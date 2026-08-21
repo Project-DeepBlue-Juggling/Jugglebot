@@ -138,13 +138,34 @@ last digit. The "0.21 % / 0.23 % above 4h" quoted in several places in this
 codebase is therefore exactly ``Δz/4h``, which is height-dependent; the constant
 is the 6.736.
 
-Two numbers in the tree round this differently and neither is wrong so much as
-stale: ``toss_fit_lib``'s header says 3126.5 and ``toss_trim``'s says 3126.64.
-A third, ``aim_target_offset_mm``'s **54.578 mm/deg**, is a different quantity
-altogether — the SECANT gain at a full 1° aim, where ``tan(1°)/1°`` adds 0.011 %
-— against this module's derivative-at-zero 54.5718 mm/deg. Both are correct;
-they are not interchangeable, and :func:`sensitivity` reports the derivative
-because that is what a Jacobian is.
+**THE CANONICAL STATEMENT OF THIS GAIN (D3, resolved 2026-08-21).** Every other
+site in the tree now points here. Three facts, all measured
+(``/tmp/probe_d3_gain.py``, run 2026-08-21):
+
+1. the excess over ``4h`` is the CONSTANT ``Δz`` = 6.7360 mm at every h, so
+   "0.21 % above 4h" is ``Δz/4h`` and is height-dependent — quote the constant,
+   not the percentage;
+2. the gain does **not depend on the catch z** at all (identical to 4 decimals
+   over z ∈ {0, 100, 170, 250} mm). ``aim_landing_jacobian(T, z)`` takes z
+   because the production seam does, not because the answer moves;
+3. so the three numbers in the tree are **three geometries of one exact rule**,
+   not three roundings of one number:
+
+   * **3126.736** mm/rad — h = *exactly* 0.78 m (T = 0.79771241 s). This module.
+   * **3126.639** mm/rad — T = *exactly* 0.7977 s (h = 0.779976 m). ``toss_trim``
+     (which quoted it as "3126.64"); its reference geometry rounds T, not h.
+   * **3126.5 / 3126.53** — ``toss_fit_lib`` / ``toss_cal_grid``, a 4-s.f.
+     rounding at "h = 0.78" with no T. Reproduces no geometry exactly; those
+     headers now say so, and nothing there turns on the fifth digit.
+
+A fourth number, ``aim_target_offset_mm``'s **54.578 mm/deg**, is a different
+QUANTITY altogether — the SECANT gain to a full 1° aim, larger by
+``tan(1°)/1°`` (1.0001016) plus the tilted-release drop, ratio measured
+**1.0001044** — against this module's derivative-at-zero **54.5718 mm/deg** at
+the same h = 0.78. Both are correct; they are not interchangeable. A sizing
+argument about a clamp wants the secant (``toss_cal.TOTAL_MAX_RAD``'s "55 mm at
+1°"); a linearised update law wants the derivative, and :func:`sensitivity`
+reports the derivative because that is what a Jacobian is.
 
 WHAT THE MEASURED CORPUS SAYS, IN ONE PLACE
 -------------------------------------------
@@ -212,6 +233,7 @@ from jugglebot.motion.trajectory.toss_release import (              # noqa: E402
     compute_release_state_tilted,
     validate_event_vel,
 )
+from jugglebot import toss_sequencer                                # noqa: E402
 from jugglebot.toss_sequencer import (                              # noqa: E402
     FLIGHT_TIME_MAX_S,
     FLIGHT_TIME_MIN_S,
@@ -236,6 +258,15 @@ __all__ = [
     'IlcFitError', 'TossGoal',
     'U_CHANNELS', 'U_LABELS', 'N_U', 'CATCH_CHANNELS',
     'E_LABELS', 'N_E', 'E1_BLOCKED', 'E1_MASK', 'DEFAULT_MASK', 'SIGMA_E',
+    'AIM_CHANNELS', 'MONITOR_CHANNELS', 'MONITOR_MASK', 'FULL_MASK',
+    'GUARD_SCOPE', 'GUARD_ROW_REASONS', 'GUARD_LAND_ERR_REASONS',
+    'GUARD_DECLARATION_GAP_REASONS', 'GUARD_SELF_BLINDING_REASONS',
+    'GuardVerdict', 'guard_verdict', 'land_err_admissible',
+    'channel_disagreement', 'disagreement_census',
+    'evidence_gate', 'EVIDENCE_PASS', 'EVIDENCE_THIN', 'EVIDENCE_INSIDE_SE',
+    'EVIDENCE_FROZEN',
+    'TIER_8B', 'THROW_SITE_KEY_TOL_MM', 'throw_site_xy_of',
+    'throw_site_admissible',
     'FD_STEPS', 'TAU0', 'AUTHORITY', 'ILC_SPEED_AUTHORITY', 'RHO_DAMPING',
     'speed_authority_band', 'speed_authority_band_for_goal',
     'MAX_TRUST_SHRINKS', 'lateral_admissible', 'COVERAGE_ASYM_MAX_S',
@@ -509,6 +540,46 @@ AUTHORITY = np.array([c.authority for c in U_CHANNELS], dtype=float)
 #: :func:`catch_channel` raises rather than returning a zero, because a silently
 #: zero catch channel is a fit that reports it optimised something it never
 #: touched.
+#:
+#: **``catch_timing_offset`` was considered as the first catch channel on
+#: 2026-08-21 (owner decision 5) and DECLINED, with the residual written down.**
+#: G-2 has since closed (``b084f98``, the hand's braking clamp was the legs' Kt
+#: in ``torque_soft_min``), so the decision hangs on the other prerequisite, and
+#: three things have to be true for a channel to be a channel here:
+#:
+#: 1. **a measured residual.** This one exists and is clean: the catch edge is
+#:    DEBOUNCE-FREE (``toss_record``'s own header — the 241 ms asymmetry is on
+#:    the DEPARTURE edge), so ``t_catch_deb_ros`` is a real instant, and the
+#:    residual is
+#:
+#:        ``catch_time_err_s = (t_catch_deb_ros − t_land_bag) − event_delay_s``
+#:
+#:    i.e. measured seat instant minus plane-crossing instant, minus the delay
+#:    the catch was ARMED with at ``catch_coordinator_node._arm_hand_catch``.
+#:    Every one of those three fields is already mined on every row.
+#: 2. **an analytic ``∂e/∂u`` through the production chain** (design constraint
+#:    1: never a symbolic twin). This is the one that fails. ``e_model`` is
+#:    release-side and analytic to the plane — ballistic flight plus the
+#:    ``hand_stroke`` closed form — and it stops there. The seat instant is a
+#:    function of the hand's DESCENT profile, which lives in the Teensy's
+#:    ``calcCatch`` geometry; differentiating it would mean importing or
+#:    re-deriving firmware, and re-deriving it is exactly the twin the constraint
+#:    forbids. Note the shape of the failure: the column would not be
+#:    structurally zero the way ``release_timing_offset``'s is — it would be
+#:    *unmodelled*, which is worse, because a finite-difference through a chain
+#:    the model does not contain returns a confident wrong number instead of a
+#:    zero the screen can exclude.
+#: 3. **a σ for the new ``e`` row.** Never measured; and the only corpus that
+#:    exists cannot legitimately supply it, because ``partition_key`` includes
+#:    ``bridge_fw_version`` and every row predates FW 14 (C6).
+#:
+#: And the cadence work makes (2) worse, not better: the true 0.25 s dwell (R6)
+#: is a DEFERRED FIRMWARE FORK of ``calcCatch``, so the very geometry this
+#: channel would differentiate is the one scheduled to change. Building the
+#: channel now would fit a descent profile the fork replaces.
+#:
+#: So: declared, unimplemented, residual definition recorded above, and the
+#: unblocking condition is a modelled descent — not more hardware time.
 CATCH_CHANNELS: Tuple[Tuple[str, str, str], ...] = (
     ('catch_pose_dx', 'mm',
      'catch_coordinator._compute_catch_command reach target xy'),
@@ -528,15 +599,25 @@ def catch_channel(name: str):
         raise IlcFitError(
             'unknown command channel {!r} — throw side is {}, catch side is {}'
             .format(name, list(U_LABELS), sorted(known)))
+    extra = ''
+    if name == 'catch_timing_offset':
+        extra = (' This one was re-examined on 2026-08-21 (owner decision 5) '
+                 'and DECLINED for a NAMED reason, not for time: its residual '
+                 'is clean and already mined — catch_time_err_s = '
+                 '(t_catch_deb_ros - t_land_bag) - event_delay_s — but there is '
+                 'no analytic d(seat instant)/du, because the seat is a '
+                 'function of the Teensy calcCatch descent geometry that '
+                 'e_model does not contain, and finite-differencing through a '
+                 'chain the model lacks returns a confident wrong column rather '
+                 'than a zero the screen can exclude. See CATCH_CHANNELS.')
     raise NotImplementedError(
-        'catch-side channel {!r} is DECLARED, NOT IMPLEMENTED in v1. Two open '
-        'prerequisites, neither of them "we ran out of time": G-2 (the '
-        'hand-ODrive braking clamp is in the catch-softness path, so a fit '
-        'against it fits the clamp), and Phase 0b outcome (ii) — the measured '
-        'impact transient did not separate from its matched cross-label '
-        'control, so the modelled contact-velocity surrogate has no validation '
-        'channel yet. Seam, for whoever implements it: {}'
-        .format(name, dict((c[0], c[2]) for c in CATCH_CHANNELS)[name]))
+        'catch-side channel {!r} is DECLARED, NOT IMPLEMENTED in v1. The '
+        'prerequisite is Phase 0b outcome (ii) — the measured impact transient '
+        'did not separate from its matched cross-label control, so the modelled '
+        'contact-velocity surrogate has no validation channel yet. (G-2, the '
+        'hand-ODrive braking clamp, was the other one and CLOSED 2026-08-18, '
+        'b084f98.) Seam, for whoever implements it: {}.{}'
+        .format(name, dict((c[0], c[2]) for c in CATCH_CHANNELS)[name], extra))
 
 
 def zero_command() -> np.ndarray:
@@ -571,7 +652,63 @@ E1_BLOCKED: Tuple[str, ...] = ('land_err_x', 'land_err_y',
 E1_MASK = np.array([0.0 if lbl in E1_BLOCKED else 1.0 for lbl in E_LABELS],
                    dtype=float)
 
-#: **THE MODULE-WIDE DEFAULT MASK — full-size since 2026-08-13.**
+#: The two channels that DRIVE the aim columns of ``u``. Owner decision 6 of the
+#: 2026-08-21 ILC-primary fold-in: **the whole-arc arrival direction is the
+#: primary and only aim residual.**
+AIM_CHANNELS: Tuple[str, ...] = ('arrival_dir_x', 'arrival_dir_y')
+
+#: The plane-position channels — **MONITOR ONLY since 2026-08-21** (decision 6,
+#: closing contradiction **C3**). Mined, recorded, reported and disagreement-
+#: logged on every toss; weighted **zero** in the update law.
+#:
+#: Root cause, not the decision by name. ``land_err_mm`` is a POSITION fit at the
+#: catch plane, so it carries the mocap visible-centroid bias ``b(z)``
+#: ABSOLUTELY; ``arrival_dir_err_rad`` is a whole-arc VELOCITY and is bias-immune
+#: by parity (a position bias is EVEN in ``tau = t − t_apex``, any aerodynamic
+#: force is ODD). E-1 measured only the bias GRADIENT — ``b_y`` −23.3 mm at
+#: z = 882 falling to −2.5 mm at z = 1882, r = 0.998 over 19 arcs — never the
+#: absolute offset, and the two channels therefore disagree SYSTEMATICALLY:
+#: +18.0 mm in y pooled (+17.4 / +19.5 / +15.4 across the three goal cells)
+#: against 0.85 mm in x. ``weight_matrix``'s ``Q`` arbitrated that as though it
+#: were noise, which is the one thing it is not.
+#:
+#: **Why the discriminator was not run.** The planned resolution was H2, a 20 min
+#: static fixtured-ball capture with conventional markers. Owner pushback
+#: 2026-08-21: markers on the ball corrupt the very trackable surface being
+#: measured, so H2 cannot measure the bias of the unmarked ball. The mechanism
+#: the owner reads instead — platform-frame occlusion near the bottom of the
+#: stroke — is what the arc's own data already says: the bias is large at
+#: z ≈ 880 (the catch-plane height) and has vanished by z ≈ 1880, and it is
+#: parity-EVEN. So C3 is resolved BY DECISION on the evidence in hand, and the
+#: bias-immune channel takes the loop.
+#:
+#: **What closes ABSOLUTE centering, since the direction channel cannot.** An
+#: arrival-direction loop converges the ball onto the cup the *arc* points at; a
+#: constant registration offset between the mocap frame and the physical cup is
+#: invisible to it. That closes through CATCH OUTCOMES — the penalty loop is the
+#: ground truth for "centered on the cup" — and a residual ~10 mm registration
+#: bias against the 35 mm capture radius is tolerable and visible in the penalty
+#: trend.
+#:
+#: **The standing validation** is :func:`channel_disagreement`, logged per toss:
+#: if the arrival_dir-driven loop converges while the plane residual holds the
+#: known ``b(z)`` profile shape, the model is confirmed. If catch rate plateaus
+#: with a converged aim, the decision is wrong and gets revisited.
+MONITOR_CHANNELS: Tuple[str, ...] = ('land_err_x', 'land_err_y')
+
+#: 1.0 on a monitor channel, 0.0 elsewhere — the complement of the default mask.
+MONITOR_MASK = np.array([1.0 if lbl in MONITOR_CHANNELS else 0.0
+                         for lbl in E_LABELS], dtype=float)
+
+#: All five channels weighted. **HISTORICAL / diagnostic only** since decision 6
+#: — it is what :data:`DEFAULT_MASK` was between 2026-08-13 and 2026-08-21, kept
+#: by name so the pre-decision answer stays reproducible from the same corpus
+#: (the same service :data:`E1_MASK` performs for the pre-2026-08-13 answer).
+#: **Do not pass it to a fit that will be written to an artifact.**
+FULL_MASK = np.ones(N_E, dtype=float)
+
+#: **THE MODULE-WIDE DEFAULT MASK.** ``[0, 0, 1, 1, 1]`` since 2026-08-21 —
+#: full-size between 2026-08-13 (E-1 closed) and then.
 #:
 #: E-1 CLOSED 2026-08-13. Owner-adopted resolution, evidence in
 #: ``plans/active/critical-point-ilc.md`` § Phase 1 E-1 and reproducible from
@@ -602,7 +739,20 @@ E1_MASK = np.array([0.0 if lbl in E1_BLOCKED else 1.0 for lbl in E_LABELS],
 #: :func:`measured_error` returns ``nan`` in the lateral channels of a row that
 #: fails it. One enforcement point each, and a stale file loses its lateral
 #: channels rather than the whole corpus.
-DEFAULT_MASK = np.ones(N_E, dtype=float)
+#:
+#: **The 2026-08-21 change, and the one safety question it had to answer.**
+#: Zeroing two of the four lateral entries removes SNR from the aim columns, and
+#: an aim column that falls below :data:`SCREEN_SNR_MIN` would be EXCLUDED by
+#: :func:`screen_channels` — i.e. the decision would silently switch the aim
+#: channel off rather than re-source it. Measured at the corpus goal
+#: (``/tmp/probe_mask_design.py``, run 2026-08-21): the whitened aim-column norm
+#: is 2.9207 under :data:`FULL_MASK`, of which ``land_err`` contributes 1.5857
+#: and ``arrival_dir`` 2.4527. Under this mask it is **2.4527**, and under this
+#: mask WITH the D2-corrected sigma (0.00302) it is **1.9330** — both far above
+#: the 1.0 floor, and the retained set is unchanged
+#: (``aim_rx``, ``aim_ry``, ``event_vel_trim``). ``release_timing_offset`` stays
+#: EXCLUDED for the reason it always was: its column is structurally zero.
+DEFAULT_MASK = FULL_MASK - MONITOR_MASK
 
 #: Per-channel measurement noise, in each channel's own unit. **PROVISIONAL**
 #: until a corpus larger than 19 rows exists, in the convention
@@ -612,26 +762,61 @@ DEFAULT_MASK = np.ones(N_E, dtype=float)
 #: * ``land_err``  — per-axis sd 15.7 / 13.6 mm over the 17 rows with a landing
 #:   fit; pooled to one isotropic 14.7 mm rather than split, because the physics
 #:   is isotropic and two numbers at n = 17 is fitting the axes.
-#: * ``arrival_dir`` — per-axis sd 0.00267 / 0.00203 rad, pooled to 0.00238.
+#: * ``arrival_dir`` — per-axis sd 0.00296 / 0.00308 rad, pooled to **0.00302**.
+#:   (Pre-E-1-re-mine it was 0.00267 / 0.00203 → 0.00238; see the D2 block
+#:   below for why the number moved and why it is now the one in this array.)
 #: * ``flight_time`` — sd 0.0139 s. Deliberately the RAW scatter and not the
 #:   0.0122 s the 23 %-plant / 77 %-noise decomposition implies: a Q weight that
 #:   under-states the noise over-trusts the channel, and the decomposition rests
 #:   on one correlation coefficient at n = 19.
 #:
-#: **STALE IN ONE CHANNEL, deliberately not fixed here (2026-08-13).** The E-1
-#: re-mine changed the lateral estimator, so ``arrival_dir``'s measured scatter
-#: moved: on the re-mined corpus the per-axis sd is 0.00296 / 0.00308, pooled
-#: **0.00302 rad**, i.e. 27 % above the 0.00238 sitting in this array. ``land_err``
-#: (14.73 vs 14.7) and ``flight_time`` (0.01385 vs 0.0139) are unchanged, because
-#: their estimators were. This array is NOT updated because Gate 1 approved
-#: ``Q = diag(1/sigma^2)`` with these numbers on 2026-08-13 and re-deriving an
-#: approved weight is an owner decision, not a tidy-up. The cost of leaving it is
-#: bounded and measured: it over-trusts ``arrival_dir`` relative to ``land_err``,
-#: moving the pooled aim requirement from |aim| = 0.00997 to 0.01044 rad
-#: (57.1 % -> 59.8 % of the D7 authority) — inside the authority either way.
+#: **D2 — RE-DERIVED 2026-08-21. ``arrival_dir`` is 0.00302, not 0.00238.**
+#: The E-1 re-mine changed the lateral estimator (per-branch → whole-arc), so the
+#: channel's measured scatter moved with it: on the re-mined corpus the per-axis
+#: sd is 0.00296 / 0.00308, pooled **0.00301993 rad**, 27 % above the 0.00238
+#: this array carried. ``land_err`` (14.7313 vs 14.7) and ``flight_time``
+#: (0.0138473 vs 0.0139) are unchanged, because their estimators were.
+#: Reproduce: ``/tmp/probe_ilc_sigma.py``, run 2026-08-21 over the three
+#: newest-mine corpus files, and re-derivable from the committed
+#: ``tests/hardware/ilc_corpus_fixture.py`` since C8 landed.
 #:
-#: **The gap the weights are arbitrating is NOT noise, and this is the finding to
-#: carry forward.** The two lateral channels disagree SYSTEMATICALLY, in y only,
+#: **The population it belongs to, which is not the population it is now applied
+#: over.** 0.00302 is the pooled sd over the **17** rows carrying BOTH lateral
+#: channels, because ``lateral_admissible`` required ``land_err_mm`` until
+#: 2026-08-21. Now that the primary channel no longer depends on a monitor one
+#: (decision 6), **19** arrival directions are readable and the same statistic
+#: reads **0.00286** — 5.4 % lower. This array keeps 0.00302, i.e. it slightly
+#: OVER-states the noise, which is the conservative direction and this array's
+#: own stated doctrine one bullet up: a ``Q`` weight that under-states the noise
+#: over-trusts the channel. Both numbers are pinned by
+#: ``test_the_committed_fixture_reproduces_the_headline_numbers``.
+#:
+#: It was left stale on 2026-08-13 because Gate 1 had approved
+#: ``Q = diag(1/sigma^2)`` with the old numbers and re-deriving an approved
+#: weight is an owner decision. That decision was taken on 2026-08-21 (fold-in
+#: decision 6, D2), and **the cost it was weighed against has since collapsed to
+#: zero in the aim channels** — which is the part worth writing down:
+#:
+#: * the bounded cost of the stale entry was 0.00997 → 0.01044 rad of pooled aim
+#:   requirement (57.1 % → 59.8 % of the D7 authority). Every millimetre of that
+#:   was ``Q`` ARBITRATING ``arrival_dir`` against ``land_err`` — the sigma ratio
+#:   is what decides how a systematic +18 mm disagreement is split.
+#: * Decision 6 removes the arbitration: with :data:`MONITOR_MASK` zeroed out of
+#:   the update, ``aim_rx`` is driven by ``arrival_dir_y`` alone and ``aim_ry``
+#:   by ``arrival_dir_x`` alone (``F`` is exactly this sparse — see
+#:   :func:`sensitivity`), so a common scale on the only two channels driving
+#:   those columns cancels out of ``(FᵀQF)⁻¹FᵀQe`` entirely. Measured: the pooled
+#:   aim requirement is **0.008717 rad at BOTH sigmas**, bit-identical.
+#: * What the value still changes is the DAMPED step, because ``R = diag(ρ/τ²)``
+#:   is in scaled coordinates and does not cancel, and the SNR the screen reads
+#:   (2.4527 → 1.9330, both above the 1.0 floor). So the number matters; the
+#:   57.1/59.8 framing does not survive decision 6 and is recorded here as
+#:   superseded rather than deleted.
+#:
+#: **The gap the weights WERE arbitrating is NOT noise — and since 2026-08-21
+#: they no longer arbitrate it** (:data:`MONITOR_CHANNELS`, decision 6). Kept
+#: verbatim because it is the measurement the decision rests on.
+#: The two lateral channels disagree SYSTEMATICALLY, in y only,
 #: by +18.0 mm at the plane (pooled; +17.4 / +19.5 / +15.4 across the three goal
 #: cells) while agreeing in x to under 1.3 mm. ``land_err_mm`` is a POSITION fit
 #: at the catch plane and so carries the centroid bias b_y(z_plane) absolutely;
@@ -641,7 +826,7 @@ DEFAULT_MASK = np.ones(N_E, dtype=float)
 #: as the measured b_y profile's own span (21 mm). Until the fixtured no-robot
 #: capture closes that, a mocap-closed aim loop converges to the measurement's
 #: cup, not the world's, and these two channels are how far apart those are.
-SIGMA_E = np.array([14.7, 14.7, 0.00238, 0.00238, 0.0139], dtype=float)
+SIGMA_E = np.array([14.7, 14.7, 0.00302, 0.00302, 0.0139], dtype=float)
 
 #: The cross-check channel (NOT part of ``e``). ``release_speed_err_mms`` is the
 #: same physical quantity as ``flight_time_err`` seen through the other branch of
@@ -921,8 +1106,10 @@ def conditioning(F, *, sigma_e=None, tau=None, mask=None) -> Dict[str, Any]:
     :func:`iterate` and :func:`fit_corpus`. One default across the whole module,
     because the alternative — this family defaulting to one mask and that family
     to another — is how a report and the step it justifies come to describe two
-    different systems. Since E-1 closed (2026-08-13) that default is FULL SIZE;
-    the historical masked answer is an EXPLICIT ``mask=E1_MASK``.
+    different systems. It went full size when E-1 closed (2026-08-13) and became
+    ``[0, 0, 1, 1, 1]`` on 2026-08-21 when owner decision 6 demoted ``land_err``
+    to a monitor; both historical answers stay reachable by name, as an EXPLICIT
+    ``mask=FULL_MASK`` or ``mask=E1_MASK``.
     """
     F = np.asarray(F, dtype=float).reshape(N_E, N_U)
     s = SIGMA_E if sigma_e is None else np.asarray(sigma_e, dtype=float)
@@ -983,9 +1170,16 @@ def screen_channels(F, *, sigma_e=None, tau=None, mask=None) -> Dict[str, Any]:
     4. otherwise **retained**.
 
     ``mask=None`` means :data:`DEFAULT_MASK`, the module-wide default (see
-    :func:`conditioning`), which is FULL SIZE since E-1 closed. Rule 1 still
-    needs the full-size matrix internally and computes it regardless of what was
-    asked for, so the historical ``mask=E1_MASK`` report is unchanged.
+    :func:`conditioning`), which is ``[0, 0, 1, 1, 1]`` since owner decision 6
+    demoted ``land_err`` to a monitor (2026-08-21). Rule 1 still needs the
+    full-size matrix internally and computes it regardless of what was asked for,
+    so both historical reports — ``mask=FULL_MASK`` and ``mask=E1_MASK`` — are
+    unchanged.
+
+    **The demotion does not screen the aim channels out, and that was checked
+    before it landed**: the whitened aim-column norm falls 2.9207 → 2.4527 (and
+    → 1.9330 once D2's corrected sigma is in), against a
+    :data:`SCREEN_SNR_MIN` of 1.0.
     """
     m = DEFAULT_MASK if mask is None else np.asarray(mask, dtype=float)
     full = np.ones(N_E)
@@ -1591,6 +1785,161 @@ def _pair(value: Any) -> Optional[Tuple[float, float]]:
     return None if a is None or b is None else (a, b)
 
 
+# ═════════════════════════════════════════════════════════════════════════════
+# The guard port (build step 3) — G1–G11 applied to the ILC corpus
+# ═════════════════════════════════════════════════════════════════════════════
+
+#: Refusal reasons whose subject is THE TOSS. A row earning one of these is not
+#: evidence about the plant on any channel, so the whole row is refused.
+GUARD_ROW_REASONS = frozenset({
+    'label_unknown', 'label_no_release',          # G9 — possession / label
+    'label_unusable',                             # G9, speed guard's spelling
+    'no_release_evidence',                        # G1
+    'retry_cycle', 'reload_settle',               # G11 / G10
+    'interlude_cycle',                            # G11+G10, speed guard's
+    'no_gravity_correction', 'no_tilt_map',       # G5 — layer 0 identity
+    'plant_dip_below_x3', 'plant_stroke_peak',    # G4 — plant health
+    'plant_stroke_truncated',
+})
+
+#: Refusal reasons whose subject is the LANDING-PLANE POSITION FIT, i.e. exactly
+#: and only the ``land_err_x/y`` monitor columns (G2). Scoped to the channel by
+#: :func:`land_err_admissible`; the row keeps its arrival direction and its
+#: flight time.
+GUARD_LAND_ERR_REASONS = frozenset({
+    'no_mocap_fit', 'mocap_fit_sparse', 'mocap_fit_rms_unknown',
+    'mocap_fit_quality', 'missed_with_thin_track',
+})
+
+#: Refusal reasons that are preconditions of the SESSION TRIM'S OWN ESTIMATOR
+#: and not of this one. Counted and reported, never applied.
+#:
+#: * ``applied_aim_unknown`` — ``toss_trim.reduce_to_aim`` computes
+#:   ``b = A − J⁻¹·land_err`` and needs ``A = applied_aim_rad`` to subtract. The
+#:   ILC update law never forms ``A``: it accumulates ``u`` in its own artifact
+#:   and re-validates the sum through :func:`admit_command`. So the field is a
+#:   precondition of a different estimator, and it is a DECLARATION ('D') field
+#:   that no mined-only row can carry — on the 2026-08-12 corpus it alone would
+#:   refuse 6 of 19.
+#: * ``no_flight_pair`` — needs the DECLARED ``flight_time_s``. The miner
+#:   produces the same measurand as ``cmd_flight_time_s`` (origin 'M', from the
+#:   announcement's ``predicted_tof_sec``), and :func:`goal_of` already builds
+#:   this module's entire geometry on it. Requiring the declaration would refuse
+#:   16 of 19 rows for a number the fit is already using.
+#: * ``no_geometry`` — ``toss_trim._z_of`` reads the goal z out of
+#:   ``goal_catch_xyz_stow_mm``, another 'D' field that is null on every
+#:   mined-only row. :func:`goal_of` recovers the same z from ``land_plane_mm``
+#:   walked back down the two GENERATED offsets, which is this module's geometry
+#:   precondition and is enforced where it belongs — a row whose goal cannot be
+#:   recovered gets no goal cell and is not fitted at one. Applying the trim's
+#:   version alone refused **16 of 19** rows (measured 2026-08-21) for a pose the
+#:   fit had already reconstructed.
+GUARD_DECLARATION_GAP_REASONS = frozenset({
+    'applied_aim_unknown', 'no_flight_pair', 'no_geometry',
+})
+
+#: Refusal reasons that are SELF-BLINDING for this estimator — waived by name,
+#: with the root cause, and counted.
+#:
+#: ``apex_out_of_band`` is G3: refuse a toss whose achieved apex missed the
+#: commanded one by more than ``toss_trim.APEX_SANITY_FRAC`` (10 %). That guard
+#: is correct for the trim, which fits AIM ONLY and cannot model the vertical
+#: miss. **This module fits the vertical channel** — ``flight_time_err`` is
+#: ``E_LABELS[4]`` and ``event_vel_trim`` is the column that corrects it — so a
+#: toss whose apex missed is precisely the record the fit exists to consume.
+#: ``toss_trim`` makes this exact argument itself, one estimator over:
+#: :func:`~jugglebot.toss_trim.admit_for_speed` *"deliberately does NOT apply G3
+#: … a toss whose apex missed by more than 10 % is precisely the record the speed
+#: estimator exists to consume"*.
+#:
+#: It is not a theoretical concern. The corpus headline is a hand that throws
+#: **+11 % fast**, and ``h = gT²/8`` turns +11 % of flight time into **+23 % of
+#: apex** — so on any row carrying the declaration, G3 refuses the machine's own
+#: dominant, known, correctable error. The guard would refuse the evidence needed
+#: to clear the guard: a deadlock, not a conservative default.
+GUARD_SELF_BLINDING_REASONS = frozenset({'apex_out_of_band'})
+
+#: Every ``toss_trim`` refusal reason, mapped to the scope this module applies it
+#: at. Pinned COMPLETE against ``toss_trim.AIM_REFUSAL_REASONS`` and
+#: ``SPEED_REFUSAL_REASONS`` by ``test_every_toss_trim_refusal_reason_is_scoped``
+#: — a guard added upstream must be scoped here or the suite goes red, rather
+#: than defaulting to "admitted", which is how a guard that looks enforced is not.
+GUARD_SCOPE: Dict[str, str] = {}
+for _r in GUARD_ROW_REASONS:
+    GUARD_SCOPE[_r] = 'ROW'
+for _r in GUARD_LAND_ERR_REASONS:
+    GUARD_SCOPE[_r] = 'LAND_ERR'
+for _r in GUARD_DECLARATION_GAP_REASONS:
+    GUARD_SCOPE[_r] = 'DECLARATION_GAP'
+for _r in GUARD_SELF_BLINDING_REASONS:
+    GUARD_SCOPE[_r] = 'SELF_BLINDING'
+del _r
+
+
+class GuardVerdict(NamedTuple):
+    """What ``toss_trim``'s G1–G11 say about one row, sorted by scope.
+
+    ``row_reasons`` refuses the record outright; ``land_err_reasons`` refuses
+    only the two monitor columns; ``waived`` is reported, never applied.
+    """
+    row_reasons: Tuple[str, ...]
+    land_err_reasons: Tuple[str, ...]
+    waived: Tuple[str, ...]
+
+    @property
+    def row_ok(self) -> bool:
+        return not self.row_reasons
+
+
+def guard_verdict(rec: Dict[str, Any]) -> GuardVerdict:
+    """Run ``toss_trim``'s aim AND speed guards over one row and scope the result.
+
+    **This is design constraint 4's possession gate, and until 2026-08-21 it did
+    not exist.** ``admit_record`` imported ``toss_trim`` for constants only and
+    called none of its guards, so G1–G11 were not applied to the ILC corpus at
+    all — including G9, the label/possession gate the plan makes an admission
+    requirement. A synthetic corpus carried ``'label': 'CAUGHT'`` and nothing
+    read it.
+
+    The guards are CALLED, never re-implemented (one definition, or the online
+    trim and the offline fit disagree about which rows are in the population).
+    Both non-short-circuiting forms are used —
+    :func:`~jugglebot.toss_trim.aim_refusals` and
+    :func:`~jugglebot.toss_trim.speed_refusals` — because a classifier that only
+    ever sees the FIRST reason would admit a row whose first refusal is
+    channel-scoped and whose second refuses the whole toss.
+
+    Every returned reason is looked up in :data:`GUARD_SCOPE`. An unrecognised
+    reason is treated as :data:`GUARD_ROW_REASONS` — **fail closed**, so a guard
+    added to ``toss_trim`` without a scope entry here refuses rows loudly instead
+    of passing silently, and the completeness test says which one.
+    """
+    reasons: List[str] = []
+    for reason in toss_trim.aim_refusals(rec):
+        if reason not in reasons:
+            reasons.append(reason)
+    for reason in toss_trim.speed_refusals(rec):
+        if reason not in reasons:
+            reasons.append(reason)
+
+    row: List[str] = []
+    land: List[str] = []
+    waived: List[str] = []
+    for reason in reasons:
+        scope = GUARD_SCOPE.get(reason)
+        if scope is None and reason.startswith(toss_trim.LABEL_REFUSAL_PREFIX):
+            # The open `label_<name>` family — a label that is neither unknown,
+            # nor NO_RELEASE, nor in AIM_LABELS. G9, and it refuses the row.
+            scope = 'ROW'
+        if scope == 'LAND_ERR':
+            land.append(reason)
+        elif scope in ('DECLARATION_GAP', 'SELF_BLINDING'):
+            waived.append(reason)
+        else:
+            row.append(reason)
+    return GuardVerdict(tuple(row), tuple(land), tuple(waived))
+
+
 def lateral_admissible(rec: Dict[str, Any]) -> Tuple[bool, str]:
     """May this row's LATERAL channels be read at all? ``(ok, reason)``.
 
@@ -1612,12 +1961,19 @@ def lateral_admissible(rec: Dict[str, Any]) -> Tuple[bool, str]:
        matches both mines (:func:`load_corpus`'s de-duplication is by
        ``toss_uid``, not by miner version), so without this check lifting the
        mask would silently re-open E-1 on any corpus with a stale file in it.
-    2. the channels themselves present — ``land_err_mm`` and
-       ``arrival_dir_err_rad``.
+    2. the channel itself present — ``arrival_dir_err_rad``.
 
     The threshold is IMPORTED from the miner rather than restated, for the same
     reason ``_lean_rad`` is: one definition of the gate, or the corpus and the
     fit disagree about which rows are in it.
+
+    **``land_err_mm``'s presence left this gate on 2026-08-21** and moved to
+    :func:`land_err_admissible`. Root cause: decision 6 made ``arrival_dir`` the
+    PRIMARY aim channel and ``land_err`` a monitor, and requiring a monitor
+    channel in order to read the primary one throws away the measurement the loop
+    runs on to protect a column nobody fits. It is the same asymmetry
+    :func:`admit_record` already argues for the vertical channel, one level down;
+    it costs 2 of the 19 rows in the only corpus that exists.
     """
     asym = _num(rec.get('coverage_asym_s'))
     if asym is None:
@@ -1628,10 +1984,41 @@ def lateral_admissible(rec: Dict[str, Any]) -> Tuple[bool, str]:
                        'half-seen arc, where the whole-arc fit\'s parity '
                        'cancellation no longer holds'
                        .format(asym, COVERAGE_ASYM_MAX_S))
-    if _pair(rec.get('land_err_mm')) is None:
-        return False, 'no land_err_mm'
     if _pair(rec.get('arrival_dir_err_rad')) is None:
         return False, 'no arrival_dir_err_rad'
+    return True, ''
+
+
+def land_err_admissible(rec: Dict[str, Any]) -> Tuple[bool, str]:
+    """May this row's MONITOR channels (``land_err_x/y``) be read? ``(ok, why)``.
+
+    Three conditions, and the third is the guard port (build step 3):
+
+    1. :func:`lateral_admissible` — the E-1 whole-arc gate, because a plane
+       residual mined before it is as artefactual as an arrival direction;
+    2. ``land_err_mm`` present;
+    3. **``toss_trim``'s G2 track-quality guard**, via :func:`guard_verdict` —
+       ``no_mocap_fit`` / ``mocap_fit_sparse`` / ``mocap_fit_rms_unknown`` /
+       ``mocap_fit_quality`` / ``missed_with_thin_track``. Those five reasons all
+       speak about the LANDING-PLANE POSITION FIT, which is exactly and only what
+       ``land_err_mm`` is, so they gate this channel and not the row: a toss with
+       a clean arc and a poor plane fit is a perfectly good arrival-direction
+       measurement, and refusing it would discard the primary channel to protect
+       a monitor.
+
+    On the 2026-08-12 corpus this refuses 10 of the 19 admitted rows'
+    ``land_err`` columns (8 ``mocap_fit_quality`` + 2 ``no_mocap_fit``) while
+    keeping every one of their arrival directions.
+    """
+    ok, why = lateral_admissible(rec)
+    if not ok:
+        return False, why
+    if _pair(rec.get('land_err_mm')) is None:
+        return False, 'no land_err_mm'
+    verdict = guard_verdict(rec)
+    if verdict.land_err_reasons:
+        return False, ('toss_trim G2: {}'
+                       .format(', '.join(verdict.land_err_reasons)))
     return True, ''
 
 
@@ -1659,11 +2046,34 @@ def admit_record(rec: Dict[str, Any], *, need_lateral: bool = False,
       the healthy threshold is G-1's to fix, and 16 of the 19 usable rows in the
       only corpus that exists sit at 16.7 h. :func:`uptime_census` reports the
       distribution so the choice is made with the cost visible.
+    * **``toss_trim``'s G1–G11, via :func:`guard_verdict`** (2026-08-21, build
+      step 3). This is the possession gate design constraint 4 asks for and that
+      this function did not have. Only the ROW-scoped reasons refuse here; the
+      G2 landing-fit reasons scope to the ``land_err`` monitor columns
+      (:func:`land_err_admissible`) and the trim-estimator preconditions are
+      waived and counted. See :data:`GUARD_SCOPE` for the whole table and the
+      root cause of every waiver.
+    * ``throw_site_xy_mm`` under **tier 8b** (C7). Under 8a the field is the
+      ``TossSequencer`` class DEFAULT ``(0.0, 0.0)`` and means "unset", not
+      "threw from the origin" — reading it as a site would move the model 192 mm
+      on the corpus's own displaced cells. So it is consumed only when the row
+      declares 8b, an 8b row that carries no site is refused (under 8b every
+      field of the release state is a function of A, and there is no correct 8a
+      fallback), and an 8b row whose site is DISPLACED from its cup is refused
+      because the v1 artifact key ``(x, y, z, T)`` has no site component and
+      would apply that correction to every future toss to the same cup.
     """
     if not rec.get('usable_for_release_fit'):
         return False, 'not usable_for_release_fit (the miner\'s own gate)'
     if _num(rec.get('flight_time_err_s')) is None:
         return False, 'no flight_time_err_s'
+    verdict = guard_verdict(rec)
+    if verdict.row_reasons:
+        return False, ('toss_trim guard: {} (G1-G11, see GUARD_SCOPE)'
+                       .format(', '.join(verdict.row_reasons)))
+    ok, why = throw_site_admissible(rec)
+    if not ok:
+        return False, why
     if need_lateral:
         ok, why = lateral_admissible(rec)
         if not ok:
@@ -1695,15 +2105,215 @@ def measured_error(rec: Dict[str, Any]) -> np.ndarray:
     still contribute its contaminated lateral numbers through every path that
     admits on the vertical channel alone. Refusing at the read is the only place
     that closes all of them at once.
+
+    **Two gates since 2026-08-21, not one**, because the two lateral channels are
+    no longer the same kind of thing (decision 6): ``arrival_dir`` is the primary
+    aim measurand and gates on :func:`lateral_admissible` (E-1), while
+    ``land_err`` is a monitor and additionally gates on
+    :func:`land_err_admissible` (E-1 + presence + ``toss_trim``'s G2). A row with
+    a clean arc and a poor plane fit therefore comes back with its arrival
+    direction intact and ``nan`` in the monitor columns, instead of losing both.
     """
     out = np.full(N_E, np.nan, dtype=float)
     if lateral_admissible(rec)[0]:
-        out[0], out[1] = _pair(rec.get('land_err_mm'))
         out[2], out[3] = _pair(rec.get('arrival_dir_err_rad'))
+    if land_err_admissible(rec)[0]:
+        out[0], out[1] = _pair(rec.get('land_err_mm'))
     ft = _num(rec.get('flight_time_err_s'))
     if ft is not None:
         out[4] = ft
     return out
+
+
+def channel_disagreement(rec: Dict[str, Any],
+                         goal: Optional[TossGoal] = None
+                         ) -> Optional[Dict[str, Any]]:
+    """THE per-toss C3 validation log, or ``None`` when the row cannot answer.
+
+    ``(land_err − arrival_dir · gain)`` per axis, in mm at the measurement plane,
+    where ``gain`` is the model's OWN ratio ``∂land_err/∂aim ÷ ∂arrival_dir/∂aim``
+    read off :func:`sensitivity` — never a re-derived ``4h + Δz``, because the
+    whole point of the number is that it compares two channels *through the model
+    that relates them*, and a second copy of that relation would make a model
+    disagreement look like a plant one.
+
+    **Why it is logged on every toss.** Decision 6 resolves C3 by DECISION rather
+    than by the H2 measurement (which the owner retired: conventional markers on
+    the ball corrupt the trackable surface being measured). This is the standing
+    replacement validation, and it has two readings:
+
+    * the arrival_dir-driven loop converges **while** this residual holds the
+      known ``b(z)`` profile shape ⇒ the centroid-bias model is confirmed and the
+      monitor channel is behaving exactly as the model says it must;
+    * catch rate plateaus **with** a converged aim ⇒ the decision is wrong, the
+      loop has centred on the measurement's cup rather than the world's, and C3
+      re-opens.
+
+    Baseline, measured on the 2026-08-12 corpus (2026-08-21, over the three
+    newest-mine files, model gain 3993.264 mm/rad at the corpus goal). Two
+    populations, and both are quoted because they answer different questions:
+
+    * **E-1-admissible only, n = 17** — the population the C3 finding was taken
+      on: pooled ``(+0.90, +18.10) mm``, per cell y = ``+17.45 / +19.57 /
+      +15.46`` at n = 6 / 8 / 3, x under 1.35 mm everywhere.
+    * **G2-gated, n = 9** — what :func:`disagreement_census` reports now that
+      :func:`land_err_admissible` gates the monitor columns on the landing-plane
+      fit's own quality: ``(−2.90, +19.77) mm``, sd ``(3.87, 10.24)``. The y
+      disagreement SURVIVES the quality gate and tightens, which is the reading
+      that matters: it is not an artefact of poor plane fits.
+    """
+    if goal is None:
+        goal = goal_of(rec)
+    if goal is None:
+        return None
+    e = measured_error(rec)
+    if np.isnan(e[:4]).any():
+        return None
+    F = sensitivity(zero_command(), goal)
+    # aim_rx drives land_err_y and arrival_dir_y; aim_ry drives land_err_x and
+    # arrival_dir_x. The per-axis ratio is the model's mm-per-rad-of-lean.
+    with np.errstate(divide='ignore', invalid='ignore'):
+        gain_x = float(F[0, 1] / F[2, 1]) if F[2, 1] else float('nan')
+        gain_y = float(F[1, 0] / F[3, 0]) if F[3, 0] else float('nan')
+    return {'toss_uid': rec.get('toss_uid'),
+            'goal_cell': goal_key(rec),
+            'land_err_mm': (float(e[0]), float(e[1])),
+            'arrival_dir_rad': (float(e[2]), float(e[3])),
+            'gain_mm_per_rad': (gain_x, gain_y),
+            'arrival_dir_as_plane_mm': (float(e[2]) * gain_x,
+                                        float(e[3]) * gain_y),
+            'disagreement_mm': (float(e[0]) - float(e[2]) * gain_x,
+                                float(e[1]) - float(e[3]) * gain_y)}
+
+
+def disagreement_census(records: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    """Pooled :func:`channel_disagreement` over rows that can answer it."""
+    rows = [d for d in (channel_disagreement(r) for r in records)
+            if d is not None]
+    if not rows:
+        return {'n': 0, 'mean_mm': (float('nan'), float('nan')),
+                'sd_mm': (float('nan'), float('nan')), 'rows': []}
+    arr = np.array([d['disagreement_mm'] for d in rows], dtype=float)
+    sd = arr.std(axis=0, ddof=1) if arr.shape[0] > 1 else np.zeros(2)
+    return {'n': int(arr.shape[0]),
+            'mean_mm': (float(arr[:, 0].mean()), float(arr[:, 1].mean())),
+            'sd_mm': (float(sd[0]), float(sd[1])),
+            'rows': rows}
+
+
+#: The tier string that makes ``throw_site_xy_mm`` mean something (C7). Imported
+#: from the sequencer rather than restated — the record's ``toss_tier`` field is
+#: stamped from the same constant.
+TIER_8B = str(toss_sequencer.TIER_8B)
+
+#: How far an 8b throw site may sit from its own cup xy and still be written into
+#: a v1 artifact cell, mm — the plan's **zero-displacement admission gate**
+#: (``plans/active/critical-point-ilc.md``, contradiction ledger C7).
+#:
+#: **This is not a physical tolerance — it is the width of "the key can still
+#: name this geometry".** The v1 key is ``(x, y, z, T)`` on the CATCH pose
+#: (``toss_ilc.goal_key``) with no site component, so two goals that share a cup
+#: and differ in throw site share a cell and their corrections pool. Under 8a,
+#: and under 8b thrown from the cup, the cup determines the geometry exactly.
+#:
+#: It is :data:`POSE_CELL_MM`, the key's own xy quantisation, and that choice is
+#: the plan's — deliberately NOT the 1 mm "the site IS the cup" reading my first
+#: pass used. Root cause, and the plan states it in one line: **8b is the SHIPPED
+#: default** (``config/hardware_config.yaml: toss_tier: "8b"``), so a gate at
+#: float slack refuses every row a real 8b session produces — the machine throws
+#: from wherever it is and aims at displaced cups, and refusing that is refusing
+#: the tier. The symmetry that makes 150 mm defensible rather than merely
+#: convenient: the key ALREADY tolerates 150 mm of variation in the cup xy
+#: itself, since a cup anywhere inside a cell shares that cell. Tolerating the
+#: same of site variation is the existing tolerance applied to the other end of
+#: the same geometry, not a new one.
+#:
+#: What it does NOT establish, and this is the open item rather than a silence:
+#: two points 150 mm apart can still fall in DIFFERENT cells (74 mm and 224 mm
+#: quantise to 0 and 150), so "inside the gate" does not prove "the aim site and
+#: the cup name one cell". The plan's full C7 resolution pairs this gate with
+#: keying the cell on the AIM SITE — catch xy under 8a, throw site under 8b —
+#: which needs ``toss_ilc.goal_key`` and the node's lookup to move together and
+#: is a separate, node-touching change.
+THROW_SITE_KEY_TOL_MM = POSE_CELL_MM
+
+
+def throw_site_xy_of(rec: Dict[str, Any]) -> Optional[Tuple[float, float]]:
+    """The row's MEANINGFUL 8b throw site, or ``None``. **Tier-gated** (C7).
+
+    ``throw_site_xy_mm`` is a DECLARATION field filled from
+    ``getattr(seq, 'throw_site_xy_mm', (0.0, 0.0))``, and ``TossSequencer``'s own
+    class default for it is ``(0.0, 0.0)``. Under tier 8a nothing ever assigns
+    it, so ``[0.0, 0.0]`` on an 8a row means **UNSET**, not "threw from the
+    origin" — and the 2026-08-12 corpus contains exactly that: three admitted
+    rows declaring ``toss_tier = '8a'``, ``throw_site_xy_mm = [0.0, 0.0]`` and a
+    cup at ``(±150, −120)``. Reading the field as a site there moves the modelled
+    release **192.094 mm**, which is why C7 says the fit ignores it and why the
+    fix is a tier gate rather than a plain read.
+    """
+    if str(rec.get('toss_tier') or '') != TIER_8B:
+        return None
+    return _pair(rec.get('throw_site_xy_mm'))
+
+
+def throw_site_admissible(rec: Dict[str, Any]) -> Tuple[bool, str]:
+    """C7 — may this row be fitted and written under the v1 artifact key?
+
+    Three refusals, all only reachable under tier 8b:
+
+    * **``throw_site_unknown``** — the row declares 8b and carries no usable
+      site. Under 8b every field of the release state is a function of A
+      (``reload_coordinator_node``'s own ``elif tier == TIER_8B`` branch returns
+      ``release = None`` for exactly this reason), so there is no 8a fallback
+      that is merely approximate: the model would be evaluated at a pose the
+      machine never occupied.
+    * **``throw_site_not_in_key``** — the row declares 8b and its site is more
+      than :data:`THROW_SITE_KEY_TOL_MM` from its own cup xy. The geometry is
+      recoverable and :func:`goal_of` models it correctly; what cannot hold it is
+      the ARTIFACT KEY, which names the cup and not the site. Writing such a
+      row's correction into that cell would apply a far-displaced-throw aim to
+      every future toss to the same cup from anywhere. The bound is the key's own
+      xy quantisation, NOT float slack — 8b is the shipped default and a gate at
+      float slack refuses the tier; see :data:`THROW_SITE_KEY_TOL_MM`.
+
+    Zero rows in the 2026-08-12 corpus are affected: all 19 admitted rows are
+    tier 8a or tier-unknown.
+    """
+    if str(rec.get('toss_tier') or '') != TIER_8B:
+        return True, ''
+    site = _pair(rec.get('throw_site_xy_mm'))
+    if site is None:
+        return False, ('throw_site_unknown — the row declares tier 8b and every '
+                       'field of an 8b release state is a function of the throw '
+                       'site A; there is no 8a fallback that is merely '
+                       'approximate')
+    cup = _cup_xy_of(rec)
+    if cup is None:
+        # The SITE is known here; the CUP is not, so the displacement the gate
+        # bounds cannot be formed — and without a cup :func:`goal_of` returns
+        # None, so the row has no artifact cell to be written to in the first
+        # place. Named apart from `throw_site_unknown` so the two are not
+        # diagnosed as one fault.
+        return False, ('throw_site_unplaceable — tier 8b with a site but no '
+                       'recoverable cup xy, so the displacement the v1 key '
+                       'tolerance bounds cannot be computed')
+    offset = math.hypot(site[0] - cup[0], site[1] - cup[1])
+    if offset > THROW_SITE_KEY_TOL_MM:
+        return False, ('throw_site_not_in_key — an 8b throw site {:.1f} mm from '
+                       'its cup, and the v1 artifact key (x, y, z, T) names the '
+                       'cup only, so this correction would be applied to every '
+                       'toss to the same cup regardless of throw site'
+                       .format(offset))
+    return True, ''
+
+
+def _cup_xy_of(rec: Dict[str, Any]) -> Optional[Tuple[float, float]]:
+    """``land_xy_global_mm − land_err_mm`` — the announced cup xy, or ``None``."""
+    land = _pair(rec.get('land_xy_global_mm'))
+    err = _pair(rec.get('land_err_mm'))
+    if land is None or err is None:
+        return None
+    return (land[0] - err[0], land[1] - err[1])
 
 
 def goal_of(rec: Dict[str, Any]) -> Optional[TossGoal]:
@@ -1712,20 +2322,29 @@ def goal_of(rec: Dict[str, Any]) -> Optional[TossGoal]:
     ``goal_catch_xyz_stow_mm`` is a DECLARATION field and every mined-only row
     has it null, so the pose is recovered from the two mined fields that bracket
     it: ``land_xy_global_mm − land_err_mm`` is the announced cup xy by the
-    miner's own definition of ``land_err_mm``, and the cup xy IS the goal xy for
-    an 8a toss (``stow_to_global_mm`` adds only z). The z comes from
-    ``land_plane_mm`` walked back down the two GENERATED offsets — never a third
-    copy of the geometry.
+    miner's own definition of ``land_err_mm``, and the cup xy IS the goal xy
+    (``stow_to_global_mm`` adds only z). The z comes from ``land_plane_mm``
+    walked back down the two GENERATED offsets — never a third copy of the
+    geometry.
+
+    **The throw site is carried since 2026-08-21 (C7).** It used to be dropped,
+    on the stated assumption that the toss was tier 8a; under 8b that assumption
+    silently evaluates the forward model at the cup instead of at A. It is read
+    through :func:`throw_site_xy_of`, which is tier-gated — see there for why a
+    plain read of ``throw_site_xy_mm`` is a 192 mm trap on this very corpus.
+    ``TossGoal.site_xy`` still falls back to the cup xy when it is ``None``,
+    which is correct for 8a and is now a documented tier fact rather than an
+    assumption about a corpus.
     """
     T = _num(rec.get('cmd_flight_time_s'))
-    land = _pair(rec.get('land_xy_global_mm'))
-    err = _pair(rec.get('land_err_mm'))
+    cup = _cup_xy_of(rec)
     plane = _num(rec.get('land_plane_mm'))
-    if T is None or land is None or err is None or plane is None:
+    if T is None or cup is None or plane is None:
         return None
     z = plane - float(hw.GEOM_INITIAL_HEIGHT_MM) - float(hw.HAND_CATCH_OFFSET_MM)
-    return TossGoal(catch_pose_stow_mm=(land[0] - err[0], land[1] - err[1], z),
-                    flight_time_s=T, plane_mm=plane)
+    return TossGoal(catch_pose_stow_mm=(cup[0], cup[1], z),
+                    flight_time_s=T, plane_mm=plane,
+                    throw_site_xy_mm=throw_site_xy_of(rec))
 
 
 def goal_key(rec: Dict[str, Any], *, pose_cell_mm: float = POSE_CELL_MM,
@@ -2166,8 +2785,29 @@ def synthetic_corpus(goal: TossGoal, *, u_plant, n: int = 12,
             'tilt_map_version': 'synthetic-tilt/1',
             'bridge_fw_version': '10 (proto 5)',
             'platform_fw_version': '2',
-            'label': 'CAUGHT',
             'record_provenance': 'mined-only',
+            # ── toss_trim's G1–G11, satisfied EXPLICITLY (2026-08-21) ──
+            # Same argument as the E-1 block above, one guard family over: since
+            # `admit_record` now RUNS those guards (build step 3), a synthetic
+            # corpus that left these fields absent would exercise the refusal
+            # path instead of the closed loop, and V2a's channels would come
+            # back zero for a reason that has nothing to do with the fit. Each
+            # value is what a healthy machine's record carries.
+            'label': 'CAUGHT',                        # G9 — possession
+            't_departure_raw_ros': t0 + i * dt_s + 0.17,   # G1 — release seen
+            'ball_track_confirmed': True,
+            'throw_stroke_seen': True,
+            'gravity_correction_loaded': True,        # G5 — layer 0 identity
+            'tilt_map_applied': True,
+            'retry_of': None, 'reload_settle': None,  # G10 / G11 — not an
+            #                                           interlude cycle
+            'n_fit': 40,                              # G2 — landing-plane fit
+            'fit_rms_mm': 0.5, 'fit_sparse': False,
+            'dip_below_x3_rev': 0.0,                  # G4 — plant health
+            'stroke_peak_rev': 9.0, 'trunc': False,
+            # C7: tier 8a, so `throw_site_xy_mm` is meaningless and the goal xy
+            # IS the cup xy — which is what this generator builds.
+            'toss_tier': '8a',
         })
     del z
     return rows
@@ -2188,9 +2828,19 @@ def _goal_from_rows(rows: Sequence[Dict[str, Any]]) -> TossGoal:
             'no row in this group carries a recoverable goal — pass goal= '
             'explicitly rather than letting the fit invent one')
     pose = np.mean([g.catch_pose_stow_mm for g in goals], axis=0)
+    # The throw site, when the cell has one (C7). Every 8b row admitted into a
+    # cell sits within THROW_SITE_KEY_TOL_MM of its own cup — `admit_record`
+    # refuses the rest by name — so a cell either has no site at all (8a, or
+    # tier-unknown: `site_xy` then falls back to the cup, which is what 8a means)
+    # or one that is the cup to float slack. Averaging is therefore exact, not a
+    # compromise; the mean is taken so the code says WHICH site rather than
+    # picking a row.
+    sites = [g.throw_site_xy_mm for g in goals if g.throw_site_xy_mm is not None]
+    site = (tuple(float(v) for v in np.mean(sites, axis=0)) if sites else None)
     return TossGoal(
         catch_pose_stow_mm=tuple(float(v) for v in pose),
         flight_time_s=float(np.mean([g.flight_time_s for g in goals])),
+        throw_site_xy_mm=site,
         plane_mm=float(np.mean([g.plane_mm for g in goals])))
 
 
@@ -2210,11 +2860,174 @@ def pooled_error(rows: Sequence[Dict[str, Any]]) -> Tuple[np.ndarray, np.ndarray
     return np.where(np.isnan(mean), 0.0, mean), counts
 
 
+#: Evidence-gate verdicts, in increasing order of "and it will not come back".
+EVIDENCE_PASS = 'PASS'
+EVIDENCE_THIN = 'THIN'
+EVIDENCE_INSIDE_SE = 'INSIDE_SE_GATE'
+EVIDENCE_FROZEN = 'FROZEN_CUSUM'
+
+
+def evidence_gate(rows: Sequence[Dict[str, Any]], *, mask=None) -> Dict[str, Any]:
+    """The per-cell evidence gate — build step 3's second half. **Per channel.**
+
+    Returns ``{'mask': (N_E,), 'channels': [...], 'frozen': bool,
+    'frozen_monitor': bool, 'passed': (...), 'gated': (...)}`` where the mask is
+    1.0 on a channel this cell may write a step from and 0.0 on one it may not.
+    ``frozen`` is about the FITTED channels; a CUSUM alarm on a monitor column
+    sets ``frozen_monitor`` instead, because nothing was going to be learnt from
+    that column and telling an operator the loop froze when it did not is worse
+    than saying nothing. Three refusals, each ``toss_trim``'s and each imported rather than
+    re-derived, because every one of those constants carries a measurement that
+    nobody is going to re-run:
+
+    * **THIN** — fewer than ``toss_trim.N_MIN_APPLY`` = 6 measurements in the
+      channel. Probed 2026-08-11 over 300–400 synthetic sessions: the design's
+      ``n ≥ 3`` let **45.7 %** of ZERO-bias sessions command a non-zero
+      correction.
+    * **INSIDE_SE_GATE** — ``|mean| < toss_trim.SE_GATE · se`` = 2.5 standard
+      errors. Chosen on the measured expected residual error in mm, not on the
+      false-action rate: 2.5 halves 2.0's zero-bias cost (2.01 → 1.03 mm) for
+      ≤ 0.3 mm at the biases worth correcting.
+    * **FROZEN_CUSUM** — a two-sided tabular CUSUM (``k = 0.5``, ``h = 8.0``,
+      armed at ``CUSUM_N_MIN`` = 5) alarms on the channel's series. 2 % false
+      alarm over a 60-toss goal, 99.7 % detection of a 2σ shift within six
+      tosses. The recursion is ``toss_trim.cusum_step`` — extracted 2026-08-21
+      so the online trim and this batch scan drive ONE implementation of the
+      arithmetic those numbers were measured against.
+
+    **Why this module needed the gate at all.** ILC's only noise defence was the
+    model-side SNR screen and ``ρ``: a three-row cell with wide scatter produced
+    a confident-looking step, because the screen asks *"can this COMMAND move the
+    task error above the noise?"* — a property of ``F`` and ``σ``, identical for
+    every cell — and never *"does THIS CELL's measurement resolve above its own
+    standard error?"*. Those are different questions and only the second one can
+    see a thin, noisy cell.
+
+    **``se`` is ``sd/√n``, not ``toss_trim``'s ``sd/√(n₀+n)``.** The trim shrinks
+    toward a prior with ``n₀ = 4`` and its standard error is the shrunken
+    estimator's; :func:`pooled_error` is a plain per-channel ``nanmean`` with no
+    prior, so ``n₀`` would understate the error of the quantity actually being
+    tested. Same gate, applied to the estimator that exists here.
+
+    **Freeze-never-zero.** A gated channel contributes zero to the STEP, which is
+    not the same as zeroing the correction: the update law is ``u_next = u_prev +
+    du`` (:func:`propose_step`), so ``du_j = 0`` HOLDS the accumulated command at
+    whatever the last admitted fit put there. The artifact keeps its value; only
+    learning stops. That is ``toss_trim._freeze``'s rule — *"stop learning and
+    HOLD δ; never zeroes"* — transposed to an accumulating law, and it is pinned
+    by ``test_a_frozen_channel_holds_u_prev_rather_than_zeroing_it``.
+
+    The CUSUM scans rows in the order given. :func:`load_corpus` sorts by
+    ``toss_uid``, i.e. chronologically within a bag, which is what a change
+    detector needs; a caller that re-orders a cell gets a detector reading a
+    scrambled series and this docstring is the notice.
+    """
+    m = DEFAULT_MASK if mask is None else np.asarray(mask, dtype=float)
+    stack = (np.vstack([measured_error(r) for r in rows])
+             if len(rows) else np.zeros((0, N_E), dtype=float))
+    out_mask = np.zeros(N_E, dtype=float)
+    channels: List[Dict[str, Any]] = []
+    frozen = False
+    frozen_monitor = False
+    for j, label in enumerate(E_LABELS):
+        col = stack[:, j] if stack.shape[0] else np.array([])
+        col = col[~np.isnan(col)]
+        n = int(col.shape[0])
+        entry: Dict[str, Any] = {
+            'channel': label, 'index': j, 'n': n,
+            'requested': bool(m[j] > 0.0),
+            'mean': float(col.mean()) if n else float('nan'),
+            'sd': float('nan'), 'se': float('nan'),
+            'significance': float('nan'),
+            'cusum_max': float('nan'), 'cusum_index': None,
+            'verdict': EVIDENCE_THIN, 'detail': ''}
+        if n >= 2:
+            sd = float(max(col.std(ddof=1), 1e-12))
+            se = sd / math.sqrt(n)
+            entry['sd'] = sd
+            entry['se'] = se
+            entry['significance'] = abs(entry['mean']) / se if se else float('inf')
+        # G8 first: a shift makes the mean meaningless, so a frozen channel is
+        # frozen whatever its significance says.
+        alarm_at, cusum_max = _cusum_scan(col)
+        entry['cusum_max'] = cusum_max
+        entry['cusum_index'] = alarm_at
+        if alarm_at is not None:
+            entry['verdict'] = EVIDENCE_FROZEN
+            entry['detail'] = (
+                'two-sided CUSUM alarm at sample {} (max |S| = {:.2f} against '
+                'h = {:.1f}) — this channel SHIFTED inside the cell, so its '
+                'pooled mean describes two plants. Learning stops and the '
+                'accumulated command is HELD, never zeroed.'
+                .format(alarm_at, cusum_max, toss_trim.CUSUM_H))
+            # A MONITOR channel can alarm too, and it is worth shouting about --
+            # a plane residual that shifts mid-cell is a plant statement. But it
+            # is not a FIT freeze: nothing was going to be learnt from that
+            # column, so there is no accumulated command being held. Reported
+            # apart so an operator is not told the loop froze when it did not.
+            if m[j] > 0.0:
+                frozen = True
+            else:
+                frozen_monitor = True
+        elif n < toss_trim.N_MIN_APPLY:
+            entry['detail'] = ('{} measurements, below toss_trim.N_MIN_APPLY = {}'
+                               .format(n, toss_trim.N_MIN_APPLY))
+        elif entry['significance'] < toss_trim.SE_GATE:
+            entry['verdict'] = EVIDENCE_INSIDE_SE
+            entry['detail'] = ('|mean| = {:.6g} is {:.2f} se, inside '
+                               'toss_trim.SE_GATE = {} — this cell has not '
+                               'resolved a residual above its own noise'
+                               .format(abs(entry['mean']),
+                                       entry['significance'], toss_trim.SE_GATE))
+        else:
+            entry['verdict'] = EVIDENCE_PASS
+            out_mask[j] = 1.0
+        channels.append(entry)
+    return {'mask': out_mask * (m > 0.0).astype(float),
+            'channels': channels, 'frozen': frozen,
+            'frozen_monitor': frozen_monitor,
+            'passed': tuple(c['channel'] for c in channels
+                            if c['verdict'] == EVIDENCE_PASS and m[c['index']]),
+            'gated': tuple((c['channel'], c['verdict']) for c in channels
+                           if c['verdict'] != EVIDENCE_PASS and m[c['index']])}
+
+
+def _cusum_scan(col) -> Tuple[Optional[int], float]:
+    """``(alarm_index, max|S|)`` for one channel's series. ``toss_trim``'s G8.
+
+    One-step-ahead residual, exactly as :meth:`toss_trim.SessionTrim._cusum`
+    defines it and for its measured reason: standardise sample ``i`` against the
+    mean and sd of samples ``[:i]``, so the statistic is not referenced on a mean
+    that already contains the shift it is testing for. Arms at
+    ``toss_trim.CUSUM_N_MIN``; ``σ̂`` is ``toss_trim.history_sd``, the plain
+    ``ddof=1`` sd whose docstring records why the design's MAD·1.4826 could not
+    drive the false-alarm rate below 14.8 % at ANY ``(k, h)``.
+    """
+    col = np.asarray(col, dtype=float)
+    s_p = 0.0
+    s_m = 0.0
+    peak = 0.0
+    for i in range(int(col.shape[0])):
+        if i < toss_trim.CUSUM_N_MIN:
+            continue
+        history = col[:i].reshape(-1, 1)
+        sd = toss_trim.history_sd(history)
+        if sd is None or not np.all(np.isfinite(sd)):
+            continue
+        z = (float(col[i]) - float(history.mean())) / float(sd[0])
+        s_p, s_m = toss_trim.cusum_step(s_p, s_m, z)
+        peak = max(peak, float(abs(s_p)), float(abs(s_m)))
+        if toss_trim.cusum_alarmed(s_p, s_m):
+            return i, peak
+    return None, peak
+
+
 def fit_corpus(records: Sequence[Dict[str, Any]], *, goal: Optional[TossGoal] = None,
                goal_cell: Any = '__modal__', pool_across_goals: bool = False,
                allow_cross_partition: bool = False,
                tau=None, rho: float = RHO_DAMPING, mask=None,
-               uptime_max_ms: Optional[float] = None) -> Dict[str, Any]:
+               uptime_max_ms: Optional[float] = None,
+               require_evidence: bool = True) -> Dict[str, Any]:
     """One goal cell's fit: admitted rows → pooled ``e_meas`` → ``F`` → ``du``.
 
     **Per goal cell by default**, because the artifact is per-goal keyed: pooling
@@ -2246,6 +3059,16 @@ def fit_corpus(records: Sequence[Dict[str, Any]], *, goal: Optional[TossGoal] = 
     the geometry each cell would be fitted at is returned rather than left to a
     caller to re-derive (a second definition of "this cell's goal" is a second
     thing to drift).
+
+    **``require_evidence`` (default True, 2026-08-21)** runs
+    :func:`evidence_gate` over the fitted rows and intersects its per-channel
+    verdict into the mask the step is solved under, so no step is written from a
+    channel whose pooled residual is inside ``2.5·se``, or that carries fewer
+    than 6 measurements, or that a CUSUM says shifted mid-cell. ``'evidence'`` is
+    returned whether or not it was applied, so a caller that turns it off still
+    reports what it would have said. ``'disagreement'`` is the C3 monitor census
+    (:func:`disagreement_census`) and is always computed — it is a validation
+    channel, never a gate.
     """
     admitted = [r for r in records
                 if admit_record(r, uptime_max_ms=uptime_max_ms)[0]]
@@ -2279,6 +3102,13 @@ def fit_corpus(records: Sequence[Dict[str, Any]], *, goal: Optional[TossGoal] = 
 
     e_meas, counts = pooled_error(rows)
     m = DEFAULT_MASK if mask is None else np.asarray(mask, dtype=float)
+    # THE per-cell evidence gate (build step 3). ON by default: it is a safety
+    # gate, and the corpus that is quiet enough not to need it is also the corpus
+    # it costs nothing on. `require_evidence=False` is for the synthetic closed
+    # loops (V2) whose whole job is to recover an INJECTED perturbation from a
+    # noiseless corpus, where "this cell has not resolved a residual above its
+    # own noise" is not a statement about the plant.
+    gate = evidence_gate(rows, mask=m)
     # A channel with NO measurements comes back 0.0 from `pooled_error` with a
     # count of 0, and a 0.0 residual under a non-zero weight is not "no
     # information" — it is the assertion "this channel is already perfect",
@@ -2289,6 +3119,8 @@ def fit_corpus(records: Sequence[Dict[str, Any]], *, goal: Optional[TossGoal] = 
     # returned so a report can say which channels were fitted rather than which
     # were requested.
     m_eff = m * (counts > 0).astype(float)
+    if require_evidence:
+        m_eff = m_eff * gate['mask']
     F = sensitivity(zero_command(), goal)
     step = propose_step(F, e_meas, goal, tau=tau, rho=rho, mask=m_eff)
     # Every recoverable cell's own geometry. `goal_key` returns non-None only
@@ -2303,6 +3135,8 @@ def fit_corpus(records: Sequence[Dict[str, Any]], *, goal: Optional[TossGoal] = 
             'du': step['du'], 'u_next': step['u_next'],
             'shrinks': step['shrinks'], 'refusals': step['refusals'],
             'screen': screen_channels(F, mask=m_eff),
+            'evidence': gate, 'evidence_applied': bool(require_evidence),
+            'disagreement': disagreement_census(rows),
             'partition_census': census, 'partition_key': part_key,
             'warnings': warnings,
             'goal_cells': dict((k, len(v)) for k, v in groups.items()),

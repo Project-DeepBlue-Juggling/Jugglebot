@@ -72,12 +72,18 @@ def print_channels() -> None:
         print('  {:<22s} unit={:<12s} seam: {}'.format(name, unit, seam))
     print('TASK ERROR e — throw critical point')
     for i, lbl in enumerate(lib.E_LABELS):
+        if lib.DEFAULT_MASK[i]:
+            role = 'FITTED'
+        elif lbl in lib.MONITOR_CHANNELS:
+            role = 'MONITOR ONLY (decision 6 — never drives the aim)'
+        else:
+            role = 'MASKED OUT'
         print('  [{}] {:<18s} sigma={:<10.5g} {}'.format(
-            i, lbl, lib.SIGMA_E[i],
-            'FITTED' if lib.DEFAULT_MASK[i] else 'MASKED OUT'))
-    print('  default mask {} — E-1 CLOSED 2026-08-13; the historical masked '
-          'answer is mask=E1_MASK {}'.format(
-              list(lib.DEFAULT_MASK), list(lib.E1_MASK)))
+            i, lbl, lib.SIGMA_E[i], role))
+    print('  default mask {} — land_err is MONITOR-ONLY since 2026-08-21 (C3, '
+          'owner decision 6); the 08-13..08-21 answer is mask=FULL_MASK {} and '
+          'the pre-E-1 one is mask=E1_MASK {}'.format(
+              list(lib.DEFAULT_MASK), list(lib.FULL_MASK), list(lib.E1_MASK)))
     print('  lateral channels additionally require a mined coverage_asym_s '
           'within {:.2f} s (ilc_fit_lib.lateral_admissible)'
           .format(lib.COVERAGE_ASYM_MAX_S))
@@ -100,13 +106,18 @@ def print_report(goal: lib.TossGoal, *, mask=None) -> dict:
             lib.E_LABELS[i],
             '  '.join('{:>13.6g}'.format(F[i, j]) for j in range(lib.N_U))))
 
-    # Both masks are passed EXPLICITLY. mask=None means DEFAULT_MASK everywhere
-    # in the library (weight_matrix, solve_step, required_command, conditioning,
-    # screen_channels, iterate, fit_corpus share one default), and since E-1
-    # closed that IS the full-size mask — but naming both here keeps the
-    # historical answer one line away instead of one archaeology session away.
-    for label, m in (('FULL-SIZE (the default since E-1 closed, 2026-08-13)',
+    # All three masks are passed EXPLICITLY. mask=None means DEFAULT_MASK
+    # everywhere in the library (weight_matrix, solve_step, required_command,
+    # conditioning, screen_channels, iterate, fit_corpus share one default), and
+    # since owner decision 6 that is [0, 0, 1, 1, 1] — land_err demoted to a
+    # monitor. Naming all three here keeps each historical answer one line away
+    # instead of one archaeology session away, and lets an operator SEE that the
+    # demotion did not screen the aim channels out (the question the decision had
+    # to answer): the aim SNR falls 2.9207 -> 1.9330 and stays far above 1.0.
+    for label, m in (('THE DEFAULT since 2026-08-21 — land_err MONITOR-ONLY (C3)',
                       lib.DEFAULT_MASK),
+                     ('FULL-SIZE (HISTORICAL — the 2026-08-13..08-21 answer)',
+                      lib.FULL_MASK),
                      ('UNDER E-1 (HISTORICAL — the pre-2026-08-13 v1 answer)',
                       lib.E1_MASK)):
         scr = lib.screen_channels(F, mask=m)
@@ -189,6 +200,39 @@ def print_corpus(records, args) -> dict:
         np.array2string(fit['du'], precision=6), fit['shrinks']))
     for r in fit['refusals']:
         print('    gate refusal: {}'.format(r))
+
+    ev = fit['evidence']
+    print('\nEVIDENCE GATE (toss_trim SE gate + CUSUM, per channel){}'
+          .format('' if fit['evidence_applied']
+                  else '  — REPORTED, NOT APPLIED (require_evidence=False)'))
+    for c in ev['channels']:
+        print('  {:<18s} n={:<3d} mean={:+12.6g} se={:<12.6g} |mean|/se={:6.2f} '
+              ' {}{}'.format(c['channel'], c['n'], c['mean'], c['se'],
+                             c['significance'], c['verdict'],
+                             '' if c['requested'] else '  [monitor]'))
+        if c['detail']:
+            print('      {}'.format(c['detail']))
+    if ev['frozen']:
+        print('  FROZEN: a FITTED channel shifted mid-cell. The accumulated '
+              'command is HELD at u_prev on that channel — never zeroed.')
+    if ev.get('frozen_monitor'):
+        print('  NOTE: a MONITOR channel shifted mid-cell. Nothing was being '
+              'learnt from it, so no command is frozen — but a plane residual '
+              'that moves inside one cell is a plant statement worth reading.')
+
+    dis = fit['disagreement']
+    print('\nC3 CHANNEL DISAGREEMENT (monitor — land_err minus arrival_dir x the '
+          'model gain)')
+    if dis['n']:
+        print('  n={}  mean ({:+.2f}, {:+.2f}) mm   sd ({:.2f}, {:.2f}) mm'
+              .format(dis['n'], dis['mean_mm'][0], dis['mean_mm'][1],
+                      dis['sd_mm'][0], dis['sd_mm'][1]))
+        print('  The aim update is driven by arrival_dir ALONE (decision 6). A y '
+              'residual holding the measured b(z) profile shape CONFIRMS the '
+              'centroid-bias model; a catch-rate plateau at converged aim '
+              're-opens C3.')
+    else:
+        print('  no row in this cell can answer both channels')
 
     auth = lib.authority_report(fit['F'], fit['e_meas'],
                                 mask=fit['mask_effective'])
@@ -333,6 +377,108 @@ def _corpus_field(rows, name):
         if value not in seen:
             seen.append(value)
     return (seen[0] if len(seen) == 1 else None), seen
+
+
+#: Every record field the fit, the guards or the partition rule reads — the
+#: PROJECTION that :func:`emit_fixture` commits. Deliberately a hand-maintained
+#: list rather than "every key on the row": a fixture is evidence, and evidence
+#: whose provenance nobody can audit because it is 166 columns wide is not much
+#: better than no fixture. Pinned complete by
+#: ``test_the_committed_fixture_reproduces_the_headline_numbers`` — if the fit
+#: grows a field this list lacks, the fixture's answers stop matching and the
+#: suite says so.
+FIXTURE_FIELDS = (
+    # identity + partition (ilc_fit_lib.PARTITION_KEYS, load_corpus)
+    'toss_uid', 'schema', 'tilt_map_version', 'bridge_fw_version',
+    'platform_fw_version', 'cmd_flight_time_s', 'land_plane_mm',
+    'toss_cal_loaded', 'toss_cal_applied', 'uptime_ms_at_release',
+    # the miner's own gates
+    'usable_for_release_fit', 'usable_for_lateral_fit', 'usable_for_aim_fit',
+    'usable_for_speed_fit', 'usable_for_timing_fit', 'excluded_reason',
+    # the E channels and what recovers the goal
+    'flight_time_err_s', 'land_err_mm', 'arrival_dir_err_rad',
+    'land_xy_global_mm', 'coverage_asym_s', 'release_speed_err_mms',
+    # C7
+    'toss_tier', 'throw_site_xy_mm',
+    # toss_trim's G1-G11
+    'label', 't_departure_raw_ros', 'ball_track_confirmed',
+    'throw_stroke_seen', 'fit_sparse', 'fit_rms_mm', 'n_fit',
+    'retry_of', 'reload_settle', 'total_aim_rad', 'map_aim_rad',
+    'trim_aim_rad', 'ilc_aim_rad', 'apex_height_m', 'achieved_flight_s_mocap',
+    'flight_time_s', 'goal_catch_xyz_stow_mm', 'dip_below_x3_rev',
+    'stroke_peak_rev', 'trunc', 'gravity_correction_loaded',
+    'tilt_map_applied', 'announce_throw_time_ros',
+    'ball_held_stamp_wall_anchored', 'rimshot', 'sensor_poll_dt_ms_median',
+)
+
+_FIXTURE_HEADER = '''\
+"""Measured ILC corpus fixture — DO NOT hand-edit.
+
+The {n} rows of the 2026-08-12 corpus that ``ilc_fit_lib.admit_record`` admits,
+projected onto :data:`ilc_fit.FIXTURE_FIELDS` — every field the fit, the
+``toss_trim`` guards or the partition rule reads, and nothing else.
+
+**Why this file exists (contradiction C8 of the ILC-primary fold-in).** Every
+corpus-backed number this arc reports — V2b's 86.8 % out-of-channel
+cancellation, V3's 84.9 / 86.4 % leave-one-out, V4's R_rep 0.9858 / 0.9790, the
+C3 disagreement, D2's sigma — was measured against ``temp/probes/*.jsonl``.
+``temp/`` is gitignored and per-worktree, so on a clean checkout those tests
+SKIP and the headline numbers have no committed provenance at all. A skipped
+test is not a passing test, and a number nobody can re-derive is not a
+measurement.
+
+Regenerate with:
+    python tests/hardware/ilc_fit.py \\
+        --corpus temp/probes/toss_records_*.jsonl --emit-fixture \\
+        tests/hardware/ilc_corpus_fixture.py
+
+Source bags: {bags}
+Mined:       {mines}
+Partitions:  {parts}
+
+Consumed by tests/motion/test_ilc_fit.py. This is a PROJECTION, not the corpus:
+it cannot re-run the miner, and it carries no mocap samples. What it can do is
+answer every question the fit asks, which is what the V2b/V3/V4 assertions
+actually need.
+"""
+
+from __future__ import annotations
+
+#: The admitted rows, newest-mine-per-bag, in ``load_corpus`` order.
+ROWS = (
+'''
+
+
+def emit_fixture(records, args, path: str) -> int:
+    """Write the committed corpus fixture (C8). Returns a shell exit code."""
+    admitted = [r for r in records
+                if lib.admit_record(r, uptime_max_ms=args.uptime_max_ms)[0]]
+    if not admitted:
+        print('\nFIXTURE REFUSED: no admitted rows to cut a fixture from')
+        return 1
+    bags = sorted({str(r.get('_source_file') or '?') for r in admitted})
+    # The mine stamp is the source FILE's, by `load_corpus`'s own convention —
+    # `_mine_stamp` is what resolved the newest-mine-per-bag choice, so quoting
+    # anything else here would name a different file from the one that won.
+    mines = sorted({lib._mine_stamp(b) for b in bags if b != '?'})
+    census = lib.partition_census(admitted)
+    lines = [_FIXTURE_HEADER.format(
+        n=len(admitted),
+        bags=', '.join(os.path.basename(b) for b in bags),
+        mines=', '.join(mines),
+        parts='; '.join(lib.census_lines(census)) or '(none)')]
+    for rec in admitted:
+        lines.append('    {')
+        for name in FIXTURE_FIELDS:
+            if name in rec:
+                lines.append('        {!r}: {!r},'.format(name, rec[name]))
+        lines.append('    },')
+    lines.append(')\n')
+    with open(path, 'w') as fh:
+        fh.write('\n'.join(lines))
+    print('\nFIXTURE: wrote {} rows x {} fields to {}'
+          .format(len(admitted), len(FIXTURE_FIELDS), path))
+    return 0
 
 
 def _artifact_provenance(rows, args) -> dict:
@@ -529,7 +675,7 @@ def write_artifact(records, args) -> int:
                 refusals.extend('POOLED -> cell {}: {}'.format(list(cell), w)
                                 for w in why)
             else:
-                written.append((cell, u_next[:3]))
+                written.append((cell, u_next[:3], fit['evidence']))
     else:
         for cell in cells:
             fit = lib.fit_corpus(records, goal_cell=cell,
@@ -541,7 +687,7 @@ def write_artifact(records, args) -> int:
             if why:
                 refusals.extend('cell {}: {}'.format(list(cell), w) for w in why)
             else:
-                written.append((cell, u_next[:3]))
+                written.append((cell, u_next[:3], fit['evidence']))
 
     if refusals:
         raise WriteRefused(
@@ -552,7 +698,7 @@ def write_artifact(records, args) -> int:
         # `or 0.0` normalises -0.0 to 0.0: they compare equal, but the apply
         # seam's byte-identical branch reads `!= 0.0` and a `-0.0` in a committed
         # YAML is a distraction an operator would have to reason about.
-        [(key, [float(v) or 0.0 for v in u]) for key, u in written],
+        [(key, [float(v) or 0.0 for v in u]) for key, u, _ev in written],
         tilt_map_version=provenance['tilt_map_version'],
         toss_cal_version=provenance['toss_cal_version'],
         date=datetime.date.today().isoformat(),
@@ -581,9 +727,18 @@ def write_artifact(records, args) -> int:
                   parsed.requires_toss_cal_version,
                   parsed.requires_estimator_version,
                   parsed.requires_model_config_identity))
-    for key, u in written:
+    for key, u, ev in written:
         print('  cell {}  aim_rx={:+.6g} aim_ry={:+.6g} event_vel_trim={:+.6g}'
               .format(list(key), float(u[0]), float(u[1]), float(u[2])))
+        # A cell whose evidence gate withheld a channel carried u_prev THROUGH
+        # on that channel (freeze-never-zero) rather than learning anything, and
+        # with no --from-artifact that is a written ZERO. Silence here would let
+        # "I wrote an artifact" read as "I learned something", which is the one
+        # misreading an all-or-nothing writer cannot afford.
+        for chan, verdict in ev['gated']:
+            print('      HELD  {:<16s} {} — no step written on this channel; '
+                  'the accumulated value is carried through, never zeroed'
+                  .format(chan, verdict))
     print('  WROTE {}'.format(path))
     print('  It ships DORMANT: jugglebot_operational.toss_ilc_enabled is the '
           'gate, it defaults false, and arming it is a reviewed config commit + '
@@ -842,6 +997,11 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument('--declare-toss-cal', metavar='VERSION|NONE', default=None,
                     help='assert requires.toss_cal_version when the corpus '
                          'cannot supply it (stamped as operator-declared)')
+    ap.add_argument('--emit-fixture', metavar='PATH', default=None,
+                    help='project the admitted rows onto FIXTURE_FIELDS and '
+                         'write them as a committed Python fixture (C8) — the '
+                         'only route by which a clean checkout can re-derive '
+                         'this arc\'s corpus-backed numbers')
     ap.add_argument('--from-artifact', metavar='PATH', default=None,
                     help='ITERATE: seed each cell from this existing artifact, '
                          'so the write is u_prev + du rather than du. Without '
@@ -885,6 +1045,12 @@ def main(argv=None) -> int:
             rc |= run_validations(records, args)
         except lib.IlcFitError as exc:
             print('\nREFUSED: {}'.format(exc))
+            rc |= 1
+    if args.emit_fixture:
+        try:
+            rc |= emit_fixture(records, args, args.emit_fixture)
+        except (lib.IlcFitError, OSError) as exc:
+            print('\nFIXTURE REFUSED: {}'.format(exc))
             rc |= 1
     if args.write_artifact:
         try:

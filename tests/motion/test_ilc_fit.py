@@ -59,6 +59,7 @@ if _HW_DIR not in sys.path:
 
 import ilc_fit_lib as lib                                          # noqa: E402
 import ilc_fit as cli                                              # noqa: E402
+import ilc_corpus_fixture                                          # noqa: E402
 
 import jugglebot.hardware_config as hw                             # noqa: E402
 from jugglebot import toss_trim                                    # noqa: E402
@@ -78,6 +79,21 @@ from jugglebot.motion.trajectory.toss_release import (             # noqa: E402
 
 GOAL = lib.TossGoal(catch_pose_stow_mm=(0.0, 150.0, 170.0),
                     flight_time_s=lib.CORPUS_FLIGHT_TIME_S)
+
+#: What a HEALTHY machine's record carries for every ROW-scoped ``toss_trim``
+#: guard (:data:`ilc_fit_lib.GUARD_ROW_REASONS`). Hand-built rows in this module
+#: spread it in so that a test about something else does not silently become a
+#: test of the guard port. The complement — a row that trips a guard — is built
+#: by overriding one key, which is how the guard tests below read.
+GUARD_CLEAN = {
+    'label': 'CAUGHT',                       # G9 possession
+    't_departure_raw_ros': 100.0,            # G1 release evidence
+    'ball_track_confirmed': True,
+    'gravity_correction_loaded': True,       # G5 layer-0 identity
+    'tilt_map_applied': True,
+    'retry_of': None, 'reload_settle': None,  # G10 / G11
+    'trunc': False,                          # G4 plant health
+}
 
 
 def _corpus_paths():
@@ -138,11 +154,34 @@ def _corpus_or_skip_reason(min_admitted=10):
     return paths, rows, None
 
 
+def _fixture_rows():
+    """The COMMITTED corpus projection (C8), as a fresh mutable list.
+
+    ``ilc_corpus_fixture.ROWS`` is a tuple of dicts cut from the 2026-08-12
+    corpus by ``ilc_fit.py --emit-fixture``. Copied per call because callers
+    mutate rows (``del r['coverage_asym_s']`` and friends) and a module-level
+    tuple shared across a parallel worker's tests is exactly the fixed shared
+    state ``./run_tests.sh``'s ``--dist loadfile`` cannot protect.
+    """
+    return [dict(r) for r in ilc_corpus_fixture.ROWS]
+
+
 @pytest.fixture(scope='module')
 def corpus():
+    """The corpus, PREFERRING the live mine and falling back to the fixture.
+
+    The live mine under ``temp/probes`` wins when it is there: it carries all
+    166 record fields, so a test that reaches for a column the C8 projection
+    does not carry still works on the machine the numbers were measured on. On a
+    clean checkout — which is every checkout but this Jetson's two worktrees —
+    the committed projection takes over, and the corpus-backed assertions RUN
+    instead of skipping. That is the whole of C8: a headline number whose
+    evidence is gitignored has no provenance, and a skipped test is not a
+    passing one.
+    """
     _paths, rows, reason = _corpus_or_skip_reason()
     if reason:
-        pytest.skip(reason)
+        return _fixture_rows()
     return rows
 
 
@@ -368,8 +407,9 @@ def test_a_deliberately_degenerate_pair_is_excluded_not_regularised():
     assert 'aim_rx' in v['detail']
 
 
-def test_mask_none_means_the_FULL_SIZE_mask_in_every_family():
-    """ONE default mask across the module, and since 2026-08-13 it is FULL SIZE.
+def test_mask_none_means_the_SAME_mask_in_every_family():
+    """ONE default mask across the module, and since 2026-08-21 it is ``[0, 0,
+    1, 1, 1]``.
 
     Two facts, and they are separate. **One default**: ``conditioning`` and
     ``screen_channels`` once read ``mask=None`` as ``np.ones(N_E)`` while
@@ -377,40 +417,82 @@ def test_mask_none_means_the_FULL_SIZE_mask_in_every_family():
     ``fit_corpus`` read it as :data:`ilc_fit_lib.E1_MASK` — same keyword, same
     sentinel, opposite meaning, so a caller who omitted the argument got a
     full-size conditioning report ("three channels retained") justifying a step
-    solved on one channel. **Full size**: E-1 CLOSED 2026-08-13 (owner-adopted;
-    the miner's lateral estimators moved to whole-arc fits), so the shared
-    default became :data:`ilc_fit_lib.DEFAULT_MASK` = all five channels. The
-    historical masked answer stays reproducible by passing ``E1_MASK``, and this
-    test pins both readings against the same ``F``.
+    solved on one channel. **Which mask**: E-1 CLOSED 2026-08-13 and the default
+    went full size; owner decision 6 of the 2026-08-21 fold-in then demoted
+    ``land_err`` to MONITOR-ONLY, so it is now
+    :data:`ilc_fit_lib.DEFAULT_MASK` = ``FULL_MASK − MONITOR_MASK``. Both
+    HISTORICAL answers stay reproducible by name — ``E1_MASK`` for the
+    pre-2026-08-13 one, ``FULL_MASK`` for the 08-13→08-21 one — and this test
+    pins all three against the same ``F``.
     """
     F = lib.sensitivity(goal=GOAL)
 
-    assert np.array_equal(lib.DEFAULT_MASK, np.ones(lib.N_E))
+    assert np.array_equal(lib.DEFAULT_MASK, np.array([0.0, 0.0, 1.0, 1.0, 1.0]))
+    assert np.array_equal(lib.DEFAULT_MASK, lib.FULL_MASK - lib.MONITOR_MASK)
     assert np.array_equal(lib.conditioning(F)['mask'], lib.DEFAULT_MASK)
     assert np.array_equal(lib.screen_channels(F)['report']['mask'],
                           lib.DEFAULT_MASK)
     assert np.array_equal(np.diag(lib.weight_matrix()),
                           lib.DEFAULT_MASK / lib.SIGMA_E ** 2)
 
-    # The verdicts follow the mask, not the family.
+    # The verdicts follow the mask, not the family — and the aim channels
+    # SURVIVE the demotion, which is the safety question decision 6 had to
+    # answer (a masked-out land_err must not drop the aim SNR below
+    # SCREEN_SNR_MIN and silently switch the aim channel off instead).
     assert lib.screen_channels(F)['retained_labels'] \
         == ('aim_rx', 'aim_ry', 'event_vel_trim')
-    assert lib.screen_channels(F, mask=np.ones(lib.N_E))['retained_labels'] \
+    assert lib.screen_channels(F, mask=lib.FULL_MASK)['retained_labels'] \
         == ('aim_rx', 'aim_ry', 'event_vel_trim')
-    # ... and the HISTORICAL mask still reproduces the v1 answer exactly.
+    # ... and the E-1 mask still reproduces the v1 answer exactly.
     assert lib.screen_channels(F, mask=lib.E1_MASK)['retained_labels'] \
         == ('event_vel_trim',)
 
-    # The solve family agrees with the report family under the default: a
-    # lateral-only residual now asks for a real aim correction, where under E-1
-    # it asked for nothing.
-    lateral = np.array([50.0, -50.0, 0.0, 0.0, 0.0])
-    need = lib.required_command(F, lateral)
-    assert np.linalg.norm(need[:2]) > 1e-3
+
+def test_decision6_land_err_is_a_monitor_and_arrival_dir_is_the_aim_law():
+    """**THE decision-6 pin (C3).** A plane-position residual moves NOTHING; an
+    arrival-direction residual moves the aim by the modelled amount.
+
+    Root cause rather than the decision by name: ``land_err_mm`` is a POSITION
+    fit at the catch plane and carries the mocap visible-centroid bias ``b(z)``
+    absolutely, while ``arrival_dir_err_rad`` is a whole-arc VELOCITY and is
+    bias-immune by parity. The two disagree SYSTEMATICALLY by +18 mm in y on the
+    measured corpus, and ``weight_matrix``'s ``Q`` was arbitrating that as though
+    it were noise. Owner decision 6 resolves it by giving the loop to the
+    bias-immune channel; absolute centering closes through catch outcomes.
+
+    The "modelled amount" is not restated here — it is read back out of the same
+    ``F`` the solver used, which is the only form of this assertion that cannot
+    pass while the model and the law disagree.
+    """
+    F = lib.sensitivity(goal=GOAL)
+
+    # A pure plane-position residual — 25 mm x, −18 mm y — asks for NOTHING.
+    plane_only = np.array([25.0, -18.0, 0.0, 0.0, 0.0])
+    assert lib.required_command(F, plane_only) == pytest.approx(
+        np.zeros(lib.N_U), abs=1e-15)
+    step = lib.propose_step(F, plane_only, GOAL)
+    assert step['du'] == pytest.approx(np.zeros(lib.N_U), abs=1e-15)
+
+    # A pure arrival-direction residual asks for exactly what the model says.
+    # aim_rx drives arrival_dir_y, aim_ry drives arrival_dir_x (F is a 90°
+    # rotation, not a scaled identity), and each column is driven by ONE channel
+    # under this mask, so the required command is the plain ratio.
+    arr_only = np.array([0.0, 0.0, 0.006, -0.004, 0.0])
+    need = lib.required_command(F, arr_only)
+    assert need[0] == pytest.approx(-arr_only[3] / F[3, 0], rel=1e-12)
+    assert need[1] == pytest.approx(-arr_only[2] / F[2, 1], rel=1e-12)
     assert need[2:] == pytest.approx(np.zeros(2), abs=1e-12)
-    assert lib.required_command(F, lateral, mask=lib.E1_MASK) \
+
+    # And under the HISTORICAL full mask the plane residual DID move the aim —
+    # the pin fails for the right reason if the demotion is ever reverted.
+    was = lib.required_command(F, plane_only, mask=lib.FULL_MASK)
+    assert np.linalg.norm(was[:2]) > 1e-3
+    # The E-1 mask blocked BOTH lateral channels, so under it neither residual
+    # moves anything — a different silence from decision 6's, and both are
+    # reachable only by asking for the historical mask by name.
+    assert lib.required_command(F, plane_only, mask=lib.E1_MASK) \
         == pytest.approx(np.zeros(lib.N_U), abs=1e-12)
-    assert lib.solve_step(F, lateral, mask=lib.E1_MASK) \
+    assert lib.required_command(F, arr_only, mask=lib.E1_MASK) \
         == pytest.approx(np.zeros(lib.N_U), abs=1e-12)
     # The blocked-vs-weak distinction is retained, and is now reachable only by
     # asking for the historical mask by name.
@@ -782,15 +864,81 @@ def test_v2a_closed_loop_cancels_an_injected_command_offset():
     Run on all three retained channels at once (mask off, so the aim channels
     participate) because a per-channel test cannot catch a cross-channel sign
     swap, which is the failure mode a 90°-rotation Jacobian invites.
+
+    **Three statements since 2026-08-21, because a flat ``rel=0.10`` on one seed
+    was hiding a real property of the model.** The old form asserted a single
+    draw within 10 %; D2's ``SIGMA_E`` correction (arrival_dir 0.00238 → 0.00302)
+    re-scaled the noise, seed 7 landed outside, and chasing it turned up
+    something worth pinning instead of widening:
+
+    **(1) The NOISELESS recovery is not exact, and the error is the aim×speed
+    cross term.** ``F`` is the Jacobian at ``u = 0``, where ``∂land_err/∂vel``
+    and ``∂arrival_dir/∂vel`` are exactly zero — and that is a property OF ZERO
+    AIM, not of the model. At a finite aim a speed trim changes the achieved
+    flight time, the landing offset ``(Δz + g·T²/2)·tan θ`` scales with it, and
+    the linear inversion at zero over-recovers the aim in proportion. Measured
+    here: an aim-only injection comes back to **1e-5 relative**, and the aim
+    error is **1.62 % at k_v − 1 = 0.02** and **8.43 % at 0.10** — i.e. ≈ 0.84·k,
+    linear in the speed trim and absent without it. That is not a defect: it is
+    what a first-order ILC step IS, it is why ``iterate`` re-linearises, and on
+    the real corpus (which asks for −0.1076) it is the ~9 % that Phase 3's k ≤ 3
+    hardware iterations exist to close. Statement (3) checks the loop closes it.
+
+    **(2) The noisy estimator is UNBIASED about that noiseless answer**, over M
+    independent draws, to 3 standard errors of the mean — the GLS covariance
+    ``(FᵀQF)⁻¹/n`` of the very estimator under test, so a future change to a
+    sigma, a mask or n re-derives the bound rather than breaking it.
+
+    **(3) The LOOP recovers what one step does not**: ``iterate`` drives the
+    predicted residual toward zero on every retained channel.
     """
     u_plant = np.array([0.004, -0.003, 0.02, 0.0])
-    rows = lib.synthetic_corpus(GOAL, u_plant=u_plant, n=400, seed=7)
+    n, n_draws = 400, 12
     F = lib.sensitivity(goal=GOAL)
-    du = lib.required_command(F, lib.pooled_error(rows)[0], mask=np.ones(lib.N_E))
-    assert du[0] == pytest.approx(-u_plant[0], rel=0.10)
-    assert du[1] == pytest.approx(-u_plant[1], rel=0.10)
-    assert du[2] == pytest.approx(-u_plant[2], rel=0.10)
-    assert du[3] == 0.0
+    mask = lib.FULL_MASK
+    retained = list(lib.screen_channels(F, mask=mask)['retained'])
+
+    # (1) the noiseless step, and the size + origin of its linearisation error.
+    e_true = lib.e_model(u_plant, GOAL)
+    exact = lib.required_command(F, e_true, mask=mask)
+    for j in (0, 1):
+        assert exact[j] == pytest.approx(-u_plant[j], rel=0.03), (
+            'the aim linearisation error grew past the measured 1.6 % at '
+            'k_v - 1 = 0.02')
+    assert exact[2] == pytest.approx(-u_plant[2], rel=1e-3)
+    assert exact[3] == 0.0
+    # ...and it is the SPEED channel that causes it, not curvature in the aim.
+    aim_only = np.array([u_plant[0], u_plant[1], 0.0, 0.0])
+    exact_aim = lib.required_command(F, lib.e_model(aim_only, GOAL), mask=mask)
+    assert exact_aim[:2] == pytest.approx(-aim_only[:2], rel=1e-4)
+
+    # (2) the noisy estimator is unbiased about (1).
+    Fr = F[:, retained]
+    se = np.zeros(lib.N_U)
+    se[retained] = np.sqrt(np.diag(
+        np.linalg.inv(Fr.T @ lib.weight_matrix(mask=mask) @ Fr) / n))
+    draws = []
+    for seed in range(7, 7 + n_draws):
+        rows = lib.synthetic_corpus(GOAL, u_plant=u_plant, n=n, seed=seed)
+        du = lib.required_command(F, lib.pooled_error(rows)[0], mask=mask)
+        assert du[3] == 0.0, 'the refused channel must never move'
+        draws.append(du)
+    draws = np.vstack(draws)
+    for j in retained:
+        bias = float(draws[:, j].mean()) - exact[j]
+        assert abs(bias) <= 3.0 * se[j] / math.sqrt(n_draws), (
+            'channel {} recovers {:+.6g} on average against a noiseless {:+.6g} '
+            '— a bias of {:.3g} against 3 se of the mean ({:.3g})'
+            .format(lib.U_LABELS[j], draws[:, j].mean(), exact[j], bias,
+                    3.0 * se[j] / math.sqrt(n_draws)))
+        assert float(np.max(np.abs(draws[:, j] - exact[j]))) <= 5.0 * se[j]
+        # ...and the band is nowhere near loose enough to admit a sign flip.
+        assert 5.0 * se[j] < 0.5 * abs(u_plant[j])
+
+    # (3) the LOOP closes the linearisation error one step leaves behind.
+    steps = lib.iterate(GOAL, e_true, n_iter=5, mask=mask)
+    assert abs(steps[-1]['e_pred'][4]) < abs(steps[0]['e_pred'][4]) / 10.0
+    assert steps[-1]['u'][2] == pytest.approx(-u_plant[2], rel=0.02)
 
 
 def test_v2a_a_sign_flipped_F_is_pinned_to_FAIL():
@@ -1036,10 +1184,15 @@ def test_load_corpus_de_duplicates_re_mines_and_keeps_the_NEWER_one(tmp_path):
         path = tmp_path / name
         with open(str(path), 'w') as fh:
             for uid in uids:
-                fh.write(json.dumps({
-                    'schema': 'toss_record/1', 'toss_uid': uid,
-                    'usable_for_release_fit': usable,
-                    'flight_time_err_s': 0.05}) + '\n')
+                row = {'schema': 'toss_record/1', 'toss_uid': uid,
+                       'usable_for_release_fit': usable,
+                       'flight_time_err_s': 0.05}
+                # toss_trim's ROW-scoped guards, satisfied explicitly: since
+                # 2026-08-21 `admit_record` runs them, and this test is about
+                # DE-DUPLICATION, so a row that also trips G1/G5/G9 would make
+                # the admitted count zero for an unrelated reason.
+                row.update(GUARD_CLEAN)
+                fh.write(json.dumps(row) + '\n')
         return str(path)
 
     old = _write('toss_records_2026-08-10_16-30-44_20260812_210140.jsonl',
@@ -1141,7 +1294,12 @@ def test_the_E1_admission_refuses_a_pre_whole_arc_mine_and_says_so():
         base = {'usable_for_release_fit': True, 'flight_time_err_s': 0.1,
                 'land_err_mm': [10.0, 20.0],
                 'arrival_dir_err_rad': [0.003, 0.008],
-                'coverage_asym_s': 0.01}
+                'coverage_asym_s': 0.01,
+                # G2 is now a LAND_ERR-scoped gate (decision 6), so a row that
+                # wants its monitor columns read has to carry a landing fit the
+                # guard accepts.
+                'n_fit': 40, 'fit_rms_mm': 0.5, 'fit_sparse': False}
+        base.update(GUARD_CLEAN)
         base.update(kw)
         return base
 
@@ -1199,7 +1357,7 @@ def test_a_channel_with_no_measurements_is_not_fitted_as_a_measured_zero():
         del r['coverage_asym_s']
     fit = lib.fit_corpus(rows, goal=goal)
     assert list(fit['channel_counts']) == [0, 0, 0, 0, 40]
-    assert list(fit['mask']) == [1.0] * lib.N_E
+    assert list(fit['mask']) == list(lib.DEFAULT_MASK) == [0.0, 0.0, 1.0, 1.0, 1.0]
     assert list(fit['mask_effective']) == [0.0, 0.0, 0.0, 0.0, 1.0]
     # The vertical correction still comes out; the aim channels are silent
     # rather than confidently zero-seeking.
@@ -1265,3 +1423,477 @@ def test_the_module_imports_no_ros():
         capture_output=True, text=True, cwd=_REPO)
     assert out.returncode == 0, out.stderr
     assert out.stdout.strip() == 'False'
+
+
+# ── build step 3: the guard port, and the evidence gate ──────────────────────
+
+
+def test_every_toss_trim_refusal_reason_is_scoped():
+    """**The completeness contract.** Every reason ``toss_trim``'s guards can
+    emit has an entry in :data:`ilc_fit_lib.GUARD_SCOPE`.
+
+    Root cause rather than tidiness: :func:`ilc_fit_lib.guard_verdict` routes on
+    the reason STRING, and an unrecognised reason has to fall somewhere. It falls
+    closed (ROW), so a guard added upstream refuses loudly rather than passing
+    silently — but "loudly at runtime, on the operator's corpus" is not where you
+    want to find out. This test is where. If it goes red, the new guard needs a
+    scope decision, not a suppression: ROW if it speaks about the toss,
+    LAND_ERR if it speaks about the landing-plane fit, DECLARATION_GAP if the
+    field it reads is one no mined-only row can carry, SELF_BLINDING if applying
+    it would refuse the evidence needed to clear it.
+    """
+    declared = (set(toss_trim.AIM_REFUSAL_REASONS)
+                | set(toss_trim.SPEED_REFUSAL_REASONS))
+    unscoped = sorted(declared - set(lib.GUARD_SCOPE))
+    assert not unscoped, (
+        'toss_trim can emit {} that ilc_fit_lib.GUARD_SCOPE does not classify'
+        .format(unscoped))
+    # ...and nothing is scoped that the guards cannot emit — a stale entry is a
+    # scope decision documenting a guard that no longer exists.
+    stale = sorted(set(lib.GUARD_SCOPE) - declared)
+    assert not stale, 'GUARD_SCOPE classifies reasons no guard emits: {}'.format(
+        stale)
+    assert set(lib.GUARD_SCOPE.values()) == {
+        'ROW', 'LAND_ERR', 'DECLARATION_GAP', 'SELF_BLINDING'}
+
+
+def test_toss_trims_declared_reason_vocabulary_is_what_it_actually_emits():
+    """``AIM_REFUSAL_REASONS`` is a published set, so it has to be the truth.
+
+    Driven against real refusals rather than against the source text: a row that
+    trips each guard, and the emitted string must be in the declared set (or in
+    the open ``label_<name>`` family, which is unbounded by construction).
+    """
+    rows = [
+        {},                                                   # everything
+        dict(GUARD_CLEAN, label='NO_RELEASE'),
+        dict(GUARD_CLEAN, label='SOMETHING_ELSE'),
+        dict(GUARD_CLEAN, retry_of='t-1'),
+        dict(GUARD_CLEAN, reload_settle=True),
+        dict(GUARD_CLEAN, tilt_map_applied=False),
+        dict(GUARD_CLEAN, gravity_correction_loaded=False),
+        dict(GUARD_CLEAN, trunc=True),
+        dict(GUARD_CLEAN, dip_below_x3_rev=9.9),
+        dict(GUARD_CLEAN, stroke_peak_rev=99.0),
+        dict(GUARD_CLEAN, land_err_mm=[1.0, 2.0], fit_sparse=True),
+        dict(GUARD_CLEAN, land_err_mm=[1.0, 2.0], fit_rms_mm=99.0),
+        dict(GUARD_CLEAN, land_err_mm=[1.0, 2.0], fit_rms_mm=None),
+        dict(GUARD_CLEAN, label='MISSED', land_err_mm=[1.0, 2.0],
+             fit_rms_mm=0.5, n_fit=1),
+        # G3 fires only when the row carries BOTH the declared apex and an
+        # achieved flight time that disagrees with it by > APEX_SANITY_FRAC.
+        dict(GUARD_CLEAN, apex_height_m=1.0, achieved_flight_s_mocap=1.20),
+    ]
+    seen = set()
+    for rec in rows:
+        for reason in toss_trim.aim_refusals(rec):
+            seen.add(reason)
+            assert (reason in toss_trim.AIM_REFUSAL_REASONS
+                    or reason.startswith(toss_trim.LABEL_REFUSAL_PREFIX)), reason
+        for reason in toss_trim.speed_refusals(rec):
+            seen.add(reason)
+            assert reason in toss_trim.SPEED_REFUSAL_REASONS, reason
+    # every non-label aim reason is reachable from the rows above
+    missing = sorted(toss_trim.AIM_REFUSAL_REASONS - seen)
+    assert missing == [], 'unexercised declared reasons: {}'.format(missing)
+
+
+def test_admit_for_aim_is_bit_identical_to_its_non_short_circuiting_form():
+    """The split must not have moved the admitted set or the reported reason.
+
+    ``admit_for_aim`` is now ``aim_refusals``'s boolean face. A consumer that
+    routes on the reason (``toss_fit_lib``, ``toss_cal_grid``, the trim's own
+    refusal counters) sees reason ZERO, so reason zero has to be what the
+    sequential-return form produced — same order, same first element.
+    """
+    for rec in ({}, dict(GUARD_CLEAN),
+                dict(GUARD_CLEAN, land_err_mm=[1.0, 2.0], fit_rms_mm=0.5,
+                     n_fit=9, fit_sparse=False,
+                     goal_catch_xyz_stow_mm=[0.0, 150.0, 170.0],
+                     achieved_flight_s_mocap=0.9, total_aim_rad=[0.0, 0.0]),
+                dict(GUARD_CLEAN, retry_of='t-1', fit_sparse=True)):
+        reasons = toss_trim.aim_refusals(rec)
+        ok, why = toss_trim.admit_for_aim(rec)
+        assert ok is (not reasons)
+        assert why == (reasons[0] if reasons else '')
+
+
+def test_the_possession_gate_is_now_applied_to_the_ilc_corpus():
+    """**Design constraint 4's G9, which `admit_record` did not have.**
+
+    Before 2026-08-21 this module imported ``toss_trim`` for CONSTANTS ONLY and
+    called none of its guards, so a row labelled UNKNOWN — no evidence the ball
+    was ever possessed — was admitted and fitted. The synthetic corpus carried
+    ``'label': 'CAUGHT'`` and nothing read it, which is the specific shape of a
+    guard that looks enforced and is not.
+    """
+    base = dict(GUARD_CLEAN, usable_for_release_fit=True,
+                flight_time_err_s=0.1, coverage_asym_s=0.0,
+                arrival_dir_err_rad=[0.003, 0.008])
+    assert lib.admit_record(base)[0]
+
+    for label in ('UNKNOWN', 'NO_RELEASE', None):
+        ok, why = lib.admit_record(dict(base, label=label))
+        assert not ok, 'label {!r} must not be admitted'.format(label)
+        assert 'toss_trim guard' in why and 'label_' in why
+
+    # G10 / G11: an interlude cycle is not evidence about the plant.
+    for key, value in (('retry_of', 'toss-7'), ('reload_settle', True)):
+        ok, why = lib.admit_record(dict(base, **{key: value}))
+        assert not ok and 'toss_trim guard' in why
+
+    # G5: no learning on top of an unknown layer 0 (D3's double-count).
+    for key in ('gravity_correction_loaded', 'tilt_map_applied'):
+        ok, why = lib.admit_record(dict(base, **{key: False}))
+        assert not ok and 'toss_trim guard' in why
+
+    # G4: never learn against a degraded plant.
+    ok, why = lib.admit_record(dict(base, trunc=True))
+    assert not ok and 'plant_stroke_truncated' in why
+
+
+def test_the_declaration_gap_and_self_blinding_waivers_are_named_not_silent():
+    """The three waived guards are WAIVED, reported, and each for its own reason.
+
+    A mined-only row carries no ``applied_aim_rad``, no declared ``flight_time_s``
+    and no ``goal_catch_xyz_stow_mm``; applying the trim's preconditions for
+    those would refuse 6, 16 and 16 of the 19 rows in the only corpus that
+    exists, for quantities this fit either never forms or has already
+    reconstructed. ``apex_out_of_band`` is refused for a stronger reason still:
+    the corpus headline is a hand that throws +11 % fast, ``h = gT²/8`` makes
+    that +23 % of apex, and G3 would refuse the machine's own dominant,
+    correctable error — the guard refusing the evidence needed to clear it.
+    """
+    base = dict(GUARD_CLEAN, usable_for_release_fit=True,
+                flight_time_err_s=0.1, coverage_asym_s=0.0,
+                arrival_dir_err_rad=[0.003, 0.008])
+    verdict = lib.guard_verdict(base)
+    assert verdict.row_ok
+    assert set(verdict.waived) >= {'applied_aim_unknown', 'no_geometry',
+                                   'no_flight_pair'}
+
+    # G3 fires only when the row CARRIES the declaration and disagrees — and it
+    # is waived, not applied.
+    hot = dict(base, apex_height_m=1.0, achieved_flight_s_mocap=1.20)
+    assert 'apex_out_of_band' in toss_trim.aim_refusals(hot)
+    assert 'apex_out_of_band' in lib.guard_verdict(hot).waived
+    assert lib.admit_record(hot)[0], (
+        'G3 must not refuse the record the vertical channel exists to consume')
+
+
+def test_G2_scopes_to_the_land_err_monitor_and_spares_the_primary_channel():
+    """A poor landing-plane fit costs the MONITOR columns, not the aim law.
+
+    ``no_mocap_fit`` / ``mocap_fit_*`` / ``missed_with_thin_track`` all speak
+    about the position fit at the catch plane, which is exactly and only what
+    ``land_err_mm`` is. Under decision 6 that is a monitor, so refusing the whole
+    row would discard the primary arrival-direction measurement to protect a
+    column nobody fits.
+    """
+    base = dict(GUARD_CLEAN, usable_for_release_fit=True,
+                flight_time_err_s=0.1, coverage_asym_s=0.0,
+                arrival_dir_err_rad=[0.003, 0.008],
+                land_err_mm=[10.0, 20.0], n_fit=40, fit_rms_mm=0.5,
+                fit_sparse=False)
+    e = lib.measured_error(base)
+    assert not np.isnan(e).any()
+
+    bad = dict(base, fit_rms_mm=99.0)
+    assert lib.admit_record(bad)[0], 'the ROW survives a poor plane fit'
+    assert lib.guard_verdict(bad).land_err_reasons == ('mocap_fit_quality',)
+    assert not lib.land_err_admissible(bad)[0]
+    e = lib.measured_error(bad)
+    assert np.isnan(e[0]) and np.isnan(e[1]), 'monitor columns are nulled'
+    assert not np.isnan(e[2]) and not np.isnan(e[3]), 'the AIM law survives'
+    assert not np.isnan(e[4])
+
+    # A row with no landing fit at all keeps its arrival direction too — that
+    # dependency left `lateral_admissible` on 2026-08-21.
+    no_plane = dict(base)
+    del no_plane['land_err_mm']
+    assert lib.lateral_admissible(no_plane)[0]
+    e = lib.measured_error(no_plane)
+    assert np.isnan(e[0]) and not np.isnan(e[2])
+
+
+def _cell(n, mean, sd, seed=3, start=0.0):
+    """n synthetic rows whose arrival_dir_y is N(mean, sd), plus a step."""
+    rng = np.random.default_rng(seed)
+    rows = []
+    for i in range(n):
+        shift = start if i < n // 2 else mean
+        rows.append(dict(GUARD_CLEAN,
+                         toss_uid='syn-{:03d}'.format(i),
+                         usable_for_release_fit=True,
+                         coverage_asym_s=0.0,
+                         flight_time_err_s=0.09,
+                         arrival_dir_err_rad=[0.0,
+                                              float(shift + rng.normal(0, sd))]))
+    return rows
+
+
+def test_the_evidence_gate_refuses_a_thin_cell():
+    """No step from a cell with fewer than ``toss_trim.N_MIN_APPLY`` samples.
+
+    The measurement behind the constant: the design's ``n >= 3`` gate let 45.7 %
+    of ZERO-bias sessions command a non-zero correction, because a significance
+    test re-evaluated at every update is a sequential multiple-comparison
+    problem. ILC's own defences — the SNR screen and rho — cannot see this: the
+    screen asks whether the COMMAND can move the task error above the noise,
+    which is a property of F and sigma and identical for every cell.
+    """
+    rows = _cell(3, 0.02, 0.001)
+    gate = lib.evidence_gate(rows)
+    arr_y = [c for c in gate['channels'] if c['channel'] == 'arrival_dir_y'][0]
+    assert arr_y['verdict'] == lib.EVIDENCE_THIN
+    assert gate['mask'][3] == 0.0
+    assert 'N_MIN_APPLY' in arr_y['detail']
+    assert arr_y['n'] < toss_trim.N_MIN_APPLY
+
+
+def test_the_evidence_gate_refuses_a_residual_inside_k_se():
+    """A cell whose pooled residual does not resolve above its own standard
+    error writes no step — ``toss_trim.SE_GATE`` = 2.5, and it is the trim's
+    constant, imported."""
+    quiet = _cell(20, 0.0, 0.004, seed=5)
+    gate = lib.evidence_gate(quiet)
+    arr_y = [c for c in gate['channels'] if c['channel'] == 'arrival_dir_y'][0]
+    assert arr_y['significance'] < toss_trim.SE_GATE
+    assert arr_y['verdict'] == lib.EVIDENCE_INSIDE_SE
+    assert gate['mask'][3] == 0.0
+
+    loud = _cell(20, 0.02, 0.002, seed=5, start=0.02)
+    gate = lib.evidence_gate(loud)
+    arr_y = [c for c in gate['channels'] if c['channel'] == 'arrival_dir_y'][0]
+    assert arr_y['significance'] >= toss_trim.SE_GATE
+    assert arr_y['verdict'] == lib.EVIDENCE_PASS
+    assert gate['mask'][3] == 1.0
+
+
+def test_the_evidence_gate_freezes_on_a_detected_shift():
+    """G8: a channel that SHIFTS mid-cell is frozen, because its pooled mean
+    describes two plants.
+
+    Silently re-converging after a regime change is how the braking clamp hid
+    for a whole session. The recursion is ``toss_trim.cusum_step`` — one
+    implementation, so the measured 2 % false-alarm / 99.7 %-at-2-sigma table
+    keeps applying to both consumers.
+    """
+    shifted = _cell(24, 0.030, 0.002, seed=9, start=0.0)
+    gate = lib.evidence_gate(shifted)
+    arr_y = [c for c in gate['channels'] if c['channel'] == 'arrival_dir_y'][0]
+    assert arr_y['verdict'] == lib.EVIDENCE_FROZEN
+    assert arr_y['cusum_index'] is not None
+    assert gate['frozen'] and gate['mask'][3] == 0.0
+    assert 'SHIFTED' in arr_y['detail']
+
+    # A stationary cell of the same size does NOT alarm.
+    steady = _cell(24, 0.030, 0.002, seed=9, start=0.030)
+    assert not lib.evidence_gate(steady)['frozen']
+
+
+def test_a_frozen_channel_holds_u_prev_rather_than_zeroing_it():
+    """**Freeze-never-zero**, transposed to an accumulating law.
+
+    ``toss_trim._freeze`` stops learning and HOLDS delta. Here the law is
+    ``u_next = u_prev + du``, so a gated channel's ``du = 0`` holds the
+    accumulated command at whatever the last admitted fit put there. The artifact
+    keeps its value; only learning stops. Zeroing would throw away every
+    previous iteration's evidence on the strength of one quiet cell.
+    """
+    rows = _cell(3, 0.02, 0.001)
+    goal = GOAL
+    F = lib.sensitivity(goal=goal)
+    gate = lib.evidence_gate(rows)
+    e, _counts = lib.pooled_error(rows)
+    u_prev = np.array([0.006, -0.002, -0.05, 0.0])
+    step = lib.propose_step(F, e, goal, u_current=u_prev,
+                            mask=lib.DEFAULT_MASK * gate['mask'])
+    assert step['du'] == pytest.approx(np.zeros(lib.N_U), abs=1e-15)
+    assert step['u_next'] == pytest.approx(u_prev, abs=1e-15)
+
+
+def test_fit_corpus_applies_the_evidence_gate_by_default_and_reports_it_either_way():
+    rows = _cell(3, 0.02, 0.001)
+    goal = GOAL
+    gated = lib.fit_corpus(rows, goal=goal)
+    assert gated['evidence_applied'] is True
+    assert list(gated['mask_effective']) == [0.0, 0.0, 0.0, 0.0, 0.0]
+    assert gated['du'] == pytest.approx(np.zeros(lib.N_U), abs=1e-15)
+
+    ungated = lib.fit_corpus(rows, goal=goal, require_evidence=False)
+    assert ungated['evidence_applied'] is False
+    assert ungated['evidence']['gated'], 'it still REPORTS what it would refuse'
+    assert np.linalg.norm(ungated['du']) > 0.0
+
+
+# ── C7: tier 8b and the throw site ───────────────────────────────────────────
+
+
+def test_the_throw_site_is_read_only_under_tier_8b():
+    """C7. ``[0.0, 0.0]`` on an 8a row means UNSET, not "threw from the origin".
+
+    ``TossSequencer.throw_site_xy_mm``'s CLASS DEFAULT is ``(0.0, 0.0)`` and
+    nothing assigns it under 8a, while the record fills the field with
+    ``getattr(seq, 'throw_site_xy_mm', (0.0, 0.0))``. The 2026-08-12 corpus has
+    exactly this: three admitted rows declaring tier 8a, site ``[0, 0]`` and a
+    cup at ``(±150, −120)``. Reading the field as a site moves the modelled
+    release 192.094 mm — which is why the fit ignored it, and why the fix is a
+    TIER GATE rather than a plain read.
+    """
+    row_8a = {'toss_tier': '8a', 'throw_site_xy_mm': [0.0, 0.0]}
+    assert lib.throw_site_xy_of(row_8a) is None
+    row_none = {'throw_site_xy_mm': [0.0, 0.0]}
+    assert lib.throw_site_xy_of(row_none) is None
+    row_8b = {'toss_tier': '8b', 'throw_site_xy_mm': [12.0, -5.0]}
+    assert lib.throw_site_xy_of(row_8b) == (12.0, -5.0)
+
+
+def test_goal_of_carries_the_8b_throw_site_into_the_model():
+    base = dict(GUARD_CLEAN, usable_for_release_fit=True,
+                flight_time_err_s=0.1, coverage_asym_s=0.0,
+                arrival_dir_err_rad=[0.0, 0.0],
+                cmd_flight_time_s=lib.CORPUS_FLIGHT_TIME_S,
+                land_xy_global_mm=[10.0, 160.0], land_err_mm=[10.0, 10.0],
+                land_plane_mm=809.08, n_fit=40, fit_rms_mm=0.5,
+                fit_sparse=False)
+    # 8a: the site IS the cup, which is what `site_xy`'s fallback means.
+    goal = lib.goal_of(dict(base, toss_tier='8a',
+                            throw_site_xy_mm=[0.0, 0.0]))
+    assert goal.throw_site_xy_mm is None
+    assert goal.site_xy == pytest.approx((0.0, 150.0))
+    # 8b at the cup: carried, and identical to the fallback.
+    goal = lib.goal_of(dict(base, toss_tier='8b',
+                            throw_site_xy_mm=[0.0, 150.0]))
+    assert goal.throw_site_xy_mm == (0.0, 150.0)
+    assert goal.site_xy == pytest.approx((0.0, 150.0))
+
+
+def test_an_8b_row_the_v1_key_cannot_name_is_refused_by_name():
+    """C7's second half — the plan's zero-displacement admission gate.
+
+    The v1 artifact key is ``(x, y, z, T)`` on the CATCH pose and has no
+    throw-site component, so a far-displaced 8b correction written into a cell
+    would be applied to every future toss to that cup from anywhere. The bound is
+    ``THROW_SITE_KEY_TOL_MM`` = the key's own xy quantisation, deliberately not
+    float slack: **8b is the shipped default**, so a gate at "the site IS the
+    cup" refuses every row a real 8b session produces.
+    """
+    base = dict(GUARD_CLEAN, usable_for_release_fit=True,
+                flight_time_err_s=0.1, coverage_asym_s=0.0,
+                arrival_dir_err_rad=[0.0, 0.0],
+                cmd_flight_time_s=lib.CORPUS_FLIGHT_TIME_S,
+                land_xy_global_mm=[10.0, 160.0], land_err_mm=[10.0, 10.0],
+                land_plane_mm=809.08, n_fit=40, fit_rms_mm=0.5,
+                fit_sparse=False)
+    # thrown from its own cup: 8a geometry, admitted
+    ok, why = lib.admit_record(dict(base, toss_tier='8b',
+                                    throw_site_xy_mm=[0.0, 150.0]))
+    assert ok, 'an 8b toss thrown from its own cup is 8a geometry'
+
+    # displaced INSIDE the gate: admitted, and the shipped tier keeps working
+    ok, why = lib.admit_record(dict(base, toss_tier='8b',
+                                    throw_site_xy_mm=[0.0, 20.0]))
+    assert ok, why
+
+    # displaced PAST the key's own quantisation: refused, by name
+    ok, why = lib.admit_record(dict(base, toss_tier='8b',
+                                    throw_site_xy_mm=[0.0, -100.0]))
+    assert not ok and 'throw_site_not_in_key' in why and '250' in why
+
+    ok, why = lib.admit_record(dict(base, toss_tier='8b'))
+    assert not ok and 'throw_site_unknown' in why
+
+    # 8a is untouched by any of it.
+    assert lib.admit_record(dict(base, toss_tier='8a',
+                                 throw_site_xy_mm=[0.0, 0.0]))[0]
+
+
+# ── C8: the committed provenance fixture ─────────────────────────────────────
+
+
+def test_the_committed_fixture_carries_the_admitted_corpus():
+    """C8. Without this file the corpus-backed assertions SKIP on every checkout
+    but this Jetson's, and the arc's headline numbers have no provenance."""
+    rows = _fixture_rows()
+    assert len(rows) == 19
+    assert all(lib.admit_record(r)[0] for r in rows), (
+        'the fixture is the ADMITTED projection — a row it carries that the '
+        'current admission refuses means the projection is missing a field the '
+        'guards read, and FIXTURE_FIELDS needs it')
+    extra = set()
+    for r in rows:
+        extra |= set(r) - set(cli.FIXTURE_FIELDS)
+    assert not extra, 'the fixture carries fields FIXTURE_FIELDS does not: {}'\
+        .format(sorted(extra))
+
+
+def test_the_committed_fixture_reproduces_the_headline_numbers():
+    """The point of the fixture: the numbers this arc reports are re-derivable
+    from committed evidence. Every value below is quoted in ``ilc_fit_lib``'s
+    module header or in :data:`ilc_fit_lib.SIGMA_E`'s D2 block.
+    """
+    rows = _fixture_rows()
+    assert len(rows) == 19
+
+    # D2's sigma, re-derived — and the POPULATION it belongs to, which is the
+    # subtlety this fixture surfaced. 0.00302 was measured over the rows that
+    # carry BOTH lateral channels (17 of 19), because `lateral_admissible`
+    # required `land_err_mm` until 2026-08-21. Now that the primary channel no
+    # longer depends on a monitor one, 19 arrival directions are readable and
+    # the same statistic reads 0.00286 — 5.4 % LOWER. SIGMA_E keeps 0.00302,
+    # which over-states the noise slightly; that is the conservative direction
+    # and the module's own stated doctrine (see the `flight_time` bullet: a Q
+    # weight that under-states the noise over-trusts the channel).
+    E = np.vstack([lib.measured_error(r) for r in rows])
+
+    def _pooled(cols):
+        cols = cols[~np.isnan(cols).any(axis=1)]
+        return float(np.sqrt(np.mean(cols.std(axis=0, ddof=1) ** 2))), \
+            int(cols.shape[0])
+
+    # The D2 population is defined by the PRE-2026-08-21 `lateral_admissible`:
+    # E-1 clean AND `land_err_mm` present. Read off the raw fields, because
+    # `measured_error` now additionally G2-gates the monitor columns (9 rows)
+    # and that is a different question from which rows had a plane fit at all.
+    old_lateral = np.array(
+        [lib._pair(r['arrival_dir_err_rad'])
+         for r in rows
+         if lib.lateral_admissible(r)[0] and lib._pair(r.get('land_err_mm'))],
+        dtype=float)
+    d2_sigma, n_both = _pooled(old_lateral)
+    assert n_both == 17
+    assert d2_sigma == pytest.approx(0.00302, abs=5e-6)
+    assert lib.SIGMA_E[2] == pytest.approx(0.00302, abs=5e-6)
+
+    now_sigma, n_now = _pooled(E[:, 2:4])
+    assert n_now == 19
+    assert now_sigma == pytest.approx(0.00286, abs=5e-6)
+    assert lib.SIGMA_E[2] >= now_sigma, (
+        'SIGMA_E must never UNDER-state a channel it weights by 1/sigma^2')
+
+    # the +11 % fast hand: the corpus's dominant, correctable error
+    ft = E[:, 4]
+    assert float(ft.mean()) == pytest.approx(0.0975, abs=5e-4)
+
+    # the C3 disagreement, on the population the finding was taken on
+    dis = []
+    for r in rows:
+        if not lib.lateral_admissible(r)[0]:
+            continue
+        land, arr = lib._pair(r.get('land_err_mm')), \
+            lib._pair(r.get('arrival_dir_err_rad'))
+        goal = lib.goal_of(r)
+        if land is None or arr is None or goal is None:
+            continue
+        F = lib.sensitivity(goal=goal)
+        dis.append((land[0] - arr[0] * F[0, 1] / F[2, 1],
+                    land[1] - arr[1] * F[1, 0] / F[3, 0]))
+    dis = np.array(dis)
+    assert dis.shape[0] == 17
+    assert float(dis[:, 0].mean()) == pytest.approx(0.90, abs=0.05)
+    assert float(dis[:, 1].mean()) == pytest.approx(18.10, abs=0.05)
+
+    # and the partition rule still bites: 16 / 3 on bridge_fw_version (C6)
+    census = lib.partition_census(rows)
+    assert sorted(census.values()) == [3, 16]
