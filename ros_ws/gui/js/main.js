@@ -35,7 +35,7 @@ import {
     initStateMinimap, minimapOnOrchestratorState, minimapOnControlMode,
     minimapOnRobotState, minimapOnLinkStatus, minimapOnLegSetpointEcho,
 } from './state-minimap.js';
-import { INITIAL_HEIGHT_MM, MM_TO_REV } from './geometry-config.js';
+import { INITIAL_HEIGHT_MM, MM_TO_REV, HAND_MM_PER_REV } from './geometry-config.js';
 import {
     initTelemetryCharts, onTelemetryData, rebuildCharts, flashChart,
     clearChartGridHidden,
@@ -430,10 +430,14 @@ function onRobotState(msg) {
                 result.pos[2] + INITIAL_HEIGHT_MM,
             ];
 
-            // Hand extension: convert motor rev to mm
+            // Hand extension: convert motor rev to mm with the HAND spool
+            // gain.  This used to divide by MM_TO_REV[0] — the LEG factor
+            // (70.5 mm/rev vs the hand's 31.6), so the 3D hand rendered its
+            // travel ~2.2x too long and hit the top of its stroke at less
+            // than half the commanded extension.
             let handExtMM = 0;
             if (motors.length >= 7) {
-                handExtMM = motors[6].pos_estimate / MM_TO_REV[0]; // approximate
+                handExtMM = motors[6].pos_estimate * HAND_MM_PER_REV;
             }
 
             updateStewartPose(result.platNodes, platCentre, handExtMM);

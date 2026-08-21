@@ -289,8 +289,11 @@
     border: 1px solid var(--signal-color, var(--accent-blue));
     border-radius: var(--border-radius-sm);
     white-space: nowrap;
-    /* Clickable for copy-to-clipboard; parent .chart-callouts keeps pointer
-       events off everywhere else so the uPlot cursor stays responsive. */
+    /* Clickable for copy-to-clipboard (copies the displayed value in the
+       chart's physical unit — mm / mm-s / deg / deg-s — bare and at full
+       precision, NOT the motor-rev wire value); parent .chart-callouts keeps
+       pointer events off everywhere else so the uPlot cursor stays
+       responsive. */
     pointer-events: auto;
     cursor: pointer;
     user-select: none;

@@ -8,6 +8,7 @@ DiagnosticStatus KeyValue names shared by teensy_bridge_node and can-traffic.js.
 """
 
 import json
+import math
 import re
 from pathlib import Path
 
@@ -268,6 +269,120 @@ class TestBallButlerGeometry:
         yaml_val = yaml_config['ball_butler_trajectory']['hand_stroke_m'] * 1000
         js_val = _extract_js_number(js_source, 'BB_HAND_STROKE_MM')
         assert js_val == pytest.approx(yaml_val, abs=0.1)
+
+
+# ---- Chart display-unit conversions (telemetry-charts.js consumes these) ----
+
+
+def _mm_per_rev_from_yaml(traj_cfg):
+    """mm/rev for a spool axis, derived the way compute_derived() does.
+
+    compute_derived emits a rev/m gain::
+
+        gain = linear_gain_factor / (pi * hand_spool_radius_m * 2)
+
+    and the GUI wants its reciprocal in mm::
+
+        mm_per_rev = 1000 / gain
+
+    Written out from the YAML here (not read back from the emitted file, which
+    would make the test a tautology) so a spool-radius or gain-factor edit that
+    never reaches the GUI fails this test.
+    """
+    gain_rev_per_m = (traj_cfg['linear_gain_factor']
+                      / (math.pi * traj_cfg['hand_spool_radius_m'] * 2.0))
+    return 1000.0 / gain_rev_per_m
+
+
+class TestChartUnitConstants:
+    """Pin the four constants telemetry-charts.js converts motor revs with.
+
+    Why this matters more than a normal drift pin: the charts apply these at
+    INGESTION, to measured AND commanded alike, so a wrong factor does not look
+    wrong — the traces stay on top of each other and the operator reads a
+    plausible, silently mis-scaled number off the axis.  The 3D hand had
+    exactly that bug (it used the LEG factor, ~2.2x off) and it survived
+    unnoticed until someone measured the model.
+    """
+
+    def test_hand_mm_per_rev(self, yaml_config, js_source):
+        expected = _mm_per_rev_from_yaml(yaml_config['teensy_trajectory'])
+        js_val = _extract_js_number(js_source, 'HAND_MM_PER_REV')
+        assert js_val == pytest.approx(expected, rel=1e-6)
+
+    def test_bb_hand_mm_per_rev(self, yaml_config, js_source):
+        expected = _mm_per_rev_from_yaml(yaml_config['ball_butler_trajectory'])
+        js_val = _extract_js_number(js_source, 'BB_HAND_MM_PER_REV')
+        assert js_val == pytest.approx(expected, rel=1e-6)
+
+    def test_hand_and_bb_hand_gains_differ(self, js_source):
+        """The two spools are NOT the same radius (0.00521 vs 0.0052493 m).
+
+        Guards the copy-paste failure where one constant is emitted twice: the
+        difference is only ~4 %, small enough to look right on a chart and
+        large enough to matter over a 280 mm stroke.
+        """
+        hand = _extract_js_number(js_source, 'HAND_MM_PER_REV')
+        bb_hand = _extract_js_number(js_source, 'BB_HAND_MM_PER_REV')
+        assert hand != pytest.approx(bb_hand, rel=1e-4)
+
+    def test_bb_pitch_affine_constants(self, js_source):
+        """deg = 90 + 360*rev — owned by BB firmware (PitchAxis.h), mirrored
+        here and in teensy_bridge_node's _publish_bb_axis_estimates docstring.
+
+        Not YAML-derived (this repo does not hold the BB firmware), so the pin
+        is against the contract itself.
+        """
+        assert _extract_js_number(js_source, 'BB_PITCH_DEG_PER_REV') == pytest.approx(360.0)
+        assert _extract_js_number(js_source, 'BB_PITCH_DEG_OFFSET') == pytest.approx(90.0)
+
+    def test_bb_pitch_maps_onto_the_configured_range(self, js_source):
+        """Sanity: the affine map has to land the barrel in ~12-90 deg.
+
+        A sign flip or a swapped offset still produces a smooth-looking trace,
+        so pin the physical endpoints: rev 0 is the 90 deg (vertical) end and
+        the low end of the configured range sits near 12 deg.
+        """
+        per_rev = _extract_js_number(js_source, 'BB_PITCH_DEG_PER_REV')
+        offset = _extract_js_number(js_source, 'BB_PITCH_DEG_OFFSET')
+        assert offset + per_rev * 0.0 == pytest.approx(90.0, abs=0.1)
+        assert offset + per_rev * -0.2167 == pytest.approx(12.0, abs=0.1)
+
+    def test_hand_gain_spans_the_physical_stroke(self, yaml_config, js_source):
+        """Sanity: hard stop x mm/rev must land inside the physical stroke.
+
+        10.8 rev x 31.63 mm/rev = 341.6 mm against a 344.75 mm stroke — a
+        wrong-axis factor (the leg's 70.5 mm/rev) would give 762 mm and fail.
+        """
+        mm_per_rev = _extract_js_number(js_source, 'HAND_MM_PER_REV')
+        hard_stop = yaml_config['jugglebot_geometry']['hand_motor_hard_stop_revs']
+        stroke = yaml_config['jugglebot_geometry']['hand_stroke_mm']
+        travel = hard_stop * mm_per_rev
+        assert 0.9 * stroke < travel <= stroke
+
+
+# ---- Generated-copy identity ----
+
+
+class TestGeneratedCopyIdentity:
+    """The two geometry-config.js copies must be the same file.
+
+    tests/firmware/test_config_drift.py pins each copy against a FRESH
+    generator render, which implies identity transitively; this pins it
+    directly, so it still fails if the generator itself cannot be imported
+    (the drift module skips wholesale in that case) and it names the actual
+    failure — the GUI is served from ros_ws/gui/js/ while every reader of the
+    config tree looks at config/generated/.
+    """
+
+    def test_copies_are_byte_identical(self):
+        generated = ROOT / 'config' / 'generated' / 'geometry-config.js'
+        delivered = GUI_JS_PATH
+        assert generated.exists(), f'missing {generated}'
+        assert delivered.exists(), f'missing {delivered}'
+        assert generated.read_bytes() == delivered.read_bytes(), (
+            'config/generated/geometry-config.js and ros_ws/gui/js/'
+            'geometry-config.js differ — re-run python config/generate_config.py')
 
 
 # ---- Legacy file removal validation ----
