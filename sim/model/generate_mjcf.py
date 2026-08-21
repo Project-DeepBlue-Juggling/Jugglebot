@@ -5,6 +5,36 @@ Reads geometry from hardware_config.yaml and produces jugglebot.xml.
 Usage:
     python sim/model/generate_mjcf.py          # from repo root
     python model/generate_mjcf.py              # from sim/
+
+
+⚠ DO NOT REGENERATE `sim/model/jugglebot.xml` WITHOUT READING THIS (2026-08-21).
+
+The committed XML has been HAND-MAINTAINED past this generator and running it
+DESTROYS CAPABILITY. Measured on 2026-08-21, the XML contains and this file does
+not emit:
+
+  * the SECOND BALL -- `ball2` body, freejoint, geom, site and its `ball2_pos` /
+    `ball2_vel` sensors (8 references; zero here). Regenerating deletes two-ball
+    simulation outright.
+  * the `<contact><exclude body1="ball" body2="ball2"/>` pair, with its reasoning
+    (in a 2-in-one-hand pattern the two arcs cross but the balls are physically
+    in separate lanes, so the sim's single-arc throw produces mid-air collisions
+    that are not representative).
+  * the real ball spec: the XML is `size=0.035 / mass=0.071`; this generator
+    emits `size=0.02 / mass=0.043`.
+
+The renderer perf tweaks below (shadowsize/offsamples/reflectance) WERE in that
+same category and have now been folded in, which is why they are here. The three
+items above have NOT been, because doing so needs an owner decision about which
+ball spec is correct and whether this generator should be brought up to date or
+retired in favour of the XML as the source of truth.
+
+Until that decision is made, treat `jugglebot.xml` as the source of truth and
+this file as a historical scaffold. The only safe use of it is to diff against,
+not to overwrite with. `hand_stroke_mm` changes (e.g. the 2026-08-18 355.0 ->
+344.75 correction) therefore have to be applied to the XML BY HAND -- as of
+2026-08-21 the XML still carries `range="0 0.355000"` on `hand_slide`, which is
+the one real staleness this scaffold would have fixed.
 """
 
 import numpy as np
@@ -150,14 +180,27 @@ def generate_mjcf(config, mesh_dir=None):
     # Visual
     visual = ET.SubElement(mujoco, 'visual')
     ET.SubElement(visual, 'global', azimuth='135', elevation='-30')
-    ET.SubElement(visual, 'quality', shadowsize='2048')
+    # Renderer perf tweaks: shadowsize=0 disables shadow rendering in both the
+    # passive viewer and offscreen renders. offsamples=0 disables MSAA for
+    # offscreen renders only -- the passive viewer's MSAA is set by GLFW hints
+    # and is unaffected by this knob. The juggle demo needs smooth platform
+    # motion at full frame-rate on the Jetson, not photo-realism.
+    #
+    # These lived as HAND EDITS to the generated jugglebot.xml until 2026-08-21,
+    # so the first regeneration after they were made silently reverted them.
+    # They belong here, in the generator, for the same reason every other
+    # generated artifact does.
+    ET.SubElement(visual, 'quality', shadowsize='0', offsamples='0')
 
     # Assets
     asset = ET.SubElement(mujoco, 'asset')
     ET.SubElement(asset, 'texture', name='grid', type='2d', builtin='checker',
                   width='512', height='512', rgb1='0.9 0.9 0.9', rgb2='0.7 0.7 0.7')
     ET.SubElement(asset, 'material', name='grid_mat', texture='grid',
-                  texrepeat='8 8', reflectance='0.1')
+                  # reflectance=0: the floor is no longer mirror-like (the demo's
+                  # juggling motion is the focus; floor reflections were extra GPU
+                  # load with no informational value). Also a former hand edit.
+                  texrepeat='8 8', reflectance='0')
     ET.SubElement(asset, 'material', name='platform_mat', rgba='0.3 0.3 0.8 0.9')
     ET.SubElement(asset, 'material', name='base_mat', rgba='0.4 0.4 0.4 0.8')
     ET.SubElement(asset, 'material', name='leg_mat', rgba='0.7 0.7 0.7 1.0')
