@@ -719,6 +719,14 @@ class ReloadCoordinatorNode(Node):
         self._toss_ilc_dormant_logged = ''
         self._toss_ilc_refusal_logged = ''
         self._toss_ilc_miss_logged = set()
+        # Layer 3's SESSION-LOCAL common-mode component (C1, owner decision 2 of
+        # the 2026-08-21 fold-in). RAM only, one per GOAL, discarded when the
+        # goal ends — the same lifecycle as the layer-2 trim above and for the
+        # same reason, one layer up: it carries the quantity a re-`level` moves,
+        # which is only constant WITHIN a goal. It is seeded from the persistent
+        # artifact's `anchor` prior, which is where the between-session evidence
+        # lives; it never writes anything back.
+        self._toss_ilc_session = None
         # The platform's live COMMANDED position (STOW mm) + its arrival stamp.
         # None/0.0 = never heard ⇒ fail closed (REJECTED_POSE_UNKNOWN for a
         # displaced toss, REJECTED_NOT_CENTERED for a reload). trajectory_node
@@ -2484,13 +2492,23 @@ class ReloadCoordinatorNode(Node):
           would have asked for and how far it diverged from layer 3 — but
           nothing composes it;
         * ``ilc_aim_rad`` / ``ilc_offset_mm`` / ``ilc_vel_trim`` — layer 3, the
-          learned per-goal critical-point correction
-          (:mod:`jugglebot.motion.toss_ilc`), zero unless
-          ``jugglebot_operational.toss_ilc_enabled`` is set AND an artifact is
-          loaded AND its provenance matches AND this goal hits one of its cells.
-          A provenance verdict that cannot be COMPUTED counts as a mismatch, on
+          learned critical-point correction (:mod:`jugglebot.motion.toss_ilc`),
+          zero unless ``jugglebot_operational.toss_ilc_enabled`` is set AND an
+          artifact is loaded AND its provenance matches. A provenance verdict
+          that cannot be COMPUTED counts as a mismatch, on
           ``provenance_mismatch``'s own rule: *"I cannot verify what is
-          underneath me" is not "the right thing is underneath me"*;
+          underneath me" is not "the right thing is underneath me"*.
+          ``ilc_aim_rad`` is layer 3's TOTAL and is split, additively, into:
+
+          * ``ilc_spatial_aim_rad`` — the per-cell spatial residual, zero unless
+            this goal HITS one of the artifact's cells (a miss is exactly zero;
+            nothing is interpolated);
+          * ``ilc_session_aim_rad`` — the goal-local common mode, seeded at goal
+            start from the artifact's ``anchor`` prior and applied only if that
+            prior clears its evidence gate. It does **not** depend on a cell hit,
+            because a common mode is not a function of the cell — see the layer-3
+            block below for that argument and the tradeoff it accepts. Zero, with
+            a named ``ilc_session_reason``, on every other path;
         * ``aim_rad`` / ``offset_mm`` — the TOTAL, which is what the platform is
           actually commanded to and what the virtual target is built from.
 
@@ -2545,6 +2563,7 @@ class ReloadCoordinatorNode(Node):
             ilc = self._toss_ilc
             ilc_version = self._toss_ilc_version
             ilc_already_logged = self._toss_ilc_dormant_logged
+            session = self._toss_ilc_session
         reason = cal.provenance_mismatch(live_tilt) if cal is not None else ''
         if reason:
             with self._lock:
@@ -2572,7 +2591,16 @@ class ReloadCoordinatorNode(Node):
             # way or a monitor value would be re-applied on paper.
             'trim_monitor_aim_rad': (0.0, 0.0),
             'trim_authority': toss_trim.AIM_AUTHORITY,
+            # `ilc_aim_rad` is layer 3's TOTAL contribution to the commanded aim
+            # and stays that: every consumer that subtracts what layer 3 applied
+            # — `toss_trim.ilc_aim_rad`'s C4 subtraction above all — needs the
+            # sum, not a part. The two components ride beside it.
             'ilc_aim_rad': (0.0, 0.0),
+            'ilc_spatial_aim_rad': (0.0, 0.0),
+            'ilc_session_aim_rad': (0.0, 0.0),
+            'ilc_session_applied': False,
+            'ilc_session_reason': toss_ilc.SESSION_NO_ARTIFACT,
+            'ilc_session_n': 0,
             'ilc_offset_mm': (0.0, 0.0),
             'ilc_vel_trim': 0.0,
             'ilc_enabled': False,
@@ -2630,6 +2658,26 @@ class ReloadCoordinatorNode(Node):
                                              float(monitor[1]))
 
         # ── layer 3 — THE single per-goal ILC lookup (critical-point-ilc.md) ──
+        #
+        # Layer 3's aim has TWO components since 2026-08-21 (owner decision 2,
+        # contradiction C1) and both are read here, once:
+        #
+        #   ilc_spatial — the per-cell SPATIAL RESIDUAL from `toss_ilc.lookup`.
+        #   ilc_session — the goal-local COMMON MODE, seeded at goal start from
+        #                 the artifact's anchor prior and gated on its evidence.
+        #
+        # Root cause for the split, not the decision by name: `level()` is one
+        # int16 SCL3300 sample with 1.2-1.7 mrad/axis of session-to-session
+        # scatter, and D3 says a re-`level` deliberately does NOT invalidate a
+        # persisted map. Against the measured per-cell |aim| of 9.1-10.5 mrad
+        # that is 11-19 % of every persisted cell being one sitting's
+        # inclinometer noise, frozen forever and re-applied on every future
+        # session that never took that draw. None of layer 3's four provenance
+        # keys can see a re-`level`, so the fence has to be structural: the
+        # common mode is persisted as a PRIOR, seeded into a RAM-only component
+        # that dies with the goal, and no cell ever absorbs a `level()` draw.
+        ilc_spatial = (0.0, 0.0)
+        ilc_session = (0.0, 0.0)
         ilc_aim = (0.0, 0.0)
         ilc_dv = 0.0
         ilc_enabled = self._toss_ilc_enabled()
@@ -2688,11 +2736,41 @@ class ReloadCoordinatorNode(Node):
                         f"correction (layer 3 is a refinement, never a gate)")
                     block['ilc_applied'] = False
                     hit = None
+                # THE single per-goal read of the session common mode. It runs
+                # inside this branch, and only here, so that layer 3's dormancy
+                # verdict has exactly ONE owner: a DORMANT artifact contributes
+                # no prior for the same reason it contributes no cell, and the
+                # verdict is not re-derived anywhere it could drift from.
+                #
+                # It runs BEFORE the hit/miss branch on purpose. A MISS
+                # contributes exactly zero SPATIAL residual — `toss_ilc.lookup`'s
+                # no-interpolation rule is untouched — but it does NOT zero the
+                # common mode, and that asymmetry is the whole point of splitting
+                # them. The no-interpolation rule exists because a sparse
+                # command-vector table must not invent a value BETWEEN its cells;
+                # the common mode is by construction not a function of the cell
+                # (measured consistent, 9.1-10.5 mrad, across all three goal
+                # cells), so applying it at an unvisited goal is applying a
+                # constant, not interpolating a field. It is also exactly what
+                # layer 2 has always done with its own common mode: the session
+                # trim applies at every goal, whether or not the map has a node
+                # there. The tradeoff accepted: at a goal far outside the fitted
+                # region this extrapolates a constant that was measured inside
+                # it — bounded by ILC_AIM_MAX_RAD, gated on evidence, and
+                # recorded per toss as `ilc_session_aim_rad` so the assumption is
+                # visible in the corpus rather than implicit.
+                if session is not None:
+                    ilc_session = session.aim()
+                    block['ilc_session_aim_rad'] = (float(ilc_session[0]),
+                                                    float(ilc_session[1]))
+                    block['ilc_session_applied'] = bool(session.applied)
+                    block['ilc_session_reason'] = str(session.reason)
+                    block['ilc_session_n'] = int(session.n)
                 if hit is not None:
                     block['ilc_key'] = tuple(hit.key)
                     block['ilc_hit'] = bool(hit.hit)
                     if hit.hit:
-                        ilc_aim = hit.correction.aim_rad
+                        ilc_spatial = hit.correction.aim_rad
                         ilc_dv = float(hit.correction.event_vel_trim)
                     else:
                         # A MISS is EXACTLY zero and is said out loud once per
@@ -2708,6 +2786,13 @@ class ReloadCoordinatorNode(Node):
                                 'goal. Cells: {}'.format(
                                     ilc_version, tuple(catch_pose),
                                     list(hit.key), sorted(ilc.cells)))
+
+        # Layer 3's TOTAL aim. The two components are summed here, before the
+        # single D7 clamp, for the reason layer 3 as a whole is composed before
+        # it: adding a bound after the clamp would make a fourth authority, and
+        # the sum is what the platform is actually commanded to.
+        ilc_aim = (ilc_spatial[0] + ilc_session[0],
+                   ilc_spatial[1] + ilc_session[1])
 
         if (map_aim == (0.0, 0.0) and trim_aim == (0.0, 0.0)
                 and ilc_aim == (0.0, 0.0) and ilc_dv == 0.0):
@@ -2728,6 +2813,15 @@ class ReloadCoordinatorNode(Node):
             if hits and ilc_aim != (0.0, 0.0):
                 # REFUSE layer 3 whole, then re-compose exactly as layers 1+2
                 # would have on their own — see the method docstring (risk 5).
+                #
+                # WHOLE means BOTH components. Dropping only the spatial residual
+                # and keeping the common mode (or the reverse) would fly a
+                # correction no fit ever solved for: the cells are referenced TO
+                # the anchor, so `spatial` alone is a residual about a baseline
+                # the machine is not applying, and `session` alone is a baseline
+                # with its residual removed. Half a decomposition is not a
+                # smaller correction, it is a different one — the same reason a
+                # truncation is refused rather than applied.
                 if self._toss_ilc_refusal_logged != 'total_aim':
                     self._toss_ilc_refusal_logged = 'total_aim'
                     self.get_logger().warning(
@@ -2735,12 +2829,20 @@ class ReloadCoordinatorNode(Node):
                         '{:.6f} rad exceeds the {:.6f} rad D7 authority, and a '
                         'TRUNCATED correction is not the correction that was '
                         'solved for (risk 5). This goal flies the map aim '
-                        'unchanged; the recorded ilc_aim_rad is (0, 0).'
+                        'unchanged; the recorded ilc_aim_rad is (0, 0), and '
+                        'BOTH layer-3 components are dropped (spatial '
+                        '{:.6f} rad + session {:.6f} rad).'
                         .format(math.hypot(base_rx + ilc_aim[0],
                                            base_ry + ilc_aim[1]),
-                                toss_cal.TOTAL_MAX_RAD))
+                                toss_cal.TOTAL_MAX_RAD,
+                                math.hypot(*ilc_spatial),
+                                math.hypot(*ilc_session)))
                 block['ilc_refused'] = 'total_aim'
                 ilc_aim = (0.0, 0.0)
+                ilc_spatial = (0.0, 0.0)
+                ilc_session = (0.0, 0.0)
+                block['ilc_session_aim_rad'] = (0.0, 0.0)
+                block['ilc_session_applied'] = False
                 rx, ry, hits = toss_cal.clamp_total_aim(base_rx, base_ry)
             offset = aim_target_offset_mm(rx, ry, float(flight),
                                           float(catch_pose[2]))
@@ -2785,6 +2887,10 @@ class ReloadCoordinatorNode(Node):
         block['trim_offset_mm'] = (float(base_offset[0]) - float(map_offset[0]),
                                    float(base_offset[1]) - float(map_offset[1]))
         block['ilc_aim_rad'] = (float(ilc_aim[0]), float(ilc_aim[1]))
+        block['ilc_spatial_aim_rad'] = (float(ilc_spatial[0]),
+                                        float(ilc_spatial[1]))
+        block['ilc_session_aim_rad'] = (float(ilc_session[0]),
+                                        float(ilc_session[1]))
         block['ilc_offset_mm'] = (float(offset[0]) - float(base_offset[0]),
                                   float(offset[1]) - float(base_offset[1]))
         block['ilc_vel_trim'] = float(ilc_dv)
@@ -4001,6 +4107,11 @@ class ReloadCoordinatorNode(Node):
             # clamp or validate_event_vel) must be recorded as the zero it became,
             # or the next fit learns against a command the machine never flew.
             'ilc_aim_rad': [0.0, 0.0],
+            'ilc_spatial_aim_rad': [0.0, 0.0],
+            'ilc_session_aim_rad': [0.0, 0.0],
+            'ilc_session_applied': False,
+            'ilc_session_reason': toss_ilc.SESSION_NO_ARTIFACT,
+            'ilc_session_n': 0,
             'ilc_vel_trim': 0.0,
             'clamp_hits': [],
             'toss_cal_loaded': bool(cal_present),
@@ -4023,6 +4134,13 @@ class ReloadCoordinatorNode(Node):
                 'map_aim_mm_at_h': [float(v) for v in aim['map_offset_mm']],
                 'trim_aim_mm_at_h': [float(v) for v in aim['trim_offset_mm']],
                 'ilc_aim_rad': [float(v) for v in aim['ilc_aim_rad']],
+                'ilc_spatial_aim_rad': [
+                    float(v) for v in aim['ilc_spatial_aim_rad']],
+                'ilc_session_aim_rad': [
+                    float(v) for v in aim['ilc_session_aim_rad']],
+                'ilc_session_applied': bool(aim['ilc_session_applied']),
+                'ilc_session_reason': str(aim['ilc_session_reason']),
+                'ilc_session_n': int(aim['ilc_session_n']),
                 'ilc_vel_trim': float(aim['ilc_vel_trim']),
                 'clamp_hits': list(aim['clamp_hits']),
                 'toss_cal_applied': bool(aim['applied']),
@@ -4209,6 +4327,56 @@ class ReloadCoordinatorNode(Node):
             self._toss_trim = trim
             self._toss_trim_t0 = time.perf_counter()
             self._toss_trim_belt_warned = False
+        self._toss_ilc_session_begin(goal_id=goal_id)
+
+    def _toss_ilc_session_begin(self, *, goal_id: str) -> None:
+        """Seed a FRESH layer-3 session common mode for one goal (C1).
+
+        Called from :meth:`_toss_trim_begin` rather than from its two call sites,
+        so the two RAM-only per-goal components cannot get out of step: a goal
+        that starts a trim starts one of these, always, and there is one place to
+        read rather than two to keep matched.
+
+        **Seeded from the artifact, gated at seed, never updated.** The evidence
+        the gate reads is between-SESSION evidence, which by definition cannot
+        accumulate inside one goal; the fit is what moves it. See
+        :class:`toss_ilc.IlcSessionCommonMode` for why there is no CUSUM and no
+        freeze-never-zero here, and why that is a property of a seeded-and-held
+        component rather than an omission.
+
+        **Dormancy is NOT decided here**, deliberately. This seeds from whatever
+        artifact is loaded and :meth:`_toss_aim_for_goal` applies the result only
+        inside the branch that already owns the provenance verdict — so a DORMANT
+        artifact contributes no prior for exactly the reason it contributes no
+        cell, decided once, in one place. Duplicating the verdict here would be a
+        second owner of it, which is how two answers to one question begin.
+
+        Instrument-grade: a fault costs the component, never the goal.
+        """
+        with self._lock:
+            ilc = self._toss_ilc
+        try:
+            session = toss_ilc.IlcSessionCommonMode(ilc, goal_id=str(goal_id))
+        except Exception as exc:                               # noqa: BLE001
+            self.get_logger().warning(
+                'ILC session common mode NOT seeded ({}) — this goal runs with '
+                'the per-cell spatial residual alone'.format(exc))
+            session = None
+        with self._lock:
+            self._toss_ilc_session = session
+        if session is not None and session.applied:
+            self.get_logger().info(session.console_line())
+
+    def _toss_ilc_session_end(self) -> None:
+        """Discard the goal's session common mode.
+
+        **Nothing is written.** That is the C1 fence in one line: this component
+        exists so that one session's ``level()`` draw can be applied without ever
+        being persisted, and a component that wrote anything back would be the
+        very failure it was built to prevent.
+        """
+        with self._lock:
+            self._toss_ilc_session = None
 
     def _toss_trim_observe(self, record: dict) -> None:
         """Feed ONE cycle's declaration to the session trim, then print TRIM.
@@ -4272,7 +4440,15 @@ class ReloadCoordinatorNode(Node):
 
         Best-effort, one WARN per goal: a full disk costs the proposal, never a
         teardown.
+
+        Layer 3's session common mode dies here too, and FIRST — paired with
+        :meth:`_toss_trim_begin` starting it, so the two per-goal RAM components
+        have one begin site and one end site between them. First because the
+        proposal write below is best-effort I/O: a full disk must not be able to
+        leave a stale common mode alive into the next goal, which is the one
+        thing this component must never do.
         """
+        self._toss_ilc_session_end()
         with self._lock:
             trim = self._toss_trim
             self._toss_trim = None

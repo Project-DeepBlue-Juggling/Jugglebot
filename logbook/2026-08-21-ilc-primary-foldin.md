@@ -763,3 +763,175 @@ field kind) was checked against the tree before the run rather than assumed.
 
 - `./run_tests.sh`, run 2026-08-22: **5579 passed, 13 skipped in 254.85 s**
   (parallel 258 s, serial phase empty, total 267 s, `RESULT: PASS`).
+
+## Phase F — build step 2b (apply half): the common mode leaves the persisted cells (C1 + C5)
+
+**What changed.** Layer 3's aim now has **two** components and the node composes
+both before the single D7 clamp:
+
+```
+clamp_total_aim( map + ilc_spatial + ilc_session )
+```
+
+* `ilc_spatial` — the per-cell residual from `toss_ilc.lookup`. Exactly zero on
+  a miss; nothing is interpolated. Unchanged.
+* `ilc_session` — **new**: `toss_ilc.IlcSessionCommonMode`. RAM only, one per
+  goal, seeded from the artifact's new top-level `anchor` prior at
+  `_toss_trim_begin`, read exactly once in `_toss_aim_for_goal`, discarded at
+  `_toss_trim_end`, and with **no write path at all**.
+
+**Root cause, not the decision by name.** `level()` is one int16 SCL3300 sample
+with **1.2–1.7 mrad/axis** of session-to-session scatter, and C-TOSS-CAL-1's D3
+says a re-`level` deliberately does *not* invalidate a persisted map. Against the
+measured per-cell `|aim|` of **9.1–10.5 mrad** that is **11–19 % of every
+persisted cell** being one sitting's inclinometer noise — frozen forever, and
+re-applied on every future session that never took that draw. None of layer 3's
+four provenance keys can see a re-`level`, so no gate could ever make it stale.
+The fence had to be structural, and it is: the common mode is persisted as a
+*prior*, applied through a component that dies with the goal, and no cell ever
+absorbs a draw.
+
+**Why it is not simply discarded either**, which is the half a "just persist less"
+reading would get wrong: the measured `|aim|` is *consistent across all three
+goal cells*, i.e. the correction ILC found is **dominated by** common mode.
+Persisting only spatial residuals and applying nothing else would throw away
+~36–42 mm of the ~40 mm the loop found, against a 35 mm capture radius.
+
+### The three bounds, and the one that is new
+
+`_parse_cell` bounds the spatial residual at `ILC_AIM_MAX_RAD` and `_parse_anchor`
+bounds the common mode at the same number — but **layer 3 applies their sum**, and
+two separately-legal halves sum to 2.0°. So `parse_toss_ilc` gained a third check
+on `cell + anchor`, per cell. That is D7's own argument one level down: the bound
+belongs where both numbers first exist together, which is parse time, not either
+half's own validation. Refused rather than clamped, on `admit_command`'s rule — a
+truncated correction is not the correction that was solved for.
+
+### The gate is the trim's, transposed — and pinned equal, not re-derived
+
+`ANCHOR_N_MIN = 6`, `ANCHOR_SE_GATE = 2.5`, `ANCHOR_DEADBAND_RAD = 0.10°`, each
+restated in `toss_ilc` and pinned equal to `toss_trim`'s by test (the
+restate-don't-import shape `ILC_AIM_MAX_RAD` already follows, because a second
+importer of a module is a second owner of it). Restating them is not duplication
+for its own sake: **each one carries a measurement**, and re-deriving any of them
+would be re-deriving a probe nobody re-ran. `N_MIN_APPLY = 6` came from the
+trim's 2026-08-11 probe over 300–400 synthetic sessions, which found the design's
+`n ≥ 3` gate let **45.7 %** of ZERO-bias sessions command a non-zero correction —
+a sequential multiple-comparison problem that transposes verbatim, because two
+sessions of 1.2–1.7 mrad scatter is enough to mint a confident-looking common
+mode out of nothing.
+
+`n` counts **independent evidence units — sessions, i.e. `level()` draws** — not
+admitted tosses, and the schema refuses a float `n` by name to say so. Sixty
+tosses in one sitting are one draw; a gate keyed on the toss count would read
+that as overwhelming evidence for a number whose entire error budget is
+between-session.
+
+Ordering inside the gate is load-bearing and is pinned by its own test: the
+per-axis significance gate runs **first** and zeroes the axes it refuses, then
+the deadband judges the magnitude of what survives. The other order lets a single
+significant axis drag an insignificant one over the deadband on the hypotenuse —
+the vector clears 0.10° only because of a component the evidence just refused.
+
+### Two things the build ladder did not name
+
+**1. The common mode is deliberately NOT keyed on a cell hit.** A miss
+contributes exactly zero *spatial* residual — `lookup`'s no-interpolation rule is
+untouched — but it does not zero the common mode. The no-interpolation rule
+exists because a sparse command-vector table must not invent a value *between*
+its cells; a common mode is by construction not a function of the cell, so
+applying it at an unvisited goal is applying a constant, not interpolating a
+field. It is also exactly what layer 2 has always done with its own common mode:
+the session trim applies at every goal, whether or not the map has a node there.
+**The tradeoff, accepted and recorded rather than hidden**: at a goal far outside
+the fitted region this extrapolates a constant measured inside it. Bounded,
+evidence-gated, and written to every record as `ilc_session_aim_rad` so the
+assumption is visible in the corpus rather than implicit.
+
+**2. There is no CUSUM and no freeze-never-zero here, and that is a property
+rather than an omission.** Both defend an *updating* estimator: CUSUM detects a
+shift in a stream, and freeze-never-zero exists so a guard trip cannot inject an
+authority-sized step into the next commanded pose. This component is
+**seeded-and-held** — there is no live-admissible observable to update it from
+(`land_err_mm` is mined offline; both live candidates are D5-refused, and
+`toss_trim`'s `no_mocap_fit` refusal is the same wall) — so its value is constant
+for the goal's whole life by construction, which is the property
+freeze-never-zero is trying to approximate. Porting them anyway would be dead
+code wearing a safety argument. A test pins the absence of any
+observe/update/write path so this cannot be quietly "fixed" into an unvalidated
+live loop.
+
+### C5, closed with the composition
+
+A D7 clamp hit refuses layer 3 **whole**, and "whole" now means **both**
+components. Dropping one and keeping the other would fly a correction no fit ever
+solved for: the cells are referenced *to* the anchor, so `spatial` alone is a
+residual about a baseline the machine is not applying, and `session` alone is a
+baseline with its residual removed. Half a decomposition is not a smaller
+correction — it is a different one, which is risk 5's argument exactly.
+
+`ilc_aim_rad` stays layer 3's **TOTAL** and the two parts ride beside it as
+`ilc_spatial_aim_rad` / `ilc_session_aim_rad` (plus `ilc_session_applied`,
+`ilc_session_reason`, `ilc_session_n`). Deliberately a split rather than a
+replacement: everything that subtracts what layer 3 applied — `toss_trim`'s C4
+subtraction above all — needs the sum, and a consumer that had to add two fields
+to get it would eventually add only one.
+
+### What is NOT done, and why it is evidence rather than effort
+
+**The FIT half of build step 2b is open**: `ilc_fit_lib` / `ilc_fit.py` computing
+`mean_over_anchor_visits(û(anchor))`, emitting anchor-referenced cells, and
+stamping the anchor's `n` and `se_rad`. The anchor mean is a **between-session**
+shrinkage mean whose `n` counts `level()` draws, so writing it means choosing
+"which cell is the anchor" and "what counts as a visit" — against a corpus that
+does not exist. C6: all 19 rows are pre-FW-14 bridge, clamped hand drive, tier
+8a, and `partition_key` refuses to pool them with a fresh capture. Choosing those
+definitions now against no data is precisely the plan-author hedge the
+empirical-probe rule says to resist.
+
+What the apply half buys in the meantime is the interface the fit will be written
+against, and a machine that cannot regress: an artifact with no `anchor` block is
+a *declaration* that its cells are not anchor-referenced, and composes to exactly
+zero — the pre-C1 machine, bit for bit, pinned by test.
+
+### Also in this commit: a stale-doc gap in the landed C2 work
+
+`ILC_SPEED_AUTHORITY`'s own docstring still carried the falsified Gate-1 rail
+argument — *"neither rail is reachable anywhere in the sequencer's [0.55, 1.10] s
+flight-time band"* — while the module docstring above it had been corrected to
+say the opposite. The constant is where the module docstring sends a reader for
+"the whole argument", so the one place that mattered most was the one still
+wrong. Rewritten to record the demotion (ceiling, not authority), the two
+premises that moved, and the measured T-dependent band, with the falsified
+sentence left struck rather than deleted so a reader who remembers it learns why
+it stopped being true.
+
+### Verification — Phase F
+
+- `pytest tests/ros/test_toss_ilc_node.py tests/motion/test_toss_ilc.py
+  tests/motion/test_toss_record.py tests/ros/test_toss_trim_node.py
+  tests/motion/test_toss_trim.py tests/motion/test_ilc_fit.py
+  tests/ros/test_toss_calibration.py -q -p no:randomly`, run 2026-08-22:
+  **413 passed, 13 skipped in 34.80 s**.
+- `./run_tests.sh`, run 2026-08-22: **5606 passed, 13 skipped in 241.89 s**
+  (parallel 245 s, serial phase empty, total 254 s, `RESULT: PASS`).
+
+  The run before it failed one test — `tests/ros/test_teensy_bridge_node_coldstart.py::
+  test_reconnect_rereads_cold_start_state` — and it is recorded rather than
+  quietly re-run, because a failure in the gate is signal until it is shown not
+  to be. It is a **load flake**, not a regression: the test drives a UDP relay
+  round-trip whose own docstring notes that *"first-call socket warmup in a cold
+  test process can exceed the 0.5 s await"*, then waits on a daemon thread
+  through `_wait_until` polls — three timing dependencies, on a Jetson running
+  four xdist workers. Scoped rerun immediately afterwards:
+  `pytest tests/ros/test_teensy_bridge_node_coldstart.py -q -p no:randomly`,
+  2026-08-22, **26 passed in 7.22 s**. Nothing in this phase's diff reaches the
+  bridge path (`motion/toss_ilc.py`, `reload_coordinator_node`'s toss-aim seam,
+  `toss_record`'s field list). Per the house rule the response is a scoped rerun,
+  never a widened tolerance.
+- `./run_tests.sh --full` (every tier, `nightly` included), run 2026-08-22:
+  **RESULT: PASS** — parallel 525 s (rc=0) + serial 46 s (9 passed, rc=0),
+  total 571 s. Run at the ladder-step closure per the CLAUDE.md rule, even
+  though this phase touches nothing under `controller/` or `sim/`: the point of
+  the full tier is to see the paths the default gate deselects, and "my diff
+  shouldn't reach them" is the belief it exists to check.

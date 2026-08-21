@@ -506,8 +506,11 @@ def test_the_disabled_cycle_is_BIT_IDENTICAL_to_the_PRE_PHASE_2_arithmetic(
         live = dict(node._toss_aim)
     expected = _pre_phase2_aim_block(node, _POSE, _FLIGHT)
 
-    # Every key the pre-Phase-2 block carried must be bit-identical. The three
-    # layer-3 keys are additive and are asserted to be the inert values instead.
+    # Every key the pre-Phase-2 block carried must be bit-identical. The layer-3
+    # keys are additive and are asserted to be the inert values instead — an
+    # explicit list rather than "the ones the oracle happens not to have",
+    # because the comparison loop above iterates the ORACLE's keys and a new
+    # layer-3 key would otherwise be checked by nothing at all.
     for key, want in sorted(expected.items()):
         assert live[key] == want, (key, live[key], want)
     assert live['offset_mm'] != (0.0, 0.0), 'the composition path must have run'
@@ -517,6 +520,20 @@ def test_the_disabled_cycle_is_BIT_IDENTICAL_to_the_PRE_PHASE_2_arithmetic(
     assert live['ilc_vel_trim'] == 0.0
     assert live['ilc_applied'] is False
     assert live['ilc_refused'] == ''
+    # The C1 session component's keys (2026-08-21). Inert on this path for a
+    # reason worth stating: the flag is OFF, and the flag has to withhold the
+    # WHOLE layer — a build that gated only the cell lookup would command a
+    # learned common mode with the feature disabled.
+    assert live['ilc_spatial_aim_rad'] == (0.0, 0.0)
+    assert live['ilc_session_aim_rad'] == (0.0, 0.0)
+    assert live['ilc_session_applied'] is False
+    assert live['ilc_session_n'] == 0
+    assert set(live) - set(expected) == {
+        'ilc_aim_rad', 'ilc_spatial_aim_rad', 'ilc_session_aim_rad',
+        'ilc_session_applied', 'ilc_session_reason', 'ilc_session_n',
+        'ilc_offset_mm', 'ilc_vel_trim', 'ilc_enabled', 'ilc_loaded',
+        'ilc_applied', 'ilc_version', 'ilc_key', 'ilc_hit', 'ilc_refused',
+    }, 'a NEW block key must be added to the oracle or to this inert list'
 
 
 def test_an_absent_artifact_is_silent(monkeypatch, tmp_path):
@@ -1267,3 +1284,311 @@ def test_the_trim_keeps_OBSERVING_while_it_commands_nothing(monkeypatch,
     # converging trim as a converging CORRECTION goes looking for it in the
     # commanded aim and finds nothing.
     assert node._toss_trim.applied_flag is False
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 9. C1 — the session common mode at the apply seam, and C5's composition
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Owner decision 2 of the 2026-08-21 fold-in. The loader's half (schema, bounds,
+# the transposed evidence gate) is in `tests/motion/test_toss_ilc.py` section 9;
+# this section owns what only the NODE can be asked — that the two layer-3
+# components COMPOSE, that a D7 clamp hit drops BOTH, that the common mode is not
+# keyed on a cell hit, and that it dies with the goal.
+
+_ANCHOR = {'aim_rad': [math.radians(0.55), math.radians(-0.24)], 'n': 7,
+           'se_rad': [0.0005, 0.0005]}
+
+
+def _anchored(**over):
+    """`_ilc_doc` plus an anchor that CLEARS the evidence gate.
+
+    9.6 mrad at n = 7 — the measured per-cell |aim| is 9.1-10.5 mrad, so this is
+    the real operating magnitude rather than a number chosen to pass.
+    """
+    doc = _ilc_doc(**over)
+    doc['anchor'] = dict(_ANCHOR)
+    return doc
+
+
+def _goal(node, monkeypatch, goal_id='g1', **kw):
+    """Start a GOAL the way production does — open the record context,
+    `_toss_trim_begin` (which seeds the layer-3 session component), then build
+    one cycle.
+
+    Going through the real begin hook matters: it is the single place the
+    component is created, and a test that hand-installed one would pass on a
+    build where the hook had been dropped.
+    """
+    node._open_toss_record(action='toss', goal_id=goal_id, cycle_index=1,
+                           catch_pose=kw.get('pose', _POSE), throw_delay=5.0,
+                           vel_scale=0.9, raw_goal={},
+                           flight=kw.get('flight', _FLIGHT))
+    node._toss_trim_begin(goal_id=goal_id)
+    return _build(node, monkeypatch, **kw)
+
+
+def test_the_commanded_aim_is_the_SUM_of_BOTH_layer_3_components(monkeypatch,
+                                                                  tmp_path):
+    """**C5's composition, and the arithmetic C1 rests on.**
+
+    ``clamp_total_aim(map + ilc_spatial + ilc_session)``, and the record carries
+    the total plus its two parts. The total is what every consumer that subtracts
+    what layer 3 applied must read — ``toss_trim.ilc_aim_rad``'s C4 subtraction
+    above all — so it stays ``ilc_aim_rad`` and the split rides beside it.
+
+    Both parts are non-zero and DIFFERENT here on purpose: equal parts, or a zero
+    part, would let a build that dropped one of them pass.
+    """
+    node = _node(monkeypatch, tmp_path, ilc_doc=None, enabled=True)
+    _reload_ilc(node, tmp_path, _anchored())
+    _goal(node, monkeypatch)
+    with node._lock:
+        aim = dict(node._toss_aim)
+
+    spatial = aim['ilc_spatial_aim_rad']
+    session = aim['ilc_session_aim_rad']
+    assert spatial != (0.0, 0.0) and session != (0.0, 0.0)
+    assert spatial != session
+    assert aim['ilc_session_applied'] is True
+    assert aim['ilc_session_reason'] == toss_ilc.SESSION_APPLIED
+    assert aim['ilc_session_n'] == _ANCHOR['n']
+
+    for i in (0, 1):
+        assert aim['ilc_aim_rad'][i] == pytest.approx(
+            spatial[i] + session[i], abs=1e-15)
+        # No map in this fixture, so the commanded total IS layer 3's total.
+        assert aim['aim_rad'][i] == pytest.approx(aim['ilc_aim_rad'][i],
+                                                  abs=1e-15)
+    # ... and the record carries all three, so a corpus can attribute the aim.
+    row = _record(node)
+    assert row['ilc_aim_rad'] == [pytest.approx(v) for v in aim['ilc_aim_rad']]
+    assert row['ilc_spatial_aim_rad'] == [pytest.approx(v) for v in spatial]
+    assert row['ilc_session_aim_rad'] == [pytest.approx(v) for v in session]
+    assert row['ilc_session_applied'] is True
+    assert row['ilc_session_n'] == _ANCHOR['n']
+
+
+def test_the_session_common_mode_applies_on_a_cell_MISS(monkeypatch, tmp_path):
+    """**The asymmetry that is the whole point of splitting the two.**
+
+    A miss contributes exactly zero SPATIAL residual — ``toss_ilc.lookup``
+    interpolates nothing, and that rule is untouched. It does NOT zero the common
+    mode.
+
+    Root cause for the difference: the no-interpolation rule exists because a
+    sparse command-vector table must not invent a value BETWEEN its cells. The
+    common mode is by construction not a function of the cell — it measured
+    consistent at 9.1-10.5 mrad across all three goal cells — so applying it at an
+    unvisited goal is applying a constant, not interpolating a field. It is also
+    exactly what layer 2 has always done with its own common mode: the session
+    trim applies at every goal, whether or not the map has a node there.
+
+    The tradeoff, accepted and recorded rather than hidden: at a goal far outside
+    the fitted region this extrapolates a constant measured inside it. It is
+    bounded by ``ILC_AIM_MAX_RAD``, gated on evidence, and written to every record
+    as ``ilc_session_aim_rad`` so the assumption is visible in the corpus.
+    """
+    node = _node(monkeypatch, tmp_path, ilc_doc=None, enabled=True)
+    _reload_ilc(node, tmp_path, _anchored(key=[300.0, 300.0, 170.0, 0.9]))
+    _goal(node, monkeypatch)
+    with node._lock:
+        aim = dict(node._toss_aim)
+    assert aim['ilc_hit'] is False
+    assert aim['ilc_spatial_aim_rad'] == (0.0, 0.0)
+    assert aim['ilc_session_applied'] is True
+    assert aim['ilc_session_aim_rad'] != (0.0, 0.0)
+    assert aim['ilc_aim_rad'] == aim['ilc_session_aim_rad']
+    # The velocity trim is per CELL and stays exactly zero on a miss: the common
+    # mode is an AIM quantity — a level() draw is an orientation, and it does not
+    # touch release speed.
+    assert aim['ilc_vel_trim'] == 0.0
+
+
+def test_a_D7_clamp_hit_drops_BOTH_layer_3_components(monkeypatch, tmp_path):
+    """**Drop-the-whole-layer, and "whole" means both parts.**
+
+    Dropping only the spatial residual and keeping the common mode (or the
+    reverse) would fly a correction no fit ever solved for: the cells are
+    referenced TO the anchor, so ``spatial`` alone is a residual about a baseline
+    the machine is not applying, and ``session`` alone is a baseline with its
+    residual removed. Half a decomposition is not a smaller correction, it is a
+    different one — which is the same argument that makes a TRUNCATED correction
+    a refusal rather than a smaller step (risk 5).
+    """
+    cal = _cal_doc(toss_cal.TOTAL_MAX_RAD * 0.95, 0.0)
+    node = _node(monkeypatch, tmp_path, cal_doc=cal, ilc_doc=None, enabled=True)
+    doc = _anchored(aim_rx=math.radians(0.3), aim_ry=0.0, dv=0.0)
+    doc['requires'] = dict(doc['requires'],
+                           toss_cal_version=_live_cal_version(node))
+    _reload_ilc(node, tmp_path, doc)
+    _goal(node, monkeypatch)
+    with node._lock:
+        aim = dict(node._toss_aim)
+
+    assert aim['ilc_refused'] == 'total_aim'
+    assert aim['ilc_aim_rad'] == (0.0, 0.0)
+    assert aim['ilc_spatial_aim_rad'] == (0.0, 0.0)
+    assert aim['ilc_session_aim_rad'] == (0.0, 0.0)
+    assert aim['ilc_session_applied'] is False
+    # The goal still flies the MAP aim, unchanged and unclamped — layer 3 is a
+    # refinement and never a gate.
+    assert aim['aim_rad'][0] == pytest.approx(toss_cal.TOTAL_MAX_RAD * 0.95)
+    assert aim['clamp_hits'] == []
+    # ... and the record says zero, so the next fit sees what actually flew.
+    row = _record(node)
+    assert row['ilc_aim_rad'] == [0.0, 0.0]
+    assert row['ilc_spatial_aim_rad'] == [0.0, 0.0]
+    assert row['ilc_session_aim_rad'] == [0.0, 0.0]
+
+
+def test_a_DORMANT_artifact_contributes_NO_session_prior(monkeypatch, tmp_path):
+    """The prior is gated by the SAME dormancy verdict the cells are, decided
+    once and in one place.
+
+    Root cause, and it is layer 2's own audit fix of 2026-08-11 one layer up: a
+    prior carried in from an artifact fitted under a different levelling layer is
+    the D3 double-count arriving through the back door, with none of the fence's
+    warning. "I cannot verify what is underneath me" is not "the right thing is
+    underneath me".
+    """
+    node = _node(monkeypatch, tmp_path, ilc_doc=_anchored(tilt_version='other'),
+                 enabled=True)
+    _goal(node, monkeypatch)
+    with node._lock:
+        aim = dict(node._toss_aim)
+    assert aim['ilc_applied'] is False
+    assert aim['ilc_session_aim_rad'] == (0.0, 0.0)
+    assert aim['ilc_session_applied'] is False
+    assert aim['aim_rad'] == (0.0, 0.0)
+
+
+def test_the_flag_withholds_the_session_prior_as_well_as_the_cells(monkeypatch,
+                                                                    tmp_path):
+    """``JB_OP_TOSS_ILC_ENABLED`` off must withhold the WHOLE layer. A build
+    that gated only the cell lookup would command a learned correction with the
+    feature flag off, which is the one thing the flag exists to make
+    impossible."""
+    node = _node(monkeypatch, tmp_path, ilc_doc=_anchored(), enabled=False)
+    _goal(node, monkeypatch)
+    with node._lock:
+        aim = dict(node._toss_aim)
+    assert aim['ilc_enabled'] is False
+    assert aim['ilc_session_aim_rad'] == (0.0, 0.0)
+    assert aim['ilc_aim_rad'] == (0.0, 0.0)
+    assert aim['aim_rad'] == (0.0, 0.0)
+
+
+def test_the_session_component_is_DISCARDED_at_goal_end(monkeypatch, tmp_path):
+    """RAM only, one per goal. ``_toss_trim_end`` drops it — and drops it FIRST,
+    before the trim's best-effort proposal write, so a full disk cannot leave a
+    stale common mode alive into the next goal.
+
+    A component that survived its goal would be applying one sitting's ``level()``
+    draw to a sitting that never took it, which is C1 with the persistence moved
+    from the file into the process.
+    """
+    node = _node(monkeypatch, tmp_path, ilc_doc=_anchored(), enabled=True)
+    node._toss_trim_begin(goal_id='g1')
+    with node._lock:
+        first = node._toss_ilc_session
+    assert first is not None and first.applied is True
+
+    node._toss_trim_end()
+    with node._lock:
+        assert node._toss_ilc_session is None
+
+    # A new goal seeds a FRESH one from the artifact — never the old object.
+    node._toss_trim_begin(goal_id='g2')
+    with node._lock:
+        second = node._toss_ilc_session
+    assert second is not None and second is not first
+    assert second.aim() == first.aim()
+
+
+def test_a_session_level_draw_never_reaches_a_PERSISTED_cell(monkeypatch,
+                                                              tmp_path):
+    """**THE C1 gate, in the shape the build ladder asks for.**
+
+    Two goals in one node — the stand-in for two sessions, since the component's
+    lifetime IS the goal — with the persisted artifact untouched between them.
+    Whatever the common mode commands, it commands from the anchor block and the
+    cells are byte-identical before and after. There is no path from an applied
+    common mode back into a cell, because there is no write path at all.
+    """
+    node = _node(monkeypatch, tmp_path, ilc_doc=_anchored(), enabled=True)
+    with node._lock:
+        before = dict(node._toss_ilc.cells)
+        version = node._toss_ilc_version
+
+    seen = []
+    for goal_id in ('g1', 'g2'):
+        _goal(node, monkeypatch, goal_id=goal_id)
+        with node._lock:
+            seen.append(dict(node._toss_aim)['ilc_session_aim_rad'])
+        node._toss_trim_end()
+
+    assert seen[0] != (0.0, 0.0) and seen[0] == seen[1], (
+        'the prior is deterministic — a difference here would mean the '
+        'component had learnt something, which it has no path to do')
+    with node._lock:
+        assert dict(node._toss_ilc.cells) == before
+        assert node._toss_ilc_version == version
+    # ... and the commanded common mode is nowhere in any persisted cell.
+    for correction in before.values():
+        assert correction.aim_rad != seen[0]
+
+
+def test_a_thin_anchor_leaves_the_cells_commanding_alone(monkeypatch, tmp_path):
+    """The gate refusing the prior must not refuse the SPATIAL residual with it.
+
+    They are separate evidence: the cells were fitted from admitted tosses at
+    that goal, the anchor from between-session repeats, and a thin anchor says
+    nothing about the cells. Coupling them would make a fresh machine — which by
+    definition has one session of anchor evidence — command no correction at all.
+    """
+    doc = _anchored()
+    doc['anchor'] = dict(_ANCHOR, n=1)
+    node = _node(monkeypatch, tmp_path, ilc_doc=doc, enabled=True)
+    _goal(node, monkeypatch)
+    with node._lock:
+        aim = dict(node._toss_aim)
+    assert aim['ilc_session_aim_rad'] == (0.0, 0.0)
+    assert aim['ilc_session_reason'] == toss_ilc.SESSION_INSUFFICIENT_EVIDENCE
+    assert aim['ilc_session_n'] == 1
+    assert aim['ilc_spatial_aim_rad'] != (0.0, 0.0)
+    assert aim['ilc_aim_rad'] == aim['ilc_spatial_aim_rad']
+
+
+def test_an_artifact_with_NO_anchor_is_the_pre_C1_machine_bit_for_bit(
+        monkeypatch, tmp_path):
+    """Absent anchor ⇒ zero session component ⇒ the composition is exactly what
+    it was before C1 landed. Asserted against a live goal rather than by
+    inspection, because "adds zero" and "is not in the expression" have to be the
+    same thing here and only the arithmetic can say so."""
+    node = _node(monkeypatch, tmp_path, ilc_doc=_ilc_doc(), enabled=True)
+    _goal(node, monkeypatch)
+    with node._lock:
+        aim = dict(node._toss_aim)
+    assert aim['ilc_session_aim_rad'] == (0.0, 0.0)
+    assert aim['ilc_session_reason'] == toss_ilc.SESSION_NO_ANCHOR
+    assert aim['ilc_aim_rad'] == aim['ilc_spatial_aim_rad']
+    assert aim['ilc_aim_rad'] != (0.0, 0.0), 'the cell arm must have run'
+
+
+def test_the_session_component_is_seeded_in_exactly_one_scope():
+    """D4's manifest shape, applied to the C1 component: it is constructed in ONE
+    place (``_toss_ilc_session_begin``) and read in ONE place
+    (``_toss_aim_for_goal``).
+
+    Two construction sites is how the two per-goal RAM components get out of
+    step — one goal starts a trim and not a common mode — and two read sites is
+    how a goal ends up commanding two different values of a quantity that is
+    defined to be constant for its whole life.
+    """
+    constructs = _calls_in_package({'toss_ilc.IlcSessionCommonMode'})
+    assert sorted({scope for _f, scope, _c in constructs}) == [
+        '_toss_ilc_session_begin'], constructs
+    reads = _calls_in_package({'session.aim'})
+    assert sorted({scope for _f, scope, _c in reads}) == [
+        '_toss_aim_for_goal'], reads

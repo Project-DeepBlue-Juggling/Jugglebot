@@ -1069,3 +1069,340 @@ def test_a_SEED_the_real_gates_refuse_is_never_accumulated_onto(tmp_path,
     assert 'authority' in message, message
     assert not path.exists(), 'a refused write must leave NOTHING on disk'
     assert not path.exists()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 9. C1 — the anchor prior and the session-local common mode
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Owner decision 2 of the 2026-08-21 ILC-primary fold-in. The failure being
+# closed is measured, not hypothetical: `level()` is one int16 SCL3300 sample
+# with 1.2-1.7 mrad/axis of session-to-session scatter, D3 says a re-`level`
+# deliberately does NOT invalidate a persisted map, and the measured per-cell
+# |aim| is 9.1-10.5 mrad. That is 11-19 % of every persisted cell being one
+# sitting's inclinometer noise, frozen forever and re-applied on every future
+# session that never took that draw -- and none of layer 3's four provenance
+# keys can see a re-`level`, so the fence has to be structural.
+#
+# The node's half (composition, the D7 refusal, the goal-end discard) is in
+# `tests/ros/test_toss_ilc_node.py` section 9.
+
+
+def _anchor(rx=math.radians(0.55), ry=math.radians(-0.24), n=7,
+            se=(0.0005, 0.0005)):
+    """An anchor that CLEARS the gate: 9.6 mrad at n=7, far outside both the
+    deadband and 2.5 se. The magnitude is the measured one (9.1-10.5 mrad), so a
+    fixture that stopped clearing the gate would be telling us something real."""
+    return toss_ilc.IlcAnchor(aim_rad=(rx, ry), n=int(n),
+                              se_rad=(float(se[0]), float(se[1])))
+
+
+def _anchor_doc(anchor=None, cells=None, **over):
+    """`_doc` plus an `anchor` block, written the way `build_document` writes it."""
+    doc = _doc(cells=cells, **over)
+    a = _anchor() if anchor is None else anchor
+    doc['anchor'] = {'aim_rad': [a.aim_rad[0], a.aim_rad[1]], 'n': a.n,
+                     'se_rad': [a.se_rad[0], a.se_rad[1]]}
+    return doc
+
+
+def test_the_anchor_gate_constants_are_the_session_trims_own():
+    """The gate is TRANSPOSED from `toss_trim`, not invented here, and the three
+    constants are pinned equal to it — the same restate-don't-import shape
+    ``ILC_AIM_MAX_RAD`` follows for the same reason (a second importer of a
+    module is a second owner of it).
+
+    That matters beyond tidiness: each of the three carries a MEASUREMENT.
+    ``N_MIN_APPLY = 6`` came from a 300-400 session probe that found the design's
+    ``n >= 3`` gate let 45.7 % of ZERO-bias sessions command a non-zero
+    correction; ``SE_GATE = 2.5`` was chosen on the measured expected residual
+    aim error in mm rather than on a false-action rate; ``DEADBAND_RAD`` is
+    0.10 deg = 5.46 mm, ~1/6 of the capture radius. Re-deriving any of them here
+    would be re-deriving a probe nobody re-ran.
+    """
+    assert toss_ilc.ANCHOR_N_MIN == toss_trim.N_MIN_APPLY == 6
+    assert toss_ilc.ANCHOR_SE_GATE == toss_trim.SE_GATE == 2.5
+    assert toss_ilc.ANCHOR_DEADBAND_RAD == toss_trim.DEADBAND_RAD
+    assert toss_ilc.ANCHOR_DEADBAND_RAD == math.radians(0.10)
+
+
+def test_an_absent_anchor_block_is_a_DECLARATION_and_composes_to_zero():
+    """No ``anchor`` block means "this artifact's cells are not
+    anchor-referenced", which is the pre-C1 shape, and it must compose to
+    EXACTLY zero rather than to a small number.
+
+    It is legal rather than refused on purpose: no ``config/toss_ilc.yaml`` has
+    ever existed in either tree, so there is no installed base to protect — the
+    thing being protected is the fit tool's ability to write a usable artifact
+    before it has learnt to compute an anchor. The reason is NAMED
+    (``no_anchor``, not ``no_artifact``), because "layer 3 is off" and "layer 3
+    is on but this file predates C1" are different operator situations.
+    """
+    parsed = parse_toss_ilc(_doc())
+    assert parsed.anchor is None
+    session = toss_ilc.IlcSessionCommonMode(parsed)
+    assert session.aim() == (0.0, 0.0)
+    assert session.applied is False
+    assert session.reason == toss_ilc.SESSION_NO_ANCHOR
+    assert session.n == 0
+    # ... and no artifact at all is a THIRD, distinguishable state.
+    assert toss_ilc.IlcSessionCommonMode(None).reason == \
+        toss_ilc.SESSION_NO_ARTIFACT
+
+
+@pytest.mark.parametrize('drop', ['aim_rad', 'n', 'se_rad'])
+def test_a_present_anchor_block_is_ALL_OR_NOTHING(drop):
+    """Declare an anchor and you declare its evidence. The gate that decides
+    whether to apply the prior is made of all three fields, so an anchor without
+    its ``n`` or its ``se_rad`` is a number this loader could only apply on
+    faith — and the module's posture everywhere else is to refuse what it cannot
+    check rather than to guess a permissive default."""
+    doc = _anchor_doc()
+    del doc['anchor'][drop]
+    with pytest.raises(TossIlcError) as excinfo:
+        parse_toss_ilc(doc)
+    assert 'anchor.{}'.format(drop) in str(excinfo.value)
+
+
+def test_the_anchor_n_counts_SESSIONS_not_tosses():
+    """``n`` is independent evidence units — ``level()`` draws — so it must be an
+    integer count and a float is refused by name.
+
+    The distinction is the whole gate: sixty tosses in one sitting are ONE draw,
+    and a gate keyed on the toss count would read that as overwhelming evidence
+    for a number whose entire error budget is between-session. A schema that
+    accepted ``n: 60.0`` invites exactly that misreading.
+    """
+    doc = _anchor_doc()
+    doc['anchor']['n'] = 7.0
+    with pytest.raises(TossIlcError) as excinfo:
+        parse_toss_ilc(doc)
+    message = str(excinfo.value)
+    assert 'INDEPENDENT' in message and 'sessions' in message, message
+    doc['anchor']['n'] = -1
+    with pytest.raises(TossIlcError):
+        parse_toss_ilc(doc)
+
+
+def test_the_anchor_is_bounded_by_the_SAME_authority_the_cells_are():
+    """A prior past 1.0 deg is a fit fault for exactly the reasons a cell past it
+    is, so it is refused where it is written — not clamped. A truncated prior is
+    not the prior that was fitted."""
+    over = ILC_AIM_MAX_RAD * 1.01
+    with pytest.raises(TossIlcError) as excinfo:
+        parse_toss_ilc(_anchor_doc(_anchor(rx=over, ry=0.0)))
+    assert 'authority' in str(excinfo.value)
+    # Exactly AT the authority is admitted: the bound is a refusal above it, not
+    # a strict inequality that would make the last legal value illegal.
+    parse_toss_ilc(_anchor_doc(_anchor(rx=ILC_AIM_MAX_RAD, ry=0.0),
+                               cells=[{'key': [0.0, 150.0, 170.0, 0.9],
+                                       'aim_rx': 0.0, 'aim_ry': 0.0,
+                                       'event_vel_trim': 0.0}]))
+
+
+def test_cell_PLUS_anchor_is_bounded_and_that_is_a_THIRD_check():
+    """THE composed bound, and the one neither half can see.
+
+    ``_parse_cell`` bounds the spatial residual and ``_parse_anchor`` bounds the
+    common mode, but layer 3 APPLIES their sum, and two separately-legal halves
+    sum to 2.0 deg. This is the same argument D7 makes for clamping the total at
+    the node's apply seam rather than at any layer's own update, one level down —
+    and it is checked at PARSE because that is where both numbers first exist
+    together.
+    """
+    half = ILC_AIM_MAX_RAD * 0.6
+    cells = [{'key': [0.0, 150.0, 170.0, 0.9],
+              'aim_rx': half, 'aim_ry': 0.0, 'event_vel_trim': 0.0}]
+    doc = _anchor_doc(_anchor(rx=half, ry=0.0), cells=cells)
+    # Each half is legal on its own ...
+    assert half < ILC_AIM_MAX_RAD
+    # ... and the SUM is what the machine would command.
+    with pytest.raises(TossIlcError) as excinfo:
+        parse_toss_ilc(doc)
+    message = str(excinfo.value)
+    assert 'plus anchor' in message, message
+    assert 'their SUM is what layer 3 applies' in message, message
+
+
+def test_a_THIN_anchor_commands_nothing():
+    """Fewer than ``ANCHOR_N_MIN`` independent ``level()`` draws and the prior is
+    not applied at all.
+
+    Root cause, measured: the trim's own probe found a thin-evidence
+    significance gate let 45.7 % of ZERO-bias sessions command a non-zero
+    correction, because a single-look test re-evaluated as evidence trickles in
+    is a sequential multiple-comparison problem. Two sessions of scatter at
+    1.2-1.7 mrad/axis is enough to mint a confident-looking common mode out of
+    nothing.
+    """
+    for n in range(toss_ilc.ANCHOR_N_MIN):
+        parsed = parse_toss_ilc(_anchor_doc(_anchor(n=n)))
+        session = toss_ilc.IlcSessionCommonMode(parsed)
+        assert session.aim() == (0.0, 0.0), n
+        assert session.reason == toss_ilc.SESSION_INSUFFICIENT_EVIDENCE
+        assert session.n == n
+    # ... and exactly AT the gate it applies.
+    at = toss_ilc.IlcSessionCommonMode(
+        parse_toss_ilc(_anchor_doc(_anchor(n=toss_ilc.ANCHOR_N_MIN))))
+    assert at.applied is True
+    assert at.aim() != (0.0, 0.0)
+
+
+def test_the_SE_gate_is_PER_AXIS_and_zeroes_only_the_axis_it_refuses():
+    """Per axis, like the trim's, because the two axes carry independent
+    evidence: a significant ``rx`` must not be suppressed by an insignificant
+    ``ry``, and an insignificant ``ry`` must not ride along on ``rx``'s
+    significance.
+
+    A whole-vector gate would fail both ways at once, and the second direction is
+    the dangerous one — it commands an axis nothing measured.
+    """
+    aim = (math.radians(0.55), math.radians(0.05))
+    # ry's se is wide enough that 2.5*se swallows it; rx's is not.
+    se = (0.0005, math.radians(0.05) / toss_ilc.ANCHOR_SE_GATE * 1.01)
+    session = toss_ilc.IlcSessionCommonMode(
+        parse_toss_ilc(_anchor_doc(_anchor(rx=aim[0], ry=aim[1], se=se))))
+    assert session.applied is True
+    assert session.aim()[0] == pytest.approx(aim[0])
+    assert session.aim()[1] == 0.0, 'the insignificant axis must be zeroed'
+
+    # Both axes insignificant -> nothing at all, and the reason says so.
+    wide = (aim[0] / toss_ilc.ANCHOR_SE_GATE * 1.01,
+            aim[1] / toss_ilc.ANCHOR_SE_GATE * 1.01)
+    none = toss_ilc.IlcSessionCommonMode(
+        parse_toss_ilc(_anchor_doc(_anchor(rx=aim[0], ry=aim[1], se=wide))))
+    assert none.aim() == (0.0, 0.0)
+    assert none.reason == toss_ilc.SESSION_BELOW_SE_GATE
+
+
+def test_the_deadband_judges_what_SURVIVES_the_se_gate_not_the_raw_anchor():
+    """Ordering. The per-axis significance gate runs FIRST and zeroes the axes it
+    refuses; the deadband then judges the magnitude of what is left.
+
+    The other order lets a single significant axis drag an insignificant one over
+    the deadband on the hypotenuse — the vector clears 0.10 deg only because of a
+    component the evidence just refused.
+    """
+    small = math.radians(0.08)          # each axis alone is inside the deadband
+    assert small < toss_ilc.ANCHOR_DEADBAND_RAD
+    assert math.hypot(small, small) > toss_ilc.ANCHOR_DEADBAND_RAD
+    # ry insignificant, rx significant: what survives is (small, 0), which is
+    # INSIDE the deadband even though the raw pair's magnitude is outside it.
+    se = (0.0001, small / toss_ilc.ANCHOR_SE_GATE * 1.01)
+    session = toss_ilc.IlcSessionCommonMode(
+        parse_toss_ilc(_anchor_doc(_anchor(rx=small, ry=small, se=se))))
+    assert session.aim() == (0.0, 0.0)
+    assert session.reason == toss_ilc.SESSION_INSIDE_DEADBAND
+
+
+def test_an_anchor_inside_the_deadband_commands_nothing():
+    """0.10 deg = 5.46 mm at the reference geometry, ~1/6 of the capture radius.
+    Below it the loop churns the commanded pose for no measurable catch
+    benefit."""
+    tiny = toss_ilc.ANCHOR_DEADBAND_RAD * 0.5
+    session = toss_ilc.IlcSessionCommonMode(
+        parse_toss_ilc(_anchor_doc(_anchor(rx=tiny, ry=0.0, se=(0.0, 0.0)))))
+    assert session.aim() == (0.0, 0.0)
+    assert session.reason == toss_ilc.SESSION_INSIDE_DEADBAND
+
+
+def test_the_anchor_is_inside_the_artifact_VERSION_hash():
+    """The hash covers every number the machine ACTS ON — and all three anchor
+    fields are acted on, including the two that are never commanded. Editing
+    ``n`` from 5 to 6 turns a dormant prior into a live commanded correction
+    without touching a single aim value, so a version that did not move would be
+    reporting two materially different machines as the same one."""
+    base = artifact_version(_anchor_doc())
+    assert base != artifact_version(_doc()), 'adding an anchor must move it'
+    for field, value in (('n', 9), ('se_rad', [0.002, 0.002]),
+                         ('aim_rad', [0.001, 0.001])):
+        moved = _anchor_doc()
+        moved['anchor'][field] = value
+        assert artifact_version(moved) != base, field
+
+
+def test_the_session_component_is_SEEDED_AND_HELD_with_no_update_path():
+    """The honest limitation, pinned so it cannot be quietly "fixed" into an
+    unvalidated live loop.
+
+    There is no live-admissible observable to update this from: ``land_err_mm``
+    is mined offline and both live candidates (``catch_error_mm``,
+    ``BallState.landing_position``) are refused on their own merits by D5 —
+    ``toss_trim``'s ``no_mocap_fit`` refusal is the same wall, hit by the same
+    machine. So the component exposes no observe/update/write path at all, and
+    its value is constant for the goal's whole life by construction.
+
+    That constancy is also why there is no CUSUM and no freeze-never-zero here:
+    both are defences against an UPDATING estimator (a shift in a stream, and an
+    authority-sized step injected into the next commanded pose), and with no
+    update path there is no stream and no step. Porting them would be dead code
+    wearing a safety argument.
+    """
+    session = toss_ilc.IlcSessionCommonMode(parse_toss_ilc(_anchor_doc()))
+    first = session.aim()
+    for _ in range(5):
+        assert session.aim() == first
+    for name in ('observe', 'update', 'step', 'write', 'save', 'proposal'):
+        assert not hasattr(session, name), name
+
+
+def test_the_component_never_writes_and_the_cells_never_learn_the_common_mode():
+    """**THE C1 fence, stated as the property it guarantees.**
+
+    Seeding, gating and applying the prior must leave the persisted artifact
+    byte-identical — a session's ``level()`` draw is applied and then dropped, and
+    nothing about it reaches a cell. Two different session components built from
+    one artifact leave that artifact, its version and every cell unchanged.
+    """
+    parsed = parse_toss_ilc(_anchor_doc())
+    before_cells = dict(parsed.cells)
+    before_version = parsed.version
+    before_anchor = parsed.anchor
+
+    applied = toss_ilc.IlcSessionCommonMode(parsed, goal_id='goal-1')
+    assert applied.applied is True and applied.aim() != (0.0, 0.0)
+    refused = toss_ilc.IlcSessionCommonMode(parsed, goal_id='goal-2',
+                                            n_min=99)
+    assert refused.aim() == (0.0, 0.0)
+
+    assert parsed.cells == before_cells
+    assert parsed.version == before_version
+    assert parsed.anchor == before_anchor
+    # ... and the applied value is nowhere in any cell.
+    for correction in parsed.cells.values():
+        assert correction.aim_rad != applied.aim()
+
+
+def test_build_document_round_trips_an_anchor_and_subtracts_NOTHING():
+    """The writer lives in the production module so there is one schema, and it
+    does NOT re-reference its caller's cells: a writer that silently subtracted
+    the anchor would make ``cells`` mean one thing in the fit and another on
+    disk, which is the C1 double-count wearing the opposite hat."""
+    anchor = _anchor()
+    cells = [([0.0, 150.0, 170.0, 0.9], [0.0011, -0.0023, -0.1076])]
+    doc = toss_ilc.build_document(cells, tilt_map_version=_TILT_V,
+                                  toss_cal_version=_CAL_V,
+                                  date='2026-08-22', tool='test',
+                                  anchor=anchor)
+    parsed = parse_toss_ilc(doc)
+    assert parsed.anchor == anchor
+    key = goal_key(0.0, 150.0, 170.0, 0.9)
+    assert parsed.cells[key].aim_rx == pytest.approx(0.0011)
+    assert parsed.cells[key].aim_ry == pytest.approx(-0.0023)
+    # Omitting the anchor writes no block at all — absent is a declaration.
+    bare = toss_ilc.build_document(cells, tilt_map_version=_TILT_V,
+                                   toss_cal_version=_CAL_V,
+                                   date='2026-08-22', tool='test')
+    assert 'anchor' not in bare
+    assert parse_toss_ilc(bare).anchor is None
+
+
+def test_an_unknown_key_in_the_anchor_block_is_refused_by_name():
+    """Same rule the cells follow: a field this build does not understand may be
+    a field that changes what the others MEAN, and best-effort parsing it is a
+    silent command error."""
+    doc = _anchor_doc()
+    doc['anchor']['aim_mm'] = [1.0, 2.0]
+    with pytest.raises(TossIlcError) as excinfo:
+        parse_toss_ilc(doc)
+    assert 'aim_mm' in str(excinfo.value)

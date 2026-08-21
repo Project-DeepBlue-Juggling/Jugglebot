@@ -123,7 +123,10 @@ EXPECTED_FIELDS = (
     # calibration
     'map_aim_rad', 'trim_aim_rad', 'trim_monitor_aim_rad', 'trim_authority',
     'total_aim_rad', 'map_aim_mm_at_h',
-    'trim_aim_mm_at_h', 'ilc_aim_rad', 'ilc_vel_trim', 'speed_bias_applied',
+    'trim_aim_mm_at_h', 'ilc_aim_rad',
+    'ilc_spatial_aim_rad', 'ilc_session_aim_rad', 'ilc_session_applied',
+    'ilc_session_reason', 'ilc_session_n',
+    'ilc_vel_trim', 'speed_bias_applied',
     'timing_bias_applied_ms',
     'clamp_hits', 'trim_source_n', 'trim_state', 'trim_reset_reason',
     # dwell tilt (Layer 1.5)

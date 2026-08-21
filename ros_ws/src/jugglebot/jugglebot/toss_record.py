@@ -295,9 +295,34 @@ FIELDS: Tuple[Field, ...] = (
     # exactly (0, 0) / 0.0 — here. `total_aim_rad` already carries the sum, so
     # these two say how much of it layer 3 asked for AND GOT.
     Field('ilc_aim_rad', 'calibration', 'D', 'f2',
-          'layer 3: the ILC aim contribution APPLIED, rad. Explicit zeros when '
-          'the feature is off, the artifact is absent/dormant, the goal cell '
-          'missed, or the total-aim clamp REFUSED it'),
+          'layer 3: the TOTAL ILC aim contribution APPLIED, rad — spatial + '
+          'session. Explicit zeros when the feature is off, the artifact is '
+          'absent/dormant, the goal cell missed with no session common mode, or '
+          'the total-aim clamp REFUSED it'),
+    # The C1 split of the field above. ADDITIVE, so no schema bump (s 3.7 item
+    # 1), and deliberately a SPLIT rather than a replacement: everything that
+    # subtracts what layer 3 applied -- toss_trim.ilc_aim_rad's C4 subtraction
+    # first among them -- needs the SUM, and a consumer that had to add two
+    # fields to get it would eventually add only one.
+    Field('ilc_spatial_aim_rad', 'calibration', 'D', 'f2',
+          'layer 3a: the per-cell SPATIAL RESIDUAL applied, rad. Exactly zero '
+          'on a cell miss -- toss_ilc.lookup interpolates nothing'),
+    Field('ilc_session_aim_rad', 'calibration', 'D', 'f2',
+          'layer 3b: the SESSION-LOCAL common mode applied, rad (C1). RAM only, '
+          'seeded from the artifact anchor prior, discarded at goal end, and '
+          'NOT keyed on a cell hit -- a common mode is not a function of the '
+          'cell. This is the quantity a re-level() moves, kept out of every '
+          'persisted cell on purpose'),
+    Field('ilc_session_applied', 'calibration', 'D', 'b',
+          'layer 3b cleared its evidence gate and was commanded'),
+    Field('ilc_session_reason', 'calibration', 'D', 's',
+          'why layer 3b commanded nothing: no_artifact | no_anchor | '
+          'insufficient_evidence | below_se_gate | inside_deadband. Empty when '
+          'applied -- "commanded nothing" and "had nothing to command" are '
+          'different facts about a session'),
+    Field('ilc_session_n', 'calibration', 'D', 'i',
+          'independent evidence units (sessions, i.e. level() draws) behind the '
+          'anchor prior; 0 when there is none'),
     Field('ilc_vel_trim', 'calibration', 'D', 'f',
           'layer 3: the ILC event_vel trim APPLIED, k_v - 1. Explicit zero on '
           'every path above plus a validate_event_vel refusal'),

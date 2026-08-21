@@ -56,13 +56,22 @@ by ``toss_trim.release_latency_ms`` and by gate G-1.
 
 WHERE EACH BOUND IS ENFORCED, AND WHY THERE IS NO SECOND COPY OF THE D7 CLAMP
 -----------------------------------------------------------------------------
-* **aim** — bounded per cell at PARSE time (:data:`ILC_AIM_MAX_RAD`), and at
-  APPLY only through ``toss_cal.clamp_total_aim`` over ``map + ilc``, which is
-  D7's single enforcement point. This module deliberately contains no aim clamp
-  of its own: a second clamp is a second bound to drift, and the sum that
-  actually needs bounding exists only at the node's apply seam. (Layer 2 is no
-  longer in that sum — its aim estimator is MONITOR-ONLY since 2026-08-21,
+* **aim** — bounded at PARSE time per cell, on the anchor, and on their SUM
+  (:data:`ILC_AIM_MAX_RAD`), and at APPLY only through
+  ``toss_cal.clamp_total_aim`` over ``map + ilc``, which is D7's single
+  enforcement point. This module deliberately contains no aim clamp of its own: a
+  second clamp is a second bound to drift, and the sum that actually needs
+  bounding exists only at the node's apply seam. (Layer 2 is no longer in that
+  sum — its aim estimator is MONITOR-ONLY since 2026-08-21,
   ``toss_trim.AIM_AUTHORITY``, contradiction C4.)
+
+  Since 2026-08-21 layer 3's aim has **two components** and the node composes
+  both before that single clamp: the per-cell **spatial residual**
+  (:func:`lookup`) and the goal-local **common mode**
+  (:class:`IlcSessionCommonMode`, seeded from the artifact's :class:`IlcAnchor`).
+  A D7 clamp hit refuses **the whole layer**, both components together — see
+  ``reload_coordinator_node._toss_aim_for_goal``. Splitting the refusal would
+  desynchronise applied-u from recorded-u exactly as a truncation would.
 * **A clamp HIT at apply is a REFUSAL of the ILC contribution, not a
   truncation** — the node drops the whole ILC aim, WARNs, and re-composes
   ``map`` exactly as it would have without this layer. That mirrors
@@ -156,6 +165,9 @@ __all__ = [
     'REFUSED_CHANNELS',
     'ILC_AIM_MAX_RAD',
     'ILC_SPEED_AUTHORITY',
+    'ANCHOR_N_MIN',
+    'ANCHOR_SE_GATE',
+    'ANCHOR_DEADBAND_RAD',
     'POSE_CELL_MM',
     'POSE_Z_CELL_MM',
     'FLIGHT_TIME_CELL_S',
@@ -165,6 +177,14 @@ __all__ = [
     'TossIlcError',
     'IlcCorrection',
     'IlcLookup',
+    'IlcAnchor',
+    'IlcSessionCommonMode',
+    'SESSION_NO_ARTIFACT',
+    'SESSION_NO_ANCHOR',
+    'SESSION_INSUFFICIENT_EVIDENCE',
+    'SESSION_BELOW_SE_GATE',
+    'SESSION_INSIDE_DEADBAND',
+    'SESSION_APPLIED',
     'ZERO_CORRECTION',
     'TossIlc',
     'model_config_identity',
@@ -233,22 +253,65 @@ REFUSED_CHANNELS: Dict[str, str] = {
 #: silently truncated where it is applied.
 ILC_AIM_MAX_RAD = math.radians(1.0)
 
-#: THE ILC's own accumulated ``event_vel_trim`` authority, dimensionless
-#: (``k_v − 1``). **OWNER DECISION, 2026-08-13, Gate 1** — see
-#: ``plans/active/critical-point-ilc.md`` § "Gate 1 CLOSED" and
-#: ``tests/hardware/ilc_fit_lib.ILC_SPEED_AUTHORITY``, which carries the same
-#: number and the full rail sweep.
+#: THE ILC's ``event_vel_trim`` OUTER CEILING, dimensionless (``k_v − 1``).
+#: **Not the authority** — see the demotion below.
 #:
-#: Root cause, not appeal to the memo: the measured corpus requires
+#: *Origin*: owner decision 2026-08-13, Gate 1, as a flat ±0.15 authority. Root
+#: cause for the number itself, which is unchanged: the measured corpus requires
 #: ``event_vel_trim = −0.1076`` and two of three goal cells exceed ±0.10 on their
-#: own, so ``toss_trim.SPEED_AUTHORITY`` cannot carry this loop. Widening ±0.15
-#: is safe for three independent reasons: ``STROKE_TOP_REV`` is algebraically
-#: velocity-independent, so a speed trim cannot walk the hand into its end stop;
-#: ``validate_event_vel`` still gates every command at apply; and neither rail is
-#: reachable anywhere in the sequencer's [0.55, 1.10] s flight-time band
-#: (−15 % at T = 0.55 s is 2.30 m/s, 7.7× clear of the 0.3 m/s floor; +15 % at
-#: T = 1.10 s is 6.21 m/s, 1.13× inside the 7.0 m/s ceiling — the binding side).
+#: own, so ``toss_trim.SPEED_AUTHORITY`` cannot carry this loop.
+#:
+#: ⚠ **DEMOTED 2026-08-21 to a ceiling (contradiction C2).** Gate 1's safety
+#: argument for a *flat* ±0.15 rested on two premises that have both moved: the
+#: flight-time band is no longer the hand-picked [0.55, 1.10] s but the derived
+#: ``[0.4949, 1.1485] s`` (``throw_envelope.MIN/MAX_FLIGHT_TIME_S``), and the
+#: bridge's [0.3, 7.0] m/s wire band "bounds nothing physical". Measured against
+#: the gate that DOES bound the hardware — ``throw_envelope.evaluate``, contract
+#: C-HAND-3 — the admissible trim is strongly T-dependent: ``+0.043`` at
+#: T = 1.10 s, ``+0.000`` at the 1.1485 s ceiling (``DECEL_FF_HEADROOM``), and
+#: ``+0.000`` on the NEGATIVE side at T = 0.4949 s (``ARM_WINDOW``) — which is
+#: the R5-prime cadence target and the only direction the plant asks for. The
+#: Gate-1 claim "neither rail is reachable anywhere in the band" is **false on
+#: the current machine**, and that sentence is left here struck rather than
+#: deleted so a reader who remembers it learns why it stopped being true.
+#:
+#: THE authority is ``ilc_fit_lib.speed_authority_band(T, v)`` offline and
+#: ``reload_coordinator_node._ilc_vel_trim_refusal`` online. This constant is
+#: what PARSE time bounds a stored cell by, and parse time is deliberately not
+#: made T-dependent: a cell's key carries a *quantised* flight time, so the
+#: honest gate is the one at apply, holding the goal's real T.
 ILC_SPEED_AUTHORITY = 0.15
+
+#: Independent evidence units (sessions, i.e. ``level()`` draws) an artifact's
+#: :class:`IlcAnchor` must carry before :class:`IlcSessionCommonMode` will apply
+#: it. **Transposed from ``toss_trim.N_MIN_APPLY`` and pinned equal to it by
+#: test**, the same restate-don't-import shape :data:`ILC_AIM_MAX_RAD` follows.
+#:
+#: Root cause, and it is measured rather than chosen: the trim's own probe
+#: (2026-08-11, 300–400 synthetic sessions) found the design's ``n ≥ 3`` gate let
+#: **45.7 %** of ZERO-bias sessions command a non-zero correction, because a
+#: single-look significance test re-evaluated at every update is a sequential
+#: multiple-comparison problem. That failure mode transposes verbatim: an anchor
+#: pooled over two sessions is two ``level()`` draws, and 1.2–1.7 mrad of
+#: per-session scatter is enough to mint a confident-looking common mode out of
+#: nothing.
+ANCHOR_N_MIN = 6
+
+#: Standard errors the anchor must exceed, per axis, before it is applied.
+#: Transposed from ``toss_trim.SE_GATE`` and pinned equal to it by test — 2.5
+#: rather than the design's 2.0, chosen on the trim's measured expected residual
+#: aim error in mm (what the operator actually feels), not on a false-action rate.
+ANCHOR_SE_GATE = 2.5
+
+#: Below this magnitude the anchor is not worth commanding, rad. Transposed from
+#: ``toss_trim.DEADBAND_RAD`` (0.10° = 5.46 mm at the reference geometry, ~1/6 of
+#: the capture radius) and pinned equal to it by test.
+#:
+#: Applied to the MAGNITUDE of the gated anchor, and the ordering matters: the
+#: per-axis SE gate runs FIRST and zeroes the axes it refuses, then the deadband
+#: judges what survives. The other order would let a single significant axis drag
+#: an insignificant one over the deadband on the hypotenuse.
+ANCHOR_DEADBAND_RAD = math.radians(0.10)
 
 #: Artifact key: pose xy cell pitch, mm. **Deliberately the aim map's own grid**
 #: (``tilt_cal_grid.build_axis(DEFAULT_BOX_MM = 150, nodes = 3)`` gives
@@ -361,6 +424,50 @@ class IlcLookup(NamedTuple):
     hit: bool
 
 
+class IlcAnchor(NamedTuple):
+    """The artifact's persisted COMMON MODE, and the evidence behind it.
+
+    **This is contradiction C1's resolution, and it is a transposition of
+    ``toss-selftuning.md`` § 3.2 one layer up** — the same shape
+    ``toss_cal``'s own ``anchor.aim_rad`` already has, for the same reason.
+
+    Root cause. ``level()`` is one int16 SCL3300 sample with **1.2–1.7 mrad per
+    axis of session-to-session scatter**, and C-TOSS-CAL-1's D3 says a re-``level``
+    deliberately does *not* invalidate a map. Against the measured per-cell
+    ``|aim|`` of 9.1–10.5 mrad that is **11–19 % of every persisted cell** being
+    one session's noise draw — frozen forever, and re-applied on every future
+    session that never took that draw. None of layer 3's four provenance keys can
+    see a re-``level``, so the fence has to be structural: the common mode is
+    persisted HERE, as a prior, and the cells carry only the spatial residual
+    ``M(P) = û(P) − mean_over_anchor_visits(û(anchor))``.
+
+    **The prior is never applied directly.** It seeds
+    :class:`IlcSessionCommonMode`, which gates it and is discarded at goal end.
+    That is what makes it a prior rather than a fourth persistent correction: a
+    thin or insignificant anchor commands nothing, and no session's ``level()``
+    draw is ever frozen into a cell.
+
+    Why it is persisted at all, rather than the cells simply carrying less: the
+    measured ``|aim|`` is 9.1–10.5 mrad and is **consistent across all three goal
+    cells**, i.e. the correction ILC found is dominated by common mode. Persisting
+    only spatial residuals and applying nothing else would discard most of a
+    correction worth ~36–42 mm at the corpus operating point — against a 35 mm
+    capture radius, the difference between catching and not.
+
+    ``n`` counts INDEPENDENT evidence units — sessions, i.e. ``level()`` draws —
+    not admitted tosses. Sixty tosses in one sitting are one draw, and a gate
+    keyed on the toss count would read that as overwhelming evidence for a number
+    whose whole error budget is between-session.
+    """
+    aim_rad: Tuple[float, float]
+    n: int
+    se_rad: Tuple[float, float]
+
+    @property
+    def magnitude(self) -> float:
+        return math.hypot(self.aim_rad[0], self.aim_rad[1])
+
+
 def model_config_identity() -> str:
     """``sha256`` prefix over :data:`MODEL_CONFIG_KEYS` + the ballistic gravity.
 
@@ -436,6 +543,12 @@ class TossIlc:
     pose_cell_mm: float = POSE_CELL_MM
     pose_z_cell_mm: float = POSE_Z_CELL_MM
     flight_time_cell_s: float = FLIGHT_TIME_CELL_S
+    #: The persisted common mode (C1), or ``None`` when the document declares no
+    #: ``anchor`` block. ``None`` is not "zero anchor with no evidence" — it is
+    #: "this artifact does not say whether its cells are anchor-referenced", and
+    #: the session component treats it as no prior at all, which composes to
+    #: exactly the pre-C1 machine.
+    anchor: Optional[IlcAnchor] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
@@ -583,9 +696,15 @@ def artifact_version(data: Dict[str, Any]) -> str:
 
     **The hash covers every number the machine ACTS ON, and nothing else**: the
     schema ``version``, both ``units`` (they decide what the cells *mean*), the
-    whole ``key`` quantisation block (it decides which goal reads which cell) and
-    every cell's key and channel values. The provenance blocks (``captured``,
-    ``requires``, ``fit``) are excluded.
+    whole ``key`` quantisation block (it decides which goal reads which cell),
+    every cell's key and channel values, and the whole ``anchor`` block. The
+    provenance blocks (``captured``, ``requires``, ``fit``) are excluded.
+
+    The ``anchor`` block is inside the hash — including ``n`` and ``se_rad``,
+    which are not themselves commanded — because all three decide what layer 3
+    applies: the evidence gate is made of them, so editing ``n`` from 5 to 6 turns
+    a dormant prior into a live commanded correction without touching a single
+    aim value. ``toss_cal`` hashes its own ``anchor.aim_rad`` for the same reason.
 
     That rule is C-TOSS-CAL-1's own, restated: *two files whose applied numbers
     are identical report the same version; an edit to a single applied number
@@ -622,10 +741,74 @@ def artifact_version(data: Dict[str, Any]) -> str:
         {'version': data.get('version'),
          'units': _numeric(_block('units')),
          'key': _numeric(_block('key')),
+         'anchor': _numeric(_block('anchor')),
          'cells': sorted(cells, key=json.dumps)},
         sort_keys=True, default=str)
     digest = hashlib.sha256(payload.encode('utf-8')).hexdigest()[:8]
     return '{}-{}'.format(date or 'undated', digest)
+
+
+def _parse_anchor(doc: Dict[str, Any]) -> Optional[IlcAnchor]:
+    """The optional top-level ``anchor`` block → :class:`IlcAnchor` or ``None``.
+
+    **Absent is a declaration, not a default.** A document with no ``anchor``
+    block is one whose cells were fitted without the C1 referencing, so there is
+    no prior to seed and the session component contributes exactly zero — the
+    pre-C1 machine, bit for bit. That is why absence is silent and legal rather
+    than refused: no ``config/toss_ilc.yaml`` has ever existed, so there is no
+    installed base to break, and a fit tool that has not yet learnt to compute an
+    anchor must still be able to write a usable artifact.
+
+    **Present is all-or-nothing.** ``aim_rad``, ``n`` and ``se_rad`` are all
+    required together, because the gate that decides whether to apply the anchor
+    is made of all three. An anchor without its evidence is a number this loader
+    could only apply on faith, and the module's posture everywhere else is to
+    refuse what it cannot check rather than to guess a permissive default.
+    """
+    if 'anchor' not in doc:
+        return None
+    block = _mapping(doc.get('anchor'), "the 'anchor' block")
+
+    unknown = sorted(set(block) - {'aim_rad', 'n', 'se_rad'})
+    if unknown:
+        raise TossIlcError(
+            "the 'anchor' block carries the unknown key(s) {}; this build "
+            'understands aim_rad, n and se_rad'.format(unknown))
+
+    pairs = {}
+    for name in ('aim_rad', 'se_rad'):
+        raw = _require(block, name, 'anchor.{}'.format(name))
+        if not isinstance(raw, (list, tuple)) or len(raw) != 2:
+            raise TossIlcError(
+                'anchor.{} must be a 2-list [rx, ry], got {!r}'.format(
+                    name, raw))
+        pairs[name] = tuple(
+            _finite(v, 'anchor.{}[{}]'.format(name, i))
+            for i, v in enumerate(raw))
+
+    raw_n = _require(block, 'n', 'anchor.n')
+    if isinstance(raw_n, bool) or not isinstance(raw_n, int):
+        raise TossIlcError(
+            'anchor.n must be an integer count of INDEPENDENT evidence units '
+            '(sessions, i.e. level() draws), got {!r}'.format(raw_n))
+    if raw_n < 0:
+        raise TossIlcError('anchor.n must be >= 0, got {}'.format(raw_n))
+
+    if any(v < 0.0 for v in pairs['se_rad']):
+        raise TossIlcError(
+            'anchor.se_rad must be non-negative standard errors, got '
+            '{}'.format(list(pairs['se_rad'])))
+
+    anchor = IlcAnchor(aim_rad=pairs['aim_rad'], n=int(raw_n),
+                       se_rad=pairs['se_rad'])
+    if anchor.magnitude > ILC_AIM_MAX_RAD:
+        raise TossIlcError(
+            'anchor.aim_rad commands {:.4f}deg of common mode, past the '
+            '{:.2f}deg ILC aim authority. Refused, not clamped: a truncated '
+            'prior is not the prior that was fitted'
+            .format(math.degrees(anchor.magnitude),
+                    math.degrees(ILC_AIM_MAX_RAD)))
+    return anchor
 
 
 def _parse_cell(entry: Any, index: int, quant: Tuple[float, float, float]
@@ -789,6 +972,8 @@ def parse_toss_ilc(data: Dict[str, Any]) -> TossIlc:
             'not the same object as no artifact, and shipping one would report '
             'ilc_applied=true while commanding zero. Delete the file instead')
 
+    anchor = _parse_anchor(doc)
+
     cells: Dict[Tuple[float, float, float, float], IlcCorrection] = {}
     for index, entry in enumerate(raw_cells):
         key, correction = _parse_cell(entry, index, quant)
@@ -798,6 +983,25 @@ def parse_toss_ilc(data: Dict[str, Any]) -> TossIlc:
                 'goal is a fit that could not decide, and picking either here '
                 'would be this loader deciding for it'.format(index,
                                                               list(key)))
+        # THE composed bound. `_parse_cell` bounds the spatial residual and
+        # `_parse_anchor` bounds the common mode, but layer 3 applies their SUM,
+        # and two separately-legal halves can sum to 2.0deg. Checked here because
+        # here is the only place both exist — the same argument D7 makes for
+        # clamping the total at the node's apply seam rather than at any layer's
+        # own update, one level down. Refused rather than clamped, for
+        # `admit_command`'s reason: a truncated correction is not the correction
+        # that was solved for.
+        if anchor is not None:
+            total = math.hypot(correction.aim_rx + anchor.aim_rad[0],
+                               correction.aim_ry + anchor.aim_rad[1])
+            if total > ILC_AIM_MAX_RAD:
+                raise TossIlcError(
+                    'cells[{}] plus anchor.aim_rad commands {:.4f}deg of total '
+                    'ILC aim, past the {:.2f}deg authority — the two halves are '
+                    'each legal, their SUM is what layer 3 applies. Re-fit, or '
+                    'the anchor referencing is wrong'
+                    .format(index, math.degrees(total),
+                            math.degrees(ILC_AIM_MAX_RAD)))
         cells[key] = correction
 
     metadata = doc.get('captured') or {}
@@ -811,6 +1015,7 @@ def parse_toss_ilc(data: Dict[str, Any]) -> TossIlc:
                    requires_model_config_identity=model_req,
                    pose_cell_mm=quant[0], pose_z_cell_mm=quant[1],
                    flight_time_cell_s=quant[2],
+                   anchor=anchor,
                    metadata=metadata)
 
 
@@ -928,6 +1133,180 @@ def lookup(toss_ilc: TossIlc, x_mm: float, y_mm: float, z_mm: float,
     return IlcLookup(correction, key, True)
 
 
+# ── the session-local common mode (C1, decision 2) ───────────────
+
+
+#: The gate verdicts :class:`IlcSessionCommonMode` can return, as named reasons.
+#: A refusal is always a NAME, never a bare zero: "commanded nothing" and "had
+#: nothing to command" are different facts about a session and the record has to
+#: be able to tell them apart.
+SESSION_NO_ARTIFACT = 'no_artifact'
+SESSION_NO_ANCHOR = 'no_anchor'
+SESSION_INSUFFICIENT_EVIDENCE = 'insufficient_evidence'
+SESSION_BELOW_SE_GATE = 'below_se_gate'
+SESSION_INSIDE_DEADBAND = 'inside_deadband'
+SESSION_APPLIED = ''
+
+
+class IlcSessionCommonMode:
+    """Layer 3's **session-local common-mode component** — RAM only, one per
+    goal, discarded at goal end.
+
+    Owner decision 2 of the 2026-08-21 fold-in, closing contradiction **C1**. It
+    is the second half of :class:`IlcAnchor`: the artifact persists the common
+    mode as a *prior*, and this object is what decides whether that prior is
+    worth commanding this goal, applies it if so, and dies with the goal.
+
+    **Why the common mode is not simply left in the cells.** A persisted cell is
+    re-applied on every future session, including sessions that never took the
+    ``level()`` draw it was fitted under. One draw is 1.2–1.7 mrad per axis and
+    the cells measure 9.1–10.5 mrad, so 11–19 % of every cell would be one
+    sitting's inclinometer noise, frozen. Layer 3's four provenance keys are all
+    blind to a re-``level`` (C-TOSS-CAL-1's D3 says so deliberately), so nothing
+    downstream would ever make that stale. Splitting it out is the structural fix
+    that a provenance key could not be.
+
+    **Why it is not simply discarded either.** The measured ``|aim|`` is
+    consistent across all three goal cells, i.e. the correction is *dominated* by
+    common mode. Throwing it away would discard ~36–42 mm of the ~40 mm the loop
+    found, against a 35 mm capture radius.
+
+    THE HONEST LIMITATION, STATED RATHER THAN PAPERED OVER
+    ------------------------------------------------------
+    This component is **seeded and held**: it cannot update within a session,
+    because there is no live-admissible observable to update it from.
+    ``land_err_mm`` is mined offline, and both live candidates —
+    ``catch_error_mm`` and ``BallState.landing_position`` — are refused on their
+    own merits by C-TOSS-CAL-1's D5. ``toss_trim``'s ``no_mocap_fit`` refusal is
+    the same wall, hit by the same machine.
+
+    Two consequences follow, and both are deliberate rather than missing:
+
+    * **The evidence gate runs once, at seed.** It is the trim's gate transposed
+      to the quantity that actually varies here — the trim gates a running
+      estimate at every update because its estimate moves; this gates a fixed
+      prior once because nothing moves it.
+    * **There is no CUSUM and no freeze-never-zero.** Both are defences against
+      an *updating* estimator: CUSUM detects a shift in a stream, and
+      freeze-never-zero exists so a guard trip cannot inject a full-authority
+      step into the next commanded pose. With no update path there is no stream
+      to shift and no step to inject — the value is constant for the goal's whole
+      life by construction, which is the property freeze-never-zero is trying to
+      approximate. Porting them anyway would be dead code wearing a safety
+      argument, which is worse than their absence being written down here.
+
+    This is a genuine batch-loop constraint, not a gap in the design, and it is
+    exactly why the prior has to be PERSISTED for the component to be worth
+    anything: between-session updating is the fit's job.
+    """
+
+    def __init__(self, toss_ilc: Optional[TossIlc] = None, *,
+                 n_min: int = ANCHOR_N_MIN,
+                 se_gate: float = ANCHOR_SE_GATE,
+                 deadband_rad: float = ANCHOR_DEADBAND_RAD,
+                 goal_id: str = '') -> None:
+        """Seed from ``toss_ilc``'s anchor and run the gate ONCE.
+
+        ``toss_ilc`` is ``None`` on every path where layer 3 is not applying —
+        no artifact, a load failure, a DORMANT artifact, the feature flag off.
+        The caller passes ``None`` rather than skipping construction so that a
+        goal always has a component to read and to record, and its reason names
+        which of those it was.
+        """
+        self.goal_id = str(goal_id)
+        self._n_min = int(n_min)
+        self._se_gate = float(se_gate)
+        self._deadband = float(deadband_rad)
+        anchor = None if toss_ilc is None else toss_ilc.anchor
+        self.anchor = anchor
+        self._aim, self.reason = self._gate(toss_ilc, anchor)
+
+    def _gate(self, toss_ilc: Optional[TossIlc], anchor: Optional[IlcAnchor]
+              ) -> Tuple[Tuple[float, float], str]:
+        """The transposed evidence gate. Returns ``(aim, reason)``.
+
+        Order is load-bearing and each step closes a different failure:
+
+        1. **no artifact / no anchor** — nothing to seed from. Distinguished
+           because they are different operator situations: no artifact is
+           "layer 3 is off or dormant", no anchor is "this artifact's cells are
+           not anchor-referenced", and the second one means C1 is not closed for
+           this file.
+        2. **evidence count** (``n >= ANCHOR_N_MIN``) — the between-session
+           counter, before any arithmetic on the value. An anchor pooled over two
+           sessions is two ``level()`` draws, and the trim's own probe measured
+           what a thin-evidence significance gate does: 45.7 % of ZERO-bias
+           sessions commanded a non-zero correction.
+        3. **per-axis significance** (``|aim_i| >= se_gate * se_i``) — per AXIS,
+           like the trim's, because the two axes carry independent evidence and a
+           significant rx should not be suppressed by an insignificant ry. A
+           refused axis is zeroed, not the whole vector.
+        4. **deadband on what survives** — magnitude, after (3). Below it the
+           correction is not worth the commanded-pose churn.
+
+        A zero ``se`` on an axis with a non-zero aim passes (3): zero standard
+        error means the evidence is perfect, and ``|aim| >= 0`` holds. A zero
+        ``se`` with a zero aim fails the deadband at (4), which is where it
+        belongs.
+        """
+        if toss_ilc is None:
+            return ((0.0, 0.0), SESSION_NO_ARTIFACT)
+        if anchor is None:
+            return ((0.0, 0.0), SESSION_NO_ANCHOR)
+        if anchor.n < self._n_min:
+            return ((0.0, 0.0), SESSION_INSUFFICIENT_EVIDENCE)
+
+        gated = []
+        for value, se in zip(anchor.aim_rad, anchor.se_rad):
+            gated.append(value if abs(value) >= self._se_gate * se else 0.0)
+        pair = (float(gated[0]), float(gated[1]))
+        if pair == (0.0, 0.0):
+            return ((0.0, 0.0), SESSION_BELOW_SE_GATE)
+        if math.hypot(pair[0], pair[1]) <= self._deadband:
+            return ((0.0, 0.0), SESSION_INSIDE_DEADBAND)
+        return (pair, SESSION_APPLIED)
+
+    # ── THE read ─────────────────────────────────────────────────────────────
+
+    def aim(self) -> Tuple[float, float]:
+        """THE session common mode, rad — read ONCE per goal at
+        ``_toss_aim_for_goal`` and never anywhere else.
+
+        Exactly ``(0.0, 0.0)`` on every refused path, so a machine with no
+        artifact, a dormant one, or one whose anchor does not clear the gate is
+        today's machine bit for bit. Inside :data:`ILC_AIM_MAX_RAD` by
+        construction — ``_parse_anchor`` bounds the anchor and ``parse_toss_ilc``
+        bounds ``cell + anchor``, so this module still contains no aim clamp of
+        its own and the D7 clamp at the node's apply seam is still the single
+        enforcement point over the composed total.
+        """
+        return (float(self._aim[0]), float(self._aim[1]))
+
+    @property
+    def applied(self) -> bool:
+        return self.reason == SESSION_APPLIED
+
+    @property
+    def n(self) -> int:
+        """Independent evidence units behind the prior; 0 when there is none."""
+        return 0 if self.anchor is None else int(self.anchor.n)
+
+    def console_line(self) -> str:
+        """One line for the goal-start log. ``SESSION-ONLY`` is on it from day
+        one, for the reason the trim's console block gives: a number that is
+        never written to disk and a number that is must never look the same in a
+        log."""
+        rx, ry = self.aim()
+        if self.applied:
+            what = 'APPLIED ({:+.3f},{:+.3f})deg'.format(math.degrees(rx),
+                                                         math.degrees(ry))
+        else:
+            what = 'not applied ({})'.format(self.reason)
+        return ('ILC session common mode: {}  n={} (independent level() draws, '
+                'gate >={})  SESSION-ONLY (seeded from the artifact anchor, '
+                'discarded at goal end)'.format(what, self.n, self._n_min))
+
+
 # ── document construction (used by the fit tool's writer) ────────
 
 
@@ -937,13 +1316,21 @@ def build_document(cells: Sequence[Tuple[Sequence[float], Sequence[float]]], *,
                    estimator_version: str = ESTIMATOR_VERSION,
                    model_identity: Optional[str] = None,
                    captured: Optional[Mapping[str, Any]] = None,
-                   fit: Optional[Mapping[str, Any]] = None
+                   fit: Optional[Mapping[str, Any]] = None,
+                   anchor: Optional[IlcAnchor] = None
                    ) -> Dict[str, Any]:
     """Build a schema-v1 artifact document from fitted cells. Pure; no I/O.
 
     ``cells`` is a sequence of ``(key4, u3)`` pairs — the goal key and the
     ``(aim_rx, aim_ry, event_vel_trim)`` correction in :data:`ILC_CHANNELS`
     order.
+
+    ``anchor`` is the C1 common mode (:class:`IlcAnchor`). Pass it and the cells
+    MUST already be anchor-referenced spatial residuals — this function does not
+    subtract anything, because a writer that silently re-referenced its caller's
+    numbers would make ``cells`` mean one thing in the fit and another on disk.
+    Omit it and the document declares no anchor, which is the pre-C1 shape and
+    composes to a zero session component.
 
     **The writer lives here, in the production module, and not in the fit tool**,
     for the reason the record schema gives for living in the installed package:
@@ -989,6 +1376,12 @@ def build_document(cells: Sequence[Tuple[Sequence[float], Sequence[float]]], *,
                 'flight_time_cell_s': FLIGHT_TIME_CELL_S},
         'cells': entries,
     }
+    if anchor is not None:
+        doc['anchor'] = {
+            'aim_rad': [float(anchor.aim_rad[0]), float(anchor.aim_rad[1])],
+            'n': int(anchor.n),
+            'se_rad': [float(anchor.se_rad[0]), float(anchor.se_rad[1])],
+        }
     if fit:
         doc['fit'] = {str(k): v for k, v in fit.items()}
     return doc
