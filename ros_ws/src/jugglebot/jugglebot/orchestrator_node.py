@@ -11,7 +11,10 @@ The state machine tick runs at 10 Hz.  All CAN-node interactions are
 async (non-blocking) so the executor stays responsive.
 """
 
+from __future__ import annotations
+
 import math
+import time
 
 import rclpy
 from rclpy.node import Node
@@ -29,6 +32,7 @@ from diagnostic_msgs.msg import DiagnosticStatus
 from jugglebot.state_machine import (
     RobotState, Context, build_default_machine, BOOT_TIMEOUT_S,
 )
+from jugglebot import mocap_status as mocap_st
 from jugglebot.can import odrive
 
 
@@ -112,6 +116,20 @@ class OrchestratorNode(Node):
         # MAX_DEVIATION latch and kept accepting mode commands on a frozen robot.
         self.create_subscription(
             DiagnosticStatus, 'link_status', self._on_link_status, 10)
+        # F4/Q3 — mocap_node's QTM view. HOMING's bb_calibrate step is
+        # dispatched from this node, so this node needs its OWN answer to "can
+        # a sweep produce data": asking the bridge would mean calling the
+        # service, and the bridge's refusal is a success=False that
+        # HomingHandler turns into a FAULT (state_machine.py, 'operation_result
+        # is False -> FAULT'). Reading the same topic lets HOMING SKIP instead.
+        # The predicate is shared (jugglebot.mocap_status) so the two views of
+        # "ready" cannot drift apart.
+        self._mocap_status_kv = None
+        self._mocap_status_mono = 0.0
+        # String literal, not mocap_st.MOCAP_STATUS_TOPIC — the choreography
+        # map resolves endpoint names by AST and will not follow an attribute.
+        self.create_subscription(
+            DiagnosticStatus, 'mocap/status', self._on_mocap_status, 10)
 
         # ── Publishers ────────────────────────────────────────────
         self._control_mode_pub = self.create_publisher(
@@ -269,6 +287,32 @@ class OrchestratorNode(Node):
         self.ctx.wire_armed = self._kv_get(
             msg.values, 'mpc_active', '0') == '1'
         self.ctx.link_status_seen = True
+
+    def _on_mocap_status(self, msg):
+        """Cache mocap_node's ``mocap/status`` KeyValues (F4/Q3).
+
+        Snapshot only — decode and stamp the arrival. No decision is taken
+        here; ``_qtm_ready()`` reads the cache at the moment the HOMING step is
+        dispatched, which is what makes STALENESS (rather than "the last thing
+        we heard, whenever that was") the test.
+        """
+        try:
+            kv = mocap_st.decode_status(msg.values)
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().error(f'mocap/status decode error: {e}')
+            return
+        self._mocap_status_kv = kv
+        self._mocap_status_mono = time.monotonic()
+
+    def _qtm_ready(self):
+        """``(ready, code, detail)`` — can a BB calibration sweep produce data?
+
+        Same predicate and same two thresholds as the bridge's gate
+        (``jugglebot.mocap_status.evaluate``); only the cached snapshot is this
+        node's own. Fails closed.
+        """
+        age_s = time.monotonic() - self._mocap_status_mono
+        return mocap_st.evaluate(self._mocap_status_kv, age_s)
 
     # ═══════════════════════════════════════════════════════════════
     # Main tick
@@ -458,16 +502,32 @@ class OrchestratorNode(Node):
             self._start_home_action()
 
         elif req == 'bb_calibrate':
-            if self._bb_calibrate_client.service_is_ready():
-                self._start_service_call(
-                    self._bb_calibrate_client, Trigger.Request())
-            else:
+            qtm_ok, qtm_code, qtm_detail = self._qtm_ready()
+            if not self._bb_calibrate_client.service_is_ready():
                 # Ball Butler not available — skip calibration (BB is optional)
                 self.get_logger().warning(
                     'Ball Butler not available — skipping calibration. '
                     'BB will be uncalibrated this session.')
                 self.ctx.bb_calibration_skipped = True
                 self.ctx.operation_result = True
+            elif not qtm_ok:
+                # F4/Q3 — SKIP, never fail. The bridge would refuse this same
+                # call with success=False, and HomingHandler.execute turns
+                # `operation_result is False` straight into FAULT
+                # (state_machine.py) — so gating by *calling and catching* the
+                # refusal would convert "the mocap PC is off" into a faulted
+                # robot the operator has to clear before homing. Mirrors the
+                # service-not-ready branch above exactly: WARN, mark skipped,
+                # operation_result True so HOMING advances to IDLE.
+                self.get_logger().warning(
+                    f'QTM not delivering BB markers ({qtm_code}: {qtm_detail}) '
+                    '— skipping calibration. BB will be uncalibrated this '
+                    'session.')
+                self.ctx.bb_calibration_skipped = True
+                self.ctx.operation_result = True
+            else:
+                self._start_service_call(
+                    self._bb_calibrate_client, Trigger.Request())
 
         elif req == 'activate':
             activate_req = ActivateOrDeactivate.Request()

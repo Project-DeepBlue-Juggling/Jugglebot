@@ -684,3 +684,69 @@ class TestODriveErrorTablePins:
         main_js = (ROOT / 'ros_ws' / 'gui' / 'js' / 'main.js').read_text()
         assert re.search(r"from\s+'\./odrive-errors\.js'", main_js), \
             'main.js no longer imports the ODrive error decoder'
+
+
+class TestBBCalibrateMocapGate:
+    """The Calibrate button's mocap precondition (F4/Q4).
+
+    The calibrate COMMAND path (button -> bb/calibrate -> BB firmware sweeps)
+    and the calibrate DATA path (QTM -> mocap_node -> the circle fit) share no
+    edge. With QTM down, pressing Calibrate used to run a full physical sweep
+    that produced nothing — or, with a partly-visible constellation, a
+    plausible BB pose every subsequent throw was then aimed with.
+    teensy_bridge_node now refuses such a call outright (QTM_STALE /
+    BB_MARKERS_NOT_VISIBLE, no RPC dispatched); this button rule is the cheaper
+    half of the same gate, so the operator learns why BEFORE pressing.
+
+    String-level tripwires, in the house style for this file — there is no JS
+    runtime in this suite. They pin that the rule and its tooltip survive a
+    refactor, not that the DOM ends up in a particular state.
+    """
+
+    def test_panels_tracks_mocap_connected_state(self, panels_js):
+        assert re.search(r'\blet\s+mocapConnected\b', panels_js), \
+            'panels.js no longer keeps a mocapConnected flag for the gate'
+
+    def test_set_mocap_connected_updates_the_flag_and_regates(self, panels_js):
+        m = re.search(r'export\s+function\s+setMocapConnected\b(.*?)\n\}',
+                      panels_js, re.S)
+        assert m, 'setMocapConnected() body not found'
+        body = m.group(1)
+        assert 'mocapConnected' in body, \
+            'setMocapConnected() must record the state the gate reads'
+        assert 'applyBBCalibrateGate()' in body, \
+            'setMocapConnected() must re-evaluate the Calibrate gate — this ' \
+            'flag flips on the mocap_data watchdog, so nothing else would'
+
+    def test_calibrate_gate_disables_on_mocap_disconnect_with_a_reason(self, panels_js):
+        m = re.search(r'function\s+applyBBCalibrateGate\b(.*?)\n\}',
+                      panels_js, re.S)
+        assert m, 'applyBBCalibrateGate() body not found'
+        body = m.group(1)
+        assert '!mocapConnected' in body, \
+            'the Calibrate gate no longer considers the mocap connection'
+        assert 'disabled = true' in body, \
+            'the Calibrate gate no longer disables the button'
+        # A greyed button with no explanation is the failure mode this is meant
+        # to prevent, not a milder version of it.
+        assert re.search(r"title\s*=\s*'Mocap disconnected", body), \
+            'the Calibrate gate must name mocap as the blocking reason in the tooltip'
+
+    def test_calibrate_gate_leaves_the_reset_button_alone(self, panels_js):
+        """BB-ERROR reset has nothing to do with mocap and must stay pressable
+        with QTM down."""
+        m = re.search(r'function\s+applyBBCalibrateGate\b(.*?)\n\}',
+                      panels_js, re.S)
+        body = m.group(1)
+        assert "classList.contains('bb-reset-mode')" in body, \
+            'the Calibrate gate must bail out in RESET mode'
+
+    def test_heartbeat_handler_delegates_to_the_gate(self, panels_js):
+        """The BB-IDLE half of the rule must go through the same helper, or the
+        next heartbeat re-enables a button the mocap rule just disabled."""
+        m = re.search(r'export\s+function\s+updateBBPanel\b(.*?)\n\}\n',
+                      panels_js, re.S)
+        assert m, 'updateBBPanel() body not found'
+        assert 'applyBBCalibrateGate()' in m.group(1), \
+            'updateBBPanel() no longer routes the Calibrate enable rule ' \
+            'through applyBBCalibrateGate()'

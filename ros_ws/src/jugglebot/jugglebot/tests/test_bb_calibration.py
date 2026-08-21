@@ -11,6 +11,15 @@ Tests:
   8. Axis tilt — tilted rotation axis, position + tilt recovered
   9. Partial marker visibility — some markers have NaN gaps, still succeeds
   10. Wrap-around yaw offset — offset near ±π boundary, correctly wrapped
+  15. Arc-span floor (MIN_ARC_DEG) — a truncated sweep is refused by name, a
+      slow-but-real sweep is not, and a single stubby marker is excluded
+      rather than fatal
+
+NOTE — this module is a standalone script, not a pytest module: it has no
+``test_*`` functions and it lives outside ``testpaths = ["tests"]``, so
+``./run_tests.sh`` collects NOTHING from it. The arc-span floor's cases are
+therefore ALSO pinned in tests/ros/test_bb_calibration_arc_span.py, where the
+per-commit gate runs them. Keep the two in step when changing the floor.
 
 Run:  python -m jugglebot.tests.test_bb_calibration
 """
@@ -451,6 +460,89 @@ def run_tests():
     except ValueError as e:
         check('Raises ValueError for horizontal axis',
               'horizontal' in str(e).lower(), str(e))
+
+    # ==================================================================
+    print('\nTest 15: Arc-span floor (MIN_ARC_DEG)')
+    # ==================================================================
+    # The failure this guards: `min_points=50` at the 200 Hz marker rate is
+    # 0.25 s of data, so a sweep truncated by a mid-sweep QTM dropout could
+    # still be fitted — and a short arc fits a circle with a tiny residual and
+    # a wildly wrong centre. The output was a plausible BB pose, not an error.
+    #
+    # NB every dataset below has 200 sweep points per marker (4x min_points),
+    # so point count alone would accept all of them. Span is what separates
+    # them.
+
+    # 15a — truncated sweep (5°): refused, and by NAME.
+    trunc_data = generate_calibration_dataset(
+        TRUE_POS, TRUE_AXIS, RADII, Z_OFFSETS,
+        n_sweep=200, sweep_range=(0.0, math.radians(5.0)),
+        noise_std=0.0, rng=np.random.default_rng(42),
+    )
+    m3_t = np.array(trunc_data[2])[-1]
+    trunc_yaw = [math.degrees(
+        math.atan2(m3_t[1] - TRUE_POS[1], m3_t[0] - TRUE_POS[0]) - TRUE_YAW_OFFSET)] * 20
+    try:
+        run_calibration(trunc_data, trunc_yaw, pitch_z_offset_mm=PITCH_Z_OFFSET)
+        check('Truncated 5° sweep refused', False, 'no exception raised')
+    except ValueError as e:
+        check('Truncated 5° sweep refused', 'ARC_SPAN_TOO_SMALL' in str(e), str(e))
+
+    # 15b — the same data passes with the floor lowered. This is the danger
+    # being pinned, not just the fix: it is exactly what the pre-floor code did.
+    try:
+        r15 = run_calibration(trunc_data, trunc_yaw,
+                              pitch_z_offset_mm=PITCH_Z_OFFSET, min_arc_deg=0.0)
+        check('Same data accepted with the floor disabled',
+              r15.bb_position_mm is not None)
+    except ValueError as e:
+        check('Same data accepted with the floor disabled', False, str(e))
+
+    # 15c — a slow-but-real 25° sweep is NOT rejected.
+    slow_data = generate_calibration_dataset(
+        TRUE_POS, TRUE_AXIS, RADII, Z_OFFSETS,
+        n_sweep=200, sweep_range=(0.0, math.radians(25.0)),
+        noise_std=0.0, rng=np.random.default_rng(42),
+    )
+    m3_s = np.array(slow_data[2])[-1]
+    slow_yaw = [math.degrees(
+        math.atan2(m3_s[1] - TRUE_POS[1], m3_s[0] - TRUE_POS[0]) - TRUE_YAW_OFFSET)] * 20
+    try:
+        slow_result = run_calibration(slow_data, slow_yaw,
+                                      pitch_z_offset_mm=PITCH_Z_OFFSET)
+        slow_err = np.linalg.norm(slow_result.bb_position_mm[:2] - TRUE_POS[:2])
+        check('25° sweep still succeeds', slow_err < 0.5, f'error = {slow_err:.4f} mm')
+    except ValueError as e:
+        check('25° sweep still succeeds', False, str(e))
+
+    # 15d — one occluded marker is EXCLUDED, not fatal: its garbage centre must
+    # not be folded into the length-weighted average, but four good markers are
+    # still a calibration. (This is the case-9 scenario taken to its limit —
+    # case 9's markers all trace the full 180° sweep, so the floor leaves it
+    # untouched; here marker 0 is cut to 4°.)
+    stub_data = generate_calibration_dataset(
+        TRUE_POS, TRUE_AXIS, RADII, Z_OFFSETS,
+        n_sweep=200, noise_std=0.0, rng=np.random.default_rng(42),
+    )
+    stub_data[0] = [p for p in generate_marker_circle(
+        TRUE_POS + Z_OFFSETS[0] * TRUE_AXIS, TRUE_AXIS, RADII[0], 200,
+        angle_range=(0.0, math.radians(4.0)),
+    )]
+    m3_p = np.array(stub_data[2])[-1]
+    stub_yaw = [math.degrees(
+        math.atan2(m3_p[1] - TRUE_POS[1], m3_p[0] - TRUE_POS[0]) - TRUE_YAW_OFFSET)] * 20
+    try:
+        stub_result = run_calibration(stub_data, stub_yaw,
+                                      pitch_z_offset_mm=PITCH_Z_OFFSET)
+        stub_err = np.linalg.norm(stub_result.bb_position_mm[:2] - TRUE_POS[:2])
+        check('Stubby marker excluded, calibration survives',
+              stub_err < 0.5, f'error = {stub_err:.4f} mm')
+        m0 = stub_result.marker_metrics[0]
+        check('Stubby marker reported as skipped with the arc reason',
+              m0.status == 'skipped' and 'arc span' in (m0.reason or ''),
+              f'{m0.status} — {m0.reason}')
+    except ValueError as e:
+        check('Stubby marker excluded, calibration survives', False, str(e))
 
     # ==================================================================
     #  Summary

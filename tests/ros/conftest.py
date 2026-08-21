@@ -199,12 +199,29 @@ class SetTrapTrajLimitsMessage:
 
 @dataclass
 class BallButlerCalibrationResult:
-    position_mm: object = None
+    # ``Point`` is defined further down this file; the lambda defers the lookup
+    # to construction time. A real message default-constructs its Point, and
+    # mocap_node._publish_calibration_result writes position_mm.x/.y/.z — a
+    # bare ``None`` default made the success path unconstructable under the mock.
+    position_mm: object = field(default_factory=lambda: Point())
     yaw_offset_rad: float = 0.0
     yaw_offset_std_deg: float = 0.0
     axis_tilt_deg: float = 0.0
     success: bool = False
     message: str = ""
+
+
+@dataclass
+class MocapDataSingle:
+    position: object = field(default_factory=lambda: Point())
+    residual: float = 0.0
+    label: str = ""
+
+
+@dataclass
+class MocapDataMulti:
+    markers: list = field(default_factory=list)
+    aligned: bool = False
 
 
 @dataclass
@@ -334,6 +351,25 @@ class Pose:
 class PoseStamped:
     header: object = field(default_factory=lambda: MagicMock())
     pose: Pose = field(default_factory=Pose)
+
+
+@dataclass
+class Transform:
+    translation: Vector3 = field(default_factory=Vector3)
+    rotation: Quaternion = field(default_factory=Quaternion)
+
+
+@dataclass
+class TransformStamped:
+    """geometry_msgs/TransformStamped stand-in — mocap_node's static world →
+    platform_start TF. Added 2026-08-21 with tests/ros/test_mocap_node.py: the
+    module-level ``from geometry_msgs.msg import TransformStamped`` in
+    mocap_node.py made that node unimportable under the mock until now, which
+    is why the node had no direct test coverage at all.
+    """
+    header: object = field(default_factory=lambda: MagicMock())
+    child_frame_id: str = ""
+    transform: Transform = field(default_factory=Transform)
 
 
 # ── jugglebot_interfaces PlatformPoseCommand (SpaceMouse/GUI target) ──
@@ -949,6 +985,8 @@ _create_mock_module('jugglebot_interfaces.msg', {
     'CatchTimingResult': CatchTimingResultMsg,
     'HandTelemetryMessage': HandTelemetryMessage,
     'LegsTargetReachedMessage': LegsTargetReachedMessage,
+    'MocapDataMulti': MocapDataMulti,
+    'MocapDataSingle': MocapDataSingle,
     'RigidBodyPose': RigidBodyPose,
     'RigidBodyPoses': RigidBodyPoses,
     'RobotState': RobotState,
@@ -990,6 +1028,8 @@ _create_mock_module('geometry_msgs.msg', {
     'Vector3': Vector3,
     'Pose': Pose,
     'PoseStamped': PoseStamped,
+    'Transform': Transform,
+    'TransformStamped': TransformStamped,
 })
 
 _create_mock_module('std_msgs')
@@ -1004,6 +1044,37 @@ _create_mock_module('std_msgs.msg', {
 
 _create_mock_module('std_srvs')
 _create_mock_module('std_srvs.srv', {'Trigger': Trigger, 'SetBool': SetBool})
+
+
+# ── tf2_ros mock (UNCONDITIONAL, like rclpy) ──────────────────────────
+# The REAL Foxy tf2_ros cannot be used here no matter what the box has
+# installed: its first import line is `from rclpy.duration import Duration`,
+# and this file replaces `rclpy` with a plain module (not a package), so the
+# submodule import raises ModuleNotFoundError before tf2_ros finishes loading.
+# mocap_node.py imports tf2_ros at module level, which is why that node was
+# unimportable — and therefore untested — until 2026-08-21. Only
+# StaticTransformBroadcaster is used in this tree.
+class _MockStaticTransformBroadcaster:
+    """Stand-in for tf2_ros.StaticTransformBroadcaster.
+
+    Mirrors the real constructor's one observable effect — it creates a
+    /tf_static publisher on the node — so a test can assert the static TF was
+    broadcast without a running ROS graph.
+    """
+
+    def __init__(self, node, qos=None):
+        self._node = node
+        self.sent = []
+        self.pub_tf = node.create_publisher(object, '/tf_static', 1)
+
+    def sendTransform(self, transform):
+        self.sent.append(transform)
+
+
+_create_mock_module('tf2_ros', {
+    'StaticTransformBroadcaster': _MockStaticTransformBroadcaster,
+    'TransformBroadcaster': _MockStaticTransformBroadcaster,
+})
 
 # rclpy
 mock_rclpy = _create_mock_module('rclpy')

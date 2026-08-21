@@ -41,6 +41,30 @@ def orch():
     return node
 
 
+def _feed_mocap_status(orch, *, receiving='1', visible='5', marker3='1',
+                       age_s=0.0):
+    """Deliver one ``mocap/status`` sample to the orchestrator (F4/Q3).
+
+    Healthy by default. ``age_s`` back-dates the cached arrival stamp, which is
+    how the staleness branch is reached without sleeping.
+    """
+    from diagnostic_msgs.msg import DiagnosticStatus, KeyValue
+    from jugglebot import mocap_status as mocap_st
+
+    msg = DiagnosticStatus()
+    msg.values = [
+        KeyValue(key=mocap_st.KEY_QTM_RECEIVING, value=receiving),
+        KeyValue(key=mocap_st.KEY_BB_MARKERS_VISIBLE, value=visible),
+        KeyValue(key=mocap_st.KEY_MARKER3_VISIBLE, value=marker3),
+        KeyValue(key=mocap_st.KEY_ALIGNED, value='1'),
+        KeyValue(key=mocap_st.KEY_QTM_SYNCED, value='1'),
+    ]
+    orch._on_mocap_status(msg)
+    if age_s:
+        orch._mocap_status_mono -= age_s
+    return msg
+
+
 def _make_robot_state_msg(
     num_motors=9,
     all_heartbeats=False,
@@ -417,10 +441,90 @@ class TestProcessRequests:
         assert orch.ctx.request is None
 
     def test_bb_calibrate_calls_when_ready(self, orch):
+        """Needs a healthy mocap/status too (F4/Q3) — without one the QTM gate
+        below skips instead of calling."""
         orch._bb_calibrate_client._ready = True
+        _feed_mocap_status(orch)
         orch.ctx.request = 'bb_calibrate'
         orch._process_requests()
         assert orch.ctx.request is None
+        assert orch._pending_future is not None
+
+    # ── F4/Q3: QTM gate on the HOMING bb_calibrate step ──────────────
+    #
+    # The orchestrator reads mocap/status itself rather than calling the
+    # bridge and interpreting the refusal. That is not a style choice: the
+    # bridge refuses with success=False, and HomingHandler.execute turns
+    # `operation_result is False` straight into FAULT (state_machine.py). So
+    # "the mocap PC is off" would become a faulted robot the operator has to
+    # clear before the platform can home — for a subsystem (BB) that is
+    # optional. Reading the topic lets HOMING SKIP, exactly as it already does
+    # when the BB service itself is absent.
+
+    def test_bb_calibrate_skips_when_qtm_never_reported(self, orch):
+        """Service ready, QTM silent → SKIP, and specifically NOT a failure."""
+        orch._bb_calibrate_client._ready = True
+        orch.ctx.request = 'bb_calibrate'
+        orch._process_requests()
+        assert orch.ctx.bb_calibration_skipped is True
+        assert orch.ctx.operation_result is True
+        assert orch.ctx.request is None
+        assert orch._pending_future is None      # the service was NOT called
+
+    def test_bb_calibrate_skips_when_qtm_not_receiving(self, orch):
+        orch._bb_calibrate_client._ready = True
+        _feed_mocap_status(orch, receiving='0')
+        orch.ctx.request = 'bb_calibrate'
+        orch._process_requests()
+        assert orch.ctx.bb_calibration_skipped is True
+        assert orch.ctx.operation_result is True
+        assert orch._pending_future is None
+
+    def test_bb_calibrate_skips_when_bb_markers_not_visible(self, orch):
+        orch._bb_calibrate_client._ready = True
+        _feed_mocap_status(orch, visible='1')
+        orch.ctx.request = 'bb_calibrate'
+        orch._process_requests()
+        assert orch.ctx.bb_calibration_skipped is True
+        assert orch.ctx.operation_result is True
+        assert orch._pending_future is None
+
+    def test_bb_calibrate_skips_on_stale_mocap_status(self, orch):
+        """A status that stopped arriving is the same as no status: mocap_node
+        may have died, in which case nothing would ever say 'not receiving'."""
+        orch._bb_calibrate_client._ready = True
+        _feed_mocap_status(orch, age_s=5.0)
+        orch.ctx.request = 'bb_calibrate'
+        orch._process_requests()
+        assert orch.ctx.bb_calibration_skipped is True
+        assert orch.ctx.operation_result is True
+        assert orch._pending_future is None
+
+    def test_qtm_skip_never_faults_homing(self, orch):
+        """THE point of Q3, asserted against the state machine rather than the
+        dispatcher: run the skip and then tick HOMING, and the machine must not
+        land in FAULT. ``operation_result False`` is the edge that would do it.
+        """
+        from jugglebot.state_machine import RobotState
+
+        orch._bb_calibrate_client._ready = True
+        orch.sm.force_transition(RobotState.HOMING, orch.ctx)
+        orch.ctx.request = 'bb_calibrate'
+        orch._process_requests()
+
+        assert orch.ctx.operation_result is not False
+        orch.sm.tick(orch.ctx)
+        assert orch.sm.state != RobotState.FAULT
+
+    def test_qtm_gate_uses_the_shared_predicate(self, orch):
+        """Same predicate as the bridge's service gate (jugglebot.mocap_status),
+        so the two views of 'ready' cannot drift into disagreeing about whether
+        HOMING skips while the GUI button dispatches."""
+        from jugglebot import mocap_status as mocap_st
+        _feed_mocap_status(orch, visible='2')
+        ready, code, _ = orch._qtm_ready()
+        assert ready is False
+        assert code == mocap_st.CODE_BB_MARKERS_NOT_VISIBLE
 
     def test_activate_sends_activate(self, orch):
         orch.ctx.request = 'activate'

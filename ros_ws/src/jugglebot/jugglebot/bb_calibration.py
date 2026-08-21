@@ -4,6 +4,8 @@ Ball Butler calibration: determine BB global position and yaw offset from mocap 
 During BB's CALIBRATING state, 5 mocap markers trace circular arcs as the yaw motor
 sweeps.  After the sweep completes, this module:
 
+0. Refuses outright if the markers never traced a real arc (``MIN_ARC_DEG``) —
+   point count alone cannot tell a truncated sweep from a completed one.
 1. Fits a 3D circle to each marker trajectory (plane fit via SVD + algebraic circle fit).
 2. Extracts the common rotation axis (weighted average of circle normals/centers).
 3. Intersects the axis with the horizontal plane at the average marker Z height
@@ -22,6 +24,28 @@ import math
 import numpy as np
 from dataclasses import dataclass, field
 from typing import Optional
+
+
+#: Minimum yaw arc (degrees) the markers must actually trace before a fit is
+#: allowed to produce a BB pose.
+#:
+#: WHY A FLOOR AT ALL. ``find_rotation_axis`` only ever asked for *enough
+#: points* (``min_points=50``). At the 200 Hz marker rate that is 0.25 s of
+#: data, so a sweep truncated by a mid-sweep QTM dropout could still hand the
+#: algebraic circle fit a stubby arc — and a short arc fits a circle with a
+#: TINY residual and a wildly wrong centre and radius. The result is not a
+#: loud failure but a plausible BB position that ``ball_butler_node`` then aims
+#: every throw with. Point count cannot distinguish "swept slowly" from "barely
+#: moved"; arc span can.
+#:
+#: WHY 20°. Conservative on purpose: the partial-data failure mode is a span
+#: well under 10°, so 20° rejects it with margin while staying far below any
+#: plausible real sweep. ⚠ The true commanded sweep span is BB-firmware-owned
+#: and lives in no file in this repo, so this is a floor chosen from the
+#: failure mode, not from the command. The owner confirms or raises it from the
+#: yaw span logged by the first hardware calibrate
+#: (``plans/active/operator-observability.md`` § 8).
+MIN_ARC_DEG = 20.0
 
 
 def wrap_pi(angle: float) -> float:
@@ -43,6 +67,43 @@ def fit_plane(points: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return centroid, normal
 
 
+def plane_basis(normal: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Orthonormal (u, v) spanning the plane with the given unit *normal*."""
+    ref = np.array([1.0, 0.0, 0.0]) if abs(normal[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+    u = np.cross(normal, ref)
+    u /= np.linalg.norm(u)
+    v = np.cross(normal, u)
+    v /= np.linalg.norm(v)
+    return u, v
+
+
+def arc_span_deg(points: np.ndarray, center: np.ndarray, normal: np.ndarray) -> float:
+    """Angular extent (degrees, 0–360) the *points* cover around *center*.
+
+    Computed as ``360° − largest angular gap``, the standard circular-range
+    construction. Plain ``max(angle) − min(angle)`` is wrong here: a sweep that
+    crosses the ±π branch cut of ``atan2`` reads as ~360° when it is really a
+    few degrees, which would defeat the floor in exactly the case it exists
+    for. The gap form has no branch cut, returns ~360° for a full circle, and
+    correctly returns ~5° for a 5° arc no matter where that arc sits.
+    """
+    if points.shape[0] < 2 or not np.all(np.isfinite(normal)) or not np.all(np.isfinite(center)):
+        # Fail CLOSED: a degenerate fit (all-identical points give a NaN plane
+        # normal) has no meaningful span, and reporting 0° excludes it rather
+        # than letting a NaN comparison silently pass the floor.
+        return 0.0
+    u, v = plane_basis(normal)
+    rel = points - center
+    angles = np.sort(np.arctan2(rel @ v, rel @ u))
+    if not np.all(np.isfinite(angles)):
+        return 0.0
+    gaps = np.diff(angles)
+    # Close the circle: the wrap-around gap from the last sample back to the first.
+    wrap_gap = (angles[0] + 2.0 * np.pi) - angles[-1]
+    largest_gap = float(max(gaps.max() if gaps.size else 0.0, wrap_gap))
+    return float(np.degrees(2.0 * np.pi - largest_gap))
+
+
 def fit_circle_3d(points: np.ndarray) -> tuple[np.ndarray, float, np.ndarray, float]:
     """Fit a circle to 3D points lying approximately on a plane.
 
@@ -51,11 +112,7 @@ def fit_circle_3d(points: np.ndarray) -> tuple[np.ndarray, float, np.ndarray, fl
     centroid, normal = fit_plane(points)
 
     # Local 2D basis on the fitted plane
-    ref = np.array([1.0, 0.0, 0.0]) if abs(normal[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
-    u = np.cross(normal, ref)
-    u /= np.linalg.norm(u)
-    v = np.cross(normal, u)
-    v /= np.linalg.norm(v)
+    u, v = plane_basis(normal)
 
     # Project to 2D
     centered = points - centroid
@@ -96,17 +153,22 @@ class MarkerFitMetrics:
     normal: Optional[np.ndarray] = None
     fit_residual_mm: float = 0.0
     distance_from_axis_mm: float = 0.0
+    arc_span_deg: float = 0.0
 
 
 def find_rotation_axis(
     marker_trajectories: dict[int, np.ndarray],
     min_points: int = 50,
+    min_arc_deg: float = MIN_ARC_DEG,
 ) -> tuple[np.ndarray, np.ndarray, dict[int, MarkerFitMetrics]]:
     """Find the rotation axis from multiple marker circular trajectories.
 
     Args:
         marker_trajectories: marker_index → (N, 3) positions array.
         min_points: minimum samples per marker for inclusion.
+        min_arc_deg: minimum arc a marker must trace to be fitted at all, and
+            — via the widest marker — for the sweep to count as having
+            happened. See :data:`MIN_ARC_DEG`.
 
     Returns:
         axis_point:   a point on the axis (mm).
@@ -114,12 +176,14 @@ def find_rotation_axis(
         quality_metrics: per-marker fit metrics.
 
     Raises:
-        ValueError on insufficient data or poor geometric consistency.
+        ValueError on insufficient data, too small an arc, or poor geometric
+        consistency.
     """
     centers: list[np.ndarray] = []
     normals: list[np.ndarray] = []
     weights: list[float] = []
     quality: dict[int, MarkerFitMetrics] = {}
+    widest_arc_deg = 0.0
 
     for idx, pts in marker_trajectories.items():
         if len(pts) < min_points:
@@ -130,10 +194,30 @@ def find_rotation_axis(
             continue
 
         center, radius, normal, residual = fit_circle_3d(pts)
+        span = arc_span_deg(np.asarray(pts), center, normal)
+        widest_arc_deg = max(widest_arc_deg, span)
 
         # Consistent normal direction
         if normals and np.dot(normal, normals[0]) < 0:
             normal = -normal
+
+        if span < min_arc_deg:
+            # Individual exclusion as well as the aggregate refusal below: a
+            # single marker that was occluded for most of the sweep (the rest
+            # of the constellation fine) contributes a garbage centre/normal
+            # that the length-weighted average would happily fold in. Dropping
+            # it is the same treatment a marker with too few points already
+            # got — and if that leaves fewer than two, the existing
+            # "insufficient data" refusal fires.
+            quality[idx] = MarkerFitMetrics(
+                status='skipped',
+                reason=f'arc span {span:.1f}° < {min_arc_deg:.1f}°',
+                n_points=len(pts),
+                radius_mm=radius,
+                fit_residual_mm=residual,
+                arc_span_deg=span,
+            )
+            continue
 
         centers.append(center)
         normals.append(normal)
@@ -146,6 +230,20 @@ def find_rotation_axis(
             center=center,
             normal=normal,
             fit_residual_mm=residual,
+            arc_span_deg=span,
+        )
+
+    # Aggregate refusal FIRST, and with its own code: when the sweep never
+    # happened (mid-sweep QTM dropout, a wedged yaw motor) every marker is
+    # short, they all get excluded above, and the generic "only 0 markers had
+    # sufficient data" message would send the operator hunting for occlusion
+    # that isn't there. Naming ARC_SPAN_TOO_SMALL points at the sweep instead.
+    if widest_arc_deg < min_arc_deg and any(
+            len(pts) >= min_points for pts in marker_trajectories.values()):
+        raise ValueError(
+            f'ARC_SPAN_TOO_SMALL: widest marker arc {widest_arc_deg:.1f}° < '
+            f'{min_arc_deg:.1f}° — the yaw sweep did not complete, so the '
+            'circle fits are not trustworthy'
         )
 
     if len(centers) < 2:
@@ -266,6 +364,7 @@ def run_calibration(
     pitch_z_offset_mm: float,
     min_points: int = 50,
     max_yaw_std_deg: float = 5.0,
+    min_arc_deg: float = MIN_ARC_DEG,
 ) -> CalibrationResult:
     """Execute the full calibration pipeline.
 
@@ -276,6 +375,9 @@ def run_calibration(
         pitch_z_offset_mm: vertical offset of pitch axis from yaw axis (from config).
         min_points:        minimum marker samples for circle fitting.
         max_yaw_std_deg:   maximum allowed yaw-offset uncertainty.
+        min_arc_deg:       minimum yaw arc the markers must trace
+                           (:data:`MIN_ARC_DEG`) — the guard against a
+                           truncated sweep fitting a plausible-looking circle.
 
     Returns:
         CalibrationResult on success.
@@ -299,7 +401,8 @@ def run_calibration(
     avg_z = float(np.mean(all_z)) + pitch_z_offset_mm
 
     # Rotation axis
-    axis_point, axis_dir, metrics = find_rotation_axis(marker_trajectories, min_points)
+    axis_point, axis_dir, metrics = find_rotation_axis(
+        marker_trajectories, min_points, min_arc_deg)
 
     # Intersection with Z plane
     intersection = find_axis_plane_intersection(axis_point, axis_dir, avg_z)

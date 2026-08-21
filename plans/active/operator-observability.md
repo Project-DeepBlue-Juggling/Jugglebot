@@ -227,6 +227,17 @@ at CALIBRATING wedges collection forever (no timeout, `mocap_node.py:213-243`).
 - **Q6 — choreography**: regenerate `ros_ws/docs/choreography.md`
   (`python tools/gen_choreography_map.py`) — new pub/subs otherwise redden
   `tests/ros/test_choreography_map.py`.
+- **Amendment (2026-08-22, adjudicated at F4 landing)**: the `_qtm_ready()`
+  predicate and both thresholds live in ONE shared pure module,
+  `jugglebot/mocap_status.py`, consumed by bridge and orchestrator (each keeps
+  a thin `_qtm_ready()` over its own cached snapshot). Root cause: two nodes
+  independently evaluating the same predicate drift silently and
+  asymmetrically — raise the marker floor in one place only and HOMING starts
+  skipping while the GUI button still dispatches, or the reverse, which lands
+  on a bridge refusal that HOMING would FAULT on. One enforcement point
+  supersedes the per-node phrasing in Q2/Q3 above. (Topic name stays a string
+  literal at the call sites — `gen_choreography_map.py` resolves endpoints by
+  AST and refuses attribute expressions.)
 
 **Tests:** first-ever `tests/ros/test_mocap_node.py` (Q1 publisher, Q5b/c —
 mocked ROS per `tests/ros/conftest.py`); refusal + ordering tests in

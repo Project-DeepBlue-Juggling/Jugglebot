@@ -134,6 +134,7 @@ from teensy_link.deactivate import (
 from jugglebot.can import catching_cone
 from jugglebot.can import odrive
 from jugglebot.can.motor_state import MotorStateTracker
+from jugglebot import mocap_status as mocap_st
 import jugglebot.hardware_config as hw
 import jugglebot.protocol_config as proto
 
@@ -187,6 +188,22 @@ CACHE_AGE_SATURATED_US = 0xFFFF_FFFF
 #: ADVISORY ONLY: this sets a DiagnosticStatus level on an instrumentation topic.
 #: Nothing gates, refuses or actuates on it.
 RING_LEAK_WARN_FRAMES = 2
+
+
+# ── bb/calibrate's QTM readiness gate (F4/Q2) ──────────────────────────
+#
+# The calibrate COMMAND path (this service → BB_CALIBRATE_LOC RPC → BB sweeps)
+# and the calibrate DATA path (QTM → mocap_node accumulates markers → the
+# circle fit) share no edge. So until now the service happily dispatched a
+# sweep with QTM dark: the robot moved, produced nothing, and the operator
+# found out minutes later — or worse, a partially-visible constellation
+# produced a plausible BB pose that ball_butler_node then aimed every throw
+# with. mocap_node's `mocap/status` (5 Hz) is the missing signal.
+#
+# The thresholds and the predicate live in `jugglebot.mocap_status`, NOT here:
+# orchestrator_node gates the HOMING step on the same question, and two copies
+# of "ready" that can drift apart fail silently and asymmetrically (see that
+# module's docstring). This node owns only the cached snapshot and its age.
 
 
 # ── The alarmed command-latency monitor (2026-07-24 closure contract) ──
@@ -1795,6 +1812,18 @@ class TeensyBridgeNode(Node):
         self.create_service(Trigger, 'bb/reload',    self._svc_bb_reload)
         self.create_service(Trigger, 'bb/reset',     self._svc_bb_reset)
         self.create_service(Trigger, 'bb/calibrate', self._svc_bb_calibrate)
+
+        # F4/Q2 — mocap_node's QTM view, the DATA-path half of bb/calibrate's
+        # preconditions (see the module note above). Read-only: it feeds
+        # _qtm_ready() and nothing else, so a mocap_node that never starts costs
+        # exactly one thing — bb/calibrate refuses instead of sweeping blind.
+        self._mocap_status_kv: dict | None = None
+        self._mocap_status_mono = 0.0
+        # String literal, not mocap_st.MOCAP_STATUS_TOPIC — see the note at
+        # mocap_node's matching create_publisher: the choreography map resolves
+        # by AST and will not follow an attribute expression.
+        self.create_subscription(
+            DiagnosticStatus, 'mocap/status', self._on_mocap_status, 10)
 
         # ── Ball Butler throw ACTION (replaces bb/send_throw_command) ──
         # The action awaits the firmware's terminal outcome (relayed back as a
@@ -6538,6 +6567,38 @@ class TeensyBridgeNode(Node):
         return (bool(hb.bb_flags & _T2J_BB_FLAG_HEARTBEAT_SEEN)
                 and not bool(hb.bb_flags & _T2J_BB_FLAG_HEARTBEAT_STALE))
 
+    def _on_mocap_status(self, msg):
+        """Cache mocap_node's `mocap/status` KeyValues (F4/Q2).
+
+        Snapshot only — decode the KeyValues into a plain dict and stamp the
+        arrival with `time.monotonic()`. No decision is taken here; the gate
+        reads this cache when the service is actually called, which is what
+        makes staleness (rather than "the last thing we heard") the test.
+        """
+        try:
+            kv = mocap_st.decode_status(msg.values)
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().error(f"mocap/status decode error: {e}",
+                                    throttle_duration_sec=5.0)
+            return
+        with self._lock:
+            self._mocap_status_kv = kv
+            self._mocap_status_mono = time.monotonic()
+
+    def _qtm_ready(self) -> tuple[bool, str, str]:
+        """Is QTM in a state where a BB calibration sweep can produce data?
+
+        Returns ``(ready, code, detail)``; the predicate and both thresholds
+        are `jugglebot.mocap_status.evaluate`, shared with orchestrator_node so
+        the two gates cannot drift apart. Fails CLOSED — no status, an
+        undecodable status, or a status that says QTM is dark all refuse.
+        """
+        with self._lock:
+            kv = self._mocap_status_kv
+            stamp = self._mocap_status_mono
+        age_s = time.monotonic() - stamp
+        return mocap_st.evaluate(kv, age_s)
+
     # ═══════════════════════════════════════════════════════════
     # Catching cone (cone uplink — mirrors can_node's
     # _handle_catch_event / _publish_cone_heartbeat field-by-field)
@@ -6769,15 +6830,36 @@ class TeensyBridgeNode(Node):
         return res
 
     def _svc_bb_calibrate(self, req, res):
-        """bb/calibrate — BB_CALIBRATE_LOC RPC. If BB is not present, return
-        success=True silently (mirror can_node._svc_bb_calibrate). The state
-        machine's HOMING phase uses this service; the silent-skip lets
-        homing complete without BB attached (the original can_node
-        behaviour). When BB IS present we forward the RPC's status.
+        """bb/calibrate — BB_CALIBRATE_LOC RPC, gated on BB presence and QTM.
+
+        Two gates, and their ORDER is load-bearing:
+
+        1. BB absent → ``success=True`` silently (mirror
+           can_node._svc_bb_calibrate). The state machine's HOMING phase uses
+           this service; the silent-skip lets homing complete with no BB
+           attached. Pinned by
+           tests/ros/test_teensy_bridge_node_bb.py::test_bb_calibrate_silently_succeeds_when_bb_absent.
+        2. QTM not ready (F4/Q2) → ``success=False`` with a named code and
+           **no RPC dispatched**. This is second because "no BB" is not a
+           calibration failure at all — it is a machine that does not have the
+           subsystem — whereas "BB is here but mocap cannot see it" is a real
+           refusal an operator must act on. Gating on QTM first would turn
+           every BB-less homing into a hard failure.
+
+        When both gates pass we forward the RPC's status.
         """
         if not self._bb_present():
             res.success = True
             res.message = "No BB heartbeat received — calibration skipped"
+            return res
+        ready, code, detail = self._qtm_ready()
+        if not ready:
+            # Fail closed: refuse BEFORE any RPC leaves the node. A sweep with
+            # no usable marker stream moves the machine to produce nothing at
+            # best, and a fittable fragment of garbage at worst.
+            res.success = False
+            res.message = f"{code}: {detail} — calibration refused"
+            self.get_logger().warning(f"bb/calibrate refused — {res.message}")
             return res
         ok, m, _ = self._call_rpc(RpcMethod.BB_CALIBRATE_LOC, b"")
         res.success = ok
