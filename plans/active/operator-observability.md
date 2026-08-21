@@ -3,7 +3,7 @@ title: Operator observability quartet — chart units, UDP message rates, ODrive
 created: 2026-08-21
 status: active
 owner: harrison
-last_updated: 2026-08-21
+last_updated: 2026-08-22
 related_logbook:
   - 2026-08-21-operator-observability-plan.md
   - 2026-07-11-gui-can-traffic-per-bus-panel.md   # the CAN panel — the end-to-end template for F2
@@ -27,6 +27,13 @@ related_code:
 ---
 
 # Operator observability quartet
+
+> **Status 2026-08-22: SOFTWARE-COMPLETE.** F3 `68da188`, F4 `56424c9` (+
+> Phase-A audit fixes `4c33a90`), F1 `cddd670`, F2 `f59eb9b` (+ Phase-B audit
+> fixes `395b7dd`); both phase audits done, both `--full` closures green
+> (Phase A 2026-08-22 total 571 s; Phase B 2026-08-22 total 541 s, RESULT:
+> PASS each). Remaining: the § 8 operator bench checklist, then the
+> owner-timed merge-back to `mvp-trajectory-bringup`.
 
 Four owner-requested features, one branch. All four are **pure software — no
 firmware change, no Teensy flash, no PROTOCOL_VERSION bump anywhere**. Ordered
