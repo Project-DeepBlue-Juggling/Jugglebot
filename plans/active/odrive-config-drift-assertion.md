@@ -1,7 +1,7 @@
 ---
 title: ODrive config-drift assertion — an automatic control for NVM drift
 created: 2026-08-18
-status: parked   # 2026-08-18 — the assumed transport does not exist. A CAN/SDO read
+status: active   # 2026-08-18 — the assumed transport does not exist. A CAN/SDO read
                  # has NO response path to the Jetson (rpc.cpp:249-257,
                  # can_buses.cpp:248-262) and the hand is refused SDO_READ outright
                  # (udp_protocol.h:593-608), so nothing can be built as specified
