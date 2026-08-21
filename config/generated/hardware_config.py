@@ -15,7 +15,7 @@ import math
 
 GRAVITY_MPS2 = 9.806
 JUGGLING_BALL_MASS_KG = 0.071
-JUGGLING_BALL_RADIUS_MM = 35.0
+JUGGLING_BALL_RADIUS_MM = 37.0
 
 # ============================================================================
 # Platform Dynamics

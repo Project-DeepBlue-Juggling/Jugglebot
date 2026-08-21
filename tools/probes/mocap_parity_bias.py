@@ -85,6 +85,7 @@ for _p in (_HERE, _REPO, os.path.join(_REPO, 'ros_ws', 'src', 'jugglebot')):
         sys.path.insert(0, _p)
 
 import toss_record_miner as M                                    # noqa: E402
+import jugglebot.hardware_config as _hw                          # noqa: E402
 
 DEFAULT_ROOT = os.path.expanduser('~/Desktop/rosbags')
 OUT_DIR = os.path.join(_REPO, 'temp', 'probes')
@@ -95,13 +96,21 @@ CACHE_DIR = os.path.join(OUT_DIR, 'mocap_parity_cache')
 DEFAULT_BAGS = ('2026-08-10_16-30-44', '2026-08-12_17-45-44',
                 '2026-08-12_19-02-52')
 
-#: Ball radius, mm. NOT in ``hardware_config.yaml`` (checked: only
-#: ``ball_joint_offset`` and the tracker's match thresholds are there). 35 mm is
-#: the figure the repo states twice — ``logbook/2026-06-27-throw-aim-band-limit-
-#: and-closed-loop-catch.md`` and ``ros_ws/docs/levelling_frame.md`` § cup
-#: tolerance. Every "bounded by a ball radius" claim is against THIS assumed
-#: number; the blob-split census is the attempt to measure it from the data.
-BALL_RADIUS_MM = 35.0
+#: Ball radius, mm — **read from the config, not assumed** (2026-08-21).
+#:
+#: It used to be a local ``35.0`` with a comment saying the value was "NOT in
+#: ``hardware_config.yaml``", citing two prose sources. Both of those state the
+#: **CAPTURE RADIUS** of the cup, which is a different quantity that happens to
+#: have carried the same number, and the config *does* have the ball:
+#: ``physics.juggling_ball_radius_mm``. That key now reads **37.0** — the owner's
+#: caliper measurement of 2026-08-21, a 74 mm ball — superseding the assumed
+#: "70 mm" the repo had been repeating.
+#:
+#: Every "bounded by a ball radius" claim in this probe is against this number,
+#: so it had to stop being a private copy: a probe that quotes the cup's
+#: tolerance while calling it the ball's radius reports a 5.4 % error in the
+#: blob-split census and looks right.
+BALL_RADIUS_MM = float(_hw.JUGGLING_BALL_RADIUS_MM)
 #: Assumed, and the aero bounds scale linearly with it — reported, never hidden.
 BALL_MASS_KG = 0.100
 
@@ -1068,7 +1077,8 @@ def summary_text(records, agg) -> str:
                                      q['odd_cubic_equiv_mms2_median'],
                                      q['cubic_over_se_median'],
                                      100 * q['odd_cubic_sign_consistent']))
-    add('  object radius assumed {:.0f} mm -> the even part is {:.0f}% of it'
+    add('  object radius {:.0f} mm (hw.JUGGLING_BALL_RADIUS_MM) -> the even part '
+        'is {:.0f}% of it'
         .format(BALL_RADIUS_MM,
                 100 * agg['even_y']['amplitude_mm'] / BALL_RADIUS_MM))
     add('')
@@ -1476,7 +1486,9 @@ def main(argv=None) -> int:
             rec.pop(key, None)
     with open(base + '.json', 'w') as fh:
         json.dump({'arcs': records, 'aggregate': agg, 'bags': bags,
-                   'object_radius_mm_assumed': BALL_RADIUS_MM,
+                   # radius is CONFIG (measured); mass is still this module's
+                   # own assumption — the two are deliberately named apart.
+                   'object_radius_mm_config': BALL_RADIUS_MM,
                    'object_mass_kg_assumed': BALL_MASS_KG}, fh)
     print('wrote {}.txt and {}.json'.format(base, base))
     return 0

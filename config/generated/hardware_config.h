@@ -20,7 +20,7 @@
 namespace Physics {
   constexpr float GRAVITY_MPS2 = 9.806f;
   constexpr float JUGGLING_BALL_MASS_KG = 0.071f;
-  constexpr float JUGGLING_BALL_RADIUS_MM = 35.0f;
+  constexpr float JUGGLING_BALL_RADIUS_MM = 37.0f;
 }
 
 // ==========================================================================

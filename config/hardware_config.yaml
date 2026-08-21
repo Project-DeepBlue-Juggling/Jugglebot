@@ -44,7 +44,11 @@ physics:
   # measurement of the ball.  The names are kept distinct on purpose so that
   # `hw.JUGGLING_BALL_MASS_KG` can never be mistaken for the envelope's value.
   juggling_ball_mass_kg: 0.071      # Physical mass of one juggling ball {kg}.
-  juggling_ball_radius_mm: 35.0     # Physical radius of one juggling ball {mm} (70 mm diameter / 2).
+  juggling_ball_radius_mm: 37.0     # Physical radius of one juggling ball {mm}
+                                    # (74 mm diameter / 2, owner caliper measurement 2026-08-21).
+                                    # Was 35.0 (an assumed "70 mm ball") until then — the 35 mm that
+                                    # appears elsewhere in this repo as a CAPTURE RADIUS is a
+                                    # different quantity and is NOT superseded by this.
 
 # ============================================================
 # 1b. Platform Dynamics
