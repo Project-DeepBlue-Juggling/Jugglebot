@@ -904,6 +904,49 @@ class TossSequencer:
                 self._positioning_deadline,
                 self._position_arrival_time + TOSS_POSITION_VERIFY_WINDOW_S)
 
+    def note_position_noop(self, now: float) -> None:
+        """The node determined the platform is ALREADY at the positioning pose
+        and commanded nothing (census B1). Declare arrival immediately.
+
+        **What this is not.** It is not "skip POSITIONING". The phase still runs,
+        the reach-envelope declaration still happens at PREPARE (contract
+        C-REACH-1), and the mocap arrival cross-check still gets its window — the
+        FSM path below this point is byte-identical to an accepted move. What is
+        skipped is a ``go_to_pose`` service round trip and the wait for a move
+        that would traverse **zero millimetres**.
+
+        **Why the settle pad goes too.** ``TOSS_POSITION_SETTLE_PAD_S`` (0.20 s)
+        pads a PLANNED move's arrival for 5 Hz status granularity and
+        terminal-hold ENTRY jitter. With nothing commanded there is no plan to
+        grant granularity to and no terminal hold to enter — the platform is
+        already IN one, holding the pose the caller just matched against the live
+        commanded position. Keeping the pad here would be padding an event that
+        does not occur. Together with the skipped ``min_move_duration_s`` floor
+        (0.20 s) that is the whole 0.45 s census row B1 costs an 8a chain, every
+        cycle, to hold still.
+
+        **The safety of the claim lives at the CALLER**, deliberately: only the
+        node can compare the requested pose against a FRESH
+        ``trajectory/commanded_position``, and only the node knows the release is
+        LEVEL (that channel carries position but no orientation, so a tilted
+        pre-tilt pose is unverifiable and must always be commanded). The FSM
+        cannot check either, so it does not pretend to — it records what it was
+        told, with the ``ALREADY_THERE`` code on the result so the outcome line
+        and the toss record name which branch ran.
+
+        First result wins, and it is ignored unless the move was dispatched —
+        the same guards as :meth:`note_position_result`, because this IS a
+        position result; it just has a duration of zero and no service call."""
+        if (not self._position_dispatched or self._finished
+                or self._position_result is not None):
+            return
+        self._position_result = (True, 0.0, 'ALREADY_THERE')
+        self._positioned = True
+        self._position_arrival_time = float(now)
+        self._positioning_deadline = max(
+            self._positioning_deadline,
+            self._position_arrival_time + TOSS_POSITION_VERIFY_WINDOW_S)
+
     def note_prepare_result(self, ok: bool) -> None:
         """Report the ``ACTION_PREPARE_CATCH`` bundle outcome (== the
         ``trajectory/arm_catch`` raise result; the bundle's topic publishes cannot

@@ -299,6 +299,11 @@ def test_a_belt_that_cannot_write_warns_once_per_goal_then_goes_quiet(monkeypatc
     node.get_logger().warning = warnings.append
     for _ in range(5):
         node._log_toss_outcome(TossResult(True, 'CAUGHT'))
+    # The belt write runs on the record WORKER since 2026-08-22 (census B6), so
+    # the assertion has to wait for it. The drain is the CONTRACT — every caller
+    # that reads what the worker produces drains first — and this test is one of
+    # them, standing in for the operator reading the file afterwards.
+    assert node._toss_records_drain()
     assert len(warnings) == 1
     assert 'belt' in warnings[0]
     # The declarations still went out: the bag is the canonical sink and the
@@ -313,6 +318,7 @@ def test_the_belt_writes_the_same_bytes_as_the_topic(monkeypatch, tmp_path):
     monkeypatch.setattr(rcn, '_RECORD_BELT_DIR', str(tmp_path))
     _open(node)
     node._log_toss_outcome(TossResult(True, 'CAUGHT'))
+    assert node._toss_records_drain()          # census B6: the belt is off-thread
     path = os.path.join(str(tmp_path),
                         'toss_records_{}.jsonl'.format(node._session_id))
     with open(path) as fh:

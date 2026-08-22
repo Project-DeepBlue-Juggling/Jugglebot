@@ -74,8 +74,12 @@ platform under a seated ball mid-windup — so this node raises the new
 latches the announcement for its hand-arm window but publishes no platform
 target) and itself publishes the ONE ``catch/dynamic_target`` at t_release,
 built from the same ``CatchCoordinator.predicted_catch_command`` math with
-arrival = the announced landing (lead = the flight time by construction). Tier
-8a never touches ``catch/pretilt_hold`` — its publish sequence is unchanged there.
+arrival = the announced landing (lead = the flight time by construction).
+``catch/pretilt_hold`` is raised on EVERY toss cycle since 2026-08-22 (census
+E5) — it was 8b-only, then any-commanded-tilt, and is now unconditional: at the
+cadence rungs CCN's pre-tilt arrival clamps to the landing ITSELF, so even a
+level 8a would command a reach arriving at contact, and the next cycle's
+announcement lands inside the previous ball's settle-hold window.
 
 The reach envelope trajectory_node applies to those targets is centred on the
 DECLARED catch point B (``catch/reach_center``, published on the
@@ -120,6 +124,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import queue
 import subprocess
 import threading
 import time
@@ -410,6 +415,24 @@ _THROW_STROKE_VEL_RPS = 40.0
 # for 8b the un-arrived pre-tilt independently corrupts the throw AIM, which the
 # envelope never protected against anyway.
 _TOSS_POSITION_TOL_MM = float(hw.JB_TRAJ_CATCH_REACH_ENVELOPE_MM)
+# Per-axis bound on "the platform is ALREADY at the positioning pose, so command
+# nothing" (census B1, _toss_already_positioned). HALF the cup radius.
+#
+# It is NOT the envelope above and NOT _RELOAD_CENTERED_TOL_MM below, and the
+# difference is the point. Those two bound how far a platform may be from where a
+# catch was PLANNED from and still reach; this one bounds how far it may be
+# before a declared no-op becomes a lie. For a co-located Tier-8a toss a residual
+# is aim-NEUTRAL (throw site == catch site: the ball comes back down into the cup
+# wherever the cup is), so what it actually bounds is the error in everything
+# downstream that was told the ball will be at the NOMINATED B — the declared
+# reach centre, the announcement the tracker correlates against, and the mocap
+# cross-check target. Half a cup radius is a shift the cup absorbs with 2x margin.
+#
+# Deliberately tight rather than "as loose as still works": this constant's only
+# effect is to make the machine do LESS, so an over-wide value trades a silent
+# aim error for 0.45 s of cadence — the wrong side of that trade for a gate whose
+# failure mode is a throw fired from a site nobody solved for.
+_TOSS_ALREADY_THERE_TOL_MM = float(hw.GEOM_HAND_RADIUS_MM) / 2.0
 # RELOAD centred-ness tolerance (REJECTED_NOT_CENTERED, _platform_centered).
 #
 # NOT the bare envelope radius, and the difference is the whole point of the
@@ -930,6 +953,17 @@ class ReloadCoordinatorNode(Node):
         self._toss_record_prev_uid = None     # the PREVIOUS cycle's toss_uid, so
                                               #   an ABORTED_NO_RELEASE retry can
                                               #   name what it retried (guard G11)
+        # The record WORKER (census B6): the belt write and the trim update run
+        # here instead of on the cycle thread, so a slow SD card is a lost
+        # measurement rather than a cadence fault. ONE thread, so the append log
+        # keeps cycle order and the MUTATING trim estimator sees one update at a
+        # time. Started lazily on the first record — a node that never runs a
+        # toss never spawns it. UNBOUNDED queue deliberately: bounding it would
+        # trade a lost record for a bounded memory footprint, and the queue's
+        # steady state is one item (records arrive at most once per ~0.5 s and a
+        # belt append is sub-millisecond).
+        self._toss_records_q = queue.Queue()
+        self._toss_records_thread = None
         # ── Layer 1.5 dwell inclinometer covariate (§ 3.10) ──
         # Filled ONLY from the session's quiescent-dwell loop and consumed (and
         # cleared) by the next cycle's _open_toss_record. Zero control authority:
@@ -3477,16 +3511,44 @@ class ReloadCoordinatorNode(Node):
             # it means the envelope no longer silently depends on POSITIONING
             # having actually arrived.
             self._publish_reach_center(seq.catch_pose_stow_mm)
-            # Re-keyed from `tier == TIER_8B` onto the thing that actually
-            # matters (D3): ANY non-zero commanded tilt, tier-independent.
-            # Without the hold, catch_coordinator._on_throw_announcement's stock
-            # pre-tilt completes the un-tilt to level >= 1 s BEFORE release — its
-            # own docstring states the failure — so an aimed 8a toss would be
-            # levelled back and every log line would still report the aim as
-            # applied. Silent-wrong is the expensive failure class here.
-            if self._release_is_tilted(self._toss_commanded_release()):
-                self._publish_pretilt_hold(True)
-                self._toss_pretilt_hold_raised = True
+            # UNCONDITIONAL since 2026-08-22 (census E5). The key has widened
+            # twice, and the direction is the same each time — toward "the toss
+            # owns the platform for the whole cycle, full stop":
+            #
+            #   tier == TIER_8B          (Phase 4)
+            #   -> any non-zero commanded tilt, tier-independent (D3): the aim
+            #      map gave 8a a second source of tilt, and without the hold
+            #      catch_coordinator._on_throw_announcement's stock pre-tilt
+            #      completes the un-tilt to level >= 1 s BEFORE release, so an
+            #      aimed 8a toss is levelled back while every log line still
+            #      reports the aim as applied;
+            #   -> ALWAYS (E5).
+            #
+            # Why the last step. CCN's pre-tilt arrival is
+            # min(landing, max(landing - 1.5, now + 1.0)). At the cadence rungs
+            # `landing - 1.5` is in the PAST, so the max() picks `now + 1.0`,
+            # and the min() then clamps it to the landing itself — an arrival
+            # scheduled AT CONTACT, which is the exact degeneracy
+            # _pretilt_arrival_perf's own docstring was written to avoid (third
+            # sitting: tilt still >1 deg off until 0.24-0.49 s before landing).
+            #
+            # For a LEVEL 8a that target is the already-held pose, so the motion
+            # is degenerate and the old key was defensible. It stopped being
+            # defensible for two reasons that both arrive with cadence: the
+            # target is `predicted_catch_command`'s output, not literally the
+            # held pose, so any receive-tilt or landing-prediction residual
+            # becomes a commanded reach arriving AT CONTACT; and at a sub-second
+            # dwell the NEXT cycle's announcement lands while the previous ball
+            # is still seating, i.e. inside E1/E2's settle-hold and reach-freeze
+            # window, where any platform motion is a dropped catch.
+            #
+            # The cost of raising it when it was not needed is bounded and
+            # documented: a stale pretilt_hold only DEGRADES (a later reload
+            # catch loses its pre-tilt), it never commands anything, and all
+            # three teardowns release it keyed on the flag below. The cost of
+            # NOT raising it is a platform reach under a seated ball.
+            self._publish_pretilt_hold(True)
+            self._toss_pretilt_hold_raised = True
             self._toss_prepare_pending = True
         elif decision.action == TOSS_ACTION_ANNOUNCE:
             self._announce_toss(seq)
@@ -3573,6 +3635,25 @@ class ReloadCoordinatorNode(Node):
             orientation = self._tilt_quaternion(release.tilt_rx, release.tilt_ry)
         else:
             orientation = Quaternion()              # identity = level platform
+        if self._toss_already_positioned(x, y, z, release):
+            # CENSUS B1 — the no-op move. For a Tier-8a chain with
+            # stay_at_pose_on_caught the platform is ALREADY at B: the catch
+            # ended in ACTION_STAY and the emitter's terminal hold never let it
+            # go. Commanding it anyway costs min_move_duration_s (0.20) +
+            # TOSS_POSITION_SETTLE_PAD_S (0.20) + a service round trip, EVERY
+            # cycle, to traverse zero millimetres — 0.45 s of a turnaround whose
+            # whole physical floor is 0.49 s.
+            #
+            # Nothing else is skipped: the FSM still runs POSITIONING, the
+            # reach-envelope declaration still goes out at PREPARE (C-REACH-1),
+            # and the mocap arrival cross-check still gets its verification
+            # window. See TossSequencer.note_position_noop.
+            self.get_logger().info(
+                'POSITIONING skipped — platform is already at '
+                '({:.1f}, {:.1f}, {:.1f}) mm within {:.1f} mm (census B1); '
+                'nothing commanded'.format(x, y, z, _TOSS_ALREADY_THERE_TOL_MM))
+            seq.note_position_noop(time.perf_counter())
+            return
         if not self._go_to_pose_cli.wait_for_service(timeout_sec=_SERVICE_WAIT_S):
             self.get_logger().error('trajectory/go_to_pose service unavailable')
             seq.note_position_result(time.perf_counter(), False, 0.0, 'NO_RESPONSE')
@@ -3592,6 +3673,50 @@ class ReloadCoordinatorNode(Node):
             return
         seq.note_position_result(now, bool(resp.accepted),
                                  float(resp.planned_duration_s), str(resp.code))
+
+    def _toss_already_positioned(self, x, y, z, release) -> bool:
+        """Is the platform ALREADY at the positioning pose, provably? (census B1)
+
+        Three conditions, ALL required, and every one of them is a way this can
+        say "no" — which is the safe answer, because a wrong "yes" fires the
+        throw from a site the aim was not solved for:
+
+        1. **The release must be LEVEL.** ``trajectory/commanded_position``
+           carries position and nothing else (``trajectory_node`` publishes
+           ``_current_state()[0][:3]``), so a TILTED pre-tilt pose has an
+           orientation this node cannot verify. A tilted release therefore always
+           commands the move. That covers every aimed cycle — an ILC or
+           calibration-map aim makes the release tilted — so the skip is exactly
+           the level co-located case it was measured for, and nothing wider.
+        2. **The live commanded position must be FRESH.** ``None`` from
+           :meth:`_live_commanded_position` means unknown or stale, and unknown
+           reads as NOT-there. Same doctrine as ``throw_site_known``: an FSM that
+           was never told is not entitled to assume.
+        3. **It must match, per axis, inside the tolerance.**
+
+        **Why the tolerance is what it is.** For a co-located Tier-8a toss the
+        throw site and the catch site are the same physical place, so a residual
+        δ is aim-NEUTRAL: the ball goes up and comes back down into the cup
+        wherever the cup is (the vertical ballistic inverse is translation
+        invariant, and Δz is a hand-frame offset, not a platform-z one). What δ
+        is NOT neutral about is everything downstream that was told the ball will
+        be at the NOMINATED B: the declared reach envelope (C-REACH-1), the
+        announcement the tracker correlates against, and the mocap cross-check
+        target. So the bound is a fraction of the cup, not a fraction of the
+        workspace: ``GEOM_HAND_RADIUS_MM / 2``, which is a shift the cup absorbs
+        with 2x margin and which the catch pipeline's own B-centred expectation
+        still covers.
+
+        It is DELIBERATELY not ``_RELOAD_CENTERED_TOL_MM`` (66.53 mm): that is a
+        recentre-verification bound, an order of magnitude looser, and reusing it
+        here would let the skip fire on a platform two cup-radii off B."""
+        if self._release_is_tilted(release):
+            return False
+        live = self._live_commanded_position(time.perf_counter())
+        if live is None:
+            return False
+        return all(abs(float(live[i]) - float(v)) <= _TOSS_ALREADY_THERE_TOL_MM
+                   for i, v in enumerate((x, y, z)))
 
     @classmethod
     def _toss_positioning_xyz(cls, catch_pose_stow_mm, release):
@@ -4397,8 +4522,123 @@ class ReloadCoordinatorNode(Node):
             self._toss_record_pub.publish(String(data=payload))
         except Exception as exc:                               # noqa: BLE001
             self.get_logger().warning('toss/record publish failed: {}'.format(exc))
+        # CENSUS B6 — the belt write and the trim update leave the cycle thread.
+        # The ROS publish stays here: it is a non-blocking hand-off to the
+        # middleware, and it is the CANONICAL sink (the belt exists only so a
+        # `record:=false` bench session still produces a corpus). What moves is
+        # the pair that can BLOCK: an `open(..., 'a')` on the SD card and a numpy
+        # estimator update, both of which ran synchronously inside
+        # _run_toss_cycle before it returned — i.e. squarely in the
+        # landing -> next-cycle handoff. A full disk or a slow card was a cadence
+        # fault; now it is a lost measurement, which is what an instrument's
+        # failure should cost.
+        #
+        # The context snapshot is taken HERE, on the cycle thread, and passed in.
+        # _toss_trim_observe reads _toss_record_ctx / _toss_aim / _toss_trim, and
+        # _build_toss_cycle overwrites all three at the NEXT cycle — so a worker
+        # that read them later would attribute cycle N's toss to cycle N+1's pose
+        # and aim. That is the one real hazard in moving this off-thread, and it
+        # is closed by construction rather than by timing.
+        self._toss_records_submit(payload, record, self._toss_trim_snapshot())
+
+    # ── The record worker (census B6) ─────────────────────────────────────────
+    # ONE serialising thread, started lazily, drained at every point that READS
+    # what it produces. Not a pool: the trim estimator MUTATES, and the belt is
+    # an append log, so both need the cycle order the queue's FIFO gives them.
+
+    def _toss_trim_snapshot(self) -> dict:
+        """Freeze everything the trim update reads, on the CYCLE thread.
+
+        Taken at submit time, not at execute time, because ``_build_toss_cycle``
+        overwrites ``_toss_record_ctx`` / ``_toss_aim`` / ``_toss_trim_t0`` for
+        the NEXT cycle. ``_toss_trim`` itself is the live estimator object and is
+        carried by reference on purpose — it is the thing being updated, and the
+        single worker thread is what serialises those updates. It is read under
+        the lock so a concurrent ``_toss_trim_end`` cannot swap it mid-read."""
+        with self._lock:
+            ctx = self._toss_record_ctx or {}
+            return {
+                'trim': self._toss_trim,
+                'pose': ctx.get('catch_pose'),
+                'flight': ctx.get('flight'),
+                'aim': self._toss_aim,
+                't0': self._toss_trim_t0,
+            }
+
+    def _toss_records_submit(self, payload: str, record: dict,
+                             snapshot: dict) -> None:
+        """Queue one cycle's belt write + trim update for the worker.
+
+        Falls back to running them INLINE when the worker cannot be started —
+        so a node whose thread creation failed still produces a corpus and still
+        converges a trim, just on the cycle thread as before. Degrading to the
+        old behaviour is the right failure here; dropping the measurement is
+        not."""
+        try:
+            self._toss_records_worker_start()
+            self._toss_records_q.put_nowait((payload, record, snapshot))
+            return
+        except Exception as exc:                               # noqa: BLE001
+            self.get_logger().warning(
+                'toss record worker unavailable ({}) — running the belt write '
+                'and trim update INLINE on the cycle thread'.format(exc))
+        self._toss_records_run_one(payload, record, snapshot)
+
+    def _toss_records_worker_start(self) -> None:
+        with self._lock:
+            if self._toss_records_thread is not None:
+                return
+            t = threading.Thread(target=self._toss_records_worker,
+                                 name='toss_records', daemon=True)
+            self._toss_records_thread = t
+        t.start()
+
+    def _toss_records_worker(self) -> None:
+        while True:
+            item = self._toss_records_q.get()
+            try:
+                if item is None:                      # shutdown sentinel
+                    return
+                self._toss_records_run_one(*item)
+            except Exception as exc:                  # noqa: BLE001
+                # Belt-and-braces: _toss_records_run_one's two callees are each
+                # individually guarded, so reaching here means something outside
+                # them raised. The worker must survive it — a dead worker would
+                # silently stop the corpus for the rest of the session.
+                self.get_logger().warning(
+                    'toss record worker iteration failed ({}) — the worker '
+                    'continues'.format(exc))
+            finally:
+                self._toss_records_q.task_done()
+
+    def _toss_records_run_one(self, payload: str, record: dict,
+                              snapshot: dict) -> None:
         self._belt_toss_record(payload)
-        self._toss_trim_observe(record)
+        self._toss_trim_observe(record, snapshot)
+
+    def _toss_records_drain(self, timeout_s: float = 5.0) -> bool:
+        """Block until every queued record has been written and observed.
+
+        **Required before anything READS the worker's output**, and there are
+        exactly two such places: ``_toss_trim_end`` (which writes the trim's
+        PROPOSAL, and would otherwise omit the last cycle or two of a session)
+        and node teardown. Making the drain the contract is what keeps
+        "asynchronous" from meaning "sometimes missing" — the queue is an
+        ordering device, not a place work is allowed to be lost.
+
+        Bounded, and returns False on timeout rather than hanging: a wedged
+        worker must not be able to hold a session's terminal open."""
+        q = self._toss_records_q
+        deadline = time.perf_counter() + float(timeout_s)
+        while not q.empty() and time.perf_counter() < deadline:
+            time.sleep(_TICK_S)
+        if not q.empty():
+            self.get_logger().warning(
+                'toss record worker did not drain within {:.1f} s — {} record(s) '
+                'may be missing from the belt and the trim'.format(
+                    timeout_s, q.qsize()))
+            return False
+        return True
 
     # ── Layer 2: the session trim (contract C-TOSS-CAL-1 § 3.6, phase 2e) ─────
 
@@ -4517,7 +4757,7 @@ class ReloadCoordinatorNode(Node):
         with self._lock:
             self._toss_ilc_session = None
 
-    def _toss_trim_observe(self, record: dict) -> None:
+    def _toss_trim_observe(self, record: dict, snapshot: dict) -> None:
         """Feed ONE cycle's declaration to the session trim, then print TRIM.
 
         The declaration is the ingest point on purpose: it is the single object
@@ -4526,17 +4766,20 @@ class ReloadCoordinatorNode(Node):
         replay consumes — so the live and offline estimators cannot be fed
         different things.
 
+        **Runs on the record WORKER thread since 2026-08-22 (census B6)**, so its
+        context arrives as a ``snapshot`` taken on the cycle thread rather than
+        being read from ``self`` here. Reading it here would attribute cycle N's
+        toss to cycle N+1's pose and aim, because ``_build_toss_cycle`` overwrites
+        both between the submit and the execute.
+
         **Instrument-grade failure handling**, like the record itself: the whole
         body is guarded and a fault costs a measurement, never a teardown.
         """
-        with self._lock:
-            trim = self._toss_trim
-            pose = self._toss_record_ctx.get('catch_pose') \
-                if self._toss_record_ctx else None
-            flight = self._toss_record_ctx.get('flight') \
-                if self._toss_record_ctx else None
-            aim = self._toss_aim
-            t0 = self._toss_trim_t0
+        trim = snapshot.get('trim')
+        pose = snapshot.get('pose')
+        flight = snapshot.get('flight')
+        aim = snapshot.get('aim')
+        t0 = snapshot.get('t0')
         if trim is None:
             return
         try:
@@ -4586,7 +4829,14 @@ class ReloadCoordinatorNode(Node):
         proposal write below is best-effort I/O: a full disk must not be able to
         leave a stale common mode alive into the next goal, which is the one
         thing this component must never do.
+
+        **Drains the record worker FIRST of all** (census B6). The proposal below
+        is built from the trim's accumulated state, and the last cycle or two of a
+        session are still queued when the goal terminates — publishing a proposal
+        that omits them would be a silently short session, which is worse than a
+        slow one. The drain is bounded and its failure is a WARN, not a hang.
         """
+        self._toss_records_drain()
         self._toss_ilc_session_end()
         with self._lock:
             trim = self._toss_trim
@@ -5792,6 +6042,31 @@ class ReloadCoordinatorNode(Node):
         except Exception as e:  # noqa: BLE001
             self.get_logger().error(f'service call raised: {e}')
             return None
+
+
+    def destroy_node(self):
+        """Drain the record worker before the node goes away (census B6).
+
+        The belt write is the last stop for a `record:=false` bench session's
+        corpus, so a shutdown that discards a queued line discards a measurement
+        that has no other sink. Bounded, and a WARN rather than a hang if the
+        worker is wedged — a teardown must always complete.
+
+        The sentinel is posted after the drain so the worker exits its blocking
+        `get()` rather than being left parked on a daemon thread; a daemon thread
+        would die with the process anyway, but leaving it explicitly stopped is
+        what makes a leak visible in a test rather than invisible in a process.
+        """
+        try:
+            self._toss_records_drain()
+            if self._toss_records_thread is not None:
+                self._toss_records_q.put_nowait(None)
+                self._toss_records_thread.join(timeout=1.0)
+        except Exception as exc:                                # noqa: BLE001
+            self.get_logger().warning(
+                'toss record worker teardown failed ({}) — continuing '
+                'shutdown'.format(exc))
+        return super().destroy_node()
 
 
 def main(args=None):

@@ -13,9 +13,12 @@ ROS). Here we test the six things only the NODE can be asked:
    fold-in, contradiction C4) — and its estimate is still reported, under its
    own key. D7's *re-clamped at apply* rule is untouched and now arbitrates
    ``map + ilc``; a BINDING clamp is exercised in ``test_toss_ilc_node.py``.
-3. **``catch/pretilt_hold`` is raised for any non-zero COMMANDED aim** — D3's
-   rule, keyed on the commanded release state, so a monitor-only trim raises
-   nothing and a map aim still does.
+3. **``catch/pretilt_hold`` is raised UNCONDITIONALLY** — since 2026-08-22
+   (census E5) it is no longer keyed on the aim at all: at the cadence rungs
+   CCN's pre-tilt arrival clamps to the landing itself, so even a level 8a would
+   command a reach arriving at contact. The tests here therefore assert the
+   COMMANDED RELEASE STATE directly (``_release_is_tilted``) rather than using
+   the hold as a proxy for it — the hold stopped being evidence about the aim.
 4. **The trim is read exactly ONCE per goal**, in ``_build_toss_cycle``, and
    observed from exactly one place — the D4 manifest shape, applied to layer 2.
 5. **The record carries what was COMMANDED and what was KNOWN separately**, so a
@@ -288,12 +291,20 @@ def test_pretilt_hold_is_raised_for_a_map_only_aim(monkeypatch, tmp_path):
     assert published == [True]
 
 
-def test_a_trim_only_aim_raises_NO_pretilt_hold(monkeypatch, tmp_path):
-    """... and the converse, which is the C4 demotion seen from the FSM's side:
-    a saturated monitor-only trim leaves the goal on the byte-identical LEVEL
-    path, hold and all. ``_release_is_tilted`` keys on the commanded release
-    state rather than on any layer's value, so this follows from the composition
-    and is not a second rule that could drift from it."""
+def test_a_trim_only_aim_leaves_the_COMMANDED_release_level(monkeypatch, tmp_path):
+    """The C4 demotion seen from the FSM's side: a saturated monitor-only trim
+    leaves the goal on the byte-identical LEVEL path. ``_release_is_tilted`` keys
+    on the commanded release state rather than on any layer's value, so this
+    follows from the composition and is not a second rule that could drift.
+
+    ⚠ **This test no longer asserts anything about ``catch/pretilt_hold``**, and
+    the reason is a deliberate widening, not a regression. Until 2026-08-22 the
+    hold was the OBSERVABLE for "is the commanded release tilted", because the
+    two were keyed together. Census E5 unkeyed them: the hold is now raised
+    UNCONDITIONALLY, because at the cadence rungs CCN's pre-tilt arrival clamps
+    to the landing itself and even a level 8a would command a reach arriving at
+    contact. So the hold stopped being evidence about the aim, and this test
+    asserts the aim directly — which is what it was always about."""
     from jugglebot.toss_sequencer import ACTION_PREPARE_CATCH, TossDecision
     node = _node_with_map(monkeypatch, tmp_path, None)
     _enable_trim(node)
@@ -305,7 +316,9 @@ def test_a_trim_only_aim_raises_NO_pretilt_hold(monkeypatch, tmp_path):
     node._build_toss_observations = lambda _now: None
     seq.step = lambda _now, _obs: decision
     node._step_toss_sequence(seq, 100.0)
-    assert node._publishers['catch/pretilt_hold'].published == []
+    # The hold IS raised — for the cadence reason (E5), not for an aim reason.
+    published = [m.data for m in node._publishers['catch/pretilt_hold'].published]
+    assert published == [True]
 
 
 # ── 4. read ONCE per goal, observed from ONE place (D4, layer 2) ──────────────
@@ -363,7 +376,15 @@ def test_the_trim_is_fed_from_exactly_one_place():
     """One ingest point. The declaration is minted exactly once per cycle
     terminal and already carries every field the § 3.6.2 guards read, so feeding
     the estimator anywhere else would either double-count a toss or feed it a
-    different object from the one the offline replay consumes."""
+    different object from the one the offline replay consumes.
+
+    The SCOPE moved on 2026-08-22 (census B6) — from ``_publish_toss_record``,
+    which runs on the cycle thread, to ``_toss_records_run_one``, which runs on
+    the record worker. The invariant is unchanged and is if anything stronger:
+    the worker is a SINGLE thread draining a FIFO, so "one ingest point" now also
+    means "one update at a time" for a MUTATING estimator. What the move required
+    is that the trim's context be snapshotted at SUBMIT time — see
+    ``_toss_trim_snapshot`` and the test below."""
     sites = [s for s in _calls_in_package({'trim.observe'})
              if s[0] != 'toss_trim.py']       # toss_trim.replay is the OFFLINE
                                               # counterpart and feeds its own
@@ -371,7 +392,7 @@ def test_the_trim_is_fed_from_exactly_one_place():
     assert sites == [('reload_coordinator_node.py', '_toss_trim_observe',
                       'trim.observe')], sites
     callers = _calls_in_package({'self._toss_trim_observe'})
-    assert callers == [('reload_coordinator_node.py', '_publish_toss_record',
+    assert callers == [('reload_coordinator_node.py', '_toss_records_run_one',
                         'self._toss_trim_observe')], callers
 
 
@@ -590,5 +611,5 @@ def test_the_console_trim_block_is_emitted_once_per_cycle(monkeypatch,
                            catch_pose=_POSE, throw_delay=5.0, vel_scale=0.9,
                            raw_goal={}, flight=_FLIGHT)
     _build(node, monkeypatch)
-    node._toss_trim_observe({'cycle_index': 1})
+    node._toss_trim_observe({'cycle_index': 1}, node._toss_trim_snapshot())
     assert len(node._toss_trim.observed) == 1

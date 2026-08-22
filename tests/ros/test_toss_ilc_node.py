@@ -1278,7 +1278,7 @@ def test_the_trim_keeps_OBSERVING_while_it_commands_nothing(monkeypatch,
                            catch_pose=_POSE, throw_delay=5.0, vel_scale=0.9,
                            raw_goal={}, flight=_FLIGHT)
     _build(node, monkeypatch)
-    node._toss_trim_observe({'toss_uid': 'u1'})
+    node._toss_trim_observe({'toss_uid': 'u1'}, node._toss_trim_snapshot())
     assert observed == [{'toss_uid': 'u1'}]
     # ... and the console says MONITOR, never APPLIED: an operator who reads a
     # converging trim as a converging CORRECTION goes looking for it in the

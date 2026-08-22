@@ -24,6 +24,7 @@ ROS 2 is mocked by tests/ros/conftest.py.
 from __future__ import annotations
 
 import math
+import threading
 import time
 import types
 
@@ -2004,10 +2005,22 @@ def test_pretilt_hold_raised_at_prepare_for_8b(monkeypatch):
     assert node._toss_pretilt_hold_raised is True
 
 
-def test_pretilt_hold_never_published_for_8a(monkeypatch):
-    """THE 8a byte-identity pin: an 8a goal NEVER touches catch/pretilt_hold —
-    the PREPARE tick raises prime_hold alone and _toss_pretilt_hold_raised stays
-    False, so the publish sequence is bit-identical to Phase 1."""
+def test_pretilt_hold_is_raised_for_8a_too_and_prime_hold_still_leads(monkeypatch):
+    """⚠ **SUPERSEDED PIN, kept re-pointed rather than deleted.**
+
+    This was ``test_pretilt_hold_never_published_for_8a``: THE 8a byte-identity
+    pin, asserting that an 8a goal never touches ``catch/pretilt_hold`` so the
+    publish sequence stayed bit-identical to Phase 1. Census E5 retires that
+    identity DELIBERATELY (2026-08-22) — at the cadence rungs CCN's pre-tilt
+    arrival clamps to the landing itself, so even a level 8a would command a
+    reach arriving AT CONTACT, and at a sub-second dwell the next cycle's
+    announcement lands inside the previous ball's settle-hold window.
+
+    What the test still guards is the half that did NOT change and must not: the
+    PREPARE tick raises ``prime_hold`` and the ORDER is unchanged. The
+    prime_hold-before-armed ordering is the load-bearing one (an armed-edge
+    auto-prime would ascend with the seated ball); pretilt_hold rides alongside
+    it on the same tick, which is where it already rode for 8b."""
     t0 = 100.0
     node = _toss_ready_node(t0)
     seq = _fresh_seq(node, start=t0)                     # tier 8a (default)
@@ -2022,9 +2035,8 @@ def test_pretilt_hold_never_published_for_8a(monkeypatch):
     _stamp_fresh(node, t0 + 0.5)
     d = node._step_toss_sequence(seq, t0 + 0.5)
     assert d.action == ACTION_PREPARE_CATCH
-    assert ('prime_hold', True) in calls
-    assert all(c[0] != 'pretilt_hold' for c in calls)    # topic NEVER touched
-    assert node._toss_pretilt_hold_raised is False
+    assert calls == [('prime_hold', True), ('pretilt_hold', True)]
+    assert node._toss_pretilt_hold_raised is True
 
 
 def _capture_go_to_pose(node, monkeypatch, accepted=True):
@@ -2529,3 +2541,232 @@ def test_the_last_intended_cycle_is_not_clamped():
     seq = node._build_toss_cycle((0.0, 0.0, 170.0), 0.8, 5.0, 0.0)
     node._set_toss_next_cycle_perf(seq, session)
     assert node._expected_next_cycle_perf() == (None, None)
+
+
+# ══ The per-cycle budget fixes (census B1, B6, E5) ═══════════════════════════
+#
+# B1 skips a move that traverses zero millimetres; B6 gets the blocking I/O off
+# the cycle thread; E5 stops CCN commanding the platform during a toss at all.
+# All three are cadence work, and all three are ways the machine does LESS —
+# which is why each one's test is mostly about the conditions under which it
+# must decline to.
+
+def test_a_colocated_chain_skips_the_no_op_positioning_move():
+    """CENSUS B1. After a CAUGHT toss with ``stay_at_pose_on_caught`` the
+    platform is ALREADY at B — the terminal hold never let it go — so cycle N+1's
+    ``go_to_pose`` is a 0 mm move costing ``min_move_duration_s`` (0.20) +
+    ``TOSS_POSITION_SETTLE_PAD_S`` (0.20) + a service round trip, every cycle, out
+    of a turnaround whose whole physical floor is 0.49 s.
+
+    The skip is asserted at BOTH ends: no service call is made, and the FSM is
+    told it has arrived NOW rather than after a settle pad that pads nothing."""
+    now = time.perf_counter()
+    node = _toss_ready_node(now, commanded_pos=(0.0, 0.0, 170.0))
+    calls = []
+    node._go_to_pose_cli.wait_for_service = lambda timeout_sec=None: (
+        calls.append('service') or True)
+    seq = node._build_toss_cycle((0.0, 0.0, 170.0), 0.8, 5.0, 0.0)
+    seq._position_dispatched = True
+    node._position_platform_for_toss(seq)
+    assert calls == []                                  # nothing was commanded
+    accepted, planned, code = seq._position_result
+    assert accepted is True and planned == 0.0 and code == 'ALREADY_THERE'
+    assert seq._positioned is True
+    # No settle pad: there is no plan to grant status granularity to and no
+    # terminal hold to enter — the platform is already in one.
+    assert seq._position_arrival_time <= time.perf_counter()
+
+
+@pytest.mark.parametrize('commanded,why', [
+    ((0.0, 0.0, 170.0 + rcn._TOSS_ALREADY_THERE_TOL_MM + 1.0), 'z is off'),
+    ((rcn._TOSS_ALREADY_THERE_TOL_MM + 1.0, 0.0, 170.0), 'x is off'),
+    ((0.0, rcn._TOSS_ALREADY_THERE_TOL_MM + 1.0, 170.0), 'y is off'),
+    (None, 'the live commanded pose is UNKNOWN'),
+])
+def test_the_no_op_skip_declines_whenever_it_cannot_prove_the_pose(commanded, why):
+    """The skip's failure mode is a throw fired from a site nobody solved for, so
+    every uncertainty resolves to "command the move".
+
+    ``None`` is the load-bearing row: an absent or stale
+    ``trajectory/commanded_position`` reads as NOT-there, never as centre — the
+    same fail-closed doctrine as ``throw_site_known``, where an FSM that was
+    never told is not entitled to assume."""
+    now = time.perf_counter()
+    node = _toss_ready_node(now)
+    with node._lock:
+        node._commanded_pos_mm = (tuple(commanded) if commanded is not None
+                                  else None)
+        node._commanded_pos_mono = now if commanded is not None else 0.0
+    release = node._toss_commanded_release() if node._toss_record_ctx else None
+    assert node._toss_already_positioned(0.0, 0.0, 170.0, release) is False, why
+
+
+def test_a_stale_commanded_pose_is_not_a_matching_one():
+    """Freshness is a separate axis from agreement. A pose that MATCHES but is
+    older than the 5 Hz channel's staleness window is a pose from a machine that
+    may since have moved, and reading it as "already there" is how a stopped
+    publisher becomes a silent aim error."""
+    now = time.perf_counter()
+    node = _toss_ready_node(now)
+    with node._lock:
+        node._commanded_pos_mm = (0.0, 0.0, 170.0)
+        node._commanded_pos_mono = now - rcn._TRAJ_STATUS_STALE_S - 1.0
+    assert node._toss_already_positioned(0.0, 0.0, 170.0, None) is False
+
+
+def test_a_tilted_release_always_commands_the_move():
+    """``trajectory/commanded_position`` carries POSITION and nothing else, so a
+    tilted pre-tilt pose has an orientation this node cannot verify. Every AIMED
+    cycle is tilted — an ILC or calibration-map aim makes it so — which means the
+    skip is exactly the level co-located case it was measured for and nothing
+    wider. If the platform is level when it should be tilted, the throw is aimed
+    at the wrong place and every log line still reports the aim as applied."""
+    now = time.perf_counter()
+    node = _toss_ready_node(now)
+
+    class _Tilted:
+        tilt_rx, tilt_ry = 0.002, 0.0
+        pretilt_pose_stow = (0.0, 0.0, 170.0, 0.0, 0.0, 0.0)
+
+    assert node._release_is_tilted(_Tilted()) is True
+    assert node._toss_already_positioned(0.0, 0.0, 170.0, _Tilted()) is False
+
+
+def test_the_tolerance_is_a_fraction_of_the_cup_not_of_the_workspace():
+    """The bound is HALF the cup radius, and the choice is load-bearing.
+
+    For a co-located Tier-8a toss a positioning residual is aim-NEUTRAL — throw
+    site == catch site, so the ball comes back down into the cup wherever the cup
+    is. What it is NOT neutral about is everything told the ball will be at the
+    NOMINATED B: the declared reach centre, the announcement the tracker
+    correlates against, the mocap cross-check target. Reusing the recentre
+    tolerance (66.53 mm, an order of magnitude looser) would let the skip fire on
+    a platform two cup-radii off B."""
+    assert rcn._TOSS_ALREADY_THERE_TOL_MM == pytest.approx(
+        float(hw.GEOM_HAND_RADIUS_MM) / 2.0)
+    assert rcn._TOSS_ALREADY_THERE_TOL_MM < rcn._RELOAD_CENTERED_TOL_MM
+    assert rcn._TOSS_ALREADY_THERE_TOL_MM < rcn._TOSS_POSITION_TOL_MM
+
+
+def test_pretilt_hold_is_raised_on_every_cycle_including_a_level_one():
+    """CENSUS E5. The hold was 8b-only, then any-commanded-tilt, and is now
+    unconditional.
+
+    CCN's pre-tilt arrival is ``min(landing, max(landing - 1.5, now + 1.0))``. At
+    the cadence rungs ``landing - 1.5`` is in the PAST, so the max() picks
+    ``now + 1.0`` and the min() clamps it to the landing itself — an arrival
+    scheduled AT CONTACT, the exact degeneracy ``_pretilt_arrival_perf``'s own
+    docstring exists to avoid. For a level 8a the target is
+    ``predicted_catch_command``'s output rather than literally the held pose, so
+    any receive-tilt or landing-prediction residual becomes a commanded reach
+    arriving at contact — and at a sub-second dwell the NEXT cycle's announcement
+    lands inside the previous ball's settle-hold window, where any platform
+    motion is a dropped catch."""
+    from jugglebot.toss_sequencer import ACTION_PREPARE_CATCH, TossDecision
+    now = 100.0
+    node = _toss_ready_node(now)
+    seq = node._build_toss_cycle((0.0, 0.0, 170.0), 0.8, 5.0, 0.0)
+    assert node._release_is_tilted(node._toss_commanded_release()) is False
+    node._build_toss_observations = lambda _now: None
+    seq.step = lambda _now, _obs: TossDecision(
+        done=False, phase='PREPARING', action=ACTION_PREPARE_CATCH, result=None)
+    node._step_toss_sequence(seq, now)
+    published = [m.data for m in node._publishers['catch/pretilt_hold'].published]
+    assert published == [True]
+    assert node._toss_pretilt_hold_raised is True
+
+
+def test_the_unconditional_pretilt_hold_is_still_released_by_every_teardown():
+    """Raising it always is only safe because every terminal lowers it. The flag
+    is what makes that true, and it is keyed the same way for all three ladders
+    (STAY, RECENTER, SAFE_ABORT) — so a hold raised for the cadence reason is
+    released by exactly the code that released one raised for the aim reason."""
+    now = 100.0
+    for teardown in ('_toss_stay', '_toss_recenter', '_toss_safe_abort'):
+        node = _toss_ready_node(now)
+        node._toss_pretilt_hold_raised = True
+        getattr(node, teardown)()
+        published = [m.data for m
+                     in node._publishers['catch/pretilt_hold'].published]
+        assert published[-1] is False, teardown
+
+
+def test_the_belt_write_and_trim_update_leave_the_cycle_thread():
+    """CENSUS B6. Both ran synchronously inside ``_run_toss_cycle`` before it
+    returned — squarely in the landing -> next-cycle handoff — and both can BLOCK
+    (an ``open(..., 'a')`` on the SD card, a numpy estimator update). A full disk
+    was a cadence fault; now it is a lost measurement.
+
+    The ROS publish deliberately STAYS on the cycle thread: it is a non-blocking
+    hand-off to the middleware and it is the canonical sink."""
+    now = 100.0
+    node = _toss_ready_node(now)
+    ran_on = []
+    node._belt_toss_record = lambda payload: ran_on.append(
+        threading.current_thread().name)
+    node._open_toss_record(action='toss', goal_id='g', cycle_index=1,
+                           catch_pose=(0.0, 0.0, 170.0), throw_delay=5.0,
+                           vel_scale=0.9, raw_goal={}, flight=0.8)
+    node._log_toss_outcome(TossResult(True, 'CAUGHT'))
+    assert node._toss_records_drain()
+    assert ran_on == ['toss_records']
+
+
+def test_the_trim_context_is_snapshotted_at_submit_not_at_execute():
+    """The one real hazard in moving the trim update off-thread, closed by
+    construction rather than by timing.
+
+    ``_toss_trim_observe`` reads the cycle's pose, flight and aim.
+    ``_build_toss_cycle`` overwrites all three for the NEXT cycle. A worker that
+    read them at execute time would therefore attribute cycle N's toss to cycle
+    N+1's pose and aim — a silently wrong corpus, which is the failure class the
+    whole record layer exists to avoid."""
+    now = 100.0
+    node = _toss_ready_node(now)
+    node._open_toss_record(action='toss', goal_id='g', cycle_index=1,
+                           catch_pose=(11.0, 22.0, 170.0), throw_delay=5.0,
+                           vel_scale=0.9, raw_goal={}, flight=0.8)
+    snap = node._toss_trim_snapshot()
+    assert snap['pose'] == (11.0, 22.0, 170.0)
+    # The next cycle moves on; the snapshot does not.
+    node._open_toss_record(action='toss', goal_id='g', cycle_index=2,
+                           catch_pose=(99.0, 88.0, 170.0), throw_delay=5.0,
+                           vel_scale=0.9, raw_goal={}, flight=0.8)
+    assert snap['pose'] == (11.0, 22.0, 170.0)
+    assert node._toss_trim_snapshot()['pose'] == (99.0, 88.0, 170.0)
+
+
+def test_the_worker_is_drained_before_the_trim_proposal_is_written():
+    """The drain is the CONTRACT: "asynchronous" must not come to mean
+    "sometimes missing". The proposal is built from the trim's accumulated
+    state, and the last cycle or two of a session are still queued when the goal
+    terminates — a proposal that omitted them would be a silently short session,
+    which is worse than a slow one."""
+    import ast
+    src = ast.parse(open(rcn.__file__).read())
+    fn = next(n for n in ast.walk(src)
+              if isinstance(n, ast.FunctionDef) and n.name == '_toss_trim_end')
+    calls = [n.func.attr for n in ast.walk(fn)
+             if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)]
+    assert '_toss_records_drain' in calls
+    assert calls.index('_toss_records_drain') < calls.index('_toss_ilc_session_end')
+
+
+def test_a_worker_that_cannot_start_falls_back_to_running_inline():
+    """Degrading to the OLD behaviour is the right failure here; dropping the
+    measurement is not. A node whose thread creation failed still produces a
+    corpus and still converges a trim — just on the cycle thread, as before."""
+    now = 100.0
+    node = _toss_ready_node(now)
+    node._toss_records_worker_start = lambda: (_ for _ in ()).throw(
+        RuntimeError('cannot spawn'))
+    warned, ran = [], []
+    node.get_logger().warning = warned.append
+    node._belt_toss_record = lambda payload: ran.append(
+        threading.current_thread().name)
+    node._open_toss_record(action='toss', goal_id='g', cycle_index=1,
+                           catch_pose=(0.0, 0.0, 170.0), throw_delay=5.0,
+                           vel_scale=0.9, raw_goal={}, flight=0.8)
+    node._log_toss_outcome(TossResult(True, 'CAUGHT'))
+    assert ran == [threading.current_thread().name]        # inline, not deferred
+    assert any('INLINE' in w for w in warned)

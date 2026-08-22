@@ -59,6 +59,13 @@ related_plan: critical-point-ilc.md
   - ros_ws/docs/hand_throw_envelope.md
   - ros_ws/docs/hand_decel_feedforward.md
   - tests/hardware/toss_trace_recorder.py
+  - tests/ros/test_toss_coordinator.py
+  - tests/ros/test_toss_trim_node.py
+  - tests/ros/test_toss_calibration.py
+  - tests/ros/test_toss_record_publisher.py
+  - tests/ros/test_toss_ilc_node.py
+  - tests/ros/test_toss_sequencer.py
+  - tests/ros/test_toss_session.py
 ---
 
 # Critical-point ILC becomes the primary toss learning architecture
@@ -1890,3 +1897,179 @@ bounds how big a throw may be, this bounds when the next one may fire.)
   "read"), per the never-delete-history convention — 21 of them, in the two
   contracts, three plans, the anomaly-fixes runbook, four test docstrings and two
   YAML comments.
+
+---
+
+## Phase J — the per-cycle budget: B1, B6, E5
+
+Three census rows, one theme: **every one of them makes the machine do LESS**,
+and every one's real content is the condition under which it must decline to.
+
+### B1 — the POSITIONING move that traverses zero millimetres
+
+After a CAUGHT toss with `stay_at_pose_on_caught` the platform is *already* at B:
+the terminal action is `ACTION_STAY`, no `go_home` runs, and the emitter's
+terminal hold never lets the pose go. Cycle N+1 then commands `go_to_pose` to the
+place it is standing — `min_move_duration_s` (0.20) + `TOSS_POSITION_SETTLE_PAD_S`
+(0.20) + a service round trip, every cycle, out of a turnaround whose whole
+physical floor is 0.4871 s. The census measures it at **0.45 s**, the single
+largest soft cost after the miss path.
+
+`TossSequencer.note_position_noop(now)` declares arrival with
+`(True, 0.0, 'ALREADY_THERE')` and **no settle pad**. Dropping the pad is not
+shaving: the pad exists for 5 Hz status granularity and terminal-hold ENTRY
+jitter, and with nothing commanded there is no plan to grant granularity to and
+no hold to enter — the platform is already in one. Everything else is
+byte-identical to an accepted move: POSITIONING still runs, the reach-envelope
+declaration still goes out at PREPARE (C-REACH-1), the mocap cross-check still
+gets its verification window.
+
+**The claim's safety lives at the caller, deliberately.** Three conditions, all
+required, each a way to say "no":
+
+1. **The release must be LEVEL.** `trajectory/commanded_position` publishes
+   `_current_state()[0][:3]` — position, no orientation. A tilted pre-tilt pose is
+   therefore unverifiable from this node, so a tilted release *always* commands
+   the move. That covers every AIMED cycle (an ILC or map aim makes the release
+   tilted), which means the skip is exactly the level co-located case it was
+   measured for and nothing wider.
+2. **The live pose must be FRESH.** `None` from `_live_commanded_position` means
+   unknown or stale, and unknown reads as NOT-there — the `throw_site_known`
+   doctrine: an FSM that was never told is not entitled to assume.
+3. **It must match per axis within `_TOSS_ALREADY_THERE_TOL_MM` = 17.5 mm**, half
+   the cup radius.
+
+**Why half a cup radius and not the reach envelope.** For a co-located Tier-8a
+toss a positioning residual is *aim-neutral*: throw site == catch site, so the
+ball goes up and comes back down into the cup wherever the cup is (the vertical
+ballistic inverse is translation-invariant, and Δz is a hand-frame offset, not a
+platform-z one). What δ is NOT neutral about is everything downstream that was
+told the ball will be at the NOMINATED B — the declared reach centre, the
+announcement the tracker correlates against, the mocap cross-check target. So the
+bound is a fraction of the cup, not of the workspace. It is deliberately tight
+rather than "as loose as still works": this constant's only effect is to make the
+machine do less, so an over-wide value trades a silent aim error for 0.45 s of
+cadence — the wrong side of that trade for a gate whose failure mode is a throw
+fired from a site nobody solved for. Reusing `_RELOAD_CENTERED_TOL_MM` (66.53 mm)
+would have let the skip fire on a platform two cup-radii off B.
+
+### B6 — the belt write and the trim update leave the cycle thread
+
+`_publish_toss_record` ran three things synchronously inside `_run_toss_cycle`
+before it returned, i.e. squarely in the landing→next-cycle handoff: a ROS
+publish, an `open(..., 'a')` append to the SD card, and a numpy estimator update.
+Two of those can block. A full disk or a slow card was a **cadence fault**.
+
+The ROS publish stays — it is a non-blocking hand-off to the middleware and it is
+the canonical sink (the belt exists only so a `record:=false` bench session still
+produces a corpus). The other two move to one serialising worker thread.
+
+**One thread, not a pool, and the reason is correctness rather than simplicity:**
+the trim estimator MUTATES and the belt is an append log, so both need the cycle
+ORDER a FIFO drained by a single consumer gives them. Two workers would let cycle
+N+1's observation land before cycle N's.
+
+**The one real hazard, closed by construction.** `_toss_trim_observe` reads the
+cycle's pose, flight and aim; `_build_toss_cycle` overwrites all three for the
+NEXT cycle. A worker that read them at execute time would attribute cycle N's
+toss to cycle N+1's pose — a silently wrong corpus, which is the exact failure
+class the record layer exists to prevent. So `_toss_trim_snapshot()` freezes them
+on the CYCLE thread at submit time and they travel with the job. (The estimator
+object itself is carried by reference on purpose — it is the thing being updated,
+and the single worker is what serialises those updates.)
+
+**The drain is the contract**, and it is what keeps "asynchronous" from coming to
+mean "sometimes missing". Every place that READS the worker's output drains
+first, and there are exactly two: `_toss_trim_end` (whose PROPOSAL is built from
+accumulated trim state, and would otherwise omit the last cycle or two of a
+session — a silently short session is worse than a slow one) and `destroy_node`.
+Both drains are bounded and both degrade to a WARN, because a wedged worker must
+never hold a session's terminal or a node teardown open.
+
+**And it falls back to INLINE.** If the thread cannot be started the belt write
+and trim update run on the cycle thread exactly as before. Degrading to the old
+behaviour is the right failure here; dropping the measurement is not.
+
+The `test_the_trim_is_fed_from_exactly_one_place` manifest moved with the code —
+from `_publish_toss_record` to `_toss_records_run_one`. The invariant is unchanged
+and is arguably stronger: "one ingest point" now also means "one update at a
+time" for a mutating estimator.
+
+### E5 — `catch/pretilt_hold` on every cycle
+
+The key has widened twice and the direction is the same each time — toward *the
+toss owns the platform for the whole cycle*:
+
+    tier == TIER_8B                                    (Phase 4)
+ -> any non-zero commanded tilt, tier-independent      (D3, 2026-08-11)
+ -> ALWAYS                                             (E5, 2026-08-22)
+
+CCN's pre-tilt arrival is `min(landing, max(landing - 1.5, now + 1.0))`. At the
+cadence rungs `landing - 1.5` is in the PAST, so the `max()` picks `now + 1.0`
+and the `min()` then clamps it to the landing itself — **an arrival scheduled AT
+CONTACT**, which is the precise degeneracy `_pretilt_arrival_perf`'s own docstring
+was written to avoid (third sitting: tilt still >1° off until 0.24–0.49 s before
+landing).
+
+For a LEVEL 8a the census calls that "benign — a degenerate zero-motion target",
+and the old key was defensible on exactly that basis. It stops being defensible
+for two reasons that both arrive *with cadence*, and only one of them is in the
+census:
+
+* the target is `predicted_catch_command`'s output, **not literally the held
+  pose**, so any receive-tilt or landing-prediction residual becomes a commanded
+  reach arriving at contact;
+* at a sub-second dwell the NEXT cycle's announcement lands while the previous
+  ball is still seating — i.e. inside E1's 0.50 s catch settle-hold and E2's
+  0.30 s reach freeze, where **any** platform motion is a dropped catch.
+
+The cost of raising it when it was not needed is bounded and already documented:
+a stale `pretilt_hold` only DEGRADES (a later reload catch loses its pre-tilt), it
+never commands anything, and all three teardown ladders (STAY, RECENTER,
+SAFE_ABORT) release it keyed on `_toss_pretilt_hold_raised`. The cost of not
+raising it is a platform reach under a seated ball.
+
+## Discussion — Phase J
+
+**A pin was deliberately retired, and re-pointed rather than deleted.**
+`test_pretilt_hold_never_published_for_8a` called itself "THE 8a byte-identity
+pin": an 8a goal's publish sequence stayed bit-identical to Phase 1. E5 breaks
+that identity on purpose. The test is kept, renamed
+(`test_pretilt_hold_is_raised_for_8a_too_and_prime_hold_still_leads`) and
+re-pointed at the half that did NOT change and must not — the
+prime_hold-before-armed ORDER, which is the load-bearing one, because an
+armed-edge auto-prime would ascend with the seated ball. Deleting it would have
+lost that guard along with the retired claim.
+
+**A second-order consequence worth stating: `catch/pretilt_hold` has stopped
+being evidence about the aim.** Three test files used "was the hold raised?" as a
+proxy for "is the commanded release tilted?", which was sound while the two were
+keyed together and is now simply wrong. Each has been re-pointed at
+`_release_is_tilted` — the thing they were always about — and the module
+docstrings say why. This is the kind of drift that survives a green suite: every
+assertion still passes, and the test's *name* has quietly stopped describing what
+it checks.
+
+**Why the B1 skip is level-only, stated as a limitation rather than hidden.** An
+aimed 8a cycle — which is every cycle once ILC is converging — takes the tilted
+branch and pays the full 0.45 s. Extending the skip needs an orientation on
+`trajectory/commanded_position` (or a rotvec on `trajectory/status`), which is a
+publisher change in `trajectory_node` and outside this package. It is carried as
+an open question rather than worked around, because the available workaround —
+inferring orientation from the last commanded tilt — is exactly the kind of
+cached belief the `throw_site_known` doctrine exists to forbid.
+
+## Verification — Phase J
+
+- `./run_tests.sh` (the default gate), run 2026-08-22 as the pre-commit gate:
+  **RESULT: PASS** — parallel **5692 passed, 3 skipped in 252.82 s**, serial phase
+  empty, total 265 s.
+- Twelve new tests, all in `tests/ros/test_toss_coordinator.py` § "The per-cycle
+  budget fixes": the skip fires and commands nothing; it declines on each of the
+  four uncertainty axes (x, y, z, unknown pose) plus staleness and tilt; the
+  tolerance is pinned against the cup radius and ordered below both looser
+  siblings; the hold is raised on a LEVEL cycle and released by all three
+  teardowns; the belt write runs on the `toss_records` thread; the trim context
+  does not follow `_build_toss_cycle`; the drain precedes the proposal (asserted
+  by AST, so a reordering edit fails rather than a timing one); and a worker that
+  cannot start falls back inline.
