@@ -1949,6 +1949,39 @@ intent) **before R3, not after**.
 
 ### 11.5 The ladder
 
+> **⚠ THE EXECUTABLE LADDER IS NOW A RUNBOOK:
+> [`tests/hardware/session_cadence_ladder.md`](../../tests/hardware/session_cadence_ladder.md)**
+> (landed 2026-08-22). It carries the per-rung PASS/ABORT criteria this table
+> does not, the two pre-R3 measurements as explicit rows, the verified
+> `t7`-not-`t8` firmware answer, the aim-channel truth note, and the F4
+> cancel-latency warning. **Fly the runbook, not this table.**
+>
+> The table below is kept as the census's own record of the ladder's DESIGN.
+> **Three of its cells are now history rather than instruction:**
+>
+> * **R2 / R3** describe lowering `MIN_TOSS_THROW_DELAY_S` in steps. That
+>   constant was **retired outright** on 2026-08-22 (operator decision 3) rather
+>   than stepped down. What replaced it is § 11.6 plus the hand-geometry term
+>   `toss_session.required_dwell_s` now carries.
+> * **R5 (`0.40 s` at `T ≥ 0.64 s`) is REFUSED by the shipped floors.** This
+>   table sized it against the hand floor alone (0.3932 s at that flight) and
+>   never against the plumbing one: at `T = 0.64` the derived `:642` dispatch
+>   budget is **0.3037 s**, so the floor is `0.3037 + 0.137 = 0.4407 s` and the
+>   goal returns `REJECTED_THROW_DELAY` (probe against the real FSM, 2026-08-22).
+>   A 0.40 s dwell IS reachable — at `T ≥ ~1.0 s`, cycle period 1.40 s,
+>   **42.9 throws/min**, i.e. *slower than R5-prime*. That is § 11.1
+>   consequence 3 arriving in practice: the dwell is the wrong operator
+>   variable, and chasing 0.40 s costs cadence rather than buying it. The
+>   runbook's R5 keeps the rung's PURPOSE (first sitting at the target flight;
+>   F1/F6/F7 must have landed) at numbers the machine admits — **dwell 0.60 s at
+>   the band floor, 54.4 throws/min**.
+>
+> R4's cell is unchanged and R4's work has all LANDED. One more correction the
+> runbook carries and this table cannot: R5-prime's "apex 0.30 m" is a rounded
+> DISPLAY of the band floor, and a `throw_height_m: 0.30` goal converts to a
+> flight **0.17 ms below** `MIN_FLIGHT_TIME_S` and dies
+> `REJECTED_THROW_ENVELOPE(ARM_WINDOW)`. The runbook flies `0.31`.
+
 Each rung is a bench sitting, `num_throws = 5` first, `stop_on_miss = true`,
 `on_empty_cup = STOP` until the § 11.4 work lands.
 
@@ -2001,6 +2034,24 @@ which is the correct runtime enforcement and merely needs an honest
 C-HAND-1 no-overlap gate, and the arm window. The operator's framing: bring-up
 time fences relax as juggling work proceeds; a fence derived from state survives
 that, a hardcoded seconds constant does not.
+
+> **LANDED 2026-08-22**, and with one addition this section did not anticipate.
+> `TOSS_DISPATCH_DEBOUNCE_S = 0.10` is the debounce;
+> `hand_stroke.min_throw_event_delay_s(v_throw)` is the honest event-delay floor
+> (0.337 s at the band floor, 0.281 s at the nominal, and it MOVES with speed —
+> the windup term alone spans 2.3× across the band).
+>
+> **The addition: `toss_session.required_dwell_s` now carries the HAND-GEOMETRY
+> term**, `max(throw_delay + margin, hand_stroke.min_turnaround_dwell_s)`. § 4 of
+> this census says the hard floor IS the hand stroke geometry, and until that
+> commit nothing in the Python enforced the sentence — the plumbing term alone
+> was the floor, and it was safe only *by accident*, because 3.5 + 0.6 sat an
+> order of magnitude above anything the hand could not make. Retiring the
+> constant removes the accident: without the new term, `throw_delay 0.30 /
+> dwell 0.45` at the band floor is ACCEPTED and dispatches cycle N+1's throw
+> inside cycle N's live catch stroke. A retirement that only deleted a constant
+> would have shipped that hole. See
+> `logbook/2026-08-21-ilc-primary-foldin.md` § Phase I.
 
 **Retained regardless, and not on the table**: the hand dispatch ladders and
 `_MAX_ARM_DISPATCHES` (defence in depth against the closed ERR_TIMEOUT

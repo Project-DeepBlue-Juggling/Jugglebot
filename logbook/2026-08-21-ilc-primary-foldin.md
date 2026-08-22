@@ -66,6 +66,7 @@ related_plan: critical-point-ilc.md
   - tests/ros/test_toss_ilc_node.py
   - tests/ros/test_toss_sequencer.py
   - tests/ros/test_toss_session.py
+  - tests/hardware/session_cadence_ladder.md
 ---
 
 # Critical-point ILC becomes the primary toss learning architecture
@@ -2073,3 +2074,147 @@ cached belief the `throw_site_known` doctrine exists to forbid.
   does not follow `_build_toss_cycle`; the drain precedes the proposal (asserted
   by AST, so a reordering edit fails rather than a timing one); and a worker that
   cannot start falls back inline.
+
+---
+
+## Phase K — the ladder becomes a runbook, and two of its rungs turn out to be wrong
+
+`tests/hardware/session_cadence_ladder.md` — R0 → R5-prime, with the per-rung
+PASS/ABORT criteria the census table does not carry, the two pre-R3 measurements
+as explicit rows, the verified firmware answer, the aim-channel truth note and
+the F4 cancel warning.
+
+Writing it as an *executable* document is what surfaced the two findings below.
+The census's ladder is a design table; a runbook has to say what to type, and
+the moment every rung had concrete goal parameters they could be run through the
+real FSMs — which is when two of them stopped working.
+
+### Finding 1 — the census's R5 (dwell 0.40 s at `T ≥ 0.64 s`) is REFUSED
+
+The census sized R5 against the **hand floor alone**: 0.3932 s at that flight,
+so 0.40 s looks like a 7 ms clearance. It never checked the plumbing floor. At
+`T = 0.64` the derived `:642` dispatch budget is **0.3037 s**, so
+`required_dwell_s = max(0.3037 + 0.137, 0.3932) = 0.4407 s` and the goal returns
+`REJECTED_THROW_DELAY`. Probed against the real `TossSessionSequencer`,
+2026-08-22.
+
+**A 0.40 s dwell IS reachable — and reaching it makes the machine slower.** It
+needs `T ≥ ~1.0 s` (apex 1.23 m), which puts the cycle period at 1.40 s =
+**42.9 throws/min**, against R5-prime's 60.4. That is the census's own
+consequence 3 arriving in practice: *the dwell is the wrong operator variable*.
+Chasing 0.40 s costs cadence rather than buying it.
+
+So the runbook's R5 keeps the rung's PURPOSE — the first sitting at the target
+flight, the rung where F1/F6/F7 must have landed because the machine is no
+longer quiescent — at numbers the machine admits: **dwell 0.60 s at the band
+floor, 54.4 throws/min**, with 113 ms of dwell margin for a first sitting at a
+flight nothing has been flown at continuously. It is also better ladder design:
+one variable changes per rung (R0→R3 walk the dwell at a fixed 0.78 m throw; R4
+and R5 shorten the FLIGHT; R5-prime tightens the dwell at the R5 flight).
+
+### Finding 2 — `throw_height_m: 0.30` dies at the envelope. There is a cliff at 0.3005 m
+
+The census quotes R5-prime's apex as "0.30 m". That is a rounded **display** of
+the C-HAND-3 band floor, not a goal parameter — and the difference is fatal. A
+goal of `0.30` converts to `T = 0.49472 s`, which is **0.17 ms below**
+`throw_envelope.MIN_FLIGHT_TIME_S` (0.494882), so the cycle dies
+`REJECTED_THROW_ENVELOPE(ARM_WINDOW: …)` at CHECKING — after building the whole
+per-goal state. Probed 2026-08-22: `0.300` refuses, `0.301` admits.
+
+The runbook flies **0.31**, not `0.301`. At `0.301` the goal sits 0.7 ms above a
+cliff whose position depends on `catch/vel_scale` and on the C-HAND-2 headroom
+reservation, so any operator adjustment to either would silently start refusing
+the rung. `0.31` costs 0.5 throws/min (60.4 vs 60.9) and buys 8 ms of clearance.
+If a sitting wants the last half-throw per minute it comes out of the DWELL —
+0.4870 s is the true floor there — not out of the height.
+
+**Every rung is now checked both ways**, because the two FSMs refuse for
+different reasons and a goal can clear one and die on the other: construct the
+`TossSessionSequencer` and assert `START_CYCLE`, AND construct the cycle
+`TossSequencer` and assert its CHECKING pass reaches POSITIONING. All seven
+rungs pass both (probe, 2026-08-22).
+
+### What else the runbook carries that the census table cannot
+
+* **The firmware answer, resolved.** `t7`, not `t8` — with the six line
+  references, and an instruction to re-verify them after any `Trajectory.h`
+  flash, because a kind-0/kind-1 end hold would make the whole floor table wrong
+  by 100 ms and stop the ladder at R4.
+* **The two pre-R3 measurements as ROWS, not footnotes.** (i) Re-measure the
+  sensor arrival band post-FW 14 — with a command that uses fields the corpus
+  already carries (`t_catch_raw_ros − announce_landing_time_ros`, RAW because the
+  rising edge is the zero-debounce one) rather than a miner flag that does not
+  exist. (ii) The ~71 ms measured poll cadence against the configured 20 ms,
+  flagged as **a can-bridge investigation, explicitly NOT built here** — at the
+  R5-prime dwell that gap is 14 % of the whole dwell and it sits directly under
+  the `ball_seated` precondition.
+* **Aim-channel truth** (operator decision 6): `arrival_dir` is the PRIMARY and
+  ONLY aim residual driving the ILC update; `land_err_x/y` are MONITOR-ONLY.
+  H2 is RETIRED — conventional markers on the ball would corrupt the trackable
+  surface being measured — so C3 is resolved BY DECISION, and the standing
+  replacement validation is the per-toss `channel_disagreement` log with its two
+  readings written out. ABSOLUTE centering closes through catch outcomes.
+* **F4, stated before the first sitting rather than discovered mid-one.**
+  `TOSS_CANCEL_CUTOFF_S = 0.25` is comparable to the entire dwell from R5 down,
+  so a cancel is ALWAYS deferred: the stop button gains one full cycle of
+  latency. The cancel button is not the E-STOP.
+* **`stop_on_miss: true` / `on_empty_cup: STOP` as a standing setting**, with the
+  census's "single most dangerous change" spelled out — the possession work
+  landed 2026-08-21 and is desk-verified, but it has **not** been validated on
+  the bench, so `RELOAD` stays off until a rung confirms it on hardware.
+
+## Discussion — Phase K
+
+**Why the census's numbers were wrong in a way nobody could have caught by
+reading.** The R5 row and the R5-prime apex are both *correct as census entries*
+— 0.3932 s IS the hand floor at `T = 0.64`, and 0.30 m IS the band floor's apex
+to two decimal places. They only become wrong when someone has to type them into
+a goal, because a goal is checked against a DIFFERENT set of constraints than
+the census was reasoning about (the plumbing floor in one case, the envelope's
+flight-time floor in the other). This is the empirical-probe rule paying for
+itself in a place it is not usually applied: the thing being probed was not a
+threshold or a failure mode, it was **a runbook's own instructions**.
+
+The generalisable version, worth carrying: *a design table becomes wrong the
+moment it is transcribed into commands, and the transcription is where it should
+be executed.* Every rung in this runbook was run through the real FSMs before
+the file was committed, which took ten minutes and found two blockers that would
+each have cost a bench sitting.
+
+**Why R5's replacement is a re-basing and not a deletion.** R5's *purpose* is
+not its dwell — it is the rung at which invariant S5's "quiescent wait" stops
+being true and F1/F6/F7 become prerequisites rather than nice-to-haves. That
+purpose survives at any dwell short enough to make the machine continuously
+busy, and 0.60 s at the band floor does it (quiescent for under 0.1 s per cycle)
+while leaving a real margin for a first sitting at a flight nothing has been
+flown at continuously. Deleting the rung would have collapsed two hard steps
+into one — shorten the flight to the band floor AND tighten the dwell to 3 ms of
+margin — in a single sitting.
+
+**On the honesty of the plan-surface edits.** Operator decision 4 says to update
+plans honestly with supersession notes and never delete history. Both edits here
+follow that: the census's § 11.5 table is kept verbatim with a note naming
+exactly which three cells are now history and why, and § 11.6's "what replaces
+the floor" gains the one thing it did not anticipate — the hand-geometry term.
+Neither the table nor the reasoning is rewritten to look like it was right.
+
+## Verification — Phase K
+
+- `./run_tests.sh --full` (every tier, `nightly` included), run 2026-08-22 as
+  the phase-closure gate: **RESULT: PASS** — parallel **6115 passed, 3 skipped,
+  3 xfailed in 512.03 s**, serial **9 passed in 41.61 s**, total 560 s.
+- Ladder-rung probe, run 2026-08-22 against this tree: all seven rungs
+  (R0, R1, R2, R3, R4, R5, R5-prime) accepted by BOTH
+  `TossSessionSequencer.step()` (→ `START_CYCLE`) and `TossSequencer.step()`
+  (→ POSITIONING). The two rejected variants are recorded above with their
+  reject codes.
+- Envelope-cliff probe, run 2026-08-22: `throw_height_m` 0.300 →
+  `REJECTED_THROW_ENVELOPE(ARM_WINDOW)`, 0.301 → admitted. `MIN_FLIGHT_TIME_S`
+  = 0.4948816; `flight_time_from_height(0.30)` = 0.49472.
+- Cross-reference check, run 2026-08-22: every `path.md` / `path.py` reference in
+  the runbook resolves to a file that exists, and every markdown link target
+  resolves relative to `tests/hardware/`.
+- Internal numeric consistency sweep, 2026-08-22: the six throws/min figures
+  quoted (60.4, 61.1, 54.4, 44.3, 42.9, 9.4) and the two distinct dwell floors
+  (0.4871 at the band floor, 0.4870 at the rung's own flight) are each used in
+  exactly one sense throughout.

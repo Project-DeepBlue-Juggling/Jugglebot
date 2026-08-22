@@ -4662,6 +4662,14 @@ cap only. Take that as a watch-item for DISP-5, not as a prohibition.
 
 ## SECTION CONT — repeated toss-catch cycles (`single-ball-toss` Phase F)
 
+> **⏩ WHERE TO GO NEXT (added 2026-08-22).** This section validates the session
+> at the SHIPPED 6.0 s dwell. Walking the dwell DOWN toward the tuning-phase
+> operating point — **0.49 s at flight 0.4949 s, ~61 throws/min** — is its own
+> ladder with its own per-rung PASS/ABORT criteria:
+> [`tests/hardware/session_cadence_ladder.md`](session_cadence_ladder.md), rungs
+> R0 → R5-prime. **This section IS its R0.** Get SECTION CONT green here first;
+> the ladder's every rung inherits the plant health it establishes.
+
 > **Appended 2026-07-29.** This is operator decision **(c)** of 2026-07-28 —
 > *`toss_continuous {catch_position, throw_height_m, num_throws, dwell_time_s}`,
 > `stop_on_miss` defaults **TRUE***. Validates `plans/active/single-ball-toss.md`
