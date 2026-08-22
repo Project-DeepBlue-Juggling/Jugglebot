@@ -759,37 +759,67 @@ jugglebot_operational:
   toss_session_dwell_default_s: 6.0      # Default dwell {s} for a TossContinuous session when the goal's
                                          # dwell_time_s is 0/unset (single-ball-toss Phase F). DWELL is
                                          # defined as previous SCHEDULED LANDING → next RELEASE.
-                                         # 6.0 sits comfortably above the 5.60 s floor that the 5.0 s
+                                         # 6.0 sits comfortably above the 5.137 s floor that the 5.0 s
                                          # default throw delay implies (see toss_session_dwell_margin_s),
                                          # so the all-defaults goal is legal without the operator doing
                                          # arithmetic. toss_session's DEFAULT_SESSION_DWELL_S is the
                                          # no-config fallback only, pinned equal by the drift-guard test.
-  toss_session_dwell_margin_s: 0.6       # The unavoidable landing → next-cycle-start handoff {s}. The
-                                         # dwell FLOOR is DERIVED from it, never chosen:
-                                         #     dwell_floor = throw_delay_s + this
-                                         # because a cycle's release is its own accept + throw_delay, and
-                                         # the session cannot start cycle N+1 before cycle N's CAUGHT
-                                         # verdict has landed. Arithmetic, all three terms measured or
-                                         # landed:
-                                         #   CAUGHT verdict lands at landing + 0.202–0.442 s (median
-                                         #     0.209) — 17/17 self-tosses of the 2026-07-27 sitting,
-                                         #     logbook/2026-07-28-caught-gate-xy-plausibility.md;
-                                         #   + the node tick that observes it and the tick that starts the
-                                         #     next cycle, 2 × _TICK_S = 0.100 s;
-                                         #   = 0.542 s worst measured, so 0.6 also covers ACTION_STAY's
-                                         #     arm_catch service call on a healthy machine.
-                                         # ⇒ absolute floor 4.10 s (at toss_sequencer's own 3.5 s
-                                         # MIN_TOSS_THROW_DELAY_S), 5.60 s at the 5.0 s default delay.
-                                         # A shorter dwell is REJECTED_DWELL, never silently stretched —
-                                         # a cadence the machine quietly ignores is a lie about what it
-                                         # did. Lateness the other way IS absorbed (a long cleanup just
-                                         # reports a longer achieved dwell; it never aborts).
-                                         # NOTE the 2.0 s figure in the Phase-F brief is UNACHIEVABLE: it
-                                         # needs throw_delay ≤ 1.458 s, i.e. 2.042 s below the toss FSM's
-                                         # own REJECTED_CANT_MAKE_LEAD floor (verified against the real
-                                         # FSM, 2026-07-29: 3.49 s rejects, 3.50 s dispatches). Lowering
-                                         # that floor is a change to the arming/release timing of a
-                                         # hardware-validated path and was deliberately NOT taken.
+                                         # DELIBERATELY NOT LOWERED with the floor on 2026-08-22: a
+                                         # DEFAULT must never jump cadence. The cadence ladder
+                                         # (tests/hardware/session_cadence_ladder.md) selects a faster
+                                         # dwell EXPLICITLY, per goal, one rung at a time.
+  toss_session_dwell_margin_s: 0.137     # ⚠ PROVISIONAL. The unavoidable landing → next-cycle-start
+                                         # handoff {s}. The dwell FLOOR is DERIVED, never chosen:
+                                         #     dwell_floor = max(throw_delay_s + this,
+                                         #                       hand_stroke.min_turnaround_dwell_s(T))
+                                         # The first term is the possession handoff: a cycle's release is
+                                         # its own accept + throw_delay, and the session cannot start
+                                         # cycle N+1 before cycle N's verdict has landed. The second is
+                                         # the C-HAND-1 stroke geometry, and below ~0.5 s it is the ONLY
+                                         # term that binds.
+                                         # WAS 0.6 (2026-07-29 → 2026-08-22), sized on the MOCAP TRACKER's
+                                         # CAUGHT verdict: worst measured latency 0.442 s (17/17,
+                                         # 2026-07-27 sitting) + 2 × _TICK_S = 0.542 s. That channel
+                                         # stopped being the verdict on 2026-08-10 when possession went
+                                         # sensor-PRIMARY (C-POSSESS-1). The HAND SENSOR's arrival edge is
+                                         # the handoff now, and it is a faster channel: 0 ms debounce on
+                                         # empty→held (measured 0/0/0, against 232/241/295 ms falling) and
+                                         # the earliest observed edge at +137 ms past the announced
+                                         # landing (n=35, three 2026-08-10 bags).
+                                         # DERIVED: it IS ball_possession.ARRIVAL_BAND_MIN_S — the
+                                         # earliest instant a possession verdict for cycle N can EXIST,
+                                         # and nothing else. The old 0.6 was 0.442 (worst tracker
+                                         # verdict) + 2 × 0.05 s node ticks = 0.542, rounded up. BOTH
+                                         # halves changed: the CHANNEL (possession is sensor-PRIMARY
+                                         # since 2026-08-10; the tracker is the fallback), and the TICK
+                                         # ALLOWANCE, which is gone because it double-counted a
+                                         # guarantee session invariant S1 already makes structurally —
+                                         # START_CYCLE cannot be emitted until note_cycle_result has
+                                         # consumed the previous cycle, whatever this number says.
+                                         # It is a LOWER bound on the verdict, deliberately: the LATEST
+                                         # edge is +798 ms and a margin sized on THAT would re-impose a
+                                         # 0.94 s floor and forbid every rung. The late-seat case is
+                                         # protected by the C-POSSESS-1 § 3.4/§ 3.6 machinery (the
+                                         # dwell-clamped windows, the raw-bit live evidence read, the
+                                         # interlude's seat-edge band wait), not by this number.
+                                         # PROVISIONAL because the band it reads from is itself pending a
+                                         # re-measure: +137..+798 ms was captured against a can-bridge
+                                         # dispatch shift of +54..+133 ms that FW 14 cut to 10-20 ms
+                                         # (logbook/2026-08-15-fw14-validated-arc-closed.md), so the band
+                                         # should collapse and this number move with it. That re-measure
+                                         # is a NAMED pre-R3 row in the cadence ladder runbook.
+                                         # ⇒ floor 5.137 s at the 5.0 s default delay; 0.4871 s at the
+                                         # tuning-phase operating point (flight 0.4949 s, vel_scale 0.9),
+                                         # where the HAND term binds. A shorter dwell is REJECTED_DWELL,
+                                         # never silently stretched — a cadence the machine quietly
+                                         # ignores is a lie about what it did. Lateness the other way IS
+                                         # absorbed (a long cleanup just reports a longer achieved dwell;
+                                         # it never aborts).
+                                         # NOTE a 0.25 s dwell is UNREACHABLE at every admitted flight
+                                         # time: the hand floor bottoms at 0.2505 s at the very top of the
+                                         # C-HAND-3 band (T = 1.1485 s) and rises from there. It needs a
+                                         # Platform Teensy flash changing calcCatch's geometry — deferred,
+                                         # deliberately not built.
   toss_session_max_throws: 20            # Upper bound on TossContinuous num_throws (REJECTED_NUM_THROWS
                                          # outside [1, this]). An unbounded session is a machine stroking
                                          # unattended for an unbounded time; 20 cycles at the 6.0 s
@@ -1420,19 +1450,29 @@ hand_throw_envelope:
                                         # OWNER-STATED 2026-08-20.
                                         #
                                         # ⚠ IT IS NOT THE INSTANTANEOUS FENCE, and must not
-                                        # be used as one.  Braking is a BURST: the decel
-                                        # ramp is 50-90 ms and MIN_TOSS_THROW_DELAY_S is
-                                        # 3.5 s, so the duty cycle is ~2 % and the
-                                        # steady-state average is a few W even at peak
-                                        # instantaneous regen.  The owner is explicitly
-                                        # comfortable with bursts to 360 W (2026-08-20), so
-                                        # dc_max_negative_current = -8.0 A at 45 V is a
-                                        # DESIGN POINT, not a misconfiguration.
+                                        # be used as one.  Braking is a BURST: the throw's
+                                        # decel ramp is 50-90 ms, once per CYCLE.
+                                        # ⚠ THE DUTY CYCLE MOVED ON 2026-08-22 and this
+                                        # comment was re-derived with it.  It used to read
+                                        # "MIN_TOSS_THROW_DELAY_S is 3.5 s, so the duty cycle
+                                        # is ~2 % ... clears by ~60x" — that floor is retired
+                                        # (census A1) and the cadence ladder's operating point
+                                        # is a 0.982 s CYCLE PERIOD (dwell 0.49 + flight
+                                        # 0.4949, ~61 throws/min).  At that period the duty
+                                        # cycle is 5.1-9.2 %, so the steady-state average at
+                                        # the 360 W drive limit is 18-33 W against this 300 W
+                                        # key: it still clears, by ~9-16x instead of ~60x.
+                                        # Re-check this line before any cadence rung FASTER
+                                        # than R5-prime — it is the one config number the
+                                        # cadence work makes monotonically worse.
+                                        # The owner is explicitly comfortable with bursts to
+                                        # 360 W (2026-08-20), so dc_max_negative_current =
+                                        # -8.0 A at 45 V is a DESIGN POINT, not a
+                                        # misconfiguration.
                                         # The envelope therefore fences on the DRIVE limit
                                         # (regen_current_limit_a * dc_bus_nominal_v = 360 W)
                                         # and treats this key as the documented
-                                        # steady-state check, which the duty cycle clears by
-                                        # ~60x.  Measured peak instantaneous regen at the
+                                        # steady-state check.  Measured peak instantaneous regen at the
                                         # 1.0 m working point: **79.3 W** (132.1 rev/s x
                                         # -17.32 A x Kt, bag 2026-08-20_21-51-39).
   hand_torque_constant_nm_per_a: 0.0055133

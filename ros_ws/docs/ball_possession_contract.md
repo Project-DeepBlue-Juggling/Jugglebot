@@ -301,7 +301,9 @@ done". Both are now done, and this is where they are specified:
 ### 3.4 The windows are clamped by the machine's own cadence — added 2026-08-21
 
 Every window in § 3.2 was sized against a machine whose dwell floor was **4.10 s**
-(`toss_sequencer.MIN_TOSS_THROW_DELAY_S` 3.5 + `dwell_margin` 0.6). The
+(`toss_sequencer.MIN_TOSS_THROW_DELAY_S` 3.5 + `dwell_margin` 0.6 — both retired
+2026-08-22, census A1/A3; the floor is now
+`max(throw_delay + 0.137, hand_stroke.min_turnaround_dwell_s)`). The
 tuning-phase operating target is now **dwell 0.49 s at flight 0.4949 s** (~61
 throws/min — the maximum-throughput point of the machine as built), and the delay
 floor is retired in favour of a dispatch debounce plus state-based interlocks. Two

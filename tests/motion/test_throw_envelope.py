@@ -388,13 +388,24 @@ def test_the_torque_bounds_bind_and_end_stop_does_not():
 def test_regen_fences_the_burst_not_the_steady_state():
     """The rail's 300 W is STEADY-STATE; the fence is the drive's 360 W burst.
 
-    Braking is a burst — a 50–90 ms decel ramp against a 3.5 s
-    ``MIN_TOSS_THROW_DELAY_S`` cadence floor, ~2 % duty — so fencing the
+    Braking is a burst — a 50–90 ms decel ramp, once per CYCLE — so fencing the
     instantaneous peak against a steady-state number would tighten the envelope
     on a duty the machine never runs. The owner confirmed 360 W bursts are
     within the rail (2026-08-20), so ``dc_max_negative_current = −8.0 A`` at
     45 V is a design point, not a misconfiguration.
+
+    ⚠ The duty cycle MOVED on 2026-08-22. This docstring cited "a 3.5 s
+    ``MIN_TOSS_THROW_DELAY_S`` cadence floor, ~2 % duty"; that floor is retired
+    (census A1) and the ladder's operating point is a 0.985 s cycle period, so
+    the duty is 5.1–9.2 % and the margin is ~9–16x rather than ~60x. The
+    inequality this test pins is unchanged, but the headroom behind it is not,
+    and the arithmetic is asserted below so a further cadence rung has to come
+    back here.
     """
+    decel_ramp_s, cycle_period_s = 0.090, 0.985
+    duty = decel_ramp_s / cycle_period_s
+    assert duty < 0.10
+    assert te.REGEN_POWER_W * duty < te.REGEN_RAIL_STEADY_W
     assert te.REGEN_POWER_W == pytest.approx(8.0 * 45.0)
     assert te.REGEN_RAIL_STEADY_W == pytest.approx(300.0)
     assert te.REGEN_POWER_W > te.REGEN_RAIL_STEADY_W

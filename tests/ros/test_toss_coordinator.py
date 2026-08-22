@@ -375,7 +375,11 @@ def test_toss_goal_rejections_via_execute(breakage, expected, monkeypatch):
     elif breakage == 'track_active':
         node._balls = [_Ball(status=1, destination='jugglebot', id=9)]
     elif breakage == 'delay_floor':
-        gh = _TossGoalHandle(delay=2.0)
+        # Under the DERIVED :642 dispatch budget (0.281 s at the 0.80 s default
+        # flight), not under a flat 3.5 s — that constant retired 2026-08-22
+        # (census A1). 2.0 s is now a perfectly legal delay and this row would
+        # sail through to REJECTED_POSITION(NO_RESPONSE) if it still asked for it.
+        gh = _TossGoalHandle(delay=0.20)
     elif breakage == 'flight_floor':
         # 0.2 m → 0.404 s. Below the DERIVED floor (C-HAND-3): the catch-arm
         # window is −96 ms there, i.e. the arm cannot be placed after the throw

@@ -315,11 +315,18 @@ Braking power peaks at release, where `ω` is largest:
 **The fence is the BURST, not the rail's steady-state rating.** The HV rail's
 capacity is **300 W steady-state** (owner, 2026-08-20), and 360 W bursts are
 explicitly within it — so `dc_max_negative_current = −8.0 A` is a design point,
-not a misconfiguration. Braking is a burst: the decel ramp is 50–90 ms against
-the 3.5 s `MIN_TOSS_THROW_DELAY_S` cadence floor, a **~2 % duty**, so the
-steady-state average is a few watts even at peak instantaneous regen. Fencing
-the instantaneous peak against a continuous rating would tighten the envelope on
-a duty the machine never runs.
+not a misconfiguration. Braking is a burst: the decel ramp is 50–90 ms, once per
+cycle. Fencing the instantaneous peak against a continuous rating would tighten
+the envelope on a duty the machine never runs.
+
+> ⚠ **The duty cycle moved on 2026-08-22 and this paragraph was re-derived.** It
+> read "against the 3.5 s `MIN_TOSS_THROW_DELAY_S` cadence floor, a **~2 % duty**,
+> so the steady-state average is a few watts". That floor is retired (census A1)
+> and the cadence ladder's operating point is a **0.985 s cycle period** (dwell
+> 0.49 s at flight 0.4949 s, ~61 throws/min), so the duty is **5.1–9.2 %** and the
+> average at the 360 W fence is **18–33 W** against the rail's 300 W. It still
+> clears, by ~9–16× instead of ~60×. **This is the one number the cadence work
+> makes monotonically worse — re-check it before any rung faster than R5-prime.**
 
 Measured at the 1.0 m working point: peak instantaneous regen **79.3 W**
 (132.1 rev/s × −17.32 A × Kt, bag `2026-08-20_21-51-39`) — 26 % of the
@@ -470,7 +477,7 @@ The ceiling is now `DECEL_FF_HEADROOM`, so the levers are different from before:
 | surface | state | why |
 |---|---|---|
 | any firmware | **untouched** | no firmware reads a `HandEnv::` constant; the emitted namespace is inert. Deploying is codegen + `colcon build` + relaunch |
-| `MIN_TOSS_THROW_DELAY_S = 3.5` | untouched | a safety fork about *when* a throw fires, not *how big* it is. Explicitly out of scope |
+| ~~`MIN_TOSS_THROW_DELAY_S = 3.5`~~ | **retired 2026-08-22**, outside this contract | it was out of scope here and stayed so: C-HAND-3 bounds *how big* a throw may be, the cadence work bounds *when* the next one may fire. The retirement (census A1) replaced it with a 0.10 s goal-storm debounce plus the derived `hand_stroke.min_throw_event_delay_s`, and it did not move any bound on this page |
 | `throw_decel_reflected_inertia_kgm2` (9.5e-6) | untouched | it sizes the FIRMWARE feedforward and is deliberately LOW; this contract's `measured_reflected_inertia_kgm2` (1.050e-5) sizes a HOST authority ceiling and is deliberately HIGH. Both are conservative *for their own use*, and the pair is pinned ordered |
 | the catch-side `catch_vel_scale` knob | **not an envelope input** | the floor is sized against `catch_vel_scale_default`. A knob at its 0.3 floor can still close the arm window at an admitted flight — the runbook's H1.4 corner, unchanged. Closing it means plumbing the goal's `catch_vel_scale` into the FSM, which is a coordinator change |
 | Tier-8b displacement gates | untouched | orthogonal — they bound *where*, this bounds *how hard*. **But note the interaction:** the reported flight band is the Tier-8a CO-LOCATED projection, and an 8b goal is AIMED, so it releases faster than its flight time alone implies. At the 8a ceiling a 50 mm displacement already lifts the commanded release from 4.35683 to 4.35742 m/s and is refused. **Tier 8b's usable ceiling is therefore strictly below the reported band**, by an amount that grows with displacement — which is precisely why `evaluate` takes the commanded speed and not the flight time |

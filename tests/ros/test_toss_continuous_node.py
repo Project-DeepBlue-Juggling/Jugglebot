@@ -261,8 +261,10 @@ def test_bad_goal_numerics_rejected_before_anything_runs(kwargs, field,
     # A sub-floor throw_delay is refused HERE, not one cycle later as
     # ABORTED_CYCLE_REJECTED_CANT_MAKE_LEAD with a whole cycle's per-goal state
     # already installed. The dwell is legal for the delay, so only the delay
-    # gate can catch it.
-    (dict(delay=2.0, dwell=4.0), 'REJECTED_THROW_DELAY'),
+    # gate can catch it. The floor is the DERIVED :642 dispatch budget since
+    # 2026-08-22 (census A1) — 0.337 s at the band floor this session is judged
+    # at — so the row asks for 0.20 s; 2.0 s is now legal.
+    (dict(delay=0.20, dwell=4.0), 'REJECTED_THROW_DELAY'),
 ])
 def test_session_checking_rejects_via_execute(kwargs, expected, monkeypatch):
     clock = _Clock()

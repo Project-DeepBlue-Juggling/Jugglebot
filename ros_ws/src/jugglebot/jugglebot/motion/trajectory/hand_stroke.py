@@ -124,6 +124,20 @@ ARM_SUPPRESS_MARGIN_S = 0.040
 #: it is the DOWNWARD allowance, and it did not move.
 HAND_SETTLE_BAND_REV = 0.10
 
+#: The BOTTOM park band — ``|pos - JB_OP_HAND_RETRACT_REV| <= this`` is what
+#: ``reload_coordinator_node`` calls ``hand_parked``, and it is a PRECONDITION of
+#: every kind-0 throw dispatch (``toss_sequencer`` refuses
+#: ``REJECTED_HAND_NOT_PARKED`` at CHECKING and re-checks it at THROWING entry,
+#: because a kind-0 stroke commands ABSOLUTE positions from 0 rev).
+#:
+#: It lives here, not in the node, because since 2026-08-22 it is an input to
+#: TIMING and not only to a precondition: :func:`min_throw_event_delay_s` sizes
+#: the reachable prelude from it, and a second copy is how the gate that admits a
+#: dispatch and the arithmetic that budgets its prelude start to disagree.
+#: ``reload_coordinator_node._HAND_NEAR_TARGET_REV`` is this name; the drift-guard
+#: test pins them equal.
+HAND_PARK_BAND_REV = 0.5
+
 
 def rev_to_mm(rev: float) -> float:
     """Motor revs → mm of cable travel."""
@@ -478,7 +492,9 @@ def required_arm_lead_s(v_armed_mps: float,
 
     Both exclusions bias the same way — this function UNDER-states the true
     requirement, so the gate is marginally more willing to defer than it should
-    be.  Sizing: at the shipped flight band the caller takes
+    be.  Its THROW-side sibling is :func:`min_throw_event_delay_s`, which
+    restates the same ``:642`` budget for a kind-0 dispatch.  Sizing: at the
+    shipped flight band the caller takes
     ``max(_MIN_EVENT_DELAY_S = 0.3, this)`` and the 0.3 floor binds at every
     nominal armed velocity (budget **0.282 s at the 0.4949 s band floor, 0.176 s
     at the 1.1485 s ceiling**; the budget only overtakes the floor below
@@ -496,3 +512,96 @@ def required_arm_lead_s(v_armed_mps: float,
     margin; H1.6 reads the serial console for the refusal itself.
     """
     return (catch_lead_s(v_armed_mps) + float(prelude_s) + SAFETY_GAP_S)
+
+
+def min_throw_event_delay_s(v_throw_mps: float,
+                            park_band_rev: float = HAND_PARK_BAND_REV) -> float:
+    """Least ``event_delay`` a kind-0 THROW dispatch can carry, per throw speed.
+
+    The kind-1 sibling of :func:`required_arm_lead_s`, and the same
+    ``Teensy_code_platform.ino:642`` budget check written from the throw side::
+
+        prelude(park band) + SAFETY_GAP + windup(v)
+
+    with ``windup(v) = t_acc + t_vel = -HandStrokeModel(v).stroke_start_rel``,
+    because ``makeThrow``'s ``shiftTime(-t2)`` puts the kind-0 event at ball
+    RELEASE — the END of the velocity hold — so the profile's first sample sits
+    the whole windup BEFORE the event and ``:642`` measures against that instant.
+
+    **Why the park band and not the full stroke.**  ``MIN_THROW_EVENT_DELAY_S``
+    was a hand-written 1.0 s from 2026-07-25 until 2026-08-22, sized off the
+    *worst* prelude the firmware could ever build — a full-stroke smooth move
+    from the top, ``smooth_move_duration_s(STROKE_TOP_REV)`` = 0.758 s.  That
+    prelude is UNREACHABLE on the throw path and always was: a kind-0 dispatch is
+    admitted only with ``hand_parked`` true, checked at CHECKING and again at
+    THROWING entry (``toss_sequencer._step_preparing``), so the hand is inside
+    ``park_band_rev`` of 0 rev and the prelude cannot exceed
+    ``smooth_move_duration_s(park_band_rev)`` = **170.0 ms**.  The old constant's
+    own comment conceded this ("conservative twice over") and then shipped the
+    unreachable number anyway; at a 6 s dwell that cost nothing, and at the
+    cadence rungs it is 1.0 s of a dwell whose whole physical floor is 0.49 s.
+
+    Returns, over the C-HAND-3 admitted band (probe, 2026-08-22): **336.8 ms** at
+    the 0.4949 s band floor, **281.1 ms** at the 0.80 s nominal, **253.5 ms** at
+    the 1.1485 s ceiling.  It is a LOWER bound for exactly the two reasons
+    :func:`required_arm_lead_s` documents — the ``:642`` ``now_us`` is read at the
+    Platform Teensy, after the bridge→can-bridge→CAN hop, and that leg is pure
+    budget loss (bounded above by the ~23 ms measured announcement-to-release
+    shift).  The runtime enforcement is ``ABORTED_CANT_MAKE_RELEASE``, which
+    measures the REAL remaining lead against this; nothing here replaces it.
+    """
+    return (smooth_move_duration_s(abs(float(park_band_rev)))
+            + SAFETY_GAP_S
+            - HandStrokeModel(v_throw_mps).stroke_start_rel)
+
+
+def min_turnaround_dwell_s(v_throw_mps: float,
+                           catch_vel_scale: float = 1.0) -> float:
+    """The HAND-GEOMETRY floor on a continuous session's dwell, per throw speed.
+
+    Dwell is *previous scheduled LANDING → next RELEASE* (``toss_session``).
+    Between those two instants the hand must physically do three things in
+    series, and contract C-HAND-1 forbids overlapping them::
+
+        (t_vel_catch + t_dec_catch)(v_armed)   # ball contact -> rest at 0 rev
+      + SMOOTH_MOVE_MIN_DURATION_S             # the next command's prelude floor
+      + SAFETY_GAP_S                           # the :642 budget gap
+      + (t_acc + t_vel)(v_throw)               # the next throw's windup
+
+    **Why it is additive rather than hideable.**  Any kind-0/1/2 command clears
+    the ENTIRE packed queue and reseeds the prelude from the live encoder
+    (``Teensy_code_platform.ino:648``), so cycle N+1's throw dispatch cannot land
+    inside cycle N's catch stroke — that is the 2026-07-25 defect (arm at
+    release+8-18 ms clobbered a 120 rev/s stroke; hand overshot to 10.17-10.33
+    rev).  Phase 4's velocity-continuous prelude does not buy the overlap back:
+    ``smooth_move_max_continuous_v0_rps`` is 9.1 rev/s against the top headroom
+    and the catch descends at 41-96 rev/s.
+
+    **The catch profile ends at t7, not t8** (verified in the shipped
+    ``Trajectory.h``, 2026-08-22): ``buildCatch`` emits ``tA[4] = {t4,t5,t6,t7}``
+    and ``buildThrow`` ``{0,t1,t2,t3}``.  ``t8 = t7 + END_PROFILE_HOLD`` is read
+    ONLY by ``buildCommand()`` — the kind-2 ``makeFull`` builder no live host
+    dispatches.  So the 0.10 s ``end_profile_hold_s`` does NOT enter this floor.
+    Had it, every number below would rise by 100 ms and the 0.49 s operating
+    point would be infeasible.
+
+    ``catch_vel_scale`` is the operator's ``catch/vel_scale`` knob (shipped
+    default ``JB_OP_CATCH_VEL_SCALE_DEFAULT`` = 0.9): the catch is armed at
+    ``v_throw * scale``, and the tail is inversely proportional to it, so a
+    SLOWER catch makes the floor LONGER.  Passing 1.0 (the signature default)
+    therefore UNDER-states the shipped machine — callers that know the scale must
+    pass it.
+
+    Values at the shipped 0.9 scale (probe, 2026-08-22): **0.4871 s** at the
+    0.4949 s band floor, 0.4146 at 0.60, **0.3289** at the 0.80 s nominal, 0.2505
+    at the 1.1485 s ceiling.  The minimum over the whole admitted band is
+    0.2505 s — which is why a 0.25 s dwell is not reachable on this firmware at
+    ANY flight time, and why the tuning-phase operating point is 0.49 s.
+    """
+    scale = abs(float(catch_vel_scale)) or 1.0
+    catch = HandStrokeModel(float(v_throw_mps) * scale)
+    throw = HandStrokeModel(v_throw_mps)
+    return (catch.t_vel_catch + catch.t_dec_catch
+            + SMOOTH_MOVE_MIN_DURATION_S
+            + SAFETY_GAP_S
+            - throw.stroke_start_rel)

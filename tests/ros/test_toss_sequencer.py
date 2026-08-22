@@ -276,16 +276,62 @@ def test_tier_gate_rejects_unknown_tier():
     assert seq.prepared is False
 
 
-def test_throw_delay_floor_rejected():
-    """delay < 3.5 s can never fit the positioning + prepare budget plus the
-    1.0 s event-delay floor; the runtime ABORTED_CANT_MAKE_RELEASE guard is the
-    real enforcement, this is the loud+early copy."""
+def test_throw_delay_floor_is_the_derived_dispatch_budget_not_a_constant():
+    """CANT_MAKE_LEAD is the loud+early copy of the Teensy's own ``:642``
+    dispatch budget — prelude(park band) + SAFETY_GAP + windup(v) — and it MOVES
+    with the release speed. It was a flat 3.5 s until 2026-08-22 (census A1): a
+    generic fit over a worst-case POSITIONING move a co-located chain never
+    makes, which refused every cadence rung for a budget it did not have.
+
+    Pinned at both ends of the C-HAND-3 band, because a constant would pass one
+    end and fail the other: the floor is 0.337 s at the 0.4949 s band floor and
+    0.253 s at the 1.1485 s ceiling, a 1.33x spread driven entirely by the
+    windup term (0.147 s -> 0.064 s)."""
+    from jugglebot.toss_sequencer import FLIGHT_TIME_MAX_S, FLIGHT_TIME_MIN_S
+    for flight, floor in ((FLIGHT_TIME_MIN_S, 0.3368),
+                          (0.80, 0.2811),
+                          (FLIGHT_TIME_MAX_S, 0.2535)):
+        seq = TossSequencer(catch_pose_stow_mm=CATCH_POSE,
+                            flight_time_s=flight, throw_delay_s=5.0)
+        assert seq.min_event_delay_for_throw_s == pytest.approx(floor, abs=1e-3)
+
+        under = TossSequencer(catch_pose_stow_mm=CATCH_POSE,
+                              flight_time_s=flight, throw_delay_s=floor - 0.01)
+        under.start(0.0)
+        d = under.step(0.0, _obs(0.0))
+        assert d.done and d.result.outcome.startswith('REJECTED_CANT_MAKE_LEAD')
+        assert d.action == ACTION_NONE
+
+        over = TossSequencer(catch_pose_stow_mm=CATCH_POSE,
+                             flight_time_s=flight, throw_delay_s=floor + 0.01)
+        over.start(0.0)
+        assert over.step(0.0, _obs(0.0)).phase == PHASE_POSITIONING
+
+
+def test_a_delay_under_the_goal_storm_debounce_is_rejected():
+    """The debounce survives the retirement, and it is all that survives: a
+    throw_delay at or under ~0 would demand a release in the tick the goal was
+    accepted, so the whole sequence runs against an already-expired t_release
+    and burns a cycle's per-goal state per goal. It also still catches the sign
+    typo __post_init__ deliberately preserves."""
+    from jugglebot.toss_sequencer import TOSS_DISPATCH_DEBOUNCE_S
+    assert TOSS_DISPATCH_DEBOUNCE_S == pytest.approx(0.10)
     seq = TossSequencer(catch_pose_stow_mm=CATCH_POSE, flight_time_s=0.8,
-                        throw_delay_s=2.0)
+                        throw_delay_s=TOSS_DISPATCH_DEBOUNCE_S - 0.01)
     seq.start(0.0)
     d = seq.step(0.0, _obs(0.0))
     assert d.done and d.result.outcome == 'REJECTED_CANT_MAKE_LEAD'
     assert d.action == ACTION_NONE
+
+
+def test_an_explicit_event_delay_override_wins_over_the_derived_floor():
+    """``min_event_delay_s > 0`` is the standalone/test override; 0 (shipped)
+    derives. Pinned because the field's meaning INVERTED on 2026-08-22 — it was
+    the floor itself, it is now an override sentinel — and a caller still
+    passing the old 1.0 must get 1.0, not a silently-derived 0.281."""
+    seq = TossSequencer(catch_pose_stow_mm=CATCH_POSE, flight_time_s=0.8,
+                        throw_delay_s=5.0, min_event_delay_s=1.0)
+    assert seq.min_event_delay_for_throw_s == pytest.approx(1.0)
 
 
 def test_zero_delay_defaults_to_5s():
@@ -530,18 +576,25 @@ def test_prepare_ok_announces_after_gap_then_dispatches():
 
 
 def test_cant_make_release_aborts_before_announcing():
-    """Positioning ate the delay budget: t_release − now < the 1.0 s event-delay
-    floor at prepare-confirm time. The abort fires BEFORE the announcement goes
-    out — an announced-then-aborted toss would leave a phantom tracker
-    expectation that REJECTED_TRACK_ACTIVE then refuses on until it expires.
-    Ball still seated ⇒ safe to stand down."""
+    """Positioning ate the delay budget: t_release − now < the DERIVED
+    event-delay floor at prepare-confirm time. The abort fires BEFORE the
+    announcement goes out — an announced-then-aborted toss would leave a phantom
+    tracker expectation that REJECTED_TRACK_ACTIVE then refuses on until it
+    expires. Ball still seated ⇒ safe to stand down.
+
+    This is census B5 and it is the REAL enforcement: it measures the ACTUAL
+    remaining lead, so it stays correct however the sequence's elapsed cost
+    changes. The CHECKING gate is only its loud+early copy. Since 2026-08-22 the
+    number it compares against is 0.281 s at T = 0.80 (was a flat 1.0 s), so the
+    stall this test injects has to be correspondingly deeper."""
     seq = _fresh(throw_delay_s=3.5)                   # t_release = 3.5
+    assert seq.min_event_delay_for_throw_s == pytest.approx(0.2811, abs=1e-3)
     _to_positioning(seq)
-    seq.note_position_result(0.05, True, 2.8)         # arrival = 3.05
-    d = seq.step(3.05, _obs(3.05))
+    seq.note_position_result(0.05, True, 3.1)         # arrival = 3.35
+    d = seq.step(3.35, _obs(3.35))
     assert d.phase == PHASE_PREPARING and d.action == ACTION_PREPARE_CATCH
     seq.note_prepare_result(True)
-    d = seq.step(3.1, _obs(3.1))                      # 3.5 − 3.1 = 0.4 < 1.0
+    d = seq.step(3.4, _obs(3.4))                      # 3.5 − 3.4 = 0.1 < 0.281
     assert d.done and d.result.outcome == 'ABORTED_CANT_MAKE_RELEASE'
     assert d.action == ACTION_SAFE_ABORT
     assert seq._announce_dispatched is False          # no phantom announcement

@@ -12,9 +12,10 @@ wait) are pinned here where they are testable in isolation; S2 and S4 are
 node-level and live in test_toss_continuous_node.py.
 
 The dwell floor is DERIVED, not chosen, and this file pins the derivation against
-the landed constants it is made of — so a future edit to
-``MIN_TOSS_THROW_DELAY_S`` or to the config margin cannot silently make a
-configured session cadence unachievable.
+the landed constants it is made of — so a future edit to the cycle FSM's own
+delay gates, to the config margin, or to the HAND-GEOMETRY term added on
+2026-08-22 cannot silently make a configured session cadence unachievable (or,
+worse, make an unachievable one legal).
 """
 
 from __future__ import annotations
@@ -29,7 +30,8 @@ import hardware_config as hw
 from jugglebot.toss_sequencer import (
     CATCH_CONFIRM_WINDOW_S,
     DEFAULT_TOSS_THROW_DELAY_S,
-    MIN_TOSS_THROW_DELAY_S,
+    FLIGHT_TIME_MIN_S,
+    TOSS_DISPATCH_DEBOUNCE_S,
     TossResult,
 )
 from jugglebot.toss_session import (
@@ -150,28 +152,147 @@ def test_dwell_below_the_derived_floor_is_refused_not_stretched():
     assert ok.step(0.0).action == SESSION_ACTION_START_CYCLE
 
 
-def test_the_floor_is_derived_from_the_toss_fsm_floor_not_chosen():
-    """The absolute floor is MIN_TOSS_THROW_DELAY_S + the margin. Pinned so a
-    future edit to either constant cannot silently make a documented cadence
-    (or the 4.10 s figure in the YAML comment) wrong."""
-    s = TossSessionSequencer(num_throws=2,
-                             throw_delay_s=MIN_TOSS_THROW_DELAY_S,
+def test_the_floor_is_the_larger_of_the_handoff_and_the_hand_geometry():
+    """``required_dwell_s = max(delay + margin, hand_floor_dwell_s)``.
+
+    The max() landed on 2026-08-22 with the retirement of the 3.5 s delay floor
+    (census A1/A4). Before it, the plumbing term alone WAS the floor, and it was
+    safe only by accident: at 3.5 s it evaluated to 4.10 s, an order of magnitude
+    above anything the hand could not make, so the physics never had to be
+    consulted. Take the accident away and the plumbing term alone would ACCEPT a
+    dwell that dispatches cycle N+1's kind-0 throw inside cycle N's live catch
+    stroke — the 2026-07-25 clobbered-stroke defect, which is a hardware event
+    and not a refusal.
+
+    Both regimes are pinned, because a one-sided test would pass with the max()
+    deleted."""
+    # (a) SLOW regime — the handoff binds and the hand term is inert.
+    slow = TossSessionSequencer(num_throws=2, throw_delay_s=DELAY,
+                                flight_time_s=FLIGHT,
+                                dwell_margin_s=DEFAULT_SESSION_DWELL_MARGIN_S)
+    assert slow.required_dwell_s == pytest.approx(
+        DELAY + DEFAULT_SESSION_DWELL_MARGIN_S)
+    assert slow.required_dwell_s == pytest.approx(5.137)
+    assert slow.hand_floor_dwell_s < slow.required_dwell_s
+
+    # (b) FAST regime — the hand geometry binds. Isolated by zeroing the
+    # handoff margin, because at the SHIPPED margin the two terms are within a
+    # millisecond of each other at the band floor (pinned below) and a test that
+    # could not tell them apart would pass with the max() deleted.
+    fast = TossSessionSequencer(num_throws=2, throw_delay_s=0.34,
+                                flight_time_s=FLIGHT_TIME_MIN_S,
+                                catch_vel_scale=0.9, dwell_margin_s=0.0)
+    assert fast.hand_floor_dwell_s == pytest.approx(0.4871, abs=1e-3)
+    assert fast.required_dwell_s == pytest.approx(fast.hand_floor_dwell_s)
+    assert fast.required_dwell_s > 0.34
+
+
+def test_which_term_binds_flips_across_the_flight_band():
+    """Both terms are load-bearing, at opposite ends of the band — which is the
+    reason the floor is a max() and not either one alone.
+
+    At the C-HAND-3 band FLOOR (the tuning-phase operating point) the HAND term
+    binds: 0.4871 s against a plumbing floor of 0.3368 + 0.137 = 0.4738 s. At
+    the 0.80 s nominal it is the other way round: 0.3289 s of hand against
+    0.4181 s of plumbing. A one-sided test would pass with the max() deleted, so
+    both directions are pinned here.
+
+    This is also the arithmetic that makes the operator's R5-prime rung legal —
+    dwell 0.49 s at T = 0.4949 s clears the floor by 2.9 ms — and 2.9 ms is why
+    the bench runbook logs the per-cycle dispatch -> catch-stroke-end gap."""
+    at_floor = TossSessionSequencer(num_throws=2,
+                                    flight_time_s=FLIGHT_TIME_MIN_S,
+                                    catch_vel_scale=0.9,
+                                    dwell_margin_s=DEFAULT_SESSION_DWELL_MARGIN_S)
+    plumbing = at_floor.min_throw_delay_s + DEFAULT_SESSION_DWELL_MARGIN_S
+    assert at_floor.hand_floor_dwell_s > plumbing
+
+    nominal = TossSessionSequencer(num_throws=2, flight_time_s=0.80,
+                                   catch_vel_scale=0.9,
+                                   dwell_margin_s=DEFAULT_SESSION_DWELL_MARGIN_S)
+    assert nominal.hand_floor_dwell_s < (nominal.min_throw_delay_s
+                                         + DEFAULT_SESSION_DWELL_MARGIN_S)
+
+
+def test_the_r5_prime_operating_point_is_legal_and_by_how_much():
+    """The operator's decided tuning-phase cadence (2026-08-21 decision 3):
+    dwell 0.49 s at flight 0.4949 s, cycle period 0.985 s, ~61 throws/min.
+
+    Pinned because it is the ONE cadence the whole census, the ladder runbook
+    and the hand-geometry floor were derived to make reachable, and it clears by
+    **2.9 ms**. Any edit that quietly costs 3 ms of turnaround makes the decided
+    operating point illegal, and this test is where that shows up — at desk
+    time, not on the bench with a ball in the cup."""
+    s = TossSessionSequencer(num_throws=5, dwell_time_s=0.49,
+                             throw_delay_s=0.34,
+                             flight_time_s=FLIGHT_TIME_MIN_S,
+                             catch_vel_scale=0.9,
                              dwell_margin_s=DEFAULT_SESSION_DWELL_MARGIN_S)
-    assert s.required_dwell_s == pytest.approx(
-        MIN_TOSS_THROW_DELAY_S + DEFAULT_SESSION_DWELL_MARGIN_S)
-    assert s.required_dwell_s == pytest.approx(4.10)
-
-
-def test_the_2s_dwell_from_the_phase_brief_is_unachievable():
-    """The phase brief hedged a 2.0 s floor. It is not reachable: even at the
-    toss FSM's own 3.5 s throw-delay floor the session floor is 4.10 s, and
-    throw_delay below 3.5 is REJECTED_CANT_MAKE_LEAD by the cycle itself
-    (verified against the real FSM, probe 2026-07-29: 3.49 rejects, 3.50
-    dispatches). This test exists so the wrong number cannot creep back."""
-    s = TossSessionSequencer(num_throws=2, dwell_time_s=2.0,
-                             throw_delay_s=MIN_TOSS_THROW_DELAY_S)
     s.start(0.0)
-    assert s.step(0.0).result.outcome == 'REJECTED_DWELL'
+    assert s.step(0.0).action == SESSION_ACTION_START_CYCLE
+    assert 0.49 - s.required_dwell_s == pytest.approx(0.0029, abs=5e-4)
+    period = 0.49 + FLIGHT_TIME_MIN_S
+    assert 60.0 / period == pytest.approx(60.9, abs=0.1)
+
+
+def test_a_slower_catch_lengthens_the_floor_and_the_session_sees_it():
+    """``catch/vel_scale`` is a FLOOR term. The catch is armed at
+    ``event_vel x scale`` and the catch tail is inversely proportional to it, so
+    the operator setting most likely to be reached for when catches are being
+    missed — a SLOWER catch — makes the turnaround LONGER. A session that
+    ignored the knob would under-state its own floor in exactly that case."""
+    at09 = TossSessionSequencer(num_throws=2, flight_time_s=FLIGHT_TIME_MIN_S,
+                                catch_vel_scale=0.9)
+    at05 = TossSessionSequencer(num_throws=2, flight_time_s=FLIGHT_TIME_MIN_S,
+                                catch_vel_scale=0.5)
+    assert at05.hand_floor_dwell_s > at09.hand_floor_dwell_s
+    # 0 is the "unset" sentinel and resolves to the config default, not to 1.0.
+    unset = TossSessionSequencer(num_throws=2, flight_time_s=FLIGHT_TIME_MIN_S)
+    assert unset.catch_vel_scale == pytest.approx(
+        hw.JB_OP_CATCH_VEL_SCALE_DEFAULT)
+    assert unset.hand_floor_dwell_s == pytest.approx(at09.hand_floor_dwell_s)
+
+
+def test_an_unresolved_flight_time_is_judged_at_the_strictest_flight():
+    """0.0 flight time = "nobody resolved it" (standalone/test construction).
+    The hand floor is monotonically DECREASING in flight time, so the fallback
+    is the C-HAND-3 band FLOOR and not the 0.80 s nominal — fail-closed, the
+    same doctrine as ``throw_site_known``. A nominal fallback would under-state
+    the floor by 0.16 s for a session that never said how high it throws."""
+    unknown = TossSessionSequencer(num_throws=2, flight_time_s=0.0)
+    strictest = TossSessionSequencer(num_throws=2,
+                                     flight_time_s=FLIGHT_TIME_MIN_S)
+    nominal = TossSessionSequencer(num_throws=2, flight_time_s=0.80)
+    assert unknown.hand_floor_dwell_s == pytest.approx(
+        strictest.hand_floor_dwell_s)
+    assert unknown.hand_floor_dwell_s > nominal.hand_floor_dwell_s
+
+
+def test_the_025s_dwell_is_unreachable_at_every_admitted_flight_time():
+    """The operator's original cadence ask. It is not reachable ANYWHERE in the
+    C-HAND-3 band: the hand floor bottoms at 0.2505 s at the very TOP of the
+    band (T = 1.1485 s, apex 1.62 m) and rises monotonically from there to
+    0.4871 s at the floor. Reaching 0.25 s needs a Platform Teensy flash
+    changing calcCatch's geometry — deferred by operator decision 3.
+
+    This test replaces test_the_2s_dwell_from_the_phase_brief_is_unachievable,
+    which pinned the same doctrine against the now-retired 3.5 s constant."""
+    from jugglebot.toss_sequencer import FLIGHT_TIME_MAX_S
+    n = 25
+    for i in range(n + 1):
+        t = FLIGHT_TIME_MIN_S + (FLIGHT_TIME_MAX_S - FLIGHT_TIME_MIN_S) * i / n
+        s = TossSessionSequencer(num_throws=2, flight_time_s=t,
+                                 catch_vel_scale=0.9)
+        assert s.hand_floor_dwell_s > 0.25, (t, s.hand_floor_dwell_s)
+    ceiling = TossSessionSequencer(num_throws=2, flight_time_s=FLIGHT_TIME_MAX_S,
+                                   catch_vel_scale=0.9)
+    assert ceiling.hand_floor_dwell_s == pytest.approx(0.2505, abs=1e-3)
+    # …and a goal that asks for it is REFUSED, not quietly stretched.
+    asked = TossSessionSequencer(num_throws=2, dwell_time_s=0.25,
+                                 throw_delay_s=0.40,
+                                 flight_time_s=FLIGHT_TIME_MAX_S)
+    asked.start(0.0)
+    assert asked.step(0.0).result.outcome == 'REJECTED_DWELL'
 
 
 def test_chain_unreachable_rejected_only_when_chaining():
@@ -211,10 +332,16 @@ def test_zero_throw_delay_takes_the_toss_default():
 
 def test_the_all_defaults_combination_is_legal():
     """dwell default 6.0 must clear the floor the throw-delay default 5.0
-    implies (5.60 s), or every zero-field goal would be REJECTED_DWELL."""
+    implies (5.137 s since the margin was re-based on 2026-08-22; it was 5.60),
+    or every zero-field goal would be REJECTED_DWELL.
+
+    The DEFAULT dwell deliberately did NOT move with the floor: a default must
+    never jump cadence. Lowering the floor makes a faster rung LEGAL; the ladder
+    runbook selects it explicitly, per goal."""
     s = TossSessionSequencer(num_throws=3)
     s.start(0.0)
-    assert s.required_dwell_s == pytest.approx(5.60)
+    assert s.required_dwell_s == pytest.approx(5.137)
+    assert s.dwell_time_s == pytest.approx(6.0)
     assert s.step(0.0).action == SESSION_ACTION_START_CYCLE
 
 
@@ -485,15 +612,36 @@ def test_config_default_dwell_clears_the_config_derived_floor():
     assert float(hw.JB_OP_TOSS_SESSION_DWELL_DEFAULT_S) >= floor
 
 
-def test_dwell_margin_covers_the_measured_handoff():
-    """The margin must cover the worst MEASURED CAUGHT-verdict latency (0.442 s,
-    17/17 self-tosses of the 2026-07-27 sitting) plus the two node ticks that
-    observe it and start the next cycle (2 x 0.05 s). Below that, a configured
-    cadence is systematically unachievable on a healthy machine."""
-    worst_verdict_latency_s = 0.442
-    two_node_ticks_s = 0.10
-    assert float(hw.JB_OP_TOSS_SESSION_DWELL_MARGIN_S) >= (
-        worst_verdict_latency_s + two_node_ticks_s)
+def test_dwell_margin_covers_the_measured_sensor_arrival_edge():
+    """The margin must cover the possession handoff, and since 2026-08-10 that
+    handoff is the HAND SENSOR's arrival edge, not the mocap tracker's CAUGHT
+    verdict (C-POSSESS-1 made possession sensor-PRIMARY).
+
+    This test USED to require >= 0.442 + 0.10 = 0.542 s, the worst measured
+    tracker latency plus two node ticks. That bound outlived its channel: the
+    tracker is now the FALLBACK, and the sensor's empty->held edge carries zero
+    debounce (measured 0/0/0 ms, against 232/241/295 ms on the falling edge)
+    with the EARLIEST observed edge at +137 ms past the announced landing
+    (n=35, three 2026-08-10 bags).
+
+    The old derivation also added two node ticks; that allowance is gone,
+    because it double-counted a guarantee invariant S1 already makes
+    structurally (START_CYCLE cannot be emitted until note_cycle_result has
+    consumed the previous cycle) and it cost 40 ms of the tightest rung.
+
+    PROVISIONAL: the band it reads from is pending a post-FW14 re-measure that
+    is expected to collapse it. That re-measure is a named pre-R3 row in
+    tests/hardware/session_cadence_ladder.md."""
+    from jugglebot.ball_possession import (ARRIVAL_BAND_MAX_S,
+                                           ARRIVAL_BAND_MIN_S)
+    assert ARRIVAL_BAND_MIN_S == pytest.approx(0.137)
+    assert DEFAULT_SESSION_DWELL_MARGIN_S == pytest.approx(ARRIVAL_BAND_MIN_S)
+    assert float(hw.JB_OP_TOSS_SESSION_DWELL_MARGIN_S) == pytest.approx(
+        DEFAULT_SESSION_DWELL_MARGIN_S)
+    # It is a LOWER bound on the verdict, not an upper one — sizing it on the
+    # LATEST edge (+798 ms) would re-impose a 0.94 s floor and forbid every rung.
+    # What protects the late-seat case is the C-POSSESS-1 possession machinery.
+    assert DEFAULT_SESSION_DWELL_MARGIN_S < ARRIVAL_BAND_MAX_S
 
 
 def test_stop_on_miss_wire_default_is_true():
@@ -568,47 +716,68 @@ def test_the_miss_cleanup_floor_is_derived_from_its_sources():
     # census's F1 rung buys it back by re-deriving the floor from COMPLETION
     # rather than from service acks, and the pending post-FW14 band re-measure is
     # expected to shrink ARRIVAL_BAND_MAX_S and this with it.
-    assert DEFAULT_SESSION_MISS_CLEANUP_S == pytest.approx(2.90)
+    assert DEFAULT_SESSION_MISS_CLEANUP_S == pytest.approx(2.84)
     assert re.search(r"declare_parameter\(\s*'go_home_duration_s',\s*2\.0\s*\)",
                      TRAJECTORY_NODE.read_text()), (
         'trajectory_node go_home_duration_s default moved — GO_HOME_DURATION_S '
         'must follow it')
-    assert re.search(r'^_TICK_S\s*=\s*0\.05\b', COORDINATOR_NODE.read_text(),
+    assert re.search(r'^_TICK_S\s*=\s*0\.02\b', COORDINATOR_NODE.read_text(),
                      re.MULTILINE), (
         'reload_coordinator_node._TICK_S moved — NODE_TICK_S must follow it')
 
 
-# ── throw_delay floor (the advertised 4.10 s absolute floor is only real
-#    if the delay itself is gated) ─────────────────────────────────────────────
+# ── throw_delay floor (the floor the session advertises is only real if the
+#    delay itself is gated — and it must be gated at the SAME number the cycle
+#    uses, in BOTH directions) ──────────────────────────────────────────────────
 
-@pytest.mark.parametrize('delay', [0.5, 2.0, MIN_TOSS_THROW_DELAY_S - 0.01])
-def test_throw_delay_below_the_toss_fsm_floor_is_refused(delay):
+@pytest.mark.parametrize('delay', [0.0001, 0.05, 0.20])
+def test_throw_delay_below_the_cycle_fsm_gates_is_refused(delay):
     """Refused at SESSION checking, before a cycle is built. Otherwise a goal
-    with throw_delay 2.0 / dwell 3.0 satisfies dwell >= delay + margin, is
-    ACCEPTED, installs a whole cycle's per-goal state, and then dies
-    REJECTED_CANT_MAKE_LEAD naming a field the operator did not set wrong."""
+    with an illegal delay satisfies dwell >= delay + margin, is ACCEPTED,
+    installs a whole cycle's per-goal state, and then dies
+    REJECTED_CANT_MAKE_LEAD naming a field the operator did not set wrong.
+
+    The parameters span BOTH cycle gates now that the flat 3.5 s is retired:
+    0.0001 and 0.05 are under the goal-storm debounce, 0.20 is over the debounce
+    but under the derived :642 dispatch budget (0.337 s at the band floor this
+    session is judged at). Mirroring only the debounce would re-open this hole
+    one order of magnitude narrower."""
     s = TossSessionSequencer(num_throws=3, dwell_time_s=delay + 1.0,
                              throw_delay_s=delay)
     s.start(0.0)
     assert s.step(0.0).result.outcome == 'REJECTED_THROW_DELAY'
 
 
+def test_the_session_delay_gate_is_neither_looser_nor_stricter_than_the_cycle():
+    """One expression, mirrored. Looser and the session accepts a goal the cycle
+    kills mid-sequence; stricter and it refuses a cadence the machine can make.
+    Both are verdicts that name the wrong field."""
+    from jugglebot.toss_sequencer import TossSequencer
+    for flight in (FLIGHT_TIME_MIN_S, 0.80):
+        s = TossSessionSequencer(num_throws=3, flight_time_s=flight)
+        cycle = TossSequencer(catch_pose_stow_mm=(0.0, 0.0, 170.0),
+                              flight_time_s=flight, throw_delay_s=5.0)
+        assert s.min_throw_delay_s == pytest.approx(
+            max(TOSS_DISPATCH_DEBOUNCE_S, cycle.min_event_delay_for_throw_s))
+
+
 def test_throw_delay_exactly_at_the_floor_is_legal():
-    """3.50 s dispatches on the real FSM (probe 2026-07-29); the session must
-    not be stricter than the cycle it repeats."""
-    s = TossSessionSequencer(num_throws=3,
-                             throw_delay_s=MIN_TOSS_THROW_DELAY_S,
-                             dwell_time_s=MIN_TOSS_THROW_DELAY_S
-                             + DEFAULT_SESSION_DWELL_MARGIN_S)
-    s.start(0.0)
-    assert s.step(0.0).action == SESSION_ACTION_START_CYCLE
+    """The session must not be stricter than the cycle it repeats."""
+    s = TossSessionSequencer(num_throws=3, flight_time_s=FLIGHT)
+    floor = s.min_throw_delay_s
+    ok = TossSessionSequencer(num_throws=3, flight_time_s=FLIGHT,
+                              throw_delay_s=floor,
+                              dwell_time_s=floor + DEFAULT_SESSION_DWELL_MARGIN_S
+                              + 1.0)
+    ok.start(0.0)
+    assert ok.step(0.0).action == SESSION_ACTION_START_CYCLE
 
 
 def test_the_throw_delay_gate_precedes_the_dwell_gate():
     """A goal wrong in both ways names the delay, because the dwell FLOOR is
     derived FROM the delay — telling the operator to raise a dwell that is only
     too small because the delay is illegal sends them to the wrong field."""
-    s = TossSessionSequencer(num_throws=3, throw_delay_s=2.0, dwell_time_s=0.1)
+    s = TossSessionSequencer(num_throws=3, throw_delay_s=0.05, dwell_time_s=0.1)
     s.start(0.0)
     assert s.step(0.0).result.outcome == 'REJECTED_THROW_DELAY'
 

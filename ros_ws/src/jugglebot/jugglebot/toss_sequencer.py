@@ -204,6 +204,13 @@ from jugglebot.ball_possession import ARRIVAL_BAND_MAX_S, EVIDENCE_UNKNOWN
 # math, the generated config, and motion.trajectory (numpy, no rclpy).
 from jugglebot.motion.trajectory import throw_envelope
 
+# The firmware stroke model, for the SAME reason as throw_envelope above: since
+# 2026-08-22 the event-delay floor is DERIVED from the stroke geometry rather than
+# declared as a constant, and a pinned local copy of "prelude + gap + windup"
+# would be a second place for the Teensy's :642 budget check to be wrong.  Also
+# ROS-free (math + the generated config).
+from jugglebot.motion.trajectory import hand_stroke
+
 # ── Feedback phases (Toss.action feedback.phase — LOCKED strings) ──────────────
 PHASE_CHECKING = 'CHECKING'
 PHASE_POSITIONING = 'POSITIONING'
@@ -278,31 +285,79 @@ DEFAULT_TOSS_THROW_DELAY_S = 5.0     # 0 => this. Budget: CHECK ~0.1 + POSITION 
                                      # PREPARE ≤~0.5 + event_delay ≥1.0 + slack. NOT
                                      # reload's 3.0: the toss spends its delay on
                                      # positioning, the reload on the BB countdown.
-MIN_TOSS_THROW_DELAY_S = 3.5         # CHECKING floor (REJECTED_CANT_MAKE_LEAD). No BB
-                                     # 2.5 s lead floor here — this exists so the
-                                     # positioning+prepare budget plus the event-delay
-                                     # floor generically fit inside the delay; the
-                                     # runtime guard (ABORTED_CANT_MAKE_RELEASE) is
-                                     # the real enforcement.
-MIN_THROW_EVENT_DELAY_S = 1.0        # floor on event_delay at dispatch. DERIVED, not
-                                     # measured (Phase-5 T0 hard-confirms): prelude
-                                     # smooth-move ≤ full stroke 0.758 s — the QUINTIC
-                                     # T = √(Δ·QUINTIC_S2_MAX/A) the firmware actually
-                                     # solves (Trajectory.h:365, smoothMoveDuration) over 9.9594 rev, the
-                                     # derived stroke top since 2026-07-26 (was 9.858
-                                     # ⇒ 0.754 s); matches the 0.68–1.05 s ascents
-                                     # observed. NOT the 0.63 s a triangular profile
-                                     # would give — that model understates this budget
-                                     # by 0.13 s and this comment carried it until
-                                     # 2026-07-26. Model:
-                                     # hand_stroke.smooth_move_duration_s.
-                                     # + throw windup 2·0.187/v ≈ 0.10–0.14 s
-                                     # ⇒ 0.86–0.90 s against the 1.0 s floor, margin
-                                     # 0.102 s. Conservative twice over: the THROWING
-                                     # entry re-check that hand_parked (|pos| ≤ 0.5 rev)
-                                     # caps the REACHABLE prelude at ~0.17 s. The
-                                     # catch-side 0.3 s floor does NOT apply — that
-                                     # assumes a hand already primed at top.
+TOSS_DISPATCH_DEBOUNCE_S = 0.10      # GOAL-STORM debounce, NOT a readiness floor.
+                                     # ────────────────────────────────────────────
+                                     # This name replaced MIN_TOSS_THROW_DELAY_S =
+                                     # 3.5 s on 2026-08-22 (operator decision 3 of
+                                     # the ILC-primary fold-in), and the rename is
+                                     # the point: the old constant was a GENERIC FIT
+                                     # — "CHECK(1 tick) + POSITION(≤~2 s) +
+                                     # PREPARE(4 ticks) + event_delay(≥1.0) plus
+                                     # slack" — and a generic fit is a policy number
+                                     # wearing a physics costume. It bounded nothing
+                                     # the machine can actually observe, it made the
+                                     # session's advertised 4.10 s dwell floor an
+                                     # artefact of itself, and at the cadence rungs
+                                     # (census A1) it was 7x the whole physical
+                                     # turnaround.
+                                     #
+                                     # What guards the same failures NOW:
+                                     #   * READINESS — the derived, state-based
+                                     #     CHECKING interlocks, each of which asks
+                                     #     the machine rather than the clock:
+                                     #     hand_fresh + hand_parked (the kind-0
+                                     #     stroke commands ABSOLUTE positions from
+                                     #     0 rev), ball_seated (C-POSSESS-1),
+                                     #     track_active, mocap/status freshness,
+                                     #     platform_levelled;
+                                     #   * the ARITHMETIC that used to hide inside
+                                     #     the 3.5 s — hand_stroke.
+                                     #     min_throw_event_delay_s(v_throw), checked
+                                     #     at CHECKING (loud + early) and enforced at
+                                     #     runtime by ABORTED_CANT_MAKE_RELEASE
+                                     #     against the REAL remaining lead (census
+                                     #     B5, unchanged and still the truth);
+                                     #   * the HAND GEOMETRY — toss_session's
+                                     #     required_dwell_s now carries
+                                     #     hand_stroke.min_turnaround_dwell_s, so a
+                                     #     cadence the stroke cannot physically make
+                                     #     is refused at goal-accept instead of
+                                     #     clobbering a live stroke (C-HAND-1).
+                                     #
+                                     # What is LEFT for this constant: a dispatch
+                                     # debounce. A throw_delay at or below ~0 lets a
+                                     # goal (or a scripted storm of them) demand a
+                                     # release in the same tick it was accepted, so
+                                     # CHECKING would run POSITION/PREPARE/ANNOUNCE
+                                     # against an already-expired t_release and burn
+                                     # a cycle's per-goal state per goal. 0.10 s is
+                                     # two FSM ticks at the post-B3 _TICK_S of 0.02
+                                     # — enough for the sequence to exist at all,
+                                     # deliberately NOT enough to imply readiness.
+                                     # It also still catches the sign typo the FSM's
+                                     # __post_init__ preserves (a negative delay).
+MIN_THROW_EVENT_DELAY_S = 0.0        # 0 ⇒ DERIVE from the resolved event_vel via
+                                     # hand_stroke.min_throw_event_delay_s. A
+                                     # positive value is an explicit OVERRIDE (tests
+                                     # and the standalone harnesses).
+                                     #
+                                     # It was a hand-written 1.0 s from 2026-07-25
+                                     # until 2026-08-22, sized off the WORST prelude
+                                     # the firmware can build — a full-stroke smooth
+                                     # move from the top, 0.758 s. That prelude is
+                                     # unreachable on the throw path and always was:
+                                     # a kind-0 dispatch is admitted only with
+                                     # hand_parked true (CHECKING, and re-checked at
+                                     # THROWING entry), which caps the prelude at
+                                     # smooth_move_duration_s(HAND_PARK_BAND_REV) =
+                                     # 0.170 s. The old comment conceded exactly
+                                     # that ("conservative twice over") and shipped
+                                     # the unreachable number anyway. Derived, the
+                                     # floor is 0.337 s at the C-HAND-3 band floor
+                                     # and 0.281 s at the 0.80 s nominal — and it
+                                     # MOVES WITH v_throw, which a constant cannot:
+                                     # the windup term alone spans 0.064–0.147 s
+                                     # across the admitted band, a 2.3x spread.
 DEFAULT_TOSS_FLIGHT_TIME_S = 0.8     # 0 => this — the NO-CONFIG fallback only: the
                                      # coordinator resolves a zero goal field against
                                      # the generated JB_OP_TOSS_FLIGHT_TIME_DEFAULT_S
@@ -509,6 +564,26 @@ HAND_THROW_RELEASE_OFFSET_MM = 58.044  # release plane above platform centroid =
                                      # (derivation shared with toss_release.py).
 
 
+def vertical_event_vel_mps(flight_time_s: float) -> float:
+    """Tier-8a co-located vertical toss: the release speed for a flight time.
+
+    Launch is purely vertical, so ``|launch| = vz = Δz/T + g·T/2`` with
+    ``Δz = cup plane − release plane`` — the FULL ballistic inverse, matching
+    ``motion/trajectory/toss_release.compute_release_state``, NOT the idealised
+    ``g·T/2`` magnitude (which is the Δz → 0 limit, ≈ 8.4 mm/s adrift at
+    T = 0.8 s).
+
+    A module function since 2026-08-22 because it has a SECOND caller: the
+    session's hand-geometry dwell floor (``toss_session.hand_floor_dwell_s``)
+    needs a release speed at SESSION checking, before any cycle FSM exists.
+    Inlined twice it would be one edit away from a session that refuses a cadence
+    the cycle can make, or admits one it cannot."""
+    t = float(flight_time_s)
+    vz_mms = ((HAND_CATCH_OFFSET_MM - HAND_THROW_RELEASE_OFFSET_MM) / t
+              + GRAVITY_MMS2 * t / 2.0)
+    return vz_mms / 1000.0
+
+
 @dataclass
 class TossObservations:
     """A snapshot of everything the FSM reasons about — pure observations, no
@@ -657,8 +732,11 @@ class TossSequencer:
     positioning_timeout_s: float = TOSS_POSITIONING_TIMEOUT_S
     release_grace_s: float = TOSS_RELEASE_GRACE_S
     catch_confirm_window_s: float = CATCH_CONFIRM_WINDOW_S
-    min_throw_delay_s: float = MIN_TOSS_THROW_DELAY_S
+    min_throw_delay_s: float = TOSS_DISPATCH_DEBOUNCE_S
     min_event_delay_s: float = MIN_THROW_EVENT_DELAY_S
+                                                # 0 (the shipped default) ⇒ the
+                                                # DERIVED per-speed floor; see
+                                                # min_event_delay_for_throw_s.
     throw_site_xy_mm: tuple = (0.0, 0.0)        # Tier 8b: throw site A (STOW xy).
                                                 # The node sources it from the
                                                 # platform's LIVE commanded pose
@@ -779,14 +857,30 @@ class TossSequencer:
         if self.throw_delay_s == 0.0:
             self.throw_delay_s = DEFAULT_TOSS_THROW_DELAY_S
         if self.event_vel_mps <= 0.0:
-            # Tier-8a co-located vertical toss: launch is purely vertical, so
-            # |launch| = vz = Δz/T + g·T/2 with Δz = cup plane − release plane
-            # (the full ballistic inverse, matching motion/toss_release — NOT the
-            # idealised g·T/2 magnitude).
-            t = self.flight_time_s
-            vz_mms = ((HAND_CATCH_OFFSET_MM - HAND_THROW_RELEASE_OFFSET_MM) / t
-                      + GRAVITY_MMS2 * t / 2.0)
-            self.event_vel_mps = vz_mms / 1000.0
+            self.event_vel_mps = vertical_event_vel_mps(self.flight_time_s)
+
+    # ── derived floors ─────────────────────────────────────────────────────────
+
+    @property
+    def min_event_delay_for_throw_s(self) -> float:
+        """The event-delay floor THIS toss's release speed actually needs.
+
+        ``min_event_delay_s > 0`` is an explicit override (tests, standalone
+        harnesses); the shipped 0.0 derives it from
+        ``hand_stroke.min_throw_event_delay_s(event_vel_mps)`` — the Teensy's own
+        ``:642`` budget written from the throw side, prelude(park band) +
+        SAFETY_GAP + windup(v).
+
+        ``event_vel_mps`` is resolved in ``__post_init__`` and is therefore always
+        finite here, but it is not yet TRUSTWORTHY at that point: CHECKING's
+        EVENT_VEL / THROW_ENVELOPE / TILT_CLAMP gates are what establish that.
+        ``hand_stroke`` clamps to the bridge's accepted band internally, so an
+        out-of-band value yields a bounded floor rather than a divide-by-zero —
+        the goal still dies at the gate that names the real fault."""
+        override = float(self.min_event_delay_s)
+        if override > 0.0:
+            return override
+        return hand_stroke.min_throw_event_delay_s(self.event_vel_mps)
 
     # ── discrete async events (from the node) ──────────────────────────────────
 
@@ -895,6 +989,12 @@ class TossSequencer:
             if self.tier not in (TIER_8A, TIER_8B):
                 return self._reject('TIER')
             if self.throw_delay_s < self.min_throw_delay_s:
+                # The GOAL-STORM debounce, and the sign-typo belt (a negative
+                # delay lands here, which is what __post_init__ preserves it
+                # for). It is NOT a readiness claim — see
+                # TOSS_DISPATCH_DEBOUNCE_S. The physical lead the dispatch needs
+                # is checked immediately below, once the flight time (and with
+                # it the release speed) has been validated.
                 return self._reject('CANT_MAKE_LEAD')
             if not (math.isfinite(self.flight_time_s)
                     and self.flight_time_s > 0.0):
@@ -989,6 +1089,35 @@ class TossSequencer:
                                                self.event_vel_mps)
             if not envelope.ok:
                 return self._reject('THROW_ENVELOPE', envelope.message)
+            # The DERIVED lead gate (census A2), placed here for the same reason
+            # the envelope is: this is the first point at which `event_vel_mps`
+            # is trustworthy, and the floor is a function of it. The whole
+            # sequence must fit in the delay, but only ONE term of it is a hard
+            # physical requirement knowable at accept — the Teensy's `:642`
+            # budget for the kind-0 dispatch itself (prelude + gap + windup).
+            # Everything else (the CHECKING tick, an optional POSITIONING move,
+            # the PREPARE tick ladder) is elapsed time the runtime guard
+            # measures for real: ABORTED_CANT_MAKE_RELEASE in _step_preparing
+            # compares the ACTUAL remaining lead against this same number.
+            #
+            # So this is the loud+early copy of a runtime truth, which is what
+            # the retired MIN_TOSS_THROW_DELAY_S = 3.5 s claimed to be and was
+            # not: 3.5 s was a generic fit over a worst-case POSITIONING move
+            # that a co-located chain does not make and a 1.0 s event-delay
+            # floor sized off a prelude the hand_parked precondition forbids.
+            lead_floor = self.min_event_delay_for_throw_s
+            if self.throw_delay_s < lead_floor:
+                return self._reject(
+                    'CANT_MAKE_LEAD',
+                    'throw_delay {:.3f} s is under the {:.3f} s the kind-0 '
+                    'dispatch needs at {:.2f} m/s (prelude {:.3f} + gap {:.3f} '
+                    '+ windup {:.3f})'.format(
+                        self.throw_delay_s, lead_floor, self.event_vel_mps,
+                        hand_stroke.smooth_move_duration_s(
+                            hand_stroke.HAND_PARK_BAND_REV),
+                        hand_stroke.SAFETY_GAP_S,
+                        -hand_stroke.HandStrokeModel(
+                            self.event_vel_mps).stroke_start_rel))
             if (abs(x) > self.workspace_xy_mm or abs(y) > self.workspace_xy_mm
                     or abs(z - TOSS_ACTIVE_Z_MM) > TOSS_Z_BAND_MM):
                 return self._reject('WORKSPACE')
@@ -1144,7 +1273,7 @@ class TossSequencer:
         # REJECTED_TRACK_ACTIVE would then refuse on until it expires), and again
         # on the post-announce tick (a stall between announce and dispatch must
         # not push event_delay under the stroke's windup floor).
-        if self._t_release - now < self.min_event_delay_s:
+        if self._t_release - now < self.min_event_delay_for_throw_s:
             return self._abort('CANT_MAKE_RELEASE')
         if not self._announce_dispatched:
             # Armed confirmed → explicit ≥1-tick gap → announce: the armed edge

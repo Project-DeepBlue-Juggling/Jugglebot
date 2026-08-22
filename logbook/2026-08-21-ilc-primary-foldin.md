@@ -53,6 +53,12 @@ tags:
   - guards
   - config
 related_plan: critical-point-ilc.md
+  - ros_ws/src/jugglebot/jugglebot/toss_sequencer.py
+  - ros_ws/src/jugglebot/jugglebot/motion/trajectory/hand_stroke.py
+  - ros_ws/src/jugglebot/jugglebot/motion/trajectory/throw_envelope.py
+  - ros_ws/docs/hand_throw_envelope.md
+  - ros_ws/docs/hand_decel_feedforward.md
+  - tests/hardware/toss_trace_recorder.py
 ---
 
 # Critical-point ILC becomes the primary toss learning architecture
@@ -1659,3 +1665,228 @@ None changed a threshold or an assertion.
   correction, then re-run to prove determinism: **no generated artifact changed**
   in either invocation (the two dead justifications live in comments, and the
   generator emits values).
+
+---
+
+## Phase I — the cadence floors stop being policy constants
+
+Census rows **A1, A2, A3, A4** and **B3**, plus one firmware verification the
+census asked for and could not close from the host side.
+
+**What the machine used to believe.** Three constants stood between the operator
+and a faster cadence, and all three were *fits* wearing physics costumes:
+
+| constant | value | what it claimed to be | what it actually was |
+|---|---|---|---|
+| `toss_sequencer.MIN_TOSS_THROW_DELAY_S` | 3.5 s | "the positioning + prepare budget plus the event-delay floor, generically" | a policy margin of ~2x over a sequence that measurably costs 0.70 s, sized around a worst-case POSITIONING move a co-located 8a chain never makes |
+| `toss_sequencer.MIN_THROW_EVENT_DELAY_S` | 1.0 s | the Teensy's `:642` dispatch budget | that budget sized off the WORST prelude the firmware can build — a full-stroke smooth move, 0.758 s — which the `hand_parked` precondition makes unreachable. Its own comment said so ("conservative twice over") and shipped the unreachable number anyway |
+| `toss_session.DEFAULT_SESSION_DWELL_MARGIN_S` | 0.6 s | the landing→next-cycle-start handoff | the **mocap tracker's** CAUGHT-verdict latency, plus two node ticks. That channel stopped being the verdict on 2026-08-10 when C-POSSESS-1 made possession sensor-PRIMARY; the constant never followed |
+
+Together they put the session's advertised dwell floor at **4.10 s**, i.e. ~8x
+the machine's real turnaround, and made the operator's cadence question look like
+a safety fork when it was an arithmetic one.
+
+**What replaced them.**
+
+* `TOSS_DISPATCH_DEBOUNCE_S = 0.10` — a NEW name for what is genuinely left: a
+  goal-storm debounce (and the sign-typo belt `__post_init__` preserves negatives
+  for). It makes no readiness claim. Readiness is the derived, state-based
+  CHECKING interlocks that were always there and always did the real work:
+  `hand_fresh` + `hand_parked`, `ball_seated`, `track_active`, mocap/status
+  freshness, `platform_levelled`.
+* `hand_stroke.min_throw_event_delay_s(v_throw)` — the `:642` budget written from
+  the throw side, `smooth_move_duration_s(HAND_PARK_BAND_REV) + SAFETY_GAP +
+  windup(v)`. It MOVES with the release speed, which is the thing a constant
+  structurally cannot do: the windup term alone spans 0.064–0.147 s across the
+  admitted band, a 2.3x spread. Checked loud+early at CHECKING and enforced for
+  real at runtime by `ABORTED_CANT_MAKE_RELEASE`, which measures the ACTUAL
+  remaining lead (census B5 — unchanged, and still the truth).
+* `ball_possession.ARRIVAL_BAND_MIN_S = 0.137` — the twin of the existing
+  `ARRIVAL_BAND_MAX_S = 0.80`, the EARLIEST `empty→held` edge ever observed. The
+  dwell margin is now this constant and nothing else, so the pending post-FW14
+  band re-measure moves both ends from one place, exactly as `ARRIVAL_BAND_MAX_S`'s
+  own comment promised it would.
+* `toss_session.required_dwell_s` gained a **physics term**:
+  `max(throw_delay + margin, hand_stroke.min_turnaround_dwell_s(T, vel_scale))`.
+
+**The `max()` is the whole point of the phase, and it is the part that is not in
+the census's build list.** Read § 4 of the census: *"the hard floor is not
+`MIN_TOSS_THROW_DELAY_S`, it is the hand stroke geometry."* Until this commit
+nothing in the Python enforced that sentence — the plumbing term alone was the
+floor, and it was safe only *by accident*, because 3.5 + 0.6 = 4.10 s sat an order
+of magnitude above anything the hand could not make. Retiring the constant removes
+the accident. Without the new term a goal with `throw_delay 0.30 / dwell 0.45` at
+the band floor satisfies `dwell ≥ delay + margin`, is ACCEPTED, and then dispatches
+cycle N+1's kind-0 throw **inside cycle N's live catch stroke** — which clears the
+packed queue and reseeds the prelude from an encoder read taken at 41–96 rev/s.
+That is the 2026-07-25 defect exactly (hand overshot to 10.17–10.33 rev, then was
+yanked 0.34–1.75 rev below `x3`), and it is a hardware event, not a refusal. A
+retirement that only deleted a constant would have shipped that hole.
+
+### The firmware verification: the C-HAND-1 gate is written against `t7`
+
+The census closes with *"one item to verify in firmware before trusting the floor
+table"*: whether the no-overlap floor is `t7` (hand at rest at 0 rev) or
+`t8 = t7 + END_PROFILE_HOLD`. If `t8`, **add 0.10 s to every floor** and the
+minimum achievable dwell becomes 0.351 s — which would make the operator's decided
+0.49 s operating point infeasible at the band floor (floor 0.5871 s).
+
+Verified directly in the shipped `Teensy_code_platform/Trajectory.h`, 2026-08-22:
+
+* `buildCatch()` emits `tA[4] = {t4, t5, t6, t7}` (`:266`) and `buildSegment`
+  terminates on `end = tA[3] - start` (`:230`), so the kind-1 catch profile's last
+  sample is at `t7`;
+* `buildThrow()` emits `tA[4] = {0, t1, t2, t3}` (`:250`) — no end hold either;
+* `t8` is assigned once (`:210`) and read in exactly ONE place: `buildCommand()`'s
+  `tA[9]` and its `while (t < t8)` loop (`:291`, `:304`). `buildCommand` is the
+  kind-2 `makeFull` builder, and its own comment records that **no live host
+  dispatches kind 2** ("only kind 0/1 outside `archived/`").
+
+**So `END_PROFILE_HOLD` does not enter the turnaround floor at all.** The census's
+§ 0 table stands as written, and the 0.49 s operating point survives — by 2.9 ms.
+
+### The floor table, re-derived from this tree
+
+The census's § 0 table was computed at `5de4a1c`; it is reproduced here against
+the tree at commit time, from the same modules the FSM uses, so the runbook and
+the code cannot quote different numbers. Probe (2026-08-22):
+`HandStrokeModel(compute_release_state((0,0,170), T).event_vel_mps)`, catch tail
+taken at `v x JB_OP_CATCH_VEL_SCALE_DEFAULT (0.9)`.
+
+| flight `T` | v_release | catch tail | throw windup | **hand floor** | cycle period | throws/min | event-delay floor |
+|---|---|---|---|---|---|---|---|
+| 0.4949 (band floor) | 2.4400 | 0.2702 | 0.1469 | **0.4871** | 0.982 | 61.1 | 0.3368 |
+| 0.60 | 2.9530 | 0.2233 | 0.1213 | 0.4146 | 1.015 | 59.1 | 0.3113 |
+| 0.80 (nominal) | 3.9308 | 0.1677 | 0.0912 | 0.3289 | 1.129 | 53.1 | 0.2811 |
+| 1.00 | 4.9097 | 0.1343 | 0.0730 | 0.2773 | 1.277 | 47.0 | 0.2629 |
+| 1.1485 (band ceiling) | 5.6368 | 0.1170 | 0.0636 | **0.2505** | 1.399 | 42.9 | 0.2535 |
+
+Every column reproduces the census to ≤3 ms (its catch-tail column runs ~3 ms
+high; the release speeds, windups, periods and throws/min all match to the digit).
+**A 0.25 s dwell is unreachable at every admitted flight time** — the minimum over
+the whole band is 0.2505 s, at the very ceiling, and it rises from there. That is
+now enforced, not merely documented: `required_dwell_s` refuses it.
+
+### B3 — the tick, and why it landed here rather than with its own package
+
+`reload_coordinator_node._TICK_S` 0.05 → 0.02, `toss_session.NODE_TICK_S`
+following it (a drift-guard test pins the pair). It landed in this commit because
+it is an INPUT to the constants above: the MISS-cleanup floor is derived from it
+(2.90 → **2.84 s**), and it was very nearly an input to the dwell margin too — see
+the discussion below for why it is not.
+
+**The tick COUNTS did not change**, deliberately. Two cross-topic ordering gaps are
+tick-COUNTED, and collapsing them is the change that would break them:
+`catch/prime_hold` must land in an earlier `catch_coordinator` wait-set cycle than
+the `catch/armed` edge (or the armed-edge auto-prime ascends with the seated ball),
+and armed-confirm must precede the announcement by ≥1 tick (CCN drops pre-tilts
+that arrive unarmed). Shortening the tick preserves both; 20 ms is still ~2 orders
+of magnitude above localhost topic latency.
+
+All seven `time.sleep(_TICK_S)` sites were read before the change (2026-08-22):
+every one is a poll period inside a `while rclpy.ok()` deadline loop in a
+goal-execution thread. None is a control loop; none treats the tick as a duration.
+The cost of shortening it is CPU in a thread that was sleeping.
+
+## Discussion — Phase I
+
+**Why the margin is `ARRIVAL_BAND_MIN_S` alone, and not `+ 2 x NODE_TICK_S`.**
+This was the one place the census's number and the honest derivation disagreed,
+and the disagreement was load-bearing enough to change the answer.
+
+The obvious move is to keep the OLD derivation's shape and swap only the channel:
+"the earliest instant a verdict can exist, plus the tick that observes it and the
+tick that starts the next cycle" ⇒ `0.137 + 2 x 0.02 = 0.177`. That was built
+first. It is wrong twice over:
+
+1. **It double-counts a guarantee the FSM already makes structurally.** Session
+   invariant S1 forbids emitting `ACTION_START_CYCLE` until `note_cycle_result`
+   has consumed the previous cycle. The two ticks therefore *cannot* be skipped,
+   whatever this number says, and lateness in that direction is absorbed by design
+   ("a cycle whose handoff ran long reports a longer achieved dwell and never
+   aborts"). Budgeting for them buys nothing.
+2. **It costs 40 ms of the tightest rung, and 40 ms is the whole margin.** At
+   0.177 the plumbing floor at the band floor is `0.3368 + 0.177 = 0.5138 s`,
+   which is **above** the operator's decided 0.49 s operating point. The rung the
+   entire census exists to reach would have been refused at goal-accept — by a
+   number nobody had asked for, derived from a habit.
+
+At `0.137` the plumbing floor is 0.4738 s, the HAND term (0.4871 s) becomes the
+binding one at the band floor, and R5-prime is legal by **2.9 ms**. That is the
+census's own headline arithmetic finally holding in code: *the hard floor is the
+hand stroke geometry*. It is also why the ladder runbook logs the per-cycle
+`dispatch → catch-stroke-end` gap — 2.9 ms of modelled margin is not margin you
+trust without measuring.
+
+**Which term binds flips across the band**, and both directions are pinned
+(`test_which_term_binds_flips_across_the_flight_band`), because a one-sided test
+would pass with the `max()` deleted. At the band floor the hand binds (0.4871 vs
+0.4738); at the 0.80 s nominal the plumbing does (0.3289 vs 0.4181).
+
+**Why the margin is a LOWER bound on the verdict and not an upper one.** The
+latest observed seat edge is +798 ms. A margin sized on THAT would re-impose a
+0.94 s dwell floor and forbid every rung on the ladder. The late-seat case is not
+this constant's job — it is protected by the C-POSSESS-1 § 3.4/§ 3.6 machinery
+that landed in Phase H (the dwell-clamped retention and arrival windows, the
+raw-bit live evidence read, the interlude's seat-edge band wait). Two different
+mechanisms for two different failure modes; collapsing them into one number is how
+the 0.6 s got its authority in the first place.
+
+**What deliberately did NOT move: the defaults.** `DEFAULT_SESSION_DWELL_S` stays
+6.0 s and `DEFAULT_TOSS_THROW_DELAY_S` stays 5.0 s, so an all-defaults goal is
+behaviourally unchanged — only its FLOOR moved, 5.60 → 5.137 s. A default must
+never jump cadence: the ladder selects a faster dwell explicitly, per goal, one
+rung at a time, with a bench sitting behind each. Lowering a floor makes a rung
+LEGAL; it must not make it AUTOMATIC.
+
+**The one number this work makes monotonically worse, stated rather than hidden.**
+The hand's regen duty cycle was argued in three places (`hardware_config.yaml`,
+`throw_envelope.py`, `hand_throw_envelope.md`) as *"a 50–90 ms decel ramp against
+a 3.5 s `MIN_TOSS_THROW_DELAY_S` cadence floor, ~2 % duty ... clears by ~60x"*.
+Retiring that floor invalidates the premise, and at the ladder's 0.985 s cycle
+period the duty is **5.1–9.2 %**: the steady-state average at the 360 W drive fence
+is 18–33 W against the rail's 300 W. It still clears — by ~9–16x instead of ~60x —
+and all three sites now say so, with an explicit instruction to re-check before any
+rung faster than R5-prime. `test_regen_fences_the_burst_not_the_steady_state`
+asserts the arithmetic so a further rung has to come back to it.
+
+**`catch_vel_scale` entered the floor**, which it never did before. The catch is
+armed at `event_vel x scale` and the catch tail is inversely proportional to it,
+so a SLOWER catch makes the turnaround LONGER — and a slower catch is exactly the
+knob an operator reaches for when catches are being missed. A session that ignored
+it would under-state its own floor in precisely that case. (C-HAND-3 explicitly
+lists this knob as "not an envelope input" and that stays true: the *envelope*
+bounds how big a throw may be, this bounds when the next one may fire.)
+
+## Verification — Phase I
+
+- `./run_tests.sh` (the default gate), run 2026-08-22 as the pre-commit gate:
+  **RESULT: PASS** — parallel **5678 passed, 3 skipped in 237.88 s**, serial phase
+  empty (every `serial`-marked test is also `nightly`), total 249 s.
+  An earlier invocation the same day failed 2/5678: one was a real defect this
+  phase introduced (a dropped trailing comma in `toss_trace_recorder.py`'s reject
+  table, caught by `test_no_bare_style_sim_imports_anywhere`'s AST parse — not by
+  anything that imports the module), and one was
+  `test_a_healthy_window_is_ok_and_a_raised_floor_warns`, a UDP-bind load flake
+  that passes scoped (`pytest tests/ros/test_teensy_bridge_node_cache_diag.py -q`,
+  2026-08-22: **16 passed in 9.32 s**) and passed in the clean re-run above. No
+  tolerance was widened.
+- `python config/generate_config.py`, run 2026-08-22, then re-run to prove
+  determinism: the second invocation left every artifact unchanged
+  (`git status --short config/ ros_ws/.../hardware_config.*` clean of new
+  modifications). The only generated value that moved is
+  `JB_OP_TOSS_SESSION_DWELL_MARGIN_S 0.6 → 0.137`.
+- Floor table probe, run 2026-08-22 against this tree:
+  `HandStrokeModel`/`compute_release_state`/`throw_envelope` at six flight times
+  reproduce the census's § 0 table to ≤3 ms (table above).
+- Firmware `t7` verification: read directly from
+  `ros_ws/src/jugglebot/Teensy_code_platform/Trajectory.h` at `:210`, `:230`,
+  `:250`, `:266`, `:291`, `:304` (2026-08-22). `grep -n "t8" Trajectory.h` returns
+  four lines — one declaration, one assignment, two inside `buildCommand()`.
+- Grep sweep for the retired names, 2026-08-22: `MIN_TOSS_THROW_DELAY_S` and
+  `MIN_THROW_EVENT_DELAY_S` return **zero live code references** across
+  `ros_ws/src`, `tests`, `tools`, `sim`, `controller`, `config`. Every surviving
+  occurrence is a deliberate historical citation in past tense ("was", "retired",
+  "read"), per the never-delete-history convention — 21 of them, in the two
+  contracts, three plans, the anomaly-fixes runbook, four test docstrings and two
+  YAML comments.

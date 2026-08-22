@@ -92,37 +92,59 @@ is its own accept + ``throw_delay``, so
 
     cycle_start(N+1) = landing(N) + dwell − throw_delay
 
-and the session simply idles until that instant. The floor follows from two
-landed constants and one measurement, with nothing free in it:
+and the session simply idles until that instant. The floor is the LARGER of a
+plumbing term and a physics term, and neither is chosen::
 
-    dwell_floor = throw_delay + dwell_margin_s
+    dwell_floor = max(throw_delay + dwell_margin_s,          # the handoff
+                      hand_floor_dwell_s(flight, vel_scale))  # the stroke
 
-* ``throw_delay`` cannot go below ``MIN_TOSS_THROW_DELAY_S`` = 3.5 s — the toss
-  FSM's own ``REJECTED_CANT_MAKE_LEAD`` gate, which exists so the positioning +
-  prepare budget plus the 1.0 s ``event_delay`` floor generically fit inside the
-  delay. Verified against the real FSM (probe, 2026-07-29): 3.49 s ⇒
-  ``REJECTED_CANT_MAKE_LEAD``, 3.50 s ⇒ dispatched.
-* ``dwell_margin_s`` covers the handoff the machine cannot avoid: the CAUGHT
-  verdict lands at *landing + 0.202–0.442 s* (median 0.209; 17/17 self-tosses of
-  the 2026-07-27 sitting, ``logbook/2026-07-28-caught-gate-xy-plausibility.md``)
-  plus the tick that observes it and the tick that starts the next cycle
-  (2 × 0.05 s). Worst measured: 0.442 + 0.10 = 0.542 s, so the shipped 0.6 s
-  covers it with the ``ACTION_STAY`` service call inside the margin.
+* ``throw_delay`` is gated by the cycle FSM at ``TOSS_DISPATCH_DEBOUNCE_S``
+  (0.10 s, a goal-storm debounce) and, once the release speed is known, at
+  ``hand_stroke.min_throw_event_delay_s(v_throw)`` — the Teensy's own ``:642``
+  budget for the kind-0 dispatch, 0.281 s at the 0.80 s nominal flight. Until
+  2026-08-22 it was gated at ``MIN_TOSS_THROW_DELAY_S`` = 3.5 s, a generic fit
+  over a worst-case POSITIONING move a co-located chain never makes; retiring it
+  is operator decision 3 of the ILC-primary fold-in.
+* ``dwell_margin_s`` covers the landing → next-cycle-start handoff. It was 0.6 s
+  from 2026-07-29 to 2026-08-22, sized on the MOCAP TRACKER's CAUGHT verdict
+  (*landing + 0.202–0.442 s*, median 0.209; 17/17 self-tosses of the 2026-07-27
+  sitting, ``logbook/2026-07-28-caught-gate-xy-plausibility.md``) plus two node
+  ticks. Since the possession verdict became sensor-PRIMARY (C-POSSESS-1,
+  2026-08-10) the handoff is the HAND SENSOR's arrival edge, which is a
+  different and much faster channel — 0 ms debounce on ``empty→held``, earliest
+  observed edge **+137 ms** past the announced landing. **PROVISIONAL at 0.137 s**
+  (``ARRIVAL_BAND_MIN_S`` itself — the earliest instant a verdict can EXIST,
+  with the old derivation's 2-tick allowance dropped because invariant S1
+  already enforces that ordering structurally)
+  pending the post-FW14 band re-measure (see ``ball_possession``'s
+  ``ARRIVAL_BAND_MAX_S``): the +137…+798 ms band was captured against a
+  can-bridge dispatch shift of +54…+133 ms that FW 14 cut to 10–20 ms, so the
+  band is expected to collapse and this number to move with it. It is a LOWER
+  bound on the verdict and not an upper one, deliberately: the LATEST edge is
+  +798 ms, and a margin sized on THAT would re-impose a 0.94 s floor and forbid
+  every rung. The late-seat case is protected by the C-POSSESS-1 § 3.4/§ 3.6
+  machinery, not by this number.
+* ``hand_floor_dwell_s`` is the C-HAND-1 term, and below ~0.5 s it is the ONLY
+  one that binds. Between a landing and the next release the hand must
+  decelerate the caught ball to rest at 0 rev, then prelude + gap + wind up the
+  next throw — in SERIES, because any kind-0/1/2 command clears the whole packed
+  queue (``Teensy_code_platform.ino:648``) and overlapping the two is the
+  2026-07-25 clobbered-stroke defect. See
+  ``hand_stroke.min_turnaround_dwell_s``.
 
-So the absolute floor is **4.10 s** (at the FSM's 3.5 s delay floor) and the floor
-at the 5.0 s default delay is **5.60 s**. The 4.10 s figure is only a real floor
-if ``throw_delay`` itself is gated, so CHECKING refuses ``throw_delay <
-MIN_TOSS_THROW_DELAY_S`` as ``REJECTED_THROW_DELAY`` before it looks at the dwell
-— otherwise a 2.0 s delay with a 3.0 s dwell satisfies the derived inequality,
-gets ACCEPTED, and dies ``REJECTED_CANT_MAKE_LEAD`` one cycle later naming a
-field the operator did not think was in play.
+At the shipped defaults (delay 5.0, margin 0.137, flight 0.80) the floor is
+**5.137 s** and the default dwell is 6.0 s, so an all-defaults goal is unchanged.
+At the tuning-phase operating point (flight 0.4949 s, ``catch/vel_scale`` 0.9)
+the hand floor is **0.4871 s**, which is what makes a 0.49 s dwell — 61
+throws/min — the fastest cadence this firmware can be asked for. It clears by
+**2.9 ms**; the bench runbook (``tests/hardware/session_cadence_ladder.md``)
+logs the per-cycle ``dispatch → catch-stroke-end`` gap for exactly that reason.
 
-**The 2.0 s figure in this phase's brief is unachievable and was not adopted.**
-It would need ``throw_delay ≤ 1.458 s``, i.e. 2.042 s *below* the toss FSM's own
-floor. Lowering that floor is a change to the arming/release timing of a
-hardware-validated path — a safety fork, deliberately not taken here. It is the
-lever a future phase can pull, and pulling it needs a bench measurement of the
-real positioning + prepare budget, not an argument.
+**A 0.25 s dwell is not reachable at ANY admitted flight time.** The hand floor
+bottoms at 0.2505 s at the very top of the C-HAND-3 band (T = 1.1485 s, apex
+1.62 m) and rises from there. Reaching it needs a Platform Teensy flash changing
+``calcCatch``'s geometry — deferred by operator decision 3, deliberately not
+built here.
 
 A dwell under the floor is REFUSED (``REJECTED_DWELL``), never silently stretched:
 a cadence the machine quietly ignores is a lie about what it did. Lateness in the
@@ -221,11 +243,15 @@ import math
 from dataclasses import dataclass, field
 from typing import List, Optional
 
+from jugglebot.ball_possession import ARRIVAL_BAND_MIN_S
+from jugglebot.motion.trajectory import hand_stroke
 from jugglebot.toss_sequencer import (
     CATCH_CONFIRM_WINDOW_S,
     DEFAULT_TOSS_THROW_DELAY_S,
-    MIN_TOSS_THROW_DELAY_S,
+    FLIGHT_TIME_MIN_S,
+    TOSS_DISPATCH_DEBOUNCE_S,
     TossResult,
+    vertical_event_vel_mps,
 )
 
 # ── Feedback phases (TossContinuous.action feedback.phase — LOCKED strings) ────
@@ -277,15 +303,84 @@ def resolve_on_empty_cup(raw) -> str:
 # the ctor; these literals serve standalone/test use and the config drift-guard
 # test pins each pair equal — the same pattern as the toss FSM's
 # DEFAULT_TOSS_FLIGHT_TIME_S.
-DEFAULT_SESSION_DWELL_S = 6.0        # 0 => this. Comfortably over the 5.60 s floor
-                                     # at the 5.0 s default throw delay, so the
-                                     # default combination is legal without the
-                                     # operator doing arithmetic.
-DEFAULT_SESSION_DWELL_MARGIN_S = 0.6 # the unavoidable landing -> next-cycle-start
-                                     # handoff: worst measured CAUGHT-verdict
-                                     # latency 0.442 s (17/17, 2026-07-27 sitting)
-                                     # + 2 x 0.05 s node ticks = 0.542 s, with the
-                                     # ACTION_STAY arm_catch call inside the rest.
+DEFAULT_SESSION_DWELL_S = 6.0        # 0 => this. Comfortably over the 5.137 s
+                                     # floor at the 5.0 s default throw delay, so
+                                     # the default combination is legal without the
+                                     # operator doing arithmetic. DELIBERATELY NOT
+                                     # lowered with the floor on 2026-08-22: a
+                                     # DEFAULT must never jump cadence. The ladder
+                                     # (tests/hardware/session_cadence_ladder.md)
+                                     # selects a faster dwell EXPLICITLY, per goal,
+                                     # one rung at a time.
+DEFAULT_SESSION_DWELL_MARGIN_S = ARRIVAL_BAND_MIN_S
+                                     # = 0.137 s. ⚠ PROVISIONAL (census A3,
+                                     # 2026-08-22) — the landing -> next-cycle-
+                                     # start handoff, re-based on the HAND
+                                     # SENSOR's arrival edge.
+                                     #
+                                     # It is the earliest instant a possession
+                                     # verdict for cycle N can EXIST, and nothing
+                                     # else. The old 0.6 s was 0.442 (worst MOCAP
+                                     # TRACKER CAUGHT-verdict latency, 17/17,
+                                     # 2026-07-27 sitting) + 2 x 0.05 s node ticks
+                                     # = 0.542, rounded up. TWO things changed:
+                                     #
+                                     #   * the CHANNEL. Possession went
+                                     #     sensor-PRIMARY on 2026-08-10
+                                     #     (C-POSSESS-1); the tracker is the
+                                     #     FALLBACK. The sensor's empty->held edge
+                                     #     carries ZERO debounce (measured 0/0/0
+                                     #     ms, against 232/241/295 ms on the
+                                     #     falling edge) and its earliest observed
+                                     #     edge is +137 ms (ARRIVAL_BAND_MIN_S).
+                                     #   * the TICK ALLOWANCE is GONE, because it
+                                     #     was double-counting a guarantee the FSM
+                                     #     already makes structurally. Invariant
+                                     #     S1 forbids emitting START_CYCLE until
+                                     #     note_cycle_result has consumed the
+                                     #     previous cycle, so "the tick that
+                                     #     observes the verdict and the tick that
+                                     #     starts the next cycle" cannot be
+                                     #     skipped whatever this number says. And
+                                     #     lateness is absorbed by design: a cycle
+                                     #     whose handoff ran long reports a longer
+                                     #     achieved dwell and never aborts. A
+                                     #     margin that budgets for it buys nothing
+                                     #     and costs 40 ms of the tightest rung.
+                                     #
+                                     # It is a LOWER bound on the verdict and not
+                                     # an upper one, deliberately: the LATEST edge
+                                     # is +798 ms, and a margin sized on THAT would
+                                     # re-impose a 0.94 s floor and forbid every
+                                     # cadence rung. What protects the late-seat
+                                     # case is not this number but the possession
+                                     # machinery landed 2026-08-21 (C-POSSESS-1
+                                     # § 3.4/§ 3.6: the dwell-clamped retention and
+                                     # arrival windows, the raw-bit live evidence
+                                     # read, and the interlude's seat-edge band
+                                     # wait).
+                                     #
+                                     # PROVISIONAL because ARRIVAL_BAND_MIN_S is
+                                     # itself pending a re-measure: the band was
+                                     # captured against a can-bridge dispatch shift
+                                     # of +54..+133 ms that FW 14 cut to 10-20 ms,
+                                     # so it should collapse and this number move
+                                     # with it. Deriving it from the band constant
+                                     # is what makes that automatic — exactly what
+                                     # ARRIVAL_BAND_MAX_S's own comment promises.
+                                     #
+                                     # Lowering it does NOT speed any shipped goal
+                                     # up: it is a FLOOR term, and the DEFAULT
+                                     # dwell (DEFAULT_SESSION_DWELL_S, still 6.0)
+                                     # is what sets cadence.
+DEFAULT_CATCH_VEL_SCALE = 0.9        # 0 => this. The catch-speed knob's shipped
+                                     # default (hw.JB_OP_CATCH_VEL_SCALE_DEFAULT,
+                                     # pinned equal by the config drift-guard test).
+                                     # It enters the DWELL FLOOR, not just the
+                                     # catch: the tail is inversely proportional to
+                                     # the armed speed, so 0.9 is 11% more tail than
+                                     # a scale of 1.0 and 0.3 (the _VEL_SCALE_MIN
+                                     # floor) is 3x.
 DEFAULT_SESSION_MAX_THROWS = 20      # upper bound on num_throws. An unbounded
                                      # session is a machine stroking unattended for
                                      # an unbounded time; 20 cycles at the 6.0 s
@@ -311,7 +406,19 @@ GO_HOME_DURATION_S = 2.0             # trajectory_node's `go_home_duration_s`
                                      # installs. _go_home() returns on the service
                                      # ACK, so this whole duration elapses AFTER
                                      # the coordinator has moved on.
-NODE_TICK_S = 0.05                   # reload_coordinator_node._TICK_S.
+NODE_TICK_S = 0.02                   # reload_coordinator_node._TICK_S. Was 0.05
+                                     # until 2026-08-22 (census B3). The FSMs are
+                                     # time-driven, so this bounds LATENCY, not
+                                     # correctness — but at a 0.49 s dwell a 0.05 s
+                                     # tick is 10% of the whole turnaround, spent
+                                     # in sleep(). 0.02 s is still two orders of
+                                     # magnitude above localhost topic latency, so
+                                     # every TICK-COUNTED ordering gap keeps its
+                                     # guarantee. The tick COUNTS did NOT change:
+                                     # collapsing them is what would break the two
+                                     # load-bearing cross-topic gaps (prime_hold
+                                     # before the armed edge; armed-confirm before
+                                     # the announcement).
 
 # A MISSED cycle that the session CONTINUES past cannot hand over at
 # `dwell_margin_s`: that margin sizes the CAUGHT handoff (a verdict, then two
@@ -410,8 +517,29 @@ class TossSessionSequencer:
     throw_delay_s: float = 0.0                  # 0 => DEFAULT_TOSS_THROW_DELAY_S;
                                                 #   moves the FIRST release only —
                                                 #   later releases are set by dwell
-    flight_time_s: float = 0.0                  # resolved by the node (height ⇒ T);
-                                                #   used only for reporting/deadlines
+    flight_time_s: float = 0.0                  # resolved by the node (height ⇒ T).
+                                                #   Reporting + deadlines, and since
+                                                #   2026-08-22 the HAND-GEOMETRY dwell
+                                                #   floor: the catch tail and the throw
+                                                #   windup are both f(release speed),
+                                                #   and the release speed is f(T). 0.0
+                                                #   ⇒ judged at the C-HAND-3 band FLOOR
+                                                #   (the strictest case) — see
+                                                #   hand_floor_dwell_s.
+    catch_vel_scale: float = 0.0                # this session's catch/vel_scale knob;
+                                                #   0 ⇒ JB_OP_CATCH_VEL_SCALE_DEFAULT
+                                                #   (0.9), which the node resolves and
+                                                #   passes in. It belongs to the FLOOR
+                                                #   because the catch is armed at
+                                                #   event_vel x scale and the catch
+                                                #   tail is inversely proportional to
+                                                #   it: a SLOWER catch (a smaller
+                                                #   scale) makes the turnaround
+                                                #   LONGER, so a session that ignored
+                                                #   it would under-state its own floor
+                                                #   for exactly the operator setting
+                                                #   most likely to be reached for when
+                                                #   catches are being missed.
     stop_on_miss: bool = True                   # operator decision (c). The ctor
                                                 #   default matches the ACTION's IDL
                                                 #   default; both are load-bearing —
@@ -487,16 +615,82 @@ class TossSessionSequencer:
             self.dwell_time_s = float(self.dwell_default_s)
         if self.throw_delay_s == 0.0:
             self.throw_delay_s = DEFAULT_TOSS_THROW_DELAY_S
+        if self.catch_vel_scale == 0.0:
+            self.catch_vel_scale = DEFAULT_CATCH_VEL_SCALE
 
     # ── derived ────────────────────────────────────────────────────────────────
 
     @property
+    def min_throw_delay_s(self) -> float:
+        """The cycle FSM's own delay floor, restated at session scope.
+
+        ``max(TOSS_DISPATCH_DEBOUNCE_S, min_throw_event_delay_s(v_throw))`` — the
+        two gates ``toss_sequencer._step_checking`` applies, in one expression,
+        so a session can never be looser than the cycle it repeats nor stricter
+        than it (either direction is a verdict that names the wrong field).
+
+        Uses the same fail-closed flight-time fallback as
+        :attr:`hand_floor_dwell_s`: the event-delay floor also RISES as the
+        flight shortens (0.281 s at T = 0.80, 0.337 s at the band floor)."""
+        t = float(self.flight_time_s)
+        if not (math.isfinite(t) and t > 0.0):
+            t = float(FLIGHT_TIME_MIN_S)
+        return max(TOSS_DISPATCH_DEBOUNCE_S,
+                   hand_stroke.min_throw_event_delay_s(
+                       vertical_event_vel_mps(t)))
+
+    @property
+    def hand_floor_dwell_s(self) -> float:
+        """The C-HAND-1 dwell floor: catch tail + prelude + gap + throw windup.
+
+        THE physics term, and below ~0.5 s the only one that binds (census § 0).
+        Delegates to ``hand_stroke.min_turnaround_dwell_s`` — see it for why the
+        four terms are additive rather than overlappable, and for the verified
+        finding that the catch profile ends at ``t7`` and not at
+        ``t8 = t7 + END_PROFILE_HOLD`` (which would add 0.10 s to every number
+        here and make the 0.49 s operating point infeasible).
+
+        The release speed comes from ``toss_sequencer.vertical_event_vel_mps`` —
+        the SAME closed form the cycle FSM resolves its own ``event_vel_mps``
+        with, so the session cannot refuse a cadence the cycle can make.
+
+        ``flight_time_s`` is 0.0 when nothing resolved it (standalone/test
+        construction). The fallback is the C-HAND-3 band FLOOR, not the nominal
+        0.80 s default, because the floor is monotonically DECREASING in flight
+        time: the shortest admitted flight has the largest hand floor, so an
+        un-resolved session is judged against the strictest case it could be.
+        Fail-closed, the same doctrine as ``throw_site_known``."""
+        t = float(self.flight_time_s)
+        if not (math.isfinite(t) and t > 0.0):
+            t = float(FLIGHT_TIME_MIN_S)
+        return hand_stroke.min_turnaround_dwell_s(
+            vertical_event_vel_mps(t), float(self.catch_vel_scale))
+
+    @property
     def required_dwell_s(self) -> float:
-        """The smallest dwell this session's own ``throw_delay_s`` can honour —
-        the release is accept + throw_delay, and the session cannot start cycle
-        N+1 before the previous CAUGHT verdict has landed. Derived, never chosen;
-        see the module docstring for the two constants and the one measurement."""
-        return float(self.throw_delay_s) + float(self.dwell_margin_s)
+        """The smallest dwell this session can honour — the LARGER of the
+        plumbing handoff and the hand's own geometry.
+
+        The plumbing term is ``throw_delay + dwell_margin``: the release is
+        accept + throw_delay, and the session cannot start cycle N+1 before the
+        previous cycle's possession verdict has landed. The physics term is
+        :attr:`hand_floor_dwell_s`.
+
+        **Why the max() and not just the plumbing term.** Until 2026-08-22 the
+        plumbing term alone was the floor, and it was safe only by accident: at
+        ``MIN_TOSS_THROW_DELAY_S`` = 3.5 s it evaluated to 4.10 s, an order of
+        magnitude above anything the hand could not make, so the physics never
+        had to be consulted. Retiring that constant (operator decision 3) removes
+        the accident. Without this term a goal with ``throw_delay 0.30 / dwell
+        0.45`` at the 0.4949 s band floor satisfies ``dwell >= delay + margin``,
+        is ACCEPTED, and then dispatches cycle N+1's kind-0 throw INSIDE cycle
+        N's live catch stroke — which clears the packed queue and reseeds the
+        prelude from an encoder reading taken at 41-96 rev/s. That is the
+        2026-07-25 defect exactly (hand overshot to 10.17-10.33 rev, then was
+        yanked 0.34-1.75 rev below x3), and it is a hardware event, not a
+        refusal. Derived, never chosen; see the module docstring."""
+        return max(float(self.throw_delay_s) + float(self.dwell_margin_s),
+                   self.hand_floor_dwell_s)
 
     @property
     def cycle_index(self) -> int:
@@ -661,16 +855,21 @@ class TossSessionSequencer:
         machine is exactly as the operator left it."""
         if self.num_throws < 1 or self.num_throws > self.max_throws:
             return 'REJECTED_NUM_THROWS'
-        if self.throw_delay_s < MIN_TOSS_THROW_DELAY_S:
-            # The absolute 4.10 s floor this module, the .action and the runbook
-            # all advertise is `MIN_TOSS_THROW_DELAY_S + margin` — so it is only
-            # a real floor if the delay itself is gated. Without this, a goal
-            # with throw_delay 2.0 / dwell 3.0 satisfies `dwell >= delay +
-            # margin` and is ACCEPTED: cycle 1 is fully built (per-goal state
-            # installed, the live pose read, the release state computed) and
-            # then dies REJECTED_CANT_MAKE_LEAD inside the cycle FSM, naming a
-            # field the operator did not think was in play. Refused HERE the
-            # verdict names throw_delay_s, which is the field that is wrong.
+        if self.throw_delay_s < self.min_throw_delay_s:
+            # The session mirrors the CYCLE's own delay gates so the verdict
+            # names throw_delay_s — the field that is wrong — instead of dying
+            # one layer down. Without this, a goal whose delay is illegal
+            # satisfies `dwell >= delay + margin`, is ACCEPTED, builds cycle 1's
+            # whole per-goal state (the live pose read, the release state
+            # computed) and only then reports REJECTED_CANT_MAKE_LEAD, naming a
+            # field the operator did not think was in play.
+            #
+            # BOTH cycle gates are mirrored (see min_throw_delay_s): the
+            # goal-storm debounce AND the derived `:642` dispatch budget. Until
+            # 2026-08-22 there was one constant to mirror, MIN_TOSS_THROW_DELAY_S
+            # = 3.5 s; mirroring only the debounce now would re-open the exact
+            # hole this gate was written to close, one order of magnitude
+            # narrower.
             return 'REJECTED_THROW_DELAY'
         if not math.isfinite(self.dwell_time_s) or self.dwell_time_s < 0.0:
             return 'REJECTED_DWELL'

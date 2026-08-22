@@ -569,21 +569,33 @@ def test_the_three_measured_seat_then_leaves_read_as_bounce_outs(hold_s):
     assert v.confirmed is False
 
 
-def test_a_legitimate_throw_can_never_read_as_a_bounce_out():
-    """The upper constraint on the retention window is the machine's own cadence:
-    toss_sequencer.MIN_TOSS_THROW_DELAY_S is 3.5 s, so the earliest a legitimate
-    departure can follow a catch is 2.3x the window. A window sized above that
-    floor would score every chained Toss → Toss as a bounce-out."""
-    from jugglebot.toss_sequencer import MIN_TOSS_THROW_DELAY_S
-    assert _RETAIN_S < MIN_TOSS_THROW_DELAY_S / 2.0
+def test_a_legitimate_throw_at_the_SHIPPED_cadence_is_not_a_bounce_out():
+    """A slow-cadence departure is inside the unclamped retention window's own
+    reach and must read CONFIRMED.
+
+    ⚠ THIS TEST'S PREMISE CHANGED ON 2026-08-22. It used to argue from
+    ``MIN_TOSS_THROW_DELAY_S = 3.5 s`` — "the earliest a legitimate departure can
+    follow a catch is 2.3x the window" — and that constant is RETIRED (census
+    A1). The window is no longer safe by cadence arithmetic; it is safe because
+    ``observe`` CLAMPS its horizon to the announced next release
+    (C-POSSESS-1 § 3.4, census D1), which is what
+    ``test_a_legitimate_throw_is_not_a_bounce_out_at_a_short_dwell`` pins.
+
+    What survives here is the SLOW case, and it is worth keeping separately: at
+    the shipped 6.0 s dwell the departure is far outside the window, so the
+    clamp is inert and the raw window has to get the answer right on its own. A
+    regression that broke the unclamped path would otherwise hide behind the
+    clamp at every cadence the ladder actually runs."""
+    departure_after_catch_s = float(hw.JB_OP_TOSS_SESSION_DWELL_DEFAULT_S)
+    assert _RETAIN_S < departure_after_catch_s
     src = _sensor()
     land = 10.0
     edge = land + 0.4
     _stream(src, 8.0, edge, held=False)
-    _stream(src, edge, edge + MIN_TOSS_THROW_DELAY_S, held=True)
-    _stream(src, edge + MIN_TOSS_THROW_DELAY_S,
-            edge + MIN_TOSS_THROW_DELAY_S + 0.3, held=False)
-    v = src.observe(edge + MIN_TOSS_THROW_DELAY_S + 0.3, landing_t=land)
+    _stream(src, edge, edge + departure_after_catch_s, held=True)
+    _stream(src, edge + departure_after_catch_s,
+            edge + departure_after_catch_s + 0.3, held=False)
+    v = src.observe(edge + departure_after_catch_s + 0.3, landing_t=land)
     assert v.retention == RETENTION_CONFIRMED
 
 
@@ -827,7 +839,8 @@ def test_a_legitimate_throw_is_not_a_bounce_out_at_a_short_dwell():
 
     The retention window is 1.50 s and was justified at the top by
     ``MIN_TOSS_THROW_DELAY_S`` being 3.5 s — "so a legitimate throw can never
-    read as a bounce-out". That floor is retired. At the R3 dwell the ball leaves
+    read as a bounce-out". That floor is RETIRED (census A1, landed 2026-08-22:
+    the name is gone from the tree). At the R3 dwell the ball leaves
     the cup 1.50 s after the landing for OUR OWN next throw, which is INSIDE the
     unclamped window, so the source returns RETENTION_REJECTED on a perfect
     cycle. With ``on_empty_cup: RELOAD`` that route asks BallButler to throw a

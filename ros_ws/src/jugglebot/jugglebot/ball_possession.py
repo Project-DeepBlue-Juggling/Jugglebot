@@ -144,6 +144,22 @@ RELEASE_GUARD_S = 0.30
 #: to COLLAPSE. Everything that must shrink with it derives from this name —
 #: that is the whole reason it exists (census D7).
 ARRIVAL_BAND_MAX_S = 0.80
+#: The same band's FLOOR — the EARLIEST empty->held edge observed on a real
+#: catch: **+137 ms** past the announced landing, over the same 35 announcements
+#: (nothing before landing at all).  It is the twin of the ceiling above and it
+#: lives beside it for the same reason: the ceiling sizes how long a verdict may
+#: take to ARRIVE, this sizes how soon one can EXIST, and the post-FW14
+#: re-measure moves both from one place.
+#:
+#: Its consumer is the session's dwell margin — the landing -> next-cycle-start
+#: handoff (``toss_session.DEFAULT_SESSION_DWELL_MARGIN_S``), which was sized on
+#: the mocap tracker's CAUGHT verdict until 2026-08-22 and is now sized on this,
+#: because possession became sensor-PRIMARY on 2026-08-10 and the tracker is the
+#: FALLBACK.  Deliberately NOT rounded: 0.137 is the datum, and the rounding
+#: belongs in the consumer that adds its own tick allowance to it.
+#:
+#: ⚠ PENDING THE SAME RE-MEASURE as the ceiling.
+ARRIVAL_BAND_MIN_S = 0.137
 
 # ── Source identifiers (carried in every verdict, so a log line names its author)
 SOURCE_TRACKER_ARRIVAL = 'tracker_arrival'

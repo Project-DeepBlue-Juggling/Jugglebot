@@ -574,6 +574,21 @@ S1 at most one live cycle; S2 the session commands no motion of its own; S3
 cancellation obeys the per-cycle phase rules verbatim; S5 the dwell is a quiescent
 wait, never a stretched `throw_delay`.
 
+> ⚠ **SUPERSEDED 2026-08-22 (census A1/A3/A4, operator decision 3).** Both terms
+> of the paragraph below were retired. `MIN_TOSS_THROW_DELAY_S = 3.5 s` is gone —
+> replaced by a 0.10 s goal-storm debounce plus the DERIVED
+> `hand_stroke.min_throw_event_delay_s(v_throw)` (0.281 s at the 0.80 s nominal).
+> The 0.6 s margin is gone — re-based on the hand sensor's arrival edge,
+> `ball_possession.ARRIVAL_BAND_MIN_S` = **0.137 s** (PROVISIONAL, pending the
+> post-FW14 band re-measure). And the floor gained a THIRD, physical term it
+> never had: `hand_stroke.min_turnaround_dwell_s`, the C-HAND-1 catch-tail +
+> prelude + gap + windup, which is what actually binds below ~0.5 s. The floor is
+> now `max(throw_delay + 0.137, hand_floor_dwell_s)` — **5.137 s at the 5.0 s
+> default delay, 0.4871 s at the tuning-phase operating point.** The 2.0 s figure
+> is still unachievable, but for the honest reason: the hand-stroke geometry, not
+> a policy constant. Ladder: `tests/hardware/session_cadence_ladder.md`. The
+> paragraph is kept verbatim because it records what the numbers were sized from.
+
 **The dwell floor is DERIVED, and the brief's 2.0 s figure is unachievable.**
 Dwell is previous SCHEDULED LANDING → next RELEASE, so
 `cycle_start(N+1) = landing(N) + dwell − throw_delay` and the floor is

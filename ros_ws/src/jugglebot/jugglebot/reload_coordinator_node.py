@@ -226,7 +226,7 @@ from jugglebot import clock_offset, toss_record, toss_trim
 from jugglebot.toss_record import latch_announced_ball
 from jugglebot.motion.tilt_map import find_repo_root
 from jugglebot.motion import toss_cal, toss_ilc
-from jugglebot.motion.trajectory import throw_envelope
+from jugglebot.motion.trajectory import hand_stroke, throw_envelope
 from jugglebot.motion.trajectory.tilt_geometry import MAX_TILT_DEG
 from jugglebot.motion.ik_solver import rot_matrix_to_quat, rotvec_to_rot_matrix
 from jugglebot.motion.trajectory.toss_release import (
@@ -336,11 +336,39 @@ _HAND_DISPATCH_ATTEMPTS = 4
 # by tests/ros/test_reload_coordinator_node.py::
 # test_prime_move_leaves_the_park_band_windows_open.
 _HAND_ACK_SETTLE_S = 0.25          # let a lied-ack move begin before reading telemetry
-_HAND_NEAR_TARGET_REV = 0.5        # |pos - target| within this ⇒ already at the target
+_HAND_NEAR_TARGET_REV = hand_stroke.HAND_PARK_BAND_REV
+                                   # |pos - target| within this ⇒ already at the
+                                   # target. Sourced from hand_stroke since
+                                   # 2026-08-22: the same band now sizes the kind-0
+                                   # dispatch's PRELUDE BUDGET
+                                   # (min_throw_event_delay_s), so the gate that
+                                   # admits a throw and the arithmetic that budgets
+                                   # its prelude must be one number, not two.
 _HAND_MOVING_VEL_RPS = 2.0         # |vel| toward the target at/above this ⇒ move underway
 _HAND_TELEMETRY_STALE_S = 0.3      # telemetry older than this ⇒ cannot verify ⇒ blind ladder
 # Sequence loop tick (the FSM is time-driven; this bounds latency, not correctness).
-_TICK_S = 0.05
+#
+# 0.05 -> 0.02 on 2026-08-22 (census B3). The reason is cadence, not latency for
+# its own sake: at the tuning-phase 0.49 s dwell a 0.05 s tick is 10% of the
+# whole turnaround spent in sleep(), and the PREPARE ladder alone costs four of
+# them. 0.02 s is still ~2 orders of magnitude above localhost topic latency, so
+# the two load-bearing TICK-COUNTED ordering gaps keep their guarantee:
+#   (a) catch/prime_hold must land in an EARLIER catch_coordinator wait-set cycle
+#       than the catch/armed edge, or the armed-edge auto-prime ascends with the
+#       seated ball;
+#   (b) armed-confirm -> >=1 tick -> announce, because catch_coordinator drops
+#       pre-tilts that arrive unarmed.
+# THE TICK COUNTS ARE UNCHANGED, deliberately. Collapsing them is the change that
+# would break (a) and (b); shortening the tick is not.
+#
+# Every use is a POLL PERIOD in a goal-execution thread (verified by inspection,
+# 2026-08-22: seven time.sleep(_TICK_S) sites, all inside `while rclpy.ok()`
+# deadline loops). None of them is a control loop and none treats the tick as a
+# DURATION, so the cost of shortening it is CPU in a thread that was sleeping.
+# toss_session.NODE_TICK_S mirrors this and is pinned to it by a drift-guard test
+# — it is an input to DEFAULT_SESSION_DWELL_MARGIN_S and to the MISS-cleanup
+# floor, so the two cannot be allowed to drift.
+_TICK_S = 0.02
 # A hard ceiling on a single reload attempt so a wedged sequence always terminates.
 _MAX_SEQUENCE_S = 30.0
 # Slack added on top of the FSM's own budgets when deriving the per-goal ceiling.
@@ -4708,6 +4736,13 @@ class ReloadCoordinatorNode(Node):
             dwell_time_s=dwell,
             throw_delay_s=throw_delay,
             flight_time_s=flight,
+            # The RESOLVED catch-speed knob (goal field, else the config
+            # default), because since 2026-08-22 the session's dwell floor is
+            # partly the CATCH STROKE's tail and that tail is inversely
+            # proportional to the armed speed — a slower catch is a longer
+            # turnaround, so the floor must see the same scale the arm will.
+            catch_vel_scale=(vel_scale if vel_scale > 0.0
+                             else float(hw.JB_OP_CATCH_VEL_SCALE_DEFAULT)),
             stop_on_miss=stop_on_miss,
             max_throws=int(hw.JB_OP_TOSS_SESSION_MAX_THROWS),
             dwell_default_s=float(hw.JB_OP_TOSS_SESSION_DWELL_DEFAULT_S),

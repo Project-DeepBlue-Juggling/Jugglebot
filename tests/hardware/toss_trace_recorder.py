@@ -226,7 +226,15 @@ REJECT_WIRE_MAP = {
                      '(shipped default: 8b since 2026-07-28 — do NOT "fix" this '
                      'by reverting the default; a tier outside {8a, 8b} means the '
                      'YAML or the INSTALLED copy is wrong)',
-    'REJECTED_CANT_MAKE_LEAD': 'goal: throw_delay_s below the 3.5 s floor',
+    'REJECTED_CANT_MAKE_LEAD': 'goal: throw_delay_s below the DERIVED dispatch '
+                               'budget for THIS release speed — '
+                               'hand_stroke.min_throw_event_delay_s = '
+                               'prelude(park band) + SAFETY_GAP + windup, i.e. '
+                               '0.337 s at the 0.4949 s band floor and 0.281 s '
+                               'at the 0.80 s nominal (or below the 0.10 s '
+                               'goal-storm debounce, which also catches a sign '
+                               'typo). The flat 3.5 s floor retired 2026-08-22 '
+                               '(census A1). The message names the three terms',
     'REJECTED_FLIGHT_TIME': 'goal: flight_time_s is not a positive finite '
                             'number (a sign typo or a NaN — the FSM never '
                             'coerces one to the default). The flyable BAND is '
