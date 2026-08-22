@@ -95,8 +95,11 @@ is its own accept + ``throw_delay``, so
 and the session simply idles until that instant. The floor is the LARGER of a
 plumbing term and a physics term, and neither is chosen::
 
-    dwell_floor = max(throw_delay + dwell_margin_s,          # the handoff
+    dwell_floor = max(throw_delay + handoff_margin_s,        # the handoff
                       hand_floor_dwell_s(flight, vel_scale))  # the stroke
+
+    handoff_margin_s = max(dwell_margin_s,                   # verdict exists
+                           catch_park_reentry_s(v, scale))   # hand back at park
 
 * ``throw_delay`` is gated by the cycle FSM at ``TOSS_DISPATCH_DEBOUNCE_S``
   (0.10 s, a goal-storm debounce) and, once the release speed is known, at
@@ -105,7 +108,9 @@ plumbing term and a physics term, and neither is chosen::
   2026-08-22 it was gated at ``MIN_TOSS_THROW_DELAY_S`` = 3.5 s, a generic fit
   over a worst-case POSITIONING move a co-located chain never makes; retiring it
   is operator decision 3 of the ILC-primary fold-in.
-* ``dwell_margin_s`` covers the landing → next-cycle-start handoff. It was 0.6 s
+* ``dwell_margin_s`` covers ONE HALF of the landing → next-cycle-start handoff —
+  the verdict half; see the ``handoff_margin_s`` bullet below for the other, and
+  note that the floor consumes THAT and not this. It was 0.6 s
   from 2026-07-29 to 2026-08-22, sized on the MOCAP TRACKER's CAUGHT verdict
   (*landing + 0.202–0.442 s*, median 0.209; 17/17 self-tosses of the 2026-07-27
   sitting, ``logbook/2026-07-28-caught-gate-xy-plausibility.md``) plus two node
@@ -124,6 +129,14 @@ plumbing term and a physics term, and neither is chosen::
   +798 ms, and a margin sized on THAT would re-impose a 0.94 s floor and forbid
   every rung. The late-seat case is protected by the C-POSSESS-1 § 3.4/§ 3.6
   machinery, not by this number.
+* ``handoff_margin_s`` is what the floor ACTUALLY uses, and it is
+  ``max(dwell_margin_s, hand_stroke.catch_park_reentry_s(v, scale))`` (audit fix,
+  2026-08-22). The verdict is only half of what the next cycle's CHECKING needs;
+  the other half is ``hand_parked``, and the catch stroke does not bring the hand
+  back inside the park band until **+0.190 s** at the R5-prime flight. The
+  retired 0.6 s margin covered that by accident and 0.137 s does not, so at every
+  cadence rung the bare arrival term would schedule cycle N+1 inside cycle N's
+  live catch stroke. See :attr:`TossSessionSequencer.handoff_margin_s`.
 * ``hand_floor_dwell_s`` is the C-HAND-1 term, and below ~0.5 s it is the ONLY
   one that binds. Between a landing and the next release the hand must
   decelerate the caught ball to rest at 0 rev, then prelude + gap + wind up the
@@ -153,8 +166,8 @@ longer achieved dwell in ``per_cycle_dwell_s`` and never aborts.
 
 ### The MISS path needs a bigger floor than the CAUGHT one, and gets it here
 
-``dwell_margin_s`` sizes the CAUGHT handoff, where nothing is commanded: a verdict
-lands and two ticks pass. A MISSED cycle the session CONTINUES past
+``handoff_margin_s`` sizes the CAUGHT handoff, where nothing is commanded: a
+verdict lands and the hand finishes its catch stroke back at the park band. A MISSED cycle the session CONTINUES past
 (``stop_on_miss`` False) hands over through a whole ``ACTION_SAFE_ABORT`` ladder
 instead, and every rung of it is dispatched on a SERVICE ACK — ``_go_home()``
 returns when ``trajectory_node`` has *installed* a 2.0 s recentre profile, not
@@ -421,8 +434,8 @@ NODE_TICK_S = 0.02                   # reload_coordinator_node._TICK_S. Was 0.05
                                      # the announcement).
 
 # A MISSED cycle that the session CONTINUES past cannot hand over at
-# `dwell_margin_s`: that margin sizes the CAUGHT handoff (a verdict, then two
-# ticks — nothing is commanded). The MISS handoff is a whole SAFE_ABORT ladder,
+# `handoff_margin_s`: that margin sizes the CAUGHT handoff (a verdict lands, the
+# catch stroke finishes — nothing is commanded). The MISS handoff is a whole SAFE_ABORT ladder,
 # and every rung of it is dispatched on a service ACK, so `_run_toss_cycle`
 # returns while the retract is still descending and the go_home profile is still
 # traversing. Measured from the cycle's SCHEDULED landing:
@@ -621,6 +634,22 @@ class TossSessionSequencer:
     # ── derived ────────────────────────────────────────────────────────────────
 
     @property
+    def _flight_or_floor_s(self) -> float:
+        """``flight_time_s``, or the C-HAND-3 band FLOOR when nothing resolved it.
+
+        ONE fallback for all three derived floors below, because every one of
+        them is monotonically DECREASING in flight time: the shortest admitted
+        flight has the largest floor, so an un-resolved session is judged against
+        the strictest case it could be. Fail-closed, the same doctrine as
+        ``throw_site_known``. Single-sourced so the three cannot drift apart —
+        a session judged against 0.4949 s by one floor and 0.80 s by another is
+        a floor combination no flight time produces."""
+        t = float(self.flight_time_s)
+        if not (math.isfinite(t) and t > 0.0):
+            return float(FLIGHT_TIME_MIN_S)
+        return t
+
+    @property
     def min_throw_delay_s(self) -> float:
         """The cycle FSM's own delay floor, restated at session scope.
 
@@ -632,12 +661,9 @@ class TossSessionSequencer:
         Uses the same fail-closed flight-time fallback as
         :attr:`hand_floor_dwell_s`: the event-delay floor also RISES as the
         flight shortens (0.281 s at T = 0.80, 0.337 s at the band floor)."""
-        t = float(self.flight_time_s)
-        if not (math.isfinite(t) and t > 0.0):
-            t = float(FLIGHT_TIME_MIN_S)
         return max(TOSS_DISPATCH_DEBOUNCE_S,
                    hand_stroke.min_throw_event_delay_s(
-                       vertical_event_vel_mps(t)))
+                       vertical_event_vel_mps(self._flight_or_floor_s)))
 
     @property
     def hand_floor_dwell_s(self) -> float:
@@ -660,20 +686,60 @@ class TossSessionSequencer:
         time: the shortest admitted flight has the largest hand floor, so an
         un-resolved session is judged against the strictest case it could be.
         Fail-closed, the same doctrine as ``throw_site_known``."""
-        t = float(self.flight_time_s)
-        if not (math.isfinite(t) and t > 0.0):
-            t = float(FLIGHT_TIME_MIN_S)
         return hand_stroke.min_turnaround_dwell_s(
-            vertical_event_vel_mps(t), float(self.catch_vel_scale))
+            vertical_event_vel_mps(self._flight_or_floor_s),
+            float(self.catch_vel_scale))
+
+    @property
+    def handoff_margin_s(self) -> float:
+        """THE landing → next-cycle-CHECKING floor: the LARGER of the possession
+        verdict's earliest instant and the hand's return to the park band.
+
+        Two independent things have to be true before cycle N+1's CHECKING can
+        pass, and until 2026-08-22 only one of them was modelled:
+
+        * a possession VERDICT for cycle N has to exist — ``dwell_margin_s``,
+          re-based onto ``ARRIVAL_BAND_MIN_S`` (0.137 s) when the channel went
+          sensor-PRIMARY. Correct about the quantity it models.
+        * the HAND has to be back inside the park band — ``hand_parked`` is a
+          hard CHECKING precondition (a kind-0 stroke commands absolute positions
+          from 0 rev), and the catch stroke is still running well past +137 ms:
+          ``hand_stroke.catch_park_reentry_s`` is **0.1903 s** at the R5-prime
+          flight, 0.1582 at R4's, 0.1204 at R0–R3's.
+
+        **Why this is a separate property and not a bigger literal** (audit fix,
+        2026-08-22). The retired 0.6 s ``DEFAULT_SESSION_DWELL_MARGIN_S`` covered
+        the park re-entry by accident — 0.6 s is past every value the geometry
+        can produce — so nothing ever had to name it. Re-basing the margin onto
+        the arrival band removed the accident without replacing it, and at the
+        cadence rungs the gap is decisive: R5-prime schedules cycle N+1 at
+        ``landing + 0.140`` against a hand that re-enters the band at +0.190,
+        i.e. 50 ms INSIDE the live catch stroke. CHECKING then reads ~1.5 rev and
+        mints ``REJECTED_HAND_NOT_PARKED`` on a healthy catch — a machine-fault
+        verdict for a cadence fault, which ends the sitting and routes the
+        operator to the wrong subsystem.
+
+        The only thing standing between that schedule and that verdict today is
+        that the cycle terminal still waits for a TRACKER ``CAUGHT`` at
+        *landing + 0.202…0.442 s* — the FALLBACK channel this same fold-in
+        demoted, and whose 0.442 s figure it retired. An accidental fence, 12 ms
+        wide at R4/R5, that disappears the moment the sensor alone is allowed to
+        terminate a cycle. Derived, so it cannot drift away again."""
+        return max(float(self.dwell_margin_s),
+                   hand_stroke.catch_park_reentry_s(
+                       vertical_event_vel_mps(self._flight_or_floor_s),
+                       float(self.catch_vel_scale)))
 
     @property
     def required_dwell_s(self) -> float:
         """The smallest dwell this session can honour — the LARGER of the
         plumbing handoff and the hand's own geometry.
 
-        The plumbing term is ``throw_delay + dwell_margin``: the release is
+        The plumbing term is ``throw_delay + handoff_margin``: the release is
         accept + throw_delay, and the session cannot start cycle N+1 before the
-        previous cycle's possession verdict has landed. The physics term is
+        previous cycle's possession verdict has landed AND the hand has come back
+        to the park band (see :attr:`handoff_margin_s` — the second half was
+        unmodelled until 2026-08-22). The physics term is
         :attr:`hand_floor_dwell_s`.
 
         **Why the max() and not just the plumbing term.** Until 2026-08-22 the
@@ -689,7 +755,7 @@ class TossSessionSequencer:
         2026-07-25 defect exactly (hand overshot to 10.17-10.33 rev, then was
         yanked 0.34-1.75 rev below x3), and it is a hardware event, not a
         refusal. Derived, never chosen; see the module docstring."""
-        return max(float(self.throw_delay_s) + float(self.dwell_margin_s),
+        return max(float(self.throw_delay_s) + self.handoff_margin_s,
                    self.hand_floor_dwell_s)
 
     @property
@@ -877,8 +943,18 @@ class TossSessionSequencer:
             # The floor is derived from THIS session's throw_delay (module
             # docstring). Refusing beats silently stretching: a cadence the
             # machine quietly ignores is a lie about what it did, and the
-            # operator's remedy — raise dwell, or lower throw_delay toward the
-            # 3.5 s FSM floor — is only visible if the number is named.
+            # operator's remedy — raise dwell, or lower throw_delay toward
+            # `min_throw_delay_s` — is only visible if the number is named.
+            #
+            # That remedy said "toward the 3.5 s FSM floor" until 2026-08-22, and
+            # MIN_TOSS_THROW_DELAY_S was retired by the same commit that rewrote
+            # this hunk (audit fix). The floor is now DERIVED and speed-dependent
+            # — 0.281 s at the 0.80 s nominal flight, 0.337 s at the C-HAND-3
+            # band floor — so an operator following the old text would lower
+            # throw_delay toward a number an order of magnitude above the real
+            # one, be refused again, and never discover the rungs are legal.
+            # Naming the property rather than a literal is what keeps this
+            # sentence true through the next re-derivation.
             return 'REJECTED_DWELL'
         if self.num_throws >= 2 and not self.chain_site_reachable:
             # The chain pre-check, caught BEFORE a ball flies. Without this, a

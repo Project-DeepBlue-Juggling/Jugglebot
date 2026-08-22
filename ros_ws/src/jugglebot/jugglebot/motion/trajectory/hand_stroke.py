@@ -605,3 +605,60 @@ def min_turnaround_dwell_s(v_throw_mps: float,
             + SMOOTH_MOVE_MIN_DURATION_S
             + SAFETY_GAP_S
             - throw.stroke_start_rel)
+
+
+def catch_park_reentry_s(v_throw_mps: float,
+                         catch_vel_scale: float = 1.0,
+                         park_band_rev: float = HAND_PARK_BAND_REV) -> float:
+    """Ball contact → the hand is back inside the PARK BAND, per throw speed.
+
+    The catch stroke's own answer to a question :func:`min_turnaround_dwell_s`
+    does not ask.  That function bounds *landing → next RELEASE* (the dwell); this
+    one bounds *landing → the earliest instant ``hand_parked`` can read True*,
+    which is the gate ``toss_sequencer._step_checking`` applies to the NEXT
+    cycle — and a continuous session starts that cycle at
+    ``landing + dwell − throw_delay``, not at the release.  Two different
+    quantities, and only bounding the first leaves the second free.
+
+    **Why this had to become a derived number** (audit fix, 2026-08-22).  Until
+    then the landing→next-CHECKING handoff was covered by
+    ``toss_session.DEFAULT_SESSION_DWELL_MARGIN_S`` = 0.6 s, which was structural
+    cover by accident: 0.6 s is comfortably past every value below, so the
+    geometry never had to be consulted.  Re-basing that margin onto
+    ``ARRIVAL_BAND_MIN_S`` = 0.137 s — correct about the quantity IT models, the
+    earliest instant a possession verdict can exist — removed the accident
+    without replacing it.  0.137 s is under every number in the table below, so
+    at the cadence rungs the next cycle's CHECKING would land INSIDE the live
+    catch stroke and mint ``REJECTED_HAND_NOT_PARKED`` on a perfectly good catch:
+    a machine-fault verdict for a cadence fault, which ends the sitting and sends
+    the operator to the wrong subsystem.
+
+    The profile is ``calcCatch``'s, evaluated from ball contact at ``x5``: a
+    velocity hold at ``vC`` down to ``x6``, then the decel ramp to rest at
+    **exactly 0 rev** (verified against the shipped ``Trajectory.h``, 2026-08-22 —
+    the kind-1 profile's last sample is ``t7``, with no end hold).  Position is
+    strictly monotone decreasing across both, so the band edge is crossed exactly
+    once and the closed form below is the first crossing.
+
+    Values at the shipped 0.9 ``catch_vel_scale`` (probe, 2026-08-22):
+    **0.1933 s** at the 0.4949 s band floor, 0.1903 at 0.5029 (R5-prime),
+    0.1582 at 0.6059 (R4), 0.1204 at the 0.7977 s R0–R3 flight, 0.0837 at the
+    1.1485 s ceiling.  Like every other number in this module it is a LOWER
+    bound — it is the COMMANDED profile, and the real hand trails it — so the
+    runtime ``hand_parked`` observation remains the truth and this only decides
+    whether the schedule was ever going to allow it.
+    """
+    scale = abs(float(catch_vel_scale)) or 1.0
+    m = HandStrokeModel(float(v_throw_mps) * scale)
+    band_m = abs(float(park_band_rev)) / LINEAR_GAIN_REV_PER_M
+    if m.x5_m <= band_m:                       # already in band at contact
+        return 0.0
+    if m.x6_m <= band_m:                       # crossed during the velocity hold
+        return (band_m - m.x5_m) / m.vC
+    # The decel ramp. p(tau) = x6 + vC.tau + 0.5.D.tau^2 with D = -vC/t_dec, whose
+    # vertex is exactly t_dec (where p = 0), so p is decreasing on [0, t_dec] and
+    # the SMALLER root is the crossing.
+    decel = -m.vC / m.t_dec_catch
+    disc = m.vC * m.vC - 2.0 * decel * (m.x6_m - band_m)
+    root = math.sqrt(disc) if disc > 0.0 else 0.0
+    return m.t_vel_catch + (-m.vC - root) / decel

@@ -67,6 +67,11 @@ related_plan: critical-point-ilc.md
   - tests/ros/test_toss_sequencer.py
   - tests/ros/test_toss_session.py
   - tests/hardware/session_cadence_ladder.md
+  - tools/probes/cadence_rung_check.py
+  - tests/hardware/ilc_fit_lib.py
+  - tests/motion/test_hand_stroke.py
+  - tests/motion/test_toss_ilc.py
+  - tests/ros/test_ball_possession.py
 ---
 
 # Critical-point ILC becomes the primary toss learning architecture
@@ -2218,3 +2223,267 @@ Neither the table nor the reasoning is rewritten to look like it was right.
   quoted (60.4, 61.1, 54.4, 44.3, 42.9, 9.4) and the two distinct dwell floors
   (0.4871 at the band floor, 0.4870 at the rung's own flight) are each used in
   exactly one sense throughout.
+
+## Phase L — audit fixes: the runbook's own rungs do not throw a ball
+
+The adversarial audit of the 12-commit fold-in (`6d226f6..78daf4b`) returned one
+BLOCKING, one HIGH, four MEDIUM and six LOW. This phase lands the HIGH, the two
+MEDIUM implementation defects, both MEDIUM runbook defects and all six LOWs. The
+BLOCKING and two `needs-design` MEDIUMs are carried as open questions, named at
+the end.
+
+### L1 — the handoff margin was only half of the handoff (HIGH)
+
+Phase I re-based `DEFAULT_SESSION_DWELL_MARGIN_S` from 0.6 s onto
+`ARRIVAL_BAND_MIN_S` = 0.137 s, and argued it correctly: 0.137 s is the earliest
+instant a possession VERDICT can exist, and the retired 0.542 s derivation was
+built on a tracker channel that had since been demoted to FALLBACK.
+
+What that argument missed is that a verdict is not the only thing cycle N+1's
+CHECKING waits on. `hand_parked` is a hard precondition — a kind-0 stroke
+commands absolute positions from 0 rev — and the catch stroke does not bring the
+hand back inside the 0.5 rev park band until well after +137 ms. Computed from
+the shipped `HandStrokeModel` (probe, 2026-08-22; catch profile verified to end
+at exactly 0.000000 rev):
+
+| flight `T` | park re-entry | vs `ARRIVAL_BAND_MIN_S` |
+|---|---|---|
+| 0.4949 (band floor) | **0.1933 s** | +41 % |
+| 0.5029 (R5-prime) | **0.1903 s** | +39 % |
+| 0.6059 (R4) | **0.1582 s** | +15 % |
+| 0.7977 (R0–R3) | 0.1204 s | −12 % — the arrival term still binds |
+| 1.1449 (near ceiling) | 0.0837 s | −39 % |
+
+`required_dwell_s` bounds `dwell`; nothing bounded `dwell − throw_delay`, which
+is the quantity `_next_cycle_at` actually schedules on. At the published R5-prime
+that put cycle N+1's CHECKING at `landing + 0.140` — **50 ms inside cycle N's
+live catch stroke**, where it reads ~1.5 rev and mints `REJECTED_HAND_NOT_PARKED`
+on a healthy catch. At R4/R5 the gap was 10 ms, less than one telemetry period
+and negative under the known 100–150 ms hand-telemetry freezes.
+
+The only thing standing between that schedule and that verdict was that the cycle
+terminal still waits for a TRACKER `CAUGHT` at *landing + 0.202…0.442 s* — the
+FALLBACK channel this same fold-in demoted, and whose 0.442 s figure Phase I
+retired. An accidental fence, and one that disappears the moment the sensor alone
+is allowed to terminate a cycle.
+
+**Fix**: `hand_stroke.catch_park_reentry_s(v_throw, catch_vel_scale)` — a closed
+form over `calcCatch`'s two post-contact phases, verified against a brute-force
+sweep of the same profile to 1e-9 — consumed by a new
+`TossSession.handoff_margin_s = max(dwell_margin_s, catch_park_reentry_s(...))`,
+which `required_dwell_s` now uses in place of the bare margin. One derived
+quantity, one enforcement point, one test that sweeps the crossover.
+
+The three derived floors also stopped each re-implementing the
+unresolved-flight-time fallback; they share `_flight_or_floor_s` now, so a
+session cannot be judged against 0.4949 s by one floor and 0.80 s by another.
+
+### L2 — the drain returned before the work was done (MEDIUM)
+
+`_toss_records_drain` polled `q.empty()`. `Queue.empty()` goes True the instant
+the census-B6 worker `get`s the last item — the worker calls `task_done()` in a
+`finally` AFTER the belt write and the trim update — so the drain returned while
+the final cycle was still being processed, which is the exact opposite of its own
+docstring ("block until every queued record has been written and observed").
+
+`_toss_trim_end` then took the estimator under the lock, set it to None and wrote
+`trim.proposal(...)` with that cycle missing: "a silently short session", the
+failure the drain exists to prevent. Worse, `snapshot['trim']` carries the
+estimator BY REFERENCE, so the proposal could read numpy state the worker was
+concurrently mutating.
+
+**Fix**: wait on `unfinished_tasks == 0` via the queue's own condition variable —
+what `Queue.join()` does internally, with the timeout `join()` does not offer.
+The counter was there all along.
+
+### L3 — a failed thread start latched a dead worker (MEDIUM)
+
+`_toss_records_worker_start` assigned the handle inside the lock and called
+`start()` outside it, with no rollback. One `RuntimeError` from `Thread.start()`
+(thread exhaustion on a loaded Jetson) latched the handle forever: the caller's
+inline fallback wrote THAT record correctly — so the failure looked transient —
+while every later submit returned early at the `is not None` check and
+`put_nowait`'d into a queue no thread was servicing. Silent, permanent loss of
+the sitting's toss corpus, plus a full 5 s drain timeout at every goal end.
+**Fix**: roll the handle back and re-raise, so the caller's fallback runs and the
+next cycle can retry.
+
+### L4 — the runbook's rungs, re-verified to the gate that refuses them
+
+Phase K's own verification is the thing this fix repairs. It asserted that each
+rung's cycle FSM "reaches POSITIONING" — and `ABORTED_CANT_MAKE_RELEASE` is
+minted in `_step_preparing`, **after** POSITIONING. The check could not see the
+gate that refuses a fast rung.
+
+Driven to `ACTION_DISPATCH_THROW` at the real 0.02 s node tick, fed the fastest
+node behaviour that is legal, the pre-audit ladder reports:
+
+| rung | session | LEVEL | AIMED |
+|---|---|---|---|
+| R0–R3 | ACCEPT | FLIES | FLIES |
+| R4 (0.75 / 0.55) | ACCEPT | FLIES | **ABORTED_CANT_MAKE_RELEASE** |
+| R5 (0.60 / 0.40) | ACCEPT | **ABORTED_CANT_MAKE_RELEASE** | **ABORTED_CANT_MAKE_RELEASE** |
+| R5-prime (0.49 / 0.35) | **REJECTED_DWELL** | **ABORTED_CANT_MAKE_RELEASE** | **ABORTED_CANT_MAKE_RELEASE** |
+
+Two independent causes, and both are in the fold-in:
+
+1. **The accept-time floor is systematically too loose.** `min_throw_delay_s` is
+   `max(TOSS_DISPATCH_DEBOUNCE_S, min_throw_event_delay_s(v))` — the kind-0
+   dispatch budget alone. The runtime guard at `_step_preparing` compares the
+   SAME floor against `t_release − now` after CHECKING + POSITIONING + the
+   PREPARE ladder have elapsed. The shortfall is **0.080 s** on a level chain
+   (4 ticks, before the PREPARE bundle's three synchronous service round-trips)
+   and **0.460 s** on an aimed one.
+2. **`_toss_already_positioned` refuses to skip a tilted release**, by
+   construction: `trajectory/commanded_position` carries no orientation. Every
+   aimed cycle therefore pays `min_move_duration_s` (0.20) +
+   `TOSS_POSITION_SETTLE_PAD_S` (0.20) + ticks. That is the whole 0.38 s
+   difference between the two columns — and the ladder exists to arm ILC-primary,
+   whose entire output is a tilted release.
+
+**Fix**: the probe is committed at `tools/probes/cadence_rung_check.py`, drives
+to `ACTION_DISPATCH_THROW`, reports both chains, keeps the pre-audit table as
+`LADDER_PRE_AUDIT`, and has a `--frontier` mode. The runbook republishes every
+rung from R4 down with a LEVEL and an AIMED variant, states the shortfall in a
+box at the top of the file, and adds the B1 diagnostic box the R4 rung needed.
+
+### L5 — the six LOWs
+
+| # | what | fix |
+|---|---|---|
+| 1 | Both cross-topic ordering arguments still quoted "50 ms ≫ topic latency"; `_TICK_S` has been 0.02 since c938c1d | both sites corrected, with the margin restated so a future session tightening cadence reads 20 ms |
+| 2 | `_checking_reject`'s REJECTED_DWELL remedy told the operator to "lower throw_delay toward the 3.5 s FSM floor" — retired by the commit that wrote the hunk | names `min_throw_delay_s` and its derived range |
+| 3 | The D7 clamp corrected every sibling field but left `ilc_session_reason` at `SESSION_APPLIED`, so a refused goal recorded reason=APPLIED next to applied=False | new `toss_ilc.SESSION_REFUSED_TOTAL_AIM`, set at the refusal |
+| 4 | `_parse_anchor` admitted `se_rad: 0.0`, and `_gate` documented zero-se as an explicit PASS — an unpopulated field commanding the full anchor | loader refuses non-positive se; gate refuses any axis whose se is not finite-and-positive |
+| 5 | `note_sample`'s `raw=None` contract is unreachable in production — `ball_held_raw` is a declared `bool`, so `getattr` returns False, never None | both docstrings corrected to say what the path does and does not cover, and to name `evidence_settled` as the defence that actually holds |
+| 6 | `test_ball_possession.py`'s `_R5P_*` constants model a rung that moved | numbers KEPT (they are the strictly-tighter bound a clamp test wants) and the label corrected |
+
+`ilc_fit_lib.evidence_gate`'s twin of LOW 4 — `max(col.std(ddof=1), 1e-12)`, so
+six identical values read as infinitely significant — is **documented, not
+changed**: that module feeds a proposal a human promotes, never an actuation
+path, and tightening a fit's admission rule is a fit decision rather than an
+audit fix.
+
+## Discussion — Phase L
+
+**The hypothesis that did not survive: "the hand is the floor."** Phase I's whole
+framing — and the census's before it — is that cadence is bounded by hand-stroke
+geometry, and that policy constants had been standing in front of the real
+physical limit. That framing was right about the constants and wrong about what
+is behind them. Once `MIN_TOSS_THROW_DELAY_S` was retired, the binding term did
+not become `min_turnaround_dwell_s`; it became `throw_delay + handoff_margin`,
+where the delay carries the software sequence and the margin carries the hand's
+return to park. At the target flight the hand floor is 0.487 s and the actual
+floor is 0.605 s level / 0.985 s aimed. **The machine is now software-limited,
+not hand-limited**, and § 0 of the runbook says so in place of the table that
+implied otherwise.
+
+That matters beyond the numbers because it redirects the next optimisation. A
+`calcCatch` firmware fork (R6) was the named route to more cadence; it now buys
+almost nothing, because it moves a term that is no longer binding. The two things
+that WOULD move it are both software and both cheap by comparison — publish
+orientation with `commanded_position` so the B1 skip works on aimed chains
+(worth 0.38 s per cycle, the entire LEVEL/AIMED gap), and make the accept-time
+floor model the sequence it is measured against.
+
+**Why the runbook publishes slower numbers rather than waiting for the fix.** The
+operator's 2026-08-21 decision named 0.49 s / ~61 throws/min, and the honest
+options were (a) leave the ladder as published and note it is blocked, (b) fix
+the accept gate so the numbers become legal, or (c) republish rungs the machine
+admits and surface the decision as needing re-taking.
+
+(b) is not available as an audit fix: the accept-time floor cannot know whether
+the node will take the B1 skip, so budgeting the sequence means either charging
+every session the aimed 0.460 s — which forbids fast level chains — or plumbing
+the node's positioning decision back into the session gate. Both are design
+choices with an operator-visible cost, which is exactly what `needs-design`
+means. (a) leaves an armed operator with a file whose starred rung retracts the
+hand under a seated ball. (c) is what shipped: every rung re-verified to the
+gate that refuses it, both chains published, and the decision that rested on the
+old numbers flagged in the plan as needing the operator again rather than
+silently reinterpreted.
+
+**Why the possession tests keep numbers the ladder abandoned.** `_R5P_DWELL_S =
+0.49` now models a session `toss_session` will not accept at any delay. Kept
+anyway, because those tests pin the D1/D2 CLAMPS and a clamp is period-dependent
+in one direction: holding them at a period 15 % shorter than anything the machine
+will schedule makes every assertion a strict superset of the real case. What was
+actually wrong was the LABEL — the block called 0.49/0.4949 "the operating
+target", and a reader comparing it against the ladder would have found two
+different numbers under one name. Fixing the label and keeping the bound is the
+combination that stays true when the operating point moves again.
+
+**Why `catch_park_reentry_s` is derived rather than a second constant.** The
+tempting fix was to raise `DEFAULT_SESSION_DWELL_MARGIN_S` back to something that
+covers 0.1933 s. That is how the bug got here: 0.6 s covered the park re-entry by
+accident, nobody wrote down that it was doing so, and re-basing the constant onto
+a well-argued smaller number silently removed a guarantee no document named. A
+derived term cannot be re-based out of existence, and its test sweeps the
+crossover point — 0.1204 s at the R0–R3 flight (arrival binds) against 0.1933 s
+at the band floor (park binds) — so a future reduction reds the rows where it
+matters rather than passing on one side of it.
+
+## Verification — Phase L
+
+- `./run_tests.sh --full` (every tier, `nightly` included), run 2026-08-22 as
+  the phase-closure gate: **RESULT: PASS** — parallel **6126 passed, 3 skipped,
+  3 xfailed in 520.82 s**, serial **9 passed in 41.72 s**, total 572 s. (11 more
+  than Phase K's 6115: the eight new tests below, plus three parametrisations of
+  the non-positive-`se_rad` refusal.)
+- New tests, all landed this phase:
+  `tests/motion/test_hand_stroke.py::test_catch_park_reentry_matches_a_numeric_sweep_of_the_shipped_profile`,
+  `…::test_catch_park_reentry_beats_the_arrival_band_at_the_cadence_rungs`,
+  `…::test_catch_park_reentry_is_a_slice_of_the_turnaround_floor_not_a_new_one`;
+  `tests/ros/test_toss_session.py::test_no_accepted_session_starts_a_cycle_inside_the_live_catch_stroke`
+  (the handoff contract, swept across the crossover) and the rewritten
+  `…::test_the_decided_r5_prime_operating_point_is_REFUSED_and_by_how_much`;
+  `tests/ros/test_toss_coordinator.py::test_a_failed_thread_start_does_not_latch_a_dead_worker_handle`,
+  `…::test_the_drain_waits_for_the_WORK_not_merely_for_the_queue_to_empty`,
+  `…::test_the_drain_reports_failure_rather_than_hanging_on_a_wedged_worker`;
+  `tests/motion/test_toss_ilc.py::test_a_non_positive_anchor_se_is_REFUSED_not_read_as_perfect_evidence`,
+  `…::test_the_gate_refuses_an_axis_whose_se_it_cannot_CHECK`.
+- Ladder-rung probe, run 2026-08-22 against this tree
+  (`python tools/probes/cadence_rung_check.py`): the republished ladder reports
+  `PUBLISHED LADDER: all rungs FLY` — every rung's LEVEL variant on a level chain
+  and every AIMED variant on an aimed chain reaches `ACTION_DISPATCH_THROW`, with
+  the session gate ACCEPTing each. The pre-audit table reproduces the three
+  failures in the L4 table.
+- Frontier sweep, run 2026-08-22 (`--frontier`): monotone across the whole
+  C-HAND-3 band, fastest at the floor — **LEVEL 1.1051 s = 54.3 throws/min**
+  (T 0.4949, delay 0.4168, dwell 0.6102); **AIMED 1.4850 s = 40.4 throws/min**
+  (T 0.4949, delay 0.7968, dwell 0.9901).
+- Park-re-entry closed form vs brute-force sweep of the same `calcCatch` profile,
+  run 2026-08-22: agreement to **≤ 2.8e-17 s** at every flight in
+  {0.4949, 0.5029, 0.6059, 0.7977, 1.1485} and every scale in {0.7, 0.9, 1.0};
+  the catch profile ends at **exactly 0.000000 rev**.
+- Mutation checks, run 2026-08-22 — each new test verified to RED against the
+  pre-fix code, not merely green against the post-fix code:
+  `handoff_margin_s` → `dwell_margin_s` reds 3 in `tests/ros/test_toss_session.py`;
+  the drain reverted to `q.empty()` polling and the thread-start rollback removed
+  red 3 in `tests/ros/test_toss_coordinator.py`.
+
+### Open questions carried out of Phase L
+
+1. **BLOCKING — the accept-time `throw_delay` floor does not model the sequence
+   it is measured against.** `toss_session.min_throw_delay_s` (and its mirror at
+   `toss_sequencer.py:1151`) is the kind-0 dispatch budget; the runtime guard
+   applies the same number to the lead REMAINING after the pre-dispatch sequence.
+   Systematically loose by 0.080 s (level) / 0.460 s (aimed). Second instance:
+   the session computes its floor from the UNTRIMMED `vertical_event_vel_mps(T)`
+   while the FSM receives the ILC-trimmed `event_vel_mps`, so a negative speed
+   trim raises the floor after accept. `needs-design` — the session cannot know
+   at accept time whether the node will take the B1 positioning skip.
+2. **Make the census-B1 positioning skip reachable on an aimed chain** by
+   publishing orientation alongside `trajectory/commanded_position`. Worth the
+   entire 0.38 s LEVEL/AIMED gap — the single largest cadence item on the board,
+   and a prerequisite for ILC-primary sittings running at level-chain cadence.
+3. **MEDIUM — the C-POSSESS-1 § 3.4 arrival clamp closes inside the measured
+   arrival band at the target cadence** (clamped close at landing+0.7929 vs a
+   band ceiling of +0.798 / `ARRIVAL_BAND_MAX_S` 0.80). Drops `catch_event_dt_s`
+   for the tail of the band, and lets a valid sensor `ARRIVAL_REJECTED` veto a
+   tracker CAUGHT. The abutment argument also assumes exact schedule adherence
+   (clamp uses the SCHEDULED next landing; the next window opens at the ACTUAL
+   one). `needs-design`.
+4. **Operator decision 3 of the fold-in needs re-taking.** 61 throws/min is not
+   available on this build; the frontier is 54.3 level / 40.4 aimed and the
+   corrected ladder targets 53.0 / 39.7.

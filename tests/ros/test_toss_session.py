@@ -27,12 +27,14 @@ from pathlib import Path
 import pytest
 
 import hardware_config as hw
+from jugglebot.motion.trajectory import hand_stroke
 from jugglebot.toss_sequencer import (
     CATCH_CONFIRM_WINDOW_S,
     DEFAULT_TOSS_THROW_DELAY_S,
     FLIGHT_TIME_MIN_S,
     TOSS_DISPATCH_DEBOUNCE_S,
     TossResult,
+    vertical_event_vel_mps,
 )
 from jugglebot.toss_session import (
     DEFAULT_SESSION_DWELL_MARGIN_S,
@@ -176,15 +178,17 @@ def test_the_floor_is_the_larger_of_the_handoff_and_the_hand_geometry():
     assert slow.hand_floor_dwell_s < slow.required_dwell_s
 
     # (b) FAST regime — the hand geometry binds. Isolated by zeroing the
-    # handoff margin, because at the SHIPPED margin the two terms are within a
-    # millisecond of each other at the band floor (pinned below) and a test that
-    # could not tell them apart would pass with the max() deleted.
-    fast = TossSessionSequencer(num_throws=2, throw_delay_s=0.34,
+    # handoff margin AND dropping the delay under the park term, because
+    # `handoff_margin_s` floors the margin at `catch_park_reentry_s` (0.1933 s
+    # here) whatever `dwell_margin_s` says, so a zeroed margin alone no longer
+    # isolates anything. A test that could not tell the two terms apart would
+    # pass with the max() deleted.
+    fast = TossSessionSequencer(num_throws=2, throw_delay_s=0.20,
                                 flight_time_s=FLIGHT_TIME_MIN_S,
                                 catch_vel_scale=0.9, dwell_margin_s=0.0)
     assert fast.hand_floor_dwell_s == pytest.approx(0.4871, abs=1e-3)
     assert fast.required_dwell_s == pytest.approx(fast.hand_floor_dwell_s)
-    assert fast.required_dwell_s > 0.34
+    assert fast.required_dwell_s > 0.20 + fast.handoff_margin_s
 
 
 def test_which_term_binds_flips_across_the_flight_band():
@@ -214,25 +218,97 @@ def test_which_term_binds_flips_across_the_flight_band():
                                          + DEFAULT_SESSION_DWELL_MARGIN_S)
 
 
-def test_the_r5_prime_operating_point_is_legal_and_by_how_much():
-    """The operator's decided tuning-phase cadence (2026-08-21 decision 3):
-    dwell 0.49 s at flight 0.4949 s, cycle period 0.985 s, ~61 throws/min.
+def test_the_decided_r5_prime_operating_point_is_REFUSED_and_by_how_much():
+    """The operator's decided tuning-phase cadence (2026-08-21 decision 3) —
+    dwell 0.49 s at flight 0.4949 s, ~61 throws/min — **is not legal**, and this
+    test is the record of why.
 
-    Pinned because it is the ONE cadence the whole census, the ladder runbook
-    and the hand-geometry floor were derived to make reachable, and it clears by
-    **2.9 ms**. Any edit that quietly costs 3 ms of turnaround makes the decided
-    operating point illegal, and this test is where that shows up — at desk
-    time, not on the bench with a ball in the cup."""
+    It was pinned as LEGAL here until 2026-08-22, clearing by 2.9 ms against a
+    floor of ``max(delay + 0.137, hand_floor)``. The audit fix that landed
+    :attr:`handoff_margin_s` moved the floor, because 0.137 s (the earliest
+    instant a possession VERDICT can exist) was never the whole handoff: cycle
+    N+1's CHECKING also needs ``hand_parked``, and the catch stroke does not
+    bring the hand back inside the park band until **0.1933 s** past the landing
+    at this flight. The 0.6 s margin this rung was designed under covered that
+    by accident; 0.137 s does not.
+
+    So the decided point now needs ``0.34 + 0.1933 = 0.5333 s`` of dwell against
+    the 0.49 s asked for — **43 ms short**. Refusing is the correct outcome:
+    accepting it schedules cycle N+1's CHECKING 50 ms inside cycle N's live
+    catch stroke, where it reads ~1.5 rev and mints REJECTED_HAND_NOT_PARKED on
+    a healthy catch.
+
+    Pinned as a REFUSAL, with the shortfall named, so that (a) nobody
+    re-publishes the rung without moving the floor back on purpose, and (b) the
+    number an operator needs in order to re-take the decision is in the test
+    suite rather than only in a runbook."""
     s = TossSessionSequencer(num_throws=5, dwell_time_s=0.49,
                              throw_delay_s=0.34,
                              flight_time_s=FLIGHT_TIME_MIN_S,
                              catch_vel_scale=0.9,
                              dwell_margin_s=DEFAULT_SESSION_DWELL_MARGIN_S)
     s.start(0.0)
-    assert s.step(0.0).action == SESSION_ACTION_START_CYCLE
-    assert 0.49 - s.required_dwell_s == pytest.approx(0.0029, abs=5e-4)
-    period = 0.49 + FLIGHT_TIME_MIN_S
-    assert 60.0 / period == pytest.approx(60.9, abs=0.1)
+    assert s.step(0.0).action != SESSION_ACTION_START_CYCLE
+    assert s._checking_reject() == 'REJECTED_DWELL'
+    assert s.required_dwell_s == pytest.approx(0.5333, abs=5e-4)
+    assert s.required_dwell_s - 0.49 == pytest.approx(0.0433, abs=5e-4)
+
+    # …and the smallest dwell that IS accepted at this delay, which is the
+    # number the runbook's corrected rung is built from.
+    ok = TossSessionSequencer(num_throws=5, dwell_time_s=s.required_dwell_s,
+                              throw_delay_s=0.34,
+                              flight_time_s=FLIGHT_TIME_MIN_S,
+                              catch_vel_scale=0.9,
+                              dwell_margin_s=DEFAULT_SESSION_DWELL_MARGIN_S)
+    ok.start(0.0)
+    assert ok.step(0.0).action == SESSION_ACTION_START_CYCLE
+
+
+def test_no_accepted_session_starts_a_cycle_inside_the_live_catch_stroke():
+    """**THE handoff contract.** For every session the gate ACCEPTS,
+    ``dwell − throw_delay`` (landing → next cycle's CHECKING, the instant
+    ``_next_cycle_at`` schedules) must be at least
+    ``hand_stroke.catch_park_reentry_s`` — the time the catch stroke takes to
+    bring the hand back inside the park band.
+
+    ``hand_parked`` is a hard CHECKING precondition, so violating this does not
+    degrade gracefully: it mints REJECTED_HAND_NOT_PARKED on a healthy catch, a
+    machine-fault verdict for a cadence fault, and ends the sitting.
+
+    Swept across the whole C-HAND-3 band and a range of delays rather than
+    spot-checked, because the two terms cross over inside the band — the park
+    term is 0.1204 s at the 0.7977 s flight (UNDER the 0.137 s arrival term, so
+    the arrival term binds) and 0.1933 s at the band floor (OVER it, so the park
+    term binds). A single-flight test would sit on one side of that crossover
+    and pass with :attr:`handoff_margin_s` reduced to ``dwell_margin_s``."""
+    for flight in (FLIGHT_TIME_MIN_S, 0.55, 0.6059, 0.70, 0.7977, 1.00, 1.14):
+        for delay in (0.35, 0.50, 0.90, 2.40, 5.00):
+            s = TossSessionSequencer(
+                num_throws=5, dwell_time_s=0.0, throw_delay_s=delay,
+                flight_time_s=flight, catch_vel_scale=0.9,
+                dwell_margin_s=DEFAULT_SESSION_DWELL_MARGIN_S)
+            park = hand_stroke.catch_park_reentry_s(
+                vertical_event_vel_mps(flight), 0.9)
+            # THE invariant: the smallest dwell the gate admits still leaves the
+            # catch stroke room to finish before the next CHECKING.
+            smallest = s.required_dwell_s
+            assert smallest - delay >= park - 1e-9, (flight, delay, park)
+            # And the margin is exactly the max() it claims to be — not slack
+            # the hand floor happens to provide. Three regimes are reachable
+            # across this sweep and each is named, so a reduction of
+            # handoff_margin_s to dwell_margin_s reds the park-bound rows.
+            assert s.handoff_margin_s == pytest.approx(
+                max(DEFAULT_SESSION_DWELL_MARGIN_S, park)), (flight, delay)
+            assert smallest == pytest.approx(
+                max(delay + s.handoff_margin_s, s.hand_floor_dwell_s)), (
+                    flight, delay)
+    # The crossover really is inside the band, i.e. both branches of that max()
+    # are exercised above rather than one of them being dead.
+    assert hand_stroke.catch_park_reentry_s(
+        vertical_event_vel_mps(FLIGHT_TIME_MIN_S), 0.9) > \
+        DEFAULT_SESSION_DWELL_MARGIN_S
+    assert hand_stroke.catch_park_reentry_s(
+        vertical_event_vel_mps(0.7977), 0.9) < DEFAULT_SESSION_DWELL_MARGIN_S
 
 
 def test_a_slower_catch_lengthens_the_floor_and_the_session_sees_it():
@@ -337,10 +413,15 @@ def test_the_all_defaults_combination_is_legal():
 
     The DEFAULT dwell deliberately did NOT move with the floor: a default must
     never jump cadence. Lowering the floor makes a faster rung LEGAL; the ladder
-    runbook selects it explicitly, per goal."""
+    runbook selects it explicitly, per goal.
+
+    5.1933, not 5.137: an all-defaults session has no resolved flight time, so
+    `handoff_margin_s` is judged at the C-HAND-3 band FLOOR (the strictest case,
+    the same fail-closed fallback the other two derived floors use) where the
+    hand's park re-entry is 0.1933 s and beats the 0.137 s arrival term."""
     s = TossSessionSequencer(num_throws=3)
     s.start(0.0)
-    assert s.required_dwell_s == pytest.approx(5.137)
+    assert s.required_dwell_s == pytest.approx(5.1933, abs=5e-4)
     assert s.dwell_time_s == pytest.approx(6.0)
     assert s.step(0.0).action == SESSION_ACTION_START_CYCLE
 

@@ -1781,10 +1781,21 @@ Four consequences the operator needs stated plainly:
    on every other constraint simultaneously. It misses by 0.8 ms.
 2. **At a juggling-realistic flight it misses by 2×**: 0.486 s at `T = 0.50 s`.
 3. **The dwell is the wrong operator variable.** Cycle *period* (`T + dwell`)
-   is nearly flat across the band and bottoms at **0.985 s ⇒ ~61 throws/min** at
-   the band floor. Today's 6.0 s dwell gives ~10/min, so there is a genuine **6×
-   throughput gain** available — bought by making the *flight short*, not by
-   making the dwell 0.25 s. Ask for "≥ 50 throws/min", not "0.25 s dwell".
+   is nearly flat across the band and bottoms at the band FLOOR. Today's 6.0 s
+   dwell gives ~10/min, so there is a genuine large throughput gain available —
+   bought by making the *flight short*, not by making the dwell 0.25 s. Ask for
+   a throws/min number, not "0.25 s dwell".
+
+   > ⚠ **The `0.985 s ⇒ ~61 throws/min` this consequence used to quote is the
+   > HAND floor's hypothetical, not an achievable cadence** (audit, 2026-08-22).
+   > It assumes the hand geometry is the only floor, which it stopped being once
+   > the pre-dispatch sequence was measured: `throw_delay` must clear the kind-0
+   > dispatch budget **plus** the whole CHECKING→POSITIONING→PREPARE sequence
+   > (+0.080 s level, **+0.460 s** once an aim is armed, because the census-B1
+   > positioning skip cannot fire on a tilted release). The achievable frontier
+   > is **1.105 s ⇒ 54.3 throws/min level, 1.485 s ⇒ 40.4 aimed**
+   > (`tools/probes/cadence_rung_check.py --frontier`). The direction of this
+   > consequence is unchanged and still correct; only the number moved.
 4. **`MIN_TOSS_THROW_DELAY_S = 3.5 s` is a policy fork, and it is NOT what pins
    the floor.** Its real content today is ~0.70 s of sequence plus `event_delay`
    (§ 11.3). Opening it fully, plus the plumbing below, reaches ~0.5 s dwell.
@@ -1973,14 +1984,55 @@ intent) **before R3, not after**.
 >   consequence 3 arriving in practice: the dwell is the wrong operator
 >   variable, and chasing 0.40 s costs cadence rather than buying it. The
 >   runbook's R5 keeps the rung's PURPOSE (first sitting at the target flight;
->   F1/F6/F7 must have landed) at numbers the machine admits — **dwell 0.60 s at
->   the band floor, 54.4 throws/min**.
+>   F1/F6/F7 must have landed) at numbers the machine admits. ⚠ **The 0.60 s /
+>   54.4 throws/min this paragraph named does not fly either** (audit,
+>   2026-08-22): it clears the dispatch budget and dies on the runtime
+>   release-window guard, like every rung below R3 did. R5 is now **0.70 s dwell
+>   / 0.47 s delay (49.9/min) level, 1.08 / 0.85 (37.9/min) aimed** — see
+>   `tests/hardware/session_cadence_ladder.md` § 2.0 and
+>   `tools/probes/cadence_rung_check.py`.
 >
 > R4's cell is unchanged and R4's work has all LANDED. One more correction the
 > runbook carries and this table cannot: R5-prime's "apex 0.30 m" is a rounded
 > DISPLAY of the band floor, and a `throw_height_m: 0.30` goal converts to a
 > flight **0.17 ms below** `MIN_FLIGHT_TIME_S` and dies
 > `REJECTED_THROW_ENVELOPE(ARM_WINDOW)`. The runbook flies `0.31`.
+
+> ### ⚠ SECOND SUPERSESSION, 2026-08-22 (audit) — the R4 / R5 / R5-prime rows
+>
+> The note above corrects two cells of this table for reasons the census could
+> not have known. A later probe found a third and larger one, and it invalidates
+> the **dwell and cadence figures of every row from R4 down** — including
+> R5-prime's `0.985 s ⇒ 60.9 throws/min`, and including § 11.5a's premise that
+> the flight time is the band floor.
+>
+> Every rung here was sized against the hand floor and, where relevant, the
+> kind-0 dispatch budget. Neither is the binding constraint below R3. The
+> `throw_delay` a goal needs is the dispatch budget **plus the whole
+> pre-dispatch sequence** — `+0.080 s` on a level chain, `+0.460 s` once an aim
+> is armed — because `toss_sequencer._step_preparing` re-checks the budget
+> against the lead REMAINING after CHECKING + POSITIONING + PREPARE, and
+> `_toss_already_positioned` cannot take the census-B1 skip on a tilted release
+> (`trajectory/commanded_position` carries no orientation). Driven to
+> `ACTION_DISPATCH_THROW` rather than to POSITIONING, R4 aborts on an aimed
+> chain and R5 and R5-prime abort on both.
+>
+> **This is § 11.6's own sentence coming true in the other direction.** § 11.6
+> says the release-window guard "is the correct runtime enforcement and merely
+> needs an honest `MIN_THROW_EVENT_DELAY_S` beneath it" — correct, and the
+> derived floor landed. What no one wrote down is that the *accept-time* mirror
+> of that floor must model the sequence the runtime guard measures across, and
+> it does not. Closing that is an open design question (the session cannot know
+> at accept time whether the node will take the B1 skip).
+>
+> The reachable frontier is **54.3 throws/min level / 40.4 aimed**, and the
+> corrected ladder targets **53.0 / 39.7**. The re-verified rungs, both chains,
+> live in `tests/hardware/session_cadence_ladder.md` § 2.0 and are re-runnable
+> with `python tools/probes/cadence_rung_check.py`. Nothing in this table is
+> rewritten: the hand-geometry reasoning it rests on is still correct, and it is
+> still what a `calcCatch` firmware change would move — it simply is not what
+> bounds the machine today. Full write-up:
+> `logbook/2026-08-21-ilc-primary-foldin.md` § Phase L.
 
 Each rung is a bench sitting, `num_throws = 5` first, `stop_on_miss = true`,
 `on_empty_cup = STOP` until the § 11.4 work lands.

@@ -1431,6 +1431,15 @@ def test_a_D7_clamp_hit_drops_BOTH_layer_3_components(monkeypatch, tmp_path):
     assert aim['ilc_spatial_aim_rad'] == (0.0, 0.0)
     assert aim['ilc_session_aim_rad'] == (0.0, 0.0)
     assert aim['ilc_session_applied'] is False
+    # THE REASON, not only the value (audit fix, 2026-08-22). Every sibling
+    # field in this branch was corrected and this one was left at its
+    # pre-refusal SESSION_APPLIED, so the record read reason=APPLIED next to
+    # applied=False and aim=(0, 0) — and `ilc_session_reason` is precisely the
+    # field a corpus consumer routes on to learn WHY the common mode did or did
+    # not fly. Reading APPLIED there attributes the landing error to a
+    # correction that was refused.
+    assert aim['ilc_session_reason'] == toss_ilc.SESSION_REFUSED_TOTAL_AIM
+    assert aim['ilc_session_reason'] != toss_ilc.SESSION_APPLIED
     # The goal still flies the MAP aim, unchanged and unclamped — layer 3 is a
     # refinement and never a gate.
     assert aim['aim_rad'][0] == pytest.approx(toss_cal.TOTAL_MAX_RAD * 0.95)
@@ -1440,6 +1449,7 @@ def test_a_D7_clamp_hit_drops_BOTH_layer_3_components(monkeypatch, tmp_path):
     assert row['ilc_aim_rad'] == [0.0, 0.0]
     assert row['ilc_spatial_aim_rad'] == [0.0, 0.0]
     assert row['ilc_session_aim_rad'] == [0.0, 0.0]
+    assert row['ilc_session_reason'] == toss_ilc.SESSION_REFUSED_TOTAL_AIM
 
 
 def test_a_DORMANT_artifact_contributes_NO_session_prior(monkeypatch, tmp_path):

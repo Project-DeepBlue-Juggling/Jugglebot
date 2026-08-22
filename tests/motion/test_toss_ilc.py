@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import ast
 import copy
+import dataclasses
 import math
 import os
 import sys
@@ -1097,6 +1098,15 @@ def _anchor(rx=math.radians(0.55), ry=math.radians(-0.24), n=7,
                               se_rad=(float(se[0]), float(se[1])))
 
 
+def _doc_with_anchor(anchor):
+    """A parsed artifact carrying an anchor the LOADER would never admit.
+
+    The loader's own refusals are tested separately; this exists so the gate's
+    half of the same fence can be exercised on an :class:`IlcAnchor` built in
+    code, which is the only way a future writer could produce one."""
+    return dataclasses.replace(parse_toss_ilc(_doc()), anchor=anchor)
+
+
 def _anchor_doc(anchor=None, cells=None, **over):
     """`_doc` plus an `anchor` block, written the way `build_document` writes it."""
     doc = _doc(cells=cells, **over)
@@ -1162,6 +1172,51 @@ def test_a_present_anchor_block_is_ALL_OR_NOTHING(drop):
     with pytest.raises(TossIlcError) as excinfo:
         parse_toss_ilc(doc)
     assert 'anchor.{}'.format(drop) in str(excinfo.value)
+
+
+@pytest.mark.parametrize('se', [[0.0, 0.0005], [0.0005, 0.0], [-1e-6, 0.0005]])
+def test_a_non_positive_anchor_se_is_REFUSED_not_read_as_perfect_evidence(se):
+    """``se_rad`` must be STRICTLY positive (audit fix, 2026-08-22; it was merely
+    non-negative, and a zero was documented as an explicit PASS).
+
+    ``se_rad`` is the standard error of a between-session shrinkage mean over
+    ``n >= ANCHOR_N_MIN`` independent ``level()`` draws, and one draw alone is
+    1.2-1.7 mrad per axis — so an exactly-zero se cannot be evidence, it is an
+    unpopulated field. Admitting it made the significance test
+    ``|aim| >= ANCHOR_SE_GATE * se`` pass unconditionally, i.e. it commanded the
+    full anchor — up to ``ILC_AIM_MAX_RAD`` of common-mode platform tilt — on a
+    number nobody computed. That is the exact failure ``ANCHOR_SE_GATE`` exists
+    to prevent, reached THROUGH the gate rather than around it, which is why it
+    is closed at the loader and not only at the gate."""
+    doc = _anchor_doc()
+    doc['anchor']['se_rad'] = list(se)
+    with pytest.raises(TossIlcError) as excinfo:
+        parse_toss_ilc(doc)
+    assert 'se_rad' in str(excinfo.value)
+
+
+def test_the_gate_refuses_an_axis_whose_se_it_cannot_CHECK():
+    """The second half of the same fence, for an :class:`IlcAnchor` built in code
+    rather than loaded from YAML — the loader cannot see those.
+
+    Per AXIS, like the significance test itself: an unresolvable ry must not
+    suppress a perfectly good rx, and it must not be applied either."""
+    good = math.radians(0.55)
+    # rx has real evidence and clears the gate; ry's se is unusable.
+    mixed = toss_ilc.IlcAnchor(aim_rad=(good, good), n=7,
+                               se_rad=(0.0005, 0.0))
+    session = toss_ilc.IlcSessionCommonMode(_doc_with_anchor(mixed))
+    assert session.aim() == (pytest.approx(good), 0.0)
+    assert session.applied
+
+    # Both axes unusable -> nothing survives, and it is NAMED as a gate refusal
+    # rather than reported as an applied zero.
+    dead = toss_ilc.IlcAnchor(aim_rad=(good, good), n=7,
+                              se_rad=(float('nan'), -0.0))
+    off = toss_ilc.IlcSessionCommonMode(_doc_with_anchor(dead))
+    assert off.aim() == (0.0, 0.0)
+    assert off.reason == toss_ilc.SESSION_BELOW_SE_GATE
+    assert not off.applied
 
 
 def test_the_anchor_n_counts_SESSIONS_not_tosses():
@@ -1300,8 +1355,14 @@ def test_an_anchor_inside_the_deadband_commands_nothing():
     Below it the loop churns the commanded pose for no measurable catch
     benefit."""
     tiny = toss_ilc.ANCHOR_DEADBAND_RAD * 0.5
+    # se small enough that BOTH axes clear the significance gate, so the deadband
+    # is provably what refuses. It used to be exactly 0.0 — which the loader now
+    # rejects outright, and the gate now reads as unresolvable rather than as
+    # perfect evidence (audit fix, 2026-08-22): an unpopulated se_rad must not be
+    # a free pass through ANCHOR_SE_GATE.
+    se = tiny / (toss_ilc.ANCHOR_SE_GATE * 10.0)
     session = toss_ilc.IlcSessionCommonMode(
-        parse_toss_ilc(_anchor_doc(_anchor(rx=tiny, ry=0.0, se=(0.0, 0.0)))))
+        parse_toss_ilc(_anchor_doc(_anchor(rx=tiny, ry=0.0, se=(se, se)))))
     assert session.aim() == (0.0, 0.0)
     assert session.reason == toss_ilc.SESSION_INSIDE_DEADBAND
 

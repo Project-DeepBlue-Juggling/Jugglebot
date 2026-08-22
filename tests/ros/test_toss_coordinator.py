@@ -27,6 +27,7 @@ import math
 import threading
 import time
 import types
+from unittest import mock
 
 import numpy as np
 import pytest
@@ -2770,3 +2771,113 @@ def test_a_worker_that_cannot_start_falls_back_to_running_inline():
     node._log_toss_outcome(TossResult(True, 'CAUGHT'))
     assert ran == [threading.current_thread().name]        # inline, not deferred
     assert any('INLINE' in w for w in warned)
+
+
+def test_a_failed_thread_start_does_not_latch_a_dead_worker_handle():
+    """CENSUS B6, audit fix 2026-08-22. ``_toss_records_worker_start`` assigns the
+    handle INSIDE the lock and calls ``start()`` outside it; without a rollback a
+    single ``RuntimeError`` from ``Thread.start()`` (thread exhaustion on a loaded
+    Jetson) latched the handle forever.
+
+    The caller's inline fallback then wrote THAT record correctly — so the failure
+    looked transient — while every later ``_toss_records_submit`` returned early
+    at the ``is not None`` check and ``put_nowait``'d into a queue no thread was
+    servicing. Silent, permanent loss of the sitting's toss corpus, plus a full
+    5 s drain timeout at every goal end, announced as one warning.
+    """
+    now = 100.0
+    node = _toss_ready_node(now)
+    real_thread = threading.Thread
+    attempts = []
+
+    class _FailFirst(real_thread):
+        def start(self):
+            attempts.append(self.name)
+            if len(attempts) == 1:
+                raise RuntimeError('cannot spawn')
+            return real_thread.start(self)
+
+    ran = []
+    node._belt_toss_record = lambda payload: ran.append(
+        threading.current_thread().name)
+    node.get_logger().warning = lambda *_a, **_k: None
+
+    with mock.patch.object(threading, 'Thread', _FailFirst):
+        node._open_toss_record(action='toss', goal_id='g', cycle_index=1,
+                               catch_pose=(0.0, 0.0, 170.0), throw_delay=5.0,
+                               vel_scale=0.9, raw_goal={}, flight=0.8)
+        node._log_toss_outcome(TossResult(True, 'CAUGHT'))
+        # Cycle 1: start() raised, so the record ran INLINE and the handle was
+        # rolled back rather than latched.
+        assert ran == [threading.current_thread().name]
+        assert node._toss_records_thread is None
+
+        # Cycle 2: the retry is possible BECAUSE of the rollback, and it lands
+        # on the worker.
+        node._open_toss_record(action='toss', goal_id='g', cycle_index=2,
+                               catch_pose=(0.0, 0.0, 170.0), throw_delay=5.0,
+                               vel_scale=0.9, raw_goal={}, flight=0.8)
+        node._log_toss_outcome(TossResult(True, 'CAUGHT'))
+
+    assert node._toss_records_drain()
+    assert len(attempts) == 2
+    assert ran[1] == 'toss_records'
+
+
+def test_the_drain_waits_for_the_WORK_not_merely_for_the_queue_to_empty():
+    """``Queue.empty()`` goes True the instant the worker ``get``s the last item —
+    BEFORE the belt write and the trim update have run. Polling it returned while
+    the final cycle was still being processed, which is the exact opposite of what
+    the drain promises, and it is why ``_toss_trim_end`` could write a proposal
+    with the last cycle missing (audit fix, 2026-08-22).
+
+    Driven by making the worker's own work slow enough that ``empty()`` and
+    ``unfinished_tasks == 0`` are separated by a real interval — no sleep in the
+    test thread, and no dependence on which thread wins a race."""
+    now = 100.0
+    node = _toss_ready_node(now)
+    started, finished = threading.Event(), []
+
+    def _slow(payload):
+        started.set()
+        time.sleep(0.25)
+        finished.append(payload)
+
+    node._belt_toss_record = _slow
+    node._open_toss_record(action='toss', goal_id='g', cycle_index=1,
+                           catch_pose=(0.0, 0.0, 170.0), throw_delay=5.0,
+                           vel_scale=0.9, raw_goal={}, flight=0.8)
+    node._log_toss_outcome(TossResult(True, 'CAUGHT'))
+
+    # The worker has the item in hand: the queue reads EMPTY and the work is not
+    # done. This is precisely the window the old drain returned in.
+    assert started.wait(timeout=5.0)
+    assert node._toss_records_q.empty()
+    assert finished == []
+
+    assert node._toss_records_drain(timeout_s=5.0)
+    assert len(finished) == 1                    # the drain outlasted the work
+
+
+def test_the_drain_reports_failure_rather_than_hanging_on_a_wedged_worker():
+    """Bounded, and False on timeout: a wedged worker must never hold a session's
+    terminal open. The WARN names how many records are outstanding, which is the
+    number an operator needs to know how short the corpus is."""
+    now = 100.0
+    node = _toss_ready_node(now)
+    release = threading.Event()
+    node._belt_toss_record = lambda payload: release.wait(timeout=10.0)
+    warned = []
+    node.get_logger().warning = warned.append
+    node._open_toss_record(action='toss', goal_id='g', cycle_index=1,
+                           catch_pose=(0.0, 0.0, 170.0), throw_delay=5.0,
+                           vel_scale=0.9, raw_goal={}, flight=0.8)
+    node._log_toss_outcome(TossResult(True, 'CAUGHT'))
+    try:
+        t0 = time.perf_counter()
+        assert node._toss_records_drain(timeout_s=0.2) is False
+        assert time.perf_counter() - t0 < 5.0     # returned, did not hang
+        assert any('did not drain' in w for w in warned)
+    finally:
+        release.set()
+        node._toss_records_drain(timeout_s=5.0)

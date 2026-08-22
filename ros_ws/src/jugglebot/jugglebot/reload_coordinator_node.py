@@ -1122,7 +1122,9 @@ class ReloadCoordinatorNode(Node):
         # Declared reach-envelope centre (contract C-REACH-1,
         # ros_ws/docs/catch_reach_envelope.md). Published by the TOSS on the
         # ACTION_PREPARE_CATCH tick — the SAME tick as prime_hold, i.e. one full
-        # FSM tick (50 ms >> topic latency) before the bundle that calls
+        # FSM tick (_TICK_S, 20 ms since c938c1d — still two orders of magnitude
+        # above localhost topic latency, but NOT the 50 ms this comment claimed
+        # until 2026-08-22) before the bundle that calls
         # trajectory/arm_catch, because the two travel on different transports
         # with no cross-topic ordering guarantee (the identical reasoning that
         # split prime_hold off the bundle). trajectory_node consumes it at the
@@ -1426,9 +1428,17 @@ class ReloadCoordinatorNode(Node):
             # raw one answers the LIVE `evidence` query, because the debounce is
             # asymmetric and slow in the fall direction (~241 ms measured) and a
             # ball-evidence gate reading it would pass an EMPTY cup once the dwell
-            # approached that number — a fail-OPEN possession gate. `raw=None`
-            # (the field absent) degrades to the debounced bit, NOT to False: a
-            # missing field must never be indistinguishable from an empty cup.
+            # approached that number — a fail-OPEN possession gate.
+            #
+            # The getattr default is a belt for a NON-ROS caller, and it is
+            # honest about being no more than that (audit fix, 2026-08-22):
+            # ball_held_raw is a declared `bool` on HandTelemetryMessage, so this
+            # returns False and never None for any real message, and a publisher
+            # that never sets the bit is indistinguishable here from an empty
+            # cup. What actually protects the actuating path is
+            # `evidence_settled` (the interlude's read), which sees the raw and
+            # debounced bits disagree and answers UNKNOWN. See
+            # ball_possession.note_sample.
             raw = getattr(msg, 'ball_held_raw', None)
             self._ball_sensor.note_sample(
                 now,
@@ -3000,6 +3010,14 @@ class ReloadCoordinatorNode(Node):
                 ilc_session = (0.0, 0.0)
                 block['ilc_session_aim_rad'] = (0.0, 0.0)
                 block['ilc_session_applied'] = False
+                # ... and the REASON, which is the field a corpus consumer or a
+                # bench operator actually routes on. Left at its pre-refusal
+                # SESSION_APPLIED until 2026-08-22, so the record read
+                # reason=APPLIED next to applied=False and aim=(0, 0) and the
+                # landing error got attributed to a correction that was refused
+                # (audit fix). Every sibling field in this branch is corrected;
+                # this one was the miss.
+                block['ilc_session_reason'] = toss_ilc.SESSION_REFUSED_TOTAL_AIM
                 rx, ry, hits = toss_cal.clamp_total_aim(base_rx, base_ry)
             offset = aim_target_offset_mm(rx, ry, float(flight),
                                           float(catch_pose[2]))
@@ -3482,7 +3500,15 @@ class ReloadCoordinatorNode(Node):
         catch_coordinator wait-set cycle have no intra-cycle ordering either,
         so a same-tick hold could lose to the armed edge and let the
         armed-edge auto-prime ascend with the seated ball. One full FSM tick
-        (50 ms ≫ topic latency) puts the hold in an earlier CCN cycle."""
+        puts the hold in an earlier CCN cycle.
+
+        **That tick is ``_TICK_S`` = 20 ms, not the 50 ms this docstring claimed
+        until 2026-08-22** (audit fix; the B3 cadence work cut it in c938c1d and
+        left both cross-topic ordering arguments quoting the old number). Still
+        two orders of magnitude above localhost topic latency, so the argument
+        holds — but a future session tightening cadence reads the margin HERE,
+        and reading 50 ms would credit it with 2.5x more headroom than it has
+        before collapsing this split into one tick."""
         obs = self._build_toss_observations(now)
         decision = seq.step(now, obs)
         if decision.action == TOSS_ACTION_POSITION_PLATFORM:
@@ -4585,13 +4611,31 @@ class ReloadCoordinatorNode(Node):
         self._toss_records_run_one(payload, record, snapshot)
 
     def _toss_records_worker_start(self) -> None:
+        """Start the belt/trim worker, ONCE, and only if it really started.
+
+        The handle is latched inside the lock so two cycles racing here cannot
+        start two workers — but ``start()`` runs OUTSIDE the lock (it can block)
+        and it can RAISE (thread exhaustion on a loaded Jetson). Rolling the
+        handle back on that failure is what keeps the retry possible: without it
+        the caller's inline fallback writes THAT record correctly, and every
+        later call returns early at the ``is not None`` check and queues into a
+        queue no thread is servicing — silent, permanent loss of the session's
+        toss corpus, announced as one transient warning, with every subsequent
+        ``_toss_trim_end`` burning the full 5 s drain timeout (audit fix,
+        2026-08-22)."""
         with self._lock:
             if self._toss_records_thread is not None:
                 return
             t = threading.Thread(target=self._toss_records_worker,
                                  name='toss_records', daemon=True)
             self._toss_records_thread = t
-        t.start()
+        try:
+            t.start()
+        except Exception:                                      # noqa: BLE001
+            with self._lock:
+                if self._toss_records_thread is t:
+                    self._toss_records_thread = None
+            raise
 
     def _toss_records_worker(self) -> None:
         while True:
@@ -4627,16 +4671,33 @@ class ReloadCoordinatorNode(Node):
         ordering device, not a place work is allowed to be lost.
 
         Bounded, and returns False on timeout rather than hanging: a wedged
-        worker must not be able to hold a session's terminal open."""
+        worker must not be able to hold a session's terminal open.
+
+        **Waits on ``unfinished_tasks``, NOT on ``empty()``** (audit fix,
+        2026-08-22). ``Queue.empty()`` goes True the instant the worker ``get``s
+        the last item — BEFORE ``_toss_records_run_one`` has done the belt write
+        or the trim update — so an ``empty()`` poll returns while the last cycle
+        is still being processed, which is the exact opposite of what this method
+        promises. Two things went wrong with that: ``_toss_trim_end`` took the
+        estimator and wrote its proposal with the final cycle missing ("a
+        silently short session", the failure this drain exists to prevent), and
+        because ``snapshot['trim']`` carries the estimator BY REFERENCE, the
+        proposal could read numpy state the worker was concurrently mutating.
+        The queue already calls ``task_done()`` in a ``finally``, so the counter
+        that means "handed out AND finished" was there all along."""
         q = self._toss_records_q
-        deadline = time.perf_counter() + float(timeout_s)
-        while not q.empty() and time.perf_counter() < deadline:
-            time.sleep(_TICK_S)
-        if not q.empty():
+        # `Queue.join()` is exactly this wait but has no timeout, and a wedged
+        # worker must not hold the terminal open — so the same condition variable
+        # is waited on directly, which is what join() does internally.
+        with q.all_tasks_done:
+            drained = q.all_tasks_done.wait_for(
+                lambda: q.unfinished_tasks == 0, timeout=float(timeout_s))
+            outstanding = int(q.unfinished_tasks)
+        if not drained:
             self.get_logger().warning(
                 'toss record worker did not drain within {:.1f} s — {} record(s) '
                 'may be missing from the belt and the trim'.format(
-                    timeout_s, q.qsize()))
+                    timeout_s, outstanding))
             return False
         return True
 

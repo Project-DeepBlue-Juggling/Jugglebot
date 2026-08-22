@@ -812,12 +812,25 @@ def test_describe_attributes_a_sensor_veto_to_the_sensor():
 #
 #   R3   dwell 1.50 s, flight 0.80 s   — the rung the census orders these fixes
 #                                        to land BEFORE
-#   R5'  dwell 0.49 s, flight 0.4949 s — the tuning-phase operating target
-#                                        (~61 throws/min, the maximum-throughput
-#                                        point of the machine as built)
+#   R5'  dwell 0.49 s, flight 0.4949 s — the TIGHTEST cadence any published rung
+#                                        ever named, deliberately kept after the
+#                                        rung itself moved (see below)
 #
 # and the seat edge is placed at +0.30 s, inside the measured +137…+798 ms band.
-
+#
+# ⚠ THESE ARE NO LONGER THE R5-PRIME RUNG'S NUMBERS, and that is deliberate
+# (audit fix, 2026-08-22). The ladder republished R5-prime as dwell 0.63 s /
+# flight 0.5029 s (level) and 1.01 / 0.5029 (aimed) once the pre-dispatch
+# sequence cost was measured, and 0.49 / 0.4949 is not merely a different rung —
+# `toss_session` will not ACCEPT it at any throw_delay, because the delay floor
+# at that flight (0.3345 s) plus the handoff margin (0.1933 s) already exceeds
+# 0.49 s. The pair is retained anyway because these tests pin the D1/D2 CLAMPS,
+# and a clamp is period-dependent: holding them at a period 15 % shorter than
+# anything the machine will schedule makes every assertion here a strict
+# superset of the real case. What was fixed is the LABEL — this block used to
+# call 0.49/0.4949 "the operating target", which stopped being true, and a
+# future reader comparing it against the ladder would have found two different
+# numbers under one name.
 _R3_DWELL_S, _R3_FLIGHT_S = 1.50, 0.80
 _R5P_DWELL_S, _R5P_FLIGHT_S = 0.49, 0.4949
 _SEAT_DT_S = 0.30                      # inside the measured catch band

@@ -185,6 +185,7 @@ __all__ = [
     'SESSION_BELOW_SE_GATE',
     'SESSION_INSIDE_DEADBAND',
     'SESSION_APPLIED',
+    'SESSION_REFUSED_TOTAL_AIM',
     'ZERO_CORRECTION',
     'TossIlc',
     'model_config_identity',
@@ -794,9 +795,22 @@ def _parse_anchor(doc: Dict[str, Any]) -> Optional[IlcAnchor]:
     if raw_n < 0:
         raise TossIlcError('anchor.n must be >= 0, got {}'.format(raw_n))
 
-    if any(v < 0.0 for v in pairs['se_rad']):
+    if any(v <= 0.0 for v in pairs['se_rad']):
+        # STRICTLY positive, not merely non-negative (audit fix, 2026-08-22).
+        # se_rad is the standard error of a between-session shrinkage mean over
+        # `n >= ANCHOR_N_MIN` independent level() draws, and one draw alone is
+        # 1.2-1.7 mrad per axis — so an exactly-zero se is not "perfect
+        # evidence", it is a writer that did not populate the field. Admitting
+        # it made `_gate`'s `|aim| >= se_gate * se` pass unconditionally, i.e.
+        # it commanded the full anchor (up to ILC_AIM_MAX_RAD of common-mode
+        # tilt) on evidence nobody computed — the one thing ANCHOR_SE_GATE
+        # exists to prevent, reached through the gate rather than around it.
+        # Refusing is the module's standing posture: refuse what it cannot check
+        # rather than guess a permissive default. No installed base to break —
+        # the C1 writer half is not built, so every anchor today is hand-authored.
         raise TossIlcError(
-            'anchor.se_rad must be non-negative standard errors, got '
+            'anchor.se_rad must be STRICTLY POSITIVE standard errors (a zero se '
+            'is an unpopulated field, not perfect evidence), got '
             '{}'.format(list(pairs['se_rad'])))
 
     anchor = IlcAnchor(aim_rad=pairs['aim_rad'], n=int(raw_n),
@@ -1146,6 +1160,15 @@ SESSION_INSUFFICIENT_EVIDENCE = 'insufficient_evidence'
 SESSION_BELOW_SE_GATE = 'below_se_gate'
 SESSION_INSIDE_DEADBAND = 'inside_deadband'
 SESSION_APPLIED = ''
+#: The one refusal this class does NOT mint itself: the node's D7 total-aim clamp
+#: drops both layer-3 components whole when ``map + ilc`` exceeds the authority,
+#: and the record's ``ilc_session_reason`` has to say so. Without it the block
+#: kept the pre-refusal ``SESSION_APPLIED`` while ``applied`` went False and the
+#: aim went (0, 0) — a record reading "APPLIED" on a goal that flew none of it,
+#: with the truth only in the separate ``ilc_refused`` key (audit fix,
+#: 2026-08-22). Named here rather than at the node so the whole vocabulary a
+#: consumer must route on lives in one place.
+SESSION_REFUSED_TOTAL_AIM = 'refused_total_aim'
 
 
 class IlcSessionCommonMode:
@@ -1244,10 +1267,18 @@ class IlcSessionCommonMode:
         4. **deadband on what survives** — magnitude, after (3). Below it the
            correction is not worth the commanded-pose churn.
 
-        A zero ``se`` on an axis with a non-zero aim passes (3): zero standard
-        error means the evidence is perfect, and ``|aim| >= 0`` holds. A zero
-        ``se`` with a zero aim fails the deadband at (4), which is where it
-        belongs.
+        A non-positive or non-finite ``se`` on an axis REFUSES that axis (it is
+        zeroed), and does not pass it. Until 2026-08-22 the rule was the
+        opposite — "zero standard error means the evidence is perfect, and
+        ``|aim| >= 0`` holds" — which made an unpopulated ``se_rad`` field
+        command the full anchor unconditionally, up to ``ILC_AIM_MAX_RAD`` of
+        common-mode tilt, on evidence nobody computed (audit fix). For a
+        shrinkage mean over ``n >= ANCHOR_N_MIN`` independent ``level()`` draws
+        a zero se is physically impossible, so the permissive reading could only
+        ever be a writer bug, and refusing is the direction this module refuses
+        in everywhere else. ``_parse_anchor`` now rejects such a document
+        outright; this is the second half of the same fence, for an
+        :class:`IlcAnchor` built in code rather than loaded from YAML.
         """
         if toss_ilc is None:
             return ((0.0, 0.0), SESSION_NO_ARTIFACT)
@@ -1258,7 +1289,10 @@ class IlcSessionCommonMode:
 
         gated = []
         for value, se in zip(anchor.aim_rad, anchor.se_rad):
-            gated.append(value if abs(value) >= self._se_gate * se else 0.0)
+            checkable = math.isfinite(se) and se > 0.0
+            gated.append(value if (checkable
+                                   and abs(value) >= self._se_gate * se)
+                         else 0.0)
         pair = (float(gated[0]), float(gated[1]))
         if pair == (0.0, 0.0):
             return ((0.0, 0.0), SESSION_BELOW_SE_GATE)

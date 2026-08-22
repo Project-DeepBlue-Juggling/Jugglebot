@@ -303,12 +303,22 @@ done". Both are now done, and this is where they are specified:
 Every window in § 3.2 was sized against a machine whose dwell floor was **4.10 s**
 (`toss_sequencer.MIN_TOSS_THROW_DELAY_S` 3.5 + `dwell_margin` 0.6 — both retired
 2026-08-22, census A1/A3; the floor is now
-`max(throw_delay + 0.137, hand_stroke.min_turnaround_dwell_s)`). The
-tuning-phase operating target is now **dwell 0.49 s at flight 0.4949 s** (~61
-throws/min — the maximum-throughput point of the machine as built), and the delay
-floor is retired in favour of a dispatch debounce plus state-based interlocks. Two
-of the three windows **invert** at that cadence, and both inversions are
-label-semantics faults with a safety tail:
+`max(throw_delay + handoff_margin_s, hand_stroke.min_turnaround_dwell_s)`). The
+tuning-phase operating target was **dwell 0.49 s at flight 0.4949 s** (~61
+throws/min) when this section was written; it is now **dwell 0.63 s at flight
+0.5029 s (53.0 throws/min) level, 1.01 s (39.7) aimed** — the 0.49 s point is
+refused, and the reason is in `tests/hardware/session_cadence_ladder.md` § 2.0
+(audit, 2026-08-22). The delay floor is retired in favour of a dispatch debounce
+plus state-based interlocks. Two of the three windows **invert** at that cadence,
+and both inversions are label-semantics faults with a safety tail:
+
+> **The clamps below are UNAFFECTED by the operating point moving, and were left
+> sized for the tighter one deliberately.** Every one of them is a bound on
+> "shorter than the next scheduled event", so a machine that schedules its next
+> event LATER only ever has more separation, never less. Sizing them at 0.49 s
+> while the machine flies 0.63 s makes each assertion a strict superset of the
+> real case — which is why `tests/ros/test_ball_possession.py` still pins
+> `_R5P_DWELL_S = 0.49`, with a comment saying exactly that.
 
 | # | window | what breaks at a 0.49 s dwell | consequence |
 |---|---|---|---|

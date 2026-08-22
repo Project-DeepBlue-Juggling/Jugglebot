@@ -340,9 +340,13 @@ FIELDS: Tuple[Field, ...] = (
           'layer 3b cleared its evidence gate and was commanded'),
     Field('ilc_session_reason', 'calibration', 'D', 's',
           'why layer 3b commanded nothing: no_artifact | no_anchor | '
-          'insufficient_evidence | below_se_gate | inside_deadband. Empty when '
-          'applied -- "commanded nothing" and "had nothing to command" are '
-          'different facts about a session'),
+          'insufficient_evidence | below_se_gate | inside_deadband | '
+          'refused_total_aim. Empty when applied -- "commanded nothing" and '
+          '"had nothing to command" are different facts about a session. '
+          'refused_total_aim is the only one the session component does not '
+          'mint itself: the node D7 clamp drops BOTH layer-3 components when '
+          'map+ilc exceeds the authority, and before 2026-08-22 this field kept '
+          'reading APPLIED on those goals'),
     Field('ilc_session_n', 'calibration', 'D', 'i',
           'independent evidence units (sessions, i.e. level() draws) behind the '
           'anchor prior; 0 when there is none'),

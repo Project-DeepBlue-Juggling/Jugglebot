@@ -577,10 +577,29 @@ class HandBallSensorSource:
         wall-epoch only once the bridge's clock anchor lands.
 
         ``held`` is the DEBOUNCED bit (``ball_held``) and ``raw`` the undebounced
-        one (``ball_held_raw``). ``raw=None`` means the caller has no raw bit —
-        an older node, a bag cut before Phase 5, a test harness — and it degrades
-        to the debounced bit rather than to ``False``: a missing field must never
-        read as "no ball" (the same rule the node's ``getattr`` reads follow).
+        one (``ball_held_raw``). ``raw=None`` means the caller has no raw bit and
+        it degrades to the debounced bit rather than to ``False``: a missing field
+        must never read as "no ball".
+
+        **What that path does and does not cover** (audit fix, 2026-08-22 — this
+        docstring previously implied more than it delivers). It serves callers
+        that hand over a *dict-shaped* sample: a decoded bag, an analysis script,
+        a test harness. It does NOT cover the live node, because
+        ``ball_held_raw`` is a declared ``bool`` field on
+        ``HandTelemetryMessage`` — ``getattr(msg, 'ball_held_raw', None)`` on any
+        real message returns ``False``, never ``None``, so a publisher that fills
+        ``ball_held``/``ball_held_valid`` and forgets the raw bit yields
+        ``raw=False`` and reads exactly as the empty cup this rule forbids. A
+        bare ``bool`` cannot carry "unset", and widening the message to a
+        tri-state for it would be a wire change for a case no shipped publisher
+        produces.
+
+        The defence that DOES hold there is :meth:`evidence_settled`, which the
+        one consumer that COMMANDS anything (the auto-reload interlude) uses: it
+        requires the raw and debounced bits to AGREE, so a stuck-low raw bit over
+        a seated ball answers ``EVIDENCE_UNKNOWN`` and the interlude declines to
+        act. The designed defence is real; this documented one is narrower than
+        it read.
 
         A sample that is invalid, or that arrives after a gap longer than
         ``stale_s``, opens a blind span and updates NOTHING else — in particular

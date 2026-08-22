@@ -2921,6 +2921,19 @@ def evidence_gate(rows: Sequence[Dict[str, Any]], *, mask=None) -> Dict[str, Any
     ``toss_uid``, i.e. chronologically within a bag, which is what a change
     detector needs; a caller that re-orders a cell gets a detector reading a
     scrambled series and this docstring is the notice.
+
+    **A DEGENERATE column reads as infinitely significant, and that is not a
+    guard** (noted 2026-08-22). ``sd`` is floored at ``1e-12`` so ``se`` can never
+    be zero, which means a cell whose N values are bit-identical scores
+    ``|mean| / 4e-13`` and clears ``SE_GATE`` unconditionally. Real ``float64``
+    flight-time residuals never repeat, so this cannot arise from measurement —
+    but a QUANTISED channel, a synthetic corpus, or a stuck upstream field would
+    each produce it, and the gate would read a writer bug as perfect evidence.
+    Deliberately not changed here: this module feeds a PROPOSAL a human promotes,
+    never an actuation path, and tightening the fit's admission rule is a fit
+    decision rather than an audit fix. The actuating twin of this hazard —
+    ``toss_ilc``'s anchor ``se_rad`` — WAS closed, in both its loader and its
+    gate.
     """
     m = DEFAULT_MASK if mask is None else np.asarray(mask, dtype=float)
     stack = (np.vstack([measured_error(r) for r in rows])
