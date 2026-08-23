@@ -382,8 +382,21 @@ that was invisible; at a 0.49 s dwell it is a **fail-open possession gate**:
 
 > the debounce is asymmetric and far slower than its nominal 100 ms — measured
 > `held→empty` **232 / 241 / 295 ms**, `empty→held` **0 / 0 / 0 ms** (the poll
-> cadence itself measures ~71 ms against a configured 20 ms, and that 3.5x gap
+> cadence itself measured ~71 ms against a configured 20 ms, and that 3.5x gap
 > still has no diagnosis).
+
+> **The 71 ms figure is STALE — re-measured 2026-08-23 and the gap has closed.**
+> Over the 2026-08-23 ladder (`~/Desktop/rosbags/2026-08-23_19-14-54`, can-bridge
+> FW 15, 27 415 `hand_telemetry` frames, **11 462 fresh samples**, every frame
+> `ball_held_valid`), the interval between distinct `ball_held_stamp` values is
+> **median 20.0 ms — exactly the configured cadence** — mean 24.0, p10 20.0,
+> p90 30.0, max 160.0 ms; host-arrival deltas agree (median 21.5, mean 24.0).
+> So the poller runs at cadence and the distribution is one-sided: a tail out to
+> 160 ms rather than a uniform 3.5x stretch. **The asymmetric debounce numbers
+> above are NOT re-measured and still stand as written** — the cadence was only
+> ever one candidate explanation for them, and it is now excluded rather than
+> confirmed. Whether the tail is the same mechanism is a can-bridge bench
+> question and stays open.
 
 So for ~241 ms after a ball leaves the cup the debounced bit still reads HELD, and
 cycle N+1's CHECKING — which at a 0.49 s dwell runs inside that window — would

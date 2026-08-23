@@ -143,6 +143,22 @@ RELEASE_GUARD_S = 0.30
 #: (`logbook/2026-08-15-fw14-validated-arc-closed.md`), so the band is expected
 #: to COLLAPSE. Everything that must shrink with it derives from this name —
 #: that is the whole reason it exists (census D7).
+#:
+#: RE-MEASURED 2026-08-23 (report only — NOT applied, see below). Over the
+#: HAND-7 ladder `~/Desktop/rosbags/2026-08-23_19-14-54` (can-bridge FW 15,
+#: 15 self-tosses, every throw caught), the raw empty->held edge lands
+#: **+46.5 .. +267.5 ms** past the announced landing, median **+184.7 ms** —
+#: the band DID collapse, to about a third of its width. Dispatch shift on the
+#: same capture: +8.3 / +11.6 / +19.5 ms (min/median/max), confirming FW 14-15
+#: holds the 10-20 ms figure.
+#:
+#: Not applied here, deliberately: 15 self-tosses at one dwell is a narrower
+#: corpus than the 35 announcements this 0.80 was cut from, and both consumers
+#: (`toss_record` windows, `CATCH_CONFIRM_WINDOW_S` via D7) size REFUSALS from
+#: it — shrinking it on a thin corpus buys cadence by turning late-but-real
+#: catches into MISSES, which is the direction this contract does not take
+#: without the owner. Land it with a wider capture, and move D7's derived
+#: constants in the same commit.
 ARRIVAL_BAND_MAX_S = 0.80
 #: The same band's FLOOR — the EARLIEST empty->held edge observed on a real
 #: catch: **+137 ms** past the announced landing, over the same 35 announcements
@@ -158,7 +174,14 @@ ARRIVAL_BAND_MAX_S = 0.80
 #: FALLBACK.  Deliberately NOT rounded: 0.137 is the datum, and the rounding
 #: belongs in the consumer that adds its own tick allowance to it.
 #:
-#: ⚠ PENDING THE SAME RE-MEASURE as the ceiling.
+#: ⚠ PENDING THE SAME RE-MEASURE as the ceiling — and the 2026-08-23 capture
+#: says this floor is now the BINDING half. The earliest raw edge on that
+#: ladder is **+46.5 ms**, i.e. **91 ms BELOW** the shipped 0.137, so a floor
+#: left here would refuse a real arrival rather than admit a spurious one. That
+#: is the fail-closed direction and therefore not urgent, but it costs a false
+#: MISS on the fastest catches, and the cost lands on the same rungs the census
+#: is trying to reach. Same reason as the ceiling for not moving it here: one
+#: dwell, 15 tosses.
 ARRIVAL_BAND_MIN_S = 0.137
 
 # ── Source identifiers (carried in every verdict, so a log line names its author)

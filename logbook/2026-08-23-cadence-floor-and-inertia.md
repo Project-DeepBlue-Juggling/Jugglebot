@@ -25,6 +25,15 @@ files_changed:
   - tests/ros/test_toss_coordinator.py
   - tests/ros/test_trajectory_node.py
   - plans/active/critical-point-ilc.md
+  - tools/probes/hand_decel_authority.py
+  - tools/probes/hand_stroke_timeline.py
+  - tests/motion/test_hand_decel_authority_probe.py
+  - tests/motion/test_hand_stroke_timeline_probe.py
+  - ros_ws/docs/hand_decel_feedforward.md
+  - ros_ws/docs/ball_possession_contract.md
+  - ros_ws/src/jugglebot/jugglebot/ball_possession.py
+  - tests/hardware/session_anomaly_fixes.md
+  - plans/active/catch-robustness.md
 subsystem:
   - ros
   - motion
@@ -449,3 +458,187 @@ rungs reaches `ABORTED_CANT_MAKE_RELEASE` any more.
    not from scheduling jitter**, and no static floor can change that. If a bench
    sitting produces one, it is a real finding about tick overshoot on a loaded
    Jetson and belongs in an investigation, not in the floor.
+
+---
+
+## Package 2 — the C-HAND-2 inertia re-derivation on the unclamped drive
+
+**Verdict: the premise was wrong, and no constant was landed.** The package went
+looking for evidence to *raise* `teensy_trajectory.throw_decel_reflected_inertia_kgm2`
+above 9.5e-6. The ladder says the opposite — and it says it through two
+instrument defects that had to be fixed before any of it could be read.
+
+### The capture, and its plant identity
+
+Operator flew the § CHECK HAND-7 R0–R5 ladder on 2026-08-23:
+`~/Desktop/rosbags/2026-08-23_19-14-54`, **15 self-tosses, 5 tiers × 3** at
+2.706 / 3.440 / 3.920 / 4.436 / 4.858 m/s, every throw caught. Verified before
+scoring anything: can-bridge FW **15** (proto 5), Platform FW **3**,
+`torque_ff_enabled = 1`, `torque_clamp_mask = 0`, bridge uptime 116.71 → 116.79 h.
+
+The uptime is 4.9 days and the standing rule is to reboot before a session, so
+the S2 telemetry-freeze mechanism was checked rather than assumed: over 27 415
+frames the longest bit-identical `pos+vel+iq` run is **3 samples / 21 ms, at
+rest**, and the longest while moving is **2 samples / 13 ms**. No ~100–150 ms
+freeze anywhere in the hand stream. Median telemetry `dt` 10.0 ms. Dispatch shift
+(`hand_stroke_timeline`, fit − announcement) **+8.3 / +11.6 / +19.5 ms**
+min/median/max, so FW 15 holds FW 14's 10–20 ms.
+
+### The discriminator answered, in both channels
+
+The 2026-08-10 sitting is the true A/B: **same corrected feedforward** (Platform
+FW 2, `tor_hold` 0.150 N·m), **clamp still live**, same 4.436 m/s tier, 31 tosses.
+
+| | 2026-08-10 clamp LIVE | 2026-08-23 clamp GONE |
+|---|---|---|
+| commanded decel FF | 27.2 A | 27.2 A |
+| worst braking `iq` per toss | min **−10.52**, median −7.05 A | min **−14.40**, median −13.95 A |
+| whole-session `iq` floor | **−11.42 A** | **−17.77 A** |
+| coast peak vs `x3` | **+0.719 rev** (31/31) | **−0.279 rev** (3/3) |
+
+Braking current now exceeds the old −10 A ceiling on every toss of the top three
+tiers — structurally impossible before — and scales monotonically with the
+command across the ladder (9.1 A → −3.5, 16.3 → −7.3, 20.0 → −9.2, 27.2 → −14.0,
+30.8 → −17.7). **`b084f98` is confirmed on the plant.**
+
+**But the discriminator question — *does achieved decel become tier-independent?*
+— answers NO.** η reads **1.018 / 1.044 / 1.053 / 1.074 / 1.076** up the ladder:
+monotone, and *above* 1 at every tier, which means the hand **stopped short of
+`x3` on 15 of 15 throws**. Its coast topped out 0.058–0.292 rev under the stroke
+top and sagged a further 0.034–0.183 rev under the latched terminal torque,
+finishing **0.113–0.468 rev below `x3`** — over row H7.4's 0.100 rev band on
+every throw, by up to 4.7× (4.8× on the timeline probe's own row).
+
+### Why that took two instrument fixes to see
+
+Both shipped instruments reported `dip_below_x3 = 0.000  [OK]` on all 15.
+
+**Defect 1 — the window.** `peak` was the maximum `pos_meas` over the ~400 ms
+after the commanded stroke end, and `over_x3` / `eta` / the decel-side inertia
+bound all derived from it. C-HAND-1's gated catch arm dispatches its prelude
+37–183 ms into that window, re-seeds `pos_cmd` at the live encoder position and
+climbs back past `x3`, overshooting by a measured 0.046–0.222 rev. Whenever the
+throw's own coast tops out lower, **the reported peak is the arm's excursion,
+~200 ms after the throw ended.** Contamination measured by re-scoring the
+recordings: **15 of 15** on 2026-08-23, and **10 of the 17 tosses of the
+2026-07-27 sitting every empirical number in C-HAND-2 is drawn from** — both low
+tiers on every toss, where the contract's table reads `over_x3` +0.074 / +0.063
+rev while those throws actually finished **−0.051 / −0.092 rev, below `x3`**. The
+contract's "the plant already tracks to η = 0.98 at the bottom of the band",
+which it leans on twice, was never measured.
+
+**Defect 2 — the torque.** The per-tier bound multiplied `tor_legacy` —
+`accelToTorque`, the *pre*-C-HAND-2 feedforward — long after Platform FW 2 put
+`throwDecelToTorque` aboard, understating the shipped braking torque by
+**1.289×** and the bound with it. The capture carries the answer directly:
+`buildSegment` stops one 500 Hz sample short of `t3`, so the last commanded frame
+latches the full decel feedforward across the coast. Read off the wire, the
+ladder gives 0.050 / 0.090 / 0.110 / 0.150 / 0.170 N·m against a corrected model
+of 0.054 / 0.087 / 0.113 / 0.145 / 0.174 and a legacy model of 0.042 / 0.068 /
+0.088 / 0.113 / 0.135 — never confusable, and the probe now prints which
+generation it found.
+
+### Discussion — why refuse to land, when the sign is settled
+
+Re-run with the coast window and the wire torque, **every tier's coast finished
+below `x3`**, so the hand never caught `pos_cmd`, `τ_loop` pushed *up* through
+the whole excursion, and C-HAND-2's own expression is an **upper** bound rather
+than a lower one: `J_true ≤ 1.004e-5 / 1.025e-5 / 9.41e-6 / 9.63e-6 / 9.04e-6`
+kg·m² by tier. The regression identification agrees in kind (slope 0.9415,
+R² 0.9999 → 1.009e-5; on the measured wire torque 1.027e-5, R² 0.9915, intercept
+0.84 A against the 1.50 A ± 50 % gravity hold).
+
+Both are computed at the **commanded** release velocity, and that is where the
+capture stops being decisive. The hand's encoder puts its peak velocity −5.5 % to
++2.3 % of commanded, with a `a·2.5 ms` sampling bias of −4.1 % at the top tier —
+de-biased, *on target*. The **ball** disagrees: a ballistic fit `z = z₀ + v·t −
+½g·t²` over the rise (mocap, static reflectors filtered, n = 3/tier, within-tier
+spread < 2 points) gives **+15.5 / +11.8 / +11.3 / +9.9 / +10.6 %**, with a
+fitted `z₀` of 794–832 mm against the announced 802.3 — so the fit does not rest
+on the announced release height. Independently corroborated by the ILC corpus's
+**+11 % fast**.
+
+**The two channels disagree on magnitude and agree on sign, and the sign is what
+the contract turns on.** `J ∝ v⁻²`, so the encoder channel bounds `J_true ≤
+9.04e-6` and the ball channel `≤ ~7.5e-6` — **both below the declared 9.5e-6.**
+With the direct kinematic observation (short on 15/15), the one-sided-safety
+clause reads violated *in the over-braking direction*, and the contract's own
+documented response to that is to **lower** the constant, never raise it.
+
+So why not land a lower value? Because the sign is settled and the **magnitude is
+not** — the two bounds differ by 20 % — and closing that by guessing costs a
+Platform Teensy flash (Arduino IDE; `pio` is CAN-mute and suspended) plus a
+re-validation ladder *each time*. Landing 9.5e-6 → 9.0e-6 → 7.5e-6 in sequence
+would be three flashes to converge on a number that one measurement settles. The
+measurement is named rather than deferred: **the rev→mm gain, measured
+statically**. The two channels reconcile exactly if one motor revolution moves
+~10 % more hand than the assumed 31.628 mm — the encoder is right in *rev* space
+and every m/s in the hand path is 10 % low — and that also re-bases `J`, which
+scales as gain⁻². It was attempted from this bag (regressing the seated ball's
+mocap `z` on `pos_meas` through the ascent) and is **inconclusive**: the ball is
+occluded in the cup for most of the climb, only 1 of 15 throws yielded ≥ 15
+paired samples, and that fit read −21 % at R² 0.81. Recorded as not-evidence
+rather than quietly dropped.
+
+**What was NOT concluded, deliberately.** That the hand over-brakes because the
+declared inertia is too large is *one* reading; that it releases 10 % fast and
+therefore under-shoots a correctly-sized ramp is another, and this capture cannot
+separate them. Both are consistent with every number above. The refusal is not
+caution about the direction — it is that a flash sized from the wrong one of the
+two is a flash in the wrong direction.
+
+### Why `peak` was NOT narrowed, and the gated dip row NOT re-armed
+
+Two deliberate non-changes, both about not trading a measurement bug for a worse
+one. `peak` is the **end-stop** column: the question it answers is "what is the
+largest excursion of any cause", and on a healthy capture the arm's own overshoot
+is routinely the answer — bounding it to the coast would hide exactly the
+excursions that approach the 10.8 rev stop. It keeps the wide window; a `*`
+marks the tosses where it and the coast differ (15 of 15 here). And
+`dip_below_x3` is an operator **ABORT threshold**: re-arming it on this evidence
+would newly abort on the machine's shipped behaviour, which is a stakeholder
+decision, not an instrument fix. It keeps its definition and its verdict, and
+`coast_below_x3` is reported beside it with a `<<< BLIND SPOT` marker when the
+two disagree across the band — so the instrument can no longer pass quietly,
+without anyone's abort moving behind their back.
+
+### Bonus measurements from the same bag (report-only, nothing applied)
+
+1. **Sensor arrival band, the pre-R3 re-measure the constants ask for.** Raw
+   `empty→held` edge vs announced landing: **+46.5 … +267.5 ms, median +184.7**,
+   n = 15. The band collapsed to about a third of the shipped
+   `[0.137, 0.80]` — and the **floor is now the binding half**: the earliest edge
+   is 91 ms *below* `ARRIVAL_BAND_MIN_S`, so a floor left there refuses a real
+   arrival (fail-closed, but it costs a false MISS on the fastest catches,
+   exactly the rungs the census is trying to reach). Not applied: 15 self-tosses
+   at one dwell is a thinner corpus than the 35 announcements the 0.80 was cut
+   from, and both consumers size *refusals* from it. Annotated at the constants,
+   with D7's derived `CATCH_CONFIRM_WINDOW_S` to move in the same commit.
+2. **Hand-sensor fresh-sample cadence — the 71 ms figure is stale.** 11 462 fresh
+   samples, every frame `ball_held_valid`: interval between distinct
+   `ball_held_stamp` values is **median 20.0 ms, exactly the configured
+   cadence** (mean 24.0, p10 20.0, p90 30.0, max 160.0). The 3.5× gap is gone and
+   the distribution is one-sided — a tail to 160 ms, not a uniform stretch. The
+   asymmetric-debounce numbers it was cited beside (232/241/295 ms fall, 0 ms
+   rise) are **not** re-measured and still stand; the cadence was one candidate
+   explanation for them and is now excluded rather than confirmed.
+3. **Catch rate and seat proxy, first baseline on the restored plant.** 15/15
+   throws produced an arrival edge. Raw-bit flicker in the 400 ms after the seat
+   edge: **17 of 20 rises show zero transitions**, three show 2–4 — consistent
+   with the operator's "every throw caught, some messy".
+
+### Verification
+
+- `python tools/probes/hand_decel_authority.py --self-check`, run 2026-08-23:
+  **SELF-CHECK: PASS**, exit 0 — and **mutation-verified to bite**: reverting the
+  coast bound to `w[stop:stop+40]` fails it with `max |recovered − built| =
+  0.1458 rev`.
+- `python tools/probes/hand_stroke_timeline.py --gate`, run 2026-08-23:
+  **GATE PASS** on both branches (the pre-fix fixture is a truncation, where the
+  coast row is correctly blank).
+- `pytest tests/motion/test_hand_decel_authority_probe.py
+  tests/motion/test_hand_stroke_timeline_probe.py -q`, run 2026-08-23:
+  **29/29 pass in 3.17 s** — 12 of them new (7 in the new file, and the
+  timeline probe's file goes 17 -> 22). Mutation-verified:
+  reverting the window fails 2 of the 7; reverting the wire torque to
+  `tor_legacy` fails 2 of the 7.

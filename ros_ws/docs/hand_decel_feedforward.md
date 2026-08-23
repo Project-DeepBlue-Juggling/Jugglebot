@@ -11,7 +11,15 @@ which governs *when* a hand command may be dispatched, and
 *which throws may be dispatched at all*. This one governs *how hard the throw
 stroke brakes once it has been*.
 
-> ### ⚠ Three numbers in this document moved after it was written
+> ### ⚠ Four things in this document moved after it was written
+>
+> 0. **Two rows of the founding measurement table were measuring a different
+>    event**, and the re-derivation the 2026-08-18 clamp removal ordered has now
+>    been done. Read § *The re-derivation on the UNCLAMPED drive* before using
+>    any number below: the declared 9.5e-6 is no longer known to sit *under* the
+>    measured inertia, and the evidence points the other way. Nothing about the
+>    contract's *statement* changes; what changed is which side of it the plant
+>    is on.
 >
 > 1. **`FLIGHT_TIME_MAX_S` is no longer 1.10 s.** Every "band ceiling" below was
 >    written at 1.10 s and is left at that value, because each is a statement
@@ -22,9 +30,14 @@ stroke brakes once it has been*.
 >    unresolved* below describes `torque_soft_min = −0.055133 N·m` (= −10.00 A)
 >    against a `torque_soft_max` of +0.5 as the live configuration. Since
 >    2026-08-18 they are a symmetric **±0.7 N·m**, saved to the drive — runbook
->    row H7.0c is now a regression check, not an open question. What remains open
->    is only whether the clamp was ever *binding* on the achieved deceleration;
->    the kinematics in that section say no.
+>    row H7.0c is now a regression check, not an open question. **And whether it
+>    was ever *binding* on the achieved deceleration is no longer open either —
+>    it was** (2026-08-23). The A/B is two sittings running the SAME corrected
+>    feedforward at the SAME 4.436 m/s tier: with the clamp live the throw's coast
+>    peaked **+0.719 rev past `x3`** (31/31 tosses), with it gone **−0.279 rev**
+>    (3/3). The kinematic argument in that section — that a hard clamp would force
+>    one achieved decel per tier — is the same argument the probe retracted on
+>    2026-08-18, and it is wrong for the same reason.
 > 3. **The end stop is 10.8 rev, not the ~11.06 this document infers.** It was
 >    declared 11.1 — 0.3 rev *past* metal — until the operator measured metal
 >    contact on 2026-08-18 (`logbook/2026-08-18-hand-end-stop-corrected.md`).
@@ -99,17 +112,34 @@ peak = x3 + 4.046 · (1/η − 1)          η ≡ achieved decel / commanded dec
 
 Measured on the 2026-07-27 sitting (`logbook/2026-07-28-anomaly-fixes-validation-sitting.md`):
 
-| commanded release | commanded decel | measured peak | over `x3` | implied η |
-|---|---|---|---|---|
-| 2.742 m/s | 929 rev/s² | 10.033 rev | +0.074 | 0.982 |
-| 3.440 m/s | 1462 rev/s² | 10.022 rev | +0.063 | 0.985 |
-| 3.969 m/s | 1947 rev/s² | 10.306 rev | +0.347 | 0.921 |
-| 4.858 m/s | 2916 rev/s² | 10.980 rev | **+1.020** | **0.799** |
+| commanded release | commanded decel | measured peak | over `x3` | implied η | ⚠ |
+|---|---|---|---|---|---|
+| 2.742 m/s | 929 rev/s² | 10.033 rev | +0.074 | 0.982 | **the arm, not the throw** |
+| 3.440 m/s | 1462 rev/s² | 10.022 rev | +0.063 | 0.985 | **the arm, not the throw** |
+| 3.969 m/s | 1947 rev/s² | 10.306 rev | +0.347 | 0.921 | the throw (5/5) |
+| 4.858 m/s | 2916 rev/s² | 10.980 rev | **+1.020** | **0.799** | the throw on 2/5 |
 
 The last row is the tier that made **light physical contact with the end stop**
 (operator testimony, 2026-07-28). η degrades with speed because the loop's
 contribution is roughly a fixed torque while the feedforward deficit scales with
 the commanded decel.
+
+> **⚠ The two low rows do not measure this throw's deceleration** (found
+> 2026-08-23, `tools/probes/hand_decel_authority.py` § *Why the coast window
+> exists*). `peak` was the maximum `pos_meas` over the ~400 ms after the
+> commanded stroke end, and C-HAND-1's gated catch arm dispatches its prelude
+> 37-183 ms into that window and climbs back past `x3`, overshooting it by
+> 0.046-0.222 rev. On **10 of the sitting's 17 tosses** — both low tiers on
+> every toss — the reported peak is that arm's excursion. Re-scored with the
+> window bounded at the first post-stroke command, the two low tiers' throws
+> topped out at **−0.051 and −0.092 rev**, i.e. *below* `x3`, not above it.
+>
+> So the claim "the plant already tracks to η = 0.98 at the bottom of the band",
+> which this contract leans on twice — once to reject a computed undershoot and
+> once to argue the gravity over-brake is absorbed — **was never measured**. The
+> two upper rows are unaffected in kind: 3.969 is the throw on 5/5 and 4.858 on
+> 2/5, and the end-stop contact that motivated the whole phase is real. What
+> moved is the *bottom* of the band, and it moved toward over-braking.
 
 ## Why a feedforward correction and not a steeper ramp
 
@@ -182,6 +212,14 @@ the telemetry aliasing (below) cannot corrupt it.
 > number against a *hand-only* floor and called the ball part of the rotor. On the
 > decel-side bound the rotor residual is `1.0126e-5 − 7.120e-6 = 2.9e-6 kg·m²`.
 
+> **Superseded as a statement about the CURRENT plant** (2026-08-23). Both
+> numbers in the table above were measured through the −10.00 A clamp and with
+> the contaminated window; the re-derivation on the restored drive is
+> § *The re-derivation on the UNCLAMPED drive* below, and it puts `J_true` at or
+> **below** the declared value rather than above it. The rows are kept because
+> the *methods* are still the two this contract uses, and because the 2026-08-10
+> A/B against them is what proves the clamp was binding.
+
 **The shipped value is 9.5e-6 — 6–10 % below the decel-side evidence, on
 purpose.** The feedforward alone produces a deceleration of `a_cmd · J_ff/J_true`,
 so *considered alone* it cannot over-brake while `J_ff ≤ J_true`. That is the
@@ -189,6 +227,100 @@ second obligation of the contract. Raising the value is a bench decision backed
 by measurement, not a desk one — and the enforcement is
 `tests/sim/test_hand_throw_decel_ff.py::test_declared_inertia_cannot_over_brake`,
 which pins the declared value under the **1.0126e-5 decel-side bound**.
+
+### The re-derivation on the UNCLAMPED drive (2026-08-23) — and why no new value landed
+
+`plans/active/catch-robustness.md`'s conditional Open row fired on 2026-08-18:
+every capture in the repo predated the removal of the hand ODrive's −10.00 A
+torque clamp, so the decel-side bound above was measured through it. The
+operator flew a HAND-7 ladder on the restored drive on 2026-08-23 —
+`~/Desktop/rosbags/2026-08-23_19-14-54`, **15 throws, 5 tiers × 3, at 2.706 /
+3.440 / 3.920 / 4.436 / 4.858 m/s**, can-bridge FW **15** (proto 5), Platform FW
+**3**, `torque_ff_enabled = 1`, bridge uptime 116.7 h. Score it with
+
+```
+python tools/probes/hand_decel_authority.py --bag ~/Desktop/rosbags/2026-08-23_19-14-54
+```
+
+**The clamp removal is confirmed in both channels**, which is what the
+discriminator was for:
+
+| | 2026-08-10 (clamp LIVE, Platform FW 2) | 2026-08-23 (clamp GONE, FW 3) |
+|---|---|---|
+| tier | 4.436 m/s, 31 tosses | 4.436 m/s, 3 tosses |
+| commanded decel feedforward | 27.2 A | 27.2 A |
+| worst braking `iq` per toss | min **−10.52**, median −7.05 A | min **−14.40**, median −13.95 A |
+| whole-session `iq` floor | **−11.42 A** | **−17.77 A** |
+| coast peak vs `x3` | **+0.719 rev** (31/31 the throw's own) | **−0.279 rev** (3/3) |
+
+Braking current now tracks the command monotonically across the whole ladder —
+9.1 A commanded → −3.5 measured, 16.3 → −7.3, 20.0 → −9.2, 27.2 → −14.0, 30.8 →
+−17.7 (per-tier medians of the worst fresh sample per toss) — and it exceeds the
+old −10 A ceiling on every toss of the top three tiers, which it structurally
+could not do before.
+
+**But achieved deceleration did NOT become tier-independent.** η reads **1.018 /
+1.044 / 1.053 / 1.074 / 1.076** up the ladder — a monotone trend, and *above*
+1 at every tier, which by the definition above means the hand **stopped short of
+`x3` on all 15 throws**. Its coast topped out 0.058-0.292 rev under the stroke
+top and then sagged a further 0.034-0.183 rev under the latched terminal torque,
+ending **0.113-0.468 rev below `x3`** — over row H7.4's 0.100 rev band on 15 of
+15. (Both shipped instruments reported `dip_below_x3 = 0.000` on all 15; that is
+the same window defect as the founding table's, and it is now marked rather than
+silent — `hand_stroke_timeline.py`'s `coast_below_x3` row.)
+
+Re-running this contract's own two methods with the coast window and with the
+wire feedforward read off the capture:
+
+| method | result on the unclamped drive |
+|---|---|
+| **decel-side torque balance, per tier** | every tier's coast finished BELOW `x3`, so the hand never caught `pos_cmd`, `τ_loop` pushed **up** through the whole excursion, and the SAME expression is an **upper** bound: `J_true ≤ 1.004e-5 / 1.025e-5 / 9.41e-6 / 9.63e-6 / **9.04e-6**` kg·m² by tier |
+| regression of achieved-vs-commanded decel | slope 0.9415 (R² 0.9999) → `J_ff/slope` = 1.009e-5; on the measured wire torque, `1/(2π·slope)` = 1.027e-5 (R² 0.9915, intercept 0.84 A against the 1.50 A ± 50 % gravity hold) |
+
+Both readings are computed **at the commanded release velocity**, and that is
+where the capture stops being decisive:
+
+* the hand's own encoder puts its peak velocity **−5.5 % to +2.3 %** of
+  commanded, and its ~100 Hz sampling of a 3-6 ms velocity apex is biased low by
+  `a · 2.5 ms` = **−4.1 %** at the top tier — so de-biased, the encoder says the
+  release is *on target*;
+* the **ball** says it is not. A ballistic fit `z = z₀ + v·t − ½g·t²` over the
+  rise, on the mocap marker with static reflectors filtered, gives **+15.5 /
+  +11.8 / +11.3 / +9.9 / +10.6 %** by tier (n = 3 each, within-tier spread under
+  2 points), and the fitted `z₀` of 794-832 mm agrees with the announced release
+  height 802.3 mm to ±30 mm — so the fit does not rest on that assumption.
+  Independently corroborated: the ILC corpus measures this hand **+11 % fast**
+  (`logbook/2026-08-21-ilc-primary-foldin.md`).
+
+**The two channels agree on the SIGN and disagree on the MAGNITUDE, and the sign
+is what this contract turns on.** `J` scales as `v⁻²`, so the encoder channel
+gives `J_true ≤ 9.04e-6` and the ball channel `≤ ~7.5e-6` — **both below the
+declared 9.5e-6.** Together with the direct kinematic observation (the hand
+stops short on 15/15), the one-sided-safety clause now reads **violated in the
+over-braking direction**, and this contract's documented response to that is to
+*lower* `throw_decel_reflected_inertia_kgm2`, never raise it.
+
+**So the package that went looking for a higher value found the opposite, and
+still did not land one.** The direction is settled; the magnitude is not — the
+two channels' upper bounds differ by 20 %, and closing the gap by flashing a
+guessed value costs a Platform Teensy flash (Arduino IDE; `pio` is CAN-mute and
+suspended) plus a re-validation ladder. Landing 9.5e-6 → 9.0e-6 → 7.5e-6 in
+sequence would be three flashes to converge on a number one measurement settles.
+
+**What settles it**, in order:
+
+1. **The rev→mm gain, measured statically.** The two channels reconcile exactly
+   if one motor revolution moves ~10 % more hand than the
+   `2π·HAND_SPOOL_RADIUS_M / LINEAR_GAIN_FACTOR` = 31.628 mm assumed above —
+   the encoder is right in *rev* space and every m/s in the hand path is 10 %
+   low. That also re-bases `J`, which scales as gain⁻². Measure it with the hand
+   at rest: command a known rev displacement and measure the cup's travel.
+   *(Attempted from this bag by regressing the seated ball's mocap `z` on
+   `pos_meas` through the ascent — **inconclusive**: the ball is occluded in the
+   cup for most of the climb, only 1 of 15 throws yielded ≥ 15 paired samples,
+   and that fit read −21 % at R² 0.81. It is not evidence in either direction.)*
+2. **Then re-fly R0-R5** and re-read `cst_pk`, `under` and the per-tier sense
+   line. Until step 1 lands, a ladder measures the same ambiguity again.
 
 ### The one-sided-safety clause, stated honestly: gravity is in it too
 
@@ -251,6 +383,18 @@ it is very probably not binding. Against that: with the decel window corrected
 tosses is **−9.91 A**, and the whole-session floor is −11.4 A, while the
 kinematics require ~26 A of braking at the top tier. That gap is unexplained;
 the aliasing is the likely cause, but it has not been shown.
+
+> **RESOLVED 2026-08-23 — it was binding, and the current gap was the tell, not
+> the aliasing.** On the restored drive the whole-session braking floor moves
+> **−11.42 → −17.77 A** and exceeds the old −10 A clamp on every toss of the top
+> three tiers, which it structurally could not do before; braking `iq` now
+> scales monotonically with the commanded feedforward across the ladder (9.1 A
+> commanded → −3.5 measured, 16.3 → −7.3, 20.0 → −9.2, 27.2 → −14.0, 30.8 →
+> −17.7). The measured current still falls well short of the commanded
+> feedforward, so the aliasing caveat above stands on its own — it was simply
+> never the whole explanation. Keep the paragraph: it is the shape of a
+> counter-argument that felt strong and was not, and § *The re-derivation on the
+> UNCLAMPED drive* is where the consequences land.
 
 **Bench pre-flight H7.0c** settles it in 30 seconds: read
 `axis0.config.torque_soft_min` off the live hand axis *before* the flash. And
