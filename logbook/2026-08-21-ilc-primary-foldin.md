@@ -2477,13 +2477,19 @@ matters rather than passing on one side of it.
    publishing orientation alongside `trajectory/commanded_position`. Worth the
    entire 0.38 s LEVEL/AIMED gap — the single largest cadence item on the board,
    and a prerequisite for ILC-primary sittings running at level-chain cadence.
-3. **MEDIUM — the C-POSSESS-1 § 3.4 arrival clamp closes inside the measured
-   arrival band at the target cadence** (clamped close at landing+0.7929 vs a
+3. ~~**MEDIUM — the C-POSSESS-1 § 3.4 arrival clamp closes inside the measured
+   arrival band at the target cadence**~~ (clamped close at landing+0.7929 vs a
    band ceiling of +0.798 / `ARRIVAL_BAND_MAX_S` 0.80). Drops `catch_event_dt_s`
    for the tail of the band, and lets a valid sensor `ARRIVAL_REJECTED` veto a
    tracker CAUGHT. The abutment argument also assumes exact schedule adherence
    (clamp uses the SCHEDULED next landing; the next window opens at the ACTUAL
-   one). `needs-design`.
+   one). **RESOLVED 2026-08-23** — C-POSSESS-1 clauses **C.1** (the boundary
+   surrenders the NEXT window's pre-landing lead before any of THIS ball's band,
+   which also pins it to `landing + ARRIVAL_BAND_MAX_S` at every period under
+   1.000 s and so removes the schedule-adherence dependence exactly where it
+   reached an edge) and **C.2** (a window the schedule truncated inside the band
+   answers UNKNOWN, never REJECTED). `logbook/2026-08-23-cadence-floor-and-inertia.md`
+   § "Package 3".
 4. **Operator decision 3 of the fold-in needs re-taking.** 61 throws/min is not
    available on this build; the frontier is 54.3 level / 40.4 aimed and the
    corrected ladder targets 53.0 / 39.7.

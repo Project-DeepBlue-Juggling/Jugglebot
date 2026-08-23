@@ -89,7 +89,8 @@ from typing import Any, Dict, Iterable, List, NamedTuple, Optional, Sequence, Tu
 # horizon are the SAME instant, so they must be the same constant. See
 # DEPARTURE_LEAD_S. `ball_possession` is pure Python with no further jugglebot
 # imports, so this cannot cycle.
-from jugglebot.ball_possession import RELEASE_GUARD_S
+from jugglebot.ball_possession import (ARRIVAL_BAND_MAX_S, RELEASE_GUARD_S,
+                                       arrival_boundary_t)
 
 # ── Schema version ────────────────────────────────────────────────────────────
 #: Bumps on field REMOVAL or a semantic change; purely additive fields do not
@@ -915,6 +916,7 @@ def label_from_sensor(samples: Sequence[SensorSample], *,
                       windows: SensorWindows,
                       next_release_time: Optional[float] = None,
                       next_landing_time: Optional[float] = None,
+                      prev_landing_time: Optional[float] = None,
                       stamp_wall_anchored: Optional[bool] = None) -> SensorBlock:
     """THE definition of "caught" for the corpus. Pure; one implementation.
 
@@ -966,11 +968,24 @@ def label_from_sensor(samples: Sequence[SensorSample], *,
     So the horizon closes at ``next_release_time - departure_lead_s`` — the very
     instant the NEXT toss's departure search opens. A fall at or after it is that
     throw's departure by definition and cannot also be this toss's bounce-out.
-    Likewise ``arr_hi`` closes at ``next_landing_time - arrival_lead_s``, where
-    the next arrival search opens, so no edge is claimed twice (census D2). When
-    the horizon leaves no interval at all the bounce test is SKIPPED rather than
+    Likewise the arrival search is bounded by ``ball_possession.arrival_boundary_t``
+    at BOTH ends — ``arr_hi`` where the next row's search opens, ``arr_lo`` where
+    the previous row's closed — so no edge is claimed twice (census D2). When the
+    horizon leaves no interval at all the bounce test is SKIPPED rather than
     resolved either way: there is nothing to observe, and inventing a BOUNCED
     from arithmetic is the failure this clamp exists to prevent.
+
+    **C-POSSESS-1.C.1 / C.2, added 2026-08-23.** ``arr_hi`` used to be
+    ``next_landing_time - arrival_lead_s`` outright, which pays the NEXT row's
+    pre-landing guard out of THIS row's measured arrival band and, once the cycle
+    period drops under ``ARRIVAL_BAND_MAX_S + arrival_lead_s`` = 1.000 s, mints a
+    **false MISSED** on a catch whose seat edge merely landed in the band's tail.
+    ``arrival_boundary_t`` surrenders the guard rather than the band; and where
+    the schedule truncates the band anyway (a period under 0.800 s — the deferred
+    R6 fork), gate 3 answers **UNKNOWN, not MISSED**, because a window that
+    stopped short of the evidence is not a positive observation of non-arrival.
+    ``prev_landing_time`` is the other end of the same boundary: pass the
+    previous row's ``landing_time`` and adjacent rows abut exactly.
     """
     dep_lo = throw_time - windows.departure_lead_s
     # Clamped so the departure search can NEVER reach into the arrival search and
@@ -983,8 +998,28 @@ def label_from_sensor(samples: Sequence[SensorSample], *,
     arr_hi = landing_time + windows.arrival_window_s
     next_land = _finite_or_none(next_landing_time)
     if next_land is not None:
-        # Census D2 — close where the NEXT cycle's arrival search opens.
-        arr_hi = max(arr_lo, min(arr_hi, next_land - windows.arrival_lead_s))
+        # Census D2 / clause C.1 — close at the boundary this pair of landings
+        # shares, which is where the NEXT row's arrival search opens.
+        arr_hi = max(arr_lo, min(arr_hi, arrival_boundary_t(
+            landing_time, next_land, windows.arrival_lead_s)))
+    prev_land = _finite_or_none(prev_landing_time)
+    if prev_land is not None:
+        # The identical call the PREVIOUS row made to close its own search. Only
+        # ever moves this opening LATER, so its absence is the shipped window.
+        arr_lo = max(arr_lo, arrival_boundary_t(
+            prev_land, landing_time, windows.arrival_lead_s))
+        # Degenerate to a single INSTANT rather than inverting, and degenerate to
+        # the same instant `HandBallSensorSource._window` does — the low end wins
+        # in both. An inverted search would make every `lo <= t <= hi` vacuously
+        # false and mint a MISSED out of arithmetic. Only reachable on a schedule
+        # whose next landing precedes this one, i.e. never from a real
+        # announcement stream; it is written down because the two implementations
+        # are required to clamp the SAME way, including where they fail.
+        arr_hi = max(arr_lo, arr_hi)
+    # Clause C.2: did the search outlast the ball's measured band? A window the
+    # SCHEDULE truncated inside the band has not seen the evidence out, so "no
+    # rise" is not a positive observation of non-arrival — gate 3 below.
+    band_watched_out = arr_hi >= landing_time + ARRIVAL_BAND_MAX_S
     next_rel = _finite_or_none(next_release_time)
     win_lo = dep_lo
     win_hi = arr_hi + windows.retention_window_s
@@ -1060,11 +1095,28 @@ def label_from_sensor(samples: Sequence[SensorSample], *,
                            1.0)
     # Gate 3 — it left and never came back.
     if t_catch_deb is None:
+        dep_at = (t_dep_raw if t_dep_raw is not None else t_dep_deb) - throw_time
+        if not band_watched_out:
+            # C-POSSESS-1.C.2. The search closed inside the measured band — the
+            # next landing truncated it, or `arrival_window_s` is configured
+            # under the band — so the corpus does not know whether the ball
+            # missed or whether we looked away. MISSED is a POSITIVE claim and is
+            # not available; UNKNOWN never collapses to one (gate 1's rule, same
+            # reason).
+            return SensorBlock(
+                fields, LABEL_UNKNOWN,
+                'departure at {:+.3f} s, no empty->held edge in [{:+.3f}, '
+                '{:+.3f}] s of landing — but the search was band clamped, '
+                'closing at {:+.3f} s short of the measured band ceiling '
+                '{:+.3f} s, so non-arrival was never observed'.format(
+                    dep_at, arr_lo - landing_time, arr_hi - landing_time,
+                    (landing_time + ARRIVAL_BAND_MAX_S) - arr_hi,
+                    ARRIVAL_BAND_MAX_S),
+                0.0)
         return SensorBlock(fields, LABEL_MISSED,
                            'departure at {:+.3f} s, no empty->held edge in '
                            '[{:+.3f}, {:+.3f}] s of landing'.format(
-                               (t_dep_raw if t_dep_raw is not None
-                                else t_dep_deb) - throw_time,
+                               dep_at,
                                arr_lo - landing_time, arr_hi - landing_time),
                            1.0)
     # Gate 4 — it arrived and then left again inside the retention HORIZON. A

@@ -32,6 +32,10 @@ files_changed:
   - ros_ws/docs/hand_decel_feedforward.md
   - ros_ws/docs/ball_possession_contract.md
   - ros_ws/src/jugglebot/jugglebot/ball_possession.py
+  - ros_ws/src/jugglebot/jugglebot/toss_record.py
+  - tests/motion/test_toss_record.py
+  - tests/ros/test_ball_possession.py
+  - logbook/2026-08-21-ilc-primary-foldin.md
   - tests/hardware/session_anomaly_fixes.md
   - plans/active/catch-robustness.md
 subsystem:
@@ -642,3 +646,229 @@ without anyone's abort moving behind their back.
   timeline probe's file goes 17 -> 22). Mutation-verified:
   reverting the window fails 2 of the 7; reverting the wire torque to
   `tor_legacy` fails 2 of the 7.
+
+---
+
+## Package 3 — the C-POSSESS-1 § 3.4 arrival clamp stops measuring the schedule
+
+Closes the third open question the Phase-L audit carried out
+(`logbook/2026-08-21-ilc-primary-foldin.md` § "Open questions carried out of
+Phase L", item 3, MEDIUM): *the arrival clamp closes inside the measured arrival
+band at the target cadence — clamped close at landing+0.7929 vs a band ceiling of
++0.798 — dropping `catch_event_dt_s` for the tail and letting a valid sensor
+`ARRIVAL_REJECTED` veto a tracker CAUGHT; the abutment argument also assumes exact
+schedule adherence.* Operator-approved 2026-08-23.
+
+### Symptom
+
+C-POSSESS-1.C (landed 2026-08-21, census D2) closed each cycle's ARRIVAL window
+at `next_landing_t − arrival_lead_s`, the same instant the next cycle's window
+opens. Below a cycle period of `ARRIVAL_BAND_MAX_S + arrival_lead_s` = **1.000 s**
+that instant falls *inside the current ball's own measured arrival band*
+(+137…+798 ms, 35 announcements, three 2026-08-10 bags). A catch seating in the
+amputated tail then produces:
+
+- `arrival_time` → NaN, so `catch_event_dt_s` — the ILC catch-timing measurand,
+  and the only quantity this machine has for *when* the ball entered the cup — is
+  silently dropped;
+- a closed, empty window → `ARRIVAL_REJECTED`, which is a **positive claim of
+  non-arrival**, and which `merge_possession` lets **veto a tracker CAUGHT**
+  (§ 3.2 rule 2). A schedule number thereby manufactures a refusal about a ball.
+
+Offline the same geometry mints a false `MISSED` in `toss_record.label_from_sensor`
+— the label the aim fit weights most heavily.
+
+### Diagnosis — two terms that are not the same kind of quantity
+
+The root cause is not the arithmetic, it is the *pairing*:
+
+| term | value | property of |
+|---|---|---|
+| `ARRIVAL_BAND_MAX_S` | 0.80 s | the **ball** — the latest empty→held edge ever observed on a real catch |
+| `arrival_lead_s` | 0.200 s | the **schedule** — how early the NEXT window starts looking, in case its landing prediction runs late |
+
+`next_landing_t − arrival_lead_s` charges the *next* window's guard to the
+*current* window's evidence. Nothing in C-POSSESS-1.C's derivation noticed,
+because at the dwell it was written against (1.50 s, R3) the two never met.
+
+Measured over the tree's own constants across every published rung
+(`/tmp/probe_arrival_clamp.py`, run 2026-08-23; offsets from this cycle's landing,
+band ceiling +0.800):
+
+| rung | flight | period | window closed at | tail lost |
+|---|---|---|---|---|
+| R0–R3 | 0.7977 | 2.2977–6.3977 | +1.5000 (fixed window binds) | — |
+| R4 | 0.6059 | 1.2559 | +1.0559 | — |
+| R5 | 0.5029 | 1.2029 | +1.0029 | — |
+| **R5-prime (accepted)** | 0.5029 | 1.1629 | +0.9629 | — |
+| R5′ clamp pin (0.49 / 0.4949) | 0.4949 | 0.9849 | +0.7849 | **15.1 ms** |
+| R6 (deferred fork, dwell 0.25) | 0.5029 | 0.7529 | +0.5529 | **247.1 ms** |
+
+**No published rung amputates today** — the accepted operating point clears the
+ceiling by 163 ms. That is why this was a MEDIUM and not a live defect, and it is
+stated in the contract rather than left for a reader to derive.
+
+### Discussion — why this shape of fix, and what was rejected
+
+**The abutment principle stays.** A window must never outlast the machine's next
+scheduled event of the kind it is looking for; two adjacent windows must neither
+claim one edge twice nor leave a gap. Every alternative below was measured against
+those two, plus a third the finding itself adds: *a clamp that amputates the
+measured physical band is measuring the schedule, not the ball.*
+
+- **Just drop the clamp / widen the window.** Re-opens census D2 outright: at any
+  period under `arrival_window_s` the next cycle's seat edge falls inside this
+  cycle's search and both rows claim it. Rejected — that is the fault C-POSSESS-1.C
+  exists to close, and the fix for one inversion must not restore the other.
+- **Only downgrade the refusal (clause C.2 alone).** Kills the veto but keeps the
+  measurand dropped — `arrival_time` still returns NaN for the tail, and the
+  sensor-primary verdict degrades to tracker-fallback on exactly the late catches
+  the ILC timing channel most wants. It answers the safety half of the finding and
+  ignores the measurement half. Rejected as the whole fix, **kept as the belt**.
+- **A tolerance term added to the clamp.** § 3.4 already argued this down for the
+  retention clamp: a tolerance has to be re-tuned at every rung of the ladder,
+  which is why the guard was written as an instant. The same argument applies here
+  and it has not weakened.
+- **A period-dependent lead, with no new argument.** Shrink `arrival_lead_s` as
+  the period tightens and the closing survives — but the *next* window computes
+  its opening from `(its own landing, ITS next landing)` and does not know this
+  period, so the two ends stop agreeing the moment the period varies between
+  cycles. Abutment is the property being protected; a rule that only abuts at
+  constant cadence is not a fix. Rejected — and it is what forced the extra
+  argument below.
+
+**What landed instead — the guard comes out of the NEXT window's OPENING.** One
+boundary instant per pair of adjacent landings, evaluated by both neighbours from
+the same two numbers (`ball_possession.arrival_boundary_t`, imported by
+`toss_record` rather than re-derived — the discipline `DEPARTURE_LEAD_S`/
+`RELEASE_GUARD_S` already carries):
+
+```
+arrival_boundary_t(a, b) = max(b − arrival_lead_s, min(a + ARRIVAL_BAND_MAX_S, b))
+```
+
+The boundary belongs to the earlier ball for as long as its measured band runs,
+never past the next scheduled landing, and never earlier than the lead-based
+instant — so no window that works today gets narrower. That is why the source and
+the labeller now take `prev_landing_t` / `prev_landing_time`: the closing of
+window `L` and the opening of window `N` are the same call on the same pair.
+
+**The cost of relocating the guard is measured to be zero.** Across the same 35
+announcements the band was cut from, *nothing arrived before its announced landing
+at all* (earliest +137 ms; +46.5 ms on the 2026-08-23 FW-15 capture). The
+pre-landing lead has never once been the term that caught an edge; the band's tail
+demonstrably has. Surrendering the first to protect the second is not a trade
+between two risks, it is a trade between a hypothetical and a measurement.
+
+**The schedule-adherence sub-item dissolves rather than being patched.** The old
+boundary was a function of `next_landing_t` — a prediction made a cycle early,
+while the next window opens at the *actual* landing, so a late release pulled the
+two ends apart. Under the new rule the boundary is pinned to
+`L + ARRIVAL_BAND_MAX_S` and is **independent of `N`** for every period under
+1.000 s, i.e. for exactly the cadences at which it sits anywhere near an edge.
+Above 1.000 s it tracks `N` again, but there it is `period − 1.000 s` past this
+ball's band ceiling (163 ms at the accepted operating point) and never less than
+`ARRIVAL_BAND_MIN_S + arrival_lead_s` = 337 ms before the next ball's earliest
+possible edge. No tolerance was added and no new instant was invented; the
+dependence was moved out of the region where it could reach an edge — which is a
+weaker claim than "removed" and is the one the measurements support.
+
+**Where the band cannot be preserved, the refusal is refused (clause C.2).**
+Below a 0.800 s period the next ball lands before this one's band closes and *no*
+boundary rule can give both balls their whole band — at the deferred R6 fork the
+window reaches +0.7529 and 47.1 ms of band goes unwatched. A window shorter than
+the evidence it is judging has not observed non-arrival, so `REJECTED` (live) and
+`MISSED` (corpus) become unavailable to it: it answers UNKNOWN with the cause
+named (`SENSOR_BAND_CLAMPED` / `band clamped`). UNKNOWN never vetoes, so the
+tracker survives — **and the loss is surfaced instead of silent**, which was the
+finding's own stated requirement.
+
+**A consequence that was not designed for, and is kept.** C.2 is written as an
+invariant over the window rather than over the cadence, so it also fires when
+`arrival_window_s` is configured *shorter than the band*. That relabels one
+pre-existing test: § 3.3's draft 0.70 s window used to turn the measured +798 ms
+catch into `MISSED`, and now turns it into `UNKNOWN` with the cause on the record.
+This is the D7 derivation (`CATCH_CONFIRM_WINDOW_S` from `ARRIVAL_BAND_MAX_S`)
+becoming enforceable in the labeller: a window sized under the band can no longer
+produce a verdict at all. The row is lost to the fit either way; it is now lost
+honestly. The test's narrative was rewritten rather than its assertion relaxed.
+
+**Why now rather than at R6, when no rung reaches it today.** `ARRIVAL_BAND_MAX_S`
+is the constant the pending post-FW14 re-measure will move (ladder § 3.1), and
+moving a constant is only safe once every consumer reads it the same way. The
+boundary is now a fifth consumer of that ceiling, which is recorded in the ladder:
+on the 2026-08-23 capture's +267.5 ms ceiling the amputation threshold would fall
+from 1.000 s to about 0.47 s, moving R6's 0.7529 s period from "the band cannot be
+watched out" to clear.
+
+**One residual, named.** `prev_landing_t` is latched per SESSION and rolled per
+cycle (`_reset_toss_arrival_boundary`, `_set_toss_next_cycle_perf`), so a reload
+and a session's FIRST cycle pass `None` and open at the shipped
+`landing − arrival_lead_s`. That is correct rather than tolerated — nothing landed
+before them — but it does mean the boundary is a property of a SESSION, not of
+the machine, and a future interleaving of reloads with session cycles would need
+the reload's landing rolled in too.
+
+A single `Toss` is the interesting corner: it never calls
+`_set_toss_next_cycle_perf`, so it neither rolls nor clears the latch and inherits
+a previous session's last landing. Left deliberately, and `arrival_boundary_t` is
+what makes it safe — the boundary is a `max` against `landing − arrival_lead_s`,
+so a landing older than `ARRIVAL_BAND_MAX_S + arrival_lead_s` = 1.000 s
+degenerates to exactly the shipped opening, while one newer than that is a *real*
+neighbour whose band genuinely overlaps, which is the case the boundary exists to
+arbitrate. Clearing it at a `Toss` accept would be less correct, not more. The
+same `max` is why the argument holds without a lifecycle audit: every path that
+does not know its predecessor fails to the shipped window rather than to a
+narrower one.
+
+### Fix
+
+1. **`ball_possession.arrival_boundary_t`** — the boundary, with the root cause in
+   its docstring. `HandBallSensorSource._window` applies it at both ends;
+   `observe` / `arrival_time` take `prev_landing_t`.
+2. **`HandBallSensorSource._band_watched_out`** + the C.2 branch in
+   `_arrival_state`: `ARRIVAL_UNKNOWN` / `SENSOR_BAND_CLAMPED` instead of
+   `ARRIVAL_REJECTED` whenever the window closed before
+   `landing + ARRIVAL_BAND_MAX_S`.
+3. **`toss_record.label_from_sensor`** — the same boundary at both ends of the
+   arrival search (importing the one function), `prev_landing_time`, and gate 3
+   answering `LABEL_UNKNOWN` with the shortfall in the reason rather than `MISSED`.
+4. **`reload_coordinator_node`** — `_toss_prev_landing_perf` / `_toss_cycle_landing_perf`
+   rolled in `_set_toss_next_cycle_perf` and cleared by the named
+   `_reset_toss_arrival_boundary` at session start; both consumers
+   (`_possession_confirmed`, the `catch_event_dt_s` read) pass it through. The
+   value handed on is `seq.t_release + seq.flight_time_s` — bit-identical to the
+   `landing_t` that cycle was judged against, not a second derivation of it.
+5. **`tools/probes/toss_record_miner.py`** — `prev_landing_time` from `anns[i-1]`,
+   plus two rows in the built-in self-check.
+6. **`ros_ws/docs/ball_possession_contract.md`** — clauses **C.1** and **C.2**,
+   the two-term table, the reachability table, and the enforcement-point note.
+   **`tests/hardware/session_cadence_ladder.md`** § 3.1 — the fifth consumer.
+
+### Verification
+
+- Rung probe, run 2026-08-23 (`python /tmp/probe_arrival_clamp.py`): the
+  reachability table above, computed from `ARRIVAL_BAND_MAX_S`,
+  `JB_BD_ARRIVAL_LEAD_S` and `JB_BD_ARRIVAL_WINDOW_S` as the tree holds them —
+  amputation threshold **1.000 s**, total-truncation threshold **0.800 s**, and
+  **no published rung affected**.
+- `python -m pytest tests/motion/test_toss_record.py tests/ros/test_ball_possession.py
+  tests/ros/test_toss_coordinator.py tests/ros/test_toss_record_miner.py
+  tests/ros/test_hand_sensor_replay.py -q -p no:randomly`, run 2026-08-23:
+  **352 passed in 108.17 s** — 9 of them new (4 in `test_ball_possession.py`,
+  4 in `test_toss_record.py`, 1 in `test_toss_coordinator.py`).
+- Miner self-check, run 2026-08-23 (`toss_record_miner.self_check()`):
+  **63/63 self-check cases pass**, up from 61 — the two new rows are the band
+  tail and the band-clamped UNKNOWN.
+- `./run_tests.sh --full`, run 2026-08-23: **RESULT: PASS** — parallel 533 s
+  (**6165 passed, 3 skipped, 3 xfailed**) + serial 46 s (**9 passed**),
+  total 579 s.
+- **Mutation-verified, both halves separately** (run 2026-08-23): with the three
+  production files stashed, 5 of `tests/motion/test_toss_record.py` go RED
+  (`…share_ONE_arrival_boundary`, `…band_TAIL_is_not_labelled_missed`,
+  `…reach_back_for_the_PREVIOUS_balls_seat_edge`,
+  `…band_clamped_search_declares_unknown_rather_than_missed`, and the rewritten
+  draft-window test). With only the BEHAVIOUR reverted in `ball_possession.py`
+  and `arrival_boundary_t` left defined — so the check isolates the fix from the
+  new API surface — 3 of `tests/ros/test_ball_possession.py` go RED; reverting
+  the `prev_landing_t` clamp alone reds the fourth.

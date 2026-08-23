@@ -667,6 +667,17 @@ need and which costs minutes.
 materially cheaper. If it does NOT collapse, say so: the margin is `PROVISIONAL`
 precisely because this is unresolved, and confirming the old band is a result.
 
+> **A fifth consumer joined the ceiling on 2026-08-23**, and it is the reason
+> that re-measure is worth booking rather than deferring: the ARRIVAL window's
+> boundary between adjacent cycles is now `ball_possession.arrival_boundary_t`,
+> which reads `ARRIVAL_BAND_MAX_S` directly (C-POSSESS-1 § 3.4 clauses C.1/C.2).
+> A collapsing ceiling therefore buys **cadence headroom** as well as the four
+> constants above: the boundary stops eating this ball's band at any cycle period
+> under `ARRIVAL_BAND_MAX_S + arrival_lead_s`, which is 1.000 s today and would
+> fall to about 0.47 s on the 2026-08-23 capture's +267.5 ms ceiling — moving the
+> R6 fork's 0.7529 s period from "the band cannot be watched out" to "clear". No
+> rung on the table above is affected either way; R6 is.
+
 ### 3.2 The 71 ms measured poll cadence against the configured 20 ms ⬜ NOT DIAGNOSED
 
 **What**: `jugglebot_ball_detect.check_interval_ms` is **20** (50 Hz nominal).

@@ -1230,6 +1230,13 @@ def mine_bag(data: BagData, *, robot: str = 'jugglebot',
         nxt = anns[i + 1] if i + 1 < len(anns) else None
         next_release_ros = nxt['throw_time'] if nxt else None
         next_landing_ros = nxt['landing_time'] if nxt else None
+        # C-POSSESS-1 § 3.4 clause C.1: the arrival boundary has two ends, and
+        # the offline twin must clamp at both or adjacent rows stop abutting the
+        # way the live verdict's do. `anns[i-1]['landing_time']` is the same
+        # number the previous row was labelled against, so the two searches meet
+        # at one instant instead of at two agreeing derivations of one.
+        prv = anns[i - 1] if i else None
+        prev_landing_ros = prv['landing_time'] if prv else None
         row = toss_record.blank_record()
         # cycle_index and action are left NULL on the mined side on purpose.
         # The schema's M source for cycle_index is the action feedback stream
@@ -1257,6 +1264,7 @@ def mine_bag(data: BagData, *, robot: str = 'jugglebot',
                                  landing_time=landing_ros, windows=windows,
                                  next_release_time=next_release_ros,
                                  next_landing_time=next_landing_ros,
+                                 prev_landing_time=prev_landing_ros,
                                  stamp_wall_anchored=anchored)
         row.update(block.fields)
         row['label'] = block.label
@@ -1872,12 +1880,14 @@ def self_check() -> int:
         if got != want:
             fails.append('{}: got {!r}, want {!r}'.format(name, got, want))
 
-    def run(next_release_time=None, next_landing_time=None, **kw):
+    def run(next_release_time=None, next_landing_time=None,
+            prev_landing_time=None, **kw):
         samples, throw, landing = _synth(**kw)
         return label_from_sensor(samples, throw_time=throw,
                                  landing_time=landing, windows=windows,
                                  next_release_time=next_release_time,
-                                 next_landing_time=next_landing_time)
+                                 next_landing_time=next_landing_time,
+                                 prev_landing_time=prev_landing_time)
 
     # ACCEPT — the measured catch band, both ends (min +137 ms, max +798 ms on
     # the reference bag). The +798 row is the one that SIZED arrival_window_s.
@@ -1926,6 +1936,24 @@ def self_check() -> int:
               next_release_time=_r5_rel, next_landing_time=_r5_rel + 0.4949)
     check('R5-prime: retention is not observable', _r5.label, 'CAUGHT')
     check('R5-prime: and the label says so', _r5.confidence, 0.5)
+    # C-POSSESS-1 § 3.4 C.1/C.2, the arrival BOUNDARY (2026-08-23). At the R5'
+    # clamp pin the cycle period is 0.9849 s, so `next_landing - arrival_lead`
+    # closes this row's search at +0.7849 — 15.1 ms INSIDE the measured +798 ms
+    # band ceiling. A catch seating in that tail was labelled MISSED off a
+    # SCHEDULE number. The boundary now surrenders the next row's lead instead.
+    # Only the PERIOD to the next landing matters, so these keep the harness's
+    # own 0.8 s flight and put the next landing 0.9849 s (R5' pin) / 0.7529 s
+    # (R6) away — which also keeps the 100 Hz sample grid on round offsets.
+    _b_land = 100.0 + 0.8
+    check('a catch in the band TAIL is not a MISS (the defect)',
+          run(catch_dt=0.79,
+              next_landing_time=_b_land + 0.9849).label, 'CAUGHT')
+    # And where the schedule truncates the band anyway — a period under the
+    # 0.800 s band itself, the deferred R6 fork — a search that stopped short of
+    # the evidence may not answer MISSED, which is a positive claim.
+    check('a band-clamped search declares UNKNOWN, never MISSED',
+          run(catch_dt=None,
+              next_landing_time=_b_land + 0.7529).label, 'UNKNOWN')
     check('a NO_RELEASE cup stays held at dispatch',
           run(departure_dt=None,
               catch_dt=None).fields['sensor_held_at_dispatch'], True)

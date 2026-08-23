@@ -2534,6 +2534,51 @@ def test_a_session_cycle_clamps_the_windows_to_its_own_next_release():
     assert node._expected_next_cycle_perf() == (None, None)
 
 
+def test_the_previous_cycles_landing_is_the_number_that_cycle_judged_against():
+    """C-POSSESS-1 § 3.4 clause C.1's other boundary end (2026-08-23).
+
+    Cycle N closes its arrival window at ``arrival_boundary_t(prev, N)`` and
+    cycle N+1 must OPEN at the identical call, or the two stop abutting and one
+    seat edge can be claimed twice. That identity survives only if N+1 is handed
+    the number N was judged against — ``seq.landing_perf`` — rather than a second
+    derivation of it, which is why the latch is rolled here and not recomputed at
+    the query. The FIRST cycle has no predecessor and must read ``None``: the
+    boundary can only move an opening LATER, so its absence is the shipped
+    window, never a widened one."""
+    import jugglebot.toss_session as ts
+    now = 100.0
+    node = _toss_ready_node(now)
+    session = ts.TossSessionSequencer(num_throws=3, dwell_time_s=1.5,
+                                      throw_delay_s=5.0)
+    session.start(now)
+
+    assert node._expected_prev_landing_perf() is None       # nothing landed yet
+    first = node._build_toss_cycle((0.0, 0.0, 170.0), 0.8, 5.0, 0.0)
+    node._set_toss_next_cycle_perf(first, session)
+    assert node._expected_prev_landing_perf() is None       # ... still the first
+    first_landing = first.landing_perf
+
+    second = node._build_toss_cycle((0.0, 0.0, 170.0), 0.8, 5.0, 0.0)
+    node._set_toss_next_cycle_perf(second, session)
+    # The IDENTITY, not merely the value: `landing_perf` is what `observe` was
+    # given as `landing_t` for cycle 1.
+    assert node._expected_prev_landing_perf() == pytest.approx(first_landing)
+    # Tearing the CYCLE down must NOT drop it — the boundary spans cycles, which
+    # is the whole difference between this latch and the next-release pair above.
+    node._clear_toss_cycle_state()
+    assert node._expected_prev_landing_perf() == pytest.approx(first_landing)
+    # A landing carried in from a previous GOAL would clamp the next session's
+    # first window against an instant minutes old, so the per-SESSION reset drops
+    # it — and that reset is a named method precisely so this lifecycle is one
+    # grep rather than two assignments buried in a goal handler.
+    node._reset_toss_arrival_boundary()
+    assert node._expected_prev_landing_perf() is None
+    third = node._build_toss_cycle((0.0, 0.0, 170.0), 0.8, 5.0, 0.0)
+    node._set_toss_next_cycle_perf(third, session)
+    assert node._expected_prev_landing_perf() is None, (
+        'a reset session starts its first cycle with no predecessor')
+
+
 def test_the_last_intended_cycle_is_not_clamped():
     """`intends_another_cycle` is keyed on THROWS, like the session's own
     completion test, so a REJECTED_NO_BALL cycle does not consume one."""

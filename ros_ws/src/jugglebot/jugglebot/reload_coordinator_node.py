@@ -870,6 +870,15 @@ class ReloadCoordinatorNode(Node):
         # session's own schedule at cycle start, cleared with the cycle.
         self._toss_next_release_perf = None
         self._toss_next_landing_perf = None
+        # The PREVIOUS and CURRENT cycles' landings, C-POSSESS-1 § 3.4 clause
+        # C.1's other boundary end. Unlike the pair above these span CYCLES and
+        # are cleared per SESSION (with `_toss_record_prev_uid`), because that is
+        # what they are for: the previous cycle closed its arrival window at
+        # `arrival_boundary_t(prev, this)` and this one must OPEN at the identical
+        # call, so what is handed to `observe` is literally the number the
+        # previous cycle was given as its own `landing_t` — not a re-derivation.
+        self._toss_prev_landing_perf = None
+        self._toss_cycle_landing_perf = None
         # Ball ids already IN_FLIGHT when THIS goal's throw was accepted — excluded
         # from the announced-ball latch. Attempt 5 of the 2026-07-23 re-test latched
         # a phantom untagged track that predated the throw and rode it to a wrong
@@ -1747,6 +1756,41 @@ class ReloadCoordinatorNode(Node):
         with self._lock:
             return self._toss_next_release_perf, self._toss_next_landing_perf
 
+    def _reset_toss_arrival_boundary(self) -> None:
+        """Drop the cross-cycle landings that clause C.1's boundary is built
+        from. Per SESSION, never per cycle: clearing them per cycle would delete
+        the very number the next cycle needs, and this makes a session's FIRST
+        window open at the shipped `landing - arrival_lead_s`.
+
+        A single ``Toss`` never calls `_set_toss_next_cycle_perf` and so never
+        rolls the latch, which leaves a PREVIOUS session's last landing standing
+        when one follows a session in the same process. That is deliberate rather
+        than tolerated, and `arrival_boundary_t` is what makes it safe: the
+        boundary is a `max` against `landing - arrival_lead_s`, so a landing more
+        than `ARRIVAL_BAND_MAX_S + arrival_lead_s` = 1.000 s old degenerates to
+        exactly the shipped opening — and one NEWER than that is a real neighbour whose
+        band really does overlap, which is precisely the case the boundary exists
+        to arbitrate. Clearing it there would be less correct, not more."""
+        with self._lock:
+            self._toss_prev_landing_perf = None
+            self._toss_cycle_landing_perf = None
+
+    def _expected_prev_landing_perf(self):
+        """-> the PREVIOUS cycle's landing on the perf clock, or ``None``.
+
+        C-POSSESS-1 § 3.4 clause C.1's other boundary end. ``None`` on a single
+        ``Toss``, on a reload, and on a session's FIRST cycle — nothing landed
+        before them, and the boundary can only ever move an opening later, so its
+        absence is exactly the shipped window rather than a widened one.
+
+        It is the number `_set_toss_next_cycle_perf` recorded as the previous
+        cycle's landing, NOT a re-derivation: the previous cycle closed its
+        arrival window at `arrival_boundary_t(prev, this)` and this one opens at
+        the same call on the same pair, which is the whole point of the
+        abutment."""
+        with self._lock:
+            return self._toss_prev_landing_perf
+
     def _set_toss_next_cycle_perf(self, seq, session) -> None:
         """Latch the next cycle's schedule for the cycle `seq` is about to run.
 
@@ -1754,7 +1798,16 @@ class ReloadCoordinatorNode(Node):
         intended cycle the windows stay unclamped, which costs nothing (there is
         no next release to be confused with a bounce-out) and buys back the one
         cycle per session on which a late bounce-out would otherwise read
-        UNKNOWN — see § 3.4's sized residual."""
+        UNKNOWN — see § 3.4's sized residual.
+
+        It also ROLLS the arrival boundary's other end (clause C.1). ``landing``
+        here is ``seq.t_release + seq.flight_time_s``, which is exactly what
+        ``seq.landing_perf`` returns and therefore exactly what `observe` will be
+        given as ``landing_t`` for this cycle — so next cycle's ``prev_landing_t``
+        is the same number this cycle judged against, and the two windows abut by
+        identity rather than by two agreeing derivations. Safe to read
+        ``t_release`` here: `_build_toss_cycle` has already called ``seq.start``,
+        which is what sets it."""
         landing = float(seq.t_release) + float(seq.flight_time_s)
         if session is None or not session.intends_another_cycle:
             rel = land = None
@@ -1764,6 +1817,8 @@ class ReloadCoordinatorNode(Node):
         with self._lock:
             self._toss_next_release_perf = rel
             self._toss_next_landing_perf = land
+            self._toss_prev_landing_perf = self._toss_cycle_landing_perf
+            self._toss_cycle_landing_perf = landing
 
     def _possession_confirmed(self, ball, ref_point_mm=None) -> bool:
         """THE possession question, for every caller in this node: does this tracker
@@ -1797,7 +1852,8 @@ class ReloadCoordinatorNode(Node):
             sensor=self._ball_sensor.observe(
                 time.perf_counter(), self._expected_landing_perf(),
                 next_release_t=next_release_perf,
-                next_landing_t=next_landing_perf),
+                next_landing_t=next_landing_perf,
+                prev_landing_t=self._expected_prev_landing_perf()),
             tracker=tracker)
         ok = bool(verdict.confirmed)
         # Keyed on the ARRIVAL STATE, not on the boolean: UNKNOWN and REFUSED both
@@ -1956,7 +2012,8 @@ class ReloadCoordinatorNode(Node):
         landing_perf = self._expected_landing_perf()
         next_release_perf, next_landing_perf = self._expected_next_cycle_perf()
         catch_event_perf = self._ball_sensor.arrival_time(
-            landing_perf, next_landing_t=next_landing_perf)
+            landing_perf, next_landing_t=next_landing_perf,
+            prev_landing_t=self._expected_prev_landing_perf())
         catch_event_dt_s = (catch_event_perf - landing_perf
                             if (landing_perf is not None
                                 and math.isfinite(catch_event_perf))
@@ -5315,6 +5372,7 @@ class ReloadCoordinatorNode(Node):
             self._dwell_tilt_next_at = 0.0
             self._dwell_tilt_degraded = False
             self._toss_record_prev_uid = None
+        self._reset_toss_arrival_boundary()
         # A FRESH Layer-2 trim for this session — same reasoning, one layer up:
         # the trim estimates a common mode that is only constant WITHIN a goal.
         self._toss_trim_begin(goal_id=_goal_id_hex(goal_handle))

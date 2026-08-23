@@ -30,6 +30,7 @@ import math
 import pytest
 
 from jugglebot import toss_record as tr
+from jugglebot.ball_possession import ARRIVAL_BAND_MAX_S
 
 
 # The SHIPPED windows, as both the node and the miner construct them. Imported
@@ -372,6 +373,16 @@ def test_the_plans_draft_catch_window_would_have_relabelled_a_measured_catch():
     inside the draft boundary, so the margin is one session's variation wide. The
     shipped window is used instead, which also makes the offline labeller and the
     live ``HandBallSensorSource`` agree by construction (D11).
+
+    **The relabel is now to UNKNOWN, not to MISSED** — changed 2026-08-23 with
+    C-POSSESS-1.C.2, and it strengthens rather than softens this argument. The
+    draft window is 0.70 s against a band that runs to ``ARRIVAL_BAND_MAX_S``
+    0.80 s, so it stops looking before the evidence runs out; C.2 forbids a
+    search in that state from minting MISSED, which is a POSITIVE claim of
+    non-arrival. A window sized under the band can no longer produce a verdict
+    at all, which is exactly the enforcement D7 wanted when it derived
+    ``CATCH_CONFIRM_WINDOW_S`` from the band in the first place. The row is still
+    lost to the fit either way; it is now lost with the cause on the record.
     """
     draft = tr.SensorWindows(arrival_lead_s=0.30, arrival_window_s=0.70,
                              retention_window_s=WINDOWS.retention_window_s)
@@ -379,13 +390,17 @@ def test_the_plans_draft_catch_window_would_have_relabelled_a_measured_catch():
     def under(windows, catch_dt):
         return tr.label_from_sensor(
             stream(catch_dt=catch_dt), throw_time=THROW_T,
-            landing_time=LANDING_T, windows=windows).label
+            landing_time=LANDING_T, windows=windows)
 
-    assert under(WINDOWS, 0.798) == tr.LABEL_CAUGHT
-    assert under(draft, 0.798) == tr.LABEL_MISSED
+    assert under(WINDOWS, 0.798).label == tr.LABEL_CAUGHT
+    assert draft.arrival_window_s < ARRIVAL_BAND_MAX_S, (
+        'premise: the draft window is shorter than the band it must judge')
+    relabelled = under(draft, 0.798)
+    assert relabelled.label == tr.LABEL_UNKNOWN
+    assert 'band clamped' in relabelled.reason
     # The runner-up survives the draft — which is the honest statement of how
     # thin the margin was, not a claim that the draft lost two rows.
-    assert under(draft, 0.675) == tr.LABEL_CAUGHT
+    assert under(draft, 0.675).label == tr.LABEL_CAUGHT
 
 
 def test_an_invalid_sample_in_the_window_is_unknown_and_never_collapses():
@@ -804,6 +819,115 @@ def test_the_arrival_search_stops_where_the_next_cycles_begins():
     assert under().label == tr.LABEL_CAUGHT                     # the edge, stolen
     assert under(next_release_time=next_release,
                  next_landing_time=next_land).label == tr.LABEL_MISSED
+
+
+# ── The arrival BOUNDARY (C-POSSESS-1 § 3.4 clauses C.1 / C.2, 2026-08-23) ────
+#
+# `arr_hi` used to be `next_landing_time - arrival_lead_s` outright, which pays
+# the NEXT row's pre-landing guard out of THIS row's measured arrival band.
+# Measured over the tree's own constants (`/tmp/probe_arrival_clamp.py`, run
+# 2026-08-23) that closes the search 15.1 ms inside the +798 ms band ceiling at
+# the R5' clamp pin, and 247.1 ms inside it at the deferred R6 fork.
+
+R5P_PERIOD_S = R5P_DWELL_S + R5P_FLIGHT_S             # 0.9849 s
+R6_PERIOD_S = 0.25 + 0.5029                           # 0.7529 s — the 0.25 dwell
+
+
+def test_the_corpus_and_the_live_verdict_share_ONE_arrival_boundary():
+    """The same discipline ``DEPARTURE_LEAD_S``/``RELEASE_GUARD_S`` carries, one
+    clamp along. Two implementations of "caught" that each derive the boundary
+    from the constants will agree today and drift the first time one of them is
+    edited; the miner is the R3 rung's gate instrument, so a drift there scores
+    the machine against a definition the machine is not using."""
+    from jugglebot.ball_possession import arrival_boundary_t
+    assert tr.arrival_boundary_t is arrival_boundary_t
+
+
+def test_a_catch_in_the_band_TAIL_is_not_labelled_missed():
+    """C-POSSESS-1.C.1, the corpus half — a false MISSED minted off a SCHEDULE.
+
+    The premise comes from the constants, not from a chosen number: at the R5'
+    period the shipped clamp closes at +0.7849 while the band this labeller was
+    sized against runs to +0.798. A catch seating in that sliver is a REAL catch
+    the search never saw, and the corpus called it a MISS — which is the label
+    the aim fit weights most heavily.
+
+    Both halves asserted: the defect reproduces against the shipped instant, the
+    fix labels it CAUGHT and keeps the catch-event field."""
+    next_land = LANDING_T + R5P_PERIOD_S
+    shipped_close = R5P_PERIOD_S - WINDOWS.arrival_lead_s
+    assert shipped_close < ARRIVAL_BAND_MAX_S, (
+        'premise: at this period the shipped clamp closes inside the band')
+    catch_dt = 0.79                       # in the sliver, and on the sample grid
+    assert shipped_close < catch_dt < ARRIVAL_BAND_MAX_S
+    samples = stream(catch_dt=catch_dt)
+
+    # THE DEFECT: the shipped instant as a fixed window is arithmetically the
+    # same search C-POSSESS-1.C built, and it cannot see the edge.
+    narrow = tr.SensorWindows(arrival_lead_s=WINDOWS.arrival_lead_s,
+                              arrival_window_s=shipped_close,
+                              retention_window_s=WINDOWS.retention_window_s)
+    missed = tr.label_from_sensor(samples, throw_time=THROW_T,
+                                  landing_time=LANDING_T, windows=narrow)
+    assert missed.fields['t_catch_deb_ros'] is None
+
+    got = tr.label_from_sensor(samples, throw_time=THROW_T,
+                               landing_time=LANDING_T, windows=WINDOWS,
+                               next_landing_time=next_land)
+    assert got.label == tr.LABEL_CAUGHT
+    assert got.fields['t_catch_deb_ros'] == pytest.approx(
+        LANDING_T + catch_dt, abs=0.011)
+
+
+def test_a_row_cannot_reach_back_for_the_PREVIOUS_balls_seat_edge():
+    """The abutment, from the other end — and why the closing could move at all.
+
+    Moving ``arr_hi`` later without moving the next row's ``arr_lo`` with it hands
+    one edge to two rows: the census-D2 fault, re-created by its own fix. Here the
+    PREVIOUS ball seats late, at +0.79 of ITS landing, which at the R5' period
+    falls inside this row's unclamped pre-landing lead. Unclamped this row reads
+    CAUGHT off its neighbour's ball; clamped at the shared boundary it reads the
+    MISS it actually was."""
+    prev_land = LANDING_T - R5P_PERIOD_S
+    stolen_dt = (prev_land + 0.79) - LANDING_T        # -0.1949 s
+    assert -WINDOWS.arrival_lead_s < stolen_dt < 0.0, (
+        'premise: the neighbour edge sits inside the unclamped opening')
+    samples = stream(catch_dt=stolen_dt, dt=0.001)
+
+    def under(**kw):
+        return tr.label_from_sensor(samples, throw_time=THROW_T,
+                                    landing_time=LANDING_T, windows=WINDOWS,
+                                    **kw)
+
+    assert under().label == tr.LABEL_CAUGHT                    # the edge, stolen
+    assert under(prev_landing_time=prev_land).label == tr.LABEL_MISSED
+
+
+def test_a_band_clamped_search_declares_unknown_rather_than_missed():
+    """C-POSSESS-1.C.2 — the half no boundary rule can fix.
+
+    Below a 0.800 s period the next ball lands before this one's band has closed,
+    so both balls cannot have their whole band: at the deferred R6 fork the search
+    reaches +0.7529 and 47.1 ms of band goes unwatched. MISSED is a POSITIVE
+    claim, and a search that stopped short of the evidence has not earned it. The
+    corpus says UNKNOWN and names the cause, so a fitter can tell "the ball
+    missed" from "the schedule looked away" — which is the whole reason gate 1
+    exists, one gate up."""
+    next_land = LANDING_T + R6_PERIOD_S
+    assert R6_PERIOD_S < ARRIVAL_BAND_MAX_S, (
+        'premise: the next ball lands before this band closes')
+    samples = stream(catch_dt=None)
+
+    def under(**kw):
+        return tr.label_from_sensor(samples, throw_time=THROW_T,
+                                    landing_time=LANDING_T, windows=WINDOWS,
+                                    **kw)
+
+    assert under().label == tr.LABEL_MISSED        # a search that DID watch out
+    got = under(next_landing_time=next_land)
+    assert got.label == tr.LABEL_UNKNOWN
+    assert 'band clamped' in got.reason
+    assert got.confidence == 0.0
 
 
 def test_the_clamp_is_absent_by_default_so_a_single_toss_is_unchanged():

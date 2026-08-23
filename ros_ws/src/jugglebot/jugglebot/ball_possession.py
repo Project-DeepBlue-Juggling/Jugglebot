@@ -184,6 +184,47 @@ ARRIVAL_BAND_MAX_S = 0.80
 #: dwell, 15 tosses.
 ARRIVAL_BAND_MIN_S = 0.137
 
+
+def arrival_boundary_t(earlier_landing_t: float, later_landing_t: float,
+                       arrival_lead_s: float) -> float:
+    """THE instant that separates two adjacent ARRIVAL windows (C-POSSESS-1
+    § 3.4, clause C.1). One home, imported by ``toss_record`` rather than
+    re-derived, for the same reason ``DEPARTURE_LEAD_S`` is an alias of
+    ``RELEASE_GUARD_S``: two computations of a boundary is how an abutment stops
+    abutting.
+
+        ``max(b - lead, min(a + ARRIVAL_BAND_MAX_S, b))``
+
+    The boundary belongs to the EARLIER ball for as long as its measured band
+    runs — never past the later scheduled landing, and never earlier than the
+    lead-based instant, so no window that works today gets narrower.
+
+    WHY NOT SIMPLY ``b - lead``, which is what C-POSSESS-1.C shipped: that
+    charges the LATER window's guard (a property of the SCHEDULE — headroom for a
+    landing prediction that runs late) to the EARLIER window's evidence (a
+    property of the BALL — the measured +137..+798 ms band). Once the cycle
+    period drops under ``ARRIVAL_BAND_MAX_S + lead`` = 1.000 s that subtraction
+    closes a window INSIDE its own ball's band, which drops ``catch_event_dt_s``
+    for the tail and — far worse — mints ``ARRIVAL_REJECTED``, a positive claim
+    of non-arrival that VETOES a tracker CAUGHT (§ 3.2). A schedule number must
+    never manufacture a refusal about a ball.
+
+    The lead is not deleted, it is RELOCATED: the later window gives up its
+    pre-landing lead before the earlier one gives up any band. Measured cost:
+    zero. Across the 35 announcements the band was cut from, nothing arrived
+    before its announced landing at ALL (earliest +137 ms; +46.5 ms on the
+    2026-08-23 FW-15 capture), so the pre-landing lead has never been the term
+    that caught an edge — while the band's tail demonstrably has.
+
+    Both neighbours evaluate THIS function on the SAME pair, so the abutment of
+    C-POSSESS-1.C is preserved exactly: window(L) closes at
+    ``arrival_boundary_t(L, N)`` and window(N) opens at the identical call.
+    Non-finite inputs are the caller's problem — pass only values that
+    :meth:`HandBallSensorSource._finite` has already accepted."""
+    return max(later_landing_t - arrival_lead_s,
+               min(earlier_landing_t + ARRIVAL_BAND_MAX_S, later_landing_t))
+
+
 # ── Source identifiers (carried in every verdict, so a log line names its author)
 SOURCE_TRACKER_ARRIVAL = 'tracker_arrival'
 SOURCE_HAND_BALL_SENSOR = 'hand_ball_sensor'
@@ -506,12 +547,20 @@ class HandBallSensorSource:
         search, so a departure inside the announced throw window is OUR throw and
         is excluded from the bounce test by construction rather than by a
         tolerance;
-      * ``next_landing_t`` closes ARRIVAL at ``next_landing_t -
-        arrival_lead_s`` — the same instant that OPENS the next cycle's arrival
-        window, so two adjacent cycles' arrival windows can never overlap and
-        claim the same edge.
+      * ``next_landing_t`` closes ARRIVAL at
+        ``arrival_boundary_t(landing_t, next_landing_t)`` — the same instant that
+        OPENS the next cycle's arrival window, so two adjacent cycles' arrival
+        windows can never overlap and claim the same edge;
+      * ``prev_landing_t`` OPENS ARRIVAL at
+        ``arrival_boundary_t(prev_landing_t, landing_t)`` — the other end of the
+        same identity, added 2026-08-23 with clause C.1. Until then the closing
+        was ``next_landing_t - arrival_lead_s``, which bought the NEXT window's
+        pre-landing guard out of THIS ball's measured band and, under a 1.000 s
+        cycle period, refused real catches with ``ARRIVAL_REJECTED``. The
+        boundary now surrenders the guard instead of the band, and the opening
+        has to move with it or the two stop abutting.
 
-    Both default to ``None`` (= nothing is scheduled after this ball), which is
+    All three default to ``None`` (= nothing is scheduled around this ball), which is
     the honest answer for a single ``Toss`` and for a session's last cycle, and
     which reproduces the pre-2026-08-21 behaviour exactly.
 
@@ -707,22 +756,27 @@ class HandBallSensorSource:
             return EVIDENCE_SEATED if self._held else EVIDENCE_EMPTY
 
     def arrival_time(self, landing_t: Optional[float],
-                     next_landing_t: Optional[float] = None) -> float:
+                     next_landing_t: Optional[float] = None,
+                     prev_landing_t: Optional[float] = None) -> float:
         """The observed arrival edge's instant (monotonic), or NaN when no edge
         fell inside the window around ``landing_t``. This is the **catch-event
         time** — the first quantity this machine has ever had that says WHEN the
         ball entered the cup, rather than when a tracker stopped seeing it.
 
-        ``next_landing_t`` clamps the search window exactly as it does in
-        :meth:`observe`; passing it here as well is what keeps the reported
-        catch-event time and the ARRIVAL verdict reading the same edge."""
+        ``next_landing_t`` / ``prev_landing_t`` clamp the search window exactly
+        as they do in :meth:`observe`; passing them here as well is what keeps the
+        reported catch-event time and the ARRIVAL verdict reading the same edge.
+        That identity is also what made C-POSSESS-1.C's boundary bug EXACT rather
+        than approximate: a window closed inside the band dropped this measurand
+        for the tail at the same instant it started refusing the catch."""
         with self._mu:
-            rise = self._arrival_edge(landing_t, next_landing_t)
+            rise = self._arrival_edge(landing_t, next_landing_t, prev_landing_t)
         return rise if rise is not None else float('nan')
 
     def observe(self, now: float, landing_t: Optional[float] = None, *,
                 next_release_t: Optional[float] = None,
-                next_landing_t: Optional[float] = None) -> PossessionVerdict:
+                next_landing_t: Optional[float] = None,
+                prev_landing_t: Optional[float] = None) -> PossessionVerdict:
         """The two-part verdict for a ball predicted to land at ``landing_t``
         (monotonic; ``None``/NaN = no goal is expecting one, so ARRIVAL is
         honestly ``UNKNOWN`` and the merge falls back to the tracker).
@@ -733,14 +787,24 @@ class HandBallSensorSource:
         default to ``None`` (nothing scheduled after this ball), which reproduces
         the pre-2026-08-21 fixed windows exactly.
 
+        ``prev_landing_t`` is the PREVIOUS cycle's landing, and it is the other
+        half of clause C.1's boundary (added 2026-08-23): the caller passes the
+        very number it passed as ``landing_t`` one cycle ago, so this window's
+        opening and the previous one's closing are the same ``arrival_boundary_t``
+        call on the same pair and abut exactly. ``None`` on a first cycle or a
+        single ``Toss`` — it can only ever move the opening LATER, so its absence
+        is the shipped behaviour and never a widened window.
+
         ``arrival_err_mm`` / ``plane_drop_mm`` are NaN: this source measures the
         cup, not a position, and reporting a zero would claim an accuracy it never
         measured."""
         now = float(now)
         with self._mu:
-            arrival, reason = self._arrival_state(now, landing_t, next_landing_t)
+            arrival, reason = self._arrival_state(now, landing_t, next_landing_t,
+                                                  prev_landing_t)
             retention = self._retention_state(now, arrival, landing_t,
-                                              next_landing_t, next_release_t)
+                                              next_landing_t, next_release_t,
+                                              prev_landing_t)
         return PossessionVerdict(
             source=self.name,
             arrival=arrival,
@@ -766,7 +830,8 @@ class HandBallSensorSource:
         return out if math.isfinite(out) else None
 
     def _window(self, landing_t: Optional[float],
-                next_landing_t: Optional[float] = None
+                next_landing_t: Optional[float] = None,
+                prev_landing_t: Optional[float] = None
                 ) -> Optional[Tuple[float, float]]:
         land = self._finite(landing_t)
         if land is None:
@@ -775,14 +840,39 @@ class HandBallSensorSource:
         w1 = land + self.arrival_window_s
         nxt = self._finite(next_landing_t)
         if nxt is not None:
-            # C-POSSESS-1 § 3.4: close where the NEXT cycle's window opens, so
-            # two adjacent arrival windows abut and can never claim one edge.
-            w1 = min(w1, nxt - self.arrival_lead_s)
+            # C-POSSESS-1 § 3.4 clause C.1: close at the boundary this pair of
+            # landings shares, so two adjacent arrival windows abut and can never
+            # claim one edge — and so the boundary is never bought out of THIS
+            # ball's measured band while the NEXT window still holds a
+            # pre-landing lead it has never once needed.
+            w1 = min(w1, arrival_boundary_t(land, nxt, self.arrival_lead_s))
+        prv = self._finite(prev_landing_t)
+        if prv is not None:
+            # The SAME call the PREVIOUS cycle made to close its own window. It
+            # can only move this opening LATER (the boundary is never below
+            # `land - lead`), so a first cycle, a single Toss, or a caller that
+            # does not know the previous landing keeps exactly the shipped
+            # opening — this can never widen a window.
+            w0 = max(w0, arrival_boundary_t(prv, land, self.arrival_lead_s))
         # A schedule tighter than the lead itself degenerates the window to a
         # single instant rather than inverting it. An inverted window would make
         # `w0 <= t <= w1` vacuously false AND `_blind_between` vacuously false,
         # i.e. it would answer REJECTED — inventing a refusal out of arithmetic.
         return (w0, max(w0, w1))
+
+    def _band_watched_out(self, landing_t: float, w1: float) -> bool:
+        """Did the window outlast the ball's measured arrival band?
+
+        C-POSSESS-1 § 3.4 clause C.2. A window closing before
+        ``landing + ARRIVAL_BAND_MAX_S`` has not watched the whole band, so
+        "no rise" is not evidence of no arrival and REJECTED is not available —
+        see :meth:`_arrival_state`. Reachable below a 0.800 s cycle period, where
+        the next ball lands before this one's band has closed and NO boundary
+        rule can give both balls their whole band (the deferred R6 fork). Also
+        true of an ``arrival_window_s`` configured shorter than the band, which
+        is why this is written as an invariant and not as a cadence special
+        case."""
+        return w1 >= landing_t + ARRIVAL_BAND_MAX_S
 
     def _blind_between(self, a: float, b: float) -> bool:
         """True if the sensor was unreadable at any point in ``[a, b]``."""
@@ -796,9 +886,10 @@ class HandBallSensorSource:
         return self._blind_from is not None and self._blind_from <= b
 
     def _arrival_edge(self, landing_t: Optional[float],
-                      next_landing_t: Optional[float] = None
+                      next_landing_t: Optional[float] = None,
+                      prev_landing_t: Optional[float] = None
                       ) -> Optional[float]:
-        win = self._window(landing_t, next_landing_t)
+        win = self._window(landing_t, next_landing_t, prev_landing_t)
         if win is None:
             return None
         w0, w1 = win
@@ -808,13 +899,15 @@ class HandBallSensorSource:
         return None
 
     def _arrival_state(self, now: float, landing_t: Optional[float],
-                       next_landing_t: Optional[float] = None
+                       next_landing_t: Optional[float] = None,
+                       prev_landing_t: Optional[float] = None
                        ) -> Tuple[str, str]:
-        win = self._window(landing_t, next_landing_t)
-        if win is None:
+        win = self._window(landing_t, next_landing_t, prev_landing_t)
+        land = self._finite(landing_t)
+        if win is None or land is None:
             return ARRIVAL_UNKNOWN, 'SENSOR_NO_LANDING'
         w0, w1 = win
-        rise = self._arrival_edge(landing_t, next_landing_t)
+        rise = self._arrival_edge(landing_t, next_landing_t, prev_landing_t)
         if rise is not None:
             return ARRIVAL_CONFIRMED, 'SENSOR_ARRIVED'
         # No edge YET. Blindness beats both remaining answers: a window we could
@@ -823,6 +916,14 @@ class HandBallSensorSource:
             return ARRIVAL_UNKNOWN, 'SENSOR_BLIND'
         if now < w1:
             return ARRIVAL_UNKNOWN, 'SENSOR_WINDOW_OPEN'
+        # C-POSSESS-1 § 3.4 clause C.2. The window is CLOSED and empty — but if
+        # the schedule truncated it inside the ball's measured band, we stopped
+        # looking before the evidence ran out, and REJECTED would be a positive
+        # claim of non-arrival drawn from a cadence number. It also VETOES a
+        # tracker CAUGHT (§ 3.2), so this is the difference between "the ball
+        # missed" and "we looked away". Say the second one out loud.
+        if not self._band_watched_out(land, w1):
+            return ARRIVAL_UNKNOWN, 'SENSOR_BAND_CLAMPED'
         return ARRIVAL_REJECTED, 'SENSOR_NO_ARRIVAL'
 
     def _retention_horizon(self, rise: float,
@@ -842,10 +943,11 @@ class HandBallSensorSource:
     def _retention_state(self, now: float, arrival: str,
                          landing_t: Optional[float],
                          next_landing_t: Optional[float] = None,
-                         next_release_t: Optional[float] = None) -> str:
+                         next_release_t: Optional[float] = None,
+                         prev_landing_t: Optional[float] = None) -> str:
         if arrival != ARRIVAL_CONFIRMED:
             return RETENTION_UNKNOWN
-        rise = self._arrival_edge(landing_t, next_landing_t)
+        rise = self._arrival_edge(landing_t, next_landing_t, prev_landing_t)
         if rise is None:                       # unreachable; belt for a future edit
             return RETENTION_UNKNOWN
         r1 = self._retention_horizon(rise, next_release_t)

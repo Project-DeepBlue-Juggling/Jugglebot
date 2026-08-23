@@ -332,18 +332,26 @@ and both inversions are label-semantics faults with a safety tail:
 > next scheduled **release** and the next scheduled **landing**, per query and
 > never latched, exactly as `landing_t` is. Retention closes at
 > `next_release_t − RELEASE_GUARD_S`, which is the same instant that OPENS the
-> next toss's departure search; arrival closes at `next_landing_t −
-> arrival_lead_s`, which is the same instant that OPENS the next cycle's arrival
+> next toss's departure search; arrival closes at `arrival_boundary_t(landing_t,
+> next_landing_t)`, which is the same instant that OPENS the next cycle's arrival
 > window. Where a clamp leaves **no interval at all**, the part it governs is
 > `UNKNOWN` — never `CONFIRMED` (which would claim an observation never made) and
 > never `REJECTED` (which is the inversion above).
+>
+> ⚠ **The ARRIVAL half read `next_landing_t − arrival_lead_s` until 2026-08-23.**
+> That form is SUPERSEDED, not merely refined: it closes the window inside the
+> ball's own measured band at any cycle period under 1.000 s. **C.1 below is the
+> normative form** and the source is told `prev_landing_t` as well, so that both
+> ends of one boundary are one call. Do not restore the subtraction.
 
 Enforcement points: `ball_possession.HandBallSensorSource._window` /
 `._retention_horizon` for the live verdict, and `toss_record.label_from_sensor`
 for the offline corpus label. They are two implementations of one definition of
 "caught", so they clamp the same way **from the same constants** —
 `ball_possession.RELEASE_GUARD_S` is the single home, and
-`toss_record.DEPARTURE_LEAD_S` is an alias of it rather than a second copy.
+`toss_record.DEPARTURE_LEAD_S` is an alias of it rather than a second copy. The
+ARRIVAL boundary joined that discipline on 2026-08-23 as
+`ball_possession.arrival_boundary_t`, for the reason C.1 below spells out.
 
 **Why the guard is an instant and not a tolerance.** Both clamps are written as
 "close where the next search opens", so the two windows *abut* — they can neither
@@ -351,6 +359,120 @@ overlap (one edge claimed twice) nor leave a gap (a real bounce-out attributed t
 the throw). A tolerance would have to be re-tuned at every rung of the cadence
 ladder; an abutment is correct at every dwell by construction, which is what makes
 this a contract clause rather than a constant.
+
+#### C-POSSESS-1.C.1 — the guard comes out of the NEXT window's OPENING, never out of THIS band's TAIL — added 2026-08-23
+
+C-POSSESS-1.C closed the ARRIVAL window at `next_landing_t − arrival_lead_s`.
+That instant charges one window's **guard** to its neighbour's **evidence**, and
+those are not the same kind of quantity:
+
+| term | what it is | what it is a property of |
+|---|---|---|
+| `ARRIVAL_BAND_MAX_S` = 0.80 s | how late a REAL catch's empty→held edge has ever been observed (+798 ms, 35 announcements, three 2026-08-10 bags) | the **ball** |
+| `arrival_lead_s` = 0.200 s | how early the NEXT window starts looking, in case its landing prediction runs late | the **schedule** |
+
+Subtract the second from the next landing and, as soon as the cycle period drops
+below `ARRIVAL_BAND_MAX_S + arrival_lead_s` = **1.000 s**, this cycle's window
+closes *inside its own ball's measured band*. Two things break, and only one of
+them is merely a reporting fault:
+
+1. `catch_event_dt_s` — the ILC catch-timing measurand, and the only quantity
+   this machine has that says *when* the ball entered the cup — goes silently
+   NaN for every catch in the amputated tail. `arrival_time` clamps exactly as
+   the verdict does, by design, so that the two read one edge; the loss is
+   therefore exact rather than approximate.
+2. A window that closes with no rise in it answers `ARRIVAL_REJECTED` — a
+   POSITIVE claim that the ball did not arrive — and a valid sensor
+   `ARRIVAL_REJECTED` **vetoes a tracker CAUGHT** (§ 3.2, consequence 2). So a
+   *schedule* number manufactures a refusal about a *ball*. That is the
+   inversion this whole section exists to kill, re-entering through the fix for
+   its twin.
+
+**The rule.** One boundary instant per pair of adjacent landings, evaluated by
+both neighbours from the same two numbers:
+
+```
+arrival_boundary_t(a, b) = max(b − arrival_lead_s,
+                               min(a + ARRIVAL_BAND_MAX_S, b))
+```
+
+Read it as: *the boundary belongs to the earlier ball for as long as its measured
+band runs — but never past the next scheduled landing, and never earlier than the
+lead-based instant, so nothing that works today gets narrower.* A landing `L`
+with neighbours `P` and `N` therefore searches
+
+```
+[ arrival_boundary_t(P, L),  min(L + arrival_window_s, arrival_boundary_t(L, N)) ]
+```
+
+and C-POSSESS-1.C's abutment survives **exactly**, because the closing of `L`'s
+window and the opening of `N`'s are literally the same call on the same pair.
+That is why the source is now told `prev_landing_t` alongside `next_landing_t`,
+and why `arrival_boundary_t` has one home that `toss_record` imports rather than
+re-derives — two computations of a boundary is how an abutment stops abutting,
+the same way two copies of `RELEASE_GUARD_S` would have been.
+
+The guard is not deleted, it is **relocated**: the next window surrenders its
+pre-landing lead before this one surrenders any of its band. That costs nothing
+measured — across those same 35 announcements **nothing arrived before its
+announced landing at all** (earliest +137 ms; +46.5 ms on the 2026-08-23 FW-15
+capture), so the pre-landing lead has never once been the term that caught an
+edge, while the band's tail demonstrably has.
+
+**The schedule-adherence assumption evaporates where it mattered.** The old
+boundary was a function of `next_landing_t`, which is a *prediction* made a cycle
+early — the clamp used the SCHEDULED next landing while the next window opened at
+the ACTUAL one, so a release that ran late pulled the two ends apart. Under the
+new rule the boundary is pinned to `L + ARRIVAL_BAND_MAX_S`, **independent of
+`N`**, for every period under 1.000 s — i.e. for exactly the cadences at which
+the boundary sits anywhere near an edge either window could claim. Above 1.000 s
+it tracks `N` again — but there it is `period − 1.000 s` PAST this ball's band
+ceiling (163 ms at the accepted operating point) and never less than
+`ARRIVAL_BAND_MIN_S + arrival_lead_s` = **337 ms** BEFORE the next ball's earliest
+possible edge, so the region a schedule error could move it through contains no
+edge either window could claim. The dependence is not removed everywhere; it is
+removed everywhere it could do harm, which is the strongest claim available
+without a second measurement.
+
+**Where the band cannot be preserved, the refusal itself is refused.** Below a
+period of `ARRIVAL_BAND_MAX_S` = **0.800 s** the next ball lands before this
+one's band has closed, and *no* boundary rule can give both balls their whole
+band. The window is then genuinely shorter than the evidence it is judging, so
+"no rise" stops being evidence of no arrival:
+
+> **C-POSSESS-1.C.2.** An ARRIVAL window that closed before
+> `landing_t + ARRIVAL_BAND_MAX_S` has not watched the whole band and MUST NOT
+> answer `REJECTED`. It answers `UNKNOWN` with a reason naming the cause —
+> `SENSOR_BAND_CLAMPED` live, `LABEL_UNKNOWN` with `band clamped` in the corpus.
+> UNKNOWN never vetoes (§ 2 consequence 3), so the tracker survives; and the
+> machine SAYS it stopped looking early instead of dropping the measurand in
+> silence.
+
+C.2 is a general invariant, not a carve-out for one cadence: it fires whenever
+the schedule truncates the band, an `arrival_window_s` configured shorter than
+the band included.
+
+**Reachability, stated rather than implied.** Measured against the tree's own
+constants over every published rung (`/tmp/probe_arrival_clamp.py`, run
+2026-08-23; offsets are relative to this cycle's landing):
+
+| rung | flight | period | window closed at | band ceiling | tail lost |
+|---|---|---|---|---|---|
+| R0–R3 | 0.7977 | 2.2977–6.3977 | +1.5000 (the fixed window binds) | +0.800 | — |
+| R4 | 0.6059 | 1.2559 | +1.0559 | +0.800 | — |
+| R5 | 0.5029 | 1.2029 | +1.0029 | +0.800 | — |
+| **R5-prime (accepted 2026-08-23)** | 0.5029 | 1.1629 | +0.9629 | +0.800 | — |
+| R5′ clamp pin (dwell 0.49 / T 0.4949) | 0.4949 | 0.9849 | +0.7849 | +0.800 | **15.1 ms** |
+| R6 (deferred fork, dwell 0.25) | 0.5029 | 0.7529 | +0.5529 | +0.800 | **247.1 ms** |
+
+**No published rung amputates today** — the accepted operating point clears the
+band ceiling by 163 ms — which is why this was carried as a MEDIUM rather than a
+live defect. It becomes reachable below a 1.000 s period, which is the only
+direction the cadence census travels, and C.2 becomes the operative half at R6,
+where even the new boundary reaches only +0.7529 and 47.1 ms of band stays
+unwatched. It lands now, not at R6, because the constant that decides all of it —
+`ARRIVAL_BAND_MAX_S` — is the one the pending post-FW14 re-measure will move, and
+moving a constant is only safe once every consumer reads it the same way.
 
 **RETENTION GOES DARK AT THE TARGET CADENCE, and that must be said plainly.**
 The seat edge lands **+137…+798 ms** after the predicted landing (median +399) and
