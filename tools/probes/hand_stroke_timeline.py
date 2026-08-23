@@ -1988,8 +1988,14 @@ def emit_gate_fixture(src_trace: str, out_path: str) -> int:
 # ══════════════════════════════════════════════════════════════════════════
 
 def main(argv=None) -> int:
+    # The WHOLE module docstring, with its line breaks — the same fix 907ed30
+    # applied to the five other bench CLIs. This parser carried a hand-written
+    # one-liner instead of `__doc__` at all, so --help never showed the row
+    # definitions (`coast_below_x3` and its `<<< BLIND SPOT` marker among them)
+    # or the `--gate` contract the ladder scores against.
     ap = argparse.ArgumentParser(
-        description='Per-throw hand stroke timeline from a toss trace or rosbag.')
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--trace', action='append', default=[],
                     help='a toss_trace_*.jsonl (repeatable)')
     ap.add_argument('--bag', action='append', default=[],

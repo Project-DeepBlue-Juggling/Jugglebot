@@ -819,7 +819,15 @@ def _self_check() -> int:
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    # The WHOLE module docstring, with its line breaks — not
+    # `__doc__.splitlines()[0]`, which is the truncation 907ed30 swept out of the
+    # five other bench CLIs and left here. This one carries the coast-window
+    # definition, the "which channel to trust" ruling and the per-column units an
+    # operator needs while standing at the robot; a --help that drops them sends
+    # them back to a 900-line source file at exactly the wrong moment.
+    ap = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--self-check', action='store_true',
                     help='two-sided synthetic gate; no trace needed (INST-6)')
     ap.add_argument('--trace', nargs='*', default=[],
