@@ -49,6 +49,8 @@ from jugglebot.toss_sequencer import (
     ACTION_POSITION_PLATFORM,
     ACTION_PREPARE_CATCH,
     ACTION_REACH_CATCH,
+    DEFAULT_TOSS_THROW_DELAY_S,
+    FLOOR_REPRESENTATION_SLACK_S,
     PHASE_BALL_IN_FLIGHT,
     PHASE_CATCHING,
     PHASE_CHECKING,
@@ -65,6 +67,7 @@ from jugglebot.toss_sequencer import (
     TossDecision,
     TossResult,
     TossSequencer,
+    pre_dispatch_budget_s,
 )
 from jugglebot.motion.trajectory.toss_release import (
     ThrowTiltInfeasible,
@@ -115,13 +118,16 @@ class _TossGoalHandle:
         self.terminal = 'canceled'
 
 
-def _toss_ready_node(now, commanded_pos=(0.0, 0.0, 170.0)):
+def _toss_ready_node(now, commanded_pos=(0.0, 0.0, 170.0),
+                     commanded_rotvec=(0.0, 0.0, 0.0)):
     """A node with every toss precondition satisfied and caches FRESH at `now`:
     TRAJECTORY streaming, mocap fresh, a fresh trajectory/status affirming a
     loaded gravity correction, a fresh trajectory/commanded_position (the
     displaced toss's throw site A — Phase E; absent it the goal is
-    REJECTED_POSE_UNKNOWN), hand telemetry fresh AT the bottom park band,
-    ball possession latched, a SEATED hand ball sensor, no live tracks."""
+    REJECTED_POSE_UNKNOWN), a fresh trajectory/commanded_pose (the SAME sample
+    with its INTENT-frame orientation — the census-B1 positioning skip reads it
+    and refuses to skip without it), hand telemetry fresh AT the bottom park
+    band, ball possession latched, a SEATED hand ball sensor, no live tracks."""
     node = ReloadCoordinatorNode()
     with node._lock:
         node._control_mode = TOSS_CONTROL_MODE
@@ -130,6 +136,9 @@ def _toss_ready_node(now, commanded_pos=(0.0, 0.0, 170.0)):
         node._gravity_correction_loaded = True
         node._commanded_pos_mm = tuple(float(v) for v in commanded_pos)
         node._commanded_pos_mono = now
+        node._commanded_pose = (tuple(float(v) for v in commanded_pos)
+                                + tuple(float(v) for v in commanded_rotvec))
+        node._commanded_pose_mono = now
         node._mocap_mono = now
         node._balls = []
         node._balls_mono = now
@@ -2578,6 +2587,133 @@ def test_a_colocated_chain_skips_the_no_op_positioning_move():
     assert seq._position_arrival_time <= time.perf_counter()
 
 
+def test_the_positioning_decision_is_taken_once_and_reused():
+    """**ONE decision, one place** (2026-08-23). The B1 predicate is now TWO
+    things at once — the branch POSITIONING takes, and the pre-dispatch budget
+    the cycle's CHECKING delay gate charges — so it is evaluated in
+    ``_build_toss_cycle`` and CACHED, never re-derived a tick later.
+
+    Re-deriving it is the failure this closes: the commanded pose is republished
+    at 5 Hz and the platform can be commanded by other nodes between the two
+    evaluations, so a second read could take the cheap branch under an expensive
+    budget (harmless) or the expensive branch under a cheap one — a cycle that
+    was ACCEPTED against the 0.080 s sequence and then spends 0.460 s of its
+    lead, i.e. exactly the accept-vs-runtime gap the 2026-08-22 audit found.
+
+    Driven by MOVING the platform between the two calls: the cached answer must
+    win."""
+    now = time.perf_counter()
+    node = _toss_ready_node(now, commanded_pos=(0.0, 0.0, 170.0))
+    calls = []
+    node._go_to_pose_cli.wait_for_service = lambda timeout_sec=None: (
+        calls.append('service') or True)
+    seq = node._build_toss_cycle((0.0, 0.0, 170.0), 0.8, 5.0, 0.0)
+    assert seq.positioning_move_expected is False        # the skip is expected
+    with node._lock:
+        assert node._toss_positioning_move is False
+    # The platform moves after the decision was taken. A re-derivation here
+    # would command the move under a budget that assumed the skip.
+    with node._lock:
+        node._commanded_pose = (500.0, 0.0, 170.0, 0.0, 0.0, 0.0)
+    seq._position_dispatched = True
+    node._position_platform_for_toss(seq)
+    assert calls == []
+    assert seq._position_result[2] == 'ALREADY_THERE'
+
+
+def test_a_cycle_that_must_move_charges_the_moving_budget_at_CHECKING(monkeypatch):
+    """The cycle FSM is told which sequence it will run, and its delay gate
+    charges that sequence — the loud+early half of the fix.
+
+    A cycle that cannot prove the platform is already positioned pays
+    ``min_move_duration_s + settle pad + ticks``; before 2026-08-23 the gate
+    charged the kind-0 dispatch budget alone and the shortfall surfaced as
+    ``ABORTED_CANT_MAKE_RELEASE`` at ``cycle_start + 0.06 s``, with the hand
+    retracting under a seated ball."""
+    # Tier 8a, pinned: an 8b throw sites A at the LIVE commanded pose, so
+    # displacing the platform to make the skip decline would also change the aim
+    # and with it the release speed — and the delay floor is a function of that
+    # speed. 8a keeps the two cycles' dispatch budgets identical so the only
+    # thing this measures is the pre-dispatch sequence.
+    monkeypatch.setattr(hw, 'JB_OP_TOSS_TIER', '8a')
+    now = time.perf_counter()
+    node = _toss_ready_node(now, commanded_pos=(0.0, 60.0, 170.0))
+    seq = node._build_toss_cycle((0.0, 0.0, 170.0), 0.8, 5.0, 0.0)
+    assert seq.positioning_move_expected is True
+    assert seq.min_throw_delay_for_cycle_s == pytest.approx(
+        seq.min_event_delay_for_throw_s + pre_dispatch_budget_s(True)
+        + FLOOR_REPRESENTATION_SLACK_S, abs=1e-12)
+    # …and the same goal from the pose it throws from charges the skip budget.
+    here = _toss_ready_node(now, commanded_pos=(0.0, 0.0, 170.0))
+    chained = here._build_toss_cycle((0.0, 0.0, 170.0), 0.8, 5.0, 0.0)
+    assert chained.min_throw_delay_for_cycle_s == pytest.approx(
+        chained.min_event_delay_for_throw_s + pre_dispatch_budget_s(False)
+        + FLOOR_REPRESENTATION_SLACK_S, abs=1e-12)
+    assert (seq.min_throw_delay_for_cycle_s
+            - chained.min_throw_delay_for_cycle_s) == pytest.approx(
+                pre_dispatch_budget_s(True) - pre_dispatch_budget_s(False))
+    assert (pre_dispatch_budget_s(True)
+            - pre_dispatch_budget_s(False)) == pytest.approx(0.38)
+
+
+def test_a_session_cycle_that_must_move_is_GRANTED_the_lead_a_single_toss_is_refused(
+        monkeypatch):
+    """The one thing the two callers do differently, and why.
+
+    A single ``Toss``'s ``throw_delay`` is an APPOINTMENT the operator set: too
+    short for the sequence this cycle must run is a loud
+    ``REJECTED_CANT_MAKE_LEAD``, because stretching it answers a request nobody
+    made. A ``TossContinuous`` cycle's delay is a CADENCE parameter the session's
+    own scheduler consumes (``next_at = landing + dwell − throw_delay``), and the
+    session's dwell floor is sized on the CHAINED steady state — so the one cycle
+    that must first command its pre-positioning move is granted the extra lead
+    instead of killing the sitting on cycle 1.
+
+    Without the grant, every ILC-primary sitting dies on its first cycle: the
+    platform is level at goal accept, the aim makes the release tilted, and the
+    ladder's delay is the chained one."""
+    monkeypatch.setattr(hw, 'JB_OP_TOSS_TIER', '8a')
+    now = time.perf_counter()
+    delay = 0.45
+    away = _toss_ready_node(now, commanded_pos=(0.0, 60.0, 170.0))
+    single = away._build_toss_cycle((0.0, 0.0, 170.0), 0.8, delay, 0.0)
+    assert single.throw_delay_s == pytest.approx(delay)     # untouched
+    now2 = time.perf_counter()
+    single.start(now2)
+    d = single.step(now2, away._build_toss_observations(now2))
+    assert d.done and d.result.outcome.startswith('REJECTED_CANT_MAKE_LEAD')
+
+    away2 = _toss_ready_node(now, commanded_pos=(0.0, 60.0, 170.0))
+    chained = away2._build_toss_cycle((0.0, 0.0, 170.0), 0.8, delay, 0.0,
+                                      delay_is_cadence=True)
+    assert chained.throw_delay_s > delay
+    assert chained.throw_delay_s == pytest.approx(
+        chained.min_throw_delay_for_cycle_s)
+
+    # A session cycle that DOES take the skip keeps the operator's number
+    # exactly — the grant is for the move, not a blanket raise.
+    here = _toss_ready_node(now, commanded_pos=(0.0, 0.0, 170.0))
+    kept = here._build_toss_cycle((0.0, 0.0, 170.0), 0.8, delay, 0.0,
+                                  delay_is_cadence=True)
+    assert kept.throw_delay_s == pytest.approx(delay)
+
+
+@pytest.mark.parametrize('delay', [0.0, -1.0])
+def test_the_lead_grant_never_launders_an_unset_or_negative_delay(delay,
+                                                                 monkeypatch):
+    """0.0 is the goal's "unset" sentinel (``__post_init__`` substitutes the
+    5.0 s default) and a negative delay is the sign typo ``__post_init__``
+    deliberately PRESERVES so CHECKING rejects it loudly. Raising either would
+    turn an operator error into a number the machine chose."""
+    monkeypatch.setattr(hw, 'JB_OP_TOSS_TIER', '8a')
+    now = time.perf_counter()
+    node = _toss_ready_node(now, commanded_pos=(0.0, 60.0, 170.0))
+    seq = node._build_toss_cycle((0.0, 0.0, 170.0), 0.8, delay, 0.0,
+                                 delay_is_cadence=True)
+    expected = (DEFAULT_TOSS_THROW_DELAY_S if delay == 0.0 else delay)
+    assert seq.throw_delay_s == pytest.approx(expected)
+
+
 @pytest.mark.parametrize('commanded,why', [
     ((0.0, 0.0, 170.0 + rcn._TOSS_ALREADY_THERE_TOL_MM + 1.0), 'z is off'),
     ((rcn._TOSS_ALREADY_THERE_TOL_MM + 1.0, 0.0, 170.0), 'x is off'),
@@ -2585,19 +2721,21 @@ def test_a_colocated_chain_skips_the_no_op_positioning_move():
     (None, 'the live commanded pose is UNKNOWN'),
 ])
 def test_the_no_op_skip_declines_whenever_it_cannot_prove_the_pose(commanded, why):
-    """The skip's failure mode is a throw fired from a site nobody solved for, so
+    """The skip's failure mode is a throw fired from a pose nobody solved for, so
     every uncertainty resolves to "command the move".
 
     ``None`` is the load-bearing row: an absent or stale
-    ``trajectory/commanded_position`` reads as NOT-there, never as centre — the
-    same fail-closed doctrine as ``throw_site_known``, where an FSM that was
-    never told is not entitled to assume."""
+    ``trajectory/commanded_pose`` reads as NOT-there, never as centre — the
+    same fail-closed doctrine as ``throw_site_known``, where a node that was
+    never told is not entitled to assume. It is also the version-skew case: a
+    trajectory_node that predates the topic leaves the skip permanently off,
+    which costs cadence and nothing else."""
     now = time.perf_counter()
     node = _toss_ready_node(now)
     with node._lock:
-        node._commanded_pos_mm = (tuple(commanded) if commanded is not None
-                                  else None)
-        node._commanded_pos_mono = now if commanded is not None else 0.0
+        node._commanded_pose = (tuple(commanded) + (0.0, 0.0, 0.0)
+                                if commanded is not None else None)
+        node._commanded_pose_mono = now if commanded is not None else 0.0
     release = node._toss_commanded_release() if node._toss_record_ctx else None
     assert node._toss_already_positioned(0.0, 0.0, 170.0, release) is False, why
 
@@ -2610,27 +2748,95 @@ def test_a_stale_commanded_pose_is_not_a_matching_one():
     now = time.perf_counter()
     node = _toss_ready_node(now)
     with node._lock:
-        node._commanded_pos_mm = (0.0, 0.0, 170.0)
-        node._commanded_pos_mono = now - rcn._TRAJ_STATUS_STALE_S - 1.0
+        node._commanded_pose = (0.0, 0.0, 170.0, 0.0, 0.0, 0.0)
+        node._commanded_pose_mono = now - rcn._TRAJ_STATUS_STALE_S - 1.0
     assert node._toss_already_positioned(0.0, 0.0, 170.0, None) is False
 
 
-def test_a_tilted_release_always_commands_the_move():
-    """``trajectory/commanded_position`` carries POSITION and nothing else, so a
-    tilted pre-tilt pose has an orientation this node cannot verify. Every AIMED
-    cycle is tilted — an ILC or calibration-map aim makes it so — which means the
-    skip is exactly the level co-located case it was measured for and nothing
-    wider. If the platform is level when it should be tilted, the throw is aimed
-    at the wrong place and every log line still reports the aim as applied."""
+def test_a_tilted_release_skips_only_when_the_platform_HOLDS_that_tilt():
+    """**The census-B1 skip on an AIMED chain** (2026-08-23).
+
+    Until then this asserted the opposite — ``a tilted release ALWAYS commands
+    the move`` — because ``trajectory/commanded_position`` carried position and
+    nothing else, so a pre-tilt pose had an orientation the node could not
+    verify. Correct, and it cost 0.38 s of throw delay on EVERY cycle of every
+    aimed sitting, which is every ILC-primary sitting there is.
+
+    The fix published the orientation rather than weakening the check, so the
+    check got STRICTER, not looser. Three rows, and the middle one is the whole
+    point:
+
+    * platform LEVEL, release TILTED  ⇒ move (the aim is not applied yet);
+    * platform AT the tilt, release TILTED ⇒ **skip** — the chained cycle;
+    * platform at a DIFFERENT tilt ⇒ move, even a tilt one ILC step away.
+
+    The third row is what stops the skip from laundering a stale aim: an ILC
+    correction that changed between sittings must be commanded, and the measured
+    per-cell |aim| is 9.1-10.5 mrad against a 2.7 mrad tolerance, so it always
+    is.
+
+    ``AIM_RAD`` is that measured per-cell magnitude, not a round number — a test
+    driven at a tilt UNDER the tolerance would assert the opposite of what it
+    reads (a sub-tolerance aim is deliberately admitted; see the last block)."""
     now = time.perf_counter()
-    node = _toss_ready_node(now)
+    AIM_RAD = 0.010
 
     class _Tilted:
-        tilt_rx, tilt_ry = 0.002, 0.0
+        tilt_rx, tilt_ry = AIM_RAD, 0.0
         pretilt_pose_stow = (0.0, 0.0, 170.0, 0.0, 0.0, 0.0)
 
-    assert node._release_is_tilted(_Tilted()) is True
-    assert node._toss_already_positioned(0.0, 0.0, 170.0, _Tilted()) is False
+    assert AIM_RAD > 3.0 * rcn._TOSS_ALREADY_THERE_TOL_RAD
+
+    level = _toss_ready_node(now)
+    assert level._release_is_tilted(_Tilted()) is True
+    assert level._toss_already_positioned(0.0, 0.0, 170.0, _Tilted()) is False
+
+    holding = _toss_ready_node(now, commanded_rotvec=(AIM_RAD, 0.0, 0.0))
+    assert holding._toss_already_positioned(0.0, 0.0, 170.0, _Tilted()) is True
+    # …and a LEVEL release from that same tilted platform is refused, which is
+    # the symmetric half: the old check would have skipped it on position alone.
+    assert holding._toss_already_positioned(0.0, 0.0, 170.0, None) is False
+
+    other = _toss_ready_node(
+        now, commanded_rotvec=(AIM_RAD + 2 * rcn._TOSS_ALREADY_THERE_TOL_RAD,
+                               0.0, 0.0))
+    assert other._toss_already_positioned(0.0, 0.0, 170.0, _Tilted()) is False
+
+    # A sub-tolerance aim IS admitted, deliberately and symmetrically with the
+    # position half: the landing drift it costs is inside the same budget the
+    # position tolerance already spends, so refusing it would buy nothing and
+    # cost 0.38 s. Asserted so a future reader does not read the tolerance as a
+    # bug.
+    class _Tiny:
+        tilt_rx = rcn._TOSS_ALREADY_THERE_TOL_RAD / 2.0
+        tilt_ry = 0.0
+        pretilt_pose_stow = (0.0, 0.0, 170.0, 0.0, 0.0, 0.0)
+
+    assert level._toss_already_positioned(0.0, 0.0, 170.0, _Tiny()) is True
+
+
+def test_the_angular_tolerance_is_derived_from_the_position_one():
+    """Both halves of the skip admit the SAME physical error.
+
+    A residual platform tilt δθ tilts the release velocity by δθ and displaces
+    the landing by ``4·h·sin(δθ)`` — the identical expression the CHECKING
+    levelling gate is sized on. Setting that equal to the position tolerance at
+    the LARGEST apex the C-HAND-3 band admits (fail-closed: the drift is linear
+    in apex) is where the angular bound comes from. Pinned as a derivation, not
+    as a literal, so re-deriving the cup radius or the flight band moves it.
+
+    And pinned against the ILC's own aim authority, because that ratio is what
+    makes the skip safe on an aimed chain: an armed ±1.0° aim can never be
+    mistaken for a level platform."""
+    apex_max = rcn.apex_height_from_flight_time(
+        float(rcn.TOSS_FLIGHT_TIME_MAX_S))
+    assert rcn._TOSS_ALREADY_THERE_TOL_RAD == pytest.approx(
+        (rcn._TOSS_ALREADY_THERE_TOL_MM / 1000.0) / (4.0 * apex_max))
+    # The landing drift it admits IS the position budget, at the worst apex.
+    drift_mm = 4.0 * apex_max * rcn._TOSS_ALREADY_THERE_TOL_RAD * 1000.0
+    assert drift_mm == pytest.approx(rcn._TOSS_ALREADY_THERE_TOL_MM)
+    # …and it is a small fraction of the aim authority it must discriminate.
+    assert rcn._TOSS_ALREADY_THERE_TOL_RAD < math.radians(1.0) / 5.0
 
 
 def test_the_tolerance_is_a_fraction_of_the_cup_not_of_the_workspace():

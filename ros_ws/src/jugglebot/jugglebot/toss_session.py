@@ -103,11 +103,18 @@ plumbing term and a physics term, and neither is chosen::
 
 * ``throw_delay`` is gated by the cycle FSM at ``TOSS_DISPATCH_DEBOUNCE_S``
   (0.10 s, a goal-storm debounce) and, once the release speed is known, at
-  ``hand_stroke.min_throw_event_delay_s(v_throw)`` — the Teensy's own ``:642``
-  budget for the kind-0 dispatch, 0.281 s at the 0.80 s nominal flight. Until
-  2026-08-22 it was gated at ``MIN_TOSS_THROW_DELAY_S`` = 3.5 s, a generic fit
-  over a worst-case POSITIONING move a co-located chain never makes; retiring it
-  is operator decision 3 of the ILC-primary fold-in.
+  ``toss_sequencer.min_throw_delay_for_release_s`` — the Teensy's own ``:642``
+  budget for the kind-0 dispatch (``hand_stroke.min_throw_event_delay_s``,
+  0.281 s at the 0.80 s nominal flight) **plus the pre-dispatch sequence that
+  budget is measured after** (``pre_dispatch_budget_s``: 0.080 s when POSITIONING
+  takes the census-B1 skip, 0.460 s when it commands a move). The second term
+  landed 2026-08-23. Without it the accept gate was systematically looser than
+  the runtime guard it fronts for, and a goal could be ACCEPTED and then abort
+  ``ABORTED_CANT_MAKE_RELEASE`` on every cycle — which is what three published
+  rungs of ``tests/hardware/session_cadence_ladder.md`` did. Until 2026-08-22
+  the gate was ``MIN_TOSS_THROW_DELAY_S`` = 3.5 s, a generic fit over a
+  worst-case POSITIONING move a co-located chain never makes; retiring it is
+  operator decision 3 of the ILC-primary fold-in.
 * ``dwell_margin_s`` covers ONE HALF of the landing → next-cycle-start handoff —
   the verdict half; see the ``handoff_margin_s`` bullet below for the other, and
   note that the floor consumes THAT and not this. It was 0.6 s
@@ -257,13 +264,16 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 
 from jugglebot.ball_possession import ARRIVAL_BAND_MIN_S
-from jugglebot.motion.trajectory import hand_stroke
+from jugglebot.motion.trajectory import hand_stroke, throw_envelope
 from jugglebot.toss_sequencer import (
     CATCH_CONFIRM_WINDOW_S,
     DEFAULT_TOSS_THROW_DELAY_S,
     FLIGHT_TIME_MIN_S,
+    NODE_TICK_S,
     TOSS_DISPATCH_DEBOUNCE_S,
     TossResult,
+    min_throw_delay_for_release_s,
+    pre_dispatch_budget_s,
     vertical_event_vel_mps,
 )
 
@@ -419,19 +429,28 @@ GO_HOME_DURATION_S = 2.0             # trajectory_node's `go_home_duration_s`
                                      # installs. _go_home() returns on the service
                                      # ACK, so this whole duration elapses AFTER
                                      # the coordinator has moved on.
-NODE_TICK_S = 0.02                   # reload_coordinator_node._TICK_S. Was 0.05
-                                     # until 2026-08-22 (census B3). The FSMs are
-                                     # time-driven, so this bounds LATENCY, not
-                                     # correctness — but at a 0.49 s dwell a 0.05 s
-                                     # tick is 10% of the whole turnaround, spent
-                                     # in sleep(). 0.02 s is still two orders of
-                                     # magnitude above localhost topic latency, so
-                                     # every TICK-COUNTED ordering gap keeps its
-                                     # guarantee. The tick COUNTS did NOT change:
-                                     # collapsing them is what would break the two
-                                     # load-bearing cross-topic gaps (prime_hold
-                                     # before the armed edge; armed-confirm before
-                                     # the announcement).
+# NODE_TICK_S — reload_coordinator_node._TICK_S. Was 0.05 until 2026-08-22
+# (census B3). The FSMs are time-driven, so this bounds LATENCY, not correctness
+# — but at a 0.49 s dwell a 0.05 s tick is 10% of the whole turnaround, spent in
+# sleep(). 0.02 s is still two orders of magnitude above localhost topic latency,
+# so every TICK-COUNTED ordering gap keeps its guarantee. The tick COUNTS did NOT
+# change: collapsing them is what would break the two load-bearing cross-topic
+# gaps (prime_hold before the armed edge; armed-confirm before the announcement).
+#
+# DEFINED IN toss_sequencer SINCE 2026-08-23 and re-exported here (this module's
+# importers, including tests, read `toss_session.NODE_TICK_S`). It moved because
+# it stopped being a latency note and became ARITHMETIC: `pre_dispatch_budget_s`
+# counts the pre-dispatch sequence in ticks, and that function is what BOTH delay
+# gates now charge — so the tick and the gates have to live in one module or the
+# accept floor can be re-based by an edit that never mentions it.
+
+#: The ILC's ``event_vel_trim`` outer ceiling (``k_v − 1``), RESTATED from
+#: ``motion/toss_ilc.ILC_SPEED_AUTHORITY`` and pinned equal to it by
+#: ``test_toss_session.py``.  Restated rather than imported for the reason the
+#: whole module is: ``toss_ilc`` pulls numpy + yaml + the artifact loader, and
+#: this FSM stays a standalone-importable pure-Python file.  Read by
+#: :attr:`TossSessionSequencer.floor_event_vel_mps`.
+ILC_SPEED_AUTHORITY = 0.15
 
 # A MISSED cycle that the session CONTINUES past cannot hand over at
 # `handoff_margin_s`: that margin sizes the CAUGHT handoff (a verdict lands, the
@@ -590,6 +609,28 @@ class TossSessionSequencer:
                                                 #   never reach here as RELOAD.
     max_reloads: int = DEFAULT_SESSION_MAX_RELOADS
     floor_pause_every: int = DEFAULT_SESSION_FLOOR_PAUSE_EVERY
+    ilc_speed_trim_possible: bool = True        # can layer 3 command a speed trim
+                                                #   on this goal (ILC enabled AND an
+                                                #   artifact loaded)? It is the only
+                                                #   thing that can make the cycle's
+                                                #   event_vel differ from the
+                                                #   untrimmed vertical closed form
+                                                #   this session computes its floors
+                                                #   from — and the delay floor RISES
+                                                #   as the speed FALLS, so a negative
+                                                #   trim raised the floor AFTER the
+                                                #   session had accepted the goal
+                                                #   (audit finding, 2026-08-22).
+                                                #   See floor_event_vel_mps.
+                                                #
+                                                #   Default TRUE = FAIL-CLOSED: a
+                                                #   session that was not told judges
+                                                #   itself against the slowest
+                                                #   release the apply seam could
+                                                #   command. It costs nothing at the
+                                                #   cadence rungs, where the throw
+                                                #   envelope refuses the negative
+                                                #   side outright.
 
     # ── internal state ──
     _phase: str = field(default=SESSION_PHASE_CHECKING, init=False)
@@ -650,20 +691,98 @@ class TossSessionSequencer:
         return t
 
     @property
+    def floor_event_vel_mps(self) -> float:
+        """The SLOWEST release this goal's cycles could actually be commanded at.
+
+        Every derived floor on this class is monotonically DECREASING in release
+        speed (a slower throw has a longer windup, so it needs more lead and more
+        dwell), which makes the slowest admissible speed the fail-closed one to
+        judge against.
+
+        Without layer 3 that is just ``vertical_event_vel_mps(T)`` — the same
+        closed form the cycle FSM resolves ``event_vel_mps`` with. **With layer 3
+        armed it is not**, and that was the second half of the 2026-08-22 audit's
+        BLOCKING finding: the session computed its floors from the UNTRIMMED
+        speed while the FSM received ``v · (1 + ilc_vel_trim)``, so a NEGATIVE
+        trim raised the cycle's floor after the session had already accepted the
+        goal — a REJECTED_CANT_MAKE_LEAD on cycle 1 of a session the operator was
+        told was legal.
+
+        The bound is derived, not assumed: the trim is applied through
+        ``reload_coordinator_node._ilc_vel_trim_refusal``, which REFUSES any trim
+        whose commanded speed breaks ``throw_envelope.evaluate`` (contract
+        C-HAND-3) — so the slowest speed that can actually fly is the smallest
+        ``v · (1 + t)``, ``t ∈ [−ILC_SPEED_AUTHORITY, 0]``, that the envelope
+        admits.  Bisected here because the envelope's negative-side bound is
+        strongly flight-dependent and has no closed form.
+
+        **It costs nothing where the cadence lives.** At the ladder's flights the
+        envelope's ``ARM_WINDOW`` term refuses the negative side almost entirely
+        (0.0 mm/s of headroom at the 0.4949 s band floor, 0.21 m/s at 0.5029 s),
+        so this returns the untrimmed speed or within a whisker of it; the charge
+        only becomes visible at the long flights where the delay is seconds clear
+        of every floor anyway.  The bridge's own [0.3, 7.0] m/s wire band is two
+        orders of magnitude away from binding here and is not re-checked."""
+        nominal = vertical_event_vel_mps(self._flight_or_floor_s)
+        if not self.ilc_speed_trim_possible:
+            return nominal
+        flight = self._flight_or_floor_s
+        lo = nominal * (1.0 - ILC_SPEED_AUTHORITY)
+        if throw_envelope.evaluate(flight, lo).ok:
+            return lo
+        hi = nominal
+        # Monotone: the ARM_WINDOW term that refuses a slow release only relaxes
+        # as the release speeds up, so a bisection lands on the exact frontier.
+        for _ in range(48):
+            mid = 0.5 * (lo + hi)
+            if throw_envelope.evaluate(flight, mid).ok:
+                hi = mid
+            else:
+                lo = mid
+        return hi
+
+    @property
     def min_throw_delay_s(self) -> float:
-        """The cycle FSM's own delay floor, restated at session scope.
+        """The session's ``throw_delay_s`` floor — THE cadence this build can hold.
 
-        ``max(TOSS_DISPATCH_DEBOUNCE_S, min_throw_event_delay_s(v_throw))`` — the
-        two gates ``toss_sequencer._step_checking`` applies, in one expression,
-        so a session can never be looser than the cycle it repeats nor stricter
-        than it (either direction is a verdict that names the wrong field).
+        One derivation, shared with the cycle FSM's own CHECKING gate
+        (:func:`toss_sequencer.min_throw_delay_for_release_s`):
+        ``max(TOSS_DISPATCH_DEBOUNCE_S, kind-0 dispatch budget + pre-dispatch
+        sequence)``.  Until 2026-08-23 it charged the dispatch budget alone, which
+        is the floor the RUNTIME guard measures the *remaining* lead against — so
+        the session admitted delays whose cycles then aborted
+        ``ABORTED_CANT_MAKE_RELEASE`` every time (the whole reason three published
+        cadence rungs never threw a ball).
 
-        Uses the same fail-closed flight-time fallback as
-        :attr:`hand_floor_dwell_s`: the event-delay floor also RISES as the
-        flight shortens (0.281 s at T = 0.80, 0.337 s at the band floor)."""
-        return max(TOSS_DISPATCH_DEBOUNCE_S,
-                   hand_stroke.min_throw_event_delay_s(
-                       vertical_event_vel_mps(self._flight_or_floor_s)))
+        **Which pre-dispatch budget: the STEADY STATE, deliberately.** This gate
+        charges ``positioning_move=False`` — the chained cycle, where the platform
+        is already holding the pose the previous cycle threw and caught from and
+        POSITIONING takes the census-B1 no-op skip.  That is not optimism; it is
+        what the session's number MEANS.  ``throw_delay_s`` is the operator's
+        cadence parameter (``required_dwell_s`` is ``throw_delay +
+        handoff_margin``), a cadence is a steady state, and charging the 0.460 s
+        moving budget here would refuse every cadence above ~40 throws/min for a
+        cost only the FIRST cycle of a sitting ever pays.
+
+        The first cycle is not left to abort:
+
+        * the CYCLE's own gate charges the REAL per-cycle predicate (the node
+          feeds ``positioning_move_expected`` from the same cached B1 decision
+          that drives POSITIONING), so a cycle that must move and cannot make its
+          lead dies ``REJECTED_CANT_MAKE_LEAD`` at CHECKING — loud, pre-throw,
+          nothing moved — and never ``ABORTED_CANT_MAKE_RELEASE`` mid-sequence;
+        * and the node RAISES that first cycle's ``throw_delay`` to the moving
+          floor (``_build_toss_cycle``, one WARN line), so the ordinary case is
+          "cycle 1 releases ~0.38 s later than the metronome implies, then the
+          landing-anchored schedule takes over" rather than a refusal.
+
+        The speed is :attr:`floor_event_vel_mps`, not the untrimmed closed form —
+        see it for the ILC negative-trim half of the same finding.  The
+        flight-time fallback is the shared fail-closed one
+        (:attr:`_flight_or_floor_s`): the event-delay floor RISES as the flight
+        shortens (0.281 s at T = 0.80, 0.337 s at the band floor)."""
+        return min_throw_delay_for_release_s(self.floor_event_vel_mps,
+                                             positioning_move=False)
 
     @property
     def hand_floor_dwell_s(self) -> float:
@@ -679,6 +798,22 @@ class TossSessionSequencer:
         The release speed comes from ``toss_sequencer.vertical_event_vel_mps`` —
         the SAME closed form the cycle FSM resolves its own ``event_vel_mps``
         with, so the session cannot refuse a cadence the cycle can make.
+
+        **UNTRIMMED, unlike the two floors either side of it** (2026-08-23), and
+        the asymmetry is deliberate. This is THE named C-HAND-1 geometry number:
+        the census, the cadence runbook's § 0 table and
+        ``ros_ws/docs/hand_decel_feedforward.md`` all quote it per flight time,
+        and re-basing it onto a speed that depends on whether an ILC artifact
+        happens to be loaded would make "the hand floor at T = 0.5029 s" two
+        different numbers on one machine. It is safe to leave nominal because it
+        is **not the binding term at any admitted flight**: since the delay floor
+        grew the pre-dispatch sequence, ``throw_delay + handoff_margin`` exceeds
+        this by **0.1230 s at its worst** across the whole C-HAND-3 band (probe,
+        2026-08-23), which covers this term's entire **0.0715 s** worst-case
+        sensitivity to a maximal negative speed trim with 1.7x margin.
+        ``test_the_hand_floor_is_dominated_by_the_plumbing_term``
+        pins that dominance, so if the plumbing term ever shrinks back under it
+        the argument is re-taken rather than silently relied on.
 
         ``flight_time_s`` is 0.0 when nothing resolved it (standalone/test
         construction). The fallback is the C-HAND-3 band FLOOR, not the nominal
@@ -724,10 +859,14 @@ class TossSessionSequencer:
         *landing + 0.202…0.442 s* — the FALLBACK channel this same fold-in
         demoted, and whose 0.442 s figure it retired. An accidental fence, 12 ms
         wide at R4/R5, that disappears the moment the sensor alone is allowed to
-        terminate a cycle. Derived, so it cannot drift away again."""
+        terminate a cycle. Derived, so it cannot drift away again.
+
+        The speed is :attr:`floor_event_vel_mps` (2026-08-23): the catch is armed
+        for the ball the throw put up, so a layer-3 speed trim moves the park
+        re-entry with it, and the fail-closed value is the slow one."""
         return max(float(self.dwell_margin_s),
                    hand_stroke.catch_park_reentry_s(
-                       vertical_event_vel_mps(self._flight_or_floor_s),
+                       self.floor_event_vel_mps,
                        float(self.catch_vel_scale)))
 
     @property
@@ -936,6 +1075,12 @@ class TossSessionSequencer:
             # = 3.5 s; mirroring only the debounce now would re-open the exact
             # hole this gate was written to close, one order of magnitude
             # narrower.
+            #
+            # And since 2026-08-23 the mirrored floor carries the PRE-DISPATCH
+            # SEQUENCE too, through the one derivation the cycle gate uses. A
+            # mirror that models a different sequence from the guard it fronts
+            # for is not a mirror; it is a second, looser gate wearing the
+            # first one's name, and it is what let three cadence rungs ship.
             return 'REJECTED_THROW_DELAY'
         if not math.isfinite(self.dwell_time_s) or self.dwell_time_s < 0.0:
             return 'REJECTED_DWELL'
@@ -949,12 +1094,13 @@ class TossSessionSequencer:
             # That remedy said "toward the 3.5 s FSM floor" until 2026-08-22, and
             # MIN_TOSS_THROW_DELAY_S was retired by the same commit that rewrote
             # this hunk (audit fix). The floor is now DERIVED and speed-dependent
-            # — 0.281 s at the 0.80 s nominal flight, 0.337 s at the C-HAND-3
-            # band floor — so an operator following the old text would lower
-            # throw_delay toward a number an order of magnitude above the real
-            # one, be refused again, and never discover the rungs are legal.
-            # Naming the property rather than a literal is what keeps this
-            # sentence true through the next re-derivation.
+            # — since 2026-08-23 it is the `:642` dispatch budget PLUS the
+            # pre-dispatch sequence, 0.361 s at the 0.80 s nominal flight and
+            # 0.417 s at the C-HAND-3 band floor — so an operator following the
+            # old text would lower throw_delay toward a number an order of
+            # magnitude above the real one, be refused again, and never discover
+            # the rungs are legal. Naming the property rather than a literal is
+            # what keeps this sentence true through the next re-derivation.
             return 'REJECTED_DWELL'
         if self.num_throws >= 2 and not self.chain_site_reachable:
             # The chain pre-check, caught BEFORE a ball flies. Without this, a

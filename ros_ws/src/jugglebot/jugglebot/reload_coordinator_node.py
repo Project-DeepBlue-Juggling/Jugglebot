@@ -198,6 +198,7 @@ from jugglebot.toss_sequencer import (
     ACTION_RECENTER as TOSS_ACTION_RECENTER,
     ACTION_SAFE_ABORT as TOSS_ACTION_SAFE_ABORT,
     ACTION_STAY as TOSS_ACTION_STAY,
+    FLIGHT_TIME_MAX_S as TOSS_FLIGHT_TIME_MAX_S,
     PHASE_CHECKING as TOSS_PHASE_CHECKING,
     PHASE_POSITIONING as TOSS_PHASE_POSITIONING,
     PHASE_PREPARING as TOSS_PHASE_PREPARING,
@@ -210,6 +211,8 @@ from jugglebot.toss_sequencer import (
     TossObservations,
     TossResult,
     TossSequencer,
+    min_throw_delay_for_release_s,
+    pre_dispatch_budget_s,
 )
 from jugglebot.toss_session import (
     DEFAULT_SESSION_MISS_CLEANUP_S,
@@ -233,7 +236,12 @@ from jugglebot.motion.tilt_map import find_repo_root
 from jugglebot.motion import toss_cal, toss_ilc
 from jugglebot.motion.trajectory import hand_stroke, throw_envelope
 from jugglebot.motion.trajectory.tilt_geometry import MAX_TILT_DEG
-from jugglebot.motion.ik_solver import rot_matrix_to_quat, rotvec_to_rot_matrix
+from jugglebot.motion.ik_solver import (
+    quat_to_rot_matrix,
+    rot_matrix_to_quat,
+    rot_matrix_to_rotvec,
+    rotvec_to_rot_matrix,
+)
 from jugglebot.motion.trajectory.toss_release import (
     ThrowTiltInfeasible,
     aim_target_offset_mm,
@@ -433,6 +441,29 @@ _TOSS_POSITION_TOL_MM = float(hw.JB_TRAJ_CATCH_REACH_ENVELOPE_MM)
 # aim error for 0.45 s of cadence — the wrong side of that trade for a gate whose
 # failure mode is a throw fired from a site nobody solved for.
 _TOSS_ALREADY_THERE_TOL_MM = float(hw.GEOM_HAND_RADIUS_MM) / 2.0
+# The ORIENTATION half of the same gate (2026-08-23), per rotvec component.
+#
+# DERIVED from the position bound above rather than picked, so the two halves
+# admit the same physical error: a residual platform tilt δθ tilts the release
+# velocity by δθ and displaces the landing by 4·h·sin(δθ) — the identical
+# expression the CHECKING levelling gate is sized on
+# (toss_sequencer._step_checking, REJECTED_NOT_LEVELLED). Setting that
+# displacement equal to _TOSS_ALREADY_THERE_TOL_MM and solving at the LARGEST
+# apex the C-HAND-3 band admits (fail-closed — the drift is linear in apex, so
+# the tallest throw is the strictest case) gives δθ.
+#
+# 2.71 mrad (0.155°) as shipped. Two sanity readings on that number:
+#
+#   * it is 1/6.4 of the ILC's own ±1.0° aim authority, so an ARMED aim can
+#     never be mistaken for a level platform — which is the wrong "yes" that
+#     would fire an ILC throw with the correction not applied;
+#   * on a CHAINED cycle the residual is ~1e-15 rad: the platform is holding the
+#     pose the previous cycle commanded, and this cycle recomputes the identical
+#     pre-tilt from the identical (catch_pose, flight, aim). The tolerance is not
+#     what makes the skip fire; it is what stops it firing on anything else.
+_TOSS_ALREADY_THERE_TOL_RAD = (
+    (_TOSS_ALREADY_THERE_TOL_MM / 1000.0)
+    / (4.0 * apex_height_from_flight_time(float(TOSS_FLIGHT_TIME_MAX_S))))
 # RELOAD centred-ness tolerance (REJECTED_NOT_CENTERED, _platform_centered).
 #
 # NOT the bare envelope radius, and the difference is the whole point of the
@@ -797,6 +828,12 @@ class ReloadCoordinatorNode(Node):
         # "no commanded pose exists", not "the topic is quiet".
         self._commanded_pos_mm = None
         self._commanded_pos_mono = 0.0
+        # The SAME sample with its orientation, (x, y, z, rx, ry, rz) in the
+        # INTENT frame (trajectory/commanded_pose). Separate cache, single
+        # stamp: the census-B1 skip needs all six components from ONE sample,
+        # and None fails closed to "command the move".
+        self._commanded_pose = None
+        self._commanded_pose_mono = 0.0
         self._mocap_mono = 0.0
         self._balls = []
         self._balls_mono = 0.0
@@ -938,6 +975,12 @@ class ReloadCoordinatorNode(Node):
         # otherwise level the platform back BEFORE release and every log line
         # would still report the aim as applied.
         self._toss_pretilt_hold_raised = False
+        # THE per-cycle positioning decision (census B1), taken once in
+        # _build_toss_cycle and consumed by _position_platform_for_toss.
+        # Initialised and reset FAIL-CLOSED (True = command the move): with no
+        # cycle built there is no evidence the platform is anywhere in
+        # particular, and a stale False would skip a move the next cycle needs.
+        self._toss_positioning_move = True
         # Tier 8b only: the announced landing state stashed at ANNOUNCE for the
         # deferred A->B reach to reuse — (landing_pos_global_mm, landing_vel_mms,
         # landing_time_ros_seconds). None between goals / for 8a.
@@ -1031,6 +1074,13 @@ class ReloadCoordinatorNode(Node):
         self.create_subscription(
             Point, 'trajectory/commanded_position',
             self._on_commanded_position, 10)
+        # …and the same sample WITH its orientation, in the intent frame. Read by
+        # exactly one thing — the census-B1 positioning skip — which needs the
+        # full 6-DOF pose from ONE sample to prove "commanding this would move
+        # nothing". Its absence fails closed to "command the move" (cadence, not
+        # safety), so this subscription is additive to every other read path.
+        self.create_subscription(
+            Pose, 'trajectory/commanded_pose', self._on_commanded_pose, 10)
         self.create_subscription(
             RigidBodyPoses, 'rigid_body_poses', self._on_mocap, 10)
         self.create_subscription(
@@ -1368,6 +1418,53 @@ class ReloadCoordinatorNode(Node):
         if pos is None or mono <= 0.0 or (now - mono) >= _TRAJ_STATUS_STALE_S:
             return None
         return pos
+
+    def _on_commanded_pose(self, msg):
+        """``trajectory/commanded_pose``: the SAME sampled plan state as
+        ``commanded_position``, with its ORIENTATION, as a rotation vector in the
+        **INTENT** frame (``trajectory_node._intent_orientation`` inverts the
+        C-LEVEL-1 correction before publishing, so this is directly comparable
+        against a pose this node is about to REQUEST — see that method).
+
+        Cached as one ``(x, y, z, rx, ry, rz)`` tuple with a single arrival
+        stamp, deliberately: the only consumer (the census-B1 positioning skip)
+        needs position and orientation from ONE sample, and a torn read across
+        two caches would let a mid-move platform match a target on a stale half.
+
+        Non-finite components are dropped whole, for the reason
+        :meth:`_on_commanded_position` drops them: a NaN comparison silently
+        reads as "not there", which is safe here but hides a real fault."""
+        p = msg.position
+        q = msg.orientation
+        vals = (float(p.x), float(p.y), float(p.z),
+                float(q.w), float(q.x), float(q.y), float(q.z))
+        if not all(math.isfinite(v) for v in vals):
+            self.get_logger().error(
+                'trajectory/commanded_pose {} is non-finite — DISCARDED'
+                .format(vals))
+            return
+        rotvec = rot_matrix_to_rotvec(
+            quat_to_rot_matrix(vals[3], vals[4], vals[5], vals[6]))
+        with self._lock:
+            self._commanded_pose = (vals[0], vals[1], vals[2],
+                                    float(rotvec[0]), float(rotvec[1]),
+                                    float(rotvec[2]))
+            self._commanded_pose_mono = time.perf_counter()
+
+    def _live_commanded_pose(self, now: float):
+        """The live commanded platform POSE ``(x, y, z, rx, ry, rz)``, or None.
+
+        Same freshness window and same fail-closed doctrine as
+        :meth:`_live_commanded_position` — absence is UNKNOWN, never "at the
+        origin, level". A trajectory_node that predates the topic therefore
+        leaves the B1 skip permanently off, which costs cadence and nothing
+        else."""
+        with self._lock:
+            pose = self._commanded_pose
+            mono = self._commanded_pose_mono
+        if pose is None or mono <= 0.0 or (now - mono) >= _TRAJ_STATUS_STALE_S:
+            return None
+        return pose
 
     def _on_mocap(self, msg):
         with self._lock:
@@ -3142,7 +3239,8 @@ class ReloadCoordinatorNode(Node):
         with self._lock:
             return self._toss_release_cmd
 
-    def _build_toss_cycle(self, catch_pose, flight, throw_delay, vel_scale):
+    def _build_toss_cycle(self, catch_pose, flight, throw_delay, vel_scale,
+                          *, delay_is_cadence=False):
         """Build ONE toss cycle: resolve the tier / throw site / release state,
         construct + start the ``TossSequencer``, and install the per-goal node
         state the observation builder and the async-event routing read.
@@ -3155,6 +3253,23 @@ class ReloadCoordinatorNode(Node):
         The goal numerics are the CALLER's gate (both callers refuse
         REJECTED_BAD_GOAL before reaching here, with nothing built and nothing
         installed).
+
+        ``delay_is_cadence`` is the ONE thing the two callers do differently, and
+        it is a statement about what ``throw_delay`` MEANS to each of them:
+
+        * a single ``Toss`` is an APPOINTMENT the operator set. Too short for
+          the sequence this cycle must run ⇒ ``REJECTED_CANT_MAKE_LEAD``, loud,
+          nothing moved. Silently stretching it would answer a request the
+          operator did not make.
+        * a ``TossContinuous`` cycle's delay is a CADENCE parameter the SESSION
+          consumes — it schedules cycle N+1 as ``landing + dwell − throw_delay``
+          precisely so the RELEASE lands one dwell past the landing, and the
+          session's own dwell floor is sized on the chained steady state. So a
+          cycle that must first COMMAND its pre-positioning move is GRANTED the
+          extra lead (once, loudly) instead of killing the sitting on its first
+          cycle. Only the first cycle normally pays it: a CAUGHT toss ends in
+          ACTION_STAY holding the pose it threw from, so every later cycle takes
+          the census-B1 skip and keeps the operator's number exactly.
         """
         # The release state (frames + ballistics) comes from the single tested
         # conversion module; the FSM gets its event_vel from here, never a second
@@ -3282,12 +3397,60 @@ class ReloadCoordinatorNode(Node):
                 aim['ilc_refused'] = (
                     '{},event_vel'.format(aim['ilc_refused'])
                     if aim['ilc_refused'] else 'event_vel')
+        # ── THE positioning decision, taken ONCE (2026-08-23) ──
+        # It used to be taken inside _position_platform_for_toss, one FSM tick
+        # from now. It is taken here because it is now TWO things at once:
+        #
+        #   * the branch POSITIONING takes (skip vs command a go_to_pose), and
+        #   * the pre-dispatch budget the CHECKING delay gate charges
+        #     (toss_sequencer.pre_dispatch_budget_s — 0.080 s for the skip,
+        #     0.460 s for a move).
+        #
+        # Taking it twice would let those two disagree, and a budget charged for
+        # a branch the node did not take is exactly the accept-vs-runtime gap the
+        # 2026-08-22 audit found. Cached under the lock below; the POSITIONING
+        # step consumes the cached answer and re-reads nothing.
+        #
+        # `release_cmd is None` (a tilt-clamp raise, or an unknown 8b site) means
+        # the FSM rejects on its first step and POSITIONING is never reached — the
+        # fail-closed True there is moot but costs nothing.
+        px, py, pz = self._toss_positioning_xyz(catch_pose, release_cmd)
+        positioning_move = not (
+            release_cmd is not None
+            and self._toss_already_positioned(px, py, pz, release_cmd))
+        # ── and the lead that decision needs (SESSION cycles only) ──
+        # See the `delay_is_cadence` paragraph in the docstring for why this is
+        # a grant here and a refusal on the single-Toss path. In one line: a
+        # cadence parameter is a MINIMUM lead the session's own scheduler
+        # consumes, an appointment is not.
+        #
+        # ⚠ STRICTLY POSITIVE delays only. 0.0 is the goal's "unset" sentinel and
+        # TossSequencer.__post_init__ substitutes the 5.0 s default for it;
+        # a NEGATIVE value is the sign typo __post_init__ deliberately preserves
+        # so CHECKING rejects it loudly. Raising either would launder an operator
+        # error into a number the machine chose.
+        cycle_delay = float(throw_delay)
+        lead_floor = min_throw_delay_for_release_s(event_vel, positioning_move)
+        if (delay_is_cadence and positioning_move
+                and 0.0 < cycle_delay < lead_floor):
+            self.get_logger().warning(
+                'toss throw_delay raised {:.3f} -> {:.3f} s for this cycle: '
+                'POSITIONING must COMMAND the pre-positioning move (the platform '
+                'is not already at ({:.1f}, {:.1f}, {:.1f}) mm within {:.1f} mm, '
+                'at the commanded orientation), which spends {:.3f} s of the '
+                'lead before the release-window guard runs. A chained cycle takes '
+                'the census-B1 skip and keeps the {:.3f} s you asked for.'.format(
+                    cycle_delay, lead_floor, px, py, pz,
+                    _TOSS_ALREADY_THERE_TOL_MM,
+                    pre_dispatch_budget_s(True), cycle_delay))
+            cycle_delay = lead_floor
         seq = TossSequencer(
             catch_pose_stow_mm=catch_pose, flight_time_s=flight,
-            throw_delay_s=throw_delay, tier=tier,
+            throw_delay_s=cycle_delay, tier=tier,
             event_vel_mps=event_vel,
             throw_site_xy_mm=throw_site,
             throw_site_known=throw_site_known,
+            positioning_move_expected=positioning_move,
             max_displacement_mm=float(hw.JB_OP_TOSS_MAX_DISPLACEMENT_MM),
             workspace_xy_mm=float(hw.JB_OP_TOSS_WORKSPACE_XY_MM),
             stay_at_pose_on_caught=bool(hw.JB_OP_TOSS_STAY_AT_POSE_ON_CAUGHT),
@@ -3327,6 +3490,14 @@ class ReloadCoordinatorNode(Node):
             self._toss_release_state = release
             self._toss_release_cmd = release_cmd
             self._toss_aim = aim
+            # THE cached positioning decision (2026-08-23). Written here, read
+            # exactly once by _position_platform_for_toss on the next FSM tick.
+            # It is not an optimisation: the CHECKING delay gate has ALREADY
+            # charged a pre-dispatch budget keyed on this boolean, so re-deriving
+            # it a tick later — against a commanded pose that may have been
+            # republished in between — could take the cheap branch under an
+            # expensive budget, or the reverse. One decision, one place.
+            self._toss_positioning_move = positioning_move
             # release is None on a Tier-8b tilt-clamp raise (the FSM rejects
             # REJECTED_TILT_CLAMP on the first step, so the nominated landing is
             # never consulted); guard the deref. None ⇒ the possession
@@ -3378,6 +3549,10 @@ class ReloadCoordinatorNode(Node):
             self._toss_platform_target_mm = None
             self._toss_prepare_pending = False
             self._toss_throw_dispatched = False
+            # Fail-closed between cycles: a leftover False would let the NEXT
+            # cycle's POSITIONING skip a move on evidence that belonged to the
+            # previous one.
+            self._toss_positioning_move = True
             # The cadence clamp is per-CYCLE (C-POSSESS-1 § 3.4): a schedule that
             # outlived its cycle would clamp the next ball's windows against a
             # stale instant, which is the arm/disarm lifecycle bug class the
@@ -3661,14 +3836,23 @@ class ReloadCoordinatorNode(Node):
             orientation = self._tilt_quaternion(release.tilt_rx, release.tilt_ry)
         else:
             orientation = Quaternion()              # identity = level platform
-        if self._toss_already_positioned(x, y, z, release):
-            # CENSUS B1 — the no-op move. For a Tier-8a chain with
-            # stay_at_pose_on_caught the platform is ALREADY at B: the catch
-            # ended in ACTION_STAY and the emitter's terminal hold never let it
-            # go. Commanding it anyway costs min_move_duration_s (0.20) +
-            # TOSS_POSITION_SETTLE_PAD_S (0.20) + a service round trip, EVERY
-            # cycle, to traverse zero millimetres — 0.45 s of a turnaround whose
-            # whole physical floor is 0.49 s.
+        # THE cached decision from _build_toss_cycle, not a fresh evaluation
+        # (2026-08-23). The CHECKING delay gate has already charged a
+        # pre-dispatch budget keyed on this exact boolean; re-deriving it here
+        # would let the branch taken and the budget charged disagree.
+        with self._lock:
+            already_positioned = not bool(self._toss_positioning_move)
+        if already_positioned:
+            # CENSUS B1 — the no-op move. For a chain with
+            # stay_at_pose_on_caught the platform is ALREADY at the
+            # pre-positioning pose: the catch ended in ACTION_STAY and the
+            # emitter's terminal hold never let it go. Commanding it anyway costs
+            # min_move_duration_s (0.20) + TOSS_POSITION_SETTLE_PAD_S (0.20) + a
+            # service round trip, EVERY cycle, to traverse zero millimetres —
+            # 0.45 s of a turnaround whose whole physical floor is 0.49 s. Since
+            # 2026-08-23 that holds for an AIMED chain too: the skip verifies the
+            # commanded ORIENTATION as well, so it no longer refuses every tilted
+            # release by construction.
             #
             # Nothing else is skipped: the FSM still runs POSITIONING, the
             # reach-envelope declaration still goes out at PREPARE (C-REACH-1),
@@ -3703,22 +3887,49 @@ class ReloadCoordinatorNode(Node):
     def _toss_already_positioned(self, x, y, z, release) -> bool:
         """Is the platform ALREADY at the positioning pose, provably? (census B1)
 
-        Three conditions, ALL required, and every one of them is a way this can
-        say "no" — which is the safe answer, because a wrong "yes" fires the
-        throw from a site the aim was not solved for:
+        Two conditions, BOTH required, and each is a way this can say "no" —
+        which is the safe answer, because a wrong "yes" fires the throw from a
+        pose the aim was not solved for:
 
-        1. **The release must be LEVEL.** ``trajectory/commanded_position``
-           carries position and nothing else (``trajectory_node`` publishes
-           ``_current_state()[0][:3]``), so a TILTED pre-tilt pose has an
-           orientation this node cannot verify. A tilted release therefore always
-           commands the move. That covers every aimed cycle — an ILC or
-           calibration-map aim makes the release tilted — so the skip is exactly
-           the level co-located case it was measured for, and nothing wider.
-        2. **The live commanded position must be FRESH.** ``None`` from
-           :meth:`_live_commanded_position` means unknown or stale, and unknown
-           reads as NOT-there. Same doctrine as ``throw_site_known``: an FSM that
-           was never told is not entitled to assume.
-        3. **It must match, per axis, inside the tolerance.**
+        1. **The live commanded POSE must be FRESH.** ``None`` from
+           :meth:`_live_commanded_pose` means unknown or stale, and unknown reads
+           as NOT-there. Same doctrine as ``throw_site_known``: a node that was
+           never told is not entitled to assume. A trajectory_node that predates
+           ``trajectory/commanded_pose`` therefore leaves the skip permanently
+           off — cadence lost, nothing unsafe.
+        2. **Position AND orientation must match, per component, inside their
+           tolerances** — ``_TOSS_ALREADY_THERE_TOL_MM`` and
+           ``_TOSS_ALREADY_THERE_TOL_RAD``, the second derived from the first
+           (see the constant).
+
+        **The third condition, retired 2026-08-23: "the release must be LEVEL".**
+        It was there because ``trajectory/commanded_position`` published position
+        and nothing else, so a TILTED pre-tilt pose carried an orientation this
+        node could not verify and had to command. Correct, and expensive: an
+        armed aim — ILC layer 3, the calibration map, Tier 8b — makes EVERY
+        release tilted, so the skip was off for the whole of every ILC sitting
+        and each cycle paid ``min_move_duration_s`` + ``TOSS_POSITION_SETTLE_PAD_S``
+        + ticks (0.38 s of throw delay, and one-for-one the same in dwell) to
+        traverse zero millimetres and re-command a tilt it was already holding.
+        That was the largest single cadence item on the 2026-08-22 audit's board.
+
+        The fix was to publish what the check needed rather than to weaken the
+        check: ``trajectory/commanded_pose`` carries the same sampled plan state
+        WITH its orientation, in the INTENT frame, so the comparison is against
+        the pose this node is about to request rather than against a
+        gravity-corrected version of it. Nothing here got looser — a tilted
+        release now has to PROVE the platform is at its tilt, where before it
+        could not be asked.
+
+        **Why this fires on a chain, and only on a chain.** A CAUGHT toss ends in
+        ``ACTION_STAY``: nothing is commanded, and the emitter's terminal hold
+        leaves the platform exactly where the cycle threw and caught from. The
+        next cycle recomputes its pre-tilt pose from the same ``(catch_pose,
+        flight, aim)``, so the target is bit-identical and the residual is
+        floating-point noise. Anything that MOVED the platform in between — a
+        MISS's ``go_home``, a reload interlude's recentre, a SpaceMouse nudge, a
+        reload catch's own pre-tilt at the same position — fails one component or
+        the other and the move is commanded.
 
         **Why the tolerance is what it is.** For a co-located Tier-8a toss the
         throw site and the catch site are the same physical place, so a residual
@@ -3731,18 +3942,30 @@ class ReloadCoordinatorNode(Node):
         target. So the bound is a fraction of the cup, not a fraction of the
         workspace: ``GEOM_HAND_RADIUS_MM / 2``, which is a shift the cup absorbs
         with 2x margin and which the catch pipeline's own B-centred expectation
-        still covers.
+        still covers. The ANGULAR bound is the tilt whose landing drift equals
+        that same budget at the tallest admitted throw.
 
         It is DELIBERATELY not ``_RELOAD_CENTERED_TOL_MM`` (66.53 mm): that is a
         recentre-verification bound, an order of magnitude looser, and reusing it
         here would let the skip fire on a platform two cup-radii off B."""
-        if self._release_is_tilted(release):
-            return False
-        live = self._live_commanded_position(time.perf_counter())
+        live = self._live_commanded_pose(time.perf_counter())
         if live is None:
             return False
-        return all(abs(float(live[i]) - float(v)) <= _TOSS_ALREADY_THERE_TOL_MM
-                   for i, v in enumerate((x, y, z)))
+        if any(abs(float(live[i]) - float(v)) > _TOSS_ALREADY_THERE_TOL_MM
+               for i, v in enumerate((x, y, z))):
+            return False
+        # The pre-tilt ORIENTATION this cycle would command, as a rotvec — the
+        # SAME (tilt_rx, tilt_ry, 0) that _position_platform_for_toss encodes
+        # into the go_to_pose quaternion, compared before that encoding rather
+        # than after it (quaternions double-cover: q and -q are one rotation, so
+        # a component-wise compare of the encoded form can read a match as a
+        # mismatch).
+        if self._release_is_tilted(release):
+            target = (float(release.tilt_rx), float(release.tilt_ry), 0.0)
+        else:
+            target = (0.0, 0.0, 0.0)
+        return all(abs(float(live[3 + i]) - v) <= _TOSS_ALREADY_THERE_TOL_RAD
+                   for i, v in enumerate(target))
 
     @classmethod
     def _toss_positioning_xyz(cls, catch_pose_stow_mm, release):
@@ -5014,6 +5237,14 @@ class ReloadCoordinatorNode(Node):
             return result
 
         flight = self._resolve_toss_flight_s(height)
+        # A cheap, side-effect-free read of layer 3's arming state — NOT
+        # _toss_aim_for_goal, which is THE single per-goal aim lookup and belongs
+        # to _build_toss_cycle (tests/motion/test_toss_cal.py pins that call site
+        # structurally). All the session's floors need is whether a speed trim is
+        # POSSIBLE, so they can be judged fail-closed against the slowest release
+        # it could command; the exact trim is the cycle's business.
+        with self._lock:
+            ilc_loaded = self._toss_ilc is not None
         # Phase E's KNOWN LIMITATION, caught BEFORE a ball flies (num_throws >= 2
         # only — a one-cycle session has no chain). See _predicted_chain_site_mm.
         chain_reachable = True
@@ -5059,6 +5290,19 @@ class ReloadCoordinatorNode(Node):
             dwell_default_s=float(hw.JB_OP_TOSS_SESSION_DWELL_DEFAULT_S),
             dwell_margin_s=float(hw.JB_OP_TOSS_SESSION_DWELL_MARGIN_S),
             chain_site_reachable=chain_reachable,
+            # Can layer 3 command a SPEED trim on this goal? It is the only thing
+            # that can make a cycle's event_vel differ from the untrimmed
+            # vertical closed form the session computes its floors from, and
+            # every one of those floors RISES as the speed falls — so an armed
+            # ILC has to be judged against the slowest release its apply seam
+            # could command (toss_session.floor_event_vel_mps). Read as
+            # "enabled AND an artifact is loaded": a dormant-by-provenance
+            # artifact still cannot trim, but establishing that costs the whole
+            # provenance verdict, and this gate is deliberately cheap and
+            # conservative. Costs nothing at the cadence rungs, where the throw
+            # envelope refuses the negative side outright.
+            ilc_speed_trim_possible=bool(
+                self._toss_ilc_enabled() and ilc_loaded),
             on_empty_cup=on_empty_cup,
             max_reloads=(max_reloads_raw if max_reloads_raw > 0
                          else int(hw.JB_OP_TOSS_SESSION_MAX_RELOADS)),
@@ -5135,7 +5379,8 @@ class ReloadCoordinatorNode(Node):
                     continue
                 if decision.action == SESSION_ACTION_START_CYCLE:
                     seq = self._build_toss_cycle(
-                        catch_pose, flight, session.throw_delay_s, vel_scale)
+                        catch_pose, flight, session.throw_delay_s, vel_scale,
+                        delay_is_cadence=True)
                     # The cadence clamp (C-POSSESS-1 § 3.4). Set HERE and not
                     # inside _build_toss_cycle because the dwell is the SESSION's
                     # number and a single Toss has none — passing the session in

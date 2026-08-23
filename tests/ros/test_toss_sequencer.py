@@ -284,28 +284,88 @@ def test_throw_delay_floor_is_the_derived_dispatch_budget_not_a_constant():
     makes, which refused every cadence rung for a budget it did not have.
 
     Pinned at both ends of the C-HAND-3 band, because a constant would pass one
-    end and fail the other: the floor is 0.337 s at the 0.4949 s band floor and
-    0.253 s at the 1.1485 s ceiling, a 1.33x spread driven entirely by the
-    windup term (0.147 s -> 0.064 s)."""
-    from jugglebot.toss_sequencer import FLIGHT_TIME_MAX_S, FLIGHT_TIME_MIN_S
-    for flight, floor in ((FLIGHT_TIME_MIN_S, 0.3368),
-                          (0.80, 0.2811),
-                          (FLIGHT_TIME_MAX_S, 0.2535)):
+    end and fail the other: the DISPATCH budget is 0.337 s at the 0.4949 s band
+    floor and 0.253 s at the 1.1485 s ceiling, a 1.33x spread driven entirely by
+    the windup term (0.147 s -> 0.064 s).
+
+    Since 2026-08-23 the GATE charges that budget PLUS the pre-dispatch sequence
+    (:func:`pre_dispatch_budget_s`), because the runtime guard applies the same
+    budget to the lead REMAINING after the sequence has run. The two quantities
+    are pinned separately here: ``min_event_delay_for_throw_s`` is still the
+    dispatch budget alone (it is what ``_step_preparing`` measures), and
+    ``min_throw_delay_for_cycle_s`` is what CHECKING refuses against."""
+    from jugglebot.toss_sequencer import (
+        FLIGHT_TIME_MAX_S, FLIGHT_TIME_MIN_S, pre_dispatch_budget_s)
+    for flight, budget in ((FLIGHT_TIME_MIN_S, 0.3368),
+                           (0.80, 0.2811),
+                           (FLIGHT_TIME_MAX_S, 0.2535)):
         seq = TossSequencer(catch_pose_stow_mm=CATCH_POSE,
                             flight_time_s=flight, throw_delay_s=5.0)
-        assert seq.min_event_delay_for_throw_s == pytest.approx(floor, abs=1e-3)
+        assert seq.min_event_delay_for_throw_s == pytest.approx(budget, abs=1e-3)
+        # The default is FAIL-CLOSED: an FSM nobody told assumes POSITIONING
+        # commands the move, so it charges the 0.460 s sequence.
+        assert seq.positioning_move_expected is True
+        assert seq.min_throw_delay_for_cycle_s == pytest.approx(
+            budget + pre_dispatch_budget_s(True), abs=1e-3)
 
-        under = TossSequencer(catch_pose_stow_mm=CATCH_POSE,
-                              flight_time_s=flight, throw_delay_s=floor - 0.01)
-        under.start(0.0)
-        d = under.step(0.0, _obs(0.0))
-        assert d.done and d.result.outcome.startswith('REJECTED_CANT_MAKE_LEAD')
-        assert d.action == ACTION_NONE
+        for moves in (False, True):
+            floor = budget + pre_dispatch_budget_s(moves)
+            under = TossSequencer(catch_pose_stow_mm=CATCH_POSE,
+                                  flight_time_s=flight,
+                                  throw_delay_s=floor - 0.01,
+                                  positioning_move_expected=moves)
+            under.start(0.0)
+            d = under.step(0.0, _obs(0.0))
+            assert d.done and d.result.outcome.startswith(
+                'REJECTED_CANT_MAKE_LEAD')
+            assert d.action == ACTION_NONE
 
-        over = TossSequencer(catch_pose_stow_mm=CATCH_POSE,
-                             flight_time_s=flight, throw_delay_s=floor + 0.01)
-        over.start(0.0)
-        assert over.step(0.0, _obs(0.0)).phase == PHASE_POSITIONING
+            over = TossSequencer(catch_pose_stow_mm=CATCH_POSE,
+                                 flight_time_s=flight,
+                                 throw_delay_s=floor + 0.01,
+                                 positioning_move_expected=moves)
+            over.start(0.0)
+            assert over.step(0.0, _obs(0.0)).phase == PHASE_POSITIONING
+
+
+def test_the_pre_dispatch_budget_is_the_node_tick_ladder_not_a_literal():
+    """``pre_dispatch_budget_s`` counts the ticks the node actually spends
+    between cycle start and the LAST release-window guard evaluation:
+
+      * no move (census-B1 skip): arrival is declared inside tick 0, so
+        ``_step_positioning`` runs at tick 1 and PREPARE/announce/dispatch add
+        three more — **4 ticks = 0.080 s**;
+      * a commanded move: arrival is ``min_move_duration_s + settle pad`` =
+        0.400 s, first observed at tick 20, plus the same three —
+        **23 ticks = 0.460 s**.
+
+    Pinned as a FUNCTION of the tick, not as two literals: the tick moved
+    0.05 -> 0.02 on 2026-08-22 and this budget must move with it. The 0.40/0.02
+    case is also the float trap — a bare ``ceil`` charges a 21st tick, because
+    the quotient is 20.000000000000004."""
+    from jugglebot.toss_sequencer import (
+        TOSS_POSITION_MIN_MOVE_S, TOSS_POSITION_SETTLE_PAD_S,
+        NODE_TICK_S, pre_dispatch_budget_s)
+    assert pre_dispatch_budget_s(False) == pytest.approx(4 * NODE_TICK_S)
+    arrival = TOSS_POSITION_MIN_MOVE_S + TOSS_POSITION_SETTLE_PAD_S
+    assert pre_dispatch_budget_s(True) == pytest.approx(
+        (round(arrival / NODE_TICK_S) + 3) * NODE_TICK_S)
+    assert pre_dispatch_budget_s(True) == pytest.approx(0.460)
+    # It tracks the tick, both ways.
+    assert pre_dispatch_budget_s(False, 0.05) == pytest.approx(0.20)
+    assert pre_dispatch_budget_s(True, 0.05) == pytest.approx(0.55)
+
+
+def test_the_planner_min_move_floor_matches_the_generated_config():
+    """Drift guard: ``TOSS_POSITION_MIN_MOVE_S`` is a local copy of
+    ``hw.JB_TRAJ_MIN_MOVE_DURATION_S`` (this module's readable-standalone
+    pattern), and the pre-dispatch budget is now sized on it. A codegen that
+    moves the planner floor without moving this one would leave every accept-time
+    delay gate charging a move the machine no longer makes."""
+    import jugglebot.hardware_config as hw
+    from jugglebot.toss_sequencer import TOSS_POSITION_MIN_MOVE_S
+    assert TOSS_POSITION_MIN_MOVE_S == pytest.approx(
+        float(hw.JB_TRAJ_MIN_MOVE_DURATION_S))
 
 
 def test_a_delay_under_the_goal_storm_debounce_is_rejected():

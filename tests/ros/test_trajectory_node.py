@@ -30,6 +30,11 @@ from jugglebot_interfaces.msg import (
 from jugglebot_interfaces.srv import GoToPose, SetTrajectoryLimits, TimedTarget
 
 from jugglebot.trajectory_node import TrajectoryNode
+from jugglebot.motion import levelling
+from jugglebot.motion.ik_solver import (
+    quat_to_rot_matrix,
+    rot_matrix_to_rotvec,
+)
 from jugglebot.motion.trajectory import feasibility as feas
 from jugglebot.motion.trajectory import planner
 from jugglebot.motion.trajectory import HoldPlan
@@ -2034,6 +2039,68 @@ def test_commanded_position_published_only_while_streaming():
     p2 = node.commanded_position_pub.published[-1]
     assert (p2.x, p2.y, p2.z) == pytest.approx(
         tuple(float(v) for v in node._current_state()[0][:3]), abs=1e-9)
+
+
+def test_commanded_pose_carries_the_same_sample_with_its_orientation():
+    """``trajectory/commanded_pose`` is ADDITIVE to ``commanded_position`` and
+    shares its sample, its 5 Hz tick and its seeded+streaming gate.
+
+    It exists because ``_toss_already_positioned`` (census B1) could not verify a
+    TILTED pre-tilt pose with only three of six components on the wire, so it
+    refused every tilted release — 0.38 s of throw delay on every cycle of every
+    aimed sitting. The position half must stay bit-identical, because the
+    displaced throw site A reads the Point and a divergence between the two
+    would site a throw somewhere the check never looked."""
+    node = _node()
+    node._publish_status()
+    assert node.commanded_pose_pub.published == []       # never seeded
+    node._on_control_mode(String(data='STANDBY'))
+    node._publish_status()
+    assert node.commanded_pose_pub.published == []       # streaming but unseeded
+
+    node = _traj_mode_node()
+    node._publish_status()
+    point = node.commanded_position_pub.published[-1]
+    pose = node.commanded_pose_pub.published[-1]
+    # ONE sample feeds both: no torn read is possible between the two topics.
+    assert (pose.position.x, pose.position.y, pose.position.z) == (
+        point.x, point.y, point.z)
+    q = pose.orientation
+    assert (q.w, q.x, q.y, q.z) == pytest.approx((1.0, 0.0, 0.0, 0.0), abs=1e-9)
+
+
+def test_commanded_pose_orientation_is_the_INTENT_frame_not_the_corrected_one():
+    """**The frame is the whole point of publishing it.**
+
+    ``_current_state()`` samples the ACTIVE PLAN, which was built to the
+    C-LEVEL-1 CORRECTED target — so the raw rotation there is
+    ``R_gravity @ R_request``. A consumer comparing it against a pose it is about
+    to REQUEST would be comparing two frames, and its only alternatives would be
+    to re-derive the correction on its own side (the cross-node duplication
+    ``motion/levelling.py`` exists to delete) or to get the intent frame handed
+    to it. So the node inverts before publishing.
+
+    Driven with a NON-ZERO gravity offset, deliberately: with a zero offset the
+    corrected and intent frames are identical and this test would prove nothing —
+    exactly the trap ``apply_gravity_correction``'s docstring names for the
+    composition order."""
+    node = _traj_mode_node()
+    node._on_gravity_offset(Float64MultiArray(data=[0.0136, -0.0105]))
+    # Command a tilted hold through the SAME ingest a go_to_pose request uses,
+    # so the plan carries the corrected rotation the publisher must undo.
+    intent = np.array([0.0, 0.0, 170.0, 0.004, -0.006, 0.0])
+    corrected = levelling.correct_pose(
+        intent, levelling.correction_from_offset(0.0136, -0.0105))
+    assert not np.allclose(corrected[3:6], intent[3:6], atol=1e-6)
+    node._install(HoldPlan(corrected))
+
+    node._publish_status()
+    q = node.commanded_pose_pub.published[-1].orientation
+    rotvec = rot_matrix_to_rotvec(
+        quat_to_rot_matrix(float(q.w), float(q.x), float(q.y), float(q.z)))
+    assert rotvec == pytest.approx(tuple(intent[3:6]), abs=1e-9)
+    # …and it is NOT the corrected rotation, which is the mistake this closes.
+    assert not np.allclose(rotvec, corrected[3:6], atol=1e-6)
 
 
 # ── catch-armed latch (reload-action-catch-latch Phase 1) ─────

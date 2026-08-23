@@ -56,6 +56,7 @@ __all__ = [
     'correction_for_pose',
     'apply_gravity_correction',
     'correct_pose',
+    'uncorrect_pose',
 ]
 
 
@@ -166,4 +167,40 @@ def correct_pose(pose, correction) -> np.ndarray:
     """
     out = np.array(pose, dtype=float)
     out[3:6] = apply_gravity_correction(out[3:6], correction)
+    return out
+
+
+def uncorrect_pose(pose, correction) -> np.ndarray:
+    """The exact inverse of :func:`correct_pose`: corrected frame → INTENT frame.
+
+    ``R_target = R_gravityᵀ @ R_corrected`` — the correction is a rotation
+    matrix, so its transpose is its inverse and the round trip is exact to
+    floating point.  Position is copied through untouched, for the same reason
+    :func:`correct_pose` never touches it.
+
+    **Why an inverse exists at all** (2026-08-23, contract C-LEVEL-1's
+    observability corollary).  The correction is applied ONCE, at ingest, inside
+    the node that owns it — that is the whole point of this module, and it means
+    everything downstream of the ingest is expressed in the CORRECTED frame,
+    including ``trajectory_node``'s sampled plan state.  An external consumer
+    that wants to ask *"is the platform already at the pose I am about to
+    request?"* is speaking the INTENT frame (its request will be corrected on the
+    way in), and it has exactly two ways to compare: re-derive the correction on
+    its own side, or be handed the commanded pose already expressed in the frame
+    it speaks.  The first is the cross-node duplication this module was written
+    to delete — the composition is not commutative and a re-derived copy that
+    writes ``R_target @ R_gravity`` is a silent frame error.  So the publisher
+    inverts, once, where the correction lives, and the consumer compares
+    like with like.
+
+    ``correction`` must be evaluated at the pose's own x/y (C-LEVEL-2 keys the
+    residual on the UNCORRECTED intent position — which is the position here,
+    because position passes through uncorrected).  Mid-move that is exact only
+    where the residual is locally constant; at the point a consumer actually
+    cares about — a MATCH against a target — the two x/y agree by construction,
+    so the inversion is exact where its answer is load-bearing."""
+    out = np.array(pose, dtype=float)
+    R_corrected = rotvec_to_rot_matrix(np.asarray(out[3:6], dtype=float))
+    R_target = np.asarray(correction, dtype=float).T @ R_corrected
+    out[3:6] = rot_matrix_to_rotvec(R_target)
     return out

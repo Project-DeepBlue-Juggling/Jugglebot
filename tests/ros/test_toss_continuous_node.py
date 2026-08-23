@@ -464,9 +464,9 @@ def test_every_cycle_goes_through_the_shared_builder(monkeypatch):
     calls = []
     real_build = node._build_toss_cycle
 
-    def spy(catch_pose, flight, throw_delay, vel_scale):
-        calls.append((catch_pose, flight, throw_delay, vel_scale))
-        return real_build(catch_pose, flight, throw_delay, vel_scale)
+    def spy(catch_pose, flight, throw_delay, vel_scale, **kw):
+        calls.append((catch_pose, flight, throw_delay, vel_scale, kw))
+        return real_build(catch_pose, flight, throw_delay, vel_scale, **kw)
 
     monkeypatch.setattr(node, '_build_toss_cycle', spy)
     _stub_cycles(node, monkeypatch, clock,
@@ -474,11 +474,16 @@ def test_every_cycle_goes_through_the_shared_builder(monkeypatch):
     node._execute_toss_continuous(
         _ContGoalHandle(num_throws=2, delay=DELAY, vel_scale=0.9))
     assert len(calls) == 2
-    for pose, flight, delay, scale in calls:
+    for pose, flight, delay, scale, kw in calls:
         assert pose == (0.0, 0.0, 170.0)
         assert flight == pytest.approx(float(hw.JB_OP_TOSS_FLIGHT_TIME_DEFAULT_S))
         assert delay == pytest.approx(DELAY)
         assert scale == pytest.approx(0.9)
+        # …and the SESSION path declares its delay a CADENCE parameter, which is
+        # what lets the one cycle that must command its pre-positioning move be
+        # granted the extra lead instead of killing the sitting (2026-08-23). A
+        # single Toss passes no such flag and is refused instead.
+        assert kw == {'delay_is_cadence': True}
 
 
 def test_a_real_cycle_reject_terminates_the_session(monkeypatch):
