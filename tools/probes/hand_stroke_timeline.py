@@ -612,6 +612,21 @@ _DIP_BELOW_X3_BAND_REV = 0.10    # `dip_below_x3_rev` at or under this reads as 
                               # TIGHTEST defect (ball 34) and ~100x on the healthy
                               # side — the tight side is the one to watch if a
                               # future capture lands near 0.3 rev.
+def _coast_disagrees(tl) -> bool:
+    """The gated row passes while the throw's own coast blew through the band.
+
+    This is the whole failure the coast row exists to surface: on the
+    2026-08-23 ladder the gated row read 0.000 rev on 15 of 15 throws whose
+    coasts finished 0.119-0.481 rev under x3.  Returning True does not change
+    any verdict — it prints a marker beside the one that would otherwise pass
+    quietly.
+    """
+    return (tl.dip_below_x3_rev is not None
+            and tl.coast_below_x3_rev is not None
+            and tl.dip_below_x3_rev <= _DIP_BELOW_X3_BAND_REV
+            < tl.coast_below_x3_rev)
+
+
 _PRE_WINDOW_S = 0.60
 _POST_WINDOW_S = 0.60
 _TRUNC_SCAN_MARGIN_S = 0.050  # how far past the modelled stroke end the truncation
@@ -780,6 +795,14 @@ class ThrowTimeline:
     # from a healthy stroke, and it is what the operator runbook gates on.
     dip_below_x3_rev: Optional[float] = None
     dip_below_x3_mm: Optional[float] = None
+    # The same question asked over the THROW'S OWN COAST only — bounded at
+    # `post_stroke_cmd`, so a later commanded move cannot supply the maximum
+    # the gated row searches down from.  Reported, never gated; see the block
+    # that computes it.
+    coast_peak_rev: Optional[float] = None
+    coast_min_rev: Optional[float] = None
+    coast_below_x3_rev: Optional[float] = None
+    coast_below_x3_mm: Optional[float] = None
     recovery: Optional[float] = None
     # Any downward command after the release, catch or not.  Reported separately
     # from `catch_desc` so a braking prelude is VISIBLE rather than shadowing the
@@ -1062,6 +1085,43 @@ def analyse_throw(session: Session, ann: Announcement) -> ThrowTimeline:
     tl.dip_below_x3_rev = max(0.0, model.x3_rev - bot.pos_meas)
     tl.dip_below_x3_mm = rev_to_mm(tl.dip_below_x3_rev)
 
+    # ── the COAST-ONLY companion: the ordering the gated row is blind to ────
+    # `dip_below_x3` searches for the bottom only AFTER the window's maximum,
+    # and that maximum can belong to a LATER COMMANDED MOVE — the gated catch
+    # arm's own prelude climbs back past x3 and overshoots it by a measured
+    # 0.046-0.222 rev.  When the throw's coast tops out lower than that (the
+    # coast-then-sag ordering this file's `_synth_fixed_session` docstring has
+    # flagged as a known blind spot since 2026-07-28, instrument-defect item
+    # 10), the search starts ~200 ms too late and the sag it was built to catch
+    # is behind it.
+    #
+    # That is not hypothetical any more.  On the first HAND-7 ladder flown on
+    # the unclamped drive (2026-08-23_19-14-54, 15 throws, 5 tiers) the gated
+    # row read 0.000 rev on 15 of 15 while the hand actually finished
+    # 0.119-0.481 rev under x3 — over the 0.10 rev band on EVERY throw, by up
+    # to 4.8x.
+    #
+    # The band is an operator ABORT threshold, so this does NOT re-arm it
+    # silently: `dip_below_x3` keeps its definition and its verdict, and this
+    # row is REPORTED beside it.  What the printer does add is a BLIND-SPOT
+    # marker whenever the two disagree across the band, so the instrument can
+    # no longer pass quietly on a capture whose coast blew through it.
+    # Bounded BELOW by the commanded stroke end, not by the release: the
+    # ascent runs from x2 = 5.91 rev and would supply the minimum of any
+    # window that opens earlier.  Meaningful only when the stroke actually
+    # completed — on a truncation the command never latched at x3, so there is
+    # no coast to bound and the row stays blank rather than inventing one.
+    coast_hi = tl.post_stroke_cmd if tl.post_stroke_cmd is not None else dip_end
+    coast = ([s for s in dip_win if tl.stroke_end_reached <= s.t <= coast_hi]
+             if (tl.trunc is None and tl.stroke_end_reached is not None) else [])
+    if coast:
+        cmin = min(coast, key=lambda s: s.pos_meas)
+        cmax = max(coast, key=lambda s: s.pos_meas)
+        tl.coast_peak_rev = cmax.pos_meas
+        tl.coast_min_rev = cmin.pos_meas
+        tl.coast_below_x3_rev = max(0.0, model.x3_rev - cmin.pos_meas)
+        tl.coast_below_x3_mm = rev_to_mm(tl.coast_below_x3_rev)
+
     # `recovery` is defined against the replacement quintic's target, so it is
     # meaningful only when there WAS a truncation.
     if tl.quintic_target_rev is not None:
@@ -1218,10 +1278,22 @@ def print_session(session: Session, timelines, preview: bool = False) -> None:
                 _f(tl.dip_depth_mm, '%.1f'),
                 _f(tl.dip_depth_pct_stroke, '%.1f'))),
             ('dip_below_x3   *** THE GATED ROW ***', tl.dip_bottom,
-             '%s rev = %s mm below x3   [%s, band %.2f rev]'
+             '%s rev = %s mm below x3   [%s, band %.2f rev]%s'
              % (_f(tl.dip_below_x3_rev, '%.3f'), _f(tl.dip_below_x3_mm, '%.1f'),
                 ('-' if tl.dip_below_x3_rev is None else
                  ('OK' if tl.dip_below_x3_rev <= _DIP_BELOW_X3_BAND_REV
+                  else 'OVER')),
+                _DIP_BELOW_X3_BAND_REV,
+                ('' if not _coast_disagrees(tl) else
+                 '   <<< BLIND SPOT: the coast row below is OVER the same band'))),
+            ('coast_below_x3 throw-only, REPORTED', tl.dip_bottom,
+             '%s rev = %s mm below x3   (coast peak %s, min %s; bounded at '
+             'post_stroke_cmd)   [%s, same %.2f rev band]'
+             % (_f(tl.coast_below_x3_rev, '%.3f'),
+                _f(tl.coast_below_x3_mm, '%.1f'),
+                _f(tl.coast_peak_rev, '%.4f'), _f(tl.coast_min_rev, '%.4f'),
+                ('-' if tl.coast_below_x3_rev is None else
+                 ('OK' if tl.coast_below_x3_rev <= _DIP_BELOW_X3_BAND_REV
                   else 'OVER')),
                 _DIP_BELOW_X3_BAND_REV)),
             ('recovery       back at target', tl.recovery, ''),
