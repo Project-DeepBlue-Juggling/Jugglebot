@@ -2464,8 +2464,8 @@ matters rather than passing on one side of it.
 
 ### Open questions carried out of Phase L
 
-1. **BLOCKING — the accept-time `throw_delay` floor does not model the sequence
-   it is measured against.** `toss_session.min_throw_delay_s` (and its mirror at
+1. ~~**BLOCKING — the accept-time `throw_delay` floor does not model the sequence
+   it is measured against.**~~ `toss_session.min_throw_delay_s` (and its mirror at
    `toss_sequencer.py:1151`) is the kind-0 dispatch budget; the runtime guard
    applies the same number to the lead REMAINING after the pre-dispatch sequence.
    Systematically loose by 0.080 s (level) / 0.460 s (aimed). Second instance:
@@ -2473,10 +2473,23 @@ matters rather than passing on one side of it.
    while the FSM receives the ILC-trimmed `event_vel_mps`, so a negative speed
    trim raises the floor after accept. `needs-design` — the session cannot know
    at accept time whether the node will take the B1 positioning skip.
-2. **Make the census-B1 positioning skip reachable on an aimed chain** by
-   publishing orientation alongside `trajectory/commanded_position`. Worth the
+   **RESOLVED 2026-08-23** — both gates import ONE derivation,
+   `toss_sequencer.min_throw_delay_for_release_s` = dispatch budget +
+   `pre_dispatch_budget_s`, and the session judges it at `floor_event_vel_mps`
+   (the slowest release layer 3's apply seam could command), which closes the
+   second instance. The `needs-design` blocker dissolved rather than being
+   answered: the node takes the B1 decision ONCE at cycle build and feeds it to
+   the FSM, so the session charges the chained steady state and the node grants
+   the first cycle the extra lead.
+   `logbook/2026-08-23-cadence-floor-and-inertia.md` § "Package 1".
+2. ~~**Make the census-B1 positioning skip reachable on an aimed chain** by
+   publishing orientation alongside `trajectory/commanded_position`.~~ Worth the
    entire 0.38 s LEVEL/AIMED gap — the single largest cadence item on the board,
    and a prerequisite for ILC-primary sittings running at level-chain cadence.
+   **RESOLVED 2026-08-23** — `trajectory/commanded_pose` carries the same plan
+   sample WITH its orientation, in the INTENT frame
+   (`levelling.uncorrect_pose`), and `_toss_already_positioned` verifies both
+   halves. Aimed frontier **40.4 → 54.3 throws/min**. Same entry, § "Package 1".
 3. ~~**MEDIUM — the C-POSSESS-1 § 3.4 arrival clamp closes inside the measured
    arrival band at the target cadence**~~ (clamped close at landing+0.7929 vs a
    band ceiling of +0.798 / `ARRIVAL_BAND_MAX_S` 0.80). Drops `catch_event_dt_s`
@@ -2490,6 +2503,14 @@ matters rather than passing on one side of it.
    reached an edge) and **C.2** (a window the schedule truncated inside the band
    answers UNKNOWN, never REJECTED). `logbook/2026-08-23-cadence-floor-and-inertia.md`
    § "Package 3".
-4. **Operator decision 3 of the fold-in needs re-taking.** 61 throws/min is not
+4. ~~**Operator decision 3 of the fold-in needs re-taking.**~~ 61 throws/min is not
    available on this build; the frontier is 54.3 level / 40.4 aimed and the
    corrected ladder targets 53.0 / 39.7.
+   **RE-TAKEN AND ACCEPTED by the operator 2026-08-23**, and ⚠ **every number on
+   the line above is superseded** — item 2's orientation surface deleted the
+   LEVEL/AIMED split, so the frontier is **54.3 throws/min with or without an
+   armed aim** and the accepted operating point is R5-prime **`dwell 0.66 /
+   throw_delay 0.44` at `throw_height_m 0.31`, 51.6 throws/min either way**
+   (was 53.0 level / 39.7 aimed). Recorded in
+   `plans/active/critical-point-ilc.md` decision 3 and
+   `tests/hardware/session_cadence_ladder.md` § 2.0.
