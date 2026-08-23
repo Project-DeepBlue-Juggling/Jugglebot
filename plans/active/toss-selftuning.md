@@ -2009,13 +2009,20 @@ intent) **before R3, not after**.
 > Every rung here was sized against the hand floor and, where relevant, the
 > kind-0 dispatch budget. Neither is the binding constraint below R3. The
 > `throw_delay` a goal needs is the dispatch budget **plus the whole
-> pre-dispatch sequence** — `+0.080 s` on a level chain, `+0.460 s` once an aim
-> is armed — because `toss_sequencer._step_preparing` re-checks the budget
-> against the lead REMAINING after CHECKING + POSITIONING + PREPARE, and
-> `_toss_already_positioned` cannot take the census-B1 skip on a tilted release
-> (`trajectory/commanded_position` carries no orientation). Driven to
+> pre-dispatch sequence** — `+0.080 s` when POSITIONING takes the census-B1 skip,
+> `+0.460 s` when it commands the move — because
+> `toss_sequencer._step_preparing` re-checks the budget against the lead
+> REMAINING after CHECKING + POSITIONING + PREPARE. Driven to
 > `ACTION_DISPATCH_THROW` rather than to POSITIONING, R4 aborts on an aimed
 > chain and R5 and R5-prime abort on both.
+>
+> **Both halves of that closed on 2026-08-23**
+> (`logbook/2026-08-23-cadence-floor-and-inertia.md`). The accept-time floor now
+> charges the sequence through one derivation both gates import, so those rungs
+> are refused BEFORE anything is armed rather than aborting mid-sequence; and
+> `trajectory/commanded_pose` publishes the commanded ORIENTATION, so the B1 skip
+> fires on an aimed chain and the level/aimed split — the `+0.380 s` difference
+> above — no longer exists. The aimed frontier went 40.4 → 54.3 throws/min.
 >
 > **This is § 11.6's own sentence coming true in the other direction.** § 11.6
 > says the release-window guard "is the correct runtime enforcement and merely

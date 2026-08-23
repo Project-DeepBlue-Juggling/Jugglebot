@@ -147,8 +147,12 @@ architecture.** What that does to this programme:
   matched cross-label control) — is why, and that verdict is itself due a
   re-check now that the clamp is gone (every 0b bag was recorded through it).
 - **Cadence**: the shipped 6.0 s dwell is replaced by the R0→R5 ladder toward
-  **R5-prime** (dwell 0.49 s at `T = 0.4949 s`, ~61 throws/min) —
-  [toss-selftuning.md](toss-selftuning.md) § 11. ⚠ The dangerous change is not
+  **R5-prime** — re-taken and accepted by the operator 2026-08-23 as **dwell
+  0.66 s / `throw_delay` 0.44 s at `T = 0.5029 s`, 51.6 throws/min with or
+  without an armed aim** (the ~61 throws/min this line asked for is not reachable
+  on this build; the frontier is 54.3). See
+  [toss-selftuning.md](toss-selftuning.md) § 11 and
+  `tests/hardware/session_cadence_ladder.md` § 2.0. ⚠ The dangerous change is not
   lowering `MIN_TOSS_THROW_DELAY_S`; it is lowering the dwell **without** the
   possession-semantics work (§ 11.4), which would leave a fail-open
   `ball_seated` gate, mislabel every good cycle `BOUNCED`, and route good cycles

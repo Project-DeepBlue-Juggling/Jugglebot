@@ -574,10 +574,16 @@ S1 at most one live cycle; S2 the session commands no motion of its own; S3
 cancellation obeys the per-cycle phase rules verbatim; S5 the dwell is a quiescent
 wait, never a stretched `throw_delay`.
 
-> ⚠ **SUPERSEDED 2026-08-22 (census A1/A3/A4, operator decision 3).** Both terms
-> of the paragraph below were retired. `MIN_TOSS_THROW_DELAY_S = 3.5 s` is gone —
-> replaced by a 0.10 s goal-storm debounce plus the DERIVED
-> `hand_stroke.min_throw_event_delay_s(v_throw)` (0.281 s at the 0.80 s nominal).
+> ⚠ **SUPERSEDED 2026-08-22 (census A1/A3/A4, operator decision 3), and again
+> 2026-08-23.** Both terms of the paragraph below were retired.
+> `MIN_TOSS_THROW_DELAY_S = 3.5 s` is gone — replaced by a 0.10 s goal-storm
+> debounce plus the DERIVED `hand_stroke.min_throw_event_delay_s(v_throw)`
+> (0.281 s at the 0.80 s nominal) **plus, since 2026-08-23, the pre-dispatch
+> sequence that budget is measured after** (`pre_dispatch_budget_s`: 0.080 s with
+> the census-B1 positioning skip, 0.460 s without it), because the runtime guard
+> in `_step_preparing` applies the same budget to the lead REMAINING after
+> CHECKING + POSITIONING + PREPARE. The floor at the 0.80 s nominal is therefore
+> 0.361 s, not 0.281 s.
 > The 0.6 s margin is gone — re-based on the hand sensor's arrival edge,
 > `ball_possession.ARRIVAL_BAND_MIN_S` = **0.137 s** (PROVISIONAL, pending the
 > post-FW14 band re-measure). And the floor gained a THIRD, physical term it

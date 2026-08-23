@@ -5,35 +5,43 @@
 **Action**: `jugglebot/toss_continuous` (`TossContinuous.action`)
 **Depends on**: `session_anomaly_fixes.md` § SECTION CONT green at the shipped
 6.0 s dwell. This file starts from that baseline and walks the dwell DOWN.
-**Goal**: reach the tuning-phase operating point — **dwell 0.63 s at a 0.31 m
-throw (flight 0.5029 s), cycle period 1.133 s, 53.0 throws/min on a LEVEL chain;
-dwell 1.01 s, period 1.513 s, 39.7 throws/min once an aim is ARMED** — one bench
-sitting per rung, with a measurable gate and a stated ABORT at each.
+**Goal**: reach the tuning-phase operating point — **dwell 0.66 s at a 0.31 m
+throw (flight 0.5029 s), cycle period 1.163 s, 51.6 throws/min — with or without
+an armed aim** — one bench sitting per rung, with a measurable gate and a stated
+ABORT at each.
 
-> ### ⚠ THE OPERATING POINT MOVED, 2026-08-22. Read this before booking a sitting.
+> ### ⚠ THE OPERATING POINT MOVED TWICE. Read this before booking a sitting.
 >
-> This file published **dwell 0.49 s / delay 0.35 s / 60.4 throws/min** as the
-> starred operating point, and **that goal never throws a ball.** Nor do R4 or
-> R5 as they were published. The rung table below is the corrected one; the
-> numbers it replaced, and the measurement that condemned them, are in
-> § 2.0.
+> **2026-08-22.** This file published **dwell 0.49 s / delay 0.35 s / 60.4
+> throws/min**, and *that goal never threw a ball* — nor did R4 or R5 as they
+> were published. Every rung's `throw_delay_s` was checked against the **kind-0
+> dispatch budget** (`hand_stroke.min_throw_event_delay_s`, 0.28–0.34 s), which
+> is the right floor for the dispatch and is not the floor the machine enforces:
+> `toss_sequencer._step_preparing` re-checks that same budget against the lead
+> REMAINING after CHECKING, POSITIONING and the PREPARE ladder have elapsed. The
+> old numbers cleared the first floor and died on the second, every cycle, at
+> `cycle_start + 0.06 s`, with the hand retracting under a seated ball. The file
+> then republished every rung twice — a LEVEL pair and an AIMED pair 0.38 s
+> apart — and reported a frontier of 54.3 / 40.4 throws/min.
 >
-> The short version: every rung's `throw_delay_s` was checked against the
-> **kind-0 dispatch budget** (`hand_stroke.min_throw_event_delay_s`, 0.28–0.34 s)
-> — which is the right floor for the dispatch, and is not the floor the machine
-> actually enforces. `toss_sequencer._step_preparing` re-checks that same budget
-> against the lead REMAINING after CHECKING, POSITIONING and the PREPARE ladder
-> have already elapsed, so the real floor is the budget **plus the whole
-> pre-dispatch sequence**: +0.080 s on a level chain and **+0.460 s** once any
-> aim is armed. The old numbers cleared the first floor and died on the second,
-> every cycle, at `cycle_start + 0.06 s`, with the hand retracting under a
-> seated ball.
+> **2026-08-23 — the split is GONE and the aimed number is 34 % better.** Both
+> items that gap named are now closed:
+>
+> 1. `trajectory/commanded_pose` publishes the commanded ORIENTATION alongside
+>    the position, so `_toss_already_positioned` can verify a pre-tilt pose and
+>    the census-B1 skip fires on an aimed chain. That was the entire LEVEL/AIMED
+>    gap. **One pair per rung again**, and the frontier is **54.3 throws/min
+>    whether an aim is armed or not** (was 40.4 aimed).
+> 2. The accept-time delay floor now models the whole pre-dispatch sequence
+>    (`toss_sequencer.min_throw_delay_for_release_s`, imported by BOTH gates).
+>    It buys no cadence — it buys an honest refusal: a goal these gates accept
+>    **cannot** die `ABORTED_CANT_MAKE_RELEASE`, and the probe asserts that over
+>    the whole `(T, dwell, delay, aim)` grid.
 >
 > The operator's decision of 2026-08-21 ("dwell 0.49 s, ~61 throws/min") was
-> taken on those numbers. **It cannot be honoured as stated** — 61 throws/min is
-> not reachable on this build in either chain (the frontier is 54.3 level /
-> 40.4 aimed, § 2.0) — so the decision needs re-taking against the real
-> frontier. That is an open question, not a thing this file has settled.
+> taken on the pre-audit numbers. **It cannot be honoured as stated** — 61
+> throws/min is not reachable on this build — and the corrected ladder below is
+> what the operator ACCEPTED on 2026-08-23 in its place.
 
 The C-HAND-3 band FLOOR is flight 0.4949 s, and the goal parameters here sit a
 deliberate 8 ms of flight time above it, which buys clearance from a cliff — see
@@ -41,7 +49,7 @@ the warning under the ladder table in § 2.
 
 > **⚡ THIS SESSION FIRES REAL THROWS, FASTER EACH RUNG.** By R4 the machine
 > throws and catches roughly once a second and does not stop between cycles; by
-> R5-prime the hand is in motion for all but ~0.14 s of every LEVEL cycle. On any miss the ball
+> R5-prime the hand is in motion for all but ~0.17 s of every cycle. On any miss the ball
 > lands on the floor. Clear the area, keep clear of the hand's stroke path and the landing
 > zone, and keep the E-STOP in reach the entire time.
 >
@@ -91,10 +99,10 @@ at its 0.9 default):
 > **⚠ The last two columns are HYPOTHETICAL, not achievable.** They are what the
 > cadence would be if the hand floor were the only floor — which it was until the
 > pre-dispatch sequence was measured on 2026-08-22, and is not any more. The
-> achievable numbers are in § 2.0's frontier table (**54.3 level / 40.4 aimed**
-> at best, against the 61.1 this row implies). The hand-geometry columns to their
-> left are correct and still worth having: they are what a firmware change to
-> `calcCatch` would move, and nothing else in this file is.
+> achievable number is in § 2.0's frontier table (**54.3 throws/min** at best,
+> aim armed or not, against the 61.1 this row implies). The hand-geometry columns
+> to their left are correct and still worth having: they are what a firmware
+> change to `calcCatch` would move, and nothing else in this file is.
 
 **Three consequences to state plainly before the first sitting:**
 
@@ -106,17 +114,19 @@ at its 0.9 default):
 2. **The dwell is the wrong operator variable.** Cycle *period* is nearly flat
    across the band and bottoms at the FLOOR of the flight band, whichever floor
    is binding. Ask for a throws/min number, not a dwell — and get there by making
-   the FLIGHT short, not the dwell. (The achievable bottom is 1.105 s level /
-   1.485 s aimed, § 2.0, not the 0.982 s this table's hypothetical column shows.)
-3. **The hand floor is no longer what binds below R3 — the PRE-DISPATCH
+   the FLIGHT short, not the dwell. (The achievable bottom is 1.105 s, § 2.0, not
+   the 0.982 s this table's hypothetical column shows.)
+3. **The hand floor is no longer what binds ANYWHERE — the PRE-DISPATCH
    SEQUENCE is.** The table above is the hand's own geometry and it is correct,
    but `required_dwell_s` is `max(throw_delay + handoff_margin, hand_floor)`, and
-   below ~0.7 s of flight the first term wins by a distance: the delay must clear
-   the dispatch budget **plus** the sequence cost (0.080 s level / 0.460 s
-   aimed), and the handoff margin then adds the hand's park re-entry on top. At
-   the target flight that makes the smallest legal dwell **0.605 s level /
-   0.985 s aimed**, against a 0.487 s hand floor. The hand is no longer the
-   limit; the software sequence is. See § 2.0.
+   since the delay floor grew the sequence cost the first term wins **at every
+   admitted flight time, by at least 0.12 s**: the delay must clear the dispatch
+   budget **plus** 0.080 s of chained sequence, and the handoff margin then adds
+   the hand's park re-entry on top. At the target flight that makes the smallest
+   legal dwell **0.605 s** (0.636 s with an ILC artifact loaded), against a
+   0.487 s hand floor. The hand is no longer the limit; the software sequence is.
+   `test_the_hand_floor_is_dominated_by_the_plumbing_term` pins that dominance,
+   so if it ever inverts again the suite says so. See § 2.0.
 
 ### The firmware question the census left open: `t7`, not `t8` — VERIFIED
 
@@ -124,10 +134,20 @@ The census flagged one item to verify before trusting the table above: whether
 the C-HAND-1 no-overlap floor is written against `t7` (hand at rest at 0 rev) or
 `t8 = t7 + END_PROFILE_HOLD` (0.10 s). **If `t8`, every number above rises by
 100 ms**. That no longer moves the operating point — since 2026-08-22 the hand
-floor is not what binds below R3 (§ 0 consequence 3) — but it would raise the
-hand floor at the band floor from 0.4871 s to 0.5871 s, and R5-prime's LEVEL
-dwell of 0.63 s would then clear it by only 43 ms instead of by 143 ms, making
-the hand the binding term on the level column all over again.
+floor is not what binds (§ 0 consequence 3) — and it would not move it even then:
+the hand floor at the band floor would rise from 0.4871 s to 0.5871 s against a
+plumbing term of 0.6101 s, so the plumbing would still bind and R5-prime's 0.66 s
+dwell would still be legal (its own hand floor would be 0.5805 s).
+
+**What it WOULD do is eat the dominance argument.** The plumbing term's worst-case
+margin over the hand floor drops from **0.1230 s to 0.0230 s** (both at
+`T = 0.4949`, probe 2026-08-23) — and that margin is what makes it safe to leave
+`hand_floor_dwell_s` on the untrimmed release speed while the two floors either
+side of it moved to the fail-closed one (0.0715 s of worst-case trim sensitivity
+would no longer fit inside it). `test_the_hand_floor_is_dominated_by_the_plumbing_term`
+asserts the 0.12 s margin, so a `t8` firmware change reds the suite rather than
+silently inverting an argument. That is the whole reason the six line references
+below are re-verified after any `Trajectory.h` flash.
 
 **Verified in the shipped `Teensy_code_platform/Trajectory.h`, 2026-08-22: it is
 `t7`.** No adjustment. The evidence:
@@ -183,15 +203,25 @@ cycle either dispatches a throw or dies.** The check is a committed probe:
 
 ```bash
 source ~/Desktop/PDJ_venv/venv/bin/activate
-python tools/probes/cadence_rung_check.py            # every rung, both chains
+python tools/probes/cadence_rung_check.py            # every rung, four ways
+python tools/probes/cadence_rung_check.py --solve    # the per-rung floors
 python tools/probes/cadence_rung_check.py --frontier # the reachable frontier
+python tools/probes/cadence_rung_check.py --grid     # accept-implies-flies
 ```
 
 It constructs the `TossSessionSequencer` and asserts the accept gate passes,
 then constructs the cycle `TossSequencer`, ticks it at the node's real
 `_TICK_S` (0.02 s), feeds it the fastest node behaviour that is legal, and
-asserts it reaches **`ACTION_DISPATCH_THROW`**. Re-run it after any change to
+asserts it reaches **`ACTION_DISPATCH_THROW`** — on the CHAINED cycle and on the
+FIRST cycle of the sitting, with an ILC artifact loaded and without, i.e. four
+ways per rung. `--grid` additionally sweeps the whole `(T, dwell, delay, aim)`
+space for **accept-implies-flies** violations. Re-run it after any change to
 `toss_session`, `toss_sequencer`, `hand_stroke` or the coordinator's tick.
+
+**It is also a test now** — `tests/motion/test_cadence_rung_check.py` imports the
+probe and reds the suite if any published rung stops flying or the grid finds a
+violation, so this table cannot drift away from the machine again without the
+default gate saying so.
 
 > **Why that last word matters.** Until 2026-08-22 this section claimed every
 > rung "has been checked against the real FSMs", and the check stopped at
@@ -209,24 +239,54 @@ asserts it reaches **`ACTION_DISPATCH_THROW`**. Re-run it after any change to
 >
 > The probe keeps that table as `LADDER_PRE_AUDIT`, deliberately: a probe that
 > can no longer reproduce the finding has lost it.
+>
+> **Against the 2026-08-23 tree those same rungs still fail — and they fail
+> EARLIER.** The accept-time floor now models the whole sequence, so R5 and
+> R5-prime are `REJECTED_THROW_DELAY` at the session gate and every remaining
+> failure is a `REJECTED_CANT_MAKE_LEAD` at CHECKING: refused before anything is
+> armed, with the reject message naming the dispatch budget, the sequence cost
+> and which of the two sequences it charged. Not one of them reaches
+> `ABORTED_CANT_MAKE_RELEASE` any more. That is the fix, stated as a diff rather
+> than as a claim.
 
-**The LEVEL / AIMED split is not a refinement — it is 0.38 s of throw delay.**
-The census-B1 positioning skip (`_toss_already_positioned`) returns `False` on
-**every tilted release**, by construction: `trajectory/commanded_position`
-carries position and nothing else, so the node cannot verify the platform is
-already at a pre-tilt pose and must command the move. An armed aim — ILC layer 3,
-the calibration map, or Tier 8b displacement — makes every release tilted. So
-each aimed cycle pays `min_move_duration_s` (0.20) + `TOSS_POSITION_SETTLE_PAD_S`
-(0.20) + ticks that a level cycle skips, and **the ladder this file exists to
-run for ILC-primary is the AIMED one.**
+**The LEVEL / AIMED split published here on 2026-08-22 is GONE, and it was worth
+0.38 s of throw delay per cycle.** It existed because the census-B1 positioning
+skip (`_toss_already_positioned`) returned `False` on **every tilted release**,
+by construction: `trajectory/commanded_position` carried position and nothing
+else, so the node could not verify the platform was already at a pre-tilt pose
+and had to command the move. An armed aim — ILC layer 3, the calibration map, or
+Tier 8b displacement — makes every release tilted, so every ILC sitting paid
+`min_move_duration_s` (0.20) + `TOSS_POSITION_SETTLE_PAD_S` (0.20) + ticks to
+traverse zero millimetres and re-command a tilt it was already holding.
 
-**The reachable frontier** (`--frontier`, 2026-08-22; monotone across the whole
+`trajectory/commanded_pose` now carries the same sampled plan state WITH its
+orientation, in the INTENT frame (`trajectory_node._intent_orientation` inverts
+the C-LEVEL-1 correction before publishing, so a consumer compares against what
+it is about to request rather than against a gravity-corrected version of it).
+The check got STRICTER, not looser — a tilted release must now PROVE the platform
+holds its tilt, where before it could not be asked — and the discriminator became
+per-CYCLE:
+
+- **the FIRST cycle of a sitting commands the move** (the platform is not yet at
+  the pre-tilt pose). The node grants that one cycle the extra lead and logs one
+  WARN line naming the raise; it does not kill the sitting;
+- **every chained cycle takes the skip**, because a CAUGHT toss ends in
+  `ACTION_STAY` holding the pose it threw and caught from.
+
+**The reachable frontier** (`--frontier`, 2026-08-23; monotone across the whole
 C-HAND-3 band, fastest at the floor):
 
-| chain | fastest period | throws/min | at `T` | `throw_delay_s` | `dwell_time_s` |
+| aim | fastest period | throws/min | at `T` | `throw_delay_s` | `dwell_time_s` |
 |---|---|---|---|---|---|
-| LEVEL | 1.105 s | **54.3** | 0.4949 | 0.4168 | 0.6102 |
-| AIMED | 1.485 s | **40.4** | 0.4949 | 0.7968 | 0.9901 |
+| DISARMED | 1.105 s | **54.3** | 0.4949 | 0.4168 | 0.6101 |
+| ILC artifact LOADED | 1.105 s | **54.3** | 0.4949 | 0.4168 | 0.6101 |
+
+The two meet at the band floor because the throw envelope refuses a negative
+speed trim there, so a loaded artifact costs nothing at the fastest point. Away
+from the floor it costs ~1.5 throws/min: the session judges every derived floor
+at the **slowest release the ILC's apply seam could command**, because every one
+of those floors rises as the release slows and a negative trim used to raise the
+cycle's floor *after* the session had accepted the goal.
 
 Those are knife edges — zero clearance, and the PREPARE bundle's three
 synchronous service round-trips are charged as free. The published rungs below
@@ -239,38 +299,47 @@ sit back from them.
 delay makes even R1 illegal), and `throw_height_m` has a **cliff** — see the
 warning under the table.
 
-**Two columns per rung from R4 down.** Use the LEVEL pair only when the aim is
-provably disarmed (no ILC artifact loaded, no calibration map applied, Tier 8a);
-use the AIMED pair for everything else, and for every ILC-primary sitting. The
-AIMED pair is legal on a level chain too, just slower — **when in doubt, use
-AIMED.**
+**ONE pair per rung again** (2026-08-23). Every pair below is legal with a
+layer-3 artifact LOADED as well as without it — the stricter of the two cases,
+chosen because this runbook exists to arm ILC-primary and a two-column table is
+a way to pick the wrong column at 2 am.
 
-| rung | `throw_height_m` | ⇒ flight `T` | LEVEL `dwell`/`delay` | period | /min | AIMED `dwell`/`delay` | period | /min |
-|---|---|---|---|---|---|---|---|---|
-| R0 | 0.78 | 0.7977 | 5.60 / 5.00 | 6.398 | 9.4 | 5.60 / 5.00 | 6.398 | 9.4 |
-| R1 | 0.78 | 0.7977 | 4.10 / 3.50 | 4.898 | 12.3 | 4.10 / 3.50 | 4.898 | 12.3 |
-| R2 | 0.78 | 0.7977 | 3.00 / 2.40 | 3.798 | 15.8 | 3.00 / 2.40 | 3.798 | 15.8 |
-| R3 | 0.78 | 0.7977 | 1.50 / 0.90 | 2.298 | 26.1 | 1.50 / 0.90 | 2.298 | 26.1 |
-| R4 | 0.45 | 0.6059 | 0.65 / 0.45 | 1.256 | 47.8 | 1.00 / 0.82 | 1.606 | 37.4 |
-| R5 | 0.31 | 0.5029 | 0.70 / 0.47 | 1.203 | 49.9 | 1.08 / 0.85 | 1.583 | 37.9 |
-| **R5-prime** | **0.31** | **0.5029** | **0.63 / 0.43** | **1.133** | **53.0** | **1.01 / 0.81** | **1.513** | **39.7** |
+| rung | `throw_height_m` | ⇒ flight `T` | `dwell_time_s` | `throw_delay_s` | period | throws/min |
+|---|---|---|---|---|---|---|
+| R0 | 0.78 | 0.7977 | 5.60 | 5.00 | 6.398 | 9.4 |
+| R1 | 0.78 | 0.7977 | 4.10 | 3.50 | 4.898 | 12.3 |
+| R2 | 0.78 | 0.7977 | 3.00 | 2.40 | 3.798 | 15.8 |
+| R3 | 0.78 | 0.7977 | 1.50 | 0.90 | 2.298 | 26.1 |
+| R4 | 0.45 | 0.6059 | 0.65 | 0.45 | 1.256 | 47.8 |
+| R5 | 0.31 | 0.5029 | 0.70 | 0.47 | 1.203 | 49.9 |
+| **R5-prime** | **0.31** | **0.5029** | **0.66** | **0.44** | **1.163** | **51.6** |
 
 Every cell above is `PUBLISHED LADDER: all rungs FLY` from
-`tools/probes/cadence_rung_check.py`, run 2026-08-22. R0–R3 need no split: their
-delays are seconds clear of every floor, so whether the B1 skip fires is not
-load-bearing there.
+`tools/probes/cadence_rung_check.py`, run 2026-08-23 — four ways per rung
+(session accept; chained cycle; first cycle; each with the ILC trim possible and
+not) — and `tests/motion/test_cadence_rung_check.py` reds the suite if that stops
+being true.
 
 **One variable changes per rung.** R0→R3 walk the DWELL down at a fixed 0.78 m
 throw; R4 and R5 shorten the FLIGHT (which is where the cadence actually comes
 from — see § 0 consequence 2); R5-prime tightens the dwell at the R5 flight.
 
-**The AIMED column does not walk the dwell down, and that is real.** R4 aimed is
-1.00 s and R5 aimed is 1.08 s — the dwell goes *up* between them, because the
-dispatch budget rises as the flight shortens and the aimed delay carries the
-whole sequence cost on top of it. On an aimed chain the cadence still improves
-(1.606 → 1.583 s period) because the flight shrinks faster than the dwell grows.
-This is § 0 consequence 2 arriving with teeth: **period is the operator variable,
-dwell is not.**
+**R5 is SLOWER in dwell than R4 and still faster in cadence, and that is real.**
+R4's dwell is 0.65 s and R5's is 0.70 s — the dwell goes *up* between them,
+because the kind-0 dispatch budget rises as the flight shortens (0.310 s at
+`T = 0.6059`, 0.334 s at `T = 0.5029`) and the delay carries it. The cadence
+still improves (1.256 → 1.203 s period) because the flight shrinks faster than
+the dwell grows. This is § 0 consequence 2 arriving with teeth: **period is the
+operator variable, dwell is not.**
+
+**What each rung clears its floors by** (probe, 2026-08-23; the ILC-loaded floors,
+which are the binding ones):
+
+| rung | delay floor | clearance | dwell floor | clearance |
+|---|---|---|---|---|
+| R4 | 0.4113 | 38.7 ms | 0.6361 | 13.9 ms |
+| R5 | 0.4280 | 42.0 ms | 0.6781 | 21.9 ms |
+| R5-prime | 0.4280 | 12.0 ms | 0.6481 | 11.9 ms |
 
 > **⚠ `throw_height_m: 0.31`, NOT 0.30 — there is a cliff at 0.3005 m.** The
 > census quotes the operating point's apex as "0.30 m", which is a rounded
@@ -338,36 +407,44 @@ dwell is not.**
 
 | | |
 |---|---|
-| **goal (LEVEL)** | `throw_height_m: 0.45`, `dwell_time_s: 0.65`, `throw_delay_s: 0.45` — aim provably disarmed only |
-| **goal (AIMED)** | `throw_height_m: 0.45`, `dwell_time_s: 1.00`, `throw_delay_s: 0.82` — **use this one unless you have checked** |
-| **must have landed** | census **B1** (the no-op positioning move is skipped), **B3** (`_TICK_S` 0.05 → 0.02), **B6** (record + trim off the cycle thread), **A3** (the dwell margin re-based on the sensor arrival edge, 0.137 s), **E5** (`catch/pretilt_hold` raised on EVERY cycle). All landed 2026-08-22 |
+| **goal** | `throw_height_m: 0.45`, `dwell_time_s: 0.65`, `throw_delay_s: 0.45` |
+| **must have landed** | census **B1** (the no-op positioning move is skipped), **B3** (`_TICK_S` 0.05 → 0.02), **B6** (record + trim off the cycle thread), **A3** (the dwell margin re-based on the sensor arrival edge, 0.137 s), **E5** (`catch/pretilt_hold` raised on EVERY cycle). All landed 2026-08-22. **AND** the B1 orientation surface + the accept-floor redesign, landed 2026-08-23 |
 | **measurable gate** | 5/5 CAUGHT; `dip_below_x3 ≤ 0.10 rev` on **every** cycle; `sensor_held_at_dispatch = true` on all 5; **log the per-cycle `dispatch → catch-stroke-end` gap** |
 | **watch for** | (a) a mis-ordered `prime_hold`/`armed` toggle shows up HERE as a `dip_below_x3` excursion — the two now toggle at ~0.8 Hz and that has never been run; (b) E1/E2 conflict — **any platform motion inside `arrival ± [0.30, 0.50] s` is a stop**; (c) B1 — see the box below, and read it before diagnosing anything |
 | **PASS** | 5/5 with every `dip_below_x3` inside band and a positive stroke gap on every cycle |
 | **ABORT** | any `dip_below_x3 > 0.10 rev`; any commanded platform motion inside the settle/freeze window; **any negative `dispatch → catch-stroke-end` gap** |
 
-> **⚠ B1: `POSITIONING skipped` NEVER appears on an aimed chain, and that is
-> correct behaviour — not a levelling fault.** This box replaces the previous
-> instruction ("if it is NOT firing on a level chain, the platform is drifting
-> off B and that is the finding"), which was true only for the level case and
-> silent about the other one (audit fix, 2026-08-22).
+> **⚠ B1: `POSITIONING skipped` should appear on EVERY cycle but the first —
+> aim armed or not.** This box replaced a 2026-08-22 version that said the
+> opposite ("it NEVER appears on an aimed chain, and that is correct"), which was
+> true of the build that could not verify an orientation and is not true of this
+> one.
 >
-> `_toss_already_positioned` has three conditions and **the first one is that the
-> release must be LEVEL**: `trajectory/commanded_position` publishes position
-> only, so a pre-tilt pose carries an orientation this node cannot verify, and a
-> wrong "yes" would fire the throw from a site the aim was not solved for. Any
-> armed aim — ILC layer 3, the calibration map, Tier 8b — makes every release
-> tilted, so the skip is off for the whole sitting by construction.
+> `_toss_already_positioned` has two conditions now: a FRESH
+> `trajectory/commanded_pose`, and a match on position AND orientation within
+> tolerance (17.5 mm per axis, 2.71 mrad per rotvec component — the tilt whose
+> landing drift equals that same 17.5 mm at the tallest admitted throw). A
+> chained cycle matches both trivially: the previous cycle's `ACTION_STAY` left
+> the platform holding the pose it threw and caught from, and this cycle
+> recomputes the identical pre-tilt from the identical (catch pose, flight, aim).
 >
 > Diagnose it this way:
 >
-> - **aim armed, no `POSITIONING skipped`** → expected. You are on the AIMED
->   column. Nothing to chase.
-> - **aim disarmed, no `POSITIONING skipped`** → *now* it is the finding: the
->   platform is drifting off B, or `trajectory/commanded_position` is stale.
-> - **aim armed AND `POSITIONING skipped`** → **stop the sitting.** The skip
->   fired on a tilted release, which means the release was not tilted after all
->   or the guard has regressed; either way the aim is not flying.
+> - **cycle 1 has no `POSITIONING skipped`, and one WARN line saying
+>   `toss throw_delay raised … for this cycle`** → expected on every sitting that
+>   starts from a level platform (i.e. every aimed one). Nothing to chase; the
+>   cadence you asked for starts at cycle 2.
+> - **cycles 2..N have no `POSITIONING skipped`** → *now* it is the finding:
+>   the platform is drifting off the throw pose, `trajectory/commanded_pose` is
+>   stale (or the running `trajectory_node` predates the topic — check
+>   `ros2 topic list | grep commanded_pose`), or the aim is changing per cycle.
+> - **the raise WARN appears on a cycle other than the first** → the previous
+>   cycle did not end in `ACTION_STAY` (a MISS's `go_home`, a reload interlude's
+>   recentre) or something else moved the platform. Read the WARN's pose.
+> - **`POSITIONING skipped` on a cycle whose aim you believe is armed, with no
+>   preceding cycle at that aim** → **stop the sitting.** Either the release was
+>   not tilted after all or the guard has regressed; either way the aim is not
+>   flying.
 
 ### R5 — 0.70 s level / 1.08 s aimed at the TARGET flight ⚠ the machine stops being quiescent
 
@@ -381,21 +458,20 @@ dwell is not.**
 >
 > A 0.40 s dwell is not reachable at ANY flight on this build once the
 > pre-dispatch sequence is counted (§ 2.0): the smallest legal dwell over the
-> whole C-HAND-3 band is **0.471 s level / 0.851 s aimed**, both at `T ≈ 1.145`
-> near the band ceiling, where the cadence is 37.1 / 30.1 throws/min
-> (`--frontier`, 2026-08-22). Chasing 0.40 s costs cadence
+> whole C-HAND-3 band is **0.471 s** (0.482 s with an ILC artifact loaded), at
+> `T ≈ 1.145` near the band ceiling, where the cadence is 37.1 throws/min
+> (`--frontier`, 2026-08-23). Chasing 0.40 s costs cadence
 > rather than buying it — § 0 consequence 2, arriving in practice.
 >
 > So R5 keeps its PURPOSE — the first sitting at the target flight, the rung
 > where F1/F6/F7 must have landed because the machine is no longer quiescent —
 > and takes numbers the machine admits, with a deliberate margin above the floor
-> for a flight nothing has been flown at continuously: **level 0.70 s dwell
-> (39.7 ms above its 0.660 s floor), aimed 1.08 s (39.7 ms above 1.040 s).**
+> for a flight nothing has been flown at continuously: **0.70 s dwell, 21.9 ms
+> above its 0.678 s floor, and a 0.47 s delay 42.0 ms above its 0.428 s one.**
 
 | | |
 |---|---|
-| **goal (LEVEL)** | `throw_height_m: 0.31`, `dwell_time_s: 0.70`, `throw_delay_s: 0.47` — 49.9 throws/min |
-| **goal (AIMED)** | `throw_height_m: 0.31`, `dwell_time_s: 1.08`, `throw_delay_s: 0.85` — 37.9 throws/min |
+| **goal** | `throw_height_m: 0.31`, `dwell_time_s: 0.70`, `throw_delay_s: 0.47` — 49.9 throws/min |
 | **must have landed** | census **F1** (the miss-cleanup floor re-derived from COMPLETION rather than service acks), **F6** (pipelining, OR a demonstrated verdict path with ≤ 0.10 s latency), **F7** (invariant S5 re-argued **in writing** — at this dwell the "quiescent wait" is under 0.2 s and the reactive catch path is effectively always live). **None of these has landed. R5 is NOT reachable today.** |
 | **measurable gate** | 20/20 CAUGHT across 4 sessions; measured `landing → next release` within 20 ms of the modelled floor; sustained **49.9 (level) / 37.9 (aimed) throws/min** |
 | **watch for** | the C-HAND-1 no-overlap margin, per cycle. **A negative `dispatch → catch-stroke-end` gap is an abort-the-sitting event, not a data point.** Also: this is the first sitting at a ~0.50 s flight, so re-check the § 0 table's short-flight column against what the hand actually does before R5-prime tightens the dwell on top of it. And log `landing → hand back inside the park band` — the model says 0.190 s at this flight, and `handoff_margin_s` is now sized on it |
@@ -406,39 +482,38 @@ dwell is not.**
 
 | | |
 |---|---|
-| **goal (LEVEL)** | `throw_height_m: 0.31`, `dwell_time_s: 0.63`, `throw_delay_s: 0.43` |
-| **goal (AIMED)** | `throw_height_m: 0.31`, `dwell_time_s: 1.01`, `throw_delay_s: 0.81` |
+| **goal** | `throw_height_m: 0.31`, `dwell_time_s: 0.66`, `throw_delay_s: 0.44` |
 | **flight / apex** | 0.5029 s / 0.31 m — 8 ms above the C-HAND-3 band FLOOR |
 | **must have landed** | everything through R5 |
-| **measurable gate** | **cycle period 1.133 s ⇒ 53.0 throws/min (level)**, or **1.513 s ⇒ 39.7 throws/min (aimed)**, sustained |
-| **watch for** | this rung is TIGHT, on both variants: the dwell clears its floor by **9.7 ms** and the delay clears its own by **15.5 ms** (probe, 2026-08-22). Log the stroke gap on every cycle and treat the sitting as instrumentation, not as a demo. Do not round any of the four numbers down, and do not round the height down either (see the cliff warning in § 2) |
-| **PASS** | sustained 53 (level) / 39.7 (aimed) throws/min with a positive stroke gap on every cycle |
+| **measurable gate** | **cycle period 1.163 s ⇒ 51.6 throws/min**, sustained, with or without an armed aim |
+| **watch for** | this rung is TIGHT: against the ILC-loaded floors the dwell clears by **11.9 ms** and the delay by **12.0 ms** (probe, 2026-08-23). Log the stroke gap on every cycle and treat the sitting as instrumentation, not as a demo. Do not round any of the three numbers down, and do not round the height down either (see the cliff warning in § 2) |
+| **PASS** | sustained 51.6 throws/min with a positive stroke gap on every cycle |
 | **ABORT** | as R5 |
 
 **This is the maximum-throughput operating point of the machine as built —
-53.0 throws/min level, 39.7 aimed.** The absolute frontier is 54.3 / 40.4
-(§ 2.0), and this rung is that frontier with ~10 ms of dwell clearance, ~15 ms
-of delay clearance and 8 ms of flight-time clearance, for a combined cost of
-1.3 / 0.7 throws/min.
+51.6 throws/min, whether or not an aim is armed.** The absolute frontier is 54.3
+(§ 2.0), and this rung is that frontier with ~12 ms of clearance on both floors
+and 8 ms of flight-time clearance, for a combined cost of 2.7 throws/min.
 
-> **This is NOT the 60.4 throws/min this file used to claim, and the gap is not
+> **This is NOT the 60.4 throws/min this file once claimed, and the gap is not
 > the hand.** The hand floor at this flight is 0.487 s and it is not what binds:
 > the binding term is `throw_delay + handoff_margin`, where the delay must cover
 > the kind-0 dispatch budget **plus the whole pre-dispatch sequence** (§ 2.0).
-> Two things would move it, and neither is a firmware fork:
+> The two things that WOULD have moved it both landed on 2026-08-23 and are why
+> the aimed column of this file disappeared:
 >
-> 1. **Publish orientation alongside `trajectory/commanded_position`**, so
->    `_toss_already_positioned` can verify a pre-tilt pose and the census-B1 skip
->    fires on an aimed chain too. That is the whole 0.38 s gap between the LEVEL
->    and AIMED columns — it would bring aimed sittings back to ~53 throws/min.
-> 2. **Make the accept-time delay floor model the sequence it is actually
->    measured against**, rather than the dispatch budget alone, so the session
->    refuses at accept instead of the cycle aborting at PREPARE. That does not
->    buy cadence; it buys an honest refusal, and it is what would have caught
->    this file's own numbers.
+> 1. **`trajectory/commanded_pose` publishes the orientation**, so
+>    `_toss_already_positioned` verifies a pre-tilt pose and the census-B1 skip
+>    fires on an aimed chain. That was the whole 0.38 s gap — aimed sittings went
+>    from 39.7 to 51.6 throws/min, a 30 % improvement, and it is the entire
+>    cadence content of that day's work.
+> 2. **The accept-time delay floor models the sequence it is measured against.**
+>    It bought no cadence and was never going to; what it bought is that a goal
+>    these gates accept cannot abort mid-sequence with the hand committed, which
+>    is what would have caught this file's own numbers a day earlier.
 >
-> Both are open questions as of 2026-08-22. Anything faster than the frontier
-> after those land is R6, and R6 is a firmware fork that is not being built.
+> Anything faster than the 54.3 frontier is R6, and R6 is a firmware fork that is
+> not being built.
 
 ### ~~R6 — 0.25 s~~ — DEFERRED FIRMWARE FORK, DO NOT BUILD
 
@@ -447,6 +522,90 @@ re-derivation of C-HAND-3's `ARM_WINDOW` bound, `hand_stroke.HandStrokeModel`,
 `sim/hand/trajectory.py`, and **every stroke landmark** (`x2` / `x3` / `x5`) that
 the tilt map and the catch tuning were validated at. Operator decision 3,
 2026-08-21: not being built.
+---
+
+## 2.9 Command reference — every field of `jugglebot/toss_continuous`
+
+The rungs above give three numbers. This section is what those three numbers sit
+inside, so an operator can type the command without reading the `.action` file.
+Every default and every bound below is read from
+`ros_ws/src/jugglebot_interfaces/action/TossContinuous.action`, the numerics gate
+`reload_coordinator_node._invalid_toss_session_goal_field`, and the generated
+`hardware_config` — never from memory.
+
+### The template
+
+```bash
+ros2 action send_goal --feedback jugglebot/toss_continuous \
+  jugglebot_interfaces/action/TossContinuous \
+  "{catch_position: {x: 0.0, y: 0.0, z: 170.0},
+    throw_height_m: 0.31,
+    num_throws: 5,
+    dwell_time_s: 0.66,
+    throw_delay_s: 0.44,
+    catch_vel_scale: 0.0,
+    stop_on_miss: true,
+    on_empty_cup: 'STOP',
+    max_reloads: 0}"
+```
+
+`--feedback` is worth the noise at these cadences: the feedback carries
+`cycle_index`, the live cycle's phase and a running `catches_confirmed`, which is
+the only way to watch a sitting degrade before its terminal.
+
+### Every field
+
+| field | type / units | omitted or `0` means | validated range | refused as |
+|---|---|---|---|---|
+| `catch_position` | `geometry_msgs/Point`, mm, **STOW-relative platform frame** (`z: 170.0` is the ACTIVE plane) | `(0, 0, 0)` — a real request, **not** a default. `z: 0` is 170 mm below the active plane and dies. Always state it | finite; `abs(x), abs(y)` within `toss_workspace_xy_mm` (160.0), `abs(z - 170)` within `TOSS_Z_BAND_MM` | non-finite ⇒ `REJECTED_BAD_GOAL(catch_position.x)` / `.y` / `.z`; outside the box ⇒ `REJECTED_WORKSPACE` |
+| `throw_height_m` | `float64`, apex above the release plane | the config default FLIGHT `JB_OP_TOSS_FLIGHT_TIME_DEFAULT_S` = 0.8 s (about a 0.784 m apex) — the flight is the default, not a height | finite, non-negative; converted once by `flight_time_from_height`, then gated by the derived C-HAND-3 envelope | negative or non-finite ⇒ `REJECTED_BAD_GOAL(throw_height_m)`; outside the envelope ⇒ `REJECTED_THROW_ENVELOPE(<bound>: ...)`, which names the bound it broke |
+| `num_throws` | `int32` | `0` ⇒ `REJECTED_NUM_THROWS`. There is **no** default | 1 to `JB_OP_TOSS_SESSION_MAX_THROWS` = 20, inclusive | `REJECTED_NUM_THROWS` |
+| `dwell_time_s` | `float64`, previous SCHEDULED landing to next release | `JB_OP_TOSS_SESSION_DWELL_DEFAULT_S` = 6.0 s | finite, non-negative, and at least `required_dwell_s` = `max(throw_delay + handoff_margin, hand_floor)` — see § 0 | negative or non-finite ⇒ `REJECTED_BAD_GOAL(dwell_time_s)`; under the floor ⇒ `REJECTED_DWELL` |
+| `throw_delay_s` | `float64`, goal-accept to the FIRST release | `DEFAULT_TOSS_THROW_DELAY_S` = 5.0 s, which puts the dwell floor at 5.137 s — **even R1 is illegal at the default** | finite, non-negative, and at least `min_throw_delay_s` = the kind-0 dispatch budget **plus the pre-dispatch sequence** (0.361 s at the 0.80 s flight; 0.428 s at the R5 flight with an ILC artifact loaded) | negative or non-finite ⇒ `REJECTED_BAD_GOAL(throw_delay_s)`; under the floor ⇒ `REJECTED_THROW_DELAY` |
+| `catch_vel_scale` | `float64`, multiplier on the armed catch speed | `JB_OP_CATCH_VEL_SCALE_DEFAULT` = 0.9 | finite, non-negative; catch_coordinator clamps to `[0.3, 1.5]` | negative or non-finite ⇒ `REJECTED_BAD_GOAL(catch_vel_scale)`. Outside the clamp is logged and clamped, never refused |
+| `stop_on_miss` | `bool` | **`true`** — the IDL default, and load-bearing: an omitted field must mean STOP | n/a | n/a. It governs the `MISSED` class only; every `REJECTED_*`/`ABORTED_*` stops the session regardless of it |
+| `on_empty_cup` | `string` | `"STOP"` — and anything that is not exactly `"RELOAD"` resolves to STOP (empty, misspelt, an older client's unset field) | `STOP` or `RELOAD` | never refused; an unreadable value fails closed to STOP |
+| `max_reloads` | `int32` | `JB_OP_TOSS_SESSION_MAX_RELOADS` = 3 | non-negative | negative ⇒ `REJECTED_BAD_GOAL(max_reloads)` |
+
+**`REJECTED_BAD_GOAL(<field>)` names the field.** That is the point of the code:
+the numerics gate runs before anything is built or installed, and the log line
+carries every value it was given, so a typo is diagnosed from one console line.
+
+**Two things that change what the rungs mean have no goal field at all** and are
+read from the generated config: the tier (`JB_OP_TOSS_TIER`, `8b` as shipped —
+8a and 8b differ in whether the throw site is the live commanded pose) and
+whether layer 3 may correct the aim (`JB_OP_TOSS_ILC_ENABLED`, `false` as
+shipped). Neither is settable per goal; both are worth reading back before a
+sitting.
+
+### One worked example per rung
+
+Only the fields that CHANGE are shown; everything else stays as the template.
+`catch_position` is `{x: 0.0, y: 0.0, z: 170.0}` throughout — the ladder walks
+cadence, never the catch site.
+
+| rung | what the operator varies | the line |
+|---|---|---|
+| **R0** | the cadence pair only | `throw_height_m: 0.78, num_throws: 5, dwell_time_s: 5.60, throw_delay_s: 5.00` |
+| **R1** | dwell **and** delay — the delay is not optional (at the 5.0 default the floor is 5.137 s, so 4.10 is `REJECTED_DWELL`) | `throw_height_m: 0.78, num_throws: 5, dwell_time_s: 4.10, throw_delay_s: 3.50` |
+| **R2** | dwell + delay | `throw_height_m: 0.78, num_throws: 5, dwell_time_s: 3.00, throw_delay_s: 2.40` |
+| **R3** | dwell + delay | `throw_height_m: 0.78, num_throws: 5, dwell_time_s: 1.50, throw_delay_s: 0.90` |
+| **R4** | **the FLIGHT comes down** as well as the pair | `throw_height_m: 0.45, num_throws: 5, dwell_time_s: 0.65, throw_delay_s: 0.45` |
+| **R5** | the flight again, at the target | `throw_height_m: 0.31, num_throws: 5, dwell_time_s: 0.70, throw_delay_s: 0.47` |
+| **R5-prime** | the dwell tightens at the R5 flight | `throw_height_m: 0.31, num_throws: 5, dwell_time_s: 0.66, throw_delay_s: 0.44` |
+
+`stop_on_miss: true`, `on_empty_cup: 'STOP'` and `max_reloads: 0` are the
+standing settings of § 1 and are **not** varied by any rung.
+`catch_vel_scale: 0.0` (the config default 0.9) is likewise fixed, and not for
+convenience: it is a FLOOR term — the catch is armed at `event_vel x scale` and
+the catch tail is inversely proportional to it, so a slower catch is a LONGER
+turnaround and changing it invalidates every dwell in the table above.
+
+Repeat a rung at a higher count once its gate is met by raising `num_throws`
+alone. R5's gate asks for 20/20 across four sessions, i.e. four goals at
+`num_throws: 5`, not one at 20 — the per-session terminal is part of what is
+being scored.
+
 
 ## 3. The two measurements that must happen BEFORE R3
 

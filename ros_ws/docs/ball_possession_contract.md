@@ -305,11 +305,13 @@ Every window in § 3.2 was sized against a machine whose dwell floor was **4.10 
 2026-08-22, census A1/A3; the floor is now
 `max(throw_delay + handoff_margin_s, hand_stroke.min_turnaround_dwell_s)`). The
 tuning-phase operating target was **dwell 0.49 s at flight 0.4949 s** (~61
-throws/min) when this section was written; it is now **dwell 0.63 s at flight
-0.5029 s (53.0 throws/min) level, 1.01 s (39.7) aimed** — the 0.49 s point is
-refused, and the reason is in `tests/hardware/session_cadence_ladder.md` § 2.0
-(audit, 2026-08-22). The delay floor is retired in favour of a dispatch debounce
-plus state-based interlocks. Two of the three windows **invert** at that cadence,
+throws/min) when this section was written; it is now **dwell 0.66 s at flight
+0.5029 s — 51.6 throws/min, aim armed or not** (operator decision 3, re-taken and
+accepted 2026-08-23). The 0.49 s point is refused, and the reason is in
+`tests/hardware/session_cadence_ladder.md` § 2.0. The delay floor is retired in
+favour of a dispatch debounce plus the derived
+`toss_sequencer.min_throw_delay_for_release_s` — the kind-0 dispatch budget PLUS
+the pre-dispatch sequence — and state-based interlocks. Two of the three windows **invert** at that cadence,
 and both inversions are label-semantics faults with a safety tail:
 
 > **The clamps below are UNAFFECTED by the operating point moving, and were left
