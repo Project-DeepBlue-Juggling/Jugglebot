@@ -103,7 +103,9 @@ def _bound_beyond(flight_s, v0, k, step):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--step', type=float, default=0.001,
                         help='trim resolution of the sweep (default 0.001)')
     parser.add_argument('--reach', type=float, default=0.5,

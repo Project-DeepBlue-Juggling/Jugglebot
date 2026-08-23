@@ -2252,7 +2252,9 @@ def self_check() -> int:
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
+    ap = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--bag', action='append', default=[],
                     help='bag directory name under --root (repeatable)')
     ap.add_argument('--root', default=DEFAULT_ROOT)

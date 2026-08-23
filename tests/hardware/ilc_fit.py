@@ -965,7 +965,9 @@ def build_parser() -> argparse.ArgumentParser:
     hand-builds an args namespace drifts from the parser silently, and the one
     entry point that writes a file into ``config/`` is the last place to accept
     that."""
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--corpus', nargs='*', default=[],
                     help='mined toss_record/1 JSONL file(s)')
     ap.add_argument('--report', action='store_true',
