@@ -36,12 +36,83 @@ ABORT at each.
 >    (`toss_sequencer.min_throw_delay_for_release_s`, imported by BOTH gates).
 >    It buys no cadence — it buys an honest refusal: a goal these gates accept
 >    **cannot** die `ABORTED_CANT_MAKE_RELEASE`, and the probe asserts that over
->    the whole `(T, dwell, delay, aim)` grid.
+>    the whole `(T, dwell, delay, aim)` grid. ⛔ **That claim is DEFEATED on the
+>    first-cycle lead-grant path — see the carried-findings box immediately
+>    below.** Item 1 there is why R4/R5/R5-prime are not bookable today; the
+>    sentence above holds for every path the grant does not touch, which is
+>    R0–R3 and every cycle whose asked delay already clears the moving floor.
 >
 > The operator's decision of 2026-08-21 ("dwell 0.49 s, ~61 throws/min") was
 > taken on the pre-audit numbers. **It cannot be honoured as stated** — 61
 > throws/min is not reachable on this build — and the corrected ladder below is
 > what the operator ACCEPTED on 2026-08-23 in its place.
+
+> ### ⛔ DO NOT BOOK R4, R5 OR R5-PRIME YET — two 2026-08-24 audit findings are CARRIED UNFIXED
+>
+> Both are `needs-design`; both were left in the tree deliberately rather than
+> patched under a house rule, and both are named as open questions in
+> `logbook/2026-08-23-cadence-floor-and-inertia.md` § Audit fixes. **R0–R3 are
+> unaffected by either and are still bookable.**
+>
+> **1 (BLOCKING) — the first cycle's lead GRANT lands EXACTLY on the modelled
+> floor, and the model charges nothing for the work the node actually does.**
+> `reload_coordinator_node._build_toss_cycle` sets
+> `cycle_delay = min_throw_delay_for_release_s(...)` — *equal to* the floor, whose
+> only headroom over the runtime guard is `FLOOR_REPRESENTATION_SLACK_S = 1e-6 s`
+> (one twenty-thousandth of a tick, added to beat a floating-point identity, not
+> to buy time). But `pre_dispatch_budget_s` is an **idealised tick-grid quantity**:
+> 23 ticks × 20 ms, charging **zero** for the `go_to_pose` service round trip the
+> node makes synchronously inside tick 0, **zero** for the PREPARE bundle's
+> synchronous service calls, and **zero** for every tick's loop body (the node's
+> `time.sleep(_TICK_S)` is a lower bound on a tick, not the tick). Real elapsed
+> time is therefore strictly greater than the modelled 0.460 s, and the
+> release-window guard at the DISPATCH tick mints **`ABORTED_CANT_MAKE_RELEASE`**
+> — the catch armed, the announcement out, the hand retracting under a seated
+> ball. That is the exact failure this package closed everywhere else, defeated on
+> the one path the package itself added.
+>
+> *Which rungs.* The grant only fires when the asked `throw_delay_s` is below the
+> **moving** floor (0.7414 s at T 0.7977, 0.7701 at R4's T, 0.7945 at R5/R5-prime's).
+> R0–R3 ask 0.90–5.00 s, so no grant, and metres of margin. **R4, R5 and
+> R5-prime ask 0.45 / 0.47 / 0.44 — every one takes the grant.**
+>
+> *There is no operator-side workaround at the tight rungs, and pretending there
+> is would be worse than saying so.* Raising `throw_delay_s` above the moving
+> floor by hand also raises `required_dwell_s = throw_delay + handoff_margin` to
+> ~0.96–1.00 s, so the session answers `REJECTED_DWELL` at the published dwells;
+> honouring it would put you near 40 throws/min, i.e. slower than R4.
+>
+> *Why the probe cannot see it.* `tools/probes/cadence_rung_check.py` drives the
+> real FSMs at **exact** tick boundaries with no loop-body cost and no service
+> latency — its own docstring says the PREPARE bundle's round-trips "are charged
+> as zero". So `first ... FLIES` in its output means *"flies on an ideal clock"*,
+> and this finding is precisely the gap between that clock and the node's.
+> **This is not a jitter question** — jitter is bounded by the runtime guard by
+> design; this is a static term that was left out of a static floor.
+>
+> **2 (HIGH) — on the SHIPPED tier the B1 skip cannot fire on a chain, so the
+> 0.38 s / 34 % cadence claim is demonstrated on Tier 8a ONLY.** `JB_OP_TOSS_TIER`
+> ships **`8b`**. `toss_sequencer._reach_action_if_due` emits `ACTION_REACH_CATCH`
+> unconditionally for 8b at `t_release`, and
+> `reload_coordinator_node._publish_toss_reach` publishes a `catch/dynamic_target`
+> whose `target_quat` comes from
+> `catch_coordinator.predicted_catch_command(announced landing)` →
+> `compute_catch_orientation(landing_velocity)` — a **receive tilt for the
+> incoming ball**, which for a self-toss is essentially level. It is never the
+> throw's aim pre-tilt. So the pose the platform is holding when the cycle ends
+> has the aim taken *out* of its orientation, the next cycle's
+> `_toss_already_positioned` fails the 2.71 mrad orientation test, and POSITIONING
+> commands the move again. **With finding 1 that compounds**: every cycle takes
+> the grant, so every cycle — not just the first — is exposed.
+>
+> *Scope, stated honestly.* This bites when an aim is actually armed (an ILC
+> artifact, a calibration map, or a displaced 8b site). With **no** artifact
+> loaded the aim composes to exactly zero, the pre-tilt is level, and the level
+> reach and the level pre-tilt agree — so a zero-aim 8b chain may still skip. The
+> verified half is the ORIENTATION mechanism above; whether the reach's *position*
+> (`landing − hand_catch_offset · platform_z`) also breaks the 17.5 mm test has
+> not been measured. **Every published cadence number in this file was produced on
+> the 8a-equivalent path.**
 
 The C-HAND-3 band FLOOR is flight 0.4949 s, and the goal parameters here sit a
 deliberate 8 ms of flight time above it, which buys clearance from a cliff — see
@@ -292,6 +363,16 @@ Those are knife edges — zero clearance, and the PREPARE bundle's three
 synchronous service round-trips are charged as free. The published rungs below
 sit back from them.
 
+> ⚠ **"Sit back from them" is measured against the SAME idealised budget**
+> (2026-08-24 audit, MEDIUM, carried `needs-operator`). R5-prime's published
+> clearances are 12.0 ms of delay and 11.9 ms of dwell; the omitted costs — the
+> `go_to_pose` round trip, the PREPARE bundle's three synchronous calls, and
+> every tick's loop body — are of the same order. **The starred operating point
+> may sit inside the noise of its own floor.** This resolves with the BLOCKING
+> finding in the carried box at the top of the file: measure the sequence's real
+> cost once and every number in this section re-bases. Deliberately not patched
+> with a guessed margin.
+
 ### 2.1 The rungs
 
 `throw_delay_s` matters as much as `dwell_time_s` (the floor is
@@ -352,12 +433,17 @@ which are the binding ones):
 > `0.31` is used here instead of `0.301` deliberately: at `0.301` the goal sits
 > 0.7 ms above a cliff whose position depends on `catch/vel_scale` and on the
 > C-HAND-2 headroom reservation, so any operator adjustment to either would
-> silently start refusing the rung. `0.31` costs **0.35 throws/min** (52.96 vs
-> 53.31 level; 39.66 vs 39.85 aimed — probe, 2026-08-22) and buys 8 ms of
-> clearance. If a sitting needs the last third of a throw per minute, take it
-> from the DWELL — but read § 2.0 first: the floor at this flight is 0.620 s
-> level / 1.000 s aimed, **not** the 0.487 s hand floor, and R5-prime already
-> sits only 9.7 ms above it.
+> silently start refusing the rung. **Re-derived 2026-08-24** against the
+> collapsed columns (`/tmp/probe_cliff_box.py`, which calls the probe's own
+> `fastest_at`): `0.31` costs **0.12 throws/min** with the aim disarmed
+> (54.29 → 54.17) and **1.48** with an ILC artifact loaded (54.16 → 52.68) — the
+> ILC column is the binding one and the cost there is 4× what the retired
+> LEVEL/AIMED pair reported. It buys 8 ms of flight-time clearance. If a sitting
+> needs that throw and a half per minute back, take it from the DWELL — but read
+> § 2.0 first: the dwell floor at this flight is **0.6047 s** with the aim
+> disarmed and **0.6361 s** with an ILC artifact loaded, **not** the 0.487 s hand
+> floor; and against `required_dwell_s` at R5-prime's own 0.44 s delay
+> (**0.6481 s**, ILC loaded) the rung already sits only **11.9 ms** above it.
 
 ### R0 — baseline (no change)
 
@@ -403,7 +489,7 @@ which are the binding ones):
 | **PASS** | 5/5 on BOTH the live verdict and the mined label |
 | **ABORT** | any `BOUNCED` label on a cycle the operator saw caught; any interlude; any `REJECTED_NO_BALL` on a cycle that had a ball. **Each of these is the fail-open class — stop the sitting, do not retry at a lower dwell** |
 
-### R4 — 0.65 s level / 1.00 s aimed, and the flight comes down
+### R4 — 0.65 s dwell, and the flight comes down
 
 | | |
 |---|---|
@@ -419,6 +505,24 @@ which are the binding ones):
 > opposite ("it NEVER appears on an aimed chain, and that is correct"), which was
 > true of the build that could not verify an orientation and is not true of this
 > one.
+>
+> > **⛔ READ THE CARRIED-FINDINGS BOX AT THE TOP OF THIS FILE FIRST
+> > (2026-08-24).** Two audit findings change what this box's diagnosis ladder
+> > means, and neither is fixed:
+> >
+> > * on the SHIPPED **Tier 8b** with an aim armed, the deferred A→B reach
+> >   re-commands the platform's ORIENTATION at `t_release`, so `POSITIONING
+> >   skipped` is expected to appear on **no** cycle — the "cycles 2..N have no
+> >   skip ⇒ *now* it is the finding" rung below is the shipped machine's normal
+> >   behaviour under 8b, not a fault to chase;
+> > * the **first cycle's raise WARN is not benign.** The granted delay lands
+> >   exactly on an idealised floor, so the cycle it grants is expected to abort
+> >   `ABORTED_CANT_MAKE_RELEASE` — with the catch armed and the hand retracting
+> >   under a seated ball. **If you see the raise WARN, that cycle is the hazard,
+> >   not the warm-up.**
+> >
+> > Until both are closed, treat this ladder as a description of the *intended*
+> > machine. R0–R3 do not raise, do not grant and are unaffected.
 >
 > `_toss_already_positioned` has two conditions now: a FRESH
 > `trajectory/commanded_pose`, and a match on position AND orientation within
@@ -446,7 +550,7 @@ which are the binding ones):
 >   not tilted after all or the guard has regressed; either way the aim is not
 >   flying.
 
-### R5 — 0.70 s level / 1.08 s aimed at the TARGET flight ⚠ the machine stops being quiescent
+### R5 — 0.70 s dwell at the TARGET flight ⚠ the machine stops being quiescent
 
 > **⚠ THIS RUNG'S NUMBERS DEVIATE FROM THE CENSUS, DELIBERATELY. Read why.**
 >
@@ -473,7 +577,7 @@ which are the binding ones):
 |---|---|
 | **goal** | `throw_height_m: 0.31`, `dwell_time_s: 0.70`, `throw_delay_s: 0.47` — 49.9 throws/min |
 | **must have landed** | census **F1** (the miss-cleanup floor re-derived from COMPLETION rather than service acks), **F6** (pipelining, OR a demonstrated verdict path with ≤ 0.10 s latency), **F7** (invariant S5 re-argued **in writing** — at this dwell the "quiescent wait" is under 0.2 s and the reactive catch path is effectively always live). **None of these has landed. R5 is NOT reachable today.** |
-| **measurable gate** | 20/20 CAUGHT across 4 sessions; measured `landing → next release` within 20 ms of the modelled floor; sustained **49.9 (level) / 37.9 (aimed) throws/min** |
+| **measurable gate** | 20/20 CAUGHT across 4 sessions; measured `landing → next release` within 20 ms of the modelled floor; sustained **49.9 throws/min**, aim armed or not (period 1.2029 s — probe, 2026-08-24) |
 | **watch for** | the C-HAND-1 no-overlap margin, per cycle. **A negative `dispatch → catch-stroke-end` gap is an abort-the-sitting event, not a data point.** Also: this is the first sitting at a ~0.50 s flight, so re-check the § 0 table's short-flight column against what the hand actually does before R5-prime tightens the dwell on top of it. And log `landing → hand back inside the park band` — the model says 0.190 s at this flight, and `handoff_margin_s` is now sized on it |
 | **PASS** | 20/20 and the timing within 20 ms of model |
 | **ABORT** | any negative stroke gap; any miss (`stop_on_miss` handles it, but debrief before retrying); **any `REJECTED_HAND_NOT_PARKED` on a cycle whose previous catch was good** — that is the handoff margin being too small, not a machine fault |
@@ -610,7 +714,9 @@ being scored.
 ## 3. The two measurements that must happen BEFORE R3
 
 Neither is an argument. Both are measurements, and R3 does not run until they
-exist.
+exist. **One of the two is now DONE**: § 3.2's poll-cadence gap was measured away
+on the 2026-08-23 FW-15 capture. **§ 3.1 — the arrival-band re-measure — is still
+outstanding, and it is the one that gates R3.**
 
 ### 3.1 Re-measure the sensor arrival band, post-FW 14 ⬜ NOT DONE
 
@@ -672,27 +778,40 @@ precisely because this is unresolved, and confirming the old band is a result.
 > boundary between adjacent cycles is now `ball_possession.arrival_boundary_t`,
 > which reads `ARRIVAL_BAND_MAX_S` directly (C-POSSESS-1 § 3.4 clauses C.1/C.2).
 > A collapsing ceiling therefore buys **cadence headroom** as well as the four
-> constants above: the boundary stops eating this ball's band at any cycle period
-> under `ARRIVAL_BAND_MAX_S + arrival_lead_s`, which is 1.000 s today and would
-> fall to about 0.47 s on the 2026-08-23 capture's +267.5 ms ceiling — moving the
+> constants above: the boundary starts eating this ball's band once the cycle
+> period drops under `ARRIVAL_BAND_MAX_S` itself — **0.800 s today**, falling to
+> about **0.27 s** on the 2026-08-23 capture's +267.5 ms ceiling, which moves the
 > R6 fork's 0.7529 s period from "the band cannot be watched out" to "clear". No
 > rung on the table above is affected either way; R6 is.
+>
+> *(Corrected 2026-08-24, audit MEDIUM: this box quoted `BAND_MAX + lead` =
+> 1.000 s / 0.47 s, which is the **superseded** `b − lead` rule. The shipped
+> `arrival_boundary_t` amputates only below `BAND_MAX` alone — see
+> C-POSSESS-1 § 3.4's reachability table, corrected in the same pass.)*
 
-### 3.2 The 71 ms measured poll cadence against the configured 20 ms ⬜ NOT DIAGNOSED
+### 3.2 The 71 ms measured poll cadence against the configured 20 ms ✅ MEASURED AWAY 2026-08-23
 
-**What**: `jugglebot_ball_detect.check_interval_ms` is **20** (50 Hz nominal).
-The measured poll cadence is **~71 ms** — a 3.5× gap with **no diagnosis**
-(`plans/active/toss-selftuning.md` § Open findings).
+**What it said**: `jugglebot_ball_detect.check_interval_ms` is **20** (50 Hz
+nominal); the measured poll cadence was **~71 ms** — a 3.5× gap with no
+diagnosis (`plans/active/toss-selftuning.md` § Open findings). It was a
+prerequisite because at the R5-prime dwell 71 ms is **11 % of the whole dwell**
+(71 ms of 0.66 s), sitting directly under the `ball_seated` precondition.
 
-**Why it is a prerequisite and not a footnote**: at the R5-prime dwell that gap
-is **11 % of the whole dwell** on the level column (71 ms of 0.63 s), and it sits directly under the `ball_seated`
-precondition. A gate whose sample interval is 3.5× what its config says is a gate
-whose staleness bound nobody has actually established.
+**The gap is GONE on the FW-15 plant, and the 71 ms figure is stale.** Scored on
+`~/Desktop/rosbags/2026-08-23_19-14-54` (2026-08-23, 11 462 fresh samples, every
+frame `ball_held_valid`): the interval between distinct `ball_held_stamp` values
+is **median 20.0 ms — exactly the configured cadence** (mean 24.0, p10 20.0,
+p90 30.0, max 160.0). The distribution is one-sided — a tail to 160 ms, not a
+uniform 3.5× stretch — so the staleness bound this row wanted is now a *tail*
+question, not a *rate* question. Full numbers:
+`logbook/2026-08-23-cadence-floor-and-inertia.md` § "Bonus measurements", item 2.
 
-**This is a CAN-BRIDGE INVESTIGATION and it is NOT built here.** It belongs with
-the bridge's polling path, not with the cadence work — the census flags it, this
-runbook carries it, and neither resolves it. Open it as its own investigation
-before R3 (`/investigate`), and record the finding here.
+**⚠ Do NOT read this as closing the debounce question.** The asymmetric-debounce
+numbers the 71 ms was cited beside (**232 / 241 / 295 ms fall, 0 ms rise**) are
+**not** re-measured and still stand. The poll cadence was one candidate
+explanation for them and is now **excluded**, which makes those numbers *more* in
+need of a mechanism, not less. If a fall-lag investigation is opened, it is a
+can-bridge / sensor-firmware one and it does not belong to the cadence work.
 
 ---
 

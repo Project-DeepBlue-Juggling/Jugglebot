@@ -424,8 +424,12 @@ boundary was a function of `next_landing_t`, which is a *prediction* made a cycl
 early — the clamp used the SCHEDULED next landing while the next window opened at
 the ACTUAL one, so a release that ran late pulled the two ends apart. Under the
 new rule the boundary is pinned to `L + ARRIVAL_BAND_MAX_S`, **independent of
-`N`**, for every period under 1.000 s — i.e. for exactly the cadences at which
-the boundary sits anywhere near an edge either window could claim. Above 1.000 s
+`N`**, for every period between 0.800 s and 1.000 s — i.e. for exactly the
+cadences at which the boundary sits anywhere near an edge either window could
+claim, and which is where the whole published ladder below 1.000 s would sit.
+(Under 0.800 s it is pinned to `N` itself, but that is the C.2 region: the band
+cannot be watched out at all there, the window says so, and no verdict rests on
+where the boundary landed.) Above 1.000 s
 it tracks `N` again — but there it is `period − 1.000 s` PAST this ball's band
 ceiling (163 ms at the accepted operating point) and never less than
 `ARRIVAL_BAND_MIN_S + arrival_lead_s` = **337 ms** BEFORE the next ball's earliest
@@ -453,8 +457,10 @@ the schedule truncates the band, an `arrival_window_s` configured shorter than
 the band included.
 
 **Reachability, stated rather than implied.** Measured against the tree's own
-constants over every published rung (`/tmp/probe_arrival_clamp.py`, run
-2026-08-23; offsets are relative to this cycle's landing):
+constants over every published rung, by calling **the shipped
+`arrival_boundary_t`** rather than restating its formula
+(`/tmp/probe_arrival_clamp.py`, re-derived 2026-08-24; offsets are relative to
+this cycle's landing):
 
 | rung | flight | period | window closed at | band ceiling | tail lost |
 |---|---|---|---|---|---|
@@ -462,14 +468,29 @@ constants over every published rung (`/tmp/probe_arrival_clamp.py`, run
 | R4 | 0.6059 | 1.2559 | +1.0559 | +0.800 | — |
 | R5 | 0.5029 | 1.2029 | +1.0029 | +0.800 | — |
 | **R5-prime (accepted 2026-08-23)** | 0.5029 | 1.1629 | +0.9629 | +0.800 | — |
-| R5′ clamp pin (dwell 0.49 / T 0.4949) | 0.4949 | 0.9849 | +0.7849 | +0.800 | **15.1 ms** |
-| R6 (deferred fork, dwell 0.25) | 0.5029 | 0.7529 | +0.5529 | +0.800 | **247.1 ms** |
+| R5′ clamp pin (dwell 0.49 / T 0.4949) | 0.4949 | 0.9849 | +0.8000 | +0.800 | — |
+| R6 (deferred fork, dwell 0.25) | 0.5029 | 0.7529 | +0.7529 | +0.800 | **47.1 ms** |
+
+> **The last two rows were wrong on 2026-08-23 and are corrected here
+> (2026-08-24 audit, MEDIUM).** They published `+0.7849 / 15.1 ms` and
+> `+0.5529 / 247.1 ms` — the **superseded** `b − arrival_lead_s` rule this clause
+> replaces, not the rule that shipped. Under `arrival_boundary_t` the R5′ clamp
+> pin loses **nothing** and R6 loses **47.1 ms**, which is what the paragraph
+> below and `_band_watched_out`'s own docstring have said all along. The
+> contradiction was inside one normative document; the fix is the table, not the
+> prose.
 
 **No published rung amputates today** — the accepted operating point clears the
 band ceiling by 163 ms — which is why this was carried as a MEDIUM rather than a
-live defect. It becomes reachable below a 1.000 s period, which is the only
-direction the cadence census travels, and C.2 becomes the operative half at R6,
-where even the new boundary reaches only +0.7529 and 47.1 ms of band stays
+live defect. **Two thresholds, and they are not the same number.** The
+*superseded* `b − lead` rule began amputating below a **1.000 s** period
+(`ARRIVAL_BAND_MAX_S + arrival_lead_s`) — that is the defect this clause closes,
+and it is the number `arrival_boundary_t`'s docstring quotes when it explains
+what it is *not*. The rule that ships amputates only below **0.800 s**
+(`ARRIVAL_BAND_MAX_S` alone), because below that the next ball genuinely lands
+before this one's band has closed and no boundary rule can give both balls their
+whole band. So the fix bought **200 ms of period**, and C.2 becomes the operative
+half at R6, where the boundary reaches only +0.7529 and 47.1 ms of band stays
 unwatched. It lands now, not at R6, because the constant that decides all of it —
 `ARRIVAL_BAND_MAX_S` — is the one the pending post-FW14 re-measure will move, and
 moving a constant is only safe once every consumer reads it the same way.

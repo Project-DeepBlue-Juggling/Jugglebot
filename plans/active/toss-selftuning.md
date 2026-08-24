@@ -1496,14 +1496,23 @@ the measurements.
   item 5 and the logbook's § Phase 2c. The finding that decided it: the measured
   departure-shift sd (20.51 ms) **is** the poll quantisation `Δ/√12` (20.50 ms),
   ratio 1.001, so the release timing is more repeatable than the instrument can
-  see. The underlying 3.5x poll-cadence gap still has no diagnosis and is still a
-  can-bridge question, not this plan's.
+  see. ~~The underlying 3.5x poll-cadence gap still has no diagnosis and is still
+  a can-bridge question, not this plan's.~~ **The 3.5× gap is GONE on the FW-15
+  plant (measured 2026-08-23, median 20.0 ms — see the pre-R3 list in § 11.4).**
+  The `Δ/√12` finding above is unaffected in kind: it says the release timing is
+  finer than the instrument's quantisation, and a *smaller* Δ only widens that
+  margin.
 - **D12's ~100 ms debounce estimate is low by 2.4x, and the lag is asymmetric.**
-  Measured: `empty→held` 0/0/0 ms, `held→empty` 232/**241**/295 ms — consistent
-  with the documented five-miss-to-drop / one-hit-to-restore firmware rule at the
-  measured 71 ms poll. 241 ms is *larger* than the +118–133 ms uptime dispatch
-  shift the fresh-boot discipline exists to control, which strengthens D12
-  rather than weakening it.
+  Measured: `empty→held` 0/0/0 ms, `held→empty` 232/**241**/295 ms. ⚠ **The
+  mechanism sentence that used to follow is REFUTED (2026-08-23)**: it read
+  "consistent with the documented five-miss-to-drop / one-hit-to-restore firmware
+  rule at the measured 71 ms poll", and the poll is **20.0 ms**, so five misses
+  buy ~100 ms, not ~355. The poll cadence was one candidate explanation for the
+  asymmetry and is now **excluded**, which leaves the 232/241/295 ms fall lag
+  *without* a mechanism rather than with one. The numbers themselves stand — they
+  are NOT re-measured — and 241 ms is still *larger* than the +118–133 ms uptime
+  dispatch shift the fresh-boot discipline exists to control, which strengthens
+  D12 rather than weakening it.
 - **Ball visibility in the descending band is an unchecked capture
   precondition, and the reference sitting fails it.** In ±1.5 s of a landing that
   bag carries four unlabelled markers — three static rig markers outside the
@@ -1954,9 +1963,18 @@ intent) **before R3, not after**.
    (n = 35) was captured when the dispatch shift was +54–133 ms; FW 14 cut that
    to 10–20 ms. If the band collapses, the dwell margin, the arrival window and
    the evidence gate all shrink together and R4 gets much cheaper.
-2. **The ~71 ms measured sensor poll cadence against the configured 20 ms**
+2. ~~**The ~71 ms measured sensor poll cadence against the configured 20 ms**
    (§ 10 Open findings — still no diagnosis, still a can-bridge question). It is
-   a prerequisite, not a footnote.
+   a prerequisite, not a footnote.~~ **CLOSED BY MEASUREMENT 2026-08-23**: on the
+   FW-15 capture (`~/Desktop/rosbags/2026-08-23_19-14-54`, 11 462 fresh samples)
+   the interval between distinct `ball_held_stamp` values is **median 20.0 ms —
+   exactly the configured cadence** (mean 24.0, p90 30.0, max 160.0). The 3.5×
+   gap is gone and the residual is a one-sided tail, not a rate error. The
+   **asymmetric-debounce** numbers this was cited beside (232/241/295 ms fall,
+   0 ms rise) are NOT re-measured and still stand — the poll cadence was one
+   candidate explanation for them and is now *excluded*, not confirmed. See
+   `logbook/2026-08-23-cadence-floor-and-inertia.md` § "Bonus measurements",
+   item 2, and runbook § 3.2.
 
 ### 11.5 The ladder
 

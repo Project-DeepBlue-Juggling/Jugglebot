@@ -2,7 +2,7 @@
 title: The accept-time delay floor learns the sequence it is measured against, and the B1 positioning skip learns to read an orientation
 type: bugfix
 date: 2026-08-23
-status: resolved
+status: resolved-with-open-items
 files_changed:
   - ros_ws/src/jugglebot/jugglebot/toss_sequencer.py
   - ros_ws/src/jugglebot/jugglebot/toss_session.py
@@ -38,6 +38,9 @@ files_changed:
   - logbook/2026-08-21-ilc-primary-foldin.md
   - tests/hardware/session_anomaly_fixes.md
   - plans/active/catch-robustness.md
+  - plans/active/INDEX.md
+  - plans/active/toss-selftuning.md
+  - tests/sim/test_hand_throw_decel_ff.py
 subsystem:
   - ros
   - motion
@@ -462,6 +465,13 @@ rungs reaches `ABORTED_CANT_MAKE_RELEASE` any more.
    not from scheduling jitter**, and no static floor can change that. If a bench
    sitting produces one, it is a real finding about tick overshoot on a loaded
    Jetson and belongs in an investigation, not in the floor.
+   ⛔ **Item 3 is DEFEATED on the lead-GRANT path, and item 2 is worse than
+   "untested" — see § Audit fixes (2026-08-24).** The 2026-08-24 audit found that
+   the grant lands *exactly* on the modelled floor, and that the model charges
+   nothing for the synchronous service round trips or the per-tick loop body, so
+   the granted cycle aborts deterministically rather than sometimes. Carried
+   `needs-design`; R4/R5/R5-prime are not bookable until it closes, R0–R3 are
+   unaffected.
 
 ---
 
@@ -701,8 +711,18 @@ band ceiling +0.800):
 | R4 | 0.6059 | 1.2559 | +1.0559 | — |
 | R5 | 0.5029 | 1.2029 | +1.0029 | — |
 | **R5-prime (accepted)** | 0.5029 | 1.1629 | +0.9629 | — |
-| R5′ clamp pin (0.49 / 0.4949) | 0.4949 | 0.9849 | +0.7849 | **15.1 ms** |
-| R6 (deferred fork, dwell 0.25) | 0.5029 | 0.7529 | +0.5529 | **247.1 ms** |
+| R5′ clamp pin (0.49 / 0.4949) | 0.4949 | 0.9849 | +0.8000 | — |
+| R6 (deferred fork, dwell 0.25) | 0.5029 | 0.7529 | +0.7529 | **47.1 ms** |
+
+> **The last two rows were published wrong on 2026-08-23 and are corrected
+> here (2026-08-24 audit, MEDIUM — see § Audit fixes).** They read
+> `+0.7849 / 15.1 ms` and `+0.5529 / 247.1 ms`, which is the **superseded**
+> `b − lead` rule, not the `arrival_boundary_t` that shipped in this very
+> package. The § Discussion two subsections down always carried the correct
+> 47.1 ms, so the entry contradicted itself; the probe was rewritten to CALL
+> `arrival_boundary_t` rather than restate its formula, which is what made the
+> two agree. Same correction landed in `ros_ws/docs/ball_possession_contract.md`
+> § 3.4 (the normative copy) and the runbook's § 3.1 fifth-consumer box.
 
 **No published rung amputates today** — the accepted operating point clears the
 ceiling by 163 ms. That is why this was a MEDIUM and not a live defect, and it is
@@ -764,8 +784,11 @@ between two risks, it is a trade between a hypothetical and a measurement.
 boundary was a function of `next_landing_t` — a prediction made a cycle early,
 while the next window opens at the *actual* landing, so a late release pulled the
 two ends apart. Under the new rule the boundary is pinned to
-`L + ARRIVAL_BAND_MAX_S` and is **independent of `N`** for every period under
-1.000 s, i.e. for exactly the cadences at which it sits anywhere near an edge.
+`L + ARRIVAL_BAND_MAX_S` and is **independent of `N`** for every period between
+0.800 and 1.000 s, i.e. for exactly the cadences at which it sits anywhere near
+an edge. (Under 0.800 s it is pinned to `N`, but that is the C.2 region below —
+the band cannot be watched out there at all and no verdict rests on where the
+boundary landed.)
 Above 1.000 s it tracks `N` again, but there it is `period − 1.000 s` past this
 ball's band ceiling (163 ms at the accepted operating point) and never less than
 `ARRIVAL_BAND_MIN_S + arrival_lead_s` = 337 ms before the next ball's earliest
@@ -798,8 +821,10 @@ is the constant the pending post-FW14 re-measure will move (ladder § 3.1), and
 moving a constant is only safe once every consumer reads it the same way. The
 boundary is now a fifth consumer of that ceiling, which is recorded in the ladder:
 on the 2026-08-23 capture's +267.5 ms ceiling the amputation threshold would fall
-from 1.000 s to about 0.47 s, moving R6's 0.7529 s period from "the band cannot be
-watched out" to clear.
+from **0.800 s to about 0.27 s**, moving R6's 0.7529 s period from "the band
+cannot be watched out" to clear. *(Corrected 2026-08-24 with the table above: the
+`1.000 s → 0.47 s` originally written here is `BAND_MAX + lead`, the superseded
+rule's threshold. The shipped rule's threshold is `BAND_MAX` alone.)*
 
 **One residual, named.** `prev_landing_t` is latched per SESSION and rolled per
 cycle (`_reset_toss_arrival_boundary`, `_set_toss_next_cycle_perf`), so a reload
@@ -847,11 +872,15 @@ narrower one.
 
 ### Verification
 
-- Rung probe, run 2026-08-23 (`python /tmp/probe_arrival_clamp.py`): the
-  reachability table above, computed from `ARRIVAL_BAND_MAX_S`,
-  `JB_BD_ARRIVAL_LEAD_S` and `JB_BD_ARRIVAL_WINDOW_S` as the tree holds them —
-  amputation threshold **1.000 s**, total-truncation threshold **0.800 s**, and
-  **no published rung affected**.
+- Rung probe, **re-run 2026-08-24** (`python /tmp/probe_arrival_clamp.py`,
+  rewritten to CALL `ball_possession.arrival_boundary_t` instead of restating its
+  formula): the corrected reachability table above, computed from
+  `ARRIVAL_BAND_MAX_S`, `JB_BD_ARRIVAL_LEAD_S` and `JB_BD_ARRIVAL_WINDOW_S` as
+  the tree holds them — shipped-rule amputation threshold **0.800 s period**
+  (`ARRIVAL_BAND_MAX_S` alone; the superseded `b − lead` rule's was 1.000 s), and
+  **no published rung affected — R5′'s clamp pin now loses nothing and R6 loses
+  47.1 ms.** The 2026-08-23 run of this probe reported the superseded rule's
+  numbers; see § Audit fixes.
 - `python -m pytest tests/motion/test_toss_record.py tests/ros/test_ball_possession.py
   tests/ros/test_toss_coordinator.py tests/ros/test_toss_record_miner.py
   tests/ros/test_hand_sensor_replay.py -q -p no:randomly`, run 2026-08-23:
@@ -872,3 +901,209 @@ narrower one.
   and `arrival_boundary_t` left defined — so the check isolates the fix from the
   new API surface — 3 of `tests/ros/test_ball_possession.py` go RED; reverting
   the `prev_landing_t` clamp alone reds the fourth.
+
+---
+
+## Audit fixes (2026-08-24)
+
+The independent audit of the three packages returned **NOT CLEAN — 1 BLOCKING,
+1 HIGH, 3 MEDIUM, 3 LOW**. Everything it verified clean stayed clean: no codegen
+drift, py3.8 compiles, the new tests are parallel-safe (no fixed paths or ports,
+no new markers), the runbook's § 2.9 operator command reference matches the
+`.action` IDL field-for-field, `arrival_boundary_t` / `_band_watched_out` are
+correct and consistently implemented across the live source and the offline
+corpus labeller, and `levelling.uncorrect_pose` is an exact transpose inverse
+evaluated at the frame-invariant position key.
+
+**Five landed; four are carried.** The split follows the house rule — fix every
+BLOCKING/HIGH whose diagnosis is `clear`, carry `needs-design` and
+`needs-operator` untouched, take MEDIUM/LOW only when trivially safe. Both of the
+severe findings are `needs-design`, so **nothing in this package's production
+code changed in this pass**; what changed is that the machine now says so where
+an operator will read it.
+
+### Landed
+
+1. **MEDIUM — `ros_ws/docs/ball_possession_contract.md`'s C-POSSESS-1.C.1
+   reachability table published the SUPERSEDED boundary rule in its last two
+   rows,** so the normative contract contradicted its own prose two paragraphs
+   later. Re-derived against the shipped `arrival_boundary_t`: the R5′ clamp pin
+   loses **nothing** (the table said 15.1 ms) and R6 loses **47.1 ms** (the table
+   said 247.1 ms). The root cause is worth naming because it is the reason the
+   discipline exists: the 2026-08-23 probe **restated the boundary formula**
+   instead of calling `arrival_boundary_t`, and it restated the version the
+   clause replaces. `/tmp/probe_arrival_clamp.py` now imports the function — the
+   same "one home, never a second derivation" rule the fix itself landed for
+   `toss_record`. Corrected in all three places that carried the number: the
+   contract, this entry's Package 3 table, and the runbook's § 3.1
+   fifth-consumer box (which quoted the superseded 1.000 s / 0.47 s thresholds;
+   the shipped rule amputates below `ARRIVAL_BAND_MAX_S` **alone** — 0.800 s
+   today, ~0.27 s on the 2026-08-23 capture's ceiling).
+2. **MEDIUM — stale LEVEL/AIMED residue survived in the operator-facing body of
+   the runbook whose headline says the split is GONE.** The R4 and R5 section
+   headings still published two dwell/delay pairs, R5's measurable gate still
+   demanded "sustained 49.9 (level) / 37.9 (aimed) throws/min", and the
+   0.31-vs-0.301 cliff box still quoted the retired "0.620 s level / 1.000 s
+   aimed" floor with a 9.7 ms clearance against a superseded 0.63 dwell. All
+   collapsed to one column and **re-derived rather than re-typed**
+   (`/tmp/probe_cliff_box.py`, which calls the probe's own `fastest_at`, run
+   2026-08-24): R5 is 49.9 throws/min either way; choosing `0.31` over `0.301`
+   costs **0.12 throws/min** with the aim disarmed and **1.48** with an ILC
+   artifact loaded — the binding column, and **4× what the retired pair
+   reported**, which is exactly the kind of drift a collapsed-column edit hides
+   if the numbers are carried across by hand.
+3. **LOW — `plans/active/critical-point-ilc.md` decision-3's "Why" cell asserted
+   that the ACCEPTED operating point is refused.** The Decision column was
+   rewritten to R5-prime `dwell 0.66 / delay 0.44`; the Why column still carried
+   the arithmetic for the retired 0.49 s definition, ending "R5-prime as decided
+   is now 43 ms SHORT and is REJECTED_DWELL". Both statements are true of
+   *different* R5-primes, so the cell now names which is which — the 0.49 s
+   original is what is 43 ms short, and that is *why* the row was re-taken.
+4. **Consistency, found while closing out rather than by the audit: the runbook's
+   § 3.2 pre-R3 gate was still open against a number this very package
+   measured away.** It told an operator to open a can-bridge investigation into a
+   "~71 ms poll cadence vs the configured 20 ms, 3.5× gap, no diagnosis" — while
+   § "Bonus measurements" above reports the same quantity at **median 20.0 ms,
+   exactly the configured cadence**, on the FW-15 capture. Marked done in the
+   runbook and struck in `plans/active/toss-selftuning.md` § 11.4's pre-R3 list,
+   both carrying the explicit warning that the **asymmetric-debounce** numbers it
+   was cited beside (232/241/295 ms fall, 0 ms rise) are NOT re-measured: the
+   poll cadence was one candidate explanation for them and is now *excluded*,
+   which makes them more in need of a mechanism, not less. § 3.1 — the arrival
+   band re-measure — is untouched and is still the gate on R3.
+5. **LOW (documentation half only) —
+   `tests/sim/test_hand_throw_decel_ff.py::test_declared_inertia_cannot_over_brake`
+   read as live confirmation of one-sided safety that no longer holds.** It pins
+   the declared 9.5e-6 under `_MEASURED_REFLECTED_INERTIA_MIN_KGM2 = 1.0126e-5`,
+   a bound `hand_decel_feedforward.md` now marks SUPERSEDED — and Package 2 above
+   puts the tightest measured bounds at 9.04e-6 (encoder) and ~7.5e-6 (ball),
+   **both below the declared value**. The assertion is unchanged (see the carried
+   list); the module docstring and the test docstring now say plainly that a PASS
+   here is a **regression fence against re-raising the constant**, not evidence
+   the failure mode is closed on the current plant, and that lowering the
+   constant without landing the firmware value in the same commit reds the suite
+   on a machine nobody changed.
+
+### Carried untouched — and what each one costs
+
+**BLOCKING (`needs-design`) — the first-cycle lead GRANT sets `throw_delay`
+exactly on an idealised tick-grid floor, so the cycle it grants aborts.**
+`reload_coordinator_node._build_toss_cycle` sets `cycle_delay =
+min_throw_delay_for_release_s(...)` — equal to the floor, whose only headroom
+over the runtime guard is `FLOOR_REPRESENTATION_SLACK_S = 1e-6 s`, a value named
+for beating a floating-point identity and never intended to buy wall-clock time.
+`pre_dispatch_budget_s` charges 23 ticks × 20 ms and charges **zero** for the
+`go_to_pose` service round trip the node makes synchronously inside tick 0,
+**zero** for the PREPARE bundle's synchronous service calls, and **zero** for any
+tick's loop body (`time.sleep(_TICK_S)` is a lower bound on a tick). Every one of
+those costs is strictly positive, so the release-window guard at the DISPATCH
+tick mints `ABORTED_CANT_MAKE_RELEASE` — with the catch armed, the announcement
+out and the hand retracting under a seated ball. **This is the package's own
+central contract, defeated on the one path the package itself added.**
+
+*Scope, exactly.* The grant only fires when the asked delay is under the MOVING
+floor, so R0–R3 (asking 0.90–5.00 s against 0.7414 s) never take it and are
+unaffected; **R4, R5 and R5-prime ask 0.45 / 0.47 / 0.44 and every one takes
+it.** There is no operator-side workaround at those rungs: raising the delay past
+the moving floor by hand raises `required_dwell_s = delay + handoff_margin` to
+~0.96–1.00 s and the session then answers `REJECTED_DWELL` at the published
+dwells, so honouring it lands near 40 throws/min — slower than R4.
+
+*Why the committed probe greens it, and why that is not a probe bug.*
+`cadence_rung_check` drives the real FSMs at **exact** tick boundaries; its own
+docstring says the PREPARE bundle's round-trips "are charged as zero". So `first
+… FLIES` means *flies on an ideal clock*, and this finding is the gap between
+that clock and the node's. It is emphatically **not** a jitter question — jitter
+is the runtime guard's job by design (§ "A knife edge the model exposed" above
+argues against a static jitter allowance, and that argument stands); this is a
+static term omitted from a static floor. Which is also why it is `needs-design`:
+the honest fix is to make the budget charge the sequence's real synchronous
+costs — measured, not guessed — and nothing in this tree measures them yet.
+
+**HIGH (`needs-design`) — on the SHIPPED Tier 8b the B1 skip cannot fire on a
+chain, so the 0.38 s / 34 % claim is demonstrated on Tier 8a only.**
+`JB_OP_TOSS_TIER` ships `8b`. `toss_sequencer._reach_action_if_due` emits
+`ACTION_REACH_CATCH` unconditionally for 8b at `t_release`, and
+`_publish_toss_reach` publishes a `catch/dynamic_target` whose `target_quat`
+comes from `catch_coordinator.predicted_catch_command(announced landing)` →
+`compute_catch_orientation(landing_velocity)`: a **receive tilt for the incoming
+ball**, essentially level for a self-toss, never the throw's aim pre-tilt. The
+held pose at cycle end therefore has the aim taken *out* of its orientation, the
+next cycle's `_toss_already_positioned` fails the 2.71 mrad test, and POSITIONING
+commands the move again. **Compounded with the BLOCKING**: every cycle then takes
+the grant, so on 8b the exposure is every cycle, not only the first.
+
+*What is verified and what is not.* The orientation mechanism is traced end to
+end in the source. The finding bites when an aim is actually armed (an ILC
+artifact, a calibration map, or a displaced 8b site); with no artifact loaded the
+aim composes to exactly zero, the pre-tilt is level, and a level reach and a
+level pre-tilt agree, so a zero-aim 8b chain may still skip. Whether the reach's
+*position* (`landing − hand_catch_offset · platform_z`) also breaks the 17.5 mm
+test is **not** measured. The honest summary is the one now in the runbook:
+**every published cadence number in this arc was produced on the 8a-equivalent
+path.** `needs-design` because the fix is a real fork — teach the reach the throw
+pre-tilt, gate it at zero displacement, or teach B1 that an 8b cycle ends at the
+catch pose — and each answers a different question about what an 8b cycle *is*.
+
+**MEDIUM (`needs-operator`) — the published per-rung clearances are measured
+against the same idealised budget.** R5-prime's starred 12.0 ms delay / 11.9 ms
+dwell and R4's 13.9 ms dwell all come from the probe, and the runbook's own § 2.0
+says the PREPARE bundle's synchronous round-trips "are charged as free". Those
+omitted costs are of the same order as the clearance, so the starred operating
+point may sit inside the noise of its own floor. It resolves with the BLOCKING —
+measure the sequence's real cost once and every number here re-bases — so it is
+deliberately not patched with a guessed margin.
+
+**LOW (`clear`, not taken — a production change on the shipped 8b path) — a torn
+read across two independently-stamped caches.** `_build_toss_cycle` sets the
+Tier-8b throw site A from `_live_commanded_position` (Point) and backs the B1
+skip with `_live_commanded_pose` (Pose). The design explicitly avoids a torn read
+*inside* the Pose (§ "One message, not two topics") and reintroduces one *across*
+the two topics, so A can come from sample N while "already positioned" is judged
+against N+1. Not taken here for two reasons. First, changing A's source changes
+which topic must be alive for an 8b goal to be accepted at all, and
+`REJECTED_POSE_UNKNOWN` is pinned to the existing one — that is not a trivially
+safe edit on the shipped tier. Second, the only consequence of the tear is
+whether the B1 skip fires, and the HIGH above says it cannot fire on 8b anyway:
+this belongs in the same redesign, not ahead of it. The existing code comment's
+argument survives untouched — A is NOMINATED, not observed, so a stale read
+yields a *self-consistent* throw site.
+
+**LOW (`needs-operator`) — the C-HAND-2 inertia constant itself.** Documented
+above (landed item 5); the value is not changed. See § "why refuse to land, when
+the sign is settled": the sign is settled and the magnitude is not, the two
+channels differ by 20 %, and each candidate costs a Platform Teensy flash
+(Arduino IDE — `pio` is CAN-mute and suspended) plus a re-validation ladder. The
+reconciling measurement is named and cheap: **the rev→mm gain, taken statically.**
+
+### Verification
+
+- `./run_tests.sh --full` (every tier, `nightly` included), run 2026-08-24 as the
+  first close-out gate: **RESULT: PASS** — parallel **6165 passed, 3 skipped,
+  3 xfailed in 518.63 s**, serial **9 passed in 41.69 s**, total 567 s. Counts
+  identical to the package's own 2026-08-23 closure run, as they must be: this
+  pass changed one Python docstring and seven markdown files, and added no test.
+- `./run_tests.sh --full`, re-run 2026-08-24 as the COMMIT gate (the close-out
+  session died to an API outage between the run above and the commit, so the
+  gate was re-run by the salvaging session on the final tree): **RESULT: PASS**
+  — parallel **6181 passed, 3 skipped, 3 xfailed in 523.41 s**, serial **9
+  passed in 41.92 s**, total 571 s. The +16 over the run above is the
+  interleaved observability-session commits (61aea25/2995855/145484c), which
+  added tests after the first gate ran. Caveat, stated per the load-flake
+  doctrine: this run overlapped a foreign scoped pytest for part of its window;
+  it finished all-green, which the doctrine holds valid (only load-flake
+  FAILURES under shared CPU are suspect).
+- `/tmp/probe_arrival_clamp.py`, rewritten to CALL `ball_possession.arrival_boundary_t`,
+  run 2026-08-24: the corrected reachability table — R5′ clamp pin closes at
+  **+0.8000** (loses nothing), R6 at **+0.7529** (loses **47.1 ms**),
+  amputation threshold **0.800 s** of cycle period.
+- `/tmp/probe_cliff_box.py`, run 2026-08-24 (calls `cadence_rung_check.fastest_at`):
+  `h 0.301` → 54.29/min aim-disarmed, 54.16/min ILC-loaded; `h 0.31` → 54.17 and
+  **52.68**; `h 0.300` refuses (T 0.494720, **0.16 ms** under
+  `MIN_FLIGHT_TIME_S`). R5-prime's `required_dwell_s` at its own 0.44 s delay is
+  **0.6303** (aim disarmed) / **0.6481** (ILC loaded) — clearance 29.7 / **11.9**
+  ms; delay floor **0.4144 / 0.4280** — clearance 25.6 / **12.0** ms.
+- `python tools/probes/cadence_rung_check.py --solve`, run 2026-08-24 against
+  this tree: **PUBLISHED LADDER: all rungs FLY** (7 rungs × {ILC off, ON} ×
+  {chained, first}) — reproduced here precisely so the BLOCKING's "the probe
+  cannot see it" claim is on the record beside the probe's own green.

@@ -37,6 +37,34 @@ way of getting this wrong:
    on the commanded profile.  A torque-only change leaves every one of them
    valid *without moving*; a profile-shaping change would not have.
 
+.. warning::
+
+   **THE ANCHORS BELOW ARE SUPERSEDED AS A STATEMENT ABOUT THE CURRENT PLANT
+   (2026-08-23), AND PROPERTY 1 IS THE ONE THAT MOVED.**  Every number in this
+   section was measured through the hand ODrive's ``-10.00 A`` braking clamp
+   (removed 2026-08-18, ``b084f98``) and through a scoring window that was
+   reading the *catch arm's* excursion rather than the throw's coast
+   (``ab8968f``).  Re-derived on the restored drive from
+   ``~/Desktop/rosbags/2026-08-23_19-14-54`` (15 throws, 5 tiers x 3), every
+   tier's coast finished BELOW ``x3``, which flips the same torque-balance
+   expression from a LOWER bound into an UPPER one: ``J_true <= 9.04e-6``
+   (encoder channel) and ``<= ~7.5e-6`` (ballistic channel) — **both BELOW the
+   declared 9.5e-6.**  The two channels disagree on magnitude by 20 % and agree
+   on sign, and the sign says the shipped feedforward is on the OVER-braking
+   side of the contract, not the safe side.
+
+   **No new constant was landed, deliberately**: the reconciling measurement is
+   the rev->mm gain taken statically, and each candidate value costs a Platform
+   Teensy flash (Arduino IDE; ``pio`` is CAN-mute) plus a re-validation ladder.
+   See ``ros_ws/docs/hand_decel_feedforward.md`` § *The re-derivation on the
+   UNCLAMPED drive*.
+
+   So ``test_declared_inertia_cannot_over_brake`` still PASSES against
+   ``_MEASURED_REFLECTED_INERTIA_MIN_KGM2``, and **that pass is a regression
+   fence on the 2026-07-27 identification, not live confirmation that the
+   machine cannot over-brake.**  Do not cite it as the latter.  It moves when
+   the operator lands a value, and not before.
+
 EMPIRICAL ANCHORS — every number below traces to a measurement
 -------------------------------------------------------------
 Probe: ``tools/probes/hand_decel_authority.py``, run against
@@ -172,6 +200,19 @@ def test_declared_inertia_cannot_over_brake():
     queue-clobber dip C-HAND-1 exists to detect, because
     ``tools/probes/hand_stroke_timeline.py``'s ``dip_below_x3`` row scores the
     hand's position, not its cause.
+
+    ⚠ **What a PASS here does and does not mean, since 2026-08-23.**  The bound
+    it pins, ``_MEASURED_REFLECTED_INERTIA_MIN_KGM2 = 1.0126e-5``, is the
+    CLAMPED-drive identification and is superseded — see the module docstring's
+    warning.  On the restored drive the tightest measured bounds are 9.04e-6
+    (encoder) and ~7.5e-6 (ball), both BELOW the declared 9.5e-6, and the hand
+    finished short of ``x3`` on 15 of 15 throws.  This assertion is therefore a
+    **regression fence against re-raising the declared value**, not evidence
+    that the failure mode above is closed on the current plant.  Retightening
+    the bound is an operator decision with a Platform Teensy flash behind it
+    (carried open question, ``logbook/2026-08-23-cadence-floor-and-inertia.md``
+    § Audit fixes) — do not lower this constant without landing the firmware
+    value in the same commit, or the suite goes red on a machine nobody changed.
     """
     declared = hw.TEENSY_TRAJ_THROW_DECEL_REFLECTED_INERTIA_KGM2
     assert declared <= _MEASURED_REFLECTED_INERTIA_MIN_KGM2, (
