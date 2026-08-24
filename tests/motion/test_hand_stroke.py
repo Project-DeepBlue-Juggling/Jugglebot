@@ -709,11 +709,16 @@ def test_catch_park_reentry_matches_a_numeric_sweep_of_the_shipped_profile():
 def test_catch_park_reentry_beats_the_arrival_band_at_the_cadence_rungs():
     """WHY the session takes a max() rather than trusting ``ARRIVAL_BAND_MIN_S``.
 
-    The park term and the arrival term cross over INSIDE the admitted band: at
-    the 0.7977 s R0-R3 flight the hand is back in the band at 0.1204 s, under the
-    0.137 s arrival floor, so the arrival term binds and nothing changed. At
-    every rung from R4 down the park term wins, and by the target flight it is
-    0.1903 s — 39 % above the margin that was covering it.
+    The park term and the arrival term cross over INSIDE the admitted band, and
+    the 2026-08-24 post-FW-14 band re-measure MOVED that crossover rather than
+    deleting it. While the arrival floor was 0.137 s it sat at roughly a 0.75 s
+    flight: the 0.7977 s R0-R3 rung was on the arrival side (park 0.1204 s) and
+    everything from R4 down on the park side. At the re-measured 0.087 s floor
+    the crossover is up near the TOP of the band (~1.13 s of flight), so the park
+    term now wins at EVERY published rung — which is why a 50 ms cut to
+    ``ARRIVAL_BAND_MIN_S`` bought no dwell anywhere on the ladder. The arrival
+    term survives as the max()'s winner only at the band's long-flight end, where
+    the stroke is fastest.
 
     Monotone decreasing in flight time, so the SHORTEST admitted flight is the
     worst case, which is what makes ``toss_session``'s unresolved-flight fallback
@@ -735,11 +740,15 @@ def test_catch_park_reentry_beats_the_arrival_band_at_the_cadence_rungs():
     assert values == sorted(values, reverse=True)
     assert all(a > b for a, b in zip(values, values[1:]))
 
-    # The crossover, both sides, against the constant the session compares to.
+    # The crossover, both sides, against the constant the session compares to —
+    # so this test still reds if `handoff_margin_s` collapses to either term.
     from jugglebot.ball_possession import ARRIVAL_BAND_MIN_S
-    assert park[0.5029] > ARRIVAL_BAND_MIN_S
-    assert park[0.6059] > ARRIVAL_BAND_MIN_S
-    assert park[0.7977] < ARRIVAL_BAND_MIN_S
+    # PARK side: every published rung flight, since 2026-08-24.
+    for rung_flight in (FLIGHT_TIME_MIN_S, 0.5029, 0.6059, 0.7977):
+        assert park[rung_flight] > ARRIVAL_BAND_MIN_S, rung_flight
+    # ARRIVAL side: the long-flight end of the C-HAND-3 band, where the catch
+    # stroke is fast enough that the verdict is the later of the two.
+    assert park[1.1449] < ARRIVAL_BAND_MIN_S
 
 
 def test_catch_park_reentry_is_a_slice_of_the_turnaround_floor_not_a_new_one():

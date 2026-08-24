@@ -76,7 +76,7 @@ for _p in (_HERE, _REPO, os.path.join(_REPO, 'ros_ws', 'src', 'jugglebot')):
 
 import jugglebot.hardware_config as hw                          # noqa: E402
 import toss_record_miner as miner                                # noqa: E402
-from jugglebot.toss_record import edges                          # noqa: E402
+from jugglebot.toss_record import edges, poll_dt_steps_ms        # noqa: E402
 
 DEFAULT_ROOT = miner.DEFAULT_ROOT
 OUT_DIR = os.path.join(_REPO, 'temp', 'probes')
@@ -118,44 +118,51 @@ def poll_cadence(samples):
     cached bit at 100 Hz, so counting *messages* would report 100 Hz and be
     wrong by the whole factor this census exists to expose.
 
-    Returns the percentile spread, not just the median the miner's ledger
-    carries, because the 2a finding was specifically that the distribution is
-    *spread* (p5 32 / p50 71 / p95 111 ms) rather than quantised at a different
-    fixed rate — the signature of a poll being deferred, not re-rated.
+    **What counts as a step is NOT defined here.** It is
+    ``jugglebot.toss_record.poll_dt_steps_ms`` — the same rule the robot's own
+    ``sensor_poll_dt_ms_median`` record field is built from — so this census and
+    the mined ledger cannot drift onto two notions of a poll interval. This
+    function defines only the REDUCTION: the percentile spread, which the
+    record's bare median does not carry, because the 2a finding was specifically
+    that the distribution is *spread* (p5 32 / p50 71 / p95 111 ms) rather than
+    quantised at a different fixed rate — the signature of a poll being deferred,
+    not re-rated.
 
-    A **backwards** ``ball_held_stamp`` step is dropped and counted, never
-    averaged in. The stamp is bridge-sourced and a re-anchor (or a wrap) makes it
-    go down; a negative sample would drag the percentiles toward zero and — via
-    ``select_outcome``'s "a W-second window holds N polls" line, which DIVIDES by
-    p50 — could report a negative or absurd poll count. ``n_backwards`` is
-    reported rather than swallowed, because a stream that steps backwards at all
-    is a finding about the bridge clock.
+    Adopted 2026-08-24 (``logbook/2026-08-24-cadence-crossrecording-closeout.md``).
+    This was the last private copy of the step rule, and it carried two holes the
+    shared definition closes. A **backwards** stamp was already dropped and
+    counted here — the stamp is bridge-sourced and a re-anchor (or a wrap) makes
+    it go down, and a negative sample would drag the percentiles toward zero and,
+    via ``select_outcome``'s "a W-second window holds N polls" line, which DIVIDES
+    by p50, report a negative or absurd poll count. But dropping the negative is
+    only half of it: ``prev`` was carried forward onto the LOW stamp, so the very
+    next sample became a step of the whole re-anchor distance in the POSITIVE
+    direction — a 0.5 s re-anchor minted a 500 ms "poll". ``prev`` now resets, and
+    the one interval spanning the re-anchor is lost rather than invented. The
+    shared rule also resets across an INVALID span (the bridge may poll several
+    times while ``ball_held_valid`` is false, so the difference across the gap is
+    not one interval) and refuses a step that crosses the bridge's **wall
+    anchor** — the +1.79e12 ms epoch change, reported as ``n_domain_breaks``.
+
+    Both refusal counts are reported rather than swallowed, because a stream that
+    steps backwards, or that changes stamp epoch mid-capture, is a finding about
+    the bridge clock and not a cadence.
     """
-    steps = []
-    backwards = 0
-    prev = None
-    for s in samples:
-        if not s.valid:
-            continue
-        stamp = float(s.stamp)
-        if prev is not None and stamp != prev:
-            if stamp < prev:
-                backwards += 1
-            else:
-                steps.append((stamp - prev) * 1e3)
-        prev = stamp
-    steps.sort()
+    cleaned = poll_dt_steps_ms(samples)
+    steps = sorted(cleaned.steps_ms)
+    base = {'n': len(steps),
+            'n_backwards': cleaned.n_backwards,
+            'n_domain_breaks': cleaned.n_domain_breaks,
+            'configured_ms': float(hw.JB_BD_CHECK_INTERVAL_MS)}
     if not steps:
-        return {'n': 0, 'n_backwards': backwards,
-                'configured_ms': float(hw.JB_BD_CHECK_INTERVAL_MS)}
+        return base
 
     def p(q):
         return steps[min(len(steps) - 1, int(q * len(steps)))]
 
-    return {'n': len(steps), 'n_backwards': backwards,
-            'p5_ms': p(.05), 'p50_ms': p(.5), 'p95_ms': p(.95),
-            'max_ms': steps[-1],
-            'configured_ms': float(hw.JB_BD_CHECK_INTERVAL_MS)}
+    base.update({'p5_ms': p(.05), 'p50_ms': p(.5), 'p95_ms': p(.95),
+                 'max_ms': steps[-1]})
+    return base
 
 
 #: A raw edge whose debounced confirmation has not arrived within this long was
@@ -564,6 +571,10 @@ def print_report(name, res):
                       c['configured_ms']))
     else:
         print('  sensor poll: no ball_held_stamp advance in this bag')
+    if c.get('n_backwards') or c.get('n_domain_breaks'):
+        print('  ⚠ bridge-clock refusals: {} backwards step(s), {} stamp-epoch '
+              'break(s) — intervals DROPPED, not measured'
+              .format(c.get('n_backwards', 0), c.get('n_domain_breaks', 0)))
     d = res['debounce_lag']
     for edge, label in (('rise_ms', 'catch edge (empty->held)'),
                         ('fall_ms', 'departure edge (held->empty)')):
@@ -809,6 +820,27 @@ def self_check() -> int:
           cad['p5_ms'] > 0.0, True)
     check('...and the median is still the measured poll rate',
           70.0 <= cad['p50_ms'] <= 72.0, True)
+    # The RE-ANCHOR HOLE, closed 2026-08-24 by adopting `poll_dt_steps_ms`.
+    # A single TRANSIENT low stamp (a glitch, not a persistent re-anchor) used to
+    # be dropped as backwards and then have `prev` carried onto it, so the NEXT
+    # sample minted a step of the whole excursion in the POSITIVE direction. The
+    # sign checks above all pass on that fake step — only the MAX catches it.
+    glitch = [s._replace(stamp=s.stamp - 0.5) if i == 10 else s
+              for i, s in enumerate(clean)]
+    cad = poll_cadence(glitch)
+    check('a transient low stamp is counted backwards',
+          cad['n_backwards'], 1)
+    check('...and does NOT mint a 571 ms poll out of the excursion',
+          cad['max_ms'] < 100.0, True)
+    # A change of stamp EPOCH mid-capture (the bridge's wall anchor landing) is
+    # refused and counted, not measured as a 1.79e12 ms poll.
+    anchored = [s._replace(stamp=s.stamp + 1.786e9) if i >= 10 else s
+                for i, s in enumerate(clean)]
+    cad = poll_cadence(anchored)
+    check('a wall-anchor epoch change is counted as a domain break',
+          cad['n_domain_breaks'], 1)
+    check('...and no step spans the epoch change',
+          cad['max_ms'] < 100.0, True)
 
     # A miner row with NO label must not take the whole bag down. The annotation
     # join sorted (t, label) TUPLES, which reaches the label the instant two

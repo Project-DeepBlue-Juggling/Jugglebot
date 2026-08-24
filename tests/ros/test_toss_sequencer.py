@@ -71,8 +71,8 @@ FIXTURE_LANDING_T = 5.8
 #: DERIVED, not typed: the confirm window moved 0.70 -> 0.80 on 2026-08-21 when
 #: it became `ball_possession.ARRIVAL_BAND_MAX_S` (census D7), and twelve tests
 #: in this file went red on a hard-coded 6.5 for a reason that had nothing to do
-#: with what any of them assert. Deriving it means the pending post-FW14 band
-#: re-measure moves them too.
+#: with what any of them assert. Deriving it meant the 2026-08-24 post-FW14 band
+#: re-measure (0.80 -> 0.56) moved all twelve without touching this file.
 PAST_SETTLE_T = FIXTURE_LANDING_T + CATCH_CONFIRM_WINDOW_S
 #: Just inside the CATCHING phase-report threshold (landing - confirm window).
 CATCHING_PHASE_T = FIXTURE_LANDING_T - CATCH_CONFIRM_WINDOW_S + 0.05

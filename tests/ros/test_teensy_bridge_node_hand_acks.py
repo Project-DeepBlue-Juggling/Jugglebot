@@ -107,9 +107,16 @@ def test_teensy_returned_error_counts_as_fail_teensy():
 
     This is the observed epidemic's shape: the recount found ZERO
     'ERR_TIMEOUT after N retries' lines on the hand path, i.e. every hand
-    failure was Teensy-RETURNED — the firmware ran ``hand_ops`` and a
-    ``can_jugglebot_send`` returned false. ERR_TIMEOUT is used as the status here
+    failure was Teensy-RETURNED — the firmware ran ``hand_ops`` and its CAN send
+    did not reach the wire. ERR_TIMEOUT is used as the status here
     deliberately: it is the exact code whose two origins the log text pools.
+
+    (Wording only, 2026-08-24: that send used to be ``can_jugglebot_send``
+    returning false, which pooled *failed* with *queued into the software TX
+    buffer*. The FW-15 tri-state splits them — ``TxResult::FAILED`` is now the
+    bus-partner presence gate alone, and a DEFERRED send acks truthfully. This
+    node-side test is unaffected either way: it drives the RPC status the bridge
+    returns, not the bridge's reason for returning it.)
     """
     teensy, client, node = _node()
     try:

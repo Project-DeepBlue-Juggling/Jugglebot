@@ -358,6 +358,27 @@ static void task_diag(void*) {
                     (unsigned long)ch.decode_short, (unsigned long)ch.decode_bad_axis,
                     (unsigned long)can_cone_fwd_drops(),
                     (unsigned long)can_cmd_result_fwd_drops());
+      // Per-CALLER deferral census (2026-08-24, FW 16). [canhealth]'s defer= is the
+      // per-BUS total and cannot say whose pressure it is; these six can. safety= is
+      // the dedicated safety-frame counter — a deferred E-stop / CLEAR_ERRORS / relay
+      // op still transmits in order, so it is a WATCH SIGNAL rather than a fault, and
+      // it is broken out precisely so it never hides inside a leg-burst total. All
+      // cumulative since boot; nominal on this bridge is every column 0 (the FW 10
+      // setMaxMB raise to 16 TX mailboxes is what keeps them there). Console-only:
+      // promoting them to the uplink needs a new additive MsgType (can_buses.h says
+      // why appending to BridgeTxDiag is the wrong move).
+      {
+        const TxDeferCensus dc = can_buses_defer_census();
+        Serial.printf("[cantx]     defer_by_class poller=%lu legs=%lu hand=%lu rpc=%lu"
+                      " safety=%lu timesync=%lu coldstart=%lu\n",
+                      (unsigned long)dc.by_class[TxCls::POLLER],
+                      (unsigned long)dc.by_class[TxCls::LEGS],
+                      (unsigned long)dc.by_class[TxCls::HAND],
+                      (unsigned long)dc.by_class[TxCls::RPC],
+                      (unsigned long)dc.by_class[TxCls::SAFETY],
+                      (unsigned long)dc.by_class[TxCls::TIMESYNC],
+                      (unsigned long)dc.by_class[TxCls::OTHER]);
+      }
       can_buses_print_esr1();   // raw ESR1 words of fresh error snapshots (diagnostic)
 
       // Hand-dispatch interp-phase stamp (2026-08-09) — the falsifiable test for the

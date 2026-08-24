@@ -514,6 +514,7 @@ class ReloadSequencer:
         early by the ball's whole time of flight — ``~0.6-0.7 s``, the same term
         :meth:`_step_throw_pending`'s deadline comment names — against a
         ``JB_BD_ARRIVAL_WINDOW_S`` of 1.50 s. That is ~2x of headroom, not 10x,
+        against a flight that is itself the dominant term;
         and a late arrival measured from the fallback anchor CAN fall outside the
         window. The failure direction is the safe one — a real catch read MISSED,
         never a false CAUGHT — but it is a bench-watch item, not a proof:

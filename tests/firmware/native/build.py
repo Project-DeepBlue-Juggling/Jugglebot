@@ -143,6 +143,15 @@ _BINARIES = {
         NATIVE_DIR / "test_rpc_dispatch.cpp",
         ["axis_state", "ball_butler_state", "fake_hal"],
     ),
+    # TX tri-state coverage: EXECUTE can_buses.h's header-inline classify_tx_write()
+    # + the tx_reached_the_wire / tx_was_deferred predicates and the TxCls census
+    # vocabulary. can_buses.cpp compiles in NO native binary, which is why the
+    # write()-return rule was moved into the header in the first place — a contract
+    # that cannot be executed cannot be defended. Pure header, no linked objects.
+    "test_can_tx_result": (
+        NATIVE_DIR / "test_can_tx_result.cpp",
+        [],
+    ),
     # ODrive-encoder coverage: EXECUTE the real odrive_protocol.h encoders + emit a
     # cross-language golden (pinned by the Python xref to odrive.py). Pure header.
     "test_odrive_protocol": (

@@ -35,6 +35,37 @@ static_assert(JBBallDetect::MAX_MISSING_SAMPLES > 0u && JBBallDetect::MAX_MISSIN
 static constexpr uint64_t POLL_INTERVAL_US = (uint64_t)JBBallDetect::CHECK_INTERVAL_MS * 1000ull;
 static constexpr uint64_t REPLY_TIMEOUT_US = (uint64_t)JBBallDetect::CHECK_TIMEOUT_MS  * 1000ull;
 
+// ── Pacing grid (2026-08-24, FW 16) ─────────────────────────────────────────
+//  The step runs on task_homing at HOMING_RATE_HZ, and the poll interval is an
+//  exact multiple of that task period. That coincidence is what made the OLD
+//  pacing lose ~1 cycle in 3.
+//
+//  WHAT WENT WRONG. The old code restarted the interval from `now` at each send
+//  (`s_attempt_us = now`), where `now` is the tick instant PLUS this wake's
+//  scheduling jitter d_k. The next send needed `now - s_attempt_us >= INTERVAL`,
+//  i.e. d_{k+2} >= d_k — a coin flip. Losing it costs a WHOLE task period, so a
+//  20 ms cycle becomes 30 ms; the measured distinct-sample cadence was 20 ms p50
+//  / 30 ms p95, ~42 Hz against the configured 50. Worse, the restart-from-`now`
+//  then re-anchored the grid on the late tick, so the phase never recovered.
+//
+//  THE FIX HAS TWO HALVES, AND BOTH ARE NEEDED.
+//   (a) ABSOLUTE SCHEDULE: the next due time advances from the PREVIOUS DUE TIME,
+//       not from `now`, so wake jitter cannot accumulate into the period and a
+//       cycle that does slip is recovered on the next one instead of shifting the
+//       grid forever.
+//   (b) A HALF-TICK EARLY-FIRE BAND: with (a) alone the due instants still land
+//       exactly ON nominal tick instants — the worst possible phase — and the
+//       d_{k+2} >= d_k coin flip survives. Firing when the due instant is within
+//       half a task period is the same thing as ROUNDING THE DUE INSTANT TO THE
+//       NEAREST TICK, which is exactly the intent. Half a period is the largest
+//       band that cannot pull a cycle forward onto its predecessor's tick, so
+//       "at most ONE send per tick" is preserved by construction (worst-case
+//       spacing INTERVAL - SLOP = one and a half task periods).
+static constexpr uint64_t TICK_PERIOD_US = 1000000ull / (uint64_t)HOMING_RATE_HZ;
+static constexpr uint64_t DUE_SLOP_US    = TICK_PERIOD_US / 2ull;
+static_assert(POLL_INTERVAL_US > TICK_PERIOD_US,
+              "poll interval must exceed the task period or the schedule cannot pace anything");
+
 // Staleness window. A healthy poller lands a good reply at least every
 // (CHECK_INTERVAL_MS + CHECK_TIMEOUT_MS); two of those tolerate ONE lost round
 // trip without flapping the tri-state to UNKNOWN, and still surface a dead sensor
@@ -47,7 +78,8 @@ enum class Gate   : uint8_t { UNRECEIVED, MATCH, MISMATCH };
 
 // ── Writer-private state (task_homing only) ──────────────────────────────────
 static PPhase   s_phase        = PPhase::IDLE;
-static uint64_t s_attempt_us   = 0;       // monotonic stamp of the last request attempt (pacing + timeout)
+static uint64_t s_attempt_us   = 0;       // monotonic stamp of the last request SEND (reply timeout only)
+static uint64_t s_next_due_us  = 0;       // absolute monotonic instant the next request is due (pacing)
 static uint8_t  s_miss_count   = 0;       // consecutive EMPTY good readings (saturating)
 static bool     s_held         = false;   // debounced verdict
 static uint64_t s_last_good_mono_us = 0;  // writer's mirror of the published mono stamp; 0 ⇒ none
@@ -129,6 +161,24 @@ static inline void publish(const Published& p) {
 static inline void reply_invalidate() {
   s_reply_pending = false;
   asm volatile("" ::: "memory");
+}
+
+// Is the next request due at this tick? Signed difference, because s_next_due_us
+// is normally AHEAD of `now` and an unsigned compare would read that as overdue.
+static inline bool schedule_due(uint64_t now) {
+  return (int64_t)((now + DUE_SLOP_US) - s_next_due_us) >= 0;
+}
+
+// Advance the grid by exactly one interval from the PREVIOUS DUE TIME.
+static inline void schedule_advance(uint64_t now) {
+  s_next_due_us += POLL_INTERVAL_US;
+  // CATCH-UP GUARD. After a long quiet stretch — a runtime-off window, a
+  // version-gate park, a starved task — the grid can be many intervals behind,
+  // and replaying it would burst one request per tick until it caught up, on a
+  // bus whose whole reason for one-frame-per-tick pacing is not to burst. The
+  // poller is a periodic SAMPLER, not a queue: a sample not taken has no backlog,
+  // so re-base onto the current instant instead of paying down the debt.
+  if (schedule_due(now)) s_next_due_us = now + POLL_INTERVAL_US;
 }
 
 static inline bool reply_take(uint32_t& out, uint64_t& wall_us, uint64_t& mono_us) {
@@ -217,6 +267,8 @@ static void apply_good_reply(uint32_t states, uint64_t reply_wall_us, uint64_t r
 void gpio_poll_init() {
   s_phase             = PPhase::IDLE;
   s_attempt_us        = 0;
+  s_next_due_us       = 0;   // due on the first step (setup() runs long before the
+                             // first task_homing tick, so this is not a boot burst)
   s_miss_count        = 0;
   s_held              = false;
   s_last_good_mono_us = 0;
@@ -280,6 +332,9 @@ void gpio_poll_rtt_take(GpioPollRtt& out) {
 
 void gpio_poll_step() {
   if (!JBBallDetect::ENABLED) return;   // build-time kill switch (constexpr, never #if)
+
+  const uint64_t now = micros64();      // interval clock: pacing, timeout, staleness
+
   if (!s_enabled) {
     // Runtime toggle OFF. DRAIN, don't just return: a reply latched in AWAIT
     // when the console toggled off would otherwise be taken as fresh on
@@ -288,10 +343,12 @@ void gpio_poll_step() {
     reply_invalidate();
     rtt_disarm();   // same reason: an in-flight request abandoned by the toggle
                     // must not be closed by whatever reply arrives next
+    // Hold the grid against `now` while parked, so re-enabling starts a fresh
+    // interval instead of leaning on the catch-up guard to unwind an off-window
+    // that could be hours long.
+    s_next_due_us = now;
     return;
   }
-
-  const uint64_t now = micros64();      // interval clock: pacing, timeout, staleness
 
   if (s_phase == PPhase::AWAIT) {
     uint32_t states = 0;
@@ -301,12 +358,31 @@ void gpio_poll_step() {
       s_phase = PPhase::IDLE;
     } else if (now - s_attempt_us >= REPLY_TIMEOUT_US) {
       s_phase = PPhase::IDLE;           // timeout ⇒ staleness only: verdict + miss_count untouched
+    } else {
+      return;                           // still outstanding — nothing to do this tick
     }
-    return;                             // at most one CAN3 TX per tick (bus pacing)
+    // CONSUME AND SEND IN THE SAME TICK. This used to `return` here, and that
+    // return was the OTHER half of the cadence loss: closing a round trip cost a
+    // whole task period before the next request could even be CONSIDERED, making
+    // the cycle 10*max(2, ceil(RTT/10)+1) ms. Falling through does not weaken the
+    // "at most one CAN3 TX per tick" pacing rule, because the send below is the
+    // only send in this function and the schedule still gates it.
+    //
+    // ACCEPTED CONSEQUENCE, stated because it is not obvious: on the TIMEOUT
+    // branch the next request now goes out in the same tick, which collapses the
+    // incidental ~1-tick window in which a straggling reply to the abandoned
+    // request would have been dropped by the pre-send reply_invalidate() below.
+    // A straggler landing AFTER that invalidate is attributed to the new request
+    // — but that was already true one tick later, so the hazard is unchanged in
+    // KIND, only in window width. It needs a reply-to-request correlator to close
+    // properly, and the ODrive TxSdo reply carries no sequence to correlate on.
   }
 
-  if (now - s_attempt_us < POLL_INTERVAL_US) return;
-  s_attempt_us = now;   // paces EVERY outcome below, refusals included, off the 100 Hz tick
+  if (!schedule_due(now)) return;
+  // Paces EVERY outcome below, refusals included, off the task tick: a version
+  // gate parked on UNRECEIVED or a down bus must consume a whole interval, never
+  // spin at tick rate. Advancing BEFORE the gates is what makes that true.
+  schedule_advance(now);
 
   ODrive::Version v{};
   const Gate g = version_gate(v);
@@ -314,8 +390,8 @@ void gpio_poll_step() {
   if (g == Gate::MISMATCH) { park_latch(v); return; }
 
   // Never TX into a dead bus: the health gate here, the CAN3 partner-presence
-  // gate inside can_jugglebot_send() (an un-ACKed TX climbs the FlexCAN TEC).
-  // can_jugglebot_send is version_check_step's TX path — the poller is
+  // gate inside can_jugglebot_tx() (an un-ACKed TX climbs the FlexCAN TEC).
+  // can_jugglebot_tx is version_check_step's TX path — the poller is
   // firmware-internal and never touches send_axis_frame's allow-table.
   if (!jugglebot_commands_allowed()) return;
   reply_invalidate();
@@ -327,9 +403,19 @@ void gpio_poll_step() {
   // FW 13 RING_DIAG: stamp BEFORE the send (gpio_poll.h explains why the other
   // order would corrupt the floor this measures), and disarm if the send did not
   // take — an un-sent request must never be differenced against a later reply.
-  rtt_arm(micros64());
-  if (can_jugglebot_send(ODrive::encode_sdo_write(
-          HAND_AXIS, EndpointId::odrive_pro_0_6_11::get_gpio_states, 0.0f)))
+  const uint64_t send_us = micros64();
+  rtt_arm(send_us);
+  s_attempt_us = send_us;   // the reply timeout runs from the SEND, not the tick top
+  // TRI-STATE RULING (owner, 2026-08-24): a DEFERRED request is IN FLIGHT. The
+  // frame is in the transmit queue and will go out in order, so AWAIT is armed and
+  // the RTT stays armed with it — queue latency IS part of the round trip, and this
+  // instrument's whole job is to measure the round-trip FLOOR truthfully. Only
+  // TxResult::FAILED (the presence gate refusing a partner-less bus) means no
+  // frame exists to wait for.
+  if (tx_reached_the_wire(can_jugglebot_tx(
+          ODrive::encode_sdo_write(
+              HAND_AXIS, EndpointId::odrive_pro_0_6_11::get_gpio_states, 0.0f),
+          TxCls::POLLER)))
     s_phase = PPhase::AWAIT;
   else
     rtt_disarm();

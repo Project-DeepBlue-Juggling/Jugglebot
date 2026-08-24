@@ -32,9 +32,18 @@ QUICK_DROP_S = 1.5
 #: JB_BD_RETENTION_WINDOW_S on these.
 QUICK_DROP_DURATIONS_S = (0.5695, 0.9995, 0.9883)
 
-#: MEASURED hand-sensor poll cadence (median ball_held_stamp advance),
-#: against a CONFIGURED JB_BD_CHECK_INTERVAL_MS of 20. The gap is the
-#: reason sensor_poll_dt_ms_median is a mined field and not an assumption.
+#: MEASURED hand-sensor poll cadence (median ball_held_stamp advance) ON
+#: THIS BAG, against a CONFIGURED JB_BD_CHECK_INTERVAL_MS of 20.
+#:
+#: A HISTORICAL measurement of ONE 2026-08-10 sitting, and NOT an
+#: expectation for the current plant. That capture predates the FW 14
+#: can-bridge fix (2026-08-15); all thirteen decodable bags captured from
+#: 2026-08-15 on measure p50 20 / p95 30 ms, i.e. the configured interval
+#: (logbook/2026-08-24-hand-sensor-poll-cadence.md). It is pinned here
+#: because the miner must reproduce this bag's number from this bag —
+#: which is also why sensor_poll_dt_ms_median is a mined field per record
+#: and never an assumption. A future bag that measures an elevated cadence
+#: means investigate; it does not identify a mechanism.
 POLL_DT_MS_MEDIAN = 70.998
 
 #: Announcements with thrower_name == target_id == the robot.

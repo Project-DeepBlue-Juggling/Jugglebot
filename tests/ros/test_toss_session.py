@@ -157,14 +157,22 @@ def test_dwell_non_finite_or_negative_rejected(dwell):
 
 
 def test_dwell_below_the_derived_floor_is_refused_not_stretched():
-    """The floor is throw_delay + margin. Below it the session REFUSES rather
-    than quietly running slower: a cadence the machine ignores is a lie about
-    what it did, and the operator's remedy is only visible if it is named."""
-    s = _session(dwell_time_s=DELAY + DEFAULT_SESSION_DWELL_MARGIN_S - 0.01)
+    """The floor is ``throw_delay + handoff_margin``. Below it the session
+    REFUSES rather than quietly running slower: a cadence the machine ignores is
+    a lie about what it did, and the operator's remedy is only visible if it is
+    named.
+
+    Read from ``required_dwell_s`` rather than rebuilt from
+    ``DEFAULT_SESSION_DWELL_MARGIN_S``, because ``handoff_margin_s`` takes a
+    max() with the hand's park re-entry and the arrival term stopped being the
+    winner at the 2026-08-24 band re-measure — a test that re-derives the floor
+    from the margin alone tests arithmetic the session does not do."""
+    floor = _session().required_dwell_s
+    s = _session(dwell_time_s=floor - 0.01)
     d = s.step(0.0)
     assert d.done and d.result.outcome == 'REJECTED_DWELL'
     # …and exactly at the floor it is accepted.
-    ok = _session(dwell_time_s=DELAY + DEFAULT_SESSION_DWELL_MARGIN_S)
+    ok = _session(dwell_time_s=floor)
     assert ok.step(0.0).action == SESSION_ACTION_START_CYCLE
 
 
@@ -187,8 +195,12 @@ def test_the_floor_is_the_larger_of_the_handoff_and_the_hand_geometry():
                                 flight_time_s=FLIGHT, **NO_ILC_TRIM,
                                 dwell_margin_s=DEFAULT_SESSION_DWELL_MARGIN_S)
     assert slow.required_dwell_s == pytest.approx(
-        DELAY + DEFAULT_SESSION_DWELL_MARGIN_S)
-    assert slow.required_dwell_s == pytest.approx(5.137)
+        DELAY + slow.handoff_margin_s)
+    # 5.137 until the 2026-08-24 band re-measure, when the arrival term (0.137 ⇒
+    # 0.087) fell under the PARK term and the max() changed hands. The number is
+    # now hand geometry at this flight, not sensor latency.
+    assert slow.required_dwell_s == pytest.approx(5.1200, abs=1e-4)
+    assert slow.handoff_margin_s > DEFAULT_SESSION_DWELL_MARGIN_S
     assert slow.hand_floor_dwell_s < slow.required_dwell_s
 
     # (b) FAST regime — the hand geometry binds. Isolated by zeroing the
@@ -371,53 +383,74 @@ def test_no_accepted_session_starts_a_cycle_inside_the_live_catch_stroke():
     machine-fault verdict for a cadence fault, and ends the sitting.
 
     Swept across the whole C-HAND-3 band and a range of delays rather than
-    spot-checked, because the two terms cross over inside the band — the park
-    term is 0.1204 s at the 0.7977 s flight (UNDER the 0.137 s arrival term, so
-    the arrival term binds) and 0.1933 s at the band floor (OVER it, so the park
-    term binds). A single-flight test would sit on one side of that crossover
-    and pass with :attr:`handoff_margin_s` reduced to ``dwell_margin_s``.
+    spot-checked, because both branches of that max() have to stay live. Until
+    the 2026-08-24 band re-measure the crossover sat INSIDE the C-HAND-3 band —
+    park 0.1204 s at the 0.7977 s flight (UNDER the 0.137 s arrival term) and
+    0.1933 s at the band floor (OVER it) — so sweeping the flight alone
+    exercised both. **The re-measure took the arrival term to 0.087 s and pushed
+    the crossover from a ~0.75 s flight out to ~1.13 s**, past every published
+    rung, leaving the ``dwell_margin_s`` branch alive only at the very top of the
+    C-HAND-3 band — thin cover for a mutation reducing :attr:`handoff_margin_s`
+    to ``catch_park_reentry_s``. The margin is therefore swept too: the shipped
+    0.087 s and a 0.30 s margin above every park value in the band (where the
+    margin always wins). A single-flight, single-margin test would sit on one
+    side and pass with the max() collapsed either way.
 
     Swept with the ILC speed trim BOTH possible and not (2026-08-23): a slower
     commanded release lengthens the catch stroke and therefore the park
     re-entry, so the contract has to hold against the slowest release the apply
     seam could command, not only against the untrimmed one."""
+    #: Above every ``catch_park_reentry_s`` the band can produce (max 0.2081 s at
+    #: the band floor with a trim possible), so it keeps the ARRIVAL branch live.
+    _MARGIN_OVER_PARK_S = 0.30
+    parks = []
     for trim in (False, True):
         for flight in (FLIGHT_TIME_MIN_S, 0.55, 0.6059, 0.70, 0.7977, 1.00,
                        1.14):
             for delay in (0.35, 0.50, 0.90, 2.40, 5.00):
-                s = TossSessionSequencer(
-                    num_throws=5, dwell_time_s=0.0, throw_delay_s=delay,
-                    flight_time_s=flight, catch_vel_scale=0.9,
-                    ilc_speed_trim_possible=trim,
-                    dwell_margin_s=DEFAULT_SESSION_DWELL_MARGIN_S)
-                park = hand_stroke.catch_park_reentry_s(
-                    s.floor_event_vel_mps, 0.9)
-                if not trim:
-                    # …and with no trim possible that IS the untrimmed speed.
-                    assert s.floor_event_vel_mps == pytest.approx(
-                        vertical_event_vel_mps(flight))
-                # THE invariant: the smallest dwell the gate admits still leaves
-                # the catch stroke room to finish before the next CHECKING.
-                smallest = s.required_dwell_s
-                assert smallest - delay >= park - 1e-9, (trim, flight, delay,
-                                                         park)
-                # And the margin is exactly the max() it claims to be — not slack
-                # the hand floor happens to provide. Three regimes are reachable
-                # across this sweep and each is named, so a reduction of
-                # handoff_margin_s to dwell_margin_s reds the park-bound rows.
-                assert s.handoff_margin_s == pytest.approx(
-                    max(DEFAULT_SESSION_DWELL_MARGIN_S, park)), (trim, flight,
-                                                                 delay)
-                assert smallest == pytest.approx(
-                    max(delay + s.handoff_margin_s, s.hand_floor_dwell_s)), (
-                        trim, flight, delay)
-    # The crossover really is inside the band, i.e. both branches of that max()
-    # are exercised above rather than one of them being dead.
-    assert hand_stroke.catch_park_reentry_s(
-        vertical_event_vel_mps(FLIGHT_TIME_MIN_S), 0.9) > \
-        DEFAULT_SESSION_DWELL_MARGIN_S
-    assert hand_stroke.catch_park_reentry_s(
-        vertical_event_vel_mps(0.7977), 0.9) < DEFAULT_SESSION_DWELL_MARGIN_S
+                for margin in (DEFAULT_SESSION_DWELL_MARGIN_S,
+                               _MARGIN_OVER_PARK_S):
+                    s = TossSessionSequencer(
+                        num_throws=5, dwell_time_s=0.0, throw_delay_s=delay,
+                        flight_time_s=flight, catch_vel_scale=0.9,
+                        ilc_speed_trim_possible=trim,
+                        dwell_margin_s=margin)
+                    park = hand_stroke.catch_park_reentry_s(
+                        s.floor_event_vel_mps, 0.9)
+                    parks.append(park)
+                    if not trim:
+                        # …and with no trim possible that IS the untrimmed speed.
+                        assert s.floor_event_vel_mps == pytest.approx(
+                            vertical_event_vel_mps(flight))
+                    # THE invariant: the smallest dwell the gate admits still
+                    # leaves the catch stroke room to finish before the next
+                    # CHECKING.
+                    smallest = s.required_dwell_s
+                    assert smallest - delay >= park - 1e-9, (trim, flight,
+                                                             delay, park)
+                    # And the margin is exactly the max() it claims to be — not
+                    # slack the hand floor happens to provide. A reduction of
+                    # handoff_margin_s to EITHER of its two terms reds a row.
+                    assert s.handoff_margin_s == pytest.approx(
+                        max(margin, park)), (trim, flight, delay, margin)
+                    assert smallest == pytest.approx(
+                        max(delay + s.handoff_margin_s,
+                            s.hand_floor_dwell_s)), (trim, flight, delay,
+                                                     margin)
+    # Both branches really are exercised, and the state of the crossover is
+    # asserted rather than assumed. The 2026-08-24 band re-measure did not delete
+    # the crossover, it MOVED it: it now sits near the TOP of the C-HAND-3 band
+    # rather than in the middle of it, so it covers the whole published ladder
+    # and hands back only above a ~1.13 s flight. The 0.30 s margin clears every
+    # park value in the band, which keeps the arrival branch live everywhere.
+    assert min(parks) < DEFAULT_SESSION_DWELL_MARGIN_S < max(parks)
+    assert max(parks) < _MARGIN_OVER_PARK_S
+    # …and at every PUBLISHED rung flight the park term is the winner, which is
+    # why the re-measure bought no dwell at any rung.
+    for rung_flight in (0.4949, 0.5029, 0.6059, 0.7977):
+        assert hand_stroke.catch_park_reentry_s(
+            vertical_event_vel_mps(rung_flight), 0.9) > \
+            DEFAULT_SESSION_DWELL_MARGIN_S, rung_flight
 
 
 def test_a_slower_catch_lengthens_the_floor_and_the_session_sees_it():
@@ -819,18 +852,20 @@ def test_dwell_margin_covers_the_measured_sensor_arrival_edge():
     structurally (START_CYCLE cannot be emitted until note_cycle_result has
     consumed the previous cycle) and it cost 40 ms of the tightest rung.
 
-    PROVISIONAL: the band it reads from is pending a post-FW14 re-measure that
-    is expected to collapse it. That re-measure is a named pre-R3 row in
-    tests/hardware/session_cadence_ladder.md."""
+    NO LONGER PROVISIONAL: the post-FW14 re-measure this test used to wait on
+    landed 2026-08-24 (cadence-ladder § 3.1). The band collapsed +137…+798 ⇒
+    +87.6…+554.7 ms (n=33, four bags) and this moved 0.137 ⇒ 0.087 with it. It
+    bought no cadence — see ``handoff_margin_s``, where the park term now wins
+    the max() at every published rung."""
     from jugglebot.ball_possession import (ARRIVAL_BAND_MAX_S,
                                            ARRIVAL_BAND_MIN_S)
-    assert ARRIVAL_BAND_MIN_S == pytest.approx(0.137)
+    assert ARRIVAL_BAND_MIN_S == pytest.approx(0.087)
     assert DEFAULT_SESSION_DWELL_MARGIN_S == pytest.approx(ARRIVAL_BAND_MIN_S)
     assert float(hw.JB_OP_TOSS_SESSION_DWELL_MARGIN_S) == pytest.approx(
         DEFAULT_SESSION_DWELL_MARGIN_S)
     # It is a LOWER bound on the verdict, not an upper one — sizing it on the
-    # LATEST edge (+798 ms) would re-impose a 0.94 s floor and forbid every rung.
-    # What protects the late-seat case is the C-POSSESS-1 possession machinery.
+    # LATEST edge (+554.7 ms) would put the floor 0.47 s higher and forbid every
+    # rung. What protects the late-seat case is the C-POSSESS-1 machinery.
     assert DEFAULT_SESSION_DWELL_MARGIN_S < ARRIVAL_BAND_MAX_S
 
 
@@ -897,16 +932,23 @@ def test_the_miss_cleanup_floor_is_derived_from_its_sources():
     or the settle window cannot leave this floor silently wrong."""
     assert DEFAULT_SESSION_MISS_CLEANUP_S == pytest.approx(
         CATCH_CONFIRM_WINDOW_S + GO_HOME_DURATION_S + 2.0 * NODE_TICK_S)
-    # 2.90 s since 2026-08-21, was 2.80. CATCH_CONFIRM_WINDOW_S moved 0.70 -> 0.80
+    # 2.60 s since the 2026-08-24 band re-measure (2.84 s before it, and 2.80 s
+    # before 2026-08-21). CATCH_CONFIRM_WINDOW_S moved 0.70 -> 0.80
     # when it became DERIVED from ball_possession.ARRIVAL_BAND_MAX_S (census D7):
     # a sensor-primary possession verdict needs a MISSED deadline that outlasts
-    # the band a real seat edge lands in (+137..+798 ms measured), and 0.70 sat
-    # 98 ms under its ceiling. The 0.10 s this adds to the MISS-path floor is the
-    # wrong direction for cadence and is stated as such rather than hidden: the
-    # census's F1 rung buys it back by re-deriving the floor from COMPLETION
-    # rather than from service acks, and the pending post-FW14 band re-measure is
-    # expected to shrink ARRIVAL_BAND_MAX_S and this with it.
-    assert DEFAULT_SESSION_MISS_CLEANUP_S == pytest.approx(2.84)
+    # the band a real seat edge lands in (+137..+798 ms then), and 0.70 sat 98 ms
+    # under its ceiling. The 0.10 s that added to the MISS-path floor was the
+    # wrong direction for cadence and was stated as such rather than hidden — and
+    # the 2026-08-24 post-FW14 band re-measure has now given back more than it
+    # ever cost: 0.80 -> 0.56 takes this floor to 2.60 s. The census's F1 rung
+    # (re-deriving the floor from COMPLETION rather than from service acks) is
+    # still the larger win and is still open.
+    assert DEFAULT_SESSION_MISS_CLEANUP_S == pytest.approx(2.60)
+    # The floor still covers the non-release teardown it is reused for
+    # (toss_session ~line 1221): release_grace 0.5 + go_home 2.0 + 2 ticks.
+    # The re-measure narrowed that margin from 300 ms to 60 ms without
+    # inverting it, and this is where a further cut would first be caught.
+    assert DEFAULT_SESSION_MISS_CLEANUP_S >= 0.5 + GO_HOME_DURATION_S + 2.0 * NODE_TICK_S
     assert re.search(r"declare_parameter\(\s*'go_home_duration_s',\s*2\.0\s*\)",
                      TRAJECTORY_NODE.read_text()), (
         'trajectory_node go_home_duration_s default moved — GO_HOME_DURATION_S '

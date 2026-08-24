@@ -1001,31 +1001,45 @@ def test_arrival_time_reads_the_same_edge_the_verdict_does():
 #
 # C-POSSESS-1.C closed the arrival window at `next_landing_t - arrival_lead_s`.
 # That instant pays the NEXT window's guard — a property of the SCHEDULE — out of
-# THIS ball's measured band — a property of the BALL. Measured against the tree's
-# own constants (`/tmp/probe_arrival_clamp.py`, run 2026-08-23), the shipped
-# clamp closes at these offsets from the landing:
+# THIS ball's measured band — a property of the BALL.
 #
-#   R4          period 1.2559 -> +1.0559     R5          period 1.2029 -> +1.0029
-#   R5-prime    period 1.1629 -> +0.9629     R5' pin     period 0.9849 -> +0.7849
-#   R6 (fork)   period 0.7529 -> +0.5529
+# **The two scenario periods below are DERIVED from the constants, not typed.**
+# They used to be the R5' clamp pin (0.9849 s) and the deferred R6 fork
+# (0.7529 s), which were the reachable cadences while the band ceiling was
+# 0.800 s. The 2026-08-24 post-FW-14 re-measure took the ceiling to **0.560 s**
+# and both rungs walked out of both clauses — R6 now watches its whole band out.
+# Re-typing a new pair of rung numbers here would only schedule the same rot for
+# the next re-measure, so the periods are computed from the arithmetic that
+# defines each clause:
 #
-# against a band ceiling of ARRIVAL_BAND_MAX_S = +0.800. So no PUBLISHED rung
-# amputates — the accepted operating point clears the ceiling by 163 ms — and the
-# defect is reachable below a 1.000 s period, i.e. exactly where the cadence
-# census is heading. The R5' pin above is what these tests use, for the same
-# reason the D1/D2 block uses it: a strict superset of anything the machine will
-# schedule.
+#   * C.1 bites when `b - lead` closes inside the band, i.e. for a period in
+#     [BAND_MAX, BAND_MAX + lead). Anywhere in that half-open interval the FIXED
+#     boundary is exactly `land + BAND_MAX`, which is what C.1 restores.
+#   * C.2 bites when the next ball lands before the band closes at all, i.e. for
+#     a period BELOW BAND_MAX — where no boundary rule can serve both balls.
+#
+# Both are now SYNTHETIC: at the collapsed ceiling a C.1 period needs a dwell of
+# ~0.157 s and a C.2 period a dwell of ~0.001 s, and the C-HAND-1 hand floor is
+# 0.487 s. That is the headline of the re-measure, not a weakening of the tests —
+# the clauses are invariants over the WINDOW, and `arrival_window_s` configured
+# under the band reaches C.2 from a direction the cadence no longer can.
 
-_R6_DWELL_S, _R6_FLIGHT_S = 0.25, 0.5029     # the deferred 0.25 s dwell fork
+_R6_FLIGHT_S = 0.5029                        # the deferred fork's flight
+#: A period that puts the SUPERSEDED `b - lead` clamp inside the band (C.1).
+_AMPUTATING_PERIOD_S = ARRIVAL_BAND_MAX_S + _LEAD_S / 2.0
+#: A period below the band ceiling itself, where C.2 is the operative half.
+_CLAMPED_PERIOD_S = ARRIVAL_BAND_MAX_S * 0.9
+_C1_DWELL_S = _AMPUTATING_PERIOD_S - _R6_FLIGHT_S
+_R6_DWELL_S = _CLAMPED_PERIOD_S - _R6_FLIGHT_S
 
 
 def test_the_arrival_window_never_closes_inside_the_measured_band():
     """C-POSSESS-1.C.1 — the defect, and the fix, at one rung.
 
     The premise is computed from the tree's constants rather than typed in: at
-    the R5' pin the shipped clamp lands 15.1 ms BEFORE the band ceiling, so a
-    catch that seats in that sliver is a REAL catch the window never saw. Two
-    consequences, both asserted:
+    a period inside [BAND_MAX, BAND_MAX + lead) the superseded clamp lands
+    BEFORE the band ceiling, so a catch that seats in that sliver is a REAL catch
+    the window never saw. Two consequences, both asserted:
 
       * ``catch_event_dt_s`` — the ILC catch-timing measurand, the only number
         this machine has for WHEN the ball entered the cup — goes silently NaN;
@@ -1035,13 +1049,15 @@ def test_the_arrival_window_never_closes_inside_the_measured_band():
 
     The fix takes the guard out of the NEXT window's opening instead."""
     land = 10.0
-    rel, next_land = _cycle(land, _R5P_DWELL_S, _R5P_FLIGHT_S)
+    rel, next_land = _cycle(land, _C1_DWELL_S, _R6_FLIGHT_S)
     shipped_close = next_land - _LEAD_S
     assert shipped_close < land + ARRIVAL_BAND_MAX_S, (
         'premise: at this period the shipped clamp closes inside the band')
     # In the amputated sliver, and on the 100 Hz sample grid (the stream starts
-    # at land - 1.0, so +0.79 is a sample instant, not a rounding of one).
-    rise = land + 0.79
+    # at land - 1.0, so a centisecond offset is a sample instant, not a rounding
+    # of one). DERIVED — the sliver moves with ARRIVAL_BAND_MAX_S, and a typed
+    # offset would silently stop being inside it at the next band re-measure.
+    rise = land + round(0.5 * (shipped_close - land + ARRIVAL_BAND_MAX_S), 2)
     assert shipped_close < rise < land + ARRIVAL_BAND_MAX_S
     src = _sensor()
     _stream(src, land - 1.0, rise + 0.5, held=lambda t: t >= rise)
@@ -1087,7 +1103,7 @@ def test_the_boundary_abuts_from_both_sides_so_no_edge_is_claimed_twice():
     an edge one microsecond before the boundary belongs to this cycle alone, one
     microsecond after it to the next cycle alone, and none falls between."""
     land = 10.0
-    rel, next_land = _cycle(land, _R5P_DWELL_S, _R5P_FLIGHT_S)
+    rel, next_land = _cycle(land, _C1_DWELL_S, _R6_FLIGHT_S)
     b = arrival_boundary_t(land, next_land, _LEAD_S)
     assert b == pytest.approx(land + ARRIVAL_BAND_MAX_S)
     # One rise, placed either side of the boundary; the sensor never sees the
@@ -1134,10 +1150,9 @@ def test_the_previous_landing_can_only_narrow_a_window_never_widen_it():
 def test_a_band_clamped_window_declares_unknown_instead_of_refusing():
     """C-POSSESS-1.C.2 — the half the boundary rule cannot fix.
 
-    Below a 0.800 s cycle period the next ball lands before this one's band has
-    closed, and NO boundary rule can give both balls their whole band: at the
-    deferred R6 fork (dwell 0.25 s) the window reaches +0.7529 and 47.1 ms of
-    band stays unwatched. A window shorter than the evidence it is judging has
+    Below an ``ARRIVAL_BAND_MAX_S`` cycle period the next ball lands before this
+    one's band has closed, and NO boundary rule can give both balls their whole
+    band. A window shorter than the evidence it is judging has
     not observed non-arrival, so ``REJECTED`` — which is a positive claim, and
     which VETOES a tracker CAUGHT — is not available to it. It says UNKNOWN and
     names the cause, so the loss is surfaced rather than silent."""
@@ -1265,13 +1280,18 @@ def test_the_release_guard_is_one_constant_not_two():
 def test_the_catch_confirm_deadline_clears_the_band_it_has_to_outlast():
     """CENSUS D7. Since 2026-08-10 the possession verdict is sensor-PRIMARY, so
     the deadline that mints MISSED must outlast the band in which a real seat
-    edge lands (+137…+798 ms measured, n=35). It was a hand-written 0.70 s — 98 ms
-    UNDER that ceiling, latent only because the tracker's own CAUGHT lands
-    earlier (+202…+442 ms) and the merge falls back to it.
+    edge lands (+87.6…+554.7 ms since the 2026-08-24 post-FW-14 re-measure;
+    +137…+798 ms, n=35, when D7 landed). It was a hand-written 0.70 s — 98 ms
+    UNDER the ceiling of the day, latent only because the tracker's own CAUGHT
+    lands earlier (+202…+442 ms) and the merge falls back to it.
 
-    Deriving it also puts the pending post-FW14 re-measure in ONE place: both
-    sequencers and the session's MISS-cleanup floor follow the band constant."""
+    Deriving it put that re-measure in ONE place, and on 2026-08-24 that is what
+    happened: the constant moved 0.80 -> 0.56 and both sequencers plus the
+    session's MISS-cleanup floor followed with no edit of their own."""
     from jugglebot import reload_sequencer, toss_sequencer
     assert toss_sequencer.CATCH_CONFIRM_WINDOW_S is ARRIVAL_BAND_MAX_S
     assert reload_sequencer.CATCH_CONFIRM_WINDOW_S is ARRIVAL_BAND_MAX_S
-    assert ARRIVAL_BAND_MAX_S >= 0.798
+    # The measured ceiling the deadline must outlast. +0.5547 s over 33 catches,
+    # four post-FW-14 bags, 2026-08-24 (it was +0.798, n=35, 2026-08-10 — and the
+    # deadline was a hand-written 0.70 under THAT until census D7).
+    assert ARRIVAL_BAND_MAX_S >= 0.5547

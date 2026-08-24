@@ -1327,10 +1327,16 @@ def _stamp_wall_anchored(data: BagData):
     discriminator is blunt on purpose: a wall stamp sits within a minute of the
     sample's own ROS stamp, a boot-relative one is a small number of seconds
     since 1970. Nothing subtle can go wrong with it.
+
+    The tolerance is ``toss_record.STAMP_WALL_TOL_S`` rather than a local 60.0,
+    because ``toss_record.poll_dt_steps_ms`` refuses a cadence step that crosses
+    the anchor using the SAME test. Two copies of the number would let the flag
+    on the record and the guard on the measurement disagree about which epoch a
+    stamp is in.
     """
     for s in data.hand:
         if s.valid and s.stamp > 0.0:
-            return abs(s.stamp - s.t) < 60.0
+            return abs(s.stamp - s.t) < toss_record.STAMP_WALL_TOL_S
     return None
 
 
@@ -1672,10 +1678,27 @@ def print_arc_report(rows) -> None:
         '-' if not clean else '{:+.0f}'.format(clean[len(clean) // 2])))
 
 
+def bag_label(name: str) -> str:
+    """The bag's NAME, whatever form ``--bag`` was given in.
+
+    ``--bag`` accepts a bare name resolved against ``--root`` OR a path, and a
+    shell's ``~`` expansion silently turns the second form into an absolute one.
+    Splicing that into an output filename builds
+    ``temp/probes/toss_records_/home/.../bag_<stamp>.jsonl`` — a path through
+    directories that do not exist, so the write dies ``FileNotFoundError`` AFTER
+    the whole report has printed and the mining is done. Reduce to the basename
+    once, here, so the report header, the jsonl name and the fixture's
+    ``REFERENCE_BAG`` all say the same thing for either spelling.
+    """
+    label = os.path.basename(os.path.normpath(name.rstrip('/'))) or name
+    return label.replace(os.sep, '_')
+
+
 def write_outputs(name: str, rows, led: dict) -> str:
     os.makedirs(OUT_DIR, exist_ok=True)
     stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    base = os.path.join(OUT_DIR, 'toss_records_{}_{}'.format(name, stamp))
+    base = os.path.join(OUT_DIR, 'toss_records_{}_{}'.format(bag_label(name),
+                                                             stamp))
     with open(base + '.jsonl', 'w') as fh:
         for row in rows:
             fh.write(toss_record.encode(row) + '\n')
@@ -1749,9 +1772,18 @@ def emit_fixture(name: str, led: dict, rows, path: str = FIXTURE_PATH) -> str:
          '#: JB_BD_RETENTION_WINDOW_S on these.',
          tuple(round(d, 4) for _t, d in sorted(led['quick_drops']))),
         ('POLL_DT_MS_MEDIAN',
-         'MEASURED hand-sensor poll cadence (median ball_held_stamp advance),\n'
-         '#: against a CONFIGURED JB_BD_CHECK_INTERVAL_MS of 20. The gap is the\n'
-         '#: reason sensor_poll_dt_ms_median is a mined field and not an assumption.',
+         'MEASURED hand-sensor poll cadence (median ball_held_stamp advance) ON\n'
+         '#: THIS BAG, against a CONFIGURED JB_BD_CHECK_INTERVAL_MS of 20.\n'
+         '#:\n'
+         '#: A HISTORICAL measurement of ONE 2026-08-10 sitting, and NOT an\n'
+         '#: expectation for the current plant. That capture predates the FW 14\n'
+         '#: can-bridge fix (2026-08-15); all thirteen decodable bags captured from\n'
+         '#: 2026-08-15 on measure p50 20 / p95 30 ms, i.e. the configured interval\n'
+         '#: (logbook/2026-08-24-hand-sensor-poll-cadence.md). It is pinned here\n'
+         '#: because the miner must reproduce this bag\'s number from this bag —\n'
+         '#: which is also why sensor_poll_dt_ms_median is a mined field per record\n'
+         '#: and never an assumption. A future bag that measures an elevated cadence\n'
+         '#: means investigate; it does not identify a mechanism.',
          round(led['poll_dt_ms_median'], 3)),
         ('N_SELF_TOSSES',
          'Announcements with thrower_name == target_id == the robot.',
@@ -1936,24 +1968,33 @@ def self_check() -> int:
               next_release_time=_r5_rel, next_landing_time=_r5_rel + 0.4949)
     check('R5-prime: retention is not observable', _r5.label, 'CAUGHT')
     check('R5-prime: and the label says so', _r5.confidence, 0.5)
-    # C-POSSESS-1 § 3.4 C.1/C.2, the arrival BOUNDARY (2026-08-23). At the R5'
-    # clamp pin the cycle period is 0.9849 s, so `next_landing - arrival_lead`
-    # closes this row's search at +0.7849 — 15.1 ms INSIDE the measured +798 ms
-    # band ceiling. A catch seating in that tail was labelled MISSED off a
-    # SCHEDULE number. The boundary now surrenders the next row's lead instead.
-    # Only the PERIOD to the next landing matters, so these keep the harness's
-    # own 0.8 s flight and put the next landing 0.9849 s (R5' pin) / 0.7529 s
-    # (R6) away — which also keeps the 100 Hz sample grid on round offsets.
+    # C-POSSESS-1 § 3.4 C.1/C.2, the arrival BOUNDARY (2026-08-23). C.1 bites for
+    # a cycle period in [ARRIVAL_BAND_MAX_S, ARRIVAL_BAND_MAX_S + arrival_lead),
+    # where `next_landing - arrival_lead` closes this row's search INSIDE the
+    # measured band ceiling and a catch seating in that tail is labelled MISSED
+    # off a SCHEDULE number; C.2 bites below ARRIVAL_BAND_MAX_S itself, where no
+    # boundary rule can serve both balls. Both periods are DERIVED from the band
+    # constant rather than typed: they were the R5' clamp pin (0.9849 s) and the
+    # R6 fork (0.7529 s) while the ceiling was 0.800 s, and the 2026-08-24
+    # post-FW-14 re-measure (0.56 s) took both rungs out of both clauses. Only
+    # the PERIOD matters, so these keep the harness's own 0.8 s flight, and every
+    # offset is rounded to the 100 Hz sample grid.
     _b_land = 100.0 + 0.8
+    _b_lead = float(hw.JB_BD_ARRIVAL_LEAD_S)
+    _c1_period = toss_record.ARRIVAL_BAND_MAX_S + _b_lead / 2.0
+    _c1_close = _c1_period - _b_lead
     check('a catch in the band TAIL is not a MISS (the defect)',
-          run(catch_dt=0.79,
-              next_landing_time=_b_land + 0.9849).label, 'CAUGHT')
-    # And where the schedule truncates the band anyway — a period under the
-    # 0.800 s band itself, the deferred R6 fork — a search that stopped short of
-    # the evidence may not answer MISSED, which is a positive claim.
+          run(catch_dt=round(0.5 * (_c1_close
+                                    + toss_record.ARRIVAL_BAND_MAX_S), 2),
+              next_landing_time=_b_land + _c1_period).label, 'CAUGHT')
+    # And where the schedule truncates the band anyway — a period under the band
+    # ceiling itself — a search that stopped short of the evidence may not answer
+    # MISSED, which is a positive claim.
     check('a band-clamped search declares UNKNOWN, never MISSED',
           run(catch_dt=None,
-              next_landing_time=_b_land + 0.7529).label, 'UNKNOWN')
+              next_landing_time=(_b_land
+                                 + toss_record.ARRIVAL_BAND_MAX_S * 0.9)).label,
+          'UNKNOWN')
     check('a NO_RELEASE cup stays held at dispatch',
           run(departure_dt=None,
               catch_dt=None).fields['sensor_held_at_dispatch'], True)
@@ -2306,8 +2347,13 @@ def main(argv=None) -> int:
         ap.error('need --bag (or --self-check)')
 
     rc = 0
-    for name in args.bag:
-        path = os.path.join(args.root, name)
+    for arg in args.bag:
+        path = os.path.join(args.root, arg)
+        # The PATH keeps whatever spelling was given (an absolute --bag makes
+        # the join drop --root, which is the point); the NAME is reduced to the
+        # bag's own basename, because every downstream use of it is an identity
+        # — a report header, an output filename, the fixture's REFERENCE_BAG.
+        name = bag_label(arg)
         try:
             data = read_bag(path, sensor_only=args.sensor_only)
         except (IOError, OSError) as exc:

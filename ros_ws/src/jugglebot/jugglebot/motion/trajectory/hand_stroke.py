@@ -625,9 +625,10 @@ def catch_park_reentry_s(v_throw_mps: float,
     ``toss_session.DEFAULT_SESSION_DWELL_MARGIN_S`` = 0.6 s, which was structural
     cover by accident: 0.6 s is comfortably past every value below, so the
     geometry never had to be consulted.  Re-basing that margin onto
-    ``ARRIVAL_BAND_MIN_S`` = 0.137 s — correct about the quantity IT models, the
-    earliest instant a possession verdict can exist — removed the accident
-    without replacing it.  0.137 s is under every number in the table below, so
+    ``ARRIVAL_BAND_MIN_S`` (0.137 s then, **0.087 s** since the 2026-08-24
+    post-FW-14 re-measure) — correct about the quantity IT models, the earliest
+    instant a possession verdict can exist — removed the accident without
+    replacing it.  Either value is under every number in the table below, so
     at the cadence rungs the next cycle's CHECKING would land INSIDE the live
     catch stroke and mint ``REJECTED_HAND_NOT_PARKED`` on a perfectly good catch:
     a machine-fault verdict for a cadence fault, which ends the sitting and sends

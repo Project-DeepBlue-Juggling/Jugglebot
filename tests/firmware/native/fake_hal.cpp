@@ -32,8 +32,11 @@ static bool     g_homing = false, g_activate = false, g_deactivate = false;
 static bool     g_commands_allowed = true;   // CAN3 gate; default open (see fake_hal.h)
 static std::vector<SentFrame>      g_sent;
 static std::deque<SentFrame>       g_can3_rx;   // inbound injection FIFO (growable hook)
-static int g_send_fail_index = -1;   // can_jugglebot_send attempt (0-based) that fails; -1 = never
-static int g_send_attempts   = 0;    // attempts since the last reset / fail-index set
+static int  g_send_fail_index  = -1;   // can_jugglebot_tx attempt (0-based) that FAILS; -1 = never
+static int  g_send_defer_index = -1;   // attempt (0-based) that DEFERS (and is recorded); -1 = never
+static bool g_send_defer_all   = false;
+static int  g_send_attempts    = 0;    // attempts since the last reset / index set
+static int  g_last_tx_class    = -1;
 
 // ── Reset ────────────────────────────────────────────────────────────────────
 void fake_reset() {
@@ -42,7 +45,10 @@ void fake_reset() {
   g_homing = g_activate = g_deactivate = false;
   g_commands_allowed = true;
   g_send_fail_index = -1;
+  g_send_defer_index = -1;
+  g_send_defer_all = false;
   g_send_attempts = 0;
+  g_last_tx_class = -1;
   g_sent.clear();
   g_can3_rx.clear();
 }
@@ -82,17 +88,36 @@ void fake_set_send_fail_index(int attempt_index) {
   g_send_fail_index = attempt_index;
   g_send_attempts = 0;
 }
+void fake_set_send_defer_index(int attempt_index) {
+  g_send_defer_index = attempt_index;
+  g_send_attempts = 0;
+}
+void fake_set_send_defer_all(bool defer_all) { g_send_defer_all = defer_all; }
 
 // ── Recording CAN3 TX ────────────────────────────────────────────────────────
-bool can_jugglebot_send(const ODrive::CanFrame& f) {   // HAL: can_buses.h
+TxResult can_jugglebot_tx(const ODrive::CanFrame& f, uint8_t cls) {   // HAL: can_buses.h
   const int attempt = g_send_attempts++;
-  if (attempt == g_send_fail_index) return false;   // simulate a TX-enqueue failure — frame NOT recorded (never reached the bus)
+  g_last_tx_class = (int)cls;
+  // FAILED models the bus-partner presence gate refusing: nothing was queued and
+  // nothing reaches the wire, so the frame is NOT recorded.
+  if (attempt == g_send_fail_index) return TxResult::FAILED;
   SentFrame s;
   s.id = f.id;
   s.len = f.len;
   for (int i = 0; i < 8; ++i) s.buf[i] = f.buf[i];
+  s.cls = cls;
   g_sent.push_back(s);
-  return true;
+  // DEFERRED is recorded: the frame is in the software txBuffer and transmits in
+  // order. A fake that withheld it here would encode the very error the tri-state
+  // exists to correct.
+  if (g_send_defer_all || attempt == g_send_defer_index) return TxResult::DEFERRED;
+  return TxResult::MAILBOX;
+}
+int fake_last_tx_class() { return g_last_tx_class; }
+size_t fake_sent_count_cls(uint8_t cls) {
+  size_t n = 0;
+  for (const auto& s : g_sent) if (s.cls == cls) ++n;
+  return n;
 }
 size_t           fake_sent_count() { return g_sent.size(); }
 const SentFrame& fake_sent_at(size_t i) { return g_sent.at(i); }
@@ -105,7 +130,7 @@ size_t fake_sent_count_cmd(uint8_t cmd_id) {
 
 // ── GROWABLE inbound-CAN3 injection hook (not yet consumed by any decode path) ─
 void fake_inject_can3_rx(uint32_t id, const uint8_t* data, uint8_t len) {
-  SentFrame r; r.id = id; r.len = len;
+  SentFrame r; r.id = id; r.len = len; r.cls = TxCls::OTHER;
   for (int i = 0; i < 8; ++i) r.buf[i] = (i < len && data) ? data[i] : 0;
   g_can3_rx.push_back(r);
 }

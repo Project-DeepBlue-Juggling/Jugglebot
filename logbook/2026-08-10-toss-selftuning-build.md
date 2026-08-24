@@ -110,6 +110,16 @@ The reason the plan's estimate was low compounds with finding 3.
 
 #### 3. The sensor poll runs at ~71 ms, not the configured 20 ms
 
+**(Diagnosed and reframed 2026-08-24 — see
+`logbook/2026-08-24-hand-sensor-poll-cadence.md`. The 71 ms below is a true
+measurement of THIS sitting and not a property of the plant; the mechanism, the
+pre-FW-14 FlexCAN\_T4 RX-ring leak inflating the SDO round trip that the
+strictly one-in-flight poll loop turns straight into cadence, was already fixed
+2026-08-15. `test_the_fixture_records_the_measured_poll_cadence_gap`, named
+below, is now `test_the_fixture_pins_the_reference_bags_mined_poll_cadence`: a
+MINER-regression pin on this bag's own number, which no longer asserts a gap
+against the configured interval.)**
+
 `JB_BD_CHECK_INTERVAL_MS = 20` (50 Hz). Measured cadence of `ball_held_stamp`
 advances on the same bag: **p5 32 / median 71 / p95 111 ms** — a 3.5× gap,
 spread wide rather than quantised, which is the signature of a poll being
@@ -336,8 +346,23 @@ tests/sim/test_plans_index.py -q` → **57 passed in 0.53 s**.
   `sensor_poll_dt_ms_median` within 10 % of 20 ms; the measured median is 71 ms,
   so the gate refuses every record. 2c owns re-deriving it from the measured
   distribution rather than from the configured interval.
+  *(Reframed 2026-08-24 — see `logbook/2026-08-24-hand-sensor-poll-cadence.md`.
+  "Unsatisfiable on this plant" was too strong: 71 ms was a true measurement of
+  THIS sitting, not a property. 2c's re-derived band gate
+  (`toss_trim.admit_for_timing`) stands, but its justification is that the
+  cadence varies between sittings — not that the plant runs slow.)*
 - **The measured 71 ms poll cadence has no diagnosis.** Configured 20 ms,
   achieved p5 32 / p50 71 / p95 111. Own investigation, can-bridge side.
+  *(Resolved 2026-08-24 — see `logbook/2026-08-24-hand-sensor-poll-cadence.md`.
+  It needed no sitting: the bridge's poll loop is strictly one-in-flight on a
+  10 ms grid, so C = 10·max(2, ceil(RTT/10)+1) and a 50-60 ms round trip IS a
+  71 ms cadence. The round trip was inflated by the pre-FW-14 FlexCAN\_T4 RX-ring
+  leak, fixed 2026-08-15; all thirteen decodable bags since median at the
+  configured 20 ms. The
+  71 ms was a true measurement of THIS sitting and never a property of the
+  plant. `test_the_fixture_records_the_measured_poll_cadence_gap`, named in § 3
+  above, is now `test_the_fixture_pins_the_reference_bags_mined_poll_cadence` —
+  the fixture value is unchanged and still pins the miner against this bag.)*
 - **Ball visibility in `/mocap_data` is an unchecked capture precondition.** The
   reference sitting has no unlabelled ball marker near the cup, so it cannot
   support an aim fit at any record-list completeness. Proposal: a P2 preflight —

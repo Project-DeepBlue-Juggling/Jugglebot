@@ -58,12 +58,17 @@ void cs_set_commands_allowed(bool allowed);     // → jugglebot_commands_allowe
 void cs_set_mpc_active(bool active);            // → fault_mpc_active() (MPC-stream interlock)
 void cs_set_stow_pending(bool pending);        // → fault_stow_pending() (deferred-stow interlock, review fix)
 
-// ── Recording CAN3 TX (drives can_jugglebot_send()) ──────────────────────────
+// ── Recording CAN3 TX (drives can_jugglebot_tx()) ────────────────────────────
 size_t             cs_sent_count();
 const CsSentFrame& cs_sent_at(size_t i);
 void               cs_clear_sent();
-// Fail the Nth can_jugglebot_send ATTEMPT after this call (0-based); -1 = never.
-// A failed send returns false and is NOT recorded (never reached the bus).
+// Fail the Nth can_jugglebot_tx ATTEMPT after this call (0-based); -1 = never.
+// FAILED models the bus-partner presence gate refusing: nothing is queued, so the
+// frame is NOT recorded and the bool wrapper the cold-start ladders use reads false.
 void               cs_set_send_fail_index(int attempt_index);
+// DEFER the Nth attempt (0-based): TxResult::DEFERRED, and the frame IS recorded —
+// it went into the software txBuffer and transmits in order, so the ladders' bool
+// wrapper reads TRUE and a ladder must NOT abort on it. -1 (the default) = never.
+void               cs_set_send_defer_index(int attempt_index);
 
 }  // namespace CanBridge

@@ -374,7 +374,12 @@ static void interp_isr() {
       // → an unarmed gravity drop. The mutual exclusion belongs on the MPC ladder TX
       // (below), not the self-contained safety stow. The target cache above still
       // updates for all legs (telemetry) regardless.
-      if (s_output_enabled && leg_present(i)) can_jugglebot_send(ODrive::encode_leg_setpoint(i, p, v, 0.0f));
+      // TxCls::LEGS (2026-08-24): a DEFERRED setpoint is SENT. The result is
+      // deliberately discarded and NEVER retried — these are latest-wins
+      // setpoints at 500 Hz, so re-sending a frame the queue already holds would
+      // put a STALE setpoint on the wire behind a fresher one. The census counts
+      // the deferral; the fault machine is not involved.
+      if (s_output_enabled && leg_present(i)) can_jugglebot_tx(ODrive::encode_leg_setpoint(i, p, v, 0.0f), TxCls::LEGS);
     }
     s_stow_complete = all_done;
     return;
@@ -582,7 +587,7 @@ static void interp_isr() {
       // that isn't on the bus. No-op on the full robot (all six present); on the
       // single-leg bench rig this drops the 5 phantom frames/tick to absent
       // nodes 1-5. The target cache above is written for all legs regardless.
-      if (leg_present(i)) can_jugglebot_send(ODrive::encode_leg_setpoint(i, cmd_pos[i], cmd_vel[i], cmd_tor[i]));
+      if (leg_present(i)) can_jugglebot_tx(ODrive::encode_leg_setpoint(i, cmd_pos[i], cmd_vel[i], cmd_tor[i]), TxCls::LEGS);   // TxCls::LEGS — latest-wins, deferral counted, never retried
     }
   }
 }
@@ -648,7 +653,7 @@ void leg_interp_init() {
   // ceiling, interp_isr AND EVERYTHING IT CALLS make ZERO FreeRTOS API calls — any
   // FreeRTOS call from above the ceiling is undefined behaviour. The full call tree
   // is FreeRTOS-free: micros64() (PRIMASK-guarded + Arduino micros()),
-  // latch_from_staging() (pure float math + file-statics), can_jugglebot_send()
+  // latch_from_staging() (pure float math + file-statics), can_jugglebot_tx()
   // (PRIMASK-guarded FlexCAN_T4::write mailbox register write, NOT a mutex),
   // homing_active()/activate_active()/deactivate_active()/leg_present() (single-word
   // reads via non-inline cross-TU calls under -O2/no-LTO — the call is the barrier),

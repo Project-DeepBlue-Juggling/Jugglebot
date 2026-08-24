@@ -757,7 +757,10 @@ degraded plant"* structural rather than remembered.
 5. Speed fit consumes `achieved_flight_s_mocap` vs `flight_time_s`; timing fit
    consumes `t_departure_raw_ros − announce_throw_time_ros`, gated on
    `ball_held_stamp_wall_anchored` and on `sensor_poll_dt_ms_median` inside
-   **[20 ms, 200 ms]**.
+   **[15 ms, 200 ms]**. (The floor was 20 ms — 1.0x configured — until
+   2026-08-24, when it was measured to be refusing 9 of 39 healthy post-FW-14
+   records; it is now 0.75x configured.
+   `logbook/2026-08-24-cadence-crossrecording-closeout.md`.)
    **RE-DERIVED BY THE 2c BUILD (2026-08-11).** The original gate ("within 10 %
    of 20 ms", the configured `JB_BD_CHECK_INTERVAL_MS`) refuses 100 % of records:
    the measured per-record cadence on `2026-08-10_16-30-44` is 60 / 63 / **70** /
@@ -1492,18 +1495,27 @@ the measurements.
   landing + JB_BD_ARRIVAL_WINDOW_S]`.**
 - ~~**§ 3.7 item 5's timing-fit gate is unsatisfiable on this plant.**~~
   **CLOSED by 2c (2026-08-11).** Re-derived from the measured distribution as a
-  *precision* gate, `[20 ms, 200 ms]` plus the `se ≤ 5 ms` apply bar — see § 3.7
+  *precision* gate, `[15 ms, 200 ms]` plus the `se ≤ 5 ms` apply bar — see § 3.7
   item 5 and the logbook's § Phase 2c. The finding that decided it: the measured
   departure-shift sd (20.51 ms) **is** the poll quantisation `Δ/√12` (20.50 ms),
   ratio 1.001, so the release timing is more repeatable than the instrument can
-  see. The underlying 3.5x poll-cadence gap still has no diagnosis and is still a
-  can-bridge question, not this plan's.
+  see. ~~The underlying 3.5x poll-cadence gap still has no diagnosis and is still
+  a can-bridge question, not this plan's.~~ **The 3.5× gap is GONE on the FW-15
+  plant (measured 2026-08-23, median 20.0 ms — see the pre-R3 list in § 11.4).**
+  The `Δ/√12` finding above is unaffected in kind: it says the release timing is
+  finer than the instrument's quantisation, and a *smaller* Δ only widens that
+  margin.
 - **D12's ~100 ms debounce estimate is low by 2.4x, and the lag is asymmetric.**
-  Measured: `empty→held` 0/0/0 ms, `held→empty` 232/**241**/295 ms — consistent
-  with the documented five-miss-to-drop / one-hit-to-restore firmware rule at the
-  measured 71 ms poll. 241 ms is *larger* than the +118–133 ms uptime dispatch
-  shift the fresh-boot discipline exists to control, which strengthens D12
-  rather than weakening it.
+  Measured: `empty→held` 0/0/0 ms, `held→empty` 232/**241**/295 ms. ⚠ **The
+  mechanism sentence that used to follow is REFUTED (2026-08-23)**: it read
+  "consistent with the documented five-miss-to-drop / one-hit-to-restore firmware
+  rule at the measured 71 ms poll", and the poll is **20.0 ms**, so five misses
+  buy ~100 ms, not ~355. The poll cadence was one candidate explanation for the
+  asymmetry and is now **excluded**, which leaves the 232/241/295 ms fall lag
+  *without* a mechanism rather than with one. The numbers themselves stand — they
+  are NOT re-measured — and 241 ms is still *larger* than the +118–133 ms uptime
+  dispatch shift the fresh-boot discipline exists to control, which strengthens
+  D12 rather than weakening it.
 - **Ball visibility in the descending band is an unchecked capture
   precondition, and the reference sitting fails it.** In ±1.5 s of a landing that
   bag carries four unlabelled markers — three static rig markers outside the
@@ -1948,15 +1960,47 @@ intent) **before R3, not after**.
 >    0.10 s back by re-deriving that floor from COMPLETION rather than from
 >    service acks.
 
-**Two things must be measured before R3, not argued:**
+**Two things had to be measured before R3, not argued. BOTH ARE NOW DONE
+(2026-08-24) and R3 is unblocked:**
 
-1. **Re-measure the sensor arrival band post-FW 14.** The +137…+798 ms figure
+1. ~~**Re-measure the sensor arrival band post-FW 14.** The +137…+798 ms figure
    (n = 35) was captured when the dispatch shift was +54–133 ms; FW 14 cut that
    to 10–20 ms. If the band collapses, the dwell margin, the arrival window and
-   the evidence gate all shrink together and R4 gets much cheaper.
-2. **The ~71 ms measured sensor poll cadence against the configured 20 ms**
+   the evidence gate all shrink together and R4 gets much cheaper.~~
+   **MEASURED AND APPLIED 2026-08-24**: the band collapsed to **+87.6…+554.7 ms,
+   median +183.9, n = 33** over four post-FW-14 bags, so `ARRIVAL_BAND_MIN_S`
+   0.137 → **0.087** and `ARRIVAL_BAND_MAX_S` 0.80 → **0.56**. The prediction
+   above was half right. The *ceiling* paid: `CATCH_CONFIRM_WINDOW_S` 0.80 →
+   0.56, the miss-cleanup floor 2.84 → 2.60 s, and C-POSSESS-1 § 3.4 clause
+   C.2's amputation threshold 0.800 → 0.560 s of cycle period, which takes the
+   deferred R6 fork out of that clause entirely. The *floor* bought **nothing**
+   — the dwell floor's `max()` was already won by the hand's park re-entry
+   (0.1416 s at R0–R3 on the binding aim-armed column, i.e. above even the OLD
+   0.137 s arrival term), so not one published rung's dwell moves and **R4 does
+   not get cheaper**. R0–R3 gain 16.6 ms each only with the aim disarmed. See
+   `logbook/2026-08-24-arrival-band-remeasure.md` and runbook § 3.1.
+2. ~~**The ~71 ms measured sensor poll cadence against the configured 20 ms**
    (§ 10 Open findings — still no diagnosis, still a can-bridge question). It is
-   a prerequisite, not a footnote.
+   a prerequisite, not a footnote.~~ **CLOSED BY MEASUREMENT 2026-08-23**: on the
+   FW-15 capture (`~/Desktop/rosbags/2026-08-23_19-14-54`, 11 462 fresh samples)
+   the interval between distinct `ball_held_stamp` values is **median 20.0 ms —
+   exactly the configured cadence** (mean 24.0, p90 30.0, max 160.0). The 3.5×
+   gap is gone and the residual is a one-sided tail, not a rate error. The
+   **asymmetric-debounce** numbers this was cited beside (232/241/295 ms fall,
+   0 ms rise) are NOT re-measured and still stand — the poll cadence was one
+   candidate explanation for them and is now *excluded*, not confirmed. See
+   `logbook/2026-08-23-cadence-floor-and-inertia.md` § "Bonus measurements",
+   item 2, and runbook § 3.2.
+   **DIAGNOSED 2026-08-24**, offline from the existing corpus and with no new
+   sitting: the mechanism was the **pre-FW-14 FlexCAN_T4 RX-ring leak**, already
+   fixed on 2026-08-15. The bridge's poll loop is strictly one-in-flight on a
+   10 ms grid, so `C = 10·max(2, ceil(RTT/10)+1)` ms — a ring-inflated 50–60 ms
+   round trip *is* a 71 ms cadence, with no poll missed and nothing re-rated. So
+   this row is no longer an open can-bridge question in any form: it is closed,
+   and the 71 ms was a measurement of one sitting rather than a property of this
+   plant. **An elevated cadence in future means *investigate*** — the ring leak
+   is deliberately NOT left here as a prior, because anything that slows the
+   round trip elevates `C`. `logbook/2026-08-24-hand-sensor-poll-cadence.md`.
 
 ### 11.5 The ladder
 

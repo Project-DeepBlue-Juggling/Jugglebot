@@ -759,7 +759,7 @@ jugglebot_operational:
   toss_session_dwell_default_s: 6.0      # Default dwell {s} for a TossContinuous session when the goal's
                                          # dwell_time_s is 0/unset (single-ball-toss Phase F). DWELL is
                                          # defined as previous SCHEDULED LANDING → next RELEASE.
-                                         # 6.0 sits comfortably above the 5.137 s floor that the 5.0 s
+                                         # 6.0 sits comfortably above the 5.1416 s floor that the 5.0 s
                                          # default throw delay implies (see toss_session_dwell_margin_s),
                                          # so the all-defaults goal is legal without the operator doing
                                          # arithmetic. toss_session's DEFAULT_SESSION_DWELL_S is the
@@ -768,7 +768,7 @@ jugglebot_operational:
                                          # DEFAULT must never jump cadence. The cadence ladder
                                          # (tests/hardware/session_cadence_ladder.md) selects a faster
                                          # dwell EXPLICITLY, per goal, one rung at a time.
-  toss_session_dwell_margin_s: 0.137     # ⚠ PROVISIONAL. The unavoidable landing → next-cycle-start
+  toss_session_dwell_margin_s: 0.087     # The unavoidable landing → next-cycle-start
                                          # handoff {s}. The dwell FLOOR is DERIVED, never chosen:
                                          #     dwell_floor = max(throw_delay_s + this,
                                          #                       hand_stroke.min_turnaround_dwell_s(T))
@@ -784,8 +784,19 @@ jugglebot_operational:
                                          # sensor-PRIMARY (C-POSSESS-1). The HAND SENSOR's arrival edge is
                                          # the handoff now, and it is a faster channel: 0 ms debounce on
                                          # empty→held (measured 0/0/0, against 232/241/295 ms falling) and
-                                         # the earliest observed edge at +137 ms past the announced
-                                         # landing (n=35, three 2026-08-10 bags).
+                                         # the earliest observed edge at +87.6 ms past the announced
+                                         # landing (n=33, four post-FW-14 bags, 2026-08-24; it read
+                                         # +137 ms, n=35, three 2026-08-10 bags, before that).
+                                         # ⚠ THIS KEY IS A LITERAL COPY of a Python constant and the
+                                         # ONLY place the runtime value comes from — the node passes it
+                                         # in, and toss_session's DEFAULT_SESSION_DWELL_MARGIN_S is a
+                                         # no-config FALLBACK. So the cadence ladder's "update the two
+                                         # names and nothing else, every consumer follows" is wrong about
+                                         # exactly one consumer: this one. It is held equal to
+                                         # ball_possession.ARRIVAL_BAND_MIN_S by
+                                         # test_local_constants_match_generated_config, which is what
+                                         # makes the duplication safe rather than merely present — that
+                                         # test reds if a band re-measure moves one and not the other.
                                          # DERIVED: it IS ball_possession.ARRIVAL_BAND_MIN_S — the
                                          # earliest instant a possession verdict for cycle N can EXIST,
                                          # and nothing else. The old 0.6 was 0.442 (worst tracker
@@ -797,20 +808,25 @@ jugglebot_operational:
                                          # START_CYCLE cannot be emitted until note_cycle_result has
                                          # consumed the previous cycle, whatever this number says.
                                          # It is a LOWER bound on the verdict, deliberately: the LATEST
-                                         # edge is +798 ms and a margin sized on THAT would re-impose a
-                                         # 0.94 s floor and forbid every rung. The late-seat case is
+                                         # edge is +554.7 ms and a margin sized on THAT would put the
+                                         # floor 0.47 s higher and forbid every rung. The late-seat case is
                                          # protected by the C-POSSESS-1 § 3.4/§ 3.6 machinery (the
                                          # dwell-clamped windows, the raw-bit live evidence read, the
                                          # interlude's seat-edge band wait), not by this number.
-                                         # PROVISIONAL because the band it reads from is itself pending a
-                                         # re-measure: +137..+798 ms was captured against a can-bridge
-                                         # dispatch shift of +54..+133 ms that FW 14 cut to 10-20 ms
-                                         # (logbook/2026-08-15-fw14-validated-arc-closed.md), so the band
-                                         # should collapse and this number move with it. That re-measure
-                                         # is a NAMED pre-R3 row in the cadence ladder runbook.
-                                         # ⇒ floor 5.137 s at the 5.0 s default delay; 0.4871 s at the
-                                         # tuning-phase operating point (flight 0.4949 s, vel_scale 0.9),
-                                         # where the HAND term binds. A shorter dwell is REJECTED_DWELL,
+                                         # NO LONGER PROVISIONAL. The band it reads from was re-measured
+                                         # 2026-08-24 (the cadence ladder's pre-R3 § 3.1 row): +137..+798
+                                         # ms had been captured against a can-bridge dispatch shift of
+                                         # +54..+133 ms that FW 14 cut to 10-20 ms
+                                         # (logbook/2026-08-15-fw14-validated-arc-closed.md); it collapsed
+                                         # to +87.6..+554.7 ms and this moved 0.137 → 0.087 with it.
+                                         # It bought NO cadence at any published rung: the session takes
+                                         # max(this, hand_stroke.catch_park_reentry_s), and the park term
+                                         # is ≥ 0.1204 s everywhere on the ladder, so it now binds on both
+                                         # the aim-armed and aim-disarmed columns.
+                                         # ⇒ floor 5.1204 s at the 5.0 s default delay (the PARK term, not
+                                         # this one; 5.1416 s with a layer-3 speed trim possible), and
+                                         # 0.4871 s at the tuning-phase operating point (flight 0.4949 s,
+                                         # vel_scale 0.9), where the HAND term binds. A shorter dwell is REJECTED_DWELL,
                                          # never silently stretched — a cadence the machine quietly
                                          # ignores is a lie about what it did. Lateness the other way IS
                                          # absorbed (a long cleanup just reports a longer achieved dwell;

@@ -165,7 +165,11 @@ static void clear_disarm_reasons() {
 // iff it actually sent.
 static bool clear_errors_can() {
   if (s_fatal_can_error) return false;
-  for (uint8_t i = 0; i < NUM_AXES; ++i) can_jugglebot_send(ODrive::encode_clear_errors(i));  // NUM_AXES incl. hand (aligns rpc.cpp AXIS_ALL)
+  // TxCls::SAFETY (2026-08-24): the dedicated safety-deferral counter. A deferred
+  // safety frame still transmits, in order, and drains in ~0.1-1 ms — so this is a
+  // WATCH SIGNAL, not a fault: nothing here retries, and only TxResult::FAILED
+  // (which this call site has always ignored) would mean the frame never left.
+  for (uint8_t i = 0; i < NUM_AXES; ++i) can_jugglebot_tx(ODrive::encode_clear_errors(i), TxCls::SAFETY);  // NUM_AXES incl. hand (aligns rpc.cpp AXIS_ALL)
   clear_error_flags();
   clear_disarm_reasons();   // mirror can_node._clear_errors → clear_disarm_reasons
   return true;
@@ -320,7 +324,7 @@ static void watchdog_and_stow() {
   // Stow progress. Completion → IDLE all legs (deactivating) and clear the latch.
   if (s_stowing) {
     if (interp_stow_complete()) {
-      for (uint8_t i = 0; i < NUM_LEGS; ++i) can_jugglebot_send(ODrive::encode_set_state(i, ODriveState::IDLE));
+      for (uint8_t i = 0; i < NUM_LEGS; ++i) can_jugglebot_tx(ODrive::encode_set_state(i, ODriveState::IDLE), TxCls::SAFETY);   // TxCls::SAFETY
       interp_end_stow();
       s_stowing = false;
       s_stow_pending = false;

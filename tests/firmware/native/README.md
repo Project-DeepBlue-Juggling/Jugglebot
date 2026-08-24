@@ -72,7 +72,7 @@ python tests/firmware/native/build.py --force    # ignore the cache, rebuild
     recursive-mutex shim. `test_udp_framing.cpp`, `test_odrive_protocol.cpp`, and
     `test_ball_butler_protocol.cpp` compile the generated C++ framing codec and the
     ODrive / Ball-Butler CAN codecs against their headers (no extra firmware `.cpp`
-    object). `build.py` builds 14 binaries in all.
+    object). `build.py` builds 15 binaries in all.
   * Shared objects compiled once and linked as needed: `axis_state.o`,
     `ball_butler_state.o`, and either `fake_hal.o` (fault/interp/relay/version/hand)
     or `coldstart_hal.o` (the three cold-start move drivers).

@@ -32,6 +32,7 @@ static bool     g_mpc_active = false;              // MPC-stream interlock (reje
 static bool     g_stow_pending = false;            // deferred-stow interlock (review fix); default: no stow
 static std::vector<CsSentFrame> g_sent;
 static int g_send_fail_index = -1;
+static int g_send_defer_index = -1;   // attempt (0-based) that DEFERS (and is recorded); -1 = never
 static int g_send_attempts   = 0;
 
 // ── Reset ────────────────────────────────────────────────────────────────────
@@ -44,6 +45,7 @@ void cs_reset() {
   g_mpc_active = false;
   g_stow_pending = false;
   g_send_fail_index = -1;
+  g_send_defer_index = -1;
   g_send_attempts = 0;
   g_sent.clear();
 }
@@ -96,15 +98,24 @@ void cs_set_send_fail_index(int attempt_index) {
   g_send_fail_index = attempt_index;
   g_send_attempts = 0;
 }
-bool can_jugglebot_send(const ODrive::CanFrame& f) {   // HAL: can_buses.h
+void cs_set_send_defer_index(int attempt_index) {
+  g_send_defer_index = attempt_index;
+  g_send_attempts = 0;
+}
+TxResult can_jugglebot_tx(const ODrive::CanFrame& f, uint8_t /*cls*/) {   // HAL: can_buses.h
   const int attempt = g_send_attempts++;
-  if (attempt == g_send_fail_index) return false;   // TX-enqueue failure — not recorded
+  if (attempt == g_send_fail_index) return TxResult::FAILED;   // presence gate refused — not recorded
   CsSentFrame s;
   s.id = f.id;
   s.len = f.len;
   for (int i = 0; i < 8; ++i) s.buf[i] = f.buf[i];
   g_sent.push_back(s);
-  return true;
+  // DEFERRED is recorded: the frame is queued and transmits in order. The ladders
+  // reach this through the can_jugglebot_send bool wrapper, which now reads TRUE —
+  // so a ladder no longer aborts mid-move on TX pressure, which is the safer
+  // behaviour (aborting left a leg with a live input_vel and no monitor).
+  if (attempt == g_send_defer_index) return TxResult::DEFERRED;
+  return TxResult::MAILBOX;
 }
 size_t             cs_sent_count() { return g_sent.size(); }
 const CsSentFrame& cs_sent_at(size_t i) { return g_sent.at(i); }

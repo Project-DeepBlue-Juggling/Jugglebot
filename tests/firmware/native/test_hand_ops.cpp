@@ -333,3 +333,58 @@ TEST_CASE("the reset seam zeroes every counter") {
   check_counters(/*calls=*/0, /*rej=*/0, /*down=*/0,
                  /*pre1=*/0, /*pre2=*/0, /*traj=*/0, /*ok=*/0);
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  TRI-STATE TX (2026-08-24) — the ack stops lying about a deferred dispatch
+// ═══════════════════════════════════════════════════════════════════════════
+
+TEST_CASE("a DEFERRED dispatch acks OK: the frames went out, so the ack says so") {
+  // THE DEFECT THIS CLOSES, in one sentence: every send here ended in
+  // `bus.write(m) > 0`, and FlexCAN_T4::write returns -1 for "no mailbox free,
+  // QUEUED into the software txBuffer" — a frame that transmits, in order, ~0.1-1 ms
+  // later. So a dispatch under TX pressure was acked ERR_TIMEOUT while the bench
+  // watched its frames go out. That is the 2026-08-09 "lying ack", and it is what
+  // drove the hand ladders and the _MAX_ARM_DISPATCHES cap.
+  fake_reset();
+  hand_ops_counters_reset();
+  fake_set_commands_allowed(true);
+  fake_set_send_defer_all(true);          // every mailbox busy: all three sends defer
+
+  CHECK(HandOps::hand_traj_cmd(make_traj_arg()) == JbUdp::RpcStatus::OK);
+
+  // All three frames are on the bus — deferral is a queue hop, not a drop.
+  REQUIRE(fake_sent_count() == 3);
+  const auto traj_id = PlatformCanId::TRAJ_CMD;
+  CHECK(fake_sent_at(2).id == traj_id);   // the 0x6D0 traj frame was NOT aborted
+
+  // No stage is charged a failure, so the OK count derives correctly and the
+  // /link_status attribution row does not manufacture a phantom timeout.
+  check_counters(/*calls=*/1, /*rej=*/0, /*down=*/0,
+                 /*pre1=*/0, /*pre2=*/0, /*traj=*/0, /*ok=*/1);
+
+  // Every one of the three is charged to the HAND deferral bucket, not to a
+  // neighbour's — a mis-bucketed dispatch would hide inside the leg burst total,
+  // which is the one place this pressure is guaranteed to be invisible.
+  CHECK(fake_sent_count_cls(TxCls::HAND) == 3u);
+  CHECK(fake_sent_count_cls(TxCls::LEGS) == 0u);
+
+  // AND NOTHING RE-DISPATCHED. The lying-ack lesson stands: a truthful ack is the
+  // fix, a blind retry is not. Exactly three frames, one per logical send.
+  CHECK(fake_sent_count() == 3);
+}
+
+TEST_CASE("a FAILED preamble still aborts: only FAILED means the frame never left") {
+  // The abort path is unchanged for a genuine failure — the presence gate refusing
+  // a partner-less bus. Running a trajectory against a hand that never received its
+  // CLOSED_LOOP would fault or silently no-op the move, so this must stay.
+  fake_reset();
+  hand_ops_counters_reset();
+  fake_set_commands_allowed(true);
+  fake_set_send_defer_all(true);          // deferral is NOT what aborts...
+  fake_set_send_fail_index(0);            // ...a real failure is
+
+  CHECK(HandOps::hand_traj_cmd(make_traj_arg()) == JbUdp::RpcStatus::ERR_TIMEOUT);
+  CHECK(fake_sent_count() == 0);          // nothing reached the bus at all
+  check_counters(/*calls=*/1, /*rej=*/0, /*down=*/0,
+                 /*pre1=*/1, /*pre2=*/0, /*traj=*/0, /*ok=*/0);
+}

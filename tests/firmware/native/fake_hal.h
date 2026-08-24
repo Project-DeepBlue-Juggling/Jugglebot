@@ -31,6 +31,12 @@ struct SentFrame {
   uint32_t id;
   uint8_t  len;
   uint8_t  buf[8];
+  uint8_t  cls;   // the TxCls the caller declared (2026-08-24 tri-state accounting).
+                  // Recorded so a test can assert not just WHAT went on the bus but
+                  // which per-caller deferral bucket the firmware charged it to —
+                  // the classification is a per-caller RULING, so a silent drift to
+                  // the wrong bucket would mis-attribute exactly the pressure the
+                  // census exists to attribute.
 };
 
 // ── Whole-harness reset (call between test cases, with fault_machine_init() and
@@ -69,13 +75,27 @@ void              fake_clear_sent();
 // Convenience: count recorded frames whose ODrive command id (arb & 0x1F) matches.
 size_t            fake_sent_count_cmd(uint8_t cmd_id);
 
-// ── Send-failure injection (drives can_jugglebot_send()'s return value) ───────
-//  Fail the Nth can_jugglebot_send ATTEMPT after this call (0-based): it returns
-//  false and does NOT record the frame (a real TX-enqueue failure never reached the
-//  bus). -1 (the fake_reset default) = every send succeeds. Used by the hand_ops
-//  preamble-abort test: a failed preamble send must abort the traj TX, so the 0x6D0
-//  frame is never sent.
+// ── Send-outcome injection (drives can_jugglebot_tx()'s TxResult) ────────────
+//  Fail the Nth can_jugglebot_tx ATTEMPT after this call (0-based): it returns
+//  TxResult::FAILED and does NOT record the frame. FAILED is the bus-partner
+//  presence gate refusing — the ONE outcome in which no frame reaches the wire — so
+//  not recording it is the faithful model. -1 (the fake_reset default) = never.
+//  Used by the hand_ops preamble-abort test: a failed preamble send must abort the
+//  traj TX, so the 0x6D0 frame is never sent.
 void              fake_set_send_fail_index(int attempt_index);
+
+//  DEFER the Nth attempt (0-based): it returns TxResult::DEFERRED and IS RECORDED.
+//  That asymmetry with the fail hook is the whole point of the tri-state — a
+//  deferred frame went into the software txBuffer and transmits in order, so a
+//  faithful fake must put it on the recorded bus. -1 (the default) = never.
+void              fake_set_send_defer_index(int attempt_index);
+//  Defer EVERY send (a saturated-mailbox bus). Composes with the fail index: a
+//  FAILED attempt still fails.
+void              fake_set_send_defer_all(bool defer_all);
+//  How many recorded sends carried each TxCls, and the class of the most recent
+//  send ATTEMPT (recorded or not). Both reset with fake_reset().
+size_t            fake_sent_count_cls(uint8_t cls);
+int               fake_last_tx_class();   // -1 ⇒ nothing attempted since the reset
 
 // ── NOT HERE: leg_interp symbols (interp_last_tick_us & friends) ─────────────
 //  A seam for a leg_interp symbol looks like it belongs in this file and MUST NOT

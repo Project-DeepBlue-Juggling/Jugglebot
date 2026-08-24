@@ -325,7 +325,7 @@ and both inversions are label-semantics faults with a safety tail:
 | # | window | what breaks at a 0.49 s dwell | consequence |
 |---|---|---|---|
 | D1 | `retention_window_s` 1.50 s | Every legitimate throw departs the cup 0.49 s after the LANDING (the dwell is defined landing->release), i.e. within 0.353 s of seating at the band floor and BEFORE seating at its top — *inside* the window either way, and faster than the fastest seat-then-leave the sensor has ever resolved (0.999 s) | `RETENTION_REJECTED` on **every good cycle**; the record labels `BOUNCED`; with `on_empty_cup: RELOAD` that route asks BallButler to throw a **second ball at a full cup** |
-| D2 | `arrival_window_s` 1.50 s | The next cycle's landing arrives at +0.99 s, *inside* this cycle's arrival window. The "4x separation" the window was sized on (catch band +137…+798 ms vs next non-catch rise +3194 ms) is gone | two adjacent cycles' windows overlap and can claim the same edge |
+| D2 | `arrival_window_s` 1.50 s | The next cycle's landing arrives at +0.99 s, *inside* this cycle's arrival window. The "4x separation" the window was sized on (catch band +137…+798 ms vs next non-catch rise +3194 ms — the band re-measured to +87.6…+554.7 ms on 2026-08-24, which does not restore the separation) is gone | two adjacent cycles' windows overlap and can claim the same edge |
 
 > **C-POSSESS-1.C.** A window may never outlast the machine's own next scheduled
 > event of the kind it is looking for. A tick-driven source is therefore told the
@@ -340,7 +340,9 @@ and both inversions are label-semantics faults with a safety tail:
 >
 > ⚠ **The ARRIVAL half read `next_landing_t − arrival_lead_s` until 2026-08-23.**
 > That form is SUPERSEDED, not merely refined: it closes the window inside the
-> ball's own measured band at any cycle period under 1.000 s. **C.1 below is the
+> ball's own measured band at any cycle period under `ARRIVAL_BAND_MAX_S +
+> arrival_lead_s` — **0.760 s** since the 2026-08-24 band re-measure, 1.000 s
+> before it. **C.1 below is the
 > normative form** and the source is told `prev_landing_t` as well, so that both
 > ends of one boundary are one call. Do not restore the subtraction.
 
@@ -368,12 +370,13 @@ those are not the same kind of quantity:
 
 | term | what it is | what it is a property of |
 |---|---|---|
-| `ARRIVAL_BAND_MAX_S` = 0.80 s | how late a REAL catch's empty→held edge has ever been observed (+798 ms, 35 announcements, three 2026-08-10 bags) | the **ball** |
+| `ARRIVAL_BAND_MAX_S` = 0.56 s | how late a REAL catch's empty→held edge has ever been observed (+554.7 ms, 33 announced catches, four post-FW-14 bags, 2026-08-24 — was 0.80 s / +798 ms / n = 35 on the 2026-08-10 plant) | the **ball** |
 | `arrival_lead_s` = 0.200 s | how early the NEXT window starts looking, in case its landing prediction runs late | the **schedule** |
 
 Subtract the second from the next landing and, as soon as the cycle period drops
-below `ARRIVAL_BAND_MAX_S + arrival_lead_s` = **1.000 s**, this cycle's window
-closes *inside its own ball's measured band*. Two things break, and only one of
+below `ARRIVAL_BAND_MAX_S + arrival_lead_s` = **0.760 s** (1.000 s before the
+2026-08-24 re-measure), this cycle's window closes *inside its own ball's
+measured band*. Two things break, and only one of
 them is merely a reporting fault:
 
 1. `catch_event_dt_s` — the ILC catch-timing measurand, and the only quantity
@@ -414,29 +417,42 @@ the same way two copies of `RELEASE_GUARD_S` would have been.
 
 The guard is not deleted, it is **relocated**: the next window surrenders its
 pre-landing lead before this one surrenders any of its band. That costs nothing
-measured — across those same 35 announcements **nothing arrived before its
-announced landing at all** (earliest +137 ms; +46.5 ms on the 2026-08-23 FW-15
-capture), so the pre-landing lead has never once been the term that caught an
-edge, while the band's tail demonstrably has.
+measured — across the 33 post-FW-14 announced catches **nothing arrived before
+its announced landing at all** (earliest **+87.6 ms**; the one sub-88 ms datum,
++45.4 ms, is a rim graze labelled BOUNCED, not a seated arrival), and the same
+held over the 35 announcements of the 2026-08-10 plant (earliest +137 ms). So
+the pre-landing lead has never once been the term that caught an edge, while
+the band's tail demonstrably has.
 
 **The schedule-adherence assumption evaporates where it mattered.** The old
 boundary was a function of `next_landing_t`, which is a *prediction* made a cycle
 early — the clamp used the SCHEDULED next landing while the next window opened at
 the ACTUAL one, so a release that ran late pulled the two ends apart. Under the
 new rule the boundary is pinned to `L + ARRIVAL_BAND_MAX_S`, **independent of
-`N`**, for every period under 1.000 s — i.e. for exactly the cadences at which
-the boundary sits anywhere near an edge either window could claim. Above 1.000 s
-it tracks `N` again — but there it is `period − 1.000 s` PAST this ball's band
-ceiling (163 ms at the accepted operating point) and never less than
-`ARRIVAL_BAND_MIN_S + arrival_lead_s` = **337 ms** BEFORE the next ball's earliest
+`N`**, for every period between **0.560 s and 0.760 s** — i.e. for exactly the
+cadences at which the boundary sits anywhere near an edge either window could
+claim. (Under 0.560 s it is pinned to `N` itself, but that is the C.2 region:
+the band cannot be watched out at all there, the window says so, and no verdict
+rests on where the boundary landed.) Above 0.760 s
+it tracks `N` again — but there it is `period − 0.760 s` PAST this ball's band
+ceiling (**403 ms** at the accepted operating point) and never less than
+`ARRIVAL_BAND_MIN_S + arrival_lead_s` = **287 ms** BEFORE the next ball's earliest
 possible edge, so the region a schedule error could move it through contains no
-edge either window could claim. The dependence is not removed everywhere; it is
+edge either window could claim.
+
+> **Re-derived 2026-08-24 at `ARRIVAL_BAND_MAX_S` 0.56 / `ARRIVAL_BAND_MIN_S`
+> 0.087.** Both thresholds fell by 240 ms and the pinned region MOVED — still
+> 200 ms of period, now sitting 240 ms lower — the *width* is
+> `arrival_lead_s` and does not move; only where it sits does. The whole
+> published ladder now sits **above** 0.760 s, so every rung reads the `N`-tracking
+> branch, which is the safer one: it is the branch this paragraph shows carries no
+> claimable edge. See `logbook/2026-08-24-arrival-band-remeasure.md`. The dependence is not removed everywhere; it is
 removed everywhere it could do harm, which is the strongest claim available
 without a second measurement.
 
 **Where the band cannot be preserved, the refusal itself is refused.** Below a
-period of `ARRIVAL_BAND_MAX_S` = **0.800 s** the next ball lands before this
-one's band has closed, and *no* boundary rule can give both balls their whole
+period of `ARRIVAL_BAND_MAX_S` = **0.560 s** (0.800 s before the 2026-08-24
+re-measure) the next ball lands before this one's band has closed, and *no* boundary rule can give both balls their whole
 band. The window is then genuinely shorter than the evidence it is judging, so
 "no rise" stops being evidence of no arrival:
 
@@ -453,32 +469,85 @@ the schedule truncates the band, an `arrival_window_s` configured shorter than
 the band included.
 
 **Reachability, stated rather than implied.** Measured against the tree's own
-constants over every published rung (`/tmp/probe_arrival_clamp.py`, run
-2026-08-23; offsets are relative to this cycle's landing):
+constants over every published rung, by calling **the shipped
+`arrival_boundary_t`** rather than restating its formula
+(`/tmp/probe_arrival_clamp.py`, re-derived 2026-08-24 at `ARRIVAL_BAND_MAX_S`
+**0.56**; offsets are relative to this cycle's landing):
 
 | rung | flight | period | window closed at | band ceiling | tail lost |
 |---|---|---|---|---|---|
-| R0–R3 | 0.7977 | 2.2977–6.3977 | +1.5000 (the fixed window binds) | +0.800 | — |
-| R4 | 0.6059 | 1.2559 | +1.0559 | +0.800 | — |
-| R5 | 0.5029 | 1.2029 | +1.0029 | +0.800 | — |
-| **R5-prime (accepted 2026-08-23)** | 0.5029 | 1.1629 | +0.9629 | +0.800 | — |
-| R5′ clamp pin (dwell 0.49 / T 0.4949) | 0.4949 | 0.9849 | +0.7849 | +0.800 | **15.1 ms** |
-| R6 (deferred fork, dwell 0.25) | 0.5029 | 0.7529 | +0.5529 | +0.800 | **247.1 ms** |
+| R0–R3 | 0.7977 | 2.2977–6.3977 | +1.5000 (the fixed window binds) | +0.560 | — |
+| R4 | 0.6059 | 1.2559 | +1.0559 | +0.560 | — |
+| R5 | 0.5029 | 1.2029 | +1.0029 | +0.560 | — |
+| **R5-prime (accepted 2026-08-23)** | 0.5029 | 1.1629 | +0.9629 | +0.560 | — |
+| R5′ clamp pin (dwell 0.49 / T 0.4949) | 0.4949 | 0.9849 | +0.7849 | +0.560 | — |
+| R6 (deferred fork, dwell 0.25) | 0.5029 | 0.7529 | +0.5600 | +0.560 | — |
 
-**No published rung amputates today** — the accepted operating point clears the
-band ceiling by 163 ms — which is why this was carried as a MEDIUM rather than a
-live defect. It becomes reachable below a 1.000 s period, which is the only
-direction the cadence census travels, and C.2 becomes the operative half at R6,
-where even the new boundary reaches only +0.7529 and 47.1 ms of band stays
-unwatched. It lands now, not at R6, because the constant that decides all of it —
-`ARRIVAL_BAND_MAX_S` — is the one the pending post-FW14 re-measure will move, and
-moving a constant is only safe once every consumer reads it the same way.
+> **Re-derived 2026-08-24 against the collapsed band**
+> (`logbook/2026-08-24-arrival-band-remeasure.md`; the previous cut of this table,
+> at a 0.800 s ceiling, read `+0.8000 / —` and `+0.7529 / 47.1 ms` for the last
+> two rows). **Every published rung, and the deferred R6 fork, now watches its
+> whole band: nothing amputates anywhere on this table.** Two rows are worth
+> reading twice. The **R5′ clamp pin** closes 15.1 ms EARLIER than before
+> (+0.7849 vs +0.8000) — one of the two windows this re-measure narrowed, and
+> the only one where the narrowing came from a change of BRANCH, because
+> `b − lead` overtakes `min(a + BAND_MAX, b)` once the ceiling drops under
+> `period − lead`; it still outlasts the evidence by 225 ms, which is the
+> invariant that matters, not the direction. **R6** closes at +0.5600 against a
+> +0.560 ceiling — `_band_watched_out` tests `w1 >= landing_t +
+> ARRIVAL_BAND_MAX_S`, so it passes at **exactly** equality and with **zero**
+> margin. That is a correct pass, not a comfortable one: any future re-measure
+> that raises the ceiling by even a millisecond puts R6 back inside C.2. Read the
+> R6 row as *reachable*, never as *cleared*. R6's window narrowed far more in
+> absolute terms (+0.7529 → +0.5600, 192.9 ms earlier) — it is the min-branch
+> value itself that fell — but it narrowed alongside a ceiling that fell
+> 240 ms, which is why it stops amputating rather than starting to.
+>
+> **An older correction, kept because it names a live trap.** On 2026-08-23 the
+> last two rows were computed with the **superseded** `b − arrival_lead_s` rule
+> rather than the shipped one, and published `+0.7849 / 15.1 ms` and
+> `+0.5529 / 247.1 ms` (2026-08-24 audit, MEDIUM). Note that the R5′ pin's
+> `+0.7849` above is numerically the same figure — arrived at by the SHIPPED rule
+> at the new ceiling, for a different reason. Two rules agreeing on one cell is
+> not evidence either is right; derive this table by calling
+> `arrival_boundary_t`, never by restating it.
+
+**No published rung amputates today**, and after the 2026-08-24 re-measure
+neither does the deferred R6 fork — the accepted operating point clears the band
+ceiling by 403 ms. **Two thresholds, and they are not the same number.** The
+*superseded* `b − lead` rule began amputating below a period of
+`ARRIVAL_BAND_MAX_S + arrival_lead_s` = **0.760 s** — that is the defect this
+clause closes, and it is the number `arrival_boundary_t`'s docstring quotes when
+it explains what it is *not*. The rule that ships amputates only below **0.560 s**
+(`ARRIVAL_BAND_MAX_S` alone), because below that the next ball genuinely lands
+before this one's band has closed and no boundary rule can give both balls their
+whole band. So the fix buys **200 ms of period** — `arrival_lead_s` exactly, and
+therefore unchanged by any band re-measure. What the re-measure changed is where
+that 200 ms sits: both thresholds fell 240 ms (1.000 → 0.760, 0.800 → 0.560), and
+**C.2 stopped being the operative half at R6**. It landed on 2026-08-23 rather
+than at R6 because the constant that decides all of it — `ARRIVAL_BAND_MAX_S` —
+was the one the then-pending post-FW14 re-measure was going to move, and moving a
+constant is only safe once every consumer reads it the same way. That re-measure
+landed on 2026-08-24, and this table is the check that the ordering held.
 
 **RETENTION GOES DARK AT THE TARGET CADENCE, and that must be said plainly.**
-The seat edge lands **+137…+798 ms** after the predicted landing (median +399) and
-the next release is **+490 ms** after it, so at the R5′ operating point the median
-cycle has *no* observable retention interval at all — the clamp is not what
-removes it, the physics is (the debounced fall lag alone is ~241 ms). At R5′,
+The seat edge lands **+87.6…+554.7 ms** after the predicted landing (median
+**+183.9**, n = 33, re-measured 2026-08-24; it was +137…+798 / median +399 on the
+2026-08-10 plant). Retention closes at `next_release_t − RELEASE_GUARD_S`, and at
+the 0.49 s dwell this clause is deliberately sized against (§ 3.4 preamble — not
+the accepted 0.66 s operating point) the next release is **+490 ms** after the
+landing, so the window closes at **+190 ms** — leaving the median cycle
+**6.1 ms** of observable retention interval, against a debounced fall lag of
+**~241 ms**. At the ACCEPTED 0.66 s dwell the window closes at +360 ms and the
+median cycle gets 176 ms — larger, still under the same ~241 ms lag, so the
+conclusion is unchanged and only the margin moves. Even at the band
+floor the interval is 102 ms, still under half that lag; at the band ceiling the
+window has already closed. **So the conclusion the collapsed band did NOT
+overturn is this one**: the median cycle has no *usable* retention interval — the
+clamp is not what removes it, the physics is. (The re-measure moved the interval
+from −209 ms to +6.1 ms, i.e. from "inverted" to "open but far shorter than the
+edge it would have to resolve". That is a narrowing of the residual, not a
+closing of it, and it is the honest way to read the improvement.) At R5′,
 possession is therefore **ARRIVAL-only** again, and the bounce-out trap that § 7
 accepted and § 3.2 closed is **re-opened by cadence**. What still closes it:
 
@@ -519,6 +588,17 @@ that was invisible; at a 0.49 s dwell it is a **fail-open possession gate**:
 > ever one candidate explanation for them, and it is now excluded rather than
 > confirmed. Whether the tail is the same mechanism is a can-bridge bench
 > question and stays open.
+>
+> **The RATE half was diagnosed on 2026-08-24**
+> (`logbook/2026-08-24-hand-sensor-poll-cadence.md`): the bridge's poll loop is
+> strictly one-in-flight on a 10 ms grid, so `C = 10·max(2, ceil(RTT/10)+1)` ms,
+> and the pre-FW-14 FlexCAN_T4 RX-ring leak inflated the SDO round trip with
+> bridge uptime. That transfer function also says what the **tail** is — a
+> stalled round trip, one gap at a time, in a stream that medians at the
+> configured interval either side of it — so the open question is now *what
+> stalls a single round trip*, not *why the rate is wrong*. **Do not read an
+> elevated cadence as "the ring leak again"**: anything that slows the round trip
+> elevates `C`, and the entry says why that prior was deliberately kept out.
 
 So for ~241 ms after a ball leaves the cup the debounced bit still reads HELD, and
 cycle N+1's CHECKING — which at a 0.49 s dwell runs inside that window — would
@@ -554,10 +634,14 @@ rest do not have.
 
 **(a) It may not trust the terminal that summoned it.** The interlude is entered
 from `REJECTED_NO_BALL`, minted at CHECKING — which runs at
-`landing + (dwell − throw_delay)`. The physical seat edge lands **+137…+798 ms**
-after the announced landing. Those two numbers cross below roughly a 1.2 s dwell
-(`dwell − throw_delay < 0.798 s` at the census's 0.38 s post-plumbing delay
-floor): CHECKING reads the cup *before the ball has finished arriving in it*, so a **good
+`landing + (dwell − throw_delay)`. The physical seat edge lands **+87.6…+554.7 ms**
+after the announced landing (re-measured 2026-08-24; it was +137…+798 ms). Those
+two numbers cross below roughly a **0.93 s** dwell (`dwell − throw_delay <
+0.555 s` at the census's 0.38 s post-plumbing delay floor) — it was ~1.2 s at the
+old ceiling, so the collapsed band shrank the hazard window by ~243 ms of dwell
+but did **not** close it: R4 (0.65), R5 (0.70) and the accepted R5′ (0.66) all
+still sit under it. Below that dwell CHECKING reads the cup *before the ball has
+finished arriving in it*, so a **good
 catch** mints `REJECTED_NO_BALL` and routes a healthy cycle into an interlude that
 throws a second ball at a full cup. The interlude therefore takes **its own** cup
 read, after `JB_BD_ARRIVAL_WINDOW_S` past the previous cycle's scheduled landing —

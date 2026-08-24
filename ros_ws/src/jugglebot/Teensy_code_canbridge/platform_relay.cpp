@@ -14,7 +14,7 @@
 #include "udp_protocol.h"
 #include "protocol_config.h"   // PlatformCanId (STATE_UPDATE 0x6E0, TILT_READING 0x7DE)
 #include "odrive_protocol.h"   // ODrive::CanFrame
-#include "can_buses.h"         // can_jugglebot_send, jugglebot_commands_allowed
+#include "can_buses.h"         // can_jugglebot_tx / TxCls, jugglebot_commands_allowed
 
 namespace CanBridge {
 namespace Relay {
@@ -22,7 +22,11 @@ namespace Relay {
 // Send one CAN3 frame through the shared gate. Returns the RpcStatus ack.
 static uint16_t send_gated(const ODrive::CanFrame& f) {
   if (!jugglebot_commands_allowed()) return JbUdp::RpcStatus::ERR_BUS_DOWN;
-  return can_jugglebot_send(f) ? JbUdp::RpcStatus::OK : JbUdp::RpcStatus::ERR_TIMEOUT;
+  // TxCls::SAFETY (2026-08-24): relay ops ride the safety-deferral counter. A
+  // DEFERRED relay frame is SENT — it reaches the Platform Teensy in order — so
+  // the ack is OK, and only TxResult::FAILED (no bus partner) is ERR_TIMEOUT.
+  return tx_reached_the_wire(can_jugglebot_tx(f, TxCls::SAFETY))
+             ? JbUdp::RpcStatus::OK : JbUdp::RpcStatus::ERR_TIMEOUT;
 }
 
 uint16_t tilt_read() {

@@ -219,6 +219,31 @@ def test_native_rpc_dispatch_binary_passes(binaries):
         f"from the expected (method,axis)/gate-basis behaviour:\n{r.stdout}\n{r.stderr}")
 
 
+def test_native_can_tx_result_binary_passes(binaries):
+    """can_buses.h's TX tri-state classifier passes every assertion.
+
+    ``can_buses.cpp`` compiles in NO native binary (the coverage gap recorded at
+    ``BusRxHealth::tx_deferred``), which is exactly why the rule that decides
+    whether a frame "went out" was moved OUT of it and into a header-inline
+    classifier on 2026-08-24: the old rule, ``bus.write(m) > 0``, read
+    FlexCAN_T4's ``-1`` (*no mailbox free, QUEUED into the software txBuffer*) as
+    FAILURE, and lived somewhere no test could reach it.  That misreading is the
+    mechanism behind the 2026-08-09 lying ack.
+
+    This binary pins ``classify_tx_write`` against the vendored library's
+    documented return contract (``+1`` mailbox / ``-1`` queued / never ``0``),
+    the ``tx_reached_the_wire`` predicate that replaced the bool, and the
+    ``TxCls`` census vocabulary.  The source-level half — that the ``.tpp`` still
+    says so, and that FW 14's P4 ``break`` still guards the deferral drain — is
+    ``tests/firmware/test_flexcan_tx_defer_guard.py``.
+    """
+    r = _run(binaries["test_can_tx_result"])
+    assert r.returncode == 0, (
+        "native test_can_tx_result FAILED — can_buses.h's TX tri-state diverged "
+        "from the FlexCAN_T4 write() return contract every per-caller DEFERRED "
+        f"ruling rests on:\n{r.stdout}\n{r.stderr}")
+
+
 def test_native_odrive_protocol_binary_passes(binaries):
     """The compiled odrive_protocol.h encoders pass their self-checks (arb_id packing,
     the <fhh set_input_pos round-trip, zero-length get_version). The

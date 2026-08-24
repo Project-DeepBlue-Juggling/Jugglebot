@@ -452,10 +452,12 @@ CATCH_CONFIRM_WINDOW_S = ARRIVAL_BAND_MAX_S
                                      # measured +798 ms ceiling — latent today only
                                      # because the tracker's own CAUGHT lands earlier
                                      # (+202..+442 ms) and the merge falls back to it.
-                                     # Deriving it also puts the pending post-FW14
-                                     # band re-measure in ONE place: shrink
-                                     # ARRIVAL_BAND_MAX_S and this, the reload twin
-                                     # and DEFAULT_SESSION_MISS_CLEANUP_S all follow.
+                                     # Deriving it put the post-FW14 band re-measure
+                                     # in ONE place, and on 2026-08-24 that is what
+                                     # happened: ARRIVAL_BAND_MAX_S 0.80 -> 0.56, and
+                                     # this, the reload twin and
+                                     # DEFAULT_SESSION_MISS_CLEANUP_S followed without
+                                     # an edit of their own.
                                      # (Still absorbs the +0.115 s announced-early
                                      # bias of the fourth sitting, with more room.)
 TOSS_CANCEL_CUTOFF_S = 0.25          # node-level (§ cancellation): cancels honoured up

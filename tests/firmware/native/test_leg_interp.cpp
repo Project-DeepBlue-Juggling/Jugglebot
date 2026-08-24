@@ -682,3 +682,43 @@ TEST_CASE("re-enable recovery slew: the emitted command is always re-clamped to 
   // And the slew STATE is pulled back inside the band too (never keeps running away).
   CHECK(std::fabs(s_recover_pos[0] - axes[0].pos_rev) <= MAX_LEAD_REV + 1e-4f);
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  TRI-STATE TX (2026-08-24) — the 500 Hz setpoint burst's owner-delegated ruling
+// ═══════════════════════════════════════════════════════════════════════════
+
+TEST_CASE("a DEFERRED leg setpoint is SENT: counted, charged to LEGS, never retried") {
+  reset_interp_test();
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) axes[i].heartbeat_seen = true;
+  float u0[6] = {0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f};
+  float zeros[6] = {0, 0, 0, 0, 0, 0};
+  interp_set_output_enabled(true);
+  stage(u0, nullptr, zeros, zeros);
+
+  // A saturated mailbox set: every setpoint in the burst defers into the software
+  // txBuffer. THE RULING: that is SENT. It transmits, in order, ~0.1-1 ms later.
+  fake_clear_sent();
+  fake_set_send_defer_all(true);
+  interp_isr();
+
+  // Exactly ONE frame per present leg. NOT ONE MORE. The retry that a "failed"
+  // reading would invite is the wrong move here and always was: these are
+  // latest-wins setpoints at 500 Hz, so re-sending a frame the queue already holds
+  // puts a STALE setpoint on the wire behind a fresher one — the interp ladder's
+  // whole contract is that the newest command wins.
+  CHECK(fake_sent_count_cmd(CMD_SETPOS) == (size_t)NUM_LEGS);
+  CHECK(fake_sent_count() == (size_t)NUM_LEGS);
+
+  // Charged to the LEGS bucket, so leg-burst pressure can never be mistaken for a
+  // deferred hand dispatch or a deferred safety frame in the census.
+  CHECK(fake_sent_count_cls(TxCls::LEGS) == (size_t)NUM_LEGS);
+  CHECK(fake_sent_count_cls(TxCls::HAND) == 0u);
+  CHECK(fake_sent_count_cls(TxCls::SAFETY) == 0u);
+
+  // And the next tick behaves identically — no backlog, no accumulated retry queue,
+  // no fault-machine involvement. The ISR does not even look at the result.
+  fake_clear_sent();
+  fake_advance(INTERP_PERIOD_US);
+  interp_isr();
+  CHECK(fake_sent_count() == (size_t)NUM_LEGS);
+}
