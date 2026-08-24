@@ -332,7 +332,7 @@ def resolve_on_empty_cup(raw) -> str:
 # the ctor; these literals serve standalone/test use and the config drift-guard
 # test pins each pair equal — the same pattern as the toss FSM's
 # DEFAULT_TOSS_FLIGHT_TIME_S.
-DEFAULT_SESSION_DWELL_S = 6.0        # 0 => this. Comfortably over the 5.137 s
+DEFAULT_SESSION_DWELL_S = 6.0        # 0 => this. Comfortably over the 5.1416 s
                                      # floor at the 5.0 s default throw delay, so
                                      # the default combination is legal without the
                                      # operator doing arithmetic. DELIBERATELY NOT

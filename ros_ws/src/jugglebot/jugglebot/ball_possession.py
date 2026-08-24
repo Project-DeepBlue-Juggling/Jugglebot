@@ -485,9 +485,20 @@ class HandBallSensorSource:
 
       the debounce is **asymmetric and much slower than its nominal 100 ms** —
       measured ``held->empty`` **232 / 241 / 295 ms**, ``empty->held``
-      **0 / 0 / 0 ms** (`plans/active/toss-selftuning.md` § Open findings; the
-      poll cadence itself measures ~71 ms, not the configured 20 ms, and that
-      gap has no diagnosis yet).
+      **0 / 0 / 0 ms** (`plans/active/toss-selftuning.md` § Open findings).
+
+    Those debounce numbers are NOT re-measured and still stand. What HAS moved is
+    the poll cadence they were once explained by: this docstring used to add
+    "*the poll cadence itself measures ~71 ms, not the configured 20 ms, and that
+    gap has no diagnosis yet*", and both halves of that are now wrong. The 71 ms
+    was a measurement of ONE sitting on a degraded plant, not a property of this
+    robot — read ``sensor_poll_dt_ms_median`` per record — and the mechanism was
+    diagnosed on 2026-08-24 as the pre-FW-14 FlexCAN_T4 RX-ring leak, already
+    fixed on 2026-08-15; the post-FW-14 corpus medians at the configured 20 ms.
+    That **removes** the cadence as a candidate explanation for the 232/241/295 ms
+    fall lag, which leaves that asymmetry *without* a mechanism rather than with
+    one — so the raw/debounced split below is more load-bearing, not less.
+    ``logbook/2026-08-24-hand-sensor-poll-cadence.md``.
 
     So for ~241 ms after a ball leaves the cup the debounced bit still reads
     HELD. Once the dwell approaches that number — which is the whole point of the

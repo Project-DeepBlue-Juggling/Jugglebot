@@ -671,12 +671,58 @@ def test_the_timing_gate_admits_the_cadence_the_reference_bag_measured():
     (None, 'poll_cadence_unmeasured'),
 ])
 def test_the_timing_gate_refuses_both_ends_for_different_reasons(dt_ms, reason):
-    """The FLOOR is physics: a cadence below the firmware's own poll interval
-    means the stamp is not the poll stamp. The CEILING is reachability: at
+    """The FLOOR is physics: a cadence FAR below the firmware's own poll
+    interval means the stamp is not the poll stamp. Since 2026-08-24 "far" is
+    0.75x configured = 15.0 ms — see
+    test_the_timing_floor_admits_the_healthy_plant_and_still_refuses_the_republish
+    for why 1.0x was refusing healthy records. The CEILING is reachability: at
     Δ = 200 ms a 5 ms standard error needs n = 133 admitted tosses, more than the
     entire 129-toss first capture."""
     rec = _timing_record(dt_ms)
     assert fit.admit_for_timing(rec) == (False, reason)
+
+
+#: The exact ``sensor_poll_dt_ms_median`` the healthy post-FW-14 plant mines for
+#: 9 of its 39 per-toss records — 19.1 ns under the configured 20.0 ms interval,
+#: a floating-point artefact of the stamp arithmetic and not a fast sensor.
+#: Verbatim so a re-derivation of the floor has to face the real number.
+_HEALTHY_PLANT_POLL_DT_MS = 19.999980926513672
+
+#: What the mined median would read if the stamp were the ``/hand_telemetry``
+#: 100 Hz republish stamp rather than the poll stamp — the one measurand of
+#: impossible provenance the floor exists to catch.
+_REPUBLISH_POLL_DT_MS = 10.0
+
+
+def test_the_timing_floor_admits_the_healthy_plant_and_still_refuses_the_republish():
+    """The floor is 0.75x configured, and BOTH halves of that are load-bearing.
+
+    It was ``1.0x`` — 20.0 ms exactly, against a strict ``<`` — until 2026-08-24,
+    and on the post-FW-14 plant that refused **9 of 39** real records: the whole
+    measured distribution is one spike at the configured interval (min
+    19.999980927, max 20.003080368 ms, total spread 3.1 us) and its low mode sits
+    19.1 ns *under* 20.0. A guard that refuses a quarter of a healthy sitting is
+    reading the last bit of a float, not the provenance of a measurand.
+
+    The floor must still refuse the thing it was built for. The impossible
+    measurand with a name is the 100 Hz republish stamp — 10.0 ms — so 0.75x
+    (15.0 ms) is the midpoint of the only gap in the corpus: 5 ms clear of the
+    republish rate, 5 ms below every healthy reading ever mined.
+    `logbook/2026-08-24-cadence-crossrecording-closeout.md`.
+    """
+    configured = float(hw.JB_BD_CHECK_INTERVAL_MS)
+    assert fit.TIMING_POLL_DT_MS_MIN == pytest.approx(0.75 * configured)
+    assert fit.TIMING_POLL_DT_MS_MIN == pytest.approx(15.0)
+
+    # The regression this floor move exists to stop.
+    assert _HEALTHY_PLANT_POLL_DT_MS < configured, (
+        'the measured healthy median really is under the configured interval')
+    assert fit.admit_for_timing(
+        _timing_record(_HEALTHY_PLANT_POLL_DT_MS)) == (True, '')
+
+    # ...without giving up the provenance check.
+    assert fit.admit_for_timing(_timing_record(_REPUBLISH_POLL_DT_MS)) == (
+        False, 'poll_cadence_below_configured_interval')
 
 
 def test_the_timing_ceiling_is_the_cadence_at_which_a_fit_stops_being_reachable():

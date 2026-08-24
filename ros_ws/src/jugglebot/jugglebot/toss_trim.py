@@ -510,13 +510,50 @@ APEX_SANITY_FRAC = 0.10
 AIM_LABELS = (toss_record.LABEL_CAUGHT, toss_record.LABEL_BOUNCED,
               toss_record.LABEL_MISSED)
 
-#: Floor for the τ fit's poll cadence. A per-record median cadence BELOW the
-#: firmware's own configured poll interval is not a fast sensor, it is a stamp
-#: that is not the poll stamp — a different firmware, or a mined field that does
-#: not mean what this fit thinks. Refuse rather than fit a measurand of unknown
-#: provenance. (Re-derived in phase 2c; see that phase's logbook section for the
-#: measurement that retired the design's ±10 %-of-configured gate.)
-TIMING_POLL_DT_MS_MIN = float(hw.JB_BD_CHECK_INTERVAL_MS)
+#: Floor for the τ fit's poll cadence. A per-record median cadence WELL BELOW
+#: the firmware's own configured poll interval is not a fast sensor, it is a
+#: stamp that is not the poll stamp — a different firmware, or a mined field
+#: that does not mean what this fit thinks. Refuse rather than fit a measurand
+#: of unknown provenance. (Re-derived in phase 2c; see that phase's logbook
+#: section for the measurement that retired the design's ±10 %-of-configured
+#: gate.) (How far below is the 0.75x derivation two paragraphs down — the
+#: reason string still says ``below_configured_interval`` because it is a
+#: stable operator-facing token, not because the threshold is 1.0x.)
+#:
+#: **0.75x, not 1.0x, and the fraction is measured rather than chosen**
+#: (2026-08-24, ``logbook/2026-08-24-cadence-crossrecording-closeout.md``). At
+#: ``1.0x`` this was ``20.0`` exactly, tested with a strict ``<`` at
+#: :func:`admit_for_timing` — and on the healthy post-FW-14 plant it was
+#: REFUSING healthy records. Over every post-FW-14 per-toss record that carries a
+#: cadence (n = 39, four bags, 2026-08-18 → 2026-08-23), the whole distribution
+#: is one spike at the configured interval: min 19.999980927, max 20.003080368,
+#: a total spread of **3.1 µs**. **9 of those 39 (23 %) sit
+#: 19.1 ns BELOW 20.0** — a floating-point representation artefact of the stamp
+#: arithmetic, not a plant that polls faster than its own interval — and every
+#: one of them was answered ``poll_cadence_below_configured_interval``. A guard
+#: that refuses a quarter of a healthy sitting is not measuring provenance, it is
+#: measuring the last bit of a float.
+#:
+#: **Why 0.75x specifically.** The guard exists to catch a measurand of
+#: IMPOSSIBLE provenance, and the impossible measurand with a name is the
+#: ``/hand_telemetry`` **100 Hz republish**: if the mined stamp were the publish
+#: stamp rather than the poll stamp, the median would read **10.0 ms**. So the
+#: real question is where to cut between 20.0 (everything ever measured on a
+#: healthy plant) and 10.0 (the one wrong stamp this can be). ``0.75x`` = **15.0
+#: ms** splits that gap exactly — 5 ms clear of the republish rate it must still
+#: refuse, and 5 ms below a measured distribution whose entire observed width is
+#: 3.1 µs, i.e. ~1600x the spread. Nothing in the corpus lies between; the
+#: pre-FW-14 records (n = 31, medians 60-87 ms) are far ABOVE the floor and were
+#: never the population at risk. The margin over the republish rate is a
+#: property of TODAY'S configured interval, not of the fraction: at any
+#: configured interval <= 13.33 ms, 0.75x lands at or under 10.0 and the
+#: republish stamp would be ADMITTED. That is fenced in tests rather than in
+#: this expression —
+#: ``test_the_timing_floor_admits_the_healthy_plant_and_still_refuses_the_republish``
+#: pins 15.0 absolutely AND asserts the 10.0
+#: refusal, so a ``JB_BD_CHECK_INTERVAL_MS`` change reds both and forces a
+#: re-derivation here.
+TIMING_POLL_DT_MS_MIN = 0.75 * float(hw.JB_BD_CHECK_INTERVAL_MS)
 
 #: Ceiling, sized on REACHABILITY rather than on the plant. The τ trim applies at
 #: ``se ≤ 5 ms``, and with quantisation-limited samples ``se = Δ/√(12·n)``, so
