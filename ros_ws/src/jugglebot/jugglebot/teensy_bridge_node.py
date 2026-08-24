@@ -134,6 +134,7 @@ from teensy_link.deactivate import (
 from jugglebot.can import catching_cone
 from jugglebot.can import odrive
 from jugglebot.can.motor_state import MotorStateTracker
+from jugglebot import mocap_status as mocap_st
 import jugglebot.hardware_config as hw
 import jugglebot.protocol_config as proto
 
@@ -187,6 +188,22 @@ CACHE_AGE_SATURATED_US = 0xFFFF_FFFF
 #: ADVISORY ONLY: this sets a DiagnosticStatus level on an instrumentation topic.
 #: Nothing gates, refuses or actuates on it.
 RING_LEAK_WARN_FRAMES = 2
+
+
+# ── bb/calibrate's QTM readiness gate (F4/Q2) ──────────────────────────
+#
+# The calibrate COMMAND path (this service → BB_CALIBRATE_LOC RPC → BB sweeps)
+# and the calibrate DATA path (QTM → mocap_node accumulates markers → the
+# circle fit) share no edge. So until now the service happily dispatched a
+# sweep with QTM dark: the robot moved, produced nothing, and the operator
+# found out minutes later — or worse, a partially-visible constellation
+# produced a plausible BB pose that ball_butler_node then aimed every throw
+# with. mocap_node's `mocap/status` (5 Hz) is the missing signal.
+#
+# The thresholds and the predicate live in `jugglebot.mocap_status`, NOT here:
+# orchestrator_node gates the HOMING step on the same question, and two copies
+# of "ready" that can drift apart fail silently and asymmetrically (see that
+# module's docstring). This node owns only the cached snapshot and its age.
 
 
 # ── The alarmed command-latency monitor (2026-07-24 closure contract) ──
@@ -842,6 +859,25 @@ _DIAG_FLAG_HB_SEEN = 0x2    # ODrive has heartbeated at least once this firmware
 # per axis (send_bb_diag), so 3 s = three missed frames; BB estimates ride the
 # 100 Hz telemetry tick, so 0.5 s of silence means the stream (not the bus) died.
 _BB_DIAG_FRESH_S = 3.0
+# Freshness budget for NARRATING a cached diagnostic — F3/C2's shell logging and
+# F3/C3's robot_state.error[] decode. Same 3 s as the BB honesty gate above, and
+# for the same reason: DIAGNOSTIC frames arrive at a fixed 1 Hz per axis, so
+# three missed frames is silence, not jitter.
+#
+# WHY NARRATION NEEDS A BUDGET AT ALL. _latest_diag is a last-value cache with
+# no eviction: when the UDP link dies it FREEZES, and C2/C3 then keep decoding
+# that frozen snapshot forever. The operator reads a live-looking 'ODrive error
+# on leg 2: …' line, and robot_state.error[] keeps carrying a decoded string,
+# describing a bitfield that may be minutes old — at exactly the moment the
+# bridge is ALSO reporting the link as lost, so the loudest thing on screen is
+# the least current. Silence is the honest output for a cache that stopped
+# updating (the leg_setpoint_echo philosophy, applied to error narration).
+#
+# ⚠ DELIBERATELY NOT APPLIED TO _guard_fault_leg_hint (C1). At latch time the
+# sticky disarm_reason is frequently the ONLY surviving record of the cause, and
+# the guard-latch edge log is the one line an operator gets; suppressing it on
+# age would trade a stale-but-real attribution for no attribution at all.
+_DIAG_NARRATE_FRESH_S = _BB_DIAG_FRESH_S
 _BB_EST_FRESH_S = 0.5
 
 # "Already at STOW" band for the deactivate no-op guard: a leg is considered stowed
@@ -855,6 +891,53 @@ _ERR_DC_BUS_UNDER_VOLTAGE = 512
 
 # ODrive CLOSED_LOOP axis state (matches odrive.AXIS_STATES['CLOSED_LOOP']).
 _AXIS_STATE_CLOSED_LOOP = 8
+
+# ── ODrive error decode (F3) ──────────────────────────────────────────────
+# The full 32-bit active_errors/disarm_reason masks reach this node on every
+# DIAGNOSTIC frame, but until F3 nothing on the Jetson turned them back into
+# names: robot_state collapsed them to booleans, the guard-latch hint printed
+# only '(leg 3)', and the decode table (odrive.ERROR_CODES / odrive.error_names)
+# had ZERO consumers in the launched node graph. These two helpers are the one
+# formatting point shared by the three restored consumers (_guard_fault_leg_hint,
+# _log_odrive_errors, _publish_robot_state) so the operator sees one shape in the
+# shell, the bag and the GUI.
+#
+# BOTH MASKS, ALWAYS. The 2026-08-10 leg-0 spinout had active_errors == 0 and
+# the truth (SPINOUT_DETECTED) only in disarm_reason: active_errors self-heals,
+# disarm_reason is sticky until CLEAR_ERRORS. A decoder that reads one mask is
+# blind to exactly the class of fault that already bit this robot.
+_AXIS_LABELS = {
+    _HAND_AXIS: 'hand',
+    _BB_PITCH_AXIS: 'bb_pitch',
+    _BB_HAND_AXIS: 'bb_hand',
+}
+
+
+def _axis_label(axis: int) -> str:
+    """Human label for an ODrive axis id: 'leg 0'..'leg 5', hand, bb_pitch, bb_hand.
+
+    Legs keep the SPACED 'leg N' form the pre-F3 guard hint and the frozen
+    MAX_DEVIATION fallback already printed — the operator (and the existing
+    tests) read that shape, and one hint string must not mix two leg spellings.
+    """
+    if 0 <= axis < _NUM_LEGS:
+        return f'leg {axis}'
+    return _AXIS_LABELS.get(axis, f'axis {axis}')
+
+
+def _decode_axis_errors(active: int, disarm: int) -> str:
+    """'active=[NAME,...] disarm=[NAME,...] 0x<active>/0x<disarm>'.
+
+    Names come from ``odrive.error_names`` (unknown bits survive as one
+    ``UNKNOWN(0x…)`` entry rather than being silently eaten). The raw hex pair
+    is kept alongside the names so a bag/log line stays decodable even if the
+    table later gains a bit this build did not know about.
+    """
+    act_names = odrive.error_names(int(active))
+    dis_names = odrive.error_names(int(disarm))
+    return (f'active=[{",".join(act_names)}] disarm=[{",".join(dis_names)}] '
+            f'0x{int(active):X}/0x{int(disarm):X}')
+
 
 # ── Safe-shutdown sequencing (Task 3.3: Ctrl-C must ALWAYS profiled-stow) ──
 # on_shutdown runs an ordered, bounded, best-effort sequence: DISARM (mpc_active→0)
@@ -1152,6 +1235,13 @@ class TeensyBridgeNode(Node):
         self._robot_state_pub_gen = -1
         self._robot_state_stale_skips = 0
         self._robot_state_consec_skips = 0
+        # /udp_diag level state: the CRC + decode error total at the previous
+        # tick. The level is derived from the DELTA, not the total, because the
+        # totals are cumulative-since-node-start — one corrupted frame at boot
+        # would otherwise latch WARN for the whole session and stop meaning
+        # anything. -1 seeds a value no total can equal; the first tick
+        # therefore establishes the baseline and never WARNs off it.
+        self._udp_diag_prev_errors = -1
         self._latest_heartbeat: HeartbeatT2J | None = None
         # Generation counter on the heartbeat, same idea as _telemetry_gen: the
         # latency monitor samples lead_clamp_mask off the LATEST heartbeat at
@@ -1437,6 +1527,17 @@ class TeensyBridgeNode(Node):
         # the tracker stores only the (major, minor, rev) triple.
         self._fw_unreleased = {}
 
+        # ── F3/C2: per-(axis, error-code) log throttle for _log_odrive_errors ──
+        # A SECOND tracker, deliberately NOT self._versions. The tracker above is
+        # bound to the firmware-version handshake (record_version/validate_group);
+        # overloading it would put two unrelated lifetimes on one object and make
+        # a future reset of either one silently clobber the other. All this
+        # instance is used for is last_error_log_times() + error_log_throttle_sec
+        # — the throttle scaffolding can_node used, which survived the port
+        # unused. It is touched only from the 10 Hz _publish_link_status timer
+        # (node-default MutuallyExclusiveCallbackGroup), so it needs no lock.
+        self._error_log = MotorStateTracker()
+
         # ── Subscriptions to T→J streams (RX-thread callbacks) ──
         self._client.subscribe(int(MsgType.HEARTBEAT_T2J), self._on_heartbeat_t2j)
         self._client.subscribe(int(MsgType.TELEMETRY), self._on_telemetry)
@@ -1471,6 +1572,14 @@ class TeensyBridgeNode(Node):
             DiagnosticStatus, 'link_status', 10)
         self.profile_pub = self.create_publisher(
             DiagnosticStatus, 'profile', 10)
+        # Per-MESSAGE-TYPE UDP link census (F2/R2). Distinct from 'profile',
+        # which carries the Teensy's own CAN-side instrumentation: this one is
+        # the HOST's view of the Jetson↔can-bridge UDP link, one row per
+        # MsgType per direction. Cumulative counters, never rates — a counter
+        # is the honest rosbag artefact (differenceable offline, immune to the
+        # publisher's own scheduling jitter), and the GUI differentiates.
+        self.udp_diag_pub = self.create_publisher(
+            DiagnosticStatus, 'udp_diag', 10)
         # GUI observability: the last ACCEPTED leg setpoint u0 (6 floats, motor
         # revs), source-agnostic — trajectory_node and run_mpc.py both feed the
         # :5557 funnel this echoes. No ROS topic otherwise carries commanded leg
@@ -1738,6 +1847,18 @@ class TeensyBridgeNode(Node):
         self.create_service(Trigger, 'bb/reset',     self._svc_bb_reset)
         self.create_service(Trigger, 'bb/calibrate', self._svc_bb_calibrate)
 
+        # F4/Q2 — mocap_node's QTM view, the DATA-path half of bb/calibrate's
+        # preconditions (see the module note above). Read-only: it feeds
+        # _qtm_ready() and nothing else, so a mocap_node that never starts costs
+        # exactly one thing — bb/calibrate refuses instead of sweeping blind.
+        self._mocap_status_kv: dict | None = None
+        self._mocap_status_mono = 0.0
+        # String literal, not mocap_st.MOCAP_STATUS_TOPIC — see the note at
+        # mocap_node's matching create_publisher: the choreography map resolves
+        # by AST and will not follow an attribute expression.
+        self.create_subscription(
+            DiagnosticStatus, 'mocap/status', self._on_mocap_status, 10)
+
         # ── Ball Butler throw ACTION (replaces bb/send_throw_command) ──
         # The action awaits the firmware's terminal outcome (relayed back as a
         # CMD_RESULT CAN frame) instead of the bridge-side "frame queued" ack the
@@ -1773,6 +1894,7 @@ class TeensyBridgeNode(Node):
         self.create_timer(1.0, self._publish_ring_diag)           # 1 Hz drain (RX-ring occupancy census)
         self.create_timer(0.5, self._publish_bb_odrive)        # 2 Hz BB ODrive diag (CAN1 ~1 Hz src)
         self.create_timer(1.0, self._publish_profile)          # 1 Hz (profile rate)
+        self.create_timer(1.0, self._publish_udp_diag)         # 1 Hz per-type UDP census
         self.create_timer(1.0, self._health_check)             # 1 Hz link watchdog
         self.create_timer(1.0, self._version_check_poll)       # 1 Hz firmware-version handshake (no-op once resolved)
 
@@ -3121,8 +3243,12 @@ class TeensyBridgeNode(Node):
             # dark/stale (see _build_bb_motor_states); every leg/hand
             # computation below slices states[:_NUM_LEGS] or indexes 0..6,
             # so the trailing entries never feed the fatal-fault logic.
+            # One monotonic read for every freshness test in this publish (the
+            # BB honesty gate and C3's error-narration gate below), so the two
+            # cannot disagree about how old the same cached diagnostic is.
+            now_mono = time.monotonic()
             states += self._build_bb_motor_states(
-                diag, diag_mono, bb_est, bb_est_mono, time.monotonic())
+                diag, diag_mono, bb_est, bb_est_mono, now_mono)
 
             msg = RobotState()
             msg.timestamp = self.get_clock().now().to_msg()
@@ -3215,6 +3341,40 @@ class TeensyBridgeNode(Node):
                 errors.append(
                     f"Fatal ODrive issue (Teensy fault_state="
                     f"{_enum_name(FaultState, fault_state)}).")
+                # F3/C3 — name the actual ODrive error(s) beside the coarse
+                # fault_state string, so a bag or the GUI's error[0]-and-friends
+                # readouts say WHICH axis and WHICH condition instead of leaving
+                # every consumer to re-decode the raw bitfields.
+                #
+                # STRICTLY INSIDE THE FATAL BRANCH — non-negotiable.
+                # orchestrator_node._tick force-FAULTs on ANY non-empty
+                # robot_state.error[], so a decoded line appended for a
+                # NON-fatal bit (a hand/BB axis error, a leg disarm with no leg
+                # in CLOSED_LOOP) would manufacture a brand-new FAULT path out
+                # of pure observability. The decode adds detail to a fault that
+                # has already been declared; it never declares one.
+                #
+                # APPENDED, never prepended: state-minimap.js reads error[0] as
+                # the headline, and that headline must stay the coarse cause.
+                #
+                # STALE AXES ARE OMITTED (_DIAG_NARRATE_FRESH_S). _latest_diag
+                # is a never-evicting last-value cache, so on a link loss it
+                # freezes — and has_fatal_can_error is raised BY that same link
+                # loss, which means without this gate every published
+                # robot_state would carry a decoded per-axis line describing a
+                # bitfield frozen minutes ago, indistinguishable from a live
+                # one. The coarse fault_state headline above still publishes;
+                # only the detail that can no longer be corroborated drops out.
+                for axis in sorted(diag):
+                    if (now_mono - diag_mono.get(axis, 0.0)) > _DIAG_NARRATE_FRESH_S:
+                        continue
+                    d = diag[axis]
+                    a_err, d_err = int(d.active_errors), int(d.disarm_reason)
+                    if a_err == 0 and d_err == 0:
+                        continue
+                    errors.append(
+                        f"ODrive {_axis_label(axis)}: "
+                        f"{_decode_axis_errors(a_err, d_err)}")
             if msg.has_fatal_can_error:
                 # Distinguish the UDP-link-loss cause (safety hardening) from a CAN3
                 # bus fault, so an operator sees WHY robot_state went fatal.
@@ -4247,22 +4407,40 @@ class TeensyBridgeNode(Node):
                 throttle_duration_sec=1.0)
 
     def _guard_fault_leg_hint(self) -> str:
-        """Best-effort ' (leg N)' / ' (legs N,M)' suffix naming the offending leg.
+        """Best-effort ' (leg 3: active=[…] disarm=[…] 0x…/0x…)' culprit suffix.
 
         HeartbeatT2J.fault_state carries the guard REASON but no axis, so the
-        edge log names the leg from the latest per-axis Diagnostic cache: a leg
-        (0..5) with a non-zero active error or disarm reason is the likely
+        edge log names the axis from the latest per-axis Diagnostic cache: an
+        axis with a non-zero active error or disarm reason is the likely
         culprit for an ODRIVE_FATAL/MAX_DEVIATION/OVERSPEED latch. That scan is
         the primary path and is correct for ODRIVE_FATAL.
 
-        Fallback: a MAX_DEVIATION latch trips on command↔encoder divergence, not
-        an ODrive error, so active_errors/disarm_reason are frequently zero (all
-        three 2026-07-16 S4 latches had active_errors==0 → the diag scan found
-        nothing and the hint was silently empty). The firmware freezes the FIRST
-        leg to cross in HeartbeatT2J.max_dev_leg (0xFF = none since boot) with the
-        trip deviation in max_dev_value — that frozen snapshot is the ground-truth
-        attribution, so name the leg from it when the diag scan is empty and the
-        active fault is MAX_DEVIATION.
+        F3 widened it twice. (a) It now DECODES both masks to names instead of
+        printing a bare '(leg 3)' — the axis alone told an operator nothing
+        about whether they were looking at an under-voltage, a spinout or a
+        thermistor, and the names were already sitting unused in
+        odrive.ERROR_CODES. (b) It scans EVERY axis present in _latest_diag,
+        not range(_NUM_LEGS): a hand (6) or Ball Butler (7/8) fault produced a
+        completely empty hint before, so the loudest line the bridge prints
+        stayed silent about the one axis that was broken. Multiple culprits are
+        joined with '; ' in axis order.
+
+        MAX_DEVIATION attribution is ADDITIVE, not a fallback. A MAX_DEVIATION
+        latch trips on command↔encoder divergence, not an ODrive error, so
+        active_errors/disarm_reason are frequently zero (all three 2026-07-16 S4
+        latches had active_errors==0 → the diag scan found nothing). The firmware
+        freezes the FIRST leg to cross in HeartbeatT2J.max_dev_leg (0xFF = none
+        since boot) with the trip deviation in max_dev_value — that frozen
+        snapshot is the ground-truth attribution and it is appended whenever the
+        active fault is MAX_DEVIATION, regardless of what the diag scan found.
+        ⚠ It CANNOT be an else-branch on the scan: widening (b) above made the
+        scan see axes 7/8 (hand/Ball Butler), whose disarm_reason is STICKY and
+        routinely non-zero for entirely benign historical reasons. Gating the
+        snapshot on "the scan found nothing" therefore deleted the S4 attribution
+        — the one line that names the leg — on any machine where BB had ever
+        disarmed. The two sources answer different questions ("which axis reports
+        an ODrive error" vs "which leg crossed the deviation limit first"), so
+        both are printed, joined with ' | '.
 
         Returns '' when no leg-specific cause is identifiable (e.g. a bus-level
         CAN_BUS_DOWN or an MPC-staleness fault) so the message stays honest rather
@@ -4271,22 +4449,104 @@ class TeensyBridgeNode(Node):
         with self._lock:
             diag = dict(self._latest_diag)
             hb = self._latest_heartbeat
+        parts = []
         culprits = []
-        for axis in range(_NUM_LEGS):
-            d = diag.get(axis)
-            if d is not None and (int(d.active_errors) != 0
-                                  or int(d.disarm_reason) != 0):
-                culprits.append(axis)
-        if len(culprits) == 1:
-            return f' (leg {culprits[0]})'
-        if len(culprits) > 1:
-            return f' (legs {",".join(str(a) for a in culprits)})'
+        for axis in sorted(diag):
+            d = diag[axis]
+            active, disarm = int(d.active_errors), int(d.disarm_reason)
+            if active != 0 or disarm != 0:
+                culprits.append(f'{_axis_label(axis)}: '
+                                f'{_decode_axis_errors(active, disarm)}')
+        if culprits:
+            parts.append('; '.join(culprits))
         if (hb is not None
                 and int(hb.fault_state) == int(FaultState.MAX_DEVIATION)
                 and int(hb.max_dev_leg) != 0xFF):
-            return (f' (leg {int(hb.max_dev_leg)}, '
-                    f'dev={hb.max_dev_value:+.3f} rev at trip)')
-        return ''
+            parts.append(f'leg {int(hb.max_dev_leg)} first to cross, '
+                         f'dev={hb.max_dev_value:+.3f} rev at trip')
+        if not parts:
+            return ''
+        return f' ({" | ".join(parts)})'
+
+    def _log_odrive_errors(self):
+        """F3/C2 — throttled per-axis ODrive error logging (can_node parity).
+
+        Ported from ``can_node._handle_error`` (``7c7f61b^:can_node.py:419-447``),
+        whose throttle scaffolding survived the cutover unused in
+        ``can/motor_state.py``. Without it an ODrive error was visible ONLY as a
+        boolean on /robot_state and a raw bitfield in the bag: an operator
+        watching the launch shell got no line at all unless the Teensy guard
+        also latched.
+
+        WHICH TIMER. Called from the 10 Hz ``_publish_link_status``. Not the
+        100 Hz ``_publish_robot_state`` (ten times the scan for no extra
+        information — the throttle floor is 10 s), and not the 1 Hz
+        ``_health_check`` (a fresh error would wait up to a second behind the
+        link watchdog's own work). 10 Hz makes the first line effectively
+        immediate while the scan itself is nine dict lookups.
+
+        ONE LINE PER AXIS, NOT PER CODE. can_node emitted a separate line per
+        set bit, which turns a bus-wide undervoltage into six near-identical
+        lines. The message here is axis-level (``active=[…] disarm=[…]``), so a
+        per-code line would just repeat itself. Throttling stays per
+        (axis, code) exactly as before: a line is emitted when ANY currently-set
+        code on that axis is outside its 10 s window, and every set code is then
+        stamped — so a NEW code appearing mid-window still logs immediately,
+        which is the property the per-code throttle exists for.
+
+        Stamps are deliberately NOT pruned when a code clears. active_errors
+        self-heals, so a flapping bit with pruning would log at the full 10 Hz;
+        keeping the stamp costs one stale float and bounds the worst case at one
+        line per 10 s per axis, which is what the throttle is for.
+
+        STALE AXES ARE SILENT (_DIAG_NARRATE_FRESH_S). _latest_diag never
+        evicts, so after a link loss this scan would otherwise keep printing
+        'ODrive error on leg 2: …' at one line per 10 s per axis forever, from a
+        snapshot frozen at the moment the link died — a live-sounding present
+        tense over minute-old data, printed alongside the bridge's own "link
+        lost" line. An axis whose diagnostic stopped arriving gets silence.
+        """
+        try:
+            with self._lock:
+                diag = dict(self._latest_diag)
+                diag_mono = dict(self._latest_diag_mono)
+            now = time.time()
+            now_mono = time.monotonic()   # separate clock: _latest_diag_mono is monotonic
+            throttle = self._error_log.error_log_throttle_sec
+            for axis in sorted(diag):
+                if (now_mono - diag_mono.get(axis, 0.0)) > _DIAG_NARRATE_FRESH_S:
+                    continue  # frozen cache — say nothing rather than narrate the past
+                d = diag[axis]
+                active, disarm = int(d.active_errors), int(d.disarm_reason)
+                if active == 0 and disarm == 0:
+                    continue
+                both = active | disarm
+                # Throttle keys: every KNOWN set bit, plus one aggregate key for
+                # the unknown residue (which can never collide with a known
+                # single-bit code, since the residue excludes known bits). The
+                # residue is keyed too so a future firmware error code is
+                # throttled like any other rather than logging every 100 ms.
+                known_mask = 0
+                codes = []
+                for code in odrive.ERROR_CODES:
+                    known_mask |= code
+                    if both & code:
+                        codes.append(code)
+                unknown = both & ~known_mask
+                if unknown:
+                    codes.append(unknown)
+                log_times = self._error_log.last_error_log_times(axis)
+                due = [c for c in codes if now - log_times.get(c, 0.0) > throttle]
+                if not due:
+                    continue
+                for c in codes:
+                    log_times[c] = now
+                self.get_logger().error(
+                    f'ODrive error on {_axis_label(axis)}: '
+                    f'{_decode_axis_errors(active, disarm)}')
+        except Exception as e:  # noqa: BLE001 — observability must never break the timer
+            self.get_logger().error(f'ODrive error logging failed: {e}',
+                                    throttle_duration_sec=10.0)
 
     # ═══════════════════════════════════════════════════════════
     # The alarmed command-latency monitor (2026-07-24 closure contract)
@@ -4442,6 +4702,11 @@ class TeensyBridgeNode(Node):
             # 10 Hz heartbeat this method already holds). Runs BEFORE the level
             # is decided and never touches it — advisory, by contract.
             latency_monitor = self._latency_monitor_step(hb, hb_gen)
+            # F3/C2 — throttled per-axis ODrive error decode onto the node log.
+            # Rides this 10 Hz timer (see _log_odrive_errors for why this one)
+            # and, like the latency monitor, is ADVISORY: it reads the diag
+            # cache and writes only to the logger, never to msg.level.
+            self._log_odrive_errors()
 
             msg = DiagnosticStatus()
             msg.name = 'teensy/link'
@@ -4817,6 +5082,80 @@ class TeensyBridgeNode(Node):
             self.profile_pub.publish(msg)
         except Exception as e:  # noqa: BLE001
             self.get_logger().error(f"Profile publish error: {e}",
+                                    throttle_duration_sec=5.0)
+
+    def _publish_udp_diag(self):
+        """Publish the per-message-type UDP link census as DiagnosticStatus.
+
+        One row per :class:`MsgType` per direction, by enum NAME:
+        ``rx_<TYPE_NAME>`` / ``tx_<TYPE_NAME>`` (every type, every tick — a
+        never-seen type is an honest ``0``, not an absent row), plus
+        ``gap_<TYPE_NAME>`` for the sequence-gap tally, emitted ONLY when
+        nonzero (21 permanently-zero gap rows would bury the one that matters).
+        Aggregates ride alongside in lower case —
+        ``rx_frames``/``tx_frames``/``crc_errors``/``decode_errors``/``drain_capped``
+        — and the case split is load-bearing: it is what lets a consumer tell a
+        per-type row from an aggregate with a pattern rather than a hardcoded
+        inventory (``udp-traffic.js``'s ``PER_TYPE_KEY_RE``).
+
+        **Counters, not rates.** A rate computed here would be a rate over
+        whatever interval this timer actually fired on, and the rosbag would
+        record the derived number with the divisor thrown away. Cumulative
+        counters are differenceable offline by anything, at any window; the GUI
+        does exactly that (Δcount/Δt over its own arrival timestamps).
+
+        ``sum(rx_<TYPE>) <= rx_frames``: the difference is the frames that
+        failed CRC or structural decode, plus any frame whose msg_type this
+        build's enum does not name. See :class:`teensy_link.LinkStats`.
+
+        The stats object is snapshotted ONCE per tick so every row in a message
+        comes from the same instant — a per-row read would let the RX thread
+        advance underneath the loop and publish an internally inconsistent
+        census (rx_frames from before a burst, per-type counts from after).
+        """
+        try:
+            stats = self._client.stats.snapshot()
+
+            values = []
+            for t in MsgType:
+                name = t.name
+                tid = int(t)
+                values.append(KeyValue(key=f'rx_{name}',
+                                       value=str(stats.rx_count_by_type.get(tid, 0))))
+                values.append(KeyValue(key=f'tx_{name}',
+                                       value=str(stats.tx_count_by_type.get(tid, 0))))
+            for t in MsgType:
+                gaps = stats.seq_gaps_by_type.get(int(t), 0)
+                if gaps:
+                    values.append(KeyValue(key=f'gap_{t.name}', value=str(gaps)))
+
+            values += [
+                KeyValue(key='rx_frames', value=str(stats.rx_frames)),
+                KeyValue(key='tx_frames', value=str(stats.tx_frames)),
+                KeyValue(key='crc_errors', value=str(stats.crc_errors)),
+                KeyValue(key='decode_errors', value=str(stats.decode_errors)),
+                KeyValue(key='drain_capped', value=str(stats.drain_capped)),
+            ]
+
+            # Level off the error DELTA (see _udp_diag_prev_errors). ADVISORY,
+            # like /profile's: nothing gates on this topic, and the link/fault
+            # channel an orchestrator reads is /link_status.
+            errors = int(stats.crc_errors) + int(stats.decode_errors)
+            new_errors = (0 if self._udp_diag_prev_errors < 0
+                          else errors - self._udp_diag_prev_errors)
+            self._udp_diag_prev_errors = errors
+
+            msg = DiagnosticStatus()
+            msg.name = 'teensy/udp'
+            msg.hardware_id = 'can_bridge_teensy'
+            msg.level = (DiagnosticStatus.WARN if new_errors > 0
+                         else DiagnosticStatus.OK)
+            msg.message = (f'rx={stats.rx_frames} tx={stats.tx_frames} '
+                           f'crc={stats.crc_errors} decode={stats.decode_errors}')
+            msg.values = values
+            self.udp_diag_pub.publish(msg)
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().error(f"UDP diag publish error: {e}",
                                     throttle_duration_sec=5.0)
 
     # ═══════════════════════════════════════════════════════════
@@ -6374,6 +6713,38 @@ class TeensyBridgeNode(Node):
         return (bool(hb.bb_flags & _T2J_BB_FLAG_HEARTBEAT_SEEN)
                 and not bool(hb.bb_flags & _T2J_BB_FLAG_HEARTBEAT_STALE))
 
+    def _on_mocap_status(self, msg):
+        """Cache mocap_node's `mocap/status` KeyValues (F4/Q2).
+
+        Snapshot only — decode the KeyValues into a plain dict and stamp the
+        arrival with `time.monotonic()`. No decision is taken here; the gate
+        reads this cache when the service is actually called, which is what
+        makes staleness (rather than "the last thing we heard") the test.
+        """
+        try:
+            kv = mocap_st.decode_status(msg.values)
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().error(f"mocap/status decode error: {e}",
+                                    throttle_duration_sec=5.0)
+            return
+        with self._lock:
+            self._mocap_status_kv = kv
+            self._mocap_status_mono = time.monotonic()
+
+    def _qtm_ready(self) -> tuple[bool, str, str]:
+        """Is QTM in a state where a BB calibration sweep can produce data?
+
+        Returns ``(ready, code, detail)``; the predicate and both thresholds
+        are `jugglebot.mocap_status.evaluate`, shared with orchestrator_node so
+        the two gates cannot drift apart. Fails CLOSED — no status, an
+        undecodable status, or a status that says QTM is dark all refuse.
+        """
+        with self._lock:
+            kv = self._mocap_status_kv
+            stamp = self._mocap_status_mono
+        age_s = time.monotonic() - stamp
+        return mocap_st.evaluate(kv, age_s)
+
     # ═══════════════════════════════════════════════════════════
     # Catching cone (cone uplink — mirrors can_node's
     # _handle_catch_event / _publish_cone_heartbeat field-by-field)
@@ -6605,15 +6976,43 @@ class TeensyBridgeNode(Node):
         return res
 
     def _svc_bb_calibrate(self, req, res):
-        """bb/calibrate — BB_CALIBRATE_LOC RPC. If BB is not present, return
-        success=True silently (mirror can_node._svc_bb_calibrate). The state
-        machine's HOMING phase uses this service; the silent-skip lets
-        homing complete without BB attached (the original can_node
-        behaviour). When BB IS present we forward the RPC's status.
+        """bb/calibrate — BB_CALIBRATE_LOC RPC, gated on BB presence and QTM.
+
+        Two gates, and their ORDER is load-bearing:
+
+        1. BB absent → ``success=True`` silently (mirror
+           can_node._svc_bb_calibrate). The state machine's HOMING phase uses
+           this service; the silent-skip lets homing complete with no BB
+           attached. Pinned by
+           tests/ros/test_teensy_bridge_node_bb.py::test_bb_calibrate_silently_succeeds_when_bb_absent.
+        2. QTM not ready (F4/Q2) → ``success=False`` with a named code and
+           **no RPC dispatched**. This is second because "no BB" is not a
+           calibration failure at all — it is a machine that does not have the
+           subsystem — whereas "BB is here but mocap cannot see it" is a real
+           refusal an operator must act on. Gating on QTM first would turn
+           every BB-less homing into a hard failure.
+
+        When both gates pass we forward the RPC's status.
         """
         if not self._bb_present():
             res.success = True
             res.message = "No BB heartbeat received — calibration skipped"
+            return res
+        ready, code, detail = self._qtm_ready()
+        if not ready:
+            # Fail closed: refuse BEFORE any RPC leaves the node. A sweep with
+            # no usable marker stream moves the machine to produce nothing at
+            # best, and a fittable fragment of garbage at worst.
+            res.success = False
+            # CODE FIRST, and it is a mocap_status constant (via _qtm_ready →
+            # mocap_st.evaluate), never a literal spelled here. The orchestrator
+            # matches this message's PREFIX against those same constants to tell
+            # a lost-race refusal (skip) from a genuine RPC failure (fault) —
+            # see orchestrator_node._is_qtm_refusal. Prepending anything to this
+            # string, or spelling the code by hand, breaks that match silently
+            # and turns "the mocap PC went quiet" back into a faulted robot.
+            res.message = f"{code}: {detail} — calibration refused"
+            self.get_logger().warning(f"bb/calibrate refused — {res.message}")
             return res
         ok, m, _ = self._call_rpc(RpcMethod.BB_CALIBRATE_LOC, b"")
         res.success = ok

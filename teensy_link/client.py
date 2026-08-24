@@ -112,9 +112,42 @@ def _parse_rx_timestamp_us(ancdata) -> Optional[int]:
     return None
 
 
+def _seeded_type_counters() -> Dict[int, int]:
+    """A per-msg-type counter dict with every known :class:`MsgType` id at 0.
+
+    The ``default_factory`` for :class:`LinkStats`' three per-type dicts — see
+    that class's docstring for why the seeding matters (snapshot race + honest
+    zero rows).
+    """
+    return {int(t): 0 for t in p.MsgType}
+
+
 @dataclass
 class LinkStats:
-    """Counters surfaced for diagnostics; updated by the RX/TX paths."""
+    """Counters surfaced for diagnostics; updated by the RX/TX paths.
+
+    The three per-type dicts are PRE-SEEDED with every :class:`MsgType` id at
+    zero (:func:`_seeded_type_counters`) for two reasons:
+
+    * **Snapshot race.** :meth:`snapshot` copies them with ``dict(...)`` from a
+      caller thread (the ROS timer) while the RX thread mutates them, with no
+      lock anywhere on this path. Rebinding an EXISTING key is safe under the
+      GIL; INSERTING one while ``dict()`` iterates raises ``RuntimeError:
+      dictionary changed size during iteration``. Pre-seeding removes every
+      insertion for a known type, and every bump site is rebind-only
+      (``if key in dict``), so a frame whose msg_type this build's enum does
+      not name (``decode_frame`` validates magic/version/length/CRC but not
+      the type — the additive-firmware case) never inserts either: it is
+      counted only in the aggregates, and snapshot() cannot race an insert
+      from this class's own paths.
+    * **Honest zeros.** A never-seen type renders as a real ``0`` row on
+      ``/udp_diag`` instead of vanishing, so "this type is not flowing" is
+      distinguishable from "this consumer forgot about this type".
+
+    Note ``sum(rx_count_by_type) <= rx_frames``: ``rx_frames`` counts every
+    datagram received, including the ones that then fail CRC or structural
+    decode (``crc_errors`` / ``decode_errors``) and any unknown-type frame.
+    """
 
     rx_frames: int = 0
     rx_bytes: int = 0
@@ -123,8 +156,9 @@ class LinkStats:
     crc_errors: int = 0
     decode_errors: int = 0
     drain_capped: int = 0    # times a single drain hit the per-wakeup frame cap
-    seq_gaps_by_type: Dict[int, int] = field(default_factory=dict)
-    rx_count_by_type: Dict[int, int] = field(default_factory=dict)
+    seq_gaps_by_type: Dict[int, int] = field(default_factory=_seeded_type_counters)
+    rx_count_by_type: Dict[int, int] = field(default_factory=_seeded_type_counters)
+    tx_count_by_type: Dict[int, int] = field(default_factory=_seeded_type_counters)
     last_rx_us: int = 0
     last_t2j_heartbeat_us: int = 0
 
@@ -139,6 +173,7 @@ class LinkStats:
             drain_capped=self.drain_capped,
             seq_gaps_by_type=dict(self.seq_gaps_by_type),
             rx_count_by_type=dict(self.rx_count_by_type),
+            tx_count_by_type=dict(self.tx_count_by_type),
             last_rx_us=self.last_rx_us,
             last_t2j_heartbeat_us=self.last_t2j_heartbeat_us,
         )
@@ -334,6 +369,7 @@ class TeensyLinkClient:
         self.stream_sock.sendto(frame, self._peer_stream)
         self.stats.tx_frames += 1
         self.stats.tx_bytes += len(frame)
+        self._count_tx(msg_type)
 
     def send_rpc(self, msg_type: int, payload: bytes) -> None:
         """Send a frame on the RPC port to the Teensy."""
@@ -343,6 +379,7 @@ class TeensyLinkClient:
         self.rpc_sock.sendto(frame, self._peer_rpc)
         self.stats.tx_frames += 1
         self.stats.tx_bytes += len(frame)
+        self._count_tx(msg_type)
 
     def send_to(self, sock_kind: str, msg_type: int, seq: int, payload: bytes, dest: Address) -> None:
         """Send a frame to an explicit address. Used mainly for RPC responses.
@@ -357,6 +394,22 @@ class TeensyLinkClient:
         sock.sendto(frame, dest)
         self.stats.tx_frames += 1
         self.stats.tx_bytes += len(frame)
+        self._count_tx(msg_type)
+
+    def _count_tx(self, msg_type: int) -> None:
+        """Bump the per-type TX counter (the /udp_diag tx_<TYPE> rows).
+
+        Called AFTER a successful ``sendto`` in all three send paths, so the
+        count is frames that reached the kernel — a raising send counts
+        nothing, matching ``tx_frames`` beside it. Rebind-only (pre-seeded
+        keys), so a snapshot() copy never races an insert. Counts are
+        best-effort under concurrent sends: the read-modify-write is not
+        atomic across the sending threads, so a lost increment is possible
+        and bounded by the send rate — the same guarantee ``tx_frames`` has
+        always had.
+        """
+        if msg_type in self.stats.tx_count_by_type:
+            self.stats.tx_count_by_type[msg_type] += 1
 
     def send_heartbeat(self, t_jetson_us: Optional[int] = None, flags: int = 0) -> None:
         """Send a J→T heartbeat. Convenience wrapper around send_stream."""
@@ -524,9 +577,12 @@ class TeensyLinkClient:
                 logger.debug("decode failure: %s (%d bytes from %s)", e, len(data), addr)
                 continue
             self._track_seq(msg_type, seq)
-            self.stats.rx_count_by_type[msg_type] = (
-                self.stats.rx_count_by_type.get(msg_type, 0) + 1
-            )
+            if msg_type in self.stats.rx_count_by_type:
+                # Rebind-only: an unknown msg_type (newer firmware, same
+                # PROTOCOL_VERSION — the additive convention) must not INSERT
+                # on the RX thread while snapshot() copies on the ROS timer.
+                # It stays counted in rx_frames, the documented superset.
+                self.stats.rx_count_by_type[msg_type] += 1
             if msg_type == int(p.MsgType.HEARTBEAT_T2J):
                 self.stats.last_t2j_heartbeat_us = self.stats.last_rx_us
             self._dispatch(msg_type, seq, payload, addr, rx_wall_us)
@@ -544,9 +600,9 @@ class TeensyLinkClient:
         expected = (prev + 1) & 0xFFFF
         if seq != expected:
             # Crude gap measure: count one gap event per out-of-order seq.
-            self.stats.seq_gaps_by_type[msg_type] = (
-                self.stats.seq_gaps_by_type.get(msg_type, 0) + 1
-            )
+            # Rebind-only, same snapshot-race reason as rx_count_by_type.
+            if msg_type in self.stats.seq_gaps_by_type:
+                self.stats.seq_gaps_by_type[msg_type] += 1
 
     def _confirm_rx_stamping(self) -> None:
         """PROBING → KERNEL on the first packet that actually carried a stamp.

@@ -41,6 +41,30 @@ def orch():
     return node
 
 
+def _feed_mocap_status(orch, *, receiving='1', visible='5', marker3='1',
+                       age_s=0.0):
+    """Deliver one ``mocap/status`` sample to the orchestrator (F4/Q3).
+
+    Healthy by default. ``age_s`` back-dates the cached arrival stamp, which is
+    how the staleness branch is reached without sleeping.
+    """
+    from diagnostic_msgs.msg import DiagnosticStatus, KeyValue
+    from jugglebot import mocap_status as mocap_st
+
+    msg = DiagnosticStatus()
+    msg.values = [
+        KeyValue(key=mocap_st.KEY_QTM_RECEIVING, value=receiving),
+        KeyValue(key=mocap_st.KEY_BB_MARKERS_VISIBLE, value=visible),
+        KeyValue(key=mocap_st.KEY_MARKER3_VISIBLE, value=marker3),
+        KeyValue(key=mocap_st.KEY_ALIGNED, value='1'),
+        KeyValue(key=mocap_st.KEY_QTM_SYNCED, value='1'),
+    ]
+    orch._on_mocap_status(msg)
+    if age_s:
+        orch._mocap_status_mono -= age_s
+    return msg
+
+
 def _make_robot_state_msg(
     num_motors=9,
     all_heartbeats=False,
@@ -417,10 +441,185 @@ class TestProcessRequests:
         assert orch.ctx.request is None
 
     def test_bb_calibrate_calls_when_ready(self, orch):
+        """Needs a healthy mocap/status too (F4/Q3) — without one the QTM gate
+        below skips instead of calling."""
         orch._bb_calibrate_client._ready = True
+        _feed_mocap_status(orch)
         orch.ctx.request = 'bb_calibrate'
         orch._process_requests()
         assert orch.ctx.request is None
+        assert orch._pending_future is not None
+
+    # ── F4/Q3: QTM gate on the HOMING bb_calibrate step ──────────────
+    #
+    # The orchestrator reads mocap/status itself rather than calling the
+    # bridge and interpreting the refusal. That is not a style choice: the
+    # bridge refuses with success=False, and HomingHandler.execute turns
+    # `operation_result is False` straight into FAULT (state_machine.py). So
+    # "the mocap PC is off" would become a faulted robot the operator has to
+    # clear before the platform can home — for a subsystem (BB) that is
+    # optional. Reading the topic lets HOMING SKIP, exactly as it already does
+    # when the BB service itself is absent.
+
+    def test_bb_calibrate_skips_when_qtm_never_reported(self, orch):
+        """Service ready, QTM silent → SKIP, and specifically NOT a failure."""
+        orch._bb_calibrate_client._ready = True
+        orch.ctx.request = 'bb_calibrate'
+        orch._process_requests()
+        assert orch.ctx.bb_calibration_skipped is True
+        assert orch.ctx.operation_result is True
+        assert orch.ctx.request is None
+        assert orch._pending_future is None      # the service was NOT called
+
+    def test_bb_calibrate_skips_when_qtm_not_receiving(self, orch):
+        orch._bb_calibrate_client._ready = True
+        _feed_mocap_status(orch, receiving='0')
+        orch.ctx.request = 'bb_calibrate'
+        orch._process_requests()
+        assert orch.ctx.bb_calibration_skipped is True
+        assert orch.ctx.operation_result is True
+        assert orch._pending_future is None
+
+    def test_bb_calibrate_skips_when_bb_markers_not_visible(self, orch):
+        orch._bb_calibrate_client._ready = True
+        _feed_mocap_status(orch, visible='1')
+        orch.ctx.request = 'bb_calibrate'
+        orch._process_requests()
+        assert orch.ctx.bb_calibration_skipped is True
+        assert orch.ctx.operation_result is True
+        assert orch._pending_future is None
+
+    def test_bb_calibrate_skips_on_stale_mocap_status(self, orch):
+        """A status that stopped arriving is the same as no status: mocap_node
+        may have died, in which case nothing would ever say 'not receiving'."""
+        orch._bb_calibrate_client._ready = True
+        _feed_mocap_status(orch, age_s=5.0)
+        orch.ctx.request = 'bb_calibrate'
+        orch._process_requests()
+        assert orch.ctx.bb_calibration_skipped is True
+        assert orch.ctx.operation_result is True
+        assert orch._pending_future is None
+
+    def test_qtm_skip_never_faults_homing(self, orch):
+        """THE point of Q3, asserted against the state machine rather than the
+        dispatcher: run the skip and then tick HOMING, and the machine must not
+        land in FAULT. ``operation_result False`` is the edge that would do it.
+        """
+        from jugglebot.state_machine import RobotState
+
+        orch._bb_calibrate_client._ready = True
+        orch.sm.force_transition(RobotState.HOMING, orch.ctx)
+        orch.ctx.request = 'bb_calibrate'
+        orch._process_requests()
+
+        assert orch.ctx.operation_result is not False
+        orch.sm.tick(orch.ctx)
+        assert orch.sm.state != RobotState.FAULT
+
+    # ── The QTM race between dispatch and the bridge's handler ────────
+    #
+    # _dispatch_request checks _qtm_ready() at DISPATCH; the bridge checks its
+    # own cache when the SERVICE HANDLER runs. Two instants. The cached status
+    # only has to age past MOCAP_STATUS_MAX_AGE_S in between — mocap_node dying
+    # in that window, or the executor being busy — for a call this node judged
+    # healthy to meet a bridge that judges it stale. The bridge then refuses
+    # with success=False, which flows through _check_pending_operations into
+    # ctx.operation_result and FAULTs HOMING: exactly the outcome the Q3 skip
+    # exists to prevent, reached by a different route.
+
+    def _refuse(self, orch, message):
+        """Resolve the in-flight bb/calibrate future with a bridge refusal."""
+        result = Trigger.Response()
+        result.success = False
+        result.message = message
+        orch._pending_future.set_result(result)
+        orch._check_pending_operations()
+
+    def _dispatch_calibrate(self, orch):
+        orch._bb_calibrate_client._ready = True
+        _feed_mocap_status(orch)             # healthy AT DISPATCH
+        orch.ctx.request = 'bb_calibrate'
+        orch._process_requests()
+        assert orch._pending_future is not None, 'precondition: the call went out'
+
+    def test_lost_qtm_race_skips_instead_of_faulting(self, orch):
+        """Orchestrator's view healthy, bridge refuses → SKIP, not failure."""
+        from jugglebot import mocap_status as mocap_st
+        self._dispatch_calibrate(orch)
+        self._refuse(orch, f'{mocap_st.CODE_QTM_STALE}: no mocap status for '
+                           '1.4 s (limit 1.0 s) — calibration refused')
+        assert orch.ctx.operation_result is True
+        assert orch.ctx.bb_calibration_skipped is True
+
+    def test_lost_qtm_race_on_the_marker_code_too(self, orch):
+        """BOTH refusal codes are races, not failures — markers can vanish
+        between dispatch and the sweep just as easily as the stream can."""
+        from jugglebot import mocap_status as mocap_st
+        self._dispatch_calibrate(orch)
+        self._refuse(orch, f'{mocap_st.CODE_BB_MARKERS_NOT_VISIBLE}: 1/5 '
+                           'visible (need >= 3 incl. Marker 3, seen=no) '
+                           '— calibration refused')
+        assert orch.ctx.operation_result is True
+        assert orch.ctx.bb_calibration_skipped is True
+
+    def test_lost_qtm_race_completes_homing_without_faulting(self, orch):
+        """Asserted against the STATE MACHINE, not the dispatcher — the same
+        shape as test_qtm_skip_never_faults_homing, but for the refusal that
+        arrives after the call has already gone out."""
+        from jugglebot import mocap_status as mocap_st
+        orch.sm.force_transition(RobotState.HOMING, orch.ctx)
+        self._dispatch_calibrate(orch)
+        self._refuse(orch, f'{mocap_st.CODE_QTM_STALE}: mocap_node reports no '
+                           'QTM packets arriving — calibration refused')
+        assert orch.ctx.operation_result is not False
+        orch.sm.tick(orch.ctx)
+        assert orch.sm.state != RobotState.FAULT
+
+    def test_a_genuine_calibrate_failure_still_faults(self, orch):
+        """The carve-out must stay narrow. An RPC that actually failed means the
+        CAN write did not land — a real machine problem, not an optional
+        subsystem being unavailable — and it must keep faulting."""
+        self._dispatch_calibrate(orch)
+        self._refuse(orch, 'Calibrate failed: RPC timeout')
+        assert orch.ctx.operation_result is False
+        assert orch.ctx.bb_calibration_skipped is False
+
+    def test_a_qtm_shaped_failure_on_another_operation_still_faults(self, orch):
+        """The kind tag is load-bearing, not decorative: only bb_calibrate gets
+        the skip. A refusal-shaped message from any other service is a failure."""
+        from jugglebot import mocap_status as mocap_st
+        orch.ctx.request = 'encoder_search'
+        orch._process_requests()
+        assert orch._pending_future is not None
+        assert orch._pending_kind is None, 'only bb_calibrate tags its future'
+        self._refuse(orch, f'{mocap_st.CODE_QTM_STALE}: … — calibration refused')
+        assert orch.ctx.operation_result is False
+        assert orch.ctx.bb_calibration_skipped is False
+
+    def test_the_refusal_prefix_matches_the_bridge_verbatim(self, orch):
+        """Cross-node pin: the predicate matches the string the BRIDGE actually
+        builds, not a hand-copied approximation of it. If the bridge reformats
+        its refusal, this fails here rather than silently faulting a real
+        HOMING run on the robot."""
+        from jugglebot import mocap_status as mocap_st
+        ready, code, detail = mocap_st.evaluate(None, 0.0)
+        assert ready is False
+        bridge_message = f'{code}: {detail} — calibration refused'
+        from jugglebot.orchestrator_node import OrchestratorNode
+        assert OrchestratorNode._is_qtm_refusal(bridge_message) is True
+        assert OrchestratorNode._is_qtm_refusal('Calibrate failed: nope') is False
+        assert OrchestratorNode._is_qtm_refusal('') is False
+        assert OrchestratorNode._is_qtm_refusal(None) is False
+
+    def test_qtm_gate_uses_the_shared_predicate(self, orch):
+        """Same predicate as the bridge's service gate (jugglebot.mocap_status),
+        so the two views of 'ready' cannot drift into disagreeing about whether
+        HOMING skips while the GUI button dispatches."""
+        from jugglebot import mocap_status as mocap_st
+        _feed_mocap_status(orch, visible='2')
+        ready, code, _ = orch._qtm_ready()
+        assert ready is False
+        assert code == mocap_st.CODE_BB_MARKERS_NOT_VISIBLE
 
     def test_activate_sends_activate(self, orch):
         orch.ctx.request = 'activate'
@@ -928,3 +1127,67 @@ class TestFireForgetDisarm:
         orch._dispatch_request('arm_setpoints')
         assert orch._pending_future is not None
         assert orch.ctx.operation_pending is True
+
+
+# ════════════════════════════════════════════════════════════════
+# F3/C4 — say WHY on entry to FAULT
+#
+# '[SM] Entering FAULT' told an operator nothing about the cause. The strings
+# that FORCED the transition live in ctx.errors (copied wholesale from
+# robot_state.error[] on every 100 Hz publish) and were visible only to whoever
+# thought to echo the topic — which, on this Foxy box, is unreliable for a
+# high-rate RELIABLE topic anyway. With F3 those strings now carry the decoded
+# per-axis ODrive names, so logging them once per FAULT visit puts the actual
+# cause in the launch shell beside the transition.
+# ════════════════════════════════════════════════════════════════
+
+
+class TestFaultEntryCauseLogging:
+    def _warnings(self, orch):
+        return [str(c[0][0]) for c in orch._logger.warning.call_args_list]
+
+    def test_fault_entry_logs_the_error_strings(self, orch):
+        orch._tick()  # BOOT
+        orch._on_robot_state(_make_robot_state_msg(
+            all_heartbeats=True,
+            errors=['Fatal ODrive issue (Teensy fault_state=ODRIVE_FATAL).',
+                    'ODrive leg 0: active=[] disarm=[SPINOUT_DETECTED] 0x0/0x4000000'],
+            has_fatal_odrive_error=True))
+        orch._logger.warning = MagicMock()
+        orch._tick()
+        assert orch.sm.state == RobotState.FAULT
+        causes = [m for m in self._warnings(orch) if 'FAULT cause' in m]
+        assert len(causes) == 1, self._warnings(orch)
+        # The decoded per-axis name — the whole point of F3 — reaches the shell.
+        assert 'SPINOUT_DETECTED' in causes[0]
+        assert 'ODRIVE_FATAL' in causes[0]
+
+    def test_fault_cause_logged_once_per_visit_not_every_tick(self, orch):
+        """FAULT is held, and _tick runs at 10 Hz — an unguarded log would spam
+        the shell until the operator cleared it, burying the one line that
+        matters."""
+        orch._tick()
+        orch._on_robot_state(_make_robot_state_msg(
+            all_heartbeats=True, errors=['boom'], has_fatal_odrive_error=True))
+        orch._logger.warning = MagicMock()
+        orch._tick()
+        orch._tick()
+        orch._tick()
+        assert orch.sm.state == RobotState.FAULT
+        assert len([m for m in self._warnings(orch) if 'FAULT cause' in m]) == 1
+
+    def test_guard_only_fault_logs_an_honest_no_strings_line(self, orch):
+        """A Teensy guard latch suppresses leg output WITHOUT disarming, so it
+        never reaches robot_state.error[]. The line must say so rather than
+        printing an empty list that reads as 'no cause found'."""
+        orch.sm.force_transition(RobotState.ACTIVE, orch.ctx)
+        orch.ctx.active_mode = ActiveMode.TRAJECTORY
+        orch._tick()
+        orch._on_link_status(_link_status('MAX_DEVIATION'))
+        orch._logger.warning = MagicMock()
+        orch._tick()
+        assert orch.sm.state == RobotState.FAULT
+        causes = [m for m in self._warnings(orch) if 'FAULT cause' in m]
+        assert len(causes) == 1, self._warnings(orch)
+        assert 'no robot_state.error[] strings' in causes[0]
+        assert 'guard_latched=True' in causes[0]

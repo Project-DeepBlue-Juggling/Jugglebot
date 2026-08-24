@@ -297,6 +297,20 @@ html, body {
     overflow-y: auto;
 }
 
+/* The UDP view of the same panel: the two containers are siblings and exactly
+   one is display:none at a time (udp-traffic.js), so both need the identical
+   stretch-and-scroll treatment — whichever is showing is the sidebar's
+   flexible element.  min-height:0 lets it actually shrink inside the flex
+   column instead of pushing the CAN panel off the bottom. */
+#left-sidebar #udp-table-container {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;   /* #udp-rows does the scrolling, so the window presets
+                           and the aggregate footer stay pinned in view */
+}
+
 /* Scrollbar styling (left sidebar) */
 #left-sidebar::-webkit-scrollbar {
     width: 6px;

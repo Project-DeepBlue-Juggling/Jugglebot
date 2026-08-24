@@ -36,9 +36,11 @@ from tests.ros._bridge_harness import _build_paired_node, _teardown, _wait_until
 
 # Mocked ROS service/message + action types (tests/ros/conftest.py).
 from std_srvs.srv import Trigger
+from diagnostic_msgs.msg import DiagnosticStatus, KeyValue
 from rclpy.action import GoalResponse
 from jugglebot_interfaces.action import BallButlerThrowCmd
 from jugglebot.protocol_config import BallButlerCommandType, BallButlerCommandOutcome
+from jugglebot import mocap_status as mocap_st
 
 
 def _node():
@@ -170,11 +172,17 @@ def test_bb_reload_invokes_rpc_with_empty_args():
 
 
 def test_bb_calibrate_invokes_rpc_with_empty_args_when_bb_present():
-    """bb/calibrate forwards to BB_CALIBRATE_LOC when BB is present."""
+    """bb/calibrate forwards to BB_CALIBRATE_LOC when BB is present.
+
+    Now needs a healthy ``mocap/status`` as well (F4/Q2): with QTM dark the
+    service refuses before the RPC. The assertion is unchanged — same success,
+    same empty args — only the precondition is now stated explicitly.
+    """
     teensy, client, node = _node()
     try:
         _send_heartbeat(teensy, bb_state=1)
         assert _wait_until(lambda: node._latest_heartbeat is not None)
+        _send_mocap_status(node)
         box = _capture(teensy, RpcMethod.BB_CALIBRATE_LOC)
         res = node._svc_bb_calibrate(Trigger.Request(), Trigger.Response())
         assert res.success is True
@@ -202,6 +210,191 @@ def test_bb_calibrate_silently_succeeds_when_bb_absent():
         assert res.success is True
         assert "skipped" in res.message.lower()
         assert called['flag'] is False
+    finally:
+        _teardown(teensy, client, node)
+
+
+# ── bb/calibrate QTM readiness gate (F4/Q2) ──────────────────────────────────
+#
+# The calibrate COMMAND path (this service → BB_CALIBRATE_LOC → BB sweeps) and
+# the calibrate DATA path (QTM → mocap_node → the circle fit) share no edge, so
+# before this gate the service happily commanded a full physical sweep with QTM
+# dark. That produces nothing at best; with a partly-visible constellation it
+# produces a plausible BB pose that ball_butler_node then aims every throw with.
+# The gate refuses fail-closed, with a code naming which subsystem to go and
+# look at, and — the part that matters on a powered robot — dispatches NO RPC.
+
+
+def _send_mocap_status(node, *, receiving='1', visible='5', marker3='1',
+                       age_s=0.0):
+    """Feed the bridge one ``mocap/status`` sample.
+
+    ``age_s`` back-dates the cached arrival stamp, which is how the staleness
+    branch is reached without sleeping.
+    """
+    msg = DiagnosticStatus()
+    msg.values = [
+        KeyValue(key=mocap_st.KEY_QTM_RECEIVING, value=receiving),
+        KeyValue(key=mocap_st.KEY_BB_MARKERS_VISIBLE, value=visible),
+        KeyValue(key=mocap_st.KEY_MARKER3_VISIBLE, value=marker3),
+        KeyValue(key=mocap_st.KEY_ALIGNED, value='1'),
+        KeyValue(key=mocap_st.KEY_QTM_SYNCED, value='1'),
+    ]
+    node._on_mocap_status(msg)
+    if age_s:
+        node._mocap_status_mono -= age_s
+    return msg
+
+
+def _calibrate_with_no_rpc_allowed(teensy, node):
+    """Call bb/calibrate with a tripwire on BB_CALIBRATE_LOC.
+
+    Returns ``(response, rpc_was_dispatched)``.
+    """
+    fired = {'flag': False}
+
+    def handler(req_id, args):
+        fired['flag'] = True
+        return (int(RpcStatus.OK), b"")
+
+    teensy.on_rpc(int(RpcMethod.BB_CALIBRATE_LOC), handler)
+    res = node._svc_bb_calibrate(Trigger.Request(), Trigger.Response())
+    return res, fired['flag']
+
+
+def test_bb_calibrate_refuses_when_no_mocap_status_ever_seen():
+    """Fail closed on silence: a bridge that has never heard from mocap_node
+    must not command a sweep on the strength of hearing nothing."""
+    teensy, client, node = _node()
+    try:
+        _send_heartbeat(teensy, bb_state=1)
+        assert _wait_until(lambda: node._latest_heartbeat is not None)
+        res, dispatched = _calibrate_with_no_rpc_allowed(teensy, node)
+        assert res.success is False
+        assert res.message.startswith('QTM_STALE:')
+        assert dispatched is False
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_bb_calibrate_refuses_on_stale_mocap_status():
+    """A status that stopped arriving is the same as no status — mocap_node
+    itself may have died, in which case nothing would ever say 'not receiving'."""
+    teensy, client, node = _node()
+    try:
+        _send_heartbeat(teensy, bb_state=1)
+        assert _wait_until(lambda: node._latest_heartbeat is not None)
+        _send_mocap_status(node, age_s=3.2)
+        res, dispatched = _calibrate_with_no_rpc_allowed(teensy, node)
+        assert res.success is False
+        assert res.message.startswith('QTM_STALE:')
+        assert '3.2 s' in res.message
+        assert dispatched is False
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_bb_calibrate_refuses_when_qtm_not_receiving():
+    teensy, client, node = _node()
+    try:
+        _send_heartbeat(teensy, bb_state=1)
+        assert _wait_until(lambda: node._latest_heartbeat is not None)
+        _send_mocap_status(node, receiving='0')
+        res, dispatched = _calibrate_with_no_rpc_allowed(teensy, node)
+        assert res.success is False
+        assert res.message.startswith('QTM_STALE:')
+        assert dispatched is False
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_bb_calibrate_refuses_when_too_few_bb_markers_visible():
+    """DISTINCT code from QTM_STALE. 'QTM is dark' and 'QTM is fine but cannot
+    see the BB' are different errands at the bench — one merged code sends the
+    operator to the wrong one half the time (toss_sequencer's reject ladder)."""
+    teensy, client, node = _node()
+    try:
+        _send_heartbeat(teensy, bb_state=1)
+        assert _wait_until(lambda: node._latest_heartbeat is not None)
+        _send_mocap_status(node, visible='1')
+        res, dispatched = _calibrate_with_no_rpc_allowed(teensy, node)
+        assert res.success is False
+        assert res.message.startswith('BB_MARKERS_NOT_VISIBLE:')
+        assert '1/5' in res.message
+        assert dispatched is False
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_bb_calibrate_refuses_when_marker3_not_visible():
+    """Four markers visible but not Marker 3 (index 2): run_calibration hard-
+    requires it for the yaw offset, so the sweep would complete and then fail."""
+    teensy, client, node = _node()
+    try:
+        _send_heartbeat(teensy, bb_state=1)
+        assert _wait_until(lambda: node._latest_heartbeat is not None)
+        _send_mocap_status(node, visible='4', marker3='0')
+        res, dispatched = _calibrate_with_no_rpc_allowed(teensy, node)
+        assert res.success is False
+        assert res.message.startswith('BB_MARKERS_NOT_VISIBLE:')
+        assert dispatched is False
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_bb_calibrate_gate_order_bb_absence_wins_over_qtm():
+    """ORDERING CONTRACT. The BB-absent silent-success is checked FIRST.
+
+    'No BB' is not a calibration failure — it is a machine without the
+    subsystem, and HOMING must complete on it (the can_node semantics
+    test_bb_calibrate_silently_succeeds_when_bb_absent pins). Gate on QTM first
+    and every BB-less homing on a bench with no mocap turns into a hard
+    failure instead of a skip.
+    """
+    teensy, client, node = _node()
+    try:
+        _send_heartbeat(teensy, heartbeat_seen=False)
+        assert _wait_until(lambda: node._latest_heartbeat is not None)
+        # QTM is dark too — the BB branch must still win.
+        res, dispatched = _calibrate_with_no_rpc_allowed(teensy, node)
+        assert res.success is True
+        assert 'skipped' in res.message.lower()
+        assert 'QTM' not in res.message
+        assert dispatched is False
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_bb_calibrate_recovers_once_mocap_status_returns():
+    """The gate is a live read, not a latch: a refusal must not wedge the
+    service after QTM comes back."""
+    teensy, client, node = _node()
+    try:
+        _send_heartbeat(teensy, bb_state=1)
+        assert _wait_until(lambda: node._latest_heartbeat is not None)
+        _send_mocap_status(node, receiving='0')
+        first, _ = _calibrate_with_no_rpc_allowed(teensy, node)
+        assert first.success is False
+
+        _send_mocap_status(node)
+        box = _capture(teensy, RpcMethod.BB_CALIBRATE_LOC)
+        second = node._svc_bb_calibrate(Trigger.Request(), Trigger.Response())
+        assert second.success is True
+        assert box['args'] == b""
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_bb_calibrate_gate_uses_the_shared_predicate():
+    """The bridge and the orchestrator must answer 'is QTM ready' identically;
+    the predicate lives in jugglebot.mocap_status so there is one place to
+    change it. Pin the delegation, not a copy of the thresholds."""
+    teensy, client, node = _node()
+    try:
+        _send_mocap_status(node, visible='2')
+        ready, code, _ = node._qtm_ready()
+        assert (ready, code) == (False, mocap_st.CODE_BB_MARKERS_NOT_VISIBLE)
+        assert mocap_st.evaluate(node._mocap_status_kv, 0.0)[1] == code
     finally:
         _teardown(teensy, client, node)
 

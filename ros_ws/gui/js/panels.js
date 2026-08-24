@@ -227,12 +227,34 @@ export function updateFlags(robotState) {
     setFlagError('flag-undervoltage', robotState.has_undervoltage, 'Undervoltage', 'Voltage OK');
 }
 
+/** Last-known mocap connection state, from main.js's mocap_data watchdog.
+ *  Read by applyBBCalibrateGate() (F4/Q4) — the Calibrate button is useless
+ *  without QTM marker data, so it follows this flag. */
+let mocapConnected = false;
+
+/** Last-known Ball Butler connection state.
+ *
+ *  Tracked EXPLICITLY rather than inferred from lastBBState, which is a
+ *  last-value cache that setBBDisconnected does not invalidate. Without this
+ *  flag the gate had a live re-enable path: BB disconnects (button correctly
+ *  disabled, title 'Ball Butler disconnected'), lastBBState still holds 1 from
+ *  the final IDLE heartbeat, and then the very next mocap_data frame calls
+ *  setMocapConnected(true) -> applyBBCalibrateGate(), which sees bbIdle true
+ *  and mocapConnected true and RE-ENABLES Calibrate on a Ball Butler that is
+ *  not there. mocap_data runs continuously, so that is not a corner case — it
+ *  is what happens within milliseconds of every BB disconnect. */
+let bbConnected = false;
+
 /**
  * Update the mocap connected flag.
  * @param {boolean} connected
  */
 export function setMocapConnected(connected) {
+    mocapConnected = !!connected;
     setFlagError('flag-mocap', !connected, 'Mocap Disconnected', 'Mocap Connected');
+    // Re-evaluate the Calibrate gate: this flag flips on the mocap_data
+    // watchdog, NOT on a BB heartbeat, so nothing else would re-run the rule.
+    applyBBCalibrateGate();
 }
 
 /**
@@ -546,6 +568,7 @@ export function updateBBPanel(hb) {
 
     // Connected — auto-expand the panel on the connect edge.
     driveBBConnectionEdge(true);
+    bbConnected = true;
 
     const badge = document.getElementById('bb-state-badge');
     if (badge) {
@@ -586,16 +609,64 @@ export function updateBBPanel(hb) {
             calBtn.removeEventListener('click', onBBCalibrateClick);
             calBtn.addEventListener('click', onBBResetClick);
             calBtn.disabled = false;
+            calBtn.title = '';
         } else if (!isError && wasReset) {
             // Switch back to Calibrate button
             calBtn.textContent = 'Calibrate';
             calBtn.classList.remove('bb-reset-mode');
             calBtn.removeEventListener('click', onBBResetClick);
             calBtn.addEventListener('click', onBBCalibrateClick);
-            calBtn.disabled = hb.state !== 1;
+            applyBBCalibrateGate();
         } else if (!isError && calBtn.textContent === 'Calibrate') {
-            calBtn.disabled = hb.state !== 1;
+            applyBBCalibrateGate();
         }
+    }
+}
+
+/**
+ * Apply the Calibrate button's enable rule (F4/Q4).
+ *
+ * THREE preconditions, checked in that order. BB must be CONNECTED at all —
+ * the gate is re-run from the mocap_data watchdog, which keeps ticking after
+ * Ball Butler goes away, so without an explicit connection flag the first
+ * mocap frame after a BB disconnect re-enabled the button off a stale
+ * lastBBState (see the bbConnected declaration). BB must be IDLE (state 1) —
+ * it cannot start a sweep from any other state — AND mocap must be connected,
+ * because the calibrate COMMAND path (this button -> bb/calibrate -> the BB
+ * firmware sweeps) and the calibrate DATA path (QTM -> mocap_node -> the
+ * circle fit) share no edge. With QTM down the press used to move the machine
+ * through a full sweep that could produce nothing at all, or — worse, with a
+ * partly-visible constellation — a plausible BB pose that every subsequent
+ * throw is then aimed with. teensy_bridge_node now refuses such a call outright
+ * (QTM_STALE / BB_MARKERS_NOT_VISIBLE, no RPC dispatched); this rule is the
+ * cheaper half of the same gate — the operator sees WHY before pressing rather
+ * than after.
+ *
+ * The tooltip names the blocking reason: a greyed button with no explanation
+ * is the failure mode this is meant to prevent, not a milder version of it.
+ *
+ * Deliberately does NOT touch the button in RESET mode — the BB-ERROR reset
+ * has nothing to do with mocap and must stay pressable with QTM down.
+ */
+function applyBBCalibrateGate() {
+    const calBtn = document.getElementById('bb-calibrate-btn');
+    if (!calBtn) return;
+    if (calBtn.classList.contains('bb-reset-mode')) return;
+    if (calBtn.textContent !== 'Calibrate') return;  // mid-flight label
+
+    const bbIdle = lastBBState === 1;
+    if (!bbConnected) {
+        calBtn.disabled = true;
+        calBtn.title = 'Ball Butler disconnected';
+    } else if (!bbIdle) {
+        calBtn.disabled = true;
+        calBtn.title = 'Ball Butler must be IDLE to calibrate';
+    } else if (!mocapConnected) {
+        calBtn.disabled = true;
+        calBtn.title = 'Mocap disconnected — calibration needs QTM marker data';
+    } else {
+        calBtn.disabled = false;
+        calBtn.title = '';
     }
 }
 
@@ -604,6 +675,13 @@ export function setBBDisconnected() {
     // BB-reported disconnected heartbeat and a full GUI↔rosbridge drop, which
     // calls this from main.js — mirrors how Catching Cone is handled).
     driveBBConnectionEdge(false);
+    // Invalidate BOTH pieces of state the Calibrate gate reads. lastBBState is
+    // a last-value cache, and leaving it at its final IDLE value let the next
+    // mocap_data frame's setMocapConnected() -> applyBBCalibrateGate() re-enable
+    // the button on an absent Ball Butler; bbConnected is the primary guard and
+    // resetting lastBBState makes the stale value unusable either way.
+    bbConnected = false;
+    lastBBState = -1;
 
     const badge = document.getElementById('bb-state-badge');
     if (badge) {
@@ -635,6 +713,7 @@ export function setBBDisconnected() {
             calBtn.addEventListener('click', onBBCalibrateClick);
         }
         calBtn.disabled = true;
+        calBtn.title = 'Ball Butler disconnected';
     }
 }
 

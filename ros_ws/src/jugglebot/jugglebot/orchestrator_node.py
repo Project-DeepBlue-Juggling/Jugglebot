@@ -11,7 +11,10 @@ The state machine tick runs at 10 Hz.  All CAN-node interactions are
 async (non-blocking) so the executor stays responsive.
 """
 
+from __future__ import annotations
+
 import math
+import time
 
 import rclpy
 from rclpy.node import Node
@@ -29,6 +32,7 @@ from diagnostic_msgs.msg import DiagnosticStatus
 from jugglebot.state_machine import (
     RobotState, Context, build_default_machine, BOOT_TIMEOUT_S,
 )
+from jugglebot import mocap_status as mocap_st
 from jugglebot.can import odrive
 
 
@@ -63,6 +67,11 @@ class OrchestratorNode(Node):
 
         # ── Async operation tracking ──────────────────────────────
         self._pending_future = None          # For service calls
+        # Which request the in-flight _pending_future belongs to. Needed because
+        # a service RESULT has to be interpreted in the light of what was asked:
+        # a bb/calibrate refusal is a skip, an activate failure is a fault. See
+        # _check_pending_operations' QTM-race branch.
+        self._pending_kind = None
         self._pending_goal_future = None     # Phase 1: goal acceptance
         self._pending_result_future = None   # Phase 2: action result
         # Fire-and-forget futures (A2 disarm) — retained until their
@@ -112,6 +121,20 @@ class OrchestratorNode(Node):
         # MAX_DEVIATION latch and kept accepting mode commands on a frozen robot.
         self.create_subscription(
             DiagnosticStatus, 'link_status', self._on_link_status, 10)
+        # F4/Q3 — mocap_node's QTM view. HOMING's bb_calibrate step is
+        # dispatched from this node, so this node needs its OWN answer to "can
+        # a sweep produce data": asking the bridge would mean calling the
+        # service, and the bridge's refusal is a success=False that
+        # HomingHandler turns into a FAULT (state_machine.py, 'operation_result
+        # is False -> FAULT'). Reading the same topic lets HOMING SKIP instead.
+        # The predicate is shared (jugglebot.mocap_status) so the two views of
+        # "ready" cannot drift apart.
+        self._mocap_status_kv = None
+        self._mocap_status_mono = 0.0
+        # String literal, not mocap_st.MOCAP_STATUS_TOPIC — the choreography
+        # map resolves endpoint names by AST and will not follow an attribute.
+        self.create_subscription(
+            DiagnosticStatus, 'mocap/status', self._on_mocap_status, 10)
 
         # ── Publishers ────────────────────────────────────────────
         self._control_mode_pub = self.create_publisher(
@@ -270,6 +293,32 @@ class OrchestratorNode(Node):
             msg.values, 'mpc_active', '0') == '1'
         self.ctx.link_status_seen = True
 
+    def _on_mocap_status(self, msg):
+        """Cache mocap_node's ``mocap/status`` KeyValues (F4/Q3).
+
+        Snapshot only — decode and stamp the arrival. No decision is taken
+        here; ``_qtm_ready()`` reads the cache at the moment the HOMING step is
+        dispatched, which is what makes STALENESS (rather than "the last thing
+        we heard, whenever that was") the test.
+        """
+        try:
+            kv = mocap_st.decode_status(msg.values)
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().error(f'mocap/status decode error: {e}')
+            return
+        self._mocap_status_kv = kv
+        self._mocap_status_mono = time.monotonic()
+
+    def _qtm_ready(self):
+        """``(ready, code, detail)`` — can a BB calibration sweep produce data?
+
+        Same predicate and same two thresholds as the bridge's gate
+        (``jugglebot.mocap_status.evaluate``); only the cached snapshot is this
+        node's own. Fails closed.
+        """
+        age_s = time.monotonic() - self._mocap_status_mono
+        return mocap_st.evaluate(self._mocap_status_kv, age_s)
+
     # ═══════════════════════════════════════════════════════════════
     # Main tick
     # ═══════════════════════════════════════════════════════════════
@@ -295,6 +344,34 @@ class OrchestratorNode(Node):
 
         # 3. Run state machine
         self.sm.tick(self.ctx)
+
+        # 3-pre-a. (F3/C4) Say WHY on entry to FAULT, once per visit.
+        # The machine already logs '[SM] Entering FAULT', which tells an operator
+        # nothing about the cause: ctx.errors — the robot_state.error[] strings
+        # that forced the transition at step 2, now carrying F3's decoded
+        # per-axis ODrive names — was visible only to whoever thought to echo a
+        # 100 Hz topic. Edge-gated off _last_sm_state (the state at the END of
+        # the previous tick), so a held FAULT logs once, not at 10 Hz; it fires
+        # for BOTH the forced transition above and a handler-returned one,
+        # because it reads the post-tick state rather than the force path.
+        # (On the forced path the '[SM] Entering FAULT' line lands in the SAME
+        # tick, just above this one; on a handler-returned transition the
+        # machine logs 'X -> FAULT' now and 'Entering FAULT' next tick, so this
+        # cause line sits between them — adjacent either way.)
+        # WARNING level, not error: FAULT itself is already logged, and a
+        # guard-only fault (no ODrive error at all) is a routing state, not a
+        # failure.
+        if (self.sm.state == RobotState.FAULT
+                and self._last_sm_state != RobotState.FAULT):
+            if self.ctx.errors:
+                self.get_logger().warning(
+                    'FAULT cause — robot_state.error[]: '
+                    + ' | '.join(str(e) for e in self.ctx.errors))
+            else:
+                self.get_logger().warning(
+                    'FAULT cause — no robot_state.error[] strings '
+                    f'(guard_latched={self.ctx.guard_latched}, '
+                    f'boot_timed_out={self.ctx.boot_timed_out})')
 
         # 3a. Log boot timeout (once per occurrence)
         if self.ctx.boot_timed_out and not self._boot_timeout_logged:
@@ -339,6 +416,20 @@ class OrchestratorNode(Node):
     # Async operation management
     # ═══════════════════════════════════════════════════════════════
 
+    @staticmethod
+    def _is_qtm_refusal(message):
+        """Is this bb/calibrate failure message the bridge's QTM refusal?
+
+        The bridge formats it as ``f'{code}: {detail} — calibration refused'``
+        with ``code`` one of ``jugglebot.mocap_status``' two constants, so the
+        prefix test is against those imported constants and not a copied
+        literal — a renamed code becomes a NameError at import instead of a
+        predicate that silently stops matching and starts faulting HOMING.
+        """
+        text = str(message or '')
+        return text.startswith((mocap_st.CODE_QTM_STALE,
+                                mocap_st.CODE_BB_MARKERS_NOT_VISIBLE))
+
     def _check_pending_operations(self):
         """Poll pending async service/action calls for completion."""
         # ── Tilt service call (no success field) ──────────────────
@@ -364,15 +455,45 @@ class OrchestratorNode(Node):
         if self._pending_future is not None and self._pending_future.done():
             try:
                 result = self._pending_future.result()
-                self.ctx.operation_result = result.success
-                if not result.success:
-                    detail = getattr(result, 'message', 'unknown')
-                    self.get_logger().warning(f'Operation failed: {detail}')
+                detail = getattr(result, 'message', 'unknown')
+                if (not result.success
+                        and self._pending_kind == 'bb_calibrate'
+                        and self._is_qtm_refusal(detail)):
+                    # THE RACE. _dispatch_request checked _qtm_ready() at
+                    # dispatch; the bridge checks its OWN cache when the handler
+                    # runs. Those are two instants, and the cached status only
+                    # has to age past MOCAP_STATUS_MAX_AGE_S in between for a
+                    # dispatch this node judged healthy to meet a bridge that
+                    # judges it stale. The bridge then refuses with
+                    # success=False — and HomingHandler turns that straight into
+                    # FAULT, which is precisely the outcome the Q3 skip exists
+                    # to prevent. Losing a race is not a reason to fault a
+                    # robot, so a REFUSAL (not a failure) is treated exactly
+                    # like the dispatch-time skip: WARN, mark, carry on.
+                    #
+                    # Matched on the shared code constants, never on prose: the
+                    # bridge builds this message from the same
+                    # jugglebot.mocap_status codes, so the two cannot drift into
+                    # a silent non-match the way a copied string would.
+                    self.get_logger().warning(
+                        f'bb/calibrate refused by the bridge ({detail}) '
+                        '— skipping, not faulting. BB will be uncalibrated '
+                        'this session.')
+                    self.ctx.bb_calibration_skipped = True
+                    self.ctx.operation_result = True
+                else:
+                    self.ctx.operation_result = result.success
+                    if not result.success:
+                        # A genuine RPC failure still faults: the CAN write did
+                        # not land, which is a real machine problem, not an
+                        # optional subsystem being unavailable.
+                        self.get_logger().warning(f'Operation failed: {detail}')
             except Exception as e:
                 self.get_logger().error(f'Service call exception: {e}')
                 self.ctx.operation_result = False
             self.ctx.operation_pending = False
             self._pending_future = None
+            self._pending_kind = None
 
         # ── Action: waiting for goal acceptance ───────────────────
         if (self._pending_goal_future is not None
@@ -430,16 +551,33 @@ class OrchestratorNode(Node):
             self._start_home_action()
 
         elif req == 'bb_calibrate':
-            if self._bb_calibrate_client.service_is_ready():
-                self._start_service_call(
-                    self._bb_calibrate_client, Trigger.Request())
-            else:
+            qtm_ok, qtm_code, qtm_detail = self._qtm_ready()
+            if not self._bb_calibrate_client.service_is_ready():
                 # Ball Butler not available — skip calibration (BB is optional)
                 self.get_logger().warning(
                     'Ball Butler not available — skipping calibration. '
                     'BB will be uncalibrated this session.')
                 self.ctx.bb_calibration_skipped = True
                 self.ctx.operation_result = True
+            elif not qtm_ok:
+                # F4/Q3 — SKIP, never fail. The bridge would refuse this same
+                # call with success=False, and HomingHandler.execute turns
+                # `operation_result is False` straight into FAULT
+                # (state_machine.py) — so gating by *calling and catching* the
+                # refusal would convert "the mocap PC is off" into a faulted
+                # robot the operator has to clear before homing. Mirrors the
+                # service-not-ready branch above exactly: WARN, mark skipped,
+                # operation_result True so HOMING advances to IDLE.
+                self.get_logger().warning(
+                    f'QTM not delivering BB markers ({qtm_code}: {qtm_detail}) '
+                    '— skipping calibration. BB will be uncalibrated this '
+                    'session.')
+                self.ctx.bb_calibration_skipped = True
+                self.ctx.operation_result = True
+            else:
+                self._start_service_call(
+                    self._bb_calibrate_client, Trigger.Request(),
+                    kind='bb_calibrate')
 
         elif req == 'activate':
             activate_req = ActivateOrDeactivate.Request()
@@ -529,6 +667,7 @@ class OrchestratorNode(Node):
         is correct for ACTIVE→IDLE but wrong for ACTIVE→FAULT).
         """
         self._pending_future = None
+        self._pending_kind = None
         self._pending_goal_future = None
         self._pending_result_future = None
         self._pending_tilt_future = None
@@ -537,8 +676,14 @@ class OrchestratorNode(Node):
         self.ctx.clear_requests()
         self.ctx.clear_commands()
 
-    def _start_service_call(self, client, request):
-        """Start a non-blocking service call."""
+    def _start_service_call(self, client, request, kind=None):
+        """Start a non-blocking service call.
+
+        ``kind`` records WHICH request this future belongs to, so
+        ``_check_pending_operations`` can interpret the result in context (only
+        bb_calibrate uses it today). Left None by callers that need no such
+        interpretation — a None kind matches nothing.
+        """
         if not client.service_is_ready():
             self.get_logger().warning(
                 f'Service {client.srv_name} not ready, failing request')
@@ -547,6 +692,7 @@ class OrchestratorNode(Node):
 
         self.ctx.operation_pending = True
         self.ctx.operation_result = None
+        self._pending_kind = kind
         self._pending_future = client.call_async(request)
 
     def _fire_forget_service_call(self, client, request, label):

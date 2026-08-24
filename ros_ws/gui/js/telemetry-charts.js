@@ -6,6 +6,13 @@
  * temperature, bus voltage/current) with shared Y-axes for same-unit signals
  * and synchronized crosshair cursors.
  *
+ * Units:
+ *   Position and velocity are plotted in PHYSICAL units, not motor revs — mm
+ *   and mm/s for the legs and both hands, absolute barrel deg and deg/s for BB
+ *   pitch.  The conversion happens once, at ingestion (onTelemetryData), using
+ *   the per-chart table in axisUnitsFor(); every downstream consumer (axes,
+ *   callouts, Δ pills, y-range padding, CSV export) inherits it for free.
+ *
  * Hover UX:
  *   - Entering a chart cell highlights the matching element in the 3D scene
  *     (leg 0..5 → Stewart leg, Hand → Stewart hand axis, BB Pitch/Hand → BB
@@ -20,6 +27,10 @@ import {
     getEventsInRange, subscribeEvents, subscribeHighlight,
     getHighlightedEventId, EVENT_COLORS,
 } from './event-store.js';
+import {
+    MM_TO_REV, HAND_MM_PER_REV, BB_HAND_MM_PER_REV,
+    BB_PITCH_DEG_PER_REV, BB_PITCH_DEG_OFFSET,
+} from './geometry-config.js';
 
 // ---- Signal definitions ----
 
@@ -28,15 +39,17 @@ import {
  *  key      – unique identifier & localStorage toggle key
  *  label    – toolbar button text
  *  color    – line colour (consistent across all 9 charts)
- *  unit     – physical unit (for Y-axis label)
+ *  unit     – physical unit (for Y-axis label).  'per-chart' means the unit
+ *             depends on which axis the chart plots — axisUnitsFor(chartIdx)
+ *             is the authority for those, not this table.
  *  scale    – scale group key (signals sharing a scale share a Y-axis)
  *  extract  – fn(motorState) → number   (null if external data)
  *  dash     – optional uPlot dash pattern [on, off]
  */
 const SIGNAL_GROUPS = [
-    { key: 'pos_measured',  label: 'Pos (meas)',    color: '#3b82f6', unit: 'rev',   scale: 'position',    extract: m => m.pos_estimate },
-    { key: 'pos_commanded', label: 'Pos (cmd)',     color: '#60a5fa', unit: 'rev',   scale: 'position',    extract: null, dash: [5, 3] },
-    { key: 'vel_measured',  label: 'Velocity',      color: '#22c55e', unit: 'rev/s', scale: 'velocity',    extract: m => m.vel_estimate },
+    { key: 'pos_measured',  label: 'Pos (meas)',    color: '#3b82f6', unit: 'per-chart', scale: 'position',    extract: m => m.pos_estimate },
+    { key: 'pos_commanded', label: 'Pos (cmd)',     color: '#60a5fa', unit: 'per-chart', scale: 'position',    extract: null, dash: [5, 3] },
+    { key: 'vel_measured',  label: 'Velocity',      color: '#22c55e', unit: 'per-chart', scale: 'velocity',    extract: m => m.vel_estimate },
     { key: 'iq_setpoint',   label: 'Current (set)', color: '#f59e0b', unit: 'A',     scale: 'current',     extract: m => m.iq_setpoint },
     { key: 'iq_measured',   label: 'Current (meas)',color: '#fbbf24', unit: 'A',     scale: 'current',     extract: m => m.iq_measured, dash: [5, 3] },
     { key: 'fet_temp',      label: 'FET Temp',      color: '#ef4444', unit: '\u00b0C', scale: 'temperature', extract: m => m.fet_temp },
@@ -45,7 +58,16 @@ const SIGNAL_GROUPS = [
     { key: 'bus_current',   label: 'Bus Current',   color: '#c084fc', unit: 'A',     scale: 'bus_current', extract: m => m.bus_current },
 ];
 
-/** Map from scale key → display metadata */
+/**
+ * Map from scale key → display metadata.
+ *
+ * `position` and `velocity` are the two PER-CHART scales: their unit, decimal
+ * count and y-range pad floor come from axisUnitsFor(chartIdx), because leg 3
+ * (mm), the hand (mm) and BB pitch (deg) share the scale key but not the unit.
+ * The entries kept here for those two are the raw-rev fallback used when a
+ * chart index is out of range; everything else on this table is genuinely
+ * chart-independent.
+ */
 const SCALE_META = {
     position:    { unit: 'rev',   decimals: 3 },
     velocity:    { unit: 'rev/s', decimals: 2 },
@@ -53,6 +75,29 @@ const SCALE_META = {
     temperature: { unit: '\u00b0C', decimals: 1 },
     voltage:     { unit: 'V',     decimals: 2 },
     bus_current: { unit: 'A',     decimals: 2 },
+};
+
+/**
+ * Per-unit display rules.
+ *
+ *  decimals – digits after the point on axis ticks, callouts and Δ pills.
+ *  padFloor – minimum half-height of the y-range when the data is flat
+ *             (dataMin === dataMax).  Stated in the PLOTTED unit, so it has to
+ *             be per-unit: the old hardcoded 0.5 meant half a rev, i.e. ±35 mm
+ *             on a leg — it swamped the very signal it was padding.
+ *  csv      – header slug ('/' and '°' stripped so the CSV column name stays
+ *             a plain identifier).
+ */
+const UNIT_FORMAT = {
+    'mm':          { decimals: 1, padFloor: 2.0, csv: 'mm' },
+    'mm/s':        { decimals: 1, padFloor: 5.0, csv: 'mm_s' },
+    'deg':         { decimals: 2, padFloor: 1.0, csv: 'deg' },
+    'deg/s':       { decimals: 2, padFloor: 5.0, csv: 'deg_s' },
+    'rev':         { decimals: 3, padFloor: 0.5, csv: 'rev' },
+    'rev/s':       { decimals: 2, padFloor: 0.5, csv: 'rev_s' },
+    'A':           { decimals: 2, padFloor: 0.5, csv: 'a' },
+    '\u00b0C': { decimals: 1, padFloor: 0.5, csv: 'degC' },
+    'V':           { decimals: 2, padFloor: 0.5, csv: 'v' },
 };
 
 // ---- Motor layout ----
@@ -83,9 +128,9 @@ const CHART_TOOLTIPS = [
  * the engineering logbook.
  */
 const SIGNAL_TOOLTIPS = {
-    pos_measured:  'Encoder position (revolutions from home). Toggle to show/hide on every chart.',
-    pos_commanded: 'Commanded position target (dashed). Source: leg_setpoint_echo (accepted setpoints echoed by the Teensy bridge) for legs, hand_telemetry for the hand.',
-    vel_measured:  'Motor velocity (rev/s). Signed — follows the motor\u2019s own direction convention.',
+    pos_measured:  'Encoder position in this chart\u2019s physical unit: mm of travel from home for the legs and both hands, absolute barrel angle (deg) for BB Pitch. Toggle to show/hide on every chart.',
+    pos_commanded: 'Commanded position target (dashed), converted with the SAME per-axis factor as the measured trace — so the gap between the two is real tracking error, not a unit mismatch. Source: leg_setpoint_echo (accepted setpoints echoed by the Teensy bridge) for legs, hand_telemetry for the hand; the BB axes have no commanded source, so the trace is absent there.',
+    vel_measured:  'Axis velocity in this chart\u2019s physical unit (mm/s for the legs and both hands, deg/s for BB Pitch). Signed — follows the motor\u2019s own direction convention.',
     iq_setpoint:   'Commanded quadrature current (A) \u2014 proportional to commanded torque.',
     iq_measured:   'Measured quadrature current (A, dashed) \u2014 proportional to actual torque.',
     fet_temp:      'ODrive MOSFET temperature (\u00b0C).',
@@ -771,7 +816,16 @@ export function nanGaps(u, sidx, i0, i1, nullGaps) {
     return nullGaps;
 }
 
-function buildUPlotOpts(width, height, showXAxis = true, onCursor = null) {
+/**
+ * Build the uPlot options for ONE chart.
+ *
+ * `chartIdx` is required (not defaulted): the y-axis label and the flat-data
+ * pad floor are per-chart now, and a silently-defaulted index would label a
+ * BB-pitch chart in millimetres.  (Tick decimals stay on uPlot's auto
+ * formatter; per-chart decimals apply to callouts and Δ pills only.)
+ * Sole call site: buildAllCharts.
+ */
+function buildUPlotOpts(chartIdx, width, height, showXAxis = true, onCursor = null) {
     const signalList = getActiveSignalList();
 
     // Chart surface colours — re-read each build so theme switches pick up
@@ -790,7 +844,7 @@ function buildUPlotOpts(width, height, showXAxis = true, onCursor = null) {
     for (const sig of signalList) {
         if (!usedScales.has(sig.scale)) {
             usedScales.set(sig.scale, {
-                unit: SCALE_META[sig.scale]?.unit || '',
+                unit: unitFor(chartIdx, sig.scale),
                 color: sig.color,
             });
         }
@@ -799,6 +853,9 @@ function buildUPlotOpts(width, height, showXAxis = true, onCursor = null) {
     // Build scales — custom range function to keep axes tight to data
     const scales = { x: { time: true } };
     for (const scaleKey of usedScales.keys()) {
+        // Captured per scale: the flat-data floor is in the plotted unit, so
+        // it differs between a mm position axis and a deg/s velocity axis.
+        const padFloor = padFloorFor(chartIdx, scaleKey);
         scales[scaleKey] = {
             auto: true,
             range: (u, dataMin, dataMax) => {
@@ -806,7 +863,7 @@ function buildUPlotOpts(width, height, showXAxis = true, onCursor = null) {
                 if (dataMin == null || dataMax == null) return [0, 1];
                 if (dataMin === dataMax) {
                     const v = dataMin;
-                    const pad = Math.max(Math.abs(v) * 0.1, 0.5);
+                    const pad = Math.max(Math.abs(v) * 0.1, padFloor);
                     return [v - pad, v + pad];
                 }
                 // Add 5% padding above and below
@@ -840,12 +897,18 @@ function buildUPlotOpts(width, height, showXAxis = true, onCursor = null) {
 
     let sideToggle = 3; // start left
     for (const [scaleKey, meta] of usedScales) {
+        // Physical units need more gutter than revs did: a leg position tick
+        // is now "-345.0" and a hand velocity tick can reach "-5000.0", where
+        // the old rev ticks were "-1.234".  60 px clipped those; 72 px does
+        // not.  Chart-independent scales (A, °C, V) keep the narrower gutter
+        // so a 3×3 grid doesn't lose plot width for nothing.
+        const physical = (scaleKey === 'position' || scaleKey === 'velocity');
         axes.push({
             scale: scaleKey,
             side: sideToggle,
             label: meta.unit,
             labelSize: 16,
-            size: 60,
+            size: physical ? 72 : 60,
             // Tint the tick labels and axis label with the series colour
             // so multi-axis charts are unambiguous at a glance.  Grid
             // strokes stay neutral — colour-tinted gridlines would be
@@ -969,9 +1032,9 @@ function buildAllCharts() {
         // Rebuilt every time buildAllCharts runs (so it stays in sync with
         // the active signal list).  One label per active series, anchored to
         // the vertical crosshair at the curve's Y value.
-        const calloutRecord = createCalloutRecord(signalList);
+        const calloutRecord = createCalloutRecord(signalList, i);
 
-        const opts = buildUPlotOpts(w, h, isBottomRow, (u) => {
+        const opts = buildUPlotOpts(i, w, h, isBottomRow, (u) => {
             updateCallouts(u, calloutRecord);
         });
 
@@ -1061,6 +1124,19 @@ function resizeAllCharts() {
 
 /**
  * Called from main.js onRobotState with the full motor state array.
+ *
+ * UNIT BOUNDARY.  Everything upstream of this function is in motor revs (the
+ * wire unit of /robot_state, /leg_setpoint_echo and /hand_telemetry);
+ * everything downstream — stores, charts, callouts, Δ pills, CSV — is in the
+ * chart's physical unit (mm, mm/s, deg, deg/s).  Converting here, once, is
+ * what keeps measured and commanded on the same scale: any per-consumer
+ * conversion eventually gets applied to one and not the other, and the chart
+ * then shows a constant tracking error that does not exist.
+ *
+ * NaN survives the affine map (NaN*k + c === NaN), so the gap semantics the
+ * nanGaps hook depends on — an absent commanded sample must render as pen-up,
+ * never as a bridge — are unchanged by the conversion.
+ *
  * @param {object[]} motorStates  – robot_state.motor_states (up to 9)
  * @param {number[]|null} commandedLegs – leg_setpoint_echo data (6 legs, motor revs) or null
  * @param {object|null} handTelemetry – HandTelemetryMessage or null
@@ -1072,9 +1148,10 @@ export function onTelemetryData(motorStates, commandedLegs, handTelemetry) {
 
     for (let i = 0; i < Math.min(motorStates.length, MOTOR_COUNT); i++) {
         const m = motorStates[i];
+        const u = axisUnitsFor(i);
         const values = {
-            pos_measured:  m.pos_estimate,
-            vel_measured:  m.vel_estimate,
+            pos_measured:  m.pos_estimate * u.posScale + u.posOffset,
+            vel_measured:  m.vel_estimate * u.velScale,
             iq_setpoint:   m.iq_setpoint,
             iq_measured:   m.iq_measured,
             fet_temp:      m.fet_temp,
@@ -1083,11 +1160,14 @@ export function onTelemetryData(motorStates, commandedLegs, handTelemetry) {
             bus_current:   m.bus_current,
         };
 
-        // Commanded position — legs from leg_setpoint_echo, hand from hand_telemetry
+        // Commanded position — legs from leg_setpoint_echo, hand from
+        // hand_telemetry.  Both arrive in motor revs, so both go through the
+        // SAME per-axis map as pos_measured above (see the unit-boundary note).
+        // The BB axes have no commanded source: NaN in, NaN out, gap drawn.
         if (i < 6 && commandedLegs && commandedLegs.length > i) {
-            values.pos_commanded = commandedLegs[i];
+            values.pos_commanded = commandedLegs[i] * u.posScale + u.posOffset;
         } else if (i === 6 && handTelemetry) {
-            values.pos_commanded = handTelemetry.pos_cmd;
+            values.pos_commanded = handTelemetry.pos_cmd * u.posScale + u.posOffset;
         } else {
             values.pos_commanded = NaN;
         }
@@ -1594,7 +1674,10 @@ function refreshChartDeltaCallouts() {
             el.style.display = '';
             const dv = vB - vA;
             const sign = dv >= 0 ? '+' : '\u2212';
-            const absStr = formatCalloutValue(Math.abs(dv), sig.scale);
+            // Δ is in the chart's unit — the position offset (BB pitch's +90°)
+            // cancels in a difference, and both samples were converted at
+            // ingestion, so no extra handling is needed here.
+            const absStr = formatCalloutValue(Math.abs(dv), sig.scale, i);
             textNode.textContent = `${sign}${absStr}`;
             textNode.classList.toggle('positive', dv >= 0);
             textNode.classList.toggle('negative', dv < 0);
@@ -1658,11 +1741,17 @@ function exportTelemetryCSV() {
         return;
     }
 
+    // Column names carry their unit, per axis: the stores hold converted
+    // values, and the position/velocity unit differs BETWEEN axes (leg_0 mm,
+    // bb_pitch deg), so a bare `pos_measured` header would be ambiguous in
+    // exactly the place a reader can no longer ask the GUI.  No in-repo
+    // consumer parses these files, so the rename breaks nothing.
     const header = ['timestamp_s'];
     for (let i = 0; i < MOTOR_COUNT; i++) {
         const motor = CHART_LABELS[i].replace(/\s+/g, '_').toLowerCase();
         for (const sg of SIGNAL_GROUPS) {
-            header.push(`${motor}.${sg.key}`);
+            const slug = UNIT_FORMAT[unitFor(i, sg.scale)]?.csv;
+            header.push(slug ? `${motor}.${sg.key}_${slug}` : `${motor}.${sg.key}`);
         }
     }
 
@@ -1819,7 +1908,7 @@ function initKeyboardShortcuts() {
  * Returned record is owned by chartCallouts[i] and replaced whenever the
  * chart is rebuilt (active signal set changed, layout changed, etc).
  */
-function createCalloutRecord(signalList) {
+function createCalloutRecord(signalList, chartIdx) {
     const overlay = document.createElement('div');
     overlay.className = 'chart-callouts';
 
@@ -1829,11 +1918,15 @@ function createCalloutRecord(signalList) {
         el.style.setProperty('--signal-color', sig.color);
         el.innerHTML = '<span class="chart-callout-dot"></span><span class="chart-callout-text"></span>';
         el.style.display = 'none';
-        el.title = `${sig.label} \u2014 click to copy value`;
+        el.title = `${sig.label} \u2014 click to copy the value in ` +
+                   `${unitFor(chartIdx, sig.scale) || 'chart units'} (full precision, no unit suffix)`;
 
-        // Click-to-copy: copies the raw numeric value (no unit) so it can be
-        // pasted straight into a script or calculator.  A brief .copied class
-        // flashes the pill green as confirmation.
+        // Click-to-copy: copies the displayed quantity as a bare number — the
+        // chart's physical unit (mm / mm-s / deg / deg-s), at full precision
+        // and with no unit suffix, so it pastes straight into a script or
+        // calculator.  NB this is NOT the motor-rev wire value any more:
+        // conversion happens at ingestion, so the store never holds revs.
+        // A brief .copied class flashes the pill green as confirmation.
         el.addEventListener('click', async (ev) => {
             ev.stopPropagation();
             ev.preventDefault();
@@ -1854,13 +1947,17 @@ function createCalloutRecord(signalList) {
         return { el, textNode: el.querySelector('.chart-callout-text'), sig };
     });
 
-    return { overlay, pills, signalList };
+    return { overlay, pills, signalList, chartIdx };
 }
 
-function formatCalloutValue(v, scale) {
-    const meta = SCALE_META[scale] || {};
-    const decimals = meta.decimals ?? 2;
-    const unit = meta.unit || '';
+/**
+ * Format one value for a callout / Δ pill.  `chartIdx` selects the unit and
+ * decimal count, because the position and velocity scales mean different
+ * things on different charts (mm on a leg, deg on BB pitch).
+ */
+function formatCalloutValue(v, scale, chartIdx) {
+    const decimals = decimalsFor(chartIdx, scale);
+    const unit = unitFor(chartIdx, scale);
     return `${v.toFixed(decimals)}${unit ? ' ' + unit : ''}`;
 }
 
@@ -1871,7 +1968,7 @@ function formatCalloutValue(v, scale) {
  */
 function updateCallouts(u, record) {
     if (!record) return;
-    const { overlay, pills } = record;
+    const { overlay, pills, chartIdx } = record;
     const idx = u.cursor.idx;
     const data = u.data;
     if (idx == null || idx < 0 || !data || !data[0] || idx >= data[0].length) {
@@ -1903,11 +2000,104 @@ function updateCallouts(u, record) {
         el.style.left = `${xPx}px`;
         el.style.top = `${yPx}px`;
         el.classList.toggle('flip-left', flipLeft);
-        textNode.textContent = formatCalloutValue(val, sig.scale);
-        // Raw numeric (no unit) for click-to-copy.  Kept at full precision so
-        // copy-paste into a script preserves everything we have.
+        textNode.textContent = formatCalloutValue(val, sig.scale, chartIdx);
+        // Bare numeric (no unit suffix) for click-to-copy, in the chart's
+        // display unit.  Kept at full precision so copy-paste into a script
+        // preserves everything we have.
         el.dataset.rawValue = String(val);
     }
+}
+
+// ---- Per-chart physical units -------------------------------------------
+
+/**
+ * Build one immutable unit record.  `decimals` and `padFloor` are keyed by
+ * SCALE key so the axis/callout/range code can look them up with the same key
+ * it already carries (`sig.scale`).
+ */
+function makeUnitRecord(posUnit, posScale, posOffset, velUnit, velScale) {
+    return Object.freeze({
+        posUnit, posScale, posOffset, velUnit, velScale,
+        decimals: Object.freeze({
+            position: UNIT_FORMAT[posUnit].decimals,
+            velocity: UNIT_FORMAT[velUnit].decimals,
+        }),
+        padFloor: Object.freeze({
+            position: UNIT_FORMAT[posUnit].padFloor,
+            velocity: UNIT_FORMAT[velUnit].padFloor,
+        }),
+    });
+}
+
+/**
+ * Unit record per chart index — built once at module load, frozen, and handed
+ * out by reference (ingestion reads it 9× per telemetry frame; allocating a
+ * fresh object there would be pointless garbage).
+ *
+ *   legs 0-5 : mm / mm-s, per-leg gain 1/MM_TO_REV[i] — the six legs do NOT
+ *              share a factor (they differ by ~1.3 %), so a single "leg
+ *              constant" would bake a per-leg error into every reading.
+ *   hand   6 : mm / mm-s via HAND_MM_PER_REV (platform spool).
+ *   BB pitch 7: ABSOLUTE barrel degrees, deg = 90 + 360·rev (PitchAxis.h) —
+ *              the same number the BB panel shows as pitch_deg and the same
+ *              frame as the configured 12-90° range, so the two readouts can
+ *              be compared directly.  Velocity has no offset: deg/s = 360·rev/s.
+ *   BB hand 8: mm / mm-s via BB_HAND_MM_PER_REV (BB spool ≠ platform spool).
+ */
+const CHART_UNITS = Object.freeze([
+    ...Array.from({ length: 6 }, (_, i) => {
+        const mmPerRev = 1 / MM_TO_REV[i];
+        return makeUnitRecord('mm', mmPerRev, 0, 'mm/s', mmPerRev);
+    }),
+    makeUnitRecord('mm', HAND_MM_PER_REV, 0, 'mm/s', HAND_MM_PER_REV),
+    makeUnitRecord('deg', BB_PITCH_DEG_PER_REV, BB_PITCH_DEG_OFFSET,
+                   'deg/s', BB_PITCH_DEG_PER_REV),
+    makeUnitRecord('mm', BB_HAND_MM_PER_REV, 0, 'mm/s', BB_HAND_MM_PER_REV),
+]);
+
+/** Identity fallback: raw motor revs, used only for an out-of-range index. */
+const RAW_REV_UNITS = makeUnitRecord('rev', 1, 0, 'rev/s', 1);
+
+/**
+ * Unit conversion + formatting rules for chart `chartIdx`.
+ *
+ * Position:  physical = rev * posScale + posOffset
+ * Velocity:  physical = rev_per_s * velScale        (no offset — a constant
+ *            position offset has zero derivative)
+ *
+ * Applied ONCE, at ingestion (onTelemetryData), so every downstream reader —
+ * y-axis, callouts, Δ pills, y-range padding, CSV export — is automatically in
+ * the same unit.  Converting later, per consumer, is how measured and
+ * commanded end up on different scales and fabricate a constant tracking error.
+ */
+function axisUnitsFor(chartIdx) {
+    return CHART_UNITS[chartIdx] || RAW_REV_UNITS;
+}
+
+/** Display unit string for one (chart, scale-group) pair. */
+function unitFor(chartIdx, scaleKey) {
+    const u = axisUnitsFor(chartIdx);
+    if (scaleKey === 'position') return u.posUnit;
+    if (scaleKey === 'velocity') return u.velUnit;
+    return SCALE_META[scaleKey]?.unit || '';
+}
+
+/** Decimal places for one (chart, scale-group) pair. */
+function decimalsFor(chartIdx, scaleKey) {
+    const u = axisUnitsFor(chartIdx);
+    if (scaleKey === 'position' || scaleKey === 'velocity') {
+        return u.decimals[scaleKey];
+    }
+    return SCALE_META[scaleKey]?.decimals ?? 2;
+}
+
+/** Flat-data y-range pad floor for one (chart, scale-group) pair. */
+function padFloorFor(chartIdx, scaleKey) {
+    const u = axisUnitsFor(chartIdx);
+    if (scaleKey === 'position' || scaleKey === 'velocity') {
+        return u.padFloor[scaleKey];
+    }
+    return UNIT_FORMAT[SCALE_META[scaleKey]?.unit]?.padFloor ?? 0.5;
 }
 
 // ---- Chart-cell hover → 3D scene highlight ------------------------------

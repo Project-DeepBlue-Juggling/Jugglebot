@@ -57,6 +57,19 @@ export const MM_TO_REV = [0.01418332, 0.01419076, 0.01408956, 0.01418684, 0.0142
 export const LEG_MOTOR_MAX_POS_REVS = 4.2;
 export const HAND_MOTOR_HARD_STOP_REVS = 10.8;
 
+// Motor-rev -> physical-unit conversions for the non-leg axes.
+// Legs use 1/MM_TO_REV[i] (per leg, above); these are the hand/BB axes.
+// Spool gains are derived, NOT literals: mm/rev = 1000 / (rev/m gain).
+export const HAND_MM_PER_REV = 31.628401;
+export const BB_HAND_MM_PER_REV = 32.982325;
+
+// BB pitch is affine in motor revs: deg = 90 + 360*rev (absolute barrel
+// angle, matching the BB panel's pitch_deg and the 12-90 deg range).
+// Owned by BB firmware (PitchAxis.h), not by this YAML — see the
+// docstring at teensy_bridge_node.py::_publish_bb_axis_estimates.
+export const BB_PITCH_DEG_PER_REV = 360.0;
+export const BB_PITCH_DEG_OFFSET = 90.0;
+
 // Ball Butler position relative to base centre (mm).
 // Placeholder -- updated dynamically via bb/calibration_result topic.
 export const BB_POSITION_MM = [0, -500, 0];

@@ -30,12 +30,16 @@ import {
     initCanTrafficPanel, canTrafficOnProfile, canTrafficOnLinkStatus,
     setCanTrafficRosLink,
 } from './can-traffic.js';
+import {
+    initUdpTrafficPanel, udpTrafficOnDiag, udpTrafficOnLinkStatus,
+    setUdpTrafficRosLink,
+} from './udp-traffic.js';
 import { initCommands, updateCommandStates } from './commands.js';
 import {
     initStateMinimap, minimapOnOrchestratorState, minimapOnControlMode,
     minimapOnRobotState, minimapOnLinkStatus, minimapOnLegSetpointEcho,
 } from './state-minimap.js';
-import { INITIAL_HEIGHT_MM, MM_TO_REV } from './geometry-config.js';
+import { INITIAL_HEIGHT_MM, MM_TO_REV, HAND_MM_PER_REV } from './geometry-config.js';
 import {
     initTelemetryCharts, onTelemetryData, rebuildCharts, flashChart,
     clearChartGridHidden,
@@ -45,6 +49,7 @@ import { initJogPanel, setJogPanelVisible,
 } from './jog-panel.js';
 import { initTheme } from './theme.js';
 import { emitEvent, EVENT_TYPES } from './event-store.js';
+import { formatAxisErrors } from './odrive-errors.js';
 import { initCommandHistory } from './command-history.js';
 import { initCameraPresets } from './camera-presets.js';
 
@@ -84,6 +89,12 @@ function init() {
     // 2a. Init CAN traffic panel (left sidebar — own module, chart-heavy,
     //     same precedent as telemetry-charts).
     initCanTrafficPanel();
+
+    // 2b. Init the UDP message-rate view of the topics panel (own module for
+    //     the same reason: it owns a second view of a shared panel, and
+    //     panels.js is already 1600 lines).  After initAllPanels() so the ROS
+    //     topic monitor exists before the mode switch decides which one shows.
+    initUdpTrafficPanel();
 
     // 3. Init commands.  The old mode command buttons (Standby/SpaceMouse/
     //    Shell/GUI) are gone — jog + speed-limit panel visibility is driven
@@ -195,6 +206,11 @@ function onConnectionStateChange(state) {
     // (not just the down edge) and placed above the DOM early-return below so
     // a missing status-dot element can't silently skip it.
     setCanTrafficRosLink(isUp);
+    // Same treatment for the UDP view: with the websocket down there is no
+    // source of truth for the link's counters, so its rates must blank rather
+    // than keep differencing a ring whose newest sample is however old the
+    // outage is.
+    setUdpTrafficRosLink(isUp);
 
     const dot = document.getElementById('conn-dot');
     const text = document.getElementById('conn-text');
@@ -278,6 +294,12 @@ function subscribeAll() {
     // can-hub link/bus health (10 Hz, cheap KeyValue parse) — CAN health dots
     ros.subscribe('link_status', 'diagnostic_msgs/msg/DiagnosticStatus', onLinkStatus, 0);
 
+    // Per-message-type UDP link census (1 Hz cumulative counters) — the topics
+    // panel's UDP view.  NOT throttled: throttling would drop counter samples
+    // and widen the effective differencing interval, and at 1 Hz × ~50 rows it
+    // is one of the cheapest subscriptions on the page.
+    ros.subscribe('udp_diag', 'diagnostic_msgs/msg/DiagnosticStatus', onUdpDiag, 0);
+
     // Hand telemetry (500Hz -> throttle to 10Hz = 100ms)
     ros.subscribe('hand_telemetry', 'jugglebot_interfaces/msg/HandTelemetryMessage', onHandTelemetry, 100);
 
@@ -319,6 +341,18 @@ const lastFaultFlags = {
     has_undervoltage: null,
 };
 
+/** Axis-index → label for the per-axis ODrive error rows (robot_state's
+ *  positional motor_states layout: 0-5 legs, 6 hand, 7/8 Ball Butler). */
+const MOTOR_AXIS_LABELS = [
+    'leg 0', 'leg 1', 'leg 2', 'leg 3', 'leg 4', 'leg 5',
+    'hand', 'bb_pitch', 'bb_hand',
+];
+
+/** axis index → `${active_errors}/${disarm_reason}` as last seen.  Drives the
+ *  per-axis ODrive error rows in the event log: the three boolean flags above
+ *  say only THAT something faulted, never which axis or which condition. */
+const lastMotorErrorMasks = new Map();
+
 function onRobotState(msg) {
     recordTopicMessage('robot_state');
     lastRobotStateMs = Date.now();
@@ -343,6 +377,44 @@ function onRobotState(msg) {
             });
         }
         lastFaultFlags[key] = now;
+    }
+
+    // Per-axis ODrive error rows.  The three boolean flags above cover the
+    // CAN/undervoltage/fatal channels but collapse everything else to "ODrive
+    // Error"; these rows name the axis and decode BOTH masks, which is the only
+    // way an event-log reader learns that (say) leg 0 spun out.  Change-detected
+    // on the (active, disarm) tuple so a persisting fault emits one row, not one
+    // per 100 Hz sample, while a fault that CHANGES (a second bit sets, or the
+    // active mask self-heals leaving a sticky disarm_reason) emits a fresh row.
+    //
+    // Only a change TO a non-zero state is news — a mask returning to 0/0 is a
+    // clear, and clears stay out of the event log for the same reason the flag
+    // events above skip them (marker-forest readability); the fault dots below
+    // already show live state.  The first sample for an axis is a BASELINE, not
+    // an event: without that, every page load / reconnect would replay every
+    // standing error as if it had just happened.
+    for (let i = 0; i < Math.min(motors.length, 9); i++) {
+        const m = motors[i];
+        const active = (m.active_errors >>> 0);
+        const disarm = (m.disarm_reason >>> 0);
+        const key = `${active}/${disarm}`;
+        const prev = lastMotorErrorMasks.get(i);
+        if (prev !== undefined && prev !== key && (active !== 0 || disarm !== 0)) {
+            emitEvent({
+                type: EVENT_TYPES.FAULT,
+                label: `ODrive: ${MOTOR_AXIS_LABELS[i] || `axis ${i}`}`,
+                detail: formatAxisErrors(active, disarm),
+            });
+        }
+        lastMotorErrorMasks.set(i, key);
+    }
+    // The bridge drops back to 7 axes when Ball Butler goes dark/stale (the same
+    // honest-silence shrink the fault dots handle below).  Forget the baselines
+    // for the axes that vanished: keeping them would compare a stale pre-blackout
+    // mask against the first post-reconnect sample and emit a phantom "change"
+    // for a fault that never moved.  Re-appearance re-baselines instead.
+    for (const idx of Array.from(lastMotorErrorMasks.keys())) {
+        if (idx >= motors.length) lastMotorErrorMasks.delete(idx);
     }
 
     // Per-motor fault viz — red pulse on rising edge, steady red while the
@@ -379,10 +451,14 @@ function onRobotState(msg) {
                 result.pos[2] + INITIAL_HEIGHT_MM,
             ];
 
-            // Hand extension: convert motor rev to mm
+            // Hand extension: convert motor rev to mm with the HAND spool
+            // gain.  This used to divide by MM_TO_REV[0] — the LEG factor
+            // (70.5 mm/rev vs the hand's 31.6), so the 3D hand rendered its
+            // travel ~2.2x too long and hit the top of its stroke at less
+            // than half the commanded extension.
             let handExtMM = 0;
             if (motors.length >= 7) {
-                handExtMM = motors[6].pos_estimate / MM_TO_REV[0]; // approximate
+                handExtMM = motors[6].pos_estimate * HAND_MM_PER_REV;
             }
 
             updateStewartPose(result.platNodes, platCentre, handExtMM);
@@ -481,6 +557,12 @@ function onLinkStatus(msg) {
     // Thin router: fan out to consumers.
     canTrafficOnLinkStatus(msg);
     minimapOnLinkStatus(msg);
+    udpTrafficOnLinkStatus(msg);
+}
+
+function onUdpDiag(msg) {
+    recordTopicMessage('udp_diag');
+    udpTrafficOnDiag(msg);
 }
 
 let latestHandTelemetry = null;
@@ -897,7 +979,8 @@ function applyFontSize(size) {
 /** Topics we subscribe to for data processing (not just monitoring) */
 const GUI_SUBSCRIBED_TOPICS = new Set([
     'robot_state', 'bb/heartbeat', 'orchestrator_state',
-    'profile', 'link_status', 'hand_telemetry', 'mocap_data', 'rigid_body_poses',
+    'profile', 'link_status', 'udp_diag', 'hand_telemetry', 'mocap_data',
+    'rigid_body_poses',
     'leg_setpoint_echo', 'control_mode_topic', 'motion/diagnostics',
     'bb/calibration_result', 'cone/heartbeat', 'cone/timing_result',
 ]);
