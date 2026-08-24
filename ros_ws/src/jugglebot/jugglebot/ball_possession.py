@@ -134,55 +134,86 @@ EVIDENCE_UNKNOWN = 'UNKNOWN'
 #: bounce-out once the dwell drops under the retention window (census D1).
 RELEASE_GUARD_S = 0.30
 #: The measured post-landing arrival band CEILING — the LATEST empty->held edge
-#: observed on a real catch. +798 ms over 35 announcements across the three
-#: 2026-08-10 retest bags (median +399, earliest +137, nothing before landing);
-#: rounded UP to 0.80 s so the constant is a bound rather than a datum.
+#: observed on a real catch. **+554.7 ms** over 33 announced catches across four
+#: post-FW-14 bags (2026-08-18_18-42-19, 2026-08-20_21-51-39,
+#: 2026-08-21_10-11-42, 2026-08-23_19-14-54; median +183.9, earliest +87.6,
+#: nothing before landing); ceiled to the next 10 ms so the constant is a bound
+#: rather than a datum — the same sizing the retired 0.80 got from its +798 ms.
 #:
-#: ⚠ PENDING RE-MEASURE post-FW 14. The band was captured when the can-bridge
-#: uptime-dependent dispatch shift was +54..+133 ms; FW 14 cut that to 10-20 ms
-#: (`logbook/2026-08-15-fw14-validated-arc-closed.md`), so the band is expected
-#: to COLLAPSE. Everything that must shrink with it derives from this name —
-#: that is the whole reason it exists (census D7).
+#: RE-MEASURED AND APPLIED 2026-08-24, closing the post-FW-14 re-measure this
+#: comment carried as PENDING for two weeks
+#: (`tests/hardware/session_cadence_ladder.md` § 3.1;
+#: `logbook/2026-08-24-arrival-band-remeasure.md`). The retired band was
+#: +137..+798 ms, median +399, n=35 over three 2026-08-10 bags, captured while
+#: the can-bridge uptime-dependent dispatch shift was +54..+133 ms. FW 14 cut
+#: that to 10-20 ms (`logbook/2026-08-15-fw14-validated-arc-closed.md`) and the
+#: band collapsed with it: the CEILING by 243 ms, the MEDIAN by 215 ms.
 #:
-#: RE-MEASURED 2026-08-23 (report only — NOT applied, see below). Over the
-#: HAND-7 ladder `~/Desktop/rosbags/2026-08-23_19-14-54` (can-bridge FW 15,
-#: 15 self-tosses, every throw caught), the raw empty->held edge lands
-#: **+46.5 .. +267.5 ms** past the announced landing, median **+184.7 ms** —
-#: the band DID collapse, to about a third of its width. Dispatch shift on the
-#: same capture: +8.3 / +11.6 / +19.5 ms (min/median/max), confirming FW 14-15
-#: holds the 10-20 ms figure.
+#: The 2026-08-23 report-only reading this supersedes (+46.5..+267.5 ms, n=15,
+#: ONE dwell) was right to refuse to ship — its own text said 15 self-tosses at
+#: one dwell is thinner than the 35 the 0.80 was cut from. The corpus that DID
+#: ship is four bags, two bridge FW versions, and eight distinct flight times
+#: from 0.549 s to 1.069 s, n=33 CAUGHT (34 rows carry the pair; the 34th is a
+#: rimshot — see ARRIVAL_BAND_MIN_S below, where it matters).
 #:
-#: Not applied here, deliberately: 15 self-tosses at one dwell is a narrower
-#: corpus than the 35 announcements this 0.80 was cut from, and both consumers
-#: (`toss_record` windows, `CATCH_CONFIRM_WINDOW_S` via D7) size REFUSALS from
-#: it — shrinking it on a thin corpus buys cadence by turning late-but-real
-#: catches into MISSES, which is the direction this contract does not take
-#: without the owner. Land it with a wider capture, and move D7's derived
-#: constants in the same commit.
-ARRIVAL_BAND_MAX_S = 0.80
+#: ⚠ The offset is FLIGHT-DEPENDENT — r = 0.49 over the corpus, ~320 ms of
+#: offset per second of flight — and BOTH rows above +300 ms sit at flights
+#: (0.903 s, 1.069 s) LONGER than any published ladder rung. Inside the ladder's
+#: own envelope (flight <= 0.798 s) the observed ceiling is +271 ms, so 0.56
+#: leaves >2x headroom everywhere the cadence census actually operates. It is
+#: sized on the WHOLE corpus regardless, because a bound that only holds inside
+#: the envelope is not a bound. What remains uncovered is extrapolation ABOVE
+#: the corpus: the C-HAND-3 flight ceiling is 1.1485 s, the longest flight
+#: measured here is 1.069 s (n=1), and the fitted slope would put ~+580 ms
+#: there. **More samples at long flights is the one thing that can move this
+#: number again** — not another sitting at the ladder's own flights.
+ARRIVAL_BAND_MAX_S = 0.56
 #: The same band's FLOOR — the EARLIEST empty->held edge observed on a real
-#: catch: **+137 ms** past the announced landing, over the same 35 announcements
+#: catch: **+87.6 ms** past the announced landing, over the same 33 catches
 #: (nothing before landing at all).  It is the twin of the ceiling above and it
 #: lives beside it for the same reason: the ceiling sizes how long a verdict may
-#: take to ARRIVE, this sizes how soon one can EXIST, and the post-FW14
-#: re-measure moves both from one place.
+#: take to ARRIVE, this sizes how soon one can EXIST, and one re-measure moves
+#: both from one place.  Deliberately NOT rounded up: 0.087 is the datum floored
+#: to the millisecond so it stays a true lower bound, and any tick allowance
+#: belongs in the consumer.  Retired value 0.137 (n=35, 2026-08-10).
 #:
 #: Its consumer is the session's dwell margin — the landing -> next-cycle-start
 #: handoff (``toss_session.DEFAULT_SESSION_DWELL_MARGIN_S``), which was sized on
 #: the mocap tracker's CAUGHT verdict until 2026-08-22 and is now sized on this,
 #: because possession became sensor-PRIMARY on 2026-08-10 and the tracker is the
-#: FALLBACK.  Deliberately NOT rounded: 0.137 is the datum, and the rounding
-#: belongs in the consumer that adds its own tick allowance to it.
+#: FALLBACK.  It is the ONLY production consumer: nothing in this module reads
+#: it, the arrival window opens at ``landing - arrival_lead_s`` and admits an
+#: early edge whatever this says, and the labeller never sees it.
 #:
-#: ⚠ PENDING THE SAME RE-MEASURE as the ceiling — and the 2026-08-23 capture
-#: says this floor is now the BINDING half. The earliest raw edge on that
-#: ladder is **+46.5 ms**, i.e. **91 ms BELOW** the shipped 0.137, so a floor
-#: left here would refuse a real arrival rather than admit a spurious one. That
-#: is the fail-closed direction and therefore not urgent, but it costs a false
-#: MISS on the fastest catches, and the cost lands on the same rungs the census
-#: is trying to reach. Same reason as the ceiling for not moving it here: one
-#: dwell, 15 tosses.
-ARRIVAL_BAND_MIN_S = 0.137
+#: ⚠ **And that consumer does not actually read THIS constant at runtime.**
+#: ``DEFAULT_SESSION_DWELL_MARGIN_S`` is the no-config FALLBACK; the node passes
+#: in ``hw.JB_OP_TOSS_SESSION_DWELL_MARGIN_S``, generated from
+#: ``config/hardware_config.yaml: toss_session_dwell_margin_s`` — a re-typed
+#: literal of this value.  Moving this name alone changes the fallback and
+#: leaves the robot where it was.  The two are pinned equal by
+#: ``test_local_constants_match_generated_config``, which is what makes the
+#: duplication safe; a band re-measure is a YAML edit + ``generate_config.py`` +
+#: ``colcon build --packages-select jugglebot``, not a one-line Python change.
+#:
+#: **Why the CAUGHT-only minimum and not the corpus minimum.** One row in the
+#: 2026-08-24 corpus carries an edge at **+45.4 ms**, 42 ms below this floor: a
+#: rimshot (sensor_edge_count 4, held for 122 ms, labelled BOUNCED). A rim graze
+#: does produce a verdict, so it is a fair datum for "a verdict existed" — but
+#: the quantity the dwell margin needs is the earliest instant a verdict about a
+#: CAUGHT ball can exist, and no catch in 33 has ever seated before +87.6 ms.
+#: Sizing the handoff on the graze would put the margin 42 ms below that, which
+#: is the fail-OPEN direction for the one thing this models. Recorded here so a
+#: future reader finds the 45.4 ms already accounted for rather than
+#: re-discovering it as a contradiction.
+#:
+#: **It is inert at every published rung, and that is worth knowing before
+#: anyone spends a sitting on it.** ``toss_session.handoff_margin_s`` is
+#: ``max(dwell_margin_s, hand_stroke.catch_park_reentry_s(...))`` and the park
+#: term is >= 0.1416 s at every rung R0-R5 once layer 3 can trim the speed
+#: (0.1204 s at R0-R3 with the aim disarmed). So the 50 ms this floor just gave
+#: back buys **0 ms of dwell on the binding column** and 16.6 ms at R0-R3 on the
+#: disarmed one. The re-measure's value is almost entirely in the CEILING.
+ARRIVAL_BAND_MIN_S = 0.087
 
 
 def arrival_boundary_t(earlier_landing_t: float, later_landing_t: float,
@@ -202,8 +233,8 @@ def arrival_boundary_t(earlier_landing_t: float, later_landing_t: float,
     WHY NOT SIMPLY ``b - lead``, which is what C-POSSESS-1.C shipped: that
     charges the LATER window's guard (a property of the SCHEDULE — headroom for a
     landing prediction that runs late) to the EARLIER window's evidence (a
-    property of the BALL — the measured +137..+798 ms band). Once the cycle
-    period drops under ``ARRIVAL_BAND_MAX_S + lead`` = 1.000 s that subtraction
+    property of the BALL — the measured +87.6..+554.7 ms band). Once the cycle
+    period drops under ``ARRIVAL_BAND_MAX_S + lead`` = 0.760 s that subtraction
     closes a window INSIDE its own ball's band, which drops ``catch_event_dt_s``
     for the tail and — far worse — mints ``ARRIVAL_REJECTED``, a positive claim
     of non-arrival that VETOES a tracker CAUGHT (§ 3.2). A schedule number must
@@ -211,10 +242,10 @@ def arrival_boundary_t(earlier_landing_t: float, later_landing_t: float,
 
     The lead is not deleted, it is RELOCATED: the later window gives up its
     pre-landing lead before the earlier one gives up any band. Measured cost:
-    zero. Across the 35 announcements the band was cut from, nothing arrived
-    before its announced landing at ALL (earliest +137 ms; +46.5 ms on the
-    2026-08-23 FW-15 capture), so the pre-landing lead has never been the term
-    that caught an edge — while the band's tail demonstrably has.
+    zero. Across the 33 catches the band was cut from, nothing arrived before
+    its announced landing at ALL (earliest +87.6 ms; +45.4 ms counting the one
+    rimshot), so the pre-landing lead has never been the term that caught an
+    edge — while the band's tail demonstrably has.
 
     Both neighbours evaluate THIS function on the SAME pair, so the abutment of
     C-POSSESS-1.C is preserved exactly: window(L) closes at
@@ -502,7 +533,10 @@ class HandBallSensorSource:
         it**. The next non-catch edge in the same population is **+3194 ms**. So
         the catch band and the re-seat band are separated ~4x, and a window of
         ``[-0.20, +1.50] s`` sits 1.9x above the catch band's top and 2.1x below
-        the re-seat floor. The lead is a guard, not a fit: nothing was observed
+        the re-seat floor.  (Those are the 2026-08-10 numbers this window was
+        SIZED from and they are left as the sizing record; the band itself was
+        re-measured 2026-08-24 to **+87.6 … +554.7 ms**, median +183.9, n=33 —
+        see ``ARRIVAL_BAND_MAX_S``. The window only got MORE margin.) The lead is a guard, not a fit: nothing was observed
         early, and a ball that never left the cup raises no EDGE at all, so the
         lead cannot manufacture an arrival.
 
@@ -555,8 +589,9 @@ class HandBallSensorSource:
         ``arrival_boundary_t(prev_landing_t, landing_t)`` — the other end of the
         same identity, added 2026-08-23 with clause C.1. Until then the closing
         was ``next_landing_t - arrival_lead_s``, which bought the NEXT window's
-        pre-landing guard out of THIS ball's measured band and, under a 1.000 s
-        cycle period, refused real catches with ``ARRIVAL_REJECTED``. The
+        pre-landing guard out of THIS ball's measured band and, under a
+        ``BAND_MAX + lead`` cycle period (1.000 s then, 0.760 s since the
+        2026-08-24 re-measure), refused real catches with ``ARRIVAL_REJECTED``. The
         boundary now surrenders the guard instead of the band, and the opening
         has to move with it or the two stop abutting.
 
@@ -866,7 +901,10 @@ class HandBallSensorSource:
         C-POSSESS-1 § 3.4 clause C.2. A window closing before
         ``landing + ARRIVAL_BAND_MAX_S`` has not watched the whole band, so
         "no rise" is not evidence of no arrival and REJECTED is not available —
-        see :meth:`_arrival_state`. Reachable below a 0.800 s cycle period, where
+        see :meth:`_arrival_state`. Reachable below an ``ARRIVAL_BAND_MAX_S``
+        cycle period — 0.800 s until the 2026-08-24 re-measure, **0.560 s**
+        since, which is what takes the deferred R6 fork's 0.7529 s period out of
+        this clause entirely — where
         the next ball lands before this one's band has closed and NO boundary
         rule can give both balls their whole band (the deferred R6 fork). Also
         true of an ``arrival_window_s`` configured shorter than the band, which

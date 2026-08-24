@@ -1767,7 +1767,7 @@ class ReloadCoordinatorNode(Node):
         when one follows a session in the same process. That is deliberate rather
         than tolerated, and `arrival_boundary_t` is what makes it safe: the
         boundary is a `max` against `landing - arrival_lead_s`, so a landing more
-        than `ARRIVAL_BAND_MAX_S + arrival_lead_s` = 1.000 s old degenerates to
+        than `ARRIVAL_BAND_MAX_S + arrival_lead_s` (0.760 s) old degenerates to
         exactly the shipped opening — and one NEWER than that is a real neighbour whose
         band really does overlap, which is precisely the case the boundary exists
         to arbitrate. Clearing it there would be less correct, not more."""
@@ -5593,8 +5593,9 @@ class ReloadCoordinatorNode(Node):
         CENSUS D4/F3, and the reason the interlude cannot trust the terminal that
         summoned it. ``REJECTED_NO_BALL`` is minted at CHECKING, and CHECKING runs
         at ``landing + (dwell - throw_delay)``. The physical seat edge lands
-        **+137…+798 ms** after the announced landing (n=35, three 2026-08-10
-        bags). Those two numbers cross: below roughly a 1.2 s dwell, CHECKING
+        **+87.6…+554.7 ms** after the announced landing (n=33, four post-FW-14
+        bags; it was +137…+798 ms, n=35, until the 2026-08-24 re-measure). Those
+        two numbers cross: below roughly a 1.0 s dwell, CHECKING
         reads the cup BEFORE the ball has finished arriving in it, so a **good
         catch** mints ``REJECTED_NO_BALL`` — and with ``on_empty_cup: RELOAD``
         that route asks BallButler to throw a **second ball at a full cup**.
@@ -5602,9 +5603,19 @@ class ReloadCoordinatorNode(Node):
         So the interlude's own cup read is re-taken here, after
         ``JB_BD_ARRIVAL_WINDOW_S`` past the previous cycle's SCHEDULED landing —
         the constant that already means "how long after the predicted landing a
-        seat edge may still arrive". Deriving the wait from it rather than
-        choosing a number is what makes the pending post-FW14 band re-measure
-        shrink this wait too.
+        seat edge may still arrive".
+
+        **This wait did NOT follow the 2026-08-24 band re-measure, and the
+        sentence that used to promise it would was wrong about the mechanism.**
+        ``JB_BD_ARRIVAL_WINDOW_S`` is a ``hardware_config.yaml`` knob (1.50 s)
+        sized WITH margin ABOVE the band, not a derivation of
+        ``ball_possession.ARRIVAL_BAND_MAX_S``; a change to the constant cannot
+        reach it. What the re-measure did was widen the margin this wait already
+        carried — 1.9x the old +798 ms ceiling, **2.7x** the new +554.7 ms one —
+        so the wait is now conservative rather than stale. Shrinking it is a
+        separate YAML decision with its own blast radius (the same knob sizes the
+        live ARRIVAL search window and the reload budget), and it is deliberately
+        NOT taken here.
 
         Nothing is armed and nothing is airborne while this runs: the interlude is
         only ever entered from ``REJECTED_NO_BALL``, the one toss terminal whose

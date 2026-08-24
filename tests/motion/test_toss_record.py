@@ -352,12 +352,19 @@ def test_an_arrival_that_leaves_inside_retention_is_bounced():
     assert got.fields['t_dropout_ros'] is not None
 
 
-@pytest.mark.parametrize('catch_dt', (0.137, 0.798))
+@pytest.mark.parametrize('catch_dt', (0.0876, 0.137, 0.5547, 0.798))
 def test_the_measured_catch_band_labels_caught_at_both_ends(catch_dt):
-    """+137 ms and +798 ms are the earliest and latest arrivals in the whole
-    2026-08-10 three-bag population. The +798 row is the one that SIZED
-    ``JB_BD_ARRIVAL_WINDOW_S``; if the search window is ever trimmed toward the
-    median it is the row that goes red first, which is the point."""
+    """Both measured populations' ends, because the search window still has to
+    admit both.
+
+    +137 ms / +798 ms are the earliest and latest arrivals in the 2026-08-10
+    three-bag population, and the +798 row is the one that SIZED
+    ``JB_BD_ARRIVAL_WINDOW_S`` — that knob did NOT move at the 2026-08-24
+    re-measure, so that row is still the sizing row and still has to label
+    CAUGHT. +87.6 ms / +554.7 ms are the ends of the post-FW-14 population the
+    band constants were re-cut from (n=33, four bags). If the search window is
+    ever trimmed toward the median, the +798 row goes red first, which is the
+    point."""
     assert label(catch_dt=catch_dt).label == tr.LABEL_CAUGHT
 
 
@@ -375,16 +382,23 @@ def test_the_plans_draft_catch_window_would_have_relabelled_a_measured_catch():
     live ``HandBallSensorSource`` agree by construction (D11).
 
     **The relabel is now to UNKNOWN, not to MISSED** — changed 2026-08-23 with
-    C-POSSESS-1.C.2, and it strengthens rather than softens this argument. The
-    draft window is 0.70 s against a band that runs to ``ARRIVAL_BAND_MAX_S``
-    0.80 s, so it stops looking before the evidence runs out; C.2 forbids a
-    search in that state from minting MISSED, which is a POSITIVE claim of
-    non-arrival. A window sized under the band can no longer produce a verdict
-    at all, which is exactly the enforcement D7 wanted when it derived
+    C-POSSESS-1.C.2, and it strengthens rather than softens this argument. A
+    window that stops looking before the evidence runs out cannot mint MISSED,
+    which is a POSITIVE claim of non-arrival; it can no longer produce a verdict
+    at all. That is exactly the enforcement D7 wanted when it derived
     ``CATCH_CONFIRM_WINDOW_S`` from the band in the first place. The row is still
     lost to the fit either way; it is now lost with the cause on the record.
+
+    **The literal 0.70 s draft no longer trips this, and for a reason worth
+    recording**: the 2026-08-24 re-measure took ``ARRIVAL_BAND_MAX_S`` to 0.56 s,
+    so a 0.70 s window now OUTLASTS the band. The draft would be safe today — by
+    accident, on a plant the plan's author never measured, and it would go unsafe
+    again the moment the band widened. So the demonstration window is DERIVED to
+    sit just under whatever the band currently is, and the historical 0.70 s is
+    asserted separately for what it now is: adequate, and adequate by luck.
     """
-    draft = tr.SensorWindows(arrival_lead_s=0.30, arrival_window_s=0.70,
+    draft = tr.SensorWindows(arrival_lead_s=0.30,
+                             arrival_window_s=ARRIVAL_BAND_MAX_S - 0.01,
                              retention_window_s=WINDOWS.retention_window_s)
 
     def under(windows, catch_dt):
@@ -395,12 +409,21 @@ def test_the_plans_draft_catch_window_would_have_relabelled_a_measured_catch():
     assert under(WINDOWS, 0.798).label == tr.LABEL_CAUGHT
     assert draft.arrival_window_s < ARRIVAL_BAND_MAX_S, (
         'premise: the draft window is shorter than the band it must judge')
-    relabelled = under(draft, 0.798)
+    # The plan's literal 0.70 s, stated for the record: it outlasts today's band
+    # and so labels normally — the historical hazard is gone, not the mechanism.
+    plan_draft = tr.SensorWindows(
+        arrival_lead_s=0.30, arrival_window_s=0.70,
+        retention_window_s=WINDOWS.retention_window_s)
+    assert plan_draft.arrival_window_s > ARRIVAL_BAND_MAX_S
+    relabelled = under(draft, draft.arrival_window_s + 0.005)
     assert relabelled.label == tr.LABEL_UNKNOWN
     assert 'band clamped' in relabelled.reason
-    # The runner-up survives the draft — which is the honest statement of how
-    # thin the margin was, not a claim that the draft lost two rows.
-    assert under(draft, 0.675).label == tr.LABEL_CAUGHT
+    # …and an arrival INSIDE the short window still labels normally, so this is a
+    # clamp test rather than a blanket softening of the label. (In the 2026-08-10
+    # argument this row was the +675 ms runner-up, 25 ms inside the plan's 0.70 s
+    # boundary — the measure of how thin that margin was. Derived now, because
+    # "just inside the window" is the property, not the number.)
+    assert under(draft, draft.arrival_window_s - 0.025).label == tr.LABEL_CAUGHT
 
 
 def test_an_invalid_sample_in_the_window_is_unknown_and_never_collapses():
@@ -980,12 +1003,27 @@ def test_the_arrival_search_stops_where_the_next_cycles_begins():
 #
 # `arr_hi` used to be `next_landing_time - arrival_lead_s` outright, which pays
 # the NEXT row's pre-landing guard out of THIS row's measured arrival band.
-# Measured over the tree's own constants (`/tmp/probe_arrival_clamp.py`, run
-# 2026-08-23) that closes the search 15.1 ms inside the +798 ms band ceiling at
-# the R5' clamp pin, and 247.1 ms inside it at the deferred R6 fork.
+# The two scenario periods are DERIVED from the constants, not typed. They used
+# to be the R5' clamp pin (0.9849 s) and the deferred R6 fork (0.7529 s), the
+# reachable cadences while the band ceiling was 0.800 s; the 2026-08-24
+# post-FW-14 re-measure took the ceiling to 0.560 s and both rungs walked out of
+# both clauses. Re-typing a fresh pair would only schedule the same rot for the
+# next re-measure, so each clause's period comes from its own arithmetic:
+#
+#   * C.1 bites for a period in [BAND_MAX, BAND_MAX + arrival_lead) — where
+#     `b - lead` closes inside the band and the fixed boundary is `a + BAND_MAX`;
+#   * C.2 bites for a period BELOW BAND_MAX, where no rule serves both balls.
+#
+# Both are SYNTHETIC at the collapsed ceiling (they need dwells of ~0.16 s and
+# ~0.001 s against a 0.487 s hand floor). That is the re-measure's headline, not
+# a weakening: these are invariants over the WINDOW, and an `arrival_window_s`
+# configured under the band reaches C.2 from a direction cadence no longer can.
 
-R5P_PERIOD_S = R5P_DWELL_S + R5P_FLIGHT_S             # 0.9849 s
-R6_PERIOD_S = 0.25 + 0.5029                           # 0.7529 s — the 0.25 dwell
+R5P_PERIOD_S = R5P_DWELL_S + R5P_FLIGHT_S             # 0.9849 s — a real rung
+#: A period that puts the SUPERSEDED `b - lead` clamp inside the band (C.1).
+C1_PERIOD_S = ARRIVAL_BAND_MAX_S + WINDOWS.arrival_lead_s / 2.0
+#: A period below the band ceiling itself, where C.2 is the operative half.
+R6_PERIOD_S = ARRIVAL_BAND_MAX_S * 0.9
 
 
 def test_the_corpus_and_the_live_verdict_share_ONE_arrival_boundary():
@@ -1001,20 +1039,29 @@ def test_the_corpus_and_the_live_verdict_share_ONE_arrival_boundary():
 def test_a_catch_in_the_band_TAIL_is_not_labelled_missed():
     """C-POSSESS-1.C.1, the corpus half — a false MISSED minted off a SCHEDULE.
 
-    The premise comes from the constants, not from a chosen number: at the R5'
-    period the shipped clamp closes at +0.7849 while the band this labeller was
-    sized against runs to +0.798. A catch seating in that sliver is a REAL catch
-    the search never saw, and the corpus called it a MISS — which is the label
-    the aim fit weights most heavily.
+    The premise comes from the constants, not from a chosen number: at a period
+    inside [BAND_MAX, BAND_MAX + lead) the superseded clamp closes before the
+    band ceiling. A catch seating in that sliver is a REAL catch the search never
+    saw, and the corpus called it a MISS — which is the label the aim fit weights
+    most heavily.
 
     Both halves asserted: the defect reproduces against the shipped instant, the
     fix labels it CAUGHT and keeps the catch-event field."""
-    next_land = LANDING_T + R5P_PERIOD_S
-    shipped_close = R5P_PERIOD_S - WINDOWS.arrival_lead_s
+    next_land = LANDING_T + C1_PERIOD_S
+    shipped_close = C1_PERIOD_S - WINDOWS.arrival_lead_s
     assert shipped_close < ARRIVAL_BAND_MAX_S, (
         'premise: at this period the shipped clamp closes inside the band')
-    catch_dt = 0.79                       # in the sliver, and on the sample grid
+    # In the sliver, and on the 100 Hz sample grid. DERIVED: the sliver moves
+    # with ARRIVAL_BAND_MAX_S and a typed offset would silently leave it.
+    catch_dt = round(0.5 * (shipped_close + ARRIVAL_BAND_MAX_S), 2)
     assert shipped_close < catch_dt < ARRIVAL_BAND_MAX_S
+    # …and the tightest PUBLISHED rung does not reach this state at all, which is
+    # what the 2026-08-24 band re-measure bought and is worth pinning rather than
+    # asserting in prose: at the R5' clamp pin the boundary sits above the band
+    # ceiling, so no rung on the ladder can lose a band tail.
+    assert tr.arrival_boundary_t(LANDING_T, LANDING_T + R5P_PERIOD_S,
+                                 WINDOWS.arrival_lead_s) \
+        >= LANDING_T + ARRIVAL_BAND_MAX_S
     samples = stream(catch_dt=catch_dt)
 
     # THE DEFECT: the shipped instant as a fixed window is arithmetically the
@@ -1039,14 +1086,19 @@ def test_a_row_cannot_reach_back_for_the_PREVIOUS_balls_seat_edge():
 
     Moving ``arr_hi`` later without moving the next row's ``arr_lo`` with it hands
     one edge to two rows: the census-D2 fault, re-created by its own fix. Here the
-    PREVIOUS ball seats late, at +0.79 of ITS landing, which at the R5' period
-    falls inside this row's unclamped pre-landing lead. Unclamped this row reads
-    CAUGHT off its neighbour's ball; clamped at the shared boundary it reads the
-    MISS it actually was."""
-    prev_land = LANDING_T - R5P_PERIOD_S
-    stolen_dt = (prev_land + 0.79) - LANDING_T        # -0.1949 s
-    assert -WINDOWS.arrival_lead_s < stolen_dt < 0.0, (
-        'premise: the neighbour edge sits inside the unclamped opening')
+    PREVIOUS ball seats late, which at a C.1 period falls inside this row's
+    unclamped pre-landing lead. Unclamped this row reads CAUGHT off its
+    neighbour's ball; clamped at the shared boundary it reads the MISS it
+    actually was."""
+    prev_land = LANDING_T - C1_PERIOD_S
+    # The shared boundary, relative to THIS landing, and an edge halfway between
+    # it and the unclamped opening — derived, so the scenario follows the band.
+    boundary_dt = tr.arrival_boundary_t(
+        prev_land, LANDING_T, WINDOWS.arrival_lead_s) - LANDING_T
+    stolen_dt = round(0.5 * (boundary_dt - WINDOWS.arrival_lead_s), 3)
+    assert -WINDOWS.arrival_lead_s < stolen_dt < boundary_dt < 0.0, (
+        'premise: the neighbour edge sits inside the unclamped opening but '
+        'outside the clamped one')
     samples = stream(catch_dt=stolen_dt, dt=0.001)
 
     def under(**kw):
@@ -1061,9 +1113,9 @@ def test_a_row_cannot_reach_back_for_the_PREVIOUS_balls_seat_edge():
 def test_a_band_clamped_search_declares_unknown_rather_than_missed():
     """C-POSSESS-1.C.2 — the half no boundary rule can fix.
 
-    Below a 0.800 s period the next ball lands before this one's band has closed,
-    so both balls cannot have their whole band: at the deferred R6 fork the search
-    reaches +0.7529 and 47.1 ms of band goes unwatched. MISSED is a POSITIVE
+    Below an ``ARRIVAL_BAND_MAX_S`` period the next ball lands before this one's
+    band has closed, so both balls cannot have their whole band. MISSED is a
+    POSITIVE
     claim, and a search that stopped short of the evidence has not earned it. The
     corpus says UNKNOWN and names the cause, so a fitter can tell "the ball
     missed" from "the schedule looked away" — which is the whole reason gate 1

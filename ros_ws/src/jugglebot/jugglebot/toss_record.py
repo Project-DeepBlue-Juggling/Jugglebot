@@ -187,11 +187,14 @@ class SensorWindows(NamedTuple):
     so the margin was one session's variation wide.
 
     > **Updated 2026-08-21 (census D7).** ``CATCH_CONFIRM_WINDOW_S`` is now
-    > derived from ``ball_possession.ARRIVAL_BAND_MAX_S`` (0.80 s — the measured
-    > band ceiling, rounded up), so it no longer sits BELOW the band it has to
-    > outlast. The two constants remain different quantities and must not be
-    > substituted for one another: 0.80 s is the band *ceiling* a deadline must
-    > clear, 1.50 s is the search *window* sized with margin above it.
+    > derived from ``ball_possession.ARRIVAL_BAND_MAX_S`` (0.80 s then, **0.56 s**
+    > since the 2026-08-24 post-FW-14 re-measure — the measured band ceiling,
+    > rounded up), so it no longer sits BELOW the band it has to outlast. The two
+    > constants remain different quantities and must not be substituted for one
+    > another: ``ARRIVAL_BAND_MAX_S`` is the band *ceiling* a deadline must
+    > clear, 1.50 s is the search *window* sized with margin above it — a margin
+    > the re-measure widened from 1.9x to 2.7x, which is why
+    > ``JB_BD_ARRIVAL_WINDOW_S`` did NOT follow the band down.
     """
     arrival_lead_s: float
     arrival_window_s: float
@@ -1075,11 +1078,13 @@ def label_from_sensor(samples: Sequence[SensorSample], *,
     **C-POSSESS-1.C.1 / C.2, added 2026-08-23.** ``arr_hi`` used to be
     ``next_landing_time - arrival_lead_s`` outright, which pays the NEXT row's
     pre-landing guard out of THIS row's measured arrival band and, once the cycle
-    period drops under ``ARRIVAL_BAND_MAX_S + arrival_lead_s`` = 1.000 s, mints a
+    period drops under ``ARRIVAL_BAND_MAX_S + arrival_lead_s`` (1.000 s when this
+    clause landed, 0.760 s since the 2026-08-24 re-measure), mints a
     **false MISSED** on a catch whose seat edge merely landed in the band's tail.
     ``arrival_boundary_t`` surrenders the guard rather than the band; and where
-    the schedule truncates the band anyway (a period under 0.800 s — the deferred
-    R6 fork), gate 3 answers **UNKNOWN, not MISSED**, because a window that
+    the schedule truncates the band anyway (a period under ``ARRIVAL_BAND_MAX_S``
+    — 0.800 s then, 0.560 s now, which is BELOW the deferred R6 fork's own
+    0.7529 s), gate 3 answers **UNKNOWN, not MISSED**, because a window that
     stopped short of the evidence is not a positive observation of non-arrival.
     ``prev_landing_time`` is the other end of the same boundary: pass the
     previous row's ``landing_time`` and adjacent rows abut exactly.

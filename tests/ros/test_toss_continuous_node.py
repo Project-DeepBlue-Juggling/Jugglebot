@@ -1584,8 +1584,14 @@ def test_the_band_wait_commands_nothing_and_is_derived_from_the_arrival_window(
     only ever entered from ``REJECTED_NO_BALL``, the one toss terminal whose own
     terminal action was ACTION_NONE. And the wait is DERIVED from
     ``JB_BD_ARRIVAL_WINDOW_S``, the constant that already means "how long after
-    the predicted landing a seat edge may still arrive", so the pending post-FW14
-    band re-measure shrinks this wait too."""
+    the predicted landing a seat edge may still arrive".
+
+    ⚠ **That is a YAML knob, not ``ball_possession.ARRIVAL_BAND_MAX_S``**, and
+    the docstring here used to claim the pending post-FW14 band re-measure would
+    shrink this wait too. It did not: the re-measure (2026-08-24) moved the band
+    constant 0.80 -> 0.56 and left ``JB_BD_ARRIVAL_WINDOW_S`` at 1.50 s, widening
+    this wait's margin over the ceiling from 1.9x to 2.7x. This test pins the
+    derivation that actually exists."""
     landing = 1000.0
     clock = _Clock(landing)
     monkeypatch.setattr(rcn, 'time', clock)

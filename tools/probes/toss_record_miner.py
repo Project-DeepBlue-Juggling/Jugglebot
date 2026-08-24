@@ -1968,24 +1968,33 @@ def self_check() -> int:
               next_release_time=_r5_rel, next_landing_time=_r5_rel + 0.4949)
     check('R5-prime: retention is not observable', _r5.label, 'CAUGHT')
     check('R5-prime: and the label says so', _r5.confidence, 0.5)
-    # C-POSSESS-1 § 3.4 C.1/C.2, the arrival BOUNDARY (2026-08-23). At the R5'
-    # clamp pin the cycle period is 0.9849 s, so `next_landing - arrival_lead`
-    # closes this row's search at +0.7849 — 15.1 ms INSIDE the measured +798 ms
-    # band ceiling. A catch seating in that tail was labelled MISSED off a
-    # SCHEDULE number. The boundary now surrenders the next row's lead instead.
-    # Only the PERIOD to the next landing matters, so these keep the harness's
-    # own 0.8 s flight and put the next landing 0.9849 s (R5' pin) / 0.7529 s
-    # (R6) away — which also keeps the 100 Hz sample grid on round offsets.
+    # C-POSSESS-1 § 3.4 C.1/C.2, the arrival BOUNDARY (2026-08-23). C.1 bites for
+    # a cycle period in [ARRIVAL_BAND_MAX_S, ARRIVAL_BAND_MAX_S + arrival_lead),
+    # where `next_landing - arrival_lead` closes this row's search INSIDE the
+    # measured band ceiling and a catch seating in that tail is labelled MISSED
+    # off a SCHEDULE number; C.2 bites below ARRIVAL_BAND_MAX_S itself, where no
+    # boundary rule can serve both balls. Both periods are DERIVED from the band
+    # constant rather than typed: they were the R5' clamp pin (0.9849 s) and the
+    # R6 fork (0.7529 s) while the ceiling was 0.800 s, and the 2026-08-24
+    # post-FW-14 re-measure (0.56 s) took both rungs out of both clauses. Only
+    # the PERIOD matters, so these keep the harness's own 0.8 s flight, and every
+    # offset is rounded to the 100 Hz sample grid.
     _b_land = 100.0 + 0.8
+    _b_lead = float(hw.JB_BD_ARRIVAL_LEAD_S)
+    _c1_period = toss_record.ARRIVAL_BAND_MAX_S + _b_lead / 2.0
+    _c1_close = _c1_period - _b_lead
     check('a catch in the band TAIL is not a MISS (the defect)',
-          run(catch_dt=0.79,
-              next_landing_time=_b_land + 0.9849).label, 'CAUGHT')
-    # And where the schedule truncates the band anyway — a period under the
-    # 0.800 s band itself, the deferred R6 fork — a search that stopped short of
-    # the evidence may not answer MISSED, which is a positive claim.
+          run(catch_dt=round(0.5 * (_c1_close
+                                    + toss_record.ARRIVAL_BAND_MAX_S), 2),
+              next_landing_time=_b_land + _c1_period).label, 'CAUGHT')
+    # And where the schedule truncates the band anyway — a period under the band
+    # ceiling itself — a search that stopped short of the evidence may not answer
+    # MISSED, which is a positive claim.
     check('a band-clamped search declares UNKNOWN, never MISSED',
           run(catch_dt=None,
-              next_landing_time=_b_land + 0.7529).label, 'UNKNOWN')
+              next_landing_time=(_b_land
+                                 + toss_record.ARRIVAL_BAND_MAX_S * 0.9)).label,
+          'UNKNOWN')
     check('a NO_RELEASE cup stays held at dispatch',
           run(departure_dt=None,
               catch_dt=None).fields['sensor_held_at_dispatch'], True)

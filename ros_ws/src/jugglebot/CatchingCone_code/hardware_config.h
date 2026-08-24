@@ -163,7 +163,7 @@ namespace JBOp {
   constexpr bool TOSS_STAY_AT_POSE_ON_CAUGHT = true;
   constexpr bool TOSS_REQUIRE_BALL_EVIDENCE = true;
   constexpr float TOSS_SESSION_DWELL_DEFAULT_S = 6.0f;
-  constexpr float TOSS_SESSION_DWELL_MARGIN_S = 0.137f;
+  constexpr float TOSS_SESSION_DWELL_MARGIN_S = 0.087f;
   constexpr uint32_t TOSS_SESSION_MAX_THROWS = 20u;
   constexpr uint32_t TOSS_SESSION_MAX_RELOADS = 3u;
   constexpr uint32_t TOSS_SESSION_FLOOR_PAUSE_EVERY = 5u;

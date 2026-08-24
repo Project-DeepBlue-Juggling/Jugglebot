@@ -124,26 +124,29 @@ plumbing term and a physics term, and neither is chosen::
   ticks. Since the possession verdict became sensor-PRIMARY (C-POSSESS-1,
   2026-08-10) the handoff is the HAND SENSOR's arrival edge, which is a
   different and much faster channel — 0 ms debounce on ``empty→held``, earliest
-  observed edge **+137 ms** past the announced landing. **PROVISIONAL at 0.137 s**
-  (``ARRIVAL_BAND_MIN_S`` itself — the earliest instant a verdict can EXIST,
-  with the old derivation's 2-tick allowance dropped because invariant S1
-  already enforces that ordering structurally)
-  pending the post-FW14 band re-measure (see ``ball_possession``'s
-  ``ARRIVAL_BAND_MAX_S``): the +137…+798 ms band was captured against a
-  can-bridge dispatch shift of +54…+133 ms that FW 14 cut to 10–20 ms, so the
-  band is expected to collapse and this number to move with it. It is a LOWER
-  bound on the verdict and not an upper one, deliberately: the LATEST edge is
-  +798 ms, and a margin sized on THAT would re-impose a 0.94 s floor and forbid
-  every rung. The late-seat case is protected by the C-POSSESS-1 § 3.4/§ 3.6
+  observed edge **+87.6 ms** past the announced landing. It is
+  ``ARRIVAL_BAND_MIN_S`` itself — the earliest instant a verdict can EXIST, with
+  the old derivation's 2-tick allowance dropped because invariant S1 already
+  enforces that ordering structurally. **No longer PROVISIONAL**: the post-FW14
+  band re-measure it was waiting on landed 2026-08-24 (+137…+798 ms ⇒
+  +87.6…+554.7 ms, n=33 over four bags), and this number moved 0.137 ⇒ 0.087
+  with it. It bought no cadence — see ``handoff_margin_s`` below, where the park
+  term binds first at every rung. It is a LOWER bound on the verdict and not an
+  upper one, deliberately: the LATEST edge is +554.7 ms, and a margin sized on
+  THAT would put the floor 0.47 s above where it sits and forbid every rung. The late-seat case is protected by the C-POSSESS-1 § 3.4/§ 3.6
   machinery, not by this number.
 * ``handoff_margin_s`` is what the floor ACTUALLY uses, and it is
   ``max(dwell_margin_s, hand_stroke.catch_park_reentry_s(v, scale))`` (audit fix,
   2026-08-22). The verdict is only half of what the next cycle's CHECKING needs;
   the other half is ``hand_parked``, and the catch stroke does not bring the hand
-  back inside the park band until **+0.190 s** at the R5-prime flight. The
-  retired 0.6 s margin covered that by accident and 0.137 s does not, so at every
-  cadence rung the bare arrival term would schedule cycle N+1 inside cycle N's
-  live catch stroke. See :attr:`TossSessionSequencer.handoff_margin_s`.
+  back inside the park band until **+0.190 s** at the R5-prime flight (+0.208 s
+  with a layer-3 speed trim possible, which is the binding column). The retired
+  0.6 s margin covered that by accident and 0.087 s does not, so at every cadence
+  rung the bare arrival term would schedule cycle N+1 inside cycle N's live catch
+  stroke.  Since 2026-08-24 the park term binds at **every** published rung on
+  both columns — the arrival term is now 0.087 s against a park term that never
+  drops below 0.1204 s — so the re-measured floor is inert here by construction,
+  not by accident. See :attr:`TossSessionSequencer.handoff_margin_s`.
 * ``hand_floor_dwell_s`` is the C-HAND-1 term, and below ~0.5 s it is the ONLY
   one that binds. Between a landing and the next release the hand must
   decelerate the caught ball to rest at 0 rev, then prelude + gap + wind up the
@@ -152,8 +155,10 @@ plumbing term and a physics term, and neither is chosen::
   2026-07-25 clobbered-stroke defect. See
   ``hand_stroke.min_turnaround_dwell_s``.
 
-At the shipped defaults (delay 5.0, margin 0.137, flight 0.80) the floor is
-**5.137 s** and the default dwell is 6.0 s, so an all-defaults goal is unchanged.
+At the shipped defaults (delay 5.0, flight 0.80) the floor is **5.1416 s** with
+a layer-3 speed trim possible and **5.1204 s** without — the PARK term, not the
+0.087 s arrival margin, on both — and the default dwell is 6.0 s, so an
+all-defaults goal is unchanged.
 At the tuning-phase operating point (flight 0.4949 s, ``catch/vel_scale`` 0.9)
 the hand floor is **0.4871 s**, which is what makes a 0.49 s dwell — 61
 throws/min — the fastest cadence this firmware can be asked for. It clears by
@@ -185,7 +190,8 @@ arithmetic starts cycle N+1 inside the previous cycle's teardown. At the shipped
 defaults it already does: 6.0 − 5.0 puts the next cycle 1.0 s past the landing,
 1.7 s before the recentre lands.
 
-:data:`DEFAULT_SESSION_MISS_CLEANUP_S` (2.80 s) is therefore applied as a FLOOR on
+:data:`DEFAULT_SESSION_MISS_CLEANUP_S` (**2.60 s** since the 2026-08-24 band
+re-measure; 2.84 s before it) is therefore applied as a FLOOR on
 ``landing → next cycle start`` after any non-success cycle. It can only lengthen a
 gap, never shorten one, so a session that already dwells long enough is
 bit-unchanged. Neither consequence it prevents is a hazard — a mid-traverse throw
@@ -336,10 +342,10 @@ DEFAULT_SESSION_DWELL_S = 6.0        # 0 => this. Comfortably over the 5.137 s
                                      # selects a faster dwell EXPLICITLY, per goal,
                                      # one rung at a time.
 DEFAULT_SESSION_DWELL_MARGIN_S = ARRIVAL_BAND_MIN_S
-                                     # = 0.137 s. ⚠ PROVISIONAL (census A3,
-                                     # 2026-08-22) — the landing -> next-cycle-
-                                     # start handoff, re-based on the HAND
-                                     # SENSOR's arrival edge.
+                                     # = 0.087 s since 2026-08-24 (0.137 s from
+                                     # census A3, 2026-08-22, until then) — the
+                                     # landing -> next-cycle-start handoff,
+                                     # re-based on the HAND SENSOR's arrival edge.
                                      #
                                      # It is the earliest instant a possession
                                      # verdict for cycle N can EXIST, and nothing
@@ -355,7 +361,9 @@ DEFAULT_SESSION_DWELL_MARGIN_S = ARRIVAL_BAND_MIN_S
                                      #     carries ZERO debounce (measured 0/0/0
                                      #     ms, against 232/241/295 ms on the
                                      #     falling edge) and its earliest observed
-                                     #     edge is +137 ms (ARRIVAL_BAND_MIN_S).
+                                     #     edge is +87.6 ms (ARRIVAL_BAND_MIN_S;
+                                     #     it read +137 ms until the 2026-08-24
+                                     #     post-FW-14 re-measure).
                                      #   * the TICK ALLOWANCE is GONE, because it
                                      #     was double-counting a guarantee the FSM
                                      #     already makes structurally. Invariant
@@ -373,9 +381,9 @@ DEFAULT_SESSION_DWELL_MARGIN_S = ARRIVAL_BAND_MIN_S
                                      #
                                      # It is a LOWER bound on the verdict and not
                                      # an upper one, deliberately: the LATEST edge
-                                     # is +798 ms, and a margin sized on THAT would
-                                     # re-impose a 0.94 s floor and forbid every
-                                     # cadence rung. What protects the late-seat
+                                     # is +554.7 ms, and a margin sized on THAT
+                                     # would re-impose a floor 0.47 s higher and
+                                     # forbid every cadence rung. What protects the late-seat
                                      # case is not this number but the possession
                                      # machinery landed 2026-08-21 (C-POSSESS-1
                                      # § 3.4/§ 3.6: the dwell-clamped retention and
@@ -383,12 +391,18 @@ DEFAULT_SESSION_DWELL_MARGIN_S = ARRIVAL_BAND_MIN_S
                                      # read, and the interlude's seat-edge band
                                      # wait).
                                      #
-                                     # PROVISIONAL because ARRIVAL_BAND_MIN_S is
-                                     # itself pending a re-measure: the band was
-                                     # captured against a can-bridge dispatch shift
-                                     # of +54..+133 ms that FW 14 cut to 10-20 ms,
-                                     # so it should collapse and this number move
-                                     # with it. Deriving it from the band constant
+                                     # NO LONGER PROVISIONAL. The re-measure it
+                                     # was waiting on landed 2026-08-24: the band
+                                     # had been captured against a can-bridge
+                                     # dispatch shift of +54..+133 ms that FW 14
+                                     # cut to 10-20 ms, it collapsed to
+                                     # +87.6..+554.7 ms (n=33, four bags), and
+                                     # this number moved 0.137 -> 0.087 with it.
+                                     # It bought NO cadence: handoff_margin_s
+                                     # takes max() with the hand's park re-entry,
+                                     # which is >= 0.1204 s at every published
+                                     # rung, so the park term binds on both
+                                     # columns. Deriving it from the band constant
                                      # is what makes that automatic — exactly what
                                      # ARRIVAL_BAND_MAX_S's own comment promises.
                                      #
@@ -462,7 +476,10 @@ ILC_SPEED_AUTHORITY = 0.15
 # + GO_HOME_DURATION_S      the recentre profile _safe_abort installs last
 # + 2 x NODE_TICK_S         observe-the-terminal + start-the-next-cycle
 DEFAULT_SESSION_MISS_CLEANUP_S = (CATCH_CONFIRM_WINDOW_S + GO_HOME_DURATION_S
-                                  + 2.0 * NODE_TICK_S)      # 2.80 s
+                                  + 2.0 * NODE_TICK_S)      # 2.60 s since
+                                                            # 2026-08-24 (2.84 s
+                                                            # while the band
+                                                            # ceiling was 0.80)
 
 # The MISSED family — the ONLY cycle-failure class stop_on_miss governs. Every
 # other non-CAUGHT outcome (REJECTED_*, ABORTED_*) ends the session regardless:
@@ -834,13 +851,18 @@ class TossSessionSequencer:
         pass, and until 2026-08-22 only one of them was modelled:
 
         * a possession VERDICT for cycle N has to exist — ``dwell_margin_s``,
-          re-based onto ``ARRIVAL_BAND_MIN_S`` (0.137 s) when the channel went
-          sensor-PRIMARY. Correct about the quantity it models.
+          re-based onto ``ARRIVAL_BAND_MIN_S`` (0.137 s then, **0.087 s** since
+          the 2026-08-24 re-measure) when the channel went sensor-PRIMARY.
+          Correct about the quantity it models.
         * the HAND has to be back inside the park band — ``hand_parked`` is a
           hard CHECKING precondition (a kind-0 stroke commands absolute positions
-          from 0 rev), and the catch stroke is still running well past +137 ms:
+          from 0 rev), and the catch stroke is still running well past +87.6 ms:
           ``hand_stroke.catch_park_reentry_s`` is **0.1903 s** at the R5-prime
-          flight, 0.1582 at R4's, 0.1204 at R0–R3's.
+          flight, 0.1582 at R4's, 0.1204 at R0–R3's — and 0.2081 / 0.1861 /
+          0.1416 at the same three flights once a layer-3 speed trim is possible,
+          which is the column that binds. Since the 2026-08-24 re-measure took
+          the arrival term to 0.087 s, this term is the max() winner at EVERY
+          published rung on BOTH columns.
 
         **Why this is a separate property and not a bigger literal** (audit fix,
         2026-08-22). The retired 0.6 s ``DEFAULT_SESSION_DWELL_MARGIN_S`` covered
@@ -1210,8 +1232,12 @@ class TossSessionSequencer:
                 # but the constant is still a valid floor here, with slack: this
                 # ladder starts at `t_release + release_grace_s` (0.5 s), so the
                 # need measured from t_release is 0.5 + GO_HOME_DURATION_S +
-                # 2 ticks = 2.60 s, while this grants flight + 2.80 s >= 2.80 s
-                # for any flight >= 0. Reusing the constant (rather than deriving
+                # 2 x NODE_TICK_S = 2.54 s, while this grants
+                # flight + DEFAULT_SESSION_MISS_CLEANUP_S >= 2.60 s for any
+                # flight >= 0. The 2026-08-24 band re-measure narrowed that
+                # margin from 300 ms to 60 ms without inverting it; a further
+                # cut to ARRIVAL_BAND_MAX_S below 0.50 s WOULD invert it, and
+                # this comment is where that would first be visible. Reusing the constant (rather than deriving
                 # a second, shorter one) is also what keeps the two teardown
                 # floors from drifting apart — the reload interlude's rung 4
                 # reuses it for the third time.
