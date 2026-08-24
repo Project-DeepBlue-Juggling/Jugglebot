@@ -147,7 +147,11 @@ envelope exists to bound.
    `planner.build_catch` and the feasibility gate like any other.
 7. **The throw site A is read as a CENTROID and consumed as a CUP xy.**
    `trajectory/commanded_position` publishes `_current_state()[0][:3]`, the
-   commanded platform centroid, while `compute_release_state_tilted` documents
+   commanded platform centroid (its 2026-08-23 sibling
+   `trajectory/commanded_pose` carries the same three components plus the
+   orientation, and is read only by the census-B1 positioning skip — the throw
+   site still comes from the `Point`), while `compute_release_state_tilted`
+   documents
    `throw_site_xy_mm` as the point the release *cup* sits at. The two are
    identical whenever the platform is level and differ by
    `hand_catch_offset_mm · sin(tilt)` when it is not — which is exactly the state

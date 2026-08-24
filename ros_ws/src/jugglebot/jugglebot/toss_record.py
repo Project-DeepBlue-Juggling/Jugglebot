@@ -84,6 +84,14 @@ import json
 import math
 from typing import Any, Dict, Iterable, List, NamedTuple, Optional, Sequence, Tuple
 
+# The ONE import this otherwise self-contained module takes, and it is
+# deliberate: the departure guard below and the possession source's retention
+# horizon are the SAME instant, so they must be the same constant. See
+# DEPARTURE_LEAD_S. `ball_possession` is pure Python with no further jugglebot
+# imports, so this cannot cycle.
+from jugglebot.ball_possession import (ARRIVAL_BAND_MAX_S, RELEASE_GUARD_S,
+                                       arrival_boundary_t)
+
 # ── Schema version ────────────────────────────────────────────────────────────
 #: Bumps on field REMOVAL or a semantic change; purely additive fields do not
 #: bump (plan § 3.7). ``tests/motion/test_toss_record.py`` pins both the version
@@ -125,11 +133,25 @@ PROV_DECLARED = 'declared-only'
 # Every ``ball_butler`` announcement in the same bag has NO departure edge, which
 # is the correct answer — a Butler ball never leaves our cup.
 #
-#: How far BEFORE the announced throw_time a departure edge is still ours. All
-#: measured shifts are positive (the release runs LATE), so this is pure headroom
-#: for the fault direction — an early release is a real defect and must be
-#: visible as a number rather than invisible as a missing edge.
-DEPARTURE_LEAD_S = 0.30
+#: How far BEFORE the announced throw_time a departure edge is still ours. The
+#: measured departure-edge shifts are all positive, but that is NOT evidence the
+#: release runs late: the lag tracks the SENSOR POLL CADENCE rather than dispatch
+#: — the mocap backcast of the same tosses puts the release 4.6 ms EARLY
+#: (−4.6 ms; see the 2026-08-12 addendum in
+#: ``logbook/2026-08-10-toss-selftuning-build.md``). So this lead is headroom for
+#: the sensor channel's own lag, and for the fault direction the edges cannot
+#: resolve — an early release is a real defect and must be visible as a number
+#: rather than invisible as a missing edge.
+#:
+#: **It is an ALIAS as of 2026-08-21 (census D1), not an independent number.**
+#: ``ball_possession.RELEASE_GUARD_S`` is the same instant seen from the other
+#: side: ``release - guard`` opens this module's departure search AND closes the
+#: previous toss's retention horizon. Two copies of that number is how the two
+#: windows start to overlap (a legitimate throw read as a bounce-out) or leave a
+#: gap (a real bounce-out attributed to the throw), so there is one. Pinned equal
+#: by ``tests/motion/test_toss_record.py::
+#: test_departure_lead_is_the_possession_release_guard``.
+DEPARTURE_LEAD_S = RELEASE_GUARD_S
 #: How far after it. 4.7x the measured worst case (+212 ms), and the window is
 #: additionally clamped to end at ``landing - arrival_lead`` so it can never
 #: overlap the arrival search and mistake a bounce-out for a departure.
@@ -147,13 +169,20 @@ class SensorWindows(NamedTuple):
     instrument that scores a capture against windows the robot never ran agrees
     with the robot only by coincidence.
 
-    **Do NOT substitute ``toss_sequencer.CATCH_CONFIRM_WINDOW_S`` (0.70 s) for
+    **Do NOT substitute ``toss_sequencer.CATCH_CONFIRM_WINDOW_S`` for
     ``arrival_window_s``.** That constant is the FSM's terminal deadline, not a
     sensor search window; the plan's § 3.3 draft used it. Measured on the
-    reference bag (2026-08-10, 25 catches): at 0.70 s exactly ONE arrival
-    relabels MISSED — the +798 ms row, which is the population MAXIMUM and the
-    row ``JB_BD_ARRIVAL_WINDOW_S`` was sized on. The runner-up (+675 ms) sits
-    25 ms inside that boundary, so the margin is one session's variation wide.
+    reference bag (2026-08-10, 25 catches): at the 0.70 s it then carried,
+    exactly ONE arrival relabels MISSED — the +798 ms row, which is the
+    population MAXIMUM. The runner-up (+675 ms) sits 25 ms inside that boundary,
+    so the margin was one session's variation wide.
+
+    > **Updated 2026-08-21 (census D7).** ``CATCH_CONFIRM_WINDOW_S`` is now
+    > derived from ``ball_possession.ARRIVAL_BAND_MAX_S`` (0.80 s — the measured
+    > band ceiling, rounded up), so it no longer sits BELOW the band it has to
+    > outlast. The two constants remain different quantities and must not be
+    > substituted for one another: 0.80 s is the band *ceiling* a deadline must
+    > clear, 1.50 s is the search *window* sized with margin above it.
     """
     arrival_lead_s: float
     arrival_window_s: float
@@ -259,11 +288,72 @@ FIELDS: Tuple[Field, ...] = (
 
     # ── Applied calibration (all null/zero through phase 2a) ──────────────────
     Field('map_aim_rad', 'calibration', 'D', 'f2', 'phase 2b'),
-    Field('trim_aim_rad', 'calibration', 'D', 'f2', 'phase 2e'),
+    Field('trim_aim_rad', 'calibration', 'D', 'f2',
+          'layer 2 CONTRIBUTED to the commanded aim. A STRUCTURAL zero since '
+          '2026-08-21 — the layer-2 aim estimator is monitor-only (C4)'),
+    # ADDITIVE, so no schema bump (§ 3.7 item 1). Deliberately a SEPARATE key
+    # from trim_aim_rad rather than a repurposing of it: everything that
+    # reconstructs the applied aim from a record — toss_trim.applied_aim_rad's
+    # map+trim fallback, the miner, ilc_fit_lib — reads trim_aim_rad as "what was
+    # applied", and folding a monitor value into that key would re-apply it on
+    # paper, which is exactly the C4 double-count wearing a different hat.
+    Field('trim_monitor_aim_rad', 'calibration', 'D', 'f2',
+          'layer 2 ESTIMATED but did not command, rad. Its divergence from '
+          'ilc_aim_rad is the standing validation of the C3 by-decision '
+          'resolution (the two reduce different residual channels)'),
+    Field('trim_authority', 'calibration', 'D', 's',
+          "MONITOR since 2026-08-21 — toss_trim.AIM_AUTHORITY, recorded so a "
+          "corpus can prove which build's records carry a commanded trim"),
     Field('total_aim_rad', 'calibration', 'D', 'f2', 'what was actually commanded'),
     Field('map_aim_mm_at_h', 'calibration', 'D', 'f2',
           'REPORT field: mm at THIS toss apex, never the stored unit'),
     Field('trim_aim_mm_at_h', 'calibration', 'D', 'f2', 'REPORT field'),
+    # Layer 3 — the critical-point ILC correction (critical-point-ilc.md
+    # Phase 2). ADDITIVE fields, so no schema bump (§ 3.7 item 1).
+    #
+    # POST-GATE, both of them, and that is the whole reason they exist: the plan's
+    # risk 5 is that a correction partially truncated by the D7 total-aim clamp
+    # (or refused by validate_event_vel) desynchronises applied-u from recorded-u,
+    # and the learner then fits against a command the machine never flew. The
+    # apply seam refuses rather than truncates and writes the REFUSED value —
+    # exactly (0, 0) / 0.0 — here. `total_aim_rad` already carries the sum, so
+    # these two say how much of it layer 3 asked for AND GOT.
+    Field('ilc_aim_rad', 'calibration', 'D', 'f2',
+          'layer 3: the TOTAL ILC aim contribution APPLIED, rad — spatial + '
+          'session. Explicit zeros when the feature is off, the artifact is '
+          'absent/dormant, the goal cell missed with no session common mode, or '
+          'the total-aim clamp REFUSED it'),
+    # The C1 split of the field above. ADDITIVE, so no schema bump (s 3.7 item
+    # 1), and deliberately a SPLIT rather than a replacement: everything that
+    # subtracts what layer 3 applied -- toss_trim.ilc_aim_rad's C4 subtraction
+    # first among them -- needs the SUM, and a consumer that had to add two
+    # fields to get it would eventually add only one.
+    Field('ilc_spatial_aim_rad', 'calibration', 'D', 'f2',
+          'layer 3a: the per-cell SPATIAL RESIDUAL applied, rad. Exactly zero '
+          'on a cell miss -- toss_ilc.lookup interpolates nothing'),
+    Field('ilc_session_aim_rad', 'calibration', 'D', 'f2',
+          'layer 3b: the SESSION-LOCAL common mode applied, rad (C1). RAM only, '
+          'seeded from the artifact anchor prior, discarded at goal end, and '
+          'NOT keyed on a cell hit -- a common mode is not a function of the '
+          'cell. This is the quantity a re-level() moves, kept out of every '
+          'persisted cell on purpose'),
+    Field('ilc_session_applied', 'calibration', 'D', 'b',
+          'layer 3b cleared its evidence gate and was commanded'),
+    Field('ilc_session_reason', 'calibration', 'D', 's',
+          'why layer 3b commanded nothing: no_artifact | no_anchor | '
+          'insufficient_evidence | below_se_gate | inside_deadband | '
+          'refused_total_aim. Empty when applied -- "commanded nothing" and '
+          '"had nothing to command" are different facts about a session. '
+          'refused_total_aim is the only one the session component does not '
+          'mint itself: the node D7 clamp drops BOTH layer-3 components when '
+          'map+ilc exceeds the authority, and before 2026-08-22 this field kept '
+          'reading APPLIED on those goals'),
+    Field('ilc_session_n', 'calibration', 'D', 'i',
+          'independent evidence units (sessions, i.e. level() draws) behind the '
+          'anchor prior; 0 when there is none'),
+    Field('ilc_vel_trim', 'calibration', 'D', 'f',
+          'layer 3: the ILC event_vel trim APPLIED, k_v - 1. Explicit zero on '
+          'every path above plus a validate_event_vel refusal'),
     Field('speed_bias_applied', 'calibration', 'D', 'f', 'k_v, phase 2e'),
     Field('timing_bias_applied_ms', 'calibration', 'D', 'f', 'tau, phase 2e'),
     Field('clamp_hits', 'calibration', 'D', 'l', 'per-channel clamp names'),
@@ -344,13 +434,169 @@ FIELDS: Tuple[Field, ...] = (
     Field('fit_rms_mm', 'mocap', 'M', 'f', 'G2 track quality'),
     Field('fit_sparse', 'mocap', 'M', 'b', ''),
     Field('apex_z_mm', 'mocap', 'M', 'f', ''),
-    Field('achieved_flight_s_mocap', 'mocap', 'M', 'f', ''),
+    Field('achieved_flight_s_mocap', 'mocap', 'M', 'f',
+          'MEASURED release -> catch-plane crossing, both instants read off the '
+          'SAME mocap arc in the bag clock (so no clock crossing enters it). '
+          'Defined by tools/probes/toss_record_miner.mine_arc; null in every '
+          'corpus written before 2026-08-12'),
     Field('t_land_bag', 'mocap', 'M', 'f', 'bag clock — /mocap_data has no header'),
     Field('qtm_offset_s', 'mocap', 'M', 'f', ''),
     Field('mocap_gap_ms_max', 'mocap', 'M', 'f', ''),
     Field('land_plane_mm', 'mocap', 'M', 'f',
           'the fit plane USED — so a historical plane mismatch is detectable'),
     Field('floor_arrival', 'mocap', 'M', 'i', 'REPORT-only floor census'),
+
+    # ── Command reference for the mined errors (ILC Phase 0a/0c) ──────────────
+    # The commanded release state the arrival/backcast errors are differenced
+    # against, RECORDED rather than assumed: on a mined-only row every 'D' field
+    # (launch_vel_mms, flight_time_s) is null by construction, so without these
+    # the errors below would not be auditable from the corpus alone.
+    Field('cmd_launch_vel_mms', 'command_ref', 'M', 'f3',
+          'commanded release velocity the mined errors are taken against; '
+          'equals the declared launch_vel_mms when a declaration joined'),
+    Field('cmd_flight_time_s', 'command_ref', 'M', 'f',
+          'commanded release->cup flight time, same source as '
+          'cmd_launch_vel_mms'),
+    Field('cmd_release_source', 'command_ref', 'M', 's',
+          "where cmd_* came from. 'announcement' is the only value the miner "
+          'emits: the announcement is filled from the same ReleaseState the '
+          'declaration reports, and it is the ONLY source on a bag predating '
+          '/toss/record. The slot is named rather than assumed so a corpus can '
+          'still say so if that ever changes'),
+
+    # ── The WHOLE-ARC fit (ILC entry condition E-1, resolved 2026-08-13) ──────
+    # Definition point: tools/probes/toss_record_miner.mine_arc. A THIRD ballistic
+    # fit over the union of the two branches, and it owns every LATERAL velocity
+    # component below. WHY, in one paragraph: the tracked point is the centroid of
+    # the visible retroreflective cap, so it carries a height-locked position bias
+    # b(z) of ~20 mm; height is EVEN about a ballistic apex, so a per-branch line
+    # fit reads v_true +- <db/dz.|vz|> and the two branches disagree by 104 mm/s
+    # on exactly the aim channels, repeatably. A whole-arc slope cancels that by
+    # parity, leaving only the sample coverage's asymmetry about the apex — which
+    # is what `coverage_asym_s` measures and what gates `usable_for_lateral_fit`.
+    # Evidence and the refuted alternatives: plans/active/critical-point-ilc.md
+    # § Phase 1 E-1; probe tools/probes/mocap_parity_bias.py.
+    Field('arc_fit_n', 'arc', 'M', 'i',
+          'rows in the WHOLE-ARC fit (both branches, apex row de-duplicated)'),
+    Field('arc_fit_rms_mm', 'arc', 'M', 'f',
+          '3-D RMS residual of the whole-arc ballistic fit'),
+    Field('arc_lateral_vel_se_mms', 'arc', 'M', 'f',
+          'worst of the two 1-sigma standard errors on the fitted LATERAL '
+          'velocities — the noise floor of every direction channel below'),
+    Field('coverage_asym_s', 'arc', 'M', 'f',
+          'mean sample time MINUS the fitted apex instant, seconds. The one '
+          'term the whole-arc estimator does not cancel: cov(tau, b) is exactly '
+          'zero for coverage symmetric about the apex, so this is the bias-leak '
+          'driver. A GROSS-TRUNCATION guard, not a leak predictor (one 0.0003 s '
+          'arc still leaks 6 mm/s). Measured on the 2026-08-13 re-mine, by '
+          'population: over the 19 usable_for_release_fit rows, 0.0001-0.0732 s '
+          '(median 0.0148), 0 refused; over all 32 mined arcs, median 0.052 s, '
+          'worst 0.600 s, 12 refused — every one a half-seen arc the '
+          'release-fit gate already refuses. Refused past '
+          'COVERAGE_ASYM_MAX_S = 0.1 s'),
+
+    # ── Arrival kinematics (ILC Phase 0a; VERTICAL from the DESCENDING branch) ─
+    # Definition point: tools/probes/toss_record_miner.mine_arc. The nominal is
+    # ballistics_bc.arrival_velocity(cmd_launch_vel_mms, cmd_flight_time_s) —
+    # the PRODUCTION function, never a second copy (plan constraint 1), and it
+    # is deliberately NOT stored: one production call reproduces it, a stored
+    # copy could drift from it.
+    Field('arrival_vel_mms', 'arrival', 'M', 'f3',
+          'MEASURED ball velocity at the catch-plane crossing (global mm/s). '
+          'xy from the WHOLE-ARC fit (E-1), z from the descending branch'),
+    Field('arrival_dir_err_rad', 'arrival', 'M', 'f2',
+          'measured - nominal per-axis lean of the arrival velocity off the '
+          'vertical it is travelling along: [atan2(vx,|vz|), atan2(vy,|vz|)]. '
+          'Bias-immune since E-1: the numerator is whole-arc'),
+    Field('arrival_dir_err_norm_rad', 'arrival', 'M', 'f',
+          'total angle between the measured and nominal arrival directions'),
+    Field('arrival_speed_err_mms', 'arrival', 'M', 'f',
+          '|v_measured| - |v_nominal| at the catch plane'),
+    Field('t_arrival_fit_bag', 'arrival', 'M', 'f',
+          'MEASURED catch-plane crossing instant, bag clock (t_land_bag is the '
+          'ANNOUNCED landing crossed into the bag clock — not the same number)'),
+    Field('arrival_fit_n', 'arrival', 'M', 'i', 'rows in the descending fit'),
+    Field('arrival_fit_rms_mm', 'arrival', 'M', 'f',
+          '3-D RMS residual of the descending ballistic fit'),
+    Field('arrival_vel_se_mms', 'arrival', 'M', 'f',
+          '1-sigma standard error on the fitted VERTICAL arrival velocity. THE '
+          'noise floor this phase owes Phase 1 — a short branch fits a clean '
+          'RMS and a badly wrong velocity, and only this number says so. The '
+          'lateral components are ~10x better determined (their residual is '
+          '2-8 mm against 25-34 mm in z, because the bag clock error shows up '
+          'multiplied by the axis speed)'),
+    Field('flight_time_err_s', 'arrival', 'M', 'f',
+          'achieved_flight_s_mocap - cmd_flight_time_s'),
+
+    # ── Release-state backcast (ILC Phase 0c; ASCENDING branch) ──────────────
+    # The throw critical point's INPUT-side truth. Everything here is
+    # attributable to the RELEASE (hand stroke, dispatch timing, aim);
+    # everything in `land_err_flight_mm` below is what the release does NOT
+    # explain. That split is the discriminator the whole ILC leans on.
+    Field('release_pos_track_mm', 'backcast', 'M', 'f3',
+          'MEASURED release point: the ascending fit evaluated where it crosses '
+          'the release plane'),
+    Field('release_vel_track_mms', 'backcast', 'M', 'f3',
+          'MEASURED release velocity at that crossing (global mm/s). xy from '
+          'the WHOLE-ARC fit (E-1), z from the ascending branch'),
+    Field('t_release_fit_bag', 'backcast', 'M', 'f',
+          'MEASURED release instant, bag clock'),
+    Field('release_time_err_ms', 'backcast', 'M', 'f',
+          't_release_fit crossed to ros MINUS announce_throw_time_ros — an '
+          'INDEPENDENT dispatch-shift measurement (the sensor departure edge is '
+          'the other one, and they disagree; see the 0a/0c logbook)'),
+    Field('release_vel_err_mms', 'backcast', 'M', 'f3',
+          'release_vel_track_mms - cmd_launch_vel_mms, per axis'),
+    Field('release_speed_err_mms', 'backcast', 'M', 'f',
+          '|measured| - |commanded| release speed'),
+    Field('release_dir_err_rad', 'backcast', 'M', 'f2',
+          'per-axis lean error of the release velocity, same convention as '
+          'arrival_dir_err_rad, and whole-arc in the same sense. NOTE the '
+          'consequence: release and arrival now share ONE lateral velocity, so '
+          'these two channels differ only through their |vz| denominators and '
+          'their nominals — they are not independent lateral measurements'),
+    Field('backcast_fit_n', 'backcast', 'M', 'i', 'rows in the ascending fit'),
+    Field('backcast_fit_rms_mm', 'backcast', 'M', 'f',
+          '3-D RMS residual of the ascending ballistic fit'),
+    Field('release_vel_se_mms', 'backcast', 'M', 'f',
+          '1-sigma standard error on the fitted VERTICAL release velocity — the '
+          'arrival_vel_se_mms twin, and the same warning applies'),
+
+    # ── Release-vs-flight split of the landing error (ILC Phase 0c) ──────────
+    # By construction land_err_release_mm + land_err_flight_mm == land_err_mm,
+    # exactly. The first half is what the MEASURED release state already
+    # predicts (propagated to the cup plane by the production ballistics).
+    #
+    # RE-MARKED 2026-08-13 (E-1's resolution). Both halves are LATERAL (xy)
+    # quantities, and under the whole-arc estimator the second half is NOT
+    # measurable flight-phase physics:
+    #   * the parity decomposition puts an upper bound on any lateral
+    #     aerodynamic force well under the artefact it was competing with —
+    #     Magnus would need 3.4-8.8 rev/s against an observed ~0.5, and would
+    #     land in the ODD channel about the apex, which is empty;
+    #   * so what remains in land_err_flight_mm is the disagreement between two
+    #     ESTIMATORS of the same crossing — the descending-band position fit
+    #     behind land_xy_global_mm, against the release state propagated
+    #     forward — plus the unmeasured ABSOLUTE centroid bias, which both
+    #     halves carry and neither resolves.
+    # Read it as an estimator-agreement diagnostic. **Lateral landing error is
+    # RELEASE-side**, and nothing may fit land_err_flight_mm as a flight
+    # channel. The VERTICAL split is untouched and stays meaningful:
+    # release_speed_err_mms against flight_time_err_s are two disjoint branches
+    # measuring one throw, which is exactly what the ILC's V2b cross-check
+    # leans on.
+    Field('land_err_release_mm', 'split', 'M', 'f2',
+          'RELEASE-attributable part of land_err_mm — where the MEASURED '
+          'release state lands under production ballistics, minus the cup. It '
+          'equals "measured release vs COMMANDED release" only because the '
+          'announced landing IS the commanded release own ballistic landing '
+          '(build_announcement_fields); an announcement inconsistent with its '
+          'own release state would land its inconsistency here. Since E-1 this '
+          'is the whole of the lateral landing error, to estimator agreement'),
+    Field('land_err_flight_mm', 'split', 'M', 'f2',
+          'land_err_mm minus the release-attributable part. NOT a flight-physics '
+          'channel since E-1 (2026-08-13) — an estimator-agreement diagnostic; '
+          'see the block comment above'),
 
     # ── Plant (mined; row builder IMPORTED from hand_stroke_timeline) ─────────
     Field('stroke_peak_rev', 'plant', 'M', 'f', ''),
@@ -379,7 +625,21 @@ FIELDS: Tuple[Field, ...] = (
     Field('usable_for_aim_fit', 'quality', 'X', 'b', ''),
     Field('usable_for_timing_fit', 'quality', 'X', 'b', ''),
     Field('usable_for_speed_fit', 'quality', 'X', 'b', ''),
-    Field('excluded_reason', 'quality', 'X', 's', ''),
+    Field('usable_for_release_fit', 'quality', 'X', 'b',
+          'the ARC fits are trustworthy: both branches long enough and the '
+          'fitted release velocity SE small. NOT implied by _speed_fit, which '
+          'gates on the landing fit'),
+    Field('usable_for_lateral_fit', 'quality', 'X', 'b',
+          'the WHOLE-ARC lateral estimate is admissible (E-1, 2026-08-13): '
+          'coverage_asym_s present and within COVERAGE_ASYM_MAX_S. A separate '
+          'flag for the same reason _release_fit is one — _aim_fit gates the '
+          'aim MAP, which consumes only the landing POSITION and never carried '
+          'the branch artefact. ABSENT coverage_asym_s refuses: that is a '
+          'pre-E-1 mine, whose lateral velocities ARE the artefact'),
+    Field('excluded_reason', 'quality', 'X', 's',
+          'every refusal this row accumulated, comma-joined and sorted — across '
+          'ALL the usable_* flags, not one of them. A null coverage_asym_s is '
+          'deliberately NOT a reason: there is no lateral estimate to exclude'),
 )
 
 FIELD_NAMES: Tuple[str, ...] = tuple(f.name for f in FIELDS)
@@ -627,6 +887,22 @@ def _first_in(instants: Sequence[float], lo: float, hi: float) -> Optional[float
     return None
 
 
+def _finite_or_none(value: Any) -> Optional[float]:
+    """``float(value)`` when it is a real number, else None.
+
+    One helper so None and NaN are treated identically everywhere a SCHEDULE
+    instant is optional. A NaN that reached a horizon would compare False against
+    everything and silently disable the clamp it was meant to apply — the sibling
+    of ``ball_possession.HandBallSensorSource._finite``, and for the same reason."""
+    if value is None:
+        return None
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    return out if math.isfinite(out) else None
+
+
 class SensorBlock(NamedTuple):
     """The mined sensor block plus the label it implies."""
     fields: Dict[str, Any]
@@ -638,6 +914,9 @@ class SensorBlock(NamedTuple):
 def label_from_sensor(samples: Sequence[SensorSample], *,
                       throw_time: float, landing_time: float,
                       windows: SensorWindows,
+                      next_release_time: Optional[float] = None,
+                      next_landing_time: Optional[float] = None,
+                      prev_landing_time: Optional[float] = None,
                       stamp_wall_anchored: Optional[bool] = None) -> SensorBlock:
     """THE definition of "caught" for the corpus. Pure; one implementation.
 
@@ -645,11 +924,20 @@ def label_from_sensor(samples: Sequence[SensorSample], *,
     side are ignored. ``throw_time`` / ``landing_time`` are the announcement's
     own stamps in the SAME clock as ``samples[i].t``.
 
+    ``next_release_time`` / ``next_landing_time`` are the NEXT cycle's announced
+    instants in that same clock, or ``None`` when this is the last toss of a
+    chain. They are the cadence clamp of C-POSSESS-1 § 3.4 and they are what
+    keeps this label honest as the dwell shrinks — see "THE CADENCE CLAMP" below.
+    The live verdict takes the identical pair through
+    ``ball_possession.HandBallSensorSource.observe``; the two implementations of
+    "caught" must agree, so they clamp the same way from the same constants.
+
     **The decisive window** is ``[throw - departure_lead, landing +
-    arrival_window + retention_window]`` — release evidence at one end, the
-    latest instant at which CAUGHT can still turn into BOUNCED at the other.
-    ``sensor_valid_frac`` is computed over exactly that span, because a sensor
-    that was healthy an hour earlier says nothing about this toss.
+    arrival_window + retention_window]``, both ends subject to the clamp —
+    release evidence at one end, the latest instant at which CAUGHT can still
+    turn into BOUNCED at the other. ``sensor_valid_frac`` is computed over
+    exactly that span, because a sensor that was healthy an hour earlier says
+    nothing about this toss.
 
     **The label, in gate order** (plan § 3.3):
 
@@ -661,12 +949,43 @@ def label_from_sensor(samples: Sequence[SensorSample], *,
        datum there is.
     2. no departure edge ⇒ **NO_RELEASE**;
     3. departure, no catch edge ⇒ **MISSED**;
-    4. departure, catch edge, dropout inside the retention window ⇒ **BOUNCED**;
+    4. departure, catch edge, dropout inside the retention horizon ⇒ **BOUNCED**;
     5. otherwise ⇒ **CAUGHT**.
 
     Edge TIMES come from the RAW bit and the VERDICT from the DEBOUNCED one
     (D12) — see the module docstring for the measured ~241 ms asymmetric fall lag
     that makes the distinction worth a field rather than a footnote.
+
+    **THE CADENCE CLAMP — why gate 4 is not a fixed 1.5 s (census D1).**
+    ``retention_window_s`` was sized 1.5x the longest seat-then-leave the sensor
+    has resolved (0.999 s) and justified at the top by a delay floor of 3.5 s
+    that no longer exists. At the tuning-phase dwell of **0.49 s** a legitimate
+    throw departs the cup 0.49 s after seating — comfortably inside a fixed
+    1.5 s window — so gate 4 would fire on EVERY successful cycle and the corpus
+    would read ``BOUNCED`` for a perfect session. Worse, that same route is what
+    ``on_empty_cup: RELOAD`` uses to decide a ball is on the floor.
+
+    So the horizon closes at ``next_release_time - departure_lead_s`` — the very
+    instant the NEXT toss's departure search opens. A fall at or after it is that
+    throw's departure by definition and cannot also be this toss's bounce-out.
+    Likewise the arrival search is bounded by ``ball_possession.arrival_boundary_t``
+    at BOTH ends — ``arr_hi`` where the next row's search opens, ``arr_lo`` where
+    the previous row's closed — so no edge is claimed twice (census D2). When the
+    horizon leaves no interval at all the bounce test is SKIPPED rather than
+    resolved either way: there is nothing to observe, and inventing a BOUNCED
+    from arithmetic is the failure this clamp exists to prevent.
+
+    **C-POSSESS-1.C.1 / C.2, added 2026-08-23.** ``arr_hi`` used to be
+    ``next_landing_time - arrival_lead_s`` outright, which pays the NEXT row's
+    pre-landing guard out of THIS row's measured arrival band and, once the cycle
+    period drops under ``ARRIVAL_BAND_MAX_S + arrival_lead_s`` = 1.000 s, mints a
+    **false MISSED** on a catch whose seat edge merely landed in the band's tail.
+    ``arrival_boundary_t`` surrenders the guard rather than the band; and where
+    the schedule truncates the band anyway (a period under 0.800 s — the deferred
+    R6 fork), gate 3 answers **UNKNOWN, not MISSED**, because a window that
+    stopped short of the evidence is not a positive observation of non-arrival.
+    ``prev_landing_time`` is the other end of the same boundary: pass the
+    previous row's ``landing_time`` and adjacent rows abut exactly.
     """
     dep_lo = throw_time - windows.departure_lead_s
     # Clamped so the departure search can NEVER reach into the arrival search and
@@ -677,8 +996,37 @@ def label_from_sensor(samples: Sequence[SensorSample], *,
                  landing_time - windows.arrival_lead_s)
     arr_lo = landing_time - windows.arrival_lead_s
     arr_hi = landing_time + windows.arrival_window_s
+    next_land = _finite_or_none(next_landing_time)
+    if next_land is not None:
+        # Census D2 / clause C.1 — close at the boundary this pair of landings
+        # shares, which is where the NEXT row's arrival search opens.
+        arr_hi = max(arr_lo, min(arr_hi, arrival_boundary_t(
+            landing_time, next_land, windows.arrival_lead_s)))
+    prev_land = _finite_or_none(prev_landing_time)
+    if prev_land is not None:
+        # The identical call the PREVIOUS row made to close its own search. Only
+        # ever moves this opening LATER, so its absence is the shipped window.
+        arr_lo = max(arr_lo, arrival_boundary_t(
+            prev_land, landing_time, windows.arrival_lead_s))
+        # Degenerate to a single INSTANT rather than inverting, and degenerate to
+        # the same instant `HandBallSensorSource._window` does — the low end wins
+        # in both. An inverted search would make every `lo <= t <= hi` vacuously
+        # false and mint a MISSED out of arithmetic. Only reachable on a schedule
+        # whose next landing precedes this one, i.e. never from a real
+        # announcement stream; it is written down because the two implementations
+        # are required to clamp the SAME way, including where they fail.
+        arr_hi = max(arr_lo, arr_hi)
+    # Clause C.2: did the search outlast the ball's measured band? A window the
+    # SCHEDULE truncated inside the band has not seen the evidence out, so "no
+    # rise" is not a positive observation of non-arrival — gate 3 below.
+    band_watched_out = arr_hi >= landing_time + ARRIVAL_BAND_MAX_S
+    next_rel = _finite_or_none(next_release_time)
     win_lo = dep_lo
     win_hi = arr_hi + windows.retention_window_s
+    if next_rel is not None:
+        # Census D1 — and never SHORTER than the arrival search itself, or the
+        # decisive-sample filter would starve the very gates it feeds.
+        win_hi = max(arr_hi, min(win_hi, next_rel - windows.departure_lead_s))
 
     decisive = [s for s in samples if win_lo <= s.t <= win_hi]
     n = len(decisive)
@@ -693,20 +1041,26 @@ def label_from_sensor(samples: Sequence[SensorSample], *,
     t_catch_raw = _first_in(rises_raw, arr_lo, arr_hi)
     t_catch_deb = _first_in(rises_deb, arr_lo, arr_hi)
 
-    t_dropout = None
+    # The retention HORIZON (C-POSSESS-1 § 3.4), mirroring
+    # HandBallSensorSource._retention_horizon exactly.
+    ret_hi = None
     if t_catch_deb is not None:
-        t_dropout = _first_in(falls_deb, t_catch_deb,
-                              t_catch_deb + windows.retention_window_s)
+        ret_hi = t_catch_deb + windows.retention_window_s
+        if next_rel is not None:
+            ret_hi = min(ret_hi, next_rel - windows.departure_lead_s)
+
+    t_dropout = None
+    if t_catch_deb is not None and ret_hi > t_catch_deb:
+        t_dropout = _first_in(falls_deb, t_catch_deb, ret_hi)
 
     held_at_dispatch = None
     for s in decisive:
         if s.valid and s.t <= throw_time:
             held_at_dispatch = bool(s.held)
     held_at_retention = None
-    if t_catch_deb is not None:
-        target = t_catch_deb + windows.retention_window_s
+    if t_catch_deb is not None and ret_hi > t_catch_deb:
         for s in decisive:
-            if s.valid and s.t <= target:
+            if s.valid and s.t <= ret_hi:
                 held_at_retention = bool(s.held)
 
     edge_count = len(rises_deb) + len(falls_deb)
@@ -741,26 +1095,57 @@ def label_from_sensor(samples: Sequence[SensorSample], *,
                            1.0)
     # Gate 3 — it left and never came back.
     if t_catch_deb is None:
+        dep_at = (t_dep_raw if t_dep_raw is not None else t_dep_deb) - throw_time
+        if not band_watched_out:
+            # C-POSSESS-1.C.2. The search closed inside the measured band — the
+            # next landing truncated it, or `arrival_window_s` is configured
+            # under the band — so the corpus does not know whether the ball
+            # missed or whether we looked away. MISSED is a POSITIVE claim and is
+            # not available; UNKNOWN never collapses to one (gate 1's rule, same
+            # reason).
+            return SensorBlock(
+                fields, LABEL_UNKNOWN,
+                'departure at {:+.3f} s, no empty->held edge in [{:+.3f}, '
+                '{:+.3f}] s of landing — but the search was band clamped, '
+                'closing at {:+.3f} s short of the measured band ceiling '
+                '{:+.3f} s, so non-arrival was never observed'.format(
+                    dep_at, arr_lo - landing_time, arr_hi - landing_time,
+                    (landing_time + ARRIVAL_BAND_MAX_S) - arr_hi,
+                    ARRIVAL_BAND_MAX_S),
+                0.0)
         return SensorBlock(fields, LABEL_MISSED,
                            'departure at {:+.3f} s, no empty->held edge in '
                            '[{:+.3f}, {:+.3f}] s of landing'.format(
-                               (t_dep_raw if t_dep_raw is not None
-                                else t_dep_deb) - throw_time,
+                               dep_at,
                                arr_lo - landing_time, arr_hi - landing_time),
                            1.0)
-    # Gate 4 — it arrived and then left again inside retention.
+    # Gate 4 — it arrived and then left again inside the retention HORIZON. A
+    # departure at or after `next_release - departure_lead` is the next toss's
+    # release and was excluded above, by construction rather than by tolerance.
     if t_dropout is not None:
         return SensorBlock(fields, LABEL_BOUNCED,
                            'arrival at {:+.3f} s, dropout {:+.3f} s later '
-                           '(retention {:.2f} s)'.format(
+                           '(retention horizon {:.2f} s)'.format(
                                t_catch_deb - landing_time,
                                t_dropout - t_catch_deb,
-                               windows.retention_window_s),
+                               ret_hi - t_catch_deb),
                            1.0)
     # Gate 5.
+    if ret_hi <= t_catch_deb:
+        # The cadence leaves NO interval between the seat edge and the next
+        # release, so retention was never observable. CAUGHT is still the right
+        # label — the ball demonstrably arrived — but the reason must say the
+        # bounce test never ran, and the confidence must not claim it did.
+        return SensorBlock(fields, LABEL_CAUGHT,
+                           'arrival at {:+.3f} s; retention NOT OBSERVABLE (the '
+                           'next release at {:+.3f} s leaves no horizon)'.format(
+                               t_catch_deb - landing_time,
+                               (next_rel or float('nan')) - landing_time),
+                           0.5)
     return SensorBlock(fields, LABEL_CAUGHT,
-                       'arrival at {:+.3f} s, held through retention'.format(
-                           t_catch_deb - landing_time),
+                       'arrival at {:+.3f} s, held through retention '
+                       '({:.2f} s horizon)'.format(
+                           t_catch_deb - landing_time, ret_hi - t_catch_deb),
                        1.0)
 
 

@@ -337,6 +337,12 @@
 - **subscribers:** _none_
 - **type:** `std_msgs.msg.String`
 
+### `trajectory/commanded_pose`
+
+- **publishers:** `trajectory_node`
+- **subscribers:** `reload_coordinator_node`
+- **type:** `geometry_msgs.msg.Pose`
+
 ### `trajectory/commanded_position`
 
 - **publishers:** `trajectory_node`

@@ -26,7 +26,11 @@
 # WHY THE PLATFORM NEEDS NO MOVE EITHER: a CAUGHT toss ends in ACTION_STAY (config
 # jugglebot_operational.toss_stay_at_pose_on_caught, default true) and
 # trajectory/commanded_position reports the live pose, so cycle N+1's throw site A is
-# cycle N's catch pose for free. See the KNOWN LIMITATION below.
+# cycle N's catch pose for free. Since 2026-08-23 trajectory/commanded_pose reports the
+# ORIENTATION of that same sample too, so cycle N+1 can also prove it is already at the
+# pre-tilt pose and skip the zero-millimetre positioning move on an AIMED chain — worth
+# 0.38 s of every cycle's throw delay, and the whole reason the cadence ladder stopped
+# publishing a separate (slower) aimed column. See the KNOWN LIMITATION below.
 #
 # DWELL is defined as previous SCHEDULED LANDING -> next RELEASE, and it is realised as a
 # QUIESCENT WAIT before the next cycle starts — never as a stretched throw_delay. That
@@ -59,13 +63,15 @@ int32 num_throws                     # how many toss-catch cycles to run. Must b
 float64 dwell_time_s                 # previous SCHEDULED LANDING -> next RELEASE (s);
                                      # 0 => config default toss_session_dwell_default_s.
                                      # FLOOR, and it is DERIVED not chosen:
-                                     #   dwell >= throw_delay_s + toss_session_dwell_margin_s
+                                     #   dwell >= max(throw_delay_s + handoff_margin_s,
+                                     #               hand_stroke.min_turnaround_dwell_s)
                                      # because a cycle's release is its own accept +
                                      # throw_delay, and the session cannot start cycle N+1
-                                     # before cycle N's CAUGHT verdict has landed. At the
-                                     # toss FSM's own 3.5 s throw-delay floor that is
-                                     # 4.10 s; at the 5.0 s default throw delay it is
-                                     # 5.60 s. Below it => REJECTED_DWELL. A dwell the
+                                     # before cycle N's possession verdict has landed AND
+                                     # the hand is back inside the park band
+                                     # (handoff_margin_s, 2026-08-22). At the 5.0 s default
+                                     # throw delay that is 5.137 s. Below it =>
+                                     # REJECTED_DWELL. A dwell the
                                      # machine cannot honour is never silently stretched
                                      # into a longer one — it is refused, because a
                                      # cadence that is quietly ignored is a lie about what
@@ -82,13 +88,35 @@ float64 throw_delay_s                # delay from goal-accept to the FIRST relea
                                      # 0 => the Toss default (5.0 s). Cycles 2..N use the
                                      # SAME internal delay, but their release instants are
                                      # set by dwell_time_s, so this field only moves the
-                                     # first one. Must be >= the toss FSM's own
-                                     # MIN_TOSS_THROW_DELAY_S (3.5 s) or
-                                     # REJECTED_THROW_DELAY — that gate is what makes the
-                                     # 4.10 s absolute dwell floor above a real floor
-                                     # rather than an arithmetic identity, and it names the
-                                     # field the operator actually set wrong instead of
-                                     # letting cycle 1 die REJECTED_CANT_MAKE_LEAD.
+                                     # first one. Must be >= toss_session.min_throw_delay_s
+                                     # or REJECTED_THROW_DELAY — that gate is what makes
+                                     # the absolute dwell floor above a real floor rather
+                                     # than an arithmetic identity, and it names the field
+                                     # the operator actually set wrong instead of letting
+                                     # cycle 1 die REJECTED_CANT_MAKE_LEAD.
+                                     #
+                                     # The floor was a flat MIN_TOSS_THROW_DELAY_S = 3.5 s
+                                     # until 2026-08-22 (operator decision 3), then the
+                                     # DERIVED kind-0 dispatch budget, and since 2026-08-23
+                                     # that budget PLUS the pre-dispatch sequence the
+                                     # runtime guard measures it after: 0.361 s at the
+                                     # 0.80 s default flight, 0.417 s at the C-HAND-3 band
+                                     # floor. Charging the dispatch budget alone let a goal
+                                     # be ACCEPTED and then abort ABORTED_CANT_MAKE_RELEASE
+                                     # on every cycle, with the catch armed and the hand
+                                     # committed.
+                                     #
+                                     # ONE cycle may be granted MORE than this field asks
+                                     # for: the first cycle of a sitting has to COMMAND its
+                                     # pre-positioning move (later cycles hold the pose
+                                     # they threw from and take the census-B1 skip), which
+                                     # costs 0.38 s more of lead. The coordinator raises
+                                     # that cycle's delay and logs one WARN naming the
+                                     # raise; the session's landing-anchored schedule
+                                     # absorbs it and the CADENCE is unchanged. A single
+                                     # Toss is refused instead — there the delay is an
+                                     # appointment the operator set, not a cadence
+                                     # parameter the session consumes.
 float64 catch_vel_scale              # 0 => config default; same semantics and clamp
                                      # [0.3, 1.5] as Toss.action / Reload.action. Applies
                                      # to every cycle.

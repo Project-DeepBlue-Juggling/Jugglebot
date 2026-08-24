@@ -266,11 +266,26 @@ _LEVELLING_MANIFEST = (
      'levelling.correction_for_pose', 'build:E3+E4'),
     ('trajectory_node.py', 'TrajectoryNode._pose_from_msg',
      'levelling.correct_pose', 'apply:E3+E4'),
+    # THE one EGRESS (C-LEVEL-1.E, 2026-08-23). Everything above is a pose coming
+    # IN; this is the single surface that publishes a commanded pose in the frame
+    # external callers speak, so a consumer can compare it against its own
+    # REQUEST without re-deriving the correction. It builds for the pose it
+    # inverts, exactly as an ingest does — see `_EGRESS_FUNCS`.
+    ('trajectory_node.py', 'TrajectoryNode._intent_orientation',
+     'levelling.correction_for_pose', 'build:E7'),
+    ('trajectory_node.py', 'TrajectoryNode._intent_orientation',
+     'levelling.uncorrect_pose', 'egress:E7'),
 )
 
 _APPLY_FUNCS = frozenset(
     {'levelling.correct_pose', 'levelling.apply_gravity_correction'})
 _BUILD_FUNCS = frozenset({'levelling.correction_for_pose'})
+# The EGRESS direction (C-LEVEL-1.E). It is NOT an apply — it composes the
+# INVERSE — but it carries the same obligation: an egress that inverted the
+# stored C-LEVEL-1 offset while the ingests apply a C-LEVEL-2 per-pose correction
+# would leave a residual exactly equal to the map's contribution, silently, on
+# the one surface whose whole job is answering "are these two poses the same".
+_EGRESS_FUNCS = frozenset({'levelling.uncorrect_pose'})
 _STORE_FUNCS = frozenset(
     {'levelling.correction_from_offset', 'levelling.identity_correction'})
 
@@ -526,16 +541,21 @@ def test_follower_target_writers_are_frozen(ast_scan):
 def test_every_application_sits_in_a_declared_ingest_handler():
     """Each callee's declared KIND must match what that callee actually does.
 
-    Three kinds, and the vocabulary is closed (see the comment above
-    `_LEVELLING_MANIFEST`): `apply:` composes a correction into a pose, `build:`
-    computes the correction FOR a pose (C-LEVEL-2's per-pose map lookup), and
-    `store` caches it once per `/gravity_offset` message. A callee declared under
-    the wrong kind is how the per-message / per-pose distinction dies quietly.
+    Four kinds since 2026-08-23, and the vocabulary is closed (see the comment
+    above `_LEVELLING_MANIFEST`): `apply:` composes a correction into a pose,
+    `egress:` composes its INVERSE (C-LEVEL-1.E — publishing a commanded pose in
+    the frame external callers speak), `build:` computes the correction FOR a
+    pose (C-LEVEL-2's per-pose map lookup), and `store` caches it once per
+    `/gravity_offset` message. A callee declared under the wrong kind is how the
+    per-message / per-pose distinction dies quietly.
     """
     for _f, where, callee, kind in _LEVELLING_MANIFEST:
         if callee in _APPLY_FUNCS:
             assert kind.startswith('apply:'), (
                 f"{where} applies the correction but is not declared an ingest")
+        elif callee in _EGRESS_FUNCS:
+            assert kind.startswith('egress:'), (
+                f"{where} INVERTS the correction but is not declared an egress")
         elif callee in _BUILD_FUNCS:
             assert kind.startswith('build:'), (
                 f"{where} builds a POSE-DEPENDENT correction (C-LEVEL-2) but is "
@@ -569,7 +589,7 @@ def test_every_apply_has_a_build_in_the_same_scope():
               if callee in _BUILD_FUNCS}
     unpaired = sorted(
         (f, where, kind) for f, where, callee, kind in _LEVELLING_MANIFEST
-        if callee in _APPLY_FUNCS and kind != 'apply:B1'
+        if callee in (_APPLY_FUNCS | _EGRESS_FUNCS) and kind != 'apply:B1'
         and (f, where) not in builds)
     assert unpaired == [], (
         "an ingest applies the levelling correction without building it for "

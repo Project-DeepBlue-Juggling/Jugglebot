@@ -138,7 +138,10 @@ ESTIMATOR_VERSION = 'arrival-offset/1'
 #: * it caps the cup-swing side effect at ``HAND_CATCH_OFFSET_MM · sin(1°)`` =
 #:   **1.131 mm** (measured by ``/tmp/probe_toss_cal_aim.py``, 2026-08-11);
 #: * at the working height it is ~55 mm of commanded landing shift
-#:   (54.578 mm at h = 0.78 m, same probe) — 1.6× the 35 mm capture radius, so a
+#:   (54.578 mm at a full 1° aim, h = 0.78 m, same probe — a SECANT, which is
+#:   the right quantity for "what does saturating this clamp buy"; the
+#:   derivative at zero aim is 54.5718 mm/deg, see D3 in
+#:   ``toss_release.aim_target_offset_mm``) — 1.6× the 35 mm capture radius, so a
 #:   saturated wrong-signed aim is guaranteed to miss and must never be
 #:   exceeded by an unreviewed number.
 #:

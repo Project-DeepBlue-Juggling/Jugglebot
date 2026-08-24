@@ -29,7 +29,10 @@ way of getting this wrong:
    feedforward would raise the achieved release velocity and re-calibrate every
    throw height the machine has ever flown.
 3. **The commanded position and velocity streams did not move.**  C-HAND-1's
-   stroke-busy window, ``MIN_THROW_EVENT_DELAY_S``, ``_PRIME_INFLIGHT_S`` and
+   stroke-busy window, the throw event-delay floor (the constant
+   ``MIN_THROW_EVENT_DELAY_S`` when this was written; ``hand_stroke.
+   min_throw_event_delay_s(v_throw)`` since 2026-08-22, derived from the same
+   geometry — the claim is unaffected), ``_PRIME_INFLIGHT_S`` and
    ``tools/probes/hand_stroke_timeline.py``'s whole verdict model are all sized
    on the commanded profile.  A torque-only change leaves every one of them
    valid *without moving*; a profile-shaping change would not have.

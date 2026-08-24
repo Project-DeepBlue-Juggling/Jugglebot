@@ -30,6 +30,7 @@ import math
 import pytest
 
 from jugglebot import toss_record as tr
+from jugglebot.ball_possession import ARRIVAL_BAND_MAX_S
 
 
 # The SHIPPED windows, as both the node and the miner construct them. Imported
@@ -121,8 +122,13 @@ EXPECTED_FIELDS = (
     'catch_point_global_mm', 'aim_tilt_rx_rad', 'aim_tilt_ry_rad',
     'throw_site_xy_mm',
     # calibration
-    'map_aim_rad', 'trim_aim_rad', 'total_aim_rad', 'map_aim_mm_at_h',
-    'trim_aim_mm_at_h', 'speed_bias_applied', 'timing_bias_applied_ms',
+    'map_aim_rad', 'trim_aim_rad', 'trim_monitor_aim_rad', 'trim_authority',
+    'total_aim_rad', 'map_aim_mm_at_h',
+    'trim_aim_mm_at_h', 'ilc_aim_rad',
+    'ilc_spatial_aim_rad', 'ilc_session_aim_rad', 'ilc_session_applied',
+    'ilc_session_reason', 'ilc_session_n',
+    'ilc_vel_trim', 'speed_bias_applied',
+    'timing_bias_applied_ms',
     'clamp_hits', 'trim_source_n', 'trim_state', 'trim_reset_reason',
     # dwell tilt (Layer 1.5)
     'dwell_tilt_rad', 'dwell_tilt_sd_rad', 'dwell_tilt_n', 'dwell_tilt_span_s',
@@ -146,6 +152,21 @@ EXPECTED_FIELDS = (
     'fit_rms_mm', 'fit_sparse', 'apex_z_mm', 'achieved_flight_s_mocap',
     't_land_bag', 'qtm_offset_s', 'mocap_gap_ms_max', 'land_plane_mm',
     'floor_arrival',
+    # command reference for the mined errors (ILC Phase 0a/0c)
+    'cmd_launch_vel_mms', 'cmd_flight_time_s', 'cmd_release_source',
+    # the WHOLE-ARC fit (ILC entry condition E-1, resolved 2026-08-13)
+    'arc_fit_n', 'arc_fit_rms_mm', 'arc_lateral_vel_se_mms', 'coverage_asym_s',
+    # arrival kinematics (ILC Phase 0a)
+    'arrival_vel_mms', 'arrival_dir_err_rad', 'arrival_dir_err_norm_rad',
+    'arrival_speed_err_mms', 't_arrival_fit_bag', 'arrival_fit_n',
+    'arrival_fit_rms_mm', 'arrival_vel_se_mms', 'flight_time_err_s',
+    # release-state backcast (ILC Phase 0c)
+    'release_pos_track_mm', 'release_vel_track_mms', 't_release_fit_bag',
+    'release_time_err_ms', 'release_vel_err_mms', 'release_speed_err_mms',
+    'release_dir_err_rad', 'backcast_fit_n', 'backcast_fit_rms_mm',
+    'release_vel_se_mms',
+    # release-vs-flight split of the landing error
+    'land_err_release_mm', 'land_err_flight_mm',
     # plant
     'stroke_peak_rev', 'dip_below_x3_rev', 'pullback_rps', 'trunc', 'seeds',
     'iq_brake_min_a', 'dispatch_shift_ms', 'hand_traj_acks', 'can_errors',
@@ -154,7 +175,7 @@ EXPECTED_FIELDS = (
     'label', 'label_source', 'label_confidence', 'label_reason', 'rimshot',
     'disagreement', 'record_provenance', 'join_residual_ms',
     'usable_for_aim_fit', 'usable_for_timing_fit', 'usable_for_speed_fit',
-    'excluded_reason',
+    'usable_for_release_fit', 'usable_for_lateral_fit', 'excluded_reason',
 )
 
 
@@ -352,6 +373,16 @@ def test_the_plans_draft_catch_window_would_have_relabelled_a_measured_catch():
     inside the draft boundary, so the margin is one session's variation wide. The
     shipped window is used instead, which also makes the offline labeller and the
     live ``HandBallSensorSource`` agree by construction (D11).
+
+    **The relabel is now to UNKNOWN, not to MISSED** — changed 2026-08-23 with
+    C-POSSESS-1.C.2, and it strengthens rather than softens this argument. The
+    draft window is 0.70 s against a band that runs to ``ARRIVAL_BAND_MAX_S``
+    0.80 s, so it stops looking before the evidence runs out; C.2 forbids a
+    search in that state from minting MISSED, which is a POSITIVE claim of
+    non-arrival. A window sized under the band can no longer produce a verdict
+    at all, which is exactly the enforcement D7 wanted when it derived
+    ``CATCH_CONFIRM_WINDOW_S`` from the band in the first place. The row is still
+    lost to the fit either way; it is now lost with the cause on the record.
     """
     draft = tr.SensorWindows(arrival_lead_s=0.30, arrival_window_s=0.70,
                              retention_window_s=WINDOWS.retention_window_s)
@@ -359,13 +390,17 @@ def test_the_plans_draft_catch_window_would_have_relabelled_a_measured_catch():
     def under(windows, catch_dt):
         return tr.label_from_sensor(
             stream(catch_dt=catch_dt), throw_time=THROW_T,
-            landing_time=LANDING_T, windows=windows).label
+            landing_time=LANDING_T, windows=windows)
 
-    assert under(WINDOWS, 0.798) == tr.LABEL_CAUGHT
-    assert under(draft, 0.798) == tr.LABEL_MISSED
+    assert under(WINDOWS, 0.798).label == tr.LABEL_CAUGHT
+    assert draft.arrival_window_s < ARRIVAL_BAND_MAX_S, (
+        'premise: the draft window is shorter than the band it must judge')
+    relabelled = under(draft, 0.798)
+    assert relabelled.label == tr.LABEL_UNKNOWN
+    assert 'band clamped' in relabelled.reason
     # The runner-up survives the draft — which is the honest statement of how
     # thin the margin was, not a claim that the draft lost two rows.
-    assert under(draft, 0.675) == tr.LABEL_CAUGHT
+    assert under(draft, 0.675).label == tr.LABEL_CAUGHT
 
 
 def test_an_invalid_sample_in_the_window_is_unknown_and_never_collapses():
@@ -662,3 +697,250 @@ def test_the_departure_window_is_far_wider_than_the_measured_shift():
     clamped = FLIGHT_S - float(hw.JB_BD_ARRIVAL_LEAD_S)
     assert clamped >= 2.5 * 0.212
     assert math.isclose(tr.DEPARTURE_LEAD_S, 0.30)
+
+
+# ── 4. The cadence clamp (C-POSSESS-1 § 3.4; census D1/D2) ────────────────────
+#
+# The corpus label and the live verdict are two implementations of one definition
+# of "caught". They must clamp the same way from the same constants, or the
+# offline miner — which is the R3 rung's gate instrument ("score the miner, not
+# the console") — will disagree with the machine it is scoring.
+#
+# Rung instants, never round numbers:
+#   R3   dwell 1.50 s, flight 0.80 s   (the rung these fixes must land before)
+#   R5'  dwell 0.49 s, flight 0.4949 s (the tuning-phase operating target)
+
+R3_DWELL_S = 1.50
+R5P_DWELL_S, R5P_FLIGHT_S = 0.49, 0.4949
+SEAT_DT_S = 0.30                       # inside the measured +137…+798 ms band
+
+
+def test_departure_lead_is_the_possession_release_guard():
+    """The departure search opens at ``throw - DEPARTURE_LEAD_S``; the previous
+    toss's retention horizon closes at ``release - RELEASE_GUARD_S``. Same
+    instant, so the two windows ABUT — no fall edge belongs to both (a good throw
+    read as a bounce-out) and none falls between them (a real bounce-out
+    attributed to the throw). Two copies of that number is exactly how the
+    property dies quietly, so there is one and this pins the identity."""
+    from jugglebot.ball_possession import RELEASE_GUARD_S
+    assert tr.DEPARTURE_LEAD_S is RELEASE_GUARD_S
+
+
+def test_a_good_cycle_is_not_labelled_bounced_once_the_dwell_shrinks():
+    """CENSUS D1 — the inversion, and the fix, in one test.
+
+    ``retention_window_s`` is 1.50 s and its UPPER justification was written in
+    the YAML as *"shorter than MIN_TOSS_THROW_DELAY_S (3.5 s) by 2.3x, so a
+    legitimate throw can never read as a bounce-out"*. That floor is retired. At
+    the R3 dwell the ball leaves the cup 1.50 s after the landing for OUR OWN
+    next throw, which sits inside the unclamped window, so gate 4 mints BOUNCED
+    on a perfect cycle — and with ``on_empty_cup: RELOAD`` that same route asks
+    BallButler to throw a second ball at a full cup.
+
+    Both halves are asserted: without the clamp the defect reproduces, with it
+    the label is CAUGHT. Asserting only the fixed behaviour would also pass
+    against an implementation that had merely widened something."""
+    next_release = LANDING_T + R3_DWELL_S
+    samples = stream(catch_dt=SEAT_DT_S, drop_after=R3_DWELL_S - SEAT_DT_S)
+
+    def under(**kw):
+        return tr.label_from_sensor(samples, throw_time=THROW_T,
+                                    landing_time=LANDING_T, windows=WINDOWS,
+                                    **kw)
+
+    assert under().label == tr.LABEL_BOUNCED                    # the defect
+    got = under(next_release_time=next_release,
+                next_landing_time=next_release + FLIGHT_S)
+    assert got.label == tr.LABEL_CAUGHT
+    assert got.confidence == 1.0
+
+
+def test_a_real_bounce_out_survives_the_clamp():
+    """The clamp excludes the announced throw window, NOT everything after the
+    arrival. Trading the D1 mislabel for its mirror image — every bounce-out read
+    as a catch — would re-open the trap C-POSSESS-1 § 7 spent a whole section
+    accepting before the sensor closed it."""
+    next_release = LANDING_T + R3_DWELL_S
+    got = tr.label_from_sensor(
+        stream(catch_dt=SEAT_DT_S, drop_after=0.20), throw_time=THROW_T,
+        landing_time=LANDING_T, windows=WINDOWS,
+        next_release_time=next_release,
+        next_landing_time=next_release + FLIGHT_S)
+    assert got.label == tr.LABEL_BOUNCED
+
+
+def test_an_unobservable_retention_is_declared_not_assumed():
+    """C-POSSESS-1 § 3.4's third clause, and the honest half of the change.
+
+    At R5' the seat edge lands +0.30 s after the landing and the next release
+    only +0.49 s after it, so the horizon closes BEFORE the ball is even seated.
+    Retention was never observable — the physics removes it, not the clamp (the
+    debounced fall lag alone is ~241 ms). The label is still CAUGHT (the ball
+    demonstrably arrived), but the corpus must be able to tell "held through
+    retention" from "we did not look", so the confidence drops and the reason
+    says so. A fitter that treats every CAUGHT alike would otherwise inherit an
+    unmarked change in what CAUGHT means, at exactly the cadence the fit runs
+    at."""
+    next_release = LANDING_T + R5P_DWELL_S
+    assert LANDING_T + SEAT_DT_S > next_release - tr.DEPARTURE_LEAD_S, (
+        'premise: the seat edge lands PAST the horizon at this cadence')
+    samples = stream(catch_dt=SEAT_DT_S,
+                     drop_after=R5P_DWELL_S - SEAT_DT_S)
+    got = tr.label_from_sensor(samples, throw_time=THROW_T,
+                               landing_time=LANDING_T, windows=WINDOWS,
+                               next_release_time=next_release,
+                               next_landing_time=next_release + R5P_FLIGHT_S)
+    assert got.label == tr.LABEL_CAUGHT
+    assert got.confidence == 0.5
+    assert 'NOT OBSERVABLE' in got.reason
+
+
+def test_the_arrival_search_stops_where_the_next_cycles_begins():
+    """CENSUS D2. At R5' the cycle PERIOD is ``dwell + T = 0.985 s``, under the
+    1.50 s arrival window, so the NEXT cycle's seat edge falls inside this
+    cycle's unclamped search and both rows can claim it. Clamped, this window
+    closes exactly where the next one opens.
+
+    Only the PERIOD to the next landing matters here, so this cycle keeps the
+    harness's own throw/landing pair; the R5' numbers set where the next cycle
+    lands."""
+    period_s = R5P_DWELL_S + R5P_FLIGHT_S              # 0.985 s
+    next_release = LANDING_T + R5P_DWELL_S
+    next_land = LANDING_T + period_s
+    assert period_s < WINDOWS.arrival_window_s, 'premise: they overlap'
+    # This cycle MISSED; only the NEXT cycle's ball ever seats.
+    samples = stream(catch_dt=period_s + SEAT_DT_S)
+
+    def under(**kw):
+        return tr.label_from_sensor(samples, throw_time=THROW_T,
+                                    landing_time=LANDING_T, windows=WINDOWS,
+                                    **kw)
+
+    assert under().label == tr.LABEL_CAUGHT                     # the edge, stolen
+    assert under(next_release_time=next_release,
+                 next_landing_time=next_land).label == tr.LABEL_MISSED
+
+
+# ── The arrival BOUNDARY (C-POSSESS-1 § 3.4 clauses C.1 / C.2, 2026-08-23) ────
+#
+# `arr_hi` used to be `next_landing_time - arrival_lead_s` outright, which pays
+# the NEXT row's pre-landing guard out of THIS row's measured arrival band.
+# Measured over the tree's own constants (`/tmp/probe_arrival_clamp.py`, run
+# 2026-08-23) that closes the search 15.1 ms inside the +798 ms band ceiling at
+# the R5' clamp pin, and 247.1 ms inside it at the deferred R6 fork.
+
+R5P_PERIOD_S = R5P_DWELL_S + R5P_FLIGHT_S             # 0.9849 s
+R6_PERIOD_S = 0.25 + 0.5029                           # 0.7529 s — the 0.25 dwell
+
+
+def test_the_corpus_and_the_live_verdict_share_ONE_arrival_boundary():
+    """The same discipline ``DEPARTURE_LEAD_S``/``RELEASE_GUARD_S`` carries, one
+    clamp along. Two implementations of "caught" that each derive the boundary
+    from the constants will agree today and drift the first time one of them is
+    edited; the miner is the R3 rung's gate instrument, so a drift there scores
+    the machine against a definition the machine is not using."""
+    from jugglebot.ball_possession import arrival_boundary_t
+    assert tr.arrival_boundary_t is arrival_boundary_t
+
+
+def test_a_catch_in_the_band_TAIL_is_not_labelled_missed():
+    """C-POSSESS-1.C.1, the corpus half — a false MISSED minted off a SCHEDULE.
+
+    The premise comes from the constants, not from a chosen number: at the R5'
+    period the shipped clamp closes at +0.7849 while the band this labeller was
+    sized against runs to +0.798. A catch seating in that sliver is a REAL catch
+    the search never saw, and the corpus called it a MISS — which is the label
+    the aim fit weights most heavily.
+
+    Both halves asserted: the defect reproduces against the shipped instant, the
+    fix labels it CAUGHT and keeps the catch-event field."""
+    next_land = LANDING_T + R5P_PERIOD_S
+    shipped_close = R5P_PERIOD_S - WINDOWS.arrival_lead_s
+    assert shipped_close < ARRIVAL_BAND_MAX_S, (
+        'premise: at this period the shipped clamp closes inside the band')
+    catch_dt = 0.79                       # in the sliver, and on the sample grid
+    assert shipped_close < catch_dt < ARRIVAL_BAND_MAX_S
+    samples = stream(catch_dt=catch_dt)
+
+    # THE DEFECT: the shipped instant as a fixed window is arithmetically the
+    # same search C-POSSESS-1.C built, and it cannot see the edge.
+    narrow = tr.SensorWindows(arrival_lead_s=WINDOWS.arrival_lead_s,
+                              arrival_window_s=shipped_close,
+                              retention_window_s=WINDOWS.retention_window_s)
+    missed = tr.label_from_sensor(samples, throw_time=THROW_T,
+                                  landing_time=LANDING_T, windows=narrow)
+    assert missed.fields['t_catch_deb_ros'] is None
+
+    got = tr.label_from_sensor(samples, throw_time=THROW_T,
+                               landing_time=LANDING_T, windows=WINDOWS,
+                               next_landing_time=next_land)
+    assert got.label == tr.LABEL_CAUGHT
+    assert got.fields['t_catch_deb_ros'] == pytest.approx(
+        LANDING_T + catch_dt, abs=0.011)
+
+
+def test_a_row_cannot_reach_back_for_the_PREVIOUS_balls_seat_edge():
+    """The abutment, from the other end — and why the closing could move at all.
+
+    Moving ``arr_hi`` later without moving the next row's ``arr_lo`` with it hands
+    one edge to two rows: the census-D2 fault, re-created by its own fix. Here the
+    PREVIOUS ball seats late, at +0.79 of ITS landing, which at the R5' period
+    falls inside this row's unclamped pre-landing lead. Unclamped this row reads
+    CAUGHT off its neighbour's ball; clamped at the shared boundary it reads the
+    MISS it actually was."""
+    prev_land = LANDING_T - R5P_PERIOD_S
+    stolen_dt = (prev_land + 0.79) - LANDING_T        # -0.1949 s
+    assert -WINDOWS.arrival_lead_s < stolen_dt < 0.0, (
+        'premise: the neighbour edge sits inside the unclamped opening')
+    samples = stream(catch_dt=stolen_dt, dt=0.001)
+
+    def under(**kw):
+        return tr.label_from_sensor(samples, throw_time=THROW_T,
+                                    landing_time=LANDING_T, windows=WINDOWS,
+                                    **kw)
+
+    assert under().label == tr.LABEL_CAUGHT                    # the edge, stolen
+    assert under(prev_landing_time=prev_land).label == tr.LABEL_MISSED
+
+
+def test_a_band_clamped_search_declares_unknown_rather_than_missed():
+    """C-POSSESS-1.C.2 — the half no boundary rule can fix.
+
+    Below a 0.800 s period the next ball lands before this one's band has closed,
+    so both balls cannot have their whole band: at the deferred R6 fork the search
+    reaches +0.7529 and 47.1 ms of band goes unwatched. MISSED is a POSITIVE
+    claim, and a search that stopped short of the evidence has not earned it. The
+    corpus says UNKNOWN and names the cause, so a fitter can tell "the ball
+    missed" from "the schedule looked away" — which is the whole reason gate 1
+    exists, one gate up."""
+    next_land = LANDING_T + R6_PERIOD_S
+    assert R6_PERIOD_S < ARRIVAL_BAND_MAX_S, (
+        'premise: the next ball lands before this band closes')
+    samples = stream(catch_dt=None)
+
+    def under(**kw):
+        return tr.label_from_sensor(samples, throw_time=THROW_T,
+                                    landing_time=LANDING_T, windows=WINDOWS,
+                                    **kw)
+
+    assert under().label == tr.LABEL_MISSED        # a search that DID watch out
+    got = under(next_landing_time=next_land)
+    assert got.label == tr.LABEL_UNKNOWN
+    assert 'band clamped' in got.reason
+    assert got.confidence == 0.0
+
+
+def test_the_clamp_is_absent_by_default_so_a_single_toss_is_unchanged():
+    """A single ``Toss``, and a session's LAST cycle, have nothing scheduled
+    after them — the honest horizon is the shipped fixed one. ``None`` and
+    ``NaN`` must behave identically: a NaN horizon compares False against
+    everything and would silently disable the clamp it was meant to apply."""
+    nan = float('nan')
+    base = label(catch_dt=0.4)
+    for kw in ({}, {'next_release_time': nan, 'next_landing_time': nan},
+               {'next_release_time': None, 'next_landing_time': None}):
+        got = tr.label_from_sensor(stream(catch_dt=0.4), throw_time=THROW_T,
+                                   landing_time=LANDING_T, windows=WINDOWS,
+                                   **kw)
+        assert (got.label, got.reason, got.confidence) == (
+            base.label, base.reason, base.confidence)

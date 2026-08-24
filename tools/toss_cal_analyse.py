@@ -605,7 +605,7 @@ def _jsonable(value):
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description=__doc__.split('\n\n')[0],
+        description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--corpus', action='append', default=[],
                         help='toss_record JSONL file or glob (repeatable)')

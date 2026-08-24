@@ -32,6 +32,7 @@ from jugglebot.toss_sequencer import (
     ACTION_ANNOUNCE,
     ACTION_DISPATCH_THROW,
     ACTION_NONE,
+    CATCH_CONFIRM_WINDOW_S,
     ACTION_POSITION_PLATFORM,
     ACTION_PREPARE_CATCH,
     ACTION_REACH_CATCH,
@@ -63,6 +64,18 @@ from jugglebot.toss_sequencer import (
 )
 
 CATCH_POSE = (0.0, 0.0, 170.0)
+
+#: The standard fixture's SCHEDULED landing: ``t_release`` 5.0 + flight 0.8.
+FIXTURE_LANDING_T = 5.8
+#: The first instant at or past the settle deadline (`now >= _settle_deadline`).
+#: DERIVED, not typed: the confirm window moved 0.70 -> 0.80 on 2026-08-21 when
+#: it became `ball_possession.ARRIVAL_BAND_MAX_S` (census D7), and twelve tests
+#: in this file went red on a hard-coded 6.5 for a reason that had nothing to do
+#: with what any of them assert. Deriving it means the pending post-FW14 band
+#: re-measure moves them too.
+PAST_SETTLE_T = FIXTURE_LANDING_T + CATCH_CONFIRM_WINDOW_S
+#: Just inside the CATCHING phase-report threshold (landing - confirm window).
+CATCHING_PHASE_T = FIXTURE_LANDING_T - CATCH_CONFIRM_WINDOW_S + 0.05
 
 
 def _obs(now, **kw):
@@ -127,8 +140,8 @@ def _to_throw_dispatched(seq):
 
 
 def _to_in_flight(seq):
-    """… ack ok + stroke evidence → BALL_IN_FLIGHT. Scheduled landing 5.8;
-    settle deadline 5.0 + 0.8 + 0.7 = 6.5."""
+    """… ack ok + stroke evidence → BALL_IN_FLIGHT. Scheduled landing
+    FIXTURE_LANDING_T (5.0 + 0.8); settle deadline PAST_SETTLE_T."""
     _to_throw_dispatched(seq)
     seq.note_throw_dispatch(THROW_DISPATCH_OK)
     d = seq.step(1.1, _obs(1.1, throw_stroke_seen=True))
@@ -263,16 +276,122 @@ def test_tier_gate_rejects_unknown_tier():
     assert seq.prepared is False
 
 
-def test_throw_delay_floor_rejected():
-    """delay < 3.5 s can never fit the positioning + prepare budget plus the
-    1.0 s event-delay floor; the runtime ABORTED_CANT_MAKE_RELEASE guard is the
-    real enforcement, this is the loud+early copy."""
+def test_throw_delay_floor_is_the_derived_dispatch_budget_not_a_constant():
+    """CANT_MAKE_LEAD is the loud+early copy of the Teensy's own ``:642``
+    dispatch budget — prelude(park band) + SAFETY_GAP + windup(v) — and it MOVES
+    with the release speed. It was a flat 3.5 s until 2026-08-22 (census A1): a
+    generic fit over a worst-case POSITIONING move a co-located chain never
+    makes, which refused every cadence rung for a budget it did not have.
+
+    Pinned at both ends of the C-HAND-3 band, because a constant would pass one
+    end and fail the other: the DISPATCH budget is 0.337 s at the 0.4949 s band
+    floor and 0.253 s at the 1.1485 s ceiling, a 1.33x spread driven entirely by
+    the windup term (0.147 s -> 0.064 s).
+
+    Since 2026-08-23 the GATE charges that budget PLUS the pre-dispatch sequence
+    (:func:`pre_dispatch_budget_s`), because the runtime guard applies the same
+    budget to the lead REMAINING after the sequence has run. The two quantities
+    are pinned separately here: ``min_event_delay_for_throw_s`` is still the
+    dispatch budget alone (it is what ``_step_preparing`` measures), and
+    ``min_throw_delay_for_cycle_s`` is what CHECKING refuses against."""
+    from jugglebot.toss_sequencer import (
+        FLIGHT_TIME_MAX_S, FLIGHT_TIME_MIN_S, pre_dispatch_budget_s)
+    for flight, budget in ((FLIGHT_TIME_MIN_S, 0.3368),
+                           (0.80, 0.2811),
+                           (FLIGHT_TIME_MAX_S, 0.2535)):
+        seq = TossSequencer(catch_pose_stow_mm=CATCH_POSE,
+                            flight_time_s=flight, throw_delay_s=5.0)
+        assert seq.min_event_delay_for_throw_s == pytest.approx(budget, abs=1e-3)
+        # The default is FAIL-CLOSED: an FSM nobody told assumes POSITIONING
+        # commands the move, so it charges the 0.460 s sequence.
+        assert seq.positioning_move_expected is True
+        assert seq.min_throw_delay_for_cycle_s == pytest.approx(
+            budget + pre_dispatch_budget_s(True), abs=1e-3)
+
+        for moves in (False, True):
+            floor = budget + pre_dispatch_budget_s(moves)
+            under = TossSequencer(catch_pose_stow_mm=CATCH_POSE,
+                                  flight_time_s=flight,
+                                  throw_delay_s=floor - 0.01,
+                                  positioning_move_expected=moves)
+            under.start(0.0)
+            d = under.step(0.0, _obs(0.0))
+            assert d.done and d.result.outcome.startswith(
+                'REJECTED_CANT_MAKE_LEAD')
+            assert d.action == ACTION_NONE
+
+            over = TossSequencer(catch_pose_stow_mm=CATCH_POSE,
+                                 flight_time_s=flight,
+                                 throw_delay_s=floor + 0.01,
+                                 positioning_move_expected=moves)
+            over.start(0.0)
+            assert over.step(0.0, _obs(0.0)).phase == PHASE_POSITIONING
+
+
+def test_the_pre_dispatch_budget_is_the_node_tick_ladder_not_a_literal():
+    """``pre_dispatch_budget_s`` counts the ticks the node actually spends
+    between cycle start and the LAST release-window guard evaluation:
+
+      * no move (census-B1 skip): arrival is declared inside tick 0, so
+        ``_step_positioning`` runs at tick 1 and PREPARE/announce/dispatch add
+        three more — **4 ticks = 0.080 s**;
+      * a commanded move: arrival is ``min_move_duration_s + settle pad`` =
+        0.400 s, first observed at tick 20, plus the same three —
+        **23 ticks = 0.460 s**.
+
+    Pinned as a FUNCTION of the tick, not as two literals: the tick moved
+    0.05 -> 0.02 on 2026-08-22 and this budget must move with it. The 0.40/0.02
+    case is also the float trap — a bare ``ceil`` charges a 21st tick, because
+    the quotient is 20.000000000000004."""
+    from jugglebot.toss_sequencer import (
+        TOSS_POSITION_MIN_MOVE_S, TOSS_POSITION_SETTLE_PAD_S,
+        NODE_TICK_S, pre_dispatch_budget_s)
+    assert pre_dispatch_budget_s(False) == pytest.approx(4 * NODE_TICK_S)
+    arrival = TOSS_POSITION_MIN_MOVE_S + TOSS_POSITION_SETTLE_PAD_S
+    assert pre_dispatch_budget_s(True) == pytest.approx(
+        (round(arrival / NODE_TICK_S) + 3) * NODE_TICK_S)
+    assert pre_dispatch_budget_s(True) == pytest.approx(0.460)
+    # It tracks the tick, both ways.
+    assert pre_dispatch_budget_s(False, 0.05) == pytest.approx(0.20)
+    assert pre_dispatch_budget_s(True, 0.05) == pytest.approx(0.55)
+
+
+def test_the_planner_min_move_floor_matches_the_generated_config():
+    """Drift guard: ``TOSS_POSITION_MIN_MOVE_S`` is a local copy of
+    ``hw.JB_TRAJ_MIN_MOVE_DURATION_S`` (this module's readable-standalone
+    pattern), and the pre-dispatch budget is now sized on it. A codegen that
+    moves the planner floor without moving this one would leave every accept-time
+    delay gate charging a move the machine no longer makes."""
+    import jugglebot.hardware_config as hw
+    from jugglebot.toss_sequencer import TOSS_POSITION_MIN_MOVE_S
+    assert TOSS_POSITION_MIN_MOVE_S == pytest.approx(
+        float(hw.JB_TRAJ_MIN_MOVE_DURATION_S))
+
+
+def test_a_delay_under_the_goal_storm_debounce_is_rejected():
+    """The debounce survives the retirement, and it is all that survives: a
+    throw_delay at or under ~0 would demand a release in the tick the goal was
+    accepted, so the whole sequence runs against an already-expired t_release
+    and burns a cycle's per-goal state per goal. It also still catches the sign
+    typo __post_init__ deliberately preserves."""
+    from jugglebot.toss_sequencer import TOSS_DISPATCH_DEBOUNCE_S
+    assert TOSS_DISPATCH_DEBOUNCE_S == pytest.approx(0.10)
     seq = TossSequencer(catch_pose_stow_mm=CATCH_POSE, flight_time_s=0.8,
-                        throw_delay_s=2.0)
+                        throw_delay_s=TOSS_DISPATCH_DEBOUNCE_S - 0.01)
     seq.start(0.0)
     d = seq.step(0.0, _obs(0.0))
     assert d.done and d.result.outcome == 'REJECTED_CANT_MAKE_LEAD'
     assert d.action == ACTION_NONE
+
+
+def test_an_explicit_event_delay_override_wins_over_the_derived_floor():
+    """``min_event_delay_s > 0`` is the standalone/test override; 0 (shipped)
+    derives. Pinned because the field's meaning INVERTED on 2026-08-22 — it was
+    the floor itself, it is now an override sentinel — and a caller still
+    passing the old 1.0 must get 1.0, not a silently-derived 0.281."""
+    seq = TossSequencer(catch_pose_stow_mm=CATCH_POSE, flight_time_s=0.8,
+                        throw_delay_s=5.0, min_event_delay_s=1.0)
+    assert seq.min_event_delay_for_throw_s == pytest.approx(1.0)
 
 
 def test_zero_delay_defaults_to_5s():
@@ -517,18 +636,25 @@ def test_prepare_ok_announces_after_gap_then_dispatches():
 
 
 def test_cant_make_release_aborts_before_announcing():
-    """Positioning ate the delay budget: t_release − now < the 1.0 s event-delay
-    floor at prepare-confirm time. The abort fires BEFORE the announcement goes
-    out — an announced-then-aborted toss would leave a phantom tracker
-    expectation that REJECTED_TRACK_ACTIVE then refuses on until it expires.
-    Ball still seated ⇒ safe to stand down."""
+    """Positioning ate the delay budget: t_release − now < the DERIVED
+    event-delay floor at prepare-confirm time. The abort fires BEFORE the
+    announcement goes out — an announced-then-aborted toss would leave a phantom
+    tracker expectation that REJECTED_TRACK_ACTIVE then refuses on until it
+    expires. Ball still seated ⇒ safe to stand down.
+
+    This is census B5 and it is the REAL enforcement: it measures the ACTUAL
+    remaining lead, so it stays correct however the sequence's elapsed cost
+    changes. The CHECKING gate is only its loud+early copy. Since 2026-08-22 the
+    number it compares against is 0.281 s at T = 0.80 (was a flat 1.0 s), so the
+    stall this test injects has to be correspondingly deeper."""
     seq = _fresh(throw_delay_s=3.5)                   # t_release = 3.5
+    assert seq.min_event_delay_for_throw_s == pytest.approx(0.2811, abs=1e-3)
     _to_positioning(seq)
-    seq.note_position_result(0.05, True, 2.8)         # arrival = 3.05
-    d = seq.step(3.05, _obs(3.05))
+    seq.note_position_result(0.05, True, 3.1)         # arrival = 3.35
+    d = seq.step(3.35, _obs(3.35))
     assert d.phase == PHASE_PREPARING and d.action == ACTION_PREPARE_CATCH
     seq.note_prepare_result(True)
-    d = seq.step(3.1, _obs(3.1))                      # 3.5 − 3.1 = 0.4 < 1.0
+    d = seq.step(3.4, _obs(3.4))                      # 3.5 − 3.4 = 0.1 < 0.281
     assert d.done and d.result.outcome == 'ABORTED_CANT_MAKE_RELEASE'
     assert d.action == ACTION_SAFE_ABORT
     assert seq._announce_dispatched is False          # no phantom announcement
@@ -630,7 +756,7 @@ def test_stroke_evidence_advances():
     seq.note_throw_dispatch(THROW_DISPATCH_OK)
     d = seq.step(1.1, _obs(1.1, throw_stroke_seen=True))
     assert d.phase == PHASE_BALL_IN_FLIGHT
-    assert seq._settle_deadline == pytest.approx(6.5)  # 5.0 + 0.8 + 0.7
+    assert seq._settle_deadline == pytest.approx(PAST_SETTLE_T)
 
 
 def test_tracker_evidence_advances():
@@ -675,14 +801,16 @@ def test_happy_path_caught_stays_at_pose():
 
 
 def test_settle_deadline_anchored_on_landing_not_release():
-    """The settle deadline includes the time-of-flight (t_release + T + 0.7),
-    so a catch confirmed after the scheduled landing still reads CAUGHT — not
-    MISSED because the deadline treated RELEASE as landing."""
+    """The settle deadline includes the time-of-flight (t_release + T +
+    CATCH_CONFIRM_WINDOW_S), so a catch confirmed after the scheduled landing
+    still reads CAUGHT — not MISSED because the deadline treated RELEASE as
+    landing."""
     seq = _fresh()
     _to_in_flight(seq)
     d = seq.step(5.85, _obs(5.85, ball_caught=False))  # past landing, in window
     assert not d.done
-    d = seq.step(6.4, _obs(6.4, ball_caught=True, catch_error_mm=8.0))
+    late = PAST_SETTLE_T - 0.1                     # inside the window, past landing
+    d = seq.step(late, _obs(late, ball_caught=True, catch_error_mm=8.0))
     assert d.done and d.result.outcome == 'CAUGHT'
     assert d.action == ACTION_STAY
 
@@ -690,7 +818,7 @@ def test_settle_deadline_anchored_on_landing_not_release():
 def test_missed_after_settle_window():
     seq = _fresh()
     _to_in_flight(seq)
-    d = seq.step(6.5, _obs(6.5, ball_caught=False))
+    d = seq.step(PAST_SETTLE_T, _obs(PAST_SETTLE_T, ball_caught=False))
     assert d.done and d.result.outcome == 'MISSED'
     assert d.action == ACTION_SAFE_ABORT               # armed → safe the robot
 
@@ -705,7 +833,7 @@ def test_infeasible_does_not_terminate_mid_flight():
     seq.note_catch_feasibility(False, 'WORKSPACE')
     d = seq.step(5.2, _obs(5.2))
     assert not d.done
-    d = seq.step(6.5, _obs(6.5, ball_caught=False))
+    d = seq.step(PAST_SETTLE_T, _obs(PAST_SETTLE_T, ball_caught=False))
     assert d.done and d.result.outcome == 'MISSED_INFEASIBLE_WORKSPACE'
     assert d.action == ACTION_SAFE_ABORT
 
@@ -730,7 +858,7 @@ def test_accept_clears_standing_reject():
     _to_in_flight(seq)
     seq.note_catch_feasibility(False, 'WORKSPACE')
     seq.note_catch_feasibility(True)
-    d = seq.step(6.5, _obs(6.5, ball_caught=False))
+    d = seq.step(PAST_SETTLE_T, _obs(PAST_SETTLE_T, ball_caught=False))
     assert d.done and d.result.outcome == 'MISSED'
 
 
@@ -744,7 +872,7 @@ def test_accept_then_reject_stream_still_not_infeasible():
     seq.note_catch_feasibility(True)                   # pre-tilt accepted
     for _ in range(30):                                # corrupt-track reject stream
         seq.note_catch_feasibility(False, 'WORKSPACE')
-    d = seq.step(6.5, _obs(6.5, ball_caught=False))
+    d = seq.step(PAST_SETTLE_T, _obs(PAST_SETTLE_T, ball_caught=False))
     assert d.done and d.result.outcome == 'MISSED'     # honest: reachable, not seated
 
 
@@ -764,7 +892,7 @@ def test_feasibility_during_preparing_counts():
     seq.note_throw_dispatch(THROW_DISPATCH_OK)
     seq.step(1.1, _obs(1.1, throw_stroke_seen=True))   # BALL_IN_FLIGHT
     seq.note_catch_feasibility(False, 'WORKSPACE')     # in-flight garbage reject
-    d = seq.step(6.5, _obs(6.5, ball_caught=False))
+    d = seq.step(PAST_SETTLE_T, _obs(PAST_SETTLE_T, ball_caught=False))
     assert d.done and d.result.outcome == 'MISSED'     # not MISSED_INFEASIBLE
 
 
@@ -776,7 +904,7 @@ def test_feasibility_before_prepare_dispatch_ignored():
     seq = _fresh()
     seq.note_catch_feasibility(False, 'WORKSPACE')     # pre-prepare: ignored
     _to_in_flight(seq)
-    d = seq.step(6.5, _obs(6.5, ball_caught=False))
+    d = seq.step(PAST_SETTLE_T, _obs(PAST_SETTLE_T, ball_caught=False))
     assert d.done and d.result.outcome == 'MISSED'     # not MISSED_INFEASIBLE
 
     seq2 = _fresh()
@@ -791,18 +919,19 @@ def test_feasibility_before_prepare_dispatch_ignored():
     seq2.note_throw_dispatch(THROW_DISPATCH_OK)
     seq2.step(1.1, _obs(1.1, throw_stroke_seen=True))  # BALL_IN_FLIGHT
     seq2.note_catch_feasibility(False, 'WORKSPACE')    # real standing reject
-    d = seq2.step(6.5, _obs(6.5, ball_caught=False))
+    d = seq2.step(PAST_SETTLE_T, _obs(PAST_SETTLE_T, ball_caught=False))
     assert d.done and d.result.outcome == 'MISSED_INFEASIBLE_WORKSPACE'
 
 
 def test_phase_reports_catching_near_landing():
     """The reported phase flips BALL_IN_FLIGHT → CATCHING at scheduled landing −
-    confirm window (5.8 − 0.7 = 5.1)."""
+    confirm window."""
     seq = _fresh()
     _to_in_flight(seq)
-    d = seq.step(5.0, _obs(5.0))
+    early = FIXTURE_LANDING_T - CATCH_CONFIRM_WINDOW_S - 0.05
+    d = seq.step(early, _obs(early))
     assert d.phase == PHASE_BALL_IN_FLIGHT
-    d = seq.step(5.15, _obs(5.15))
+    d = seq.step(CATCHING_PHASE_T, _obs(CATCHING_PHASE_T))
     assert d.phase == PHASE_CATCHING
 
 
@@ -906,7 +1035,7 @@ def test_achieved_flight_nan_without_confirmation():
     crossing estimate is untrusted ⇒ NaN."""
     seq = _fresh()
     _to_in_flight(seq)                                 # stroke evidence only
-    d = seq.step(6.5, _obs(6.5, ball_caught=False))
+    d = seq.step(PAST_SETTLE_T, _obs(PAST_SETTLE_T, ball_caught=False))
     assert d.done and d.result.outcome == 'MISSED'
     assert math.isnan(d.result.achieved_flight_s)
 
@@ -927,7 +1056,7 @@ def test_catch_error_nan_on_all_non_caught_terminals(stage):
         d = seq.step(5.5, _obs(5.5, catch_error_mm=55.0))
     else:                                              # missed
         _to_in_flight(seq)
-        d = seq.step(6.5, _obs(6.5, ball_caught=False, catch_error_mm=55.0))
+        d = seq.step(PAST_SETTLE_T, _obs(PAST_SETTLE_T, ball_caught=False, catch_error_mm=55.0))
     assert d.done and d.result.success is False
     assert math.isnan(d.result.catch_error_mm)
 
@@ -1082,7 +1211,7 @@ def test_not_caught_terminals_always_safe_abort(stay, drive, outcome):
     seq = _fresh(stay_at_pose_on_caught=stay)
     if drive == 'missed':
         _to_in_flight(seq)
-        d = seq.step(6.5, _obs(6.5, ball_caught=False))
+        d = seq.step(PAST_SETTLE_T, _obs(PAST_SETTLE_T, ball_caught=False))
     else:
         _to_throw_dispatched(seq)
         seq.note_throw_dispatch(THROW_DISPATCH_OK)

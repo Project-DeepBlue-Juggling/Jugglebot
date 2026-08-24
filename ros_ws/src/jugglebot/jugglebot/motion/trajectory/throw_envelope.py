@@ -126,11 +126,20 @@ TORQUE_SOFT_LIMIT_NM = float(hw.HAND_ENV_HAND_TORQUE_SOFT_LIMIT_NM)
 J_MEASURED_KGM2 = float(hw.HAND_ENV_MEASURED_REFLECTED_INERTIA_KGM2)
 GRAVITY_TORQUE_NM = float(hw.HAND_ENV_GRAVITY_HOLD_CURRENT_A) * KT_NM_PER_A
 #: BURST regen fence (W) — what the drive's ``dc_max_negative_current`` allows at
-#: the nominal bus.  Braking is a burst, not a duty: the decel ramp is 50-90 ms
-#: against a 3.5 s ``MIN_TOSS_THROW_DELAY_S`` cadence floor (~2 % duty), and the
-#: owner has confirmed (2026-08-20) that the rail tolerates 360 W bursts.  So the
-#: rail's STEADY-STATE capacity is NOT the instantaneous fence — using it as one
-#: would tighten the envelope on a duty the machine never runs.
+#: the nominal bus.  Braking is a burst, not a duty: the decel ramp is 50-90 ms,
+#: once per CYCLE, and the owner has confirmed (2026-08-20) that the rail
+#: tolerates 360 W bursts.  So the rail's STEADY-STATE capacity is NOT the
+#: instantaneous fence — using it as one would tighten the envelope on a duty
+#: the machine never runs.
+#:
+#: ⚠ THE DUTY CYCLE MOVED ON 2026-08-22 and this note was re-derived with it.
+#: It read "against a 3.5 s ``MIN_TOSS_THROW_DELAY_S`` cadence floor (~2 % duty)"
+#: — that floor is retired (census A1), and the cadence ladder's operating point
+#: is a **0.985 s cycle period** (dwell 0.49 + flight 0.4949, ~61 throws/min).
+#: The duty is therefore **5.1-9.2 %**, so the average at the 360 W fence is
+#: 18-33 W against the rail's 300 W: it still clears, by ~9-16x instead of ~60x.
+#: This is the one number the cadence work makes monotonically worse — re-check
+#: it before any rung faster than R5-prime.
 REGEN_POWER_W = (float(hw.HAND_ENV_REGEN_CURRENT_LIMIT_A)
                  * float(hw.HAND_ENV_DC_BUS_NOMINAL_V))
 

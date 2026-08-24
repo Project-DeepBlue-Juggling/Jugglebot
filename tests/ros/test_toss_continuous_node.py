@@ -261,8 +261,10 @@ def test_bad_goal_numerics_rejected_before_anything_runs(kwargs, field,
     # A sub-floor throw_delay is refused HERE, not one cycle later as
     # ABORTED_CYCLE_REJECTED_CANT_MAKE_LEAD with a whole cycle's per-goal state
     # already installed. The dwell is legal for the delay, so only the delay
-    # gate can catch it.
-    (dict(delay=2.0, dwell=4.0), 'REJECTED_THROW_DELAY'),
+    # gate can catch it. The floor is the DERIVED :642 dispatch budget since
+    # 2026-08-22 (census A1) — 0.337 s at the band floor this session is judged
+    # at — so the row asks for 0.20 s; 2.0 s is now legal.
+    (dict(delay=0.20, dwell=4.0), 'REJECTED_THROW_DELAY'),
 ])
 def test_session_checking_rejects_via_execute(kwargs, expected, monkeypatch):
     clock = _Clock()
@@ -462,9 +464,9 @@ def test_every_cycle_goes_through_the_shared_builder(monkeypatch):
     calls = []
     real_build = node._build_toss_cycle
 
-    def spy(catch_pose, flight, throw_delay, vel_scale):
-        calls.append((catch_pose, flight, throw_delay, vel_scale))
-        return real_build(catch_pose, flight, throw_delay, vel_scale)
+    def spy(catch_pose, flight, throw_delay, vel_scale, **kw):
+        calls.append((catch_pose, flight, throw_delay, vel_scale, kw))
+        return real_build(catch_pose, flight, throw_delay, vel_scale, **kw)
 
     monkeypatch.setattr(node, '_build_toss_cycle', spy)
     _stub_cycles(node, monkeypatch, clock,
@@ -472,11 +474,16 @@ def test_every_cycle_goes_through_the_shared_builder(monkeypatch):
     node._execute_toss_continuous(
         _ContGoalHandle(num_throws=2, delay=DELAY, vel_scale=0.9))
     assert len(calls) == 2
-    for pose, flight, delay, scale in calls:
+    for pose, flight, delay, scale, kw in calls:
         assert pose == (0.0, 0.0, 170.0)
         assert flight == pytest.approx(float(hw.JB_OP_TOSS_FLIGHT_TIME_DEFAULT_S))
         assert delay == pytest.approx(DELAY)
         assert scale == pytest.approx(0.9)
+        # …and the SESSION path declares its delay a CADENCE parameter, which is
+        # what lets the one cycle that must command its pre-positioning move be
+        # granted the extra lead instead of killing the sitting (2026-08-23). A
+        # single Toss passes no such flag and is refused instead.
+        assert kw == {'delay_is_cadence': True}
 
 
 def test_a_real_cycle_reject_terminates_the_session(monkeypatch):
@@ -1228,6 +1235,15 @@ def test_the_session_ceiling_makes_room_for_the_reload_budget():
     assert _toss_session_deadline_s(
         reload_, 30.0,
         reload_budget_s=rcn._reload_interlude_budget_s(reload_)) > base
+    # Every wait the interlude can legitimately spend must be IN the budget. The
+    # seat-edge band (C-POSSESS-1 § 3.6) is the newest one and it is the easiest
+    # to forget, because it is spent in the GATE — before the attempt loop the
+    # rest of this arithmetic walks. Charged per attempt, which over-counts on
+    # purpose: this ceiling ABORTS.
+    per_attempt = rcn._reload_interlude_budget_s(reload_) / 3.0
+    assert per_attempt > (rcn.GO_HOME_DURATION_S + rcn._RECENTRE_VERIFY_PAD_S
+                          + rcn.DEFAULT_SESSION_MISS_CLEANUP_S
+                          + float(rcn.hw.JB_BD_ARRIVAL_WINDOW_S))
 
 
 # ── The reopened ABORTED_NO_RELEASE retry, through the node ──────────────────
@@ -1489,3 +1505,249 @@ def test_a_cancel_inside_the_interlude_terminalises_the_session_as_cancelled(
     result = node._execute_toss_continuous(gh)
     assert result.outcome == 'ABORTED_CANCELLED'
     assert gh.terminal == 'canceled'
+
+
+# ══ The interlude fixes the census orders BEFORE rung R3 (D4 / F3 + the HIGH) ══
+
+ARRIVAL_BAND_S = float(rcn.hw.JB_BD_ARRIVAL_WINDOW_S)
+_TICK = float(rcn._TICK_S)
+
+
+def _caught(flight=FLIGHT):
+    return TossResult(True, 'CAUGHT', 3.0, float(flight))
+
+
+def _session_after_a_catch(landing, **kw):
+    """A session that has completed ONE cycle, CAUGHT at ``landing``.
+
+    That is the state the interlude is actually entered from, and the anchor the
+    seat-edge band needs. Note the session does NOT advance ``_last_landing`` on
+    the REJECTED_NO_BALL branch (it returns early), so at the interlude
+    ``last_landing_perf`` is the previous CAUGHT cycle's landing — the instant the
+    seat edge belongs to. That early return is load-bearing here: anchoring the
+    band on the REJECTED cycle instead would anchor it on a landing that never
+    happened, which is in the future and would over-wait."""
+    s = _session(**kw)
+    assert s.step(0.0).action == ts.SESSION_ACTION_START_CYCLE
+    s.note_cycle_result(_caught(), 0.0, float(landing))
+    assert s.last_landing_perf == pytest.approx(float(landing))
+    return s
+
+
+class _SeatingClock(_Clock):
+    """A fake clock whose cup fills part-way through the wait — a REAL catch
+    whose seat edge lands inside the measured +137…+798 ms band, after a CHECKING
+    tick that already read the cup and called it empty."""
+
+    def __init__(self, t0, seat_at):
+        super().__init__(t0)
+        self.seat_at = float(seat_at)
+        self.sensor_held = False
+
+    def sleep(self, dt):
+        super().sleep(dt)
+        if self.t >= self.seat_at:
+            self.sensor_held = True
+
+
+def test_a_good_catch_mislabelled_no_ball_never_licenses_a_bb_throw(monkeypatch):
+    """CENSUS D4 + F3 — the "single most dangerous change" the cadence census
+    names, closed.
+
+    ``REJECTED_NO_BALL`` is minted at CHECKING, which runs at
+    ``landing + (dwell - throw_delay)``. The physical seat edge lands
+    **+137…+798 ms** after the announced landing. Below roughly a 1.2 s dwell
+    those cross, so a CHECKING tick reads the cup BEFORE the ball has finished
+    arriving and a GOOD catch mints ``REJECTED_NO_BALL``. With
+    ``on_empty_cup: RELOAD`` that route asks BallButler to throw a SECOND ball
+    at a cup that is about to be — and by the time BB throws, already is — full.
+
+    Both halves are asserted. Read at the instant the interlude is entered the
+    cup is EMPTY and the gate PASSES (the defect). Read after the seat-edge band
+    it is SEATED and the gate refuses, naming the contradiction."""
+    landing = 1000.0
+    clock = _SeatingClock(landing, seat_at=landing + 0.30)   # inside the band
+    monkeypatch.setattr(rcn, 'time', clock)
+    node = _reload_ready_node(clock, cup_held=False)
+    session = _session_after_a_catch(landing)
+    # THE DEFECT: at the instant the interlude is entered the cup reads EMPTY.
+    assert node._ball_sensor.evidence_settled(clock.t) == 'EMPTY'
+    # THE FIX: the gate takes its own read, after the band.
+    assert node._reload_interlude_gate(session) == 'STOPPED_CUP_NOT_EMPTY'
+    assert clock.t >= landing + ARRIVAL_BAND_S, (
+        'the read must be taken after the seat-edge band, not before it')
+
+
+def test_the_band_wait_commands_nothing_and_is_derived_from_the_arrival_window(
+        monkeypatch):
+    """Nothing is armed and nothing is airborne while it waits — the interlude is
+    only ever entered from ``REJECTED_NO_BALL``, the one toss terminal whose own
+    terminal action was ACTION_NONE. And the wait is DERIVED from
+    ``JB_BD_ARRIVAL_WINDOW_S``, the constant that already means "how long after
+    the predicted landing a seat edge may still arrive", so the pending post-FW14
+    band re-measure shrinks this wait too."""
+    landing = 1000.0
+    clock = _Clock(landing)
+    monkeypatch.setattr(rcn, 'time', clock)
+    node = _reload_ready_node(clock, cup_held=False)
+    moved = []
+    for name in ('_go_home', '_arm_catch', '_smooth_move_hand', '_safe_abort'):
+        monkeypatch.setattr(node, name,
+                            lambda *a, _n=name, **k: moved.append(_n) or True)
+    assert node._reload_interlude_gate(_session_after_a_catch(landing)) is None
+    assert clock.t == pytest.approx(landing + ARRIVAL_BAND_S, abs=_TICK)
+    assert moved == []
+
+
+def test_a_session_with_no_landing_yet_does_not_wait(monkeypatch):
+    """Before any cycle has landed there is no seat edge to wait for, and a
+    session that never reports one must not stall the interlude for a band that
+    is anchored on nothing. NaN is the honest "no anchor"."""
+    clock = _Clock(1000.0)
+    monkeypatch.setattr(rcn, 'time', clock)
+    node = _reload_ready_node(clock, cup_held=False)
+    t0 = clock.t
+    assert node._reload_interlude_gate(_session()) is None
+    assert clock.t == pytest.approx(t0)
+
+
+def test_the_gate_reads_the_settled_query_so_a_flicker_cannot_license_a_throw(
+        monkeypatch):
+    """C-POSSESS-1 § 3.5/§ 3.6. The live ``evidence`` query reads the RAW bit,
+    which is right everywhere a wrong answer REFUSES — and wrong here, where a
+    carry-flicker over a seated ball would COMMAND an autonomous BB throw into a
+    full cup. The gate uses ``evidence_settled``: the two bits must agree, and a
+    disagreement is UNKNOWN, which this gate already refuses on without moving
+    anything."""
+    landing = 1000.0
+    clock = _Clock(landing)
+    monkeypatch.setattr(rcn, 'time', clock)
+    node = _reload_ready_node(clock, cup_held=True)
+    clock.detach()          # stop the harness re-feeding, so the flicker stands
+    # A single raw sample flickers EMPTY under a seated ball (five misses are
+    # needed before the DEBOUNCED verdict would follow).
+    node._ball_sensor.note_sample(landing + 0.01, held=True, valid=True,
+                                  raw=False)
+    clock.t = landing + 0.01
+    assert node._ball_sensor.evidence(clock.t) == 'EMPTY'        # raw, fail-closed
+    assert node._reload_interlude_gate(_session()) == 'STOPPED_SENSOR_UNKNOWN'
+
+
+# ── The deferred-cancel discipline, transposed onto the interlude ─────────────
+
+def _reload_seq_in(node, phase):
+    """A ReloadSequencer parked in ``phase`` — the interlude builds its own, so
+    the deferral predicate is exercised on the real object."""
+    seq = ReloadSequencer(catch_point_mm=node._catch_point_mm, throw_delay_s=0.0)
+    seq.start(0.0)
+    seq._phase = phase
+    return seq
+
+
+@pytest.mark.parametrize('phase,deferred', [
+    ('CHECKING', False),        # nothing commanded to BB — nothing can be falling
+    ('PREPARING', False),       # armed, but the throw has not been sent
+    ('AIMING', True),           # bb/throw_at_target dispatched: a ball may leave
+    ('THROW_PENDING', True),
+    ('BALL_IN_FLIGHT', True),
+    ('CATCHING', True),
+    ('SETTLING', True),
+])
+def test_a_cancel_is_deferred_once_the_throw_is_committed_to_bb(phase, deferred):
+    """THE UNFIXED HIGH from the Phase-2 audit, closed by transposing
+    ``_toss_cancel_deferred``.
+
+    The toss path has always refused to honour a cancel mid-flight, for a reason
+    that was never toss-specific: aborting a catch mid-flight drops a ball on the
+    robot, and the honoured path runs ``_safe_on_early_exit`` -> ``_safe_abort``,
+    i.e. it RETRACTS THE HAND out from under the incoming ball. The interlude's
+    ball is thrown by BallButler and is exactly as airborne, and until 2026-08-21
+    a session cancel during an interlude was honoured on the very next tick, at
+    any phase.
+
+    The boundary is the DISPATCH, not a cutoff around a release instant: AIMING
+    is entered by invoking ``bb/throw_at_target``, BB's countdown cannot be
+    aborted (``_enter_preparing``'s own docstring says so), and the interlude —
+    unlike the toss, which is its own announcer — has no release instant to
+    compare against until BB's announcement lands."""
+    node = ReloadCoordinatorNode()
+    assert node._reload_cancel_deferred(_reload_seq_in(node, phase), 0.0) \
+        is deferred
+
+
+def test_a_deferred_cancel_keeps_ticking_and_never_retracts_mid_flight(
+        monkeypatch):
+    """The behavioural half: with a ball committed, the attempt does NOT safe and
+    does NOT return None — it ticks the FSM to its own terminal, exactly as
+    ``_run_toss_cycle`` does under ``_toss_cancel_deferred``, and the session's
+    own loop-top check terminalises the goal as cancelled afterwards."""
+    clock = _Clock()
+    monkeypatch.setattr(rcn, 'time', clock)
+    node = _reload_ready_node(clock)
+    safed = []
+    monkeypatch.setattr(node, '_safe_on_early_exit',
+                        lambda seq: safed.append(seq))
+    ticks = []
+    cancelling = []
+
+    def fake_step(seq, now, gh=None):
+        ticks.append(now)
+        # Tick 1 commits the throw to BB; the operator's cancel arrives after it.
+        seq._phase = 'BALL_IN_FLIGHT'
+        cancelling.append(True)
+        if len(ticks) < 3:
+            return types.SimpleNamespace(done=False, result=None,
+                                         action='none', phase='CATCHING')
+        return types.SimpleNamespace(
+            done=True, result=ReloadResult(False, 'MISSED'),
+            action='safe_abort', phase='SETTLING')
+
+    monkeypatch.setattr(node, '_step_sequence', fake_step)
+    result = node._run_one_reload_attempt(cancel_now_fn=lambda: bool(cancelling))
+    assert result is not None and result.outcome == 'MISSED'
+    assert safed == [], 'a deferred cancel must never retract under a live ball'
+    assert len(ticks) == 3, 'the FSM keeps ticking to its own terminal'
+
+
+def test_a_deferred_cancel_still_skips_the_settle_floor(monkeypatch):
+    """The floor protects the NEXT cycle and a cancelled session has none —
+    whether the cancel was honoured or deferred. Charging the operator's stop
+    both the deferral AND the floor would make it look 2.9 s slower than it is."""
+    clock = _Clock()
+    monkeypatch.setattr(rcn, 'time', clock)
+    node = _reload_ready_node(clock)
+    monkeypatch.setattr(node, '_safe_on_early_exit', lambda seq: None)
+
+    cancelling = []
+
+    def fake_step(seq, now, gh=None):
+        # Tick 1 commits the throw and the cancel lands after it; tick 2 sees the
+        # cancel (deferred, ball in the air) and then reaches the FSM terminal.
+        seq._phase = 'BALL_IN_FLIGHT'
+        if not cancelling:
+            cancelling.append(True)
+            return types.SimpleNamespace(done=False, result=None,
+                                         action='none', phase='CATCHING')
+        return types.SimpleNamespace(
+            done=True, result=ReloadResult(False, 'MISSED'),
+            action='safe_abort', phase='SETTLING')
+
+    monkeypatch.setattr(node, '_step_sequence', fake_step)
+    t0 = clock.t
+    node._run_one_reload_attempt(cancel_now_fn=lambda: bool(cancelling))
+    assert clock.t - t0 < rcn.DEFAULT_SESSION_MISS_CLEANUP_S
+
+
+def test_a_cancel_during_the_band_wait_is_honoured_before_anything_is_committed(
+        monkeypatch):
+    """The band wait can run for ~1.5 s and it precedes every commitment, so a
+    cancel there must be honoured immediately — the deferral exists for a
+    committed throw, not for a wait."""
+    landing = 1000.0
+    clock = _Clock(landing)
+    monkeypatch.setattr(rcn, 'time', clock)
+    node = _reload_ready_node(clock, cup_held=False)
+    session = _session_after_a_catch(landing)
+    stop = node._reload_interlude_gate(session, cancel_now_fn=lambda: True)
+    assert stop == 'STOPPED_RELOAD_CANCELLED'
+    assert clock.t < landing + ARRIVAL_BAND_S, 'it must not wait the band out'

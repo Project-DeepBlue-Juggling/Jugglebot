@@ -190,7 +190,7 @@ from typing import Optional
 # Pure-python sibling module (no ROS): the ball-evidence vocabulary lives with the
 # possession contract, so the FSM's reject codes and the node's live sensor read
 # can never drift into two spellings of the same state.
-from jugglebot.ball_possession import EVIDENCE_UNKNOWN
+from jugglebot.ball_possession import ARRIVAL_BAND_MAX_S, EVIDENCE_UNKNOWN
 
 # The derived throw-admission envelope (contract C-HAND-3,
 # ros_ws/docs/hand_throw_envelope.md).  This is the ONE import in this module
@@ -203,6 +203,13 @@ from jugglebot.ball_possession import EVIDENCE_UNKNOWN
 # the life of the constant).  It is still ROS-free: throw_envelope imports only
 # math, the generated config, and motion.trajectory (numpy, no rclpy).
 from jugglebot.motion.trajectory import throw_envelope
+
+# The firmware stroke model, for the SAME reason as throw_envelope above: since
+# 2026-08-22 the event-delay floor is DERIVED from the stroke geometry rather than
+# declared as a constant, and a pinned local copy of "prelude + gap + windup"
+# would be a second place for the Teensy's :642 budget check to be wrong.  Also
+# ROS-free (math + the generated config).
+from jugglebot.motion.trajectory import hand_stroke
 
 # ── Feedback phases (Toss.action feedback.phase — LOCKED strings) ──────────────
 PHASE_CHECKING = 'CHECKING'
@@ -278,31 +285,88 @@ DEFAULT_TOSS_THROW_DELAY_S = 5.0     # 0 => this. Budget: CHECK ~0.1 + POSITION 
                                      # PREPARE ≤~0.5 + event_delay ≥1.0 + slack. NOT
                                      # reload's 3.0: the toss spends its delay on
                                      # positioning, the reload on the BB countdown.
-MIN_TOSS_THROW_DELAY_S = 3.5         # CHECKING floor (REJECTED_CANT_MAKE_LEAD). No BB
-                                     # 2.5 s lead floor here — this exists so the
-                                     # positioning+prepare budget plus the event-delay
-                                     # floor generically fit inside the delay; the
-                                     # runtime guard (ABORTED_CANT_MAKE_RELEASE) is
-                                     # the real enforcement.
-MIN_THROW_EVENT_DELAY_S = 1.0        # floor on event_delay at dispatch. DERIVED, not
-                                     # measured (Phase-5 T0 hard-confirms): prelude
-                                     # smooth-move ≤ full stroke 0.758 s — the QUINTIC
-                                     # T = √(Δ·QUINTIC_S2_MAX/A) the firmware actually
-                                     # solves (Trajectory.h:365, smoothMoveDuration) over 9.9594 rev, the
-                                     # derived stroke top since 2026-07-26 (was 9.858
-                                     # ⇒ 0.754 s); matches the 0.68–1.05 s ascents
-                                     # observed. NOT the 0.63 s a triangular profile
-                                     # would give — that model understates this budget
-                                     # by 0.13 s and this comment carried it until
-                                     # 2026-07-26. Model:
-                                     # hand_stroke.smooth_move_duration_s.
-                                     # + throw windup 2·0.187/v ≈ 0.10–0.14 s
-                                     # ⇒ 0.86–0.90 s against the 1.0 s floor, margin
-                                     # 0.102 s. Conservative twice over: the THROWING
-                                     # entry re-check that hand_parked (|pos| ≤ 0.5 rev)
-                                     # caps the REACHABLE prelude at ~0.17 s. The
-                                     # catch-side 0.3 s floor does NOT apply — that
-                                     # assumes a hand already primed at top.
+TOSS_DISPATCH_DEBOUNCE_S = 0.10      # GOAL-STORM debounce, NOT a readiness floor.
+                                     # ────────────────────────────────────────────
+                                     # This name replaced MIN_TOSS_THROW_DELAY_S =
+                                     # 3.5 s on 2026-08-22 (operator decision 3 of
+                                     # the ILC-primary fold-in), and the rename is
+                                     # the point: the old constant was a GENERIC FIT
+                                     # — "CHECK(1 tick) + POSITION(≤~2 s) +
+                                     # PREPARE(4 ticks) + event_delay(≥1.0) plus
+                                     # slack" — and a generic fit is a policy number
+                                     # wearing a physics costume. It bounded nothing
+                                     # the machine can actually observe, it made the
+                                     # session's advertised 4.10 s dwell floor an
+                                     # artefact of itself, and at the cadence rungs
+                                     # (census A1) it was 7x the whole physical
+                                     # turnaround.
+                                     #
+                                     # What guards the same failures NOW:
+                                     #   * READINESS — the derived, state-based
+                                     #     CHECKING interlocks, each of which asks
+                                     #     the machine rather than the clock:
+                                     #     hand_fresh + hand_parked (the kind-0
+                                     #     stroke commands ABSOLUTE positions from
+                                     #     0 rev), ball_seated (C-POSSESS-1),
+                                     #     track_active, mocap/status freshness,
+                                     #     platform_levelled;
+                                     #   * the ARITHMETIC that used to hide inside
+                                     #     the 3.5 s — hand_stroke.
+                                     #     min_throw_event_delay_s(v_throw),
+                                     #     enforced at runtime by
+                                     #     ABORTED_CANT_MAKE_RELEASE against the
+                                     #     REAL remaining lead (census B5,
+                                     #     unchanged and still the truth), and
+                                     #     checked at CHECKING (loud + early) as
+                                     #     min_throw_delay_for_release_s — that
+                                     #     budget PLUS the pre-dispatch sequence
+                                     #     the guard has already spent by the time
+                                     #     it runs (2026-08-23; charging the
+                                     #     dispatch budget alone made the accept
+                                     #     gate loose by 0.080-0.460 s and shipped
+                                     #     three cadence rungs that abort every
+                                     #     cycle);
+                                     #   * the HAND GEOMETRY — toss_session's
+                                     #     required_dwell_s now carries
+                                     #     hand_stroke.min_turnaround_dwell_s, so a
+                                     #     cadence the stroke cannot physically make
+                                     #     is refused at goal-accept instead of
+                                     #     clobbering a live stroke (C-HAND-1).
+                                     #
+                                     # What is LEFT for this constant: a dispatch
+                                     # debounce. A throw_delay at or below ~0 lets a
+                                     # goal (or a scripted storm of them) demand a
+                                     # release in the same tick it was accepted, so
+                                     # CHECKING would run POSITION/PREPARE/ANNOUNCE
+                                     # against an already-expired t_release and burn
+                                     # a cycle's per-goal state per goal. 0.10 s is
+                                     # two FSM ticks at the post-B3 _TICK_S of 0.02
+                                     # — enough for the sequence to exist at all,
+                                     # deliberately NOT enough to imply readiness.
+                                     # It also still catches the sign typo the FSM's
+                                     # __post_init__ preserves (a negative delay).
+MIN_THROW_EVENT_DELAY_S = 0.0        # 0 ⇒ DERIVE from the resolved event_vel via
+                                     # hand_stroke.min_throw_event_delay_s. A
+                                     # positive value is an explicit OVERRIDE (tests
+                                     # and the standalone harnesses).
+                                     #
+                                     # It was a hand-written 1.0 s from 2026-07-25
+                                     # until 2026-08-22, sized off the WORST prelude
+                                     # the firmware can build — a full-stroke smooth
+                                     # move from the top, 0.758 s. That prelude is
+                                     # unreachable on the throw path and always was:
+                                     # a kind-0 dispatch is admitted only with
+                                     # hand_parked true (CHECKING, and re-checked at
+                                     # THROWING entry), which caps the prelude at
+                                     # smooth_move_duration_s(HAND_PARK_BAND_REV) =
+                                     # 0.170 s. The old comment conceded exactly
+                                     # that ("conservative twice over") and shipped
+                                     # the unreachable number anyway. Derived, the
+                                     # floor is 0.337 s at the C-HAND-3 band floor
+                                     # and 0.281 s at the 0.80 s nominal — and it
+                                     # MOVES WITH v_throw, which a constant cannot:
+                                     # the windup term alone spans 0.064–0.147 s
+                                     # across the admitted band, a 2.3x spread.
 DEFAULT_TOSS_FLIGHT_TIME_S = 0.8     # 0 => this — the NO-CONFIG fallback only: the
                                      # coordinator resolves a zero goal field against
                                      # the generated JB_OP_TOSS_FLIGHT_TIME_DEFAULT_S
@@ -361,12 +425,39 @@ TOSS_POSITION_VERIFY_WINDOW_S = 1.0  # when the config-keyed mocap cross-check i
                                      # envelope on top of. Disabled (the default) the
                                      # node feeds platform_at_target True at every
                                      # tick, so the timed arrival stands alone.
+TOSS_POSITION_MIN_MOVE_S = 0.2       # trajectory_node's `min_move_duration_s` — the
+                                     # PLANNER FLOOR a real (non-skipped) go_to_pose
+                                     # pays even for a zero-length move. Local copy of
+                                     # hw.JB_TRAJ_MIN_MOVE_DURATION_S in this module's
+                                     # established pattern (a nominal PLANNING value
+                                     # stays readable standalone), pinned equal by
+                                     # test_toss_sequencer.py's drift guard. Read here
+                                     # by pre_dispatch_budget_s: a cycle that COMMANDS
+                                     # its pre-positioning move cannot arrive sooner
+                                     # than this + the settle pad, and that wait is
+                                     # spent out of throw_delay.
 TOSS_RELEASE_GRACE_S = 0.5           # release evidence must appear within t_release +
                                      # this (mirrors reload's ANNOUNCEMENT_GRACE_S).
-CATCH_CONFIRM_WINDOW_S = 0.7         # identical value+role to reload: CAUGHT within
-                                     # this PAST the scheduled landing; also the
-                                     # CATCHING phase-report threshold. Absorbs the
-                                     # +0.115 s announced-early bias (fourth sitting).
+CATCH_CONFIRM_WINDOW_S = ARRIVAL_BAND_MAX_S
+                                     # CAUGHT within this PAST the scheduled landing;
+                                     # also the CATCHING phase-report threshold, and
+                                     # (through toss_session) the MISS-cleanup floor.
+                                     # DERIVED, not chosen (census D7). It must clear
+                                     # the band in which a real seat edge can land,
+                                     # because since 2026-08-10 the possession verdict
+                                     # is sensor-PRIMARY: the deadline that mints
+                                     # MISSED has to outlast the latest arrival the
+                                     # sensor has ever observed. It was a hand-written
+                                     # 0.7 until 2026-08-21, i.e. 98 ms UNDER the
+                                     # measured +798 ms ceiling — latent today only
+                                     # because the tracker's own CAUGHT lands earlier
+                                     # (+202..+442 ms) and the merge falls back to it.
+                                     # Deriving it also puts the pending post-FW14
+                                     # band re-measure in ONE place: shrink
+                                     # ARRIVAL_BAND_MAX_S and this, the reload twin
+                                     # and DEFAULT_SESSION_MISS_CLEANUP_S all follow.
+                                     # (Still absorbs the +0.115 s announced-early
+                                     # bias of the fourth sitting, with more room.)
 TOSS_CANCEL_CUTOFF_S = 0.25          # node-level (§ cancellation): cancels honoured up
                                      # to t_release − this; later ⇒ deferred to the
                                      # FSM's own terminal.
@@ -491,6 +582,145 @@ HAND_THROW_RELEASE_OFFSET_MM = 58.044  # release plane above platform centroid =
                                      # hw.HAND_THROW_POS_M (0.187044)·1000 — no
                                      # generated constant exists for the throw case
                                      # (derivation shared with toss_release.py).
+
+
+def vertical_event_vel_mps(flight_time_s: float) -> float:
+    """Tier-8a co-located vertical toss: the release speed for a flight time.
+
+    Launch is purely vertical, so ``|launch| = vz = Δz/T + g·T/2`` with
+    ``Δz = cup plane − release plane`` — the FULL ballistic inverse, matching
+    ``motion/trajectory/toss_release.compute_release_state``, NOT the idealised
+    ``g·T/2`` magnitude (which is the Δz → 0 limit, ≈ 8.4 mm/s adrift at
+    T = 0.8 s).
+
+    A module function since 2026-08-22 because it has a SECOND caller: the
+    session's hand-geometry dwell floor (``toss_session.hand_floor_dwell_s``)
+    needs a release speed at SESSION checking, before any cycle FSM exists.
+    Inlined twice it would be one edit away from a session that refuses a cadence
+    the cycle can make, or admits one it cannot."""
+    t = float(flight_time_s)
+    vz_mms = ((HAND_CATCH_OFFSET_MM - HAND_THROW_RELEASE_OFFSET_MM) / t
+              + GRAVITY_MMS2 * t / 2.0)
+    return vz_mms / 1000.0
+
+
+# ── THE pre-dispatch budget — one derivation, two gates (2026-08-23) ───────────
+# `reload_coordinator_node._TICK_S`, restated here because it is now ARITHMETIC
+# and not merely latency: the pre-dispatch sequence is counted in ticks, so the
+# accept-time floor moves when the tick does.  `toss_session` re-exports this
+# name (it lived there until 2026-08-23) and the drift-guard test pins all three
+# equal.
+NODE_TICK_S = 0.02
+
+#: One microsecond of slack on the accept-time delay floor, and it is NOT a
+#: jitter allowance — bounding scheduling jitter is the RUNTIME guard's job and
+#: no static floor can do it (an ``ABORTED_CANT_MAKE_RELEASE`` from a late tick
+#: is a real finding and the cadence runbook aborts the sitting on one).
+#:
+#: What it buys is that the floor is STRICTLY sufficient rather than
+#: exactly-equal-and-lucky.  The runtime guard asks
+#: ``t_release − now < dispatch_budget``, and at a delay sitting exactly on the
+#: floor that is ``(dispatch + budget) − budget < dispatch`` — an identity in
+#: real arithmetic and a coin flip in binary floating point, because
+#: ``(a + b) − b`` is not ``a``.  Measured against the tree on 2026-08-23: the
+#: R5 rung's exactly-at-floor delay passed and R4's aborted, for no reason but
+#: the bit pattern.  A contract that holds by luck at half its grid points is not
+#: a contract.
+#:
+#: 1e-6 s is 1/20000 of a node tick: invisible in every published cadence number
+#: (the ladder's rungs clear their floors by 10-40 ms) and ~10 orders of
+#: magnitude above the double-rounding error it covers.
+FLOOR_REPRESENTATION_SLACK_S = 1e-6
+
+
+def pre_dispatch_budget_s(positioning_move: bool,
+                          tick_s: float = NODE_TICK_S) -> float:
+    """Cycle START → the LAST evaluation of the release-window guard, in seconds.
+
+    **The quantity the accept-time delay floor was missing.**  Until 2026-08-23
+    both delay gates — ``TossSequencer``'s CHECKING mirror and
+    ``toss_session.min_throw_delay_s`` — charged the kind-0 dispatch budget
+    alone (``hand_stroke.min_throw_event_delay_s``).  The runtime guard in
+    :meth:`TossSequencer._step_preparing` applies that SAME budget to the lead
+    *remaining* after CHECKING, POSITIONING and the PREPARE ladder have already
+    elapsed, so a goal could clear the accept gate by construction and then abort
+    ``ABORTED_CANT_MAKE_RELEASE`` every cycle — at ``cycle_start + 0.06 s``, with
+    the hand retracting under a seated ball.  Three published rungs of
+    ``tests/hardware/session_cadence_ladder.md`` did exactly that.
+
+    The sequence is fully determined by the node's own tick ladder, so it is
+    derived here rather than measured (``tools/probes/cadence_rung_check.py``
+    drives the real FSM at the real tick and pins these numbers):
+
+    ===============================  ==========================================
+    tick 0                           CHECKING passes → ``ACTION_POSITION_PLATFORM``;
+                                     the node answers SYNCHRONOUSLY inside the
+                                     tick (``note_position_noop`` or
+                                     ``note_position_result``)
+    the first tick at/after arrival  ``_step_positioning`` → ``_enter_preparing``
+                                     → ``ACTION_PREPARE_CATCH``
+    +1 tick                          the node's DEFERRED PREPARE bundle answers
+                                     (``note_prepare_result``)
+    +1 tick                          release-window guard, then ``ACTION_ANNOUNCE``
+    +1 tick                          release-window guard, then DISPATCH
+    ===============================  ==========================================
+
+    ``arrival`` is 0 when POSITIONING is a no-op (census B1) and
+    ``TOSS_POSITION_MIN_MOVE_S + TOSS_POSITION_SETTLE_PAD_S`` when it commands a
+    move — the planner floor even a ZERO-millimetre move pays, plus the pad
+    ``note_position_result`` adds.  A longer real move costs more, but that is a
+    dynamic quantity (how far the platform is from the pre-positioning pose) and
+    no static gate can bound it; what this closes is the STATIC shortfall.
+
+    So: **0.080 s with the skip, 0.460 s without it** at the shipped 0.02 s tick.
+    That 0.38 s gap is the whole LEVEL/AIMED split the cadence ladder published —
+    and since 2026-08-23 an aimed CHAIN takes the skip too (the B1 predicate is
+    orientation-aware), so the discriminator is "does POSITIONING command a move",
+    never "is the release tilted".
+    """
+    tick = float(tick_s)
+    arrival_s = (TOSS_POSITION_MIN_MOVE_S + TOSS_POSITION_SETTLE_PAD_S
+                 if positioning_move else 0.0)
+    # ceil to the tick the FSM actually observes the arrival on, never fewer than
+    # one (the noop declares arrival inside tick 0, and _step_positioning still
+    # runs no earlier than tick 1).  The epsilon is not cosmetic: 0.40/0.02 is
+    # 20.000000000000004 in binary floating point, and a bare ceil() would charge
+    # a 21st tick the machine never spends.
+    arrival_ticks = max(1, int(math.ceil(arrival_s / tick - 1e-9)))
+    return (arrival_ticks + 3) * tick
+
+
+def min_throw_delay_for_release_s(event_vel_mps: float,
+                                  positioning_move: bool,
+                                  min_event_delay_s: float = 0.0,
+                                  tick_s: float = NODE_TICK_S) -> float:
+    """THE accept-time ``throw_delay_s`` floor — the ONE derivation both gates use.
+
+    ``max(TOSS_DISPATCH_DEBOUNCE_S, dispatch budget + pre-dispatch budget)``:
+
+    * the **dispatch budget** is ``hand_stroke.min_throw_event_delay_s(v)``, the
+      Teensy's own ``:642`` check written from the throw side (prelude + gap +
+      windup).  It is what the runtime guard measures the REMAINING lead against;
+    * the **pre-dispatch budget** is :func:`pre_dispatch_budget_s`, the lead the
+      sequence spends BEFORE that guard runs.
+
+    Adding them is the whole fix: a ``throw_delay_s`` at or above this floor
+    cannot die ``ABORTED_CANT_MAKE_RELEASE`` from static arithmetic, because the
+    guard's own inequality (``t_release − now ≥ dispatch budget``) is implied by
+    it at the last tick the guard runs.  ``min_event_delay_s > 0`` is the same
+    explicit override ``TossSequencer.min_event_delay_s`` is (tests, standalone
+    harnesses); the shipped 0.0 derives the dispatch budget from the speed.
+
+    Both gates import THIS function rather than restating it, for the reason the
+    2026-08-22 audit found the hard way: the session's mirror and the cycle's own
+    gate were two expressions of one floor, and they had already drifted from the
+    guard they front for."""
+    override = float(min_event_delay_s)
+    dispatch_s = (override if override > 0.0
+                  else hand_stroke.min_throw_event_delay_s(event_vel_mps))
+    return max(TOSS_DISPATCH_DEBOUNCE_S,
+               dispatch_s + pre_dispatch_budget_s(positioning_move, tick_s)
+               + FLOOR_REPRESENTATION_SLACK_S)
 
 
 @dataclass
@@ -641,8 +871,32 @@ class TossSequencer:
     positioning_timeout_s: float = TOSS_POSITIONING_TIMEOUT_S
     release_grace_s: float = TOSS_RELEASE_GRACE_S
     catch_confirm_window_s: float = CATCH_CONFIRM_WINDOW_S
-    min_throw_delay_s: float = MIN_TOSS_THROW_DELAY_S
+    min_throw_delay_s: float = TOSS_DISPATCH_DEBOUNCE_S
     min_event_delay_s: float = MIN_THROW_EVENT_DELAY_S
+                                                # 0 (the shipped default) ⇒ the
+                                                # DERIVED per-speed floor; see
+                                                # min_event_delay_for_throw_s.
+    positioning_move_expected: bool = True      # will POSITIONING COMMAND a move,
+                                                # or take the census-B1 no-op skip?
+                                                # It is the single input that sets
+                                                # the pre-dispatch budget the
+                                                # CHECKING delay gate charges
+                                                # (0.460 s vs 0.080 s), so getting
+                                                # it wrong in the optimistic
+                                                # direction re-opens the exact hole
+                                                # the 2026-08-22 audit found.
+                                                #
+                                                # Default TRUE = FAIL-CLOSED, the
+                                                # same doctrine as
+                                                # throw_site_known: an FSM that was
+                                                # never told assumes it must pay
+                                                # for the move. The node evaluates
+                                                # the predicate ONCE per cycle (in
+                                                # _build_toss_cycle) and reuses the
+                                                # SAME cached answer to drive
+                                                # POSITIONING, so the budget this
+                                                # gate charges and the branch the
+                                                # node takes cannot disagree.
     throw_site_xy_mm: tuple = (0.0, 0.0)        # Tier 8b: throw site A (STOW xy).
                                                 # The node sources it from the
                                                 # platform's LIVE commanded pose
@@ -763,14 +1017,46 @@ class TossSequencer:
         if self.throw_delay_s == 0.0:
             self.throw_delay_s = DEFAULT_TOSS_THROW_DELAY_S
         if self.event_vel_mps <= 0.0:
-            # Tier-8a co-located vertical toss: launch is purely vertical, so
-            # |launch| = vz = Δz/T + g·T/2 with Δz = cup plane − release plane
-            # (the full ballistic inverse, matching motion/toss_release — NOT the
-            # idealised g·T/2 magnitude).
-            t = self.flight_time_s
-            vz_mms = ((HAND_CATCH_OFFSET_MM - HAND_THROW_RELEASE_OFFSET_MM) / t
-                      + GRAVITY_MMS2 * t / 2.0)
-            self.event_vel_mps = vz_mms / 1000.0
+            self.event_vel_mps = vertical_event_vel_mps(self.flight_time_s)
+
+    # ── derived floors ─────────────────────────────────────────────────────────
+
+    @property
+    def min_event_delay_for_throw_s(self) -> float:
+        """The event-delay floor THIS toss's release speed actually needs.
+
+        ``min_event_delay_s > 0`` is an explicit override (tests, standalone
+        harnesses); the shipped 0.0 derives it from
+        ``hand_stroke.min_throw_event_delay_s(event_vel_mps)`` — the Teensy's own
+        ``:642`` budget written from the throw side, prelude(park band) +
+        SAFETY_GAP + windup(v).
+
+        ``event_vel_mps`` is resolved in ``__post_init__`` and is therefore always
+        finite here, but it is not yet TRUSTWORTHY at that point: CHECKING's
+        EVENT_VEL / THROW_ENVELOPE / TILT_CLAMP gates are what establish that.
+        ``hand_stroke`` clamps to the bridge's accepted band internally, so an
+        out-of-band value yields a bounded floor rather than a divide-by-zero —
+        the goal still dies at the gate that names the real fault."""
+        override = float(self.min_event_delay_s)
+        if override > 0.0:
+            return override
+        return hand_stroke.min_throw_event_delay_s(self.event_vel_mps)
+
+    @property
+    def min_throw_delay_for_cycle_s(self) -> float:
+        """The ACCEPT-time ``throw_delay_s`` floor for this cycle, whole sequence.
+
+        :attr:`min_event_delay_for_throw_s` is what the RUNTIME guard measures the
+        remaining lead against; this is that same budget PLUS the lead the
+        pre-dispatch sequence spends before the guard runs
+        (:func:`pre_dispatch_budget_s`, keyed on
+        :attr:`positioning_move_expected`).  Clearing this at CHECKING is what
+        makes ``ABORTED_CANT_MAKE_RELEASE`` unreachable from static arithmetic —
+        loud and early, with nothing moved, instead of at
+        ``cycle_start + 0.06 s`` with the hand already committed."""
+        return min_throw_delay_for_release_s(
+            self.event_vel_mps, bool(self.positioning_move_expected),
+            float(self.min_event_delay_s))
 
     # ── discrete async events (from the node) ──────────────────────────────────
 
@@ -793,6 +1079,54 @@ class TossSequencer:
             self._positioning_deadline = max(
                 self._positioning_deadline,
                 self._position_arrival_time + TOSS_POSITION_VERIFY_WINDOW_S)
+
+    def note_position_noop(self, now: float) -> None:
+        """The node determined the platform is ALREADY at the positioning pose
+        and commanded nothing (census B1). Declare arrival immediately.
+
+        **What this is not.** It is not "skip POSITIONING". The phase still runs,
+        the reach-envelope declaration still happens at PREPARE (contract
+        C-REACH-1), and the mocap arrival cross-check still gets its window — the
+        FSM path below this point is byte-identical to an accepted move. What is
+        skipped is a ``go_to_pose`` service round trip and the wait for a move
+        that would traverse **zero millimetres**.
+
+        **Why the settle pad goes too.** ``TOSS_POSITION_SETTLE_PAD_S`` (0.20 s)
+        pads a PLANNED move's arrival for 5 Hz status granularity and
+        terminal-hold ENTRY jitter. With nothing commanded there is no plan to
+        grant granularity to and no terminal hold to enter — the platform is
+        already IN one, holding the pose the caller just matched against the live
+        commanded position. Keeping the pad here would be padding an event that
+        does not occur. Together with the skipped ``min_move_duration_s`` floor
+        (0.20 s) that is the whole 0.45 s census row B1 costs an 8a chain, every
+        cycle, to hold still.
+
+        **The safety of the claim lives at the CALLER**, deliberately: only the
+        node can compare the requested pose against a FRESH
+        ``trajectory/commanded_pose`` — position AND orientation, from one plan
+        sample, in the INTENT frame the node's own go_to_pose request speaks. The
+        FSM cannot check that, so it does not pretend to: it records what it was
+        told, with the ``ALREADY_THERE`` code on the result so the outcome line
+        and the toss record name which branch ran.
+
+        (Until 2026-08-23 only ``trajectory/commanded_position`` existed, three
+        of the six pose components, so the caller ALSO had to know the release
+        was LEVEL — a tilted pre-tilt pose was unverifiable and always commanded.
+        That refusal was correct and cost 0.38 s of throw delay on every cycle of
+        every aimed sitting.)
+
+        First result wins, and it is ignored unless the move was dispatched —
+        the same guards as :meth:`note_position_result`, because this IS a
+        position result; it just has a duration of zero and no service call."""
+        if (not self._position_dispatched or self._finished
+                or self._position_result is not None):
+            return
+        self._position_result = (True, 0.0, 'ALREADY_THERE')
+        self._positioned = True
+        self._position_arrival_time = float(now)
+        self._positioning_deadline = max(
+            self._positioning_deadline,
+            self._position_arrival_time + TOSS_POSITION_VERIFY_WINDOW_S)
 
     def note_prepare_result(self, ok: bool) -> None:
         """Report the ``ACTION_PREPARE_CATCH`` bundle outcome (== the
@@ -879,6 +1213,12 @@ class TossSequencer:
             if self.tier not in (TIER_8A, TIER_8B):
                 return self._reject('TIER')
             if self.throw_delay_s < self.min_throw_delay_s:
+                # The GOAL-STORM debounce, and the sign-typo belt (a negative
+                # delay lands here, which is what __post_init__ preserves it
+                # for). It is NOT a readiness claim — see
+                # TOSS_DISPATCH_DEBOUNCE_S. The physical lead the dispatch needs
+                # is checked immediately below, once the flight time (and with
+                # it the release speed) has been validated.
                 return self._reject('CANT_MAKE_LEAD')
             if not (math.isfinite(self.flight_time_s)
                     and self.flight_time_s > 0.0):
@@ -973,6 +1313,53 @@ class TossSequencer:
                                                self.event_vel_mps)
             if not envelope.ok:
                 return self._reject('THROW_ENVELOPE', envelope.message)
+            # The DERIVED lead gate (census A2), placed here for the same reason
+            # the envelope is: this is the first point at which `event_vel_mps`
+            # is trustworthy, and the floor is a function of it.
+            #
+            # ⚠ THE WHOLE SEQUENCE, not just its last item (2026-08-23). Until
+            # then this gate charged the Teensy's `:642` dispatch budget ALONE
+            # and called the rest — the CHECKING tick, the POSITIONING wait, the
+            # PREPARE tick ladder — "elapsed time the runtime guard measures for
+            # real". It does measure it, and that was the bug: the guard in
+            # _step_preparing applies the SAME budget to the lead REMAINING after
+            # all of it, so this gate was systematically loose by the entire
+            # pre-dispatch cost (0.080 s with the B1 skip, 0.460 s without it).
+            # A goal could clear this line by construction and then abort
+            # ABORTED_CANT_MAKE_RELEASE every cycle at cycle_start + 0.06 s, with
+            # the hand retracting under a seated ball — which is what three
+            # published rungs of the cadence ladder did. Both terms now come from
+            # ONE derivation (min_throw_delay_for_release_s), which the session's
+            # mirror imports too, so the two cannot drift again.
+            #
+            # This is still the loud+early copy of a runtime truth, which is what
+            # the retired MIN_TOSS_THROW_DELAY_S = 3.5 s claimed to be and was
+            # not: 3.5 s was a generic fit over a worst-case POSITIONING move
+            # that a co-located chain does not make and a 1.0 s event-delay
+            # floor sized off a prelude the hand_parked precondition forbids. The
+            # difference is that every term here is derived from the constants the
+            # sequence is actually made of.
+            lead_floor = self.min_throw_delay_for_cycle_s
+            if self.throw_delay_s < lead_floor:
+                dispatch_s = self.min_event_delay_for_throw_s
+                return self._reject(
+                    'CANT_MAKE_LEAD',
+                    'throw_delay {:.3f} s is under the {:.3f} s this cycle '
+                    'needs at {:.2f} m/s: the kind-0 dispatch budget {:.3f} '
+                    '(prelude {:.3f} + gap {:.3f} + windup {:.3f}) plus the '
+                    '{:.3f} s pre-dispatch sequence ({} positioning move)'
+                    .format(
+                        self.throw_delay_s, lead_floor, self.event_vel_mps,
+                        dispatch_s,
+                        hand_stroke.smooth_move_duration_s(
+                            hand_stroke.HAND_PARK_BAND_REV),
+                        hand_stroke.SAFETY_GAP_S,
+                        -hand_stroke.HandStrokeModel(
+                            self.event_vel_mps).stroke_start_rel,
+                        pre_dispatch_budget_s(
+                            bool(self.positioning_move_expected)),
+                        'with a' if self.positioning_move_expected
+                        else 'census-B1 skip, no'))
             if (abs(x) > self.workspace_xy_mm or abs(y) > self.workspace_xy_mm
                     or abs(z - TOSS_ACTIVE_Z_MM) > TOSS_Z_BAND_MM):
                 return self._reject('WORKSPACE')
@@ -1128,7 +1515,7 @@ class TossSequencer:
         # REJECTED_TRACK_ACTIVE would then refuse on until it expires), and again
         # on the post-announce tick (a stall between announce and dispatch must
         # not push event_delay under the stroke's windup floor).
-        if self._t_release - now < self.min_event_delay_s:
+        if self._t_release - now < self.min_event_delay_for_throw_s:
             return self._abort('CANT_MAKE_RELEASE')
         if not self._announce_dispatched:
             # Armed confirmed → explicit ≥1-tick gap → announce: the armed edge

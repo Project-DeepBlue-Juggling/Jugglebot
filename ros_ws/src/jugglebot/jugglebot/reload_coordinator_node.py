@@ -74,8 +74,12 @@ platform under a seated ball mid-windup — so this node raises the new
 latches the announcement for its hand-arm window but publishes no platform
 target) and itself publishes the ONE ``catch/dynamic_target`` at t_release,
 built from the same ``CatchCoordinator.predicted_catch_command`` math with
-arrival = the announced landing (lead = the flight time by construction). Tier
-8a never touches ``catch/pretilt_hold`` — its publish sequence is unchanged there.
+arrival = the announced landing (lead = the flight time by construction).
+``catch/pretilt_hold`` is raised on EVERY toss cycle since 2026-08-22 (census
+E5) — it was 8b-only, then any-commanded-tilt, and is now unconditional: at the
+cadence rungs CCN's pre-tilt arrival clamps to the landing ITSELF, so even a
+level 8a would command a reach arriving at contact, and the next cycle's
+announcement lands inside the previous ball's settle-hold window.
 
 The reach envelope trajectory_node applies to those targets is centred on the
 DECLARED catch point B (``catch/reach_center``, published on the
@@ -120,6 +124,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import queue
 import subprocess
 import threading
 import time
@@ -177,6 +182,8 @@ from jugglebot.reload_sequencer import (
     ACTION_SAFE_ABORT,
     ACTION_SEND_THROW,
     BB_STATE_IDLE,
+    PHASE_CHECKING as RELOAD_PHASE_CHECKING,
+    PHASE_PREPARING as RELOAD_PHASE_PREPARING,
     ReloadObservations,
     ReloadResult,
     ReloadSequencer,
@@ -191,6 +198,7 @@ from jugglebot.toss_sequencer import (
     ACTION_RECENTER as TOSS_ACTION_RECENTER,
     ACTION_SAFE_ABORT as TOSS_ACTION_SAFE_ABORT,
     ACTION_STAY as TOSS_ACTION_STAY,
+    FLIGHT_TIME_MAX_S as TOSS_FLIGHT_TIME_MAX_S,
     PHASE_CHECKING as TOSS_PHASE_CHECKING,
     PHASE_POSITIONING as TOSS_PHASE_POSITIONING,
     PHASE_PREPARING as TOSS_PHASE_PREPARING,
@@ -203,6 +211,8 @@ from jugglebot.toss_sequencer import (
     TossObservations,
     TossResult,
     TossSequencer,
+    min_throw_delay_for_release_s,
+    pre_dispatch_budget_s,
 )
 from jugglebot.toss_session import (
     DEFAULT_SESSION_MISS_CLEANUP_S,
@@ -223,9 +233,15 @@ from jugglebot.catch_coordinator import CatchCoordinator
 from jugglebot import clock_offset, toss_record, toss_trim
 from jugglebot.toss_record import latch_announced_ball
 from jugglebot.motion.tilt_map import find_repo_root
-from jugglebot.motion import toss_cal
+from jugglebot.motion import toss_cal, toss_ilc
+from jugglebot.motion.trajectory import hand_stroke, throw_envelope
 from jugglebot.motion.trajectory.tilt_geometry import MAX_TILT_DEG
-from jugglebot.motion.ik_solver import rot_matrix_to_quat, rotvec_to_rot_matrix
+from jugglebot.motion.ik_solver import (
+    quat_to_rot_matrix,
+    rot_matrix_to_quat,
+    rot_matrix_to_rotvec,
+    rotvec_to_rot_matrix,
+)
 from jugglebot.motion.trajectory.toss_release import (
     ThrowTiltInfeasible,
     aim_target_offset_mm,
@@ -234,6 +250,7 @@ from jugglebot.motion.trajectory.toss_release import (
     compute_release_state,
     compute_release_state_tilted,
     flight_time_from_height,
+    validate_event_vel,
 )
 
 # BallStatus enum (BallState.msg): 0 = TO_BE_THROWN, 1 = IN_FLIGHT, 2 = CAUGHT.
@@ -332,11 +349,39 @@ _HAND_DISPATCH_ATTEMPTS = 4
 # by tests/ros/test_reload_coordinator_node.py::
 # test_prime_move_leaves_the_park_band_windows_open.
 _HAND_ACK_SETTLE_S = 0.25          # let a lied-ack move begin before reading telemetry
-_HAND_NEAR_TARGET_REV = 0.5        # |pos - target| within this ⇒ already at the target
+_HAND_NEAR_TARGET_REV = hand_stroke.HAND_PARK_BAND_REV
+                                   # |pos - target| within this ⇒ already at the
+                                   # target. Sourced from hand_stroke since
+                                   # 2026-08-22: the same band now sizes the kind-0
+                                   # dispatch's PRELUDE BUDGET
+                                   # (min_throw_event_delay_s), so the gate that
+                                   # admits a throw and the arithmetic that budgets
+                                   # its prelude must be one number, not two.
 _HAND_MOVING_VEL_RPS = 2.0         # |vel| toward the target at/above this ⇒ move underway
 _HAND_TELEMETRY_STALE_S = 0.3      # telemetry older than this ⇒ cannot verify ⇒ blind ladder
 # Sequence loop tick (the FSM is time-driven; this bounds latency, not correctness).
-_TICK_S = 0.05
+#
+# 0.05 -> 0.02 on 2026-08-22 (census B3). The reason is cadence, not latency for
+# its own sake: at the tuning-phase 0.49 s dwell a 0.05 s tick is 10% of the
+# whole turnaround spent in sleep(), and the PREPARE ladder alone costs four of
+# them. 0.02 s is still ~2 orders of magnitude above localhost topic latency, so
+# the two load-bearing TICK-COUNTED ordering gaps keep their guarantee:
+#   (a) catch/prime_hold must land in an EARLIER catch_coordinator wait-set cycle
+#       than the catch/armed edge, or the armed-edge auto-prime ascends with the
+#       seated ball;
+#   (b) armed-confirm -> >=1 tick -> announce, because catch_coordinator drops
+#       pre-tilts that arrive unarmed.
+# THE TICK COUNTS ARE UNCHANGED, deliberately. Collapsing them is the change that
+# would break (a) and (b); shortening the tick is not.
+#
+# Every use is a POLL PERIOD in a goal-execution thread (verified by inspection,
+# 2026-08-22: seven time.sleep(_TICK_S) sites, all inside `while rclpy.ok()`
+# deadline loops). None of them is a control loop and none treats the tick as a
+# DURATION, so the cost of shortening it is CPU in a thread that was sleeping.
+# toss_session.NODE_TICK_S mirrors this and is pinned to it by a drift-guard test
+# — it is an input to DEFAULT_SESSION_DWELL_MARGIN_S and to the MISS-cleanup
+# floor, so the two cannot be allowed to drift.
+_TICK_S = 0.02
 # A hard ceiling on a single reload attempt so a wedged sequence always terminates.
 _MAX_SEQUENCE_S = 30.0
 # Slack added on top of the FSM's own budgets when deriving the per-goal ceiling.
@@ -378,6 +423,47 @@ _THROW_STROKE_VEL_RPS = 40.0
 # for 8b the un-arrived pre-tilt independently corrupts the throw AIM, which the
 # envelope never protected against anyway.
 _TOSS_POSITION_TOL_MM = float(hw.JB_TRAJ_CATCH_REACH_ENVELOPE_MM)
+# Per-axis bound on "the platform is ALREADY at the positioning pose, so command
+# nothing" (census B1, _toss_already_positioned). HALF the cup radius.
+#
+# It is NOT the envelope above and NOT _RELOAD_CENTERED_TOL_MM below, and the
+# difference is the point. Those two bound how far a platform may be from where a
+# catch was PLANNED from and still reach; this one bounds how far it may be
+# before a declared no-op becomes a lie. For a co-located Tier-8a toss a residual
+# is aim-NEUTRAL (throw site == catch site: the ball comes back down into the cup
+# wherever the cup is), so what it actually bounds is the error in everything
+# downstream that was told the ball will be at the NOMINATED B — the declared
+# reach centre, the announcement the tracker correlates against, and the mocap
+# cross-check target. Half a cup radius is a shift the cup absorbs with 2x margin.
+#
+# Deliberately tight rather than "as loose as still works": this constant's only
+# effect is to make the machine do LESS, so an over-wide value trades a silent
+# aim error for 0.45 s of cadence — the wrong side of that trade for a gate whose
+# failure mode is a throw fired from a site nobody solved for.
+_TOSS_ALREADY_THERE_TOL_MM = float(hw.GEOM_HAND_RADIUS_MM) / 2.0
+# The ORIENTATION half of the same gate (2026-08-23), per rotvec component.
+#
+# DERIVED from the position bound above rather than picked, so the two halves
+# admit the same physical error: a residual platform tilt δθ tilts the release
+# velocity by δθ and displaces the landing by 4·h·sin(δθ) — the identical
+# expression the CHECKING levelling gate is sized on
+# (toss_sequencer._step_checking, REJECTED_NOT_LEVELLED). Setting that
+# displacement equal to _TOSS_ALREADY_THERE_TOL_MM and solving at the LARGEST
+# apex the C-HAND-3 band admits (fail-closed — the drift is linear in apex, so
+# the tallest throw is the strictest case) gives δθ.
+#
+# 2.71 mrad (0.155°) as shipped. Two sanity readings on that number:
+#
+#   * it is 1/6.4 of the ILC's own ±1.0° aim authority, so an ARMED aim can
+#     never be mistaken for a level platform — which is the wrong "yes" that
+#     would fire an ILC throw with the correction not applied;
+#   * on a CHAINED cycle the residual is ~1e-15 rad: the platform is holding the
+#     pose the previous cycle commanded, and this cycle recomputes the identical
+#     pre-tilt from the identical (catch_pose, flight, aim). The tolerance is not
+#     what makes the skip fire; it is what stops it firing on anything else.
+_TOSS_ALREADY_THERE_TOL_RAD = (
+    (_TOSS_ALREADY_THERE_TOL_MM / 1000.0)
+    / (4.0 * apex_height_from_flight_time(float(TOSS_FLIGHT_TIME_MAX_S))))
 # RELOAD centred-ness tolerance (REJECTED_NOT_CENTERED, _platform_centered).
 #
 # NOT the bare envelope radius, and the difference is the whole point of the
@@ -581,13 +667,23 @@ def _toss_deadline_s(seq) -> float:
 def _reload_interlude_budget_s(session) -> float:
     """Wall time the whole auto-reload allowance can legitimately consume.
 
-    Per attempt: the recentre (profile + verification window) + a full reload
-    sequence ceiling + the post-reload settle floor. Multiplied by the session's
-    reload budget, because every attempt is charged to it. Zero when the session
-    cannot reload at all, so a STOP session's ceiling is bit-unchanged."""
+    Per attempt: the seat-edge band wait + the recentre (profile + verification
+    window) + a full reload sequence ceiling + the post-reload settle floor.
+    Multiplied by the session's reload budget, because every attempt is charged
+    to it. Zero when the session cannot reload at all, so a STOP session's
+    ceiling is bit-unchanged.
+
+    The band wait (:meth:`ReloadCoordinatorNode._wait_out_seat_edge_band`,
+    C-POSSESS-1 § 3.6) is charged PER ATTEMPT even though it is spent once per
+    INTERLUDE, in the gate, before the attempt loop. That over-counts by design —
+    the sibling ceiling's own docstring states the doctrine ("over-counting is the
+    safe direction here"), and the direction that matters is the other one: this
+    ceiling's exit path is an ABORT, and a ceiling that drifts INSIDE a legitimate
+    window SAFE_ABORTs a session for doing exactly what it was asked to do."""
     if str(getattr(session, 'on_empty_cup', '')) != ON_EMPTY_CUP_RELOAD:
         return 0.0
-    per_attempt = (GO_HOME_DURATION_S + _RECENTRE_VERIFY_PAD_S
+    per_attempt = (float(hw.JB_BD_ARRIVAL_WINDOW_S)
+                   + GO_HOME_DURATION_S + _RECENTRE_VERIFY_PAD_S
                    + _sequence_deadline_s(ReloadSequencer(catch_point_mm=(0.0,
                                                                          0.0,
                                                                          0.0)))
@@ -697,6 +793,34 @@ class ReloadCoordinatorNode(Node):
         self._toss_trim = None
         self._toss_trim_t0 = 0.0
         self._toss_trim_belt_warned = False
+        # ── Layer 3: the critical-point ILC correction (motion/toss_ilc.py) ──
+        # plans/active/critical-point-ilc.md Phase 2. Persistent, per-GOAL keyed,
+        # fitted offline between sessions — so it lives here beside the aim map
+        # for the same reason the aim map does (it rewrites a GOAL), and NOT
+        # beside the session trim, which is RAM-only and dies with its goal.
+        # Loaded once in __init__ and never reloaded live: unlike the aim map
+        # there is no acquisition tool rewriting it mid-session, and a
+        # relaunch-only artifact cannot change underneath a running fit.
+        self._toss_ilc = None
+        self._toss_ilc_loaded = False
+        self._toss_ilc_version = ''
+        self._toss_ilc_path = ''
+        # Dormancy / refusal WARNs are deduplicated by REASON, not emitted per
+        # goal: a dormant artifact at 10 goals/min would otherwise bury the
+        # console — the same 4091-ERRORs-in-41 s failure mode the aim map's
+        # dormancy log already guards against.
+        self._toss_ilc_dormant_reason = ''
+        self._toss_ilc_dormant_logged = ''
+        self._toss_ilc_refusal_logged = ''
+        self._toss_ilc_miss_logged = set()
+        # Layer 3's SESSION-LOCAL common-mode component (C1, owner decision 2 of
+        # the 2026-08-21 fold-in). RAM only, one per GOAL, discarded when the
+        # goal ends — the same lifecycle as the layer-2 trim above and for the
+        # same reason, one layer up: it carries the quantity a re-`level` moves,
+        # which is only constant WITHIN a goal. It is seeded from the persistent
+        # artifact's `anchor` prior, which is where the between-session evidence
+        # lives; it never writes anything back.
+        self._toss_ilc_session = None
         # The platform's live COMMANDED position (STOW mm) + its arrival stamp.
         # None/0.0 = never heard ⇒ fail closed (REJECTED_POSE_UNKNOWN for a
         # displaced toss, REJECTED_NOT_CENTERED for a reload). trajectory_node
@@ -704,6 +828,12 @@ class ReloadCoordinatorNode(Node):
         # "no commanded pose exists", not "the topic is quiet".
         self._commanded_pos_mm = None
         self._commanded_pos_mono = 0.0
+        # The SAME sample with its orientation, (x, y, z, rx, ry, rz) in the
+        # INTENT frame (trajectory/commanded_pose). Separate cache, single
+        # stamp: the census-B1 skip needs all six components from ONE sample,
+        # and None fails closed to "command the move".
+        self._commanded_pose = None
+        self._commanded_pose_mono = 0.0
         self._mocap_mono = 0.0
         self._balls = []
         self._balls_mono = 0.0
@@ -727,6 +857,28 @@ class ReloadCoordinatorNode(Node):
         # destination-tagged candidate displaces it (see _build_observations).
         self._announced_ball_id = None
         self._announced_id_untagged = False
+        # The id the PREVIOUS cycle of THIS session latched (census D6). Rolled
+        # forward at _build_toss_cycle, cleared at goal ACCEPT so it never spans
+        # two goals. It is excluded from `track_active`, which the CHECKING gate
+        # reads: at a short dwell the previous ball's track is still IN_FLIGHT
+        # when cycle N+1 checks (the tracker only leaves IN_FLIGHT when it mints
+        # CAUGHT, landing +0.202..+0.442 s), and refusing our own just-caught ball
+        # as a "phantom" is a hard REJECTED_TRACK_ACTIVE on a healthy cycle.
+        self._prev_announced_ball_id = None
+        # The LIVE cycle's next scheduled release/landing on the perf clock, or
+        # (None, None) — the cadence clamp of C-POSSESS-1 § 3.4. Set from the
+        # session's own schedule at cycle start, cleared with the cycle.
+        self._toss_next_release_perf = None
+        self._toss_next_landing_perf = None
+        # The PREVIOUS and CURRENT cycles' landings, C-POSSESS-1 § 3.4 clause
+        # C.1's other boundary end. Unlike the pair above these span CYCLES and
+        # are cleared per SESSION (with `_toss_record_prev_uid`), because that is
+        # what they are for: the previous cycle closed its arrival window at
+        # `arrival_boundary_t(prev, this)` and this one must OPEN at the identical
+        # call, so what is handed to `observe` is literally the number the
+        # previous cycle was given as its own `landing_t` — not a re-derivation.
+        self._toss_prev_landing_perf = None
+        self._toss_cycle_landing_perf = None
         # Ball ids already IN_FLIGHT when THIS goal's throw was accepted — excluded
         # from the announced-ball latch. Attempt 5 of the 2026-07-23 re-test latched
         # a phantom untagged track that predated the throw and rode it to a wrong
@@ -832,6 +984,12 @@ class ReloadCoordinatorNode(Node):
         # otherwise level the platform back BEFORE release and every log line
         # would still report the aim as applied.
         self._toss_pretilt_hold_raised = False
+        # THE per-cycle positioning decision (census B1), taken once in
+        # _build_toss_cycle and consumed by _position_platform_for_toss.
+        # Initialised and reset FAIL-CLOSED (True = command the move): with no
+        # cycle built there is no evidence the platform is anywhere in
+        # particular, and a stale False would skip a move the next cycle needs.
+        self._toss_positioning_move = True
         # Tier 8b only: the announced landing state stashed at ANNOUNCE for the
         # deferred A->B reach to reuse — (landing_pos_global_mm, landing_vel_mms,
         # landing_time_ros_seconds). None between goals / for 8a.
@@ -847,6 +1005,17 @@ class ReloadCoordinatorNode(Node):
         self._toss_record_prev_uid = None     # the PREVIOUS cycle's toss_uid, so
                                               #   an ABORTED_NO_RELEASE retry can
                                               #   name what it retried (guard G11)
+        # The record WORKER (census B6): the belt write and the trim update run
+        # here instead of on the cycle thread, so a slow SD card is a lost
+        # measurement rather than a cadence fault. ONE thread, so the append log
+        # keeps cycle order and the MUTATING trim estimator sees one update at a
+        # time. Started lazily on the first record — a node that never runs a
+        # toss never spawns it. UNBOUNDED queue deliberately: bounding it would
+        # trade a lost record for a bounded memory footprint, and the queue's
+        # steady state is one item (records arrive at most once per ~0.5 s and a
+        # belt append is sub-millisecond).
+        self._toss_records_q = queue.Queue()
+        self._toss_records_thread = None
         # ── Layer 1.5 dwell inclinometer covariate (§ 3.10) ──
         # Filled ONLY from the session's quiescent-dwell loop and consumed (and
         # cleared) by the next cycle's _open_toss_record. Zero control authority:
@@ -914,6 +1083,13 @@ class ReloadCoordinatorNode(Node):
         self.create_subscription(
             Point, 'trajectory/commanded_position',
             self._on_commanded_position, 10)
+        # …and the same sample WITH its orientation, in the intent frame. Read by
+        # exactly one thing — the census-B1 positioning skip — which needs the
+        # full 6-DOF pose from ONE sample to prove "commanding this would move
+        # nothing". Its absence fails closed to "command the move" (cadence, not
+        # safety), so this subscription is additive to every other read path.
+        self.create_subscription(
+            Pose, 'trajectory/commanded_pose', self._on_commanded_pose, 10)
         self.create_subscription(
             RigidBodyPoses, 'rigid_body_poses', self._on_mocap, 10)
         self.create_subscription(
@@ -1005,7 +1181,9 @@ class ReloadCoordinatorNode(Node):
         # Declared reach-envelope centre (contract C-REACH-1,
         # ros_ws/docs/catch_reach_envelope.md). Published by the TOSS on the
         # ACTION_PREPARE_CATCH tick — the SAME tick as prime_hold, i.e. one full
-        # FSM tick (50 ms >> topic latency) before the bundle that calls
+        # FSM tick (_TICK_S, 20 ms since c938c1d — still two orders of magnitude
+        # above localhost topic latency, but NOT the 50 ms this comment claimed
+        # until 2026-08-22) before the bundle that calls
         # trajectory/arm_catch, because the two travel on different transports
         # with no cross-topic ordering guarantee (the identical reasoning that
         # split prime_hold off the bundle). trajectory_node consumes it at the
@@ -1066,6 +1244,7 @@ class ReloadCoordinatorNode(Node):
         self.create_service(Trigger, 'toss/reload_calibration',
                             self._svc_reload_toss_calibration)
         self._load_toss_cal()
+        self._load_toss_ilc()
         # One node launch = one session id; also names the best-effort belt file.
         self._session_id = '{}-{}'.format(
             datetime.now().strftime('%Y%m%d-%H%M%S'), os.getpid())
@@ -1249,6 +1428,53 @@ class ReloadCoordinatorNode(Node):
             return None
         return pos
 
+    def _on_commanded_pose(self, msg):
+        """``trajectory/commanded_pose``: the SAME sampled plan state as
+        ``commanded_position``, with its ORIENTATION, as a rotation vector in the
+        **INTENT** frame (``trajectory_node._intent_orientation`` inverts the
+        C-LEVEL-1 correction before publishing, so this is directly comparable
+        against a pose this node is about to REQUEST — see that method).
+
+        Cached as one ``(x, y, z, rx, ry, rz)`` tuple with a single arrival
+        stamp, deliberately: the only consumer (the census-B1 positioning skip)
+        needs position and orientation from ONE sample, and a torn read across
+        two caches would let a mid-move platform match a target on a stale half.
+
+        Non-finite components are dropped whole, for the reason
+        :meth:`_on_commanded_position` drops them: a NaN comparison silently
+        reads as "not there", which is safe here but hides a real fault."""
+        p = msg.position
+        q = msg.orientation
+        vals = (float(p.x), float(p.y), float(p.z),
+                float(q.w), float(q.x), float(q.y), float(q.z))
+        if not all(math.isfinite(v) for v in vals):
+            self.get_logger().error(
+                'trajectory/commanded_pose {} is non-finite — DISCARDED'
+                .format(vals))
+            return
+        rotvec = rot_matrix_to_rotvec(
+            quat_to_rot_matrix(vals[3], vals[4], vals[5], vals[6]))
+        with self._lock:
+            self._commanded_pose = (vals[0], vals[1], vals[2],
+                                    float(rotvec[0]), float(rotvec[1]),
+                                    float(rotvec[2]))
+            self._commanded_pose_mono = time.perf_counter()
+
+    def _live_commanded_pose(self, now: float):
+        """The live commanded platform POSE ``(x, y, z, rx, ry, rz)``, or None.
+
+        Same freshness window and same fail-closed doctrine as
+        :meth:`_live_commanded_position` — absence is UNKNOWN, never "at the
+        origin, level". A trajectory_node that predates the topic therefore
+        leaves the B1 skip permanently off, which costs cadence and nothing
+        else."""
+        with self._lock:
+            pose = self._commanded_pose
+            mono = self._commanded_pose_mono
+        if pose is None or mono <= 0.0 or (now - mono) >= _TRAJ_STATUS_STALE_S:
+            return None
+        return pose
+
     def _on_mocap(self, msg):
         with self._lock:
             self._mocap_mono = time.perf_counter()
@@ -1302,10 +1528,29 @@ class ReloadCoordinatorNode(Node):
             # passed through untouched and nothing here decides anything.
             # getattr, not a bare read: an older node running against a bag or a
             # pre-Phase-5 message must degrade to UNKNOWN, never to "no ball".
+            #
+            # BOTH bits are fed since 2026-08-21 (C-POSSESS-1 § 3.5, census D3).
+            # The debounced one is the VERDICT bit (arrival/retention edges); the
+            # raw one answers the LIVE `evidence` query, because the debounce is
+            # asymmetric and slow in the fall direction (~241 ms measured) and a
+            # ball-evidence gate reading it would pass an EMPTY cup once the dwell
+            # approached that number — a fail-OPEN possession gate.
+            #
+            # The getattr default is a belt for a NON-ROS caller, and it is
+            # honest about being no more than that (audit fix, 2026-08-22):
+            # ball_held_raw is a declared `bool` on HandTelemetryMessage, so this
+            # returns False and never None for any real message, and a publisher
+            # that never sets the bit is indistinguishable here from an empty
+            # cup. What actually protects the actuating path is
+            # `evidence_settled` (the interlude's read), which sees the raw and
+            # debounced bits disagree and answers UNKNOWN. See
+            # ball_possession.note_sample.
+            raw = getattr(msg, 'ball_held_raw', None)
             self._ball_sensor.note_sample(
                 now,
                 held=bool(getattr(msg, 'ball_held', False)),
-                valid=bool(getattr(msg, 'ball_held_valid', False)))
+                valid=bool(getattr(msg, 'ball_held_valid', False)),
+                raw=None if raw is None else bool(raw))
 
     def _on_announcement(self, msg):
         # Only OUR ball's announcement (thrown by BB, aimed at us) advances the FSM.
@@ -1493,6 +1738,88 @@ class ReloadCoordinatorNode(Node):
             return None
         return land if math.isfinite(land) else None
 
+    def _expected_next_cycle_perf(self):
+        """-> ``(next_release_t, next_landing_t)`` on the perf clock, or
+        ``(None, None)``. The cadence clamp of C-POSSESS-1 § 3.4.
+
+        These are the machine's OWN next scheduled instants, and they bound both
+        sensor windows: retention closes where the next toss's departure search
+        opens, arrival closes where the next cycle's arrival search opens. Sized
+        by the SESSION (it owns the dwell) and latched per cycle, cleared with the
+        cycle — the same lifecycle discipline `landing_perf` has, and for the same
+        reason: a schedule that outlives its cycle would clamp the NEXT ball's
+        windows against a stale instant.
+
+        ``(None, None)`` for a single ``Toss`` and for a session's last intended
+        cycle — nothing is scheduled after them, so the honest horizon is the
+        shipped fixed one and the behaviour is the pre-2026-08-21 behaviour."""
+        with self._lock:
+            return self._toss_next_release_perf, self._toss_next_landing_perf
+
+    def _reset_toss_arrival_boundary(self) -> None:
+        """Drop the cross-cycle landings that clause C.1's boundary is built
+        from. Per SESSION, never per cycle: clearing them per cycle would delete
+        the very number the next cycle needs, and this makes a session's FIRST
+        window open at the shipped `landing - arrival_lead_s`.
+
+        A single ``Toss`` never calls `_set_toss_next_cycle_perf` and so never
+        rolls the latch, which leaves a PREVIOUS session's last landing standing
+        when one follows a session in the same process. That is deliberate rather
+        than tolerated, and `arrival_boundary_t` is what makes it safe: the
+        boundary is a `max` against `landing - arrival_lead_s`, so a landing more
+        than `ARRIVAL_BAND_MAX_S + arrival_lead_s` = 1.000 s old degenerates to
+        exactly the shipped opening — and one NEWER than that is a real neighbour whose
+        band really does overlap, which is precisely the case the boundary exists
+        to arbitrate. Clearing it there would be less correct, not more."""
+        with self._lock:
+            self._toss_prev_landing_perf = None
+            self._toss_cycle_landing_perf = None
+
+    def _expected_prev_landing_perf(self):
+        """-> the PREVIOUS cycle's landing on the perf clock, or ``None``.
+
+        C-POSSESS-1 § 3.4 clause C.1's other boundary end. ``None`` on a single
+        ``Toss``, on a reload, and on a session's FIRST cycle — nothing landed
+        before them, and the boundary can only ever move an opening later, so its
+        absence is exactly the shipped window rather than a widened one.
+
+        It is the number `_set_toss_next_cycle_perf` recorded as the previous
+        cycle's landing, NOT a re-derivation: the previous cycle closed its
+        arrival window at `arrival_boundary_t(prev, this)` and this one opens at
+        the same call on the same pair, which is the whole point of the
+        abutment."""
+        with self._lock:
+            return self._toss_prev_landing_perf
+
+    def _set_toss_next_cycle_perf(self, seq, session) -> None:
+        """Latch the next cycle's schedule for the cycle `seq` is about to run.
+
+        Only when the session INTENDS another throw after this one. On the last
+        intended cycle the windows stay unclamped, which costs nothing (there is
+        no next release to be confused with a bounce-out) and buys back the one
+        cycle per session on which a late bounce-out would otherwise read
+        UNKNOWN — see § 3.4's sized residual.
+
+        It also ROLLS the arrival boundary's other end (clause C.1). ``landing``
+        here is ``seq.t_release + seq.flight_time_s``, which is exactly what
+        ``seq.landing_perf`` returns and therefore exactly what `observe` will be
+        given as ``landing_t`` for this cycle — so next cycle's ``prev_landing_t``
+        is the same number this cycle judged against, and the two windows abut by
+        identity rather than by two agreeing derivations. Safe to read
+        ``t_release`` here: `_build_toss_cycle` has already called ``seq.start``,
+        which is what sets it."""
+        landing = float(seq.t_release) + float(seq.flight_time_s)
+        if session is None or not session.intends_another_cycle:
+            rel = land = None
+        else:
+            rel = landing + float(session.dwell_time_s)
+            land = rel + float(seq.flight_time_s)
+        with self._lock:
+            self._toss_next_release_perf = rel
+            self._toss_next_landing_perf = land
+            self._toss_prev_landing_perf = self._toss_cycle_landing_perf
+            self._toss_cycle_landing_perf = landing
+
     def _possession_confirmed(self, ball, ref_point_mm=None) -> bool:
         """THE possession question, for every caller in this node: does this tracker
         ``CAUGHT`` confirm that WE have the ball?
@@ -1520,9 +1847,13 @@ class ReloadCoordinatorNode(Node):
             ball_xyz_mm=(float(ball.position.x), float(ball.position.y),
                          float(ball.position.z)),
             ref_point_mm=ref)
+        next_release_perf, next_landing_perf = self._expected_next_cycle_perf()
         verdict = merge_possession(
-            sensor=self._ball_sensor.observe(time.perf_counter(),
-                                             self._expected_landing_perf()),
+            sensor=self._ball_sensor.observe(
+                time.perf_counter(), self._expected_landing_perf(),
+                next_release_t=next_release_perf,
+                next_landing_t=next_landing_perf,
+                prev_landing_t=self._expected_prev_landing_perf()),
             tracker=tracker)
         ok = bool(verdict.confirmed)
         # Keyed on the ARRIVAL STATE, not on the boolean: UNKNOWN and REFUSED both
@@ -1679,7 +2010,10 @@ class ReloadCoordinatorNode(Node):
         # again, so the whole observation is built from ONE instant's cup state.
         ball_evidence = self._ball_sensor.evidence(now)
         landing_perf = self._expected_landing_perf()
-        catch_event_perf = self._ball_sensor.arrival_time(landing_perf)
+        next_release_perf, next_landing_perf = self._expected_next_cycle_perf()
+        catch_event_perf = self._ball_sensor.arrival_time(
+            landing_perf, next_landing_t=next_landing_perf,
+            prev_landing_t=self._expected_prev_landing_perf())
         catch_event_dt_s = (catch_event_perf - landing_perf
                             if (landing_perf is not None
                                 and math.isfinite(catch_event_perf))
@@ -1689,10 +2023,24 @@ class ReloadCoordinatorNode(Node):
         catch_error_mm = float('nan')
         time_at_land_perf = float('nan')
         if balls_fresh:
+            with self._lock:
+                own_prev_id = self._prev_announced_ball_id
+            # Census D6 — THE bug, and the docstring below already claimed the
+            # fix. The gate exists to refuse a phantom destination='jugglebot'
+            # track that would correlate against OUR announcement. The ball this
+            # session just caught is not that: it is the one whose fate the
+            # PREVIOUS cycle already adjudicated, and its track only leaves
+            # IN_FLIGHT when the tracker mints CAUGHT (landing +0.202..+0.442 s).
+            # At any dwell short enough for CHECKING to run inside that window —
+            # every rung from R3 down — the unfixed gate hard-rejects
+            # REJECTED_TRACK_ACTIVE on a perfectly healthy cycle, and it pins the
+            # same floor the CAUGHT-verdict handoff does from a completely
+            # independent direction.
             track_active = any(
                 b.destination == self._robot_name
                 and int(b.status) in (_BALL_STATUS_TO_BE_THROWN,
                                       _BALL_STATUS_IN_FLIGHT)
+                and (own_prev_id is None or int(b.id) != int(own_prev_id))
                 for b in balls)
             announced_id = self._update_announced_ball_latch(balls)
             if announced_id is not None:
@@ -1823,6 +2171,10 @@ class ReloadCoordinatorNode(Node):
             busy = self._goal_claimed or self._active_seq is not None
             if not busy:
                 self._goal_claimed = True
+                # The D6 exclusion spans CYCLES, never GOALS: a new goal's
+                # CHECKING must judge every live track on its merits, and a
+                # stale id from an earlier session would silently un-guard one.
+                self._prev_announced_ball_id = None
         if busy:
             self.get_logger().warning(
                 'Ball-op goal REJECTED_BUSY — a reload/toss/session is already '
@@ -2237,7 +2589,195 @@ class ReloadCoordinatorNode(Node):
                 str(cal.requires_tilt_map_version) if cal is not None else ''),
             'live_tilt_map_version': live_tilt,
             'estimator_version': toss_cal.ESTIMATOR_VERSION,
+            # Layer 3 rides the SAME latched topic under a nested key rather than
+            # claiming a second one: it is the same question ("what correction is
+            # this machine applying to a toss goal?") one layer up, an operator
+            # reading one and not the other would draw the wrong conclusion, and
+            # a nested key is additive for every existing reader.
+            'ilc': self._toss_ilc_status_snapshot(),
         }
+
+    def _toss_ilc_status_snapshot(self) -> dict:
+        """The observable layer-3 state — enabled / loaded / applied / version.
+
+        THREE separate booleans, not two, and each answers a question the other
+        two cannot: ``enabled`` is the shipped config flag (a build decision),
+        ``loaded`` is "a valid artifact is present", and ``applied`` is "and the
+        flag is on AND its provenance matches this machine". An operator
+        debugging "why did nothing change?" needs to be able to tell a disabled
+        build from a missing file from a dormant artifact, and collapsing any
+        pair of them is how the aim map's own loaded-vs-applied confusion had to
+        be fixed in four documents.
+
+        ``applied`` deliberately folds the flag in, so it means exactly what the
+        per-toss record means by a non-zero ``ilc_aim_rad``: *this machine is
+        commanding the learned correction*. A topic that said "applied" beside a
+        record of zeros would be the same confusion in a new place.
+
+        The provenance verdict is GUARDED for the reason
+        :meth:`_toss_aim_for_goal` gives — ``provenance_mismatch`` hashes six
+        generated ``hardware_config`` constants and an install-tree skew raises
+        there — and it must fail the SAME way in both places, or the topic would
+        report a correction the apply seam has already withheld. This one also
+        rides a Trigger service response (``toss/reload_calibration``), so an
+        unguarded raise costs an operator their read-back too.
+        """
+        with self._lock:
+            ilc = self._toss_ilc
+            live_tilt = self._tilt_map_version
+            version = self._toss_ilc_version
+            path = self._toss_ilc_path
+        enabled = self._toss_ilc_enabled()
+        reason = ''
+        if ilc is not None:
+            try:
+                reason = ilc.provenance_mismatch(
+                    tilt_map_version=live_tilt,
+                    toss_cal_version=self._applied_toss_cal_version()) or ''
+            except Exception as exc:                               # noqa: BLE001
+                reason = ('the provenance check itself FAILED ({}: {})'
+                          .format(type(exc).__name__, exc))
+        try:
+            identity = toss_ilc.model_config_identity()
+        except Exception as exc:                                   # noqa: BLE001
+            identity = 'UNAVAILABLE ({})'.format(type(exc).__name__)
+        return {
+            'ilc_enabled': enabled,
+            'ilc_loaded': bool(ilc is not None),
+            'ilc_applied': bool(enabled and ilc is not None and not reason),
+            'ilc_version': version,
+            'ilc_path': path,
+            'ilc_cells': int(ilc.n_cells) if ilc is not None else 0,
+            'dormant_reason': reason,
+            'estimator_version': toss_ilc.ESTIMATOR_VERSION,
+            'model_config_identity': identity,
+        }
+
+    @staticmethod
+    def _toss_ilc_enabled() -> bool:
+        """The shipped layer-3 gate, read **fail-closed**.
+
+        ``getattr(..., False)`` rather than a direct attribute read, deliberately:
+        the flag is generated into ``jugglebot/hardware_config.py`` from
+        ``config/hardware_config.yaml``, and an install tree that predates the
+        codegen simply does not have the name. Fail-closed there means "the
+        learned correction stays off until the build is complete", which is the
+        only safe reading — an ``AttributeError`` on a goal-build path would take
+        down the toss instead.
+        """
+        return bool(getattr(hw, 'JB_OP_TOSS_ILC_ENABLED', False))
+
+    def _applied_toss_cal_version(self) -> str:
+        """The aim-map version this machine is **APPLYING**, or ``''``.
+
+        NOT ``_toss_cal_version``, which is set for a loaded-but-DORMANT map too.
+        Layer 3's provenance gate has to compare against what is actually being
+        commanded: a dormant layer 1 aims vertically, which is the same state as
+        no map at all, and an ILC residual fitted on top of an applied aim map
+        double-counts it when that map stops applying.
+        """
+        with self._lock:
+            cal = self._toss_cal
+            version = self._toss_cal_version
+            live_tilt = self._tilt_map_version
+        if cal is None:
+            return ''
+        return '' if cal.provenance_mismatch(live_tilt) else str(version)
+
+    def _load_toss_ilc(self):
+        """Resolve and load ``config/toss_ilc.yaml``. Returns ``(ok, message)``.
+
+        Four outcomes, exactly the aim map's, and non-gating in all four:
+
+        * **Absent** — silent. ``None`` from the resolver means no correction
+          exists, which is the pre-Phase-2 machine. It is also the Phase-3 A/B's
+          baseline arm (``$JUGGLEBOT_TOSS_ILC`` pointed at a path that is not
+          there), so it must stay quiet and free.
+        * **Loaded** — every validation in ``toss_ilc.parse_toss_ilc`` passed.
+          Whether it is APPLIED is a separate, per-goal provenance question.
+        * **Invalid** — nothing is loaded and the failure is an ERROR. There is
+          no "keep the previous artifact" case to handle here (unlike the aim
+          map's reload service) because this loads exactly once, at construction.
+        * **Present but the feature is OFF** — still loaded and still reported.
+          Loading costs one file read at construction, never inside a control
+          loop, and an operator who has shipped an artifact needs to see that the
+          node can read it *before* the config commit that arms it.
+        """
+        candidates = toss_ilc.toss_ilc_candidates()
+        path = toss_ilc.resolve_toss_ilc_path()
+        enabled = self._toss_ilc_enabled()
+        if path is None:
+            with self._lock:
+                self._toss_ilc = None
+                self._toss_ilc_loaded = False
+                self._toss_ilc_version = ''
+                self._toss_ilc_path = ''
+                self._toss_ilc_dormant_reason = ''
+                self._toss_ilc_dormant_logged = ''
+            message = ('no ILC artifact found (searched: {})'
+                       .format(', '.join(candidates) or
+                               '<nothing — set $' + toss_ilc.ILC_ENV + '>'))
+            override = os.environ.get(toss_ilc.ILC_ENV)
+            if override:
+                # An explicitly NAMED artifact that is not there is worth one
+                # WARN per launch. It fires for the Phase-3 A/B's baseline arm
+                # too (flag on, override pointing at nothing) and that is the
+                # right behaviour, not noise: the operator running the baseline
+                # gets confirmation the override took effect, and the operator
+                # who typo'd a path gets told before a whole sitting is captured
+                # against a correction that was never applied. Silent absence is
+                # reserved for the case with no override at all.
+                self.get_logger().warning(
+                    '${} names {!r}, which does not exist — this toss session '
+                    'applies NO learned ILC correction'.format(
+                        toss_ilc.ILC_ENV, override))
+            return False, message
+
+        try:
+            loaded = toss_ilc.load_toss_ilc(path)
+        except toss_ilc.TossIlcError as exc:
+            with self._lock:
+                self._toss_ilc = None
+                self._toss_ilc_loaded = False
+                self._toss_ilc_version = ''
+                self._toss_ilc_path = ''
+            self.get_logger().error(
+                'ILC artifact REJECTED, nothing loaded: {} — this session '
+                'throws with layer 3 contributing exactly zero (the learned '
+                'correction is a refinement, never a gate)'.format(exc))
+            return False, str(exc)
+        except Exception as exc:                                   # noqa: BLE001
+            # load_toss_ilc's contract is that every failure is a TossIlcError;
+            # this branch exists so a contract violation degrades to "no
+            # correction" instead of killing the node's constructor.
+            with self._lock:
+                self._toss_ilc = None
+                self._toss_ilc_loaded = False
+                self._toss_ilc_version = ''
+                self._toss_ilc_path = ''
+            self.get_logger().error(
+                'ILC artifact {} raised an UNEXPECTED {} ({}) — nothing loaded'
+                .format(path, type(exc).__name__, exc))
+            return False, str(exc)
+
+        with self._lock:
+            self._toss_ilc = loaded
+            self._toss_ilc_version = str(loaded.version)
+            self._toss_ilc_path = str(path)
+            self._toss_ilc_dormant_reason = ''
+            self._toss_ilc_dormant_logged = ''
+            self._toss_ilc_loaded = True
+        message = ('ILC artifact [{}] loaded from {} ({} goal cells)'
+                   .format(loaded.version, path, loaded.n_cells))
+        if enabled:
+            self.get_logger().info(message)
+        else:
+            self.get_logger().info(
+                '{} — but jugglebot_operational.toss_ilc_enabled is FALSE, so '
+                'layer 3 contributes exactly zero this session. Arming it is a '
+                'reviewed config commit + codegen + colcon build.'
+                .format(message))
+        return True, message
 
     def _publish_toss_cal_status(self) -> None:
         """Publish the latched calibration status. Instrument only — every
@@ -2261,31 +2801,79 @@ class ReloadCoordinatorNode(Node):
         that structurally, in the shape of C-LEVEL-2's own manifest test.
 
         Returns the applied-calibration block for the whole goal, split into its
-        two contributions so the record can carry both:
+        three contributions so the record can carry all of them:
 
         * ``map_aim_rad`` / ``map_offset_mm`` — layer 1, the persistent
           home-referenced field (:mod:`jugglebot.motion.toss_cal`);
-        * ``trim_aim_rad`` / ``trim_offset_mm`` — layer 2, this goal's RAM-only
-          common-mode session trim (:mod:`jugglebot.toss_trim`), zero unless
-          ``toss_trim_enabled`` is set AND the estimator has left WARMUP;
+        * ``trim_aim_rad`` / ``trim_offset_mm`` — layer 2's contribution to the
+          COMMANDED aim. **Structurally zero since 2026-08-21**: the layer-2 aim
+          estimator is MONITOR-ONLY (``toss_trim.AIM_AUTHORITY``, owner decision
+          1, contradiction C4). Its estimate is carried beside them as
+          ``trim_monitor_aim_rad``, so a future reader can see what layer 2
+          would have asked for and how far it diverged from layer 3 — but
+          nothing composes it;
+        * ``ilc_aim_rad`` / ``ilc_offset_mm`` / ``ilc_vel_trim`` — layer 3, the
+          learned critical-point correction (:mod:`jugglebot.motion.toss_ilc`),
+          zero unless ``jugglebot_operational.toss_ilc_enabled`` is set AND an
+          artifact is loaded AND its provenance matches. A provenance verdict
+          that cannot be COMPUTED counts as a mismatch, on
+          ``provenance_mismatch``'s own rule: *"I cannot verify what is
+          underneath me" is not "the right thing is underneath me"*.
+          ``ilc_aim_rad`` is layer 3's TOTAL and is split, additively, into:
+
+          * ``ilc_spatial_aim_rad`` — the per-cell spatial residual, zero unless
+            this goal HITS one of the artifact's cells (a miss is exactly zero;
+            nothing is interpolated);
+          * ``ilc_session_aim_rad`` — the goal-local common mode, seeded at goal
+            start from the artifact's ``anchor`` prior and applied only if that
+            prior clears its evidence gate. It does **not** depend on a cell hit,
+            because a common mode is not a function of the cell — see the layer-3
+            block below for that argument and the tradeoff it accepts. Zero, with
+            a named ``ilc_session_reason``, on every other path;
         * ``aim_rad`` / ``offset_mm`` — the TOTAL, which is what the platform is
           actually commanded to and what the virtual target is built from.
 
-        **The TOTAL is re-clamped HERE, at apply** (D7), over ``map + trim`` — not
-        at either layer's own update. Each layer bounds itself (parse time for
-        the map, ``TRIM_MAX`` for the trim) but 1.0° + 0.15° is 1.15°, past the
-        authority every downstream argument is sized on, and the only place that
-        sum exists is this line.
+        **The TOTAL is re-clamped HERE, at apply** (D7), over ``map + ilc`` —
+        not at any layer's own update. Each layer bounds itself (parse time for
+        the map and the ILC) but 1.0° + 1.0° is 2.0°, past the authority every
+        downstream argument is sized on, and the only place that sum exists is
+        this line.
+        Layer 3 is composed BEFORE that single clamp, deliberately: it makes the
+        existing D7 clamp the final authority over the whole commanded aim rather
+        than adding a fourth bound after it.
+
+        **A clamp HIT REFUSES the ILC contribution; it never truncates it.** If
+        ``map + ilc`` would bind the authority, layer 3 is dropped whole, a WARN
+        is emitted, and the aim is re-composed from ``map`` exactly as it would
+        have been without this layer — so a saturated goal is bit-identical to
+        the pre-Phase-2 machine. Root cause, and it is the plan's own risk 5: a
+        partially truncated correction is not the correction that was solved for,
+        so applied-u and recorded-u desynchronise and the next fit learns against
+        a command the machine never flew. It is also
+        ``ilc_fit_lib.admit_command``'s convention — the fit refuses a step the
+        clamp would truncate and shrinks its trust region instead — and the two
+        halves of one loop must agree about what "refused" means. The clamp's
+        TRUNCATION branch is layer 1's long-standing behaviour and is untouched,
+        but nothing can reach it any more: ``parse_toss_cal`` bounds a map node
+        by ``TOTAL_MAX_RAD`` on the same magnitude ``clamp_total_aim`` bounds, so
+        with layer 2 at zero authority every loadable map is already inside the
+        clamp (pinned by ``tests/ros/test_toss_ilc_node.py::
+        test_the_D7_clamp_can_no_longer_BIND_without_layer_3``).
 
         ``aim_rad`` is exactly ``(0.0, 0.0)`` — and ``offset_mm`` exactly
-        ``(0.0, 0.0)`` — whenever no map is loaded (or it is dormant) and the
-        trim commands nothing, which is what makes the disabled path today's
-        machine bit for bit.
+        ``(0.0, 0.0)`` — whenever no map is loaded (or it is dormant), the trim
+        commands nothing and layer 3 contributes nothing, which is what makes the
+        disabled path today's machine bit for bit.
 
-        **Layer 2 does not depend on layer 1's dormancy.** A DORMANT map is one
-        fitted against a different layer 0; the trim was measured *this goal*
-        against *this* layer 0, so it stays valid and stays applied. That is
-        § 3.2's separation doing its job rather than an exception to it.
+        **Layer 2 does not depend on layer 1's dormancy** — historically because
+        the trim was measured *this goal* against *this* layer 0 and so stayed
+        valid when a map fitted under another one did not. That argument is now
+        moot for the COMMAND (layer 2 commands nothing) and survives only as the
+        reason its monitor read-out is still trustworthy under a dormant map.
+        **Layer 3 DOES depend on it**, and that asymmetry is not an
+        inconsistency: layer 3's provenance explicitly records which aim map was
+        being APPLIED underneath it, so a layer 1 that stops applying is a
+        recorded premise of the fit going false.
         """
         with self._lock:
             cal = self._toss_cal
@@ -2293,6 +2881,10 @@ class ReloadCoordinatorNode(Node):
             version = self._toss_cal_version
             already_logged = self._toss_cal_dormant_logged
             trim = self._toss_trim
+            ilc = self._toss_ilc
+            ilc_version = self._toss_ilc_version
+            ilc_already_logged = self._toss_ilc_dormant_logged
+            session = self._toss_ilc_session
         reason = cal.provenance_mismatch(live_tilt) if cal is not None else ''
         if reason:
             with self._lock:
@@ -2311,6 +2903,34 @@ class ReloadCoordinatorNode(Node):
             'map_offset_mm': (0.0, 0.0),
             'trim_aim_rad': (0.0, 0.0),
             'trim_offset_mm': (0.0, 0.0),
+            # Layer 2's estimate, and what it would have commanded if it still
+            # had authority. Separate keys from `trim_aim_rad` deliberately:
+            # `trim_aim_rad` means "what layer 2 CONTRIBUTED to the commanded
+            # aim", which is now structurally zero, and every consumer that
+            # reconstructs the applied aim from the record (`applied_aim_rad`'s
+            # map+trim fallback, the miner, the fit) must keep reading it that
+            # way or a monitor value would be re-applied on paper.
+            'trim_monitor_aim_rad': (0.0, 0.0),
+            'trim_authority': toss_trim.AIM_AUTHORITY,
+            # `ilc_aim_rad` is layer 3's TOTAL contribution to the commanded aim
+            # and stays that: every consumer that subtracts what layer 3 applied
+            # — `toss_trim.ilc_aim_rad`'s C4 subtraction above all — needs the
+            # sum, not a part. The two components ride beside it.
+            'ilc_aim_rad': (0.0, 0.0),
+            'ilc_spatial_aim_rad': (0.0, 0.0),
+            'ilc_session_aim_rad': (0.0, 0.0),
+            'ilc_session_applied': False,
+            'ilc_session_reason': toss_ilc.SESSION_NO_ARTIFACT,
+            'ilc_session_n': 0,
+            'ilc_offset_mm': (0.0, 0.0),
+            'ilc_vel_trim': 0.0,
+            'ilc_enabled': False,
+            'ilc_loaded': bool(ilc is not None),
+            'ilc_applied': False,
+            'ilc_version': ilc_version,
+            'ilc_key': None,
+            'ilc_hit': False,
+            'ilc_refused': '',
             'clamp_hits': [],
             'loaded': bool(cal is not None),
             'applied': bool(cal is not None and not reason),
@@ -2336,46 +2956,324 @@ class ReloadCoordinatorNode(Node):
                 block['applied'] = False
                 map_aim = (0.0, 0.0)
 
-        # ── layer 2 — THE single per-goal trim read (§ 3.6) ──
+        # ── layer 2 — THE single per-goal trim read (§ 3.6), MONITOR ONLY ──
+        #
+        # ZERO AUTHORITY since 2026-08-21 (``toss_trim.AIM_AUTHORITY``, owner
+        # decision 1 / contradiction C4). The estimator still runs, still guards,
+        # still writes its proposal — but its aim is RECORDED, not commanded, and
+        # `trim_aim` below is a hard zero rather than a value that happens to be
+        # zero. Root cause: two converging estimators of one quantity
+        # double-count in both directions (the machine over-aims by the ILC's
+        # contribution while the trim reports CONVERGED; and a converged trim
+        # makes the ILC unlearn itself to zero). The trim reduces `land_err_mm`
+        # while the ILC's aim update is driven by `arrival_dir`, so keeping both
+        # read-outs alive makes their disagreement visible per toss — which is
+        # the standing validation of C3's by-decision resolution.
         trim_aim = (0.0, 0.0)
         enabled = bool(self.get_parameter(_TOSS_TRIM_PARAM).value)
         block['trim_enabled'] = enabled
-        if enabled and trim is not None:
-            trim_aim = trim.aim()
+        block['trim_authority'] = toss_trim.AIM_AUTHORITY
+        if trim is not None:
+            monitor = trim.aim()
+            block['trim_monitor_aim_rad'] = (float(monitor[0]),
+                                             float(monitor[1]))
 
-        if map_aim == (0.0, 0.0) and trim_aim == (0.0, 0.0):
+        # ── layer 3 — THE single per-goal ILC lookup (critical-point-ilc.md) ──
+        #
+        # Layer 3's aim has TWO components since 2026-08-21 (owner decision 2,
+        # contradiction C1) and both are read here, once:
+        #
+        #   ilc_spatial — the per-cell SPATIAL RESIDUAL from `toss_ilc.lookup`.
+        #   ilc_session — the goal-local COMMON MODE, seeded at goal start from
+        #                 the artifact's anchor prior and gated on its evidence.
+        #
+        # Root cause for the split, not the decision by name: `level()` is one
+        # int16 SCL3300 sample with 1.2-1.7 mrad/axis of session-to-session
+        # scatter, and D3 says a re-`level` deliberately does NOT invalidate a
+        # persisted map. Against the measured per-cell |aim| of 9.1-10.5 mrad
+        # that is 11-19 % of every persisted cell being one sitting's
+        # inclinometer noise, frozen forever and re-applied on every future
+        # session that never took that draw. None of layer 3's four provenance
+        # keys can see a re-`level`, so the fence has to be structural: the
+        # common mode is persisted as a PRIOR, seeded into a RAM-only component
+        # that dies with the goal, and no cell ever absorbs a `level()` draw.
+        ilc_spatial = (0.0, 0.0)
+        ilc_session = (0.0, 0.0)
+        ilc_aim = (0.0, 0.0)
+        ilc_dv = 0.0
+        ilc_enabled = self._toss_ilc_enabled()
+        block['ilc_enabled'] = ilc_enabled
+        if ilc_enabled and ilc is not None:
+            # `'' if (cal is None or reason)` IS `_applied_toss_cal_version()`,
+            # inlined because this scope already holds `cal`, `reason` and
+            # `version` under one lock acquisition and the helper would re-take
+            # the lock and re-run the provenance verdict on the goal-build path.
+            # The two must agree — a divergence would make the status topic and
+            # the applied correction disagree about which aim map is underneath.
+            #
+            # GUARDED, and it is not defensive noise. This runs on the GOAL-BUILD
+            # path, and `provenance_mismatch` is not a pure string compare: it
+            # calls `model_config_identity()`, which reads six generated
+            # `hardware_config` constants through `getattr` and floats them. An
+            # install tree that predates a codegen — the same skew
+            # `_toss_ilc_enabled`'s `getattr(..., False)` already fails closed on
+            # — raises `AttributeError` there, and an unguarded raise here does
+            # not cost the correction, it kills `_build_toss_cycle` and with it
+            # the toss. Layer 3 is a refinement, never a gate (the same rule the
+            # `toss_cal.lookup` and `toss_ilc.lookup` guards below implement), so
+            # the failure is fail-CLOSED: zero correction, dormant, loud.
+            try:
+                ilc_reason = ilc.provenance_mismatch(
+                    tilt_map_version=live_tilt,
+                    toss_cal_version=('' if (cal is None or reason)
+                                      else str(version))) or ''
+            except Exception as exc:                               # noqa: BLE001
+                ilc_reason = (
+                    'the provenance check itself FAILED ({}: {}) — "I cannot '
+                    'verify what is underneath me" is not "the right thing is '
+                    'underneath me"'.format(type(exc).__name__, exc))
+            block['ilc_applied'] = not ilc_reason
+            if ilc_reason:
+                with self._lock:
+                    self._toss_ilc_dormant_reason = ilc_reason
+                    self._toss_ilc_dormant_logged = ilc_reason
+                if ilc_reason != ilc_already_logged:
+                    self.get_logger().warning(
+                        f"ILC artifact [{ilc_version}] is LOADED but DORMANT — "
+                        f"{ilc_reason}. This goal gets ZERO learned correction. "
+                        f"Re-fit against the live layers, or restore the ones it "
+                        f"was fitted under (design constraint 5).")
+            else:
+                try:
+                    hit = toss_ilc.lookup(ilc, float(catch_pose[0]),
+                                          float(catch_pose[1]),
+                                          float(catch_pose[2]), float(flight))
+                except (toss_ilc.TossIlcError, ValueError) as exc:
+                    # Same degradation the aim map takes: a lookup fault costs
+                    # the refinement, never the goal.
+                    self.get_logger().error(
+                        f"ILC lookup FAILED for goal {tuple(catch_pose)} at "
+                        f"T={flight}: {exc} — this goal gets ZERO learned "
+                        f"correction (layer 3 is a refinement, never a gate)")
+                    block['ilc_applied'] = False
+                    hit = None
+                # THE single per-goal read of the session common mode. It runs
+                # inside this branch, and only here, so that layer 3's dormancy
+                # verdict has exactly ONE owner: a DORMANT artifact contributes
+                # no prior for the same reason it contributes no cell, and the
+                # verdict is not re-derived anywhere it could drift from.
+                #
+                # It runs BEFORE the hit/miss branch on purpose. A MISS
+                # contributes exactly zero SPATIAL residual — `toss_ilc.lookup`'s
+                # no-interpolation rule is untouched — but it does NOT zero the
+                # common mode, and that asymmetry is the whole point of splitting
+                # them. The no-interpolation rule exists because a sparse
+                # command-vector table must not invent a value BETWEEN its cells;
+                # the common mode is by construction not a function of the cell
+                # (measured consistent, 9.1-10.5 mrad, across all three goal
+                # cells), so applying it at an unvisited goal is applying a
+                # constant, not interpolating a field. It is also exactly what
+                # layer 2 has always done with its own common mode: the session
+                # trim applies at every goal, whether or not the map has a node
+                # there. The tradeoff accepted: at a goal far outside the fitted
+                # region this extrapolates a constant that was measured inside
+                # it — bounded by ILC_AIM_MAX_RAD, gated on evidence, and
+                # recorded per toss as `ilc_session_aim_rad` so the assumption is
+                # visible in the corpus rather than implicit.
+                if session is not None:
+                    ilc_session = session.aim()
+                    block['ilc_session_aim_rad'] = (float(ilc_session[0]),
+                                                    float(ilc_session[1]))
+                    block['ilc_session_applied'] = bool(session.applied)
+                    block['ilc_session_reason'] = str(session.reason)
+                    block['ilc_session_n'] = int(session.n)
+                if hit is not None:
+                    block['ilc_key'] = tuple(hit.key)
+                    block['ilc_hit'] = bool(hit.hit)
+                    if hit.hit:
+                        ilc_spatial = hit.correction.aim_rad
+                        ilc_dv = float(hit.correction.event_vel_trim)
+                    else:
+                        # A MISS is EXACTLY zero and is said out loud once per
+                        # cell: an operator who expected a correction needs to
+                        # learn that this goal quantised somewhere the fit never
+                        # visited, and silence would read as "applied, and it
+                        # made no difference".
+                        if hit.key not in self._toss_ilc_miss_logged:
+                            self._toss_ilc_miss_logged.add(hit.key)
+                            self.get_logger().info(
+                                'ILC artifact [{}] has no cell for goal {} '
+                                '(key {}) — ZERO learned correction for this '
+                                'goal. Cells: {}'.format(
+                                    ilc_version, tuple(catch_pose),
+                                    list(hit.key), sorted(ilc.cells)))
+
+        # Layer 3's TOTAL aim. The two components are summed here, before the
+        # single D7 clamp, for the reason layer 3 as a whole is composed before
+        # it: adding a bound after the clamp would make a fourth authority, and
+        # the sum is what the platform is actually commanded to.
+        ilc_aim = (ilc_spatial[0] + ilc_session[0],
+                   ilc_spatial[1] + ilc_session[1])
+
+        if (map_aim == (0.0, 0.0) and trim_aim == (0.0, 0.0)
+                and ilc_aim == (0.0, 0.0) and ilc_dv == 0.0):
             # Not one floating-point operation on the disabled path.
             return block
 
+        # `base` = every layer BELOW layer 3. `trim_aim` is a hard (0, 0) since
+        # C4 and is kept in the expression on purpose: it makes the composition
+        # read as the layered sum it is, it keeps the layer-3 mm split a
+        # difference of two commanded offsets rather than a special case, and if
+        # layer 2 were ever re-armed the sum would be right by construction
+        # instead of needing this line rediscovered.
+        base_rx = map_aim[0] + trim_aim[0]
+        base_ry = map_aim[1] + trim_aim[1]
         try:
-            rx, ry, hits = toss_cal.clamp_total_aim(map_aim[0] + trim_aim[0],
-                                                    map_aim[1] + trim_aim[1])
+            rx, ry, hits = toss_cal.clamp_total_aim(base_rx + ilc_aim[0],
+                                                    base_ry + ilc_aim[1])
+            if hits and ilc_aim != (0.0, 0.0):
+                # REFUSE layer 3 whole, then re-compose exactly as layers 1+2
+                # would have on their own — see the method docstring (risk 5).
+                #
+                # WHOLE means BOTH components. Dropping only the spatial residual
+                # and keeping the common mode (or the reverse) would fly a
+                # correction no fit ever solved for: the cells are referenced TO
+                # the anchor, so `spatial` alone is a residual about a baseline
+                # the machine is not applying, and `session` alone is a baseline
+                # with its residual removed. Half a decomposition is not a
+                # smaller correction, it is a different one — the same reason a
+                # truncation is refused rather than applied.
+                if self._toss_ilc_refusal_logged != 'total_aim':
+                    self._toss_ilc_refusal_logged = 'total_aim'
+                    self.get_logger().warning(
+                        'ILC aim contribution REFUSED at apply: map+ilc = '
+                        '{:.6f} rad exceeds the {:.6f} rad D7 authority, and a '
+                        'TRUNCATED correction is not the correction that was '
+                        'solved for (risk 5). This goal flies the map aim '
+                        'unchanged; the recorded ilc_aim_rad is (0, 0), and '
+                        'BOTH layer-3 components are dropped (spatial '
+                        '{:.6f} rad + session {:.6f} rad).'
+                        .format(math.hypot(base_rx + ilc_aim[0],
+                                           base_ry + ilc_aim[1]),
+                                toss_cal.TOTAL_MAX_RAD,
+                                math.hypot(*ilc_spatial),
+                                math.hypot(*ilc_session)))
+                block['ilc_refused'] = 'total_aim'
+                ilc_aim = (0.0, 0.0)
+                ilc_spatial = (0.0, 0.0)
+                ilc_session = (0.0, 0.0)
+                block['ilc_session_aim_rad'] = (0.0, 0.0)
+                block['ilc_session_applied'] = False
+                # ... and the REASON, which is the field a corpus consumer or a
+                # bench operator actually routes on. Left at its pre-refusal
+                # SESSION_APPLIED until 2026-08-22, so the record read
+                # reason=APPLIED next to applied=False and aim=(0, 0) and the
+                # landing error got attributed to a correction that was refused
+                # (audit fix). Every sibling field in this branch is corrected;
+                # this one was the miss.
+                block['ilc_session_reason'] = toss_ilc.SESSION_REFUSED_TOTAL_AIM
+                rx, ry, hits = toss_cal.clamp_total_aim(base_rx, base_ry)
             offset = aim_target_offset_mm(rx, ry, float(flight),
                                           float(catch_pose[2]))
             map_offset = aim_target_offset_mm(map_aim[0], map_aim[1],
                                               float(flight),
                                               float(catch_pose[2]))
+            if ilc_aim == (0.0, 0.0):
+                # The pre-Phase-2 arithmetic, unchanged and unreached by layer 3.
+                base_offset = offset
+            else:
+                # Reachable only when the clamp did NOT bind (a hit refuses layer
+                # 3 above), so (rx, ry) IS base + ilc exactly and the split below
+                # is a difference of two commanded offsets rather than an
+                # approximation.
+                base_offset = aim_target_offset_mm(base_rx, base_ry,
+                                                   float(flight),
+                                                   float(catch_pose[2]))
         except (toss_cal.TossCalError, ValueError) as exc:
             self.get_logger().error(
                 f"toss aim composition FAILED for catch pose "
                 f"{tuple(catch_pose)}: {exc} — this goal is thrown UNAIMED "
                 f"(C-TOSS-CAL-1 is a refinement, never a gate)")
             block['applied'] = False
+            block['ilc_applied'] = False
             return block
         block['aim_rad'] = (float(rx), float(ry))
         block['offset_mm'] = (float(offset[0]), float(offset[1]))
         block['map_aim_rad'] = (float(map_aim[0]), float(map_aim[1]))
         block['map_offset_mm'] = (float(map_offset[0]), float(map_offset[1]))
         block['trim_aim_rad'] = (float(trim_aim[0]), float(trim_aim[1]))
-        # The trim's mm REPORT value is the DIFFERENCE of the two commanded
-        # offsets, not `aim_target_offset_mm(trim)` on its own: what the trim
-        # actually moved is the virtual target, and after the total clamp that
-        # displacement is exactly total − map. Computing it independently would
-        # report a trim the machine did not command whenever the clamp bound.
-        block['trim_offset_mm'] = (float(offset[0]) - float(map_offset[0]),
-                                   float(offset[1]) - float(map_offset[1]))
+        # The trim's mm REPORT value is the DIFFERENCE of the commanded offsets,
+        # not `aim_target_offset_mm(trim)` on its own: what the trim actually
+        # moved is the virtual target, and after the total clamp that displacement
+        # is exactly (map+trim) − map. Computing it independently would report a
+        # trim the machine did not command whenever the clamp bound — and since
+        # C4 that is not a "whenever" but an ALWAYS, because layer 2 commands
+        # nothing, so this expression is what keeps the field a structural zero
+        # rather than a number about the monitor. Layer 3 gets the same treatment
+        # one step further out — total − (map+trim) — and with layer 3 inactive
+        # `base_offset is offset`, so this is bit-for-bit the pre-Phase-2
+        # expression.
+        block['trim_offset_mm'] = (float(base_offset[0]) - float(map_offset[0]),
+                                   float(base_offset[1]) - float(map_offset[1]))
+        block['ilc_aim_rad'] = (float(ilc_aim[0]), float(ilc_aim[1]))
+        block['ilc_spatial_aim_rad'] = (float(ilc_spatial[0]),
+                                        float(ilc_spatial[1]))
+        block['ilc_session_aim_rad'] = (float(ilc_session[0]),
+                                        float(ilc_session[1]))
+        block['ilc_offset_mm'] = (float(offset[0]) - float(base_offset[0]),
+                                  float(offset[1]) - float(base_offset[1]))
+        block['ilc_vel_trim'] = float(ilc_dv)
         block['clamp_hits'] = list(hits)
         return block
+
+    @staticmethod
+    def _ilc_vel_trim_refusal(nominal_mps: float, trimmed_mps: float,
+                              flight_s: float) -> str:
+        """``''`` to APPLY the layer-3 speed trim, or the reason to drop it.
+
+        THE apply-seam gate for the ``event_vel_trim`` channel (contradiction
+        **C2** of the 2026-08-21 ILC fold-in). Three checks, and each one is a
+        different failure it closes:
+
+        1. ``validate_event_vel`` — the bridge's ``[0.3, 7.0]`` m/s acceptance
+           band. Kept, and it is NOT the important one: that band "bounds
+           nothing physical" (``toss_trim.SessionTrim.speed_gain``'s ⚠ block).
+        2. ``throw_envelope.evaluate(T, trimmed)`` — contract **C-HAND-3**, the
+           gate that does bound the hardware, run on the speed the trim would
+           actually command. Without it a trim that clears the wire band but
+           breaks the envelope makes ``TossSequencer`` CHECKING mint
+           ``REJECTED_THROW_ENVELOPE`` and **layer 3 becomes a gate** — the
+           precise thing C-TOSS-CAL-1's "a refinement, never a gate" rule
+           forbids, and the reason this seam exists at all. The admissible trim
+           is strongly T-dependent (at the derived band floor T = 0.4949 s the
+           negative side is exactly ``+0.000``, bounded by ``ARM_WINDOW``), so a
+           trim fitted at one flight time is not automatically flyable at
+           another. ``ilc_fit_lib.speed_authority_band`` is the offline half of
+           the same computation; this is the online verdict.
+        3. the NOMINAL must clear the envelope too. Root cause: if the untrimmed
+           goal is already inadmissible, applying a trim that happens to be
+           admissible would make layer 3 the difference between a rejected goal
+           and a flown one — so an absent or dormant artifact would flip the
+           machine's verdict on a goal, and "byte-identical with layer 3 off"
+           would stop being true of the outcome. A goal the machine cannot fly
+           untrimmed is refused for its own reason, with the trim dropped.
+
+        Static and pure so it can be tested without a node.
+        """
+        if not validate_event_vel(trimmed_mps):
+            return ('would be outside the bridge band [{:.2f}, {:.2f}] '
+                    '(REJECTED_EVENT_VEL)'.format(
+                        hw.TEENSY_TRAJ_MIN_EVENT_VEL_MPS,
+                        hw.TEENSY_TRAJ_MAX_EVENT_VEL_MPS))
+        verdict = throw_envelope.evaluate(flight_s, trimmed_mps)
+        if not verdict.ok:
+            return 'REJECTED_THROW_ENVELOPE({})'.format(verdict.message)
+        nominal = throw_envelope.evaluate(flight_s, nominal_mps)
+        if not nominal.ok:
+            return ('the UNTRIMMED goal is itself outside the throw envelope '
+                    '({}) — layer 3 never decides whether a goal is flyable'
+                    .format(nominal.message))
+        return ''
 
     @staticmethod
     def _release_is_tilted(release) -> bool:
@@ -2398,7 +3296,8 @@ class ReloadCoordinatorNode(Node):
         with self._lock:
             return self._toss_release_cmd
 
-    def _build_toss_cycle(self, catch_pose, flight, throw_delay, vel_scale):
+    def _build_toss_cycle(self, catch_pose, flight, throw_delay, vel_scale,
+                          *, delay_is_cadence=False):
         """Build ONE toss cycle: resolve the tier / throw site / release state,
         construct + start the ``TossSequencer``, and install the per-goal node
         state the observation builder and the async-event routing read.
@@ -2411,6 +3310,23 @@ class ReloadCoordinatorNode(Node):
         The goal numerics are the CALLER's gate (both callers refuse
         REJECTED_BAD_GOAL before reaching here, with nothing built and nothing
         installed).
+
+        ``delay_is_cadence`` is the ONE thing the two callers do differently, and
+        it is a statement about what ``throw_delay`` MEANS to each of them:
+
+        * a single ``Toss`` is an APPOINTMENT the operator set. Too short for
+          the sequence this cycle must run ⇒ ``REJECTED_CANT_MAKE_LEAD``, loud,
+          nothing moved. Silently stretching it would answer a request the
+          operator did not make.
+        * a ``TossContinuous`` cycle's delay is a CADENCE parameter the SESSION
+          consumes — it schedules cycle N+1 as ``landing + dwell − throw_delay``
+          precisely so the RELEASE lands one dwell past the landing, and the
+          session's own dwell floor is sized on the chained steady state. So a
+          cycle that must first COMMAND its pre-positioning move is GRANTED the
+          extra lead (once, loudly) instead of killing the sitting on its first
+          cycle. Only the first cycle normally pays it: a CAUGHT toss ends in
+          ACTION_STAY holding the pose it threw from, so every later cycle takes
+          the census-B1 skip and keeps the operator's number exactly.
         """
         # The release state (frames + ballistics) comes from the single tested
         # conversion module; the FSM gets its event_vel from here, never a second
@@ -2504,17 +3420,94 @@ class ReloadCoordinatorNode(Node):
                 release = None
                 release_cmd = None
                 tilt_clamp_exceeded = True
+        # The COMMANDED launch speed: the aim tilts the launch, so |v| grows by
+        # 1/cos(aim) (0.015 % at 1°). The FSM still gates it through
+        # validate_event_vel, so an aim can no more push event_vel past the
+        # bridge's [0.3, 7.0] m/s than a displacement can.
+        event_vel = (float(release_cmd.event_vel_mps)
+                     if release_cmd is not None else 0.0)
+        # ── layer 3's SECOND channel: the learned event_vel trim ──
+        # `k_v - 1`, applied as the multiply `release_state_for_command` models
+        # (ilc_fit_lib) — the fit and the machine must scale the same magnitude
+        # in the same place or the sensitivity F describes a different command
+        # than the one that flies. Guarded on `!= 0.0` so an inactive layer 3
+        # costs not one floating-point operation and `event_vel` stays the exact
+        # float the pre-Phase-2 expression produced.
+        if event_vel and aim['ilc_vel_trim'] != 0.0:
+            trimmed = event_vel * (1.0 + float(aim['ilc_vel_trim']))
+            refusal = self._ilc_vel_trim_refusal(event_vel, trimmed, flight)
+            if not refusal:
+                event_vel = trimmed
+            else:
+                # REFUSE the trim, fly the nominal. The FSM would otherwise mint
+                # REJECTED_EVENT_VEL / REJECTED_THROW_ENVELOPE and the whole goal
+                # would die for a refinement — and layer 3, like C-TOSS-CAL-1, is
+                # a refinement and never a gate. The record then carries
+                # ilc_vel_trim = 0.0, which is the truth about what was commanded
+                # (risk 5).
+                self.get_logger().warning(
+                    'ILC event_vel trim {:+.4f} REFUSED at apply: it would '
+                    'command {:.4f} m/s and {}. This goal throws at the '
+                    'untrimmed {:.4f} m/s.'.format(
+                        float(aim['ilc_vel_trim']), trimmed, refusal, event_vel))
+                aim['ilc_vel_trim'] = 0.0
+                aim['ilc_refused'] = (
+                    '{},event_vel'.format(aim['ilc_refused'])
+                    if aim['ilc_refused'] else 'event_vel')
+        # ── THE positioning decision, taken ONCE (2026-08-23) ──
+        # It used to be taken inside _position_platform_for_toss, one FSM tick
+        # from now. It is taken here because it is now TWO things at once:
+        #
+        #   * the branch POSITIONING takes (skip vs command a go_to_pose), and
+        #   * the pre-dispatch budget the CHECKING delay gate charges
+        #     (toss_sequencer.pre_dispatch_budget_s — 0.080 s for the skip,
+        #     0.460 s for a move).
+        #
+        # Taking it twice would let those two disagree, and a budget charged for
+        # a branch the node did not take is exactly the accept-vs-runtime gap the
+        # 2026-08-22 audit found. Cached under the lock below; the POSITIONING
+        # step consumes the cached answer and re-reads nothing.
+        #
+        # `release_cmd is None` (a tilt-clamp raise, or an unknown 8b site) means
+        # the FSM rejects on its first step and POSITIONING is never reached — the
+        # fail-closed True there is moot but costs nothing.
+        px, py, pz = self._toss_positioning_xyz(catch_pose, release_cmd)
+        positioning_move = not (
+            release_cmd is not None
+            and self._toss_already_positioned(px, py, pz, release_cmd))
+        # ── and the lead that decision needs (SESSION cycles only) ──
+        # See the `delay_is_cadence` paragraph in the docstring for why this is
+        # a grant here and a refusal on the single-Toss path. In one line: a
+        # cadence parameter is a MINIMUM lead the session's own scheduler
+        # consumes, an appointment is not.
+        #
+        # ⚠ STRICTLY POSITIVE delays only. 0.0 is the goal's "unset" sentinel and
+        # TossSequencer.__post_init__ substitutes the 5.0 s default for it;
+        # a NEGATIVE value is the sign typo __post_init__ deliberately preserves
+        # so CHECKING rejects it loudly. Raising either would launder an operator
+        # error into a number the machine chose.
+        cycle_delay = float(throw_delay)
+        lead_floor = min_throw_delay_for_release_s(event_vel, positioning_move)
+        if (delay_is_cadence and positioning_move
+                and 0.0 < cycle_delay < lead_floor):
+            self.get_logger().warning(
+                'toss throw_delay raised {:.3f} -> {:.3f} s for this cycle: '
+                'POSITIONING must COMMAND the pre-positioning move (the platform '
+                'is not already at ({:.1f}, {:.1f}, {:.1f}) mm within {:.1f} mm, '
+                'at the commanded orientation), which spends {:.3f} s of the '
+                'lead before the release-window guard runs. A chained cycle takes '
+                'the census-B1 skip and keeps the {:.3f} s you asked for.'.format(
+                    cycle_delay, lead_floor, px, py, pz,
+                    _TOSS_ALREADY_THERE_TOL_MM,
+                    pre_dispatch_budget_s(True), cycle_delay))
+            cycle_delay = lead_floor
         seq = TossSequencer(
             catch_pose_stow_mm=catch_pose, flight_time_s=flight,
-            throw_delay_s=throw_delay, tier=tier,
-            # The COMMANDED launch speed: the aim tilts the launch, so |v| grows
-            # by 1/cos(aim) (0.015 % at 1°). The FSM still gates it through
-            # validate_event_vel, so an aim can no more push event_vel past the
-            # bridge's [0.3, 7.0] m/s than a displacement can.
-            event_vel_mps=(float(release_cmd.event_vel_mps)
-                           if release_cmd is not None else 0.0),
+            throw_delay_s=cycle_delay, tier=tier,
+            event_vel_mps=event_vel,
             throw_site_xy_mm=throw_site,
             throw_site_known=throw_site_known,
+            positioning_move_expected=positioning_move,
             max_displacement_mm=float(hw.JB_OP_TOSS_MAX_DISPLACEMENT_MM),
             workspace_xy_mm=float(hw.JB_OP_TOSS_WORKSPACE_XY_MM),
             stay_at_pose_on_caught=bool(hw.JB_OP_TOSS_STAY_AT_POSE_ON_CAUGHT),
@@ -2529,8 +3522,18 @@ class ReloadCoordinatorNode(Node):
                 'only; never run powered sessions with this set.')
         with self._lock:
             self._active_seq = seq
+            # Roll the outgoing latch forward BEFORE clearing it (census D6):
+            # cycle N+1's CHECKING must be able to tell OUR just-caught ball —
+            # whose track is still IN_FLIGHT until the tracker mints CAUGHT —
+            # from a genuine phantom. Cleared at goal ACCEPT, so it spans cycles
+            # and never goals.
+            self._prev_announced_ball_id = self._announced_ball_id
             self._announced_ball_id = None
             self._announced_id_untagged = False
+            # A new cycle inherits no schedule: the session sets it immediately
+            # after this returns, and a single Toss never does.
+            self._toss_next_release_perf = None
+            self._toss_next_landing_perf = None
             # GOAL-START phantom snapshot: any id already IN_FLIGHT before OUR
             # throw is a phantom BY CONSTRUCTION (our ball cannot be airborne
             # before our announcement's throw_time). The PREPARE-tick snapshot
@@ -2544,6 +3547,14 @@ class ReloadCoordinatorNode(Node):
             self._toss_release_state = release
             self._toss_release_cmd = release_cmd
             self._toss_aim = aim
+            # THE cached positioning decision (2026-08-23). Written here, read
+            # exactly once by _position_platform_for_toss on the next FSM tick.
+            # It is not an optimisation: the CHECKING delay gate has ALREADY
+            # charged a pre-dispatch budget keyed on this boolean, so re-deriving
+            # it a tick later — against a commanded pose that may have been
+            # republished in between — could take the cheap branch under an
+            # expensive budget, or the reverse. One decision, one place.
+            self._toss_positioning_move = positioning_move
             # release is None on a Tier-8b tilt-clamp raise (the FSM rejects
             # REJECTED_TILT_CLAMP on the first step, so the nominated landing is
             # never consulted); guard the deref. None ⇒ the possession
@@ -2595,6 +3606,16 @@ class ReloadCoordinatorNode(Node):
             self._toss_platform_target_mm = None
             self._toss_prepare_pending = False
             self._toss_throw_dispatched = False
+            # Fail-closed between cycles: a leftover False would let the NEXT
+            # cycle's POSITIONING skip a move on evidence that belonged to the
+            # previous one.
+            self._toss_positioning_move = True
+            # The cadence clamp is per-CYCLE (C-POSSESS-1 § 3.4): a schedule that
+            # outlived its cycle would clamp the next ball's windows against a
+            # stale instant, which is the arm/disarm lifecycle bug class the
+            # contract deletes rather than guards.
+            self._toss_next_release_perf = None
+            self._toss_next_landing_perf = None
 
     def _run_toss_cycle(self, seq, *, deadline_s, cancel_now_fn, feedback_fn):
         """Tick ONE toss cycle to a terminal. Returns ``(TossResult, exit_kind)``
@@ -2711,7 +3732,15 @@ class ReloadCoordinatorNode(Node):
         catch_coordinator wait-set cycle have no intra-cycle ordering either,
         so a same-tick hold could lose to the armed edge and let the
         armed-edge auto-prime ascend with the seated ball. One full FSM tick
-        (50 ms ≫ topic latency) puts the hold in an earlier CCN cycle."""
+        puts the hold in an earlier CCN cycle.
+
+        **That tick is ``_TICK_S`` = 20 ms, not the 50 ms this docstring claimed
+        until 2026-08-22** (audit fix; the B3 cadence work cut it in c938c1d and
+        left both cross-topic ordering arguments quoting the old number). Still
+        two orders of magnitude above localhost topic latency, so the argument
+        holds — but a future session tightening cadence reads the margin HERE,
+        and reading 50 ms would credit it with 2.5x more headroom than it has
+        before collapsing this split into one tick."""
         obs = self._build_toss_observations(now)
         decision = seq.step(now, obs)
         if decision.action == TOSS_ACTION_POSITION_PLATFORM:
@@ -2740,16 +3769,44 @@ class ReloadCoordinatorNode(Node):
             # it means the envelope no longer silently depends on POSITIONING
             # having actually arrived.
             self._publish_reach_center(seq.catch_pose_stow_mm)
-            # Re-keyed from `tier == TIER_8B` onto the thing that actually
-            # matters (D3): ANY non-zero commanded tilt, tier-independent.
-            # Without the hold, catch_coordinator._on_throw_announcement's stock
-            # pre-tilt completes the un-tilt to level >= 1 s BEFORE release — its
-            # own docstring states the failure — so an aimed 8a toss would be
-            # levelled back and every log line would still report the aim as
-            # applied. Silent-wrong is the expensive failure class here.
-            if self._release_is_tilted(self._toss_commanded_release()):
-                self._publish_pretilt_hold(True)
-                self._toss_pretilt_hold_raised = True
+            # UNCONDITIONAL since 2026-08-22 (census E5). The key has widened
+            # twice, and the direction is the same each time — toward "the toss
+            # owns the platform for the whole cycle, full stop":
+            #
+            #   tier == TIER_8B          (Phase 4)
+            #   -> any non-zero commanded tilt, tier-independent (D3): the aim
+            #      map gave 8a a second source of tilt, and without the hold
+            #      catch_coordinator._on_throw_announcement's stock pre-tilt
+            #      completes the un-tilt to level >= 1 s BEFORE release, so an
+            #      aimed 8a toss is levelled back while every log line still
+            #      reports the aim as applied;
+            #   -> ALWAYS (E5).
+            #
+            # Why the last step. CCN's pre-tilt arrival is
+            # min(landing, max(landing - 1.5, now + 1.0)). At the cadence rungs
+            # `landing - 1.5` is in the PAST, so the max() picks `now + 1.0`,
+            # and the min() then clamps it to the landing itself — an arrival
+            # scheduled AT CONTACT, which is the exact degeneracy
+            # _pretilt_arrival_perf's own docstring was written to avoid (third
+            # sitting: tilt still >1 deg off until 0.24-0.49 s before landing).
+            #
+            # For a LEVEL 8a that target is the already-held pose, so the motion
+            # is degenerate and the old key was defensible. It stopped being
+            # defensible for two reasons that both arrive with cadence: the
+            # target is `predicted_catch_command`'s output, not literally the
+            # held pose, so any receive-tilt or landing-prediction residual
+            # becomes a commanded reach arriving AT CONTACT; and at a sub-second
+            # dwell the NEXT cycle's announcement lands while the previous ball
+            # is still seating, i.e. inside E1/E2's settle-hold and reach-freeze
+            # window, where any platform motion is a dropped catch.
+            #
+            # The cost of raising it when it was not needed is bounded and
+            # documented: a stale pretilt_hold only DEGRADES (a later reload
+            # catch loses its pre-tilt), it never commands anything, and all
+            # three teardowns release it keyed on the flag below. The cost of
+            # NOT raising it is a platform reach under a seated ball.
+            self._publish_pretilt_hold(True)
+            self._toss_pretilt_hold_raised = True
             self._toss_prepare_pending = True
         elif decision.action == TOSS_ACTION_ANNOUNCE:
             self._announce_toss(seq)
@@ -2836,6 +3893,34 @@ class ReloadCoordinatorNode(Node):
             orientation = self._tilt_quaternion(release.tilt_rx, release.tilt_ry)
         else:
             orientation = Quaternion()              # identity = level platform
+        # THE cached decision from _build_toss_cycle, not a fresh evaluation
+        # (2026-08-23). The CHECKING delay gate has already charged a
+        # pre-dispatch budget keyed on this exact boolean; re-deriving it here
+        # would let the branch taken and the budget charged disagree.
+        with self._lock:
+            already_positioned = not bool(self._toss_positioning_move)
+        if already_positioned:
+            # CENSUS B1 — the no-op move. For a chain with
+            # stay_at_pose_on_caught the platform is ALREADY at the
+            # pre-positioning pose: the catch ended in ACTION_STAY and the
+            # emitter's terminal hold never let it go. Commanding it anyway costs
+            # min_move_duration_s (0.20) + TOSS_POSITION_SETTLE_PAD_S (0.20) + a
+            # service round trip, EVERY cycle, to traverse zero millimetres —
+            # 0.45 s of a turnaround whose whole physical floor is 0.49 s. Since
+            # 2026-08-23 that holds for an AIMED chain too: the skip verifies the
+            # commanded ORIENTATION as well, so it no longer refuses every tilted
+            # release by construction.
+            #
+            # Nothing else is skipped: the FSM still runs POSITIONING, the
+            # reach-envelope declaration still goes out at PREPARE (C-REACH-1),
+            # and the mocap arrival cross-check still gets its verification
+            # window. See TossSequencer.note_position_noop.
+            self.get_logger().info(
+                'POSITIONING skipped — platform is already at '
+                '({:.1f}, {:.1f}, {:.1f}) mm within {:.1f} mm (census B1); '
+                'nothing commanded'.format(x, y, z, _TOSS_ALREADY_THERE_TOL_MM))
+            seq.note_position_noop(time.perf_counter())
+            return
         if not self._go_to_pose_cli.wait_for_service(timeout_sec=_SERVICE_WAIT_S):
             self.get_logger().error('trajectory/go_to_pose service unavailable')
             seq.note_position_result(time.perf_counter(), False, 0.0, 'NO_RESPONSE')
@@ -2855,6 +3940,89 @@ class ReloadCoordinatorNode(Node):
             return
         seq.note_position_result(now, bool(resp.accepted),
                                  float(resp.planned_duration_s), str(resp.code))
+
+    def _toss_already_positioned(self, x, y, z, release) -> bool:
+        """Is the platform ALREADY at the positioning pose, provably? (census B1)
+
+        Two conditions, BOTH required, and each is a way this can say "no" —
+        which is the safe answer, because a wrong "yes" fires the throw from a
+        pose the aim was not solved for:
+
+        1. **The live commanded POSE must be FRESH.** ``None`` from
+           :meth:`_live_commanded_pose` means unknown or stale, and unknown reads
+           as NOT-there. Same doctrine as ``throw_site_known``: a node that was
+           never told is not entitled to assume. A trajectory_node that predates
+           ``trajectory/commanded_pose`` therefore leaves the skip permanently
+           off — cadence lost, nothing unsafe.
+        2. **Position AND orientation must match, per component, inside their
+           tolerances** — ``_TOSS_ALREADY_THERE_TOL_MM`` and
+           ``_TOSS_ALREADY_THERE_TOL_RAD``, the second derived from the first
+           (see the constant).
+
+        **The third condition, retired 2026-08-23: "the release must be LEVEL".**
+        It was there because ``trajectory/commanded_position`` published position
+        and nothing else, so a TILTED pre-tilt pose carried an orientation this
+        node could not verify and had to command. Correct, and expensive: an
+        armed aim — ILC layer 3, the calibration map, Tier 8b — makes EVERY
+        release tilted, so the skip was off for the whole of every ILC sitting
+        and each cycle paid ``min_move_duration_s`` + ``TOSS_POSITION_SETTLE_PAD_S``
+        + ticks (0.38 s of throw delay, and one-for-one the same in dwell) to
+        traverse zero millimetres and re-command a tilt it was already holding.
+        That was the largest single cadence item on the 2026-08-22 audit's board.
+
+        The fix was to publish what the check needed rather than to weaken the
+        check: ``trajectory/commanded_pose`` carries the same sampled plan state
+        WITH its orientation, in the INTENT frame, so the comparison is against
+        the pose this node is about to request rather than against a
+        gravity-corrected version of it. Nothing here got looser — a tilted
+        release now has to PROVE the platform is at its tilt, where before it
+        could not be asked.
+
+        **Why this fires on a chain, and only on a chain.** A CAUGHT toss ends in
+        ``ACTION_STAY``: nothing is commanded, and the emitter's terminal hold
+        leaves the platform exactly where the cycle threw and caught from. The
+        next cycle recomputes its pre-tilt pose from the same ``(catch_pose,
+        flight, aim)``, so the target is bit-identical and the residual is
+        floating-point noise. Anything that MOVED the platform in between — a
+        MISS's ``go_home``, a reload interlude's recentre, a SpaceMouse nudge, a
+        reload catch's own pre-tilt at the same position — fails one component or
+        the other and the move is commanded.
+
+        **Why the tolerance is what it is.** For a co-located Tier-8a toss the
+        throw site and the catch site are the same physical place, so a residual
+        δ is aim-NEUTRAL: the ball goes up and comes back down into the cup
+        wherever the cup is (the vertical ballistic inverse is translation
+        invariant, and Δz is a hand-frame offset, not a platform-z one). What δ
+        is NOT neutral about is everything downstream that was told the ball will
+        be at the NOMINATED B: the declared reach envelope (C-REACH-1), the
+        announcement the tracker correlates against, and the mocap cross-check
+        target. So the bound is a fraction of the cup, not a fraction of the
+        workspace: ``GEOM_HAND_RADIUS_MM / 2``, which is a shift the cup absorbs
+        with 2x margin and which the catch pipeline's own B-centred expectation
+        still covers. The ANGULAR bound is the tilt whose landing drift equals
+        that same budget at the tallest admitted throw.
+
+        It is DELIBERATELY not ``_RELOAD_CENTERED_TOL_MM`` (66.53 mm): that is a
+        recentre-verification bound, an order of magnitude looser, and reusing it
+        here would let the skip fire on a platform two cup-radii off B."""
+        live = self._live_commanded_pose(time.perf_counter())
+        if live is None:
+            return False
+        if any(abs(float(live[i]) - float(v)) > _TOSS_ALREADY_THERE_TOL_MM
+               for i, v in enumerate((x, y, z))):
+            return False
+        # The pre-tilt ORIENTATION this cycle would command, as a rotvec — the
+        # SAME (tilt_rx, tilt_ry, 0) that _position_platform_for_toss encodes
+        # into the go_to_pose quaternion, compared before that encoding rather
+        # than after it (quaternions double-cover: q and -q are one rotation, so
+        # a component-wise compare of the encoded form can read a match as a
+        # mismatch).
+        if self._release_is_tilted(release):
+            target = (float(release.tilt_rx), float(release.tilt_ry), 0.0)
+        else:
+            target = (0.0, 0.0, 0.0)
+        return all(abs(float(live[3 + i]) - v) <= _TOSS_ALREADY_THERE_TOL_RAD
+                   for i, v in enumerate(target))
 
     @classmethod
     def _toss_positioning_xyz(cls, catch_pose_stow_mm, release):
@@ -3473,7 +4641,15 @@ class ReloadCoordinatorNode(Node):
             # state: the release point, the launch vector, the dispatched
             # event_vel and the commanded tilt.
             rec.update({
-                'event_vel_mps': float(release_cmd.event_vel_mps),
+                # Read off the SEQUENCER, not off `release_cmd`: the sequencer is
+                # what `_dispatch_toss_throw` sends (`req.event_vel =
+                # seq.event_vel_mps`), and since layer 3's velocity trim is
+                # applied between the two they are no longer the same number
+                # whenever it acts. With layer 3 inactive the sequencer holds the
+                # exact float `release_cmd.event_vel_mps` produced, so this is
+                # bit-identical to the pre-Phase-2 record.
+                'event_vel_mps': float(seq.event_vel_mps) if seq is not None
+                else float(release_cmd.event_vel_mps),
                 'release_pos_global_mm': [float(v) for v in
                                           release_cmd.release_pos_global_mm],
                 'launch_vel_mms': [float(v) for v in release_cmd.launch_vel_mms],
@@ -3484,14 +4660,29 @@ class ReloadCoordinatorNode(Node):
         # Explicit ZEROS, never nulls: a null reads as "unknown", a zero reads as
         # "nothing was applied", and the corpus has to be able to prove which one
         # its baseline was. That holds for the REJECTED_BAD_GOAL path too — a
-        # goal that never built a cycle commanded exactly zero aim. The session
-        # trim is phase 2e, so trim_aim_rad is a standing zero here.
+        # goal that never built a cycle commanded exactly zero aim. `trim_aim_rad`
+        # is a STRUCTURAL zero since 2026-08-21 — layer 2's aim estimator is
+        # monitor-only (C4) — and its estimate rides beside it in
+        # `trim_monitor_aim_rad`.
         rec.update({
             'map_aim_rad': [0.0, 0.0],
             'trim_aim_rad': [0.0, 0.0],
+            'trim_monitor_aim_rad': [0.0, 0.0],
+            'trim_authority': toss_trim.AIM_AUTHORITY,
             'total_aim_rad': [0.0, 0.0],
             'map_aim_mm_at_h': [0.0, 0.0],
             'trim_aim_mm_at_h': [0.0, 0.0],
+            # Layer 3, POST-GATE. Explicit zeros for the same reason the two
+            # above are explicit zeros, and one more: a REFUSED correction (total
+            # clamp or validate_event_vel) must be recorded as the zero it became,
+            # or the next fit learns against a command the machine never flew.
+            'ilc_aim_rad': [0.0, 0.0],
+            'ilc_spatial_aim_rad': [0.0, 0.0],
+            'ilc_session_aim_rad': [0.0, 0.0],
+            'ilc_session_applied': False,
+            'ilc_session_reason': toss_ilc.SESSION_NO_ARTIFACT,
+            'ilc_session_n': 0,
+            'ilc_vel_trim': 0.0,
             'clamp_hits': [],
             'toss_cal_loaded': bool(cal_present),
             'toss_cal_version': cal_version or None,
@@ -3503,12 +4694,24 @@ class ReloadCoordinatorNode(Node):
             rec.update({
                 'map_aim_rad': [float(v) for v in aim['map_aim_rad']],
                 'trim_aim_rad': [float(v) for v in aim['trim_aim_rad']],
+                'trim_monitor_aim_rad': [
+                    float(v) for v in aim['trim_monitor_aim_rad']],
+                'trim_authority': str(aim['trim_authority']),
                 'total_aim_rad': [float(v) for v in aim['aim_rad']],
                 # REPORT fields: mm at THIS toss's apex, never the stored unit.
                 # They are the exact virtual-target offsets that were commanded,
                 # so they need no re-derivation (and cannot drift from one).
                 'map_aim_mm_at_h': [float(v) for v in aim['map_offset_mm']],
                 'trim_aim_mm_at_h': [float(v) for v in aim['trim_offset_mm']],
+                'ilc_aim_rad': [float(v) for v in aim['ilc_aim_rad']],
+                'ilc_spatial_aim_rad': [
+                    float(v) for v in aim['ilc_spatial_aim_rad']],
+                'ilc_session_aim_rad': [
+                    float(v) for v in aim['ilc_session_aim_rad']],
+                'ilc_session_applied': bool(aim['ilc_session_applied']),
+                'ilc_session_reason': str(aim['ilc_session_reason']),
+                'ilc_session_n': int(aim['ilc_session_n']),
+                'ilc_vel_trim': float(aim['ilc_vel_trim']),
                 'clamp_hits': list(aim['clamp_hits']),
                 'toss_cal_applied': bool(aim['applied']),
             })
@@ -3625,8 +4828,158 @@ class ReloadCoordinatorNode(Node):
             self._toss_record_pub.publish(String(data=payload))
         except Exception as exc:                               # noqa: BLE001
             self.get_logger().warning('toss/record publish failed: {}'.format(exc))
+        # CENSUS B6 — the belt write and the trim update leave the cycle thread.
+        # The ROS publish stays here: it is a non-blocking hand-off to the
+        # middleware, and it is the CANONICAL sink (the belt exists only so a
+        # `record:=false` bench session still produces a corpus). What moves is
+        # the pair that can BLOCK: an `open(..., 'a')` on the SD card and a numpy
+        # estimator update, both of which ran synchronously inside
+        # _run_toss_cycle before it returned — i.e. squarely in the
+        # landing -> next-cycle handoff. A full disk or a slow card was a cadence
+        # fault; now it is a lost measurement, which is what an instrument's
+        # failure should cost.
+        #
+        # The context snapshot is taken HERE, on the cycle thread, and passed in.
+        # _toss_trim_observe reads _toss_record_ctx / _toss_aim / _toss_trim, and
+        # _build_toss_cycle overwrites all three at the NEXT cycle — so a worker
+        # that read them later would attribute cycle N's toss to cycle N+1's pose
+        # and aim. That is the one real hazard in moving this off-thread, and it
+        # is closed by construction rather than by timing.
+        self._toss_records_submit(payload, record, self._toss_trim_snapshot())
+
+    # ── The record worker (census B6) ─────────────────────────────────────────
+    # ONE serialising thread, started lazily, drained at every point that READS
+    # what it produces. Not a pool: the trim estimator MUTATES, and the belt is
+    # an append log, so both need the cycle order the queue's FIFO gives them.
+
+    def _toss_trim_snapshot(self) -> dict:
+        """Freeze everything the trim update reads, on the CYCLE thread.
+
+        Taken at submit time, not at execute time, because ``_build_toss_cycle``
+        overwrites ``_toss_record_ctx`` / ``_toss_aim`` / ``_toss_trim_t0`` for
+        the NEXT cycle. ``_toss_trim`` itself is the live estimator object and is
+        carried by reference on purpose — it is the thing being updated, and the
+        single worker thread is what serialises those updates. It is read under
+        the lock so a concurrent ``_toss_trim_end`` cannot swap it mid-read."""
+        with self._lock:
+            ctx = self._toss_record_ctx or {}
+            return {
+                'trim': self._toss_trim,
+                'pose': ctx.get('catch_pose'),
+                'flight': ctx.get('flight'),
+                'aim': self._toss_aim,
+                't0': self._toss_trim_t0,
+            }
+
+    def _toss_records_submit(self, payload: str, record: dict,
+                             snapshot: dict) -> None:
+        """Queue one cycle's belt write + trim update for the worker.
+
+        Falls back to running them INLINE when the worker cannot be started —
+        so a node whose thread creation failed still produces a corpus and still
+        converges a trim, just on the cycle thread as before. Degrading to the
+        old behaviour is the right failure here; dropping the measurement is
+        not."""
+        try:
+            self._toss_records_worker_start()
+            self._toss_records_q.put_nowait((payload, record, snapshot))
+            return
+        except Exception as exc:                               # noqa: BLE001
+            self.get_logger().warning(
+                'toss record worker unavailable ({}) — running the belt write '
+                'and trim update INLINE on the cycle thread'.format(exc))
+        self._toss_records_run_one(payload, record, snapshot)
+
+    def _toss_records_worker_start(self) -> None:
+        """Start the belt/trim worker, ONCE, and only if it really started.
+
+        The handle is latched inside the lock so two cycles racing here cannot
+        start two workers — but ``start()`` runs OUTSIDE the lock (it can block)
+        and it can RAISE (thread exhaustion on a loaded Jetson). Rolling the
+        handle back on that failure is what keeps the retry possible: without it
+        the caller's inline fallback writes THAT record correctly, and every
+        later call returns early at the ``is not None`` check and queues into a
+        queue no thread is servicing — silent, permanent loss of the session's
+        toss corpus, announced as one transient warning, with every subsequent
+        ``_toss_trim_end`` burning the full 5 s drain timeout (audit fix,
+        2026-08-22)."""
+        with self._lock:
+            if self._toss_records_thread is not None:
+                return
+            t = threading.Thread(target=self._toss_records_worker,
+                                 name='toss_records', daemon=True)
+            self._toss_records_thread = t
+        try:
+            t.start()
+        except Exception:                                      # noqa: BLE001
+            with self._lock:
+                if self._toss_records_thread is t:
+                    self._toss_records_thread = None
+            raise
+
+    def _toss_records_worker(self) -> None:
+        while True:
+            item = self._toss_records_q.get()
+            try:
+                if item is None:                      # shutdown sentinel
+                    return
+                self._toss_records_run_one(*item)
+            except Exception as exc:                  # noqa: BLE001
+                # Belt-and-braces: _toss_records_run_one's two callees are each
+                # individually guarded, so reaching here means something outside
+                # them raised. The worker must survive it — a dead worker would
+                # silently stop the corpus for the rest of the session.
+                self.get_logger().warning(
+                    'toss record worker iteration failed ({}) — the worker '
+                    'continues'.format(exc))
+            finally:
+                self._toss_records_q.task_done()
+
+    def _toss_records_run_one(self, payload: str, record: dict,
+                              snapshot: dict) -> None:
         self._belt_toss_record(payload)
-        self._toss_trim_observe(record)
+        self._toss_trim_observe(record, snapshot)
+
+    def _toss_records_drain(self, timeout_s: float = 5.0) -> bool:
+        """Block until every queued record has been written and observed.
+
+        **Required before anything READS the worker's output**, and there are
+        exactly two such places: ``_toss_trim_end`` (which writes the trim's
+        PROPOSAL, and would otherwise omit the last cycle or two of a session)
+        and node teardown. Making the drain the contract is what keeps
+        "asynchronous" from meaning "sometimes missing" — the queue is an
+        ordering device, not a place work is allowed to be lost.
+
+        Bounded, and returns False on timeout rather than hanging: a wedged
+        worker must not be able to hold a session's terminal open.
+
+        **Waits on ``unfinished_tasks``, NOT on ``empty()``** (audit fix,
+        2026-08-22). ``Queue.empty()`` goes True the instant the worker ``get``s
+        the last item — BEFORE ``_toss_records_run_one`` has done the belt write
+        or the trim update — so an ``empty()`` poll returns while the last cycle
+        is still being processed, which is the exact opposite of what this method
+        promises. Two things went wrong with that: ``_toss_trim_end`` took the
+        estimator and wrote its proposal with the final cycle missing ("a
+        silently short session", the failure this drain exists to prevent), and
+        because ``snapshot['trim']`` carries the estimator BY REFERENCE, the
+        proposal could read numpy state the worker was concurrently mutating.
+        The queue already calls ``task_done()`` in a ``finally``, so the counter
+        that means "handed out AND finished" was there all along."""
+        q = self._toss_records_q
+        # `Queue.join()` is exactly this wait but has no timeout, and a wedged
+        # worker must not hold the terminal open — so the same condition variable
+        # is waited on directly, which is what join() does internally.
+        with q.all_tasks_done:
+            drained = q.all_tasks_done.wait_for(
+                lambda: q.unfinished_tasks == 0, timeout=float(timeout_s))
+            outstanding = int(q.unfinished_tasks)
+        if not drained:
+            self.get_logger().warning(
+                'toss record worker did not drain within {:.1f} s — {} record(s) '
+                'may be missing from the belt and the trim'.format(
+                    timeout_s, outstanding))
+            return False
+        return True
 
     # ── Layer 2: the session trim (contract C-TOSS-CAL-1 § 3.6, phase 2e) ─────
 
@@ -3694,8 +5047,58 @@ class ReloadCoordinatorNode(Node):
             self._toss_trim = trim
             self._toss_trim_t0 = time.perf_counter()
             self._toss_trim_belt_warned = False
+        self._toss_ilc_session_begin(goal_id=goal_id)
 
-    def _toss_trim_observe(self, record: dict) -> None:
+    def _toss_ilc_session_begin(self, *, goal_id: str) -> None:
+        """Seed a FRESH layer-3 session common mode for one goal (C1).
+
+        Called from :meth:`_toss_trim_begin` rather than from its two call sites,
+        so the two RAM-only per-goal components cannot get out of step: a goal
+        that starts a trim starts one of these, always, and there is one place to
+        read rather than two to keep matched.
+
+        **Seeded from the artifact, gated at seed, never updated.** The evidence
+        the gate reads is between-SESSION evidence, which by definition cannot
+        accumulate inside one goal; the fit is what moves it. See
+        :class:`toss_ilc.IlcSessionCommonMode` for why there is no CUSUM and no
+        freeze-never-zero here, and why that is a property of a seeded-and-held
+        component rather than an omission.
+
+        **Dormancy is NOT decided here**, deliberately. This seeds from whatever
+        artifact is loaded and :meth:`_toss_aim_for_goal` applies the result only
+        inside the branch that already owns the provenance verdict — so a DORMANT
+        artifact contributes no prior for exactly the reason it contributes no
+        cell, decided once, in one place. Duplicating the verdict here would be a
+        second owner of it, which is how two answers to one question begin.
+
+        Instrument-grade: a fault costs the component, never the goal.
+        """
+        with self._lock:
+            ilc = self._toss_ilc
+        try:
+            session = toss_ilc.IlcSessionCommonMode(ilc, goal_id=str(goal_id))
+        except Exception as exc:                               # noqa: BLE001
+            self.get_logger().warning(
+                'ILC session common mode NOT seeded ({}) — this goal runs with '
+                'the per-cell spatial residual alone'.format(exc))
+            session = None
+        with self._lock:
+            self._toss_ilc_session = session
+        if session is not None and session.applied:
+            self.get_logger().info(session.console_line())
+
+    def _toss_ilc_session_end(self) -> None:
+        """Discard the goal's session common mode.
+
+        **Nothing is written.** That is the C1 fence in one line: this component
+        exists so that one session's ``level()`` draw can be applied without ever
+        being persisted, and a component that wrote anything back would be the
+        very failure it was built to prevent.
+        """
+        with self._lock:
+            self._toss_ilc_session = None
+
+    def _toss_trim_observe(self, record: dict, snapshot: dict) -> None:
         """Feed ONE cycle's declaration to the session trim, then print TRIM.
 
         The declaration is the ingest point on purpose: it is the single object
@@ -3704,17 +5107,20 @@ class ReloadCoordinatorNode(Node):
         replay consumes — so the live and offline estimators cannot be fed
         different things.
 
+        **Runs on the record WORKER thread since 2026-08-22 (census B6)**, so its
+        context arrives as a ``snapshot`` taken on the cycle thread rather than
+        being read from ``self`` here. Reading it here would attribute cycle N's
+        toss to cycle N+1's pose and aim, because ``_build_toss_cycle`` overwrites
+        both between the submit and the execute.
+
         **Instrument-grade failure handling**, like the record itself: the whole
         body is guarded and a fault costs a measurement, never a teardown.
         """
-        with self._lock:
-            trim = self._toss_trim
-            pose = self._toss_record_ctx.get('catch_pose') \
-                if self._toss_record_ctx else None
-            flight = self._toss_record_ctx.get('flight') \
-                if self._toss_record_ctx else None
-            aim = self._toss_aim
-            t0 = self._toss_trim_t0
+        trim = snapshot.get('trim')
+        pose = snapshot.get('pose')
+        flight = snapshot.get('flight')
+        aim = snapshot.get('aim')
+        t0 = snapshot.get('t0')
         if trim is None:
             return
         try:
@@ -3727,7 +5133,11 @@ class ReloadCoordinatorNode(Node):
                 uptime_ms=None,
                 elapsed_s=(time.perf_counter() - t0
                            if t0 else None),
-                applied=bool(aim and aim.get('trim_enabled')),
+                # NEVER applied since 2026-08-21 — the aim estimator is
+                # monitor-only (toss_trim.AIM_AUTHORITY, C4). The console has to
+                # say so, or an operator reads a converging trim as a converging
+                # CORRECTION and goes looking for it in the commanded aim.
+                applied=False,
                 cycle_index=(record or {}).get('cycle_index'))
         except Exception as exc:                               # noqa: BLE001
             self.get_logger().warning(
@@ -3753,7 +5163,22 @@ class ReloadCoordinatorNode(Node):
 
         Best-effort, one WARN per goal: a full disk costs the proposal, never a
         teardown.
+
+        Layer 3's session common mode dies here too, and FIRST — paired with
+        :meth:`_toss_trim_begin` starting it, so the two per-goal RAM components
+        have one begin site and one end site between them. First because the
+        proposal write below is best-effort I/O: a full disk must not be able to
+        leave a stale common mode alive into the next goal, which is the one
+        thing this component must never do.
+
+        **Drains the record worker FIRST of all** (census B6). The proposal below
+        is built from the trim's accumulated state, and the last cycle or two of a
+        session are still queued when the goal terminates — publishing a proposal
+        that omits them would be a silently short session, which is worse than a
+        slow one. The drain is bounded and its failure is a WARN, not a hang.
         """
+        self._toss_records_drain()
+        self._toss_ilc_session_end()
         with self._lock:
             trim = self._toss_trim
             self._toss_trim = None
@@ -3869,6 +5294,14 @@ class ReloadCoordinatorNode(Node):
             return result
 
         flight = self._resolve_toss_flight_s(height)
+        # A cheap, side-effect-free read of layer 3's arming state — NOT
+        # _toss_aim_for_goal, which is THE single per-goal aim lookup and belongs
+        # to _build_toss_cycle (tests/motion/test_toss_cal.py pins that call site
+        # structurally). All the session's floors need is whether a speed trim is
+        # POSSIBLE, so they can be judged fail-closed against the slowest release
+        # it could command; the exact trim is the cycle's business.
+        with self._lock:
+            ilc_loaded = self._toss_ilc is not None
         # Phase E's KNOWN LIMITATION, caught BEFORE a ball flies (num_throws >= 2
         # only — a one-cycle session has no chain). See _predicted_chain_site_mm.
         chain_reachable = True
@@ -3902,11 +5335,31 @@ class ReloadCoordinatorNode(Node):
             dwell_time_s=dwell,
             throw_delay_s=throw_delay,
             flight_time_s=flight,
+            # The RESOLVED catch-speed knob (goal field, else the config
+            # default), because since 2026-08-22 the session's dwell floor is
+            # partly the CATCH STROKE's tail and that tail is inversely
+            # proportional to the armed speed — a slower catch is a longer
+            # turnaround, so the floor must see the same scale the arm will.
+            catch_vel_scale=(vel_scale if vel_scale > 0.0
+                             else float(hw.JB_OP_CATCH_VEL_SCALE_DEFAULT)),
             stop_on_miss=stop_on_miss,
             max_throws=int(hw.JB_OP_TOSS_SESSION_MAX_THROWS),
             dwell_default_s=float(hw.JB_OP_TOSS_SESSION_DWELL_DEFAULT_S),
             dwell_margin_s=float(hw.JB_OP_TOSS_SESSION_DWELL_MARGIN_S),
             chain_site_reachable=chain_reachable,
+            # Can layer 3 command a SPEED trim on this goal? It is the only thing
+            # that can make a cycle's event_vel differ from the untrimmed
+            # vertical closed form the session computes its floors from, and
+            # every one of those floors RISES as the speed falls — so an armed
+            # ILC has to be judged against the slowest release its apply seam
+            # could command (toss_session.floor_event_vel_mps). Read as
+            # "enabled AND an artifact is loaded": a dormant-by-provenance
+            # artifact still cannot trim, but establishing that costs the whole
+            # provenance verdict, and this gate is deliberately cheap and
+            # conservative. Costs nothing at the cadence rungs, where the throw
+            # envelope refuses the negative side outright.
+            ilc_speed_trim_possible=bool(
+                self._toss_ilc_enabled() and ilc_loaded),
             on_empty_cup=on_empty_cup,
             max_reloads=(max_reloads_raw if max_reloads_raw > 0
                          else int(hw.JB_OP_TOSS_SESSION_MAX_RELOADS)),
@@ -3919,6 +5372,7 @@ class ReloadCoordinatorNode(Node):
             self._dwell_tilt_next_at = 0.0
             self._dwell_tilt_degraded = False
             self._toss_record_prev_uid = None
+        self._reset_toss_arrival_boundary()
         # A FRESH Layer-2 trim for this session — same reasoning, one layer up:
         # the trim estimates a common mode that is only constant WITHIN a goal.
         self._toss_trim_begin(goal_id=_goal_id_hex(goal_handle))
@@ -3983,7 +5437,15 @@ class ReloadCoordinatorNode(Node):
                     continue
                 if decision.action == SESSION_ACTION_START_CYCLE:
                     seq = self._build_toss_cycle(
-                        catch_pose, flight, session.throw_delay_s, vel_scale)
+                        catch_pose, flight, session.throw_delay_s, vel_scale,
+                        delay_is_cadence=True)
+                    # The cadence clamp (C-POSSESS-1 § 3.4). Set HERE and not
+                    # inside _build_toss_cycle because the dwell is the SESSION's
+                    # number and a single Toss has none — passing the session in
+                    # would give the cycle builder a parameter that is None on
+                    # its other caller and mean "no clamp" by accident rather
+                    # than by statement.
+                    self._set_toss_next_cycle_perf(seq, session)
                     self._open_toss_record(
                         action='toss_continuous',
                         goal_id=_goal_id_hex(goal_handle),
@@ -4124,7 +5586,40 @@ class ReloadCoordinatorNode(Node):
 
     # ── The auto-reload interlude (§ 3.9) ─────────────────────────────────────
 
-    def _reload_interlude_gate(self, session):
+    def _wait_out_seat_edge_band(self, session, *, cancel_now_fn=None) -> bool:
+        """Hold until the previous cycle's seat-edge band has elapsed. Commands
+        nothing — it waits. Returns False iff a cancel was honoured.
+
+        CENSUS D4/F3, and the reason the interlude cannot trust the terminal that
+        summoned it. ``REJECTED_NO_BALL`` is minted at CHECKING, and CHECKING runs
+        at ``landing + (dwell - throw_delay)``. The physical seat edge lands
+        **+137…+798 ms** after the announced landing (n=35, three 2026-08-10
+        bags). Those two numbers cross: below roughly a 1.2 s dwell, CHECKING
+        reads the cup BEFORE the ball has finished arriving in it, so a **good
+        catch** mints ``REJECTED_NO_BALL`` — and with ``on_empty_cup: RELOAD``
+        that route asks BallButler to throw a **second ball at a full cup**.
+
+        So the interlude's own cup read is re-taken here, after
+        ``JB_BD_ARRIVAL_WINDOW_S`` past the previous cycle's SCHEDULED landing —
+        the constant that already means "how long after the predicted landing a
+        seat edge may still arrive". Deriving the wait from it rather than
+        choosing a number is what makes the pending post-FW14 band re-measure
+        shrink this wait too.
+
+        Nothing is armed and nothing is airborne while this runs: the interlude is
+        only ever entered from ``REJECTED_NO_BALL``, the one toss terminal whose
+        own terminal action was ``ACTION_NONE``."""
+        landing = float(getattr(session, 'last_landing_perf', float('nan')))
+        if not math.isfinite(landing):
+            return True                    # nothing has landed yet — nothing to wait for
+        deadline = landing + float(hw.JB_BD_ARRIVAL_WINDOW_S)
+        while rclpy.ok() and time.perf_counter() < deadline:
+            if cancel_now_fn is not None and cancel_now_fn():
+                return False
+            time.sleep(_TICK_S)
+        return True
+
+    def _reload_interlude_gate(self, session, *, cancel_now_fn=None):
         """The node's half of the interlude precondition gate — the rungs that
         are OBSERVATIONS rather than counters (the session owns budget + floor,
         and has already passed them before ``SESSION_ACTION_RELOAD`` is emitted).
@@ -4157,14 +5652,33 @@ class ReloadCoordinatorNode(Node):
             bb_verified = self._bb_ball_in_hand_observed_false
         if not bb_verified:
             return 'STOPPED_BB_UNVERIFIED'
-        # (4) The cup. UNKNOWN refuses — a dead sensor must not license an
+        # (4) The cup — a CONFIRMED-EMPTY read, taken after the seat-edge band
+        # and from the SETTLED query. Two changes on 2026-08-21, both because
+        # this is the one refusal in the node that answers by COMMANDING (an
+        # autonomous BB throw), not by refusing:
+        #
+        #   * the band (census D4/F3) — see _wait_out_seat_edge_band. Below a
+        #     ~1.2 s dwell, CHECKING's REJECTED_NO_BALL fires on GOOD catches
+        #     because it reads the cup before the ball has finished arriving, so
+        #     the terminal that summoned the interlude is not evidence of
+        #     anything and the interlude must look for itself, later;
+        #   * `evidence_settled`, not `evidence` (C-POSSESS-1 § 3.5) — the live
+        #     query now reads the RAW bit, which is right everywhere a wrong
+        #     answer REFUSES and wrong here, where a carry-flicker over a seated
+        #     ball would put a second ball into a full cup. The settled query
+        #     needs both bits to agree and answers UNKNOWN when they do not,
+        #     which this gate already refuses on without moving anything.
+        #
+        # UNKNOWN refuses — a dead (or disagreeing) sensor must not license an
         # autonomous BB throw at a cup nobody can see into. SEATED refuses too,
-        # and gets its own code: the interlude was entered because the cup read
-        # EMPTY one moment ago, so a SEATED read here is a CONTRADICTION, and
-        # reloading onto a loaded cup throws a ball at a hand that already holds
-        # one. (§ 3.9 names one sensor code; splitting it is the one deviation
-        # here, and it is in the fail-closed direction.)
-        evidence = self._ball_sensor.evidence(now)
+        # and gets its own code: after the band has elapsed a SEATED read means
+        # the cup is genuinely loaded, i.e. the cycle that reported NO_BALL was
+        # mislabelled. (§ 3.9 names one sensor code; splitting it is the one
+        # deviation here, and it is in the fail-closed direction.)
+        if not self._wait_out_seat_edge_band(session,
+                                             cancel_now_fn=cancel_now_fn):
+            return 'STOPPED_RELOAD_CANCELLED'
+        evidence = self._ball_sensor.evidence_settled(time.perf_counter())
         if evidence == EVIDENCE_SEATED:
             return 'STOPPED_CUP_NOT_EMPTY'
         if evidence != EVIDENCE_EMPTY:
@@ -4238,7 +5752,7 @@ class ReloadCoordinatorNode(Node):
 
         The whole loop deliberately does NOT own the goal handle: a session's
         interlude terminal is not the session's terminal."""
-        stop = self._reload_interlude_gate(session)
+        stop = self._reload_interlude_gate(session, cancel_now_fn=cancel_now_fn)
         if stop is not None:
             self.get_logger().warning(
                 'reload interlude REFUSED %s — nothing moved (reloads %d/%d, '
@@ -4293,6 +5807,42 @@ class ReloadCoordinatorNode(Node):
                     attempts)
         return False, OUTCOME_STOPPED_RELOAD_BUDGET, attempts
 
+    @staticmethod
+    def _reload_cancel_deferred(seq, now: float) -> bool:
+        """Per-phase cancellation for the auto-reload interlude. True ⇒ DEFER:
+        keep ticking the FSM to its own terminal and resolve the cancel there.
+
+        THE TRANSPOSE of :meth:`_toss_cancel_deferred`, and it closes the HIGH the
+        Phase-2 audit left open. The toss path already refuses to honour a cancel
+        while a ball is airborne, for a reason that is not toss-specific:
+
+            aborting a catch mid-flight drops a ball on the robot.
+
+        The interlude's ball is thrown by BallButler and is exactly as airborne.
+        Until 2026-08-21 a session cancel during an interlude was honoured on the
+        very next tick, at any phase — including with a BB ball in the air — and
+        the honoured path runs ``_safe_on_early_exit`` → ``_safe_abort``, i.e. it
+        RETRACTS THE HAND out from under the incoming ball. Same hazard, same
+        discipline:
+
+          - CHECKING / PREPARING — honour now. Nothing has been commanded to BB;
+            the early-exit safing retracts and lowers the latch iff anything
+            armed, and the cup is loaded or not but nothing is falling;
+          - AIMING and every later phase — DEFER. AIMING is entered by dispatching
+            ``bb/throw_at_target``, and BB's countdown cannot be aborted
+            (``_enter_preparing``'s own docstring says so), so from that dispatch
+            onward a ball may leave the Butler at any moment. There is no
+            release instant to compare against before the announcement lands —
+            unlike the toss, which owns its own ``t_release`` — so the boundary is
+            the dispatch itself rather than a cutoff around it.
+
+        Deferring is bounded: every later phase carries its own deadline
+        (``_announcement_deadline``, ``_settle_deadline``) and the whole attempt
+        sits under ``_sequence_deadline_s``. A BB that never throws
+        (``THROW_ABORTED_NOT_SETTLED``) terminates on the announcement grace, not
+        on this."""
+        return seq.phase not in (RELOAD_PHASE_CHECKING, RELOAD_PHASE_PREPARING)
+
     def _run_one_reload_attempt(self, *, cancel_now_fn=None):
         """Drive ONE reload sequence to its terminal. Returns the
         :class:`ReloadResult`, or None if a cancel was honoured.
@@ -4318,17 +5868,37 @@ class ReloadCoordinatorNode(Node):
             self._catch_vel_scale = float(hw.JB_OP_CATCH_VEL_SCALE_DEFAULT)
         self._possession_logged = set()
         max_sequence_s = _sequence_deadline_s(seq)
-        cancelled = False
+        cancel_seen = False
+        deferred_logged = False
         try:
             t_start = time.perf_counter()
             while rclpy.ok():
-                if cancel_now_fn is not None and cancel_now_fn():
-                    cancelled = True
-                    self._safe_on_early_exit(seq)
-                    self._log_reload_outcome(
-                        ReloadResult(False, 'ABORTED_CANCELLED'))
-                    return None
                 now = time.perf_counter()
+                if cancel_now_fn is not None and cancel_now_fn():
+                    cancel_seen = True
+                    if not self._reload_cancel_deferred(seq, now):
+                        self.get_logger().warning(
+                            'reload interlude CANCEL honoured NOW in %s — '
+                            'nothing was commanded to BallButler yet, so no '
+                            'ball can be in the air (deferred-cancel discipline, '
+                            'C-POSSESS-1 § 3.6 / _reload_cancel_deferred).'
+                            % seq.phase)
+                        self._safe_on_early_exit(seq)
+                        self._log_reload_outcome(
+                            ReloadResult(False, 'ABORTED_CANCELLED'))
+                        return None
+                    if not deferred_logged:
+                        deferred_logged = True
+                        # ONE line per attempt, and it names the phase: an
+                        # operator whose stop button appears not to have worked
+                        # must be able to see WHY from the log, not infer it.
+                        self.get_logger().warning(
+                            'reload interlude CANCEL DEFERRED in %s — the throw '
+                            'is committed to BallButler and its countdown cannot '
+                            'be aborted, so a ball may be in the air. Honouring '
+                            'now would retract the hand from under it. The '
+                            'cancel resolves at this interlude terminal (same '
+                            'discipline as _toss_cancel_deferred).' % seq.phase)
                 decision = self._step_sequence(seq, now, None)
                 if decision.done:
                     self._log_reload_outcome(decision.result)
@@ -4353,9 +5923,14 @@ class ReloadCoordinatorNode(Node):
             # reason; reusing the constant is what keeps the two from drifting.
             # SKIPPED on a cancel: the floor exists to protect the NEXT cycle,
             # and a cancelled session has none — waiting it out would only make
-            # the operator's cancel look 2.8 s slower than it is. (The safing has
+            # the operator's cancel look 2.9 s slower than it is. (The safing has
             # already run above; this is a wait, not a teardown step.)
-            if not cancelled:
+            #
+            # `cancel_seen`, not "cancel honoured": a DEFERRED cancel ends the
+            # session at this same terminal, so it has no next cycle either, and
+            # holding the floor for it would add the deferral's cost to the
+            # operator's stop TWICE.
+            if not cancel_seen:
                 self._settle_after_reload()
 
     def _settle_after_reload(self) -> None:
@@ -4831,6 +6406,31 @@ class ReloadCoordinatorNode(Node):
         except Exception as e:  # noqa: BLE001
             self.get_logger().error(f'service call raised: {e}')
             return None
+
+
+    def destroy_node(self):
+        """Drain the record worker before the node goes away (census B6).
+
+        The belt write is the last stop for a `record:=false` bench session's
+        corpus, so a shutdown that discards a queued line discards a measurement
+        that has no other sink. Bounded, and a WARN rather than a hang if the
+        worker is wedged — a teardown must always complete.
+
+        The sentinel is posted after the drain so the worker exits its blocking
+        `get()` rather than being left parked on a daemon thread; a daemon thread
+        would die with the process anyway, but leaving it explicitly stopped is
+        what makes a leak visible in a test rather than invisible in a process.
+        """
+        try:
+            self._toss_records_drain()
+            if self._toss_records_thread is not None:
+                self._toss_records_q.put_nowait(None)
+                self._toss_records_thread.join(timeout=1.0)
+        except Exception as exc:                                # noqa: BLE001
+            self.get_logger().warning(
+                'toss record worker teardown failed ({}) — continuing '
+                'shutdown'.format(exc))
+        return super().destroy_node()
 
 
 def main(args=None):

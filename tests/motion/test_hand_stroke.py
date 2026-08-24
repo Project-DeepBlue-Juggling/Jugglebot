@@ -652,3 +652,105 @@ def test_clamp_event_vel_keeps_the_model_finite():
     assert hand_stroke.clamp_event_vel(99.0) == hw.TEENSY_TRAJ_MAX_EVENT_VEL_MPS
     assert math.isfinite(hand_stroke.throw_decel_s(0.0))
     assert math.isfinite(hand_stroke.catch_lead_s(0.0))
+
+
+def test_catch_park_reentry_matches_a_numeric_sweep_of_the_shipped_profile():
+    """``catch_park_reentry_s`` is a CLOSED FORM over ``calcCatch``'s two
+    post-contact phases, so it is checked against a brute-force sweep of the
+    same profile rather than against hand-copied numbers.
+
+    Landed 2026-08-22 (audit fix) because ``toss_session.handoff_margin_s`` is
+    sized on it: the retired 0.6 s dwell margin covered the hand's return to the
+    park band by accident, and the 0.137 s arrival-band replacement does not, so
+    the quantity had to become derived. A wrong closed form here would schedule
+    the next cycle's CHECKING inside the live catch stroke and mint
+    REJECTED_HAND_NOT_PARKED on a healthy catch.
+    """
+    gain = hand_stroke.LINEAR_GAIN_REV_PER_M
+    band = hand_stroke.HAND_PARK_BAND_REV
+
+    def pos_rev(m, tau):
+        """Commanded catch-stroke position, ``tau`` s after ball contact."""
+        if tau <= 0.0:
+            return m.x5_m * gain
+        if tau <= m.t_vel_catch:
+            return (m.x5_m + m.vC * tau) * gain
+        t2 = tau - m.t_vel_catch
+        if t2 <= m.t_dec_catch:
+            decel = -m.vC / m.t_dec_catch
+            return (m.x6_m + m.vC * t2 + 0.5 * decel * t2 * t2) * gain
+        return 0.0
+
+    for flight in (FLIGHT_TIME_MIN_S, 0.5029, 0.6059, 0.7977, 1.00, 1.14):
+        v_throw, _ = _band_case(flight)
+        for scale in (0.7, 0.9, 1.0):
+            got = hand_stroke.catch_park_reentry_s(v_throw, scale)
+            m = hand_stroke.HandStrokeModel(v_throw * scale)
+            tail = m.t_vel_catch + m.t_dec_catch
+            # The catch profile ends AT the park centre, so the answer is a
+            # strict interior point of the tail.
+            assert pos_rev(m, tail) == pytest.approx(0.0, abs=1e-9)
+            assert 0.0 < got < tail
+            # Bisect the same profile and agree to float precision.
+            lo, hi = 0.0, tail
+            for _ in range(200):
+                mid = 0.5 * (lo + hi)
+                if abs(pos_rev(m, mid)) <= band:
+                    hi = mid
+                else:
+                    lo = mid
+            assert got == pytest.approx(hi, abs=1e-9), (flight, scale)
+            # …and it really is the FIRST crossing: just inside the band, just
+            # outside a hair earlier.
+            assert abs(pos_rev(m, got)) <= band + 1e-9
+            assert abs(pos_rev(m, got - 1e-4)) > band
+
+
+def test_catch_park_reentry_beats_the_arrival_band_at_the_cadence_rungs():
+    """WHY the session takes a max() rather than trusting ``ARRIVAL_BAND_MIN_S``.
+
+    The park term and the arrival term cross over INSIDE the admitted band: at
+    the 0.7977 s R0-R3 flight the hand is back in the band at 0.1204 s, under the
+    0.137 s arrival floor, so the arrival term binds and nothing changed. At
+    every rung from R4 down the park term wins, and by the target flight it is
+    0.1903 s — 39 % above the margin that was covering it.
+
+    Monotone decreasing in flight time, so the SHORTEST admitted flight is the
+    worst case, which is what makes ``toss_session``'s unresolved-flight fallback
+    to the band floor fail-closed."""
+    scale = hw.JB_OP_CATCH_VEL_SCALE_DEFAULT
+    park = {}
+    for flight in (FLIGHT_TIME_MIN_S, 0.5029, 0.6059, 0.7977, 1.1449):
+        v_throw, _ = _band_case(flight)
+        park[flight] = hand_stroke.catch_park_reentry_s(v_throw, scale)
+
+    assert park[FLIGHT_TIME_MIN_S] == pytest.approx(0.1933, abs=1e-3)
+    assert park[0.5029] == pytest.approx(0.1903, abs=1e-3)
+    assert park[0.6059] == pytest.approx(0.1582, abs=1e-3)
+    assert park[0.7977] == pytest.approx(0.1204, abs=1e-3)
+
+    # Strictly decreasing in flight time — the fail-closed fallback rests on it.
+    flights = sorted(park)
+    values = [park[f] for f in flights]
+    assert values == sorted(values, reverse=True)
+    assert all(a > b for a, b in zip(values, values[1:]))
+
+    # The crossover, both sides, against the constant the session compares to.
+    from jugglebot.ball_possession import ARRIVAL_BAND_MIN_S
+    assert park[0.5029] > ARRIVAL_BAND_MIN_S
+    assert park[0.6059] > ARRIVAL_BAND_MIN_S
+    assert park[0.7977] < ARRIVAL_BAND_MIN_S
+
+
+def test_catch_park_reentry_is_a_slice_of_the_turnaround_floor_not_a_new_one():
+    """The park re-entry must be strictly INSIDE the catch tail that
+    ``min_turnaround_dwell_s`` already charges — it is the same stroke, measured
+    to an earlier landmark. If it ever exceeded the tail, the two floors would be
+    describing different strokes and one of them would be wrong."""
+    for flight in (FLIGHT_TIME_MIN_S, 0.6059, 0.7977, 1.1449):
+        v_throw, _ = _band_case(flight)
+        scale = hw.JB_OP_CATCH_VEL_SCALE_DEFAULT
+        m = hand_stroke.HandStrokeModel(v_throw * scale)
+        tail = m.t_vel_catch + m.t_dec_catch
+        assert hand_stroke.catch_park_reentry_s(v_throw, scale) < tail
+        assert tail < hand_stroke.min_turnaround_dwell_s(v_throw, scale)

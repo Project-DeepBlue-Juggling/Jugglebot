@@ -276,7 +276,9 @@ SC3_COMMON_MODE_MM = 6.0         # pooled |c|, must fit one session-trim authori
 UPTIME_ABORT_MS = tcg.UPTIME_WARN_MS
 
 # Cadence arithmetic for the ETA (§ 6's budget table).
-SETTLE_S = 2.80                  # toss_session.DEFAULT_SESSION_MISS_CLEANUP_S
+SETTLE_S = 2.90                  # toss_session.DEFAULT_SESSION_MISS_CLEANUP_S
+                                 #   (2.80 -> 2.90 on 2026-08-21: CATCH_CONFIRM_WINDOW_S
+                                 #   became derived from the measured arrival band)
 GOAL_OVERHEAD_S = 4.0            # accept + go_home + verified arrival between goals
 RELOAD_COST_S = 25.0             # § 6: "a drop costs ~25 s all-in"
 
@@ -806,7 +808,8 @@ def sc0_measure(arms: Dict[str, Sequence[Sequence[float]]], probe_rad: float,
     Why the ratio and not the raw matrix: § 3.8's accept test is written as
     "diagonal within ±25 % of the predicted ``4h``, off-diagonal < 30 % of the
     diagonal", which presumes ``S`` is a scaled identity. The 2c build measured
-    it and it is **a 90° rotation** (``J = [[0, 3126.5], [−3126.5, 0]]``), so in
+    it and it is **a 90° rotation** (``J = [[0, 3126.5], [−3126.5, 0]]`` to 4
+    s.f. at h ≈ 0.78 m; the exact gain is ``4h + 6.7360`` mm/rad, D3), so in
     the raw ``(Lx,Ly)×(rx,ry)`` basis the design's "diagonal" is the zero entry
     and its "off-diagonal" is the gain — the literal test is inverted on this
     plant. Expressed in the predicted basis the test means exactly what it says

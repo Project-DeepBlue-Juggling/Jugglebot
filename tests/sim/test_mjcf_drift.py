@@ -206,6 +206,15 @@ def test_ball_spec_comes_from_hardware_config():
     rendered = _GEN.render_xml(cfg)
     assert 'size="0.0125" mass="0.0999"' in rendered, (
         "generate_mjcf.py stopped reading the ball spec from hardware_config.yaml")
-    # and the committed model carries the real owner-stated values
-    assert 'size="0.035" mass="0.071"' in _RENDERED, (
-        "the ball spec drifted from the owner-stated 71 g / 70 mm diameter")
+    # ...and the committed model carries the real owner-MEASURED values.
+    #
+    # 37 mm, not 35: the 35 mm this pin carried until 2026-08-21 was an ASSUMED
+    # "70 mm ball" that the repo had been repeating, and the owner's caliper
+    # re-measurement makes it 74 mm across. The pin was therefore guarding the
+    # wrong value — which is the failure mode a drift test is least able to
+    # notice about itself, since both sides agreed. The mass was always measured
+    # and is unchanged. Do NOT reconcile this with the 35 mm CAPTURE RADIUS that
+    # appears in the aim/catch docs: different quantity, same number by accident.
+    assert 'size="0.037" mass="0.071"' in _RENDERED, (
+        "the ball spec drifted from the owner-measured 71 g / 74 mm diameter "
+        "(caliper, 2026-08-21)")

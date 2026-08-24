@@ -81,7 +81,7 @@ from rclpy.node import Node
 from std_msgs.msg import Float64MultiArray, String
 from std_srvs.srv import SetBool, Trigger
 from diagnostic_msgs.msg import DiagnosticStatus, KeyValue
-from geometry_msgs.msg import Point
+from geometry_msgs.msg import Point, Pose, Quaternion
 from jugglebot_interfaces.msg import (
     DynamicTargetCommand,
     PlatformPoseCommand,
@@ -98,6 +98,7 @@ from jugglebot.motion.ik_solver import (
     leg_lengths_to_pose,
     pose_to_leg_lengths,
     quat_to_rot_matrix,
+    rot_matrix_to_quat,
     rot_matrix_to_rotvec,
     rotvec_to_rot_matrix,
 )
@@ -598,6 +599,38 @@ class TrajectoryNode(Node):
         # jugglebot_interfaces vs jugglebot is a known silent hazard here.
         self.commanded_position_pub = self.create_publisher(
             Point, 'trajectory/commanded_position', 10)
+        # …and the SAME sample with its ORIENTATION, as a geometry_msgs/Pose
+        # (2026-08-23). ADDITIVE: `commanded_position` above is unchanged, keeps
+        # its type and keeps every consumer it had. A type change on a live topic
+        # is silent in ROS 2 — a mismatched subscriber simply never connects —
+        # and that read sites the displaced throw, so it does not get to fail
+        # quietly.
+        #
+        # WHY the orientation had to be published. `_toss_already_positioned`
+        # (census B1) asks "would commanding this pose move anything?", and with
+        # only three of the six components on the wire it could not answer for a
+        # TILTED pre-tilt pose — so it refused every tilted release by
+        # construction. That refusal cost 0.38 s of throw delay on EVERY cycle of
+        # an aimed chain, i.e. on every ILC-primary sitting, which is the single
+        # largest cadence item the 2026-08-22 audit found.
+        #
+        # ONE message, not two topics. The B1 decision needs position and
+        # orientation from the SAME plan sample: a torn read across two topics
+        # would let a mid-move platform match a target on a stale half.
+        #
+        # ⚠ THE ORIENTATION IS IN THE **INTENT** FRAME, not the corrected one.
+        # `_current_state()` samples the active plan, which was built to the
+        # gravity/tilt-CORRECTED target (C-LEVEL-1 ingest E3/E4), so the raw
+        # rotation here is `R_gravity @ R_request`. A consumer comparing it
+        # against a pose it is about to REQUEST would be comparing two different
+        # frames, and its only fixes would be to re-derive the correction on its
+        # own side — the cross-node duplication motion/levelling.py exists to
+        # delete — or to be handed the intent frame. So the inversion happens
+        # HERE, where the correction lives, via levelling.uncorrect_pose. The
+        # POSITION is frame-invariant (correct_pose never touches it), so it is
+        # bit-identical to the Point above.
+        self.commanded_pose_pub = self.create_publisher(
+            Pose, 'trajectory/commanded_pose', 10)
         self.create_timer(0.2, self._publish_status)
         # Re-measure the ROS↔perf clock offset every REFRESH_PERIOD_S to track
         # drift (cadence shared with catch_coordinator_node via
@@ -2106,6 +2139,35 @@ class TrajectoryNode(Node):
             correction = self._tilt_map_degraded('E3/E4 request pose', exc)
         return levelling.correct_pose(intent, correction)
 
+    def _intent_orientation(self, commanded_pose) -> Quaternion:
+        """The EGRESS converter — the exact inverse of :meth:`_pose_from_msg`.
+
+        ``commanded_pose`` is a sampled plan state, i.e. the CORRECTED frame
+        (``R_gravity @ R_request``). This returns the request's own orientation
+        as a quaternion, so a consumer can compare what is commanded against
+        what it is about to command without re-deriving C-LEVEL-1 on its side.
+
+        Published on ``trajectory/commanded_pose`` (see the publisher comment in
+        ``__init__`` for why the orientation is on the wire at all). The
+        quaternion encoding is the same ``rotvec → matrix → quat`` round trip
+        ``_pose_from_msg`` decodes with, single-sourced through the ik_solver
+        helpers rather than hand-rolled.
+
+        A degraded tilt map takes the SAME path the ingest takes — one shared
+        ``_tilt_map_degraded`` counter, one WARN policy — so a map that cannot be
+        evaluated leaves this reporting the identity-corrected frame rather than
+        raising inside a 5 Hz timer."""
+        pose = np.asarray(commanded_pose, dtype=float)
+        try:
+            correction = levelling.correction_for_pose(
+                self._gravity_offset, self._active_tilt_map(), pose)
+        except tilt_map.TiltMapError as exc:
+            correction = self._tilt_map_degraded('commanded_pose egress', exc)
+        intent = levelling.uncorrect_pose(pose, correction)
+        w, x, y, z = rot_matrix_to_quat(
+            rotvec_to_rot_matrix(np.asarray(intent[3:6], dtype=float)))
+        return Quaternion(w=float(w), x=float(x), y=float(y), z=float(z))
+
     def _svc_go_to_pose(self, request, response):
         """``trajectory/go_to_pose``: a profiled point-to-point move (TRAJECTORY mode).
 
@@ -2868,9 +2930,18 @@ class TrajectoryNode(Node):
         # consumer site a throw at a pose the machine is not holding. Silence is
         # the honest signal — the toss's REJECTED_POSE_UNKNOWN reads it as such.
         if streaming:
-            pos = self._current_state()[0][:3]
+            # ONE sample feeds both topics, so the Point and the Pose can never
+            # disagree about the position (and so a consumer reading the Pose
+            # gets position and orientation from the same instant — see the
+            # publisher comment in __init__).
+            commanded = self._current_state()[0]
+            pos = commanded[:3]
             self.commanded_position_pub.publish(
                 Point(x=float(pos[0]), y=float(pos[1]), z=float(pos[2])))
+            self.commanded_pose_pub.publish(
+                Pose(position=Point(x=float(pos[0]), y=float(pos[1]),
+                                    z=float(pos[2])),
+                     orientation=self._intent_orientation(commanded)))
 
         # Diagnostics: the last accepted move's measured leg peaks + emitter jitter.
         diag = DiagnosticStatus()

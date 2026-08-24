@@ -574,6 +574,27 @@ S1 at most one live cycle; S2 the session commands no motion of its own; S3
 cancellation obeys the per-cycle phase rules verbatim; S5 the dwell is a quiescent
 wait, never a stretched `throw_delay`.
 
+> ⚠ **SUPERSEDED 2026-08-22 (census A1/A3/A4, operator decision 3), and again
+> 2026-08-23.** Both terms of the paragraph below were retired.
+> `MIN_TOSS_THROW_DELAY_S = 3.5 s` is gone — replaced by a 0.10 s goal-storm
+> debounce plus the DERIVED `hand_stroke.min_throw_event_delay_s(v_throw)`
+> (0.281 s at the 0.80 s nominal) **plus, since 2026-08-23, the pre-dispatch
+> sequence that budget is measured after** (`pre_dispatch_budget_s`: 0.080 s with
+> the census-B1 positioning skip, 0.460 s without it), because the runtime guard
+> in `_step_preparing` applies the same budget to the lead REMAINING after
+> CHECKING + POSITIONING + PREPARE. The floor at the 0.80 s nominal is therefore
+> 0.361 s, not 0.281 s.
+> The 0.6 s margin is gone — re-based on the hand sensor's arrival edge,
+> `ball_possession.ARRIVAL_BAND_MIN_S` = **0.137 s** (PROVISIONAL, pending the
+> post-FW14 band re-measure). And the floor gained a THIRD, physical term it
+> never had: `hand_stroke.min_turnaround_dwell_s`, the C-HAND-1 catch-tail +
+> prelude + gap + windup, which is what actually binds below ~0.5 s. The floor is
+> now `max(throw_delay + 0.137, hand_floor_dwell_s)` — **5.137 s at the 5.0 s
+> default delay, 0.4871 s at the tuning-phase operating point.** The 2.0 s figure
+> is still unachievable, but for the honest reason: the hand-stroke geometry, not
+> a policy constant. Ladder: `tests/hardware/session_cadence_ladder.md`. The
+> paragraph is kept verbatim because it records what the numbers were sized from.
+
 **The dwell floor is DERIVED, and the brief's 2.0 s figure is unachievable.**
 Dwell is previous SCHEDULED LANDING → next RELEASE, so
 `cycle_start(N+1) = landing(N) + dwell − throw_delay` and the floor is
@@ -705,7 +726,9 @@ cycle the session continues past hands over through a whole `SAFE_ABORT` ladder
 whose every rung returns on a SERVICE ACK — `_go_home()` returns when a 2.0 s
 recentre profile has been *installed*. At the shipped defaults the naive
 arithmetic already starts cycle N+1 **1.7 s before the recentre lands**. Landed
-fix: `DEFAULT_SESSION_MISS_CLEANUP_S = 2.80 s` as a FLOOR on landing -> next cycle
+fix: `DEFAULT_SESSION_MISS_CLEANUP_S` as a FLOOR on landing -> next cycle
+(2.80 s as landed; 2.90 s since 2026-08-21, when `CATCH_CONFIRM_WINDOW_S` became
+derived from the measured sensor arrival band)
 start after any non-success cycle — it can only lengthen a gap, never shorten one,
 so it makes the docstring's existing "lateness is absorbed" claim true by
 construction. Also landed: `REJECTED_THROW_DELAY`, without which the advertised

@@ -447,3 +447,64 @@ def test_the_gate_reference_is_anchored_on_the_shipped_hard_stop(probe):
     want = dict((name, exp) for name, exp, _tol, _u in probe._GATE_EXPECT)
     assert want['headroom_to_limit_rev'] == pytest.approx(
         hw.GEOM_HAND_MOTOR_HARD_STOP_REVS - want['peak_pos_rev'], abs=1e-12)
+
+
+# ── the coast-then-sag ordering the gated row is blind to (2026-08-23) ─────
+#
+# `dip_below_x3` searches for the bottom only AFTER the maximum of a window
+# that runs to the catch descent, and that maximum can belong to a LATER
+# COMMANDED MOVE: the gated arm's prelude climbs back past x3 and overshoots it
+# by a measured 0.046-0.222 rev.  When the throw's own coast tops out lower
+# than that, the search starts ~200 ms too late and the sag it exists to catch
+# is already behind it.  This file's `_synth_fixed_session` docstring has
+# carried that as a known blind spot since 2026-07-28 (instrument-defect item
+# 10); the 2026-08-23 HAND-7 ladder made it load-bearing — the gated row read
+# 0.000 rev on 15 of 15 throws whose coasts finished 0.119-0.481 rev under x3.
+#
+# The band is an operator ABORT threshold, so the fix does NOT re-arm it here.
+# `coast_below_x3_rev` is REPORTED beside the gated row and the printer marks
+# the disagreement, so the instrument can no longer pass quietly.
+
+@pytest.mark.parametrize('hold_s', _HOLDS_S)
+def test_the_coast_row_sees_the_sag_the_gated_row_misses(probe, hold_s):
+    """The blind spot, asserted as a defect rather than described in prose."""
+    tl, _ = _arm_prelude_capture(probe, hold_s)
+    # the gated row passes: the arm's climb supplied the maximum it searched
+    # down from, so the sag is outside its search
+    assert tl.dip_below_x3_rev <= probe._DIP_BELOW_X3_BAND_REV
+    # the coast row sees it — the built sag is 0.156 rev, plus the synthetic's
+    # own 8 ms measurement lag
+    assert tl.coast_below_x3_rev == pytest.approx(0.156, abs=0.020)
+    assert tl.coast_below_x3_rev > probe._DIP_BELOW_X3_BAND_REV
+    assert probe._coast_disagrees(tl) is True
+
+
+@pytest.mark.parametrize('hold_s', _HOLDS_S)
+def test_the_coast_row_is_bounded_at_the_stroke_end_not_the_release(probe,
+                                                                   hold_s):
+    """The ascent starts at x2 = 5.91 rev and would supply any lower bound.
+
+    A window opening at the release reports a "dip" of ~4 rev on every healthy
+    throw, which is not a blind spot but a different wrong answer.  The coast
+    opens at the commanded stroke end, so its minimum is a post-stroke quantity.
+    """
+    tl, _ = _arm_prelude_capture(probe, hold_s)
+    model = probe.StrokeModel(3.9308)
+    assert tl.coast_min_rev > model.x2_rev
+    assert tl.coast_min_rev == pytest.approx(model.x3_rev - 0.156, abs=0.020)
+    assert tl.coast_peak_rev <= model.x3_rev + 0.010
+
+
+def test_a_truncated_stroke_reports_no_coast_at_all(probe):
+    """There is no latched stroke top to bound a coast against.
+
+    On a truncation `pos_cmd` never reaches x3, so the row stays blank rather
+    than inventing a coast out of the replacement quintic — and the blind-spot
+    marker cannot fire on a capture whose gated row is already doing its job.
+    """
+    tl, _t_freeze, _freeze = _late_truncation_capture(probe)
+    assert tl.status == 'ok'
+    assert tl.trunc is not None
+    assert tl.coast_below_x3_rev is None
+    assert tl.coast_peak_rev is None
+    assert probe._coast_disagrees(tl) is False

@@ -29,12 +29,15 @@ import pytest
 
 import jugglebot.hardware_config as hw
 from jugglebot.ball_possession import (
+    ARRIVAL_BAND_MAX_S,
+    ARRIVAL_BAND_MIN_S,
     ARRIVAL_CONFIRMED,
     ARRIVAL_REJECTED,
     ARRIVAL_UNKNOWN,
     EVIDENCE_EMPTY,
     EVIDENCE_SEATED,
     EVIDENCE_UNKNOWN,
+    RELEASE_GUARD_S,
     RETENTION_CONFIRMED,
     RETENTION_REJECTED,
     RETENTION_UNKNOWN,
@@ -44,6 +47,7 @@ from jugglebot.ball_possession import (
     HandBallSensorSource,
     PossessionVerdict,
     TrackerArrivalSource,
+    arrival_boundary_t,
     describe,
     lateral_miss_mm,
     merge_possession,
@@ -375,6 +379,9 @@ _RETAIN_S = float(hw.JB_BD_RETENTION_WINDOW_S)
 _STALE_S = 0.5                       # the node passes _HAND_STATE_STALE_S
 
 
+_UNSET = object()      # "the caller passed no raw bit at all" — see _stream
+
+
 def _sensor(**kw):
     cfg = dict(arrival_lead_s=_LEAD_S, arrival_window_s=_WINDOW_S,
                retention_window_s=_RETAIN_S, stale_s=_STALE_S)
@@ -382,15 +389,22 @@ def _sensor(**kw):
     return HandBallSensorSource(**cfg)
 
 
-def _stream(src, t0, t1, held, valid=True, dt=0.01):
+def _stream(src, t0, t1, held, valid=True, dt=0.01, raw=_UNSET):
     """Feed samples at 100 Hz (the /hand_telemetry rate) over [t0, t1).
 
     ``held`` may be a bool or a callable of t, so a test can place an edge at a
-    measured instant instead of splicing two loops."""
+    measured instant instead of splicing two loops. ``raw`` is the same shape and
+    defaults to *omitted entirely* — i.e. the pre-2026-08-21 two-argument feed,
+    which the source degrades to the debounced bit. A test that cares about the
+    debounce asymmetry passes both."""
     t = t0
     while t < t1 - 1e-9:
         h = held(t) if callable(held) else held
-        src.note_sample(t, held=bool(h), valid=bool(valid))
+        if raw is _UNSET:
+            src.note_sample(t, held=bool(h), valid=bool(valid))
+        else:
+            r = raw(t) if callable(raw) else raw
+            src.note_sample(t, held=bool(h), valid=bool(valid), raw=bool(r))
         t += dt
     return t
 
@@ -557,21 +571,33 @@ def test_the_three_measured_seat_then_leaves_read_as_bounce_outs(hold_s):
     assert v.confirmed is False
 
 
-def test_a_legitimate_throw_can_never_read_as_a_bounce_out():
-    """The upper constraint on the retention window is the machine's own cadence:
-    toss_sequencer.MIN_TOSS_THROW_DELAY_S is 3.5 s, so the earliest a legitimate
-    departure can follow a catch is 2.3x the window. A window sized above that
-    floor would score every chained Toss → Toss as a bounce-out."""
-    from jugglebot.toss_sequencer import MIN_TOSS_THROW_DELAY_S
-    assert _RETAIN_S < MIN_TOSS_THROW_DELAY_S / 2.0
+def test_a_legitimate_throw_at_the_SHIPPED_cadence_is_not_a_bounce_out():
+    """A slow-cadence departure is inside the unclamped retention window's own
+    reach and must read CONFIRMED.
+
+    ⚠ THIS TEST'S PREMISE CHANGED ON 2026-08-22. It used to argue from
+    ``MIN_TOSS_THROW_DELAY_S = 3.5 s`` — "the earliest a legitimate departure can
+    follow a catch is 2.3x the window" — and that constant is RETIRED (census
+    A1). The window is no longer safe by cadence arithmetic; it is safe because
+    ``observe`` CLAMPS its horizon to the announced next release
+    (C-POSSESS-1 § 3.4, census D1), which is what
+    ``test_a_legitimate_throw_is_not_a_bounce_out_at_a_short_dwell`` pins.
+
+    What survives here is the SLOW case, and it is worth keeping separately: at
+    the shipped 6.0 s dwell the departure is far outside the window, so the
+    clamp is inert and the raw window has to get the answer right on its own. A
+    regression that broke the unclamped path would otherwise hide behind the
+    clamp at every cadence the ladder actually runs."""
+    departure_after_catch_s = float(hw.JB_OP_TOSS_SESSION_DWELL_DEFAULT_S)
+    assert _RETAIN_S < departure_after_catch_s
     src = _sensor()
     land = 10.0
     edge = land + 0.4
     _stream(src, 8.0, edge, held=False)
-    _stream(src, edge, edge + MIN_TOSS_THROW_DELAY_S, held=True)
-    _stream(src, edge + MIN_TOSS_THROW_DELAY_S,
-            edge + MIN_TOSS_THROW_DELAY_S + 0.3, held=False)
-    v = src.observe(edge + MIN_TOSS_THROW_DELAY_S + 0.3, landing_t=land)
+    _stream(src, edge, edge + departure_after_catch_s, held=True)
+    _stream(src, edge + departure_after_catch_s,
+            edge + departure_after_catch_s + 0.3, held=False)
+    v = src.observe(edge + departure_after_catch_s + 0.3, landing_t=land)
     assert v.retention == RETENTION_CONFIRMED
 
 
@@ -779,3 +805,473 @@ def test_describe_attributes_a_sensor_veto_to_the_sensor():
                             tracker=_tracker_says(False))
     _sev, both_line = describe(both, TOL)
     assert 'agrees' in both_line and 'DISAGREES' not in both_line
+
+
+# ── The cadence clamp (C-POSSESS-1 § 3.4 / § 3.5, census D1/D2/D3) ────────────
+#
+# Every instant below is the machine's own schedule at a named rung of the
+# cadence ladder, never a round number chosen to make an assertion pass:
+#
+#   R3   dwell 1.50 s, flight 0.80 s   — the rung the census orders these fixes
+#                                        to land BEFORE
+#   R5'  dwell 0.49 s, flight 0.4949 s — the TIGHTEST cadence any published rung
+#                                        ever named, deliberately kept after the
+#                                        rung itself moved (see below)
+#
+# and the seat edge is placed at +0.30 s, inside the measured +137…+798 ms band.
+#
+# ⚠ THESE ARE NO LONGER THE R5-PRIME RUNG'S NUMBERS, and that is deliberate
+# (audit fix, 2026-08-22). The ladder republished R5-prime as dwell 0.63 s /
+# flight 0.5029 s (level) and 1.01 / 0.5029 (aimed) once the pre-dispatch
+# sequence cost was measured, and 0.49 / 0.4949 is not merely a different rung —
+# `toss_session` will not ACCEPT it at any throw_delay, because the delay floor
+# at that flight (0.3345 s) plus the handoff margin (0.1933 s) already exceeds
+# 0.49 s. The pair is retained anyway because these tests pin the D1/D2 CLAMPS,
+# and a clamp is period-dependent: holding them at a period 15 % shorter than
+# anything the machine will schedule makes every assertion here a strict
+# superset of the real case. What was fixed is the LABEL — this block used to
+# call 0.49/0.4949 "the operating target", which stopped being true, and a
+# future reader comparing it against the ladder would have found two different
+# numbers under one name.
+_R3_DWELL_S, _R3_FLIGHT_S = 1.50, 0.80
+_R5P_DWELL_S, _R5P_FLIGHT_S = 0.49, 0.4949
+_SEAT_DT_S = 0.30                      # inside the measured catch band
+
+
+def _cycle(landing, dwell, flight):
+    """-> (next_release_t, next_landing_t) for a cycle landing at ``landing``.
+
+    The session's own arithmetic: ``release(N+1) = landing(N) + dwell`` (the
+    dwell is defined previous-SCHEDULED-LANDING -> next RELEASE, see
+    ``toss_session``'s module docstring), and the landing follows one flight
+    later."""
+    rel = landing + dwell
+    return rel, rel + flight
+
+
+def test_a_legitimate_throw_is_not_a_bounce_out_at_a_short_dwell():
+    """CENSUS D1, the inversion this clamp exists to kill.
+
+    The retention window is 1.50 s and was justified at the top by
+    ``MIN_TOSS_THROW_DELAY_S`` being 3.5 s — "so a legitimate throw can never
+    read as a bounce-out". That floor is RETIRED (census A1, landed 2026-08-22:
+    the name is gone from the tree). At the R3 dwell the ball leaves
+    the cup 1.50 s after the landing for OUR OWN next throw, which is INSIDE the
+    unclamped window, so the source returns RETENTION_REJECTED on a perfect
+    cycle. With ``on_empty_cup: RELOAD`` that route asks BallButler to throw a
+    second ball at a full cup, so this is a safety fault wearing a label's
+    clothes.
+
+    Both halves are asserted: the defect reproduces without the clamp, and the
+    clamp closes it. A test that only asserted the fixed behaviour would pass
+    against an implementation that had simply widened something."""
+    land = 10.0
+    rise = land + _SEAT_DT_S
+    rel, next_land = _cycle(land, _R3_DWELL_S, _R3_FLIGHT_S)
+    src = _sensor()
+    _stream(src, land - 1.0, rel + 0.5, held=lambda t: rise <= t < rel)
+    now = rel + 0.5
+    # UNCLAMPED — the shipped behaviour, and the defect.
+    assert src.observe(now, landing_t=land).retention == RETENTION_REJECTED
+    # CLAMPED — the departure at `rel` is at/after `rel - RELEASE_GUARD_S`, so it
+    # is OUR throw and is excluded from the bounce test by construction.
+    v = src.observe(now, landing_t=land,
+                    next_release_t=rel, next_landing_t=next_land)
+    assert v.retention == RETENTION_CONFIRMED
+    assert v.confirmed is True
+
+
+def test_a_real_bounce_out_still_reads_rejected_under_the_clamp():
+    """The clamp excludes the announced throw window, NOT everything after the
+    arrival. A clamp that swallowed real bounce-outs would trade one mislabel for
+    its mirror image, and the bounce-out trap is what C-POSSESS-1 § 7 spent a
+    whole section accepting before the sensor closed it."""
+    land = 10.0
+    rise = land + _SEAT_DT_S
+    drop = rise + 0.20                 # well inside the horizon, and not our throw
+    rel, next_land = _cycle(land, _R3_DWELL_S, _R3_FLIGHT_S)
+    src = _sensor()
+    _stream(src, land - 1.0, rel + 0.5, held=lambda t: rise <= t < drop)
+    v = src.observe(rel + 0.5, landing_t=land,
+                    next_release_t=rel, next_landing_t=next_land)
+    assert v.retention == RETENTION_REJECTED
+    assert v.confirmed is False
+
+
+def test_retention_is_unknown_not_confirmed_when_the_cadence_leaves_no_horizon():
+    """C-POSSESS-1 § 3.4's third clause, and the honest half of this change.
+
+    At the R5' operating point the seat edge lands +0.30 s after the landing and
+    the next release only +0.49 s after it, so `rise` is already PAST
+    `next_release - RELEASE_GUARD_S`. There is no interval in which a bounce-out
+    could be observed at all — the physics removes it, not the clamp (the
+    debounced fall lag alone is ~241 ms).
+
+    The answer must be UNKNOWN. CONFIRMED would claim an observation never made;
+    REJECTED is the D1 inversion. UNKNOWN does not veto (§ 2 consequence 3), so
+    the catch still confirms — possession is simply ARRIVAL-only again at this
+    cadence, which § 3.4 states plainly and routes to the next cycle's live
+    evidence read and the catch-outcome penalty loop."""
+    land = 10.0
+    rise = land + _SEAT_DT_S
+    rel, next_land = _cycle(land, _R5P_DWELL_S, _R5P_FLIGHT_S)
+    assert rise > rel - 0.30, 'premise: the seat edge is past the horizon'
+    src = _sensor()
+    _stream(src, land - 1.0, rel + 0.5, held=lambda t: rise <= t < rel)
+    v = src.observe(rel + 0.5, landing_t=land,
+                    next_release_t=rel, next_landing_t=next_land)
+    assert v.arrival == ARRIVAL_CONFIRMED
+    assert v.retention == RETENTION_UNKNOWN
+    assert v.confirmed is True
+
+
+def test_adjacent_arrival_windows_abut_and_never_overlap():
+    """CENSUS D2. The arrival window is 1.50 s and was justified by a ~4x
+    separation between the catch band (+137…+798 ms) and the next non-catch rise
+    (+3194 ms). That premise dies once the CYCLE PERIOD drops below the window:
+    at R5' the period is ``dwell + T = 0.985 s``, so the NEXT cycle's landing —
+    and its seat edge at +0.30 s — fall INSIDE this cycle's unclamped window and
+    can be claimed twice. (The rung is R5' and not R3 for a measurable reason:
+    R3's period is 2.30 s, still 1.5x clear of the window, so the overlap is not
+    yet reachable there.)
+
+    Clamped, this window closes exactly where the next one opens
+    (`next_landing - arrival_lead_s`), so the two abut: no edge belongs to both,
+    and none falls between them."""
+    land = 10.0
+    rel, next_land = _cycle(land, _R5P_DWELL_S, _R5P_FLIGHT_S)
+    assert next_land - land < _WINDOW_S, 'premise: the periods overlap at R5-prime'
+    src = _sensor()
+    # ONLY the next cycle's seat edge exists — this cycle's ball never arrived.
+    next_rise = next_land + _SEAT_DT_S
+    _stream(src, land - 1.0, next_rise + 0.5, held=lambda t: t >= next_rise)
+    now = next_rise + 0.5
+    # UNCLAMPED the neighbour's edge is stolen and this cycle reads CONFIRMED.
+    assert src.observe(now, landing_t=land).arrival == ARRIVAL_CONFIRMED
+    # CLAMPED it is out of reach, and a window that closed with no rise in it is
+    # a positive observation of non-arrival.
+    v = src.observe(now, landing_t=land,
+                    next_release_t=rel, next_landing_t=next_land)
+    assert v.arrival == ARRIVAL_REJECTED
+    # ... and the NEXT cycle owns that same edge, from its own landing.
+    assert src.observe(now, landing_t=next_land).arrival == ARRIVAL_CONFIRMED
+
+
+def test_the_clamps_are_off_by_default_so_a_single_toss_is_unchanged():
+    """A single ``Toss`` — and a session's last cycle — have nothing scheduled
+    after them, so the honest horizon is the shipped fixed one. None and NaN must
+    behave identically: a NaN horizon compares False against everything and would
+    silently disable the clamp it was meant to apply."""
+    land = 10.0
+    rise = land + _SEAT_DT_S
+    src = _sensor()
+    _stream(src, land - 1.0, rise + _RETAIN_S + 0.2, held=lambda t: t >= rise)
+    now = rise + _RETAIN_S + 0.1
+    base = src.observe(now, landing_t=land)
+    assert base.retention == RETENTION_CONFIRMED
+    nan = float('nan')
+    for v in (src.observe(now, landing_t=land, next_release_t=nan,
+                          next_landing_t=nan),
+              src.observe(now, landing_t=land, next_release_t=None,
+                          next_landing_t=None)):
+        # Field-wise, not tuple-wise: this source reports arrival_err_mm and
+        # plane_drop_mm as NaN (it measures the cup, not a position) and NaN is
+        # not equal to itself.
+        assert (v.arrival, v.retention, v.reason) == (base.arrival,
+                                                      base.retention,
+                                                      base.reason)
+
+
+def test_arrival_time_reads_the_same_edge_the_verdict_does():
+    """``arrival_time`` feeds the record's ``catch_event_dt_s`` and ``observe``
+    feeds the verdict. If only one of them were clamped they would report
+    different edges for one catch — the corpus would carry a catch-event time for
+    an arrival the verdict says never happened. R5' for the same reason as the
+    test above: it is the rung where the windows actually overlap."""
+    land = 10.0
+    rel, next_land = _cycle(land, _R5P_DWELL_S, _R5P_FLIGHT_S)
+    next_rise = next_land + _SEAT_DT_S
+    src = _sensor()
+    _stream(src, land - 1.0, next_rise + 0.5, held=lambda t: t >= next_rise)
+    assert src.arrival_time(land) == pytest.approx(next_rise, abs=0.011)
+    assert math.isnan(src.arrival_time(land, next_landing_t=next_land))
+
+
+# ── The arrival BOUNDARY (C-POSSESS-1 § 3.4 clauses C.1 / C.2, 2026-08-23) ────
+#
+# C-POSSESS-1.C closed the arrival window at `next_landing_t - arrival_lead_s`.
+# That instant pays the NEXT window's guard — a property of the SCHEDULE — out of
+# THIS ball's measured band — a property of the BALL. Measured against the tree's
+# own constants (`/tmp/probe_arrival_clamp.py`, run 2026-08-23), the shipped
+# clamp closes at these offsets from the landing:
+#
+#   R4          period 1.2559 -> +1.0559     R5          period 1.2029 -> +1.0029
+#   R5-prime    period 1.1629 -> +0.9629     R5' pin     period 0.9849 -> +0.7849
+#   R6 (fork)   period 0.7529 -> +0.5529
+#
+# against a band ceiling of ARRIVAL_BAND_MAX_S = +0.800. So no PUBLISHED rung
+# amputates — the accepted operating point clears the ceiling by 163 ms — and the
+# defect is reachable below a 1.000 s period, i.e. exactly where the cadence
+# census is heading. The R5' pin above is what these tests use, for the same
+# reason the D1/D2 block uses it: a strict superset of anything the machine will
+# schedule.
+
+_R6_DWELL_S, _R6_FLIGHT_S = 0.25, 0.5029     # the deferred 0.25 s dwell fork
+
+
+def test_the_arrival_window_never_closes_inside_the_measured_band():
+    """C-POSSESS-1.C.1 — the defect, and the fix, at one rung.
+
+    The premise is computed from the tree's constants rather than typed in: at
+    the R5' pin the shipped clamp lands 15.1 ms BEFORE the band ceiling, so a
+    catch that seats in that sliver is a REAL catch the window never saw. Two
+    consequences, both asserted:
+
+      * ``catch_event_dt_s`` — the ILC catch-timing measurand, the only number
+        this machine has for WHEN the ball entered the cup — goes silently NaN;
+      * the empty window answers ``ARRIVAL_REJECTED``, a POSITIVE claim of
+        non-arrival minted from a cadence number, which then vetoes a tracker
+        CAUGHT (§ 3.2).
+
+    The fix takes the guard out of the NEXT window's opening instead."""
+    land = 10.0
+    rel, next_land = _cycle(land, _R5P_DWELL_S, _R5P_FLIGHT_S)
+    shipped_close = next_land - _LEAD_S
+    assert shipped_close < land + ARRIVAL_BAND_MAX_S, (
+        'premise: at this period the shipped clamp closes inside the band')
+    # In the amputated sliver, and on the 100 Hz sample grid (the stream starts
+    # at land - 1.0, so +0.79 is a sample instant, not a rounding of one).
+    rise = land + 0.79
+    assert shipped_close < rise < land + ARRIVAL_BAND_MAX_S
+    src = _sensor()
+    _stream(src, land - 1.0, rise + 0.5, held=lambda t: t >= rise)
+    now = rise + 0.4
+
+    # THE DEFECT, driven rather than described: a source whose window closes at
+    # the shipped instant is reproduced by giving it that instant as its FIXED
+    # window, which is arithmetically the same window C-POSSESS-1.C built out of
+    # `next_landing_t - arrival_lead_s`. It cannot see the rise at all, so the
+    # catch-event time — the ILC measurand — is NaN.
+    shipped_src = _sensor(arrival_window_s=shipped_close - land)
+    _stream(shipped_src, land - 1.0, rise + 0.5, held=lambda t: t >= rise)
+    assert math.isnan(shipped_src.arrival_time(land))
+    # And under the SHIPPED code that empty window answered ARRIVAL_REJECTED — a
+    # positive claim of non-arrival, which vetoes a tracker CAUGHT. Clause C.2
+    # now forbids exactly that, so the same geometry reads UNKNOWN and the veto
+    # is gone; the tracker survives either way the boundary is drawn.
+    refused = shipped_src.observe(now, landing_t=land)
+    assert refused.arrival == ARRIVAL_UNKNOWN
+    assert refused.reason == 'SENSOR_BAND_CLAMPED'
+    assert merge_possession(sensor=refused,
+                            tracker=_tracker_says(True)).confirmed is True
+
+    v = src.observe(now, landing_t=land,
+                    next_release_t=rel, next_landing_t=next_land)
+    assert v.arrival == ARRIVAL_CONFIRMED
+    assert v.reason == 'SENSOR_ARRIVED'
+    assert src.arrival_time(land, next_landing_t=next_land) == pytest.approx(
+        rise, abs=0.011)
+    # ... and the window closed exactly at the band ceiling, not a millisecond
+    # sooner and not at the fixed 1.5 s window either.
+    assert src._window(land, next_land)[1] == pytest.approx(   # noqa: SLF001
+        land + ARRIVAL_BAND_MAX_S)
+
+
+def test_the_boundary_abuts_from_both_sides_so_no_edge_is_claimed_twice():
+    """C-POSSESS-1.C.1's abutment, which is what lets the closing move at all.
+
+    Moving this window's close LATER without moving the next window's open with
+    it would hand one edge to two cycles — the census-D2 fault the clamp exists
+    to prevent, re-created by its own fix. Both ends are the SAME
+    ``arrival_boundary_t`` call on the SAME pair, so the property is structural:
+    an edge one microsecond before the boundary belongs to this cycle alone, one
+    microsecond after it to the next cycle alone, and none falls between."""
+    land = 10.0
+    rel, next_land = _cycle(land, _R5P_DWELL_S, _R5P_FLIGHT_S)
+    b = arrival_boundary_t(land, next_land, _LEAD_S)
+    assert b == pytest.approx(land + ARRIVAL_BAND_MAX_S)
+    # One rise, placed either side of the boundary; the sensor never sees the
+    # cup empty again, so there is exactly one edge to fight over.
+    for dt, mine, theirs in ((-0.002, True, False), (+0.002, False, True)):
+        s = _sensor()
+        rise = b + dt
+        _stream(s, land - 1.0, rise + 0.5, held=lambda t, r=rise: t >= r,
+                dt=0.001)
+        now = rise + 0.4
+        this_cycle = s.observe(now, landing_t=land, next_release_t=rel,
+                               next_landing_t=next_land).arrival
+        next_cycle = s.observe(now, landing_t=next_land,
+                               prev_landing_t=land).arrival
+        assert (this_cycle == ARRIVAL_CONFIRMED) is mine
+        assert (next_cycle == ARRIVAL_CONFIRMED) is theirs
+
+
+def test_the_previous_landing_can_only_narrow_a_window_never_widen_it():
+    """The safety direction of the new argument, asserted rather than argued.
+
+    ``prev_landing_t`` exists to move an OPENING later. If it could ever move one
+    EARLIER it would let a cycle reach back for the previous ball's seat edge —
+    the false-CAUGHT class § 7 sized and § 3.2 closed. ``arrival_boundary_t`` is
+    a ``max`` against ``land - lead`` precisely so that cannot happen, at any
+    cadence including ones no rung will ever schedule."""
+    land = 10.0
+    src = _sensor()
+    for period in (0.30, 0.7529, 0.9849, 1.1629, 2.2977, 6.3977):
+        w0_plain, w1_plain = src._window(land)                 # noqa: SLF001
+        w0, w1 = src._window(land, prev_landing_t=land - period)  # noqa: SLF001
+        assert w0 >= w0_plain, period
+        assert w1 == w1_plain, period
+        # ... and never past the band FLOOR either: the earliest edge a real
+        # catch has ever produced must still be inside the window.
+        assert w0 <= land + ARRIVAL_BAND_MIN_S, period
+        # It must also BITE where it is needed. Below a 1.000 s period the
+        # previous cycle's window now runs past `land - arrival_lead_s`, so an
+        # opening that had not moved would be claiming an edge its neighbour has
+        # already claimed — the D2 fault, from the other side.
+        assert (w0 > w0_plain) is (period < ARRIVAL_BAND_MAX_S + _LEAD_S), period
+
+
+def test_a_band_clamped_window_declares_unknown_instead_of_refusing():
+    """C-POSSESS-1.C.2 — the half the boundary rule cannot fix.
+
+    Below a 0.800 s cycle period the next ball lands before this one's band has
+    closed, and NO boundary rule can give both balls their whole band: at the
+    deferred R6 fork (dwell 0.25 s) the window reaches +0.7529 and 47.1 ms of
+    band stays unwatched. A window shorter than the evidence it is judging has
+    not observed non-arrival, so ``REJECTED`` — which is a positive claim, and
+    which VETOES a tracker CAUGHT — is not available to it. It says UNKNOWN and
+    names the cause, so the loss is surfaced rather than silent."""
+    land = 10.0
+    rel, next_land = _cycle(land, _R6_DWELL_S, _R6_FLIGHT_S)
+    assert next_land - land < ARRIVAL_BAND_MAX_S, (
+        'premise: the next ball lands before this band closes')
+    src = _sensor()
+    # The cup never fills: this ball genuinely did not arrive INSIDE the window
+    # we were allowed to watch — but we were not allowed to watch it out.
+    _stream(src, land - 1.0, land + 2.0, held=False)
+    v = src.observe(land + 1.5, landing_t=land,
+                    next_release_t=rel, next_landing_t=next_land)
+    assert v.arrival == ARRIVAL_UNKNOWN
+    assert v.reason == 'SENSOR_BAND_CLAMPED'
+    # The whole point of UNKNOWN over REJECTED: § 2 consequence 3 forbids it from
+    # vetoing, so a tracker CAUGHT survives a window the SCHEDULE truncated.
+    merged = merge_possession(sensor=v, tracker=_tracker_says(True))
+    assert merged.confirmed is True
+    # And a window that DID watch the band out still refuses, at the same rung —
+    # so this is a clamp test, not a blanket softening of the refusal.
+    wide = _sensor()
+    _stream(wide, land - 1.0, land + 2.0, held=False)
+    far = wide.observe(land + 1.5, landing_t=land)
+    assert far.arrival == ARRIVAL_REJECTED
+    assert far.reason == 'SENSOR_NO_ARRIVAL'
+    assert merge_possession(sensor=far,
+                            tracker=_tracker_says(True)).confirmed is False
+
+
+def test_the_live_evidence_read_falls_with_the_ball_not_with_the_debounce():
+    """CENSUS D3 — the fail-OPEN possession gate, and the direction it fails in.
+
+    The debounce is asymmetric: measured ``held->empty`` 232/241/295 ms,
+    ``empty->held`` 0/0/0 ms. At the R5' dwell of 0.49 s, cycle N+1's CHECKING
+    runs INSIDE that fall lag, so an ``evidence`` read taken from the debounced
+    bit would answer SEATED over a cup the previous ball has already left — and
+    the gate whose whole posture is "a dead sensor refuses, it does not pass"
+    would pass an empty cup.
+
+    The raw bit falls with the ball. Both bits are asserted, at the same instant,
+    so the test states the asymmetry rather than assuming it.
+
+    THE REACHABLE INSTANCE, spelled out rather than asserted, because "the gap
+    shrinks" is not a schedule. The case is a **bounce-out during a dwell** — the
+    one C-POSSESS-1 § 3.3 edit 2 exists for. Rung R4 (dwell 0.75 s, flight 0.8 s)
+    with the census's post-B1/B2 ``throw_delay`` floor of 0.38 s:
+
+        seat edge      landing + 0.137   (the measured band FLOOR)
+        bounce-out     landing + 0.20
+        debounced fall landing + 0.44    (0.20 + the 0.241 lag)
+        CHECKING(N+1)  landing + 0.37    (dwell 0.75 - throw_delay 0.38)
+
+    CHECKING lands 170 ms after the cup emptied and 70 ms before the debounced
+    bit notices. Read from the debounced bit the gate PASSES, and cycle N+1
+    fires a kind-0 stroke into an empty cup."""
+    src = _sensor()
+    land = 10.0
+    rise = land + 0.137                # the measured catch band FLOOR
+    bounce = land + 0.20
+    lag = 0.241                        # the measured worst-case fall lag
+    check_at = land + (0.75 - 0.38)    # R4 CHECKING: dwell - throw_delay
+    assert bounce < check_at < bounce + lag, (
+        'premise: CHECKING lands after the cup emptied and inside the fall lag')
+    held = lambda t: rise <= t < bounce + lag           # debounced: the fall lags
+    raw = lambda t: rise <= t < bounce                  # raw: falls with the ball
+    # Streamed only up TO the CHECKING tick: `evidence` is a LIVE query, so a
+    # stream that ran past it would answer from a later sample than the gate saw.
+    _stream(src, land - 1.0, check_at, held=held, raw=raw)
+    assert src.evidence(check_at) == EVIDENCE_EMPTY
+    # The debounced bit at that same instant still says SEATED — the fail-open
+    # answer this rule removes. `evidence_settled` refuses to pick between them.
+    assert src.evidence_settled(check_at) == EVIDENCE_UNKNOWN
+    # And once the debounce catches up the two agree again, on EMPTY.
+    settled_at = bounce + lag + 0.05
+    _stream(src, check_at, settled_at, held=held, raw=raw)
+    assert src.evidence_settled(settled_at) == EVIDENCE_EMPTY
+
+
+def test_settled_evidence_refuses_rather_than_licensing_a_throw_on_a_flicker():
+    """The cost of reading raw is chatter, and it has exactly ONE dangerous
+    consumer: the auto-reload interlude answers an EMPTY cup by asking BallButler
+    to throw a ball at it, so a carry-flicker over a seated ball would put a
+    second ball into a full cup.
+
+    ``evidence_settled`` requires both bits to agree. A flicker makes them
+    disagree, which is "I could not look with confidence" — UNKNOWN — and the
+    interlude gate already refuses on UNKNOWN without moving anything."""
+    src = _sensor()
+    _stream(src, 0.0, 1.0, held=True, raw=True)
+    assert src.evidence_settled(1.0) == EVIDENCE_SEATED
+    # One raw sample flickers EMPTY under a seated ball (five misses are needed
+    # before the debounced verdict would follow).
+    src.note_sample(1.0, held=True, valid=True, raw=False)
+    assert src.evidence(1.0) == EVIDENCE_EMPTY          # raw, fail-closed
+    assert src.evidence_settled(1.0) == EVIDENCE_UNKNOWN  # and it refuses to act
+    # Agreement restores a usable answer.
+    src.note_sample(1.01, held=True, valid=True, raw=True)
+    assert src.evidence_settled(1.01) == EVIDENCE_SEATED
+
+
+def test_a_missing_raw_bit_degrades_to_the_debounced_one_never_to_no_ball():
+    """A node running against an older bag, or a pre-Phase-5 message, has no
+    ``ball_held_raw``. The node passes None rather than a defaulted False, and
+    None must read as "use the debounced bit" — defaulting to False would make a
+    missing FIELD indistinguishable from an empty CUP, which is the same class of
+    error as BallButler's fail-open boot, pointed the other way."""
+    src = _sensor()
+    _stream(src, 0.0, 1.0, held=True)          # raw omitted entirely
+    assert src.evidence(1.0) == EVIDENCE_SEATED
+    assert src.evidence_settled(1.0) == EVIDENCE_SEATED
+
+
+def test_the_release_guard_is_one_constant_not_two():
+    """The retention horizon closes at ``next_release - RELEASE_GUARD_S`` and the
+    NEXT toss's departure search opens at ``throw - DEPARTURE_LEAD_S``. Those are
+    the same instant: the two windows abut, so no fall edge belongs to both (a
+    good throw read as a bounce-out) and none falls between them (a real
+    bounce-out attributed to the throw). Two copies of the number is how that
+    property dies quietly, so there is one."""
+    from jugglebot import toss_record
+    assert toss_record.DEPARTURE_LEAD_S is RELEASE_GUARD_S
+
+
+def test_the_catch_confirm_deadline_clears_the_band_it_has_to_outlast():
+    """CENSUS D7. Since 2026-08-10 the possession verdict is sensor-PRIMARY, so
+    the deadline that mints MISSED must outlast the band in which a real seat
+    edge lands (+137…+798 ms measured, n=35). It was a hand-written 0.70 s — 98 ms
+    UNDER that ceiling, latent only because the tracker's own CAUGHT lands
+    earlier (+202…+442 ms) and the merge falls back to it.
+
+    Deriving it also puts the pending post-FW14 re-measure in ONE place: both
+    sequencers and the session's MISS-cleanup floor follow the band constant."""
+    from jugglebot import reload_sequencer, toss_sequencer
+    assert toss_sequencer.CATCH_CONFIRM_WINDOW_S is ARRIVAL_BAND_MAX_S
+    assert reload_sequencer.CATCH_CONFIRM_WINDOW_S is ARRIVAL_BAND_MAX_S
+    assert ARRIVAL_BAND_MAX_S >= 0.798

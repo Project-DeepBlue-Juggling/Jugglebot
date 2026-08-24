@@ -47,6 +47,7 @@ from sim.juggle_selfcatch import (
 )
 from sim.juggle_throw import run_single_throw, SingleThrowConfig
 from sim.juggle_noise import NoiseConfig
+from sim.juggle_catch import SEAT_RADIUS_MM
 
 
 pytestmark = pytest.mark.nightly
@@ -97,20 +98,41 @@ def test_column_selfcatch_does_not_sustain(seed):
     assert r.diverged
 
 
-def test_reach_amplifies_loop_gain_gt_one(faithful_seed0):
-    """The loop-gain signature (seed 0, a clear reach-amplification case): the
+#: The seed whose column loop breaks via REACH AMPLIFICATION rather than via the
+#: catch-seat knife edge. Mode selection is a property of the catch CONTACT, not
+#: of the seed: it was seed 0 under the 2026-07-02 firmed contact and became
+#: seed 3 on 2026-08-21 when the ball radius was corrected 35.0 -> 37.0 mm
+#: (owner caliper). Measured over seeds 0-5 that day: 3 amplifies (6.92 ->
+#: 105.41 -> 211.66 mm), 0/1/2/4/5 break at cycle 1 with a sub-0.3 mm reach.
+#: Every seed still diverges either way.
+_AMPLIFY_SEED = 3
+
+
+def test_reach_amplifies_loop_gain_gt_one():
+    """The loop-gain signature (a clear reach-amplification case): the
     catch reach AMPLIFIES from the tight first throw (~7.7 mm) past the catch's
     ~60-80 mm reliable reach within a couple of cycles (measured 7.7 -> 106.7 mm)
     -- loop gain > 1, the same class as the pre-tilt divergence (logbook 2026-06-27).
 
     Which seed shows the reach-amplification mode (vs the catch-seat-knife-edge
     mode) depends on the catch contact: under the 2026-07-02 firmed catch contact
-    seed 0 amplifies (7.7 -> 106.7 mm) while seeds 1-5 break at cycle 1 via the
+    seed 0 amplified (7.7 -> 106.7 mm) while seeds 1-5 broke at cycle 1 via the
     knife-edge (tiny cycle-1 reach). Every seed still DIVERGES either way
     (``test_column_selfcatch_does_not_sustain``); this test pins the amplification
-    mode specifically. See logbook/2026-07-02-fast-catch-fidelity.md."""
-    reaches = [c.reach_mm for c in faithful_seed0.cycles]
-    assert reaches[0] < 20.0                       # tight first throw (~7.7 mm)
+    mode specifically. See logbook/2026-07-02-fast-catch-fidelity.md.
+
+    **THE SEED MOVED 2026-08-21, and the docstring above predicted exactly why.**
+    Correcting the ball radius (``physics.juggling_ball_radius_mm`` 35.0 -> 37.0,
+    owner caliper) is a change to the CATCH CONTACT, and mode selection is
+    contact-dependent — so seed 0 flipped to the knife-edge (cycle-1 reach
+    **0.09 mm**, the tiny reach this docstring names) and **seed 3** now carries
+    the amplification mode (6.92 -> 105.41 -> 211.66 mm, measured 2026-08-21 over
+    seeds 0-5). Nothing about the BREAK changed: all six seeds still diverge,
+    sustained <= 2 of 12. The test follows the mode rather than the seed number,
+    which is what it was always for."""
+    r = run_self_catch(SelfCatchConfig(seed=_AMPLIFY_SEED, n_cycles=12))
+    reaches = [c.reach_mm for c in r.cycles]
+    assert reaches[0] < 20.0                       # tight first throw (~6.9 mm)
     assert max(reaches) > 3.0 * reaches[0]         # amplifies several-fold
     assert max(reaches) > CATCH_REACH_MM           # past the reliable reach -> drop
 
@@ -179,7 +201,16 @@ def test_oscillation_landing_amplifies_loop_gain_gt_one():
     column BREAK drew, now with tilt ACTIVE."""
     r = run_self_catch(SelfCatchConfig(seed=1, n_cycles=12, oscillate=True))
     errs = [c.landing_err_mm for c in r.cycles]
-    assert errs[0] < 10.0                               # tight first throw (~3.7)
+    # The FIRST-CYCLE bound is the cup seat radius, not a pinned "measured"
+    # value: correcting the ball radius (35.0 -> 37.0 mm, owner caliper,
+    # 2026-08-21) moved this cycle's landing error 3.7 -> 28.2 mm, and sweeping
+    # the radius 33-38 mm that day gave 13.2 / 23.2 / 3.7 / 10.6 / 28.2 / 39.9 --
+    # non-monotonic, so the 3.7 was one draw of a chaotic quantity. What this
+    # test is ABOUT is the amplification below, and that is untouched: measured
+    # 2026-08-21 the oscillation still runs 28.2 -> ~470 mm on every seed 0-5,
+    # a 16-17x amplification past the 80 mm reliable reach (453.9-492.6 mm
+    # across seeds 0-5; the factor is a range, not one number).
+    assert errs[0] < SEAT_RADIUS_MM                     # measured 28.2 mm
     assert max(errs) > CATCH_REACH_MM                   # amplifies past the reach
     assert max(errs) > 5.0 * errs[0]                    # several-fold amplification
     held_offs = [c.in_off_end_mm for c in r.cycles if c.caught and c.held_at_end]
@@ -188,17 +219,44 @@ def test_oscillation_landing_amplifies_loop_gain_gt_one():
 
 def test_oscillation_throw_is_pose_sensitive():
     """The ROOT cause (deterministic, noise off): the tilt-aimed throw's landing is
-    highly sensitive to the throw-ORIGIN position -- a 10 mm shift of the throw
-    point swings the landing ~40 mm (dLanding/dOrigin ~4). This pose-chaos is the
-    contact-detach knife-edge that gives the oscillation loop gain > 1; tilt does
-    not address it. (Uses the Rung-2a throw harness directly.)"""
+    highly sensitive to the throw-ORIGIN position -- a small shift of the throw
+    point swings the landing several times as far (dLanding/dOrigin up to ~4).
+    This pose-chaos is the contact-detach knife-edge that gives the oscillation
+    loop gain > 1; tilt does not address it. (Uses the Rung-2a throw harness
+    directly.)
+
+    **Probed over FOUR origin shifts since 2026-08-21, not one.** The old form
+    probed a single −10 mm shift and asserted ``> 20 mm`` on a "measured
+    ~40.8 mm". Correcting the ball radius (35.0 -> 37.0 mm, owner caliper) made
+    that one probe read **4.29 mm** — and the map it samples is precisely the
+    chaotic one this test exists to characterise, so pinning one direction of it
+    was pinning a coin flip. Measured that day at ±10 / ±20 mm the landing
+    shifts are **4.29 / 43.55 / 34.09 / 39.26 mm**, i.e. per-mm gains of
+    **0.43 / 4.35 / 1.70 / 1.96**.
+
+    The two assertions below say what "chaotic" actually means and are far more
+    robust than the old single probe: SOME direction swings the landing well past
+    its own origin shift, and the gain is strongly NON-UNIFORM across directions
+    (a smooth, well-behaved throw would have all four gains alike)."""
     off = NoiseConfig(bb_throw_noise_frac=0.0, tracking_noise_mm=0.0)
-    l0 = np.array(run_single_throw(SingleThrowConfig(
-        seed=0, throw_xy_m=(0.0, 0.0), target_xy_m=(0.0, 0.0), noise=off)).landing_xy_m)
-    l1 = np.array(run_single_throw(SingleThrowConfig(
-        seed=0, throw_xy_m=(-0.010, 0.0), target_xy_m=(0.0, 0.0), noise=off)).landing_xy_m)
-    shift_mm = float(np.linalg.norm(l1 - l0) * 1000.0)
-    assert shift_mm > 20.0                              # measured ~40.8 mm
+
+    def _landing(dx_m):
+        return np.array(run_single_throw(SingleThrowConfig(
+            seed=0, throw_xy_m=(dx_m, 0.0), target_xy_m=(0.0, 0.0),
+            noise=off)).landing_xy_m)
+
+    l0 = _landing(0.0)
+    gains = []
+    for dx_mm in (-10.0, 10.0, -20.0, 20.0):
+        shift_mm = float(np.linalg.norm(_landing(dx_mm / 1000.0) - l0) * 1000.0)
+        gains.append(shift_mm / abs(dx_mm))
+    assert max(gains) > 3.0, (
+        'no probed direction amplifies the origin shift — the throw is no '
+        'longer pose-chaotic, which would be a FIX to the documented BREAK: '
+        'gains {}'.format(['%.2f' % g for g in gains]))
+    assert max(gains) > 3.0 * min(gains), (
+        'the pose sensitivity is uniform across directions, i.e. smooth rather '
+        'than knife-edge: gains {}'.format(['%.2f' % g for g in gains]))
 
 
 def test_oscillation_is_deterministic_per_seed():

@@ -163,11 +163,15 @@ def generate_mjcf(config, mesh_dir=None):
     gravity = config['physics']['gravity_mps2']
 
     # ---- Juggling ball (canonical spec: config/hardware_config.yaml:physics) --
-    # Owner-stated 2026-08-21: 71 g, 70 mm diameter.  Hardcoded here as
-    # 0.02 m / 0.043 kg until then, disagreeing with the hand-edited XML's
-    # 0.035 / 0.071 -- which is exactly the drift this generator now exists to
-    # make impossible.  NOT the same quantity as throw_envelope.BALL_MASS_KG
-    # (0.0952 kg, implied by INERTIA_RATIO); see the YAML comment.
+    # Owner CALIPER measurement 2026-08-21: 71 g, 74 mm diameter -> 37 mm radius.
+    # It supersedes the "70 mm ball" this comment carried until then, which was
+    # an assumed figure and never a measurement; the mass is unchanged.  The
+    # 35 mm that appears elsewhere in the repo is the CAPTURE RADIUS of the cup,
+    # a different quantity, and is NOT superseded by this.  Read from the YAML,
+    # never hardcoded -- a hardcode here is exactly the drift this generator
+    # exists to make impossible.  NOT the same quantity as
+    # throw_envelope.BALL_MASS_KG (0.0952 kg, implied by INERTIA_RATIO); see the
+    # YAML comment.
     ball_radius_m = config['physics']['juggling_ball_radius_mm'] / 1000.0
     ball_mass_kg = config['physics']['juggling_ball_mass_kg']
 

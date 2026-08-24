@@ -40,6 +40,7 @@ import pytest
 from sim.juggle_selfcatch import (
     run_self_catch, SelfCatchConfig, CATCH_REACH_MM,
 )
+from sim.juggle_catch import SEAT_RADIUS_MM
 
 
 @pytest.fixture(scope="module")
@@ -88,15 +89,34 @@ def test_oscillation_engages_tilt(osc_seed0):
 
 def test_oscillation_first_cycle_composes(osc_seed0):
     """The primitives compose the first LATERAL cycle WITH tilt engaged: the
-    seeded A->B throw separates, is caught + held, and lands tight on B (~3.7 mm),
-    seated near-centred. So the loop STARTS cleanly — the divergence characterised
-    in the nightly file is not a failure to get going, it is a genuine loop-gain
-    > 1."""
+    seeded A->B throw separates, is caught + held, and lands inside the cup seat
+    radius, seated near-centred. So the loop STARTS cleanly — the divergence
+    characterised in the nightly file is not a failure to get going, it is a
+    genuine loop-gain > 1.
+
+    **The landing bound was re-derived 2026-08-21, and the reason is worth
+    keeping.** It used to read ``< 15.0  # measured ~3.7 mm``. Correcting the
+    ball radius (``physics.juggling_ball_radius_mm`` 35.0 -> 37.0, owner caliper:
+    the "70 mm ball" was assumed, the ball is 74 mm across) moved this cycle's
+    landing error to 28.2 mm — so the pin went red on a change that made the
+    model MORE correct. Sweeping the radius over 33-38 mm (2026-08-21, one
+    oscillate cycle at seed 0) gives landing errors of **13.2 / 23.2 / 3.7 /
+    10.6 / 28.2 / 39.9 mm**: non-monotonic, no trend, a ~+-15 mm spread over a
+    5 mm sweep of ONE geometric constant. The 3.7 mm the comment quoted was a
+    lucky draw of a chaotic quantity, and a 15 mm pin on it was pinning noise.
+
+    So the bound is now ``juggle_catch.SEAT_RADIUS_MM`` — the cup seat radius
+    ``CatchResult.clean`` is already defined against, i.e. *the throw lands
+    somewhere the catch can seat it*, which is what "the primitives compose"
+    actually claims. The behavioural assertions (separated, caught, held, tilt
+    engaged, seated near-centred) are unchanged and are what regression pressure
+    this test carries.
+    """
     c0 = osc_seed0.cycles[0]
     assert c0.separated
     assert c0.caught and c0.held_at_end
     assert c0.tilt_deg > 1.0
-    assert c0.landing_err_mm < 15.0                      # measured ~3.7 mm
+    assert c0.landing_err_mm < SEAT_RADIUS_MM            # measured 28.2 mm
     assert c0.in_off_end_mm < 10.0                       # seated near-centred
 
 

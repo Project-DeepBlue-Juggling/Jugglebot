@@ -192,3 +192,52 @@ def test_apply_gravity_correction_does_not_mutate_its_input():
     before = rotvec.copy()
     levelling.apply_gravity_correction(rotvec, R)
     assert np.array_equal(rotvec, before)
+
+
+# ── the inverse (C-LEVEL-1's observability corollary, 2026-08-23) ─────────────
+
+def test_uncorrect_pose_inverts_correct_pose_exactly():
+    """Round trip, on a NON-IDENTITY target and a non-trivial correction.
+
+    Both halves matter. An identity target cannot tell `Rᵀ @ R_corrected` from
+    `R_corrected @ Rᵀ` (the same trap the composition-order test names), and a
+    zero correction makes the inverse the identity function, which would pass
+    against a `uncorrect_pose = correct_pose` typo."""
+    correction = levelling.correction_from_offset(*_SESSION_OFFSET)
+    for intent in ([0.0, 0.0, 170.0, 0.15, -0.08, 0.0],
+                   [12.0, -30.0, 190.0, 0.004, -0.006, 0.0],
+                   [0.0, 0.0, 170.0, 0.0, 0.0, 0.0]):
+        pose = np.array(intent, dtype=float)
+        back = levelling.uncorrect_pose(
+            levelling.correct_pose(pose, correction), correction)
+        assert back == pytest.approx(pose, abs=1e-12)
+
+    # …and it really is doing work: the corrected rotation differs from the
+    # intent by the correction, so a no-op inverse would fail the round trip.
+    tilted = np.array([0.0, 0.0, 170.0, 0.15, -0.08, 0.0])
+    corrected = levelling.correct_pose(tilted, correction)
+    assert not np.allclose(corrected[3:6], tilted[3:6], atol=1e-6)
+
+
+def test_uncorrect_pose_leaves_position_untouched_and_does_not_mutate():
+    """Position is frame-invariant here (``correct_pose`` never touches it), so
+    the inverse must not either — and the input is a caller's array."""
+    correction = levelling.correction_from_offset(*_SESSION_OFFSET)
+    pose = np.array([12.0, -30.0, 190.0, 0.15, -0.08, 0.0])
+    before = pose.copy()
+    out = levelling.uncorrect_pose(pose, correction)
+    assert out[:3] == pytest.approx(pose[:3], abs=0.0)
+    assert pose == pytest.approx(before, abs=0.0)
+    assert out is not pose
+
+
+def test_uncorrect_pose_is_the_transpose_not_the_negated_offset():
+    """``Rᵀ`` and ``R(−offset)`` agree for THIS correction (a single Rodrigues of
+    a negated rotvec), and that agreement is worth pinning rather than assuming:
+    it is what makes the inverse exact instead of first-order, and it is the
+    property a future pose-dependent correction must preserve or the inverse
+    silently becomes an approximation."""
+    correction = levelling.correction_from_offset(*_SESSION_OFFSET)
+    negated = rotvec_to_rot_matrix(
+        -rot_matrix_to_rotvec(correction))
+    assert correction.T == pytest.approx(negated, abs=1e-12)

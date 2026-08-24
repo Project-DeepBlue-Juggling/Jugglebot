@@ -8,6 +8,12 @@ four things only the NODE can be asked:
    topic traffic, the commanded release IS the announcement release — the same
    object, so the disabled path costs not one floating-point operation.
 2. **``catch/pretilt_hold`` on ANY non-zero commanded aim, tier-independent**
+   — the D3 rule these tests were written for. NOTE that the hold became
+   UNCONDITIONAL on 2026-08-22 (census E5, a cadence fix): it is raised for a
+   level 8a too, so it is no longer EVIDENCE that an aim is commanded. These
+   tests remain valid because each asserts the commanded release state
+   alongside the topic, and because their scope is the goal BUILD rather than
+   the PREPARE tick where the hold is published.
    (D3). Without it the stock announcement pre-tilt levels the platform back
    ≥ 1 s before release while every log line still reports the aim as applied.
 3. **The announcement stays the UNCORRECTED landing** (D4) — the aim moves the
@@ -115,8 +121,16 @@ def test_absent_map_leaves_the_release_state_untouched(monkeypatch, tmp_path):
 
 def test_absent_map_adds_no_rejection_code_and_no_pretilt_hold(monkeypatch,
                                                                tmp_path):
-    """C-TOSS-CAL-1 is a refinement, never a gate: absence is silent. The level
-    publish sequence must stay byte-identical — the topic is not touched."""
+    """C-TOSS-CAL-1 is a refinement, never a gate: absence is silent.
+
+    The scope here is the GOAL BUILD, not the whole cycle: nothing about an
+    absent map may reach a topic while the release state is being resolved. The
+    PREPARE tick is a separate question and its answer changed on 2026-08-22 —
+    ``catch/pretilt_hold`` is raised there UNCONDITIONALLY now (census E5), for a
+    cadence reason that has nothing to do with the map. Asserting emptiness here
+    still pins what this test is about; see
+    ``test_toss_coordinator.py::test_pretilt_hold_is_raised_on_every_cycle_
+    including_a_level_one`` for the PREPARE-tick behaviour."""
     node = _node_with_map(monkeypatch, tmp_path, None)
     seq = _build(node, monkeypatch=monkeypatch)
     assert seq.tilt_clamp_exceeded is False
@@ -132,7 +146,10 @@ def test_a_loaded_but_all_zero_map_is_still_the_identity_path(monkeypatch,
                                                               tmp_path):
     """A flat-field map (§ 3.8 refuses to WRITE one, but an operator can hand-
     edit one to zero as a rollback) must take the same identity path as no map
-    at all — the aim is zero, so the tilted branch is never entered."""
+    at all — the aim is zero, so the tilted branch is never entered.
+
+    Same scope caveat as the test above: this is the goal BUILD. The PREPARE
+    tick raises ``catch/pretilt_hold`` unconditionally since census E5."""
     node = _node_with_map(monkeypatch, tmp_path, _cal_doc(0.0, 0.0))
     _build(node, monkeypatch=monkeypatch)
     with node._lock:

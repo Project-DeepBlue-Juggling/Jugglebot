@@ -42,10 +42,17 @@ convention ever changed, the fit's would change with it in the same direction,
 which is the only structural defence against the failure mode rung SC-0 exists to
 catch (a sign flip aims the machine roughly twice as badly as no map).
 
-That ``J`` is emphatically **not** a scaled identity. At h = 0.78 m::
+That ``J`` is emphatically **not** a scaled identity. At h ≈ 0.78 m, to four
+significant figures::
 
     J = [[    0.0,  3126.5],
          [-3126.5,     0.0]]  mm/rad
+
+(D3, 2026-08-21 — the 3126.5 is a 4-s.f. rounding and reproduces no geometry
+exactly. The gain is the exact rule ``dL/dθ = 4h + Δz``, ``Δz = 6.7360 mm``,
+independent of catch z; ``ilc_fit_lib``'s header carries the canonical statement
+and the three geometries the tree quotes it at. Nothing here turns on the fifth
+digit — the SHAPE is what this section is about.)
 
 i.e. ``S = [[0, 1], [-1, 0]]``, a 90° rotation: a tilt about **+rx** moves the
 ball in **−y** and a tilt about **+ry** moves it in **+x** (right-hand rule on
@@ -75,9 +82,10 @@ injects a known bias into a replayed corpus, runs the REAL fit, and asserts sign
 ``tests/motion/test_tilt_cal_grid.py``.
 
 The design's ``4·h`` gain is kept as a documented cross-check rather than as the
-arithmetic: ``J``'s magnitude is 3126.5 mm/rad at h = 0.78 against ``4h`` =
-3120.0, a 0.21 % difference carried by the ``Δz`` and drop terms the exact form
-keeps. A test pins the two together at 1 %.
+arithmetic: ``J``'s magnitude is 3126.5 mm/rad at h ≈ 0.78 against ``4h`` =
+3120.0, a 0.21 % difference which is exactly ``Δz/4h`` — the excess is the
+CONSTANT 6.7360 mm, not a percentage, so it does not scale with h. A test pins
+the two together at 1 %.
 
 HOME-REFERENCING (§ 3.2), AND WHY THE ANCHOR IS NOT A CORRECTION
 -----------------------------------------------------------------

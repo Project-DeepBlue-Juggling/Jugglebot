@@ -202,6 +202,48 @@ for the assembled catch plan). Ingest-side correction keeps
 **2. It gives the in-flight rule for free, and the alternative puts a step on the
 wire.** See below.
 
+## The EGRESS direction — C-LEVEL-1.E (added 2026-08-23)
+
+Everything above is about poses coming IN. One surface needs the inverse, and
+naming it is what stops it becoming a seventh place where the correction is
+re-derived.
+
+**The problem.** `trajectory_node` publishes its live commanded pose so a
+consumer can ask *"is the platform already where I am about to send it?"*
+(`reload_coordinator_node._toss_already_positioned`, the census-B1 positioning
+skip). That question is asked in the **intent** frame: the consumer's request
+will be corrected on the way in, so a request-vs-commanded comparison must
+happen before the correction, not after it. But the commanded pose is a sample of
+the ACTIVE PLAN, and the plan was built to the corrected target — so the rotation
+on the wire is `R_gravity @ R_request`.
+
+**The consumer had exactly two options and one of them is forbidden.** Either it
+re-derives the correction on its own side — which needs `/gravity_offset`, the
+tilt map, the additive composition and the non-commutative order, i.e. the whole
+duplication this contract exists to delete — or it is handed the intent frame.
+
+**So the inverse runs ONCE, in the node that owns the correction.**
+`levelling.uncorrect_pose(pose, correction)` is the exact transpose inverse of
+`correct_pose` (a rotation matrix's transpose is its inverse, so the round trip
+is exact to floating point), and `TrajectoryNode._intent_orientation` is its
+single call site. It BUILDS the correction for the pose it is inverting, exactly
+as an ingest does — the same `correction_for_pose` keyed on the same x/y, because
+position passes through uncorrected and is therefore its own lookup key.
+
+**Manifest kind `egress:`.** The AST manifest in
+`tests/ros/test_levelling_frame.py` gained a fourth kind alongside
+`store` / `build:` / `apply:`. An egress carries the same obligation an apply
+does — it must have a `build:` in the same scope — because an egress that
+inverted the stored C-LEVEL-1 offset while the ingest applied a C-LEVEL-2
+per-pose correction would leave a residual exactly equal to the map's own
+contribution, silently, on the one surface whose whole job is to answer
+"are these two poses the same".
+
+**What this does NOT license.** An egress is not a licence to publish corrected
+poses and let consumers un-correct them. There is one egress, it exists because
+one consumer needs to compare against its own *request*, and any second one has
+to make that same argument in this document first.
+
 ## The in-flight rule
 
 > **A live plan keeps the frame it was built in.** A `/gravity_offset` that
