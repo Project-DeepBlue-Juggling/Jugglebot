@@ -353,11 +353,24 @@ def test_the_fixture_departure_band_justifies_the_pinned_window():
     assert tr.DEPARTURE_WINDOW_S >= 4.0 * worst_s
 
 
-def test_the_fixture_records_the_measured_poll_cadence_gap():
-    """The plan assumed a 50 Hz (20 ms) sensor poll. The bag says otherwise, and
-    the record carries ``sensor_poll_dt_ms_median`` precisely so this is a
-    measurement rather than an inherited assumption."""
-    assert fx.POLL_DT_MS_MEDIAN > 2.0 * float(hw.JB_BD_CHECK_INTERVAL_MS)
+def test_the_fixture_pins_the_reference_bags_mined_poll_cadence():
+    """A MINER-REGRESSION pin: 70.998 ms is what ``poll_dt_ms_median`` reads off
+    ``2026-08-10_16-30-44``, and a change to what counts as a poll step has to
+    move this number or it did not change anything.
+
+    It pins the INSTRUMENT against one bag, not the plant. This capture predates
+    the FW 14 can-bridge fix (2026-08-15) and was taken on a degraded plant; its
+    cadence is a historical measurement, and bags taken since read a median of
+    20 ms — the configured ``JB_BD_CHECK_INTERVAL_MS``. So do not read this
+    number as a standing property, and do not re-phrase this test as a gap
+    against the configured interval: that framing is what let a one-sitting
+    measurement be carried for two weeks as a property of the robot
+    (``logbook/2026-08-24-hand-sensor-poll-cadence.md``).
+
+    An elevated cadence in some future bag means *investigate*. It does not
+    identify a mechanism, and nothing here should be read as naming one.
+    """
+    assert fx.POLL_DT_MS_MEDIAN == pytest.approx(70.998, abs=0.001)
 
 
 def test_the_fixture_is_a_fully_degraded_capture():

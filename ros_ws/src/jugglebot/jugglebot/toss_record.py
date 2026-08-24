@@ -73,9 +73,18 @@ by contrast, is debounce-free, so ``t_catch_raw_ros`` and ``t_catch_deb_ros``
 agree on that bag by construction.
 
 The same capture also measures the poll cadence the plan assumed: consecutive
-``ball_held_stamp`` advances run **p5 32 / median 71 / p95 111 ms**, against a
-configured ``JB_BD_CHECK_INTERVAL_MS`` of 20. That is why
-``sensor_poll_dt_ms_median`` is a MEASURED field and never an assumed one.
+``ball_held_stamp`` advances ran **p5 32 / median 71 / p95 111 ms** on that bag,
+against a configured ``JB_BD_CHECK_INTERVAL_MS`` of 20.
+
+That gap is a HISTORICAL measurement of one sitting, not a standing property of
+this plant. A 52-bag census (``logbook/2026-08-24-hand-sensor-poll-cadence.md``)
+found the measured cadence varies session to session, and all thirteen decodable
+bags captured from 2026-08-15 on measure **p50 20 / p95 30 ms** at the same
+configured 20 ms. Read the field per record; never carry a remembered number.
+And if a future bag measures an elevated cadence, that means *investigate* — the
+mechanism is undetermined until it is measured, and no particular one should be
+presumed. That is why ``sensor_poll_dt_ms_median`` is a MEASURED field and never
+an assumed one.
 """
 
 from __future__ import annotations
@@ -856,28 +865,116 @@ def edges(samples: Sequence[SensorSample], *, debounced: bool = True
     return tuple(rises), tuple(falls)
 
 
+#: Tolerance on "this ``ball_held_stamp`` is wall-epoch rather than
+#: bridge-boot-relative". Blunt on purpose, and it is the SAME discriminator
+#: ``tools/probes/toss_record_miner._stamp_wall_anchored`` uses to set the
+#: record's ``ball_held_stamp_wall_anchored`` flag: a wall stamp sits within a
+#: minute of the sample's own ROS stamp, a boot-relative one is a small number of
+#: seconds since 1970. One constant, so the flag on the record and the guard
+#: inside :func:`poll_dt_steps_ms` cannot drift onto two different notions of
+#: which epoch a stamp is in.
+STAMP_WALL_TOL_S = 60.0
+
+
+def _stamp_is_wall(sample: SensorSample) -> bool:
+    """Is THIS sample's ``ball_held_stamp`` in the wall epoch? See
+    :data:`STAMP_WALL_TOL_S`."""
+    return abs(float(sample.stamp) - float(sample.t)) < STAMP_WALL_TOL_S
+
+
+class PollSteps(NamedTuple):
+    """Cleaned ``ball_held_stamp`` advances in ms, plus what was refused.
+
+    The refusals are COUNTED rather than swallowed: a stream that steps
+    backwards, or that changes stamp epoch mid-capture, is a finding about the
+    bridge clock and not a cadence.
+    """
+    steps_ms: Tuple[float, ...]
+    n_backwards: int
+    n_domain_breaks: int
+
+
+def poll_dt_steps_ms(samples: Sequence[SensorSample]) -> PollSteps:
+    """Every MEASURED sensor poll interval in ``samples``, in ms.
+
+    A step is the advance of ``ball_held_stamp`` between two **consecutive
+    valid** samples. Three things are deliberately NOT steps, because each one
+    turns a clock artefact into a fake cadence:
+
+    **Repeats are not steps.** ``/hand_telemetry`` republishes the cached bit at
+    100 Hz, so most consecutive samples carry the SAME stamp. Counting messages
+    would report the publish rate and be wrong by the whole factor this
+    measurement exists to expose.
+
+    **A backwards step is counted and RESETS the tracker.** The stamp is
+    bridge-sourced; a re-anchor makes it go down. A negative folded into the
+    statistics drags the median toward zero, and any consumer that DIVIDES by it
+    (a "how many polls fit in this window" line) gets an absurd or negative
+    count. The sibling census in ``tools/probes/hand_sensor_settle.poll_cadence``
+    has always dropped-and-counted these; this is that rule, at the shared
+    definition. Dropping the negative is only half of it, though: carrying
+    ``prev`` forward onto the LOW stamp makes the very next sample a step of the
+    whole re-anchor distance in the POSITIVE direction — a 0.5 s re-anchor mints
+    a 500 ms "poll". The clock moved under the measurement, so the next
+    difference has no valid reference either; ``prev`` resets exactly as it does
+    on an invalid sample, and the one interval that spans the re-anchor is lost
+    rather than invented.
+
+    **A step across an invalid span, or across a change of stamp epoch, is not
+    a step at all.** ``prev`` resets on any invalid sample: the bridge may have
+    polled several times while ``ball_held_valid`` was false, so the stamp
+    difference either side of the gap spans an unknown number of polls and is
+    not one interval. And ``ball_held_stamp`` is wall-epoch only *after* the
+    bridge's wall anchor lands (module docstring, CLOCK DOMAINS) — before it,
+    the stamp is boot-relative. A capture that spans the anchor therefore
+    contains one step of the whole wall epoch: **+1.79e12 ms**, measured on
+    ``2026-08-12_14-55-18`` (17.251 s -> 1786510522.066 s). A cadence is a
+    difference, so a wholly boot-relative stream still measures correctly — it
+    is only the CHANGE of epoch that has to be refused.
+
+    Pure, and the one definition of a poll interval in this repo. Consumers that
+    want a p95 or a max take them from ``steps_ms`` rather than re-deriving the
+    steps, so a guard added here reaches all of them.
+    """
+    steps: List[float] = []
+    n_backwards = 0
+    n_domain_breaks = 0
+    prev: Optional[Tuple[float, bool]] = None   # (stamp, is-wall-epoch)
+    for s in samples:
+        if not s.valid:
+            prev = None
+            continue
+        stamp = float(s.stamp)
+        wall = _stamp_is_wall(s)
+        if prev is not None:
+            prev_stamp, prev_wall = prev
+            if wall != prev_wall:
+                n_domain_breaks += 1        # the anchor landed mid-capture
+            elif stamp < prev_stamp:
+                n_backwards += 1
+                prev = None                 # the clock re-anchored under us
+                continue
+            elif stamp > prev_stamp:
+                steps.append((stamp - prev_stamp) * 1e3)
+        prev = (stamp, wall)
+    return PollSteps(tuple(steps), n_backwards, n_domain_breaks)
+
+
 def poll_dt_ms_median(samples: Sequence[SensorSample]) -> Optional[float]:
     """MEASURED sensor poll cadence: the median advance of ``ball_held_stamp``
     over valid samples, in ms. ``None`` when no stamp ever advances.
 
     Not the ``/hand_telemetry`` publish rate — that is 100 Hz and says nothing
     about how often the bridge actually got an SDO reply. On
-    2026-08-10_16-30-44 the two differ by 7x (10 ms publish, 71 ms median poll,
-    against a configured ``JB_BD_CHECK_INTERVAL_MS`` of 20).
+    2026-08-10_16-30-44 the two differed by 7x (10 ms publish, 71 ms median
+    poll, against a configured ``JB_BD_CHECK_INTERVAL_MS`` of 20) — a
+    measurement of THAT sitting, not a property of the plant; see the module
+    docstring. :func:`poll_dt_steps_ms` defines what counts as a step.
     """
-    steps: List[float] = []
-    prev: Optional[float] = None
-    for s in samples:
-        if not s.valid:
-            continue
-        stamp = float(s.stamp)
-        if prev is not None and stamp != prev:
-            steps.append(stamp - prev)
-        prev = stamp
+    steps = sorted(poll_dt_steps_ms(samples).steps_ms)
     if not steps:
         return None
-    steps.sort()
-    return steps[len(steps) // 2] * 1e3
+    return steps[len(steps) // 2]
 
 
 def _first_in(instants: Sequence[float], lo: float, hi: float) -> Optional[float]:

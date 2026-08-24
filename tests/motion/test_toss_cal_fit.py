@@ -645,12 +645,19 @@ def test_an_off_node_check_pose_is_never_snapped_into_a_node():
 # ── the RE-DERIVED timing gate (design § 10 hands this to 2c) ────────────────
 
 
-def test_the_timing_gate_admits_the_cadence_this_plant_actually_runs_at():
+def test_the_timing_gate_admits_the_cadence_the_reference_bag_measured():
     """§ 3.7 item 5 gated on ``sensor_poll_dt_ms_median`` within 10 % of the
     configured ``JB_BD_CHECK_INTERVAL_MS`` (20 ms). MEASURED per-record on
     ``2026-08-10_16-30-44``: 60 / 63 / 70 / 80 / 87 ms
-    (min / p5 / median / p95 / max). The shipped gate refuses 100 % of records —
-    it is not a gate, it is an outage."""
+    (min / p5 / median / p95 / max). Against THAT capture the shipped gate
+    refuses 100 % of records — it is not a gate, it is an outage.
+
+    The re-derivation stands, but its motivating measurement does not generalise:
+    that bag predates the FW 14 can-bridge fix (2026-08-15) and bags taken since
+    measure a 20 ms median, so the gate is band-shaped rather than a match
+    against a constant because the cadence VARIES between sittings — not because
+    the plant permanently runs slow (``logbook/2026-08-24-hand-sensor-poll-cadence.md``).
+    """
     assert bagfix.POLL_DT_MS_MEDIAN == pytest.approx(71.0, abs=1.0)
     assert float(hw.JB_BD_CHECK_INTERVAL_MS) * 1.1 < bagfix.POLL_DT_MS_MEDIAN, (
         'the SHIPPED gate would refuse the reference bag entirely')
