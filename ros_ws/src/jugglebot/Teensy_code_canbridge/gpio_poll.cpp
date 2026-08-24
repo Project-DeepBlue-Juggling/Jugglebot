@@ -35,7 +35,7 @@ static_assert(JBBallDetect::MAX_MISSING_SAMPLES > 0u && JBBallDetect::MAX_MISSIN
 static constexpr uint64_t POLL_INTERVAL_US = (uint64_t)JBBallDetect::CHECK_INTERVAL_MS * 1000ull;
 static constexpr uint64_t REPLY_TIMEOUT_US = (uint64_t)JBBallDetect::CHECK_TIMEOUT_MS  * 1000ull;
 
-// ── Pacing grid (2026-08-24, FW 15) ─────────────────────────────────────────
+// ── Pacing grid (2026-08-24, FW 16) ─────────────────────────────────────────
 //  The step runs on task_homing at HOMING_RATE_HZ, and the poll interval is an
 //  exact multiple of that task period. That coincidence is what made the OLD
 //  pacing lose ~1 cycle in 3.

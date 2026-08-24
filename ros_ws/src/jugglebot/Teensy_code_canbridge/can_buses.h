@@ -54,7 +54,7 @@ namespace CanBridge {
 void can_buses_init();      // begin all three buses, register RX callbacks
 void can_buses_service();   // pump bb/cone/jugglebot events(); call from CAN RX task
 
-// ── TX OUTCOME: TRI-STATE, NOT A BOOL (2026-08-24, can-bridge FW 15) ─────────
+// ── TX OUTCOME: TRI-STATE, NOT A BOOL (2026-08-24, can-bridge FW 16) ─────────
 //  THE DEFECT THIS CLOSES. Every send used to end in `bus.write(m) > 0`, and
 //  every caller read the resulting false as "the frame did not go out". That is
 //  wrong for one of the two false cases. FlexCAN_T4::write(const CAN_message_t&)

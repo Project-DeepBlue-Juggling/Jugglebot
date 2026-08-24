@@ -358,7 +358,7 @@ static void task_diag(void*) {
                     (unsigned long)ch.decode_short, (unsigned long)ch.decode_bad_axis,
                     (unsigned long)can_cone_fwd_drops(),
                     (unsigned long)can_cmd_result_fwd_drops());
-      // Per-CALLER deferral census (2026-08-24, FW 15). [canhealth]'s defer= is the
+      // Per-CALLER deferral census (2026-08-24, FW 16). [canhealth]'s defer= is the
       // per-BUS total and cannot say whose pressure it is; these six can. safety= is
       // the dedicated safety-frame counter — a deferred E-stop / CLEAR_ERRORS / relay
       // op still transmits in order, so it is a WATCH SIGNAL rather than a fault, and

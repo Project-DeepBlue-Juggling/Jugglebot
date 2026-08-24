@@ -540,7 +540,7 @@ TEST_CASE("a reply cached with no request outstanding is dropped, never publishe
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  13-17. CADENCE (2026-08-24, FW 15) — the poller reaches its configured rate
+//  13-17. CADENCE (2026-08-24, FW 16) — the poller reaches its configured rate
 // ═══════════════════════════════════════════════════════════════════════════
 //  Two independent defects held the achieved rate at ~42 Hz against a configured
 //  50, and BOTH have to be fixed for the cadence to close — which is why these

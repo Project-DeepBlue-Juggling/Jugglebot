@@ -20,6 +20,7 @@ files_changed:
   - ros_ws/src/jugglebot/Teensy_code_canbridge/time_sync_master.cpp
   - ros_ws/src/jugglebot/Teensy_code_canbridge/Teensy_code_canbridge.ino
   - ros_ws/src/jugglebot/Teensy_code_canbridge/canbridge_config.h
+  - teensy_link/rpc_args.py
   - tests/firmware/native/build.py
   - tests/firmware/native/README.md
   - tests/firmware/native/fake_hal.h
@@ -46,9 +47,11 @@ tags:
 
 ## Summary
 
-Two can-bridge firmware changes, folded into the already-written-but-unflashed
-**FW 15** rather than bumped to 16 (owner's decision, 2026-08-24, so one upload
-carries both this and the hand end-stop correction). **(1)** The hand
+Two can-bridge firmware changes, shipped as can-bridge **FW 16**. They were
+briefly folded into FW 15 instead (commit `2995855`) on the premise that 15 —
+the hand end-stop image — was still unflashed; it was not, so the fold was
+superseded the same day. See § "Why FW 16, and why the fold was withdrawn".
+**(1)** The hand
 ball-sensor poller now achieves its configured 50 Hz; it was delivering ~42 Hz,
 with ~38 % of cycles taking 30 ms instead of 20. **(2)** Every CAN send now
 returns a tri-state `TxResult{FAILED, MAILBOX, DEFERRED}` instead of
@@ -57,7 +60,7 @@ TX buffer, will transmit in order* — which every caller in this firmware has b
 reading as **failed**. Each caller now has an explicit, owner-delegated ruling on
 `DEFERRED`, and deferrals are counted per caller class.
 
-`status: in-progress` deliberately: FW 15 is **not flashed**, so every claim
+`status: in-progress` deliberately: FW 16 is **not flashed**, so every claim
 here is a host-side one. The bench validation checklist at the bottom is what
 closes this entry.
 
@@ -223,27 +226,54 @@ slave-side rejection band) is a change across three firmwares and is not mine to
 take. The census answers the prior question first: *does a 0x7DD beacon ever
 defer at all?* Every bus currently reports `tx_deferred == 0`.
 
-### Why the FW-15 fold, and why nothing warns against the FW 14 board
+### Why FW 16, and why the fold was withdrawn
 
-Owner's decision (2026-08-24): fold into FW 15 rather than bump to 16, because
-the hand end-stop change in FW 15 is **also unflashed** and one upload should
-carry both.
+**The fold, as first decided.** Owner's decision (2026-08-24, morning): fold into
+FW 15 rather than bump to 16, because the hand end-stop change in FW 15 was
+believed to be **also unflashed** and one upload should carry both. That is what
+commit `2995855` implemented — `FW_VERSION` left at 15, `EXPECTED_BRIDGE_FW_VERSION`
+left at 15, the changelog note extended in place.
 
-The install-skew precedent was checked against the end-stop commit itself
-(`3760daa`, 2026-08-18): it bumped `canbridge_config.h`'s `FW_VERSION` 14 → 15
-**and** `teensy_link/rpc_args.py`'s `EXPECTED_BRIDGE_FW_VERSION` 14 → 15 **in the
-same commit**, deliberately reporting a skew against the FW 14 board that is
-actually aboard — *"BRIDGE_FW_CHECK will correctly report FAIL until both boards
-are flashed; that alarm is the point."* That is the standing convention
-(`rpc_args.py`: *"EXPECTED IS BUMPED WHILE THE BOARD IS STILL ON 10, ON
-PURPOSE"*), and the check is **advisory everywhere, never enforced**
-(`tests/firmware/test_bridge_fw_version_xref.py`, § "what is deliberately not
-asserted").
+**The premise was false, and it was the whole basis of the decision.** The board
+has self-reported `bridge_fw_version` **15** on the `BRIDGE_IDENTITY` frame since
+~2026-08-20 — the end-stop image went aboard days before this work started. The
+2026-08-23 ladder bag is independent evidence of it (`ros_ws/docs/ball_possession_contract.md`
+§ 3.5 records that session as *"can-bridge FW 15"*, read off the live link).
 
-Following that precedent for a fold means **changing neither constant**: both are
-already 15, this work joins that release, and no *new* warning appears. The one
-thing that would have broken the live link is a `PROTOCOL_VERSION` bump — so the
-per-class counters are deliberately **console-only** (see below).
+**Two things follow, and the second is the one that matters.** First, `2995855`'s
+commit message asserts *"the live bridge stays on FW 14"* — **that claim is
+wrong**, and the commit is pushed, so it cannot be amended; this paragraph is the
+correction of record. Second, and structurally: a fold would have put two
+behaviourally different images behind one version number. `bridge_fw_version` has
+exactly one job — telling the operator *which build answered* — and after the fold
+a board reporting 15 could have been the end-stop clamp alone or the clamp plus a
+50 Hz poller and tri-state TX, with no field anywhere able to separate them. That
+is the same silent-skew defect the 0x8E `BridgeIdentity` frame was added to close,
+re-opened by the version number itself. **Owner's re-decision, 2026-08-24: bump the
+poller/tri-state image to FW 16.** This entry supersedes the fold paragraph that
+stood here before.
+
+**What the bump costs, and why that cost is the point.** The install-skew
+precedent is the end-stop commit itself (`3760daa`, 2026-08-18): it bumped
+`canbridge_config.h`'s `FW_VERSION` 14 → 15 **and** `teensy_link/rpc_args.py`'s
+`EXPECTED_BRIDGE_FW_VERSION` 14 → 15 **in the same commit**, deliberately
+reporting a skew against the FW 14 board that was then aboard — *"BRIDGE_FW_CHECK
+will correctly report FAIL until both boards are flashed; that alarm is the
+point."* That is the standing convention (`rpc_args.py`: *"EXPECTED IS BUMPED
+WHILE THE BOARD IS STILL ON 10, ON PURPOSE"*). So both constants move to 16 here,
+and until the operator flashes, `/link_status` reads `15 (SKEW — expected v16)` on
+every launch. That row is **correct** — the tree has FW 16, the bench has FW 15 —
+and it is the standing reminder that the image on the bench is not the image in
+the tree. The check is **advisory everywhere, never enforced**: a `BRIDGE_FW_CHECK`
+log line and a `link_status` row, no gate and no refusal, pinned by
+`tests/firmware/test_bridge_fw_version_xref.py` § "what is deliberately not
+asserted".
+
+The one thing that *would* have broken the live link is a `PROTOCOL_VERSION` bump
+— so the per-class counters are deliberately **console-only** (see below), and
+FW 14, FW 15 and FW 16 remain wire-identical in all directions. Which is exactly
+why the flash must be confirmed on `BRIDGE_IDENTITY` and never inferred from a
+healthy link.
 
 ### Why the deferral census does not go on the wire
 
@@ -255,7 +285,7 @@ The natural home looks like `BridgeTxDiag` (0x8D), which already carries
 * The precedent for appending to an *existing* payload is FW 7→8's Profile cone
   slot, which **bumped `PROTOCOL_VERSION` 4→5** and required a matching Jetson
   checkout. `PROTOCOL_VERSION` must match at both ends or the link is dark — so
-  that would take the link down against the FW 14 board currently aboard, which
+  that would take the link down against the FW 15 board currently aboard, which
   is exactly what must not happen before the flash.
 * The precedent for *additive* telemetry is a **new MsgType** (LegCmd /
   HandSensor / BridgeTxDiag / ClockDiag / CacheDiag / RingDiag), which needs no
@@ -345,7 +375,11 @@ bags — bag mining, out of scope here, and named in Open Questions.
   `platform_relay.cpp:28`; `time_sync_master.cpp:75-77`; and the ~20 cold-start
   ladder sites unchanged on the bool wrapper.
 * `Teensy_code_canbridge.ino` — the 1 Hz `[cantx] defer_by_class …` line.
-* `canbridge_config.h` — the FW 15 changelog note extended with this half.
+* `canbridge_config.h` — `FW_VERSION` 15 → 16, and the changelog restructured
+  so 15 reads as the hand end-stop clamp alone (flashed) and 16 as this
+  change-set (unflashed).
+* `teensy_link/rpc_args.py` — `EXPECTED_BRIDGE_FW_VERSION` 15 → 16, with the
+  15 and 16 history entries the bump-at-commit convention calls for.
 
 ## Verification
 
@@ -462,18 +496,19 @@ reported, not fixed.
 
 ## Flash + bench validation checklist
 
-FW 15 is written, compiled and host-tested, and is **NOT FLASHED** (this session
-was also asked not to commit, so the change-set is in the working tree). Nothing
+FW 16 is written, compiled and host-tested, and is **NOT FLASHED**. Nothing
 below can be confirmed from the source tree; every row needs the board.
 
-1. **Flash FW 15** (the combined image: hand end-stop **and** this change-set).
-   Confirm on the `BRIDGE_IDENTITY` frame — `/link_status` `bridge_fw_version`
-   must read **15**, not 14, and the `(SKEW — expected v15)` row must clear.
-   *Never infer the flash from a healthy link*: FW 14 and FW 15 are
-   wire-identical, so the link looks fine either way.
-2. **`EXPECTED_BRIDGE_FW_VERSION` needs no change at flash time.** It was already
-   moved to 15 by `3760daa`; the fold does not bump it. If a future half is
-   folded in after the flash, it *does* need a bump — that is the precedent.
+1. **Flash FW 16** (this change-set; the hand end-stop clamp is already aboard as
+   FW 15). Confirm on the `BRIDGE_IDENTITY` frame — `/link_status`
+   `bridge_fw_version` must read **16**, not 15, and the `(SKEW — expected v16)`
+   row must clear. *Never infer the flash from a healthy link*: FW 15 and FW 16
+   are wire-identical, so the link looks fine either way. This row is the reason
+   the fold was withdrawn — under the fold there was no reading of that field
+   that could have told you whether this image was aboard.
+2. **`EXPECTED_BRIDGE_FW_VERSION` needs no change at flash time.** It moves to 16
+   in the same commit as the firmware constant (the `3760daa` precedent), so the
+   skew alarm stands from now until the flash and clears on it.
 3. **Poller cadence.** Log `ball_held_stamp` (`t_bridge_us`) and take the
    **distinct-sample** intervals: p50 must be **20 ms**, and the **30 ms mode
    must be gone** (pre-change it was ~38 % of cycles, p95 30 ms). Effective rate
@@ -510,9 +545,10 @@ below can be confirmed from the source tree; every row needs the board.
    not TX pressure.
 9. **Hand end-stop behaviour** per its own entry
    (`logbook/2026-08-18-hand-end-stop-corrected.md`) — the setpoint clamp must
-   bind at 10.8 rev, not 11.1. That is the other half of this image.
+   bind at 10.8 rev, not 11.1. That is **FW 15, already aboard**, so this row is
+   a standing re-confirmation rather than something the FW 16 flash introduces.
 10. **Interp health unchanged**: `interp_max_jitter_us` / `interp_deadline_misses`
-    must read as they did on FW 14. The per-class increment is one indexed add
+    must read as they do on the FW 15 board now aboard. The per-class increment is one indexed add
     inside an existing masked region, and only on the deferral path — but it is
     the only thing this change-set adds anywhere near the 500 Hz ISR.
 

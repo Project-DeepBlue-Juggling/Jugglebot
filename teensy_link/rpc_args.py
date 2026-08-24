@@ -421,7 +421,34 @@ def decode_platform_fw_version(data: bytes) -> int:
 #: uptime. Same bumped-while-the-board-is-behind situation until the operator
 #: flashes: ``/link_status`` will read `13 (SKEW — expected v14)`, which is the
 #: CORRECT report, and it is advisory everywhere, never enforced.
-EXPECTED_BRIDGE_FW_VERSION = 15
+#: 15 (2026-08-18) = the hand END-STOP correction, and NOTHING ELSE:
+#: ``hand_motor_hard_stop_revs`` 11.1 → 10.8 rev (the operator-measured metal
+#: contact), which the bridge consumes as ``HAND_MOTOR_MAX_POSITION`` in
+#: ``clip_position``, so an FW 14 board passes commanded setpoints up to 0.3 rev
+#: (9.5 mm) PAST metal and an FW 15 board does not.  WIRE-INVISIBLE again —
+#: no MsgType, no payload, PROTOCOL_VERSION still 5.  **FLASHED ~2026-08-20**:
+#: the board has self-reported ``bridge_fw_version`` 15 on BRIDGE_IDENTITY ever
+#: since, which is what makes 16 below a bump rather than a fold.
+#: 16 (2026-08-24) = the hand ball-sensor POLLER CADENCE fix (consume-and-send in
+#: one tick + an absolute schedule with a half-tick early-fire band, so the
+#: poller finally reaches its configured 50 Hz instead of 20/30 ms bimodal) and
+#: TRI-STATE TX ACCOUNTING (``TxResult{FAILED, MAILBOX, DEFERRED}`` — FlexCAN_T4's
+#: ``write()`` returns −1 for QUEUED-and-will-transmit, which every caller had
+#: been reading as failure: the mechanism behind the 2026-08-09 lying-ack).
+#: WIRE-INVISIBLE once more, so an FW 15 board decodes identically; what it does
+#: NOT have is a poller at cadence or a truthful TX verdict.
+#: THIS ONE WAS BRIEFLY FOLDED INTO 15 (commit 2995855) ON A FALSE PREMISE —
+#: that 15 was still unflashed.  It was not; the end-stop image went aboard
+#: ~2026-08-20 and the board has been reporting 15 since, so a fold would have
+#: made ``bridge_fw_version`` unable to tell the two images apart, which is the
+#: single job this constant has.  Owner's re-decision 2026-08-24: bump to 16.
+#: Same bumped-while-the-board-is-behind situation as 11–14, and here it is the
+#: WHOLE POINT: until the operator flashes, ``/link_status`` reads
+#: `15 (SKEW — expected v16)`, which is the CORRECT report — the tree has FW 16,
+#: the bench has FW 15 — and it is advisory everywhere, never enforced (a
+#: BRIDGE_FW_CHECK log line and a ``link_status`` row; no gate, no refusal —
+#: pinned by ``tests/firmware/test_bridge_fw_version_xref.py``).
+EXPECTED_BRIDGE_FW_VERSION = 16
 
 
 # ── Ball Butler ─────────────────────────────────────────────────────────────

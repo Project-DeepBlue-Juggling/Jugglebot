@@ -53,7 +53,7 @@ void gpio_poll_init();
 // an ABSOLUTE JBBallDetect::CHECK_INTERVAL_MS grid. No-op when compiled out or
 // toggled off. Sole writer of the published record.
 //
-// CADENCE CONTRACT (2026-08-24, FW 15). A round trip is consumed and the next
+// CADENCE CONTRACT (2026-08-24, FW 16). A round trip is consumed and the next
 // request issued in the SAME tick, and the grid advances from the previous DUE
 // time (not from `now`) with a half-task-period early-fire band. Together those
 // make the achieved cadence CHECK_INTERVAL_MS for any RTT below it, instead of
