@@ -77,7 +77,7 @@ but test for the reply and return; only from IDLE, and only once the poll
 interval (20 ms) has elapsed, does it send the next request. (Cited by symbol
 rather than by line: at commit `24c7551` (2026-08-22) that is
 `gpio_poll.cpp:296-309`, but a parallel workstream is rewriting exactly this
-pacing as FW 15 — see Open Questions.) Because the reply is *observed* on a tick
+pacing as FW 16 — see Open Questions.) Because the reply is *observed* on a tick
 and the next attempt is taken on a later tick, the achieved cadence quantises to
 the 10 ms task grid:
 
@@ -417,19 +417,27 @@ plant it measures 20 ms.
 
 Deliberately deferred, each with what would settle it:
 
-- **The `TIMING_POLL_DT_MS_MIN` strict-`<` edge.** `toss_trim.py:519` sets the
+- ~~**The `TIMING_POLL_DT_MS_MIN` strict-`<` edge.** `toss_trim.py:519` sets the
   floor to `JB_BD_CHECK_INTERVAL_MS` = 20.0 exactly, and `:1065` refuses on
   `dt < TIMING_POLL_DT_MS_MIN`. A healthy plant now medians *at* the floor, and
   quantisation puts real medians at 19.99x — those would be refused
   `poll_cadence_below_configured_interval`. Not changed here: the right fix
   depends on the incidence, which needs a probe over the post-FW-14 corpus
   (every bag in the census above medians at 20.0, but the census reports the
-  whole bag, not the per-record decisive window the gate actually reads).
+  whole bag, not the per-record decisive window the gate actually reads).~~
+  **CLOSED 2026-08-24, and the concern was right**: the incidence probe this
+  item asked for was run over the per-record population the gate actually reads
+  — **9 of 39** post-FW-14 records (23 %) sat 19.1 ns under 20.0 and were being
+  refused. The floor is now `0.75 x` configured = **15.0 ms**, sized as the
+  midpoint between the measured spike (20.000 ± 0.003 ms) and the 10 ms
+  `/hand_telemetry` republish rate that is the one measurand of impossible
+  provenance this guard exists to catch.
+  `logbook/2026-08-24-cadence-crossrecording-closeout.md`.
 - **The 42-vs-50 Hz residual — being closed elsewhere, concurrently.** The
   transfer function predicts a floor of 20 ms (50 Hz) and the corpus agrees at
   p50, but p95 is 30 ms, so the *mean* cadence is ~24 ms, ~42 Hz. While this
   entry was being written a parallel workstream landed the mechanism in
-  `gpio_poll.cpp` (uncommitted at the time of writing, FW 15, dated 2026-08-24):
+  `gpio_poll.cpp` (uncommitted at the time of writing, FW 16, dated 2026-08-24):
   the old pacing restarted the interval from `now` at each send, so with the
   poll interval an exact multiple of the task period the next send needed this
   wake's jitter to beat the one two ticks earlier — a coin flip that costs a
@@ -448,7 +456,12 @@ Deliberately deferred, each with what would settle it:
   (`tests/hardware/session_cadence_ladder.md` § 3.2, headed "⬜ NOT DIAGNOSED")
   and `plans/active/toss-selftuning.md`'s open row. Both are under active
   modification by a parallel workstream, so they were not touched here; updating
-  them is a one-paragraph follow-up once that work lands. The other two need **no
+  them is a one-paragraph follow-up once that work lands. **DONE 2026-08-24**:
+  both now carry the mechanism and the closure, and the runbook's § 3 preamble
+  says R3 is unblocked — `logbook/2026-08-24-cadence-crossrecording-closeout.md`.
+  (The runbook heading that item quotes had already been flipped to
+  "✅ MEASURED AWAY 2026-08-23" by the parallel workstream before this pass
+  ran; what was missing was the mechanism, not the status.) The other two need **no
   edit**, and nothing here should be read as claiming otherwise:
   `plans/active/critical-point-ilc.md` retracted the framing itself on 2026-08-12
   off the Phase-0d eleven-bag census — `:161-163` *"the sensor poll cadence is
@@ -470,3 +483,10 @@ Deliberately deferred, each with what would settle it:
   path the record actually carries, and because its own consuming test
   (`tests/ros/test_ilc_measurement_probes.py`) pins numbers that a step-rule
   change would have to be re-derived against.
+  **CLOSED 2026-08-24**: `poll_cadence` now imports `poll_dt_steps_ms` and
+  defines only the reduction. The re-derivation the deferral worried about cost
+  nothing — `tests/ros/test_ilc_measurement_probes.py` passes unchanged (30/30)
+  and the probe's `--self-check` went 34/34 → **38/38**, the four new cases
+  pinning exactly the two holes: a transient low stamp that the private rule
+  reported as a **571 ms** poll, and a wall-anchor epoch change it reported as a
+  **1.786e12 ms** one. `logbook/2026-08-24-cadence-crossrecording-closeout.md`.

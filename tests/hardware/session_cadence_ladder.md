@@ -461,7 +461,7 @@ which are the binding ones):
 | | |
 |---|---|
 | **goal** | `throw_height_m: 0.78`, `dwell_time_s: 4.10`, **`throw_delay_s: 3.5`** |
-| **must have landed** | nothing. But **the delay is NOT optional**: leave it at the 5.0 default and the floor is 5.137 s, so a 4.10 s dwell is `REJECTED_DWELL`. The census's "no code needed" is about the CODE, not about the goal |
+| **must have landed** | nothing. But **the delay is NOT optional**: leave it at the 5.0 default and the floor is **5.1416 s** (5.1204 s with the aim disarmed), so a 4.10 s dwell is `REJECTED_DWELL`. The census's "no code needed" is about the CODE, not about the goal |
 | **measurable gate** | 5/5 CAUGHT; per-cycle `dwell_s ∈ [4.10, 4.4]`; **`dwell_tilt_n ≥ 1`** |
 | **watch for** | the first rung where the landing→next-cycle handoff is visibly the binding term. Note where the possession verdict lands relative to the scheduled landing — that number is what census A3 re-based the margin on |
 | **PASS** | 5/5, and the achieved dwell inside the band |
@@ -494,7 +494,7 @@ which are the binding ones):
 | | |
 |---|---|
 | **goal** | `throw_height_m: 0.45`, `dwell_time_s: 0.65`, `throw_delay_s: 0.45` |
-| **must have landed** | census **B1** (the no-op positioning move is skipped), **B3** (`_TICK_S` 0.05 → 0.02), **B6** (record + trim off the cycle thread), **A3** (the dwell margin re-based on the sensor arrival edge, 0.137 s), **E5** (`catch/pretilt_hold` raised on EVERY cycle). All landed 2026-08-22. **AND** the B1 orientation surface + the accept-floor redesign, landed 2026-08-23 |
+| **must have landed** | census **B1** (the no-op positioning move is skipped), **B3** (`_TICK_S` 0.05 → 0.02), **B6** (record + trim off the cycle thread), **A3** (the dwell margin re-based on the sensor arrival edge, 0.137 s — re-measured to **0.087 s** on 2026-08-24, § 3.1), **E5** (`catch/pretilt_hold` raised on EVERY cycle). All landed 2026-08-22. **AND** the B1 orientation surface + the accept-floor redesign, landed 2026-08-23 |
 | **measurable gate** | 5/5 CAUGHT; `dip_below_x3 ≤ 0.10 rev` on **every** cycle; `sensor_held_at_dispatch = true` on all 5; **log the per-cycle `dispatch → catch-stroke-end` gap** |
 | **watch for** | (a) a mis-ordered `prime_hold`/`armed` toggle shows up HERE as a `dip_below_x3` excursion — the two now toggle at ~0.8 Hz and that has never been run; (b) E1/E2 conflict — **any platform motion inside `arrival ± [0.30, 0.50] s` is a stop**; (c) B1 — see the box below, and read it before diagnosing anything |
 | **PASS** | 5/5 with every `dip_below_x3` inside band and a positive stroke gap on every cycle |
@@ -665,7 +665,7 @@ the only way to watch a sitting degrade before its terminal.
 | `throw_height_m` | `float64`, apex above the release plane | the config default FLIGHT `JB_OP_TOSS_FLIGHT_TIME_DEFAULT_S` = 0.8 s (about a 0.784 m apex) — the flight is the default, not a height | finite, non-negative; converted once by `flight_time_from_height`, then gated by the derived C-HAND-3 envelope | negative or non-finite ⇒ `REJECTED_BAD_GOAL(throw_height_m)`; outside the envelope ⇒ `REJECTED_THROW_ENVELOPE(<bound>: ...)`, which names the bound it broke |
 | `num_throws` | `int32` | `0` ⇒ `REJECTED_NUM_THROWS`. There is **no** default | 1 to `JB_OP_TOSS_SESSION_MAX_THROWS` = 20, inclusive | `REJECTED_NUM_THROWS` |
 | `dwell_time_s` | `float64`, previous SCHEDULED landing to next release | `JB_OP_TOSS_SESSION_DWELL_DEFAULT_S` = 6.0 s | finite, non-negative, and at least `required_dwell_s` = `max(throw_delay + handoff_margin, hand_floor)` — see § 0 | negative or non-finite ⇒ `REJECTED_BAD_GOAL(dwell_time_s)`; under the floor ⇒ `REJECTED_DWELL` |
-| `throw_delay_s` | `float64`, goal-accept to the FIRST release | `DEFAULT_TOSS_THROW_DELAY_S` = 5.0 s, which puts the dwell floor at 5.137 s — **even R1 is illegal at the default** | finite, non-negative, and at least `min_throw_delay_s` = the kind-0 dispatch budget **plus the pre-dispatch sequence** (0.361 s at the 0.80 s flight; 0.428 s at the R5 flight with an ILC artifact loaded) | negative or non-finite ⇒ `REJECTED_BAD_GOAL(throw_delay_s)`; under the floor ⇒ `REJECTED_THROW_DELAY` |
+| `throw_delay_s` | `float64`, goal-accept to the FIRST release | `DEFAULT_TOSS_THROW_DELAY_S` = 5.0 s, which puts the dwell floor at **5.1416 s** — **even R1 is illegal at the default**. (Re-derived 2026-08-24: the floor's second term is `handoff_margin_s = max(dwell_margin_s, catch_park_reentry_s)`, and the **park** term binds at R0–R3, not the arrival margin — 0.1416 s on the binding aim-armed column, 0.1204 s with the aim disarmed. The 2026-08-24 band re-measure moved `dwell_margin_s` 0.137 → 0.087 and therefore did **not** move this floor at all; see § 3.1.) | finite, non-negative, and at least `min_throw_delay_s` = the kind-0 dispatch budget **plus the pre-dispatch sequence** (0.361 s at the 0.80 s flight; 0.428 s at the R5 flight with an ILC artifact loaded) | negative or non-finite ⇒ `REJECTED_BAD_GOAL(throw_delay_s)`; under the floor ⇒ `REJECTED_THROW_DELAY` |
 | `catch_vel_scale` | `float64`, multiplier on the armed catch speed | `JB_OP_CATCH_VEL_SCALE_DEFAULT` = 0.9 | finite, non-negative; catch_coordinator clamps to `[0.3, 1.5]` | negative or non-finite ⇒ `REJECTED_BAD_GOAL(catch_vel_scale)`. Outside the clamp is logged and clamped, never refused |
 | `stop_on_miss` | `bool` | **`true`** — the IDL default, and load-bearing: an omitted field must mean STOP | n/a | n/a. It governs the `MISSED` class only; every `REJECTED_*`/`ABORTED_*` stops the session regardless of it |
 | `on_empty_cup` | `string` | `"STOP"` — and anything that is not exactly `"RELOAD"` resolves to STOP (empty, misspelt, an older client's unset field) | `STOP` or `RELOAD` | never refused; an unreadable value fails closed to STOP |
@@ -691,7 +691,7 @@ cadence, never the catch site.
 | rung | what the operator varies | the line |
 |---|---|---|
 | **R0** | the cadence pair only | `throw_height_m: 0.78, num_throws: 5, dwell_time_s: 5.60, throw_delay_s: 5.00` |
-| **R1** | dwell **and** delay — the delay is not optional (at the 5.0 default the floor is 5.137 s, so 4.10 is `REJECTED_DWELL`) | `throw_height_m: 0.78, num_throws: 5, dwell_time_s: 4.10, throw_delay_s: 3.50` |
+| **R1** | dwell **and** delay — the delay is not optional (at the 5.0 default the floor is 5.1416 s, so 4.10 is `REJECTED_DWELL`) | `throw_height_m: 0.78, num_throws: 5, dwell_time_s: 4.10, throw_delay_s: 3.50` |
 | **R2** | dwell + delay | `throw_height_m: 0.78, num_throws: 5, dwell_time_s: 3.00, throw_delay_s: 2.40` |
 | **R3** | dwell + delay | `throw_height_m: 0.78, num_throws: 5, dwell_time_s: 1.50, throw_delay_s: 0.90` |
 | **R4** | **the FLIGHT comes down** as well as the pair | `throw_height_m: 0.45, num_throws: 5, dwell_time_s: 0.65, throw_delay_s: 0.45` |
@@ -713,81 +713,101 @@ being scored.
 
 ## 3. The two measurements that must happen BEFORE R3
 
-Neither is an argument. Both are measurements, and R3 does not run until they
-exist. **One of the two is now DONE**: § 3.2's poll-cadence gap was measured away
-on the 2026-08-23 FW-15 capture. **§ 3.1 — the arrival-band re-measure — is still
-outstanding, and it is the one that gates R3.**
+Neither is an argument. Both are measurements, and **both are now DONE** — so
+**R3 is UNBLOCKED**: nothing in this section gates it any more. § 3.2's
+poll-cadence gap was measured away on the 2026-08-23 FW-15 capture and then
+*diagnosed* on 2026-08-24 (`logbook/2026-08-24-hand-sensor-poll-cadence.md`);
+§ 3.1's arrival band was re-measured and applied on 2026-08-24
+(`logbook/2026-08-24-arrival-band-remeasure.md`). Read both rows before flying
+R3 anyway — each one moved a number this runbook publishes elsewhere.
 
-### 3.1 Re-measure the sensor arrival band, post-FW 14 ⬜ NOT DONE
+### 3.1 Re-measure the sensor arrival band, post-FW 14 ✅ MEASURED AND APPLIED 2026-08-24
 
-**What**: the empty→held edge's offset from the announced landing, over ≥ 30
-catches. Today's constants are `ARRIVAL_BAND_MIN_S = 0.137` and
-`ARRIVAL_BAND_MAX_S = 0.80` (measured +137…+798 ms, median +399, n = 35 over
-three 2026-08-10 bags).
+**What it asked**: the empty→held edge's offset from the announced landing, over
+≥ 30 catches on the post-FW-14 plant. The constants were
+`ARRIVAL_BAND_MIN_S = 0.137` and `ARRIVAL_BAND_MAX_S = 0.80` (measured
++137…+798 ms, median +399, n = 35 over three 2026-08-10 bags), captured while the
+can-bridge uptime-dependent dispatch shift was +54…+133 ms — a shift FW 14 cut to
+10–20 ms on 2026-08-15.
 
-**Why it must be re-taken**: that band was captured when the can-bridge
-uptime-dependent dispatch shift was **+54…+133 ms**. FW 14 cut it to **10–20 ms**
-(`logbook/2026-08-15-fw14-validated-arc-closed.md`). The band is expected to
-COLLAPSE, and four separate constants shrink with it because they are all derived
-from those two names: `DEFAULT_SESSION_DWELL_MARGIN_S`, `CATCH_CONFIRM_WINDOW_S`,
-`DEFAULT_SESSION_MISS_CLEANUP_S`, and the interlude's seat-edge band wait.
+**The band collapsed.** Mined offline from the existing corpus — **no sitting was
+needed and none was taken** — over the four post-FW-14 bags that carry announced
+self-tosses (`2026-08-18_18-42-19`, `2026-08-20_21-51-39`, `2026-08-21_10-11-42`,
+`2026-08-23_19-14-54`; bridge FW 14 and 15, 47–117 h of uptime, eight distinct
+flight times from 0.549 s to 1.069 s):
 
-> **One of those four has a FLOOR under it now, and it will not follow the band
-> all the way down.** `toss_session.handoff_margin_s` is
-> `max(dwell_margin_s, hand_stroke.catch_park_reentry_s(v, scale))` — the verdict
-> can only arrive once the hand is ALSO back inside the park band, and that
-> second term is hand geometry, not sensor latency. It is **0.190 s** at the
-> R5-prime flight against today's 0.137 s arrival term, so the park term is
-> already the binding one at every rung from R4 down, and a collapsing arrival
-> band does not move the dwell floor there at all. Where the re-measure DOES pay
-> is R0–R3 (park re-entry 0.120 s at the 0.7977 s flight, still under 0.137) and
-> in the other three constants. Size the expected saving accordingly before
-> booking the sitting.
+| | shipped (2026-08-10) | measured (2026-08-24) |
+|---|---|---|
+| n | 35 announcements | **33 announced catches** |
+| earliest | +137 ms | **+87.6 ms** |
+| median | +399 ms | **+183.9 ms** |
+| p95 | — | +319.5 ms |
+| latest | +798 ms | **+554.7 ms** |
 
-**How**: mine any fresh bag — no new sitting is needed if one already exists at
-FW 14 with ≥ 30 announced catches. The band is
-`t_catch_raw_ros − announce_landing_time_ros` per row: the RAW empty→held edge
-(zero debounce, which is why the RAW field and not `t_catch_deb_ros`) against the
-announced landing, both on the ROS clock. Both fields are already in the corpus —
-there is no new instrumentation to add and no bespoke miner flag.
+Per-bag medians are 177 / 173 / 284 / 189 ms — the 284 is the n = 3 bag and is
+small-sample noise; there is no plant-pooling problem. Full tables, the per-flight
+breakdown and the plausibility check are in
+`logbook/2026-08-24-arrival-band-remeasure.md`.
 
-```bash
-source ~/Desktop/PDJ_venv/venv/bin/activate
-python tools/probes/toss_record_miner.py --bag <fresh-bag> --sensor-only --jsonl \
-    > /tmp/band.jsonl
-python - <<'EOF'
-import json, statistics
-d = [json.loads(l) for l in open('/tmp/band.jsonl')]
-b = [r['t_catch_raw_ros'] - r['announce_landing_time_ros'] for r in d
-     if r.get('t_catch_raw_ros') and r.get('announce_landing_time_ros')]
-print('n=%d  min=%.3f  median=%.3f  max=%.3f' %
-      (len(b), min(b), statistics.median(b), max(b)))
-EOF
-```
+**The constants that moved**: `ARRIVAL_BAND_MIN_S 0.137 → 0.087` (the datum,
+floored to the millisecond) and `ARRIVAL_BAND_MAX_S 0.80 → 0.56` (the datum ceiled
+to the next 10 ms, the same sizing +798 ms got). Plus one the runbook did not
+name — see the ⚠ below.
 
-`--sensor-only` skips the mocap/tracker pass, which this measurement does not
-need and which costs minutes.
+**What moved with them**
 
-**Outcome**: if the band collapses, update `ARRIVAL_BAND_MIN_S` /
-`ARRIVAL_BAND_MAX_S` **and nothing else** — every consumer follows. R4 gets
-materially cheaper. If it does NOT collapse, say so: the margin is `PROVISIONAL`
-precisely because this is unresolved, and confirming the old band is a result.
+* `CATCH_CONFIRM_WINDOW_S` **0.80 → 0.56 s**, in `toss_sequencer` *and*
+  `reload_sequencer`. Derived; no edit of their own.
+* `DEFAULT_SESSION_MISS_CLEANUP_S` **2.84 → 2.60 s** — 240 ms off every missed
+  cycle a session continues past.
+* C-POSSESS-1 § 3.4 clause **C.2's amputation threshold, 0.800 → 0.560 s of cycle
+  period**, and the boundary tracks the next landing again above
+  `BAND_MAX + lead` = 0.760 s rather than 1.000 s. **The deferred R6 fork (period
+  0.7529 s) stops amputating entirely** — its window closes at +0.5600 against a
+  +0.560 ceiling, so `_band_watched_out` passes and ARRIVAL can answer at that
+  cadence for the first time. (This section's old box predicted ≈ 0.27 s from the
+  thin 2026-08-23 reading; the wider corpus says 0.56 s, which still clears R6 by
+  193 ms.)
+* **Per-rung dwell: nothing.** `handoff_margin_s` is
+  `max(dwell_margin_s, catch_park_reentry_s)`, and on the binding column — a
+  layer-3 speed trim possible — the park term is 0.1416 s at R0–R3, 0.1861 at R4
+  and 0.2081 at R5. It was already above the *old* 0.137 s, so the arrival term
+  had stopped being the max()'s winner before this re-measure ran. **Not one
+  published rung's floor changes.** With the aim disarmed R0–R3 gain exactly
+  **16.6 ms** each (park 0.1204 s) and R4/R5 gain nothing. The old text's estimate
+  of where the saving would land was right about the rungs and wrong about the
+  term; the value of this measurement is entirely in the ceiling.
 
-> **A fifth consumer joined the ceiling on 2026-08-23**, and it is the reason
-> that re-measure is worth booking rather than deferring: the ARRIVAL window's
-> boundary between adjacent cycles is now `ball_possession.arrival_boundary_t`,
-> which reads `ARRIVAL_BAND_MAX_S` directly (C-POSSESS-1 § 3.4 clauses C.1/C.2).
-> A collapsing ceiling therefore buys **cadence headroom** as well as the four
-> constants above: the boundary starts eating this ball's band once the cycle
-> period drops under `ARRIVAL_BAND_MAX_S` itself — **0.800 s today**, falling to
-> about **0.27 s** on the 2026-08-23 capture's +267.5 ms ceiling, which moves the
-> R6 fork's 0.7529 s period from "the band cannot be watched out" to "clear". No
-> rung on the table above is affected either way; R6 is.
+> ⚠ **"Update the two names and nothing else — every consumer follows" was wrong
+> about two of the four consumers, and both are worth knowing before the next
+> re-measure.**
 >
-> *(Corrected 2026-08-24, audit MEDIUM: this box quoted `BAND_MAX + lead` =
-> 1.000 s / 0.47 s, which is the **superseded** `b − lead` rule. The shipped
-> `arrival_boundary_t` amputates only below `BAND_MAX` alone — see
-> C-POSSESS-1 § 3.4's reachability table, corrected in the same pass.)*
+> 1. **The interlude's seat-edge band wait does not follow at all.**
+>    `_wait_out_seat_edge_band` waits `JB_BD_ARRIVAL_WINDOW_S` — a
+>    `hardware_config.yaml` knob, **1.50 s**, unchanged — not
+>    `ARRIVAL_BAND_MAX_S`. Its docstring's claim that deriving it "is what makes
+>    the pending post-FW14 band re-measure shrink this wait too" was false about
+>    the mechanism and has been corrected. What the re-measure did was widen the
+>    margin it already carried, 1.9× ⇒ **2.7×** the ceiling. Trimming it is now a
+>    live question, not a promise: the same knob also sizes the live ARRIVAL
+>    search window and the reload budget.
+> 2. **`toss_session_dwell_margin_s` in `hardware_config.yaml` IS a re-typed
+>    literal, and it is the value the running machine uses** — the module
+>    constant is only the no-config fallback. Updating Python alone would have
+>    left the robot at 0.137. It is held equal by
+>    `test_local_constants_match_generated_config`, which is how it was caught.
+>    **A band re-measure is therefore a YAML edit plus `generate_config.py` plus
+>    `colcon build --packages-select jugglebot`, not a one-line Python change.**
+
+**Residual exposure, so the next reader does not have to re-derive it.** The
+offset is flight-dependent (r = 0.49, ≈ 320 ms per second of flight) and both
+corpus rows above +300 ms sit at flights *longer* than any rung here. Inside the
+ladder's envelope (flight ≤ 0.798 s) the observed ceiling is **+271 ms**, so 0.56
+leaves > 2× headroom everywhere the cadence census operates. What is NOT covered
+is extrapolation above the corpus: the C-HAND-3 flight ceiling is 1.1485 s, the
+longest flight measured is 1.069 s at n = 1, and the fitted slope would put
+≈ +580 ms there. **More samples at long flights is the only thing that can move
+this number again** — not another sitting at the ladder's own flights.
 
 ### 3.2 The 71 ms measured poll cadence against the configured 20 ms ✅ MEASURED AWAY 2026-08-23
 
@@ -805,6 +825,18 @@ p90 30.0, max 160.0). The distribution is one-sided — a tail to 160 ms, not a
 uniform 3.5× stretch — so the staleness bound this row wanted is now a *tail*
 question, not a *rate* question. Full numbers:
 `logbook/2026-08-23-cadence-floor-and-inertia.md` § "Bonus measurements", item 2.
+
+**And DIAGNOSED on 2026-08-24, from the existing corpus with no new sitting**
+(`logbook/2026-08-24-hand-sensor-poll-cadence.md`). The mechanism was the
+**pre-FW-14 FlexCAN_T4 RX-ring leak**, already fixed on 2026-08-15: the bridge's
+poll loop is strictly one-in-flight on a 10 ms grid, so the achieved cadence is
+`C = 10 · max(2, ceil(RTT/10) + 1)` ms and a ring-inflated 50–60 ms round trip
+*is* a 71 ms cadence — no poll was ever missed, the poller was waiting. A
+same-day reboot A/B reads 72.0 → 20.0 ms, and all 13 decodable post-FW-14 bags
+median at the configured 20.0 ms out to 116.7 h of uptime. **Do not invert this
+into a prior**: an elevated cadence means *investigate*, not "it's the ring leak
+again" — anything that slows the round trip elevates `C`, and the entry says why
+that sentence was deliberately kept out of the record.
 
 **⚠ Do NOT read this as closing the debounce question.** The asymmetric-debounce
 numbers the 71 ms was cited beside (**232 / 241 / 295 ms fall, 0 ms rise**) are

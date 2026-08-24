@@ -594,6 +594,11 @@ wait, never a stretched `throw_delay`.
 > is still unachievable, but for the honest reason: the hand-stroke geometry, not
 > a policy constant. Ladder: `tests/hardware/session_cadence_ladder.md`. The
 > paragraph is kept verbatim because it records what the numbers were sized from.
+>
+> **Superseded 2026-08-24**: the re-measure this paragraph calls pending
+> landed — `ARRIVAL_BAND_MIN_S` is 0.087 s, and the floor at the default delay
+> is 5.1416 s, set by the hand's park re-entry (0.1416 s) rather than by the
+> arrival term. See `tests/hardware/session_cadence_ladder.md` § 3.1.
 
 **The dwell floor is DERIVED, and the brief's 2.0 s figure is unachievable.**
 Dwell is previous SCHEDULED LANDING → next RELEASE, so
