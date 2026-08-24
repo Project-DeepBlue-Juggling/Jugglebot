@@ -13,7 +13,7 @@
 #include "canbridge_config.h"  // HAND_AXIS
 #include "protocol_config.h"   // ODriveState / ODriveControlMode / ODriveInputMode / PlatformCanId
 #include "odrive_protocol.h"   // ODrive::encode_set_state / encode_set_controller_mode / CanFrame
-#include "can_buses.h"         // can_jugglebot_send, jugglebot_commands_allowed
+#include "can_buses.h"         // can_jugglebot_tx / TxCls, jugglebot_commands_allowed
 #include "leg_homing.h"        // homing_active (HAND_TRAJ_CMD ↔ homing interlock)
 #include "leg_interp.h"        // interp_last_tick_us (the phase-stamp reference)
 #include "time_base.h"         // micros64 (interval clock — the phase is an INTERVAL)
@@ -99,13 +99,21 @@ uint16_t hand_traj_cmd(const JbUdp::RpcArgs::ArgHandTraj& a) {
   // the audit flagged, row 37). ABORT the traj TX if either preamble frame fails to
   // enqueue — running a trajectory against a hand that is not in CLOSED_LOOP/
   // PASSTHROUGH would fault or silently no-op the move.
-  if (!can_jugglebot_send(ODrive::encode_set_state(HAND_AXIS, ODriveState::CLOSED_LOOP))) {
+  // TxCls::HAND (2026-08-24): DEFERRED = SENT, and the ack says so. Reading a
+  // deferral as failure here is what produced the ERR_TIMEOUT epidemic — a
+  // dispatch the bench then observed transmitting, acked as a timeout (the
+  // "lying ack"). Only TxResult::FAILED aborts now. NOTHING here re-dispatches:
+  // the hand ladders and _MAX_ARM_DISPATCHES cap stay as they are, deliberately.
+  if (!tx_reached_the_wire(can_jugglebot_tx(
+          ODrive::encode_set_state(HAND_AXIS, ODriveState::CLOSED_LOOP), TxCls::HAND))) {
     s_counters.pre1_fail++;
     phase_push(phase_us, HAND_PHASE_PRE1);
     return RpcStatus::ERR_TIMEOUT;
   }
-  if (!can_jugglebot_send(ODrive::encode_set_controller_mode(
-          HAND_AXIS, ODriveControlMode::POSITION, ODriveInputMode::PASSTHROUGH))) {
+  if (!tx_reached_the_wire(can_jugglebot_tx(
+          ODrive::encode_set_controller_mode(
+              HAND_AXIS, ODriveControlMode::POSITION, ODriveInputMode::PASSTHROUGH),
+          TxCls::HAND))) {
     s_counters.pre2_fail++;
     phase_push(phase_us, HAND_PHASE_PRE2);
     return RpcStatus::ERR_TIMEOUT;
@@ -119,7 +127,7 @@ uint16_t hand_traj_cmd(const JbUdp::RpcArgs::ArgHandTraj& a) {
   f.id  = PlatformCanId::TRAJ_CMD;   // 0x6D0
   f.len = 8;
   memcpy(f.buf, a.payload, 8);
-  if (!can_jugglebot_send(f)) {
+  if (!tx_reached_the_wire(can_jugglebot_tx(f, TxCls::HAND))) {
     s_counters.traj_fail++;
     phase_push(phase_us, HAND_PHASE_TRAJ);
     return RpcStatus::ERR_TIMEOUT;

@@ -7,7 +7,7 @@
 #include "version_check.h"
 
 #include "axis_state.h"        // axes[], NUM_AXES, HAND_AXIS, heartbeat_seen
-#include "can_buses.h"         // can_jugglebot_send, jugglebot_commands_allowed
+#include "can_buses.h"         // can_jugglebot_tx / TxCls, jugglebot_commands_allowed
 #include "odrive_protocol.h"   // ODrive::encode_get_version
 #include "udp_protocol.h"      // JbUdp::RpcArgs::ResultAxisVersions
 #include "time_base.h"         // micros64 (re-query pacing)
@@ -75,7 +75,10 @@ void version_check_step() {
   for (uint8_t i = 0; i < NUM_AXES; ++i) {
     const uint8_t bit = (uint8_t)(1u << i);
     if ((s_query_sent_mask & bit) || !axes[i].heartbeat_seen) continue;
-    if (can_jugglebot_send(ODrive::encode_get_version(i))) {
+    // TxCls::RPC (2026-08-24): DEFERRED = SENT, so the axis is marked queried.
+    // The Get_Version leaves in order; marking it unsent would re-query an axis
+    // whose request is already in the transmit queue.
+    if (tx_reached_the_wire(can_jugglebot_tx(ODrive::encode_get_version(i), TxCls::RPC))) {
       s_query_sent_mask |= bit;
       s_last_query_us = now;
     }
@@ -90,7 +93,7 @@ void version_check_step() {
   for (uint8_t i = 0; i < NUM_AXES; ++i) {
     const uint8_t bit = (uint8_t)(1u << i);
     if ((s_received_mask & bit) || !axes[i].heartbeat_seen) continue;
-    if (can_jugglebot_send(ODrive::encode_get_version(i)))
+    if (tx_reached_the_wire(can_jugglebot_tx(ODrive::encode_get_version(i), TxCls::RPC)))
       s_last_query_us = now;
     return;   // one re-query per tick (bus pacing)
   }

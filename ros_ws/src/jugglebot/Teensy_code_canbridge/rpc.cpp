@@ -115,7 +115,16 @@ static uint16_t send_axis_frame(uint16_t method, uint8_t axis, const ODrive::Can
     return JbUdp::RpcStatus::ERR_BAD_ARGS;
   }
   if (!gate_allows(method)) return JbUdp::RpcStatus::ERR_BUS_DOWN;
-  return can_jugglebot_send(f) ? JbUdp::RpcStatus::OK : JbUdp::RpcStatus::ERR_TIMEOUT;
+  // TxCls (2026-08-24) derived from the SAME predicate that picks the gate basis,
+  // so the classification has one enforcement point and no call site can drift:
+  // CLEAR_ERRORS / REBOOT_ODRIVES are the recovery one-shots and ride the
+  // dedicated safety-deferral counter; everything else is ordinary RPC. DEFERRED
+  // = SENT, so the ack is OK — the frame is queued and transmits in order.
+  // TxResult::FAILED (no bus partner) is the only ERR_TIMEOUT, which is exactly
+  // the true-failure retry basis the callers below already act on.
+  const uint8_t cls = method_gates_on_bus_transmittable(method) ? TxCls::SAFETY : TxCls::RPC;
+  return tx_reached_the_wire(can_jugglebot_tx(f, cls))
+             ? JbUdp::RpcStatus::OK : JbUdp::RpcStatus::ERR_TIMEOUT;
 }
 
 // Ball Butler presence gate. CAN1 carries no other partner; with BB unpowered
@@ -134,7 +143,8 @@ static bool bb_present() {
 // Send a BB frame to CAN1, gated on BB presence (above). Returns RpcStatus.
 static uint16_t send_bb_frame(const ODrive::CanFrame& f) {
   if (!bb_present()) return JbUdp::RpcStatus::ERR_BUS_DOWN;
-  return can_bb_send(f) ? JbUdp::RpcStatus::OK : JbUdp::RpcStatus::ERR_TIMEOUT;
+  return tx_reached_the_wire(can_bb_tx(f, TxCls::RPC))
+             ? JbUdp::RpcStatus::OK : JbUdp::RpcStatus::ERR_TIMEOUT;
 }
 
 template <typename Arg>
@@ -194,7 +204,12 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
         // send is the LEFT operand of &&/|=, so every axis is attempted regardless.
         bool ok = true, any = false;
         for (uint8_t i = 0; i < NUM_AXES; ++i) {
-          const bool s = can_jugglebot_send(ODrive::encode_clear_errors(i));
+          // TxCls::SAFETY. `any`/`ok` keep their exact meaning: a DEFERRED clear
+          // IS on its way to the bus, so it refills the budget and releases the
+          // guard latch — which is what the "must not fire the side-effects with
+          // nothing on the wire" rule was always trying to express.
+          const bool s = tx_reached_the_wire(
+              can_jugglebot_tx(ODrive::encode_clear_errors(i), TxCls::SAFETY));
           any |= s; ok = s && ok;
         }
         if (any) fault_notify_clear_errors();
@@ -230,7 +245,8 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
         // partial failure surfaces as ERR_TIMEOUT; every axis is still attempted.
         bool ok = true, any = false;
         for (uint8_t i = 0; i < NUM_AXES; ++i) {
-          const bool s = can_jugglebot_send(ODrive::encode_reboot(i));
+          const bool s = tx_reached_the_wire(
+              can_jugglebot_tx(ODrive::encode_reboot(i), TxCls::SAFETY));   // TxCls::SAFETY
           any |= s; ok = s && ok;
         }
         if (any) fault_notify_reboot_started();

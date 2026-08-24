@@ -49,9 +49,21 @@ struct GpioPollSnapshot {
 void gpio_poll_init();
 
 // Cold-start monitor tick (task_homing, HOMING_RATE_HZ, never an ISR). Runs the
-// two-phase request/await state machine: at most ONE CAN3 TX per tick, internally
-// rate-limited to JBBallDetect::CHECK_INTERVAL_MS. No-op when compiled out or
+// two-phase request/await state machine: at most ONE CAN3 TX per tick, paced onto
+// an ABSOLUTE JBBallDetect::CHECK_INTERVAL_MS grid. No-op when compiled out or
 // toggled off. Sole writer of the published record.
+//
+// CADENCE CONTRACT (2026-08-24, FW 15). A round trip is consumed and the next
+// request issued in the SAME tick, and the grid advances from the previous DUE
+// time (not from `now`) with a half-task-period early-fire band. Together those
+// make the achieved cadence CHECK_INTERVAL_MS for any RTT below it, instead of
+// the old 10*max(2, ceil(RTT/10)+1) ms — which on the healthy plant delivered
+// ~42 Hz against a configured 50, with ~38 % of cycles taking 30 ms rather than
+// 20. Only CADENCE changed: the tri-state signal semantics, the miss_count
+// freeze, the debounce asymmetry, the reply timeout and the staleness window are
+// all untouched, so no ball_held verdict moves as a result of this. See
+// gpio_poll.cpp's pacing-grid block for the mechanism and why both halves are
+// needed.
 void gpio_poll_step();
 
 // CAN3 RX decode seam: a TxSdo reply from the hand carrying the get_gpio_states

@@ -46,9 +46,35 @@ static void broadcast_0x7dd() {
   memcpy(&f.buf[4], &usec, 4);
   // Independent TX per bus — call all three regardless of individual results so
   // one bus failing (cone absent, mailbox full) never blocks the others.
-  can_bb_send(f);
-  can_cone_send(f);
-  can_jugglebot_send(f);
+  //
+  // TxCls::TIMESYNC (2026-08-24). THE MAPPING IS DELIBERATELY UNCHANGED HERE: the
+  // result is discarded, exactly as before, and the counter is an INSTRUMENT, not
+  // a mitigation. The reason is an OPEN question the owner has to rule on, and it
+  // is stated here because the code is where the next reader will be:
+  //
+  //   THE STAMP IS TAKEN BEFORE THE WRITE. `w` is sampled once at the top of this
+  //   function and packed into the payload; a frame that DEFERS transmits later
+  //   carrying that older stamp. The staleness is bounded (the frames ahead of it
+  //   in the 16 TX mailboxes are ~115 us each at 1 Mbit, and the software queue is
+  //   drained by events() on the 1 kHz service tick), so it is a few ms at worst.
+  //
+  //   AND THE SLAVES DO NOT REJECT OUTLIERS. Teensy_code_platform.ino
+  //   handleSyncFrame() — reused verbatim by CatchingCone_code.ino — hard STEPS
+  //   the offset on the first frame (`if (!have_offset) wall_offset_us = offset`)
+  //   and then slews unconditionally by `diff >> TIME_SYNC_ALPHA_SHIFT`. There is
+  //   no median, no plausibility band, no rejection of any kind. So a late
+  //   stale-stamped beacon IS absorbed: at 1/8 gain, decaying as (7/8)^n over the
+  //   100 Hz beacon stream (~80 ms), and a deferred FIRST beacon after a slave
+  //   boot is taken as a hard step with no filtering at all.
+  //
+  //   Bounded and self-healing, therefore — but genuinely absorbed, so inventing a
+  //   mitigation here (stamp-at-TX, drop-on-defer, a slave-side band) is a real
+  //   design decision with a real blast radius across three firmwares, and it is
+  //   NOT taken unilaterally. The census answers the prior question first: does a
+  //   0x7DD beacon ever defer at all? Today every bus reports tx_deferred == 0.
+  can_bb_send(f, TxCls::TIMESYNC);
+  can_cone_send(f, TxCls::TIMESYNC);
+  can_jugglebot_send(f, TxCls::TIMESYNC);
 }
 
 // ── Time-of-day query (RPC client) ────────────────────────────────────────────

@@ -49,6 +49,7 @@ static constexpr uint64_t POLL_US    = (uint64_t)JBBallDetect::CHECK_INTERVAL_MS
 static constexpr uint64_t TIMEOUT_US = (uint64_t)JBBallDetect::CHECK_TIMEOUT_MS  * 1000ull;
 static constexpr uint64_t STALE_US   = 2ull * (POLL_US + TIMEOUT_US);
 
+
 // A raw get_gpio_states word. ACTIVE-LOW: the seated ball shorts the pin to GND,
 // so HELD ⇒ the pin's bit is CLEAR. The other bits carry a recognisable pattern
 // so a test can prove the word is published verbatim.
@@ -70,8 +71,10 @@ static void seed_matching_hand_version() {
 }
 
 // Fresh poller + fresh version cache + open bus. The clock starts at 0; note that
-// gpio_poll_init() zeroes the pacing stamp, so the FIRST request is due one whole
-// CHECK_INTERVAL_MS after init, not immediately.
+// gpio_poll_init() zeroes the pacing grid (s_next_due_us = 0), so the FIRST request
+// is due on the first step — setup() runs long before the first task_homing tick on
+// the real board, so that is not a boot burst. Every case below still advances a
+// full interval first, which the absolute grid then anchors on.
 static void reset_all() {
   fake_reset();
   version_check_init();
@@ -104,6 +107,63 @@ static void poll_round_timeout() {
   gpio_poll_step();              // send
   fake_advance(TIMEOUT_US);
   gpio_poll_step();              // timeout → IDLE (no publish, no counter movement)
+}
+
+// The task period gpio_poll_step() is called on, and the early-fire band the
+// absolute pacing grid uses. Mirrored from gpio_poll.cpp rather than hard-coded so
+// a YAML/rate change moves both together.
+static constexpr uint64_t TICK_US = 1000000ull / (uint64_t)HOMING_RATE_HZ;
+static constexpr uint64_t SLOP_US = TICK_US / 2ull;
+
+// Run the step at ticks spaced TICK_US apart, with a per-tick wake JITTER, and
+// report how many requests went out. This is the shape the real board runs: the
+// step is a 100 Hz task callback, and `now` at each callback is the tick instant
+// plus that wake's scheduling delay.
+struct CadenceRun {
+  size_t   sends    = 0;
+  uint64_t max_gap  = 0;
+  uint64_t min_gap  = 0;
+  size_t   gaps     = 0;
+  size_t   gaps_at_interval = 0;   // gaps exactly POLL_US wide — the healthy mode
+};
+
+// Run n_ticks of the step on a TICK_US grid with a repeating per-tick WAKE JITTER
+// pattern, delivering each reply rtt_us after its request, and reduce the resulting
+// send instants to a gap distribution.
+//
+// This is the shape the real board runs, and the jitter is the whole point: the step
+// is a 100 Hz task callback and `now` at each callback is the nominal tick instant
+// PLUS that wake's scheduling delay. The old pacing restarted the interval from that
+// jittered `now`, so the next send needed jitter_{k+2} >= jitter_k — a coin flip that
+// cost a whole task period when lost.
+static CadenceRun run_ticks(size_t n_ticks, uint64_t rtt_us,
+                            const uint64_t* jitter_us, size_t n_jitter) {
+  CadenceRun r;
+  const uint64_t t0 = fake_mono_us();
+  uint64_t prev_send_at = 0;
+  bool have_prev = false;
+  for (size_t k = 0; k < n_ticks; ++k) {
+    const uint64_t j = n_jitter ? jitter_us[k % n_jitter] : 0ull;
+    const uint64_t now = t0 + (uint64_t)k * TICK_US + j;
+    fake_set_clock(now, now);          // absolute: jitter is not cumulative
+    const size_t before = fake_sent_count();
+    gpio_poll_step();
+    if (fake_sent_count() == before) continue;
+    if (have_prev) {
+      const uint64_t gap = now - prev_send_at;
+      if (r.gaps == 0 || gap > r.max_gap) r.max_gap = gap;
+      if (r.gaps == 0 || gap < r.min_gap) r.min_gap = gap;
+      if (gap == POLL_US) r.gaps_at_interval++;
+      r.gaps++;
+    }
+    prev_send_at = now; have_prev = true;
+    r.sends++;
+    // The hand answers rtt_us later. With rtt_us < TICK_US the reply is already in
+    // the mailbox when the next tick's step runs, which is the steady state on the
+    // real bus (measured RTT ~ 2 ms against a 10 ms task period).
+    gpio_poll_record(states_for(true), now + rtt_us, now + rtt_us);
+  }
+  return r;
 }
 
 // ── 1. Version UNRECEIVED: zero TX, state UNKNOWN ────────────────────────────
@@ -160,12 +220,30 @@ TEST_CASE("version MATCH: the poller requests get_gpio_states, paced at CHECK_IN
   gpio_poll_step();
   CHECK(fake_sent_count() == 1);
 
-  fake_advance(POLL_US - 1);
+  // Pacing is now an ABSOLUTE grid with a half-task-period early-fire band (the
+  // grid's due instants land exactly on nominal tick instants, so without the band
+  // a microsecond of negative wake jitter would push the whole cycle a tick late —
+  // that is the 30 ms mode this release removes). So the poller is quiet right up
+  // to one half-tick before the due instant, and fires from there on.
+  fake_advance(POLL_US - SLOP_US - 1);
   gpio_poll_step();
-  CHECK(fake_sent_count() == 1);        // one tick short of the interval: still quiet
+  CHECK(fake_sent_count() == 1);        // still outside the band: quiet
   fake_advance(1);
   gpio_poll_step();
-  CHECK(fake_sent_count() == 2);        // exactly at CHECK_INTERVAL_MS
+  CHECK(fake_sent_count() == 2);        // the band opens exactly a half-tick early
+
+  // And the GRID does not move with the early fire: the next request is due one
+  // whole interval after the DUE instant, not after the (early) send instant.
+  // Restarting from `now` is precisely the defect being fixed.
+  gpio_poll_record(states_for(true), fake_wall_us(), fake_mono_us());
+  gpio_poll_step();                     // consume; may fall through, must not send
+  CHECK(fake_sent_count() == 2);
+  fake_advance(POLL_US - 1);            // now = due2 - SLOP - 1 + POLL_US - 1
+  gpio_poll_step();
+  CHECK(fake_sent_count() == 2);        // one microsecond short of the band
+  fake_advance(1);
+  gpio_poll_step();
+  CHECK(fake_sent_count() == 3);
 }
 
 // ── 3. MISMATCH: latched — no TX ever, valid=false ───────────────────────────
@@ -427,21 +505,231 @@ TEST_CASE("an un-anchored wall clock marks the sample not-time-synced") {
   CHECK(snap().time_synced == true);
 }
 
-// ── 12. Late reply after its timeout is dropped by the pre-send invalidate ───
+// ── 12. The pre-send invalidate drops whatever is cached at the send instant ──
 
-TEST_CASE("a reply that lands after its timeout is dropped, never published") {
+TEST_CASE("a reply cached with no request outstanding is dropped, never published") {
   reset_all();
   seed_matching_hand_version();
 
-  poll_round_timeout();                 // request timed out, phase back to IDLE
-  const uint64_t late_wall = 0xDEADBEEFull;
-  gpio_poll_record(states_for(true), late_wall, fake_mono_us());   // hand answers late
+  // WHY THIS CASE CHANGED SHAPE (2026-08-24). It used to time a request out, drop
+  // a straggler into the mailbox, and rely on the NEXT TICK's send to invalidate
+  // it — i.e. it tested the ~1-tick window between "timeout decided" and "next
+  // request sent". Consume-and-send-in-the-same-tick collapses that window to
+  // nothing: after a timeout the next request goes out immediately, so a straggler
+  // arriving after it is attributed to the NEW request. That hazard is unchanged
+  // in KIND (it was always true one tick later) and needs a reply-to-request
+  // correlator to close, which the ODrive TxSdo reply gives us no sequence for.
+  // What is still a firm contract, and is what this now asserts, is the
+  // invalidate itself: NOTHING cached before a send survives that send.
+  poll_round(true);                     // a completed round leaves the poller IDLE
+  REQUIRE(snap().held == true);
+  const uint64_t good_stamp = snap().t_bridge_us;
+  const size_t sent_before = fake_sent_count();
+
+  const uint64_t ghost_wall = 0xDEADBEEFull;
+  gpio_poll_record(states_for(false), ghost_wall, fake_mono_us());   // unsolicited
 
   fake_advance(POLL_US);
-  gpio_poll_step();                     // invalidate (drops the late reply), then send
-  CHECK(fake_sent_count() == 2);
+  gpio_poll_step();                     // invalidate (drops the ghost), then send
+  CHECK(fake_sent_count() == sent_before + 1);
   gpio_poll_step();                     // AWAIT: mailbox is empty, nothing to take
   const GpioPollSnapshot s = snap();
-  CHECK(s.t_bridge_us != late_wall);
-  CHECK(s.t_bridge_us == 0);            // the late reply was never published
+  CHECK(s.t_bridge_us != ghost_wall);
+  CHECK(s.t_bridge_us == good_stamp);   // still the last GOOD reply
+  CHECK(s.held == true);                // the ghost's EMPTY never touched the verdict
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  13-17. CADENCE (2026-08-24, FW 15) — the poller reaches its configured rate
+// ═══════════════════════════════════════════════════════════════════════════
+//  Two independent defects held the achieved rate at ~42 Hz against a configured
+//  50, and BOTH have to be fixed for the cadence to close — which is why these
+//  cases assert the gap DISTRIBUTION under wake jitter rather than a single
+//  round trip. A single round trip passed on the old code too.
+
+TEST_CASE("cadence: at a small RTT the poll interval is the configured interval") {
+  reset_all();
+  seed_matching_hand_version();
+
+  // RTT well inside one task period — the measured steady state on the healthy
+  // plant is ~2 ms against a 10 ms task tick.
+  const uint64_t rtt = TICK_US / 5ull;
+  const CadenceRun r = run_ticks(200, rtt, nullptr, 0);
+
+  REQUIRE(r.gaps > 0);
+  CHECK(r.min_gap == POLL_US);
+  CHECK(r.max_gap == POLL_US);          // THE headline: no cycle takes longer
+  CHECK(r.gaps_at_interval == r.gaps);  // every single gap is the configured one
+  // Transfer function, stated as a rate: 200 ticks at TICK_US is 200/HOMING_RATE_HZ
+  // seconds, and one send per POLL_US means ticks/(POLL_US/TICK_US) sends.
+  CHECK(r.sends == 200u / (size_t)(POLL_US / TICK_US));
+}
+
+TEST_CASE("cadence: wake jitter no longer promotes a cycle to the next tick") {
+  reset_all();
+  seed_matching_hand_version();
+
+  // THE OLD FAILURE, REPRODUCED AS A DRIVER. The old pacing restarted the interval
+  // from the JITTERED `now`, so a send needed jitter_{k+2} >= jitter_k. This
+  // pattern makes that false on half the cycles: a late wake followed by an early
+  // one. On the old code ~38 % of cycles took 30 ms; here every gap must be 20 ms.
+  const uint64_t jitter[] = { TICK_US / 4ull, 0ull, TICK_US / 3ull, 0ull, TICK_US / 8ull };
+  const CadenceRun r = run_ticks(300, TICK_US / 5ull, jitter, sizeof(jitter)/sizeof(jitter[0]));
+
+  REQUIRE(r.gaps > 0);
+  // Jitter still moves each SEND INSTANT by its own wake delay, so gaps vary by at
+  // most the jitter spread — but never by a whole task period, which is what the
+  // 30 ms mode was.
+  CHECK(r.max_gap < POLL_US + TICK_US);
+  CHECK(r.min_gap > POLL_US - TICK_US);
+  // And the grid does not DRIFT: over 300 ticks the send count is the interval's,
+  // not the degraded one. On the old transfer function C = 10*max(2, ceil(RTT/10)+1)
+  // with cycles promoted to 30 ms, this count would come out materially lower.
+  const size_t ideal = 300u / (size_t)(POLL_US / TICK_US);
+  CHECK(r.sends >= ideal - 1u);
+  CHECK(r.sends <= ideal + 1u);
+}
+
+TEST_CASE("cadence: a round trip is consumed and re-issued without losing a tick") {
+  reset_all();
+  seed_matching_hand_version();
+
+  // The AWAIT branch used to `return` after consuming, so closing a round trip cost
+  // a whole task period before the next request could even be considered. Drive the
+  // pathological case directly: a reply that lands only just before the next due
+  // instant. The consuming step must fall through and send in the SAME tick.
+  fake_advance(POLL_US);
+  gpio_poll_step();                       // request 1 out
+  REQUIRE(fake_sent_count() == 1);
+
+  fake_advance(POLL_US);                  // the reply took nearly a whole interval
+  gpio_poll_record(states_for(true), fake_wall_us(), fake_mono_us());
+  gpio_poll_step();                       // consume AND send, one tick
+  CHECK(fake_sent_count() == 2);
+  CHECK(snap().held == true);             // the reply was really applied, not skipped
+
+  // Same for the TIMEOUT exit: it is an exit from AWAIT like any other.
+  fake_advance(TIMEOUT_US);
+  const size_t before = fake_sent_count();
+  gpio_poll_step();                       // timeout AND send, one tick
+  CHECK(fake_sent_count() == before + 1);
+  CHECK(snap().held == true);             // timeout is still NOT a miss
+  CHECK(snap().miss_count == 0);
+}
+
+TEST_CASE("cadence: at most ONE request per tick, even after a long stall") {
+  reset_all();
+  seed_matching_hand_version();
+
+  // A long refusal window: the grid falls hours behind. The catch-up guard must
+  // RE-BASE rather than replay the backlog — one request per tick until it caught
+  // up would burst exactly the bus this poller is one-frame-per-tick paced to spare.
+  poll_round(true);
+  fake_set_commands_allowed(false);
+  fake_advance(3600ull * 1000000ull);     // an hour of refusals
+  gpio_poll_step();
+  fake_set_commands_allowed(true);
+
+  const size_t before = fake_sent_count();
+  // Ten consecutive ticks with no advance beyond the task period.
+  for (int k = 0; k < 10; ++k) { fake_advance(TICK_US); gpio_poll_step(); }
+  const size_t sent = fake_sent_count() - before;
+  // Ten ticks is 10/HOMING_RATE_HZ seconds; at one request per POLL_US that is at
+  // most 10/(POLL_US/TICK_US) requests, and never one per tick.
+  CHECK(sent <= 10u / (size_t)(POLL_US / TICK_US) + 1u);
+  CHECK(sent < 10u);
+}
+
+TEST_CASE("cadence: a refusal consumes a whole interval, it does not spin") {
+  reset_all();
+  // Version gate UNRECEIVED — the boot state, and permanent for an unpowered hand.
+  // The refusal happens AFTER the schedule advances, which is what stops the gate
+  // being re-evaluated at task-tick rate for the seconds (or forever) it holds.
+  uint64_t before_due_ticks = 0;
+  for (int k = 0; k < 40; ++k) { fake_advance(TICK_US); gpio_poll_step(); ++before_due_ticks; }
+  CHECK(fake_sent_count() == 0);          // still quiet — nothing left the Teensy
+
+  // Now the same for a DOWN BUS, where the refusal is after the version gate.
+  seed_matching_hand_version();
+  fake_set_commands_allowed(false);
+  for (int k = 0; k < 40; ++k) { fake_advance(TICK_US); gpio_poll_step(); }
+  CHECK(fake_sent_count() == 0);
+
+  // And when the bus comes back the poller is due within one interval, not stalled
+  // behind an hour of unpaid schedule.
+  fake_set_commands_allowed(true);
+  size_t sent = 0;
+  for (int k = 0; k < (int)(POLL_US / TICK_US) + 1; ++k) {
+    fake_advance(TICK_US); gpio_poll_step();
+    sent = fake_sent_count();
+    if (sent) break;
+  }
+  CHECK(sent == 1u);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  18-19. TRI-STATE TX (2026-08-24) — the poller's owner-delegated ruling
+// ═══════════════════════════════════════════════════════════════════════════
+
+TEST_CASE("a DEFERRED request is IN FLIGHT: AWAIT is armed and the reply lands") {
+  reset_all();
+  seed_matching_hand_version();
+
+  // Every send defers: no TX mailbox is free, so the frame goes into the software
+  // txBuffer and transmits in order. THE RULING: that is in-flight, not failed.
+  // Under the old `write() > 0` this returned false, the poller stayed IDLE, and
+  // the reply that DID come back was thrown away by the next send's invalidate —
+  // a sensor that silently stopped sampling under exactly the TX pressure that
+  // makes the hand busy.
+  fake_set_send_defer_all(true);
+
+  fake_advance(POLL_US);
+  gpio_poll_step();
+  REQUIRE(fake_sent_count() == 1);        // the deferred frame IS on the bus
+  CHECK(fake_last_tx_class() == (int)TxCls::POLLER);
+  CHECK(s_phase == PPhase::AWAIT);        // armed, so the reply has somewhere to land
+
+  // The RTT instrument stays armed with it: queue latency IS round-trip latency,
+  // and this instrument's job is the round-trip FLOOR. A disarm here would drop the
+  // sample entirely and quietly under-report the census count.
+  CHECK(bool(s_rtt_req_armed) == true);
+
+  const uint64_t rtt = TICK_US / 5ull;
+  fake_advance(rtt);
+  gpio_poll_record(states_for(true), fake_wall_us(), fake_mono_us());
+  gpio_poll_step();
+  CHECK(snap().valid == true);
+  CHECK(snap().held == true);             // the deferred round trip completed normally
+
+  GpioPollRtt c{};
+  gpio_poll_rtt_take(c);
+  CHECK(c.count == 1u);                   // the deferral was MEASURED, not skipped
+  CHECK(c.min_us == (uint32_t)rtt);
+}
+
+TEST_CASE("a FAILED request is not in flight: IDLE holds and the RTT disarms") {
+  reset_all();
+  seed_matching_hand_version();
+
+  // TxResult::FAILED is the bus-partner presence gate refusing — the one outcome in
+  // which no frame exists. Nothing to await, and nothing a later reply could
+  // legitimately close.
+  fake_set_send_fail_index(0);
+
+  fake_advance(POLL_US);
+  gpio_poll_step();
+  CHECK(fake_sent_count() == 0);          // nothing reached the bus
+  CHECK(s_phase == PPhase::IDLE);         // NOT armed
+  CHECK(bool(s_rtt_req_armed) == false);  // an un-sent request must never be differenced
+
+  // A reply arriving anyway cannot be folded into the RTT census.
+  gpio_poll_record(states_for(true), fake_wall_us(), fake_mono_us());
+  GpioPollRtt c{};
+  gpio_poll_rtt_take(c);
+  CHECK(c.count == 0u);
+
+  // And the refusal still consumed its interval: no tick-rate retry storm.
+  const size_t before = fake_sent_count();
+  gpio_poll_step();
+  CHECK(fake_sent_count() == before);
 }

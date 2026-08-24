@@ -943,32 +943,39 @@ void can_buses_print_esr1() {
 
 // Each FlexCAN template instance is a distinct type, so a small overload per bus
 // rather than a template (mirrors the original two-bus pattern).
-static bool send_on(FlexCAN_T4<CAN1, RX_SIZE_256, TX_SIZE_64>& bus,
-                    const ODrive::CanFrame& f) {
+//
+// Returns the LIBRARY'S RAW int, not a bool: +1 = written into a hardware TX
+// mailbox, -1 = no mailbox free so the frame was queued into the 64-slot software
+// txBuffer (it still transmits, in order, drained by the TX-complete ISR). The old
+// `> 0` collapsed those two into "failed", which is the defect the TxResult
+// tri-state in can_buses.h exists to close — the classification now happens ONCE,
+// in classify_tx_write(), where a native test can reach it.
+static int send_on(FlexCAN_T4<CAN1, RX_SIZE_256, TX_SIZE_64>& bus,
+                   const ODrive::CanFrame& f) {
   CAN_message_t m;
   m.id = f.id;
   m.len = f.len;
   m.flags.extended = 0;
   memcpy(m.buf, f.buf, 8);
-  return bus.write(m) > 0;
+  return bus.write(m);
 }
-static bool send_on(FlexCAN_T4<CAN2, RX_SIZE_256, TX_SIZE_64>& bus,
-                    const ODrive::CanFrame& f) {
+static int send_on(FlexCAN_T4<CAN2, RX_SIZE_256, TX_SIZE_64>& bus,
+                   const ODrive::CanFrame& f) {
   CAN_message_t m;
   m.id = f.id;
   m.len = f.len;
   m.flags.extended = 0;
   memcpy(m.buf, f.buf, 8);
-  return bus.write(m) > 0;
+  return bus.write(m);
 }
-static bool send_on(FlexCAN_T4<CAN3, RX_SIZE_256, TX_SIZE_64>& bus,
-                    const ODrive::CanFrame& f) {
+static int send_on(FlexCAN_T4<CAN3, RX_SIZE_256, TX_SIZE_64>& bus,
+                   const ODrive::CanFrame& f) {
   CAN_message_t m;
   m.id = f.id;
   m.len = f.len;
   m.flags.extended = 0;
   memcpy(m.buf, f.buf, 8);
-  return bus.write(m) > 0;
+  return bus.write(m);
 }
 
 // ── TX serialisation (interp-ISR-safe) ───────────────────────────────────────
@@ -1039,41 +1046,73 @@ static inline bool partner_recent(const volatile uint64_t* last_rx_us,
 // pending. Both answer "how deep was the software queue at this send instant",
 // which is the pressure signal — not "how many frames are waiting because of me".
 //
-// `ok == false` is a DEFERRAL, not a drop — write() returned -1 and the frame is
-// in the software txBuffer awaiting the TX-complete ISR. See can_buses.h for the
-// two paths that do genuinely lose a frame.
+// tx_deferred moves on TxResult::DEFERRED — write() returned -1 and the frame is
+// in the software txBuffer awaiting the TX-complete ISR. That is a DEFERRAL, not a
+// drop; see can_buses.h for the two paths that do genuinely lose a frame, and for
+// why TxResult::FAILED (the presence-gate refusal, counted as tx_gated) is now the
+// only outcome in which nothing reaches the wire.
 
-bool can_bb_send(const ODrive::CanFrame& f) {
-  if (!partner_recent(&s_bb_last_rx_us, s_bb_rxh)) return false;
+// ── Per-class deferral census (2026-08-24) ───────────────────────────────────
+// Written by the SAME writer class as tx_deferred/tx_q_hwm — the 500 Hz interp
+// ISR and several FreeRTOS tasks — so the read-modify-write rides the PRIMASK
+// region the mailbox write already holds. No new critical section, no added ISR
+// latency, one extra indexed increment per deferred send (and NOTHING at all on
+// the mailbox path, which is the steady state). Contract + rulings: can_buses.h.
+static uint32_t s_tx_defer_cls[TxCls::COUNT] = {0};
+
+// Fold one outcome into the per-class census. CALLED ONLY from inside a send's
+// existing masked region — the bounds check is a compile-time-visible guard
+// against a future caller passing a raw number, not a runtime expectation.
+static inline void note_defer(TxResult r, uint8_t cls) {
+  if (r != TxResult::DEFERRED) return;
+  if (cls >= TxCls::COUNT) cls = TxCls::OTHER;
+  s_tx_defer_cls[cls]++;
+}
+
+TxDeferCensus can_buses_defer_census() {
+  TxDeferCensus c{};
+  // Each entry is a single naturally-aligned word, so each load is atomic; a torn
+  // read ACROSS entries is harmless for a 1 Hz console line (same argument as
+  // snapshot_bus). No mask, so the census can never sit inside the timing budget
+  // of the path it measures.
+  for (uint8_t i = 0; i < TxCls::COUNT; ++i) c.by_class[i] = s_tx_defer_cls[i];
+  return c;
+}
+
+TxResult can_bb_tx(const ODrive::CanFrame& f, uint8_t cls) {
+  if (!partner_recent(&s_bb_last_rx_us, s_bb_rxh)) return TxResult::FAILED;
   const uint32_t pm = __get_PRIMASK(); __disable_irq();
-  const bool ok = send_on(can_bb, f);
-  if (ok) s_bb_tx++; else s_bb_rxh.tx_deferred++;
+  const TxResult r = classify_tx_write(send_on(can_bb, f));
+  if (r == TxResult::MAILBOX) s_bb_tx++; else s_bb_rxh.tx_deferred++;
+  note_defer(r, cls);
   const uint16_t q = (uint16_t)can_bb.getTXQueueCount();
   if (q > s_bb_rxh.tx_q_hwm) s_bb_rxh.tx_q_hwm = q;
   __set_PRIMASK(pm);
-  return ok;
+  return r;
 }
 
-bool can_cone_send(const ODrive::CanFrame& f) {
-  if (!partner_recent(&s_cone_last_rx_us, s_cone_rxh)) return false;
+TxResult can_cone_tx(const ODrive::CanFrame& f, uint8_t cls) {
+  if (!partner_recent(&s_cone_last_rx_us, s_cone_rxh)) return TxResult::FAILED;
   const uint32_t pm = __get_PRIMASK(); __disable_irq();
-  const bool ok = send_on(can_cone, f);
-  if (ok) s_cone_tx++; else s_cone_rxh.tx_deferred++;
+  const TxResult r = classify_tx_write(send_on(can_cone, f));
+  if (r == TxResult::MAILBOX) s_cone_tx++; else s_cone_rxh.tx_deferred++;
+  note_defer(r, cls);
   const uint16_t q = (uint16_t)can_cone.getTXQueueCount();
   if (q > s_cone_rxh.tx_q_hwm) s_cone_rxh.tx_q_hwm = q;
   __set_PRIMASK(pm);
-  return ok;
+  return r;
 }
 
-bool can_jugglebot_send(const ODrive::CanFrame& f) {
-  if (!partner_recent(&s_jugglebot_last_rx_us, s_jugglebot_rxh)) return false;
+TxResult can_jugglebot_tx(const ODrive::CanFrame& f, uint8_t cls) {
+  if (!partner_recent(&s_jugglebot_last_rx_us, s_jugglebot_rxh)) return TxResult::FAILED;
   const uint32_t pm = __get_PRIMASK(); __disable_irq();
-  const bool ok = send_on(can_jugglebot, f);
-  if (ok) s_jugglebot_tx++; else s_jugglebot_rxh.tx_deferred++;
+  const TxResult r = classify_tx_write(send_on(can_jugglebot, f));
+  if (r == TxResult::MAILBOX) s_jugglebot_tx++; else s_jugglebot_rxh.tx_deferred++;
+  note_defer(r, cls);
   const uint16_t q = (uint16_t)can_jugglebot.getTXQueueCount();
   if (q > s_jugglebot_rxh.tx_q_hwm) s_jugglebot_rxh.tx_q_hwm = q;
   __set_PRIMASK(pm);
-  return ok;
+  return r;
 }
 
 // Shared CAN3 command gate (declared in can_buses.h; consumed by rpc.cpp leg

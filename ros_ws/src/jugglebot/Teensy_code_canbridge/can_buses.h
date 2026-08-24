@@ -54,11 +54,98 @@ namespace CanBridge {
 void can_buses_init();      // begin all three buses, register RX callbacks
 void can_buses_service();   // pump bb/cone/jugglebot events(); call from CAN RX task
 
-// All three sends are presence-gated (bus_partner_present(); false = refused, nothing
-// queued) — the bridge never transmits into a partner-less bus (2026-07-05).
-bool can_bb_send(const ODrive::CanFrame& f);         // CAN1 Ball Butler TX (time-sync + relayed BB cmds)
-bool can_cone_send(const ODrive::CanFrame& f);       // CAN2 cone TX (time-sync)
-bool can_jugglebot_send(const ODrive::CanFrame& f);  // CAN3 Jugglebot core TX (setpoints, RPC, fault cmds)
+// ── TX OUTCOME: TRI-STATE, NOT A BOOL (2026-08-24, can-bridge FW 15) ─────────
+//  THE DEFECT THIS CLOSES. Every send used to end in `bus.write(m) > 0`, and
+//  every caller read the resulting false as "the frame did not go out". That is
+//  wrong for one of the two false cases. FlexCAN_T4::write(const CAN_message_t&)
+//  (lib/FlexCAN_T4/FlexCAN_T4.tpp:1024-1047, the overload we use) returns:
+//      +1  "transmit entry accepted" — written straight into a free TX mailbox;
+//      -1  "transmit entry failed, no mailboxes available, QUEUED" — the frame
+//          was pushed into the library's 64-slot software txBuffer, from which
+//          events() moves it into the first mailbox that frees, IN ORDER.
+//  It NEVER returns 0 (only the write(FLEXCAN_MAILBOX, ...) overload does, for a
+//  FIFO/non-transmit mailbox — and nothing in this tree calls it). So -1 is a
+//  DEFERRAL of ~0.1-1 ms, not a drop: the frame reaches the wire. Reading it as
+//  failure is what made hand_ops answer ERR_TIMEOUT for dispatches that the bench
+//  then observed transmitting (the 2026-08-09 "lying ack"), and it is why the
+//  only genuinely-failed send — the bus-partner presence gate refusing, because
+//  there is no partner to ACK — could not be told apart from ordinary TX pressure.
+//
+//  The three outcomes are now distinct, and callers rule on DEFERRED explicitly.
+enum class TxResult : uint8_t {
+  FAILED   = 0,   // nothing reached the peripheral: the bus-partner presence gate refused
+                  // (tx_gated++). This is the ONLY outcome in which no frame goes out.
+  MAILBOX  = 1,   // written straight into a free hardware TX mailbox
+  DEFERRED = 2,   // no mailbox free: queued into the software txBuffer, ISR-drained, in order
+};
+
+// Pure classifier for FlexCAN_T4::write()'s int return. HEADER-INLINE on purpose:
+// can_buses.cpp compiles in no native test binary (the coverage gap recorded at
+// BusRxHealth::tx_deferred below), so a classifier left in the .cpp would be
+// untestable — the same reason classify_bus_health / classify_command_gate live
+// here. 0 maps to FAILED rather than DEFERRED: on the mailbox-indexed overload it
+// means the frame reached neither hardware nor the queue, which is a real loss.
+inline TxResult classify_tx_write(int rc) {
+  if (rc > 0) return TxResult::MAILBOX;
+  if (rc < 0) return TxResult::DEFERRED;
+  return TxResult::FAILED;
+}
+
+// "Did this frame reach the wire?" — the predicate that replaces the old bool.
+// DEFERRED is TRUE: the frame is in the transmit queue and will go out in order.
+inline bool tx_reached_the_wire(TxResult r) { return r != TxResult::FAILED; }
+inline bool tx_was_deferred(TxResult r)     { return r == TxResult::DEFERRED; }
+
+// ── Per-caller deferral census (owner-delegated rulings, 2026-08-24) ─────────
+//  Deferral is harmless for a latest-wins setpoint stream and a watch-signal on a
+//  safety frame, so "how many deferrals" is not a useful number on its own — WHOSE
+//  deferrals is. Every send names its class; can_*_tx() folds the count into the
+//  same masked region that already maintains tx_deferred/tx_q_hwm, so no new
+//  critical section is opened on any hot path.
+namespace TxCls {
+  constexpr uint8_t POLLER   = 0u;  // gpio_poll's hand ball-sensor SDO request
+  constexpr uint8_t LEGS     = 1u;  // leg_interp's 500 Hz setpoint burst
+  constexpr uint8_t HAND     = 2u;  // hand_ops' trajectory relay + its preamble
+  constexpr uint8_t RPC      = 3u;  // RPC-dispatched axis/BB frames + the version sweep
+  constexpr uint8_t SAFETY   = 4u;  // fault machine, CLEAR_ERRORS/REBOOT, platform relay ops
+  constexpr uint8_t TIMESYNC = 5u;  // the 100 Hz 0x7DD beacon fan-out
+  constexpr uint8_t OTHER    = 6u;  // today EXACTLY the three cold-start move ladders
+                                    // (leg_homing / leg_activate / leg_deactivate), which
+                                    // reach the bus through the bool wrapper's default
+  constexpr uint8_t COUNT    = 7u;
+}
+
+// Cumulative-since-boot deferral counts, one per TxCls. Console-only today
+// ([cantx], 1 Hz): promoting them to the uplink means a new additive MsgType in
+// config/generate_udp_protocol.py, NOT an append to BridgeTxDiag — appending would
+// move BRIDGE_TX_DIAG_SIZE, and the FW 7→8 Profile-slot precedent bumped
+// PROTOCOL_VERSION for exactly that, which would take the link dark against the
+// FW 14 board currently aboard. Owner decision, deliberately not taken here.
+struct TxDeferCensus { uint32_t by_class[TxCls::COUNT]; };
+TxDeferCensus can_buses_defer_census();
+
+// All three sends are presence-gated (bus_partner_present(); TxResult::FAILED =
+// refused, nothing queued) — the bridge never transmits into a partner-less bus
+// (2026-07-05). `cls` is the caller's TxCls, for the deferral census above.
+TxResult can_bb_tx(const ODrive::CanFrame& f, uint8_t cls);         // CAN1 Ball Butler TX (time-sync + relayed BB cmds)
+TxResult can_cone_tx(const ODrive::CanFrame& f, uint8_t cls);       // CAN2 cone TX (time-sync)
+TxResult can_jugglebot_tx(const ODrive::CanFrame& f, uint8_t cls);  // CAN3 Jugglebot core TX (setpoints, RPC, fault cmds)
+
+// Thin bool-compatible wrappers, kept ONLY to bound the churn of the tri-state
+// landing: the three cold-start move ladders have ~20 call sites between them and
+// need nothing beyond "did it reach the wire". They are NOT a deprecated path —
+// but note the semantics MOVED underneath them: a deferral now reads TRUE, which
+// is why a leg_homing ladder no longer aborts mid-move on TX pressure (aborting
+// there left the leg with a live input_vel and no monitor — strictly worse).
+inline bool can_bb_send(const ODrive::CanFrame& f, uint8_t cls = TxCls::OTHER) {
+  return tx_reached_the_wire(can_bb_tx(f, cls));
+}
+inline bool can_cone_send(const ODrive::CanFrame& f, uint8_t cls = TxCls::OTHER) {
+  return tx_reached_the_wire(can_cone_tx(f, cls));
+}
+inline bool can_jugglebot_send(const ODrive::CanFrame& f, uint8_t cls = TxCls::OTHER) {
+  return tx_reached_the_wire(can_jugglebot_tx(f, cls));
+}
 
 // "Never command a confirmed-dead bus." True iff CAN3 (the Jugglebot core bus
 // carrying the leg + hand ODrives AND the Platform-Teensy relay partner) is NOT
@@ -392,6 +479,11 @@ struct BusRxHealth {
   // pin, the ROS render test, and the on-hardware [canhealth] serial line.
   // Building a FlexCAN_T4 host shim to close it is real work, deliberately not
   // done here.
+  // PARTIALLY CLOSED 2026-08-24: the write()-return → TxResult mapping that
+  // decides whether this counter moves is now the header-inline pure classifier
+  // classify_tx_write() above, natively pinned by
+  // tests/firmware/native/test_can_tx_result.cpp. What remains untested on the
+  // host is the increment SITE (still inside can_buses.cpp), not the rule.
   uint32_t tx_deferred;   // sends whose write() returned -1 (queued, NOT dropped)
   uint16_t tx_q_hwm;      // peak txBuffer occupancy at a send instant (cap 64)
   // ── Sustained-confinement tracking (2026-07-29 CAN3 flap) ─────────────────
