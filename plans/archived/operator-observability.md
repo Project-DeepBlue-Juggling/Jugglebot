@@ -1,9 +1,11 @@
 ---
 title: Operator observability quartet — chart units, UDP message rates, ODrive error propagation, QTM calibrate gate
 created: 2026-08-21
-status: active
+status: completed
+completed: 2026-08-25
+archived: 2026-08-25
 owner: harrison
-last_updated: 2026-08-22
+last_updated: 2026-08-25
 related_logbook:
   - 2026-08-21-operator-observability-plan.md
   - 2026-07-11-gui-can-traffic-per-bus-panel.md   # the CAN panel — the end-to-end template for F2
@@ -28,12 +30,17 @@ related_code:
 
 # Operator observability quartet
 
-> **Status 2026-08-22: SOFTWARE-COMPLETE.** F3 `68da188`, F4 `56424c9` (+
-> Phase-A audit fixes `4c33a90`), F1 `cddd670`, F2 `f59eb9b` (+ Phase-B audit
-> fixes `395b7dd`); both phase audits done, both `--full` closures green
-> (Phase A 2026-08-22 total 571 s; Phase B 2026-08-22 total 541 s, RESULT:
-> PASS each). Remaining: the § 8 operator bench checklist, then the
-> owner-timed merge-back to `mvp-trajectory-bringup`.
+> **Status 2026-08-25: ARCHIVED — completed.** All four features shipped
+> (F3 `68da188`, F4 `56424c9` + Phase-A audit fixes `4c33a90`, F1 `cddd670`,
+> F2 `f59eb9b` + Phase-B audit fixes `395b7dd`; both phase audits done, both
+> `--full` closures green — Phase A 2026-08-22 total 571 s, Phase B 2026-08-22
+> total 541 s, RESULT: PASS each) and **merged to `mvp-trajectory-bringup` as
+> `b705a21`** on 2026-08-25, colcon-built. The merged quartet was
+> **bench-validated at the 2026-08-25 sitting** — owner verdict: all four
+> features landed cleanly. The § 8 operator bench checklist has been run and
+> every item dispositioned; see **Archival note — 2026-08-25** at the foot of
+> this file for what shipped, where it lives, and where the residue was
+> re-homed.
 
 Four owner-requested features, one branch. All four are **pure software — no
 firmware change, no Teensy flash, no PROTOCOL_VERSION bump anywhere**. Ordered
@@ -153,7 +160,10 @@ restoring, and its throttle scaffolding survives unused in
   boolean rising-edge with a per-axis change-detector over
   `(active_errors, disarm_reason)` tuples across `motor_states`. On any change
   to a non-zero state emit
-  `{type: FAULT, label: 'ODrive: leg 3', detail: 'active=SPINOUT_DETECTED (0x4000000); disarm=—'}`.
+  `{type: FAULT, label: 'ODRIVE ERROR: leg 3 SPINOUT_DETECTED', detail: 'active=SPINOUT_DETECTED (0x4000000); disarm=—'}`
+  (the trailing `…` is appended only when the chosen mask decodes to MORE THAN
+  ONE name — a single active `SPINOUT_DETECTED` gets no ellipsis;
+  `main.js:409-410`).
   Keep the existing three boolean-flag events (they cover CAN/undervoltage).
   Handle the 7→9→7 axis-count shrink the same way the fault dots do
   (`main.js:351-365`).
@@ -425,3 +435,66 @@ from this plan's sections, adjudicates diffs, runs/verifies gates, commits.
   logs (`mocap_node`: "BB yaw span swept: N°") — that is the encoder-derived
   primary gate; the per-marker `arc_span` lines beside it are noise-inflated
   and are NOT the number to read.
+
+## Archival note — 2026-08-25
+
+Archived **completed**. All four features shipped, merged to
+`mvp-trajectory-bringup` as **`b705a21`**, and bench-validated at the
+2026-08-25 sitting — owner verdict: all four features landed cleanly.
+
+### What shipped, and where it lives
+
+| Feature | Where it lives now |
+|---------|--------------------|
+| **F3** — ODrive errors decoded by name + axis | `teensy_bridge_node._log_odrive_errors` and `_guard_fault_leg_hint`, plus `ros_ws/gui/js/odrive-errors.js`. Includes the 2026-08-25 owner-requested headline refinement (`ODRIVE ERROR: <axis> <NAME>`) — `logbook/2026-08-25-odrive-event-headline.md` |
+| **F4** — QTM-gated BB calibrate | the shared `mocap_status.py` predicate, the `mocap/status` topic, and the `bb_calibration.py` hardening (arc-span floor, mid-sweep invalidation, collection timeout) |
+| **F1** — charts in physical units | `axisUnitsFor` in `ros_ws/gui/js/telemetry-charts.js`, fed by the four generated constants |
+| **F2** — true per-type UDP rates | the 1 Hz `/udp_diag` publisher, `ros_ws/gui/js/udp-traffic.js`, and `LinkStats.tx_count_by_type` |
+
+### § 8 dispositions
+
+- **Bench checks 1–3 passed** at the 2026-08-25 sitting.
+- **3b exposed the per-type Gaps artifact.** Root cause **pre-dates F2 by
+  eleven weeks**: `client.py::_track_seq` (`2b605af`) tracks last-seq per
+  message *type*, but the wire carries ONE shared sequence counter per
+  (socket, direction), so any interleaved frame of another type scores a gap.
+  Diagnosis in `logbook/2026-08-25-udp-gap-column-artifact.md`; the fix is
+  scoped as P1–P4 of `plans/active/udp-channel-health.md`; and the misleading
+  column has **already been removed from the panel** (close-out,
+  `logbook/2026-08-25-observability-closeout-fixes.md`).
+- **Item 4 RESOLVED.** The first real calibrate swept **118.8°**, so
+  `MIN_ARC_DEG` was raised **20° → 60°** the same day.
+  `MIN_MARKER_RADIUS_MM` stays **20**, confirmed by that passing calibrate.
+  (Only the sweep gate moved: the per-marker INCLUSION threshold was split off
+  as `MIN_MARKER_ARC_DEG = 20` — unchanged behaviour — because a marker
+  occluded inside a sweep that legally cleared 60° fits a short arc and must
+  still be folded into the axis average.)
+- **`generate_config --no-external` RESOLVED.** The flag landed 2026-08-25,
+  the default is unchanged, and external writes are now announced with an
+  `EXTERNAL:` line naming the absolute destination.
+- **C5 count corrected.** The archival review found a **sixth** unpinned
+  vendored table (`tests/hardware/free_platform_test.py`), and the fix closed
+  the whole vendored-decoder **class** rather than the one instance —
+  `supported_platform_test.py`'s disarm-blindness and `single_leg_test.py`'s
+  (disarm-blind *and* dropping unknown bits) went with it;
+  `tests/hardware/tilt_cal_grid.py` was checked and **exonerated**. Result:
+  **6/6 tables pinned, and the decoders pinned on behaviour**, not merely on
+  their tables.
+
+### Named but not scheduled (seen, not forgotten)
+
+- ZMQ endpoint rates (six sockets, `motion/ipc.py`) — needs net-new counting
+  in another process.
+- `odrive_errors` as a KeyValue on `/link_status`, for the minimap.
+- `panels.js` unit consistency (motor grid hand → mm, velocities → physical).
+
+### Watch item, next bench run
+
+`tests/hardware/supported_platform_test.py` B4 / `test_estop` **and**
+`tests/hardware/single_leg_test.py` `test_estop` may now **fail loudly** if the
+firmware records a disarm reason for a user-requested IDLE. Both report and
+score it the same way: the named `fault_summary` is printed and folded into the
+pass/fail terms, so it is a scored **FAIL**, not a raised `RuntimeError` that
+aborts the run before the other criteria are reported. The faithful both-masks
+gate was kept **deliberately** — judge from the printed `fault_summary` before
+touching the criterion.

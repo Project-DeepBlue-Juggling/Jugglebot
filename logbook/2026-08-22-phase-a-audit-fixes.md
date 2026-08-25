@@ -16,7 +16,7 @@ files_changed:
   - tests/ros/test_teensy_bridge_node_read.py
   - tests/ros/test_orchestrator_node.py
   - tests/ros/test_gui_geometry.py
-  - plans/active/operator-observability.md
+  - plans/archived/operator-observability.md
   - logbook/INDEX.md
 subsystem:
   - ros

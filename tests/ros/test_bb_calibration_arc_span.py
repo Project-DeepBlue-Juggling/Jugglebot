@@ -62,6 +62,7 @@ import pytest
 
 from jugglebot.bb_calibration import (
     MIN_ARC_DEG,
+    MIN_MARKER_ARC_DEG,
     MIN_MARKER_RADIUS_MM,
     angular_span_deg,
     arc_span_deg,
@@ -189,9 +190,9 @@ def test_truncated_sweep_is_refused_by_name(noise_mm):
 
     ⚠ AT EVERY NOISE LEVEL. This is the case the marker-only floor got wrong:
     at 0.1 mm the same 5° arc's circle fit collapses to a 9.6 mm radius reading
-    56° of span, and at 0.5 mm to 2.9 mm reading 328° — both comfortably over
-    the 20° floor. The refusal now comes from BB's yaw series, which reads 5.0°
-    regardless.
+    56° of span, and at 0.5 mm to 2.9 mm reading 328° — the first is over the
+    old 20° floor and the second is over the 60° one too. The refusal now comes
+    from BB's yaw series, which reads 5.0° regardless.
     """
     data = _sweep_dataset(5.0, noise_mm=noise_mm)
     with pytest.raises(ValueError) as exc:
@@ -247,7 +248,8 @@ def test_truncated_sweep_would_have_been_accepted_without_the_floor():
     data = _sweep_dataset(5.0)
     result = run_calibration(data, _yaw_readings(data, 5.0),
                              pitch_z_offset_mm=PITCH_Z_OFFSET_MM,
-                             min_arc_deg=0.0, min_radius_mm=0.0)
+                             min_arc_deg=0.0, min_radius_mm=0.0,
+                             min_marker_arc_deg=0.0)
     assert result.bb_position_mm is not None
 
 
@@ -266,15 +268,44 @@ def test_without_the_floors_a_noisy_truncated_sweep_blames_the_wrong_subsystem(
     with pytest.raises(ValueError) as exc:
         run_calibration(data, _yaw_readings(data, 5.0),
                         pitch_z_offset_mm=PITCH_Z_OFFSET_MM,
-                        min_arc_deg=0.0, min_radius_mm=0.0)
+                        min_arc_deg=0.0, min_radius_mm=0.0,
+                        min_marker_arc_deg=0.0)
     assert 'marker visibility' in str(exc.value)
     assert 'ARC_SPAN_TOO_SMALL' not in str(exc.value)
 
 
+@pytest.mark.parametrize('noise_mm', NOISE_LEVELS)
+def test_sweep_just_below_the_floor_is_refused(noise_mm):
+    """The lower bracket of the 60° floor, at every noise level.
+
+    55° is a sweep that really happened and would have passed the old 20° floor
+    — it is refused now because the owner raised the floor to 60° on 2026-08-25
+    (a real calibrate swept 118.8°). The refusal has to be noise-independent,
+    which is exactly what the PRIMARY gate buys: it reads BB's encoder-derived
+    yaw series, so 55° reads 55.0° whatever the markers are doing. The
+    marker-derived span cannot make this promise — at 0.5 mm a 59° sweep already
+    reads ≥60° at the fitted centre (measured 2026-08-25).
+    """
+    data = _sweep_dataset(55.0, noise_mm=noise_mm)
+    with pytest.raises(ValueError) as exc:
+        run_calibration(data, _yaw_readings(data, 55.0),
+                        pitch_z_offset_mm=PITCH_Z_OFFSET_MM)
+    assert 'ARC_SPAN_TOO_SMALL' in str(exc.value)
+    assert '55.0' in str(exc.value), 'the refusal must report the span it read'
+
+
 def test_sweep_just_above_the_floor_succeeds():
-    """The floor rejects truncation, not a slow-but-real sweep."""
-    data = _sweep_dataset(25.0)
-    result = run_calibration(data, _yaw_readings(data, 25.0),
+    """The upper bracket: the floor rejects truncation, not a real sweep.
+
+    65° — just above the 60° floor, and unlike the 25° case this replaced it is
+    also above the regime where the pre-existing ``max_dev > 3.0`` axis check
+    rejects the fit anyway: at 65° the same sweep still lands at 0.1 mm and
+    0.5 mm of marker noise (1.5 mm position error at 0.5 mm, measured
+    2026-08-25). Raising the floor closed that gap between "the arc floor admits
+    it" and "the pipeline can actually use it".
+    """
+    data = _sweep_dataset(65.0)
+    result = run_calibration(data, _yaw_readings(data, 65.0),
                              pitch_z_offset_mm=PITCH_Z_OFFSET_MM)
     assert np.linalg.norm(result.bb_position_mm[:2] - BB_POS[:2]) < 0.5
 
@@ -317,6 +348,43 @@ def test_one_stubby_marker_is_excluded_not_fatal():
     assert result.marker_metrics[1].status == 'ok'
 
 
+def test_marker_between_the_two_floors_is_kept_and_the_sweep_gate_still_holds():
+    """The two floors are separate numbers, and this is the gap between them.
+
+    A marker occluded for part of an otherwise legal sweep fits a SHORT arc —
+    30° here: above ``MIN_MARKER_ARC_DEG`` (20°) and below ``MIN_ARC_DEG``
+    (60°). It must stay INCLUDED, because the sweep it belongs to covered 180°
+    and holding a per-marker fit to the SWEEP's floor would drop good markers
+    out of a good calibrate. That is why the 2026-08-25 raise moved one number
+    and not the other. The primary gate is unaffected by the split: 30° of YAW
+    is still refused.
+    """
+    assert MIN_MARKER_ARC_DEG == 20.0
+    assert MIN_ARC_DEG == 60.0
+
+    data = _sweep_dataset(180.0)
+    partial_centre = BB_POS + Z_OFFSETS[0] * AXIS
+    data[0] = [p for p in _arc(0.0, math.radians(30.0), 200,
+                               radius=RADII[0], centre=partial_centre)]
+
+    result = run_calibration(data, _yaw_readings(data, 180.0),
+                             pitch_z_offset_mm=PITCH_Z_OFFSET_MM)
+    m0 = result.marker_metrics[0]
+    assert MIN_MARKER_ARC_DEG < m0.arc_span_deg < MIN_ARC_DEG, (
+        'precondition: marker 0 must fit an arc BETWEEN the two floors '
+        f'(read {m0.arc_span_deg:.1f}°)')
+    assert m0.status == 'ok', (
+        f'a marker occluded during a legal sweep was excluded: {m0.reason}')
+    assert np.linalg.norm(result.bb_position_mm[:2] - BB_POS[:2]) < 0.5
+
+    # …and the sweep gate keeps its own, higher floor: a 30° SWEEP is refused.
+    short = _sweep_dataset(30.0)
+    with pytest.raises(ValueError) as exc:
+        run_calibration(short, _yaw_readings(short, 30.0),
+                        pitch_z_offset_mm=PITCH_Z_OFFSET_MM)
+    assert 'ARC_SPAN_TOO_SMALL' in str(exc.value)
+
+
 def test_one_noisy_stubby_marker_is_excluded_by_radius_not_kept():
     """The inversion, pinned. A noisy stubby marker used to read the WIDEST span
     of the five and was therefore the one marker guaranteed to be kept — its
@@ -341,9 +409,9 @@ def test_one_noisy_stubby_marker_is_excluded_by_radius_not_kept():
 
 
 def test_metrics_carry_the_measured_span():
-    """The span is reported, not just tested against — the owner confirms or
-    raises MIN_ARC_DEG from the first hardware calibrate's logged value
-    (plans/active/operator-observability.md § 8), and mocap_node logs it."""
+    """The span is reported, not just tested against — mocap_node logs it, and
+    the first hardware calibrate's logged value is what MIN_ARC_DEG was raised
+    from on 2026-08-25 (plans/archived/operator-observability.md § 8)."""
     data = _sweep_dataset(180.0)
     result = run_calibration(data, _yaw_readings(data, 180.0),
                              pitch_z_offset_mm=PITCH_Z_OFFSET_MM)
@@ -459,10 +527,11 @@ def test_arc_refusal_is_distinct_from_the_insufficient_points_refusal():
 
 
 def test_default_floor_is_the_documented_value():
-    """20° is a deliberate, conservative choice pending hardware confirmation;
+    """60° is the owner's 2026-08-25 value, set from hardware (a real calibrate
+    swept 118.8°, and the Phase-A probe put the noise-defeated regime at ≤25°);
     a silent change to it should show up as a failing test, not as a quietly
     different acceptance threshold on the next calibrate."""
-    assert MIN_ARC_DEG == 20.0
+    assert MIN_ARC_DEG == 60.0
 
 
 def test_fit_circle_3d_is_unchanged_by_the_shared_plane_basis():

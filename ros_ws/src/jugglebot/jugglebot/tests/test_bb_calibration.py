@@ -563,30 +563,34 @@ def run_tests():
         except ValueError as e:
             check(f'180° sweep still succeeds ({tag})', False, str(e))
 
-    # 15c-bis — a slow-but-real 25° sweep, just above the floor, is NOT rejected.
+    # 15c-bis — a slow-but-real 65° sweep, just above the floor, is NOT rejected.
     #
-    # ⚠ NOISELESS ON PURPOSE, and the reason is worth knowing. Add 0.1 mm and
-    # this same 25° sweep fails — not at the arc floor but at the pre-existing
-    # `max_dev > 3.0` axis-consistency check (3.12 mm at 0.1 mm, 4.82 mm at
-    # 0.5 mm, measured 2026-08-22). A 25° arc simply does not constrain a circle
-    # centre well enough to survive real marker noise. So MIN_ARC_DEG = 20°
-    # admits sweeps that the downstream check rejects anyway — which is a floor
-    # the owner may want to RAISE, not lower, once the first hardware calibrate
-    # reports its yaw span (plans/active/operator-observability.md § 8 item 4).
+    # The floor was 20° until 2026-08-25, and this case was a 25° sweep — which
+    # the arc floor admitted but the pipeline could not actually use: add 0.1 mm
+    # of noise and it failed the pre-existing `max_dev > 3.0` axis-consistency
+    # check instead (3.12 mm at 0.1 mm, 4.82 mm at 0.5 mm, measured 2026-08-22),
+    # because a 25° arc does not constrain a circle centre well enough to
+    # survive real marker noise. The owner raised MIN_ARC_DEG to 60° from the
+    # first hardware calibrate (which swept 118.8°), which closes that gap: at
+    # 65° the same sweep lands at 0.1 mm and 0.5 mm noise too (measured
+    # 2026-08-25). Kept noiseless here so the 0.5 mm tolerance stays a tight one.
+    # Only the SWEEP floor moved: the per-marker inclusion floor was split off
+    # as MIN_MARKER_ARC_DEG and stayed at 20°, so what this case exercises is
+    # the primary yaw gate, and every marker here traces the full 65° anyway.
     slow_data = generate_calibration_dataset(
         TRUE_POS, TRUE_AXIS, RADII, Z_OFFSETS,
-        n_sweep=200, sweep_range=(0.0, math.radians(25.0)),
+        n_sweep=200, sweep_range=(0.0, math.radians(65.0)),
         noise_std=0.0, rng=np.random.default_rng(42),
     )
-    slow_yaw = sweep_yaw_readings(_m3_end_yaw(slow_data), span_deg=25.0)
+    slow_yaw = sweep_yaw_readings(_m3_end_yaw(slow_data), span_deg=65.0)
     try:
         slow_result = run_calibration(slow_data, slow_yaw,
                                       pitch_z_offset_mm=PITCH_Z_OFFSET)
         slow_err = np.linalg.norm(slow_result.bb_position_mm[:2] - TRUE_POS[:2])
-        check('25° sweep still succeeds (noiseless)', slow_err < 0.5,
+        check('65° sweep still succeeds (noiseless)', slow_err < 0.5,
               f'error = {slow_err:.4f} mm')
     except ValueError as e:
-        check('25° sweep still succeeds (noiseless)', False, str(e))
+        check('65° sweep still succeeds (noiseless)', False, str(e))
 
     # 15b — clean 5° data passes with the floors lowered. This is the danger
     # being pinned, not just the fix: it is exactly what the pre-floor code did.
@@ -599,7 +603,8 @@ def run_tests():
     try:
         r15 = run_calibration(clean_trunc, clean_trunc_yaw,
                               pitch_z_offset_mm=PITCH_Z_OFFSET,
-                              min_arc_deg=0.0, min_radius_mm=0.0)
+                              min_arc_deg=0.0, min_radius_mm=0.0,
+                              min_marker_arc_deg=0.0)
         check('Same data accepted with the floors disabled',
               r15.bb_position_mm is not None)
     except ValueError as e:

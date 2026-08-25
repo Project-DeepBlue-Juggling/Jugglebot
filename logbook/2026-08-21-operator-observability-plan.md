@@ -2,13 +2,16 @@
 title: Operator observability quartet — plan opened on its own worktree branch
 type: feature
 date: 2026-08-21
-status: in-progress
+status: resolved
 phase: "operator-observability planning"
 related_plan: operator-observability.md
 files_changed:
-  - plans/active/operator-observability.md
+  - plans/archived/operator-observability.md
+  - plans/archived/INDEX.md
   - plans/active/INDEX.md
   - logbook/INDEX.md
+  - ros_ws/src/jugglebot/jugglebot/mocap_node.py
+  - logbook/2026-08-22-phase-a-audit-fixes.md
 subsystem:
   - gui
   - can
@@ -41,7 +44,7 @@ Work proceeds on worktree `~/Desktop/Jugglebot-obs`, branch
 hand-tuning/throw-envelope unit, immediately before the ILC fold-in merge —
 so it runs fully independent of the live ILC session in the main tree.
 Order F3 → F4 → F1 → F2; two audit points (one per pair); details and scope
-decisions (owner, 2026-08-21) in `plans/active/operator-observability.md`.
+decisions (owner, 2026-08-21) in `plans/archived/operator-observability.md`.
 
 ## Verification
 
@@ -62,3 +65,13 @@ Docs-only. Coverage traced, not assumed:
 
 `pytest tests/sim/test_plans_index.py tests/sim/test_logbook_front_matter.py
 tests/sim/test_logbook_search.py -q` (run 2026-08-21): **103 passed in 0.60 s**.
+
+## Close-out — 2026-08-25
+
+`status: in-progress` → **`resolved`**: the plan this entry opened is closed.
+All four features shipped, merged to `mvp-trajectory-bringup` as `b705a21`
+(colcon-built) and bench-validated at the 2026-08-25 sitting; the plan was
+archived `completed` the same day to
+`plans/archived/operator-observability.md`, whose **Archival note —
+2026-08-25** carries the § 8 dispositions and the residue map. Path references
+above were re-pointed from `plans/active/` at that move.

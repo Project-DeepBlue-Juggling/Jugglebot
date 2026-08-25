@@ -76,7 +76,7 @@ export function errorNames(mask) {
 }
 
 /**
- * Render one axis's error pair the way the bridge renders it in the shell:
+ * Render one axis's error pair as one line of decoded names plus their hex mask:
  * `active=SPINOUT_DETECTED (0x4000000); disarm=—`.
  *
  * @param {number} active `active_errors`.

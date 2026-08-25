@@ -9,12 +9,26 @@ Usage:
                                                # diff every artifact and
                                                # delivered copy, WRITE NOTHING.
                                                # exit 0 = fresh, 1 = drift.
+    python generate_config.py --no-external    # write ONLY inside this repo:
+                                               # ../BallButler is left alone.
+                                               # WRITE-PATH FLAG ONLY: it is a
+                                               # NO-OP under --check, which
+                                               # writes nothing anyway but
+                                               # still READS the external
+                                               # artifacts and reports them as
+                                               # EXTERNAL DRIFT.
 
 The exit code covers IN-REPO destinations only. `../BallButler` is a separate
 git checkout on its own branch; its drift prints as `EXTERNAL DRIFT:` and is
 never allowed to fail this repo's gate or raise its bring-up banner. Anything
 that could not be checked (absent parent dir, missing hardware YAML) prints as
 `SKIPPED:` / `NOT CHECKED:` so a partial run can never masquerade as a clean one.
+
+Delivery into that external checkout is the DEFAULT and stays that way — the two
+repos' firmware share these headers, so suppressing it by default would just move
+the drift somewhere quieter. But the write path now names the destination
+directory on an `EXTERNAL:` line, and `--no-external` turns the writes off for a
+run where dirtying another checkout is not wanted.
 
 The --check gate is dependency-light on purpose (stdlib + PyYAML only, no
 numpy/casadi): jugglebot_launch.py runs it with the system python3.8, which
@@ -31,6 +45,7 @@ Outputs:
 
 from __future__ import annotations
 
+import argparse
 import math
 import sys
 from pathlib import Path
@@ -1151,22 +1166,23 @@ def _print_bb_warning():
 
 
 def main(argv=None):
-    argv = list(sys.argv[1:] if argv is None else argv)
+    parser = argparse.ArgumentParser(
+        prog="generate_config.py",
+        description="Render C++/Python/JS constants from the config YAML files.")
+    parser.add_argument(
+        "yaml_path", nargs="?", default=None,
+        help="protocol YAML (default: config/protocol_config.yaml)")
+    parser.add_argument(
+        "--check", action="store_true",
+        help="drift gate: render in memory, diff every artifact, WRITE NOTHING")
+    parser.add_argument(
+        "--no-external", dest="no_external", action="store_true",
+        help="suppress every write outside this repo (../BallButler); the "
+             "in-repo artifacts are generated exactly as usual")
+    args = parser.parse_args(argv)
 
-    check_only = False
-    if "--check" in argv:
-        check_only = True
-        argv = [a for a in argv if a != "--check"]
-
-    positional = [a for a in argv if not a.startswith("-")]
-    unknown = [a for a in argv if a.startswith("-")]
-    if unknown:
-        print(f"Error: unknown option(s): {' '.join(unknown)}", file=sys.stderr)
-        print("Usage: generate_config.py [--check] [path/to/protocol_config.yaml]",
-              file=sys.stderr)
-        return 2
-
-    yaml_path = Path(positional[0]) if positional else DEFAULT_YAML
+    check_only = args.check
+    yaml_path = Path(args.yaml_path) if args.yaml_path else DEFAULT_YAML
     if not yaml_path.exists():
         print(f"Error: YAML file not found: {yaml_path}", file=sys.stderr)
         return 1
@@ -1209,7 +1225,14 @@ def main(argv=None):
 
     # ── Write path ──
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    external_written = {}      # destination DIRECTORY -> files written into it
+    n_external_suppressed = 0
     for dest, content, label in plan:
+        if is_external(dest):
+            if args.no_external:
+                n_external_suppressed += 1
+                continue
+            external_written[dest.parent] = external_written.get(dest.parent, 0) + 1
         dest.write_text(content, encoding="utf-8")
         print(f"{(label + ':').ljust(10)} {_rel(dest)}")
     for dest in skipped:
@@ -1217,8 +1240,21 @@ def main(argv=None):
     for note in notes:
         print(note)
 
-    # Print BallButler warning at the very end so it's impossible to miss
-    if not bb_available:
+    # A write into ANOTHER git checkout is never silent again. The per-file
+    # lines above print a repo-parent-relative path, which reads like an in-repo
+    # path unless you already know ../BallButler is a separate repository — two
+    # sessions were spent chasing config the generator had dirtied there. Name
+    # the absolute destination directory, and name the way to turn it off.
+    for root in sorted(external_written):
+        print(f"EXTERNAL: {external_written[root]} file(s) written OUTSIDE this "
+              f"repo, into {root} (suppress with --no-external)")
+    if n_external_suppressed:
+        print(f"EXTERNAL: {n_external_suppressed} file(s) outside this repo NOT "
+              f"written (--no-external)")
+
+    # Print BallButler warning at the very end so it's impossible to miss.
+    # Not under --no-external: its absence is exactly what was asked for.
+    if not bb_available and not args.no_external:
         _print_bb_warning()
     return 0
 

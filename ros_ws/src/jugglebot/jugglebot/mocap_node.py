@@ -512,10 +512,11 @@ class MocapNode(Node):
             f'({result.yaw_offset_rad:.4f} rad)'
         )
         self.get_logger().info(f'Yaw uncertainty: ±{result.yaw_offset_std_deg:.2f}°')
-        # THE number the owner reads to confirm or raise MIN_ARC_DEG
-        # (plans/active/operator-observability.md § 8 item 4). It is BB's own
-        # reported yaw span — encoder-derived, so unlike the per-marker
-        # arc_span below it is not inflated by QTM marker noise.
+        # THE number MIN_ARC_DEG was set from — 118.8° on the first hardware
+        # calibrate, 2026-08-25 (plans/archived/operator-observability.md § 8
+        # item 4, RESOLVED). It is BB's own reported yaw span — encoder-derived,
+        # so unlike the per-marker arc_span below it is not inflated by QTM
+        # marker noise.
         self.get_logger().info(
             f'BB yaw span swept: {result.yaw_span_deg:.1f}° '
             f'(floor MIN_ARC_DEG={MIN_ARC_DEG:.1f}°)')

@@ -136,9 +136,14 @@ let repaintTimer = null;
 //   badge   shown when ANY cause is active; tooltip names the live causes
 //   rates   '--' under ANY cause (a rate is only meaningful when the counters
 //           behind it are both fresh AND trustworthy)
-//   counts  cumulative columns keep their last values under diagStale/rosDown
-//           (a counter is a total, not a rate — the last one is still the last
-//           true total) but are dimmed via the .udp-stale class
+//   counts  the TABLE carries no cumulative column at all, so nothing in a row
+//           can print a live-looking total while its rates read '--' (the row
+//           hover blanks with them too).  The only cumulative figures left in
+//           the panel are the aggregate error totals in the footer: they are
+//           labelled "cumulative" in the footer text itself and dimmed via the
+//           .udp-stale class, and they deliberately KEEP their last values —
+//           a crc/decode total is the truth about a link precisely when that
+//           link has just gone down.
 const staleState = {
     diagStale: false,
     healthStale: false,
@@ -503,30 +508,33 @@ function paint() {
     const newest = samples[samples.length - 1];
     const pair = ratesUntrusted() ? null : windowPair();
 
+    // No gaps column: per-type gaps are shared wire-seq artifacts (plans/active/udp-channel-health.md).
     let html = banner + `<table class="topic-table udp-table">
         <thead><tr>
             <th class="col-topic" title="teensy_link MsgType — the wire message type, by enum name">Type</th>
-            <th class="col-rate" title="Jetson ← Teensy, true wire rate over the last ${windowSec} s (NOT the ROS view's browser-received Hz)">rx msg/s</th>
-            <th class="col-rate" title="Jetson → Teensy, true wire rate over the last ${windowSec} s (NOT the ROS view's browser-received Hz)">tx msg/s</th>
-            <th class="col-rate" title="Cumulative sequence gaps on this type since the bridge node started (blank = none)">gaps</th>
+            <th class="col-rate" title="Jetson ← Teensy, true wire rate over the last ${windowSec} s (NOT the ROS view's browser-received Hz)">rx (msg/s)</th>
+            <th class="col-rate" title="Jetson → Teensy, true wire rate over the last ${windowSec} s (NOT the ROS view's browser-received Hz)">tx (msg/s)</th>
         </tr></thead><tbody>`;
 
     for (const name of typeOrder) {
         const rxKey = `rx_${name}`;
         const txKey = `tx_${name}`;
-        const gaps = newest.kv[`gap_${name}`] || 0;
         const rxRate = rateOf(pair, rxKey);
         const txRate = rateOf(pair, txKey);
         const idle = !(rxRate > 0) && !(txRate > 0);
-        const rxCount = newest.kv[rxKey] || 0;
-        const txCount = newest.kv[txKey] || 0;
-        const title = `${name}: rx ${rxCount} / tx ${txCount} frames since node start`
-            + (gaps ? `, ${gaps} sequence gaps` : '');
+        // The hover totals are CUMULATIVE, a different unit from the msg/s
+        // columns — so they say so, and they blank exactly when the rates do.
+        // A frozen total beside a '--' rate is the deception this panel exists
+        // to refuse (see "Staleness state").
+        const title = pair
+            ? `${name}: cumulative since node start — rx ${newest.kv[rxKey] || 0}`
+              + ` / tx ${newest.kv[txKey] || 0} frames`
+            : `${name}: ${staleHeadline() || 'not enough samples yet'} — rates and`
+              + ` cumulative totals unavailable`;
         html += `<tr class="${idle ? 'udp-row-idle' : ''}" title="${title}">
             <td class="col-topic">${name}</td>
             <td class="col-rate">${fmtRate(rxRate)}</td>
             <td class="col-rate">${fmtRate(txRate)}</td>
-            <td class="col-rate${gaps ? ' udp-gaps' : ''}">${gaps || ''}</td>
         </tr>`;
     }
     html += '</tbody></table>';
@@ -566,5 +574,5 @@ function paintAggregates(newest, pair) {
         + `crc + decode failures are counted in rx_frames but in no per-type row, `
         + `which is why the rows can sum to less than the total. drain_capped = RX `
         + `drain hit its per-wakeup frame cap (backlog picked up on the next wakeup).">`
-        + `crc ${crc} · decode ${dec} · capped ${capped}</span>`;
+        + `cumulative: crc ${crc} · decode ${dec} · capped ${capped}</span>`;
 }

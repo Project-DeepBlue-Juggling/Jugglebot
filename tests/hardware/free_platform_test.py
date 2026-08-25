@@ -216,6 +216,13 @@ def decode_iq(data: bytes):
     return setpoint, measured
 
 
+# Vendored from jugglebot.can.odrive.ERROR_CODES (this harness deliberately
+# imports no ROS workspace).  PINNED by tests/ros/test_gui_geometry.py::
+# TestODriveErrorTablePins — the copy must stay equivalent to the authoritative
+# table.  Before that pin reached this file the copy had drifted: it stopped at
+# 0x1000000 and mislabelled that bit (WATCHDOG_TIMER_EXPIRED) as
+# 'ESTOP_REQUESTED', so a bench watchdog expiry printed the wrong cause and
+# SPINOUT_DETECTED — the 2026-08-10 leg-0 fault — printed nothing at all.
 ERROR_CODES = {
     0x01: 'INITIALIZING',
     0x02: 'SYSTEM_LEVEL',
@@ -233,12 +240,49 @@ ERROR_CODES = {
     0x4000: 'INVERTER_OVER_TEMP',
     0x8000: 'VELOCITY_LIMIT_VIOLATION',
     0x10000: 'POSITION_LIMIT_VIOLATION',
-    0x1000000: 'ESTOP_REQUESTED',
+    0x1000000: 'WATCHDOG_TIMER_EXPIRED',
+    0x2000000: 'ESTOP_REQUESTED',
+    0x4000000: 'SPINOUT_DETECTED',
+    0x8000000: 'BRAKE_RESISTOR_DISARMED',
+    0x10000000: 'THERMISTOR_DISCONNECTED',
+    0x40000000: 'CALIBRATION_ERROR',
 }
 
 
 def error_names(bitmask: int) -> list:
-    return [name for bit, name in ERROR_CODES.items() if bitmask & bit]
+    """Decode an ODrive error bitmask into names.
+
+    Unknown bits survive as ONE aggregate UNKNOWN(0x…) entry rather than being
+    silently dropped — a firmware code this build's table has never seen must
+    still reach the operator standing next to the robot.  Same contract as
+    jugglebot.can.odrive.error_names (and the GUI's odrive-errors.js).
+    """
+    known_mask = 0
+    names = []
+    for bit, name in ERROR_CODES.items():
+        if bitmask & bit:
+            names.append(name)
+        known_mask |= bit
+    unknown = bitmask & ~known_mask
+    if unknown:
+        names.append(f'UNKNOWN(0x{unknown:X})')
+    return names
+
+
+def decode_axis_errors(active: int, disarm: int) -> str:
+    """'active=[NAME,...] disarm=[NAME,...] 0x<active>/0x<disarm>'.
+
+    BOTH MASKS, ALWAYS — same shape and same reason as
+    teensy_bridge_node._decode_axis_errors.  The 2026-08-10 leg-0 spinout had
+    active_errors == 0 and the truth (SPINOUT_DETECTED) only in disarm_reason:
+    active_errors self-heals, disarm_reason is sticky until CLEAR_ERRORS.  A
+    bench report that reads one mask is blind to exactly the class of fault
+    that already bit this robot.  The raw hex pair rides along so a pasted log
+    line stays decodable even against a table that later gains a bit.
+    """
+    return (f'active=[{",".join(error_names(active))}] '
+            f'disarm=[{",".join(error_names(disarm))}] '
+            f'0x{active:X}/0x{disarm:X}')
 
 
 # ---------------------------------------------------------------------------
@@ -261,10 +305,32 @@ class AxisState:
     last_heartbeat: float = 0.0
     heartbeat_count: int = 0
     last_encoder_time: float = 0.0
+    error_frame_count: int = 0   # Get_Error frames seen (freshness, not a fault)
 
     @property
     def has_errors(self) -> bool:
+        """Active-error predicate (the raw ODrive bit)."""
         return self.active_errors != 0
+
+    @property
+    def has_fault(self) -> bool:
+        """EITHER mask is set — the predicate every report site gates on.
+
+        has_errors alone is blind to a self-healed fault: SPINOUT_DETECTED
+        (the 2026-08-10 leg-0 event) clears out of active_errors but stays in
+        the sticky disarm_reason until CLEAR_ERRORS.  Gating the bench reports
+        on active_errors only meant that fault printed nothing at all.
+
+        Safe against stale latches because every test clears errors and then
+        waits for a post-clear Get_Error frame (see clear_all_errors) before
+        anything is gated on this.
+        """
+        return self.has_errors or self.disarm_reason != 0
+
+    @property
+    def fault_summary(self) -> str:
+        """Both masks, decoded — see decode_axis_errors."""
+        return decode_axis_errors(self.active_errors, self.disarm_reason)
 
     @property
     def state_name(self) -> str:
@@ -291,6 +357,7 @@ class PlatformTestHarness:
 
     CAN_SEND_DELAY_S = 0.002
     HEARTBEAT_TIMEOUT_S = 2.0
+    ERROR_FRESH_TIMEOUT_S = 0.5   # bounded wait for a post-CLEAR_ERRORS frame
 
     def __init__(self, interface: str = 'socketcan', channel: str = 'can0'):
         self._interface = interface
@@ -329,7 +396,7 @@ class PlatformTestHarness:
                 for axis_id in LEG_AXES:
                     s = self.states[axis_id]
                     print(f"    Axis {axis_id}: {s.state_name}, "
-                          f"errors: {s.active_errors}")
+                          f"{s.fault_summary}")
                 return
             missing = [a for a in LEG_AXES if a not in received]
             if len(received) > 0 and time.time() % 2 < 0.1:
@@ -400,6 +467,7 @@ class PlatformTestHarness:
         s = self.states[axis_id]
         s.active_errors = errors
         s.disarm_reason = disarm
+        s.error_frame_count += 1
 
     def _handle_encoder(self, axis_id: int, data: bytes):
         pos, vel = decode_encoder_estimate(data)
@@ -426,11 +494,32 @@ class PlatformTestHarness:
             self.send(encode_clear_errors(axis_id))
         time.sleep(0.1)
         self._poll()
+        # Bounded, best-effort wait for a POST-clear Get_Error frame on every
+        # axis before anything is judged.  The cached masks are only ever as
+        # new as the last frame, and disarm_reason is STICKY: without this wait
+        # a latch from an earlier session reads as a live fault and aborts the
+        # very test that just cleared it.  If the ODrives are not broadcasting
+        # Get_Error at all the counters never move, the loop simply expires and
+        # both masks stay 0 — identical behaviour to before.
+        #
+        # The baseline is snapshotted HERE, after the drain above, not before
+        # the CLEAR_ERRORS send: a frame already in flight when the clear went
+        # out carries a PRE-clear mask, and counting it would satisfy the wait
+        # with the very staleness the wait exists to exclude.  The drain
+        # absorbs those, so the frame this loop waits for provably arrived at
+        # least 0.1 s after the clear was sent.
+        frames_before = {a: self.states[a].error_frame_count for a in LEG_AXES}
+        deadline = time.time() + self.ERROR_FRESH_TIMEOUT_S
+        while time.time() < deadline:
+            self._poll(timeout=0.02)
+            if all(self.states[a].error_frame_count > frames_before[a]
+                   for a in LEG_AXES):
+                break
         for axis_id in LEG_AXES:
             s = self.states[axis_id]
-            if s.has_errors:
-                print(f"  WARNING: Axis {axis_id} still has errors: "
-                      f"{error_names(s.active_errors)}")
+            if s.has_fault:
+                print(f"  WARNING: Axis {axis_id} still faulted: "
+                      f"{s.fault_summary}")
         print(f"  Errors cleared on all axes.")
 
     def set_safe_limits_all(self):
@@ -454,10 +543,9 @@ class PlatformTestHarness:
         self._poll()
         for axis_id in LEG_AXES:
             s = self.states[axis_id]
-            if s.has_errors:
-                names = error_names(s.active_errors)
+            if s.has_fault:
                 raise RuntimeError(
-                    f"Axis {axis_id} has errors: {names}")
+                    f"Axis {axis_id} has faults: {s.fault_summary}")
 
     def all_heartbeats_fresh(self) -> bool:
         now = time.time()
@@ -514,7 +602,7 @@ class PlatformTestHarness:
         s = self.states[axis_id]
         raise RuntimeError(
             f"Axis {axis_id} failed to enter CLOSED_LOOP after {timeout_s}s. "
-            f"State: {s.state_name}, errors: {error_names(s.active_errors)}")
+            f"State: {s.state_name}, {s.fault_summary}")
 
     def enter_position_mode_all(self):
         self._poll()
@@ -575,10 +663,10 @@ class PlatformTestHarness:
             for axis_id in LEG_AXES:
                 if axis_id not in done and self.states[axis_id].trajectory_done:
                     done.add(axis_id)
-                if self.states[axis_id].has_errors:
-                    names = error_names(self.states[axis_id].active_errors)
+                if self.states[axis_id].has_fault:
                     raise RuntimeError(
-                        f"Axis {axis_id} error during trajectory: {names}")
+                        f"Axis {axis_id} fault during trajectory: "
+                        f"{self.states[axis_id].fault_summary}")
             if len(done) == NUM_LEGS:
                 return True
             if not self.all_heartbeats_fresh():
@@ -800,10 +888,10 @@ def test_stable_hold(harness: PlatformTestHarness):
             if dev > max_dev_mm[axis_id]:
                 max_dev_mm[axis_id] = dev
 
-            if s.has_errors and not errors_seen[axis_id]:
+            if s.has_fault and not errors_seen[axis_id]:
                 errors_seen[axis_id] = True
-                names = error_names(s.active_errors)
-                print(f"    ERROR at sample {i}: Axis {axis_id}: {names}")
+                print(f"    ERROR at sample {i}: Axis {axis_id}: "
+                      f"{s.fault_summary}")
 
         # Progress every 2 seconds
         if (i + 1) % 20 == 0:
@@ -907,10 +995,10 @@ def test_ff_toggle(harness: PlatformTestHarness):
                 dev = abs(current_mm - start_mm[axis_id])
                 if dev > max_dev[axis_id]:
                     max_dev[axis_id] = dev
-                if harness.states[axis_id].has_errors:
-                    names = error_names(harness.states[axis_id].active_errors)
+                if harness.states[axis_id].has_fault:
                     raise RuntimeError(
-                        f"Axis {axis_id} error during {label}: {names}")
+                        f"Axis {axis_id} fault during {label}: "
+                        f"{harness.states[axis_id].fault_summary}")
         return max_dev
 
     # Phase 1: baseline with FF on
@@ -1081,9 +1169,9 @@ def test_step_response(harness: PlatformTestHarness):
 
     # Check for errors
     for axis_id in LEG_AXES:
-        if harness.states[axis_id].has_errors:
-            names = error_names(harness.states[axis_id].active_errors)
-            print(f"    ERROR: Axis {axis_id}: {names}")
+        if harness.states[axis_id].has_fault:
+            print(f"    ERROR: Axis {axis_id}: "
+                  f"{harness.states[axis_id].fault_summary}")
             all_pass = False
 
     if all_pass:
@@ -1242,9 +1330,9 @@ def test_gravity_rotation(harness: PlatformTestHarness):
         # Check for errors
         has_err = False
         for axis_id in LEG_AXES:
-            if harness.states[axis_id].has_errors:
-                names = error_names(harness.states[axis_id].active_errors)
-                print(f"    ERROR: Axis {axis_id}: {names}")
+            if harness.states[axis_id].has_fault:
+                print(f"    ERROR: Axis {axis_id}: "
+                      f"{harness.states[axis_id].fault_summary}")
                 has_err = True
                 all_pass = False
 

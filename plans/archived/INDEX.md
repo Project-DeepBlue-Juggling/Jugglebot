@@ -54,6 +54,7 @@ next touches that plan, not a mechanical edit. The vocabulary going forward is
 | 2026-08-15 | [teensy-can-offload.md](teensy-can-offload.md) | superseded | Teensy CAN Offload Architecture |
 | 2026-08-15 | [tilt-calibration-grid.md](tilt-calibration-grid.md) | complete | Tilt calibration grid — pose-dependent gravity-level reference (residual map over the workspace) |
 | 2026-08-21 | [hand-command-continuity.md](hand-command-continuity.md) | completed | Hand-command continuity — stop clobbering a live stroke (post-throw dip + throw truncation) |
+| 2026-08-25 | [operator-observability.md](operator-observability.md) | completed | Operator observability quartet — chart units, UDP message rates, ODrive error propagation, QTM calibrate gate |
 
 ## Where the other plans are
 

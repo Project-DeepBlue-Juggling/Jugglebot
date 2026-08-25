@@ -7,7 +7,8 @@ sweeps.  After the sweep completes, this module:
 0. Refuses outright if the sweep never happened (``MIN_ARC_DEG``) — point count
    alone cannot tell a truncated sweep from a completed one. The primary test is
    on BB's own reported yaw series (encoder-derived, so noise-immune); the
-   per-marker geometry carries a secondary floor. See :data:`MIN_ARC_DEG`.
+   per-marker geometry carries a secondary, lower floor. See
+   :data:`MIN_ARC_DEG` and :data:`MIN_MARKER_ARC_DEG`.
 1. Fits a 3D circle to each marker trajectory (plane fit via SVD + algebraic circle fit).
 2. Extracts the common rotation axis (weighted average of circle normals/centers).
 3. Intersects the axis with the horizontal plane at the average marker Z height
@@ -71,17 +72,21 @@ from typing import Optional
 #: as a 1-D angle, and needs no centre to be fitted, so a 5° sweep reads 5.0°
 #: at any marker noise. It is therefore the PRIMARY gate
 #: (:func:`angular_span_deg`, applied in :func:`run_calibration`). The
-#: per-marker span check remains as a secondary, alongside
-#: :data:`MIN_MARKER_RADIUS_MM` which catches the collapse signature directly.
+#: per-marker span check remains as a secondary under its own, lower floor
+#: (:data:`MIN_MARKER_ARC_DEG`), alongside :data:`MIN_MARKER_RADIUS_MM` which
+#: catches the collapse signature directly.
 #:
-#: WHY 20°. Conservative on purpose: the partial-data failure mode is a span
-#: well under 10°, so 20° rejects it with margin while staying far below any
-#: plausible real sweep. ⚠ The true commanded sweep span is BB-firmware-owned
-#: and lives in no file in this repo, so this is a floor chosen from the
-#: failure mode, not from the command. The owner confirms or raises it from the
-#: yaw span logged by the first hardware calibrate
-#: (``plans/active/operator-observability.md`` § 8).
-MIN_ARC_DEG = 20.0
+#: WHY 60° (owner, 2026-08-25; was 20°): a real calibrate swept 118.8°, and
+#: the Phase-A probe showed spans ≤25° are defeated by real marker noise, so
+#: 60° sits ~2× under real operation and well clear of the noise regime. This
+#: is the SWEEP gate only — the per-marker inclusion floor stayed at 20°.
+MIN_ARC_DEG = 60.0
+
+#: Per-marker arc floor (degrees) for INCLUSION in the axis average
+#: (:func:`find_rotation_axis`). A marker's FITTED arc shrinks under occlusion
+#: during a sweep that legally cleared the primary gate, so this floor
+#: deliberately did NOT move with the 2026-08-25 raise of :data:`MIN_ARC_DEG`.
+MIN_MARKER_ARC_DEG = 20.0
 
 #: Minimum fitted circle radius (mm) for a marker to be folded into the axis
 #: average. The BB constellation sits 75–110 mm off the yaw axis, so a fit that
@@ -247,7 +252,7 @@ class MarkerFitMetrics:
 def find_rotation_axis(
     marker_trajectories: dict[int, np.ndarray],
     min_points: int = 50,
-    min_arc_deg: float = MIN_ARC_DEG,
+    min_marker_arc_deg: float = MIN_MARKER_ARC_DEG,
     min_radius_mm: float = MIN_MARKER_RADIUS_MM,
 ) -> tuple[np.ndarray, np.ndarray, dict[int, MarkerFitMetrics]]:
     """Find the rotation axis from multiple marker circular trajectories.
@@ -255,9 +260,13 @@ def find_rotation_axis(
     Args:
         marker_trajectories: marker_index → (N, 3) positions array.
         min_points: minimum samples per marker for inclusion.
-        min_arc_deg: minimum arc a marker must trace to be fitted at all, and
-            — via the widest marker — for the sweep to count as having
-            happened. See :data:`MIN_ARC_DEG`.
+        min_marker_arc_deg: minimum arc a marker must trace to be fitted at
+            all, and — via the widest marker — for the sweep to count as
+            having happened on this (direct-caller) path. This is the
+            per-marker floor :data:`MIN_MARKER_ARC_DEG`, NOT the sweep gate
+            :data:`MIN_ARC_DEG`: an occluded marker in an otherwise legal
+            sweep fits a short arc, and must be excluded, not held to the
+            sweep's floor.
         min_radius_mm: minimum fitted circle radius for a marker to be folded
             into the axis average (:data:`MIN_MARKER_RADIUS_MM`) — the
             noise-proof half of the pair, since a collapsed fit is what
@@ -316,8 +325,8 @@ def find_rotation_axis(
             skip_reason = (f'fitted radius {radius:.1f} mm < '
                            f'{min_radius_mm:.1f} mm (collapsed fit — the '
                            f'marker barely moved)')
-        elif span < min_arc_deg:
-            skip_reason = f'arc span {span:.1f}° < {min_arc_deg:.1f}°'
+        elif span < min_marker_arc_deg:
+            skip_reason = f'arc span {span:.1f}° < {min_marker_arc_deg:.1f}°'
         if skip_reason:
             if radius < min_radius_mm:
                 n_radius_collapsed += 1
@@ -350,12 +359,12 @@ def find_rotation_axis(
     # short, they all get excluded above, and the generic "only 0 markers had
     # sufficient data" message would send the operator hunting for occlusion
     # that isn't there. Naming ARC_SPAN_TOO_SMALL points at the sweep instead.
-    if widest_arc_deg < min_arc_deg and any(
+    if widest_arc_deg < min_marker_arc_deg and any(
             len(pts) >= min_points for pts in marker_trajectories.values()):
         raise ValueError(
             f'ARC_SPAN_TOO_SMALL: widest marker arc {widest_arc_deg:.1f}° < '
-            f'{min_arc_deg:.1f}° — the yaw sweep did not complete, so the '
-            'circle fits are not trustworthy'
+            f'{min_marker_arc_deg:.1f}° — the yaw sweep did not complete, so '
+            'the circle fits are not trustworthy'
         )
 
     if len(centers) < 2:
@@ -492,8 +501,8 @@ class CalibrationResult:
     axis_direction: np.ndarray          # unit vector along rotation axis
     axis_tilt_deg: float                # tilt from vertical
     #: Span of BB's reported yaw series (deg) — the PRIMARY sweep-completeness
-    #: measurement, and the number the owner confirms/raises MIN_ARC_DEG from
-    #: after the first hardware calibrate. 0.0 when too few yaw readings
+    #: measurement, and the number MIN_ARC_DEG was set from (the first hardware
+    #: calibrate swept 118.8°, 2026-08-25). 0.0 when too few yaw readings
     #: arrived for the span to mean anything (see MIN_YAW_READINGS).
     yaw_span_deg: float = 0.0
     marker_metrics: dict[int, MarkerFitMetrics] = field(default_factory=dict)
@@ -507,6 +516,7 @@ def run_calibration(
     max_yaw_std_deg: float = 5.0,
     min_arc_deg: float = MIN_ARC_DEG,
     min_radius_mm: float = MIN_MARKER_RADIUS_MM,
+    min_marker_arc_deg: float = MIN_MARKER_ARC_DEG,
 ) -> CalibrationResult:
     """Execute the full calibration pipeline.
 
@@ -520,12 +530,16 @@ def run_calibration(
         min_arc_deg:       minimum yaw arc the sweep must cover
                            (:data:`MIN_ARC_DEG`) — the guard against a
                            truncated sweep fitting a plausible-looking circle.
-                           Applied FIRST to BB's reported yaw series (the
-                           noise-immune measurement) and then, per marker,
-                           inside :func:`find_rotation_axis`.
+                           Applied ONLY to BB's reported yaw series, the
+                           noise-immune measurement.
         min_radius_mm:     per-marker fitted-radius floor
                            (:data:`MIN_MARKER_RADIUS_MM`), forwarded to
                            :func:`find_rotation_axis`.
+        min_marker_arc_deg: per-marker arc floor for INCLUSION in the axis
+                           average (:data:`MIN_MARKER_ARC_DEG`), forwarded to
+                           :func:`find_rotation_axis`. Separate from
+                           ``min_arc_deg`` and deliberately lower: a marker
+                           occluded during a legal sweep fits a short arc.
 
     Returns:
         CalibrationResult on success.
@@ -571,7 +585,7 @@ def run_calibration(
 
     # Rotation axis
     axis_point, axis_dir, metrics = find_rotation_axis(
-        marker_trajectories, min_points, min_arc_deg, min_radius_mm)
+        marker_trajectories, min_points, min_marker_arc_deg, min_radius_mm)
 
     # Intersection with Z plane
     intersection = find_axis_plane_intersection(axis_point, axis_dir, avg_z)

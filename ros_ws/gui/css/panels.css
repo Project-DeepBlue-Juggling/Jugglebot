@@ -916,10 +916,6 @@
     opacity: 0.55;
 }
 
-.udp-table .udp-gaps {
-    color: var(--accent-amber);
-}
-
 /* Every rate untrustworthy (link down / stale / ROS2 down): dim the data so
    the cumulative columns are never mistaken for live rates.  The banner is
    deliberately NOT dimmed — it is the one thing that must read clearly. */

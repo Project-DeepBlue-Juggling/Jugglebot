@@ -220,7 +220,43 @@ def decode_iq(data: bytes):
 
 
 def error_names(bitmask: int) -> list:
-    return [name for code, name in ERROR_CODES.items() if bitmask & code]
+    """Decode an ODrive error bitmask into names.
+
+    Unknown bits survive as ONE aggregate UNKNOWN(0x…) entry rather than being
+    silently dropped — a firmware code this build's table has never seen must
+    still reach the operator standing next to the robot.  Same contract as
+    jugglebot.can.odrive.error_names (and the GUI's odrive-errors.js); the
+    comprehension this replaced ate every such bit and reported "no errors"
+    for a fault the ODrive WAS raising.
+    """
+    known_mask = 0
+    names = []
+    for code, name in ERROR_CODES.items():
+        if bitmask & code:
+            names.append(name)
+        known_mask |= code
+    unknown = bitmask & ~known_mask
+    if unknown:
+        names.append(f'UNKNOWN(0x{unknown:X})')
+    return names
+
+
+def decode_axis_errors(active: int, disarm: int) -> str:
+    """'active=[NAME,...] disarm=[NAME,...] 0x<active>/0x<disarm>'.
+
+    BOTH MASKS, ALWAYS — same shape and same reason as
+    teensy_bridge_node._decode_axis_errors.  The 2026-08-10 leg-0 spinout had
+    active_errors == 0 and the truth (SPINOUT_DETECTED) only in disarm_reason:
+    active_errors self-heals, disarm_reason is sticky until CLEAR_ERRORS.  A
+    bench report that reads one mask is blind to exactly the class of fault
+    that already bit this robot — and this harness unpacked disarm_reason into
+    AxisState from the start while printing it at none of its report sites.
+    The raw hex pair rides along so a pasted log line stays decodable even
+    against a table that later gains a bit.
+    """
+    return (f'active=[{",".join(error_names(active))}] '
+            f'disarm=[{",".join(error_names(disarm))}] '
+            f'0x{active:X}/0x{disarm:X}')
 
 
 # ===========================================================================
@@ -243,10 +279,32 @@ class AxisState:
     iq_measured: float = 0.0     # current measured in A
     last_heartbeat: float = 0.0  # time.time() of last heartbeat
     heartbeat_count: int = 0     # total heartbeats received
+    error_frame_count: int = 0   # Get_Error frames seen (freshness, not a fault)
 
     @property
     def has_errors(self) -> bool:
+        """Active-error predicate (the raw ODrive bit)."""
         return self.active_errors != 0
+
+    @property
+    def has_fault(self) -> bool:
+        """EITHER mask is set — the predicate every report site gates on.
+
+        has_errors alone is blind to a self-healed fault: SPINOUT_DETECTED
+        (the 2026-08-10 leg-0 event) clears out of active_errors but stays in
+        the sticky disarm_reason until CLEAR_ERRORS.  Gating the bench reports
+        on active_errors only meant that fault printed nothing at all.
+
+        Safe against stale latches because every test clears errors and then
+        waits for a post-clear Get_Error frame (see clear_errors) before
+        anything is gated on this.
+        """
+        return self.has_errors or self.disarm_reason != 0
+
+    @property
+    def fault_summary(self) -> str:
+        """Both masks, decoded — see decode_axis_errors."""
+        return decode_axis_errors(self.active_errors, self.disarm_reason)
 
     @property
     def state_name(self) -> str:
@@ -282,6 +340,7 @@ class SingleLegTestHarness:
 
     CAN_SEND_DELAY_S = 0.002  # 2ms between consecutive sends (CAN pacing)
     HEARTBEAT_TIMEOUT_S = 2.0  # seconds without heartbeat = fault
+    ERROR_FRESH_TIMEOUT_S = 0.5   # bounded wait for a post-CLEAR_ERRORS frame
 
     def __init__(self, axis_id: int = 0,
                  interface: str = 'socketcan', channel: str = 'can0'):
@@ -317,7 +376,7 @@ class SingleLegTestHarness:
             self._poll(timeout=0.1)
             if self.state.heartbeat_count > 0:
                 print(f"  Heartbeat received! State: {self.state.state_name}, "
-                      f"errors: {self.state.active_errors}")
+                      f"{self.state.fault_summary}")
                 return
         raise TimeoutError(
             f"No heartbeat from axis {self.axis_id} after 5 seconds. "
@@ -385,6 +444,7 @@ class SingleLegTestHarness:
         errors, disarm = decode_error(data)
         self.state.active_errors = errors
         self.state.disarm_reason = disarm
+        self.state.error_frame_count += 1
 
     def _handle_encoder(self, data: bytes):
         pos, vel = decode_encoder_estimate(data)
@@ -412,7 +472,28 @@ class SingleLegTestHarness:
         self.send(encode_clear_errors(self.axis_id))
         time.sleep(0.1)
         self._poll()
-        print(f"  Errors cleared. Active errors: {self.state.active_errors}")
+        # Bounded, best-effort wait for a POST-clear Get_Error frame before
+        # anything is judged.  The cached masks are only ever as new as the
+        # last frame, and disarm_reason is STICKY: without this wait a latch
+        # from an earlier session reads as a live fault and aborts the very
+        # test that just cleared it (require_no_errors runs immediately after
+        # this in every test).  If the ODrive is not broadcasting Get_Error at
+        # all the counter never moves, the loop simply expires and both masks
+        # stay 0 — identical behaviour to before.
+        #
+        # The baseline is snapshotted HERE, after the drain above, not before
+        # the CLEAR_ERRORS send: a frame already in flight when the clear went
+        # out carries a PRE-clear mask, and counting it would satisfy the wait
+        # with the very staleness the wait exists to exclude.  The drain
+        # absorbs those, so the frame this loop waits for provably arrived at
+        # least 0.1 s after the clear was sent.
+        frames_before = self.state.error_frame_count
+        deadline = time.time() + self.ERROR_FRESH_TIMEOUT_S
+        while time.time() < deadline:
+            self._poll(timeout=0.02)
+            if self.state.error_frame_count > frames_before:
+                break
+        print(f"  Errors cleared. {self.state.fault_summary}")
 
     def set_safe_limits(self):
         """Apply conservative velocity and current limits."""
@@ -442,7 +523,7 @@ class SingleLegTestHarness:
         raise RuntimeError(
             f"Failed to enter CLOSED_LOOP after {timeout_s}s. "
             f"State: {self.state.state_name}, "
-            f"errors: {error_names(self.state.active_errors)}")
+            f"{self.state.fault_summary}")
 
     def enter_torque_mode(self):
         """Put axis into TORQUE control with PASSTHROUGH input."""
@@ -575,11 +656,10 @@ class SingleLegTestHarness:
         raise RuntimeError("No fresh heartbeat after flush -- ODrive may be disconnected!")
 
     def require_no_errors(self):
-        """Assert the axis has no active errors."""
+        """Assert the axis is not faulted (either mask)."""
         self._poll()
-        if self.state.has_errors:
-            names = error_names(self.state.active_errors)
-            raise RuntimeError(f"Axis has errors: {names}")
+        if self.state.has_fault:
+            raise RuntimeError(f"Axis has faults: {self.state.fault_summary}")
 
     # -- Utility: measure encoder at rest --------------------------
 
@@ -706,15 +786,23 @@ def test_estop(harness: SingleLegTestHarness):
 
     time.sleep(0.5)
     harness.poll_for(0.3)
+    harness._poll()
 
-    harness.require_no_errors()
     vel_after = harness.state.vel_rps
 
     idle_confirmed = harness.state.is_idle
     fast_enough = stop_latency_ms < 100
     no_residual = abs(vel_after) < 0.05
+    # Report-and-score, the same shape as supported_platform B4: the clear at
+    # the top of this test zeroed both masks and waited for a post-clear frame,
+    # so anything set here was set BY the e-stop.  It is NAMED and folded into
+    # the verdict rather than raised — a RuntimeError would abort the run before
+    # the other three criteria were reported, and the operator standing at the
+    # leg needs the bit in front of them to judge it on the spot.
+    no_fault = not harness.state.has_fault
+    print(f"  Post-stop error masks: {harness.state.fault_summary}")
 
-    if idle_confirmed and fast_enough and no_residual:
+    if idle_confirmed and fast_enough and no_residual and no_fault:
         print("  PASS: E-stop confirmed -- IDLE within 100ms, no errors, "
               "velocity settled to zero")
         return True
@@ -725,6 +813,8 @@ def test_estop(harness: SingleLegTestHarness):
             print(f"  FAIL: IDLE took {stop_latency_ms:.1f}ms (>100ms)")
         if not no_residual:
             print(f"  FAIL: Residual velocity {vel_after:.4f} rev/s")
+        if not no_fault:
+            print(f"  FAIL: {harness.state.fault_summary}")
         return False
 
 

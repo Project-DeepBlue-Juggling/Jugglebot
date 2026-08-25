@@ -607,7 +607,10 @@ class TestUdpDiagKeyValueContract:
         # publish CADENCE, and a blanket ban would forbid explaining exactly
         # the distinction this test exists to protect.
         headers = re.findall(r'>([^<>]*)</th>', js)
-        assert len(headers) >= 4, f'<th> extraction went stale: {headers}'
+        # 3, not 4: the per-type 'gaps' column was removed 2026-08-25 — that
+        # counter is an artifact of the shared wire seq counter, so the panel
+        # stopped rendering it (plans/active/udp-channel-health.md).
+        assert len(headers) >= 3, f'<th> extraction went stale: {headers}'
         rate_headers = [h for h in headers if 'msg/s' in h]
         assert len(rate_headers) == 2, \
             f'expected an rx and a tx msg/s column, got {headers}'
@@ -828,25 +831,80 @@ ODRIVE_PY = (ROOT / 'ros_ws' / 'src' / 'jugglebot' / 'jugglebot'
              / 'can' / 'odrive.py')
 SUPPORTED_PLATFORM_PY = ROOT / 'tests' / 'hardware' / 'supported_platform_test.py'
 SINGLE_LEG_PY = ROOT / 'tests' / 'hardware' / 'single_leg_test.py'
+FREE_PLATFORM_PY = ROOT / 'tests' / 'hardware' / 'free_platform_test.py'
+TILT_CAL_GRID_PY = ROOT / 'tests' / 'hardware' / 'tilt_cal_grid.py'
+
+# Harness copies whose vendored DECODER (not just the table) is pinned against
+# the canonical one, executed for real. All three now honour the contract:
+# single_leg_test.py's copy was the last one dropping unknown bits (a bare
+# comprehension over ERROR_CODES), fixed 2026-08-25 with the rest of the class.
+VENDORED_DECODERS = [
+    (SUPPORTED_PLATFORM_PY, 'supported_platform_test.py'),
+    (FREE_PLATFORM_PY, 'free_platform_test.py'),
+    (SINGLE_LEG_PY, 'single_leg_test.py'),
+]
+
+# Harnesses whose REPORT sites must read both masks. Same list, different
+# property: a harness can decode perfectly and still print only active_errors.
+BOTH_MASK_HARNESSES = [
+    (FREE_PLATFORM_PY, 'free_platform_test.py'),
+    (SUPPORTED_PLATFORM_PY, 'supported_platform_test.py'),
+    (SINGLE_LEG_PY, 'single_leg_test.py'),
+]
 
 
-def _extract_py_dict(py_text, name, source_label):
+def _extract_py_dict(py_text, name, source_label, nested=False):
     """Extract a module-level dict literal by AST, without importing.
 
     Parsing beats importing here: ``can/odrive.py`` pulls the generated config
-    (and, transitively on some boxes, python-can), while the two hardware
-    harnesses open CAN interfaces from ``__main__`` argument parsing. The pin
-    only needs the literal.
+    (and, transitively on some boxes, python-can), while the hardware harnesses
+    open CAN interfaces from ``__main__`` argument parsing. The pin only needs
+    the literal.
+
+    ``nested=True`` walks the whole tree instead of the module body, for a copy
+    that lives inside a ``try: import … except ImportError:`` fallback — which
+    is precisely the copy an import-based pin can never see (see
+    ``test_tilt_cal_grid_fallback_table_matches_python``).
     """
     import ast
     tree = ast.parse(py_text)
-    for node in tree.body:
+    for node in (ast.walk(tree) if nested else tree.body):
         targets = (node.targets if isinstance(node, ast.Assign)
                    else [node.target] if isinstance(node, ast.AnnAssign) else [])
         for t in targets:
             if isinstance(t, ast.Name) and t.id == name:
                 return ast.literal_eval(node.value)
     raise AssertionError(f'Could not find dict {name} in {source_label}')
+
+
+def _load_error_names(py_text, source_label):
+    """Compile a file's ERROR_CODES + error_names WITHOUT importing the module.
+
+    Same reason as ``_extract_py_dict`` — importing a harness opens a CAN bus
+    — but this lifts the DECODER too, so the vendored copies can be pinned on
+    BEHAVIOUR (what an operator actually reads) and not only on the table. The
+    two definitions are self-contained: ``error_names`` closes over nothing but
+    ``ERROR_CODES``, in every copy.
+    """
+    import ast
+    tree = ast.parse(py_text)
+    wanted = []
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == 'error_names':
+            wanted.append(node)
+        elif isinstance(node, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == 'ERROR_CODES'
+                for t in node.targets):
+            wanted.append(node)
+    assert len(wanted) == 2, (
+        f'Expected exactly one ERROR_CODES and one error_names in '
+        f'{source_label}; the AST walk found {len(wanted)} node(s)')
+    wanted.sort(key=lambda n: n.lineno)
+    module = ast.Module(body=wanted, type_ignores=[])
+    namespace = {}
+    exec(compile(ast.fix_missing_locations(module), f'<{source_label}>',
+                 'exec'), namespace)
+    return namespace['error_names']
 
 
 def _extract_js_int_string_map(js_text, name):
@@ -883,8 +941,11 @@ class TestODriveErrorTablePins:
     (it is WATCHDOG_TIMER_EXPIRED) and stopped at 0x10000, so SPINOUT_DETECTED
     — the 2026-08-10 leg-0 fault — decoded to nothing at all on that bench.
 
-    ``tilt_cal_grid``'s copy is pinned separately, in
-    ``tests/motion/test_tilt_cal_grid.py``, next to its own decoder tests.
+    ``tilt_cal_grid``'s DECODER is pinned separately, in
+    ``tests/motion/test_tilt_cal_grid.py``, next to its own decoder tests —
+    it imports the tool for real, so it pins behaviour better than an AST lift
+    could. Its vendored FALLBACK table is pinned here instead, for the reason
+    in that test's docstring.
     """
 
     def test_gui_js_table_matches_python(self, authoritative_error_codes):
@@ -905,6 +966,45 @@ class TestODriveErrorTablePins:
                                  'ERROR_CODES', 'single_leg_test.py')
         assert table == authoritative_error_codes
 
+    def test_free_platform_harness_table_matches_python(
+            self, authoritative_error_codes):
+        """The Stage-C harness copy — unpinned until 2026-08-25, and drifted.
+
+        It stopped at 0x1000000 and called that bit 'ESTOP_REQUESTED' (it is
+        WATCHDOG_TIMER_EXPIRED), missing the five bits above it — so on the one
+        bench where the platform stands free, a watchdog expiry named the wrong
+        cause and SPINOUT_DETECTED named nothing.
+        """
+        table = _extract_py_dict(FREE_PLATFORM_PY.read_text(),
+                                 'ERROR_CODES', 'free_platform_test.py')
+        assert table == authoritative_error_codes
+
+    def test_tilt_cal_grid_fallback_table_matches_python(
+            self, authoritative_error_codes):
+        """The one copy an import-based pin structurally cannot see.
+
+        ``tilt_cal_grid`` prefers the real ``jugglebot.can.odrive.ERROR_CODES``
+        and vendors a literal only in the ``except ImportError`` arm (its
+        package ``__init__`` needs jugglebot_interfaces + python-can, absent on
+        an off-robot checkout). So ``tests/motion/test_tilt_cal_grid.py``'s
+        ``tcg.ODRIVE_ERROR_CODES == odrive.ERROR_CODES`` is a TAUTOLOGY on every
+        box where the import succeeds — this Jetson included — and the fallback
+        literal could drift untouched until the day it is the only table there
+        is, i.e. off-robot forensics on a dumped snapshot. Lifting the literal
+        by AST pins it regardless of what the import does here.
+
+        Its decoder (``decode_error_bits``) is NOT in VENDORED_DECODERS: it
+        takes a different name, a different table name, and renders residue as
+        ``UNKNOWN_BITS_0x%08X`` rather than ``UNKNOWN(0x…)`` — a JSON-forensics
+        label, pinned behaviourally in tests/motion. It already honours both
+        halves of the contract (residue surfaced; both masks decoded and
+        printed at every dump site), so nothing here needs to change it.
+        """
+        table = _extract_py_dict(TILT_CAL_GRID_PY.read_text(),
+                                 'ODRIVE_ERROR_CODES', 'tilt_cal_grid.py',
+                                 nested=True)
+        assert table == authoritative_error_codes
+
     def test_js_unknown_bit_contract_is_stated(self):
         """Regex tripwire (honesty note: it cannot execute the JS).
 
@@ -920,6 +1020,89 @@ class TestODriveErrorTablePins:
         assert re.search(r'\bexport\s+function\s+errorNames\s*\(', js), \
             'odrive-errors.js no longer exports errorNames()'
 
+    @pytest.mark.parametrize('path,label', VENDORED_DECODERS,
+                             ids=[label for _, label in VENDORED_DECODERS])
+    def test_vendored_decoder_matches_canonical(self, path, label):
+        """Executed, not grepped: the vendored decode must equal canonical.
+
+        The table pins above compare dicts, which says nothing about what the
+        decoder DOES with them. Each copy is lifted out by AST and run
+        (importing the harness would open a CAN bus), so a copy that keeps the
+        right table but decodes it differently still fails here.
+        """
+        canonical = _load_error_names(ODRIVE_PY.read_text(), 'can/odrive.py')
+        vendored = _load_error_names(path.read_text(), label)
+        masks = [0, 0x200, 0x1000000, 0x2000000, 0x4000000,
+                 0x200 | 0x4000000, 0xFFFFFFFF]
+        for mask in masks:
+            assert vendored(mask) == canonical(mask), \
+                f'{label} decodes 0x{mask:X} differently from can/odrive.py'
+
+    @pytest.mark.parametrize('path,label', VENDORED_DECODERS,
+                             ids=[label for _, label in VENDORED_DECODERS])
+    def test_vendored_decoder_keeps_unknown_bits(self, path, label):
+        """The unknown-bit contract, for the Python copies (cf. the JS one).
+
+        A bench harness that drops a bit it does not recognise reports 'no
+        errors' for a fault the ODrive IS raising — the worst possible output
+        for the one operator standing next to a free-standing platform. Bit 7
+        (0x80) is unassigned in every published table, same probe as
+        tests/ros/test_odrive.py.
+        """
+        vendored = _load_error_names(path.read_text(), label)
+        assert vendored(0) == []
+        assert vendored(0x80) == ['UNKNOWN(0x80)'], \
+            f'{label} silently drops unknown error bits'
+        assert vendored(0x200 | 0x80) == ['DC_BUS_UNDER_VOLTAGE',
+                                          'UNKNOWN(0x80)']
+
+    @pytest.mark.parametrize('path,label', BOTH_MASK_HARNESSES,
+                             ids=[label for _, label in BOTH_MASK_HARNESSES])
+    def test_harness_reports_both_masks(self, path, label):
+        """String tripwire: every bench report reads disarm_reason too.
+
+        All three harnesses unpacked disarm_reason into their AxisState from
+        the start and printed it at NO report site — free_platform at nine
+        sites, supported_platform at eleven, single_leg at four. active_errors
+        self-heals; disarm_reason is sticky until CLEAR_ERRORS — so the
+        2026-08-10 leg-0 signature (SPINOUT_DETECTED surviving only in the
+        disarm mask) printed nothing at all on any bench. Same 'BOTH MASKS,
+        ALWAYS' rule teensy_bridge_node._decode_axis_errors carries.
+
+        Honesty note: string-level, in this file's house style. It cannot prove
+        a given print statement renders both masks; it pins the two-mask
+        decoder, the AxisState property that feeds it both, and the absence of
+        the one-mask idiom that made the class silent.
+        """
+        src = path.read_text()
+        assert 'def decode_axis_errors(' in src, \
+            f'{label} lost its two-mask decoder'
+        assert 'decode_axis_errors(self.active_errors, self.disarm_reason)' \
+            in src, f'{label}: fault_summary no longer feeds it both masks'
+        assert not re.search(r'error_names\([^)]*active_errors', src), \
+            (f'a {label} report site decodes active_errors alone again — '
+             f'use fault_summary (both masks)')
+
+    @pytest.mark.parametrize('path,label', BOTH_MASK_HARNESSES,
+                             ids=[label for _, label in BOTH_MASK_HARNESSES])
+    def test_harness_waits_for_a_post_clear_error_frame(self, path, label):
+        """The other half of the both-masks fix, and it is load-bearing.
+
+        Gating on the STICKY mask is only safe if the mask is known fresh.
+        Each harness clears errors then immediately asserts a clean bus
+        (require_no_errors*), but the cached masks are only ever as new as the
+        last Get_Error frame — so without a bounded wait for a POST-clear frame
+        a latch from an EARLIER session reads as a live fault and aborts the
+        very test that just cleared it. The counter is the freshness proof;
+        ERROR_FRESH_TIMEOUT_S bounds it, so a bus not broadcasting Get_Error
+        degrades to the old behaviour instead of hanging.
+        """
+        src = path.read_text()
+        assert 'ERROR_FRESH_TIMEOUT_S' in src, \
+            f'{label} lost the bounded post-CLEAR_ERRORS wait'
+        assert 'error_frame_count' in src, \
+            f'{label} lost the Get_Error frame counter the wait watches'
+
     def test_main_js_consumes_the_decoder(self):
         """The table is only useful if the event log actually decodes with it —
         pin the import so a refactor cannot leave a dead module behind a
@@ -927,6 +1110,17 @@ class TestODriveErrorTablePins:
         main_js = (ROOT / 'ros_ws' / 'gui' / 'js' / 'main.js').read_text()
         assert re.search(r"from\s+'\./odrive-errors\.js'", main_js), \
             'main.js no longer imports the ODrive error decoder'
+
+    def test_fault_headline_names_the_error(self):
+        """String tripwire: the event-log headline says ODRIVE ERROR, loudly.
+
+        The row is read at a glance and the decode only lives in the hover
+        title, so a headline that degrades back to a bare axis label ('ODrive:
+        hand') costs the operator the one word that says what broke.
+        """
+        main_js = (ROOT / 'ros_ws' / 'gui' / 'js' / 'main.js').read_text()
+        assert 'ODRIVE ERROR: ' in main_js, \
+            'main.js event-log fault headline lost its ODRIVE ERROR prefix'
 
 
 class TestBBCalibrateMocapGate:

@@ -49,7 +49,7 @@ import { initJogPanel, setJogPanelVisible,
 } from './jog-panel.js';
 import { initTheme } from './theme.js';
 import { emitEvent, EVENT_TYPES } from './event-store.js';
-import { formatAxisErrors } from './odrive-errors.js';
+import { errorNames, formatAxisErrors } from './odrive-errors.js';
 import { initCommandHistory } from './command-history.js';
 import { initCameraPresets } from './camera-presets.js';
 
@@ -400,9 +400,17 @@ function onRobotState(msg) {
         const key = `${active}/${disarm}`;
         const prev = lastMotorErrorMasks.get(i);
         if (prev !== undefined && prev !== key && (active !== 0 || disarm !== 0)) {
+            // `active_errors` self-heals, `disarm_reason` stays sticky, so the
+            // sticky mask is the fallback once the active one has cleared.
+            // Headline gets one name + `…`; the hover title holds both decoded.
+            const axis = MOTOR_AXIS_LABELS[i] || `axis ${i}`;
+            const activeNames = errorNames(active);
+            const names = activeNames.length ? activeNames : errorNames(disarm);
+            const first = names.length
+                ? ` ${names[0]}${names.length > 1 ? '…' : ''}` : '';
             emitEvent({
                 type: EVENT_TYPES.FAULT,
-                label: `ODrive: ${MOTOR_AXIS_LABELS[i] || `axis ${i}`}`,
+                label: `ODRIVE ERROR: ${axis}${first}`,
                 detail: formatAxisErrors(active, disarm),
             });
         }
