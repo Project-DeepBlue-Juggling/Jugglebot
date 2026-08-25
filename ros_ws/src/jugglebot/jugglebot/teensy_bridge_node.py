@@ -4951,6 +4951,14 @@ class TeensyBridgeNode(Node):
                 KeyValue(key='tx_frames', value=str(stats.tx_frames)),
                 KeyValue(key='crc_errors', value=str(stats.crc_errors)),
                 KeyValue(key='decode_errors', value=str(stats.decode_errors)),
+                # Aggregate RX sequence skips (teensy_link's _track_seq). It
+                # rides HERE, not only on the 1 Hz /udp_diag, because the one
+                # signal that separates a real dropped frame from a peer reboot
+                # — uptime_ms, a few rows below — is on this message: a Teensy
+                # restart costs exactly one gap (its TX seq statics have no
+                # reset path, udp_link.cpp:41-42), and the two numbers must be
+                # read from the same tick to tell those apart.
+                KeyValue(key='seq_gaps', value=str(stats.seq_gaps)),
             ]
             if hb is not None:
                 values += [
@@ -5089,11 +5097,13 @@ class TeensyBridgeNode(Node):
 
         One row per :class:`MsgType` per direction, by enum NAME:
         ``rx_<TYPE_NAME>`` / ``tx_<TYPE_NAME>`` (every type, every tick — a
-        never-seen type is an honest ``0``, not an absent row), plus
-        ``gap_<TYPE_NAME>`` for the sequence-gap tally, emitted ONLY when
-        nonzero (21 permanently-zero gap rows would bury the one that matters).
-        Aggregates ride alongside in lower case —
-        ``rx_frames``/``tx_frames``/``crc_errors``/``decode_errors``/``drain_capped``
+        never-seen type is an honest ``0``, not an absent row).
+        There is deliberately NO per-type ``gap_<TYPE_NAME>`` row: the wire
+        carries one shared sequence counter per (channel, direction), so a
+        per-type gap count only measured how often another type interleaved
+        (``logbook/2026-08-25-udp-gap-column-artifact.md``).
+        Aggregates ride alongside in lower case — ``rx_frames``/``tx_frames``/
+        ``crc_errors``/``decode_errors``/``drain_capped``/``seq_gaps``
         — and the case split is load-bearing: it is what lets a consumer tell a
         per-type row from an aggregate with a pattern rather than a hardcoded
         inventory (``udp-traffic.js``'s ``PER_TYPE_KEY_RE``).
@@ -5124,10 +5134,6 @@ class TeensyBridgeNode(Node):
                                        value=str(stats.rx_count_by_type.get(tid, 0))))
                 values.append(KeyValue(key=f'tx_{name}',
                                        value=str(stats.tx_count_by_type.get(tid, 0))))
-            for t in MsgType:
-                gaps = stats.seq_gaps_by_type.get(int(t), 0)
-                if gaps:
-                    values.append(KeyValue(key=f'gap_{t.name}', value=str(gaps)))
 
             values += [
                 KeyValue(key='rx_frames', value=str(stats.rx_frames)),
@@ -5135,6 +5141,16 @@ class TeensyBridgeNode(Node):
                 KeyValue(key='crc_errors', value=str(stats.crc_errors)),
                 KeyValue(key='decode_errors', value=str(stats.decode_errors)),
                 KeyValue(key='drain_capped', value=str(stats.drain_capped)),
+                # Aggregate RX sequence skips, both sockets tracked apart.
+                # The STREAM half is the same quantity the Teensy counts for
+                # the downlink (track_downlink_seq, udp_link.cpp:72) and the
+                # two ends are directly comparable there. The RPC half has NO
+                # far-end counterpart — the Teensy's counter is gated
+                # `if (!is_rpc)` (udp_link.cpp:107) — so this TOTAL can carry
+                # RPC gaps the far end never counted. LOWER case, like its
+                # neighbours: the case split is what routes it to the GUI's
+                # aggregate footer instead of a per-type row.
+                KeyValue(key='seq_gaps', value=str(stats.seq_gaps)),
             ]
 
             # Level off the error DELTA (see _udp_diag_prev_errors). ADVISORY,

@@ -32,7 +32,7 @@ import {
 } from './can-traffic.js';
 import {
     initUdpTrafficPanel, udpTrafficOnDiag, udpTrafficOnLinkStatus,
-    setUdpTrafficRosLink,
+    udpTrafficOnClockDiag, setUdpTrafficRosLink,
 } from './udp-traffic.js';
 import { initCommands, updateCommandStates } from './commands.js';
 import {
@@ -299,6 +299,11 @@ function subscribeAll() {
     // and widen the effective differencing interval, and at 1 Hz × ~50 rows it
     // is one of the cheapest subscriptions on the page.
     ros.subscribe('udp_diag', 'diagnostic_msgs/msg/DiagnosticStatus', onUdpDiag, 0);
+
+    // Time-sync anchor discipline (~1 message per 30 s) — the UDP panel's
+    // 'anchor rtt', the only live latency in ms this system publishes.  NOT
+    // throttled: at ~0.03 Hz a throttle could only ever drop samples.
+    ros.subscribe('clock_diag', 'diagnostic_msgs/msg/DiagnosticStatus', onClockDiag, 0);
 
     // Hand telemetry (500Hz -> throttle to 10Hz = 100ms)
     ros.subscribe('hand_telemetry', 'jugglebot_interfaces/msg/HandTelemetryMessage', onHandTelemetry, 100);
@@ -571,6 +576,11 @@ function onLinkStatus(msg) {
 function onUdpDiag(msg) {
     recordTopicMessage('udp_diag');
     udpTrafficOnDiag(msg);
+}
+
+function onClockDiag(msg) {
+    recordTopicMessage('clock_diag');
+    udpTrafficOnClockDiag(msg);
 }
 
 let latestHandTelemetry = null;
@@ -987,7 +997,8 @@ function applyFontSize(size) {
 /** Topics we subscribe to for data processing (not just monitoring) */
 const GUI_SUBSCRIBED_TOPICS = new Set([
     'robot_state', 'bb/heartbeat', 'orchestrator_state',
-    'profile', 'link_status', 'udp_diag', 'hand_telemetry', 'mocap_data',
+    'profile', 'link_status', 'udp_diag', 'clock_diag', 'hand_telemetry',
+    'mocap_data',
     'rigid_body_poses',
     'leg_setpoint_echo', 'control_mode_topic', 'motion/diagnostics',
     'bb/calibration_result', 'cone/heartbeat', 'cone/timing_result',

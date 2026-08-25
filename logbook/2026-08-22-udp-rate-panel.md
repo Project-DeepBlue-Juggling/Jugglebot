@@ -43,6 +43,10 @@ types had per-type RX counters in `LinkStats` that nothing published.
   from the ROS timer while the RX thread writes, and rebinding an existing key
   is safe where inserting one raises `RuntimeError` mid-`dict()`. It also makes
   a never-seen type an honest `0` row instead of an absent one.
+  **[2026-08-25: two dicts, not three — `seq_gaps_by_type` was removed by
+  `plans/archived/udp-channel-health.md` P1. The pre-seeding rationale is
+  unchanged for the surviving `rx_count_by_type`/`tx_count_by_type` pair; the
+  sentence above is the 2026-08-22 record.]**
 - **R2** `/udp_diag`, 1 Hz, modelled on `_publish_profile`: `rx_<TYPE>` /
   `tx_<TYPE>` by enum NAME for every type, `gap_<TYPE>` only when nonzero, plus
   the lower-case aggregates `rx_frames`/`tx_frames`/`crc_errors`/
@@ -51,6 +55,10 @@ types had per-type RX counters in `LinkStats` that nothing published.
   before the bag saw it. Stats are snapshotted once per tick so one message is
   one instant. The level follows the CRC+decode **delta**, not the total: one
   corrupted frame at boot must not latch WARN for the session.
+  **[2026-08-25: the `gap_<TYPE>` keys were removed and one lower-case
+  aggregate `seq_gaps` added in their place, by
+  `plans/archived/udp-channel-health.md` P1/P4; the key inventory above is the
+  2026-08-22 record of what F2 shipped.]**
 - **R3–R5** new ES module `ros_ws/gui/js/udp-traffic.js` (no imports; it is a
   table, not a chart), routed beside `profile`/`link_status` in `main.js`. Rate
   = Δcount/Δt over a 5/10/30/60 s window (1 Hz cadence makes a 1 s window one
@@ -87,6 +95,10 @@ stream honestly averages ~70.
   `LINK DOWN`, every rate `--`, container `.udp-stale`; recovery → 70 msg/s
   across the outage then 100; a counter reset drops history instead of showing
   a negative; `gap_TELEMETRY=4` surfaces, zero gaps do not.
+  **[2026-08-25: the per-type gap keys and `seq_gaps_by_type` were removed by
+  `plans/archived/udp-channel-health.md` P1; the triple above is historical —
+  it is what the probe exercised on 2026-08-22, not a claim about the panel
+  today.]**
 - `node --check` on every touched JS file.
 - Not yet eyeballed on hardware. Deploy: `colcon build --packages-select
   jugglebot` + relaunch for `/udp_diag`, relaunch only for `teensy_link`

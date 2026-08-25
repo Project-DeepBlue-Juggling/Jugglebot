@@ -115,7 +115,7 @@ def _parse_rx_timestamp_us(ancdata) -> Optional[int]:
 def _seeded_type_counters() -> Dict[int, int]:
     """A per-msg-type counter dict with every known :class:`MsgType` id at 0.
 
-    The ``default_factory`` for :class:`LinkStats`' three per-type dicts — see
+    The ``default_factory`` for :class:`LinkStats`' two per-type dicts — see
     that class's docstring for why the seeding matters (snapshot race + honest
     zero rows).
     """
@@ -126,7 +126,7 @@ def _seeded_type_counters() -> Dict[int, int]:
 class LinkStats:
     """Counters surfaced for diagnostics; updated by the RX/TX paths.
 
-    The three per-type dicts are PRE-SEEDED with every :class:`MsgType` id at
+    The two per-type dicts are PRE-SEEDED with every :class:`MsgType` id at
     zero (:func:`_seeded_type_counters`) for two reasons:
 
     * **Snapshot race.** :meth:`snapshot` copies them with ``dict(...)`` from a
@@ -147,6 +147,14 @@ class LinkStats:
     Note ``sum(rx_count_by_type) <= rx_frames``: ``rx_frames`` counts every
     datagram received, including the ones that then fail CRC or structural
     decode (``crc_errors`` / ``decode_errors``) and any unknown-type frame.
+
+    ``seq_gaps`` has a NARROWER domain than the other RX counters: 5005/5006
+    are fixed ports, so a second binder on this box steals datagrams into this
+    process, and frames from a source other than the configured peer are
+    excluded from sequence tracking (their seq comes from a foreign counter and
+    would manufacture gaps). They stay counted in ``rx_frames`` and the per-type
+    rows, so the foreign traffic remains visible as a discrepancy — see
+    :meth:`TeensyLinkClient._track_seq`.
     """
 
     rx_frames: int = 0
@@ -156,7 +164,7 @@ class LinkStats:
     crc_errors: int = 0
     decode_errors: int = 0
     drain_capped: int = 0    # times a single drain hit the per-wakeup frame cap
-    seq_gaps_by_type: Dict[int, int] = field(default_factory=_seeded_type_counters)
+    seq_gaps: int = 0        # aggregate RX sequence skips, both sockets — _track_seq
     rx_count_by_type: Dict[int, int] = field(default_factory=_seeded_type_counters)
     tx_count_by_type: Dict[int, int] = field(default_factory=_seeded_type_counters)
     last_rx_us: int = 0
@@ -171,7 +179,7 @@ class LinkStats:
             crc_errors=self.crc_errors,
             decode_errors=self.decode_errors,
             drain_capped=self.drain_capped,
-            seq_gaps_by_type=dict(self.seq_gaps_by_type),
+            seq_gaps=self.seq_gaps,
             rx_count_by_type=dict(self.rx_count_by_type),
             tx_count_by_type=dict(self.tx_count_by_type),
             last_rx_us=self.last_rx_us,
@@ -216,12 +224,13 @@ class TeensyLinkClient:
         self._stream_sock: Optional[socket.socket] = None
         self._rpc_sock: Optional[socket.socket] = None
 
+        # Last RX seq PER SOCKET (key: ``sock is self._rpc_sock``), for the
+        # aggregate gap count. Two entries, never more — see _track_seq.
+        self._last_rx_seq: Dict[bool, int] = {}
+
         # seq counters are per-direction. Wire wraps at 16 bits.
         self._tx_seq_stream = 0
         self._tx_seq_rpc = 0
-
-        # Per-message-type last-rx-seq for gap detection.
-        self._last_rx_seq: Dict[int, int] = {}
 
         # Callbacks: list of (callback, wants_rx_stamp) per msg_type. A separate
         # "wildcard" list catches all frames (used by diagnostics) and is always
@@ -281,6 +290,13 @@ class TeensyLinkClient:
         self.stop()
 
     def _open_sockets(self) -> None:
+        # A NEW socket pair is a new sequence epoch: whatever the far end was
+        # counting against the old pair says nothing about the frames arriving
+        # on this one (and a peer that restarted alongside us restarts its own
+        # counters at 0 — udp_link.cpp:41-42). Dropping the baseline costs the
+        # first frame per socket, which _track_seq already treats as free.
+        self._last_rx_seq.clear()
+
         self._stream_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._stream_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._stream_sock.bind((self._bind_host, self._bind_stream))
@@ -527,7 +543,18 @@ class TeensyLinkClient:
         # per datagram) so the kernel's RX timestamp rides along in ancillary
         # data. Hoisted out of the loop: one identity check per wakeup, not per
         # frame. The stream socket stays on recvfrom.
-        stamped = (sock is self._rpc_sock
+        #
+        # is_rpc is hoisted for the same reason and doubles as the sequence
+        # tracker's key: the two sockets carry independent wire counters.
+        is_rpc = sock is self._rpc_sock
+        # Expected SOURCE HOST for this socket, hoisted for the same reason: one
+        # lookup per wakeup, not per frame. Host only — the peer's source port
+        # is its own bound port, which need not be the port we send to. The
+        # configured peer is an IP literal by contract (p.TEENSY_IP, an octet
+        # quad from the generated protocol constants), so this is a plain
+        # string compare with no resolution step on the RX path.
+        peer_host = (self._peer_rpc if is_rpc else self._peer_stream)[0]
+        stamped = (is_rpc
                    and self._rx_stamp_mode in (RX_STAMP_PROBING, RX_STAMP_KERNEL))
         for _ in range(self._MAX_DRAIN_PER_WAKE):
             rx_wall_us: Optional[int] = None
@@ -576,7 +603,18 @@ class TeensyLinkClient:
                 self.stats.decode_errors += 1
                 logger.debug("decode failure: %s (%d bytes from %s)", e, len(data), addr)
                 continue
-            self._track_seq(msg_type, seq)
+            # Sequence tracking is PEER-ONLY. 5005/5006 are fixed, well-known
+            # ports: a second binder on this box (another client, a bench probe,
+            # a stale process) can land datagrams here carrying seq values from
+            # an entirely different counter, and feeding those to _track_seq
+            # would manufacture gaps out of nothing.
+            #
+            # rx_frames, rx_bytes and the per-type counts stay UNFILTERED on
+            # purpose: foreign traffic must stay VISIBLE. It then shows up as a
+            # discrepancy between the aggregates and seq_gaps rather than
+            # disappearing from the panel entirely.
+            if addr[0] == peer_host:
+                self._track_seq(is_rpc, seq)
             if msg_type in self.stats.rx_count_by_type:
                 # Rebind-only: an unknown msg_type (newer firmware, same
                 # PROTOCOL_VERSION — the additive convention) must not INSERT
@@ -592,17 +630,78 @@ class TeensyLinkClient:
             # drained on the next select wakeup (bounded, never a hard stall).
             self.stats.drain_capped += 1
 
-    def _track_seq(self, msg_type: int, seq: int) -> None:
-        prev = self._last_rx_seq.get(msg_type)
-        self._last_rx_seq[msg_type] = seq
+    def _track_seq(self, is_rpc: bool, seq: int) -> None:
+        """Count aggregate RX sequence skips, with one tracker PER SOCKET.
+
+        The wire carries ONE sequence counter per (channel, direction): the
+        Teensy bumps ``s_seq_stream_tx`` / ``s_seq_rpc_tx`` once per frame
+        inside ``send_to`` (``udp_link.cpp:171``), whatever the message type.
+        An aggregate count of skips is therefore the ONLY loss figure a
+        receiver can honestly derive — a per-TYPE tally over a shared counter
+        measures how often another type interleaved, not loss, which is what
+        the predecessor of this method was doing
+        (``logbook/2026-08-25-udp-gap-column-artifact.md``).
+
+        Keyed on the socket because the two channels count independently;
+        one tracker across both would score a gap on every alternation.
+
+        **Only the STREAM half has a far-end counterpart.** The Teensy's own
+        downlink gap counter (``track_downlink_seq``, ``udp_link.cpp:72-79``)
+        is called under ``if (!is_rpc)`` (``udp_link.cpp:107``) — it is
+        STREAM-ONLY. So the stream half of this counter measures the same
+        quantity the Teensy measures for the opposite direction and the two are
+        directly comparable; the RPC half has NO far-end counterpart at all,
+        and a nonzero TOTAL may carry RPC gaps the far end never counted. A
+        mismatch between the two ends is therefore not by itself evidence of
+        anything until the halves are separated.
+
+        Only frames from the CONFIGURED peer reach this method: ``_drain_socket``
+        gates the call on the source address, so a second binder on the local
+        ports cannot inject sequence numbers from a foreign counter (see the
+        gate there for why the frame still counts in ``rx_frames``).
+
+        Four caveats worth knowing before reading a nonzero value:
+
+        * **A failed Teensy send is correctly a gap.** ``send_to`` consumes the
+          seq (``udp_link.cpp:171``) BEFORE ``beginPacket``/``endPacket``, so a
+          send that fails leaves a hole in the sequence. The frame never
+          reached the wire, which is exactly what this counter means by
+          missing — a feature, not noise.
+        * **The echo path would poison this if a new TX type appeared.** The
+          Teensy echoes any unhandled valid frame back VERBATIM
+          (``udp_link.cpp:122-132``), carrying the Jetson's own seq from the
+          opposite direction. Inert today — every msg_type the Jetson sends has
+          a case in that switch — but the day a Jetson TX type is added without
+          a matching Teensy case, its echoes land in this tracker's stream and
+          the count stops meaning anything. Two details sharpen it: the echo is
+          addressed to ``sock.remoteIP()`` (``udp_link.cpp:128``), i.e. back to
+          WHOEVER sent the frame and not necessarily the Jetson; and it calls
+          ``beginPacket``/``write``/``endPacket`` directly, bypassing
+          ``send_to`` and therefore the Teensy's TX seq counters entirely — an
+          echoed frame consumes no uplink seq of its own.
+        * **One silent send-loss path is invisible here.** ``rpc.cpp:403``
+          guards the reply with ``if (n)``: when ``pack_response`` fails,
+          ``udp_send_rpc`` is never called, so NO seq is consumed and no hole
+          appears in the sequence. That is the exact complement of the first
+          caveat — a send that fails after the seq is taken shows up, a
+          response that is never built does not.
+        * **A peer restart costs exactly one gap, and looks like loss.** The
+          Teensy's ``s_seq_stream_tx`` / ``s_seq_rpc_tx`` are file-scope
+          statics with no reset path (``udp_link.cpp:41-42``), so they restart
+          at 0 on a reboot and this tracker scores one skip against the
+          pre-reboot baseline. One count, not a storm — but nothing in this
+          counter distinguishes it from a real dropped frame. ``uptime_ms`` on
+          the 10 Hz heartbeat is the only separating signal: a value that just
+          went backwards means the gap on that tick was a reboot.
+
+        Called on the RX thread only, so the increment needs no lock.
+        """
+        prev = self._last_rx_seq.get(is_rpc)
+        self._last_rx_seq[is_rpc] = seq
         if prev is None:
-            return
-        expected = (prev + 1) & 0xFFFF
-        if seq != expected:
-            # Crude gap measure: count one gap event per out-of-order seq.
-            # Rebind-only, same snapshot-race reason as rx_count_by_type.
-            if msg_type in self.stats.seq_gaps_by_type:
-                self.stats.seq_gaps_by_type[msg_type] += 1
+            return                      # first frame on this socket: no baseline
+        if seq != ((prev + 1) & 0xFFFF):
+            self.stats.seq_gaps += 1
 
     def _confirm_rx_stamping(self) -> None:
         """PROBING → KERNEL on the first packet that actually carried a stamp.

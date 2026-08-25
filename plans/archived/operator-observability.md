@@ -352,6 +352,10 @@ template, including its three-cause staleness honesty.
   names) + `gap_<TYPE_NAME>` (nonzero only) + aggregates
   (`rx_frames/tx_frames/crc_errors/decode_errors/drain_capped`). Counters,
   not rates — the GUI differentiates; counters are the honest rosbag artifact.
+  **2026-08-25: superseded — the per-type `gap_<TYPE_NAME>` keys were removed
+  and an aggregate `seq_gaps` added by `plans/archived/udp-channel-health.md`
+  P1/P4; see `logbook/2026-08-25-udp-channel-health-implementation.md`.** The
+  key list above is the record of what F2 shipped, not the live contract.
 - **R3 — GUI module** `ros_ws/gui/js/udp-traffic.js` (do not grow
   `panels.js`): subscribes via a `main.js` route beside `profile`/`link_status`
   (`:276-279`, `:474-483`); stores counter samples with arrival timestamps;
@@ -377,7 +381,11 @@ template, including its three-cause staleness honesty.
 
 **Done means:** toggling the panel shows live per-type `msg/s` both directions
 (TELEMETRY ~100, HEARTBEAT 10, SETPOINT 40-when-streaming…), gaps surfaced,
-link-down rendered honestly, contracts pinned.
+link-down rendered honestly, contracts pinned. **[2026-08-25: all met as
+written; "gaps surfaced" was then RETIRED the same day — the per-type gaps were
+a shared-wire-seq artifact and were deleted, and one aggregate `seq_gaps`
+replaced them (`plans/archived/udp-channel-health.md` P1/P4, implemented +
+archived same day).]**
 
 ## 6. Verification & process
 
@@ -458,10 +466,13 @@ Archived **completed**. All four features shipped, merged to
   eleven weeks**: `client.py::_track_seq` (`2b605af`) tracks last-seq per
   message *type*, but the wire carries ONE shared sequence counter per
   (socket, direction), so any interleaved frame of another type scores a gap.
-  Diagnosis in `logbook/2026-08-25-udp-gap-column-artifact.md`; the fix is
-  scoped as P1–P4 of `plans/active/udp-channel-health.md`; and the misleading
-  column has **already been removed from the panel** (close-out,
-  `logbook/2026-08-25-observability-closeout-fixes.md`).
+  Diagnosis in `logbook/2026-08-25-udp-gap-column-artifact.md`; the misleading
+  column was **removed from the panel** in the close-out
+  (`logbook/2026-08-25-observability-closeout-fixes.md`), and the fix proper
+  **was implemented and archived the same day** as P1–P4 of
+  `plans/archived/udp-channel-health.md` — the producer counters deleted and
+  the panel re-ranked latency-first
+  (`logbook/2026-08-25-udp-channel-health-implementation.md`).
 - **Item 4 RESOLVED.** The first real calibrate swept **118.8°**, so
   `MIN_ARC_DEG` was raised **20° → 60°** the same day.
   `MIN_MARKER_RADIUS_MM` stays **20**, confirmed by that passing calibrate.

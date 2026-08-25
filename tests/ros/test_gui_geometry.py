@@ -420,12 +420,21 @@ BRIDGE_NODE_PY = (ROOT / 'ros_ws' / 'src' / 'jugglebot' / 'jugglebot'
                   / 'teensy_bridge_node.py')
 CAN_TRAFFIC_JS = ROOT / 'ros_ws' / 'gui' / 'js' / 'can-traffic.js'
 UDP_TRAFFIC_JS = ROOT / 'ros_ws' / 'gui' / 'js' / 'udp-traffic.js'
+PANELS_CSS = ROOT / 'ros_ws' / 'gui' / 'css' / 'panels.css'
+CANBRIDGE_FW = ROOT / 'ros_ws' / 'src' / 'jugglebot' / 'Teensy_code_canbridge'
+TILT_CAL_GRID_PY = ROOT / 'tests' / 'hardware' / 'tilt_cal_grid.py'
 
 
 @pytest.fixture(scope='module')
 def udp_traffic_js():
     """Read udp-traffic.js as text."""
     return UDP_TRAFFIC_JS.read_text()
+
+
+@pytest.fixture(scope='module')
+def panels_css():
+    """Read panels.css as text."""
+    return PANELS_CSS.read_text()
 
 
 @pytest.fixture(scope='module')
@@ -438,6 +447,16 @@ def bridge_py():
 def can_traffic_js():
     """Read can-traffic.js as text."""
     return CAN_TRAFFIC_JS.read_text()
+
+
+@pytest.fixture(scope='module')
+def tilt_cal_grid_py():
+    """Read the offline capture harness as text.
+
+    It holds the THIRD copy of the latency_monitor rank table (the node and
+    udp-traffic.js hold the other two), so it belongs in the same pin.
+    """
+    return TILT_CAL_GRID_PY.read_text()
 
 
 def _extract_method_source(py_text, name):
@@ -540,7 +559,12 @@ class TestUdpDiagKeyValueContract:
     """
 
     #: Direction/kind prefixes shared by the producer and the consumer regex.
-    PREFIXES = ('rx', 'tx', 'gap')
+    #: 'gap' left with the column it fed (2026-08-25): a per-type gap tally over
+    #: a SHARED wire sequence counter measured type interleaving, not loss
+    #: (logbook/2026-08-25-udp-gap-column-artifact.md).  Both ends move together
+    #: or this class fails — that is the point of reconstructing the key set
+    #: from the same tuple on both sides.
+    PREFIXES = ('rx', 'tx')
 
     def _produced_keys(self, bridge_py):
         from teensy_link import MsgType
@@ -582,7 +606,11 @@ class TestUdpDiagKeyValueContract:
         direct = set(re.findall(r'\bkv\.([a-z_]+)\b', js))
         # bridge_link / heartbeat_age_ms come from link_status, not udp_diag —
         # they are pinned by TestCanTrafficKeyValueContract's link_status test.
-        direct -= {'bridge_link', 'heartbeat_age_ms'}
+        # latency_monitor is link_status too, pinned by
+        # TestUdpPanelLatencyMonitor below; rtt_us is clock_diag, pinned by
+        # TestUdpPanelAnchorRtt.
+        direct -= {'bridge_link', 'heartbeat_age_ms', 'latency_monitor',
+                   'rtt_us'}
         return per_type | listed | direct
 
     def test_udp_diag_consumer_subset_of_producer(self, bridge_py,
@@ -609,7 +637,7 @@ class TestUdpDiagKeyValueContract:
         headers = re.findall(r'>([^<>]*)</th>', js)
         # 3, not 4: the per-type 'gaps' column was removed 2026-08-25 — that
         # counter is an artifact of the shared wire seq counter, so the panel
-        # stopped rendering it (plans/active/udp-channel-health.md).
+        # stopped rendering it (plans/archived/udp-channel-health.md).
         assert len(headers) >= 3, f'<th> extraction went stale: {headers}'
         rate_headers = [h for h in headers if 'msg/s' in h]
         assert len(rate_headers) == 2, \
@@ -618,6 +646,23 @@ class TestUdpDiagKeyValueContract:
             assert 'Hz' not in h, \
                 f"UDP column header {h!r} labels a rate 'Hz' — that unit " \
                 f"belongs to the ROS view's browser-received rate"
+
+    def test_seq_gaps_also_rides_link_status_beside_uptime_ms(self, bridge_py):
+        """The gap counter must be readable on the SAME message as uptime_ms.
+
+        A Teensy restart costs exactly one gap — its TX seq statics have no
+        reset path (``udp_link.cpp:41-42``) — and nothing in the counter itself
+        distinguishes that from a real dropped frame.  ``uptime_ms`` going
+        backwards is the only separating signal, and it lives on /link_status,
+        so a bag that carries the gaps at 1 Hz on /udp_diag and the uptime at
+        10 Hz on /link_status cannot pair them tick-for-tick.  Both on
+        /link_status is what makes the distinction reconstructable offline.
+        """
+        src = _extract_method_source(bridge_py, '_publish_link_status')
+        keys = _keyvalue_keys(src)
+        assert {'seq_gaps', 'uptime_ms'} <= keys, \
+            'seq_gaps and uptime_ms must both be published on /link_status ' \
+            f'so a peer reboot can be told from real loss; got {sorted(keys)}'
 
     def test_window_presets_never_include_one_second(self, udp_traffic_js):
         """/udp_diag publishes at 1 Hz, so a 1 s window holds ONE sample and
@@ -639,6 +684,301 @@ class TestUdpDiagKeyValueContract:
         assert 'udpTrafficOnLinkStatus(msg)' in m.group(1), \
             'the UDP view lost its bridge_link gate — a dead uplink would ' \
             'render as a plausible table of zeros'
+
+
+class TestUdpPanelLatencyMonitor:
+    """Pin the latency verdict the UDP footer renders against the node source.
+
+    Same honesty note as the two contract classes above: string-level
+    tripwires, not behavioural tests.
+
+    What they protect is the reason latency is on this panel at all.  The
+    five-week uptime-lag arc (2026-07-18 → 2026-08-15, can-bridge FW 14) was a
+    LATENCY failure that every loss counter read clean through, and the token
+    the node publishes is the alarmed surface that arc left behind.  The rank
+    order is CAUSAL, not severity, and the panel's "worst in session" is a max
+    over it — so a token this GUI does not know, or a rank reordered on one
+    side only, would leave the footer quietly naming the wrong condition: an
+    operator pointed at the clamp duty when the ring leak upstream of it is
+    what needs fixing.
+    """
+
+    def _node_tokens(self, bridge_py):
+        """``{token: rank}`` as teensy_bridge_node.py defines them."""
+        names = dict(re.findall(r"^(LATENCY_MONITOR_\w+) = '(\w+)'\s*$",
+                                bridge_py, re.M))
+        assert len(names) == 4, \
+            f'token-constant extraction went stale: {names}'
+        m = re.search(r'_LATENCY_MONITOR_RANK = \{(.*?)\n\}', bridge_py, re.S)
+        assert m, '_LATENCY_MONITOR_RANK extraction went stale'
+        ranks = re.findall(r'(LATENCY_MONITOR_\w+):\s*(\d+)', m.group(1))
+        assert len(ranks) == 4, f'rank extraction went stale: {ranks}'
+        return {names[n]: int(r) for n, r in ranks}
+
+    def _js_tokens(self, udp_traffic_js):
+        js = _strip_js_comments(udp_traffic_js)
+        m = re.search(r'const LATENCY_MONITOR_RANK = \{(.*?)\n\};', js, re.S)
+        assert m, 'LATENCY_MONITOR_RANK extraction went stale in udp-traffic.js'
+        pairs = re.findall(r'(\w+):\s*(\d+)', m.group(1))
+        assert len(pairs) == 4, f'JS rank extraction went stale: {pairs}'
+        return {k: int(v) for k, v in pairs}
+
+    def _harness_tokens(self, tilt_cal_grid_py):
+        """``{token: rank}`` as the offline capture harness defines them.
+
+        Its table mixes one NAME reference with three string literals, so both
+        forms are resolved here rather than assumed.
+        """
+        ok = re.search(r"^LATENCY_MONITOR_OK = '(\w+)'\s*$",
+                       tilt_cal_grid_py, re.M)
+        assert ok, 'LATENCY_MONITOR_OK extraction went stale in tilt_cal_grid.py'
+        m = re.search(r'^_LATENCY_MONITOR_RANK = \{(.*?)\}\s*$',
+                      tilt_cal_grid_py, re.M | re.S)
+        assert m, ('_LATENCY_MONITOR_RANK extraction went stale in '
+                   'tilt_cal_grid.py')
+        pairs = re.findall(r"(?:'(\w+)'|LATENCY_MONITOR_OK):\s*(\d+)",
+                           m.group(1))
+        assert len(pairs) == 4, f'harness rank extraction went stale: {pairs}'
+        return {(name or ok.group(1)): int(rank) for name, rank in pairs}
+
+    def test_tokens_and_rank_order_match_the_node(self, bridge_py,
+                                                  udp_traffic_js):
+        assert self._js_tokens(udp_traffic_js) == self._node_tokens(bridge_py)
+
+    def test_all_three_rank_copies_agree(self, bridge_py, udp_traffic_js,
+                                         tilt_cal_grid_py):
+        """The node, the GUI and the offline harness each carry the table.
+
+        Three copies exist because three runtimes need it and none can import
+        the others (the harness must stay off ``rclpy``, the GUI is a browser
+        module).  A reorder in one of them makes two tools name a DIFFERENT
+        most-upstream cause from the same session, which is worse than either
+        being wrong on its own — the operator has no way to tell which reading
+        to act on.
+        """
+        node = self._node_tokens(bridge_py)
+        assert self._js_tokens(udp_traffic_js) == node
+        assert self._harness_tokens(tilt_cal_grid_py) == node
+
+    def test_unknown_token_outranks_every_known_cause(self, udp_traffic_js,
+                                                      tilt_cal_grid_py,
+                                                      bridge_py):
+        """An unrecognised token comes from a NEWER producer than the reader.
+
+        Its place in the causal chain is unknowable to the reader, so it must
+        never be reduced away — not as OK (silently "fine"), and not slotted
+        between two named causes it might well sit upstream of.  Both readers
+        that tolerate an unknown token rank it above the whole table, and the
+        two constants must agree or worst-in-session means two things.
+        """
+        js = _strip_js_comments(udp_traffic_js)
+        m = re.search(r'const LATENCY_MONITOR_UNKNOWN_RANK = (\d+);', js)
+        assert m, 'LATENCY_MONITOR_UNKNOWN_RANK extraction went stale in JS'
+        js_unknown = int(m.group(1))
+
+        h = re.search(r'^_LATENCY_MONITOR_UNKNOWN_RANK = (\d+)\s*$',
+                      tilt_cal_grid_py, re.M)
+        assert h, ('_LATENCY_MONITOR_UNKNOWN_RANK extraction went stale in '
+                   'tilt_cal_grid.py')
+        assert js_unknown == int(h.group(1)), \
+            'the GUI and the offline harness disagree on the unknown-token rank'
+        assert js_unknown > max(self._node_tokens(bridge_py).values()), \
+            'an unknown token no longer outranks every NAMED cause'
+
+        # And the fallback actually USES the constant — a stray literal in
+        # latencyRank would leave this pin green while the panel ranked an
+        # unknown token below a named one.
+        fn = re.search(r'function latencyRank\(token\)\s*\{(.*?)\n\}', js, re.S)
+        assert fn, 'latencyRank extraction went stale'
+        assert 'LATENCY_MONITOR_UNKNOWN_RANK' in fn.group(1), \
+            'latencyRank no longer falls back to LATENCY_MONITOR_UNKNOWN_RANK'
+
+    def test_node_publishes_the_token_on_link_status(self, bridge_py):
+        """Unconditionally, and on link_status — the panel's only source."""
+        src = _extract_method_source(bridge_py, '_publish_link_status')
+        assert "KeyValue(key='latency_monitor'" in src, \
+            'the node stopped publishing latency_monitor on /link_status — ' \
+            'the UDP footer has no other source for it'
+
+    def test_panel_reads_the_token_from_link_status(self, udp_traffic_js):
+        js = _strip_js_comments(udp_traffic_js)
+        m = re.search(r'export function udpTrafficOnLinkStatus\(msg\)\s*\{'
+                      r'(.*?)\n\}', js, re.S)
+        assert m, 'udpTrafficOnLinkStatus extraction went stale'
+        assert 'kv.latency_monitor' in m.group(1), \
+            'the UDP panel no longer reads the latency verdict'
+
+    def test_ok_is_quiet_and_anything_else_is_prominent(self, udp_traffic_js,
+                                                        panels_css):
+        """Both render classes must exist in the stylesheet.
+
+        A class named only in JS renders as unstyled body text — which for the
+        alarm half means a RING_LEAK verdict that reads exactly like an OK one.
+        """
+        js = _strip_js_comments(udp_traffic_js)
+        m = re.search(r'function latencyHtml\(\)\s*\{(.*?)\n\}', js, re.S)
+        assert m, 'latencyHtml extraction went stale'
+        body = m.group(1)
+        for cls in ('udp-latency-ok', 'udp-latency-alarm'):
+            assert cls in body, f'latencyHtml no longer applies .{cls}'
+            assert f'.{cls}' in panels_css, f'panels.css has no .{cls} rule'
+
+
+class TestUdpPanelAnchorRtt:
+    """Pin the one live latency NUMBER the panel shows: clock_diag's rtt_us.
+
+    String-level tripwires again.  ``rtt_us`` is the time-sync anchor's round
+    trip (1–3 ms healthy) and is the only latency in milliseconds anything in
+    this system publishes — it is what exonerated the transport during the
+    uptime-lag arc, reading flat 1–3 ms at 63 h while the tracking lag was
+    ~240 ms.  A silent rename or a dropped route puts a permanent '--' in the
+    footer with no error anywhere.
+    """
+
+    def test_node_publishes_rtt_us_on_clock_diag(self, bridge_py):
+        src = _extract_method_source(bridge_py, '_publish_clock_diag')
+        assert "KeyValue(key='rtt_us'" in src, \
+            'the node stopped publishing rtt_us on /clock_diag'
+
+    def test_panel_reads_rtt_us(self, udp_traffic_js):
+        js = _strip_js_comments(udp_traffic_js)
+        m = re.search(r'export function udpTrafficOnClockDiag\(msg\)\s*\{'
+                      r'(.*?)\n\}', js, re.S)
+        assert m, 'udpTrafficOnClockDiag extraction went stale'
+        assert 'kv.rtt_us' in m.group(1), \
+            'the UDP panel no longer reads the anchor RTT'
+
+    def test_main_routes_clock_diag(self, main_js):
+        assert "ros.subscribe('clock_diag'" in main_js, \
+            'main.js no longer subscribes to clock_diag'
+        m = re.search(r'function onClockDiag\(msg\)\s*\{(.*?)\n\}', main_js, re.S)
+        assert m, 'onClockDiag not found in main.js'
+        assert 'udpTrafficOnClockDiag(msg)' in m.group(1), \
+            'clock_diag no longer reaches the UDP panel'
+
+
+class TestUdpNominalRates:
+    """Pin the UDP panel's nominal-rate table against the FIRMWARE constants.
+
+    The panel colours a msg/s cell when a steady flow drifts outside its
+    nominal band, which makes those nominals a reference an operator trusts
+    without re-deriving.  A firmware retune (TELEM_RATE_HZ, the hand poller's
+    CHECK_INTERVAL_MS, HEARTBEAT_HZ) would leave that reference quietly wrong
+    — an amber cell on a healthy link, or worse a quiet one on a sick link.
+    This is the extract-both-sides-and-compare idiom the rest of this file
+    uses, so the retune fails the suite instead.
+    """
+
+    @staticmethod
+    def _table_block(js):
+        """The NOMINAL_RATES literal, comments INTACT (a test below reads
+        them: an uncommented number is a number nobody can re-derive)."""
+        m = re.search(r'const NOMINAL_RATES = \{(.*?)\n\};', js, re.S)
+        assert m, 'NOMINAL_RATES extraction went stale'
+        return m.group(1)
+
+    @classmethod
+    def _entries(cls, js):
+        """``{key: hz}`` from the JS table."""
+        block = _strip_js_comments(cls._table_block(js))
+        pairs = re.findall(r'(\w+):\s*\{\s*hz:\s*(\d+)', block)
+        assert pairs, f'NOMINAL_RATES entry extraction went stale: {block!r}'
+        return {k: int(v) for k, v in pairs}
+
+    @staticmethod
+    def _firmware_nominals():
+        """The three firmware constants the table mirrors, as msg/s."""
+        cfg = (CANBRIDGE_FW / 'canbridge_config.h').read_text()
+        # The ACTIVE branch, not the BENCH_SYSID_BUILD override above it.
+        m = re.search(r'#else\s*\n\s*constexpr uint32_t TELEM_RATE_HZ\s*=\s*(\d+)',
+                      cfg)
+        assert m, 'TELEM_RATE_HZ extraction went stale (the #else branch)'
+        telem_hz = int(m.group(1))
+
+        hw = (CANBRIDGE_FW / 'hardware_config.h').read_text()
+        # Scoped to JBBallDetect: BBBallDetect has a CHECK_INTERVAL_MS too, and
+        # it is a different robot's sensor.
+        ns = re.search(r'namespace JBBallDetect \{(.*?)\n\}', hw, re.S)
+        assert ns, 'JBBallDetect namespace extraction went stale'
+        m = re.search(r'CHECK_INTERVAL_MS\s*=\s*(\d+)u?;', ns.group(1))
+        assert m, 'JBBallDetect::CHECK_INTERVAL_MS extraction went stale'
+        poll_ms = int(m.group(1))
+        assert 1000 % poll_ms == 0, \
+            f'poll interval {poll_ms} ms no longer divides a second evenly — ' \
+            f'the JS nominal cannot stay an integer msg/s'
+
+        proto = (CANBRIDGE_FW / 'udp_protocol.h').read_text()
+        m = re.search(r'constexpr uint8_t HEARTBEAT_HZ\s*=\s*(\d+)u?;', proto)
+        assert m, 'JbUdp::HEARTBEAT_HZ extraction went stale'
+        return telem_hz, 1000 // poll_ms, int(m.group(1))
+
+    def test_nominals_match_the_firmware_constants(self, udp_traffic_js):
+        telem_hz, hand_hz, hb_hz = self._firmware_nominals()
+        entries = self._entries(udp_traffic_js)
+        assert entries == {
+            # telemetry_step()'s unconditional back-to-back trio
+            'rx_TELEMETRY': telem_hz,
+            'rx_BB_AXIS_ESTIMATES': telem_hz,
+            'rx_LEG_CMD': telem_hz,
+            'rx_HAND_SENSOR': hand_hz,
+            'rx_HEARTBEAT_T2J': hb_hz,
+            'tx_HEARTBEAT_J2T': hb_hz,
+            # SETPOINT has no firmware constant — it is the Jetson's own
+            # trajectory stream rate, and it is bimodal (see below).
+            'tx_SETPOINT': 40,
+        }, 'the JS nominal table drifted from the firmware'
+
+    def test_every_entry_names_its_firmware_source(self, udp_traffic_js):
+        """The comments are the whole reason the numbers are auditable."""
+        block = self._table_block(udp_traffic_js)
+        for token in ('TELEM_RATE_HZ', 'canbridge_config.h',
+                      'CHECK_INTERVAL_MS', 'hardware_config.h',
+                      'HEARTBEAT_HZ', 'udp_protocol.h',
+                      'telemetry.cpp'):
+            assert token in block, \
+                f'NOMINAL_RATES no longer cites {token} — a nominal nobody ' \
+                f'can trace back to firmware is a number nobody can trust'
+
+    def test_setpoint_stays_bimodal(self, udp_traffic_js):
+        """0 and ~40 are BOTH healthy, so only an overshoot may be flagged.
+
+        Policing the low side would paint the panel amber every time nothing
+        is streaming, which is most of a session.
+        """
+        block = _strip_js_comments(self._table_block(udp_traffic_js))
+        m = re.search(r'tx_SETPOINT:\s*\{([^}]*)\}', block)
+        assert m, 'tx_SETPOINT entry extraction went stale'
+        assert 'bimodal: true' in m.group(1), \
+            'tx_SETPOINT lost its bimodal flag — an idle link would flag'
+
+    def test_event_driven_types_have_no_nominal(self, udp_traffic_js):
+        """A nominal on an event-driven type is a permanent false alarm."""
+        entries = self._entries(udp_traffic_js)
+        for name in ('RPC_REQUEST', 'RPC_RESPONSE', 'CMD_RESULT',
+                     'HAND_CMD_ECHO', 'CONE_FRAME', 'PLATFORM_FRAME',
+                     'DIAGNOSTIC'):
+            for prefix in ('rx', 'tx'):
+                assert f'{prefix}_{name}' not in entries, \
+                    f'{prefix}_{name} is event-driven and cannot have a nominal'
+
+    def test_table_keys_are_real_msgtypes(self, udp_traffic_js):
+        """A typo'd key would simply never match and never flag anything."""
+        from teensy_link import MsgType
+
+        names = {t.name for t in MsgType}
+        for key in self._entries(udp_traffic_js):
+            prefix, _, name = key.partition('_')
+            assert prefix in ('rx', 'tx'), f'{key} has no direction prefix'
+            assert name in names, f'{key} names no MsgType'
+
+    def test_the_deviation_class_is_rendered_and_styled(self, udp_traffic_js,
+                                                        panels_css):
+        js = _strip_js_comments(udp_traffic_js)
+        assert 'rateDeviates(' in js, 'the conformance check is gone'
+        assert 'udp-rate-off' in js, 'no cell can be marked as deviating'
+        assert '.udp-rate-off' in panels_css, \
+            'panels.css has no .udp-rate-off rule — a deviating cell would ' \
+            'render exactly like a conforming one'
 
 
 # ---- State-minimap tripwires ----

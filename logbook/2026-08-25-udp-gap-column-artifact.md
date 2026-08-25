@@ -2,7 +2,7 @@
 title: The UDP panel's Gaps column is a measurement artifact, not message loss
 type: investigation
 date: 2026-08-25
-status: in-progress
+status: resolved
 phase: "operator-observability F2"
 related_plan: operator-observability.md
 subsystem:
@@ -51,18 +51,26 @@ Consistent with that, `HAND_SENSOR` is not in the per-tick trio — it comes fro
 `hand_sensor_uplink_step()` (`telemetry.cpp:260-289`), gated on reply freshness
 with a 1 Hz keepalive, and a `static_assert` pins the poll no faster than the
 telemetry tick (`CHECK_INTERVAL_MS` 20 ms against a 10 ms tick), so its true
-rate genuinely is about half `TELEMETRY`'s. **Discriminator, needs no code:** one
-`ros2 topic echo /udp_diag`, comparing cumulative `rx_HAND_SENSOR` against
-`gap_HAND_SENSOR` in the same message.
+rate genuinely is about half `TELEMETRY`'s. A discriminator was pre-registered
+here — one `ros2 topic echo /udp_diag`, comparing cumulative `rx_HAND_SENSOR`
+against `gap_HAND_SENSOR` in the same message — but it was **never run, and is
+now DROPPED by decision**: P1 deleted the `gap_<TYPE>` keys the same day, and the
+firmware answers the question without it. See Open Questions.
 
 ## Fix
 
-**Deliberately NOT implemented in this close-out session** — read-only
-investigation — with one exception taken in the same commit: the misleading
-column was removed from the panel (`udp-traffic.js:511`); the producer counters
-and `gap_<TYPE>` keys are untouched and remain P1. Filed as
-`plans/active/udp-channel-health.md`, written in parallel
-with this entry at `status: proposed` — nothing implemented, nothing approved.
+**This close-out session implemented only the column removal.** The
+investigation itself was read-only; the one exception was taken in the same
+commit — the misleading column was removed from the panel
+(`udp-traffic.js:511`), while the producer counters and the `gap_<TYPE>` keys
+were left untouched as P1. The fix proper was filed as
+`plans/archived/udp-channel-health.md`, written in parallel with this entry and
+at `status: proposed` **at that moment** — nothing beyond the column
+implemented, nothing yet approved. **The producer counters and the
+channel-health metrics landed LATER THE SAME DAY** as P1–P4, after the owner
+redirected the plan from *counting gaps* to *gauging channel health*; that plan
+is now archived `completed`
+(`logbook/2026-08-25-udp-channel-health-implementation.md`).
 
 That plan was **rescoped the same day after owner review**: the question is
 *gauge channel health*, not *count gaps*, so it now carries four independently
@@ -86,8 +94,8 @@ a `seq == last+1` guard there was already rejected once.
 
 **No link-health concern.** `crc_errors`, `decode_errors` and `drain_capped` are
 the honest numbers on that panel and were clean for the sitting. The per-type
-gap counters survive on `/udp_diag` until P1 lands; they must not be read as
-loss.
+gap counters survived on `/udp_diag` only until P1 landed later the same day
+(2026-08-25); they were never to be read as loss, and they are gone.
 
 ## Verification
 
@@ -98,5 +106,22 @@ mechanism confirmed at every file:line cited above).
 
 ## Open Questions
 
-- `HAND_SENSOR ≈ RX/2` — unexplained by the confirmed mechanism. Run the
-  `/udp_diag` echo before accepting the unit-mixing explanation.
+**None. The one that was open is CLOSED — by the firmware read, not by the
+measurement (2026-08-25).**
+
+`HAND_SENSOR ≈ RX/2` was to be settled by the `/udp_diag` echo above. That echo
+was destroyed unrun: P1 landed the same day and deleted the `gap_<TYPE>` keys it
+would have read. It is deliberately NOT being reinstated, because the source
+already answers it. `send_to` consumes ONE sequence counter per socket
+(`udp_link.cpp:171`) for every message type, and `telemetry_step` emits its trio
+back-to-back on a single tick (`telemetry.cpp:619-622`) — so **any** per-type
+ratio taken over that shared counter is an artifact BY CONSTRUCTION, and the
+particular value of the ratio is a fact about how often another type interleaved
+with the flow being read, not about the link. For `HAND_SENSOR` that cadence is
+round-trip paced: it sends once per poll REPLY (`telemetry.cpp:273-275` gates on
+the reply's wall stamp, plus a flags flip — never on the ball verdict changing
+value), so the interleave pattern carries the CAN round-trip jitter of the poll.
+
+Running the echo would therefore have confirmed a mechanism already proven from
+the firmware, at the cost of implying the exact ratio meant something. It has no
+remaining diagnostic value, and nothing downstream is waiting on it.

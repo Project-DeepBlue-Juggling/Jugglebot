@@ -916,6 +916,17 @@
     opacity: 0.55;
 }
 
+/* A steady flow outside its firmware nominal band (udp-traffic.js's
+   NOMINAL_RATES / RATE_TOLERANCE).  Placed AFTER the idle rule and matched on
+   the cell so it wins the opacity: a TELEMETRY stream that fell to 0 is an
+   idle row by the letter of that rule and the single most important thing on
+   the panel by any other measure. */
+.udp-table td.udp-rate-off {
+    color: var(--accent-amber);
+    font-weight: 600;
+    opacity: 1;
+}
+
 /* Every rate untrustworthy (link down / stale / ROS2 down): dim the data so
    the cumulative columns are never mistaken for live rates.  The banner is
    deliberately NOT dimmed — it is the one thing that must read clearly. */
@@ -937,6 +948,20 @@
 
 .udp-agg-errors.udp-err {
     color: var(--accent-amber);
+}
+
+/* The bridge's latency verdict (link_status latency_monitor), first in the
+   footer.  Latency is the failure class a loss counter is blind to — the
+   2026-07-18 → 2026-08-15 uptime-lag arc read clean on every loss counter for
+   five weeks — so OK is deliberately quiet and anything else must read at a
+   glance without becoming a second alarm banner. */
+.udp-latency-ok {
+    color: var(--accent-green);
+}
+
+.udp-latency-alarm {
+    color: var(--accent-amber);
+    font-weight: 600;
 }
 
 /* Outage headline above the table — names the outage (LINK DOWN / ROS2

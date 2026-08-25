@@ -1,15 +1,18 @@
 ---
 title: UDP channel-health metrics — four independently-landable phases
 created: 2026-08-25
-status: proposed   # outside DOCUMENTATION_GUIDE 2.6's vocabulary on purpose, for a document nobody has approved yet (as leg-bus-frame-drops.md does); `active` on approval.
+status: completed
+completed: 2026-08-25
+archived: 2026-08-25
 owner: harrison
 last_updated: 2026-08-25
 related_plan: operator-observability.md
 related_logbook:
   - 2026-08-22-udp-rate-panel.md            # the F2 entry that shipped the panel and the gap_<TYPE> keys
   - 2026-08-25-udp-gap-column-artifact.md   # the read-only investigation this plan carries forward
+  - 2026-08-25-udp-channel-health-implementation.md   # the as-built record of P1-P4 and the 17-finding audit
 related_code:
-  - teensy_link/client.py::UdpClient._track_seq
+  - teensy_link/client.py::TeensyLinkClient._track_seq
   - ros_ws/src/jugglebot/jugglebot/teensy_bridge_node.py::_publish_udp_diag
   - ros_ws/src/jugglebot/jugglebot/teensy_bridge_node.py::_latency_monitor_step
   - ros_ws/gui/js/udp-traffic.js
@@ -18,10 +21,15 @@ related_code:
 
 # UDP channel-health metrics
 
-> **PROPOSAL — nothing implemented.** Diagnostic surface only: nothing here is in the leg safety loop, and § 7
-> rules out the firmware option precisely because it would be. Investigated 2026-08-25 (session `f0978e1e`); the
-> diagnosis is complete, so implementation needs no re-investigation. **Rescoped 2026-08-25 after owner review**:
-> the goal is *gauging channel health*, not counting gaps.
+> **ARCHIVED `completed` 2026-08-25 — drafted, implemented, audited and archived on the same day.** P1, P2, P3
+> and P4 all landed in code and tests, and the 17-finding audit round on that work was applied in full. Diagnostic
+> surface only: nothing here is in the leg safety loop, and § 7 rules out the firmware option precisely because it
+> would be. **The body below is the PRE-implementation proposal and still reads in the future tense throughout** —
+> its file:line references, its "what remains" clauses and its estimates are all from before the build, and several
+> are now stale. It is kept unrewritten on purpose, as the record of what was proposed; **§ Archival note carries
+> the as-built account**, and the code plus `logbook/2026-08-25-udp-channel-health-implementation.md` are the
+> authority on what actually shipped. Investigated 2026-08-25 (session `f0978e1e`); **rescoped 2026-08-25 after
+> owner review**: the goal is *gauging channel health*, not counting gaps.
 
 ## 1. Why latency outranks loss
 
@@ -155,6 +163,71 @@ way. Safety-loop code is not worth risking for a diagnostic.
 ## 8. Done means
 
 Each phase ships alone, gated on `./run_tests.sh` green. **P1** — no per-type gap key on `/udp_diag`, no gaps column,
-four test sites updated, the `/udp_diag` echo logged. **P2** — current and worst-in-session `latency_monitor` on the
+four test sites updated. **The pre-registered `/udp_diag` echo check is DROPPED by decision (2026-08-25), not merely
+skipped**: P1 deleted the `gap_<TYPE>` keys before anyone ran it, so it is no longer runnable, and it is *not* being
+reinstated — the firmware settles the question without it. `send_to` consumes ONE counter per socket
+(`udp_link.cpp:171`) for every message type, and `telemetry_step` emits its trio back-to-back on a single tick
+(`telemetry.cpp:619-622`), so **any** per-type ratio taken over that shared counter is an artifact by construction.
+The particular ratio `HAND_SENSOR` showed (≈ rx/2 rather than the ≡ rx−1 of the back-to-back trio) is a fact about how
+often another type interleaved with a round-trip-paced flow, and carries no information about link health — measuring
+it would have confirmed a mechanism already proven from the source, at the cost of implying the number meant
+something. **P2** — current and worst-in-session `latency_monitor` on the
 panel, tokens and rank order pinned against the node source. **P3** — steady flows annotated from a firmware-pinned
 JS table, every number stating its unit. **P4** — one lower-case `seq_gaps` aggregate, both sockets tracked apart.
+
+## Archival note — 2026-08-25
+
+Archived **completed**, on the day it was written. This plan was drafted in the morning out of the
+Gaps-artifact investigation (`logbook/2026-08-25-udp-gap-column-artifact.md`), **redirected by the owner the
+same day** from *counting gaps* to *gauging channel health* — which is what produced the latency-first ranking
+in § 1 — then implemented P1–P4 in one session and audited. The audit returned **17 findings (2 BLOCKING /
+8 WARNING / 7 NOTE), all applied**. The as-built account is
+`logbook/2026-08-25-udp-channel-health-implementation.md`; the body above is the pre-implementation proposal
+and is not a description of the shipped code.
+
+Two audit outcomes are worth carrying forward because they change what a reader may conclude from the panel:
+
+- **BLOCKING — the two link ends are not equally comparable.** § 6's justification for P4 was that the Teensy
+  measures the same quantity for the downlink. It does, but `track_downlink_seq` is gated `if (!is_rpc)`
+  (`udp_link.cpp:107`), so **only the STREAM half has a far-end counterpart**. A nonzero *total* can carry RPC
+  gaps the far end never counted, so an end-to-end mismatch is not by itself evidence of loss. The counter was
+  kept whole (splitting it doubles a footer number nobody is chasing) and the docstrings at both the client and
+  the publisher now say exactly what is and is not comparable.
+- **The § 3 / § 8 `/udp_diag` echo check was DROPPED BY DECISION, not skipped.** P1 deleted the `gap_<TYPE>`
+  keys before anyone ran it, and the firmware settles the question without it: `send_to` consumes ONE counter
+  per socket (`udp_link.cpp:171`) for every type and `telemetry_step` emits its trio back-to-back on one tick
+  (`telemetry.cpp:619-622`), so **any** per-type ratio over that counter is an artifact by construction. The
+  `HAND_SENSOR ≈ RX/2` question is closed by source read.
+
+### What shipped, and where it lives
+
+| Phase | Where it lives now |
+|-------|--------------------|
+| **P1** — the per-type gap counters deleted end-to-end | `_track_seq`'s per-type body and `LinkStats.seq_gaps_by_type` gone (`teensy_link/client.py`), the `gap_<TYPE>` publish loop gone (`teensy_bridge_node.py`), `'gap'` out of `PER_TYPE_KEY_RE` (`ros_ws/gui/js/udp-traffic.js`), and four coupled test sites moved with them — including the **bidirectional** `PREFIXES` pin in `tests/ros/test_gui_geometry.py`, which fails if either end changes alone |
+| **P2a** — the latency verdict on the panel | the current `latency_monitor` token **plus worst-in-session** in the footer (`udp-traffic.js`), rank table **three-way pinned** (JS == the node's `_LATENCY_MONITOR_RANK` == `tests/hardware/tilt_cal_grid.py`'s `worse_latency_monitor`), with an **unknown token ranked 4** — above every named cause, because a token this page does not know comes from a *newer* node and must never hide behind one it does |
+| **P2b** — `anchor rtt` | `rtt_us` from `/clock_diag` mirrored into the footer via a new `main.js` route. ~30 s anchors, so deliberately **not** staleness-classed with the other feeds, and labelled *anchor rtt* rather than latency — it is the transport round trip; nothing publishes an end-to-end telemetry latency |
+| **P3** — rate conformance | a `NOMINAL_RATES` table for **steady flows only**, each nominal commented with and pinned against its firmware constant (`TELEMETRY`/`BB_AXIS_ESTIMATES`/`LEG_CMD` 100 Hz, `HAND_SENSOR` 50 Hz *configured*, `HEARTBEAT` 10 Hz, `SETPOINT` bimodal). Band **±25 %**; `.udp-rate-off` amber ordered *after* the idle-row rule so it wins the opacity; **`SETPOINT` polices the high side only**, so a window straddling stream-start cannot flash amber at every move onset. Footer units labelled throughout |
+| **P4** — one honest aggregate `seq_gaps` | a per-socket tracker in `LinkStats` keyed on `sock is self._rpc_sock` — u16-wrap-safe, baseline cleared on reconnect (a new socket pair is a new sequence epoch), foreign-source frames excluded from tracking but kept in `rx_frames` so a second binder on :5005/:5006 reads as a count discrepancy rather than fake wire loss. Published on `/udp_diag` **and** on `/link_status` beside `uptime_ms`, because a peer restart costs exactly one gap and only the reboot detector on the same tick separates it from a real drop. Docstring carries **four caveats**: failed-send-still-counts (correct), the echo path bypasses the TX seq counters, `rpc.cpp:403`'s `if (n)` is a silent send-loss blind spot, and peer-restart-costs-one-gap |
+
+**Deploy:** `colcon build` for `teensy_bridge_node`; `teensy_link/` is PYTHONPATH-live and takes effect at the
+next relaunch; the GUI is static JS/CSS — **browser hard-refresh**.
+
+### Watch item — first bench read of the new footer
+
+Archival is **not** gated on it (owner decision, 2026-08-25), but nothing on this panel has been seen against a
+live link. Expect, at the next powered session:
+
+- **`latency OK`** as the current verdict, and `worst` no worse than that for a healthy session.
+- **`anchor rtt` 1–3 ms** — the healthy band from the FW 14 validation campaign.
+- **`HAND_SENSOR` ~42 msg/s against a 50 nominal**, *not* amber: ±25 % of 50 is 37.5–62.5, so it is in-band by
+  design. That is the known FW 15 poller cadence, diagnosed and fixed in FW 16
+  (`logbook/2026-08-24-poller-cadence-and-tristate-tx.md`) — an operator comparing the live number against the
+  stated nominal is not looking at a fault until that flash lands.
+
+**Anything else is the panel doing its job** — read it as a finding, not as a panel defect.
+
+### Possible follow-up
+
+Split the `seq_gaps` scalar into stream and RPC halves **if a nonzero total ever needs attributing**. It is
+deliberately not done pre-emptively: only the stream half has a far-end counterpart (the BLOCKING finding
+above), so the split buys attribution for a case nobody is chasing at the cost of a second footer number.

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import socket
 import struct
 import time
 
@@ -60,16 +61,118 @@ def test_client_receives_and_decodes_telemetry(fake_teensy_and_client):
     assert tm.vel_rps == pytest.approx((0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7))
 
 
-def test_client_tracks_seq_gaps(fake_teensy_and_client):
+def _wait_for_rx(client, n, timeout=1.0):
+    """Block until the client has received at least ``n`` datagrams."""
+    deadline = time.time() + timeout
+    while time.time() < deadline and client.stats.rx_frames < n:
+        time.sleep(0.005)
+    assert client.stats.rx_frames >= n, \
+        f'only {client.stats.rx_frames} of {n} frames arrived'
+
+
+def test_seq_gaps_ignores_type_interleave(fake_teensy_and_client):
+    """Interleaved message types must produce ZERO gaps.
+
+    THE case the predecessor per-type counter got wrong and its only test
+    never exercised (it drove one type through an otherwise silent link).  The
+    wire carries one sequence counter per (channel, direction), so alternating
+    types is perfectly contiguous on the wire — 0, 1, 2, 3 … — and anything
+    that scores a gap here is measuring interleaving, not loss.
+    """
     teensy, client = fake_teensy_and_client
-    # send seq 0, then skip to seq 5 manually by directly using send_to_jetson
-    # FakeTeensy's send_to_jetson auto-increments; manipulate _tx_seq_stream.
-    teensy.send_telemetry()  # seq=0
-    teensy._tx_seq_stream = 5  # skip ahead
-    teensy.send_telemetry()  # seq=5
-    time.sleep(0.1)
-    # The client should have noticed a gap (seq jumped from 0 to 5, expected 1)
-    assert client.stats.seq_gaps_by_type.get(int(MsgType.TELEMETRY), 0) >= 1
+    for _ in range(10):
+        teensy.send_telemetry()
+        teensy.send_heartbeat_t2j()
+    _wait_for_rx(client, 20)
+    assert client.stats.seq_gaps == 0, \
+        'interleaving two types scored a gap — the counter is per type again'
+
+
+def test_seq_gaps_counts_one_genuine_skip(fake_teensy_and_client):
+    """A real hole in the sequence counts exactly once, whatever type it hits."""
+    teensy, client = fake_teensy_and_client
+    teensy.send_telemetry()          # seq 0
+    teensy.send_heartbeat_t2j()      # seq 1
+    teensy._tx_seq_stream = 5        # seqs 2, 3, 4 never reach the wire
+    teensy.send_telemetry()          # seq 5 — one skip, one gap event
+    _wait_for_rx(client, 3)
+    assert client.stats.seq_gaps == 1, \
+        'a skipped seq must count exactly one gap event, not one per frame'
+
+
+def test_seq_gaps_tracks_the_two_sockets_apart(fake_teensy_and_client):
+    """STREAM and RPC carry INDEPENDENT wire counters.
+
+    One tracker across both would score a gap on every alternation between
+    them — the same by-construction artifact as the per-type counter, one
+    level up.
+    """
+    teensy, client = fake_teensy_and_client
+    for i in range(5):
+        teensy.send_telemetry()                       # stream seq 0..4
+        teensy.send_rpc_request(method=0, req_id=i)   # rpc seq 0..4
+    _wait_for_rx(client, 10)
+    assert client.stats.seq_gaps == 0, \
+        'the two sockets share a sequence tracker'
+
+
+def test_seq_gaps_survives_the_16_bit_wrap(fake_teensy_and_client):
+    """0xFFFF → 0x0000 is contiguous on the wire, not a gap."""
+    teensy, client = fake_teensy_and_client
+    teensy._tx_seq_stream = 0xFFFF
+    teensy.send_telemetry()          # seq 0xFFFF
+    teensy.send_telemetry()          # seq 0x0000 — the wrap
+    _wait_for_rx(client, 2)
+    assert client.stats.seq_gaps == 0, 'the seq wrap counted as a gap'
+
+
+def test_seq_gaps_ignores_a_foreign_source_address(fake_teensy_and_client):
+    """A frame from a source that is NOT the configured peer bumps the RX
+    counters but must NOT reach the sequence tracker.
+
+    5005/5006 are fixed, well-known ports: a second binder on this box (another
+    client, a bench probe, a stale process) lands datagrams in this process
+    carrying seq values from an entirely different counter, and feeding those to
+    ``_track_seq`` manufactures gaps out of nothing.  The frame still counts in
+    ``rx_frames`` and in its per-type row on purpose — foreign traffic must stay
+    VISIBLE as a discrepancy between the aggregates and ``seq_gaps``, not vanish.
+
+    The spoof is real, not mocked: the whole of 127.0.0.0/8 is loopback on
+    Linux, so an intruder socket bound to 127.0.0.2 gives a genuinely foreign
+    ``addr[0]`` against the fixture's 127.0.0.1 peer.
+    """
+    teensy, client = fake_teensy_and_client
+    teensy.send_telemetry()                    # stream seq 0 — sets the baseline
+    _wait_for_rx(client, 1)
+    assert client.stats.seq_gaps == 0
+
+    jetson_stream_port = client._stream_sock.getsockname()[1]
+    intruder = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        intruder.bind(('127.0.0.2', 0))
+        # seq 4242 against a baseline of 0: any tracker that accepted this frame
+        # would score a gap on it.
+        payload = p.Telemetry(t_teensy_us=0,
+                              pos_rev=(0.0,) * p.NUM_AXES,
+                              vel_rps=(0.0,) * p.NUM_AXES).pack()
+        frame = p.encode_frame(int(MsgType.TELEMETRY), 4242, payload)
+        intruder.sendto(frame, ('127.0.0.1', jetson_stream_port))
+        _wait_for_rx(client, 2)
+    finally:
+        intruder.close()
+
+    assert client.stats.seq_gaps == 0, \
+        'a foreign-source frame reached _track_seq and manufactured a gap'
+    assert client.stats.rx_count_by_type[int(MsgType.TELEMETRY)] >= 2, \
+        'the foreign frame was filtered out of the RX counts too — it must ' \
+        'stay visible as a discrepancy, not disappear'
+
+    # The intruder must not have poisoned the BASELINE either: the peer's next
+    # frame is seq 1, contiguous with its own seq 0, and must still read clean.
+    teensy.send_telemetry()                    # stream seq 1
+    _wait_for_rx(client, 3)
+    assert client.stats.seq_gaps == 0, \
+        'the foreign frame overwrote the peer baseline in _last_rx_seq'
 
 
 def test_client_counts_crc_errors(fake_teensy_and_client):
@@ -154,7 +257,7 @@ def test_link_stats_preseed_every_msgtype():
 
     stats = LinkStats()
     want = {int(t) for t in MsgType}
-    for name in ('rx_count_by_type', 'tx_count_by_type', 'seq_gaps_by_type'):
+    for name in ('rx_count_by_type', 'tx_count_by_type'):
         got = set(getattr(stats, name))
         assert got == want, f'{name} is not pre-seeded with every MsgType'
         assert set(getattr(stats, name).values()) == {0}, f'{name} seeded nonzero'
@@ -175,7 +278,7 @@ def test_snapshot_survives_concurrent_rx_counting(fake_teensy_and_client):
     """Snapshotting under live RX traffic must not raise.
 
     This is the race the pre-seed closes: ``snapshot()`` does ``dict(...)`` on
-    three dicts the RX thread is writing, with no lock.  With every known key
+    both per-type dicts the RX thread is writing, with no lock.  With every key
     pre-seeded the RX thread only ever REBINDS, so the copy is safe.  Loops so
     the snapshot lands mid-burst rather than in a quiet gap.
     """

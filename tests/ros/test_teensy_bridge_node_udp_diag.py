@@ -48,6 +48,11 @@ def test_udp_diag_publishes_every_msgtype_both_directions():
             assert f'tx_{t.name}' in kv, f'no tx row for {t.name}'
         # Names, not ids: a bag consumer must not have to carry an enum table.
         assert 'rx_129' not in kv and 'rx_TELEMETRY' in kv
+        # And NO per-type gap row: the wire's sequence counter is shared across
+        # types per (channel, direction), so a per-type gap tally counted
+        # interleaving, not loss (2026-08-25-udp-gap-column-artifact.md).
+        assert not any(k.startswith('gap_') for k in kv), \
+            'per-type gap rows are back — they cannot measure per-type loss'
     finally:
         _teardown(teensy, client, node)
 
@@ -85,25 +90,6 @@ def test_udp_diag_counts_tx_by_type():
         _teardown(teensy, client, node)
 
 
-def test_udp_diag_omits_zero_gap_rows_and_emits_nonzero_ones():
-    """21 permanently-zero gap rows would bury the one that matters."""
-    teensy, client, node = _build_paired_node()
-    try:
-        kv = _diag_kv(node)
-        assert not any(k.startswith('gap_') for k in kv), \
-            'zero gap rows must be omitted'
-
-        teensy.send_telemetry()          # seq 0
-        teensy._tx_seq_stream = 5        # skip ahead → one gap event
-        teensy.send_telemetry()          # seq 5
-        assert _wait_until(
-            lambda: client.stats.seq_gaps_by_type.get(int(MsgType.TELEMETRY), 0) >= 1)
-        kv = _diag_kv(node)
-        assert int(kv[f'gap_{MsgType.TELEMETRY.name}']) >= 1
-    finally:
-        _teardown(teensy, client, node)
-
-
 def test_udp_diag_carries_the_aggregates():
     """rx_frames counts EVERY datagram, so it is >= the sum of the per-type
     rows; the difference (crc + decode failures, unknown types) is only
@@ -114,11 +100,39 @@ def test_udp_diag_carries_the_aggregates():
         assert _wait_until(lambda: client.stats.rx_frames >= 1)
         kv = _diag_kv(node)
         for key in ('rx_frames', 'tx_frames', 'crc_errors', 'decode_errors',
-                    'drain_capped'):
+                    'drain_capped', 'seq_gaps'):
             assert key in kv, f'missing aggregate {key}'
+        # Lower case is the contract, not a style choice: it is what routes
+        # seq_gaps to the GUI's aggregate footer instead of a per-type row
+        # (udp-traffic.js PER_TYPE_KEY_RE).
+        assert 'seq_gaps' in kv and 'SEQ_GAPS' not in kv
         per_type_rx = sum(int(v) for k, v in kv.items() if k.startswith('rx_')
                           and k != 'rx_frames')
         assert per_type_rx <= int(kv['rx_frames'])
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_udp_diag_seq_gaps_follows_a_real_wire_skip():
+    """The one honest loss number on this topic, end to end.
+
+    Interleaved types must NOT move it (that was the artifact the per-type
+    ``gap_<TYPE>`` rows measured); a genuine hole in the wire's per-socket
+    sequence counter must.
+    """
+    teensy, client, node = _build_paired_node()
+    try:
+        for _ in range(4):
+            teensy.send_telemetry()
+            teensy.send_heartbeat_t2j()
+        assert _wait_until(lambda: client.stats.rx_frames >= 8)
+        assert int(_diag_kv(node)['seq_gaps']) == 0, \
+            'type interleaving moved the aggregate gap counter'
+
+        teensy._tx_seq_stream += 5       # a real hole
+        teensy.send_telemetry()
+        assert _wait_until(lambda: client.stats.seq_gaps >= 1)
+        assert int(_diag_kv(node)['seq_gaps']) == 1
     finally:
         _teardown(teensy, client, node)
 
