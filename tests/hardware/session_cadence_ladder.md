@@ -343,6 +343,29 @@ Record for every rung: `uptime_ms`, `iq_brake_min_a`, the per-cycle
 `dwell_s`, and the toss-record JSONL (`temp/logs/toss_records_<session>.jsonl`).
 Score the **miner**, not the console — see § 4.
 
+> **STANDING WATCH ITEM, every rung (new 2026-08-26): `Toss loop OVERRAN`.**
+> The node now censuses its own tick loop, so `NODE_LOOP_PERIOD_S` — the constant
+> every delay and dwell floor on this page is denominated in — is checked against
+> reality on every cycle instead of being re-derived from a bag afterwards.
+>
+> * **Expected: you never see this line.** Silence is the healthy result. The
+>   measured iteration was 26.7–37.7 ms against a 40 ms bound.
+> * **If it appears, the floors below are too low and the rung is not bookable.**
+>   It means a pre-dispatch tick exceeded the bound, i.e. the arithmetic that
+>   condemned the old rungs (§ 2.0) has drifted again. Treat it exactly like a
+>   moved floor: re-run the probe, do not book R4 or R5, and debrief.
+> * It is **instrument only** and never aborts a cycle by itself — a cycle that
+>   overran and still CAUGHT is still a good catch. What it forfeits is the
+>   *margin* the tight rungs are booked on.
+>
+> Ten `timing` fields ride every toss record. The three that answer "which cost
+> moved" are `loop_obs_max_pre_s` (the observation rebuild),
+> `loop_body_max_pre_s` (the PREPARE bundle's blocking calls) and
+> `loop_sleep_max_pre_s` (scheduler overshoot, measured rather than assumed).
+> `loop_work_max_pre_s` is the whole iteration minus its sleep — the number that
+> would size a deadline-compensated tick, if that lands.
+> See `logbook/2026-08-26-toss-loop-period-census.md`.
+
 ---
 
 ## 2. The ladder
@@ -452,8 +475,10 @@ C-HAND-3 band, fastest at the floor):
 > PREPARING. **This is the only lever that moves it back: make a tick cheaper.**
 > The skip budget is four loop iterations, so every millisecond removed from the
 > observation build or the PREPARE bundle's blocking service calls is worth four,
-> and `NODE_LOOP_PERIOD_S`'s own comment carries the one-grep recipe for
-> re-measuring it off the next bag.
+> and the loop census (§ 1, standing watch item) now reports
+> `loop_obs_max_pre_s` / `loop_body_max_pre_s` per cycle, so which of the two to
+> attack is a corpus query rather than an argument. `NODE_LOOP_PERIOD_S`'s own
+> comment keeps the one-grep recipe as a fallback for pre-census bags.
 >
 > **The published rungs do NOT sit on this frontier and are not meant to.** R5,
 > the operating point, is cut at 47.5 throws/min — 3.1 below the frontier — by

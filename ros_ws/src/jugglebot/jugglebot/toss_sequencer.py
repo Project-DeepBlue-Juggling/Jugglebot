@@ -689,8 +689,20 @@ NODE_TICK_S = 0.02
 #: bundle answering, ANNOUNCE) plus the charged fourth (ANNOUNCE→DISPATCH), which
 #: the bag cannot time because nothing logs the dispatch tick. A tick
 #: that grows new work (another blocking service in the PREPARE bundle) moves this
-#: number, and the way to find out is to re-run the grep above on the next bag, not
-#: to reason about it.
+#: number, and the way to find out is to MEASURE it, not to reason about it.
+#:
+#: SINCE 2026-08-26 THE MACHINE MEASURES IT FOR YOU. :class:`LoopPeriodCensus`
+#: censuses every cycle's pre-dispatch iterations and reports
+#: ``loop_period_max_pre_s`` (this bound), ``loop_work_max_pre_s`` (the iteration
+#: minus its sleep) and an obs/body/sleep split on every toss record — plus a WARN
+#: on any cycle where a pre-dispatch tick exceeded this constant. Read those first;
+#: the grep recipe above is now the FALLBACK, for bags predating the census.
+#:
+#: ⚠ The census must never SET this number. A bound that re-derives itself from
+#: observed slowness tracks a degradation instead of exposing it, which is the
+#: failure described immediately above. It stays hand-set and reviewed; the census
+#: only tells a human when to look. Pinned by
+#: ``tests/ros/test_toss_sequencer.py::test_the_census_never_feeds_a_budget``.
 NODE_LOOP_PERIOD_S = 0.04
 
 
