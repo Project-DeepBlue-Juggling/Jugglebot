@@ -3,7 +3,7 @@ title: Phase B — pipelining the toss preamble out of the critical path
 created: 2026-08-26
 status: active
 owner: Harrison
-last_updated: 2026-08-26
+last_updated: 2026-08-27
 related_logbook:
   - 2026-08-26-possession-verdicts-become-sensor-only.md
   - 2026-08-26-toss-loop-period-census.md
@@ -149,10 +149,14 @@ says it holds one, so the earliest honest release is
 ```
 
 and `seat_edge` has a **+183.9 ms median bias** that no amount of pipelining
-removes. About 52.3 ms of it is the release itself running late (*"departure minus
-commanded: median +52.3 ms, sd 12.5 ms"*, Phase A § Summary); the remaining
-~130 ms is flight-model error plus sensor detection lag, and decomposing it is a
-pre-registered Phase-B0 measurement (§ 5.1, probe P2) rather than an assumption.
+removes. ~~About 52.3 ms of it is the release itself running late~~ **[CORRECTED
+by B0/P2, 2026-08-27]**: the ballistic back-cast puts the release at **−1.6 ms**
+(on time) — the "+52.3 ms late departure" of Phase A § Summary was the ball
+occluding the cup beam while accelerating out, and it belongs to the sensor term.
+The measured three-way split (n=25): release **−1.6 ms**, flight-time model
+**+102.1 ms**, seating/detection **+85.9 ms** (`tools/probes/seat_edge_decomposition.py`,
+2026-08-27). The flight-model term is the correctable half (Q-2); the seating
+residual is the hard floor on any evidence-gated commit.
 
 Carried through, the prediction is:
 
@@ -184,9 +188,10 @@ _execute_toss_continuous  (reload_coordinator_node.py:5446)
   ├─ session.step(now) ──► SESSION_ACTION_START_CYCLE
   │     when now >= _next_cycle_at,  _next_cycle_at = landing(k-1) + dwell − throw_delay
   │
-  ├─ _build_toss_cycle(...)  ─► one TossSequencer + ~20 fields of node-global
-  │                             per-cycle state (_toss_release_state, _toss_aim,
-  │                             _toss_positioning_move, _announced_ball_id, …)
+  ├─ _build_toss_cycle(...)  ─► one TossSequencer + one TossCycleState [B1]
+  │                             (.release_state, .aim, .positioning_move, …),
+  │                             installed as self._toss_committed; the
+  │                             _announced_ball_id latches stayed node-global
   │
   ├─ _set_toss_next_cycle_perf(seq, session)   ← the C-POSSESS-1 § 3.4 clamp,
   │                                              latched node-global
@@ -265,8 +270,14 @@ about **ownership of a shared actuator**, not about the number of FSM objects. S
 
 > **S6 (new)** — the catch latch and the catch-coordinator holds are
 > **session-scoped**, with exactly one raise and one lower per contiguous run of
-> chained cycles. No cycle raises or lowers `trajectory/arm_catch`, `catch/armed`,
-> `catch/prime_hold` or `catch/pretilt_hold`.
+> chained cycles. No cycle raises or lowers `trajectory/arm_catch`,
+> `catch/prime_hold` or `catch/pretilt_hold`. **[AMENDED 2026-08-27]** The
+> `catch/armed` topic publish **stays per-cycle** (as § 4 B3's scope always said —
+> the original wording here listed it and contradicted B3): it installs no
+> graceful stop (the arm-mid-move hazard lives solely in `trajectory_node`'s
+> `_svc_arm_catch` raise path), and the bench trace recorder's `cycle_spans`
+> segments every CS check off its edges — session-scoping it would collapse
+> CS-1…CS-5 to one span per sitting.
 
 > **S7 (new)** — **the pipeline is DRAINED before any `go_home`.** Every path that
 > dispatches `trajectory/go_home` (SAFE_ABORT, RECENTER, the reload interlude, the
@@ -625,8 +636,9 @@ cycle's gate had drifted). Resulting floors:
 same order as R5's published 1.9 ms dwell clearance, which the runbook calls a
 razor edge. **That is what workstream B5 is for**: at a trimmed
 `NODE_LOOP_PERIOD_S` of 0.025 s the `h = 1.0` floor falls to 0.4020 s and the
-clearance triples to 32.9 ms. B5 is subordinate to B4 in sequence and load-bearing
-for the *margin*, not for the milestone.
+clearance triples to 32.9 ms. B5 is subordinate to B4 in sequence, and — at the
+measured 0.070 s loop (B0/P1) — load-bearing for the `h = 1.0` half of the
+milestone, not only for the margin (see § 3's B5 row).
 
 ---
 
@@ -634,12 +646,12 @@ for the *margin*, not for the milestone.
 
 | Phase | Scope | Status | Date | Risk | Validates |
 |-------|-------|--------|------|------|-----------|
-| **B0** | Measure first: the seat-edge decomposition probe, the first census read, `cadence_rung_check --pipeline` model. No production code. | NOT STARTED | | none | that the § 1.4 predictions are measurements, not models |
-| **B1** | Extract per-cycle node state into `TossCycleState`; every reader takes it explicitly. Pure refactor, zero behaviour change. | NOT STARTED | | low | that two cycles can coexist without sharing state |
+| **B0** | Measure first: the seat-edge decomposition probe, the first census read, `cadence_rung_check --pipeline` model. No production code. | **COMPLETE** | 2026-08-27 | none | that the § 1.4 predictions are measurements, not models |
+| **B1** | Extract per-cycle node state into `TossCycleState`; every reader takes it explicitly. Pure refactor, zero behaviour change. | **COMPLETE** | 2026-08-27 | low | that two cycles can coexist without sharing state |
 | **B2** | `release_at_perf` as a `TossSequencer` input; `TossSessionSequencer.next_release_at`. Bit-identical default. **The Phase C seam.** | NOT STARTED | | low | that the schedule is an input |
 | **B3** | Session-scoped arming (S6) + drain-before-`go_home` (S7). PREPARE bundle shrinks to the per-cycle remainder. | NOT STARTED | | **medium — changes the armed window** | the arm-mid-move seam closed by construction |
 | **B4** | The two-slot pipeline: `STAGED`/`COMMITTING`, the commit gate, the slip, the unwind, the clamp re-homing, `commit_budget_s`, the re-derived `required_dwell_s`. Ships behind `toss_pipeline_enabled`, default **false**. | NOT STARTED | | **high — the core** | the milestone floors |
-| **B5** | Loop-cost trim: absolute-schedule tick pacing, incremental observation build, blocking calls off the tick; then a reviewed re-cut of `NODE_LOOP_PERIOD_S`. | NOT STARTED | | medium | the margin, not the milestone |
+| **B5** | Loop-cost trim: absolute-schedule tick pacing, incremental observation build, blocking calls off the tick; then a reviewed re-cut of `NODE_LOOP_PERIOD_S`. | NOT STARTED | | medium | **[re-scoped 2026-08-27, B0/P1] the h=1.0 half of the milestone, and the margin.** The census read found `NODE_LOOP_PERIOD_S = 0.040` is not a bound (chained p50 0.0447, max 0.0626; honest ceil-to-10 ms bound **0.070**), and at 0.070 the h=1.0 pipelined floor is 0.4470 — **12.1 ms short of the 0.4349 milestone** — while h=1.3 still clears by +71.8 ms. B5 must land (and a post-B3/B4 census must be read) before the h=1.0 rungs P4–P5 are flown; the h=1.3 rungs P0–P3 do not wait for it. The dominant term is `body` (blocking calls, argmax 40/73 cycles), not the observation build (~6 %); the sleep overshoot is ~1.5 ms. |
 | **B6** | Hardware validation ladder (§ 6), close-out, runbook + contract updates. | NOT STARTED | | **hardware** | the milestone, on the machine |
 
 Phases are strictly incremental: B1 and B2 are behaviour-preserving and land
@@ -652,11 +664,13 @@ gate-visible effect is a reviewed constant.
 
 ## 4. Implementation Phases (detailed)
 
-### Phase B0: Measure before designing against a number — NOT STARTED
+### Phase B0: Measure before designing against a number — COMPLETE 2026-08-27
 
 **New files**
 * `tools/probes/seat_edge_decomposition.py` — committed, outputs to
   `temp/probes/` per `tools/probes/README.md`.
+* `tools/probes/toss_loop_census.py` — committed, the P1 reader for the shipped
+  `LoopPeriodCensus` fields in `temp/logs/toss_records_*.jsonl`.
 
 **Modified files**
 * `tools/probes/cadence_rung_check.py` — add `commit_budget_s` modelling and a
@@ -674,8 +688,9 @@ requiring a sitting:
    `logbook/2026-08-26-toss-loop-period-census.md` § Outcome poses, and it is what
    sizes B5's TARGET. **Until it has been read, B5 chooses no number.**
 2. **P2 — the seat-edge decomposition.** `catch_event_dt_s` has a +183.9 ms
-   median. Decompose it into (a) release execution lateness (+52.3 ms measured,
-   Phase A), (b) flight-time model error (`achieved_flight_s` vs
+   median. Decompose it into (a) release execution lateness (measured −1.6 ms —
+   on time; the "+52.3 ms" was beam occlusion, see § 1.4),
+   (b) flight-time model error (`achieved_flight_s` vs
    `flight_time_s`), (c) sensor detection lag (the residual). Only (b) and part of
    (a) are correctable; the residual is a hard floor on any evidence-gated commit,
    and § 1.4's whole prediction rests on which is which.
@@ -692,13 +707,15 @@ floors and non-zero against the old ones.
 **Dependencies.** P1 needs one sitting's corpus (any rung; R0–R3 are bookable
 today). P2 and P3 need nothing.
 
-### Phase B1: Per-cycle node state becomes an object — NOT STARTED
+### Phase B1: Per-cycle node state becomes an object — COMPLETE 2026-08-27
 
 **Modified files**
 * `ros_ws/src/jugglebot/jugglebot/reload_coordinator_node.py`
 * `tests/ros/test_toss_coordinator.py`, `tests/ros/test_toss_continuous_node.py`
 
-**Scope.** `_build_toss_cycle` currently installs ~20 fields of **node-global**
+**Scope (the layout as it stood BEFORE B1 — none of these bare names is a node
+attribute any more; see "As built" below).** `_build_toss_cycle` installed ~20
+fields of **node-global**
 per-cycle state under `self._lock` (`_toss_release_state`, `_toss_release_cmd`,
 `_toss_aim`, `_toss_landing_global_mm`, `_toss_platform_target_mm`,
 `_toss_positioning_move`, `_toss_prepare_pending`, `_toss_throw_dispatched`,
@@ -717,18 +734,32 @@ This phase extracts a `TossCycleState` dataclass, returns it from
 the record builders. **No behaviour changes**: the single-slot callers pass the
 one state object and the code path is otherwise identical.
 
-Three fields do **not** move into the per-cycle state, and each has a reason:
-`_prev_announced_ball_id` (census D6 — it spans cycles by design),
+**As built (2026-08-27).** Every moved name above is now a `TossCycleState`
+field reached through the committed slot — `self._toss_committed.release_state`,
+`.release_cmd`, `.aim`, `.landing_global_mm`, `.platform_target_mm`,
+`.positioning_move`, `.prepare_pending`, `.throw_dispatched`, `.stroke_seen`,
+`.track_confirmed`, `.pretilt_hold_raised`, `.announced_reach`,
+`.next_release_perf`, `.next_landing_perf`, `.record_announce` — and B4's scope
+should be read in that spelling, not the bare-attribute one.
+
+Five of the fields listed above did **not** move into the per-cycle state, and
+each has a reason: the `_announced_ball_id` pair (`_announced_ball_id` /
+`_prev_announced_ball_id` — census D6, and shared verbatim with the RELOAD path)
+plus `_preexisting_flight_ids` (written by the reload paths), and
 `_toss_prev_landing_perf` / `_toss_cycle_landing_perf` (the arrival boundary's
-cross-cycle latch, reset per SESSION by `_reset_toss_arrival_boundary`), and
-`_ball_possession` (the latch survives across cycles).
+cross-cycle latch, reset per SESSION by `_reset_toss_arrival_boundary`).
+`_ball_possession` (the latch survives across cycles) stays too, and was never
+in the twenty-field list.
 
 **Critical details.** The lock discipline is unchanged — the state object is
 written once at build under `self._lock` and read under it. The subscriber
 callbacks (`_on_balls`, `_on_hand_telemetry`, `_on_target_feedback`,
-`_on_announcement`) currently write into node-global per-cycle fields; they must
-route to the **committed** slot's state, which is the one field this phase adds to
-the node (`self._toss_committed`) and B4 extends with `self._toss_staged`.
+`_on_announcement`) were expected to write into node-global per-cycle fields and
+to need re-routing to the **committed** slot's state, which is the one field this
+phase adds to the node (`self._toss_committed`) and B4 extends with
+`self._toss_staged`. **As built that rule was a no-op**: after D1 (2026-08-26)
+moved the possession latch out of `_on_balls`, no subscriber callback writes any
+moved field.
 
 **Acceptance.** `./run_tests.sh --full` green with **zero test edits that change
 an assertion** — only the ones that reach into the moved fields. A structural test
@@ -777,12 +808,15 @@ separable).
   `tests/ros/test_toss_session.py`
 
 **Scope.** Move `trajectory/arm_catch` raise + confirm, `set_hand_gains`,
-`catch/vel_scale`, `catch/prime_hold` and `catch/pretilt_hold` from the per-cycle
+`catch/vel_scale`, `catch/prime_hold`, `catch/pretilt_hold` **and the
+`catch/reach_center` declaration** (Q-3 resolution, 2026-08-27 — declared once,
+immediately before the session raise that consumes it) from the per-cycle
 PREPARE bundle to a **session-scoped** raise, executed once before cycle 1 and
 lowered once at the session terminal. What remains per-cycle in
-`_prepare_toss_catch`: `catch/prime_dispatched`, `catch/armed`, the
-reach-envelope-centre declaration, and the phantom-flight snapshot refresh — all
-publishes, no service round trips.
+`_prepare_toss_catch`: `catch/prime_dispatched`, `catch/armed` (see the S6
+amendment in § 2.3), and the phantom-flight snapshot refresh — all publishes, no
+service round trips — plus the new **reach-centre drift guard** (refuse a cycle
+whose B leaves the session envelope).
 
 Implement S7 as one method, `_drain_pipeline_and_disarm()`, called at the top of
 every path that reaches `_go_home()`: `_toss_safe_abort`, `_toss_recenter`,
@@ -803,16 +837,31 @@ every path that reaches `_go_home()`: `_toss_safe_abort`, `_toss_recenter`,
   flight when it runs (the session arms before cycle 1's positioning is
   dispatched — or, if cycle 1 must move, after that move's verified arrival,
   exactly as `_enter_preparing` requires today).
-* The reach-envelope centre is declared **per cycle**, one tick before that
-  cycle's armed edge, and the armed edge is what consumes it (contract
-  C-REACH-1). With the latch already up there is no armed edge to consume it, so
-  this phase must re-establish the declaration seam: `catch/reach_center` is
-  published per cycle and `trajectory_node`'s capture must be re-checked against a
-  standing latch. **This is the one place B3 can silently degrade a contract**;
-  if the capture is edge-triggered on the raise, the envelope falls back to the
-  commanded pose, which degrades to a mid-flight WORKSPACE reject of the A→B
-  reach. It is benign for the zero-displacement chain this milestone flies and it
-  is a hard blocker for displaced 8b — recorded as open question **Q-3**.
+* **[Q-3 RESOLVED 2026-08-27 — the capture is edge-triggered, and worse than
+  this plan assumed.]** `trajectory_node._on_reach_center` only stores a pending
+  declaration; `_svc_arm_catch` read-and-clears it **before** its idempotent
+  early return, so under a standing latch every per-cycle declaration is
+  *consumed and discarded* and the envelope centre stays **frozen at whatever the
+  session raise captured** (not "falls back per cycle" — a session that arms
+  while parked away from B fails from cycle 1, demonstrated empirically through
+  the real node harness). **The adopted design is to scope the declaration the
+  way S6 scopes the raise: declare `catch/reach_center` ONCE, at session scope,
+  immediately before the session `arm_catch` raise, and drop the per-cycle
+  declaration.** Zero `trajectory_node` change, zero contract change; it also
+  closes the leaked-pending hazard (`catch_reach_envelope.md` § 5 residual 5 —
+  with no per-cycle raise, a pending declaration would otherwise sit live for a
+  later interlude raise to consume). Root cause: *the declaration's lifetime is
+  scoped to the raise it feeds*. Two obligations ride with it: (a) a **drift
+  guard** — a cycle whose nominated B differs from the session centre by more
+  than the envelope margin must refuse (or re-arm), so the foreclosed
+  per-cycle-varying-B case fails loudly; the documented forward path for
+  displaced chaining is the redundant-raise capture (move the idempotent early
+  return after the centre capture for `want=True`), taken only when a session
+  genuinely needs a different B per cycle. (b) **T-I3 must assert the captured
+  value of `_catch_envelope_center`, not publish ordering** — the bench trace
+  recorder's CS-4 (one declaration per cycle, ≥1 tick before the arm) stays
+  green under B3 while the declaration goes unapplied, i.e. CS-4 alone is a
+  false green; B6 must re-cut CS-4 for pipelined sessions.
 
 **Acceptance.** `./run_tests.sh --full` green. A structural test pins that
 `_go_home` has no call site that is not preceded by `_drain_pipeline_and_disarm`
@@ -961,8 +1010,8 @@ that made this a rule are in
 
 | ID | probe | question it answers | output |
 |---|---|---|---|
-| **P1** | the shipped `LoopPeriodCensus`, read from a sitting's `temp/logs/toss_records_*.jsonl` | is `NODE_LOOP_PERIOD_S = 0.040` still a bound, and which of obs / body / sleep dominates? | three maxima + `loop_n_over_pre` |
-| **P2** | `tools/probes/seat_edge_decomposition.py` (new, committed) | how does the +183.9 ms median `catch_event_dt_s` split into release lateness / flight-model error / detection lag? | a three-way split summing to the median within 10 ms |
+| **P1** | the shipped `LoopPeriodCensus`, read from a sitting's `temp/logs/toss_records_*.jsonl` by `tools/probes/toss_loop_census.py` (new, committed) | is `NODE_LOOP_PERIOD_S = 0.040` still a bound, and which of obs / body / sleep dominates? | three maxima + `loop_n_over_pre` |
+| **P2** | `tools/probes/seat_edge_decomposition.py` (new, committed) | how does the +183.9 ms median `t_catch_raw_ros − announce_landing_time_ros` (the mined ROS-clock RAW-bit measurand; its live perf-clock twin `catch_event_dt_s_fsm` measures +3.7 ms apart) split into release lateness / flight-model error / detection lag? | a three-way split summing to the median within 10 ms |
 | **P3** | `tools/probes/cadence_rung_check.py --pipeline` (extended) | do the pipelined floors admit the milestone, and does accept still imply flies? | the § 2.7 table + zero grid violations |
 | **P4** | `/tmp/probe_arrival_clamp_pipelined.py` (one-off, uncommitted) | at the milestone periods, where does the arrival window close and is the band watched out? | the § 2.5 table, **by calling `arrival_boundary_t`, never by restating it** |
 | **P5** | `/tmp/probe_retention_inverted.py` (one-off) | does an inverted retention interval answer UNKNOWN rather than REJECTED at the milestone numbers? | the state and reason string per rung |
@@ -1096,12 +1145,12 @@ is no longer the cadence lever (§ 2.6). The dwell steps are the owner's:
 | **P0** | 1.30 | 1.0298 | 0.76 | 0.3941 | 366 ms | 0.760 | 1.790 | 33.5 |
 | **P1** | 1.30 | 1.0298 | 0.65 | 0.3941 | 256 ms | 0.650 | 1.680 | 35.7 |
 | **P2** | 1.30 | 1.0298 | 0.55 | 0.3941 | 156 ms | 0.550 | 1.580 | 38.0 |
-| **P3** | 1.30 | 1.0298 | **0.50** | 0.3941 | 102 ms | 0.4958 → 0.500 | 1.530 | **39.2** ⭐ |
+| **P3** | 1.30 | 1.0298 | **0.50** | 0.3941 | 106 ms | 0.4958 → 0.500 | 1.530 | **39.2** ⭐ |
 | **P4** | 1.00 | 0.9032 | **0.45** | 0.4170 | 33 ms | ~0.495 (slip ~45 ms) | ~1.398 | **42.9** ⭐ |
-| **P5** | 1.00 | 0.9032 | 0.43 | 0.4170 | **18 ms** | ~0.495 (slip ~65 ms) | ~1.398 | 42.9 |
+| **P5** | 1.00 | 0.9032 | 0.43 | 0.4170 | **13 ms** | ~0.495 (slip ~65 ms) | ~1.398 | 42.9 |
 
 **P3 and P4 are the milestone.** P5 is the milestone's lower edge and is
-deliberately last: its 18 ms of accept clearance is the same razor-edge class the
+deliberately last: its 13 ms of accept clearance is the same razor-edge class the
 runbook flags at R5's 1.9 ms, and it is the rung B5 exists to widen. **P0 is not
 optional** — it is the first sitting under a standing catch latch (S6) and under a
 staged preamble, at a dwell with a third of a second of margin, and its job is to
@@ -1135,7 +1184,12 @@ Stop the sitting, do not step down, and debrief on any of:
   one is a design finding, not a tuning finding;
 * any commanded platform motion between a verdict and the next release (PIPE-5);
 * any *"catch latch armed mid-move"* line (PIPE-7);
-* `loop_n_over_pre` non-zero on a successful cycle (PIPE-2);
+* `loop_n_over_pre` non-zero on a successful cycle (PIPE-2) — **[caveat
+  2026-08-27]** on the pre-B5 tree this fires on 48 of 66 successful cycles
+  (B0/P1), so this stop condition presumes B5's tick pacing has landed and
+  `NODE_LOOP_PERIOD_S` has been honestly re-cut from a post-B3/B4 census; flying
+  any pipelined rung before that makes PIPE-2 an instant stop, which is the
+  census doing its job;
 * any `MISSED_SENSOR_BLIND` — the cup could not look, which at these periods
   should not be schedule-caused (§ 2.5) and therefore points at the sensor;
 * any HAND row outside `tests/hardware/session_anomaly_fixes.md` § PASS/ABORT.
@@ -1184,13 +1238,35 @@ drain). The cancel button is not the E-STOP. Say this out loud before arming.
 
 | # | prerequisite | hard? | why |
 |---|---|---|---|
-| **P-1** | **FW 16 flashed on the can-bridge Teensy** | **recommended, not blocking** | FW 16 is the poller + tri-state image (`587b363`); the tree's `EXPECTED_BRIDGE_FW_VERSION` already expects 16 and the panel carries a `15 (SKEW — expected v16)` advisory until it is flashed. A cleaner substrate for a cadence sitting, and it removes an advisory the operator would otherwise have to hold in their head. Nothing in this plan depends on it |
+| **P-1** | **FW 16 flashed on the can-bridge Teensy** | ✅ **SATISFIED 2026-08-26** (operator flashed from the Win10 box; first live `/link_status` read pending) | FW 16 is the poller + tri-state image (`587b363`). Post-flash the panel's `15 (SKEW — expected v16)` advisory disappears |
 | **P-2** | **Phase A is deployed** — `cd ros_ws && colcon build --packages-select jugglebot` | **hard** | the install space must carry `f997470` + `6036476`; a sitting that measures the tracker-primary verdict measures nothing this plan cares about |
-| **P-3** | **B0/P1 has read one sitting's census** | **hard for B5**, soft for B4 | B5 must not choose a TARGET from 28 log-line-inferred samples of one bag |
-| **P-4** | **`session_cadence_ladder.md` carried finding 2 is closed** | **hard for the pipeline to engage on tier 8b with an aim armed** | the deferred A→B reach re-commands the orientation, `_toss_already_positioned` fails its 2.71 mrad test, and every chained cycle re-commands the move ⇒ no cycle ever stages. Safely inert, but inert |
+| **P-3** | **B0/P1 has read one sitting's census** | ✅ **SATISFIED 2026-08-27** (`tools/probes/toss_loop_census.py` over the 21:29 sitting, n=74) | the read re-scoped B5 (see § 3): the honest chained bound is **0.070 s**, `body` dominates, and the over-period counter already fires on 48/66 successful cycles |
+| **P-4** | **`session_cadence_ladder.md` carried finding 2 is closed** | **hard for the pipeline to engage on tier 8b with an aim armed** — fix approved into this arc (own commit, between B2 and B4). Traced 2026-08-27: the re-command is **real, physically-required motion** (the catch policy levels the platform to receive; the throw aim re-tilts it; nothing reconciles them — they agree only at zero aim). Adopted fix: in `_publish_toss_reach`, reach at the commanded pre-tilt quaternion **iff** the receive tilt is within the ±1° aim authority of it (zero-aim byte-identical; displaced never triggers, its delta is ~2θ). Pending one owner physical-intuition check: the fix accepts the cup seating with ≤1° of tilt on aimed 8b — which aimed 8a already does on every validated cycle | with it open, every chained aimed cycle re-commands a ≤1 mm/≤1° move charged at a fixed 0.360 s ⇒ no cycle ever stages. Safely inert, but inert |
 | **P-5** | the drive-restoration state of 2026-08-18 (`b084f98`) holds | **hard** | pre-2026-08-18 braking-clamp behaviour invalidates every catch-tail number this plan's floors are built on |
 
 ### 8.2 Open questions — decisions required before the phase named
+
+**Status 2026-08-27: Q-1, Q-4, Q-5 DECIDED by the owner (2026-08-26 session);
+Q-2 and Q-3 ANSWERED by measurement/diagnosis.** The original texts are kept
+below for the record; the resolutions:
+
+* **Q-1 → S6 as written** (session-scoped latch), owner-approved. Amended only
+  in that `catch/armed` stays per-cycle (§ 2.3).
+* **Q-2 → the release-latency hook must NOT be populated.** B0/P2 measured the
+  ballistic release at **−1.6 ms** (on time); the "+52.3 ms" was beam occlusion
+  on exit. The correctable term is the **flight-time model (+102.1 ms, 53 % of
+  the bias)** — correcting it is a future arc's own change (it moves every
+  scheduled landing), not this plan's. The hard seating/detection residual is
+  +85.9 ms.
+* **Q-3 → resolved: session-scoped declaration (option C)** — see § 4 B3. The
+  redundant-raise capture is the documented forward path for per-cycle-varying B.
+* **Q-4 → band on both measurands**: the milestone reads "the machine holds a
+  0.43–0.50 s dwell", commanded and achieved both inside the band.
+* **Q-5 → the owner books P5 in the first sitting** (declining the hold-for-B5
+  recommendation). Carried with it, from B0/P1: at the measured loop bound the
+  h=1.0 rungs P4–P5 are not honestly bookable until B5 lands and a post-B3/B4
+  census is read (§ 3, B5 row) — so "first sitting" means the first sitting at
+  which h=1.0 is bookable at all, and the P0–P3 (h=1.3) sitting does not wait.
 
 * **Q-1 — the session-scoped latch (S6) is an owner decision, not a technical
   one.** It converts the armed duty cycle from ~97 % to 100 % and it is what
@@ -1224,7 +1300,7 @@ drain). The cancel button is not the E-STOP. Say this out loud before arming.
   as *"the commanded dwell is achieved to the millisecond"*, because the second
   reading is not reachable at `h = 1.0` without Q-2.
 * **Q-5 — should P5 (dwell 0.43 at `h = 1.0`) be booked at all before B5?** Its
-  18 ms of accept clearance is the razor-edge class the runbook declined at R5.
+  13 ms of accept clearance is the razor-edge class the runbook declined at R5.
   The recommendation is to fly P0–P4, land B5, re-cut the clearance table, and
   then book P5.
 

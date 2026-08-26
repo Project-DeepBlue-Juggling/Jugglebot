@@ -717,8 +717,10 @@ The register asks whether anything trusts an **uncorrected** neutral. Findings:
     **wire**, not the node, so
     they stay green — and they are exactly what proves the correction is not being
     applied twice.
-  - the POSITIONING mocap arrival cross-check (`_toss_platform_target_mm`,
-    `reload_coordinator_node.py:406, 1219-1220`) is **position-only**, so it is
+  - the POSITIONING mocap arrival cross-check
+    (`TossCycleState.platform_target_mm` on `self._toss_committed`, formerly the
+    node-global `_toss_platform_target_mm` — B1, 2026-08-27;
+    `reload_coordinator_node.py:791, 2233, 3841`) is **position-only**, so it is
     unaffected.
 - **The lean shaper superposes tilt additively in rotvec space**
   (`shaping.py:361`, `pose[3:5] += tilt`) while the correction composes in SO(3).
