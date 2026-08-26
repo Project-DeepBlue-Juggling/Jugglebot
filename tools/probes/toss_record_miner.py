@@ -1280,12 +1280,12 @@ def mine_bag(data: BagData, *, robot: str = 'jugglebot',
         row['ball_track_confirmed'] = ball_id is not None
         # land_err needs a catch point, and the ANNOUNCED landing position is
         # that point on BOTH tiers — not just 8a. `_announce_toss` builds the
-        # announcement from `_toss_release_state`, which is the UNCORRECTED
+        # announcement from the cycle's `release_state`, which is the UNCORRECTED
         # release, and the declaration's `catch_point_global_mm` comes from the
-        # same object; an aim correction only ever moves `_toss_release_cmd`
-        # (D4). So this IS the schema's definition of land_err_mm (`land_xy −
-        # catch_point_global_mm[:2]`) computed from the mined half, and the join
-        # deliberately does NOT recompute it — there is nothing to correct.
+        # same object; an aim correction only ever moves the cycle's
+        # `release_cmd` (D4). So this IS the schema's definition of land_err_mm
+        # (`land_xy − catch_point_global_mm[:2]`) computed from the mined half,
+        # and the join deliberately does NOT recompute it — nothing to correct.
         # (The comment here used to claim the join overrode it. It never did,
         # and it never needed to; corrected with the § 7 R1 audit fix.)
         # What the join DOES add is the plane check — see
@@ -1309,9 +1309,10 @@ def mine_bag(data: BagData, *, robot: str = 'jugglebot',
         # means the check that exists to catch "the corpus is scoring arrivals at
         # the wrong height" never ran on a single row of it. The announcement's
         # own `landing_position[2]` is the same quantity the declaration's
-        # `catch_point_global_mm[2]` is (both come from `_toss_release_state`;
-        # see the land_err comment above), so it answers the same question on a
-        # bag that predates `/toss/record`. Same constant, same refusal.
+        # `catch_point_global_mm[2]` is (both come from the cycle's
+        # `release_state`; see the land_err comment above), so it answers the
+        # same question on a bag that predates `/toss/record`. Same constant,
+        # same refusal.
         if cup and len(cup) > 2 and cup[2] is not None and abs(
                 float(cup[2]) - float(this_plane)) > PLANE_MISMATCH_TOL_MM:
             refuse_plane(row)
@@ -1694,7 +1695,28 @@ def bag_label(name: str) -> str:
     return label.replace(os.sep, '_')
 
 
-def write_outputs(name: str, rows, led: dict) -> str:
+def write_outputs(name: str, rows, led: dict, *,
+                  sensor_only: bool = False) -> str:
+    """Write ``<base>.jsonl`` + ``<base>_meta.json`` under ``temp/probes``.
+
+    ``sensor_only`` is recorded in the sidecar because **the flavor decides which
+    channels the corpus can carry, and the filename does not say**. A
+    ``--sensor-only`` run returns before ``/mocap_data`` is read, so every row
+    lands ``excluded_reason='no_mocap_fit'`` with every ``usable_for_*_fit`` flag
+    false: the two flavors are two POPULATIONS of one bag, not two versions of
+    one corpus. ``temp/probes`` is a shared drop-box, so a consumer that ranks
+    mines of a bag by stamp alone — the obvious "newest mine wins" rule — silently
+    swaps population the moment another probe re-mines that bag for its own
+    purpose. That is not hypothetical: it happened on 2026-08-27
+    (``tools/probes/seat_edge_decomposition.py``, which needs the arc) and took
+    five assertions in ``tests/motion/test_ilc_fit.py`` red with it.
+
+    Additive, and in the SIDECAR rather than the row: a per-row flavor field
+    would have to join ``toss_record.FIELDS``, which is the wire schema shared
+    with the node's ``/toss/record`` publisher. Consumers that predate the marker
+    fall back to a structural test (does any row carry the mocap block?), which
+    the sidecar exists to make unnecessary from here on.
+    """
     os.makedirs(OUT_DIR, exist_ok=True)
     stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     base = os.path.join(OUT_DIR, 'toss_records_{}_{}'.format(bag_label(name),
@@ -1704,6 +1726,7 @@ def write_outputs(name: str, rows, led: dict) -> str:
             fh.write(toss_record.encode(row) + '\n')
     with open(base + '_meta.json', 'w') as fh:
         json.dump({'bag': name, 'schema': toss_record.SCHEMA,
+                   'sensor_only': bool(sensor_only),
                    'ledger': {k: v for k, v in led.items()
                               if k != 'segment_s'},
                    'n_rows': len(rows)}, fh, indent=1)
@@ -2372,7 +2395,9 @@ def main(argv=None) -> int:
         led = ledger(data.hand)
         print_report(name, rows, led, data)
         if args.jsonl:
-            print('  wrote {}.jsonl'.format(write_outputs(name, rows, led)))
+            print('  wrote {}.jsonl'.format(
+                write_outputs(name, rows, led,
+                              sensor_only=args.sensor_only)))
         if args.emit_fixture:
             print('  wrote {}'.format(emit_fixture(name, led, rows)))
     return rc

@@ -96,6 +96,85 @@ GUARD_CLEAN = {
 }
 
 
+#: Columns only ``toss_record_miner``'s **mocap pass** can fill. This is the
+#: STRUCTURAL flavor discriminator, for mines written before ``write_outputs``
+#: began recording the flavor (2026-08-27). Five of them rather than one because
+#: any single column is null on a bag whose arc fits all failed — on the
+#: 2026-08-20 bag exactly ONE toss of seven got an arc at all, and it carries no
+#: landing fit — whereas a run that entered the mocap pass at all leaves at least
+#: one of these behind on at least one row.
+_MOCAP_ARC_COLUMNS = ('mocap_gap_ms_max', 'apex_z_mm', 'arc_fit_n',
+                      'coverage_asym_s', 'release_pos_track_mm')
+
+
+def _mine_is_sensor_only(path):
+    """Which FLAVOR of mine is ``path``: ``--sensor-only``, or whole-arc?
+
+    ``toss_record_miner --sensor-only`` returns before ``/mocap_data`` is read at
+    all, so every row comes out ``excluded_reason='no_mocap_fit'`` with every
+    ``usable_for_*_fit`` flag false. The two flavors are therefore not two
+    versions of one corpus — they are two different POPULATIONS of the same bag,
+    and only one of them can be fitted.
+
+    Recorded marker first (``<base>_meta.json``'s ``sensor_only``, written by
+    :func:`toss_record_miner.write_outputs` since 2026-08-27), structural
+    fallback second, because the sidecar can be absent on an older artefact and
+    a missing marker must not silently mean "either flavor will do".
+
+    Fails CLOSED — an unreadable file or a malformed row is reported as NOT this
+    module's flavor, so a corrupt artefact drops out of the corpus rather than
+    joining it.
+    """
+    meta = path[:-len('.jsonl')] + '_meta.json'
+    try:
+        with open(meta) as fh:
+            recorded = json.load(fh).get('sensor_only')
+    except (IOError, OSError, ValueError):
+        recorded = None
+    if isinstance(recorded, bool):
+        return recorded
+    try:
+        with open(path) as fh:
+            for line in fh:
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                if any(row.get(col) is not None for col in _MOCAP_ARC_COLUMNS):
+                    return False
+    except (IOError, OSError, ValueError):
+        return False
+    return True
+
+
+def _corpus_files():
+    """Every mine under ``temp/probes`` OF THIS MODULE'S FLAVOR, re-mines and all.
+
+    ``temp/probes`` is a shared drop-box: any probe may mine any bag for its own
+    purpose. On 2026-08-27 ``tools/probes/seat_edge_decomposition.py`` legitimately
+    re-mined four post-FW-14 bags WITHOUT ``--sensor-only`` (it needs the mocap
+    arc), and the resulting whole-arc mines are a different population of the same
+    bags — 20 admissible rows across six flight-time cells where this module's
+    corpus is 19 rows at ONE (measured 2026-08-27: ``ilc_fit_lib.load_corpus``
+    over the four ``20260827`` mines, ``admit_record`` gate). Every corpus-backed
+    number in this file is measured
+    on the 2026-08-12 corpus and its committed C8 projection; swapping the
+    population under them turns five assertions red without a line of production
+    code changing, which is a corpus bug wearing a test failure's clothes.
+
+    So the flavor is part of the selection, not a property of whichever mine ran
+    last: see :func:`_mine_is_sensor_only`.
+
+    This is a filter, NOT a blanket fallback to the fixture — a ``--sensor-only``
+    mine that did carry admissible rows would still be fitted. Adopting the
+    whole-arc population instead is a real decision for the ILC arc's owner: it
+    is a bigger, multi-flight-time corpus and every measured number quoted in
+    this module would have to be re-measured against it. Worth doing on purpose;
+    never worth doing because another probe re-mined a bag.
+    """
+    pattern = os.path.join(_REPO, 'temp', 'probes', 'toss_records_*.jsonl')
+    return [p for p in sorted(glob.glob(pattern)) if _mine_is_sensor_only(p)]
+
+
 def _corpus_paths():
     """The mined corpora under ``temp/probes``, NEWEST MINE PER BAG.
 
@@ -105,7 +184,13 @@ def _corpus_paths():
     looks exactly like better data. Basename shape:
     ``toss_records_<YYYY-MM-DD>_<HH-MM-SS>_<minedate>_<minetime>.jsonl``.
 
-    :func:`ilc_fit_lib.load_corpus` now de-duplicates by ``toss_uid`` as well,
+    **Newest per bag WITHIN ONE FLAVOR** (:func:`_corpus_files`). The mine stamp
+    is a chronological order, not a quality one: ranking two flavors by it makes
+    "which population does this module fit?" depend on which probe happened to
+    run last, and the answer silently flips both ways. A re-mine of EITHER
+    flavor now leaves this module's corpus exactly where it was.
+
+    :func:`ilc_fit_lib.load_corpus` de-duplicates by ``toss_uid`` as well,
     with the same newest-mine-wins rule, so this helper is no longer the only
     defence — it is kept because selecting the files is cheaper than reading
     and discarding them, and
@@ -113,8 +198,7 @@ def _corpus_paths():
     routes to the same admitted set.
     """
     per_bag = {}
-    for path in sorted(glob.glob(os.path.join(_REPO, 'temp', 'probes',
-                                              'toss_records_*.jsonl'))):
+    for path in _corpus_files():
         parts = os.path.basename(path)[len('toss_records_'):-len('.jsonl')]
         parts = parts.split('_')
         if len(parts) < 4:
@@ -170,7 +254,9 @@ def _fixture_rows():
 def corpus():
     """The corpus, PREFERRING the live mine and falling back to the fixture.
 
-    The live mine under ``temp/probes`` wins when it is there: it carries all
+    The live mine under ``temp/probes`` wins when it is there — the newest of
+    THIS MODULE'S FLAVOR (:func:`_corpus_files`), and only when it carries an
+    admissible corpus. It carries all
     166 record fields, so a test that reaches for a column the C8 projection
     does not carry still works on the machine the numbers were measured on. On a
     clean checkout — which is every checkout but this Jetson's two worktrees —
@@ -1218,11 +1304,26 @@ def test_load_corpus_de_duplicates_re_mines_and_keeps_the_NEWER_one(tmp_path):
 def test_the_documented_corpus_glob_yields_one_row_per_toss(corpus):
     """The invocation in ``ilc_fit.py``'s own docstring —
     ``--corpus temp/probes/toss_records_*.jsonl`` — matches every re-mine, so
-    the de-duplication above is what keeps that documented command honest."""
-    paths = sorted(glob.glob(os.path.join(_REPO, 'temp', 'probes',
-                                          'toss_records_*.jsonl')))
+    the de-duplication above is what keeps that documented command honest.
+
+    Both halves of the comparison are scoped the SAME two ways, and each scope
+    is load-bearing:
+
+    * to one mine FLAVOR (:func:`_corpus_files`), because the glob also matches
+      another probe's whole-arc mines of the same bags and those are a different
+      population — de-duplication cannot reconcile two populations and is not
+      being asked to;
+    * to a tree whose live corpus is actually ADMISSIBLE, because ``corpus``
+      falls back to the committed C8 projection otherwise and the assertion
+      would then be comparing the glob against a fixture it has no relationship
+      to.
+    """
+    _p, _r, reason = _corpus_or_skip_reason()
+    if reason:
+        pytest.skip(reason)
+    paths = _corpus_files()
     if len(paths) <= len(_corpus_paths()):
-        pytest.skip('no re-mined duplicates in this checkout')
+        pytest.skip('no re-mined duplicates of this flavor in this checkout')
     rows = lib.load_corpus(paths)
     uids = [r['toss_uid'] for r in rows]
     assert len(uids) == len(set(uids)), 'the glob must not double any toss'

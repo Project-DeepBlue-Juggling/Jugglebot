@@ -32,6 +32,7 @@ a full corpus from it, every row ``mined-only``.
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 
 import pytest
@@ -201,8 +202,8 @@ def test_a_mined_only_row_is_plane_checked_against_its_announcement(miner):
     ``catch_point_global_mm``, which only a declaration carries — so on the whole
     reference corpus (every row ``mined-only``) the R1 refusal never fired once.
     The announcement's ``landing_position[2]`` is the same quantity from the same
-    ``_toss_release_state``, so it answers the same question on a bag that
-    predates ``/toss/record``, against the SAME constant.
+    ``TossCycleState.release_state``, so it answers the same question on a bag
+    that predates ``/toss/record``, against the SAME constant.
     """
     windows = _miner_windows()
 
@@ -298,8 +299,26 @@ def test_the_plane_refusal_runs_before_the_corpus_is_written(miner):
     src = open(_PROBE_PATH).read()
     join_at = src.index('rows = toss_record.join(')
     enforce_at = src.index('enforce_declared_planes(rows)', join_at)
-    write_at = src.index('write_outputs(name, rows, led)', join_at)
+    # Matched WITHOUT the closing paren: what this pins is the ORDER of three
+    # calls, and a keyword argument added to the write (the mine-flavor marker,
+    # 2026-08-27) is not a change to that order. Pinning the full call spelling
+    # made every additive argument look like a broken invariant.
+    write_at = src.index('write_outputs(name, rows, led', join_at)
     assert join_at < enforce_at < write_at
+
+
+@pytest.mark.parametrize('flavor', [True, False])
+def test_the_mine_flavor_lands_in_the_meta_sidecar(miner, monkeypatch, tmp_path,
+                                                   flavor):
+    """The flavor marker is what keeps two POPULATIONS of one bag apart
+    (2026-08-27). Without it consumers fall back to a structural inference that a
+    bag with no successful arc fit defeats."""
+    monkeypatch.setattr(miner, 'OUT_DIR', str(tmp_path))
+    base = miner.write_outputs('bag', [], {'n_samples': 0, 'segment_s': []},
+                               sensor_only=flavor)
+    with open(base + '_meta.json') as fh:
+        meta = json.load(fh)
+    assert meta['sensor_only'] is flavor
 
 
 def test_the_self_toss_filter_drops_ball_butler_throws(miner):
