@@ -128,6 +128,7 @@ import queue
 import subprocess
 import threading
 import time
+from dataclasses import dataclass
 from datetime import datetime
 
 import yaml
@@ -746,6 +747,114 @@ def _sequence_deadline_s(seq) -> float:
     return max(_MAX_SEQUENCE_S, budget)
 
 
+@dataclass
+class TossCycleState:
+    """ONE toss cycle's per-cycle state, as an object rather than as node globals.
+
+    Every field here used to be a ``self._toss_*`` attribute on the node, written
+    once by :meth:`ReloadCoordinatorNode._build_toss_cycle` and read by the
+    observation builder, the action handlers and the record builder. That is
+    exactly the state TWO coexisting cycles would silently share (the two-slot
+    pipeline, ``plans/active/toss-pipelined-preamble.md`` Phase B4), so it is
+    lifted out first, on its own, with no behaviour change: the single-slot
+    callers build one object, install it as the node's COMMITTED slot, and pass
+    it explicitly down the same code path.
+
+    **This object is NOT self-synchronising.** The lock discipline is the node's
+    and it is unchanged: every field is written once at build under
+    ``node._lock`` and read under it, EXCEPT ``prepare_pending`` and
+    ``pretilt_hold_raised``, which ``_step_toss_sequence`` and the three
+    teardowns touch on the cycle thread without the lock exactly as they did as
+    node attributes. Do not "tidy" that up here — moving a lock is a behaviour
+    change, and this class exists so that a later phase can reason about
+    ownership, not to acquire an opinion about threading.
+
+    Which fields did NOT move, and why (each is a deliberate exclusion, not an
+    oversight — see the class comment at its node attribute):
+    ``_prev_announced_ball_id``, ``_announced_ball_id`` /
+    ``_announced_id_untagged`` / ``_preexisting_flight_ids``,
+    ``_toss_prev_landing_perf`` / ``_toss_cycle_landing_perf``,
+    ``_ball_possession``, ``_catch_vel_scale``, ``_toss_mocap_body``.
+    """
+
+    #: motion ReleaseState — the UNCORRECTED state ANNOUNCE publishes (D4).
+    release_state: object = None
+    #: the COMMANDED release state (C-TOSS-CAL-1). The SAME OBJECT as
+    #: ``release_state`` whenever the commanded aim is zero, so the disabled
+    #: path costs not one extra floating-point operation.
+    release_cmd: object = None
+    #: the per-goal applied-calibration block (record-only).
+    aim: object = None
+    #: nominated cup point, global mm — the CAUGHT plausibility reference.
+    landing_global_mm: object = None
+    #: nominated PLATFORM pose (STOW-relative) — the mocap arrival cross-check.
+    platform_target_mm: object = None
+    #: THE per-cycle positioning decision (census B1), taken once in
+    #: ``_build_toss_cycle`` and consumed by ``_position_platform_for_toss``.
+    #: FAIL-CLOSED default (True = command the move): with no cycle built there
+    #: is no evidence the platform is anywhere in particular, and a stale False
+    #: would skip a move the next cycle needs.
+    positioning_move: bool = True
+    #: trace-only ball-evidence waiver, resolved per cycle at build.
+    waiver: bool = False
+    #: PREPARE-bundle deferral (one FSM tick) — see ``_step_toss_sequence``.
+    prepare_pending: bool = False
+    #: gates the release-stroke telemetry watch, the tracker-CONFIRMED latch AND
+    #: the possession-clear (release evidence can only exist after OUR dispatch).
+    throw_dispatched: bool = False
+    #: sticky release evidence: telemetry channel.
+    stroke_seen: bool = False
+    #: sticky release evidence: tracker channel.
+    track_confirmed: bool = False
+    #: catch/pretilt_hold was raised this cycle — the terminal teardowns release
+    #: it iff raised, so a LEVEL goal's publish sequence stays byte-identical.
+    pretilt_hold_raised: bool = False
+    #: the announced landing stashed at ANNOUNCE for Tier 8b's deferred A->B
+    #: reach — (landing_pos_global_mm, landing_vel_mms, landing_time_ros_s).
+    announced_reach: object = None
+    #: this cycle's NEXT scheduled release/landing on the perf clock, or
+    #: (None, None) — the cadence clamp of C-POSSESS-1 § 3.4.
+    next_release_perf: object = None
+    next_landing_perf: object = None
+    #: (throw_time_ros, landing_time_ros) — THE record join key. Record-only;
+    #: nothing reads it back into the FSM.
+    record_announce: object = None
+
+    def clear(self) -> None:
+        """Tear this cycle's state down IN PLACE.
+
+        The field set and the values are :meth:`_clear_toss_cycle_state`'s
+        verbatim, because what a torn-down cycle leaves behind is load-bearing
+        in two places and both are preserved bit-for-bit:
+
+        * ``positioning_move`` resets FAIL-CLOSED to True, not to False — a
+          leftover False would let the NEXT cycle's POSITIONING skip a move on
+          evidence that belonged to the previous one;
+        * ``next_release_perf`` / ``next_landing_perf`` are dropped because the
+          cadence clamp is per-CYCLE (C-POSSESS-1 § 3.4): a schedule that
+          outlived its cycle would clamp the next ball's windows against a stale
+          instant.
+
+        Everything NOT listed here deliberately SURVIVES the teardown, exactly
+        as it survived on the node: ``stroke_seen`` / ``track_confirmed`` /
+        ``record_announce`` / ``waiver`` / ``pretilt_hold_raised`` /
+        ``announced_reach``. The first three are read by the record builder on
+        the REJECTED_BAD_GOAL path, which runs BEFORE the next cycle is built —
+        clearing them here would change what that (instrument-only) record
+        declares.
+        """
+        self.release_state = None
+        self.release_cmd = None
+        self.aim = None
+        self.landing_global_mm = None
+        self.platform_target_mm = None
+        self.prepare_pending = False
+        self.throw_dispatched = False
+        self.positioning_move = True
+        self.next_release_perf = None
+        self.next_landing_perf = None
+
+
 class ReloadCoordinatorNode(Node):
     def __init__(self, robot_name: str = 'jugglebot'):
         super().__init__('reload_coordinator_node')
@@ -870,6 +979,21 @@ class ReloadCoordinatorNode(Node):
         # this sequence; only that id's CAUGHT confirms (a stray caught ball never does).
         # An UNTAGGED (empty-destination fallback) latch is provisional — a
         # destination-tagged candidate displaces it (see _build_observations).
+        #
+        # DOES NOT MOVE onto TossCycleState, despite Phase B1's plan listing it
+        # (with `_preexisting_flight_ids`) among the per-cycle fields. Two
+        # independent reasons, and either alone is decisive:
+        #   1. it is not toss state. `_update_announced_ball_latch` is shared
+        #      verbatim by the RELOAD and toss observation builders, and
+        #      `_execute_reload` / `_run_one_reload_attempt` / `_request_bb_throw`
+        #      all write this trio for a path that has no toss cycle at all;
+        #   2. it must SURVIVE the cycle teardown. `_clear_toss_cycle_state`
+        #      deliberately does not touch it, because the NEXT cycle's build is
+        #      what rolls it into `_prev_announced_ball_id` (census D6). A field
+        #      that is read across the teardown boundary is by definition not
+        #      torn down with the cycle.
+        # Phase B4 owns making the latch per-slot; doing it here would be a
+        # behaviour change wearing a refactor's clothes.
         self._announced_ball_id = None
         self._announced_id_untagged = False
         # The id the PREVIOUS cycle of THIS session latched (census D6). Rolled
@@ -879,29 +1003,39 @@ class ReloadCoordinatorNode(Node):
         # when cycle N+1 checks (the tracker only leaves IN_FLIGHT when it mints
         # CAUGHT, landing +0.202..+0.442 s), and refusing our own just-caught ball
         # as a "phantom" is a hard REJECTED_TRACK_ACTIVE on a healthy cycle.
+        #
+        # DOES NOT MOVE onto TossCycleState: it SPANS cycles by design — that is
+        # the whole of census D6 — so a per-cycle home would delete exactly the
+        # number cycle N+1 needs.
         self._prev_announced_ball_id = None
-        # The LIVE cycle's next scheduled release/landing on the perf clock, or
-        # (None, None) — the cadence clamp of C-POSSESS-1 § 3.4. Set from the
-        # session's own schedule at cycle start, cleared with the cycle.
-        self._toss_next_release_perf = None
-        self._toss_next_landing_perf = None
         # The PREVIOUS and CURRENT cycles' landings, C-POSSESS-1 § 3.4 clause
-        # C.1's other boundary end. Unlike the pair above these span CYCLES and
-        # are cleared per SESSION (with `_toss_record_prev_uid`), because that is
-        # what they are for: the previous cycle closed its arrival window at
-        # `arrival_boundary_t(prev, this)` and this one must OPEN at the identical
-        # call, so what is handed to `observe` is literally the number the
-        # previous cycle was given as its own `landing_t` — not a re-derivation.
+        # C.1's other boundary end. Unlike the LIVE cycle's next-release pair
+        # (which moved onto TossCycleState) these span CYCLES and are cleared per
+        # SESSION by `_reset_toss_arrival_boundary` (with
+        # `_toss_record_prev_uid`), because that is what they are for: the
+        # previous cycle closed its arrival window at
+        # `arrival_boundary_t(prev, this)` and this one must OPEN at the
+        # identical call, so what is handed to `observe` is literally the number
+        # the previous cycle was given as its own `landing_t` — not a
+        # re-derivation. A per-cycle home would break the abutment.
         self._toss_prev_landing_perf = None
         self._toss_cycle_landing_perf = None
         # Ball ids already IN_FLIGHT when THIS goal's throw was accepted — excluded
         # from the announced-ball latch. Attempt 5 of the 2026-07-23 re-test latched
         # a phantom untagged track that predated the throw and rode it to a wrong
         # MISSED verdict.
+        #
+        # DOES NOT MOVE onto TossCycleState — same two reasons as
+        # `_announced_ball_id` above (shared verbatim with the RELOAD path;
+        # survives the cycle teardown by design).
         self._preexisting_flight_ids = set()
         # This goal's catch-speed knob (goal.catch_vel_scale; 0 => the config
         # default JB_OP_CATCH_VEL_SCALE_DEFAULT), published on catch/vel_scale at
         # PREPARE so catch_coordinator has it before any arm.
+        #
+        # DOES NOT MOVE onto TossCycleState: it is a BALL-OP-wide knob, written
+        # and read by the reload path (`_prepare_catch`, `_execute_reload`,
+        # `_run_one_reload_attempt`) as well as the toss path.
         self._catch_vel_scale = float(hw.JB_OP_CATCH_VEL_SCALE_DEFAULT)
         # THE possession sources (contract C-POSSESS-1,
         # ros_ws/docs/ball_possession_contract.md). Every "did we catch it?"
@@ -973,63 +1107,34 @@ class ReloadCoordinatorNode(Node):
         # closed by the EMPTY read, and the mirror-image false NEGATIVE — a real
         # catch the tracker never confirmed, which was 12 of 23 on bag
         # 2026-08-26_14-25-16 — is closed by the SEATED one.
+        #
+        # DOES NOT MOVE onto TossCycleState: the latch SURVIVES across cycles —
+        # a caught ball is still in the cup when the next cycle starts, and
+        # `_on_hand_telemetry` maintains it whether or not any cycle is live.
         self._ball_possession = False
-        # Per-toss-goal state (None/False between goals):
-        self._toss_release_state = None       # motion ReleaseState (announcement physics)
-        # The COMMANDED release state (C-TOSS-CAL-1). Identical OBJECT to
-        # _toss_release_state whenever the commanded aim is zero — i.e. with no
-        # aim map loaded it is not merely equal, it is the same object, so the
-        # disabled path costs not one extra floating-point operation. When an aim
-        # IS commanded the two diverge on exactly the fields the aim moves: the
-        # commanded tilt, the pre-tilt pose, the release point, the launch vector
-        # and event_vel. _toss_release_state stays the UNCORRECTED vertical toss
-        # to B, because D4 announces the uncorrected landing — that is what keeps
-        # the correlation→catch path, the receive-tilt computation and the
-        # possession plausibility bound bitwise unchanged.
-        self._toss_release_cmd = None
-        self._toss_aim = None                 # per-goal applied-calibration block (record-only)
-        self._toss_landing_global_mm = None   # nominated cup point — CAUGHT plausibility ref
-        self._toss_platform_target_mm = None  # nominated PLATFORM pose, global (mocap check)
-        self._toss_waiver = False             # trace-only ball-evidence waiver, read per goal
-        self._toss_throw_dispatched = False   # gates the release-stroke telemetry watch,
-                                              # the tracker-CONFIRMED latch AND the
-                                              # possession-clear (release evidence can
-                                              # only exist after OUR dispatch)
-        self._toss_stroke_seen = False        # sticky release evidence: telemetry channel
-        self._toss_track_confirmed = False    # sticky release evidence: tracker channel
-        # PREPARE-bundle deferral (one FSM tick): the ACTION_PREPARE_CATCH tick
-        # publishes catch/prime_hold ALONE; the bundle (gains → arm → vel_scale
-        # → prime_dispatched → armed → snapshot) runs on the NEXT tick so the
-        # hold lands in an earlier catch_coordinator wait-set cycle than the
-        # armed edge (same-cycle callbacks have no intra-cycle ordering
-        # guarantee — the armed edge could beat the hold and auto-prime the
-        # ball-laden hand).
-        self._toss_prepare_pending = False
-        # catch/pretilt_hold was raised this goal — the terminal teardowns
-        # release it iff raised, so a LEVEL goal's publish sequence stays
-        # byte-identical (it never touches the topic). Keyed on "the commanded
-        # release carries a non-zero tilt", NOT on the tier (D3): the moment an
-        # 8a toss commands an aim tilt, the stock announcement pre-tilt would
-        # otherwise level the platform back BEFORE release and every log line
-        # would still report the aim as applied.
-        self._toss_pretilt_hold_raised = False
-        # THE per-cycle positioning decision (census B1), taken once in
-        # _build_toss_cycle and consumed by _position_platform_for_toss.
-        # Initialised and reset FAIL-CLOSED (True = command the move): with no
-        # cycle built there is no evidence the platform is anywhere in
-        # particular, and a stale False would skip a move the next cycle needs.
-        self._toss_positioning_move = True
-        # Tier 8b only: the announced landing state stashed at ANNOUNCE for the
-        # deferred A->B reach to reuse — (landing_pos_global_mm, landing_vel_mms,
-        # landing_time_ros_seconds). None between goals / for 8a.
-        self._toss_announced_reach = None
+        # ── THE COMMITTED SLOT: one toss cycle's per-cycle state ──
+        # Everything that used to be a `self._toss_*` per-goal attribute here
+        # now lives on a :class:`TossCycleState` (see its docstring for the full
+        # field list and for what each field is FOR). `_build_toss_cycle` mints a
+        # fresh one per cycle and installs it here under the lock; every reader
+        # and writer takes it EXPLICITLY, and this attribute is what the paths
+        # with no state parameter — the record builder, the cadence-clamp query
+        # the RELOAD path also calls — resolve to.
+        #
+        # It is an EMPTY state, never None, from construction: a node that has
+        # never run a cycle answers every per-cycle question with the same
+        # cleared values the old node attributes held, so nothing downstream
+        # needs a None branch it did not need before. Phase B4 adds
+        # `self._toss_staged` beside it.
+        self._toss_committed = TossCycleState()
         # ── Per-toss RECORD (instrument only, zero control authority) ──
         # toss-selftuning plan § 3.3/§ 3.4, D10. Everything here is written by
         # the record path and read by NOTHING in the FSM: if every line below
         # were deleted the machine would behave identically. That is the
         # property to preserve when this block grows in phases 2b/2d/2e.
         self._toss_record_ctx = None          # per-cycle declaration context
-        self._toss_record_announce = None     # (throw_time_ros, landing_time_ros)
+        # (throw_time_ros, landing_time_ros) — THE record join key — moved onto
+        # TossCycleState.record_announce with the rest of the per-cycle state.
         self._toss_record_belt_warned = False  # one WARN per goal, then silence
         # The per-cycle tick-loop census (INSTRUMENT ONLY). Installed fresh by
         # _run_toss_cycle and left as None on every path where no cycle ran, so
@@ -1808,9 +1913,17 @@ class ReloadCoordinatorNode(Node):
 
         ``(None, None)`` for a single ``Toss`` and for a session's last intended
         cycle — nothing is scheduled after them, so the honest horizon is the
-        shipped fixed one and the behaviour is the pre-2026-08-21 behaviour."""
+        shipped fixed one and the behaviour is the pre-2026-08-21 behaviour.
+
+        Reads the COMMITTED slot rather than taking a state parameter, and that
+        is deliberate: the RELOAD observation builder reaches this method too
+        (``_build_observations`` -> ``_possession_observed`` ->
+        ``_possession_verdict``), and the reload has no toss cycle to hand it.
+        The cleared slot answers ``(None, None)`` there, exactly as the cleared
+        node attributes did."""
         with self._lock:
-            return self._toss_next_release_perf, self._toss_next_landing_perf
+            state = self._toss_committed
+            return state.next_release_perf, state.next_landing_perf
 
     def _reset_toss_arrival_boundary(self) -> None:
         """Drop the cross-cycle landings that clause C.1's boundary is built
@@ -1847,7 +1960,7 @@ class ReloadCoordinatorNode(Node):
         with self._lock:
             return self._toss_prev_landing_perf
 
-    def _set_toss_next_cycle_perf(self, seq, session) -> None:
+    def _set_toss_next_cycle_perf(self, seq, session, state=None) -> None:
         """Latch the next cycle's schedule for the cycle `seq` is about to run.
 
         Only when the session INTENDS another throw after this one. On the last
@@ -1863,7 +1976,13 @@ class ReloadCoordinatorNode(Node):
         is the same number this cycle judged against, and the two windows abut by
         identity rather than by two agreeing derivations. Safe to read
         ``t_release`` here: `_build_toss_cycle` has already called ``seq.start``,
-        which is what sets it."""
+        which is what sets it.
+
+        ``state`` is the cycle `seq` belongs to; None ⇒ the committed slot. Note
+        which half goes where: the per-CYCLE clamp lands on the cycle's own
+        state, while the arrival-boundary roll stays on the NODE, because clause
+        C.1's two landings span cycles by construction."""
+        state = self._toss_committed if state is None else state
         landing = float(seq.t_release) + float(seq.flight_time_s)
         if session is None or not session.intends_another_cycle:
             rel = land = None
@@ -1871,8 +1990,8 @@ class ReloadCoordinatorNode(Node):
             rel = landing + float(session.dwell_time_s)
             land = rel + float(seq.flight_time_s)
         with self._lock:
-            self._toss_next_release_perf = rel
-            self._toss_next_landing_perf = land
+            state.next_release_perf = rel
+            state.next_landing_perf = land
             self._toss_prev_landing_perf = self._toss_cycle_landing_perf
             self._toss_cycle_landing_perf = landing
 
@@ -2001,9 +2120,15 @@ class ReloadCoordinatorNode(Node):
             (float(ball.position.x), float(ball.position.y),
              float(ball.position.z)), ref)
 
-    def _build_toss_observations(self, now: float) -> TossObservations:
+    def _build_toss_observations(self, now: float,
+                                 state=None) -> TossObservations:
         """Assemble the toss FSM's observation snapshot (the toss sibling of
         :meth:`_build_observations`; shares the caches and the announced-ball latch).
+
+        ``state`` is the :class:`TossCycleState` of the cycle being observed;
+        None ⇒ the committed slot. It supplies every per-cycle input this builder
+        reads (the landing reference, the positioning target, the waiver, the
+        dispatch gate) and receives the two sticky release-evidence latches.
 
         Toss-only constructions:
           - ``platform_levelled`` — ``trajectory/status``'s
@@ -2062,12 +2187,14 @@ class ReloadCoordinatorNode(Node):
             rests on the go_to_pose accept + timed wait;
           - ``throw_stroke_seen`` / ``ball_track_confirmed`` — the two independent
             release-evidence channels, both node-latched sticky for the goal and
-            both GATED on _toss_throw_dispatched: release evidence cannot exist
+            both GATED on the cycle state's ``throw_dispatched``: release
+            evidence cannot exist
             before OUR dispatch, so a pre-existing CONFIRMED phantom track must
             never read as "the ball left the cup" (which would clear possession
             and poison the goal with false release evidence);
           - ``ball_time_at_land_perf`` — the latched ball's live landing-plane
             crossing, ROS→perf crossed here (feeds achieved_flight_s)."""
+        state = self._toss_committed if state is None else state
         with self._lock:
             control_mode = self._control_mode
             streaming = self._streaming
@@ -2102,11 +2229,13 @@ class ReloadCoordinatorNode(Node):
             # beyond the self-clear, that is the signal to take the amendment —
             # do not just widen the latch's use to give it a job.
             possession = self._ball_possession
-            landing_ref = self._toss_landing_global_mm
-            platform_target = self._toss_platform_target_mm
+            landing_ref = state.landing_global_mm
+            platform_target = state.platform_target_mm
+            # NOT per-cycle: `_toss_mocap_body` is a PARAMETER cache read by
+            # `_on_mocap`, which runs between goals and before the first cycle.
             mocap_body = self._toss_mocap_body
-            waiver = self._toss_waiver
-            throw_dispatched = self._toss_throw_dispatched
+            waiver = state.waiver
+            throw_dispatched = state.throw_dispatched
         # platform_levelled — an AFFIRMATION, not an absence of evidence: it is
         # True only while trajectory_node is currently saying it holds a
         # correction. Same shape as hand_fresh (stamp > 0 ⇒ heard from at all,
@@ -2127,7 +2256,7 @@ class ReloadCoordinatorNode(Node):
                 and hand_pos > float(hw.JB_OP_HAND_RETRACT_REV)
                 + _HAND_NEAR_TARGET_REV):
             with self._lock:
-                self._toss_stroke_seen = True
+                state.stroke_seen = True
         # THE live ball-evidence read (C-POSSESS-1 § 3.3 edit 1). One call, one
         # place — every downstream use below reads this variable, never the source
         # again, so the whole observation is built from ONE instant's cup state.
@@ -2182,7 +2311,7 @@ class ReloadCoordinatorNode(Node):
                         # it, a CONFIRMED track can only be a phantom, and
                         # latching it would mint false release evidence.
                         with self._lock:
-                            self._toss_track_confirmed = True
+                            state.track_confirmed = True
                     time_at_land_perf = self._ball_time_at_land_perf(b, now)
                     if int(b.status) == _BALL_STATUS_CAUGHT:
                         caught_ball = b
@@ -2199,8 +2328,8 @@ class ReloadCoordinatorNode(Node):
             catch_error_mm = self._catch_error_from_ball(
                 caught_ball, ref_point_mm=landing_ref)
         with self._lock:
-            stroke_seen = self._toss_stroke_seen
-            track_confirmed = self._toss_track_confirmed
+            stroke_seen = state.stroke_seen
+            track_confirmed = state.track_confirmed
             if (throw_dispatched and possession
                     and (stroke_seen or track_confirmed) and not ball_caught):
                 # OUR release evidence: the ball left the cup. Gated on the
@@ -2486,7 +2615,8 @@ class ReloadCoordinatorNode(Node):
                 self._goal_claimed = False
             return result
         flight = self._resolve_toss_flight_s(height)
-        seq = self._build_toss_cycle(catch_pose, flight, throw_delay, vel_scale)
+        seq, cycle_state = self._build_toss_cycle(
+            catch_pose, flight, throw_delay, vel_scale)
         self._open_toss_record(
             action='toss', goal_id=_goal_id_hex(goal_handle), cycle_index=1,
             catch_pose=catch_pose, flight=flight,
@@ -2508,7 +2638,8 @@ class ReloadCoordinatorNode(Node):
                 cancel_now_fn=lambda now: (
                     goal_handle.is_cancel_requested
                     and not self._toss_cancel_deferred(seq, now)),
-                feedback_fn=_publish_phase)
+                feedback_fn=_publish_phase,
+                state=cycle_state)
             result.success = bool(r.success)
             result.outcome = str(r.outcome)
             result.catch_error_mm = float(r.catch_error_mm)
@@ -3436,16 +3567,29 @@ class ReloadCoordinatorNode(Node):
         return (float(getattr(release, 'tilt_rx', 0.0)) != 0.0
                 or float(getattr(release, 'tilt_ry', 0.0)) != 0.0)
 
-    def _toss_commanded_release(self):
-        """The COMMANDED release state for the live cycle (aim applied), or None."""
+    def _toss_commanded_release(self, state=None):
+        """The COMMANDED release state for the cycle (aim applied), or None.
+
+        ``state`` is the cycle's :class:`TossCycleState`; None ⇒ the committed
+        slot."""
+        state = self._toss_committed if state is None else state
         with self._lock:
-            return self._toss_release_cmd
+            return state.release_cmd
 
     def _build_toss_cycle(self, catch_pose, flight, throw_delay, vel_scale,
                           *, delay_is_cadence=False):
         """Build ONE toss cycle: resolve the tier / throw site / release state,
-        construct + start the ``TossSequencer``, and install the per-goal node
-        state the observation builder and the async-event routing read.
+        construct + start the ``TossSequencer``, and mint the
+        :class:`TossCycleState` the observation builder, the action handlers and
+        the record builder read.
+
+        Returns ``(seq, state)``. The state is ALSO installed as the node's
+        COMMITTED slot (``self._toss_committed``) under the lock, because three
+        paths reach this cycle's state without a state parameter to hand: the
+        record builder (which the REJECTED_BAD_GOAL terminal calls with no cycle
+        at all), the cadence-clamp query the RELOAD observation builder shares,
+        and the trim snapshot. Callers that HAVE the object pass it explicitly —
+        that is what Phase B4's second slot will rely on.
 
         Shared verbatim by the single ``Toss`` and by every ``TossContinuous``
         cycle — that is the point. Two copies of this would let a session drift
@@ -3665,49 +3809,24 @@ class ReloadCoordinatorNode(Node):
                 f'{_TOSS_WAIVER_PARAM} is SET — waiving the ball-possession '
                 'precondition (hand-parked/hand-fresh stay hard). Trace use '
                 'only; never run powered sessions with this set.')
-        with self._lock:
-            self._active_seq = seq
-            # Roll the outgoing latch forward BEFORE clearing it (census D6):
-            # cycle N+1's CHECKING must be able to tell OUR just-caught ball —
-            # whose track is still IN_FLIGHT until the tracker mints CAUGHT —
-            # from a genuine phantom. Cleared at goal ACCEPT, so it spans cycles
-            # and never goals.
-            self._prev_announced_ball_id = self._announced_ball_id
-            self._announced_ball_id = None
-            self._announced_id_untagged = False
-            # A new cycle inherits no schedule: the session sets it immediately
-            # after this returns, and a single Toss never does.
-            self._toss_next_release_perf = None
-            self._toss_next_landing_perf = None
-            # GOAL-START phantom snapshot: any id already IN_FLIGHT before OUR
-            # throw is a phantom BY CONSTRUCTION (our ball cannot be airborne
-            # before our announcement's throw_time). The PREPARE-tick snapshot
-            # later only ADDS ids that appear during positioning/prepare — it
-            # never clears this baseline.
-            self._preexisting_flight_ids = {
-                int(b.id) for b in self._balls
-                if int(b.status) == _BALL_STATUS_IN_FLIGHT}
-            self._catch_vel_scale = (vel_scale if vel_scale > 0.0
-                                     else float(hw.JB_OP_CATCH_VEL_SCALE_DEFAULT))
-            self._toss_release_state = release
-            self._toss_release_cmd = release_cmd
-            self._toss_aim = aim
-            # THE cached positioning decision (2026-08-23). Written here, read
-            # exactly once by _position_platform_for_toss on the next FSM tick.
-            # It is not an optimisation: the CHECKING delay gate has ALREADY
-            # charged a pre-dispatch budget keyed on this boolean, so re-deriving
-            # it a tick later — against a commanded pose that may have been
-            # republished in between — could take the cheap branch under an
-            # expensive budget, or the reverse. One decision, one place.
-            self._toss_positioning_move = positioning_move
+        # THE cycle's state object, built OUTSIDE the lock (nothing else can see
+        # it yet) and published as the committed slot inside it — one assignment,
+        # so no reader can ever observe a half-installed cycle. Every field is
+        # set HERE, at construction, rather than by twenty assignments through a
+        # node: a field this constructor forgets is a dataclass default, not a
+        # value left over from the previous cycle.
+        state = TossCycleState(
+            release_state=release,
+            release_cmd=release_cmd,
+            aim=aim,
             # release is None on a Tier-8b tilt-clamp raise (the FSM rejects
             # REJECTED_TILT_CLAMP on the first step, so the nominated landing is
             # never consulted); guard the deref. None ⇒ the possession
             # plausibility falls back to the ACTIVE catch point (the reload
             # default), which is moot for an immediately-rejected goal.
-            self._toss_landing_global_mm = (
+            landing_global_mm=(
                 tuple(float(v) for v in release.catch_point_global_mm)
-                if release is not None else None)
+                if release is not None else None),
             # The POSITIONING mocap arrival cross-check target, kept STOW-relative
             # and UNCONVERTED (the cross-check compares in the platform_start
             # frame — the frame non-base bodies publish in, see
@@ -3719,50 +3838,75 @@ class ReloadCoordinatorNode(Node):
             # pre-tilt pose at the throw site (else an operator who configures a
             # platform body for a tilted sitting gets measured-A vs target-B → a
             # spurious ABORTED_POSITION_FAILED).
-            self._toss_platform_target_mm = self._toss_positioning_xyz(
-                catch_pose, release_cmd)
-            self._toss_waiver = waiver
+            platform_target_mm=self._toss_positioning_xyz(
+                catch_pose, release_cmd),
+            # THE cached positioning decision (2026-08-23). Written here, read
+            # exactly once by _position_platform_for_toss on the next FSM tick.
+            # It is not an optimisation: the CHECKING delay gate has ALREADY
+            # charged a pre-dispatch budget keyed on this boolean, so re-deriving
+            # it a tick later — against a commanded pose that may have been
+            # republished in between — could take the cheap branch under an
+            # expensive budget, or the reverse. One decision, one place.
+            positioning_move=positioning_move,
+            waiver=waiver)
+        # The remaining fields keep their dataclass defaults, and each default is
+        # the value _build_toss_cycle used to assign explicitly: prepare_pending
+        # / throw_dispatched / stroke_seen / track_confirmed False,
+        # pretilt_hold_raised False (raised iff the COMMANDED release carries a
+        # tilt — a level goal never touches catch/pretilt_hold), announced_reach
+        # / record_announce None, and next_release_perf / next_landing_perf None
+        # because a new cycle inherits no schedule (the session sets it
+        # immediately after this returns, and a single Toss never does).
+        with self._lock:
+            self._active_seq = seq
+            self._toss_committed = state
+            # Roll the outgoing latch forward BEFORE clearing it (census D6):
+            # cycle N+1's CHECKING must be able to tell OUR just-caught ball —
+            # whose track is still IN_FLIGHT until the tracker mints CAUGHT —
+            # from a genuine phantom. Cleared at goal ACCEPT, so it spans cycles
+            # and never goals. Node-scoped on BOTH sides on purpose: the roll
+            # reads across the previous cycle's teardown, which is why the latch
+            # did not move onto TossCycleState (see its __init__ comment).
+            self._prev_announced_ball_id = self._announced_ball_id
+            self._announced_ball_id = None
+            self._announced_id_untagged = False
+            # GOAL-START phantom snapshot: any id already IN_FLIGHT before OUR
+            # throw is a phantom BY CONSTRUCTION (our ball cannot be airborne
+            # before our announcement's throw_time). The PREPARE-tick snapshot
+            # later only ADDS ids that appear during positioning/prepare — it
+            # never clears this baseline.
+            self._preexisting_flight_ids = {
+                int(b.id) for b in self._balls
+                if int(b.status) == _BALL_STATUS_IN_FLIGHT}
+            self._catch_vel_scale = (vel_scale if vel_scale > 0.0
+                                     else float(hw.JB_OP_CATCH_VEL_SCALE_DEFAULT))
             self._toss_mocap_body = str(
                 self.get_parameter(_TOSS_MOCAP_BODY_PARAM).value or '')
             self._platform_pos_mm = None   # never trust a stale/other-body cache
-            self._toss_prepare_pending = False
-            self._toss_throw_dispatched = False
-            self._toss_stroke_seen = False
-            self._toss_track_confirmed = False
-            # Raised iff the COMMANDED release carries a tilt (a level goal
-            # never touches catch/pretilt_hold).
-            self._toss_pretilt_hold_raised = False
-            self._toss_announced_reach = None
         self._possession_logged = set()
-        return seq
+        return seq, state
 
     def _clear_toss_cycle_state(self) -> None:
-        """Tear down ONE cycle's per-goal node state. Deliberately does NOT touch
+        """Tear down ONE cycle's per-goal state. Deliberately does NOT touch
         ``_goal_claimed`` (that spans a whole session) nor ``_ball_possession``
-        (the latch survives across cycles — a caught ball is still in the cup)."""
+        (the latch survives across cycles — a caught ball is still in the cup).
+
+        It clears the committed slot IN PLACE rather than dropping the object,
+        and that choice is load-bearing rather than stylistic: three fields the
+        old teardown deliberately left standing (``stroke_seen``,
+        ``track_confirmed``, ``record_announce``) are read by the record builder
+        on the REJECTED_BAD_GOAL path, which runs after a teardown and before
+        the next build. Dropping the object would silently change what that
+        record declares. Which field survives and which is reset lives in
+        :meth:`TossCycleState.clear`, with the reason for each."""
         with self._lock:
             self._active_seq = None
-            # Per-goal toss state down; the possession plausibility reference
+            # Per-cycle toss state down; the possession plausibility reference
             # reverts to the ACTIVE catch point between goals.
-            self._toss_release_state = None
-            self._toss_release_cmd = None
-            self._toss_aim = None
-            self._toss_landing_global_mm = None
-            self._toss_platform_target_mm = None
-            self._toss_prepare_pending = False
-            self._toss_throw_dispatched = False
-            # Fail-closed between cycles: a leftover False would let the NEXT
-            # cycle's POSITIONING skip a move on evidence that belonged to the
-            # previous one.
-            self._toss_positioning_move = True
-            # The cadence clamp is per-CYCLE (C-POSSESS-1 § 3.4): a schedule that
-            # outlived its cycle would clamp the next ball's windows against a
-            # stale instant, which is the arm/disarm lifecycle bug class the
-            # contract deletes rather than guards.
-            self._toss_next_release_perf = None
-            self._toss_next_landing_perf = None
+            self._toss_committed.clear()
 
-    def _run_toss_cycle(self, seq, *, deadline_s, cancel_now_fn, feedback_fn):
+    def _run_toss_cycle(self, seq, *, deadline_s, cancel_now_fn, feedback_fn,
+                        state=None):
         """Tick ONE toss cycle to a terminal. Returns ``(TossResult, exit_kind)``
         with ``exit_kind`` in {'fsm', 'cancel', 'timeout', 'shutdown'}.
 
@@ -3776,7 +3920,12 @@ class ReloadCoordinatorNode(Node):
         (``_toss_cancel_deferred`` for both callers today): True means honour the
         cancel NOW; a deferred cancel simply keeps ticking and resolves at the
         FSM's own terminal, because aborting a catch mid-flight drops the ball on
-        the robot."""
+        the robot.
+
+        ``state`` is the :class:`TossCycleState` `seq` was built with; None ⇒ the
+        committed slot. It is threaded to every tick and to every safing path so
+        the cycle's state travels with the cycle rather than being looked up."""
+        state = self._toss_committed if state is None else state
         t_start = time.perf_counter()
         # INSTRUMENT ONLY. Fresh per cycle so no record can inherit another
         # cycle's timings, and read back on THIS thread by _log_toss_outcome.
@@ -3791,11 +3940,11 @@ class ReloadCoordinatorNode(Node):
                 # sleep, so counting it would report a period never spent.
                 census.note_iteration_start(now)
                 if cancel_now_fn(now):
-                    self._safe_toss_on_early_exit(seq)
+                    self._safe_toss_on_early_exit(seq, state)
                     r = TossResult(False, 'ABORTED_CANCELLED')
                     self._log_toss_outcome(r)
                     return r, 'cancel'
-                decision = self._step_toss_sequence(seq, now, None)
+                decision = self._step_toss_sequence(seq, now, None, state)
                 if decision.done:
                     r = decision.result
                     self._log_toss_outcome(r)
@@ -3803,7 +3952,7 @@ class ReloadCoordinatorNode(Node):
                 if feedback_fn is not None:
                     feedback_fn(decision.phase)
                 if now - t_start > deadline_s:
-                    self._safe_toss_on_early_exit(seq)
+                    self._safe_toss_on_early_exit(seq, state)
                     r = TossResult(False, 'ABORTED_TIMEOUT')
                     self._log_toss_outcome(r)
                     return r, 'timeout'
@@ -3813,7 +3962,7 @@ class ReloadCoordinatorNode(Node):
                     decision.phase)
                 time.sleep(_TICK_S)
             # rclpy shutting down.
-            self._safe_toss_on_early_exit(seq)
+            self._safe_toss_on_early_exit(seq, state)
             r = TossResult(False, 'ABORTED_SHUTDOWN')
             self._log_toss_outcome(r)
             return r, 'shutdown'
@@ -3822,7 +3971,7 @@ class ReloadCoordinatorNode(Node):
             # be positioned / latched / stroke-armed, so SAFE FIRST, then emit
             # the one authoritative outcome line and re-raise so the caller (and
             # the executor's own error path) still sees the fault.
-            self._safe_toss_on_early_exit(seq)
+            self._safe_toss_on_early_exit(seq, state)
             self._log_toss_outcome(TossResult(False, 'ABORTED_EXCEPTION'))
             raise
 
@@ -3878,10 +4027,15 @@ class ReloadCoordinatorNode(Node):
             return False
         return True
 
-    def _step_toss_sequence(self, seq, now, goal_handle=None):
+    def _step_toss_sequence(self, seq, now, goal_handle=None, state=None):
         """One toss FSM tick: build observations, step, execute the requested
         action, publish phase feedback. Returns the decision (testable in
         isolation) — the toss sibling of :meth:`_step_sequence`.
+
+        ``state`` is the :class:`TossCycleState` `seq` was built with; None ⇒
+        the committed slot. Every per-cycle read and write on this tick — the
+        observation snapshot, the positioning decision, the PREPARE deferral,
+        the pretilt-hold flag, the dispatch gate — goes through it.
 
         ACTION_PREPARE_CATCH is split across two ticks: the verified-arrival
         tick publishes catch/prime_hold ALONE, and the bundle runs on the NEXT
@@ -3899,14 +4053,15 @@ class ReloadCoordinatorNode(Node):
         holds — but a future session tightening cadence reads the margin HERE,
         and reading 50 ms would credit it with 2.5x more headroom than it has
         before collapsing this split into one tick."""
-        obs = self._build_toss_observations(now)
+        state = self._toss_committed if state is None else state
+        obs = self._build_toss_observations(now, state)
         # INSTRUMENT ONLY (see LoopPeriodCensus): stamped here rather than
         # returned so this method's signature stays what its docstring promises —
         # a decision, testable in isolation.
         self._toss_obs_build_s = time.perf_counter() - now
         decision = seq.step(now, obs)
         if decision.action == TOSS_ACTION_POSITION_PLATFORM:
-            self._position_platform_for_toss(seq)
+            self._position_platform_for_toss(seq, state)
         elif decision.action == TOSS_ACTION_PREPARE_CATCH:
             # Verified-arrival tick: raise the hold, defer the bundle (see the
             # docstring). The FSM idles in PREPARING until the bundle's
@@ -3968,30 +4123,30 @@ class ReloadCoordinatorNode(Node):
             # three teardowns release it keyed on the flag below. The cost of
             # NOT raising it is a platform reach under a seated ball.
             self._publish_pretilt_hold(True)
-            self._toss_pretilt_hold_raised = True
-            self._toss_prepare_pending = True
+            state.pretilt_hold_raised = True
+            state.prepare_pending = True
         elif decision.action == TOSS_ACTION_ANNOUNCE:
-            self._announce_toss(seq)
+            self._announce_toss(seq, state)
         elif decision.action == TOSS_ACTION_DISPATCH_THROW:
-            outcome, message = self._dispatch_toss_throw(seq)
+            outcome, message = self._dispatch_toss_throw(seq, state)
             seq.note_throw_dispatch(outcome, message)
         elif decision.action == TOSS_ACTION_REACH_CATCH:
             # Tier 8b's deferred A->B reach (time-triggered at t_release): the
             # ONE announcement-derived catch/dynamic_target for B (lead = the
             # flight time by construction). 8a never emits this action.
-            self._publish_toss_reach()
+            self._publish_toss_reach(state)
         elif decision.action == TOSS_ACTION_STAY:
-            self._toss_stay()
+            self._toss_stay(state)
         elif decision.action == TOSS_ACTION_RECENTER:
-            self._toss_recenter()
+            self._toss_recenter(state)
         elif decision.action == TOSS_ACTION_SAFE_ABORT:
-            self._toss_safe_abort()
-        elif self._toss_prepare_pending and not decision.done:
+            self._toss_safe_abort(state)
+        elif state.prepare_pending and not decision.done:
             # The tick after the hold went out: run the PREPARE bundle. A
             # terminal decision on this tick (mode change, cancel-driven abort)
             # takes the elif branches above instead — the pending bundle is
             # simply dropped (per-goal state, reset at goal init).
-            self._toss_prepare_pending = False
+            state.prepare_pending = False
             seq.note_prepare_result(self._prepare_toss_catch())
         if (decision.done and decision.result is not None
                 and decision.result.outcome in _TOSS_POSITION_UNKNOWN_TERMINALS):
@@ -4006,8 +4161,12 @@ class ReloadCoordinatorNode(Node):
             goal_handle.publish_feedback(fb)
         return decision
 
-    def _position_platform_for_toss(self, seq) -> None:
+    def _position_platform_for_toss(self, seq, state=None) -> None:
         """POSITIONING: the profiled go_to_pose to the pre-positioning pose.
+
+        ``state`` is the cycle's :class:`TossCycleState` (None ⇒ the committed
+        slot): it carries the COMMANDED release and the cached positioning
+        decision this method consumes.
 
         Tier 8a throws from a LEVEL platform at the nominated catch pose B
         (identity orientation). Tier 8b throws from the swing-compensated PRE-TILT
@@ -4039,10 +4198,12 @@ class ReloadCoordinatorNode(Node):
         ABORTED_POSITION_TIMEOUT) therefore gets a best-effort go_home from
         _step_toss_sequence — go_home supersedes any zombie move by design
         (see _TOSS_POSITION_UNKNOWN_TERMINALS)."""
-        release = self._toss_commanded_release()
+        state = self._toss_committed if state is None else state
+        release = self._toss_commanded_release(state)
         # The STOW-frame POSITION is the SINGLE source shared with the POSITIONING
-        # mocap arrival cross-check target (_toss_platform_target_mm, set in
-        # _build_toss_cycle from the SAME _toss_positioning_xyz), so what we command
+        # mocap arrival cross-check target (the cycle state's
+        # `platform_target_mm`, set in _build_toss_cycle from the SAME
+        # _toss_positioning_xyz), so what we command
         # and what we verify against can never diverge: a level goal = B, a tilted
         # one = the swing-compensated pre-tilt pose at the throw site.
         x, y, z = self._toss_positioning_xyz(seq.catch_pose_stow_mm, release)
@@ -4060,7 +4221,7 @@ class ReloadCoordinatorNode(Node):
         # pre-dispatch budget keyed on this exact boolean; re-deriving it here
         # would let the branch taken and the budget charged disagree.
         with self._lock:
-            already_positioned = not bool(self._toss_positioning_move)
+            already_positioned = not bool(state.positioning_move)
         if already_positioned:
             # CENSUS B1 — the no-op move. For a chain with
             # stay_at_pose_on_caught the platform is ALREADY at the
@@ -4191,7 +4352,8 @@ class ReloadCoordinatorNode(Node):
         """The STOW-frame platform POSITION the toss pre-positions to — the SINGLE
         source for BOTH the go_to_pose command (:meth:`_position_platform_for_toss`)
         and the POSITIONING mocap arrival cross-check target
-        (``_toss_platform_target_mm``, set in :meth:`_build_toss_cycle`), so the
+        (``TossCycleState.platform_target_mm``, set in
+        :meth:`_build_toss_cycle`), so the
         commanded pose and the verification target can never diverge.
 
         Keyed on the COMMANDED release, not the tier (design F2): a LEVEL release
@@ -4300,7 +4462,7 @@ class ReloadCoordinatorNode(Node):
                 'set_hand_gains failed — tossing on the ambient hand gains')
         return ok
 
-    def _announce_toss(self, seq) -> None:
+    def _announce_toss(self, seq, state=None) -> None:
         """ANNOUNCE (its own FSM action, ≥1 tick after the armed confirm): publish
         the self-ThrowAnnouncement that closes the existing correlation → catch
         path. All physics fields come from the single tested release-state module;
@@ -4308,7 +4470,12 @@ class ReloadCoordinatorNode(Node):
         one (the tracker tags destination from it; catch_coordinator's pre-tilt
         gate requires the strict match; thrower_name is cosmetic). This is the ONE
         ROS↔perf clock crossing of the sequence: the FSM's perf-domain t_release
-        becomes the absolute ROS throw_time."""
+        becomes the absolute ROS throw_time.
+
+        ``state`` is the cycle's :class:`TossCycleState` (None ⇒ the committed
+        slot): it supplies the release state announced and receives both
+        stashes — the deferred reach's landing and the record's join key."""
+        state = self._toss_committed if state is None else state
         if seq.announce_lead_short:
             # WARN-only for BOTH tiers (the Phase-1 "8b hardens this to an abort"
             # promise was SUPERSEDED in Phase 4 — see the sequencer's
@@ -4321,7 +4488,7 @@ class ReloadCoordinatorNode(Node):
                 'degenerates toward arrive-at-contact (motion-free for level 8a; '
                 '8b platform reach is deferred to release regardless)')
         with self._lock:
-            release = self._toss_release_state
+            release = state.release_state
         now_perf = time.perf_counter()
         now_ros = self.get_clock().now()
         delta_s = seq.t_release - now_perf
@@ -4351,7 +4518,7 @@ class ReloadCoordinatorNode(Node):
         landing_time_ros_s = (now_ros.nanoseconds * 1e-9 + delta_s
                               + float(seq.flight_time_s))
         with self._lock:
-            self._toss_announced_reach = (
+            state.announced_reach = (
                 np.array(lp, dtype=float), np.array(lv, dtype=float),
                 landing_time_ros_s)
             # THE JOIN KEY, stashed for the per-toss record. The SAME float this
@@ -4359,12 +4526,12 @@ class ReloadCoordinatorNode(Node):
             # and the bagged announcement match exactly rather than to a
             # tolerance (toss-selftuning § 3.4). Record-only — nothing reads it
             # back into the FSM.
-            self._toss_record_announce = (
+            state.record_announce = (
                 now_ros.nanoseconds * 1e-9 + delta_s, landing_time_ros_s)
         self._announce_pub.publish(ann)
         seq.note_announcement()
 
-    def _dispatch_toss_throw(self, seq):
+    def _dispatch_toss_throw(self, seq, state=None):
         """THE throw dispatch (set_hand_traj_cmd traj_type=0) — single-shot,
         tri-state, NEVER retried (unlike the idempotent smooth-moves): an ambiguous
         ack may have armed the stroke, and a re-dispatch re-packs a new wall_time /
@@ -4382,7 +4549,11 @@ class ReloadCoordinatorNode(Node):
         event_delay is recomputed from the ABSOLUTE scheduled release at dispatch
         time (invariant to earlier stalls), shifted EARLY by the T0-measured
         release latency (ships 0.0) while the announced landing stays un-shifted —
-        the BB pattern."""
+        the BB pattern.
+
+        ``state`` is the cycle's :class:`TossCycleState` (None ⇒ the committed
+        slot); it carries the dispatch gate the release-evidence watches read."""
+        state = self._toss_committed if state is None else state
         if not self._hand_traj_cli.wait_for_service(timeout_sec=_SERVICE_WAIT_S):
             return (THROW_DISPATCH_REJECTED,
                     'set_hand_traj_cmd service unavailable')
@@ -4395,7 +4566,7 @@ class ReloadCoordinatorNode(Node):
         with self._lock:
             # Before the call, not after: the frame may fire while we wait on the
             # ack, and the release-stroke telemetry watch must already be armed.
-            self._toss_throw_dispatched = True
+            state.throw_dispatched = True
         resp = self._wait_future(self._hand_traj_cli.call_async(req))
         if resp is None:
             return THROW_DISPATCH_AMBIGUOUS, 'set_hand_traj_cmd ack timeout'
@@ -4434,7 +4605,7 @@ class ReloadCoordinatorNode(Node):
             'toss declared catch reach centre (%.1f, %.1f, %.1f) mm STOW'
             % (x, y, z))
 
-    def _publish_toss_reach(self):
+    def _publish_toss_reach(self, state=None):
         """Tier 8b's deferred A->B reach (ACTION_REACH_CATCH, time-triggered at
         t_release): build the ONE catch/dynamic_target for B from the stashed
         announced landing via the SAME policy catch_coordinator_node uses
@@ -4444,9 +4615,13 @@ class ReloadCoordinatorNode(Node):
         Mirrors CCN's _publish_dynamic_target field-mapping + ROS->perf crossing
         exactly. A missing stash, or a policy reject (should not happen
         post-CHECKING, but guarded), logs a warning and publishes nothing — the
-        FSM's ABORTED_NO_RELEASE / MISSED path still cleans up."""
+        FSM's ABORTED_NO_RELEASE / MISSED path still cleans up.
+
+        ``state`` is the cycle's :class:`TossCycleState`; None ⇒ the committed
+        slot."""
+        state = self._toss_committed if state is None else state
         with self._lock:
-            stash = self._toss_announced_reach
+            stash = state.announced_reach
         if stash is None:
             self.get_logger().warning(
                 'toss deferred reach requested but no announced landing was '
@@ -4489,7 +4664,7 @@ class ReloadCoordinatorNode(Node):
             'toss deferred A->B reach published (arrival %.3f perf, ROS lead '
             '%.3f s)' % (arrival_perf, cmd.landing_time - now_ros))
 
-    def _toss_recenter(self):
+    def _toss_recenter(self, state=None):
         """Toss RECENTER (CAUGHT): the reload teardown verbatim (lower latch,
         catch/armed False, go_home — the hand keeps the caught ball, no retract,
         so the next Toss is immediately serviceable), THEN prime_hold False LAST.
@@ -4501,13 +4676,17 @@ class ReloadCoordinatorNode(Node):
         ball-ops prime proactively themselves. Tier 8b's catch/pretilt_hold is
         released LAST of all (iff it was raised this goal), same
         cross-topic-ordering rationale: a stale pretilt_hold only DEGRADES
-        (a reload announcement loses its platform pre-tilt) — never a hazard."""
+        (a reload announcement loses its platform pre-tilt) — never a hazard.
+
+        ``state`` is the cycle's :class:`TossCycleState` (None ⇒ the committed
+        slot); the pretilt-hold release is keyed on its ``pretilt_hold_raised``."""
+        state = self._toss_committed if state is None else state
         self._recenter()
         self._publish_prime_hold(False)
-        if self._toss_pretilt_hold_raised:
+        if state.pretilt_hold_raised:
             self._publish_pretilt_hold(False)
 
-    def _toss_stay(self):
+    def _toss_stay(self, state=None):
         """Toss STAY (CAUGHT, the default since 2026-07-29): the RECENTER ladder
         MINUS go_home — lower the catch latch, publish catch/armed False, then
         release prime_hold and (iff raised) pretilt_hold LAST.
@@ -4535,14 +4714,18 @@ class ReloadCoordinatorNode(Node):
         extends it INDEFINITELY, which the machine has never done. The operator
         runbook scores it (§ SECTION DISP row DISP-5, a REPORT row); set
         toss_stay_at_pose_on_caught false to revert to go_home if it does not
-        hold."""
+        hold.
+
+        ``state`` is the cycle's :class:`TossCycleState` (None ⇒ the committed
+        slot); the pretilt-hold release is keyed on its ``pretilt_hold_raised``."""
+        state = self._toss_committed if state is None else state
         self._arm_catch(False)
         self._publish_catch_armed(False)
         self._publish_prime_hold(False)
-        if self._toss_pretilt_hold_raised:
+        if state.pretilt_hold_raised:
             self._publish_pretilt_hold(False)
 
-    def _toss_safe_abort(self):
+    def _toss_safe_abort(self, state=None):
         """Toss SAFE_ABORT: the reload safing ladder verbatim (catch/armed False
         FIRST so the retry tick stands down, telemetry-verified retract — which
         deliberately also CLEARS any armed throw stroke on the last-writer-wins
@@ -4552,22 +4735,29 @@ class ReloadCoordinatorNode(Node):
         abort has the ball still seated in the cup. Tier 8b's catch/pretilt_hold
         is released LAST of all (iff it was raised this goal), same rationale;
         _safe_toss_on_early_exit routes through here so cancel/timeout/shutdown
-        are covered."""
+        are covered.
+
+        ``state`` is the cycle's :class:`TossCycleState` (None ⇒ the committed
+        slot); the pretilt-hold release is keyed on its ``pretilt_hold_raised``."""
+        state = self._toss_committed if state is None else state
         self._safe_abort()
         self._publish_prime_hold(False)
-        if self._toss_pretilt_hold_raised:
+        if state.pretilt_hold_raised:
             self._publish_pretilt_hold(False)
 
-    def _safe_toss_on_early_exit(self, seq):
+    def _safe_toss_on_early_exit(self, seq, state=None):
         """Safe the robot on a NODE-level toss exit (cancel honoured / timeout /
         shutdown) that bypasses the FSM's own terminal. `prepared` covers both
         commitments that need undoing: an accepted platform move (go_home leg) and
-        a dispatched PREPARE (latch / prime_hold / possibly an armed stroke)."""
+        a dispatched PREPARE (latch / prime_hold / possibly an armed stroke).
+
+        ``state`` is the cycle's :class:`TossCycleState`; None ⇒ the committed
+        slot."""
         if seq.prepared:
             self.get_logger().warning(
                 'Toss early exit while prepared — safing (retract + lower latch '
                 '+ recenter + release prime hold).')
-            self._toss_safe_abort()
+            self._toss_safe_abort(state)
 
     def _log_toss_outcome(self, result) -> None:
         """The single authoritative per-toss outcome line (the reload discipline:
@@ -4701,7 +4891,15 @@ class ReloadCoordinatorNode(Node):
             ctx['retry_of'] = prev_uid if (retry and prev_uid) else None
             self._toss_record_prev_uid = uid
             self._toss_record_ctx = ctx
-            self._toss_record_announce = None
+            # The join key belongs to the CYCLE, so it is cleared on the
+            # committed slot. THREE call sites, two orders: the pre-gate open
+            # (_execute_toss, before _build_toss_cycle) clears the OUTGOING
+            # cycle's key; the two post-build opens clear the INCOMING cycle's,
+            # which _build_toss_cycle already minted as None. Both reproduce the
+            # node-global clear exactly. B4 MUST revisit this: with a staged
+            # slot, 'the committed slot' stops being 'the cycle this record is
+            # for'.
+            self._toss_committed.record_announce = None
             self._toss_record_belt_warned = False
 
     def _toss_record_fields(self, result) -> dict:
@@ -4710,11 +4908,16 @@ class ReloadCoordinatorNode(Node):
         rec = toss_record.blank_record()
         with self._lock:
             ctx = self._toss_record_ctx
-            announce = self._toss_record_announce
+            # The COMMITTED slot, not a state parameter: this method is called
+            # from _log_toss_outcome, which the REJECTED_BAD_GOAL terminal also
+            # calls with no cycle built and nothing to pass. Reading the slot
+            # reproduces the node-global read exactly, `built` and all.
+            cycle_state = self._toss_committed
+            announce = cycle_state.record_announce
             seq = self._active_seq
-            release = self._toss_release_state
-            release_cmd = self._toss_release_cmd
-            aim = self._toss_aim
+            release = cycle_state.release_state
+            release_cmd = cycle_state.release_cmd
+            aim = cycle_state.aim
             cal_version = self._toss_cal_version
             cal_present = self._toss_cal is not None
             gravity_loaded = self._gravity_correction_loaded
@@ -4722,16 +4925,17 @@ class ReloadCoordinatorNode(Node):
             tilt_version = self._tilt_map_version
             perf_minus_ros = self._perf_minus_ros_s
             vel_scale = self._catch_vel_scale
-            stroke_seen = self._toss_stroke_seen
-            track_confirmed = self._toss_track_confirmed
+            stroke_seen = cycle_state.stroke_seen
+            track_confirmed = cycle_state.track_confirmed
             trim = self._toss_trim
         trim_snapshot = trim.snapshot() if trim is not None else None
         ctx = ctx or {}
         # A cycle was actually built iff a flight time was resolved. On the
         # REJECTED_BAD_GOAL path nothing was built, so the node's RESOLVED
-        # per-goal state (_catch_vel_scale, _active_seq, _toss_release_state) is
-        # still the PREVIOUS goal's — reading it would attribute the last toss's
-        # numbers to this rejection. Raw goal fields stay valid either way.
+        # per-goal state (_catch_vel_scale, _active_seq, the committed slot's
+        # release_state) is still the PREVIOUS goal's — reading it would
+        # attribute the last toss's numbers to this rejection. Raw goal fields
+        # stay valid either way.
         built = ctx.get('flight') is not None
         if not built:
             seq = None
@@ -5042,7 +5246,8 @@ class ReloadCoordinatorNode(Node):
         # failure should cost.
         #
         # The context snapshot is taken HERE, on the cycle thread, and passed in.
-        # _toss_trim_observe reads _toss_record_ctx / _toss_aim / _toss_trim, and
+        # _toss_trim_observe reads _toss_record_ctx / the committed slot's aim /
+        # _toss_trim, and
         # _build_toss_cycle overwrites all three at the NEXT cycle — so a worker
         # that read them later would attribute cycle N's toss to cycle N+1's pose
         # and aim. That is the one real hazard in moving this off-thread, and it
@@ -5058,7 +5263,8 @@ class ReloadCoordinatorNode(Node):
         """Freeze everything the trim update reads, on the CYCLE thread.
 
         Taken at submit time, not at execute time, because ``_build_toss_cycle``
-        overwrites ``_toss_record_ctx`` / ``_toss_aim`` / ``_toss_trim_t0`` for
+        overwrites ``_toss_record_ctx`` / the committed slot's ``aim`` /
+        ``_toss_trim_t0`` for
         the NEXT cycle. ``_toss_trim`` itself is the live estimator object and is
         carried by reference on purpose — it is the thing being updated, and the
         single worker thread is what serialises those updates. It is read under
@@ -5069,7 +5275,7 @@ class ReloadCoordinatorNode(Node):
                 'trim': self._toss_trim,
                 'pose': ctx.get('catch_pose'),
                 'flight': ctx.get('flight'),
-                'aim': self._toss_aim,
+                'aim': self._toss_committed.aim,
                 't0': self._toss_trim_t0,
             }
 
@@ -5638,7 +5844,7 @@ class ReloadCoordinatorNode(Node):
                                                stop_code=stop_code)
                     continue
                 if decision.action == SESSION_ACTION_START_CYCLE:
-                    seq = self._build_toss_cycle(
+                    seq, cycle_state = self._build_toss_cycle(
                         catch_pose, flight, session.throw_delay_s, vel_scale,
                         delay_is_cadence=True)
                     # The cadence clamp (C-POSSESS-1 § 3.4). Set HERE and not
@@ -5647,7 +5853,7 @@ class ReloadCoordinatorNode(Node):
                     # would give the cycle builder a parameter that is None on
                     # its other caller and mean "no clamp" by accident rather
                     # than by statement.
-                    self._set_toss_next_cycle_perf(seq, session)
+                    self._set_toss_next_cycle_perf(seq, session, cycle_state)
                     self._open_toss_record(
                         action='toss_continuous',
                         goal_id=_goal_id_hex(goal_handle),
@@ -5672,7 +5878,8 @@ class ReloadCoordinatorNode(Node):
                                     and not self._toss_cancel_deferred(_s, n))),
                             feedback_fn=(
                                 lambda phase: self._publish_session_feedback(
-                                    goal_handle, session, phase)))
+                                    goal_handle, session, phase)),
+                            state=cycle_state)
                     finally:
                         # One cycle's node state never outlives its cycle, even
                         # on the raising path (the session's own finally is the

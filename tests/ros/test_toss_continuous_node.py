@@ -155,7 +155,7 @@ def _stub_cycles(node, monkeypatch, clock, results, *, verdict_latency=0.30):
     built = []
     pending = list(results)
 
-    def fake_run(seq, *, deadline_s, cancel_now_fn, feedback_fn):
+    def fake_run(seq, *, deadline_s, cancel_now_fn, feedback_fn, state=None):
         built.append(seq)
         if feedback_fn is not None:
             feedback_fn('THROWING')
@@ -515,10 +515,10 @@ def test_cycle_state_is_cleared_between_cycles_but_possession_survives(
     node = _ready_node(clock)
     seen = []
 
-    def fake_run(seq, *, deadline_s, cancel_now_fn, feedback_fn):
+    def fake_run(seq, *, deadline_s, cancel_now_fn, feedback_fn, state=None):
         with node._lock:
-            seen.append((node._toss_release_state is not None,
-                         node._toss_landing_global_mm is not None))
+            seen.append((node._toss_committed.release_state is not None,
+                         node._toss_committed.landing_global_mm is not None))
         clock.t = seq.t_release + float(seq.flight_time_s) + 0.3
         _stamp(node, clock.t)
         return TossResult(True, 'CAUGHT', 2.0, 0.81), 'fsm'
@@ -527,8 +527,8 @@ def test_cycle_state_is_cleared_between_cycles_but_possession_survives(
     node._execute_toss_continuous(_ContGoalHandle(num_throws=2))
     assert seen == [(True, True), (True, True)]   # installed for every cycle
     with node._lock:
-        assert node._toss_release_state is None       # …and torn down after
-        assert node._toss_landing_global_mm is None
+        assert node._toss_committed.release_state is None       # …and torn down after
+        assert node._toss_committed.landing_global_mm is None
         assert node._active_seq is None
         assert node._ball_possession is True          # the ball is still there
 
@@ -630,7 +630,7 @@ def test_cancel_between_cycles_is_honoured_and_commands_nothing(monkeypatch):
                             lambda *a, _n=name, **k: moved.append(_n))
     gh = _ContGoalHandle(num_throws=3)
 
-    def fake_run(seq, *, deadline_s, cancel_now_fn, feedback_fn):
+    def fake_run(seq, *, deadline_s, cancel_now_fn, feedback_fn, state=None):
         clock.t = seq.t_release + float(seq.flight_time_s) + 0.3
         _stamp(node, clock.t)
         gh.is_cancel_requested = True          # cancel arrives after cycle 1
@@ -655,7 +655,7 @@ def test_cancel_inside_a_cycle_ends_the_session_with_its_accounting(monkeypatch)
     outcomes = [(TossResult(True, 'CAUGHT', 2.0, 0.81), 'fsm'),
                 (TossResult(False, 'ABORTED_CANCELLED'), 'cancel')]
 
-    def fake_run(seq, *, deadline_s, cancel_now_fn, feedback_fn):
+    def fake_run(seq, *, deadline_s, cancel_now_fn, feedback_fn, state=None):
         clock.t = seq.t_release + float(seq.flight_time_s) + 0.3
         _stamp(node, clock.t)
         return outcomes.pop(0)
@@ -682,7 +682,7 @@ def test_cycle_level_node_exits_end_the_session(exit_kind, outcome, terminal,
     monkeypatch.setattr(rcn, 'time', clock)
     node = _ready_node(clock)
 
-    def fake_run(seq, *, deadline_s, cancel_now_fn, feedback_fn):
+    def fake_run(seq, *, deadline_s, cancel_now_fn, feedback_fn, state=None):
         clock.t = seq.t_release + float(seq.flight_time_s) + 0.3
         _stamp(node, clock.t)
         return TossResult(False, 'ABORTED_' + exit_kind.upper()), exit_kind
@@ -700,7 +700,7 @@ def test_session_exception_preserves_accounting_and_reraises(monkeypatch):
     node = _ready_node(clock)
     calls = {'n': 0}
 
-    def fake_run(seq, *, deadline_s, cancel_now_fn, feedback_fn):
+    def fake_run(seq, *, deadline_s, cancel_now_fn, feedback_fn, state=None):
         calls['n'] += 1
         clock.t = seq.t_release + float(seq.flight_time_s) + 0.3
         _stamp(node, clock.t)

@@ -350,18 +350,18 @@ def _toss_node_8b_announce(pose=(50.0, 0.0, 170.0), throw_site=(0.0, 0.0),
                            flight=0.8):
     """A real toss node with Tier-8b goal state installed (tilted release) and
     its ACTUAL announce executor run — populating BOTH the deferred-reach stash
-    (_toss_announced_reach) and the wire ThrowAnnouncement."""
+    (the cycle state's ``announced_reach``) and the wire ThrowAnnouncement."""
     node = ReloadCoordinatorNode()
     release = compute_release_state_tilted(pose, flight, throw_site_xy_mm=throw_site)
     with node._lock:
-        node._toss_release_state = release
-        node._toss_landing_global_mm = tuple(
+        node._toss_committed.release_state = release
+        node._toss_committed.landing_global_mm = tuple(
             float(v) for v in release.catch_point_global_mm)
-        node._toss_platform_target_mm = tuple(float(v) for v in pose)
-        node._toss_prepare_pending = False
-        node._toss_throw_dispatched = False
-        node._toss_pretilt_hold_raised = False
-        node._toss_announced_reach = None
+        node._toss_committed.platform_target_mm = tuple(float(v) for v in pose)
+        node._toss_committed.prepare_pending = False
+        node._toss_committed.throw_dispatched = False
+        node._toss_committed.pretilt_hold_raised = False
+        node._toss_committed.announced_reach = None
     seq = TossSequencer(catch_pose_stow_mm=pose, flight_time_s=flight,
                         throw_delay_s=5.0, tier=TIER_8B, throw_site_xy_mm=throw_site,
                         throw_site_known=True,
@@ -438,7 +438,7 @@ def test_8b_pretilt_hold_suppresses_ccn_and_deferred_reach_is_sole_target(monkey
     assert len(toss_node._dyn_target_pub.published) == m0 + 1
     out = toss_node._dyn_target_pub.published[-1]
     cmd_reach = toss_node._toss_catch_policy.predicted_catch_command(
-        *toss_node._toss_announced_reach)
+        *toss_node._toss_committed.announced_reach)
     assert cmd_reach is not None
     assert out.target_pos.x == pytest.approx(cmd_reach.target_pos[0])
     assert out.target_pos.y == pytest.approx(cmd_reach.target_pos[1])

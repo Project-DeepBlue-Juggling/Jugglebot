@@ -89,7 +89,10 @@ def _build(node, pose=(0.0, 150.0, 170.0), flight=0.8, tier=TIER_8A,
            monkeypatch=None):
     if monkeypatch is not None:
         monkeypatch.setattr(hw, 'JB_OP_TOSS_TIER', tier)
-    return node._build_toss_cycle(pose, flight, 5.0, 0.9)
+    # `_build_toss_cycle` returns (seq, TossCycleState) since Phase B1;
+    # this helper keeps handing back the sequencer, and every caller
+    # reads the cycle state off `node._toss_committed`.
+    return node._build_toss_cycle(pose, flight, 5.0, 0.9)[0]
 
 
 def _status(node):
@@ -107,12 +110,12 @@ def test_absent_map_leaves_the_release_state_untouched(monkeypatch, tmp_path):
     node = _node_with_map(monkeypatch, tmp_path, None)
     _build(node, monkeypatch=monkeypatch)
     with node._lock:
-        assert node._toss_release_cmd is node._toss_release_state
-        assert node._toss_release_state.__class__ is tr.ReleaseState
-        assert node._toss_aim['aim_rad'] == (0.0, 0.0)
-        assert node._toss_aim['offset_mm'] == (0.0, 0.0)
+        assert node._toss_committed.release_cmd is node._toss_committed.release_state
+        assert node._toss_committed.release_state.__class__ is tr.ReleaseState
+        assert node._toss_committed.aim['aim_rad'] == (0.0, 0.0)
+        assert node._toss_committed.aim['offset_mm'] == (0.0, 0.0)
     expected = tr.compute_release_state((0.0, 150.0, 170.0), 0.8)
-    got = node._toss_release_state
+    got = node._toss_committed.release_state
     assert np.array_equal(got.release_pos_global_mm,
                           expected.release_pos_global_mm)
     assert np.array_equal(got.launch_vel_mms, expected.launch_vel_mms)
@@ -153,8 +156,9 @@ def test_a_loaded_but_all_zero_map_is_still_the_identity_path(monkeypatch,
     node = _node_with_map(monkeypatch, tmp_path, _cal_doc(0.0, 0.0))
     _build(node, monkeypatch=monkeypatch)
     with node._lock:
-        assert node._toss_release_cmd is node._toss_release_state
-        assert node._toss_aim['applied'] is True      # loaded, valid, commanding 0
+        assert node._toss_committed.release_cmd is node._toss_committed.release_state
+        # loaded, valid, commanding 0
+        assert node._toss_committed.aim['applied'] is True
     assert node._publishers['catch/pretilt_hold'].published == []
 
 
@@ -167,7 +171,7 @@ def _prepare_tick(node, seq, now):
     from jugglebot.toss_sequencer import ACTION_PREPARE_CATCH, TossDecision
     decision = TossDecision(done=False, phase='PREPARING',
                             action=ACTION_PREPARE_CATCH, result=None)
-    node._build_toss_observations = lambda _now: None
+    node._build_toss_observations = lambda _now, _state=None: None
     seq.step = lambda _now, _obs: decision
     node._step_toss_sequence(seq, now)
 
@@ -187,7 +191,7 @@ def test_pretilt_hold_is_raised_for_a_tier_8a_aim(monkeypatch, tmp_path):
     _prepare_tick(node, seq, 100.0)
     published = [m.data for m in node._publishers['catch/pretilt_hold'].published]
     assert published == [True]
-    assert node._toss_pretilt_hold_raised is True
+    assert node._toss_committed.pretilt_hold_raised is True
 
 
 def test_pretilt_hold_is_raised_for_every_non_zero_aim_direction(monkeypatch,
@@ -207,8 +211,9 @@ def test_pretilt_hold_is_raised_for_every_non_zero_aim_direction(monkeypatch,
 
 def test_the_hold_is_released_at_the_terminal_for_an_aimed_8a_goal(monkeypatch,
                                                                    tmp_path):
-    """The teardown is keyed on ``_toss_pretilt_hold_raised``, so it follows the
-    raise automatically — but a level goal must still never touch the topic."""
+    """The teardown is keyed on the cycle state's ``pretilt_hold_raised``, so it
+    follows the raise automatically — but a level goal must still never touch
+    the topic."""
     node = _node_with_map(monkeypatch, tmp_path, _cal_doc(math.radians(0.4), 0.0))
     seq = _build(node, monkeypatch=monkeypatch)
     _prepare_tick(node, seq, 100.0)
@@ -268,13 +273,13 @@ def test_the_announcement_landing_stays_uncorrected(monkeypatch, tmp_path):
                                                           math.radians(0.5)))
     _build(node, pose=pose, monkeypatch=monkeypatch)
     plain = tr.compute_release_state(pose, 0.8)
-    ann = node._toss_release_state
+    ann = node._toss_committed.release_state
     assert np.array_equal(ann.catch_point_global_mm,
                           plain.catch_point_global_mm)
     assert np.array_equal(ann.launch_vel_mms, plain.launch_vel_mms)
     assert np.array_equal(ann.release_pos_global_mm, plain.release_pos_global_mm)
     with node._lock:
-        assert node._toss_landing_global_mm == tuple(
+        assert node._toss_committed.landing_global_mm == tuple(
             float(v) for v in plain.catch_point_global_mm)
     # The COMMANDED state is the one that moved.
     cmd = node._toss_commanded_release()
@@ -302,7 +307,7 @@ def test_the_positioning_crosscheck_target_matches_the_commanded_pose(
     _build(node, monkeypatch=monkeypatch)
     cmd = node._toss_commanded_release()
     with node._lock:
-        target = node._toss_platform_target_mm
+        target = node._toss_committed.platform_target_mm
     assert target == pytest.approx(tuple(float(v)
                                          for v in cmd.pretilt_pose_stow[:3]))
 
@@ -361,10 +366,10 @@ def test_a_provenance_mismatch_loads_but_does_not_apply(monkeypatch, tmp_path):
 
     _build(node, monkeypatch=monkeypatch)
     with node._lock:
-        assert node._toss_release_cmd is node._toss_release_state
-        assert node._toss_aim['aim_rad'] == (0.0, 0.0)
-        assert node._toss_aim['loaded'] is True
-        assert node._toss_aim['applied'] is False
+        assert node._toss_committed.release_cmd is node._toss_committed.release_state
+        assert node._toss_committed.aim['aim_rad'] == (0.0, 0.0)
+        assert node._toss_committed.aim['loaded'] is True
+        assert node._toss_committed.aim['applied'] is False
     assert node._publishers['catch/pretilt_hold'].published == []
 
 
@@ -391,7 +396,7 @@ def test_an_unknown_live_tilt_map_version_is_dormant_not_applied(monkeypatch,
     assert _status(node)['toss_cal_applied'] is False
     _build(node, monkeypatch=monkeypatch)
     with node._lock:
-        assert node._toss_aim['applied'] is False
+        assert node._toss_committed.aim['applied'] is False
 
 
 def test_a_tilt_map_reload_re_evaluates_dormancy_live(monkeypatch, tmp_path):
@@ -502,7 +507,7 @@ def test_tier_8b_is_unchanged_with_no_map(monkeypatch, tmp_path):
     expected = tr.compute_release_state_tilted((100.0, 0.0, 170.0), 0.8,
                                                throw_site_xy_mm=(0.0, 0.0))
     cmd = node._toss_commanded_release()
-    assert cmd is node._toss_release_state
+    assert cmd is node._toss_committed.release_state
     assert cmd.tilt_rx == expected.tilt_rx and cmd.tilt_ry == expected.tilt_ry
     assert node._release_is_tilted(cmd) is True
     _prepare_tick(node, seq, 100.0)
@@ -524,7 +529,7 @@ def test_tier_8b_composes_the_aim_on_top_of_its_displacement(monkeypatch,
                                             throw_site_xy_mm=(0.0, 0.0))
     cmd = node._toss_commanded_release()
     # The announcement half is the UNCORRECTED displaced state (D4).
-    assert np.array_equal(node._toss_release_state.catch_point_global_mm,
+    assert np.array_equal(node._toss_committed.release_state.catch_point_global_mm,
                           plain.catch_point_global_mm)
     # The commanded half carries the extra aim, and it is additive in the
     # target, so the extra tilt is close to (not exactly) the map's aim.

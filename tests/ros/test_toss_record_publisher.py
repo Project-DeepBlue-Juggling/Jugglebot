@@ -183,7 +183,7 @@ def test_opening_a_new_cycle_clears_the_previous_announcement():
     node = _node()
     _open(node)
     with node._lock:
-        node._toss_record_announce = (1000.0, 1000.8)
+        node._toss_committed.record_announce = (1000.0, 1000.8)
     node._log_toss_outcome(TossResult(True, 'CAUGHT'))
     _open(node, cycle_index=2)
     node._log_toss_outcome(TossResult(True, 'CAUGHT'))

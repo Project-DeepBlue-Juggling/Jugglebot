@@ -61,7 +61,10 @@ _PKG_DIR = os.path.dirname(os.path.abspath(_rcn.__file__))
 
 def _build(node, monkeypatch, pose=_POSE, flight=_FLIGHT, tier=TIER_8A):
     monkeypatch.setattr(hw, 'JB_OP_TOSS_TIER', tier)
-    return node._build_toss_cycle(pose, flight, 5.0, 0.9)
+    # `_build_toss_cycle` returns (seq, TossCycleState) since Phase B1;
+    # this helper keeps handing back the sequencer, and every caller
+    # reads the cycle state off `node._toss_committed`.
+    return node._build_toss_cycle(pose, flight, 5.0, 0.9)[0]
 
 
 class _StubTrim:
@@ -118,13 +121,13 @@ def test_a_disabled_trim_leaves_the_release_state_untouched(monkeypatch,
     node._toss_trim = _StubTrim((toss_trim.TRIM_MAX_RAD, 0.0))
     _build(node, monkeypatch)
     with node._lock:
-        assert node._toss_release_cmd is node._toss_release_state
-        assert node._toss_aim['aim_rad'] == (0.0, 0.0)
-        assert node._toss_aim['trim_aim_rad'] == (0.0, 0.0)
-        assert node._toss_aim['trim_enabled'] is False
+        assert node._toss_committed.release_cmd is node._toss_committed.release_state
+        assert node._toss_committed.aim['aim_rad'] == (0.0, 0.0)
+        assert node._toss_committed.aim['trim_aim_rad'] == (0.0, 0.0)
+        assert node._toss_committed.aim['trim_enabled'] is False
     assert node._publishers['catch/pretilt_hold'].published == []
     expected = tr.compute_release_state(_POSE, _FLIGHT)
-    got = node._toss_release_state
+    got = node._toss_committed.release_state
     assert np.array_equal(got.launch_vel_mms, expected.launch_vel_mms)
     assert got.event_vel_mps == expected.event_vel_mps
 
@@ -139,9 +142,9 @@ def test_an_enabled_but_warming_up_trim_is_still_the_identity_path(monkeypatch,
     node._toss_trim_begin(goal_id='abc')
     _build(node, monkeypatch)
     with node._lock:
-        assert node._toss_release_cmd is node._toss_release_state
-        assert node._toss_aim['trim_enabled'] is True
-        assert node._toss_aim['aim_rad'] == (0.0, 0.0)
+        assert node._toss_committed.release_cmd is node._toss_committed.release_state
+        assert node._toss_committed.aim['trim_enabled'] is True
+        assert node._toss_committed.aim['aim_rad'] == (0.0, 0.0)
 
 
 def _enable_trim(node, value=True):
@@ -183,7 +186,7 @@ def test_the_layer_2_aim_has_ZERO_authority_over_the_commanded_aim(monkeypatch,
     node._toss_trim = _StubTrim((toss_trim.TRIM_MAX_RAD, 0.0))
     _build(node, monkeypatch)
     with node._lock:
-        aim = dict(node._toss_aim)
+        aim = dict(node._toss_committed.aim)
     # The commanded total is the MAP alone, to the last bit — a saturated trim
     # did not push it into the clamp because it was never added.
     assert aim['aim_rad'][0] == pytest.approx(toss_cal.TOTAL_MAX_RAD, rel=1e-12)
@@ -219,7 +222,7 @@ def test_the_trims_mm_report_is_the_difference_of_the_commanded_offsets(
     node._toss_trim = _StubTrim((toss_trim.TRIM_MAX_RAD, 0.0))
     _build(node, monkeypatch)
     with node._lock:
-        aim = dict(node._toss_aim)
+        aim = dict(node._toss_committed.aim)
     # The total is clamped back onto the map's own value, so the trim moved the
     # target by nothing at all — and says so.
     assert aim['trim_offset_mm'][0] == pytest.approx(0.0, abs=1e-9)
@@ -230,7 +233,7 @@ def test_the_trims_mm_report_is_the_difference_of_the_commanded_offsets(
     node2._toss_trim = _StubTrim((toss_trim.TRIM_MAX_RAD, 0.0))
     _build(node2, monkeypatch)
     with node2._lock:
-        aim2 = dict(node2._toss_aim)
+        aim2 = dict(node2._toss_committed.aim)
     want = tr.aim_target_offset_mm(toss_trim.TRIM_MAX_RAD, 0.0, _FLIGHT,
                                    _POSE[2])
     assert aim2['trim_offset_mm'][0] == pytest.approx(float(want[0]), rel=1e-9)
@@ -255,9 +258,9 @@ def test_the_virtual_target_is_NOT_moved_by_the_monitor_only_trim(monkeypatch,
     node._toss_trim = _StubTrim(trim_aim)
     _build(node, monkeypatch)
     with node._lock:
-        cmd = node._toss_release_cmd
-        base = node._toss_release_state
-        aim = dict(node._toss_aim)
+        cmd = node._toss_committed.release_cmd
+        base = node._toss_committed.release_state
+        aim = dict(node._toss_committed.aim)
     assert cmd is base                     # not one floating-point operation
     assert aim['aim_rad'] == (0.0, 0.0)
     assert aim['trim_aim_rad'] == (0.0, 0.0)
@@ -284,7 +287,7 @@ def test_pretilt_hold_is_raised_for_a_map_only_aim(monkeypatch, tmp_path):
     assert node._release_is_tilted(node._toss_commanded_release()) is True
     decision = TossDecision(done=False, phase='PREPARING',
                             action=ACTION_PREPARE_CATCH, result=None)
-    node._build_toss_observations = lambda _now: None
+    node._build_toss_observations = lambda _now, _state=None: None
     seq.step = lambda _now, _obs: decision
     node._step_toss_sequence(seq, 100.0)
     published = [m.data for m in node._publishers['catch/pretilt_hold'].published]
@@ -313,7 +316,7 @@ def test_a_trim_only_aim_leaves_the_COMMANDED_release_level(monkeypatch, tmp_pat
     assert node._release_is_tilted(node._toss_commanded_release()) is False
     decision = TossDecision(done=False, phase='PREPARING',
                             action=ACTION_PREPARE_CATCH, result=None)
-    node._build_toss_observations = lambda _now: None
+    node._build_toss_observations = lambda _now, _state=None: None
     seq.step = lambda _now, _obs: decision
     node._step_toss_sequence(seq, 100.0)
     # The hold IS raised — for the cadence reason (E5), not for an aim reason.

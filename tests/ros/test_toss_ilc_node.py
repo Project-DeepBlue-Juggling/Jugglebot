@@ -146,7 +146,10 @@ def _live_cal_version(node):
 
 def _build(node, monkeypatch, pose=_POSE, flight=_FLIGHT, tier=TIER_8A):
     monkeypatch.setattr(hw, 'JB_OP_TOSS_TIER', tier)
-    return node._build_toss_cycle(pose, flight, 5.0, 0.9)
+    # `_build_toss_cycle` returns (seq, TossCycleState) since Phase B1;
+    # this helper keeps handing back the sequencer, and every caller
+    # reads the cycle state off `node._toss_committed`.
+    return node._build_toss_cycle(pose, flight, 5.0, 0.9)[0]
 
 
 def _warnings(node):
@@ -274,14 +277,14 @@ def _cycle_fingerprint(node, seq):
     """
     fp = _fields_of(seq, 'seq')
     with node._lock:
-        fp.update(_fields_of(node._toss_release_state, 'release'))
-        fp.update(_fields_of(node._toss_release_cmd, 'release_cmd'))
-        fp['release_cmd_is_release'] = (node._toss_release_cmd
-                                        is node._toss_release_state)
-        for key, value in sorted(node._toss_aim.items()):
+        fp.update(_fields_of(node._toss_committed.release_state, 'release'))
+        fp.update(_fields_of(node._toss_committed.release_cmd, 'release_cmd'))
+        fp['release_cmd_is_release'] = (node._toss_committed.release_cmd
+                                        is node._toss_committed.release_state)
+        for key, value in sorted(node._toss_committed.aim.items()):
             fp['aim.{}'.format(key)] = _plain(value)
-        fp['platform_target'] = _plain(node._toss_platform_target_mm)
-        fp['landing_global'] = _plain(node._toss_landing_global_mm)
+        fp['platform_target'] = _plain(node._toss_committed.platform_target_mm)
+        fp['landing_global'] = _plain(node._toss_committed.landing_global_mm)
     for key, value in sorted(_record(node).items()):
         fp['record.{}'.format(key)] = _plain(value)
     return fp
@@ -314,8 +317,8 @@ def test_a_disabled_ilc_leaves_the_release_state_untouched(monkeypatch,
         'is the FLAG that withholds it, not an empty table'
     _build(node, monkeypatch)
     with node._lock:
-        assert node._toss_release_cmd is node._toss_release_state
-        aim = dict(node._toss_aim)
+        assert node._toss_committed.release_cmd is node._toss_committed.release_state
+        aim = dict(node._toss_committed.aim)
     assert aim['ilc_enabled'] is False
     assert aim['ilc_loaded'] is True
     assert aim['ilc_applied'] is False
@@ -503,7 +506,7 @@ def test_the_disabled_cycle_is_BIT_IDENTICAL_to_the_PRE_PHASE_2_arithmetic(
     node = _aimed_node(monkeypatch, tmp_path, ilc_doc=_ilc_doc(), enabled=False)
     _build(node, monkeypatch)
     with node._lock:
-        live = dict(node._toss_aim)
+        live = dict(node._toss_committed.aim)
     expected = _pre_phase2_aim_block(node, _POSE, _FLIGHT)
 
     # Every key the pre-Phase-2 block carried must be bit-identical. The layer-3
@@ -544,8 +547,8 @@ def test_an_absent_artifact_is_silent(monkeypatch, tmp_path):
     warnings = _warnings(node)
     _build(node, monkeypatch)
     with node._lock:
-        assert node._toss_release_cmd is node._toss_release_state
-        assert node._toss_aim['ilc_loaded'] is False
+        assert node._toss_committed.release_cmd is node._toss_committed.release_state
+        assert node._toss_committed.aim['ilc_loaded'] is False
     assert warnings == []
 
 
@@ -560,8 +563,8 @@ def test_an_invalid_artifact_loads_nothing_and_never_gates_a_toss(monkeypatch,
     seq = _build(node, monkeypatch)
     assert seq.tilt_clamp_exceeded is False
     with node._lock:
-        assert node._toss_release_cmd is node._toss_release_state
-        assert node._toss_aim['ilc_vel_trim'] == 0.0
+        assert node._toss_committed.release_cmd is node._toss_committed.release_state
+        assert node._toss_committed.aim['ilc_vel_trim'] == 0.0
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -687,9 +690,9 @@ def test_an_enabled_hit_composes_into_the_total_aim(monkeypatch, tmp_path):
                  ilc_doc=_ilc_doc(cal_version=''), enabled=True)
     _build(node, monkeypatch)
     with node._lock:
-        aim = dict(node._toss_aim)
-        cmd = node._toss_release_cmd
-        base = node._toss_release_state
+        aim = dict(node._toss_committed.aim)
+        cmd = node._toss_committed.release_cmd
+        base = node._toss_committed.release_state
     assert aim['ilc_applied'] is True
     assert aim['ilc_hit'] is True
     assert tuple(aim['ilc_key']) == tuple(_KEY)
@@ -717,7 +720,7 @@ def test_the_three_layers_sum_and_the_offsets_split_cleanly(monkeypatch,
                          cal_version=_live_cal_version(node)))
     _build(node, monkeypatch)
     with node._lock:
-        aim = dict(node._toss_aim)
+        aim = dict(node._toss_committed.aim)
     assert aim['ilc_applied'] is True
     assert aim['aim_rad'][0] == pytest.approx(math.radians(0.3), rel=1e-9)
     assert aim['map_aim_rad'][0] == pytest.approx(math.radians(0.2), rel=1e-9)
@@ -751,9 +754,9 @@ def test_the_event_vel_trim_scales_the_dispatched_speed(monkeypatch, tmp_path):
     with node._lock:
         # A velocity-only correction leaves the AIM path bit-identical: the
         # commanded release is still the announcement's object.
-        assert node._toss_release_cmd is node._toss_release_state
-        assert node._toss_aim['aim_rad'] == (0.0, 0.0)
-        assert node._toss_aim['ilc_vel_trim'] == -0.10
+        assert node._toss_committed.release_cmd is node._toss_committed.release_state
+        assert node._toss_committed.aim['aim_rad'] == (0.0, 0.0)
+        assert node._toss_committed.aim['ilc_vel_trim'] == -0.10
 
 
 def test_the_record_carries_the_APPLIED_ilc_contribution(monkeypatch, tmp_path):
@@ -812,7 +815,7 @@ def test_a_binding_total_clamp_REFUSES_the_ilc_aim_rather_than_truncating_it(
     warnings = _warnings(node)
     _build(node, monkeypatch)
     with node._lock:
-        aim = dict(node._toss_aim)
+        aim = dict(node._toss_committed.aim)
     assert aim['ilc_refused'] == 'total_aim'
     assert aim['ilc_aim_rad'] == (0.0, 0.0), 'a REFUSAL is not a truncation'
     # And the commanded aim is EXACTLY the map's own — bit for bit what a build
@@ -867,7 +870,7 @@ def test_the_D7_clamp_can_no_longer_BIND_without_layer_3(monkeypatch, tmp_path):
     node._toss_trim = _StubTrim(toss_trim.TRIM_MAX_RAD, 0.0)
     _build(node, monkeypatch)
     with node._lock:
-        aim = dict(node._toss_aim)
+        aim = dict(node._toss_committed.aim)
     assert aim['clamp_hits'] == []
     assert math.hypot(*aim['aim_rad']) == pytest.approx(toss_cal.TOTAL_MAX_RAD,
                                                         rel=1e-12)
@@ -904,8 +907,8 @@ def test_a_provenance_mismatch_is_LOADED_but_DORMANT_and_loud(monkeypatch,
     warnings = _warnings(node)
     _build(node, monkeypatch)
     with node._lock:
-        aim = dict(node._toss_aim)
-        assert node._toss_release_cmd is node._toss_release_state
+        aim = dict(node._toss_committed.aim)
+        assert node._toss_committed.release_cmd is node._toss_committed.release_state
     assert aim['ilc_loaded'] is True
     assert aim['ilc_applied'] is False
     assert aim['ilc_aim_rad'] == (0.0, 0.0)
@@ -943,7 +946,7 @@ def test_a_provenance_check_that_CANNOT_BE_COMPLETED_fails_CLOSED(monkeypatch,
     # there all along.
     _build(node, monkeypatch)
     with node._lock:
-        assert node._toss_aim['ilc_applied'] is True
+        assert node._toss_committed.aim['ilc_applied'] is True
 
     def _boom():
         raise AttributeError("module 'jugglebot.hardware_config' has no "
@@ -955,8 +958,8 @@ def test_a_provenance_check_that_CANNOT_BE_COMPLETED_fails_CLOSED(monkeypatch,
 
     assert seq is not None
     with node._lock:
-        aim = dict(node._toss_aim)
-        assert node._toss_release_cmd is node._toss_release_state
+        aim = dict(node._toss_committed.aim)
+        assert node._toss_committed.release_cmd is node._toss_committed.release_state
     assert aim['ilc_loaded'] is True
     assert aim['ilc_applied'] is False
     assert aim['ilc_aim_rad'] == (0.0, 0.0)
@@ -985,7 +988,7 @@ def test_a_DORMANT_aim_map_makes_the_ilc_dormant_too(monkeypatch, tmp_path):
                 _ilc_doc(cal_version=_live_cal_version(node)))
     _build(node, monkeypatch)
     with node._lock:
-        assert node._toss_aim['ilc_applied'] is True
+        assert node._toss_committed.aim['ilc_applied'] is True
 
     # Now make layer 1 dormant by moving the live tilt map underneath it. Layer 1
     # stops applying, so layer 3's recorded premise is false and it must stop too.
@@ -994,7 +997,7 @@ def test_a_DORMANT_aim_map_makes_the_ilc_dormant_too(monkeypatch, tmp_path):
     node._load_toss_cal()
     _build(node, monkeypatch)
     with node._lock:
-        aim = dict(node._toss_aim)
+        aim = dict(node._toss_committed.aim)
     assert aim['applied'] is False
     assert aim['ilc_applied'] is False
     assert aim['ilc_aim_rad'] == (0.0, 0.0)
@@ -1016,8 +1019,8 @@ def test_a_key_MISS_is_exactly_zero_and_the_machine_says_so(monkeypatch,
     node.get_logger().info = infos.append
     _build(node, monkeypatch)
     with node._lock:
-        aim = dict(node._toss_aim)
-        assert node._toss_release_cmd is node._toss_release_state
+        aim = dict(node._toss_committed.aim)
+        assert node._toss_committed.release_cmd is node._toss_committed.release_state
     assert aim['ilc_applied'] is True, 'the artifact APPLIES; this goal missed'
     assert aim['ilc_hit'] is False
     assert aim['ilc_aim_rad'] == (0.0, 0.0)
@@ -1060,7 +1063,7 @@ def test_a_trim_that_breaks_the_throw_envelope_REFUSES_the_trim_not_the_goal(
     assert tr.validate_event_vel(float(nominal.event_vel_mps) * 1.10)
     assert seq.event_vel_mps == float(nominal.event_vel_mps)
     with node._lock:
-        aim = dict(node._toss_aim)
+        aim = dict(node._toss_committed.aim)
     assert aim['ilc_vel_trim'] == 0.0
     assert 'event_vel' in aim['ilc_refused']
     assert any('REJECTED_THROW_ENVELOPE' in w for w in warnings), warnings
@@ -1091,7 +1094,7 @@ def test_an_untrimmable_goal_never_has_its_verdict_flipped_by_layer_3(
     nominal = tr.compute_release_state(_POSE, flight)
     assert seq.event_vel_mps == float(nominal.event_vel_mps)
     with node._lock:
-        assert node._toss_aim['ilc_vel_trim'] == 0.0
+        assert node._toss_committed.aim['ilc_vel_trim'] == 0.0
     assert any('UNTRIMMED goal is itself outside the throw envelope' in w
                for w in warnings), warnings
 
@@ -1116,7 +1119,7 @@ def test_an_out_of_band_event_vel_REFUSES_the_trim_not_the_goal(monkeypatch,
     nominal = tr.compute_release_state(_POSE, _FLIGHT)
     assert seq.event_vel_mps == float(nominal.event_vel_mps)
     with node._lock:
-        aim = dict(node._toss_aim)
+        aim = dict(node._toss_committed.aim)
     assert aim['ilc_vel_trim'] == 0.0
     assert 'event_vel' in aim['ilc_refused']
     assert any('REFUSED' in w for w in warnings), warnings
@@ -1220,7 +1223,7 @@ def test_both_layers_live_the_machine_does_NOT_over_aim_by_the_trim(monkeypatch,
                        enabled=True)
     _build(node, monkeypatch)
     with node._lock:
-        aim = dict(node._toss_aim)
+        aim = dict(node._toss_committed.aim)
         trim = node._toss_trim
 
     monitor = trim.aim()
@@ -1344,7 +1347,7 @@ def test_the_commanded_aim_is_the_SUM_of_BOTH_layer_3_components(monkeypatch,
     _reload_ilc(node, tmp_path, _anchored())
     _goal(node, monkeypatch)
     with node._lock:
-        aim = dict(node._toss_aim)
+        aim = dict(node._toss_committed.aim)
 
     spatial = aim['ilc_spatial_aim_rad']
     session = aim['ilc_session_aim_rad']
@@ -1393,7 +1396,7 @@ def test_the_session_common_mode_applies_on_a_cell_MISS(monkeypatch, tmp_path):
     _reload_ilc(node, tmp_path, _anchored(key=[300.0, 300.0, 170.0, 0.9]))
     _goal(node, monkeypatch)
     with node._lock:
-        aim = dict(node._toss_aim)
+        aim = dict(node._toss_committed.aim)
     assert aim['ilc_hit'] is False
     assert aim['ilc_spatial_aim_rad'] == (0.0, 0.0)
     assert aim['ilc_session_applied'] is True
@@ -1424,7 +1427,7 @@ def test_a_D7_clamp_hit_drops_BOTH_layer_3_components(monkeypatch, tmp_path):
     _reload_ilc(node, tmp_path, doc)
     _goal(node, monkeypatch)
     with node._lock:
-        aim = dict(node._toss_aim)
+        aim = dict(node._toss_committed.aim)
 
     assert aim['ilc_refused'] == 'total_aim'
     assert aim['ilc_aim_rad'] == (0.0, 0.0)
@@ -1466,7 +1469,7 @@ def test_a_DORMANT_artifact_contributes_NO_session_prior(monkeypatch, tmp_path):
                  enabled=True)
     _goal(node, monkeypatch)
     with node._lock:
-        aim = dict(node._toss_aim)
+        aim = dict(node._toss_committed.aim)
     assert aim['ilc_applied'] is False
     assert aim['ilc_session_aim_rad'] == (0.0, 0.0)
     assert aim['ilc_session_applied'] is False
@@ -1482,7 +1485,7 @@ def test_the_flag_withholds_the_session_prior_as_well_as_the_cells(monkeypatch,
     node = _node(monkeypatch, tmp_path, ilc_doc=_anchored(), enabled=False)
     _goal(node, monkeypatch)
     with node._lock:
-        aim = dict(node._toss_aim)
+        aim = dict(node._toss_committed.aim)
     assert aim['ilc_enabled'] is False
     assert aim['ilc_session_aim_rad'] == (0.0, 0.0)
     assert aim['ilc_aim_rad'] == (0.0, 0.0)
@@ -1535,7 +1538,7 @@ def test_a_session_level_draw_never_reaches_a_PERSISTED_cell(monkeypatch,
     for goal_id in ('g1', 'g2'):
         _goal(node, monkeypatch, goal_id=goal_id)
         with node._lock:
-            seen.append(dict(node._toss_aim)['ilc_session_aim_rad'])
+            seen.append(dict(node._toss_committed.aim)['ilc_session_aim_rad'])
         node._toss_trim_end()
 
     assert seen[0] != (0.0, 0.0) and seen[0] == seen[1], (
@@ -1562,7 +1565,7 @@ def test_a_thin_anchor_leaves_the_cells_commanding_alone(monkeypatch, tmp_path):
     node = _node(monkeypatch, tmp_path, ilc_doc=doc, enabled=True)
     _goal(node, monkeypatch)
     with node._lock:
-        aim = dict(node._toss_aim)
+        aim = dict(node._toss_committed.aim)
     assert aim['ilc_session_aim_rad'] == (0.0, 0.0)
     assert aim['ilc_session_reason'] == toss_ilc.SESSION_INSUFFICIENT_EVIDENCE
     assert aim['ilc_session_n'] == 1
@@ -1579,7 +1582,7 @@ def test_an_artifact_with_NO_anchor_is_the_pre_C1_machine_bit_for_bit(
     node = _node(monkeypatch, tmp_path, ilc_doc=_ilc_doc(), enabled=True)
     _goal(node, monkeypatch)
     with node._lock:
-        aim = dict(node._toss_aim)
+        aim = dict(node._toss_committed.aim)
     assert aim['ilc_session_aim_rad'] == (0.0, 0.0)
     assert aim['ilc_session_reason'] == toss_ilc.SESSION_NO_ANCHOR
     assert aim['ilc_aim_rad'] == aim['ilc_spatial_aim_rad']

@@ -23,6 +23,7 @@ ROS 2 is mocked by tests/ros/conftest.py.
 
 from __future__ import annotations
 
+import dataclasses
 import math
 import threading
 import time
@@ -214,15 +215,15 @@ def _install_toss_goal(node, pose=(0.0, 0.0, 170.0), flight=0.8, vel_scale=0.0):
             int(b.id) for b in node._balls if int(b.status) == 1}
         node._catch_vel_scale = (vel_scale if vel_scale > 0.0
                                  else float(hw.JB_OP_CATCH_VEL_SCALE_DEFAULT))
-        node._toss_release_state = release
-        node._toss_landing_global_mm = tuple(
+        node._toss_committed.release_state = release
+        node._toss_committed.landing_global_mm = tuple(
             float(v) for v in release.catch_point_global_mm)
-        node._toss_platform_target_mm = tuple(float(v) for v in pose)
-        node._toss_waiver = False
-        node._toss_prepare_pending = False
-        node._toss_throw_dispatched = False
-        node._toss_stroke_seen = False
-        node._toss_track_confirmed = False
+        node._toss_committed.platform_target_mm = tuple(float(v) for v in pose)
+        node._toss_committed.waiver = False
+        node._toss_committed.prepare_pending = False
+        node._toss_committed.throw_dispatched = False
+        node._toss_committed.stroke_seen = False
+        node._toss_committed.track_confirmed = False
     return release
 
 
@@ -495,7 +496,8 @@ def test_bad_goal_numerics_rejected_before_anything_runs(kwargs, field,
     node = _toss_ready_node(time.perf_counter())
     monkeypatch.setattr(
         node, '_step_toss_sequence',
-        lambda seq, now, gh=None: pytest.fail('FSM ran on a bad goal'))
+        lambda seq, now, gh=None, state=None: pytest.fail(
+            'FSM ran on a bad goal'))
     gh = _TossGoalHandle(**kwargs)
     result = node._execute_toss(gh)
     assert result.success is False
@@ -516,13 +518,14 @@ def test_toss_execute_exception_safes_logs_and_reraises(monkeypatch):
     node = _toss_ready_node(time.perf_counter())
     order = []
     monkeypatch.setattr(node, '_safe_toss_on_early_exit',
-                        lambda seq: order.append('safed'))
+                        lambda seq, state=None: order.append('safed'))
     logged = []
     monkeypatch.setattr(node, '_log_toss_outcome',
                         lambda r: logged.append(str(r.outcome)))
     monkeypatch.setattr(
         node, '_step_toss_sequence',
-        lambda seq, now, gh=None: (_ for _ in ()).throw(RuntimeError('boom')))
+        lambda seq, now, gh=None, state=None: (
+            _ for _ in ()).throw(RuntimeError('boom')))
     gh = _TossGoalHandle()
     orig_abort = gh.abort
     gh.abort = lambda: (order.append('aborted'), orig_abort())
@@ -614,7 +617,7 @@ def test_waiver_waives_possession_only(monkeypatch):
     node._ball_possession = False
     monkeypatch.setattr(
         node, '_position_platform_for_toss',
-        lambda seq: seq.note_position_result(
+        lambda seq, state=None: seq.note_position_result(
             time.perf_counter(), False, 0.0, 'WORKSPACE'))
     result = node._execute_toss(_TossGoalHandle())
     assert result.outcome == 'REJECTED_POSITION(WORKSPACE)'   # past NO_BALL
@@ -663,7 +666,7 @@ def test_the_config_escape_hatch_restores_the_unconditional_pass(monkeypatch):
     _feed_ball_sensor(node, now, held=False)     # sensor says EMPTY, and is right
     monkeypatch.setattr(
         node, '_position_platform_for_toss',
-        lambda seq: seq.note_position_result(
+        lambda seq, state=None: seq.note_position_result(
             time.perf_counter(), False, 0.0, 'WORKSPACE'))
     result = node._execute_toss(_TossGoalHandle())
     assert result.outcome == 'REJECTED_POSITION(WORKSPACE)'     # got PAST NO_BALL
@@ -773,7 +776,7 @@ def test_release_evidence_clears_possession_but_the_sensor_overrules_it(monkeypa
     node = _toss_ready_node(now)                 # sensor SEATED
     _install_toss_goal(node)
     with node._lock:
-        node._toss_throw_dispatched = True
+        node._toss_committed.throw_dispatched = True
         node._hand_vel_meas = 50.0           # ≫ the 40 rev/s stroke threshold
         node._hand_pos_meas = 3.0            # clear of the bottom park band
     obs = node._build_toss_observations(now)
@@ -808,13 +811,14 @@ def test_preexisting_confirmed_track_does_not_poison_goal(monkeypatch):
     monkeypatch.setattr(time, 'sleep', lambda *a, **k: None)
     monkeypatch.setattr(
         node, '_position_platform_for_toss',
-        lambda seq: seq.note_position_result(
+        lambda seq, state=None: seq.note_position_result(
             time.perf_counter(), False, 0.0, 'WORKSPACE'))
     result = node._execute_toss(_TossGoalHandle())
     assert result.outcome == 'REJECTED_POSITION(WORKSPACE)'   # past CHECKING
     with node._lock:
         assert node._ball_possession is True          # possession survived
-        assert node._toss_track_confirmed is False    # no false release evidence
+        # no false release evidence
+        assert node._toss_committed.track_confirmed is False
 
 
 def test_track_confirmed_not_latched_before_dispatch(monkeypatch):
@@ -832,7 +836,7 @@ def test_track_confirmed_not_latched_before_dispatch(monkeypatch):
     assert obs.ball_track_confirmed is False          # pre-dispatch: not evidence
     assert obs.ball_seated is True                    # possession untouched
     with node._lock:
-        node._toss_throw_dispatched = True
+        node._toss_committed.throw_dispatched = True
     obs = node._build_toss_observations(now)
     assert obs.ball_track_confirmed is True           # post-dispatch: latches
 
@@ -1206,7 +1210,7 @@ def test_stroke_watch_threshold_clears_smooth_move_prelude():
     node = _toss_ready_node(now)
     _install_toss_goal(node)
     with node._lock:
-        node._toss_throw_dispatched = True
+        node._toss_committed.throw_dispatched = True
         node._hand_pos_meas = 3.0            # clear of the bottom park band
         node._hand_vel_meas = 35.0           # prelude-speed ascent: NOT a throw
     assert node._build_toss_observations(now).throw_stroke_seen is False
@@ -1227,7 +1231,7 @@ def test_ball_time_at_land_crossed_to_perf():
                  time_at_land=types.SimpleNamespace(sec=12, nanosec=500000000))
     with node._lock:
         node._balls = [ball]
-        node._toss_throw_dispatched = True
+        node._toss_committed.throw_dispatched = True
     obs = node._build_toss_observations(now)
     assert obs.ball_track_confirmed is True
     assert obs.ball_time_at_land_perf == pytest.approx(12.5 + 100.0)
@@ -1342,7 +1346,8 @@ def test_prime_hold_raised_tick_before_prepare_bundle(monkeypatch):
     tick = {'i': 0}
     monkeypatch.setattr(
         node, '_position_platform_for_toss',
-        lambda s: s.note_position_result(100.0, True, 0.3))   # arrival 100.5
+        lambda s, state=None: s.note_position_result(
+            100.0, True, 0.3))                               # arrival 100.5
     monkeypatch.setattr(node, '_set_soft_catch_gains', lambda: True)
     monkeypatch.setattr(node, '_arm_catch', lambda a: True)
     monkeypatch.setattr(
@@ -1384,7 +1389,8 @@ def test_reach_centre_declared_a_tick_before_the_arm_raise(monkeypatch):
     tick = {'i': 0}
     monkeypatch.setattr(
         node, '_position_platform_for_toss',
-        lambda s: s.note_position_result(100.0, True, 0.3))   # arrival 100.5
+        lambda s, state=None: s.note_position_result(
+            100.0, True, 0.3))                               # arrival 100.5
     monkeypatch.setattr(node, '_set_soft_catch_gains', lambda: True)
     monkeypatch.setattr(
         node, '_arm_catch',
@@ -1416,7 +1422,7 @@ def test_reach_centre_declared_for_tier_8b_too(monkeypatch):
     published = []
     monkeypatch.setattr(
         node, '_position_platform_for_toss',
-        lambda s: s.note_position_result(100.0, True, 0.3))
+        lambda s, state=None: s.note_position_result(100.0, True, 0.3))
     monkeypatch.setattr(node, '_publish_prime_hold', lambda h: None)
     monkeypatch.setattr(node, '_publish_pretilt_hold', lambda h: None)
     monkeypatch.setattr(node._reach_center_pub, 'publish',
@@ -1495,7 +1501,7 @@ def test_toss_choreography_full_walk(monkeypatch):
     order = []
     monkeypatch.setattr(
         node, '_position_platform_for_toss',
-        lambda s: order.append('position') or s.note_position_result(
+        lambda s, state=None: order.append('position') or s.note_position_result(
             t0, True, 0.3))                              # arrival t0 + 0.5
     _wire_prepare_recorder(node, order, monkeypatch)
     ann_pub = node._publishers['throw_announcements']
@@ -1506,10 +1512,10 @@ def test_toss_choreography_full_walk(monkeypatch):
         orig_ann_publish(msg)
     monkeypatch.setattr(ann_pub, 'publish', _rec_announce)
 
-    def _fake_dispatch(s):
+    def _fake_dispatch(s, state=None):
         order.append('dispatch')
         with node._lock:
-            node._toss_throw_dispatched = True
+            node._toss_committed.throw_dispatched = True
         return THROW_DISPATCH_OK, ''
     monkeypatch.setattr(node, '_dispatch_toss_throw', _fake_dispatch)
     # The CAUGHT terminal is _toss_stay since 2026-07-29 (Phase E). Let the REAL
@@ -1520,7 +1526,7 @@ def test_toss_choreography_full_walk(monkeypatch):
     monkeypatch.setattr(node, '_go_home',
                         lambda: order.append('go_home') or True)
     monkeypatch.setattr(node, '_toss_recenter',
-                        lambda: pytest.fail(
+                        lambda state=None: pytest.fail(
                             'CAUGHT must STAY, not RECENTER, at the shipped '
                             'toss_stay_at_pose_on_caught default'))
 
@@ -1601,9 +1607,10 @@ def test_position_unverified_arrival_aborts(monkeypatch):
         node._platform_pos_mm = (0.0, 0.0, 170.0)        # never moved (84.9 mm off)
     monkeypatch.setattr(
         node, '_position_platform_for_toss',
-        lambda s: s.note_position_result(t0, True, 0.3))
+        lambda s, state=None: s.note_position_result(t0, True, 0.3))
     safed = []
-    monkeypatch.setattr(node, '_toss_safe_abort', lambda: safed.append(1))
+    monkeypatch.setattr(node, '_toss_safe_abort',
+                        lambda state=None: safed.append(1))
     node._step_toss_sequence(seq, t0)
     _stamp_fresh(node, t0 + 0.6)
     d = node._step_toss_sequence(seq, t0 + 0.6)
@@ -1643,7 +1650,8 @@ def test_position_no_response_dispatches_best_effort_go_home(monkeypatch):
     seq = _fresh_seq(node, start=100.0)
     monkeypatch.setattr(
         node, '_position_platform_for_toss',
-        lambda s: s.note_position_result(100.0, False, 0.0, 'NO_RESPONSE'))
+        lambda s, state=None: s.note_position_result(
+            100.0, False, 0.0, 'NO_RESPONSE'))
     homed = []
     monkeypatch.setattr(node, '_go_home', lambda: homed.append(1) or True)
     node._step_toss_sequence(seq, 100.0)
@@ -1659,7 +1667,8 @@ def test_position_timeout_dispatches_best_effort_go_home(monkeypatch):
     ABORTED_POSITION_TIMEOUT too."""
     node = _toss_ready_node(100.0)
     seq = _fresh_seq(node, start=100.0)
-    monkeypatch.setattr(node, '_position_platform_for_toss', lambda s: None)
+    monkeypatch.setattr(node, '_position_platform_for_toss',
+                        lambda s, state=None: None)
     homed = []
     monkeypatch.setattr(node, '_go_home', lambda: homed.append(1) or True)
     node._step_toss_sequence(seq, 100.0)
@@ -1737,7 +1746,7 @@ def test_dispatch_request_fields_and_ok(monkeypatch):
                         lambda req: captured.append(req) or object())
 
     def _resp(fut, timeout_s=2.0):
-        assert node._toss_throw_dispatched is True       # armed pre-ack
+        assert node._toss_committed.throw_dispatched is True       # armed pre-ack
         return types.SimpleNamespace(success=True, message='Hand trajectory set.')
     monkeypatch.setattr(node, '_wait_future', _resp)
     outcome, _ = node._dispatch_toss_throw(seq)
@@ -1830,11 +1839,11 @@ def test_toss_stay_releases_pretilt_hold_last_when_raised(monkeypatch):
                         lambda h: order.append(('prime_hold', h)))
     monkeypatch.setattr(node, '_publish_pretilt_hold',
                         lambda h: order.append(('pretilt_hold', h)))
-    node._toss_pretilt_hold_raised = False
+    node._toss_committed.pretilt_hold_raised = False
     node._toss_stay()
     assert order == [('prime_hold', False)]              # 8a: never touched
     order.clear()
-    node._toss_pretilt_hold_raised = True
+    node._toss_committed.pretilt_hold_raised = True
     node._toss_stay()
     assert order == [('prime_hold', False), ('pretilt_hold', False)]
 
@@ -1904,7 +1913,7 @@ def test_cancel_deferred_resolves_with_fsm_outcome(monkeypatch):
                      TossResult(False, 'MISSED')),
     ])
     monkeypatch.setattr(node, '_step_toss_sequence',
-                        lambda seq, now, gh=None: next(decisions))
+                        lambda seq, now, gh=None, state=None: next(decisions))
     gh = _TossGoalHandle()
     gh.is_cancel_requested = True
     result = node._execute_toss(gh)
@@ -1917,7 +1926,7 @@ def test_cancel_deferred_resolves_with_fsm_outcome(monkeypatch):
 def _script_position_accept(node, monkeypatch, side_effect=None):
     """Script positioning to ACCEPT (seq becomes prepared — the go_home leg of
     SAFE_ABORT is owed from that point), optionally firing a side effect."""
-    def _accept(seq):
+    def _accept(seq, state=None):
         seq.note_position_result(time.perf_counter(), True, 0.3)
         if side_effect is not None:
             side_effect()
@@ -1936,7 +1945,8 @@ def test_cancel_prepared_safes_before_canceled(monkeypatch):
     _script_position_accept(
         node, monkeypatch,
         side_effect=lambda: setattr(gh, 'is_cancel_requested', True))
-    monkeypatch.setattr(node, '_toss_safe_abort', lambda: order.append('safed'))
+    monkeypatch.setattr(node, '_toss_safe_abort',
+                        lambda state=None: order.append('safed'))
     orig_canceled = gh.canceled
     gh.canceled = lambda: (order.append('canceled'), orig_canceled())
     result = node._execute_toss(gh)
@@ -1954,7 +1964,8 @@ def test_sequence_ceiling_timeout_aborts_and_safes(monkeypatch):
         'jugglebot.reload_coordinator_node._toss_deadline_s', lambda seq: 0.0)
     _script_position_accept(node, monkeypatch)
     safed = []
-    monkeypatch.setattr(node, '_toss_safe_abort', lambda: safed.append(1))
+    monkeypatch.setattr(node, '_toss_safe_abort',
+                        lambda state=None: safed.append(1))
     gh = _TossGoalHandle()
     result = node._execute_toss(gh)
     assert result.outcome == 'ABORTED_TIMEOUT'
@@ -1980,7 +1991,8 @@ def test_rclpy_shutdown_aborts_and_safes(monkeypatch):
     monkeypatch.setattr(time, 'sleep', lambda *a, **k: None)
     _script_position_accept(node, monkeypatch)
     safed = []
-    monkeypatch.setattr(node, '_toss_safe_abort', lambda: safed.append(1))
+    monkeypatch.setattr(node, '_toss_safe_abort',
+                        lambda state=None: safed.append(1))
     calls = {'n': 0}
 
     def _ok():
@@ -2009,24 +2021,24 @@ def _fresh_seq_8b(node, pose=(50.0, 0.0, 170.0), throw_site=(0.0, 0.0),
         node._preexisting_flight_ids = {
             int(b.id) for b in node._balls if int(b.status) == 1}
         node._catch_vel_scale = float(hw.JB_OP_CATCH_VEL_SCALE_DEFAULT)
-        node._toss_release_state = release
+        node._toss_committed.release_state = release
         # Zero aim map in these fixtures ⇒ the commanded release IS the
         # announcement release, the same object (C-TOSS-CAL-1's disabled path).
-        node._toss_release_cmd = release
-        node._toss_aim = None
-        node._toss_landing_global_mm = tuple(
+        node._toss_committed.release_cmd = release
+        node._toss_committed.aim = None
+        node._toss_committed.landing_global_mm = tuple(
             float(v) for v in release.catch_point_global_mm)
         # Mirror _execute_toss: the tilted cross-check target is the commanded A
         # pose (single source _toss_positioning_xyz), NOT the nominated catch B.
-        node._toss_platform_target_mm = ReloadCoordinatorNode._toss_positioning_xyz(
-            pose, release)
-        node._toss_waiver = False
-        node._toss_prepare_pending = False
-        node._toss_throw_dispatched = False
-        node._toss_stroke_seen = False
-        node._toss_track_confirmed = False
-        node._toss_pretilt_hold_raised = False
-        node._toss_announced_reach = None
+        node._toss_committed.platform_target_mm = (
+            ReloadCoordinatorNode._toss_positioning_xyz(pose, release))
+        node._toss_committed.waiver = False
+        node._toss_committed.prepare_pending = False
+        node._toss_committed.throw_dispatched = False
+        node._toss_committed.stroke_seen = False
+        node._toss_committed.track_confirmed = False
+        node._toss_committed.pretilt_hold_raised = False
+        node._toss_committed.announced_reach = None
     seq = TossSequencer(catch_pose_stow_mm=pose, flight_time_s=flight,
                         throw_delay_s=delay, tier=TIER_8B,
                         throw_site_xy_mm=throw_site, throw_site_known=True,
@@ -2038,13 +2050,14 @@ def _fresh_seq_8b(node, pose=(50.0, 0.0, 170.0), throw_site=(0.0, 0.0),
 def test_pretilt_hold_raised_at_prepare_for_8b(monkeypatch):
     """Tier 8b raises catch/pretilt_hold on the ACTION_PREPARE_CATCH tick
     (alongside prime_hold, >=2 FSM ticks before our announcement can reach
-    catch_coordinator) and records _toss_pretilt_hold_raised."""
+    catch_coordinator) and records the cycle state's ``pretilt_hold_raised``."""
     t0 = 100.0
     node = _toss_ready_node(t0)
     seq, _ = _fresh_seq_8b(node, start=t0)
     calls = []
     monkeypatch.setattr(node, '_position_platform_for_toss',
-                        lambda s: s.note_position_result(t0, True, 0.3))
+                        lambda s, state=None: s.note_position_result(
+                            t0, True, 0.3))
     monkeypatch.setattr(node, '_publish_prime_hold',
                         lambda h: calls.append(('prime_hold', h)))
     monkeypatch.setattr(node, '_publish_pretilt_hold',
@@ -2055,7 +2068,7 @@ def test_pretilt_hold_raised_at_prepare_for_8b(monkeypatch):
     assert d.action == ACTION_PREPARE_CATCH
     assert ('prime_hold', True) in calls
     assert ('pretilt_hold', True) in calls
-    assert node._toss_pretilt_hold_raised is True
+    assert node._toss_committed.pretilt_hold_raised is True
 
 
 def test_pretilt_hold_is_raised_for_8a_too_and_prime_hold_still_leads(monkeypatch):
@@ -2079,7 +2092,8 @@ def test_pretilt_hold_is_raised_for_8a_too_and_prime_hold_still_leads(monkeypatc
     seq = _fresh_seq(node, start=t0)                     # tier 8a (default)
     calls = []
     monkeypatch.setattr(node, '_position_platform_for_toss',
-                        lambda s: s.note_position_result(t0, True, 0.3))
+                        lambda s, state=None: s.note_position_result(
+                            t0, True, 0.3))
     monkeypatch.setattr(node, '_publish_prime_hold',
                         lambda h: calls.append(('prime_hold', h)))
     monkeypatch.setattr(node, '_publish_pretilt_hold',
@@ -2089,7 +2103,7 @@ def test_pretilt_hold_is_raised_for_8a_too_and_prime_hold_still_leads(monkeypatc
     d = node._step_toss_sequence(seq, t0 + 0.5)
     assert d.action == ACTION_PREPARE_CATCH
     assert calls == [('prime_hold', True), ('pretilt_hold', True)]
-    assert node._toss_pretilt_hold_raised is True
+    assert node._toss_committed.pretilt_hold_raised is True
 
 
 def _capture_go_to_pose(node, monkeypatch, accepted=True):
@@ -2154,12 +2168,13 @@ def test_8a_positioning_commands_level_pose_at_B(monkeypatch):
     q = req.pose.orientation
     assert (q.w, q.x, q.y, q.z) == pytest.approx((1.0, 0.0, 0.0, 0.0))  # identity
     # 8a cross-check target stays B, equal to what go_to_pose is commanded.
-    assert node._toss_platform_target_mm == pytest.approx((30.0, -40.0, 170.0))
+    assert node._toss_committed.platform_target_mm == pytest.approx(
+        (30.0, -40.0, 170.0))
 
 
 def test_8b_cross_check_target_equals_commanded_A_pose(monkeypatch):
     """FIX-1 follow-up: the POSITIONING mocap arrival cross-check target
-    (_toss_platform_target_mm) must equal the pose go_to_pose is actually
+    (the cycle state's ``platform_target_mm``) must equal the pose go_to_pose is
     COMMANDED — A (the swing-compensated pre-tilt pose) for 8b, NOT the nominated
     catch B. Single source (_toss_positioning_xyz) so command and verification can
     never diverge; else an operator who configures a platform body for an 8b
@@ -2174,10 +2189,11 @@ def test_8b_cross_check_target_equals_commanded_A_pose(monkeypatch):
     commanded = (req.pose.position.x, req.pose.position.y, req.pose.position.z)
     pre = np.asarray(release.pretilt_pose_stow, dtype=float)
     # Verification target == the commanded A pose == the pre-tilt pose, NOT B.
-    assert node._toss_platform_target_mm == pytest.approx(commanded)
-    assert node._toss_platform_target_mm == pytest.approx(
+    assert node._toss_committed.platform_target_mm == pytest.approx(commanded)
+    assert node._toss_committed.platform_target_mm == pytest.approx(
         (float(pre[0]), float(pre[1]), float(pre[2])))
-    assert node._toss_platform_target_mm[0] != pytest.approx(50.0)   # NOT B's x
+    # NOT B's x
+    assert node._toss_committed.platform_target_mm[0] != pytest.approx(50.0)
 
 
 def test_step_dispatches_reach_catch_to_publish_toss_reach(monkeypatch):
@@ -2185,8 +2201,10 @@ def test_step_dispatches_reach_catch_to_publish_toss_reach(monkeypatch):
     node's ONLY platform publish for an 8b flight."""
     node = ReloadCoordinatorNode()
     called = []
-    monkeypatch.setattr(node, '_publish_toss_reach', lambda: called.append(1))
-    monkeypatch.setattr(node, '_build_toss_observations', lambda now: None)
+    monkeypatch.setattr(node, '_publish_toss_reach',
+                        lambda state=None: called.append(1))
+    monkeypatch.setattr(node, '_build_toss_observations',
+                        lambda now, state=None: None)
     stub = types.SimpleNamespace(
         tier=TIER_8B,
         step=lambda now, obs: TossDecision(
@@ -2207,7 +2225,8 @@ def test_publish_toss_reach_publishes_one_target_for_B():
     landing_vel = np.array([100.0, 0.0, -3900.0])
     landing_time_ros = 105.8
     with node._lock:
-        node._toss_announced_reach = (landing_pos, landing_vel, landing_time_ros)
+        node._toss_committed.announced_reach = (
+            landing_pos, landing_vel, landing_time_ros)
     n0 = len(node._dyn_target_pub.published)
     before = time.perf_counter()
     node._publish_toss_reach()
@@ -2232,7 +2251,7 @@ def test_publish_toss_reach_no_stash_publishes_nothing():
     MISSED path still cleans up."""
     node = ReloadCoordinatorNode()
     with node._lock:
-        node._toss_announced_reach = None
+        node._toss_committed.announced_reach = None
     n0 = len(node._dyn_target_pub.published)
     node._publish_toss_reach()
     assert len(node._dyn_target_pub.published) == n0
@@ -2243,7 +2262,7 @@ def test_publish_toss_reach_policy_reject_publishes_nothing(monkeypatch):
     guarded) publishes nothing."""
     node = ReloadCoordinatorNode()
     with node._lock:
-        node._toss_announced_reach = (np.zeros(3), np.zeros(3), 105.8)
+        node._toss_committed.announced_reach = (np.zeros(3), np.zeros(3), 105.8)
     monkeypatch.setattr(node._toss_catch_policy, 'predicted_catch_command',
                         lambda p, v, t: None)
     n0 = len(node._dyn_target_pub.published)
@@ -2257,7 +2276,7 @@ def test_toss_recenter_releases_pretilt_hold_last_when_raised(monkeypatch):
     rationale; a stale pretilt_hold only DEGRADES a later reload, never a
     hazard."""
     node = ReloadCoordinatorNode()
-    node._toss_pretilt_hold_raised = True
+    node._toss_committed.pretilt_hold_raised = True
     order = []
     monkeypatch.setattr(node, '_arm_catch',
                         lambda a: order.append(('arm', a)) or True)
@@ -2277,7 +2296,7 @@ def test_toss_safe_abort_releases_pretilt_hold_last_when_raised(monkeypatch):
     """Tier 8b SAFE_ABORT: catch/pretilt_hold released LAST of all, iff raised —
     it outlives the whole teardown (same reason as prime_hold)."""
     node = ReloadCoordinatorNode()
-    node._toss_pretilt_hold_raised = True
+    node._toss_committed.pretilt_hold_raised = True
     monkeypatch.setattr(time, 'sleep', lambda *a, **k: None)
     order = []
     monkeypatch.setattr(node, '_publish_catch_armed',
@@ -2298,11 +2317,11 @@ def test_toss_safe_abort_releases_pretilt_hold_last_when_raised(monkeypatch):
 
 
 def test_toss_terminals_skip_pretilt_release_when_not_raised(monkeypatch):
-    """8a (or an 8b goal that never reached PREPARE): _toss_pretilt_hold_raised
+    """8a (or an 8b goal that never reached PREPARE): ``pretilt_hold_raised``
     stays False, so the terminals NEVER publish on catch/pretilt_hold — the 8a
     terminal publish sequence is byte-identical to Phase 1."""
     node = ReloadCoordinatorNode()
-    assert node._toss_pretilt_hold_raised is False
+    assert node._toss_committed.pretilt_hold_raised is False
     pretilt = []
     monkeypatch.setattr(time, 'sleep', lambda *a, **k: None)
     monkeypatch.setattr(node, '_arm_catch', lambda a: True)
@@ -2565,7 +2584,7 @@ def test_a_session_cycle_clamps_the_windows_to_its_own_next_release():
     session = ts.TossSessionSequencer(num_throws=3, dwell_time_s=1.5,
                                       throw_delay_s=5.0)
     session.start(now)
-    seq = node._build_toss_cycle((0.0, 0.0, 170.0), 0.8, 5.0, 0.0)
+    seq, _ = node._build_toss_cycle((0.0, 0.0, 170.0), 0.8, 5.0, 0.0)
     node._set_toss_next_cycle_perf(seq, session)
     landing = seq.t_release + seq.flight_time_s
     rel, land = node._expected_next_cycle_perf()
@@ -2575,6 +2594,88 @@ def test_a_session_cycle_clamps_the_windows_to_its_own_next_release():
     # the cycle that owns it (the arm/disarm lifecycle bug class).
     node._clear_toss_cycle_state()
     assert node._expected_next_cycle_perf() == (None, None)
+
+
+#: Phase B1's field inventory: the node attribute that WAS, and the
+#: :class:`TossCycleState` field it became. Kept as data rather than as prose so
+#: the structural test below can enumerate it — a field that quietly comes back
+#: to the node is a field two coexisting cycles would silently share.
+_MOVED_ONTO_THE_CYCLE_OBJECT = {
+    '_toss_release_state': 'release_state',
+    '_toss_release_cmd': 'release_cmd',
+    '_toss_aim': 'aim',
+    '_toss_landing_global_mm': 'landing_global_mm',
+    '_toss_platform_target_mm': 'platform_target_mm',
+    '_toss_positioning_move': 'positioning_move',
+    '_toss_waiver': 'waiver',
+    '_toss_prepare_pending': 'prepare_pending',
+    '_toss_throw_dispatched': 'throw_dispatched',
+    '_toss_stroke_seen': 'stroke_seen',
+    '_toss_track_confirmed': 'track_confirmed',
+    '_toss_pretilt_hold_raised': 'pretilt_hold_raised',
+    '_toss_announced_reach': 'announced_reach',
+    '_toss_next_release_perf': 'next_release_perf',
+    '_toss_next_landing_perf': 'next_landing_perf',
+    '_toss_record_announce': 'record_announce',
+}
+
+#: The node attributes that DELIBERATELY did not move, each with the reason it
+#: cannot: the first four span cycles by design, and the last three are shared
+#: verbatim with the RELOAD path, which has no toss cycle to carry them.
+_STAYS_ON_THE_NODE = (
+    '_prev_announced_ball_id',      # census D6 — spans cycles by design
+    '_toss_prev_landing_perf',      # the arrival boundary's cross-cycle latch,
+    '_toss_cycle_landing_perf',     #   reset per SESSION, never per cycle
+    '_ball_possession',             # the latch survives across cycles
+    '_announced_ball_id',           # shared with the reload observation builder
+    '_preexisting_flight_ids',      #   ... and written by the reload paths
+    '_catch_vel_scale',             # a ball-op-wide knob, not a toss one
+)
+
+
+def test_per_cycle_state_lives_on_the_cycle_object_not_the_node():
+    """Phase B1's whole point, made mechanical.
+
+    Every field in ``_MOVED_ONTO_THE_CYCLE_OBJECT`` used to be a node global
+    written once by ``_build_toss_cycle``. Two coexisting cycles — the two-slot
+    pipeline this phase clears the way for — would silently SHARE every one of
+    them: cycle k+1's build would overwrite the release state cycle k is still
+    flying on, and the sticky release-evidence latches would cross-contaminate
+    in both directions. So the invariant is structural rather than a matter of
+    discipline: after a cycle has been built AND after it has been torn down, no
+    per-cycle name may exist on the node at all.
+
+    ``hasattr`` is the mechanism because it catches the failure that matters —
+    an assignment somewhere re-creating the attribute — which a class-dict
+    inspection would miss (these were always instance attributes) and which
+    checking only the dataclass would miss too."""
+    now = 100.0
+    node = _toss_ready_node(now)
+    fields = {f.name for f in dataclasses.fields(rcn.TossCycleState)}
+
+    # Before any cycle: the node carries an EMPTY committed slot, never None, so
+    # nothing downstream needs a None branch it did not need before.
+    assert isinstance(node._toss_committed, rcn.TossCycleState)
+
+    seq, state = node._build_toss_cycle((0.0, 0.0, 170.0), 0.8, 5.0, 0.0)
+    assert isinstance(state, rcn.TossCycleState)
+    assert node._toss_committed is state       # ... and it IS the committed slot
+    assert seq is node._active_seq
+
+    for old, new in sorted(_MOVED_ONTO_THE_CYCLE_OBJECT.items()):
+        assert new in fields, f'{old} moved to a field TossCycleState lacks'
+        assert not hasattr(node, old), (
+            f'{old} is back on the node — two live cycles would share it')
+
+    node._clear_toss_cycle_state()
+    for old in sorted(_MOVED_ONTO_THE_CYCLE_OBJECT):
+        assert not hasattr(node, old), f'{old} reappeared at teardown'
+
+    # The exclusions are as deliberate as the moves: each of these is read
+    # ACROSS a cycle boundary (or by the reload path, which has no cycle), so a
+    # per-cycle home would delete exactly the number its next reader needs.
+    for kept in _STAYS_ON_THE_NODE:
+        assert hasattr(node, kept), f'{kept} must stay on the node'
 
 
 def test_the_previous_cycles_landing_is_the_number_that_cycle_judged_against():
@@ -2596,12 +2697,12 @@ def test_the_previous_cycles_landing_is_the_number_that_cycle_judged_against():
     session.start(now)
 
     assert node._expected_prev_landing_perf() is None       # nothing landed yet
-    first = node._build_toss_cycle((0.0, 0.0, 170.0), 0.8, 5.0, 0.0)
+    first, _ = node._build_toss_cycle((0.0, 0.0, 170.0), 0.8, 5.0, 0.0)
     node._set_toss_next_cycle_perf(first, session)
     assert node._expected_prev_landing_perf() is None       # ... still the first
     first_landing = first.landing_perf
 
-    second = node._build_toss_cycle((0.0, 0.0, 170.0), 0.8, 5.0, 0.0)
+    second, _ = node._build_toss_cycle((0.0, 0.0, 170.0), 0.8, 5.0, 0.0)
     node._set_toss_next_cycle_perf(second, session)
     # The IDENTITY, not merely the value: `landing_perf` is what `observe` was
     # given as `landing_t` for cycle 1.
@@ -2616,7 +2717,7 @@ def test_the_previous_cycles_landing_is_the_number_that_cycle_judged_against():
     # grep rather than two assignments buried in a goal handler.
     node._reset_toss_arrival_boundary()
     assert node._expected_prev_landing_perf() is None
-    third = node._build_toss_cycle((0.0, 0.0, 170.0), 0.8, 5.0, 0.0)
+    third, _ = node._build_toss_cycle((0.0, 0.0, 170.0), 0.8, 5.0, 0.0)
     node._set_toss_next_cycle_perf(third, session)
     assert node._expected_prev_landing_perf() is None, (
         'a reset session starts its first cycle with no predecessor')
@@ -2636,7 +2737,7 @@ def test_the_last_intended_cycle_is_not_clamped():
     assert more.intends_another_cycle is True
     now = 100.0
     node = _toss_ready_node(now)
-    seq = node._build_toss_cycle((0.0, 0.0, 170.0), 0.8, 5.0, 0.0)
+    seq, _ = node._build_toss_cycle((0.0, 0.0, 170.0), 0.8, 5.0, 0.0)
     node._set_toss_next_cycle_perf(seq, session)
     assert node._expected_next_cycle_perf() == (None, None)
 
@@ -2663,7 +2764,7 @@ def test_a_colocated_chain_skips_the_no_op_positioning_move():
     calls = []
     node._go_to_pose_cli.wait_for_service = lambda timeout_sec=None: (
         calls.append('service') or True)
-    seq = node._build_toss_cycle((0.0, 0.0, 170.0), 0.8, 5.0, 0.0)
+    seq, _ = node._build_toss_cycle((0.0, 0.0, 170.0), 0.8, 5.0, 0.0)
     seq._position_dispatched = True
     node._position_platform_for_toss(seq)
     assert calls == []                                  # nothing was commanded
@@ -2695,10 +2796,10 @@ def test_the_positioning_decision_is_taken_once_and_reused():
     calls = []
     node._go_to_pose_cli.wait_for_service = lambda timeout_sec=None: (
         calls.append('service') or True)
-    seq = node._build_toss_cycle((0.0, 0.0, 170.0), 0.8, 5.0, 0.0)
+    seq, _ = node._build_toss_cycle((0.0, 0.0, 170.0), 0.8, 5.0, 0.0)
     assert seq.positioning_move_expected is False        # the skip is expected
     with node._lock:
-        assert node._toss_positioning_move is False
+        assert node._toss_committed.positioning_move is False
     # The platform moves after the decision was taken. A re-derivation here
     # would command the move under a budget that assumed the skip.
     with node._lock:
@@ -2726,14 +2827,14 @@ def test_a_cycle_that_must_move_charges_the_moving_budget_at_CHECKING(monkeypatc
     monkeypatch.setattr(hw, 'JB_OP_TOSS_TIER', '8a')
     now = time.perf_counter()
     node = _toss_ready_node(now, commanded_pos=(0.0, 60.0, 170.0))
-    seq = node._build_toss_cycle((0.0, 0.0, 170.0), 0.8, 5.0, 0.0)
+    seq, _ = node._build_toss_cycle((0.0, 0.0, 170.0), 0.8, 5.0, 0.0)
     assert seq.positioning_move_expected is True
     assert seq.min_throw_delay_for_cycle_s == pytest.approx(
         seq.min_event_delay_for_throw_s + pre_dispatch_budget_s(True)
         + FLOOR_REPRESENTATION_SLACK_S, abs=1e-12)
     # …and the same goal from the pose it throws from charges the skip budget.
     here = _toss_ready_node(now, commanded_pos=(0.0, 0.0, 170.0))
-    chained = here._build_toss_cycle((0.0, 0.0, 170.0), 0.8, 5.0, 0.0)
+    chained, _ = here._build_toss_cycle((0.0, 0.0, 170.0), 0.8, 5.0, 0.0)
     assert chained.min_throw_delay_for_cycle_s == pytest.approx(
         chained.min_event_delay_for_throw_s + pre_dispatch_budget_s(False)
         + FLOOR_REPRESENTATION_SLACK_S, abs=1e-12)
@@ -2767,7 +2868,7 @@ def test_a_session_cycle_that_must_move_is_GRANTED_the_lead_a_single_toss_is_ref
     now = time.perf_counter()
     delay = 0.45
     away = _toss_ready_node(now, commanded_pos=(0.0, 60.0, 170.0))
-    single = away._build_toss_cycle((0.0, 0.0, 170.0), 0.8, delay, 0.0)
+    single, _ = away._build_toss_cycle((0.0, 0.0, 170.0), 0.8, delay, 0.0)
     assert single.throw_delay_s == pytest.approx(delay)     # untouched
     now2 = time.perf_counter()
     single.start(now2)
@@ -2775,7 +2876,7 @@ def test_a_session_cycle_that_must_move_is_GRANTED_the_lead_a_single_toss_is_ref
     assert d.done and d.result.outcome.startswith('REJECTED_CANT_MAKE_LEAD')
 
     away2 = _toss_ready_node(now, commanded_pos=(0.0, 60.0, 170.0))
-    chained = away2._build_toss_cycle((0.0, 0.0, 170.0), 0.8, delay, 0.0,
+    chained, _ = away2._build_toss_cycle((0.0, 0.0, 170.0), 0.8, delay, 0.0,
                                       delay_is_cadence=True)
     assert chained.throw_delay_s > delay
     assert chained.throw_delay_s == pytest.approx(
@@ -2784,7 +2885,7 @@ def test_a_session_cycle_that_must_move_is_GRANTED_the_lead_a_single_toss_is_ref
     # A session cycle that DOES take the skip keeps the operator's number
     # exactly — the grant is for the move, not a blanket raise.
     here = _toss_ready_node(now, commanded_pos=(0.0, 0.0, 170.0))
-    kept = here._build_toss_cycle((0.0, 0.0, 170.0), 0.8, delay, 0.0,
+    kept, _ = here._build_toss_cycle((0.0, 0.0, 170.0), 0.8, delay, 0.0,
                                   delay_is_cadence=True)
     assert kept.throw_delay_s == pytest.approx(delay)
 
@@ -2799,7 +2900,7 @@ def test_the_lead_grant_never_launders_an_unset_or_negative_delay(delay,
     monkeypatch.setattr(hw, 'JB_OP_TOSS_TIER', '8a')
     now = time.perf_counter()
     node = _toss_ready_node(now, commanded_pos=(0.0, 60.0, 170.0))
-    seq = node._build_toss_cycle((0.0, 0.0, 170.0), 0.8, delay, 0.0,
+    seq, _ = node._build_toss_cycle((0.0, 0.0, 170.0), 0.8, delay, 0.0,
                                  delay_is_cadence=True)
     expected = (DEFAULT_TOSS_THROW_DELAY_S if delay == 0.0 else delay)
     assert seq.throw_delay_s == pytest.approx(expected)
@@ -2963,15 +3064,15 @@ def test_pretilt_hold_is_raised_on_every_cycle_including_a_level_one():
     from jugglebot.toss_sequencer import ACTION_PREPARE_CATCH, TossDecision
     now = 100.0
     node = _toss_ready_node(now)
-    seq = node._build_toss_cycle((0.0, 0.0, 170.0), 0.8, 5.0, 0.0)
+    seq, _ = node._build_toss_cycle((0.0, 0.0, 170.0), 0.8, 5.0, 0.0)
     assert node._release_is_tilted(node._toss_commanded_release()) is False
-    node._build_toss_observations = lambda _now: None
+    node._build_toss_observations = lambda _now, _state=None: None
     seq.step = lambda _now, _obs: TossDecision(
         done=False, phase='PREPARING', action=ACTION_PREPARE_CATCH, result=None)
     node._step_toss_sequence(seq, now)
     published = [m.data for m in node._publishers['catch/pretilt_hold'].published]
     assert published == [True]
-    assert node._toss_pretilt_hold_raised is True
+    assert node._toss_committed.pretilt_hold_raised is True
 
 
 def test_the_unconditional_pretilt_hold_is_still_released_by_every_teardown():
@@ -2982,7 +3083,7 @@ def test_the_unconditional_pretilt_hold_is_still_released_by_every_teardown():
     now = 100.0
     for teardown in ('_toss_stay', '_toss_recenter', '_toss_safe_abort'):
         node = _toss_ready_node(now)
-        node._toss_pretilt_hold_raised = True
+        node._toss_committed.pretilt_hold_raised = True
         getattr(node, teardown)()
         published = [m.data for m
                      in node._publishers['catch/pretilt_hold'].published]
@@ -3202,7 +3303,7 @@ def test_the_cycle_loop_feeds_the_census_and_drops_only_the_terminal(monkeypatch
                      result=TossResult(True, 'CAUGHT')),
     ]
     monkeypatch.setattr(node, '_step_toss_sequence',
-                        lambda seq, now, gh: script.pop(0))
+                        lambda seq, now, gh, state=None: script.pop(0))
     seen = {}
     monkeypatch.setattr(
         node, '_log_toss_outcome',
