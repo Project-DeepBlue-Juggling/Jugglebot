@@ -65,6 +65,11 @@ Usage::
                                                           #   cadence per flight
     python tools/probes/cadence_rung_check.py --grid      # + accept-implies-flies
                                                           #   over the whole grid
+    python tools/probes/cadence_rung_check.py --pipeline  # + the PIPELINED floors
+                                                          #   (plan B, § 2.7/§ 6.2)
+    python tools/probes/cadence_rung_check.py --pipeline --loop-period 0.070
+                                                          #   … at the MEASURED
+                                                          #   loop bound (P1)
 
 Read-only: constructs FSMs in-process, commands nothing, touches no hardware and
 no ROS graph.  Outputs to stdout only (see ``tools/probes/README.md``).
@@ -99,11 +104,27 @@ per-tick work is charged four times over in the skip budget, so the levers are
 real ones — fewer blocking service calls in the PREPARE bundle, a cheaper
 observation build — and each of them is measurable by re-running the grep this
 constant was cut from.  Relaxing the floor instead just re-buys the abort.
+
+**``--pipeline`` (2026-08-27, Phase B0 / probe P3 of
+``plans/active/toss-pipelined-preamble.md``).**  The other way back is to stop
+spending the preamble on the critical path at all: stage cycle ``k+1``'s
+CHECKING / POSITIONING / PREPARING inside cycle ``k``'s flight and charge the
+cadence only the COMMIT tick.  That mode models the plan's § 2.7 floors and
+§ 6.2 rungs, so the milestone can be argued against arithmetic before any of
+B1–B4 is written.
+
+⚠ **It is a MODEL, and B4 owns the reconciliation.**  Neither
+``commit_budget_s`` nor the pipelined branch of ``required_dwell_s`` exists in
+``ros_ws/`` yet — see :func:`commit_budget_s` for the exact obligation.  Every
+term it *can* import (the dispatch budget, the handoff margin, the hand floor,
+the loop period) is imported from the shipped code and never restated, so only
+the two new expressions are the probe's own.
 """
 
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import sys
 
@@ -122,7 +143,8 @@ from jugglebot.motion.trajectory import hand_stroke              # noqa: E402
 from jugglebot.motion.trajectory.toss_release import (           # noqa: E402
     apex_height_from_flight_time, flight_time_from_height)
 from jugglebot.toss_sequencer import (                           # noqa: E402
-    FLIGHT_TIME_MAX_S, FLIGHT_TIME_MIN_S, NODE_LOOP_PERIOD_S)
+    CATCH_CONFIRM_WINDOW_S, FLIGHT_TIME_MAX_S, FLIGHT_TIME_MIN_S,
+    FLOOR_REPRESENTATION_SLACK_S, NODE_LOOP_PERIOD_S)
 
 # THE ITERATION COST, IMPORTED — never restated here.
 #
@@ -207,6 +229,43 @@ LADDER_PRE_AUDIT = [
     ('R5',       0.31, 0.60, 0.40),
     ('R5-prime', 0.31, 0.49, 0.35),
 ]
+
+
+#: The § 6.2 pipelined ladder — ``(name, throw_height_m, dwell, delay)``.
+#:
+#: ``throw_delay_s`` is **0.0** at every pipelined rung and that is not a
+#: placeholder: under B2/B4 the release is scheduled ABSOLUTELY
+#: (``release_at_perf``) and the delay field stops being the cadence lever
+#: (plan § 2.6).  The dwell steps are the owner's: 0.76 -> 0.65 -> 0.55 -> 0.50
+#: -> 0.45, at the two milestone heights.  P3 and P4 are the milestone; P5 is its
+#: lower edge and is deliberately last.
+PIPELINED_LADDER = [
+    ('P0', 1.30, 0.76, 0.0),
+    ('P1', 1.30, 0.65, 0.0),
+    ('P2', 1.30, 0.55, 0.0),
+    ('P3', 1.30, 0.50, 0.0),
+    ('P4', 1.00, 0.45, 0.0),
+    ('P5', 1.00, 0.43, 0.0),
+]
+
+#: The § 1.1 physics milestone: a two-balls-in-one-hand dwell ratio of 0.65 of
+#: the hand period gives ``D = 0.325·T / 0.675``.  Stated as the ratio rather
+#: than as four dwell literals so a different ratio re-cuts the whole table.
+MILESTONE_DWELL_RATIO = 0.325 / 0.675
+
+#: The heights § 1.2 / § 2.7 tabulate. The middle two are the milestone.
+MILESTONE_HEIGHTS = (0.50, 0.80, 1.00, 1.30)
+
+#: The measured seat-edge bias — the empty->held cup edge, past the SCHEDULED
+#: landing: **median +183.9 ms**, band [+87.6, +554.7] ms, n = 33 over four
+#: post-FW-14 bags (``logbook/2026-08-24-arrival-band-remeasure.md``).
+#:
+#: It is NOT part of any floor and must never become one.  A floor is what the
+#: gates promise; this is what the PLANT does, and § 1.4's whole point is that
+#: the two are different claims scored separately.  It enters this probe in
+#: exactly one place — the predicted ``commit_slip_s`` column — and
+#: :func:`pipelined_grid_violations` deliberately does not consult it.
+MEASURED_SEAT_EDGE_MEDIAN_S = 0.1839
 
 
 def flight_for_height(h_m: float) -> float:
@@ -438,6 +497,412 @@ def grid_violations(*, verbose: bool = False):
     return out
 
 
+# ── THE PIPELINED MODEL (plan B § 2.2-2.7) ───────────────────────────────────
+#
+# Everything below models a machine that does not exist yet.  B4 lands it; this
+# is what B4 is being asked to reproduce.
+
+
+def commit_budget_s(event_vel_mps: float, min_event_delay_s: float = 0.0,
+                    loop_period_s: float = NODE_LOOP_PERIOD_S) -> float:
+    """Cycle COMMIT -> release, in seconds — the pipelined sibling of
+    ``pre_dispatch_budget_s`` + the dispatch budget.
+
+    ⚠ **THIS FUNCTION DOES NOT EXIST IN ``ros_ws/`` YET.**  Plan
+    ``toss-pipelined-preamble.md`` § 2.7 specifies it as a new function in
+    ``toss_sequencer.py``, placed next to ``pre_dispatch_budget_s`` so an edit to
+    either sees the other, and **workstream B4 must reconcile the two**: when it
+    lands, this body becomes ``return ts.commit_budget_s(...)`` and the
+    arithmetic below is deleted, exactly as the ``NODE_TICK_S`` literal this
+    module used to carry was deleted in favour of an import.  Until then a drift
+    between the probe and the shipped floor is possible, which is precisely the
+    class of defect the 2026-08-22 audit found (the session's mirror and the
+    cycle's gate were two expressions of one floor and had drifted).
+
+    **ONE loop period, not four.**  Under the pipeline the announce tick, the
+    PREPARE tick and the deferred-bundle tick have already run inside the
+    PREVIOUS cycle's flight, and the >=1-tick armed->announce gap is satisfied by
+    the session-scoped latch (invariant S6) rather than by a tick.  The one
+    period charged is the COMMIT tick itself, which is **polled**: the iteration
+    that crosses ``commit_at`` may be up to one full loop period late, and that
+    lateness comes straight off the lead the release-window guard measures.
+
+    Note what is NOT here and is in ``min_throw_delay_for_release_s``: the
+    ``max(TOSS_DISPATCH_DEBOUNCE_S, ...)`` clamp.  That constant is a goal-storm
+    debounce on ``throw_delay_s``, an operator-facing field; the commit budget is
+    an internal schedule offset that no operator types, so clamping it would
+    charge a 0.10 s floor for a hazard that is not on this path.  § 2.7's sketch
+    omits it too — recorded here so B4 omits it deliberately rather than by
+    transcription.
+    """
+    override = float(min_event_delay_s)
+    dispatch_s = (override if override > 0.0
+                  else hand_stroke.min_throw_event_delay_s(event_vel_mps))
+    return dispatch_s + float(loop_period_s) + FLOOR_REPRESENTATION_SLACK_S
+
+
+def _session(T: float, dwell_s: float = 99.0, delay_s: float = 1.0,
+             *, ilc_trim: bool = False):
+    """A session object built only to read its derived properties."""
+    return tsess.TossSessionSequencer(
+        num_throws=5, dwell_time_s=float(dwell_s), throw_delay_s=float(delay_s),
+        flight_time_s=float(T), ilc_speed_trim_possible=bool(ilc_trim))
+
+
+def pipelined_terms(T: float, *, ilc_trim: bool = False,
+                    loop_period_s: float = NODE_LOOP_PERIOD_S,
+                    budget_loop_s=None) -> dict:
+    """Every term of the § 2.7 floor table at one flight time.
+
+    Three of the four are read off the SHIPPED session properties
+    (``floor_event_vel_mps``, ``handoff_margin_s``, ``hand_floor_dwell_s``) and
+    only ``commit`` is the probe's own — see :func:`commit_budget_s`.
+
+    ``budget_loop_s`` separates *the period the loop actually runs at* from
+    *the period the budget CHARGES for it*.  They are the same number on a
+    correct build and defaulting one to the other says so; splitting them is
+    what lets the grid's counter-check ask "what if the commit budget forgot
+    the polled tick" without also pretending the machine stopped polling.
+    """
+    sess = _session(T, ilc_trim=ilc_trim)
+    v = sess.floor_event_vel_mps
+    dispatch = hand_stroke.min_throw_event_delay_s(v)
+    charge = loop_period_s if budget_loop_s is None else budget_loop_s
+    commit = commit_budget_s(v, loop_period_s=charge)
+    handoff = float(sess.handoff_margin_s)
+    hand_floor = float(sess.hand_floor_dwell_s)
+    return {
+        'T': float(T), 'v': v, 'dispatch': dispatch, 'commit': commit,
+        'handoff': handoff, 'hand_floor': hand_floor,
+        'park_reentry': hand_stroke.catch_park_reentry_s(
+            v, float(sess.catch_vel_scale)),
+        'floor': max(commit + handoff, hand_floor),
+        'plumbing_binds': (commit + handoff) >= hand_floor,
+    }
+
+
+def pipelined_required_dwell(T: float, *, ilc_trim: bool = False,
+                             loop_period_s: float = NODE_LOOP_PERIOD_S,
+                             budget_loop_s=None) -> float:
+    """``required_dwell_s``'s pipelined branch (§ 2.7):
+    ``max(commit_budget_s(v) + handoff_margin_s, hand_floor_dwell_s)``."""
+    return pipelined_terms(T, ilc_trim=ilc_trim, loop_period_s=loop_period_s,
+                           budget_loop_s=budget_loop_s)['floor']
+
+
+def pipelined_session_accepts(T: float, dwell_s: float, *,
+                              ilc_trim: bool = False,
+                              loop_period_s: float = NODE_LOOP_PERIOD_S,
+                              budget_loop_s=None):
+    """The pipelined SESSION gate — ``None`` on accept, else its reject code.
+
+    Every gate of the shipped ``_checking_reject`` except the delay one, which
+    the pipeline retires: with an absolute ``release_at_perf`` (§ 2.6)
+    ``throw_delay_s`` is 0.0 at every § 6.2 rung and
+    ``REJECTED_THROW_DELAY`` would refuse the whole ladder.  **What replaces that
+    gate is a B4 decision this probe does not make**; it is recorded here as a
+    modelling assumption rather than silently dropped, because a retired gate
+    that nothing replaces is how the 0.160 s got charged twice in the first
+    place.
+    """
+    sess = _session(T, dwell_s, 0.0, ilc_trim=ilc_trim)
+    if sess.num_throws < 1 or sess.num_throws > sess.max_throws:
+        return 'REJECTED_NUM_THROWS'
+    if not math.isfinite(float(dwell_s)) or float(dwell_s) < 0.0:
+        return 'REJECTED_DWELL'
+    if float(dwell_s) < pipelined_required_dwell(
+            T, ilc_trim=ilc_trim, loop_period_s=loop_period_s,
+            budget_loop_s=budget_loop_s):
+        return 'REJECTED_DWELL'
+    if sess.num_throws >= 2 and not sess.chain_site_reachable:
+        return 'REJECTED_CHAIN_UNREACHABLE'
+    return None
+
+
+def commit_tick(T: float, dwell_s: float, *, ilc_trim: bool = False,
+                loop_period_s: float = NODE_LOOP_PERIOD_S,
+                seat_edge_s: float = 0.0, poll_lateness_s=None,
+                budget_loop_s=None):
+    """Model ONE commit, from the previous cycle's landing at ``t = 0``.
+
+    Returns ``(verdict, slip_s, commit_at_s, release_at_s)``, all on a clock
+    whose origin is that landing — so ``release_at_s`` **is** the ACHIEVED dwell,
+    a different claim from the commanded one (§ 1.4; the two must not be
+    collapsed).  ``verdict`` is ``'FLIES'``, ``'SLIP_UNBOUNDED'`` when the wait
+    runs past ``CATCH_CONFIRM_WINDOW_S`` (cycle ``k`` is MISSED by then and the
+    staged slot is discarded — § 2.4.3), or ``'ABORTED_CANT_MAKE_RELEASE'``.
+
+    The § 2.4.2 gate, in its own order, with the two evidence instants modelled:
+
+    * ``hand_parked`` becomes true at ``catch_park_reentry_s`` past the landing
+      — the same quantity ``handoff_margin_s`` maxes over, so the floor is
+      supposed to cover it and a wait here is a **drift between floor and gate**;
+    * ``ball_seated`` becomes true at ``seat_edge_s`` past the landing — a
+      measured PLANT property that no floor claims to cover, so a wait here is
+      the § 1.4 prediction, not a defect.  Default 0.0 (the fastest legal
+      machine, the doctrine ``_observations`` already uses); pass the measured
+      median to get the predicted ``commit_slip_s``.
+
+    ``slip_s`` is § 2.4.3's quantity — ``max(0, evidence − commit_at)``, the
+    continuous one the plan predicts as 0 ms at ``h = 1.3`` and ~60 ms at
+    ``h = 1.0``.  ``release_at_s`` is the POLLED consequence of it and is
+    therefore coarser: a slipped commit lands on the next tick boundary, so the
+    achieved dwell rounds UP by up to one loop period.  Keeping the two separate
+    is deliberate — the plan's § 1.4 achieved-period table is the continuous
+    reading and does not carry that quantisation.
+
+    ``poll_lateness_s`` is how late the iteration crossing ``commit_at`` runs.
+    It defaults to a full loop period, the WORST case, because that is exactly
+    what :func:`commit_budget_s` charges and a bound argument evaluated at the
+    best case is not a bound argument.  The truth is uniform on ``[0, loop)`` —
+    the loop's phase is inherited from the previous cycle and nothing aligns it
+    to ``commit_at``.  It is **not** the knob for § 1.4's continuous reading:
+    once the commit waits at all, the wait quantises onto the tick grid whatever
+    phase it started from, so ``poll_lateness_s = 0`` still rounds up.  § 1.4's
+    number is the ``loop -> 0`` limit, ``max(dwell, evidence + commit_budget)``,
+    and :func:`print_pipeline` computes it in closed form for that reason.
+    """
+    terms = pipelined_terms(T, ilc_trim=ilc_trim, loop_period_s=loop_period_s,
+                            budget_loop_s=budget_loop_s)
+    loop = float(loop_period_s)
+    if loop <= 0.0:
+        raise ValueError('the loop period must be positive — a polled machine '
+                         'that never advances cannot be modelled')
+    late = loop if poll_lateness_s is None else float(poll_lateness_s)
+    commit_at = float(dwell_s) - terms['commit']
+    # The SAME representation cover FLOOR_REPRESENTATION_SLACK_S buys the delay
+    # floor, applied to the same shape of expression. At a dwell sitting exactly
+    # on the pipelined floor, `commit_at` is `(commit + handoff) - commit`, which
+    # is `handoff` in real arithmetic and up to a few ULPs below it in binary —
+    # measured 5.6e-17 s on the grid. A bare `<` turns that into a whole slipped
+    # loop period, i.e. the probe would report a 40 ms defect caused by the bit
+    # pattern. 1e-6 s is ten orders of magnitude above the error and four below
+    # the smallest real quantity here, so it cannot mask a genuine wait.
+    evidence_at = (max(terms['park_reentry'], float(seat_edge_s))
+                   - FLOOR_REPRESENTATION_SLACK_S)
+    slip = max(0.0, evidence_at - commit_at)
+    now = commit_at + late
+    t_release = float(dwell_s)
+    while now < evidence_at:
+        # SLIP: the commit re-arms on the next iteration and _t_release moves
+        # with it (§ 2.6 rule 2 — commit_at is derived FROM the release), so the
+        # released ball's own schedule stays self-consistent and the
+        # release-window guard cannot be broken by a slip: now and t_release
+        # advance together. The bound is cycle k's own terminal deadline.
+        if now > CATCH_CONFIRM_WINDOW_S:
+            return 'SLIP_UNBOUNDED', slip, commit_at, t_release
+        now += loop
+        t_release = now + terms['commit']
+    if t_release - now < terms['dispatch']:
+        return 'ABORTED_CANT_MAKE_RELEASE', slip, commit_at, t_release
+    return 'FLIES', slip, commit_at, t_release
+
+
+def pipelined_accept_implies_flies(T: float, dwell_s: float, *,
+                                   ilc_trim: bool = False,
+                                   loop_period_s: float = NODE_LOOP_PERIOD_S,
+                                   budget_loop_s=None):
+    """THE contract, pipelined, at one grid point. ``None`` when consistent.
+
+    Two strengths, both real:
+
+    * a dwell the session ACCEPTS must never reach ``ABORTED_CANT_MAKE_RELEASE``
+      — the same terminal, with the same cost (latch up, announcement out, hand
+      committed), reached from the same place;
+    * and it must not force a slip on a HEALTHY machine.  ``handoff_margin_s`` is
+      in the pipelined floor exactly so the commit tick lands after the hand is
+      back in the park band; if an accepted dwell still slips on that gate, the
+      floor and the gate have drifted apart, which is the 2026-08-22 finding's
+      shape rather than a cadence the plant simply cannot hold.
+
+    The seat edge is deliberately absent (see :data:`MEASURED_SEAT_EDGE_MEDIAN_S`).
+    """
+    if pipelined_session_accepts(T, dwell_s, ilc_trim=ilc_trim,
+                                 loop_period_s=loop_period_s,
+                                 budget_loop_s=budget_loop_s) is not None:
+        return None
+    verdict, slip, _, _ = commit_tick(T, dwell_s, ilc_trim=ilc_trim,
+                                      loop_period_s=loop_period_s,
+                                      budget_loop_s=budget_loop_s)
+    if verdict != 'FLIES':
+        return 'session ACCEPTED but the commit {}'.format(verdict)
+    if slip > 0.0:
+        return ('session ACCEPTED but the commit slips {:.4f} s on the park '
+                'gate the floor is supposed to cover'.format(slip))
+    return None
+
+
+def pipelined_grid_violations(*, loop_period_s: float = NODE_LOOP_PERIOD_S,
+                              budget_loop_s=None,
+                              verbose: bool = False) -> list:
+    """Sweep ``(T, dwell, ilc)`` for pipelined contract violations.
+
+    Same shape as :func:`grid_violations` and same reason for the shape: coarse
+    in ``T``, fine around the FLOOR, because a dwell seconds clear of every gate
+    cannot expose a disagreement between two gates.
+    """
+    out = []
+    T = float(FLIGHT_TIME_MIN_S)
+    while T <= float(FLIGHT_TIME_MAX_S) + 1e-9:
+        for ilc_trim in (False, True):
+            floor = pipelined_required_dwell(T, ilc_trim=ilc_trim,
+                                             loop_period_s=loop_period_s,
+                                             budget_loop_s=budget_loop_s)
+            for dwell in (floor - 0.001, floor, floor + 0.001, floor + 0.02,
+                          floor + 0.10, floor + 0.50, 1.50, 5.60):
+                if dwell <= 0.0:
+                    continue
+                why = pipelined_accept_implies_flies(
+                    T, dwell, ilc_trim=ilc_trim, loop_period_s=loop_period_s,
+                    budget_loop_s=budget_loop_s)
+                if why is not None:
+                    out.append((T, dwell, ilc_trim, why))
+                    if verbose:
+                        print('  VIOLATION T={:.4f} dwell={:.4f} ilc_trim={}: '
+                              '{}'.format(T, dwell, ilc_trim, why))
+        T += 0.05
+    return out
+
+
+def fastest_pipelined_at(T: float, *, ilc_trim: bool = False,
+                         loop_period_s: float = NODE_LOOP_PERIOD_S):
+    """``(dwell, period)`` — the fastest legal PIPELINED cadence at this flight."""
+    dwell = pipelined_required_dwell(T, ilc_trim=ilc_trim,
+                                     loop_period_s=loop_period_s)
+    return dwell, dwell + float(T)
+
+
+def milestone_dwell(T: float) -> float:
+    """§ 1.1's two-in-one-hand dwell at this flight time."""
+    return MILESTONE_DWELL_RATIO * float(T)
+
+
+def print_pipeline(loop_period_s: float, seat_edge_s: float,
+                   *, frontier: bool = False, grid: bool = False) -> bool:
+    """The § 2.7 floor table, the § 6.2 rungs, and optionally the frontier and
+    the grid. Returns True when every § 6.2 rung clears its floor."""
+    print()
+    print('=' * 78)
+    print('THE PIPELINED MODEL — plan toss-pipelined-preamble.md § 2.7 / § 6.2')
+    print('commit_budget_s = dispatch + {:.3f} s (ONE loop period) + slack '
+          '{:.0e}'.format(loop_period_s, FLOOR_REPRESENTATION_SLACK_S))
+    print('⚠ MODELLED HERE, NOT SHIPPED — B4 must reconcile (see '
+          'commit_budget_s.__doc__)')
+
+    print()
+    print('§ 2.7 THE FLOOR TABLE — ILC artifact NOT loaded (the shipped machine)')
+    head = ('{:>5} {:>7} | {:>8} {:>8} {:>8} {:>9} | {:>9} {:>9} {:>10}'
+            .format('apex', 'T', 'dispatch', '+1 loop', 'handoff', 'handfloor',
+                    'floor', 'milestone', 'clearance'))
+    print(head)
+    print('-' * len(head))
+    for h in MILESTONE_HEIGHTS:
+        T = flight_for_height(h)
+        t = pipelined_terms(T, loop_period_s=loop_period_s)
+        target = milestone_dwell(T)
+        clear = target - t['floor']
+        print('{:>5.2f} {:>7.4f} | {:>8.4f} {:>8.4f} {:>8.4f} {:>9.4f} | '
+              '{:>9.4f} {:>9.4f} {:>+10.4f} {}'
+              .format(h, T, t['dispatch'], t['commit'], t['handoff'],
+                      t['hand_floor'], t['floor'], target, clear,
+                      '✓' if clear >= 0.0 else '✗'))
+    print('(serial comparison, same heights: dwell floor '
+          + ', '.join('{:.4f}'.format(
+              required_dwell(flight_for_height(h),
+                             session_floor_delay(flight_for_height(h))))
+              for h in MILESTONE_HEIGHTS) + ')')
+
+    print()
+    print('§ 6.2 THE RUNGS — modelled commit, seat edge {:.4f} s'
+          .format(seat_edge_s))
+    head = ('{:<5} {:>5} {:>7} {:>7} | {:>7} {:>9} | {:>10} {:>7} {:>8} {:>8} '
+            '{:>8} {:>6}'.format('rung', 'h', 'T', 'dwell', 'floor',
+                                 'clearance', 'session', 'slip', 'ach§1.4',
+                                 'ach@1T', 'period', 'tpm'))
+    print(head)
+    print('-' * len(head))
+    ok = True
+    for name, h, dwell, _delay in PIPELINED_LADDER:
+        T = flight_for_height(h)
+        floor = pipelined_required_dwell(T, loop_period_s=loop_period_s)
+        rej = pipelined_session_accepts(T, dwell, loop_period_s=loop_period_s)
+        verdict, slip, _, achieved = commit_tick(
+            T, dwell, loop_period_s=loop_period_s, seat_edge_s=seat_edge_s)
+        # § 1.4's reading: max(commanded, seat edge + commit budget), the
+        # loop-period -> 0 limit. NOT a poll-phase choice — the polled machine
+        # quantises to its own tick grid whatever phase it starts on.
+        terms = pipelined_terms(T, loop_period_s=loop_period_s)
+        continuous = max(float(dwell),
+                         max(terms['park_reentry'], seat_edge_s)
+                         + terms['commit'])
+        period = achieved + T
+        ok = ok and rej is None and verdict == 'FLIES'
+        print('{:<5} {:>5.2f} {:>7.4f} {:>7.4f} | {:>7.4f} {:>+9.4f} | '
+              '{:>10} {:>7.4f} {:>8.4f} {:>8.4f} {:>8.4f} {:>6.1f}  {}'
+              .format(name, h, T, dwell, floor, dwell - floor,
+                      rej or 'ACCEPT', slip, continuous, achieved, period,
+                      60.0 / period, verdict))
+    print()
+    print('PIPELINED LADDER: {}'.format(
+        'all rungs COMMIT' if ok else 'RED'))
+    print('  "slip" is § 2.4.3\'s continuous quantity, max(0, seat edge − '
+          'commit_at) — the\n  seat edge is a PLANT property, not a floor, and '
+          'pipelining does not remove it.')
+    print('  "ach§1.4" is the plan\'s continuous achieved dwell; "ach@1T" is '
+          'the same\n  machine POLLED at its worst tick phase. "period" uses '
+          'ach@1T (the bound).')
+
+    if frontier:
+        print()
+        print('THE PIPELINED FRONTIER — fastest legal cadence per flight time')
+        print('{:>7} {:>6} | {:>8} {:>8} {:>7} | {:>8} {:>8} {:>7}'
+              .format('T', 'apex', 'dwell', 'period', 'tpm',
+                      'dwell', 'period', 'tpm'))
+        print('{:>7} {:>6} | {:^25} | {:^25}'
+              .format('', '', 'aim DISARMED', 'ILC artifact LOADED'))
+        best = {}
+        T = float(FLIGHT_TIME_MIN_S)
+        while T <= float(FLIGHT_TIME_MAX_S) + 1e-9:
+            row = [T, apex_height_from_flight_time(T)]
+            for ilc in (False, True):
+                w, p = fastest_pipelined_at(T, ilc_trim=ilc,
+                                            loop_period_s=loop_period_s)
+                row += [w, p, 60.0 / p]
+                key = 'ilc' if ilc else 'disarmed'
+                if key not in best or p < best[key][0]:
+                    best[key] = (p, T, w)
+            print('{:>7.4f} {:>6.3f} | {:>8.4f} {:>8.4f} {:>7.1f} | '
+                  '{:>8.4f} {:>8.4f} {:>7.1f}'.format(*row))
+            T += 0.05
+        print()
+        for key in ('disarmed', 'ilc'):
+            p, T, w = best[key]
+            print('FASTEST PIPELINED {:<8} period {:.4f} s = {:.1f} throws/min '
+                  'at T {:.4f}, dwell {:.4f}'.format(key, p, 60.0 / p, T, w))
+
+    if grid:
+        print()
+        print('PIPELINED ACCEPT-IMPLIES-FLIES over the (T, dwell, ilc) grid')
+        bad = pipelined_grid_violations(loop_period_s=loop_period_s,
+                                        verbose=True)
+        print('{} violation(s) at the MODELLED floors'.format(len(bad)))
+        if bad:
+            ok = False
+        # …and the same sweep against a commit budget that FORGOT the polled
+        # tick — the machine still polls at `loop_period_s`, the BUDGET charges
+        # zero for it. That is the regression this model's +1 loop period exists
+        # to prevent, and non-zero here is the finding staying findable, exactly
+        # as LADDER_PRE_AUDIT keeps the 2026-08-22 one findable.
+        counter = pipelined_grid_violations(loop_period_s=loop_period_s,
+                                            budget_loop_s=0.0)
+        print('{} violation(s) with the loop period REMOVED from the commit '
+              'budget (must be non-zero)'.format(len(counter)))
+        if not counter:
+            print('  ⚠ the counter-check no longer reproduces its failure')
+            ok = False
+    return ok
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description=__doc__,
@@ -449,6 +914,18 @@ def main() -> int:
     ap.add_argument('--grid', action='store_true',
                     help='sweep (T, dwell, delay, aim) for accept-implies-flies '
                          'violations')
+    ap.add_argument('--pipeline', action='store_true',
+                    help='also model the PIPELINED floors (plan B § 2.7/§ 6.2) '
+                         '— combines with --frontier and --grid')
+    ap.add_argument('--loop-period', type=float, default=NODE_LOOP_PERIOD_S,
+                    help='loop period the PIPELINED model charges (default: the '
+                         'shipped NODE_LOOP_PERIOD_S). The measured chained '
+                         'bound is 0.070 s — tools/probes/toss_loop_census.py')
+    ap.add_argument('--seat-edge', type=float,
+                    default=MEASURED_SEAT_EDGE_MEDIAN_S,
+                    help='seat-edge bias used for the PREDICTED slip column '
+                         '(default: the measured +183.9 ms median). Never a '
+                         'floor — see MEASURED_SEAT_EDGE_MEDIAN_S')
     args = ap.parse_args()
 
     print('loop period {:.3f} s | min_move_duration {:.3f} s | settle pad '
@@ -558,6 +1035,10 @@ def main() -> int:
         print('{} violation(s)'.format(len(bad)))
         if bad:
             ok = False
+
+    if args.pipeline:
+        ok = print_pipeline(args.loop_period, args.seat_edge,
+                            frontier=args.frontier, grid=args.grid) and ok
     return 0 if ok else 1
 
 
