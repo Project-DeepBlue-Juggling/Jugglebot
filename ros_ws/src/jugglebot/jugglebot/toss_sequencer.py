@@ -1173,6 +1173,50 @@ class TossSequencer:
                                                 # convention; z 170 = ACTIVE plane)
     flight_time_s: float = 0.0                  # 0 => DEFAULT_TOSS_FLIGHT_TIME_S
     throw_delay_s: float = 0.0                  # 0 => DEFAULT_TOSS_THROW_DELAY_S
+    release_at_perf: float = 0.0                # THE ABSOLUTE scheduled release on
+                                                # the perf clock, and THE seam a
+                                                # beat clock drops in through
+                                                # (pipelined-preamble plan § 2.6).
+                                                #
+                                                # 0.0 ⇒ derive it at start(now) as
+                                                # `now + throw_delay_s`, which is
+                                                # bit-for-bit today's behaviour and
+                                                # what every shipped caller passes.
+                                                # A non-zero value is taken
+                                                # VERBATIM: the cycle no longer
+                                                # decides WHEN it releases, it is
+                                                # TOLD — so a scheduler that moves
+                                                # the release moves the guard, the
+                                                # 8b reach, the settle deadline and
+                                                # the landing with it, for free,
+                                                # because all of them read
+                                                # _t_release and none re-derives it.
+                                                #
+                                                # Sentinel doctrine, the same one
+                                                # flight_time_s / throw_delay_s use:
+                                                # 0.0 is the ONLY "unset" value, and
+                                                # a negative (or non-finite) one is
+                                                # PRESERVED so CHECKING refuses it
+                                                # loudly (REJECTED_RELEASE_SCHEDULE)
+                                                # rather than laundering a sign typo
+                                                # into a release the operator never
+                                                # asked for. The substitution cannot
+                                                # happen in __post_init__ like the
+                                                # other two — resolving it needs
+                                                # `now`, which only start() has.
+                                                #
+                                                # ⚠ CHECKING's accept-time floor
+                                                # (min_throw_delay_for_cycle_s) is
+                                                # still charged against
+                                                # throw_delay_s, so a caller that
+                                                # supplies an absolute release is
+                                                # itself responsible for that
+                                                # release clearing the pre-dispatch
+                                                # budget measured from start(now).
+                                                # Phase B4's COMMIT gate is what
+                                                # charges the absolute lead; until
+                                                # it exists nothing in-tree passes
+                                                # a non-zero value.
     tier: str = TIER_8A                         # config-resolved (JB_OP_TOSS_TIER)
     event_vel_mps: float = 0.0                  # 0 => computed from the Tier-8a vertical
                                                 # closed form; the node normally passes
@@ -1310,6 +1354,7 @@ class TossSequencer:
     _catch_accepted: bool = field(default=False, init=False)  # any target accepted this flight
     _track_confirmed_seen: bool = field(default=False, init=False)
     _last_time_at_land: float = field(default=float('nan'), init=False)
+    _commit_slip_s: float = field(default=0.0, init=False)   # see slip_s
     _finished: bool = field(default=False, init=False)
     _result: Optional[TossResult] = field(default=None, init=False)
 
@@ -1327,6 +1372,12 @@ class TossSequencer:
             self.throw_delay_s = DEFAULT_TOSS_THROW_DELAY_S
         if self.event_vel_mps <= 0.0:
             self.event_vel_mps = vertical_event_vel_mps(self.flight_time_s)
+        # `release_at_perf` is deliberately NOT resolved here: its default is
+        # `now + throw_delay_s` and `now` does not exist until start(). Its
+        # sentinel is consumed there, and the loud refusal for a value that is
+        # not a usable instant lives with the other static goal invalids in
+        # CHECKING (REJECTED_RELEASE_SCHEDULE) — same split as flight_time_s,
+        # whose default lands here and whose sign typo dies at the gate.
 
     # ── derived floors ─────────────────────────────────────────────────────────
 
@@ -1494,9 +1545,20 @@ class TossSequencer:
     # ── driver ─────────────────────────────────────────────────────────────────
 
     def start(self, now: float) -> None:
+        """Stamp the accept instant and THE scheduled release, once.
+
+        The release is an INPUT, never a re-derivation (plan § 2.6 rule 1): an
+        absolute :attr:`release_at_perf` is taken verbatim and only the 0.0
+        sentinel derives ``now + throw_delay_s``. This is the ONLY place
+        ``_t_release`` is ever written — every consumer (:meth:`_landing_perf`,
+        PREPARING's release-window guard, ``_enter_throwing``'s release
+        deadline, the settle deadline, Tier 8b's deferred reach, and node-side
+        the announcement, the dispatch's ``event_delay``, the cancel cutoff and
+        the record) READS it, so moving the release moves all of them together
+        by construction rather than by nine agreeing derivations."""
         self._phase = PHASE_CHECKING
         self._t_accept = now
-        self._t_release = now + self.throw_delay_s
+        self._t_release = self.release_at_perf or (now + self.throw_delay_s)
 
     def step(self, now: float, obs: TossObservations) -> TossDecision:
         if self._finished:
@@ -1529,6 +1591,23 @@ class TossSequencer:
                 # is checked immediately below, once the flight time (and with
                 # it the release speed) has been validated.
                 return self._reject('CANT_MAKE_LEAD')
+            if self.release_at_perf != 0.0 and not (
+                    math.isfinite(self.release_at_perf)
+                    and self.release_at_perf > 0.0):
+                # The ABSOLUTE schedule's half of the sentinel doctrine, and the
+                # other end of the contract `release_at_perf`'s comment states:
+                # 0.0 means "derive", so anything else must be a usable instant
+                # on the perf clock. A negative (the preserved sign typo) or a
+                # non-finite one would otherwise sail through CHECKING — every
+                # gate above it is keyed on throw_delay_s — and then WEDGE the
+                # cycle: `_t_release` NaN makes `now >= deadline` false forever,
+                # so nothing releases and nothing times out until the node's own
+                # ceiling SAFE_ABORTs under a hand that was armed for a throw
+                # that never came. Loud and early, with nothing moved, is the
+                # same trade FLIGHT_TIME takes. Gated on `!= 0.0` so the shipped
+                # derived path costs one float compare and is otherwise
+                # bit-identical.
+                return self._reject('RELEASE_SCHEDULE')
             if not (math.isfinite(self.flight_time_s)
                     and self.flight_time_s > 0.0):
                 # VALIDITY only since 2026-08-18 — the flyable BAND moved to the
@@ -2078,5 +2157,47 @@ class TossSequencer:
     @property
     def t_release(self) -> float:
         """Scheduled release instant (perf clock) — the node derives event_delay
-        (``t_release − now`` at dispatch) and the cancel cutoff from it."""
+        (``t_release − now`` at dispatch) and the cancel cutoff from it.
+
+        Written ONCE, by :meth:`start`, from :attr:`release_at_perf` or the
+        derived default. Read everywhere; re-derived nowhere."""
         return self._t_release
+
+    @property
+    def scheduled_lead_s(self) -> float:
+        """accept → scheduled release, in seconds: the lead THIS cycle actually
+        has, whichever way its release was scheduled.
+
+        ``throw_delay_s`` is that lead only on the DERIVED path. With an
+        absolute :attr:`release_at_perf` the two are different numbers, and
+        anything that sizes a budget or a ceiling off the delay would then be
+        sizing it off a quantity the cycle no longer runs on. Hence one
+        accessor, read by :func:`reload_coordinator_node._toss_deadline_s`.
+
+        Returns ``throw_delay_s`` on the derived path EXACTLY — not
+        ``_t_release − _t_accept``, which is the same number only to within a
+        float ulp at a large ``perf_counter`` origin — and before
+        :meth:`start` has stamped anything (the throwaway sequencer the session
+        ceiling budgets from is built and never started)."""
+        if not self.release_at_perf or self._t_release <= 0.0:
+            return float(self.throw_delay_s)
+        return float(self._t_release) - float(self._t_accept)
+
+    @property
+    def slip_s(self) -> float:
+        """Commit lateness: ``commit-time − scheduled commit``, in seconds.
+
+        **Scaffolding at Phase B2 — it reads 0.0 for every cycle.** There is no
+        COMMITTING phase yet: Phase B4 adds ``commit_at = _t_release −
+        commit_budget_s`` and writes ``_commit_slip_s`` from the tick that
+        crosses it. It is defined HERE, one phase early and deliberately, so
+        that B4 and Phase C's bounded-slip policy POPULATE an agreed quantity
+        rather than each inventing one — plan § 2.6 rule 3, "slip is reported,
+        not hidden". A slip the FSM absorbed silently is indistinguishable from
+        a cadence that never slipped, and the whole point of scheduling the
+        release absolutely is that lateness becomes measurable instead of being
+        soaked up by the next cycle's lead.
+
+        Never negative: an EARLY commit does not exist (the gate is polled and
+        can only be crossed at or after ``commit_at``)."""
+        return self._commit_slip_s

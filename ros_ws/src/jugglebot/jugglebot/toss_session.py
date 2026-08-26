@@ -90,10 +90,16 @@ chosen for three concrete failure modes the other has:
 ``dwell_time_s`` is *previous SCHEDULED LANDING → next RELEASE*. A cycle's release
 is its own accept + ``throw_delay``, so
 
-    cycle_start(N+1) = landing(N) + dwell − throw_delay
+    release(N+1)     = landing(N) + dwell            # :meth:`next_release_at`
+    cycle_start(N+1) = release(N+1) − throw_delay
 
-and the session simply idles until that instant. The floor is the LARGER of a
-plumbing term and a physics term, and neither is chosen::
+and the session simply idles until that instant. The first line is a METHOD, not
+an expression repeated at its two call sites, and that is the Phase-C seam: the
+beat is replaced by replacing that body (plan § 2.6), while the cycle takes its
+release as an input (``TossSequencer.release_at_perf``) either way.
+
+The floor is the LARGER of a plumbing term and a physics term, and neither is
+chosen::
 
     dwell_floor = max(throw_delay + handoff_margin_s,        # the handoff
                       hand_floor_dwell_s(flight, vel_scale))  # the stroke
@@ -1059,6 +1065,29 @@ class TossSessionSequencer:
         inside the quiescent window with room, never push against it."""
         return self._next_cycle_at
 
+    def next_release_at(self, landing_perf: float) -> float:
+        """THE BEAT: the absolute perf instant at which the cycle following
+        ``landing_perf`` should RELEASE.
+
+        One line, and it is the only place the session says where a beat comes
+        from. Two callers today — :meth:`note_cycle_result`, which schedules the
+        next cycle START one ``throw_delay_s`` before it, and the node's
+        ``_set_toss_next_cycle_perf``, which hands the same instant to the hand
+        sensor as the cadence clamp (C-POSSESS-1 § 3.4). Those two used to carry
+        a copy each of ``landing + dwell``; two copies of a cadence is how the
+        clamp and the schedule drift apart by a dwell edit that only lands in
+        one of them.
+
+        **Phase C replaces exactly this body** with a free-running metronome
+        (plan § 2.6) and nothing else in either FSM needs to know: the cycle
+        already takes its release as an input (``TossSequencer.release_at_perf``)
+        and the clamp already takes this number as an input.
+
+        ``landing_perf`` is a SCHEDULED landing, never an observed one — the
+        observed one is exactly what the tracker is least trustworthy about and
+        a cadence must not inherit that noise."""
+        return float(landing_perf) + float(self.dwell_time_s)
+
     @property
     def cycle_is_retry(self) -> bool:
         """True while the LIVE cycle is the single ABORTED_NO_RELEASE retry.
@@ -1344,10 +1373,13 @@ class TossSessionSequencer:
             self._stop_outcome = OUTCOME_COMPLETED
             return
         # Schedule the next cycle so its release lands one dwell past this
-        # cycle's landing. If that instant is already past (a handoff that ran
+        # cycle's landing — the beat itself comes from `next_release_at` and
+        # from nowhere else (§ 2.6), and this line only converts it from a
+        # RELEASE instant to the cycle START that precedes it by one
+        # `throw_delay_s`. If that instant is already past (a handoff that ran
         # long), the next cycle starts immediately and simply reports a longer
         # achieved dwell. Lateness is absorbed; it never aborts.
-        next_at = (float(landing_perf) + float(self.dwell_time_s)
+        next_at = (self.next_release_at(landing_perf)
                    - float(self.throw_delay_s))
         if not bool(result.success):
             # A MISSED cycle the session is CONTINUING past (stop_on_miss False).

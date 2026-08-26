@@ -672,9 +672,21 @@ def _repo_revision():
 def _toss_deadline_s(seq) -> float:
     """The node-level hard ceiling for THIS toss goal — same doctrine as
     :func:`_sequence_deadline_s`: never below _MAX_SEQUENCE_S and never inside a
-    legitimate sequence window (positioning + delay + flight + grace + confirm),
-    because the timeout path SAFE_ABORTs (retract under an airborne ball)."""
-    budget = (float(seq.positioning_timeout_s) + float(seq.throw_delay_s)
+    legitimate sequence window (positioning + LEAD + flight + grace + confirm),
+    because the timeout path SAFE_ABORTs (retract under an airborne ball).
+
+    The lead term is ``seq.scheduled_lead_s`` — accept → SCHEDULED RELEASE — and
+    NOT ``seq.throw_delay_s``, because since the release became an input
+    (``TossSequencer.release_at_perf``, plan § 2.6) those are the same number
+    only on the derived path. Size this ceiling off the delay while the cycle
+    runs on an absolute release further out, and the ceiling lands INSIDE a
+    legitimate window: the goal is SAFE_ABORTed — hand retracted, latch dropped,
+    go_home — for doing exactly what it was asked to do, and if the ball is
+    airborne by then the retract happens under it. The accessor answers
+    ``throw_delay_s`` exactly on the derived path and for a sequencer that was
+    never started (the throwaway one :func:`_toss_session_deadline_s` budgets
+    from), so today's ceilings are bit-unchanged."""
+    budget = (float(seq.positioning_timeout_s) + float(seq.scheduled_lead_s)
               + float(seq.flight_time_s) + float(seq.release_grace_s)
               + float(seq.catch_confirm_window_s) + _SEQUENCE_CEILING_MARGIN_S)
     return max(_MAX_SEQUENCE_S, budget)
@@ -720,8 +732,8 @@ def _toss_session_deadline_s(session, cycle_budget_s: float,
     inside :meth:`_run_toss_cycle`, so a wedge INSIDE a cycle is caught in ~30 s;
     this only bounds a wedge in the outer loop, whose only wait is time-based.
     Budget per cycle = the cycle's own ceiling + a full dwell (the quiescent wait
-    before it), which over-counts because the cycle ceiling already contains
-    ``throw_delay`` — over-counting is the safe direction here.
+    before it), which over-counts because the cycle ceiling already contains the
+    cycle's own lead — over-counting is the safe direction here.
 
     ``reload_budget_s`` adds the auto-reload interludes a session may legitimately
     spend (:func:`_reload_interlude_budget_s`). Without it an on_empty_cup RELOAD
@@ -1987,7 +1999,14 @@ class ReloadCoordinatorNode(Node):
         if session is None or not session.intends_another_cycle:
             rel = land = None
         else:
-            rel = landing + float(session.dwell_time_s)
+            # THE beat, from the session's own single derivation
+            # (:meth:`TossSessionSequencer.next_release_at`) rather than a
+            # second copy of `landing + dwell` here. The clamp and the schedule
+            # must name the SAME instant: a clamp sized off a beat the session
+            # does not actually run on would close the sensor's retention window
+            # against a release that never comes. Phase C moves the beat by
+            # replacing that method body, and this reads the new one for free.
+            rel = session.next_release_at(landing)
             land = rel + float(seq.flight_time_s)
         with self._lock:
             state.next_release_perf = rel
@@ -3577,7 +3596,7 @@ class ReloadCoordinatorNode(Node):
             return state.release_cmd
 
     def _build_toss_cycle(self, catch_pose, flight, throw_delay, vel_scale,
-                          *, delay_is_cadence=False):
+                          *, delay_is_cadence=False, release_at_perf=0.0):
         """Build ONE toss cycle: resolve the tier / throw site / release state,
         construct + start the ``TossSequencer``, and mint the
         :class:`TossCycleState` the observation builder, the action handlers and
@@ -3616,6 +3635,17 @@ class ReloadCoordinatorNode(Node):
           cycle. Only the first cycle normally pays it: a CAUGHT toss ends in
           ACTION_STAY holding the pose it threw from, so every later cycle takes
           the census-B1 skip and keeps the operator's number exactly.
+
+        ``release_at_perf`` is the ABSOLUTE instant this cycle must release at,
+        passed straight through to the FSM (plan § 2.6). **0.0 — the shipped
+        value on both call sites — means "derive it", i.e. ``start(now) +
+        throw_delay_s``, which is the pre-B2 behaviour bit for bit.** It is a
+        parameter rather than something read off the session here because the
+        cycle builder must stay ignorant of where a beat comes from: today the
+        session's schedule (:meth:`TossSessionSequencer.next_release_at`), under
+        Phase C a free-running metronome. The single ``Toss`` action has no beat
+        at all — an appointment the operator set is a delay, not a schedule —
+        and keeps the derived default forever.
         """
         # The release state (frames + ballistics) comes from the single tested
         # conversion module; the FSM gets its event_vel from here, never a second
@@ -3797,6 +3827,7 @@ class ReloadCoordinatorNode(Node):
             throw_site_xy_mm=throw_site,
             throw_site_known=throw_site_known,
             positioning_move_expected=positioning_move,
+            release_at_perf=float(release_at_perf),
             max_displacement_mm=float(hw.JB_OP_TOSS_MAX_DISPLACEMENT_MM),
             workspace_xy_mm=float(hw.JB_OP_TOSS_WORKSPACE_XY_MM),
             stay_at_pose_on_caught=bool(hw.JB_OP_TOSS_STAY_AT_POSE_ON_CAUGHT),
@@ -5844,6 +5875,31 @@ class ReloadCoordinatorNode(Node):
                                                stop_code=stop_code)
                     continue
                 if decision.action == SESSION_ACTION_START_CYCLE:
+                    # ── THE Phase-C seam, and it is left at the DEFAULT here ──
+                    # The beat this cycle belongs to is
+                    # `session.next_release_at(previous landing)`, and B4's
+                    # `_tick_toss_pipeline` passes exactly that as
+                    # `release_at_perf=`. Not passing it yet is a decision, not
+                    # an omission:
+                    #
+                    #  * START_CYCLE is POLLED. `now` is up to one loop period
+                    #    past `next_cycle_at`, so today's release sits that same
+                    #    jitter past the beat. Handing the beat over instead
+                    #    would ABSORB the jitter into this cycle's lead —
+                    #    silently, since nothing measures it until B4 populates
+                    #    `seq.slip_s`;
+                    #  * and nothing would catch the shortfall: CHECKING's
+                    #    accept-time floor (`min_throw_delay_for_cycle_s`) is
+                    #    charged against `throw_delay_s`, so a lead shortened by
+                    #    an absolute release passes the gate and dies later at
+                    #    the runtime guard — ABORTED_CANT_MAKE_RELEASE with the
+                    #    platform moved and the latch up. That accept-vs-runtime
+                    #    gap is the exact hole the 2026-08-22 audit closed, and
+                    #    B4's `commit_budget_s` is what re-closes it for an
+                    #    absolute schedule.
+                    #
+                    # So B2 lands the plumbing and the single beat derivation;
+                    # B4 supplies the argument once a gate charges the real lead.
                     seq, cycle_state = self._build_toss_cycle(
                         catch_pose, flight, session.throw_delay_s, vel_scale,
                         delay_is_cadence=True)

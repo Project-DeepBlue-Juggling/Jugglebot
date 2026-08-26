@@ -660,6 +660,30 @@ def test_first_cycle_starts_immediately_and_reports_nan_dwell():
     assert math.isnan(res.cycle_dwell_s[0])
 
 
+def test_the_beat_is_one_derivation_and_the_schedule_routes_through_it():
+    """``next_release_at`` IS the beat — *previous scheduled landing → next
+    RELEASE* — and the session's own next-cycle instant is that number minus one
+    ``throw_delay_s``, not a second copy of ``landing + dwell``.
+
+    Pinned by SUBSTITUTION rather than by arithmetic: a session whose beat has
+    been replaced schedules off the replacement, which is exactly the operation
+    Phase C performs (plan § 2.6 — it replaces this method body and nothing
+    else in either FSM learns where the beat came from). Two copies of the
+    cadence is how a dwell edit lands in the schedule and not in the node's
+    cadence clamp, leaving the hand sensor's retention window closing against a
+    release that never comes."""
+    s = _session(num_throws=2)
+    _t_rel, landing = _run_cycle(s, 0.0, _caught())
+    assert s.next_release_at(landing) == pytest.approx(landing + DWELL)
+    assert s.next_cycle_at == pytest.approx(s.next_release_at(landing) - DELAY)
+
+    # The beat, moved. The schedule follows it because it is READ, not re-derived.
+    moved = _session(num_throws=2)
+    moved.next_release_at = lambda land: float(land) + DWELL + 0.25
+    _t_rel2, landing2 = _run_cycle(moved, 0.0, _caught())
+    assert moved.next_cycle_at == pytest.approx(landing2 + DWELL + 0.25 - DELAY)
+
+
 # ── stop_on_miss (S3) ─────────────────────────────────────────────────────────
 
 def test_stop_on_miss_true_ends_the_session_at_the_cycle_boundary():

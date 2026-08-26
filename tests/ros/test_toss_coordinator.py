@@ -2596,6 +2596,86 @@ def test_a_session_cycle_clamps_the_windows_to_its_own_next_release():
     assert node._expected_next_cycle_perf() == (None, None)
 
 
+def test_the_cadence_clamp_reads_the_sessions_beat_rather_than_copying_it():
+    """…and it reads it from ``TossSessionSequencer.next_release_at``, the
+    session's single beat derivation, instead of holding a second copy of
+    ``landing + dwell``.
+
+    Pinned by substitution: move the beat and the clamp must move with it. The
+    two numbers must name the SAME instant, because the clamp is what closes the
+    hand sensor's retention window "where the next toss's departure search
+    opens" (C-POSSESS-1 § 3.4) — a clamp sized off a beat the session does not
+    run on closes that window against a release that never comes. Phase C moves
+    the beat by replacing that one method body (plan § 2.6), and this is the
+    node-side half of the promise that nothing else has to be told."""
+    import jugglebot.toss_session as ts
+    now = 100.0
+    node = _toss_ready_node(now)
+    session = ts.TossSessionSequencer(num_throws=3, dwell_time_s=1.5,
+                                      throw_delay_s=5.0)
+    session.start(now)
+    session.next_release_at = lambda landing: float(landing) + 9.0
+    seq, _ = node._build_toss_cycle((0.0, 0.0, 170.0), 0.8, 5.0, 0.0)
+    node._set_toss_next_cycle_perf(seq, session)
+    landing = seq.t_release + seq.flight_time_s
+    rel, land = node._expected_next_cycle_perf()
+    assert rel == pytest.approx(landing + 9.0)          # the beat, not the dwell
+    assert land == pytest.approx(landing + 9.0 + 0.8)
+
+
+def test_the_cycle_builder_passes_an_absolute_release_straight_through():
+    """``_build_toss_cycle``'s ``release_at_perf`` reaches the FSM unmodified,
+    and its 0.0 default is the pre-B2 arithmetic bit for bit.
+
+    The cycle builder is shared verbatim by the single ``Toss`` and by every
+    session cycle, so this parameter is the ONE place a beat clock enters the
+    cycle machinery — and the builder stays ignorant of where the beat came
+    from (plan § 2.6). Both shipped call sites take the default today; B4's
+    pipeline is what supplies a number."""
+    node = _toss_ready_node(100.0)
+    # The builder starts the FSM off the real perf clock, so the derived twin is
+    # pinned by its LEAD (accept -> release) rather than by an absolute instant.
+    derived, _ = node._build_toss_cycle((0.0, 0.0, 170.0), 0.8, 5.0, 0.0)
+    assert derived.release_at_perf == 0.0
+    assert derived.scheduled_lead_s == pytest.approx(5.0)
+    beat = time.perf_counter() + 7.5
+    scheduled, _ = node._build_toss_cycle((0.0, 0.0, 170.0), 0.8, 5.0, 0.0,
+                                          release_at_perf=beat)
+    assert scheduled.release_at_perf == beat
+    assert scheduled.t_release == beat                   # the input, verbatim
+    assert scheduled.landing_perf == pytest.approx(beat + 0.8)
+    # The lead is now the SCHEDULE's, not the delay field's — the number the
+    # per-goal ceiling has to be sized on.
+    assert scheduled.scheduled_lead_s == pytest.approx(7.5, abs=0.5)
+
+
+def test_the_toss_ceiling_covers_an_absolutely_scheduled_release():
+    """The per-goal ceiling is sized on the lead the cycle ACTUALLY has
+    (``scheduled_lead_s``), not on ``throw_delay_s``.
+
+    Same doctrine as the sibling test above, applied to the schedule the release
+    became an input to: size the ceiling off the delay while the cycle runs on a
+    release 25 s out, and the ceiling lands INSIDE a legitimate window. The exit
+    path there is a SAFE_ABORT — hand retracted, latch dropped, go_home — for a
+    goal doing exactly what it was asked to do, and under an airborne ball the
+    retract happens beneath it."""
+    from jugglebot.reload_coordinator_node import _MAX_SEQUENCE_S
+    now = 100.0
+    seq = TossSequencer(catch_pose_stow_mm=(0, 0, 170.0), flight_time_s=1.1,
+                        throw_delay_s=5.0, release_at_perf=now + 25.0)
+    seq.start(now)
+    assert seq.scheduled_lead_s == pytest.approx(25.0)
+    ceiling = _toss_deadline_s(seq)
+    assert ceiling > 25.0 + 1.1 + 0.5 + 0.7
+    assert ceiling >= _MAX_SEQUENCE_S
+    # …and the derived path is unchanged: an UNSTARTED sequencer (the throwaway
+    # one the session ceiling budgets from) still answers off the delay.
+    unstarted = TossSequencer(catch_pose_stow_mm=(0, 0, 170.0),
+                              flight_time_s=1.1, throw_delay_s=25.0)
+    assert unstarted.scheduled_lead_s == pytest.approx(25.0)
+    assert _toss_deadline_s(unstarted) == pytest.approx(ceiling)
+
+
 #: Phase B1's field inventory: the node attribute that WAS, and the
 #: :class:`TossCycleState` field it became. Kept as data rather than as prose so
 #: the structural test below can enumerate it — a field that quietly comes back

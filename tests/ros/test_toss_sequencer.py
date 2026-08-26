@@ -484,6 +484,137 @@ def test_negative_params_never_coerce_to_defaults():
     assert d.done and d.result.outcome == 'REJECTED_CANT_MAKE_LEAD'
 
 
+# ── The release instant is an INPUT (the Phase-C seam, plan § 2.6) ─────────────
+
+def _release_trace(seq):
+    """Drive `seq` through one whole uncaught cycle and record every decision,
+    instant for instant: ``(now, phase, action, done, outcome)``.
+
+    The discrete events are injected at the SAME instants for every FSM this is
+    run on, so two traces can differ only if the two FSMs disagreed. The tail
+    instants straddle ``t_release`` (4.999 / 5.0 / 5.001 — Tier 8b's deferred
+    reach is TIME-triggered on the first tick at or past it), the CATCHING
+    threshold and the settle deadline, because those are the four decisions a
+    re-derived release would move."""
+    trace = []
+
+    def _step(now, **kw):
+        d = seq.step(now, _obs(now, **kw))
+        trace.append((now, d.phase, d.action, d.done,
+                      None if d.result is None else d.result.outcome))
+        return d
+
+    _step(0.0)                                  # CHECKING -> POSITIONING
+    seq.note_position_result(0.05, True, 0.5)
+    _step(0.8)                                  # arrival verified -> PREPARE
+    seq.note_prepare_result(True)
+    _step(0.9)                                  # armed -> the >=1-tick gap -> ANNOUNCE
+    seq.note_announcement()
+    _step(1.0)                                  # -> THROWING, dispatch
+    seq.note_throw_dispatch(THROW_DISPATCH_OK)
+    for now in (1.1, 2.0, 4.999, 5.0, 5.001, 5.7,
+                FIXTURE_LANDING_T, PAST_SETTLE_T):
+        _step(now, throw_stroke_seen=True)
+    return trace
+
+
+@pytest.mark.parametrize('tier', [TIER_8A, TIER_8B])
+def test_the_release_instant_is_an_input_not_a_rederivation(tier):
+    """T-U12. The SAME goal, scheduled two ways — derived (``throw_delay_s``
+    5.0 from ``start(0.0)``) and absolute (``release_at_perf`` 5.0, carrying a
+    DIFFERENT 3.0 s delay) — produces identical decisions instant for instant.
+
+    The two delays differ on purpose: 5.0 is the only number a re-derivation
+    could produce, so if anything downstream recomputed
+    ``now + throw_delay_s`` the absolute twin would release at 3.0 and the
+    traces would diverge at the release-window guard, at Tier 8b's
+    time-triggered reach, at the release deadline and at the settle deadline.
+    Identical traces are the evidence that ``_t_release`` is written once, by
+    ``start``, and only READ thereafter — the property Phase C's beat clock
+    rests on (plan § 2.6 rule 1), since a scheduler that moves the release must
+    move all four of those for free.
+
+    Both delays clear CHECKING's own gates (debounce 0.10 s and the derived
+    ~0.80 s pre-dispatch floor), so the comparison is about the SCHEDULE and
+    not about a gate one twin passes and the other does not."""
+    common = dict(catch_pose_stow_mm=CATCH_POSE, flight_time_s=0.8, tier=tier,
+                  throw_site_known=True)
+    derived = TossSequencer(throw_delay_s=5.0, **common)
+    derived.start(0.0)
+    absolute = TossSequencer(throw_delay_s=3.0, release_at_perf=5.0, **common)
+    absolute.start(0.0)
+
+    # The input won: the absolute twin is NOT at accept + its own delay.
+    assert absolute.t_release == pytest.approx(5.0)
+    assert absolute.t_release != pytest.approx(0.0 + absolute.throw_delay_s)
+    assert derived.t_release == pytest.approx(absolute.t_release)
+    assert derived.landing_perf == pytest.approx(absolute.landing_perf)
+    # …and the LEAD the node's ceiling sizes itself on follows the schedule,
+    # not the delay field (both twins really do have 5.0 s of lead).
+    assert derived.scheduled_lead_s == pytest.approx(5.0)
+    assert absolute.scheduled_lead_s == pytest.approx(5.0)
+
+    assert _release_trace(derived) == _release_trace(absolute)
+    # …and the comparison has teeth: the trace of the FSM a re-derivation WOULD
+    # have produced (release at accept + 3.0) is a different trace. Without this
+    # the equality above could pass on a trace too coarse to see the schedule.
+    rederived = TossSequencer(throw_delay_s=3.0, **common)
+    rederived.start(0.0)
+    assert _release_trace(rederived) != _release_trace(derived)
+
+
+def test_an_unset_release_schedule_still_derives_the_shipped_lead():
+    """0.0 is the ONLY "derive it" sentinel, and it reproduces the pre-B2
+    arithmetic exactly — including from a large perf-clock origin, which is the
+    only origin the machine ever starts a cycle from."""
+    seq = TossSequencer(catch_pose_stow_mm=CATCH_POSE, flight_time_s=0.8,
+                        throw_delay_s=5.0)
+    assert seq.release_at_perf == 0.0                   # the shipped default
+    seq.start(123456.75)
+    assert seq.t_release == 123456.75 + 5.0
+    # The ceiling's lead term is the delay EXACTLY on this path — not
+    # `t_release - t_accept`, which is the same number only to within a float
+    # ulp at this origin.
+    assert seq.scheduled_lead_s == 5.0
+
+
+@pytest.mark.parametrize('bad', [-5.0, float('nan'), float('inf')])
+def test_a_release_schedule_that_is_not_an_instant_dies_at_checking(bad):
+    """The absolute schedule's half of the never-coerce doctrine: a negative
+    (the preserved sign typo) or a non-finite release is refused loudly, before
+    anything moves.
+
+    Every gate above it is keyed on ``throw_delay_s``, so without this one a
+    NaN release would sail through CHECKING and then WEDGE the cycle — nothing
+    compares true against NaN, so neither the release deadline nor the settle
+    deadline can ever fire, and the goal sits armed until the node's own
+    ceiling SAFE_ABORTs it with the hand retracting under a throw that never
+    came."""
+    seq = TossSequencer(catch_pose_stow_mm=CATCH_POSE, flight_time_s=0.8,
+                        throw_delay_s=5.0, release_at_perf=bad)
+    assert seq.release_at_perf != 0.0 or math.isnan(seq.release_at_perf)
+    seq.start(0.0)
+    d = seq.step(0.0, _obs(0.0))
+    assert d.done and d.result.outcome == 'REJECTED_RELEASE_SCHEDULE'
+    assert d.action == ACTION_NONE                      # nothing moved, nothing armed
+    assert seq.prepared is False
+
+
+def test_the_slip_reads_zero_until_the_commit_phase_exists():
+    """``slip_s`` is Phase-B2 SCAFFOLDING, and pinned as such so its arrival in
+    B4 is a change to this test rather than a new quantity invented at the
+    point of need (plan § 2.6 rule 3: slip is reported, not hidden).
+
+    Until ``COMMITTING`` exists there is no scheduled commit to be late for, so
+    it reads 0.0 for every cycle — including one driven to its terminal."""
+    seq = _fresh()
+    assert seq.slip_s == 0.0
+    _to_in_flight(seq)
+    assert seq.slip_s == 0.0
+    seq.step(PAST_SETTLE_T, _obs(PAST_SETTLE_T))
+    assert seq.finished and seq.slip_s == 0.0
+
+
 @pytest.mark.parametrize('flight_t, bound', [
     (0.40, 'ARM_WINDOW'),       # below the derived floor — the catch cannot be armed
     (1.16, 'DECEL_FF_HEADROOM'),  # between the FF line and hard authority
