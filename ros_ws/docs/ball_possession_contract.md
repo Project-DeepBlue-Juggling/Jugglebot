@@ -156,39 +156,52 @@ field). Pinned by
 
 A source is any object with a `name` from `ball_possession.SOURCE_*` and a
 `judge(ball_xyz_mm, ref_point_mm) -> PossessionVerdict`. Sources are swapped at
-one place, `ReloadCoordinatorNode._possession_source`; all three consumers
-(`_on_balls`, `_build_observations`, `_build_toss_observations`) go through
-`_possession_confirmed`. Pinned by
-`tests/ros/test_reload_coordinator_node.py::test_possession_source_is_pluggable_at_one_seam`
+one place, `ReloadCoordinatorNode._possession_source` (the tracker, report-only
+since 2026-08-26) and `._ball_sensor` (the cup, which decides); all three
+consumers (`_on_hand_telemetry`'s latch, `_build_observations`,
+`_build_toss_observations`) go through `_possession_observed`. Pinned by
+`tests/ros/test_reload_coordinator_node.py::test_possession_is_asked_at_one_seam_from_every_consumer`
 (which substitutes a source that does **not** inherit `PossessionSource` — the
 seam is duck-typed on purpose, so a sensor source need not import this module's
 base class).
 
-**What the seam does and does not buy you — read this before the sensor phase.**
-The swap is real, but it is a **filter on a tracker `CAUGHT`, not an origination
-point.** All three call sites sit inside an `int(b.status) == _BALL_STATUS_CAUGHT`
-guard (`reload_coordinator_node.py:709`, `:793`, `:1029`), and `judge()` takes only
-a position and a reference point — no time, no tick. Three consequences the
-sensor phase inherits, stated so it does not discover them at the bench:
+**What the seam did and did not buy you — the 2026-07-28 warning, and what became
+of it.** The swap was real, but it was a **filter on a tracker `CAUGHT`, not an
+origination point.** All three call sites sat inside an
+`int(b.status) == _BALL_STATUS_CAUGHT` guard, and `judge()` takes only a position
+and a reference point — no time, no tick. Three consequences were stated here so
+the sensor phase would not discover them at the bench:
 
 - **A source cannot originate a possession claim.** If the tagged track never
   reaches `CAUGHT` — 55 of the 139 tracks in the reference capture never do;
   `UNKNOWN` is the other terminal state — the seam is never called, `obs.ball_caught`
   stays False, and the goal runs to the settle deadline and `SAFE_ABORT`s **with the
   ball in the cup**. A sensor holding a ball cannot say so.
+  **CLOSED 2026-08-26 (C-POSSESS-1.D).**
 - **A source cannot answer late.** `toss_sequencer._step_in_flight` finishes the
   goal on the first confirmed tick, so a retention answer that needs settle time can
-  never bind.
+  never bind. **STILL TRUE, and deliberate** — see § 3.2's closing paragraph.
 - **A source cannot clear the latch.** `_ball_possession` is cleared only in
   `__init__` and the release-evidence branch; a `RETENTION_REJECTED` verdict does not
-  reach it.
+  reach it. **CLOSED 2026-08-21 (§ 3.3 edit 2), and the latch's SOURCE moved to
+  the cup entirely on 2026-08-26** — it is maintained by `_on_hand_telemetry` off
+  the live `evidence` read, and `/balls` carries no possession claim at all.
 
-So the earlier flat claim that "a new source changes no call site" holds only for
-the **arrival-filter** role. Making the hand sensor genuinely PRIMARY needs a
-tick-driven query with the ball optional, plus a latch-clear path — that is design
-work belonging to the sensor phase, not a drop-in.
+> ⚠ **The first of those three was written on 2026-07-28, was correct, and cost
+> 15 catches on 2026-08-26.** It is the single most useful paragraph in this
+> document's history and it sat unactioned for four weeks while the sensor was
+> made "PRIMARY" in the merge rules only. Recorded here as the pattern rather
+> than the incident: **when this contract names a structural limitation of the
+> seam, that limitation is the next defect, not a caveat.**
 
-**The one thing a new source must not forget.** `_possession_confirmed` passes
+So the earlier flat claim that "a new source changes no call site" held only for
+the **arrival-filter** role. Making the hand sensor genuinely PRIMARY needed a
+tick-driven query with the ball optional plus a latch-clear path — both landed
+(2026-08-26 and 2026-08-21 respectively), and the seam is now
+`_possession_observed(now, ball=None, ref_point_mm=None)`, reached on every tick
+by both observation builders whether or not any track exists.
+
+**The one thing a new source must not forget.** `_possession_observed` passes
 `_CAUGHT_MAX_XY_ERROR_MM` — the *tracker* source's bound — into `describe()` for
 the log line. That is correct only while the installed source is the tracker one.
 A source with a different (or no) arrival bound must either supply its own value
@@ -244,23 +257,84 @@ recognises a second kind:
 
 When both kinds are installed, they are combined at **one** place —
 `ball_possession.merge_possession`, reached only through
-`ReloadCoordinatorNode._possession_confirmed` — by three rules:
+`ReloadCoordinatorNode._possession_observed` — by three rules:
 
 1. **RETENTION is the sensor's, always.** The tracker is forbidden from claiming
    retention (§ 2 consequence 2); there is nothing to merge. Taking anything else
    from the tracker here would re-open § 7's accepted bounce-out trap.
-2. **ARRIVAL is the sensor's whenever the sensor observed it (`CONFIRMED` or
-   `REJECTED`); the tracker's only when the sensor is `UNKNOWN`.** The sensor
-   reads the cup, so it is the one source whose error model does not run through a
-   dead-reckoned free-fall extrapolation — that is *why* it is primary, and why a
-   valid sensor `ARRIVAL_REJECTED` **vetoes** a tracker `CAUGHT`. That veto is the
-   § 7 false-CAUGHT class finally being closed rather than accepted. The fallback
-   is not politeness: a blind sensor that refused everything would leave the
-   machine strictly **less** capable than before the sensor landed, so the
-   degradation path is exactly today's tracker-only behaviour.
+2. **ARRIVAL is the sensor's, always.** The tracker is not consulted for it at
+   all. The sensor reads the cup, so it is the one source whose error model does
+   not run through a dead-reckoned free-fall extrapolation — that is *why* it is
+   primary, and why a valid sensor `ARRIVAL_REJECTED` **vetoes** a tracker
+   `CAUGHT`. That veto is the § 7 false-CAUGHT class finally being closed rather
+   than accepted.
 3. **`arrival_err_mm` / `plane_drop_mm` stay the TRACKER's, always** — the sensor
    cannot supply them, and § 3's "the one thing a new source must not forget" is
-   about exactly this reporting wart.
+   about exactly this reporting wart. They are REPORT-ONLY: nothing branches on
+   them, and since C-POSSESS-1.D they are the tracker's *entire* contribution.
+
+### C-POSSESS-1.D — the tracker is not a fallback either — added 2026-08-26
+
+> **The rule.** ARRIVAL is the sensor's in ALL THREE of its states, `CONFIRMED`,
+> `REJECTED` and `UNKNOWN`. There is no tracker fallback. A source that cannot
+> look REFUSES, and the refusal is distinguishable from an ordinary open window
+> (`ball_possession.arrival_blind`) so a consumer can name the fault.
+>
+> **The rule's other half, which is the one that was actually broken.** No source
+> may gate whether the possession question is EVALUATED. A source that decides
+> when the question is asked is primary regardless of what these merge rules say.
+> The question is asked on a TICK, from a tick-driven seam, and every consumer
+> reaches it through that one seam.
+
+Rule 2 read *"ARRIVAL is the sensor's whenever the sensor observed it; the
+tracker's only when the sensor is `UNKNOWN`"* from 2026-08-10 until 2026-08-26,
+and it was defended as a degradation path: *"a blind sensor that refused
+everything would leave the machine strictly less capable than before the sensor
+landed"*.
+
+**Both halves failed, and the second one silently.** The merge was sensor-primary
+on paper while both FSM observation builders — and the `_on_balls` possession
+latch — only called into it inside `if int(b.status) == _BALL_STATUS_CAUGHT`. The
+tracker could not CONFIRM a catch it had not seen, and it did not need to: it
+SUPPRESSED the question.
+
+Measured on `~/Desktop/rosbags/2026-08-26_14-25-16`, 27 cycles that produced a cup
+verdict, replayed through this contract's own surface by
+`tools/probes/possession_replay.py`. The 31 is the whole bag: these 27 plus four
+rows that never put a ball up — 2× `ABORTED_CANT_MAKE_RELEASE` and 2×
+`REJECTED_NO_BALL` — which the cup also called correctly and which are not
+adjudicated in the table below:
+
+| | CAUGHT | MISSED |
+|---|---|---|
+| cup sensor (operator-confirmed 31/31) | **23** | **4** |
+| the shipped merged verdict | 11 | 16 |
+
+15 false MISSED — twelve of them tracks the tracker never confirmed at all, three
+with a tracker `CAUGHT` 0.615–0.830 s past the landing, i.e. past the FSM's
+0.560 s deadline — and 3 false CAUGHT over an empty cup, one of which drove a
+phantom reload.
+
+**Why the fallback is unsound and not merely unhelpful.** It falls back to the
+observable with the worse error model, keyed on the better one being quiet. The
+tracker's `CAUGHT` estimate is the dead-reckoned extrapolation § 1 is about, and
+its instant is when a marker *vanished* — a property of the mocap coverage, not of
+the ball. Selecting for "the cup said nothing" selects for the cup being blind,
+which is uncorrelated with the tracker being right. Capability is not the metric.
+
+**What is preserved.** `TrackerArrivalSource` stays installed and stays tested:
+`arrival_err_mm` is the catch-accuracy number the hardware runbooks score and the
+cup cannot supply it. A future tracker phase that fixes the split-track
+mis-association may earn a corroboration role back — that is a decision to
+re-take against data, not a code path to leave armed meanwhile.
+
+**Consequence for consumers.** `MISSED_SENSOR_BLIND` is the terminal both FSMs
+mint when `arrival_blind` holds. It is in the `MISSED` family by prefix, so
+`stop_on_miss`, the terminal action and the session accounting are unchanged; the
+name is what routes an operator to the sensor rather than to the throw. A
+still-open window is NOT blindness: both FSMs terminalise at
+`landing + CATCH_CONFIRM_WINDOW_S`, which IS `ARRIVAL_BAND_MAX_S`, so at that
+instant the whole measured band has been watched and "no rise" is a real miss.
 
 **The direction of the new failure mode, sized honestly.** A sensor that reads
 valid-EMPTY on a genuinely seated ball (a stuck-open switch, a ball resting off the
@@ -784,6 +858,26 @@ Both deltas were checked against the same bag before the change landed:
 `go_home` also fires up to 0.5 s earlier, with the ball seated in a cup rigidly
 mounted on the platform, along a profiled trajectory. Same class as today.
 
+> **The terminal moves EARLIER AGAIN with C-POSSESS-1.D (2026-08-26), by ~0.18 s
+> median, and the argument above carries — with one term strengthened.** The
+> verdict instant is now the cup's empty→held edge (+0.087 … +0.555 s past the
+> landing, median +0.184 over the 2026-08-24 corpus) instead of the tracker's
+> `CAUGHT` (+0.202 … +0.442 s here, +0.29 … +0.83 s on `2026-08-26_14-25-16`).
+>
+> Every quantity in the two bullets above is measured from the LANDING, so the
+> only question is whether the new instant can fall earlier than the catch stroke
+> finishes. It cannot within the measured band: the earliest cup edge ever
+> observed on a real catch is **+87.6 ms** (`ARRIVAL_BAND_MIN_S`), and the hand is
+> already within ±0.045 rev of the retract target at the tracker instant, which is
+> LATER — but the stronger point is that the two instants measure different
+> things. A cup edge is a *ball in the cup*; a tracker `CAUGHT` is a *marker that
+> stopped being seen*. The earlier terminal now fires on the stronger evidence.
+>
+> **On the shipped toss default this is not an actuation change at all**:
+> `toss_stay_at_pose_on_caught` is `true`, so the CAUGHT terminal is `ACTION_STAY`
+> and commands nothing. The `RECENTER` path above is the reload's, and a toss
+> with that config set false.
+
 **Two residuals on this path, both un-measured and both watched at the bench
 rather than argued away here.**
 
@@ -799,7 +893,8 @@ rather than argued away here.**
    (runbook **POSS-2.1** / **POSS-2.2**) rather than coded around. Note the
    observation that would corroborate it is already assembled one function away:
    `_build_toss_observations` has `hand_pos`/`hand_fresh` in scope at the point it
-   calls `_possession_confirmed`.
+   calls `_possession_observed` (`_possession_confirmed` until 2026-08-26, when
+   the boolean-only wrapper was deleted — the builders need both halves).
 2. **The ball's settle time before the platform moves is not measured.** The
    evidence offered above is hand `pos_meas`, which says where the *hand* is, not
    whether the *ball* has come to rest. A caught toss now begins `go_home`
@@ -817,7 +912,7 @@ rather than argued away here.**
 | part | where |
 |---|---|
 | normative statement | this document |
-| enforcement point | `jugglebot/ball_possession.py` — `TrackerArrivalSource.judge`, `HandBallSensorSource.observe` and `merge_possession`, all reached only through `ReloadCoordinatorNode._possession_confirmed` |
+| enforcement point | `jugglebot/ball_possession.py` — `TrackerArrivalSource.judge` (report-only since C-POSSESS-1.D), `HandBallSensorSource.observe` and `merge_possession`, all reached only through `ReloadCoordinatorNode._possession_observed`, which is TICK-driven |
 | enforcement point (§ 3.3, the precondition) | `ReloadCoordinatorNode._build_toss_observations` — the ONE live `evidence(now)` read, consumed by `toss_sequencer._step_checking` |
 | tests | `tests/ros/test_ball_possession.py` (the verdict surface, on 2026-07-27 fixtures + the 2026-08-10 sensor timings), `tests/ros/test_reload_coordinator_node.py` (the node seam) and `tests/ros/test_toss_coordinator.py` (the CHECKING refusals) |
 | bag replay | `tools/probes/hand_sensor_verdict_replay.py` — replays `/hand_telemetry` + `/throw_announcements` through the PRODUCTION verdict logic and prints per-throw labels; `tests/ros/test_hand_sensor_replay.py` runs it on a committed fixture cut and skips when `~/Desktop/rosbags` is absent |
@@ -971,3 +1066,15 @@ as `RETENTION_REJECTED` in the very next verdict but cannot retract, because the
 goal has already finished. POSS-1.2 therefore stays a REPORT row and stays
 un-tightened: it is now scoring a known, bounded reporting residual rather than an
 un-sized actuation gap.
+
+**Completed 2026-08-26 (C-POSSESS-1.D).** Point 2 above is now closed at its
+source rather than patched: `_on_balls` carries no possession claim at all, and
+the latch is maintained by `_on_hand_telemetry` off the live `evidence` read — a
+valid SEATED sets it, a valid EMPTY clears it, UNKNOWN touches neither. The
+sentence *"the seam for the sensor's ARRIVAL verdict is already in place and needs
+no wire change — `_possession_confirmed` → `_possession_source` is where a
+`BallInCupSource` drops in"* was the belief this section warned against
+inheriting, and it was wrong for the reason § 3 gave one page earlier: the seam
+was a filter on a tracker `CAUGHT`, so dropping a source into it produced a
+sensor that could veto but not originate. That cost 15 catches on
+`2026-08-26_14-25-16` before it was fixed.

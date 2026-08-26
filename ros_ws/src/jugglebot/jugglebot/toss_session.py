@@ -106,9 +106,10 @@ plumbing term and a physics term, and neither is chosen::
   ``toss_sequencer.min_throw_delay_for_release_s`` — the Teensy's own ``:642``
   budget for the kind-0 dispatch (``hand_stroke.min_throw_event_delay_s``,
   0.281 s at the 0.80 s nominal flight) **plus the pre-dispatch sequence that
-  budget is measured after** (``pre_dispatch_budget_s``: 0.080 s when POSITIONING
-  takes the census-B1 skip, 0.460 s when it commands a move). The second term
-  landed 2026-08-23. Without it the accept gate was systematically looser than
+  budget is measured after** (``pre_dispatch_budget_s``: 0.160 s when POSITIONING
+  takes the census-B1 skip, 0.520 s when it commands a move — 0.080 / 0.460 until
+  owner decision D3 re-based both on the loop's measured PERIOD on 2026-08-26).
+  The second term landed 2026-08-23. Without it the accept gate was systematically looser than
   the runtime guard it fronts for, and a goal could be ACCEPTED and then abort
   ``ABORTED_CANT_MAKE_RELEASE`` on every cycle — which is what three published
   rungs of ``tests/hardware/session_cadence_ladder.md`` did. Until 2026-08-22
@@ -190,8 +191,9 @@ arithmetic starts cycle N+1 inside the previous cycle's teardown. At the shipped
 defaults it already does: 6.0 − 5.0 puts the next cycle 1.0 s past the landing,
 1.7 s before the recentre lands.
 
-:data:`DEFAULT_SESSION_MISS_CLEANUP_S` (**2.60 s** since the 2026-08-24 band
-re-measure; 2.84 s before it) is therefore applied as a FLOOR on
+:data:`DEFAULT_SESSION_MISS_CLEANUP_S` (**2.80 s** since owner decision D3 charged
+the SAFE_ABORT ladder's own dispatch cost, 2026-08-26; 2.60 s from the 2026-08-24
+band re-measure, 2.84 s before that) is therefore applied as a FLOOR on
 ``landing → next cycle start`` after any non-success cycle. It can only lengthen a
 gap, never shorten one, so a session that already dwells long enough is
 bit-unchanged. Neither consequence it prevents is a hazard — a mid-traverse throw
@@ -255,7 +257,7 @@ and a session multiplies the exposure by ``num_throws``. ``stop_on_miss`` does n
 close it either: the bounce-out happens *after* a CAUGHT verdict.
 
 The seam that closes it is already in place and needs no wire change: the
-coordinator routes every possession question through ``_possession_confirmed`` →
+coordinator routes every possession question through ``_possession_observed`` →
 ``_possession_source``, and the ball-in-cup hand sensor (installed 2026-07-28)
 becomes the PRIMARY source there. When it does, cycle N+1's existing
 ``ball_seated`` precondition becomes a real retention check with no edit to this
@@ -275,6 +277,7 @@ from jugglebot.toss_sequencer import (
     CATCH_CONFIRM_WINDOW_S,
     DEFAULT_TOSS_THROW_DELAY_S,
     FLIGHT_TIME_MIN_S,
+    NODE_LOOP_PERIOD_S,
     NODE_TICK_S,
     TOSS_DISPATCH_DEBOUNCE_S,
     TossResult,
@@ -457,6 +460,14 @@ GO_HOME_DURATION_S = 2.0             # trajectory_node's `go_home_duration_s`
 # counts the pre-dispatch sequence in ticks, and that function is what BOTH delay
 # gates now charge — so the tick and the gates have to live in one module or the
 # accept floor can be re-based by an edit that never mentions it.
+#
+# ⚠ AND IT IS NO LONGER THE ARITHMETIC UNIT (owner decision D3, 2026-08-26). It is
+# the SLEEP at the bottom of `_run_toss_cycle`, and a loop ITERATION costs the
+# sleep plus the tick's own work — measured 0.0267-0.0377 s against this 0.020 s.
+# `toss_sequencer.NODE_LOOP_PERIOD_S` (0.040 s) is what every budget on this page
+# and in `pre_dispatch_budget_s` is now counted in. This constant survives as the
+# drift guard against `reload_coordinator_node._TICK_S` and as the honest name for
+# the sleep; charging a budget in it again is the defect D3 closed.
 
 #: The ILC's ``event_vel_trim`` outer ceiling (``k_v − 1``), RESTATED from
 #: ``motion/toss_ilc.ILC_SPEED_AUTHORITY`` and pinned equal to it by
@@ -466,6 +477,52 @@ GO_HOME_DURATION_S = 2.0             # trajectory_node's `go_home_duration_s`
 #: :attr:`TossSessionSequencer.floor_event_vel_mps`.
 ILC_SPEED_AUTHORITY = 0.15
 
+# The SAFE_ABORT ladder's own dispatch cost: MISSED verdict -> the go_home
+# INSTALL. Four blocking rungs (`_safe_abort`): catch/armed False, the
+# telemetry-VERIFIED hand retract, `trajectory/arm_catch` lower, and finally
+# `trajectory/go_home`. The floor below used to charge ZERO for all four and start
+# the 2.0 s profile clock at the verdict instant, which is the same
+# price-the-work-at-zero error `toss_sequencer.NODE_LOOP_PERIOD_S` documents one
+# gate over.
+#
+# 0.160 s bounds the largest of the ten measured go_home-install lower bounds
+# (+0.112 s) by 1.43x. **It is NOT four loop periods**: `_safe_abort` runs all
+# four dispatches inside ONE iteration of `_run_toss_cycle` (no sleep between
+# rungs; rungs 1-3 measured at +0.022..0.025 s TOTAL). It is written against
+# NODE_LOOP_PERIOD_S only so a loop-cost re-measure moves both ladders together.
+#
+# MEASURED, and the measurement RE-DERIVES from the arithmetic written out below
+# (bag 2026-08-26_14-25-16, /rosout, re-derived 2026-08-26). The fourth rung is
+# not directly
+# logged, but its consequence is: trajectory_node prints "catch latch armed
+# mid-move — installed a graceful stop (move silenced)" whenever the NEXT cycle's
+# PREPARE arms the latch while the go_home profile is still traversing, and that
+# line fired on **10 of the 16 post-MISS toss cycles in that bag**. The step the
+# note used to be missing is the VERDICT -> CYCLE-START GAP, without which the
+# arm instant cannot be re-based onto the verdict:
+#
+#     verdict -> cycle start = DEFAULT_SESSION_MISS_CLEANUP_S - CATCH_CONFIRM_WINDOW_S
+#                            = 2.60 - 0.56 = 2.040 s   (the build that FLEW)
+#     cycle start -> arm     = 0.0566 .. 0.0717 s      (the ten lines)
+#     install >= 2.040 + [0.0566 .. 0.0717] - GO_HOME_DURATION_S
+#             =  +0.0966 .. +0.1117 s past the verdict
+#
+# These are LOWER bounds (the profile may have run past the arm instant), so a
+# future sitting should re-grep that same line; its ABSENCE is the acceptance —
+# and at the 2.80 s cleanup the gap becomes 2.240 s, which puts the arm 0.30 s
+# clear of an install that costs even the full 0.160 s.
+#
+# ⚠ This supersedes the "+0.099..+0.129 s, 1.24x" pair this comment carried when
+# D3 landed. That pair did not re-derive from the bag by any reading of it; the
+# bracket above does, from the recipe stated. The CONSTANT is unchanged.
+#
+# WHY IT MATTERS beyond tidiness: arming the catch latch mid-move installs a
+# graceful stop, so the platform halts wherever the interrupted go_home left it
+# and the cycle then throws from a site A its aim was not solved for. That is the
+# arrived-before-arming invariant `_step_positioning` enforces WITHIN a cycle,
+# defeated ACROSS cycles by a floor that ends before the move does.
+SAFE_ABORT_LADDER_S = 4.0 * NODE_LOOP_PERIOD_S
+
 # A MISSED cycle that the session CONTINUES past cannot hand over at
 # `handoff_margin_s`: that margin sizes the CAUGHT handoff (a verdict lands, the
 # catch stroke finishes — nothing is commanded). The MISS handoff is a whole SAFE_ABORT ladder,
@@ -473,13 +530,22 @@ ILC_SPEED_AUTHORITY = 0.15
 # returns while the retract is still descending and the go_home profile is still
 # traversing. Measured from the cycle's SCHEDULED landing:
 #   CATCH_CONFIRM_WINDOW_S  the settle window before the MISSED verdict is minted
+# + SAFE_ABORT_LADDER_S     the ladder's own dispatch cost, verdict -> go_home
+#                           INSTALL (added 2026-08-26, D3 — it was charged at zero)
 # + GO_HOME_DURATION_S      the recentre profile _safe_abort installs last
-# + 2 x NODE_TICK_S         observe-the-terminal + start-the-next-cycle
-DEFAULT_SESSION_MISS_CLEANUP_S = (CATCH_CONFIRM_WINDOW_S + GO_HOME_DURATION_S
-                                  + 2.0 * NODE_TICK_S)      # 2.60 s since
-                                                            # 2026-08-24 (2.84 s
-                                                            # while the band
-                                                            # ceiling was 0.80)
+# + 2 x NODE_LOOP_PERIOD_S  observe-the-terminal + start-the-next-cycle, at the
+#                           LOOP period rather than the sleep, same as every other
+#                           node-side term here
+DEFAULT_SESSION_MISS_CLEANUP_S = (CATCH_CONFIRM_WINDOW_S + SAFE_ABORT_LADDER_S
+                                  + GO_HOME_DURATION_S
+                                  + 2.0 * NODE_LOOP_PERIOD_S)
+                                                            # 2.80 s since
+                                                            # 2026-08-26 (2.60 s
+                                                            # from the 2026-08-24
+                                                            # band re-measure;
+                                                            # 2.84 s while the
+                                                            # band ceiling was
+                                                            # 0.80)
 
 # The MISSED family — the ONLY cycle-failure class stop_on_miss governs. Every
 # other non-CAUGHT outcome (REJECTED_*, ABORTED_*) ends the session regardless:
@@ -777,7 +843,7 @@ class TossSessionSequencer:
         POSITIONING takes the census-B1 no-op skip.  That is not optimism; it is
         what the session's number MEANS.  ``throw_delay_s`` is the operator's
         cadence parameter (``required_dwell_s`` is ``throw_delay +
-        handoff_margin``), a cadence is a steady state, and charging the 0.460 s
+        handoff_margin``), a cadence is a steady state, and charging the 0.520 s
         moving budget here would refuse every cadence above ~40 throws/min for a
         cost only the FIRST cycle of a sitting ever pays.
 
@@ -790,7 +856,7 @@ class TossSessionSequencer:
           nothing moved — and never ``ABORTED_CANT_MAKE_RELEASE`` mid-sequence;
         * and the node RAISES that first cycle's ``throw_delay`` to the moving
           floor (``_build_toss_cycle``, one WARN line), so the ordinary case is
-          "cycle 1 releases ~0.38 s later than the metronome implies, then the
+          "cycle 1 releases ~0.36 s later than the metronome implies, then the
           landing-anchored schedule takes over" rather than a refusal.
 
         The speed is :attr:`floor_event_vel_mps`, not the untrimmed closed form —
@@ -1231,12 +1297,14 @@ class TossSessionSequencer:
                 # an observed one, and for a non-release nothing actually flew —
                 # but the constant is still a valid floor here, with slack: this
                 # ladder starts at `t_release + release_grace_s` (0.5 s), so the
-                # need measured from t_release is 0.5 + GO_HOME_DURATION_S +
-                # 2 x NODE_TICK_S = 2.54 s, while this grants
-                # flight + DEFAULT_SESSION_MISS_CLEANUP_S >= 2.60 s for any
-                # flight >= 0. The 2026-08-24 band re-measure narrowed that
-                # margin from 300 ms to 60 ms without inverting it; a further
-                # cut to ARRIVAL_BAND_MAX_S below 0.50 s WOULD invert it, and
+                # need measured from t_release is 0.5 + SAFE_ABORT_LADDER_S +
+                # GO_HOME_DURATION_S + 2 x NODE_LOOP_PERIOD_S = 2.74 s, while
+                # this grants flight + DEFAULT_SESSION_MISS_CLEANUP_S >= 2.80 s
+                # for any flight >= 0. The 2026-08-24 band re-measure narrowed
+                # that margin from 300 ms to 60 ms without inverting it, and the
+                # 2026-08-26 D3 edit added the SAME ladder term to BOTH sides, so
+                # the margin is still 60 ms; a further cut to ARRIVAL_BAND_MAX_S
+                # below 0.50 s WOULD invert it, and
                 # this comment is where that would first be visible. Reusing the constant (rather than deriving
                 # a second, shorter one) is also what keeps the two teardown
                 # floors from drifting apart — the reload interlude's rung 4
@@ -1324,11 +1392,27 @@ class TossSessionSequencer:
                            stop_code: Optional[str] = None) -> None:
         """Consume the interlude the node just ran.
 
-        ``attempts`` is how many reload attempts it actually SPENT — the BB
-        not-positioned-in-time retry re-enters the reload FSM inside one
-        interlude, and every re-entry is a real BB ball, so it is charged to the
-        same budget. ``stop_code`` is the node's named refusal (its half of the
-        precondition gate, or a failed reload); the session stops on it.
+        ``attempts`` is how many reload attempts it actually SPENT — a failed
+        attempt re-enters the reload FSM inside one interlude, and every re-entry
+        is a real BB ball, so it is charged to the same budget. Since owner
+        decision D2 (2026-08-26) any failed THROW is retried within budget, not
+        only BB's ``THROW_ABORTED_NOT_SETTLED``; each retry re-runs the whole
+        interlude ladder, so every refusal rung still gates it. (A PRECONDITION
+        failure is not a throw and stops the session by name instead — see
+        ``reload_coordinator_node._run_reload_interlude``.)
+        ``stop_code`` is the node's named refusal (its half of the precondition
+        gate, or an exhausted budget); the session stops on it.
+
+        **THE FLOOR TALLY IS CHARGED PER ATTEMPT HERE** (audit fix, 2026-08-26),
+        and it has to be charged here because nothing else can. ``attempts`` balls
+        left BallButler and every one of them that did not land in the cup is on
+        the floor; ``_reload_precheck`` charged exactly ONE, at the top of the
+        interlude, because that is all there was before D2 let one interlude spend
+        the whole budget. The session's floor and budget rungs are evaluated ONCE
+        per interlude and are deliberately excluded from the per-attempt ladder
+        (``_reload_interlude_gate``), so a 3-attempt interlude used to advance
+        ``floor_balls`` by 1 and ``floor_pause_every`` never fired on the sitting
+        that had most balls down. The undercount is exactly ``attempts - 1``.
 
         A successful interlude flags the NEXT cycle ``reload_settle`` — the cycle
         after a reload is excluded from every fit (guard G10), because a
@@ -1339,6 +1423,9 @@ class TossSessionSequencer:
         self._reload_pending = False
         self._phase = SESSION_PHASE_DWELL
         self._reloads_used += max(0, int(attempts))
+        # Every ATTEMPT is a ball on the floor; `_reload_precheck` charged the
+        # first one. D2 lets one interlude spend up to `max_reloads`.
+        self._floor_balls += max(0, int(attempts) - 1)
         if ok:
             self._reload_settle_next = True
             return

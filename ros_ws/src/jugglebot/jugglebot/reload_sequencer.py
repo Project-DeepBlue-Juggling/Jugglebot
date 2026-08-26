@@ -45,10 +45,15 @@ hardware session — see the ORDERING PRINCIPLE below):
    the 2026-07-23 session caught two balls exactly that way, while the previous
    finish-immediately behaviour tore the arming down while the ball was still in
    the air. The outcome resolves at settle.
-6. **SETTLING** — ball status ``CAUGHT`` from the tracker within the confirm window ⇒
-   ``CAUGHT`` (FSM emits ``ACTION_RECENTER``); otherwise ``MISSED_INFEASIBLE_<code>``
+6. **SETTLING** — the BALL-IN-CUP SENSOR observing the ball arrive within the
+   confirm window ⇒ ``CAUGHT`` (FSM emits ``ACTION_RECENTER``); otherwise
+   ``MISSED_SENSOR_BLIND`` (the cup could not look — a machine fault, named
+   rather than laundered into a miss), ``MISSED_INFEASIBLE_<code>``
    (only when NO catch target was ever accepted for the flight — see
    :meth:`note_catch_feasibility`) or ``MISSED``.
+   Read "ball status ``CAUGHT`` from the tracker" here until 2026-08-26, when
+   owner decision D1 made possession the cup's alone on BOTH FSMs
+   (``ros_ws/docs/ball_possession_contract.md``, C-POSSESS-1.D).
 
 ORDERING PRINCIPLE (the Q2 fix): every Jugglebot-side arming action (hand prime,
 catch latch) happens BEFORE ``bb/throw_at_target`` is sent. BB's throw countdown
@@ -126,6 +131,16 @@ DEFAULT_THROW_DELAY_S = 3.0                 # >= BB's ~2.5 s lead floor
 MIN_THROW_LEAD_S = 2.5                      # BB CANT_MAKE_LEAD floor
 RELOAD_TIMEOUT_S = 10.0                     # RELOADING → IDLE + ball_in_hand
 ANNOUNCEMENT_GRACE_S = 0.5                  # announcement must land within delay + this
+# ⚠ CORRECT BY CONSTRUCTION SINCE 2026-08-26 (D1), where before it was correct by
+# luck. This window is a SENSOR-BAND budget, and until D1 it was spent waiting on
+# the mocap TRACKER's CAUGHT latency — two unrelated quantities sharing one
+# number, which is the "bound without an error model" defect one level down. The
+# 2026-08-26 census is what made the mismatch visible: three genuine catches whose
+# cup edge landed at +0.222 / +0.249 / +0.227 s (comfortably inside) died MISSED
+# because the tracker's CAUGHT did not arrive until +0.615 / +0.83 / +0.622 s.
+# With the cup as the sole consumer the derivation closes: the LATEST cup arrival
+# edge in that whole bag is **+0.303 s**, against this 0.560 s ceiling — 1.85x of
+# margin — so the constant did NOT change and did not need to.
 CATCH_CONFIRM_WINDOW_S = ARRIVAL_BAND_MAX_S # CAUGHT within this of predicted landing.
                                             # DERIVED from the measured sensor arrival
                                             # band, exactly as the toss twin is (census
@@ -158,7 +173,16 @@ class ReloadObservations:
                                       # Default False = fail-closed: an FSM that was
                                       # never told is not entitled to assume.
                                       # See REJECTED_NOT_CENTERED in _step_checking.
-    ball_caught: bool = False         # tracker CAUGHT confirmation for the thrown ball
+    ball_caught: bool = False         # THE possession verdict for the thrown ball —
+                                      # the ball-in-cup sensor's, and ONLY its, since
+                                      # 2026-08-26 (owner decision D1). The mocap
+                                      # tracker is not consulted for possession on
+                                      # either FSM; it keeps every other role.
+    possession_blind: bool = False    # the verdict was UNKNOWN because the sensor
+                                      # COULD NOT LOOK (ball_possession.arrival_blind),
+                                      # not because its window was still open. Names
+                                      # the fault at the terminal instead of
+                                      # laundering a dead sensor into a MISS.
     catch_error_mm: float = float('nan')
 
 
@@ -529,6 +553,17 @@ class ReloadSequencer:
     def _step_settling(self, now: float, obs: ReloadObservations) -> ReloadDecision:
         if obs.ball_caught:
             return self._finish(ReloadResult(True, 'CAUGHT', obs.catch_error_mm))
+        if obs.possession_blind:
+            # The cup sensor could not LOOK across the arrival window (invalid
+            # samples, a stale poller, an un-anchored bridge clock). Since D1 it is
+            # the sole source, so "no rise seen" is not evidence of no arrival —
+            # and a dead sensor must never be laundered into a MISS verdict the
+            # operator would route at the catch. Same MISSED family (the terminal
+            # action, the stop_on_miss governance and the accounting are all
+            # keyed on the prefix), a different name, which is what sends the
+            # operator to the sensor instead of to the throw.
+            return self._finish(ReloadResult(
+                False, 'MISSED_SENSOR_BLIND', obs.catch_error_mm))
         if self._catch_infeasible is not None:
             # No catch target was EVER accepted for this flight — the platform
             # never had a reachable catch pose — and the ball did not land in the

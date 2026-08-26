@@ -328,32 +328,90 @@ def test_throw_delay_floor_is_the_derived_dispatch_budget_not_a_constant():
             assert over.step(0.0, _obs(0.0)).phase == PHASE_POSITIONING
 
 
-def test_the_pre_dispatch_budget_is_the_node_tick_ladder_not_a_literal():
-    """``pre_dispatch_budget_s`` counts the ticks the node actually spends
-    between cycle start and the LAST release-window guard evaluation:
+def test_the_pre_dispatch_budget_is_the_node_loop_ladder_not_a_literal():
+    """``pre_dispatch_budget_s`` counts the LOOP ITERATIONS the node actually
+    spends between cycle start and the LAST release-window guard evaluation:
 
       * no move (census-B1 skip): arrival is declared inside tick 0, so
         ``_step_positioning`` runs at tick 1 and PREPARE/announce/dispatch add
-        three more — **4 ticks = 0.080 s**;
+        three more — **4 iterations = 0.160 s**;
       * a commanded move: arrival is ``min_move_duration_s + settle pad`` =
-        0.400 s, first observed at tick 20, plus the same three —
-        **23 ticks = 0.460 s**.
+        0.400 s, first observed at iteration 10, plus the same three —
+        **13 iterations = 0.520 s**.
 
-    Pinned as a FUNCTION of the tick, not as two literals: the tick moved
-    0.05 -> 0.02 on 2026-08-22 and this budget must move with it. The 0.40/0.02
-    case is also the float trap — a bare ``ceil`` charges a 21st tick, because
-    the quotient is 20.000000000000004."""
+    Pinned as a FUNCTION of the period, not as two literals: the tick moved
+    0.05 -> 0.02 on 2026-08-22 and the UNIT moved from the sleep to the measured
+    loop period on 2026-08-26 (owner decision D3), and this budget must move with
+    both. The 0.40/0.02 case is also the float trap — a bare ``ceil`` charges an
+    extra iteration, because the quotient is 20.000000000000004."""
     from jugglebot.toss_sequencer import (
         TOSS_POSITION_MIN_MOVE_S, TOSS_POSITION_SETTLE_PAD_S,
-        NODE_TICK_S, pre_dispatch_budget_s)
-    assert pre_dispatch_budget_s(False) == pytest.approx(4 * NODE_TICK_S)
+        NODE_LOOP_PERIOD_S, pre_dispatch_budget_s)
+    assert pre_dispatch_budget_s(False) == pytest.approx(4 * NODE_LOOP_PERIOD_S)
     arrival = TOSS_POSITION_MIN_MOVE_S + TOSS_POSITION_SETTLE_PAD_S
     assert pre_dispatch_budget_s(True) == pytest.approx(
-        (round(arrival / NODE_TICK_S) + 3) * NODE_TICK_S)
-    assert pre_dispatch_budget_s(True) == pytest.approx(0.460)
-    # It tracks the tick, both ways.
+        (round(arrival / NODE_LOOP_PERIOD_S) + 3) * NODE_LOOP_PERIOD_S)
+    assert pre_dispatch_budget_s(True) == pytest.approx(0.520)
+    # It tracks the period, both ways.
     assert pre_dispatch_budget_s(False, 0.05) == pytest.approx(0.20)
     assert pre_dispatch_budget_s(True, 0.05) == pytest.approx(0.55)
+    # The float trap, still charged correctly at the new period: 0.40/0.04 is
+    # 10.000000000000002.
+    assert pre_dispatch_budget_s(True, 0.04) == pytest.approx(13 * 0.04)
+
+
+def test_the_loop_period_is_a_bound_over_the_measured_iteration():
+    """D3, 2026-08-26. The unit the ladder is counted in is the loop's PERIOD
+    (work + sleep), not its sleep, and it is MEASURED.
+
+    Bag ``2026-08-26_14-25-16``, 28 cycle starts across 12 goals: cycle start to
+    the ``/throw_ann`` publish spans exactly 3 loop iterations and measured
+    0.080-0.113 s, i.e. 0.0267-0.0377 s per iteration. The constant is that
+    maximum ceiled to the next 10 ms, which is what makes it a bound rather than a
+    datum — and it must stay STRICTLY above the measured maximum, never equal to
+    it, or the floor holds by luck at the worst sample.
+
+    It must also stay at or above the sleep: an iteration cannot be shorter than
+    the sleep at its bottom."""
+    from jugglebot.toss_sequencer import NODE_LOOP_PERIOD_S, NODE_TICK_S
+    measured_max_iteration_s = 0.113 / 3.0
+    assert NODE_LOOP_PERIOD_S > measured_max_iteration_s
+    assert NODE_LOOP_PERIOD_S >= NODE_TICK_S
+
+
+@pytest.mark.parametrize(
+    'event_vel_mps,throw_delay_s,label',
+    [(2.48, 0.44, 'run 2 c1'),
+     (3.92, 0.40, 'run 10 c2')])
+def test_the_two_2026_08_26_aborts_are_refused_at_accept_now(
+        event_vel_mps, throw_delay_s, label):
+    """THE D3 acceptance, driven from the two cycles that failed.
+
+    Both ``ABORTED_CANT_MAKE_RELEASE`` cycles of bag ``2026-08-26_14-25-16``
+    cleared the accept-time floor — by 26 ms and 39 ms — and then died at the
+    runtime guard in PREPARING, with the catch latch raised, the announcement
+    published and a phantom tracker expectation left behind for the next cycle's
+    ``REJECTED_TRACK_ACTIVE`` to trip over. That is precisely what
+    ``min_throw_delay_for_release_s`` exists to make unreachable from static
+    arithmetic, and it stayed reachable because both gates agreed on a
+    pre-dispatch budget that was 0.080 s short.
+
+    The acceptance the brief asked for is stated as the choice it is: with the
+    honest budget these two are **REFUSED AT ACCEPT**, not cleared. Refusing is
+    the correct half of "loud and early" — the operator asked for a lead the
+    machine demonstrably cannot make, and the alternative is the armed abort they
+    actually got."""
+    from jugglebot.toss_sequencer import min_throw_delay_for_release_s
+    floor = min_throw_delay_for_release_s(event_vel_mps, False)
+    assert throw_delay_s < floor, (
+        '{}: throw_delay {:.3f} s must now be REFUSED against the {:.4f} s floor'
+        .format(label, throw_delay_s, floor))
+    # ... and it was ACCEPTED under the old 0.080 s budget, which is the
+    # regression this pins. (The old floor is reconstructed from the same
+    # function, at the old unit, rather than typed in.)
+    old_floor = min_throw_delay_for_release_s(event_vel_mps, False,
+                                              loop_period_s=0.02)
+    assert throw_delay_s >= old_floor
 
 
 def test_the_planner_min_move_floor_matches_the_generated_config():
@@ -1630,3 +1688,166 @@ def test_announce_lead_short_warns_for_8b_too():
     seq.note_announcement()
     d = seq.step(3.9, _obs(3.9))
     assert d.phase == PHASE_THROWING and d.action == ACTION_DISPATCH_THROW
+
+
+# ── The loop-period census (INSTRUMENT ONLY) ─────────────────────────────────
+#
+# ⚠ These tests verify ARITHMETIC ONLY. They cannot tell you the real loop is
+# fast: the mocked-ROS suite has no executor, no publishers and no GIL
+# contention, so it is structurally blind to the thing the census exists to
+# measure. The only check that can answer that is a hardware sitting's corpus.
+# What is pinned here is that the numbers the corpus carries mean what their
+# field docs say — an off-by-one in the lag, or a phase attributed to the wrong
+# bucket, would make a whole sitting's census quietly wrong.
+
+
+def _census_iteration(census, now, *, obs_s, body_s, phase):
+    """Drive one full iteration at `now`, spending `obs_s` then `body_s`."""
+    from jugglebot.toss_sequencer import PHASE_PREPARING
+    census.note_iteration_start(now)
+    t_obs_done = now + obs_s
+    t_pre_sleep = t_obs_done + body_s
+    census.note_iteration_end(now, t_obs_done, t_pre_sleep, phase)
+    return t_pre_sleep
+
+
+def test_the_census_measures_period_top_of_loop_to_top_of_loop():
+    """The period is the FSM's own clock advancing, not the body plus a nominal
+    sleep: `now` is what every guard compares against, so the interval between
+    successive `now` values IS the granularity time appears to move at."""
+    from jugglebot.toss_sequencer import LoopPeriodCensus, PHASE_PREPARING
+    c = LoopPeriodCensus()
+    # Three starts at 0.00 / 0.03 / 0.07 => two committed periods, 30 and 40 ms.
+    for t in (0.00, 0.03, 0.07):
+        _census_iteration(c, t, obs_s=0.001, body_s=0.004,
+                          phase=PHASE_PREPARING)
+    c.note_iteration_start(0.10)                  # commits the third, 30 ms
+    s = c.summary()
+    assert s['loop_n_pre'] == 3
+    assert s['loop_period_max_pre_s'] == pytest.approx(0.04)
+    assert s['loop_period_mean_pre_s'] == pytest.approx(0.100 / 3)
+
+
+def test_the_terminal_iteration_is_never_counted():
+    """An iteration that returns from the middle of the loop never reaches the
+    sleep, so charging it a period would report time the loop did not spend.
+    The lag-by-one commit drops it by construction — this pins that it does."""
+    from jugglebot.toss_sequencer import LoopPeriodCensus, PHASE_PREPARING
+    c = LoopPeriodCensus()
+    _census_iteration(c, 0.00, obs_s=0.001, body_s=0.004, phase=PHASE_PREPARING)
+    _census_iteration(c, 0.03, obs_s=0.001, body_s=0.004, phase=PHASE_PREPARING)
+    # The real loop's terminal tick: a start, then an early return. No end call.
+    c.note_iteration_start(0.06)
+    assert c.summary()['loop_n_pre'] == 2         # not 3
+
+
+def test_a_cycle_that_never_completes_an_iteration_reports_not_measured():
+    """All-None, never zeros. A REJECTED_BAD_GOAL record must be distinguishable
+    from a cycle that ran and measured nothing — the record's null discipline
+    exists so a reader never has to guess which it is looking at."""
+    from jugglebot.toss_sequencer import (CENSUS_FIELD_NAMES, LoopPeriodCensus)
+    s = LoopPeriodCensus().summary()
+    assert set(s) == set(CENSUS_FIELD_NAMES)
+    assert all(v is None for v in s.values())
+
+
+def test_post_dispatch_ticks_do_not_dilute_the_pre_dispatch_statistics():
+    """THE reason the census is phase-split. A cycle spends most of its ticks
+    idling out a flight; only the pre-dispatch handful are what
+    pre_dispatch_budget_s charges. Pooling them would report a comfortable mean
+    for a ladder that is not comfortable."""
+    from jugglebot.toss_sequencer import (LoopPeriodCensus, PHASE_BALL_IN_FLIGHT,
+                                          PHASE_PREPARING)
+    c = LoopPeriodCensus()
+    _census_iteration(c, 0.00, obs_s=0.002, body_s=0.016, phase=PHASE_PREPARING)
+    t = 0.038                                     # an expensive pre-dispatch tick
+    for i in range(20):                           # then 20 cheap flight ticks
+        _census_iteration(c, t, obs_s=0.0005, body_s=0.0005,
+                          phase=PHASE_BALL_IN_FLIGHT)
+        t += 0.021
+    c.note_iteration_start(t)
+    s = c.summary()
+    assert s['loop_n_pre'] == 1 and s['loop_n_post'] == 20
+    assert s['loop_period_max_pre_s'] == pytest.approx(0.038)
+    assert s['loop_period_max_post_s'] == pytest.approx(0.021)
+    # The pre-dispatch mean is the expensive tick alone, undiluted by 20 cheap ones.
+    assert s['loop_period_mean_pre_s'] == pytest.approx(0.038)
+
+
+def test_the_body_decomposition_separates_sleep_overshoot_from_work():
+    """The three-way split is the whole diagnostic value. `sleep` is MEASURED,
+    not assumed to be NODE_TICK_S: a sleep that returns 6 ms late must land in
+    the sleep column, or scheduler overshoot is charged to code that did not run
+    slowly and the GIL question becomes indistinguishable from the blocking-call
+    question."""
+    from jugglebot.toss_sequencer import LoopPeriodCensus, PHASE_PREPARING
+    c = LoopPeriodCensus()
+    # obs 3 ms, body 12 ms, then a 20 ms sleep that returns at 26 ms.
+    c.note_iteration_start(0.000)
+    c.note_iteration_end(0.000, 0.003, 0.015, PHASE_PREPARING)
+    c.note_iteration_start(0.041)                 # 15 ms work + 26 ms sleep
+    s = c.summary()
+    assert s['loop_obs_max_pre_s'] == pytest.approx(0.003)
+    assert s['loop_body_max_pre_s'] == pytest.approx(0.012)
+    assert s['loop_sleep_max_pre_s'] == pytest.approx(0.026)
+    assert s['loop_work_max_pre_s'] == pytest.approx(0.015)
+    assert s['loop_period_max_pre_s'] == pytest.approx(0.041)
+
+
+def test_work_max_is_the_max_of_the_sum_not_the_sum_of_the_maxima():
+    """They differ, and only the former answers 'how close did the worst tick
+    come to its budget' — which is the question that decides whether the loop
+    could run to a shorter period."""
+    from jugglebot.toss_sequencer import LoopPeriodCensus, PHASE_PREPARING
+    c = LoopPeriodCensus()
+    # Tick A: obs 10, body 1. Tick B: obs 1, body 10. Both sum to 11 ms.
+    c.note_iteration_start(0.000)
+    c.note_iteration_end(0.000, 0.010, 0.011, PHASE_PREPARING)
+    c.note_iteration_start(0.031)
+    c.note_iteration_end(0.031, 0.032, 0.042, PHASE_PREPARING)
+    c.note_iteration_start(0.062)
+    s = c.summary()
+    assert s['loop_obs_max_pre_s'] == pytest.approx(0.010)
+    assert s['loop_body_max_pre_s'] == pytest.approx(0.010)
+    assert s['loop_work_max_pre_s'] == pytest.approx(0.011)   # NOT 0.020
+
+
+def test_overrun_counts_only_pre_dispatch_ticks_and_flags_the_cycle():
+    """The alarm. A pre-dispatch tick over NODE_LOOP_PERIOD_S means the bound
+    every delay floor is denominated in did not hold — on a SUCCESSFUL cycle
+    that is the early warning that was previously invisible. A slow POST-dispatch
+    tick is not that finding and must not raise it."""
+    from jugglebot.toss_sequencer import (LoopPeriodCensus, NODE_LOOP_PERIOD_S,
+                                          PHASE_BALL_IN_FLIGHT, PHASE_PREPARING)
+    over = NODE_LOOP_PERIOD_S + 0.005
+    c = LoopPeriodCensus()
+    _census_iteration(c, 0.0, obs_s=0.001, body_s=0.004, phase=PHASE_BALL_IN_FLIGHT)
+    c.note_iteration_start(over)                  # a slow POST tick
+    assert c.overran is False
+    assert c.n_over_pre == 0
+    # ...and the SUMMARY is all-None, not zeros: no pre-dispatch iteration was
+    # censused at all, which is "not measured" and not "measured, none over".
+    assert c.summary()['loop_n_over_pre'] is None
+
+    c = LoopPeriodCensus()
+    _census_iteration(c, 0.0, obs_s=0.001, body_s=0.004, phase=PHASE_PREPARING)
+    c.note_iteration_start(over)                  # the same slowness, PRE
+    assert c.overran is True and c.summary()['loop_n_over_pre'] == 1
+
+
+def test_the_census_never_feeds_a_budget():
+    """The governing constraint, pinned. pre_dispatch_budget_s must depend on
+    NODE_LOOP_PERIOD_S and on nothing the last cycle measured: a floor that
+    re-derived itself from observed slowness would TRACK a degradation instead of
+    exposing it, which is exactly how the two 2026-08-26
+    ABORTED_CANT_MAKE_RELEASE cycles cleared a gate they should have failed."""
+    from jugglebot import toss_sequencer as ts
+    for fn in (ts.pre_dispatch_budget_s, ts.min_throw_delay_for_release_s):
+        # The COMPILED identifier set, not the source text: 'census' is an
+        # unrelated word in this codebase (the B1/B6 census notes) and a source
+        # grep matches those docstrings. co_names/co_varnames carry the names the
+        # function actually reaches for, and docstrings live in co_consts.
+        refs = set(fn.__code__.co_names) | set(fn.__code__.co_varnames)
+        assert not [r for r in refs if 'census' in r.lower()], fn.__name__
+    # And the census exposes no method a gate could mistake for a budget.
+    assert not hasattr(ts.LoopPeriodCensus, 'budget_s')

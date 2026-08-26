@@ -1029,22 +1029,176 @@ def test_the_bb_not_settled_abort_is_retried_within_budget(monkeypatch):
     assert len(calls) == 2
 
 
-def test_the_retry_is_targeted_at_that_code_and_nothing_else(monkeypatch):
-    """A blanket 'retry any failed reload' would swallow the BB fail-open boot
-    bug and every real BB fault, and would keep asking an unwell machine to throw
-    real balls. Every other terminal stops the session by name."""
+def test_any_failed_attempt_is_retried_within_budget(monkeypatch):
+    """**Owner decision D2, 2026-08-26.** Every way a reload can fail draws on
+    ``max_reloads``, not just BB's ``THROW_ABORTED_NOT_SETTLED``.
+
+    Before D2 this test asserted the opposite — that only that ONE code retried,
+    because 'a blanket retry would swallow the BB fail-open boot bug and every
+    real BB fault, and would keep asking an unwell machine to throw real balls'.
+    The argument was right about the hazard and wrong about the remedy: the
+    fail-open boot fence is ``STOPPED_BB_UNVERIFIED`` and the unwell-machine fence
+    is ``STOPPED_BB_NOT_READY``, both rungs of the interlude GATE — and the gate
+    ran once, outside the retry loop, so keying on the code was doing the fences'
+    job badly instead of running the fences. D2 runs the whole ladder per attempt
+    (``test_every_refusal_rung_gates_every_retry``), which is what makes the
+    widening safe.
+
+    The operator cost of the old rule: a DELIVERED reload that missed the cup
+    stopped the sitting on its first miss."""
     clock = _Clock()
     monkeypatch.setattr(rcn, 'time', clock)
     for bb_code in ('', 'THROW_REJECTED_PV_STALE (axis=YAW, detail1=0)',
-                    'TIMEOUT (axis=n/a, detail1=0)'):
+                    'TIMEOUT (axis=n/a, detail1=0)',
+                    'THROW_ABORTED_NOT_SETTLED (axis=YAW, detail1=0)'):
         node = _reload_ready_node(clock)
-        calls = _stub_attempts(node, monkeypatch,
-                               [ReloadResult(False, 'MISSED')],
-                               bb_codes=[bb_code])
+        calls = _stub_attempts(
+            node, monkeypatch,
+            [ReloadResult(False, 'MISSED'), ReloadResult(True, 'CAUGHT')],
+            bb_codes=[bb_code, ''])
         ok, code, attempts = node._run_reload_interlude(_session(max_reloads=3))
-        assert ok is False and attempts == 1, bb_code
-        assert code == 'STOPPED_RELOAD_MISSED', bb_code
-        assert len(calls) == 1, bb_code
+        assert (ok, code, attempts) == (True, None, 2), bb_code
+        assert len(calls) == 2, bb_code
+
+
+def test_a_delivered_but_missed_reload_draws_on_the_budget(monkeypatch):
+    """The D2 case the old rule could not serve: BB threw, the ball flew, the cup
+    stayed empty. Nothing is wrong with the machine — the throw missed — so the
+    budget is exactly the right fence, and it is spent one ball at a time until it
+    runs out."""
+    clock = _Clock()
+    monkeypatch.setattr(rcn, 'time', clock)
+    node = _reload_ready_node(clock)
+    calls = _stub_attempts(
+        node, monkeypatch,
+        [ReloadResult(False, 'MISSED'), ReloadResult(False, 'MISSED'),
+         ReloadResult(False, 'MISSED')],
+        bb_codes=['', '', ''])            # BB reported nothing: a real delivery
+    ok, code, attempts = node._run_reload_interlude(_session(max_reloads=3))
+    assert (ok, code, attempts) == (False, rcn.OUTCOME_STOPPED_RELOAD_BUDGET, 3)
+    assert len(calls) == 3
+
+
+@pytest.mark.parametrize('break_rung,want_code', [
+    ('cup_not_empty', 'STOPPED_CUP_NOT_EMPTY'),
+    ('sensor_unknown', 'STOPPED_SENSOR_UNKNOWN'),
+    ('bb_not_ready', 'STOPPED_BB_NOT_READY'),
+    ('bb_unverified', 'STOPPED_BB_UNVERIFIED'),
+    ('recentre', 'STOPPED_RECENTRE_FAILED'),
+])
+def test_every_refusal_rung_gates_every_retry(monkeypatch, break_rung, want_code):
+    """**The safety half of D2.** A retry is a repeat of the whole LADDER, not of
+    the throw: rungs 1 and 2 run again before every attempt.
+
+    Driven the only way that proves it — let attempt 1 run and FAIL, then break
+    one rung and assert the RETRY refuses with that rung's own code rather than
+    throwing a second ball. Before D2 the gate ran once, outside the loop, so the
+    retry could not see any of these.
+
+    ``STOPPED_CUP_NOT_EMPTY`` is the load-bearing one: the interlude answers an
+    empty cup by asking BallButler to throw at it, so a retry that skipped this
+    rung after the first ball actually landed would put a second ball into a full
+    cup."""
+    clock = _Clock()
+    monkeypatch.setattr(rcn, 'time', clock)
+    node = _reload_ready_node(clock)
+    calls = _stub_attempts(
+        node, monkeypatch,
+        [ReloadResult(False, 'MISSED'), ReloadResult(True, 'CAUGHT')],
+        bb_codes=['', ''])
+
+    real_attempt = node._run_one_reload_attempt
+
+    def attempt_then_break(**kw):
+        out = real_attempt(**kw)
+        if break_rung == 'cup_not_empty':
+            clock.sensor_held = True
+            _feed_sensor(node, clock.t, held=True, valid=True)
+        elif break_rung == 'sensor_unknown':
+            _feed_sensor(node, clock.t, held=False, valid=False)
+        elif break_rung == 'bb_not_ready':
+            with node._lock:
+                node._hb = _Hb(connected=False)
+        elif break_rung == 'bb_unverified':
+            with node._lock:
+                node._bb_ball_in_hand_observed_false = False
+        elif break_rung == 'recentre':
+            monkeypatch.setattr(node, '_go_home', lambda: False)
+        return out
+
+    monkeypatch.setattr(node, '_run_one_reload_attempt', attempt_then_break)
+    ok, code, attempts = node._run_reload_interlude(_session(max_reloads=3))
+    assert ok is False
+    assert code == want_code
+    # ONE ball was thrown, not two: the refusal landed BEFORE the retry.
+    assert attempts == 1
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize('outcome', [
+    'REJECTED_WRONG_MODE', 'REJECTED_MOCAP_STALE', 'REJECTED_NOT_STREAMING',
+    'REJECTED_NO_BALL', 'REJECTED_BB_BUSY', 'REJECTED_NOT_CENTERED',
+    'REJECTED_BB(solver: no solution)',
+    'ABORTED_BB_ERROR', 'ABORTED_TIMEOUT', 'ABORTED_SHUTDOWN',
+])
+def test_a_precondition_failure_stops_by_name_and_draws_no_further_budget(
+        monkeypatch, outcome):
+    """**D2 widens the budget to failed THROWS, not to precondition failures**
+    (audit finding W6, 2026-08-26).
+
+    ``max_reloads`` is a BALL budget — it counts balls the interlude put on the
+    floor. As first written the D2 loop retried on ANY non-success
+    ``ReloadResult``, which spends that budget on failures where no ball ever
+    left BallButler, and then collapses all of them into
+    ``STOPPED_RELOAD_BUDGET``.
+
+    That collapse is the part with teeth. ``tests/hardware/toss_cal_grid.py``
+    reads ``STOPPED_RELOAD_BUDGET`` as *"the node exhausted its reloads — skip
+    this node"*, so a BallButler with a stale mocap feed or a hard fault would
+    have burned three balls per cell and then let the capture tool complete a
+    THIN GRID SILENTLY, with no operator-visible fault anywhere. A calibration
+    that quietly measured less than it says it did is the one failure a capture
+    tool must never have.
+
+    So each of these stops the session by its OWN name, on the first attempt,
+    before any further budget is drawn and before the recentre is re-dispatched.
+    The operator reads what to fix."""
+    clock = _Clock()
+    monkeypatch.setattr(rcn, 'time', clock)
+    node = _reload_ready_node(clock)
+    calls = _stub_attempts(
+        node, monkeypatch,
+        [ReloadResult(False, outcome), ReloadResult(True, 'CAUGHT')])
+    recentres = []
+    real_recentre = node._recentre_for_reload
+    monkeypatch.setattr(node, '_recentre_for_reload',
+                        lambda: (recentres.append(1), real_recentre())[1])
+    ok, code, attempts = node._run_reload_interlude(_session(max_reloads=3))
+    assert ok is False
+    assert code == 'STOPPED_RELOAD_{}'.format(outcome)
+    assert code != rcn.OUTCOME_STOPPED_RELOAD_BUDGET
+    # ONE attempt, ONE recentre: the second ReloadResult above is never reached.
+    assert attempts == 1
+    assert len(calls) == 1
+    assert len(recentres) == 1
+
+
+def test_a_delivered_MISS_is_still_a_failed_throw_and_still_retries(monkeypatch):
+    """The other side of W6, so the narrowing cannot quietly become "stop on any
+    failure". A ``MISSED`` is a ball that flew and did not land in the cup — the
+    exact case D2 widened the budget FOR — and it must still draw an attempt and
+    retry. Ditto the three ABORTED codes deliberately left on the retry side."""
+    clock = _Clock()
+    monkeypatch.setattr(rcn, 'time', clock)
+    for outcome in ('MISSED', 'ABORTED_MODE_CHANGED', 'ABORTED_PRIME_FAILED',
+                    'ABORTED_PREPARE_FAILED'):
+        node = _reload_ready_node(clock)
+        calls = _stub_attempts(
+            node, monkeypatch,
+            [ReloadResult(False, outcome), ReloadResult(True, 'CAUGHT')])
+        ok, code, attempts = node._run_reload_interlude(_session(max_reloads=3))
+        assert (ok, code, attempts) == (True, None, 2), outcome
+        assert len(calls) == 2, outcome
 
 
 def test_a_not_settled_run_that_exhausts_the_budget_stops_with_the_budget_code(
@@ -1061,19 +1215,26 @@ def test_a_not_settled_run_that_exhausts_the_budget_stops_with_the_budget_code(
     assert (ok, code, attempts) == (False, rcn.OUTCOME_STOPPED_RELOAD_BUDGET, 2)
 
 
-def test_a_stale_bb_outcome_cannot_license_a_retry(monkeypatch):
-    """A NOT_SETTLED from a PREVIOUS attempt must not authorise retrying a reload
-    that failed for some other reason — so the cache is only consulted for
-    outcomes stamped after this attempt began."""
+def test_a_stale_bb_outcome_is_not_attributed_to_this_attempt(monkeypatch):
+    """A BB code from a PREVIOUS attempt must not be reported as this attempt's —
+    so the cache is only consulted for outcomes stamped after this attempt began.
+
+    Until D2 (2026-08-26) this was a SAFETY rule: a stale NOT_SETTLED would have
+    licensed a retry of a reload that failed for another reason. Since D2 every
+    failure retries anyway, so what the freshness rule protects is the LOG LINE —
+    a mis-attributed BB code routes the operator at the wrong machine. Kept, and
+    re-stated for what it now does; the assertion is on the reported code."""
     clock = _Clock()
     monkeypatch.setattr(rcn, 'time', clock)
     node = _reload_ready_node(clock)
     node._on_bb_throw_outcome(
         types.SimpleNamespace(data='THROW_ABORTED_NOT_SETTLED (axis=YAW)'))
     clock.sleep(1.0)                       # the attempt starts AFTER that stamp
-    _stub_attempts(node, monkeypatch, [ReloadResult(False, 'MISSED')])
-    ok, code, _ = node._run_reload_interlude(_session(max_reloads=3))
-    assert (ok, code) == (False, 'STOPPED_RELOAD_MISSED')
+    assert node._bb_throw_outcome_since(clock.perf_counter()) is None
+    _stub_attempts(node, monkeypatch,
+                   [ReloadResult(False, 'MISSED')] * 3)
+    ok, code, attempts = node._run_reload_interlude(_session(max_reloads=3))
+    assert (ok, code, attempts) == (False, rcn.OUTCOME_STOPPED_RELOAD_BUDGET, 3)
 
 
 def test_the_retried_attempts_are_charged_to_the_session_budget(monkeypatch):
@@ -1757,3 +1918,28 @@ def test_a_cancel_during_the_band_wait_is_honoured_before_anything_is_committed(
     stop = node._reload_interlude_gate(session, cancel_now_fn=lambda: True)
     assert stop == 'STOPPED_RELOAD_CANCELLED'
     assert clock.t < landing + ARRIVAL_BAND_S, 'it must not wait the band out'
+
+
+@pytest.mark.parametrize('fault_code', [
+    'REJECTED_WRONG_MODE', 'ABORTED_BB_ERROR', 'ABORTED_TIMEOUT'])
+def test_a_precondition_fault_stops_the_session_by_name(monkeypatch, fault_code):
+    """**The narrowing half of D2 (audit W6).** The budget is a BALL-SUPPLY
+    fence: it is drawn on by failed THROWS (BB's NOT_SETTLED abort, or a
+    delivered ball the cup did not catch) and by nothing else. A precondition
+    fault — wrong mode, stale mocap, a BB error — is not a ball: retrying it
+    spends the budget on a failure no reload can fix, and collapsing its
+    terminal into ``STOPPED_RELOAD_BUDGET`` makes ``toss_cal_grid`` read a
+    faulted BallButler as "node exhausted, skip" and complete a thin grid
+    instead of aborting. So the session stops on the FIRST such attempt, with
+    the fault's own name on the terminal."""
+    clock = _Clock()
+    monkeypatch.setattr(rcn, 'time', clock)
+    node = _reload_ready_node(clock)
+    calls = _stub_attempts(
+        node, monkeypatch,
+        [ReloadResult(False, fault_code), ReloadResult(True, 'CAUGHT')],
+        bb_codes=['', ''])
+    ok, code, attempts = node._run_reload_interlude(_session(max_reloads=3))
+    assert (ok, code, attempts) == (
+        False, 'STOPPED_RELOAD_{}'.format(fault_code), 1)
+    assert len(calls) == 1, 'a precondition fault must never be retried'

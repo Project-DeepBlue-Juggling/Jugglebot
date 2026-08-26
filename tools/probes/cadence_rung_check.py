@@ -18,7 +18,10 @@ node tick, and reports the phase the cycle actually reaches:
      (``_checking_reject`` via a real ``step``), which must emit
      ``ACTION_START_CYCLE``.
   2. :class:`toss_sequencer.TossSequencer` — the cycle FSM, ticked at
-     ``NODE_TICK_S`` and fed the **fastest node behaviour that is legal**:
+     ``toss_sequencer.NODE_LOOP_PERIOD_S`` (the MEASURED cost of one
+     ``_run_toss_cycle`` iteration, which is what the accept floor is charged in
+     — not the ``time.sleep`` at the bottom of it) and fed the **fastest node
+     behaviour that is legal**:
 
        * every live precondition already true on the first tick,
        * POSITIONING answered on the very next tick (``note_position_noop`` when
@@ -67,18 +70,35 @@ Read-only: constructs FSMs in-process, commands nothing, touches no hardware and
 no ROS graph.  Outputs to stdout only (see ``tools/probes/README.md``).
 Exit code 1 if any rung reds or the grid finds a violation.
 
-Findings on the tree of 2026-08-23, after the accept-floor redesign and the B1
-orientation surface.  ``--frontier`` is monotone across the whole C-HAND-3 band,
-fastest at the FLOOR, and the two columns MEET there (the throw envelope refuses
-a negative speed trim at the band floor, so an armed ILC costs nothing)::
+Findings on the tree of 2026-08-26, after owner decision D3.  ``--frontier`` is
+monotone across the whole C-HAND-3 band, fastest at the FLOOR, and the two
+columns MEET there (the throw envelope refuses a negative speed trim at the band
+floor, so an armed ILC costs nothing)::
 
-    fastest, aim disarmed  1.1050 s = 54.3 throws/min  (T 0.4949, delay 0.4168, dwell 0.6101)
-    fastest, ILC loaded    1.1050 s = 54.3 throws/min  (T 0.4949, delay 0.4168, dwell 0.6101)
+    fastest, aim disarmed  1.1850 s = 50.6 throws/min  (T 0.4949, delay 0.4968, dwell 0.6901)
+    fastest, ILC loaded    1.1850 s = 50.6 throws/min  (T 0.4949, delay 0.4968, dwell 0.6901)
 
-The aimed frontier was **40.4 throws/min** on 2026-08-22.  The whole 34 % is the
-B1 skip becoming reachable on a tilted release; the accept-floor redesign bought
-no cadence at all, and was never going to — what it bought is that a rung the
-gates accept cannot abort mid-sequence with the hand committed.
+The aimed frontier was **40.4 throws/min** on 2026-08-22 and **54.3** on
+2026-08-23.  The 34 % gain was the B1 skip becoming reachable on a tilted
+release; the accept-floor redesign bought no cadence at all, and was never going
+to — what it bought is that a rung the gates accept cannot abort mid-sequence
+with the hand committed.
+
+**D3 gave 6.8 % of that back — 54.3 -> 50.6 — and it is the same purchase, made
+honestly this time.**  The pre-dispatch sequence is now charged in the FSM loop's
+measured PERIOD rather than in its sleep (``toss_sequencer.NODE_LOOP_PERIOD_S``),
+because the sleep was never what a tick costs: measured over 28 cycle starts in
+bag ``2026-08-26_14-25-16`` an iteration is 0.0267-0.0377 s against a 0.020 s
+sleep.  The 54.3 figure was a cadence the gates would accept and the machine
+could not make — and on that sitting it did not: two cycles cleared the accept
+floor by 26 and 39 ms and then aborted ``ABORTED_CANT_MAKE_RELEASE`` in
+PREPARING, with the catch latch raised and the announcement already published.
+
+**The way back to 54.3 is the LOOP, not the floor.**  Every millisecond of
+per-tick work is charged four times over in the skip budget, so the levers are
+real ones — fewer blocking service calls in the PREPARE bundle, a cheaper
+observation build — and each of them is measurable by re-running the grep this
+constant was cut from.  Relaxing the floor instead just re-buys the abort.
 """
 
 from __future__ import annotations
@@ -102,10 +122,18 @@ from jugglebot.motion.trajectory import hand_stroke              # noqa: E402
 from jugglebot.motion.trajectory.toss_release import (           # noqa: E402
     apex_height_from_flight_time, flight_time_from_height)
 from jugglebot.toss_sequencer import (                           # noqa: E402
-    FLIGHT_TIME_MAX_S, FLIGHT_TIME_MIN_S)
+    FLIGHT_TIME_MAX_S, FLIGHT_TIME_MIN_S, NODE_LOOP_PERIOD_S)
 
-#: The reload coordinator's FSM tick, as of c938c1d (was 0.05 before B3).
-NODE_TICK_S = 0.02
+# THE ITERATION COST, IMPORTED — never restated here.
+#
+# Until 2026-08-26 this module carried its own ``NODE_TICK_S = 0.02`` literal and
+# advanced the FSM by it, while ``pre_dispatch_budget_s`` charged the SAME ladder
+# at ``NODE_LOOP_PERIOD_S`` (0.040 s) per iteration.  A probe whose clock runs at
+# half the rate the gate is charged at reports a lead the machine never has: it
+# green-lit the pre-D3 arithmetic that aborted two cycles of bag
+# ``2026-08-26_14-25-16`` with the hand committed, and reported 0 grid violations
+# for it.  The unit is now the one the floor is cut from, by import, so the two
+# cannot drift again — move ``NODE_LOOP_PERIOD_S`` and this probe moves with it.
 
 #: The planner floor a real (non-skipped) go_to_pose pays even for a zero-length
 #: pre-tilt move.  Sourced from the generated config, never hardcoded.
@@ -121,14 +149,50 @@ MIN_MOVE_DURATION_S = float(hw.JB_TRAJ_MIN_MOVE_DURATION_S)
 #: whatever its tilt, so one pair serves both. Each pair below is legal with a
 #: layer-3 artifact LOADED as well as without it — the stricter case, because
 #: this runbook exists to arm ILC-primary.
+#:
+#: ⚠ **THE FAST END MOVED ON 2026-08-26 (owner decision D3).** The pre-dispatch
+#: sequence is now charged in the FSM loop's measured PERIOD instead of in its
+#: sleep (``toss_sequencer.NODE_LOOP_PERIOD_S``), which raises the CHAINED
+#: (census-B1 skip) delay floor by **0.080 s** and the FIRST-cycle moving floor by
+#: **0.060 s**, and every derived dwell floor by its own delay's change.
+#:
+#: (The two are different because ``pre_dispatch_budget_s`` is
+#: ``(arrival_ticks + 3) * loop`` and only the ``+3`` scales with the loop on the
+#: skip path: with a move the 0.400 s arrival is a WALL-CLOCK quantity, so its
+#: tick count halves as the period doubles — 20 -> 10 ticks — and the budget goes
+#: 0.460 -> 0.520, not 0.460 -> 0.920. "+0.080 s on every floor" was wrong and is
+#: corrected here, audit finding W9.)
+#:
+#: R0-R3 clear their floors by seconds and are untouched; R4 and R5 were both
+#: published INSIDE the new floors and are re-cut here, at the ILC-loaded
+#: (stricter) column:
+#:
+#:     R4   0.65 / 0.45  ->  0.69 / 0.50    (46.3 throws/min, was 47.8)
+#:     R5   0.70 / 0.47  ->  0.76 / 0.55    (47.5 throws/min, was 49.9)
+#:
+#: R5's pair is the OWNER'S MARGIN RE-CUT (2026-08-26), not the smallest legal
+#: one. The smallest legal pair at that height is 0.72 / 0.51, which clears its
+#: delay floor by 2.0 ms; 0.55 restores the 42.0 ms of delay clearance the rung
+#: carried before D3, and costs 1.6 throws/min against the razor edge. ⚠ It does
+#: NOT restore the DWELL clearance: ``required_dwell_s`` is
+#: ``throw_delay + handoff_margin``, so raising the delay raises the dwell floor
+#: with it and 0.76 clears by **1.9 ms** — the same razor edge the delay just
+#: stepped back from. See the runbook's § 2.1 clearance table.
+#:
+#: ⚰ **R5-prime is RETIRED** (owner decision, 2026-08-26). It existed to be R5's
+#: tighter twin at the same height; under the D3 floors there is no tighter legal
+#: pair at that height, so the row duplicated R5 exactly. The runbook keeps a
+#: one-line tombstone so inbound references resolve. It stays in
+#: ``LADDER_PRE_AUDIT`` below, which is a HISTORICAL record and must not follow.
+#: Reviving it as a distinct rung needs the loop period reduced, not the floor
+#: relaxed.
 LADDER = [
     ('R0',       0.78, 5.60, 5.00),
     ('R1',       0.78, 4.10, 3.50),
     ('R2',       0.78, 3.00, 2.40),
     ('R3',       0.78, 1.50, 0.90),
-    ('R4',       0.45, 0.65, 0.45),
-    ('R5',       0.31, 0.70, 0.47),
-    ('R5-prime', 0.31, 0.66, 0.44),
+    ('R4',       0.45, 0.69, 0.50),
+    ('R5',       0.31, 0.76, 0.55),
 ]
 
 #: The ladder as it was published from 78daf4b until the 2026-08-22 audit fix —
@@ -164,7 +228,7 @@ def _observations(now: float, **over):
 
 
 def run_cycle(T: float, delay_s: float, *, aimed: bool,
-              max_ticks: int = 4000):
+              max_ticks: int = 2000):
     """Drive one cycle FSM to its first terminal-or-dispatch outcome.
 
     Returns ``(verdict, t_reached)`` where verdict is ``'FLIES'`` or the FSM's
@@ -193,14 +257,14 @@ def run_cycle(T: float, delay_s: float, *, aimed: bool,
     seq.start(t0)
     now = t0
     prepare_pending = False
-    # `now` is recomputed as t0 + k*tick from an INTEGER k rather than
-    # accumulated, deliberately: 23 additions of 0.02 land 1.1e-16 above
-    # 23*0.02, and the release-window guard at the last tick compares against a
-    # budget that a delay sitting exactly on the accept floor matches EXACTLY.
-    # Accumulating turns that equality into an abort and makes the probe report
-    # a violation the arithmetic does not have.
+    # `now` is recomputed as t0 + k*period from an INTEGER k rather than
+    # accumulated, deliberately: 23 additions of 0.04 land above 23*0.04, and
+    # the release-window guard at the last tick compares against a budget that a
+    # delay sitting exactly on the accept floor matches EXACTLY. Accumulating
+    # turns that equality into an abort and makes the probe report a violation
+    # the arithmetic does not have.
     for tick in range(int(max_ticks)):
-        now = t0 + tick * NODE_TICK_S
+        now = t0 + tick * NODE_LOOP_PERIOD_S
         dec = seq.step(now, _observations(now))
         if dec.action == ts.ACTION_DISPATCH_THROW:
             return 'FLIES', now - t0
@@ -208,8 +272,8 @@ def run_cycle(T: float, delay_s: float, *, aimed: bool,
             return dec.result.outcome, now - t0
         # The elif CHAIN below mirrors reload_coordinator_node._step_toss_sequence
         # exactly, including which branches are mutually exclusive. Getting this
-        # wrong by one tick is a 20 ms error in a budget whose whole margin is
-        # 3 ms, so it is modelled rather than approximated.
+        # wrong by one iteration is a 40 ms error in a budget whose whole margin
+        # is single-digit ms, so it is modelled rather than approximated.
         if dec.action == ts.ACTION_POSITION_PLATFORM:
             # _position_platform_for_toss calls note_position_* SYNCHRONOUSLY,
             # inside this tick: the go_to_pose ack (or the B1 no-op decision) is
@@ -387,9 +451,9 @@ def main() -> int:
                          'violations')
     args = ap.parse_args()
 
-    print('node tick {:.3f} s | min_move_duration {:.3f} s | settle pad {:.3f} s'
-          .format(NODE_TICK_S, MIN_MOVE_DURATION_S,
-                  ts.TOSS_POSITION_SETTLE_PAD_S))
+    print('loop period {:.3f} s | min_move_duration {:.3f} s | settle pad '
+          '{:.3f} s'.format(NODE_LOOP_PERIOD_S, MIN_MOVE_DURATION_S,
+                            ts.TOSS_POSITION_SETTLE_PAD_S))
     print()
     print('THE PUBLISHED LADDER — every rung, ILC artifact loaded AND not')
     head = ('{:<9} {:>5} {:>7} {:>7} {:>7} | {:>6} {:>6} {:>5} {:>10} {:>7} {:>7}'

@@ -82,6 +82,42 @@ class _Ball:
         self.position = _Pos(x, y, z)
 
 
+def _cup_sees_a_catch(node, now, *, arrival_dt_s=0.15, rise=True,
+                      landing_age_s=0.30):
+    """Feed the node's ball-in-cup sensor an EMPTY→HELD arrival edge, and give the
+    node a landing to judge it against, ON THE TEST'S OWN CLOCK.
+
+    THE HELPER D1 MADE NECESSARY (2026-08-26). Possession is the cup's alone now,
+    so a node test that wants a CAUGHT has to put a ball in the cup — a tracker
+    ``CAUGHT`` no longer mints one, which is the entire point.
+
+    ``now`` is the same synthetic instant the test passes to
+    ``_build_observations`` / ``_build_toss_observations``. That is possible
+    BECAUSE D1 threaded the tick's instant through ``_possession_observed``
+    instead of re-reading ``time.perf_counter()`` inside it: one tick is now one
+    instant everywhere, in the node and here. A first cut of this helper used the
+    wall clock and passed — because ARRIVAL_CONFIRMED depends only on the EDGE
+    being inside the window, not on ``now`` — while silently breaking every
+    blind/refused assertion, which are the ones that read ``now``.
+
+    ``rise=False`` streams an EMPTY cup for the whole window instead — the "the
+    ball genuinely did not arrive" case. Pair it with a ``landing_age_s`` past the
+    configured arrival window to get a CLOSED empty window, which is what turns
+    ``SENSOR_WINDOW_OPEN`` (still looking) into ``SENSOR_NO_ARRIVAL`` (a positive
+    refusal); that distinction is the whole of ``arrival_blind``'s reason for
+    existing, so the helper must be able to produce both."""
+    land = float(now) - float(landing_age_s)      # the landing is behind us
+    edge = land + float(arrival_dt_s)
+    node._active_seq = types.SimpleNamespace(landing_perf=land)
+    src = node._ball_sensor
+    sample = land - 0.50
+    while sample <= float(now):
+        held = bool(rise and sample >= edge)
+        src.note_sample(sample, held=held, valid=True, raw=held)
+        sample += 0.01
+    return land, edge
+
+
 def _node_fresh(now, commanded_pos=(0.0, 0.0, 170.0)):
     """A node with every observation cached FRESH at `now` and preconditions met.
 
@@ -168,6 +204,7 @@ def test_build_observations_stale_mocap_and_heartbeat():
 def test_build_observations_detects_caught_ball_with_error():
     now = 100.0
     node = _node_fresh(now)
+    _cup_sees_a_catch(node, now)     # the verdict is the cup's (D1, 2026-08-26)
     # The tracker first puts OUR ball in flight → the coordinator latches its id.
     with node._lock:
         node._balls = [_Ball(status=1, id=5)]             # IN_FLIGHT
@@ -643,28 +680,45 @@ def test_sequence_deadline_never_lands_inside_the_flight_window():
 
 # ── CAUGHT plausibility + phantom exclusion (2026-07-23 re-test hardening) ─────
 
-def test_implausible_caught_not_counted():
-    """The tracker's split-track corruption flips CAUGHT on tracks coasting below
-    the floor near BB — 5 of 6 reloads on 2026-07-23 spuriously reported SUCCESS.
-    A caught ball only confirms if its final estimate is physically near the catch
-    point."""
+def test_a_tracker_caught_over_an_empty_cup_is_not_counted():
+    """The false-CAUGHT direction, and since D1 (2026-08-26) it is closed for the
+    whole class rather than for the plausible-looking half of it.
+
+    The tracker's split-track corruption flips CAUGHT on tracks coasting below the
+    floor near BB — 5 of 6 reloads on 2026-07-23 spuriously reported SUCCESS, and
+    three more fired on 2026-08-26 (one of which drove a phantom reload). The old
+    defence was a spatial plausibility bound on the tracker's estimate, which
+    catches the corrupt tracks and misses the plausible-but-wrong ones. The cup
+    answers both: it was EMPTY, so nothing was caught, wherever the tracker thinks
+    the ball was."""
     now = 100.0
     node = _node_fresh(now)
+    _cup_sees_a_catch(node, now, rise=False)                    # cup EMPTY throughout
     with node._lock:
         node._balls = [_Ball(status=1, id=5)]
         node._balls_mono = now
     node._build_observations(now)                          # latch id 5
-    # The corrupt track flips CAUGHT below the floor near BB.
+    # The corrupt track flips CAUGHT below the floor near BB…
     with node._lock:
         node._balls = [_Ball(status=2, id=5, x=-539.0, y=-323.0, z=-532.0)]
         node._balls_mono = now
+    assert node._build_observations(now).ball_caught is False
+    # …and so does a perfectly PLAUSIBLE one, which is the half the old bound let
+    # through. This assertion is the D1 delta.
+    with node._lock:
+        node._balls = [_Ball(status=2, id=5, x=30.0, y=15.0, z=805.0)]
+        node._balls_mono = now
     obs = node._build_observations(now)
-    assert obs.ball_caught is False                        # implausible → not counted
+    assert obs.ball_caught is False
+    assert obs.possession_blind is False    # EMPTY is an OBSERVATION, not blindness
 
 
 def test_plausible_caught_still_counts():
+    """A cup that saw the ball arrive mints the catch, and the tracker's estimate
+    is still what supplies the reported miss distance."""
     now = 100.0
     node = _node_fresh(now)
+    _cup_sees_a_catch(node, now)
     with node._lock:
         node._balls = [_Ball(status=1, id=5)]
         node._balls_mono = now
@@ -675,6 +729,43 @@ def test_plausible_caught_still_counts():
     obs = node._build_observations(now)
     assert obs.ball_caught is True
     assert obs.catch_error_mm == pytest.approx((30.0**2 + 15.0**2) ** 0.5)
+
+
+def test_a_catch_the_tracker_never_saw_is_counted_with_a_nan_error():
+    """THE 2026-08-26 headline, at the node seam. On bag 2026-08-26_14-25-16
+    **twelve** genuine catches carried no confirmed tracker track at all: the
+    tracker vetoed by silence, the question was never asked, and each one died
+    MISSED at the settle deadline — then charged the next cycle the 2.60 s
+    MISS-cleanup floor, which is what made the operator's cadence irregular.
+
+    With no ball in ``/balls`` there is no estimate to report, so ``catch_error_mm``
+    is NaN. That is the honest reading — the cup cannot measure a miss distance —
+    and it must not be mistaken for a failure to catch."""
+    now = 100.0
+    node = _node_fresh(now)
+    _cup_sees_a_catch(node, now)
+    obs = node._build_observations(now)                    # no /balls at all
+    assert obs.ball_caught is True
+    assert obs.catch_error_mm != obs.catch_error_mm        # NaN
+    assert obs.possession_blind is False
+
+
+def test_a_blind_cup_refuses_and_says_so():
+    """C-POSSESS-1's posture, and the one thing D1 had to keep: a sensor that
+    cannot LOOK never defaults to CAUGHT — and, since it is now the sole source,
+    never silently defaults to MISSED either. It refuses, and it says which
+    UNKNOWN it is so the terminal can name the fault."""
+    now = 100.0
+    node = _node_fresh(now)
+    # A landing to judge, and no samples at all: the source has never heard from
+    # the sensor, which _blind_between reports as blind across the whole window.
+    node._active_seq = types.SimpleNamespace(landing_perf=now - 0.30)
+    obs = node._build_observations(now)
+    assert obs.ball_caught is False
+    assert obs.possession_blind is True
+    toss_obs = node._build_toss_observations(now)
+    assert toss_obs.ball_caught is False
+    assert toss_obs.possession_blind is True
 
 
 def test_preexisting_flight_ball_never_latched():
@@ -745,9 +836,15 @@ def test_possession_tolerance_is_the_catching_aperture():
 def test_node_counts_every_real_self_toss_catch(ball_id, x, y, z):
     """End to end through the node: all 17 real catches of 2026-07-27 reported
     MISSED because the deleted z bound (305-1007 mm of dead-reckoning) could never
-    pass. RED for every one of the 17 against the pre-2026-07-28 gate."""
+    pass. RED for every one of the 17 against the pre-2026-07-28 gate.
+
+    Since D1 the CUP is what counts them, so the fixture's job changed: it no
+    longer proves the bound admits these estimates (nothing is bounded any more),
+    it proves the number the node REPORTS for a counted catch stays the lateral
+    miss — inside the aperture for every one of the 17."""
     now = 100.0
     node = _node_fresh(now)
+    _cup_sees_a_catch(node, now)
     _latch(node, now)
     with node._lock:
         node._balls = [_Ball(status=2, id=5, x=x, y=y, z=z)]
@@ -758,42 +855,75 @@ def test_node_counts_every_real_self_toss_catch(ball_id, x, y, z):
 
 
 @pytest.mark.parametrize('ball_id,x,y,z', fx.RELOAD_CAUGHT)
-def test_node_refuses_every_corrupt_reload_track(ball_id, x, y, z):
-    """The negative set stays rejected end to end."""
+def test_a_corrupt_reload_track_no_longer_vetoes_a_catch_the_cup_saw(
+        ball_id, x, y, z):
+    """The 2026-07-28 negative set, re-read after D1 — and it INVERTS, deliberately.
+
+    Every one of these estimates sits 204.9-752.9 mm from the catch point because
+    the track is split and its filter is fed by the wrong marker. **Thirteen of the
+    eighteen were real catches the operator watched land.** While the tracker
+    could veto, all eighteen were refused and thirteen good catches were thrown
+    away with the five bad ones; the cup tells them apart, so a corrupt estimate
+    beside a ball that demonstrably arrived is now COUNTED — with the corrupt
+    distance still reported, because it is report-only and refusing to print it
+    would hide the tracker fault instead of surfacing it.
+
+    The direction that still holds: the same corrupt track over an EMPTY cup is
+    refused (``test_a_tracker_caught_over_an_empty_cup_is_not_counted``)."""
     now = 100.0
     node = _node_fresh(now)
+    _cup_sees_a_catch(node, now)
     _latch(node, now)
     with node._lock:
         node._balls = [_Ball(status=2, id=5, x=x, y=y, z=z)]
         node._balls_mono = now
-    assert node._build_observations(now).ball_caught is False
+    obs = node._build_observations(now)
+    assert obs.ball_caught is True
+    assert obs.catch_error_mm > hw.GEOM_ARM_RADIUS_MM      # still report-only
 
 
-def test_possession_source_is_pluggable_at_one_seam():
-    """C-POSSESS-1 § 3: the ball-in-cup hand sensor becomes the PRIMARY source by
-    replacing ONE attribute — no call site changes.
+def test_possession_is_asked_at_one_seam_from_every_consumer():
+    """C-POSSESS-1 § 3: every possession question in this node goes through ONE
+    place, so the source can change without touching a call site.
 
-    Proven, not asserted: a substitute source flips the verdict on a fixture the
-    tracker source refuses, and it is reached from all THREE consumers (the
-    possession latch in _on_balls, the reload observation builder, and the toss
-    observation builder), so none of them has its own private copy of the rule."""
+    Proven, not asserted: a substitute cup source flips the verdict, and it is
+    reached from all THREE consumers (the possession latch in ``_on_balls``, the
+    reload observation builder and the toss observation builder), so none of them
+    has a private copy of the rule.
+
+    Substituting the CUP rather than the tracker is the D1 change: since
+    2026-08-26 the tracker cannot move a verdict, so replacing it would prove
+    nothing at all."""
     from jugglebot.ball_possession import (
-        ARRIVAL_CONFIRMED, PossessionVerdict, RETENTION_CONFIRMED,
-        SOURCE_HAND_BALL_SENSOR)
+        ARRIVAL_CONFIRMED, ARRIVAL_REJECTED, PossessionVerdict,
+        RETENTION_CONFIRMED, RETENTION_UNKNOWN, SOURCE_HAND_BALL_SENSOR)
 
-    class _AlwaysYes:
+    class _Cup:
         name = SOURCE_HAND_BALL_SENSOR
 
-        def __init__(self):
+        def __init__(self, arrival):
+            self.arrival = arrival
             self.calls = []
 
-        def judge(self, ball_xyz_mm, ref_point_mm):
-            self.calls.append(tuple(ball_xyz_mm))
-            return PossessionVerdict(self.name, ARRIVAL_CONFIRMED,
-                                     RETENTION_CONFIRMED, 0.0, 0.0,
-                                     'SENSOR_HELD')
+        def observe(self, now, landing_t=None, **kw):
+            self.calls.append(float(now))
+            return PossessionVerdict(
+                self.name, self.arrival,
+                RETENTION_CONFIRMED if self.arrival == ARRIVAL_CONFIRMED
+                else RETENTION_UNKNOWN,
+                float('nan'), float('nan'), 'SENSOR_TEST')
 
-    corrupt = fx.RELOAD_CAUGHT[0][1:]              # 726 mm out — tracker refuses
+        def evidence(self, now):
+            self.calls.append(float(now))
+            return ('SEATED' if self.arrival == ARRIVAL_CONFIRMED else 'EMPTY')
+
+        def note_sample(self, *a, **kw):
+            pass
+
+        def arrival_time(self, *a, **kw):
+            return float('nan')
+
+    corrupt = fx.RELOAD_CAUGHT[0][1:]              # 726 mm out — report-only now
     now = 100.0
     node = _node_fresh(now)
     _latch(node, now)
@@ -801,20 +931,29 @@ def test_possession_source_is_pluggable_at_one_seam():
         node._balls = [_Ball(status=2, id=5, x=corrupt[0], y=corrupt[1],
                              z=corrupt[2])]
         node._balls_mono = now
-    assert node._build_observations(now).ball_caught is False   # tracker source
 
-    fake = _AlwaysYes()
-    node._possession_source = fake
+    node._ball_sensor = _Cup(ARRIVAL_REJECTED)
+    assert node._build_observations(now).ball_caught is False
+
+    fake = _Cup(ARRIVAL_CONFIRMED)
+    node._ball_sensor = fake
     assert node._build_observations(now).ball_caught is True
+    # The THIRD consumer is `_on_hand_telemetry` since D1 (2026-08-26), not
+    # `_on_balls`: the possession latch moved onto the cup's own feed, and
+    # `/balls` carries no possession claim at all.
+    node._on_hand_telemetry(types.SimpleNamespace(
+        pos_meas=0.0, vel_meas=0.0, ball_held=True, ball_held_raw=True,
+        ball_held_valid=True))
+    assert node._ball_possession is True
     node._on_balls(types.SimpleNamespace(
         balls=[_Ball(status=2, id=5, x=corrupt[0], y=corrupt[1], z=corrupt[2])]))
-    assert node._ball_possession is True
+    assert node._ball_possession is True    # /balls neither sets nor clears it
     node._build_toss_observations(now)
     assert len(fake.calls) >= 3            # all three consumers reached the seam
 
 
 def test_possession_verdict_logged_once_per_outcome():
-    """One INFO line per (ball, verdict) — the accepted line is what the bench
+    """One INFO line per (subject, verdict) — the accepted line is what the bench
     scores the gate against by eye (runbook row POSS-1), and the refused line must
     name the dead-reckoning error model rather than reading as an error in a
     working sequence."""
@@ -822,6 +961,7 @@ def test_possession_verdict_logged_once_per_outcome():
     node = _node_fresh(now)
     rec = _RecLogger()
     node._logger = rec
+    _cup_sees_a_catch(node, now)
     _latch(node, now)
     clean = fx.SELF_TOSS_CAUGHT[0][1:]
     with node._lock:
@@ -833,29 +973,48 @@ def test_possession_verdict_logged_once_per_outcome():
                 if 'Ball 5' in m and 'CONFIRMED' in m]
     assert len(ok_lines) == 1
     assert all(lvl == 'info' for lvl, m in rec.records if 'Ball 5' in m)
-    assert 'UNKNOWN' in ok_lines[0]          # retention is stated, never implied
 
-    corrupt = fx.RELOAD_CAUGHT[0][1:]
-    with node._lock:
-        node._balls = [_Ball(status=2, id=7, x=corrupt[0], y=corrupt[1],
-                             z=corrupt[2])]
-        node._balls_mono = now
-        node._announced_ball_id = 7
+    # The REFUSED shape, now authored by the CUP: an empty cup under a tracker
+    # CAUGHT. The line must NOT print the tracker's bound as the reason — that
+    # sends an operator hunting a tracker fault that is not there.
+    node2 = _node_fresh(now)
+    rec2 = _RecLogger()
+    node2._logger = rec2
+    _cup_sees_a_catch(node2, now, rise=False, landing_age_s=2.0)
+    _latch(node2, now, ball_id=7)
+    with node2._lock:
+        node2._balls = [_Ball(status=2, id=7, x=clean[0], y=clean[1], z=clean[2])]
+        node2._balls_mono = now
     for _ in range(4):
-        node._build_observations(now)
-    no_lines = [m for _l, m in rec.records if 'Ball 7' in m and 'REFUSED' in m]
+        node2._build_observations(now)
+    no_lines = [m for _l, m in rec2.records if 'Ball 7' in m and 'REFUSED' in m]
     assert len(no_lines) == 1
-    assert 'dead-reckoned' in no_lines[0]
+    assert 'the cup sensor did not observe the ball arrive' in no_lines[0]
+    # The tracker's numbers appear only as a CROSS-CHECK, never as the reason.
+    # The wart this pins: a sensor veto rendered as "arrival 3 mm > 70 mm from the
+    # catch point" sends an operator hunting a tracker fault that is not there.
+    assert 'from the catch point' not in no_lines[0]
+    assert 'tracker cross-check' in no_lines[0]
 
 
 def test_catch_error_is_horizontal_only():
     """`catch_error_mm` is a LATERAL miss. Folding the vertical component in would
-    report 305-1007 mm of dead-reckoning as catch inaccuracy on every real catch —
-    and it is the same formula the gate decides on (one computation, not two)."""
+    report 305-1007 mm of dead-reckoning as catch inaccuracy on every real catch.
+
+    Since D1 it is no longer "the same formula the gate decides on" — nothing
+    decides on it — so the pairing asserted here is different and weaker on
+    purpose: the REPORTED number is horizontal, and the verdict beside it comes
+    from the cup, not from this number."""
+    now = 100.0
     node = ReloadCoordinatorNode()
     ball = _Ball(status=2, id=5, x=30.0, y=40.0, z=-500.0)
     assert node._catch_error_from_ball(ball) == pytest.approx(50.0)
-    assert node._possession_confirmed(ball) is True
+    # No cup evidence has ever reached this node, so the verdict refuses whatever
+    # the tracker's estimate says — in BOTH directions.
+    assert node._possession_observed(now, ball)[0] is False
+    _cup_sees_a_catch(node, now)
+    assert node._possession_observed(now, ball)[0] is True
+    assert node._catch_error_from_ball(ball) == pytest.approx(50.0)
 
 
 # ── catch_vel_scale relay + prime retry ────────────────────────────────────────
@@ -1144,3 +1303,44 @@ def test_reload_outcome_log_reports_catch_error():
     hits = [(lvl, m) for lvl, m in rec.records if 'Reload CAUGHT' in m]
     assert len(hits) == 1 and hits[0][0] == 'info'
     assert '12' in hits[0][1]
+
+
+def test_the_node_seam_reproduces_the_sitting_fixture_rows():
+    """**Audit N14: cross the seam that actually failed, with the sitting's own
+    data.** ``test_possession_replay.py`` proves the VERDICT surface on the
+    2026-08-26 fixture; the root cause, though, lived one seam up — the node
+    only ASKED the cup after the tracker had already minted. This drives
+    ``_build_toss_observations`` (the asking) over three fixture rows' real
+    sensor streams: the earliest and the latest formerly-false-MISSED catches,
+    and the one genuine drop. Under the pre-D1 gating, the two catch rows read
+    ``ball_caught False`` here (no ``/balls`` are fed at all)."""
+    from jugglebot.toss_sequencer import CATCH_CONFIRM_WINDOW_S
+    from tests.ros import toss_verdict_replay_fixtures as vfx
+    from tools.probes.possession_replay import expand_stream
+
+    catches = [c for c in vfx.CYCLES
+               if c['sensor_label'] == 'CAUGHT' and c['fsm_outcome'] == 'MISSED'
+               and c.get('catch_event_dt_s') is not None]
+    rows = [min(catches, key=lambda c: c['catch_event_dt_s']),
+            max(catches, key=lambda c: c['catch_event_dt_s']),
+            next(c for c in vfx.CYCLES
+                 if c['sensor_label'] == 'MISSED'
+                 and c['fsm_outcome'] == 'MISSED')]
+    for row in rows:
+        want_caught = row['sensor_label'] == 'CAUGHT'
+        land = 100.0
+        now = land + CATCH_CONFIRM_WINDOW_S + 0.05
+        node = _node_fresh(now)
+        node._active_seq = types.SimpleNamespace(landing_perf=land)
+        src = node._ball_sensor
+        for t_rel, held, raw, valid in expand_stream(
+                row['segments'], row['step_s']):
+            src.note_sample(land - 3.0 + t_rel, held=held, valid=valid,
+                            raw=raw)
+        obs = node._build_toss_observations(now)
+        assert obs.ball_caught is want_caught, (
+            'row run %s cycle %s: the cup stream says %s and the node seam '
+            'must agree' % (row['run'], row['cycle_index'],
+                            row['sensor_label']))
+        assert obs.possession_blind is False, (
+            'a healthy recorded stream is never blind')

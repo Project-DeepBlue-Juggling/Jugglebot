@@ -165,6 +165,19 @@ def _feed_ball_sensor(node, t, held=True, valid=True):
     node._ball_sensor.note_sample(float(t), held=bool(held), valid=bool(valid))
 
 
+def _telem(node, *, held=True, raw=None, valid=True):
+    """One ``/hand_telemetry`` message through the REAL subscription callback.
+
+    Unlike :func:`_feed_ball_sensor` it runs on the node module's own perf clock
+    (the callback stamps with it), which is what the possession LATCH needs: since
+    D1 (2026-08-26) the latch is maintained there, off the live ``evidence`` read,
+    not from a tracker CAUGHT on ``/balls``."""
+    node._on_hand_telemetry(types.SimpleNamespace(
+        pos_meas=0.0, vel_meas=0.0, ball_held=bool(held),
+        ball_held_raw=bool(held if raw is None else raw),
+        ball_held_valid=bool(valid)))
+
+
 def _feed_sensor_catch(node, t_release, t_catch):
     """Simulate one real throw as the SENSOR sees it: the ball leaves the cup at
     the release stroke and re-enters at the catch. The empty→held edge is what
@@ -219,6 +232,12 @@ def _fresh_seq(node, pose=(0.0, 0.0, 170.0), flight=0.8, delay=5.0, start=100.0)
                         throw_delay_s=delay,
                         event_vel_mps=float(release.event_vel_mps))
     seq.start(start)
+    # `_execute_toss` latches this before it ticks, and since D1 (2026-08-26) it
+    # is load-bearing rather than bookkeeping: `_expected_landing_perf` reads it
+    # to give the cup sensor a window, and without it EVERY tick answers
+    # ARRIVAL_UNKNOWN/SENSOR_NO_LANDING — i.e. blind, which refuses.
+    with node._lock:
+        node._active_seq = seq
     return seq
 
 
@@ -672,48 +691,53 @@ def test_an_unknown_sensor_refuses_rather_than_passing(monkeypatch):
 
 # ── Possession latch (D4a — no ball-in-cup sensor exists) ──────────────────────
 
-def test_possession_latched_from_plausible_caught_on_balls():
+def test_the_possession_latch_follows_the_cup_not_the_tracker():
+    """**D1, 2026-08-26.** ``_ball_possession`` is "do we have a ball", and the cup
+    is what knows. It used to latch on any plausible destination-tagged tracker
+    ``CAUGHT`` on ``/balls``, which fails in BOTH directions: it cannot latch a
+    catch the tracker never confirmed (12 of 23 on bag 2026-08-26_14-25-16) and it
+    cannot un-latch a ball that bounced out — the false positive that comment
+    accepted "until the ball-held-sensor era"."""
     node = ReloadCoordinatorNode()
     assert node._ball_possession is False
+    # A perfectly plausible tracker CAUGHT, and nothing in the cup: no latch.
     node._on_balls(types.SimpleNamespace(
         balls=[_Ball(status=2, x=10.0, y=-5.0, z=805.0)]))
+    assert node._ball_possession is False
+    # The cup says SEATED, and no track exists at all: latched. Two samples
+    # because the FIRST one after construction has no predecessor and opens a
+    # blind span (ball_possession.note_sample's WARM-UP rule).
+    _telem(node, held=True, raw=True)
+    _telem(node, held=True, raw=True)
+    assert node._ball_possession is True
+    # The cup empties — a bounce-out during a dwell, the case the old latch was
+    # structurally blind to: un-latched, with no release evidence required.
+    _telem(node, held=True, raw=False)
+    assert node._ball_possession is False
+
+
+def test_the_possession_latch_ignores_a_blind_cup():
+    """UNKNOWN touches neither branch. Blindness is not evidence in either
+    direction, so a dead sensor must neither mint possession nor destroy a belief
+    that was true when it was last observable."""
+    node = ReloadCoordinatorNode()
+    _telem(node, held=True, raw=True)
+    _telem(node, held=True, raw=True)
+    assert node._ball_possession is True
+    _telem(node, held=False, raw=False, valid=False)
     assert node._ball_possession is True
 
 
-def test_possession_not_latched_from_implausible_caught():
-    """The split-track corruption class: a CAUGHT coasting below the floor near
-    BB must not fake possession (the same plausibility gates as the reload
-    verdict)."""
-    node = ReloadCoordinatorNode()
-    node._on_balls(types.SimpleNamespace(
-        balls=[_Ball(status=2, x=-539.0, y=-323.0, z=-532.0)]))
-    assert node._ball_possession is False
-
-
-def test_possession_not_latched_from_other_destination():
-    node = ReloadCoordinatorNode()
-    node._on_balls(types.SimpleNamespace(
-        balls=[_Ball(status=2, destination='someone_else')]))
-    assert node._ball_possession is False
-
-
-def test_possession_plausibility_uses_nominated_point_during_toss():
-    """While a toss goal is live the CAUGHT plausibility reference is the
-    NOMINATED landing point, not the fixed ACTIVE catch point — a corner-pose
-    toss's own catch must latch possession, and a far-away corrupt CAUGHT that
-    happens to sit near the DEFAULT point must not."""
-    node = ReloadCoordinatorNode()
-    _install_toss_goal(node, pose=(140.0, 140.0, 170.0), flight=0.8)
-    # Near the nominated cup point → latches.
-    node._on_balls(types.SimpleNamespace(
-        balls=[_Ball(status=2, x=140.0, y=140.0, z=805.0)]))
-    assert node._ball_possession is True
-    # Far from the nominated point (339 mm off) but near the DEFAULT catch
-    # point — with the nominated reference this is implausible → no latch.
-    node._ball_possession = False
-    node._on_balls(types.SimpleNamespace(
-        balls=[_Ball(status=2, x=-100.0, y=-100.0, z=805.0, id=6)]))
-    assert node._ball_possession is False
+def test_a_tracker_caught_on_balls_no_longer_latches_possession():
+    """The negative that closes the D1 class rather than one instance: NO track,
+    at ANY position and ANY destination, moves the latch — the split-track
+    corruption case, the plausible-but-wrong case and the other-robot case alike."""
+    for ball in (_Ball(status=2, x=-539.0, y=-323.0, z=-532.0),   # corrupt
+                 _Ball(status=2, x=0.0, y=0.0, z=805.0),          # plausible
+                 _Ball(status=2, destination='someone_else')):
+        node = ReloadCoordinatorNode()
+        node._on_balls(types.SimpleNamespace(balls=[ball]))
+        assert node._ball_possession is False
 
 
 def test_possession_survives_safe_abort(monkeypatch):
@@ -1209,23 +1233,36 @@ def test_ball_time_at_land_crossed_to_perf():
     assert obs.ball_time_at_land_perf == pytest.approx(12.5 + 100.0)
 
 
-def test_caught_correlates_to_latched_id_vs_nominated_point():
-    """CAUGHT confirms only for the latched announced-ball id, plausibility- and
-    error-judged against the NOMINATED landing point (not reload's fixed catch
-    point)."""
+def test_the_reported_catch_error_comes_from_the_latched_id_vs_nominated_point():
+    """``catch_error_mm`` is the LATCHED announced ball's lateral miss against the
+    NOMINATED landing point (not reload's fixed catch point).
+
+    Since D1 (2026-08-26) the tracker no longer decides WHETHER a catch happened,
+    so this test's subject narrowed to what it reports: the cup mints the verdict
+    on every branch below, and only the reported number moves. A stray id
+    contributes nothing (NaN — the honest reading, and the same one a catch with
+    no track at all now produces)."""
     now = 100.0
     node = _toss_ready_node(now)
-    _install_toss_goal(node, pose=(30.0, -40.0, 170.0))
+    pose = (30.0, -40.0, 170.0)
+    seq = _fresh_seq(node, pose=pose, delay=5.0, start=now)   # landing 105.8
     with node._lock:
+        node._active_seq = seq
         node._balls = [_Ball(status=1, id=5)]            # latch id 5
     node._build_toss_observations(now)
+    # The cup sees the ball arrive +0.11 s past the scheduled landing.
+    _stamp_fresh(node, now + 5.9, held=False)
+    node._ball_sensor.note_sample(now + 5.91, held=True, valid=True, raw=True)
+    t = now + 5.92
     with node._lock:
         node._balls = [_Ball(status=2, id=99, x=30.0, y=-40.0),   # stray id
                        _Ball(status=1, id=5)]
-    assert node._build_toss_observations(now).ball_caught is False
+    obs = node._build_toss_observations(t)
+    assert obs.ball_caught is True                       # the CUP saw it
+    assert obs.catch_error_mm != obs.catch_error_mm      # NaN: not OUR track
     with node._lock:
         node._balls = [_Ball(status=2, id=5, x=45.0, y=-40.0, z=805.0)]
-    obs = node._build_toss_observations(now)
+    obs = node._build_toss_observations(t)
     assert obs.ball_caught is True
     assert obs.catch_error_mm == pytest.approx(15.0)     # vs (30, −40), not (0, 0)
 
@@ -1517,10 +1554,16 @@ def test_toss_choreography_full_walk(monkeypatch):
     node._step_toss_sequence(seq, t0 + 5.0, gh)
     with node._lock:
         node._balls = [_Ball(status=2, id=5, x=30.0, y=-40.0, z=805.0)]
-    _stamp_fresh(node, t0 + 5.9)
-    d = node._step_toss_sequence(seq, t0 + 5.9, gh)
+    # THE CATCH, as the CUP sees it (D1, 2026-08-26): the verdict is the cup's
+    # alone, so this walk has to put a ball back in the cup — a tracker CAUGHT no
+    # longer mints one. Scheduled landing is t_release + flight = t0 + 5.8, and
+    # the empty→held edge lands +0.11 s past it, inside the measured arrival band.
+    _stamp_fresh(node, t0 + 5.9, held=False)
+    node._ball_sensor.note_sample(t0 + 5.91, held=True, valid=True, raw=True)
+    d = node._step_toss_sequence(seq, t0 + 5.92, gh)
     assert d.done and d.result.outcome == 'CAUGHT'
     assert d.result.catch_error_mm == pytest.approx(0.0)
+    assert d.result.catch_event_dt_s == pytest.approx(0.11, abs=1e-6)
     # vel_scale is the CONFIG default relayed verbatim, not a number this test
     # owns: the goal leaves catch_vel_scale at 0, so `_install_toss_goal`
     # resolves JB_OP_CATCH_VEL_SCALE_DEFAULT exactly as `_execute_toss` does.
@@ -2697,8 +2740,11 @@ def test_a_cycle_that_must_move_charges_the_moving_budget_at_CHECKING(monkeypatc
     assert (seq.min_throw_delay_for_cycle_s
             - chained.min_throw_delay_for_cycle_s) == pytest.approx(
                 pre_dispatch_budget_s(True) - pre_dispatch_budget_s(False))
+    # 0.38 s until 2026-08-26; the D3 unit change (sleep -> measured loop period)
+    # re-quantises the go_to_pose arrival wait onto a coarser grid, so the SPLIT
+    # narrows to 0.36 s even though both budgets grew.
     assert (pre_dispatch_budget_s(True)
-            - pre_dispatch_budget_s(False)) == pytest.approx(0.38)
+            - pre_dispatch_budget_s(False)) == pytest.approx(0.36)
 
 
 def test_a_session_cycle_that_must_move_is_GRANTED_the_lead_a_single_toss_is_refused(
@@ -3132,3 +3178,53 @@ def test_the_drain_reports_failure_rather_than_hanging_on_a_wedged_worker():
     finally:
         release.set()
         node._toss_records_drain(timeout_s=5.0)
+
+
+# ── The tick-loop census is actually wired (INSTRUMENT ONLY) ─────────────────
+
+def test_the_cycle_loop_feeds_the_census_and_drops_only_the_terminal(monkeypatch):
+    """THE wiring pin. Every other census test injects a pre-filled census or
+    exercises the class in isolation, so all of them stay green if
+    ``_run_toss_cycle`` stops calling it — and a whole sitting would then report
+    a null timing block that reads exactly like "no cycle ran".
+
+    Also pins the lag-by-one boundary against the real control flow: four
+    decisions, the fourth terminal, must commit THREE iterations. The terminal
+    tick returns from the middle of the loop and never reaches its sleep, so
+    charging it a period would report time the loop did not spend."""
+    node = _toss_ready_node(time.perf_counter())
+    monkeypatch.setattr(time, 'sleep', lambda *a, **k: None)
+    script = [
+        TossDecision(PHASE_PREPARING),
+        TossDecision(PHASE_PREPARING),
+        TossDecision(PHASE_BALL_IN_FLIGHT),
+        TossDecision(PHASE_BALL_IN_FLIGHT, done=True,
+                     result=TossResult(True, 'CAUGHT')),
+    ]
+    monkeypatch.setattr(node, '_step_toss_sequence',
+                        lambda seq, now, gh: script.pop(0))
+    seen = {}
+    monkeypatch.setattr(
+        node, '_log_toss_outcome',
+        lambda r: seen.update(summary=node._toss_loop_census.summary()))
+    result, kind = node._run_toss_cycle(
+        object(), deadline_s=10.0, cancel_now_fn=lambda now: False,
+        feedback_fn=None)
+
+    assert kind == 'fsm' and result.outcome == 'CAUGHT'
+    s = seen['summary']
+    assert s['loop_n_pre'] == 2                   # the two PREPARING ticks
+    assert s['loop_n_post'] == 1                  # the first BALL_IN_FLIGHT tick
+    assert s['loop_period_max_pre_s'] > 0.0       # a real measurement, not a zero
+    assert s['loop_n_over_pre'] == 0              # sleep is stubbed out here
+
+
+def test_the_census_is_consumed_by_the_outcome_line():
+    """``_log_toss_outcome`` clears it, so a later terminal that ran no loop
+    (REJECTED_BAD_GOAL) cannot inherit these timings. Pinned at the node seam
+    because the clear lives there, not in the census."""
+    from jugglebot.toss_sequencer import LoopPeriodCensus
+    node = _toss_ready_node(time.perf_counter())
+    node._toss_loop_census = LoopPeriodCensus()
+    node._log_toss_outcome(TossResult(True, 'CAUGHT'))
+    assert node._toss_loop_census is None

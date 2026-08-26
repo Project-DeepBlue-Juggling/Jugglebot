@@ -48,6 +48,7 @@ from jugglebot.toss_session import (
     DEFAULT_SESSION_MISS_CLEANUP_S,
     EVIDENCE_SEATED_NAME,
     GO_HOME_DURATION_S,
+    NODE_LOOP_PERIOD_S,
     NODE_TICK_S,
     ON_EMPTY_CUP_RELOAD,
     ON_EMPTY_CUP_STOP,
@@ -60,6 +61,7 @@ from jugglebot.toss_session import (
     SESSION_PHASE_CHECKING,
     SESSION_PHASE_DWELL,
     SESSION_PHASE_RELOAD,
+    SAFE_ABORT_LADDER_S,
     TossSessionResult,
     TossSessionSequencer,
     resolve_on_empty_cup,
@@ -224,10 +226,11 @@ def test_the_hand_floor_is_dominated_by_the_plumbing_term():
     This test used to assert a CROSSOVER ("the hand binds at the band floor, the
     plumbing binds at the nominal"), and that was true while the delay floor was
     the kind-0 dispatch budget alone. Adding the pre-dispatch sequence to the
-    delay floor raised the plumbing term by 0.080 s at every flight, which is
-    more than the crossover was ever worth: ``throw_delay + handoff_margin`` now
-    exceeds ``hand_floor_dwell_s`` across the whole C-HAND-3 band, by at least
-    0.12 s.
+    delay floor raised the plumbing term by 0.080 s at every flight (0.160 s
+    since owner decision D3 charged that sequence in the loop's measured PERIOD,
+    2026-08-26), which is more than the crossover was ever worth:
+    ``throw_delay + handoff_margin`` now exceeds ``hand_floor_dwell_s`` across
+    the whole C-HAND-3 band, by at least **0.2030 s**.
 
     Two things are pinned, and both matter:
 
@@ -236,7 +239,9 @@ def test_the_hand_floor_is_dominated_by_the_plumbing_term():
        speed (see its docstring), and that choice is only safe while this margin
        covers the term's worst-case 0.0715 s sensitivity to a maximal negative
        ILC speed trim (measured over the band, 2026-08-23; the margin's own worst
-       case is 0.1230 s, so the ratio is 1.7x). If a future change shrinks the
+       case is **0.2030 s** at ``T = 0.4949``, so the ratio is **2.8x** — it was
+       0.1230 s and 1.7x until D3 raised the plumbing term on 2026-08-26). If a
+       future change shrinks the
        plumbing term back under the hand floor, this reds and the argument gets
        re-taken rather than silently relied on.
     2. **That the max() is still live** — a floor that is currently never
@@ -255,7 +260,11 @@ def test_the_hand_floor_is_dominated_by_the_plumbing_term():
         assert plumbing > s.hand_floor_dwell_s, (flight, plumbing,
                                                  s.hand_floor_dwell_s)
         worst = min(worst, plumbing - s.hand_floor_dwell_s)
-    assert worst > 0.12, worst
+    # 0.2030 s at T = 0.4949 (0.1230 s before D3). Asserted with a floor rather
+    # than an approx so a change that WIDENS the margin is not a failure — the
+    # thing that must not happen is it shrinking back onto the 0.0715 s trim
+    # sensitivity this dominance argument spends it on.
+    assert worst > 0.20, worst
 
     # The max() is live: below its own delay floor the hand term selects.
     fast = TossSessionSequencer(num_throws=2, throw_delay_s=0.20,
@@ -329,10 +338,19 @@ def test_the_decided_r5_prime_operating_point_is_REFUSED_and_by_how_much():
 
     **The verdict moved on 2026-08-23, and it moved to the right field.** The
     delay floor grew the pre-dispatch sequence, so 0.34 s is now under the DELAY
-    floor (0.4168 s at this flight) as well as under the dwell floor — and the
-    delay gate runs first, deliberately: the dwell floor is DERIVED from the
-    delay, so telling an operator to raise a dwell that is only too small because
-    the delay is illegal sends them to the wrong knob.
+    floor as well as under the dwell floor — and the delay gate runs first,
+    deliberately: the dwell floor is DERIVED from the delay, so telling an
+    operator to raise a dwell that is only too small because the delay is illegal
+    sends them to the wrong knob.
+
+    **And the delay floor moved again on 2026-08-26 (D3), 0.4168 -> 0.4968 s at
+    this flight**, when the pre-dispatch sequence started being priced in the
+    node loop's measured PERIOD rather than in its sleep. That is 0.080 s of
+    additional refusal on this rung and on every rung that takes the census-B1
+    skip — the price of two cycles in bag 2026-08-26_14-25-16 clearing this gate
+    and then aborting ABORTED_CANT_MAKE_RELEASE with the catch armed. The rung was
+    already refused, so nothing published changes here; what changes is the
+    number an operator needs in order to re-take the decision.
 
     Pinned as a REFUSAL, with both shortfalls named, so that (a) nobody
     re-publishes the rung without moving a floor back on purpose, and (b) the
@@ -346,8 +364,8 @@ def test_the_decided_r5_prime_operating_point_is_REFUSED_and_by_how_much():
     s.start(0.0)
     assert s.step(0.0).action != SESSION_ACTION_START_CYCLE
     assert s._checking_reject() == 'REJECTED_THROW_DELAY'
-    assert s.min_throw_delay_s == pytest.approx(0.4168, abs=5e-4)
-    assert s.min_throw_delay_s - 0.34 == pytest.approx(0.0768, abs=5e-4)
+    assert s.min_throw_delay_s == pytest.approx(0.4968, abs=5e-4)
+    assert s.min_throw_delay_s - 0.34 == pytest.approx(0.1568, abs=5e-4)
     # The dwell was short too, and by the amount the 2026-08-22 audit named.
     assert s.required_dwell_s == pytest.approx(0.5333, abs=5e-4)
     assert s.required_dwell_s - 0.49 == pytest.approx(0.0433, abs=5e-4)
@@ -368,7 +386,9 @@ def test_the_decided_r5_prime_operating_point_is_REFUSED_and_by_how_much():
                               dwell_margin_s=DEFAULT_SESSION_DWELL_MARGIN_S)
     ok.start(0.0)
     assert ok.step(0.0).action == SESSION_ACTION_START_CYCLE
-    assert ok.required_dwell_s == pytest.approx(0.6101, abs=5e-4)
+    # 0.6101 s until 2026-08-26; the D3 delay-floor rise (+0.080 s) carries
+    # straight through the dwell floor, which is DERIVED from the delay.
+    assert ok.required_dwell_s == pytest.approx(0.6901, abs=5e-4)
 
 
 def test_no_accepted_session_starts_a_cycle_inside_the_live_catch_stroke():
@@ -505,10 +525,15 @@ def test_the_025s_dwell_is_unreachable_at_every_admitted_flight_time():
     ceiling = TossSessionSequencer(num_throws=2, flight_time_s=FLIGHT_TIME_MAX_S,
                                    catch_vel_scale=0.9)
     assert ceiling.hand_floor_dwell_s == pytest.approx(0.2505, abs=1e-3)
-    # …and a goal that asks for it is REFUSED, not quietly stretched.
+    # …and a goal that asks for it is REFUSED, not quietly stretched. The delay
+    # is set from the LIVE floor rather than typed: the delay gate runs before the
+    # dwell gate on purpose, so a typed delay that later falls under its own floor
+    # turns this into a REJECTED_THROW_DELAY test by accident — which is exactly
+    # what the 2026-08-26 D3 floor rise did to the literal 0.40 that stood here.
     asked = TossSessionSequencer(num_throws=2, dwell_time_s=0.25,
-                                 throw_delay_s=0.40,
-                                 flight_time_s=FLIGHT_TIME_MAX_S)
+                                 throw_delay_s=ceiling.min_throw_delay_s,
+                                 flight_time_s=FLIGHT_TIME_MAX_S,
+                                 catch_vel_scale=0.9)
     asked.start(0.0)
     assert asked.step(0.0).result.outcome == 'REJECTED_DWELL'
 
@@ -931,9 +956,18 @@ def test_the_miss_cleanup_floor_is_derived_from_its_sources():
     against the file it comes from — so an edit to the go_home profile duration
     or the settle window cannot leave this floor silently wrong."""
     assert DEFAULT_SESSION_MISS_CLEANUP_S == pytest.approx(
-        CATCH_CONFIRM_WINDOW_S + GO_HOME_DURATION_S + 2.0 * NODE_TICK_S)
-    # 2.60 s since the 2026-08-24 band re-measure (2.84 s before it, and 2.80 s
-    # before 2026-08-21). CATCH_CONFIRM_WINDOW_S moved 0.70 -> 0.80
+        CATCH_CONFIRM_WINDOW_S + SAFE_ABORT_LADDER_S + GO_HOME_DURATION_S
+        + 2.0 * NODE_LOOP_PERIOD_S)
+    # SAFE_ABORT_LADDER_S is the term added 2026-08-26 (owner decision D3): the
+    # ladder's own dispatch cost between the MISSED verdict and the go_home
+    # INSTALL, which was charged at ZERO. Its acceptance is an ABSENCE in the next
+    # bag — trajectory_node prints "catch latch armed mid-move — installed a
+    # graceful stop (move silenced)" whenever the next cycle's PREPARE arms while
+    # the recentre is still traversing, and that line fired on 10 of the 16
+    # post-MISS cycles of 2026-08-26_14-25-16.
+    assert SAFE_ABORT_LADDER_S == pytest.approx(4.0 * NODE_LOOP_PERIOD_S)
+    # 2.80 s since 2026-08-26 (2.60 s from the 2026-08-24 band re-measure, 2.84 s
+    # before it, 2.80 s before 2026-08-21). CATCH_CONFIRM_WINDOW_S moved 0.70 -> 0.80
     # when it became DERIVED from ball_possession.ARRIVAL_BAND_MAX_S (census D7):
     # a sensor-primary possession verdict needs a MISSED deadline that outlasts
     # the band a real seat edge lands in (+137..+798 ms then), and 0.70 sat 98 ms
@@ -943,12 +977,14 @@ def test_the_miss_cleanup_floor_is_derived_from_its_sources():
     # ever cost: 0.80 -> 0.56 takes this floor to 2.60 s. The census's F1 rung
     # (re-deriving the floor from COMPLETION rather than from service acks) is
     # still the larger win and is still open.
-    assert DEFAULT_SESSION_MISS_CLEANUP_S == pytest.approx(2.60)
+    assert DEFAULT_SESSION_MISS_CLEANUP_S == pytest.approx(2.80)
     # The floor still covers the non-release teardown it is reused for
-    # (toss_session ~line 1221): release_grace 0.5 + go_home 2.0 + 2 ticks.
-    # The re-measure narrowed that margin from 300 ms to 60 ms without
-    # inverting it, and this is where a further cut would first be caught.
-    assert DEFAULT_SESSION_MISS_CLEANUP_S >= 0.5 + GO_HOME_DURATION_S + 2.0 * NODE_TICK_S
+    # (toss_session ~line 1221): release_grace 0.5 + the ladder + go_home 2.0 +
+    # 2 loop periods. The band re-measure narrowed that margin from 300 ms to
+    # 60 ms without inverting it, and D3 added the SAME ladder term to both sides,
+    # so it is still 60 ms — this is where a further cut would first be caught.
+    assert DEFAULT_SESSION_MISS_CLEANUP_S >= (
+        0.5 + SAFE_ABORT_LADDER_S + GO_HOME_DURATION_S + 2.0 * NODE_LOOP_PERIOD_S)
     assert re.search(r"declare_parameter\(\s*'go_home_duration_s',\s*2\.0\s*\)",
                      TRAJECTORY_NODE.read_text()), (
         'trajectory_node go_home_duration_s default moved — GO_HOME_DURATION_S '
@@ -1241,6 +1277,50 @@ def test_the_floor_tally_counts_every_drop_including_the_exhausting_one():
     s.note_reload_result(True, attempts=1)
     _drive_to_reload(s, 100.0)                     # budget-exhausting drop
     assert s.floor_balls == 2
+
+
+def test_every_retried_attempt_is_a_ball_on_the_floor_too():
+    """**The undercount D2 opened and the 2026-08-26 audit closed (W7).**
+
+    ``_reload_precheck`` charges the floor tally ONE ball when the interlude is
+    entered, which was the whole truth before D2: an interlude threw once. D2 lets
+    one interlude spend the entire budget on failed throws, and every one of those
+    is a real BB ball that did not end up in the cup. The session's floor and
+    budget rungs are evaluated ONCE per interlude and are deliberately EXCLUDED
+    from the per-attempt ladder (``_reload_interlude_gate`` owns only the
+    observation rungs), so nothing else in the system can charge them — which is
+    why ``note_reload_result`` charges ``attempts - 1`` itself.
+
+    Before the fix a 3-attempt interlude advanced ``floor_balls`` by 1, and
+    ``floor_pause_every`` therefore never fired on the sitting with the most balls
+    down. Nothing on the robot can see the floor, so an undercount here is
+    invisible until someone trips over it."""
+    s = _reload_session(num_throws=20, max_reloads=5, floor_pause_every=0)
+    _drive_to_reload(s, 0.0)
+    assert s.floor_balls == 1                      # the precheck's charge
+    s.note_reload_result(True, attempts=3)         # two failed throws, then a catch
+    assert s.floor_balls == 3
+    assert s.reloads_used == 3
+    # A single-attempt interlude is unchanged — the precheck already charged it,
+    # and `attempts - 1` is 0. This is the non-regression half.
+    _drive_to_reload(s, 100.0)
+    assert s.floor_balls == 4
+    s.note_reload_result(True, attempts=1)
+    assert s.floor_balls == 4
+
+
+def test_a_multi_attempt_interlude_trips_the_floor_pause_it_earned():
+    """W7's consequence, at the gate the operator actually meets.
+
+    ``floor_pause_every=3`` with one 3-attempt interlude: three balls are down, so
+    the NEXT drop must stop the session for a floor clear. Under the undercount
+    the tally read 1 and the session sailed past."""
+    s = _reload_session(num_throws=20, max_reloads=6, floor_pause_every=3)
+    _drive_to_reload(s, 0.0)
+    s.note_reload_result(True, attempts=3)
+    assert s.floor_balls == 3
+    d = _drive_to_reload(s, 100.0)
+    assert d.done and d.result.outcome == OUTCOME_STOPPED_FLOOR_CLEAR_REQUIRED
 
 
 def test_floor_pause_stops_the_session_cleanly_between_cycles():

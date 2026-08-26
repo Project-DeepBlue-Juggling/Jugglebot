@@ -28,7 +28,8 @@ a probe. ``label_from_sensor`` is that definition.
 WHERE THE LABEL IS MINTED, AND WHY NOT IN THE NODE
 --------------------------------------------------
 The node **cannot** label at its own terminal, and this is structural rather than
-a choice. A toss terminalises at ``landing + CATCH_CONFIRM_WINDOW_S`` (0.70 s),
+a choice. A toss terminalises at ``landing + CATCH_CONFIRM_WINDOW_S`` (0.56 s
+since the 2026-08-24 band re-measure; 0.70 s when this was written),
 while the label needs the *retention* window (1.50 s past the arrival edge) to
 tell CAUGHT from BOUNCED. The node therefore publishes a DECLARATION and the
 label is derived offline — which is also why ``label`` carries origin ``X``
@@ -622,6 +623,45 @@ FIELDS: Tuple[Field, ...] = (
     Field('can_errors', 'plant', 'M', 'i', 'per-cycle delta'),
     Field('bridge_tx_diag', 'plant', 'M', 's', 'per-cycle delta, verbatim'),
     Field('plant_block_source', 'plant', 'M', 's', 'trace | bag'),
+
+    # ── Loop timing (declared; INSTRUMENT ONLY, no control authority) ────────
+    # The node's own tick loop, censused per cycle by
+    # `toss_sequencer.LoopPeriodCensus`. Scoped to the PRE-DISPATCH ticks
+    # (CHECKING/POSITIONING/PREPARING) because those are exactly what
+    # `pre_dispatch_budget_s` charges: the post-dispatch majority is idle
+    # flight-waiting and would dilute any whole-cycle statistic.
+    #
+    # These exist to answer whether NODE_LOOP_PERIOD_S is still a bound, and if
+    # not, WHICH cost moved. They must never be read back by a gate — a budget
+    # that re-derives itself from the last cycle tracks a degradation instead of
+    # exposing it.
+    Field('loop_n_pre', 'timing', 'D', 'i',
+          'complete pre-dispatch iterations censused (the terminal tick has no '
+          'trailing sleep and is deliberately excluded)'),
+    Field('loop_period_max_pre_s', 'timing', 'D', 'f',
+          'THE number NODE_LOOP_PERIOD_S must bound: worst pre-dispatch '
+          'iteration, top-of-loop to top-of-loop'),
+    Field('loop_period_mean_pre_s', 'timing', 'D', 'f',
+          'mean pre-dispatch iteration — the trend line; the MAX is what the '
+          'budgets are sized on'),
+    Field('loop_work_max_pre_s', 'timing', 'D', 'f',
+          'worst (obs + body), i.e. the iteration minus its sleep. Max of the '
+          'per-iteration SUM, not the sum of the maxima. This is the headroom '
+          'number if the loop ever becomes deadline-compensated'),
+    Field('loop_obs_max_pre_s', 'timing', 'D', 'f',
+          'worst _build_toss_observations — the per-tick rebuild'),
+    Field('loop_body_max_pre_s', 'timing', 'D', 'f',
+          'worst step + action dispatch + publishes, obs excluded — where a '
+          'blocking service call in the PREPARE bundle shows up'),
+    Field('loop_sleep_max_pre_s', 'timing', 'D', 'f',
+          'worst MEASURED sleep, not assumed to be NODE_TICK_S: scheduler '
+          'overshoot lands here rather than being misattributed to body'),
+    Field('loop_n_over_pre', 'timing', 'D', 'i',
+          'pre-dispatch iterations exceeding NODE_LOOP_PERIOD_S. Nonzero on a '
+          'SUCCESSFUL cycle is the early warning that was invisible before'),
+    Field('loop_n_post', 'timing', 'D', 'i', 'post-dispatch iterations'),
+    Field('loop_period_max_post_s', 'timing', 'D', 'f',
+          'worst post-dispatch iteration, for contrast'),
 
     # ── Label / quality (derived at join) ─────────────────────────────────────
     Field('label', 'quality', 'X', 's', ' | '.join(LABELS)),

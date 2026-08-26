@@ -18,9 +18,20 @@ What it pins, in order of how much it costs to get wrong:
 3. **the pre-audit ladder still reds** — the regression the probe was written to
    find has to stay findable, or the probe has lost it.
 
-Runtime note: the grid sweep drives two real FSMs at the real 0.02 s node tick
-over ~1500 grid points, which is a few seconds — worth it for the one class of
-failure that reaches the hand.
+Runtime note: the grid sweep drives two real FSMs at the FSM loop's measured
+0.040 s period — ``toss_sequencer.NODE_LOOP_PERIOD_S``, imported by the probe,
+never restated — over ~1500 grid points, which is a few seconds. Worth it for the
+one class of failure that reaches the hand.
+
+⚠ **It said "the real 0.02 s node tick" until 2026-08-26, and the probe advanced
+by a local literal of that value** (audit finding B3). That is the SLEEP at the
+bottom of ``_run_toss_cycle``, not what an iteration costs, and it is half what
+``pre_dispatch_budget_s`` charges the same ladder. A probe whose clock runs at
+half the rate the gate is charged at grants the machine lead it never has: driven
+with the pre-D3 floors, the corrected probe reports **252** accept-implies-flies
+violations where the old one reported **0** — including the exact
+``ABORTED_CANT_MAKE_RELEASE`` at ``+0.120 s`` that bag ``2026-08-26_14-25-16``
+produced twice with the hand committed.
 """
 
 from __future__ import annotations
@@ -112,7 +123,13 @@ def test_the_probe_reports_the_frontier_the_runbook_publishes():
     T = float(probe.FLIGHT_TIME_MIN_S)
     disarmed = probe.fastest_at(T, ilc_trim=False)
     armed = probe.fastest_at(T, ilc_trim=True)
-    assert 60.0 / disarmed[2] == pytest.approx(54.3, abs=0.1)
-    assert 60.0 / armed[2] == pytest.approx(54.3, abs=0.1)
-    assert disarmed[0] == pytest.approx(0.4168, abs=5e-4)
-    assert disarmed[1] == pytest.approx(0.6101, abs=5e-4)
+    # 54.3 / 0.4168 / 0.6101 until 2026-08-26. Owner decision D3 charges the
+    # pre-dispatch sequence in the loop's measured PERIOD instead of its sleep
+    # (+0.080 s on every delay floor), which costs 6.8 % of the frontier — the
+    # cadence the old floor advertised was one the machine could not make, and
+    # bag 2026-08-26_14-25-16 aborted two cycles proving it. The way back is a
+    # cheaper tick, not a smaller floor.
+    assert 60.0 / disarmed[2] == pytest.approx(50.6, abs=0.1)
+    assert 60.0 / armed[2] == pytest.approx(50.6, abs=0.1)
+    assert disarmed[0] == pytest.approx(0.4968, abs=5e-4)
+    assert disarmed[1] == pytest.approx(0.6901, abs=5e-4)

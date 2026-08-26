@@ -11,7 +11,16 @@ destination-tagged track that reached ``CAUGHT``:
 
   * the CAUGHT estimate and the reference point it was judged against;
   * the ARRIVAL error (horizontal) and the REPORT-ONLY plane drop (vertical);
-  * the verdict the coordinator WOULD have minted for it.
+  * the verdict the TRACKER SOURCE alone would return for it.
+
+⚠ **THAT IS NO LONGER THE COORDINATOR'S VERDICT** (owner decision D1,
+2026-08-26). Possession is the ball-in-cup sensor's alone; the tracker supplies
+report-only ``arrival_err_mm``, and this probe therefore scores the tracker's
+CONTRIBUTION, not the machine's answer. For the machine's answer, replay the cup:
+``tools/probes/possession_replay.py``. This probe is kept because
+``arrival_err_mm`` is still the catch-accuracy number the runbooks score and
+because its fixtures (``tests/ros/possession_fixtures.py``) are the corpus the
+tracker's split-track behaviour is characterised from.
 
 That turns a capture into the two numbers the hardware runbook's row ``POSS-1``
 needs — *how many CAUGHT verdicts the gate minted* and *how many catches the

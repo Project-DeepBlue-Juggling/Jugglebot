@@ -170,6 +170,7 @@ from jugglebot.ball_possession import (
     EVIDENCE_UNKNOWN,
     HandBallSensorSource,
     TrackerArrivalSource,
+    arrival_blind,
     describe as describe_possession,
     lateral_miss_mm,
     merge_possession,
@@ -198,7 +199,10 @@ from jugglebot.toss_sequencer import (
     ACTION_RECENTER as TOSS_ACTION_RECENTER,
     ACTION_SAFE_ABORT as TOSS_ACTION_SAFE_ABORT,
     ACTION_STAY as TOSS_ACTION_STAY,
+    CENSUS_FIELD_NAMES,
     FLIGHT_TIME_MAX_S as TOSS_FLIGHT_TIME_MAX_S,
+    LoopPeriodCensus,
+    NODE_LOOP_PERIOD_S as TOSS_LOOP_PERIOD_S,
     PHASE_CHECKING as TOSS_PHASE_CHECKING,
     PHASE_POSITIONING as TOSS_PHASE_POSITIONING,
     PHASE_PREPARING as TOSS_PHASE_PREPARING,
@@ -527,16 +531,27 @@ _DWELL_TILT_READ_TIMEOUT_S = 0.30
 # Slack reserved between the last possible read and the next cycle's start.
 _DWELL_TILT_GUARD_S = 0.20
 
-# The ONE identifiable BB-side abort the interlude retries within budget: the
+# The identifiable BB-side abort worth NAMING in the interlude's log lines: the
 # firmware's BallButlerCommandOutcome.THROW_ABORTED_NOT_SETTLED (41) — BB was not
 # positioned in time, so no ball ever left it (observed twice on hardware: the
 # 2026-07-23 and 2026-07-24 sittings, both `axis=YAW`). bb/throw_at_target is
 # FIRE-AND-FORGET — ball_butler_node publishes the announcement and returns
 # success BEFORE the firmware's terminal CMD_RESULT exists — so this code reaches
 # us only on the bb/throw_outcome topic, and a reload that hit it otherwise looks
-# exactly like an ordinary MISSED. Retrying the whole not-caught class instead
-# would swallow the BB fail-open boot bug and every real BB fault; that is why
-# the retry is keyed on this string and why the log line names it.
+# exactly like an ordinary MISSED.
+#
+# ⚠ NO LONGER THE RETRY KEY (owner decision D2, 2026-08-26). It was: only this
+# code licensed a retry, and a DELIVERED-but-missed reload stopped the session on
+# its first miss, so `max_reloads` fenced one of the two ways a reload can fail
+# and the other cost the operator a whole sitting. Every failed attempt now draws
+# on the budget. The old argument for keying on this string — "retrying the whole
+# not-caught class would swallow the BB fail-open boot bug and every real BB
+# fault" — is answered by re-running the WHOLE ladder per attempt instead
+# (_run_reload_interlude): the boot-bug fence is `STOPPED_BB_UNVERIFIED` and the
+# not-ready fence is `STOPPED_BB_NOT_READY`, both rungs of that gate, and both now
+# gate every retry rather than only the first attempt. The code is still reported
+# in the log line so an operator can tell "BB never threw" from "BB threw and we
+# missed" at a glance.
 _BB_NOT_SETTLED_CODE = 'THROW_ABORTED_NOT_SETTLED'
 # How recent a bb/throw_outcome must be to describe THIS reload attempt. The
 # reload FSM's own budget from throw to terminal is throw_delay (>= 2.5 s) +
@@ -890,21 +905,25 @@ class ReloadCoordinatorNode(Node):
         self._catch_vel_scale = float(hw.JB_OP_CATCH_VEL_SCALE_DEFAULT)
         # THE possession sources (contract C-POSSESS-1,
         # ros_ws/docs/ball_possession_contract.md). Every "did we catch it?"
-        # question in this node routes through _possession_confirmed, which is
+        # question in this node routes through _possession_observed, which is
         # the ONE merge point (§ 3.2).
         #
-        # _possession_source is the tracker CORROBORATOR — ARRIVAL only, and the
-        # only supplier of arrival_err_mm (the catch-accuracy number the hardware
-        # runbooks score, which the sensor cannot produce). It stays the
-        # duck-typed swap seam that test_possession_source_is_pluggable_at_one_seam
-        # exercises.
+        # _possession_source is the tracker, and since 2026-08-26 (owner decision
+        # D1, contract clause C-POSSESS-1.D) it is REPORT-ONLY: the only supplier
+        # of arrival_err_mm (the catch-accuracy number the hardware runbooks
+        # score, which the cup cannot produce) and of nothing else. It was the
+        # ARRIVAL corroborator and the fallback until then; it decides nothing
+        # now, in either direction.
         self._possession_source = TrackerArrivalSource(
             arrival_tol_mm=_CAUGHT_MAX_XY_ERROR_MM)
-        # _ball_sensor is the PRIMARY source (2026-08-10): the ball-in-cup hand
-        # sensor is the only one that can observe RETENTION, and its ARRIVAL beats
-        # the tracker's whenever it can see. TICK-DRIVEN — it reads the cup, so it
-        # takes no ball and no reference point, which is exactly the shape the
-        # contract's § 3 said a genuinely primary source would need.
+        # _ball_sensor is the SOLE possession source (PRIMARY 2026-08-10, sole
+        # since 2026-08-26): the ball-in-cup hand sensor is the only one that can
+        # observe RETENTION, and it is the one whose ARRIVAL error model does not
+        # run through a dead-reckoned free-fall extrapolation. TICK-DRIVEN — it
+        # reads the cup, so it takes no ball and no reference point, which is
+        # exactly the shape the contract's § 3 said a genuinely primary source
+        # would need. It is the duck-typed swap seam
+        # test_possession_is_asked_at_one_seam_from_every_consumer exercises.
         # Staleness reuses _HAND_STATE_STALE_S rather than minting a fourth
         # window: the question ("is the Jetson still hearing the hand?") is
         # literally the one that constant already answers for hand_fresh, and two
@@ -935,15 +954,25 @@ class ReloadCoordinatorNode(Node):
         # ACTIVE), directly comparable to the STOW-relative nominated pose —
         # see _TOSS_MOCAP_BODY_PARAM for the frame contract.
         self._platform_pos_mm = None
-        # Sticky ball-possession latch (the toss's REJECTED_NO_BALL evidence; no
-        # ball-in-cup sensor exists): SET on any plausible destination-tagged CAUGHT
-        # on `balls` (a Reload's catch, or a prior Toss's), CLEARED only on OUR
-        # release evidence during a toss — it deliberately SURVIVES SAFE_ABORT
-        # retracts (the cup carries the ball down at ~3.16 m/s² ≪ g), so an aborted
-        # toss is retryable without a Reload. Known false-positive: a post-CAUGHT
-        # bounce-out leaves it set; the resulting empty-cup toss is safe (stroke
-        # fires, tracker never confirms, outcome resolves honestly) — accepted
-        # until the ball-held-sensor era.
+        # The ball-possession latch — "do we have a ball", as distinct from "did
+        # this ball arrive".
+        #
+        # ITS SOURCE IS THE CUP, since 2026-08-26 (owner decision D1). It is
+        # maintained by :meth:`_on_hand_telemetry` off the live `evidence` read: a
+        # valid SEATED sets it, a valid EMPTY clears it, UNKNOWN touches neither
+        # (blindness is not evidence in either direction). It deliberately SURVIVES
+        # SAFE_ABORT retracts (the cup carries the ball down at ~3.16 m/s² ≪ g), so
+        # an aborted toss is retryable without a Reload — and it survives because
+        # the ball really is still seated, not because a flag was left alone.
+        #
+        # BEFORE D1 it was SET on any plausible destination-tagged tracker CAUGHT
+        # on `balls` and cleared only on OUR release evidence, with a documented
+        # false-positive ("a post-CAUGHT bounce-out leaves it set … accepted until
+        # the ball-held-sensor era"). The sensor era arrived on 2026-08-10 and the
+        # latch kept its tracker trigger until D1; the bounce-out false-positive is
+        # closed by the EMPTY read, and the mirror-image false NEGATIVE — a real
+        # catch the tracker never confirmed, which was 12 of 23 on bag
+        # 2026-08-26_14-25-16 — is closed by the SEATED one.
         self._ball_possession = False
         # Per-toss-goal state (None/False between goals):
         self._toss_release_state = None       # motion ReleaseState (announcement physics)
@@ -1002,6 +1031,14 @@ class ReloadCoordinatorNode(Node):
         self._toss_record_ctx = None          # per-cycle declaration context
         self._toss_record_announce = None     # (throw_time_ros, landing_time_ros)
         self._toss_record_belt_warned = False  # one WARN per goal, then silence
+        # The per-cycle tick-loop census (INSTRUMENT ONLY). Installed fresh by
+        # _run_toss_cycle and left as None on every path where no cycle ran, so
+        # the REJECTED_BAD_GOAL record cannot inherit the previous cycle's
+        # timings. Touched from the cycle thread alone — no lock.
+        self._toss_loop_census = None
+        # Seconds spent in the last _build_toss_observations, written by
+        # _step_toss_sequence and read by _run_toss_cycle on the same thread.
+        self._toss_obs_build_s = 0.0
         self._toss_record_prev_uid = None     # the PREVIOUS cycle's toss_uid, so
                                               #   an ABORTED_NO_RELEASE retry can
                                               #   name what it retried (guard G11)
@@ -1315,10 +1352,10 @@ class ReloadCoordinatorNode(Node):
         relayed by ``ball_butler_node`` (``NAME (axis=..., detail1=...)``).
 
         Cached with an arrival stamp and consulted by exactly one caller — the
-        auto-reload interlude, deciding whether a failed reload was the known
-        ``THROW_ABORTED_NOT_SETTLED`` (BB not positioned in time, so no ball ever
-        left) and therefore retryable within budget. Nothing else in this node
-        reads it, and no FSM branches on it."""
+        auto-reload interlude, which since D2 (2026-08-26) uses it to NAME a failed
+        attempt in the log ("BB never threw" vs "BB threw and we missed") rather
+        than to decide whether to retry. Nothing else in this node reads it, and no
+        FSM branches on it."""
         try:
             text = str(msg.data)
         except Exception:                                      # noqa: BLE001
@@ -1333,8 +1370,10 @@ class ReloadCoordinatorNode(Node):
         so the caller compares against a named code rather than pattern-matching a
         human-readable sentence. Anything older than ``t_perf``, or older than
         ``_BB_THROW_OUTCOME_STALE_S``, belongs to a previous attempt and is not
-        reported: a stale NOT_SETTLED must never license a retry of a reload that
-        failed for some other reason."""
+        reported: a stale code must never be attributed to THIS attempt. The
+        freshness rule outlived its original reason (it used to gate a retry; since
+        D2 it gates a log line) and is kept because a mis-attributed BB code in the
+        operator's log routes them at the wrong machine."""
         with self._lock:
             cached = self._bb_throw_outcome
         if not cached:
@@ -1496,22 +1535,19 @@ class ReloadCoordinatorNode(Node):
                     break
 
     def _on_balls(self, msg):
+        """Cache ``/balls``. It carries NO possession claim since 2026-08-26 (D1).
+
+        It used to latch ``_ball_possession`` on any plausible destination-tagged
+        tracker ``CAUGHT``. That was the third of the three places the tracker
+        gated whether the possession question got ASKED, and it fails in both
+        directions: it cannot latch a catch the tracker never confirmed (12 of 23
+        on bag ``2026-08-26_14-25-16``) and it cannot un-latch a ball that bounced
+        out. The cup answers both, and :meth:`_on_hand_telemetry` — the source's
+        own feed, which arrives whether or not any track exists — is where the
+        latch now lives."""
         with self._lock:
             self._balls = list(msg.balls)
             self._balls_mono = time.perf_counter()
-            ref = self._toss_landing_global_mm
-        # Ball-possession latch (toss REJECTED_NO_BALL evidence): any plausible
-        # destination-tagged CAUGHT sets it — a Reload's catch or a prior Toss's,
-        # judged against the nominated toss landing point while a toss runs and the
-        # ACTIVE catch point otherwise. Sticky; cleared only on OUR release
-        # evidence (_build_toss_observations).
-        for b in msg.balls:
-            if (b.destination == self._robot_name
-                    and int(b.status) == _BALL_STATUS_CAUGHT
-                    and self._possession_confirmed(b, ref_point_mm=ref)):
-                with self._lock:
-                    self._ball_possession = True
-                break
 
     def _on_hand_telemetry(self, msg):
         now = time.perf_counter()
@@ -1551,6 +1587,17 @@ class ReloadCoordinatorNode(Node):
                 held=bool(getattr(msg, 'ball_held', False)),
                 valid=bool(getattr(msg, 'ball_held_valid', False)),
                 raw=None if raw is None else bool(raw))
+        # THE possession latch (D1, 2026-08-26) — it lives here now, on the cup's
+        # own feed, instead of on a tracker CAUGHT in `_on_balls`. Outside the
+        # lock: `evidence` takes the SOURCE's lock, and taking the node lock across
+        # it is the nested-lock shape `HandBallSensorSource`'s own docstring
+        # declines. UNKNOWN touches neither branch — blindness is not evidence in
+        # either direction — which is the same three-way rule
+        # `_build_toss_observations` applies per tick.
+        evidence = self._ball_sensor.evidence(now)
+        if evidence in (EVIDENCE_SEATED, EVIDENCE_EMPTY):
+            with self._lock:
+                self._ball_possession = (evidence == EVIDENCE_SEATED)
 
     def _on_announcement(self, msg):
         # Only OUR ball's announcement (thrown by BB, aimed at us) advances the FSM.
@@ -1624,17 +1671,22 @@ class ReloadCoordinatorNode(Node):
             control_mode = self._control_mode
             balls = self._balls
             balls_fresh = (now - self._balls_mono) < _STATUS_STALE_S
-        ball_caught = False
         catch_error_mm = float('nan')
+        caught_ball = None
         if balls_fresh:
             announced_id = self._update_announced_ball_latch(balls)
             if announced_id is not None:
                 for b in balls:
                     if int(b.id) == announced_id and int(b.status) == _BALL_STATUS_CAUGHT:
-                        if self._possession_confirmed(b):
-                            ball_caught = True
-                            catch_error_mm = self._catch_error_from_ball(b)
+                        caught_ball = b
                         break
+        # Sensor-only, tick-driven (D1, 2026-08-26) — the toss builder's change,
+        # transposed. The reload path carries the same defect for the same reason:
+        # a BB reload track that the tracker never confirms produced no question
+        # and therefore no catch, whatever the cup saw.
+        ball_caught, possession_blind = self._possession_observed(now, caught_ball)
+        if ball_caught and caught_ball is not None:
+            catch_error_mm = self._catch_error_from_ball(caught_ball)
         return ReloadObservations(
             now=now,
             control_mode=control_mode,
@@ -1645,6 +1697,7 @@ class ReloadCoordinatorNode(Node):
             streaming=streaming,
             platform_centered=self._platform_centered(now),
             ball_caught=ball_caught,
+            possession_blind=possession_blind,
             catch_error_mm=catch_error_mm)
 
     def _platform_centered(self, now: float) -> bool:
@@ -1722,9 +1775,12 @@ class ReloadCoordinatorNode(Node):
         read fresh on every query and never latched, so a finished goal's window
         cannot survive to veto the next ball's CAUGHT.
 
-        None (⇒ ``ARRIVAL_UNKNOWN`` ⇒ the merge falls back to the tracker) whenever
-        no sequence is running or none has scheduled a throw yet — which is the
-        honest answer: with nothing in the air, "did it arrive?" has no referent."""
+        None (⇒ ``ARRIVAL_UNKNOWN``, reason ``SENSOR_NO_LANDING``) whenever no
+        sequence is running or none has scheduled a throw yet — which is the
+        honest answer: with nothing in the air, "did it arrive?" has no referent.
+        **Since D1 (2026-08-26) that REFUSES; there is no tracker fallback** —
+        ``SENSOR_NO_LANDING`` is in ``ball_possession.BLIND_REASONS``, so a
+        consumer reading it mints ``MISSED_SENSOR_BLIND``, not ``MISSED``."""
         with self._lock:
             seq = self._active_seq
         if seq is None:
@@ -1820,9 +1876,36 @@ class ReloadCoordinatorNode(Node):
             self._toss_prev_landing_perf = self._toss_cycle_landing_perf
             self._toss_cycle_landing_perf = landing
 
-    def _possession_confirmed(self, ball, ref_point_mm=None) -> bool:
-        """THE possession question, for every caller in this node: does this tracker
-        ``CAUGHT`` confirm that WE have the ball?
+    def _possession_observed(self, now, ball=None, ref_point_mm=None):
+        """THE possession question, for every caller in this node: do WE have the
+        ball? -> ``(confirmed, blind)``.
+
+        ``blind`` is ``ball_possession.arrival_blind`` on the same verdict the
+        boolean came from — "the sensor could not look", as opposed to "its window
+        has not closed yet". Both halves come out of ONE ``observe`` call on
+        purpose: deriving the second from a second call would read the cup at a
+        different instant than the first, which is exactly the split-observation
+        class C-POSSESS-1 § 3.3 edit 1 closed for ``ball_evidence``.
+
+        ``now`` is the TICK's instant, passed in rather than re-read here for the
+        same reason: an observation snapshot must be built from one instant, and
+        the builders already pass this exact value to ``evidence``.
+
+        **TICK-DRIVEN AND SENSOR-ONLY since 2026-08-26 (owner decision D1).**
+        ``ball`` is now OPTIONAL and REPORT-ONLY. It used to be mandatory, and the
+        two FSM observation builders only called this method on a tracker
+        ``CAUGHT`` — which made the mocap tracker the primary source of possession
+        verdicts whatever ``merge_possession`` said, because a source that gates
+        whether the question is ASKED can veto by silence. Measured on bag
+        ``2026-08-26_14-25-16``: 15 false MISSED (12 of them tracks the tracker
+        never confirmed) and 3 false CAUGHT, against a cup sensor that called
+        31/31 (the 27 adjudicated cycles plus four rows that never put a ball up:
+        2x ``ABORTED_CANT_MAKE_RELEASE``, 2x ``REJECTED_NO_BALL``). See
+        ``jugglebot/ball_possession.py``'s module docstring.
+
+        Passing a ``ball`` now adds the tracker cross-check line and
+        ``arrival_err_mm`` to the log; it cannot move the verdict in either
+        direction.
 
         The single seam onto :attr:`_possession_source` (contract C-POSSESS-1,
         ``ros_ws/docs/ball_possession_contract.md``) — routing all callers through
@@ -1838,29 +1921,27 @@ class ReloadCoordinatorNode(Node):
         ``ref_point_mm`` overrides the reference point (the toss judges against its
         NOMINATED landing point); None = the reload's fixed ACTIVE catch point.
 
-        THE MERGE POINT (C-POSSESS-1 § 3.2, 2026-08-10). The tracker source is
-        consulted for ARRIVAL-as-corroboration and for ``arrival_err_mm``; the hand
-        sensor is consulted for the real answer. ``merge_possession`` owns the
+        THE ENFORCEMENT POINT (C-POSSESS-1 § 3.2). ``merge_possession`` owns the
         rules — do not re-derive them here."""
-        ref = self._catch_point_mm if ref_point_mm is None else ref_point_mm
-        tracker = self._possession_source.judge(
-            ball_xyz_mm=(float(ball.position.x), float(ball.position.y),
-                         float(ball.position.z)),
-            ref_point_mm=ref)
-        next_release_perf, next_landing_perf = self._expected_next_cycle_perf()
-        verdict = merge_possession(
-            sensor=self._ball_sensor.observe(
-                time.perf_counter(), self._expected_landing_perf(),
-                next_release_t=next_release_perf,
-                next_landing_t=next_landing_perf,
-                prev_landing_t=self._expected_prev_landing_perf()),
-            tracker=tracker)
+        tracker = None
+        if ball is not None:
+            ref = self._catch_point_mm if ref_point_mm is None else ref_point_mm
+            tracker = self._possession_source.judge(
+                ball_xyz_mm=(float(ball.position.x), float(ball.position.y),
+                             float(ball.position.z)),
+                ref_point_mm=ref)
+        verdict = self._possession_verdict(now, tracker)
         ok = bool(verdict.confirmed)
         # Keyed on the ARRIVAL STATE, not on the boolean: UNKNOWN and REFUSED both
         # project to False but say opposite things about where the fault is, and
         # keying on the bool would emit whichever fired first and swallow the
         # other for the rest of the goal.
-        key = (int(ball.id), verdict.arrival)
+        #
+        # -1 is the "no tracker estimate in hand" key. It cannot collide with a
+        # real ball id (the tracker's ids are unsigned) and it keeps the ONE line
+        # per (subject, state) discipline on the tick-driven path, which now runs
+        # at every tick of every goal instead of once per tracker CAUGHT.
+        key = (int(ball.id) if ball is not None else -1, verdict.arrival)
         if key not in self._possession_logged:
             self._possession_logged.add(key)
             # BOTH verdicts are logged, and the wording AND the severity come from
@@ -1873,10 +1954,32 @@ class ReloadCoordinatorNode(Node):
             severity, line = describe_possession(verdict, _CAUGHT_MAX_XY_ERROR_MM)
             log = self.get_logger()
             emit = log.info if severity == 'info' else log.warning
-            emit(f"Ball {int(ball.id)} at "
-                 f"({float(ball.position.x):.0f}, {float(ball.position.y):.0f}, "
-                 f"{float(ball.position.z):.0f}) mm: {line}")
-        return ok
+            if ball is None:
+                emit(f'Cup: {line}')
+            else:
+                emit(f"Ball {int(ball.id)} at "
+                     f"({float(ball.position.x):.0f}, "
+                     f"{float(ball.position.y):.0f}, "
+                     f"{float(ball.position.z):.0f}) mm: {line}")
+        return ok, bool(arrival_blind(verdict))
+
+    def _possession_verdict(self, now, tracker=None):
+        """The live :class:`PossessionVerdict` for whatever this node currently
+        expects, through the contract's one enforcement point.
+
+        Split out of :meth:`_possession_observed` on 2026-08-26 because the
+        observation builders now need BOTH halves of the verdict — the boolean AND
+        whether an UNKNOWN is blindness or patience (``arrival_blind``) — and
+        deriving the second from a second ``observe`` call would read the cup at a
+        different instant than the boolean was minted from."""
+        next_release_perf, next_landing_perf = self._expected_next_cycle_perf()
+        return merge_possession(
+            sensor=self._ball_sensor.observe(
+                float(now), self._expected_landing_perf(),
+                next_release_t=next_release_perf,
+                next_landing_t=next_landing_perf,
+                prev_landing_t=self._expected_prev_landing_perf()),
+            tracker=tracker)
 
     def _catch_error_from_ball(self, ball, ref_point_mm=None) -> float:
         """Horizontal miss distance of the caught ball from the world-frame catch point.
@@ -1978,6 +2081,26 @@ class ReloadCoordinatorNode(Node):
             hand_vel = self._hand_vel_meas
             balls = self._balls
             balls_fresh = (now - self._balls_mono) < _STATUS_STALE_S
+            # ⚠ WHO CONSUMES THIS (named explicitly, audit finding N13,
+            # 2026-08-26). Since D1 made `ball_seated` a LIVE `evidence(now)`
+            # read, this latch has exactly ONE reader — the release-evidence
+            # branch ~100 lines below, which only ever writes the latch back. It
+            # feeds NO observation field: `ball_seated` is deliberately not
+            # `or possession` (see its comment), and no other method in this node
+            # reads `_ball_possession`. So the latch's live effect today is
+            # confined to a single tick shape: `ball_evidence == UNKNOWN` (the cup
+            # blind or unsettled) AND our own release evidence present, where the
+            # clear below is what stops a blind cup carrying a stale SEATED
+            # belief across the throw.
+            #
+            # It is KEPT rather than deleted because it is normative, not
+            # incidental: `ros_ws/docs/ball_possession_contract.md` § 3.3 edit 2
+            # specifies the latch and its clear-without-release-evidence rule, and
+            # § 7.1's "a source cannot clear the latch" is closed BY it. Deleting
+            # it is a contract amendment (document first, then enforcement), not a
+            # tidy-up. If a future reader finds this comment and still no consumer
+            # beyond the self-clear, that is the signal to take the amendment —
+            # do not just widen the latch's use to give it a job.
             possession = self._ball_possession
             landing_ref = self._toss_landing_global_mm
             platform_target = self._toss_platform_target_mm
@@ -2019,9 +2142,13 @@ class ReloadCoordinatorNode(Node):
                                 and math.isfinite(catch_event_perf))
                             else float('nan'))
         track_active = False
-        ball_caught = False
         catch_error_mm = float('nan')
         time_at_land_perf = float('nan')
+        # The tracker's CAUGHT estimate for OUR announced ball, when it has one.
+        # REPORT-ONLY since 2026-08-26 (D1): it supplies `catch_error_mm` and the
+        # cross-check line, and it no longer decides — nor gates the ASKING of —
+        # the possession question. See _possession_observed.
+        caught_ball = None
         if balls_fresh:
             with self._lock:
                 own_prev_id = self._prev_announced_ball_id
@@ -2058,11 +2185,19 @@ class ReloadCoordinatorNode(Node):
                             self._toss_track_confirmed = True
                     time_at_land_perf = self._ball_time_at_land_perf(b, now)
                     if int(b.status) == _BALL_STATUS_CAUGHT:
-                        if self._possession_confirmed(b, ref_point_mm=landing_ref):
-                            ball_caught = True
-                            catch_error_mm = self._catch_error_from_ball(
-                                b, ref_point_mm=landing_ref)
+                        caught_ball = b
                     break
+        # THE possession verdict — ONE call, on EVERY tick, sensor-only (D1). It
+        # used to sit inside the `status == CAUGHT` branch above, which is what
+        # made the tracker primary in practice: on the 12 cycles of bag
+        # 2026-08-26_14-25-16 where the tracker never confirmed the track, the
+        # question was never asked at all and a genuine catch died MISSED at the
+        # settle deadline.
+        ball_caught, possession_blind = self._possession_observed(
+            now, caught_ball, ref_point_mm=landing_ref)
+        if ball_caught and caught_ball is not None:
+            catch_error_mm = self._catch_error_from_ball(
+                caught_ball, ref_point_mm=landing_ref)
         with self._lock:
             stroke_seen = self._toss_stroke_seen
             track_confirmed = self._toss_track_confirmed
@@ -2072,11 +2207,12 @@ class ReloadCoordinatorNode(Node):
                 # dispatch (both evidence latches already are — this is the
                 # belt on the consumer side): possession must never clear off
                 # a phantom's evidence before our stroke could have fired.
-                # (A caught toss re-sets possession via _on_balls; a missed
-                # one stays cleared. Never cleared on the tick that itself
-                # observes the plausible CAUGHT — the ball is back in the cup,
-                # and a track pruning right after the verdict would otherwise
-                # leave a caught toss possession-less.)
+                # (A caught toss re-sets possession from the CUP on the next
+                # /hand_telemetry sample — it re-set from a tracker CAUGHT on
+                # `_on_balls` until 2026-08-26; a missed one stays cleared.
+                # Never cleared on the tick that itself observes the CAUGHT —
+                # the ball is back in the cup, and clearing there would leave a
+                # caught toss possession-less for a tick.)
                 self._ball_possession = False
                 possession = False
             # C-POSSESS-1 § 3.3 edit 2 — the latch can now be corrected WITHOUT
@@ -2084,6 +2220,14 @@ class ReloadCoordinatorNode(Node):
             # is what stops a bounce-out during a TossContinuous dwell from
             # leaving a belief the machine then acts on. UNKNOWN touches nothing:
             # blindness is not evidence in either direction.
+            #
+            # TWO WRITERS, ONE RULE (D1, 2026-08-26): `_on_hand_telemetry` applies
+            # this same three-way rule on every sample, so the latch is correct
+            # BETWEEN ticks too. This copy is not redundant — the local
+            # `possession` below has to be coherent with the ONE `ball_evidence`
+            # read this snapshot was built from, and reading the latch instead
+            # would let the release-clear above and the cup disagree within a
+            # single observation. Keep them identical; if one changes, both do.
             if ball_evidence == EVIDENCE_EMPTY:
                 self._ball_possession = False
                 possession = False
@@ -2124,6 +2268,7 @@ class ReloadCoordinatorNode(Node):
             throw_stroke_seen=stroke_seen,
             ball_track_confirmed=track_confirmed,
             ball_caught=ball_caught,
+            possession_blind=possession_blind,
             catch_error_mm=catch_error_mm,
             catch_event_dt_s=catch_event_dt_s,
             ball_time_at_land_perf=time_at_land_perf,
@@ -3460,8 +3605,8 @@ class ReloadCoordinatorNode(Node):
         #
         #   * the branch POSITIONING takes (skip vs command a go_to_pose), and
         #   * the pre-dispatch budget the CHECKING delay gate charges
-        #     (toss_sequencer.pre_dispatch_budget_s — 0.080 s for the skip,
-        #     0.460 s for a move).
+        #     (toss_sequencer.pre_dispatch_budget_s — 0.160 s for the skip,
+        #     0.520 s for a move; 0.080 / 0.460 before owner decision D3).
         #
         # Taking it twice would let those two disagree, and a budget charged for
         # a branch the node did not take is exactly the accept-vs-runtime gap the
@@ -3633,9 +3778,18 @@ class ReloadCoordinatorNode(Node):
         FSM's own terminal, because aborting a catch mid-flight drops the ball on
         the robot."""
         t_start = time.perf_counter()
+        # INSTRUMENT ONLY. Fresh per cycle so no record can inherit another
+        # cycle's timings, and read back on THIS thread by _log_toss_outcome.
+        census = LoopPeriodCensus()
+        self._toss_loop_census = census
         try:
             while rclpy.ok():
                 now = time.perf_counter()
+                # Commits the PREVIOUS iteration: its period and its sleep are
+                # only measurable from here. Every early return below therefore
+                # drops the terminal tick, which is correct — it has no trailing
+                # sleep, so counting it would report a period never spent.
+                census.note_iteration_start(now)
                 if cancel_now_fn(now):
                     self._safe_toss_on_early_exit(seq)
                     r = TossResult(False, 'ABORTED_CANCELLED')
@@ -3653,6 +3807,10 @@ class ReloadCoordinatorNode(Node):
                     r = TossResult(False, 'ABORTED_TIMEOUT')
                     self._log_toss_outcome(r)
                     return r, 'timeout'
+                t_pre_sleep = time.perf_counter()
+                census.note_iteration_end(
+                    now, now + self._toss_obs_build_s, t_pre_sleep,
+                    decision.phase)
                 time.sleep(_TICK_S)
             # rclpy shutting down.
             self._safe_toss_on_early_exit(seq)
@@ -3742,6 +3900,10 @@ class ReloadCoordinatorNode(Node):
         and reading 50 ms would credit it with 2.5x more headroom than it has
         before collapsing this split into one tick."""
         obs = self._build_toss_observations(now)
+        # INSTRUMENT ONLY (see LoopPeriodCensus): stamped here rather than
+        # returned so this method's signature stays what its docstring promises —
+        # a decision, testable in isolation.
+        self._toss_obs_build_s = time.perf_counter() - now
         decision = seq.step(now, obs)
         if decision.action == TOSS_ACTION_POSITION_PLATFORM:
             self._position_platform_for_toss(seq)
@@ -3966,7 +4128,7 @@ class ReloadCoordinatorNode(Node):
         armed aim — ILC layer 3, the calibration map, Tier 8b — makes EVERY
         release tilted, so the skip was off for the whole of every ILC sitting
         and each cycle paid ``min_move_duration_s`` + ``TOSS_POSITION_SETTLE_PAD_S``
-        + ticks (0.38 s of throw delay, and one-for-one the same in dwell) to
+        + ticks (0.36 s of throw delay, and one-for-one the same in dwell) to
         traverse zero millimetres and re-command a tilt it was already holding.
         That was the largest single cadence item on the 2026-08-22 audit's board.
 
@@ -4428,13 +4590,43 @@ class ReloadCoordinatorNode(Node):
             parts.append(f'flight={fl:.3f} s')
         if np.isfinite(dt):
             parts.append(f'catch_dt={dt:+.3f} s')
+        census = self._toss_loop_census
+        if census is not None and census.overran:
+            # Appended to the outcome line so the census is visible without
+            # opening the corpus — but it does NOT move the line's level. An
+            # instrument must never change how an outcome is reported: a
+            # successful cycle that overran is still a success, and the overrun
+            # gets its own WARN below.
+            parts.append(f'tick_max={census.max_pre_s * 1e3:.0f} ms')
         suffix = f" ({', '.join(parts)})" if parts else ''
         line = f'Toss {result.outcome}{suffix}'
         if result.success:
             self.get_logger().info(line)
         else:
             self.get_logger().warning(line)
+        if census is not None and census.overran:
+            # Once per cycle by construction (this method is the one
+            # authoritative outcome line), so a 20-cycle session reports 20
+            # overruns rather than one — the per-GOAL throttle the record belt
+            # uses would hide nineteen of them.
+            #
+            # The four maxima are INDEPENDENT: the worst obs, body and sleep need
+            # not come from the tick that set the worst period. They localise
+            # which cost is growing, not how one tick decomposed.
+            self.get_logger().warning(
+                'Toss loop OVERRAN: {}/{} pre-dispatch ticks over {:.0f} ms '
+                '(worst period {:.1f}, obs {:.1f}, body {:.1f}, sleep {:.1f} ms) '
+                '— NODE_LOOP_PERIOD_S may no longer bound the pre-dispatch '
+                'ladder, so re-check it before booking a tight cadence rung. '
+                'Instrument only: this cycle was unaffected.'.format(
+                    census.n_over_pre, census.n_pre, TOSS_LOOP_PERIOD_S * 1e3,
+                    census.max_pre_s * 1e3, census.max_obs_pre_s * 1e3,
+                    census.max_body_pre_s * 1e3, census.max_sleep_pre_s * 1e3))
         self._publish_toss_record(result)
+        # Consumed. Cleared so a later terminal that ran no cycle at all (the
+        # REJECTED_BAD_GOAL path calls this method too) cannot inherit these
+        # timings and declare them as its own.
+        self._toss_loop_census = None
 
     # ── The per-toss record (INSTRUMENT ONLY — no control authority) ──────────
 
@@ -4731,6 +4923,16 @@ class ReloadCoordinatorNode(Node):
                 'speed_bias_applied': float(trim_snapshot['speed_k_v']),
                 'timing_bias_applied_ms': float(trim_snapshot['tau_ms']),
             })
+        # ── Loop timing (INSTRUMENT ONLY) ──
+        # Read OUTSIDE self._lock: the census is touched from the cycle thread
+        # alone, and this method runs on that thread (_log_toss_outcome ->
+        # _publish_toss_record). Locking it would put contention into the very
+        # loop it measures. `summary()` is all-None when no complete
+        # pre-dispatch iteration was censused, which is the REJECTED_BAD_GOAL
+        # case and reads correctly as "not measured".
+        census = self._toss_loop_census
+        rec.update(census.summary() if census is not None
+                   else {name: None for name in CENSUS_FIELD_NAMES})
         return rec
 
     def _toss_record_seq_fields(self, seq) -> dict:
@@ -5754,26 +5956,56 @@ class ReloadCoordinatorNode(Node):
              as the MISS path already does;
           5. the caller flags the next cycle ``RELOAD_SETTLE`` (guard G10).
 
-        Rung 3 may run more than once: the BB firmware's
-        ``THROW_ABORTED_NOT_SETTLED`` (BB not positioned in time, ball never
-        left) is retried within the session's remaining budget, because it is a
-        known BB-side defect rather than a Jugglebot fault. The retry is keyed on
-        that CODE — not on "the reload did not catch" — so it cannot swallow the
-        BB fail-open boot bug or any real BB fault, and the log line names it.
+        Rung 3 may run more than once. **Owner decision D2, 2026-08-26: any failed
+        THROW draws on the budget until it is spent.** Until then the retry was
+        keyed on the single BB code ``THROW_ABORTED_NOT_SETTLED`` (BB not
+        positioned in time, ball never left) and a reload that was DELIVERED and
+        genuinely missed stopped the session on its first miss — so ``max_reloads``
+        fenced only one of the two ways a reload can fail, and the operator had to
+        restart a sitting because one BB throw missed the cup.
+
+        **A THROW, not any terminal** (audit fix, 2026-08-26). ``max_reloads`` is a
+        BALL budget: it counts balls the interlude put on the floor. A
+        ``REJECTED_*`` or an ``ABORTED_BB_ERROR`` / ``ABORTED_TIMEOUT`` /
+        ``ABORTED_SHUTDOWN`` is a precondition the operator has to fix, not a ball,
+        so retrying it spends the ball budget on a non-ball failure and — worse —
+        collapses a faulted BallButler into ``STOPPED_RELOAD_BUDGET``, which
+        ``tests/hardware/toss_cal_grid.py`` reads as "the node exhausted its
+        reloads, skip this cell". A faulted BB would then complete a thin grid
+        silently. Those terminals now stop the session BY NAME
+        (``STOPPED_RELOAD_<outcome>``), before drawing another attempt.
+
+        ⚠ Three ABORTED codes are deliberately NOT on that list and still draw
+        budget: ``ABORTED_MODE_CHANGED``, ``ABORTED_PRIME_FAILED`` and
+        ``ABORTED_PREPARE_FAILED``. They are named here rather than left implicit —
+        ``ABORTED_PREPARE_FAILED`` in particular means no ball ever left the
+        Butler, so it arguably belongs with the precondition set. Extending the
+        list is a behaviour change with an operator-visible name attached, so it
+        waits for the owner rather than being inferred here.
+
+        What makes the widening safe is that a retry is not a repeat of the
+        dispatch, it is a repeat of the whole LADDER: rungs 1 and 2 run again
+        before every attempt, so every refusal that gated the first attempt gates
+        each retry — ``STOPPED_BALL_EVIDENCE_DISABLED``, ``STOPPED_BB_NOT_READY``,
+        ``STOPPED_BB_UNVERIFIED``, ``STOPPED_CUP_NOT_EMPTY``,
+        ``STOPPED_SENSOR_UNKNOWN``, ``STOPPED_RECENTRE_FAILED``. In particular
+        ``STOPPED_CUP_NOT_EMPTY`` is what stops a retry throwing a second ball at a
+        cup the first one actually reached, and a sensor that cannot see refuses
+        rather than retrying. The session's own budget and floor rungs are NOT
+        among them and the claim that they were is deleted (audit fix, 2026-08-26):
+        ``_reload_interlude_gate`` explicitly excludes them, and they are evaluated
+        once per INTERLUDE, not once per attempt — which is why
+        :meth:`toss_session.TossSessionSequencer.note_reload_result` has to charge
+        the floor per attempt itself.
+
+        (Before D2 the gate and the recentre ran ONCE, outside the loop, so a
+        NOT_SETTLED retry re-threw at a cup nobody had re-checked. That was
+        defensible only because NOT_SETTLED means no ball ever left the Butler;
+        it is not defensible for a delivered miss, and the ladder is now uniform
+        rather than carrying a per-code carve-out.)
 
         The whole loop deliberately does NOT own the goal handle: a session's
         interlude terminal is not the session's terminal."""
-        stop = self._reload_interlude_gate(session, cancel_now_fn=cancel_now_fn)
-        if stop is not None:
-            self.get_logger().warning(
-                'reload interlude REFUSED %s — nothing moved (reloads %d/%d, '
-                'floor %d)'
-                % (stop, session.reloads_used, session.max_reloads,
-                   session.floor_balls))
-            return False, stop, 0
-        if not self._recentre_for_reload():
-            return False, 'STOPPED_RECENTRE_FAILED', 0
-
         attempts = 0
         # The FSM refuses to emit SESSION_ACTION_RELOAD with no budget left, so
         # this is a belt — and it fails CLOSED rather than granting a courtesy
@@ -5782,6 +6014,19 @@ class ReloadCoordinatorNode(Node):
         if budget <= 0:
             return False, OUTCOME_STOPPED_RELOAD_BUDGET, 0
         while attempts < budget:
+            # Rungs 1+2, per attempt (D2). On attempt 1 this is byte-identical to
+            # the pre-D2 pre-loop gate, so a first-attempt refusal still reports
+            # `attempts = 0` and "nothing moved".
+            stop = self._reload_interlude_gate(session, cancel_now_fn=cancel_now_fn)
+            if stop is not None:
+                self.get_logger().warning(
+                    'reload interlude REFUSED %s on attempt %d/%d — nothing '
+                    'moved (reloads %d/%d, floor %d)'
+                    % (stop, attempts + 1, budget, session.reloads_used,
+                       session.max_reloads, session.floor_balls))
+                return False, stop, attempts
+            if not self._recentre_for_reload():
+                return False, 'STOPPED_RECENTRE_FAILED', attempts
             attempts += 1
             t_attempt = time.perf_counter()
             outcome = self._run_one_reload_attempt(cancel_now_fn=cancel_now_fn)
@@ -5793,29 +6038,35 @@ class ReloadCoordinatorNode(Node):
                     'flagged RELOAD_SETTLE and excluded from the fit'
                     % (attempts, budget))
                 return True, None, attempts
-            code = self._bb_throw_outcome_since(t_attempt)
-            if code == _BB_NOT_SETTLED_CODE and attempts < budget:
-                self.get_logger().warning(
-                    'reload interlude attempt %d/%d ended %s with BB reporting '
-                    '%s — BB was not positioned in time, so no ball ever left '
-                    'it. Retrying within the reload budget (this retry is '
-                    'targeted at that ONE code; every other BB failure stops '
-                    'the session).'
-                    % (attempts, budget, outcome.outcome, _BB_NOT_SETTLED_CODE))
-                continue
-            if code == _BB_NOT_SETTLED_CODE:
+            if outcome.outcome.startswith('REJECTED_') or outcome.outcome in (
+                    'ABORTED_BB_ERROR', 'ABORTED_TIMEOUT', 'ABORTED_SHUTDOWN'):
+                # Not a ball, and not a miss: a precondition the operator must
+                # fix. Retrying spends the ball budget on a non-ball failure and
+                # hides the fault behind the capture tool's node-skip.
                 self.get_logger().error(
-                    'reload interlude EXHAUSTED the budget on %s (%d attempts)'
-                    % (_BB_NOT_SETTLED_CODE, attempts))
-                return False, OUTCOME_STOPPED_RELOAD_BUDGET, attempts
+                    'reload interlude attempt %d/%d ended %s — stopping the '
+                    'session by name (D2 widens the budget to failed THROWS, '
+                    'not to precondition failures)' % (attempts, budget,
+                                                       outcome.outcome))
+                return (False, 'STOPPED_RELOAD_{}'.format(outcome.outcome),
+                        attempts)
+            code = self._bb_throw_outcome_since(t_attempt)
+            if attempts < budget:
+                self.get_logger().warning(
+                    'reload interlude attempt %d/%d ended %s%s — retrying '
+                    'within the reload budget (D2: any failed attempt draws on '
+                    'it; every precondition rung is re-checked before the '
+                    'retry, so a non-empty cup or a blind sensor refuses '
+                    'instead).'
+                    % (attempts, budget, outcome.outcome,
+                       '' if code is None else ' (BB reported %s)' % code))
+                continue
             self.get_logger().error(
-                'reload interlude attempt %d/%d ended %s%s — stopping the '
-                'session (only %s is retryable)'
-                % (attempts, budget, outcome.outcome,
-                   '' if code is None else ' (BB reported %s)' % code,
-                   _BB_NOT_SETTLED_CODE))
-            return (False, 'STOPPED_RELOAD_{}'.format(outcome.outcome),
-                    attempts)
+                'reload interlude EXHAUSTED the budget after %d attempt(s); '
+                'last outcome %s%s'
+                % (attempts, outcome.outcome,
+                   '' if code is None else ' (BB reported %s)' % code))
+            return False, OUTCOME_STOPPED_RELOAD_BUDGET, attempts
         return False, OUTCOME_STOPPED_RELOAD_BUDGET, attempts
 
     @staticmethod

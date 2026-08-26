@@ -127,11 +127,16 @@ where the reload receives from BB):
    moving platform under a seated ball mid-windup. The node suppresses it via
    ``catch/pretilt_hold`` for the goal's duration (8a is motion-free under the
    stock path and keeps it unchanged).
-6. **SETTLING** — tracker ``CAUGHT`` for OUR announced ball within the confirm
-   window past the scheduled landing ⇒ ``CAUGHT`` (``ACTION_STAY`` by default,
-   ``ACTION_RECENTER`` iff ``stay_at_pose_on_caught`` is False — see
-   ``_terminal_action``); otherwise ``MISSED_INFEASIBLE_<code>`` (only when NO
-   catch target was ever accepted) or ``MISSED``.
+6. **SETTLING** — the BALL-IN-CUP SENSOR observing OUR ball arrive within the
+   confirm window past the scheduled landing ⇒ ``CAUGHT`` (``ACTION_STAY`` by
+   default, ``ACTION_RECENTER`` iff ``stay_at_pose_on_caught`` is False — see
+   ``_terminal_action``); otherwise ``MISSED_SENSOR_BLIND`` (the cup could not
+   look — a machine fault, named rather than laundered into a miss),
+   ``MISSED_INFEASIBLE_<code>`` (only when NO catch target was ever accepted)
+   or ``MISSED``.
+   Read "tracker ``CAUGHT``" here until 2026-08-26, when owner decision D1 made
+   possession the cup's alone — the tracker is no longer consulted for it on
+   either FSM (``ros_ws/docs/ball_possession_contract.md``, C-POSSESS-1.D).
 
 ORDERING PRINCIPLE (transposed from reload): every Jugglebot-side arming action
 (platform positioning, catch latch, announcement) happens BEFORE the throw is
@@ -323,7 +328,7 @@ TOSS_DISPATCH_DEBOUNCE_S = 0.10      # GOAL-STORM debounce, NOT a readiness floo
                                      #     the guard has already spent by the time
                                      #     it runs (2026-08-23; charging the
                                      #     dispatch budget alone made the accept
-                                     #     gate loose by 0.080-0.460 s and shipped
+                                     #     gate loose by 0.160-0.520 s and shipped
                                      #     three cadence rungs that abort every
                                      #     cycle);
                                      #   * the HAND GEOMETRY — toss_session's
@@ -460,6 +465,27 @@ CATCH_CONFIRM_WINDOW_S = ARRIVAL_BAND_MAX_S
                                      # an edit of their own.
                                      # (Still absorbs the +0.115 s announced-early
                                      # bias of the fourth sitting, with more room.)
+                                     #
+                                     # ⚠ CORRECT BY CONSTRUCTION SINCE 2026-08-26 (D1),
+                                     # where before it was correct by luck. The comment
+                                     # above is right that the deadline must outlast the
+                                     # SENSOR band — and until D1 the budget was
+                                     # actually being spent on the mocap TRACKER's
+                                     # CAUGHT latency, because `ball_caught` was minted
+                                     # only on a tracker CAUGHT. Two unrelated
+                                     # quantities were sharing one number. Bag
+                                     # 2026-08-26_14-25-16 made it visible: three
+                                     # genuine catches whose CUP edge landed at +0.222 /
+                                     # +0.249 / +0.227 s died MISSED because the
+                                     # TRACKER's CAUGHT did not arrive until +0.615 /
+                                     # +0.830 / +0.622 s. With the cup as the sole
+                                     # consumer the derivation closes on its own terms:
+                                     # the LATEST cup arrival edge in that entire bag is
+                                     # +0.303 s against this 0.560 s, i.e. 1.85x of
+                                     # margin. The constant did NOT change and the fix
+                                     # was in the CONSUMER — a shrink would have been
+                                     # the wrong lever, and was the pre-registered H1a
+                                     # this investigation refuted.
 TOSS_CANCEL_CUTOFF_S = 0.25          # node-level (§ cancellation): cancels honoured up
                                      # to t_release − this; later ⇒ deferred to the
                                      # FSM's own terminal.
@@ -614,6 +640,239 @@ def vertical_event_vel_mps(flight_time_s: float) -> float:
 # equal.
 NODE_TICK_S = 0.02
 
+#: THE LOOP PERIOD — one iteration of ``_run_toss_cycle``, wall-clock. **This, not
+#: :data:`NODE_TICK_S`, is what the pre-dispatch ladder is counted in** (owner
+#: decision D3, 2026-08-26).
+#:
+#: The loop is ``work; time.sleep(_TICK_S)``, so an iteration costs the sleep PLUS
+#: the tick's own work — and the pre-dispatch ticks are the expensive ones in the
+#: whole sequence: ``_build_toss_observations`` (locks, a numpy norm, a sensor
+#: query), the feedback publish, and then a BLOCKING dispatch — the reach-centre
+#: declaration, the PREPARE bundle (soft gains + ``trajectory/arm_catch`` raise and
+#: confirm + vel scale + two publishes), the announcement build and publish.
+#: Charging them at the SLEEP was the error: ``pre_dispatch_budget_s`` promised the
+#: lead the sequence spends before the runtime guard runs, and it named the tick
+#: ladder correctly while pricing every rung at zero work.
+#:
+#: MEASURED, and the measurement is reproducible from a bag with one grep.
+#: ``2026-08-26_14-25-16``, **28 cycle starts** across 12 goals: from the tick that
+#: dispatches ``ACTION_POSITION_PLATFORM`` (``reload_coordinator_node`` logs
+#: "POSITIONING skipped …"/"POSITIONING commanded …" there) to the tick that
+#: publishes the self-announcement (``/throw_ann``) is **exactly 3 loop
+#: iterations** — positioning→PREPARE, the deferred PREPARE bundle answering,
+#: ANNOUNCE. Measured span **0.080 – 0.113 s**, median 0.0905 ⇒ **0.0267 – 0.0377 s
+#: per iteration**, i.e. 1.33x – 1.89x the sleep. Ceiled to the next 10 ms so the
+#: constant is a bound rather than a datum (the sizing discipline
+#: ``ARRIVAL_BAND_MAX_S`` uses): **0.040 s, exactly 2 x NODE_TICK_S**.
+#:
+#: WHAT IT COST TO GET THIS WRONG. Both ``ABORTED_CANT_MAKE_RELEASE`` cycles in
+#: that bag are this shortfall and nothing else:
+#:
+#: ==========  =====  ============  ==========  =============  ================
+#: cycle       v m/s  dispatch bgt  throw_delay accept floor    lead at guard
+#: ==========  =====  ============  ==========  =============  ================
+#: run 2 c1     2.48       0.3344        0.440   0.4144 (old)   0.330 -> ABORT
+#: run 10 c2    3.92       0.2813        0.400   0.3613 (old)   0.272 -> ABORT
+#: ==========  =====  ============  ==========  =============  ================
+#:
+#: Both cleared their accept floor — by 26 ms and 39 ms — and both then died at the
+#: runtime guard, with the catch latch raised, the announcement out and a phantom
+#: tracker expectation left behind. That is exactly the failure
+#: :func:`min_throw_delay_for_release_s` exists to make unreachable, and it stayed
+#: reachable because the two gates agreed on an arithmetic that was 0.08 s short.
+#: With the loop period charged, both goals are REFUSED AT ACCEPT instead — loud,
+#: early, nothing armed.
+#:
+#: ⚠ NOT A JITTER ALLOWANCE, and not a licence to stop measuring. It is the
+#: measured cost of the work in one iteration on THIS Jetson at THIS tick rate —
+#: bounded from the three MEASURED iterations (positioning→PREPARE, the deferred
+#: bundle answering, ANNOUNCE) plus the charged fourth (ANNOUNCE→DISPATCH), which
+#: the bag cannot time because nothing logs the dispatch tick. A tick
+#: that grows new work (another blocking service in the PREPARE bundle) moves this
+#: number, and the way to find out is to re-run the grep above on the next bag, not
+#: to reason about it.
+NODE_LOOP_PERIOD_S = 0.04
+
+
+# ── The loop-period census (INSTRUMENT ONLY — no control authority) ───────────
+#: Exactly the phases :func:`pre_dispatch_budget_s` charges.
+#:
+#: The split is what makes the census honest. A cycle spends most of its ticks
+#: waiting out a 0.5 s flight, and those ticks are almost all ``ACTION_NONE``;
+#: the handful BEFORE the throw are the ones that run a blocking ``arm_catch``
+#: raise-and-confirm and an announcement publish, and they are the only ones any
+#: delay floor is denominated in. A whole-cycle mean would be dominated by the
+#: cheap majority and would hide the expensive minority — which is precisely the
+#: quantity :data:`NODE_LOOP_PERIOD_S` has to bound.
+PRE_DISPATCH_PHASES = frozenset(
+    (PHASE_CHECKING, PHASE_POSITIONING, PHASE_PREPARING))
+
+#: The census field names, in record order.
+#:
+#: ``toss_record.FIELDS`` declares the same ten names and is pinned equal to this
+#: tuple by ``tests/motion/test_toss_record.py``. A drift-guard test rather than
+#: an import, deliberately: ``toss_record`` takes exactly ONE jugglebot import
+#: (``ball_possession``, pure and leaf) so that a corpus reader never drags in the
+#: FSM, and importing this module there would cost that property for a list of
+#: strings. Same trade the ``_TICK_S`` / ``NODE_TICK_S`` mirror already makes.
+CENSUS_FIELD_NAMES = (
+    'loop_n_pre',
+    'loop_period_max_pre_s',
+    'loop_period_mean_pre_s',
+    'loop_work_max_pre_s',
+    'loop_obs_max_pre_s',
+    'loop_body_max_pre_s',
+    'loop_sleep_max_pre_s',
+    'loop_n_over_pre',
+    'loop_n_post',
+    'loop_period_max_post_s',
+)
+
+
+class LoopPeriodCensus:
+    """Wall-clock census of ONE toss cycle's own tick loop.
+
+    **INSTRUMENT ONLY. No control authority, now or ever** — and specifically
+    NOT a source for :data:`NODE_LOOP_PERIOD_S`. That constant is a reviewed
+    bound on how long an iteration may take; a bound that re-derived itself from
+    the last cycle would TRACK a degradation instead of exposing it, and the two
+    ``ABORTED_CANT_MAKE_RELEASE`` cycles of 2026-08-26 are what a silently
+    moving floor costs. This class answers "should a human move it?" and stops
+    there. Nothing here may be read by a gate, a budget or an FSM transition.
+
+    **What it measures, and why the boundaries are where they are.**
+
+    An iteration is ``now`` to the next ``now`` — the loop's OWN top-of-loop
+    ``time.perf_counter()`` read, reused rather than re-taken. That is not
+    frugality: ``now`` is the clock the FSM reasons with, so the interval between
+    successive ``now`` values IS the granularity at which the release-window
+    guard sees time advance. Any other pair of stamps measures a nearby but
+    different quantity.
+
+    Each iteration decomposes into three terms, which between them adjudicate the
+    three suspected costs without inference::
+
+        obs   = t_obs_done  - now           the per-tick observation rebuild
+        body  = t_pre_sleep - t_obs_done    step + blocking dispatch + publishes
+        sleep = next_now    - t_pre_sleep   what the SLEEP actually cost
+
+    ``sleep`` is measured rather than assumed to be ``NODE_TICK_S``. On a loaded
+    Jetson ``time.sleep(0.020)`` can return at 0.026, and folding that overshoot
+    into ``body`` would charge six milliseconds to code that did not run slowly —
+    the executor/GIL-contention question would then be indistinguishable from the
+    blocking-service question, which is the whole thing the census exists to
+    separate.
+
+    **Why a row lags by one call.** An iteration's period and its sleep are only
+    knowable once the NEXT one starts, so :meth:`note_iteration_start` commits
+    the previous row. The terminal iteration returns from the middle of the loop
+    and never reaches :meth:`note_iteration_end`, so it is never committed — also
+    deliberate: it has no trailing sleep, and counting it would report a period
+    the loop never spent.
+
+    O(1) and allocation-free per tick (ten float compares, no container touched),
+    and lock-free: every method is called from the cycle thread alone, and
+    ``_log_toss_outcome`` reads the summary on that same thread. Taking the
+    node's lock here would add contention to the loop under measurement.
+    """
+
+    __slots__ = ('n_pre', 'sum_pre_s', 'max_pre_s', 'n_over_pre',
+                 'max_work_pre_s', 'max_obs_pre_s', 'max_body_pre_s',
+                 'max_sleep_pre_s', 'n_post', 'max_post_s',
+                 '_open_now', '_open_pre_sleep', '_open_obs_s', '_open_body_s',
+                 '_open_is_pre', 'over_threshold_s')
+
+    def __init__(self, over_threshold_s: float = NODE_LOOP_PERIOD_S) -> None:
+        self.over_threshold_s = float(over_threshold_s)
+        self.n_pre = 0
+        self.sum_pre_s = 0.0
+        self.max_pre_s = 0.0
+        self.n_over_pre = 0
+        self.max_work_pre_s = 0.0
+        self.max_obs_pre_s = 0.0
+        self.max_body_pre_s = 0.0
+        self.max_sleep_pre_s = 0.0
+        self.n_post = 0
+        self.max_post_s = 0.0
+        self._open_now = None
+        self._open_pre_sleep = 0.0
+        self._open_obs_s = 0.0
+        self._open_body_s = 0.0
+        self._open_is_pre = False
+
+    def note_iteration_start(self, now: float) -> None:
+        """Top of the loop, with the loop's own ``now``. Commits the previous
+        iteration, whose period is only measurable from here."""
+        if self._open_now is not None:
+            self._commit(now - self._open_now, now - self._open_pre_sleep)
+            self._open_now = None
+
+    def note_iteration_end(self, now: float, t_obs_done: float,
+                           t_pre_sleep: float, phase: str) -> None:
+        """Bottom of the loop, immediately before the sleep. ``now`` is the SAME
+        value passed to :meth:`note_iteration_start` for this iteration."""
+        self._open_now = now
+        self._open_pre_sleep = t_pre_sleep
+        self._open_obs_s = t_obs_done - now
+        self._open_body_s = t_pre_sleep - t_obs_done
+        self._open_is_pre = phase in PRE_DISPATCH_PHASES
+
+    def _commit(self, period_s: float, sleep_s: float) -> None:
+        if not self._open_is_pre:
+            self.n_post += 1
+            if period_s > self.max_post_s:
+                self.max_post_s = period_s
+            return
+        work_s = self._open_obs_s + self._open_body_s
+        self.n_pre += 1
+        self.sum_pre_s += period_s
+        if period_s > self.max_pre_s:
+            self.max_pre_s = period_s
+        if period_s > self.over_threshold_s:
+            self.n_over_pre += 1
+        if work_s > self.max_work_pre_s:
+            self.max_work_pre_s = work_s
+        if self._open_obs_s > self.max_obs_pre_s:
+            self.max_obs_pre_s = self._open_obs_s
+        if self._open_body_s > self.max_body_pre_s:
+            self.max_body_pre_s = self._open_body_s
+        if sleep_s > self.max_sleep_pre_s:
+            self.max_sleep_pre_s = sleep_s
+
+    @property
+    def overran(self) -> bool:
+        """At least one pre-dispatch iteration exceeded the threshold — i.e. the
+        bound every delay floor is built on did not hold this cycle."""
+        return self.n_over_pre > 0
+
+    def summary(self) -> dict:
+        """The record fields. All ``None`` when no complete pre-dispatch
+        iteration was seen (the ``REJECTED_BAD_GOAL`` path, or a cycle that
+        terminated inside its first tick) — ``None`` is "not measured", which is
+        a different fact from a measured zero and the record's null discipline
+        keeps them apart.
+
+        ``loop_work_max_pre_s`` is the max of the per-iteration SUM, not the sum
+        of the two maxima: those differ, and only the former answers "how close
+        did the worst tick come to its budget".
+        """
+        if self.n_pre <= 0:
+            return {name: None for name in CENSUS_FIELD_NAMES}
+        return {
+            'loop_n_pre': int(self.n_pre),
+            'loop_period_max_pre_s': float(self.max_pre_s),
+            'loop_period_mean_pre_s': float(self.sum_pre_s / self.n_pre),
+            'loop_work_max_pre_s': float(self.max_work_pre_s),
+            'loop_obs_max_pre_s': float(self.max_obs_pre_s),
+            'loop_body_max_pre_s': float(self.max_body_pre_s),
+            'loop_sleep_max_pre_s': float(self.max_sleep_pre_s),
+            'loop_n_over_pre': int(self.n_over_pre),
+            'loop_n_post': int(self.n_post),
+            'loop_period_max_post_s': (float(self.max_post_s)
+                                       if self.n_post > 0 else None),
+        }
+
+
 #: One microsecond of slack on the accept-time delay floor, and it is NOT a
 #: jitter allowance — bounding scheduling jitter is the RUNTIME guard's job and
 #: no static floor can do it (an ``ABORTED_CANT_MAKE_RELEASE`` from a late tick
@@ -636,7 +895,7 @@ FLOOR_REPRESENTATION_SLACK_S = 1e-6
 
 
 def pre_dispatch_budget_s(positioning_move: bool,
-                          tick_s: float = NODE_TICK_S) -> float:
+                          loop_period_s: float = NODE_LOOP_PERIOD_S) -> float:
     """Cycle START → the LAST evaluation of the release-window guard, in seconds.
 
     **The quantity the accept-time delay floor was missing.**  Until 2026-08-23
@@ -674,28 +933,50 @@ def pre_dispatch_budget_s(positioning_move: bool,
     dynamic quantity (how far the platform is from the pre-positioning pose) and
     no static gate can bound it; what this closes is the STATIC shortfall.
 
-    So: **0.080 s with the skip, 0.460 s without it** at the shipped 0.02 s tick.
-    That 0.38 s gap is the whole LEVEL/AIMED split the cadence ladder published —
+    ⚠ **THE UNIT IS THE LOOP PERIOD, NOT THE SLEEP** (owner decision D3,
+    2026-08-26).  Until then this counted the ladder in ``NODE_TICK_S`` — the
+    ``time.sleep`` at the bottom of ``_run_toss_cycle`` — which prices every rung's
+    own work at zero, and the pre-dispatch rungs are the ones that DO work (a
+    blocking arm_catch raise+confirm, an announcement build and publish).  The
+    measured iteration is 0.0267 – 0.0377 s, bounded by
+    :data:`NODE_LOOP_PERIOD_S` = 0.040 s; the 0.020 s charge was short by a factor
+    of two, and it is what killed both ``ABORTED_CANT_MAKE_RELEASE`` cycles of bag
+    ``2026-08-26_14-25-16`` after they had cleared this very gate.  See
+    :data:`NODE_LOOP_PERIOD_S` for the measurement and the two cycles.
+
+    So: **0.160 s with the skip, 0.520 s without it** (0.080 / 0.460 before D3).
+    That ~0.36 s gap is the whole LEVEL/AIMED split the cadence ladder published —
     and since 2026-08-23 an aimed CHAIN takes the skip too (the B1 predicate is
     orientation-aware), so the discriminator is "does POSITIONING command a move",
     never "is the release tilted".
     """
-    tick = float(tick_s)
+    loop = float(loop_period_s)
     arrival_s = (TOSS_POSITION_MIN_MOVE_S + TOSS_POSITION_SETTLE_PAD_S
                  if positioning_move else 0.0)
-    # ceil to the tick the FSM actually observes the arrival on, never fewer than
-    # one (the noop declares arrival inside tick 0, and _step_positioning still
-    # runs no earlier than tick 1).  The epsilon is not cosmetic: 0.40/0.02 is
-    # 20.000000000000004 in binary floating point, and a bare ceil() would charge
-    # a 21st tick the machine never spends.
-    arrival_ticks = max(1, int(math.ceil(arrival_s / tick - 1e-9)))
-    return (arrival_ticks + 3) * tick
+    # ceil to the iteration the FSM actually observes the arrival on, never fewer
+    # than one (the noop declares arrival inside tick 0, and _step_positioning
+    # still runs no earlier than tick 1).  The epsilon is not cosmetic and it is
+    # not tied to any particular pair of numbers: `arrival_s / loop` is a ratio of
+    # decimal literals that are not exactly representable in binary, so a quotient
+    # that is a whole number in real arithmetic can land a few ULPs ABOVE it, and
+    # a bare ceil() would then charge an extra iteration the machine never spends
+    # — 0.040 s of phantom lead demanded at the accept gate, on a rung whose whole
+    # clearance is single-digit milliseconds.  Today's operands happen to divide
+    # clean (0.400/0.040 is exactly 10.0, and so was 0.400/0.020), but `arrival_s`
+    # is built from two CONFIG values and `loop` is a measured constant: any of the
+    # three moving can re-open it.  The guard is written for the class, not for a
+    # worked example.  1e-9 is ~11 orders of magnitude above the representation
+    # error and ~7 below the smallest real quantity here, so it cannot mask a
+    # genuine extra iteration.
+    arrival_ticks = max(1, int(math.ceil(arrival_s / loop - 1e-9)))
+    return (arrival_ticks + 3) * loop
 
 
 def min_throw_delay_for_release_s(event_vel_mps: float,
                                   positioning_move: bool,
                                   min_event_delay_s: float = 0.0,
-                                  tick_s: float = NODE_TICK_S) -> float:
+                                  loop_period_s: float = NODE_LOOP_PERIOD_S
+                                  ) -> float:
     """THE accept-time ``throw_delay_s`` floor — the ONE derivation both gates use.
 
     ``max(TOSS_DISPATCH_DEBOUNCE_S, dispatch budget + pre-dispatch budget)``:
@@ -721,7 +1002,7 @@ def min_throw_delay_for_release_s(event_vel_mps: float,
     dispatch_s = (override if override > 0.0
                   else hand_stroke.min_throw_event_delay_s(event_vel_mps))
     return max(TOSS_DISPATCH_DEBOUNCE_S,
-               dispatch_s + pre_dispatch_budget_s(positioning_move, tick_s)
+               dispatch_s + pre_dispatch_budget_s(positioning_move, loop_period_s)
                + FLOOR_REPRESENTATION_SLACK_S)
 
 
@@ -799,10 +1080,24 @@ class TossObservations:
                                       # CONFIRMED on `balls` — physical airborne
                                       # evidence (status IN_FLIGHT is time-based and
                                       # proves nothing).
-    ball_caught: bool = False         # tracker CAUGHT for the LATCHED id only,
-                                      # plausibility-gated vs the NOMINATED catch point
+    ball_caught: bool = False         # THE possession verdict — the ball-in-cup
+                                      # sensor's, and ONLY its, since 2026-08-26
+                                      # (owner decision D1). It used to be "a tracker
+                                      # CAUGHT for the latched id, plausibility-gated",
+                                      # which made the mocap tracker the primary
+                                      # source: a track it never confirmed produced no
+                                      # verdict at all. The tracker keeps every other
+                                      # role (landing announcements, aim/ILC channels,
+                                      # ball tracking) — only possession changed.
+    possession_blind: bool = False    # the verdict was UNKNOWN because the sensor
+                                      # COULD NOT LOOK (ball_possession.arrival_blind),
+                                      # not because its window was still open. Drives
+                                      # MISSED_SENSOR_BLIND at the settle terminal.
     catch_error_mm: float = float('nan')  # hypot(ball xy − nominated landing xy) at the
-                                      # CAUGHT tick; NaN otherwise
+                                      # CAUGHT tick; NaN otherwise — and NaN is now the
+                                      # HONEST reading on a catch the tracker never
+                                      # saw, which the 2026-08-26 census showed is a
+                                      # large minority of real catches
     catch_event_dt_s: float = float('nan')
                                       # HAND-SENSOR catch-event time: the ball's observed
                                       # arrival edge in the cup MINUS the predicted
@@ -883,7 +1178,7 @@ class TossSequencer:
                                                 # It is the single input that sets
                                                 # the pre-dispatch budget the
                                                 # CHECKING delay gate charges
-                                                # (0.460 s vs 0.080 s), so getting
+                                                # (0.520 s vs 0.160 s), so getting
                                                 # it wrong in the optimistic
                                                 # direction re-opens the exact hole
                                                 # the 2026-08-22 audit found.
@@ -1114,7 +1409,7 @@ class TossSequencer:
         (Until 2026-08-23 only ``trajectory/commanded_position`` existed, three
         of the six pose components, so the caller ALSO had to know the release
         was LEVEL — a tilted pre-tilt pose was unverifiable and always commanded.
-        That refusal was correct and cost 0.38 s of throw delay on every cycle of
+        That refusal was correct and cost 0.36 s of throw delay on every cycle of
         every aimed sitting.)
 
         First result wins, and it is ignored unless the move was dispatched —
@@ -1326,7 +1621,7 @@ class TossSequencer:
             # real". It does measure it, and that was the bug: the guard in
             # _step_preparing applies the SAME budget to the lead REMAINING after
             # all of it, so this gate was systematically loose by the entire
-            # pre-dispatch cost (0.080 s with the B1 skip, 0.460 s without it).
+            # pre-dispatch cost (0.160 s with the B1 skip, 0.520 s without it).
             # A goal could clear this line by construction and then abort
             # ABORTED_CANT_MAKE_RELEASE every cycle at cycle_start + 0.06 s, with
             # the hand retracting under a seated ball — which is what three
@@ -1653,6 +1948,19 @@ class TossSequencer:
             return self._finish(TossResult(
                 True, 'CAUGHT', obs.catch_error_mm, self._achieved_flight_s(),
                 obs.catch_event_dt_s))
+        if obs.possession_blind:
+            # The cup sensor could not LOOK across the arrival window (invalid
+            # samples, a stale poller, an un-anchored bridge clock). Since D1 it
+            # is the sole possession source, so "no rise seen" is not evidence of
+            # no arrival — and a dead sensor must never be laundered into a MISS
+            # the operator would route at the throw. Same MISSED family (terminal
+            # action, stop_on_miss governance and the session accounting are all
+            # keyed on the prefix), a different name, checked BEFORE the
+            # infeasibility branch because a blind cup cannot corroborate that
+            # branch's "and the ball did not land in the cup anyway" either.
+            return self._finish(TossResult(
+                False, 'MISSED_SENSOR_BLIND', float('nan'),
+                self._achieved_flight_s()))
         if self._catch_infeasible is not None:
             # No catch target was EVER accepted for this flight — the platform
             # never had a reachable catch pose — and the ball did not land in

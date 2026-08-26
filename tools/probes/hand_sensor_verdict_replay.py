@@ -245,9 +245,17 @@ def ledger(samples, n_valid, quick_drop_s=1.5):
 
 
 def counterfactual(rows, tracker_mode):
-    """What the MERGED verdict would be, given a tracker that always ``refuse``s
-    or always ``confirm``s. Makes the fallback rule's consequence countable: the
-    UNKNOWN rows are exactly the ones where the tracker still decides."""
+    """What the verdict would be, given a tracker that always ``refuse``s or
+    always ``confirm``s.
+
+    ⚠ **IT IS NOW A CONSTANT FUNCTION OF ``tracker_mode``, deliberately** (owner
+    decision D1, 2026-08-26). It used to make the tracker-fallback rule's
+    consequence countable — "the UNKNOWN rows are exactly the ones where the
+    tracker still decides" — and there is no fallback any more: the cup is the
+    sole source and the tracker cannot move a verdict in either direction. Kept,
+    rather than deleted, precisely because it MEASURES that: a future edit that
+    quietly re-opens a tracker path shows up here as a row whose verdict depends
+    on ``tracker_mode``, which is what the two self-check cases below now pin."""
     from jugglebot.ball_possession import SOURCE_TRACKER_ARRIVAL
     ok = tracker_mode == 'confirm'
     tracker = PossessionVerdict(
@@ -475,12 +483,19 @@ def self_check() -> int:
     check('blind across the window', run(0.4, blind=True)['label'], LABEL_UNKNOWN)
     # No edge at all: the ball never left the cup, so nothing arrived.
     check('no edge in the window', run(None)['label'], LABEL_MISSED)
-    # The fallback rule, both directions.
+    # D1 (2026-08-26): the tracker decides NOTHING, in either direction. These two
+    # cases used to pin the fallback rule; they now pin its absence, which is the
+    # property that has to stay true.
     blind_row = run(0.4, blind=True)
-    check('blind + confirming tracker -> tracker decides',
-          counterfactual([blind_row], 'confirm')[0], True)
+    check('blind + confirming tracker -> STILL refuses (no fallback)',
+          counterfactual([blind_row], 'confirm')[0], False)
     check('sensor REJECTED vetoes a confirming tracker',
           counterfactual([run(3.194)], 'confirm')[0], False)
+    # …and a CONFIRMING cup is not vetoed by a refusing tracker either — the same
+    # rule read from the other side, and the direction that recovered 13 real
+    # reload catches from corrupt split tracks.
+    check('sensor CONFIRMED survives a refusing tracker',
+          counterfactual([run(0.4)], 'refuse')[0], True)
 
     for f in fails:
         print('FAIL  {}'.format(f))

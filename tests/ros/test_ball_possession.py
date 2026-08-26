@@ -47,6 +47,7 @@ from jugglebot.ball_possession import (
     HandBallSensorSource,
     PossessionVerdict,
     TrackerArrivalSource,
+    arrival_blind,
     arrival_boundary_t,
     describe,
     lateral_miss_mm,
@@ -606,8 +607,9 @@ def test_a_blind_window_is_unknown_even_though_the_cup_ends_up_full():
     flag. Empty before the gap, held after it: physically a ball arrived, but the
     edge was never seen and therefore cannot be timed or placed inside the
     window. Synthesising an arrival from 'was empty, is now held' is how a blind
-    window mints a catch — so the source re-seeds silently and reports UNKNOWN,
-    which the merge then answers from the tracker."""
+    window mints a catch — so the source re-seeds silently and reports UNKNOWN.
+    Since D1 (2026-08-26) that UNKNOWN REFUSES; there is no tracker fallback, and
+    the cycle terminal is MISSED_SENSOR_BLIND."""
     src = _sensor()
     land = 10.0
     _stream(src, 8.0, land - 0.5, held=False)
@@ -617,6 +619,89 @@ def test_a_blind_window_is_unknown_even_though_the_cup_ends_up_full():
     assert v.arrival == ARRIVAL_UNKNOWN
     assert v.reason == 'SENSOR_BLIND'
     assert src.evidence(land + 2.5) == EVIDENCE_SEATED    # live read still works
+
+
+def test_a_feed_that_simply_STOPS_reads_blind_and_not_missed():
+    """**The dead-cup mode, and it was the one blindness could not see** (audit
+    finding B1, 2026-08-26).
+
+    A blind SPAN is only recorded when the next sample lands and closes it, so a
+    feed that stops mid-flight and never comes back left ``_blind_between``
+    answering False for ever. The window then closed empty, the source answered
+    ``SENSOR_NO_ARRIVAL``, and the FSM minted a plain ``MISSED`` — bit-identical
+    to a genuine miss, on a machine whose cup had been dead since before the ball
+    was in the air. D1 forbids exactly that outcome: a source that could not look
+    must refuse and say so, and ``MISSED_SENSOR_BLIND`` is the saying-so.
+
+    The liveness term closes it: anything past ``_last_t + stale_s`` is unwatched
+    whether or not a later sample ever proves it. Note this is the SAME
+    arithmetic ``evidence`` has always used (``_live_ok``), so the two halves of
+    the source now agree about when it has gone dark."""
+    from jugglebot.toss_sequencer import CATCH_CONFIRM_WINDOW_S
+    src = _sensor()
+    land = 10.0
+    # A healthy 100 Hz feed, empty cup, up to 0.2 s before the landing…
+    _stream(src, 8.0, land - 0.2, held=False)
+    # …and then nothing. No later sample ever arrives to close the span.
+    deadline = land + CATCH_CONFIRM_WINDOW_S
+    v = src.observe(deadline, landing_t=land)
+    assert v.arrival == ARRIVAL_UNKNOWN
+    assert v.reason == 'SENSOR_BLIND'
+    assert arrival_blind(merge_possession(sensor=v)) is True
+    # `evidence` already answered UNKNOWN here — the two halves now agree.
+    assert src.evidence(deadline) == EVIDENCE_UNKNOWN
+    # NON-REGRESSION, and it is the whole reason the term is written against
+    # `_last_t + stale_s` rather than against `now`: a healthy 100 Hz feed running
+    # right through the same deadline is NOT blind. At the FSM's deadline its
+    # window is still open (SENSOR_WINDOW_OPEN — the FSM terminalises on its own
+    # deadline, which is what makes "still looking" a real MISS there), and when
+    # the source's own window does close it mints a POSITIVE refusal.
+    live = _sensor()
+    _stream(live, 8.0, deadline + 0.01, held=False)
+    lv = live.observe(deadline, landing_t=land)
+    assert lv.arrival == ARRIVAL_UNKNOWN
+    assert lv.reason == 'SENSOR_WINDOW_OPEN'
+    assert arrival_blind(merge_possession(sensor=lv)) is False
+    closed = land + _WINDOW_S + 0.01
+    _stream(live, deadline + 0.01, closed + 0.01, held=False)
+    lc = live.observe(closed, landing_t=land)
+    assert lc.arrival == ARRIVAL_REJECTED
+    assert lc.reason == 'SENSOR_NO_ARRIVAL'
+    assert arrival_blind(merge_possession(sensor=lc)) is False
+
+
+def test_the_fsm_mints_MISSED_SENSOR_BLIND_for_a_feed_that_stopped():
+    """B1's consequence, at the terminal the operator actually reads.
+
+    The unit assertion above proves the verdict; this proves the NAME the sitting
+    gets. ``MISSED`` sends an operator to the throw, ``MISSED_SENSOR_BLIND`` sends
+    them to the cup — and on a dead cup the second one is the true fault. Same
+    MISSED family, so ``stop_on_miss`` governs both identically."""
+    from jugglebot.toss_sequencer import (
+        CATCH_CONFIRM_WINDOW_S as _W, TossObservations, TossSequencer)
+    src = _sensor()
+    land = 10.0
+    _stream(src, 8.0, land - 0.2, held=False)      # feed stops before the landing
+    deadline = land + _W
+    verdict = merge_possession(sensor=src.observe(deadline, landing_t=land))
+    assert arrival_blind(verdict) is True
+
+    seq = TossSequencer(catch_pose_stow_mm=(0.0, 0.0, 170.0),
+                        flight_time_s=0.80, throw_delay_s=1.0,
+                        event_vel_mps=3.93, throw_site_known=True)
+    obs = TossObservations(
+        now=deadline, control_mode='TOSS', streaming=True, mocap_fresh=True,
+        platform_levelled=True, hand_fresh=True, hand_parked=True,
+        ball_seated=False, ball_evidence=EVIDENCE_UNKNOWN,
+        ball_caught=False, possession_blind=arrival_blind(verdict))
+    # Drive `_step_settling` directly: the phase transition is not what is under
+    # test here (test_toss_sequencer owns it), the TERMINAL NAME is.
+    dec = seq._step_settling(deadline, obs)
+    assert dec.done and dec.result.outcome == 'MISSED_SENSOR_BLIND'
+    # …and the same tick with a LIVE cup that simply saw no rise is a plain MISS.
+    plain = seq._step_settling(deadline, TossObservations(
+        **dict(obs.__dict__, possession_blind=False)))
+    assert plain.done and plain.result.outcome == 'MISSED'
 
 
 def test_a_recovered_link_does_not_manufacture_an_edge():
@@ -644,12 +729,17 @@ def test_merge_lets_a_valid_sensor_veto_a_tracker_caught():
     """The false-CAUGHT class § 7 sized and ACCEPTED is now closed, and this is
     the assertion that closes it: the tracker's estimate is a dead-reckoned
     free-fall extrapolation, the sensor reads the cup, and when they disagree the
-    cup wins."""
+    cup wins.
+
+    Three of these fired for real on bag 2026-08-26_14-25-16 — a tracker CAUGHT
+    over an empty cup, one of which drove a phantom reload."""
     m = merge_possession(sensor=_sensor_says(ARRIVAL_REJECTED),
                          tracker=_tracker_says(True))
     assert m.arrival == ARRIVAL_REJECTED
     assert m.confirmed is False
-    assert m.source == SOURCE_MERGED
+    # The CUP is the author, not a composite: since D1 (2026-08-26) the tracker
+    # contributes report fields and nothing else.
+    assert m.source == SOURCE_HAND_BALL_SENSOR
 
 
 def test_merge_lets_a_valid_sensor_confirm_what_the_tracker_refuses():
@@ -663,15 +753,67 @@ def test_merge_lets_a_valid_sensor_confirm_what_the_tracker_refuses():
     assert m.confirmed is True
 
 
-def test_merge_falls_back_to_the_tracker_when_the_sensor_is_blind():
-    """The degradation path is exactly the pre-sensor behaviour, in BOTH
-    directions. A blind sensor that refused everything would leave the machine
-    strictly less capable than it was before the sensor landed."""
+def test_merge_never_falls_back_to_the_tracker(): # D1, 2026-08-26
+    """THE D1 assertion. A blind sensor REFUSES; it does not hand the question to
+    the tracker, in either direction.
+
+    This test used to assert the opposite (`..._falls_back_to_the_tracker_when_
+    the_sensor_is_blind`), on the argument that a blind sensor which refused
+    everything would leave the machine strictly less capable than before the
+    sensor landed. Bag 2026-08-26_14-25-16 is the counter-evidence: the fallback
+    is a fallback to the LESS reliable observable, keyed on the more reliable one
+    being quiet, and on that sitting the tracker scored 11/16 against the cup's
+    23/4. Capability is not the metric — being right is.
+
+    The blind case is not silently swallowed either: `arrival_blind` separates it
+    from an ordinary still-open window, and both FSMs mint MISSED_SENSOR_BLIND on
+    it rather than a plain MISSED."""
     for tracker_ok in (True, False):
-        m = merge_possession(sensor=_sensor_says(ARRIVAL_UNKNOWN),
-                             tracker=_tracker_says(tracker_ok))
-        assert m.arrival_ok is tracker_ok
-        assert m.source == SOURCE_TRACKER_ARRIVAL     # names its real author
+        sensor = _sensor_says(ARRIVAL_UNKNOWN)
+        m = merge_possession(sensor=sensor, tracker=_tracker_says(tracker_ok))
+        assert m.arrival == ARRIVAL_UNKNOWN
+        assert m.arrival_ok is False
+        assert m.confirmed is False
+        assert m.source == SOURCE_HAND_BALL_SENSOR
+
+
+def test_merge_takes_no_tracker_at_all():
+    """The shape change D1 needed: with no CAUGHT estimate in hand there is no
+    ball to judge, so the question can be asked on a TICK. Report fields go NaN,
+    which is the honest reading and is what a catch the tracker never saw now
+    records."""
+    m = merge_possession(sensor=_sensor_says(ARRIVAL_CONFIRMED))
+    assert m.arrival == ARRIVAL_CONFIRMED
+    assert m.confirmed is True
+    assert m.source == SOURCE_HAND_BALL_SENSOR
+    assert m.arrival_err_mm != m.arrival_err_mm        # NaN
+    assert m.plane_drop_mm != m.plane_drop_mm
+    assert m.reason == 'SENSOR_TEST'                   # not joined with a '/'
+
+
+def test_arrival_blind_separates_could_not_look_from_still_looking():
+    """The distinction D1 made load-bearing. Both are ARRIVAL_UNKNOWN and both
+    refuse, but one is a machine fault to name and the other is the ordinary
+    reading of every tick before the ball seats."""
+    blind = merge_possession(
+        sensor=PossessionVerdict(SOURCE_HAND_BALL_SENSOR, ARRIVAL_UNKNOWN,
+                                 RETENTION_UNKNOWN, float('nan'), float('nan'),
+                                 'SENSOR_BLIND'))
+    waiting = merge_possession(
+        sensor=PossessionVerdict(SOURCE_HAND_BALL_SENSOR, ARRIVAL_UNKNOWN,
+                                 RETENTION_UNKNOWN, float('nan'), float('nan'),
+                                 'SENSOR_WINDOW_OPEN'))
+    assert arrival_blind(blind) is True
+    assert arrival_blind(waiting) is False
+    # It survives the '/'-joined reason a tracker-carrying merge produces, and it
+    # is False for every non-UNKNOWN arrival.
+    assert arrival_blind(merge_possession(
+        sensor=PossessionVerdict(SOURCE_HAND_BALL_SENSOR, ARRIVAL_UNKNOWN,
+                                 RETENTION_UNKNOWN, float('nan'), float('nan'),
+                                 'SENSOR_BLIND'),
+        tracker=_tracker_says(True))) is True
+    assert arrival_blind(merge_possession(
+        sensor=_sensor_says(ARRIVAL_REJECTED))) is False
 
 
 def test_merge_takes_retention_only_from_the_sensor():
@@ -715,13 +857,13 @@ def test_describe_distinguishes_unknown_from_refused():
     """An operator who reads REFUSED goes hunting for a miss; one who reads
     UNKNOWN goes to the sensor. Collapsing them costs a sitting.
 
-    The UNKNOWN branch is DEFENSIVE at today's call site and that is stated
-    rather than left to be discovered: `_possession_confirmed` only runs on a
-    tracker CAUGHT, the tracker always has an estimate in hand, and the merge
-    therefore never yields an UNKNOWN arrival while it is the corroborator. It
-    exists because the first tick-driven consumer that calls `observe` without a
-    tracker verdict WILL hit it, and a `describe` that rendered blindness as
-    "REFUSED … 0 mm from the catch point" would be actively misleading."""
+    The UNKNOWN branch was DEFENSIVE until 2026-08-26 — `_possession_observed`
+    only ran on a tracker CAUGHT, the tracker always had an estimate in hand, and
+    the merge fell back to it, so an UNKNOWN arrival could not be minted. D1
+    deleted the fallback and made the question tick-driven, so this is now the
+    COMMON shape: it is what every tick before the ball seats produces. A
+    `describe` that rendered blindness as "REFUSED … 0 mm from the catch point"
+    would be actively misleading on most lines the operator sees."""
     unknown_verdict = PossessionVerdict(
         SOURCE_HAND_BALL_SENSOR, ARRIVAL_UNKNOWN, RETENTION_UNKNOWN,
         float('nan'), float('nan'), 'SENSOR_BLIND')
@@ -737,11 +879,13 @@ def test_describe_distinguishes_unknown_from_refused():
 
 
 def test_the_merged_log_line_names_the_sensor_state_that_produced_it():
-    """The operator-facing consequence of the fallback rule. When the sensor is
-    blind the merged verdict reads exactly like a tracker-only one — same author,
-    same wording — so the ONLY thing distinguishing "the tracker refused" from
-    "the sensor could not look and the tracker refused" is the reason string.
-    It therefore has to be in the line."""
+    """The reason string has to reach the operator-facing line.
+
+    It mattered under the fallback rule because a blind-sensor verdict read
+    exactly like a tracker-only one. It matters MORE since D1 (2026-08-26): the
+    verdict is the cup's in every state, so the reason is the only thing in the
+    line that says WHICH of the two UNKNOWNs this is — "could not look" (a
+    machine fault) or "still looking" (every tick before the ball seats)."""
     blind = merge_possession(
         sensor=PossessionVerdict(SOURCE_HAND_BALL_SENSOR, ARRIVAL_UNKNOWN,
                                  RETENTION_UNKNOWN, float('nan'), float('nan'),
@@ -1072,14 +1216,32 @@ def test_the_arrival_window_never_closes_inside_the_measured_band():
     _stream(shipped_src, land - 1.0, rise + 0.5, held=lambda t: t >= rise)
     assert math.isnan(shipped_src.arrival_time(land))
     # And under the SHIPPED code that empty window answered ARRIVAL_REJECTED — a
-    # positive claim of non-arrival, which vetoes a tracker CAUGHT. Clause C.2
-    # now forbids exactly that, so the same geometry reads UNKNOWN and the veto
-    # is gone; the tracker survives either way the boundary is drawn.
+    # positive claim of non-arrival minted from a cadence number. Clause C.2 now
+    # forbids exactly that, so the same geometry reads UNKNOWN.
+    #
+    # WHAT THAT UNKNOWN BUYS CHANGED WITH D1 (2026-08-26) and the clause is more
+    # load-bearing, not less. It used to buy a fallback to the tracker; the
+    # fallback is gone, so what it buys now is that the machine does not claim a
+    # MISS it never observed.
+    #
+    # ⚠ AND IT IS A COULD-NOT-LOOK (audit finding W4, 2026-08-26). This test
+    # asserted `arrival_blind(refused) is False` on the argument that "the sensor
+    # could look perfectly well, its window was simply cut short". That is true
+    # about the CAUSE and wrong about the CONSEQUENCE: nothing watched the ball's
+    # band through, which is the only question `arrival_blind` asks. Whether a
+    # dead poller or a cadence number closed the eye decides who to blame, not
+    # whether anything saw the ball — and `_arrival_state`'s own normative comment
+    # already said so ("this is the difference between 'the ball missed' and 'we
+    # looked away'. Say the second one out loud"). So SENSOR_BAND_CLAMPED is in
+    # BLIND_REASONS and this geometry mints MISSED_SENSOR_BLIND, which is the
+    # loud, correctly-routed terminal for it.
     refused = shipped_src.observe(now, landing_t=land)
     assert refused.arrival == ARRIVAL_UNKNOWN
     assert refused.reason == 'SENSOR_BAND_CLAMPED'
+    assert refused.arrival != ARRIVAL_REJECTED
+    assert arrival_blind(refused) is True
     assert merge_possession(sensor=refused,
-                            tracker=_tracker_says(True)).confirmed is True
+                            tracker=_tracker_says(True)).confirmed is False
 
     v = src.observe(now, landing_t=land,
                     next_release_t=rel, next_landing_t=next_land)
@@ -1155,7 +1317,11 @@ def test_a_band_clamped_window_declares_unknown_instead_of_refusing():
     band. A window shorter than the evidence it is judging has
     not observed non-arrival, so ``REJECTED`` — which is a positive claim, and
     which VETOES a tracker CAUGHT — is not available to it. It says UNKNOWN and
-    names the cause, so the loss is surfaced rather than silent."""
+    names the cause, so the loss is surfaced rather than silent.
+
+    Since D1 (2026-08-26) there is no tracker to veto, and the clause still binds
+    for the reason under the veto: a positive claim of non-arrival from a cadence
+    number would now be the WHOLE verdict rather than half of it."""
     land = 10.0
     rel, next_land = _cycle(land, _R6_DWELL_S, _R6_FLIGHT_S)
     assert next_land - land < ARRIVAL_BAND_MAX_S, (
@@ -1168,10 +1334,24 @@ def test_a_band_clamped_window_declares_unknown_instead_of_refusing():
                     next_release_t=rel, next_landing_t=next_land)
     assert v.arrival == ARRIVAL_UNKNOWN
     assert v.reason == 'SENSOR_BAND_CLAMPED'
-    # The whole point of UNKNOWN over REJECTED: § 2 consequence 3 forbids it from
-    # vetoing, so a tracker CAUGHT survives a window the SCHEDULE truncated.
+    # The whole point of UNKNOWN over REJECTED, restated for the sensor-only era:
+    # neither state confirms, but only REJECTED is a CLAIM. A schedule number must
+    # never manufacture one.
+    #
+    # ⚠ IT IS ALSO A COULD-NOT-LOOK (audit finding W4, 2026-08-26): this asserted
+    # `arrival_blind(merged) is False` until then, on the argument that a clamped
+    # window is not a dead sensor. Correct about the cause, wrong about the
+    # consequence — `arrival_blind` asks only whether anything watched the band
+    # through, and here nothing did. The terminal is MISSED_SENSOR_BLIND, which
+    # names a real fault (the cadence closed the eye) rather than pretending the
+    # throw missed. The two are still told apart by the REASON STRING, which is
+    # what routes the operator: SENSOR_BAND_CLAMPED says "your schedule", where
+    # SENSOR_BLIND says "your cup".
     merged = merge_possession(sensor=v, tracker=_tracker_says(True))
-    assert merged.confirmed is True
+    assert merged.confirmed is False
+    assert merged.arrival == ARRIVAL_UNKNOWN
+    assert arrival_blind(merged) is True
+    assert merged.reason.startswith('SENSOR_BAND_CLAMPED')
     # And a window that DID watch the band out still refuses, at the same rung —
     # so this is a clamp test, not a blanket softening of the refusal.
     wide = _sensor()

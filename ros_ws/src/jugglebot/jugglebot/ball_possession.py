@@ -2,7 +2,7 @@
 
 Pure Python (no ROS2, no config imports) so the whole verdict surface is testable
 without a node and without a bag. The ROS wrapper is
-``reload_coordinator_node._possession_confirmed``.
+``reload_coordinator_node._possession_observed`` (TICK-driven since 2026-08-26).
 
 Normative contract: ``ros_ws/docs/ball_possession_contract.md`` (**C-POSSESS-1**).
 Read it before changing anything here — the bound below is not a tunable.
@@ -51,6 +51,39 @@ A possession verdict answers two questions that are NOT the same question:
 
   ARRIVAL    the ball reached the cup;
   RETENTION  it was still there afterwards (it did not bounce out).
+
+SENSOR-ONLY SINCE 2026-08-26 (owner decision D1)
+------------------------------------------------
+:func:`merge_possession` no longer falls back to the tracker for ARRIVAL. The
+tracker is consulted for **nothing** a possession verdict rests on; it supplies
+``arrival_err_mm`` / ``plane_drop_mm`` (report-only) and keeps every one of its
+other roles (landing announcements, aim/ILC channels, ball tracking).
+
+The evidence is bag ``2026-08-26_14-25-16``, 27 self-toss cycles that produced a
+cup verdict. The cup sensor called **31/31** outcomes correctly (27 here plus the
+four no-release/no-ball rows — 2x ``ABORTED_CANT_MAKE_RELEASE``, 2x
+``REJECTED_NO_BALL``). The tracker-primary path — the FSMs only *asked*
+the possession question on a tracker ``CAUGHT``, so the tracker could veto by
+silence and mint by speaking — scored **11 CAUGHT / 16 MISSED** against the cup's
+**23 / 4**:
+
+  * **15 false MISSED.** All genuine catches; cup edges +0.143 … +0.303 s past the
+    scheduled landing, every one inside the 0.56 s confirm window. Twelve had no
+    confirmed tracker track at ALL (a mocap coverage hole — the tracker cannot
+    veto by silence if it is never asked), three had a tracker ``CAUGHT`` that
+    arrived 0.62 / 0.615 / 0.83 s past the landing, i.e. AFTER the deadline.
+  * **3 false CAUGHT.** The tracker minted, the cup was empty. One of them drove a
+    phantom reload.
+
+Each false MISSED also charged the next cycle
+``toss_session.DEFAULT_SESSION_MISS_CLEANUP_S``, which is what turned an even
+cadence into the operator's observed irregular spacing.
+
+``TrackerArrivalSource`` is therefore now a REPORTING source only. It is kept
+(not deleted) because ``arrival_err_mm`` is the catch-accuracy number the hardware
+runbooks score and the cup cannot supply it, and because a future tracker phase
+that fixes the split-track mis-association may earn a corroboration role back —
+which is a decision to re-take with data, not a fallback to leave armed.
 
 ``TrackerArrivalSource`` can answer ARRIVAL and **cannot** answer RETENTION, and
 that is a measured fact rather than a modelling convenience: the track freezes at
@@ -103,6 +136,35 @@ RETENTION_UNKNOWN = 'UNKNOWN'
 ARRIVAL_CONFIRMED = 'CONFIRMED'
 ARRIVAL_REJECTED = 'REJECTED'
 ARRIVAL_UNKNOWN = 'UNKNOWN'
+
+# ── The two UNKNOWNs, which are NOT the same thing (added 2026-08-26, D1) ─────
+# `ARRIVAL_UNKNOWN` covers two states a caller must be able to tell apart once the
+# sensor is the SOLE source:
+#
+#   "I could not look"     — SENSOR_BLIND / SENSOR_NO_LANDING /
+#                            SENSOR_BAND_CLAMPED. Nothing watched the window
+#                            through. A consumer must REFUSE and say so.
+#   "I am still looking"   — SENSOR_WINDOW_OPEN. The window has simply not closed.
+#                            A consumer that has its OWN deadline (both FSMs
+#                            terminalise at landing + CATCH_CONFIRM_WINDOW_S,
+#                            which IS ARRIVAL_BAND_MAX_S) has watched the whole
+#                            measured band by then, so "no rise yet" is a real
+#                            MISS there and not blindness.
+#
+# SENSOR_BAND_CLAMPED is a could-not-look, not a still-looking (audit fix,
+# 2026-08-26): the schedule CLOSED the window inside the ball's measured arrival
+# band, so the source stopped watching before the evidence ran out. That it was a
+# CADENCE number rather than a dead poller that closed the eye changes who to
+# blame, not whether anything saw the ball — and `_arrival_state`'s own normative
+# comment already says it out loud ("this is the difference between 'the ball
+# missed' and 'we looked away'. Say the second one out loud").
+#
+# Keyed on the REASON rather than on a new tri-state member on purpose: the states
+# are already distinguished, and a fourth ARRIVAL_* would force every existing
+# `arrival == ARRIVAL_UNKNOWN` comparison in the tree to be re-audited for which
+# of the two it meant.
+BLIND_REASONS = frozenset({'SENSOR_BLIND', 'SENSOR_NO_LANDING',
+                           'SENSOR_BAND_CLAMPED'})
 
 # ── Live cup evidence (the ball-evidence PRECONDITION, distinct from ARRIVAL) ──
 # ARRIVAL answers "did a ball come in around the predicted landing"; EVIDENCE
@@ -259,8 +321,12 @@ def arrival_boundary_t(earlier_landing_t: float, later_landing_t: float,
 # ── Source identifiers (carried in every verdict, so a log line names its author)
 SOURCE_TRACKER_ARRIVAL = 'tracker_arrival'
 SOURCE_HAND_BALL_SENSOR = 'hand_ball_sensor'
-# The merged verdict's author (C-POSSESS-1 § 3.2) — a composite so an operator
-# reading one log line can tell it was not minted by either source alone.
+# RETIRED AS AN AUTHOR 2026-08-26 (D1) and deliberately not deleted. It was the
+# composite author `merge_possession` stamped while the tracker could still supply
+# the ARRIVAL half; since D1 the cup is the sole author, so nothing MINTS this any
+# more. The name survives because it appears in bagged log lines from every
+# session between 2026-08-10 and 2026-08-26, and `describe` must keep rendering
+# those correctly when an old record is replayed.
 SOURCE_MERGED = 'hand_ball_sensor+tracker_arrival'
 
 
@@ -825,7 +891,9 @@ class HandBallSensorSource:
                 prev_landing_t: Optional[float] = None) -> PossessionVerdict:
         """The two-part verdict for a ball predicted to land at ``landing_t``
         (monotonic; ``None``/NaN = no goal is expecting one, so ARRIVAL is
-        honestly ``UNKNOWN`` and the merge falls back to the tracker).
+        honestly ``UNKNOWN`` — and since D1, 2026-08-26, that REFUSES; there is
+        no tracker fallback. The reason is ``SENSOR_NO_LANDING``, which is in
+        :data:`BLIND_REASONS`, so the consumer mints ``MISSED_SENSOR_BLIND``).
 
         ``next_release_t`` / ``next_landing_t`` are the machine's OWN next
         scheduled instants in the same clock — the cadence clamp of C-POSSESS-1
@@ -932,7 +1000,16 @@ class HandBallSensorSource:
         for s, e in self._blind_spans:
             if s <= b and e >= a:
                 return True
-        return self._blind_from is not None and self._blind_from <= b
+        if self._blind_from is not None and self._blind_from <= b:
+            return True
+        # An OPEN gap: no sample has arrived since `_last_t`, so everything past
+        # `_last_t + stale_s` is unwatched. A blind span is only RECORDED when the
+        # next sample lands, so a feed that simply STOPS would otherwise read as
+        # "still looking" for ever — the commonest dead-sensor mode, laundered
+        # into a MISS. (`evidence` already answers UNKNOWN here, via `_live_ok`.)
+        if self._last_t is not None and b > self._last_t + self.stale_s:
+            return True
+        return False
 
     def _arrival_edge(self, landing_t: Optional[float],
                       next_landing_t: Optional[float] = None,
@@ -1019,8 +1096,9 @@ class HandBallSensorSource:
 
 
 def merge_possession(sensor: PossessionVerdict,
-                     tracker: PossessionVerdict) -> PossessionVerdict:
-    """Combine the PRIMARY sensor verdict with the tracker CORROBORATOR
+                     tracker: Optional[PossessionVerdict] = None
+                     ) -> PossessionVerdict:
+    """THE possession verdict — the contract's ONE enforcement point
     (C-POSSESS-1 § 3.2 — read it before changing this).
 
     Three rules, each stated by the failure it prevents:
@@ -1029,30 +1107,68 @@ def merge_possession(sensor: PossessionVerdict,
        from claiming retention (§ 2 consequence 2) — its track freezes at CAUGHT
        and is pruned — so there is nothing to merge. Taking anything else from the
        tracker here would re-open § 7's accepted bounce-out trap.
-    2. **ARRIVAL is the sensor's whenever the sensor observed it; the tracker's
-       only when the sensor is UNKNOWN.** The sensor reads the cup, so it is the
-       one source whose error model does not run through a dead-reckoned free-fall
-       extrapolation — that is why it is PRIMARY, and why a valid sensor
-       ``ARRIVAL_REJECTED`` vetoes a tracker CAUGHT (the false-CAUGHT class § 7
-       sized and accepted). The fallback is not politeness: a blind sensor that
-       refused everything would leave the machine strictly LESS capable than
-       before the sensor landed, so the degradation path is exactly today's
-       tracker-only behaviour.
+    2. **ARRIVAL is the sensor's, always — the tracker is not consulted at all.**
+       Owner decision D1, 2026-08-26. Until then the tracker was the fallback for
+       a sensor ``ARRIVAL_UNKNOWN``, and the *asking* was gated on a tracker
+       ``CAUGHT`` at both FSM call sites, which made the tracker primary in
+       practice however this function was written. Measured cost on bag
+       ``2026-08-26_14-25-16``: 15 false MISSED (12 of them tracks the tracker
+       never confirmed — it vetoed by silence) and 3 false CAUGHT, against a cup
+       sensor that called 31/31. See the module docstring for the full census.
+
+       The fallback is not merely unhelpful, it is unsound: it re-admits an
+       observable whose error model runs through a dead-reckoned free-fall
+       extrapolation *precisely* on the ticks where the trustworthy observable
+       said nothing, i.e. it is a fallback to the less reliable source, keyed on
+       the more reliable one being quiet.
+
+       Blindness therefore refuses, and it must be told apart from "still
+       looking" — :func:`arrival_blind`.
     3. **``arrival_err_mm`` / ``plane_drop_mm`` stay the TRACKER's, always.** They
        are the catch-accuracy numbers the hardware runbooks score and the sensor
        cannot supply them (§ 3, "the one thing a new source must not forget").
+       They are REPORT-ONLY and nothing here or downstream branches on them.
+
+    ``tracker`` is OPTIONAL since D1, and that is the shape change that lets the
+    question be asked on a TICK rather than on a tracker event: with no CAUGHT
+    estimate in hand there is no ball to judge, and the verdict is the cup's alone
+    with NaN report fields. Passing one adds the cross-check numbers and nothing
+    else — it can no longer move the verdict in either direction.
     """
-    arrival = (sensor.arrival if sensor.arrival != ARRIVAL_UNKNOWN
-               else tracker.arrival)
-    author = (SOURCE_MERGED if sensor.arrival != ARRIVAL_UNKNOWN
-              else tracker.source)
+    err = tracker.arrival_err_mm if tracker is not None else float('nan')
+    drop = tracker.plane_drop_mm if tracker is not None else float('nan')
+    reason = (sensor.reason if tracker is None
+              else '{}/{}'.format(sensor.reason, tracker.reason))
     return PossessionVerdict(
-        source=author,
-        arrival=arrival,
+        # The AUTHOR is the cup, whether or not a tracker estimate rode along:
+        # naming a composite author would claim the tracker contributed to the
+        # decision, and since D1 it contributes only to the report fields.
+        source=SOURCE_HAND_BALL_SENSOR,
+        arrival=sensor.arrival,
         retention=sensor.retention,
-        arrival_err_mm=tracker.arrival_err_mm,
-        plane_drop_mm=tracker.plane_drop_mm,
-        reason='{}/{}'.format(sensor.reason, tracker.reason))
+        arrival_err_mm=err,
+        plane_drop_mm=drop,
+        reason=reason)
+
+
+def arrival_blind(verdict: PossessionVerdict) -> bool:
+    """True iff this verdict is ``ARRIVAL_UNKNOWN`` because the sensor **could not
+    look**, as opposed to because its window has not closed yet.
+
+    The distinction only became load-bearing with D1 (2026-08-26): while the
+    tracker was the fallback, every UNKNOWN degraded to a second opinion, so a
+    caller never had to ask *which* UNKNOWN it had. With the cup as the sole
+    source the two demand opposite handling — a consumer with its own deadline
+    reads "still looking" at that deadline as a genuine MISS (the deadline IS
+    ``ARRIVAL_BAND_MAX_S``, so the whole measured band has been watched), while
+    "could not look" is a machine fault that must be named, never a miss.
+
+    Reads the reason string, which the merge joins with ``/``, so it works on both
+    a bare sensor verdict and a merged one.
+    """
+    if verdict.arrival != ARRIVAL_UNKNOWN:
+        return False
+    return any(part in BLIND_REASONS for part in str(verdict.reason).split('/'))
 
 
 def _tracker_cross_check(verdict: PossessionVerdict, tol_mm: float) -> str:
@@ -1090,19 +1206,26 @@ def describe(verdict: PossessionVerdict, tol_mm: float) -> Tuple[str, str]:
     broken (the reason the pre-2026-07-28 line was INFO too).
 
     Three shapes since 2026-08-10, because ARRIVAL is tri-state: CONFIRMED,
-    REFUSED (positively not observed) and UNKNOWN (nothing could look). The third
-    must never read like the second — an operator who sees "REFUSED" goes hunting
-    for a miss, where "UNKNOWN" sends them to the sensor, which is the actual
-    fault. Both non-confirmed shapes end "Not counted" so the bench tally is
-    unambiguous either way.
+    REFUSED (positively not observed) and UNKNOWN — which is itself two states
+    the line has to tell apart, "nothing could look" (`arrival_blind`) and "the
+    window has not closed yet". The third shape must never read like the second —
+    an operator who sees "REFUSED" goes hunting for a miss, where a BLIND UNKNOWN
+    sends them to the sensor, which is the actual fault. Both non-confirmed
+    shapes end "Not counted" so the bench tally is unambiguous either way.
 
-    REACHABILITY, so nobody hunts for a line that cannot be emitted: through
-    today's only caller (`_possession_confirmed`) the UNKNOWN shape is DEFENSIVE —
-    it runs on a tracker CAUGHT, the tracker always has an estimate in hand, and
-    the merge falls back to it, so the merged arrival is never UNKNOWN. It exists
-    for the first tick-driven consumer that calls `observe` with no tracker
-    verdict; rendering that as "REFUSED … 0 mm from the catch point" would be
-    actively misleading. The REFUSED shape has TWO authors and prints
+    REACHABILITY. Until 2026-08-26 the UNKNOWN shape was DEFENSIVE: the only
+    caller ran on a tracker CAUGHT and the merge fell back to it, so the merged
+    arrival was never UNKNOWN. D1 deleted that fallback and made the question
+    tick-driven, so **UNKNOWN is now the common shape** — it is what every tick
+    before the arrival edge produces. It stays INFO and stays out of the tally,
+    and `arrival_blind` is what separates the machine-fault UNKNOWN from the
+    ordinary still-watching one — so the UNKNOWN line PRINTS that split rather
+    than asserting the machine fault on every healthy pre-arrival tick. It used
+    to say "nothing could look" and render ``nan mm`` unconditionally, which
+    under D1 is a 100 % false-positive sensor alarm at ~25 lines per cycle; the
+    tracker number now goes through `_tracker_cross_check`, which prints
+    "unavailable" instead of ``nan`` when no tracker rode along. The REFUSED
+    shape has TWO authors and prints
     differently for each (below) — that split is not cosmetic: since 2026-08-10
     the commonest REFUSED on a self-toss is the sensor vetoing a tracker CAUGHT,
     where the tracker's own number is *small*.
@@ -1114,11 +1237,12 @@ def describe(verdict: PossessionVerdict, tol_mm: float) -> Tuple[str, str]:
             f'{verdict.retention} [{verdict.reason}] — '
             f'ros_ws/docs/ball_possession_contract.md')
     if verdict.arrival == ARRIVAL_UNKNOWN:
+        blind = arrival_blind(verdict)
         return 'info', (
-            f'possession UNKNOWN from {verdict.source} — no source positively '
-            f'observed an arrival [{verdict.reason}]; tracker cross-check '
-            f'{verdict.arrival_err_mm:.0f} mm. UNKNOWN is NOT "no ball": it is '
-            f'"nothing could look" (C-POSSESS-1 § 2) — see '
+            f'possession UNKNOWN from {verdict.source} — '
+            + ('the sensor COULD NOT LOOK across the arrival window'
+               if blind else 'the arrival window has not closed yet')
+            + f' [{verdict.reason}]; {_tracker_cross_check(verdict, tol_mm)} — '
             f'ros_ws/docs/ball_possession_contract.md. Not counted')
     if verdict.source in (SOURCE_MERGED, SOURCE_HAND_BALL_SENSOR):
         # The SENSOR refused. `merge_possession` names itself the author only when

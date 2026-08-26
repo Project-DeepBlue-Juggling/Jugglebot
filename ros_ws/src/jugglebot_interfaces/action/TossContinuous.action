@@ -29,8 +29,10 @@
 # cycle N's catch pose for free. Since 2026-08-23 trajectory/commanded_pose reports the
 # ORIENTATION of that same sample too, so cycle N+1 can also prove it is already at the
 # pre-tilt pose and skip the zero-millimetre positioning move on an AIMED chain — worth
-# 0.38 s of every cycle's throw delay, and the whole reason the cadence ladder stopped
-# publishing a separate (slower) aimed column. See the KNOWN LIMITATION below.
+# 0.36 s of every cycle's throw delay (0.38 s until D3 re-based both budgets on the loop
+# period: the moving budget is 0.520 s against the skip's 0.160 s), and the whole reason
+# the cadence ladder stopped publishing a separate (slower) aimed column. See the KNOWN
+# LIMITATION below.
 #
 # DWELL is defined as previous SCHEDULED LANDING -> next RELEASE, and it is realised as a
 # QUIESCENT WAIT before the next cycle starts — never as a stretched throw_delay. That
@@ -82,8 +84,12 @@ float64 dwell_time_s                 # previous SCHEDULED LANDING -> next RELEAS
                                      # ladder retracts the hand and installs a 2.0 s
                                      # go_home, both on service acks, so the session waits
                                      # out a 2.80 s floor from the landing before starting
-                                     # the next cycle. It is a FLOOR, never a shortening;
-                                     # per_cycle_dwell_s reports what actually happened.
+                                     # the next cycle (toss_session
+                                     # .DEFAULT_SESSION_MISS_CLEANUP_S — 2.60 s between
+                                     # 2026-08-24 and 2026-08-26, when D3 restored the
+                                     # ladder's own dispatch cost to the sum). It is a
+                                     # FLOOR, never a shortening; per_cycle_dwell_s reports
+                                     # what actually happened.
 float64 throw_delay_s                # delay from goal-accept to the FIRST release (s);
                                      # 0 => the Toss default (5.0 s). Cycles 2..N use the
                                      # SAME internal delay, but their release instants are
@@ -99,18 +105,23 @@ float64 throw_delay_s                # delay from goal-accept to the FIRST relea
                                      # until 2026-08-22 (operator decision 3), then the
                                      # DERIVED kind-0 dispatch budget, and since 2026-08-23
                                      # that budget PLUS the pre-dispatch sequence the
-                                     # runtime guard measures it after: 0.361 s at the
-                                     # 0.80 s default flight, 0.417 s at the C-HAND-3 band
-                                     # floor. Charging the dispatch budget alone let a goal
-                                     # be ACCEPTED and then abort ABORTED_CANT_MAKE_RELEASE
-                                     # on every cycle, with the catch armed and the hand
-                                     # committed.
+                                     # runtime guard measures it after. Charging the
+                                     # dispatch budget alone let a goal be ACCEPTED and
+                                     # then abort ABORTED_CANT_MAKE_RELEASE on every cycle,
+                                     # with the catch armed and the hand committed.
+                                     # Since 2026-08-26 (owner decision D3) that
+                                     # pre-dispatch sequence is priced in the FSM loop's
+                                     # measured PERIOD instead of in its sleep, which is
+                                     # 0.080 s more: 0.441 s at the 0.80 s default flight,
+                                     # 0.497 s at the C-HAND-3 band floor (was 0.361 /
+                                     # 0.417). Bag 2026-08-26_14-25-16 aborted two cycles
+                                     # that had cleared the old floor by 26 and 39 ms.
                                      #
                                      # ONE cycle may be granted MORE than this field asks
                                      # for: the first cycle of a sitting has to COMMAND its
                                      # pre-positioning move (later cycles hold the pose
                                      # they threw from and take the census-B1 skip), which
-                                     # costs 0.38 s more of lead. The coordinator raises
+                                     # costs 0.36 s more of lead. The coordinator raises
                                      # that cycle's delay and logs one WARN naming the
                                      # raise; the session's landing-anchored schedule
                                      # absorbs it and the CADENCE is unchanged. A single
@@ -179,6 +190,36 @@ int32 max_reloads                    # How many reload attempts the WHOLE sessio
                                      # invented here. On exhaustion the SESSION fails closed
                                      # with STOPPED_RELOAD_BUDGET; the capture tool treats
                                      # that terminal as "node exhausted" and skips the node.
+                                     #
+                                     # WHAT DRAWS ON IT (owner decision D2, 2026-08-26):
+                                     # any failed THROW. Both ways a reload THROW can fail
+                                     # now cost one attempt and are retried until the
+                                     # budget is spent — BB's THROW_ABORTED_NOT_SETTLED (BB
+                                     # not positioned in time, no ball ever left) and a
+                                     # DELIVERED reload that genuinely missed the cup. Until
+                                     # D2 only the first was retryable and a missed reload
+                                     # stopped the session on its first miss, so this field
+                                     # fenced one failure mode and the other cost a whole
+                                     # sitting.
+                                     # WHAT DOES NOT (audit fix, 2026-08-26): a
+                                     # PRECONDITION failure. Every REJECTED_* and the
+                                     # ABORTED_BB_ERROR / ABORTED_TIMEOUT /
+                                     # ABORTED_SHUTDOWN terminals are not a ball, so they
+                                     # stop the session BY NAME as
+                                     # STOPPED_RELOAD_<outcome> instead of drawing an
+                                     # attempt. This is a budget of BALLS. Collapsing them
+                                     # into STOPPED_RELOAD_BUDGET would hide a faulted
+                                     # BallButler behind the capture tool's node-skip and
+                                     # complete a thin grid silently.
+                                     # A retry is a repeat of the whole INTERLUDE LADDER,
+                                     # not of the throw: the precondition gate (ball-evidence
+                                     # config, BB ready, BB fail-open-boot verified, cup
+                                     # CONFIRMED-EMPTY through the settled query) and the
+                                     # verified go_home recentre run again before every
+                                     # attempt. So a cup the previous ball actually reached
+                                     # refuses STOPPED_CUP_NOT_EMPTY and a sensor that cannot
+                                     # see refuses STOPPED_SENSOR_UNKNOWN, rather than a
+                                     # second ball being thrown at a loaded or unwatched cup.
 ---
 bool success                         # True iff throws_completed == num_throws AND
                                      # catches_confirmed == num_throws (a clean session).
@@ -193,12 +234,18 @@ string outcome                       # COMPLETED | STOPPED_ON_MISS | REJECTED_<c
 int32 throws_completed               # cycles that got a ball into the air (CAUGHT or
                                      # MISSED). A cycle rejected before release does NOT
                                      # count.
-int32 catches_confirmed              # cycles whose announced ball came back CAUGHT
-                                     # (contract C-POSSESS-1's verdict — arrival-only; see
+int32 catches_confirmed              # cycles whose ball was observed to ARRIVE IN THE CUP
+                                     # (contract C-POSSESS-1's verdict — arrival-only, and
+                                     # the ball-in-cup sensor's alone since owner decision
+                                     # D1, 2026-08-26; see
                                      # ros_ws/docs/ball_possession_contract.md).
 string[] per_cycle_outcomes          # one Toss outcome string per STARTED cycle, in order
 float64[] per_cycle_catch_error_mm   # per cycle, tracker last-KF horizontal miss (NaN
-                                     # when not caught / unknown)
+                                     # when not caught / unknown). Since D1 it is ALSO NaN
+                                     # on a confirmed catch the mocap tracker never saw —
+                                     # 12 of the 23 real catches in bag 2026-08-26_14-25-16
+                                     # were exactly that. NaN here is the honest reading,
+                                     # not a fault: the cup cannot measure a miss distance.
 float64[] per_cycle_flight_s         # per cycle, measured release->catch-plane time (NaN
                                      # when unknown)
 int32 reloads_used                   # reload attempts actually spent (<= the resolved

@@ -457,3 +457,123 @@ def test_a_single_toss_carries_no_session_policy_fields():
     assert row['goal_on_empty_cup'] is None
     assert row['goal_max_reloads'] is None
     assert row['reload_settle'] is None
+
+
+# ── Loop-timing census (INSTRUMENT ONLY) ─────────────────────────────────────
+
+def _censused(n_pre=3, period_s=0.030, obs_s=0.002, body_s=0.008,
+              phase=None):
+    """A census that has committed `n_pre` identical pre-dispatch iterations."""
+    from jugglebot.toss_sequencer import LoopPeriodCensus, PHASE_PREPARING
+    phase = PHASE_PREPARING if phase is None else phase
+    c = LoopPeriodCensus()
+    t = 0.0
+    for _ in range(n_pre):
+        c.note_iteration_start(t)
+        c.note_iteration_end(t, t + obs_s, t + obs_s + body_s, phase)
+        t += period_s
+    c.note_iteration_start(t)          # commit the last one
+    return c
+
+
+def test_the_record_carries_the_loop_census():
+    node = _node()
+    _open(node)
+    node._toss_loop_census = _censused(n_pre=3, period_s=0.030)
+    node._log_toss_outcome(TossResult(True, 'CAUGHT'))
+    row = _records(node)[0]
+    assert tr.validate(row) == ()
+    assert row['loop_n_pre'] == 3
+    assert row['loop_period_max_pre_s'] == pytest.approx(0.030)
+    assert row['loop_obs_max_pre_s'] == pytest.approx(0.002)
+    assert row['loop_body_max_pre_s'] == pytest.approx(0.008)
+    assert row['loop_work_max_pre_s'] == pytest.approx(0.010)
+
+
+def test_a_rejected_goal_does_not_inherit_the_previous_cycles_timings():
+    """Census integrity, applied to the timing block. ``_log_toss_outcome``
+    CONSUMES the census — a REJECTED_BAD_GOAL row is emitted by a goal that ran
+    no loop at all, and inheriting the last real cycle's periods would put
+    fabricated timings in the corpus under a uid that never ticked.
+
+    This is the timing-block twin of the identity property this file already
+    protects, and it is the reason the census is cleared rather than merely
+    overwritten at the next cycle start."""
+    node = _node()
+    _open(node)
+    node._toss_loop_census = _censused(n_pre=3, period_s=0.030)
+    node._log_toss_outcome(TossResult(True, 'CAUGHT'))
+
+    _open_bad_goal(node, goal_id='0badc0de0badc0de', cycle_index=2)
+    node._log_toss_outcome(TossResult(False, 'REJECTED_BAD_GOAL(throw_height_m)'))
+    rows = _records(node)
+    assert len(rows) == 2
+    assert rows[1]['outcome'] == 'REJECTED_BAD_GOAL(throw_height_m)'
+    for name in ('loop_n_pre', 'loop_period_max_pre_s', 'loop_work_max_pre_s',
+                 'loop_obs_max_pre_s', 'loop_body_max_pre_s',
+                 'loop_sleep_max_pre_s', 'loop_n_over_pre'):
+        assert rows[1][name] is None, name
+    # And the first row still carries its own, i.e. clearing did not retro-blank it.
+    assert rows[0]['loop_n_pre'] == 3
+
+
+class _RecLogger:
+    """The rclpy logger surface, recording (level, message)."""
+    def __init__(self):
+        self.records = []
+
+    def info(self, msg, **kw): self.records.append(('info', msg))
+    def warning(self, msg, **kw): self.records.append(('warning', msg))
+    def warn(self, msg, **kw): self.records.append(('warning', msg))
+    def error(self, msg, **kw): self.records.append(('error', msg))
+    def debug(self, msg, **kw): self.records.append(('debug', msg))
+    def fatal(self, msg, **kw): self.records.append(('fatal', msg))
+
+
+def test_an_overrun_warns_but_does_not_change_the_outcome_line_level():
+    """An instrument must never restate an outcome. A SUCCESSFUL cycle that
+    overran stays an INFO success; the overrun gets its own WARN alongside."""
+    from jugglebot.toss_sequencer import NODE_LOOP_PERIOD_S
+    node = _node()
+    node._logger = _RecLogger()
+    _open(node)
+    node._toss_loop_census = _censused(n_pre=2,
+                                       period_s=NODE_LOOP_PERIOD_S + 0.010)
+    node._log_toss_outcome(TossResult(True, 'CAUGHT'))
+    recs = node._logger.records
+    outcome = [r for r in recs if 'Toss CAUGHT' in r[1]]
+    assert len(outcome) == 1
+    assert outcome[0][0] == 'info'                # STILL info, not warning
+    assert 'tick_max=' in outcome[0][1]           # visible on the outcome line
+    overrun = [r for r in recs if 'OVERRAN' in r[1]]
+    assert len(overrun) == 1 and overrun[0][0] == 'warning'
+    assert 'Instrument only' in overrun[0][1]
+    row = _records(node)[0]
+    assert row['loop_n_over_pre'] == 2
+    assert row['success'] is True                 # the verdict is untouched
+
+
+def test_a_healthy_cycle_logs_no_overrun_and_no_suffix():
+    node = _node()
+    node._logger = _RecLogger()
+    _open(node)
+    node._toss_loop_census = _censused(n_pre=4, period_s=0.030)
+    node._log_toss_outcome(TossResult(True, 'CAUGHT'))
+    text = ' '.join(m for _lvl, m in node._logger.records)
+    assert 'OVERRAN' not in text
+    assert 'tick_max=' not in text
+    assert _records(node)[0]['loop_n_over_pre'] == 0
+
+
+def test_a_census_that_measured_nothing_is_null_not_zero():
+    """A cycle that terminated inside its first tick censused no complete
+    iteration. That row must read "not measured" — zeros would enter the corpus
+    as a real observation of an infinitely fast loop."""
+    from jugglebot.toss_sequencer import LoopPeriodCensus
+    node = _node()
+    _open(node)
+    node._toss_loop_census = LoopPeriodCensus()
+    node._log_toss_outcome(TossResult(False, 'ABORTED_TIMEOUT'))
+    row = _records(node)[0]
+    assert row['loop_n_pre'] is None
+    assert row['loop_period_max_pre_s'] is None

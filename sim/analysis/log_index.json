@@ -992,6 +992,50 @@
       "rosbag": "/home/jetson/Desktop/rosbags/2026-05-21_16-22-31",
       "session_group": "2026-05-21_16-22-31",
       "phase": "hardware-safety / Tier-1 fallback rewrite validation"
+    },
+    "2026-08-26_14-25-16": {
+      "analyzed": true,
+      "flags_count": 20,
+      "last_analyzed": "2026-08-26T06:20:00Z",
+      "logbook_entry": "2026-08-26-possession-verdicts-become-sensor-only.md",
+      "phase": "toss-timing Phase A forensics \u2014 the cadence ladder R0->R4. 31 declared cycles / 12 goals. 18 of the 27 cup-adjudicated cycles mis-verdicted by the tracker-primary path (15 false MISSED, 3 false CAUGHT, one of which drove a phantom reload) + 2 ABORTED_CANT_MAKE_RELEASE from the pre-dispatch budget shortfall. THE reference bag for owner decisions D1/D2/D3; fixture at tests/ros/toss_verdict_replay_fixtures.py",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-08-26_14-25-16",
+      "session_group": "2026-08-26_14-25-16",
+      "verdict": "FAIL"
+    },
+    "2026-08-26_08-51-06": {
+      "analyzed": true,
+      "flags_count": 0,
+      "last_analyzed": "2026-08-26T06:20:00Z",
+      "logbook_entry": "2026-08-26-possession-verdicts-become-sensor-only.md",
+      "phase": "toss-timing Phase A forensics \u2014 NO toss cycle reached a release, so there is nothing to adjudicate and no possession census. Analysed and excluded rather than left unanalysed, so a later /diagnose does not re-open it",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-08-26_08-51-06",
+      "session_group": "2026-08-26_08-51-06",
+      "verdict": "NEEDS_ATTENTION"
+    },
+    "2026-08-25_22-07-37": {
+      "analyzed": true,
+      "flags_count": 0,
+      "last_analyzed": "2026-08-26T06:20:00Z",
+      "logbook_entry": "2026-08-26-possession-verdicts-become-sensor-only.md",
+      "phase": "toss-timing Phase A forensics \u2014 NO toss cycle reached a release (as 2026-08-26_08-51-06). Analysed and excluded",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-08-25_22-07-37",
+      "session_group": "2026-08-25_22-07-37",
+      "verdict": "NEEDS_ATTENTION"
+    },
+    "2026-08-25_19-19-57": {
+      "analyzed": true,
+      "flags_count": 3,
+      "last_analyzed": "2026-08-26T06:20:00Z",
+      "logbook_entry": "2026-08-26-possession-verdicts-become-sensor-only.md",
+      "phase": "toss-timing Phase A forensics \u2014 2 cup-adjudicated cycles, ONE of them a false CAUGHT (tracker minted over an empty cup), plus 2 REJECTED_DISPLACEMENT. Corroborates the D1 census on a second sitting",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-08-25_19-19-57",
+      "session_group": "2026-08-25_19-19-57",
+      "verdict": "NEEDS_ATTENTION"
     }
   },
   "version": 1
