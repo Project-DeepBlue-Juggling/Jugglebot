@@ -89,7 +89,9 @@ cycle") was written against the unpaced loop and needs re-reading in that light.
 
 **What it costs, stated.** The session loop's between-cycle poll coarsens from
 ~0.023 s to ~0.040 s, so a *serial* cycle's START is detected a median ~7.5 ms
-later and the achieved period grows by that much. It does not accumulate —
+later — `~7.5 ms = (0.040 − _PACE_SLOP_S)/2 − 0.023/2`, the shift in the mean
+wait of a uniformly-arriving event between the two poll granularities — and the
+achieved period grows by that much. It does not accumulate —
 `_next_cycle_at` is re-derived from the previous cycle's **scheduled** landing
 every cycle — and it is the same quantity `DEFAULT_SESSION_MISS_CLEANUP_S` has
 charged at `2 × NODE_LOOP_PERIOD_S` since D3, so the poll is finally costing what
@@ -102,8 +104,9 @@ whole cycle.
 The plan says "half-tick early-fire band" and points at the FW 16 poller fix
 (`2026-08-24-poller-cadence-and-tristate-tx.md` § Feature 1). **Read literally
 against this loop, "half a tick" would destroy the pacing.** In the poller the
-band is `TICK_PERIOD_US / 2` — half the **wake granularity** (the 1 kHz service
-tick), not half the 20 ms poll interval it paces. Half of `_PACE_PERIOD_S` here
+band is `TICK_PERIOD_US / 2` — half the **wake granularity** (the 100 Hz
+`task_homing` tick — `TICK_PERIOD_US = 1e6 / HOMING_RATE_HZ`,
+`HOMING_RATE_HZ = 100`), not half the 20 ms poll interval it paces. Half of `_PACE_PERIOD_S` here
 is 0.020 s, and firing 20 ms early on a 40 ms grid hands the period straight back
 to `work`. The band's job is to absorb the wake granularity, so it is sized to
 the wake granularity: **0.002 s**.
@@ -129,7 +132,7 @@ sizing target — a band that large would systematically shorten the period by
 17 %, and an outlier wake is what the runtime guard and `loop_n_over_pre` are for.
 Ceiling: the band must stay under `PERIOD / 2`, the poller's own bound (the
 largest that cannot pull an iteration onto its predecessor's slot). 0.002 is a
-twentieth of it.
+tenth of that ceiling (a twentieth of the period).
 
 ### Recovery: re-anchor, not catch-up — and where the line is
 
@@ -261,9 +264,11 @@ tests/ros/test_toss_sequencer.py -q -p no:randomly` — **470 passed in 101.35 s
 — **1 passed in 0.29 s**, run 2026-08-27), which is the pin the plan names by
 line for this phase.
 
-**The full gate was NOT run** — the orchestrator holds it. This phase touches
-`ros_ws/` only, so `--full`'s `nightly` tier (`controller/`, `sim/`) covers no
-path changed here, but the gate is the gate.
+Full gate, run by the orchestrator after this entry was drafted and before the
+commit (`./run_tests.sh --full`, **2026-08-27**): parallel **6555 selected,
+rc=0, in 524 s** + serial **9 passed (rc=0) in 45 s**, total 569 s, **RESULT: PASS** — the
+(date, command, result) triple § 5.7 requires. The commit (`b316429`) carries
+the same triple.
 
 Logbook parse, run **2026-08-27**: `pytest tests/sim/test_logbook_search.py -q
 -p no:randomly` — **24 passed in 0.26 s**. Run because that suite parses the real
@@ -292,7 +297,8 @@ overshoot p50 0.1 ms / p99 0.1 ms / max 0.9 ms over 400 samples.
 Probe, run **2026-08-27**: `/tmp/probe_b5_lever3.py` — the AST call-graph table
 in § Discussion.
 
-**Nine new tests** in `tests/ros/test_toss_coordinator.py`: the constant drift
+**Eight new tests** (the commit message's "nine" is a miscount) in
+`tests/ros/test_toss_coordinator.py`: the constant drift
 guard, the absolute grid over 20 varying-work iterations, the early-fire band,
 the bounded catch-up, the re-anchor, the never-negative sweep, the structural pin
 that both loops call the pacer and neither sleeps a fixed interval, and the

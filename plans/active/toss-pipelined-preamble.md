@@ -10,6 +10,10 @@ related_logbook:
   - 2026-08-23-cadence-floor-and-inertia.md
   - 2026-08-24-arrival-band-remeasure.md
   - 2026-08-24-poller-cadence-and-tristate-tx.md
+  - 2026-08-27-phase-b2-release-instant-input.md
+  - 2026-08-27-phase-b3-session-scoped-arming.md
+  - 2026-08-27-phase-b4-two-slot-pipeline.md
+  - 2026-08-27-phase-b5-loop-pacing.md
 related_config:
   - config/hardware_config.yaml → jugglebot_operational.toss_session_dwell_margin_s
   - config/hardware_config.yaml → jugglebot_operational.toss_tier
@@ -278,6 +282,25 @@ about **ownership of a shared actuator**, not about the number of FSM objects. S
 > `_svc_arm_catch` raise path), and the bench trace recorder's `cycle_spans`
 > segments every CS check off its edges — session-scoping it would collapse
 > CS-1…CS-5 to one span per sitting.
+>
+> **[as built 2026-08-27 — B4 resolved this against § 2.4.2, and the amendment
+> above is now true only of the SERIAL path.]** This paragraph and § 2.4.2's third
+> bullet could not both be true, and reading `catch_coordinator_node` settled which:
+> the ≥1-tick armed→announce gap concerns `catch/armed`, **the topic**
+> (`_on_throw_announcement` returns early on `not self._catch_armed`) — not the
+> `trajectory/arm_catch` latch S6 hoists. Under the pipeline the previous cycle's
+> `_toss_stay` (which publishes `catch/armed` False) and the next cycle's
+> announcement land **in the same tick**, so a per-cycle edge would put a False, a
+> True and an announcement into one `catch_coordinator` wait-set with no cross-topic
+> ordering guarantee: drain the False first and the announcement is dropped, and
+> with it the `_latch_throw_stroke_window` call that is the C-HAND-1 stroke-busy
+> protection. **`_toss_stay` therefore holds `catch/armed` HIGH while a staged slot
+> is live.** The root cause is that STAY is the *chaining* terminal — it installs no
+> `go_home`, so a standing latch has no move to land inside and the hazard the
+> per-cycle edge was defended for does not exist on that path. The topic comes down
+> at `_disarm_session` with every other session-scoped resource. The diagnostics cost
+> is real and is B6's: `cycle_spans` collapse across a pipelined chain, adding
+> CS-1…CS-5 to the CS-4 re-cut B6 already owns.
 
 > **S7 (new)** — **the pipeline is DRAINED before any `go_home`.** Every path that
 > dispatches `trajectory/go_home` (SAFE_ABORT, RECENTER, the reload interlude, the
@@ -387,11 +410,25 @@ if not (obs.streaming and obs.mocap_fresh and obs.platform_levelled
         and obs.hand_fresh):              return abort('MODE'|'…')
 if not obs.hand_parked:                   return SLIP            # the hand is still landing
 if not obs.ball_seated:                   return SLIP or MISSED  # § 2.4.3
-if obs.track_active:                      return abort('TRACK_ACTIVE')
+if obs.track_active:                      return REJECTED_TRACK_ACTIVE  # ACTION_NONE
 if self._t_release - now < self.min_event_delay_for_throw_s:
                                           return abort('CANT_MAKE_RELEASE')
 ANNOUNCE ; DISPATCH_THROW                                        # one tick, in order
 ```
+
+**[as built 2026-08-27 — the `track_active` line above originally read
+`abort('TRACK_ACTIVE')`, contradicting § 2.4.3's staged-failure table.]** § 2.4.3
+won, because it is the half that argues: at a refused commit nothing is armed at
+the hand (the dispatch never ran) and no announcement was published, so an
+`ABORTED_` — which reads as a plant fault and drags a SAFE_ABORT ladder behind it,
+retracting the hand under an airborne upstream ball — would be a **false statement
+about the machine**. The shipped outcome is `REJECTED_TRACK_ACTIVE` with
+`ACTION_NONE`. `track_active` is also the one commit gate that does **not** SLIP:
+unlike `hand_parked` and `ball_seated` it is not a thing that resolves by waiting.
+(Carried with it: at a staged cycle's commit the upstream ball has only just
+landed, so `track_active`'s exclusion set had to widen to **both** announced-ball
+latches — otherwise the gate hard-rejects on every healthy pipelined cycle for the
+machine's own ball, which is census D6 one cycle earlier.)
 
 Three properties of that ordering are load-bearing:
 
@@ -408,7 +445,13 @@ Three properties of that ordering are load-bearing:
   unarmed (`toss_sequencer.py:82`). Under S6 the latch was raised at session
   start, seconds earlier, so the gap is satisfied by construction and the tick it
   used to cost is returned to the dwell floor. This is where one of the four
-  preamble loop periods actually goes.
+  preamble loop periods actually goes. **[as built 2026-08-27]** This bullet is
+  right about the *conclusion* and wrong about the *mechanism*, and the difference
+  is load-bearing: the gate `catch_coordinator` applies is `catch/armed`, **the
+  topic**, not the `arm_catch` latch S6 hoists — so the gap is satisfied only
+  because B4 makes `_toss_stay` hold that topic HIGH across a chained boundary.
+  The resolution, and the same-tick False/True/announcement race that forced it,
+  are recorded at the S6 amendment in § 2.3.
 
 **Rejected alternative — commit early, veto late.** A pre-release SAFE_ABORT's
 kind-3 retract does replace an armed kind-0 stroke on the last-writer-wins queue
@@ -438,8 +481,30 @@ And the two failures that belong to the staged cycle itself:
 
 | staged `k+1` fails at | outcome | machine state |
 |---|---|---|
-| a STATIC gate, while staging | `REJECTED_<code>`, `ACTION_NONE` | nothing armed, nothing moved; the slot simply never fills, and the cycle re-stages on a later tick if there is still time |
+| a STATIC gate, while staging | `REJECTED_<code>`, `ACTION_NONE` | nothing armed, nothing moved; the slot simply never fills, and the cycle is **rebuilt SERIALLY exactly once** — see the amendment below |
 | the COMMIT evidence gate, past the slip bound | `REJECTED_NO_BALL` / `REJECTED_HAND_NOT_PARKED` / `REJECTED_TRACK_ACTIVE`, `ACTION_NONE` | nothing armed at the hand (the dispatch never ran) and **no announcement was published** — so, unlike the two `ABORTED_CANT_MAKE_RELEASE` cycles of bag `2026-08-26_14-25-16`, no phantom tracker expectation is left behind |
+
+**[as built 2026-08-27 — a staged cycle that fails a STATIC gate is rebuilt
+SERIALLY ONCE; it does not "re-stage on a later tick".]** Re-staging every tick
+mints a toss record per attempt and **never terminates on a persistent fault** — a
+`REJECTED_NOT_LEVELLED` would loop until the session ceiling. The shipped path is
+`note_stage_abandoned`: the stage is dropped, the cycle index and the inherited
+one-cycle flags are given back (guards G10/G11 depend on exactly one cycle wearing
+each), and the slot is held shut until `note_cycle_result` reschedules. The retry
+is serial and happens exactly once; if the fault is real, the same gate mints the
+same refusal on the serial path, where `note_cycle_result` stops the session **by
+name** (`ABORTED_CYCLE_REJECTED_NOT_LEVELLED`). A transient hiccup costs one stage
+attempt and the cadence absorbs it. A useful second consequence of the same
+routing: a staged cycle that slips out on an empty cup does **not** trigger the
+reload interlude directly — it abandons the stage, is rebuilt serially, and its
+CHECKING mints `REJECTED_NO_BALL` through `note_cycle_result`, which is where the
+interlude lives. The session's fate stays decided by a cycle that actually ran.
+The `ACTION_NONE` in both staged-failure rows is likewise a **hazard fix rather
+than tidiness**: `_terminal_action`'s serial test would have emitted SAFE_ABORT for
+a refused staged cycle (`_positioned` True from the zero-millimetre skip,
+`_prepare_dispatched` True from the drift guard), and SAFE_ABORT's ladder retracts
+the hand — under the incoming ball, with the catch torn down. The narrowing is
+guarded on `staged and not committed`, so the serial path cannot see it.
 
 **The slip, and its bound.** `SLIP` re-arms the commit for the next loop
 iteration and moves `_t_release` with it, so the released ball's own schedule
@@ -640,6 +705,16 @@ clearance triples to 32.9 ms. B5 is subordinate to B4 in sequence, and — at th
 measured 0.070 s loop (B0/P1) — load-bearing for the `h = 1.0` half of the
 milestone, not only for the margin (see § 3's B5 row).
 
+**[as built 2026-08-27 — the 0.070 s premise in the sentence above is superseded,
+and the table is unchanged.]** B5 landed as *pacing*, not as a re-cut: the loops
+now keep an absolute 0.040 grid (projected worst-per-cycle period p50 = p90 =
+**0.0400**, max 0.0418, work over the charge on 2/73 corpus cycles), so the machine
+finally runs the period this table is denominated in and the 0.4170 / 0.3941 floors
+above are the ones in force. `NODE_LOOP_PERIOD_S` did **not** move, so no number in
+this table moved either. The 0.025 s trim remains available and remains B6's, off a
+paced census — and under pacing a measured bound *above* 0.040 means trim work,
+never raise the constant.
+
 ---
 
 ## 3. Implementation Phase Summary
@@ -648,17 +723,20 @@ milestone, not only for the margin (see § 3's B5 row).
 |-------|-------|--------|------|------|-----------|
 | **B0** | Measure first: the seat-edge decomposition probe, the first census read, `cadence_rung_check --pipeline` model. No production code. | **COMPLETE** | 2026-08-27 | none | that the § 1.4 predictions are measurements, not models |
 | **B1** | Extract per-cycle node state into `TossCycleState`; every reader takes it explicitly. Pure refactor, zero behaviour change. | **COMPLETE** | 2026-08-27 | low | that two cycles can coexist without sharing state |
-| **B2** | `release_at_perf` as a `TossSequencer` input; `TossSessionSequencer.next_release_at`. Bit-identical default. **The Phase C seam.** | NOT STARTED | | low | that the schedule is an input |
-| **B3** | Session-scoped arming (S6) + drain-before-`go_home` (S7). PREPARE bundle shrinks to the per-cycle remainder. | NOT STARTED | | **medium — changes the armed window** | the arm-mid-move seam closed by construction |
-| **B4** | The two-slot pipeline: `STAGED`/`COMMITTING`, the commit gate, the slip, the unwind, the clamp re-homing, `commit_budget_s`, the re-derived `required_dwell_s`. Ships behind `toss_pipeline_enabled`, default **false**. | NOT STARTED | | **high — the core** | the milestone floors |
-| **B5** | Loop-cost trim: absolute-schedule tick pacing, incremental observation build, blocking calls off the tick; then a reviewed re-cut of `NODE_LOOP_PERIOD_S`. | NOT STARTED | | medium | **[re-scoped 2026-08-27, B0/P1] the h=1.0 half of the milestone, and the margin.** The census read found `NODE_LOOP_PERIOD_S = 0.040` is not a bound (chained p50 0.0447, max 0.0626; honest ceil-to-10 ms bound **0.070**), and at 0.070 the h=1.0 pipelined floor is 0.4470 — **12.1 ms short of the 0.4349 milestone** — while h=1.3 still clears by +71.8 ms. B5 must land (and a post-B3/B4 census must be read) before the h=1.0 rungs P4–P5 are flown; the h=1.3 rungs P0–P3 do not wait for it. The dominant term is `body` (blocking calls, argmax 40/73 cycles), not the observation build (~6 %); the sleep overshoot is ~1.5 ms. |
+| **B2** | `release_at_perf` as a `TossSequencer` input; `TossSessionSequencer.next_release_at`. Bit-identical default. **The Phase C seam.** | **COMPLETE** | 2026-08-27 | low | that the schedule is an input |
+| **B3** | Session-scoped arming (S6) + drain-before-`go_home` (S7). PREPARE bundle shrinks to the per-cycle remainder. | **COMPLETE** | 2026-08-27 | **medium — changes the armed window** | the arm-mid-move seam closed by construction |
+| **B4** | The two-slot pipeline: `STAGED`/`COMMITTING`, the commit gate, the slip, the unwind, the clamp re-homing, `commit_budget_s`, the re-derived `required_dwell_s`. Ships behind `toss_pipeline_enabled`, default **false**. | **COMPLETE** | 2026-08-27 | **high — the core** | the milestone floors |
+| **B5** | Loop-cost trim: absolute-schedule tick pacing, incremental observation build, blocking calls off the tick; then a reviewed re-cut of `NODE_LOOP_PERIOD_S`. | **COMPLETE** — *constant re-cut deferred to B6's census read, by design* | 2026-08-27 | medium | **[as built 2026-08-27] Lever 1 only, and that is the whole of it.** Both toss loops now pace to an absolute grid at `_PACE_PERIOD_S`, an **alias** of `NODE_LOOP_PERIOD_S` (0.040), with a `_PACE_SLOP_S = 0.002` early-fire band and a re-anchor past one period of backlog. Re-scored over the B0/P1 corpus (73 chained cycles): worst-per-cycle period p50 **0.0447 → 0.0400**, p90 0.0519 → 0.0400, max 0.0626 → 0.0418; cycles whose worst pre-dispatch iteration exceeds the charge **53/73 → 2/73**. Lever 2 (incremental observation build) **de-scoped by measurement**, as this row's own clause provided: obs is p50 0.0026 against `body`'s 0.0233, argmax on 1/73 cycles, and the numpy premise is stale (the call does not run on the shipped default); lever 3 verified clean by AST call graph. `NODE_LOOP_PERIOD_S` is **not re-cut** — the census that sizes it must come from a post-B3/B4/B5 sitting read by a human, and none exists; B6 owns it (mechanical four-step recipe in `2026-08-27-phase-b5-loop-pacing.md` § Outcome). **[original text, for the record — the 0.070 premise is superseded by the pacing]** *"[re-scoped 2026-08-27, B0/P1] the h=1.0 half of the milestone, and the margin. The census read found `NODE_LOOP_PERIOD_S = 0.040` is not a bound (chained p50 0.0447, max 0.0626; honest ceil-to-10 ms bound 0.070), and at 0.070 the h=1.0 pipelined floor is 0.4470 — 12.1 ms short of the 0.4349 milestone — while h=1.3 still clears by +71.8 ms. B5 must land (and a post-B3/B4 census must be read) before the h=1.0 rungs P4–P5 are flown; the h=1.3 rungs P0–P3 do not wait for it. The dominant term is `body` (blocking calls, argmax 40/73 cycles), not the observation build (~6 %); the sleep overshoot is ~1.5 ms."* |
 | **B6** | Hardware validation ladder (§ 6), close-out, runbook + contract updates. | NOT STARTED | | **hardware** | the milestone, on the machine |
 
 Phases are strictly incremental: B1 and B2 are behaviour-preserving and land
 independently; B3 is a behaviour change that is valuable on its own (it closes the
 arm-mid-move seam whether or not B4 ever lands); B4 ships dormant so the flag flip
 is the only thing the bench is validating; B5 is a pure cost reduction whose only
-gate-visible effect is a reviewed constant.
+gate-visible effect is a reviewed constant. **[as built 2026-08-27]** B5's
+gate-visible effect turned out to be *one re-denominated assertion* and no constant
+at all: pacing made the machine keep the grid the constant already names, so the
+review of the constant is B6's, off a paced sitting.
 
 ---
 
@@ -768,7 +846,7 @@ remains a bare node attribute.
 
 **Dependencies.** none.
 
-### Phase B2: The release instant becomes an input — NOT STARTED
+### Phase B2: The release instant becomes an input — COMPLETE 2026-08-27
 
 **Modified files**
 * `toss_sequencer.py` (`release_at_perf` field, `start()`, `slip_s` property)
@@ -795,7 +873,7 @@ instant**. `./run_tests.sh --full` green.
 **Dependencies.** B1 (not strictly, but landing it after keeps the diffs
 separable).
 
-### Phase B3: Session-scoped arming, and drain-before-`go_home` — NOT STARTED
+### Phase B3: Session-scoped arming, and drain-before-`go_home` — COMPLETE 2026-08-27
 
 **Modified files**
 * `reload_coordinator_node.py` (`_execute_toss_continuous`, `_prepare_toss_catch`,
@@ -863,6 +941,40 @@ every path that reaches `_go_home()`: `_toss_safe_abort`, `_toss_recenter`,
   green under B3 while the declaration goes unapplied, i.e. CS-4 alone is a
   false green; B6 must re-cut CS-4 for pipelined sessions.
 
+**As built (2026-08-27)** — three deviations from the text above, all recorded in
+`logbook/2026-08-27-phase-b3-session-scoped-arming.md`:
+
+* **The session arm is TWO methods across two FSM ticks, not one `_arm_session`.**
+  `_arm_session_declare` runs on cycle 1's **verified-arrival** tick (the holds +
+  the `catch/reach_center` declaration); `_arm_session` runs on the **PREPARE**
+  tick one tick later (gains → arm raise → vel_scale). The declaration lands one
+  tick *before* the raise that consumes it because `catch/reach_center` is a
+  **topic** and `trajectory/arm_catch` is a **service** — different transports, no
+  cross-transport ordering guarantee — and the pre-S6 code bought that ordering
+  with one full 20 ms tick, ~2 orders of magnitude above localhost topic latency.
+  S6 makes losing that race **strictly worse**, not better: with one raise per
+  session a lost declaration mis-centres the envelope for the **whole run** instead
+  of for one cycle. Same argument for `catch/prime_hold`, which must land in an
+  *earlier* `catch_coordinator` wait-set cycle than the armed edge.
+  `test_reach_centre_declared_a_tick_before_the_arm_raise` pins it. The *relative*
+  order the bullets above call load-bearing is preserved exactly, and is now
+  stronger: gains → raise → vel_scale precede every cycle's armed edge by seconds.
+* **`_drain_pipeline_and_disarm` fronts SIX `go_home` call sites, not five.** The
+  five named above plus the **position-unknown zombie superseder in
+  `_step_toss_sequence`** (`_TOSS_POSITION_UNKNOWN_TERMINALS`) — found because the
+  structural call-site test would not pass without it. At B3 the *drain* half is a
+  documented placeholder (no staged slot exists yet) and the *disarm* half is real,
+  so B4 added the discard in one place instead of re-auditing six teardown ladders.
+* **The drift guard shipped at 66.53 mm, as `REJECTED_REACH_CENTER_DRIFT`.** The
+  bound is derived, not chosen: `JB_TRAJ_CATCH_REACH_ENVELOPE_MM` (80.00 mm) −
+  `HAND_CATCH_OFFSET_MM · sin(MAX_TILT_DEG)` (64.78 · sin 12° = 13.47 mm, the
+  saturated-tilt swing the reach itself carries, a bound because the tilt clamp
+  saturates on every real arrival) = **66.53 mm**. It is the same arithmetic
+  `_RELOAD_CENTERED_TOL_MM` makes one path over; the two stay separate names and
+  sit next to each other. The refusal is a `REJECTED_`, not an `ABORTED_`, which
+  needed one new seam — `note_prepare_result(ok, reject_code='')` — because an
+  ABORTED reads as a plant fault and sends the operator to the wrong subsystem.
+
 **Acceptance.** `./run_tests.sh --full` green. A structural test pins that
 `_go_home` has no call site that is not preceded by `_drain_pipeline_and_disarm`
 inside the same function (the `test_dwell_tilt_reads_have_exactly_one_call_site`
@@ -872,7 +984,7 @@ acceptance, exactly as `SAFE_ABORT_LADDER_S`'s comment already prescribes.
 
 **Dependencies.** B1.
 
-### Phase B4: The two-slot pipeline — NOT STARTED
+### Phase B4: The two-slot pipeline — COMPLETE 2026-08-27
 
 **New/modified files**
 * `toss_sequencer.py` — `PHASE_STAGED`, `PHASE_COMMITTING`, `_step_staged`,
@@ -893,7 +1005,8 @@ acceptance, exactly as `SAFE_ABORT_LADDER_S`'s comment already prescribes.
 **Scope.** Everything in § 2.2–2.4. `_run_toss_cycle` is retained verbatim for the
 single `Toss` action and for a non-staging session cycle; the session gains
 `_tick_toss_pipeline`, which per iteration steps the committed slot, then the
-staged slot, then sleeps. Ordering is not cosmetic: the committed slot owns the
+staged slot. The sleep stays in `_execute_toss_continuous`'s while-loop — which
+is where B5's pacer went; see § 4 B5's as-built note. Ordering is not cosmetic: the committed slot owns the
 hand, so it must always get the tick first, and a structural test pins the order.
 
 **IPC / message formats.** No new topics, no new services, no wire changes. The
@@ -927,6 +1040,32 @@ phase it does not recognise, never a phase that changed meaning.
 * **The single `Toss` action is untouched.** It has no previous cycle to pipeline
   behind; it takes the serial path and its arithmetic is unchanged.
 
+**As built (2026-08-27).** Two seams reached the shipped surface that are not
+named above:
+
+* **`min_stage_lead_for_release_s`** (`toss_sequencer.py`) — the staged path's
+  replacement for the sequencer's per-cycle delay gate. `_step_checking` skips
+  `min_throw_delay_for_cycle_s` when `staged` is set (that floor is charged
+  against `throw_delay_s`, which a staged cycle does not run on — § 2.6 rule 1),
+  and charges `stage_budget_s + commit_budget_s` against the real remaining lead
+  instead, rejecting `CANT_MAKE_LEAD`. It is the same ladder arithmetic as
+  `min_throw_delay_for_release_s(v, False)` — the same tick count and the same
+  dispatch budget, three ticks simply moved off the DWELL onto the previous
+  cycle's FLIGHT — and agrees with it to within one ULP (the summation order
+  differs, so it is *not* bit-for-bit at every velocity). The session-level
+  `REJECTED_THROW_DELAY` gate is **not** retired: it stays on both branches,
+  because the first cycle of every pipelined sitting still runs serially.
+* **`note_stage_abandoned`** (`toss_session.py`, called from three
+  `reload_coordinator_node.py` sites) — the discard seam that closes a staged
+  slot's record with its `staged_discarded_reason`.
+
+Four places where this section was open or self-contradictory are resolved
+elsewhere in the plan, and this list is the phase's index of its own deviations:
+**§ 2.3** (`catch/armed` holds HIGH while a slot is staged), **§ 2.4.2**
+(`REJECTED_TRACK_ACTIVE` with `ACTION_NONE` at commit, not an abort), **§ 2.4.3**
+(a staged cycle failing a STATIC gate is rebuilt serially **once**), and
+**§ 5.6 T-G4** (the re-taken margin is 0.0830 s / 1.16×, not 0.0947 s / 1.3×).
+
 **Acceptance.** The flag defaults false and a test asserts the shipped default
 produces **decision sequences identical to the pre-B4 tree** on the whole
 `cadence_rung_check` grid. With the flag true, the probe's `--pipeline --grid`
@@ -935,18 +1074,23 @@ reproduces from the shipped `required_dwell_s`. `./run_tests.sh --full` green.
 
 **Dependencies.** B1, B2, B3.
 
-### Phase B5: Loop-cost trim — NOT STARTED
+### Phase B5: Loop-cost trim — COMPLETE 2026-08-27 (constant re-cut deferred to B6's census read, by design)
 
 **Modified files**
-* `reload_coordinator_node.py` (`_run_toss_cycle`, `_tick_toss_pipeline`,
-  `_build_toss_observations`)
+* `reload_coordinator_node.py` (`_run_toss_cycle`, ~~`_tick_toss_pipeline`~~
+  **the session while-loop inside `_execute_toss_continuous`** *[as built
+  2026-08-27 — `_tick_toss_pipeline` has **no loop**; it is one iteration's body,
+  called from `_execute_toss_continuous`'s while-loop, which is where the sleep
+  lives and therefore where the pacer went]*, `_build_toss_observations`)
 * `toss_sequencer.py` (`NODE_LOOP_PERIOD_S`, and only after B5's measurement)
+  *[as built: documentation only — the constant's value did not move; see the
+  amended Acceptance below]*
 
 **Scope.** Three levers, in the order their cost is known:
 
 1. **Absolute-schedule tick pacing.** Replace `time.sleep(_TICK_S)` with
-   `next_due += _TICK_S; sleep(max(0, next_due − now))`, plus a **half-tick
-   early-fire band** so a due instant landing marginally after the wake does not
+   `next_due += _TICK_S; sleep(max(0, next_due − now))`, plus a ~~**half-tick
+   early-fire band**~~ so a due instant landing marginally after the wake does not
    cost a whole extra period. This is not a new idea in this repo: it is exactly
    the fix the hand-sensor poller took — *"Feature 1 — absolute schedule **plus** a
    half-tick early-fire band… `s_next_due_us += POLL_INTERVAL_US` from the previous
@@ -955,16 +1099,74 @@ reproduces from the shipped `required_dwell_s`. `./run_tests.sh --full` green.
    the absolute due instants land exactly *on* nominal tick instants. It converts
    the period from an output into an input, which is what every budget in this
    stack is denominated in.
-2. **Incremental observation build.** `_build_toss_observations` rebuilds ~25
-   fields per tick under the lock, including a numpy `hypot` and a sensor query.
-   Cache the slowly-varying half behind the subscriber callbacks' own dirty flags
-   and rebuild only the live half per tick. `loop_obs_max_pre_s` from B0/P1 says
-   whether this is the dominant term before any of it is written.
+
+   > ⚠ **[as built 2026-08-27 — "half-tick" was a TRAP, and the transposition had
+   > to be corrected before it was written.]** In the poller the band is
+   > `TICK_PERIOD_US / 2` — half the **wake granularity** (the 100 Hz
+   > `task_homing` tick — `TICK_PERIOD_US = 1e6 / HOMING_RATE_HZ`,
+   > `HOMING_RATE_HZ = 100`), *not* half the 20 ms poll interval it paces. Read literally against this loop,
+   > "half a tick" is half the paced period: firing 20 ms early on a 40 ms grid
+   > hands the period **straight back to `work`** and destroys the pacing the lever
+   > exists to buy. **The band's job is to absorb the wake granularity, so it is
+   > sized to the wake granularity: `_PACE_SLOP_S = 0.002 s`** — never `period/2`,
+   > which is only the *ceiling* (the largest band that cannot pull an iteration
+   > onto its predecessor's slot); 0.002 is a tenth of that ceiling (a twentieth
+   > of the period). It is sized from
+   > measurement at both ends: idle `time.sleep` overshoot on this Jetson is p50
+   > 0.1 ms / max 0.9 ms (400 samples, `/tmp/probe_sleep_granularity.py`), and
+   > under the live executor `loop_sleep_max_pre_s − 0.020` is p50 1.5 ms / max
+   > 6.8 ms (B0/P1); 0.002 covers the idle maximum and the live median, and the
+   > 6.8 ms tail is deliberately not a sizing target. The band is not cosmetic:
+   > `time.sleep` returns **late**, four late wakes come straight out of
+   > `pre_dispatch_budget_s`, and at a `throw_delay_s` sitting exactly on the accept
+   > floor the runtime guard's comparison is an *equality* — so a systematic
+   > +1.5 ms would `ABORTED_CANT_MAKE_RELEASE` on every at-the-floor rung. Late is
+   > the failure direction; early is free margin. **Paced period as built:
+   > `_PACE_PERIOD_S`, an alias of `NODE_LOOP_PERIOD_S` (0.040), NOT `_TICK_S`
+   > (0.020)** — at 0.020 the sleep is degenerate on 49 of 73 measured cycles
+   > (chained `loop_work_max_pre_s` p50 0.0237), and at 0.040 the machine finally
+   > runs the grid `cadence_rung_check` has always modelled. Recovery is bounded
+   > catch-up with a re-anchor past one period of backlog — never a burst: every
+   > guard here is level-triggered, so replaying missed slots would spin the FSM at
+   > one instant and corrupt the census on exactly the cycle that overran.
+2. ~~**Incremental observation build.**~~ **[DE-SCOPED BY MEASUREMENT 2026-08-27,
+   as this lever's own last sentence provided.]** `_build_toss_observations`
+   rebuilds ~25 fields per tick under the lock, including a numpy `hypot` and a
+   sensor query. Cache the slowly-varying half behind the subscriber callbacks' own
+   dirty flags and rebuild only the live half per tick. `loop_obs_max_pre_s` from
+   B0/P1 says whether this is the dominant term before any of it is written — **and
+   it says no**: chained `loop_obs_max_pre_s` is p50 **0.0026** against `body`'s
+   **0.0233**, and the per-cycle argmax is `body × 40, sleep × 32, obs × 1` over 73
+   cycles. obs is ~6 % of the cost and the *smallest* of the three levers. The
+   premise had also gone stale: **on the shipped default the numpy call does not
+   run at all** (`np.linalg.norm` sits inside the `else` of `if not mocap_body`, and
+   `_TOSS_MOCAP_BODY_PARAM` is unconfigured by default, so the builder takes the
+   `platform_at_target = True` branch). The sensor query is one
+   `self._ball_sensor.evidence(now)` call and caching it is **forbidden**, not
+   merely unhelpful: C-POSSESS-1 § 3.3 edit 1 requires the whole snapshot to be
+   built from one instant's cup state, and § 2.4.4 requires the read that admits
+   the commit to be the read that terminalises the upstream cycle. Carried to B6:
+   `loop_obs_max_pre_s` has an unexplained **heavy tail** (p50 0.0026, p90 0.0113,
+   p95 0.0165, max 0.0400) that the census cannot explain — that tail, never the
+   median, is the only thing that would justify re-opening this lever.
 3. **Blocking calls off the tick.** B3 already removes the three synchronous
    service round trips from the per-cycle path. What remains is
    `_dispatch_toss_throw`'s own call, which is *inside* the commit tick by
    necessity, and `_go_home` / `_arm_catch` on the teardown paths, which are off
-   the cadence path entirely.
+   the cadence path entirely. **[as built 2026-08-27 — verified by AST call graph
+   (`/tmp/probe_b5_lever3.py`), and this list is one entry short.]** The fourth
+   reachable site is **`_position_platform_for_toss`'s blocking `go_to_pose`**: it
+   is **necessary**, it is the 0.2774 s `body` of the one moving cycle in the B0/P1
+   corpus (a 0.3022 s single iteration — the case the re-anchor exists for), it is
+   **never reached by a *staged* cycle** (§ 2.4.1: a cycle stages only if its
+   positioning decision is SKIP), and on the serial path it is the first cycle of a
+   sitting and is charged by `pre_dispatch_budget_s(True)`'s moving budget. Also
+   worth knowing: `_go_home` is reached from `_step_toss_sequence`'s
+   position-unknown zombie-superseder rather than from a terminal action handler,
+   and it only runs on `decision.done` — the terminal iteration the census never
+   commits. `_build_toss_observations` reaches **none**. The plan's claim stands,
+   with the positioning `go_to_pose` added to the list of per-tick blocking calls
+   that are *necessary and charged* rather than absent.
 
 **Only then** may `NODE_LOOP_PERIOD_S` be re-cut, and it is re-cut **by a human
 reading the census**, never by the census. `test_the_census_never_feeds_a_budget`
@@ -972,11 +1174,23 @@ reading the census**, never by the census. `test_the_census_never_feeds_a_budget
 the budget functions and must keep passing: *"a bound that tracks its own
 degradation hides the degradation"*.
 
-**Acceptance.** The census's `loop_period_max_pre_s` over a full session falls
-below the re-cut constant with the sizing discipline `ARRIVAL_BAND_MAX_S` uses
-(ceil to the next 10 ms, so the constant is a bound rather than a datum).
-`loop_n_over_pre` is 0 on every successful cycle. The probe's `--frontier` moves
-by the predicted amount and the runbook's clearance table is re-cut.
+**Acceptance. [amended as built 2026-08-27 — the re-cut is B6's, by design.]** The
+census's `loop_period_max_pre_s` over a full session falls below the re-cut
+constant with the sizing discipline `ARRIVAL_BAND_MAX_S` uses (ceil to the next
+10 ms, so the constant is a bound rather than a datum). ~~`loop_n_over_pre` is 0 on
+every successful cycle.~~ **Under pacing that criterion needs re-reading: a paced
+period still carries `wake_k − wake_{k−1}`, so `loop_n_over_pre` is ≈0 — wake
+jitter of a millisecond or two can still trip it — and the finding is
+`loop_work_max_pre_s` sitting *over* the constant, not the counter being non-zero.**
+The probe's `--frontier` moves by the predicted amount and the runbook's clearance
+table is re-cut. **`NODE_LOOP_PERIOD_S` was deliberately NOT re-cut in B5**: the
+census that sizes it must come from a post-B3/B4/B5 sitting read by a human, and
+the 2026-08-26 corpus is a pre-B3 *unpaced* loop — re-cutting off it would size a
+constant against a machine that no longer exists. B6 owns the four mechanical
+steps (read → cut one constant → re-cut § 2.7 and § 6.2 → re-run and re-publish);
+the recipe is in `logbook/2026-08-27-phase-b5-loop-pacing.md` § Outcome. Under
+pacing a bound **above** 0.040 means the answer is to trim work, never to raise the
+constant.
 
 **Dependencies.** B0/P1 (the measurement), B3 and B4 (which remove work).
 
@@ -1049,7 +1263,7 @@ helpers rather than fixtures, and constants imported rather than typed.
 
 ### 5.3 Property tests on the pipeline FSM
 
-**These would be the first Hypothesis tests in `tests/ros`** (the library is used
+**These are the first Hypothesis tests in `tests/ros`** (landed in `e00a974`; the library is used
 only in `tests/sim/` today; profiles `ci-fast` = 50 / `ci-deep` = 1000 are
 registered suite-wide in `tests/conftest_hypothesis.py` and **no per-test
 `@settings` override exists anywhere in the repo** — do not add one, and do not
@@ -1086,7 +1300,7 @@ fourth consumer rather than a fourth pattern.
 |---|---|---|
 | **T-I1** | the toss's self-announcement through the **real** `BallTracker` correlation and **real** `CatchCoordinator`, with a staged cycle live during the previous flight (extends `tests/ros/test_toss_integration.py`) | exactly one announcement is correlated per ball; a staged cycle contributes none |
 | **T-I2** | `catch/pretilt_hold` + `catch/prime_hold` replayed into a real `CatchCoordinatorNode` under S6's standing latch | no auto-prime fires across the whole session; no pre-tilt is installed |
-| **T-I3** | the reach-envelope-centre declaration under a standing latch (Q-3) | `trajectory_node` captures the declared centre per cycle, or the test names the degradation explicitly |
+| **T-I3** | the reach-envelope-centre declaration under a standing latch (Q-3) | `trajectory_node`'s captured `_catch_envelope_center` equals the session declaration, across every cycle of a chained run (the per-cycle capture was disproved — Q-3) |
 
 ### 5.6 Regression tests
 
@@ -1095,7 +1309,22 @@ fourth consumer rather than a fourth pattern.
 | **T-G1** | `cadence_rung_check --grid` with the flag **false** | byte-identical decisions to the pre-B4 tree over ~1500 grid points |
 | **T-G2** | the published R0–R5 ladder, four ways, flag false | `PUBLISHED LADDER: all rungs FLY`, unchanged |
 | **T-G3** | the single `Toss` action | no decision changes at all; it never stages |
-| **T-G4** | `test_the_hand_floor_is_dominated_by_the_plumbing_term` (**existing**) | must be **re-taken**, not deleted: under the pipelined floor the plumbing term's dominance narrows from 0.2030 s to 0.0947 s at the band floor. It is still dominant, but the margin over the 0.0715 s worst-case ILC trim sensitivity falls from 2.8× to **1.3×**. The test's docstring must carry the new number and the re-taken argument |
+| **T-G4** | `test_the_hand_floor_is_dominated_by_the_plumbing_term` (**existing**) | must be **re-taken**, not deleted: under the pipelined floor the plumbing term's dominance narrows from 0.2030 s to **0.0830 s** at `T = 0.4949`, and the margin over the 0.0715 s worst-case ILC trim sensitivity falls from 2.8× to **1.16×**. The test's docstring must carry the new number and the re-taken argument |
+
+**[as built 2026-08-27 — the plan's 0.0947 s / 1.3× was 11.7 ms optimistic; the
+re-taken number is 0.0830 s / 1.16×.]** Measured over the whole C-HAND-3 band at
+`catch_vel_scale` 0.9 with no ILC trim, the worst-case pipelined margin is
+**0.0830 s at `T = 0.4949`**. That is not a matter of measurement noise — it falls
+out of the arithmetic: both plumbing terms are `dispatch + n × loop + slack +
+handoff` and they differ by **exactly `3 × NODE_LOOP_PERIOD_S`**, so the margin is
+`0.2030 − 0.120 = 0.0830` and can be nothing else. The plan's number would have
+required the gap to be 0.1083 s, which is not three of anything. 1.16× is still a
+cover rather than a coincidence — the 0.0715 s sensitivity is a WORST CASE at a
+maximal negative ILC trim, and the throw envelope refuses almost the whole negative
+side at exactly the flights where this margin is narrowest — but it is thinner than
+the plan believed, so the re-taken test now asserts the **difference** between the
+two branches (`3 × NODE_LOOP_PERIOD_S`) as well as the absolute floor, and the next
+constant edit re-derives instead of needing a re-measure.
 
 **T-G4 is the one existing test this plan genuinely stresses**, and it is worth
 surfacing rather than quietly re-baselining: shortening the plumbing term brings
@@ -1149,6 +1378,21 @@ is no longer the cadence lever (§ 2.6). The dwell steps are the owner's:
 | **P4** | 1.00 | 0.9032 | **0.45** | 0.4170 | 33 ms | ~0.495 (slip ~45 ms) | ~1.398 | **42.9** ⭐ |
 | **P5** | 1.00 | 0.9032 | 0.43 | 0.4170 | **13 ms** | ~0.495 (slip ~65 ms) | ~1.398 | 42.9 |
 
+**[as built 2026-08-27, B5 — no rung number above changes, `NODE_LOOP_PERIOD_S`
+did not move.]** One honestly-stated cost rides in with the pacing and PIPE-3's
+scoring must not be surprised by it: the session loop's **between-cycle poll
+coarsens from ~0.023 s to ~0.040 s**, so a *serial* cycle's START is detected a
+median **~7.5 ms later** — `~7.5 ms = (0.040 − _PACE_SLOP_S)/2 − 0.023/2`, the
+shift in the mean wait of a uniformly-arriving event between the two poll
+granularities — and its achieved period grows by that much. It does not
+accumulate (`_next_cycle_at` is re-derived from the previous cycle's **scheduled**
+landing every cycle), it is the same quantity `DEFAULT_SESSION_MISS_CLEANUP_S` has
+charged at `2 × NODE_LOOP_PERIOD_S` since D3 — so the poll is finally costing what
+the budget already pays for — and cancel-between-cycles latency moves by the same
+amount against a 0.25 s `TOSS_CANCEL_CUTOFF_S` and a documented one-cycle deferral.
+Expect it on the *serial* rungs and on the first cycle of every sitting; a
+*pipelined* cycle's release is scheduled absolutely and does not carry it.
+
 **P3 and P4 are the milestone.** P5 is the milestone's lower edge and is
 deliberately last: its 13 ms of accept clearance is the same razor-edge class the
 runbook flags at R5's 1.9 ms, and it is the rung B5 exists to widen. **P0 is not
@@ -1162,7 +1406,7 @@ the edge.
 | row | measurand | source | why |
 |---|---|---|---|
 | **PIPE-1** | `commit_slip_s`, per cycle | toss record | the § 1.4 prediction, tested. Median slip at P3 should be ~0; at P4/P5 ~45–65 ms. A slip **rising** across a session is a loop-cost regression |
-| **PIPE-2** | `loop_period_max_pre_s`, `loop_n_over_pre` | toss record | `loop_n_over_pre` must be **0 on every successful cycle**. Non-zero on a success is the early warning the census exists for |
+| **PIPE-2** | `loop_period_max_pre_s`, `loop_n_over_pre`, `loop_work_max_pre_s` | toss record | **[re-worded as built 2026-08-27, B5]** under pacing, `loop_n_over_pre` must be **≈0 on every successful cycle** — wake jitter of a millisecond or two can still trip it — **and `loop_work_max_pre_s` must sit under the constant**. Work over the constant is the early warning the census exists for; a near-threshold period with the work term comfortable is scheduler jitter |
 | **PIPE-3** | achieved `landing → release`, per cycle | toss record | scored against the commanded dwell **and** against `seat_edge + commit_budget_s`. These are two different claims and both are published |
 | **PIPE-4** | `dispatch → catch-stroke-end` gap, per cycle | hand telemetry | the C-HAND-1 no-overlap margin. **A negative gap is an abort-the-sitting event, not a data point** (inherited verbatim from R4/R5) |
 | **PIPE-5** | any commanded platform motion between the verdict and the next release | `/trajectory/commanded_position` | S6's accepted cost (§ 2.3, S5′ point 1). Any motion here is a stop |
@@ -1184,12 +1428,17 @@ Stop the sitting, do not step down, and debrief on any of:
   one is a design finding, not a tuning finding;
 * any commanded platform motion between a verdict and the next release (PIPE-5);
 * any *"catch latch armed mid-move"* line (PIPE-7);
-* `loop_n_over_pre` non-zero on a successful cycle (PIPE-2) — **[caveat
-  2026-08-27]** on the pre-B5 tree this fires on 48 of 66 successful cycles
-  (B0/P1), so this stop condition presumes B5's tick pacing has landed and
-  `NODE_LOOP_PERIOD_S` has been honestly re-cut from a post-B3/B4 census; flying
-  any pipelined rung before that makes PIPE-2 an instant stop, which is the
-  census doing its job;
+* `loop_n_over_pre` non-zero on a successful cycle (PIPE-2) — **[re-worded as
+  built 2026-08-27, B5]** B5's tick pacing **has landed**, so the pre-B5 caveat
+  (48 of 66 successful cycles firing, B0/P1) no longer describes the tree; the
+  remaining B6 step is the honest re-cut of `NODE_LOOP_PERIOD_S` from a
+  post-B3/B4/B5 census. The stop condition itself is now **`loop_n_over_pre` ≈ 0
+  on every successful cycle, and `loop_work_max_pre_s` under the constant**: a
+  paced period is still `PERIOD + (wake_k − wake_{k−1})`, so a handful of
+  near-threshold periods with the work term well under the charge is scheduler
+  jitter of a millisecond or two, not a finding — where the unpaced loop tripped
+  the threshold by twenty. **Work over the constant is the finding.** Stop on that,
+  not on the bare counter;
 * any `MISSED_SENSOR_BLIND` — the cup could not look, which at these periods
   should not be schedule-caused (§ 2.5) and therefore points at the sensor;
 * any HAND row outside `tests/hardware/session_anomaly_fixes.md` § PASS/ABORT.
@@ -1240,8 +1489,8 @@ drain). The cancel button is not the E-STOP. Say this out loud before arming.
 |---|---|---|---|
 | **P-1** | **FW 16 flashed on the can-bridge Teensy** | ✅ **SATISFIED 2026-08-26** (operator flashed from the Win10 box; first live `/link_status` read pending) | FW 16 is the poller + tri-state image (`587b363`). Post-flash the panel's `15 (SKEW — expected v16)` advisory disappears |
 | **P-2** | **Phase A is deployed** — `cd ros_ws && colcon build --packages-select jugglebot` | **hard** | the install space must carry `f997470` + `6036476`; a sitting that measures the tracker-primary verdict measures nothing this plan cares about |
-| **P-3** | **B0/P1 has read one sitting's census** | ✅ **SATISFIED 2026-08-27** (`tools/probes/toss_loop_census.py` over the 21:29 sitting, n=74) | the read re-scoped B5 (see § 3): the honest chained bound is **0.070 s**, `body` dominates, and the over-period counter already fires on 48/66 successful cycles |
-| **P-4** | **`session_cadence_ladder.md` carried finding 2 is closed** | **hard for the pipeline to engage on tier 8b with an aim armed** — fix approved into this arc (own commit, between B2 and B4). Traced 2026-08-27: the re-command is **real, physically-required motion** (the catch policy levels the platform to receive; the throw aim re-tilts it; nothing reconciles them — they agree only at zero aim). Adopted fix: in `_publish_toss_reach`, reach at the commanded pre-tilt quaternion **iff** the receive tilt is within the ±1° aim authority of it (zero-aim byte-identical; displaced never triggers, its delta is ~2θ). Pending one owner physical-intuition check: the fix accepts the cup seating with ≤1° of tilt on aimed 8b — which aimed 8a already does on every validated cycle | with it open, every chained aimed cycle re-commands a ≤1 mm/≤1° move charged at a fixed 0.360 s ⇒ no cycle ever stages. Safely inert, but inert |
+| **P-3** | **B0/P1 has read one sitting's census** | ✅ **SATISFIED 2026-08-27** (`tools/probes/toss_loop_census.py` over the 21:29 sitting, n=74) | the read re-scoped B5 (see § 3): the honest chained bound is **0.070 s**, `body` dominates, and the over-period counter already fires on 48/66 successful cycles. **[as built 2026-08-27, B5]** both readings describe the PRE-pacing tree; see § 2.7 and § 6.4 |
+| **P-4** | **`session_cadence_ladder.md` carried finding 2 is closed** | **hard for the pipeline to engage on tier 8b with an aim armed** — fix approved into this arc (own commit, between B2 and B4). Traced 2026-08-27: the re-command is **real, physically-required motion** (the catch policy levels the platform to receive; the throw aim re-tilts it; nothing reconciles them — they agree only at zero aim). Adopted fix: in `_publish_toss_reach`, reach at the commanded pre-tilt quaternion **iff** the receive tilt is within the ±1° aim authority of it (zero-aim byte-identical; displaced never triggers, its delta is ~2θ). Pending one owner physical-intuition check: the fix accepts the cup seating with ≤1° of tilt on aimed 8b — which aimed 8a already does on every validated cycle. **[as built 2026-08-27]** the B2→B5 wave landed without it; the fix is now the NEXT work item (owner accepted the ≤1° cup tilt at seat, 2026-08-27) and is the live gate on § 6.1's "do not book any rung" | with it open, every chained aimed cycle re-commands a ≤1 mm/≤1° move charged at a fixed 0.360 s ⇒ no cycle ever stages. Safely inert, but inert |
 | **P-5** | the drive-restoration state of 2026-08-18 (`b084f98`) holds | **hard** | pre-2026-08-18 braking-clamp behaviour invalidates every catch-tail number this plan's floors are built on |
 
 ### 8.2 Open questions — decisions required before the phase named
@@ -1251,7 +1500,10 @@ Q-2 and Q-3 ANSWERED by measurement/diagnosis.** The original texts are kept
 below for the record; the resolutions:
 
 * **Q-1 → S6 as written** (session-scoped latch), owner-approved. Amended only
-  in that `catch/armed` stays per-cycle (§ 2.3).
+  in that `catch/armed` stays per-cycle (§ 2.3) — **[as built 2026-08-27, B4: that
+  amendment now holds only on the SERIAL path; under the pipeline `_toss_stay`
+  holds `catch/armed` HIGH across a chained boundary. See the resolution at § 2.3's
+  S6 amendment.]**
 * **Q-2 → the release-latency hook must NOT be populated.** B0/P2 measured the
   ballistic release at **−1.6 ms** (on time); the "+52.3 ms" was beam occlusion
   on exit. The correctable term is the **flight-time model (+102.1 ms, 53 % of
@@ -1267,6 +1519,14 @@ below for the record; the resolutions:
   h=1.0 rungs P4–P5 are not honestly bookable until B5 lands and a post-B3/B4
   census is read (§ 3, B5 row) — so "first sitting" means the first sitting at
   which h=1.0 is bookable at all, and the P0–P3 (h=1.3) sitting does not wait.
+  **[as built 2026-08-27] B5 has landed and the first half of that condition is
+  discharged; the second is not, and NO rung number in § 6.2 changes** — the
+  pacing made the machine keep the 0.040 grid rather than moving the constant, so
+  every floor and clearance in § 2.7 and § 6.2 stands exactly as tabled. What
+  remains before P4–P5 are honestly bookable is B6's census read off a **paced**
+  post-B3/B4/B5 sitting (§ 4 B5 Acceptance). The P0–P3 (h=1.3) sitting still does
+  not wait, and it is the sitting that produces that census — subject to P-4,
+  which is § 8.1's live gate.
 
 * **Q-1 — the session-scoped latch (S6) is an owner decision, not a technical
   one.** It converts the armed duty cycle from ~97 % to 100 % and it is what
@@ -1318,7 +1578,7 @@ below for the record; the resolutions:
 | **All motion is profiled; never a step position change** | `trajectory_node` / `planner` / `feasibility.validate` | jerky hardware movement; this plan commands no new motion primitive |
 | **The Teensy-side `MAX_DEVIATION` guard is the leg-path safety authority** | can-bridge firmware | nothing on the Jetson is in that loop, and nothing in this plan enters it |
 | **C-HAND-1: the catch stroke and the next throw stroke do not overlap** | `hand_stroke.min_turnaround_dwell_s`, kept in `required_dwell_s`'s `max()` | any kind-0/1/2 command clears the whole packed queue and reseeds the prelude from a live encoder reading taken at 41–96 rev/s — the 2026-07-25 clobber |
-| **The teardown publish order: `catch/armed` False before the `prime_hold` release** | `_toss_stay` / `_toss_recenter` / `_toss_safe_abort` | a released hold meeting a still-armed `catch_coordinator` re-opens the auto-prime with the ball in the cup; the ascent would launch it |
+| **The teardown publish order: `catch/armed` False before the `prime_hold` release** | `_toss_stay` / `_toss_recenter` / `_toss_safe_abort`; **[as built 2026-08-27] on a session the whole teardown is `_disarm_session`'s, in the same unchanged order (`catch/armed` False → latch → `prime_hold` → `pretilt_hold`), and `_toss_stay` publishes no `catch/armed` False at all while a slot is staged (§ 2.3)** | a released hold meeting a still-armed `catch_coordinator` re-opens the auto-prime with the ball in the cup; the ascent would launch it |
 | **C-POSSESS-1.C: a window may never outlast the machine's next scheduled event of the kind it is looking for; where a clamp leaves no interval, the answer is UNKNOWN** | `ball_possession.HandBallSensorSource._window` / `._retention_horizon`, `toss_record.label_from_sensor` | at these dwells a `REJECTED` from an inverted retention window is a positive bounce-out claim on every good cycle |
 | **The arrival boundary has ONE home** | `ball_possession.arrival_boundary_t` | two computations of a boundary is how an abutment stops abutting |
 | **The census has no control authority** | `test_the_census_never_feeds_a_budget` | a bound that tracks its own degradation hides the degradation |

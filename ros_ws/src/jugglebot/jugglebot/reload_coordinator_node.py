@@ -483,7 +483,8 @@ _PACE_PERIOD_S = TOSS_LOOP_PERIOD_S
 #: Transposed from the hand-sensor poller's Feature 1
 #: (`logbook/2026-08-24-poller-cadence-and-tristate-tx.md`), and the transposition
 #: has to be read carefully: there the band is `TICK_PERIOD_US / 2` — half the
-#: WAKE GRANULARITY (the 1 kHz service tick), NOT half the 20 ms poll interval it
+#: WAKE GRANULARITY (the 100 Hz `task_homing` tick — `TICK_PERIOD_US = 1e6 /
+#: HOMING_RATE_HZ`, `HOMING_RATE_HZ = 100`), NOT half the 20 ms poll interval it
 #: paces. Half of `_PACE_PERIOD_S` here would be 0.020 s, and firing 20 ms early
 #: on a 40 ms grid would hand the period straight back to `work`. The band's job
 #: is to absorb the wake granularity, so it is sized to the wake granularity.
@@ -514,7 +515,7 @@ _PACE_PERIOD_S = TOSS_LOOP_PERIOD_S
 #:
 #: CEILING. The band must stay below `_PACE_PERIOD_S / 2`, the poller's own bound
 #: — the largest band that cannot pull an iteration onto its predecessor's slot.
-#: 0.002 s is a twentieth of that.
+#: 0.002 s is a tenth of that ceiling (a twentieth of the period).
 _PACE_SLOP_S = 0.002
 
 

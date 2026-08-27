@@ -307,7 +307,7 @@ DIFFERENCE between the two branches (`3 × NODE_LOOP_PERIOD_S`) as well as the
 absolute floor, so the next constant edit re-derives instead of needing a
 re-measure.
 
-### Four defects found while writing this — two of them mine, and silent
+### Five defects found while writing this — two of them mine, and silent
 
 Worth recording because two of them are the shape that stays invisible:
 
@@ -389,7 +389,8 @@ closes the BUDGET, this closes the FLOOR built on it.
   run 2026-08-27): **all pass**.
 * Hypothesis properties T-P1…T-P5 at nightly depth
   (`python -m pytest tests/ros/test_toss_pipeline_properties.py -q
-  --hypothesis-profile=ci-deep`, run 2026-08-27): **9/9 pass in 58.81 s**.
+  --hypothesis-profile=ci-deep`, run 2026-08-27): **9/9 pass in 58.81 s** (the
+  commit message's 57.23 s is an earlier run of the same nine).
 * T-R1, the recorded sitting through the pipelined verdict path
   (`python -m pytest tests/ros/test_possession_replay.py -q`, run 2026-08-27):
   **11/11 pass** — bag `2026-08-26_14-25-16` still comes out **23 CAUGHT /
@@ -426,10 +427,24 @@ closes the BUDGET, this closes the FLOOR built on it.
   `destination='jugglebot'` expectation, and the coordinator emits a catch
   command for it.
 
-⚠ `./run_tests.sh --full` has NOT been run — this session was scoped-pytest only
-by instruction. The orchestrator owns the gate, and the rule's cases (b)
-plan-phase closure and (c) a change under `controller/`… do not apply to this
-diff, but case (a) does before any sitting.
+Full gate, run by the orchestrator after this entry was drafted and before the
+commit (`./run_tests.sh --full`, **2026-08-27**): parallel **6547 selected,
+rc=0, in 527 s** + serial **9 passed (rc=0) in 45 s**, total 572 s,
+**RESULT: PASS** — the (date, command, result) triple § 5.7 requires. The
+commit (`e00a974`) carries the same triple.
+
+## Outcome
+
+The two-slot pipeline exists, fully tested and DORMANT: `toss_pipeline_enabled`
+defaults false and the flag-false decision stream is sha256-identical to the
+pre-B4 tree over the whole grid, so the flag flip is the only thing the bench
+will be validating. With the flag true the shipped `required_dwell_s`
+reproduces the § 2.7 floors (0.4170 at h = 1.0, 0.3941 at h = 1.3 — both
+admitting the milestone), the probe's `--pipeline --grid` reports zero
+accept-implies-flies violations, and the recorded sitting's 23/4 census
+survives the pipelined clamps row-for-row. What stands between this and a
+flown milestone: B5 (landed next, same day), the B6 sitting ladder, and
+prerequisite P-4 for aimed-8b staging.
 
 ## Open questions / follow-ups
 
