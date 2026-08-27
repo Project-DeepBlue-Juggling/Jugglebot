@@ -801,6 +801,35 @@ def test_prepare_failure_safe_aborts():
     assert seq._throw_dispatched is False
 
 
+def test_a_named_prepare_refusal_terminalises_rejected_not_aborted():
+    """S6's drift guard needs the PREPARE failure channel to carry a NAME. A
+    REJECTED names an operator-visible refusal ("re-arm with a new declaration");
+    an ABORTED reads as a plant fault and sends the operator to the wrong
+    subsystem — the same two-codes-for-two-subsystems rule REJECTED_NO_BALL and
+    REJECTED_BALL_UNKNOWN were split under.
+
+    The cleanup is unchanged: _prepare_dispatched is already True, so the holds
+    and the declaration are out and the terminal is still SAFE_ABORT."""
+    seq = _fresh()
+    _to_prepared(seq)
+    seq.note_prepare_result(False, 'REACH_CENTER_DRIFT')
+    d = seq.step(0.9, _obs(0.9))
+    assert d.done and d.result.outcome == 'REJECTED_REACH_CENTER_DRIFT'
+    assert d.action == ACTION_SAFE_ABORT
+    assert seq._throw_dispatched is False
+
+
+def test_an_unnamed_prepare_refusal_still_aborts_prepare_failed():
+    """The default is unchanged — a bare `note_prepare_result(False)` (the arm
+    raise failed) is still ABORTED_PREPARE_FAILED. The code is opt-in, so no
+    existing producer changes meaning."""
+    seq = _fresh()
+    _to_prepared(seq)
+    seq.note_prepare_result(False, '')
+    d = seq.step(0.9, _obs(0.9))
+    assert d.done and d.result.outcome == 'ABORTED_PREPARE_FAILED'
+
+
 def test_prepare_ok_announces_after_gap_then_dispatches():
     """DELIBERATE DEVIATION from reload (which never announces — BB does): the
     self-announcement is emitted on a LATER tick than the PREPARE bundle, never

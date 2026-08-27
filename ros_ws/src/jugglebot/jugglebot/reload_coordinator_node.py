@@ -497,6 +497,53 @@ _RELOAD_CENTERED_TOL_MM = (
     float(hw.JB_TRAJ_CATCH_REACH_ENVELOPE_MM)
     - float(hw.HAND_CATCH_OFFSET_MM) * math.sin(math.radians(MAX_TILT_DEG)))
 
+# ── S6's reach-centre DRIFT GUARD (plans/active/toss-pipelined-preamble.md B3) ─
+# How far a CHAINED cycle's nominated catch B may sit from the centre the SESSION
+# declared before its one ``trajectory/arm_catch`` raise.
+#
+# Why the guard exists at all. Under S6 the session declares ``catch/reach_center``
+# ONCE and raises the latch ONCE, and ``trajectory_node._svc_arm_catch``
+# read-and-CLEARS the pending declaration BEFORE its idempotent early return — so
+# with the latch standing, the envelope centre is FROZEN at whatever that single
+# raise captured and no later declaration can move it. A cycle nominating a
+# different B would therefore be judged against an envelope centred somewhere
+# else, and the refusal would arrive MID-FLIGHT as a WORKSPACE reject of the A->B
+# reach: a ball on the floor, which is precisely the class C-REACH-1 exists to
+# make impossible (ros_ws/docs/catch_reach_envelope.md § 2). The case is
+# FORECLOSED by this phase, so it has to fail LOUDLY and EARLY instead.
+#
+# DERIVED, not chosen — and derived exactly as ``_RELOAD_CENTERED_TOL_MM`` above
+# is, because it is the same failure one path over (a gate that says yes to a
+# band the envelope will then say no to). The two answer different questions
+# ("how far off centre may the platform be PARKED" vs "how far may this cycle's B
+# DRIFT from the declared centre") and are deliberately separate names, but the
+# arithmetic is the envelope radius MINUS the systematic swing shift the reach
+# itself carries:
+#
+#   * the radius is ``JB_TRAJ_CATCH_REACH_ENVELOPE_MM`` (80 mm);
+#   * the target published for B is NOT B. ``_publish_toss_reach`` goes through
+#     the same ``predicted_catch_command`` / ``compute_catch_orientation`` policy
+#     the reload does, so the commanded cup point sits up to
+#     ``HAND_CATCH_OFFSET_MM * sin(MAX_TILT_DEG)`` = 64.78 * sin(12 deg) =
+#     13.47 mm off B. The clamp SATURATES, so that is a bound, not a datum.
+#
+# => 66.53 mm. A cycle admitted at exactly this tolerance still lands its own
+# REQUESTED reach inside the envelope; the band it refuses was already doomed.
+#
+# What the margin does NOT reserve is the drift budget itself: C-REACH-1 § 1
+# allocates the whole 80 mm to UNREQUESTED excursion, so every millimetre of
+# B-drift is spent out of it. This is a LAST LINE, not a design point. The design
+# point is |B − centre| = 0, which every session in scope has by construction —
+# ``catch_position`` is one goal field, constant for the whole session — so a
+# non-zero drift means the machine is doing something this phase foreclosed. The
+# forward path, if a session ever genuinely needs a different B per cycle, is the
+# redundant-raise capture (move ``_svc_arm_catch``'s idempotent early return
+# AFTER the centre capture for ``want=True``): a trajectory_node change with its
+# own evidence, never a widening of this number.
+_TOSS_SESSION_REACH_DRIFT_TOL_MM = (
+    float(hw.JB_TRAJ_CATCH_REACH_ENVELOPE_MM)
+    - float(hw.HAND_CATCH_OFFSET_MM) * math.sin(math.radians(MAX_TILT_DEG)))
+
 # ── The auto-reload interlude (TossContinuous on_empty_cup: RELOAD, § 3.9) ────
 # How long past the go_home PROFILE the interlude keeps looking for a fresh,
 # centred trajectory/commanded_position before minting STOPPED_RECENTRE_FAILED.
@@ -1139,6 +1186,41 @@ class ReloadCoordinatorNode(Node):
         # needs a None branch it did not need before. Phase B4 adds
         # `self._toss_staged` beside it.
         self._toss_committed = TossCycleState()
+        # ── S6: the SESSION-SCOPED catch arming (chained TossContinuous only) ──
+        # `plans/active/toss-pipelined-preamble.md` § 2.3, S6. A contiguous run of
+        # chained cycles raises `trajectory/arm_catch`, `catch/prime_hold` and
+        # `catch/pretilt_hold` EXACTLY ONCE and lowers them exactly once, so there
+        # is no per-cycle re-raise left to land inside a `go_home` — the
+        # arm-mid-move seam is closed by construction rather than by the
+        # `DEFAULT_SESSION_MISS_CLEANUP_S` timing fence (which stays: it protects
+        # the retract descent and the throw site, it just stops being the only
+        # thing between an interrupted `go_home` and a throw).
+        #
+        # `catch/armed` is NOT here — it stays PER-CYCLE (the S6 amendment of
+        # 2026-08-27): it installs no graceful stop, and the bench trace
+        # recorder's `cycle_spans` segments every CS check off its edges.
+        #
+        # All three are touched from the goal-execute thread only (the FSM tick
+        # and the teardown ladders run there), so they take no lock — the same
+        # discipline `TossCycleState.prepare_pending` documents.
+        #
+        # `_toss_session_live`  — a TossContinuous goal is executing, so the
+        #                         arming is session-scoped. False ⇒ the single
+        #                         `Toss` action's per-cycle arming, UNCHANGED.
+        # `_toss_session_center_mm` — the `catch/reach_center` this run declared
+        #                         (None ⇒ nothing declared, so the session owns
+        #                         neither hold). Also the drift guard's reference.
+        # `_toss_session_armed` — the run's ONE confirmed `arm_catch` raise.
+        self._toss_session_live = False
+        self._toss_session_center_mm = None
+        self._toss_session_armed = False
+        # The refusal code `_prepare_toss_catch` minted, if any — read once by
+        # `_step_toss_sequence` on the same tick, immediately after the call, and
+        # handed to `note_prepare_result`. It exists so the PREPARE bundle can
+        # distinguish "the latch raise failed" (ABORTED_PREPARE_FAILED) from a
+        # refusal it wants named (REJECTED_REACH_CENTER_DRIFT) without changing
+        # the bundle's `-> bool` contract.
+        self._toss_prepare_reject = ''
         # ── Per-toss RECORD (instrument only, zero control authority) ──
         # toss-selftuning plan § 3.3/§ 3.4, D10. Everything here is written by
         # the record path and read by NOTHING in the FSM: if every line below
@@ -4102,7 +4184,7 @@ class ReloadCoordinatorNode(Node):
             # announcement pre-tilt never fires — this node owns the deferred
             # A->B reach at t_release. For 8a the topic is NEVER touched (the
             # publish sequence stays byte-identical).
-            self._publish_prime_hold(True)
+            #
             # Declare the reach-envelope centre (contract C-REACH-1) on THIS tick,
             # so it lands in an earlier trajectory_node callback than the
             # arm_catch raise the bundle makes one full FSM tick later. The
@@ -4116,8 +4198,8 @@ class ReloadCoordinatorNode(Node):
             # equals the fallback and the behaviour is unchanged — but declaring
             # it means the envelope no longer silently depends on POSITIONING
             # having actually arrived.
-            self._publish_reach_center(seq.catch_pose_stow_mm)
-            # UNCONDITIONAL since 2026-08-22 (census E5). The key has widened
+            #
+            # The pretilt hold is UNCONDITIONAL since 2026-08-22 (census E5). The key has widened
             # twice, and the direction is the same each time — toward "the toss
             # owns the platform for the whole cycle, full stop":
             #
@@ -4153,8 +4235,19 @@ class ReloadCoordinatorNode(Node):
             # catch loses its pre-tilt), it never commands anything, and all
             # three teardowns release it keyed on the flag below. The cost of
             # NOT raising it is a platform reach under a seated ball.
-            self._publish_pretilt_hold(True)
-            state.pretilt_hold_raised = True
+            #
+            # ── S6 ── In a chained session all three publishes below belong to
+            # the SESSION, not to the cycle: `_arm_session_declare` emits them
+            # once, on the first cycle's verified-arrival tick, and every later
+            # cycle finds them already standing. That is why the branch is taken
+            # as a whole rather than per-publish — the three are one declaration.
+            if self._toss_session_live:
+                self._arm_session_declare(seq)
+            else:
+                self._publish_prime_hold(True)
+                self._publish_reach_center(seq.catch_pose_stow_mm)
+                self._publish_pretilt_hold(True)
+                state.pretilt_hold_raised = True
             state.prepare_pending = True
         elif decision.action == TOSS_ACTION_ANNOUNCE:
             self._announce_toss(seq, state)
@@ -4178,13 +4271,28 @@ class ReloadCoordinatorNode(Node):
             # takes the elif branches above instead — the pending bundle is
             # simply dropped (per-goal state, reset at goal init).
             state.prepare_pending = False
-            seq.note_prepare_result(self._prepare_toss_catch())
+            # The bundle's `-> bool` is the arm-raise outcome; a refusal it wants
+            # NAMED (the S6 reach-centre drift guard) rides on
+            # `_toss_prepare_reject`, read here on the same tick and handed
+            # straight to the FSM so the cycle terminalises REJECTED_<code>
+            # instead of a generic ABORTED_PREPARE_FAILED.
+            ok = self._prepare_toss_catch(seq)
+            seq.note_prepare_result(ok, self._toss_prepare_reject)
         if (decision.done and decision.result is not None
                 and decision.result.outcome in _TOSS_POSITION_UNKNOWN_TERMINALS):
             # Position-unknown terminals carry ACTION_NONE from the FSM, but an
             # ack-timed-out go_to_pose may still be executing — dispatch a
             # best-effort go_home to supersede any zombie move (see
             # _TOSS_POSITION_UNKNOWN_TERMINALS).
+            #
+            # S7: this is a `go_home` like any other, so the pipeline drains and
+            # the session-scoped arming comes down FIRST. Without it the zombie
+            # superseder would be dispatched under a standing catch latch — the
+            # arm-mid-move seam with the two events in the other order, and the
+            # one `go_home` call site the plan's five named teardowns do not
+            # cover (the FSM emits ACTION_NONE on these terminals, so no ladder
+            # runs).
+            self._drain_pipeline_and_disarm()
             self._go_home()
         if goal_handle is not None and not decision.done:
             fb = Toss.Feedback()
@@ -4417,7 +4525,7 @@ class ReloadCoordinatorNode(Node):
             rotvec_to_rot_matrix(np.array([float(rx), float(ry), 0.0])))
         return Quaternion(w=float(w), x=float(qx), y=float(qy), z=float(qz))
 
-    def _prepare_toss_catch(self) -> bool:
+    def _prepare_toss_catch(self, seq=None) -> bool:
         """The PREPARE bundle (verified at the nominated pose, ball seated,
         BEFORE anything is committed at the hand). catch/prime_hold is NOT in
         this bundle: the node already raised it on the PREVIOUS FSM tick (the
@@ -4450,19 +4558,72 @@ class ReloadCoordinatorNode(Node):
              announced-ball latch, so nothing latched against a pre-snapshot
              phantom survives into the flight.
 
+        **S6 (2026-08-27) — steps 1-3 are SESSION-SCOPED on a chained cycle.**
+        In a ``TossContinuous`` session the gains, the ``arm_catch`` raise and
+        the ``vel_scale`` relay are hoisted out of the per-cycle bundle into
+        :meth:`_arm_session`, which runs ONCE per contiguous run (on the first
+        cycle's PREPARE, one full FSM tick after :meth:`_arm_session_declare`).
+        The RELATIVE order survives untouched and is strictly STRONGER for it:
+        gains → arm raise → vel_scale still precede every cycle's armed edge,
+        now by seconds instead of by microseconds. What is left per cycle is
+        steps 4-6 — three topic publishes and a snapshot, **no service round
+        trip at all** — plus the reach-centre drift guard below.
+
+        The single ``Toss`` action keeps the per-cycle arming EXACTLY as before:
+        ``_toss_session_live`` is False for it, so it takes the else-branch and
+        its publish sequence is byte-identical to the pre-S6 one.
+
+        ``seq`` is the cycle's :class:`~jugglebot.toss_sequencer.TossSequencer`
+        (None ⇒ no drift guard and no session arm — the standalone-call form the
+        bundle-order tests use).
+
         The self-announcement is NOT part of this bundle either: the FSM emits
         it as a separate action on a LATER tick (the ≥1-tick gap — catch/armed
         and throw_announcements have no cross-topic ordering guarantee, and
-        catch_coordinator drops announcement pre-tilts that arrive unarmed)."""
-        self._set_soft_catch_gains()
-        if not self._arm_catch(True):
-            self.get_logger().error(
-                'TOSS PREPARE failed: trajectory/arm_catch raise did not succeed '
-                '— aborting before anything is announced or armed at the hand')
-            return False
-        with self._lock:
-            scale = self._catch_vel_scale
-        self._vel_scale_pub.publish(Float64(data=float(scale)))
+        catch_coordinator drops announcement pre-tilts that arrive unarmed).
+        Under S6 that gap is ALSO satisfied by the session raise seconds
+        earlier; the tick it costs is not reclaimed here (see
+        ``toss_sequencer.pre_dispatch_budget_s``)."""
+        self._toss_prepare_reject = ''
+        if self._toss_session_live:
+            # ── the S6 reach-centre DRIFT GUARD, BEFORE any publish ──
+            # The session's ONE declaration is frozen at trajectory_node; a
+            # cycle whose B has left that envelope cannot be flown, and the
+            # only honest place to say so is here, with nothing armed.
+            drift = self._toss_session_center_drift_mm(seq)
+            if drift is not None:
+                centre = self._toss_session_center_mm
+                self.get_logger().error(
+                    'TOSS PREPARE refused REACH_CENTER_DRIFT: this cycle '
+                    'nominates B=(%.1f, %.1f, %.1f) mm, %.1f mm from the centre '
+                    '(%.1f, %.1f, %.1f) this session declared at its ONE '
+                    'arm_catch raise — past the %.1f mm tolerance. The latch is '
+                    'standing, so trajectory_node CANNOT re-capture a centre '
+                    '(the declaration is consumed at the raise), and flying '
+                    'this cycle would reject the A->B reach WORKSPACE '
+                    'mid-flight. Forward path: end this session and RE-ARM with '
+                    'a new declaration (a fresh TossContinuous goal at the new '
+                    'B), or land the redundant-raise capture in trajectory_node '
+                    'if a session genuinely needs a different B per cycle.'
+                    % (seq.catch_pose_stow_mm[0], seq.catch_pose_stow_mm[1],
+                       seq.catch_pose_stow_mm[2], drift,
+                       centre[0], centre[1], centre[2],
+                       _TOSS_SESSION_REACH_DRIFT_TOL_MM))
+                self._toss_prepare_reject = 'REACH_CENTER_DRIFT'
+                return False
+            if not self._arm_session(seq):
+                return False
+        else:
+            self._set_soft_catch_gains()
+            if not self._arm_catch(True):
+                self.get_logger().error(
+                    'TOSS PREPARE failed: trajectory/arm_catch raise did not '
+                    'succeed — aborting before anything is announced or armed '
+                    'at the hand')
+                return False
+            with self._lock:
+                scale = self._catch_vel_scale
+            self._vel_scale_pub.publish(Float64(data=float(scale)))
         self._prime_dispatched_pub.publish(Bool(data=True))
         self._publish_catch_armed(True)
         with self._lock:
@@ -4472,6 +4633,203 @@ class ReloadCoordinatorNode(Node):
             self._announced_ball_id = None
             self._announced_id_untagged = False
         return True
+
+    # ── S6 / S7: the session-scoped catch arming ─────────────────────────────
+
+    def _arm_session_declare(self, seq) -> None:
+        """S6, first half: DECLARE the session's catch arming — the two
+        catch_coordinator holds and the ONE ``catch/reach_center``.
+
+        Runs on the FIRST chained cycle's verified-arrival (ACTION_PREPARE_CATCH)
+        tick and is a no-op on every later cycle of the same contiguous run.
+        Idempotent by the declared-centre latch, so a re-entered PREPARE (a
+        retried cycle, a cycle after a slip) cannot double-declare.
+
+        **Why this is split from :meth:`_arm_session` across one FSM tick, and
+        why that split is not cosmetic.** ``catch/reach_center`` is a TOPIC
+        publish and ``trajectory/arm_catch`` is a SERVICE call; they travel on
+        different transports with no ordering guarantee, and the raise is where
+        trajectory_node read-and-clears the declaration. The pre-S6 code bought
+        that ordering with one full FSM tick (``_TICK_S`` = 20 ms, ~2 orders of
+        magnitude above localhost topic latency) and this keeps it — because S6
+        makes losing the race STRICTLY WORSE, not better: with one raise per
+        session, a lost declaration centres the envelope on the throw site for
+        the WHOLE RUN rather than for one cycle. Same argument for
+        ``catch/prime_hold``: it must land in an EARLIER catch_coordinator
+        wait-set cycle than the armed edge, and here it precedes it by a tick on
+        cycle 1 and by a whole cycle after that.
+
+        No cycle's ``state.pretilt_hold_raised`` is set here, deliberately: the
+        hold belongs to the SESSION now, and that flag is what the per-cycle
+        release tail keys the pretilt half on. Leaving it False keeps the
+        per-cycle path honest even if the session gate around it ever changes —
+        belt under :meth:`_release_toss_holds`'s own session check, not a
+        substitute for it."""
+        if self._toss_session_center_mm is not None:
+            return
+        self._publish_prime_hold(True)
+        self._publish_reach_center(seq.catch_pose_stow_mm)
+        self._publish_pretilt_hold(True)
+        self._toss_session_center_mm = tuple(
+            float(v) for v in seq.catch_pose_stow_mm)
+
+    def _arm_session(self, seq) -> bool:
+        """S6, second half: ARM the session — soft catch gains, the ONE
+        ``trajectory/arm_catch`` raise + confirm, and the ``catch/vel_scale``
+        relay. Returns the raise outcome.
+
+        Runs inside the FIRST chained cycle's PREPARE bundle, one full FSM tick
+        after :meth:`_arm_session_declare`, and is a no-op (returning True) on
+        every later cycle. That placement is the plan's § 9.3 ordering: **after
+        cycle 1's VERIFIED ARRIVAL and before its PREPARE**, because
+        ``_arm_catch(True)`` C2-stops any in-flight move — arming mid-traverse
+        would leave the platform short of A and fire the throw from a site the
+        aim was not solved for. Arriving first is what makes "no move is ever in
+        flight when the raise runs" true, and after cycle 1 there is no raise
+        left to run at all: that is the arm-mid-move seam closed by
+        CONSTRUCTION rather than by the ``DEFAULT_SESSION_MISS_CLEANUP_S``
+        timing fence (which stays — it protects the retract descent and the
+        throw site — but stops being the only thing holding the seam shut).
+
+        The three steps keep the pre-S6 in-bundle order verbatim (gains → raise
+        → vel_scale), and every one of them now precedes EVERY cycle's armed
+        edge instead of only its own cycle's."""
+        if self._toss_session_armed:
+            return True
+        self._set_soft_catch_gains()
+        if not self._arm_catch(True):
+            self.get_logger().error(
+                'TOSS SESSION ARM failed: trajectory/arm_catch raise did not '
+                'succeed — aborting before anything is announced or armed at '
+                'the hand')
+            return False
+        with self._lock:
+            scale = self._catch_vel_scale
+        self._vel_scale_pub.publish(Float64(data=float(scale)))
+        self._toss_session_armed = True
+        centre = self._toss_session_center_mm
+        self.get_logger().info(
+            'toss session catch arming RAISED (ONE arm_catch for this chained '
+            'run; envelope centre %s STOW, vel_scale %.2f)'
+            % ('unknown' if centre is None else '(%.1f, %.1f, %.1f) mm'
+               % (centre[0], centre[1], centre[2]), float(scale)))
+        return True
+
+    def _toss_session_center_drift_mm(self, seq):
+        """The S6 drift guard's measurement: ``‖B − session centre‖`` in mm when
+        it exceeds :data:`_TOSS_SESSION_REACH_DRIFT_TOL_MM`, else None.
+
+        None also when nothing is declared yet (cycle 1 declares FROM this very
+        B, so its drift is 0 by construction) or when no sequencer was supplied.
+        See the constant for the derivation of the bound and for why a non-zero
+        drift is a foreclosed case rather than a tuning knob."""
+        centre = self._toss_session_center_mm
+        if centre is None or seq is None:
+            return None
+        b = np.asarray(seq.catch_pose_stow_mm, dtype=float)
+        drift = float(np.linalg.norm(b - np.asarray(centre, dtype=float)))
+        return drift if drift > _TOSS_SESSION_REACH_DRIFT_TOL_MM else None
+
+    def _drain_pipeline_and_disarm(self) -> None:
+        """S7 — **DRAIN the pipeline, THEN lower the session arming, and do both
+        BEFORE any ``trajectory/go_home``.**
+
+        Called at the top of every path that reaches :meth:`_go_home`:
+        :meth:`_toss_safe_abort`, :meth:`_toss_recenter`,
+        :meth:`_recentre_for_reload`, :meth:`_safe_toss_on_early_exit`, the
+        zombie-superseder in :meth:`_step_toss_sequence`, and the session
+        terminal (``_execute_toss_continuous``'s ``finally``). A structural test
+        pins that there is no ``_go_home`` call site this does not front.
+
+        Order is the invariant. A staged cycle must be dropped before the latch
+        comes down (it owns nothing that moves, so the drop is a pure state
+        discard), and the latch must come down before a profile is installed, so
+        no ``go_home`` is ever traversed under a catch the machine still thinks
+        is live.
+
+        **At B3 the DRAIN half is a documented NO-OP PLACEHOLDER.** There is no
+        staged slot yet — B4 adds ``self._toss_staged`` — so the one thing this
+        method can do today is the disarm. It exists now, with all six call
+        sites wired and pinned, so that B4 adds the discard in ONE place instead
+        of re-auditing six teardown ladders under a pipeline.
+
+        Idempotent and free when nothing is armed: the single ``Toss`` action
+        and the RELOAD path never set the session flags, so for them this is a
+        branch and a return."""
+        # ── the DRAIN half (B4: discard self._toss_staged, close its record
+        #    with `staged_discarded_reason`, and do it HERE so the disarm below
+        #    still runs after it). Deliberately empty at B3: no staged slot
+        #    exists, and an empty placeholder is honest where a comment in six
+        #    teardowns would not be. ──
+        # ── the DISARM half (S6) ──
+        self._disarm_session()
+
+    def _disarm_session(self) -> None:
+        """S6's mirror: lower the session-scoped catch arming, ONCE, at the end
+        of a contiguous chained run.
+
+        **The teardown ORDER does not change and is the load-bearing half**
+        (``_toss_stay`` / ``_toss_recenter`` / ``_toss_safe_abort`` all carry the
+        same rule): ``catch/armed`` False must precede the ``prime_hold``
+        release, because a released hold meeting a still-armed
+        catch_coordinator re-opens the auto-prime exactly while a ball rests in
+        the cup — and the ascent would launch it. ``catch/pretilt_hold`` goes
+        last of all, same cross-topic reasoning: a stale pretilt hold only
+        DEGRADES (a later reload announcement loses its platform pre-tilt), it
+        never commands anything.
+
+        Session scope moved WHEN the teardown runs, never the order inside it.
+
+        A no-op unless this run declared or armed something, so every call site
+        can invoke it unconditionally. Both flags are cleared, so a session that
+        continues past a SAFE_ABORT (``stop_on_miss`` False) or through a reload
+        interlude simply RE-ARMS on its next cycle — a fresh declaration for a
+        fresh raise, which is also what keeps C-REACH-1 residual 5's
+        leaked-pending-declaration hazard closed."""
+        if self._toss_session_center_mm is None and not self._toss_session_armed:
+            return
+        self._publish_catch_armed(False)
+        if self._toss_session_armed:
+            if not self._arm_catch(False):
+                self.get_logger().error(
+                    'toss session disarm: trajectory/arm_catch lower FAILED — '
+                    'trajectory_node force-disarms on any mode change as the '
+                    'backstop')
+        self._publish_prime_hold(False)
+        self._publish_pretilt_hold(False)
+        self._toss_session_armed = False
+        self._toss_session_center_mm = None
+        self.get_logger().info('toss session catch arming LOWERED')
+
+    def _toss_session_owns_holds(self) -> bool:
+        """True while the catch-coordinator holds belong to the SESSION rather
+        than to the cycle — i.e. for every cycle of a chained run.
+
+        Keyed on ``_toss_session_live`` and deliberately NOT on the declaration
+        latch: :meth:`_disarm_session` CLEARS that latch as its last act, so a
+        teardown that drains first and then runs the per-cycle tail would find
+        the session "no longer owning" holds it had *just* released and publish
+        a second, pointless ``prime_hold`` False. The question the tail asks is
+        *whose holds are these*, and in a session the answer is the session's
+        for the whole run — the drain included. A session that never got as far
+        as declaring has no holds standing, so the no-op is right there too."""
+        return self._toss_session_live
+
+    def _release_toss_holds(self, state) -> None:
+        """Release the per-cycle catch-coordinator holds — the tail every toss
+        terminal shares, LAST of all and after the disarm (see
+        :meth:`_toss_recenter` for the full ordering argument).
+
+        **S6: a no-op while the session owns them.** In a chained run the holds
+        were raised once by :meth:`_arm_session_declare` and are lowered once by
+        :meth:`_disarm_session`; a per-cycle release here would drop
+        ``prime_hold`` between cycles and let the NEXT cycle's armed edge
+        auto-prime the hand with the caught ball still in the cup."""
+        if self._toss_session_owns_holds():
+            return
+        self._publish_prime_hold(False)
+        if state.pretilt_hold_raised:
+            self._publish_pretilt_hold(False)
 
     def _set_soft_catch_gains(self) -> bool:
         """Best-effort soft catch gains (step 1 of PREPARE): a failure is loud but
@@ -4710,12 +5068,19 @@ class ReloadCoordinatorNode(Node):
         (a reload announcement loses its platform pre-tilt) — never a hazard.
 
         ``state`` is the cycle's :class:`TossCycleState` (None ⇒ the committed
-        slot); the pretilt-hold release is keyed on its ``pretilt_hold_raised``."""
+        slot); the pretilt-hold release is keyed on its ``pretilt_hold_raised``.
+
+        **S7:** this terminal dispatches ``go_home``, so it DRAINS first — the
+        staged slot goes, then the session-scoped arming comes down, and only
+        then is a profile installed. In a chained session that drain is what
+        performs the whole teardown; ``_recenter``'s own ``arm_catch(False)`` /
+        ``catch/armed`` publishes then re-run as idempotent no-ops (they are
+        shared verbatim with the RELOAD path and stay byte-identical for it),
+        and ``_release_toss_holds`` finds the holds already released."""
         state = self._toss_committed if state is None else state
+        self._drain_pipeline_and_disarm()
         self._recenter()
-        self._publish_prime_hold(False)
-        if state.pretilt_hold_raised:
-            self._publish_pretilt_hold(False)
+        self._release_toss_holds(state)
 
     def _toss_stay(self, state=None):
         """Toss STAY (CAUGHT, the default since 2026-07-29): the RECENTER ladder
@@ -4748,13 +5113,23 @@ class ReloadCoordinatorNode(Node):
         hold.
 
         ``state`` is the cycle's :class:`TossCycleState` (None ⇒ the committed
-        slot); the pretilt-hold release is keyed on its ``pretilt_hold_raised``."""
+        slot); the pretilt-hold release is keyed on its ``pretilt_hold_raised``.
+
+        **S6: this is the ONE terminal that does NOT lower the session arming,
+        and that is the entire point of the invariant.** STAY is the CHAINING
+        terminal — it issues no ``go_home``, so S7 has nothing to front and the
+        latch has no move to land inside. In a chained run the ``arm_catch``
+        lower and both hold releases belong to :meth:`_disarm_session` at the
+        session terminal; what stays per cycle is ``catch/armed`` False, which
+        installs no graceful stop and is what the bench trace recorder's
+        ``cycle_spans`` segments every CS check off (the S6 amendment of
+        2026-08-27). For the single ``Toss`` the ladder is byte-identical to the
+        pre-S6 one."""
         state = self._toss_committed if state is None else state
-        self._arm_catch(False)
+        if not self._toss_session_armed:
+            self._arm_catch(False)
         self._publish_catch_armed(False)
-        self._publish_prime_hold(False)
-        if state.pretilt_hold_raised:
-            self._publish_pretilt_hold(False)
+        self._release_toss_holds(state)
 
     def _toss_safe_abort(self, state=None):
         """Toss SAFE_ABORT: the reload safing ladder verbatim (catch/armed False
@@ -4769,12 +5144,18 @@ class ReloadCoordinatorNode(Node):
         are covered.
 
         ``state`` is the cycle's :class:`TossCycleState` (None ⇒ the committed
-        slot); the pretilt-hold release is keyed on its ``pretilt_hold_raised``."""
+        slot); the pretilt-hold release is keyed on its ``pretilt_hold_raised``.
+
+        **S7:** the drain runs FIRST, ahead of the whole safing ladder — the
+        staged slot is discarded and the session arming lowered before the
+        retract, the latch lower and the ``go_home``. That preserves the
+        ladder's own ordering rule (``catch/armed`` False before anything else,
+        so catch_coordinator's prime-retry tick stands down before the retract)
+        because the drain's first act is exactly that publish."""
         state = self._toss_committed if state is None else state
+        self._drain_pipeline_and_disarm()
         self._safe_abort()
-        self._publish_prime_hold(False)
-        if state.pretilt_hold_raised:
-            self._publish_pretilt_hold(False)
+        self._release_toss_holds(state)
 
     def _safe_toss_on_early_exit(self, seq, state=None):
         """Safe the robot on a NODE-level toss exit (cancel honoured / timeout /
@@ -4782,8 +5163,17 @@ class ReloadCoordinatorNode(Node):
         commitments that need undoing: an accepted platform move (go_home leg) and
         a dispatched PREPARE (latch / prime_hold / possibly an armed stroke).
 
+        **S7, and the drain is UNCONDITIONAL — outside the ``prepared`` gate.**
+        That is not symmetry for its own sake: under S6 the latch and the holds
+        belong to the SESSION, so a cycle that exits early having dispatched no
+        PREPARE of its own (a cancel honoured in CHECKING, a timeout in
+        POSITIONING) still leaves a standing catch behind it. ``seq.prepared``
+        answers "did THIS cycle arm anything", which stopped being the same
+        question on 2026-08-27.
+
         ``state`` is the cycle's :class:`TossCycleState`; None ⇒ the committed
         slot."""
+        self._drain_pipeline_and_disarm()
         if seq.prepared:
             self.get_logger().warning(
                 'Toss early exit while prepared — safing (retract + lower latch '
@@ -5838,6 +6228,17 @@ class ReloadCoordinatorNode(Node):
             reload_budget_s=_reload_interlude_budget_s(session))
 
         try:
+            # ── S6 ── For the whole of this try/finally the catch arming is
+            # SESSION-scoped: `_step_toss_sequence` routes the first cycle's
+            # PREPARE tick through `_arm_session_declare` / `_arm_session`
+            # instead of publishing per cycle, and every teardown that reaches
+            # `go_home` drains through `_drain_pipeline_and_disarm` first (S7).
+            # Inside the `try` deliberately — the `finally` is what clears it,
+            # so no failure between here and the loop can leave a later single
+            # `Toss` taking the session branch.
+            self._toss_session_live = True
+            self._toss_session_center_mm = None
+            self._toss_session_armed = False
             t_start = time.perf_counter()
             while rclpy.ok():
                 now = time.perf_counter()
@@ -6014,6 +6415,17 @@ class ReloadCoordinatorNode(Node):
                     'ABORTED_EXCEPTION: goal_handle.abort() itself failed')
             raise
         finally:
+            # ── S7, THE SESSION TERMINAL ── ONE call site covering every way a
+            # session can end (COMPLETED, stop_on_miss, cancel between or inside
+            # a cycle, timeout, shutdown, exception), because a session that
+            # ends with the latch standing is a machine left armed with a ball
+            # in the cup and nobody ticking it. It runs BEFORE the cycle-state
+            # teardown so the drain still sees whatever B4 stages, and it is
+            # idempotent — the terminating cycle's own ladder has usually
+            # drained already, and STAY (the chaining terminal) deliberately has
+            # not.
+            self._drain_pipeline_and_disarm()
+            self._toss_session_live = False
             self._clear_toss_cycle_state()
             # The trim is per GOAL, so it dies here — with its proposal written.
             # In the `finally` deliberately: a cancelled or aborted goal's trim
@@ -6178,7 +6590,15 @@ class ReloadCoordinatorNode(Node):
         ``_RELOAD_CENTERED_TOL_MM``. A timeout is ``STOPPED_RECENTRE_FAILED`` and
         NEVER a reload attempt: asking BB to throw at a platform we could not
         prove is centred is the mid-flight-rejection failure the centred gate
-        exists to make impossible."""
+        exists to make impossible.
+
+        **S7:** the interlude's ``go_home`` is a ``go_home`` like any other, so
+        the pipeline drains and the session-scoped arming comes down first. This
+        is the seam that used to fire loudest: the interlude traverses the whole
+        workspace, and before S6 the NEXT cycle's PREPARE would re-raise the
+        latch into that traverse. The interlude ends the contiguous run; the
+        cycle after it re-arms with its own fresh declaration."""
+        self._drain_pipeline_and_disarm()
         if not self._go_home():
             self.get_logger().error(
                 'reload interlude: trajectory/go_home dispatch FAILED — not '

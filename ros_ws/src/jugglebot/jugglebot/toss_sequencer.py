@@ -84,6 +84,21 @@ where the reload receives from BB):
    cross-topic reason: ``catch_coordinator`` drops announcement pre-tilts that
    arrive unarmed. Reload never needed this — BB's announcement arrives
    seconds after arming; ours would race it.
+
+   **The bundle NARROWED on 2026-08-27 for a chained session (S6,
+   ``toss_session``'s module docstring).** In a ``TossContinuous`` run the
+   holds, the ``catch/reach_center`` declaration, the soft gains, the
+   ``arm_catch`` raise and the ``vel_scale`` relay are SESSION-scoped — one
+   raise and one lower per contiguous run — so a chained cycle's PREPARE is
+   three topic publishes and a snapshot, with **no service round trip at all**.
+   The FSM is unchanged by that: it still emits ``ACTION_PREPARE_CATCH``, still
+   defers one tick, still waits for ``note_prepare_result`` and still refuses to
+   announce until it says yes. What moved is what the node does inside the
+   action, and the ordering the FSM guarantees only got stronger — the armed
+   →announce gap is now satisfied by a raise that happened seconds earlier
+   rather than by one tick. The single ``Toss`` is untouched and runs the full
+   per-cycle bundle. A cycle whose nominated B has drifted out of the session's
+   declared reach envelope refuses here, ``REJECTED_REACH_CENTER_DRIFT``.
 4. **THROWING** — entered only after a hand-parked RE-VERIFY (positioning +
    prepare took seconds; a kind-0 stroke commands ABSOLUTE positions from
    0 rev, so a hand that drifted/was moved off the bottom band since CHECKING
@@ -173,6 +188,15 @@ returns ``ACTION_NONE``):
     retract carries the ball down at ~3.16 m/s² ≪ g — it stays seated, and
     possession survives, so an aborted toss is retryable without a Reload.
   - A reject before anything moved or armed emits ``ACTION_NONE``.
+
+**S6 (2026-08-27) changes what the NODE does inside those three terminals in a
+chained session, never which one the FSM emits.** The latch lower and the two
+hold releases are session-scoped, so a chained ``ACTION_STAY`` publishes
+``catch/armed`` False and stops — leaving the latch standing for the next cycle,
+which is exactly what makes the chain a chain. ``ACTION_RECENTER`` and
+``ACTION_SAFE_ABORT`` dispatch ``go_home``, so they DRAIN and disarm first (S7):
+no ``go_home`` is ever installed under a catch the machine still thinks is live.
+The single ``Toss`` runs all three verbatim as before.
 
 Cancellation is node-level and PER-PHASE (plan § Choreography 7, a deliberate
 deviation from reload's immediate-cancel): honoured immediately through
@@ -961,6 +985,18 @@ def pre_dispatch_budget_s(positioning_move: bool,
     and since 2026-08-23 an aimed CHAIN takes the skip too (the B1 predicate is
     orientation-aware), so the discriminator is "does POSITIONING command a move",
     never "is the release tilted".
+
+    ⚠ **S6 (2026-08-27) made two of these rungs cheaper and this number did NOT
+    move.** The session-scoped catch latch hoists the ``arm_catch``
+    raise-and-confirm and the soft-gains call out of every chained cycle after
+    the first, and it satisfies the armed→announce gap by construction (the
+    latch was raised seconds earlier), so the ANNOUNCE tick no longer needs a
+    tick to buy that ordering. Both savings are DELIBERATELY unbanked here: this
+    function is the SERIAL ladder's budget and the serial ladder still walks all
+    four iterations. The tick the gap used to cost is returned in B4's
+    ``commit_budget_s`` — a separate derivation, charged by a gate that measures
+    the real lead — and never by quietly shrinking the constant a runtime guard
+    is fronted by. Two branches, one derivation each.
     """
     loop = float(loop_period_s)
     arrival_s = (TOSS_POSITION_MIN_MOVE_S + TOSS_POSITION_SETTLE_PAD_S
@@ -1340,6 +1376,11 @@ class TossSequencer:
     _positioned: bool = field(default=False, init=False)  # move ACCEPTED (cleanup marker)
     _prepare_dispatched: bool = field(default=False, init=False)
     _prepare_result: Optional[bool] = field(default=None, init=False)
+    #: A refusal code the node attached to a FAILED PREPARE, so the terminal
+    #: NAMES the refusal (``REJECTED_<code>``) instead of laundering every
+    #: bundle failure into ``ABORTED_PREPARE_FAILED``. Empty ⇒ the generic
+    #: abort. Today's one producer is the S6 reach-centre drift guard.
+    _prepare_reject_code: str = field(default='', init=False)
     _announce_dispatched: bool = field(default=False, init=False)
     _announced: bool = field(default=False, init=False)   # node confirmed the publish
     _announce_lead_short: bool = field(default=False, init=False)  # WARN flag (Tier 8a)
@@ -1488,13 +1529,31 @@ class TossSequencer:
             self._positioning_deadline,
             self._position_arrival_time + TOSS_POSITION_VERIFY_WINDOW_S)
 
-    def note_prepare_result(self, ok: bool) -> None:
-        """Report the ``ACTION_PREPARE_CATCH`` bundle outcome (== the
-        ``trajectory/arm_catch`` raise result; the bundle's topic publishes cannot
-        fail detectably). A failure aborts BEFORE the announcement and the throw —
-        the arming-before-throw ordering."""
+    def note_prepare_result(self, ok: bool, reject_code: str = '') -> None:
+        """Report the ``ACTION_PREPARE_CATCH`` bundle outcome. A failure aborts
+        BEFORE the announcement and the throw — the arming-before-throw ordering.
+
+        **The bundle's contents narrowed on 2026-08-27 (S6).** For a single
+        ``Toss`` this is still the ``trajectory/arm_catch`` raise result. For a
+        cycle of a chained ``TossContinuous`` session the latch was raised ONCE,
+        at session scope, before cycle 1's PREPARE — so ``ok`` there reports the
+        SESSION arm on the first cycle and, on every later cycle, only that the
+        per-cycle remainder (``catch/prime_dispatched``, ``catch/armed``, the
+        phantom-flight snapshot) was admitted. Either way the FSM's contract is
+        unchanged: no announcement and no throw until this says yes.
+
+        ``reject_code``, when non-empty, names a refusal the node wants carried
+        to the terminal as ``REJECTED_<code>`` rather than as the generic
+        ``ABORTED_PREPARE_FAILED``. It is only read when ``ok`` is False. Today's
+        one producer is the S6 reach-centre drift guard
+        (``REACH_CENTER_DRIFT``): the session's ONE ``catch/reach_center``
+        declaration is consumed at its ONE raise, so a cycle nominating a B that
+        has left that envelope cannot be flown, and the distinction matters
+        because a REJECTED names an operator-visible refusal while an ABORTED
+        reads as a plant fault."""
         if self._prepare_dispatched and not self._finished:
             self._prepare_result = bool(ok)
+            self._prepare_reject_code = str(reject_code or '')
 
     def note_announcement(self) -> None:
         """Report that the self-``ThrowAnnouncement`` was published (the node calls
@@ -1897,6 +1956,12 @@ class TossSequencer:
         if self._prepare_result is None:
             return TossDecision(PHASE_PREPARING, ACTION_NONE, False, None)
         if not self._prepare_result:
+            # A NAMED refusal (the S6 reach-centre drift guard) terminalises as
+            # REJECTED_<code>; anything else is the generic abort. Both take the
+            # SAFE_ABORT cleanup — `_prepare_dispatched` is already True, so the
+            # declaration and the holds are out and the machine is not pristine.
+            if self._prepare_reject_code:
+                return self._reject(self._prepare_reject_code)
             return self._abort('PREPARE_FAILED')
         # Release-window guard — checked BEFORE the announcement goes out (an
         # announced-then-aborted toss leaves a phantom tracker expectation that
@@ -1911,6 +1976,21 @@ class TossSequencer:
             # ordering guarantee, and catch_coordinator drops announcement
             # pre-tilts that arrive unarmed. The announce action is emitted on a
             # LATER tick than the PREPARE bundle by construction.
+            #
+            # ⚠ S6 (2026-08-27) DID NOT DELETE THIS GAP, and the tick it costs
+            # is NOT reclaimed here. Under the session-scoped latch the gap is
+            # already satisfied by construction — `trajectory/arm_catch` was
+            # raised SECONDS earlier, at session scope, so catch_coordinator has
+            # been armed since before this cycle existed — which is strictly
+            # stronger than the one tick this deferral buys. The tick survives
+            # for two reasons: the single `Toss` (and a session's own FIRST
+            # cycle) still raise the latch one tick before this point and need
+            # it, and reclaiming it is a CADENCE change that belongs to B4's
+            # `commit_budget_s`, where the whole pre-dispatch ladder is
+            # re-derived at once and a gate charges the real lead. Shortening
+            # the ladder HERE would loosen the accept gate under a runtime guard
+            # that had not moved — the exact accept-vs-runtime gap the
+            # 2026-08-22 audit closed.
             if (self._t_release + self.flight_time_s) - now < TOSS_MIN_ANNOUNCE_LEAD_S:
                 # WARN-only for BOTH tiers: 8a's pre-tilt target equals the
                 # already-held pose (motion-free degeneracy), and 8b's platform

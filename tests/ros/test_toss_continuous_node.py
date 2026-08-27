@@ -15,6 +15,11 @@ Two invariants that only exist at this level are pinned here:
   S2 — the session commands NO motion of its own. Every go_to_pose / go_home /
        hand dispatch in a session belongs to a cycle; a cancel or timeout
        BETWEEN cycles issues nothing at all.
+  S6 — the catch latch and the two catch_coordinator holds are SESSION-scoped:
+       one raise inside the execute call, one lower on every exit path.
+  S7 — every go_home is fronted by _drain_pipeline_and_disarm, pinned
+       STRUCTURALLY (an added call site is the failure, and no behavioural test
+       would see it).
 
 The fake clock is a namespace swapped in for the node module's ``time``, which
 uses exactly ``perf_counter`` and ``sleep`` — so a multi-second dwell costs
@@ -25,6 +30,7 @@ ROS 2 is mocked by tests/ros/conftest.py.
 
 from __future__ import annotations
 
+import ast
 import math
 import types
 from pathlib import Path
@@ -720,6 +726,239 @@ def test_session_exception_preserves_accounting_and_reraises(monkeypatch):
     with node._lock:
         assert node._goal_claimed is False
         assert node._active_seq is None
+
+
+# ── S6/S7: session-scoped arming and drain-before-go_home ────────────────────
+# plans/active/toss-pipelined-preamble.md § 2.3. The per-cycle choreography and
+# the drift guard are pinned in test_toss_coordinator.py; here we pin the
+# SESSION lifecycle (raised inside the execute call, lowered on every exit) and
+# the structural invariant S7 rests on.
+
+def _method_sources(module):
+    """Every top-level-or-nested ``def`` in a module, by name, as source text.
+
+    AST rather than string-splitting so a method's extent is exact — the point
+    of the structural test below is "in the SAME function", and a regex over
+    ``\\n    def `` would silently merge a method into its neighbour the first
+    time someone nests a helper."""
+    text = Path(module.__file__).with_suffix('.py').read_text()
+    lines = text.splitlines()
+    out = {}
+    for node in ast.walk(ast.parse(text)):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            out[node.name] = '\n'.join(lines[node.lineno - 1:node.end_lineno])
+    return out
+
+
+#: The two go_home dispatchers that are SHARED VERBATIM with the reload path
+#: (`_step_sequence`'s RECENTER / SAFE_ABORT actions), mapped to the toss-side
+#: wrapper that drains for them. They are not given the drain themselves because
+#: the drain is a toss concept and these two are the reload's ladders too —
+#: keeping them byte-identical for the reload is what makes "the toss teardown
+#: is the reload teardown verbatim" still true.
+_GO_HOME_DRAINED_BY_WRAPPER = {'_recenter': '_toss_recenter',
+                               '_safe_abort': '_toss_safe_abort'}
+
+
+def test_go_home_has_no_call_site_that_is_not_drained_first():
+    """**THE structural gate for S7** (the test_dwell_tilt_reads_have_exactly_one
+    _call_site idiom): every function that dispatches ``trajectory/go_home``
+    drains the pipeline and lowers the session-scoped arming FIRST, in the same
+    function — or is one of the two reload-shared ladders whose toss-side
+    wrapper does it for them.
+
+    Structural rather than behavioural because the failure it prevents is an
+    ADDED call site: a new teardown that dispatches go_home under a standing
+    catch latch reproduces the arm-mid-move seam (10 of 16 post-MISS cycles on
+    bag 2026-08-26_14-25-16) and no behavioural test would notice, because every
+    existing path would still be green."""
+    src = _method_sources(rcn)
+    callers = sorted(n for n, s in src.items()
+                     if n != '_go_home' and 'self._go_home(' in s)
+    assert callers, 'no go_home call sites found — the test would pass vacuously'
+    for name in callers:
+        body = src[name]
+        if 'self._drain_pipeline_and_disarm(' in body:
+            assert (body.index('self._drain_pipeline_and_disarm(')
+                    < body.index('self._go_home(')), (
+                f'{name} drains AFTER its go_home')
+            continue
+        wrapper = _GO_HOME_DRAINED_BY_WRAPPER.get(name)
+        assert wrapper is not None, (
+            f'{name} dispatches go_home without draining first (S7)')
+        w = src[wrapper]
+        assert (w.index('self._drain_pipeline_and_disarm(')
+                < w.index('self.%s(' % name)), (
+            f'{wrapper} must drain before calling {name}')
+
+
+def test_every_named_teardown_routes_through_the_drain():
+    """The five paths the plan names, plus the position-unknown zombie
+    superseder — the one go_home call site the FSM reaches with ACTION_NONE, so
+    no terminal ladder runs and nothing else would have drained it."""
+    src = _method_sources(rcn)
+    for name in ('_toss_safe_abort', '_toss_recenter', '_recentre_for_reload',
+                 '_safe_toss_on_early_exit', '_step_toss_sequence',
+                 '_execute_toss_continuous'):
+        assert 'self._drain_pipeline_and_disarm(' in src[name], name
+    # …and STAY deliberately does NOT: it issues no go_home, and draining there
+    # would force the next chained cycle to re-raise the latch — the seam.
+    assert 'self._drain_pipeline_and_disarm(' not in src['_toss_stay']
+
+
+def _arming_cycles(node, monkeypatch, clock, results, *, verdict_latency=0.30):
+    """`_stub_cycles`, but the stubbed cycle also performs the SESSION ARM the
+    real first cycle's PREPARE would — so the teardown paths under test have
+    something to lower."""
+    monkeypatch.setattr(node, '_set_soft_catch_gains', lambda: True)
+    arm_calls = []
+    monkeypatch.setattr(node, '_arm_catch',
+                        lambda a: arm_calls.append(bool(a)) or True)
+    pending = list(results)
+
+    def fake_run(seq, *, deadline_s, cancel_now_fn, feedback_fn, state=None):
+        node._arm_session_declare(seq)
+        assert node._arm_session(seq) is True
+        clock.t = seq.t_release + float(seq.flight_time_s) + verdict_latency
+        _stamp(node, clock.t)
+        return pending.pop(0), 'fsm'
+
+    monkeypatch.setattr(node, '_run_toss_cycle', fake_run)
+    return arm_calls
+
+
+def test_a_chained_session_raises_the_latch_once_and_lowers_it_once(monkeypatch):
+    """S6 at session scope: three chained CAUGHT cycles, ONE arm_catch raise and
+    ONE lower. The lower happens at the session terminal — the CAUGHT terminal
+    (STAY) deliberately leaves the latch up, which is what makes the run
+    contiguous."""
+    clock = _Clock()
+    monkeypatch.setattr(rcn, 'time', clock)
+    node = _ready_node(clock)
+    arm_calls = _arming_cycles(
+        node, monkeypatch, clock,
+        [TossResult(True, 'CAUGHT', 2.0, 0.81)] * 3)
+    gh = _ContGoalHandle(num_throws=3, stop_on_miss=False)
+    result = node._execute_toss_continuous(gh)
+    assert result.outcome == 'COMPLETED'
+    assert arm_calls == [True, False]
+    assert node._toss_session_armed is False
+    assert node._toss_session_center_mm is None
+    assert node._toss_session_live is False
+
+
+@pytest.mark.parametrize('exit_kind,outcome', [
+    ('fsm', 'COMPLETED'),
+    ('cancel', 'ABORTED_CANCELLED'),
+    ('timeout', 'ABORTED_TIMEOUT'),
+    ('shutdown', 'ABORTED_SHUTDOWN')])
+def test_the_session_terminal_disarms_on_every_exit(exit_kind, outcome,
+                                                    monkeypatch):
+    """S7 at the session terminal, and it is in the ``finally`` for exactly this
+    reason: a session that ends with the latch standing is a machine left armed
+    with a ball in the cup and nobody ticking it. Every node-level exit —
+    completion, a cancel or timeout adjudicated inside a cycle, an rclpy
+    shutdown — routes through the same one call site."""
+    clock = _Clock()
+    monkeypatch.setattr(rcn, 'time', clock)
+    node = _ready_node(clock)
+    monkeypatch.setattr(node, '_set_soft_catch_gains', lambda: True)
+    arm_calls = []
+    monkeypatch.setattr(node, '_arm_catch',
+                        lambda a: arm_calls.append(bool(a)) or True)
+
+    def fake_run(seq, *, deadline_s, cancel_now_fn, feedback_fn, state=None):
+        node._arm_session_declare(seq)
+        node._arm_session(seq)
+        clock.t = seq.t_release + float(seq.flight_time_s) + 0.3
+        _stamp(node, clock.t)
+        if exit_kind == 'fsm':
+            return TossResult(True, 'CAUGHT', 2.0, 0.81), 'fsm'
+        return TossResult(False, 'ABORTED_' + exit_kind.upper()), exit_kind
+
+    monkeypatch.setattr(node, '_run_toss_cycle', fake_run)
+    node._execute_toss_continuous(_ContGoalHandle(num_throws=1,
+                                                  stop_on_miss=False))
+    assert arm_calls == [True, False]
+    assert node._toss_session_armed is False
+    assert node._toss_session_live is False
+
+
+def test_the_session_disarm_survives_a_raising_cycle(monkeypatch):
+    """The ``finally`` is what makes the disarm unconditional: a cycle that
+    RAISES must not leave the latch up on the way out. Same argument as the
+    goal-claim release beside it, and the reason both live there."""
+    clock = _Clock()
+    monkeypatch.setattr(rcn, 'time', clock)
+    node = _ready_node(clock)
+    monkeypatch.setattr(node, '_set_soft_catch_gains', lambda: True)
+    arm_calls = []
+    monkeypatch.setattr(node, '_arm_catch',
+                        lambda a: arm_calls.append(bool(a)) or True)
+
+    def fake_run(seq, *, deadline_s, cancel_now_fn, feedback_fn, state=None):
+        node._arm_session_declare(seq)
+        node._arm_session(seq)
+        raise RuntimeError('boom')
+
+    monkeypatch.setattr(node, '_run_toss_cycle', fake_run)
+    with pytest.raises(RuntimeError, match='boom'):
+        node._execute_toss_continuous(_ContGoalHandle(num_throws=2))
+    assert arm_calls == [True, False]
+    assert node._toss_session_armed is False
+    assert node._toss_session_live is False
+
+
+def test_the_single_toss_action_is_never_session_scoped(monkeypatch):
+    """The flag is set inside `_execute_toss_continuous`'s try and cleared in
+    its finally, so a single `Toss` on the same node — before, after, or
+    interleaved with a session — always takes the per-cycle arming path."""
+    clock = _Clock()
+    monkeypatch.setattr(rcn, 'time', clock)
+    node = _ready_node(clock)
+    assert node._toss_session_live is False
+    seen = []
+    _stub_cycles(node, monkeypatch, clock,
+                 [TossResult(True, 'CAUGHT', 2.0, 0.81)])
+    orig = node._run_toss_cycle
+
+    def watch(seq, **kw):
+        seen.append(node._toss_session_live)
+        return orig(seq, **kw)
+
+    monkeypatch.setattr(node, '_run_toss_cycle', watch)
+    node._execute_toss_continuous(_ContGoalHandle(num_throws=1,
+                                                  stop_on_miss=False))
+    assert seen == [True]                 # live for the cycle…
+    assert node._toss_session_live is False   # …and clear again after
+
+
+def test_the_reload_interlude_drains_before_its_recentre(monkeypatch):
+    """S7 on the interlude, and this is the seam that used to fire loudest: the
+    interlude traverses the whole workspace on a go_home, and before S6 the NEXT
+    cycle's PREPARE re-raised the latch into that traverse. The interlude ends
+    the contiguous run; the cycle after it re-arms with a fresh declaration."""
+    clock = _Clock()
+    monkeypatch.setattr(rcn, 'time', clock)
+    node = _ready_node(clock)
+    node._toss_session_live = True
+    node._toss_session_center_mm = (0.0, 0.0, 170.0)
+    node._toss_session_armed = True
+    order = []
+    monkeypatch.setattr(node, '_arm_catch',
+                        lambda a: order.append(('arm', a)) or True)
+    monkeypatch.setattr(node, '_publish_catch_armed',
+                        lambda a: order.append(('armed', a)))
+    monkeypatch.setattr(node, '_publish_prime_hold',
+                        lambda h: order.append(('prime_hold', h)))
+    monkeypatch.setattr(node, '_publish_pretilt_hold',
+                        lambda h: order.append(('pretilt_hold', h)))
+    monkeypatch.setattr(node, '_go_home',
+                        lambda: order.append('go_home') or False)
+    assert node._recentre_for_reload() is False        # go_home refused
+    assert order == [('armed', False), ('arm', False), ('prime_hold', False),
+                     ('pretilt_hold', False), 'go_home']
+    assert node._toss_session_armed is False
 
 
 # ── Deadlines ────────────────────────────────────────────────────────────────

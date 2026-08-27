@@ -10,7 +10,9 @@ PREPARE choreography's load-bearing order (prime_hold raised ALONE one tick befo
 the bundle; in-bundle gains → arm → vel_scale → prime_dispatched stamp → armed →
 snapshot, with the announcement on a LATER tick still), the single-shot tri-state
 throw dispatch (classification pinned against the REAL teensy_bridge validation
-path — no copied strings), the terminal orderings (prime_hold released LAST), the
+path — no copied strings), the S6 SESSION-scoped arming (one raise and one lower
+per contiguous chained run, catch/armed still per-cycle) with its reach-centre
+drift guard, the S7 drain-before-go_home, the terminal orderings (prime_hold released LAST), the
 trace-only ball-evidence waiver, the per-phase cancel deferral, and the node-level
 early exits (cancel/timeout/shutdown/exception all safe before terminalising).
 
@@ -38,6 +40,7 @@ import jugglebot.reload_coordinator_node as rcn
 from jugglebot.motion.trajectory import hand_stroke
 from jugglebot.reload_coordinator_node import (
     ReloadCoordinatorNode,
+    _TOSS_SESSION_REACH_DRIFT_TOL_MM,
     _TOSS_SOFT_CATCH_GAINS,
     _TOSS_WAIVER_PARAM,
     _toss_deadline_s,
@@ -1431,6 +1434,324 @@ def test_reach_centre_declared_for_tier_8b_too(monkeypatch):
         _stamp_fresh(node, t)
         node._step_toss_sequence(seq, t)
     assert published == [(140.0, 0.0, 170.0)]
+
+
+# ── S6/S7: the SESSION-scoped catch arming ────────────────────────────────────
+# plans/active/toss-pipelined-preamble.md § 2.3 (S6, S7) and § 4 (Phase B3).
+# A contiguous run of chained cycles raises trajectory/arm_catch, the two
+# catch_coordinator holds and the ONE catch/reach_center declaration EXACTLY
+# once, and lowers them exactly once — so there is no per-cycle re-raise left to
+# land inside a go_home. catch/armed stays PER-CYCLE (the S6 amendment).
+
+def _wire_session_recorder(node, order, monkeypatch, arm_ok=True):
+    """Record every publish/service the session arming touches, in order.
+
+    A superset of :func:`_wire_prepare_recorder` — it adds the reach-centre
+    declaration and the pretilt hold, because under S6 those are session-scoped
+    too and "how many times" is the whole subject."""
+    _wire_prepare_recorder(node, order, monkeypatch, arm_ok=arm_ok)
+    monkeypatch.setattr(node, '_publish_pretilt_hold',
+                        lambda hold: order.append(('pretilt_hold', hold)))
+    monkeypatch.setattr(
+        node._reach_center_pub, 'publish',
+        lambda msg: order.append(('centre', (msg.x, msg.y, msg.z))))
+
+
+def _walk_chained_cycle(node, monkeypatch, order, pose, start, tick):
+    """Drive ONE chained cycle from CHECKING to its PREPARE bundle.
+
+    Three FSM ticks, exactly as `test_prime_hold_raised_tick_before_prepare_
+    bundle` walks them: positioning (answered synchronously), verified arrival
+    (the declaration tick), and the deferred bundle. Returns the sequencer."""
+    seq = _fresh_seq(node, pose=pose, start=start)
+    monkeypatch.setattr(
+        node, '_position_platform_for_toss',
+        lambda s, state=None: s.note_position_result(start, True, 0.3))
+    for t in (start, start + 0.6, start + 0.7):
+        tick['i'] += 1
+        _stamp_fresh(node, t)
+        node._step_toss_sequence(seq, t)
+    return seq
+
+
+def test_a_chained_session_declares_and_arms_exactly_once(monkeypatch):
+    """S6, the headline: across TWO chained cycles the reach-centre declaration,
+    both holds, the soft gains, the arm_catch raise and the vel_scale relay each
+    happen ONCE — while catch/prime_dispatched and catch/armed happen once PER
+    CYCLE (the S6 amendment: catch/armed installs no graceful stop, and the bench
+    trace recorder segments every CS check off its edges).
+
+    That count IS the invariant. A resource that is never re-raised cannot be
+    re-raised at the wrong moment, which is how S6 closes the arm-mid-move seam
+    by construction instead of by the DEFAULT_SESSION_MISS_CLEANUP_S fence."""
+    pose = (30.0, -40.0, 170.0)
+    node = _toss_ready_node(100.0, commanded_pos=pose)
+    node._toss_session_live = True                 # what _execute_toss_continuous sets
+    order = []
+    tick = {'i': 0}
+    _wire_session_recorder(node, order, monkeypatch)
+    _walk_chained_cycle(node, monkeypatch, order, pose, 100.0, tick)
+    _walk_chained_cycle(node, monkeypatch, order, pose, 110.0, tick)
+    assert order.count(('centre', pose)) == 1
+    assert order.count(('prime_hold', True)) == 1
+    assert order.count(('pretilt_hold', True)) == 1
+    assert order.count('gains') == 1
+    assert order.count(('arm', True)) == 1
+    assert len([e for e in order if e[0] == 'vel_scale']) == 1
+    # …and the per-cycle remainder, twice: three topic publishes and no service.
+    assert order.count(('prime_dispatched', True)) == 2
+    assert order.count(('armed', True)) == 2
+
+
+def test_the_session_arm_preserves_the_in_bundle_relative_order(monkeypatch):
+    """Hoisting three steps to session scope must preserve their RELATIVE order,
+    which is the property each of them was placed for: gains before the raise
+    (the standing prime_hold suppresses the auto-prime that normally sets them),
+    the raise before vel_scale, vel_scale before any armed edge, and the ONE
+    prime_dispatched stamp immediately before armed.
+
+    It also pins the two cross-transport gaps S6 must NOT collapse: the
+    catch/reach_center declaration lands a full FSM tick before the arm_catch
+    service call that consumes it (C-REACH-1 — and under S6 losing that race
+    would mis-centre the envelope for the WHOLE RUN, not for one cycle), and
+    catch/prime_hold lands a tick before the armed edge."""
+    pose = (30.0, -40.0, 170.0)
+    node = _toss_ready_node(100.0, commanded_pos=pose)
+    node._toss_session_live = True
+    order = []
+    tick = {'i': 0}
+    ticked = []
+    _wire_session_recorder(node, order, monkeypatch)
+    # Re-wrap the two ordering-critical events with their FSM tick index.
+    monkeypatch.setattr(
+        node, '_publish_prime_hold',
+        lambda hold: (order.append(('prime_hold', hold)),
+                      ticked.append((tick['i'], ('prime_hold', hold))))[0])
+    monkeypatch.setattr(
+        node._reach_center_pub, 'publish',
+        lambda msg: (order.append(('centre', (msg.x, msg.y, msg.z))),
+                     ticked.append((tick['i'], 'centre')))[0])
+    monkeypatch.setattr(
+        node, '_arm_catch',
+        lambda a: (order.append(('arm', a)),
+                   ticked.append((tick['i'], ('arm', a))))[0] or True)
+    monkeypatch.setattr(
+        node, '_publish_catch_armed',
+        lambda a: (order.append(('armed', a)),
+                   ticked.append((tick['i'], ('armed', a))))[0])
+    _walk_chained_cycle(node, monkeypatch, order, pose, 100.0, tick)
+    assert order == [
+        # the declaration tick (verified arrival)
+        ('prime_hold', True), ('centre', pose), ('pretilt_hold', True),
+        # the bundle tick, one FSM tick later
+        'gains', ('arm', True),
+        ('vel_scale', float(hw.JB_OP_CATCH_VEL_SCALE_DEFAULT)),
+        ('prime_dispatched', True), ('armed', True)]
+    centre_tick = next(i for i, e in ticked if e == 'centre')
+    hold_tick = next(i for i, e in ticked if e == ('prime_hold', True))
+    arm_tick = next(i for i, e in ticked if e == ('arm', True))
+    armed_tick = next(i for i, e in ticked if e == ('armed', True))
+    assert centre_tick < arm_tick                  # C-REACH-1's transport gap
+    assert hold_tick < armed_tick                  # FIX-4's wait-set gap
+
+
+def test_a_chained_stay_keeps_the_latch_and_the_holds_standing(monkeypatch):
+    """STAY is the CHAINING terminal and the one terminal S6 deliberately does
+    NOT disarm: it issues no go_home, so there is no move for a latch to land
+    inside, and lowering the latch here would force the next cycle to re-raise
+    it — which is the seam. What still happens per cycle is catch/armed False.
+
+    Releasing prime_hold here would be the live hazard: the NEXT cycle's armed
+    edge would then meet a released hold and auto-prime the hand with the caught
+    ball resting in the cup."""
+    node = _toss_ready_node(100.0)
+    node._toss_session_live = True
+    node._toss_session_center_mm = (0.0, 0.0, 170.0)
+    node._toss_session_armed = True
+    order = []
+    _wire_session_recorder(node, order, monkeypatch)
+    node._toss_stay()
+    assert order == [('armed', False)]
+    assert node._toss_session_armed is True
+    assert node._toss_session_center_mm == (0.0, 0.0, 170.0)
+
+
+def test_the_session_disarm_lowers_armed_before_the_holds(monkeypatch):
+    """S6's mirror, and the ORDER inside it is the part that does not change:
+    catch/armed False must precede the prime_hold release, because a released
+    hold meeting a still-armed catch_coordinator re-opens the auto-prime exactly
+    while a ball rests in the cup — the ascent would launch it. pretilt_hold
+    goes last of all (a stale one only DEGRADES a later reload's pre-tilt).
+
+    Session scope moved WHEN the teardown runs, never the order inside it."""
+    node = _toss_ready_node(100.0)
+    node._toss_session_live = True
+    node._toss_session_center_mm = (0.0, 0.0, 170.0)
+    node._toss_session_armed = True
+    order = []
+    _wire_session_recorder(node, order, monkeypatch)
+    node._disarm_session()
+    assert order == [('armed', False), ('arm', False),
+                     ('prime_hold', False), ('pretilt_hold', False)]
+    assert node._toss_session_armed is False
+    assert node._toss_session_center_mm is None
+    # Idempotent: a second call (the session terminal after a cycle ladder
+    # already drained) publishes nothing at all.
+    order.clear()
+    node._disarm_session()
+    assert order == []
+
+
+def test_a_chained_safe_abort_drains_before_the_go_home(monkeypatch):
+    """S7: every path that dispatches go_home drains and disarms FIRST, so no
+    go_home is ever installed under a catch the machine still thinks is live —
+    the arm-mid-move seam, closed from the other side.
+
+    Also pins that the drain's first act is catch/armed False, which is exactly
+    what _safe_abort's own ladder needs before the retract (catch_coordinator's
+    prime-retry tick must stand down before a kind-3 descent is dispatched)."""
+    node = _toss_ready_node(100.0)
+    node._toss_session_live = True
+    node._toss_session_center_mm = (0.0, 0.0, 170.0)
+    node._toss_session_armed = True
+    order = []
+    _wire_session_recorder(node, order, monkeypatch)
+    monkeypatch.setattr(node, '_retract_hand_with_retries',
+                        lambda: order.append('retract') or True)
+    monkeypatch.setattr(node, '_go_home',
+                        lambda: order.append('go_home') or True)
+    node._toss_safe_abort()
+    # The whole drain — armed False FIRST (so catch_coordinator's prime-retry
+    # tick stands down), then the latch, then the holds — precedes the safing
+    # ladder, and the go_home is last of everything.
+    assert order == [('armed', False), ('arm', False), ('prime_hold', False),
+                     ('pretilt_hold', False),
+                     # _safe_abort's own ladder, unchanged and shared verbatim
+                     # with the RELOAD path: its armed/latch publishes are now
+                     # idempotent repeats of the drain's.
+                     ('armed', False), 'retract', ('arm', False), 'go_home']
+    # The holds are released EXACTLY ONCE: the per-cycle tail no-ops for every
+    # cycle of a session, drain included, so nothing re-publishes them.
+    assert order.count(('prime_hold', False)) == 1
+    assert order.count(('pretilt_hold', False)) == 1
+
+
+def test_the_single_toss_keeps_its_per_cycle_arming(monkeypatch):
+    """The single Toss action is NOT session-scoped and its arming is unchanged:
+    every cycle runs the full bundle, and the session flags stay clear so the
+    STAY/RECENTER/SAFE_ABORT ladders keep lowering the latch per goal.
+
+    This is the control for the two counts above — the same walk, the same
+    recorder, `_toss_session_live` False."""
+    pose = (30.0, -40.0, 170.0)
+    node = _toss_ready_node(100.0, commanded_pos=pose)
+    assert node._toss_session_live is False        # the shipped default
+    order = []
+    tick = {'i': 0}
+    _wire_session_recorder(node, order, monkeypatch)
+    _walk_chained_cycle(node, monkeypatch, order, pose, 100.0, tick)
+    _walk_chained_cycle(node, monkeypatch, order, pose, 110.0, tick)
+    assert order.count(('centre', pose)) == 2
+    assert order.count(('prime_hold', True)) == 2
+    assert order.count(('pretilt_hold', True)) == 2
+    assert order.count('gains') == 2
+    assert order.count(('arm', True)) == 2
+    assert order.count(('armed', True)) == 2
+    assert node._toss_session_armed is False
+    assert node._toss_session_center_mm is None
+
+
+# ── S6's reach-centre DRIFT GUARD ─────────────────────────────────────────────
+
+def test_the_drift_bound_is_the_envelope_minus_the_worst_case_swing(monkeypatch):
+    """The bound is DERIVED, not chosen, and this pins the derivation rather
+    than the number: the C-REACH-1 envelope radius minus the systematic swing
+    shift the reach itself carries (hand_catch_offset · sin(MAX_TILT_DEG), which
+    SATURATES on every real arrival — the same subtraction
+    _RELOAD_CENTERED_TOL_MM makes one path over, for the same reason: a gate
+    that says yes to a band the envelope will then say no to mid-flight)."""
+    expected = (float(hw.JB_TRAJ_CATCH_REACH_ENVELOPE_MM)
+                - float(hw.HAND_CATCH_OFFSET_MM)
+                * math.sin(math.radians(rcn.MAX_TILT_DEG)))
+    assert _TOSS_SESSION_REACH_DRIFT_TOL_MM == pytest.approx(expected)
+    assert _TOSS_SESSION_REACH_DRIFT_TOL_MM < float(
+        hw.JB_TRAJ_CATCH_REACH_ENVELOPE_MM)
+
+
+def test_the_drift_guard_refuses_a_cycle_that_left_the_session_envelope(
+        monkeypatch):
+    """The foreclosed case fails LOUDLY and EARLY. Under S6 trajectory_node's
+    envelope centre is frozen at the session's ONE declaration (`_svc_arm_catch`
+    read-and-clears the pending centre BEFORE its idempotent early return), so a
+    cycle nominating a different B would be judged against an envelope centred
+    somewhere else — and the refusal would arrive MID-FLIGHT as a WORKSPACE
+    reject of the A→B reach, with the ball already airborne.
+
+    So the cycle is refused here instead, with NOTHING published, and it is
+    refused with a REJECTED code rather than a generic PREPARE abort."""
+    node = _toss_ready_node(100.0)
+    node._toss_session_live = True
+    node._toss_session_center_mm = (0.0, 0.0, 170.0)
+    node._toss_session_armed = True
+    order = []
+    _wire_session_recorder(node, order, monkeypatch)
+    far = (0.0, _TOSS_SESSION_REACH_DRIFT_TOL_MM + 1.0, 170.0)
+    seq = TossSequencer(catch_pose_stow_mm=far)
+    assert node._prepare_toss_catch(seq) is False
+    assert node._toss_prepare_reject == 'REACH_CENTER_DRIFT'
+    assert order == []                              # nothing armed, nothing stamped
+
+
+def test_the_drift_guard_admits_a_cycle_inside_the_margin(monkeypatch):
+    """The complement, so the guard is a BOUND and not a blanket refusal: a B
+    just inside the tolerance still lands its own requested reach inside the
+    80 mm envelope, so it flies. (Every session in scope sits at drift 0 —
+    catch_position is one goal field, constant for the whole session — so this
+    is the guard's inactive side, which is the side it must stay on.)"""
+    node = _toss_ready_node(100.0)
+    node._toss_session_live = True
+    node._toss_session_center_mm = (0.0, 0.0, 170.0)
+    node._toss_session_armed = True
+    order = []
+    _wire_session_recorder(node, order, monkeypatch)
+    near = (0.0, _TOSS_SESSION_REACH_DRIFT_TOL_MM - 1.0, 170.0)
+    seq = TossSequencer(catch_pose_stow_mm=near)
+    assert node._prepare_toss_catch(seq) is True
+    assert node._toss_prepare_reject == ''
+    assert order == [('prime_dispatched', True), ('armed', True)]
+
+
+def test_a_drifted_cycle_terminalises_rejected_reach_center_drift(monkeypatch):
+    """End to end at the FSM seam: the refusal is carried to the terminal as
+    REJECTED_REACH_CENTER_DRIFT (an operator-visible refusal that names the
+    forward path) rather than laundered into ABORTED_PREPARE_FAILED (which reads
+    as a plant fault). The cleanup is still SAFE_ABORT — the declaration and the
+    holds are out, so the machine is not pristine."""
+    pose = (0.0, 0.0, 170.0)
+    node = _toss_ready_node(100.0, commanded_pos=pose)
+    node._toss_session_live = True
+    node._toss_session_center_mm = pose
+    node._toss_session_armed = True
+    order = []
+    tick = {'i': 0}
+    _wire_session_recorder(node, order, monkeypatch)
+    safed = []
+    monkeypatch.setattr(node, '_toss_safe_abort',
+                        lambda state=None: safed.append(1))
+    far = (0.0, _TOSS_SESSION_REACH_DRIFT_TOL_MM + 20.0, 170.0)
+    seq = _fresh_seq(node, pose=far, start=100.0)
+    monkeypatch.setattr(
+        node, '_position_platform_for_toss',
+        lambda s, state=None: s.note_position_result(100.0, True, 0.3))
+    d = None
+    for t in (100.0, 100.6, 100.7, 100.8):
+        tick['i'] += 1
+        _stamp_fresh(node, t)
+        d = node._step_toss_sequence(seq, t)
+        if d.done:
+            break
+    assert d.done and d.result.outcome == 'REJECTED_REACH_CENTER_DRIFT'
+    assert safed == [1]
 
 
 def test_announcement_content_and_frames():

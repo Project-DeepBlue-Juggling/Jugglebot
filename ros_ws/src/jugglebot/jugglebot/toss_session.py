@@ -85,6 +85,96 @@ chosen for three concrete failure modes the other has:
      3.5–5 s). Waiting keeps each cycle bit-identical to a validated single toss;
      the only new thing is when it starts.
 
+**S6 (2026-08-27) — the catch latch and the catch-coordinator holds are
+SESSION-scoped.** Exactly ONE ``trajectory/arm_catch`` raise, ONE
+``catch/reach_center`` declaration, ONE ``catch/prime_hold`` raise and ONE
+``catch/pretilt_hold`` raise per contiguous run of chained cycles, and exactly
+one lower of each. No cycle raises or lowers any of the four.
+
+``catch/armed`` STAYS PER-CYCLE, and that exception is deliberate on two
+grounds: the topic installs no graceful stop (the arm-mid-move hazard lives
+solely in ``trajectory_node._svc_arm_catch``'s raise path, which is the thing
+S6 removes), and the bench trace recorder's ``cycle_spans`` segments every CS
+check off its edges — session-scoping it would collapse CS-1…CS-5 to one span
+per sitting.
+
+The ``catch/reach_center`` declaration is scoped WITH the raise rather than with
+the cycle, and that is forced rather than chosen: ``_svc_arm_catch``
+read-and-clears the pending declaration BEFORE its idempotent early return, so
+under a standing latch every per-cycle declaration is consumed and DISCARDED and
+the envelope centre stays frozen at whatever the session raise captured. Root
+cause: *the declaration's lifetime is scoped to the raise it feeds.* The
+foreclosed case — a cycle nominating a different B — therefore has to fail
+LOUDLY, which is the node's ``REJECTED_REACH_CENTER_DRIFT`` guard
+(``reload_coordinator_node._TOSS_SESSION_REACH_DRIFT_TOL_MM``: the 80 mm
+C-REACH-1 envelope minus the worst-case ``hand_catch_offset · sin(12°)`` swing
+shift the reach itself carries = 66.53 mm). The forward path for a session that
+genuinely needs a per-cycle B is the redundant-raise capture in
+``trajectory_node``, taken with its own evidence.
+
+**S7 (2026-08-27) — the pipeline is DRAINED before any ``go_home``.** Every path
+that dispatches ``trajectory/go_home`` — SAFE_ABORT, RECENTER, the reload
+interlude's recentre, the node-level early-exit safing, the position-unknown
+zombie superseder, and the session terminal — first discards the staged slot and
+then lowers the latch, in that order. (At Phase B3 there is no staged slot yet,
+so the discard half is a placeholder; the ordering and the six call sites are
+landed now so B4 adds the discard in one place.)
+
+Together S6 and S7 close the **arm-mid-move seam by construction rather than by
+timing**. Before them, ``trajectory_node`` printed *"catch latch armed mid-move
+— installed a graceful stop (move silenced)"* whenever the next cycle's PREPARE
+armed the latch while the previous cycle's SAFE_ABORT ``go_home`` was still
+traversing: 10 of the 16 post-MISS toss cycles of bag ``2026-08-26_14-25-16``.
+The remedy shipped then was to lengthen ``DEFAULT_SESSION_MISS_CLEANUP_S`` to
+2.80 s so the arm lands after the profile — a timing fence over a race. With S6
+there is no re-raise to race; with S7 there is nothing armed when the profile is
+installed. **The cleanup floor stays** (it protects the retract's descent and
+the throw site) but it stops being the only thing between an interrupted
+``go_home`` and a throw from a site the aim was not solved for, and it must not
+be lowered while S6 is in.
+
+**S5′ — the "quiescent wait" argument, RE-TAKEN in writing under S6.**
+S5 chose the quiescent dwell over a stretched ``throw_delay`` for three named
+failure modes. Under S6 the dwell is no longer quiescent — the latch and both
+holds stand across it — so each of the three is re-argued on its merits rather
+than inherited:
+
+  1. *"``catch/armed`` stays RAISED for the whole dwell with a ball resting in
+     the cup, so ``catch_coordinator``'s reactive catch path is live for that
+     entire window."* **Accepted deliberately, and it is the one real cost of
+     S6.** At the milestone dwells the armed window is already ~97 % of wall
+     time (a 0.435 s dwell inside a 1.34 s period, against a catch armed from
+     PREPARE to terminal), so S6 converts a 97 % duty cycle into 100 % rather
+     than creating a new state. Every mitigation is already shipped and
+     unconditional: ``catch/pretilt_hold`` is raised for the whole run (census
+     E5) so no announcement pre-tilt can command motion; ``catch/prime_hold``
+     suppresses the armed-edge auto-prime that would ascend with a seated ball;
+     and contract C-REACH-1 centres the reach envelope on the nominated catch B,
+     so any commanded reach is bounded at 80 mm. What is genuinely NEW is that a
+     foreign tracked ball entering the volume BETWEEN cycles now meets an armed
+     machine where before it met one for 97 % of the interval. Accepted; the
+     runbook keeps the by-eye watch (``session_cadence_ladder.md``, row PIPE-5:
+     any commanded platform motion between a verdict and the next release stops
+     the sitting).
+  2. *"An armed dwell looks identical to an about-to-throw machine, so the
+     operator's intervention window is one in which the robot is armed."*
+     **Already true at these cadences and already documented.**
+     ``session_cadence_ladder.md`` § 5 records that from R5 down *"a cancel is
+     always deferred… your stop button gains one full cycle of latency"*
+     (``TOSS_CANCEL_CUTOFF_S`` = 0.25 s). The pipeline adds at most one further
+     cycle, because a deferred cancel must also drain the staged slot. The
+     runbook says so explicitly and repeats that the cancel button is NOT the
+     E-STOP.
+  3. *"A stretched delay moves every cycle's internal timing off the profile the
+     hardware measured."* **Unaffected, and this is the load-bearing half.** S6
+     moves no motion instant: from PREPARE onward a chained cycle is
+     byte-identical to a validated single toss — same guard, same announcement,
+     same single-shot dispatch, same flight, same settle. What moved out of the
+     cycle is three service round trips and three topic publishes, none of which
+     command anything, and the ORDER among them is preserved exactly (gains →
+     arm raise → vel_scale still precede every armed edge, now by seconds). The
+     dwell is still a wait; it is simply a wait spent armed.
+
 ## Dwell — definition, and why the floor is derived rather than chosen
 
 ``dwell_time_s`` is *previous SCHEDULED LANDING → next RELEASE*. A cycle's release
