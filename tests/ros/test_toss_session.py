@@ -249,7 +249,44 @@ def test_the_hand_floor_is_dominated_by_the_plumbing_term():
        dead; it is the guarantee that a cadence the STROKE cannot make is
        refused at goal-accept instead of clobbering a live stroke (the
        2026-07-25 defect). Drop the delay below its own floor and the hand term
-       selects, exactly as it must."""
+       selects, exactly as it must.
+
+    **RE-TAKEN 2026-08-27 for the pipelined branch (B4, plan § 5.6 T-G4), and
+    the argument genuinely narrows.** Shortening the plumbing term brings the
+    hand's own geometry back TOWARD binding, which is the intended direction and
+    also the direction in which a bad number stops being caught by a comfortable
+    margin. Measured over the same band on the pipelined floor
+    (``commit_budget_s + handoff_margin`` against ``hand_floor_dwell_s``):
+
+      * the dominance HOLDS — the plumbing term still exceeds the hand floor at
+        every admitted flight;
+      * but its worst-case margin falls from **0.2030 s** to **0.0830 s** (both
+        at ``T = 0.4949``, the C-HAND-3 band floor);
+      * so the ratio over the term's 0.0715 s worst-case ILC-trim sensitivity
+        falls from **2.8x** to **1.16x**.
+
+    ⚠ **The plan's § 5.6 T-G4 row predicts 0.0947 s and 1.3x, and it is WRONG
+    by 11.7 ms** (measured 2026-08-27, over the whole C-HAND-3 band at
+    ``catch_vel_scale`` 0.9 with no ILC trim — the sweep is in the B4 logbook
+    entry). The correct value falls straight out of the arithmetic and is not a
+    matter of measurement noise: the pipelined plumbing term differs from the
+    serial one by EXACTLY ``3 x NODE_LOOP_PERIOD_S`` (both are
+    ``dispatch + n x loop + slack + handoff``), so the margin is
+    ``0.2030 - 0.120 = 0.0830`` and can be nothing else. The plan's number
+    would require the gap to be 0.1083 s, which is not three of anything.
+
+    1.16x is THIN and is recorded as thin — thinner than the plan believed when
+    it called this "the one existing test this plan genuinely stresses". It is
+    still a cover rather than a coincidence: the sensitivity is a WORST CASE at
+    a maximal negative trim, and the throw envelope refuses almost the whole
+    negative side at exactly the flights where this margin is narrowest (0.0 mm/s
+    of headroom at the 0.4949 s band floor — see ``floor_event_vel_mps``). But a
+    future edit that shortens the plumbing term again should expect this
+    assertion to red, and should re-take the argument rather than lower the
+    threshold. The honest alternative, if it ever inverts, is to re-base
+    ``hand_floor_dwell_s`` onto ``floor_event_vel_mps`` like the two floors
+    either side of it, at the cost of "the hand floor at T" becoming two
+    numbers on one machine."""
     worst = float('inf')
     for flight in (FLIGHT_TIME_MIN_S, 0.55, 0.6059, 0.7977, 1.00,
                    FLIGHT_TIME_MAX_S):
@@ -265,6 +302,37 @@ def test_the_hand_floor_is_dominated_by_the_plumbing_term():
     # thing that must not happen is it shrinking back onto the 0.0715 s trim
     # sensitivity this dominance argument spends it on.
     assert worst > 0.20, worst
+    # ── the PIPELINED branch, re-taken (B4) ──
+    from jugglebot.toss_sequencer import commit_budget_s
+    worst_pipe = float('inf')
+    for flight in (FLIGHT_TIME_MIN_S, 0.55, 0.6059, 0.7977, 1.00,
+                   FLIGHT_TIME_MAX_S):
+        s = TossSessionSequencer(num_throws=2, flight_time_s=flight,
+                                 catch_vel_scale=0.9, **NO_ILC_TRIM,
+                                 pipelined=True,
+                                 dwell_margin_s=DEFAULT_SESSION_DWELL_MARGIN_S)
+        plumbing = (commit_budget_s(s.floor_event_vel_mps)
+                    + s.handoff_margin_s)
+        assert plumbing > s.hand_floor_dwell_s, (flight, plumbing,
+                                                 s.hand_floor_dwell_s)
+        # the max() is still LIVE on this branch too — it is the same max().
+        assert s.required_dwell_s == pytest.approx(
+            max(plumbing, s.hand_floor_dwell_s), abs=1e-12)
+        worst_pipe = min(worst_pipe, plumbing - s.hand_floor_dwell_s)
+    # 0.0830 s at T = 0.4949 — 1.16x the 0.0715 s trim sensitivity, against the
+    # serial branch's 2.8x. Thin, and pinned AS thin: the threshold is the
+    # measured number rounded down, so a further shortening reds here and the
+    # argument gets re-taken rather than silently relied on.
+    assert worst_pipe > 0.0715, (
+        'the pipelined dominance no longer covers the ILC trim sensitivity: '
+        '{} <= 0.0715'.format(worst_pipe))
+    assert worst_pipe > 0.082, worst_pipe
+    assert worst_pipe < worst, 'the pipelined margin must be the NARROWER one'
+    # …and the gap between the two branches is EXACTLY the three loop periods
+    # the preamble stopped spending on the critical path. Asserting the
+    # difference rather than two independent thresholds is what makes this
+    # re-derive instead of needing a re-measure at the next constant edit.
+    assert worst - worst_pipe == pytest.approx(3 * NODE_LOOP_PERIOD_S, abs=1e-9)
 
     # The max() is live: below its own delay floor the hand term selects.
     fast = TossSessionSequencer(num_throws=2, throw_delay_s=0.20,
@@ -1559,3 +1627,203 @@ def test_reload_phase_string_is_on_the_wire():
 def test_reloads_used_reaches_the_action_result():
     assert 'int32 reloads_used' in ACTION_FILE.read_text()
     assert TossSessionResult(success=False, outcome='X').reloads_used == 0
+
+
+# ── B4: the two-slot pipeline at session level ───────────────────────────────
+
+
+def _pipelined(**kw):
+    """A session running the pipeline. `pipelined` ships FALSE, so every test in
+    this file above describes the shipped machine and every test below describes
+    the one behind the flag."""
+    params = dict(pipelined=True)
+    params.update(kw)
+    return _session(**params)
+
+
+def test_the_session_phase_strings_are_the_cycles_own():
+    """The two additive TossContinuous phases are the CYCLE FSM's strings
+    re-exported, not second spellings of them. Two spellings of one phase is how
+    a GUI filter and a trace recorder come to disagree about what the machine
+    was doing, and the .action documents these by value."""
+    from jugglebot import toss_sequencer as ts
+    from jugglebot.toss_session import (SESSION_PHASE_COMMITTING,
+                                        SESSION_PHASE_STAGED)
+    assert SESSION_PHASE_STAGED == ts.PHASE_STAGED == 'STAGED'
+    assert SESSION_PHASE_COMMITTING == ts.PHASE_COMMITTING == 'COMMITTING'
+
+
+def test_the_pipelined_dwell_floor_admits_the_milestone():
+    """T-U11 — the milestone, from the SHIPPED ``required_dwell_s``.
+
+    Probe first (the house rule): ``python tools/probes/cadence_rung_check.py
+    --pipeline`` produced the § 2.7 table on 2026-08-27, and since B4 that probe
+    IMPORTS ``toss_sequencer.commit_budget_s`` rather than modelling it — so
+    these numbers and the probe's are one computation.
+
+    The two milestone heights clear; the two below the band do NOT, which is
+    § 7's whole reason for putting h = 0.5 out of scope rather than pretending
+    it is reachable."""
+    from jugglebot.motion.trajectory.toss_release import flight_time_from_height
+    expected = {0.50: (0.4941, 0.3075), 0.80: (0.4390, 0.3890),
+                1.00: (0.4170, 0.4349), 1.30: (0.3941, 0.4958)}
+    for h, (floor, milestone) in expected.items():
+        T = flight_time_from_height(h)
+        s = _pipelined(flight_time_s=T, dwell_time_s=milestone)
+        assert s.required_dwell_s == pytest.approx(floor, abs=5e-4), h
+        if h in (1.00, 1.30):
+            assert s.dwell_time_s >= s.required_dwell_s, h
+            assert s._checking_reject() is None, h
+        else:
+            assert s._checking_reject() == 'REJECTED_DWELL', h
+    # …and the two clearances the plan publishes, which are what B5 exists to
+    # widen at h = 1.0 (17.9 ms is the same razor-edge class as R5's 1.9 ms).
+    for h, clearance in ((1.00, 0.0179), (1.30, 0.1018)):
+        T = flight_time_from_height(h)
+        s = _pipelined(flight_time_s=T, dwell_time_s=expected[h][1])
+        assert s.dwell_time_s - s.required_dwell_s == pytest.approx(
+            clearance, abs=5e-4), h
+
+
+def test_the_pipelined_floor_charges_the_commit_budget_not_the_delay():
+    """Two branches, ONE derivation each — the property the 2026-08-22 audit was
+    written after (the session's mirror and the cycle's gate had drifted).
+
+    The pipelined branch must not consult ``throw_delay_s`` at all: a staged
+    cycle's release is an absolute instant it was TOLD, so a dwell floor charged
+    against a field that cycle ignores is a floor for a quantity nothing runs
+    on. Moving the delay by seconds must not move the pipelined floor by a bit."""
+    from jugglebot.toss_sequencer import commit_budget_s
+    for delay in (0.30, 1.00, 5.00):
+        s = _pipelined(throw_delay_s=delay, dwell_time_s=9.0)
+        assert s.required_dwell_s == pytest.approx(
+            max(commit_budget_s(s.floor_event_vel_mps) + s.handoff_margin_s,
+                s.hand_floor_dwell_s), abs=1e-12)
+        assert s.required_dwell_s == pytest.approx(
+            _pipelined(throw_delay_s=5.0, dwell_time_s=9.0).required_dwell_s,
+            abs=1e-12)
+    # …while the SERIAL branch still moves with it, unchanged.
+    assert (_session(throw_delay_s=1.0, dwell_time_s=9.0).required_dwell_s
+            != _session(throw_delay_s=5.0, dwell_time_s=9.0).required_dwell_s)
+
+
+def test_the_delay_gate_survives_on_both_branches():
+    """``REJECTED_THROW_DELAY`` is NOT retired by the pipeline, and that is a
+    decision rather than an oversight: the FIRST cycle of every pipelined
+    sitting runs SERIALLY (there is nothing to pipeline it behind, and it is the
+    cycle that arms the session), so its release really is
+    ``accept + throw_delay`` and the floor that gates it still means something."""
+    for pipelined in (False, True):
+        s = _session(pipelined=pipelined, throw_delay_s=0.05,
+                     dwell_time_s=9.0)
+        assert s._checking_reject() == 'REJECTED_THROW_DELAY', pipelined
+
+
+def test_at_most_one_cycle_is_past_its_commit(monkeypatch):
+    """S1′ — the hazard S1 named, preserved while the implementation relaxes.
+
+    Two cycles may EXIST; only one may own the hand. The session's two flags say
+    which is which, and START_CYCLE is emitted for the STAGING slot while
+    ``committed_live`` still holds."""
+    s = _pipelined(num_throws=4)
+    d = s.step(0.0)
+    assert d.action == SESSION_ACTION_START_CYCLE and s.cycle_index == 1
+    assert (s.cycle_live, s.committed_live) == (True, False)
+    # …no second START_CYCLE while the staging slot is full (S1 unchanged).
+    assert s.step(0.1).action == SESSION_ACTION_NONE
+    # …cycle 1 commits: the staging slot frees, the hand is owned.
+    s.note_cycle_committed()
+    assert (s.cycle_live, s.committed_live) == (False, True)
+    d = s.step(0.2)
+    assert d.action == SESSION_ACTION_START_CYCLE and s.cycle_index == 2
+    assert (s.cycle_live, s.committed_live) == (True, True)
+    # …and NOT a third: the staging slot is full again and only one cycle may be
+    # past its commit.
+    assert s.step(0.3).action == SESSION_ACTION_NONE
+    s.note_cycle_committed()
+    assert s.committed_live is True
+    # cycle 1's terminal, arriving after cycle 2 has already committed.
+    s.note_cycle_result(_caught(), 1.0, 1.8)
+    assert s.committed_live is False
+
+
+def test_the_last_pipelined_cycle_does_not_stage_a_successor():
+    """`intends_another_cycle` gates the stage, and it is the SAME predicate the
+    cadence clamp uses — so "will there be another ball" has one answer in this
+    FSM. Without it the session would stage a cycle beyond num_throws and then
+    discard it, which is a record and a build for nothing."""
+    s = _pipelined(num_throws=2)
+    assert s.step(0.0).action == SESSION_ACTION_START_CYCLE     # cycle 1
+    s.note_cycle_committed()
+    assert s.step(0.1).action == SESSION_ACTION_START_CYCLE     # cycle 2 stages
+    s.note_cycle_result(_caught(), 1.0, 1.8)                    # cycle 1 lands
+    s.note_cycle_committed()                                    # cycle 2 commits
+    assert s.intends_another_cycle is False
+    assert s.step(0.2).action == SESSION_ACTION_NONE
+
+
+def test_an_abandoned_stage_gives_the_index_and_the_flags_back():
+    """§ 2.4.1's fallback, and the accounting that makes it free.
+
+    A cycle that could not stage NEVER RAN, so it costs no index and no
+    inherited flag — guards G10/G11 depend on exactly one cycle wearing each,
+    and a flag consumed by a cycle that was un-run would exclude the wrong toss
+    from every fit. What it DOES cost is the pipeline: no further START_CYCLE
+    until the committed cycle terminalises and reschedules, so the cycle is
+    rebuilt on the serial path exactly once rather than re-attempted every
+    tick."""
+    s = _pipelined(num_throws=4)
+    s.step(0.0)
+    s.note_cycle_committed()
+    # the reload interlude flags the NEXT cycle; make one inherit them
+    s._reload_settle_next = True
+    s._retry_next = True
+    assert s.step(0.1).action == SESSION_ACTION_START_CYCLE
+    assert s.cycle_index == 2
+    assert (s.cycle_is_retry, s.cycle_reload_settle) == (True, True)
+    s.note_stage_abandoned('POSITIONING_MOVE')
+    assert s.cycle_index == 1                      # given back
+    assert (s._retry_next, s._reload_settle_next) == (True, True)
+    assert s.cycle_live is False
+    # …and NOT re-attempted while the committed cycle is still live.
+    for t in (0.2, 0.3, 0.4):
+        assert s.step(t).action == SESSION_ACTION_NONE
+    s.note_cycle_result(_caught(), 1.0, 1.8)
+    d = s.step(9.0)
+    assert d.action == SESSION_ACTION_START_CYCLE and s.cycle_index == 2
+    assert (s.cycle_is_retry, s.cycle_reload_settle) == (True, True)
+
+
+def test_the_beat_is_unchanged_by_the_pipeline():
+    """T-R2's unit half: ``next_release_at`` is the ONE place a beat comes from
+    and B4 does not touch it. Serial and pipelined schedule the same release off
+    the same landing — the pipeline changed which INTERVAL pays for the
+    preamble, never where the beat is."""
+    for landing in (0.0, 12.5, 73788.7):
+        assert (_pipelined().next_release_at(landing)
+                == _session().next_release_at(landing))
+
+
+def test_no_reload_interlude_starts_while_a_cycle_owns_the_hand():
+    """S2's amendment, protected under S1′.
+
+    The interlude MOVES the platform — a recentre and a whole BallButler
+    delivery — and S2 admits it ONLY because it is entered from a machine that
+    is quiescent (`REJECTED_NO_BALL` is minted in CHECKING, before anything is
+    positioned or armed). Under the pipeline "no cycle is live" stopped being
+    the same statement as "no cycle owns the hand", so the guard has to name the
+    second one. An interlude under an airborne ball would recentre the platform
+    out from under the catch.
+
+    Unreachable today by the same CHECKING argument — which is exactly why it is
+    asserted rather than assumed."""
+    s = _pipelined(num_throws=4, on_empty_cup=ON_EMPTY_CUP_RELOAD,
+                   max_reloads=2)
+    s.step(0.0)
+    s.note_cycle_committed()                 # a cycle owns the hand
+    s._reload_pending = True                 # …and an interlude is pending
+    assert s.step(0.1).action == SESSION_ACTION_NONE
+    assert s.phase != SESSION_PHASE_RELOAD
+    # …once the hand is free it runs, exactly as it always did.
+    s.note_cycle_result(_caught(), 1.0, 1.8)
+    assert s.step(9.0).action == SESSION_ACTION_RELOAD

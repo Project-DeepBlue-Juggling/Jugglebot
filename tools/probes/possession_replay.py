@@ -106,11 +106,28 @@ def _sensor():
         stale_s=float(_HAND_STATE_STALE_S))
 
 
-def cycles_from_rows(rows):
+def cycles_from_rows(rows, *, pipelined=False):
     """Group mined+declared rows into runs (one per goal) in declaration order,
     and attach the schedule each cycle's node would have latched.
 
     -> list of dicts, one per cycle that reached a release.
+
+    ``pipelined`` (B4, plan § 2.5a) selects WHERE the cadence clamp's
+    ``next_release_t`` comes from, and it is the one thing the two-slot pipeline
+    changes about the possession path:
+
+    * SERIAL (the default, and what the corpus was recorded under) — the clamp
+      is the PREDICTION ``_set_toss_next_cycle_perf`` latched a cycle early,
+      ``landing + dwell``;
+    * PIPELINED — the next cycle EXISTS when these windows are evaluated, so the
+      clamp reads its ACTUAL ``t_release``. In a replay that number is already
+      in the corpus: it is the following row's own ``t_release_perf``, slip and
+      all.
+
+    **The point of running both is that the census must not move.** The pipeline
+    has no business changing a possession verdict; if feeding the clamp actuals
+    instead of predictions flips a single row, it changed the semantics rather
+    than the schedule, and T-R1 is the test that says so.
     """
     runs = []
     cur = None
@@ -124,7 +141,13 @@ def cycles_from_rows(rows):
     for run_index, run in enumerate(runs, 1):
         prev_landing = None
         throws = 0
-        for r in run['rows']:
+        # The rows that actually reached a release, so "the NEXT cycle's actual
+        # release" is the next FLYING cycle rather than the next row (a
+        # REJECTED_NO_BALL row scheduled nothing and clamps nothing).
+        flying = [x for x in run['rows']
+                  if x.get('t_release_perf') and x.get('t_landing_sched_perf')
+                  and x.get('flight_time_s')]
+        for position, r in enumerate(flying):
             rel = r.get('t_release_perf')
             land = r.get('t_landing_sched_perf')
             flight = r.get('flight_time_s')
@@ -138,6 +161,11 @@ def cycles_from_rows(rows):
             # clamps this replay uses are the ones the node really latched.
             intends = bool(num and dwell and (throws + 1) < int(num))
             next_release = (land + float(dwell)) if intends else None
+            if pipelined and intends and position + 1 < len(flying):
+                # § 2.5a: the STAGED slot's ACTUAL release, not the prediction.
+                nxt = flying[position + 1].get('t_release_perf')
+                if nxt:
+                    next_release = float(nxt)
             next_landing = ((next_release + float(flight))
                             if next_release is not None else None)
             out.append({

@@ -176,6 +176,12 @@ EXPECTED_FIELDS = (
     'loop_work_max_pre_s', 'loop_obs_max_pre_s', 'loop_body_max_pre_s',
     'loop_sleep_max_pre_s', 'loop_n_over_pre', 'loop_n_post',
     'loop_period_max_post_s',
+    # The two-slot pipeline (B4, 2026-08-27). ADDITIVE — no SCHEMA bump, per
+    # the schema's own rule; null on every serial cycle.
+    'staged_at_s',
+    'commit_at_s',
+    'commit_slip_s',
+    'staged_discarded_reason',
     # quality
     'label', 'label_source', 'label_confidence', 'label_reason', 'rimshot',
     'disagreement', 'record_provenance', 'join_residual_ms',

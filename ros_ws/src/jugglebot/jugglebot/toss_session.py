@@ -34,6 +34,30 @@ Teensy's last-writer-wins queue and fight over the single ``catch/armed`` latch 
 the exact hazard the node's cross-action busy claim exists to prevent, reproduced
 INSIDE one goal.
 
+**S1′ (2026-08-27, B4) REPLACES S1 on a pipelined session, and it preserves S1's
+HAZARD rather than its wording.** Both halves of that hazard — the queue and the
+latch — are about **ownership of a shared actuator**, not about the number of FSM
+objects. So:
+
+> At most one cycle may be **past its COMMIT point** at any instant, and only
+> that cycle may emit a hand-bearing action. A staged cycle's decision set is
+> restricted to ``{ACTION_NONE, ACTION_POSITION_PLATFORM, ACTION_PREPARE_CATCH}``
+> and ``ACTION_POSITION_PLATFORM`` is admissible only as the census-B1 **no-op
+> skip**: a cycle whose positioning decision is not SKIP does not stage at all,
+> it falls back to the serial path (plan § 2.4.1).
+
+Mechanically, ``_cycle_live`` is split in two. It keeps its name and its meaning
+— *a cycle occupies the slot this FSM fills* — and gains a sibling,
+:attr:`~TossSessionSequencer.committed_live`, for *a cycle owns the hand*. On a
+serial session they are the same flag and the second is never set; pipelined, the
+first spans START→COMMIT and the second spans COMMIT→terminal. The structural
+test that pins a staged cycle's emittable action set, and the property test that
+asserts ``committed_live`` is never true of two cycles at once, are what make the
+ownership rule mechanical rather than a matter of discipline.
+
+``pipelined`` is node-resolved from ``hw.JB_OP_TOSS_PIPELINE_ENABLED`` and ships
+**false**, so S1 — not S1′ — is what the shipped build runs.
+
 **S2 — the session commands NO motion of its own.** There is no session-level
 positioning move, no session-level ``go_home``, no session-level hand dispatch.
 Every commanded motion in a session belongs to a cycle and is already covered by
@@ -375,8 +399,11 @@ from jugglebot.toss_sequencer import (
     FLIGHT_TIME_MIN_S,
     NODE_LOOP_PERIOD_S,
     NODE_TICK_S,
+    PHASE_COMMITTING,
+    PHASE_STAGED,
     TOSS_DISPATCH_DEBOUNCE_S,
     TossResult,
+    commit_budget_s,
     min_throw_delay_for_release_s,
     pre_dispatch_budget_s,
     vertical_event_vel_mps,
@@ -387,6 +414,19 @@ from jugglebot.toss_sequencer import (
 # three are the session's own.
 SESSION_PHASE_CHECKING = 'SESSION_CHECKING'
 SESSION_PHASE_DWELL = 'DWELL'
+# ── B4, the two-slot pipeline's own two (TossContinuous.action) ───────────────
+# ADDITIVE in exactly the sense SESSION_PHASE_RELOAD was: an existing consumer
+# sees a phase it does not recognise, never a phase that changed meaning. They
+# are the CYCLE FSM's own strings re-exported, not second spellings of them —
+# `test_the_session_phase_strings_are_the_cycles_own` pins the identity, because
+# two spellings of one phase is how a GUI filter and a trace recorder come to
+# disagree about what the machine was doing.
+SESSION_PHASE_STAGED = PHASE_STAGED            # 'STAGED' — a cycle's preamble is
+                                               #   complete and it waits for its
+                                               #   commit instant
+SESSION_PHASE_COMMITTING = PHASE_COMMITTING    # 'COMMITTING' — the commit tick
+                                               #   (evidence -> announce ->
+                                               #   dispatch)
 SESSION_PHASE_RELOAD = 'RELOAD'      # the auto-reload interlude (§ 3.9). Additive:
                                      # an existing consumer that only knows the
                                      # first two sees a phase it does not
@@ -788,6 +828,29 @@ class TossSessionSequencer:
                                                 #   never reach here as RELOAD.
     max_reloads: int = DEFAULT_SESSION_MAX_RELOADS
     floor_pause_every: int = DEFAULT_SESSION_FLOOR_PAUSE_EVERY
+    pipelined: bool = False                     # B4: run the TWO-SLOT pipeline
+                                                #   (plan toss-pipelined-preamble
+                                                #   § 2.2). Node-resolved from
+                                                #   hw.JB_OP_TOSS_PIPELINE_ENABLED,
+                                                #   which ships FALSE.
+                                                #
+                                                #   It changes exactly two things
+                                                #   on this FSM: `required_dwell_s`
+                                                #   charges commit_budget_s instead
+                                                #   of throw_delay_s (§ 2.7), and
+                                                #   S1 becomes S1' — the slot this
+                                                #   FSM fills is freed at the
+                                                #   cycle's COMMIT rather than at
+                                                #   its terminal, so the next
+                                                #   cycle may stage during this
+                                                #   one's flight.
+                                                #
+                                                #   Default FALSE = the serial
+                                                #   session, bit-for-bit. Every
+                                                #   branch below is guarded on it
+                                                #   so the shipped default's
+                                                #   decision stream is identical
+                                                #   to the pre-B4 tree.
     ilc_speed_trim_possible: bool = True        # can layer 3 command a speed trim
                                                 #   on this goal (ILC enabled AND an
                                                 #   artifact loaded)? It is the only
@@ -816,6 +879,20 @@ class TossSessionSequencer:
     _t_start: float = field(default=0.0, init=False)
     _cycle_index: int = field(default=0, init=False)      # 1-based; 0 = none started
     _cycle_live: bool = field(default=False, init=False)  # S1's guard
+    #: B4 / S1′ — a cycle is PAST ITS COMMIT and owns the hand. Serial sessions
+    #: never set it: there ``_cycle_live`` spans START→terminal and is the whole
+    #: story. Pipelined, the two split — ``_cycle_live`` spans START→COMMIT (the
+    #: slot this FSM FILLS) and this one spans COMMIT→terminal (the slot that
+    #: owns the actuator) — which is exactly S1′'s relaxation: at most one cycle
+    #: past its commit point, not at most one cycle in existence.
+    _committed_live: bool = field(default=False, init=False)
+    #: B4 — a cycle was built and could NOT stage (its positioning decision was
+    #: not SKIP, or it failed a STATIC gate while staging). It fell back to the
+    #: serial path, so no further ``START_CYCLE`` may be emitted until the
+    #: committed cycle has terminalised and :meth:`note_cycle_result` has
+    #: rescheduled. Without it the session would re-attempt the stage on every
+    #: tick and mint a record per attempt.
+    _stage_declined: bool = field(default=False, init=False)
     _next_cycle_at: float = field(default=0.0, init=False)
     _last_landing: float = field(default=float('nan'), init=False)
     _throws: int = field(default=0, init=False)
@@ -1077,7 +1154,40 @@ class TossSessionSequencer:
         prelude from an encoder reading taken at 41-96 rev/s. That is the
         2026-07-25 defect exactly (hand overshot to 10.17-10.33 rev, then was
         yanked 0.34-1.75 rev below x3), and it is a hardware event, not a
-        refusal. Derived, never chosen; see the module docstring."""
+        refusal. Derived, never chosen; see the module docstring.
+
+        **The PIPELINED branch (B4, plan § 2.7).** Under the two-slot pipeline
+        the plumbing term is ``commit_budget_s + handoff_margin`` rather than
+        ``throw_delay + handoff_margin``, and the substitution is the whole
+        milestone: what a dwell has to cover is the distance from the previous
+        landing to the next release, and under the pipeline the only thing left
+        on that path is the COMMIT tick. The staged preamble did not get
+        cheaper — :func:`stage_budget_s` still charges three loop periods, and
+        ``stage_budget_s + commit_budget_s`` is EXACTLY the serial
+        ``min_throw_delay_for_release_s(v, False)`` to the last bit — it moved
+        off the DWELL and onto the previous cycle's FLIGHT, which is time the
+        machine was spending anyway. Nothing is relaxed; work was relocated
+        (§ 9.2, "the floors are re-derived, never relaxed").
+
+        **Two branches, ONE derivation each**, which is the property the
+        2026-08-22 audit was written after: the serial branch charges
+        :attr:`min_throw_delay_s`'s number through ``throw_delay_s`` and the
+        pipelined branch charges :func:`toss_sequencer.commit_budget_s`, the
+        same function the cycle's own COMMIT gate derives ``commit_at`` from.
+        Neither restates the other's arithmetic.
+
+        ``throw_delay_s`` is deliberately NOT consulted on the pipelined branch:
+        a staged cycle's release is an absolute instant it was told (§ 2.6 rule
+        1), so charging a dwell floor against a field that cycle ignores would
+        be a floor for a quantity nothing runs on. The session's own
+        ``REJECTED_THROW_DELAY`` gate stays on BOTH branches, because the FIRST
+        cycle of every pipelined sitting still runs serially (there is nothing to
+        pipeline it behind — § 2.4.1) and its release really is
+        ``accept + throw_delay``."""
+        if self.pipelined:
+            return max(commit_budget_s(self.floor_event_vel_mps)
+                       + self.handoff_margin_s,
+                       self.hand_floor_dwell_s)
         return max(float(self.throw_delay_s) + self.handoff_margin_s,
                    self.hand_floor_dwell_s)
 
@@ -1100,7 +1210,26 @@ class TossSessionSequencer:
 
     @property
     def cycle_live(self) -> bool:
+        """A cycle occupies the slot this FSM FILLS.
+
+        Serial: START_CYCLE → terminal, unchanged. Pipelined (S1′): START_CYCLE →
+        COMMIT, because the cycle then moves to the committed slot and the
+        staging slot is free for its successor. Read :attr:`committed_live` for
+        "a cycle owns the hand" — on a pipelined session that is the question
+        every caller who used to ask this one actually meant."""
         return self._cycle_live
+
+    @property
+    def committed_live(self) -> bool:
+        """B4 / S1′ — a cycle is PAST ITS COMMIT and owns the hand: the
+        announcement is out, the stroke is dispatched or about to be, and the
+        ball is in the air or on its way there. Always False on a serial
+        session, where :attr:`cycle_live` answers the same question.
+
+        THE invariant a property test asserts after every step: at most one
+        cycle may be past its commit at any instant, and that is this flag being
+        a bool rather than a count."""
+        return self._committed_live
 
     @property
     def reloads_used(self) -> int:
@@ -1137,7 +1266,16 @@ class TossSessionSequencer:
 
         Keyed on THROWS for the same reason ``step``'s completion test is: a
         REJECTED_NO_BALL cycle and the single ABORTED_NO_RELEASE retry cost a
-        cycle index without costing one of the ``num_throws`` data points."""
+        cycle index without costing one of the ``num_throws`` data points.
+
+        **B4 reads it as "a staged slot exists or will be created"**, and it is
+        the same expression because it is the same question: evaluated at a
+        commit, ``_throws`` already counts every cycle consumed before this one,
+        so ``_throws + 1 < num_throws`` is exactly "there is a cycle after the
+        one just committed". :meth:`step` uses it to decide whether to stage at
+        all, and the cadence clamp uses it to decide whether to clamp — ONE
+        predicate, so the schedule and the sensor's horizon cannot disagree
+        about whether another ball is coming."""
         return int(self._throws) + 1 < int(self.num_throws)
 
     @property
@@ -1229,9 +1367,37 @@ class TossSessionSequencer:
         # S1: never two live cycles. The node runs a cycle to completion before
         # stepping the session again, so this can only be a caller error — it
         # fails CLOSED (no new cycle) rather than double-owning the hand.
-        if self._cycle_live:
+        #
+        # S1′ (B4) relaxes WHICH slot this guards, never the hazard: pipelined,
+        # `_cycle_live` spans START→COMMIT, so a second START_CYCLE fills the
+        # STAGED slot while `_committed_live` still holds the hand. The hazard
+        # S1 named — two cycles double-owning the hand on the last-writer-wins
+        # queue — is guarded by `_committed_live` being set at exactly one
+        # commit at a time, plus the cycle FSM's own restriction of a staged
+        # cycle's emittable action set.
+        #
+        # `_stage_declined` is the other half: a cycle that could not stage fell
+        # back to the serial path, and re-emitting START_CYCLE for it before the
+        # committed cycle terminalises would put two cycles on the serial ladder.
+        if self._cycle_live or self._stage_declined:
             return TossSessionDecision(self._phase, SESSION_ACTION_NONE,
                                        self._cycle_index, False, None)
+        if self._committed_live:
+            # A cycle OWNS THE HAND. The only thing that may start from here is
+            # the STAGING of its successor — and only if there is one.
+            #
+            # The reload interlude is excluded explicitly rather than by luck:
+            # it MOVES the platform (a recentre and a whole BB delivery), and S2
+            # admits it only because it is entered from a machine that is
+            # quiescent. Today it is unreachable in this state anyway
+            # (`_reload_pending` is set only from a REJECTED_NO_BALL terminal,
+            # which is minted in CHECKING, so no cycle can be past its commit),
+            # but "unreachable today" is not a guard — an interlude that ran
+            # under an airborne ball would recentre the platform out from under
+            # the catch.
+            if self._reload_pending or not self.intends_another_cycle:
+                return TossSessionDecision(self._phase, SESSION_ACTION_NONE,
+                                           self._cycle_index, False, None)
 
         # The reload interlude, before any cycle can start. Emitted from the
         # REJECTED_NO_BALL terminal only, and the budget/floor gates have already
@@ -1324,6 +1490,60 @@ class TossSessionSequencer:
 
     # ── discrete event (from the node) ─────────────────────────────────────────
 
+    def note_cycle_committed(self) -> None:
+        """B4 / S1′: the live cycle has passed its COMMIT point — it owns the
+        hand now, and the slot this FSM FILLS is free again, so the next cycle
+        may stage during this one's flight.
+
+        That is the entire scheduling change the pipeline makes to this FSM.
+        ``_next_cycle_at`` is untouched and keeps its serial meaning
+        (``landing + dwell − throw_delay``, set by :meth:`note_cycle_result`);
+        at every cadence in scope that instant is already in the past by the
+        time a commit happens, so the stage fires on the next tick. A session
+        with a delay SHORTER than its commit budget simply stages a little
+        later, which costs slack it has in abundance (the whole flight).
+
+        Ignored unless a cycle is live and unless the session is pipelined — a
+        serial session's slot is freed by :meth:`note_cycle_result` and by
+        nothing else."""
+        if self._finished or not self.pipelined or not self._cycle_live:
+            return
+        self._cycle_live = False
+        self._committed_live = True
+
+    def note_stage_abandoned(self, reason: str) -> None:
+        """B4: the node built a cycle that could not STAGE and dropped it —
+        because its positioning decision was not SKIP (§ 2.4.1: a staged cycle
+        may not command a ``go_to_pose``), because it failed a STATIC gate while
+        staging, or because the unwind discarded it (§ 2.4.3).
+
+        The cycle **never ran**, so it costs nothing: the index is given back and
+        the inherited one-cycle flags (``retry``/``reload_settle``) are returned
+        to the pool, because guards G10/G11 depend on exactly one cycle wearing
+        each. What it does cost is the pipeline: ``_stage_declined`` holds the
+        slot shut until :meth:`note_cycle_result` reschedules, so the cycle is
+        rebuilt on the SERIAL path once the committed cycle terminalises.
+
+        That fallback is what makes a persistent fault loud instead of silent. A
+        staged cycle that fails ``REJECTED_NOT_LEVELLED`` here would otherwise
+        re-stage every tick and mint a record per attempt; instead it is retried
+        exactly once, serially, where the same gate mints the same refusal and
+        the session stops by name (``ABORTED_CYCLE_REJECTED_NOT_LEVELLED``).
+        A transient hiccup costs one stage attempt and the cadence absorbs it.
+
+        ``reason`` is carried for the log line only; nothing branches on it."""
+        if self._finished or not self._cycle_live:
+            return
+        self._cycle_live = False
+        self._stage_declined = True
+        self._cycle_index -= 1
+        # Give the consumed flags back — one cycle wears each, and the cycle
+        # that consumed them is being un-run.
+        self._retry_next = self._cycle_is_retry
+        self._reload_settle_next = self._cycle_reload_settle
+        self._cycle_is_retry = False
+        self._cycle_reload_settle = False
+
     def note_cycle_result(self, result: TossResult, t_release: float,
                           landing_perf: float, *,
                           ball_evidence: Optional[str] = None) -> None:
@@ -1343,10 +1563,27 @@ class TossSessionSequencer:
         that moves.
 
         Ignored once finished, and ignored when no cycle is live (S1's other
-        half: a result for a cycle nobody started must not advance the count)."""
-        if self._finished or not self._cycle_live:
+        half: a result for a cycle nobody started must not advance the count).
+
+        **Pipelined (B4), the live cycle is the COMMITTED one.** The slot this
+        FSM fills was already freed at that cycle's commit
+        (:meth:`note_cycle_committed`), so the guard has to consult both slots
+        or a pipelined cycle's outcome would be dropped on the floor. The
+        accounting below is identical either way — which is the point: the
+        pipeline moved WHEN a slot frees, never what a result means."""
+        if self._finished or not (self._cycle_live or self._committed_live):
             return
-        self._cycle_live = False
+        if self._committed_live:
+            # Pipelined: this result belongs to the COMMITTED cycle, and the
+            # staging slot may well be occupied by its successor RIGHT NOW —
+            # clearing `_cycle_live` here would free a slot that is full and let
+            # a third cycle stage behind two.
+            self._committed_live = False
+        else:
+            self._cycle_live = False
+        # The declined cycle (if any) may be rebuilt now: the committed slot is
+        # free, and the scheduling below sets the instant it is rebuilt at.
+        self._stage_declined = False
         outcome = str(result.outcome)
         self._outcomes.append(outcome)
         self._errors.append(float(result.catch_error_mm))

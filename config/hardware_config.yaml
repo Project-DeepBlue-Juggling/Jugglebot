@@ -742,6 +742,41 @@ jugglebot_operational:
                                          # (0, 0) and reject the incoming BB ball MID-FLIGHT. Reload
                                          # therefore refuses REJECTED_NOT_CENTERED before asking BB to
                                          # throw — see reload_sequencer's platform_centered gate.
+  toss_pipeline_enabled: false           # Whether a TossContinuous session runs the TWO-SLOT PIPELINE
+                                         # (plans/active/toss-pipelined-preamble.md Phase B4) instead of
+                                         # the serial one-cycle-at-a-time loop. SHIPS FALSE.
+                                         # FALSE = today's machine, bit-for-bit: one live cycle, its whole
+                                         # CHECKING/POSITIONING/PREPARING preamble spent BETWEEN the
+                                         # previous catch and the next release, and a dwell floor of
+                                         # throw_delay + handoff_margin. A test pins that the decision
+                                         # stream at false is identical to the pre-B4 tree over the whole
+                                         # cadence_rung_check grid, and the single Toss action never reads
+                                         # this key at all — it has no previous cycle to pipeline behind.
+                                         # TRUE = cycle N+1's preamble (the STATIC CHECKING gates, the
+                                         # skip-only POSITIONING, the whole PREPARE ladder) runs during
+                                         # cycle N's FLIGHT, and what remains on the critical path is ONE
+                                         # tick: the COMMIT, which re-reads the evidence and then
+                                         # announces and dispatches in that same tick. The dwell floor
+                                         # becomes commit_budget_s + handoff_margin — 0.4170 s at a 1.0 m
+                                         # apex against 0.5370 s serial, 0.3941 s at 1.3 m against
+                                         # 0.5141 s — which is what admits the 0.43-0.50 s milestone.
+                                         # NOTHING IS RELAXED: stage_budget_s + commit_budget_s is
+                                         # bit-for-bit the serial min_throw_delay_for_release_s. The work
+                                         # moved off the dwell and onto the flight, which is time the
+                                         # machine was spending anyway.
+                                         # ⚠ ball_seated and hand_parked are read at the COMMIT tick and
+                                         # nowhere earlier, so the empty-stroke gate gets STRICTER, not
+                                         # weaker: the evidence-to-dispatch distance falls from
+                                         # 0.160-0.520 s to zero ticks.
+                                         # ⚠ It is INERT unless cycles actually stage, and a cycle stages
+                                         # only when its POSITIONING takes the census-B1 no-op skip. On
+                                         # toss_tier 8b with a non-zero aim the deferred A→B reach
+                                         # re-commands the orientation at t_release, so no chained cycle
+                                         # takes the skip and the pipeline never engages (safely inert —
+                                         # the plan's prerequisite P-4).
+                                         # ⚠ Do not flip this outside the plan's § 6.2 rung ladder. The
+                                         # first pipelined sitting is a rung with a third of a second of
+                                         # dwell margin, not a cadence.
   toss_require_ball_evidence: true       # Whether Toss CHECKING enforces a ball-in-cup precondition.
                                          # DEFAULT true since 2026-08-10 — the condition the old `false`
                                          # was written under ("there is NO ball-in-cup sensor") no longer

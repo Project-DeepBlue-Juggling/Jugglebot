@@ -264,12 +264,39 @@ int32 cycle_index                    # 1-based index of the live cycle; 0 before
                                      # cycle starts
 string phase                         # SESSION_CHECKING | DWELL, or the live cycle's Toss
                                      # phase verbatim (CHECKING | POSITIONING | PREPARING |
-                                     # THROWING | BALL_IN_FLIGHT | CATCHING | SETTLING).
+                                     # STAGED | COMMITTING | THROWING | BALL_IN_FLIGHT |
+                                     # CATCHING | SETTLING).
                                      # SESSION_CHECKING is published exactly ONCE, at goal
                                      # accept with cycle_index 0, BEFORE the session's own
                                      # CHECKING is adjudicated — so it appears even on a
                                      # session that is about to be REJECTED, which is
                                      # exactly when an operator wants to know the goal was
                                      # received rather than dropped.
+                                     #
+                                     # STAGED and COMMITTING are ADDITIVE (2026-08-27,
+                                     # plan toss-pipelined-preamble.md Phase B4), in
+                                     # exactly the sense RELOAD was: an existing consumer
+                                     # sees a phase it does not recognise, never a phase
+                                     # that changed meaning. They appear ONLY while
+                                     # jugglebot_operational.toss_pipeline_enabled is true
+                                     # (it ships FALSE), and only from a cycle running in
+                                     # the pipeline's STAGED slot:
+                                     #   STAGED     — the cycle's whole preamble is
+                                     #                complete and it is waiting for its
+                                     #                commit instant, INSIDE the previous
+                                     #                cycle's flight. It owns nothing that
+                                     #                moves.
+                                     #   COMMITTING — the single ARM-POINT tick: the
+                                     #                evidence is re-read and, in that same
+                                     #                tick and in that order, the
+                                     #                announcement is published and the
+                                     #                throw dispatched. It is also what a
+                                     #                SLIP reports, so a commit waiting on
+                                     #                a late seat edge is visible live
+                                     #                rather than only in the toss record's
+                                     #                commit_slip_s.
+                                     # This file is comment-plus-vocabulary only: no field
+                                     # was added, removed or retyped, so a
+                                     # jugglebot_interfaces rebuild is NOT required.
 int32 catches_confirmed              # running count, so a watched session is scoreable
                                      # live rather than only at the terminal

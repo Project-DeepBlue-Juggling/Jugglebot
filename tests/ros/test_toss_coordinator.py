@@ -3730,3 +3730,34 @@ def test_the_census_is_consumed_by_the_outcome_line():
     node._toss_loop_census = LoopPeriodCensus()
     node._log_toss_outcome(TossResult(True, 'CAUGHT'))
     assert node._toss_loop_census is None
+
+
+def test_the_loop_census_on_the_record_is_the_one_the_cycle_actually_fed(
+        monkeypatch):
+    """The census is on the SLOT since B4, and there must be exactly ONE per
+    cycle — the one `_run_toss_cycle` (or `_tick_toss_pipeline`) feeds and the
+    one `_toss_record_fields` reads.
+
+    Two would be the worst kind of instrument bug: the loop would feed one, the
+    record would declare the other, and every timing field would read null while
+    the loop was measured perfectly. Nothing would go red — a null is "not
+    measured", which is a legal value — so a session's whole timing census would
+    vanish silently. That is precisely what the census exists to prevent one
+    level up."""
+    node = _toss_ready_node(100.0)
+    _install_toss_goal(node)
+    seq = _fresh_seq(node)
+    state = node._toss_committed
+    from jugglebot.toss_sequencer import LoopPeriodCensus, TossDecision
+    built = LoopPeriodCensus()
+    state.census = built
+    monkeypatch.setattr(node, '_step_toss_sequence',
+                        lambda *a, **k: TossDecision(
+                            'CHECKING', 'none', True,
+                            TossResult(False, 'REJECTED_TEST')))
+    monkeypatch.setattr(node, '_log_toss_outcome', lambda r: None)
+    node._run_toss_cycle(seq, deadline_s=1.0, cancel_now_fn=lambda n: False,
+                         feedback_fn=None, state=state)
+    assert node._toss_loop_census is built, (
+        'the loop fed a census the record cannot see')
+    assert state.census is built

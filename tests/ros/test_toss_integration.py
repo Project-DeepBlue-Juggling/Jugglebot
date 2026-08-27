@@ -61,7 +61,8 @@ from jugglebot.reload_coordinator_node import (
 )
 from jugglebot.toss_sequencer import TIER_8B, TossSequencer
 from jugglebot.motion.trajectory.toss_release import compute_release_state_tilted
-from tests.ros.test_toss_coordinator import _install_toss_goal
+from tests.ros.test_toss_coordinator import (_install_toss_goal,
+                                             _toss_ready_node)
 from tests.ros.test_catch_coordinator_node import _balls_msg, _catchable_cmd
 from tests.ros.test_trajectory_node import (
     _arm_catch,
@@ -643,3 +644,118 @@ def test_8b_pretilt_hold_suppresses_ccn_and_deferred_reach_is_sole_target(monkey
     assert out.target_pos.x == pytest.approx(cmd_reach.target_pos[0])
     assert out.target_pos.y == pytest.approx(cmd_reach.target_pos[1])
     assert out.target_pos.z == pytest.approx(cmd_reach.target_pos[2])
+
+
+# ── B4 / T-I1: a staged cycle contributes NO announcement ────────────────────
+
+
+def _staged_cycle_on_a_live_node(node, pose=(0.0, 0.0, 170.0), flight=0.8,
+                                 lead=3.0):
+    """Install a STAGED cycle in the node's staged slot, as
+    `_start_pipelined_cycle` installs one, and return `(seq, state, t0)`.
+
+    The session flags are set the way `_execute_toss_continuous` sets them for a
+    chained run whose FIRST cycle has already armed — which is the only state in
+    which a staged cycle can exist."""
+    t0 = _time.perf_counter()
+    _install_toss_goal(node, pose=pose, flight=flight)
+    node._toss_session_live = True
+    node._toss_session_armed = True
+    node._toss_session_center_mm = tuple(float(v) for v in pose)
+    seq = TossSequencer(catch_pose_stow_mm=pose, flight_time_s=flight,
+                        throw_delay_s=5.0, release_at_perf=t0 + float(lead),
+                        positioning_move_expected=False, staged=True)
+    seq.start(t0)
+    assert seq.staged is True
+    state = rcn_state = node._toss_committed
+    staged_state = type(rcn_state)(
+        release_state=rcn_state.release_state,
+        release_cmd=rcn_state.release_cmd,
+        aim=rcn_state.aim,
+        landing_global_mm=rcn_state.landing_global_mm,
+        platform_target_mm=rcn_state.platform_target_mm,
+        positioning_move=False, staged=True)
+    with node._lock:
+        node._toss_staged_seq = seq
+        node._toss_staged = staged_state
+    return seq, staged_state, t0
+
+
+def _obs_ok(node, now):
+    """Every precondition satisfied at `now`, through the REAL observation
+    builder (freshness caches re-stamped the way the graph re-stamps them)."""
+    with node._lock:
+        node._mocap_mono = now
+        node._balls_mono = now
+        node._hand_telemetry_mono = now
+        node._traj_status_mono = now
+        node._commanded_pos_mono = now
+    node._ball_sensor.note_sample(now - 0.01, held=True, valid=True, raw=True)
+    node._ball_sensor.note_sample(now, held=True, valid=True, raw=True)
+
+
+def test_a_staged_cycle_contributes_no_announcement_until_its_commit(monkeypatch):
+    """**T-I1** — the self-announcement through the REAL `BallTracker`
+    correlation and the REAL `CatchCoordinator`, with a cycle STAGED.
+
+    Exactly one announcement is correlated per ball, and **a staged cycle
+    contributes none**. That is not a stylistic claim: `ThrowAnnouncement` is
+    what creates a `destination='jugglebot'` tracker expectation, and an
+    announcement published during the previous cycle's flight would create a
+    SECOND live expectation for a ball that does not exist yet — which the next
+    cycle's own `track_active` gate would then (correctly) refuse on, and which
+    the correlation path could match a real marker to.
+
+    It is the pipeline's structural answer to the two
+    `ABORTED_CANT_MAKE_RELEASE` cycles of bag `2026-08-26_14-25-16`, which left
+    exactly that phantom behind. Here the announcement cannot go out early
+    because the FSM does not emit it until the COMMIT gate has passed, and the
+    gate is the last tick before the CAN frame exists."""
+    node = _toss_ready_node(_time.perf_counter())
+    seq, state, t0 = _staged_cycle_on_a_live_node(node)
+    pub = node._publishers['throw_announcements']
+    dispatched = []
+    monkeypatch.setattr(node, '_dispatch_toss_throw',
+                        lambda s, st=None: (dispatched.append(s.t_release),
+                                            ('ok', ''))[1])
+    monkeypatch.setattr(node, '_arm_catch', lambda a: True)
+    # ── the whole STAGED preamble, through the REAL node tick ──
+    t = t0
+    from jugglebot.toss_sequencer import NODE_LOOP_PERIOD_S, PHASE_STAGED
+    for _ in range(8):
+        _obs_ok(node, t)
+        d = node._step_toss_sequence(seq, t, None, state)
+        assert d.action != 'announce'
+        t += NODE_LOOP_PERIOD_S
+        if seq.phase == PHASE_STAGED:
+            break
+    assert seq.phase == PHASE_STAGED
+    # …and it keeps NOT announcing for the whole wait.
+    while t < seq.commit_at - NODE_LOOP_PERIOD_S:
+        _obs_ok(node, t)
+        node._step_toss_sequence(seq, t, None, state)
+        t += NODE_LOOP_PERIOD_S
+    assert pub.published == [], 'a staged cycle announced before its commit'
+    assert dispatched == []
+    # ── THE COMMIT: one announcement, one dispatch, one tick ──
+    seq.note_upstream_terminalised()
+    _obs_ok(node, seq.commit_at)
+    d = node._step_toss_sequence(seq, seq.commit_at, None, state)
+    assert d.action == 'announce' and d.action_then == 'dispatch_throw'
+    assert len(pub.published) == 1
+    assert len(dispatched) == 1
+    # ── and that ONE announcement correlates through the real engines ──
+    ann = pub.published[-1]
+    tracker = _make_tracker()
+    ball, t_now = _confirm_toss_ball(tracker, ann)
+    assert ball is not None
+    assert ball.destination == 'jugglebot'
+    assert ball.tracking == TrackingConfidence.CONFIRMED
+    # exactly ONE expectation exists — a staged cycle created none
+    tagged = [b for b in tracker.active_balls
+              if b.destination == 'jugglebot']
+    assert len(tagged) == 1, [b.id for b in tagged]
+    coord = _make_coordinator()
+    cmd = coord.update([ball], current_time=t_now)
+    assert cmd is not None, 'the coordinator produced no catch command'
+    assert cmd.ball_id == ball.id

@@ -289,3 +289,141 @@ def test_the_pipelined_frontier_is_faster_than_the_serial_one():
     assert 60.0 / serial_period == pytest.approx(50.6, abs=0.1)
     assert 60.0 / period == pytest.approx(56.3, abs=0.1)
     assert dwell == pytest.approx(0.5701, abs=5e-4)
+
+
+# ── B4's probe reconciliation (2026-08-27) ───────────────────────────────────
+
+
+def test_the_probe_imports_the_shipped_commit_budget_rather_than_modelling_it():
+    """**THE reconciliation this module's header demanded**, and the obligation
+    ``commit_budget_s.__doc__`` carried through Phase B0.
+
+    The probe MODELLED ``commit_budget_s`` while it did not exist in
+    ``ros_ws/``; B4 landed ``toss_sequencer.commit_budget_s`` and the probe now
+    forwards to it. Pinned as an IDENTITY, not an approximation, because the
+    defect class this closes is a probe and a shipped floor drifting apart —
+    which is the 2026-08-22 audit's finding (the session's mirror and the
+    cycle's gate were two expressions of one floor) wearing a different hat.
+
+    Asserted three ways so a re-fork cannot slip through any of them: the same
+    float at every milestone speed, the same object identity through
+    ``__wrapped__``-free forwarding, and the same behaviour under the override
+    and loop-period arguments the sweeps drive it with."""
+    from jugglebot import toss_sequencer as ts
+    assert probe.commit_budget_s is not ts.commit_budget_s, (
+        'the probe keeps a thin wrapper so its docstring can carry the history')
+    for h in probe.MILESTONE_HEIGHTS:
+        T = probe.flight_for_height(h)
+        v = probe.ts.vertical_event_vel_mps(T)
+        for loop in (ts.NODE_LOOP_PERIOD_S, 0.025, 0.070):
+            assert probe.commit_budget_s(v, loop_period_s=loop) == (
+                ts.commit_budget_s(v, loop_period_s=loop))
+        assert probe.commit_budget_s(v, 0.35) == ts.commit_budget_s(v, 0.35)
+
+
+def test_the_probes_pipelined_floor_is_the_shipped_required_dwell():
+    """The other half of the reconciliation: the probe's ``floor`` column and a
+    ``pipelined=True`` session's ``required_dwell_s`` are ONE number.
+
+    The forwarded ``commit_budget_s`` closes the BUDGET; this closes the FLOOR
+    built on it. Without it the probe could still print a § 2.7 table the accept
+    gate does not enforce — which is precisely how three published cadence rungs
+    shipped."""
+    for h in (0.50, 0.80, 1.00, 1.30):
+        T = probe.flight_for_height(h)
+        for ilc in (False, True):
+            terms = probe.pipelined_terms(T, ilc_trim=ilc)
+            assert terms['floor'] == pytest.approx(terms['shipped_floor'],
+                                                   abs=1e-12), (h, ilc)
+
+
+def test_the_pipelined_floor_table_reproduces_from_the_shipped_gate():
+    """§ 2.7's table, from the SHIPPED ``required_dwell_s`` rather than from the
+    probe's own expression — B4's acceptance, stated as the plan states it.
+
+    These are the same four rows ``test_the_pipelined_floor_table_reproduces_
+    the_plans_section_2_7`` asserts off the model; asserting them again off the
+    gate is what makes "the model and the machine agree" a fact rather than an
+    intention."""
+    from jugglebot.toss_session import TossSessionSequencer
+    expected = {0.50: 0.4941, 0.80: 0.4390, 1.00: 0.4170, 1.30: 0.3941}
+    for h, floor in expected.items():
+        T = probe.flight_for_height(h)
+        session = TossSessionSequencer(num_throws=5, dwell_time_s=9.0,
+                                       throw_delay_s=5.0, flight_time_s=T,
+                                       ilc_speed_trim_possible=False,
+                                       pipelined=True)
+        assert session.required_dwell_s == pytest.approx(floor, abs=5e-4), h
+
+
+def test_the_flag_false_decision_stream_is_the_pre_b4_one_over_the_whole_grid():
+    """**T-U13 / T-G1 — the acceptance the flag ships on.**
+
+    With ``toss_pipeline_enabled`` false the SERIAL grid must be exactly what it
+    was before B4: the probe drives the REAL ``TossSequencer`` at the real loop
+    period over ~1500 grid points, and every one of them must reach the same
+    verdict. The new FSM fields (``staged``, ``action_then``, ``slip``, the two
+    new phases) are inert at their defaults, so "identical" here is a statement
+    about the whole decision stream and not only about the terminal.
+
+    This is the rollback § 9.5 level 1 promises, made checkable: one YAML key
+    plus a colcon build, and the machine is the one the ladder validated."""
+    assert probe.grid_violations() == []
+    # …and the SERIAL ladder still flies, four ways, exactly as before.
+    for name, h, dwell, delay in probe.LADDER:
+        T = probe.flight_for_height(h)
+        v = probe.ts.vertical_event_vel_mps(T)
+        granted = max(float(delay),
+                      probe.ts.min_throw_delay_for_release_s(v, True))
+        for ilc in (False, True):
+            assert probe.session_accepts(T, dwell, delay,
+                                         ilc_trim=ilc) is None, name
+        assert probe.run_cycle(T, delay, aimed=False)[0] == 'FLIES', name
+        assert probe.run_cycle(T, granted, aimed=True)[0] == 'FLIES', name
+    # …while the pre-audit ladder still REDS: the regression stays findable, so
+    # a green grid is evidence rather than an absence of coverage.
+    reds = sum(1 for name, h, dwell, delay in probe.LADDER_PRE_AUDIT
+               if (probe.session_accepts(probe.flight_for_height(h), dwell,
+                                         delay) is not None
+                   or probe.run_cycle(probe.flight_for_height(h), delay,
+                                      aimed=True)[0] != 'FLIES'))
+    assert reds >= 3
+
+
+def test_no_serial_decision_moves_when_a_cycle_is_merely_capable_of_staging():
+    """The other direction of the same acceptance, at the FSM: constructing a
+    cycle with the pipeline's new fields at their defaults produces the
+    identical decision stream to one constructed without them at all.
+
+    It matters because ``staged`` has a ``__post_init__`` belt that can force
+    itself False, and a belt that ALSO perturbed the serial path would make the
+    flag a behaviour change rather than a switch."""
+    from jugglebot.toss_sequencer import TossSequencer, TossObservations
+    from jugglebot import toss_sequencer as ts
+
+    def stream(**kw):
+        seq = TossSequencer(catch_pose_stow_mm=(0.0, 0.0, 170.0),
+                            flight_time_s=0.8, throw_delay_s=5.0,
+                            positioning_move_expected=False, **kw)
+        seq.start(0.0)
+        out = []
+        t = 0.0
+        for _ in range(10):
+            obs = TossObservations(
+                now=t, control_mode=ts.TOSS_CONTROL_MODE, streaming=True,
+                mocap_fresh=True, platform_levelled=True, hand_fresh=True,
+                hand_parked=True, ball_seated=True, ball_evidence='SEATED',
+                platform_at_target=True)
+            d = seq.step(t, obs)
+            out.append((round(t, 6), d.phase, d.action, d.action_then, d.slip,
+                        d.done))
+            if d.action == ts.ACTION_POSITION_PLATFORM:
+                seq.note_position_noop(t)
+            elif d.action == ts.ACTION_PREPARE_CATCH:
+                seq.note_prepare_result(True)
+            elif d.action == ts.ACTION_ANNOUNCE:
+                seq.note_announcement()
+            t += ts.NODE_LOOP_PERIOD_S
+        return out
+
+    assert stream() == stream(staged=False)

@@ -128,7 +128,7 @@ import queue
 import subprocess
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace as dataclass_replace
 from datetime import datetime
 
 import yaml
@@ -205,8 +205,10 @@ from jugglebot.toss_sequencer import (
     LoopPeriodCensus,
     NODE_LOOP_PERIOD_S as TOSS_LOOP_PERIOD_S,
     PHASE_CHECKING as TOSS_PHASE_CHECKING,
+    PHASE_COMMITTING as TOSS_PHASE_COMMITTING,
     PHASE_POSITIONING as TOSS_PHASE_POSITIONING,
     PHASE_PREPARING as TOSS_PHASE_PREPARING,
+    PHASE_STAGED as TOSS_PHASE_STAGED,
     PHASE_THROWING as TOSS_PHASE_THROWING,
     THROW_DISPATCH_AMBIGUOUS,
     THROW_DISPATCH_OK,
@@ -879,6 +881,34 @@ class TossCycleState:
     #: nothing reads it back into the FSM.
     record_announce: object = None
 
+    # ── B4: what the SLOT carries so a promotion moves the whole cycle ────────
+    # `_run_toss_cycle` held these three on its own stack, which was right while
+    # exactly one cycle could be running. With two slots they belong to the
+    # cycle, so a staged slot promoting to committed carries its own deadline
+    # clock and its own census across rather than inheriting the other slot's.
+    #: this cycle's own ``time.perf_counter()`` at the first tick — the origin
+    #: the per-cycle node ceiling (:func:`_toss_deadline_s`) is measured from.
+    t_start: float = 0.0
+    #: that ceiling, resolved once at build (a second derivation of it is how a
+    #: ceiling drifts INSIDE a legitimate window, and the timeout path
+    #: SAFE_ABORTs).
+    deadline_s: float = 0.0
+    #: this cycle's :class:`~jugglebot.toss_sequencer.LoopPeriodCensus`.
+    #: INSTRUMENT ONLY; fresh per cycle so no record inherits another's timings.
+    census: object = None
+    #: True while this slot is the STAGED one. Cleared at promotion, so it reads
+    #: "is this cycle still pre-commit" and the record's own `staged_at_s` is
+    #: what survives to say "did it ever stage".
+    staged: bool = False
+    #: why a staged slot was discarded without committing (§ 2.4.3's unwind), or
+    #: '' — the record's ``staged_discarded_reason``.
+    discarded_reason: str = ''
+    #: this cycle's declaration context (``_open_toss_record``'s ctx dict), or
+    #: None. It lives on the SLOT because with two of them "the record context"
+    #: stops being a node-global: a staged cycle that is discarded has to close
+    #: ITS record, not the committed cycle's.
+    record_ctx: object = None
+
     def clear(self) -> None:
         """Tear this cycle's state down IN PLACE.
 
@@ -901,6 +931,23 @@ class TossCycleState:
         the REJECTED_BAD_GOAL path, which runs BEFORE the next cycle is built —
         clearing them here would change what that (instrument-only) record
         declares.
+
+        Of the six B4 slot fields, ``census`` / ``staged`` /
+        ``discarded_reason`` ARE cleared and ``t_start`` / ``deadline_s`` /
+        ``record_ctx`` are not, and the split is the same rule as everything
+        above it — *what does the REJECTED_BAD_GOAL record read between a
+        teardown and the next build?*
+
+        It reads the census. That path builds no cycle, so the node's own
+        ``_toss_loop_census`` is already None ("not measured", which is a
+        different fact from a measured zero and is the honest value); leaving a
+        torn-down cycle's census standing on the slot would make the record
+        declare the PREVIOUS cycle's loop timings as if they were this
+        rejection's. ``staged`` and ``discarded_reason`` go with it for the same
+        reason — a stale ``staged_discarded_reason`` would count a discard
+        twice. ``t_start`` / ``deadline_s`` are pure build-time constants that
+        nothing reads off a dead slot, and ``record_ctx`` is what a discarded
+        STAGED slot closes its own record from.
         """
         self.release_state = None
         self.release_cmd = None
@@ -912,6 +959,9 @@ class TossCycleState:
         self.positioning_move = True
         self.next_release_perf = None
         self.next_landing_perf = None
+        self.census = None
+        self.staged = False
+        self.discarded_reason = ''
 
 
 class ReloadCoordinatorNode(Node):
@@ -1186,6 +1236,31 @@ class ReloadCoordinatorNode(Node):
         # needs a None branch it did not need before. Phase B4 adds
         # `self._toss_staged` beside it.
         self._toss_committed = TossCycleState()
+        # ── THE STAGED SLOT (B4): the cycle whose preamble is running inside the
+        # COMMITTED cycle's flight, and which owns NOTHING that moves (S1′).
+        #
+        # None — not an empty state — for the whole life of a serial session and
+        # of every single `Toss`, and that asymmetry with the committed slot is
+        # deliberate: "is a cycle staged?" is a question the drain, the clamp and
+        # the terminal ladders all ask, and an empty-but-present object would
+        # answer it with a field read instead of an identity test. The committed
+        # slot is never None because a dozen no-cycle paths read its fields; the
+        # staged slot is read by four places that all mean "is one there".
+        #
+        # `_toss_staged_seq` is its TossSequencer — the staged twin of
+        # `_active_seq`, which stays the COMMITTED cycle's and is what the hand
+        # ball sensor is always told about (§ 2.5b: the sensor is ALWAYS told the
+        # committed slot's landing).
+        self._toss_staged = None
+        self._toss_staged_seq = None
+        # The live TossSessionSequencer, for the duration of a TossContinuous
+        # goal. It exists for exactly ONE caller: `_drain_pipeline_and_disarm`,
+        # which discards the staged slot from six teardown ladders that have no
+        # session parameter to be handed. The session's slot bookkeeping has to
+        # learn about a discard — a dropped slot the session still believes is
+        # filled would wedge S1′'s guard — and the alternative (threading the
+        # session through six ladders and their tests) buys nothing.
+        self._toss_session_ref = None
         # ── S6: the SESSION-SCOPED catch arming (chained TossContinuous only) ──
         # `plans/active/toss-pipelined-preamble.md` § 2.3, S6. A contiguous run of
         # chained cycles raises `trajectory/arm_catch`, `catch/prime_hold` and
@@ -2014,8 +2089,29 @@ class ReloadCoordinatorNode(Node):
         (``_build_observations`` -> ``_possession_observed`` ->
         ``_possession_verdict``), and the reload has no toss cycle to hand it.
         The cleared slot answers ``(None, None)`` there, exactly as the cleared
-        node attributes did."""
+        node attributes did.
+
+        **B4, plan § 2.5(a) — the STAGED slot, when there is one, is the
+        answer, and it is a strictly better one.** The latched pair below is a
+        PREDICTION made a cycle early (``landing + dwell``, from
+        ``_set_toss_next_cycle_perf``), and C-POSSESS-1.C's own text names that
+        as the weakness of the rule it superseded: *"the clamp used the
+        SCHEDULED next landing while the next window opened at the ACTUAL one,
+        so a release that ran late pulled the two ends apart"*. Under the
+        pipeline the next cycle EXISTS while these windows are evaluated, so
+        the clamp reads its real ``t_release`` — slip included, because a slip
+        moves ``t_release`` and this read follows it — instead of a number the
+        machine may no longer be running on.
+
+        The fallback is not a degradation: with no staged slot (a serial
+        session, a single ``Toss``, a reload, or the window between a promotion
+        and the next stage) the latched prediction IS the machine's own next
+        scheduled instant, which is what the clause asks for."""
         with self._lock:
+            staged = self._toss_staged_seq
+            if staged is not None:
+                rel = float(staged.t_release)
+                return rel, rel + float(staged.flight_time_s)
             state = self._toss_committed
             return state.next_release_perf, state.next_landing_perf
 
@@ -2382,6 +2478,23 @@ class ReloadCoordinatorNode(Node):
         if balls_fresh:
             with self._lock:
                 own_prev_id = self._prev_announced_ball_id
+                # B4: OUR CURRENT ball too. On the serial path this is always
+                # None when the gate is read — `_build_toss_cycle` clears the
+                # latch before CHECKING's first tick, and `track_active` is
+                # computed above `_update_announced_ball_latch` — so adding it
+                # is a NO-OP there, byte for byte.
+                #
+                # Under the pipeline it is the whole gate. The staged cycle's
+                # `track_active` is read at its COMMIT, and at that instant the
+                # PREVIOUS cycle's ball has only just landed: its id is still in
+                # `_announced_ball_id` (the roll happens at the promotion, i.e.
+                # at this very commit) and its track stays IN_FLIGHT until the
+                # tracker mints CAUGHT, +0.202..+0.442 s later. That is census
+                # D6 exactly, one cycle earlier: without this the gate
+                # hard-rejects REJECTED_TRACK_ACTIVE on every healthy pipelined
+                # cycle, and it would do it for the machine's OWN ball.
+                own_cur_id = self._announced_ball_id
+            own_ids = {i for i in (own_prev_id, own_cur_id) if i is not None}
             # Census D6 — THE bug, and the docstring below already claimed the
             # fix. The gate exists to refuse a phantom destination='jugglebot'
             # track that would correlate against OUR announcement. The ball this
@@ -2397,7 +2510,7 @@ class ReloadCoordinatorNode(Node):
                 b.destination == self._robot_name
                 and int(b.status) in (_BALL_STATUS_TO_BE_THROWN,
                                       _BALL_STATUS_IN_FLIGHT)
-                and (own_prev_id is None or int(b.id) != int(own_prev_id))
+                and int(b.id) not in own_ids
                 for b in balls)
             announced_id = self._update_announced_ball_latch(balls)
             if announced_id is not None:
@@ -3678,7 +3791,8 @@ class ReloadCoordinatorNode(Node):
             return state.release_cmd
 
     def _build_toss_cycle(self, catch_pose, flight, throw_delay, vel_scale,
-                          *, delay_is_cadence=False, release_at_perf=0.0):
+                          *, delay_is_cadence=False, release_at_perf=0.0,
+                          staged=False):
         """Build ONE toss cycle: resolve the tier / throw site / release state,
         construct + start the ``TossSequencer``, and mint the
         :class:`TossCycleState` the observation builder, the action handlers and
@@ -3728,6 +3842,31 @@ class ReloadCoordinatorNode(Node):
         Phase C a free-running metronome. The single ``Toss`` action has no beat
         at all — an appointment the operator set is a delay, not a schedule —
         and keeps the derived default forever.
+
+        ``staged`` (B4) builds into the **STAGED slot** instead of the committed
+        one, and it is the ONE parameter that changes this method's side effects
+        rather than its arithmetic. What a staged build does NOT do:
+
+        * it does not touch ``_active_seq`` — the hand ball sensor is always
+          told the COMMITTED slot's landing (§ 2.5b), and a staged cycle's
+          landing is a whole flight in the future;
+        * it does not ROLL the announced-ball latch and does not refresh the
+          phantom-flight snapshot. Both would clobber the cycle whose ball is IN
+          THE AIR: the roll would drop the id that cycle's release evidence and
+          ``achieved_flight_s`` are latched on, and the snapshot would record
+          that same airborne ball as a pre-existing phantom. They move to the
+          PROMOTION (:meth:`_promote_toss_staged`), which puts the snapshot
+          immediately before the announcement it exists to protect — strictly
+          closer than the PREPARE-tick refresh it replaces;
+        * it does not reset ``_platform_pos_mm`` or ``_possession_logged``: the
+          first is the committed cycle's live mocap cross-check cache and the
+          second its per-cycle log-once set, and a staged build is not entitled
+          to clear either while that cycle is still running.
+
+        Everything else — the tier, the throw site, the release state, the aim,
+        the ILC trim, the positioning decision, the delay grant — is the
+        identical computation, which is the point: a staged cycle must be the
+        SAME cycle, scheduled differently.
         """
         # The release state (frames + ballistics) comes from the single tested
         # conversion module; the FSM gets its event_vel from here, never a second
@@ -3910,6 +4049,11 @@ class ReloadCoordinatorNode(Node):
             throw_site_known=throw_site_known,
             positioning_move_expected=positioning_move,
             release_at_perf=float(release_at_perf),
+            # SKIP-ONLY (§ 2.4.1). `positioning_move` was decided ten lines up
+            # from the same predicate the FSM's own belt re-checks, so the
+            # node's "do not stage a mover" and the FSM's "refuse to be a staged
+            # mover" are ONE decision read twice, never two decisions.
+            staged=bool(staged) and not positioning_move,
             max_displacement_mm=float(hw.JB_OP_TOSS_MAX_DISPLACEMENT_MM),
             workspace_xy_mm=float(hw.JB_OP_TOSS_WORKSPACE_XY_MM),
             stay_at_pose_on_caught=bool(hw.JB_OP_TOSS_STAY_AT_POSE_ON_CAUGHT),
@@ -3961,7 +4105,15 @@ class ReloadCoordinatorNode(Node):
             # republished in between — could take the cheap branch under an
             # expensive budget, or the reverse. One decision, one place.
             positioning_move=positioning_move,
-            waiver=waiver)
+            waiver=waiver,
+            # The slot's own clock and ceiling (B4). `_run_toss_cycle` kept both
+            # on its stack; with two slots they travel WITH the cycle, so a
+            # promotion carries the right deadline instead of inheriting the
+            # other slot's.
+            t_start=time.perf_counter(),
+            deadline_s=_toss_deadline_s(seq),
+            census=LoopPeriodCensus(),
+            staged=bool(seq.staged))
         # The remaining fields keep their dataclass defaults, and each default is
         # the value _build_toss_cycle used to assign explicitly: prepare_pending
         # / throw_dispatched / stroke_seen / track_confirmed False,
@@ -3970,6 +4122,21 @@ class ReloadCoordinatorNode(Node):
         # / record_announce None, and next_release_perf / next_landing_perf None
         # because a new cycle inherits no schedule (the session sets it
         # immediately after this returns, and a single Toss never does).
+        if staged:
+            # ── THE STAGED INSTALL (B4) ── one assignment pair, and NOTHING
+            # else. Every side effect below belongs to the cycle that owns the
+            # hand right now, and this cycle does not: see the `staged`
+            # paragraph in the docstring for what each of them would break, and
+            # `_promote_toss_staged` for where they run instead.
+            #
+            # `_catch_vel_scale` and `_toss_mocap_body` are session constants in
+            # a chained run (the goal's scale, the node's parameter), so leaving
+            # them to the committed cycle's build costs nothing and re-reading a
+            # parameter mid-flight buys nothing.
+            with self._lock:
+                self._toss_staged_seq = seq
+                self._toss_staged = state
+            return seq, state
         with self._lock:
             self._active_seq = seq
             self._toss_committed = state
@@ -4042,7 +4209,14 @@ class ReloadCoordinatorNode(Node):
         t_start = time.perf_counter()
         # INSTRUMENT ONLY. Fresh per cycle so no record can inherit another
         # cycle's timings, and read back on THIS thread by _log_toss_outcome.
-        census = LoopPeriodCensus()
+        #
+        # It lives on the SLOT since B4, and this reuses the one `_build_toss_
+        # cycle` minted rather than shadowing it. A second census here would be
+        # the one being FED while `_toss_record_fields` read the slot's empty
+        # one, so every serial cycle would declare all-null timing fields — the
+        # exact silent-instrument failure the census exists to prevent.
+        census = state.census if state.census is not None else LoopPeriodCensus()
+        state.census = census
         self._toss_loop_census = census
         try:
             while rclpy.ok():
@@ -4087,6 +4261,221 @@ class ReloadCoordinatorNode(Node):
             self._safe_toss_on_early_exit(seq, state)
             self._log_toss_outcome(TossResult(False, 'ABORTED_EXCEPTION'))
             raise
+
+    def _staged_observations(self, obs):
+        """Cycle ``k``'s observation snapshot, re-pointed at the STAGED slot.
+
+        ONE snapshot is built per pipeline tick, from the committed slot's
+        state, and both slots reason from it — that is what makes § 2.4.4's
+        "one read serves the commit gate AND the upstream terminalisation" true
+        by construction rather than by two calls that happen to agree.
+
+        What is REPLACED here is the per-cycle EVIDENCE that belongs to the
+        committed cycle and would be a lie about the staged one: its release
+        evidence (``throw_stroke_seen`` / ``ball_track_confirmed``), its
+        possession verdict (``ball_caught`` / ``possession_blind``) and the two
+        diagnostics derived from them. A staged cycle has thrown nothing, so
+        every one of those is False/NaN for it by definition; inheriting them
+        would let cycle ``k``'s CAUGHT terminalise cycle ``k+1`` as well.
+
+        What is KEPT is everything the two cycles genuinely share — the link and
+        plant state (``control_mode`` … ``hand_fresh``), the live cup
+        (``ball_seated`` / ``ball_evidence``), ``hand_parked``,
+        ``track_active`` and the live leg limits. Those ARE the commit gate, and
+        they must be the committed cycle's own instant.
+
+        ``platform_at_target`` is kept rather than recomputed, and that is a
+        deliberate simplification with a name: it is fed True unconditionally
+        while the mocap cross-check is unconfigured (the shipped default), and
+        when it IS configured both slots nominate the same B — S6's reach-centre
+        drift guard refuses any chained cycle whose B has left the session's
+        declared envelope, so "the pose the committed cycle was verified at" and
+        "the pose the staged cycle nominates" are the same pose to within that
+        tolerance. A per-cycle-varying B is the foreclosed case in both places."""
+        return dataclass_replace(
+            obs,
+            throw_stroke_seen=False,
+            ball_track_confirmed=False,
+            ball_caught=False,
+            possession_blind=False,
+            catch_error_mm=float('nan'),
+            catch_event_dt_s=float('nan'),
+            ball_time_at_land_perf=float('nan'))
+
+    def _tick_toss_pipeline(self, now, session, *, cancel_now_fn, feedback_fn):
+        """ONE iteration of the TWO-SLOT PIPELINE (plan § 2.2) — the pipelined
+        replacement for :meth:`_run_toss_cycle`'s loop BODY, minus the loop.
+
+        Returns ``(cycle_result, exit_kind)``:
+
+        * ``(None, '')`` — keep ticking;
+        * ``(result, '')`` — the COMMITTED slot terminalised on this tick and
+          has already been consumed by :meth:`TossSessionSequencer.note_cycle_result`;
+          the session's own next ``step`` adjudicates ``stop_on_miss`` /
+          COMPLETED, exactly as it does after a serial cycle;
+        * ``(result, 'cancel' | 'timeout' | 'shutdown')`` — a NODE-level exit,
+          the robot is already safed, and the session must terminalise.
+
+        **The committed slot is ALWAYS stepped first, and the order is not
+        cosmetic.** It owns the hand and the airborne ball, so its terminal must
+        be resolved before the staged slot is offered a commit — that ordering is
+        what makes S1′ ("at most one cycle past its COMMIT") true within a tick
+        rather than merely between ticks, and it is what lets the staged slot's
+        gate consume the very verdict the committed slot just minted, from the
+        same read. A structural test pins the call order.
+
+        Everything the blocking wrapper did per iteration still happens, once per
+        slot rather than once: the cancel policy, the node-level per-cycle
+        ceiling, the loop census, the phase feedback, and the safing on every
+        early exit. What does NOT happen is the block."""
+        with self._lock:
+            seq_c = self._active_seq
+            state_c = self._toss_committed
+            seq_s = self._toss_staged_seq
+            state_s = self._toss_staged
+        for st in (state_c if seq_c is not None else None, state_s):
+            if st is not None and st.census is not None:
+                st.census.note_iteration_start(now)
+        # The cancel policy is the COMMITTED slot's: it is the one holding a
+        # stroke and a ball, and `_toss_cancel_deferred` is a function of THAT
+        # cycle's phase. A cancel during a staged cycle's preamble is honoured
+        # here through the committed slot's own CHECKING/PREPARING branches, and
+        # the drain (S7) takes the staged slot down with it.
+        if seq_c is not None and cancel_now_fn(now, seq_c):
+            self._safe_toss_on_early_exit(seq_c, state_c)
+            r = TossResult(False, 'ABORTED_CANCELLED')
+            self._toss_loop_census = state_c.census
+            self._log_toss_outcome(r)
+            return r, 'cancel'
+        # ── ONE observation snapshot, ONE cup read, both slots (§ 2.4.4) ──
+        obs_state = state_c if seq_c is not None else state_s
+        if obs_state is None:
+            return None, ''
+        obs = self._build_toss_observations(now, obs_state)
+        self._toss_obs_build_s = time.perf_counter() - now
+        result = None
+        # ── 1. THE COMMITTED SLOT ──
+        if seq_c is not None:
+            decision = self._step_toss_sequence(seq_c, now, None, state_c, obs)
+            if decision.action == TOSS_ACTION_DISPATCH_THROW:
+                # S1′, half one: a SERIALLY-run committed cycle passing its own
+                # commit point. The pipeline's FIRST cycle is one of these — it
+                # was never staged, so it never promotes — and without this it
+                # would hold the staging slot until its terminal and the
+                # pipeline would never engage at all.
+                session.note_cycle_committed()
+            if decision.done:
+                result = decision.result
+                self._toss_loop_census = state_c.census
+                self._log_toss_outcome(result)
+                # The LIVE cup at the cycle's terminal, read once and passed in.
+                # It licenses exactly one decision — whether an
+                # ABORTED_NO_RELEASE may be retried — and it is read HERE, after
+                # the terminal, so it describes the cup the retry would stroke
+                # over. Identical placement to the serial path's.
+                session.note_cycle_result(
+                    result, seq_c.t_release,
+                    seq_c.t_release + float(seq_c.flight_time_s),
+                    ball_evidence=self._ball_sensor.evidence(now))
+                self._clear_toss_cycle_state()
+                # S1′: the committed slot is free, so the staged cycle's COMMIT
+                # gate may pass. Re-read the slot — the terminal ladder above
+                # runs through the S7 drain on every not-caught path, and a
+                # drained slot must not then be told its upstream is clear.
+                with self._lock:
+                    seq_s_now = self._toss_staged_seq
+                if seq_s_now is not None:
+                    seq_s_now.note_upstream_terminalised()
+            else:
+                feedback_fn(decision.phase)
+                if now - float(state_c.t_start) > float(state_c.deadline_s):
+                    self._safe_toss_on_early_exit(seq_c, state_c)
+                    r = TossResult(False, 'ABORTED_TIMEOUT')
+                    self._toss_loop_census = state_c.census
+                    self._log_toss_outcome(r)
+                    return r, 'timeout'
+        # ── 2. THE STAGED SLOT ──
+        with self._lock:
+            seq_s = self._toss_staged_seq
+            state_s = self._toss_staged
+        staged_phase = None
+        if seq_s is not None and not seq_s.finished:
+            phase_before = seq_s.phase
+            sdecision = self._step_toss_sequence(
+                seq_s, now, None, state_s, self._staged_observations(obs))
+            staged_phase = sdecision.phase
+            if sdecision.action_then == TOSS_ACTION_DISPATCH_THROW:
+                # S1′, half two: the STAGED cycle passed its COMMIT gate and
+                # `_step_toss_sequence` has already promoted it. Same
+                # notification, same meaning, keyed on the same event — the
+                # dispatch — so "past its commit" has ONE definition here.
+                session.note_cycle_committed()
+            if sdecision.done:
+                # A staged cycle that terminalised WITHOUT committing never ran:
+                # it commanded nothing, armed nothing, and its FSM emitted
+                # ACTION_NONE (`_terminal_action`'s staged branch). It does not
+                # go through `note_cycle_result` — that hook is for cycles the
+                # session SPENT, and spending one here would stop the session on
+                # a slot that never left the bench. The session gives the index
+                # back and rebuilds the cycle SERIALLY once the committed slot
+                # frees, where the same gate refuses loudly if the fault is real.
+                if not seq_s.committed:
+                    staged_phase = None      # dropped: it spends no more ticks
+                    with self._lock:
+                        self._toss_staged = None
+                        self._toss_staged_seq = None
+                    state_s.discarded_reason = str(sdecision.result.outcome)
+                    self.get_logger().warning(
+                        'toss STAGE abandoned: %s — nothing armed, nothing '
+                        'moved; the cycle is rebuilt on the serial path once '
+                        'the committed slot frees'
+                        % state_s.discarded_reason)
+                    self._publish_toss_record(
+                        sdecision.result, ctx=state_s.record_ctx,
+                        cycle_state=state_s, seq=seq_s)
+                    session.note_stage_abandoned(state_s.discarded_reason)
+            elif (sdecision.phase == TOSS_PHASE_COMMITTING
+                    or (sdecision.phase == TOSS_PHASE_STAGED
+                        and phase_before != TOSS_PHASE_STAGED)
+                    or seq_c is None):
+                # WHO WINS THE FEEDBACK SLOT. The committed slot's phase is the
+                # default — it is the cycle with a ball in the air, and the
+                # runbook watches BALL_IN_FLIGHT/CATCHING/SETTLING through it.
+                # The staged slot takes the slot in exactly three cases:
+                #
+                #  * COMMITTING — THE arm point, the single most operator-
+                #    relevant instant of a cycle, and every SLIP tick with it,
+                #    which is how a commit that is running away becomes visible
+                #    LIVE rather than only in the record's `commit_slip_s`;
+                #  * the EDGE into STAGED — one tick, announcing "the next cycle
+                #    is fully prepared and waiting for its instant". That is
+                #    genuinely new information the serial path never had, and an
+                #    edge rather than a level so it cannot shadow the flight;
+                #  * no committed slot at all — then it is the only cycle there
+                #    is to report.
+                feedback_fn(sdecision.phase)
+        # ── the loop census, per slot, closing THIS iteration ──
+        # Each slot is closed with ITS OWN reported phase, and a slot that
+        # terminalised or was dropped on this tick is deliberately left open:
+        # it spends no trailing sleep, so counting it would report a period the
+        # loop never spent for it. That is `LoopPeriodCensus`'s own rule for the
+        # terminal iteration, applied per slot.
+        #
+        # ⚠ The STAGED slot's end is NOT gated on the committed slot's terminal.
+        # It was, briefly, and the effect was that the COMMIT tick — the one
+        # iteration `commit_budget_s` charges its single loop period for — was
+        # never censused at all, because the commit and the upstream terminal
+        # land on the same tick by construction (§ 2.4.4). The pipeline's whole
+        # pre-dispatch census would have been the empty set.
+        t_pre_sleep = time.perf_counter()
+        t_obs_done = now + self._toss_obs_build_s
+        if seq_c is not None and result is None and state_c.census is not None:
+            state_c.census.note_iteration_end(now, t_obs_done, t_pre_sleep,
+                                              decision.phase)
+        if staged_phase is not None and state_s.census is not None:
+            state_s.census.note_iteration_end(now, t_obs_done, t_pre_sleep,
+                                              staged_phase)
+        return result, ''
 
     @staticmethod
     def _invalid_toss_goal_field(catch_pose, throw_height, throw_delay, vel_scale):
@@ -4140,7 +4529,8 @@ class ReloadCoordinatorNode(Node):
             return False
         return True
 
-    def _step_toss_sequence(self, seq, now, goal_handle=None, state=None):
+    def _step_toss_sequence(self, seq, now, goal_handle=None, state=None,
+                            obs=None):
         """One toss FSM tick: build observations, step, execute the requested
         action, publish phase feedback. Returns the decision (testable in
         isolation) — the toss sibling of :meth:`_step_sequence`.
@@ -4167,12 +4557,28 @@ class ReloadCoordinatorNode(Node):
         and reading 50 ms would credit it with 2.5x more headroom than it has
         before collapsing this split into one tick."""
         state = self._toss_committed if state is None else state
-        obs = self._build_toss_observations(now, state)
-        # INSTRUMENT ONLY (see LoopPeriodCensus): stamped here rather than
-        # returned so this method's signature stays what its docstring promises —
-        # a decision, testable in isolation.
-        self._toss_obs_build_s = time.perf_counter() - now
+        if obs is None:
+            obs = self._build_toss_observations(now, state)
+            # INSTRUMENT ONLY (see LoopPeriodCensus): stamped here rather than
+            # returned so this method's signature stays what its docstring
+            # promises — a decision, testable in isolation.
+            self._toss_obs_build_s = time.perf_counter() - now
+        # ``obs`` is supplied ONLY by `_tick_toss_pipeline`, which builds ONE
+        # snapshot per tick and feeds it to both slots. That is not an
+        # optimisation: plan § 2.4.4 requires that the read admitting the commit
+        # and the read terminalising the upstream cycle be the SAME read, from
+        # ONE instant. Two `observe` calls would sample the cup twice for one
+        # decision — the split-observation class C-POSSESS-1 § 3.3 edit 1 closed.
         decision = seq.step(now, obs)
+        if decision.action_then == TOSS_ACTION_DISPATCH_THROW and state.staged:
+            # ── THE PROMOTION, between the gate and its actions (B4) ──
+            # The commit gate has passed; this cycle owns the hand from here.
+            # It runs BEFORE the announcement because the phantom-flight
+            # snapshot and the announced-ball roll live inside it, and their
+            # whole purpose is to be taken immediately before the announcement
+            # they protect. `_step_committing` is the only producer of
+            # `action_then`, so this cannot fire on any other transition.
+            self._promote_toss_staged(self._toss_session_ref)
         if decision.action == TOSS_ACTION_POSITION_PLATFORM:
             self._position_platform_for_toss(seq, state)
         elif decision.action == TOSS_ACTION_PREPARE_CATCH:
@@ -4241,7 +4647,16 @@ class ReloadCoordinatorNode(Node):
             # once, on the first cycle's verified-arrival tick, and every later
             # cycle finds them already standing. That is why the branch is taken
             # as a whole rather than per-publish — the three are one declaration.
-            if self._toss_session_live:
+            #
+            # ── B4 ── A STAGED cycle publishes NONE of the three: the session
+            # raised all of them before its first cycle threw, and they are
+            # standing. It still defers a tick and still waits for
+            # `note_prepare_result`, so the FSM's ladder is unchanged — what the
+            # node does inside the action is what moved (see
+            # `_prepare_toss_catch`'s `staged` paragraph).
+            if seq.staged:
+                pass
+            elif self._toss_session_live:
                 self._arm_session_declare(seq)
             else:
                 self._publish_prime_hold(True)
@@ -4276,8 +4691,22 @@ class ReloadCoordinatorNode(Node):
             # `_toss_prepare_reject`, read here on the same tick and handed
             # straight to the FSM so the cycle terminalises REJECTED_<code>
             # instead of a generic ABORTED_PREPARE_FAILED.
-            ok = self._prepare_toss_catch(seq)
+            ok = self._prepare_toss_catch(seq, staged=bool(seq.staged))
             seq.note_prepare_result(ok, self._toss_prepare_reject)
+        if decision.action_then == TOSS_ACTION_DISPATCH_THROW:
+            # ── THE COMMIT TICK's second half (B4, plan § 2.4.2) ──
+            # ANNOUNCE then DISPATCH, one tick, in that order, and it is the FSM
+            # that says so: a slipped release invalidates an already-published
+            # announcement and there is no withdrawal message on the wire, so the
+            # announcement cannot go out a tick early the way the serial ladder
+            # sends it. `_announce_toss` above has already published it and
+            # called `note_announcement`; this is the CAN frame.
+            #
+            # The only producer of `action_then` is `_step_committing`, and it
+            # sets it only after the whole evidence gate has passed — so this
+            # branch cannot be reached on evidence read at an earlier tick.
+            outcome, message = self._dispatch_toss_throw(seq, state)
+            seq.note_throw_dispatch(outcome, message)
         if (decision.done and decision.result is not None
                 and decision.result.outcome in _TOSS_POSITION_UNKNOWN_TERMINALS):
             # Position-unknown terminals carry ACTION_NONE from the FSM, but an
@@ -4525,7 +4954,7 @@ class ReloadCoordinatorNode(Node):
             rotvec_to_rot_matrix(np.array([float(rx), float(ry), 0.0])))
         return Quaternion(w=float(w), x=float(qx), y=float(qy), z=float(qz))
 
-    def _prepare_toss_catch(self, seq=None) -> bool:
+    def _prepare_toss_catch(self, seq=None, *, staged=False) -> bool:
         """The PREPARE bundle (verified at the nominated pose, ball seated,
         BEFORE anything is committed at the hand). catch/prime_hold is NOT in
         this bundle: the node already raised it on the PREVIOUS FSM tick (the
@@ -4583,8 +5012,53 @@ class ReloadCoordinatorNode(Node):
         catch_coordinator drops announcement pre-tilts that arrive unarmed).
         Under S6 that gap is ALSO satisfied by the session raise seconds
         earlier; the tick it costs is not reclaimed here (see
-        ``toss_sequencer.pre_dispatch_budget_s``)."""
+        ``toss_sequencer.pre_dispatch_budget_s``).
+
+        **``staged=True`` (B4) leaves NOTHING in the bundle but the guards.**
+        Steps 4-6 — ``catch/prime_dispatched``, ``catch/armed`` and the phantom
+        snapshot — move to the COMMIT tick (:meth:`_commit_toss_catch`), and
+        they move for a reason that is not tidiness:
+
+        * ``catch/armed`` published at STAGE time would be lowered again by the
+          upstream cycle's own terminal (``_toss_stay`` publishes False) BEFORE
+          this cycle throws, so the catch would be disarmed for the throw it was
+          armed for. Publishing at the commit puts it after that terminal, in
+          the same tick and in the right order;
+        * the phantom snapshot taken at stage time would record the UPSTREAM
+          cycle's airborne ball as a pre-existing phantom, which excludes the
+          next cycle's own track from its own gate;
+        * ``catch/prime_dispatched`` is the belt UNDER the armed edge (it holds
+          catch_coordinator's 1.2 s prime-inflight window across it), so it goes
+          where the armed edge goes or it is not a belt.
+
+        What is left is the reach-centre drift guard and one belt: a staged
+        cycle whose session is not already armed refuses. That case is
+        structurally unreachable — the first cycle of every pipelined sitting
+        runs SERIALLY, and it is what arms the session — and the refusal exists
+        so that if it ever became reachable, a staged cycle could not trigger an
+        ``arm_catch`` raise, which C2-stops any in-flight move, while the
+        upstream cycle's ball is in the air."""
         self._toss_prepare_reject = ''
+        if staged:
+            drift = self._toss_session_center_drift_mm(seq)
+            if drift is not None:
+                self.get_logger().error(
+                    'TOSS STAGE refused REACH_CENTER_DRIFT: %.1f mm from the '
+                    'session centre (tolerance %.1f mm) — see the committed '
+                    'path for the full argument.'
+                    % (drift, _TOSS_SESSION_REACH_DRIFT_TOL_MM))
+                self._toss_prepare_reject = 'REACH_CENTER_DRIFT'
+                return False
+            if not self._toss_session_armed:
+                self.get_logger().error(
+                    'TOSS STAGE refused SESSION_NOT_ARMED: a staged cycle may '
+                    'never raise trajectory/arm_catch — the raise C2-stops any '
+                    'in-flight move and the upstream ball is airborne. The '
+                    'session arms on its FIRST cycle, which runs serially, so '
+                    'reaching this is a pipeline sequencing defect.')
+                self._toss_prepare_reject = 'SESSION_NOT_ARMED'
+                return False
+            return True
         if self._toss_session_live:
             # ── the S6 reach-centre DRIFT GUARD, BEFORE any publish ──
             # The session's ONE declaration is frozen at trajectory_node; a
@@ -4715,6 +5189,123 @@ class ReloadCoordinatorNode(Node):
                % (centre[0], centre[1], centre[2]), float(scale)))
         return True
 
+    # ── B4: the two-slot pipeline's slot transitions ─────────────────────────
+
+    def _commit_toss_catch(self, state) -> None:
+        """The per-cycle catch publishes, at the COMMIT tick — steps 4-6 of the
+        PREPARE bundle, relocated (see :meth:`_prepare_toss_catch`'s ``staged``
+        paragraph for why each one had to move).
+
+        Order is the bundle's own, unchanged: ``catch/prime_dispatched`` then
+        ``catch/armed`` then the snapshot. It runs immediately BEFORE the
+        announcement and the dispatch, in the same tick, which is the tightest
+        placement the phantom snapshot has ever had — its whole job is "any id
+        already IN_FLIGHT before OUR throw is a phantom", and it is now taken
+        microseconds before the announcement rather than four ticks.
+
+        The armed→announce ordering the ≥1-tick gap used to buy survives, and
+        by a stronger mechanism than a tick: in a chained run ``catch/armed`` is
+        ALREADY True when this republishes it (the previous cycle raised it and
+        :meth:`_toss_stay` does not lower it while a staged slot is live), so
+        ``catch_coordinator`` cannot drop the announcement whatever order its
+        wait-set happens to drain in. A republish of an unchanged Bool is a
+        no-op there by its own early return."""
+        self._prime_dispatched_pub.publish(Bool(data=True))
+        self._publish_catch_armed(True)
+        with self._lock:
+            self._preexisting_flight_ids |= {
+                int(b.id) for b in self._balls
+                if int(b.status) == _BALL_STATUS_IN_FLIGHT}
+            self._announced_ball_id = None
+            self._announced_id_untagged = False
+
+    def _promote_toss_staged(self, session) -> None:
+        """Promote the STAGED slot to COMMITTED — the instant S1′ hands the hand
+        over, and the ONE place the pipeline's cross-cycle bookkeeping happens.
+
+        Called from the commit tick, after the FSM's gate has passed and BEFORE
+        the announcement goes out, so everything below describes the cycle that
+        is about to throw:
+
+        * ``_active_seq`` becomes this cycle, which re-points every "the ACTIVE
+          sequence's landing" read (§ 2.5b: the sensor is ALWAYS told the
+          committed slot's landing);
+        * the D6 announced-ball roll and the phantom snapshot run here rather
+          than at build (:meth:`_build_toss_cycle`'s ``staged`` paragraph);
+        * :meth:`_set_toss_next_cycle_perf` rolls the arrival boundary, so
+          ``prev_landing_t`` becomes the outgoing cycle's landing and
+          ``_toss_cycle_landing_perf`` this one's. It is called HERE and not at
+          build for exactly that reason: clause C.1's abutment holds by identity
+          only while the two ends name the two COMMITTED cycles, and at build
+          time this cycle was not one of them;
+        The session's slot bookkeeping is told SEPARATELY, by
+        :meth:`_tick_toss_pipeline`, and deliberately not from here: "a cycle
+        passed its COMMIT point" is true of a SERIALLY-run committed cycle too
+        (the pipeline's first cycle, which never promotes because it was never
+        staged), and if the only notification lived here that cycle would hold
+        the staging slot until its terminal and NOTHING would ever pipeline
+        behind it. One notification, keyed on the DISPATCH, covering both."""
+        with self._lock:
+            seq = self._toss_staged_seq
+            state = self._toss_staged
+            if seq is None or state is None:
+                return
+            self._toss_staged_seq = None
+            self._toss_staged = None
+            state.staged = False
+            self._active_seq = seq
+            self._toss_committed = state
+            self._toss_record_ctx = state.record_ctx
+            self._toss_loop_census = state.census
+            self._prev_announced_ball_id = self._announced_ball_id
+            self._platform_pos_mm = None
+        self._possession_logged = set()
+        self._commit_toss_catch(state)
+        self._set_toss_next_cycle_perf(seq, session, state)
+
+    def _discard_toss_staged(self, reason: str):
+        """Drop the STAGED slot — § 2.4.3's unwind, and a PURE STATE DISCARD.
+
+        The staged slot has commanded nothing and armed nothing (S1′ + the
+        skip-only rule + the empty staged PREPARE bundle), so there is no
+        publish to undo, no service to call and no retraction to make. What
+        there IS is a record: the slot's own declaration is closed with
+        ``staged_discarded_reason`` so a discard is COUNTABLE in the corpus
+        rather than being an absence, which is the difference between "the
+        pipeline dropped four cycles that sitting" and "four cycles are
+        missing".
+
+        Returns the discarded state (or None). Idempotent: called from the drain
+        on every teardown path, most of which have nothing staged."""
+        with self._lock:
+            state = self._toss_staged
+            seq = self._toss_staged_seq
+            self._toss_staged = None
+            self._toss_staged_seq = None
+        if state is None:
+            return None
+        state.discarded_reason = str(reason or 'DISCARDED')
+        self.get_logger().info(
+            'toss pipeline: STAGED slot discarded (%s) — it commanded nothing '
+            'and armed nothing, so the drop is a pure state discard'
+            % state.discarded_reason)
+        try:
+            self._publish_toss_record(
+                TossResult(False, 'DISCARDED_{}'.format(state.discarded_reason)),
+                ctx=state.record_ctx, cycle_state=state, seq=seq)
+        except Exception:                                       # noqa: BLE001
+            # An INSTRUMENT must never be able to affect a teardown — the same
+            # posture `_publish_toss_record` takes internally, restated here
+            # because this call site is INSIDE the S7 drain and the next thing
+            # to run is a `go_home`.
+            self.get_logger().warning(
+                'toss pipeline: the discarded slot\'s record could not be '
+                'published (instrument only — the drain continues)')
+        session = self._toss_session_ref
+        if session is not None:
+            session.note_stage_abandoned(state.discarded_reason)
+        return state
+
     def _toss_session_center_drift_mm(self, seq):
         """The S6 drift guard's measurement: ``‖B − session centre‖`` in mm when
         it exceeds :data:`_TOSS_SESSION_REACH_DRIFT_TOL_MM`, else None.
@@ -4747,20 +5338,23 @@ class ReloadCoordinatorNode(Node):
         no ``go_home`` is ever traversed under a catch the machine still thinks
         is live.
 
-        **At B3 the DRAIN half is a documented NO-OP PLACEHOLDER.** There is no
-        staged slot yet — B4 adds ``self._toss_staged`` — so the one thing this
-        method can do today is the disarm. It exists now, with all six call
-        sites wired and pinned, so that B4 adds the discard in ONE place instead
-        of re-auditing six teardown ladders under a pipeline.
+        **The DRAIN half landed at B4** (it was a documented no-op placeholder
+        at B3, wired into all six call sites so that this became a one-place
+        edit rather than a re-audit of six teardown ladders). It discards the
+        staged slot and closes its record with ``staged_discarded_reason``,
+        STRICTLY before the disarm and therefore strictly before any
+        ``go_home`` — which is the whole ordering invariant, stated in
+        § 2.4.3's unwind table as "**discarded** before the ladder".
 
-        Idempotent and free when nothing is armed: the single ``Toss`` action
-        and the RELOAD path never set the session flags, so for them this is a
-        branch and a return."""
-        # ── the DRAIN half (B4: discard self._toss_staged, close its record
-        #    with `staged_discarded_reason`, and do it HERE so the disarm below
-        #    still runs after it). Deliberately empty at B3: no staged slot
-        #    exists, and an empty placeholder is honest where a comment in six
-        #    teardowns would not be. ──
+        Idempotent and free when nothing is staged and nothing is armed: the
+        single ``Toss`` action and the RELOAD path never set the session flags
+        and never stage, so for them this is two branches and a return."""
+        # ── the DRAIN half (B4, § 2.4.3) ──
+        # It runs FIRST. A staged cycle owns nothing that moves, so dropping it
+        # is a pure state discard; but it is a cycle the machine still BELIEVES
+        # in, and lowering the latch (or installing a go_home) under a slot that
+        # is about to be told to commit is exactly the seam S7 exists to close.
+        self._discard_toss_staged('DRAINED')
         # ── the DISARM half (S6) ──
         self._disarm_session()
 
@@ -5128,7 +5722,39 @@ class ReloadCoordinatorNode(Node):
         state = self._toss_committed if state is None else state
         if not self._toss_session_armed:
             self._arm_catch(False)
-        self._publish_catch_armed(False)
+        if self._toss_staged is None:
+            self._publish_catch_armed(False)
+        else:
+            # ── B4, and it is a SAFETY ordering point, not an optimisation ──
+            # A staged cycle is one tick from its COMMIT, and the commit
+            # publishes the announcement in that same tick.
+            # `catch_coordinator._on_throw_announcement` DROPS an announcement
+            # that arrives while `catch/armed` is False, and dropping it loses
+            # the C-HAND-1 stroke-busy latch that keeps the next throw stroke
+            # from overlapping this catch.
+            #
+            # Lowering armed here and raising it again at the commit puts a
+            # False and a True on one topic and an announcement on another,
+            # all inside one tick, into a wait-set with no cross-topic ordering
+            # guarantee — the exact race the ≥1-tick armed→announce gap was
+            # bought to close, re-opened by a publish that has nothing left to
+            # protect. STAY is the CHAINING terminal: it installs no `go_home`,
+            # so there is no move for a standing latch to land inside (that
+            # hazard lives in `trajectory_node._svc_arm_catch`, which this topic
+            # does not reach), and the latch comes down at `_disarm_session`
+            # like every other session-scoped resource.
+            #
+            # ⚠ The plan (§ 2.3's S6 amendment) keeps `catch/armed` per-cycle on
+            # the grounds that it installs no graceful stop and that the bench
+            # trace recorder's `cycle_spans` segments off its edges. The first
+            # is true and is why the standing latch is safe; the second is a
+            # DIAGNOSTICS cost, and § 2.4.2's own claim that the gap is
+            # "satisfied by construction" is only true if this edge does not
+            # drop. B6 re-cuts the CS spans for pipelined sessions (it already
+            # must, for CS-4).
+            self.get_logger().debug(
+                'toss STAY: catch/armed held HIGH — a staged cycle commits '
+                'next tick and its announcement must meet an armed coordinator')
         self._release_toss_holds(state)
 
     def _toss_safe_abort(self, state=None):
@@ -5269,7 +5895,7 @@ class ReloadCoordinatorNode(Node):
     def _open_toss_record(self, *, action, goal_id, cycle_index,
                           catch_pose, throw_delay, vel_scale, raw_goal,
                           flight=None, session=None, reload_settle=False,
-                          retry=False) -> None:
+                          retry=False, state=None) -> None:
         """Install the declaration context for ONE cycle. Never reads back into
         the FSM; deleting this method changes no commanded motion.
 
@@ -5311,31 +5937,56 @@ class ReloadCoordinatorNode(Node):
             self._dwell_tilt_degraded = False
             ctx['retry_of'] = prev_uid if (retry and prev_uid) else None
             self._toss_record_prev_uid = uid
-            self._toss_record_ctx = ctx
-            # The join key belongs to the CYCLE, so it is cleared on the
-            # committed slot. THREE call sites, two orders: the pre-gate open
+            # The ctx rides on the SLOT (B4) and, for a committed cycle, on the
+            # node as well. Both, not either: the slot copy is what a discarded
+            # STAGED cycle closes its own record from, and the node copy is what
+            # the REJECTED_BAD_GOAL terminal — which has no cycle at all — reads.
+            # A staged open deliberately does NOT install the node copy, because
+            # the committed cycle's record is still the live one until this cycle
+            # promotes (:meth:`_promote_toss_staged` moves it across).
+            target = self._toss_committed if state is None else state
+            target.record_ctx = ctx
+            if state is None or state is self._toss_committed:
+                self._toss_record_ctx = ctx
+            # The join key belongs to the CYCLE, so it is cleared on THAT
+            # cycle's slot (B4 resolved the note this comment used to carry: with
+            # a staged slot, 'the committed slot' stopped being 'the cycle this
+            # record is for'). FOUR call sites, two orders: the pre-gate open
             # (_execute_toss, before _build_toss_cycle) clears the OUTGOING
-            # cycle's key; the two post-build opens clear the INCOMING cycle's,
-            # which _build_toss_cycle already minted as None. Both reproduce the
-            # node-global clear exactly. B4 MUST revisit this: with a staged
-            # slot, 'the committed slot' stops being 'the cycle this record is
-            # for'.
-            self._toss_committed.record_announce = None
+            # cycle's key; the post-build opens clear the INCOMING cycle's,
+            # which _build_toss_cycle already minted as None. All reproduce the
+            # node-global clear exactly.
+            target.record_announce = None
             self._toss_record_belt_warned = False
 
-    def _toss_record_fields(self, result) -> dict:
+    def _toss_record_fields(self, result, ctx=None, cycle_state=None,
+                            seq=None) -> dict:
         """Assemble THE declaration for this cycle. Pure-ish: reads cached state
-        under the lock, allocates a dict, touches no hardware and no service."""
+        under the lock, allocates a dict, touches no hardware and no service.
+
+        The three optional parameters name the SLOT this record is for, and they
+        exist because B4 made "the committed slot" and "the cycle this record is
+        for" two different things: a STAGED slot that is discarded before it ever
+        commits has its own declaration to close (``staged_discarded_reason``),
+        and closing it against the committed slot's state would attribute one
+        cycle's numbers to another. All three default to the committed reads,
+        which reproduces the pre-B4 behaviour exactly — `built` and all — and is
+        what the REJECTED_BAD_GOAL terminal (no cycle at all, nothing to pass)
+        depends on."""
         rec = toss_record.blank_record()
+        explicit = ctx is not None or cycle_state is not None or seq is not None
         with self._lock:
-            ctx = self._toss_record_ctx
+            if ctx is None and not explicit:
+                ctx = self._toss_record_ctx
             # The COMMITTED slot, not a state parameter: this method is called
             # from _log_toss_outcome, which the REJECTED_BAD_GOAL terminal also
             # calls with no cycle built and nothing to pass. Reading the slot
             # reproduces the node-global read exactly, `built` and all.
-            cycle_state = self._toss_committed
+            if cycle_state is None:
+                cycle_state = self._toss_committed
             announce = cycle_state.record_announce
-            seq = self._active_seq
+            if seq is None and not explicit:
+                seq = self._active_seq
             release = cycle_state.release_state
             release_cmd = cycle_state.release_cmd
             aim = cycle_state.aim
@@ -5555,9 +6206,28 @@ class ReloadCoordinatorNode(Node):
         # loop it measures. `summary()` is all-None when no complete
         # pre-dispatch iteration was censused, which is the REJECTED_BAD_GOAL
         # case and reads correctly as "not measured".
-        census = self._toss_loop_census
+        census = (cycle_state.census if cycle_state.census is not None
+                  else self._toss_loop_census)
         rec.update(census.summary() if census is not None
                    else {name: None for name in CENSUS_FIELD_NAMES})
+        # ── The two-slot pipeline (B4). All four are null on a serial cycle,
+        # which is the partition key a corpus needs: "did this cycle stage?" is
+        # answerable from the row rather than from the build. ──
+        rec['staged_discarded_reason'] = (str(cycle_state.discarded_reason)
+                                          or None)
+        if seq is not None and bool(getattr(seq, 'staged', False)):
+            staged_at = float(getattr(seq, 'staged_at', 0.0) or 0.0)
+            rec.update({
+                'staged_at_s': staged_at or None,
+                'commit_at_s': (float(getattr(seq, 'commit_at_scheduled', 0.0))
+                                or None),
+                # Recorded even when it is zero: a 0.000 slip is a MEASUREMENT
+                # (the commit fired on its scheduled tick) and a null is "this
+                # cycle had no commit gate". The runbook's PIPE-1 row scores the
+                # distribution, and a distribution that silently drops its zeros
+                # is not the one the § 1.4 prediction was made about.
+                'commit_slip_s': float(getattr(seq, 'slip_s', 0.0)),
+            })
         return rec
 
     def _toss_record_seq_fields(self, seq) -> dict:
@@ -5580,8 +6250,15 @@ class ReloadCoordinatorNode(Node):
             'announce_lead_short': bool(getattr(seq, 'announce_lead_short', False)),
             't_accept_perf': float(getattr(seq, '_t_accept', 0.0)) or None,
             't_release_perf': float(getattr(seq, 't_release', 0.0)) or None,
-            'event_delay_s': (float(getattr(seq, 'throw_delay_s', 0.0))
-                              if getattr(seq, 'throw_delay_s', 0.0) else None),
+            # accept → SCHEDULED RELEASE, and NOT `throw_delay_s`. Those are the
+            # same number only on the DERIVED path; with an absolute
+            # `release_at_perf` (§ 2.6, and every staged cycle has one) the
+            # delay field is not the lead this cycle ran on, so declaring it
+            # would put a number the machine ignored in the field a corpus reads
+            # the lead from. `scheduled_lead_s` returns `throw_delay_s` EXACTLY
+            # on the derived path, so every pre-B4 record is bit-unchanged.
+            'event_delay_s': (float(getattr(seq, 'scheduled_lead_s', 0.0))
+                              if getattr(seq, 'scheduled_lead_s', 0.0) else None),
             'throw_site_xy_mm': [float(v) for v in
                                  getattr(seq, 'throw_site_xy_mm', (0.0, 0.0))],
         }
@@ -5630,12 +6307,18 @@ class ReloadCoordinatorNode(Node):
                 _TOSS_SOFT_CATCH_GAINS['vel_integrator_gain']),
         }
 
-    def _publish_toss_record(self, result) -> None:
+    def _publish_toss_record(self, result, ctx=None, cycle_state=None,
+                             seq=None) -> None:
         """Publish ONE declaration on ``toss/record`` and belt it to JSONL.
 
         Called from the single authoritative outcome line, so exactly one record
         exists per cycle terminal — including the REJECTED_BAD_GOAL path, where
         the census matters most and the record degrades to identity + outcome.
+
+        The three optional slot parameters are threaded to
+        :meth:`_toss_record_fields`; the ONE caller that passes them is the
+        staged-slot discard (:meth:`_discard_toss_staged`), which closes a
+        record for a cycle that is not, and never became, the committed one.
 
         **Fails silently, by design.** This is an instrument; it must never be
         able to affect a teardown. The whole body is guarded, the belt write
@@ -5644,7 +6327,7 @@ class ReloadCoordinatorNode(Node):
         ladder.
         """
         try:
-            record = self._toss_record_fields(result)
+            record = self._toss_record_fields(result, ctx, cycle_state, seq)
             payload = toss_record.encode(record)
         except Exception as exc:                               # noqa: BLE001
             self.get_logger().warning(
@@ -6189,6 +6872,13 @@ class ReloadCoordinatorNode(Node):
             # envelope refuses the negative side outright.
             ilc_speed_trim_possible=bool(
                 self._toss_ilc_enabled() and ilc_loaded),
+            # ── B4's flag, resolved ONCE per goal ──
+            # Ships FALSE (see the YAML key). Read here rather than at each
+            # branch so a session cannot change pipelines halfway through — the
+            # accept gate that admitted its dwell was the pipelined or the
+            # serial one, and a mid-session flip would leave a cadence accepted
+            # under a floor the machine is no longer running.
+            pipelined=bool(hw.JB_OP_TOSS_PIPELINE_ENABLED),
             on_empty_cup=on_empty_cup,
             max_reloads=(max_reloads_raw if max_reloads_raw > 0
                          else int(hw.JB_OP_TOSS_SESSION_MAX_RELOADS)),
@@ -6239,6 +6929,11 @@ class ReloadCoordinatorNode(Node):
             self._toss_session_live = True
             self._toss_session_center_mm = None
             self._toss_session_armed = False
+            # The drain's only way to reach the session (see the attribute's
+            # comment in __init__): a staged slot it discards has to be given
+            # back to the session's slot bookkeeping, and six teardown ladders
+            # have no session parameter to be handed.
+            self._toss_session_ref = session
             t_start = time.perf_counter()
             while rclpy.ok():
                 now = time.perf_counter()
@@ -6275,13 +6970,33 @@ class ReloadCoordinatorNode(Node):
                     session.note_reload_result(ok, attempts=attempts,
                                                stop_code=stop_code)
                     continue
-                if decision.action == SESSION_ACTION_START_CYCLE:
+                if (decision.action == SESSION_ACTION_START_CYCLE
+                        and session.pipelined):
+                    # ── B4: fill a SLOT, and do not block ──
+                    # Which slot is not a session decision: START_CYCLE means
+                    # "the slot this FSM fills is empty", and the node knows
+                    # which one that is. Committed slot empty ⇒ this is the
+                    # session's FIRST cycle (or its first after a teardown) and
+                    # it runs the SERIAL ladder, because there is nothing to
+                    # pipeline it behind and it is the cycle that ARMS the
+                    # session. Committed slot occupied ⇒ STAGE, behind the cycle
+                    # that owns the hand.
+                    self._start_pipelined_cycle(
+                        goal_handle, session, catch_pose, flight, vel_scale,
+                        raw_goal={'throw_height_m': height,
+                                  'throw_delay_s': throw_delay,
+                                  'catch_vel_scale': vel_scale,
+                                  'on_empty_cup': on_empty_cup,
+                                  'max_reloads': max_reloads_raw})
+                elif decision.action == SESSION_ACTION_START_CYCLE:
                     # ── THE Phase-C seam, and it is left at the DEFAULT here ──
                     # The beat this cycle belongs to is
                     # `session.next_release_at(previous landing)`, and B4's
                     # `_tick_toss_pipeline` passes exactly that as
-                    # `release_at_perf=`. Not passing it yet is a decision, not
-                    # an omission:
+                    # `release_at_perf=` on the PIPELINED branch above. The
+                    # SERIAL branch deliberately keeps the derived default, and
+                    # that is what makes `toss_pipeline_enabled: false` a
+                    # decision-stream identity rather than a near-identity:
                     #
                     #  * START_CYCLE is POLLED. `now` is up to one loop period
                     #    past `next_cycle_at`, so today's release sits that same
@@ -6299,8 +7014,10 @@ class ReloadCoordinatorNode(Node):
                     #    B4's `commit_budget_s` is what re-closes it for an
                     #    absolute schedule.
                     #
-                    # So B2 lands the plumbing and the single beat derivation;
-                    # B4 supplies the argument once a gate charges the real lead.
+                    # So B2 landed the plumbing and the single beat derivation;
+                    # B4 supplies the argument on the branch where a gate
+                    # (`min_stage_lead_for_release_s`) charges the real lead,
+                    # and nowhere else.
                     seq, cycle_state = self._build_toss_cycle(
                         catch_pose, flight, session.throw_delay_s, vel_scale,
                         delay_is_cadence=True)
@@ -6378,8 +7095,42 @@ class ReloadCoordinatorNode(Node):
                         return result
                     # Let the next step() adjudicate stop_on_miss / COMPLETED.
                     continue
-                self._publish_session_feedback(
-                    goal_handle, session, decision.phase)
+                if session.pipelined:
+                    # ── B4: ONE non-blocking tick of BOTH slots ──
+                    # It replaces the blocking `_run_toss_cycle` above and does
+                    # everything that wrapper's loop body did, once per slot:
+                    # the cancel policy, the per-cycle node ceiling, the census,
+                    # the feedback and the safing. The committed slot is always
+                    # stepped first.
+                    _cycle_result, exit_kind = self._tick_toss_pipeline(
+                        now, session,
+                        cancel_now_fn=(
+                            lambda n, s: (goal_handle.is_cancel_requested
+                                          and not self._toss_cancel_deferred(
+                                              s, n))),
+                        feedback_fn=(
+                            lambda phase: self._publish_session_feedback(
+                                goal_handle, session, phase)))
+                    if exit_kind:
+                        outcome = {'cancel': 'ABORTED_CANCELLED',
+                                   'timeout': 'ABORTED_TIMEOUT',
+                                   'shutdown': 'ABORTED_SHUTDOWN'}[exit_kind]
+                        self._finish_session(result, session, outcome)
+                        if exit_kind == 'cancel':
+                            goal_handle.canceled()
+                        elif exit_kind == 'timeout':
+                            goal_handle.abort()
+                        return result
+                    if not (session.cycle_live or session.committed_live):
+                        # Nothing in either slot: the session's own phase is the
+                        # only thing to report. With a slot live the tick has
+                        # already published the CYCLE's phase verbatim, which is
+                        # what the .action documents.
+                        self._publish_session_feedback(
+                            goal_handle, session, decision.phase)
+                else:
+                    self._publish_session_feedback(
+                        goal_handle, session, decision.phase)
                 # ── Layer 1.5, and its ONLY call site ──
                 # Structurally confined to the quiescent dwell: _run_toss_cycle
                 # is a BLOCKING call, so no iteration of this loop happens while
@@ -6387,9 +7138,22 @@ class ReloadCoordinatorNode(Node):
                 # THROW to a tilt read. The extra `not session.cycle_live` is a
                 # belt, not the mechanism (test_dwell_tilt_reads_have_one_call
                 # _site_and_it_is_the_quiescent_dwell pins the structure).
+                #
+                # ⚠ B4 made the belt LOAD-BEARING on the pipelined path, and
+                # `not session.committed_live` is why. Pipelined, `cycle_live`
+                # is cleared at a cycle's COMMIT, so it is False for the whole
+                # flight — the one window in which a blocking tilt read is
+                # exactly what § 3.10 rule 1 forbids. `committed_live` is the
+                # flag that spans COMMIT→terminal, and requiring BOTH to be
+                # false means a pipelined session reads no dwell tilt at all,
+                # which is honest: under the pipeline there is no quiescent
+                # dwell to read one in. That is a known cost of the pipeline,
+                # not an oversight — Layer 1.5's covariate simply does not exist
+                # at these cadences.
                 if (decision.action == SESSION_ACTION_NONE
                         and decision.phase == SESSION_PHASE_DWELL
-                        and not session.cycle_live):
+                        and not session.cycle_live
+                        and not session.committed_live):
                     self._maybe_read_dwell_tilt(now, session)
                 if now - t_start > max_session_s:
                     # Reachable only BETWEEN cycles (a cycle's own ceiling is
@@ -6426,6 +7190,7 @@ class ReloadCoordinatorNode(Node):
             # not.
             self._drain_pipeline_and_disarm()
             self._toss_session_live = False
+            self._toss_session_ref = None
             self._clear_toss_cycle_state()
             # The trim is per GOAL, so it dies here — with its proposal written.
             # In the `finally` deliberately: a cancelled or aborted goal's trim
@@ -6433,6 +7198,83 @@ class ReloadCoordinatorNode(Node):
             self._toss_trim_end()
             with self._lock:
                 self._goal_claimed = False
+
+    def _start_pipelined_cycle(self, goal_handle, session, catch_pose, flight,
+                               vel_scale, *, raw_goal) -> None:
+        """Fill a pipeline SLOT for the cycle the session just started (B4).
+
+        Two cases, and the node — not the session — decides which, because
+        ``SESSION_ACTION_START_CYCLE`` says only "the slot this FSM fills is
+        empty":
+
+        * **committed slot empty ⇒ the SERIAL ladder, in the committed slot.**
+          The first cycle of a sitting has nothing to pipeline behind, and it is
+          the cycle that ARMS the session (S6) — the one raise that every later
+          cycle finds standing. Its release is DERIVED from ``throw_delay_s``
+          exactly as today, because an absolute beat has no previous landing to
+          be measured from yet;
+        * **committed slot occupied ⇒ STAGE, behind the cycle that owns the
+          hand.** Its release is the beat —
+          ``session.next_release_at(committed landing)`` — passed through
+          ``release_at_perf``, which is the B2 seam finally carrying a value.
+          The landing it is measured from is the committed cycle's SCHEDULED
+          one (``t_release + flight``), which is exactly the number
+          :meth:`TossSessionSequencer.note_cycle_result` will schedule the
+          cycle AFTER it from, so the beat is self-consistent whether or not
+          this cycle's own commit slips.
+
+        **A cycle that cannot stage is dropped, not degraded** (§ 2.4.1). Its
+        positioning decision is only knowable after the release state is solved,
+        so the build has to run first; a staged build is side-effect-free apart
+        from the slot install, so dropping it costs one solve and no state. The
+        session gives the index back and rebuilds it SERIALLY once the committed
+        slot frees, which is the plan's own fallback: it pays the 0.520 s moving
+        budget, gets its lead granted with one WARN line, and simply does not
+        get faster."""
+        with self._lock:
+            committed_seq = self._active_seq
+        staged = committed_seq is not None
+        release_at = 0.0
+        if staged:
+            release_at = session.next_release_at(
+                float(committed_seq.t_release)
+                + float(committed_seq.flight_time_s))
+        seq, cycle_state = self._build_toss_cycle(
+            catch_pose, flight, session.throw_delay_s, vel_scale,
+            delay_is_cadence=True, release_at_perf=release_at, staged=staged)
+        if staged and not seq.staged:
+            # The skip-only rule refused it (§ 2.4.1): POSITIONING would COMMAND
+            # a move, and a staged cycle may not move the platform during the
+            # previous cycle's flight, under a ball the catch is armed for.
+            with self._lock:
+                self._toss_staged = None
+                self._toss_staged_seq = None
+            self.get_logger().info(
+                'toss pipeline: cycle %d does NOT stage — its POSITIONING must '
+                'COMMAND a move, so it falls back to the serial path and runs '
+                'once the committed cycle terminalises. The pipeline is inert '
+                'for this cycle by design, not degraded.' % session.cycle_index)
+            session.note_stage_abandoned('POSITIONING_MOVE')
+            return
+        if not staged:
+            # The committed slot's clamp is latched at build, exactly as on the
+            # serial path — a first cycle has no staged successor to read
+            # actuals from, so the prediction IS the machine's next scheduled
+            # instant. Every LATER cycle latches it at its promotion instead
+            # (`_promote_toss_staged`), where the arrival boundary's two ends
+            # name the two COMMITTED cycles.
+            self._set_toss_next_cycle_perf(seq, session, cycle_state)
+        self._open_toss_record(
+            action='toss_continuous',
+            goal_id=_goal_id_hex(goal_handle),
+            cycle_index=session.cycle_index,
+            catch_pose=catch_pose, flight=flight,
+            throw_delay=session.throw_delay_s, vel_scale=vel_scale,
+            raw_goal=raw_goal,
+            session=session,
+            reload_settle=bool(session.cycle_reload_settle),
+            retry=bool(session.cycle_is_retry),
+            state=cycle_state)
 
     @staticmethod
     def _invalid_toss_session_goal_field(catch_pose, throw_height, throw_delay,

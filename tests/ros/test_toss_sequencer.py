@@ -2002,7 +2002,14 @@ def test_the_census_never_feeds_a_budget():
     exposing it, which is exactly how the two 2026-08-26
     ABORTED_CANT_MAKE_RELEASE cycles cleared a gate they should have failed."""
     from jugglebot import toss_sequencer as ts
-    for fn in (ts.pre_dispatch_budget_s, ts.min_throw_delay_for_release_s):
+    # B4 (T-U14): `commit_budget_s` and the two functions built on it JOIN the
+    # inspected set. It is the pipelined path's whole floor, and the failure
+    # mode it would have is the identical one — a budget that shrank because the
+    # last cycle was slow would let the commit gate fire later and later while
+    # reporting a clearance it no longer has.
+    for fn in (ts.pre_dispatch_budget_s, ts.min_throw_delay_for_release_s,
+               ts.commit_budget_s, ts.stage_budget_s,
+               ts.min_stage_lead_for_release_s):
         # The COMPILED identifier set, not the source text: 'census' is an
         # unrelated word in this codebase (the B1/B6 census notes) and a source
         # grep matches those docstrings. co_names/co_varnames carry the names the
@@ -2011,3 +2018,416 @@ def test_the_census_never_feeds_a_budget():
         assert not [r for r in refs if 'census' in r.lower()], fn.__name__
     # And the census exposes no method a gate could mistake for a budget.
     assert not hasattr(ts.LoopPeriodCensus, 'budget_s')
+
+
+# ── B4: the two-slot pipeline's cycle FSM ────────────────────────────────────
+#
+# Everything below drives the STAGED ladder — CHECKING(STATIC) -> POSITIONING
+# (skip) -> PREPARING -> STAGED -> COMMITTING. The serial ladder above is
+# untouched by all of it, and that is the acceptance the flag ships on: with
+# `staged=False` (the default, and what `toss_pipeline_enabled: false` produces)
+# not one decision in this file moves.
+
+
+def _staged(**kw):
+    """A cycle that RUNS the pipelined ladder: staged, skip-only, and TOLD its
+    release instant absolutely (`release_at_perf`) the way the node's
+    `_start_pipelined_cycle` tells a staged cycle its beat.
+
+    ``release_at_perf=5.0`` keeps the fixture's own landing arithmetic
+    (FIXTURE_LANDING_T) intact, so a staged cycle and a serial one release at
+    the same instant and the two ladders are compared like for like."""
+    params = dict(catch_pose_stow_mm=CATCH_POSE, flight_time_s=0.8,
+                  throw_delay_s=5.0, release_at_perf=5.0,
+                  positioning_move_expected=False, staged=True)
+    params.update(kw)
+    seq = TossSequencer(**params)
+    seq.start(0.0)
+    return seq
+
+
+def _to_staged(seq, *, t0=0.0):
+    """Walk the STAGED preamble: CHECKING -> POSITIONING(noop) -> PREPARE ->
+    the deferred bundle -> PHASE_STAGED. Three loop periods, which is exactly
+    what `stage_budget_s` charges."""
+    from jugglebot.toss_sequencer import NODE_LOOP_PERIOD_S, PHASE_STAGED
+    # The node's OWN ladder, tick for tick — the same one `stage_budget_s`
+    # counts. The intermediate NONE tick is not padding: `ACTION_PREPARE_CATCH`
+    # defers the bundle by one full FSM tick (the cross-topic ordering split in
+    # `_step_toss_sequence`), so `note_prepare_result` lands on tick 2 and the
+    # FSM observes it on tick 3.
+    d = seq.step(t0, _obs(t0))
+    assert d.phase == PHASE_POSITIONING and d.action == ACTION_POSITION_PLATFORM
+    seq.note_position_noop(t0)
+    t1 = t0 + NODE_LOOP_PERIOD_S
+    d = seq.step(t1, _obs(t1))
+    assert d.phase == PHASE_PREPARING and d.action == ACTION_PREPARE_CATCH
+    t2 = t1 + NODE_LOOP_PERIOD_S
+    d = seq.step(t2, _obs(t2))               # the deferred bundle's own tick
+    assert d.phase == PHASE_PREPARING and d.action == ACTION_NONE
+    seq.note_prepare_result(True)            # …answered by the node, on it
+    t3 = t2 + NODE_LOOP_PERIOD_S
+    d = seq.step(t3, _obs(t3))
+    assert d.phase == PHASE_STAGED and d.action == ACTION_NONE
+    return d
+
+
+def test_the_commit_budget_is_one_loop_period_not_four():
+    """T-U1 — THE arithmetic the whole plan rests on.
+
+    ``pre_dispatch_budget_s`` charges the chained serial preamble
+    ``(1 + 3) x NODE_LOOP_PERIOD_S``; the pipeline moves three of those four
+    ticks into the PREVIOUS cycle's flight and satisfies the armed->announce gap
+    by construction instead of with a tick. So the commit budget must be exactly
+    three loop periods smaller than the serial delay floor — not "about", and
+    not by a hand-typed 0.120.
+
+    Probe: ``python tools/probes/cadence_rung_check.py --pipeline`` (P3,
+    2026-08-27), which now IMPORTS this function rather than modelling it."""
+    from jugglebot import toss_sequencer as ts
+    for flight in (0.4949, 0.6387, 0.9032, 1.0298):
+        v = ts.vertical_event_vel_mps(flight)
+        dispatch = ts.hand_stroke.min_throw_event_delay_s(v)
+        assert ts.commit_budget_s(v) == pytest.approx(
+            dispatch + ts.NODE_LOOP_PERIOD_S + ts.FLOOR_REPRESENTATION_SLACK_S,
+            abs=1e-12)
+        serial = ts.min_throw_delay_for_release_s(v, False)
+        assert serial - ts.commit_budget_s(v) == pytest.approx(
+            3.0 * ts.NODE_LOOP_PERIOD_S, abs=1e-9)
+
+
+def test_nothing_is_relaxed_the_preamble_only_moved_off_the_dwell():
+    """The plan's own thesis, stated as an identity rather than as prose.
+
+    ``stage_budget_s + commit_budget_s`` is BIT-FOR-BIT the serial
+    ``min_throw_delay_for_release_s(v, positioning_move=False)``: the pipeline
+    charges the same four loop periods and the same dispatch budget. What
+    changed is WHICH interval pays for them — three of the four moved off the
+    DWELL (landing -> next release) and onto the previous cycle's FLIGHT, which
+    is time the machine was spending anyway.
+
+    That is why § 9.2 can say "the floors are re-derived, never relaxed" and
+    have it be literally true. If this ever stops holding, someone has shortened
+    a ladder rather than relocating one."""
+    from jugglebot import toss_sequencer as ts
+    for flight in (0.4949, 0.6387, 0.9032, 1.0298, 1.1485):
+        v = ts.vertical_event_vel_mps(flight)
+        assert (ts.stage_budget_s() + ts.commit_budget_s(v)
+                == pytest.approx(ts.min_throw_delay_for_release_s(v, False),
+                                 abs=1e-12))
+
+
+def test_the_staged_ladder_reaches_staged_in_the_budgeted_three_ticks():
+    """The tick table `stage_budget_s` counts, walked. Three loop periods from
+    the first CHECKING tick to PHASE_STAGED — a budget that counted a ladder the
+    FSM does not walk is the 2026-08-23 defect one gate over."""
+    from jugglebot.toss_sequencer import (NODE_LOOP_PERIOD_S, PHASE_STAGED,
+                                          stage_budget_s)
+    seq = _staged()
+    _to_staged(seq)
+    assert seq.phase == PHASE_STAGED
+    assert seq.staged_at == pytest.approx(stage_budget_s(), abs=1e-12)
+    assert stage_budget_s() == pytest.approx(3 * NODE_LOOP_PERIOD_S)
+
+
+def test_a_staged_cycle_never_emits_a_hand_bearing_action():
+    """T-U2 (the deterministic half; the property test is
+    tests/ros/test_toss_pipeline_properties.py).
+
+    S1′: while a cycle is staged its emittable action set is
+    {NONE, POSITION_PLATFORM(skip), PREPARE_CATCH} and nothing else. Not one of
+    ANNOUNCE / DISPATCH_THROW / REACH_CATCH / STAY / RECENTER / SAFE_ABORT may
+    appear before the COMMIT gate has passed, because every one of them either
+    moves the platform, commits the hand or tears the catch down — under a ball
+    the previous cycle put in the air."""
+    from jugglebot.toss_sequencer import NODE_LOOP_PERIOD_S, PHASE_STAGED
+    allowed = {ACTION_NONE, ACTION_POSITION_PLATFORM, ACTION_PREPARE_CATCH}
+    seq = _staged()
+    _to_staged(seq)
+    # …and it keeps emitting NONE for as long as the commit instant is away.
+    t = seq.staged_at
+    while t < seq.commit_at - NODE_LOOP_PERIOD_S:
+        d = seq.step(t, _obs(t))
+        assert d.action in allowed, (t, d.action)
+        assert d.action_then == ACTION_NONE
+        assert d.phase == PHASE_STAGED
+        t += NODE_LOOP_PERIOD_S
+
+
+def test_a_staged_cycle_cannot_command_a_positioning_move():
+    """T-U5's FSM half: staging is SKIP-ONLY, and the FSM refuses to be a staged
+    mover rather than trusting the node not to build one.
+
+    A staged cycle that commanded a `go_to_pose` would traverse the platform
+    during the previous cycle's flight, under a ball the catch is armed for. The
+    node declines to stage such a cycle; this is the belt, and it fails in the
+    SAFE direction (serial, not staged)."""
+    seq = TossSequencer(catch_pose_stow_mm=CATCH_POSE, flight_time_s=0.8,
+                        throw_delay_s=5.0, release_at_perf=5.0,
+                        positioning_move_expected=True, staged=True)
+    assert seq.staged is False        # __post_init__ forced it back
+    seq.start(0.0)
+    # …and it walks the SERIAL ladder from there: PREPARE -> ANNOUNCE ->
+    # DISPATCH, which is the fallback § 2.4.1 specifies.
+    _to_positioning(seq)
+    seq.note_position_result(0.05, True, 0.5)
+    seq.step(0.8, _obs(0.8))
+    seq.note_prepare_result(True)
+    assert seq.step(0.9, _obs(0.9)).action == ACTION_ANNOUNCE
+
+
+def test_the_dispatch_is_evidence_armed_on_its_own_tick():
+    """T-U3 — the safety property, stated temporally.
+
+    Two halves, and the second is the one that makes it a GATE rather than a
+    latch:
+
+      * ``ball_seated`` False ON the commit tick yields a SLIP and never
+        ACTION_DISPATCH_THROW;
+      * ``ball_seated`` False on the tick BEFORE and True at commit still
+        dispatches — the gate is the commit read, not a latch that a single bad
+        sample can poison for the cycle."""
+    from jugglebot.toss_sequencer import (NODE_LOOP_PERIOD_S, PHASE_COMMITTING)
+    # (a) empty cup at the commit tick -> SLIP, no dispatch.
+    seq = _staged()
+    _to_staged(seq)
+    seq.note_upstream_terminalised()
+    d = seq.step(seq.commit_at, _obs(seq.commit_at, ball_seated=False,
+                                     ball_evidence='EMPTY'))
+    assert d.slip is True
+    assert d.phase == PHASE_COMMITTING
+    assert d.action == ACTION_NONE and d.action_then == ACTION_NONE
+    # (b) empty a tick early, seated at the commit -> it dispatches.
+    seq = _staged()
+    _to_staged(seq)
+    seq.note_upstream_terminalised()
+    early = seq.commit_at - NODE_LOOP_PERIOD_S
+    assert seq.step(early, _obs(early, ball_seated=False,
+                                ball_evidence='EMPTY')).action == ACTION_NONE
+    d = seq.step(seq.commit_at, _obs(seq.commit_at))
+    assert d.action == ACTION_ANNOUNCE
+    assert d.action_then == ACTION_DISPATCH_THROW
+
+
+def test_the_commit_publishes_the_announcement_and_the_throw_in_one_tick():
+    """§ 2.4.2's ordering, pinned on the decision rather than on the node.
+
+    ``ThrowAnnouncement`` carries ``throw_time`` and ``landing_time``; a slipped
+    release invalidates an already-published announcement and there is no
+    withdrawal message on the wire. So the announcement cannot go out a tick
+    early the way the serial ladder sends it — it goes out in the commit tick,
+    immediately before the CAN frame, and the FSM says so with ONE decision
+    carrying both actions in order."""
+    from jugglebot.toss_sequencer import PHASE_COMMITTING
+    seq = _staged()
+    _to_staged(seq)
+    seq.note_upstream_terminalised()
+    d = seq.step(seq.commit_at, _obs(seq.commit_at))
+    assert (d.action, d.action_then) == (ACTION_ANNOUNCE, ACTION_DISPATCH_THROW)
+    # The DECISION reports COMMITTING — that is what this tick was, it is what
+    # the session publishes as feedback, and it is what files the tick on the
+    # PRE-dispatch side of the loop census (where `commit_budget_s` charges it).
+    assert d.phase == PHASE_COMMITTING
+    # …while the FSM's own phase has advanced, because the dispatch IS
+    # committed from this instant and the cancel policy must say so.
+    assert seq.phase == PHASE_THROWING
+    assert seq.committed is True
+
+
+def test_no_announcement_is_published_on_a_refused_commit():
+    """§ 2.4.3: a staged cycle that refuses leaves NO phantom tracker
+    expectation, which is exactly what the two ABORTED_CANT_MAKE_RELEASE cycles
+    of bag 2026-08-26_14-25-16 did leave (announcement out, latch up, and a
+    REJECTED_TRACK_ACTIVE on the next cycle until it expired)."""
+    seq = _staged()
+    _to_staged(seq)
+    seq.note_upstream_terminalised()
+    # Track active at the commit: a refusal, and nothing announced.
+    d = seq.step(seq.commit_at, _obs(seq.commit_at, track_active=True))
+    assert d.done is True
+    assert d.result.outcome == 'REJECTED_TRACK_ACTIVE'
+    assert d.action == ACTION_NONE and d.action_then == ACTION_NONE
+
+
+def test_a_refused_staged_cycle_does_not_safe_abort():
+    """The terminal ACTION for a staged cycle that never committed is NONE, and
+    the reason is a hazard, not tidiness.
+
+    `_positioned` is True (POSITIONING is skip-only here, so the noop declared
+    an arrival that traversed zero millimetres) and `_prepare_dispatched` is
+    True (the staged PREPARE is the drift guard and nothing else), so the serial
+    test would read both commitments as real and emit SAFE_ABORT. A staged cycle
+    can refuse WHILE THE UPSTREAM BALL IS AIRBORNE, and SAFE_ABORT's ladder
+    retracts the hand — under the incoming ball, with the catch torn down."""
+    seq = _staged()
+    _to_staged(seq)
+    seq.note_upstream_terminalised()
+    d = seq.step(seq.commit_at, _obs(seq.commit_at, track_active=True))
+    assert d.action == ACTION_SAFE_ABORT or d.action == ACTION_NONE
+    assert d.action == ACTION_NONE, 'a staged refusal must not retract the hand'
+    # …while the SAME refusal on the serial ladder still safes, unchanged.
+    ser = _fresh()
+    _to_prepared(ser)
+    ser.note_prepare_result(False)
+    assert ser.step(0.9, _obs(0.9)).action == ACTION_SAFE_ABORT
+
+
+def test_ball_seated_and_hand_parked_are_read_only_from_the_commit_handler():
+    """T-U4 — STRUCTURAL, the `inspect.getsource`-per-handler idiom
+    (tests/ros/test_possession_replay.py:192).
+
+    The two evidence gates may be referenced ONLY by the COMMIT handler and by
+    the serial path's CHECKING/PREPARING. Reading either from `_step_staged`
+    would be a gate evaluated at stage time — up to a whole flight before the
+    CAN frame exists — which is the pipeline weakening the empty-stroke gate
+    instead of strengthening it."""
+    import inspect
+    from jugglebot import toss_sequencer
+    src = inspect.getsource(toss_sequencer.TossSequencer)
+    for handler in ('_step_staged', '_step_positioning'):
+        body = src.split('def {}('.format(handler))[1].split('\n    def ')[0]
+        assert 'ball_seated' not in body, handler
+        assert 'hand_parked' not in body, handler
+    commit = src.split('def _step_committing(')[1].split('\n    def ')[0]
+    assert 'obs.ball_seated' in commit
+    assert 'obs.hand_parked' in commit
+
+
+def test_the_slip_is_bounded_by_the_confirm_window_and_nothing_else():
+    """T-U6 — the bound is DERIVED, so a mutation of the constant moves it.
+
+    The upstream cycle terminalises at the cup edge, or at
+    ``landing + catch_confirm_window_s`` at the very latest; a commit that has
+    slipped past that is waiting for something that is not coming. No new
+    constant is introduced, and this test reads the one that IS the bound rather
+    than a number typed next to it."""
+    from jugglebot.toss_sequencer import NODE_LOOP_PERIOD_S
+    for window in (CATCH_CONFIRM_WINDOW_S, 0.25, 1.10):
+        seq = _staged(catch_confirm_window_s=window)
+        _to_staged(seq)
+        seq.note_upstream_terminalised()
+        commit_at = seq.commit_at_scheduled
+        t = commit_at
+        last = None
+        # Starve the cup forever: it slips, and slips, until the bound.
+        while t < commit_at + window + 5 * NODE_LOOP_PERIOD_S:
+            d = seq.step(t, _obs(t, ball_seated=False, ball_evidence='EMPTY'))
+            if d.done:
+                last = (t, d)
+                break
+            assert d.slip is True
+            t += NODE_LOOP_PERIOD_S
+        assert last is not None, window
+        t_refused, d = last
+        assert d.result.outcome.startswith('REJECTED_NO_BALL')
+        # It refused only AFTER the window and within one poll of it — the bound
+        # IS the window, not a number that happens to sit near it.
+        assert t_refused > commit_at + window
+        assert t_refused <= commit_at + window + NODE_LOOP_PERIOD_S
+        assert seq.slip_s == pytest.approx(t_refused - commit_at, abs=1e-9)
+
+
+def test_a_slip_moves_the_release_so_the_runtime_guard_cannot_break():
+    """§ 2.4.3's release bound, which holds BY CONSTRUCTION: the slip advances
+    ``now`` and ``_t_release`` together, so ``t_release − now`` is pinned at the
+    commit budget and can never fall under the dispatch budget it contains.
+
+    That is what makes ABORTED_CANT_MAKE_RELEASE structurally unreachable on the
+    pipelined path — the plan's § 6.4 stop condition calls one a DESIGN finding
+    rather than a tuning finding, and this is why."""
+    from jugglebot.toss_sequencer import NODE_LOOP_PERIOD_S
+    seq = _staged()
+    _to_staged(seq)
+    seq.note_upstream_terminalised()
+    t = seq.commit_at
+    for _ in range(6):
+        d = seq.step(t, _obs(t, hand_parked=False))
+        assert d.slip is True
+        # the guard's own inequality, evaluated at every slipped tick
+        assert seq.t_release - t >= seq.min_event_delay_for_throw_s
+        assert seq.t_release - t == pytest.approx(seq.commit_budget_for_cycle_s,
+                                                  abs=1e-12)
+        t += NODE_LOOP_PERIOD_S
+    # …and the landing follows the release, so the cycle stays self-consistent.
+    assert seq.landing_perf == pytest.approx(seq.t_release + seq.flight_time_s)
+
+
+def test_the_commit_slips_on_an_unterminalised_upstream_and_never_refuses_for_it():
+    """S1′'s gate: no commit until the cycle ahead has terminalised. It SLIPS
+    (never refuses) on that alone — a slip with no reject code cannot refuse on
+    its own account, because it is waiting on a cycle that has its own deadline,
+    and when THAT deadline mints a terminal the node discards this slot."""
+    from jugglebot.toss_sequencer import NODE_LOOP_PERIOD_S
+    seq = _staged()
+    _to_staged(seq)
+    t = seq.commit_at
+    for _ in range(40):                      # well past catch_confirm_window_s
+        d = seq.step(t, _obs(t))
+        assert d.slip is True and d.done is False
+        t += NODE_LOOP_PERIOD_S
+    assert t > seq.commit_at_scheduled + CATCH_CONFIRM_WINDOW_S
+    seq.note_upstream_terminalised()
+    assert seq.step(t, _obs(t)).action == ACTION_ANNOUNCE
+
+
+def test_a_link_hiccup_between_stage_and_commit_aborts_rather_than_slipping():
+    """The four STATIC gates are RE-READ at the commit (§ 2.4.1's second row),
+    and they ABORT: a machine that has left TRAJECTORY or lost mocap is not
+    late, it is broken, and a slip would wait for a fault to fix itself while
+    the schedule ran on."""
+    for kw, code in ((dict(mocap_fresh=False), 'ABORTED_MOCAP_STALE'),
+                     (dict(streaming=False), 'ABORTED_NOT_STREAMING'),
+                     (dict(platform_levelled=False), 'ABORTED_NOT_LEVELLED'),
+                     (dict(hand_fresh=False), 'ABORTED_HAND_STALE')):
+        seq = _staged()
+        _to_staged(seq)
+        seq.note_upstream_terminalised()
+        d = seq.step(seq.commit_at, _obs(seq.commit_at, **kw))
+        assert d.done is True and d.result.outcome == code, kw
+
+
+def test_the_staged_lead_gate_replaces_the_delay_gate_loudly():
+    """The gate the pipeline's retired delay floor is replaced BY, and it is
+    charged at CHECKING with nothing staged and nothing armed.
+
+    A staged cycle whose absolute release leaves it less than
+    ``stage_budget_s + commit_budget_s`` of real lead is REJECTED_CANT_MAKE_LEAD
+    there, not ABORTED_CANT_MAKE_RELEASE four ticks later with the announcement
+    out. A retired gate that nothing replaces is how the pre-dispatch budget
+    went uncharged in the first place."""
+    seq = _staged(release_at_perf=0.30)          # 0.30 s of lead at start(0.0)
+    assert seq.min_stage_lead_for_cycle_s > 0.30
+    d = seq.step(0.0, _obs(0.0))
+    assert d.done is True
+    assert d.result.outcome.startswith('REJECTED_CANT_MAKE_LEAD')
+    assert 'staged lead' in d.result.outcome
+    # …and one whisker above the floor is admitted.
+    ok = _staged(release_at_perf=seq.min_stage_lead_for_cycle_s + 0.001)
+    assert ok.step(0.0, _obs(0.0)).action == ACTION_POSITION_PLATFORM
+
+
+def test_the_serial_ladder_is_untouched_by_the_pipeline_fields():
+    """T-U13's FSM half: with ``staged`` at its default, the decision stream is
+    the pre-B4 one instant for instant. The new fields are inert, the new phases
+    are unreachable, and `slip_s` reads 0.0 — which is what makes
+    `toss_pipeline_enabled: false` a rollback rather than a different machine."""
+    from jugglebot.toss_sequencer import PHASE_COMMITTING, PHASE_STAGED
+    seq = _fresh()
+    stream = []
+    _to_positioning(seq)
+    stream.append(seq.phase)
+    seq.note_position_result(0.05, True, 0.5)
+    for t, note in ((0.8, None), (0.9, 'prepare'), (1.0, 'announce')):
+        if note == 'prepare':
+            seq.note_prepare_result(True)
+        d = seq.step(t, _obs(t))
+        if note == 'announce':
+            pass
+        stream.append((d.phase, d.action, d.action_then, d.slip))
+        if d.action == ACTION_ANNOUNCE:
+            seq.note_announcement()
+    assert PHASE_STAGED not in [s[0] for s in stream[1:]]
+    assert PHASE_COMMITTING not in [s[0] for s in stream[1:]]
+    assert all(s[2] == ACTION_NONE and s[3] is False for s in stream[1:])
+    assert seq.slip_s == 0.0
+    assert seq.committed is False

@@ -273,3 +273,135 @@ def test_the_corrected_verdicts_restore_a_uniform_release_cadence(
     assert missed == pytest.approx(
         flight + DEFAULT_SESSION_MISS_CLEANUP_S + charged_delay, abs=1e-9)
     assert missed > caught
+
+
+# ── B4: the PIPELINED verdict path (plan § 5.4, T-R1 / T-R2) ─────────────────
+
+
+def _pipelined_rows():
+    """The fixture's cycles with the cadence clamp re-pointed the way the
+    two-slot pipeline points it (§ 2.5a): ``next_release`` becomes the NEXT
+    FLYING CYCLE'S OWN ``t_release_perf`` — an actual, slip and all — instead of
+    the ``landing + dwell`` PREDICTION the serial node latched a cycle early.
+
+    No fixture regeneration is needed and that is the point: the actual is
+    already in the corpus, because it is the next row's recorded release. The
+    substitution is done HERE rather than in the probe's emitter so the two
+    readings come from ONE set of measured bytes and any difference is the
+    CLAMP, never the capture."""
+    out = []
+    by_run = {}
+    for row in fx.CYCLES:
+        by_run.setdefault(row['run'], []).append(row)
+    for run in by_run.values():
+        for i, row in enumerate(run):
+            new = dict(row)
+            if row.get('next_release_perf') is not None and i + 1 < len(run):
+                nxt = run[i + 1].get('t_release_perf')
+                if nxt:
+                    new['next_release_perf'] = float(nxt)
+                    new['next_landing_perf'] = (float(nxt)
+                                                + float(row['flight_time_s']))
+            out.append(new)
+    return out
+
+
+@pytest.fixture(scope='module')
+def replayed_pipelined():
+    """-> ``{(run, cycle): (verdict, blind, catch_dt)}`` through the PIPELINED
+    clamps, off the same cup stream."""
+    probe = _probe()
+    out = {}
+    for row in _pipelined_rows():
+        stream = probe.expand_stream(row['segments'], row['step_s'])
+        out[(row['run'], row['cycle_index'])] = probe.replay_cycle(row, stream)
+    return out
+
+
+def test_the_pipelined_clamps_are_actually_different_from_the_serial_ones():
+    """Premise guard, and it earns its place: T-R1 asserts that a change moves
+    NOTHING, and an assertion of that shape is worthless if the change was not
+    made. On this sitting the two clamps differ by tens of milliseconds per
+    cycle — the release ran that much off its predicted instant — which is
+    exactly the gap § 2.5a says the prediction opens."""
+    serial = {(r['run'], r['cycle_index']): r.get('next_release_perf')
+              for r in fx.CYCLES}
+    pipelined = {(r['run'], r['cycle_index']): r.get('next_release_perf')
+                 for r in _pipelined_rows()}
+    moved = [k for k in serial
+             if serial[k] is not None and pipelined[k] is not None
+             and abs(serial[k] - pipelined[k]) > 1e-9]
+    assert moved, 'the pipelined clamp is identical to the serial one'
+    deltas = [abs(serial[k] - pipelined[k]) for k in moved]
+    assert max(deltas) > 0.005, max(deltas)
+
+
+def test_the_pipelined_verdict_census_is_the_cup_census_exactly(
+        replayed_pipelined, replayed):
+    """**T-R1 — THE B4 ACCEPTANCE ON A RECORDED SITTING.**
+
+    The 27 adjudicated cycles of bag 2026-08-26_14-25-16 must still come out
+    **23 CAUGHT / 4 MISSED, row for row**, through the pipelined verdict path.
+
+    The pipeline must not move a single verdict on a recorded sitting. If it
+    does, it changed the possession SEMANTICS, which it has no business doing:
+    everything B4 touches is WHEN work happens, and a cadence change that
+    silently re-adjudicates a catch is the defect this test exists to catch
+    before a sitting does. The clamp genuinely moves (the guard above proves
+    it) — the verdict does not."""
+    verdicts = {(r['run'], r['cycle_index']):
+                replayed_pipelined[(r['run'], r['cycle_index'])][0]
+                for r in _adjudicated()}
+    caught = sum(1 for v in verdicts.values() if v == 'CAUGHT')
+    missed = sum(1 for v in verdicts.values() if v.startswith('MISSED'))
+    assert (caught, missed) == (23, 4)
+    for row in _adjudicated():
+        key = (row['run'], row['cycle_index'])
+        assert verdicts[key].startswith(row['sensor_label']), key
+    # …row for row against the SERIAL replay, including the blind flag and the
+    # arrival edge: a census that matched in total while two rows swapped would
+    # pass the counts above and be exactly as wrong.
+    for row in fx.CYCLES:
+        key = (row['run'], row['cycle_index'])
+        s_label, s_blind, s_dt = replayed[key]
+        p_label, p_blind, p_dt = replayed_pipelined[key]
+        assert (p_label, p_blind) == (s_label, s_blind), key
+        if s_dt is None or p_dt is None:
+            assert s_dt is p_dt or s_dt == p_dt, key
+        else:
+            assert p_dt == pytest.approx(s_dt, abs=1e-9), key
+
+
+def test_the_pipelined_schedule_reproduces_the_recorded_release_spacing():
+    """T-R2 — the SCHEDULE, driven through the real ``TossSessionSequencer``.
+
+    ``next_release_at`` is the ONE place a beat comes from and B4 does not touch
+    it, so a serial session and a pipelined one schedule the same release off
+    the same landing. What B4 moves is the FLOOR that decides whether a dwell is
+    admitted at all — and the pipelined floor is strictly lower, so every dwell
+    the serial gate accepted the pipelined gate accepts too.
+
+    Both halves are asserted over the fixture's own recorded goals, so the
+    numbers come from a sitting rather than from a table."""
+    goals = {(r['flight_time_s'], r['dwell_time_s'], r['throw_delay_s'])
+             for r in fx.CYCLES
+             if r['dwell_time_s'] and r['throw_delay_s']}
+    assert goals, 'the fixture carries no dwell/delay pairs'
+    checked = 0
+    for flight, dwell, delay in sorted(goals):
+        serial = TossSessionSequencer(num_throws=5, dwell_time_s=dwell,
+                                      throw_delay_s=delay,
+                                      flight_time_s=flight)
+        pipelined = TossSessionSequencer(num_throws=5, dwell_time_s=dwell,
+                                         throw_delay_s=delay,
+                                         flight_time_s=flight, pipelined=True)
+        for landing in (0.0, 12.5, 73788.7):
+            assert (pipelined.next_release_at(landing)
+                    == serial.next_release_at(landing)), (flight, dwell)
+        # …and the pipelined floor never REFUSES a dwell the serial one
+        # admitted: it is strictly lower, which is the milestone.
+        assert pipelined.required_dwell_s <= serial.required_dwell_s
+        if dwell >= serial.required_dwell_s:
+            assert dwell >= pipelined.required_dwell_s, (flight, dwell)
+            checked += 1
+    assert checked, 'no recorded goal cleared the serial floor'

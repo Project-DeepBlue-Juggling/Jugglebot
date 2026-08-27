@@ -244,6 +244,18 @@ from jugglebot.motion.trajectory import hand_stroke
 PHASE_CHECKING = 'CHECKING'
 PHASE_POSITIONING = 'POSITIONING'
 PHASE_PREPARING = 'PREPARING'
+PHASE_STAGED = 'STAGED'              # B4: the preamble is complete and the cycle
+                                     #   is waiting for its COMMIT instant. It
+                                     #   owns NOTHING that moves — S1' restricts a
+                                     #   staged cycle's emittable action set to
+                                     #   {NONE, POSITION_PLATFORM(skip),
+                                     #   PREPARE_CATCH}, and it reaches STAGED with
+                                     #   all three already spent.
+PHASE_COMMITTING = 'COMMITTING'      # B4: THE arm point — the single tick that
+                                     #   re-reads the evidence and, in the same
+                                     #   tick and in this order, publishes the
+                                     #   announcement and dispatches the throw.
+                                     #   Never entered on the serial path.
 PHASE_THROWING = 'THROWING'
 PHASE_BALL_IN_FLIGHT = 'BALL_IN_FLIGHT'
 PHASE_CATCHING = 'CATCHING'
@@ -740,8 +752,16 @@ NODE_LOOP_PERIOD_S = 0.04
 #: delay floor is denominated in. A whole-cycle mean would be dominated by the
 #: cheap majority and would hide the expensive minority — which is precisely the
 #: quantity :data:`NODE_LOOP_PERIOD_S` has to bound.
+#:
+#: ``PHASE_COMMITTING`` joins them at B4 and ``PHASE_STAGED`` deliberately does
+#: not. The commit tick is exactly what :func:`commit_budget_s` charges its one
+#: loop period for, so it belongs in the same census as the serial ladder's four;
+#: STAGED is a WAIT — the pipelined analogue of flight-waiting — and folding a
+#: long idle into the pre-dispatch statistic would dilute precisely the expensive
+#: minority the census exists to expose. Neither phase is reachable on the serial
+#: path, so adding one of them moves no serial number.
 PRE_DISPATCH_PHASES = frozenset(
-    (PHASE_CHECKING, PHASE_POSITIONING, PHASE_PREPARING))
+    (PHASE_CHECKING, PHASE_POSITIONING, PHASE_PREPARING, PHASE_COMMITTING))
 
 #: The census field names, in record order.
 #:
@@ -1020,6 +1040,96 @@ def pre_dispatch_budget_s(positioning_move: bool,
     return (arrival_ticks + 3) * loop
 
 
+def commit_budget_s(event_vel_mps: float, min_event_delay_s: float = 0.0,
+                    loop_period_s: float = NODE_LOOP_PERIOD_S) -> float:
+    """Cycle COMMIT → release, in seconds. The PIPELINED sibling of
+    :func:`pre_dispatch_budget_s` + the dispatch budget (plan
+    ``toss-pipelined-preamble.md`` § 2.7), and it lives here, next to it, so an
+    edit to either sees the other.
+
+    **ONE loop period, not four.** Under the two-slot pipeline the announce
+    tick, the PREPARE tick and the deferred-bundle tick have already run inside
+    the PREVIOUS cycle's flight (:data:`PHASE_STAGED`), and the ≥1-tick
+    armed→announce gap is satisfied by construction rather than by a tick: the
+    session-scoped ``trajectory/arm_catch`` latch (S6) stands for the whole run,
+    and ``catch/armed`` is not lowered between chained cycles while a staged slot
+    is live, so ``catch_coordinator`` has been armed since before this cycle
+    existed. The one period charged is the COMMIT tick itself, which is
+    **polled**: the iteration that crosses ``commit_at`` may be up to one full
+    loop period late, and that lateness comes straight off the lead the runtime
+    release-window guard measures.
+
+    Note what is NOT here and IS in :func:`min_throw_delay_for_release_s`: the
+    ``max(TOSS_DISPATCH_DEBOUNCE_S, …)`` clamp. That constant is a goal-storm
+    debounce on ``throw_delay_s``, an operator-facing field; the commit budget is
+    an internal schedule offset no operator types, so clamping it would charge a
+    0.10 s floor for a hazard that is not on this path. Omitted deliberately, not
+    by transcription.
+
+    ``tools/probes/cadence_rung_check.py`` MODELLED this function through Phase
+    B0 and now imports it — the reconciliation its docstring demanded, pinned
+    equal by ``tests/motion/test_cadence_rung_check.py``. A probe that keeps its
+    own copy of a shipped floor is the 2026-08-22 audit's finding wearing a
+    different hat."""
+    override = float(min_event_delay_s)
+    dispatch_s = (override if override > 0.0
+                  else hand_stroke.min_throw_event_delay_s(event_vel_mps))
+    return dispatch_s + float(loop_period_s) + FLOOR_REPRESENTATION_SLACK_S
+
+
+#: The STAGED preamble, in loop periods — the pipelined twin of
+#: :func:`pre_dispatch_budget_s`'s ladder, counted the same way and from the same
+#: tick table::
+#:
+#:     tick 0   CHECKING (STATIC gates only) passes -> ACTION_POSITION_PLATFORM;
+#:              the node answers SYNCHRONOUSLY inside the tick (note_position_noop
+#:              — staging is SKIP-ONLY, so there is never a service round trip)
+#:     tick 1   _step_positioning -> _enter_preparing -> ACTION_PREPARE_CATCH
+#:     tick 2   the node's deferred PREPARE answers (note_prepare_result)
+#:     tick 3   _step_preparing sees the result -> PHASE_STAGED
+#:
+#: THREE periods, against the serial ladder's four, and the missing one is the
+#: armed→announce gap S6 makes free. It is charged at CHECKING (loud, early,
+#: nothing staged) and NOWHERE else — the commit gate charges
+#: :func:`commit_budget_s` against the real remaining lead.
+STAGE_LADDER_TICKS = 3
+
+
+def stage_budget_s(loop_period_s: float = NODE_LOOP_PERIOD_S) -> float:
+    """Cycle START → :data:`PHASE_STAGED`, in seconds. See
+    :data:`STAGE_LADDER_TICKS` for the tick table it counts."""
+    return STAGE_LADDER_TICKS * float(loop_period_s)
+
+
+def min_stage_lead_for_release_s(event_vel_mps: float,
+                                 min_event_delay_s: float = 0.0,
+                                 loop_period_s: float = NODE_LOOP_PERIOD_S
+                                 ) -> float:
+    """THE accept-time floor on a STAGED cycle's lead — ``release_at_perf − now``
+    at the instant the cycle is staged.
+
+    The pipelined analogue of :func:`min_throw_delay_for_release_s`, and it
+    exists for exactly the reason that one does: the runtime guard in
+    :meth:`TossSequencer._step_committing` measures ``t_release − now`` against
+    the kind-0 dispatch budget, and a cycle that cleared no static floor could
+    reach that guard with the announcement about to go out. Charging
+    ``stage_budget_s + commit_budget_s`` at CHECKING is what makes
+    ``ABORTED_CANT_MAKE_RELEASE`` **structurally unreachable on the pipelined
+    path** (plan § 6.4: one is a design finding, not a tuning finding) —
+    the commit gate slips or rejects instead, with nothing armed.
+
+    It REPLACES ``min_throw_delay_for_cycle_s`` for a staged cycle rather than
+    joining it, because the two measure different quantities: that floor is
+    charged against ``throw_delay_s``, which a staged cycle does not run on (its
+    release is an absolute instant it was TOLD — plan § 2.6 rule 1). Leaving the
+    delay floor as the only gate would be a gate on a number the cycle ignores;
+    dropping both would be the retired-gate-nothing-replaces failure the probe's
+    ``pipelined_session_accepts`` recorded as an open B4 decision. This is that
+    decision, taken."""
+    return (stage_budget_s(loop_period_s)
+            + commit_budget_s(event_vel_mps, min_event_delay_s, loop_period_s))
+
+
 def min_throw_delay_for_release_s(event_vel_mps: float,
                                   positioning_move: bool,
                                   min_event_delay_s: float = 0.0,
@@ -1195,6 +1305,26 @@ class TossDecision:
     action: str = ACTION_NONE
     done: bool = False
     result: Optional[TossResult] = None
+    action_then: str = ACTION_NONE
+    #: A SECOND action the node must execute on THIS tick, immediately after
+    #: ``action`` and in that order. Exactly one producer, ever: the COMMIT gate
+    #: (:meth:`TossSequencer._step_committing`), which publishes the
+    #: announcement and dispatches the throw **in one tick** because a slipped
+    #: release invalidates an already-published announcement and there is no
+    #: withdrawal message on the wire (plan § 2.4.2). ``ACTION_NONE`` — the
+    #: default every other construction keeps — means "nothing follows", so the
+    #: serial path's decision stream is bit-unchanged.
+    #:
+    #: A tuple would have been the general shape; a second named field is the
+    #: honest one, because the general shape does not exist: no other transition
+    #: emits two actions, and a container invites one to.
+    slip: bool = False
+    #: The COMMIT gate deferred to the next loop iteration (plan § 2.4.3). Not an
+    #: action — a SLIP commands nothing; it re-arms the commit and moves
+    #: ``_t_release`` with it. Reported rather than hidden so the operator scores
+    #: ``commit_slip_s`` instead of inferring it, and so a slip that runs away is
+    #: visible before its bound (``catch_confirm_window_s``) converts it into a
+    #: refusal.
 
 
 @dataclass
@@ -1253,6 +1383,38 @@ class TossSequencer:
                                                 # charges the absolute lead; until
                                                 # it exists nothing in-tree passes
                                                 # a non-zero value.
+    staged: bool = False                        # B4: run the PIPELINED ladder —
+                                                # CHECKING(STATIC gates only) →
+                                                # POSITIONING(skip) → PREPARING →
+                                                # STAGED → COMMITTING — instead of
+                                                # the serial one. The node sets it
+                                                # True only for a cycle it is
+                                                # putting in the STAGED slot while
+                                                # another cycle owns the hand.
+                                                #
+                                                # ⚠ SKIP-ONLY, and enforced here
+                                                # rather than trusted from the
+                                                # caller: __post_init__ forces it
+                                                # back to False whenever
+                                                # positioning_move_expected is
+                                                # True. A staged cycle may not
+                                                # command a go_to_pose — it would
+                                                # move the platform during the
+                                                # PREVIOUS cycle's flight, under a
+                                                # ball the catch is armed for
+                                                # (plan § 2.4.1) — so a cycle that
+                                                # must move simply does not stage
+                                                # and takes the serial path. The
+                                                # node declines to stage it for the
+                                                # same reason; this is the belt, so
+                                                # the two cannot disagree in the
+                                                # dangerous direction.
+                                                #
+                                                # Default False = the serial
+                                                # ladder, bit-for-bit the pre-B4
+                                                # FSM, which is what makes
+                                                # `toss_pipeline_enabled: false`
+                                                # a decision-stream identity.
     tier: str = TIER_8A                         # config-resolved (JB_OP_TOSS_TIER)
     event_vel_mps: float = 0.0                  # 0 => computed from the Tier-8a vertical
                                                 # closed form; the node normally passes
@@ -1396,6 +1558,21 @@ class TossSequencer:
     _track_confirmed_seen: bool = field(default=False, init=False)
     _last_time_at_land: float = field(default=float('nan'), init=False)
     _commit_slip_s: float = field(default=0.0, init=False)   # see slip_s
+    #: B4 — the COMMIT instant, ``_t_release − commit_budget_s`` (§ 2.6 rule 2:
+    #: the commit is derived FROM the release, never the reverse, so a scheduler
+    #: that moves the release moves the commit for free). ``_commit_at`` is
+    #: re-armed by every SLIP; ``_commit_at_sched`` keeps the ORIGINAL, which is
+    #: what :attr:`slip_s` is measured against and what the slip's
+    #: ``catch_confirm_window_s`` bound is counted from.
+    _commit_at: float = field(default=0.0, init=False)
+    _commit_at_sched: float = field(default=0.0, init=False)
+    _staged_at: float = field(default=0.0, init=False)     # entered PHASE_STAGED
+    _committed: bool = field(default=False, init=False)    # passed the COMMIT gate
+    #: The node's answer to "has the UPSTREAM cycle terminalised?" (S1′: at most
+    #: one cycle past COMMIT). Set once, by :meth:`note_upstream_terminalised`;
+    #: until then the commit gate SLIPS. Meaningless — and never read — on the
+    #: serial path, where nothing is upstream.
+    _upstream_clear: bool = field(default=False, init=False)
     _finished: bool = field(default=False, init=False)
     _result: Optional[TossResult] = field(default=None, init=False)
 
@@ -1413,6 +1590,14 @@ class TossSequencer:
             self.throw_delay_s = DEFAULT_TOSS_THROW_DELAY_S
         if self.event_vel_mps <= 0.0:
             self.event_vel_mps = vertical_event_vel_mps(self.flight_time_s)
+        # SKIP-ONLY staging (plan § 2.4.1), enforced rather than trusted. See the
+        # `staged` field's comment: a cycle that must COMMAND its pre-positioning
+        # move cannot stage, because the move would traverse the platform during
+        # the previous cycle's flight, under a ball the catch is armed for. The
+        # node takes the same decision from the same predicate one layer up; this
+        # is the belt, and it fails in the SAFE direction (serial, not staged).
+        if self.staged and self.positioning_move_expected:
+            self.staged = False
         # `release_at_perf` is deliberately NOT resolved here: its default is
         # `now + throw_delay_s` and `now` does not exist until start(). Its
         # sentinel is consumed there, and the loud refusal for a value that is
@@ -1442,6 +1627,27 @@ class TossSequencer:
         if override > 0.0:
             return override
         return hand_stroke.min_throw_event_delay_s(self.event_vel_mps)
+
+    @property
+    def commit_budget_for_cycle_s(self) -> float:
+        """This cycle's COMMIT → release budget (:func:`commit_budget_s` at its
+        own release speed), i.e. how far ahead of ``_t_release`` the arm point
+        sits. Read by :meth:`start` and by the SLIP path, which is why it is a
+        property and not a call at each site: a slip re-derives the release from
+        it, and two derivations of a schedule offset is how a schedule and its
+        gate drift apart."""
+        return commit_budget_s(self.event_vel_mps, float(self.min_event_delay_s))
+
+    @property
+    def min_stage_lead_for_cycle_s(self) -> float:
+        """The ACCEPT-time lead floor for THIS cycle if it stages
+        (:func:`min_stage_lead_for_release_s`): the staged preamble plus the
+        commit budget. Charged at CHECKING against the REAL lead
+        ``_t_release − now``, which is the quantity a staged cycle actually runs
+        on — see the function for why it replaces
+        :attr:`min_throw_delay_for_cycle_s` rather than joining it."""
+        return min_stage_lead_for_release_s(self.event_vel_mps,
+                                            float(self.min_event_delay_s))
 
     @property
     def min_throw_delay_for_cycle_s(self) -> float:
@@ -1555,6 +1761,23 @@ class TossSequencer:
             self._prepare_result = bool(ok)
             self._prepare_reject_code = str(reject_code or '')
 
+    def note_upstream_terminalised(self) -> None:
+        """S1′'s other half: the node reports that the cycle AHEAD of this one
+        has reached its terminal, so the committed slot is free and this cycle's
+        COMMIT gate may pass.
+
+        Until it is called the gate SLIPS — it does not refuse — because "the
+        ball is not in the cup yet" is a cadence fact on a healthy machine, not a
+        machine fault (plan § 9.2, *slip rather than refuse*). The slip is bounded
+        by :attr:`catch_confirm_window_s`, which is when the upstream cycle
+        terminalises at the LATEST, so this hook introduces no new constant and
+        no new way to wedge.
+
+        One-way and idempotent: a cycle whose upstream has terminalised cannot
+        un-terminalise it. Never called on the serial path (nothing is upstream),
+        where ``_upstream_clear`` is never read."""
+        self._upstream_clear = True
+
     def note_announcement(self) -> None:
         """Report that the self-``ThrowAnnouncement`` was published (the node calls
         this right after executing ``ACTION_ANNOUNCE``; a topic publish cannot fail
@@ -1618,6 +1841,13 @@ class TossSequencer:
         self._phase = PHASE_CHECKING
         self._t_accept = now
         self._t_release = self.release_at_perf or (now + self.throw_delay_s)
+        # B4, plan § 2.6 rule 2 — the commit instant is DERIVED FROM the release,
+        # never the reverse. Stamped here, with `_t_release`, so the two can never
+        # be computed from different numbers; the SLIP path re-arms `_commit_at`
+        # and moves `_t_release` with it, and `_commit_at_sched` keeps the
+        # original so the lateness stays measurable.
+        self._commit_at = self._t_release - self.commit_budget_for_cycle_s
+        self._commit_at_sched = self._commit_at
 
     def step(self, now: float, obs: TossObservations) -> TossDecision:
         if self._finished:
@@ -1786,8 +2016,35 @@ class TossSequencer:
             # floor sized off a prelude the hand_parked precondition forbids. The
             # difference is that every term here is derived from the constants the
             # sequence is actually made of.
+            if self.staged:
+                # ── THE PIPELINED lead gate (B4, plan § 2.4.1 / § 2.7) ──
+                # A staged cycle does not run on `throw_delay_s`: its release is
+                # an ABSOLUTE instant it was TOLD (§ 2.6 rule 1), so the delay
+                # floor above would gate a number this cycle ignores. What it
+                # actually needs is enough REAL lead to walk the staged preamble
+                # and still reach its commit tick with the dispatch budget
+                # intact — `min_stage_lead_for_release_s`, charged here against
+                # `_t_release − now` with nothing staged and nothing armed.
+                #
+                # This is what makes ABORTED_CANT_MAKE_RELEASE structurally
+                # unreachable on the pipelined path (§ 6.4 stop conditions: one
+                # would be a DESIGN finding, not a tuning finding). Retiring the
+                # delay gate without replacing it is how the pre-dispatch budget
+                # went uncharged in the first place; this replaces it.
+                stage_floor = self.min_stage_lead_for_cycle_s
+                lead = self._t_release - now
+                if lead < stage_floor:
+                    return self._reject(
+                        'CANT_MAKE_LEAD',
+                        'staged lead {:.3f} s is under the {:.3f} s this cycle '
+                        'needs at {:.2f} m/s: the kind-0 dispatch budget {:.3f} '
+                        'plus one polled loop period {:.3f} (the commit tick) '
+                        'plus the {:.3f} s staged preamble'
+                        .format(lead, stage_floor, self.event_vel_mps,
+                                self.min_event_delay_for_throw_s,
+                                NODE_LOOP_PERIOD_S, stage_budget_s()))
             lead_floor = self.min_throw_delay_for_cycle_s
-            if self.throw_delay_s < lead_floor:
+            if not self.staged and self.throw_delay_s < lead_floor:
                 dispatch_s = self.min_event_delay_for_throw_s
                 return self._reject(
                     'CANT_MAKE_LEAD',
@@ -1837,6 +2094,10 @@ class TossSequencer:
             return self._step_positioning(now, obs)
         if self._phase == PHASE_PREPARING:
             return self._step_preparing(now, obs)
+        if self._phase == PHASE_STAGED:
+            return self._step_staged(now, obs)
+        if self._phase == PHASE_COMMITTING:
+            return self._step_committing(now, obs)
         if self._phase == PHASE_THROWING:
             return self._step_throwing(now, obs)
         if self._phase in (PHASE_BALL_IN_FLIGHT, PHASE_CATCHING):
@@ -1883,6 +2144,29 @@ class TossSequencer:
             return self._reject('NOT_LEVELLED')
         if not obs.hand_fresh:
             return self._reject('HAND_STALE')
+        # ── THE STATIC / EVIDENCE LINE (B4, plan § 2.4.1) ──
+        # Everything ABOVE is a function of the goal, the config and slowly-
+        # varying link state; everything BELOW is a function of the PREVIOUS
+        # cycle's outcome, and is FALSE for part of the staging window BY
+        # CONSTRUCTION — the hand is inside the previous catch stroke, the cup is
+        # empty for the whole flight, and the machine's own airborne ball is a
+        # live track destined for it. Evaluating them at stage time would refuse
+        # every healthy pipelined cycle.
+        #
+        # They are not dropped; they MOVE, to the single tick before the CAN
+        # frame exists (:meth:`_step_committing`). That makes the pipeline's
+        # empty-stroke gate STRICTER than the serial one, not weaker: the
+        # evidence-to-dispatch distance falls from the serial ladder's
+        # 0.160-0.520 s to zero ticks.
+        #
+        # The four gates above are re-read at COMMIT too (a link hiccup between
+        # stage and commit must refuse) — see `_step_committing`.
+        if self.staged:
+            self._phase = PHASE_POSITIONING
+            self._position_dispatched = True
+            self._positioning_deadline = now + self.positioning_timeout_s
+            return TossDecision(PHASE_POSITIONING, ACTION_POSITION_PLATFORM,
+                                False, None)
         if not obs.hand_parked:
             return self._reject('HAND_NOT_PARKED')
         if not obs.ball_seated:
@@ -1963,6 +2247,15 @@ class TossSequencer:
             if self._prepare_reject_code:
                 return self._reject(self._prepare_reject_code)
             return self._abort('PREPARE_FAILED')
+        if self.staged:
+            # ── B4: the preamble ends HERE, one tick's worth of work short of
+            # the serial ladder's announce. The cycle parks in STAGED until its
+            # commit instant; the release-window guard, the announcement and the
+            # dispatch all belong to that single tick (§ 2.4.2), which is what
+            # the whole pipeline is for.
+            self._phase = PHASE_STAGED
+            self._staged_at = now
+            return TossDecision(PHASE_STAGED, ACTION_NONE, False, None)
         # Release-window guard — checked BEFORE the announcement goes out (an
         # announced-then-aborted toss leaves a phantom tracker expectation that
         # REJECTED_TRACK_ACTIVE would then refuse on until it expires), and again
@@ -2011,6 +2304,168 @@ class TossSequencer:
             # physical hazard. Prepared ⇒ SAFE_ABORT cleans up.
             return self._abort('HAND_NOT_PARKED')
         return self._enter_throwing(now)
+
+    def _step_staged(self, now: float, obs: TossObservations) -> TossDecision:
+        """PHASE_STAGED — the wait. The preamble is spent, nothing is armed, and
+        this cycle owns nothing that moves; the only question left is whether the
+        commit instant has arrived.
+
+        It emits ``ACTION_NONE`` and nothing else, ever. That is S1′ stated as
+        code rather than as discipline: the staged slot's whole emittable action
+        set — ``{NONE, POSITION_PLATFORM(skip), PREPARE_CATCH}`` — is already
+        spent by the time this handler is reached.
+
+        The tick that CROSSES ``_commit_at`` IS the commit tick — it falls
+        straight through rather than waiting for the next iteration, because the
+        one loop period :func:`commit_budget_s` charges is exactly the polling
+        lateness of this crossing, and spending a second period here would charge
+        it twice."""
+        if now < self._commit_at:
+            return TossDecision(PHASE_STAGED, ACTION_NONE, False, None)
+        self._phase = PHASE_COMMITTING
+        return self._step_committing(now, obs)
+
+    def _step_committing(self, now: float,
+                         obs: TossObservations) -> TossDecision:
+        """**THE ARM POINT** (plan § 2.4.2): the single tick at which the FSM
+        evaluates the evidence and, in the same tick and in this order,
+        publishes the announcement and dispatches the throw. No dispatch is ever
+        issued on evidence read at an earlier tick.
+
+        The gate, in its own order, and every line of it load-bearing:
+
+        1. **the upstream cycle must have terminalised** (S1′) — else SLIP. The
+           node answers with :meth:`note_upstream_terminalised`, from the SAME
+           ``_possession_observed`` read that admits this throw (§ 2.4.4): a
+           SEATED cup at the commit tick *is* the CAUGHT evidence for the cycle
+           ahead, so one read serves both and the cup is never sampled at two
+           instants for one decision;
+        2. **the four STATIC link gates, RE-READ** — a hiccup between stage and
+           commit must refuse, and these are cheap. They ABORT rather than slip:
+           a machine that has left TRAJECTORY or lost mocap is not late, it is
+           broken;
+        3. **``hand_parked``** — SLIP. The hand is still landing; that is a
+           cadence fact on a healthy machine, and ``REJECTED_HAND_NOT_PARKED``
+           there would be a machine-fault verdict for it (the R5 mis-routing);
+        4. **``ball_seated``** — SLIP. THE hard gate, and it is evaluated at the
+           last tick before the CAN frame exists. The cup's seat edge is late by
+           a measured, systematic +183.9 ms median (§ 1.4), so refusing here
+           would turn every healthy cycle into ``REJECTED_NO_BALL``;
+        5. **``track_active``** — REJECT. A phantom destination='jugglebot'
+           track would correlate against OUR announcement, and unlike the two
+           above it is not a thing that resolves by waiting;
+        6. **the runtime release-window guard** — the same inequality
+           ``_step_preparing`` applies, against the same budget. Structurally
+           unreachable here (CHECKING charged
+           :attr:`min_stage_lead_for_cycle_s` and the slip moves ``now`` and
+           ``_t_release`` together), and kept as the belt the serial path has.
+
+        Then ANNOUNCE and DISPATCH, in one tick, in that order — because
+        ``ThrowAnnouncement`` carries ``throw_time`` and ``landing_time``, a
+        slipped release invalidates an already-published announcement, and there
+        is no withdrawal message on the wire. Publishing at commit is what keeps
+        the announcement true.
+
+        **No announcement is published on a refused commit**, which is the whole
+        difference between this and the two ``ABORTED_CANT_MAKE_RELEASE`` cycles
+        of bag ``2026-08-26_14-25-16``: those left a phantom tracker expectation
+        behind that ``REJECTED_TRACK_ACTIVE`` then refused on until it expired."""
+        if not self._upstream_clear:
+            return self._slip(now, 'upstream cycle not terminalised')
+        if not (obs.streaming and obs.mocap_fresh and obs.platform_levelled
+                and obs.hand_fresh):
+            # Named individually, in the SAME order CHECKING names them, so a
+            # commit-time refusal routes the operator to the same subsystem a
+            # stage-time one would.
+            if not obs.mocap_fresh:
+                return self._abort('MOCAP_STALE')
+            if not obs.streaming:
+                return self._abort('NOT_STREAMING')
+            if not obs.platform_levelled:
+                return self._abort('NOT_LEVELLED')
+            return self._abort('HAND_STALE')
+        if not obs.hand_parked:
+            return self._slip(now, 'hand not back inside the park band',
+                              reject_code='HAND_NOT_PARKED')
+        if not obs.ball_seated:
+            return self._slip(
+                now, 'cup not seated',
+                reject_code=('BALL_UNKNOWN'
+                             if obs.ball_evidence == EVIDENCE_UNKNOWN
+                             else 'NO_BALL'))
+        if obs.track_active:
+            return self._reject('TRACK_ACTIVE')
+        if self._t_release - now < self.min_event_delay_for_throw_s:
+            return self._abort('CANT_MAKE_RELEASE')
+        # ── COMMITTED. Everything below this line is one tick. ──
+        self._commit_slip_s = max(0.0, now - self._commit_at_sched)
+        self._committed = True
+        self._announce_dispatched = True
+        if (self._t_release + self.flight_time_s) - now < TOSS_MIN_ANNOUNCE_LEAD_S:
+            # WARN-only for both tiers, exactly as on the serial path — and at
+            # the milestone cadences it is ALWAYS short, which is the point of
+            # the constant's own comment rather than a surprise.
+            self._announce_lead_short = True
+        self._phase = PHASE_THROWING
+        self._throw_dispatched = True
+        self._release_deadline = self._t_release + self.release_grace_s
+        # The FSM's own phase advances to THROWING (the dispatch is committed
+        # and the cancel policy must treat it as such from this instant), but
+        # the DECISION reports ``COMMITTING``, because that is what this tick
+        # WAS. Two consumers depend on the distinction:
+        #
+        #  * the session feedback publishes the decision's phase, and the arm
+        #    point is the single most operator-relevant instant of a cycle — a
+        #    tick that reported THROWING would make ``COMMITTING`` a wire
+        #    string that appears only on a SLIP;
+        #  * :class:`LoopPeriodCensus` classifies iterations by the reported
+        #    phase, and this tick is exactly what :func:`commit_budget_s`
+        #    charges its one loop period for. Reporting THROWING would file the
+        #    one PRE-dispatch tick the pipeline has under the post-dispatch
+        #    idle majority — which is the dilution the pre/post split exists to
+        #    prevent.
+        return TossDecision(PHASE_COMMITTING, ACTION_ANNOUNCE, False, None,
+                            action_then=ACTION_DISPATCH_THROW)
+
+    def _slip(self, now: float, why: str,
+              reject_code: str = '') -> TossDecision:
+        """SLIP the commit to the next loop iteration, or REFUSE once the slip
+        has run past its bound (plan § 2.4.3).
+
+        **The slip moves ``_t_release`` with it**, so the released ball's own
+        schedule stays self-consistent — the announcement has not gone out, and
+        every consumer (the landing, the settle deadline, the 8b reach, the
+        cancel cutoff, the dispatch's ``event_delay``) reads ``_t_release`` and
+        re-derives nothing. Two bounds, both DERIVED rather than chosen:
+
+        * **the release bound** holds by construction: ``now`` and
+          ``_t_release`` advance together, so the runtime guard
+          ``_t_release − now ≥ min_event_delay_for_throw_s`` can never be broken
+          BY a slip;
+        * **the upstream bound** is :attr:`catch_confirm_window_s` — the
+          upstream cycle terminalises at the cup edge or at
+          ``landing + catch_confirm_window_s`` at the latest, so a slip that
+          outlives it is waiting for something that is not coming. No new
+          constant: mutate that one and this bound moves with it.
+
+        Past the bound the cycle REFUSES by the name of the gate that held it —
+        ``REJECTED_NO_BALL`` / ``REJECTED_BALL_UNKNOWN`` /
+        ``REJECTED_HAND_NOT_PARKED`` — with nothing armed at the hand and NO
+        announcement published (§ 2.4.3's staged-failure table). A slip with no
+        ``reject_code`` (the upstream one) cannot refuse on its own account: it
+        is waiting on a cycle that has its own deadline, and when that deadline
+        mints the upstream terminal the node discards this slot instead."""
+        self._commit_slip_s = max(0.0, now - self._commit_at_sched)
+        if reject_code and now > self._commit_at_sched + self.catch_confirm_window_s:
+            return self._reject(reject_code, 'commit slipped {:.3f} s past the '
+                                             '{:.3f} s bound ({})'
+                                .format(self._commit_slip_s,
+                                        self.catch_confirm_window_s, why))
+        # Re-arm on the next iteration, and take the release with it.
+        self._commit_at = now
+        self._t_release = now + self.commit_budget_for_cycle_s
+        return TossDecision(PHASE_COMMITTING, ACTION_NONE, False, None,
+                            slip=True)
 
     def _enter_throwing(self, now: float) -> TossDecision:
         """Everything Jugglebot-side is armed (latch up, announcement out) — the
@@ -2203,6 +2658,23 @@ class TossSequencer:
         returns ACTION_NONE)."""
         if result.success:
             return ACTION_STAY if self.stay_at_pose_on_caught else ACTION_RECENTER
+        if self.staged and not self._committed:
+            # ── B4, plan § 2.4.3's staged-failure table: ACTION_NONE ──
+            # A staged cycle that never passed its COMMIT gate has commanded
+            # NOTHING and armed NOTHING. `_positioned` is True (POSITIONING is
+            # skip-only here, so `note_position_noop` declared an arrival that
+            # traversed zero millimetres) and `_prepare_dispatched` is True (the
+            # staged PREPARE is the reach-centre drift guard and nothing else —
+            # under S6 every publish and every service call moved to the session
+            # or to the commit tick), so the serial test below would read both
+            # commitments as real and SAFE_ABORT.
+            #
+            # That is not a tidiness point. A staged cycle can refuse WHILE THE
+            # UPSTREAM CYCLE IS STILL AIRBORNE, and SAFE_ABORT's ladder retracts
+            # the hand — under the incoming ball, with the catch torn down. The
+            # honest cleanup for a slot that touched nothing is to drop it, which
+            # is exactly what the node's discard path does.
+            return ACTION_NONE
         if self._positioned or self._prepare_dispatched:
             return ACTION_SAFE_ABORT
         return ACTION_NONE
@@ -2264,19 +2736,55 @@ class TossSequencer:
         return float(self._t_release) - float(self._t_accept)
 
     @property
+    def commit_at(self) -> float:
+        """The COMMIT instant on the perf clock — ``_t_release −
+        commit_budget_s``, re-armed by every SLIP (plan § 2.6 rule 2).
+
+        0.0 before :meth:`start`, and meaningless on the serial path, which
+        never enters :data:`PHASE_COMMITTING`. Read by the node's record builder
+        and by the pipeline tick; nothing gates on it outside the FSM."""
+        return self._commit_at
+
+    @property
+    def commit_at_scheduled(self) -> float:
+        """The commit instant as ORIGINALLY scheduled, before any slip — the
+        datum :attr:`slip_s` is measured from and the origin the slip's
+        ``catch_confirm_window_s`` bound is counted from."""
+        return self._commit_at_sched
+
+    @property
+    def staged_at(self) -> float:
+        """When this cycle entered :data:`PHASE_STAGED` (0.0 if it never did) —
+        the record's ``staged_at_s``, so a corpus can measure the staged
+        preamble against :func:`stage_budget_s` instead of assuming it."""
+        return self._staged_at
+
+    @property
+    def committed(self) -> bool:
+        """True once the COMMIT gate passed — i.e. once the announcement and the
+        dispatch went out. THE S1′ predicate: at most one cycle may read True at
+        any instant, and only that cycle may emit a hand-bearing action.
+
+        Always False on a cycle that is not :attr:`staged`; the serial path's own
+        commitment flags (``_throw_dispatched``, ``prepared``) are unchanged and
+        still say what they always said."""
+        return self._committed
+
+    @property
     def slip_s(self) -> float:
         """Commit lateness: ``commit-time − scheduled commit``, in seconds.
 
-        **Scaffolding at Phase B2 — it reads 0.0 for every cycle.** There is no
-        COMMITTING phase yet: Phase B4 adds ``commit_at = _t_release −
-        commit_budget_s`` and writes ``_commit_slip_s`` from the tick that
-        crosses it. It is defined HERE, one phase early and deliberately, so
-        that B4 and Phase C's bounded-slip policy POPULATE an agreed quantity
-        rather than each inventing one — plan § 2.6 rule 3, "slip is reported,
-        not hidden". A slip the FSM absorbed silently is indistinguishable from
-        a cadence that never slipped, and the whole point of scheduling the
-        release absolutely is that lateness becomes measurable instead of being
-        soaked up by the next cycle's lead.
+        **Populated for real since Phase B4.** The COMMITTING gate writes it on
+        every SLIP and once more at the commit itself, so the number the record
+        carries is the lateness of the tick the announcement actually went out
+        on. Plan § 2.6 rule 3, "slip is reported, not hidden": a slip the FSM
+        absorbed silently is indistinguishable from a cadence that never
+        slipped, and the whole point of scheduling the release absolutely is
+        that lateness becomes measurable instead of being soaked up by the next
+        cycle's lead. Phase C's bounded-slip policy is then a CONSUMER of a
+        measured quantity rather than a new mechanism.
+
+        0.0 for every serial cycle — there is no commit gate to be late for.
 
         Never negative: an EARLY commit does not exist (the gate is polled and
         can only be crossed at or after ``commit_at``)."""

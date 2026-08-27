@@ -663,6 +663,36 @@ FIELDS: Tuple[Field, ...] = (
     Field('loop_period_max_post_s', 'timing', 'D', 'f',
           'worst post-dispatch iteration, for contrast'),
 
+    # ── The two-slot pipeline (declared; null on every serial cycle) ──────────
+    # ADDITIVE, so no SCHEMA bump — the schema's own rule (§ 3.7 item 1) is that
+    # purely additive fields do not bump, because a reader that does not know
+    # them reads nulls and a reader that does gets the whole story. All four are
+    # null for every cycle of a `toss_pipeline_enabled: false` sitting, which is
+    # itself the partition key a corpus needs: "did this cycle stage?" is
+    # answerable from the record rather than from the build.
+    #
+    # `commit_slip_s` is the row the operator scores the plan's own § 1.4
+    # prediction from (runbook row PIPE-1: ~0 ms at h = 1.3, ~45-65 ms at
+    # h = 1.0, and a slip RISING across a session is a loop-cost regression).
+    Field('staged_at_s', 'pipeline', 'D', 'f',
+          'perf instant this cycle entered PHASE_STAGED, i.e. finished its '
+          'preamble inside the PREVIOUS cycle\'s flight. Null = it never '
+          'staged (serial cycle, or the first cycle of a pipelined sitting, '
+          'which has nothing to pipeline behind)'),
+    Field('commit_at_s', 'pipeline', 'D', 'f',
+          'the COMMIT instant as SCHEDULED — t_release - commit_budget_s at '
+          'start(), before any slip. Paired with commit_slip_s it gives the '
+          'instant the arm point actually fired'),
+    Field('commit_slip_s', 'pipeline', 'D', 'f',
+          'commit-time minus SCHEDULED commit. The measured lateness of the '
+          'arm point, never negative (the gate is polled). Phase C\'s '
+          'bounded-slip policy is a CONSUMER of this, which is why it is '
+          'recorded a phase before any policy reads it'),
+    Field('staged_discarded_reason', 'pipeline', 'D', 's',
+          'why a STAGED slot was dropped without ever committing — the § 2.4.3 '
+          'unwind. Non-null ⇒ this cycle never released, and its row exists so '
+          'a discard is countable rather than being an absence in the census'),
+
     # ── Label / quality (derived at join) ─────────────────────────────────────
     Field('label', 'quality', 'X', 's', ' | '.join(LABELS)),
     Field('label_source', 'quality', 'X', 's', ''),

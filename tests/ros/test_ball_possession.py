@@ -1475,3 +1475,151 @@ def test_the_catch_confirm_deadline_clears_the_band_it_has_to_outlast():
     # four post-FW-14 bags, 2026-08-24 (it was +0.798, n=35, 2026-08-10 — and the
     # deadline was a hand-written 0.70 under THAT until census D7).
     assert ARRIVAL_BAND_MAX_S >= 0.5547
+
+
+# ── B4: the window arithmetic at the pipelined milestone (plan § 2.5) ─────────
+#
+# Probe FIRST, then the test (the house rule, CLAUDE.md "Empirical probe before
+# writing tests"). The confirmed recipes, run 2026-08-27 on the pinned stack:
+#
+#   /tmp/probe_arrival_clamp_pipelined.py  (P4) — where each milestone period's
+#       arrival window CLOSES and whether the seat-edge band is watched out. It
+#       CALLS `arrival_boundary_t` rather than restating it, which is that
+#       function's own instruction and what the 2026-08-24 audit caught a table
+#       for violating. Output: closes at +1.0629 / +1.1381 / +1.1978 / +1.3256
+#       against a +0.560 ceiling — the clamp is LIVE at every rung, the band is
+#       watched out at every rung, SENSOR_BAND_CLAMPED is unreachable.
+#
+#   /tmp/probe_retention_inverted.py  (P5) — the retention interval at the same
+#       rungs against the measured +0.1839 s median seat edge. Output:
+#       -49.0 ms (INVERTED) / +10.7 ms / +11.9 ms, answering UNKNOWN /
+#       CONFIRMED / CONFIRMED — never REJECTED.
+#
+# Both are /tmp one-offs and uncommitted (`tools/probes/README.md`: a one-off
+# goes to /tmp, a reusable harness gets promoted). Their FINDINGS live here.
+
+#: § 1.4 / B0-P2's measured median seat edge, the number both probes are run at.
+_SEAT_EDGE_MEDIAN_S = 0.1839
+
+#: ``(name, flight, dwell)`` — the § 2.5 rungs the milestone is scored on.
+_MILESTONE_RUNGS = (
+    ('h=1.0 commanded', 0.9032, 0.4349),
+    ('h=1.0 achieved', 0.9032, 0.4946),
+    ('h=1.3 commanded', 1.0298, 0.4958),
+)
+
+
+def test_the_clamp_is_live_at_the_milestone_but_the_band_is_still_watched_out():
+    """§ 2.5's FINDING, and it CORRECTS a premise this plan was commissioned on:
+    **``SENSOR_BAND_CLAMPED`` does not become reachable at the milestone.**
+
+    Three distinct thresholds, routinely conflated:
+
+      * the fixed window stops binding below a **1.700 s** period
+        (``arrival_window_s`` 1.5 + ``arrival_lead_s`` 0.2) — every rung in
+        scope, so the CLAMP is live and is what closes the arrival search;
+      * the shipped rule AMPUTATES below a **0.560 s** period
+        (``ARRIVAL_BAND_MAX_S``) — and the nearest in-scope period is 1.338 s, a
+        factor of 2.4 away.
+
+    So the clamp becoming live is real and the blind-bucket refusal is not
+    reachable from it. Evaluated by CALLING ``arrival_boundary_t`` — never by
+    restating its formula, which is that function's own instruction (probe P4)."""
+    landing = 0.0
+    for name, flight, dwell in _MILESTONE_RUNGS:
+        period = flight + dwell
+        assert period < hw.JB_BD_ARRIVAL_WINDOW_S + hw.JB_BD_ARRIVAL_LEAD_S, (
+            '{}: the fixed window would still bind, so the clamp is not '
+            'live'.format(name))
+        assert period > ARRIVAL_BAND_MAX_S * 2.0, (
+            '{}: this rung is close enough to amputation to need a '
+            're-argument'.format(name))
+        closes = arrival_boundary_t(landing, landing + period,
+                                    arrival_lead_s=float(hw.JB_BD_ARRIVAL_LEAD_S))
+        assert closes - landing >= ARRIVAL_BAND_MAX_S, (
+            '{}: the seat-edge band is amputated'.format(name))
+    # the exact instants probe P4 printed, so a constant edit moves this test
+    assert arrival_boundary_t(0.0, 0.9032 + 0.4349,
+                              arrival_lead_s=float(hw.JB_BD_ARRIVAL_LEAD_S)) \
+        == pytest.approx(1.1381, abs=5e-4)
+
+
+def test_the_arrival_windows_of_two_live_cycles_abut_by_identity():
+    """T-U10 — § 2.5(b): with two slots live the abutment holds BY IDENTITY.
+
+    ``arrival_boundary_t(P, L)`` closing ``L``'s window and opening ``N``'s is
+    LITERALLY THE SAME CALL ON THE SAME PAIR, so the two ends cannot drift as
+    long as the three reads name the right slots (the committed slot's landing,
+    the previously-committed slot's, the staged slot's). This asserts the
+    identity itself — the node-side slot naming is pinned separately by
+    ``test_the_sensor_is_told_the_committed_slots_landing``.
+
+    "Two computations of a boundary is how an abutment stops abutting" is the
+    function's own docstring; at the milestone periods the boundary is LIVE, so
+    the property stops being theoretical."""
+    lead = float(hw.JB_BD_ARRIVAL_LEAD_S)
+    for name, flight, dwell in _MILESTONE_RUNGS:
+        period = flight + dwell
+        prev_landing, landing = 0.0, period
+        next_landing = 2.0 * period
+        close_of_this = arrival_boundary_t(landing, next_landing,
+                                           arrival_lead_s=lead)
+        open_of_next = arrival_boundary_t(landing, next_landing,
+                                          arrival_lead_s=lead)
+        assert close_of_this == open_of_next, name          # the same float
+        # …and the previous pair's boundary is the one that opened THIS window,
+        # so the chain abuts end to end with no gap and no overlap.
+        open_of_this = arrival_boundary_t(prev_landing, landing,
+                                          arrival_lead_s=lead)
+        assert open_of_this < close_of_this, name
+        assert open_of_this <= landing <= close_of_this, name
+
+
+def test_an_inverted_retention_interval_answers_unknown_not_rejected():
+    """T-U9 — § 2.5(c), and at these dwells the inverted case is the NORMAL one.
+
+    Retention closes at ``next_release − RELEASE_GUARD_S``. Against the measured
+    +183.9 ms median seat edge that is **−49.0 ms (inverted)** at the h = 1.0
+    commanded dwell, +10.7 ms at its achieved dwell and +11.9 ms at h = 1.3
+    (probe P5, 2026-08-27).
+
+    C-POSSESS-1.C already governs it — *"where a clamp leaves no interval at
+    all, the part it governs is UNKNOWN — never CONFIRMED… and never
+    REJECTED"* — but it is now the normal case rather than an edge one, and a
+    ``REJECTED`` here would be **a positive claim of a bounce-out on every good
+    cycle**. That is what this test forbids."""
+    step = 1.0 / 200.0
+    seen = {}
+    for name, flight, dwell in _MILESTONE_RUNGS:
+        landing = 1000.0
+        next_release = landing + dwell
+        src = HandBallSensorSource(
+            arrival_lead_s=float(hw.JB_BD_ARRIVAL_LEAD_S),
+            arrival_window_s=float(hw.JB_BD_ARRIVAL_WINDOW_S),
+            retention_window_s=float(hw.JB_BD_RETENTION_WINDOW_S),
+            stale_s=0.5)
+        t = landing - 1.0
+        while t <= next_release + 0.5:
+            # A perfectly healthy catch: empty through the flight, HELD from the
+            # measured seat edge onward, and never bouncing out.
+            held = t >= landing + _SEAT_EDGE_MEDIAN_S
+            src.note_sample(t, held=held, valid=True, raw=held)
+            t += step
+        verdict = merge_possession(sensor=src.observe(
+            landing + float(hw.JB_BD_ARRIVAL_WINDOW_S), landing,
+            next_release_t=next_release,
+            next_landing_t=next_release + flight, prev_landing_t=None))
+        assert verdict.retention != RETENTION_REJECTED, (
+            '{}: a REJECTED here is a positive bounce-out claim on a healthy '
+            'cycle'.format(name))
+        seen[name] = verdict.retention
+        interval = (next_release - RELEASE_GUARD_S) - (landing
+                                                       + _SEAT_EDGE_MEDIAN_S)
+        if interval < 0.0:
+            assert verdict.retention == RETENTION_UNKNOWN, name
+    # The three rungs the probe printed, and the h=1.0 COMMANDED one is the
+    # inverted one — pinned by name so a dwell edit that un-inverts it is
+    # visible rather than silently making this test vacuous.
+    assert seen['h=1.0 commanded'] == RETENTION_UNKNOWN
+    assert seen['h=1.0 achieved'] == RETENTION_CONFIRMED
+    assert seen['h=1.3 commanded'] == RETENTION_CONFIRMED

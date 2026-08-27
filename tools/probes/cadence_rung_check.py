@@ -508,37 +508,34 @@ def commit_budget_s(event_vel_mps: float, min_event_delay_s: float = 0.0,
     """Cycle COMMIT -> release, in seconds — the pipelined sibling of
     ``pre_dispatch_budget_s`` + the dispatch budget.
 
-    ⚠ **THIS FUNCTION DOES NOT EXIST IN ``ros_ws/`` YET.**  Plan
-    ``toss-pipelined-preamble.md`` § 2.7 specifies it as a new function in
-    ``toss_sequencer.py``, placed next to ``pre_dispatch_budget_s`` so an edit to
-    either sees the other, and **workstream B4 must reconcile the two**: when it
-    lands, this body becomes ``return ts.commit_budget_s(...)`` and the
-    arithmetic below is deleted, exactly as the ``NODE_TICK_S`` literal this
-    module used to carry was deleted in favour of an import.  Until then a drift
-    between the probe and the shipped floor is possible, which is precisely the
-    class of defect the 2026-08-22 audit found (the session's mirror and the
-    cycle's gate were two expressions of one floor and had drifted).
+    ✅ **RECONCILED 2026-08-27 (workstream B4).**  This body was a MODEL through
+    Phase B0, carrying the arithmetic § 2.7 specified and an explicit obligation
+    that B4 replace it with an import.  B4 landed
+    ``toss_sequencer.commit_budget_s`` and this is now that function, forwarded —
+    exactly as the ``NODE_TICK_S`` literal this module used to carry was deleted
+    in favour of an import, and for the same reason: a probe that keeps its own
+    copy of a shipped floor is the 2026-08-22 audit's finding wearing a different
+    hat (the session's mirror and the cycle's gate were two expressions of one
+    floor, and they had drifted).
+    ``tests/motion/test_cadence_rung_check.py`` pins the identity, so a future
+    edit that re-forks them reds rather than silently diverging.
 
     **ONE loop period, not four.**  Under the pipeline the announce tick, the
     PREPARE tick and the deferred-bundle tick have already run inside the
     PREVIOUS cycle's flight, and the >=1-tick armed->announce gap is satisfied by
-    the session-scoped latch (invariant S6) rather than by a tick.  The one
-    period charged is the COMMIT tick itself, which is **polled**: the iteration
-    that crosses ``commit_at`` may be up to one full loop period late, and that
-    lateness comes straight off the lead the release-window guard measures.
+    construction rather than by a tick.  The one period charged is the COMMIT
+    tick itself, which is **polled**: the iteration that crosses ``commit_at``
+    may be up to one full loop period late, and that lateness comes straight off
+    the lead the release-window guard measures.
 
     Note what is NOT here and is in ``min_throw_delay_for_release_s``: the
     ``max(TOSS_DISPATCH_DEBOUNCE_S, ...)`` clamp.  That constant is a goal-storm
     debounce on ``throw_delay_s``, an operator-facing field; the commit budget is
     an internal schedule offset that no operator types, so clamping it would
-    charge a 0.10 s floor for a hazard that is not on this path.  § 2.7's sketch
-    omits it too — recorded here so B4 omits it deliberately rather than by
-    transcription.
+    charge a 0.10 s floor for a hazard that is not on this path.  B4 omitted it
+    deliberately, and the shipped docstring says so.
     """
-    override = float(min_event_delay_s)
-    dispatch_s = (override if override > 0.0
-                  else hand_stroke.min_throw_event_delay_s(event_vel_mps))
-    return dispatch_s + float(loop_period_s) + FLOOR_REPRESENTATION_SLACK_S
+    return ts.commit_budget_s(event_vel_mps, min_event_delay_s, loop_period_s)
 
 
 def _session(T: float, dwell_s: float = 99.0, delay_s: float = 1.0,
@@ -571,12 +568,22 @@ def pipelined_terms(T: float, *, ilc_trim: bool = False,
     commit = commit_budget_s(v, loop_period_s=charge)
     handoff = float(sess.handoff_margin_s)
     hand_floor = float(sess.hand_floor_dwell_s)
+    # The SHIPPED pipelined floor, read off a `pipelined=True` session rather
+    # than recomputed. It is the number the accept gate will actually enforce,
+    # and pinning it EQUAL to the local `floor` at the default loop period (see
+    # tests/motion/test_cadence_rung_check.py) is the other half of B4's probe
+    # reconciliation: the forwarded `commit_budget_s` closes the budget, this
+    # closes the floor built on it. The local expression survives because the
+    # sweeps vary the loop period and the shipped property cannot.
+    shipped = _session(T, ilc_trim=ilc_trim)
+    shipped.pipelined = True
     return {
         'T': float(T), 'v': v, 'dispatch': dispatch, 'commit': commit,
         'handoff': handoff, 'hand_floor': hand_floor,
         'park_reentry': hand_stroke.catch_park_reentry_s(
             v, float(sess.catch_vel_scale)),
         'floor': max(commit + handoff, hand_floor),
+        'shipped_floor': float(shipped.required_dwell_s),
         'plumbing_binds': (commit + handoff) >= hand_floor,
     }
 
@@ -597,13 +604,20 @@ def pipelined_session_accepts(T: float, dwell_s: float, *,
     """The pipelined SESSION gate — ``None`` on accept, else its reject code.
 
     Every gate of the shipped ``_checking_reject`` except the delay one, which
-    the pipeline retires: with an absolute ``release_at_perf`` (§ 2.6)
-    ``throw_delay_s`` is 0.0 at every § 6.2 rung and
-    ``REJECTED_THROW_DELAY`` would refuse the whole ladder.  **What replaces that
-    gate is a B4 decision this probe does not make**; it is recorded here as a
-    modelling assumption rather than silently dropped, because a retired gate
-    that nothing replaces is how the 0.160 s got charged twice in the first
-    place.
+    the pipeline does not measure a staged cycle against: with an absolute
+    ``release_at_perf`` (§ 2.6) a staged cycle does not run on ``throw_delay_s``
+    at all.
+
+    ✅ **RESOLVED 2026-08-27 (B4).**  This docstring used to record "what
+    replaces that gate is a B4 decision this probe does not make", because a
+    retired gate that nothing replaces is how the 0.160 s got charged twice in
+    the first place.  The decision was taken:
+    ``toss_sequencer.min_stage_lead_for_release_s`` — ``stage_budget_s +
+    commit_budget_s`` — is charged at a staged cycle's CHECKING against its REAL
+    lead, and ``REJECTED_THROW_DELAY`` survives unchanged on both branches
+    because the FIRST cycle of every pipelined sitting still runs serially and
+    its release really is ``accept + throw_delay``.  This model omits it only
+    because it models the STEADY STATE, where every cycle is staged.
     """
     sess = _session(T, dwell_s, 0.0, ilc_trim=ilc_trim)
     if sess.num_throws < 1 or sess.num_throws > sess.max_throws:
@@ -786,8 +800,10 @@ def print_pipeline(loop_period_s: float, seat_edge_s: float,
     print('THE PIPELINED MODEL — plan toss-pipelined-preamble.md § 2.7 / § 6.2')
     print('commit_budget_s = dispatch + {:.3f} s (ONE loop period) + slack '
           '{:.0e}'.format(loop_period_s, FLOOR_REPRESENTATION_SLACK_S))
-    print('⚠ MODELLED HERE, NOT SHIPPED — B4 must reconcile (see '
-          'commit_budget_s.__doc__)')
+    print('✅ SHIPPED since B4 (2026-08-27): commit_budget_s is imported from '
+          'toss_sequencer,')
+    print('   and the floor column below is pinned equal to a pipelined '
+          'session\'s required_dwell_s.')
 
     print()
     print('§ 2.7 THE FLOOR TABLE — ILC artifact NOT loaded (the shipped machine)')
