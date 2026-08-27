@@ -383,16 +383,195 @@ _HAND_TELEMETRY_STALE_S = 0.3      # telemetry older than this ⇒ cannot verify
 #
 # Every use is a POLL PERIOD in a goal-execution thread (verified by inspection,
 # 2026-08-22: seven time.sleep(_TICK_S) sites, all inside `while rclpy.ok()`
-# deadline loops). None of them is a control loop and none treats the tick as a
+# deadline loops; FIVE since 2026-08-27, re-verified the same way). None of them
+# is a control loop and none treats the tick as a
 # DURATION, so the cost of shortening it is CPU in a thread that was sleeping.
 # toss_session.NODE_TICK_S mirrors this and is pinned to it by a drift-guard test
 # — it is an input to DEFAULT_SESSION_DWELL_MARGIN_S and to the MISS-cleanup
 # floor, so the two cannot be allowed to drift.
+#
+# ⚠ THE TWO TOSS LOOPS NO LONGER SLEEP THIS (B5 lever 1, 2026-08-27).
+# `_run_toss_cycle` and `_execute_toss_continuous` pace to an ABSOLUTE grid at
+# `_PACE_PERIOD_S` (= NODE_LOOP_PERIOD_S = 0.040) instead — see that constant
+# below for the argument. What survives here is the FIVE reload-side waits
+# (`_execute_reload`, `_wait_out_seat_edge_band`, `_recentre_for_reload`,
+# `_run_one_reload_attempt`, `_settle_after_reload`), plus this constant's real
+# job: the drift guard just named, and the honest name for a sleep. It is NOT
+# the arithmetic unit and has not been since D3.
 _TICK_S = 0.02
 # A hard ceiling on a single reload attempt so a wedged sequence always terminates.
 _MAX_SEQUENCE_S = 30.0
 # Slack added on top of the FSM's own budgets when deriving the per-goal ceiling.
 _SEQUENCE_CEILING_MARGIN_S = 5.0
+
+# ── Absolute-schedule tick pacing for the TWO toss loops (plan B5, lever 1) ────
+#
+# THE PACED PERIOD IS `NODE_LOOP_PERIOD_S`, NOT `_TICK_S`, and the alias below is
+# an alias precisely so the two cannot drift.
+#
+# Until 2026-08-27 both toss loops ended in a FIXED `time.sleep(_TICK_S)`, so an
+# iteration cost `work + 0.020 + scheduler overshoot` and the PERIOD was an
+# OUTPUT. Every budget in this stack is denominated in an INPUT — a count of
+# `NODE_LOOP_PERIOD_S` (`pre_dispatch_budget_s` charges 4, `commit_budget_s`
+# charges 1, `SAFE_ABORT_LADDER_S` charges 4, `DEFAULT_SESSION_MISS_CLEANUP_S`
+# charges 2 for the SESSION loop's own observe-then-start poll). A budget
+# counted in a quantity nothing sets is a budget that is right on average and
+# wrong in the tail, and the tail is where it matters:
+#
+#   B0/P1 (`tools/probes/toss_loop_census.py`, 2026-08-27, 73 chained cycles of
+#   the 2026-08-26 evening sitting): `loop_period_max_pre_s` p50 0.0447, p90
+#   0.0519, max 0.0626 against a charged 0.040 — 53/73 cycles exceeded the
+#   charge somewhere, and `loop_n_over_pre` fired on 48 of 66 SUCCESSFUL cycles.
+#   Four ticks charged at 0.160 could really cost 0.250.
+#
+# WHY `NODE_LOOP_PERIOD_S` (0.040) AND NOT `_TICK_S` (0.020). The pacer sleeps
+# `period - work`, so a target BELOW the typical work degenerates to no sleep at
+# all on exactly the loaded ticks that need the yield most, and the period goes
+# back to being `work` — an output again. The corpus says 0.020 is such a
+# target: chained `loop_work_max_pre_s` is p50 0.0237 / p90 0.0307, so pacing at
+# 0.020 leaves 49/73 cycles unpaced (re-scored from the same corpus,
+# /tmp/probe_pace_rescore.py, 2026-08-27). At 0.040 the same re-score projects a
+# per-cycle worst period of p50 0.0400 / p90 0.0400 / max 0.0418, and the CHARGE
+# BECOMES THE PERIOD.
+#
+# THE MARGIN, NAMED HONESTLY. `loop_work_max_pre_s` maxes at 0.0418 across those
+# 73 cycles — i.e. the worst measured pre-dispatch iteration does MORE work than
+# a 0.040 period can hold, and on it the pacer degenerates by 1.8 ms. That is 2
+# of 73 cycles. It is not hidden: under pacing `loop_n_over_pre` stops being
+# dominated by "the sleep plus the work happened to exceed the charge" (the 46 ms
+# typical iteration) and becomes a WORK-OVERRUN signal — a tick whose own work
+# outran the budget denominator.
+#
+# ⚠ It does NOT become a pure one, and claiming so would be the overstatement
+# this census exists to avoid. A paced period is `PERIOD + (wake_k -
+# wake_{k-1})`, so a wake-latency SPIKE still trips the threshold — by a
+# millisecond or two, where the unpaced loop tripped it by twenty. Read a
+# post-B5 `loop_n_over_pre` beside `loop_work_max_pre_s`: work over 0.040 is the
+# real finding, a handful of near-threshold periods with work well under it is
+# scheduler jitter. B6's acceptance ("0 on every successful cycle") was written
+# against the unpaced loop and should be re-read in that light.
+#
+# The re-cut of `NODE_LOOP_PERIOD_S` itself is deliberately NOT taken here (plan
+# § 4 B5: "by a human reading the census, never by the census", and the census it
+# needs is a post-B3/B4 sitting that does not exist yet).
+#
+# AND IT MAKES THE MACHINE MATCH THE MODEL THAT CERTIFIES IT.
+# `tools/probes/cadence_rung_check.py` — the probe every published rung's accept
+# gate is checked against — drives the real FSM on `now = t0 + tick *
+# NODE_LOOP_PERIOD_S` (:326), i.e. it has ALWAYS modelled a perfectly paced
+# 0.040 grid. Today the machine does not run one. Pacing is what closes that gap
+# rather than widening the probe's fiction.
+#
+# WHAT IT COSTS, STATED. The SESSION loop's between-cycle poll coarsens from
+# ~0.023 s to ~0.040 s, so a serial cycle's START is detected a median ~7.5 ms
+# later and the ACHIEVED period grows by that much (it does not accumulate:
+# `_next_cycle_at` is re-derived from the previous cycle's SCHEDULED landing
+# every cycle). Cancel-between-cycles latency grows by the same amount, against
+# a `TOSS_CANCEL_CUTOFF_S` of 0.25 s and a documented deferral of one whole
+# cycle. Both are the price of the session loop's poll finally costing what
+# `DEFAULT_SESSION_MISS_CLEANUP_S` has charged it since D3.
+#
+# NOT PACED, deliberately: the reload loops (`_run_one_reload_attempt`,
+# `_settle_after_reload`, `_wait_out_seat_edge_band`, `_recentre_for_reload`).
+# They feed different budgets, the census has never measured them, and pacing a
+# loop whose period nothing has bounded would be exactly the guess D3's
+# "measure, then choose" refused.
+_PACE_PERIOD_S = TOSS_LOOP_PERIOD_S
+
+#: The EARLY-FIRE BAND — how far before a due instant the pacer stops sleeping.
+#:
+#: Transposed from the hand-sensor poller's Feature 1
+#: (`logbook/2026-08-24-poller-cadence-and-tristate-tx.md`), and the transposition
+#: has to be read carefully: there the band is `TICK_PERIOD_US / 2` — half the
+#: WAKE GRANULARITY (the 1 kHz service tick), NOT half the 20 ms poll interval it
+#: paces. Half of `_PACE_PERIOD_S` here would be 0.020 s, and firing 20 ms early
+#: on a 40 ms grid would hand the period straight back to `work`. The band's job
+#: is to absorb the wake granularity, so it is sized to the wake granularity.
+#:
+#: WHAT IT BUYS, and it is the whole reason the band is not optional. `time.sleep`
+#: returns LATE. Sleeping the full `due - now` therefore lands every iteration a
+#: wake-latency past its grid instant, and four of those come straight out of
+#: `pre_dispatch_budget_s`: at a `throw_delay_s` sitting exactly on the accept
+#: floor the runtime guard's comparison is an EQUALITY (which is what
+#: `FLOOR_REPRESENTATION_SLACK_S` exists for), so a systematic +1.5 ms would abort
+#: `ABORTED_CANT_MAKE_RELEASE` on every at-the-floor rung. Sleeping SHORT by the
+#: band lets the scheduler's own latency carry the wake TO the due instant instead
+#: of past it — the poller's "rounding the due instant to the nearest tick" — and
+#: keeps `NODE_LOOP_PERIOD_S` a BOUND on the achieved period rather than a target
+#: the achieved period sits just above. Late is the failure direction; early is
+#: free margin.
+#:
+#: SIZED FROM MEASUREMENT, both ends:
+#:   * idle wake granularity on this Jetson — `time.sleep()` overshoot p50 0.1 ms,
+#:     p99 0.1 ms, max 0.9 ms over 400 samples at 0.014 s and 0.020 s targets
+#:     (`/tmp/probe_sleep_granularity.py`, 2026-08-27);
+#:   * under the LIVE executor — `loop_sleep_max_pre_s` minus the 0.020 s sleep it
+#:     was measuring: p50 1.5 ms, max 6.8 ms (B0/P1 corpus, 73 chained cycles).
+#: 0.002 s covers the idle maximum and the live median. The 6.8 ms tail is not a
+#: sizing target: a band that large would systematically shorten the period by
+#: 17 %, and an outlier wake is what the runtime guard and `loop_n_over_pre` are
+#: for.
+#:
+#: CEILING. The band must stay below `_PACE_PERIOD_S / 2`, the poller's own bound
+#: — the largest band that cannot pull an iteration onto its predecessor's slot.
+#: 0.002 s is a twentieth of that.
+_PACE_SLOP_S = 0.002
+
+
+def _pace_to_next_tick(next_due, period=_PACE_PERIOD_S, slop=_PACE_SLOP_S):
+    """Sleep until the next instant on an ABSOLUTE tick grid. Returns the grid
+    instant this call paced to; the caller feeds it back on the next iteration.
+
+    ``next_due += period`` from the previous DUE instant, never from ``now`` —
+    that is what makes the grid absolute and stops per-iteration lateness
+    accumulating into drift. Three behaviours, in the order the code takes them:
+
+    **Mild overrun stays on the grid.** An iteration whose work ran past its due
+    instant does not sleep, and the NEXT one is short by exactly the overrun. The
+    period of a single iteration varies; the SUM of four is still ``4 * period``,
+    which is the quantity ``pre_dispatch_budget_s`` actually charges.
+
+    **More than one period behind RE-ANCHORS — it never bursts.** The catch-up a
+    preserved grid implies is bounded to one period by construction; past that
+    the grid is abandoned and re-based on ``now``. Same call the poller took, for
+    the same reason and one more:
+
+      * the loop is a periodic SAMPLER, not a queue. Every FSM guard here is
+        level-triggered on ``now`` (``now >= commit_at``, ``now >= _t_release -
+        budget``), so a grid slot not taken has no backlog to replay;
+      * replaying would fire several iterations at almost the same ``now``, doing
+        no useful FSM work, and would charge :class:`LoopPeriodCensus` several
+        near-zero periods — diluting p50 and ``loop_n_over_pre`` precisely on the
+        cycles that just overran. The instrument that exists to expose a slow
+        loop would report the overrun surrounded by phantom fast ticks;
+      * and it would spend that burst starving the executor thread of the yield
+        it needs most, immediately after a heavy tick.
+
+      The trigger is real and measured: the one cycle in the B0/P1 corpus that
+      commanded a positioning move spent 0.3022 s in a single iteration (0.2774
+      of it inside a blocking ``go_to_pose``), which is 7.5 periods of backlog.
+      The two ``continue`` statements in ``_execute_toss_continuous`` — the
+      reload interlude and the serial blocking cycle — skip the pacer entirely
+      and land here seconds behind; re-anchoring is what makes that a no-op
+      instead of a burst.
+
+    **The sleep is never negative.** ``max(0, .)`` in the ``if``, and a test pins
+    it over a work sweep that includes the re-anchor case.
+
+    A module function, not a method: it touches no node state, so it is testable
+    against a fake clock without a node. ``time`` is looked up on the module so
+    the node tests' ``_Clock`` namespace patches it exactly as it patches every
+    other clock read here."""
+    due = float(next_due) + float(period)
+    now = time.perf_counter()
+    if now - due > float(period):
+        # >1 period behind: RE-ANCHOR onto `now`, never replay the missed slots.
+        due = now + float(period)
+    delay = due - now - float(slop)
+    if delay > 0.0:
+        time.sleep(delay)
+    return due
+
 
 # ── Toss-only constants ────────────────────────────────────────────────────────
 # Observation-level hand-telemetry freshness for the TOSS preconditions
@@ -4207,6 +4386,10 @@ class ReloadCoordinatorNode(Node):
         the cycle's state travels with the cycle rather than being looked up."""
         state = self._toss_committed if state is None else state
         t_start = time.perf_counter()
+        # The absolute tick grid (B5 lever 1), anchored on the cycle's own start
+        # so tick k is due at `t_start + k * _PACE_PERIOD_S`. Nothing else may
+        # write it: `_pace_to_next_tick` owns the advance and the re-anchor.
+        next_due = t_start
         # INSTRUMENT ONLY. Fresh per cycle so no record can inherit another
         # cycle's timings, and read back on THIS thread by _log_toss_outcome.
         #
@@ -4247,7 +4430,12 @@ class ReloadCoordinatorNode(Node):
                 census.note_iteration_end(
                     now, now + self._toss_obs_build_s, t_pre_sleep,
                     decision.phase)
-                time.sleep(_TICK_S)
+                # PACED, not a fixed sleep (B5 lever 1). The census reads the
+                # real interval either way — `note_iteration_start` above closes
+                # the row from the NEXT `now` — so `loop_sleep_max_pre_s` keeps
+                # measuring what the wait actually cost, and now also says how
+                # much headroom the period had left.
+                next_due = _pace_to_next_tick(next_due)
             # rclpy shutting down.
             self._safe_toss_on_early_exit(seq, state)
             r = TossResult(False, 'ABORTED_SHUTDOWN')
@@ -6935,6 +7123,18 @@ class ReloadCoordinatorNode(Node):
             # have no session parameter to be handed.
             self._toss_session_ref = session
             t_start = time.perf_counter()
+            # The absolute tick grid (B5 lever 1). This loop IS the pipeline's
+            # tick loop, and `commit_budget_s` charges exactly ONE period of it
+            # for the polled COMMIT — so it is the loop with the most to gain
+            # from the period being an input. On the SERIAL path it paces the
+            # between-cycle poll, which `DEFAULT_SESSION_MISS_CLEANUP_S` has
+            # charged at 2 x NODE_LOOP_PERIOD_S since D3.
+            #
+            # The two `continue`s below (the reload interlude, the blocking
+            # serial cycle) skip the pacer and return here seconds behind: the
+            # re-anchor branch is what turns that into a single fresh period
+            # instead of a burst of replayed slots.
+            next_due = t_start
             while rclpy.ok():
                 now = time.perf_counter()
                 if goal_handle.is_cancel_requested and not session.cycle_live:
@@ -7163,7 +7363,7 @@ class ReloadCoordinatorNode(Node):
                     self._finish_session(result, session, 'ABORTED_TIMEOUT')
                     goal_handle.abort()
                     return result
-                time.sleep(_TICK_S)
+                next_due = _pace_to_next_tick(next_due)
             # rclpy shutting down.
             self._finish_session(result, session, 'ABORTED_SHUTDOWN')
             return result

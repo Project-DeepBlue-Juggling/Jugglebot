@@ -3761,3 +3761,234 @@ def test_the_loop_census_on_the_record_is_the_one_the_cycle_actually_fed(
     assert node._toss_loop_census is built, (
         'the loop fed a census the record cannot see')
     assert state.census is built
+
+
+# ══ B5 lever 1 — absolute-schedule tick pacing ════════════════════════════════
+#
+# What is under test here is the SCHEDULE, so these drive the module function
+# directly against a fake clock rather than through a node: a node would only add
+# ways for the schedule to be right and the test to be wrong. The two loops' USE
+# of it is pinned STRUCTURALLY at the bottom of this section, because a loop that
+# quietly went back to `time.sleep(_TICK_S)` would pass every behavioural test
+# above it.
+#
+# The recipe behind the numbers: /tmp/probe_pace_rescore.py re-scored the B0/P1
+# corpus (73 chained cycles) as `max(PERIOD, work)` and /tmp/probe_sleep_
+# granularity.py measured this Jetson's `time.sleep` overshoot at p50 0.1 ms /
+# max 0.9 ms idle, both 2026-08-27. Both are one-offs; the durable numbers live
+# in the constants' own comments.
+
+_PERIOD = float(rcn._PACE_PERIOD_S)
+_SLOP = float(rcn._PACE_SLOP_S)
+
+
+class _PacedClock:
+    """Stand-in for the node module's ``time`` — ``perf_counter`` + ``sleep``.
+
+    ``sleep`` advances the clock by the requested interval PLUS ``overshoot``,
+    which is what a real ``time.sleep`` does and the entire reason the early-fire
+    band exists. Every interval the pacer asks for is recorded, so a test can
+    assert it never asked for a negative one and never asked for none at all."""
+
+    def __init__(self, t0=1000.0, overshoot=0.0):
+        self.t = float(t0)
+        self.overshoot = float(overshoot)
+        self.sleeps = []
+
+    def perf_counter(self):
+        return self.t
+
+    def sleep(self, dt):
+        self.sleeps.append(float(dt))
+        self.t += float(dt) + self.overshoot
+
+    def work(self, dt):
+        """Burn ``dt`` of clock inside a loop body."""
+        self.t += float(dt)
+
+
+def _paced_tops(clock, works, monkeypatch):
+    """Run the pacer over a list of per-iteration WORK durations and return the
+    ``now`` each loop body would have seen. One extra top is returned — the one
+    the iteration AFTER the last would start at — because the interesting
+    quantity is the interval, not the iteration."""
+    monkeypatch.setattr(rcn, 'time', clock)
+    next_due = clock.perf_counter()
+    tops = []
+    for w in works:
+        tops.append(clock.perf_counter())
+        clock.work(w)
+        next_due = rcn._pace_to_next_tick(next_due)
+    tops.append(clock.perf_counter())
+    return tops
+
+
+def test_the_paced_period_is_the_budget_denominator_and_not_the_sleep():
+    """The drift guard, and the whole B5 decision in three asserts.
+
+    Every budget in this stack counts `NODE_LOOP_PERIOD_S`, so that is what the
+    loops are paced to; `_TICK_S` is half of it and pacing there would degenerate
+    to no sleep at all on the majority of measured pre-dispatch ticks (chained
+    `loop_work_max_pre_s` p50 0.0237 against a 0.020 target, B0/P1). The alias is
+    an alias so the two CANNOT drift."""
+    assert rcn._PACE_PERIOD_S == rcn.TOSS_LOOP_PERIOD_S
+    assert rcn._PACE_PERIOD_S != rcn._TICK_S
+    # The band absorbs the WAKE granularity, not half the period — see the
+    # poller transposition at `_PACE_SLOP_S`. Half a period is the ceiling.
+    assert 0.0 < rcn._PACE_SLOP_S < rcn._PACE_PERIOD_S / 2.0
+
+
+def test_the_paced_loop_holds_an_absolute_grid_and_never_accumulates_drift(
+        monkeypatch):
+    """THE property. Due instants come from ``next_due += PERIOD``, never from
+    ``now``, so a per-iteration lateness (the sleep's own overshoot, the band it
+    is slept short by) is a CONSTANT offset from the grid rather than a term that
+    compounds. Twenty iterations of varying work, and the offset at the last is
+    the offset at the first."""
+    clock = _PacedClock(overshoot=0.0005)
+    t0 = clock.perf_counter()
+    works = [0.005, 0.030, 0.001, 0.020, 0.012] * 4
+    tops = _paced_tops(clock, works, monkeypatch)
+    offsets = [tops[k] - (t0 + k * _PERIOD) for k in range(1, len(tops))]
+    assert offsets[0] == pytest.approx(-_SLOP + clock.overshoot, abs=1e-9)
+    assert offsets[-1] == pytest.approx(offsets[0], abs=1e-9)
+    for k in range(2, len(tops)):
+        assert tops[k] - tops[k - 1] == pytest.approx(_PERIOD, abs=1e-9)
+
+
+def test_the_early_fire_band_fires_a_wake_inside_it_without_sleeping(
+        monkeypatch):
+    """The band's second face: a due instant already inside the band is not worth
+    a scheduler round trip. Sleeping the residual would cost a whole wake
+    latency (~1.5 ms under the live executor) to remove less than that — so the
+    pacer fires, up to ``_PACE_SLOP_S`` early, and leaves the GRID untouched.
+    That is the poller's "round the due instant to the nearest tick", and it is
+    why the band can never be sized to half the PERIOD."""
+    clock = _PacedClock()
+    t0 = clock.perf_counter()
+    # One tick of work that lands inside the band, then a normal one.
+    tops = _paced_tops(clock, [_PERIOD - _SLOP / 2.0, 0.005], monkeypatch)
+    assert len(clock.sleeps) == 1                # the FIRST tick slept not at all
+    assert tops[1] - tops[0] == pytest.approx(_PERIOD - _SLOP / 2.0, abs=1e-9)
+    # …and the grid is unmoved: the next top is still on `t0 + 2 * PERIOD`.
+    assert tops[2] == pytest.approx(t0 + 2 * _PERIOD - _SLOP, abs=1e-9)
+
+
+def test_a_mild_overrun_stays_on_the_grid_so_four_ticks_still_cost_four_periods(
+        monkeypatch):
+    """``pre_dispatch_budget_s`` charges the SUM of four ticks, not four
+    individual ticks, and a preserved grid is what makes the sum exact even when
+    one member of it overran. The catch-up this implies is bounded to ONE period
+    by construction — the next tick is short by exactly the overrun and no
+    more."""
+    clock = _PacedClock()
+    over = 0.010
+    tops = _paced_tops(clock, [0.010, _PERIOD + over, 0.010, 0.010], monkeypatch)
+    assert tops[2] - tops[1] == pytest.approx(_PERIOD + over, abs=1e-9)
+    assert tops[3] - tops[2] == pytest.approx(_PERIOD - over, abs=1e-9)
+    assert tops[4] - tops[0] == pytest.approx(4 * _PERIOD - _SLOP, abs=1e-9)
+
+
+def test_a_loop_more_than_one_period_behind_reanchors_instead_of_bursting(
+        monkeypatch):
+    """RECOVERY, and it is the decision this phase had to take rather than
+    inherit. The loop is a periodic SAMPLER — every FSM guard is level-triggered
+    on ``now`` — so a grid slot not taken has no backlog, and replaying the
+    missed ones would fire iterations at almost the same ``now`` doing no useful
+    work, charge the census several near-zero periods on exactly the cycle that
+    just overran, and starve the executor of a yield straight after a heavy tick.
+
+    The trigger is measured, not hypothetical: the one B0/P1 cycle that commanded
+    a positioning move spent 0.3022 s in a single iteration, which is 7.5 periods
+    of backlog. A catch-up pacer would answer that with seven zero-length sleeps;
+    this one answers with one full period and a re-based grid."""
+    clock = _PacedClock()
+    tops = _paced_tops(clock, [0.3022, 0.010, 0.010], monkeypatch)
+    assert len(clock.sleeps) == 3                    # one per iteration
+    assert all(s > 0.0 for s in clock.sleeps)        # …and NOT a burst of zeros
+    assert clock.sleeps[0] == pytest.approx(_PERIOD - _SLOP, abs=1e-9)
+    # The grid is re-based on the overrun's END, so the very next interval is a
+    # whole period rather than whatever was left of an abandoned schedule.
+    assert tops[2] - tops[1] == pytest.approx(_PERIOD, abs=1e-9)
+    assert tops[3] - tops[2] == pytest.approx(_PERIOD, abs=1e-9)
+
+
+def test_the_pacer_never_asks_for_a_negative_sleep(monkeypatch):
+    """``max(0, .)`` lives in the ``if``, and a negative interval would be a
+    ``ValueError`` from the real ``time.sleep`` — i.e. an exception thrown from
+    the bottom of a loop holding an armed catch latch. Swept across work
+    durations that straddle the band, the period and the re-anchor threshold."""
+    clock = _PacedClock()
+    works = [i * _PERIOD / 8.0 for i in range(0, 25)]
+    _paced_tops(clock, works, monkeypatch)
+    assert clock.sleeps, 'the sweep must exercise the sleeping branch too'
+    assert all(s > 0.0 for s in clock.sleeps)
+
+
+def test_both_toss_loops_pace_to_the_grid_rather_than_sleeping_a_fixed_tick():
+    """STRUCTURAL, and it is the one that would catch a regression the
+    behavioural tests above cannot see: a loop that went back to
+    ``time.sleep(_TICK_S)`` still ticks, still terminalises, still censuses — it
+    just silently un-denominates every budget again. The two loops are named
+    explicitly because the pipelined one is the session loop, NOT
+    ``_tick_toss_pipeline`` (which has no loop of its own), and that is exactly
+    the seam a future reader would get wrong."""
+    import ast
+    src = ast.parse(open(rcn.__file__).read())
+    for name in ('_run_toss_cycle', '_execute_toss_continuous'):
+        fn = next(n for n in ast.walk(src)
+                  if isinstance(n, ast.FunctionDef) and n.name == name)
+        called = [n.func.id for n in ast.walk(fn)
+                  if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)]
+        assert '_pace_to_next_tick' in called, name
+        slept = [n for n in ast.walk(fn)
+                 if isinstance(n, ast.Call)
+                 and isinstance(n.func, ast.Attribute)
+                 and n.func.attr == 'sleep']
+        assert not slept, '%s still sleeps a fixed interval' % name
+
+
+def test_the_census_measures_the_paced_period_and_the_headroom_left(monkeypatch):
+    """The instrument stays truthful across the change of what the WAIT is.
+    ``loop_sleep_max_pre_s`` is still ``next_now - t_pre_sleep`` and still
+    measured — but under pacing it reports HEADROOM (``period - work``) rather
+    than a fixed sleep's overshoot, which is what its docstring now says. The
+    period itself is the constant, which is the whole point of the phase."""
+    clock = _PacedClock()
+    monkeypatch.setattr(rcn, 'time', clock)
+    node = _toss_ready_node(clock.perf_counter())
+    work = 0.011
+    script = [
+        TossDecision(PHASE_PREPARING),
+        TossDecision(PHASE_PREPARING),
+        TossDecision(PHASE_PREPARING),
+        TossDecision(PHASE_BALL_IN_FLIGHT, done=True,
+                     result=TossResult(True, 'CAUGHT')),
+    ]
+
+    def _step(seq, now, gh=None, state=None, obs=None):
+        clock.work(work)
+        return script.pop(0)
+
+    monkeypatch.setattr(node, '_step_toss_sequence', _step)
+    seen = {}
+    monkeypatch.setattr(
+        node, '_log_toss_outcome',
+        lambda r: seen.update(summary=node._toss_loop_census.summary()))
+    node._run_toss_cycle(object(), deadline_s=10.0,
+                         cancel_now_fn=lambda now: False, feedback_fn=None)
+    s = seen['summary']
+    assert s['loop_n_pre'] == 3        # lag-by-one: the terminal tick is dropped
+    assert s['loop_period_max_pre_s'] == pytest.approx(_PERIOD, abs=1e-9)
+    assert s['loop_work_max_pre_s'] == pytest.approx(work, abs=1e-9)
+    # HEADROOM, exactly: in the steady state the band cancels (an iteration both
+    # starts and ends `_PACE_SLOP_S` before its grid instant), so the wait is
+    # `period - work` on the nose. Only the FIRST iteration is short by the band,
+    # which is why this is the MAX and not the min.
+    assert s['loop_sleep_max_pre_s'] == pytest.approx(_PERIOD - work, abs=1e-9)
+    # The signal B5 buys: with the fixed sleep gone, over-threshold now means
+    # "this tick's own work outran the budget denominator". On the real box a
+    # wake-latency spike can still trip it by a millisecond or two — see the
+    # caveat at `_PACE_PERIOD_S` — which is exactly why this asserts against a
+    # clock with zero overshoot rather than pretending the box has none.
+    assert s['loop_n_over_pre'] == 0

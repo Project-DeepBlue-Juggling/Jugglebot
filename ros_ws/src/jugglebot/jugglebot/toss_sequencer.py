@@ -680,15 +680,29 @@ NODE_TICK_S = 0.02
 #: :data:`NODE_TICK_S`, is what the pre-dispatch ladder is counted in** (owner
 #: decision D3, 2026-08-26).
 #:
-#: The loop is ``work; time.sleep(_TICK_S)``, so an iteration costs the sleep PLUS
+#: The loop WAS ``work; time.sleep(_TICK_S)``, so an iteration cost the sleep PLUS
 #: the tick's own work — and the pre-dispatch ticks are the expensive ones in the
-#: whole sequence: ``_build_toss_observations`` (locks, a numpy norm, a sensor
-#: query), the feedback publish, and then a BLOCKING dispatch — the reach-centre
+#: whole sequence: ``_build_toss_observations`` (locks, a sensor query, and a numpy
+#: norm only when the mocap cross-check is CONFIGURED, which the shipped default
+#: is not), the feedback publish, and then a BLOCKING dispatch — the reach-centre
 #: declaration, the PREPARE bundle (soft gains + ``trajectory/arm_catch`` raise and
 #: confirm + vel scale + two publishes), the announcement build and publish.
 #: Charging them at the SLEEP was the error: ``pre_dispatch_budget_s`` promised the
 #: lead the sequence spends before the runtime guard runs, and it named the tick
 #: ladder correctly while pricing every rung at zero work.
+#:
+#: ⚠ SINCE 2026-08-27 THIS IS ALSO A SET-POINT, not only a bound (plan B5 lever 1).
+#: Both toss loops — ``_run_toss_cycle`` and ``_execute_toss_continuous`` — now
+#: pace to an ABSOLUTE grid at this value through
+#: ``reload_coordinator_node._pace_to_next_tick`` instead of sleeping a fixed
+#: ``NODE_TICK_S``. The number did not move and its meaning as the budget
+#: denominator did not change; what changed is that the machine now RUNS at it
+#: rather than near it, which is the grid ``tools/probes/cadence_rung_check.py``
+#: has always modelled. Read the two together: raising this constant now also
+#: slows every toss loop, and lowering it below the measured
+#: ``loop_work_max_pre_s`` degenerates the pacer to no sleep at all. The
+#: argument, the corpus numbers behind it and the early-fire band are written out
+#: at ``reload_coordinator_node._PACE_PERIOD_S`` / ``_PACE_SLOP_S``.
 #:
 #: MEASURED, and the measurement is reproducible from a bag with one grep.
 #: ``2026-08-26_14-25-16``, **28 cycle starts** across 12 goals: from the tick that
@@ -810,14 +824,30 @@ class LoopPeriodCensus:
 
         obs   = t_obs_done  - now           the per-tick observation rebuild
         body  = t_pre_sleep - t_obs_done    step + blocking dispatch + publishes
-        sleep = next_now    - t_pre_sleep   what the SLEEP actually cost
+        sleep = next_now    - t_pre_sleep   what the WAIT actually cost
 
-    ``sleep`` is measured rather than assumed to be ``NODE_TICK_S``. On a loaded
-    Jetson ``time.sleep(0.020)`` can return at 0.026, and folding that overshoot
-    into ``body`` would charge six milliseconds to code that did not run slowly —
-    the executor/GIL-contention question would then be indistinguishable from the
-    blocking-service question, which is the whole thing the census exists to
-    separate.
+    ``sleep`` is measured, never assumed — and that is what kept the field
+    truthful across the change of what the wait IS. Until 2026-08-27 the wait was
+    a fixed ``time.sleep(NODE_TICK_S)`` and the field answered "how far past
+    0.020 s did the scheduler return?" (measured p50 +1.5 ms, max +6.8 ms over 73
+    chained cycles); on a loaded Jetson folding that overshoot into ``body``
+    would have charged six milliseconds to code that did not run slowly, and the
+    executor/GIL-contention question would have been indistinguishable from the
+    blocking-service question — the whole thing the census exists to separate.
+
+    **Since B5 the wait is `_pace_to_next_tick`, and the field's ARITHMETIC is
+    unchanged while its INTERPRETATION flips.** It is still ``next_now -
+    t_pre_sleep``, still the real interval, still never inferred. But under an
+    absolute grid the pacer sleeps ``period - work``, so a LARGE
+    ``loop_sleep_max_pre_s`` now means HEADROOM (the tick finished early and the
+    grid held it), and a value at or near ZERO is the interesting one: it means
+    the iteration's own work consumed the whole period and the pacer degenerated.
+    Read it beside ``loop_work_max_pre_s`` — ``period ≈ work + sleep`` still
+    holds, and under pacing the left-hand side is the constant, so the two on the
+    right trade against each other directly.  ``tools/probes/toss_loop_census.py``
+    reads the field by this name and needs no change: the number it prints is the
+    same measurement, and its own "dominant term" argmax stays meaningful (a
+    ``sleep``-dominant cycle is now a cycle with headroom to spare).
 
     **Why a row lags by one call.** An iteration's period and its sleep are only
     knowable once the NEXT one starts, so :meth:`note_iteration_start` commits
@@ -865,7 +895,8 @@ class LoopPeriodCensus:
 
     def note_iteration_end(self, now: float, t_obs_done: float,
                            t_pre_sleep: float, phase: str) -> None:
-        """Bottom of the loop, immediately before the sleep. ``now`` is the SAME
+        """Bottom of the loop, immediately before the WAIT (a fixed sleep until
+        2026-08-27, ``_pace_to_next_tick`` since). ``now`` is the SAME
         value passed to :meth:`note_iteration_start` for this iteration."""
         self._open_now = now
         self._open_pre_sleep = t_pre_sleep

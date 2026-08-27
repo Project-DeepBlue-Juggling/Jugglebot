@@ -558,10 +558,17 @@ def test_session_completes_and_reports_per_cycle_evidence(monkeypatch):
     assert list(result.per_cycle_flight_s) == pytest.approx(
         [0.805, 0.812, 0.799])
     assert math.isnan(result.per_cycle_dwell_s[0])
-    # The achieved dwell lands on the request within one node tick: the fake
-    # clock only advances in _TICK_S steps, so the wait overshoots by < 50 ms.
+    # The achieved dwell lands on the request within ONE LOOP PERIOD. The bound
+    # was `_TICK_S` until 2026-08-27, when B5 replaced the session loop's fixed
+    # `time.sleep(_TICK_S)` with absolute-schedule pacing at `_PACE_PERIOD_S`:
+    # the fake clock now advances in paced steps, so the START_CYCLE poll can be
+    # up to a whole period late instead of up to a whole sleep late. That is the
+    # cost the pacing constant's comment names in so many words, and it is the
+    # quantity `DEFAULT_SESSION_MISS_CLEANUP_S` has charged at
+    # `2 x NODE_LOOP_PERIOD_S` since D3 — so the bound is now denominated in the
+    # same unit the session's own budget is.
     for achieved in result.per_cycle_dwell_s[1:]:
-        assert DWELL <= achieved < DWELL + rcn._TICK_S
+        assert DWELL <= achieved < DWELL + rcn._PACE_PERIOD_S
     assert len(built) == 3
     assert gh.terminal == 'succeed'
 
