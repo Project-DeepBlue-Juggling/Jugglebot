@@ -384,7 +384,7 @@ absorbs it exactly as it does today (`_build_toss_cycle(delay_is_cadence=True)`
 grants the lead with one WARN line). The first cycle of every sitting therefore
 runs serially, which is correct: there is nothing to pipeline it behind.
 
-> ⚠ **This makes `session_cadence_ladder.md`'s carried finding 2 a hard
+> ⚠ **This made `session_cadence_ladder.md`'s carried finding 2 a hard
 > prerequisite for the pipeline to engage at all on the shipped tier.** That
 > finding records that on `JB_OP_TOSS_TIER = '8b'` with an aim armed, the deferred
 > A→B reach re-commands the platform orientation at `t_release`, so
@@ -392,6 +392,12 @@ runs serially, which is correct: there is nothing to pipeline it behind.
 > chained cycle re-commands the move. With that unfixed, a shipped-tier aimed
 > session never stages and the pipeline is inert — safely inert, but inert.
 > § 8 carries it as prerequisite **P-4**.
+>
+> ✅ **CLOSED 2026-08-27** (`_toss_reach_quat` — the reach holds the throw's
+> pre-tilt when it is within the ±1° aim authority of the receive tilt). The rule
+> above is unchanged and still the rule; what changed is that an armed aim no
+> longer makes every cycle a mover. See § 8.1 P-4 and
+> `logbook/2026-08-27-aimed-reach-pretilt.md`.
 
 #### 2.4.2 The COMMIT gate — the arm point, defined precisely
 
@@ -1358,9 +1364,17 @@ catch_vel_scale: 0.0      (⇒ the 0.9 config default — changing it invalidate
 
 REBOOT the can-bridge Teensy before the sitting. Record `uptime_ms`,
 `iq_brake_min_a`, the per-cycle `dwell_s`, and the toss-record JSONL. **Score the
-miner, not the console.** Do not book any rung until
-`session_cadence_ladder.md`'s carried finding 2 is closed (§ 8, P-4) — with it
-open, an aimed chain never stages and the sitting measures the serial path.
+miner, not the console.** ~~Do not book any rung until~~
+`session_cadence_ladder.md`'s carried finding 2 ✅ **is closed (2026-08-27,
+§ 8 P-4)** — an aimed chain now takes the census-B1 skip, and therefore *may*
+stage (staging itself still needs `toss_pipeline_enabled`, which ships FALSE —
+§ 9.5). **This gate is SATISFIED in the tree — it is satisfied on the MACHINE
+only after `cd ros_ws && colcon build --packages-select jugglebot` (§ 8 P-2).**
+The fix lives in `reload_coordinator_node.py`, which the launch runs from the
+INSTALL space, so an unbuilt install space books rungs against the OLD reach.
+What it does not supply is a measurement:
+every cadence number in `session_cadence_ladder.md` was produced on the
+8a-equivalent path, so the first aimed 8b rung measures rather than confirms.
 
 ### 6.2 The rungs
 
@@ -1488,9 +1502,9 @@ drain). The cancel button is not the E-STOP. Say this out loud before arming.
 | # | prerequisite | hard? | why |
 |---|---|---|---|
 | **P-1** | **FW 16 flashed on the can-bridge Teensy** | ✅ **SATISFIED 2026-08-26** (operator flashed from the Win10 box; first live `/link_status` read pending) | FW 16 is the poller + tri-state image (`587b363`). Post-flash the panel's `15 (SKEW — expected v16)` advisory disappears |
-| **P-2** | **Phase A is deployed** — `cd ros_ws && colcon build --packages-select jugglebot` | **hard** | the install space must carry `f997470` + `6036476`; a sitting that measures the tracker-primary verdict measures nothing this plan cares about |
+| **P-2** | **Phase A is deployed** — `cd ros_ws && colcon build --packages-select jugglebot` | **hard** | the install space must carry `f997470` + `6036476` + **the P-4 commit**; a sitting that measures the tracker-primary verdict measures nothing this plan cares about, and one run against a pre-P-4 install space books rungs on the OLD deferred reach — the aimed chain will not stage and § 6.1's gate is only satisfied in the tree |
 | **P-3** | **B0/P1 has read one sitting's census** | ✅ **SATISFIED 2026-08-27** (`tools/probes/toss_loop_census.py` over the 21:29 sitting, n=74) | the read re-scoped B5 (see § 3): the honest chained bound is **0.070 s**, `body` dominates, and the over-period counter already fires on 48/66 successful cycles. **[as built 2026-08-27, B5]** both readings describe the PRE-pacing tree; see § 2.7 and § 6.4 |
-| **P-4** | **`session_cadence_ladder.md` carried finding 2 is closed** | **hard for the pipeline to engage on tier 8b with an aim armed** — fix approved into this arc (own commit, between B2 and B4). Traced 2026-08-27: the re-command is **real, physically-required motion** (the catch policy levels the platform to receive; the throw aim re-tilts it; nothing reconciles them — they agree only at zero aim). Adopted fix: in `_publish_toss_reach`, reach at the commanded pre-tilt quaternion **iff** the receive tilt is within the ±1° aim authority of it (zero-aim byte-identical; displaced never triggers, its delta is ~2θ). Pending one owner physical-intuition check: the fix accepts the cup seating with ≤1° of tilt on aimed 8b — which aimed 8a already does on every validated cycle. **[as built 2026-08-27]** the B2→B5 wave landed without it; the fix is now the NEXT work item (owner accepted the ≤1° cup tilt at seat, 2026-08-27) and is the live gate on § 6.1's "do not book any rung" | with it open, every chained aimed cycle re-commands a ≤1 mm/≤1° move charged at a fixed 0.360 s ⇒ no cycle ever stages. Safely inert, but inert |
+| **P-4** | **`session_cadence_ladder.md` carried finding 2 is closed** | ✅ **CLOSED 2026-08-27** — `_toss_reach_quat` publishes the throw's commanded PRE-TILT on the deferred reach iff it is within `toss_cal.TOTAL_MAX_RAD` (the ±1° aim authority) of the policy's receive tilt: zero-aim byte-identical, aimed co-located fires by construction (the receive tilt is exactly identity, so the delta IS the clamped aim), displaced left alone (delta ~2θ — 32.3 mrad at 20 mm, 240.8 at the cap; the substitution DOES fire below a crossover and costs the same ≤1° there, so "never triggers" was one word too strong. The crossover is ~10.8 mm of displacement at flight 0.5029 s with no aim armed, and **~21.6 mm** in the worst case an aim can produce — a saturated CO-AXIAL OPPOSING aim, which *subtracts* from the throw tilt instead of adding to it; an orthogonal aim only adds in quadrature and moves the crossover in. Both ends are inside the accepted ≤1° seat re-aim, and in the co-axial case the substituted pre-tilt is *smaller* than the receive tilt it replaces — 1.4 mrad vs 16.2 at 20 mm). Owner accepted the ≤1° cup tilt at seat (2026-08-27), which aimed 8a has always done. The answered sub-question: the reach's POSITION never broke — 1.013 mm at a full aim vs 17.5 mm. An aimed chain now STAGES end to end (`test_an_aimed_colocated_chain_stages_now_that_the_reach_holds_the_pretilt`); `logbook/2026-08-27-aimed-reach-pretilt.md` | with it open, every chained aimed cycle re-commanded a real ≤1° re-tilt charged at a fixed 0.360 s ⇒ no cycle ever staged. Safely inert, but inert |
 | **P-5** | the drive-restoration state of 2026-08-18 (`b084f98`) holds | **hard** | pre-2026-08-18 braking-clamp behaviour invalidates every catch-tail number this plan's floors are built on |
 
 ### 8.2 Open questions — decisions required before the phase named
@@ -1525,8 +1539,9 @@ below for the record; the resolutions:
   every floor and clearance in § 2.7 and § 6.2 stands exactly as tabled. What
   remains before P4–P5 are honestly bookable is B6's census read off a **paced**
   post-B3/B4/B5 sitting (§ 4 B5 Acceptance). The P0–P3 (h=1.3) sitting still does
-  not wait, and it is the sitting that produces that census — subject to P-4,
-  which is § 8.1's live gate.
+  not wait, and it is the sitting that produces that census — ~~subject to P-4,
+  which is § 8.1's live gate~~ **[2026-08-27] P-4 is CLOSED**, so nothing gates
+  that sitting any more.
 
 * **Q-1 — the session-scoped latch (S6) is an owner decision, not a technical
   one.** It converts the armed duty cycle from ~97 % to 100 % and it is what

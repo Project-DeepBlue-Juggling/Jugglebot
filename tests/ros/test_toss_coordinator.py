@@ -73,8 +73,15 @@ from jugglebot.toss_sequencer import (
     TossSequencer,
     pre_dispatch_budget_s,
 )
+from jugglebot.motion import toss_cal
+from jugglebot.motion.ik_solver import (
+    quat_to_rot_matrix,
+    rot_matrix_to_rotvec,
+)
 from jugglebot.motion.trajectory.toss_release import (
     ThrowTiltInfeasible,
+    aim_target_offset_mm,
+    build_announcement_fields,
     compute_release_state,
     compute_release_state_tilted,
 )
@@ -2589,6 +2596,331 @@ def test_publish_toss_reach_policy_reject_publishes_nothing(monkeypatch):
     n0 = len(node._dyn_target_pub.published)
     node._publish_toss_reach()
     assert len(node._dyn_target_pub.published) == n0
+
+
+# ── P-4: the deferred reach holds the throw's PRE-TILT when the two agree ─────
+#
+# `tests/hardware/session_cadence_ladder.md` carried finding 2, closed
+# 2026-08-27. The cycle's TERMINAL orientation was chosen by the catch policy
+# (level the cup to receive) and the NEXT cycle's INITIAL orientation by the
+# throw aim, with nothing reconciling them — so an armed aim was taken back out
+# of the platform every cycle, the B1 skip honestly declined, and no chained
+# aimed cycle could ever STAGE. Five tests: the zero-aim path is untouched
+# (twice — synthetically, against a non-identity policy answer, and end to end),
+# the aimed co-located path closes the chain (the closure itself, with the
+# pre-fix counterfactual beside it), the displaced path is left alone, and the
+# bound that separates the two regimes is derived rather than picked.
+# The pipeline CONSEQUENCE — an aimed chain now stages — is pinned in
+# tests/ros/test_toss_continuous_node.py, where the two-slot harness lives.
+
+
+def _armed_aim(node, monkeypatch, rx, ry):
+    """Arm a layer-1-shaped aim of exactly ``(rx, ry)`` rad on this node.
+
+    Wraps the REAL ``_toss_aim_for_goal`` rather than substituting a hand-built
+    dict, so every other key of the block stays the production default and
+    ``_build_toss_cycle`` runs its real aim arm — the virtual-target
+    ``compute_release_state_tilted`` call that turns an aim into a commanded
+    pre-tilt. ``offset_mm`` is computed by the same ``aim_target_offset_mm``
+    production uses, so the resulting tilt IS the armed aim."""
+    real = node._toss_aim_for_goal
+
+    def aimed(catch_pose, flight):
+        block = real(catch_pose, flight)
+        off = aim_target_offset_mm(float(rx), float(ry), float(flight),
+                                   float(catch_pose[2]))
+        block['aim_rad'] = (float(rx), float(ry))
+        block['offset_mm'] = (float(off[0]), float(off[1]))
+        return block
+
+    monkeypatch.setattr(node, '_toss_aim_for_goal', aimed)
+
+
+def _announce_and_reach(node, seq):
+    """The cycle's REAL announcement (which stashes ``announced_reach``) followed
+    by its REAL deferred reach. Returns the published DynamicTargetCommand."""
+    seq._prepare_dispatched = True            # note_announcement's FSM gate
+    node._announce_toss(seq)
+    node._publish_toss_reach()
+    return node._dyn_target_pub.published[-1]
+
+
+def _policy_answer(node, state):
+    """What the catch policy alone would have commanded for this cycle — i.e.
+    the pre-fix reach, recomputed from the same stash."""
+    with node._lock:
+        stash = state.announced_reach
+    return node._toss_catch_policy.predicted_catch_command(*stash)
+
+
+def _park(node, now, pos, quat):
+    """Park the platform at a commanded pose, decoding the wire orientation
+    EXACTLY as trajectory_node's ``_catch_target_from_msg`` does (quat → matrix →
+    rotvec) — the INTENT frame ``trajectory/commanded_pose`` republishes and the
+    B1 skip compares against."""
+    rotvec = rot_matrix_to_rotvec(quat_to_rot_matrix(
+        float(quat[0]), float(quat[1]), float(quat[2]), float(quat[3])))
+    pos = tuple(float(v) for v in pos)
+    with node._lock:
+        node._commanded_pos_mm = pos
+        node._commanded_pos_mono = now
+        node._commanded_pose = pos + tuple(float(v) for v in rotvec)
+        node._commanded_pose_mono = now
+
+
+def _wire_quat(out):
+    return (out.target_quat.w, out.target_quat.x,
+            out.target_quat.y, out.target_quat.z)
+
+
+def test_the_reach_quat_is_the_policys_verbatim_when_the_release_is_LEVEL():
+    """P-4, the byte-identity half: a LEVEL commanded release never reaches one
+    float of the substitution.
+
+    Driven with a landing velocity that is NOT vertical (25.6 mrad off), so the
+    policy's quaternion is a real receive tilt rather than an identity any
+    implementation would reproduce — and compared with ``==``, not ``approx``."""
+    node = ReloadCoordinatorNode()
+    landing_pos = np.array([50.0, 0.0, 809.08])
+    landing_vel = np.array([100.0, 0.0, -3900.0])
+    for release in (None, compute_release_state((50.0, 0.0, 170.0), 0.8)):
+        with node._lock:
+            node._toss_committed.announced_reach = (landing_pos, landing_vel,
+                                                    105.8)
+            node._toss_committed.release_cmd = release
+        node._publish_toss_reach()
+        out = node._dyn_target_pub.published[-1]
+        cmd = node._toss_catch_policy.predicted_catch_command(
+            landing_pos, landing_vel, 105.8)
+        assert _wire_quat(out) == tuple(float(v) for v in cmd.target_quat)
+        # …and the policy's answer was a REAL tilt, so the compare had something
+        # to fail on.
+        assert cmd.target_quat[0] != 1.0
+
+
+def test_a_zero_aim_chain_publishes_the_policy_quat_unchanged():
+    """The same byte-identity, end to end through the real builder: with NO aim
+    armed the commanded release is the announcement release (C-TOSS-CAL-1's
+    disabled path), the release is level, and the wire carries the policy's own
+    quaternion component for component."""
+    now = time.perf_counter()
+    node = _toss_ready_node(now, commanded_pos=(0.0, 0.0, 170.0))
+    seq, state = node._build_toss_cycle((0.0, 0.0, 170.0), 0.8, 5.0, 0.0)
+    assert node._release_is_tilted(state.release_cmd) is False
+    out = _announce_and_reach(node, seq)
+    cmd = _policy_answer(node, state)
+    assert _wire_quat(out) == tuple(float(v) for v in cmd.target_quat)
+    # A self-toss lands vertically, so that IS identity — asserted so the
+    # zero-aim premise of the whole fix is on the record.
+    assert _wire_quat(out) == (1.0, 0.0, 0.0, 0.0)
+
+
+def test_an_aimed_colocated_reach_holds_the_pretilt_and_closes_the_chain(
+        monkeypatch):
+    """**THE P-4 closure**, end to end: an aimed co-located cycle publishes its
+    deferred reach at the throw's PRE-TILT, so the platform never un-tilts and
+    the NEXT cycle's census-B1 skip fires.
+
+    The counterfactual is in the test: parked at the policy's own answer — which
+    is EXACTLY level, because the announcement is built from the uncorrected
+    release, so the receive tilt has no aim in it — the same next cycle declines
+    the skip and commands the 0.520 s move. That decline is carried finding 2."""
+    now = time.perf_counter()
+    node = _toss_ready_node(now, commanded_pos=(0.0, 0.0, 170.0))
+    aim = (math.radians(0.8), math.radians(-0.5))          # |aim| = 0.943°
+    _armed_aim(node, monkeypatch, *aim)
+    seq, state = node._build_toss_cycle((0.0, 0.0, 170.0), 0.8, 5.0, 0.0)
+    rel = state.release_cmd
+    assert node._release_is_tilted(rel) is True
+    assert (rel.tilt_rx, rel.tilt_ry) == pytest.approx(aim, abs=1e-6)
+
+    out = _announce_and_reach(node, seq)
+    cmd = _policy_answer(node, state)
+    # The policy's answer was LEVEL — the re-tilt this fix removes was real.
+    assert tuple(float(v) for v in cmd.target_quat) == (1.0, 0.0, 0.0, 0.0)
+    pre = ReloadCoordinatorNode._tilt_quaternion(rel.tilt_rx, rel.tilt_ry)
+    assert _wire_quat(out) == (pre.w, pre.x, pre.y, pre.z)
+    # The POSITION is untouched — which is what keeps _predicted_chain_site_mm
+    # a prediction of what is commanded.
+    assert (out.target_pos.x, out.target_pos.y, out.target_pos.z) == (
+        pytest.approx(float(cmd.target_pos[0])),
+        pytest.approx(float(cmd.target_pos[1])),
+        pytest.approx(float(cmd.target_pos[2])))
+
+    # ── the closure: park where the reach commanded, and the next cycle skips ──
+    _park(node, time.perf_counter(), (out.target_pos.x, out.target_pos.y,
+                                      out.target_pos.z), _wire_quat(out))
+    seq2, state2 = node._build_toss_cycle((0.0, 0.0, 170.0), 0.8, 5.0, 0.0)
+    px, py, pz = ReloadCoordinatorNode._toss_positioning_xyz(
+        (0.0, 0.0, 170.0), state2.release_cmd)
+    assert node._toss_already_positioned(px, py, pz, state2.release_cmd) is True
+    assert state2.positioning_move is False
+    assert seq2.positioning_move_expected is False
+    # The position half never broke: the residual is the cup swing alone.
+    live = node._live_commanded_pose(time.perf_counter())
+    assert math.hypot(live[0] - px, live[1] - py) < 1.2      # mm, vs 17.5 tol
+
+    # ── the counterfactual: the pre-fix reach, i.e. the finding itself ──
+    _park(node, time.perf_counter(), (out.target_pos.x, out.target_pos.y,
+                                      out.target_pos.z), cmd.target_quat)
+    seq3, state3 = node._build_toss_cycle((0.0, 0.0, 170.0), 0.8, 5.0, 0.0)
+    assert node._toss_already_positioned(px, py, pz, state3.release_cmd) is False
+    assert state3.positioning_move is True
+    assert seq3.positioning_move_expected is True
+
+
+@pytest.mark.parametrize('aim_deg,axis', [(0.0, 'rx'), (1.0, 'rx'),
+                                          (-1.0, 'rx'), (1.0, 'ry'),
+                                          (-1.0, 'ry')])
+def test_a_displaced_reach_keeps_the_policys_receive_tilt(monkeypatch, aim_deg,
+                                                          axis):
+    """A DISPLACED cycle (A ≠ B) is left alone, with or without a saturated aim,
+    **on either aim axis**.
+
+    There the announced landing carries the throw's own lateral velocity, so the
+    receive tilt is the MIRROR of the throw tilt and the delta is ~2θ — far
+    outside the ±1° bound. The branch IS entered (the release is tilted) and
+    declines on the bound, which is what makes this test non-vacuous.
+
+    The AXIS is parametrised because it is not a free variation: this harness
+    displaces along x, and ``aim_target_offset_mm`` maps rx onto -y and ry onto
+    +x, so an ``rx`` aim is ORTHOGONAL to the throw tilt (it adds in quadrature)
+    while an ``ry`` aim is CO-AXIAL with it and one sign of it SUBTRACTS. Only
+    the co-axial-opposing case can push the delta back toward the bound, so an
+    rx-only parametrisation was testing the easy direction three times. At this
+    harness's 60 mm all five still decline (the co-axial-opposing worst case is
+    79.3 mrad, still 4.5× the bound); the crossover that case DOES set is pinned
+    in ``test_the_displaced_regime_is_separated_by_more_than_the_bound``."""
+    now = time.perf_counter()
+    node = _toss_ready_node(now, commanded_pos=(-60.0, 0.0, 170.0))
+    if aim_deg:
+        rad = math.radians(aim_deg)
+        _armed_aim(node, monkeypatch, *((rad, 0.0) if axis == 'rx'
+                                        else (0.0, rad)))
+    seq, state = node._build_toss_cycle((0.0, 0.0, 170.0), 0.8, 5.0, 0.0)
+    assert node._release_is_tilted(state.release_cmd) is True
+    out = _announce_and_reach(node, seq)
+    cmd = _policy_answer(node, state)
+    assert _wire_quat(out) == tuple(float(v) for v in cmd.target_quat)
+    assert cmd.target_quat[0] != 1.0                     # a real receive tilt
+    _, _, _, _, held = ReloadCoordinatorNode._toss_reach_quat(
+        cmd.target_quat, state.release_cmd)
+    assert held is False
+
+
+def test_the_displaced_regime_is_separated_by_more_than_the_bound():
+    """The bound is ``toss_cal.TOTAL_MAX_RAD`` — the ±1° aim authority — and it
+    is the RIGHT number because the delta it bounds IS the seat re-aim the
+    substitution costs. Re-derived from the live modules, not transcribed:
+
+    * aimed co-located ⇒ delta is EXACTLY the aim magnitude, which
+      ``clamp_total_aim`` has already bounded by the same constant, so the rule
+      fires by construction and the seat tilt is the aim's own ≤1°;
+    * displaced ⇒ delta ~2θ: 32.3 mrad at 20 mm, 240.8 mrad at the 150 mm cap
+      (flight 0.5029 s) — 1.85× to 13.8× the bound;
+    * the crossover is ~10.8 mm of displacement at that flight time with NO aim
+      armed, and ~21.6 mm in the worst case an aim can produce — a SATURATED
+      CO-AXIAL OPPOSING aim, which subtracts from the throw tilt rather than
+      adding to it. Below the crossover the rule DOES fire on a displaced goal,
+      and that is the bound working: the seat re-aim it buys is inside the same
+      ≤1°, and the lateral cup shift is inside the 1.131 mm that
+      ``TOTAL_MAX_RAD``'s own derivation names."""
+    node = ReloadCoordinatorNode()
+    flight, B = 0.5029, (0.0, 0.0, float(hw.JB_OP_DEFAULT_ACTIVE_Z_MM))
+
+    def delta(release_ann, release_cmd):
+        fields = build_announcement_fields(release_ann, throw_time_s=0.0)
+        cmd = node._toss_catch_policy.predicted_catch_command(
+            np.asarray(fields['landing_position'], dtype=float),
+            np.asarray(fields['landing_velocity'], dtype=float), flight)
+        recv = rot_matrix_to_rotvec(quat_to_rot_matrix(
+            *(float(v) for v in cmd.target_quat)))
+        target = np.array([float(release_cmd.tilt_rx),
+                           float(release_cmd.tilt_ry), 0.0])
+        return float(np.linalg.norm(np.asarray(recv, dtype=float) - target))
+
+    level = compute_release_state_tilted(B, flight, throw_site_xy_mm=(0.0, 0.0))
+    for aim_rad in (math.radians(0.155), math.radians(0.5), toss_cal.TOTAL_MAX_RAD):
+        off = aim_target_offset_mm(aim_rad, 0.0, flight, B[2])
+        aimed = compute_release_state_tilted(
+            (B[0] + off[0], B[1] + off[1], B[2]), flight,
+            throw_site_xy_mm=(0.0, 0.0))
+        d = delta(level, aimed)
+        assert d == pytest.approx(aim_rad, abs=1e-9)       # EXACTLY the aim
+        assert d <= toss_cal.TOTAL_MAX_RAD                 # so the rule fires
+
+    for disp_mm, ratio in ((20.0, 1.8), (50.0, 4.6), (150.0, 13.7)):
+        rel = compute_release_state_tilted(B, flight,
+                                           throw_site_xy_mm=(-disp_mm, 0.0))
+        d = delta(rel, rel)
+        assert d > toss_cal.TOTAL_MAX_RAD
+        assert d / toss_cal.TOTAL_MAX_RAD > ratio
+    # …and the crossover, stated so a future flight-time change is visible: the
+    # bound is on the ANGLE, so the displacement it corresponds to scales as g·T².
+    below = compute_release_state_tilted(B, flight, throw_site_xy_mm=(-10.0, 0.0))
+    above = compute_release_state_tilted(B, flight, throw_site_xy_mm=(-11.5, 0.0))
+    assert delta(below, below) <= toss_cal.TOTAL_MAX_RAD
+    assert delta(above, above) > toss_cal.TOTAL_MAX_RAD
+
+    # ── the crossover an ARMED AIM can move it to, which is the one that
+    # bounds the real system. An aim does NOT simply add: aim_target_offset_mm
+    # maps rx → −y and ry → +x, so against an x-displacement the ry component
+    # is CO-AXIAL with the throw tilt and one of its signs SUBTRACTS. That
+    # co-axial-opposing saturated aim is the worst case, and it pushes the
+    # crossover out from ~10.8 mm to ~21.6 mm. Asserted as a fires/declines
+    # PAIR either side of it, the same shape as the zero-aim pair above.
+    A = toss_cal.TOTAL_MAX_RAD
+
+    def coaxial_opposing_delta(disp_mm):
+        """delta for a displaced throw carrying a saturated aim that opposes
+        its own throw tilt — announcement from the UNCORRECTED release
+        (C-TOSS-CAL-1 D4), commanded release from the aim-offset target."""
+        base = compute_release_state_tilted(B, flight,
+                                            throw_site_xy_mm=(-disp_mm, 0.0))
+        off = aim_target_offset_mm(0.0, -A, flight, B[2])
+        cmd_rel = compute_release_state_tilted(
+            (B[0] + off[0], B[1] + off[1], B[2]), flight,
+            throw_site_xy_mm=(-disp_mm, 0.0))
+        return delta(base, cmd_rel)
+
+    assert coaxial_opposing_delta(21.5) <= A          # still fires
+    assert coaxial_opposing_delta(21.75) > A          # declines
+    # …and that the AIM is what moved it: at the same 21.5 mm the unaimed delta
+    # is far outside the bound, so this pair is not re-testing the one above.
+    at_21_5 = compute_release_state_tilted(B, flight,
+                                           throw_site_xy_mm=(-21.5, 0.0))
+    assert delta(at_21_5, at_21_5) > A
+
+    # The ORTHOGONAL axis is the easy direction — it adds in quadrature, so it
+    # can only ever move the crossover IN. Pinned so the asymmetry is on the
+    # record rather than rediscovered.
+    off_rx = aim_target_offset_mm(A, 0.0, flight, B[2])
+    base20 = compute_release_state_tilted(B, flight,
+                                          throw_site_xy_mm=(-20.0, 0.0))
+    orth20 = delta(base20, compute_release_state_tilted(
+        (B[0] + off_rx[0], B[1] + off_rx[1], B[2]), flight,
+        throw_site_xy_mm=(-20.0, 0.0)))
+    assert orth20 == pytest.approx(math.hypot(delta(base20, base20), A),
+                                   rel=1e-4)
+    assert orth20 > delta(base20, base20) > A
+    # …while the co-axial-opposing aim at the same 20 mm brings it INSIDE.
+    assert coaxial_opposing_delta(20.0) < A
+
+    # THE ANSWERED SUB-QUESTION of `session_cadence_ladder.md`'s finding 2: the
+    # reach's POSITION never broke the 17.5 mm half of the B1 test. At a full ±1°
+    # aim the next cycle's swing-compensated pre-tilt pose sits 1.013 mm from the
+    # centroid the catch parks at — the cup swing alone, 17x inside the bound.
+    off = aim_target_offset_mm(toss_cal.TOTAL_MAX_RAD, 0.0, flight, B[2])
+    saturated = compute_release_state_tilted(
+        (B[0] + off[0], B[1] + off[1], B[2]), flight, throw_site_xy_mm=(0.0, 0.0))
+    fields = build_announcement_fields(level, throw_time_s=0.0)
+    parked = node._toss_catch_policy.predicted_catch_command(
+        np.asarray(fields['landing_position'], dtype=float),
+        np.asarray(fields['landing_velocity'], dtype=float), flight).target_pos
+    pre = np.asarray(saturated.pretilt_pose_stow, dtype=float)
+    residual_mm = math.hypot(pre[0] - float(parked[0]), pre[1] - float(parked[1]))
+    assert residual_mm == pytest.approx(1.013, abs=0.005)
+    assert residual_mm < rcn._TOSS_ALREADY_THERE_TOL_MM / 10.0
 
 
 def test_toss_recenter_releases_pretilt_hold_last_when_raised(monkeypatch):

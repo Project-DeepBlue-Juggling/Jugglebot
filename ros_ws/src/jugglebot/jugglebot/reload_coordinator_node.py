@@ -5068,6 +5068,17 @@ class ReloadCoordinatorNode(Node):
         reload catch's own pre-tilt at the same position — fails one component or
         the other and the move is commanded.
 
+        **On Tier 8b that sentence was FALSE for an aimed chain until 2026-08-27,
+        and the reason was a real re-tilt, not a rounding one.** 8b's deferred
+        A->B reach commands the platform at ``t_release``, so the pose the cycle
+        ENDS at is the one that reach asked for — and it asked for the catch
+        policy's receive tilt, which for a self-toss is level, so an armed aim was
+        taken back out of the orientation on every single cycle. That is P-4 /
+        ``session_cadence_ladder.md`` carried finding 2, and it is closed at the
+        publish rather than here: see :meth:`_toss_reach_quat`. The POSITION half
+        never broke — it is the cup swing, ≤ 1.013 mm at a full 1° aim against a
+        17.5 mm bound.
+
         **Why the tolerance is what it is.** For a co-located Tier-8a toss the
         throw site and the catch site are the same physical place, so a residual
         δ is aim-NEUTRAL: the ball goes up and comes back down into the cup
@@ -5118,8 +5129,11 @@ class ReloadCoordinatorNode(Node):
         displaced aim, a Tier-8a aim from the calibration map, or both)
         pre-positions to the swing-compensated pre-tilt pose at the throw site
         (``release.pretilt_pose_stow[:3]``). For 8a the throw site IS B, so that
-        is a pre-tilt IN PLACE offset by the cup swing (≤ 1.13 mm at the 1° aim
-        authority) — which is what puts the CUP on B at both release and catch.
+        is a pre-tilt IN PLACE offset by the cup swing (1.013 mm at the 1° aim
+        authority — measured, and flight-invariant; NOT 64.78·sin 1° = 1.131 mm,
+        which is the CATCH-side cup lever and a different quantity that happens
+        to sit beside it) — which is what puts the CUP on B at both release and
+        catch.
 
         ``release`` is None only when the goal is rejected on the FSM's first step
         (tilt clamp, or POSE_UNKNOWN) and POSITIONING is never reached, so the B
@@ -5789,6 +5803,16 @@ class ReloadCoordinatorNode(Node):
         post-CHECKING, but guarded), logs a warning and publishes nothing — the
         FSM's ABORTED_NO_RELEASE / MISSED path still cleans up.
 
+        **The ORIENTATION is not always the policy's** (P-4, 2026-08-27): when the
+        receive tilt and the throw's commanded pre-tilt agree to within the aim
+        authority, the reach holds the PRE-TILT instead, so a chained aimed cycle
+        does not un-tilt and re-tilt the platform every cycle. See
+        :meth:`_toss_reach_quat` for the mechanism, the bound and its derivation.
+        The POSITION is untouched by that substitution, which is what keeps
+        :meth:`_predicted_chain_site_mm` — the parked-centroid prediction, taken
+        through this same policy object — a prediction of what is actually
+        commanded.
+
         ``state`` is the cycle's :class:`TossCycleState`; None ⇒ the committed
         slot."""
         state = self._toss_committed if state is None else state
@@ -5819,12 +5843,9 @@ class ReloadCoordinatorNode(Node):
             y=float(cmd.target_pos[1]),
             z=float(cmd.target_pos[2]),
         )
-        out.target_quat = Quaternion(
-            w=float(cmd.target_quat[0]),
-            x=float(cmd.target_quat[1]),
-            y=float(cmd.target_quat[2]),
-            z=float(cmd.target_quat[3]),
-        )
+        qw, qx, qy, qz, pretilt_held = self._toss_reach_quat(
+            cmd.target_quat, self._toss_commanded_release(state))
+        out.target_quat = Quaternion(w=qw, x=qx, y=qy, z=qz)
         out.target_vel = Vector3(
             x=float(cmd.target_vel[0]),
             y=float(cmd.target_vel[1]),
@@ -5834,7 +5855,156 @@ class ReloadCoordinatorNode(Node):
         self._dyn_target_pub.publish(out)
         self.get_logger().info(
             'toss deferred A->B reach published (arrival %.3f perf, ROS lead '
-            '%.3f s)' % (arrival_perf, cmd.landing_time - now_ros))
+            '%.3f s)%s' % (arrival_perf, cmd.landing_time - now_ros,
+                           ' — holding the throw PRE-TILT (P-4)'
+                           if pretilt_held else ''))
+
+    @classmethod
+    def _toss_reach_quat(cls, policy_quat, release):
+        """The ORIENTATION the deferred A->B reach publishes: the catch policy's
+        receive tilt, OR the throw's commanded PRE-TILT when the two agree to
+        within the aim authority. Returns ``(w, x, y, z, pretilt_held)``.
+
+        **The failure this closes (P-4, `session_cadence_ladder.md` carried
+        finding 2).** A cycle's TERMINAL platform orientation is chosen by the
+        catch policy (``predicted_catch_command`` → ``compute_catch_orientation``
+        — level the cup to receive the incoming ball) and the NEXT cycle's
+        INITIAL orientation is chosen by the throw aim (``release_cmd.tilt_rx/ry``
+        via :meth:`_position_platform_for_toss`). Nothing reconciles them, and
+        they agree only at exactly zero aim. So with an aim armed above the
+        2.71 mrad B1 tolerance, this publish re-commanded a REAL re-tilt at
+        t_release, :meth:`_toss_already_positioned` then honestly answered False
+        on the next cycle, POSITIONING commanded the move, the cycle was charged
+        the 0.520 s moving budget — and under Phase B4 a cycle that must move
+        cannot STAGE, so an aimed chain never pipelined at all. It was never
+        bookkeeping: the platform really was being tilted, levelled, and tilted
+        back, every cycle, to end where it started.
+
+        **The fix, and why the substitution is admissible.** Publishing the
+        pre-tilt instead of the receive tilt re-aims the cup's seat by exactly the
+        delta between the two — nothing else changes, because the POSITION is not
+        touched (the centroid stays the policy's, so the parked-centroid
+        prediction in :meth:`_predicted_chain_site_mm`, which reads the same
+        policy object, still predicts what is commanded). So the bound on the
+        substitution IS the bound on the accepted seat error, and it is taken
+        from the thing that creates the problem rather than picked:
+        ``toss_cal.TOTAL_MAX_RAD`` — the ±1° aim authority (D7). Three
+        consequences, in the order they matter:
+
+        * on an AIMED CO-LOCATED cycle (throw site == catch site: Tier 8a with a
+          calibration/ILC aim, and the SHIPPED Tier 8b chained on itself) the
+          announcement is built from the UNCORRECTED release (``_announce_toss``
+          reads ``state.release_state``, C-TOSS-CAL-1 D4), so the announced
+          landing velocity is exactly vertical, the policy's receive tilt is
+          EXACTLY identity, and the delta is exactly ``hypot(aim_rx, aim_ry)`` —
+          which ``clamp_total_aim`` has already bounded by ``TOTAL_MAX_RAD``.
+          The rule therefore fires on every aimed co-located cycle by
+          construction, and the cup seats at the aim's own ≤1° of tilt. That cost
+          is what the owner accepted on 2026-08-27, and it is not new behaviour:
+          Tier 8a emits no deferred reach at all (``_reach_action_if_due``), so
+          an aimed 8a cycle has ALWAYS seated the ball in a cup held at the full
+          aim tilt — on every hardware-validated cycle this machine has thrown;
+        * the same bound caps the lateral cup shift the substitution introduces
+          (the cup rides ``HAND_CATCH_OFFSET_MM · sin(δ)`` off the commanded
+          centroid) at 64.78·sin(1°) = **1.131 mm** — which is one of the three
+          documented reasons ``TOTAL_MAX_RAD`` is 1° in the first place, so the
+          reuse is the same number doing the same job, not a coincidence. Against
+          a 35 mm capture radius, and against the 17.5 mm the B1 position half
+          spends, it is noise;
+        * a DISPLACED cycle (A != B) is left ALONE over the whole useful range.
+          There the announced landing velocity carries the throw's own lateral,
+          so the receive tilt is the MIRROR of the throw tilt and the delta is
+          ~2θ: measured 2026-08-27 at flight 0.5029 s, 32.256 mrad at 20 mm of
+          displacement, 80.603 at 50 mm, 240.772 at the 150 mm cap — 1.85× to
+          13.8× the bound. Those numbers are re-derived from the live modules,
+          not transcribed, by
+          ``test_the_displaced_regime_is_separated_by_more_than_the_bound``.
+
+        **An armed aim does NOT simply add to that delta, and the direction it
+        pushes depends on its AXIS.** ``aim_target_offset_mm`` maps rx onto -y
+        and ry onto +x, so for a displacement along x the aim's ry component is
+        CO-AXIAL with the throw tilt and its rx component is ORTHOGONAL to it.
+        An orthogonal aim adds in quadrature (36.673 mrad at 20 mm, against
+        32.256 unaimed); a co-axial aim opposing the throw tilt SUBTRACTS, and
+        that is the case that sets the real crossover — at 20 mm a saturated
+        opposing co-axial aim brings the delta down to 14.802 mrad, INSIDE the
+        bound. So the rule fires out to ~21.6 mm of displacement in the worst
+        case (measured: it fires at 21.5 mm and declines at 21.75 mm), against
+        ~10.8 mm at zero aim. Both of those are pinned by the same test.
+
+        BELOW the crossover the rule does fire on a genuinely displaced goal,
+        and that is the bound working rather than leaking. The bound is on the
+        ANGLE, not the displacement (a taller throw moves the crossover out as
+        ``g·T²``), and at both ends of that band the cost is the one already
+        accepted: the seat re-aim is inside the same ≤1°, and the cup shift
+        inside the same 1.131 mm. In the co-axial case it is strictly BETTER
+        than that — the pre-tilt substituted at 20 mm is 1.413 mrad, SMALLER
+        than the 16.216 mrad receive tilt it replaces, because the opposing aim
+        has very nearly cancelled the throw tilt outright.
+
+        **Ripple, stated where it happens.** ``trajectory_node``'s
+        ``_catch_target_from_msg`` derives C-CATCH-1's through-seat residual-rate
+        DIRECTION from this same wire quaternion (deliberately uncorrected — the
+        physical seat direction). Under this substitution that direction re-aims
+        by the same ≤1° on an aimed 8b cycle. Same magnitude, same acceptance,
+        same precedent as aimed 8a above.
+
+        On the aimed CO-LOCATED cycle, though, it is a change of KIND and not
+        just of magnitude, so it is called out rather than folded into the ≤1°:
+        there the receive tilt was EXACTLY zero, so ``build_catch``'s
+        ``smag > 1e-9`` seat gate (``planner.py``) evaluated FALSE and the
+        through-seat branch was not entered at all; with the pre-tilt on the
+        wire ``smag`` is the aim magnitude and that gate now evaluates TRUE.
+        It is INERT today only because the gate's second conjunct is
+        ``rate > 0.0`` and ``trajectory_op.catch_seat_rate_radps`` ships
+        **0.0** — so no seat rate is planned either way. This paragraph is the
+        thing to re-read BEFORE any bench A/B that raises that parameter off
+        zero: on the shipped tier that experiment now has a live seat direction
+        on aimed co-located cycles where it previously had none.
+
+        **Why not widen ``_TOSS_ALREADY_THERE_TOL_RAD`` instead** — the other
+        obvious fix, and the forbidden one. That tolerance's job is to make an
+        armed aim impossible to mistake for a level platform (it is 1/6.4 of the
+        aim authority precisely so); widening it to admit an aim would make the
+        skip answer YES to a platform that has NOT applied the correction, and
+        fire an ILC throw with its aim missing. This fix moves what is commanded
+        so the existing check can answer honestly, exactly as the 2026-08-23 fix
+        published the orientation rather than dropping the orientation test.
+
+        ``release`` is the COMMANDED release state (None ⇒ nothing tilted ⇒ the
+        policy's quaternion, untouched and byte-identical — a level release never
+        reaches one float of this arithmetic)."""
+        untouched = (float(policy_quat[0]), float(policy_quat[1]),
+                     float(policy_quat[2]), float(policy_quat[3]), False)
+        if not cls._release_is_tilted(release):
+            return untouched
+        # Compared as ROTVECS, before the quaternion encoding rather than after
+        # it — quaternions double-cover (q and -q are one rotation), so a
+        # component-wise compare of the encoded form can read a match as a
+        # mismatch. Same reason, same shape as _toss_already_positioned's
+        # compare. The magnitude is the norm of the rotvec DIFFERENCE, which for
+        # rotations this small (<= 12°, the receive clamp) is the relative
+        # rotation angle to within O(δ³) — and at the co-located case that
+        # matters it is the aim magnitude clamp_total_aim itself bounds.
+        target = np.array([float(release.tilt_rx), float(release.tilt_ry), 0.0])
+        receive = np.asarray(rot_matrix_to_rotvec(quat_to_rot_matrix(
+            float(policy_quat[0]), float(policy_quat[1]),
+            float(policy_quat[2]), float(policy_quat[3]))), dtype=float)
+        # Written as `not (delta <= bound)` rather than `delta > bound` so the
+        # compare FAILS CLOSED: if the norm is ever unevaluable (a NaN in the
+        # policy quaternion or in the commanded tilt) BOTH comparisons are
+        # False, and only this spelling then returns the policy's own answer —
+        # the untouched, pre-P-4 behaviour, which is the policy's to define.
+        # The substitution is the change; an unevaluable compare must not be
+        # what elects it.
+        delta = float(np.linalg.norm(receive - target))
+        if not (delta <= toss_cal.TOTAL_MAX_RAD):
+            return untouched
+        # The SAME encoder _position_platform_for_toss commands the pre-tilt
+        # through, so trajectory_node's inverse round trip hands the next cycle's
+        # B1 check back the identical (tilt_rx, tilt_ry, 0) rotvec.
+        pre = cls._tilt_quaternion(release.tilt_rx, release.tilt_ry)
+        return (float(pre.w), float(pre.x), float(pre.y), float(pre.z), True)
 
     def _toss_recenter(self, state=None):
         """Toss RECENTER (CAUGHT): the reload teardown verbatim (lower latch,
@@ -5886,14 +6056,17 @@ class ReloadCoordinatorNode(Node):
 
         Residual, deliberately accepted and instrumented rather than designed
         away: the held pose carries the catch's RECEIVE TILT (up to ~3.6° at the
-        150 mm cap), so the ball rests in a slightly tilted cup until the next
-        command instead of being returned to level. The catch already holds that
-        tilt for the whole quiescent settle with the ball in it, so this extends
-        an existing, hardware-observed state rather than creating one — but it
-        extends it INDEFINITELY, which the machine has never done. The operator
-        runbook scores it (§ SECTION DISP row DISP-5, a REPORT row); set
-        toss_stay_at_pose_on_caught false to revert to go_home if it does not
-        hold.
+        150 mm cap — but that figure is FLIGHT-TIME dependent and this constant
+        never named its own: 3.6° is the cap at T ≈ 0.70 s, and the same 150 mm
+        cap gives 6.9° at the ladder's 0.5029 s and 2.7° at T = 0.80 s, all
+        measured 2026-08-27), so the ball rests in a slightly tilted cup until
+        the next command instead of being returned to level. The catch already
+        holds that tilt for the whole quiescent settle with the ball in it, so
+        this extends an existing, hardware-observed state rather than creating
+        one — but it extends it INDEFINITELY, which the machine has never done.
+        The operator runbook scores it (§ SECTION DISP row DISP-5, a REPORT
+        row); set toss_stay_at_pose_on_caught false to revert to go_home if it
+        does not hold.
 
         ``state`` is the cycle's :class:`TossCycleState` (None ⇒ the committed
         slot); the pretilt-hold release is keyed on its ``pretilt_hold_raised``.
@@ -8061,6 +8234,17 @@ class ReloadCoordinatorNode(Node):
         ``predicted_catch_command`` is the SAME object and method the deferred
         A->B reach publishes from, so this prediction cannot drift from the pose
         the machine will actually be commanded to.
+
+        **Still true after P-4 (2026-08-27), and by construction rather than by
+        luck.** :meth:`_toss_reach_quat` may publish the throw's pre-tilt in place
+        of the policy's receive ORIENTATION — but it never touches ``target_pos``,
+        and ``target_pos`` is the whole of what this predicts (its xy, verbatim).
+        The one thing the substitution does move is where the CUP sits relative to
+        that centroid (``HAND_CATCH_OFFSET_MM · sin(δ)`` ≤ 1.131 mm at the bound),
+        and the cup is not what parks: the commanded CENTROID is what
+        ``trajectory/commanded_position`` republishes and what the next cycle
+        reads as its throw site A. So the prediction and the command still name
+        the same quantity.
 
         None (⇒ the check is SKIPPED, not failed) in three cases, each because a
         reject here would mis-route the operator: Tier 8a never reads a throw

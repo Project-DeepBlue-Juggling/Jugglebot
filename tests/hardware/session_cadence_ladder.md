@@ -36,10 +36,11 @@ ABORT at each.
 >    (`toss_sequencer.min_throw_delay_for_release_s`, imported by BOTH gates).
 >    It buys no cadence — it buys an honest refusal: a goal these gates accept
 >    **cannot** die `ABORTED_CANT_MAKE_RELEASE`, and the probe asserts that over
->    the whole `(T, dwell, delay, aim)` grid. ⛔ **That claim is DEFEATED on the
->    first-cycle lead-grant path — see the carried-findings box immediately
->    below.** Item 1 there is why R4 and R5 are not bookable today; the
->    sentence above holds for every path the grant does not touch, which is
+>    the whole `(T, dwell, delay, aim)` grid. ⛔ **That claim was DEFEATED on the
+>    first-cycle lead-grant path — see the findings box immediately below.**
+>    Item 1 there is why R4 and R5 were unbookable until 2026-08-26 (item 2 then
+>    held them until 2026-08-27); the sentence above held throughout for every
+>    path the grant does not touch, which is
 >    R0–R3 and every cycle whose asked delay already clears the moving floor.
 >
 > **2026-08-26 — the carried BLOCKING finding is FIXED, and it costs 6.8 % of the
@@ -83,17 +84,20 @@ ABORT at each.
 > throws/min is not reachable on this build — and the corrected ladder below is
 > what the operator ACCEPTED on 2026-08-23 in its place.
 
-> ### ⛔ DO NOT BOOK R4, R5 OR R5-PRIME YET — ONE of the two 2026-08-24 audit findings is still CARRIED
+> ### ✅ BOTH 2026-08-24 AUDIT FINDINGS ARE NOW CLOSED — finding 1 on 2026-08-26, finding 2 on 2026-08-27
 >
-> Finding 1 was fixed on 2026-08-26 (owner decision D3) and finding 2 is not, so
-> the banner stands on finding 2 alone. R4 and R5 are also RE-CUT under the D3
+> The ⛔ banner this heading replaces held R4, R5 and R5-prime on finding 2 alone
+> after finding 1 was fixed (owner decision D3). Finding 2 is closed by the P-4
+> pre-tilt reach fix — see its ✅ box below. R4 and R5 are RE-CUT under the D3
 > floors and R5-prime is RETIRED (§ 2) — the numbers below the fold are the new
-> ones.
+> ones. **Nothing in this file has been re-measured on the aimed 8b path yet**;
+> the last line of finding 2 still stands.
 >
-> Both are `needs-design`; both were left in the tree deliberately rather than
-> patched under a house rule, and both are named as open questions in
-> `logbook/2026-08-23-cadence-floor-and-inertia.md` § Audit fixes. **R0–R3 are
-> unaffected by either and are still bookable.**
+> Both were raised `needs-design`; both were left in the tree deliberately rather
+> than patched under a house rule, and both are named as open questions in
+> `logbook/2026-08-23-cadence-floor-and-inertia.md` § Audit fixes — which is why
+> each one's diagnosis is preserved verbatim below its ✅ box. **R0–R3 were
+> unaffected by either and were bookable throughout.**
 >
 > ### ✅ FINDING 1 IS CLOSED (2026-08-26, owner decision D3) — read it anyway
 >
@@ -111,7 +115,10 @@ ABORT at each.
 > rungs"* — there is one, and it is the re-cut ladder in § 2. The grant path
 > itself is unchanged and is now honest, because the floor it grants is.
 >
-> **Finding 2 (the Tier-8b B1-skip HIGH) is still CARRIED and still unfixed.**
+> **Finding 2 (the Tier-8b B1-skip HIGH) was CLOSED on 2026-08-27** — see the
+> box immediately above its text below. Both findings are now closed; the banner
+> at the top of this section is retained as the record of what blocked R4/R5 and
+> is superseded by the two ✅ boxes.
 >
 > **1 (BLOCKING, CLOSED 2026-08-26) — the first cycle's lead GRANT lands EXACTLY
 > on the modelled floor, and the model charges nothing for the work the node
@@ -151,7 +158,86 @@ ABORT at each.
 > **This is not a jitter question** — jitter is bounded by the runtime guard by
 > design; this is a static term that was left out of a static floor.
 >
-> **2 (HIGH) — on the SHIPPED tier the B1 skip cannot fire on a chain, so the
+> ### ✅ FINDING 2 IS CLOSED (2026-08-27) — the diagnosis is kept verbatim below
+>
+> **Root cause, and it is not the one the box guessed at.** The box read the
+> re-command as bookkeeping — a check that could not see what it needed. It was
+> not. The cycle's TERMINAL platform orientation is chosen by the **catch
+> policy** (`predicted_catch_command` → `compute_catch_orientation`: level the
+> cup to receive the incoming ball) and the NEXT cycle's INITIAL orientation is
+> chosen by the **throw aim** (`release_cmd.tilt_rx/ry`). **Nothing reconciles
+> them**, and they agree only at exactly zero aim. So the re-command was REAL,
+> physically-required motion: with an aim armed above 0.155° (= the 2.71 mrad
+> tolerance, by construction) the platform was genuinely tilted, levelled at
+> `t_release`, and tilted back on the next cycle, every cycle, to end where it
+> started. `_toss_already_positioned` was answering honestly the whole time.
+>
+> **The open sub-question is ANSWERED: only the ORIENTATION ever broke.** The
+> reach's *position* residual is the cup swing alone — **1.013 mm at a full ±1°
+> aim** against the 17.5 mm test (measured `/tmp/probe_p4_reach_delta.py`,
+> 2026-08-27; pinned by
+> `tests/ros/test_toss_coordinator.py::test_the_displaced_regime_is_separated_by_more_than_the_bound`,
+> and the skip's own True by `…::test_an_aimed_colocated_reach_holds_the_pretilt_and_closes_the_chain`).
+> 17× of margin — the position half was never at risk.
+>
+> **The fix** (`reload_coordinator_node._toss_reach_quat`, called from
+> `_publish_toss_reach`): the deferred A→B reach publishes the throw's commanded
+> **PRE-TILT** quaternion — the same encoder `_position_platform_for_toss` uses —
+> in place of the policy's receive tilt, **iff the two differ by no more than
+> `toss_cal.TOTAL_MAX_RAD`** (the ±1° aim authority). The POSITION is untouched.
+> The bound is derived from the thing that causes the problem, not picked: the
+> delta it bounds IS the seat re-aim the substitution costs, and the same 1°
+> caps the lateral cup shift at `HAND_CATCH_OFFSET_MM · sin(1°)` = 1.131 mm —
+> one of the three documented reasons `TOTAL_MAX_RAD` is 1°.
+>
+> * zero aim ⇒ the level release never reaches one float of it: **byte-identical**;
+> * aimed CO-LOCATED (Tier 8a with a map/ILC aim, and the shipped 8b chained on
+>   itself) ⇒ the announcement is built from the UNCORRECTED release, so the
+>   receive tilt is EXACTLY identity and the delta is exactly the aim magnitude,
+>   already clamped ≤ 1° — the rule fires **by construction**, the platform never
+>   un-tilts, and the next cycle's B1 skip fires;
+> * DISPLACED (A ≠ B) ⇒ the delta is ~2θ: 32.3 mrad at 20 mm, 240.8 mrad at the
+>   150 mm cap — 1.85× to 13.8× the bound, unchanged. (There IS a crossover
+>   below which the rule fires on a genuinely displaced goal, and an armed aim
+>   moves it — but **not always outward**. `aim_target_offset_mm` maps rx → −y
+>   and ry → +x, so against an x-displacement an **orthogonal** aim adds in
+>   quadrature (36.7 mrad at 20 mm) while a **co-axial opposing** one
+>   *subtracts* (14.8 mrad at 20 mm — inside the bound). That co-axial case sets
+>   the real crossover: **~21.6 mm** of displacement at flight 0.5029 s, against
+>   ~10.8 mm with no aim armed. Below it the rule does fire, and that is the
+>   bound working rather than leaking — the seat re-aim is inside the same ≤1°,
+>   and in the co-axial case the pre-tilt substituted is *smaller* than the
+>   receive tilt it replaces, 1.4 mrad against 16.2 at 20 mm.)
+>
+> **The cost, and the owner's acceptance (2026-08-27, verbatim: *"Yes, let's go
+> with a 1° max error for 8b"*).** The cup now seats the ball with up to 1° of
+> tilt on an aimed 8b cycle instead of level. **Tier 8a has always done exactly
+> this** — 8a emits no deferred reach at all (`_reach_action_if_due`), so every
+> hardware-validated aimed 8a cycle this machine has ever thrown seated its ball
+> in a cup held at the full aim tilt. That divergence between the tiers — one
+> holding the aim through the catch, the other levelling it out and paying
+> 0.360 s per cycle for the privilege — is the deeper finding here, and it is now
+> gone: both tiers hold the pre-tilt.
+>
+> **Consequence for this file**: an aimed chain takes the B1 skip again, and
+> therefore STAGES under Phase B4 once `toss_pipeline_enabled` is on (it ships
+> FALSE — the skip's 0.36 s is banked either way) (pinned end to end by
+> `tests/ros/test_toss_continuous_node.py::test_an_aimed_colocated_chain_stages_now_that_the_reach_holds_the_pretilt`
+> — with the fix reverted that test fails at its **per-reach pre-tilt**
+> assertion (`:2752`, `(1.0, 0.0, 0.0, 0.0) != (0.99996611…)`): the reach
+> publishes a LEVEL orientation, which IS the finding. Its staging assertion
+> sits below that (`:2757`) and is never reached, so "the staging assertion sees
+> an empty list" is not what the counterfactual actually shows), the 0.36 s
+> per-cycle B1 saving now holds on the SHIPPED tier, and
+> `plans/active/toss-pipelined-preamble.md` § 6.1's "do not book any rung" gate is
+> satisfied **in the tree** — on the machine it needs
+> `cd ros_ws && colcon build --packages-select jugglebot` first (§ 8 P-2). What is still true is the last line of the box below: **every
+> cadence number published in this file was produced on the 8a-equivalent path**,
+> so the first aimed 8b sitting still measures rather than confirms.
+>
+> Written up in `logbook/2026-08-27-aimed-reach-pretilt.md`.
+>
+> **2 (HIGH, CLOSED 2026-08-27) — on the SHIPPED tier the B1 skip cannot fire on a chain, so the
 > 0.36 s / 34 % cadence claim is demonstrated on Tier 8a ONLY.** `JB_OP_TOSS_TIER`
 > ships **`8b`**. `toss_sequencer._reach_action_if_due` emits `ACTION_REACH_CATCH`
 > unconditionally for 8b at `t_release`, and

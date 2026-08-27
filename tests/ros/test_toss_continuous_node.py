@@ -43,6 +43,11 @@ from jugglebot.reload_coordinator_node import (
     ReloadCoordinatorNode,
     _toss_session_deadline_s,
 )
+from jugglebot.motion.ik_solver import (
+    quat_to_rot_matrix,
+    rot_matrix_to_rotvec,
+)
+from jugglebot.motion.trajectory.toss_release import aim_target_offset_mm
 from jugglebot.reload_sequencer import ReloadSequencer
 from jugglebot.toss_sequencer import (
     TIER_8A,
@@ -2648,6 +2653,112 @@ def test_a_cycle_that_must_move_does_not_stage(monkeypatch):
         assert node._toss_staged is None, 'a mover must not occupy the slot'
     assert session.cycle_live is False
     assert session._stage_declined is True
+
+
+class _AimedPipelineClock(_PipelineClock):
+    """``_PipelineClock`` plus the ORIENTATION half of the plant.
+
+    The base plant republishes ``trajectory/commanded_pose`` at a LEVEL
+    orientation forever, which is only true of a zero-aim session. On an AIMED
+    chain the pose the platform ends a cycle holding is the one Tier 8b's
+    deferred A→B reach commanded, so this plant reads that reach back off the
+    wire and decodes it EXACTLY as ``trajectory_node._catch_target_from_msg``
+    does (quat → matrix → rotvec, the intent frame). Without it the harness
+    would answer the question this test asks — "what is the platform holding
+    when the next cycle decides whether to stage?" — with a constant."""
+
+    def _plant(self, t):
+        super()._plant(t)
+        published = self._node._dyn_target_pub.published
+        if not published:
+            return
+        q = published[-1].target_quat
+        rotvec = rot_matrix_to_rotvec(quat_to_rot_matrix(
+            float(q.w), float(q.x), float(q.y), float(q.z)))
+        with self._node._lock:
+            self._node._commanded_pose = (
+                tuple(self._node._commanded_pose[:3])
+                + tuple(float(v) for v in rotvec))
+
+
+def _arm_aim(node, monkeypatch, rx, ry):
+    """Arm an aim of ``(rx, ry)`` rad AND restore the real announcement.
+
+    Both halves are needed and neither is scenery: the aim is what makes the
+    commanded release tilted, and the real ``_announce_toss`` is what stashes the
+    landing the deferred reach is built from (`_pipelined_node`'s stub records
+    the call and stashes nothing, so the reach would publish nothing at all and
+    the plant above would have nothing to read)."""
+    real_aim = node._toss_aim_for_goal
+    real_announce = rcn.ReloadCoordinatorNode._announce_toss
+
+    def aimed(catch_pose, flight):
+        block = real_aim(catch_pose, flight)
+        off = aim_target_offset_mm(float(rx), float(ry), float(flight),
+                                   float(catch_pose[2]))
+        block['aim_rad'] = (float(rx), float(ry))
+        block['offset_mm'] = (float(off[0]), float(off[1]))
+        return block
+
+    monkeypatch.setattr(node, '_toss_aim_for_goal', aimed)
+    monkeypatch.setattr(node, '_announce_toss',
+                        lambda seq, state=None: real_announce(node, seq, state))
+
+
+def test_an_aimed_colocated_chain_stages_now_that_the_reach_holds_the_pretilt(
+        monkeypatch):
+    """**P-4** — `tests/hardware/session_cadence_ladder.md` carried finding 2, at
+    the level the finding was written about: an AIMED chain on the SHIPPED tier
+    (8b) STAGES.
+
+    It could not, and the reason was mechanical rather than a threshold: the
+    deferred A→B reach published the catch policy's receive tilt (level for a
+    self-toss), so every cycle ended with the aim taken back OUT of the platform
+    orientation, the next cycle's census-B1 skip honestly declined, and § 2.4.1's
+    rule — *a cycle stages only if its positioning decision is SKIP* — kept the
+    pipeline inert on the tier that ships. The fix is in
+    ``_publish_toss_reach``/``_toss_reach_quat``; this is its consequence, driven
+    end to end through the real FSMs.
+
+    The inertness test above (`test_a_cycle_that_must_move_does_not_stage`) is
+    unchanged and still right: a cycle that genuinely must traverse still refuses
+    to stage. What changed is that an armed aim is no longer such a cycle."""
+    clock = _AimedPipelineClock()
+    monkeypatch.setattr(rcn, 'time', clock)
+    node, calls = _pipelined_node(clock, monkeypatch)
+    _arm_aim(node, monkeypatch, math.radians(0.8), math.radians(-0.5))
+    both = _sample_both_slots(node, monkeypatch)
+    reaches = []                      # (commanded release, published target)
+    real_reach = node._publish_toss_reach
+
+    def spy_reach(state=None):
+        real_reach(state)
+        st = node._toss_committed if state is None else state
+        reaches.append((st.release_cmd, node._dyn_target_pub.published[-1]))
+
+    monkeypatch.setattr(node, '_publish_toss_reach', spy_reach)
+    result = node._execute_toss_continuous(
+        _ContGoalHandle(num_throws=3, dwell=0.55, delay=DELAY,
+                        throw_height=1.30, vel_scale=0.9))
+    assert result.outcome == 'COMPLETED', result.outcome
+    # The premise: every cycle's aim really was armed and really tilted the
+    # release, and the reach really held that pre-tilt rather than the level
+    # receive the policy computes for a self-toss.
+    assert len(reaches) == 3
+    for rel, out in reaches:
+        assert node._release_is_tilted(rel) is True
+        pre = rcn.ReloadCoordinatorNode._tilt_quaternion(rel.tilt_rx,
+                                                         rel.tilt_ry)
+        assert (out.target_quat.w, out.target_quat.x, out.target_quat.y,
+                out.target_quat.z) == (pre.w, pre.x, pre.y, pre.z)
+        assert out.target_quat.w != 1.0
+    # THE claim: cycles staged, and each staged preamble ran inside the previous
+    # cycle's flight. Before the fix `both` was empty — the chain never staged.
+    assert both, 'no tick had both slots live — the aimed chain is still inert'
+    staged_ready = [s for s in both if s['staged_at'] > 0.0]
+    assert staged_ready, 'no staged cycle ever reached PHASE_STAGED'
+    for s in staged_ready:
+        assert s['staged_at'] < s['committed_landing'], s
 
 
 def test_the_pipelined_builder_passes_the_beat_and_the_stage_flag(monkeypatch):
