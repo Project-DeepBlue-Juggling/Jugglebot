@@ -1794,6 +1794,92 @@ def test_an_abandoned_stage_gives_the_index_and_the_flags_back():
     assert (s.cycle_is_retry, s.cycle_reload_settle) == (True, True)
 
 
+def test_a_commit_time_stage_abandonment_does_not_wedge_the_session():
+    """**THE 2026-08-28 deadlock, as a regression test** (fix F1;
+    ``logbook/2026-08-28-pipeline-first-contact-deadlock.md``).
+
+    The shape, and it is the node's own call ORDER within ONE pipeline tick
+    (`_tick_toss_pipeline`, committed slot first):
+
+      1. the committed cycle terminalises CAUGHT -> ``note_cycle_result``,
+         which clears ``_committed_live`` AND ``_stage_declined``;
+      2. the staged slot is then told its upstream is clear, steps, and refuses
+         at its own COMMIT gate -> ``note_stage_abandoned``.
+
+    Before the fix step 2 raised ``_stage_declined`` — whose ONLY clearer is
+    the ``note_cycle_result`` that has ALREADY run in step 1. The session then
+    answered DWELL / ACTION_NONE / done=False for the rest of the goal, holding
+    the node's cross-action ``_goal_claimed`` for the life of the wedge. Four
+    goals of the first pipelined sitting ended this way; the same shape
+    reproduced offline at +90 000 s, which is the horizon asserted below.
+
+    The DRAIN case is deliberately NOT this case and is asserted separately by
+    ``test_an_abandoned_stage_gives_the_index_and_the_flags_back``: there the
+    committed cycle discards the staged slot on its way through its OWN terminal
+    ladder, so ``_committed_live`` is still true, the wait has a waitee, and the
+    flag is raised exactly as it always was."""
+    s = _pipelined(num_throws=5)
+    assert s.step(0.0).action == SESSION_ACTION_START_CYCLE       # cycle 1
+    s.note_cycle_committed()                                      # …owns the hand
+    assert s.step(0.1).action == SESSION_ACTION_START_CYCLE       # cycle 2 stages
+    assert s.cycle_index == 2
+
+    # ── ONE tick, the node's order ──
+    s.note_cycle_result(_caught(), 1.0, 1.8)      # cycle 1 CAUGHT (STAY, no drain)
+    assert (s.cycle_live, s.committed_live) == (True, False)
+    s.note_stage_abandoned('ABORTED_CANT_MAKE_RELEASE')
+    assert s.cycle_index == 1, 'the un-run cycle gives its index back'
+    assert (s.cycle_live, s.committed_live) == (False, False)
+    # THE FIX: the wait is not raised, because there is nothing left to wait for.
+    assert s._stage_declined is False
+
+    # …so the very next step mints the SERIAL rebuild, off `_next_cycle_at`.
+    d = s.step(9.0)
+    assert d.action == SESSION_ACTION_START_CYCLE, (
+        'the session must rebuild the abandoned cycle serially, not answer '
+        'ACTION_NONE forever')
+    assert d.done is False
+    assert s.cycle_index == 2, 'the index the abandonment gave back is re-used'
+
+
+def test_the_wedged_session_shape_is_dead_at_every_horizon():
+    """The same defect asserted the way it actually presented: not "one step
+    answered NONE" but "no step, ever, answers anything else".
+
+    A single ``step`` assertion would have passed against the pre-fix code on
+    the tick BEFORE the abandonment and on any tick where a cycle was live; what
+    made the sitting's four goals unrecoverable is that the state is ABSORBING.
+    So this drives the horizon the offline reproduction used (+90 000 s, ~25 h)
+    and asserts the session escapes it — and, separately, that the pre-fix gate
+    expression really is what held it, by re-raising the flag by hand."""
+    s = _pipelined(num_throws=5)
+    s.step(0.0)
+    s.note_cycle_committed()
+    s.step(0.1)
+    s.note_cycle_result(_caught(), 1.0, 1.8)
+    s.note_stage_abandoned('ABORTED_CANT_MAKE_RELEASE')
+    # Poll across five orders of magnitude. The pre-fix session answers NONE at
+    # every one of them; the fixed one starts its rebuild at the first tick past
+    # `next_cycle_at` (the scheduled dwell is a legitimate wait, not the wedge).
+    actions = [(t, s.step(t).action) for t in (2.0, 30.0, 900.0, 90000.0)]
+    assert SESSION_ACTION_START_CYCLE in [a for _t, a in actions], actions
+    assert s.cycle_index == 2, actions
+
+    # …and the STRUCTURAL half: even if some future path re-raises the flag
+    # with no committed cycle behind it, `step` no longer gates on it alone.
+    s2 = _pipelined(num_throws=5)
+    s2.step(0.0)
+    s2.note_cycle_committed()
+    s2.step(0.1)
+    s2.note_cycle_result(_caught(), 1.0, 1.8)
+    s2.note_stage_abandoned('ABORTED_CANT_MAKE_RELEASE')
+    s2._stage_declined = True                     # the pre-fix state, by hand
+    assert s2.committed_live is False
+    assert s2.step(90000.0).action == SESSION_ACTION_START_CYCLE, (
+        'the gate must require a committed cycle to wait FOR, not the flag '
+        'alone — belt and braces, and this is the braces')
+
+
 def test_the_beat_is_unchanged_by_the_pipeline():
     """T-R2's unit half: ``next_release_at`` is the ONE place a beat comes from
     and B4 does not touch it. Serial and pipelined schedule the same release off

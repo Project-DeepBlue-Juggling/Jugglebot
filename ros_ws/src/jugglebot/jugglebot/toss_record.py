@@ -666,7 +666,7 @@ FIELDS: Tuple[Field, ...] = (
     # ── The two-slot pipeline (declared; null on every serial cycle) ──────────
     # ADDITIVE, so no SCHEMA bump — the schema's own rule (§ 3.7 item 1) is that
     # purely additive fields do not bump, because a reader that does not know
-    # them reads nulls and a reader that does gets the whole story. All four are
+    # them reads nulls and a reader that does gets the whole story. All five are
     # null for every cycle of a `toss_pipeline_enabled: false` sitting, which is
     # itself the partition key a corpus needs: "did this cycle stage?" is
     # answerable from the record rather than from the build.
@@ -688,6 +688,11 @@ FIELDS: Tuple[Field, ...] = (
           'arm point, never negative (the gate is polled). Phase C\'s '
           'bounded-slip policy is a CONSUMER of this, which is why it is '
           'recorded a phase before any policy reads it'),
+    Field('commit_slips', 'pipeline', 'D', 'i',
+          'how many times the COMMIT gate re-armed before it resolved. Paired '
+          'with commit_slip_s: that says HOW LATE, this says HOW MANY '
+          'ITERATIONS — one late tick on a healthy loop vs a loop chronically '
+          'over period'),
     Field('staged_discarded_reason', 'pipeline', 'D', 's',
           'why a STAGED slot was dropped without ever committing — the § 2.4.3 '
           'unwind. Non-null ⇒ this cycle never released, and its row exists so '

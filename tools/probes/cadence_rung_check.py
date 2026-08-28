@@ -113,12 +113,20 @@ cadence only the COMMIT tick.  That mode models the plan's § 2.7 floors and
 § 6.2 rungs, so the milestone can be argued against arithmetic before any of
 B1–B4 is written.
 
-⚠ **It is a MODEL, and B4 owns the reconciliation.**  Neither
-``commit_budget_s`` nor the pipelined branch of ``required_dwell_s`` exists in
-``ros_ws/`` yet — see :func:`commit_budget_s` for the exact obligation.  Every
-term it *can* import (the dispatch budget, the handoff margin, the hand floor,
-the loop period) is imported from the shipped code and never restated, so only
-the two new expressions are the probe's own.
+✅ **B4 DISCHARGED THE RECONCILIATION (2026-08-27).**  Both
+``commit_budget_s`` and the pipelined branch of ``required_dwell_s`` now ship in
+``ros_ws/``, and this probe FORWARDS to them rather than modelling them — pinned
+as an identity by
+``tests/motion/test_cadence_rung_check.py::test_the_probe_imports_the_shipped_commit_budget_rather_than_modelling_it``
+and ``::test_the_probes_pipelined_floor_is_the_shipped_required_dwell``.  Every
+term (the dispatch budget, the handoff margin, the hand floor, the loop period)
+comes from the shipped code and none is restated here.
+
+The one thing that is still the probe's own is :func:`commit_tick`'s tick loop —
+a MODEL of ``_step_committing`` + ``_slip``, not an import of them — and it was
+reconciled with the FSM's slip semantics on 2026-08-28 (see that function).  It
+is the standing obligation: a probe that keeps its own copy of a shipped rule
+goes stale silently.
 """
 
 from __future__ import annotations
@@ -499,8 +507,10 @@ def grid_violations(*, verbose: bool = False):
 
 # ── THE PIPELINED MODEL (plan B § 2.2-2.7) ───────────────────────────────────
 #
-# Everything below models a machine that does not exist yet.  B4 lands it; this
-# is what B4 is being asked to reproduce.
+# Everything below modelled a machine that did not exist when it was written.
+# B4 landed it (2026-08-27): the budget and the floor are now IMPORTS, and what
+# stays a model is `commit_tick`'s tick loop — reconciled with the FSM's slip
+# semantics 2026-08-28.
 
 
 def commit_budget_s(event_vel_mps: float, min_event_delay_s: float = 0.0,
@@ -642,9 +652,35 @@ def commit_tick(T: float, dwell_s: float, *, ilc_trim: bool = False,
     Returns ``(verdict, slip_s, commit_at_s, release_at_s)``, all on a clock
     whose origin is that landing — so ``release_at_s`` **is** the ACHIEVED dwell,
     a different claim from the commanded one (§ 1.4; the two must not be
-    collapsed).  ``verdict`` is ``'FLIES'``, ``'SLIP_UNBOUNDED'`` when the wait
-    runs past ``CATCH_CONFIRM_WINDOW_S`` (cycle ``k`` is MISSED by then and the
-    staged slot is discarded — § 2.4.3), or ``'ABORTED_CANT_MAKE_RELEASE'``.
+    collapsed).  ``verdict`` is ``'FLIES'`` or, past the slip bound, **the name
+    of the gate that was still holding it** — the shipped FSM's own vocabulary:
+    ``'REJECTED_HAND_NOT_PARKED'`` / ``'REJECTED_NO_BALL'`` (and
+    ``'REJECTED_BALL_UNKNOWN'``, which this model cannot generate because its cup
+    has a definite seat instant rather than an UNKNOWN evidence state) for the
+    evidence gates, ``'ABORTED_CANT_MAKE_RELEASE'`` for the release-window guard.
+
+    ⚠ **RECONCILED WITH THE FSM 2026-08-28** (the fix wave of
+    ``logbook/2026-08-28-pipeline-first-contact-deadlock.md``).  Until then this
+    modelled the RETIRED abort: the release-window inequality was evaluated ONCE
+    after the wait loop, an over-bound wait returned a ``'SLIP_UNBOUNDED'``
+    verdict that no FSM ever mints, and the bound was counted from the LANDING
+    instead of from the scheduled commit.  All three are now the shipped rules —
+    the guard is a per-tick SLIP inside the loop (``_step_committing`` rung 6,
+    routed through ``_slip(abort_code='CANT_MAKE_RELEASE')``), the bound is
+    ``_commit_at_sched + catch_confirm_window_s``, and past it the cycle
+    terminalises by the name of whichever gate held it.  A lateness sweep run
+    against the old model would have over-reported the abort by ~14x, which is
+    the 2026-08-22 audit's finding — a probe keeping its own copy of a shipped
+    rule — wearing a different hat.
+
+    **The re-arm ORDERING is load-bearing and is the FSM's**
+    (``toss_sequencer._slip``): at the slip instant it sets
+    ``_t_release = now + commit_budget`` and only THEN does the loop advance to
+    the next tick, so the lead the next tick measures is ``budget − loop`` =
+    ``dispatch + slack`` rather than a full fresh budget.  That single tick of
+    difference IS D1's mechanism (an iteration longer than one nominal period
+    consumes all of the headroom), so advance-then-re-arm would model a machine
+    with a period of grace it does not have.
 
     The § 2.4.2 gate, in its own order, with the two evidence instants modelled:
 
@@ -695,21 +731,35 @@ def commit_tick(T: float, dwell_s: float, *, ilc_trim: bool = False,
     evidence_at = (max(terms['park_reentry'], float(seat_edge_s))
                    - FLOOR_REPRESENTATION_SLACK_S)
     slip = max(0.0, evidence_at - commit_at)
+    # WHICH evidence gate is the one that would still be holding at the bound.
+    # `evidence_at` is the max of the two, and the FSM names them individually
+    # (rung 3 hand_parked, rung 4 ball_seated) so a refusal routes the operator
+    # to the right subsystem.
+    evidence_code = ('REJECTED_HAND_NOT_PARKED'
+                     if terms['park_reentry'] >= float(seat_edge_s)
+                     else 'REJECTED_NO_BALL')
     now = commit_at + late
     t_release = float(dwell_s)
-    while now < evidence_at:
-        # SLIP: the commit re-arms on the next iteration and _t_release moves
-        # with it (§ 2.6 rule 2 — commit_at is derived FROM the release), so the
-        # released ball's own schedule stays self-consistent and the
-        # release-window guard cannot be broken by a slip: now and t_release
-        # advance together. The bound is cycle k's own terminal deadline.
-        if now > CATCH_CONFIRM_WINDOW_S:
-            return 'SLIP_UNBOUNDED', slip, commit_at, t_release
-        now += loop
+    while True:
+        # ONE tick of `_step_committing`, in the FSM's own rung order: the
+        # evidence gates first, then the runtime release-window guard. All three
+        # SLIP; none of them aborts on the spot.
+        if now < evidence_at:
+            held = evidence_code
+        elif t_release - now < terms['dispatch']:
+            held = 'ABORTED_CANT_MAKE_RELEASE'
+        else:
+            return 'FLIES', slip, commit_at, t_release
+        # `_slip`, in ITS order: the shared bound is tested at `now` FIRST — one
+        # bound for every source, counted from the ORIGINAL commit instant, so a
+        # cycle cannot launder an unbounded wait by alternating its reasons.
+        if now > commit_at + CATCH_CONFIRM_WINDOW_S:
+            return held, slip, commit_at, t_release
+        # …and only then the re-arm, at the slip instant, BEFORE the tick
+        # advances. Reversing these two lines gives the machine a whole extra
+        # loop period of lead it does not have (see the docstring).
         t_release = now + terms['commit']
-    if t_release - now < terms['dispatch']:
-        return 'ABORTED_CANT_MAKE_RELEASE', slip, commit_at, t_release
-    return 'FLIES', slip, commit_at, t_release
+        now += loop
 
 
 def pipelined_accept_implies_flies(T: float, dwell_s: float, *,
@@ -721,8 +771,17 @@ def pipelined_accept_implies_flies(T: float, dwell_s: float, *,
     Two strengths, both real:
 
     * a dwell the session ACCEPTS must never reach ``ABORTED_CANT_MAKE_RELEASE``
-      — the same terminal, with the same cost (latch up, announcement out, hand
-      committed), reached from the same place;
+      — the same terminal, reached from the same place.
+
+      ⚠ Its COST changed on 2026-08-28 and the old "latch up, announcement out,
+      hand committed" reading no longer applies on the pipelined path: the
+      commit gate now slips, and nothing is armed and no announcement has gone
+      out until the tick that actually commits (§ 2.4.3's staged-failure table).
+      What the terminal costs here is the CYCLE — the staged slot is discarded
+      and the cadence loses a beat — and what it still means is a machine that
+      slipped its whole ``catch_confirm_window_s`` and could not make the
+      release. That is a floor-versus-gate disagreement whether or not the hand
+      was committed, which is why the contract is unchanged;
     * and it must not force a slip on a HEALTHY machine.  ``handoff_margin_s`` is
       in the pipelined floor exactly so the commit tick lands after the hand is
       back in the park band; if an accepted dwell still slips on that gate, the

@@ -21,13 +21,14 @@ What it pins, in order of how much it costs to get wrong:
    Phase B0 / probe P3 of ``plans/active/toss-pipelined-preamble.md``), and its
    grid holds the same accept-implies-flies contract the serial one does.
 
-⚠ **The pipelined half pins a MODEL, not shipped code.** Neither
-``commit_budget_s`` nor the pipelined branch of ``required_dwell_s`` exists in
-``ros_ws/`` yet; workstream B4 lands both, and when it does these numbers become
-the acceptance it is measured against (``probe.commit_budget_s.__doc__`` carries
-the reconciliation obligation). Every number below came out of the probe first
-and was then typed here — the house's probe-before-test rule, ``CLAUDE.md``
-"Empirical probe before writing tests".
+✅ **The pipelined half now pins SHIPPED code, not a model** (B4, 2026-08-27).
+``commit_budget_s`` and the pipelined branch of ``required_dwell_s`` both ship in
+``ros_ws/``, the probe forwards to them, and the two reconciliation tests at the
+bottom of this file pin that as an IDENTITY. What is still the probe's own is
+``commit_tick``'s tick loop — a model of ``_step_committing`` + ``_slip`` — and
+it was reconciled with the FSM's slip semantics on 2026-08-28. Every number
+below came out of the probe first and was then typed here — the house's
+probe-before-test rule, ``CLAUDE.md`` "Empirical probe before writing tests".
 
 Runtime note: the grid sweep drives two real FSMs at the FSM loop's measured
 0.040 s period — ``toss_sequencer.NODE_LOOP_PERIOD_S``, imported by the probe,
@@ -242,10 +243,18 @@ def test_the_predicted_commit_slip_matches_the_plans_section_1_4():
 
 
 def test_pipelined_accept_implies_flies_over_the_whole_grid():
-    """THE contract, pipelined. ``ABORTED_CANT_MAKE_RELEASE`` costs the same
-    under the pipeline as it does today — latch up, announcement out, hand
-    committed — so no dwell the session accepts may reach it, and none may force
-    a slip on the park gate the floor exists to cover."""
+    """THE contract, pipelined: no dwell the session accepts may reach
+    ``ABORTED_CANT_MAKE_RELEASE``, and none may force a slip on the park gate the
+    floor exists to cover.
+
+    ⚠ **What that terminal COSTS changed on 2026-08-28** and the old reading
+    ("latch up, announcement out, hand committed") is no longer true of the
+    pipelined path: the commit gate slips, so nothing is armed and no
+    announcement has gone out until the tick that actually commits. It costs the
+    CYCLE — the staged slot is discarded, the cadence loses a beat — and it still
+    means the machine slipped its whole ``catch_confirm_window_s`` and could not
+    make the release. The contract is unchanged because that is a floor-versus-
+    gate disagreement either way; only the sentence describing the cost is."""
     violations = probe.pipelined_grid_violations()
     assert violations == [], '\n'.join(
         'T={:.4f} dwell={:.4f} ilc_trim={}: {}'.format(T, dwell, ilc, why)

@@ -404,6 +404,76 @@ _MAX_SEQUENCE_S = 30.0
 # Slack added on top of the FSM's own budgets when deriving the per-goal ceiling.
 _SEQUENCE_CEILING_MARGIN_S = 5.0
 
+# ── The SESSION no-progress watchdog (F3, 2026-08-28) ─────────────────────────
+#
+# How long `_execute_toss_continuous` will tolerate a session that has NO cycle
+# in either pipeline slot, is PAST its own scheduled next-cycle instant, and is
+# making no progress, before terminalising the goal ABORTED_STALLED.
+#
+# WHY IT EXISTS. `_toss_session_deadline_s` already bounds a wedged session, but
+# it is a backstop of last resort sized for a whole sitting — at the 2026-08-28
+# sitting's goals (num_throws 5, dwell 0.45-0.50 s, on_empty_cup RELOAD with
+# max_reloads 3) it is 270.9 s: 5 x (30.0 + 0.50) + 113.4 + 5.0, where the 113.4
+# is `_reload_interlude_budget_s` — the term a "157.5 s" reading of this ceiling
+# forgets, and every goal of that sitting carried it. It names the failure
+# ABORTED_TIMEOUT, which reads as "the session ran long" rather than
+# "the session stopped advancing". The `_stage_declined` deadlock that fix F1
+# closes produced exactly this state, and the ONE observable it left behind was
+# a DWELL feedback string that never changed. A session that is not going to
+# make progress should say so in seconds, by name, and release the cross-action
+# `_goal_claimed` — not hold the machine for two and a half minutes and then
+# blame the clock.
+#
+# THE DERIVATION, and it is entirely in existing constants:
+#
+#   DEFAULT_SESSION_MISS_CLEANUP_S  2.80 s — the longest quiescent wait the
+#                                   SESSION FSM ITSELF imposes with BOTH slots
+#                                   empty. It is the floor `note_cycle_result`
+#                                   applies to `_next_cycle_at` after a MISSED
+#                                   cycle the session continues past, and the
+#                                   same constant fronts the ABORTED_NO_RELEASE
+#                                   retry floor and the reload interlude's rung
+#                                   4 — three uses, one number, so covering it
+#                                   covers every wait the FSM schedules itself.
+#                                   ⚠ It is NOT a bound on every legitimate
+#                                   between-cycle wait: the OPERATOR chooses the
+#                                   dwell, and the quiescent part of it
+#                                   (`dwell - throw_delay` on the serial ladder)
+#                                   can exceed 2.80 s freely — 9.00 s at a 14 s
+#                                   dwell against a 5 s delay. So it is reason 1
+#                                   below — the progress clock re-anchoring
+#                                   while `now < next_cycle_at` — and NOT this
+#                                   arithmetic that makes the bound unreachable
+#                                   in healthy operation. The arithmetic picks a
+#                                   number of the right ORDER; clause 4 is what
+#                                   makes it safe.
+# + _SEQUENCE_CEILING_MARGIN_S      5.00 s — the pad every other ceiling in this
+#                                   file already adds so it can never land
+#                                   INSIDE a legitimate window.
+#   = 7.80 s
+#
+# WHY IT CANNOT FIRE INSIDE A LEGITIMATE WAIT. Three independent reasons, and
+# the watchdog needs only one of them:
+#
+#   1. the progress clock is not even RUNNING while the session is inside its
+#      own scheduled dwell: `_toss_session_progress` re-anchors on every tick
+#      with `now < session.next_cycle_at`. A dwell of any length is free;
+#   2. it re-anchors while EITHER slot is occupied, so a flight, a catch
+#      confirmation, a settle, a SAFE_ABORT ladder and a whole staged preamble
+#      are all progress by construction — those are bounded by the per-cycle
+#      `_toss_deadline_s` ceiling, which is the guard for a wedge INSIDE a
+#      cycle and stays exactly as it was;
+#   3. the reload interlude (with its BB waits, its recentre and its
+#      `_reload_interlude_budget_s` worth of attempts) runs inside a `continue`
+#      that never reaches this check, and the loop re-anchors the clock the
+#      moment it returns.
+#
+# So the only state that can run this clock out is one in which the session has
+# nothing in flight, nothing staged, nothing pending, and has passed the instant
+# it told itself to start the next cycle. In healthy operation `step()` emits
+# START_CYCLE on the FIRST tick of that state.
+_SESSION_STALL_S = DEFAULT_SESSION_MISS_CLEANUP_S + _SEQUENCE_CEILING_MARGIN_S
+
 # ── Absolute-schedule tick pacing for the TWO toss loops (plan B5, lever 1) ────
 #
 # THE PACED PERIOD IS `NODE_LOOP_PERIOD_S`, NOT `_TICK_S`, and the alias below is
@@ -4642,6 +4712,30 @@ class ReloadCoordinatorNode(Node):
                 #    edge rather than a level so it cannot shadow the flight;
                 #  * no committed slot at all — then it is the only cycle there
                 #    is to report.
+                #
+                # ── F6 (2026-08-28): WHICH SLOT the phase came from ──
+                # `COMMITTING` on the wire is ambiguous by construction — the
+                # committed slot reports it on the tick a SERIALLY-run first
+                # cycle would, and the staged slot reports it here — and an
+                # operator watching feedback cannot tell a staged cycle's arm
+                # point from anything else. The fix is deliberately NOT a new
+                # feedback string: `TossContinuous.action`'s phase vocabulary is
+                # a published contract, `tests/ros/test_toss_continuous_node.py`
+                # pins the exact literal 'COMMITTING' in the published stream,
+                # and a decorated variant would break a consumer that matches on
+                # it — for a labelling convenience. So the disambiguation goes
+                # to the LOG, where it costs nothing and no consumer parses it,
+                # and it is emitted on the TRANSITION rather than per tick (a
+                # slipping commit re-enters this branch every iteration, and one
+                # line per slip would bury the arm point it is announcing).
+                if (sdecision.phase == TOSS_PHASE_COMMITTING
+                        and phase_before != TOSS_PHASE_COMMITTING):
+                    self.get_logger().info(
+                        'toss pipeline: STAGED slot entered COMMITTING (cycle '
+                        '%d) — this is the staged cycle\'s arm point; the '
+                        'feedback phase you see is ITS phase, not the '
+                        'committed slot\'s'
+                        % int(getattr(session, 'cycle_index', 0)))
                 feedback_fn(sdecision.phase)
         # ── the loop census, per slot, closing THIS iteration ──
         # Each slot is closed with ITS OWN reported phase, and a slot that
@@ -6572,7 +6666,7 @@ class ReloadCoordinatorNode(Node):
                   else self._toss_loop_census)
         rec.update(census.summary() if census is not None
                    else {name: None for name in CENSUS_FIELD_NAMES})
-        # ── The two-slot pipeline (B4). All four are null on a serial cycle,
+        # ── The two-slot pipeline (B4). All five are null on a serial cycle,
         # which is the partition key a corpus needs: "did this cycle stage?" is
         # answerable from the row rather than from the build. ──
         rec['staged_discarded_reason'] = (str(cycle_state.discarded_reason)
@@ -6589,6 +6683,12 @@ class ReloadCoordinatorNode(Node):
                 # distribution, and a distribution that silently drops its zeros
                 # is not the one the § 1.4 prediction was made about.
                 'commit_slip_s': float(getattr(seq, 'slip_s', 0.0)),
+                # HOW MANY iterations the gate re-armed for, next to HOW LATE it
+                # ended up. One late tick on a healthy loop and a loop
+                # chronically over period produce similar slips and very
+                # different counts, and the deferred NODE_LOOP_PERIOD_S decision
+                # is waiting on exactly that distinction.
+                'commit_slips': int(getattr(seq, 'commit_slips', 0)),
             })
         return rec
 
@@ -7309,6 +7409,11 @@ class ReloadCoordinatorNode(Node):
             # re-anchor branch is what turns that into a single fresh period
             # instead of a burst of replayed slots.
             next_due = t_start
+            # F3's datum: the last instant this session was observably making
+            # progress. See `_SESSION_STALL_S` for the derivation and for the
+            # three reasons a legitimate wait can never run it out, and
+            # `_toss_session_progressing` for what counts.
+            t_progress = t_start
             while rclpy.ok():
                 now = time.perf_counter()
                 if goal_handle.is_cancel_requested and not session.cycle_live:
@@ -7343,6 +7448,12 @@ class ReloadCoordinatorNode(Node):
                         cancel_now_fn=(lambda: goal_handle.is_cancel_requested))
                     session.note_reload_result(ok, attempts=attempts,
                                                stop_code=stop_code)
+                    # F3: the interlude IS progress, and it is a BLOCKING call
+                    # that legitimately outruns `_SESSION_STALL_S` by an order
+                    # of magnitude (`_reload_interlude_budget_s`). Re-anchor on
+                    # the clock the interlude actually returned at, not on the
+                    # `now` this iteration started with.
+                    t_progress = time.perf_counter()
                     continue
                 if (decision.action == SESSION_ACTION_START_CYCLE
                         and session.pipelined):
@@ -7467,8 +7578,14 @@ class ReloadCoordinatorNode(Node):
                         # executor can itself raise, which would replace a clean
                         # shutdown with a spurious ABORTED_EXCEPTION.
                         return result
+                    # F3: a whole SERIAL cycle just ran to its terminal inside
+                    # this iteration — progress by any measure, and (like the
+                    # interlude) a blocking call whose wall time is bounded by
+                    # `_toss_deadline_s` rather than by this watchdog.
+                    t_progress = time.perf_counter()
                     # Let the next step() adjudicate stop_on_miss / COMPLETED.
                     continue
+                tick_result = None
                 if session.pipelined:
                     # ── B4: ONE non-blocking tick of BOTH slots ──
                     # It replaces the blocking `_run_toss_cycle` above and does
@@ -7476,7 +7593,7 @@ class ReloadCoordinatorNode(Node):
                     # the cancel policy, the per-cycle node ceiling, the census,
                     # the feedback and the safing. The committed slot is always
                     # stepped first.
-                    _cycle_result, exit_kind = self._tick_toss_pipeline(
+                    tick_result, exit_kind = self._tick_toss_pipeline(
                         now, session,
                         cancel_now_fn=(
                             lambda n, s: (goal_handle.is_cancel_requested
@@ -7529,6 +7646,39 @@ class ReloadCoordinatorNode(Node):
                         and not session.cycle_live
                         and not session.committed_live):
                     self._maybe_read_dwell_tilt(now, session)
+                # ── F3, THE NO-PROGRESS WATCHDOG (2026-08-28) ──
+                # Defence in depth behind F1. F1 removes the one deadlock the
+                # first pipelined sitting found; this catches the CLASS — any
+                # state in which the session holds both slots empty, has passed
+                # its own scheduled start instant, and stops advancing. It
+                # terminalises through `_finish_session` like every other
+                # node-level exit, so the `finally` below drains the pipeline,
+                # lowers the session arming and releases `_goal_claimed` — the
+                # last of which is what makes a wedge cost ONE goal instead of
+                # every subsequent ball-op (REJECTED_BUSY is claimed at accept,
+                # across all three actions).
+                #
+                # Nothing is armed and nothing is airborne here by the guard's
+                # own definition — both slots are empty — so, exactly like the
+                # session ceiling below, this path needs no safing and commands
+                # nothing of its own.
+                if self._toss_session_progressing(now, session, decision,
+                                                  tick_result):
+                    t_progress = now
+                elif now - t_progress > _SESSION_STALL_S:
+                    self.get_logger().error(
+                        'TossContinuous STALLED: no committed slot, no staged '
+                        'slot and no progress for %.1f s (bound %.1f s; next '
+                        'cycle was due %.1f s ago at index %d) — terminalising '
+                        'so the goal claim is released. This is a node-level '
+                        'watchdog: it should be unreachable, so a firing is a '
+                        'defect report, not a tuning finding.'
+                        % (now - t_progress, _SESSION_STALL_S,
+                           now - float(session.next_cycle_at),
+                           int(session.cycle_index)))
+                    self._finish_session(result, session, 'ABORTED_STALLED')
+                    goal_handle.abort()
+                    return result
                 if now - t_start > max_session_s:
                     # Reachable only BETWEEN cycles (a cycle's own ceiling is
                     # enforced inside _run_toss_cycle), where nothing is armed
@@ -7572,6 +7722,48 @@ class ReloadCoordinatorNode(Node):
             self._toss_trim_end()
             with self._lock:
                 self._goal_claimed = False
+
+    @staticmethod
+    def _toss_session_progressing(now, session, decision, tick_result) -> bool:
+        """F3 — does THIS session iteration count as progress?
+
+        A ``@staticmethod`` and a pure function of its four arguments so the
+        watchdog's whole policy is testable without a node, a clock or a goal
+        handle: the failure this guards is a session that answers the same thing
+        forever, and a policy that could only be exercised through a live loop
+        would be tested the same way that loop was.
+
+        Four ways to be progressing, and the FIRST TWO are what make the bound
+        in :data:`_SESSION_STALL_S` a bound on *stalling* rather than a second,
+        much tighter session ceiling:
+
+        1. **a cycle terminalised on this tick** (``tick_result``). The pipeline
+           tick returns the committed slot's result, and a terminal is the most
+           progress a session ever makes in one iteration;
+        2. **either slot is occupied** — a staged preamble, a commit, a flight,
+           a catch confirmation, a settle, a SAFE_ABORT ladder. Every one of
+           those is bounded by the PER-CYCLE ceiling ``_toss_deadline_s``
+           enforces inside the tick, which is the guard for a wedge *inside* a
+           cycle and is untouched by this one. Two guards, two scopes, no
+           overlap;
+        3. **the session emitted an action** — START_CYCLE or RELOAD. The
+           session is doing something by definition;
+        4. **the session is inside its own scheduled quiescent wait**
+           (``now < next_cycle_at``). This is what lets a dwell be arbitrarily
+           long, including the ``DEFAULT_SESSION_MISS_CLEANUP_S`` floor after a
+           continued MISS, without the watchdog needing to know a single thing
+           about cadence arithmetic: the session names the instant it intends to
+           start the next cycle, and waiting for an instant it named is not a
+           stall. Only time spent PAST that instant, with nothing in either
+           slot, runs the clock — and in healthy operation ``step()`` mints
+           START_CYCLE on the very first such tick."""
+        if tick_result is not None:
+            return True
+        if session.cycle_live or session.committed_live:
+            return True
+        if decision is not None and decision.action != SESSION_ACTION_NONE:
+            return True
+        return float(now) < float(session.next_cycle_at)
 
     def _start_pipelined_cycle(self, goal_handle, session, catch_pose, flight,
                                vel_scale, *, raw_goal) -> None:

@@ -231,6 +231,23 @@ string outcome                       # COMPLETED | STOPPED_ON_MISS | REJECTED_<c
                                      # (e.g. ABORTED_CYCLE_REJECTED_HAND_NOT_PARKED) so a
                                      # failure routes to the same place a single Toss
                                      # would have routed it.
+                                     #
+                                     # ABORTED_STALLED is ADDITIVE (2026-08-28, fix F3 of
+                                     # logbook/2026-08-28-pipeline-first-contact-deadlock.md)
+                                     # and it is a DEFECT REPORT, not a tuning finding: the
+                                     # session held both pipeline slots empty, passed the
+                                     # instant it had scheduled its own next cycle for, and
+                                     # made no progress for the derived stall bound. It
+                                     # should be unreachable — dwells, flights, interludes
+                                     # and BB waits all count as progress by construction —
+                                     # so a sighting means a slot-bookkeeping bug, and the
+                                     # node log line names the cycle index and the overdue
+                                     # interval. Nothing was armed or airborne when it
+                                     # fired (that is the guard's own precondition), so the
+                                     # machine is where the last cycle left it.
+                                     # This file is comment-only here: no field was added,
+                                     # removed or retyped, so a jugglebot_interfaces
+                                     # rebuild is NOT required.
 int32 throws_completed               # cycles that got a ball into the air (CAUGHT or
                                      # MISSED). A cycle rejected before release does NOT
                                      # count.

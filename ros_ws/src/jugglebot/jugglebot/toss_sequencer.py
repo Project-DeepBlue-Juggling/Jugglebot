@@ -1144,10 +1144,30 @@ def min_stage_lead_for_release_s(event_vel_mps: float,
     :meth:`TossSequencer._step_committing` measures ``t_release − now`` against
     the kind-0 dispatch budget, and a cycle that cleared no static floor could
     reach that guard with the announcement about to go out. Charging
-    ``stage_budget_s + commit_budget_s`` at CHECKING is what makes
-    ``ABORTED_CANT_MAKE_RELEASE`` **structurally unreachable on the pipelined
-    path** (plan § 6.4: one is a design finding, not a tuning finding) —
-    the commit gate slips or rejects instead, with nothing armed.
+    ``stage_budget_s + commit_budget_s`` at CHECKING is what keeps
+    ``ABORTED_CANT_MAKE_RELEASE`` off the pipelined path for every STATIC
+    reason — the arithmetic of the goal, the beat and the ladder.
+
+    ⚠ **It was claimed here as "structurally unreachable", and the first
+    pipelined sitting refuted that** (2026-08-28,
+    ``logbook/2026-08-28-pipeline-first-contact-deadlock.md``). The claim was
+    a statement about arithmetic in a machine whose loop period is a MEASURED
+    quantity, not a guaranteed one: :func:`commit_budget_s` grants exactly one
+    NOMINAL loop period of polling lateness plus
+    :data:`FLOOR_REPRESENTATION_SLACK_S`, so an iteration that took
+    ``NODE_LOOP_PERIOD_S + 1 µs`` or more at the commit crossing broke the
+    guard's inequality no matter how much static lead had been charged — and
+    the Jetson's non-RT ``time.sleep`` overshoots by milliseconds routinely
+    (4 of the sitting's 15 staged slots died this way, every one of them with a
+    census ``loop_period_max_pre_s`` above 0.040 s).
+
+    **The honest statement now**: this floor makes the abort unreachable for
+    every static reason, and the commit gate's own late-tick shortfall is no
+    longer an abort at all — it SLIPS (:meth:`TossSequencer._slip`), and only
+    an exhausted slip bound (``catch_confirm_window_s`` from the ORIGINAL
+    commit instant) terminalises. Beyond that bound the abort is honest and it
+    no longer deadlocks the session: the machine slipped the whole window and
+    still could not make the release.
 
     It REPLACES ``min_throw_delay_for_cycle_s`` for a staged cycle rather than
     joining it, because the two measure different quantities: that floor is
@@ -1589,6 +1609,20 @@ class TossSequencer:
     _track_confirmed_seen: bool = field(default=False, init=False)
     _last_time_at_land: float = field(default=float('nan'), init=False)
     _commit_slip_s: float = field(default=0.0, init=False)   # see slip_s
+    #: How many times the COMMIT gate re-armed (:meth:`_slip`). ``slip_s``
+    #: measures HOW LATE; this measures HOW MANY RETRIES, and the pair
+    #: distinguishes one unlucky iteration from a loop that is chronically over
+    #: period. Read by :meth:`_commit_forensics` and by :attr:`commit_slips`.
+    _commit_slips: int = field(default=0, init=False)
+    #: The previous :meth:`step` instant, and the interval since it. The FSM's
+    #: own measurement of the loop period it is being ticked at — the quantity
+    #: :func:`commit_budget_s` charges ONE of and the late-tick slip source is a
+    #: function of. Instrument only (it appears in :meth:`_commit_forensics` and
+    #: nowhere else): a budget that re-derived itself from observed slowness
+    #: would TRACK a degradation instead of exposing it, which is the constraint
+    #: ``test_the_census_never_feeds_a_budget`` exists to keep.
+    _prev_step_now: float = field(default=float('nan'), init=False)
+    _last_tick_s: float = field(default=float('nan'), init=False)
     #: B4 — the COMMIT instant, ``_t_release − commit_budget_s`` (§ 2.6 rule 2:
     #: the commit is derived FROM the release, never the reverse, so a scheduler
     #: that moves the release moves the commit for free). ``_commit_at`` is
@@ -1886,6 +1920,15 @@ class TossSequencer:
             # stray extra step can't hand the consumer a None — and never re-runs
             # the terminal action.
             return TossDecision(self._phase, ACTION_NONE, True, self._result)
+
+        # THE FSM's own view of the loop period it is ticked at (instrument
+        # only — see `_prev_step_now`). Taken before any phase logic so the
+        # commit gate's forensics can name the iteration that broke it, and
+        # taken here rather than from `LoopPeriodCensus` so the census stays
+        # strictly downstream of every decision this FSM makes.
+        if math.isfinite(self._prev_step_now):
+            self._last_tick_s = now - self._prev_step_now
+        self._prev_step_now = now
 
         # Live tracker bookkeeping: the confirmation latch gates
         # achieved_flight_s; the landing-crossing estimate refreshes while finite,
@@ -2386,10 +2429,21 @@ class TossSequencer:
            track would correlate against OUR announcement, and unlike the two
            above it is not a thing that resolves by waiting;
         6. **the runtime release-window guard** — the same inequality
-           ``_step_preparing`` applies, against the same budget. Structurally
-           unreachable here (CHECKING charged
-           :attr:`min_stage_lead_for_cycle_s` and the slip moves ``now`` and
-           ``_t_release`` together), and kept as the belt the serial path has.
+           ``_step_preparing`` applies, against the same budget — and since
+           2026-08-28 it **SLIPS** like rungs 3 and 4 rather than aborting.
+           Falling short here is a CADENCE fact on a healthy machine, not a
+           machine fault: :func:`commit_budget_s` grants exactly one NOMINAL
+           loop period of polling lateness, so any iteration that ran longer
+           than :data:`NODE_LOOP_PERIOD_S` at the commit crossing breaks the
+           inequality by the overshoot alone — velocity-independent, and the
+           Jetson's non-RT sleep supplies it routinely. The announcement has
+           not gone out, nothing is armed, and the slip re-arms
+           ``_t_release = now + commit_budget_for_cycle_s`` so the NEXT tick
+           gets a full fresh budget; the absolute tick grid
+           (``_pace_to_next_tick``) makes the iteration after an overrun SHORT
+           by exactly the overrun, so the retry is the likely case rather than
+           the hopeful one. Past the shared slip bound it aborts by name — see
+           :meth:`_slip`.
 
         Then ANNOUNCE and DISPATCH, in one tick, in that order — because
         ``ThrowAnnouncement`` carries ``throw_time`` and ``landing_time``, a
@@ -2427,7 +2481,9 @@ class TossSequencer:
         if obs.track_active:
             return self._reject('TRACK_ACTIVE')
         if self._t_release - now < self.min_event_delay_for_throw_s:
-            return self._abort('CANT_MAKE_RELEASE')
+            return self._slip(now, 'the iteration that reached the commit ran '
+                                   'longer than one nominal loop period',
+                              abort_code='CANT_MAKE_RELEASE')
         # ── COMMITTED. Everything below this line is one tick. ──
         self._commit_slip_s = max(0.0, now - self._commit_at_sched)
         self._committed = True
@@ -2458,10 +2514,10 @@ class TossSequencer:
         return TossDecision(PHASE_COMMITTING, ACTION_ANNOUNCE, False, None,
                             action_then=ACTION_DISPATCH_THROW)
 
-    def _slip(self, now: float, why: str,
-              reject_code: str = '') -> TossDecision:
-        """SLIP the commit to the next loop iteration, or REFUSE once the slip
-        has run past its bound (plan § 2.4.3).
+    def _slip(self, now: float, why: str, reject_code: str = '',
+              abort_code: str = '') -> TossDecision:
+        """SLIP the commit to the next loop iteration, or TERMINALISE once the
+        slip has run past its bound (plan § 2.4.3).
 
         **The slip moves ``_t_release`` with it**, so the released ball's own
         schedule stays self-consistent — the announcement has not gone out, and
@@ -2469,34 +2525,104 @@ class TossSequencer:
         cancel cutoff, the dispatch's ``event_delay``) reads ``_t_release`` and
         re-derives nothing. Two bounds, both DERIVED rather than chosen:
 
-        * **the release bound** holds by construction: ``now`` and
-          ``_t_release`` advance together, so the runtime guard
-          ``_t_release − now ≥ min_event_delay_for_throw_s`` can never be broken
-          BY a slip;
+        * **the release bound**. ``now`` and ``_t_release`` advance together, so
+          a slip always leaves the runtime guard's inequality
+          ``_t_release − now ≥ min_event_delay_for_throw_s`` satisfied AT THE
+          INSTANT OF THE SLIP, with :func:`commit_budget_s`'s one nominal loop
+          period plus :data:`FLOOR_REPRESENTATION_SLACK_S` of headroom on top.
+
+          ⚠ This read "holds by construction" until 2026-08-28, and **that was
+          false whenever the ACTUAL period exceeded the nominal one**: the
+          headroom a slip banks is exactly ``NODE_LOOP_PERIOD_S + 1 µs``, so an
+          iteration longer than that consumes all of it and the guard is broken
+          on the NEXT tick — velocity-independent, and the mechanism behind 4 of
+          the 15 staged slots of the first pipelined sitting. What holds now is
+          the sentence above (the inequality holds AT the slip instant, not
+          across an arbitrarily long following iteration), and the guard's own
+          shortfall is routed BACK here with ``abort_code`` instead of aborting
+          on the spot. That closes the loop: a late tick slips, the absolute
+          tick grid (``_pace_to_next_tick``) makes the iteration after an
+          overrun short by exactly the overrun, and a merely-jittery machine
+          commits one tick later;
         * **the upstream bound** is :attr:`catch_confirm_window_s` — the
           upstream cycle terminalises at the cup edge or at
           ``landing + catch_confirm_window_s`` at the latest, so a slip that
           outlives it is waiting for something that is not coming. No new
-          constant: mutate that one and this bound moves with it.
+          constant: mutate that one and this bound moves with it. It is counted
+          from ``_commit_at_sched`` (the ORIGINAL commit instant) and it governs
+          EVERY slip source, the late-tick one included — ONE bound, so a cycle
+          cannot launder an unbounded wait by alternating its reasons.
 
-        Past the bound the cycle REFUSES by the name of the gate that held it —
-        ``REJECTED_NO_BALL`` / ``REJECTED_BALL_UNKNOWN`` /
-        ``REJECTED_HAND_NOT_PARKED`` — with nothing armed at the hand and NO
-        announcement published (§ 2.4.3's staged-failure table). A slip with no
-        ``reject_code`` (the upstream one) cannot refuse on its own account: it
-        is waiting on a cycle that has its own deadline, and when that deadline
-        mints the upstream terminal the node discards this slot instead."""
+        Past the bound the cycle terminalises by the name of the gate that held
+        it — ``REJECTED_NO_BALL`` / ``REJECTED_BALL_UNKNOWN`` /
+        ``REJECTED_HAND_NOT_PARKED`` for the evidence gates, and
+        ``ABORTED_CANT_MAKE_RELEASE`` for the release-window guard — with
+        nothing armed at the hand and NO announcement published (§ 2.4.3's
+        staged-failure table). The release-window guard keeps ``ABORTED_`` and
+        keeps its historical name deliberately: that string is what the
+        runbooks, the record corpus and the cadence ladder key on, and the
+        terminal it names is now HONEST rather than premature — the machine
+        slipped the whole window and still could not make the release. It
+        carries :meth:`_commit_forensics`, so the one outcome line says by how
+        much and after how many retries.
+
+        A slip with NEITHER code (the upstream one) cannot terminalise on its
+        own account: it is waiting on a cycle that has its own deadline, and
+        when that deadline mints the upstream terminal the node discards this
+        slot instead."""
         self._commit_slip_s = max(0.0, now - self._commit_at_sched)
-        if reject_code and now > self._commit_at_sched + self.catch_confirm_window_s:
+        past_bound = now > self._commit_at_sched + self.catch_confirm_window_s
+        if abort_code and past_bound:
+            return self._abort(abort_code, self._commit_forensics(now, why))
+        if reject_code and past_bound:
             return self._reject(reject_code, 'commit slipped {:.3f} s past the '
                                              '{:.3f} s bound ({})'
                                 .format(self._commit_slip_s,
                                         self.catch_confirm_window_s, why))
         # Re-arm on the next iteration, and take the release with it.
+        self._commit_slips += 1
         self._commit_at = now
         self._t_release = now + self.commit_budget_for_cycle_s
         return TossDecision(PHASE_COMMITTING, ACTION_NONE, False, None,
                             slip=True)
+
+    def _commit_forensics(self, now: float, why: str) -> str:
+        """F5 — everything a post-mortem of a slip-bound-exhausted commit needs,
+        in ONE string, carried ON THE OUTCOME so the node's single authoritative
+        outcome line IS the forensic line: ``_log_toss_outcome`` prints the
+        outcome verbatim, the staged slot's discard WARN prints it as
+        ``staged_discarded_reason``, and the record carries both.
+
+        The four numbers, and why each is here rather than inferable:
+
+        * **the shortfall** ``_t_release − now``, against the dispatch budget it
+          was measured against — the actual quantity the guard refused on, and
+          signed, so "missed by 1 ms" and "missed by 200 ms" are different
+          findings rather than one verdict string;
+        * **the lateness** ``now − _commit_at_sched`` — how far past the
+          ORIGINALLY scheduled arm point the machine got before giving up;
+        * **the slip count** — how many iterations it actually retried. One is a
+          single unlucky tick; a bound's worth is a loop that is chronically
+          over period, which is a re-cut conversation and not a bad sitting;
+        * **the last iteration's length**, against :data:`NODE_LOOP_PERIOD_S` —
+          the proximate cause, measured by the FSM itself between consecutive
+          :meth:`step` calls. :class:`LoopPeriodCensus` carries the same
+          quantity per cycle as a MAXIMUM (``loop_period_max_pre_s``); this is
+          the specific iteration that broke the inequality, and taking it from
+          the FSM's own clock rather than plumbing the census into the FSM keeps
+          the census strictly downstream of every decision — the constraint
+          ``test_the_census_never_feeds_a_budget`` pins. It is a LOG STRING, not
+          a budget: nothing here feeds back into a floor."""
+        tick = self._last_tick_s
+        tick_s = '{:.4f}'.format(tick) if math.isfinite(tick) else 'n/a'
+        return ('{}: lead {:+.4f} s against the {:.4f} s dispatch budget, '
+                '{:.3f} s past the scheduled commit, {} slip(s) inside the '
+                '{:.3f} s bound, last iteration {} s vs the {:.4f} s nominal'
+                .format(why, self._t_release - now,
+                        self.min_event_delay_for_throw_s,
+                        now - self._commit_at_sched, self._commit_slips,
+                        self.catch_confirm_window_s, tick_s,
+                        NODE_LOOP_PERIOD_S))
 
     def _enter_throwing(self, now: float) -> TossDecision:
         """Everything Jugglebot-side is armed (latch up, announcement out) — the
@@ -2650,9 +2776,18 @@ class TossSequencer:
         return self._finish(TossResult(
             False, outcome, float('nan'), self._achieved_flight_s()))
 
-    def _abort(self, code: str) -> TossDecision:
+    def _abort(self, code: str, message: str = '') -> TossDecision:
+        """``ABORTED_<code>``, optionally carrying a parenthesised forensic
+        message — symmetric with :meth:`_reject`, and for the same reason: the
+        outcome string is the ONE thing every consumer sees (the node's single
+        authoritative outcome line, the record, the session's per-cycle list),
+        so a terminal whose numbers matter carries them there rather than in a
+        second log line that can be filtered away from the first."""
+        outcome = 'ABORTED_{}'.format(code)
+        if message:
+            outcome = '{}({})'.format(outcome, message)
         return self._finish(TossResult(
-            False, 'ABORTED_{}'.format(code), float('nan'),
+            False, outcome, float('nan'),
             self._achieved_flight_s()))
 
     def _finish(self, result: TossResult) -> TossDecision:
@@ -2820,3 +2955,16 @@ class TossSequencer:
         Never negative: an EARLY commit does not exist (the gate is polled and
         can only be crossed at or after ``commit_at``)."""
         return self._commit_slip_s
+
+    @property
+    def commit_slips(self) -> int:
+        """How many times the COMMIT gate re-armed before it resolved.
+
+        :attr:`slip_s` says HOW LATE the commit was; this says HOW MANY
+        ITERATIONS it took, and the two answer different questions. A single
+        slip that cost 45 ms is one late iteration on a healthy loop; fourteen
+        slips that cost 560 ms is a loop that never got a period inside its
+        nominal one, which is a re-cut conversation about
+        :data:`NODE_LOOP_PERIOD_S` rather than a bad sitting. 0 for every serial
+        cycle and for a commit that passed on its first tick."""
+        return self._commit_slips

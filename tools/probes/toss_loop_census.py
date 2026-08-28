@@ -267,7 +267,15 @@ def summarise(records, threshold_s: float) -> dict:
         for rec in rows:
             term = dominant_term(rec)
             entry['dominant_votes'][term] = entry['dominant_votes'].get(term, 0) + 1
-            outcome = rec.get('outcome') or '?'
+            # BUCKET ON THE BARE CODE. Since F5 (2026-08-28) an abort that
+            # exhausted the slip bound carries its forensics INSIDE the outcome —
+            # `ABORTED_CANT_MAKE_RELEASE(lead +0.0031 s against ...)` — and every
+            # one of those is a unique string, so an un-split histogram gives one
+            # bucket of count 1 per event and shows nothing. The full string is
+            # kept verbatim in the per-row CSV, which is where a post-mortem
+            # reads it. (This also de-fragments the long-standing decorated
+            # `REJECTED_*(...)` reasons, which had the same shape.)
+            outcome = (rec.get('outcome') or '?').split('(', 1)[0]
             entry['outcomes'][outcome] = entry['outcomes'].get(outcome, 0) + 1
         out['classes'][name] = entry
     return out

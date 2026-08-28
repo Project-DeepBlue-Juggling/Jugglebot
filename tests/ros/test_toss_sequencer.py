@@ -2328,13 +2328,19 @@ def test_the_slip_is_bounded_by_the_confirm_window_and_nothing_else():
 
 
 def test_a_slip_moves_the_release_so_the_runtime_guard_cannot_break():
-    """§ 2.4.3's release bound, which holds BY CONSTRUCTION: the slip advances
-    ``now`` and ``_t_release`` together, so ``t_release − now`` is pinned at the
-    commit budget and can never fall under the dispatch budget it contains.
+    """§ 2.4.3's release bound, AT THE INSTANT OF THE SLIP: the slip advances
+    ``now`` and ``_t_release`` together, so ``t_release − now`` is re-armed to
+    the full commit budget and cannot fall under the dispatch budget it
+    contains.
 
-    That is what makes ABORTED_CANT_MAKE_RELEASE structurally unreachable on the
-    pipelined path — the plan's § 6.4 stop condition calls one a DESIGN finding
-    rather than a tuning finding, and this is why."""
+    ⚠ **This docstring claimed the bound made ABORTED_CANT_MAKE_RELEASE
+    "structurally unreachable on the pipelined path", and the first pipelined
+    sitting refuted it** (2026-08-28). The claim is true only while the ticks
+    are no longer than the ONE nominal loop period ``commit_budget_s`` grants —
+    which is exactly what this test feeds it — and the budget's whole headroom
+    past that is 1 µs of representation slack. The very next test drives the
+    other side: a tick longer than the nominal period breaks the inequality, and
+    since the fix that shortfall SLIPS rather than aborting."""
     from jugglebot.toss_sequencer import NODE_LOOP_PERIOD_S
     seq = _staged()
     _to_staged(seq)
@@ -2350,6 +2356,136 @@ def test_a_slip_moves_the_release_so_the_runtime_guard_cannot_break():
         t += NODE_LOOP_PERIOD_S
     # …and the landing follows the release, so the cycle stays self-consistent.
     assert seq.landing_perf == pytest.approx(seq.t_release + seq.flight_time_s)
+
+
+# ── The late-tick slip source (2026-08-28, fix F2) ───────────────────────────
+#
+# THE MECHANISM, in one line of arithmetic. `commit_budget_s` = dispatch budget
+# + ONE nominal loop period + FLOOR_REPRESENTATION_SLACK_S (1 µs). The commit
+# gate asks `t_release − now >= dispatch budget`. On the tick that CROSSES
+# `commit_at`, `now − commit_at` is the polling lateness, and after a slip
+# `t_release` is re-armed to `now + budget` so the next tick's lead is
+# `budget − Δ`. Either way the guard fails iff the iteration ran longer than
+# `NODE_LOOP_PERIOD_S + 1 µs`. Nothing about the throw's speed enters it — the
+# dispatch budget appears on BOTH sides and cancels — so no cadence, no flight
+# time and no lead can buy immunity. That is why the pre-fix abort was a design
+# finding rather than a tuning one, and why the fix is a slip.
+
+def test_a_late_tick_at_the_commit_crossing_slips_rather_than_aborting():
+    """**THE 2026-08-28 regression**: 4 of the 15 staged slots of the first
+    pipelined sitting died ``ABORTED_CANT_MAKE_RELEASE`` here, on a machine
+    whose census said the loop was healthy — per-cycle mean pre-dispatch period
+    **0.0389-0.0412 s on the cycles with >= 5 censused pre-dispatch iterations**
+    (0.0370-0.0436 s across all 25 censused cycles of the bag, whose two
+    extremes are both 4-iteration samples) against a 0.040 nominal. The absolute
+    grid holds the MEAN and individual iterations straddle it, which is why a
+    healthy loop supplies the overshoot routinely.
+
+    A late iteration is a CADENCE fact, not a machine fault: nothing is armed,
+    no announcement has gone out, and the slip re-arms the release so the next
+    tick gets a full fresh budget. The plan's own § 9.2 doctrine ("slip rather
+    than refuse") already routes ``hand_parked`` and ``ball_seated`` this way;
+    this is the third source, and it now shares their bound."""
+    from jugglebot.toss_sequencer import (FLOOR_REPRESENTATION_SLACK_S,
+                                          NODE_LOOP_PERIOD_S, PHASE_COMMITTING)
+    seq = _staged()
+    _to_staged(seq)
+    seq.note_upstream_terminalised()
+    # One iteration ONE MICROSECOND past the nominal period — the smallest
+    # overrun the guard can see, and the shape of every one of the four.
+    late = seq.commit_at + NODE_LOOP_PERIOD_S + 2 * FLOOR_REPRESENTATION_SLACK_S
+    assert seq.t_release - late < seq.min_event_delay_for_throw_s, (
+        'the fixture must actually break the guard, or this proves nothing')
+    d = seq.step(late, _obs(late))
+    assert d.slip is True and d.done is False
+    assert d.phase == PHASE_COMMITTING
+    assert d.action == ACTION_NONE and d.action_then == ACTION_NONE
+    assert seq.commit_slips == 1
+    # …and the very next NOMINAL tick commits, because the slip banked a whole
+    # fresh budget. (The node's absolute tick grid makes the iteration after an
+    # overrun SHORT by exactly the overrun, so this is the likely case on the
+    # real machine, not the hopeful one — `_pace_to_next_tick`.)
+    t = late + NODE_LOOP_PERIOD_S
+    d = seq.step(t, _obs(t))
+    assert (d.action, d.action_then) == (ACTION_ANNOUNCE, ACTION_DISPATCH_THROW)
+    assert seq.committed is True
+
+
+def test_a_chronically_late_loop_exhausts_the_slip_bound_and_aborts_by_name():
+    """The other side of F2, and the reason it is a SLIP and not a retry loop:
+    a machine that never gets an iteration inside its nominal period still
+    terminalises, at the SAME bound the evidence slips use
+    (``catch_confirm_window_s`` from the ORIGINAL commit instant) — one bound,
+    so a cycle cannot launder an unbounded wait by alternating its reasons.
+
+    The terminal keeps its historical name and its ABORTED_ family: the outcome
+    string is what the runbooks, the record corpus and the cadence ladder key
+    on. What changed is that it is now HONEST — the machine slipped the whole
+    window and still could not make the release — and, critically, that it no
+    longer deadlocks the session (see
+    ``test_a_commit_time_stage_abandonment_does_not_wedge_the_session``)."""
+    from jugglebot.toss_sequencer import NODE_LOOP_PERIOD_S
+    seq = _staged()
+    _to_staged(seq)
+    seq.note_upstream_terminalised()
+    commit_at = seq.commit_at_scheduled
+    # Every iteration 20 % over the nominal period: the guard fails on every
+    # one of them, forever, which is the pathological loop this bound is for.
+    step_s = NODE_LOOP_PERIOD_S * 1.2
+    t = commit_at + step_s
+    last = None
+    while t < commit_at + seq.catch_confirm_window_s + 5 * NODE_LOOP_PERIOD_S:
+        d = seq.step(t, _obs(t))
+        if d.done:
+            last = (t, d)
+            break
+        assert d.slip is True
+        t += step_s
+    assert last is not None, 'the guard never terminalised'
+    t_abort, d = last
+    assert d.result.outcome.startswith('ABORTED_CANT_MAKE_RELEASE')
+    # It gave up only AFTER the window, and within one (late) poll of it.
+    assert t_abort > commit_at + seq.catch_confirm_window_s
+    assert t_abort <= commit_at + seq.catch_confirm_window_s + step_s
+    # NOTHING was armed and NOTHING was announced on the way there — the whole
+    # difference between this and the two aborted cycles of bag
+    # 2026-08-26_14-25-16, which left a phantom tracker expectation behind.
+    assert seq.committed is False
+    assert seq._announce_dispatched is False
+    assert d.action == ACTION_NONE and d.action_then == ACTION_NONE
+    # F5: the ONE outcome line carries the whole post-mortem.
+    outcome = d.result.outcome
+    assert 'lead ' in outcome and 'dispatch budget' in outcome
+    assert 'past the scheduled commit' in outcome
+    assert '{} slip(s)'.format(seq.commit_slips) in outcome
+    assert 'last iteration' in outcome and 'nominal' in outcome
+    assert seq.commit_slips >= 10, seq.commit_slips
+
+
+def test_the_late_tick_shortfall_is_independent_of_the_release_speed():
+    """WHY this class could not be tuned away, stated as a test.
+
+    The guard's inequality is ``t_release − now >= dispatch_budget(v)`` and the
+    budget the slip re-arms is ``dispatch_budget(v) + NODE_LOOP_PERIOD_S +
+    slack``. The speed-dependent term appears on both sides and cancels, so the
+    threshold is ``NODE_LOOP_PERIOD_S + slack`` at EVERY flight time — a slower
+    throw does not buy headroom and a faster one does not lose it. Anyone
+    reaching for a bigger lead, a longer dwell or a lower cadence to make this
+    go away is tuning a quantity the failure does not depend on."""
+    from jugglebot.toss_sequencer import (FLOOR_REPRESENTATION_SLACK_S,
+                                          NODE_LOOP_PERIOD_S)
+    thresholds = []
+    for flight in (0.50, 0.80, 1.03):
+        seq = _staged(flight_time_s=flight, release_at_perf=8.0)
+        _to_staged(seq)
+        seq.note_upstream_terminalised()
+        # The exact lateness at which the guard first fails, from the crossing.
+        thresholds.append(seq.commit_budget_for_cycle_s
+                          - seq.min_event_delay_for_throw_s)
+        # …and it really is the whole budget minus the dispatch term.
+        assert seq.min_event_delay_for_throw_s > 0.0
+    assert thresholds == pytest.approx(
+        [NODE_LOOP_PERIOD_S + FLOOR_REPRESENTATION_SLACK_S] * 3, abs=1e-12)
 
 
 def test_the_commit_slips_on_an_unterminalised_upstream_and_never_refuses_for_it():

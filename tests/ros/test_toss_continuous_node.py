@@ -141,6 +141,46 @@ def _stamp(node, t):
         node._commanded_pos_mono = t
 
 
+@pytest.fixture(autouse=True)
+def _pin_the_pipeline_flag(monkeypatch):
+    """**Every test in this file states which pipeline it drives, and none of
+    them inherits it from the shipped config** (2026-08-28).
+
+    Until the operator turned ``toss_pipeline_enabled`` on, the flag shipped
+    FALSE and the serial half of this file got the serial ladder for free. That
+    was an implicit precondition: the session-semantics tests below
+    (``_stub_cycles`` scripts ``_run_toss_cycle``, the SERIAL blocking wrapper —
+    a method the pipelined loop never calls) assert stop_on_miss, cancel,
+    retry, teardown and reload-interlude behaviour, and the flip silently
+    re-pointed all 28 of them at a path their harness does not stub. They went
+    red without a line of production code changing, which is the tell: a test
+    whose subject is chosen by a YAML key is a test a config edit can retarget.
+
+    So the default is pinned HERE, explicitly, and the pipelined half overrides
+    it in ``_pipelined_node`` (its ``monkeypatch.setattr`` runs later and wins).
+    No assertion in this file changed; what changed is that the ones written for
+    the serial ladder now SAY so.
+
+    ⚠ The honest consequence, and it is a real coverage gap rather than a
+    bookkeeping one: the session-accounting semantics below have NO pipelined
+    twin. They never did — under the old default they could not have — but the
+    machine now ships pipelined, so the gap is live rather than latent. It is
+    recorded in ``logbook/2026-08-28-pipeline-first-contact-deadlock.md``
+    § Follow-ups.
+
+    **The instance that mattered most, named** (2026-08-28 audit): both of F3's
+    non-firing tests — ``test_the_watchdog_never_fires_on_a_healthy_chained_session``
+    and ``test_the_watchdog_never_fires_across_a_reload_interlude`` — FAIL when
+    this fixture is flipped to True (verified by flipping it), so the watchdog
+    that ships ON was pinned against FALSE FIRING only on the serial ladder,
+    which is the machine the operator no longer runs. That specific hole is now
+    closed by ``test_the_watchdog_never_fires_on_a_healthy_PIPELINED_session``;
+    the rest of the accounting suite (stop_on_miss, cancel, the retry ladder,
+    the reload interlude, the S6/S7 teardown) is still serial-only."""
+    monkeypatch.setattr(rcn.hw, 'JB_OP_TOSS_PIPELINE_ENABLED', False,
+                        raising=False)
+
+
 def _ready_node(clock, commanded_pos=(0.0, 0.0, 170.0)):
     """Every toss precondition satisfied, caches fresh at the fake clock."""
     node = ReloadCoordinatorNode()
@@ -2364,12 +2404,34 @@ def _run_pipelined(monkeypatch, *, num_throws=3, dwell=0.55, height=1.30,
     return node, calls, result, gh
 
 
-def test_the_shipped_default_is_the_serial_pipeline():
-    """T-U13 / the rollback: the flag ships FALSE, so nothing above this line
-    changed. `plans/active/toss-pipelined-preamble.md` § 9.5 level 1 — one YAML
-    key and a colcon build reverts the machine, and this is the assertion that
-    the key really is what selects."""
-    assert hw.JB_OP_TOSS_PIPELINE_ENABLED is False
+def test_the_shipped_default_is_the_two_slot_pipeline():
+    """T-U13 / the rollback, RE-AIMED at the value that actually ships.
+
+    **The operator turned the key on 2026-08-28** after the first pipelined
+    sitting, and it rides as the committed default — so the assertion that used
+    to read ``is False`` reads ``is True``, and it is the ONE assertion in this
+    file the flip is allowed to move. Its intent is unchanged and is the reason
+    it exists: `plans/active/toss-pipelined-preamble.md` § 9.5 level 1 says one
+    YAML key plus a colcon build selects the machine, and this is what proves
+    the key is really what selects rather than a second switch somewhere.
+
+    It reads the GENERATED module's SOURCE rather than the imported attribute,
+    because the autouse fixture above pins that attribute per test: an assertion
+    about what SHIPS must not be readable from a value a fixture is allowed to
+    move. ``hw.__file__`` is the generated artifact
+    (`config/generate_config.py` writes it), so this also fails if the codegen
+    stops emitting the key at all."""
+    source = Path(hw.__file__).read_text()
+    tree = ast.parse(source)
+    shipped = {}
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if getattr(target, 'id', None) == 'JB_OP_TOSS_PIPELINE_ENABLED':
+                shipped['value'] = ast.literal_eval(node.value)
+    assert 'value' in shipped, 'the codegen no longer emits the pipeline key'
+    assert shipped['value'] is True
 
 
 def test_the_session_reads_the_flag_and_the_single_toss_never_does(monkeypatch):
@@ -2801,7 +2863,13 @@ def test_the_record_carries_the_slip_and_the_commit_instant(monkeypatch):
     A zero slip is RECORDED, not nulled: a 0.000 is a measurement (the commit
     fired on its scheduled tick) and a null is "this cycle had no commit gate".
     A distribution that silently drops its zeros is not the one the prediction
-    was made about."""
+    was made about.
+
+    `commit_slips` rides next to it (2026-08-28): the slip says HOW LATE, the
+    count says HOW MANY ITERATIONS, and one late tick on a healthy loop is a
+    different finding from a loop chronically over period even when the two
+    produce the same lateness. That distinction is the stated input to the
+    deferred `NODE_LOOP_PERIOD_S` decision, so it has to reach the corpus."""
     clock = _PipelineClock()
     monkeypatch.setattr(rcn, 'time', clock)
     node, calls = _pipelined_node(clock, monkeypatch)
@@ -2816,10 +2884,12 @@ def test_the_record_carries_the_slip_and_the_commit_instant(monkeypatch):
     assert len(rows) == 3
     assert rows[0]['staged_at_s'] is None, 'cycle 1 ran serially'
     assert rows[0]['commit_slip_s'] is None
+    assert rows[0]['commit_slips'] is None
     for row in rows[1:]:
         assert row['staged_at_s'] is not None
         assert row['commit_at_s'] is not None
         assert row['commit_slip_s'] is not None and row['commit_slip_s'] >= 0.0
+        assert row['commit_slips'] is not None and row['commit_slips'] >= 0
         assert row['staged_discarded_reason'] is None
 
 
@@ -2891,3 +2961,262 @@ def test_a_pipelined_cycle_censuses_its_own_commit_tick(monkeypatch):
     # the arm point, not just the ladder.
     for row in rows[1:]:
         assert row['loop_n_pre'] >= 4, row['loop_n_pre']
+
+
+# ── F3: the SESSION no-progress watchdog (2026-08-28) ────────────────────────
+#
+# WHY IT EXISTS, and why the session ceiling was not enough. The pre-fix
+# `_stage_declined` deadlock left the session answering DWELL / ACTION_NONE /
+# done=False with both slots empty; `_toss_session_deadline_s` DID eventually
+# terminalise it, but that ceiling is a backstop sized for a whole sitting —
+# 270.9 s for the 2026-08-28 sitting's goals (num_throws 5, dwell 0.45-0.50 s,
+# on_empty_cup RELOAD with max_reloads 3): 5 x (30.0 + 0.50) + 113.4 + 5.0,
+# where the 113.4 is `_reload_interlude_budget_s`, the term a "157.5 s" reading
+# of this ceiling forgets and every goal of that sitting carried. It names the
+# failure ABORTED_TIMEOUT, which reads as "the session ran
+# long". For the whole of that window the node's cross-action `_goal_claimed` is
+# held, so every Reload / Toss / TossContinuous the operator sends is
+# REJECTED_BUSY. F1 removes the one deadlock we found; this catches the class,
+# in seconds, by name.
+
+def _wedged_session_class():
+    """A session that STOPS ADVANCING — the observable signature of the class
+    F3 guards, expressed without depending on the defect that produced it.
+
+    Everything except `step` is the real FSM (the ceiling arithmetic, the
+    accounting, `force_terminal`), so what this exercises is the node's loop
+    against a session that will never emit another action: both slots empty,
+    `next_cycle_at` in the past, nothing pending. That is exactly the state the
+    four hung goals of the first pipelined sitting sat in."""
+    from jugglebot.toss_session import (SESSION_ACTION_NONE,
+                                        SESSION_PHASE_DWELL,
+                                        TossSessionDecision)
+
+    class _Wedged(TossSessionSequencer):
+        def step(self, now):
+            return TossSessionDecision(SESSION_PHASE_DWELL,
+                                       SESSION_ACTION_NONE,
+                                       self.cycle_index, False, None)
+
+    return _Wedged
+
+
+def test_a_wedged_session_aborts_STALLED_in_seconds_and_releases_the_claim(
+        monkeypatch):
+    """THE watchdog, end to end through the real execute callback.
+
+    Three things have to be true together, and only the first is about the
+    verdict string:
+
+      * it terminalises ABORTED_STALLED — a name that says the session stopped
+        advancing, not that it ran long;
+      * it does so at the DERIVED bound (`_SESSION_STALL_S`), which is orders of
+        magnitude inside the session ceiling — asserted against BOTH so a future
+        edit to either cannot silently make this the ceiling again;
+      * and it goes through `_finish_session`, so the execute callback's
+        `finally` runs: the pipeline drains, the session arming comes down and
+        `_goal_claimed` is released. That last one is the whole point — a wedge
+        must cost ONE goal, not every ball-op for the rest of the process."""
+    clock = _Clock()
+    monkeypatch.setattr(rcn, 'time', clock)
+    node = _ready_node(clock)
+    monkeypatch.setattr(rcn, 'TossSessionSequencer', _wedged_session_class())
+    moved = []
+    for name in ('_go_home', '_safe_abort', '_recenter', '_toss_safe_abort',
+                 '_toss_stay', '_toss_recenter', '_retract_hand_with_retries',
+                 '_prime_hand_with_retries', '_position_platform_for_toss'):
+        monkeypatch.setattr(node, name,
+                            lambda *a, _n=name, **k: moved.append(_n))
+    gh = _ContGoalHandle(num_throws=5, dwell=DWELL, delay=DELAY)
+    with node._lock:
+        node._goal_claimed = True          # what `_goal_callback` takes at accept
+    t0 = clock.t
+    result = node._execute_toss_continuous(gh)
+    assert result.outcome == 'ABORTED_STALLED'
+    assert result.success is False
+    assert gh.terminal == 'abort'
+    with node._lock:
+        assert node._goal_claimed is False, (
+            'the wedge must cost ONE goal — a held claim makes every later '
+            'ball-op REJECTED_BUSY')
+    elapsed = clock.t - t0
+    assert elapsed >= rcn._SESSION_STALL_S
+    assert elapsed < rcn._SESSION_STALL_S + 10 * rcn._PACE_PERIOD_S, elapsed
+    # …and it is a real tightening of the ceiling, not a second copy of it.
+    budget_seq = TossSequencer(catch_pose_stow_mm=(0.0, 0.0, 170.0),
+                               flight_time_s=FLIGHT, throw_delay_s=DELAY,
+                               event_vel_mps=1.0)
+    ceiling = _toss_session_deadline_s(
+        rcn.TossSessionSequencer(num_throws=5, dwell_time_s=DWELL,
+                                 throw_delay_s=DELAY, flight_time_s=FLIGHT),
+        rcn._toss_deadline_s(budget_seq))
+    assert elapsed < 0.25 * ceiling, (elapsed, ceiling)
+    # S2 still holds on the way out: the watchdog commands nothing of its own
+    # (both slots are empty by its own precondition, so there is nothing to safe).
+    assert moved == [], moved
+
+
+def test_the_watchdog_never_fires_on_a_healthy_chained_session(monkeypatch):
+    """The other half, and the one that matters more: a watchdog that fires on a
+    good sitting is worse than no watchdog.
+
+    A full three-cycle session runs to COMPLETED and the ABORTED_STALLED
+    terminal never appears — over a QUIESCENT WAIT that is itself longer than
+    the stall bound, which is the case a naive "no progress for N seconds"
+    watchdog would have failed. It passes because the progress clock does not
+    run while the session is inside its own scheduled wait (clause 4 of
+    ``_toss_session_progressing``: ``now < next_cycle_at``).
+
+    ⚠ **The guard used to be on the DWELL, and that was the wrong quantity**
+    (2026-08-28 audit). On the serial ladder the cycle itself consumes
+    ``throw_delay_s`` before its release, so the between-cycle wait the progress
+    clock would run over is ``dwell − throw_delay``, not ``dwell``. At the
+    module fixture's 8.0 s dwell against a 5.0 s delay that wait is 3.0 s, well
+    INSIDE the 7.8 s bound — and the no-progress gap this session actually
+    reaches, measured, is **0.0000 s**. The test was green for a reason that had
+    nothing to do with clause 4. The local dwell below is 14.0 s so the wait is
+    a real 9.0 s, past the bound, and removing clause 4 makes this test RED."""
+    dwell, delay = 14.0, 5.0
+    assert dwell - delay > rcn._SESSION_STALL_S, (
+        'the QUIESCENT wait is dwell - throw_delay, not dwell — that is what '
+        'the progress clock would run over if clause 4 were removed')
+    clock = _Clock()
+    monkeypatch.setattr(rcn, 'time', clock)
+    node = _ready_node(clock)
+    _stub_cycles(node, monkeypatch, clock, [
+        TossResult(True, 'CAUGHT', 3.0, 0.805),
+        TossResult(True, 'CAUGHT', 5.0, 0.812),
+        TossResult(True, 'CAUGHT', 4.0, 0.799)])
+    gh = _ContGoalHandle(num_throws=3, dwell=dwell, delay=delay)
+    result = node._execute_toss_continuous(gh)
+    assert result.outcome == 'COMPLETED' and result.success is True
+    assert 'STALLED' not in str(result.outcome)
+
+
+def test_the_watchdog_never_fires_across_a_reload_interlude(monkeypatch):
+    """The interlude is a BLOCKING call whose legitimate wall time
+    (`_reload_interlude_budget_s`) is an order of magnitude past the stall
+    bound: a BB delivery, a 2.0 s recentre, a seat-edge band wait and a whole
+    reload sequence ceiling, per attempt, times `max_reloads`.
+
+    It cannot trip the watchdog for two independent reasons and this test would
+    catch the loss of either: the interlude branch `continue`s before the check
+    is ever reached, AND the loop re-anchors the progress clock on the instant
+    the interlude actually returned rather than on the `now` its iteration
+    started with. Drop the re-anchor and the FOLLOWING tick reads the whole
+    interlude as a stall."""
+    clock = _Clock()
+    monkeypatch.setattr(rcn, 'time', clock)
+    node = _ready_node(clock)
+    _stub_cycles(node, monkeypatch, clock, [
+        TossResult(False, 'REJECTED_NO_BALL', float('nan'), float('nan')),
+        TossResult(True, 'CAUGHT', 3.0, 0.805)])
+
+    ran = []
+
+    def fake_interlude(session, *, cancel_now_fn):
+        # Far longer than `_SESSION_STALL_S`, which is the point.
+        ran.append(clock.t)
+        clock.t += 10 * rcn._SESSION_STALL_S
+        _stamp(node, clock.t)
+        return True, None, 1
+
+    monkeypatch.setattr(node, '_run_reload_interlude', fake_interlude)
+    gh = _ContGoalHandle(num_throws=1, dwell=DWELL, delay=DELAY)
+    gh.request.on_empty_cup = 'RELOAD'
+    gh.request.max_reloads = 2
+    result = node._execute_toss_continuous(gh)
+    assert ran, 'the interlude never ran — this test would be vacuous'
+    assert 'STALLED' not in str(result.outcome), result.outcome
+    assert result.outcome == 'COMPLETED', result.outcome
+    assert result.reloads_used == 1
+
+
+def test_the_watchdog_never_fires_on_a_healthy_PIPELINED_session(monkeypatch):
+    """**The pipelined twin, and it is the one that covers the shipped machine.**
+
+    The two non-firing tests above drive the SERIAL ladder — `_stub_cycles`
+    scripts `_run_toss_cycle`, the blocking wrapper the pipelined loop never
+    calls — and they are pinned there by this file's autouse fixture. Under the
+    pipelined flag they do not merely lose their subject, they FAIL: the harness
+    stubs a method that is no longer on the path. So without this test the F3
+    watchdog's non-firing guarantee was pinned against false firing on a machine
+    the operator no longer runs.
+
+    The pipelined loop is where a false firing would actually cost something, and
+    its progress signature is a different one: the committed and staged slots are
+    occupied for almost the whole session (clause 2), and the quiescent gap
+    clause 4 covers is a fraction of a serial one because the next cycle's
+    preamble already ran inside the previous flight. This runs a full three-cycle
+    pipelined session through the real FSMs and the real `_tick_toss_pipeline`,
+    and asserts the terminal is COMPLETED with no ABORTED_STALLED anywhere."""
+    node, calls, result, gh = _run_pipelined(monkeypatch, num_throws=3)
+    assert 'STALLED' not in str(result.outcome), result.outcome
+    assert result.outcome == 'COMPLETED', result.outcome
+    assert result.catches_confirmed == 3
+    # …and it really was the PIPELINED path: cycles 2 and 3 staged, which is the
+    # precondition that makes this a twin rather than a second serial test.
+    assert [c[0] for c in calls if c[0] == 'dispatch'].count('dispatch') == 3
+    assert gh.terminal == 'succeed', gh.terminal
+    assert not [f for f in gh.feedbacks if 'STALLED' in str(f[1])], gh.feedbacks
+
+
+def test_the_progress_predicate_is_a_pure_function_of_the_four_things():
+    """F3's POLICY, unit-tested away from the loop — because the failure it
+    guards is "the session answers the same thing forever", and a policy only
+    reachable through a live loop would be tested the same way that loop was.
+
+    The four ways to be progressing, and the two that keep the bound honest:
+    a terminal on this tick, an occupied slot, an emitted action, or being
+    inside the session's OWN scheduled wait. Only the last one is subtle, and it
+    is what lets a dwell be arbitrarily long without the watchdog knowing
+    anything about cadence arithmetic."""
+    from jugglebot.toss_session import (SESSION_ACTION_NONE,
+                                        SESSION_ACTION_RELOAD,
+                                        SESSION_ACTION_START_CYCLE,
+                                        SESSION_PHASE_DWELL,
+                                        TossSessionDecision)
+    progressing = rcn.ReloadCoordinatorNode._toss_session_progressing
+    idle = TossSessionDecision(SESSION_PHASE_DWELL, SESSION_ACTION_NONE,
+                               1, False, None)
+
+    def _sess(*, cycle=False, committed=False, next_at=0.0):
+        return types.SimpleNamespace(cycle_live=cycle, committed_live=committed,
+                                     next_cycle_at=next_at)
+
+    # THE STALL: nothing live, nothing emitted, past the scheduled instant.
+    assert progressing(100.0, _sess(next_at=50.0), idle, None) is False
+    # 1. a cycle terminalised on this tick
+    assert progressing(100.0, _sess(next_at=50.0), idle,
+                       TossResult(True, 'CAUGHT', 1.0, 0.8)) is True
+    # 2. either slot occupied — a flight, a settle, a staged preamble
+    assert progressing(100.0, _sess(cycle=True, next_at=50.0), idle,
+                       None) is True
+    assert progressing(100.0, _sess(committed=True, next_at=50.0), idle,
+                       None) is True
+    # 3. the session emitted an action
+    for action in (SESSION_ACTION_START_CYCLE, SESSION_ACTION_RELOAD):
+        busy = TossSessionDecision(SESSION_PHASE_DWELL, action, 1, False, None)
+        assert progressing(100.0, _sess(next_at=50.0), busy, None) is True
+    # 4. inside the session's OWN scheduled quiescent wait, however long
+    assert progressing(100.0, _sess(next_at=100.0 + 86400.0), idle,
+                       None) is True
+    # …and the boundary is the instant itself, not a window around it.
+    assert progressing(100.0, _sess(next_at=100.0), idle, None) is False
+
+
+def test_the_stall_bound_is_derived_and_can_never_reach_a_legitimate_wait():
+    """`_SESSION_STALL_S` is arithmetic over two constants that already exist,
+    and the assertion is on the DERIVATION rather than on the number — a literal
+    here would go stale the first time either term is re-measured (both have
+    been, twice, in the last four days).
+
+    The two orderings that make it safe are asserted too: it must sit ABOVE the
+    longest scheduled between-cycle wait a session can hold with both slots
+    empty (the MISS cleanup floor) and BELOW the session ceiling it tightens."""
+    assert rcn._SESSION_STALL_S == pytest.approx(
+        rcn.DEFAULT_SESSION_MISS_CLEANUP_S + rcn._SEQUENCE_CEILING_MARGIN_S)
+    assert rcn._SESSION_STALL_S > rcn.DEFAULT_SESSION_MISS_CLEANUP_S
+    assert rcn._SESSION_STALL_S < rcn._MAX_SEQUENCE_S, (
+        'the session ceiling is never below _MAX_SEQUENCE_S, so staying under '
+        'it is what makes this a tightening rather than a second ceiling')

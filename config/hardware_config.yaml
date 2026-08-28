@@ -742,7 +742,7 @@ jugglebot_operational:
                                          # (0, 0) and reject the incoming BB ball MID-FLIGHT. Reload
                                          # therefore refuses REJECTED_NOT_CENTERED before asking BB to
                                          # throw — see reload_sequencer's platform_centered gate.
-  toss_pipeline_enabled: false           # Whether a TossContinuous session runs the TWO-SLOT PIPELINE
+  toss_pipeline_enabled: true            # Whether a TossContinuous session runs the TWO-SLOT PIPELINE
                                          # (plans/active/toss-pipelined-preamble.md Phase B4) instead of
                                          # the serial one-cycle-at-a-time loop. SHIPS FALSE.
                                          # FALSE = today's machine, bit-for-bit: one live cycle, its whole

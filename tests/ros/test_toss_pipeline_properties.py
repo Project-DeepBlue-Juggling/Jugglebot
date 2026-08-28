@@ -36,6 +36,18 @@ WHAT IS SIMULATED HERE, and what is real:
     the real ``_tick_toss_pipeline`` by
     ``test_the_committed_slot_is_ticked_before_the_staged_slot``, so this model
     cannot drift into describing a loop the node does not run.
+
+**2026-08-28 — the tick spacing became a PER-TICK variable** (``_TICK_GAPS``,
+alongside the original single-draw ``_JITTER``). The first pipelined sitting
+died on an interleaving these properties could not generate: ONE iteration
+longer than ``NODE_LOOP_PERIOD_S`` among nominal ones, landing on the commit
+crossing. ``_JITTER`` draws a single spacing and applies it to EVERY tick of a
+run, so a run was uniformly fast or uniformly slow and the mixed case never
+existed. T-P5 gains a twin over the new strategy — the release-window guard now
+SLIPS, which adds a path into the one writer of ``_t_release`` and therefore
+re-opens T-P5's argument — and a new property asserts that no staged cycle dies
+``CANT_MAKE_RELEASE`` INSIDE the slip bound. See
+``logbook/2026-08-28-pipeline-first-contact-deadlock.md``.
 """
 
 from __future__ import annotations
@@ -116,6 +128,25 @@ _HEALTHY_STREAM = st.lists(_HEALTHY, min_size=1, max_size=60)
 _JITTER = st.floats(min_value=NODE_LOOP_PERIOD_S * 0.5,
                     max_value=NODE_LOOP_PERIOD_S * 1.5)
 
+#: PER-TICK spacing (2026-08-28), and the difference from ``_JITTER`` is the
+#: whole point of adding it: ``_JITTER`` draws ONE value and spaces every tick
+#: of a run by it, so a run is either uniformly fast or uniformly slow and the
+#: interleaving that actually bit — **one late iteration among nominal ones,
+#: landing on the commit crossing** — was never generated. Four of the fifteen
+#: staged slots of the first pipelined sitting died on exactly that shape.
+#:
+#: The upper bound is 2.5 periods rather than 1.5 for the same reason: the
+#: commit budget grants ONE nominal period plus 1 µs, so a stream capped at 1.5
+#: periods can break the release guard but a stream capped at 1.0 cannot, and
+#: the sitting's own worst observed iteration was 1.95 periods
+#: (``loop_period_max_pre_s`` 0.0782 s against 0.040). The 0.25 floor keeps the
+#: fast side wide enough that a slipped commit really does get a nominal tick to
+#: retry on, which is the recovery path the fix depends on.
+_TICK_GAPS = st.lists(
+    st.floats(min_value=NODE_LOOP_PERIOD_S * 0.25,
+              max_value=NODE_LOOP_PERIOD_S * 2.5),
+    min_size=1, max_size=60)
+
 
 def _obs(now, spec, **over):
     base = dict(control_mode=TOSS_CONTROL_MODE, ball_evidence='SEATED',
@@ -142,6 +173,12 @@ class _Pipeline:
         self.staged = None
         self.log = []            # (t, slot, action, action_then, slip)
         self.terminals = []      # (cycle_index, outcome)
+        #: STAGED-slot terminals only, with the slip they died at — the model
+        #: drops the slot object, so a property about how a staged cycle ENDED
+        #: cannot be asked of `self.staged` after the fact. (2026-08-28: the
+        #: commit-gate regression is exactly a staged terminal, so a property
+        #: that only inspected the LIVE slots was blind to it.)
+        self.commit_terminals = []   # (outcome, slip_s, commit_slips)
         self.dispatch_obs = []   # the observation EVERY dispatch was made on
         self.releases = []
         self.started = 0
@@ -179,6 +216,9 @@ class _Pipeline:
             elif self.staged is not None and self.staged.finished:
                 self.terminals.append((self.staged_index,
                                        self.staged._result.outcome))
+                self.commit_terminals.append(
+                    (str(self.staged._result.outcome), self.staged.slip_s,
+                     self.staged.commit_slips))
                 self.staged = None
         # 3. fill an empty slot, the way the session does.
         self._maybe_start(now)
@@ -264,11 +304,19 @@ class _Pipeline:
 
 
 def _run(stream, jitter, **kw):
+    """Tick the model across ``stream``. ``jitter`` is either ONE spacing used
+    for every tick (the original ``_JITTER`` form) or a SEQUENCE of per-tick
+    gaps (``_TICK_GAPS``), cycled if it is shorter than the stream — the second
+    form is what generates a late iteration among nominal ones, which is the
+    interleaving the 2026-08-28 commit-gate regression lived in."""
     p = _Pipeline(**kw)
     t = 1000.0
-    for spec in stream:
+    gaps = None
+    if isinstance(jitter, (list, tuple)):
+        gaps = [float(g) for g in jitter] or [NODE_LOOP_PERIOD_S]
+    for i, spec in enumerate(stream):
         p.tick(t, spec)
-        t += jitter
+        t += gaps[i % len(gaps)] if gaps is not None else float(jitter)
     return p
 
 
@@ -410,6 +458,152 @@ def test_the_schedule_is_monotone_under_every_slip_sequence(stream, jitter):
     p = _run(stream, jitter, num_cycles=3)
     assert p.releases == sorted(p.releases), p.releases
     assert len(p.releases) == len(set(p.releases)), p.releases
+
+
+@given(stream=_HEALTHY_STREAM, gaps=_TICK_GAPS)
+def test_the_schedule_is_monotone_with_late_ticks_in_the_slip_sequence(stream,
+                                                                       gaps):
+    """T-P5, EXTENDED to the third slip source (2026-08-28, fix F2).
+
+    The release-window guard used to abort on a late iteration; it now SLIPS,
+    which puts a new writer on ``_t_release`` and therefore re-opens T-P5. Here
+    is the argument, walked, and this test is what makes it mechanical rather
+    than rhetorical:
+
+      **(1) Within a cycle, ``_t_release`` has exactly two writers.**
+      ``start()`` sets it once, from ``release_at_perf`` (or the derived
+      default), and ``_slip`` sets it to ``now + commit_budget_for_cycle_s``.
+      Nothing else assigns it — the new source added no third writer, it
+      re-routes into the existing one.
+
+      **(2) Every slip moves it FORWARD, never back.** The commit gate can only
+      run at ``now >= _commit_at``, and ``_commit_at`` was last set either at
+      ``start`` (to ``_t_release − budget``) or by the previous slip (to that
+      slip's ``now``). So ``now + budget >= _commit_at + budget = _t_release``
+      in both cases, with equality only in the degenerate zero-length tick.
+      Ticks are strictly increasing, so the sequence of a cycle's own releases
+      is strictly increasing.
+
+      **(3) Across cycles, the ordering is established BEFORE any slip.**
+      Cycle ``k+1`` is only staged once cycle ``k`` has DISPATCHED, and its
+      release is ``t_release(k) + flight(k) + dwell`` — strictly greater, since
+      flight > 0 and the dwell floor is positive. By (2) cycle ``k+1``'s
+      release can only grow from there, while cycle ``k``'s is frozen the
+      instant it dispatched (a committed cycle never re-enters the gate). So
+      ``t_release(k+1) > t_release(k)`` survives every slip.
+
+      **(4) A cycle that never dispatches contributes no release**, so an
+      aborted or refused slot cannot appear in the sequence at all — which is
+      why converting an abort into a slip cannot reorder anything: it either
+      ends in a dispatch that obeys (2)/(3), or in no dispatch.
+
+    The conclusion the safety argument needs: **the new slip source can only
+    DELAY a release, never advance one**, so it cannot schedule a stroke into a
+    live catch. What it CAN do is stretch the cadence, which is measured
+    (``slip_s``, ``commit_slips``) rather than hidden."""
+    p = _run(stream, gaps, num_cycles=3)
+    assert p.releases == sorted(p.releases), p.releases
+    assert len(p.releases) == len(set(p.releases)), p.releases
+    # …and each cycle's own release only ever moved FORWARD of the beat it was
+    # told, which is (2) stated on the objects rather than on the argument.
+    for seq in (p.committed, p.staged):
+        if seq is None or not seq.staged:
+            continue
+        assert seq.t_release >= seq.commit_at_scheduled, seq.t_release
+
+
+@given(stream=_HEALTHY_STREAM, gaps=_TICK_GAPS)
+def test_a_late_iteration_never_aborts_a_commit_inside_the_slip_bound(stream,
+                                                                     gaps):
+    """The fix's own property: on a HEALTHY stream, the only thing that can
+    terminalise a staged cycle at the commit gate is an EXHAUSTED slip bound.
+
+    Stated as a universal over tick spacings because that is what the defect
+    was: a single iteration longer than the nominal loop period killed the
+    cycle, at any cadence and any release speed, and no amount of static lead
+    could buy immunity (the dispatch budget appears on both sides of the guard
+    and cancels). A cycle that dies CANT_MAKE_RELEASE having slipped less than
+    ``catch_confirm_window_s`` is the regression, exactly.
+
+    ⚠ **Vacuous on the generated streams** — 0 of 1000 examples at ci-deep get
+    past the ``CANT_MAKE_RELEASE`` filter below, and reachability is
+    non-monotonic in the gap size so a wider strategy does not fix it. The
+    reachable case is pinned explicitly by
+    ``test_the_model_reaches_the_slip_bound_exhausted_abort``; this stays as the
+    universal (it is what forbids the regression at every OTHER spacing)."""
+    p = _run(stream, gaps, num_cycles=3)
+    # The DROPPED slots as well as the live ones: a staged cycle that aborts is
+    # removed from `p.staged` on the very tick it dies, so a property that only
+    # looked at the live slots would have been blind to the whole regression.
+    ended = list(p.commit_terminals)
+    for seq in (p.committed, p.staged):
+        if seq is not None and seq.finished and seq.staged:
+            ended.append((str(seq._result.outcome), seq.slip_s,
+                          seq.commit_slips))
+    for outcome, slip_s, _slips in ended:
+        if 'CANT_MAKE_RELEASE' not in outcome:
+            continue
+        assert slip_s > CATCH_CONFIRM_WINDOW_S, (outcome, slip_s)
+
+
+def test_the_late_tick_model_actually_generates_late_ticks():
+    """The non-vacuity guard for the two properties above — the same discipline
+    ``test_the_model_actually_reaches_the_states_the_properties_are_about``
+    applies to the model as a whole.
+
+    A per-tick gap strategy that never exceeded ``NODE_LOOP_PERIOD_S`` would
+    leave both properties universally true and blind: the commit budget grants
+    one nominal period plus 1 µs, so the guard the fix is about cannot even be
+    reached below that. This asserts the generated spacing really does straddle
+    it, AND that a straddling run still completes a full three-cycle session."""
+    healthy = dict(hand_parked=True, ball_seated=True, track_active=False,
+                   mocap_fresh=True, streaming=True, platform_levelled=True,
+                   hand_fresh=True)
+    # One deliberately late iteration every third tick — the sitting's shape.
+    gaps = [NODE_LOOP_PERIOD_S * 0.7, NODE_LOOP_PERIOD_S * 0.7,
+            NODE_LOOP_PERIOD_S * 1.9]
+    assert max(gaps) > NODE_LOOP_PERIOD_S, gaps
+    p = _run([healthy] * 300, gaps, num_cycles=3)
+    assert [o for _i, o in p.terminals] == ['CAUGHT'] * 3, p.terminals
+    assert len(p.dispatch_obs) == 3
+    # …and the late ticks were REALLY felt: at least one commit slipped.
+    slipped = [1 for _t, slot, _a, _at, slip in p.log
+               if slot == 'staged' and slip]
+    assert slipped, 'no commit slipped — the late ticks did not bind'
+
+
+def test_the_model_reaches_the_slip_bound_exhausted_abort():
+    """**The non-vacuity guard for**
+    ``test_a_late_iteration_never_aborts_a_commit_inside_the_slip_bound``, and
+    it is not ceremony: that property's assertion lives BEHIND a
+    ``'CANT_MAKE_RELEASE' not in outcome: continue`` filter, and the generated
+    streams never pass it — **0 of 1000 examples at ci-deep reached the filter's
+    body** (measured 2026-08-28). The property is green because it quantifies
+    over an empty set, which is the exact shape of the two model defects this
+    file's other non-vacuity guard was written after.
+
+    Widening ``_TICK_GAPS`` does NOT fix it, because reachability is
+    NON-MONOTONIC in the gap size: the bound is exhausted only when the loop is
+    late enough to keep slipping past ``CATCH_CONFIRM_WINDOW_S`` but not so late
+    that the cycle dies of something else first. Measured on the model at a
+    constant per-tick gap: 1.2x nominal -> three CAUGHT, 1.5x -> the
+    bound-exhausted abort, 2.0x -> the abort one cycle earlier, 2.5x -> three
+    CAUGHT again. So the reachable case is PINNED HERE explicitly, at a spacing
+    that is known to reach it, rather than hoped for from the generator."""
+    healthy = dict(hand_parked=True, ball_seated=True, track_active=False,
+                   mocap_fresh=True, streaming=True, platform_levelled=True,
+                   hand_fresh=True)
+    # Every iteration 1.5x the nominal period — the chronically-over-period loop
+    # the bound exists for, not the single late tick the fix absorbs.
+    p = _run([healthy] * 300, [NODE_LOOP_PERIOD_S * 1.5], num_cycles=3)
+    ends = [(o, s) for o, s, _n in p.commit_terminals
+            if 'CANT_MAKE_RELEASE' in o]
+    assert ends, 'the model no longer reaches the bound-exhausted abort'
+    for _o, slip_s in ends:
+        # …and it is the BOUND that terminalised it, which is the property's
+        # whole claim: inside the window a late tick slips, past it the machine
+        # genuinely cannot make the release.
+        assert slip_s > CATCH_CONFIRM_WINDOW_S
 
 
 @given(stream=_STREAM, jitter=_JITTER)

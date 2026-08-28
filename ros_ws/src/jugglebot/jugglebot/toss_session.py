@@ -892,6 +892,14 @@ class TossSessionSequencer:
     #: committed cycle has terminalised and :meth:`note_cycle_result` has
     #: rescheduled. Without it the session would re-attempt the stage on every
     #: tick and mint a record per attempt.
+    #:
+    #: ⚠ It is a WAIT FOR ``_committed_live``, and it is only ever raised while
+    #: that flag is true (2026-08-28). ``note_cycle_result`` is its only
+    #: clearer, so a raise taken after that clearer has already run is a
+    #: permanent deadlock — the shape four goals of the first pipelined sitting
+    #: died in. Both :meth:`note_stage_abandoned` (which no longer raises it)
+    #: and :meth:`step` (whose gate now requires ``_committed_live`` alongside
+    #: it) carry that condition.
     _stage_declined: bool = field(default=False, init=False)
     _next_cycle_at: float = field(default=0.0, init=False)
     _last_landing: float = field(default=float('nan'), init=False)
@@ -1379,7 +1387,25 @@ class TossSessionSequencer:
         # `_stage_declined` is the other half: a cycle that could not stage fell
         # back to the serial path, and re-emitting START_CYCLE for it before the
         # committed cycle terminalises would put two cycles on the serial ladder.
-        if self._cycle_live or self._stage_declined:
+        #
+        # ⚠ AND IT GATES ONLY WHILE THERE IS A COMMITTED CYCLE TO WAIT FOR
+        # (2026-08-28). The flag encodes exactly that wait, and its ONLY clearer
+        # is `note_cycle_result` — so a decline raised when `_committed_live` is
+        # ALREADY False is a wait whose waitee has already terminalised, held
+        # shut by a clearer that has already run. That is not a hypothetical: it
+        # is the shape of a COMMIT-TIME abandonment, where the node calls
+        # `note_cycle_result` for the committed cycle and then, on the SAME
+        # tick, discards a staged slot that refused at its own commit gate. The
+        # session then answered DWELL / ACTION_NONE / done=False for the rest of
+        # the goal — reproduced offline at +90 000 s, and four goals of the
+        # first pipelined sitting died that way
+        # (`logbook/2026-08-28-pipeline-first-contact-deadlock.md`).
+        #
+        # `note_stage_abandoned` now declines to RAISE the flag in that case
+        # (the belt); this conjunct is the braces, and it is the structural one:
+        # whatever sets the flag, it can only ever gate a slot that something
+        # else is going to free.
+        if self._cycle_live or (self._stage_declined and self._committed_live):
             return TossSessionDecision(self._phase, SESSION_ACTION_NONE,
                                        self._cycle_index, False, None)
         if self._committed_live:
@@ -1520,11 +1546,33 @@ class TossSessionSequencer:
         The cycle **never ran**, so it costs nothing: the index is given back and
         the inherited one-cycle flags (``retry``/``reload_settle``) are returned
         to the pool, because guards G10/G11 depend on exactly one cycle wearing
-        each. What it does cost is the pipeline: ``_stage_declined`` holds the
-        slot shut until :meth:`note_cycle_result` reschedules, so the cycle is
-        rebuilt on the SERIAL path once the committed cycle terminalises.
+        each. What it costs the PIPELINE depends on whether a committed cycle is
+        still live, and that split is the 2026-08-28 fix:
 
-        That fallback is what makes a persistent fault loud instead of silent. A
+        * **a committed cycle is still live** (the drain path: cycle ``k``'s own
+          not-caught terminal ladder discards the staged slot on its way to
+          ``go_home``). ``_stage_declined`` holds the fill slot shut until
+          :meth:`note_cycle_result` consumes cycle ``k`` and reschedules, and
+          the declined cycle is then rebuilt on the SERIAL path. Unchanged;
+        * **no committed cycle is left** (the COMMIT-TIME case: cycle ``k``
+          terminalised earlier in this very tick, so ``note_cycle_result`` has
+          already run, and then the staged slot refused at its own commit gate).
+          The wait ``_stage_declined`` encodes **has no waitee**, and its only
+          clearer has already run — raising it would shut the slot for the life
+          of the goal. So it is NOT raised: the very next :meth:`step` mints the
+          serial rebuild immediately, off ``_next_cycle_at`` exactly as it would
+          after any other terminal.
+
+        That second bullet is a bug fix, not a design choice: until 2026-08-28
+        the flag was raised unconditionally and the session answered
+        ``DWELL`` / ``ACTION_NONE`` / ``done=False`` forever afterwards
+        (reproduced offline at +90 000 s; four goals of the first pipelined
+        sitting, `logbook/2026-08-28-pipeline-first-contact-deadlock.md`).
+        :meth:`step`'s own gate carries the same condition, so the invariant
+        holds however the flag comes to be set.
+
+        The serial-rebuild fallback is what makes a persistent fault loud
+        instead of silent, on both paths. A
         staged cycle that fails ``REJECTED_NOT_LEVELLED`` here would otherwise
         re-stage every tick and mint a record per attempt; instead it is retried
         exactly once, serially, where the same gate mints the same refusal and
@@ -1535,7 +1583,11 @@ class TossSessionSequencer:
         if self._finished or not self._cycle_live:
             return
         self._cycle_live = False
-        self._stage_declined = True
+        # THE BELT (2026-08-28): raise the wait only when there is something to
+        # wait FOR. `_stage_declined` is cleared by `note_cycle_result` and by
+        # nothing else, so raising it with no committed cycle left arms a gate
+        # whose only key has already been turned.
+        self._stage_declined = bool(self._committed_live)
         self._cycle_index -= 1
         # Give the consumed flags back — one cycle wears each, and the cycle
         # that consumed them is being un-run.

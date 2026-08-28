@@ -181,6 +181,7 @@ EXPECTED_FIELDS = (
     'staged_at_s',
     'commit_at_s',
     'commit_slip_s',
+    'commit_slips',
     'staged_discarded_reason',
     # quality
     'label', 'label_source', 'label_confidence', 'label_reason', 'rimshot',
