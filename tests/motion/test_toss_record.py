@@ -136,7 +136,13 @@ EXPECTED_FIELDS = (
     # fsm
     'outcome', 'success', 'phase_at_terminal', 'throw_dispatch_class',
     'throw_dispatch_message', 'prepare_ok', 'position_accepted',
-    'position_planned_s', 'position_code', 'catch_target_accepted',
+    'position_planned_s', 'position_code',
+    # The POSITIONING BUSY absorb (2026-08-29). ADDITIVE — no SCHEMA bump, per
+    # the schema's own rule; 0.0 / 0 (not null) on every cycle that ran an FSM.
+    # The pair is HOW LONG + HOW MANY, as commit_slip_s is to commit_slips.
+    'position_busy_wait_s',
+    'position_busy_polls',
+    'catch_target_accepted',
     'announce_lead_short', 'throw_stroke_seen', 'ball_track_confirmed',
     't_accept_perf', 't_release_perf', 't_landing_sched_perf', 'reload_settle',
     'retry_of', 'achieved_flight_s_fsm', 'catch_error_mm_fsm',

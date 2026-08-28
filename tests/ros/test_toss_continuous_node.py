@@ -39,6 +39,10 @@ import pytest
 
 import jugglebot.hardware_config as hw
 import jugglebot.reload_coordinator_node as rcn
+# THE production helpers: assertions here compare the CODE (and, for the one
+# refusal that relays another layer's verdict, its SUBCODE) and must split the
+# outcome exactly the way the node's own guards do.
+from jugglebot.outcome_detail import base_outcome, outcome_subcode
 from jugglebot.reload_coordinator_node import (
     ReloadCoordinatorNode,
     _toss_session_deadline_s,
@@ -292,7 +296,11 @@ def test_bad_goal_numerics_rejected_before_anything_runs(kwargs, field,
     gh = _ContGoalHandle(**kwargs)
     result = node._execute_toss_continuous(gh)
     assert result.success is False
-    assert result.outcome == 'REJECTED_BAD_GOAL({})'.format(field)
+    assert base_outcome(result.outcome) == 'REJECTED_BAD_GOAL'
+    # The field is still named first; the offending VALUE now rides with it,
+    # which is the diagnosis a bare field name never carried.
+    assert result.outcome.startswith(
+        'REJECTED_BAD_GOAL({} = '.format(field)), result.outcome
     assert gh.terminal == 'abort'
     assert result.throws_completed == 0
     assert list(result.per_cycle_outcomes) == []
@@ -326,7 +334,11 @@ def test_session_checking_rejects_via_execute(kwargs, expected, monkeypatch):
         lambda *a, **k: pytest.fail('a cycle was built on a rejected session'))
     gh = _ContGoalHandle(**kwargs)
     result = node._execute_toss_continuous(gh)
-    assert result.outcome == expected
+    assert base_outcome(result.outcome) == expected
+    # Every gate in this table is limit-bearing, so every refusal carries its
+    # numbers to the action result — the operator's only channel here.
+    assert '(' in result.outcome and any(
+        ch.isdigit() for ch in result.outcome), result.outcome
     assert result.success is False
     assert gh.terminal == 'abort'
 
@@ -357,7 +369,7 @@ def test_a_rejected_session_never_reports_success(monkeypatch):
     node = _ready_node(clock)
     gh = _ContGoalHandle(num_throws=0)
     result = node._execute_toss_continuous(gh)
-    assert result.outcome == 'REJECTED_NUM_THROWS'
+    assert base_outcome(result.outcome) == 'REJECTED_NUM_THROWS'
     assert result.success is False
     assert gh.terminal == 'abort'
 
@@ -439,7 +451,14 @@ def test_chain_unreachable_refuses_before_a_ball_flies(monkeypatch, tier_8b):
         lambda *a, **k: pytest.fail('a cycle was built on an unchainable goal'))
     gh = _ContGoalHandle(x=147.0, num_throws=3)
     result = node._execute_toss_continuous(gh)
-    assert result.outcome == 'REJECTED_CHAIN_UNREACHABLE'
+    assert base_outcome(result.outcome) == 'REJECTED_CHAIN_UNREACHABLE'
+    # The node's predicted centroid and the box it judged against reach the
+    # OPERATOR, not just the ERROR log — this is the one session refusal about
+    # a pose nobody typed, so the numbers are the whole message.
+    msg = result.outcome
+    assert 'predicted cycle-2 centroid (' in msg, msg
+    assert '150.0 mm [toss_workspace_xy_mm]' in msg, msg
+    assert 'lower |catch_position| or run num_throws=1' in msg, msg
     assert gh.terminal == 'abort'
 
 
@@ -1124,19 +1143,116 @@ def test_gate_refuses_when_ball_evidence_is_disabled(monkeypatch):
         == 'STOPPED_BALL_EVIDENCE_DISABLED'
 
 
+class _BbBusyClock(_Clock):
+    """A fake clock whose BallButler finishes its own cycle part-way through the
+    gate's patience — the transient the 2026-08-28 defect turned terminal."""
+
+    def __init__(self, t0=1000.0, idle_at=0.0):
+        super().__init__(t0)
+        self.idle_at = float(idle_at)
+
+    def sleep(self, dt):
+        super().sleep(dt)
+        if self._node is not None and self.t >= self.idle_at:
+            with self._node._lock:
+                self._node._hb = _Hb(state=BB_STATE_IDLE)
+
+
 @pytest.mark.parametrize('hb', [
     _Hb(connected=False),
-    _Hb(state=BB_STATE_RELOADING),
     _Hb(state=BB_STATE_ERROR),
     None,                       # no heartbeat at all
 ])
-def test_gate_refuses_when_bb_is_not_ready(hb, monkeypatch):
+def test_gate_refuses_immediately_when_bb_cannot_become_ready(hb, monkeypatch):
+    """A dead LINK and a FAULT are the two states patience cannot fix — waiting
+    on a publisher that is not publishing buys silence, and a BB error needs the
+    operator — so both keep the instant refusal.
+
+    The IMMEDIACY is asserted, not just the code. `_Clock.sleep` re-stamps
+    `_hb_mono` on every simulated tick, so a rung that quietly started waiting
+    would still return this same string, ten seconds later."""
     clock = _Clock()
     monkeypatch.setattr(rcn, 'time', clock)
     node = _reload_ready_node(clock)
     with node._lock:
         node._hb = hb
+    t0 = clock.t
     assert node._reload_interlude_gate(_session()) == 'STOPPED_BB_NOT_READY'
+    assert clock.t == pytest.approx(t0), 'a dead link must not be waited out'
+
+
+def test_gate_waits_a_busy_bb_out_before_calling_it_not_ready(monkeypatch):
+    """The other half: BUSY is a transient, so the refusal costs the whole
+    patience rather than one sample. The 2026-08-28 sitting died here on a wait
+    of about a second."""
+    clock = _Clock()
+    monkeypatch.setattr(rcn, 'time', clock)
+    node = _reload_ready_node(clock, hb=_Hb(state=BB_STATE_RELOADING))
+    t0 = clock.t
+    assert node._reload_interlude_gate(_session()) == 'STOPPED_BB_NOT_READY'
+    assert clock.t - t0 == pytest.approx(rcn.BB_READY_WAIT_S, abs=rcn._TICK_S)
+
+
+def test_gate_admits_a_bb_that_becomes_ready_inside_the_patience(monkeypatch):
+    """THE FIX. BB is RELOADING when the interlude is entered and IDLE a second
+    later; the gate must pass, having commanded nothing while it waited."""
+    clock = _BbBusyClock(idle_at=1001.0)
+    monkeypatch.setattr(rcn, 'time', clock)
+    node = _reload_ready_node(clock, hb=_Hb(state=BB_STATE_RELOADING))
+    moved = []
+    for name in ('_go_home', '_arm_catch', '_smooth_move_hand', '_safe_abort'):
+        monkeypatch.setattr(node, name,
+                            lambda *a, _n=name, **k: moved.append(_n) or True)
+    t0 = clock.t
+    assert node._reload_interlude_gate(_session()) is None
+    assert t0 < clock.t < t0 + rcn.BB_READY_WAIT_S
+    assert moved == []
+
+
+def test_a_cancel_during_the_bb_wait_is_honoured_before_anything_is_committed(
+        monkeypatch):
+    """The patience can run for 10 s and it precedes every commitment, so a
+    cancel there is honoured on the spot — the deferral discipline exists for a
+    throw committed to BallButler, not for a wait."""
+    clock = _Clock()
+    monkeypatch.setattr(rcn, 'time', clock)
+    node = _reload_ready_node(clock, hb=_Hb(state=BB_STATE_RELOADING))
+    moved = []
+    for name in ('_go_home', '_arm_catch', '_smooth_move_hand', '_safe_abort'):
+        monkeypatch.setattr(node, name,
+                            lambda *a, _n=name, **k: moved.append(_n) or True)
+    t0 = clock.t
+    stop = node._reload_interlude_gate(_session(), cancel_now_fn=lambda: True)
+    assert stop == 'STOPPED_RELOAD_CANCELLED'
+    assert clock.t - t0 < rcn.BB_READY_WAIT_S, 'it must not wait the patience out'
+    assert moved == []
+
+
+def test_the_interlude_budget_charges_the_bb_patience_per_attempt():
+    """A session that legitimately WAITS for BallButler must not be ABORTed for
+    it: this term feeds `_toss_session_deadline_s`, whose exit path SAFE_ABORTs,
+    and every attempt re-runs the gate. Pinned as the DELTA against the
+    pre-patience formula, so the assertion is not the implementation restated."""
+    without_patience = 3 * (
+        float(rcn.hw.JB_BD_ARRIVAL_WINDOW_S)
+        + rcn.GO_HOME_DURATION_S + rcn._RECENTRE_VERIFY_PAD_S
+        + rcn._sequence_deadline_s(ReloadSequencer(catch_point_mm=(0.0, 0.0, 0.0)))
+        + rcn.DEFAULT_SESSION_MISS_CLEANUP_S)
+    assert rcn._reload_interlude_budget_s(_session(max_reloads=3)) \
+        - without_patience == pytest.approx(3 * rcn.BB_READY_WAIT_S)
+
+
+def test_the_sequence_ceiling_covers_the_fsm_bb_patience():
+    """The per-goal ceiling SAFE_ABORTs too, so it must clear the FSM's own
+    CHECKING wait. Read off a long delay, where the `_MAX_SEQUENCE_S` floor does
+    not mask the term."""
+    patient = ReloadSequencer(catch_point_mm=(0, 0, 809.08), throw_delay_s=20.0)
+    impatient = ReloadSequencer(catch_point_mm=(0, 0, 809.08), throw_delay_s=20.0,
+                                bb_ready_wait_s=0.0)
+    assert rcn._sequence_deadline_s(patient) - rcn._sequence_deadline_s(impatient) \
+        == pytest.approx(rcn.BB_READY_WAIT_S)
+    assert rcn._sequence_deadline_s(patient) > (
+        patient.bb_ready_wait_s + patient.reload_timeout_s + patient.throw_delay_s)
 
 
 def test_gate_refuses_a_stale_heartbeat_as_not_ready(monkeypatch):
@@ -1301,6 +1417,27 @@ def test_a_caught_reload_succeeds_on_the_first_attempt(monkeypatch):
     ok, code, attempts = node._run_reload_interlude(_session())
     assert (ok, code, attempts) == (True, None, 1)
     assert len(calls) == 1
+
+
+def test_an_interlude_entered_while_bb_is_busy_still_reloads(monkeypatch):
+    """THE 2026-08-28 DEFECT, end to end at node level.
+
+    A repeated RELOAD lands while BallButler is still finishing its own cycle.
+    The single-sample rung refused ``STOPPED_BB_NOT_READY``, the session took
+    that as terminal and the whole sitting stopped. With the patience the
+    interlude waits BB out, spends ONE attempt, and the session is left able to
+    continue."""
+    clock = _BbBusyClock(idle_at=1003.0)
+    monkeypatch.setattr(rcn, 'time', clock)
+    node = _reload_ready_node(clock, hb=_Hb(state=BB_STATE_RELOADING))
+    calls = _stub_attempts(node, monkeypatch, [ReloadResult(True, 'CAUGHT')])
+    session = _session(max_reloads=3)
+    ok, code, attempts = node._run_reload_interlude(session)
+    assert (ok, code, attempts) == (True, None, 1)
+    assert len(calls) == 1
+    assert clock.t >= 1003.0, 'the gate must have waited BB out, not skipped it'
+    session.note_reload_result(ok, attempts=attempts, stop_code=code)
+    assert session.finished is False
 
 
 def test_the_bb_not_settled_abort_is_retried_within_budget(monkeypatch):
@@ -1668,7 +1805,8 @@ def test_a_negative_max_reloads_is_refused_by_name(max_reloads, monkeypatch):
     gh = _ContGoalHandle(num_throws=3)
     gh.request.max_reloads = max_reloads
     result = node._execute_toss_continuous(gh)
-    assert result.outcome == 'REJECTED_BAD_GOAL(max_reloads)'
+    assert result.outcome.startswith('REJECTED_BAD_GOAL(max_reloads = ')
+    assert str(max_reloads) in result.outcome, result.outcome
 
 
 def test_the_session_ceiling_makes_room_for_the_reload_budget():
@@ -3541,3 +3679,141 @@ def test_the_stall_bound_is_derived_and_can_never_reach_a_legitimate_wait():
     assert rcn._SESSION_STALL_S < rcn._MAX_SEQUENCE_S, (
         'the session ceiling is never below _MAX_SEQUENCE_S, so staying under '
         'it is what makes this a tightening rather than a second ceiling')
+
+
+# ── the chained-cycle POSITIONING BUSY (bag 2026-08-28_23-53-25) ──────────────
+
+
+def _displaced_node_with_busy_positioning(clock, monkeypatch, hold_s):
+    """`_displaced_pipelined_node`, but POSITIONING runs the REAL
+    ``_position_platform_for_toss`` and ``go_to_pose`` refuses BUSY for
+    ``hold_s`` at the head of every cycle after the first.
+
+    **Why the real method has to be re-installed.** ``_pipelined_node`` seams
+    ``_position_platform_for_toss`` to a ``note_position_noop`` lambda, and
+    ``_displaced_pipelined_node`` captures THAT lambda as its ``real_position``
+    — so the displaced harness never reaches the service at all and its
+    ``_wait_future`` accept stub is dead code. Nothing else in that file depends
+    on the service running, but this test does: the whole subject is what the
+    node does when the service ANSWERS, and a re-poll only exists if the ACTION
+    is dispatched a second time.
+
+    ``hold_s`` is the RESIDUAL settle hold at the positioning dispatch, not the
+    whole ``JB_TRAJ_CATCH_SETTLE_HOLD_S``: the bag shows POSITIONING dispatching
+    0.09-0.23 s after the landing the hold is anchored to. It is keyed on the
+    committed sequencer's IDENTITY rather than on wall time, so the hold rides
+    each cycle's own head wherever the session's cadence puts it, and cycle 1 —
+    which has no previous catch to be held by — is deliberately exempt. The
+    STAGED slot is skip-only by construction and never reaches the service, so
+    ``_active_seq`` is the only slot that can be refused."""
+    node, calls = _displaced_pipelined_node(clock, monkeypatch)
+    real_position = rcn.ReloadCoordinatorNode._position_platform_for_toss
+
+    def positioning(seq, state=None):
+        st = node._toss_committed if state is None else state
+        real_position(node, seq, state)
+        # Walk the plant to the commanded pose, exactly as
+        # `_displaced_pipelined_node` does — but only once the move was
+        # ACCEPTED, so a refused poll never teleports the platform.
+        if (st.positioning_move and st.platform_target_mm is not None
+                and seq.prepared):
+            rel = node._toss_commanded_release(st)
+            rot = ((float(rel.tilt_rx), float(rel.tilt_ry), 0.0)
+                   if node._release_is_tilted(rel) else (0.0, 0.0, 0.0))
+            clock.command(clock.t, st.platform_target_mm, rot, 'position')
+
+    monkeypatch.setattr(node, '_position_platform_for_toss', positioning)
+
+    busy = types.SimpleNamespace(
+        accepted=False, code='BUSY', planned_duration_s=0.0,
+        message='a move is in flight — Phase 2 accepts moves only from hold')
+    ok = types.SimpleNamespace(accepted=True, planned_duration_s=0.30,
+                               code='OK', message='')
+    window = {'seq': None, 'n': 0, 'until': 0.0}
+    served = []
+
+    def serve(fut, timeout_s=2.0):
+        cur = node._active_seq
+        if cur is not window['seq']:
+            window['seq'] = cur
+            window['n'] += 1
+            window['until'] = ((clock.t + float(hold_s))
+                               if window['n'] >= 2 else 0.0)
+        resp = busy if clock.t < window['until'] else ok
+        served.append(str(resp.code))
+        return resp
+
+    monkeypatch.setattr(node, '_wait_future', serve)
+    return node, served
+
+
+def _busy_displaced_session(node, num_throws=2):
+    """A DISPLACED two-cycle session: the catch pose B is 70 mm off the throw
+    site, so POSITIONING really COMMANDS a move and really can be refused. A
+    co-located chain takes the census-B1 skip and never calls the service, which
+    is exactly why the 08-28 sitting only died on displaced runs."""
+    return node._execute_toss_continuous(
+        _ContGoalHandle(num_throws=num_throws, dwell=0.55, delay=DELAY,
+                        throw_height=1.30, vel_scale=0.9,
+                        x=70.0, y=0.0, z=170.0))
+
+
+def test_a_chained_cycle_absorbs_the_previous_catchs_settle_hold(monkeypatch):
+    """**THE bag-2026-08-28_23-53-25 regression**, end to end through the real
+    FSMs, the real session and a plant that actually moves.
+
+    The defect: on a DISPLACED chain cycle N+1's POSITIONING dispatches INSIDE
+    cycle N's ``JB_TRAJ_CATCH_SETTLE_HOLD_S`` settle hold, where
+    trajectory_node's ``_active_move_in_flight()`` is True and ``go_to_pose``
+    answers BUSY — correctly; that guard is not the bug. The toss FSM had no
+    retry, so ``_step_positioning`` terminalised the cycle
+    REJECTED_POSITION(BUSY), ``toss_session`` escalated it to ABORTED_CYCLE_*
+    and the whole session died. Three deterministic aborts in that bag.
+
+    The fix absorbs the refusal for a bounded, derived patience. The WEDGE half
+    — a BUSY that outlives it, which must still reject — is
+    ``test_toss_sequencer.py``'s."""
+    clock = _DisplacedPipelineClock()
+    monkeypatch.setattr(rcn, 'time', clock)
+    node, served = _displaced_node_with_busy_positioning(clock, monkeypatch,
+                                                         hold_s=0.30)
+    result = _busy_displaced_session(node)
+    assert result.outcome == 'COMPLETED', result.outcome
+    outcomes = list(result.per_cycle_outcomes)
+    assert len(outcomes) == 2, outcomes
+    assert not any('REJECTED_POSITION' in o for o in outcomes), outcomes
+    # NON-VACUITY, twice over: a BUSY really was answered (else the harness
+    # proved nothing), and it really was re-polled rather than answered once.
+    assert 'BUSY' in served, served
+    assert served.count('BUSY') >= 2, served
+
+
+def test_without_the_patience_the_same_script_aborts_the_session(monkeypatch):
+    """The control, and the pre-fix behaviour restored exactly: with the patience
+    at 0.0 the first BUSY is terminal again and the session dies on it, carrying
+    the byte-identical outcome string the 08-28 bag shows.
+
+    Patched on ``jugglebot.toss_sequencer`` because that is the constant's real
+    consumer — ``_step_checking`` stamps ``now + TOSS_POSITION_BUSY_PATIENCE_S``
+    at every POSITIONING dispatch — rather than on a copy of it."""
+    import jugglebot.toss_sequencer as toss_seq
+    monkeypatch.setattr(toss_seq, 'TOSS_POSITION_BUSY_PATIENCE_S', 0.0)
+    clock = _DisplacedPipelineClock()
+    monkeypatch.setattr(rcn, 'time', clock)
+    node, served = _displaced_node_with_busy_positioning(clock, monkeypatch,
+                                                         hold_s=0.30)
+    result = _busy_displaced_session(node)
+    # Base + subcode, not the byte-identical literal: the go_to_pose MESSAGE
+    # now rides the outcome (`REJECTED_POSITION(BUSY: <why>)`), and the SUBCODE
+    # — which the FSM's re-poll and the node's zombie-superseder guard key on —
+    # still leads the parenthetical. The composed session terminal splits the
+    # same way.
+    assert base_outcome(
+        result.outcome) == 'ABORTED_CYCLE_REJECTED_POSITION', result.outcome
+    assert outcome_subcode(result.outcome) == 'BUSY', result.outcome
+    assert 'a move is in flight' in result.outcome, result.outcome
+    assert any(o.startswith('REJECTED_POSITION(BUSY')
+               for o in result.per_cycle_outcomes), list(
+                   result.per_cycle_outcomes)
+    # One refusal, no re-poll: the wait is what the patience buys.
+    assert served.count('BUSY') == 1, served

@@ -54,14 +54,22 @@ from jugglebot.toss_sequencer import (
     TIER_8B,
     TOSS_CONTROL_MODE,
     TOSS_MAX_DISPLACEMENT_MM,
+    TOSS_POSITION_BUSY_PATIENCE_S,
+    TOSS_POSITION_BUSY_REPOLL_S,
     HAND_THROW_RELEASE_OFFSET_MM,
     REACH_VEL_LIMIT_MMPS,
     REACH_ACC_LIMIT_MMPS2,
     REACH_JERK_LIMIT_MMPS3,
     TossObservations,
     TossSequencer,
+    reach_displacement_bound,
     reach_displacement_limit_mm,
 )
+# THE production helper, imported rather than restated: every assertion below
+# that used to compare an outcome to a bare literal now compares the CODE, and
+# it must strip the parenthetical exactly the way the machine's own guards do.
+# A private copy here would let the two drift and the drift would be invisible.
+from jugglebot.outcome_detail import base_outcome
 
 CATCH_POSE = (0.0, 0.0, 170.0)
 
@@ -444,7 +452,13 @@ def test_a_delay_under_the_goal_storm_debounce_is_rejected():
                         throw_delay_s=TOSS_DISPATCH_DEBOUNCE_S - 0.01)
     seq.start(0.0)
     d = seq.step(0.0, _obs(0.0))
-    assert d.done and d.result.outcome == 'REJECTED_CANT_MAKE_LEAD'
+    assert d.done and base_outcome(d.result.outcome) == 'REJECTED_CANT_MAKE_LEAD'
+    # This code is minted at THREE sites and the other two are physical lead
+    # floors, so the refusal has to say which one it is — an operator sent to
+    # the hand geometry for a debounce trip is at the wrong gate entirely.
+    msg = d.result.outcome
+    assert 'debounce' in msg and 'TOSS_DISPATCH_DEBOUNCE_S' in msg, msg
+    assert '0.090' in msg and '0.100' in msg, msg
     assert d.action == ACTION_NONE
 
 
@@ -487,7 +501,10 @@ def test_negative_params_never_coerce_to_defaults():
     assert seq2.throw_delay_s == pytest.approx(-5.0)    # preserved, not defaulted
     seq2.start(0.0)
     d = seq2.step(0.0, _obs(0.0))
-    assert d.done and d.result.outcome == 'REJECTED_CANT_MAKE_LEAD'
+    assert d.done and base_outcome(d.result.outcome) == 'REJECTED_CANT_MAKE_LEAD'
+    # The preserved sign is IN the refusal — which is the whole point of not
+    # coercing it: "-5.000 s" names the typo, "under the floor" does not.
+    assert '-5.000' in d.result.outcome, d.result.outcome
 
 
 # ── The release instant is an INPUT (the Phase-C seam, plan § 2.6) ─────────────
@@ -684,7 +701,12 @@ def test_event_vel_bound_rejected():
                         throw_delay_s=5.0, event_vel_mps=7.5)
     seq.start(0.0)
     d = seq.step(0.0, _obs(0.0))
-    assert d.done and d.result.outcome == 'REJECTED_EVENT_VEL'
+    assert d.done and base_outcome(d.result.outcome) == 'REJECTED_EVENT_VEL'
+    # The band is a WIRE limit and the goal knob is elsewhere, so the refusal
+    # names both ends of the band and where it lives.
+    msg = d.result.outcome
+    assert '7.50' in msg and '0.30' in msg and '7.00' in msg, msg
+    assert 'TEENSY_MIN/MAX_EVENT_VEL_MPS' in msg, msg
 
 
 def test_default_event_vel_full_geometry_pin():
@@ -696,28 +718,48 @@ def test_default_event_vel_full_geometry_pin():
     assert seq.event_vel_mps == pytest.approx(3.93082, abs=1e-4)
 
 
-@pytest.mark.parametrize('pose', [
-    (200.0, 0.0, 170.0),      # |x| beyond the ±150 planning envelope
-    (0.0, -200.0, 170.0),     # |y| beyond
-    (0.0, 0.0, 225.0),        # |z − 170| beyond the ±50 band
+@pytest.mark.parametrize('pose,names,knob', [
+    # 150.0 is the MODULE fallback box (TOSS_XY_LIMIT_MM); the node passes the
+    # YAML 160 in production, and test_workspace_box_is_ctor_config pins that.
+    ((200.0, 0.0, 170.0), ('|B.x|', '200.0', '150.0'),   # |x| beyond the box
+     'toss_workspace_xy_mm'),
+    ((0.0, -200.0, 170.0), ('|B.y|', '200.0', '150.0'),  # |y| beyond
+     'toss_workspace_xy_mm'),
+    ((0.0, 0.0, 225.0), ('B.z', '225.0', '55.0', '50.0', '170.0'),
+     'TOSS_Z_BAND_MM'),                                  # |z − 170| beyond ±50
 ])
-def test_workspace_precheck_rejected(pose):
+def test_workspace_precheck_rejected(pose, names, knob):
     """Planning-envelope pre-check only — go_to_pose's feasibility gate remains
-    the truth (REJECTED_POSITION(<code>) covers what this misses)."""
+    the truth (REJECTED_POSITION(<code>) covers what this misses).
+
+    ONE code, THREE messages (2026-08-29). The lateral box and the z band are
+    different knobs, so "outside the workspace" with no component named sent
+    half these refusals to the wrong one — the row now pins WHICH bound refused
+    and that the offending component is quoted."""
     seq = TossSequencer(catch_pose_stow_mm=pose, flight_time_s=0.8,
                         throw_delay_s=5.0)
     seq.start(0.0)
     d = seq.step(0.0, _obs(0.0))
-    assert d.done and d.result.outcome == 'REJECTED_WORKSPACE'
+    assert d.done and base_outcome(d.result.outcome) == 'REJECTED_WORKSPACE'
+    msg = d.result.outcome
+    for token in names:
+        assert token in msg, (token, msg)
+    assert knob in msg, msg
 
 
 # ── POSITIONING (deviation: reload has no platform move to make or verify) ─────
 
 def test_position_emitted_once_when_preconditions_pass():
+    """One-shot: the move is dispatched exactly once and every waiting tick is
+    quiet — no re-command can C2-stop a plan already in flight.
+
+    ONE carve-out since 2026-08-29, and it does not weaken this: a go_to_pose
+    refused ``BUSY`` never installed a plan, so re-emitting cannot interrupt one.
+    That path is bounded by TOSS_POSITION_BUSY_PATIENCE_S and covered by the BUSY
+    battery below; here nothing was refused, so the count stays at one."""
     seq = _fresh()
     d = _to_positioning(seq)
     assert not d.done
-    # One-shot: the move is dispatched exactly once; waiting ticks are quiet.
     d = seq.step(0.1, _obs(0.1))
     assert d.phase == PHASE_POSITIONING and d.action == ACTION_NONE
 
@@ -792,6 +834,222 @@ def test_wire_disarmed_rejects():
     assert d.done and d.result.outcome == 'REJECTED_POSITION(WIRE_DISARMED)'
 
 
+# ── POSITIONING: the bounded BUSY re-poll (bag 2026-08-28_23-53-25) ────────────
+#
+# THE DEFECT. In a DISPLACED toss_continuous chain cycle N's catch plan ends with
+# a JB_TRAJ_CATCH_SETTLE_HOLD_S = 0.50 s quiescent hold, during which
+# trajectory_node's `_active_move_in_flight()` is True and `_svc_go_to_pose`
+# refuses BUSY — correctly. Cycle N+1's POSITIONING dispatches 0.09-0.23 s after
+# landing, i.e. INSIDE that hold, and the pre-fix FSM terminalised the first
+# non-accepted result, which toss_session escalates to ABORTED_CYCLE_* and the
+# whole session dies. Three deterministic aborts in that bag. A co-located chain
+# survives only because the census-B1 skip never calls the service at all.
+
+#: The node's FSM tick (`reload_coordinator_node._TICK_S`), so these tests poll on
+#: the grid the machine polls on rather than one chosen to make the spacing land.
+_BUSY_TICK_S = 0.02
+
+
+def _drive_busy_positioning(seq, busy_until, *, ticks=80, delay_gate=None):
+    """Tick POSITIONING on the node's 20 ms grid, answering every ``go_to_pose``
+    with BUSY until ``busy_until`` and with an accept from then on.
+
+    Reproduces the node's SYNCHRONOUS seam exactly: `_step_toss_sequence` calls
+    `_position_platform_for_toss` inside the tick that decided
+    ACTION_POSITION_PLATFORM, so the result of a re-poll is always visible to the
+    NEXT tick and never to this one.
+
+    Returns ``(decision, dispatch_instants)`` where ``decision`` is the first one
+    that finished or reached PREPARING.
+    """
+    dispatched = []
+
+    def answer(t):
+        if t < busy_until:
+            seq.note_position_result(t, False, 0.0, 'BUSY')
+        else:
+            # planned_duration 0.0 = the min-move floor case; arrival is then
+            # t + TOSS_POSITION_SETTLE_PAD_S, which keeps the ladder short.
+            seq.note_position_result(t, True, 0.0)
+
+    d = seq.step(0.0, _obs(0.0))
+    assert d.action == ACTION_POSITION_PLATFORM, d
+    dispatched.append(0.0)
+    answer(0.0)
+    for i in range(1, ticks):
+        t = i * _BUSY_TICK_S
+        d = seq.step(t, _obs(t))
+        if d.action == ACTION_POSITION_PLATFORM:
+            dispatched.append(t)
+            answer(t)
+        if d.done or d.phase == PHASE_PREPARING:
+            return d, dispatched
+    return d, dispatched
+
+
+def test_positioning_busy_re_polls_and_succeeds():
+    """THE fix: a BUSY is RE-EMITTED rather than terminalised, and an accept on a
+    later poll rejoins the normal arrival ladder unchanged.
+
+    0.25 s of BUSY is the shape the bag shows — the residual of the previous
+    cycle's settle hold at the instant POSITIONING dispatched, not the whole
+    0.50 s hold (the dispatch lands 0.09-0.23 s after the landing the hold is
+    anchored to)."""
+    seq = _fresh()
+    d, dispatched = _drive_busy_positioning(seq, busy_until=0.25)
+    # Re-emitted, and NOT on the first BUSY tick: the spacing is paid first.
+    assert len(dispatched) > 1, dispatched
+    assert dispatched[1] > _BUSY_TICK_S
+    # The ladder past the accept is byte-identical to a first-try accept.
+    assert not d.done
+    assert d.phase == PHASE_PREPARING and d.action == ACTION_PREPARE_CATCH
+    assert seq.prepared is True
+    # …and the absorb is measured, not silent.
+    assert seq.position_busy_polls == len(dispatched) - 1
+    assert seq.position_busy_wait_s > 0.2
+
+
+def test_positioning_busy_past_the_patience_bound_rejects():
+    """A BUSY that OUTLIVES the patience is a WEDGE — a stray go_home, a
+    SpaceMouse nudge, a guard latch — and must still terminalise, with the
+    outcome string BYTE-IDENTICAL to the pre-re-poll one — the trace recorder's
+    outcome parsing and a dozen exact-match tests key on it, and the re-poll adds
+    no new outcome vocabulary for either to learn.
+
+    Deliberately NOT the TOSS_POSITIONING_TIMEOUT_S (6.0 s) or session-watchdog
+    bound: those are no-response watchdogs an order of magnitude looser, and
+    waiting either out would launder a wedge into ABORTED_POSITION_TIMEOUT."""
+    seq = _fresh()
+    d, dispatched = _drive_busy_positioning(seq, busy_until=float('inf'))
+    assert d.done
+    assert d.result.outcome == 'REJECTED_POSITION(BUSY)'
+    assert d.action == ACTION_NONE          # nothing moved, nothing armed
+    assert seq.prepared is False
+    # It really did re-poll before giving up (else this passes vacuously), and it
+    # gave up at the bound rather than at the 6.0 s positioning timeout.
+    assert len(dispatched) > 1, dispatched
+    assert seq.position_busy_wait_s <= TOSS_POSITION_BUSY_PATIENCE_S
+    assert dispatched[-1] < TOSS_POSITION_BUSY_PATIENCE_S
+
+
+def test_positioning_busy_never_eats_the_release_lead():
+    """THE cadence fence. `_step_preparing`'s release guard has NO slip, so a
+    wait paid out of the remaining lead converts a REJECTED_POSITION(BUSY) —
+    nothing moved, nothing armed — into an ABORTED_CANT_MAKE_RELEASE with the
+    hand committed and a retract under a seated ball. Strictly worse, same fault.
+
+    So the guard is charged from the FIRST BUSY: a cycle sitting at the
+    min_throw_delay_for_release_s floor rejects immediately, with ZERO re-polls.
+    """
+    from jugglebot.toss_sequencer import min_throw_delay_for_release_s
+    from jugglebot.toss_sequencer import vertical_event_vel_mps
+    floor = min_throw_delay_for_release_s(vertical_event_vel_mps(0.8), True)
+    # The tightest delay CHECKING admits: one tick later the remaining lead is
+    # already under the floor the runtime guard will charge.
+    seq = _fresh(throw_delay_s=floor + 0.005)
+    d, dispatched = _drive_busy_positioning(seq, busy_until=0.46)
+    assert d.done and d.result.outcome == 'REJECTED_POSITION(BUSY)'
+    assert dispatched == [0.0], dispatched      # refused on the FIRST BUSY
+    assert seq.position_busy_polls == 0
+    # ── NON-VACUITY ── the SAME script with a generous lead absorbs the wait.
+    # 0.46 s is longer than the worst residual hold the 08-28 bag shows
+    # (0.50 - 0.09 = 0.41 s), so the control is a real absorb and not a token
+    # one. It is deliberately not >0.50: the patience is 0.54 measured from the
+    # POSITIONING dispatch and the polls are 0.10 apart, so the last poll a cycle
+    # can make sits at ~0.50 — a residual longer than that is out of contract and
+    # is SUPPOSED to reject.
+    generous = _fresh()
+    d2, dispatched2 = _drive_busy_positioning(generous, busy_until=0.46)
+    assert not d2.done and d2.phase == PHASE_PREPARING
+    assert len(dispatched2) > 1, dispatched2
+
+
+@pytest.mark.parametrize('code', [
+    'WORKSPACE', 'WIRE_DISARMED', 'NO_RESPONSE', 'GUARD_LATCHED', 'WRONG_MODE',
+    'STALE_STATE', 'TOO_FAST',
+])
+def test_only_busy_is_re_polled(code):
+    """BUSY is the ONE go_to_pose refusal that clears on its own — the previous
+    cycle's catch plan is inside a bounded, known settle hold. Every other code
+    names a state that re-asking cannot change (a disarmed wire, a latched guard,
+    the wrong mode, an infeasible plan), so re-polling them would only spend the
+    release lead before reporting the same refusal. Each stays terminal on the
+    FIRST result, with zero re-dispatches."""
+    seq = _fresh()
+    _to_positioning(seq)
+    seq.note_position_result(0.02, False, 0.0, code)
+    d = seq.step(0.04, _obs(0.04))
+    assert d.done and d.result.outcome == 'REJECTED_POSITION({})'.format(code)
+    assert seq.position_busy_polls == 0
+    assert seq.position_busy_wait_s == 0.0
+
+
+def test_the_position_refusal_carries_the_services_message_after_its_subcode():
+    """``go_to_pose`` answers with a CODE and a MESSAGE, and until 2026-08-29 the
+    node threw the message away: the operator got ``REJECTED_POSITION(BUSY)`` in
+    the action result and trajectory_node's actual reason in a log line they had
+    to know to go and find.
+
+    Two properties, and the machine depends on the first: the SUBCODE still
+    leads the parenthetical, because the BUSY re-poll matches on the code and
+    the node's zombie-move superseder matches on ``(code, subcode)``. A refusal
+    with no message stays byte-identical to the pre-enrichment string — which is
+    what keeps every ``REJECTED_POSITION(NO_RESPONSE)`` reference true."""
+    # A BUSY that OUTLIVES the patience — the one that still terminalises, and
+    # the exact shape the 08-28 bag shows. (A BUSY inside the patience is
+    # absorbed and never reaches a terminal at all.)
+    seq = _fresh()
+    _to_positioning(seq)
+    for t in (0.02, 0.14, 0.26, 0.38, 0.50, 0.62, 0.74):
+        seq.note_position_result(t, False, 0.0, 'BUSY',
+                                 'a move is in flight — Phase 2 accepts moves '
+                                 'only from hold')
+        d = seq.step(t + 0.02, _obs(t + 0.02))
+        if d.done:
+            break
+    assert d.done, 'the patience never ran out'
+    out = d.result.outcome
+    assert base_outcome(out) == 'REJECTED_POSITION'
+    assert out.startswith('REJECTED_POSITION(BUSY: '), out
+    assert 'a move is in flight' in out, out
+    # …and the machine-readable half is still recoverable, untouched by prose.
+    from jugglebot.outcome_detail import outcome_subcode
+    assert outcome_subcode(out) == 'BUSY'
+    # No message ⇒ the old string, exactly.
+    quiet = _fresh()
+    _to_positioning(quiet)
+    quiet.note_position_result(0.02, False, 0.0, 'NO_RESPONSE')
+    assert quiet.step(0.04, _obs(0.04)).result.outcome == (
+        'REJECTED_POSITION(NO_RESPONSE)')
+
+
+def test_busy_patience_matches_the_settle_hold_plus_one_loop_period():
+    """Drift guard, alongside the other local-constant pins: the patience is the
+    catch settle hold the platform is genuinely held for, plus one FSM loop
+    period for the tick grid the poll runs on. Both terms are cross-read from the
+    generated config rather than restated, because a YAML change to the hold has
+    to move this bound with it — a patience SHORTER than the hold re-opens the
+    2026-08-28 abort class on the very next sitting."""
+    import jugglebot.hardware_config as hw
+    import jugglebot.toss_sequencer as ts
+    assert TOSS_POSITION_BUSY_PATIENCE_S == pytest.approx(
+        float(hw.JB_TRAJ_CATCH_SETTLE_HOLD_S) + ts.NODE_LOOP_PERIOD_S)
+
+
+def test_busy_re_polls_are_spaced_by_the_repoll_constant():
+    """`go_to_pose` is a BLOCKING round trip inside the node loop (bag tick_max
+    320-337 ms on these cycles). Re-emitting on every 20 ms tick would multiply
+    that cost across the very wait it exists to absorb, so consecutive re-polls
+    are never closer than TOSS_POSITION_BUSY_REPOLL_S."""
+    seq = _fresh()
+    _, dispatched = _drive_busy_positioning(seq, busy_until=float('inf'))
+    assert len(dispatched) >= 3, dispatched
+    gaps = [b - a for a, b in zip(dispatched[1:], dispatched[2:])]
+    assert gaps, dispatched
+    for gap in gaps:
+        assert gap >= TOSS_POSITION_BUSY_REPOLL_S - 1e-9, dispatched
+
+
 # ── PREPARING: armed confirm → gap → announce → dispatch ───────────────────────
 
 def test_prepare_failure_safe_aborts():
@@ -820,9 +1078,25 @@ def test_a_named_prepare_refusal_terminalises_rejected_not_aborted():
     _to_prepared(seq)
     seq.note_prepare_result(False, 'REACH_CENTER_DRIFT')
     d = seq.step(0.9, _obs(0.9))
+    # A code with no message is bare — the node is what supplies the numbers.
     assert d.done and d.result.outcome == 'REJECTED_REACH_CENTER_DRIFT'
     assert d.action == ACTION_SAFE_ABORT
     assert seq._throw_dispatched is False
+
+
+def test_a_named_prepare_refusal_carries_the_nodes_numbers_to_the_terminal():
+    """The channel takes a MESSAGE as well as a code, for the same reason the
+    position channel does: the drift guard's three numbers (the nominated B, the
+    declared centre, the distance) live in the node, and the outcome string is
+    the only thing that reaches the action result, the session's per-cycle list
+    and the record. Carried verbatim, and the CODE still leads."""
+    seq = _fresh()
+    _to_prepared(seq)
+    seq.note_prepare_result(False, 'REACH_CENTER_DRIFT', 'drift 86.5 mm > 66.5')
+    d = seq.step(0.9, _obs(0.9))
+    assert base_outcome(d.result.outcome) == 'REJECTED_REACH_CENTER_DRIFT'
+    assert d.result.outcome.endswith('(drift 86.5 mm > 66.5)'), d.result.outcome
+    assert d.action == ACTION_SAFE_ABORT
 
 
 def test_an_unnamed_prepare_refusal_still_aborts_prepare_failed():
@@ -1481,8 +1755,82 @@ def test_displacement_rejected(pose, site, flight):
     150 mm / T = 0.55 s (tools/probes/displaced_reach_frontier.py)."""
     seq = _fresh_8b(pose=pose, throw_site=site, flight_time_s=flight)
     d = seq.step(0.0, _obs(0.0))
-    assert d.done and d.result.outcome == 'REJECTED_DISPLACEMENT'
+    assert d.done and base_outcome(d.result.outcome) == 'REJECTED_DISPLACEMENT'
+    # BOTH bounds are quoted every time, because "too far" is ambiguous between
+    # them and they move under different knobs — the cap is a config edit, the
+    # reach bound is a function of T and the live limits. The refusal also says
+    # which one BOUND, so the remedy names the lever that is actually connected.
+    msg = d.result.outcome
+    assert '|B-A| =' in msg, msg
+    assert 'cap' in msg and 'reach bound' in msg, msg
+    assert 'toss_max_displacement_mm' in msg, msg
+    assert 'T = {:.3f} s'.format(flight) in msg, msg
+    assert 'not binding' in msg or 'also exceeded' in msg, msg
     assert d.action == ACTION_NONE and seq.prepared is False
+
+
+def test_the_displacement_refusal_names_the_binding_bound_and_its_remedy():
+    """The two BINDING cases, each pinned by the remedy it hands the operator —
+    the property the parenthetical exists for.
+
+    Cap-bound: |B−A| = 210 mm at T = 0.80 s, where the reach bound is 256 mm and
+    slack, so the cap is the only thing refusing and lowering |B−A| is the fix.
+    Jerk-bound: 100 mm at T = 0.55 s, where the closed form gives 83.2 mm and
+    the 150 mm cap never comes into it — here the fix is a longer flight or a
+    ``set_limits`` ramp on the term that actually bound, and a message that
+    said only "cap 150" would send the operator to a knob with no effect."""
+    cap_bound = _fresh_8b(pose=(210.0, 0.0, 170.0), throw_site=(0.0, 0.0),
+                          flight_time_s=0.80)
+    msg = cap_bound.step(0.0, _obs(0.0)).result.outcome
+    assert base_outcome(msg) == 'REJECTED_DISPLACEMENT'
+    assert '> cap 150.0 mm [toss_max_displacement_mm]' in msg, msg
+    assert 'reach bound 256.0 mm (jerk-bound) at T = 0.800 s not binding' in msg, msg
+    assert 'lower |B-A| or raise the cap' in msg, msg
+
+    jerk_bound = _fresh_8b(pose=(100.0, 0.0, 170.0), throw_site=(0.0, 0.0),
+                           flight_time_s=0.55)
+    msg = jerk_bound.step(0.0, _obs(0.0)).result.outcome
+    assert base_outcome(msg) == 'REJECTED_DISPLACEMENT'
+    assert '> reach bound 83.2 mm' in msg, msg
+    # Every term starred: nothing was reported, so all three quoted numbers are
+    # the REACH_* fallbacks (the legend rides in the tail).
+    assert '[default limits 1000*/5000*/30000*]' in msg, msg
+    assert '* = default, not reported' in msg, msg
+    assert 'jerk-bound at T = 0.550 s' in msg, msg
+    assert 'cap 150.0 mm [toss_max_displacement_mm] not binding' in msg, msg
+    assert 'set_limits jerk' in msg, msg
+    # …and the LIVE half of the same sentence: a live-limits observation says so
+    # and quotes what it judged against, so an operator reading a refusal during
+    # a set_limits ramp knows which numbers were in force.
+    live = _fresh_8b(pose=(100.0, 0.0, 170.0), throw_site=(0.0, 0.0),
+                     flight_time_s=0.55)
+    msg = live.step(0.0, _obs(0.0, leg_vel_limit_mmps=1000.0,
+                              leg_acc_limit_mmps2=5000.0,
+                              leg_jerk_limit_mmps3=15000.0)).result.outcome
+    assert '[live limits 1000/5000/15000]' in msg, msg
+    # …and a fully-live refusal carries NO stars and no legend: there is nothing
+    # substituted to disclaim, and the legend would be noise on the common case.
+    assert '*' not in msg, msg
+
+
+def test_the_reach_bound_names_which_peak_bound_it():
+    """``reach_displacement_bound`` is the ONE derivation the gate and the
+    refusal share, and the term it names has to be the term that produced the
+    number — a refusal that said "jerk" while velocity bound would route the
+    operator to a ``set_limits`` ramp that changes nothing.
+
+    The three regimes, at the module defaults: jerk (T³) is the smallest term
+    at short flights, and a heavily-ramped jerk hands the binding role to acc
+    (T²) and then to vel (T)."""
+    assert reach_displacement_bound(0.55) == (
+        pytest.approx(83.19, abs=0.1), 'jerk')
+    assert reach_displacement_bound(0.60, jerk_mmps3=200000.0)[1] == 'acc'
+    assert reach_displacement_bound(0.60, acc_mmps2=1e9,
+                                    jerk_mmps3=1e9)[1] == 'vel'
+    # And it agrees with the scalar helper everywhere — one derivation, two
+    # callers, so the gate and the message can never disagree about the number.
+    for t in (0.50, 0.55, 0.669, 0.80, 1.10):
+        assert reach_displacement_bound(t)[0] == reach_displacement_limit_mm(t)
 
 
 @pytest.mark.parametrize('pose,site,flight', [
@@ -1539,7 +1887,8 @@ def test_chaining_at_the_cap_box_dissolves_the_frame_divergence(next_b,
                     flight_time_s=0.80)
     d = seq.step(0.0, _obs(0.0))
     assert d.done and d.result is not None
-    assert d.result.outcome in ('REJECTED_WORKSPACE', 'REJECTED_DISPLACEMENT')
+    assert base_outcome(d.result.outcome) in ('REJECTED_WORKSPACE',
+                                              'REJECTED_DISPLACEMENT')
     # The SAME goal from the nominal (cup) site is accepted at the fallback box
     # — which is what made this a frame divergence rather than a cap that was
     # simply too low.
@@ -1558,7 +1907,7 @@ def test_chaining_at_the_cap_box_dissolves_the_frame_divergence(next_b,
         assert (d_s.phase == PHASE_POSITIONING
                 and d_s.action == ACTION_POSITION_PLATFORM)
     else:
-        assert d_s.done and d_s.result.outcome == box_160_outcome
+        assert d_s.done and base_outcome(d_s.result.outcome) == box_160_outcome
 
 
 def test_reach_displacement_limit_closed_form():
@@ -1598,7 +1947,12 @@ def test_reach_bound_prefers_live_session_limits():
     a 100 mm goal that a cautious jerk = 15 000 session cannot fly
     (60·d/T³ ≤ 15 000 ⇒ 85.75 mm) — pre-live-limits that goal TOO_FAST-ed at
     t_release with the ball airborne (the C-REACH-1 mid-flight-verdict class);
-    now it refuses pre-throw."""
+    now it refuses pre-throw.
+
+    The tail of the test pins the three-valued limits LABEL the refusal prints,
+    because the mapping being per-field is only half the property: a partial
+    observation that renders as "live" is a message whose banner contradicts its
+    own numbers."""
     # Function level: explicit live values move the bound; None reproduces the
     # fallback exactly.
     assert reach_displacement_limit_mm(0.60, jerk_mmps3=200000.0) == (
@@ -1624,12 +1978,38 @@ def test_reach_bound_prefers_live_session_limits():
     d_ref = down.step(0.0, _obs(0.0, leg_vel_limit_mmps=1000.0,
                                 leg_acc_limit_mmps2=5000.0,
                                 leg_jerk_limit_mmps3=15000.0))
-    assert d_ref.done and d_ref.result.outcome == 'REJECTED_DISPLACEMENT'
+    assert d_ref.done and base_outcome(
+        d_ref.result.outcome) == 'REJECTED_DISPLACEMENT'
     # A partial triple (only some fields live) mixes live and fallback
     # per-term — the `or None` mapping is per-field, not all-or-nothing.
     assert reach_displacement_limit_mm(
         0.60, vel_mmps=None, acc_mmps2=None, jerk_mmps3=200000.0) == (
         pytest.approx(311.77, abs=0.1))
+    # …and the REFUSAL has to say so. The label was 'live' for any non-empty
+    # observation until 2026-08-29, which printed fallback REACH_* numbers under
+    # a "live" banner and sent the operator to ramp a term the session never
+    # reported. Three-valued now, with a `*` on each substituted term:
+    #   none observed  ⇒ default, every term starred
+    #   some observed  ⇒ mixed, only the substituted terms starred
+    #   all observed   ⇒ live, no stars (pinned above)
+    # `d_ref` above observed all three, so it is the fully-live case and carries
+    # no stars at all.
+    assert '[live limits 1000/5000/15000]' in d_ref.result.outcome
+    assert '*' not in d_ref.result.outcome, d_ref.result.outcome
+    # The middle case needs a genuinely PARTIAL observation: the same cautious
+    # jerk, with vel and acc left at the 0.0 unknown-sentinel. Same refusal, same
+    # binding term — but two of the three quoted numbers are fallbacks now, and
+    # the message has to say which.
+    part = _fresh_8b(pose=(100.0, 0.0, 170.0), flight_time_s=0.70)
+    mixed_msg = part.step(
+        0.0, _obs(0.0, leg_jerk_limit_mmps3=15000.0)).result.outcome
+    assert base_outcome(mixed_msg) == 'REJECTED_DISPLACEMENT', mixed_msg
+    assert '[mixed limits 1000*/5000*/15000]' in mixed_msg, mixed_msg
+    assert '* = default, not reported' in mixed_msg, mixed_msg
+    default = _fresh_8b(pose=(100.0, 0.0, 170.0), flight_time_s=0.55)
+    default_msg = default.step(0.0, _obs(0.0)).result.outcome
+    assert base_outcome(default_msg) == 'REJECTED_DISPLACEMENT'
+    assert '[default limits 1000*/5000*/30000*]' in default_msg, default_msg
 
 
 def test_workspace_box_is_ctor_config():
@@ -1642,7 +2022,8 @@ def test_workspace_box_is_ctor_config():
     # B-box, Tier 8a: 180 mm is outside the 150 fallback, inside a 200 box.
     ref = _fresh(catch_pose_stow_mm=(180.0, 0.0, 170.0))
     d_ref = ref.step(0.0, _obs(0.0))
-    assert d_ref.done and d_ref.result.outcome == 'REJECTED_WORKSPACE'
+    assert d_ref.done and base_outcome(
+        d_ref.result.outcome) == 'REJECTED_WORKSPACE'
     wide = _fresh(catch_pose_stow_mm=(180.0, 0.0, 170.0),
                   workspace_xy_mm=200.0)
     d_wide = wide.step(0.0, _obs(0.0))
@@ -1653,7 +2034,7 @@ def test_workspace_box_is_ctor_config():
     # verdict isolates the A-box; the same goal passes with the wider box.
     ref_a = _fresh_8b(pose=(50.0, 0.0, 170.0), throw_site=(155.0, 0.0))
     d_a = ref_a.step(0.0, _obs(0.0))
-    assert d_a.done and d_a.result.outcome == 'REJECTED_WORKSPACE'
+    assert d_a.done and base_outcome(d_a.result.outcome) == 'REJECTED_WORKSPACE'
     wide_a = _fresh_8b(pose=(50.0, 0.0, 170.0), throw_site=(155.0, 0.0),
                        workspace_xy_mm=200.0)
     d_wa = wide_a.step(0.0, _obs(0.0))
@@ -1694,7 +2075,10 @@ def test_max_displacement_is_ctor_resolved_not_the_module_constant():
     seq = _fresh_8b(pose=(100.0, 0.0, 170.0), throw_site=(0.0, 0.0),
                     max_displacement_mm=70.0)
     d = seq.step(0.0, _obs(0.0))
-    assert d.done and d.result.outcome == 'REJECTED_DISPLACEMENT'
+    assert d.done and base_outcome(d.result.outcome) == 'REJECTED_DISPLACEMENT'
+    # The lowered CAP is what refused, and the message says so by naming it as
+    # the binding bound — the reach bound at T = 0.8 s is 256 mm and slack.
+    assert '> cap 70.0 mm [toss_max_displacement_mm]' in d.result.outcome
     # …and the same goal passes at the shipped cap.
     seq2 = _fresh_8b(pose=(100.0, 0.0, 170.0), throw_site=(0.0, 0.0))
     assert seq2.step(0.0, _obs(0.0)).action == ACTION_POSITION_PLATFORM
@@ -1709,8 +2093,29 @@ def test_tilt_clamp_rejected():
     seq = _fresh_8b(pose=(50.0, 0.0, 170.0), throw_site=(0.0, 0.0),
                     tilt_clamp_exceeded=True)
     d = seq.step(0.0, _obs(0.0))
-    assert d.done and d.result.outcome == 'REJECTED_TILT_CLAMP'
+    assert d.done and base_outcome(d.result.outcome) == 'REJECTED_TILT_CLAMP'
     assert d.action == ACTION_NONE and seq.prepared is False
+
+
+def test_tilt_clamp_names_the_aim_and_the_ceiling_when_the_node_supplies_them():
+    """The clamp math lives in ``motion/toss_release`` and its raise CARRIES the
+    two numbers; the node forwards them so the refusal can quote them.
+
+    Without them the operator is told an aim ceiling was exceeded and not by how
+    much — 12.1° against a 12° ceiling is a goal one notch too far, 25° is a
+    goal in the wrong place, and the remedy differs. NaN (an FSM built without
+    the numbers) degrades to the bare code rather than inventing one."""
+    seq = _fresh_8b(pose=(50.0, 0.0, 170.0), throw_site=(0.0, 0.0),
+                    tilt_clamp_exceeded=True, tilt_required_deg=12.34,
+                    tilt_max_deg=12.0)
+    msg = seq.step(0.0, _obs(0.0)).result.outcome
+    assert base_outcome(msg) == 'REJECTED_TILT_CLAMP'
+    assert 'aim 12.34 deg > ceiling 12.00 deg [MAX_TILT_DEG]' in msg, msg
+    assert 'SHORT of B' in msg, msg
+    # Un-numbered: bare, and still the same CODE.
+    bare = _fresh_8b(pose=(50.0, 0.0, 170.0), throw_site=(0.0, 0.0),
+                     tilt_clamp_exceeded=True)
+    assert bare.step(0.0, _obs(0.0)).result.outcome == 'REJECTED_TILT_CLAMP'
 
 
 def test_tilt_clamp_rejects_in_tier_8a_too():
@@ -1731,7 +2136,7 @@ def test_tilt_clamp_rejects_in_tier_8a_too():
                         event_vel_mps=0.0, tilt_clamp_exceeded=True)
     seq.start(0.0)
     d = seq.step(0.0, _obs(0.0))
-    assert d.done and d.result.outcome == 'REJECTED_TILT_CLAMP'
+    assert d.done and base_outcome(d.result.outcome) == 'REJECTED_TILT_CLAMP'
     assert d.action == ACTION_NONE and seq.prepared is False
 
 
@@ -1741,7 +2146,7 @@ def test_displacement_precedes_tilt_clamp():
     seq = _fresh_8b(pose=(100.0, 0.0, 170.0), throw_site=(0.0, 0.0),
                     flight_time_s=0.55, tilt_clamp_exceeded=True)
     d = seq.step(0.0, _obs(0.0))
-    assert d.done and d.result.outcome == 'REJECTED_DISPLACEMENT'
+    assert d.done and base_outcome(d.result.outcome) == 'REJECTED_DISPLACEMENT'
 
 
 def test_reach_catch_emitted_once_time_triggered_at_release():

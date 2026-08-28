@@ -967,9 +967,21 @@ the only way to watch a sitting degrade before its terminal.
 | `on_empty_cup` | `string` | `"STOP"` — and anything that is not exactly `"RELOAD"` resolves to STOP (empty, misspelt, an older client's unset field) | `STOP` or `RELOAD` | never refused; an unreadable value fails closed to STOP |
 | `max_reloads` | `int32` | `JB_OP_TOSS_SESSION_MAX_RELOADS` = 3 | non-negative | negative ⇒ `REJECTED_BAD_GOAL(max_reloads)` |
 
-**`REJECTED_BAD_GOAL(<field>)` names the field.** That is the point of the code:
-the numerics gate runs before anything is built or installed, and the log line
-carries every value it was given, so a typo is diagnosed from one console line.
+**`REJECTED_BAD_GOAL(<field> = <value> — <why>)` names the field *and the
+value*.** That is the point of the code: the numerics gate runs before anything
+is built or installed, and since 2026-08-29 the offending value rides the
+OUTCOME rather than only the log line — so a typo is diagnosed from the action
+result alone, not from a console a goal storm has already scrolled away. Every
+row above still names its field first; score on the field, not on the whole
+string. The same holds for every limit-bearing refusal here: **score every row in
+this file on the CODE**, i.e. on the text before the first `(` — the
+parenthetical carries the requested value, the limit and the knob, and is
+diagnosis, never identity. Stated as a rule rather than as a list on purpose: the
+enriched set keeps growing (`REJECTED_CANT_MAKE_LEAD` carries a parenthetical at
+every mint site and is scored earlier in this file, at the `LADDER_PRE_AUDIT`
+replay), and a closed enumeration goes stale *silently* — a row scored against a
+code that has since grown its numbers simply stops matching, and a scorer reading
+the omission as "this one stays bare" mis-scores it.
 
 **Two things that change what the rungs mean have no goal field at all** and are
 read from the generated config: the tier (`JB_OP_TOSS_TIER`, `8b` as shipped —

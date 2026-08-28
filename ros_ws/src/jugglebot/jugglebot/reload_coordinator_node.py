@@ -176,6 +176,12 @@ from jugglebot.ball_possession import (
     lateral_miss_mm,
     merge_possession,
 )
+from jugglebot.protocol_config import BallButlerStates
+# THE shared refusal vocabulary. `bound_msg` formats the node's own
+# limit-bearing refusals the same way the FSMs format theirs; `base_outcome` /
+# `outcome_subcode` are how this node MATCHES an outcome it did not mint, so an
+# enriched terminal cannot silently fall out of a guard set.
+from jugglebot.outcome_detail import base_outcome, bound_msg, outcome_subcode
 from jugglebot.reload_sequencer import (
     ACTION_CALL_RELOAD,
     ACTION_PREPARE_CATCH,
@@ -183,6 +189,8 @@ from jugglebot.reload_sequencer import (
     ACTION_RECENTER,
     ACTION_SAFE_ABORT,
     ACTION_SEND_THROW,
+    BB_READY_WAIT_S,
+    BB_STATE_ERROR,
     BB_STATE_IDLE,
     PHASE_CHECKING as RELOAD_PHASE_CHECKING,
     PHASE_PREPARING as RELOAD_PHASE_PREPARING,
@@ -215,6 +223,8 @@ from jugglebot.toss_sequencer import (
     THROW_DISPATCH_REJECTED,
     TIER_8B,
     TOSS_CANCEL_CUTOFF_S,
+    TOSS_POSITION_BUSY_PATIENCE_S,
+    TOSS_POSITION_BUSY_REPOLL_S,
     TossObservations,
     TossResult,
     TossSequencer,
@@ -413,15 +423,16 @@ _SEQUENCE_CEILING_MARGIN_S = 5.0
 # WHY IT EXISTS. `_toss_session_deadline_s` already bounds a wedged session, but
 # it is a backstop of last resort sized for a whole sitting — at the 2026-08-28
 # sitting's goals (num_throws 5, dwell 0.45-0.50 s, on_empty_cup RELOAD with
-# max_reloads 3) it is 270.9 s: 5 x (30.0 + 0.50) + 113.4 + 5.0, where the 113.4
+# max_reloads 3) it is 300.9 s: 5 x (30.0 + 0.50) + 143.4 + 5.0, where the 143.4
 # is `_reload_interlude_budget_s` — the term a "157.5 s" reading of this ceiling
-# forgets, and every goal of that sitting carried it. It names the failure
-# ABORTED_TIMEOUT, which reads as "the session ran long" rather than
-# "the session stopped advancing". The `_stage_declined` deadlock that fix F1
-# closes produced exactly this state, and the ONE observable it left behind was
-# a DWELL feedback string that never changed. A session that is not going to
-# make progress should say so in seconds, by name, and release the cross-action
-# `_goal_claimed` — not hold the machine for two and a half minutes and then
+# forgets, and every goal of that sitting carried it. (113.4 until 2026-08-29,
+# when the BB-busy rung became a WAIT and charged its patience per attempt.)
+# It names the failure ABORTED_TIMEOUT, which reads as "the session ran long"
+# rather than "the session stopped advancing". The `_stage_declined` deadlock
+# that fix F1 closes produced exactly this state, and the ONE observable it left
+# behind was a DWELL feedback string that never changed. A session that is not
+# going to make progress should say so in seconds, by name, and release the
+# cross-action `_goal_claimed` — not hold the machine for five minutes and then
 # blame the clock.
 #
 # THE DERIVATION, and it is entirely in existing constants:
@@ -915,8 +926,18 @@ _TOSS_TRIM_PARAM = 'toss_trim_enabled'
 # later). The FSM's terminal action there is ACTION_NONE (nothing verifiably
 # accepted ⇒ no full SAFE_ABORT), so the node dispatches a best-effort go_home to
 # supersede any zombie move — go_home replaces the installed trajectory by design.
+#
+# Keyed on (CODE, SUBCODE), not on the whole outcome string (2026-08-29). Since
+# the go_to_pose MESSAGE now rides the outcome, a refusal that used to read
+# exactly 'REJECTED_POSITION(NO_RESPONSE)' can arrive as
+# 'REJECTED_POSITION(NO_RESPONSE: …)' the moment trajectory_node has something
+# to say about it — and a whole-string membership test would simply stop
+# matching, silently skipping the zombie-move superseder while an ack-timed-out
+# move is still executing. That is the one failure here that ends with the
+# platform traversing under a torn-down catch, so the guard matches the parts
+# that carry the MEANING and ignores the prose.
 _TOSS_POSITION_UNKNOWN_TERMINALS = frozenset({
-    'REJECTED_POSITION(NO_RESPONSE)', 'ABORTED_POSITION_TIMEOUT'})
+    ('REJECTED_POSITION', 'NO_RESPONSE'), ('ABORTED_POSITION_TIMEOUT', '')})
 
 
 #: Best-effort JSONL belt for the per-toss record (toss-selftuning § 3.3). The
@@ -1006,10 +1027,16 @@ def _reload_interlude_budget_s(session) -> float:
     the sibling ceiling's own docstring states the doctrine ("over-counting is the
     safe direction here"), and the direction that matters is the other one: this
     ceiling's exit path is an ABORT, and a ceiling that drifts INSIDE a legitimate
-    window SAFE_ABORTs a session for doing exactly what it was asked to do."""
+    window SAFE_ABORTs a session for doing exactly what it was asked to do.
+
+    ``BB_READY_WAIT_S`` is the gate's OWN patience for a busy BallButler
+    (:meth:`ReloadCoordinatorNode._wait_for_bb_ready`), charged separately from
+    the sequence ceiling's copy of it: an attempt can legitimately spend both —
+    the gate waits BB out, then the FSM's CHECKING waits it out again — and this
+    ceiling's exit path is the ABORT the paragraph above names."""
     if str(getattr(session, 'on_empty_cup', '')) != ON_EMPTY_CUP_RELOAD:
         return 0.0
-    per_attempt = (float(hw.JB_BD_ARRIVAL_WINDOW_S)
+    per_attempt = (float(hw.JB_BD_ARRIVAL_WINDOW_S) + BB_READY_WAIT_S
                    + GO_HOME_DURATION_S + _RECENTRE_VERIFY_PAD_S
                    + _sequence_deadline_s(ReloadSequencer(catch_point_mm=(0.0,
                                                                          0.0,
@@ -1046,13 +1073,15 @@ def _toss_session_deadline_s(session, cycle_budget_s: float,
 
 def _sequence_deadline_s(seq) -> float:
     """The node-level hard ceiling for THIS goal. Never below _MAX_SEQUENCE_S, and
-    never inside a legitimate sequence window: the FSM's own budgets (empty-hand
-    reload wait + throw countdown + announcement grace + catch confirm) plus margin.
+    never inside a legitimate sequence window: the FSM's own budgets (BB-busy
+    patience + empty-hand reload wait + throw countdown + announcement grace +
+    catch confirm) plus margin.
     Without this, an operator-supplied throw_delay_s ≳ 16 s put the fixed 30 s
     timeout INSIDE the flight window — and the timeout path SAFE_ABORTs, retracting
     the hand under the airborne ball (the exact hazard class the settle-resolution
     fix closed)."""
-    budget = (float(seq.reload_timeout_s) + float(seq.throw_delay_s)
+    budget = (float(getattr(seq, 'bb_ready_wait_s', 0.0))
+              + float(seq.reload_timeout_s) + float(seq.throw_delay_s)
               + float(seq.announcement_grace_s) + float(seq.catch_confirm_window_s)
               + _SEQUENCE_CEILING_MARGIN_S)
     return max(_MAX_SEQUENCE_S, budget)
@@ -1560,6 +1589,10 @@ class ReloadCoordinatorNode(Node):
         # refusal it wants named (REJECTED_REACH_CENTER_DRIFT) without changing
         # the bundle's `-> bool` contract.
         self._toss_prepare_reject = ''
+        # …and the NUMBERS behind that code, on the same one-tick handoff. The
+        # code routes the operator to a subsystem; this tells them what the
+        # machine actually measured, in the outcome string rather than in a log.
+        self._toss_prepare_reject_msg = ''
         # ── Per-toss RECORD (instrument only, zero control authority) ──
         # toss-selftuning plan § 3.3/§ 3.4, D10. Everything here is written by
         # the record path and read by NOTHING in the FSM: if every line below
@@ -2225,6 +2258,10 @@ class ReloadCoordinatorNode(Node):
         ball_caught, possession_blind = self._possession_observed(now, caught_ball)
         if ball_caught and caught_ball is not None:
             catch_error_mm = self._catch_error_from_ball(caught_ball)
+        # ONE read of the centring measurand, shared by the verdict and by the
+        # numbers the refusal quotes — the two cannot disagree, and the live
+        # commanded pose is sampled once per tick rather than three times.
+        center_offset = self._platform_center_offset_mm(now)
         return ReloadObservations(
             now=now,
             control_mode=control_mode,
@@ -2233,7 +2270,14 @@ class ReloadCoordinatorNode(Node):
             ball_in_hand=bool(hb.ball_in_hand) if hb_fresh else False,
             mocap_fresh=mocap_fresh,
             streaming=streaming,
-            platform_centered=self._platform_centered(now),
+            platform_centered=(center_offset is not None
+                               and center_offset <= _RELOAD_CENTERED_TOL_MM),
+            # None (no fresh commanded pose) maps to NaN: the FSM reads that as
+            # "the pose was UNKNOWN", which is the OTHER way this gate says no
+            # and a different subsystem to check.
+            platform_offset_mm=(float('nan') if center_offset is None
+                                else float(center_offset)),
+            platform_center_tol_mm=_RELOAD_CENTERED_TOL_MM,
             ball_caught=ball_caught,
             possession_blind=possession_blind,
             catch_error_mm=catch_error_mm)
@@ -2263,12 +2307,24 @@ class ReloadCoordinatorNode(Node):
         during the flight, planned and gated as any other catch reach).
 
         UNKNOWN (no fresh commanded position) ⇒ False: fail closed."""
+        offset = self._platform_center_offset_mm(now)
+        return offset is not None and offset <= _RELOAD_CENTERED_TOL_MM
+
+    def _platform_center_offset_mm(self, now: float):
+        """The measurand behind :meth:`_platform_centered`: how far the live
+        commanded xy sits from the reload catch point, or ``None`` when there is
+        no fresh commanded position.
+
+        Split out so the REFUSAL can quote the distance (``REJECTED_NOT_CENTERED``
+        carries it into the outcome string) without a second copy of the frame
+        argument or the reference point. ``None`` and "too far" stay
+        distinguishable all the way to the operator — they are different faults
+        in different subsystems."""
         pos = self._live_commanded_position(now)
         if pos is None:
-            return False
+            return None
         return math.hypot(pos[0] - float(self._catch_point_mm[0]),
-                          pos[1] - float(self._catch_point_mm[1])) \
-            <= _RELOAD_CENTERED_TOL_MM
+                          pos[1] - float(self._catch_point_mm[1]))
 
     def _update_announced_ball_latch(self, balls):
         """Correlate the tracker-assigned id of OUR announced ball and return it.
@@ -3086,14 +3142,17 @@ class ReloadCoordinatorNode(Node):
         bad_field = self._invalid_toss_goal_field(
             catch_pose, height, throw_delay, vel_scale)
         if bad_field is not None:
+            _name, detail = bad_field       # the detail leads with the name
             self.get_logger().error(
-                f'Toss goal REJECTED_BAD_GOAL({bad_field}): '
+                f'Toss goal REJECTED_BAD_GOAL({detail}): '
                 f'catch_position={catch_pose}, throw_height_m={height}, '
                 f'throw_delay_s={throw_delay}, catch_vel_scale={vel_scale} '
                 f'— refusing before anything runs.')
             result = Toss.Result()
             result.success = False
-            result.outcome = 'REJECTED_BAD_GOAL({})'.format(bad_field)
+            # The DETAIL, not the bare name: the outcome is the only string that
+            # reaches the action result, and `name` is already in the log above.
+            result.outcome = 'REJECTED_BAD_GOAL({})'.format(detail)
             result.catch_error_mm = float('nan')
             result.achieved_flight_s = float('nan')
             self._log_toss_outcome(result)
@@ -4195,6 +4254,12 @@ class ReloadCoordinatorNode(Node):
         throw_site = (0.0, 0.0)
         throw_site_known = True
         tilt_clamp_exceeded = False
+        # The two numbers ThrowTiltInfeasible carries, forwarded so
+        # REJECTED_TILT_CLAMP can name the aim it needed and the ceiling it
+        # broke. NaN until a raise supplies them — an un-numbered refusal is
+        # better than an invented number.
+        tilt_required_deg = float('nan')
+        tilt_max_deg = float('nan')
         # ⚠ NOT `staged`. `staged` routes the INSTALL (the staged slot vs the
         # committed one) and flipping it here would publish this cycle over the
         # one that owns the hand; this flag says only "the FSM may run the
@@ -4251,6 +4316,8 @@ class ReloadCoordinatorNode(Node):
                 self.get_logger().error(f'Toss displaced aim infeasible: {exc}')
                 release = None
                 tilt_clamp_exceeded = True
+                tilt_required_deg = float(exc.required_deg)
+                tilt_max_deg = float(exc.max_tilt_deg)
         elif tier == TIER_8B:
             # Site unknown: there is no release state to compute (every field of
             # it is a function of A). The FSM rejects POSE_UNKNOWN on its first
@@ -4293,6 +4360,8 @@ class ReloadCoordinatorNode(Node):
                 release = None
                 release_cmd = None
                 tilt_clamp_exceeded = True
+                tilt_required_deg = float(exc.required_deg)
+                tilt_max_deg = float(exc.max_tilt_deg)
         # The COMMANDED launch speed: the aim tilts the launch, so |v| grows by
         # 1/cos(aim) (0.015 % at 1°). The FSM still gates it through
         # validate_event_vel, so an aim can no more push event_vel past the
@@ -4399,7 +4468,9 @@ class ReloadCoordinatorNode(Node):
             max_displacement_mm=float(hw.JB_OP_TOSS_MAX_DISPLACEMENT_MM),
             workspace_xy_mm=float(hw.JB_OP_TOSS_WORKSPACE_XY_MM),
             stay_at_pose_on_caught=bool(hw.JB_OP_TOSS_STAY_AT_POSE_ON_CAUGHT),
-            tilt_clamp_exceeded=tilt_clamp_exceeded)
+            tilt_clamp_exceeded=tilt_clamp_exceeded,
+            tilt_required_deg=tilt_required_deg,
+            tilt_max_deg=tilt_max_deg)
         seq.start(time.perf_counter())
         waiver = bool(self.get_parameter(_TOSS_WAIVER_PARAM).value)
         if waiver:
@@ -4948,7 +5019,8 @@ class ReloadCoordinatorNode(Node):
 
     @staticmethod
     def _invalid_toss_goal_field(catch_pose, throw_height, throw_delay, vel_scale):
-        """Return the name of the first invalid Toss goal numeric, or None.
+        """The first invalid Toss goal numeric as ``(field_name, detail)``, or
+        None.
 
         Non-finite ANY of the six numerics ⇒ invalid (the ball_butler_node
         guard pattern: NaN/inf flows through ballistics into NaN commands).
@@ -4956,7 +5028,16 @@ class ReloadCoordinatorNode(Node):
         is the only "use the default" sentinel, and coercing a sign typo to a
         default would silently run a physically different toss (the
         catch_position components are legitimately signed — the workspace
-        pre-check and the feasibility gate own their bounds)."""
+        pre-check and the feasibility gate own their bounds).
+
+        **Two values, not one, since 2026-08-29.** The NAME is what the log line
+        and any programmatic router want; the DETAIL is what
+        ``REJECTED_BAD_GOAL(...)`` carries, and it adds the offending VALUE and
+        why it is offending. A goal storm that fires ten near-identical requests
+        produces ten identical ``REJECTED_BAD_GOAL(throw_delay_s)`` results, and
+        the operator cannot tell from any of them whether they typed a minus
+        sign or divided by zero — the value is the whole diagnosis and it lived
+        only in a node log."""
         finite_checks = (
             ('catch_position.x', catch_pose[0]),
             ('catch_position.y', catch_pose[1]),
@@ -4967,12 +5048,13 @@ class ReloadCoordinatorNode(Node):
         )
         for name, value in finite_checks:
             if not math.isfinite(value):
-                return name
+                return name, '{} = {:g} — not finite'.format(name, float(value))
         for name, value in (('throw_height_m', throw_height),
                             ('throw_delay_s', throw_delay),
                             ('catch_vel_scale', vel_scale)):
             if value < 0.0:
-                return name
+                return name, ('{} = {:g} — negative; 0.0 is the only "use the '
+                              'default" sentinel'.format(name, float(value)))
         return None
 
     def _toss_cancel_deferred(self, seq, now: float) -> bool:
@@ -5049,6 +5131,25 @@ class ReloadCoordinatorNode(Node):
             # `action_then`, so this cannot fire on any other transition.
             self._promote_toss_staged(self._toss_session_ref)
         if decision.action == TOSS_ACTION_POSITION_PLATFORM:
+            # ── The BUSY-absorb forensics line (bag 2026-08-28_23-53-25) ──
+            # Emitted on the FIRST re-poll only, for the reason the STAGED-slot
+            # COMMITTING line above is emitted on the transition: a wait that runs
+            # to the patience bound re-enters this branch five times, and one line
+            # per poll would bury the fact it is announcing. The TOTAL lands in
+            # the record's `position_busy_wait_s`; this exists so an operator
+            # watching the console sees the seam live, and so a session that
+            # completed with absorbs is distinguishable from one that never met
+            # them without opening the corpus.
+            if int(getattr(seq, 'position_busy_polls', 0)) == 1:
+                self.get_logger().info(
+                    'POSITIONING re-polling go_to_pose: trajectory_node answered '
+                    'BUSY — the previous catch plan is inside its {:.2f} s settle '
+                    'hold. Re-emitting every {:.2f} s for up to {:.2f} s; a BUSY '
+                    'outliving that is a wedge and still rejects '
+                    'REJECTED_POSITION(BUSY). Nothing has moved and nothing is '
+                    'armed.'.format(float(hw.JB_TRAJ_CATCH_SETTLE_HOLD_S),
+                                    TOSS_POSITION_BUSY_REPOLL_S,
+                                    TOSS_POSITION_BUSY_PATIENCE_S))
             self._position_platform_for_toss(seq, state)
         elif decision.action == TOSS_ACTION_PREPARE_CATCH:
             # Verified-arrival tick: raise the hold, defer the bundle (see the
@@ -5161,7 +5262,8 @@ class ReloadCoordinatorNode(Node):
             # straight to the FSM so the cycle terminalises REJECTED_<code>
             # instead of a generic ABORTED_PREPARE_FAILED.
             ok = self._prepare_toss_catch(seq, staged=bool(seq.staged))
-            seq.note_prepare_result(ok, self._toss_prepare_reject)
+            seq.note_prepare_result(ok, self._toss_prepare_reject,
+                                    self._toss_prepare_reject_msg)
         if decision.action_then == TOSS_ACTION_DISPATCH_THROW:
             # ── THE COMMIT TICK's second half (B4, plan § 2.4.2) ──
             # ANNOUNCE then DISPATCH, one tick, in that order, and it is the FSM
@@ -5177,7 +5279,9 @@ class ReloadCoordinatorNode(Node):
             outcome, message = self._dispatch_toss_throw(seq, state)
             seq.note_throw_dispatch(outcome, message)
         if (decision.done and decision.result is not None
-                and decision.result.outcome in _TOSS_POSITION_UNKNOWN_TERMINALS):
+                and (base_outcome(decision.result.outcome),
+                     outcome_subcode(decision.result.outcome))
+                in _TOSS_POSITION_UNKNOWN_TERMINALS):
             # Position-unknown terminals carry ACTION_NONE from the FSM, but an
             # ack-timed-out go_to_pose may still be executing — dispatch a
             # best-effort go_home to supersede any zombie move (see
@@ -5305,10 +5409,17 @@ class ReloadCoordinatorNode(Node):
             seq.note_position_result(now, False, 0.0, 'NO_RESPONSE')
             return
         if '[wire DISARMED' in str(resp.message):
-            seq.note_position_result(now, False, 0.0, 'WIRE_DISARMED')
+            seq.note_position_result(now, False, 0.0, 'WIRE_DISARMED',
+                                     str(resp.message))
             return
+        # The MESSAGE goes with the code (2026-08-29). trajectory_node says
+        # exactly why it refused — which bound, which in-flight move — and
+        # discarding that left the operator a bare subcode in the action result
+        # and the real answer in a log line they had to know to go and find. On
+        # an ACCEPTED move the message is irrelevant and the FSM ignores it.
         seq.note_position_result(now, bool(resp.accepted),
-                                 float(resp.planned_duration_s), str(resp.code))
+                                 float(resp.planned_duration_s), str(resp.code),
+                                 str(resp.message))
 
     def _toss_already_positioned(self, x, y, z, release) -> bool:
         """Is the platform ALREADY at the positioning pose, provably? (census B1)
@@ -5547,6 +5658,7 @@ class ReloadCoordinatorNode(Node):
         ``arm_catch`` raise, which C2-stops any in-flight move, while the
         upstream cycle's ball is in the air."""
         self._toss_prepare_reject = ''
+        self._toss_prepare_reject_msg = ''
         if staged:
             drift = self._toss_session_center_drift_mm(seq)
             if drift is not None:
@@ -5556,6 +5668,8 @@ class ReloadCoordinatorNode(Node):
                     'path for the full argument.'
                     % (drift, _TOSS_SESSION_REACH_DRIFT_TOL_MM))
                 self._toss_prepare_reject = 'REACH_CENTER_DRIFT'
+                self._toss_prepare_reject_msg = self._reach_drift_detail(
+                    seq, drift)
                 return False
             if not self._toss_session_armed:
                 self.get_logger().error(
@@ -5592,6 +5706,8 @@ class ReloadCoordinatorNode(Node):
                        centre[0], centre[1], centre[2],
                        _TOSS_SESSION_REACH_DRIFT_TOL_MM))
                 self._toss_prepare_reject = 'REACH_CENTER_DRIFT'
+                self._toss_prepare_reject_msg = self._reach_drift_detail(
+                    seq, drift)
                 return False
             if not self._arm_session(seq):
                 return False
@@ -5828,6 +5944,34 @@ class ReloadCoordinatorNode(Node):
         b = np.asarray(seq.catch_pose_stow_mm, dtype=float)
         drift = float(np.linalg.norm(b - np.asarray(centre, dtype=float)))
         return drift if drift > _TOSS_SESSION_REACH_DRIFT_TOL_MM else None
+
+    def _reach_drift_detail(self, seq, drift: float) -> str:
+        """The REJECTED_REACH_CENTER_DRIFT parenthetical — the same three numbers
+        the ERROR log above carries (the nominated B, the declared centre, the
+        distance against the tolerance), in the ONE string the action result
+        actually delivers.
+
+        Worth carrying twice because this refusal is un-diagnosable without
+        them: the operator did not choose the centre, the SESSION captured it at
+        its one ``arm_catch`` raise several cycles ago, and "this cycle drifted"
+        with no distance and no reference point names neither the offending pose
+        nor how far it has to come back."""
+        centre = self._toss_session_center_mm
+        b = seq.catch_pose_stow_mm
+        return bound_msg(
+            'B ({:.1f}, {:.1f}, {:.1f}) mm is'.format(
+                float(b[0]), float(b[1]), float(b[2])),
+            drift, '>', _TOSS_SESSION_REACH_DRIFT_TOL_MM, 'mm',
+            limit_label='tolerance',
+            knob='catch reach envelope - pre-tilt swing',
+            tail='measured from the reach centre {} the session declared at '
+                 'its ONE arm_catch raise, which trajectory_node cannot '
+                 're-capture under a standing latch — end the session and '
+                 're-arm at the new B'.format(
+                     'UNKNOWN' if centre is None
+                     else '({:.1f}, {:.1f}, {:.1f})'.format(
+                         float(centre[0]), float(centre[1]),
+                         float(centre[2]))))
 
     def _drain_pipeline_and_disarm(self) -> None:
         """S7 — **DRAIN the pipeline, THEN lower the session arming, and do both
@@ -6934,6 +7078,19 @@ class ReloadCoordinatorNode(Node):
                               if getattr(seq, 'scheduled_lead_s', 0.0) else None),
             'throw_site_xy_mm': [float(v) for v in
                                  getattr(seq, 'throw_site_xy_mm', (0.0, 0.0))],
+            # Recorded even when it is zero, for the `commit_slip_s` reason: a
+            # 0.000 absorb is a MEASUREMENT ("POSITIONING was never refused"), and
+            # a distribution that silently drops its zeros cannot say how often a
+            # chained cycle meets the previous catch's settle hold.
+            'position_busy_wait_s': float(
+                getattr(seq, 'position_busy_wait_s', 0.0)),
+            # The HOW MANY beside the HOW LONG, recorded for the same reason and
+            # under the same zero-is-a-measurement rule: `wait_s` alone cannot
+            # say whether 0.24 s was one patient re-poll or six impatient ones,
+            # which is exactly the quantity a re-cut of TOSS_POSITION_BUSY_
+            # REPOLL_S would be argued from.
+            'position_busy_polls': int(
+                getattr(seq, 'position_busy_polls', 0)),
         }
         landing = getattr(seq, 'landing_perf', None)
         if landing is not None:
@@ -7462,8 +7619,9 @@ class ReloadCoordinatorNode(Node):
             catch_pose, height, throw_delay, vel_scale, dwell,
             max_reloads=max_reloads_raw)
         if bad_field is not None:
+            _name, detail = bad_field       # the detail leads with the name
             self.get_logger().error(
-                f'TossContinuous goal REJECTED_BAD_GOAL({bad_field}): '
+                f'TossContinuous goal REJECTED_BAD_GOAL({detail}): '
                 f'catch_position={catch_pose}, throw_height_m={height}, '
                 f'num_throws={num_throws}, dwell_time_s={dwell}, '
                 f'throw_delay_s={throw_delay}, catch_vel_scale={vel_scale}, '
@@ -7471,7 +7629,7 @@ class ReloadCoordinatorNode(Node):
                 f'— refusing before anything runs.')
             self._fill_session_result(result, TossSessionResult(
                 success=False,
-                outcome='REJECTED_BAD_GOAL({})'.format(bad_field)))
+                outcome='REJECTED_BAD_GOAL({})'.format(detail)))
             self._log_toss_session_outcome(result)
             goal_handle.abort()
             with self._lock:
@@ -7490,6 +7648,12 @@ class ReloadCoordinatorNode(Node):
         # Phase E's KNOWN LIMITATION, caught BEFORE a ball flies (num_throws >= 2
         # only — a one-cycle session has no chain). See _predicted_chain_site_mm.
         chain_reachable = True
+        # The predicted centroid and the box it was judged against, carried into
+        # the session so REJECTED_CHAIN_UNREACHABLE can quote them: this is the
+        # one session gate whose numbers the operator cannot reconstruct from
+        # the goal they typed. None ⇒ no chain was checked.
+        chain_site = None
+        chain_box = 0.0
         if num_throws >= 2:
             site = self._predicted_chain_site_mm(catch_pose, flight)
             if site is not None:
@@ -7504,6 +7668,8 @@ class ReloadCoordinatorNode(Node):
                 workspace_xy = float(hw.JB_OP_TOSS_WORKSPACE_XY_MM)
                 chain_reachable = (abs(site[0]) <= workspace_xy
                                    and abs(site[1]) <= workspace_xy)
+                chain_site = (float(site[0]), float(site[1]))
+                chain_box = workspace_xy
                 if not chain_reachable:
                     self.get_logger().error(
                         'TossContinuous REJECTED_CHAIN_UNREACHABLE: a CAUGHT '
@@ -7532,6 +7698,8 @@ class ReloadCoordinatorNode(Node):
             dwell_default_s=float(hw.JB_OP_TOSS_SESSION_DWELL_DEFAULT_S),
             dwell_margin_s=float(hw.JB_OP_TOSS_SESSION_DWELL_MARGIN_S),
             chain_site_reachable=chain_reachable,
+            chain_site_xy_mm=chain_site,
+            chain_box_xy_mm=chain_box,
             # Can layer 3 command a SPEED trim on this goal? It is the only thing
             # that can make a cycle's event_vel differ from the untrimmed
             # vertical closed form the session computes its floors from, and
@@ -8073,8 +8241,9 @@ class ReloadCoordinatorNode(Node):
     @staticmethod
     def _invalid_toss_session_goal_field(catch_pose, throw_height, throw_delay,
                                          vel_scale, dwell, max_reloads=0):
-        """Return the name of the first invalid TossContinuous goal numeric, or
-        None. The six shared with ``Toss`` route through
+        """The first invalid TossContinuous goal numeric as
+        ``(field_name, detail)``, or None. The six shared with ``Toss`` route
+        through
         :meth:`_invalid_toss_goal_field` so the two actions cannot disagree about
         what a valid toss goal is; ``dwell_time_s`` gets the same treatment (0.0
         is the only "use the default" sentinel, so a negative is a sign typo).
@@ -8092,9 +8261,13 @@ class ReloadCoordinatorNode(Node):
         if shared is not None:
             return shared
         if not math.isfinite(dwell) or dwell < 0.0:
-            return 'dwell_time_s'
+            return 'dwell_time_s', (
+                'dwell_time_s = {:g} — must be finite and non-negative; 0.0 is '
+                'the only "use the default" sentinel'.format(float(dwell)))
         if int(max_reloads) < 0:
-            return 'max_reloads'
+            return 'max_reloads', (
+                'max_reloads = {:d} — negative; 0 is the only "use the config '
+                'default" sentinel'.format(int(max_reloads)))
         return None
 
     # ── The auto-reload interlude (§ 3.9) ─────────────────────────────────────
@@ -8143,6 +8316,66 @@ class ReloadCoordinatorNode(Node):
             time.sleep(_TICK_S)
         return True
 
+    def _wait_for_bb_ready(self, obs, *, cancel_now_fn=None):
+        """Rung 2 of the interlude gate, with PATIENCE. Returns a stop code, or
+        None once BB reads IDLE. Commands nothing — it waits.
+
+        A BUSY BallButler is a TRANSIENT, and until 2026-08-29 this rung read it
+        once and refused. On the 2026-08-28 sitting a repeated RELOAD landed while
+        BB was still finishing its own cycle and the session died
+        ``STOPPED_BB_NOT_READY`` — a ~1 s wait turned into a terminal. So a
+        non-IDLE BB is now waited out to ``BB_READY_WAIT_S`` (the SAME bound the
+        reload FSM's CHECKING waits, aliased in ``reload_sequencer`` so the two
+        cannot drift), polled at the ambient ``_TICK_S``.
+
+        TWO states are still IMMEDIATE, and they are the ones patience cannot
+        fix: ``bb_connected`` false is a dead LINK (a stale or absent heartbeat —
+        waiting on a publisher that is not publishing buys nothing but silence),
+        and ``BB_STATE_ERROR`` is a FAULT that needs the operator, so 10 s of
+        waiting only delays the message. Both keep today's code.
+
+        A cancel is honoured immediately throughout: nothing is armed, nothing is
+        airborne, and the deferral discipline (:meth:`_reload_cancel_deferred`)
+        exists for a committed throw, not for a wait."""
+        if not obs.bb_connected or obs.bb_state == BB_STATE_ERROR:
+            return 'STOPPED_BB_NOT_READY'
+        deadline = float(obs.now) + BB_READY_WAIT_S
+        while obs.bb_state != BB_STATE_IDLE:
+            if cancel_now_fn is not None and cancel_now_fn():
+                return 'STOPPED_RELOAD_CANCELLED'
+            now = time.perf_counter()
+            if now >= deadline or not rclpy.ok():
+                # Shutdown shares the deadline's exit deliberately: it is the
+                # fail-closed direction (no reload is dispatched into a dying
+                # graph) and the stop vocabulary has no better name for it.
+                return 'STOPPED_BB_NOT_READY'
+            time.sleep(_TICK_S)
+            obs = self._build_observations(time.perf_counter())
+            if not obs.bb_connected or obs.bb_state == BB_STATE_ERROR:
+                return 'STOPPED_BB_NOT_READY'
+        return None
+
+    def _bb_state_detail(self) -> str:
+        """BB's live heartbeat rendered for a refusal log line.
+
+        Freshness-gated exactly as :meth:`_build_observations` gates it, but read
+        directly rather than through a second ``_build_observations`` call: that
+        builder ticks the possession source and the announced-ball latch, and a
+        log line must not have observation side effects."""
+        now = time.perf_counter()
+        with self._lock:
+            hb = self._hb
+            fresh = hb is not None and (now - self._hb_mono) < _HEARTBEAT_STALE_S
+        if not fresh:
+            return 'bb heartbeat STALE or absent'
+        try:
+            name = BallButlerStates(int(hb.state)).name
+        except ValueError:
+            name = 'UNKNOWN'
+        return ('bb connected=%s state=%s(%d) state_data=%s'
+                % (bool(hb.connected), name, int(hb.state),
+                   getattr(hb, 'state_data', 'n/a')))
+
     def _reload_interlude_gate(self, session, *, cancel_now_fn=None):
         """The node's half of the interlude precondition gate — the rungs that
         are OBSERVATIONS rather than counters (the session owns budget + floor,
@@ -8153,6 +8386,12 @@ class ReloadCoordinatorNode(Node):
         a refused interlude leaves the machine exactly where the rejected cycle
         left it — which is quiescent, because the interlude is only ever entered
         from ``REJECTED_NO_BALL``.
+
+        It can BLOCK, though, and two rungs do: the BB-ready patience
+        (:meth:`_wait_for_bb_ready`) and the seat-edge band
+        (:meth:`_wait_out_seat_edge_band`). Both command nothing and both honour
+        ``cancel_now_fn``; both are charged to
+        :func:`_reload_interlude_budget_s`, whose exit path is the session ABORT.
 
         Ordered so the code names the rung the operator must actually fix."""
         # (1) The RUNTIME prerequisite. Phase 1 shipped
@@ -8166,9 +8405,10 @@ class ReloadCoordinatorNode(Node):
         # (2) BB ready. Read through the SAME freshness-gated snapshot the reload
         # FSM's own CHECKING uses, so the interlude cannot admit a state the
         # sequence would immediately reject.
-        obs = self._build_observations(now)
-        if not obs.bb_connected or obs.bb_state != BB_STATE_IDLE:
-            return 'STOPPED_BB_NOT_READY'
+        stop = self._wait_for_bb_ready(self._build_observations(now),
+                                       cancel_now_fn=cancel_now_fn)
+        if stop is not None:
+            return stop
         # (3) The BB fail-open boot fence (consumer side — see
         # _bb_ball_in_hand_observed_false). A BB that has never published a FALSE
         # has never had its GPIO speak, and its `true` is a boot default.
@@ -8338,11 +8578,16 @@ class ReloadCoordinatorNode(Node):
             # `attempts = 0` and "nothing moved".
             stop = self._reload_interlude_gate(session, cancel_now_fn=cancel_now_fn)
             if stop is not None:
+                # The BB state is part of the refusal, not context for it:
+                # STOPPED_BB_NOT_READY alone cannot tell an operator whether BB
+                # is disconnected, faulted, or merely still busy past the
+                # patience — three different fixes behind one code.
                 self.get_logger().warning(
                     'reload interlude REFUSED %s on attempt %d/%d — nothing '
-                    'moved (reloads %d/%d, floor %d)'
+                    'moved (reloads %d/%d, floor %d; %s)'
                     % (stop, attempts + 1, budget, session.reloads_used,
-                       session.max_reloads, session.floor_balls))
+                       session.max_reloads, session.floor_balls,
+                       self._bb_state_detail()))
                 return False, stop, attempts
             if not self._recentre_for_reload():
                 return False, 'STOPPED_RECENTRE_FAILED', attempts

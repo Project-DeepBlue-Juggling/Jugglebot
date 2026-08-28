@@ -16,8 +16,9 @@ Design (plan § Reload sequence; ordering reworked 2026-07-23 after the first
 hardware session — see the ORDERING PRINCIPLE below):
 
 1. **CHECKING** — loud precondition rejects: the robot in the active reload control
-   mode (``TRAJECTORY``), ``bb/heartbeat`` connected ∧ IDLE, mocap fresh, trajectory
-   streaming, and the platform still CENTERED (``REJECTED_NOT_CENTERED`` — the
+   mode (``TRAJECTORY``), ``bb/heartbeat`` connected ∧ IDLE (a busy BB is WAITED
+   OUT to ``bb_ready_wait_s`` first — it is a transient, not a fault), mocap fresh,
+   trajectory streaming, and the platform still CENTERED (``REJECTED_NOT_CENTERED`` — the
    reload catch is hard-fixed at the workspace centre and the reload never
    pre-positions, so a platform parked off centre would reject the incoming ball
    mid-flight; see the gate's own comment). The moment preconditions pass,
@@ -87,6 +88,9 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from jugglebot.ball_possession import ARRIVAL_BAND_MAX_S
+# THE shared refusal-detail vocabulary, imported for the same reason the toss
+# FSMs import it: one grammar for "you asked for X, the limit is Y, turn Z".
+from jugglebot.outcome_detail import bound_msg
 
 # ── BB heartbeat state enum ────────────────────────────────────────────────────
 # MUST mirror protocol_config.BallButlerStates (the heartbeat's `state` field is the
@@ -130,6 +134,14 @@ RELOAD_CONTROL_MODE = 'TRAJECTORY'
 DEFAULT_THROW_DELAY_S = 3.0                 # >= BB's ~2.5 s lead floor
 MIN_THROW_LEAD_S = 2.5                      # BB CANT_MAKE_LEAD floor
 RELOAD_TIMEOUT_S = 10.0                     # RELOADING → IDLE + ball_in_hand
+# How long CHECKING will WAIT for a busy BB to come back to IDLE before minting
+# REJECTED_BB_BUSY. A non-IDLE BB is TRANSIENT — RELOADING and THROWING both end
+# on their own — and the single-sample read that used to refuse on it turned a
+# ~1 s BB cycle into a terminal that aborts a whole toss_continuous session
+# (2026-08-28 sitting). ALIASED to RELOAD_TIMEOUT_S rather than typed again: that
+# IS the project's validated bound for BB's RELOADING → IDLE cycle, and two
+# hand-written copies of one number is how a re-measure lands in only one of them.
+BB_READY_WAIT_S = RELOAD_TIMEOUT_S
 ANNOUNCEMENT_GRACE_S = 0.5                  # announcement must land within delay + this
 # ⚠ CORRECT BY CONSTRUCTION SINCE 2026-08-26 (D1), where before it was correct by
 # luck. This window is a SENSOR-BAND budget, and until D1 it was spent waiting on
@@ -173,6 +185,20 @@ class ReloadObservations:
                                       # Default False = fail-closed: an FSM that was
                                       # never told is not entitled to assume.
                                       # See REJECTED_NOT_CENTERED in _step_checking.
+    platform_offset_mm: float = float('nan')  # the two numbers behind that boolean —
+    platform_center_tol_mm: float = 0.0       # how far off the reload catch point the
+                                      # platform actually sits, and the tolerance the
+                                      # node applied (envelope radius minus the
+                                      # pre-tilt swing; the node owns that derivation
+                                      # and this module must not restate it). Carried
+                                      # so the refusal can QUOTE them: "not centered"
+                                      # alone does not tell the operator whether they
+                                      # are 5 mm or 150 mm out. NaN offset ⇒ the pose
+                                      # was UNKNOWN or stale, which is the OTHER way
+                                      # platform_centered goes False and a different
+                                      # subsystem to check — so the message keeps the
+                                      # two apart rather than implying a distance it
+                                      # never measured.
     ball_caught: bool = False         # THE possession verdict for the thrown ball —
                                       # the ball-in-cup sensor's, and ONLY its, since
                                       # 2026-08-26 (owner decision D1). The mocap
@@ -211,6 +237,7 @@ class ReloadSequencer:
     catch_point_mm: tuple                       # (x, y, z) world frame for the throw aim
     throw_delay_s: float = DEFAULT_THROW_DELAY_S
     reload_timeout_s: float = RELOAD_TIMEOUT_S
+    bb_ready_wait_s: float = BB_READY_WAIT_S    # 0.0 ⇒ the pre-2026-08-29 instant reject
     announcement_grace_s: float = ANNOUNCEMENT_GRACE_S
     catch_confirm_window_s: float = CATCH_CONFIRM_WINDOW_S
     min_lead_s: float = MIN_THROW_LEAD_S
@@ -220,6 +247,7 @@ class ReloadSequencer:
     _reloading: bool = field(default=False, init=False)
     _reload_requested: bool = field(default=False, init=False)
     _reload_deadline: float = field(default=0.0, init=False)
+    _bb_ready_deadline: float = field(default=0.0, init=False)
     _throw_sent: bool = field(default=False, init=False)
     _throw_result: Optional[tuple] = field(default=None, init=False)   # (accepted, msg)
     _announced: bool = field(default=False, init=False)
@@ -308,6 +336,7 @@ class ReloadSequencer:
     def start(self, now: float) -> None:
         self._phase = PHASE_CHECKING
         self._reload_deadline = now + self.reload_timeout_s
+        self._bb_ready_deadline = now + self.bb_ready_wait_s
 
     def step(self, now: float, obs: ReloadObservations) -> ReloadDecision:
         if self._finished:
@@ -319,7 +348,11 @@ class ReloadSequencer:
         # A lead below BB's floor can never be made — reject up front (also caught by
         # BB's own CANT_MAKE_LEAD, surfaced as REJECTED_BB, but this is loud + early).
         if self._phase == PHASE_CHECKING and self.throw_delay_s < self.min_lead_s:
-            return self._reject('CANT_MAKE_LEAD')
+            return self._reject('CANT_MAKE_LEAD', bound_msg(
+                'throw_delay', self.throw_delay_s, '<', self.min_lead_s, 's',
+                digits=3, limit_label="BB's throw lead floor",
+                knob='MIN_THROW_LEAD_S',
+                tail='BB cannot plan a throw inside it — raise throw_delay_s'))
         # RELOAD runs within the active streaming mode (TRAJECTORY); leaving it
         # mid-sequence is the documented abort. Once _prepared (latch raised / hand
         # primed) the terminal routes through SAFE_ABORT; a pre-prepare leave rejects.
@@ -367,6 +400,20 @@ class ReloadSequencer:
         if not obs.bb_connected:
             return self._reject('BB_DISCONNECTED')
         if obs.bb_state != BB_STATE_IDLE:
+            # WAIT, don't refuse. A non-IDLE BB is a TRANSIENT (RELOADING and
+            # THROWING both end on their own), and the single-sample read this
+            # replaces made a ~1 s BB cycle terminal: a repeated RELOAD inside a
+            # toss_continuous session mints REJECTED_BB_BUSY and the whole
+            # session aborts (2026-08-28 sitting). BB_STATE_ERROR needs no case
+            # here — the universal abort above pre-empts this wait every step.
+            #
+            # Waiting commands NOTHING and arms nothing: this sits BEFORE
+            # ACTION_PRIME_HAND, so the quiescent-refusal property holds for the
+            # whole wait and the deadline reject is still ACTION_NONE. At
+            # bb_ready_wait_s = 0.0 the deadline IS `now` at start(), so the
+            # first step reproduces the instant reject exactly.
+            if now < self._bb_ready_deadline:
+                return ReloadDecision(PHASE_CHECKING, ACTION_NONE, False, None)
             return self._reject('BB_BUSY')
         if not obs.mocap_fresh:
             return self._reject('MOCAP_STALE')
@@ -412,7 +459,26 @@ class ReloadSequencer:
             # and it wants its own evidence. The runbook's DISP-7 row carries
             # the disambiguation (check /trajectory/status is live before
             # believing a NOT_CENTERED).
-            return self._reject('NOT_CENTERED')
+            #
+            # The message separates the gate's TWO ways of saying no. A finite
+            # offset is a geometry verdict and the remedy is one `go_home`; a
+            # NaN one means the commanded pose was never seen or went stale,
+            # where go_home fixes nothing and trajectory_node is the subsystem
+            # to look at (the KNOWN GAP above puts a dead link here too). The
+            # tolerance is the node's derivation, quoted, not restated.
+            if math.isfinite(obs.platform_offset_mm):
+                return self._reject('NOT_CENTERED', bound_msg(
+                    'platform is', obs.platform_offset_mm, '>',
+                    obs.platform_center_tol_mm, 'mm',
+                    limit_label='tolerance',
+                    knob='catch reach envelope - pre-tilt swing',
+                    tail='measured from the reload catch point, which the '
+                         'reload never pre-positions to — go_home and retry'))
+            return self._reject('NOT_CENTERED', 'the live commanded pose is '
+                                                'UNKNOWN or stale, which reads '
+                                                'as NOT centred by design — '
+                                                'check trajectory/status is '
+                                                'live before believing this')
 
         # Preconditions pass → prime the hand IMMEDIATELY (one-shot), before the
         # (up to 10 s) BB reload wait and the aiming call. The ~0.75 s smooth-move

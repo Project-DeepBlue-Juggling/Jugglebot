@@ -399,6 +399,21 @@ FIELDS: Tuple[Field, ...] = (
     Field('position_accepted', 'fsm', 'D', 'b', ''),
     Field('position_planned_s', 'fsm', 'D', 'f', ''),
     Field('position_code', 'fsm', 'D', 's', ''),
+    # ADDITIVE, so no SCHEMA bump (§ 3.7 item 1 — see the pipeline block below).
+    # Recorded even when it is 0.0: a zero is a MEASUREMENT ("this cycle was never
+    # refused BUSY"), and a null is "no FSM ran at all" (the REJECTED_BAD_GOAL
+    # row). Without it a REJECTED_POSITION(BUSY) row cannot be told apart from a
+    # cycle that waited out the previous catch's settle hold and threw.
+    Field('position_busy_wait_s', 'fsm', 'D', 'f',
+          'seconds POSITIONING spent absorbing go_to_pose BUSY re-polls before '
+          'the move was accepted (or the patience ran out). Nonzero on a '
+          'SUCCESSFUL cycle is the chained-cadence seam working; nonzero on a '
+          'REJECTED_POSITION(BUSY) row is a wedge that outlived the settle hold'),
+    Field('position_busy_polls', 'fsm', 'D', 'i',
+          'how many times POSITIONING RE-EMITTED go_to_pose after a BUSY. 0 on '
+          'every cycle that was never refused; the HOW MANY beside '
+          'position_busy_wait_s\'s HOW LONG, as commit_slips is to '
+          'commit_slip_s'),
     Field('catch_target_accepted', 'fsm', 'D', 'b', ''),
     Field('announce_lead_short', 'fsm', 'D', 'b', ''),
     Field('throw_stroke_seen', 'fsm', 'D', 'b', 'G1 release evidence'),

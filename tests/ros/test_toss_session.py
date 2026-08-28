@@ -28,6 +28,10 @@ import pytest
 
 import hardware_config as hw
 from jugglebot.motion.trajectory import hand_stroke
+# THE production helper. Every assertion below that used to compare an outcome
+# to a bare literal now compares the CODE, and it strips the parenthetical the
+# same way the machine's own guards do — a private copy would let the two drift.
+from jugglebot.outcome_detail import base_outcome
 from jugglebot.toss_sequencer import (
     CATCH_CONFIRM_WINDOW_S,
     DEFAULT_TOSS_THROW_DELAY_S,
@@ -132,7 +136,14 @@ def _after_cleanup(landing):
 def test_num_throws_out_of_range_rejected(num_throws):
     s = _session(num_throws=num_throws)
     d = s.step(0.0)
-    assert d.done and d.result.outcome == 'REJECTED_NUM_THROWS'
+    assert d.done and base_outcome(d.result.outcome) == 'REJECTED_NUM_THROWS'
+    # The refusal names the number asked for and the band it left, with the
+    # config knob that widens it — 'out of range' alone leaves the operator
+    # guessing at both ends.
+    msg = d.result.outcome
+    assert 'num_throws {:d} outside [1, {:d}]'.format(
+        num_throws, DEFAULT_SESSION_MAX_THROWS) in msg, msg
+    assert 'toss_session_max_throws' in msg, msg
     assert d.action == SESSION_ACTION_NONE          # S2: nothing to undo
     assert d.result.throws_completed == 0
 
@@ -155,7 +166,10 @@ def test_dwell_non_finite_or_negative_rejected(dwell):
     the ONLY 'use the default' sentinel (the toss FSM's doctrine, transposed)."""
     s = _session(dwell_time_s=dwell)
     d = s.step(0.0)
-    assert d.done and d.result.outcome == 'REJECTED_DWELL'
+    assert d.done and base_outcome(d.result.outcome) == 'REJECTED_DWELL'
+    # The VALUE is in the refusal, because that is the diagnosis: a nan and a
+    # -1.0 are two different typos and 'invalid dwell' distinguishes neither.
+    assert 'finite' in d.result.outcome, d.result.outcome
 
 
 def test_dwell_below_the_derived_floor_is_refused_not_stretched():
@@ -172,7 +186,17 @@ def test_dwell_below_the_derived_floor_is_refused_not_stretched():
     floor = _session().required_dwell_s
     s = _session(dwell_time_s=floor - 0.01)
     d = s.step(0.0)
-    assert d.done and d.result.outcome == 'REJECTED_DWELL'
+    assert d.done and base_outcome(d.result.outcome) == 'REJECTED_DWELL'
+    # The floor is a max() of two terms with DIFFERENT remedies — a
+    # plumbing-bound floor falls when throw_delay does, a hand-floor-bound one
+    # does not move until the flight time changes — so the refusal carries the
+    # decomposition. Without it the operator cannot tell which lever is even
+    # connected, which is the failure this whole gate exists to prevent.
+    msg = d.result.outcome
+    assert 'max(throw_delay' in msg and 'handoff' in msg, msg
+    assert 'hand floor' in msg, msg
+    assert '{:.3f}'.format(floor) in msg, msg
+    assert 'lower throw_delay_s toward' in msg, msg
     # …and exactly at the floor it is accepted.
     ok = _session(dwell_time_s=floor)
     assert ok.step(0.0).action == SESSION_ACTION_START_CYCLE
@@ -431,7 +455,7 @@ def test_the_decided_r5_prime_operating_point_is_REFUSED_and_by_how_much():
                              dwell_margin_s=DEFAULT_SESSION_DWELL_MARGIN_S)
     s.start(0.0)
     assert s.step(0.0).action != SESSION_ACTION_START_CYCLE
-    assert s._checking_reject() == 'REJECTED_THROW_DELAY'
+    assert base_outcome(s._checking_reject()) == 'REJECTED_THROW_DELAY'
     assert s.min_throw_delay_s == pytest.approx(0.4968, abs=5e-4)
     assert s.min_throw_delay_s - 0.34 == pytest.approx(0.1568, abs=5e-4)
     # The dwell was short too, and by the amount the 2026-08-22 audit named.
@@ -603,16 +627,50 @@ def test_the_025s_dwell_is_unreachable_at_every_admitted_flight_time():
                                  flight_time_s=FLIGHT_TIME_MAX_S,
                                  catch_vel_scale=0.9)
     asked.start(0.0)
-    assert asked.step(0.0).result.outcome == 'REJECTED_DWELL'
+    assert base_outcome(asked.step(0.0).result.outcome) == 'REJECTED_DWELL'
 
 
 def test_chain_unreachable_rejected_only_when_chaining():
     """Phase E's KNOWN LIMITATION, caught before a ball flies — but a
     single-cycle session has no chain, so the gate must not fire there."""
     s = _session(num_throws=3, chain_site_reachable=False)
-    assert s.step(0.0).result.outcome == 'REJECTED_CHAIN_UNREACHABLE'
+    assert base_outcome(
+        s.step(0.0).result.outcome) == 'REJECTED_CHAIN_UNREACHABLE'
     solo = _session(num_throws=1, chain_site_reachable=False)
     assert solo.step(0.0).action == SESSION_ACTION_START_CYCLE
+
+
+def test_chain_unreachable_quotes_the_predicted_centroid_and_the_box():
+    """The one session gate whose numbers the operator CANNOT reconstruct from
+    the goal they typed: the refusal is about the PREDICTED cycle-2 throw site,
+    a pose nobody nominated. So it names the centroid, the box and that the
+    remedy is |catch_position|, not the box.
+
+    Un-numbered (a session built without them — every hand-built FSM in this
+    file) it degrades to the bare code rather than inventing a coordinate."""
+    s = _session(num_throws=3, chain_site_reachable=False,
+                 chain_site_xy_mm=(171.4, -12.0), chain_box_xy_mm=160.0)
+    msg = s.step(0.0).result.outcome
+    assert base_outcome(msg) == 'REJECTED_CHAIN_UNREACHABLE'
+    assert 'predicted cycle-2 centroid (171.4, -12.0) mm' in msg, msg
+    assert '171.4 mm > 160.0 mm [toss_workspace_xy_mm]' in msg, msg
+    assert 'lower |catch_position| or run num_throws=1' in msg, msg
+    bare = _session(num_throws=3, chain_site_reachable=False)
+    assert bare.step(0.0).result.outcome == 'REJECTED_CHAIN_UNREACHABLE'
+
+
+def test_the_pipelined_dwell_refusal_names_the_commit_budget_not_the_delay():
+    """The decomposition follows the BRANCH. Pipelined, ``required_dwell_s``
+    charges ``commit_budget_s`` and deliberately ignores ``throw_delay_s`` — so
+    a message that still said "throw_delay" would hand the operator a lever the
+    floor does not consult, and they would lower it and be refused again with
+    the identical number."""
+    s = _pipelined(dwell_time_s=0.10)
+    msg = s.step(0.0).result.outcome
+    assert base_outcome(msg) == 'REJECTED_DWELL'
+    assert 'max(commit budget' in msg, msg
+    assert 'throw_delay' not in msg, msg
+    assert 'hand floor' in msg, msg
 
 
 def test_reject_order_num_throws_before_dwell_before_chain():
@@ -621,11 +679,11 @@ def test_reject_order_num_throws_before_dwell_before_chain():
     s = TossSessionSequencer(num_throws=0, dwell_time_s=0.1,
                              chain_site_reachable=False)
     s.start(0.0)
-    assert s.step(0.0).result.outcome == 'REJECTED_NUM_THROWS'
+    assert base_outcome(s.step(0.0).result.outcome) == 'REJECTED_NUM_THROWS'
     s2 = TossSessionSequencer(num_throws=3, dwell_time_s=0.1,
                               chain_site_reachable=False)
     s2.start(0.0)
-    assert s2.step(0.0).result.outcome == 'REJECTED_DWELL'
+    assert base_outcome(s2.step(0.0).result.outcome) == 'REJECTED_DWELL'
 
 
 # ── Defaults ──────────────────────────────────────────────────────────────────
@@ -914,7 +972,7 @@ def test_no_non_completed_terminal_can_report_success(outcome):
 def test_num_throws_zero_rejects_without_vacuous_success():
     s = _session(num_throws=0)
     d = s.step(0.0)
-    assert d.result.outcome == 'REJECTED_NUM_THROWS'
+    assert base_outcome(d.result.outcome) == 'REJECTED_NUM_THROWS'
     assert d.result.success is False
 
 
@@ -1105,7 +1163,15 @@ def test_throw_delay_below_the_cycle_fsm_gates_is_refused(delay):
     s = TossSessionSequencer(num_throws=3, dwell_time_s=delay + 1.0,
                              throw_delay_s=delay)
     s.start(0.0)
-    assert s.step(0.0).result.outcome == 'REJECTED_THROW_DELAY'
+    out = s.step(0.0).result.outcome
+    assert base_outcome(out) == 'REJECTED_THROW_DELAY'
+    # The floor is DERIVED and speed-dependent, so the refusal quotes both the
+    # requested delay and the speed it was judged at: the same number is a
+    # different floor at a different flight, and an operator who reads only the
+    # floor will re-request it at a shorter flight and be refused again.
+    assert 'throw_delay {:.3f} s'.format(delay) in out, out
+    assert 'session floor {:.3f} s'.format(s.min_throw_delay_s) in out, out
+    assert 'm/s' in out, out
 
 
 def test_the_session_delay_gate_is_neither_looser_nor_stricter_than_the_cycle():
@@ -1162,7 +1228,8 @@ def test_the_throw_delay_gate_precedes_the_dwell_gate():
     too small because the delay is illegal sends them to the wrong field."""
     s = TossSessionSequencer(num_throws=3, throw_delay_s=0.05, dwell_time_s=0.1)
     s.start(0.0)
-    assert s.step(0.0).result.outcome == 'REJECTED_THROW_DELAY'
+    assert base_outcome(
+        s.step(0.0).result.outcome) == 'REJECTED_THROW_DELAY'
 
 
 def test_action_result_fields_match_the_session_result():
@@ -1261,6 +1328,41 @@ def test_reload_policy_emits_the_interlude_instead_of_stopping():
     assert not d.done
     assert d.action == SESSION_ACTION_RELOAD
     assert d.phase == SESSION_PHASE_RELOAD
+
+
+@pytest.mark.parametrize('outcome,action', [
+    ('REJECTED_NO_BALL', SESSION_ACTION_RELOAD),
+    ('REJECTED_NO_BALL(the cup reads a valid EMPTY)', SESSION_ACTION_RELOAD),
+    ('ABORTED_NO_RELEASE', SESSION_ACTION_NONE),
+    ('ABORTED_NO_RELEASE(no stroke telemetry by t_release + 0.500 s)',
+     SESSION_ACTION_NONE),
+])
+def test_the_two_terminal_matchers_key_on_the_code_not_the_whole_string(
+        outcome, action):
+    """The defensive half of the 2026-08-29 enrichment, and the reason it is not
+    optional even though neither code carries a parenthetical today.
+
+    These two matchers decide whether an empty cup starts a reload interlude and
+    whether a non-release earns its one retry. They were string EQUALITIES, so
+    the day either code starts carrying numbers they simply stop matching — and
+    a matcher that stops matching does nothing visible: the session would end on
+    an empty cup with no error anywhere, or the retry would silently become a
+    stop. Both now go through ``base_outcome``, so an enrichment is a non-event
+    rather than a regression discovered on a sitting."""
+    s = _reload_session(num_throws=5)
+    assert s.step(0.0).action == SESSION_ACTION_START_CYCLE
+    s.note_cycle_result(TossResult(False, outcome, float('nan'), float('nan')),
+                        DELAY, DELAY + FLIGHT,
+                        ball_evidence=EVIDENCE_SEATED_NAME)
+    d = s.step(DELAY)
+    assert not d.done, d
+    assert d.action == action, d
+    if action == SESSION_ACTION_RELOAD:
+        assert d.phase == SESSION_PHASE_RELOAD
+    else:
+        # The retry path: not a stop, and scheduled onto the MISS cleanup floor
+        # (which is why this step is quiet rather than starting a cycle).
+        assert s._retry_next is True
 
 
 def test_the_interlude_is_re_emitted_until_the_node_answers():
@@ -1675,7 +1777,7 @@ def test_the_pipelined_dwell_floor_admits_the_milestone():
             assert s.dwell_time_s >= s.required_dwell_s, h
             assert s._checking_reject() is None, h
         else:
-            assert s._checking_reject() == 'REJECTED_DWELL', h
+            assert base_outcome(s._checking_reject()) == 'REJECTED_DWELL', h
     # …and the two clearances the plan publishes, which are what B5 exists to
     # widen at h = 1.0 (17.9 ms is the same razor-edge class as R5's 1.9 ms).
     for h, clearance in ((1.00, 0.0179), (1.30, 0.1018)):
@@ -1716,7 +1818,8 @@ def test_the_delay_gate_survives_on_both_branches():
     for pipelined in (False, True):
         s = _session(pipelined=pipelined, throw_delay_s=0.05,
                      dwell_time_s=9.0)
-        assert s._checking_reject() == 'REJECTED_THROW_DELAY', pipelined
+        assert base_outcome(
+            s._checking_reject()) == 'REJECTED_THROW_DELAY', pipelined
 
 
 def test_at_most_one_cycle_is_past_its_commit(monkeypatch):

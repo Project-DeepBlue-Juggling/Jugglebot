@@ -32,7 +32,7 @@ import pytest
 from jugglebot import toss_record as tr
 from jugglebot.reload_coordinator_node import ReloadCoordinatorNode
 import jugglebot.reload_coordinator_node as rcn
-from jugglebot.toss_sequencer import TossResult
+from jugglebot.toss_sequencer import TossResult, TossSequencer
 
 
 def _node():
@@ -164,6 +164,51 @@ def test_a_rejected_bad_goal_records_NO_resolved_state():
     assert bad['goal_throw_delay_s_raw'] == pytest.approx(5.0)
     assert bad['goal_throw_height_m_raw'] is None      # NaN encodes as null
     assert bad['outcome'] == 'REJECTED_BAD_GOAL(throw_height_m)'
+
+
+def test_the_busy_absorb_reaches_the_record():
+    """The POSITIONING BUSY re-poll's forensic (2026-08-29) is an ADDITIVE field,
+    so it must reach the wire and VALIDATE without a SCHEMA bump — the schema's
+    own rule (§ 3.7 item 1): a reader that does not know the field reads a null,
+    a reader that does gets the whole story.
+
+    Zero is RECORDED, not dropped, for the `commit_slip_s` reason: a 0.000 absorb
+    is the measurement "POSITIONING was never refused", and a distribution that
+    silently loses its zeros cannot say how often a chained cycle meets the
+    previous catch's settle hold. The FSM half — that the number is the wait
+    actually absorbed — is pinned in test_toss_sequencer.py; what this file owns
+    is that the declaration carries it.
+
+    BOTH halves of the pair are pinned here. `position_busy_wait_s` is HOW LONG
+    and `position_busy_polls` is HOW MANY — the same split `commit_slip_s` and
+    `commit_slips` make for the commit gate — and a declaration that carried only
+    the duration could not say whether 0.24 s was one patient re-poll or six
+    impatient ones, which is the quantity a re-cut of the re-poll period would be
+    argued from. The property under test is the DECLARATION, so a missing
+    `position_busy_polls` fails here and not only in a corpus months later.
+    """
+    node = _node()
+    _open(node)
+    seq = TossSequencer(catch_pose_stow_mm=(0.0, 150.0, 170.0), flight_time_s=0.8)
+    with node._lock:
+        node._active_seq = seq
+    node._log_toss_outcome(TossResult(True, 'CAUGHT'))
+    quiet = _records(node)[0]
+    assert tr.validate(quiet) == ()
+    assert quiet['schema'] == tr.SCHEMA
+    assert quiet['position_busy_wait_s'] == pytest.approx(0.0)
+    assert quiet['position_busy_polls'] == 0
+
+    seq._position_busy_wait_s = 0.24
+    seq._position_busy_polls = 3
+    _open(node, goal_id='cafef00ddeadbeef', cycle_index=2)
+    with node._lock:
+        node._active_seq = seq
+    node._log_toss_outcome(TossResult(True, 'CAUGHT'))
+    absorbed = _records(node)[1]
+    assert tr.validate(absorbed) == ()
+    assert absorbed['position_busy_wait_s'] == pytest.approx(0.24)
+    assert absorbed['position_busy_polls'] == 3
 
 
 def test_the_uid_is_session_goal_cycle():

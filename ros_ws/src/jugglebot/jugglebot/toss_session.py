@@ -393,6 +393,12 @@ from typing import List, Optional
 
 from jugglebot.ball_possession import ARRIVAL_BAND_MIN_S
 from jugglebot.motion.trajectory import hand_stroke, throw_envelope
+# THE shared refusal vocabulary. `base_outcome` is load-bearing here, not
+# cosmetic: this FSM matches cycle terminals by EQUALITY to decide whether to
+# run a reload interlude or a no-release retry, and an enriched terminal would
+# silently stop matching — the interlude would never fire and an empty cup would
+# end the session instead of reloading. Both guards go through it.
+from jugglebot.outcome_detail import base_outcome, bound_msg, range_msg
 from jugglebot.toss_sequencer import (
     CATCH_CONFIRM_WINDOW_S,
     DEFAULT_TOSS_THROW_DELAY_S,
@@ -714,6 +720,15 @@ OUTCOME_STOPPED_RELOAD_FAILED = 'STOPPED_RELOAD_FAILED'
 # only toss terminal where the FSM provably commanded NOTHING: it is minted in
 # CHECKING, before `_positioned` or `_prepare_dispatched`, so `_terminal_action`
 # returns ACTION_NONE and the machine is quiescent when the interlude starts.
+#
+# Both this and NO_RELEASE_OUTCOME below are matched through
+# ``outcome_detail.base_outcome``, not by string equality (2026-08-29). Neither
+# code carries a parenthetical today — NO_BALL is a structural verdict with no
+# numeric knob, and the abort is a plant fault — but the cost of that assumption
+# being wrong is silent and total: an enriched NO_BALL would stop matching, the
+# interlude would never fire, and a session that could have reloaded would end
+# on an empty cup with no error anywhere. Matching the CODE makes a future
+# enrichment a non-event instead of a regression nobody sees until a sitting.
 RELOAD_TRIGGER_OUTCOME = 'REJECTED_NO_BALL'
 
 # The terminal the single retry is gated on (operator decision 6, 2026-08-10).
@@ -819,6 +834,16 @@ class TossSessionSequencer:
                                                 #   session has no chain to check; the
                                                 #   node passes it explicitly whenever
                                                 #   num_throws >= 2.
+    chain_site_xy_mm: Optional[tuple] = None    # the PREDICTED centroid the boolean
+                                                #   above was computed from, and the box
+    chain_box_xy_mm: float = 0.0                #   it was judged against — carried so
+                                                #   the refusal can QUOTE them. The node
+                                                #   already composes both into an ERROR
+                                                #   log; passing the numbers (not that
+                                                #   prose) keeps the sentence out of the
+                                                #   pure module and lets a test assert a
+                                                #   value. None/0.0 ⇒ not told, and the
+                                                #   refusal degrades to the bare code.
     on_empty_cup: str = ON_EMPTY_CUP_STOP       # STOP (default) | RELOAD. The ctor
                                                 #   default matches the ACTION's IDL
                                                 #   default and the node re-resolves
@@ -1453,12 +1478,33 @@ class TossSessionSequencer:
         return TossSessionDecision(SESSION_PHASE_DWELL, SESSION_ACTION_NONE,
                                    self._cycle_index, False, None)
 
+    @staticmethod
+    def _reject(code: str, message: str = '') -> str:
+        """``REJECTED_<code>`` with an optional parenthesised detail — the same
+        two-part shape ``TossSequencer._reject`` and ``ReloadSequencer._reject``
+        mint, so an operator reads one grammar across all three FSMs and
+        ``base_outcome`` recovers the code from any of them.
+
+        A method rather than an inline format so the session's refusals cannot
+        drift into a second punctuation, and so adding a detail to one of them
+        is a one-argument change at the gate."""
+        return ('REJECTED_{}({})'.format(code, message) if message
+                else 'REJECTED_{}'.format(code))
+
     def _checking_reject(self) -> Optional[str]:
         """Session-level CHECKING, strictest first. Every one of these is a
         pre-throw refusal that moves NOTHING — no cycle has been built, so the
-        machine is exactly as the operator left it."""
+        machine is exactly as the operator left it.
+
+        Every gate here is limit-bearing, so every one of them names the
+        requested value, the limit it broke and the knob that moves it IN THE
+        OUTCOME — the session's outcome is what reaches the action result and
+        ``per_cycle_outcomes``, and a floor quoted only in a log is a floor the
+        operator has to go looking for while the robot sits idle."""
         if self.num_throws < 1 or self.num_throws > self.max_throws:
-            return 'REJECTED_NUM_THROWS'
+            return self._reject('NUM_THROWS', range_msg(
+                'num_throws', self.num_throws, 1, self.max_throws, digits=0,
+                knob='toss_session_max_throws'))
         if self.throw_delay_s < self.min_throw_delay_s:
             # The session mirrors the CYCLE's own delay gates so the verdict
             # names throw_delay_s — the field that is wrong — instead of dying
@@ -1480,9 +1526,22 @@ class TossSessionSequencer:
             # mirror that models a different sequence from the guard it fronts
             # for is not a mirror; it is a second, looser gate wearing the
             # first one's name, and it is what let three cadence rungs ship.
-            return 'REJECTED_THROW_DELAY'
+            #
+            # The floor is DERIVED and speed-dependent, so the message quotes
+            # the speed it was derived at: the same number is a different floor
+            # on a different flight time, and an operator who reads only "0.361"
+            # will re-request it at a shorter flight and be refused again.
+            return self._reject('THROW_DELAY', bound_msg(
+                'throw_delay', self.throw_delay_s, '<', self.min_throw_delay_s,
+                's', digits=3, limit_label='session floor',
+                tail='the kind-0 dispatch budget plus the pre-dispatch '
+                     'sequence at {:.2f} m/s (census-B1 skip) — raise '
+                     'throw_delay_s, or throw_height_m for a longer '
+                     'flight'.format(self.floor_event_vel_mps)))
         if not math.isfinite(self.dwell_time_s) or self.dwell_time_s < 0.0:
-            return 'REJECTED_DWELL'
+            return self._reject('DWELL', 'dwell {:.3f} s is not a finite, '
+                                         'non-negative number'
+                                .format(self.dwell_time_s))
         if self.dwell_time_s < self.required_dwell_s:
             # The floor is derived from THIS session's throw_delay (module
             # docstring). Refusing beats silently stretching: a cadence the
@@ -1500,7 +1559,28 @@ class TossSessionSequencer:
             # magnitude above the real one, be refused again, and never discover
             # the rungs are legal. Naming the property rather than a literal is
             # what keeps this sentence true through the next re-derivation.
-            return 'REJECTED_DWELL'
+            #
+            # And the message carries the max()'s DECOMPOSITION, because the two
+            # terms have different remedies: a plumbing-bound floor falls when
+            # throw_delay does, while a hand-floor-bound one does not move at
+            # all until the flight time changes. Without the split the operator
+            # cannot tell which lever is even connected. `required_dwell_s`
+            # substitutes the commit budget for throw_delay on the pipelined
+            # branch, so the label follows the branch rather than being pinned
+            # to the serial wording.
+            plumbing = (commit_budget_s(self.floor_event_vel_mps)
+                        if self.pipelined else float(self.throw_delay_s))
+            label = 'commit budget' if self.pipelined else 'throw_delay'
+            return self._reject('DWELL', bound_msg(
+                'dwell', self.dwell_time_s, '<', self.required_dwell_s, 's',
+                digits=3, limit_label='floor',
+                tail='max({} {:.3f} + handoff {:.3f}, hand floor {:.3f}) — '
+                     'raise dwell_time_s{}'.format(
+                         label, plumbing, self.handoff_margin_s,
+                         self.hand_floor_dwell_s,
+                         '' if self.pipelined
+                         else ' or lower throw_delay_s toward {:.3f}'.format(
+                             self.min_throw_delay_s))))
         if self.num_throws >= 2 and not self.chain_site_reachable:
             # The chain pre-check, caught BEFORE a ball flies. Without this, a
             # session near the box edge throws one ball, catches it, then
@@ -1511,7 +1591,26 @@ class TossSessionSequencer:
             # 2026-08-14); it re-binds only if the box is set below
             # cap × ~1.03 (frontier at box = 150: |B| <= 146.5 chained,
             # >= 147.0 did not — probe, 2026-07-29).
-            return 'REJECTED_CHAIN_UNREACHABLE'
+            #
+            # The refusal is about a pose the operator never typed — the
+            # PREDICTED cycle-2 throw site — so it is the one gate here whose
+            # numbers cannot be reconstructed from the goal at all. It names the
+            # predicted centroid, the box, and that the remedy is |B|, not the
+            # box.
+            if (self.chain_site_xy_mm is not None
+                    and self.chain_box_xy_mm > 0.0):
+                return self._reject('CHAIN_UNREACHABLE', bound_msg(
+                    'predicted cycle-2 centroid ({:.1f}, {:.1f}) mm, |max| ='
+                    .format(float(self.chain_site_xy_mm[0]),
+                            float(self.chain_site_xy_mm[1])),
+                    max(abs(float(self.chain_site_xy_mm[0])),
+                        abs(float(self.chain_site_xy_mm[1]))),
+                    '>', self.chain_box_xy_mm, 'mm',
+                    knob='toss_workspace_xy_mm',
+                    tail='a CAUGHT cycle 1 parks the platform there and cycle 2 '
+                         'would be refused WORKSPACE with the ball already '
+                         'caught — lower |catch_position| or run num_throws=1'))
+            return self._reject('CHAIN_UNREACHABLE')
         return None
 
     # ── discrete event (from the node) ─────────────────────────────────────────
@@ -1652,7 +1751,7 @@ class TossSessionSequencer:
             # A ball flew and was not caught. It counts as a throw.
             self._throws += 1
             self._no_release_streak = 0
-        elif outcome == RELOAD_TRIGGER_OUTCOME \
+        elif base_outcome(outcome) == RELOAD_TRIGGER_OUTCOME \
                 and self.on_empty_cup == ON_EMPTY_CUP_RELOAD:
             # THE auto-reload trigger (§ 3.9). Nothing flew and — uniquely among
             # the toss terminals — nothing was ARMED either: REJECTED_NO_BALL is
@@ -1673,7 +1772,7 @@ class TossSessionSequencer:
                 return
             self._reload_pending = True
             return
-        elif outcome == NO_RELEASE_OUTCOME:
+        elif base_outcome(outcome) == NO_RELEASE_OUTCOME:
             # Operator decision 6 (2026-08-10), which REOPENED the design's D9
             # deferral. The hand sensor answers the only question that made the
             # retry unsafe: with a VALID HELD read the ball is demonstrably still

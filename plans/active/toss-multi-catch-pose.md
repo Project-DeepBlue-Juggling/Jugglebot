@@ -591,6 +591,23 @@ the FIRST cycle of a sitting ever pays"* — and generalises its premise honestl
 when **every** leg moves, the premise is false, the carve-out is empty, and the
 moving floor becomes the session floor. That is the turning ring.
 
+**The moving leg's floor also owes the previous catch's settle hold.** A leg that
+COMMANDS its re-orient cannot dispatch that `go_to_pose` until the previous
+cycle's catch plan has expired: `build_catch`'s post-arrival tail is
+`JB_TRAJ_CATCH_SETTLE_HOLD_S` = 0.50 s, and inside it `_active_move_in_flight()`
+is True and `trajectory_node` refuses the move `BUSY` — correctly. Bag-proven
+2026-08-28_23-53-25: three deterministic `ABORTED_CYCLE_REJECTED_POSITION(BUSY)`
+on a displaced chain whose POSITIONING dispatched 0.09–0.23 s after landing. So
+the moving branch above gains a `+ JB_TRAJ_CATCH_SETTLE_HOLD_S` term, anchored at
+the **committed arrival** rather than at the dispatch. The runtime BUSY re-poll
+that landed 2026-08-29 (`TOSS_POSITION_BUSY_PATIENCE_S`,
+`toss_sequencer._absorb_position_busy`) is the **bounded absorb** for the residual
+a budget cannot pre-pay; § 2.7's floor is the **budgeted** answer — the same
+division of labour § 2.8 draws between its re-cut arrival term and its runtime
+absorb. Under **M3**'s every-leg-serial rings this seam is universal, not
+displacement-only: a co-located chain escapes it today only because the
+census-B1 skip never calls the service at all.
+
 **`pre_dispatch_budget_s(True)` must be made honest before any of this is true.**
 Its arrival term is `TOSS_POSITION_MIN_MOVE_S + TOSS_POSITION_SETTLE_PAD_S` =
 0.400 s, i.e. it assumes the move plans at the planner's floor. With lean off it

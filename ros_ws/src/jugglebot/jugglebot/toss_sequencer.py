@@ -221,6 +221,13 @@ from typing import Optional
 # can never drift into two spellings of the same state.
 from jugglebot.ball_possession import ARRIVAL_BAND_MAX_S, EVIDENCE_UNKNOWN
 
+# The shared refusal-detail vocabulary (pure text formatting over numbers this
+# module already holds).  Imported rather than restated so the three FSMs and
+# their tests punctuate a bound the same way; the module's other export,
+# `base_outcome`, is what CONSUMERS of these strings use to recover the bare
+# code, and it is why enriching a refusal here cannot disarm a guard there.
+from jugglebot.outcome_detail import bound_msg, range_msg
+
 # The derived throw-admission envelope (contract C-HAND-3,
 # ros_ws/docs/hand_throw_envelope.md).  This is the ONE import in this module
 # that is NOT mirrored by a local literal + drift-guard pin, and that asymmetry
@@ -263,7 +270,15 @@ PHASE_SETTLING = 'SETTLING'
 
 # ── Actions the node executes on the FSM's behalf ──────────────────────────────
 ACTION_NONE = 'none'
-ACTION_POSITION_PLATFORM = 'position_platform'  # go_to_pose to the catch pose (once)
+ACTION_POSITION_PLATFORM = 'position_platform'  # go_to_pose to the catch pose. Once,
+                                                #   with ONE carve-out: a BUSY refusal
+                                                #   is re-emitted on the
+                                                #   TOSS_POSITION_BUSY_REPOLL_S grid
+                                                #   for at most
+                                                #   TOSS_POSITION_BUSY_PATIENCE_S
+                                                #   (_absorb_position_busy). Nothing has
+                                                #   moved and nothing is armed while
+                                                #   that runs
 ACTION_PREPARE_CATCH = 'prepare_catch'          # node: prime-hold raise on THIS tick,
                                                 #   then (one tick later) gains + latch
                                                 #   raise + vel_scale + prime-dispatched
@@ -477,6 +492,43 @@ TOSS_POSITION_MIN_MOVE_S = 0.2       # trajectory_node's `min_move_duration_s` �
                                      # its pre-positioning move cannot arrive sooner
                                      # than this + the settle pad, and that wait is
                                      # spent out of throw_delay.
+_POSITION_BUSY_CODE = 'BUSY'         # trajectory_node's `_BUSY` — the ONE go_to_pose
+                                     # refusal that clears on its own. Named rather
+                                     # than inlined at the branch below because the
+                                     # string is a WIRE value shared with a node this
+                                     # module deliberately does not import.
+TOSS_POSITION_BUSY_PATIENCE_S = 0.54 # a go_to_pose refused BUSY is RE-POLLED for this
+                                     # long before it becomes REJECTED_POSITION(BUSY).
+                                     # 0.50 + 0.040 = hw.JB_TRAJ_CATCH_SETTLE_HOLD_S +
+                                     # NODE_LOOP_PERIOD_S, local literals in this
+                                     # module's established pattern and pinned to the
+                                     # generated config by test_toss_sequencer.py's
+                                     # drift guard.
+                                     #
+                                     # THE ONE plan that can legitimately hold the
+                                     # platform at the head of a chained cycle is the
+                                     # PREVIOUS cycle's build_catch, whose post-arrival
+                                     # tail is exactly the settle hold — so the bound is
+                                     # that hold, anchored at the COMMITTED arrival (a
+                                     # late reactive refinement re-anchors the arrival
+                                     # and the bound moves with it; observed margin
+                                     # 0.266 s in bag 2026-08-28_23-53-25). One loop
+                                     # period covers the tick grid the FSM polls on.
+                                     #
+                                     # A BUSY that OUTLIVES this is a WEDGE — a stray
+                                     # go_home, a SpaceMouse nudge, a guard latch — and
+                                     # must still abort. That is why the bound is NOT
+                                     # TOSS_POSITIONING_TIMEOUT_S (6.0) and NOT the
+                                     # session stall watchdog: both are no-response
+                                     # watchdogs an order of magnitude looser, and
+                                     # waiting either out would launder a wedge into
+                                     # ABORTED_POSITION_TIMEOUT (or a session stall)
+                                     # instead of naming the refusal that happened.
+TOSS_POSITION_BUSY_REPOLL_S = 0.10   # spacing between BUSY re-polls. go_to_pose is a
+                                     # BLOCKING round trip inside the node loop (bag
+                                     # tick_max 320-337 ms on these cycles), so
+                                     # re-emitting it on every 20 ms tick would multiply
+                                     # that cost across the wait it exists to absorb.
 TOSS_RELEASE_GRACE_S = 0.5           # release evidence must appear within t_release +
                                      # this (mirrors reload's ANNOUNCEMENT_GRACE_S).
 CATCH_CONFIRM_WINDOW_S = ARRIVAL_BAND_MAX_S
@@ -623,13 +675,37 @@ def reach_displacement_limit_mm(flight_time_s: float,
     2/8-4/8). It is a loud+early convenience, never the truth: the truth is
     ``trajectory_node``'s own feasibility gate, and the SAFETY margin against
     the optimistic half is ``max_displacement_mm``, not this bound."""
+    return reach_displacement_bound(flight_time_s, vel_mmps, acc_mmps2,
+                                    jerk_mmps3)[0]
+
+
+def reach_displacement_bound(flight_time_s: float,
+                             vel_mmps: 'float | None' = None,
+                             acc_mmps2: 'float | None' = None,
+                             jerk_mmps3: 'float | None' = None) -> tuple:
+    """``(limit_mm, binding_term)`` — :func:`reach_displacement_limit_mm` plus
+    WHICH of the three peaks produced it (``'vel'`` / ``'acc'`` / ``'jerk'``).
+
+    ONE derivation, two callers: the gate takes the number, the REFUSAL takes
+    the name. "100 mm exceeds the 93.2 mm reach bound" sends an operator hunting
+    through three limits; "jerk-bound at T = 0.571 s" sends them to the one that
+    actually binds — and which term binds decides which remedy is cheap, since
+    the bound grows as T³ on jerk and only as T on velocity."""
     t = float(flight_time_s)
     vel = REACH_VEL_LIMIT_MMPS if vel_mmps is None else float(vel_mmps)
     acc = REACH_ACC_LIMIT_MMPS2 if acc_mmps2 is None else float(acc_mmps2)
     jerk = REACH_JERK_LIMIT_MMPS3 if jerk_mmps3 is None else float(jerk_mmps3)
-    return min(vel * t / REACH_PEAK_VEL_FACTOR,
-               acc * t * t / REACH_PEAK_ACC_FACTOR,
-               jerk * t ** 3 / REACH_PEAK_JERK_FACTOR)
+    # An explicit min-then-match rather than min() over (value, name) pairs:
+    # that would order by NAME on a tie, while this keeps the vel < acc < jerk
+    # precedence the peaks are quoted in everywhere else.
+    terms = ((vel * t / REACH_PEAK_VEL_FACTOR, 'vel'),
+             (acc * t * t / REACH_PEAK_ACC_FACTOR, 'acc'),
+             (jerk * t ** 3 / REACH_PEAK_JERK_FACTOR, 'jerk'))
+    limit = min(value for value, _name in terms)
+    for value, name in terms:
+        if value == limit:
+            return limit, name
+    return limit, 'jerk'               # unreachable except for an all-NaN T
 
 # ── Tier-8a vertical-toss ballistics (default event_vel) ───────────────────────
 # Kept as module constants (not a generated-config / motion import) so this module
@@ -1613,6 +1689,17 @@ class TossSequencer:
                                                 # (either tier) an aim-corrected
                                                 # virtual target — hence not
                                                 # gated on the tier
+    tilt_required_deg: float = float('nan')     # the two numbers ThrowTiltInfeasible
+    tilt_max_deg: float = float('nan')          # carries, node-fed alongside the flag
+                                                # above so REJECTED_TILT_CLAMP can NAME
+                                                # the aim it needed and the ceiling it
+                                                # broke. NaN ⇒ the node did not say
+                                                # (older caller, hand-built FSM), and
+                                                # the refusal degrades to the bare code
+                                                # rather than inventing a number. Kept
+                                                # as floats, not the exception's prose:
+                                                # the clamp math stays in motion/, and
+                                                # a number is what a test can assert.
 
     # ── internal state ──
     _phase: str = field(default=PHASE_CHECKING, init=False)
@@ -1620,8 +1707,28 @@ class TossSequencer:
     _t_release: float = field(default=0.0, init=False)   # _t_accept + throw_delay (perf)
     _position_dispatched: bool = field(default=False, init=False)
     _position_result: Optional[tuple] = field(default=None, init=False)  # (ok, dur, code)
+    #: The service's own ``message`` for a REFUSED go_to_pose, kept OUT of the
+    #: tuple above on purpose: `code` is machine-readable (the BUSY re-poll keys
+    #: on it, and the record's `position_code` column is it), while this is the
+    #: prose that tells the operator WHY — so the two never get confused for one
+    #: another. Empty ⇒ REJECTED_POSITION(<code>) exactly as before.
+    _position_message: str = field(default='', init=False)
     _position_arrival_time: float = field(default=0.0, init=False)
     _positioning_deadline: float = field(default=0.0, init=False)
+    #: The BUSY re-poll window (:data:`TOSS_POSITION_BUSY_PATIENCE_S`), stamped at
+    #: EVERY ``ACTION_POSITION_PLATFORM`` dispatch alongside
+    #: ``_positioning_deadline`` so the two are always anchored to the same
+    #: instant, and the instant a re-poll spacing is next satisfied at.
+    _position_busy_deadline: float = field(default=0.0, init=False)
+    _position_busy_next_poll: float = field(default=0.0, init=False)
+    #: Forensics for the absorbed wait: when the first BUSY was SEEN (0.0 = never),
+    #: how long the absorb has run, and how many re-polls it cost. The pair says
+    #: the same two things ``slip_s``/``commit_slips`` say about the commit gate —
+    #: HOW LONG and HOW MANY — and it is what makes a settle-hold wait
+    #: distinguishable from a wedge after the fact.
+    _position_busy_seen_at: float = field(default=0.0, init=False)
+    _position_busy_wait_s: float = field(default=0.0, init=False)
+    _position_busy_polls: int = field(default=0, init=False)
     _positioned: bool = field(default=False, init=False)  # move ACCEPTED (cleanup marker)
     _prepare_dispatched: bool = field(default=False, init=False)
     _prepare_result: Optional[bool] = field(default=None, init=False)
@@ -1630,6 +1737,10 @@ class TossSequencer:
     #: bundle failure into ``ABORTED_PREPARE_FAILED``. Empty ⇒ the generic
     #: abort. Today's one producer is the S6 reach-centre drift guard.
     _prepare_reject_code: str = field(default='', init=False)
+    #: The numbers behind that code, when the node has them (the drift guard's
+    #: nominated B, the declared centre and the distance between them). Same
+    #: split as `_position_message`: the CODE routes, the message explains.
+    _prepare_reject_message: str = field(default='', init=False)
     _announce_dispatched: bool = field(default=False, init=False)
     _announced: bool = field(default=False, init=False)   # node confirmed the publish
     _announce_lead_short: bool = field(default=False, init=False)  # WARN flag (Tier 8a)
@@ -1769,17 +1880,30 @@ class TossSequencer:
     # ── discrete async events (from the node) ──────────────────────────────────
 
     def note_position_result(self, now: float, accepted: bool,
-                             planned_duration_s: float, code: str = '') -> None:
+                             planned_duration_s: float, code: str = '',
+                             message: str = '') -> None:
         """Report the ``go_to_pose`` service outcome. ``now`` anchors the timed
         arrival (``now + planned_duration_s + settle pad``) — the service returns
         at plan-install, so the plan clock starts at the response, not at the tick
         that eventually consumes it. On accept the positioning deadline is
         extended to cover the arrival + the mocap verification window (it never
-        shrinks). First result wins; ignored unless the move was dispatched."""
+        shrinks). First result wins; ignored unless the move was dispatched.
+
+        ``code`` and ``message`` are the service response's two halves and stay
+        SEPARATE all the way to the terminal. The code is the machine-readable
+        one — ``_step_positioning``'s BUSY re-poll matches on it exactly, and it
+        is what the record's ``position_code`` column stores — so it must never
+        pick up prose. The message is what trajectory_node said about the refusal
+        ("a move is in flight …", the workspace bound it broke) and, until
+        2026-08-29, the node DISCARDED it: the operator got
+        ``REJECTED_POSITION(BUSY)`` and had to go find a log line for the rest.
+        It now rides the outcome as ``REJECTED_POSITION(<code>: <message>)``,
+        and an empty message leaves the string byte-identical to before."""
         if (not self._position_dispatched or self._finished
                 or self._position_result is not None):
             return
         self._position_result = (bool(accepted), float(planned_duration_s), str(code))
+        self._position_message = str(message or '')
         if accepted:
             self._positioned = True
             self._position_arrival_time = (
@@ -1836,7 +1960,8 @@ class TossSequencer:
             self._positioning_deadline,
             self._position_arrival_time + TOSS_POSITION_VERIFY_WINDOW_S)
 
-    def note_prepare_result(self, ok: bool, reject_code: str = '') -> None:
+    def note_prepare_result(self, ok: bool, reject_code: str = '',
+                            message: str = '') -> None:
         """Report the ``ACTION_PREPARE_CATCH`` bundle outcome. A failure aborts
         BEFORE the announcement and the throw — the arming-before-throw ordering.
 
@@ -1857,10 +1982,16 @@ class TossSequencer:
         declaration is consumed at its ONE raise, so a cycle nominating a B that
         has left that envelope cannot be flown, and the distinction matters
         because a REJECTED names an operator-visible refusal while an ABORTED
-        reads as a plant fault."""
+        reads as a plant fault.
+
+        ``message`` carries that refusal's NUMBERS to the terminal — for the
+        drift guard, the B this cycle nominated, the centre the session declared
+        and the tolerance between them, which until 2026-08-29 existed only in a
+        node ERROR line the action result never saw."""
         if self._prepare_dispatched and not self._finished:
             self._prepare_result = bool(ok)
             self._prepare_reject_code = str(reject_code or '')
+            self._prepare_reject_message = str(message or '')
 
     def note_upstream_terminalised(self) -> None:
         """S1′'s other half: the node reports that the cycle AHEAD of this one
@@ -1989,7 +2120,18 @@ class TossSequencer:
                 # TOSS_DISPATCH_DEBOUNCE_S. The physical lead the dispatch needs
                 # is checked immediately below, once the flight time (and with
                 # it the release speed) has been validated.
-                return self._reject('CANT_MAKE_LEAD')
+                #
+                # The message says DEBOUNCE explicitly: this code is minted at
+                # three sites and the other two are physical lead floors, so an
+                # operator who reads "CANT_MAKE_LEAD" and goes looking at the
+                # hand geometry would be at the wrong gate entirely.
+                return self._reject('CANT_MAKE_LEAD', bound_msg(
+                    'throw_delay', self.throw_delay_s, '<',
+                    self.min_throw_delay_s, 's', digits=3,
+                    limit_label='goal-storm debounce',
+                    knob='TOSS_DISPATCH_DEBOUNCE_S',
+                    tail='NOT a readiness floor — the physical lead gate is '
+                         'checked further down, once the flight time is valid'))
             if self.release_at_perf != 0.0 and not (
                     math.isfinite(self.release_at_perf)
                     and self.release_at_perf > 0.0):
@@ -2047,13 +2189,18 @@ class TossSequencer:
                 # here, pre-throw, instead of at t_release with the ball
                 # airborne; raised limits stop refusing reaches the planner
                 # would happily fly.
+                live = (obs.leg_vel_limit_mmps or None,
+                        obs.leg_acc_limit_mmps2 or None,
+                        obs.leg_jerk_limit_mmps3 or None)
+                bound, term = reach_displacement_bound(
+                    self.flight_time_s, vel_mmps=live[0], acc_mmps2=live[1],
+                    jerk_mmps3=live[2])
                 if (displacement > self.max_displacement_mm
-                        or displacement > reach_displacement_limit_mm(
-                            self.flight_time_s,
-                            vel_mmps=obs.leg_vel_limit_mmps or None,
-                            acc_mmps2=obs.leg_acc_limit_mmps2 or None,
-                            jerk_mmps3=obs.leg_jerk_limit_mmps3 or None)):
-                    return self._reject('DISPLACEMENT')
+                        or displacement > bound):
+                    return self._reject(
+                        'DISPLACEMENT',
+                        self._displacement_detail(displacement, bound, term,
+                                                  live))
             if self.tilt_clamp_exceeded:
                 # The motion-module clamp gate fired: the required aim exceeds
                 # the tilt ceiling, and a silently clamped aim lands the ball
@@ -2076,10 +2223,26 @@ class TossSequencer:
                 # DISPLACEMENT → TILT_CLAMP → EVENT_VEL, because this sits
                 # immediately after the block it left
                 # (test_displacement_precedes_tilt_clamp pins it).
+                #
+                # The numbers come from the node (ThrowTiltInfeasible carries
+                # them); NaN means it did not say, and the refusal stays bare
+                # rather than quoting a ceiling it cannot vouch for.
+                if (math.isfinite(self.tilt_required_deg)
+                        and math.isfinite(self.tilt_max_deg)):
+                    return self._reject('TILT_CLAMP', bound_msg(
+                        'aim', self.tilt_required_deg, '>', self.tilt_max_deg,
+                        'deg', digits=2, limit_label='ceiling',
+                        knob='MAX_TILT_DEG',
+                        tail='a clamped aim lands the ball SHORT of B — lower '
+                             '|B-A| or raise throw_height_m'))
                 return self._reject('TILT_CLAMP')
             if not (TEENSY_MIN_EVENT_VEL_MPS <= self.event_vel_mps
                     <= TEENSY_MAX_EVENT_VEL_MPS):
-                return self._reject('EVENT_VEL')
+                return self._reject('EVENT_VEL', range_msg(
+                    'event_vel', self.event_vel_mps, TEENSY_MIN_EVENT_VEL_MPS,
+                    TEENSY_MAX_EVENT_VEL_MPS, 'm/s', digits=2,
+                    knob='TEENSY_MIN/MAX_EVENT_VEL_MPS',
+                    tail='the WIRE band — the goal knob is throw_height_m'))
             # THE derived feasibility gate (contract C-HAND-3). It runs HERE,
             # after EVENT_VEL, for the same reason the tilt-clamp gate runs
             # before it: this is the first point at which `event_vel_mps` is
@@ -2174,9 +2337,29 @@ class TossSequencer:
                             bool(self.positioning_move_expected)),
                         'with a' if self.positioning_move_expected
                         else 'census-B1 skip, no'))
-            if (abs(x) > self.workspace_xy_mm or abs(y) > self.workspace_xy_mm
-                    or abs(z - TOSS_ACTIVE_Z_MM) > TOSS_Z_BAND_MM):
-                return self._reject('WORKSPACE')
+            # ONE code, THREE messages. The gate is unchanged (same three
+            # conjuncts, same x → y → z precedence — the split is the boolean
+            # `or` written out so each branch can name ITS bound); what changes
+            # is that "outside the workspace" now says which of the lateral box
+            # and the z band refused, and quotes the offending component. They
+            # move under different knobs (`toss_workspace_xy_mm` vs the
+            # ACTIVE-plane band), so the undifferentiated code sent half these
+            # refusals to the wrong one.
+            if abs(x) > self.workspace_xy_mm:
+                return self._reject('WORKSPACE', bound_msg(
+                    '|B.x| =', abs(x), '>', self.workspace_xy_mm, 'mm',
+                    knob='toss_workspace_xy_mm'))
+            if abs(y) > self.workspace_xy_mm:
+                return self._reject('WORKSPACE', bound_msg(
+                    '|B.y| =', abs(y), '>', self.workspace_xy_mm, 'mm',
+                    knob='toss_workspace_xy_mm'))
+            if abs(z - TOSS_ACTIVE_Z_MM) > TOSS_Z_BAND_MM:
+                return self._reject('WORKSPACE', bound_msg(
+                    'B.z {:.1f} mm is'.format(z), abs(z - TOSS_ACTIVE_Z_MM),
+                    '>', TOSS_Z_BAND_MM, 'mm', knob='TOSS_Z_BAND_MM',
+                    limit_label='band',
+                    tail='measured from the ACTIVE plane {:.1f} mm'.format(
+                        TOSS_ACTIVE_Z_MM)))
             if self.tier == TIER_8B:
                 # The throw site A shares B's z (one nominated plane); its xy
                 # gets the same planning-envelope bounds as B. Since A is the
@@ -2186,9 +2369,18 @@ class TossSequencer:
                 # leave behind, and one where the pre-tilt POSITIONING move
                 # would be planned from an unvalidated pose.
                 ax, ay = self.throw_site_xy_mm
-                if (abs(float(ax)) > self.workspace_xy_mm
-                        or abs(float(ay)) > self.workspace_xy_mm):
-                    return self._reject('WORKSPACE')
+                for axis, value in (('A.x', float(ax)), ('A.y', float(ay))):
+                    if abs(value) > self.workspace_xy_mm:
+                        # The variant an operator is most likely to misread: the
+                        # goal's B may be perfectly legal and the refusal is
+                        # about where the PLATFORM is parked, so the message
+                        # names the live throw site and the one-command remedy.
+                        return self._reject('WORKSPACE', bound_msg(
+                            'live throw site |{}| ='.format(axis), abs(value),
+                            '>', self.workspace_xy_mm, 'mm',
+                            knob='toss_workspace_xy_mm',
+                            tail='the PLATFORM is parked outside the planning '
+                                 'box, not the goal — go_home and retry'))
         # TOSS runs within the active streaming mode; leaving it mid-sequence is
         # the documented abort. A mode-exit mid-flight still terminates immediately
         # (as reload): trajectory_node has force-disarmed the latch on the mode
@@ -2275,6 +2467,7 @@ class TossSequencer:
             self._phase = PHASE_POSITIONING
             self._position_dispatched = True
             self._positioning_deadline = now + self.positioning_timeout_s
+            self._position_busy_deadline = now + TOSS_POSITION_BUSY_PATIENCE_S
             return TossDecision(PHASE_POSITIONING, ACTION_POSITION_PLATFORM,
                                 False, None)
         if not obs.hand_parked:
@@ -2301,6 +2494,7 @@ class TossSequencer:
         self._phase = PHASE_POSITIONING
         self._position_dispatched = True
         self._positioning_deadline = now + self.positioning_timeout_s
+        self._position_busy_deadline = now + TOSS_POSITION_BUSY_PATIENCE_S
         return TossDecision(PHASE_POSITIONING, ACTION_POSITION_PLATFORM, False, None)
 
     def _step_positioning(self, now: float, obs: TossObservations) -> TossDecision:
@@ -2310,10 +2504,27 @@ class TossSequencer:
             return TossDecision(PHASE_POSITIONING, ACTION_NONE, False, None)
         accepted, _planned_s, code = self._position_result
         if not accepted:
+            if code == _POSITION_BUSY_CODE:
+                # THE ONE re-pollable refusal (bag 2026-08-28_23-53-25): the
+                # previous cycle's catch plan is still inside its settle hold, so
+                # the platform is genuinely busy for a BOUNDED, KNOWN interval.
+                # Every other code names a state that will not clear on its own.
+                busy = self._absorb_position_busy(now)
+                if busy is not None:
+                    return busy
             # Nothing moved, nothing armed — a loud reject with no cleanup,
             # carrying the go_to_pose reject-ladder code (reload's REJECTED_BB
-            # pattern).
-            return self._reject('POSITION', code or 'NO_RESPONSE')
+            # pattern) AND, since 2026-08-29, the service's own message after it.
+            # The subcode is unchanged and still leads the parenthetical — the
+            # re-poll keys on `code`, not on this string, and a consumer wanting
+            # the code asks `base_outcome` + the leading subcode rather than
+            # matching the whole thing. A response with no message (every FSM
+            # unit test, and the synthesised NO_RESPONSE) is byte-identical to
+            # the pre-enrichment outcome.
+            detail = code or 'NO_RESPONSE'
+            if self._position_message:
+                detail = '{}: {}'.format(detail, self._position_message)
+            return self._reject('POSITION', detail)
         if now < self._position_arrival_time:
             # The arrived-before-arming invariant: PREPARE strictly after the
             # timed arrival — arming mid-move C2-stops the move, leaving the
@@ -2336,6 +2547,63 @@ class TossSequencer:
             return self._abort('POSITION_FAILED')
         return TossDecision(PHASE_POSITIONING, ACTION_NONE, False, None)
 
+    def _absorb_position_busy(self, now: float) -> Optional[TossDecision]:
+        """Bounded re-poll of a ``go_to_pose`` refused ``BUSY``.
+
+        ``None`` ⇒ the caller rejects (the wait would be paid out of the release
+        window, or the patience is spent); a decision ⇒ HOLD between polls
+        (``ACTION_NONE``) or RE-EMIT ``ACTION_POSITION_PLATFORM``. The node
+        dispatches on the ACTION, so a re-emission re-runs
+        ``_position_platform_for_toss`` verbatim against the SAME cached
+        ``state.positioning_move`` — the pose is re-derived from the same stash
+        and cannot drift between polls.
+
+        The refusal being absorbed is structural, not incidental: at the head of a
+        chained cycle the previous cycle's catch plan is still inside its
+        ``JB_TRAJ_CATCH_SETTLE_HOLD_S`` quiescent tail, ``trajectory_node``'s
+        ``_active_move_in_flight`` is True and its BUSY guard is CORRECT to refuse.
+        A co-located chain never sees it only because the census-B1 skip never
+        calls the service.
+        """
+        if self._position_busy_seen_at <= 0.0:
+            self._position_busy_seen_at = float(now)
+            self._position_busy_next_poll = now + TOSS_POSITION_BUSY_REPOLL_S
+        self._position_busy_wait_s = max(
+            0.0, float(now) - self._position_busy_seen_at)
+        # ── THE WAIT IS NEVER PAID OUT OF THE RELEASE WINDOW ──
+        # Checked from the FIRST BUSY, not only at the patience bound.
+        # `_step_preparing`'s release guard has NO slip, so a cycle that re-polls
+        # past this floor turns a REJECTED_POSITION(BUSY) — nothing moved, nothing
+        # armed — into an ABORTED_CANT_MAKE_RELEASE with the hand committed and a
+        # retract under a seated ball. That is a strictly worse terminal for the
+        # same fault, and it is the cadence fence this conjunct holds.
+        #
+        # ONE derivation, the same `_build_toss_cycle` charges at accept, on the
+        # MOVER branch — which is the only branch a BUSY can arise on, since a
+        # census-B1 skip never reaches the service. Accept-time and runtime
+        # therefore cannot disagree, and a re-cut of the floor moves both.
+        if (self._t_release - now) <= min_throw_delay_for_release_s(
+                self.event_vel_mps, True, float(self.min_event_delay_s)):
+            return None
+        if now >= self._position_busy_deadline:
+            return None
+        if now < self._position_busy_next_poll:
+            # Holding between polls. The BUSY result deliberately STAYS in place:
+            # clearing it here would drop this tick into the `_position_result is
+            # None` arrival-wait branch above, which reads as "no answer yet" and
+            # waits out `_positioning_deadline`. The result is cleared at exactly
+            # one instant — the tick that re-emits.
+            return TossDecision(PHASE_POSITIONING, ACTION_NONE, False, None)
+        # `note_position_result` is first-result-wins, so clearing admits exactly
+        # ONE more — and it is cleared in the same tick the node re-dispatches in
+        # (`_step_toss_sequence` calls the action synchronously), never earlier.
+        self._position_result = None
+        self._position_message = ''      # the answer and its prose clear together
+        self._position_busy_next_poll = now + TOSS_POSITION_BUSY_REPOLL_S
+        self._position_busy_polls += 1
+        return TossDecision(PHASE_POSITIONING, ACTION_POSITION_PLATFORM,
+                            False, None)
+
     def _enter_preparing(self, now: float) -> TossDecision:
         """Verified arrival → arm the catch BEFORE anything is committed at the
         hand: the node declares the reach-envelope centre (the nominated catch
@@ -2355,7 +2623,8 @@ class TossSequencer:
             # SAFE_ABORT cleanup — `_prepare_dispatched` is already True, so the
             # declaration and the holds are out and the machine is not pristine.
             if self._prepare_reject_code:
-                return self._reject(self._prepare_reject_code)
+                return self._reject(self._prepare_reject_code,
+                                    self._prepare_reject_message)
             return self._abort('PREPARE_FAILED')
         if self.staged:
             # ── B4: the preamble ends HERE, one tick's worth of work short of
@@ -2823,6 +3092,76 @@ class TossSequencer:
             return self._last_time_at_land - self._t_release
         return float('nan')
 
+    def _displacement_detail(self, displacement: float, bound: float,
+                             term: str, live: tuple) -> str:
+        """The REJECTED_DISPLACEMENT parenthetical: which of the TWO bounds
+        actually refused, the other one for context, and the knob that moves the
+        binding one.
+
+        Both limits are quoted every time because "too far" is ambiguous between
+        them and they move under different knobs: the cap is a config number the
+        operator edits, the reach bound is a function of the flight time and the
+        LIVE session limits, so raising ``throw_height_m`` or ramping
+        ``set_limits`` clears one and does nothing at all to the other. Reporting
+        only the binding one would send half the refusals to the wrong knob.
+
+        BINDING = the SMALLER limit, not the first one tested: with both
+        exceeded, the smaller is the one that still refuses after the other is
+        raised, so it is the one the remedy has to name.
+
+        The limits label is THREE-VALUED because ``live`` is a PER-FIELD ``or
+        None`` mapping and a partial observation is a real state (a status
+        message that carried, say, jerk but left vel at the 0.0
+        unknown-sentinel). Labelling that whole triple "live" — as this did
+        until 2026-08-29 — printed fallback ``REACH_*`` numbers under a "live"
+        banner, and an operator reading it would ramp ``set_limits`` on a term
+        the session never reported and watch the refusal not move. So: all three
+        absent ⇒ ``default``, all three observed ⇒ ``live``, anything between ⇒
+        ``mixed``, and a trailing ``*`` marks each individual term that fell back
+        (legend in the tail). The label and the numbers can no longer
+        disagree."""
+        cap = float(self.max_displacement_mm)
+        t = float(self.flight_time_s)
+        # The three limits arrive as ONE trajectory/status sample, so they are
+        # live together or absent together; the effective values are re-derived
+        # here (not re-read from `live`) so the quoted numbers are exactly the
+        # ones the bound above was computed from, fallbacks included.
+        eff = (REACH_VEL_LIMIT_MMPS if live[0] is None else float(live[0]),
+               REACH_ACC_LIMIT_MMPS2 if live[1] is None else float(live[1]),
+               REACH_JERK_LIMIT_MMPS3 if live[2] is None else float(live[2]))
+        mixed = (any(v is None for v in live)
+                 and not all(v is None for v in live))
+        limits = '{} limits {}'.format(
+            'default' if all(v is None for v in live)
+            else ('mixed' if mixed else 'live'),
+            '/'.join('{:.0f}{}'.format(e, '' if l is not None else '*')
+                     for e, l in zip(eff, live)))
+        # The legend rides only when a star is actually present, so a fully-live
+        # refusal (the common case once trajectory/status is flowing) stays as
+        # short as it was.
+        star_note = ('; * = default, not reported'
+                     if any(v is None for v in live) else '')
+        reach_text = 'reach bound {:.1f} mm ({}-bound) at T = {:.3f} s'.format(
+            bound, term, t)
+        cap_text = 'cap {:.1f} mm [toss_max_displacement_mm]'.format(cap)
+        over_cap = displacement > cap
+        over_bound = displacement > bound
+        if over_cap and (not over_bound or cap <= bound):
+            return bound_msg(
+                '|B-A| =', displacement, '>', cap, 'mm', digits=1,
+                knob='toss_max_displacement_mm', limit_label='cap',
+                tail='{} {} — lower |B-A| or raise the cap'.format(
+                    reach_text,
+                    'also exceeded' if over_bound else 'not binding'))
+        return bound_msg(
+            '|B-A| =', displacement, '>', bound, 'mm', digits=1, knob=limits,
+            limit_label='reach bound',
+            tail='{}-bound at T = {:.3f} s, {} {} — raise throw_height_m '
+                 '(longer T) or set_limits {}{}'.format(
+                     term, t, cap_text,
+                     'also exceeded' if over_cap else 'not binding', term,
+                     star_note))
+
     def _reject(self, code: str, message: str = '') -> TossDecision:
         outcome = 'REJECTED_{}'.format(code)
         if message:
@@ -2911,6 +3250,30 @@ class TossSequencer:
         The node uses this to safe the robot on a node-level early exit
         (cancel/timeout/shutdown) that bypasses the FSM's own terminal."""
         return self._positioned or self._prepare_dispatched
+
+    @property
+    def position_busy_wait_s(self) -> float:
+        """Seconds this cycle's POSITIONING spent absorbing ``go_to_pose`` BUSY
+        re-polls — 0.0 for every cycle that was never refused.
+
+        The forensic that separates the two states a REJECTED_POSITION(BUSY)
+        cannot separate on its own: a cycle that waited out the previous catch's
+        settle hold and threw (nonzero here, CAUGHT/MISSED outcome) and a cycle
+        that met a WEDGE (nonzero here AND the reject). Recorded on every toss
+        record, so a session's absorbs are countable rather than being an absence
+        in the corpus."""
+        return self._position_busy_wait_s
+
+    @property
+    def position_busy_polls(self) -> int:
+        """How many times POSITIONING RE-EMITTED ``go_to_pose`` after a BUSY.
+
+        :attr:`position_busy_wait_s` says HOW LONG the absorb ran; this says HOW
+        MANY service round trips it cost — the same split ``slip_s`` and
+        ``commit_slips`` make for the commit gate, and the quantity a re-cut of
+        :data:`TOSS_POSITION_BUSY_REPOLL_S` would be argued from. The node reads
+        it to emit its one-per-cycle forensics line on the FIRST re-poll."""
+        return self._position_busy_polls
 
     @property
     def announce_lead_short(self) -> bool:

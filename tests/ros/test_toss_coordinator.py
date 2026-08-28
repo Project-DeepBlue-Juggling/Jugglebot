@@ -38,6 +38,9 @@ import pytest
 import jugglebot.hardware_config as hw
 import jugglebot.reload_coordinator_node as rcn
 from jugglebot.motion.trajectory import hand_stroke
+# THE production helper: assertions here compare the CODE, and must strip the
+# parenthetical the same way the node's own guards do.
+from jugglebot.outcome_detail import base_outcome
 from jugglebot.reload_coordinator_node import (
     ReloadCoordinatorNode,
     _TOSS_SESSION_REACH_DRIFT_TOL_MM,
@@ -489,7 +492,11 @@ def test_8a_has_no_displacement_cap_so_a_far_goal_reads_workspace(monkeypatch):
     gh = _TossGoalHandle(x=200.0)
     result = node._execute_toss(gh)
     assert result.success is False
-    assert result.outcome == 'REJECTED_WORKSPACE'
+    assert base_outcome(result.outcome) == 'REJECTED_WORKSPACE'
+    # …and it is the LATERAL box that refused, not the z band — which is what
+    # the enriched message makes checkable at the node seam rather than
+    # inferable from the goal.
+    assert '|B.x| = 200.0 mm' in result.outcome, result.outcome
     assert gh.terminal == 'abort'
 
 
@@ -520,7 +527,15 @@ def test_bad_goal_numerics_rejected_before_anything_runs(kwargs, field,
     gh = _TossGoalHandle(**kwargs)
     result = node._execute_toss(gh)
     assert result.success is False
-    assert result.outcome == 'REJECTED_BAD_GOAL({})'.format(field)
+    assert base_outcome(result.outcome) == 'REJECTED_BAD_GOAL'
+    # The FIELD is still named — that is the code's whole purpose — and since
+    # 2026-08-29 the offending VALUE rides with it. Ten near-identical goals in
+    # a goal storm produced ten identical results before, and the value is the
+    # entire diagnosis (a minus sign vs a divide-by-zero).
+    assert result.outcome.startswith(
+        'REJECTED_BAD_GOAL({} = '.format(field)), result.outcome
+    assert ('not finite' in result.outcome
+            or 'negative' in result.outcome), result.outcome
     assert gh.terminal == 'abort'
     assert math.isnan(result.catch_error_mm)
     with node._lock:
@@ -1766,7 +1781,16 @@ def test_a_drifted_cycle_terminalises_rejected_reach_center_drift(monkeypatch):
         d = node._step_toss_sequence(seq, t)
         if d.done:
             break
-    assert d.done and d.result.outcome == 'REJECTED_REACH_CENTER_DRIFT'
+    assert d.done and base_outcome(
+        d.result.outcome) == 'REJECTED_REACH_CENTER_DRIFT'
+    # The three numbers that make this refusal actionable — the B this cycle
+    # nominated, the centre the SESSION captured cycles ago, and the distance
+    # against the tolerance. The operator chose none of them but B.
+    msg = d.result.outcome
+    assert 'B (0.0, 86.5, 170.0) mm is 86.5 mm' in msg, msg
+    assert 'tolerance 66.5 mm' in msg, msg
+    assert 'reach centre (0.0, 0.0, 170.0)' in msg, msg
+    assert 're-arm at the new B' in msg, msg
     assert safed == [1]
 
 
@@ -1973,7 +1997,12 @@ def test_go_to_pose_wire_disarmed_marker_maps_to_reject(monkeypatch):
     _stamp_fresh(node, 100.1)
     d = node._step_toss_sequence(seq, 100.1)
     assert d.done
-    assert d.result.outcome == 'REJECTED_POSITION(WIRE_DISARMED)'
+    # The subcode still LEADS the parenthetical (the FSM's BUSY re-poll and the
+    # zombie-superseder guard both key on it), and trajectory_node's own
+    # message now follows it instead of being discarded.
+    assert d.result.outcome.startswith(
+        'REJECTED_POSITION(WIRE_DISARMED'), d.result.outcome
+    assert 'wire DISARMED' in d.result.outcome, d.result.outcome
 
 
 def test_position_no_response_dispatches_best_effort_go_home(monkeypatch):
@@ -1996,6 +2025,35 @@ def test_position_no_response_dispatches_best_effort_go_home(monkeypatch):
     d = node._step_toss_sequence(seq, 100.1)
     assert d.done and d.result.outcome == 'REJECTED_POSITION(NO_RESPONSE)'
     assert homed == [1]
+
+
+def test_the_zombie_superseder_survives_an_enriched_position_refusal(monkeypatch):
+    """THE guard the 2026-08-29 enrichment could most easily have disarmed, and
+    it would have disarmed it SILENTLY.
+
+    ``_TOSS_POSITION_UNKNOWN_TERMINALS`` used to hold the literal string
+    ``'REJECTED_POSITION(NO_RESPONSE)'``. Now that ``go_to_pose``'s message
+    rides the outcome, that literal stops matching the moment trajectory_node
+    has anything to say about a timed-out ack — and a membership test that
+    stops matching does nothing at all: no go_home, no superseder, and a plan
+    that may still be executing left to run under a machine that believes
+    nothing was accepted. The guard therefore matches (CODE, SUBCODE), which
+    both forms share, and this row drives the enriched form specifically."""
+    node = _toss_ready_node(100.0)
+    seq = _fresh_seq(node, start=100.0)
+    monkeypatch.setattr(
+        node, '_position_platform_for_toss',
+        lambda s, state=None: s.note_position_result(
+            100.0, False, 0.0, 'NO_RESPONSE',
+            'service unavailable after 2.0 s'))
+    homed = []
+    monkeypatch.setattr(node, '_go_home', lambda: homed.append(1) or True)
+    node._step_toss_sequence(seq, 100.0)
+    _stamp_fresh(node, 100.1)
+    d = node._step_toss_sequence(seq, 100.1)
+    assert d.done
+    assert d.result.outcome.startswith('REJECTED_POSITION(NO_RESPONSE: ')
+    assert homed == [1], 'the zombie-move superseder did not run'
 
 
 def test_position_timeout_dispatches_best_effort_go_home(monkeypatch):
@@ -2531,6 +2589,95 @@ def test_8b_cross_check_target_equals_commanded_A_pose(monkeypatch):
         (float(pre[0]), float(pre[1]), float(pre[2])))
     # NOT B's x
     assert node._toss_committed.platform_target_mm[0] != pytest.approx(50.0)
+
+
+class _FakePerfClock:
+    """The node module's ``time`` surface (``perf_counter`` + ``sleep`` are the
+    only two members ``reload_coordinator_node`` uses).
+
+    Needed wherever a test drives the REAL ``_position_platform_for_toss``
+    through more than one tick: the method anchors the timed arrival on
+    ``time.perf_counter()``, so on the real clock the arrival lands ~1e5 s away
+    from the synthetic ``now`` the FSM is being ticked at and the ladder never
+    advances past POSITIONING."""
+
+    def __init__(self, t0):
+        self.t = float(t0)
+
+    def perf_counter(self):
+        return self.t
+
+    def sleep(self, dt):
+        self.t += float(dt)
+
+
+def _capture_go_to_pose_ladder(node, monkeypatch, responses):
+    """:func:`_capture_go_to_pose` for a SEQUENCE of responses: every request is
+    captured in order and ``_wait_future`` serves the next canned response (the
+    last one repeats), so a test can drive the BUSY re-poll through the REAL
+    ``_position_platform_for_toss`` and read every request it built."""
+    reqs = []
+    monkeypatch.setattr(node._go_to_pose_cli, 'call_async',
+                        lambda req: reqs.append(req))
+    queue = list(responses)
+
+    def serve(fut, timeout_s=2.0):
+        return queue.pop(0) if len(queue) > 1 else queue[0]
+
+    monkeypatch.setattr(node, '_wait_future', serve)
+    return reqs
+
+
+def test_position_busy_redispatches_the_go_to_pose(monkeypatch):
+    """The node half of the BUSY re-poll (bag 2026-08-28_23-53-25): the FSM
+    re-emits ACTION_POSITION_PLATFORM and `_step_toss_sequence` re-runs
+    `_position_platform_for_toss` VERBATIM — same cached
+    ``state.positioning_move``, same ``_toss_positioning_xyz``, so the retried
+    request is the SAME pose. A retry that re-derived the pose would be a second
+    source for the commanded site, which is the drift `_build_toss_cycle`'s cache
+    exists to prevent.
+
+    Then the cycle rejoins the ordinary ladder and reaches PREPARING, which is
+    the whole point: pre-fix the first BUSY terminalised the cycle and
+    toss_session escalated it to ABORTED_CYCLE_REJECTED_POSITION(BUSY)."""
+    t0 = 100.0
+    clock = _FakePerfClock(t0)
+    monkeypatch.setattr(rcn, 'time', clock)
+    node = _toss_ready_node(t0)
+    seq = _fresh_seq(node, pose=(30.0, -40.0, 170.0), start=t0)
+    busy = types.SimpleNamespace(
+        accepted=False, code='BUSY', planned_duration_s=0.0,
+        message='a move is in flight — Phase 2 accepts moves only from hold')
+    ok = types.SimpleNamespace(accepted=True, code='OK', planned_duration_s=0.0,
+                               message='planned OK')
+    reqs = _capture_go_to_pose_ladder(node, monkeypatch, [busy, ok])
+
+    d = node._step_toss_sequence(seq, t0)
+    assert d.action == ACTION_POSITION_PLATFORM
+    assert len(reqs) == 1                       # the BUSY-refused first attempt
+
+    prepared = None
+    for i in range(1, 120):
+        t = t0 + i * 0.02
+        clock.t = t
+        _stamp_fresh(node, t)
+        d = node._step_toss_sequence(seq, t)
+        assert not d.done, d.result.outcome
+        if d.action == ACTION_PREPARE_CATCH:
+            prepared = d
+            break
+    assert len(reqs) == 2, 'the BUSY was never re-polled'
+    # The retried request is byte-identical to the refused one.
+    first, second = reqs
+    assert (second.pose.position.x, second.pose.position.y,
+            second.pose.position.z) == pytest.approx(
+        (first.pose.position.x, first.pose.position.y, first.pose.position.z))
+    q1, q2 = first.pose.orientation, second.pose.orientation
+    assert (q2.w, q2.x, q2.y, q2.z) == pytest.approx((q1.w, q1.x, q1.y, q1.z))
+    # …and the cycle really did get past POSITIONING on the retry.
+    assert prepared is not None and prepared.phase == PHASE_PREPARING
+    assert seq.position_busy_polls == 1
+    assert seq.position_busy_wait_s > 0.0
 
 
 def test_step_dispatches_reach_catch_to_publish_toss_reach(monkeypatch):
@@ -3128,7 +3275,11 @@ def test_8b_tilt_clamp_maps_to_rejected_tilt_clamp(monkeypatch):
     gh = _TossGoalHandle(x=50.0, y=0.0, z=170.0, throw_height=0.8, delay=5.0)
     result = node._execute_toss(gh)
     assert result.success is False
-    assert result.outcome == 'REJECTED_TILT_CLAMP'
+    assert base_outcome(result.outcome) == 'REJECTED_TILT_CLAMP'
+    # The raise CARRIES its two numbers and the node forwards them, so the
+    # refusal says by how much the ceiling was broken rather than only that it
+    # was — 12.1° against 12° and 20° against 12° are different situations.
+    assert 'aim 20.00 deg > ceiling 12.00 deg [MAX_TILT_DEG]' in result.outcome
     assert gh.terminal == 'abort'
 
 

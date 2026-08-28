@@ -193,10 +193,17 @@ MSG_LATCH_DISARMED = 'catch latch disarmed'      # trajectory_node (exact msg)
 MSG_PRETILT = 'pre-tilt target published from announcement'  # catch_coordinator
 MSG_WAIVER = 'waiving the ball-possession'       # reload_coordinator WARN
 CCN_PRIME_RE = re.compile(r'\bprim(?:ed|ing)\b', re.IGNORECASE)
-OUTCOME_RE = re.compile(r'^Toss ([A-Z][A-Za-z0-9_()]*)')
+# The CODE only — the text before the parenthetical (2026-08-29). Every
+# limit-bearing refusal now appends `(<requested> <op> <limit> [<knob>])`, and
+# the old `[A-Za-z0-9_()]*` class stopped at the first character not in it, so a
+# `REJECTED_WORKSPACE(|B.y| = …)` line captured the dangling `REJECTED_WORKSPACE(`
+# and a `REJECTED_THROW_ENVELOPE(END_STOP:…)` captured half its payload. The full
+# line is still returned as the third element of every `outcome_lines` tuple, so
+# nothing is lost — the detail is read from `msg`, the identity from the code.
+OUTCOME_RE = re.compile(r'^Toss ([A-Z][A-Za-z0-9_]*)')
 # The SESSION outcome line (one per TossContinuous goal, emitted after the N
 # per-cycle `Toss <OUTCOME>` lines — see _log_toss_session_outcome).
-SESSION_OUTCOME_RE = re.compile(r'^TossContinuous ([A-Z][A-Za-z0-9_()]*)')
+SESSION_OUTCOME_RE = re.compile(r'^TossContinuous ([A-Z][A-Za-z0-9_]*)')
 # CS-6 cadence tolerance. The dwell is honoured to within one coordinator tick
 # (_TICK_S = 50 ms) on the fast side and absorbs cleanup lateness on the slow
 # side, so the check is ONE-SIDED: never early by more than this, allowed to be
@@ -335,6 +342,21 @@ REJECT_WIRE_MAP = {
                              'It refuses on purpose: a fail-open sensor gate is '
                              'the BallButler defect this project declined to copy',
     'REJECTED_BUSY': 'another ball-op goal is running',
+    'REJECTED_POSITION': 'POSITIONING: trajectory/go_to_pose REFUSED the '
+                         'pre-positioning move, and the outcome names its '
+                         'ladder code first — BUSY = a move (usually the '
+                         'previous catch inside JB_TRAJ_CATCH_SETTLE_HOLD_S) '
+                         'is still in flight, and the FSM already re-polled it '
+                         'for TOSS_POSITION_BUSY_PATIENCE_S before giving up, '
+                         'so a BUSY here is a hold that OUTLIVED the settle '
+                         'tail — check the cadence, not the guard; NO_RESPONSE '
+                         '= the service was unavailable or its ack timed out, '
+                         'which leaves the platform state UNKNOWN (the node '
+                         'dispatches a best-effort go_home to supersede any '
+                         'zombie move); WIRE_DISARMED = the plan installed but '
+                         'the wire is not actuating (arm the robot); '
+                         'WORKSPACE = trajectory_node refused the pose itself. '
+                         'The service message follows the code',
 }
 
 
@@ -1164,12 +1186,20 @@ def check_rj1(rows: List[dict], win: GoalWindow, ctx: TraceContext) -> Finding:
     subs: List[Tuple[str, str]] = []
     lines = [(t, oc, msg) for (t, oc, msg) in outcome_lines(rows)
              if win.pad_start <= t <= win.pad_end]
-    nb = [(t, oc) for (t, oc, _) in lines if oc == 'REJECTED_NO_BALL']
+    # Matched on the BASE code. `OUTCOME_RE` already strips the parenthetical
+    # every limit-bearing refusal has carried since 2026-08-29, so this is the
+    # second of two guards rather than the only one — deliberately, because
+    # this tool runs unattended after a sitting and a scrape that silently
+    # classifies an enriched reject as "some other code" reports the wrong wire
+    # as unhealthy on a completely correct capture, which is the criterion-fires-
+    # on-correct-behaviour class the 2026-07-27 close-out existed to retire.
+    nb = [(t, oc) for (t, oc, _) in lines if oc.split('(')[0] == 'REJECTED_NO_BALL']
     if len(nb) == 1:
         subs.append(('PASS', 'one "Toss REJECTED_NO_BALL" at t=%.4f — all '
                              'earlier CHECKING gates passed' % nb[0][0]))
     else:
-        others = [oc for _, oc, _ in lines if oc != 'REJECTED_NO_BALL']
+        others = [oc for _, oc, _ in lines
+                  if oc.split('(')[0] != 'REJECTED_NO_BALL']
         hint = ''
         for oc in others:
             base = oc.split('(')[0]

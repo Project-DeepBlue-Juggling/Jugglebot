@@ -4034,8 +4034,17 @@ ros2 action send_goal /jugglebot/toss jugglebot_interfaces/action/Toss \
   build.
 - **`REJECT_WIRE_MAP` hygiene.** `REJECTED_DISPLACEMENT` and `REJECTED_TILT_CLAMP`
   were added on 2026-07-28 and the `REJECTED_TIER` hint corrected; `REJECTED_POSITION`
-  is still missing. That backlog is owned by
-  `logbook/2026-07-25-toss-rejected-not-levelled.md` § Follow-ups.
+  landed 2026-08-29 (with the subcode ladder — `BUSY` / `NO_RESPONSE` /
+  `WIRE_DISARMED` / `WORKSPACE` — since that code always names one). That backlog
+  is owned by `logbook/2026-07-25-toss-rejected-not-levelled.md` § Follow-ups.
+- **Reject codes now carry their numbers (2026-08-29).** Every *limit-bearing*
+  refusal appends a parenthetical naming the requested value, the limit it broke
+  and the knob that moves it — `REJECTED_WORKSPACE(|B.y| = 178.0 mm > 160.0 mm
+  [toss_workspace_xy_mm])`. **Score every row in this file on the CODE**, i.e.
+  on the text before the first `(`; the parenthetical is diagnosis, never
+  identity. Structural verdicts with no numeric knob (`NOT_LEVELLED`,
+  `WRONG_MODE`, `NO_BALL`, `HAND_*`, `MOCAP_STALE`, `TIER`, `POSE_UNKNOWN`, the
+  `BB_*` family) stay bare and their rows are byte-unchanged.
 
 ---
 

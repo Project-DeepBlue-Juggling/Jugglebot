@@ -22,9 +22,13 @@ import math
 
 import pytest
 
+# THE production helper: assertions here compare the CODE, and must strip the
+# parenthetical the same way the machine's own guards do.
+from jugglebot.outcome_detail import base_outcome
 from jugglebot.reload_sequencer import (
     ACTION_CALL_RELOAD,
     ACTION_NONE,
+    BB_READY_WAIT_S,
     CATCH_CONFIRM_WINDOW_S,
     ACTION_PREPARE_CATCH,
     ACTION_PRIME_HAND,
@@ -71,6 +75,10 @@ def _obs(now, **kw):
         # reach from there). The healthy-graph default is True; the gate itself
         # is exercised by test_not_centered_* below.
         platform_centered=True,
+        # …and the two numbers behind it, so a NOT_CENTERED refusal can quote a
+        # distance. The healthy default is the origin: 0 mm off the catch point.
+        platform_offset_mm=0.0,
+        platform_center_tol_mm=66.53,
         ball_caught=False,
         catch_error_mm=float('nan'))
     base.update(kw)
@@ -115,7 +123,9 @@ def _to_throw_pending(seq):
     ('control_mode', 'STANDBY', 'REJECTED_WRONG_MODE'),
     ('control_mode', 'SPACEMOUSE', 'REJECTED_WRONG_MODE'),
     ('bb_connected', False, 'REJECTED_BB_DISCONNECTED'),
-    ('bb_state', BB_STATE_THROWING, 'REJECTED_BB_BUSY'),
+    # bb_state is NOT in this table: a busy BB is a transient and CHECKING waits
+    # it out, so its reject only exists past the deadline. See the patience
+    # section below.
     ('mocap_fresh', False, 'REJECTED_MOCAP_STALE'),
     ('streaming', False, 'REJECTED_NOT_STREAMING'),
     ('platform_centered', False, 'REJECTED_NOT_CENTERED'),
@@ -125,8 +135,94 @@ def test_precondition_rejects(field, val, code):
     d = seq.step(0.0, _obs(0.0, **{field: val}))
     assert d.done is True
     assert d.result.success is False
-    assert d.result.outcome == code
+    assert base_outcome(d.result.outcome) == code
     # A precondition reject happens BEFORE the prime — nothing armed, no cleanup.
+    assert d.action == ACTION_NONE
+    assert seq.prepared is False
+
+
+# ── A busy BB is a TRANSIENT: CHECKING waits it out ───────────────────────────
+#
+# The 2026-08-28 sitting's defect. A repeated RELOAD inside a toss_continuous
+# session fires while BallButler is still finishing its own cycle; the
+# single-sample read minted REJECTED_BB_BUSY, and that terminal aborted the whole
+# session over a wait of about a second. The patience is BB_READY_WAIT_S, aliased
+# to RELOAD_TIMEOUT_S — the project's validated bound for BB's RELOADING → IDLE.
+
+
+def test_a_busy_bb_is_waited_out_and_then_the_sequence_proceeds():
+    """BB non-IDLE at the first step, IDLE well inside the patience: the FSM
+    must go on to arm (PRIME_HAND), not carry a reject it already decided."""
+    seq = _fresh()
+    d = seq.step(0.0, _obs(0.0, bb_state=BB_STATE_RELOADING))
+    assert (d.done, d.phase, d.action) == (False, PHASE_CHECKING, ACTION_NONE)
+    d = seq.step(1.0, _obs(1.0, bb_state=BB_STATE_IDLE))
+    assert d.done is False
+    assert d.action == ACTION_PRIME_HAND
+    assert seq.finished is False
+
+
+def test_nothing_arms_while_the_bb_patience_runs():
+    """The wait sits BEFORE ACTION_PRIME_HAND, so the quiescent-refusal property
+    holds for its whole length — the hand stays where the rejected cycle left it
+    and the latch stays down, which is what makes the deadline reject's
+    ACTION_NONE terminal correct."""
+    seq = _fresh()
+    t = 0.0
+    while t < BB_READY_WAIT_S:
+        d = seq.step(t, _obs(t, bb_state=BB_STATE_THROWING))
+        assert (d.phase, d.action, d.done) == (PHASE_CHECKING, ACTION_NONE, False)
+        assert d.result is None
+        assert seq.prepared is False
+        t += 0.5
+
+
+def test_a_bb_busy_through_the_whole_patience_still_rejects():
+    """The bound is a bound: past the deadline the outcome is exactly today's,
+    with today's terminal action (nothing was armed, so nothing to safe)."""
+    seq = _fresh()
+    assert seq.step(0.0, _obs(0.0, bb_state=BB_STATE_RELOADING)).done is False
+    d = seq.step(BB_READY_WAIT_S,
+                 _obs(BB_READY_WAIT_S, bb_state=BB_STATE_RELOADING))
+    assert d.done is True
+    assert d.result.outcome == 'REJECTED_BB_BUSY'
+    assert d.action == ACTION_NONE
+    assert seq.prepared is False
+
+
+def test_a_bb_error_mid_patience_pre_empts_the_wait():
+    """The universal abort ladder runs before the phase logic on every step, so a
+    FAULT never sits out a patience sized for a transient — and BB_STATE_ERROR
+    needs no case of its own inside the wait."""
+    seq = _fresh()
+    seq.step(0.0, _obs(0.0, bb_state=BB_STATE_RELOADING))
+    d = seq.step(1.0, _obs(1.0, bb_state=BB_STATE_ERROR))
+    assert d.done is True
+    assert d.result.outcome == 'REJECTED_BB_ERROR'
+    assert d.action == ACTION_NONE
+
+
+def test_leaving_the_control_mode_mid_patience_pre_empts_the_wait():
+    """Same ladder, the other universal abort: the operator taking the robot out
+    of TRAJECTORY is answered on the next step, not after the patience."""
+    seq = _fresh()
+    seq.step(0.0, _obs(0.0, bb_state=BB_STATE_RELOADING))
+    d = seq.step(1.0, _obs(1.0, bb_state=BB_STATE_RELOADING,
+                           control_mode='STANDBY'))
+    assert d.done is True
+    assert d.result.outcome == 'REJECTED_WRONG_MODE'
+    assert d.action == ACTION_NONE
+
+
+def test_zero_patience_reproduces_the_instant_reject():
+    """THE BOUNDARY. bb_ready_wait_s = 0.0 makes the deadline `now` at start(),
+    so the first step refuses exactly as the pre-2026-08-29 code did — the
+    property that keeps this change a strict widening."""
+    seq = _fresh(bb_ready_wait_s=0.0)
+    d = seq.step(0.0, _obs(0.0, bb_state=BB_STATE_THROWING))
+    assert d.done is True
+    assert d.result.success is False
+    assert d.result.outcome == 'REJECTED_BB_BUSY'
     assert d.action == ACTION_NONE
     assert seq.prepared is False
 
@@ -143,10 +239,38 @@ def test_not_centered_is_refused_before_bb_is_asked_to_throw():
     ACTION_PRIME_HAND and long before the throw: nothing moves and BB is never
     asked."""
     seq = _fresh()
-    d = seq.step(0.0, _obs(0.0, platform_centered=False))
-    assert d.done and d.result.outcome == 'REJECTED_NOT_CENTERED'
+    d = seq.step(0.0, _obs(0.0, platform_centered=False,
+                           platform_offset_mm=150.0))
+    assert d.done and base_outcome(d.result.outcome) == 'REJECTED_NOT_CENTERED'
+    # The distance is IN the refusal: 5 mm out and 150 mm out are the same
+    # verdict but very different operator situations, and the tolerance is a
+    # derived number (envelope radius minus the pre-tilt swing) nobody can
+    # recall from memory. The remedy — one go_home — is named too.
+    msg = d.result.outcome
+    assert 'platform is 150.0 mm' in msg, msg
+    assert '66.53' in msg or '66.5' in msg, msg
+    assert 'go_home' in msg, msg
     assert d.action == ACTION_NONE
     assert seq.prepared is False
+
+
+def test_not_centered_says_UNKNOWN_when_the_pose_was_never_read():
+    """The gate's OTHER way of saying no, kept apart from the first.
+
+    ``_platform_centered`` is fail-closed: no fresh commanded pose reads as NOT
+    centred. That is a dead-link fault, not a geometry one — ``go_home`` fixes
+    nothing and trajectory_node is the subsystem to look at — so the refusal
+    must not imply a distance it never measured. (The FSM's own KNOWN GAP note
+    says a dead trajectory link can land here; this is the message that makes
+    that survivable.)"""
+    seq = _fresh()
+    d = seq.step(0.0, _obs(0.0, platform_centered=False,
+                           platform_offset_mm=float('nan')))
+    assert base_outcome(d.result.outcome) == 'REJECTED_NOT_CENTERED'
+    msg = d.result.outcome
+    assert 'UNKNOWN or stale' in msg, msg
+    assert 'trajectory/status' in msg, msg
+    assert 'go_home' not in msg, msg
 
 
 @pytest.mark.parametrize('also_broken,code', [
@@ -162,7 +286,7 @@ def test_not_centered_yields_to_the_staleness_gates(also_broken, code):
     failure would make it unknowable."""
     seq = _fresh()
     d = seq.step(0.0, _obs(0.0, platform_centered=False, **also_broken))
-    assert d.done and d.result.outcome == code
+    assert d.done and base_outcome(d.result.outcome) == code
 
 
 def test_centered_default_is_fail_closed():
@@ -185,7 +309,12 @@ def test_cant_make_lead_rejected_early():
     seq = ReloadSequencer(catch_point_mm=CATCH_PT, throw_delay_s=1.0)  # < 2.5 floor
     seq.start(0.0)
     d = seq.step(0.0, _obs(0.0))
-    assert d.done and d.result.outcome == 'REJECTED_CANT_MAKE_LEAD'
+    assert d.done and base_outcome(d.result.outcome) == 'REJECTED_CANT_MAKE_LEAD'
+    # BB's floor is a number the operator has no other way to see from a Reload
+    # result, so the refusal quotes both it and what was asked.
+    msg = d.result.outcome
+    assert 'throw_delay 1.000 s' in msg and '2.500 s' in msg, msg
+    assert 'MIN_THROW_LEAD_S' in msg, msg
     assert d.action == ACTION_NONE
 
 
