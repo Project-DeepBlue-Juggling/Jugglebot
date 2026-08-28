@@ -84,6 +84,12 @@ def _obs(now, **kw):
         platform_levelled=True,
         hand_fresh=True, hand_parked=True, ball_seated=True,
         ball_evidence='SEATED', track_active=False,
+        # The 2026-08-28 honest-cache gate's observation, healthy: the platform
+        # is still at the pose this cycle nominated its throw site for. It is
+        # FAIL-CLOSED in the dataclass (an FSM that was never told may not
+        # assume), so the healthy fixture has to say so — the same shape
+        # `platform_levelled` and `hand_parked` take here.
+        staged_site_ok=True,
         platform_at_target=True, throw_stroke_seen=False,
         ball_track_confirmed=False, ball_caught=False,
         catch_error_mm=float('nan'), catch_event_dt_s=float('nan'),
@@ -2291,6 +2297,139 @@ def test_ball_seated_and_hand_parked_are_read_only_from_the_commit_handler():
     commit = src.split('def _step_committing(')[1].split('\n    def ')[0]
     assert 'obs.ball_seated' in commit
     assert 'obs.hand_parked' in commit
+
+
+# ── the honest-cache contract (2026-08-28, bag 2026-08-28_14-48-38) ──────────
+
+
+def test_the_commit_refuses_a_site_that_moved_under_the_staged_cycle():
+    """**THE honest-cache gate**, at the FSM level.
+
+    A staged cycle nominates its throw site — and everything solved from it: the
+    release state, the tilt aim, the pre-tilt pose — a whole flight before it
+    throws, and its POSITIONING is a SKIP by construction, so unlike the serial
+    path it cannot COMMAND that nomination true. In between, the cycle ahead of
+    it fires its deferred A->B reach and moves the platform. If nothing re-asked
+    the question, the staged cycle would release from B with a release state
+    solved for A: bag ``2026-08-28_14-48-38``, where the ball left the displaced
+    site along the residual receive tilt and landed at HOME (x=+3.98 mm against
+    a +70 mm target), deterministically, on every other cycle.
+
+    So the contract is: **a staged nomination is only valid if the platform is
+    where the nomination assumed at the moment the throw becomes irrevocable**,
+    and this is that moment.
+
+    It REFUSES rather than slipping, and that is the deliberate half: the
+    orientation the reach commanded is the one it meant to command, so waiting
+    cannot make a stale nomination true. The cycle is rebuilt on the SERIAL
+    path, where the site is read live and POSITIONING commands the move."""
+    seq = _staged()
+    _to_staged(seq)
+    seq.note_upstream_terminalised()
+    d = seq.step(seq.commit_at, _obs(seq.commit_at, staged_site_ok=False))
+    assert d.done is True
+    assert d.result.outcome == 'REJECTED_SITE_MOVED'
+    assert d.slip is False, 'waiting cannot make a moved platform correct'
+    # Nothing announced, nothing armed, nothing retracted — the § 2.4.3 staged
+    # failure shape, because the upstream ball may still be in the air.
+    assert d.action == ACTION_NONE and d.action_then == ACTION_NONE
+    # …and the SAME cycle, with the platform where it said it would be, throws.
+    ok = _staged()
+    _to_staged(ok)
+    ok.note_upstream_terminalised()
+    d_ok = ok.step(ok.commit_at, _obs(ok.commit_at))
+    assert (d_ok.action, d_ok.action_then) == (ACTION_ANNOUNCE,
+                                               ACTION_DISPATCH_THROW)
+
+
+def test_the_site_check_is_the_commit_tick_read_not_a_stage_time_latch():
+    """The temporal half, in the shape of T-U3: the gate is the COMMIT read.
+
+    A platform that was mid-traverse a tick before the commit and has arrived by
+    it must still throw — the whole point of re-asking at the last honest moment
+    is that the answer is allowed to have CHANGED. A latch taken at stage time
+    would be the same defect one gate over.
+
+    **Driven in BOTH directions at the SAME instant** (audit fix, 2026-08-28).
+    The earlier drive was one-sided — an early False followed by a commit-tick
+    True — and a one-sided drive cannot tell "the gate reads the field at the
+    commit tick" apart from "the gate never reads the field at all": an FSM that
+    ignored ``staged_site_ok`` entirely passed it. So the refusing direction is
+    driven first, on the commit tick itself, and the admitting direction on a
+    fresh cycle at the same ``commit_at``. Only the pair discriminates."""
+    from jugglebot.toss_sequencer import NODE_LOOP_PERIOD_S
+    # Direction 1 — False ON the commit tick REFUSES. This is the half whose
+    # absence let an FSM that never read the field pass the old drive.
+    moved = _staged()
+    _to_staged(moved)
+    moved.note_upstream_terminalised()
+    d_moved = moved.step(moved.commit_at,
+                         _obs(moved.commit_at, staged_site_ok=False))
+    assert d_moved.done is True
+    assert d_moved.result.outcome == 'REJECTED_SITE_MOVED'
+    # Direction 2 — the SAME instant, a fresh cycle, the platform arrived: the
+    # commit proceeds. Together with direction 1 this pins that the value read
+    # at `commit_at` is what decides, and that an EARLIER False does not latch.
+    arrived = _staged()
+    _to_staged(arrived)
+    arrived.note_upstream_terminalised()
+    assert arrived.commit_at == moved.commit_at, 'same instant, or the pair '\
+        'is comparing two different gates'
+    early = arrived.commit_at - NODE_LOOP_PERIOD_S
+    # Sanity line, kept deliberately and documented as one: it CANNOT fail on
+    # its own, because `_step_staged` structurally never references the field
+    # (`test_the_site_re_validation_is_read_only_from_the_commit_handler` is
+    # what pins that). It is here to show the drive really does put a False on
+    # the wire before the commit tick, so direction 2's pass is a
+    # not-latched result rather than a never-refused one.
+    assert arrived.step(early, _obs(early,
+                                    staged_site_ok=False)).action == ACTION_NONE
+    d = arrived.step(arrived.commit_at,
+                     _obs(arrived.commit_at, staged_site_ok=True))
+    assert (d.action, d.action_then) == (ACTION_ANNOUNCE, ACTION_DISPATCH_THROW)
+
+
+def test_the_site_re_validation_is_read_only_from_the_commit_handler():
+    """STRUCTURAL, the same `inspect.getsource`-per-handler idiom as T-U4.
+
+    ``staged_site_ok`` may be referenced ONLY by the COMMIT handler. Reading it
+    from `_step_staged` (or latching it in the preamble) would re-create the
+    defect it closes: a question answered honestly at an instant, and then
+    believed for a whole flight."""
+    import inspect
+    from jugglebot import toss_sequencer
+    src = inspect.getsource(toss_sequencer.TossSequencer)
+    for handler in ('_step_checking', '_step_positioning', '_step_preparing',
+                    '_step_staged'):
+        body = src.split('def {}('.format(handler))[1].split('\n    def ')[0]
+        assert 'staged_site_ok' not in body, handler
+    commit = src.split('def _step_committing(')[1].split('\n    def ')[0]
+    assert 'obs.staged_site_ok' in commit
+    # …and the serial ladder never consults it: it is the one observation that
+    # is meaningless for a cycle whose POSITIONING commands the move.
+    assert 'staged_site_ok' not in src.split(
+        'def _step_throwing(')[1].split('\n    def ')[0]
+
+
+def test_the_serial_ladder_is_untouched_by_the_site_gate():
+    """The flag-false / serial-path identity, re-stated for the 2026-08-28 gate.
+
+    ``staged_site_ok`` defaults FALSE (fail-closed: an FSM that was never told
+    is not entitled to assume). A serial cycle is therefore driven with the
+    field at its refusing value throughout — and must still walk CHECKING ->
+    POSITIONING -> PREPARING -> ANNOUNCE -> DISPATCH, because the gate lives in
+    a handler the serial ladder never enters."""
+    seq = _fresh()
+    _to_positioning(seq)
+    seq.note_position_result(0.05, True, 0.5)
+    assert seq.step(0.8, _obs(0.8, staged_site_ok=False)).action == (
+        ACTION_PREPARE_CATCH)
+    seq.note_prepare_result(True)
+    d = seq.step(0.9, _obs(0.9, staged_site_ok=False))
+    assert d.action == ACTION_ANNOUNCE
+    seq.note_announcement()
+    d = seq.step(1.0, _obs(1.0, staged_site_ok=False))
+    assert d.action == ACTION_DISPATCH_THROW
 
 
 def test_the_slip_is_bounded_by_the_confirm_window_and_nothing_else():

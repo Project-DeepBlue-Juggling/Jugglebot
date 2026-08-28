@@ -1282,6 +1282,42 @@ class TossObservations:
                                       # Consulted only in POSITIONING after the timed
                                       # arrival — when enabled it catches the silent
                                       # no-op move class.
+    staged_site_ok: bool = False      # node-computed, STAGED SLOT ONLY: is the LIVE
+                                      # commanded platform pose still the pose this
+                                      # cycle's throw site was NOMINATED for, within
+                                      # the census-B1 tolerances
+                                      # (_TOSS_ALREADY_THERE_TOL_MM / _RAD)?
+                                      #
+                                      # THE honest-cache contract (2026-08-28). On the
+                                      # SERIAL path the nomination makes itself true:
+                                      # POSITIONING COMMANDS the platform to the
+                                      # pre-tilt pose derived from A and CHECKING waits
+                                      # for that arrival, so "the platform is at A at
+                                      # release" holds BY CONSTRUCTION. A STAGED cycle
+                                      # is skip-only by construction (§ 2.4.1) — it
+                                      # commands nothing — so it cannot make its
+                                      # nomination true; it can only nominate what will
+                                      # be true, while the cycle AHEAD of it moves the
+                                      # platform with its deferred A->B reach in
+                                      # between. So the nomination is re-validated at
+                                      # the COMMIT tick, from the SAME snapshot the
+                                      # evidence gates read, because that is the
+                                      # instant the throw becomes irrevocable. A
+                                      # mismatch is REJECTED_SITE_MOVED: the staged
+                                      # slot is dropped and the cycle is rebuilt on the
+                                      # SERIAL path, where the nomination is read live
+                                      # and POSITIONING commands the move that makes it
+                                      # true (bag 2026-08-28_14-48-38 — a displaced
+                                      # chain threw from B with an aim solved for A and
+                                      # landed the ball at home, x=+3.98 mm against a
+                                      # +70 mm target).
+                                      #
+                                      # Default False = FAIL-CLOSED, the same doctrine
+                                      # as platform_levelled / throw_site_known: an FSM
+                                      # that was never told is not entitled to assume.
+                                      # Read ONLY by _step_committing, which only a
+                                      # staged cycle ever reaches, so the serial path's
+                                      # decision stream is untouched by the default.
     throw_stroke_seen: bool = False   # node-latched after dispatch: hand telemetry
                                       # ascending-stroke signature (vel over threshold,
                                       # pos above seated). Sticky for the goal.
@@ -2418,19 +2454,30 @@ class TossSequencer:
            commit must refuse, and these are cheap. They ABORT rather than slip:
            a machine that has left TRAJECTORY or lost mocap is not late, it is
            broken;
-        3. **``hand_parked``** — SLIP. The hand is still landing; that is a
+        3. **``staged_site_ok``** — REJECT (``REJECTED_SITE_MOVED``). THE
+           honest-cache gate (2026-08-28): is the platform still where this
+           cycle's throw site was NOMINATED to be? A staged cycle's POSITIONING
+           is a SKIP by construction, so unlike the serial path it cannot
+           COMMAND its nomination true — and the cycle ahead of it moves the
+           platform with its deferred A->B reach in exactly this window. It
+           REJECTS rather than slipping because waiting cannot fix it: the
+           orientation the reach commanded is the one it meant to command, and
+           the serial rebuild re-nominates from a fresh live read, which is
+           strictly more correct than waiting for a stale nomination to come
+           true. See :attr:`TossObservations.staged_site_ok`;
+        4. **``hand_parked``** — SLIP. The hand is still landing; that is a
            cadence fact on a healthy machine, and ``REJECTED_HAND_NOT_PARKED``
            there would be a machine-fault verdict for it (the R5 mis-routing);
-        4. **``ball_seated``** — SLIP. THE hard gate, and it is evaluated at the
+        5. **``ball_seated``** — SLIP. THE hard gate, and it is evaluated at the
            last tick before the CAN frame exists. The cup's seat edge is late by
            a measured, systematic +183.9 ms median (§ 1.4), so refusing here
            would turn every healthy cycle into ``REJECTED_NO_BALL``;
-        5. **``track_active``** — REJECT. A phantom destination='jugglebot'
+        6. **``track_active``** — REJECT. A phantom destination='jugglebot'
            track would correlate against OUR announcement, and unlike the two
            above it is not a thing that resolves by waiting;
-        6. **the runtime release-window guard** — the same inequality
+        7. **the runtime release-window guard** — the same inequality
            ``_step_preparing`` applies, against the same budget — and since
-           2026-08-28 it **SLIPS** like rungs 3 and 4 rather than aborting.
+           2026-08-28 it **SLIPS** like rungs 4 and 5 rather than aborting.
            Falling short here is a CADENCE fact on a healthy machine, not a
            machine fault: :func:`commit_budget_s` grants exactly one NOMINAL
            loop period of polling lateness, so any iteration that ran longer
@@ -2469,6 +2516,13 @@ class TossSequencer:
             if not obs.platform_levelled:
                 return self._abort('NOT_LEVELLED')
             return self._abort('HAND_STALE')
+        if not obs.staged_site_ok:
+            # THE honest-cache gate. The staged nomination is only valid if the
+            # platform is where the nomination ASSUMED at the moment the throw
+            # becomes irrevocable — and this is that moment. REJECT, not slip:
+            # nothing about a moved platform resolves by waiting, and the serial
+            # rebuild re-nominates from a live read and COMMANDS the move.
+            return self._reject('SITE_MOVED')
         if not obs.hand_parked:
             return self._slip(now, 'hand not back inside the park band',
                               reject_code='HAND_NOT_PARKED')

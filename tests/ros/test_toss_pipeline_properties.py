@@ -150,7 +150,14 @@ _TICK_GAPS = st.lists(
 
 def _obs(now, spec, **over):
     base = dict(control_mode=TOSS_CONTROL_MODE, ball_evidence='SEATED',
-                platform_at_target=True)
+                platform_at_target=True,
+                # The honest-cache gate's observation (2026-08-28), healthy.
+                # The model's platform never moves between stage and commit, so
+                # True is the truthful value here; the SITE_MOVED path is driven
+                # deterministically in test_toss_continuous_node.py rather than
+                # modelled, because a model that flipped it would be asserting
+                # the node's live-pose read rather than the FSM's response.
+                staged_site_ok=True)
     base.update(spec)
     base.update(over)
     if not base.get('ball_seated', True):

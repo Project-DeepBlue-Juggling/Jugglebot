@@ -422,7 +422,7 @@ def test_no_serial_decision_moves_when_a_cycle_is_merely_capable_of_staging():
                 now=t, control_mode=ts.TOSS_CONTROL_MODE, streaming=True,
                 mocap_fresh=True, platform_levelled=True, hand_fresh=True,
                 hand_parked=True, ball_seated=True, ball_evidence='SEATED',
-                platform_at_target=True)
+                platform_at_target=True, staged_site_ok=True)
             d = seq.step(t, obs)
             out.append((round(t, 6), d.phase, d.action, d.action_then, d.slip,
                         d.done))

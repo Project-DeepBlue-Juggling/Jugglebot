@@ -226,6 +226,15 @@ def _install_toss_goal(node, pose=(0.0, 0.0, 170.0), flight=0.8, vel_scale=0.0):
         node._catch_vel_scale = (vel_scale if vel_scale > 0.0
                                  else float(hw.JB_OP_CATCH_VEL_SCALE_DEFAULT))
         node._toss_committed.release_state = release
+        # …and the COMMANDED release, which `_build_toss_cycle` sets to the same
+        # object whenever the aim is zero (`release_cmd = release`). It was left
+        # None here until 2026-08-28, which was a fixture gap rather than a
+        # modelled state: a level release and a None one behave identically in
+        # `_release_is_tilted` / `_toss_positioning_xyz` / `_toss_reach_quat`, so
+        # nothing noticed — until the staged commit gate started asking the
+        # cycle what orientation it nominated, and a None answered "I don't
+        # know" (fail-closed) on a machine that plainly did.
+        node._toss_committed.release_cmd = release
         node._toss_committed.landing_global_mm = tuple(
             float(v) for v in release.catch_point_global_mm)
         node._toss_committed.platform_target_mm = tuple(float(v) for v in pose)

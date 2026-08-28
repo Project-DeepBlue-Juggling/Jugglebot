@@ -690,6 +690,13 @@ def _obs_ok(node, now):
         node._hand_telemetry_mono = now
         node._traj_status_mono = now
         node._commanded_pos_mono = now
+        # …and the POSE half of the same sample. Not scenery since 2026-08-28:
+        # a staged cycle's COMMIT gate re-validates that the platform is still
+        # at the pose its throw site was nominated for, and an unknown live pose
+        # reads (fail-closed) as "it is not" — REJECTED_SITE_MOVED. The real
+        # graph publishes both on the one trajectory_node timer, so a harness
+        # that re-stamps only one is modelling a plant that does not exist.
+        node._commanded_pose_mono = now
     node._ball_sensor.note_sample(now - 0.01, held=True, valid=True, raw=True)
     node._ball_sensor.note_sample(now, held=True, valid=True, raw=True)
 

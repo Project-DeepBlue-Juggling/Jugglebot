@@ -1153,6 +1153,20 @@ class TossCycleState:
     #: why a staged slot was discarded without committing (§ 2.4.3's unwind), or
     #: '' — the record's ``staged_discarded_reason``.
     discarded_reason: str = ''
+    #: why the BUILD refused to let this cycle stage, or '' for "it was the
+    #: skip-only rule" (:meth:`_start_pipelined_cycle` supplies
+    #: ``'POSITIONING_MOVE'`` as the fallback). Set at construction by
+    #: :meth:`_build_toss_cycle` — currently only ``'CHAIN_SITE_UNKNOWN'``, the
+    #: chain-site prediction being unavailable.
+    #:
+    #: It is CARRIED rather than re-derived at the decline site because the two
+    #: are answers to the same question and a re-derivation is free to disagree
+    #: with the decision that was actually taken — the same single-decision rule
+    #: that governs ``positioning_move`` (2026-08-23). Not cleared by
+    #: :meth:`clear`: it is a pure build-time constant like ``t_start`` /
+    #: ``deadline_s``, read only on the tick of its own build, and nothing reads
+    #: it off a dead slot.
+    stage_decline_reason: str = ''
     #: this cycle's declaration context (``_open_toss_record``'s ctx dict), or
     #: None. It lives on the SLOT because with two of them "the record context"
     #: stops being a node-global: a staged cycle that is discarded has to close
@@ -2858,6 +2872,15 @@ class ReloadCoordinatorNode(Node):
             ball_evidence=ball_evidence,
             track_active=track_active,
             platform_at_target=platform_at_target,
+            # The STAGED slot's own question, and only its (2026-08-28). A
+            # committed cycle's nomination made itself true — its POSITIONING
+            # COMMANDED the move — so the field is False for it and its FSM
+            # never reads it. It is computed HERE, keyed on the state's own
+            # `staged` flag, rather than only in `_staged_observations`, so that
+            # any path stepping a staged cycle gets the honest answer instead of
+            # the fail-closed default. See _staged_site_ok.
+            staged_site_ok=(bool(state.staged)
+                            and self._staged_site_ok(state)),
             throw_stroke_seen=stroke_seen,
             ball_track_confirmed=track_confirmed,
             ball_caught=ball_caught,
@@ -4113,10 +4136,22 @@ class ReloadCoordinatorNode(Node):
           second its per-cycle log-once set, and a staged build is not entitled
           to clear either while that cycle is still running.
 
-        Everything else — the tier, the throw site, the release state, the aim,
-        the ILC trim, the positioning decision, the delay grant — is the
-        identical computation, which is the point: a staged cycle must be the
-        SAME cycle, scheduled differently.
+        Everything else — the tier, the release state, the aim, the ILC trim,
+        the positioning decision, the delay grant — is the identical
+        computation, which is the point: a staged cycle must be the SAME cycle,
+        scheduled differently.
+
+        **The ONE exception, and it is the exception that proves the rule: the
+        THROW SITE** (2026-08-28). A serial cycle nominates the site from the
+        LIVE commanded pose, and that is self-consistent because POSITIONING
+        then COMMANDS the platform there — the nomination makes itself true. A
+        staged cycle's POSITIONING is a SKIP by construction, so it commands
+        nothing and the live read is a claim about an instant a whole flight
+        before the throw, with the previous cycle's deferred A->B reach inside
+        that window. It therefore nominates ``_predicted_chain_site_mm``, which
+        is the same *question* answered honestly for a cycle that cannot move.
+        The identity that matters is preserved: both paths nominate **the site
+        the platform will be at when the ball leaves the hand**.
         """
         # The release state (frames + ballistics) comes from the single tested
         # conversion module; the FSM gets its event_vel from here, never a second
@@ -4131,17 +4166,42 @@ class ReloadCoordinatorNode(Node):
         # what makes a session CHAIN: after a CAUGHT toss the platform STAYS at B,
         # so the next goal's A is that B for free.
         #
-        # Self-consistency note (why a 200 ms-old read is not a correctness bug):
-        # A is NOMINATED, not observed. POSITIONING commands the platform to the
-        # pre-tilt pose derived from A and CHECKING/PREPARE wait for that arrival,
-        # so the platform is at A at release BY CONSTRUCTION — a stale read yields
-        # a slightly different, still fully self-consistent throw site.
+        # ⚠ **THE LIVE READ IS THE SERIAL PATH'S NOMINATION, AND ONLY ITS**
+        # (2026-08-28). The self-consistency argument that licenses a stale read
+        # is: A is NOMINATED, not observed — POSITIONING COMMANDS the platform to
+        # the pre-tilt pose derived from A and CHECKING/PREPARE wait for that
+        # arrival, so the platform is at A at release BY CONSTRUCTION. Every word
+        # of that rests on POSITIONING commanding a move. A STAGED cycle's
+        # POSITIONING is a SKIP by construction (§ 2.4.1 — it may not move the
+        # platform under the previous cycle's airborne ball), so it commands
+        # nothing, makes nothing true, and the "by construction" evaporates: the
+        # cycle AHEAD of it moves the platform ~71 mm with its deferred A->B reach
+        # in exactly the window between this read and the commit. That is bag
+        # 2026-08-28_14-48-38 — the staged cycle released from B with a release
+        # state solved for A and put the ball back at home (x=+3.98 mm against a
+        # +70 mm target).
+        #
+        # So a STAGED cycle nominates the PREDICTION of where it will be:
+        # `_predicted_chain_site_mm`, the parked-centroid prediction taken through
+        # the SAME `_toss_catch_policy` object the deferred reach publishes from,
+        # and the same single derivation the accept-time
+        # REJECTED_CHAIN_UNREACHABLE check consults. On a co-located chain (the
+        # shipped steady state) the prediction is the live read's own fixed point,
+        # so nothing moves; on a displaced one it is the honest answer and the
+        # live read is the lie.
         #
         # UNKNOWN ⇒ throw_site_known=False and the FSM rejects POSE_UNKNOWN. There
         # is deliberately no fallback value here.
         throw_site = (0.0, 0.0)
         throw_site_known = True
         tilt_clamp_exceeded = False
+        # ⚠ NOT `staged`. `staged` routes the INSTALL (the staged slot vs the
+        # committed one) and flipping it here would publish this cycle over the
+        # one that owns the hand; this flag says only "the FSM may run the
+        # pipelined ladder", which is exactly what the skip-only rule below
+        # already gates. Same shape, same safe direction: serial, not staged.
+        stage_ok = True
+        stage_decline_reason = ''
         if tier == TIER_8B:
             live = self._live_commanded_position(time.perf_counter())
             if live is None:
@@ -4151,6 +4211,29 @@ class ReloadCoordinatorNode(Node):
                     'is the live commanded pose and is never guessed '
                     '(trajectory_node publishes it only while seeded+streaming)')
                 throw_site_known = False
+            elif staged:
+                predicted = self._predicted_chain_site_mm(catch_pose, flight)
+                if predicted is None:
+                    # The prediction failed for a reason that is NOT a missing
+                    # pose (the live read above succeeded): an infeasible aim
+                    # from the live A, or a catch-policy refusal. A staged cycle
+                    # that cannot say where it will be must not stage — it takes
+                    # the serial path, where the site is read live at build time
+                    # and POSITIONING commands the move that makes it true. Fail
+                    # SAFE (serial), never fail into a guessed site.
+                    self.get_logger().warning(
+                        'toss pipeline: the chain-site prediction is '
+                        'unavailable, so this cycle cannot nominate the throw '
+                        'site it will actually release from — it does NOT stage '
+                        'and runs serially instead')
+                    stage_ok = False
+                    # Carried on the state, not re-derived at the decline site:
+                    # this is the ONE place that knows WHY, and the reason the
+                    # operator reads must be the reason the build took.
+                    stage_decline_reason = 'CHAIN_SITE_UNKNOWN'
+                    throw_site = (float(live[0]), float(live[1]))
+                else:
+                    throw_site = (float(predicted[0]), float(predicted[1]))
             else:
                 throw_site = (float(live[0]), float(live[1]))
         if tier == TIER_8B and throw_site_known:
@@ -4303,7 +4386,16 @@ class ReloadCoordinatorNode(Node):
             # from the same predicate the FSM's own belt re-checks, so the
             # node's "do not stage a mover" and the FSM's "refuse to be a staged
             # mover" are ONE decision read twice, never two decisions.
-            staged=bool(staged) and not positioning_move,
+            #
+            # ⚠ Since 2026-08-28 that predicate carries the DISPLACED-CHAIN
+            # guard for free, and deliberately as ONE decision rather than two:
+            # a staged cycle now nominates the PREDICTED chain site, so on a
+            # displaced chain its positioning pose is the (level, or aim-tilted)
+            # pose at B while the platform is still at A — `positioning_move` is
+            # then honestly True and the cycle simply does not stage. A separate
+            # "do not stage a displaced cycle" test would be a second copy of
+            # the same question, free to disagree with this one.
+            staged=bool(staged) and stage_ok and not positioning_move,
             max_displacement_mm=float(hw.JB_OP_TOSS_MAX_DISPLACEMENT_MM),
             workspace_xy_mm=float(hw.JB_OP_TOSS_WORKSPACE_XY_MM),
             stay_at_pose_on_caught=bool(hw.JB_OP_TOSS_STAY_AT_POSE_ON_CAUGHT),
@@ -4363,7 +4455,10 @@ class ReloadCoordinatorNode(Node):
             t_start=time.perf_counter(),
             deadline_s=_toss_deadline_s(seq),
             census=LoopPeriodCensus(),
-            staged=bool(seq.staged))
+            staged=bool(seq.staged),
+            # '' unless the BUILD refused the stage for a reason of its own; the
+            # decline site reads it and falls back to 'POSITIONING_MOVE'.
+            stage_decline_reason=stage_decline_reason)
         # The remaining fields keep their dataclass defaults, and each default is
         # the value _build_toss_cycle used to assign explicitly: prepare_pending
         # / throw_dispatched / stroke_seen / track_confirmed False,
@@ -4521,7 +4616,8 @@ class ReloadCoordinatorNode(Node):
             self._log_toss_outcome(TossResult(False, 'ABORTED_EXCEPTION'))
             raise
 
-    def _staged_observations(self, obs):
+    def _staged_observations(self, obs, state=None, *,
+                             site_ok_already_read=False):
         """Cycle ``k``'s observation snapshot, re-pointed at the STAGED slot.
 
         ONE snapshot is built per pipeline tick, from the committed slot's
@@ -4550,7 +4646,32 @@ class ReloadCoordinatorNode(Node):
         drift guard refuses any chained cycle whose B has left the session's
         declared envelope, so "the pose the committed cycle was verified at" and
         "the pose the staged cycle nominates" are the same pose to within that
-        tolerance. A per-cycle-varying B is the foreclosed case in both places."""
+        tolerance. A per-cycle-varying B is the foreclosed case in both places.
+
+        What is ADDED is ``staged_site_ok`` (2026-08-28) — the one observation
+        that exists only for this slot, because it is the one question only a
+        staged cycle has to answer: *is the platform still where MY throw site
+        was nominated to be?* It is computed fresh on every tick from the LIVE
+        commanded pose rather than cached, so the value the COMMIT gate reads is
+        the commit tick's own read. See :meth:`_staged_site_ok`.
+
+        ``site_ok_already_read`` is § 2.4.4's one-read doctrine applied to that
+        field (audit fix, 2026-08-28). :meth:`_build_toss_observations` also
+        computes ``staged_site_ok``, keyed on the source state's own ``staged``
+        flag, so that ANY path stepping a staged cycle gets the honest answer
+        instead of the fail-closed default — and that is worth keeping. But when
+        the committed slot is empty, :meth:`_tick_toss_pipeline` builds the
+        tick's one snapshot FROM the staged state, and then this method used to
+        re-read the live pose a second time for the same question in the same
+        tick. Two reads, one decision, free to disagree across the gap: exactly
+        the split-observation shape C-POSSESS-1 § 3.3 edit 1 closed for the cup.
+        The caller — which is the only code that knows which state the snapshot
+        came from — passes True in that case and the already-fresh value is
+        carried through instead of re-derived. It is not an optimisation; the
+        second read was the defect.
+
+        ``state`` is the STAGED slot's :class:`TossCycleState` (None ⇒ nothing
+        staged ⇒ fail-closed False, which no consumer reaches)."""
         return dataclass_replace(
             obs,
             throw_stroke_seen=False,
@@ -4559,7 +4680,64 @@ class ReloadCoordinatorNode(Node):
             possession_blind=False,
             catch_error_mm=float('nan'),
             catch_event_dt_s=float('nan'),
-            ball_time_at_land_perf=float('nan'))
+            ball_time_at_land_perf=float('nan'),
+            staged_site_ok=(bool(obs.staged_site_ok) if site_ok_already_read
+                            else self._staged_site_ok(state)))
+
+    def _staged_site_ok(self, state) -> bool:
+        """THE honest-cache re-validation (2026-08-28): is the LIVE commanded
+        platform pose still the pose this staged cycle's throw site was
+        NOMINATED for? Read at the COMMIT tick; a False there is
+        ``REJECTED_SITE_MOVED``.
+
+        **The class this closes.** A staged cycle's positioning decision is
+        cached at BUILD time (``TossCycleState.positioning_move``, 2026-08-23)
+        and its throw site is nominated at the same instant — and between that
+        instant and the commit, the cycle AHEAD of it fires its deferred A->B
+        reach and moves the platform. On the SERIAL path the nomination makes
+        itself true (POSITIONING commands the move and CHECKING waits for the
+        arrival); a staged cycle is skip-only by construction, so its cached
+        "already there" is a claim about a moment that has passed. The contract
+        is therefore: **a staged nomination is only valid if the platform is
+        where the nomination assumed at the moment the throw becomes
+        irrevocable** — and this is the enforcement point.
+
+        It is the SAME predicate, against the SAME cached target, that took the
+        decision at build: :meth:`_toss_already_positioned` fed
+        ``state.platform_target_mm`` (the nominated positioning pose, set once
+        in :meth:`_build_toss_cycle` from :meth:`_toss_positioning_xyz`) and the
+        cycle's COMMANDED release. Re-deriving either here would be a second
+        copy free to disagree with the one the budget was charged for — the
+        exact failure the single-decision rule exists to prevent. What is fresh
+        is only the LIVE read inside it.
+
+        Fail-closed on every unknown (no state, no target, no release, no fresh
+        ``trajectory/commanded_pose``): the cost of a wrong False is one staged
+        cycle rebuilt serially; the cost of a wrong True is a throw released
+        from a pose its aim was not solved for.
+
+        ⚠ **Operator note, because the two look identical on the wire.** A
+        ``REJECTED_SITE_MOVED`` means the platform is not where this cycle's
+        nomination assumed **…or ``trajectory/commanded_pose`` went stale or
+        absent, which reads the same way by design** (that is the fail-closed
+        half above, inherited from :meth:`_toss_already_positioned` condition 1).
+        **Check that ``/trajectory/commanded_pose`` is publishing before hunting
+        for a mover** — and note it is NOT in the launch file's bag topic list,
+        so a recording cannot answer the question for you. The same clause is on
+        ``REJECT_WIRE_MAP['REJECTED_SITE_MOVED']`` in
+        ``tests/hardware/toss_trace_recorder.py``, which is where an operator
+        reads it."""
+        if state is None:
+            return False
+        with self._lock:
+            target = state.platform_target_mm
+        if target is None:
+            return False
+        release = self._toss_commanded_release(state)
+        if release is None:
+            return False
+        x, y, z = (float(v) for v in target)
+        return self._toss_already_positioned(x, y, z, release)
 
     def _tick_toss_pipeline(self, now, session, *, cancel_now_fn, feedback_fn):
         """ONE iteration of the TWO-SLOT PIPELINE (plan § 2.2) — the pipelined
@@ -4661,7 +4839,15 @@ class ReloadCoordinatorNode(Node):
         if seq_s is not None and not seq_s.finished:
             phase_before = seq_s.phase
             sdecision = self._step_toss_sequence(
-                seq_s, now, None, state_s, self._staged_observations(obs))
+                seq_s, now, None, state_s,
+                # § 2.4.4, one read per tick: when the tick's snapshot was
+                # built FROM this same staged state (`seq_c is None` above),
+                # `_build_toss_observations` has already taken the live pose
+                # read for `staged_site_ok`. Carry it rather than taking a
+                # second one for the same decision.
+                self._staged_observations(
+                    obs, state_s,
+                    site_ok_already_read=(obs_state is state_s)))
             staged_phase = sdecision.phase
             if sdecision.action_then == TOSS_ACTION_DISPATCH_THROW:
                 # S1′, half two: the STAGED cycle passed its COMMIT gate and
@@ -5071,6 +5257,15 @@ class ReloadCoordinatorNode(Node):
         # (2026-08-23). The CHECKING delay gate has already charged a
         # pre-dispatch budget keyed on this exact boolean; re-deriving it here
         # would let the branch taken and the budget charged disagree.
+        #
+        # The cache is honest for as long as nothing moves between the build and
+        # this tick, which on the SERIAL path is guaranteed — this IS the tick
+        # that moves things. A STAGED cycle spends a whole flight between the
+        # two, with the previous cycle's deferred A->B reach inside it, so the
+        # staged path re-validates the same claim at its COMMIT gate rather than
+        # here (`_staged_site_ok` -> REJECTED_SITE_MOVED). Re-deriving it HERE
+        # would still be wrong for the budget reason above; the answer is to
+        # re-ask at the last honest moment, not at an arbitrary later one.
         with self._lock:
             already_positioned = not bool(state.positioning_move)
         if already_positioned:
@@ -5153,14 +5348,30 @@ class ReloadCoordinatorNode(Node):
         could not be asked.
 
         **Why this fires on a chain, and only on a chain.** A CAUGHT toss ends in
-        ``ACTION_STAY``: nothing is commanded, and the emitter's terminal hold
-        leaves the platform exactly where the cycle threw and caught from. The
+        ``ACTION_STAY``: nothing further is commanded, and the emitter's terminal
+        hold leaves the platform holding the last pose the cycle asked for. The
         next cycle recomputes its pre-tilt pose from the same ``(catch_pose,
-        flight, aim)``, so the target is bit-identical and the residual is
-        floating-point noise. Anything that MOVED the platform in between — a
-        MISS's ``go_home``, a reload interlude's recentre, a SpaceMouse nudge, a
-        reload catch's own pre-tilt at the same position — fails one component or
-        the other and the move is commanded.
+        flight, aim)``, so on a CO-LOCATED chain the target is bit-identical and
+        the residual is floating-point noise. Anything that MOVED the platform in
+        between — a MISS's ``go_home``, a reload interlude's recentre, a
+        SpaceMouse nudge, a reload catch's own pre-tilt at the same position —
+        fails one component or the other and the move is commanded.
+
+        ⚠ **"exactly where the cycle threw and caught from" is TWO places on
+        Tier 8b, and this docstring said it was one until 2026-08-28.** A
+        displaced 8b cycle throws from A and its deferred A->B reach then moves
+        the platform to B *during the flight*, so the pose it ends holding is B —
+        the pose it CAUGHT at, not the pose it THREW from. Co-located chains hid
+        it (A == B there, which is the steady state a chained session converges
+        to after one cycle), and the false sentence licensed a staged cycle to
+        cache a "yes" taken while the platform was still at A. Bag
+        2026-08-28_14-48-38: the staged cycle released from B with a release
+        state solved for A and the ball landed at home, x=+3.98 mm against a
+        +70 mm target. The answer here was HONEST at the instant it was given —
+        the defect was the TIMING of the question. See :meth:`_staged_site_ok`,
+        which re-asks it at the commit tick, and :meth:`_build_toss_cycle`, where
+        a staged cycle now nominates the PREDICTED chain site so the question is
+        asked about the right pose in the first place.
 
         **On Tier 8b that sentence was FALSE for an aimed chain until 2026-08-27,
         and the reason was a real re-tilt, not a rounding one.** 8b's deferred
@@ -7812,15 +8023,32 @@ class ReloadCoordinatorNode(Node):
             # The skip-only rule refused it (§ 2.4.1): POSITIONING would COMMAND
             # a move, and a staged cycle may not move the platform during the
             # previous cycle's flight, under a ball the catch is armed for.
+            #
+            # Since 2026-08-28 this is also how a DISPLACED chain declines, and
+            # by the same one decision rather than a second test: the staged
+            # cycle nominates the PREDICTED chain site (≈ B), the platform is
+            # still at A, so `positioning_move` is honestly True and the cycle
+            # falls here. The rarer `CHAIN_SITE_UNKNOWN` is the build refusing
+            # to guess a site it could not predict.
             with self._lock:
                 self._toss_staged = None
                 self._toss_staged_seq = None
+            # The reason is CARRIED from the build, not re-derived here. The
+            # build is the only place that knows why it set `stage_ok=False`,
+            # and inferring it backwards from `positioning_move_expected` is a
+            # second answer to a question already answered: a cycle can be BOTH
+            # a mover and a failed prediction, and the inference would then
+            # report the wrong one. '' ⇒ the skip-only rule refused it, which is
+            # the common case and the fallback.
+            reason = (cycle_state.stage_decline_reason or 'POSITIONING_MOVE')
             self.get_logger().info(
-                'toss pipeline: cycle %d does NOT stage — its POSITIONING must '
-                'COMMAND a move, so it falls back to the serial path and runs '
-                'once the committed cycle terminalises. The pipeline is inert '
-                'for this cycle by design, not degraded.' % session.cycle_index)
-            session.note_stage_abandoned('POSITIONING_MOVE')
+                'toss pipeline: cycle %d does NOT stage (%s) — it cannot reach '
+                'its release from where the platform will be without COMMANDING '
+                'a move, so it falls back to the serial path and runs once the '
+                'committed cycle terminalises. The pipeline is inert for this '
+                'cycle by design, not degraded.'
+                % (session.cycle_index, reason))
+            session.note_stage_abandoned(reason)
             return
         if not staged:
             # The committed slot's clamp is latched at build, exactly as on the
@@ -8409,6 +8637,18 @@ class ReloadCoordinatorNode(Node):
         ``trajectory/commanded_position``. Returns ``(x, y)`` STOW mm, or None
         when it cannot be predicted.
 
+        **Two consumers, one derivation** (the second landed 2026-08-28):
+
+        * the ACCEPT-time chain pre-check, which refuses
+          ``REJECTED_CHAIN_UNREACHABLE`` before a ball flies;
+        * the STAGED cycle's own throw-site NOMINATION in
+          :meth:`_build_toss_cycle`. A staged cycle's POSITIONING is a skip by
+          construction, so it cannot command its nomination true the way the
+          serial path does — the only honest site for it is where it will BE,
+          which is precisely what this predicts. The serial path keeps the live
+          read (correct there: nothing moves between its build and its release
+          that POSITIONING did not itself command).
+
         This makes the centroid-vs-cup divergence checkable BEFORE anything
         moves. The catch deliberately parks the CENTROID a cup-swing outside the
         nominated B so the CUP lands ON B, and the wire publishes the centroid —
@@ -8438,11 +8678,17 @@ class ReloadCoordinatorNode(Node):
         reads as its throw site A. So the prediction and the command still name
         the same quantity.
 
-        None (⇒ the check is SKIPPED, not failed) in three cases, each because a
-        reject here would mis-route the operator: Tier 8a never reads a throw
-        site at all; an unknown live pose is already ``REJECTED_POSE_UNKNOWN`` on
-        cycle 1; and a tilt-clamp / policy refusal is already the cycle's own
-        loud verdict."""
+        None in three cases: Tier 8a never reads a throw site at all; an unknown
+        live pose is already ``REJECTED_POSE_UNKNOWN`` on cycle 1; and a
+        tilt-clamp / policy refusal is already the cycle's own loud verdict.
+
+        **The two consumers treat None differently, and both are fail-safe.**
+        For the ACCEPT check it means SKIPPED, not failed — a reject there would
+        mis-route the operator away from the verdict the cycle is about to mint
+        for itself. For the STAGED nomination it means *this cycle cannot say
+        where it will be*, so it does not stage and takes the serial path, where
+        the site is read live and POSITIONING commands the move that makes the
+        nomination true. Neither ever guesses a site."""
         if str(hw.JB_OP_TOSS_TIER) != TIER_8B:
             return None
         live = self._live_commanded_position(time.perf_counter())

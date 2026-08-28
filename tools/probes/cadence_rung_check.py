@@ -289,6 +289,10 @@ def _observations(now: float, **over):
         platform_levelled=True, hand_fresh=True, hand_parked=True,
         ball_seated=True, ball_evidence=EVIDENCE_SEATED,
         track_active=False, platform_at_target=True,
+        # The honest-cache gate (2026-08-28), healthy — this probe measures
+        # CADENCE on a machine that is where it says it is; a moved platform is
+        # a correctness question, not a floor question.
+        staged_site_ok=True,
     )
     kw.update(over)
     return ts.TossObservations(now=now, **kw)

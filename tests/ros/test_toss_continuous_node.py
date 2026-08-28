@@ -2823,6 +2823,327 @@ def test_an_aimed_colocated_chain_stages_now_that_the_reach_holds_the_pretilt(
         assert s['staged_at'] < s['committed_landing'], s
 
 
+# ── the DISPLACED-chain stale-site defect (bag 2026-08-28_14-48-38) ─────────
+
+
+class _DisplacedPipelineClock(_PipelineClock):
+    """``_PipelineClock`` plus the two things that actually MOVE the platform on
+    a displaced chain, which the base plant models as a constant:
+
+    * the POSITIONING ``go_to_pose`` — the platform ends at the pre-tilt pose at
+      the throw site A;
+    * **the deferred A->B reach**, published at ``t_release`` and arriving by the
+      landing, which is what puts the platform at B *during the previous cycle's
+      flight* — i.e. inside the window between a staged cycle's nomination and
+      its commit. That is the whole mechanism of the bag, and a harness whose
+      ``trajectory/commanded_position`` never moves cannot see it.
+
+    Commands are queued with the instant they arrive and applied on the tick
+    that reaches it, so the ORDER a real session sees is preserved."""
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self._queue = []                       # (arrival_t, xyz, rotvec)
+        self._pose = ((0.0, 0.0, 170.0), (0.0, 0.0, 0.0))
+        self._reaches_seen = 0
+        self.commands = []                     # (kind, arrival_t, xyz)
+
+    def command(self, arrival_t, pos, rotvec, kind):
+        self._queue.append((float(arrival_t), tuple(float(v) for v in pos),
+                            tuple(float(v) for v in rotvec)))
+        self.commands.append((kind, round(float(arrival_t), 3),
+                              tuple(round(float(v), 3) for v in pos)))
+
+    def _plant(self, t):
+        super()._plant(t)                      # re-drives hand + cup
+        node = self._node
+        published = node._dyn_target_pub.published
+        if len(published) > self._reaches_seen:
+            self._reaches_seen = len(published)
+            out = published[-1]
+            q = out.target_quat
+            rot = rot_matrix_to_rotvec(quat_to_rot_matrix(
+                float(q.w), float(q.x), float(q.y), float(q.z)))
+            seq = node._active_seq
+            # the reach carries `arrival = the announced landing` by
+            # construction, so that is when the platform is at B
+            land = (float(seq.t_release) + float(seq.flight_time_s)
+                    if seq is not None else t)
+            self.command(land, (float(out.target_pos.x),
+                                float(out.target_pos.y), 170.0), rot, 'reach')
+        while self._queue and self._queue[0][0] <= t:
+            _, pos, rot = self._queue.pop(0)
+            self._pose = (pos, rot)
+        with node._lock:
+            node._commanded_pos_mm = self._pose[0]
+            node._commanded_pose = self._pose[0] + self._pose[1]
+
+
+def _displaced_pipelined_node(clock, monkeypatch):
+    """`_pipelined_node` with the three things a DISPLACED chain needs and a
+    co-located one does not: a go_to_pose that accepts (POSITIONING really
+    commands a move here), the REAL `_announce_toss` (it stashes the landing the
+    deferred reach is built from — the stub records the call and stashes
+    nothing, so the reach would publish nothing at all), and the plant hook that
+    walks the platform to each commanded pose."""
+    node, calls = _pipelined_node(clock, monkeypatch)
+    real_announce = rcn.ReloadCoordinatorNode._announce_toss
+    monkeypatch.setattr(node, '_announce_toss',
+                        lambda seq, state=None: real_announce(node, seq, state))
+    monkeypatch.setattr(
+        node, '_wait_future',
+        lambda fut, timeout_s=2.0: types.SimpleNamespace(
+            accepted=True, planned_duration_s=0.30, code='OK', message=''))
+    real_position = node._position_platform_for_toss
+
+    def positioning(seq, state=None):
+        st = node._toss_committed if state is None else state
+        real_position(seq, state)
+        if st.positioning_move and st.platform_target_mm is not None:
+            rel = node._toss_commanded_release(st)
+            rot = ((float(rel.tilt_rx), float(rel.tilt_ry), 0.0)
+                   if node._release_is_tilted(rel) else (0.0, 0.0, 0.0))
+            clock.command(clock.t, st.platform_target_mm, rot, 'position')
+    monkeypatch.setattr(node, '_position_platform_for_toss', positioning)
+    return node, calls
+
+
+@pytest.mark.parametrize('stale_nomination', [False, True])
+def test_a_displaced_chain_never_throws_from_a_site_it_did_not_nominate(
+        monkeypatch, stale_nomination):
+    """**THE bag-2026-08-28_14-48-38 regression**, end to end through the real
+    FSMs, the real session and a plant that actually moves.
+
+    The defect: on a DISPLACED chain (catch pose B != the throw site A) the
+    first staged cycle read its throw site LIVE at stage time — during the
+    previous cycle's flight, with the platform still at A — and cached a
+    census-B1 "already positioned" that was honestly true at that instant. The
+    previous cycle's deferred A->B reach then moved the platform ~71 mm and
+    mirrored the tilt; nothing re-read; the staged cycle released from B with a
+    release state solved for A. Measured landing: x=+3.98 mm against a +70 mm
+    target — the ball came back to HOME — and because only the first chained
+    cycle after each un-staged one carries the defect, the sitting alternated
+    caught/missed deterministically.
+
+    **The invariant asserted here is the one the operator can see**: every
+    dispatch's nominated throw site is the site the platform is actually at. It
+    holds under BOTH of the fix's layers, which is why they are parametrised
+    rather than tested apart:
+
+    * ``stale_nomination=False`` — the shipped path. The staged cycle nominates
+      the PREDICTED chain site (~B), so its positioning pose is at B while the
+      platform is still at A, ``positioning_move`` is honestly True, and the
+      skip-only rule declines to stage it at all. It runs serially, one cycle
+      later, from a live read;
+    * ``stale_nomination=True`` — the pre-fix nomination, restored, so the
+      staged cycle really does cache the stale site. The COMMIT gate's
+      re-validation then refuses it ``REJECTED_SITE_MOVED`` with nothing
+      announced and nothing armed, and the session rebuilds it serially. This
+      is the belt: the class stays closed even if the nomination regresses.
+    """
+    clock = _DisplacedPipelineClock()
+    monkeypatch.setattr(rcn, 'time', clock)
+    node, calls = _displaced_pipelined_node(clock, monkeypatch)
+    B = (70.0, 0.0, 170.0)
+    if stale_nomination:
+        monkeypatch.setattr(
+            node, '_predicted_chain_site_mm',
+            lambda catch_pose, flight: (
+                (lambda p: None if p is None else (float(p[0]), float(p[1])))(
+                    node._live_commanded_position(clock.t))))
+    dispatches = []
+    real_dispatch = node._dispatch_toss_throw
+
+    def spy_dispatch(seq, state=None):
+        dispatches.append((tuple(float(v) for v in seq.throw_site_xy_mm),
+                           node._live_commanded_position(clock.t)))
+        return real_dispatch(seq, state)
+    monkeypatch.setattr(node, '_dispatch_toss_throw', spy_dispatch)
+    abandoned = []
+    real_abandon = TossSessionSequencer.note_stage_abandoned
+    monkeypatch.setattr(
+        TossSessionSequencer, 'note_stage_abandoned',
+        lambda self, reason: (abandoned.append(str(reason)),
+                              real_abandon(self, reason))[1])
+
+    result = node._execute_toss_continuous(
+        _ContGoalHandle(num_throws=3, dwell=0.55, delay=DELAY,
+                        throw_height=1.30, vel_scale=0.9,
+                        x=B[0], y=B[1], z=B[2]))
+    assert result.outcome == 'COMPLETED', result.outcome
+    # The premise: the plant really did traverse, and the reach really is what
+    # moved it (a harness that never moved would pass this test vacuously).
+    kinds = [c[0] for c in clock.commands]
+    assert 'reach' in kinds, clock.commands
+    xs = [c[2][0] for c in clock.commands]
+    assert max(xs) - min(xs) > 60.0, clock.commands
+    # ── THE assertion ──
+    assert len(dispatches) == 3
+    for site, live in dispatches:
+        assert live is not None
+        err = math.hypot(site[0] - float(live[0]), site[1] - float(live[1]))
+        assert err <= rcn._TOSS_ALREADY_THERE_TOL_MM, (site, live, err)
+    # …and the first chained cycle really did decline, by the layer under test.
+    if stale_nomination:
+        assert 'REJECTED_SITE_MOVED' in abandoned, abandoned
+    else:
+        assert abandoned and abandoned[0] == 'POSITIONING_MOVE', abandoned
+        assert 'REJECTED_SITE_MOVED' not in abandoned, (
+            'the honest nomination should never have to be caught by the belt')
+
+
+def test_the_serial_rebuild_of_a_declined_cycle_commands_the_move(monkeypatch):
+    """The other half of the fallback: a cycle that declines to stage is not
+    merely dropped — it is REBUILT serially and its POSITIONING really does
+    COMMAND the move that makes its nomination true.
+
+    That is what turns the honest refusal into a correct throw rather than a
+    lost cycle, and it is why the displaced chain still completes 3/3."""
+    clock = _DisplacedPipelineClock()
+    monkeypatch.setattr(rcn, 'time', clock)
+    node, calls = _displaced_pipelined_node(clock, monkeypatch)
+    moves = []
+    real_position = node._position_platform_for_toss
+
+    def spy(seq, state=None):
+        st = node._toss_committed if state is None else state
+        moves.append((bool(st.positioning_move),
+                      tuple(float(v) for v in (st.platform_target_mm or ())),
+                      tuple(float(v) for v in seq.throw_site_xy_mm)))
+        return real_position(seq, state)
+    monkeypatch.setattr(node, '_position_platform_for_toss', spy)
+
+    result = node._execute_toss_continuous(
+        _ContGoalHandle(num_throws=3, dwell=0.55, delay=DELAY,
+                        throw_height=1.30, vel_scale=0.9,
+                        x=70.0, y=0.0, z=170.0))
+    assert result.outcome == 'COMPLETED', result.outcome
+    assert len(moves) == 3, moves
+    # cycle 2 is the declined one: rebuilt serially, and it MOVES — from the A
+    # it threw cycle 1 from to the B it caught at.
+    assert moves[1][0] is True, moves
+    assert moves[1][1][0] == pytest.approx(70.0, abs=2.0), moves
+    # …and by cycle 3 the chain is co-located and takes the census-B1 skip
+    # again, which is the pipeline re-engaging one cycle after the displacement.
+    assert moves[2][0] is False, moves
+
+
+def test_a_staged_cycle_nominates_the_predicted_chain_site_not_the_live_read(
+        monkeypatch):
+    """The nomination itself, isolated from the ladder.
+
+    A SERIAL cycle nominates the site from the live commanded pose, and that is
+    self-consistent because its POSITIONING then COMMANDS the platform there. A
+    STAGED cycle's POSITIONING is a skip by construction, so the live read is a
+    claim about an instant a whole flight before the throw — it nominates the
+    prediction of where it WILL be instead, through the same single
+    `_predicted_chain_site_mm` derivation the accept-time
+    REJECTED_CHAIN_UNREACHABLE check consults."""
+    clock = _PipelineClock()
+    monkeypatch.setattr(rcn, 'time', clock)
+    node, calls = _pipelined_node(clock, monkeypatch)
+    B = (70.0, 0.0, 170.0)
+    flight = node._resolve_toss_flight_s(1.30)
+    live = node._live_commanded_position(clock.t)
+    predicted = node._predicted_chain_site_mm(B, flight)
+    assert predicted is not None
+    # The premise: on a displaced goal the two answers are ~70 mm apart, which
+    # is the whole defect and is four times the census-B1 tolerance.
+    assert abs(predicted[0] - float(live[0])) > 60.0
+    staged_seq, _ = node._build_toss_cycle(
+        B, flight, 5.0, 0.9, delay_is_cadence=True,
+        release_at_perf=clock.t + 3.0, staged=True)
+    assert staged_seq.throw_site_xy_mm == pytest.approx(predicted)
+    # …and it therefore refuses to stage, by the SKIP-ONLY rule and not by a
+    # second displaced-specific test: its positioning pose is at B and the
+    # platform is at A.
+    assert staged_seq.positioning_move_expected is True
+    assert staged_seq.staged is False
+    serial_seq, _ = node._build_toss_cycle(B, flight, 5.0, 0.9,
+                                           delay_is_cadence=True)
+    assert serial_seq.throw_site_xy_mm == pytest.approx(
+        (float(live[0]), float(live[1])))
+
+
+@pytest.mark.parametrize('pose', [(0.0, 0.0, 170.0), (30.0, -20.0, 170.0)])
+def test_on_a_colocated_chain_the_prediction_is_the_live_read_bit_for_bit(
+        monkeypatch, pose):
+    """**The no-regression half, and it is an IDENTITY rather than a bound.**
+
+    The shipped steady state of a chained session is CO-LOCATED: the platform
+    parks at B and throws from B. There the parked-centroid prediction is the
+    live read's own fixed point — a self-toss lands with a vertical velocity, so
+    the receive tilt is identity, the cup swing is zero, and the catch policy
+    parks the centroid exactly on B. So the 2026-08-28 nomination change cannot
+    move a single co-located decision, because it does not move a single
+    co-located NUMBER.
+
+    Asserted as `==` on purpose. A tolerance here would hide the day this stops
+    being an identity — at which point the co-located chain has acquired a
+    residual and somebody needs to know why."""
+    clock = _PipelineClock()
+    monkeypatch.setattr(rcn, 'time', clock)
+    node, calls = _pipelined_node(clock, monkeypatch)
+    with node._lock:
+        node._commanded_pos_mm = tuple(float(v) for v in pose)
+        node._commanded_pose = tuple(float(v) for v in pose) + (0.0, 0.0, 0.0)
+        node._commanded_pos_mono = clock.t
+        node._commanded_pose_mono = clock.t
+    flight = node._resolve_toss_flight_s(1.30)
+    live = node._live_commanded_position(clock.t)
+    predicted = node._predicted_chain_site_mm(pose, flight)
+    assert predicted == (float(live[0]), float(live[1]))
+
+
+def test_the_honest_cache_check_re_reads_the_live_pose_and_re_derives_nothing():
+    """STRUCTURAL — the re-validation's two properties, pinned where they live.
+
+    1. it is the SAME predicate against the SAME cached target the BUILD used
+       (`_toss_already_positioned` fed `state.platform_target_mm`). A second
+       derivation here would be free to disagree with the one the pre-dispatch
+       budget was charged for — the exact accept-vs-runtime gap the 2026-08-23
+       single-decision rule closed;
+    2. what IS fresh is the live pose, and it is read on the tick the
+       observation snapshot is built — the commit tick — rather than cached at
+       stage time."""
+    import inspect
+    # The COMPILED identifier set, not the source text — the
+    # `test_the_census_never_feeds_a_budget` idiom, and for the same reason: the
+    # docstring below names `_toss_positioning_xyz` precisely to say it is NOT
+    # called here, and a source grep would read that sentence as the call.
+    names = (set(rcn.ReloadCoordinatorNode._staged_site_ok.__code__.co_names)
+             | set(rcn.ReloadCoordinatorNode._staged_site_ok
+                   .__code__.co_varnames))
+    assert '_toss_already_positioned' in names
+    assert 'platform_target_mm' in names
+    assert '_toss_positioning_xyz' not in names, 'no second derivation'
+    predicate = inspect.getsource(
+        rcn.ReloadCoordinatorNode._toss_already_positioned)
+    assert '_live_commanded_pose(' in predicate
+    # `_staged_observations` may source the field from exactly two places, and
+    # BOTH are the current tick's own read (audit fix, 2026-08-28): it calls
+    # `_staged_site_ok` itself, or — when `_tick_toss_pipeline` tells it the
+    # tick's one snapshot was already built FROM the staged state — it carries
+    # `obs.staged_site_ok`, which `_build_toss_observations` produced from
+    # `_staged_site_ok` on that same tick. That is § 2.4.4's one-read doctrine
+    # applied to this field; the second live read it replaces was two reads for
+    # one decision, free to disagree across the gap.
+    staged_obs_names = set(
+        rcn.ReloadCoordinatorNode._staged_observations.__code__.co_names)
+    assert '_staged_site_ok' in staged_obs_names
+    assert 'staged_site_ok' in staged_obs_names
+    builder_names = set(
+        rcn.ReloadCoordinatorNode._build_toss_observations.__code__.co_names)
+    assert '_staged_site_ok' in builder_names, (
+        'the other producer must still take the live read itself, or the '
+        'carried value would have no fresh source')
+    staged_obs = inspect.getsource(
+        rcn.ReloadCoordinatorNode._staged_observations)
+    assert 'state.staged_site_ok' not in staged_obs, (
+        'the re-validation may never be read off the cycle STATE — a value '
+        'cached there IS the stage-time latch this contract forbids')
+
+
 def test_the_pipelined_builder_passes_the_beat_and_the_stage_flag(monkeypatch):
     """The B2 seam finally carrying a value, pinned as a kwarg set — the
     pipelined twin of `test_every_cycle_goes_through_the_shared_builder`.

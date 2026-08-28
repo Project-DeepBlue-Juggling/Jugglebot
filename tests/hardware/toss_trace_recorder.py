@@ -309,6 +309,20 @@ REJECT_WIRE_MAP = {
     'REJECTED_HAND_NOT_PARKED': 'hand pos_meas outside the +-0.5 rev park band',
     'REJECTED_TRACK_ACTIVE': 'phantom tracker expectation destined jugglebot '
                              '(wait for expiry / restart tracker; see RF-5)',
+    'REJECTED_SITE_MOVED': 'STAGED slot only: the platform is no longer at the '
+                           'pose this cycle nominated its throw site for, so '
+                           'the staged cycle was dropped and rebuilt SERIALLY. '
+                           'On a DISPLACED chain that is the honest, expected '
+                           'answer (the previous cycle A->B reach moved the '
+                           'platform); nothing was armed, announced or thrown. '
+                           'Repeated occurrences on a CO-LOCATED chain mean '
+                           'something else is moving the platform mid-cycle '
+                           '...or trajectory/commanded_pose went stale/absent, '
+                           'which reads the same way by design (fail-closed: a '
+                           'node that was never told is not entitled to assume '
+                           'the platform is where it left it). Check that '
+                           '/trajectory/commanded_pose is publishing before '
+                           'hunting for a mover',
     'REJECTED_NO_BALL': 'the hand ball sensor reads a VALID EMPTY cup — load a '
                         'ball. Live since 2026-08-10 (toss_require_ball_evidence '
                         'defaults true); before that this code only fired with '
