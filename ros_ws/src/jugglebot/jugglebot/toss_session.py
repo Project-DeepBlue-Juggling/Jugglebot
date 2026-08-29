@@ -340,7 +340,7 @@ one constant so they cannot drift apart:
    spends the same floor as a blocking wait because the interlude runs inside the
    node rather than across FSM ticks.
 
-## Former known limitation (dissolved 2026-08-14) — chaining near the box edge
+## Chaining near the box edge — the limitation, and its DISSOLUTION (2026-08-29)
 
 A catch parks the platform CENTROID slightly outside B so the CUP lands ON B, and
 ``trajectory/commanded_position`` publishes the CENTROID. For a fixed-B session the
@@ -354,16 +354,26 @@ offset is largest at cycle 2 and then collapses (measured through the production
     146.0       149.017         145.938        146.001
     147.0       150.038   ← outside a ±150 planning box
 
-So a fixed-B chain CONVERGES, and the only cycle at risk is **cycle 2**. At box =
+So a fixed-B chain CONVERGES, and the only cycle at risk was **cycle 2**. At box =
 cap = 150 the frontier was sharp: |B| ≤ 146.5 mm chained, |B| ≥ 147.0 mm did not
-(the binding gate being the box on A, NOT the displacement cap — the residual
-|B−A| never exceeds 3.1 mm). **Since 2026-08-14 the box is the config key
-``toss_workspace_xy_mm`` (shipped 160 > cap × 1.03), the cycle-2 centroid sits
-inside it at every valid B, and cap-edge chains are admitted.** The coordinator
-still pre-checks against the configured box before anything moves
-(``REJECTED_CHAIN_UNREACHABLE``) rather than letting the session throw one ball,
-catch it, and then refuse cycle 2 with the platform parked off-box and a ball in
-the cup — the refusal re-binds only if the box is set below cap × ~1.03.
+— the binding gate being the box on A, NOT any bound on |B−A|, since the residual
+|B−A| never exceeds 3.1 mm. A ``REJECTED_CHAIN_UNREACHABLE`` session gate existed
+to catch that BEFORE a ball flew.
+
+**Both are gone as of 2026-08-29**, and in that order: the lateral ±xy planning
+box was deleted with its config key, which removed the A-side refusal the chain
+gate existed to pre-empt — its premise, not merely its threshold. Re-keying it on
+the surviving reach bound was considered and rejected as a gate that can never
+fire: the chained residual is ~2 % of |B| (< 3.2 mm), while the reach bound is
+≥ 83 mm and cycle 1 has already cleared it from a centred platform, so the gate
+would need a residual some forty times larger than anything cycle 1 admits. A
+permanently-green gate costs three ctor fields and teaches every reader that the
+chain is checked when it is not.
+
+If a future capability gives a session a per-leg B (see
+``plans/active/toss-multi-catch-pose.md``), the code comes back on a DIFFERENT
+premise — an unpredictable park, i.e. ``_predicted_chain_site_mm`` returning None
+at some hop — and not on a box.
 
 ## Possession across the dwell — stated honestly, not designed away
 
@@ -821,29 +831,6 @@ class TossSessionSequencer:
                                                 #   lengthens one that would have
                                                 #   started inside the previous
                                                 #   cycle's own teardown.
-    chain_site_reachable: bool = True           # node-fed: for num_throws >= 2, the
-                                                #   PREDICTED cycle-2 throw site (the
-                                                #   catch centroid of cycle 1, through
-                                                #   the SAME predicted_catch_command
-                                                #   policy the deferred reach uses)
-                                                #   lies inside the CONFIGURED
-                                                #   toss_workspace_xy_mm box (160
-                                                #   shipped 2026-08-14; was ±150).
-                                                #   False ⇒ REJECTED_CHAIN_UNREACHABLE.
-                                                #   Default True because a single-cycle
-                                                #   session has no chain to check; the
-                                                #   node passes it explicitly whenever
-                                                #   num_throws >= 2.
-    chain_site_xy_mm: Optional[tuple] = None    # the PREDICTED centroid the boolean
-                                                #   above was computed from, and the box
-    chain_box_xy_mm: float = 0.0                #   it was judged against — carried so
-                                                #   the refusal can QUOTE them. The node
-                                                #   already composes both into an ERROR
-                                                #   log; passing the numbers (not that
-                                                #   prose) keeps the sentence out of the
-                                                #   pure module and lets a test assert a
-                                                #   value. None/0.0 ⇒ not told, and the
-                                                #   refusal degrades to the bare code.
     on_empty_cup: str = ON_EMPTY_CUP_STOP       # STOP (default) | RELOAD. The ctor
                                                 #   default matches the ACTION's IDL
                                                 #   default and the node re-resolves
@@ -1581,36 +1568,14 @@ class TossSessionSequencer:
                          '' if self.pipelined
                          else ' or lower throw_delay_s toward {:.3f}'.format(
                              self.min_throw_delay_s))))
-        if self.num_throws >= 2 and not self.chain_site_reachable:
-            # The chain pre-check, caught BEFORE a ball flies. Without this, a
-            # session near the box edge throws one ball, catches it, then
-            # refuses cycle 2 REJECTED_WORKSPACE with the platform parked
-            # outside the planning box and the ball in the cup — actuation for
-            # nothing. At the shipped toss_workspace_xy_mm = 160 no valid B
-            # trips it (Phase E's former known limitation, dissolved
-            # 2026-08-14); it re-binds only if the box is set below
-            # cap × ~1.03 (frontier at box = 150: |B| <= 146.5 chained,
-            # >= 147.0 did not — probe, 2026-07-29).
-            #
-            # The refusal is about a pose the operator never typed — the
-            # PREDICTED cycle-2 throw site — so it is the one gate here whose
-            # numbers cannot be reconstructed from the goal at all. It names the
-            # predicted centroid, the box, and that the remedy is |B|, not the
-            # box.
-            if (self.chain_site_xy_mm is not None
-                    and self.chain_box_xy_mm > 0.0):
-                return self._reject('CHAIN_UNREACHABLE', bound_msg(
-                    'predicted cycle-2 centroid ({:.1f}, {:.1f}) mm, |max| ='
-                    .format(float(self.chain_site_xy_mm[0]),
-                            float(self.chain_site_xy_mm[1])),
-                    max(abs(float(self.chain_site_xy_mm[0])),
-                        abs(float(self.chain_site_xy_mm[1]))),
-                    '>', self.chain_box_xy_mm, 'mm',
-                    knob='toss_workspace_xy_mm',
-                    tail='a CAUGHT cycle 1 parks the platform there and cycle 2 '
-                         'would be refused WORKSPACE with the ball already '
-                         'caught — lower |catch_position| or run num_throws=1'))
-            return self._reject('CHAIN_UNREACHABLE')
+        # The REJECTED_CHAIN_UNREACHABLE pre-check stood here until 2026-08-29.
+        # It refused, before a ball flew, a session whose PREDICTED cycle-2 throw
+        # site (the catch centroid of cycle 1) fell outside the lateral planning
+        # box — the alternative being a session that threw one ball, caught it,
+        # and then refused cycle 2 REJECTED_WORKSPACE with the platform parked
+        # off-box and the ball in the cup. Deleting the box deleted that A-side
+        # refusal, so the gate had nothing left to pre-empt. See the module
+        # docstring for why it was not re-keyed on the reach bound.
         return None
 
     # ── discrete event (from the node) ─────────────────────────────────────────

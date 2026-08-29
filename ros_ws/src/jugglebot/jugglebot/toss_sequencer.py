@@ -31,11 +31,16 @@ where the reload receives from BB):
    2026-08-18 it — not a hand-picked ``[0.55, 1.10]`` band — is what bounds
    throw height, the Tier-8b displaced-throw gates —
    ``REJECTED_POSE_UNKNOWN`` when the platform's live commanded pose (⇒ the throw
-   site A) could not be read, ``REJECTED_DISPLACEMENT`` for |B−A| past the cap or
-   past the closed-form quintic reach bound over the flight,
+   site A) could not be read, ``REJECTED_DISPLACEMENT`` for |B−A| past the
+   closed-form quintic reach bound over the flight,
    ``REJECTED_TILT_CLAMP`` for an aim past
-   the tilt ceiling — event-vel band, workspace pre-check on B and, for 8b, on
-   the throw site A), the
+   the tilt ceiling — event-vel band, the z-band pre-check on B, and LAST of
+   the static gates ``REJECTED_POSITION(<planner code>: …)`` when the DEFERRED
+   A→B catch reach the node planned at cycle build
+   (``motion/trajectory/catch_reach``) is infeasible: the only pre-throw gate
+   that bounds B LATERALLY under 8b, where the positioning move commands the
+   pre-tilt pose at A and never judges B, and last because every gate before it
+   names a knob while this one names the kinematics), the
    control mode, then the live observations: mocap fresh, trajectory streaming,
    a gravity-levelling correction loaded in the node that applies it
    (``REJECTED_NOT_LEVELLED`` — un-levelled the launch is 0.78° off gravity,
@@ -578,17 +583,35 @@ TOSS_CANCEL_CUTOFF_S = 0.25          # node-level (§ cancellation): cancels hon
                                      # to t_release − this; later ⇒ deferred to the
                                      # FSM's own terminal.
 
-# Workspace pre-check (loud early reject; the feasibility gate remains the truth —
-# these are planning-envelope values, POLICY not physics):
-TOSS_XY_LIMIT_MM = 150.0             # |x|, |y| bound on the nominated catch pose —
-                                     # the NO-CONFIG fallback only since 2026-08-14:
-                                     # the node resolves hw.JB_OP_TOSS_WORKSPACE_XY_MM
-                                     # (YAML toss_workspace_xy_mm, operator-adjustable)
-                                     # and passes it into the ctor (workspace_xy_mm).
-                                     # The YAML default sits ABOVE the displacement
-                                     # cap so the centroid-vs-cup chain divergence
-                                     # (2.07 % of displacement) stops binding at the
-                                     # cap edge — see the YAML key's comment.
+# Workspace pre-check (loud early reject; the feasibility gate remains the truth).
+#
+# The LATERAL half of this pre-check — the ±xy planning box on B and, under 8b,
+# on the live throw site A — was DELETED 2026-08-29 (owner decision) along with
+# its config key ``toss_workspace_xy_mm``. It was POLICY, not physics: it bounded
+# what a goal could REQUEST and nothing else, while every authority that bounds
+# what the machine will DO sat behind it (trajectory_node's feasibility gate on
+# the positioning move, the closed-form reach bound below, the tilt ceiling, the
+# firmware stroke clamp + MAX_DEVIATION guard). A far-lateral goal is now
+# accepted at CHECKING and refused pre-throw by the positioning move's own
+# verdict — REJECTED_POSITION(UNREACHABLE) — which names the subsystem that
+# actually refused instead of a number an operator had to edit YAML to move.
+#
+# ⚠ THAT JUSTIFICATION WAS 8a-ONLY, and the 8b half was repaired the same day.
+# Tier 8a's positioning move commands B itself, so go_to_pose does judge it.
+# Tier 8b pre-positions to the PRE-TILT pose at the throw site A and DEFERS the
+# A→B reach to t_release, so go_to_pose never judges B and the deletion left
+# nothing bounding it laterally (the z band is a scalar on B.z; the reach bound
+# is a scalar on |B−A|). The gate that closed the gap is a PHYSICS one, not a
+# restored box: the node plans the deferred reach at cycle build
+# (motion/trajectory/catch_reach) and CHECKING mints
+# REJECTED_POSITION(<planner code>: …) for an infeasible one. So the true
+# statement is now: a far-lateral goal is refused PRE-THROW by the
+# reach-feasibility gate at cycle build (8b) / the positioning gate (8a).
+#
+# The Z band SURVIVES, and is not the same kind of bound: the toss ballistics are
+# derived about the ACTIVE plane, so a z far off it is a goal whose flight the
+# release math cannot honestly describe rather than a reach the planner might yet
+# accept.
 TOSS_ACTIVE_Z_MM = 170.0             # ACTIVE plane (JB_OP_DEFAULT_ACTIVE_Z_MM; pinned
                                      # by the config drift-guard test)
 TOSS_Z_BAND_MM = 50.0                # |z − ACTIVE| bound (the sweep is ±30)
@@ -600,29 +623,31 @@ TEENSY_MIN_EVENT_VEL_MPS = 0.3
 TEENSY_MAX_EVENT_VEL_MPS = 7.0
 
 # ── Tier-8b displaced-throw CHECKING gates (Phase 4; re-based Phase E) ─────────
-# |B_xy − A_xy| cap — the NO-CONFIG fallback only. The node resolves
-# hw.JB_OP_TOSS_MAX_DISPLACEMENT_MM and passes it into the ctor
-# (``max_displacement_mm``); this literal serves standalone/test use and the
-# config drift-guard test pins the two equal. Same pattern as
-# DEFAULT_TOSS_FLIGHT_TIME_S.
+# THE |B−A| GATE IS THE CLOSED-FORM REACH BOUND, AND ONLY THAT (2026-08-29).
 #
-# It caps REQUESTED displacement, and nothing else. Until 2026-07-29 it was 70 mm
-# = the intersection of (a) trajectory_node's 80 mm catch reach envelope — which
-# back then was captured at A, so a B-reach beyond it was structurally rejected
-# WORKSPACE *mid-flight, after the ball was airborne* (hardware, 4/4: bag
-# 2026-07-27_16-07-30, 113-141 mm goals) — with (b) the bb Rung-2a "clean box"
-# (~±70 mm). **Contract C-REACH-1 (ros_ws/docs/catch_reach_envelope.md) removed
-# half (a)**: the envelope now centres on the NOMINATED catch B, because it
-# exists to bound UNREQUESTED drift, not requested reach. So this cap is now the
-# sole bound on |B−A| and must carry its own justification rather than inheriting
-# the envelope's — see the YAML key's comment for the evidence (production
-# planner 8/8 out to 225 mm; hardware validated only to 70 mm).
+# There used to be a second bound wearing the same REJECTED_DISPLACEMENT name: a
+# flat ``toss_max_displacement_mm`` cap (150 mm, 70 mm before 2026-07-29). The
+# owner retired it — it was a CHOSEN number, not a derived one, and a policy knob
+# that has to be edited in YAML and regenerated is a poor way to ramp difficulty
+# when the operator is standing at the machine. The physics bound below follows
+# the LIVE session limits, so ``trajectory/set_limits`` is now the single lever
+# that moves the pre-throw gate.
 #
-# The closed-form reach bound below remains a SECOND, flight-dependent gate; it
-# is CONSERVATIVE below T ≈ 0.75 s and OPTIMISTIC above it (measured,
-# tools/probes/displaced_reach_frontier.py 2026-07-29), which is precisely why
-# the cap must not be relaxed to lean on it.
-TOSS_MAX_DISPLACEMENT_MM = 150.0
+# THE RESIDUAL THIS ACCEPTS, stated plainly because it is real: the closed-form
+# bound is measured-OPTIMISTIC above T ≈ 0.75 s (it would pass a 250-400 mm reach
+# the production planner refuses 2/8-4/8 directions —
+# tools/probes/displaced_reach_frontier.py, 2026-07-29). The retired cap was the
+# margin against that half. So above T ≈ 0.75 s an over-far goal is no longer
+# refused by THIS bound. It is still refused pre-throw, by the reach-feasibility
+# gate the node planned at cycle build (motion/trajectory/catch_reach), which
+# asks build_catch the same question the mid-flight verdict would have answered
+# — so the optimistic half costs a REJECTED_POSITION at CHECKING rather than an
+# airborne miss. What the owner accepted on 2026-08-29 is that difficulty is now
+# ramped by hand through T and the live limits instead of by a YAML cap; the
+# conservative half below T ≈ 0.75 s still refuses feasible throws HERE, one
+# gate earlier, which is the residual that survives.
+# Contract C-REACH-1 (ros_ws/docs/catch_reach_envelope.md) is unaffected: it
+# bounds UNREQUESTED drift about the nominated B, which is a different quantity.
 # Closed-form peak factors of build_catch's quintic (min-jerk, zero boundary
 # velocities) over displacement d and lead T: peak vel = 1.875·d/T, peak acc =
 # 5.7735·d/T², peak |jerk| = 60·d/T³ (platform space; leg-space peaks are the
@@ -641,11 +666,12 @@ REACH_PEAK_JERK_FACTOR = 60.0
 # ramp-up is refused pre-throw for no physical reason. These copies engage only
 # when the live values are absent (0.0: pre-field publisher, stale status, bag
 # replay, standalone use), degrading to exactly the pre-2026-08-14 behaviour.
-# History of the bound itself: at the OLD 70 mm cap it never bound (d_max ≥
-# 83.2 mm at T = 0.55 s); at the Phase-E 150 mm cap it is LIVE and binding at
-# the default limits — it refuses a 150 mm goal below T ≈ 0.669 s (60·d/T³ =
-# jerk), while over-conservative at T = 0.60 (bound 108 mm, real frontier
-# 175 mm); the operator raises T, the live limits, or both.
+# Since 2026-08-29 this is the SOLE |B−A| gate (the flat cap it used to sit
+# beside is gone). Spot values at the default limits: 83.2 mm at T = 0.55 s,
+# 108 mm at T = 0.60, 256 mm at T = 0.80 — all jerk-bound, so the bound grows as
+# T³ and the cheap remedy is nearly always a longer flight. It is
+# over-conservative below T ≈ 0.75 s (real frontier 175 mm at T = 0.60) and
+# optimistic above it; the operator raises T, the live limits, or both.
 REACH_VEL_LIMIT_MMPS = 1000.0
 REACH_ACC_LIMIT_MMPS2 = 5000.0
 REACH_JERK_LIMIT_MMPS3 = 30000.0
@@ -673,8 +699,13 @@ def reach_displacement_limit_mm(flight_time_s: float,
     conservative), and ~225 mm from T = 0.70 up (cf 171.5 → 586.7 — OPTIMISTIC
     above T ≈ 0.75 s: it would pass a 250-400 mm reach the planner rejects
     2/8-4/8). It is a loud+early convenience, never the truth: the truth is
-    ``trajectory_node``'s own feasibility gate, and the SAFETY margin against
-    the optimistic half is ``max_displacement_mm``, not this bound."""
+    ``trajectory_node``'s own feasibility gate. Since 2026-08-29 the flat cap
+    that used to cover the optimistic half is retired, and what covers it
+    instead is the node's build-time reach plan
+    (``motion/trajectory/catch_reach``, minted here as
+    ``REJECTED_POSITION(<planner code>: …)``) — the SAME planner, asked one
+    phase earlier, so an over-far reach above T ≈ 0.75 s is still refused
+    pre-throw rather than mid-flight."""
     return reach_displacement_bound(flight_time_s, vel_mmps, acc_mmps2,
                                     jerk_mmps3)[0]
 
@@ -1647,24 +1678,6 @@ class TossSequencer:
                                                 # operator never asked for. The
                                                 # node passes the flag explicitly
                                                 # on BOTH branches.
-    max_displacement_mm: float = TOSS_MAX_DISPLACEMENT_MM
-                                                # Tier 8b |B−A| cap; the node
-                                                # passes hw.JB_OP_TOSS_MAX_
-                                                # DISPLACEMENT_MM. The YAML key
-                                                # is OPERATOR-ADJUSTABLE (2026-08-14):
-                                                # the module literal is only the
-                                                # no-config fallback, and the test
-                                                # pins the MECHANISM (ctor value
-                                                # is what gates), not equality.
-    workspace_xy_mm: float = TOSS_XY_LIMIT_MM   # |x|,|y| planning-envelope bound
-                                                # on B (and, 8b, on A). The node
-                                                # passes hw.JB_OP_TOSS_WORKSPACE_
-                                                # XY_MM (YAML toss_workspace_xy_mm,
-                                                # operator-adjustable); the module
-                                                # literal is the no-config fallback.
-                                                # POLICY, not physics: the planner's
-                                                # feasibility gate + the firmware
-                                                # stroke clamp remain the truth.
     stay_at_pose_on_caught: bool = True         # CAUGHT terminal: True ⇒
                                                 # ACTION_STAY (hold the catch
                                                 # pose so the next toss can throw
@@ -1700,6 +1713,18 @@ class TossSequencer:
                                                 # as floats, not the exception's prose:
                                                 # the clamp math stays in motion/, and
                                                 # a number is what a test can assert.
+    reach_verdict: str = ''                     # Tier 8b: node-fed feasibility code for
+                                                # the DEFERRED A->B catch reach, planned
+                                                # at cycle build through
+                                                # motion/trajectory/catch_reach. Empty ⇒
+                                                # feasible (or not asked: 8a, an unknown
+                                                # site, a clamped aim — every case with
+                                                # no release state to plan from). Same
+                                                # node-feeds-a-verdict shape as
+                                                # tilt_clamp_exceeded above, and for the
+                                                # same reason: the planner math stays in
+                                                # motion/ and this module carries no
+                                                # second copy of it.
 
     # ── internal state ──
     _phase: str = field(default=PHASE_CHECKING, init=False)
@@ -2174,11 +2199,10 @@ class TossSequencer:
                 # routes the operator at the trajectory link, not at the goal.
                 if not self.throw_site_known:
                     return self._reject('POSE_UNKNOWN')
-                # Then the cap (the primary contract — REQUESTED displacement,
-                # config-keyed), then the closed-form quintic reach bound over
-                # lead = T — both are loud PRE-THROW verdicts for a reach whose
-                # trajectory_node verdict would otherwise arrive only after
-                # release, with the ball already airborne.
+                # Then the closed-form quintic reach bound over lead = T — since
+                # 2026-08-29 the ONLY |B−A| gate, and a loud PRE-THROW verdict
+                # for a reach whose trajectory_node verdict would otherwise
+                # arrive only after release, with the ball already airborne.
                 ax, ay = self.throw_site_xy_mm
                 displacement = math.hypot(x - float(ax), y - float(ay))
                 # The reach bound judges against the LIVE session limits when
@@ -2195,8 +2219,7 @@ class TossSequencer:
                 bound, term = reach_displacement_bound(
                     self.flight_time_s, vel_mmps=live[0], acc_mmps2=live[1],
                     jerk_mmps3=live[2])
-                if (displacement > self.max_displacement_mm
-                        or displacement > bound):
+                if displacement > bound:
                     return self._reject(
                         'DISPLACEMENT',
                         self._displacement_detail(displacement, bound, term,
@@ -2337,22 +2360,16 @@ class TossSequencer:
                             bool(self.positioning_move_expected)),
                         'with a' if self.positioning_move_expected
                         else 'census-B1 skip, no'))
-            # ONE code, THREE messages. The gate is unchanged (same three
-            # conjuncts, same x → y → z precedence — the split is the boolean
-            # `or` written out so each branch can name ITS bound); what changes
-            # is that "outside the workspace" now says which of the lateral box
-            # and the z band refused, and quotes the offending component. They
-            # move under different knobs (`toss_workspace_xy_mm` vs the
-            # ACTIVE-plane band), so the undifferentiated code sent half these
-            # refusals to the wrong one.
-            if abs(x) > self.workspace_xy_mm:
-                return self._reject('WORKSPACE', bound_msg(
-                    '|B.x| =', abs(x), '>', self.workspace_xy_mm, 'mm',
-                    knob='toss_workspace_xy_mm'))
-            if abs(y) > self.workspace_xy_mm:
-                return self._reject('WORKSPACE', bound_msg(
-                    '|B.y| =', abs(y), '>', self.workspace_xy_mm, 'mm',
-                    knob='toss_workspace_xy_mm'))
+            # ONE code, ONE message since 2026-08-29 — the lateral ±xy box (on B,
+            # and under 8b on the live throw site A) was deleted with its config
+            # key. What survives is the z band, which quotes the offending
+            # component and names the constant that moves it. The refusal an
+            # operator used to get here for a far-lateral goal now comes from a
+            # feasibility verdict rather than a box: under 8a from the
+            # POSITIONING move's own, REJECTED_POSITION(UNREACHABLE), later by
+            # one phase but from the subsystem that actually refused; under 8b —
+            # whose positioning move commands the pre-tilt pose at A and never
+            # judges B — from the reach-feasibility gate above, at cycle build.
             if abs(z - TOSS_ACTIVE_Z_MM) > TOSS_Z_BAND_MM:
                 return self._reject('WORKSPACE', bound_msg(
                     'B.z {:.1f} mm is'.format(z), abs(z - TOSS_ACTIVE_Z_MM),
@@ -2360,27 +2377,49 @@ class TossSequencer:
                     limit_label='band',
                     tail='measured from the ACTIVE plane {:.1f} mm'.format(
                         TOSS_ACTIVE_Z_MM)))
-            if self.tier == TIER_8B:
-                # The throw site A shares B's z (one nominated plane); its xy
-                # gets the same planning-envelope bounds as B. Since A is the
-                # platform's LIVE commanded xy (Phase E), this now also refuses
-                # a toss commanded while the platform is parked OUTSIDE the
-                # planning envelope — a real state a SpaceMouse/GUI session can
-                # leave behind, and one where the pre-tilt POSITIONING move
-                # would be planned from an unvalidated pose.
-                ax, ay = self.throw_site_xy_mm
-                for axis, value in (('A.x', float(ax)), ('A.y', float(ay))):
-                    if abs(value) > self.workspace_xy_mm:
-                        # The variant an operator is most likely to misread: the
-                        # goal's B may be perfectly legal and the refusal is
-                        # about where the PLATFORM is parked, so the message
-                        # names the live throw site and the one-command remedy.
-                        return self._reject('WORKSPACE', bound_msg(
-                            'live throw site |{}| ='.format(axis), abs(value),
-                            '>', self.workspace_xy_mm, 'mm',
-                            knob='toss_workspace_xy_mm',
-                            tail='the PLATFORM is parked outside the planning '
-                                 'box, not the goal — go_home and retry'))
+            if self.reach_verdict:
+                # ── THE LATERAL BOUND ON B, restored as PHYSICS (2026-08-29) ──
+                # The ±xy planning box died with the flat cap that day, on the
+                # argument that a far goal is refused pre-throw by the
+                # POSITIONING move's own feasibility verdict. That is true for
+                # Tier 8a, whose positioning move commands B itself — and FALSE
+                # for 8b, which pre-positions to the PRE-TILT pose at the throw
+                # site A (`_toss_positioning_xyz`) and defers the A->B reach to
+                # `t_release`. Under 8b nothing else pre-throw judges B
+                # laterally at all: the z band just above is a scalar on B.z,
+                # and the DISPLACEMENT bound is a scalar on |B-A| — neither
+                # bounds |B|. Measured 2026-08-29: B = (250, 0) at T = 0.80 and
+                # B = (500, 0) at T = 1.00 both clear this whole gate ladder and
+                # are then refused WORKSPACE by the planner at t_release, with
+                # the ball already airborne (the C-REACH-1 mid-flight class — a
+                # miss, and a dead catch).
+                #
+                # So the node PLANS the deferred reach at cycle build
+                # (motion/trajectory/catch_reach) and feeds the verdict here.
+                # It is a POSITION-class refusal because the thing refused is a
+                # platform pose, and it carries the planner's own code as the
+                # leading subcode — the same `<code>: <message>` shape
+                # _step_positioning mints, so a consumer reads WHY the same way
+                # whether the refusal came from here or from go_to_pose.
+                #
+                # ⚠ LAST OF THE STATIC GATES, and that is a DELIBERATE ordering,
+                # not a convenience. Every gate above names a knob the operator
+                # can move — a flight time, a displacement, an aim ceiling, a
+                # wire band, a z band — and answers a scalar question. This one
+                # answers "the leg kinematics say no", which is true of a goal
+                # for many reasons and points at no single knob. Putting it
+                # earlier would swallow those: a z = 300 mm goal is refused by
+                # the reach plan too, and reporting THAT instead of
+                # REJECTED_WORKSPACE(B.z … TOSS_Z_BAND_MM) sends the operator
+                # hunting through kinematics for a number they could have
+                # typed. Cheapest-and-most-specific first, exactly as the
+                # 8b block's own gates are ordered.
+                return self._reject('POSITION', '{}: the nominated catch pose '
+                                    '({:.1f}, {:.1f}, {:.1f}) mm is not '
+                                    'reachable — the deferred A->B reach would '
+                                    'be refused at t_release with the ball '
+                                    'airborne'.format(self.reach_verdict,
+                                                      x, y, z))
         # TOSS runs within the active streaming mode; leaving it mid-sequence is
         # the documented abort. A mode-exit mid-flight still terminates immediately
         # (as reload): trajectory_node has force-disarmed the latch on the mode
@@ -3094,20 +3133,18 @@ class TossSequencer:
 
     def _displacement_detail(self, displacement: float, bound: float,
                              term: str, live: tuple) -> str:
-        """The REJECTED_DISPLACEMENT parenthetical: which of the TWO bounds
-        actually refused, the other one for context, and the knob that moves the
-        binding one.
+        """The REJECTED_DISPLACEMENT parenthetical: the reach bound that refused,
+        WHICH of its three peaks produced it, and the limits it was computed
+        from.
 
-        Both limits are quoted every time because "too far" is ambiguous between
-        them and they move under different knobs: the cap is a config number the
-        operator edits, the reach bound is a function of the flight time and the
-        LIVE session limits, so raising ``throw_height_m`` or ramping
-        ``set_limits`` clears one and does nothing at all to the other. Reporting
-        only the binding one would send half the refusals to the wrong knob.
-
-        BINDING = the SMALLER limit, not the first one tested: with both
-        exceeded, the smaller is the one that still refuses after the other is
-        raised, so it is the one the remedy has to name.
+        ONE bound since 2026-08-29. Until then this sentence had to arbitrate
+        between two limits wearing one code — the reach bound and a flat
+        ``toss_max_displacement_mm`` cap — quoting both every time because "too
+        far" was ambiguous between them and they moved under different knobs. The
+        cap is retired, so the message names the only thing that refused and the
+        two levers that move it: a longer flight (the bound grows as T³ on the
+        jerk term, which is what usually binds) or a ``set_limits`` ramp on the
+        term the refusal names.
 
         The limits label is THREE-VALUED because ``live`` is a PER-FIELD ``or
         None`` mapping and a partial observation is a real state (a status
@@ -3120,7 +3157,6 @@ class TossSequencer:
         ``mixed``, and a trailing ``*`` marks each individual term that fell back
         (legend in the tail). The label and the numbers can no longer
         disagree."""
-        cap = float(self.max_displacement_mm)
         t = float(self.flight_time_s)
         # The three limits arrive as ONE trajectory/status sample, so they are
         # live together or absent together; the effective values are re-derived
@@ -3141,26 +3177,12 @@ class TossSequencer:
         # short as it was.
         star_note = ('; * = default, not reported'
                      if any(v is None for v in live) else '')
-        reach_text = 'reach bound {:.1f} mm ({}-bound) at T = {:.3f} s'.format(
-            bound, term, t)
-        cap_text = 'cap {:.1f} mm [toss_max_displacement_mm]'.format(cap)
-        over_cap = displacement > cap
-        over_bound = displacement > bound
-        if over_cap and (not over_bound or cap <= bound):
-            return bound_msg(
-                '|B-A| =', displacement, '>', cap, 'mm', digits=1,
-                knob='toss_max_displacement_mm', limit_label='cap',
-                tail='{} {} — lower |B-A| or raise the cap'.format(
-                    reach_text,
-                    'also exceeded' if over_bound else 'not binding'))
         return bound_msg(
             '|B-A| =', displacement, '>', bound, 'mm', digits=1, knob=limits,
             limit_label='reach bound',
-            tail='{}-bound at T = {:.3f} s, {} {} — raise throw_height_m '
+            tail='{}-bound at T = {:.3f} s — raise throw_height_m '
                  '(longer T) or set_limits {}{}'.format(
-                     term, t, cap_text,
-                     'also exceeded' if over_cap else 'not binding', term,
-                     star_note))
+                     term, t, term, star_note))
 
     def _reject(self, code: str, message: str = '') -> TossDecision:
         outcome = 'REJECTED_{}'.format(code)

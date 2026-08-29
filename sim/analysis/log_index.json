@@ -1036,6 +1036,22 @@
       "rosbag": "/home/jetson/Desktop/rosbags/2026-08-25_19-19-57",
       "session_group": "2026-08-25_19-19-57",
       "verdict": "NEEDS_ATTENTION"
+    },
+    "2026-08-29_15-30-29": {
+      "analyzed": false,
+      "logbook_entry": "2026-08-29-reload-stay-resume.md",
+      "phase": "toss_continuous with on_empty_cup: RELOAD \u2014 the corpus for the post-RELOAD resume decomposition. Jointly with _15-40-40: 107 catch episodes (15 reload + 92 toss) on /hand_telemetry at ~99 Hz with ZERO invalid samples; n=13 caught interludes measured at 2.803-2.833 s of log silence between 'Reload CAUGHT' and 'reload interlude CAUGHT'; 7 of 12 resumed cycles logged 'POSITIONING skipped - platform is already at (0.0,0.0,170.0)'; worst seat bounce ends +0.183 s past the sensor arrival edge. Bag-measured refutation of the operator's 'JB waits for BB to settle' hypothesis",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-08-29_15-30-29",
+      "session_group": "2026-08-29_15-30-29"
+    },
+    "2026-08-29_15-40-40": {
+      "analyzed": false,
+      "logbook_entry": "2026-08-29-reload-stay-resume.md",
+      "phase": "toss_continuous with on_empty_cup: RELOAD \u2014 second sitting of the post-RELOAD resume corpus; pooled with _15-30-29 for every measurement in the entry (the seat-settle bound, the terminal lag +0.09..+0.22 s past the sensor edge, and the 42 time-independent raw-bit dropouts absorbed by the debounce)",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-08-29_15-40-40",
+      "session_group": "2026-08-29_15-40-40"
     }
   },
   "version": 1

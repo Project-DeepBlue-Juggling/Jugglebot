@@ -238,7 +238,6 @@ from jugglebot.toss_sequencer import (                              # noqa: E402
     FLIGHT_TIME_MAX_S,
     FLIGHT_TIME_MIN_S,
     TOSS_ACTIVE_Z_MM,
-    TOSS_XY_LIMIT_MM,
     TOSS_Z_BAND_MM,
 )
 # The MINER, for the one definition it owns: the per-axis lean that the mined
@@ -1309,10 +1308,13 @@ def admit_command(u, goal: TossGoal) -> Tuple[bool, str]:
     never a linearised surrogate, and never a second copy of a bound:
 
     1. ``toss_sequencer`` CHECKING's static goal gates: the flight-time band
-       (``FLIGHT_TIME_MIN/MAX_S``) and the workspace box
-       (``TOSS_XY_LIMIT_MM`` / ``TOSS_Z_BAND_MM`` about ``TOSS_ACTIVE_Z_MM``).
-       Invariant to a throw-side ``u``, and run anyway: a fit against an
-       inadmissible goal is a fit nobody can fly.
+       (``FLIGHT_TIME_MIN/MAX_S``) and the z band (``TOSS_Z_BAND_MM`` about
+       ``TOSS_ACTIVE_Z_MM``). Invariant to a throw-side ``u``, and run anyway: a
+       fit against an inadmissible goal is a fit nobody can fly. The LATERAL
+       half of that check — a ±xy planning box — was deleted from the production
+       FSM on 2026-08-29 along with its config key, so it is gone from here too
+       (it had already been flagged a stale mirror, and mirroring a gate that no
+       longer exists would refuse rows the machine will happily fly).
     2. **per-channel authority** — ``|u_j| <= AUTHORITY[j]``, every bound
        imported from the module that owns it (``toss_cal.TOTAL_MAX_RAD``,
        ``toss_trim.SPEED_AUTHORITY``, ``toss_trim.TAU_AUTHORITY_MS``). This
@@ -1352,10 +1354,9 @@ def admit_command(u, goal: TossGoal) -> Tuple[bool, str]:
                        '[{:.2f}, {:.2f}] (REJECTED_FLIGHT_TIME)'
                        .format(T, FLIGHT_TIME_MIN_S, FLIGHT_TIME_MAX_S))
     x, y, z = (float(v) for v in goal.catch_pose_stow_mm)
-    if (abs(x) > TOSS_XY_LIMIT_MM or abs(y) > TOSS_XY_LIMIT_MM
-            or abs(z - TOSS_ACTIVE_Z_MM) > TOSS_Z_BAND_MM):
+    if abs(z - TOSS_ACTIVE_Z_MM) > TOSS_Z_BAND_MM:
         return False, ('goal pose ({:.1f}, {:.1f}, {:.1f}) is outside the '
-                       'sequencer workspace box (REJECTED_WORKSPACE)'
+                       'sequencer z band (REJECTED_WORKSPACE)'
                        .format(x, y, z))
 
     # Per-axis for the SCALAR channels only. The aim pair is bounded JOINTLY, on

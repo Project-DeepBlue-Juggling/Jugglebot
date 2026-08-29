@@ -642,8 +642,8 @@ def pipelined_session_accepts(T: float, dwell_s: float, *,
             T, ilc_trim=ilc_trim, loop_period_s=loop_period_s,
             budget_loop_s=budget_loop_s):
         return 'REJECTED_DWELL'
-    if sess.num_throws >= 2 and not sess.chain_site_reachable:
-        return 'REJECTED_CHAIN_UNREACHABLE'
+    # A REJECTED_CHAIN_UNREACHABLE rung stood here until 2026-08-29; it went with
+    # the lateral planning box whose cycle-2 refusal it existed to pre-empt.
     return None
 
 

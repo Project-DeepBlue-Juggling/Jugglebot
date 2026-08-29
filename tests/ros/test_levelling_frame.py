@@ -156,6 +156,23 @@ _POSE_BEARING_ARGS = {
 # the comparison is a multiset, so losing or gaining a call fires.
 _PLANNER_MANIFEST = (
     # file, enclosing scope, callee, pose args, class, note
+    ('motion/trajectory/catch_reach.py', 'catch_reach_verdict',
+     'planner.build_catch',
+     (('catch_pose', 'catch_pose'), ('receive_tilt', '(rx, ry)')), 'D',
+     'D9 — the PRE-THROW reach feasibility probe (2026-08-29). The plan it '
+     'builds is measured and DISCARDED, never installed, so nothing here is a '
+     'command. Both arguments are CONSTRUCTED in the same function rather than '
+     'ingested: `receive_tilt` is tilt_to_receive() of the derived arrival '
+     'velocity — the gravity-referenced quantity C-CATCH-1 requires UNCORRECTED '
+     'anyway — and `catch_pose` is that same tilt plus the swing-compensated '
+     'centroid, whose POSITION half the correction never touches by rule (§ "If '
+     'you are adding a new pose surface" step 4). What DOES differ from the '
+     'commanded path is that trajectory_node corrects the catch pose ROTATION '
+     'at its own E2 ingest; the delta is the levelling residual, sub-degree, '
+     'i.e. ~1 mm of cup lever against a hundreds-of-mm leg-stroke verdict. '
+     'Correcting here is also not possible: the offset lives in trajectory_node '
+     'and this module is pure motion/. Adding a correction here would be the '
+     'DOUBLE-apply, not the fix'),
     ('motion/trajectory/follower.py', 'TargetFollower.follow',
      'planner.build_follow', (('target_pose', 'chase.pose'),), 'D',
      'D8 — the chased pose, derived from the already-corrected E1 target'),

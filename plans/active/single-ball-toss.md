@@ -383,6 +383,59 @@ rungs below are the specification; the runbook is the authority.
 
 ### Phase E — displaced throws to ±150 mm (operator decision (d), 2026-07-28)
 
+> ### ⚠ SUPERSEDED IN PART — 2026-08-29, owner decision
+>
+> **Both of Phase E's config knobs are DELETED.** The text below is left as
+> written, as the record of what was decided on 2026-07-28/29 and why; it is no
+> longer a description of the shipped machine. What changed:
+>
+> * `jugglebot_operational.toss_max_displacement_mm` (sub-change **3**, the
+>   150 mm cap) — **deleted.** It was a CHOSEN number, not a derived one, and a
+>   policy knob that needs a YAML edit plus `generate_config.py` plus a relaunch
+>   is the wrong ergonomics for ramping difficulty at the machine. The
+>   closed-form quintic reach bound — which follows the live
+>   `trajectory/set_limits` session limits — is now the sole pre-throw `|B − A|`
+>   gate, so `set_limits` is the single lever.
+> * `jugglebot_operational.toss_workspace_xy_mm` (the ±xy planning box, added
+>   2026-08-14) — **deleted.** It was policy standing in front of real
+>   authorities. A far-lateral goal is now admitted at CHECKING and refused
+>   **pre-throw by the reach-feasibility gate at cycle build (Tier 8b) / the
+>   positioning gate (Tier 8a)** — either way naming the subsystem that actually
+>   refused, and either way before anything is armed.
+>
+>   ⚠ **The 8b half was a gap for one day** (audit, 2026-08-29). The deletion's
+>   justification — "`go_to_pose` refuses it as `REJECTED_POSITION(UNREACHABLE)`"
+>   — holds for 8a, whose positioning move commands B itself. Tier 8b
+>   pre-positions to the **pre-tilt pose at the throw site A**
+>   (`_toss_positioning_xyz`) and defers the A→B reach to `t_release`, so
+>   `go_to_pose` never judged B and nothing bounded it laterally: measured on the
+>   tree, `B = (250, 0)` at `T = 0.80` and `B = (500, 0)` at `T = 1.00` were both
+>   ADMITTED and then refused `WORKSPACE` by the planner **mid-flight**. The fix
+>   is physics, not a restored box: `_build_toss_cycle` plans the deferred reach
+>   through `motion/trajectory/catch_reach` (the same body
+>   `tools/probes/displaced_reach_frontier.py` measures the frontier with) and
+>   CHECKING mints `REJECTED_POSITION(<planner code>: …)` for an infeasible one.
+>   No new outcome code; ~13–19 ms per cycle build for a feasible reach,
+>   ~1.5 ms for a refusal (measured 2026-08-29).
+> * `REJECTED_CHAIN_UNREACHABLE` — **deleted**, code and gate. Its premise was
+>   the box's cycle-2 refusal; with the box gone there was nothing left to
+>   pre-empt. (`_predicted_chain_site_mm` itself stays — a STAGED cycle nominates
+>   its throw site from it.)
+>
+> **The residual the owner accepted, explicitly:** the closed-form bound is
+> measured-OPTIMISTIC above `T ≈ 0.75 s`, and the cap was the margin against
+> that half. Above that flight an over-far goal is no longer refused by the
+> **displacement** gate — but since the 2026-08-29 audit fix it is still refused
+> **pre-throw**, by the build-time reach plan above, which asks `build_catch`
+> exactly the question `trajectory_node` would have answered at `t_release`.
+> What the owner accepts is therefore the ERGONOMICS (difficulty is ramped by
+> hand through `T` and `set_limits` rather than by a YAML cap) and the
+> conservative half below `T ≈ 0.75 s` (feasible throws refused one gate early),
+> not an airborne miss.
+>
+> Sub-changes **1** (live throw site A), **2** (C-REACH-1) and **4** (the `STAY`
+> terminal) are unaffected and still describe the shipped machine.
+
 The operator's goal, stated 2026-07-28: *throw across large translations — at
 least ±150 mm at z = 170 — from oblique platform positions, with the platform
 STAYING at its catch pose after a caught toss so sessions chain A → B → C.* Four
@@ -422,6 +475,9 @@ mechanism the corruption would *define its own envelope*. Widening the envelope 
 buys reach, which is the coupling this contract exists to break.
 
 **3. The cap is config-keyed and re-based on its own evidence.**
+*(⚠ SUPERSEDED 2026-08-29 — the key is deleted; see the banner at the head of
+this phase. The evidence below is still the evidence, and it is what made
+deleting the cap a decision on measurement rather than a guess.)*
 `jugglebot_operational.toss_max_displacement_mm` = **150 mm** (was a hard-coded
 70). The old 70 was *the 80 mm envelope ∩ the Rung-2a clean box*; C-REACH-1 removed
 the envelope half, so the cap needed evidence rather than an inheritance.
@@ -507,15 +563,18 @@ applied to a value 3.10 mm outside nominal. The offset is
 box at `|B| ≈ 147 mm`. Every refusal is loud, pre-throw and moves nothing; the
 remedy is one `go_home`.
 **UPDATE 2026-08-14 — chaining refusal DISSOLVED by the box/cap separation**:
-the planning box is now the config key `toss_workspace_xy_mm` (default 160 =
+the planning box became the config key `toss_workspace_xy_mm` (default 160 =
 cap + 10 > cap × 1.03, i.e. above the 2.07 % divergence at the cap edge), so the
-parked centroid sits inside the box and chained goals at the cap are ADMITTED;
-back-to-centre from a cap-edge park still refuses on the `|B − A|` cap, which is
-a genuinely requested displacement. Pinned by
-`tests/ros/test_toss_sequencer.py::test_chaining_at_the_cap_box_dissolves_the_frame_divergence`,
-documented as C-REACH-1 residual 7 (updated in place). The frame decision below
-is therefore no longer *forced* by DISP-5/DISP-6 — those rungs run as written at
-the shipped box — but the centroid-vs-cup question itself stays open.
+parked centroid sat inside the box and chained goals at the cap were ADMITTED;
+back-to-centre from a cap-edge park still refused on the `|B − A|` cap.
+**UPDATE 2026-08-29 — both keys DELETED**, so the mechanism is gone rather than
+widened: nothing measures the parked centroid against a lateral bound at all,
+and the ~3 mm centroid-vs-cup residual is now purely an aim question. The
+pinning test above was deleted with it; the residual magnitude is pinned by
+`tests/ros/test_toss_continuous_node.py::test_the_predicted_chain_residual_stays_a_few_mm`,
+and documented as C-REACH-1 residual 7 (updated in place). The frame decision
+below is therefore no longer *forced* by DISP-5/DISP-6 — those rungs run as
+written — but the centroid-vs-cup question itself stays open.
 
 **Open question the operator owns — the throw-site frame (centroid vs cup).**
 `trajectory/commanded_position` publishes the commanded centroid;

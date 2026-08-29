@@ -64,8 +64,8 @@ def outcome_subcode(outcome) -> str:
 
     ``'REJECTED_POSITION(NO_RESPONSE)'`` and
     ``'REJECTED_POSITION(BUSY: a move is in flight)'`` both give the code;
-    ``'REJECTED_WORKSPACE(|B.y| = 178.0 mm > 160.0 …)'`` gives ``''``, because
-    there is no subcode there to mistake for one.
+    ``'REJECTED_WORKSPACE(B.z 225.0 mm is 55.0 mm > band 50.0 …)'`` gives ``''``,
+    because there is no subcode there to mistake for one.
 
     It exists so a guard can match ``(code, subcode)`` instead of a whole
     outcome string. Matching the whole string is what breaks the moment a

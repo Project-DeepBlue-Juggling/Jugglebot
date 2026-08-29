@@ -112,11 +112,11 @@ of two landed facts: the firmware catch stroke ends where a kind-0 throw stroke
 starts (0 rev, ``Trajectory.h``), so no hand move is needed between cycles, and a
 CAUGHT toss STAYs at its catch pose, so cycle N+1's throw site A is cycle N's catch
 B for free. The centroid-vs-cup frame divergence — ``trajectory/commanded_position``
-publishes the CENTROID, which sits a cup-swing outside B — is caught BEFORE anything
-moves by :meth:`_predicted_chain_site_mm` (``REJECTED_CHAIN_UNREACHABLE``) instead of
-letting a session throw one ball and then refuse cycle 2 with the platform parked
-off-box. (Phase E's cap-edge chaining refusal itself dissolved 2026-08-14: the
-shipped ``toss_workspace_xy_mm`` = 160 box clears the divergence at every valid B.)
+publishes the CENTROID, which sits a cup-swing outside B — is handled by
+:meth:`_predicted_chain_site_mm`, which a STAGED cycle uses to nominate the site it
+will actually throw from (2026-08-28). It also fed an accept-time
+``REJECTED_CHAIN_UNREACHABLE`` pre-check until 2026-08-29; that gate went with the
+lateral planning box whose refusal it existed to pre-empt.
 """
 
 from __future__ import annotations
@@ -236,6 +236,7 @@ from jugglebot.toss_session import (
     GO_HOME_DURATION_S,
     ON_EMPTY_CUP_RELOAD,
     OUTCOME_STOPPED_RELOAD_BUDGET,
+    SAFE_ABORT_LADDER_S,
     SESSION_ACTION_NONE,
     SESSION_ACTION_RELOAD,
     SESSION_ACTION_START_CYCLE,
@@ -252,6 +253,8 @@ from jugglebot.toss_record import latch_announced_ball
 from jugglebot.motion.tilt_map import find_repo_root
 from jugglebot.motion import toss_cal, toss_ilc
 from jugglebot.motion.trajectory import hand_stroke, throw_envelope
+from jugglebot.motion.trajectory.catch_reach import catch_reach_feasible
+from jugglebot.motion.trajectory.limits import TrajectoryLimits
 from jugglebot.motion.trajectory.tilt_geometry import MAX_TILT_DEG
 from jugglebot.motion.ik_solver import (
     quat_to_rot_matrix,
@@ -826,6 +829,78 @@ _TOSS_SESSION_REACH_DRIFT_TOL_MM = (
 # the only cost of a longer window is time on a path that is already failing.
 _RECENTRE_VERIFY_PAD_S = 1.5
 
+# ── Rung 4's floor when the interlude's CAUGHT terminal STAYED (2026-08-29) ────
+#
+# THE ANCHOR IS THE VERDICT, NOT THE LANDING, and that is the whole of this
+# constant. `_settle_after_reload` starts its clock at the FSM TERMINAL — i.e. at
+# the possession verdict that minted CAUGHT — while `DEFAULT_SESSION_MISS_CLEANUP_S`
+# is derived from a cycle's SCHEDULED LANDING. Reusing the landing-anchored floor
+# here charged its leading `CATCH_CONFIRM_WINDOW_S` term a SECOND time: that term
+# is the settle window that elapses BEFORE a verdict exists, and by this call site
+# it has already been spent in real time (measured +0.094..+0.212 s from the cup's
+# `[SENSOR_ARRIVED]` line to `Reload CAUGHT`, n=13, bags 2026-08-29_15-30-29 and
+# _15-40-40). A floor may only charge for work that is still AHEAD of its clock.
+#
+# WHAT IS STILL AHEAD, now that the CAUGHT terminal STAYS (`_recenter_stay`):
+#
+#   SAFE_ABORT_LADDER_S       the terminal ladder's own dispatch cost, verdict ->
+#                             last rung. Borrowed rather than re-derived: the stay
+#                             ladder is a strict SUBSET of the ladder this prices
+#                             (2 of its 4 rungs — `arm_catch(False)` and the
+#                             `catch/armed` publish — and the two it drops are the
+#                             expensive ones, the telemetry-verified hand retract
+#                             and the go_home dispatch). The sibling measurement in
+#                             its own comment puts rungs 1-3 at +0.022..0.025 s
+#                             TOTAL, so 0.160 s over-prices our two by ~6x. That is
+#                             the safe direction, it costs 0.135 s of a 2.56 s
+#                             saving, and a second, smaller ladder constant would
+#                             need its own measurement and its own drift guard.
+# + 2 x NODE_LOOP_PERIOD_S    observe-the-terminal + start-the-next-cycle, the same
+#                             two polls every other floor on this page charges, at
+#                             the LOOP period rather than the sleep.
+#   = 0.240 s
+#
+# NO `GO_HOME_DURATION_S` TERM, and that is Fix A's consequence rather than an
+# oversight: the stay terminal installs no profile, so there is no traverse for the
+# next cycle to start inside. The term is what the other 2.0 s of the old floor
+# was, and it left with the go_home.
+#
+# NO SETTLE-HOLD TERM EITHER, and this one is a genuine hand-off rather than an
+# omission. The platform is left holding the catch plan, which carries
+# `JB_TRAJ_CATCH_SETTLE_HOLD_S` (0.50 s) of quiescent hold from its ARRIVAL, and
+# `go_to_pose` answers BUSY for as long as that plan has time remaining
+# (`trajectory_node._active_move_in_flight`). The next cycle's POSITIONING already
+# absorbs exactly that: `TOSS_POSITION_BUSY_PATIENCE_S` is the settle hold PLUS one
+# loop period, re-polled at 0.10 s. Our clock starts LATER than the arrival that
+# starts the hold (by the verdict latency above), so the residual this floor would
+# have to cover is strictly less than the hold, and the re-poll covers the hold
+# itself with a loop period to spare — the coverage is by CONSTRUCTION, not by
+# arithmetic luck, and `test_the_busy_repoll_covers_the_stay_floors_settle_residual`
+# pins the inequality rather than the numbers.
+#
+# AND NO BALL-SEATING TERM, which is the one a shortened floor could plausibly
+# owe. The resumed cycle's CHECKING reads the RAW cup bit (C-POSSESS-1 § 3.5 —
+# raw is what fails CLOSED at every dwell), so a floor that let it read while the
+# ball was still bouncing into the seat would mint REJECTED_NO_BALL on a good
+# catch and route a full cup into a phantom second interlude. MEASURED
+# 2026-08-29, /hand_telemetry at ~99 Hz over bags 2026-08-29_15-30-29 and
+# _15-40-40, 107 catch episodes (15 reload + 92 toss), ZERO invalid samples: the
+# worst seat bounce anywhere in the corpus ends **+0.183 s** past the sensor
+# arrival edge, with no post-settle re-bounce, and the raw bit read TRUE at
+# terminal + 0.24 s in **107 of 107** episodes. This floor's clock starts at the
+# TERMINAL, which the same corpus puts +0.095..+0.223 s past that edge, so the
+# earliest read is edge + 0.335 s against a 0.183 s bound.
+#
+# The corpus's OTHER finding is recorded here because it is the one a future
+# reader will otherwise re-derive and mis-attribute to this change: 42 isolated
+# <=60 ms raw dropouts under a demonstrably seated ball (~1 per 21 s of held
+# time, P ~ 0.13 % per single raw sample), every one absorbed by the DEBOUNCED
+# bit. That class is TIME-INDEPENDENT — identical at 2.80 s and at 0.24 s — so it
+# is a standing property of the raw-bit gate, not a cost of shortening this
+# floor. `test_the_stay_floor_clears_the_measured_seat_settle` keeps the two
+# apart in writing.
+RELOAD_STAY_SETTLE_S = SAFE_ABORT_LADDER_S + 2.0 * TOSS_LOOP_PERIOD_S
+
 # ── Layer 1.5 — the dwell inclinometer covariate (§ 3.10, operator decision 2) ─
 # get_platform_tilt BLOCKS the Platform-Teensy loop that streams hand moves, so
 # the two hard rules are, in priority order: reads NEVER overlap PREPARE→THROW,
@@ -1033,7 +1108,15 @@ def _reload_interlude_budget_s(session) -> float:
     (:meth:`ReloadCoordinatorNode._wait_for_bb_ready`), charged separately from
     the sequence ceiling's copy of it: an attempt can legitimately spend both —
     the gate waits BB out, then the FSM's CHECKING waits it out again — and this
-    ceiling's exit path is the ABORT the paragraph above names."""
+    ceiling's exit path is the ABORT the paragraph above names.
+
+    The settle term stays ``DEFAULT_SESSION_MISS_CLEANUP_S`` even though a CAUGHT
+    attempt now charges the much smaller ``RELOAD_STAY_SETTLE_S`` (Fix A,
+    2026-08-29). That is the same over-count the band wait above is, in the same
+    direction and for the same reason: an attempt that FAILS still pays the full
+    floor, this ceiling has to bound the worst case, and its exit path ABORTs a
+    session for doing what it was asked to do. Do not "tighten" it to the stay
+    floor."""
     if str(getattr(session, 'on_empty_cup', '')) != ON_EMPTY_CUP_RELOAD:
         return 0.0
     per_attempt = (float(hw.JB_BD_ARRIVAL_WINDOW_S) + BB_READY_WAIT_S
@@ -2037,6 +2120,32 @@ class ReloadCoordinatorNode(Node):
         if pos is None or mono <= 0.0 or (now - mono) >= _TRAJ_STATUS_STALE_S:
             return None
         return pos
+
+    def _live_traj_limits(self, now: float):
+        """The LIVE session ``TrajectoryLimits``, or None when unknown/stale.
+
+        The same freshness rule the observation builder applies to
+        ``leg_*_limit_*`` (``_TRAJ_STATUS_STALE_S`` on ``trajectory/status``),
+        expressed as the object ``motion/trajectory`` planners take rather than
+        as three loose floats — the ONE consumer is the build-time reach plan
+        in :meth:`_build_toss_cycle`, and a planner wants limits, not a triple.
+
+        A zero in ANY component is the pre-field-publisher / never-heard
+        sentinel and refuses the whole triple: a limits object built from a
+        partial read would silently plan against a 0 mm/s ceiling and refuse
+        every reach. None ⇒ the helper falls back to the YAML session defaults,
+        which is exactly what the closed-form bound does with the same absence.
+        """
+        with self._lock:
+            mono = self._traj_status_mono
+            live = self._leg_limits_live
+        if mono <= 0.0 or (now - mono) >= _TRAJ_STATUS_STALE_S:
+            return None
+        if not all(v > 0.0 for v in live):
+            return None
+        return TrajectoryLimits.from_config(
+            hw, leg_vel_mmps=live[0], leg_acc_mmps2=live[1],
+            leg_jerk_mmps3=live[2])
 
     def _on_commanded_pose(self, msg):
         """``trajectory/commanded_pose``: the SAME sampled plan state as
@@ -3086,9 +3195,32 @@ class ReloadCoordinatorNode(Node):
         else:
             self.get_logger().warning(line)
 
-    def _step_sequence(self, seq, now, goal_handle=None):
+    def _step_sequence(self, seq, now, goal_handle=None, *,
+                       stay_on_caught: bool = False):
         """One FSM tick: build observations, step, execute the requested action, publish
-        phase feedback. Returns the decision (testable in isolation)."""
+        phase feedback. Returns the decision (testable in isolation).
+
+        ``stay_on_caught`` selects :meth:`_recenter_stay` over :meth:`_recenter`
+        for the CAUGHT terminal — the auto-reload interlude passes it, the
+        standalone ``jugglebot/reload`` action does not.
+
+        **WHY THE SEAM IS HERE AND NOT IN THE FSM.** ``ACTION_RECENTER`` is shared
+        by both callers, so the cut has to be made somewhere; the three candidates
+        were the FSM's ``_terminal_action``, this dispatch, and a flag read inside
+        ``_recenter``. The FSM is wrong because the choice is not a property of the
+        SEQUENCE — the reload that ran is identical either way, mints the identical
+        ``CAUGHT`` outcome, and ``reload_sequencer`` is a pure module that must not
+        learn which caller is driving it. A flag inside ``_recenter`` is wrong
+        because it makes a shipping, hardware-validated ladder's behaviour depend
+        on node state set somewhere else, which is precisely the kind of action-at-
+        a-distance that makes a teardown unreviewable. This dispatch is the ONE
+        place that already translates an FSM action into a node ladder, and it is
+        the place both callers already share — so the drift that matters (a rung
+        added to the reload ladder) still lands here where both see it, exactly as
+        this method's contract with :meth:`_run_one_reload_attempt` promises.
+        Keyword-only and defaulted False so every existing call site — including
+        the standalone action's at ``_execute_reload`` and every test's — keeps its
+        current behaviour without being touched."""
         obs = self._build_observations(now)
         decision = seq.step(now, obs)
         if decision.action == ACTION_PRIME_HAND:
@@ -3106,7 +3238,10 @@ class ReloadCoordinatorNode(Node):
         elif decision.action == ACTION_PREPARE_CATCH:
             seq.note_prepare_result(self._prepare_catch())
         elif decision.action == ACTION_RECENTER:
-            self._recenter()
+            if stay_on_caught:
+                self._recenter_stay()
+            else:
+                self._recenter()
         elif decision.action == ACTION_SAFE_ABORT:
             self._safe_abort()
         if goal_handle is not None and not decision.done:
@@ -4242,9 +4377,10 @@ class ReloadCoordinatorNode(Node):
         #
         # So a STAGED cycle nominates the PREDICTION of where it will be:
         # `_predicted_chain_site_mm`, the parked-centroid prediction taken through
-        # the SAME `_toss_catch_policy` object the deferred reach publishes from,
-        # and the same single derivation the accept-time
-        # REJECTED_CHAIN_UNREACHABLE check consults. On a co-located chain (the
+        # the SAME `_toss_catch_policy` object the deferred reach publishes from.
+        # (It was ALSO the accept-time REJECTED_CHAIN_UNREACHABLE check's single
+        # derivation until that gate was deleted on 2026-08-29; this consumer is
+        # the surviving one.) On a co-located chain (the
         # shipped steady state) the prediction is the live read's own fixed point,
         # so nothing moves; on a displaced one it is the honest answer and the
         # live read is the lie.
@@ -4326,6 +4462,68 @@ class ReloadCoordinatorNode(Node):
             release = None
         else:
             release = compute_release_state(catch_pose, flight)
+        # ── THE DEFERRED A→B REACH, PLANNED WHILE THE GOAL IS STILL REFUSABLE ──
+        # (2026-08-29 audit BLOCKING finding.) Tier 8b pre-positions to the
+        # PRE-TILT pose at the throw site A (`_toss_positioning_xyz`) and defers
+        # the A→B translation to `t_release`, so `go_to_pose` never judges B and
+        # NOTHING else pre-throw bounds B laterally: the FSM's z band is a scalar
+        # on B.z and its displacement bound a scalar on |B−A|. Measured on this
+        # tree: B = (250, 0) at T = 0.80 and B = (500, 0) at T = 1.00 are both
+        # ADMITTED at CHECKING and then refused WORKSPACE by the planner at
+        # t_release, with the ball airborne — the C-REACH-1 mid-flight class.
+        # (Tier 8a needs none of this: its positioning move commands B itself, so
+        # the go_to_pose feasibility gate already answers for it.)
+        #
+        # So ask the PLANNER now, through the shared helper the frontier probe
+        # also calls (motion/trajectory/catch_reach — one body, so the measured
+        # frontier and the shipped gate cannot disagree). A non-OK verdict rides
+        # the FSM's node-fed-verdict channel exactly as the tilt clamp does, and
+        # CHECKING mints REJECTED_POSITION(<verdict>: …) — no new outcome code,
+        # and the planner's own code leads the parenthetical.
+        #
+        # ⚠ COST: 13-19 ms for a feasible reach on this Jetson (a refusal
+        # short-circuits at ~1.5 ms) — measured 2026-08-29, quoted in full in the
+        # helper's docstring. This runs ONCE per cycle, so it lands on a single
+        # tick of the blocking cycle loop, alongside the synchronous `go_to_pose`
+        # round trip already there (the measured 0.16-0.54 s body overruns). The
+        # class — "the FSM tick does blocking work" — is owned by the named
+        # sibling change *Unblocking the loop from the positioning service round
+        # trip* (plans/active/toss-multi-catch-pose.md § Explicit non-goals), not
+        # by this gate, which is two orders of magnitude below the round trip.
+        #
+        # `release is None` (a clamped aim, or an unknown 8b site) ⇒ no verdict:
+        # the FSM rejects on an earlier gate and there is no reach to plan.
+        reach_verdict = ''
+        if tier == TIER_8B and release is not None:
+            # LIVE session limits when trajectory_node is currently talking,
+            # exactly as the closed-form bound prefers them and for the same
+            # reason: this gate fronts for the feasibility gate that runs at
+            # t_release, so it must judge against what THAT gate will enforce.
+            # Stale/absent ⇒ None ⇒ the helper's YAML-default fallback.
+            reach_verdict = catch_reach_feasible(
+                throw_site, (float(catch_pose[0]), float(catch_pose[1])),
+                flight, catch_z_mm=float(catch_pose[2]),
+                limits=self._live_traj_limits(time.perf_counter()))
+            if reach_verdict == 'OK':
+                reach_verdict = ''
+            else:
+                # ⚠ States the VERDICT, not the terminal. This gate is the LAST
+                # static one CHECKING runs, so a goal that also breaks a
+                # knob-shaped gate (displacement, tilt, event_vel, the z band)
+                # reports THAT instead — and a log line claiming a terminal the
+                # goal did not get is exactly the kind of forensic that sends an
+                # operator to the wrong subsystem.
+                self.get_logger().error(
+                    'Toss deferred A→B catch reach INFEASIBLE ({}): from '
+                    '({:.1f}, {:.1f}) to the nominated ({:.1f}, {:.1f}, {:.1f}) '
+                    'mm over {:.3f} s does not plan — the same verdict '
+                    'trajectory_node would return at t_release with the ball '
+                    'already airborne. CHECKING refuses this goal '
+                    'REJECTED_POSITION({}: …) unless an earlier gate names a '
+                    'knob first'.format(
+                        reach_verdict, throw_site[0], throw_site[1],
+                        float(catch_pose[0]), float(catch_pose[1]),
+                        float(catch_pose[2]), flight, reach_verdict))
         # ── The AIM (contract C-TOSS-CAL-1, D1/D4) ──
         # ONE lookup, here, for the whole goal. `release` stays the UNCORRECTED
         # state and is what ANNOUNCE, the possession plausibility reference and
@@ -4465,12 +4663,11 @@ class ReloadCoordinatorNode(Node):
             # "do not stage a displaced cycle" test would be a second copy of
             # the same question, free to disagree with this one.
             staged=bool(staged) and stage_ok and not positioning_move,
-            max_displacement_mm=float(hw.JB_OP_TOSS_MAX_DISPLACEMENT_MM),
-            workspace_xy_mm=float(hw.JB_OP_TOSS_WORKSPACE_XY_MM),
             stay_at_pose_on_caught=bool(hw.JB_OP_TOSS_STAY_AT_POSE_ON_CAUGHT),
             tilt_clamp_exceeded=tilt_clamp_exceeded,
             tilt_required_deg=tilt_required_deg,
-            tilt_max_deg=tilt_max_deg)
+            tilt_max_deg=tilt_max_deg,
+            reach_verdict=reach_verdict)
         seq.start(time.perf_counter())
         waiver = bool(self.get_parameter(_TOSS_WAIVER_PARAM).value)
         if waiver:
@@ -5027,7 +5224,7 @@ class ReloadCoordinatorNode(Node):
         NEGATIVE throw_height_m / throw_delay_s / catch_vel_scale ⇒ invalid: 0.0
         is the only "use the default" sentinel, and coercing a sign typo to a
         default would silently run a physically different toss (the
-        catch_position components are legitimately signed — the workspace
+        catch_position components are legitimately signed — the z-band
         pre-check and the feasibility gate own their bounds).
 
         **Two values, not one, since 2026-08-29.** The NAME is what the log line
@@ -5319,7 +5516,7 @@ class ReloadCoordinatorNode(Node):
         the wrong site. The reach envelope the deferred A->B target is judged
         against is the DECLARED catch centre B (contract C-REACH-1; the node
         publishes catch/reach_center one FSM tick before the arm raise), so the
-        displacement is bounded by toss_max_displacement_mm rather than by the
+        displacement is bounded by the closed-form reach bound rather than by the
         envelope. The 8b tilt is encoded through the SAME
         quaternion round-trip go_to_pose decodes with (rotvec -> matrix -> quat),
         single-sourcing the ik_solver helpers rather than hand-rolling a quaternion.
@@ -7645,42 +7842,14 @@ class ReloadCoordinatorNode(Node):
         # it could command; the exact trim is the cycle's business.
         with self._lock:
             ilc_loaded = self._toss_ilc is not None
-        # Phase E's KNOWN LIMITATION, caught BEFORE a ball flies (num_throws >= 2
-        # only — a one-cycle session has no chain). See _predicted_chain_site_mm.
-        chain_reachable = True
-        # The predicted centroid and the box it was judged against, carried into
-        # the session so REJECTED_CHAIN_UNREACHABLE can quote them: this is the
-        # one session gate whose numbers the operator cannot reconstruct from
-        # the goal they typed. None ⇒ no chain was checked.
-        chain_site = None
-        chain_box = 0.0
-        if num_throws >= 2:
-            site = self._predicted_chain_site_mm(catch_pose, flight)
-            if site is not None:
-                # Same configured box the sequencer's WORKSPACE gate enforces
-                # (YAML toss_workspace_xy_mm) — checking the chain against a
-                # different constant than the gate that will refuse cycle 2 is
-                # exactly the drift this predictor exists to pre-empt. With the
-                # YAML default sitting ABOVE the displacement cap, the 2.07 %
-                # centroid-vs-cup divergence no longer binds at the cap edge
-                # (the 146.5/147.0 frontier below was measured with box = cap
-                # = 150).
-                workspace_xy = float(hw.JB_OP_TOSS_WORKSPACE_XY_MM)
-                chain_reachable = (abs(site[0]) <= workspace_xy
-                                   and abs(site[1]) <= workspace_xy)
-                chain_site = (float(site[0]), float(site[1]))
-                chain_box = workspace_xy
-                if not chain_reachable:
-                    self.get_logger().error(
-                        'TossContinuous REJECTED_CHAIN_UNREACHABLE: a CAUGHT '
-                        'catch at %s parks the platform CENTROID at (%.2f, %.2f) '
-                        'mm, outside the +-%.0f mm planning box, so cycle 2 '
-                        'would be rejected WORKSPACE with a ball already thrown '
-                        'and caught. Lower |catch_position| (at box = cap = '
-                        '150 the measured frontier was <= 146.5 mm chains, '
-                        '>= 147.0 does not) or run num_throws=1.'
-                        % (catch_pose, site[0], site[1], workspace_xy))
-
+        # An accept-time REJECTED_CHAIN_UNREACHABLE pre-check sat here until
+        # 2026-08-29. It compared _predicted_chain_site_mm against the lateral
+        # planning box, refusing a chained session whose cycle-2 throw site would
+        # land outside it — the alternative being one ball thrown, caught, and
+        # then cycle 2 refused WORKSPACE with the ball in the cup. Deleting the
+        # box deleted that cycle-2 refusal, so the pre-check lost its premise
+        # rather than its threshold. _predicted_chain_site_mm itself STAYS: the
+        # staged cycle's throw-site nomination (2026-08-28) is its live consumer.
         session = TossSessionSequencer(
             num_throws=num_throws,
             dwell_time_s=dwell,
@@ -7697,9 +7866,6 @@ class ReloadCoordinatorNode(Node):
             max_throws=int(hw.JB_OP_TOSS_SESSION_MAX_THROWS),
             dwell_default_s=float(hw.JB_OP_TOSS_SESSION_DWELL_DEFAULT_S),
             dwell_margin_s=float(hw.JB_OP_TOSS_SESSION_DWELL_MARGIN_S),
-            chain_site_reachable=chain_reachable,
-            chain_site_xy_mm=chain_site,
-            chain_box_xy_mm=chain_box,
             # Can layer 3 command a SPEED trim on this goal? It is the only thing
             # that can make a cycle's event_vel differ from the untrimmed
             # vertical closed form the session computes its floors from, and
@@ -8696,6 +8862,13 @@ class ReloadCoordinatorNode(Node):
         max_sequence_s = _sequence_deadline_s(seq)
         cancel_seen = False
         deferred_logged = False
+        # Whether the terminal that ends this attempt STAYED at the catch pose
+        # (Fix A) — i.e. installed no go_home for the next cycle to start inside.
+        # Read by the `finally` to pick rung 4's floor. False for every exit that
+        # is NOT the FSM's own CAUGHT terminal (timeout / shutdown / cancel all
+        # route through `_safe_on_early_exit`, which DOES go_home), so those keep
+        # the full landing-anchored floor.
+        stayed = False
         try:
             t_start = time.perf_counter()
             while rclpy.ok():
@@ -8725,8 +8898,13 @@ class ReloadCoordinatorNode(Node):
                             'now would retract the hand from under it. The '
                             'cancel resolves at this interlude terminal (same '
                             'discipline as _toss_cancel_deferred).' % seq.phase)
-                decision = self._step_sequence(seq, now, None)
+                decision = self._step_sequence(seq, now, None,
+                                               stay_on_caught=True)
                 if decision.done:
+                    # The CAUGHT terminal is the one that dispatched
+                    # `_recenter_stay` just above, so it is also the one whose
+                    # floor has no profile to cover.
+                    stayed = decision.action == ACTION_RECENTER
                     self._log_reload_outcome(decision.result)
                     return decision.result
                 if now - t_start > max_sequence_s:
@@ -8742,11 +8920,17 @@ class ReloadCoordinatorNode(Node):
         finally:
             with self._lock:
                 self._active_seq = None
-            # Rung 4 — SETTLE. The reload's own terminal action (RECENTER on a
-            # catch, SAFE_ABORT otherwise) dispatches on SERVICE ACKS, so it
-            # returns while the go_home profile is still traversing. The MISS
-            # path already carries exactly this floor and for exactly this
-            # reason; reusing the constant is what keeps the two from drifting.
+            # Rung 4 — SETTLE. A terminal that installs a go_home (SAFE_ABORT,
+            # and every node-level early exit) dispatches on SERVICE ACKS, so it
+            # returns while the profile is still traversing. The MISS path already
+            # carries exactly this floor and for exactly this reason; reusing the
+            # constant is what keeps the two from drifting.
+            #
+            # The CAUGHT terminal no longer installs one (Fix A, `_recenter_stay`),
+            # so it charges `RELOAD_STAY_SETTLE_S` instead — see that constant for
+            # the derivation and for why the anchor moved from the landing to the
+            # verdict. NOT a shortening of the MISS floor: `stayed` is False for
+            # every other terminal, which keeps the full floor byte-for-byte.
             # SKIPPED on a cancel: the floor exists to protect the NEXT cycle,
             # and a cancelled session has none — waiting it out would only make
             # the operator's cancel look 2.9 s slower than it is. (The safing has
@@ -8757,12 +8941,19 @@ class ReloadCoordinatorNode(Node):
             # holding the floor for it would add the deferral's cost to the
             # operator's stop TWICE.
             if not cancel_seen:
-                self._settle_after_reload()
+                self._settle_after_reload(stayed=stayed)
 
-    def _settle_after_reload(self) -> None:
-        """Hold for the MISS-cleanup floor so the next cycle does not start
-        inside the reload's own teardown. Commands nothing — it waits."""
-        deadline = time.perf_counter() + DEFAULT_SESSION_MISS_CLEANUP_S
+    def _settle_after_reload(self, *, stayed: bool = False) -> None:
+        """Hold so the next cycle does not start inside the reload's own teardown.
+        Commands nothing — it waits.
+
+        ``stayed`` ⇒ the terminal was the interlude's CAUGHT, which installs no
+        go_home, so the floor is ``RELOAD_STAY_SETTLE_S`` (verdict-anchored) rather
+        than the landing-anchored ``DEFAULT_SESSION_MISS_CLEANUP_S`` the go_home
+        terminals still charge. Defaulted False so the full floor is what any
+        caller gets by omission."""
+        floor = RELOAD_STAY_SETTLE_S if stayed else DEFAULT_SESSION_MISS_CLEANUP_S
+        deadline = time.perf_counter() + floor
         while rclpy.ok() and time.perf_counter() < deadline:
             time.sleep(_TICK_S)
 
@@ -8882,30 +9073,23 @@ class ReloadCoordinatorNode(Node):
         ``trajectory/commanded_position``. Returns ``(x, y)`` STOW mm, or None
         when it cannot be predicted.
 
-        **Two consumers, one derivation** (the second landed 2026-08-28):
+        **ONE consumer since 2026-08-29, and it is the load-bearing one**: the
+        STAGED cycle's own throw-site NOMINATION in :meth:`_build_toss_cycle`
+        (landed 2026-08-28). A staged cycle's POSITIONING is a skip by
+        construction, so it cannot command its nomination true the way the serial
+        path does — the only honest site for it is where it will BE, which is
+        precisely what this predicts. The serial path keeps the live read
+        (correct there: nothing moves between its build and its release that
+        POSITIONING did not itself command).
 
-        * the ACCEPT-time chain pre-check, which refuses
-          ``REJECTED_CHAIN_UNREACHABLE`` before a ball flies;
-        * the STAGED cycle's own throw-site NOMINATION in
-          :meth:`_build_toss_cycle`. A staged cycle's POSITIONING is a skip by
-          construction, so it cannot command its nomination true the way the
-          serial path does — the only honest site for it is where it will BE,
-          which is precisely what this predicts. The serial path keeps the live
-          read (correct there: nothing moves between its build and its release
-          that POSITIONING did not itself command).
-
-        This makes the centroid-vs-cup divergence checkable BEFORE anything
-        moves. The catch deliberately parks the CENTROID a cup-swing outside the
-        nominated B so the CUP lands ON B, and the wire publishes the centroid —
-        so near the planning-box edge a chained session would throw one ball,
-        catch it, and then refuse cycle 2 ``REJECTED_WORKSPACE`` with the
-        platform parked off-box and the ball in the cup. Measured through this
-        same policy at the old box = cap = 150 (2026-07-29): B_x 146.0 -> A_x
-        149.017 (chained), B_x 147.0 -> A_x 150.038 (did not). The residual then
-        COLLAPSES (cycle 3: 145.938, cycle 4: 146.001), so cycle 2 is the only
-        one at risk — and at the shipped ``toss_workspace_xy_mm`` = 160 box
-        (2026-08-14) no valid B trips the check at all; it re-binds only if the
-        box is configured below cap × ~1.03.
+        It also fed an ACCEPT-time ``REJECTED_CHAIN_UNREACHABLE`` pre-check until
+        2026-08-29, when that gate was deleted with the lateral planning box its
+        refusal was keyed on. The divergence this predicts is unchanged and still
+        real: the catch deliberately parks the CENTROID a cup-swing outside the
+        nominated B so the CUP lands ON B, and the wire publishes the centroid.
+        Measured through this same policy (2026-07-29): B_x 146.0 -> A_x 149.017,
+        B_x 147.0 -> A_x 150.038, then COLLAPSING (cycle 3: 145.938, cycle 4:
+        146.001) — i.e. ~2 % of |B| at cycle 2 and negligible after.
 
         Single-sourced through ``self._toss_catch_policy`` —
         ``predicted_catch_command`` is the SAME object and method the deferred
@@ -8927,13 +9111,11 @@ class ReloadCoordinatorNode(Node):
         live pose is already ``REJECTED_POSE_UNKNOWN`` on cycle 1; and a
         tilt-clamp / policy refusal is already the cycle's own loud verdict.
 
-        **The two consumers treat None differently, and both are fail-safe.**
-        For the ACCEPT check it means SKIPPED, not failed — a reject there would
-        mis-route the operator away from the verdict the cycle is about to mint
-        for itself. For the STAGED nomination it means *this cycle cannot say
-        where it will be*, so it does not stage and takes the serial path, where
-        the site is read live and POSITIONING commands the move that makes the
-        nomination true. Neither ever guesses a site."""
+        **None is fail-safe at the surviving consumer.** For the STAGED
+        nomination it means *this cycle cannot say where it will be*, so it does
+        not stage and takes the serial path, where the site is read live and
+        POSITIONING commands the move that makes the nomination true. It never
+        guesses a site."""
         if str(hw.JB_OP_TOSS_TIER) != TIER_8B:
             return None
         live = self._live_commanded_position(time.perf_counter())
@@ -9086,6 +9268,88 @@ class ReloadCoordinatorNode(Node):
         self._arm_catch(False)
         self._publish_catch_armed(False)
         self._go_home()
+
+    def _recenter_stay(self):
+        """RECENTER MINUS go_home — the auto-reload INTERLUDE's CAUGHT terminal.
+
+        The transpose of :meth:`_toss_stay`, and it is a transpose rather than a
+        new idea: that terminal has shipped as the toss's CAUGHT default since
+        2026-07-29 (``jugglebot_operational.toss_stay_at_pose_on_caught``) for the
+        same reason it applies here. The platform is left holding the catch pose
+        because the emitter's terminal hold already does that when nobody commands
+        otherwise — this is *not calling go_home*, not a new mechanism, and it
+        issues no new setpoint of any kind.
+
+        WHY THE INTERLUDE WANTS IT. The go_home this drops was not extra motion,
+        it was the NEXT CYCLE'S POSITIONING RUN EARLY AND SERIALLY. Bags
+        2026-08-29_15-30-29 / _15-40-40: in 7 of 12 resumed cycles trajectory_node
+        logged ``POSITIONING skipped — platform is already at (0.0,0.0,170.0)``,
+        i.e. the recentre's destination WAS the throw site the resumed cycle
+        wanted. The session therefore paid 2.0 s of profile plus a 2.80 s floor
+        sized to cover it, in front of a throw-delay countdown that would have
+        absorbed the same move for free (the 5 of 12 episodes that DID need a
+        pose-ring move spent 1.09-1.31 s on it inside the countdown, with
+        ``position_busy_wait_s`` 0.000 on every ``reload_settle`` record).
+        Measured cost of the pair: 2.803-2.833 s of total log silence between
+        ``Reload CAUGHT`` and ``reload interlude CAUGHT``, n=13.
+
+        ⚠ **THAT 7-of-12 IS A PRE-FIX MEASUREMENT AND DOES NOT SURVIVE THE FIX —
+        read it as the fix's JUSTIFICATION, never as its forecast.** The skips
+        were CREATED by the very go_home this drops: the recentre parked the
+        platform at ``(0, 0, 170)``, which is where the resumed cycle wanted to
+        be, so its POSITIONING found itself already there. Remove the recentre
+        and that coincidence goes with it — the platform is left at the reload
+        catch pose, which is not the resumed cycle's throw site, so
+        **essentially every resumed cycle now COMMANDS the move** instead of
+        skipping it. That is the intended trade and not a regression: the move
+        is the same move, paid inside the throw-delay countdown (the 5 of 12
+        that already paid it there spent 1.09-1.31 s, against 2.80 s serial),
+        and a countdown too short to absorb it is not silently overrun — the
+        ``lead_floor`` grant in :meth:`_build_toss_cycle` raises a cadence
+        cycle's delay to ``min_throw_delay_for_release_s(event_vel, True)``,
+        loudly, once. A future re-measure of the skip rate should therefore
+        expect ~0 of N, and should NOT read that as the fix having failed.
+
+        ORDERING is :meth:`_recenter`'s verbatim, minus the last rung, and it is
+        load-bearing for the reason ``_toss_stay`` states: ``arm_catch(False)``
+        before the ``catch/armed`` publish, so catch_coordinator's prime-retry
+        tick stands down against a latch that is already down. There are no
+        prime/pretilt holds to release here — the reload's PREPARE raises neither
+        (see :meth:`_prepare_catch`), which is why this ladder is two rungs where
+        the toss's is four.
+
+        RESIDUAL, accepted and named rather than designed away: the held pose
+        carries the reload catch's RECEIVE TILT, so the ball rests in a TILTED
+        cup until the resumed cycle's POSITIONING commands the next move.
+
+        ⚠ **AND IT IS THE CEILING TILT, not "a few degrees."** Real BB arrivals
+        are 18-40° off vertical and ``compute_catch_orientation`` CLAMPS at
+        ``MAX_TILT_DEG`` = 12°, so a reload catch SATURATES the clamp on every
+        single arrival — the same saturation ``_RELOAD_CENTERED_TOL_MM``'s
+        comment is derived from, where it shows up as an invariant
+        ``64.78·sin(12°) = 13.47 mm`` lateral cup shift (measured across
+        18/25/30/40° arrivals: 13.469 mm every time). So this path holds the
+        maximum tilt the platform will ever hold with a ball in the cup, not a
+        typical one, and the ball sits ~13.5 mm off the cup axis for the whole
+        hold against the 35 mm ``GEOM_HAND_RADIUS_MM`` — 2.6x of margin, which
+        is why it is accepted, but it is accepted on the WORST case rather than
+        on an average one.
+
+        ``_toss_stay`` accepted the same class for the toss and instruments it
+        (runbook DISP-5); the differences here are WHICH catch left the tilt and
+        that this one is always at the ceiling — so the interlude gets its own
+        REPORT rung (runbook § the reload/interlude section), scoring commanded
+        ``rx/ry`` after ``reload interlude CAUGHT`` plus the ball's mocap
+        position over the hold, aborting at 35 mm. It is bounded by the same
+        catch that produced it and ends at the next commanded move, which on
+        this path is at most one floor plus a CHECKING pass away — far shorter
+        than the toss STAY's own indefinite hold.
+
+        NOT USED BY THE STANDALONE ``jugglebot/reload`` ACTION: that path keeps
+        :meth:`_recenter` byte-identical. See :meth:`_step_sequence`'s
+        ``stay_on_caught`` for the seam and why it is drawn there."""
+        self._arm_catch(False)
+        self._publish_catch_armed(False)
 
     def _safe_abort(self):
         """SAFE_ABORT (abort once anything was armed): retract the hand to the bottom

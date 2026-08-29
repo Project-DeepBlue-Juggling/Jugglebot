@@ -40,7 +40,7 @@ import jugglebot.reload_coordinator_node as rcn
 from jugglebot.motion.trajectory import hand_stroke
 # THE production helper: assertions here compare the CODE, and must strip the
 # parenthetical the same way the node's own guards do.
-from jugglebot.outcome_detail import base_outcome
+from jugglebot.outcome_detail import base_outcome, outcome_subcode
 from jugglebot.reload_coordinator_node import (
     ReloadCoordinatorNode,
     _TOSS_SESSION_REACH_DRIFT_TOL_MM,
@@ -106,6 +106,14 @@ class _Ball:
         self.destination = destination
         self.position = _Pos(x, y, z)
         self.time_at_land = time_at_land
+
+
+# The goal nominates an apex HEIGHT, not a flight time (h = g·T²/8), so a row
+# that needs a specific flight has to say so in the goal's own units. T = 0.55 s
+# is the short end of the admitted throw envelope, where the closed-form reach
+# bound is 83.2 mm — the only flight at which a modest displacement is genuinely
+# infeasible now that the flat displacement cap is gone.
+_T055_HEIGHT_M = 9.806 * 0.55 ** 2 / 8.0        # 0.3708 m
 
 
 class _TossGoalHandle:
@@ -350,44 +358,36 @@ def test_toss_goal_rejections_via_execute(breakage, expected, monkeypatch):
     ('8a' since the operator's 2026-08-10 flip), because the gates they drive
     are tier-agnostic. The two envelope rows PIN 8b at the seam the node reads
     (`hw.JB_OP_TOSS_TIER`, resolved per goal in `_build_toss_cycle`): 8b is a
-    CAPABILITY under test here, not the shipped default, and the |B − A| cap
+    CAPABILITY under test here, not the shipped default, and the |B − A| bound
     they are about exists only under it. Before the flip these rows inherited
     8b ambiently, so `displacement` quietly became REJECTED_WORKSPACE the
     moment the YAML changed — the pin is what makes them mean the same thing
     at either shipped default.
 
     GATE ORDER, and why the two envelope rows read the way they do. Under 8b
-    the displaced-throw gates (toss_sequencer's CHECKING block: the |B − A|
-    cap, then the closed-form reach bound) run BEFORE the workspace box —
-    documented-in-code and intended, because a cap-rejected goal has no valid
-    tilted release state and so no meaningful event_vel to check. Consequences,
-    measured through this very path on 2026-07-28 (a throw-away probe drove
-    _execute_toss over a coordinate sweep; results are the ground truth quoted
-    here, not inferred from reading the gate). NOTE the sweep predates Phase E:
-    it was taken at the then-70 mm cap, and the cap is
-    `hw.JB_OP_TOSS_MAX_DISPLACEMENT_MM` = 150 mm today, so the three middle
-    rows are HISTORY, not live expectations. Only the first and last survive
-    unchanged at 150 mm, and they are the two the parametrisation drives:
+    the displaced-throw gates (toss_sequencer's CHECKING block: the closed-form
+    reach bound) run BEFORE the z-band check — documented-in-code and intended,
+    because a bound-rejected goal has no valid tilted release state and so no
+    meaningful event_vel to check.
 
-      x=200 → REJECTED_DISPLACEMENT   (200 > 150; this row reads WORKSPACE at 8a)
-      x=80  → REJECTED_DISPLACEMENT   x=71 → REJECTED_DISPLACEMENT   [at cap 70]
-      x=70  → passes CHECKING         (the cap is `>`, so a goal AT it is legal)
-      z=221 → REJECTED_WORKSPACE      z=220 → passes (the ±50 band is `>` too)
+    The `displacement` row is x=100 at T=0.55 s, where the bound is 83.2 mm.
+    IT WAS x=200 AT THE DEFAULT T=0.8 s UNTIL 2026-08-29, when the flat
+    `toss_max_displacement_mm` cap was deleted: at T=0.8 the bound is 256 mm, so
+    that goal is now ADMITTED and the row had to be re-driven onto a genuinely
+    infeasible reach rather than a policy refusal. The shorter flight is what
+    makes it infeasible, which is the honest version of this row.
 
-    So under 8b with a throw site A = (0, 0), the workspace box's
-    |x|,|y| ≤ 150 mm half is STRUCTURALLY UNREACHABLE through this path: the
-    displacement cap is never looser than the 150 mm box, so any goal that
-    could violate the box laterally is rejected as DISPLACEMENT first. The
-    z band is the only reachable WORKSPACE branch, and the row is built as
-    x=60 (a LIVE displacement, inside the cap and the 256 mm reach bound
-    at T=0.8 s, so the 8b gates genuinely run and pass) plus z=300 (|z − 170| =
+    The `workspace` row is x=60 (a LIVE displacement, inside the 83.2/256 mm
+    bound, so the 8b gates genuinely run and pass) plus z=300 (|z − 170| =
     130 mm, past the ±50 mm band). A zero-displacement variant would reach the
-    same branch while proving less — it would still pass if the cap collapsed
-    to zero and took every real displaced goal with it. The lateral half of the
-    box keeps its coverage at FSM level, tier-agnostic, in
-    test_toss_sequencer.py::test_workspace_precheck_rejected, and the SHIPPED
-    8a reading of the x=200 goal is pinned by
-    test_8a_has_no_displacement_cap_so_a_far_goal_reads_workspace below."""
+    same branch while proving less — it would still pass if the reach gate
+    collapsed to zero and took every real displaced goal with it.
+
+    The lateral half of the workspace box is GONE (2026-08-29) and no longer has
+    a row here or anywhere: a far-lateral goal is now admitted at CHECKING and
+    answered by a FEASIBILITY verdict — go_to_pose's own under Tier 8a, the
+    build-time deferred-reach plan under Tier 8b — pinned on both tiers below by
+    test_a_far_lateral_goal_is_refused_pre_throw_on_both_tiers."""
     now = time.perf_counter()
     node = _toss_ready_node(now)
     gh = _TossGoalHandle()
@@ -446,17 +446,18 @@ def test_toss_goal_rejections_via_execute(breakage, expected, monkeypatch):
         gh = _TossGoalHandle(throw_height=1.8)
     elif breakage == 'displacement':
         # 8b is the capability under test, not the shipped default (operator
-        # flipped the shipped tier to '8a' on 2026-08-10) — the |B − A| cap is
-        # an 8b gate, so the tier is pinned at the seam the node reads.
+        # flipped the shipped tier to '8a' on 2026-08-10) — the |B − A| reach
+        # bound is an 8b gate, so the tier is pinned at the seam the node reads.
         monkeypatch.setattr(hw, 'JB_OP_TOSS_TIER', TIER_8B)
-        # 200 mm from the live throw site A = (0, 0): past the 150 mm cap.
-        gh = _TossGoalHandle(x=200.0)
+        # 100 mm from the live throw site A = (0, 0) at a SHORT flight, where
+        # the closed-form bound is 83.2 mm. The flight matters: at the default
+        # T = 0.8 s the bound is 256 mm and this goal is admitted.
+        gh = _TossGoalHandle(x=100.0, throw_height=_T055_HEIGHT_M)
     elif breakage == 'workspace':
         monkeypatch.setattr(hw, 'JB_OP_TOSS_TIER', TIER_8B)
-        # Displacement 60 mm PASSES the 8b gates (cap 150 mm; reach bound
-        # 256 mm at T = 0.8 s), then the ±50 mm z band rejects at
-        # |z − 170| = 130 mm — which is what makes this the WORKSPACE row and
-        # not a second DISPLACEMENT row.
+        # Displacement 60 mm PASSES the 8b reach gate (256 mm at T = 0.8 s),
+        # then the ±50 mm z band rejects at |z − 170| = 130 mm — which is what
+        # makes this the WORKSPACE row and not a second DISPLACEMENT row.
         gh = _TossGoalHandle(x=60.0, z=300.0)
     result = node._execute_toss(gh)
     assert result.success is False
@@ -470,34 +471,231 @@ def test_toss_goal_rejections_via_execute(breakage, expected, monkeypatch):
     assert math.isnan(result.achieved_flight_s)
 
 
-def test_8a_has_no_displacement_cap_so_a_far_goal_reads_workspace(monkeypatch):
-    """The 8a half of the envelope pair above, pinned rather than inherited.
+def _spy_positioning_xyz(node, monkeypatch):
+    """Record every pose ``_toss_positioning_xyz`` returns, delegating to the
+    real classmethod. This is THE pose production commands (the go_to_pose
+    request and the mocap arrival cross-check both read it), so recording it —
+    rather than the goal's B — is what makes the 8b arm's claim checkable: under
+    8b the commanded pose is not B at all."""
+    real = rcn.ReloadCoordinatorNode._toss_positioning_xyz
+    seen = []
 
-    Tier 8a pre-positions LEVEL at the nominated catch site and throws from
-    there, so throw site == catch site and there is no |B − A| to cap: the
-    SAME x=200 goal that is REJECTED_DISPLACEMENT under 8b falls through to the
-    workspace box and reads REJECTED_WORKSPACE. Both readings are correct; which
-    one the machine gives depends on the shipped tier, which is an operator
-    decision that has now moved twice (8a → 8b 2026-07-28, 8b → 8a 2026-08-10).
+    def _spy(catch_pose_stow_mm, release):
+        out = real(catch_pose_stow_mm, release)
+        seen.append(out)
+        return out
 
-    Pinning both directions explicitly is the point. While 8b shipped, this
-    reading had no test at all and the 8b reading was covered only by accident
-    of the config — so the flip turned a config edit into a test failure that
-    looked like a code regression. Neither row can do that again."""
-    monkeypatch.setattr(hw, 'JB_OP_TOSS_TIER', TIER_8A)
-    monkeypatch.setattr(rcn, 'compute_release_state_tilted',
-                        lambda *a, **k: pytest.fail(
-                            'the tilted 8b aim must not run for an 8a goal'))
+    monkeypatch.setattr(node, '_toss_positioning_xyz', _spy)
+    return seen
+
+
+@pytest.mark.parametrize('tier,goal_x,subcode,at_positioning', [
+    (TIER_8A, 400.0, 'UNREACHABLE', True),
+    # 250 mm at the default T = 0.80 s: INSIDE the closed-form reach bound
+    # (256 mm), inside the 12 deg aim ceiling — and refused WORKSPACE by
+    # build_catch. Measured against this tree 2026-08-29; it is the exact window
+    # the audit found open.
+    (TIER_8B, 250.0, 'WORKSPACE', False),
+])
+def test_a_far_lateral_goal_is_refused_pre_throw_on_both_tiers(
+        tier, goal_x, subcode, at_positioning, monkeypatch):
+    """THE 2026-08-29 DELETION'S BEHAVIOURAL FACE, pinned on BOTH tiers.
+
+    This test replaces ``test_8a_has_no_displacement_cap_so_a_far_goal_reads_
+    workspace``, which asserted that an x=200 Tier-8a goal died
+    ``REJECTED_WORKSPACE(|B.x| = 200.0 mm …)`` against a ±150 planning box. That
+    box was POLICY — it bounded what a goal could REQUEST while every authority
+    that bounds what the machine will DO sat behind it — and the owner deleted it
+    with its config key. So the refusal moved: a far goal is now ADMITTED at
+    CHECKING and answered by a FEASIBILITY verdict, from the subsystem that
+    actually refuses.
+
+    ⚠ **WHICH subsystem is TIER-DEPENDENT, and the single-tier version of this
+    test hid that** (audit, 2026-08-29). It was written 8a-only, on the argument
+    that 8a "isolates the box's absence" — but the shipped tier is 8b, and 8b
+    never asks ``go_to_pose`` about B at all: ``_toss_positioning_xyz`` commands
+    the swing-compensated PRE-TILT pose at the throw site A for any tilted
+    release, and the A→B translation is deferred to ``t_release``. So under 8b
+    the deletion left NOTHING bounding B laterally, and a far goal was admitted
+    all the way to an airborne WORKSPACE refusal. The two arms below are the two
+    real routes:
+
+      * **8a** — the positioning move commands B itself, ``go_to_pose`` judges
+        it, and the terminal is ``REJECTED_POSITION(UNREACHABLE: …)`` at
+        POSITIONING. The seam is scripted (there is no real trajectory_node
+        here), so what this arm pins is the ROUTE, not the planner's verdict.
+      * **8b** — the build-time deferred-reach gate
+        (``motion/trajectory/catch_reach``) refuses at CHECKING, BEFORE any
+        positioning dispatch, with the planner's own code as the subcode and the
+        nominated pose named in the message. Its ``_position_platform_for_toss``
+        is a fail-if-called, because "never dispatched" is the claim.
+
+    Both arms are PRE-THROW: nothing armed, nothing flew."""
+    monkeypatch.setattr(hw, 'JB_OP_TOSS_TIER', tier)
     node = _toss_ready_node(time.perf_counter())
-    gh = _TossGoalHandle(x=200.0)
+    poses = _spy_positioning_xyz(node, monkeypatch)
+
+    dispatched = []
+
+    def _refuse_unreachable(seq, state=None):
+        # Record the pose CHECKING let through — without this the test would
+        # still pass if CHECKING had refused the goal and the terminal happened
+        # to read the same way for an unrelated reason.
+        dispatched.append(tuple(seq.catch_pose_stow_mm))
+        seq.note_position_result(time.perf_counter(), False, 0.0, 'UNREACHABLE',
+                                 'leg 3 stroke beyond travel')
+
+    def _must_not_dispatch(seq, state=None):
+        pytest.fail('the build-time reach gate must refuse BEFORE POSITIONING '
+                    'is dispatched — a dispatch here means the goal reached the '
+                    'phase the 8b route cannot answer B in')
+
+    monkeypatch.setattr(node, '_position_platform_for_toss',
+                        _refuse_unreachable if at_positioning
+                        else _must_not_dispatch)
+    gh = _TossGoalHandle(x=goal_x)
     result = node._execute_toss(gh)
+
     assert result.success is False
-    assert base_outcome(result.outcome) == 'REJECTED_WORKSPACE'
-    # …and it is the LATERAL box that refused, not the z band — which is what
-    # the enriched message makes checkable at the node seam rather than
-    # inferable from the goal.
-    assert '|B.x| = 200.0 mm' in result.outcome, result.outcome
+    assert base_outcome(result.outcome) == 'REJECTED_POSITION'
+    assert outcome_subcode(result.outcome) == subcode, result.outcome
     assert gh.terminal == 'abort'
+    # Nothing armed and nothing flew: this is still a PRE-THROW refusal, which
+    # is the property the deleted box was there to provide.
+    assert math.isnan(result.catch_error_mm)
+    assert math.isnan(result.achieved_flight_s)
+    # THE pose production commands was decided at build on BOTH tiers…
+    assert poses, 'the positioning pose was never decided'
+    if at_positioning:
+        # …and on 8a it IS B, which is why go_to_pose can answer for it.
+        assert dispatched == [(goal_x, 0.0, 170.0)], dispatched
+        assert poses[0] == pytest.approx((goal_x, 0.0, 170.0))
+        # The service's MESSAGE rides along too (2026-08-29 enrichment), so the
+        # operator gets the leg that refused and not just the code.
+        assert 'leg 3 stroke beyond travel' in result.outcome, result.outcome
+    else:
+        # …and on 8b it is the pre-tilt pose at A — NOWHERE NEAR B. This is the
+        # measurement the gap was made of: go_to_pose would have judged a pose
+        # ~250 mm away from the one the operator asked about.
+        assert dispatched == [], dispatched
+        assert abs(poses[0][0] - goal_x) > 200.0, poses[0]
+        # The refusal NAMES the nominated pose and says why, so the operator is
+        # not left matching a bare code against a goal.
+        assert '{:.1f}'.format(goal_x) in result.outcome, result.outcome
+        assert 'deferred A->B reach' in result.outcome, result.outcome
+
+
+@pytest.mark.parametrize('tier,b_xy,flight_s,expect', [
+    # THE MEASURED WINDOW (2026-08-29, this tree). Both clear every surviving
+    # CHECKING gate — 250 mm is inside the 256 mm closed-form bound at
+    # T = 0.80, and 500 mm is exactly ON the 500 mm bound at T = 1.00, which
+    # `displacement > bound` admits — and both are refused WORKSPACE by
+    # build_catch. Before the gate they were refused at t_release, airborne.
+    (TIER_8B, (250.0, 0.0), 0.80, 'WORKSPACE'),
+    (TIER_8B, (500.0, 0.0), 1.00, 'WORKSPACE'),
+    # Comfortably inside the frontier: the gate must stay SILENT here, or it
+    # would refuse the displaced throws the whole capability exists for.
+    (TIER_8B, (100.0, 0.0), 0.80, ''),
+    (TIER_8B, (70.0, 0.0), 0.80, ''),
+    # The degenerate 8b case (B == A) — the "8b subsumes 8a" expectation.
+    (TIER_8B, (0.0, 0.0), 0.80, ''),
+    # Tier 8a is NOT gated here and must not be: its positioning move commands
+    # B itself, so go_to_pose already answers for it and a second verdict would
+    # be a drift-prone duplicate. A far 8a goal therefore carries NO verdict.
+    (TIER_8A, (400.0, 0.0), 0.80, ''),
+])
+def test_build_toss_cycle_feeds_the_deferred_reach_verdict(
+        tier, b_xy, flight_s, expect, monkeypatch):
+    """``_build_toss_cycle`` plans the DEFERRED A→B catch reach and hands the
+    FSM the verdict — the pre-throw lateral bound on B under Tier 8b.
+
+    The node holds no second copy of the planner: it calls
+    ``motion/trajectory/catch_reach``, which is the same body
+    ``tools/probes/displaced_reach_frontier.py`` measures the frontier with, so
+    the shipped gate and the published frontier cannot disagree.
+
+    Asserted at BUILD rather than through the FSM because this is the half that
+    is a physics question; the terminal it produces is pinned by
+    ``test_a_far_lateral_goal_is_refused_pre_throw_on_both_tiers``."""
+    monkeypatch.setattr(hw, 'JB_OP_TOSS_TIER', tier)
+    node = _toss_ready_node(time.perf_counter())
+    seq, _state = node._build_toss_cycle(
+        (float(b_xy[0]), float(b_xy[1]), 170.0), float(flight_s), 5.0, 0.0)
+    assert seq.reach_verdict == expect, (
+        'B={} T={} tier={} gave {!r}'.format(b_xy, flight_s, tier,
+                                             seq.reach_verdict))
+
+
+def test_live_traj_limits_feeds_the_reach_plan_and_fails_closed_to_the_default():
+    """``_live_traj_limits``: the LIVE session limits the build-time reach plan
+    judges against, or None.
+
+    The reach gate fronts for the feasibility gate that runs at ``t_release``,
+    so it has to judge against what THAT gate will enforce — the same argument
+    the closed-form ``|B − A|`` bound is built on. Three states, all reachable
+    on the machine:
+
+      * fresh status with a real triple ⇒ a ``TrajectoryLimits`` carrying it;
+      * STALE status ⇒ None (a dead trajectory_node's answer is not the live
+        one, and the helper falls back to the YAML session defaults);
+      * a ZERO in ANY component ⇒ None, whole. That is the pre-field-publisher
+        sentinel, and a limits object built from a partial read would plan
+        against a 0 mm/s ceiling and refuse every reach — a fail-closed that
+        looks exactly like a real kinematic refusal."""
+    now = time.perf_counter()
+    node = _toss_ready_node(now)
+    with node._lock:
+        node._leg_limits_live = (600.0, 3000.0, 20000.0)
+    live = node._live_traj_limits(now)
+    assert live is not None
+    assert live.leg_vel_mmps == pytest.approx(600.0)
+    assert live.leg_acc_mmps2 == pytest.approx(3000.0)
+    assert live.leg_jerk_mmps3 == pytest.approx(20000.0)
+    # The ceilings are the YAML ones — a live ramp moves the SESSION limit and
+    # can never raise the pinned maximum.
+    assert live.leg_vel_ceiling_mmps == pytest.approx(
+        float(hw.JB_TRAJ_LEG_VEL_CEILING_MMPS))
+
+    with node._lock:
+        node._traj_status_mono = now - 5.0
+    assert node._live_traj_limits(now) is None
+
+    with node._lock:
+        node._traj_status_mono = now
+        node._leg_limits_live = (600.0, 0.0, 20000.0)
+    assert node._live_traj_limits(now) is None
+
+
+def test_a_reachable_displaced_8b_goal_still_reaches_positioning(monkeypatch):
+    """THE OTHER HALF OF THE GATE: it must not refuse what the machine can do.
+
+    ``B = (100, 0)`` at the default ``T = 0.80 s`` is a displaced throw well
+    inside the measured frontier — the rung the hardware ladder calls DISP-4.
+    It is ADMITTED at CHECKING, POSITIONING is DISPATCHED, and the pose it is
+    dispatched for is the pre-tilt pose at the throw site A (8b's whole shape).
+    The scripted refusal that ends the goal is ``WIRE_DISARMED``, deliberately
+    unrelated to any planner code: if the build-time reach gate had fired, the
+    terminal would read ``WORKSPACE`` and nothing would have been dispatched at
+    all, so the two outcomes cannot be confused."""
+    monkeypatch.setattr(hw, 'JB_OP_TOSS_TIER', TIER_8B)
+    node = _toss_ready_node(time.perf_counter())
+    poses = _spy_positioning_xyz(node, monkeypatch)
+    dispatched = []
+
+    def _refuse_disarmed(seq, state=None):
+        dispatched.append(tuple(seq.catch_pose_stow_mm))
+        seq.note_position_result(time.perf_counter(), False, 0.0,
+                                 'WIRE_DISARMED', 'the wire is not actuating')
+
+    monkeypatch.setattr(node, '_position_platform_for_toss', _refuse_disarmed)
+    result = node._execute_toss(_TossGoalHandle(x=100.0))
+
+    assert dispatched == [(100.0, 0.0, 170.0)], dispatched
+    assert base_outcome(result.outcome) == 'REJECTED_POSITION'
+    assert outcome_subcode(result.outcome) == 'WIRE_DISARMED', result.outcome
+    # The 8b shape, confirmed rather than assumed: the commanded pose is the
+    # pre-tilt at A (near the origin), not the nominated B at x = 100.
+    assert abs(poses[0][0] - 100.0) > 50.0, poses[0]
 
 
 @pytest.mark.parametrize('kwargs,field', [

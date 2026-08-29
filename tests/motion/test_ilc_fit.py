@@ -921,14 +921,40 @@ def test_the_speed_authority_is_the_ILCs_own_and_toss_trims_is_untouched():
 
 
 def test_an_inadmissible_goal_is_refused_before_any_fitting():
+    """``admit_command``'s step-1 static goal gates: the flight-time band and the
+    z band. A fit against a goal nobody can fly is a fit nobody can use, so both
+    are checked before any fitting work happens."""
     out_of_band = lib.TossGoal(catch_pose_stow_mm=(0.0, 0.0, 170.0),
                                flight_time_s=2.0)
     ok, why = lib.admit_command(lib.zero_command(), out_of_band)
     assert not ok and 'FLIGHT_TIME' in why
+    off_plane = lib.TossGoal(catch_pose_stow_mm=(0.0, 0.0, 250.0),
+                             flight_time_s=0.9)
+    ok, why = lib.admit_command(lib.zero_command(), off_plane)
+    assert not ok and 'WORKSPACE' in why
+
+
+def test_a_far_lateral_goal_is_admitted_now_that_the_planning_box_is_gone():
+    """The 2026-08-29 deletion reaching this harness, pinned deliberately rather
+    than left as a silent behaviour change.
+
+    ``off_pose = (400, 0, 170)`` used to be refused ``WORKSPACE`` here, mirroring
+    the FSM's ±xy planning box. That box was deleted from the production
+    sequencer with its config key, so mirroring it would now make this harness
+    STRICTER than the machine — it would refuse corpus rows the machine flies,
+    which is precisely the fidelity failure design constraint 1 exists to
+    prevent. (The mirror was already flagged stale on 2026-08-21.)
+
+    THE GAP THIS LEAVES, stated rather than hidden: production would still refuse
+    a 400 mm goal — at POSITIONING, via ``go_to_pose``'s feasibility gate — and
+    ``admit_command`` has no planner-feasibility step to stand in for that; the
+    box was its only proxy. That is acceptable HERE and nowhere else, because
+    every goal this function judges comes from a FLOWN record, so it was flyable
+    by construction. Do not read this as "the machine accepts 400 mm"."""
     off_pose = lib.TossGoal(catch_pose_stow_mm=(400.0, 0.0, 170.0),
                             flight_time_s=0.9)
     ok, why = lib.admit_command(lib.zero_command(), off_pose)
-    assert not ok and 'WORKSPACE' in why
+    assert ok, why
 
 
 def test_catch_side_channels_are_declared_and_refuse():

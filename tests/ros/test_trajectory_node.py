@@ -1895,7 +1895,8 @@ def test_catch_reach_envelope_center_lifecycle():
 # ── C-REACH-1: the declared catch reach centre ────────────────
 # ros_ws/docs/catch_reach_envelope.md. The envelope bounds UNREQUESTED drift
 # around the NOMINATED catch point; requested displacement is gated pre-throw by
-# toss_max_displacement_mm. Before this contract the centre was the held pose,
+# toss_sequencer's closed-form reach bound (a flat toss_max_displacement_mm cap
+# sat beside it until 2026-08-29). Before this contract the centre was the held pose,
 # which silently also capped requested reach — measured 4/4 on hardware (bag
 # 2026-07-27_16-07-30): four Tier-8b goals at 113-141 mm nominal displacement all
 # rejected WORKSPACE *mid-flight*, ball airborne.

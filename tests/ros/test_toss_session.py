@@ -630,33 +630,8 @@ def test_the_025s_dwell_is_unreachable_at_every_admitted_flight_time():
     assert base_outcome(asked.step(0.0).result.outcome) == 'REJECTED_DWELL'
 
 
-def test_chain_unreachable_rejected_only_when_chaining():
-    """Phase E's KNOWN LIMITATION, caught before a ball flies — but a
-    single-cycle session has no chain, so the gate must not fire there."""
-    s = _session(num_throws=3, chain_site_reachable=False)
-    assert base_outcome(
-        s.step(0.0).result.outcome) == 'REJECTED_CHAIN_UNREACHABLE'
-    solo = _session(num_throws=1, chain_site_reachable=False)
-    assert solo.step(0.0).action == SESSION_ACTION_START_CYCLE
 
 
-def test_chain_unreachable_quotes_the_predicted_centroid_and_the_box():
-    """The one session gate whose numbers the operator CANNOT reconstruct from
-    the goal they typed: the refusal is about the PREDICTED cycle-2 throw site,
-    a pose nobody nominated. So it names the centroid, the box and that the
-    remedy is |catch_position|, not the box.
-
-    Un-numbered (a session built without them — every hand-built FSM in this
-    file) it degrades to the bare code rather than inventing a coordinate."""
-    s = _session(num_throws=3, chain_site_reachable=False,
-                 chain_site_xy_mm=(171.4, -12.0), chain_box_xy_mm=160.0)
-    msg = s.step(0.0).result.outcome
-    assert base_outcome(msg) == 'REJECTED_CHAIN_UNREACHABLE'
-    assert 'predicted cycle-2 centroid (171.4, -12.0) mm' in msg, msg
-    assert '171.4 mm > 160.0 mm [toss_workspace_xy_mm]' in msg, msg
-    assert 'lower |catch_position| or run num_throws=1' in msg, msg
-    bare = _session(num_throws=3, chain_site_reachable=False)
-    assert bare.step(0.0).result.outcome == 'REJECTED_CHAIN_UNREACHABLE'
 
 
 def test_the_pipelined_dwell_refusal_names_the_commit_budget_not_the_delay():
@@ -673,15 +648,17 @@ def test_the_pipelined_dwell_refusal_names_the_commit_budget_not_the_delay():
     assert 'hand floor' in msg, msg
 
 
-def test_reject_order_num_throws_before_dwell_before_chain():
+def test_reject_order_num_throws_before_dwell():
     """Strictest first: a goal that is wrong in several ways names the most
-    fundamental one, so the operator fixes the right field."""
-    s = TossSessionSequencer(num_throws=0, dwell_time_s=0.1,
-                             chain_site_reachable=False)
+    fundamental one, so the operator fixes the right field.
+
+    A third rung, ``REJECTED_CHAIN_UNREACHABLE``, sat below DWELL until
+    2026-08-29 and went with the lateral planning box whose cycle-2 refusal it
+    pre-empted."""
+    s = TossSessionSequencer(num_throws=0, dwell_time_s=0.1)
     s.start(0.0)
     assert base_outcome(s.step(0.0).result.outcome) == 'REJECTED_NUM_THROWS'
-    s2 = TossSessionSequencer(num_throws=3, dwell_time_s=0.1,
-                              chain_site_reachable=False)
+    s2 = TossSessionSequencer(num_throws=3, dwell_time_s=0.1)
     s2.start(0.0)
     assert base_outcome(s2.step(0.0).result.outcome) == 'REJECTED_DWELL'
 
@@ -954,7 +931,7 @@ def test_force_terminal_is_idempotent_first_terminal_wins():
 # ── success semantics ─────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize('outcome', [
-    'REJECTED_NUM_THROWS', 'REJECTED_DWELL', 'REJECTED_CHAIN_UNREACHABLE',
+    'REJECTED_NUM_THROWS', 'REJECTED_DWELL',
     'ABORTED_CANCELLED', 'ABORTED_TIMEOUT', 'STOPPED_ON_MISS'])
 def test_no_non_completed_terminal_can_report_success(outcome):
     """Regression, and the class rather than the case: ``success`` used to be

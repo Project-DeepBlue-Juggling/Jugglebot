@@ -1056,7 +1056,21 @@ the defect. `sim/toss_gate.py` calls
 `planner.build_move` / `build_hold` / `build_catch` directly and the AST pass will
 never see it — correctly, because `sim/` has no gravity-offset concept, so there
 is no correction to omit and no failure mode. The manifest's scope is the ROS
-package, not "every caller of `planner`". `attic/ros-jugglebot-archived/`
+package, not "every caller of `planner`".
+
+**A planner entry that is a MEASUREMENT rather than a command** — the shape added
+2026-08-29 by `motion/trajectory/catch_reach.py` (row `D9`). It builds a
+`build_catch` plan for the Tier-8b deferred A→B reach *at cycle build*, reads the
+verdict, and throws the plan away; the pre-throw refusal it feeds is
+`REJECTED_POSITION(<planner code>: …)`. It is `D`, and the manifest row says why
+in full: both of its pose arguments are constructed inside the same function
+(the receive tilt is the gravity-referenced quantity C-CATCH-1 requires
+uncorrected, and the correction never touches a position at all), the module is
+pure `motion/` and holds no offset to apply, and the only real divergence from
+the commanded path — trajectory_node correcting the catch pose's *rotation* at
+its own `E2` ingest — is the levelling residual, a sub-degree rotation against a
+leg-stroke verdict. If a future probe of this shape needs the correction, the
+answer is to pass it in, not to build one inside `motion/`. `attic/ros-jugglebot-archived/`
 (formerly `jugglebot/archived/`, moved 2026-07-31)
 holds two dead copies of the old inline transform; neither has a `console_scripts`
 entry and neither is imported by any live module, so they are excluded from both

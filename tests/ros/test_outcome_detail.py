@@ -67,8 +67,8 @@ def test_base_outcome_coerces_rather_than_raises():
     ('REJECTED_THROW_ENVELOPE(END_STOP:modelled peak 10.660 rev)', 'END_STOP'),
     # DESCRIPTIVE details are prose and have no subcode to mistake for one —
     # which is what stops a (code, subcode) guard from matching by accident.
-    ('REJECTED_WORKSPACE(|B.y| = 178.0 mm > 160.0 mm [toss_workspace_xy_mm])',
-     ''),
+    ('REJECTED_WORKSPACE(B.z 225.0 mm is 55.0 mm > band 50.0 mm '
+     '[TOSS_Z_BAND_MM]; measured from the ACTIVE plane 170.0 mm)', ''),
     ('REJECTED_DWELL(dwell 0.90 s < floor 1.04 s; max(throw_delay 0.60))', ''),
     ('REJECTED_NOT_CENTERED(the live commanded pose is UNKNOWN or stale)', ''),
     ('REJECTED_NO_BALL', ''),                    # no parenthetical at all
@@ -106,9 +106,9 @@ def test_bound_msg_names_value_limit_and_knob():
     """The three things the operator needs, in one clause. The unit is repeated
     on BOTH sides deliberately — ``0.90 s < 1.04 s`` cannot be misread as a
     mixed-unit comparison the way ``0.90 s < 1.04`` can."""
-    assert bound_msg('|B.y| =', 178.0, '>', 160.0, 'mm',
-                     knob='toss_workspace_xy_mm') == (
-        '|B.y| = 178.0 mm > 160.0 mm [toss_workspace_xy_mm]')
+    assert bound_msg('|B-A| =', 178.0, '>', 160.0, 'mm',
+                     knob='live limits 1000/5000/30000') == (
+        '|B-A| = 178.0 mm > 160.0 mm [live limits 1000/5000/30000]')
     assert bound_msg('dwell', 0.9, '<', 1.0416, 's', digits=3,
                      limit_label='floor',
                      tail='max(throw_delay 0.600 + handoff 0.442)') == (

@@ -603,8 +603,13 @@ jugglebot_operational:
                                          # nominated catch (x, y), throw site = catch site. '8b' =
                                          # tilt-aimed displaced throw→catch: pre-tilt at the throw site A =
                                          # the platform's LIVE commanded (x, y), launch aimed at the
-                                         # displaced catch B, deferred A→B reach at t_release, |B−A| capped
-                                         # at toss_max_displacement_mm.
+                                         # displaced catch B, deferred A→B reach at t_release, |B−A| bounded
+                                         # PRE-THROW by the closed-form quintic reach bound
+                                         # (toss_sequencer.reach_displacement_limit_mm), which follows the
+                                         # LIVE trajectory/set_limits session limits. A flat
+                                         # toss_max_displacement_mm cap sat beside it until 2026-08-29,
+                                         # when the owner retired it: it was a chosen number, not a derived
+                                         # one, and set_limits is now the single lever that moves the gate.
                                          # BOTH are serviceable; anything else is REJECTED_TIER.
                                          # Since 2026-07-29 (single-ball-toss Phase E) 8b SUBSUMES 8a: a
                                          # goal whose B equals the live pose degenerates BITWISE to the 8a
@@ -665,53 +670,6 @@ jugglebot_operational:
                                          # passes the resolved value into the TossSequencer ctor;
                                          # toss_sequencer's local DEFAULT_TOSS_FLIGHT_TIME_S is the
                                          # no-config fallback only, pinned equal by the drift-guard test.
-  toss_max_displacement_mm: 150.0        # Tier-8b |B_xy − A_xy| cap {mm} — the loud PRE-THROW
-                                         # REJECTED_DISPLACEMENT gate (single-ball-toss Phase E). It bounds
-                                         # REQUESTED displacement only; UNREQUESTED drift stays bounded by
-                                         # trajectory_catch.reach_envelope_mm around the nominated B
-                                         # (contract C-REACH-1, ros_ws/docs/catch_reach_envelope.md) — the
-                                         # two are separate quantities and this key must never be raised to
-                                         # "buy reach" from the drift envelope.
-                                         # WAS 70.0 until 2026-07-29, where 70 = the 80 mm reach envelope
-                                         # (captured at A back then, so it capped displacement) ∩ the
-                                         # Rung-2a clean box. C-REACH-1 removed the envelope half; 150 is
-                                         # the operator's ordered working range and is backed by the
-                                         # production planner accepting the A→B reach 8/8 directions at
-                                         # every flight the closed-form quintic gate lets through
-                                         # (tools/probes/displaced_reach_frontier.py, 2026-07-29: 150 mm is
-                                         # 8/8 from T = 0.60 s up; the real frontier is ~225 mm, so 150
-                                         # keeps a 1.5× margin AND keeps the closed-form gate — which turns
-                                         # OPTIMISTIC above T ≈ 0.75 s — harmless).
-                                         # Hardware evidence stops at 70 mm (11/11, 2026-07-27 T4); the
-                                         # runbook ladder in tests/hardware/session_anomaly_fixes.md
-                                         # § SECTION DISP climbs 70 → 100 → 150 before this value is trusted.
-                                         # GENUINELY operator-adjustable BOTH ways since 2026-08-14: the
-                                         # drift-guard test now pins the MECHANISM (the node passes this
-                                         # value into the sequencer ctor and the ctor value is what gates),
-                                         # not YAML == module-literal equality, so an edit here is live at
-                                         # the next relaunch with no code change. The sibling closed-form
-                                         # reach bound follows the LIVE trajectory/set_limits session
-                                         # limits (published on trajectory/status), so ramping limits up
-                                         # widens the physics gate while this cap stays the policy bound.
-  toss_workspace_xy_mm: 160.0            # |x|, |y| planning-envelope box {mm} on the nominated catch B
-                                         # (and, Tier 8b, on the live throw site A) — the pre-throw
-                                         # REJECTED_WORKSPACE gate in toss_sequencer, config-keyed
-                                         # 2026-08-14 (was the hardcoded TOSS_XY_LIMIT_MM = 150, which
-                                         # made raising toss_max_displacement_mm above 150 inert).
-                                         # POLICY, not physics: the planner's feasibility gate (real leg
-                                         # stroke/vel/acc/jerk limits), the 0.3 rev/command step gate and
-                                         # the firmware stroke clamp + MAX_DEVIATION guard remain the
-                                         # authorities — this box only bounds what a goal may REQUEST.
-                                         # DEFAULT 160 = cap + 10, deliberately ABOVE
-                                         # toss_max_displacement_mm: the caught-toss park places the
-                                         # CENTROID ~2.07 % of displacement outside the nominated B
-                                         # (153.10 mm at a 150 mm B, measured 2026-07-29), and
-                                         # trajectory/commanded_position publishes the centroid, so a box
-                                         # EQUAL to the cap refused chaining at the cap edge
-                                         # (REJECTED_CHAIN_UNREACHABLE, frontier 146.5/147.0 mm). Keep
-                                         # box ≥ cap × 1.03 when adjusting either, or that limitation
-                                         # re-binds. Operator-adjustable both ways, same mechanism pin as
-                                         # the cap.
   toss_stay_at_pose_on_caught: true      # On a CAUGHT toss, hold the catch pose instead of go_home
                                          # (single-ball-toss Phase E). TRUE = the terminal lowers the catch
                                          # latch, clears catch/armed and releases the holds but issues NO
@@ -719,17 +677,18 @@ jugglebot_operational:
                                          # it caught — which is what lets a session CHAIN A → B → C (the
                                          # next toss reads its throw site A from that live pose). FALSE
                                          # restores the pre-2026-07-29 ACTION_RECENTER.
-                                         # FORMER KNOWN LIMITATION (dissolved 2026-08-14): with the
-                                         # planning box hardcoded EQUAL to the 150 mm cap, chaining worked
-                                         # below ~146 mm and was REFUSED at the cap — the catch parks the
-                                         # platform CENTROID just outside B so the CUP lands ON B
-                                         # (measured: cup (-150.00, 0), centroid (-153.10, 0) at
+                                         # FORMER KNOWN LIMITATION (dissolved twice, finally 2026-08-29):
+                                         # with the planning box hardcoded EQUAL to the 150 mm displacement
+                                         # cap, chaining worked below ~146 mm and was REFUSED at the cap —
+                                         # the catch parks the platform CENTROID just outside B so the CUP
+                                         # lands ON B (measured: cup (-150.00, 0), centroid (-153.10, 0) at
                                          # B = (-150, 0, 170), T = 0.80 s), and
                                          # trajectory/commanded_position publishes the CENTROID, so the
                                          # box judged a value ~2.07 % of displacement outside nominal.
-                                         # toss_workspace_xy_mm (default 160 = cap + 10) now clears that
-                                         # divergence at the cap edge; the refusal re-binds only if the
-                                         # box is set below cap × ~1.03. See
+                                         # Widening the box past the cap cleared it in 2026-08-14; deleting
+                                         # BOTH keys on 2026-08-29 removed the mechanism entirely. The
+                                         # centroid-vs-cup divergence itself is unchanged and still real —
+                                         # it is simply no longer measured against anything. See
                                          # ros_ws/docs/catch_reach_envelope.md residual 7.
                                          # Applies to the CAUGHT terminal ONLY: every not-caught terminal
                                          # (MISSED / ABORTED / cancel / timeout) keeps SAFE_ABORT's retract

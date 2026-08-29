@@ -57,7 +57,7 @@ from jugglebot.toss_sequencer import (
     TIER_8A,
     TIER_8B,
     TOSS_CONTROL_MODE,
-    TOSS_XY_LIMIT_MM,
+    TOSS_POSITION_BUSY_PATIENCE_S,
     TossResult,
     TossSequencer,
 )
@@ -385,7 +385,7 @@ def tier_8b(monkeypatch):
     `hw.JB_OP_TOSS_TIER` per call, and the chain-reachability gate below EXISTS
     only under 8b — at 8a the platform pre-positions LEVEL at B every cycle and
     never reads a throw site, so there is no chain to be unreachable and the
-    predictor returns None by design (`test_chain_check_is_skipped_on_tier_8a`).
+    predictor returns None by design (`test_the_predictor_declines_on_tier_8a`).
 
     8b is a CAPABILITY under test, not the shipped default: the operator flipped
     the shipped tier back to '8a' on 2026-08-10. These tests used to inherit 8b
@@ -415,91 +415,44 @@ def test_predicted_chain_site_matches_the_production_policy(bx, expect_x,
     assert site[1] == pytest.approx(0.0, abs=1e-6)
 
 
-def test_chain_frontier_is_between_146_and_147_mm(monkeypatch, tier_8b):
-    """The predictor's frontier is sharp, and against a 150 box (the box == cap
-    configuration the 2026-07-29 frontier was MEASURED at) the binding gate is
-    the planning box on A, NOT the 150 mm displacement cap (the residual |B-A|
-    never exceeds 3.1 mm). The shipped box is now toss_workspace_xy_mm = 160
-    (> cap × 1.03), which moves the operative frontier out past the cap — the
-    predictor math pinned here is box-independent."""
+def test_the_predicted_chain_residual_stays_a_few_mm(monkeypatch, tier_8b):
+    """The centroid-vs-cup residual the predictor exists to expose is SMALL and
+    stays small — a few mm, never a reach.
+
+    This used to be ``test_chain_frontier_is_between_146_and_147_mm``, pinning
+    where the predicted site crossed a ±150 planning box. That box was deleted
+    2026-08-29, so there is no frontier left to pin; what survives is the
+    quantity itself, and it is the reason the accept-time chain gate was NOT
+    re-keyed on the reach bound when the box went. At |B| ≈ 147 mm the residual
+    is ~3 mm against a reach bound of 256 mm at this flight — a gate keyed on the
+    bound could never fire, and a gate that can never fire teaches readers the
+    chain is checked when it is not.
+
+    The predicted site itself still matters: it is what a STAGED cycle nominates
+    as its throw site (2026-08-28), so a drift here is a mis-aimed throw."""
     clock = _Clock()
     monkeypatch.setattr(rcn, 'time', clock)
     node = _ready_node(clock)
-    inside = node._predicted_chain_site_mm((146.5, 0.0, 170.0), FLIGHT)
-    outside = node._predicted_chain_site_mm((147.0, 0.0, 170.0), FLIGHT)
-    assert abs(inside[0]) <= TOSS_XY_LIMIT_MM
-    assert abs(outside[0]) > TOSS_XY_LIMIT_MM
-    for bx, site in ((146.5, inside), (147.0, outside)):
-        assert math.hypot(bx - site[0], site[1]) < 3.2   # never the cap
+    for bx in (146.5, 147.0):
+        site = node._predicted_chain_site_mm((bx, 0.0, 170.0), FLIGHT)
+        assert site is not None
+        assert math.hypot(bx - site[0], site[1]) < 3.2
 
 
-def test_chain_unreachable_refuses_before_a_ball_flies(monkeypatch, tier_8b):
-    """Without this the session throws ONE ball, catches it, then refuses cycle 2
-    REJECTED_WORKSPACE with the platform parked outside the planning box and the
-    ball in the cup — actuation for nothing. The refusal moves nothing.
-
-    The box is pinned to 150 (box == cap) for this arm because the 146.5/147.0
-    frontier was measured there; at the SHIPPED 160 box the same B = 147 goal
-    chains — asserted as the second arm, because admitting exactly this class
-    of goal is what the box/cap separation (2026-08-14) exists to do."""
-    clock = _Clock()
-    monkeypatch.setattr(rcn, 'time', clock)
-    monkeypatch.setattr(hw, 'JB_OP_TOSS_WORKSPACE_XY_MM', 150.0)
-    node = _ready_node(clock)
-    monkeypatch.setattr(
-        node, '_build_toss_cycle',
-        lambda *a, **k: pytest.fail('a cycle was built on an unchainable goal'))
-    gh = _ContGoalHandle(x=147.0, num_throws=3)
-    result = node._execute_toss_continuous(gh)
-    assert base_outcome(result.outcome) == 'REJECTED_CHAIN_UNREACHABLE'
-    # The node's predicted centroid and the box it judged against reach the
-    # OPERATOR, not just the ERROR log — this is the one session refusal about
-    # a pose nobody typed, so the numbers are the whole message.
-    msg = result.outcome
-    assert 'predicted cycle-2 centroid (' in msg, msg
-    assert '150.0 mm [toss_workspace_xy_mm]' in msg, msg
-    assert 'lower |catch_position| or run num_throws=1' in msg, msg
-    assert gh.terminal == 'abort'
 
 
-def test_chain_at_147_is_admitted_at_the_shipped_box(monkeypatch, tier_8b):
-    """The resolution arm of the former known limitation: with the shipped
-    toss_workspace_xy_mm (160 > cap × 1.03) the predicted chain site at
-    B = 147 (~150.1 mm, 2.07 % centroid divergence) sits INSIDE the box, so
-    the session proceeds past the chain gate instead of refusing — chaining at
-    the cap edge is the Phase-E working range the wider box exists to admit."""
-    clock = _Clock()
-    monkeypatch.setattr(rcn, 'time', clock)
-    node = _ready_node(clock)
-    # num_throws = 2 so the chain gate RUNS (it is skipped for a single cycle)
-    # — the point is that it consults the shipped box and finds the site inside.
-    _stub_cycles(node, monkeypatch, clock,
-                 [TossResult(True, 'CAUGHT', 2.0, .8),
-                  TossResult(True, 'CAUGHT', 2.0, .8)])
-    result = node._execute_toss_continuous(
-        _ContGoalHandle(x=147.0, num_throws=2))
-    assert result.outcome == 'COMPLETED'
-    site = node._predicted_chain_site_mm((147.0, 0.0, 170.0), FLIGHT)
-    assert abs(site[0]) <= float(hw.JB_OP_TOSS_WORKSPACE_XY_MM)
 
 
-def test_chain_gate_does_not_fire_for_a_single_cycle_session(monkeypatch):
-    """num_throws = 1 has no chain: refusing it would deny the operator the very
-    throw Phase E validated at the cap."""
-    clock = _Clock()
-    monkeypatch.setattr(rcn, 'time', clock)
-    node = _ready_node(clock)
-    _stub_cycles(node, monkeypatch, clock, [TossResult(True, 'CAUGHT', 2.0, .8)])
-    result = node._execute_toss_continuous(
-        _ContGoalHandle(x=150.0, num_throws=1))
-    assert result.outcome == 'COMPLETED'
 
 
-def test_chain_check_is_skipped_when_the_pose_is_unknown(monkeypatch,
-                                                         tier_8b):
-    """An unknown live pose is already REJECTED_POSE_UNKNOWN on cycle 1 —
-    rejecting CHAIN_UNREACHABLE here instead would send the operator to the wrong
-    subsystem. The check declines rather than guessing."""
+def test_the_predictor_declines_when_the_pose_is_unknown(monkeypatch, tier_8b):
+    """None, never a guess. A staged cycle that cannot say where it will be must
+    not nominate a site — it declines to stage and takes the serial path, where
+    POSITIONING commands the move that makes the nomination true.
+
+    The session still dies honestly: an unknown live pose is
+    REJECTED_POSE_UNKNOWN on cycle 1, which routes the operator at the trajectory
+    link rather than at the goal."""
     clock = _Clock()
     monkeypatch.setattr(rcn, 'time', clock)
     node = _ready_node(clock)
@@ -511,9 +464,9 @@ def test_chain_check_is_skipped_when_the_pose_is_unknown(monkeypatch,
     assert result.outcome == 'ABORTED_CYCLE_REJECTED_POSE_UNKNOWN'
 
 
-def test_chain_check_is_skipped_on_tier_8a(monkeypatch):
+def test_the_predictor_declines_on_tier_8a(monkeypatch):
     """Tier 8a pre-positions LEVEL at B every cycle and never reads a throw
-    site, so there is no chain to be unreachable."""
+    site, so there is no chained park to predict."""
     clock = _Clock()
     monkeypatch.setattr(rcn, 'time', clock)
     monkeypatch.setattr(hw, 'JB_OP_TOSS_TIER', TIER_8A)
@@ -1691,7 +1644,7 @@ def test_the_reload_attempt_reuses_the_shipping_fsm_and_step(monkeypatch):
     node = _reload_ready_node(clock)
     seen = []
 
-    def fake_step(seq, now, goal_handle=None):
+    def fake_step(seq, now, goal_handle=None, **kw):
         seen.append((type(seq).__name__, goal_handle))
         return types.SimpleNamespace(
             done=True, result=ReloadResult(True, 'CAUGHT'), action='none',
@@ -1706,21 +1659,248 @@ def test_the_reload_attempt_reuses_the_shipping_fsm_and_step(monkeypatch):
         assert node._active_seq is None  # always torn down
 
 
+def _stub_terminal(node, monkeypatch, result, action):
+    """Drive _run_one_reload_attempt straight to one terminal, with the ACTION the
+    real FSM would carry there — `_settle_after_reload`'s floor is keyed on it."""
+    monkeypatch.setattr(
+        node, '_step_sequence',
+        lambda seq, now, gh=None, **kw: types.SimpleNamespace(
+            done=True, result=result, action=action, phase='SETTLING'))
+
+
 def test_the_reload_attempt_settles_before_handing_back(monkeypatch):
-    """Rung 4. The reload's terminal action dispatches on SERVICE ACKS, so it
-    returns while the go_home profile is still traversing — the same trap the
-    MISS path already carries a floor for, and the same constant."""
+    """Rung 4, NOT-CAUGHT half. A terminal that installs a ``go_home`` dispatches
+    it on a SERVICE ACK, so the attempt returns while the profile is still
+    traversing — the same trap the MISS path already carries a floor for, and the
+    same constant. Re-keyed 2026-08-29: the stub now carries the terminal's real
+    ACTION, because the floor is chosen from it."""
     clock = _Clock()
     monkeypatch.setattr(rcn, 'time', clock)
     node = _reload_ready_node(clock)
-    monkeypatch.setattr(
-        node, '_step_sequence',
-        lambda seq, now, gh=None: types.SimpleNamespace(
-            done=True, result=ReloadResult(True, 'CAUGHT'), action='none',
-            phase='SETTLING'))
+    _stub_terminal(node, monkeypatch, ReloadResult(False, 'MISSED'),
+                   rcn.ACTION_SAFE_ABORT)
     t0 = clock.t
     node._run_one_reload_attempt()
     assert clock.t - t0 >= rcn.DEFAULT_SESSION_MISS_CLEANUP_S
+
+
+def test_the_caught_terminal_charges_the_stay_floor_not_the_miss_floor(
+        monkeypatch):
+    """Rung 4, CAUGHT half (Fix A/B, 2026-08-29). The CAUGHT terminal STAYS at the
+    catch pose, so there is no profile for the next cycle to start inside and the
+    landing-anchored MISS floor is simply the wrong bound to charge.
+
+    Measured motivation, bags 2026-08-29_15-30-29 / _15-40-40: 2.803-2.833 s of
+    total log silence between ``Reload CAUGHT`` and ``reload interlude CAUGHT``
+    (n=13), against a go_home that had already parked the platform 0.75 s earlier."""
+    clock = _Clock()
+    monkeypatch.setattr(rcn, 'time', clock)
+    node = _reload_ready_node(clock)
+    _stub_terminal(node, monkeypatch, ReloadResult(True, 'CAUGHT'),
+                   rcn.ACTION_RECENTER)
+    t0 = clock.t
+    node._run_one_reload_attempt()
+    waited = clock.t - t0
+    assert waited >= rcn.RELOAD_STAY_SETTLE_S
+    # …and it is the SHORT floor, not the long one merely satisfied by accident.
+    assert waited < rcn.DEFAULT_SESSION_MISS_CLEANUP_S
+
+
+def test_the_stay_floor_is_derived_from_its_own_sources(monkeypatch):
+    """(1)+(2) — RELATIONS to the source constants, never bare numbers, so a
+    re-measure of any source moves this floor with it instead of leaving it
+    silently wrong.
+
+    THE ANCHOR IS THE VERDICT. Both excluded terms are excluded for that one
+    reason: ``CATCH_CONFIRM_WINDOW_S`` is the window that elapses BEFORE a verdict
+    exists (already spent in real time by the time this floor's clock starts), and
+    ``GO_HOME_DURATION_S`` is a profile the stay terminal never installs."""
+    assert rcn.RELOAD_STAY_SETTLE_S == pytest.approx(
+        rcn.SAFE_ABORT_LADDER_S + 2.0 * rcn.TOSS_LOOP_PERIOD_S)
+    # The two terms the landing-anchored floor carries and this one must not.
+    assert rcn.RELOAD_STAY_SETTLE_S < ts.CATCH_CONFIRM_WINDOW_S
+    assert rcn.RELOAD_STAY_SETTLE_S < rcn.GO_HOME_DURATION_S
+    # Stated as the subtraction it actually is, so the identity is checkable
+    # rather than merely asserted twice.
+    assert rcn.DEFAULT_SESSION_MISS_CLEANUP_S - rcn.RELOAD_STAY_SETTLE_S == (
+        pytest.approx(ts.CATCH_CONFIRM_WINDOW_S + rcn.GO_HOME_DURATION_S))
+
+
+def test_the_busy_repoll_covers_the_stay_floors_settle_residual():
+    """The term the stay floor deliberately does NOT carry, pinned as the
+    INEQUALITY that makes leaving it out safe.
+
+    The stay terminal leaves the platform holding the catch plan, which is BUSY to
+    ``go_to_pose`` for ``JB_TRAJ_CATCH_SETTLE_HOLD_S`` past its arrival. The next
+    cycle's POSITIONING absorbs exactly that under
+    ``TOSS_POSITION_BUSY_PATIENCE_S``. Coverage is by construction: the patience
+    is the whole hold plus a loop period, and this floor's clock starts LATER than
+    the arrival the hold runs from, so the residual is strictly smaller than the
+    hold the re-poll already covers."""
+    assert TOSS_POSITION_BUSY_PATIENCE_S >= float(hw.JB_TRAJ_CATCH_SETTLE_HOLD_S)
+    # The margin is a whole loop period — the re-poll does not merely tie.
+    assert TOSS_POSITION_BUSY_PATIENCE_S - float(
+        hw.JB_TRAJ_CATCH_SETTLE_HOLD_S) == pytest.approx(rcn.TOSS_LOOP_PERIOD_S)
+
+
+def test_the_interlude_caught_terminal_commands_no_go_home(monkeypatch):
+    """(5) THE Fix-A assertion, made at the dispatch seam.
+
+    The interlude's CAUGHT lowers the latch and stops — it installs no profile, so
+    the platform holds the catch pose and the resumed cycle's POSITIONING commands
+    whatever move is needed inside its throw-delay countdown."""
+    clock = _Clock()
+    monkeypatch.setattr(rcn, 'time', clock)
+    node = _reload_ready_node(clock)
+    calls = []
+    monkeypatch.setattr(node, '_go_home', lambda: calls.append('go_home') or True)
+    monkeypatch.setattr(node, '_arm_catch',
+                        lambda armed: calls.append(('arm_catch', armed)) or True)
+    monkeypatch.setattr(node, '_publish_catch_armed',
+                        lambda armed: calls.append(('armed', armed)))
+    seq = ReloadSequencer(catch_point_mm=(0.0, 0.0, 170.0))
+    monkeypatch.setattr(
+        seq, 'step',
+        lambda now, obs: types.SimpleNamespace(
+            done=True, result=ReloadResult(True, 'CAUGHT'),
+            action=rcn.ACTION_RECENTER, phase='SETTLING'))
+    node._step_sequence(seq, clock.t, None, stay_on_caught=True)
+    assert 'go_home' not in calls, 'the interlude CAUGHT must install no profile'
+    # The latch still comes down, in the RECENTER order (arm_catch before the
+    # publish — a released hold meeting a still-armed catch_coordinator re-opens
+    # the auto-prime over the caught ball).
+    assert calls == [('arm_catch', False), ('armed', False)]
+
+
+def test_the_standalone_reload_action_still_recentres(monkeypatch):
+    """(5)'s other half, and the reason the seam is a KEYWORD rather than a change
+    to the FSM or to `_recenter`: the shipping ``jugglebot/reload`` action's
+    CAUGHT terminal is byte-identical, go_home included."""
+    clock = _Clock()
+    monkeypatch.setattr(rcn, 'time', clock)
+    node = _reload_ready_node(clock)
+    calls = []
+    monkeypatch.setattr(node, '_go_home', lambda: calls.append('go_home') or True)
+    monkeypatch.setattr(node, '_arm_catch', lambda armed: True)
+    monkeypatch.setattr(node, '_publish_catch_armed', lambda armed: None)
+    seq = ReloadSequencer(catch_point_mm=(0.0, 0.0, 170.0))
+    monkeypatch.setattr(
+        seq, 'step',
+        lambda now, obs: types.SimpleNamespace(
+            done=True, result=ReloadResult(True, 'CAUGHT'),
+            action=rcn.ACTION_RECENTER, phase='SETTLING'))
+    node._step_sequence(seq, clock.t, None)      # no stay_on_caught => the action
+    assert calls == ['go_home']
+
+
+def test_a_successful_attempt_never_re_enters_the_gate_or_the_bb_wait(
+        monkeypatch):
+    """(4) THE NEGATIVE PIN, and nothing pinned it before.
+
+    The operator's 2026-08-29 reading of a slow resume was "Jugglebot waits for BB
+    to settle before resuming". It does not — the interlude returns the moment an
+    attempt succeeds — but `f63f52d` put a bounded 10 s BB-ready wait one branch
+    away from this path (`_wait_for_bb_ready`, rung 2 of the gate), and a future
+    edit that moved the success check below the loop's gate call would make the
+    hypothesis TRUE without failing a single existing test."""
+    clock = _Clock()
+    monkeypatch.setattr(rcn, 'time', clock)
+    node = _reload_ready_node(clock)
+    gate_calls, bb_waits = [], []
+    real_gate = node._reload_interlude_gate
+    monkeypatch.setattr(node, '_reload_interlude_gate',
+                        lambda session, **kw: gate_calls.append(1)
+                        or real_gate(session, **kw))
+    monkeypatch.setattr(node, '_wait_for_bb_ready',
+                        lambda obs, **kw: bb_waits.append(1) or None)
+    monkeypatch.setattr(node, '_recentre_for_reload', lambda: True)
+    _stub_attempts(node, monkeypatch, [ReloadResult(True, 'CAUGHT')])
+    ok, code, attempts = node._run_reload_interlude(_session())
+    assert (ok, code, attempts) == (True, None, 1)
+    # Exactly ONE gate pass — the one that licensed the attempt that caught.
+    assert len(gate_calls) == 1, 'the gate re-ran after a successful attempt'
+    assert len(bb_waits) == 1, 'BB was consulted again on the RESUME path'
+
+
+def test_the_reload_balls_track_is_excluded_from_the_resumed_cycles_gate(
+        monkeypatch):
+    """Census D6, transposed onto the interlude — and it is Fix A that makes it
+    bite. The resumed cycle's CHECKING refuses ``REJECTED_TRACK_ACTIVE`` on any
+    live track destined for us; the BB ball we just caught keeps its IN_FLIGHT
+    status until the tracker mints CAUGHT (landing +0.202..+0.442 s). At the old
+    2.80 s floor CHECKING ran clear of that window by seconds. At the stay floor it
+    runs INSIDE it, so the exclusion stops being luck and starts being load-bearing.
+
+    It holds because the reload writes the SAME announced-ball latch the toss does
+    and `_build_toss_cycle` rolls that latch into `_prev_announced_ball_id`, which
+    is exactly what `track_active` excludes. STRUCTURAL (the `_method_sources`
+    idiom above), because the property is a THREE-SITE CHAIN and the failure it
+    guards is a broken link, not a wrong value: any behavioural test would still
+    pass with the chain intact and the exclusion accidentally right."""
+    src = _method_sources(rcn)
+    # 1. the interlude attempt owns the latch for the reload's flight…
+    assert '_announced_ball_id = None' in src['_run_one_reload_attempt']
+    # 2. …the RELOAD's own observation builder is what sets it (shared verbatim
+    #    with the toss builder — that sharing IS the mechanism)…
+    assert '_update_announced_ball_latch(' in src['_build_observations']
+    # 3. …and the resumed cycle's build rolls it forward before clearing it.
+    roll = src['_build_toss_cycle']
+    assert '_prev_announced_ball_id = self._announced_ball_id' in roll
+    assert (roll.index('_prev_announced_ball_id = self._announced_ball_id')
+            < roll.index('_announced_ball_id = None')), (
+        'the roll must READ the latch before the clear wipes it')
+    # 4. and the gate excludes the rolled id rather than only the live one.
+    gate = src['_build_toss_observations']
+    assert 'own_prev_id = self._prev_announced_ball_id' in gate
+    assert 'int(b.id) not in own_ids' in gate
+
+
+#: Worst observed seat-settle: how long after the cup sensor's ARRIVAL EDGE the
+#: raw bit can still bounce back to EMPTY while the ball seats. MEASURED
+#: 2026-08-29 over bags 2026-08-29_15-30-29 + _15-40-40 — 107 catch episodes (15
+#: reload, 92 toss), /hand_telemetry at ~99 Hz, ZERO invalid samples: the worst
+#: bounce ends +0.183 s past the edge, and there is no post-settle re-bounce
+#: anywhere in the corpus. A measurement, not a tunable — which is why it lives
+#: in the test rather than beside the constant it bounds.
+MEASURED_SEAT_SETTLE_MAX_S = 0.183
+
+#: Floor of the same corpus's terminal lag: `Reload CAUGHT` is logged this far
+#: AFTER the possession-CONFIRMED line (range +0.095..+0.223 s, n=15). The stay
+#: floor's clock starts at that terminal, so this is credit the floor already has.
+MEASURED_RELOAD_TERMINAL_LAG_MIN_S = 0.095
+
+
+def test_the_stay_floor_clears_the_measured_seat_settle():
+    """THE RISK GUARD for Fix A, discharged by measurement rather than by a new
+    mechanism.
+
+    Shortening rung 4 moves the resumed cycle's CHECKING — which reads the RAW cup
+    bit, deliberately (C-POSSESS-1 § 3.5: raw fails CLOSED at every dwell) — from
+    +2.80 s to +0.24 s after the catch terminal. A raw EMPTY there mints
+    REJECTED_NO_BALL, and with `on_empty_cup: RELOAD` that routes into a phantom
+    second interlude which stops the session STOPPED_CUP_NOT_EMPTY. So the floor
+    has to clear the ball's SEATING, and that is a time-dependent claim this test
+    pins against the measurement.
+
+    It clears it twice over: the read happens at least
+    `terminal lag + floor` past the sensor edge, and the worst seat bounce in 107
+    episodes was done well before that. Measured directly, the raw bit read TRUE at
+    CAUGHT+0.24 s in 107 of 107 episodes.
+
+    WHAT THIS DOES **NOT** CLAIM, stated so a future reader does not over-read it:
+    the corpus also carries 42 isolated <=60 ms raw dropouts under a demonstrably
+    seated ball (~1 per 21 s of held time, P ~ 0.13 % per single raw sample), all
+    of which the DEBOUNCED bit absorbed. That class is TIME-INDEPENDENT — it is
+    equally likely at +2.80 s and at +0.24 s — so Fix A neither creates nor avoids
+    it, and it is therefore not a regression this change introduces. It is a real
+    standing exposure of the raw-bit gate and belongs to C-POSSESS-1 § 3.5, not
+    here."""
+    read_at = MEASURED_RELOAD_TERMINAL_LAG_MIN_S + rcn.RELOAD_STAY_SETTLE_S
+    assert read_at > MEASURED_SEAT_SETTLE_MAX_S, (
+        'the stay floor lets CHECKING read the cup while a ball may still be '
+        'bouncing into the seat')
+    # Not a hairline pass: a whole loop period of margin at minimum.
+    assert read_at - MEASURED_SEAT_SETTLE_MAX_S > rcn.TOSS_LOOP_PERIOD_S
 
 
 # ── End to end through the real execute path ─────────────────────────────────
@@ -1758,6 +1938,71 @@ def test_a_reload_session_runs_the_interlude_and_reports_the_budget(monkeypatch)
     assert result.success is True
     assert result.reloads_used == 1
     assert list(result.per_cycle_outcomes) == ['REJECTED_NO_BALL', 'CAUGHT']
+
+
+def test_a_caught_interlude_leaves_the_platform_for_the_resumed_cycle(
+        monkeypatch):
+    """(6) END TO END, through the REAL interlude ladder — the acceptance test for
+    Fix A, and it counts ``go_home`` dispatches because that count IS the change.
+
+    An interlude has always issued a go_home at rung 2 (`_recentre_for_reload`:
+    the reload catch is hard-fixed at the workspace centre and the FSM refuses an
+    off-centre park, so the session must recentre itself before asking BB to
+    throw). Before Fix A it issued a SECOND one at the CAUGHT terminal, and that
+    second one was the next cycle's POSITIONING run early and serially — with a
+    2.80 s floor in front of it to cover the profile. Now the terminal STAYS, so
+    the resumed cycle commands whatever move it needs inside its own throw-delay
+    countdown.
+
+    So: exactly ONE go_home per caught interlude, and the session continues.
+
+    Deliberately NOT simulating a tilted pose. "The platform holds the catch pose"
+    is precisely the claim "we issued no command", and the dispatch count pins that
+    directly; feeding the harness a fake commanded pose would add fiction without
+    adding coverage, since nothing in this path reads the pose between the terminal
+    and the resumed cycle's own live read."""
+    clock = _Clock()
+    monkeypatch.setattr(rcn, 'time', clock)
+    node = _reload_ready_node(clock)
+    homes = []
+    monkeypatch.setattr(node, '_go_home', lambda: homes.append(clock.t) or True)
+    monkeypatch.setattr(node, '_arm_catch', lambda armed: True)
+    monkeypatch.setattr(node, '_platform_centered', lambda now: True)
+    # The FSM's terminal, dispatched for real through _step_sequence — so
+    # `_recenter_stay` is the ladder that actually runs.
+    _stub_terminal(node, monkeypatch, ReloadResult(True, 'CAUGHT'),
+                   rcn.ACTION_RECENTER)
+    built = _stub_cycles(node, monkeypatch, clock,
+                         [_no_ball(), TossResult(True, 'CAUGHT', 3.0, 0.8)])
+    # `_stub_cycles` JUMPS the fake clock to the cycle's landing, and a
+    # REJECTED_NO_BALL leaves `last_landing_perf` NaN — so the interlude's
+    # seat-edge band returns without sleeping and nothing re-feeds the sensor,
+    # which then reads UNKNOWN at the gate's cup rung. That is the `_Clock.attach`
+    # artefact one call deeper: /hand_telemetry keeps arriving at ~99 Hz across a
+    # real cycle (measured, bags 2026-08-29), so the harness has to as well.
+    inner_run = node._run_toss_cycle
+
+    def feeding_run(*a, **kw):
+        out = inner_run(*a, **kw)
+        _feed_sensor(node, clock.t, held=False, valid=True)
+        return out
+
+    monkeypatch.setattr(node, '_run_toss_cycle', feeding_run)
+    gh = _ContGoalHandle(num_throws=1, stop_on_miss=False)
+    gh.request.on_empty_cup = 'RELOAD'
+    gh.request.max_reloads = 3
+    result = node._execute_toss_continuous(gh)
+
+    assert result.outcome == 'COMPLETED'
+    assert result.reloads_used == 1
+    assert list(result.per_cycle_outcomes) == ['REJECTED_NO_BALL', 'CAUGHT']
+    assert len(homes) == 1, (
+        'a caught interlude must dispatch go_home ONCE (rung 2 recentre) — the '
+        'CAUGHT terminal stays at the catch pose')
+    # The session really did resume: a second cycle was built after the interlude,
+    # and it wears the reload_settle flag that excludes it from the fit.
+    assert len(built) == 2
+    assert node._toss_record_ctx['reload_settle'] is True
 
 
 def test_a_refused_interlude_terminalises_the_session_with_its_code(monkeypatch):
@@ -2067,7 +2312,7 @@ def test_a_cancel_during_the_interlude_safes_and_does_not_wait_out_the_settle(
                         lambda seq: safed.append(seq))
     monkeypatch.setattr(
         node, '_step_sequence',
-        lambda seq, now, gh=None: types.SimpleNamespace(
+        lambda seq, now, gh=None, **kw: types.SimpleNamespace(
             done=False, result=None, action='none', phase='CHECKING'))
     t0 = clock.t
     assert node._run_one_reload_attempt(cancel_now_fn=lambda: True) is None
@@ -2286,7 +2531,7 @@ def test_a_deferred_cancel_keeps_ticking_and_never_retracts_mid_flight(
     ticks = []
     cancelling = []
 
-    def fake_step(seq, now, gh=None):
+    def fake_step(seq, now, gh=None, **kw):
         ticks.append(now)
         # Tick 1 commits the throw to BB; the operator's cancel arrives after it.
         seq._phase = 'BALL_IN_FLIGHT'
@@ -2316,7 +2561,7 @@ def test_a_deferred_cancel_still_skips_the_settle_floor(monkeypatch):
 
     cancelling = []
 
-    def fake_step(seq, now, gh=None):
+    def fake_step(seq, now, gh=None, **kw):
         # Tick 1 commits the throw and the cancel lands after it; tick 2 sees the
         # cancel (deferred, ball in the air) and then reaches the FSM terminal.
         seq._phase = 'BALL_IN_FLIGHT'
@@ -3174,9 +3419,9 @@ def test_a_staged_cycle_nominates_the_predicted_chain_site_not_the_live_read(
     self-consistent because its POSITIONING then COMMANDS the platform there. A
     STAGED cycle's POSITIONING is a skip by construction, so the live read is a
     claim about an instant a whole flight before the throw — it nominates the
-    prediction of where it WILL be instead, through the same single
-    `_predicted_chain_site_mm` derivation the accept-time
-    REJECTED_CHAIN_UNREACHABLE check consults."""
+    prediction of where it WILL be instead, through `_predicted_chain_site_mm`.
+    (That derivation also fed an accept-time REJECTED_CHAIN_UNREACHABLE check
+    until 2026-08-29; this is now its only consumer, and the load-bearing one.)"""
     clock = _PipelineClock()
     monkeypatch.setattr(rcn, 'time', clock)
     node, calls = _pipelined_node(clock, monkeypatch)

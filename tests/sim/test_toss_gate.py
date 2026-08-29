@@ -161,7 +161,7 @@ def test_sweep_points_inside_fsm_bands():
     which the band alone cannot see. A sweep that measured refused points would
     be reporting a catch rate for throws the machine will not make."""
     from jugglebot.toss_sequencer import (
-        TOSS_XY_LIMIT_MM, TOSS_ACTIVE_Z_MM, TOSS_Z_BAND_MM,
+        TOSS_ACTIVE_Z_MM, TOSS_Z_BAND_MM,
         FLIGHT_TIME_MIN_S, FLIGHT_TIME_MAX_S,
         TEENSY_MIN_EVENT_VEL_MPS, TEENSY_MAX_EVENT_VEL_MPS,
     )
@@ -169,7 +169,12 @@ def test_sweep_points_inside_fsm_bands():
     pts = default_grid('factored')
     assert len(pts) == 29
     for (x, y, z, T) in pts:
-        assert abs(x) <= TOSS_XY_LIMIT_MM and abs(y) <= TOSS_XY_LIMIT_MM
+        # The lateral half of this check read TOSS_XY_LIMIT_MM until 2026-08-29,
+        # when the FSM's ±xy planning box was deleted with its config key. The
+        # sweep still has to stay inside a sane region, but that region is now
+        # the GRID's own design (150 mm, the hardware ladder's range) rather than
+        # a production gate it must not exceed.
+        assert abs(x) <= 150.0 and abs(y) <= 150.0
         assert abs(z - TOSS_ACTIVE_Z_MM) <= TOSS_Z_BAND_MM
         assert FLIGHT_TIME_MIN_S <= T <= FLIGHT_TIME_MAX_S
         ev = toss_release.compute_release_state((x, y, z), T).event_vel_mps
@@ -360,19 +365,22 @@ def test_8b_advisory_rings_not_binding():
     are ADVISORY — never in the binding band, so a dirty edge point cannot fail
     the gate.
 
-    Re-pointed 2026-07-29 from a single 70 mm advisory ring. The cap ring is
-    read from the shipped config key so the gate and the shipped
-    ``toss_max_displacement_mm`` can never describe different machines — and it
-    stays ADVISORY on purpose: the catch RATE at the cap is dominated by a
-    release-noise magnitude that is still the Phase-5 T0 PLACEHOLDER, so gating
-    the shipped cap on it would make the cap an artefact of an unmeasured
+    Re-pointed 2026-07-29 from a single 70 mm advisory ring. The outer ring READ
+    the shipped ``toss_max_displacement_mm`` config key so the gate and the
+    shipped cap could never describe different machines; that key was deleted
+    2026-08-29 (the flat cap was policy, the closed-form reach bound is the
+    surviving |B−A| gate), so the ring is now a plain characterisation radius
+    pinned to the value the hardware ladder was written around.
+
+    It stays ADVISORY for the same reason it always did: the catch RATE out here
+    is dominated by a release-noise magnitude that is still the Phase-5 T0
+    PLACEHOLDER, so gating on it would make the gate an artefact of an unmeasured
     number. What the advisory rings DO gate is the invariant half (every emitted
     knot pump-accepted, zero feasibility violations), which they feed because
     they run the full production pipeline."""
-    import jugglebot.hardware_config as hw
     from sim.toss_gate import (default_grid_8b, _TOSS_8B_RING_MM,
                                _TOSS_8B_ADVISORY_RINGS_MM)
-    cap = float(hw.JB_OP_TOSS_MAX_DISPLACEMENT_MM)
+    cap = 150.0
     assert _TOSS_8B_ADVISORY_RINGS_MM[-1] == pytest.approx(cap)
     pts = default_grid_8b((0.0, 0.0))
     # 1 centre + 8 binding ring + 3×8 advisory rings + 2 T=0.95 spots = 35.
@@ -409,14 +417,21 @@ def test_8b_prepare_commands_nonzero_pretilt():
     assert s_ctr.displacement_mm == pytest.approx(0.0)
 
 
-def test_8b_asymmetry_map_radii_reach_the_shipped_cap():
-    """The MAP's default radii must span the shipped displacement cap, or the
-    directional evidence the operator's ladder relies on stops short of the
-    range the FSM actually permits."""
-    import jugglebot.hardware_config as hw
-    from sim.toss_gate import _ASYMMETRY_RADII_MM
+def test_8b_asymmetry_map_radii_span_the_advisory_rings():
+    """The MAP's default radii must span the advisory rings, or the directional
+    evidence the operator's ladder relies on stops short of the range the gate
+    itself characterises.
+
+    This pinned the radii against the shipped ``toss_max_displacement_mm`` until
+    2026-08-29. With that key deleted there is no config number left to span, so
+    the invariant is now internal: the map and the rings describe the same
+    machine. The production FSM's own limit is the flight-dependent reach bound,
+    which no fixed radius can be compared against — a 150 mm radius is admitted
+    at T = 0.80 and refused at T = 0.60, and BOTH cells are deliberately in the
+    map because it is a physics characterisation, not a gate."""
+    from sim.toss_gate import _ASYMMETRY_RADII_MM, _TOSS_8B_ADVISORY_RINGS_MM
     assert 70.0 in _ASYMMETRY_RADII_MM and 100.0 in _ASYMMETRY_RADII_MM
-    assert max(_ASYMMETRY_RADII_MM) >= float(hw.JB_OP_TOSS_MAX_DISPLACEMENT_MM)
+    assert max(_ASYMMETRY_RADII_MM) >= max(_TOSS_8B_ADVISORY_RINGS_MM)
 
 
 def test_8b_asymmetry_map_present_and_non_gating():

@@ -158,8 +158,6 @@ namespace JBOp {
   constexpr float TOSS_RELEASE_LATENCY_MS = 0.0f;
   constexpr bool TOSS_ILC_ENABLED = false;
   constexpr float TOSS_FLIGHT_TIME_DEFAULT_S = 0.8f;
-  constexpr float TOSS_MAX_DISPLACEMENT_MM = 150.0f;
-  constexpr float TOSS_WORKSPACE_XY_MM = 160.0f;
   constexpr bool TOSS_STAY_AT_POSE_ON_CAUGHT = true;
   constexpr bool TOSS_PIPELINE_ENABLED = true;
   constexpr bool TOSS_REQUIRE_BALL_EVIDENCE = true;

@@ -33,14 +33,30 @@ correction rewrites rotation only, so the two cannot interact.
 > for any coordinator that catches where it already is.
 >
 > Requested displacement — a coordinator deliberately reaching from A to B — is
-> gated by its own **pre-throw** contract (`jugglebot_operational.
-> toss_max_displacement_mm`, the closed-form quintic reach bound, and the
-> planner's feasibility gate), never by this envelope.
+> gated by its own **pre-throw** contract (the closed-form quintic reach bound in
+> `toss_sequencer`, and behind it the planner's feasibility gate), never by this
+> envelope.
 
 The two quantities are separate and must stay separate. Raising the envelope to
 "buy reach" re-couples them and silently loosens the drift bound by the same
-amount; lowering the displacement cap to "protect the envelope" refuses throws
-that were never a drift risk.
+amount; tightening the requested-reach gate to "protect the envelope" refuses
+throws that were never a drift risk.
+
+> **2026-08-29.** A flat `jugglebot_operational.toss_max_displacement_mm` cap
+> stood beside the closed-form bound in that pre-throw contract until the owner
+> retired it. Nothing about C-REACH-1 changes: the envelope still bounds
+> unrequested drift about B, and requested reach is still gated elsewhere. The
+> lateral `toss_workspace_xy_mm` planning box went the same day; it was never
+> part of this contract.
+>
+> The pre-throw gates there are now the closed-form `|B − A|` reach bound and —
+> added by the same day's audit, because Tier 8b pre-positions at the throw site
+> A and defers the A→B reach, so nothing else judged B laterally — a build-time
+> feasibility plan of that deferred reach (`motion/trajectory/catch_reach`,
+> minted as `REJECTED_POSITION(<planner code>: …)`). That second gate is what
+> now keeps a mid-flight `WORKSPACE` refusal of the deferred reach — the
+> residual this document's § 7 names — from being reachable by an over-far
+> nominated `B`.
 
 ## 2. Why this exists — the failure it closes
 
@@ -91,7 +107,7 @@ The envelope radius itself is `trajectory_catch.reach_envelope_mm`
 |---|---|---|---|
 | **Reload** | No | Commanded pose at the raise (its catch IS the held pose) | **Unchanged.** Byte-identical choreography. |
 | **Toss, Tier 8a** | Yes — the goal's B | B, which equals the pre-positioned held pose | Unchanged in value; the envelope simply no longer depends on POSITIONING having actually arrived. |
-| **Toss, Tier 8b** | Yes — the goal's B | B | The deferred A→B reach is now judged against B, so displacement is bounded by `toss_max_displacement_mm` and drift is still bounded at 80 mm — about B. |
+| **Toss, Tier 8b** | Yes — the goal's B | B | The deferred A→B reach is now judged against B, so displacement is bounded by the closed-form reach bound and drift is still bounded at 80 mm — about B. |
 
 The toss declares B, **not** the swing-compensated target the reach actually
 carries. B is the operator-nominated quantity, the swing shift is a few mm, and
@@ -158,16 +174,17 @@ envelope exists to bound.
    the CAUGHT `STAY` terminal now leaves behind. Measured: a catch at
    `B = (−150, 0, 170)`, `T = 0.80 s` parks the cup at exactly `(−150.00, 0)` and
    the centroid at `(−153.10, 0)`. The aim stays self-consistent (A is nominated,
-   and POSITIONING makes it true), so this is not an aim error — the planning box
-   and the displacement cap are both applied to the centroid value.
-   **RESOLVED FOR CHAINING 2026-08-14**: the box is now config-keyed
-   (`toss_workspace_xy_mm`, default 160 = cap × 1.067 > the 2.07 % divergence),
-   so the parked centroid sits inside the box and chained tosses at the cap are
-   admitted; only a genuinely-requested `|B − A|` past the cap still refuses.
-   The underlying frame question (A read as centroid, consumed as cup xy)
-   remains open on `single-ball-toss` Phase E but no longer gates chaining.
-   Pinned by
-   `tests/ros/test_toss_sequencer.py::test_chaining_at_the_cap_box_dissolves_the_frame_divergence`.
+   and POSITIONING makes it true), so this is not an aim error — but the planning
+   box and the displacement cap were both applied to the centroid value, which
+   made a ~3 mm frame difference into a refusal.
+   **RESOLVED FOR CHAINING 2026-08-14, then DISSOLVED 2026-08-29**: widening the
+   box past the cap (`toss_workspace_xy_mm` = 160) first stopped it binding;
+   deleting both keys removed the mechanism entirely, so nothing now measures the
+   parked centroid against a lateral bound at all. The underlying frame question
+   (A read as centroid, consumed as cup xy) remains open on `single-ball-toss`
+   Phase E — it is a few mm of aim, and it no longer gates anything. The residual
+   magnitude is pinned by
+   `tests/ros/test_toss_continuous_node.py::test_the_predicted_chain_residual_stays_a_few_mm`.
 8. **A is SAMPLED once at goal accept, with a 1.0 s staleness window on a 5 Hz
    topic, and nothing refuses a goal issued while a move is in flight.**
    `_live_commanded_position` inherits `_TRAJ_STATUS_STALE_S` from
@@ -209,8 +226,11 @@ Change the document first, then the enforcement point, then the tests — never 
 other way round. In particular:
 
 - **Do not raise `reach_envelope_mm` to permit a larger requested reach.** That is
-  the coupling C-REACH-1 removed. Raise `toss_max_displacement_mm` instead, and
-  bring the evidence the YAML comment asks for.
+  the coupling C-REACH-1 removed. The requested-reach gate is the closed-form
+  bound in `toss_sequencer`, which follows the live `trajectory/set_limits`
+  session limits — so a longer flight or a limits ramp is the lever, and either
+  one is answerable from the refusal's own text. (Before 2026-08-29 this line
+  said "raise `toss_max_displacement_mm` instead"; that key no longer exists.)
 - **Do not let a coordinator declare a centre it did not compute from its own
   goal.** A centre derived from live tracking would let a corrupt estimate define
   its own envelope, which is precisely the drift failure the envelope bounds.

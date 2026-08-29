@@ -53,7 +53,6 @@ from jugglebot.toss_sequencer import (
     TIER_8A,
     TIER_8B,
     TOSS_CONTROL_MODE,
-    TOSS_MAX_DISPLACEMENT_MM,
     TOSS_POSITION_BUSY_PATIENCE_S,
     TOSS_POSITION_BUSY_REPOLL_S,
     HAND_THROW_RELEASE_OFFSET_MM,
@@ -719,23 +718,33 @@ def test_default_event_vel_full_geometry_pin():
 
 
 @pytest.mark.parametrize('pose,names,knob', [
-    # 150.0 is the MODULE fallback box (TOSS_XY_LIMIT_MM); the node passes the
-    # YAML 160 in production, and test_workspace_box_is_ctor_config pins that.
-    ((200.0, 0.0, 170.0), ('|B.x|', '200.0', '150.0'),   # |x| beyond the box
-     'toss_workspace_xy_mm'),
-    ((0.0, -200.0, 170.0), ('|B.y|', '200.0', '150.0'),  # |y| beyond
-     'toss_workspace_xy_mm'),
     ((0.0, 0.0, 225.0), ('B.z', '225.0', '55.0', '50.0', '170.0'),
      'TOSS_Z_BAND_MM'),                                  # |z − 170| beyond ±50
+    ((0.0, 0.0, 100.0), ('B.z', '100.0', '70.0', '50.0', '170.0'),
+     'TOSS_Z_BAND_MM'),                                  # …and below
 ])
 def test_workspace_precheck_rejected(pose, names, knob):
-    """Planning-envelope pre-check only — go_to_pose's feasibility gate remains
-    the truth (REJECTED_POSITION(<code>) covers what this misses).
+    """The z band is ALL that is left of this pre-check (2026-08-29) — the
+    lateral ±xy box on B, and its Tier-8b twin on the live throw site A, were
+    deleted with their config key ``toss_workspace_xy_mm``.
 
-    ONE code, THREE messages (2026-08-29). The lateral box and the z band are
-    different knobs, so "outside the workspace" with no component named sent
-    half these refusals to the wrong one — the row now pins WHICH bound refused
-    and that the offending component is quoted."""
+    The message still quotes the offending component and names the constant that
+    moves it, which is what the 2026-08-29 enrichment was for. WHY THE Z HALF
+    SURVIVED A DELETION THE LATERAL HALF DID NOT: the lateral box was policy
+    standing in front of real authorities (trajectory_node's feasibility gate on
+    the positioning move, the reach bound, the tilt ceiling, the firmware
+    clamps), so removing it only changed WHICH subsystem refuses and when. The z
+    band is not that — the toss ballistics are derived about the ACTIVE plane, so
+    a far-off-plane z is a goal the release math cannot honestly describe rather
+    than a reach the planner might yet accept. Both directions are driven here so
+    the band cannot silently become one-sided.
+
+    ⚠ "Only changed WHICH subsystem refuses and when" was true of Tier 8a and
+    FALSE of the shipped 8b, whose positioning move commands the pre-tilt pose
+    at A and never judges B — so under 8b the deletion left NO lateral authority
+    at all until the same-day audit fix added the build-time deferred-reach gate
+    (``reach_verdict``, pinned below). This gate still runs FIRST: see
+    ``test_every_knob_gate_precedes_the_reach_verdict``."""
     seq = TossSequencer(catch_pose_stow_mm=pose, flight_time_s=0.8,
                         throw_delay_s=5.0)
     seq.start(0.0)
@@ -745,6 +754,22 @@ def test_workspace_precheck_rejected(pose, names, knob):
     for token in names:
         assert token in msg, (token, msg)
     assert knob in msg, msg
+
+
+def test_a_far_lateral_goal_is_no_longer_refused_at_checking():
+    """The deletion's behavioural face, pinned so it cannot regress silently.
+
+    A goal 400 mm out used to die REJECTED_WORKSPACE at CHECKING against a ±150
+    planning box. With the box gone it is ADMITTED here and travels on to
+    POSITIONING, where ``go_to_pose``'s own feasibility gate is the authority
+    that answers — REJECTED_POSITION(<code>), pinned end to end in
+    test_toss_coordinator.py. Tier 8a, so no |B−A| reach bound is in play and the
+    verdict isolates the box's absence."""
+    seq = TossSequencer(catch_pose_stow_mm=(400.0, 0.0, 170.0),
+                        flight_time_s=0.8, throw_delay_s=5.0)
+    seq.start(0.0)
+    d = seq.step(0.0, _obs(0.0))
+    assert d.phase == PHASE_POSITIONING and d.action == ACTION_POSITION_PLATFORM
 
 
 # ── POSITIONING (deviation: reload has no platform move to make or verify) ─────
@@ -1633,24 +1658,13 @@ def test_local_constants_match_generated_config():
         hw.GEOM_HAND_AXIS_BOTTOM_OFFSET_MM + hw.HAND_THROW_POS_M * 1000.0)
     assert hw.JB_OP_TOSS_FLIGHT_TIME_DEFAULT_S == pytest.approx(
         DEFAULT_TOSS_FLIGHT_TIME_S)
-    # The Phase-E displacement cap and the workspace box are OPERATOR-ADJUSTABLE
-    # YAML keys (2026-08-14): no YAML == module-literal equality pin, because
-    # that pin is precisely what made a YAML edit turn the suite red. What IS
-    # pinned: (a) the module fallbacks keep their documented values, so
-    # standalone/bag use is deterministic; (b) the MECHANISM — the ctor value is
-    # what gates (test_workspace_box_is_ctor_config and the 8b displacement
-    # battery drive explicit ctor values); (c) the RELATIONAL invariant the YAML
-    # comment states: box ≥ cap × 1.03, else the centroid-vs-cup chain
-    # divergence (2.07 % of displacement, measured 2026-07-29) re-binds at the
-    # cap edge and REJECTED_CHAIN_UNREACHABLE returns at the working range.
-    assert TOSS_MAX_DISPLACEMENT_MM == pytest.approx(150.0)
-    assert hw.JB_OP_TOSS_WORKSPACE_XY_MM >= (
-        hw.JB_OP_TOSS_MAX_DISPLACEMENT_MM * 1.03)
-    # The closed-form reach bound and the cap are SEPARATE gates; pin the
-    # FALLBACK-limits crossover flight explicitly so a change to either shows
-    # up as the flight-band shift it really is.
-    assert reach_displacement_limit_mm(0.669) == pytest.approx(
-        TOSS_MAX_DISPLACEMENT_MM, abs=0.5)
+    # The displacement cap (toss_max_displacement_mm) and the lateral planning
+    # box (toss_workspace_xy_mm) were pinned here — the module fallbacks by
+    # value, and the RELATIONAL invariant box >= cap * 1.03 — until 2026-08-29,
+    # when both YAML keys were DELETED by owner decision. Nothing replaces them:
+    # the surviving |B-A| gate is the closed-form reach bound, which reads no
+    # config key of its own (it follows the LIVE session limits, with the
+    # REACH_*_LIMIT_* fallbacks pinned just below).
     # The FALLBACK limits the closed-form bound gates against when no live
     # session limits are observed (pre-field publisher, stale status, bag
     # replay). The pin matters because the fallback path can still over-permit
@@ -1736,57 +1750,54 @@ def _fresh_8b(pose=(50.0, 0.0, 170.0), throw_site=(0.0, 0.0),
 
 
 @pytest.mark.parametrize('pose,site,flight', [
-    ((160.0, 0.0, 170.0), (0.0, 0.0), 0.8),    # 160 mm > 150 cap (within 256 bound)
-    ((0.0, -160.0, 170.0), (0.0, 0.0), 0.8),   # −y direction, cap alone
-    ((100.0, 0.0, 170.0), (0.0, 0.0), 0.55),   # 100 mm ≤ cap but > 83.2 mm @0.55
-    ((150.0, 0.0, 170.0), (0.0, 0.0), 0.60),   # 150 mm ≤ cap but > 108.0 mm @0.60
-    ((110.0, 0.0, 170.0), (-90.0, 0.0), 0.8),  # non-origin A: |B−A| = 200 > cap
+    ((100.0, 0.0, 170.0), (0.0, 0.0), 0.55),   # 100 mm > the 83.2 mm bound @0.55
+    ((150.0, 0.0, 170.0), (0.0, 0.0), 0.60),   # 150 mm > the 108.0 mm bound @0.60
+    ((0.0, -100.0, 170.0), (0.0, 0.0), 0.55),  # −y direction, same bound
+    ((110.0, 0.0, 170.0), (-90.0, 0.0), 0.55),  # non-origin A: |B−A| = 200 mm
 ])
 def test_displacement_rejected(pose, site, flight):
-    """REJECTED_DISPLACEMENT: |B_xy − A_xy| past the cap OR past the flight's
-    closed-form quintic reach bound — a loud PRE-THROW verdict for a reach whose
-    trajectory_node verdict would otherwise arrive only after the ball flies.
-    Checked BEFORE workspace, so a displaced-but-in-workspace B still rejects.
+    """REJECTED_DISPLACEMENT: |B_xy − A_xy| past the flight's closed-form quintic
+    reach bound — a loud PRE-THROW verdict for a reach whose trajectory_node
+    verdict would otherwise arrive only after the ball flies.
 
-    Re-pointed 2026-07-29 from the 70 mm cap to 150 mm (Phase E). Two of the
-    five legs now exercise the OTHER gate deliberately: at T = 0.55 and T = 0.60
-    the closed-form bound (83.2 / 108.0 mm) bites well inside the cap, which is
-    the gate doing its job — the production planner is only 3/8 directions at
-    150 mm / T = 0.55 s (tools/probes/displaced_reach_frontier.py)."""
+    ONE gate since 2026-08-29. This battery used to drive TWO limits wearing one
+    code: three legs exercised a flat ``toss_max_displacement_mm`` cap and two
+    exercised the bound. The owner retired the cap (a chosen number, not a
+    derived one), so every leg here now drives the bound, and the three
+    cap-only legs were deleted rather than retuned — at T = 0.80 a 160 mm or
+    200 mm displacement is INSIDE the 256 mm bound and is now correctly
+    admitted, which is the behavioural change and not a test to preserve.
+
+    The legs still span what matters: both binding flights (0.55 → 83.2 mm,
+    0.60 → 108.0 mm), a non-x direction, and a non-origin A so the gate is
+    measured from the live throw site rather than the origin."""
     seq = _fresh_8b(pose=pose, throw_site=site, flight_time_s=flight)
     d = seq.step(0.0, _obs(0.0))
     assert d.done and base_outcome(d.result.outcome) == 'REJECTED_DISPLACEMENT'
-    # BOTH bounds are quoted every time, because "too far" is ambiguous between
-    # them and they move under different knobs — the cap is a config edit, the
-    # reach bound is a function of T and the live limits. The refusal also says
-    # which one BOUND, so the remedy names the lever that is actually connected.
+    # The refusal names the bound, which of the three peaks produced it, and the
+    # limits it judged against — the remedy is a longer T or a set_limits ramp on
+    # the named term, and both are levers the message points at directly.
     msg = d.result.outcome
     assert '|B-A| =' in msg, msg
-    assert 'cap' in msg and 'reach bound' in msg, msg
-    assert 'toss_max_displacement_mm' in msg, msg
+    assert 'reach bound' in msg, msg
     assert 'T = {:.3f} s'.format(flight) in msg, msg
-    assert 'not binding' in msg or 'also exceeded' in msg, msg
+    # …and it no longer quotes a cap that does not exist.
+    assert 'cap' not in msg, msg
+    assert 'toss_max_displacement_mm' not in msg, msg
     assert d.action == ACTION_NONE and seq.prepared is False
 
 
 def test_the_displacement_refusal_names_the_binding_bound_and_its_remedy():
-    """The two BINDING cases, each pinned by the remedy it hands the operator —
-    the property the parenthetical exists for.
+    """The refusal pinned by the remedy it hands the operator — the property the
+    parenthetical exists for.
 
-    Cap-bound: |B−A| = 210 mm at T = 0.80 s, where the reach bound is 256 mm and
-    slack, so the cap is the only thing refusing and lowering |B−A| is the fix.
-    Jerk-bound: 100 mm at T = 0.55 s, where the closed form gives 83.2 mm and
-    the 150 mm cap never comes into it — here the fix is a longer flight or a
-    ``set_limits`` ramp on the term that actually bound, and a message that
-    said only "cap 150" would send the operator to a knob with no effect."""
-    cap_bound = _fresh_8b(pose=(210.0, 0.0, 170.0), throw_site=(0.0, 0.0),
-                          flight_time_s=0.80)
-    msg = cap_bound.step(0.0, _obs(0.0)).result.outcome
-    assert base_outcome(msg) == 'REJECTED_DISPLACEMENT'
-    assert '> cap 150.0 mm [toss_max_displacement_mm]' in msg, msg
-    assert 'reach bound 256.0 mm (jerk-bound) at T = 0.800 s not binding' in msg, msg
-    assert 'lower |B-A| or raise the cap' in msg, msg
-
+    This used to pin TWO binding cases, because REJECTED_DISPLACEMENT covered two
+    limits under one code and a message naming only one of them sent half the
+    refusals to a knob with no effect. Since 2026-08-29 there is one limit, so
+    there is one case: jerk-bound at 100 mm / T = 0.55 s, where the closed form
+    gives 83.2 mm. The remedy is a longer flight or a ``set_limits`` ramp on the
+    term that actually bound — which is why the message names the TERM and not
+    just the number."""
     jerk_bound = _fresh_8b(pose=(100.0, 0.0, 170.0), throw_site=(0.0, 0.0),
                            flight_time_s=0.55)
     msg = jerk_bound.step(0.0, _obs(0.0)).result.outcome
@@ -1797,7 +1808,6 @@ def test_the_displacement_refusal_names_the_binding_bound_and_its_remedy():
     assert '[default limits 1000*/5000*/30000*]' in msg, msg
     assert '* = default, not reported' in msg, msg
     assert 'jerk-bound at T = 0.550 s' in msg, msg
-    assert 'cap 150.0 mm [toss_max_displacement_mm] not binding' in msg, msg
     assert 'set_limits jerk' in msg, msg
     # …and the LIVE half of the same sentence: a live-limits observation says so
     # and quotes what it judged against, so an operator reading a refusal during
@@ -1835,101 +1845,60 @@ def test_the_reach_bound_names_which_peak_bound_it():
 
 @pytest.mark.parametrize('pose,site,flight', [
     ((50.0, 0.0, 170.0), (0.0, 0.0), 0.8),       # the pre-Phase-E working point
-    ((150.0, 0.0, 170.0), (0.0, 0.0), 0.8),      # AT the new cap, on-axis
-    ((150.0, 150.0, 170.0), (44.0, 44.0), 0.8),  # at the cap from an off-centre A
+    ((150.0, 0.0, 170.0), (0.0, 0.0), 0.8),      # the Phase-E working range, on-axis
+    ((150.0, 150.0, 170.0), (44.0, 44.0), 0.8),  # 150 mm from an off-centre A
     ((0.0, 0.0, 170.0), (-106.0, -106.0, ), 0.8),  # 150 mm INTO the centre
+    ((200.0, 0.0, 170.0), (0.0, 0.0), 0.8),      # ADMITTED since 2026-08-29
 ])
-def test_displacement_within_cap_accepted(pose, site, flight):
-    """|B−A| within the cap AND the flight's quintic reach bound starts the
-    positioning move — the deferred A→B reach is feasible. Includes 150 mm legs
-    from off-centre throw sites, which is the Phase-E working range."""
+def test_displacement_within_the_reach_bound_accepted(pose, site, flight):
+    """|B−A| within the flight's quintic reach bound starts the positioning move
+    — the deferred A→B reach is feasible.
+
+    The 200 mm leg is the deletion's other face, and the reason this battery
+    keeps a leg the old code refused: at T = 0.80 the bound is 256 mm, so a
+    200 mm displacement was always physically fine and was refused only by the
+    flat 150 mm cap. Admitting it is the intended behavioural change, and pinning
+    it here means a re-introduced cap cannot slip back in unnoticed."""
     seq = _fresh_8b(pose=pose, throw_site=site, flight_time_s=flight)
     d = seq.step(0.0, _obs(0.0))
     assert d.phase == PHASE_POSITIONING and d.action == ACTION_POSITION_PLATFORM
 
-
-@pytest.mark.parametrize('next_b,box_160_outcome', [
-    ((0.0, 0.0, 170.0), 'REJECTED_DISPLACEMENT'),
-                                # back to centre: |B−A| = 153.10 > the 150 cap —
-                                # a REAL requested displacement past the cap, so
-                                # the wider box does not (and must not) admit it
-    ((-150.0, 0.0, 170.0), 'ACCEPTED'),   # degenerate re-throw at the park
-    ((-100.0, 0.0, 170.0), 'ACCEPTED'),   # a short hop back toward centre
-])
-def test_chaining_at_the_cap_box_dissolves_the_frame_divergence(next_b,
-                                                                box_160_outcome):
-    """The FORMER known limitation and its 2026-08-14 resolution, both pinned.
-
-    The catch parks the platform CENTROID outside B so the CUP lands ON B
-    (swing compensation: centroid = landing - hand_catch_offset*platform_z).
-    Measured through the production chain at B = (-150, 0, 170), T = 0.80 s: the
-    cup ends at exactly (-150.00, 0) but the centroid ends at (-153.10, 0), and
-    trajectory/commanded_position publishes the CENTROID. So the next goal reads
-    A = -153.10 — a value 2.07 % of the displacement (hand_catch_offset*sin of
-    the receive tilt) outside nominal.
-
-    WITH BOX == CAP == 150 (the module fallback, first arm): the A-box trips at
-    the cap edge, chaining worked below ~146 mm and was REFUSED at 150 — the
-    original limitation, kept pinned because a standalone/no-config sequencer
-    still behaves this way.
-
-    WITH THE SHIPPED BOX (toss_workspace_xy_mm = 160 > cap × 1.03, second arm):
-    the parked centroid sits INSIDE the box, so degenerate and short-hop chain
-    goals are ADMITTED — the limitation is dissolved by the box/cap separation,
-    not by a frame decision. Back-to-centre still refuses on the |B−A| CAP,
-    which is correct: 153.10 mm is a genuinely requested displacement past the
-    cap, and the remedy (raise toss_max_displacement_mm, or one go_home) is the
-    operator's. The centroid-vs-cup frame question itself (A is read as a
-    centroid, compute_release_state_tilted consumes it as the CUP xy) remains
-    open on single-ball-toss Phase E but no longer gates chaining."""
-    parked_centroid_x = -153.10     # measured, not assumed
-    seq = _fresh_8b(pose=next_b, throw_site=(parked_centroid_x, 0.0),
-                    flight_time_s=0.80)
-    d = seq.step(0.0, _obs(0.0))
-    assert d.done and d.result is not None
-    assert base_outcome(d.result.outcome) in ('REJECTED_WORKSPACE',
-                                              'REJECTED_DISPLACEMENT')
-    # The SAME goal from the nominal (cup) site is accepted at the fallback box
-    # — which is what made this a frame divergence rather than a cap that was
-    # simply too low.
-    ok = _fresh_8b(pose=next_b, throw_site=(-150.0, 0.0), flight_time_s=0.80)
-    d_ok = ok.step(0.0, _obs(0.0))
-    assert d_ok.phase == PHASE_POSITIONING and d_ok.action == ACTION_POSITION_PLATFORM
-    # The resolution arm: the shipped YAML box admits the chain goals the
-    # fallback refused, and leaves the cap verdict standing where the request
-    # really does exceed the cap.
-    import jugglebot.hardware_config as hw
-    shipped = _fresh_8b(pose=next_b, throw_site=(parked_centroid_x, 0.0),
-                        flight_time_s=0.80,
-                        workspace_xy_mm=float(hw.JB_OP_TOSS_WORKSPACE_XY_MM))
-    d_s = shipped.step(0.0, _obs(0.0))
-    if box_160_outcome == 'ACCEPTED':
-        assert (d_s.phase == PHASE_POSITIONING
-                and d_s.action == ACTION_POSITION_PLATFORM)
-    else:
-        assert d_s.done and base_outcome(d_s.result.outcome) == box_160_outcome
 
 
 def test_reach_displacement_limit_closed_form():
     """The closed-form quintic reach bound (module session limits): d_max =
     min(vel·T/1.875, acc·T²/5.7735, jerk·T³/60). Spot values pinned.
 
-    At the OLD 70 mm cap the jerk term (≥ 83.2 mm at T = 0.55 s) always exceeded
-    the cap, so this bound never bound. At the Phase-E 150 mm cap it is LIVE and
-    is the binding gate below T ≈ 0.669 s — pinned here so a silent change to
-    either the factors or the session limits shows up as the flight-band shift
-    it would really be."""
+    Since 2026-08-29 this is the SOLE pre-throw |B−A| gate — the flat
+    ``toss_max_displacement_mm`` cap that used to sit beside it (and against
+    which this bound's crossover was pinned) is deleted. So these spot values are
+    no longer "the other gate"; they ARE the gate, and a silent change to either
+    the peak factors or the fallback session limits shows up as the change in
+    admitted flight band it would really be.
+
+    The jerk term binds across the working flights, which is why it is the term
+    the refusal usually names and why a longer flight is the cheap remedy — the
+    bound grows as T³ on jerk and only as T on velocity. It does NOT bind
+    everywhere, and the handover is pinned below: with the cap gone this is the
+    only remaining structure in the gate, so it is worth stating exactly."""
     assert reach_displacement_limit_mm(0.55) == pytest.approx(83.19, abs=0.1)
     assert reach_displacement_limit_mm(0.60) == pytest.approx(108.0, abs=0.1)
     assert reach_displacement_limit_mm(0.80) == pytest.approx(256.0, abs=0.5)
-    # The cap is NOT unconditionally slack any more: it binds only above the
-    # crossover T = (60·cap/jerk)^(1/3) = 0.669 s.
-    assert reach_displacement_limit_mm(0.55) < TOSS_MAX_DISPLACEMENT_MM
-    assert reach_displacement_limit_mm(0.80) > TOSS_MAX_DISPLACEMENT_MM
-    crossover = (60.0 * TOSS_MAX_DISPLACEMENT_MM / 30000.0) ** (1.0 / 3.0)
-    assert crossover == pytest.approx(0.669, abs=0.001)
-    assert reach_displacement_limit_mm(crossover) == pytest.approx(
-        TOSS_MAX_DISPLACEMENT_MM, abs=1e-6)
+    # The T³ jerk scaling, as a relation rather than more spot values — doubling
+    # the flight is an eightfold reach, WHILE JERK BINDS.
+    assert reach_displacement_limit_mm(0.80) == pytest.approx(
+        8.0 * reach_displacement_limit_mm(0.40), rel=1e-9)
+    assert reach_displacement_bound(0.40)[1] == 'jerk'
+    assert reach_displacement_bound(0.80)[1] == 'jerk'
+    # …and it stops binding at T = sqrt(vel·60/(jerk·1.875)) = 1.033 s, above
+    # which VELOCITY is the binding peak and the T³ intuition is simply wrong.
+    # At the top of the flight band (1.10 s) the machine is already past it, so
+    # an operator lengthening the flight to buy reach up there gets T, not T³.
+    handover = math.sqrt(1000.0 * 60.0 / (30000.0 * 1.875))
+    assert handover == pytest.approx(1.033, abs=0.001)
+    assert reach_displacement_bound(handover - 0.01)[1] == 'jerk'
+    assert reach_displacement_bound(handover + 0.01)[1] == 'vel'
+    assert reach_displacement_limit_mm(1.10) == pytest.approx(586.67, abs=0.1)
 
 
 def test_reach_bound_prefers_live_session_limits():
@@ -2012,42 +1981,15 @@ def test_reach_bound_prefers_live_session_limits():
     assert '[default limits 1000*/5000*/30000*]' in default_msg, default_msg
 
 
-def test_workspace_box_is_ctor_config():
-    """The ±workspace box is a ctor value the node resolves from YAML
-    (toss_workspace_xy_mm → hw.JB_OP_TOSS_WORKSPACE_XY_MM), not a hardcoded
-    constant (2026-08-14 — it was the hardcoded ±150, which made raising the
-    displacement cap past 150 inert: REJECTED_WORKSPACE caught the same goal
-    one line later). The module literal is only the no-config fallback, and
-    both the B-box and the 8b A-box read the SAME ctor value."""
-    # B-box, Tier 8a: 180 mm is outside the 150 fallback, inside a 200 box.
-    ref = _fresh(catch_pose_stow_mm=(180.0, 0.0, 170.0))
-    d_ref = ref.step(0.0, _obs(0.0))
-    assert d_ref.done and base_outcome(
-        d_ref.result.outcome) == 'REJECTED_WORKSPACE'
-    wide = _fresh(catch_pose_stow_mm=(180.0, 0.0, 170.0),
-                  workspace_xy_mm=200.0)
-    d_wide = wide.step(0.0, _obs(0.0))
-    assert (d_wide.phase == PHASE_POSITIONING
-            and d_wide.action == ACTION_POSITION_PLATFORM)
-    # A-box, Tier 8b: A = (155, 0) is outside the fallback box while |B−A| =
-    # 105 mm stays inside the cap and the T = 0.8 reach bound (256 mm), so the
-    # verdict isolates the A-box; the same goal passes with the wider box.
-    ref_a = _fresh_8b(pose=(50.0, 0.0, 170.0), throw_site=(155.0, 0.0))
-    d_a = ref_a.step(0.0, _obs(0.0))
-    assert d_a.done and base_outcome(d_a.result.outcome) == 'REJECTED_WORKSPACE'
-    wide_a = _fresh_8b(pose=(50.0, 0.0, 170.0), throw_site=(155.0, 0.0),
-                       workspace_xy_mm=200.0)
-    d_wa = wide_a.step(0.0, _obs(0.0))
-    assert (d_wa.phase == PHASE_POSITIONING
-            and d_wa.action == ACTION_POSITION_PLATFORM)
 
 
 def test_pose_unknown_rejected_before_every_displacement_gate():
     """REJECTED_POSE_UNKNOWN: an 8b goal whose throw site A could not be read
-    from the live commanded pose is refused BEFORE the cap, the reach bound and
-    the tilt clamp — all three are functions of |B − A| and are meaningless
-    without A. The goal below would trip the cap AND the clamp if A were
-    assumed to be the origin, and it still reads POSE_UNKNOWN."""
+    from the live commanded pose is refused BEFORE the reach bound and the tilt
+    clamp — both are functions of |B − A| and are meaningless without A. The goal
+    below would trip the BOUND (150 mm at T = 0.55, where the bound is 83.2) AND
+    the clamp if A were assumed to be the origin, and it still reads
+    POSE_UNKNOWN."""
     seq = _fresh_8b(pose=(150.0, 0.0, 170.0), throw_site=(0.0, 0.0),
                     flight_time_s=0.55, throw_site_known=False,
                     tilt_clamp_exceeded=True)
@@ -2067,21 +2009,6 @@ def test_pose_unknown_never_gates_tier_8a():
     assert d.phase == PHASE_POSITIONING and d.action == ACTION_POSITION_PLATFORM
 
 
-def test_max_displacement_is_ctor_resolved_not_the_module_constant():
-    """The cap is a ctor parameter (the node passes the config value); the
-    module constant is only the standalone default. A session that lowers it
-    must actually bind — otherwise a cautious operator's config edit would be
-    silently ignored."""
-    seq = _fresh_8b(pose=(100.0, 0.0, 170.0), throw_site=(0.0, 0.0),
-                    max_displacement_mm=70.0)
-    d = seq.step(0.0, _obs(0.0))
-    assert d.done and base_outcome(d.result.outcome) == 'REJECTED_DISPLACEMENT'
-    # The lowered CAP is what refused, and the message says so by naming it as
-    # the binding bound — the reach bound at T = 0.8 s is 256 mm and slack.
-    assert '> cap 70.0 mm [toss_max_displacement_mm]' in d.result.outcome
-    # …and the same goal passes at the shipped cap.
-    seq2 = _fresh_8b(pose=(100.0, 0.0, 170.0), throw_site=(0.0, 0.0))
-    assert seq2.step(0.0, _obs(0.0)).action == ACTION_POSITION_PLATFORM
 
 
 def test_tilt_clamp_rejected():
@@ -2089,7 +2016,7 @@ def test_tilt_clamp_rejected():
     ThrowTiltInfeasible raise onto tilt_clamp_exceeded; CHECKING mints the
     reject (a silently clamped aim lands short of B — the Rung-2a landing bias —
     so the toss refuses loudly rather than fly mis-aimed). Displacement within
-    the cap, so the clamp gate is what fires."""
+    the reach bound, so the clamp gate is what fires."""
     seq = _fresh_8b(pose=(50.0, 0.0, 170.0), throw_site=(0.0, 0.0),
                     tilt_clamp_exceeded=True)
     d = seq.step(0.0, _obs(0.0))
@@ -2141,12 +2068,76 @@ def test_tilt_clamp_rejects_in_tier_8a_too():
 
 
 def test_displacement_precedes_tilt_clamp():
-    """Gate order: the displacement cap is checked BEFORE the tilt clamp — a
-    goal that trips both reads REJECTED_DISPLACEMENT (the primary contract)."""
+    """Gate order: the reach bound is checked BEFORE the tilt clamp — a goal that
+    trips both reads REJECTED_DISPLACEMENT, because a reach the platform cannot
+    span is the more fundamental refusal (and a clamp-refused goal has no valid
+    tilted release state to measure anything else against)."""
     seq = _fresh_8b(pose=(100.0, 0.0, 170.0), throw_site=(0.0, 0.0),
                     flight_time_s=0.55, tilt_clamp_exceeded=True)
     d = seq.step(0.0, _obs(0.0))
     assert d.done and base_outcome(d.result.outcome) == 'REJECTED_DISPLACEMENT'
+
+
+def test_reach_verdict_rejects_position_with_the_planner_code_and_the_pose():
+    """The node-fed DEFERRED-REACH verdict (2026-08-29): a non-empty
+    ``reach_verdict`` mints ``REJECTED_POSITION(<planner code>: …)`` naming the
+    NOMINATED catch pose.
+
+    This is the only pre-throw gate that bounds B laterally under Tier 8b. The
+    positioning move commands the pre-tilt pose at the throw site A and the A→B
+    translation is deferred to ``t_release``, so ``go_to_pose`` never judges B;
+    without this the planner's refusal arrived mid-flight, ball airborne.
+
+    The FSM carries no copy of the planner — the verdict is fed exactly as
+    ``tilt_clamp_exceeded`` is, and for the same reason (``motion/`` owns the
+    math). What is pinned here is the TERMINAL: base code, subcode, and the
+    pose in the message."""
+    seq = _fresh_8b(pose=(250.0, 0.0, 170.0), throw_site=(0.0, 0.0),
+                    reach_verdict='WORKSPACE')
+    d = seq.step(0.0, _obs(0.0))
+    assert d.done
+    from jugglebot.outcome_detail import outcome_subcode
+    assert base_outcome(d.result.outcome) == 'REJECTED_POSITION'
+    assert outcome_subcode(d.result.outcome) == 'WORKSPACE', d.result.outcome
+    assert '250.0' in d.result.outcome, d.result.outcome
+    assert 'deferred A->B reach' in d.result.outcome, d.result.outcome
+    # A reject before anything moved or armed: no cleanup at all.
+    assert d.action == ACTION_NONE
+
+
+def test_an_empty_reach_verdict_does_not_reject():
+    """The silent case, pinned so the gate cannot become fail-closed by
+    accident: the node feeds ``''`` for a feasible reach, for Tier 8a (whose
+    positioning move commands B itself), and whenever there is no release state
+    to plan from. None of those may refuse."""
+    seq = _fresh_8b(pose=(70.0, 0.0, 170.0), throw_site=(0.0, 0.0))
+    assert seq.reach_verdict == ''
+    d = seq.step(0.0, _obs(0.0))
+    assert not (d.done and base_outcome(d.result.outcome) == 'REJECTED_POSITION')
+
+
+@pytest.mark.parametrize('kw,pose,flight,expect', [
+    # Every gate that names a KNOB wins over the reach verdict, which names the
+    # kinematics. A goal breaking both must route the operator to the number
+    # they can type, not to a leg-space refusal.
+    (dict(), (150.0, 0.0, 170.0), 0.60, 'REJECTED_DISPLACEMENT'),
+    (dict(tilt_clamp_exceeded=True), (70.0, 0.0, 170.0), 0.80,
+     'REJECTED_TILT_CLAMP'),
+    (dict(event_vel_mps=99.0), (70.0, 0.0, 170.0), 0.80, 'REJECTED_EVENT_VEL'),
+    (dict(), (70.0, 0.0, 300.0), 0.80, 'REJECTED_WORKSPACE'),
+])
+def test_every_knob_gate_precedes_the_reach_verdict(kw, pose, flight, expect):
+    """Gate order, pinned as a rule rather than as four accidents: the reach
+    verdict is LAST of the static CHECKING gates.
+
+    The z-band row is the one that caught this in review — a `z = 300 mm` goal
+    is refused by the reach plan too, and reporting that instead of
+    ``REJECTED_WORKSPACE(B.z … TOSS_Z_BAND_MM)`` sends an operator hunting
+    through kinematics for a constant they could have typed."""
+    seq = _fresh_8b(pose=pose, throw_site=(0.0, 0.0), flight_time_s=flight,
+                    reach_verdict='WORKSPACE', **kw)
+    d = seq.step(0.0, _obs(0.0))
+    assert d.done and base_outcome(d.result.outcome) == expect, d.result.outcome
 
 
 def test_reach_catch_emitted_once_time_triggered_at_release():

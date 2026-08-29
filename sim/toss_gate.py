@@ -277,11 +277,20 @@ _RING_8DIR = ((1.0, 0.0), (_R2, _R2), (0.0, 1.0), (-_R2, _R2),
 # ring, separated 10/10, landing error 4.9-32.4 mm — logbook 2026-06-30).
 _TOSS_8B_RING_MM = 50.0
 # Advisory displaced rings, extended 2026-07-29 (single-ball-toss Phase E) from
-# {70} to {70, 100, cap}: 70 = the bb Rung-2a clean-box edge and the OLD shipped
+# {70} to {70, 100, 150}: 70 = the bb Rung-2a clean-box edge and the OLD shipped
 # displacement cap (hardware-validated 11/11 at the 2026-07-27 T4 rungs), 100 and
-# 150 = the operator-ordered working range. The cap ring is read from the config
-# key so the gate and the shipped cap can never describe different machines.
-_TOSS_8B_CAP_RING_MM = float(hw.JB_OP_TOSS_MAX_DISPLACEMENT_MM)
+# 150 = the operator-ordered working range.
+#
+# The outer ring READ the shipped `toss_max_displacement_mm` config key until
+# 2026-08-29, so the gate and the cap could never describe different machines.
+# That key is gone (owner decision — the flat cap was policy, not physics; the
+# closed-form reach bound is the only surviving pre-throw |B−A| gate), so the
+# ring is a plain characterisation radius now. 150 mm is kept as the value the
+# hardware ladder was written around, and it stays ADVISORY: the catch RATE out
+# here is dominated by a release-noise magnitude that is still the Phase-5 T0
+# PLACEHOLDER, so gating on it would make the gate an artefact of an unmeasured
+# number. Override at the CLI with --advisory-rings.
+_TOSS_8B_CAP_RING_MM = 150.0
 _TOSS_8B_ADVISORY_RINGS_MM = (70.0, 100.0, _TOSS_8B_CAP_RING_MM)
 _TOSS_8B_FLIGHT_S = 0.80                    # the hardware band (§ 2.6 rules out <=0.61)
 # Directional-asymmetry MAP radii + flights (§ 3.2; non-gating). The 150 mm radius
@@ -1526,7 +1535,7 @@ def main(argv=None) -> int:
                         "pose (single-ball-toss Phase E); here it is swept.")
     p.add_argument('--advisory-rings', default=None,
                    help="Tier-8b ADVISORY ring radii, comma-separated mm "
-                        "(default 70,100,<toss_max_displacement_mm>).")
+                        "(default 70,100,150).")
     p.add_argument('--asymmetry-radii', default=None,
                    help="directional-asymmetry MAP radii, comma-separated mm "
                         "(default 70,100,150).")

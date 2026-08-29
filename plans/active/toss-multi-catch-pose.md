@@ -15,8 +15,6 @@ related_logbook:
   - 2026-08-27-aimed-reach-pretilt.md
   - 2026-08-26-possession-verdicts-become-sensor-only.md
 related_config:
-  - config/hardware_config.yaml → jugglebot_operational.toss_workspace_xy_mm (160)
-  - config/hardware_config.yaml → jugglebot_operational.toss_max_displacement_mm (150)
   - config/hardware_config.yaml → jugglebot_operational.toss_session_max_throws (20)
   - config/hardware_config.yaml → trajectory_op.lean_gain (0.6)
   - config/hardware_config.yaml → trajectory_op.min_move_duration_s (0.20)
@@ -304,10 +302,12 @@ than hoped away:
 _execute_toss_continuous
   │  catch_pose = (req.catch_position.x, .y, .z)      ← read ONCE, closed over
   │
-  ├─ accept: _predicted_chain_site_mm(catch_pose, flight)  ← ONE hop, num_throws>=2
-  │            ⇒ chain_site_reachable  ⇒ REJECTED_CHAIN_UNREACHABLE
+  │  (an accept-time _predicted_chain_site_mm hop fed a chain_site_reachable
+  │   bool ⇒ REJECTED_CHAIN_UNREACHABLE here until 2026-08-29; it went with
+  │   the lateral planning box whose cycle-2 refusal it pre-empted. The
+  │   predictor stays — a STAGED cycle nominates its throw site from it.)
   │
-  ├─ TossSessionSequencer(..., chain_site_reachable=<one bool>, pipelined=True)
+  ├─ TossSessionSequencer(..., pipelined=True)
   │       required_dwell_s = max(commit_budget_s(v) + handoff_margin_s,
   │                              hand_floor_dwell_s)         ← ONE number
   │
@@ -334,10 +334,10 @@ _execute_toss_continuous
   │     for every leg i, from EVERY A it can be entered from (§ 2.6):
   │       nominal A_i (predicted park of leg i−1), B_i itself (the REPEAT
   │       case Q-2 creates), and home (the interlude re-entry)
-  │       · |B| inside the ±160 mm box and the ±50 mm z band
-  │       · |B − A| inside min(150 mm, reach_displacement_limit_mm(T))
+  │       · |B.z − 170| inside the ±50 mm z band  (±xy box GONE 2026-08-29)
+  │       · |B − A| inside reach_displacement_limit_mm(T)
   │       · the aim tilt inside MAX_TILT_DEG (ThrowTiltInfeasible ⇒ refuse)
-  │       · |A| inside the box
+  │       · the walk can PREDICT each A_k at all (None ⇒ refuse, fail-closed)
   │       · the leg's OWN dwell floor (§ 2.7) against the commanded dwell
   │     ⇒ REJECTED_CHAIN_UNREACHABLE / _DISPLACEMENT / _TILT_CLAMP / _DWELL,
   │       each naming the LEG and the ENTRY it failed from
@@ -425,9 +425,9 @@ Every consumer of "the catch pose", and what each becomes:
 | `catch/reach_center` declaration | **once per session** (`_arm_session_declare`'s `if self._toss_session_center_mm is not None: return`) | **once per cycle** — `_declare_cycle_center(B_k)`, on the verified-arrival tick |
 | `arm_catch(True)` | **once per session** (`_arm_session`'s `if self._toss_session_armed: return True`) | once per session **plus** a redundant raise per cycle whose only effect is the centre re-capture (§ 2.5) |
 | `_toss_session_center_drift_mm` | `|B − the session centre|` | `|B_k − the APPLIED centre|` (R2) |
-| `_predicted_chain_site_mm` (accept gate) | one hop, at accept | the whole walk, `_toss_cycle_graph` (§ 2.6) |
+| `_predicted_chain_site_mm` (accept gate) | **none** — the one-hop accept gate was deleted 2026-08-29 with the planning box it was keyed on | the whole walk, `_toss_cycle_graph` (§ 2.6), re-minted on the *unpredictable-park* premise (§ 9.2) |
 | `_predicted_chain_site_mm` (**staged nomination**, `reload_coordinator_node._build_toss_cycle`) | fed the cycle's **OWN** `catch_pose`. Correct for a fixed-B session, where "the pose I will catch at" and "the pose the PREVIOUS cycle left me at" are the same pose, so the two readings are indistinguishable | must be fed the **PREVIOUS** leg's pose — `_predicted_chain_site_mm(ring[pose_index(k−1)], flight)`. Under a ring the current feed is **off by one hop** (it predicts the park *after* this cycle's catch, which is where the platform goes NEXT, not where it throws from). At `n = 2` that one hop is a full ring leg — 142 mm, sign-flipped — so the nomination wears exactly the pre-fix stale-site defect's signature: a throw site the platform is not at, with the commit belt the only thing between it and a ball on the floor, firing **once per cycle** as `REJECTED_SITE_MOVED` |
-| `TossSessionSequencer.chain_site_reachable` | one bool | a per-leg verdict list; the refusal names the leg |
+| `TossSessionSequencer.chain_site_reachable` | **deleted 2026-08-29** (with `chain_site_xy_mm` / `chain_box_xy_mm`) | re-introduced as a per-leg verdict list; the refusal names the leg |
 | `required_dwell_s` | one number | per-leg (§ 2.7) |
 | toss record `goal_catch_xyz_stow_mm` | constant across a session | varies; joined by two additive fields, `pose_index` and `ring_len` |
 
@@ -543,10 +543,8 @@ refusal at runtime name the same thing:
 | `A_k` known | tier 8b needs a fresh `trajectory/commanded_position` for hop 0 only; later hops use the predicted park | `REJECTED_POSE_UNKNOWN` |
 | **the walk's prediction itself** | `_predicted_chain_site_mm` returns `None` at hop `i` (an infeasible aim from that `A`, or a catch-policy refusal) — the gate cannot say where the platform will be, so it refuses. It is **never** treated as "no move needed" / SKIPPED: an unknown park is fail-closed at accept exactly as it is fail-safe-to-serial at runtime | `REJECTED_CHAIN_UNREACHABLE(leg i)` |
 | aim tilt | `MAX_TILT_DEG` = 12° (`ThrowTiltInfeasible`) | `REJECTED_TILT_CLAMP(leg i)` |
-| `|B − A|` | `min(toss_max_displacement_mm 150, reach_displacement_limit_mm(T))` | `REJECTED_DISPLACEMENT(leg i)` |
-| `|B.x|, |B.y|` | `toss_workspace_xy_mm` = 160 | `REJECTED_WORKSPACE(leg i)` |
+| `|B − A|` | `reach_displacement_limit_mm(T)` — the SOLE bound since 2026-08-29 | `REJECTED_DISPLACEMENT(leg i)` |
 | `|B.z − 170|` | `TOSS_Z_BAND_MM` = 50 | `REJECTED_WORKSPACE(leg i)` |
-| `|A_k.x|, |A_k.y|` | 160 | `REJECTED_CHAIN_UNREACHABLE(leg i)` |
 | the leg's own dwell floor | § 2.7 | `REJECTED_DWELL(leg i)` |
 
 **No drift allowance is added at accept**, and that is a decision rather than an
@@ -559,9 +557,14 @@ absorb (§ 1.6, § 6.4).
 
 `reach_displacement_limit_mm` is worth one caution the plan must carry into the
 ladder: it is jerk-bound and **conservative below `T ≈ 0.75 s`, optimistic above
-it** (256 mm at `T = 0.80` against a 150 mm cap). At the milestone heights the
-cap binds, so the closed form is not the active bound — but a future short-flight
-ring would find the opposite, and the gate must keep taking the `min`.
+it** (256 mm at `T = 0.80`). ⚠ **RE-POINTED 2026-08-29**: this read "against a
+150 mm cap… at the milestone heights the cap binds, so the closed form is not the
+active bound", and the gate took a `min` of the two. The cap is deleted, so the
+closed form is now the ONLY bound at every height — including the milestone ones,
+where it is the OPTIMISTIC side of that asymmetry. A ring leg that plans but does
+not fly is therefore a live possibility at long flights and the walk cannot
+pre-empt it. That residual is the owner's accepted cost of the deletion; the
+ladder should treat each long-flight leg's first fly as informative.
 
 ### 2.7 The floor re-derivation — per leg
 
@@ -876,8 +879,10 @@ The compatibility rule, and the sentinel argument behind it:
 
 **Scope — the cycle graph.** `_toss_cycle_graph(ring, flight, num_throws)`
 implements § 2.6, sharing one walk implementation with M0's probe. It returns a
-per-leg verdict list; `TossSessionSequencer.chain_site_reachable` becomes that
-list, and `_checking_reject` mints the leg-named refusal.
+per-leg verdict list; `TossSessionSequencer.chain_site_reachable` is
+RE-INTRODUCED as that list (the scalar bool and its two companion fields were
+deleted 2026-08-29 — see § 9.2), and `_checking_reject` mints the leg-named
+refusal.
 
 **Scope — the honest budget.** `pre_dispatch_budget_s`'s arrival term becomes
 `toss_position_move_budget_s + TOSS_POSITION_SETTLE_PAD_S`, with the new key
@@ -1351,7 +1356,7 @@ escape before the first ring sitting.
   absorbed here. The recorder omission is the cheapest of the three and is the
   one most likely to cost a re-fly.
 * **Relaxing any floor or any envelope.** `reach_envelope_mm`,
-  `toss_max_displacement_mm`, `_TOSS_SESSION_REACH_DRIFT_TOL_MM`,
+  `_TOSS_SESSION_REACH_DRIFT_TOL_MM`,
   `MAX_TILT_DEG`, `hand_floor_dwell_s`, `handoff_margin_s` and
   `CATCH_CONFIRM_WINDOW_S` are unchanged. The one budget that **rises** is
   `pre_dispatch_budget_s(True)`, and it rises because it was under-charging.
@@ -1531,8 +1536,20 @@ the resolutions:**
 
 * **The ring is walked at accept, not discovered at runtime**, because the
   failure it prevents is a cycle refused *after* the previous ball was thrown and
-  caught. `REJECTED_CHAIN_UNREACHABLE`'s own error text already makes that
-  argument for one hop; the walk makes it for all of them.
+  caught. The single-hop `REJECTED_CHAIN_UNREACHABLE` gate made that argument
+  first; the walk makes it for all hops.
+
+  ⚠ **THE CODE HAS TO BE RE-MINTED, ON A NEW PREMISE (2026-08-29).** That gate
+  was deleted along with the lateral planning box it was keyed on — with the box
+  gone a chained cycle had no A-side refusal left to pre-empt, and re-keying it
+  on the reach bound would have produced a gate that can never fire (the chained
+  residual is ~2 % of |B|, under 3.2 mm, against a bound of 83 mm or more that
+  cycle 1 has already cleared). This plan's use is DIFFERENT and survives that
+  reasoning: here the code refuses a hop whose park cannot be **predicted at
+  all** (`_predicted_chain_site_mm` returns `None` — an infeasible aim or a
+  catch-policy refusal at that `A`), which is a fail-closed condition rather
+  than a threshold. Re-introduce it on that premise only; do not resurrect a
+  box.
 * **The declaration is per cycle because the envelope's lifetime is scoped to
   the raise it feeds.** That is the root cause B3 identified when it hoisted the
   declaration to session scope, and it is the same root cause that says a
