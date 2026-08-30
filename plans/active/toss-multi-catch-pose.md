@@ -3,7 +3,9 @@ title: Multi-pose catch cycling — a TossContinuous session that walks a ring o
 created: 2026-08-28
 status: proposed   # out of DOCUMENTATION_GUIDE 2.6's active|completed|superseded vocabulary, used
                    # deliberately for a document nobody has approved yet (the convention
-                   # `leg-bus-frame-drops.md` established); promote to `active` on approval
+                   # `leg-bus-frame-drops.md` established); promote to `active` on approval.
+                   # 2026-08-30 — HALTED at the pre-M2 boundary (owner decision 2026-08-29): superseded
+                   # outright by plans/active/unified-7dof-planner.md; M2-M6 never run. Archival pending.
 owner: Harrison
 last_updated: 2026-08-28
 related_plan: toss-pipelined-preamble.md

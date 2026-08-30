@@ -2,8 +2,9 @@
 title: Unified whole-cycle 7-DoF motion planner (Scope B)
 created: 2026-08-29
 status: proposed   # 2026-08-29 — owner-commissioned (Scope B chosen over carry-only Scope A the same day);
-                   # promote to active when toss-multi-catch-pose M2 has landed cleanly (owner gate) and the
-                   # Phase 0 probe decisions are recorded.
+                   # promote to active when the Phase 0 probe results are recorded. The original MP-M2 gate
+                   # DISSOLVED later the same day: the owner halted toss-multi-catch-pose at the pre-M2
+                   # boundary (stop clean, no reverts) — see § 1 relationship table.
 owner: Harrison
 related_plan: toss-multi-catch-pose.md
 related_code:
@@ -43,10 +44,10 @@ Consequences, all measured or documented in-tree:
    perspective" means keeping apparent gravity (`g − a_cup`) aligned with the
    cup axis and bounded; that couples platform tilt to the translational
    acceleration of platform-plus-hand and cannot be stated across two planners.
-   The only approximation is the `LeanShaper` heuristic — which
-   `toss-multi-catch-pose.md` M2 turns OFF on the pre-tilt move for cadence
-   (0.28–0.35 s), trading seating quality for speed because the split
-   architecture offers no third option.
+   The only approximation is the `LeanShaper` heuristic — which the now-halted
+   `toss-multi-catch-pose.md` M2 *would have* turned OFF on the pre-tilt move
+   for cadence (a measured 0.28–0.35 s cost), trading seating quality for
+   speed because the split architecture offers no third option.
 2. **The carry exists physically but is planned as nothing.** After a CAUGHT
    the sequencer's terminal is `ACTION_STAY`; the next cycle's POSITIONING
    `go_to_pose` carries the seated ball to the next pre-tilt pose while the
@@ -83,19 +84,47 @@ Owner decisions recorded 2026-08-29 (conversation, this plan's commissioning):
 - **The z = 170 mm centroid pin stays the default.** The planner supports the
   platform centroid deviating from z = 170 (`unified_z_float_enabled`), but it
   ships **off**; when off, `realize` pins z exactly as today.
-- **Sequencing**: after `toss-multi-catch-pose.md` M2 lands cleanly; **before**
-  the `critical-point-ilc.md` build ladder. Rationale: ILC's `e_model` is by
+- **Sequencing**: **before** the `critical-point-ilc.md` build ladder; MP was
+  halted at the pre-M2 boundary the same day (see below), so nothing else
+  gates the start. Rationale: ILC's `e_model` is by
   design a call into the production planning chain
   (`tests/hardware/ilc_fit_lib.py` design constraint 1); Scope B replaces that
   chain's launch mechanism, so a corpus and sensitivities learned on the
   stroke-engine plant would be invalidated. ILC re-targets the unified chain
   and re-captures its corpus after Phase 5 (§ 6, ILC hand-off).
 
+Architectural resolutions recorded 2026-08-29 (owner, multiple-choice review —
+each is binding on the phases below):
+
+1. **Catch runway**: deceleration runway is a hard planner constraint (the
+   catch knot must leave `≥ v_cup²/(2·a_hand_max)` of slider stroke below it,
+   plus margin), and the **sim acceptance authority is the kinematic-capture
+   gate** (toss_gate style); MuJoCo contact runs advisory-only; the hardware
+   ladder is the seating authority. This resolves the Rung-3 blocker by
+   construction (§ 4, Phase 1).
+2. **MP wind-down**: `toss-multi-catch-pose` stops clean at the pre-M2
+   boundary, no reverts; ring-specific landed work stays unexercised; the plan
+   archives as superseded by this one (relationship table below).
+3. **Planner API**: event-timeline — the planner takes an ordered list of
+   throw/catch events over a horizon window; v1 callers pass exactly one
+   throw + one catch (§ 4, Phase 1).
+4. **Replan policy**: plan at cycle commit + bounded catch-side replans on
+   tracker updates; the next throw's boundary conditions stay fixed (§ 4,
+   Phase 4). No receding-horizon loop.
+5. **Wire velocities**: the v6 `Setpoint` carries exact segment-end
+   velocities (`v1`, all 7 channels) behind a `HAS_V1` flag — decided now
+   because the version bump is already being paid and a retrofit would cost a
+   second lockstep flash (§ 2.3).
+6. **Phase 6 trigger**: the stroke-engine retirement fires when the Phase 5
+   UH ladder completes — no separate parity campaign; the ladder's own
+   acceptance (including T-H6 outcome parity at the matched low tier) is the
+   evidence base. Rollback images stay named artifacts (§ 4, Phase 6).
+
 ### Relationship to existing plans
 
 | Plan | Relationship |
 |---|---|
-| `toss-multi-catch-pose.md` | Prerequisite (M2 landed cleanly) and **superseded in its § 7 non-goal**: the deferred "constant-beat fast path" is exactly what a whole-cycle planner provides natively. The § 7 unlock conditions (MP-M5 seating evidence, aim-authority re-derivation vs `MAX_TILT_DEG = 12°`) transfer to Phase 5 acceptance here. |
+| `toss-multi-catch-pose.md` | **SUPERSEDED OUTRIGHT (owner, 2026-08-29): MP halted at the pre-M2 boundary** — stop clean, no reverts; general-correctness fixes from the 2026-08-29 waves stay (they serve every legacy sitting until Phase 6), ring-specific landed work stays unexercised, M2–M6 never run. The plan archives as superseded by this one once the wave-2 commit lands. Its § 7 constant-beat lever and its M3/M4 machinery are provided natively here; MP-M5's carry-seating observation re-homes to Phase 5 (T-H5); the § 7 unlock conditions (aim-authority re-derivation vs `MAX_TILT_DEG = 12°`) transfer to Phase 5 acceptance. |
 | `mvp-trajectory-bringup.md` | This plan becomes the vehicle for its Phase 8/9 stretch goals (self-toss loop, two-ball). |
 | `bb-online-juggle-tilt-rearchitecture.md` Rung 3 | Sim-side twin. Its P2 attempt (2026-07-03, ~35 probes) BLOCKED on "the slam is the seat's runway" — every cleanup of the whole-cycle sim catch dropped MAKE to 0/12. **Phase 1 must answer that failure in sim before any hardware phase starts** (§ 4, Phase 1 acceptance). |
 | `critical-point-ilc.md` | Sequenced after this plan (owner). Its Phases 0–2 substrate (records, miner, gates) survives; the fit corpus, `SIGMA_E`, cell keys and the speed-authority band do not — re-capture on the unified plant. |
@@ -140,7 +169,7 @@ trajectory_node: CyclePlan (7-channel, one clock) installed like any plan
   40 Hz emitter: legs as today + hand_rev/hand_vel/hand lookahead keys
       │ ZMQ :5557
       ▼
-teensy_bridge_node: SetpointPump (7-channel) → UDP Setpoint v6 (180 B, HAS_HAND flag)
+teensy_bridge_node: SetpointPump (7-channel) → UDP Setpoint v6 (208 B, HAS_HAND/HAS_V1 flags)
       ▼
 can-bridge Teensy FW 17: 500 Hz Hermite ×7 → 6× leg set_input_pos + 1× hand set_input_pos (0x0CC)
   [legs: unchanged guards]  [hand: MAX_DEVIATION_HAND_REV, clip [0, 10.8] rev, hand lead clamp]
@@ -159,9 +188,14 @@ cache RETIRED.  RETAINED: 0x6E0 cold-start state + FW identity, SCL3300 inclinom
 **UDP `Setpoint` v6** (`config/generate_udp_protocol.py`): all six f32 arrays
 widen 6 → 7 (index 6 = hand, ODrive-convention absolute rev, **no sign flip**,
 hand wire scales 100/100 vs leg 1000/10000 — `odrive_protocol.h::
-encode_leg_setpoint` already handles axis 6 correctly). `SETPOINT_SIZE`
-156 → 180. New flag bit 2 `HAS_HAND`; when clear the firmware ignores index 6
-and emits no hand frame. **This is an incompatible wire change ⇒
+encode_leg_setpoint` already handles axis 6 correctly), **plus a new `v1`
+f32[7] array — the exact velocity at the u1 knot — behind flag bit 3
+`HAS_V1`** (owner, 2026-08-29). With `v1` carried, the 500 Hz Hermite
+reconstruction is exact for piecewise-cubic plans on every channel; the
+firmware's `v1 = (u2 − u1)/SEG_T` forward difference remains the fallback
+when the flag is clear. `SETPOINT_SIZE` 156 → 208 (49 f32 + u32 + u64). New
+flag bit 2 `HAS_HAND`; when clear the firmware ignores index 6 and emits no
+hand frame. **This is an incompatible wire change ⇒
 `PROTOCOL_VERSION` 5 → 6 ⇒ total link darkness against any board not flashed
 in lockstep** (`decode_frame` hard-rejects on version). The additive-MsgType
 alternative (a parallel `HandSetpoint` frame) is rejected: two frames per knot
@@ -170,20 +204,30 @@ torn-latch class the single-frame widening removes by construction.
 
 **ZMQ `mpc_cmd` dict** (`motion/ipc.py::make_mpc_command`): leg arrays stay
 6-wide (so `motor_guard.py`'s `shape == (6,)` asserts and
-`controller/hardware_plant.py` stay untouched and decodable). New optional
-scalar keys:
+`controller/hardware_plant.py` stay untouched and decodable). New optional keys:
 
 ```python
 {
   # ... existing 6-wide keys unchanged ...
-  'hand_rev':       9.9594,   # ODrive absolute rev, u0 for the hand lane
-  'hand_vel_rps':   -12.4,    # rev/s, v0
-  'hand_next_rev':  9.71,     # u1
-  'hand_next2_rev': 9.32,     # u2
+  'vel_next_mm_s':     [...],   # 6-wide leg extension rates at the u1 knot → v1[0:6]
+  'hand_rev':          9.9594,  # ODrive absolute rev, u0 for the hand lane
+  'hand_vel_rps':      -12.4,   # rev/s, v0
+  'hand_next_rev':     9.71,    # u1
+  'hand_next2_rev':    9.32,    # u2
+  'hand_next_vel_rps': -9.8,    # rev/s at the u1 knot → v1[6]
 }
 ```
 
-All four absent ⇒ pump clears `HAS_HAND` ⇒ behaviour identical to today.
+Hand keys absent ⇒ pump clears `HAS_HAND`; `vel_next` keys absent ⇒ pump
+clears `HAS_V1` ⇒ behaviour identical to today. `HAS_V1` requires every
+active channel's v1 (`vel_next_mm_s` always; `hand_next_vel_rps` whenever
+the hand keys are present) — a partial set **rejects the frame** loudly, per
+the NaN-reject precedent in T-U7. When emitting a `CyclePlan` (unified mode)
+the emitter supplies leg `vel_next_mm_s` from a `twist_to_leg_velocities`
+call at τ+dt on the Jacobian `_ik(pose1)` already computes — one extra
+matrix-vector product per tick; legacy plans emit no `vel_next` keys, so
+`HAS_V1` stays clear and the firmware fallback is the flown path until
+Phase 4.
 
 ### 2.4 The `hand_source` interlock (firmware)
 
@@ -219,9 +263,9 @@ mode; ball tracking, possession verdicts, `outcome_detail` discipline.
 | 5 | Hardware ladder: streamed hold → banked carry (ball seated) → planned catch → planned throw (low tier) → full cycles → two-pose constant beat | NOT STARTED | | High | Ball-smooth carry and the planned launch on hardware |
 | 6 | Exclusivity + close-out: Platform Teensy FW 4 stroke retirement, host RPC retirement, contract doc, ILC hand-off, docs | NOT STARTED | | Medium | Single-master end state |
 
-Phases 0–2 are software-only and can proceed while `toss-multi-catch-pose`
-M3+ hardware work continues on the legacy path. Phase 3 onward requires the
-owner's promotion of this plan to `active`.
+Phase 0 runs while this plan is `proposed` — its recorded results are the
+promotion gate (the MP-M2 gate dissolved 2026-08-29 with the MP halt).
+Phases 1–2 are software-only. Phase 3 onward requires `active`.
 
 ## 4. Implementation Phases (detailed)
 
@@ -245,14 +289,12 @@ owner's promotion of this plan to `active`.
    (the `run_mpc.py` pattern) — record the decision either way.
 2. **Hermite stroke-fidelity probe.** The planner's 0.025 s jerk grid aligns
    1:1 with the wire knot grid, so the cup plan is piecewise-cubic on exactly
-   the firmware's segment boundaries — cubic Hermite reconstruction would be
-   exact but for the firmware deriving the segment-end velocity as
-   `v1 = (u2 − u1)/SEG_T` (forward difference, `leg_interp.cpp` Mode 1).
-   Quantify the hand-position and release-velocity error of that
-   reconstruction against the closed-form stroke at `event_vel` 3–7 m/s.
-   Acceptance: release-velocity error < 1 % at 7 m/s, else the knot content
-   for high-jerk segments needs shaping (denser effective knots via u1/u2
-   choice) and Phase 1 carries that requirement.
+   the firmware's segment boundaries, and the v1-carriage decision (§ 2.3)
+   makes reconstruction exact by design. The probe therefore (a) verifies
+   the v1-exact reconstruction end-to-end against the closed-form stroke at
+   `event_vel` 3–7 m/s (expected: exact to float precision), and (b) records
+   the legacy `v1 = (u2 − u1)/SEG_T` forward-difference error for the record
+   (the `HAS_V1`-clear fallback path). No wire-design go/no-go remains here.
 3. **Bus headroom + frame-drop A/B.** On the bench, a `BENCH`-guarded firmware
    variant emits a 7th (hand, current-position-hold) frame in the burst.
    Measure: `PROFILE` `can1_util_x100`, `tx_deferred`/`tx_q_hwm` (must stay 0),
@@ -282,9 +324,18 @@ four decisions with the (date, command, result) triples.
 Python, numpy-only, `from __future__ import annotations`, Python 3.8):
 
 - `cup_cycle.py` — the QP port of `sim/juggle_planner/juggle_planner.py::
-  plan_cup_cycle` per the Phase 0 decision. Same inputs/outputs
-  (`CupCyclePlan`: pos/vel/acc knots + jerk + `catch_k` + `takeoff_vel`), same
-  constraint set, warm-startable from the previous cycle.
+  plan_cup_cycle` per the Phase 0 decision, with an **event-timeline API**
+  (owner, 2026-08-29): `plan_window(events, state0, cfg)` takes an ordered
+  list of throw/catch events (ball id, time, site, velocity/target) over a
+  horizon window — v1 callers always pass exactly one throw + one catch, so
+  parity with `plan_cup_cycle` is asserted on that case and 3-ball later
+  becomes data, not an interface rewrite. Same trajectory outputs
+  (`CupCyclePlan`: pos/vel/acc knots + jerk + `catch_k` + `takeoff_vel`),
+  same constraint set plus one addition: **the catch-runway hard constraint**
+  (owner, 2026-08-29) — the catch knot must leave
+  `≥ v_cup²/(2·a_hand_max)` of slider stroke below it, plus margin, so
+  deceleration room is planned rather than obtained by ceiling overshoot.
+  Warm-startable from the previous cycle.
 - `cup_realize.py` — stage 2 + 3. `tilt_schedule(cup_plan, receive_tilt,
   throw_tilt)`: banking from apparent gravity — the cup axis tracks
   `normalize(g − a_cup(t))`, saturated at `tilt_geometry.MAX_TILT_DEG` (12°),
@@ -319,24 +370,30 @@ Python, numpy-only, `from __future__ import annotations`, Python 3.8):
 `realize`-equivalent decomposition with **banking enabled** (the sim's level-
 platform `realize_tilted` pins z and rz; the port must reproduce its output
 bit-comparably at zero banking, then improve on it with banking on).
-**Acceptance includes the Rung-3 question**: the whole-cycle plan must produce
-a catch whose downward runway is *planned* (catch height and post-catch
-deceleration chosen by the optimizer inside the z-box) rather than obtained by
-overshooting to the ceiling — demonstrated by ≥ 10/12 MAKE on the Rung-3
-harness seeds without the slam, or a written analysis of why the sim-contact
-fidelity (not the plan) is the residual blocker (hardware catches are
-already smooth; the sim gate must not over-fit to MuJoCo contact).
+**Acceptance (owner, 2026-08-29 — resolves the Rung-3 collision):** the sim
+authority is the **toss_gate-style kinematic capture model**. The whole-cycle
+set must pass the kinematic-capture gate (`core_clean`-equivalent bands) with
+the runway constraint active and no ceiling-overshoot slam anywhere in the
+planned trajectory; **MuJoCo contact runs advisory-only** (reported, never
+gating). Grounds: `sim/toss_gate.py` already deliberately avoids MuJoCo
+contact as the low-fidelity element, hardware catches are already smooth
+(bench fact), and the Rung-3 P2 failure was a fragile equilibrium of exactly
+that contact model. The hardware ladder (Phase 5) is the seating authority.
 
 **Dependencies:** Phase 0 decisions 1 and 2.
 
 ### Phase 2: Wire v6 + host 7-channel path — NOT STARTED
 
-**Modified files:** `config/generate_udp_protocol.py` (Setpoint 6 → 7,
-`HAS_HAND` bit 2, `PROTOCOL_VERSION` 5 → 6) + regenerated
+**Modified files:** `config/generate_udp_protocol.py` (Setpoint 6 → 7 plus
+the `v1` f32[7] array, `HAS_HAND` bit 2, `HAS_V1` bit 3,
+`SETPOINT_SIZE` 208, `PROTOCOL_VERSION` 5 → 6) + regenerated
 `config/generated/udp_protocol.py` / `.h`; `teensy_link/setpoint_pump.py`
 (7-channel: per-channel `max_step_rev` — leg 0.3 rev, hand from Phase 0;
-`_finite_vec` widths; hand keys → index 6; `torque_ff[6] = 0`);
-`motion/ipc.py::make_mpc_command` (the four optional hand keys, § 2.3);
+`_finite_vec` widths; hand keys → index 6; `torque_ff[6] = 0`; the `v1`
+array filled from `vel_next_mm_s` + `hand_next_vel_rps` with `HAS_V1`
+cleared when absent);
+`motion/ipc.py::make_mpc_command` (the five optional hand keys +
+`vel_next_mm_s`, § 2.3);
 `motion/trajectory/emitter.py` (sample `CyclePlan.hand_at` at τ, τ+dt, τ+2dt
 when the plan carries a hand track; emit the hand keys); `trajectory_node.py`
 (the per-knot step backstop covers the hand channel with its own bound);
@@ -361,9 +418,10 @@ themselves only need the key names).
 **Modified files** (`ros_ws/src/jugglebot/Teensy_code_canbridge/`):
 `leg_interp.cpp/.h` (Staging and all per-channel state arrays 6 → 7; latch,
 isfinite loop, all three ladder modes, recovery slew, `interp_reset`,
-`interp_base_pos` bounds; hand lane gated on `HAS_HAND` and
-`hand_source == STREAMED`; TX emits the 7th `set_input_pos` — 0x0CC — in the
-same burst); `canbridge_config.h` (`MAX_DEVIATION_HAND_REV`,
+`interp_base_pos` bounds; Mode 1 uses the transmitted `v1` when `HAS_V1`,
+falling back to the `(u2 − u1)/SEG_T` forward difference when clear; hand
+lane gated on `HAS_HAND` and `hand_source == STREAMED`; TX emits the 7th
+`set_input_pos` — 0x0CC — in the same burst); `canbridge_config.h` (`MAX_DEVIATION_HAND_REV`,
 `MAX_LEAD_HAND_REV`, hand stroke clamp bounds `[0.0, HAND_MOTOR_MAX_POSITION]`,
 `FW_VERSION` 17); `fault_machine.cpp` (hand joins the guard loops with its own
 constants — the leg `MAX_MOTOR_VEL_RPS = 16.5` overspeed number must NOT be
@@ -396,6 +454,13 @@ plan-derived release/catch metadata. Planning runs **off the emitter thread**
 (the determinism rule: no solve, no blocking I/O in the 40 Hz loop) —
 per-cycle, in the coordinator's service context, budget ≤ 50 ms.
 
+**Replan policy (owner, 2026-08-29): plan at commit + bounded catch-side
+replans.** On a tracker landing update, only the catch-side tail of the
+committed cycle re-plans, installed through the existing C2 continuity /
+`_install` machinery (the dynamic-target pattern today); the next throw's
+boundary conditions stay fixed so the beat holds. Replan count is bounded and
+every output re-validates through `validate_cycle`. No receding-horizon loop.
+
 **Modified files:** `reload_coordinator_node.py`
 (`_execute_toss_continuous` routes to the unified path when
 `JB_OP_UNIFIED_CYCLE_ENABLED` and the goal opts in — the
@@ -423,12 +488,13 @@ mirrors the existing gate's `core_clean` bands.
 ### Phase 5: Hardware ladder — NOT STARTED
 
 Each rung is a separate sitting with the full-suite pre-hardware rule
-(`./run_tests.sh --full`) and E-stop discipline; rungs UH-1..UH-6 in § 5
-(T-H5 onward). Order is deliberately carry-first even under Scope B: streamed
-hold → slow streamed strokes (no ball) → **banked carry with a seated ball**
-(the by-eye cup watch inherited from MP-M5) → planned catch of a tossed ball
-→ planned throw at low tier (h ≤ 0.5 m) → full planned cycles → two-pose
-ring at constant beat. The legacy mode remains one `hand_source` switch away
+(`./run_tests.sh --full`) and E-stop discipline; rungs UH-1..UH-7 map onto
+§ 5's T-H1..T-H7. Order is deliberately carry-first even under Scope B:
+UH-1 streamed hold → UH-2 slow streamed strokes (no ball) → UH-3 **banked
+carry with a seated ball** (the by-eye cup watch inherited from MP-M5) →
+UH-4 planned catch of a tossed ball → UH-5 planned throw at low tier
+(h ≤ 0.5 m) → UH-6 full planned cycles → UH-7 two-pose ring at constant
+beat. The legacy mode remains one `hand_source` switch away
 at every rung.
 
 **Dependencies:** Phases 3–4; owner present (operator runs actuating
@@ -449,8 +515,12 @@ legacy gate retire at the next bridge FW bump. Close-out: a
 enforcement point per invariant, the tests that pin them), logbook entries,
 ILC hand-off note (what re-captures), archive review.
 
-**Dependencies:** Phase 5 fully validated; owner decision to flip the
-default.
+**Trigger (owner, 2026-08-29):** Phase 6 fires when the Phase 5 UH ladder
+completes (completion = the final rung, UH-7 two-pose constant beat,
+accepted) — no separate parity campaign; the ladder's own acceptance
+(including T-H6's outcome parity at the matched low tier) is the evidence
+base. The FW 3 Platform image and FW 16 bridge image remain named rollback
+artifacts after retirement.
 
 ## 5. Testing Plan
 
@@ -460,7 +530,9 @@ default.
   parameters (period 0.4–1.2 s, flight 0.6–1.0 s, displaced catch sites),
   assert release `‖a_cup(T) − g‖ < 1e-6`, detach collinearity
   `‖cross(a − g, axis)‖ < 1e-6` over `n_detach` knots, catch position error
-  < 0.1 mm, jerk/workspace boxes respected. Pass/fail: all constraints on
+  < 0.1 mm, jerk/workspace boxes respected, and the **catch-runway
+  constraint** holds (slider headroom below the catch knot ≥ the planned
+  deceleration distance for the arrival speed). Pass/fail: all constraints on
   every grid point that the reference solver also solves.
 - **T-U2** QP-vs-IPOPT parity: trajectory max deviation < 1 mm / 10 mm/s on
   the recorded Phase 0 cycle set (reference trajectories captured as fixtures;
@@ -477,20 +549,22 @@ default.
   (empirical-probe rule: confirm each code deterministically before
   asserting it); NaN cup input ⇒ `UNREACHABLE`; refusal strings satisfy
   `outcome_detail.base_outcome` round-trip.
-- **T-U6** Setpoint v6 codec: pack/unpack round-trip 7-wide, `HAS_HAND` flag
-  semantics, `SETPOINT_SIZE == 180`, version-5 frames rejected (extends
-  `tests/teensy_link/test_protocol_codec.py`).
+- **T-U6** Setpoint v6 codec: pack/unpack round-trip 7-wide including `v1`,
+  `HAS_HAND` and `HAS_V1` flag semantics, `SETPOINT_SIZE == 208`, version-5
+  frames rejected (extends `tests/teensy_link/test_protocol_codec.py`).
 - **T-U7** `SetpointPump` 7-channel: hand keys absent ⇒ flag clear and legs
   byte-identical to a v5-era build of the same command (regression fixture);
   per-channel step gates (leg 0.3, hand bound) reject independently; NaN in
-  any hand key rejects the frame.
+  any hand key rejects the frame; a partial v1 key set (one required
+  `vel_next` key present without the other) rejects the frame.
 - **T-U8** Emitter: `CyclePlan` sampling emits hand keys with the same
   lookahead discipline as legs; plans without a hand track emit none (legacy
   plans byte-identical output — regression fixture against current emitter).
 - **T-U9** Firmware natives (`tests/firmware/native/test_leg_interp.cpp` +
   `test_hermite_xref.py`): 7-lane Hermite parity with the Python reference;
-  hand lane inert when `HAS_HAND` clear; Mode 2/3 extrapolation on the hand
-  lane decays like a leg.
+  both Mode 1 velocity rules pinned (`HAS_V1` transmitted-exact and the
+  forward-difference fallback); hand lane inert when `HAS_HAND` clear;
+  Mode 2/3 extrapolation on the hand lane decays like a leg.
 
 ### Integration (real processes, no actuators)
 
@@ -498,8 +572,10 @@ default.
   `teensy_bridge_node` with a loopback UDP sink; assert 7-channel frames at
   40 Hz, `HAS_HAND` set only during hand-active segments.
 - **T-I2** Unified-mode sim gate (`sim/toss_gate.py` variant): production
-  chain end-to-end per § 4 Phase 4; acceptance `core_clean ≥ 9/10` on the
-  band the legacy gate pins, plus the two-pose constant-beat cycle set.
+  chain end-to-end per § 4 Phase 4 under the **kinematic capture model**
+  (MuJoCo contact advisory-only, per the 2026-08-29 resolution); acceptance
+  `core_clean ≥ 9/10` on the band the legacy gate pins, plus the two-pose
+  constant-beat cycle set.
 - **T-I3** Interlock choreography (mocked-ROS): under unified mode the
   reactive hand-arm dispatch is provably never called (spy on the
   `SetHandTrajCmd` client); under legacy mode byte-identical behaviour to
@@ -529,7 +605,10 @@ default.
   `mpc_active`.
 - **T-H5** Banked carry, seated ball (UH-3): two-pose re-pose with the ball
   in the cup, banking on, lean shaper off; by-eye cup watch + bag. Pass: no
-  visible ball disturbance at a re-pose duration ≤ the M2 lean-off duration.
+  visible ball disturbance at a re-pose duration ≤ the legacy `GoToPose`
+  duration for the same re-pose at `lean_gain = 0` (computable offline from
+  `planner.build_move`; the MP plan measured the tilt-only case at the
+  0.20 s jerk floor).
 - **T-H6** Planned catch, then planned throw at h ≤ 0.5 m (UH-4/5): outcome
   parity with the legacy tier at the same site before any tier ramp; release
   velocity error vs plan < 5 % (bag-measured).
@@ -588,6 +667,19 @@ default.
   transport from the new launch mechanism, so a failure attributes cleanly.
 - **Why before ILC:** ILC's `e_model` must call the production chain; learn
   on the plant that will exist, not the one being replaced.
+- **Why `v1` rides the v6 frame:** the version bump is paid once; retrofitting
+  exact velocities later would cost a second incompatible wire change and
+  lockstep flash. Behind `HAS_V1` the fallback (forward difference) stays
+  testable and the legacy emitter's semantics are preserved until a producer
+  opts in.
+- **Why the kinematic capture model is the sim authority:** MuJoCo contact is
+  the documented low-fidelity element (`sim/toss_gate.py` avoids it
+  deliberately), hardware catches are already smooth, and the Rung-3 P2
+  failure was an equilibrium of that contact model — gating on it optimises
+  the wrong plant.
+- **Why the event-timeline API:** the 3-ball endgame needs overlapping
+  per-ball events; taking a list now (while always passing one throw + one
+  catch) costs one signature and saves rewriting every caller later.
 
 ### Startup/shutdown ordering
 
