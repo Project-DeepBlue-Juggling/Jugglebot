@@ -143,6 +143,27 @@ static volatile uint8_t s_lead_clamp_mask = 0;
 // frame whose torque_ff[i] is in bounds. 2026-07-14 gravity-FF observability.
 static volatile uint8_t s_torque_clamp_mask = 0;
 
+#if UNIFIED7_BENCH_BUILD
+// ── BENCH ONLY — 7th-frame bus-headroom probe state ───────────────────────────
+// Compiled out of production (canbridge_config.h defaults UNIFIED7_BENCH_BUILD to
+// 0); see that header's block for the measurement and this file's TX site for the
+// frame itself.
+//
+// CONCURRENCY, matching this file's existing discipline. s_bench7_enabled is
+// written from TASK context (the console handler, on task_diag) and read by the
+// 500 Hz ISR — one naturally-aligned word, `volatile` so the ISR cannot cache it in
+// a register, exactly like s_output_enabled which the fault task owns. The four
+// counters are written ONLY by the ISR and read only by the 1 Hz console step, so
+// they are single-writer u32s and a task-side read is atomic on Cortex-M7; the
+// console differences nothing, it prints boot-cumulative values (the [cantx] idiom).
+// No IRQ-off window is added anywhere for them.
+static volatile bool     s_bench7_enabled        = false;  // BOOT DEFAULT OFF — arm A is the fresh-boot state
+static volatile uint32_t s_bench7_sent           = 0;      // ticks that transmitted the 7th frame
+static volatile uint32_t s_bench7_skipped_unseen = 0;      // ticks skipped: no encoder frame from axis 6 EVER
+static volatile uint32_t s_bench7_stale_holds    = 0;      // ticks that held a LAST-KNOWN (stale) position
+static volatile float    s_bench7_last_pos       = 0.0f;   // the position most recently commanded (diagnostic)
+#endif  // UNIFIED7_BENCH_BUILD
+
 // ── Re-enable recovery slew (2026-07-11 clear-errors jolt forensics) ──────────
 // State for the output-enable-edge slew (see the file header + canbridge_config.h
 // RECOVER_SLEW_*). All four are written AND read ONLY by the 500 Hz ISR, so no
@@ -589,6 +610,81 @@ static void interp_isr() {
       // nodes 1-5. The target cache above is written for all legs regardless.
       if (leg_present(i)) can_jugglebot_tx(ODrive::encode_leg_setpoint(i, cmd_pos[i], cmd_vel[i], cmd_tor[i]), TxCls::LEGS);   // TxCls::LEGS — latest-wins, deferral counted, never retried
     }
+#if UNIFIED7_BENCH_BUILD
+    // ── BENCH ONLY — the 7th frame (unified-7dof Phase 0 probe 3) ─────────────
+    // A hand-axis (6) set_input_pos holding axis 6's OWN cached encoder position.
+    // The measurement is BUS LOAD, not content: the unified 7-DOF planner will
+    // stream the hand as a seventh interpolated axis, and this frame reproduces
+    // that arbitration load one flash ahead of any planner work.
+    //
+    // IT SITS INSIDE THE SAME `s_output_enabled && !coldstart` GATE AS THE LEGS,
+    // deliberately, on two counts. Safety: the cold-start interlock exists because
+    // a firmware homing/activate/deactivate move drives the same ODrives, and the
+    // hand ODrive hangs off the same bus — a 7th frame outside the gate would be
+    // the one producer that ignores the interlock. Validity: the arm being measured
+    // is a SEVEN-frame burst, so the frame has to be co-resident with the six, in
+    // the same tick, behind the same gate, or it measures a different waveform.
+    //
+    // SAFE BY CONSTRUCTION, in four independent ways:
+    //  1. The commanded value is the hand's own measured position, so the command
+    //     is a no-op against the plant whatever state the hand ODrive is in. In
+    //     CLOSED_LOOP it asks the hand to stay where it already is; in IDLE
+    //     set_input_pos merely latches input_pos and moves nothing.
+    //  2. vel_ff and torque_ff are hard ZERO — no feedforward energy is injected.
+    //  3. encode_leg_setpoint() runs the same clip_position() the hand path always
+    //     runs, so the value cannot leave [0, HAND_MOTOR_MAX_POSITION] (10.8 rev,
+    //     the operator-measured metal contact) even if the cache were corrupt. It
+    //     is also the correct convention round-trip: axes[].pos_rev is stored in the
+    //     Jugglebot convention and leg_sign() is identity for axis 6.
+    //  4. NEVER BEFORE THE FIRST ENCODER FRAME. pos_timestamp_us == 0 means we have
+    //     no idea where the hand is, and 0.0 rev is a real, reachable, WRONG
+    //     position — so that case SKIPS and counts rather than commanding a guess.
+    // All four hold provided no hand dispatch is in flight — a bench-discipline
+    // precondition (runbook Safety), not a firmware interlock.
+    //
+    // STALE CACHE → HOLD LAST-KNOWN, COUNTED (the deliberate call). Once an encoder
+    // frame has been seen, a cache older than MOTOR_FB_STALENESS_US keeps
+    // transmitting the last observed position instead of skipping. Two reasons.
+    // Safety: a last-known position is a real position the hand actually occupied,
+    // so re-asserting it is still a no-op — strictly safer than any value we could
+    // synthesise, and no worse than the fresh case. Validity: ANY gap in axis 6's
+    // encoder broadcast, whatever its cause, would under a skip-on-stale rule
+    // silently drop the burst back to 6 frames in the middle of the armed arm —
+    // the A/B would self-cancel and nothing on the console would say so. (The
+    // § 4.1 cyclic-message arm is NOT that cause: it touches the LEG drives only
+    // and leaves every encoder broadcast running, and it flies with bench7 off
+    // besides, so sent/stale_hold cannot move in it at all.) Holding keeps the
+    // load constant and s_bench7_stale_holds says how many ticks did it.
+    //
+    // ISR COST: one PRIMASK-guarded u64 read (atomic_read_u64, the same idiom
+    // micros64() already uses in this ISR), one single-word float read, and one
+    // can_jugglebot_tx — a sixth of the leg loop already above it. No FreeRTOS call,
+    // so the above-syscall-ceiling contract in leg_interp_init() still holds.
+    //
+    // TxCls::LEGS, NOT TxCls::HAND. This frame stands in for the SEVENTH
+    // INTERPOLATED AXIS the unified planner will stream from this same burst, so
+    // LEGS is what it will actually be; TxCls::HAND means "a hand_ops dispatch" and
+    // borrowing it would contaminate the counter the ERR_TIMEOUT arc reads. Nothing
+    // is lost in discriminating power, because the A/B IS the attribution: [cantx]
+    // legs= is expected 0 in the 6-frame arm, so any movement in the 7-frame arm is
+    // the 7th frame by construction.
+    if (s_bench7_enabled) {
+      const uint64_t hand_ts = atomic_read_u64(&hand_axis().pos_timestamp_us);
+      if (hand_ts == 0) {
+        ++s_bench7_skipped_unseen;   // never seen axis 6 — commanding anything is a guess
+      } else {
+        // Ordering-guarded age (the fault_machine.cpp MOTOR_FB_STALE idiom): a
+        // timestamp ahead of `now_mono` would underflow the unsigned difference
+        // into a huge age and mislabel a fresh sample as stale.
+        if (now_mono > hand_ts && (now_mono - hand_ts) > MOTOR_FB_STALENESS_US)
+          ++s_bench7_stale_holds;
+        const float hp = hand_axis().pos_rev;   // single-word atomic read (as the lead clamp reads fb)
+        s_bench7_last_pos = hp;
+        can_jugglebot_tx(ODrive::encode_leg_setpoint(HAND_AXIS, hp, 0.0f, 0.0f), TxCls::LEGS);
+        ++s_bench7_sent;
+      }
+    }
+#endif  // UNIFIED7_BENCH_BUILD
   }
 }
 
@@ -632,6 +728,17 @@ void interp_reset() {
   s_last_tick_us = 0;
   s_lead_clamp_mask = 0;
   s_torque_clamp_mask = 0;
+#if UNIFIED7_BENCH_BUILD
+  // The bench toggle returns to its power-on value (off) like every other static
+  // here — today only the native test harness calls interp_reset(); if an
+  // on-target re-arm caller ever lands, it cannot leave the 7-frame burst armed.
+  // The counters go with it — they are only meaningful within one armed span.
+  s_bench7_enabled        = false;
+  s_bench7_sent           = 0;
+  s_bench7_skipped_unseen = 0;
+  s_bench7_stale_holds    = 0;
+  s_bench7_last_pos       = 0.0f;
+#endif
 }
 
 void leg_interp_init() {
@@ -708,5 +815,41 @@ void interp_begin_stow() {
 void interp_end_stow() { s_stow_active = false; }
 bool interp_stow_active() { return s_stow_active; }
 bool interp_stow_complete() { return s_stow_complete; }
+
+#if UNIFIED7_BENCH_BUILD
+// ── BENCH ONLY — 7th-frame probe console + self-identification ────────────────
+// Rationale for the console seam (vs an additive RpcMethod/MsgType) is in
+// leg_interp.h's bench7 block; the measurement is in canbridge_config.h's
+// UNIFIED7_BENCH_BUILD block; the sitting is
+// tests/hardware/session_unified7_bus_headroom.md.
+
+// One status line, shared by the console handler and the 1 Hz step so an operator
+// reading a scrollback never has to reconcile two formats. Counters are
+// BOOT-CUMULATIVE (the [cantx]/[canhealth] idiom): difference two reads across an
+// arm, never read an absolute as an arm's value.
+static void bench7_print_status() {
+  Serial.printf("[bench7] ** UNIFIED7 BENCH IMAGE — NOT PRODUCTION, RE-FLASH STOCK AFTER THE SITTING **"
+                " frames=%u toggle=%s sent=%lu unseen_skip=%lu stale_hold=%lu last_pos=%.4f\n",
+                (unsigned)(s_bench7_enabled ? 7u : 6u),
+                s_bench7_enabled ? "on" : "off",
+                (unsigned long)s_bench7_sent,
+                (unsigned long)s_bench7_skipped_unseen,
+                (unsigned long)s_bench7_stale_holds,
+                (double)s_bench7_last_pos);
+}
+
+bool interp_bench7_console(const char* line) {
+  if (line == nullptr || strncmp(line, "bench7", 6) != 0) return false;
+  const char* arg = line + 6;
+  while (*arg == ' ') ++arg;
+  if      (strcmp(arg, "on")  == 0) s_bench7_enabled = true;
+  else if (strcmp(arg, "off") == 0) s_bench7_enabled = false;
+  else if (*arg != '\0')            return false;   // not this command after all
+  bench7_print_status();
+  return true;
+}
+
+void interp_bench7_diag_step() { bench7_print_status(); }
+#endif  // UNIFIED7_BENCH_BUILD
 
 }  // namespace CanBridge

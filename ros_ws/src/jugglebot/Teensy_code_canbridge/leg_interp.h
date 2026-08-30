@@ -18,6 +18,13 @@
 // =============================================================================
 
 #include <cstdint>
+// UNIFIED7_BENCH_BUILD gates the bench-only declarations at the bottom of this
+// header. It MUST be included here rather than left to the includer: an undefined
+// macro evaluates to 0 in `#if`, so a translation unit that reached this header
+// first would silently drop those declarations while leg_interp.cpp still defined
+// them — a link error at best, and an include-order-dependent build at worst.
+// (can_buses.h pulls the same header for BUS_PARTNER_STALENESS_US.)
+#include "canbridge_config.h"
 
 namespace CanBridge {
 
@@ -98,5 +105,43 @@ void interp_begin_stow();    // capture current encoder positions, start the des
 void interp_end_stow();      // stop the descent (back to MPC ladder / hold)
 bool interp_stow_active();
 bool interp_stow_complete();  // true once all legs reached the off pose
+
+#if UNIFIED7_BENCH_BUILD
+// ── BENCH ONLY — 7th-frame bus-headroom probe (unified-7dof Phase 0 probe 3) ──
+// Compiled out of every production image (canbridge_config.h defaults the flag to
+// 0). See that header's UNIFIED7_BENCH_BUILD block for what the probe measures and
+// why it exists; the sitting runbook is
+// tests/hardware/session_unified7_bus_headroom.md.
+//
+// WHY THE SERIAL CONSOLE AND NOT AN ADDITIVE RPC / MsgType. Three reasons, in
+// descending weight. (1) The measurement channel is ALREADY the console: the
+// per-class [cantx] deferral census (Teensy_code_canbridge.ino), [canhealth]'s
+// defer=/txq= pair and the [handphase] stamp are all console-only, so the sitting
+// holds a `pio device monitor` open regardless — the toggle costs the operator no
+// new plumbing and no new host process to fight over the single-owner UDP link.
+// (2) An additive RpcMethod/MsgType is generated from config/generate_udp_protocol.py
+// and lands in the COMMITTED generated headers on BOTH ends, so a bench-only, one
+// sitting, never-flashed-to-production experiment would leave a permanent entry in
+// the production wire spec and in teensy_link — the opposite of "the bench image
+// leaves no trace". (3) The console seam already exists and has a settled idiom
+// (gpio_poll_console: own your prefix, print your own status line, return false for
+// anything else), so this is one more handler on an established dispatch chain
+// rather than a new mechanism.
+//
+// Console grammar, mirroring gpio_poll's:
+//   bench7        → print the status line (toggle state + counters), change nothing
+//   bench7 on     → arm the 7th frame   (arm B)
+//   bench7 off    → disarm it           (arm A / baseline; the BOOT DEFAULT)
+// Returns false for any line this handler does not own, so the caller can still
+// report an unknown command.
+bool interp_bench7_console(const char* line);
+
+// 1 Hz console step (task_diag). Prints the repeating self-identification +
+// counter line. Repeating rather than one-shot for the gpio_poll_diag_step reason:
+// a boot banner has scrolled away long before an operator attaches a monitor, and a
+// bench image that looks stock on the console is exactly the hazard the
+// never-flash-bench-firmware discipline exists to prevent.
+void interp_bench7_diag_step();
+#endif  // UNIFIED7_BENCH_BUILD
 
 }  // namespace CanBridge

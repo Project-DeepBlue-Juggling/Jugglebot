@@ -37,6 +37,55 @@
 #define BENCH_SYSID_BUILD 0
 #endif
 
+// ── UNIFIED7_BENCH_BUILD — 7th-frame bus-headroom probe (NEVER production) ────
+// DEFAULT OFF, and a SECOND compile-time flag rather than a widening of
+// BENCH_SYSID_BUILD on purpose: that one is a single-leg-rig cadence build whose
+// 100 Hz knots require a matching --knot-hz 100 harness, and this one must run on
+// the ASSEMBLED robot at production cadence or it does not measure the thing it
+// exists to measure. Folding them together would make the bus-headroom arm
+// impossible to fly.
+//
+// WHAT IT ADDS (plans/active/unified-7dof-planner.md § Phase 0 probe 3):
+// a RUNTIME-TOGGLED 7th frame in the 500 Hz interp TX burst — a hand-axis
+// set_input_pos (0x0CC) holding axis 6's own cached encoder position. The unified
+// 7-DOF planner will stream the hand as a seventh interpolated axis, taking the
+// bridge's jugglebot-bus TX from ~3000 to ~3500 fps (~56.5 % → ~65 % streaming
+// utilisation). This build answers, on hardware and BEFORE any planner work, two
+// questions that cannot be answered at a desk: does the bus have the headroom, and
+// does the leg-bus per-axis encoder-frame drop rate (plans/active/leg-bus-frame-
+// drops.md) SCALE with the bridge's TX rate. Content is irrelevant to both —
+// BUS LOAD is the measurement — so the frame is a position HOLD, chosen to be safe
+// by construction rather than for any effect it has.
+//
+// THE TOGGLE BOOTS OFF. A freshly-booted BENCH image transmits the same 6-frame
+// burst as production, so both A/B arms fly on ONE flash and one boot (no reflash
+// between arms, no uptime confound). It is armed from the USB serial console
+// ("bench7 on"), the same channel the sitting already reads [cantx] and [canhealth]
+// on — see leg_interp.h's bench7 block for why the console won over an additive
+// RPC/MsgType.
+//
+// It changes the CAN TX BURST WIDTH only — ZERO wire-format change on the UDP link
+// (no struct/field/MsgType/PROTOCOL_VERSION edit), and with the flag OFF the binary
+// is IDENTICAL to production (every use sits behind #if UNIFIED7_BENCH_BUILD).
+// Build the variant with `pio run -e teensy41_unified7_bench` (platformio.ini adds
+// -DUNIFIED7_BENCH_BUILD=1); DO NOT flash it to the robot for ordinary operation,
+// and RE-FLASH THE STOCK IMAGE AT THE END OF THE SITTING.
+//
+// SELF-IDENTIFICATION, and its one honest limit. FW_VERSION is deliberately NOT
+// offset here: it is pinned to teensy_link.rpc_args.EXPECTED_BRIDGE_FW_VERSION by
+// tests/firmware/test_bridge_fw_version_xref.py, and moving it would either break
+// that pin or make the stock image's reported identity conditional on a bench flag.
+// The image announces itself instead on the USB console — a boot banner and a
+// REPEATING 1 Hz [bench7] line (the gpio_poll_diag_step precedent: one-shot lines
+// scroll away before an operator attaches a monitor). RESIDUAL, stated plainly: with
+// the toggle OFF this image is behaviourally stock and there is NO tell on the wire,
+// so the console is the ONLY authority for which image is aboard, and the
+// end-of-sitting stock reflash is the real control. Runbook:
+// tests/hardware/session_unified7_bus_headroom.md.
+#ifndef UNIFIED7_BENCH_BUILD
+#define UNIFIED7_BENCH_BUILD 0
+#endif
+
 namespace CanBridge {
 
 // ── Identity ────────────────────────────────────────────────────────────────

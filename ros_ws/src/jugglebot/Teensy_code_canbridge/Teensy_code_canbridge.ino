@@ -313,7 +313,17 @@ static void console_step() {
     if (c == '\n' || c == '\r') {
       if (len > 0) {
         line[len] = '\0';
-        if (!gpio_poll_console(line))
+        // Dispatch chain: each module owns its command PREFIX and returns false for
+        // anything else, so the chain short-circuits on the first owner and the
+        // final `else` is a genuine unknown. UNIFIED7_BENCH_BUILD appends one more
+        // handler (the 7th-frame bus-headroom toggle) and compiles out of every
+        // production image — with the flag off the preprocessed statement is
+        // character-for-character the stock one.
+        if (!gpio_poll_console(line)
+#if UNIFIED7_BENCH_BUILD
+            && !interp_bench7_console(line)
+#endif
+           )
           Serial.printf("[console] unknown command: %s\n", line);
       }
       len = 0;
@@ -379,6 +389,12 @@ static void task_diag(void*) {
                       (unsigned long)dc.by_class[TxCls::TIMESYNC],
                       (unsigned long)dc.by_class[TxCls::OTHER]);
       }
+#if UNIFIED7_BENCH_BUILD
+      // Bench image self-identification + the 7th-frame probe census, on the same
+      // 1 Hz tick as [cantx] so the two are always adjacent in a scrollback. See
+      // gpio_poll_diag_step for why this repeats rather than printing once.
+      interp_bench7_diag_step();
+#endif
       can_buses_print_esr1();   // raw ESR1 words of fresh error snapshots (diagnostic)
 
       // Hand-dispatch interp-phase stamp (2026-08-09) — the falsifiable test for the
@@ -504,6 +520,19 @@ void setup() {
   Serial.printf("[boot] %s v%u  eth link=%d  ip=%u.%u.%u.%u\n",
                 FW_NAME, FW_VERSION, (int)link,
                 TEENSY_IP[0], TEENSY_IP[1], TEENSY_IP[2], TEENSY_IP[3]);
+#if UNIFIED7_BENCH_BUILD
+  // FW_VERSION cannot carry this marker (it is pinned to the host's
+  // EXPECTED_BRIDGE_FW_VERSION by tests/firmware/test_bridge_fw_version_xref.py),
+  // so the console is where a bench image announces itself. The banner is the
+  // FIRST half; the repeating 1 Hz [bench7] line in task_diag is the half that
+  // survives an operator attaching a monitor minutes later.
+  Serial.println("[boot] ******************************************************************");
+  Serial.println("[boot] ** UNIFIED7 BENCH IMAGE — 7th-frame bus-headroom probe.         **");
+  Serial.println("[boot] ** NOT PRODUCTION. The burst BOOTS at 6 frames/tick (stock);    **");
+  Serial.println("[boot] ** `bench7 on` arms the 7th. RE-FLASH THE STOCK IMAGE AT THE    **");
+  Serial.println("[boot] ** END OF THE SITTING: pio run -e teensy41 -t upload            **");
+  Serial.println("[boot] ******************************************************************");
+#endif
 
   // Register downlink handlers before the scheduler starts.
   udp_on_heartbeat_j2t(on_jetson_heartbeat);

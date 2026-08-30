@@ -124,6 +124,73 @@ The Jetson harness **must** then run with `--knot-hz 100` so knots arrive every
 10 ms (matching `SEGMENT_T_S`); a 40 Hz stream against a 0.010 s segment re-latches
 each Hermite segment before it completes and distorts the velocity profile.
 
+### Bus-headroom probe variant (`teensy41_unified7_bench`) — never leave on the robot
+
+A one-off measurement build for the `unified-7dof-planner` Phase 0 probe-3 bench
+sitting (`plans/active/unified-7dof-planner.md`; runbook
+`tests/hardware/session_unified7_bus_headroom.md`). It sets
+`UNIFIED7_BENCH_BUILD=1` (default `0`, defined in `canbridge_config.h`), which adds
+**one runtime-toggled 7th frame** to the 500 Hz interp TX burst: a hand-axis (6)
+`set_input_pos` (0x0CC) holding axis 6's own cached encoder position.
+
+The unified 7-DOF planner will stream the hand as a seventh interpolated axis,
+taking the bridge's jugglebot-bus TX from ~3000 to ~3500 fps (~56.5 % → ~65 %
+streaming utilisation). This image answers, on hardware and before any planner
+work, two things a desk cannot: whether the bus has that headroom, and whether the
+`leg-bus-frame-drops` per-axis encoder-frame drop rate **scales with the bridge's
+TX rate**. **Bus load is the measurement** — the frame's content is irrelevant, so
+it is a position hold chosen purely to be safe by construction:
+
+* the commanded value is the hand's own measured position (a no-op in CLOSED_LOOP,
+  and merely a latched `input_pos` in IDLE);
+* `vel_ff` and `torque_ff` are hard zero;
+* it goes through the same `clip_position()` the hand path always uses, so it can
+  never leave `[0, HAND_MOTOR_MAX_POSITION]`;
+* it **never transmits before the first encoder frame from axis 6** (an
+  unpopulated cache would command a real, reachable, wrong 0.0 rev) — that case
+  skips and counts;
+* once a frame has been seen, a cache older than `MOTOR_FB_STALENESS_US` **holds
+  the last known position and counts the tick**, rather than skipping. Skipping
+  would silently drop the burst back to six frames on **any** gap in axis 6's
+  encoder broadcast, self-cancelling the A/B mid-arm. (The § 4.1 cyclic-message
+  arm is not that gap's source — it touches the leg drives only and leaves every
+  encoder broadcast running, and it flies with the toggle off besides.)
+
+It sits inside the same `s_output_enabled && !coldstart` gate as the six leg
+frames, so it honours the cold-start interlock and is genuinely co-resident with
+the burst it is widening.
+
+**The toggle boots OFF**, so a fresh boot transmits the stock 6-frame burst and
+both A/B arms fly on one flash and one boot (no reflash between arms, no uptime
+confound). Drive it from the USB serial console:
+
+```
+bench7          # status line only
+bench7 on       # arm the 7th frame  (arm B)
+bench7 off      # disarm             (arm A / baseline — the boot default)
+```
+
+The console was chosen over an additive `RpcMethod`/`MsgType` because the sitting
+already holds a `pio device monitor` open (`[cantx]`, `[canhealth]`, `[handphase]`
+are all console-only), and because a generated wire entry for a one-sitting bench
+experiment would live permanently in the production protocol on both ends.
+
+```bash
+pio run -e teensy41_unified7_bench    # compile (do NOT -t upload except for the sitting)
+pio run -e teensy41 -t upload         # RESTORE the stock image when the sitting ends
+```
+
+**Self-identification, and its limit.** This is **CAN-burst width only — zero UDP
+wire-format change**, so the image is wire-identical to FW 16 and a healthy link
+proves nothing about which build is aboard. `FW_VERSION` deliberately does **not**
+carry a bench marker: it is pinned to `teensy_link.rpc_args.EXPECTED_BRIDGE_FW_VERSION`
+by `tests/firmware/test_bridge_fw_version_xref.py`. And unlike
+`teensy41_bench_sysid` there is no cadence tell either — with the toggle off this
+image is behaviourally stock. So the **USB console is the only authority**: a loud
+boot banner plus a repeating 1 Hz `[bench7]` line (repeating for the
+`gpio_poll_diag_step` reason — a one-shot banner has scrolled away long before an
+operator attaches a monitor). The end-of-sitting stock reflash is the real control.
+
 ## torque_ff ingest clamp (firmware backstop — landed 2026-07-14, needs a reflash)
 
 `leg_interp.cpp`'s UDP setpoint ingest (`interp_on_setpoint`) bounds each leg's
