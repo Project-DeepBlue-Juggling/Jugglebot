@@ -359,7 +359,7 @@ otherwise be lost:
   skip and now the commit gate both read, and it is currently invisible in a bag.
 * **the tilt-only re-orient timing law**: **T ≈ 0.196·θ_deg^(1/3) s**, fitted
   over the tilt-only (`Δxy = 0`) column of
-  `plans/active/toss-multi-catch-pose.md` § 1.4 Finding 3's lean-off table
+  `plans/archived/toss-multi-catch-pose.md` § 1.4 Finding 3's lean-off table
   (0.2471 s at 2°, 0.3121 s at 4° ⇒ 0.1961 / 0.1966 — the 0.189 first written
   here was fitted before that table existed). Against the **lean-off** plan the
   shipped `go_to_pose` runs **~2.6–3.0×** longer — 2.62× at the ring's hop 0
@@ -502,7 +502,7 @@ rebuilt cycle really does COMMAND a positioning move; and the real arrival is
 longer still than the budget charged for it, because
 `pre_dispatch_budget_s(True)` assumes the move plans at
 `min_move_duration_s` while the shipped `lean_gain` 0.6 makes it plan
-0.52–0.61 s — see `plans/active/toss-multi-catch-pose.md` § 2.7 for the
+0.52–0.61 s — see `plans/archived/toss-multi-catch-pose.md` § 2.7 for the
 derivation and § 1.4 Finding 4 for why the budget is a lie about the arrival.
 From the cycle after that the chain is co-located and pipelines exactly as
 before — the
@@ -530,7 +530,7 @@ let a displaced chain stage again.
   `_step_preparing` aborts `ABORTED_CANT_MAKE_RELEASE` outright. On this
   sitting's 5 s operator delay the lead covers it and nothing was seen; on a
   cadence lead it will not. **Cadence-lead displaced sittings should not be
-  flown until `plans/active/toss-multi-catch-pose.md` M2's honest budget, or
+  flown until `plans/archived/toss-multi-catch-pose.md` M2's honest budget, or
   `lean_gain = 0.0` for the tilt-in-place move class, lands.** Co-located
   sittings are unaffected — they take the skip and command no move.
 * **the blocking POSITIONING call** — the sole source of the sitting's 48 loop

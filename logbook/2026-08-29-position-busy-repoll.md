@@ -99,7 +99,7 @@ Same bag, same session shape, `COMPLETED 5/5` at dwell **0.52–0.69**. A
 co-located chain takes the census-B1 positioning **skip**: the platform is already
 at the pose, so the FSM never calls `go_to_pose` at all. It is not that the
 co-located chain waits better; it never asks the question. That also means the
-protection is accidental — under `plans/active/toss-multi-catch-pose.md` M3's
+protection is accidental — under `plans/archived/toss-multi-catch-pose.md` M3's
 pose rings, where every cycle commands a re-orient, **the seam becomes
 universal**.
 
@@ -195,7 +195,7 @@ noted in the audit and is a two-line edit if the corpus says so.
 
 ### Relation to the plan: this is the absorb, not the budget
 
-`plans/active/toss-multi-catch-pose.md` § 2.7 was amended this session (M2's
+`plans/archived/toss-multi-catch-pose.md` § 2.7 was amended this session (M2's
 obligation): **the moving leg's dwell floor owes the previous catch's settle
 hold**, `+ JB_TRAJ_CATCH_SETTLE_HOLD_S`, anchored at the **committed arrival**.
 That is the *budgeted* answer — it makes the cadence honest before the cycle is

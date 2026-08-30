@@ -1,13 +1,11 @@
 ---
 title: Multi-pose catch cycling — a TossContinuous session that walks a ring of catch poses
 created: 2026-08-28
-status: proposed   # out of DOCUMENTATION_GUIDE 2.6's active|completed|superseded vocabulary, used
-                   # deliberately for a document nobody has approved yet (the convention
-                   # `leg-bus-frame-drops.md` established); promote to `active` on approval.
-                   # 2026-08-30 — HALTED at the pre-M2 boundary (owner decision 2026-08-29): superseded
-                   # outright by plans/active/unified-7dof-planner.md; M2-M6 never run. Archival pending.
+status: superseded   # 2026-08-30 — HALTED at the pre-M2 boundary (owner decision 2026-08-29):
+                     # superseded outright by the unified-7dof-planner plan; M0–M6 never ran.
+archived: 2026-08-30
 owner: Harrison
-last_updated: 2026-08-28
+last_updated: 2026-08-30
 related_plan: toss-pipelined-preamble.md
 related_logbook:
   - 2026-08-28-displaced-chain-stale-site.md
@@ -40,6 +38,44 @@ related_code:
 ---
 
 # Multi-pose catch cycling — a TossContinuous session that walks a ring of catch poses
+
+## Archival note (2026-08-30)
+
+Superseded outright by `plans/active/unified-7dof-planner.md` (owner decision,
+2026-08-29): the whole-cycle 7-DoF planner natively provides what M3/M4 and
+§ 7's constant-beat fast path would have built, so the ring programme stopped
+at the pre-M2 boundary. **No M0–M6 deliverable exists in code** (verified
+2026-08-30: no ring-walk probe, no `reach_center_applied`, no
+`catch_positions` field, no `_toss_cycle_graph`, no per-cycle B threading).
+What landed adjacent under this plan's dates is general-correctness and STAYS:
+the positioning BUSY re-poll, the BB reload patience, the `outcome_detail`
+rejection enrichment, the `catch_reach` physics gate, and reload CAUGHT
+stay-at-pose.
+
+Residue dispositions:
+
+- **The cadence-lead fence is re-keyed.** "No cadence-lead displaced sittings
+  until M2's honest budget" keyed on a phase that never runs, and the defect
+  is still shipped (the 0.400 s arrival charge and the no-slip serial
+  PREPARING guard). The fence now lifts on EITHER an operational
+  `lean_gain = 0.0` for displaced positioning moves OR the unified planner's
+  Phase 5 replacing the legacy displaced path. Until one of those, the fence
+  stands.
+- **Q-2 (a survived MISS must not `go_home`; hold, settle, resume — owner,
+  2026-08-28)** was scoped to M3 and never landed; it is re-homed to the
+  unified plan's Phase 4 session choreography (noted there).
+- **"Unblocking the loop from the positioning service round trip"**
+  (§ Explicit non-goals): ownership passes to the unified plan, whose Phase 4
+  plans off the FSM tick; the two code comments naming this plan as owner
+  were re-pointed in the archival commit.
+- **The measured tables are claims-on-record.** §§ 1.4/2.7's floors, the
+  lean-gain table and the 297 mm/s² bound came from a `/tmp` probe M0 never
+  promoted; they are preserved here and in
+  `logbook/2026-08-28-displaced-chain-stale-site.md`, but no committed probe
+  reproduces them.
+- **C-REACH-1 § 5 residuals 1 and 5** revert to accepted residuals of the
+  standing contract — M1 would have closed them independently of the ring; it
+  never ran.
 
 ## 1. Context
 

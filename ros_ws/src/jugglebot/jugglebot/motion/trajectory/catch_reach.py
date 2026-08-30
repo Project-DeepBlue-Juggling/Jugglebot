@@ -53,10 +53,11 @@ sampled-limits pass would have cost the ``LIMIT_VEL``/``LIMIT_ACC``/
 ``_build_toss_cycle``, which runs once per cycle inside a blocking loop — and it
 is small against what already sits there: the measured 0.16–0.54 s body overruns
 come from the SYNCHRONOUS ``go_to_pose`` round trip in the same loop. That whole
-class — "the FSM tick does blocking work" — is owned by *Unblocking the loop
-from the positioning service round trip*, the named sibling change in
-``plans/active/toss-multi-catch-pose.md`` § Explicit non-goals, which carries its
-own evidence and its own logbook. It is not this gate's to solve, and this gate
+class — "the FSM tick does blocking work" — is described as *Unblocking the
+loop from the positioning service round trip* in
+``plans/archived/toss-multi-catch-pose.md`` § Explicit non-goals; since that
+plan's supersession the class is owned by ``plans/active/unified-7dof-planner.md``
+(its Phase 4 plans off the FSM tick). It is not this gate's to solve, and this gate
 does not move its needle.
 
 The default geometry is a module singleton on purpose: ``feasibility``'s

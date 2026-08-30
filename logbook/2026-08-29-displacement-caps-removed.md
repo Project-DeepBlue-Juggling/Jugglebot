@@ -267,7 +267,7 @@ blocking loop. That is honest to name and honest to bound: the measured 0.16–0
 body overruns in that loop come from the **synchronous `go_to_pose` round trip**
 sitting in the same tick, and that whole class is owned by *Unblocking the loop
 from the positioning service round trip* — M2's named sibling change in
-`plans/active/toss-multi-catch-pose.md` § Explicit non-goals. This gate does not
+`plans/archived/toss-multi-catch-pose.md` § Explicit non-goals. This gate does not
 move that needle and does not try to.
 
 ### The gate is LAST of the static CHECKING gates, and the suite caught the wrong order
@@ -424,7 +424,7 @@ pass it in; building one inside `motion/` would be the DOUBLE-apply, not the fix
 Phase E gets a **⚠ SUPERSEDED IN PART** banner at its head (the 2026-07-28 text is
 left standing as the record of what was decided and why, marked as no longer a
 description of the machine), and sub-change 3's cap paragraph is banner-marked
-in place. `plans/active/toss-multi-catch-pose.md` § M gate table is **re-keyed** —
+in place. `plans/archived/toss-multi-catch-pose.md` § M gate table is **re-keyed** —
 the `|B.x|,|B.y|` and `|A_k|` box rows deleted, `|B − A|` re-pointed at
 `reach_displacement_limit_mm(T)` as the sole bound, and a new row for *the walk can
 PREDICT each `A_k` at all (`None` ⇒ refuse, fail-closed)* — plus an explicit

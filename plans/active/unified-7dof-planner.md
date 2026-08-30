@@ -124,7 +124,7 @@ each is binding on the phases below):
 
 | Plan | Relationship |
 |---|---|
-| `toss-multi-catch-pose.md` | **SUPERSEDED OUTRIGHT (owner, 2026-08-29): MP halted at the pre-M2 boundary** — stop clean, no reverts; general-correctness fixes from the 2026-08-29 waves stay (they serve every legacy sitting until Phase 6), ring-specific landed work stays unexercised, M2–M6 never run. The plan archives as superseded by this one once the wave-2 commit lands. Its § 7 constant-beat lever and its M3/M4 machinery are provided natively here; MP-M5's carry-seating observation re-homes to Phase 5 (T-H5); the § 7 unlock conditions (aim-authority re-derivation vs `MAX_TILT_DEG = 12°`) transfer to Phase 5 acceptance. |
+| `toss-multi-catch-pose.md` | **SUPERSEDED OUTRIGHT (owner, 2026-08-29): MP halted at the pre-M2 boundary** — stop clean, no reverts; general-correctness fixes from the 2026-08-29 waves stay (they serve every legacy sitting until Phase 6), no ring-specific deliverable ever landed — M0–M6 never ran (verified 2026-08-30, see the MP plan's Archival note). Archived as superseded 2026-08-30. Its § 7 constant-beat lever and its M3/M4 machinery are provided natively here; MP-M5's carry-seating observation re-homes to Phase 5 (T-H5); the § 7 unlock conditions (aim-authority re-derivation vs `MAX_TILT_DEG = 12°`) transfer to Phase 5 acceptance. |
 | `mvp-trajectory-bringup.md` | This plan becomes the vehicle for its Phase 8/9 stretch goals (self-toss loop, two-ball). |
 | `bb-online-juggle-tilt-rearchitecture.md` Rung 3 | Sim-side twin. Its P2 attempt (2026-07-03, ~35 probes) BLOCKED on "the slam is the seat's runway" — every cleanup of the whole-cycle sim catch dropped MAKE to 0/12. **Phase 1 must answer that failure in sim before any hardware phase starts** (§ 4, Phase 1 acceptance). |
 | `critical-point-ilc.md` | Sequenced after this plan (owner). Its Phases 0–2 substrate (records, miner, gates) survives; the fit corpus, `SIGMA_E`, cell keys and the speed-authority band do not — re-capture on the unified plant. |
@@ -477,6 +477,9 @@ possession and suppression consumers are unchanged; the `hand_stroke.py`
 timing consumers (`stroke_clear_time`, `required_arm_lead_s`) get
 plan-derived twins under unified mode. New outcomes minted through
 `outcome_detail` (`REJECTED_CYCLE_INFEASIBLE(<validate_cycle code>: …)` etc.).
+Session choreography carries the 2026-08-28 owner directive re-homed from the
+superseded MP plan's Q-2: a survived MISS must not `go_home` — hold the pose,
+wait for the ball environment to settle, then resume.
 
 **Sim gate:** a unified-mode variant of `sim/toss_gate.py` running the
 production chain end-to-end (planner → emitter → real `SetpointPump` →
@@ -494,7 +497,9 @@ UH-1 streamed hold → UH-2 slow streamed strokes (no ball) → UH-3 **banked
 carry with a seated ball** (the by-eye cup watch inherited from MP-M5) →
 UH-4 planned catch of a tossed ball → UH-5 planned throw at low tier
 (h ≤ 0.5 m) → UH-6 full planned cycles → UH-7 two-pose ring at constant
-beat. The legacy mode remains one `hand_source` switch away
+beat. The aimed rungs inherit the superseded MP plan's § 7 unlock: re-derive
+the aim-authority window against `tilt_geometry.MAX_TILT_DEG` (12°) before
+UH-7 flies aimed at the constant beat. The legacy mode remains one `hand_source` switch away
 at every rung.
 
 **Dependencies:** Phases 3–4; owner present (operator runs actuating

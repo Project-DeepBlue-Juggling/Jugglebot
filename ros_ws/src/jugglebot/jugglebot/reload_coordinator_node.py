@@ -4486,10 +4486,13 @@ class ReloadCoordinatorNode(Node):
         # helper's docstring. This runs ONCE per cycle, so it lands on a single
         # tick of the blocking cycle loop, alongside the synchronous `go_to_pose`
         # round trip already there (the measured 0.16-0.54 s body overruns). The
-        # class — "the FSM tick does blocking work" — is owned by the named
-        # sibling change *Unblocking the loop from the positioning service round
-        # trip* (plans/active/toss-multi-catch-pose.md § Explicit non-goals), not
-        # by this gate, which is two orders of magnitude below the round trip.
+        # class — "the FSM tick does blocking work" — is described as
+        # *Unblocking the loop from the positioning service round trip*
+        # (plans/archived/toss-multi-catch-pose.md § Explicit non-goals) and is
+        # owned, since that plan's supersession, by
+        # plans/active/unified-7dof-planner.md (its Phase 4 plans off the FSM
+        # tick) — not by this gate, which is two orders of magnitude below the
+        # round trip.
         #
         # `release is None` (a clamped aim, or an unknown 8b site) ⇒ no verdict:
         # the FSM rejects on an earlier gate and there is no reach to plan.

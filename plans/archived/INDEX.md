@@ -56,6 +56,7 @@ next touches that plan, not a mechanical edit. The vocabulary going forward is
 | 2026-08-21 | [hand-command-continuity.md](hand-command-continuity.md) | completed | Hand-command continuity — stop clobbering a live stroke (post-throw dip + throw truncation) |
 | 2026-08-25 | [operator-observability.md](operator-observability.md) | completed | Operator observability quartet — chart units, UDP message rates, ODrive error propagation, QTM calibrate gate |
 | 2026-08-25 | [udp-channel-health.md](udp-channel-health.md) | completed | UDP channel-health metrics — four independently-landable phases |
+| 2026-08-30 | [toss-multi-catch-pose.md](toss-multi-catch-pose.md) | superseded | Multi-pose catch cycling — halted at the pre-M2 boundary, superseded outright by `plans/active/unified-7dof-planner.md`; M0–M6 never ran |
 
 ## Where the other plans are
 

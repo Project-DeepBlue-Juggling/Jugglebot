@@ -370,8 +370,9 @@ would need a residual some forty times larger than anything cycle 1 admits. A
 permanently-green gate costs three ctor fields and teaches every reader that the
 chain is checked when it is not.
 
-If a future capability gives a session a per-leg B (see
-``plans/active/toss-multi-catch-pose.md``), the code comes back on a DIFFERENT
+If a future capability gives a session a per-leg B (the superseded
+``plans/archived/toss-multi-catch-pose.md`` ring, now owned by
+``plans/active/unified-7dof-planner.md``), the code comes back on a DIFFERENT
 premise — an unpredictable park, i.e. ``_predicted_chain_site_mm`` returning None
 at some hop — and not on a box.
 
