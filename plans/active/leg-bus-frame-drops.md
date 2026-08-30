@@ -196,7 +196,7 @@ threshold; a property test that the clamp is never *wider* than today at zero ag
 
 ## 4. Workstream B — the source fix: convict or clear ODrive TX suppression
 
-### 4.1 The cheap A/B (one bench sitting, no firmware)
+### 4.1 The cheap A/B (one bench sitting; arm 1 no-firmware, arm 2 needs a companion build — see the 2026-08-30 note)
 
 Two independent manipulations, either of which discriminates:
 
@@ -212,6 +212,15 @@ to the drives' own broadcast scheduling.
 
 Both arms are cheap: the existing 11-move battery, the existing bag list, and the
 per-window deficit reduction already written for § 2.4.
+
+**This A/B now has a prepared runbook**:
+`tests/hardware/session_unified7_bus_headroom.md` (unified-7dof-planner
+Phase 0, 2026-08-30), which flies arm 1 alongside a 6-vs-7 bridge-frame A/B on
+one boot. ⚠ **Arm 2 is not firmware-free after all** — the bridge emits a leg
+frame every interp tick, so halving the command rate means `INTERP_RATE_HZ`
+500 → 250, a companion build that also halves the 500 Hz safety-ladder cadence.
+It is **not built and not authorised**; the runbook's row 16 puts the
+fly-without vs authorise-the-build choice to the owner.
 
 ### 4.2 The direct convictor
 
@@ -240,8 +249,10 @@ session is already degraded. The new `latency_monitor` row is the natural home.
 
 ## 5. Sequencing and gates
 
-1. **B first, cheaply**: § 4.1's A/B plus § 4.2's SDO read. One bench sitting,
-   no firmware, no control-path change, and it can invalidate the whole of § 4.3.
+1. **B first, cheaply**: § 4.1's A/B plus § 4.2's SDO read. One bench sitting;
+   § 4.1's **arm 1** and § 4.2's SDO read need no firmware and no control-path
+   change (**arm 2 does** — see the 2026-08-30 note in § 4.1), and it can
+   invalidate the whole of § 4.3.
 2. **§ 4.4's instrumentation** alongside, since it is additive and wire-invisible.
 3. **A after A1–A3 are ruled on**, and only then — it touches the live leg path.
 

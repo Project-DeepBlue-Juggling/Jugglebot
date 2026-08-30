@@ -255,7 +255,7 @@ mode; ball tracking, possession verdicts, `outcome_detail` discipline.
 
 | Phase | Scope | Status | Date | Risk | Validates |
 |-------|-------|--------|------|------|-----------|
-| 0 | Probes + recorded decisions: QP solver runtime on Jetson 3.8, Hermite stroke-reconstruction fidelity, bus headroom with a 7th frame (+ leg-bus-frame-drops A/B), hand guard constants derivation | NOT STARTED | | Low | In-process QP is feasible; 7-frame bus budget is safe |
+| 0 | Probes + recorded decisions: QP solver runtime on Jetson 3.8, Hermite stroke-reconstruction fidelity, bus headroom with a 7th frame (+ leg-bus-frame-drops A/B), hand guard constants derivation | DESK-COMPLETE (bench arm pending) | 2026-08-30 | Low | In-process QP is feasible; 7-frame bus budget is safe |
 | 1 | Planner core port (pure Python): `cup_cycle` QP, tilt schedule, `realize` generalisation, `CyclePlan`, `validate_cycle`, sim parity + MuJoCo whole-cycle gate | NOT STARTED | | Low (software only) | Ball-frame constraints hold; the Rung-3 "runway" failure is answered in sim |
 | 2 | Wire v6 + host 7-channel path: codegen, `SetpointPump`, emitter, `make_mpc_command`, tests; firmware-absent safe | NOT STARTED | | Medium | Codec, per-channel step gates, backward-compatible producers |
 | 3 | Can-bridge FW 17: 7th interp lane, hand guards, `hand_source` interlock, dispatch; lockstep flash + bench ladder | NOT STARTED | | High | Hand streaming safety envelope on real hardware |
@@ -269,7 +269,7 @@ Phases 1–2 are software-only. Phase 3 onward requires `active`.
 
 ## 4. Implementation Phases (detailed)
 
-### Phase 0: Probes and recorded decisions — NOT STARTED
+### Phase 0: Probes and recorded decisions — DESK-COMPLETE 2026-08-30 (bench arm pending)
 
 **Probes** (one-off drivers in `/tmp/probe_*.py`; anything reusable promotes to
 `tools/probes/` per `tools/probes/README.md`):
@@ -295,6 +295,10 @@ Phases 1–2 are software-only. Phase 3 onward requires `active`.
    `event_vel` 3–7 m/s (expected: exact to float precision), and (b) records
    the legacy `v1 = (u2 − u1)/SEG_T` forward-difference error for the record
    (the `HAS_V1`-clear fallback path). No wire-design go/no-go remains here.
+   (Measured 2026-08-30: exact to float precision only on knot-aligned cubics —
+   the planner's own output; ≤ 3.25 mm worst-case over grid phase on the legacy
+   closed-form stroke, vs ≤ 11.84 mm for the fallback. See the Phase 0 entry's
+   scope split.)
 3. **Bus headroom + frame-drop A/B.** On the bench, a `BENCH`-guarded firmware
    variant emits a 7th (hand, current-position-hold) frame in the burst.
    Measure: `PROFILE` `can1_util_x100`, `tx_deferred`/`tx_q_hwm` (must stay 0),
@@ -306,17 +310,57 @@ Phases 1–2 are software-only. Phase 3 onward requires `active`.
    `lib/FlexCAN_T4/PROVENANCE.md` § P3/P4 against the widened burst and record
    the verdict.
 4. **Hand guard constants.** Derive and record: `MAX_DEVIATION_HAND_REV`
-   (velocity-aware — at 221 rev/s peak stroke speed, telemetry latency alone
-   produces ~1 rev of apparent deviation; the 10 Hz fault-task guard needs
-   either a velocity-compensated bound or a bound sized to worst honest lag),
-   `MAX_LEAD_HAND_REV` (the legs' 0.10 rev is meaningless at hand speeds),
-   the planner caps `JB_TRAJ_HAND_VEL_LIMIT_RPS` (provisional 250; ceiling:
-   7 m/s × 31.617 rev/m ≈ 221 rev/s) and `JB_TRAJ_HAND_ACC_LIMIT_RPS2`
-   (provisional 3500, under the measured 4178–4333 rev/s² axis ceiling in
+   (velocity-aware — at 221 rev/s peak stroke speed the **measured** 10–15.9 ms
+   end-to-end telemetry latency alone produces **2.2–3.5 rev** of apparent
+   deviation; the earlier "~1 rev" figure here was unsourced and implies 4.5 ms
+   — see the Phase 0 entry's *Withdrawn claims*. The 10 Hz fault-task guard
+   needs either a velocity-compensated bound or a bound sized to worst honest
+   lag), `MAX_LEAD_HAND_REV` (the legs' 0.10 rev is meaningless at hand
+   speeds), the planner caps `JB_TRAJ_HAND_VEL_LIMIT_RPS` (provisional 250;
+   ceiling: 7 m/s × 31.617 rev/m ≈ 221 rev/s) and
+   `JB_TRAJ_HAND_ACC_LIMIT_RPS2` (provisional 3500, under the measured
+   4178–4333 rev/s² axis ceiling in
    `ros_ws/docs/hand_command_continuity.md`).
+   **Signed off 2026-08-30 (owner):** the provisional single caps become
+   **two-tier** (limit/ceiling, the leg pattern) —
+   `hand_vel_limit_rps` **200** / `hand_vel_ceiling_rps` **300** (200 is +12 %
+   over the C-HAND-3 certified 178.23 rev/s peak; the provisional 250 left a
+   40 % invisible band, and the planner cap is the only practical hand
+   overspeed guard today), and `hand_acc_limit_rps2` **3500** /
+   `hand_acc_ceiling_rps2` **3900**, under the **C-HAND-2 authority bound
+   3925.5 rev/s²** (that bound binds, not the measured 4178–4333 ceiling).
+   Plus a coupled fifth constant this list missed, `HAND_VELFF_LIMIT_RPS`
+   **300**, and a new `fault_machine` hand overspeed guard at ~1.15× ceiling.
 
 **Dependencies:** none. **Deliverable:** a short logbook entry recording the
 four decisions with the (date, command, result) triples.
+
+**Outcome (2026-08-30) — desk phase closed; probe 3's bench arm pending.**
+
+- **1. QP solver: IN-PROCESS numpy QP, a Goldfarb–Idnani dual active set.**
+  Parity vs the CasADi/IPOPT reference **1.91e-4 mm / 2.47e-3 mm/s** worst case
+  over 6 cases (bars 1 mm / 10 mm/s), **p50 5.577 / p90 6.367 ms on n=40**
+  under system Python 3.8 — the escape hatch is **not taken**, and IPOPT was
+  additionally caught **falsely refusing a feasible cycle** the QP solves in one
+  iteration.
+- **2. Hermite: v1-exact is float-exact (≤ 3.6e-15 rev) on knot-aligned
+  piecewise cubics** — the planner's own output — and **≤ 3.25 mm on the legacy
+  closed-form stroke vs ≤ 11.84 mm** for the forward-difference fallback.
+- **3. Bus headroom: BENCH runtime-toggle image built (unflashed) and
+  `tests/hardware/session_unified7_bus_headroom.md` ready; the FlexCAN P3/P4
+  desk verdict against the widened burst is clean. BENCH VERDICT PENDING the
+  operator sitting.**
+- **4. Hand guards owner-signed:** `MAX_DEVIATION_HAND_REV` **2.5 rev**
+  velocity-compensated with the residual computed in the 500 Hz interp tick,
+  `MAX_LEAD_HAND_REV` **2.0 rev** freshness-aware, `HAND_VELFF_LIMIT_RPS`
+  **300**, caps **200/300 rev/s** and **3500/3900 rev/s²**, and a
+  `fault_machine` hand overspeed guard to be added.
+
+**Phase 1's dependencies (decisions 1 and 2) are satisfied — Phase 1 is cleared
+to start.** The promotion gate (`proposed` → `active`) and Phase 3 await probe
+3's bench numbers. The canonical record is
+[`logbook/2026-08-30-unified-7dof-planner-phase0-probes.md`](../../logbook/2026-08-30-unified-7dof-planner-phase0-probes.md);
+commits carry the `Logbook-Entry:` trailer, so no SHAs are recorded here.
 
 ### Phase 1: Planner core port (pure Python, no hardware) — NOT STARTED
 
@@ -335,7 +379,11 @@ Python, numpy-only, `from __future__ import annotations`, Python 3.8):
   (owner, 2026-08-29) — the catch knot must leave
   `≥ v_cup²/(2·a_hand_max)` of slider stroke below it, plus margin, so
   deceleration room is planned rather than obtained by ceiling overshoot.
-  Warm-startable from the previous cycle.
+  Warm-startable from the previous cycle. **The Phase 0 decision binds the port
+  to a Goldfarb–Idnani dual active set** — the naive KKT-plus-violated-boxes
+  loop this section's earlier wording suggested was shown to *cycle*, returning
+  silently wrong trajectories (working sets to rank 37/53, `cond(K)` ~1e23,
+  answers 124 m off); see the Phase 0 logbook entry.
 - `cup_realize.py` — stage 2 + 3. `tilt_schedule(cup_plan, receive_tilt,
   throw_tilt)`: banking from apparent gravity — the cup axis tracks
   `normalize(g − a_cup(t))`, saturated at `tilt_geometry.MAX_TILT_DEG` (12°),
