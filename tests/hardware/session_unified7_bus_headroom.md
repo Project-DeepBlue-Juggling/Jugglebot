@@ -291,21 +291,146 @@ Two corollaries worth stating, because they are what would actually go wrong:
   promoting it to `tools/probes/` is the obvious follow-up and would make this
   sitting's answer reproducible rather than re-derived.
 
-## Results — <date>
+## Results — 2026-08-30
 
-_Filled by the operator / the analysing session._
+Flown by the operator 2026-08-30 15:59–16:05, one boot, rows 11–14 only.
+Bag: `~/Desktop/rosbags/2026-08-30_15-59-52/` (46 MB, 337 s, 169 514 msgs).
+Analysis: `python /tmp/probe_bag_unified7_headroom.py ~/Desktop/rosbags/2026-08-30_15-59-52`
+(run 2026-08-30 — the ad-hoc § 2.4 reduction the Artifacts § flags as missing;
+see Residuals).
 
-`./run_tests.sh --full` (date, command, result):
+Row 1 gate — `./run_tests.sh --full`, run 2026-08-30: **6676 passed, 4 skipped,
+3 xfailed (+ 9 serial) in 580 s — PASS.**
+
+Bridge self-report through the whole bag: `bridge_fw_version` **`16 (proto 5)`**,
+`install_skew` 0, `BRIDGE_FW_CHECK` clean — **FW 16 is aboard**, and the
+`15 (SKEW — expected v16)` advisory is gone (rows 3 / 27). Per the § "Firmware
+skew" note this is *not* by itself evidence of which image ran; the console
+banner is. The wire evidence that the BENCH toggle worked is the `can1_tx` step
+below.
 
 | arm | frames/tick | uptime_ms | can1_tx | can1_util_pct | defer jb Δ | txq jb | [cantx] legs Δ | deficit / streaming s |
 |---|---|---|---|---|---|---|---|---|
-| A | 6 | | | | | | | |
-| B | 7 | | | | | | | |
-| A′ | 6 | | | | | | | |
-| B′ | 7 | | | | | | | |
-| C | 6 (drives quiet) | | | | | | | |
-| D | 6 @ 250 Hz | | | | | | | |
+| A | 6 | 133 → 236 s | **3150** flat (n=77) | 56.55 mean / **56.7 peak** | **0** | **0** | not on the wire | −0.78 ± 5.66 /axis/window → **4.65 f/s** over 6 legs; 9 eps / 103 w; **no battery ran** |
+| B | 7 | 238 → 334 s | **3650** flat (n=77) | 62.13 mean / **62.2 peak** | **0** | **0** | not on the wire | −0.36 ± 4.24 → **2.14 f/s**; 2 eps / 96 w. Battery-only: −0.03 ± 0.36, **0 eps / 20 w** |
+| A′ | 6 | 335 → 367 s | **3150** flat (n=25) | 56.58 mean / **56.7 peak** | **0** | **0** | not on the wire | −0.70 ± 5.74 → **4.19 f/s**; 3 eps / 32 w. Battery-only: −1.06 ± 7.06, **3 eps / 21 w** |
+| B′ | 7 | 368 → 396 s | **3650** flat (n=18) | 62.20 mean / **62.2 peak** | **0** | **0** | not on the wire | **0.00 ± 0.00** → 0.00 f/s; 0 eps / 28 w. Battery-only identical |
+| C | 6 (drives quiet) | — | — | — | — | — | — | **NOT FLOWN** — deferred by the operator; needs the per-drive `odrivetool` backup/apply/restore of row 15, which is a separate bench block, not a console toggle |
+| D | 6 @ 250 Hz | — | — | — | — | — | — | **NOT FLOWN** — row 16's `INTERP_RATE_HZ` 250 companion build was never authorised, so no such image exists |
 
-**Decision-rule verdict:**
+Row 19 / 20 (`[cantx]`, `[bench7]`) are **USB-console only** and are not in the
+bag; the console scrollback for this sitting was not captured. Their wire proxy
+is `bridge_tx_diag` (row 18, identically 0) and the `can1_tx` step (below).
+
+**The 7th frame flowed — the B arms are valid.** `can1_tx` steps
+**3150 → 3650 fps, exactly +500**, twice (t 175.9 → 176.9 and t 305.9 → 306.9),
+and steps back to 3150 in between. That is the row-20 `unseen_skip` hazard
+closed from the wire side: had the hand ODrive never been seen, the burst would
+have stayed at 6 frames and `can1_tx` flat. `can1_util_pct` moves
+**56.7 → 62.2 %, +5.5 pp** — *below* the pinned ~65 % prediction and well under
+the ~70 % "not comfortably" line. Peak utilisation over the whole sitting is
+**62.2 %**, matching the operator's GUI reading of ~62.5 %.
+
+Row 22 validity, whole bag, every arm: `leak_jb`/`leak_bb`/`leak_cone` ≡ **0**,
+`fifo_overflows_*` and `fifo_warns_*` ≡ 0, all fifteen `can3_errors` fields ≡ 0
+(`ack=0` — the dark-bus failure mode did not occur), `rx_cap_hits_*` ≡ 0,
+`decode_short` ≡ 0, `seen_mask` ≡ 127 (all seven axes present in every window),
+`interp_deadline_misses` ≡ 0 and `interp_max_jitter_us` peaking at **2 µs in
+every one of the four arms**, 6- and 7-frame alike (the whole bag's single 3 µs
+sample is at t = 56.5 s, before streaming began) — the 7th frame inside the
+existing PRIMASK region costs nothing measurable. `latency_monitor` **OK** on all 3358 samples;
+`bus1_health`/`bus2_health` OK; `fault_state` NONE; `seq_gaps`/`crc_errors`/
+`decode_errors` 0. `decode_bad_axis` climbs at 2.00/s, the documented normal.
+`uptime_ms` 61.5 → 397.2 s: one boot, fresh plant, no arm above 6.6 min.
+
+Row 21 cross-check: the 6-leg per-window deficit against the `can1_rx` deficit
+gives **r = 0.453, slope 0.670** (2026-08-15 reference r = 0.62, slope 0.82) —
+same relationship, so the loss still localises *before* the bridge's CAN
+peripheral. Total **net** leg-frames short across the 259 one-second arm windows
+(259 s of streaming, all four arms; A −479, B −205, A′ −134, B′ +0): **818**.
+The 75 out-of-arm windows contribute −0.0, so 818 is also the whole-bag total.
+(This line read "751 across 285 streaming seconds" until the same probe was
+re-run against the same bag on 2026-09-01: **neither figure is reproducible** —
+the arm windows span 259 s, not 285, and no denominator in the reduction yields
+751. The 818 above supersedes it.)
+
+**Decision-rule verdict: the drop rate does NOT scale with the bridge's TX rate.
+The `leg-bus-frame-drops` source fix does NOT sequence before Phase 3.**
+
+Pooled over all streaming windows, the per-axis deficit is **−0.76 ± 5.68 at 6
+frames/tick (12 episodes / 135 windows)** against **−0.28 ± 3.73 at 7 frames/tick
+(2 episodes / 124 windows)** — smaller at the higher TX rate, not larger.
+Restricted to battery-moving windows, where the drops are load-gated and the
+comparison is fairest, it is **−1.06 ± 7.06 (3 episodes / 21 w) at 6 frames**
+against **−0.02 ± 0.25 (0 episodes / 41 w) at 7 frames**. Judged against the
+A-vs-A′ within-boot spread — the runbook's designed drift control, here used as
+the yardstick for "materially" — that spread
+**exceeds the 6-vs-7 difference**: A's quiet windows sit at −0.78 while A′'s
+quiet windows sit at exactly 0.00, a same-arm-type swing of 0.78 against a
+pooled 6-vs-7 difference of 0.48 that points the *wrong way* for the hypothesis.
+The +16 % (6→7 frames/tick; 3150→3650 fps) TX arm therefore returns
+**"unmoved, if anything cleaner"** — § 4.1's
+falsification branch, not its conviction branch.
+
+Three qualifications, so this is not over-read:
+
+1. **Only three of the four 11-move batteries are in the bag, and arm A carries
+   none.** Platform motion (from `/leg_setpoint_echo`, corroborated by
+   `/trajectory/commanded_position` and the single `TOO_FAST` rejection at
+   t = 262.9 s) occurs in exactly three ~20 s blocks: t 242–262 (inside arm B),
+   280–299 (inside A′), 313–332 (inside B′). Arm A's 103 s window is entirely
+   quiescent streaming. So the moving-window comparison is **one 6-frame battery
+   against two 7-frame batteries**, not the designed 2-vs-2, and the whole 6f
+   moving signal comes from a single 20 s block.
+2. **This plant is roughly 5× cleaner than the 2026-08-15 reference** (−0.76
+   here vs −3.6 ± 10.3 there). The probe had correspondingly little dynamic
+   range in which a +16 % (6→7 frames/tick; 3150→3650 fps) change could show up
+   — which is exactly the argument
+   row 16's −50 % lever was reserved for.
+3. **The only hand-axis (ax 6) episodes in the entire bag fall in arm B** — four
+   windows at t 202.5/226.5/227.5/232.5, worst −49 — giving arm B a hand mean of
+   −1.22 against 0.00 everywhere else. The 7th frame addresses axis 6, so this is
+   worth a second look; but **B′ (also 7 frames, 28 s) had none**, and the same
+   one-axis-at-a-time, 1–2-window episode shape appears on axes 0–5 in arm A with
+   no 7th frame at all. On this evidence it is the ordinary episodic pattern
+   landing on axis 6, not a cost of the hand frame.
+
+**Headroom answer: comfortable.** ~62 % streaming utilisation, zero deferral,
+zero software-txBuffer entry, unchanged ISR jitter, every validity counter
+clean. The planner's frame budget is a formality at 7 frames, not a constraint.
 
 **Residuals / follow-ups:**
+
+- **Arm C (row 15) not flown** — the drives' own TX pressure is untested, so
+  § 4.1's independent second manipulation and § 4.3's cheapest remedy are
+  undecided. It needs no firmware; it needs an `odrivetool` block per drive.
+- **Arm D (row 16) not flown** — the `INTERP_RATE_HZ` 250 companion build was
+  not authorised. Under the § "Row 16" decision, arm A/B returning *unmoved* is
+  precisely the branch where "row 16's larger lever is worth its cost"; that
+  choice is now live and informed, and qualification 2 above is the argument for
+  it.
+- **The § 2.4 deficit tool is still uncommitted.** This sitting was reduced by
+  `/tmp/probe_bag_unified7_headroom.py` (arm segmentation from the `can1_tx`
+  plateau, per-window deficit split by arm *and* by battery motion, row-22
+  validity sweep). That file is the **seed** for the `tools/probes/` promotion
+  the Artifacts § asks for — `/tmp` references rot at the next reboot
+  (`tools/probes/README.md`), so promote it before the next sitting.
+- **Console scrollback was not captured**, so rows 19 and 20 have no record at
+  all for this sitting. `defer`/`txq` at 0 make the `[cantx]` census moot here,
+  but `[bench7] sent=` / `unseen_skip` / `stale_hold` would have been the direct
+  read; the `can1_tx` step is a sound but indirect substitute. Capture the
+  console next time.
+- **FW 16 first-flash acceptance is only half read.** The counters exist and the
+  board reports 16; the hand ball-sensor poller's ~42 → ~50 Hz claim is
+  console-side and unverified (`/link_status` `hand_ball_sensor` was static
+  `held miss=0` all session, the bench having no ball).
+- **Close-out rows 24–27 are unrecorded here** — row 24 is moot (arm C not
+  flown), but whether the stock image was reflashed (rows 25–26) is not
+  determinable from the bag. **The BENCH image never leaves the bench**;
+  confirm before any non-bench session.
+- Minor, not a validity trip: `/ring_diag` `lag_now_us` drifts ~225 µs/s and
+  reseeds once at t = 308.5 s (`lag_reseeds` 0 → 1), peaking at 199 ms. Per
+  `teensy_bridge_node.py`'s RING_DIAG normaliser note this integral is a
+  *clock-divergence* quantity, not delivery latency, and `lag_corr_state` reads
+  `uncalibrated`. `leak ≡ 0` and `latency_monitor = OK` are the health verdicts,
+  and both are clean.

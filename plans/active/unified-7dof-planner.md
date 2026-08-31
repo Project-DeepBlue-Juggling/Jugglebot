@@ -129,7 +129,7 @@ each is binding on the phases below):
 | `bb-online-juggle-tilt-rearchitecture.md` Rung 3 | Sim-side twin. Its P2 attempt (2026-07-03, ~35 probes) BLOCKED on "the slam is the seat's runway" — every cleanup of the whole-cycle sim catch dropped MAKE to 0/12. **Phase 1 must answer that failure in sim before any hardware phase starts** (§ 4, Phase 1 acceptance). |
 | `critical-point-ilc.md` | Sequenced after this plan (owner). Its Phases 0–2 substrate (records, miner, gates) survives; the fit corpus, `SIGMA_E`, cell keys and the speed-authority band do not — re-capture on the unified plant. |
 | `toss-pipelined-preamble.md` | Coexists. Shipped (`toss_pipeline_enabled` default true); the legacy pipelined path remains the fallback mode throughout. |
-| `leg-bus-frame-drops.md` | Interaction: a 7th frame per 2 ms tick takes bridge TX ~3000 → ~3500 fps (~56.5 % → ~65 % streaming utilisation), intensifying the mechanism that plan indicts (ODrive-side TX suppression beating against the tick-quantised burst). Its workstream-B A/B (drop rate vs bridge TX rate) runs in Phase 0 here; if drops scale with TX rate, the source fix sequences before Phase 3 hardware streaming. |
+| `leg-bus-frame-drops.md` | Interaction: a 7th frame per 2 ms tick takes bridge TX ~3000 → ~3500 fps (~56.5 % → ~65 % streaming utilisation), intensifying the mechanism that plan indicts (ODrive-side TX suppression beating against the tick-quantised burst). Its workstream-B A/B (drop rate vs bridge TX rate) runs in Phase 0 here; if drops scale with TX rate, the source fix sequences before Phase 3 hardware streaming. **Answered 2026-08-30: they do not — the deficit is smaller at 7 frames/tick than at 6, and utilisation lands at 62.2 %, not 65 %. No prerequisite on Phase 3** (see Phase 0's Outcome). |
 
 ## 2. Architecture
 
@@ -255,7 +255,7 @@ mode; ball tracking, possession verdicts, `outcome_detail` discipline.
 
 | Phase | Scope | Status | Date | Risk | Validates |
 |-------|-------|--------|------|------|-----------|
-| 0 | Probes + recorded decisions: QP solver runtime on Jetson 3.8, Hermite stroke-reconstruction fidelity, bus headroom with a 7th frame (+ leg-bus-frame-drops A/B), hand guard constants derivation | DESK-COMPLETE (bench arm pending) | 2026-08-30 | Low | In-process QP is feasible; 7-frame bus budget is safe |
+| 0 | Probes + recorded decisions: QP solver runtime on Jetson 3.8, Hermite stroke-reconstruction fidelity, bus headroom with a 7th frame (+ leg-bus-frame-drops A/B), hand guard constants derivation | COMPLETE | 2026-08-30 | Low | In-process QP is feasible; 7-frame bus budget is safe |
 | 1 | Planner core port (pure Python): `cup_cycle` QP, tilt schedule, `realize` generalisation, `CyclePlan`, `validate_cycle`, sim parity + MuJoCo whole-cycle gate | NOT STARTED | | Low (software only) | Ball-frame constraints hold; the Rung-3 "runway" failure is answered in sim |
 | 2 | Wire v6 + host 7-channel path: codegen, `SetpointPump`, emitter, `make_mpc_command`, tests; firmware-absent safe | NOT STARTED | | Medium | Codec, per-channel step gates, backward-compatible producers |
 | 3 | Can-bridge FW 17: 7th interp lane, hand guards, `hand_source` interlock, dispatch; lockstep flash + bench ladder | NOT STARTED | | High | Hand streaming safety envelope on real hardware |
@@ -269,7 +269,7 @@ Phases 1–2 are software-only. Phase 3 onward requires `active`.
 
 ## 4. Implementation Phases (detailed)
 
-### Phase 0: Probes and recorded decisions — DESK-COMPLETE 2026-08-30 (bench arm pending)
+### Phase 0: Probes and recorded decisions — COMPLETE 2026-08-30
 
 **Probes** (one-off drivers in `/tmp/probe_*.py`; anything reusable promotes to
 `tools/probes/` per `tools/probes/README.md`):
@@ -335,7 +335,7 @@ Phases 1–2 are software-only. Phase 3 onward requires `active`.
 **Dependencies:** none. **Deliverable:** a short logbook entry recording the
 four decisions with the (date, command, result) triples.
 
-**Outcome (2026-08-30) — desk phase closed; probe 3's bench arm pending.**
+**Outcome (2026-08-30) — all four probes closed; probe 3 flown on the bench.**
 
 - **1. QP solver: IN-PROCESS numpy QP, a Goldfarb–Idnani dual active set.**
   Parity vs the CasADi/IPOPT reference **1.91e-4 mm / 2.47e-3 mm/s** worst case
@@ -346,10 +346,25 @@ four decisions with the (date, command, result) triples.
 - **2. Hermite: v1-exact is float-exact (≤ 3.6e-15 rev) on knot-aligned
   piecewise cubics** — the planner's own output — and **≤ 3.25 mm on the legacy
   closed-form stroke vs ≤ 11.84 mm** for the forward-difference fallback.
-- **3. Bus headroom: BENCH runtime-toggle image built (unflashed) and
-  `tests/hardware/session_unified7_bus_headroom.md` ready; the FlexCAN P3/P4
-  desk verdict against the widened burst is clean. BENCH VERDICT PENDING the
-  operator sitting.**
+- **3. Bus headroom: FLOWN 2026-08-30 — comfortable, and the drop rate does not
+  follow TX rate.** Rows 11–14 on one boot (bag
+  `~/Desktop/rosbags/2026-08-30_15-59-52/`): `can1_tx` **3150 → 3650 fps,
+  exactly +500**, twice, so the 7th frame demonstrably flowed;
+  `can1_util_pct` **56.7 → 62.2 %** (below the pinned ~65 %, well under ~70 %);
+  `defer jb` increment **0** and `txq jb` **0** every arm; `leak_* ≡ 0`,
+  `can3_errors` all-zero, `interp_deadline_misses` 0 with `interp_max_jitter_us`
+  peaking at 2 µs in every arm, `latency_monitor` OK ×3358. **Decision rule answers
+  NO:** per-axis encoder deficit **−0.76 ± 5.68 at 6 frames/tick** vs
+  **−0.28 ± 3.73 at 7** (battery-moving windows only: −1.06 ± 7.06 with 3
+  episodes vs −0.02 ± 0.25 with 0), smaller at the higher rate and inside the
+  A-vs-A′ within-boot spread — so the `leg-bus-frame-drops` source fix **does
+  not sequence before Phase 3**. Caveats recorded in the runbook: only three of
+  four batteries are in the bag (arm A quiescent), and this plant runs ~5×
+  cleaner than the 2026-08-15 reference, so the +16 % (6→7 frames/tick;
+  3150→3650 fps) arm had little dynamic range. **Arms C (drives quiet) and D (250 Hz) NOT flown** — C deferred by the
+  operator, D's `INTERP_RATE_HZ` 250 companion build never authorised; row 16's
+  larger lever is now the informed follow-up. The FlexCAN P3/P4 desk verdict
+  against the widened burst is clean, and FW 16 is now aboard.
 - **4. Hand guards owner-signed:** `MAX_DEVIATION_HAND_REV` **2.5 rev**
   velocity-compensated with the residual computed in the 500 Hz interp tick,
   `MAX_LEAD_HAND_REV` **2.0 rev** freshness-aware, `HAND_VELFF_LIMIT_RPS`
@@ -357,9 +372,15 @@ four decisions with the (date, command, result) triples.
   `fault_machine` hand overspeed guard to be added.
 
 **Phase 1's dependencies (decisions 1 and 2) are satisfied — Phase 1 is cleared
-to start.** The promotion gate (`proposed` → `active`) and Phase 3 await probe
-3's bench numbers. The canonical record is
-[`logbook/2026-08-30-unified-7dof-planner-phase0-probes.md`](../../logbook/2026-08-30-unified-7dof-planner-phase0-probes.md);
+to start.** Probe 3's bench numbers are now recorded, so the promotion gate
+(`proposed` → `active`) has its evidence and awaits only the owner's flip;
+Phase 3 carries **no** `leg-bus-frame-drops` prerequisite. The canonical records
+are
+[`logbook/2026-08-30-unified-7dof-planner-phase0-probes.md`](../../logbook/2026-08-30-unified-7dof-planner-phase0-probes.md)
+(desk probes) and
+[`logbook/2026-08-30-unified7-bus-headroom-sitting.md`](../../logbook/2026-08-30-unified7-bus-headroom-sitting.md)
+(the bench sitting), with the full arm table in
+[`tests/hardware/session_unified7_bus_headroom.md`](../../tests/hardware/session_unified7_bus_headroom.md) § Results;
 commits carry the `Logbook-Entry:` trailer, so no SHAs are recorded here.
 
 ### Phase 1: Planner core port (pure Python, no hardware) — NOT STARTED
@@ -490,7 +511,8 @@ poller-cadence flash — 16's behavioural content is carried forward into 17).
 `EXPECTED_BRIDGE_FW_VERSION` → 17 in the same commit.
 
 **Dependencies:** Phase 2; Phase 0 probes 3 and 4; the `leg-bus-frame-drops`
-verdict (§ 1, prerequisite row).
+verdict (§ 1, prerequisite row) — **satisfied 2026-08-30, no source fix
+required first**.
 
 ### Phase 4: Jetson unified-cycle mode — NOT STARTED
 

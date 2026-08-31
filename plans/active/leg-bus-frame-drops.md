@@ -222,6 +222,20 @@ frame every interp tick, so halving the command rate means `INTERP_RATE_HZ`
 It is **not built and not authorised**; the runbook's row 16 puts the
 fly-without vs authorise-the-build choice to the owner.
 
+**2026-08-30 — the weak arm flew, and it does not convict.** The bridge-TX A/B
+(6 → 7 frames/tick, 3150 → 3650 fps, **+16 %**, one boot) gave a per-axis deficit
+of **−0.76 ± 5.68 at 6 frames** against **−0.28 ± 3.73 at 7** (battery-moving
+windows only: −1.06 ± 7.06 with 3 episodes vs −0.02 ± 0.25 with 0) — *smaller*
+at the higher TX rate, and inside the A-vs-A′ within-boot spread. **That clears
+Phase 3 of `unified-7dof-planner` of any sequencing obligation on this plan, but
+it does not kill the hypothesis**: arm 1 (drives quiet) was not flown, and this
+plant ran ~5× cleaner than the 2026-08-15 reference (−0.76 vs −3.6 ± 10.3), so a
++16 % (6→7 frames/tick; 3150→3650 fps) lever had little to move. **Arm 2's −50 %
+lever is now the informed next
+step**, and the owner's row-16 choice is live. Numbers and caveats:
+`tests/hardware/session_unified7_bus_headroom.md` § Results;
+`logbook/2026-08-30-unified7-bus-headroom-sitting.md`.
+
 ### 4.2 The direct convictor
 
 Read the **ODrive's own CAN TX-drop statistic over SDO** during and after a drop
