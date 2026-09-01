@@ -25,6 +25,7 @@ from jugglebot.motion.trajectory.feasibility import (
     FeasibilityReport,
     TrajectoryInfeasible,
     validate,
+    validate_cycle,
     validate_follow,
 )
 from jugglebot.motion.trajectory.follower import FollowResult, TargetFollower
@@ -45,6 +46,7 @@ __all__ = [
     'FeasibilityReport',
     'TrajectoryInfeasible',
     'validate',
+    'validate_cycle',
     'validate_follow',
     'FollowResult',
     'TargetFollower',

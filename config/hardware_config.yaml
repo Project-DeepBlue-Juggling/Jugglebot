@@ -880,6 +880,22 @@ jugglebot_operational:
                                          # Matches the tilt-calibration grid's own read_gap_s so
                                          # the covariate and the calibration capture sample the
                                          # SCL3300 the same way.
+  unified_cycle_enabled: false           # Route a toss cycle through the UNIFIED 7-DoF planner
+                                         # (jugglebot/motion/trajectory/cup_cycle.py ->
+                                         # cup_realize.py -> cycle_plan.CyclePlan) instead of today's
+                                         # separate platform plan + firmware hand stroke. Plan:
+                                         # plans/active/unified-7dof-planner.md.
+                                         # SHIPS FALSE and stays false until the Phase-5 hardware
+                                         # ladder: the unified path puts the hand on the SAME 40 Hz
+                                         # streamed clock as the legs, which needs the v6 wire
+                                         # (Phase 2) and can-bridge FW 17's 7th interp lane plus its
+                                         # hand guards (Phase 3) underneath it. With those absent the
+                                         # flag has nothing to switch to, so it is a REVIEWED CONFIG
+                                         # COMMIT (same shape as toss_ilc_enabled above), never a
+                                         # runtime toggle — which build ran the unified planner has
+                                         # to be answerable from git alone when a bench trace is read
+                                         # back months later. Phase 1 (this key's landing) is the
+                                         # pure-Python planner core only; nothing reads the flag yet.
   target_reached_pos_tol_rev: 0.01       # Position tolerance for target-reached check {rev}
   target_reached_vel_tol_rps: 0.1        # Velocity tolerance for target-reached check {rev/s}
   gentle_move_vel_limit_rps: 2.5         # Velocity limit during gentle moves {rev/s}
@@ -929,6 +945,32 @@ trajectory_op:
   leg_vel_ceiling_mmps: 5000.0     # Hard set_limits clamp {mm/s} — administrative (see note above)
   leg_acc_ceiling_mmps2: 5000.0    # Hard set_limits clamp {mm/s^2} — administrative
   leg_jerk_ceiling_mmps3: 200000.0 # Hard set_limits clamp {mm/s^3} (unchanged 2026-07-16)
+  # HAND (7th channel) limits — the same two-tier limit/ceiling shape as the legs
+  # above, so trajectory/set_limits ramps the hand within a YAML-pinned envelope
+  # instead of past it. Read by TrajectoryLimits.from_config and enforced by
+  # feasibility.validate_cycle's HAND_LIMIT_VEL / HAND_LIMIT_ACC gates on a
+  # CyclePlan's 7th channel. OWNER-SIGNED 2026-08-30 (unified-7dof-planner Phase 0
+  # decision 4, logbook/2026-08-30-unified-7dof-planner-phase0-probes.md): the
+  # limits are the operating caps and the ceilings are the raise bounds.
+  # Units are HAND MOTOR revs (the firmware's homed frame), not mm of slider:
+  # 200 rev/s = 6.33 m/s of slider at the 31.617 rev/m spool gain.
+  hand_vel_limit_rps: 200.0        # Session hand velocity limit {rev/s} at launch (set_limits to change).
+                                   # +12% over the C-HAND-3 certified throw peak of 178.23 rev/s, so the
+                                   # cap sits above every admitted throw stroke without licensing a new
+                                   # speed regime the envelope has never certified.
+  hand_vel_ceiling_rps: 300.0      # Hard set_limits clamp {rev/s}. Matches the Phase-0 signed
+                                   # HAND_VELFF_LIMIT_RPS (300) the can-bridge will carry at FW 17, so
+                                   # a session ramp can never ask for a hand velocity feedforward the
+                                   # firmware would clip — the clip would be silent, and a silently
+                                   # clipped VELFF is a lagging hand, not a refused plan.
+  hand_acc_limit_rps2: 3500.0      # Session hand acceleration limit {rev/s^2} at launch. Also the
+                                   # deceleration authority validate_cycle sizes the catch runway with
+                                   # (v^2/2a), and cup_cycle.HAND_ACC_LIMIT_RPS2 mirrors it for the
+                                   # in-QP bound.
+  hand_acc_ceiling_rps2: 3900.0    # Hard set_limits clamp {rev/s^2}. Sits just UNDER the C-HAND-2
+                                   # measured authority bound of 3925.5 rev/s^2 (ros_ws/docs/
+                                   # hand_decel_feedforward.md), so the ceiling stays inside what the
+                                   # hand ODrive can actually produce rather than above it.
   knot_dt_s: 0.025                 # Fixed 40 Hz knot spacing {s} (matches firmware SEGMENT_T_S; not runtime-configurable)
   min_move_duration_s: 0.20        # Minimum profiled move duration {s}
   min_timed_lead_s: 0.25           # Minimum lead time for a timed target {s}
@@ -1007,6 +1049,29 @@ trajectory_op:
                                    # tracking-aware duration floor. Legacy loop on the batched gate
                                    # still plans shaped moves in ~0.23 s (5x the pre-SPE ~1.2 s).
                                    # See logbook/2026-07-17-retime-model-tracking-envelope.md.
+  unified_z_float_enabled: false   # Unified 7-DoF cycle: let the platform CENTROID HEIGHT absorb
+                                   # slider saturation. False (the default) pins pose z to
+                                   # jugglebot_operational.default_active_z_mm at every knot, exactly
+                                   # as sim/juggle_tilt.py::realize_tilted does today — the bit-exact
+                                   # pin the Phase-1 parity contract is asserted against. True lets a
+                                   # knot whose slider demand runs past the stroke buy the shortfall
+                                   # back off the legs (raising z by dz raises the cup base by dz and
+                                   # takes dz off the slider), bounded by unified_z_band_mm below.
+                                   # SHIPS FALSE: a floating z moves SIX legs to solve a ONE-axis
+                                   # stroke shortfall, so it trades a clamped hand for a platform
+                                   # excursion during a catch or a throw — permitted, never mandated
+                                   # (the same doctrine as catch_seat_rate_radps above). Read by
+                                   # cup_realize.RealizeConfig.z_float_enabled; the excursion it
+                                   # offers is GATED by feasibility.validate_cycle's leg-workspace
+                                   # checks, never silently trimmed at the realisation.
+  unified_z_band_mm: 30.0          # Max |z - default_active_z_mm| {mm} the float above may use.
+                                   # Value set by the owner at the unified-7dof-planner Phase-1
+                                   # config landing (2026-08-30); the plan names the key, not a
+                                   # number. Only a bound on what is OFFERED — validate_cycle
+                                   # is what refuses an
+                                   # excursion the legs cannot reach, so raising this widens the
+                                   # search, it does not widen the safety envelope. Inert while
+                                   # unified_z_float_enabled is false.
 
 # ============================================================
 # 7. Jugglebot SpaceMouse

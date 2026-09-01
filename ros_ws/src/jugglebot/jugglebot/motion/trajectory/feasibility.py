@@ -22,6 +22,13 @@ Phase 2 scope (this file): the **full** gate. In order (first failure wins the
    per-knot ``|Δu0|`` must stay under ``max_step_rev`` with a 20 % margin so a
    move is rejected here, before motion, rather than mid-stream at the pump.
 
+A THIRD entry point, :func:`validate_cycle`, gates the unified 7-DoF cycle plan
+(``cycle_plan.CyclePlan``): the same 6-DoF measurements on the pose track plus the
+hand channel's own stroke / velocity / acceleration / step gates and the
+catch-runway re-check. It is a separate function for a structural reason, not a
+stylistic one — a cycle plan has **zero segments**, so every loop above runs zero
+iterations on it. See its docstring.
+
 Timing (``TOO_FAST``) and the duration-stretch loop live in ``planner.build_move``,
 which drives :func:`validate` iteratively; this function is a **pure predicate over
 a fully-specified plan** — it never mutates durations. It always computes *all*
@@ -39,6 +46,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+import jugglebot.hardware_config as hw
 from jugglebot.motion.ik_solver import (
     accel_to_leg_accels,
     compute_jacobian,
@@ -46,12 +54,14 @@ from jugglebot.motion.ik_solver import (
     rotvec_to_rot_matrix,
     twist_to_leg_velocities,
 )
+from jugglebot.motion.trajectory.hand_stroke import LINEAR_GAIN_REV_PER_M
 from jugglebot.motion.trajectory.shaping import _ShapedPlan, batched_shaped_states
 from jugglebot.motion.workspace import (
     WorkspaceLimits,
     check_leg_extensions,
     compute_condition_number,
 )
+from jugglebot.outcome_detail import bound_msg, range_msg
 
 
 # Machine-readable feasibility codes. The full set is declared for downstream
@@ -66,6 +76,14 @@ TOO_FAST = 'TOO_FAST'
 STEP_BOUND = 'STEP_BOUND'
 STALE_STATE = 'STALE_STATE'
 WRONG_MODE = 'WRONG_MODE'
+# The 7th channel (unified 7-DoF cycle, plan § 4 Phase 1). Every one of these is a
+# BARE code with no parenthetical, so ``outcome_detail.base_outcome`` round-trips
+# it unchanged and a downstream guard matching on the code keeps matching once the
+# refusal starts carrying its numbers — the failure mode that module exists to
+# prevent, and the reason the detail lives in ``reasons`` rather than in ``code``.
+HAND_STROKE = 'HAND_STROKE'
+HAND_LIMIT_VEL = 'HAND_LIMIT_VEL'
+HAND_LIMIT_ACC = 'HAND_LIMIT_ACC'
 
 # The per-knot |Δu0| bound is enforced with a 20 % safety margin below the pump's
 # hard step gate, so the gate rejects a step-heavy move BEFORE it reaches the pump
@@ -164,6 +182,12 @@ class FeasibilityReport:
     peak_leg_jerk_mmps3: float = 0.0
     peak_leg_ext_mm: float = 0.0
     peak_step_rev: float = 0.0
+    # Hand-channel peaks — populated only by :func:`validate_cycle`; zero on the
+    # 6-DoF gates, which never see a 7th channel.
+    peak_hand_rev: float = 0.0
+    peak_hand_vel_rps: float = 0.0
+    peak_hand_acc_rps2: float = 0.0
+    peak_hand_step_rev: float = 0.0
 
 
 class TrajectoryInfeasible(Exception):
@@ -843,3 +867,430 @@ def _pose_to_rev(pose, geom, mm_to_rev) -> np.ndarray:
     """pose_6dof → motor_rev, the exact chain the emitter/pump use (scalar)."""
     pos, rot = _pose_to_pos_rot(pose)
     return pose_to_leg_lengths(pos, rot, geom) * mm_to_rev
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Unified 7-DoF cycle gate (plan § 4 Phase 1) — validate_cycle
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# WHY A THIRD ENTRY POINT, and why it must NOT delegate to the two above.
+# A ``cycle_plan.CyclePlan`` is knot-based: it carries no ``QuinticSegment``s at
+# all, sets ``total_duration`` directly, and reconstructs a cubic Hermite between
+# knots (the SAME curve the can-bridge's 500 Hz lane rebuilds from ``(u0, v0, u1,
+# v1)`` once the wire carries the ``v1`` array). Every measurement loop in this
+# module iterates ``plan.segments``. With none, BOTH gates collapse to a single
+# sample at ``t = 0`` and then call the whole cycle feasible — measured on a
+# deliberately violent 8-span x-sweep cycle (2026-08-30, pinned by
+# ``tests/motion/test_validate_cycle.py``):
+#   * :func:`validate` takes ``_segment_grids``' HoldPlan branch, so it reports
+#     the leg vel/acc at ``t = 0`` only (621 mm/s, 3502 mm/s²), jerk 0 for the
+#     entire cycle, and ``OK`` — every later knot goes unmeasured;
+#   * :func:`validate_follow` takes its degenerate single-held-pose branch (the
+#     ``if not plan.segments`` block above) and reports 0/0/0 with ``OK``.
+# Only the knot-step pass, which samples ``state_at`` rather than the segments,
+# survives in either — and neither has any concept of a 7th channel. Those are
+# silent passes on an ungated trajectory, the exact failure the single-gate
+# convention exists to make impossible. So this function samples the plan's own
+# surface — ``state_at`` / ``hand_at`` — on the plan's own grid, and nothing here
+# calls the two functions above.
+#
+# WHERE THE SAMPLES GO (and why the last one is nudged).
+# ``TrajectoryPlan``'s contract says ``state_at(t >= total_duration)`` returns the
+# TERMINAL HOLD: the final pose with ZERO twist and ZERO accel. A cycle ends at the
+# THROW, moving at the take-off velocity, so sampling the last knot at exactly
+# ``total_duration`` would read a hard stop and hide the release velocity from
+# every limit gate — a plan whose release blows the hand or leg ceiling would pass.
+# The final sample is therefore taken at ``nextafter(total_duration, 0)``: the last
+# representable instant still inside the plan, which ``CyclePlan._locate`` resolves
+# to ``s ≈ 1`` on the final span. ``test_validate_cycle.py`` pins that the cliff
+# does not mask an over-limit release.
+
+#: Sub-samples per knot span for the POSE track. The knots themselves are always
+#: sampled (they are indices ``0, m, 2m, …``), and the per-knot step bounds read
+#: exactly that subset; the intermediate samples exist because leg velocity is
+#: NOT captured by knot sampling alone. Pose acceleration is linear in ``s`` on a
+#: cubic span, so its extremum IS at a knot — but pose velocity is quadratic and
+#: can peak strictly inside a span, and the leg chain (``J·twist``) inherits that.
+#: Sizing (2026-08-30): the excursion a velocity extremum can hide is bounded by
+#: ``a²/(2·j)``; on the xy channel the cup QP's ``max_jerk_xy = 300 m/s³`` box puts
+#: that at ~42 mm/s for a 5 m/s² knot — 4 % of the 1000 mm/s session limit — so a
+#: modest mesh closes it, and 4 keeps a ~21-knot cycle at ~81 analytic samples,
+#: the cost of a single :func:`validate` segment. The HAND channel does NOT use
+#: this mesh: its span extrema are closed-form (see :func:`_hand_span_extrema`),
+#: which is exact rather than merely dense.
+_CYCLE_SAMPLES_PER_KNOT = 4
+
+#: Operating slider band, in HAND MOTOR revs (the firmware's homed frame). The top
+#: is the catch prime = the derived stroke top ``hand_stroke.STROKE_TOP_REV``; the
+#: bottom is the homed zero. A cycle whose slider leaves this band is refused —
+#: not clamped — because the realisation (``cup_realize.decompose``) already
+#: clamps, and a clamped slider silently moves the cup somewhere other than where
+#: the cup plan put it.
+HAND_STROKE_MIN_REV = 0.0
+HAND_STROKE_MAX_REV = float(hw.JB_OP_HAND_CATCH_PRIME_REV)
+
+#: The physical end stop. Crossing the operating band is a refusal; crossing THIS
+#: is a materially worse fact (the 2026-07-27 sitting made light physical contact
+#: with it), so the refusal names it separately rather than reporting one
+#: undifferentiated "out of stroke".
+HAND_HARD_STOP_REV = float(hw.GEOM_HAND_MOTOR_HARD_STOP_REVS)
+
+#: Stroke reserved below the catch, on top of the computed deceleration distance.
+#: The rev-space twin of ``cup_cycle.CupCycleConfig.catch_runway_margin_m``
+#: (0.020 m) through the package's slider gain. Restated here rather than imported
+#: because ``cup_cycle`` is a PLANNER and this is the gate it will be checked by —
+#: importing upward would invert the layering. ``test_validate_cycle.py`` pins the
+#: two against each other so the second spelling cannot drift.
+CATCH_RUNWAY_MARGIN_M = 0.020
+CATCH_RUNWAY_MARGIN_REV = CATCH_RUNWAY_MARGIN_M * LINEAR_GAIN_REV_PER_M
+
+
+def _hand_span_extrema(p0, v0, p1, v1, h):
+    """Exact extrema of ONE cubic Hermite hand span.
+
+    Returns ``(s_stationary, peak_abs_vel, peak_abs_acc)``: the normalised
+    positions inside ``(0, 1)`` where the velocity vanishes (i.e. where the
+    POSITION extrema are — the caller reads those back through the plan), and the
+    exact velocity and acceleration peaks over the span.
+
+    Closed form, not sampling. On a cubic Hermite the velocity is a quadratic in
+    the normalised span coordinate ``s`` and the acceleration is LINEAR in it, so:
+
+      * ``|a|`` peaks at a span END — both ends are evaluated and the larger wins;
+      * ``|v|`` peaks at an end OR at the single stationary point of the quadratic;
+      * the POSITION extrema are the ends plus wherever the velocity crosses zero.
+
+    Returning the true extrema rather than a dense-sample maximum matters here
+    because the hand is the channel with the QP's big jerk box
+    (``max_jerk_z = 6000 m/s³`` ⇒ ~1.9e5 rev/s³): at the 3500 rev/s² acceleration
+    limit a velocity extremum hidden between two knots is worth up to
+    ``a²/(2j) ≈ 32 rev/s``, 16 % of the 200 rev/s limit. A gate that misses 16 %
+    of the hand's speed is not a gate.
+
+    ``s`` values are returned to the caller (which re-evaluates POSITION through
+    the plan's own ``hand_at``, so the gate can never disagree with the curve the
+    plan will actually emit); velocity and acceleration are returned as numbers
+    because they are exact from the coefficients alone.
+    """
+    d = (p0 - p1) / h
+    # vel(s) = A s² + B s + C  (already d/dt, not d/ds)
+    a_q = 6.0 * d + 3.0 * (v0 + v1)
+    b_q = -6.0 * d - 4.0 * v0 - 2.0 * v1
+    c_q = v0
+    # acc(s) = (2 A s + B) / h — linear, so the ends bound it.
+    acc0 = b_q / h
+    acc1 = (2.0 * a_q + b_q) / h
+    peak_acc = max(abs(acc0), abs(acc1))
+
+    peak_vel = max(abs(v0), abs(v1))
+    if a_q != 0.0:
+        s_star = -b_q / (2.0 * a_q)
+        if 0.0 < s_star < 1.0:
+            peak_vel = max(peak_vel,
+                           abs(a_q * s_star * s_star + b_q * s_star + c_q))
+
+    # Position extrema: the ends plus the real roots of vel(s) == 0 inside (0, 1).
+    s_stationary = []
+    if a_q != 0.0:
+        disc = b_q * b_q - 4.0 * a_q * c_q
+        if disc >= 0.0:
+            root = np.sqrt(disc)
+            for s in ((-b_q + root) / (2.0 * a_q), (-b_q - root) / (2.0 * a_q)):
+                if 0.0 < s < 1.0:
+                    s_stationary.append(float(s))
+    elif b_q != 0.0:
+        s = -c_q / b_q
+        if 0.0 < s < 1.0:
+            s_stationary.append(float(s))
+    return s_stationary, peak_vel, peak_acc
+
+
+def _cycle_sample_times(n_knots, dt, total_duration, m):
+    """Sample times for a cycle plan: ``m`` sub-samples per span, knots included.
+
+    The last entry is nudged one ULP below ``total_duration`` — see the module
+    block above on the terminal-hold cliff. Knot samples are exactly the entries
+    at indices ``0, m, 2m, …``.
+    """
+    n_spans = int(n_knots) - 1
+    ts = np.arange(n_spans * m + 1, dtype=float) * (float(dt) / m)
+    ts[-1] = np.nextafter(float(total_duration), 0.0)
+    return ts
+
+
+def validate_cycle(cycle_plan, limits, geom, *,
+                   samples_per_knot: int = _CYCLE_SAMPLES_PER_KNOT,
+                   runway_margin_rev: float = CATCH_RUNWAY_MARGIN_REV
+                   ) -> FeasibilityReport:
+    """Feasibility gate for a 7-channel :class:`~cycle_plan.CyclePlan`.
+
+    Same contract as :func:`validate` — a pure predicate over a fully-specified
+    plan, returning a :class:`FeasibilityReport` whose ``code`` is the first
+    failure in priority order and whose peaks are all populated — extended to the
+    hand. It never mutates the plan and never stretches a duration.
+
+    **It does not, and must not, delegate.** ``CyclePlan.segments`` is empty, so
+    both gates above measure nothing on one; see the module block above this
+    function for the two silent-pass paths that closes.
+
+    The checks, in the order they can fail:
+
+    1. **Geometry, per sample, first-failure-wins** (early return, exactly as
+       :func:`validate`): non-finite pose or hand value → ``UNREACHABLE`` (a NaN
+       sails through every numeric comparison below, so it is caught explicitly —
+       ``CyclePlan``'s constructor rejects non-finite arrays too, and this is the
+       defence-in-depth layer for a duck-typed plan or a post-construction
+       mutation); leg extensions outside the hard stroke → ``WORKSPACE``; Jacobian
+       condition past the workspace bound → ``UNREACHABLE``; slider outside
+       ``[HAND_STROKE_MIN_REV, HAND_STROKE_MAX_REV]`` → ``HAND_STROKE``, naming the
+       hard stop separately when that is crossed too.
+    2. **The catch runway, re-checked with the ACHIEVED catch velocity** →
+       ``HAND_STROKE``. ``cup_cycle`` bounds this inside the QP with the TARGET
+       catch speed (``catch_slider_vel_ratio × |v_ball,z|``) against a cup-frame
+       floor that defaults to ``z_min_m``; the soft vertical match only approaches
+       that target, and the real floor is the slider's own bottom of travel, which
+       in the default configuration is ~0.21 m HIGHER than ``z_min_m``. So this is
+       not a duplicate of the planner's bound — it is the first time the
+       requirement is evaluated against both the achieved speed and the true
+       floor. It shares ``HAND_STROKE`` because the fact it reports is a stroke
+       fact: the travel below the catch is insufficient.
+    3. **Limit ladder** (all peaks measured first, then prioritised): leg vel →
+       leg acc → leg jerk → leg step, then hand vel → hand acc → hand step. The leg
+       half is first and unchanged so a pose-track failure reports exactly the code
+       it reports today.
+
+    ``samples_per_knot`` meshes the POSE track only (see
+    :data:`_CYCLE_SAMPLES_PER_KNOT`); the hand channel's extrema are closed-form
+    per span and independent of it. ``runway_margin_rev`` is the reserve below the
+    computed stopping distance.
+    """
+    m = max(1, int(samples_per_knot))
+    wlimits = _workspace_limits(geom)
+    mm_to_rev = np.asarray(geom.mm_to_rev, dtype=float)
+
+    dt = float(getattr(cycle_plan, 'dt', limits.knot_dt_s))
+    total = float(cycle_plan.total_duration)
+    n_knots = int(getattr(cycle_plan, 'n_knots', int(round(total / dt)) + 1))
+    if n_knots < 2 or dt <= 0.0 or total <= 0.0:
+        return FeasibilityReport(
+            ok=False, code=UNREACHABLE,
+            reasons=["cycle plan spans no time (%d knots, dt=%.4f s, "
+                     "duration=%.4f s)" % (n_knots, dt, total)])
+    catch_k = int(getattr(cycle_plan, 'catch_k', -1))
+
+    ts = _cycle_sample_times(n_knots, dt, total, m)
+    hand_limit_v = float(limits.hand_vel_limit_rps)
+    hand_limit_a = float(limits.hand_acc_limit_rps2)
+
+    peak_vel = 0.0
+    peak_acc = 0.0
+    peak_ext = 0.0
+    peak_hand_rev = 0.0
+    acc_samples = []
+
+    # ── Pass 1: geometry + hand stroke + analytic leg vel/acc, per sample ──
+    for t in ts:
+        t = float(t)
+        pose, twist, accel = cycle_plan.state_at(t)
+        hand_rev, hand_vel = cycle_plan.hand_at(t)
+        if not np.all(np.isfinite(pose)) or not np.all(np.isfinite(twist)) \
+                or not np.all(np.isfinite(accel)):
+            return FeasibilityReport(
+                ok=False, code=UNREACHABLE,
+                reasons=["pose state contains non-finite values (NaN/Inf) "
+                         "at t=%.3fs" % t])
+        if not (np.isfinite(hand_rev) and np.isfinite(hand_vel)):
+            return FeasibilityReport(
+                ok=False, code=UNREACHABLE,
+                reasons=["hand channel contains non-finite values (NaN/Inf) "
+                         "at t=%.3fs" % t])
+
+        peak_hand_rev = max(peak_hand_rev, abs(float(hand_rev)))
+        bad_stroke = _hand_stroke_reason(float(hand_rev), t)
+        if bad_stroke is not None:
+            return FeasibilityReport(
+                ok=False, code=HAND_STROKE, reasons=[bad_stroke],
+                peak_leg_ext_mm=peak_ext, peak_hand_rev=peak_hand_rev)
+
+        pos, rot = _pose_to_pos_rot(pose)
+        ext = pose_to_leg_lengths(pos, rot, geom)
+        peak_ext = max(peak_ext, float(np.max(np.abs(ext))))
+        valid, states = check_leg_extensions(ext, geom)
+        if not valid:
+            bad = [j for j, s in enumerate(states) if s != 0]
+            return FeasibilityReport(
+                ok=False, code=WORKSPACE,
+                reasons=["leg %d out of stroke (%.1f mm) at t=%.3fs"
+                         % (j, ext[j], t) for j in bad],
+                peak_leg_ext_mm=peak_ext, peak_hand_rev=peak_hand_rev)
+
+        J = compute_jacobian(pos, rot, geom)
+        cond = compute_condition_number(pos, rot, geom, J=J)
+        if cond > wlimits.cond_hard:
+            return FeasibilityReport(
+                ok=False, code=UNREACHABLE,
+                reasons=["Jacobian condition %.1f > %.1f (near singularity) "
+                         "at t=%.3fs" % (cond, wlimits.cond_hard, t)],
+                peak_leg_ext_mm=peak_ext, peak_hand_rev=peak_hand_rev)
+
+        leg_vel = twist_to_leg_velocities(twist, pos, rot, geom, J=J)
+        peak_vel = max(peak_vel, float(np.max(np.abs(leg_vel))))
+        leg_acc = accel_to_leg_accels(accel, twist, pos, rot, geom, J=J)
+        peak_acc = max(peak_acc, float(np.max(np.abs(leg_acc))))
+        acc_samples.append(leg_acc)
+
+    # Leg jerk from the finite difference of the analytic leg acceleration on the
+    # sub-knot mesh, inflated by the same _VALIDATE_JERK_MARGIN the segment gate
+    # applies. NB the margin was calibrated on a rest-to-rest quintic at 80
+    # samples/segment, not on this plan family; it is applied because a FD jerk
+    # peak always under-measures, and the whole-cycle jerk characterisation is
+    # WP4's sim harness, not this constant.
+    peak_jerk = 0.0
+    sub_dt = dt / m
+    if len(acc_samples) >= 2:
+        jerk = np.diff(np.asarray(acc_samples), axis=0) / sub_dt
+        peak_jerk = float(np.max(np.abs(jerk))) * _VALIDATE_JERK_MARGIN
+
+    # ── Pass 2: hand span extrema (closed form) + the per-span position extrema ──
+    peak_hand_vel = 0.0
+    peak_hand_acc = 0.0
+    for k in range(n_knots - 1):
+        t0 = ts[k * m]
+        t1 = ts[(k + 1) * m]
+        p0, v0 = cycle_plan.hand_at(float(t0))
+        p1, v1 = cycle_plan.hand_at(float(t1))
+        s_stationary, span_vel, span_acc = _hand_span_extrema(
+            float(p0), float(v0), float(p1), float(v1), dt)
+        peak_hand_vel = max(peak_hand_vel, span_vel)
+        peak_hand_acc = max(peak_hand_acc, span_acc)
+        # Interior POSITION extrema are read back through the plan's own hand_at,
+        # so the gate can never disagree with the curve the emitter will sample.
+        for s in s_stationary:
+            t_s = float(t0) + s * dt
+            rev_s, _ = cycle_plan.hand_at(t_s)
+            if not np.isfinite(rev_s):
+                return FeasibilityReport(
+                    ok=False, code=UNREACHABLE,
+                    reasons=["hand channel contains non-finite values (NaN/Inf) "
+                             "at t=%.3fs" % t_s])
+            peak_hand_rev = max(peak_hand_rev, abs(float(rev_s)))
+            bad_stroke = _hand_stroke_reason(float(rev_s), t_s)
+            if bad_stroke is not None:
+                return FeasibilityReport(
+                    ok=False, code=HAND_STROKE, reasons=[bad_stroke],
+                    peak_leg_ext_mm=peak_ext, peak_hand_rev=peak_hand_rev)
+
+    # ── Pass 3: the catch runway, with the ACHIEVED catch velocity ──
+    if 0 <= catch_k <= n_knots - 1:
+        t_catch = float(ts[min(catch_k * m, len(ts) - 1)])
+        rev_c, vel_c = cycle_plan.hand_at(t_catch)
+        available = float(rev_c) - HAND_STROKE_MIN_REV
+        needed = (float(vel_c) ** 2) / (2.0 * hand_limit_a) + float(runway_margin_rev)
+        if available < needed:
+            return FeasibilityReport(
+                ok=False, code=HAND_STROKE,
+                reasons=[bound_msg(
+                    'catch runway', available, '<', needed, unit='rev',
+                    digits=3, limit_label='required',
+                    tail=('achieved catch speed %.1f rev/s needs %.3f rev to stop '
+                          'at %.0f rev/s^2 plus %.3f rev margin, and the slider '
+                          'sits %.3f rev above its homed bottom at t=%.3fs — plan '
+                          'the catch higher or slow it'
+                          % (abs(float(vel_c)),
+                             (float(vel_c) ** 2) / (2.0 * hand_limit_a),
+                             hand_limit_a, float(runway_margin_rev),
+                             available, t_catch)))],
+                peak_leg_ext_mm=peak_ext, peak_hand_rev=peak_hand_rev)
+
+    # ── Pass 4: per-knot step bounds, on the wire's own knot sequence ──
+    peak_step = 0.0
+    peak_hand_step = 0.0
+    prev_rev = None
+    prev_hand = None
+    for k in range(n_knots):
+        tk = float(ts[k * m])
+        pose_k, _, _ = cycle_plan.state_at(tk)
+        motor_rev = _pose_to_rev(pose_k, geom, mm_to_rev)
+        hand_k, _ = cycle_plan.hand_at(tk)
+        if prev_rev is not None:
+            peak_step = max(peak_step,
+                            float(np.max(np.abs(motor_rev - prev_rev))))
+            peak_hand_step = max(peak_hand_step, abs(float(hand_k) - prev_hand))
+        prev_rev = motor_rev
+        prev_hand = float(hand_k)
+
+    # ── Decide the code (priority order; first failure wins) ──
+    step_bound = STEP_BOUND_MARGIN * float(limits.max_step_rev)
+    # The hand has no wire step constant of its own yet — Phase 2 adds a
+    # per-channel ``max_step_rev`` to the pump and Phase 3 the firmware's
+    # ``MAX_LEAD_HAND_REV``. Until then the bound is derived from the only hand
+    # rate authority this layer has, with the same 20 % margin the leg bound uses,
+    # so the gate refuses a step-heavy cycle BEFORE motion rather than mid-stream.
+    hand_step_bound = (STEP_BOUND_MARGIN * hand_limit_v * dt)
+    code = OK
+    reasons: list = []
+    if peak_vel > limits.leg_vel_mmps:
+        code = LIMIT_VEL
+        reasons = [f"peak leg velocity {peak_vel:.1f} mm/s > "
+                   f"{limits.leg_vel_mmps:.1f}"]
+    elif peak_acc > limits.leg_acc_mmps2:
+        code = LIMIT_ACC
+        reasons = [f"peak leg acceleration {peak_acc:.1f} mm/s² > "
+                   f"{limits.leg_acc_mmps2:.1f}"]
+    elif peak_jerk > limits.leg_jerk_mmps3:
+        code = LIMIT_JERK
+        reasons = [f"peak leg jerk {peak_jerk:.0f} mm/s³ > "
+                   f"{limits.leg_jerk_mmps3:.0f}"]
+    elif peak_step > step_bound:
+        code = STEP_BOUND
+        reasons = [f"peak per-knot step {peak_step:.3f} rev > "
+                   f"{step_bound:.3f} ({int(STEP_BOUND_MARGIN * 100)}% of "
+                   f"{limits.max_step_rev:.3f})"]
+    elif peak_hand_vel > hand_limit_v:
+        code = HAND_LIMIT_VEL
+        reasons = [bound_msg('peak hand velocity', peak_hand_vel, '>',
+                             hand_limit_v, unit='rev/s',
+                             knob='trajectory_op.hand_vel_limit_rps', digits=2)]
+    elif peak_hand_acc > hand_limit_a:
+        code = HAND_LIMIT_ACC
+        reasons = [bound_msg('peak hand acceleration', peak_hand_acc, '>',
+                             hand_limit_a, unit='rev/s^2',
+                             knob='trajectory_op.hand_acc_limit_rps2', digits=1)]
+    elif peak_hand_step > hand_step_bound:
+        code = STEP_BOUND
+        reasons = [bound_msg(
+            'peak per-knot hand step', peak_hand_step, '>', hand_step_bound,
+            unit='rev', knob='trajectory_op.hand_vel_limit_rps', digits=3,
+            tail=("%d%% of hand_vel_limit_rps %.1f x the plan's knot dt %.3f — "
+                  'the hand has no wire step constant until plan Phase 2'
+                  % (int(STEP_BOUND_MARGIN * 100), hand_limit_v, dt)))]
+
+    return FeasibilityReport(
+        ok=(code == OK), code=code, reasons=reasons,
+        peak_leg_vel_mmps=peak_vel, peak_leg_acc_mmps2=peak_acc,
+        peak_leg_jerk_mmps3=peak_jerk, peak_leg_ext_mm=peak_ext,
+        peak_step_rev=peak_step, peak_hand_rev=peak_hand_rev,
+        peak_hand_vel_rps=peak_hand_vel, peak_hand_acc_rps2=peak_hand_acc,
+        peak_hand_step_rev=peak_hand_step)
+
+
+def _hand_stroke_reason(rev: float, t: float):
+    """The ``HAND_STROKE`` refusal text for ``rev``, or ``None`` when it is inside.
+
+    Two tiers, one refusal: leaving the OPERATING band is the refusal; also
+    crossing the physical end stop is named in the tail, because "the plan asked
+    for 0.3 rev past the prime" and "the plan asked for a rev past the end stop"
+    are different conversations with the operator.
+    """
+    if HAND_STROKE_MIN_REV <= rev <= HAND_STROKE_MAX_REV:
+        return None
+    if rev > HAND_HARD_STOP_REV:
+        tail = ('at t=%.3fs; PAST THE %.2f rev END STOP'
+                % (t, HAND_HARD_STOP_REV))
+    elif rev < HAND_STROKE_MIN_REV:
+        tail = ('at t=%.3fs; BELOW the homed zero, i.e. past the physical '
+                'bottom of travel' % t)
+    else:
+        tail = 'at t=%.3fs' % t
+    return range_msg('hand position', rev, HAND_STROKE_MIN_REV,
+                     HAND_STROKE_MAX_REV, unit='rev', digits=3, tail=tail)

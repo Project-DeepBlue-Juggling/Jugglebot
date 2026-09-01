@@ -168,6 +168,7 @@ namespace JBOp {
   constexpr uint32_t TOSS_SESSION_FLOOR_PAUSE_EVERY = 5u;
   constexpr uint32_t TOSS_SESSION_DWELL_TILT_READS = 8u;
   constexpr float TOSS_SESSION_DWELL_TILT_GAP_S = 0.15f;
+  constexpr bool UNIFIED_CYCLE_ENABLED = false;
   constexpr float TARGET_REACHED_POS_TOL_REV = 0.01f;
   constexpr float TARGET_REACHED_VEL_TOL_RPS = 0.1f;
   constexpr float GENTLE_MOVE_VEL_LIMIT_RPS = 2.5f;
@@ -191,6 +192,10 @@ namespace TrajOp {
   constexpr float LEG_VEL_CEILING_MMPS = 5000.0f;
   constexpr float LEG_ACC_CEILING_MMPS2 = 5000.0f;
   constexpr float LEG_JERK_CEILING_MMPS3 = 200000.0f;
+  constexpr float HAND_VEL_LIMIT_RPS = 200.0f;
+  constexpr float HAND_VEL_CEILING_RPS = 300.0f;
+  constexpr float HAND_ACC_LIMIT_RPS2 = 3500.0f;
+  constexpr float HAND_ACC_CEILING_RPS2 = 3900.0f;
   constexpr float KNOT_DT_S = 0.025f;
   constexpr float MIN_MOVE_DURATION_S = 0.2f;
   constexpr float MIN_TIMED_LEAD_S = 0.25f;
@@ -202,6 +207,8 @@ namespace TrajOp {
   constexpr float CATCH_REACH_ENVELOPE_MM = 80.0f;
   constexpr float CATCH_SEAT_RATE_RADPS = 0.0f;
   constexpr bool RETIME_MODEL = false;
+  constexpr bool UNIFIED_Z_FLOAT_ENABLED = false;
+  constexpr float UNIFIED_Z_BAND_MM = 30.0f;
 }
 
 // ==========================================================================

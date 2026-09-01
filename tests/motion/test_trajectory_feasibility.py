@@ -41,12 +41,16 @@ def limits():
     return TrajectoryLimits.from_config(hw)
 
 
-def _limits(*, vel=1e9, acc=1e9, jerk=1e9, step=0.3, dt=0.025, min_dur=0.2):
+def _limits(*, vel=1e9, acc=1e9, jerk=1e9, step=0.3, dt=0.025, min_dur=0.2,
+            hand_vel=1e9, hand_acc=1e9):
     """A TrajectoryLimits with chosen session ceilings (defaults effectively off)."""
     return TrajectoryLimits(
         leg_vel_mmps=vel, leg_acc_mmps2=acc, leg_jerk_mmps3=jerk,
         leg_vel_ceiling_mmps=1e12, leg_acc_ceiling_mmps2=1e12,
-        leg_jerk_ceiling_mmps3=1e12, knot_dt_s=dt, max_step_rev=step,
+        leg_jerk_ceiling_mmps3=1e12,
+        hand_vel_limit_rps=hand_vel, hand_acc_limit_rps2=hand_acc,
+        hand_vel_ceiling_rps=1e12, hand_acc_ceiling_rps2=1e12,
+        knot_dt_s=dt, max_step_rev=step,
         min_move_duration_s=min_dur, min_timed_lead_s=0.25, max_timed_lead_s=60.0)
 
 
