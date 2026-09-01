@@ -497,13 +497,16 @@ PASSES.** Canonical record:
   0.85 s → 3678; ≥ 1.05 s refuses; above 0.88 m the pre-launch dip no longer
   fits). **The lever is release height, not a planner knob.**
 
-**Four owner decisions are recorded and OPEN** (entry § Open Questions): (1) the
+**Four owner decisions, resolved 2026-09-01 (see the Phase 1 entry,
+§ Open Questions — nothing shipped changes):** (1) the
 **shipped-limit verdict** — every gate cycle reads `LIMIT_JERK` at the shipped
 leg jerk 30000 for a structural reason (the z-launch jerk leaks
 `sin(tilt) × 744.3 mm` into centroid xy; 0° → 17005, 3.5° → 28970, 4° → 33339,
 12° → 107815 mm/s³, mesh-converged), so the gate runs catch-capable session
 limits (250/3000/150000) and reports `shipped_limit_verdicts` beside them —
-raise the shipped limits, or have unified mode always ride session limits;
+resolved: unified sittings raise the session limits at session start (the
+existing toss-sitting pattern) and nothing shipped changes, with the jerk value
+settled empirically at the UH-3 banked-carry rung;
 (2) the 0.9 s flight advisory band (4371 > 3500, with a test that fails if it
 ever fits); (3) the smoothing accel cap yielding to the endpoint pins on short
 cycles (2/30 grid cases ~6 % over); (4) `v_match` deferred mirroring

@@ -82,9 +82,11 @@ packages landed and the phase gate **PASSES**.
 acceleration cap with z pinned at 170 mm, **the maximum plannable flight time is
 0.80 s**. The lever on that number is **release height**, not any planner knob.
 
-Four owner decisions are **recorded and deliberately left open** (§ Open
-Questions) — the largest being that every gate cycle refuses at the *shipped*
-leg-jerk limit, for a structural reason.
+Four owner decisions are recorded here and **all four were resolved by the owner
+on 2026-09-01** (§ Open Questions) — the largest being that every gate cycle
+refuses at the *shipped* leg-jerk limit, for a structural reason; the resolution
+is that unified sittings ride raised session limits, with nothing shipped
+changing.
 
 ## Motivation
 
@@ -580,9 +582,10 @@ Python 3.8, and the sim phase gate passes on the production chain.
 - **Phase 2 is cleared to start** (software-only: the v6 wire and the host
   7-channel path). Phases 1–2 are permitted while the plan is `proposed`;
   **Phase 3 onward requires `active`**.
-- **Four owner decisions are open** and are recorded below rather than resolved.
+- **Four owner decisions are recorded below, and all four are RESOLVED**
+  (owner, 2026-09-01) — none of them changes shipped behaviour.
 
-## Open Questions — owner decisions, recorded not resolved
+## Open Questions — owner decisions, all four resolved 2026-09-01
 
 1. **The shipped-limit verdict.** Every gate cycle reads `LIMIT_JERK` at the
    shipped leg jerk of **30 000 mm/s³**, and the reason is structural, not
@@ -599,18 +602,42 @@ Python 3.8, and the sim phase gate passes on the production chain.
    verdict is pinned by a test and reported as `shipped_limit_verdicts` beside
    the gating one. **The owner's decision: raise the shipped limits, or make
    unified mode always ride session limits.** A harness may not tune past this.
+   **RESOLVED (owner, 2026-09-01): nothing shipped changes.** Unified sittings
+   raise the session limits at session start — the exact pattern the existing
+   toss sittings already use — and the concrete jerk value is decided
+   empirically at the UH-3 banked-carry rung. Context: at the current 30 000
+   working point banking is legal only below ~3.5° of tilt; refusals stay loud
+   and `validate_cycle` enforces whatever ceiling the operator sets.
 2. **The 0.9 s flight advisory band.** It needs **4371 rev/s²** against the 3500
    cap, so it is carried as advisory. A test **fails if it ever fits** — i.e. if
    a future change silently makes it plannable, that is surfaced rather than
    celebrated.
+   **CLOSED — informational (owner, 2026-09-01), not a decision.** The 0.80 s v1
+   lid is deliberate conservatism (z pin, the 3500 cap below the metal, a
+   conservative cup region, free-fall handover shaping ⇒ ~17 cm effective
+   runway, about half the legacy throw's). Named levers if the tiers must ramp:
+   release-height / region shaping (measured strongest), z-float (ships off),
+   raising the cap toward the 3900 ceiling, a Scope-B joint launch. The legacy
+   throw path stays flyable until Phase 6; if the levers have not recovered
+   current tiers by the end of the Phase 5 ladder, that is an explicit owner
+   go/no-go input at Phase 5/6. The advisory test stands.
 3. **The smoothing accel cap yields to the endpoint pins on short cycles.**
    **2 of 30** grid cases land ~6 % over. The pins are physics boundary
    conditions and win by design; `validate_cycle` stays the authority on whether
    the resulting plan is flyable.
+   **RESOLVED (owner, 2026-09-01): recorded, no action.** Endpoint pins always
+   win and the smoothness cap is best-effort — it is not a guarantee and must
+   not be treated as one. `validate_cycle`, which measures the actual resulting
+   motion, remains the sole authority.
 4. **`v_match` is deferred, mirroring `toss_gate`.** It measures a uniform
    **0.316 = 1 − `catch_slider_vel_ratio`** by design — the cup QP matches catch
    velocity *softly* at 0.7, so a hard band would fail every cycle for a designed
    reason rather than a defect. Reported, not gated.
+   **RESOLVED (owner, 2026-09-01): recorded, no action.** The ~30 % velocity
+   difference at the catch is the designed 70 % softening ratio inherited from
+   the existing system, so no naive velocity-match gate will be added — it would
+   fail every catch for a designed reason, the same call `sim/toss_gate.py`
+   made. Hardware remains the judge of catch quality.
 
 ## Tracking (orthogonal to this phase, unfixed per the phase charter)
 
