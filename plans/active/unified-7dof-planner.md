@@ -256,7 +256,7 @@ mode; ball tracking, possession verdicts, `outcome_detail` discipline.
 | Phase | Scope | Status | Date | Risk | Validates |
 |-------|-------|--------|------|------|-----------|
 | 0 | Probes + recorded decisions: QP solver runtime on Jetson 3.8, Hermite stroke-reconstruction fidelity, bus headroom with a 7th frame (+ leg-bus-frame-drops A/B), hand guard constants derivation | COMPLETE | 2026-08-30 | Low | In-process QP is feasible; 7-frame bus budget is safe |
-| 1 | Planner core port (pure Python): `cup_cycle` QP, tilt schedule, `realize` generalisation, `CyclePlan`, `validate_cycle`, sim parity + MuJoCo whole-cycle gate | NOT STARTED | | Low (software only) | Ball-frame constraints hold; the Rung-3 "runway" failure is answered in sim |
+| 1 | Planner core port (pure Python): `cup_cycle` QP, tilt schedule, `realize` generalisation, `CyclePlan`, `validate_cycle`, sim parity + MuJoCo whole-cycle gate | COMPLETE | 2026-09-01 | Low (software only) | Ball-frame constraints hold; the Rung-3 "runway" failure is answered in sim |
 | 2 | Wire v6 + host 7-channel path: codegen, `SetpointPump`, emitter, `make_mpc_command`, tests; firmware-absent safe | NOT STARTED | | Medium | Codec, per-channel step gates, backward-compatible producers |
 | 3 | Can-bridge FW 17: 7th interp lane, hand guards, `hand_source` interlock, dispatch; lockstep flash + bench ladder | NOT STARTED | | High | Hand streaming safety envelope on real hardware |
 | 4 | Jetson unified-cycle mode: orchestrator, node wiring, plan-derived announcements/suppression, outcome vocabulary; end-to-end sim gate | NOT STARTED | | Medium | Whole cycle through the production stack in sim |
@@ -383,7 +383,7 @@ are
 [`tests/hardware/session_unified7_bus_headroom.md`](../../tests/hardware/session_unified7_bus_headroom.md) § Results;
 commits carry the `Logbook-Entry:` trailer, so no SHAs are recorded here.
 
-### Phase 1: Planner core port (pure Python, no hardware) — NOT STARTED
+### Phase 1: Planner core port (pure Python, no hardware) — COMPLETE 2026-09-01
 
 **New files** (all `ros_ws/src/jugglebot/jugglebot/motion/trajectory/`, pure
 Python, numpy-only, `from __future__ import annotations`, Python 3.8):
@@ -450,6 +450,67 @@ contact as the low-fidelity element, hardware catches are already smooth
 that contact model. The hardware ladder (Phase 5) is the seating authority.
 
 **Dependencies:** Phase 0 decisions 1 and 2.
+
+**Outcome (2026-09-01) — all four work packages landed; the sim phase gate
+PASSES.** Canonical record:
+[`logbook/2026-09-01-unified-7dof-planner-phase1-planner-core.md`](../../logbook/2026-09-01-unified-7dof-planner-phase1-planner-core.md).
+
+- **WP1 `cup_cycle.py`** — the Goldfarb–Idnani port with the event-timeline
+  `plan_window` (one-throw-one-catch bit-identical to the legacy signature) and
+  the catch-runway constraint (in-QP linear bound + an analytic `CATCH_RUNWAY`
+  gate that is a **refusal** on a descending catch, since the catch-position
+  equality leaves the touch-down height no freedom). Parity **1.906e-4 mm /
+  2.471e-3 mm/s** over 6 committed fixtures; 30-point T-U1 grid worst release
+  `‖a−g‖` **6.0e-14**, detach cross **3.0e-15**, catch **2.4e-11 mm**. A
+  **second silent-wrongness class** was found and closed — a knife-edge
+  infeasible 0.40 s cycle terminated with every inequality satisfied and
+  equality residual **121**, so every solve now verifies feasibility ≤ 1e-7 and
+  refuses otherwise.
+- **WP2 `cup_realize.py` + `cycle_plan.py`** — apparent-gravity banking (2-norm
+  cap + rate limit; a per-axis-rate bug leaking **12.124°** past the 12° cap was
+  caught by the T-U3 cap assertion) and the 744.3 mm lever decomposition with
+  `CUP_Z_BASE_MM` generalised to `base(z)`, reducing to the literal bit-exactly
+  at the pin. **Zero-banking parity vs `realize_tilted` asserted at
+  `max|Δ| == 0.0`.** `CyclePlan` honours the `TrajectoryPlan` `state_at`
+  contract; the zero-segments blindness and the terminal-hold cliff are
+  documented and pinned.
+- **WP3 config + `validate_cycle`** — the six keys above landed with regenerated
+  artifacts (**CONFIG FRESH, 14 artifacts**), and `validate_cycle` (+452 lines)
+  samples the knot grid directly with `HAND_STROKE` / `HAND_LIMIT_VEL` /
+  `HAND_LIMIT_ACC` each probe-confirmed deterministic before pinning. **Hand
+  extrema are closed-form, not sampled** — knot-grid FD under-measures accel
+  **38 %** (2763.5 vs 4432.5 rev/s²) and would false-accept against the 3500
+  cap. `SetTrajectoryLimits.srv` is deliberately **not** widened (interfaces
+  rebuild → Phase 2/4).
+- **WP4 the phase gate** (`sim/cycle_gate.py` + 17 unmarked tests) — **PASS**
+  (2026-09-01, `python sim/cycle_gate.py`, 10.5 s): **11 points**, capture
+  distance **0.000 mm** everywhere, zero-banking parity **0.0**, banking beats
+  level on apparent-gravity misalignment **11/11**, slam-free, worst runway
+  margin **106 mm**. MuJoCo contact is **advisory-only at 4/11 makes** — the
+  predicted Rung-3 P2 contact-model signature, never gating. Two planner fixes
+  were required: accel-bounded banking (`tilt_accel_limit_rad_s2` 5.326 rad/s²
+  by convexity; the projection sweep was measured and rejected) and cfg-gated
+  cup accel boxes shipped **off** with a recorded negative result (the box does
+  not buy flight time).
+- **HEADLINE for tier planning: the maximum plannable flight is 0.80 s** under
+  the 3500 rev/s² hand cap with z pinned (release z 0.86 m → 3256 rev/s²;
+  0.85 s → 3678; ≥ 1.05 s refuses; above 0.88 m the pre-launch dip no longer
+  fits). **The lever is release height, not a planner knob.**
+
+**Four owner decisions are recorded and OPEN** (entry § Open Questions): (1) the
+**shipped-limit verdict** — every gate cycle reads `LIMIT_JERK` at the shipped
+leg jerk 30000 for a structural reason (the z-launch jerk leaks
+`sin(tilt) × 744.3 mm` into centroid xy; 0° → 17005, 3.5° → 28970, 4° → 33339,
+12° → 107815 mm/s³, mesh-converged), so the gate runs catch-capable session
+limits (250/3000/150000) and reports `shipped_limit_verdicts` beside them —
+raise the shipped limits, or have unified mode always ride session limits;
+(2) the 0.9 s flight advisory band (4371 > 3500, with a test that fails if it
+ever fits); (3) the smoothing accel cap yielding to the endpoint pins on short
+cycles (2/30 grid cases ~6 % over); (4) `v_match` deferred mirroring
+`toss_gate` (uniform 0.316 = 1 − `catch_slider_vel_ratio`, by design).
+
+**Phase 2 is cleared to start (software-only).** Phases 1–2 are permitted while
+this plan is `proposed`; **Phase 3+ requires `active`.**
 
 ### Phase 2: Wire v6 + host 7-channel path — NOT STARTED
 
@@ -601,7 +662,14 @@ artifacts after retirement.
 
 ### Unit (offline, no hardware)
 
-- **T-U1** `cup_cycle` constraint satisfaction: for a grid of cycle
+**T-U1..T-U5 LANDED 2026-09-01** (Phase 1) — `tests/motion/test_cup_cycle.py`
+(T-U1, T-U2), `tests/motion/test_cup_realize.py` (T-U3, T-U4),
+`tests/motion/test_validate_cycle.py` (T-U5), with
+`tests/motion/test_cycle_plan.py` and `tests/sim/test_cycle_gate.py` alongside
+them. T-U6..T-U9 remain for Phases 2–3.
+
+- **T-U1** ✅ **LANDED** (`tests/motion/test_cup_cycle.py`) `cup_cycle`
+  constraint satisfaction: for a grid of cycle
   parameters (period 0.4–1.2 s, flight 0.6–1.0 s, displaced catch sites),
   assert release `‖a_cup(T) − g‖ < 1e-6`, detach collinearity
   `‖cross(a − g, axis)‖ < 1e-6` over `n_detach` knots, catch position error
@@ -609,17 +677,23 @@ artifacts after retirement.
   constraint** holds (slider headroom below the catch knot ≥ the planned
   deceleration distance for the arrival speed). Pass/fail: all constraints on
   every grid point that the reference solver also solves.
-- **T-U2** QP-vs-IPOPT parity: trajectory max deviation < 1 mm / 10 mm/s on
+- **T-U2** ✅ **LANDED** (`tests/motion/test_cup_cycle.py`, fixtures
+  `tools/probes/data/cup_cycle_qp_refs.npz` via
+  `tools/probes/capture_cup_cycle_refs.py`) QP-vs-IPOPT parity: trajectory max
+  deviation < 1 mm / 10 mm/s on
   the recorded Phase 0 cycle set (reference trajectories captured as fixtures;
   CasADi is not installed in the test env).
-- **T-U3** `tilt_schedule`: apparent-gravity alignment within saturation,
+- **T-U3** ✅ **LANDED** (`tests/motion/test_cup_realize.py`) `tilt_schedule`:
+  apparent-gravity alignment within saturation,
   12° cap never exceeded, endpoints equal receive/throw tilt exactly, rate
   limit respected; zero-banking mode reproduces `realize_tilted` output
   bit-comparably (ports `tests/sim/test_juggle_tilt.py`'s parity pattern).
-- **T-U4** `decompose` z-pin: with `unified_z_float_enabled` false, every
+- **T-U4** ✅ **LANDED** (`tests/motion/test_cup_realize.py`) `decompose` z-pin:
+  with `unified_z_float_enabled` false, every
   emitted pose has `z == JB_OP_DEFAULT_ACTIVE_Z_MM` exactly; with it true, z
   stays within `unified_z_band_mm` and `validate` gates the excursion.
-- **T-U5** `validate_cycle` hand gates: drive `HAND_STROKE` /
+- **T-U5** ✅ **LANDED** (`tests/motion/test_validate_cycle.py`)
+  `validate_cycle` hand gates: drive `HAND_STROKE` /
   `HAND_LIMIT_VEL` / `HAND_LIMIT_ACC` each with a minimal violating plan
   (empirical-probe rule: confirm each code deterministically before
   asserting it); NaN cup input ⇒ `UNREACHABLE`; refusal strings satisfy
