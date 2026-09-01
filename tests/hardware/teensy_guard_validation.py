@@ -25,7 +25,9 @@ zero contention). Checks:
      so it's MPC_STALE, not LINK_LOST) → guard latches ESTOP; RESUME the stream and
      confirm it STAYS latched (pre-fix it auto-recovered); CLEAR_ERRORS → clean recover.
   2  Seq-guard restart: tear down the client + rebuild the stream from a fresh seq
-     (== a run_mpc restart) → confirm immediate re-accept (fault stays NONE, sp_age
+     (== a setpoint-source restart; this was written as "a run_mpc restart" before
+     run_mpc.py was removed 2026-09-01, tag mpc-final — the modern equivalent is a
+     trajectory_node restart) → confirm immediate re-accept (fault stays NONE, sp_age
      drops) — the review-caught regression that bricked control after ~half of restarts.
      (The wall-anchor clock-step half of this check is covered by the native clock-step tests.)
   3  NetLock flood: flood the UDP ports (sendto-only) while streaming → no
@@ -193,7 +195,9 @@ class HoldStreamer:
 
     def restart_link(self):
         """Tear down the client (resets the tx seq to 0) and rebuild — a faithful
-        run_mpc restart. Returns after the fresh stream is flowing again."""
+        setpoint-source restart (written as "a run_mpc restart" before run_mpc.py
+        was removed 2026-09-01, tag mpc-final; trajectory_node is the modern
+        equivalent). Returns after the fresh stream is flowing again."""
         was_armed = self.armed
         self._stream_on.clear()
         self._stream_stop.set()
@@ -355,8 +359,8 @@ class Runner:
 
     def check2(self):
         self.head("CHECK 2 — SEQ-GUARD RESTART  (zero-motion)")
-        print("Tear down the link + rebuild the stream from a FRESH seq (== a run_mpc")
-        print("restart) → confirm immediate re-accept: fault stays NONE, sp_age drops.")
+        print("Tear down the link + rebuild the stream from a FRESH seq (== a setpoint-")
+        print("source restart) → confirm immediate re-accept: fault stays NONE, sp_age drops.")
         print("(Pre-fix: persisted seq vs host-reset stream → phantom MPC_STALE for minutes.)")
         self.enter("Enter to begin")
         if not self.arm_sequence():

@@ -44,10 +44,12 @@ motion/                        Motor guard + motion primitives
 
 External:
 
-- `motion_bridge_node.py` — ROS2 node that bridges motor guard ↔ CAN via IPC
-- `mpc_bridge_node.py` — ROS2 node that bridges input targets → MPC via IPC
-- `controller/hardware_plant.py` — Converts MPC output to motor commands with feedforward
 - `tools/*.py` — Standalone hardware test harnesses that bypass ROS2
+
+!!! note "Removed 2026-09-01"
+    `motion_bridge_node.py`, `mpc_bridge_node.py` and
+    `controller/hardware_plant.py` were deleted with the MPC chain. They are at
+    git tag `mpc-final`; see `logbook/2026-09-01-mpc-chain-removed.md`.
 
 ## Data Flow Summary
 

@@ -1225,16 +1225,27 @@ phase is reached, informed by Phases 6–8 evidence.
   needed: prefer a per-frame segment-duration field in `SetpointPayload`
   (protocol bump via `generate_udp_protocol.py`; staleness/extrapolation windows
   scale from the live value) over a stateful RPC.
-- **MPC return path**: dormant and untouched. The :5557 envelope stays
+- ~~**MPC return path**: dormant and untouched. The :5557 envelope stays
   byte-identical, so `run_mpc.py` can be relaunched (with trajectory_node
   stopped; the single-binder interlock makes conflicts loud).
-  `mpc_bridge_node.py` source retained.
+  `mpc_bridge_node.py` source retained.~~
+  **CLOSED 2026-09-01 — the MPC chain was removed outright**, superseded by
+  `plans/active/unified-7dof-planner.md`. `run_mpc.py` and `mpc_bridge_node.py`
+  are deleted, so `trajectory_node` is the only :5557 binder and there is no
+  return path to relaunch. Final implementation at git tag `mpc-final`; see
+  `logbook/2026-09-01-mpc-chain-removed.md`.
 - **Full jerk-limited hand-generator overhaul**
   (`Jugglebot-bb/plans/parked/hand-trajectory-generator-overhaul.md`); only the
   slim `makeCatch()` parameterisation remains pre-scoped, and only on hardware
   evidence.
-- **motor_guard + motion_bridge_node launch retirement** — both are off the leg
-  path; verify GUI topic consumption before removal (cleanup, not MVP).
+- ~~**motor_guard + motion_bridge_node launch retirement** — both are off the leg
+  path; verify GUI topic consumption before removal (cleanup, not MVP).~~
+  **DONE 2026-09-01**: `motion_bridge_node` deleted with the MPC chain (its GUI
+  topics `motion/diagnostics` / `motion/tracking_error` degrade to the DISABLED
+  badge, as they have since 2026-08-01). `motor_guard` is retained deliberately —
+  it is the validated Python twin behind the `hermite_xref` firmware trust chain
+  and its safety tests run per-commit — but is now unlaunched with no feeder and
+  no consumer.
 - **Orchestrator-automated arming** (auto `set_setpoint_output` on ACTIVE entry).
 - **Lean shaping beyond the single gain**; `juggle_optimizer.py` port; GUI
   integration for TRAJECTORY mode.

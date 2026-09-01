@@ -459,10 +459,10 @@ def test_out_of_stroke_but_reachable_still_converges(geom):
 # ---------------------------------------------------------------------------
 
 def test_explicit_loose_tol_is_unchanged(geom):
-    """``HardwarePlant.get_state`` calls FK with ``tol=_FK_TOL_MM`` (1e-4) and
-    ``max_iter=10`` from a warm guess, inside the 40 Hz MPC hot loop.  Every
-    call there that CONVERGES must be bit-for-bit what it was before the
-    criterion changed.
+    """Callers that pass an explicit loose tolerance — FK with ``tol=1e-4``
+    and ``max_iter=10`` from a warm guess, at control rate.  Every such call
+    that CONVERGES must be bit-for-bit what it was before the criterion
+    changed.
 
     Structural argument, then the measurement: the stagnation exit is checked
     strictly AFTER the mixed test and can only fire below
@@ -479,13 +479,17 @@ def test_explicit_loose_tol_is_unchanged(geom):
     relative term and the stagnation exit, not the post-loop re-check, so this
     test cannot see the EXHAUSTION path — see
     ``test_exhaustion_returns_when_the_final_step_converges``.  The ceiling-vs-
-    caller-tol invariant is pinned against the real call site's constant in
-    ``tests/sim/test_hardware_plant_failure_paths.py``; the assertion below is
-    the ik_solver-side half.
+    caller-tol invariant was pinned in two places: here, and against the real
+    call site's constant in ``tests/sim/test_hardware_plant_failure_paths.py``.
+    That second half went with the MPC chain on 2026-09-01 (git tag
+    ``mpc-final``; see ``logbook/2026-09-01-mpc-chain-removed.md``), so the
+    literal below is now the ONLY guard — a future caller that passes a looser
+    tol must re-pin it at its own call site.
     """
     assert FK_STALL_CEILING_MM * 100.0 <= 1e-4, (
-        'the stagnation ceiling has risen to within 100x of hardware_plant\'s '
-        'tol=1e-4 — the unreachability argument above no longer holds')
+        'the stagnation ceiling has risen to within 100x of the 1e-4 tol used '
+        'by warm-guess per-tick callers — the unreachability argument above '
+        'no longer holds')
     mismatches = []
     for pos, rot, ext in _in_envelope(geom):
         guess = (pos + np.array([0.5, -0.3, 0.7]), rot.copy())
@@ -519,14 +523,14 @@ def test_exhaustion_returns_when_the_final_step_converges(geom):
       | +20 mm in x       | 2        | RAISE  | RETURN res 8.2e-06 |
       | +0.5 mm in x      | 10       | RETURN | RETURN (identical) |
 
-    For ``HardwarePlant.get_state`` this means a tick whose 10th Newton step is
-    the first to land under ``tol`` no longer increments ``_fk_fail_count``
-    toward ``_FK_FAIL_ESTOP_THRESHOLD`` and no longer substitutes
-    ``_last_measured_pose``.  That is the intended trade — the returned pose
-    satisfies the tolerance the caller asked for, so calling it a failure and
-    feeding the MPC a staler pose instead was the worse of the two — but it is
-    a deliberate reduction in that cascade's sensitivity, so it gets a test of
-    its own rather than living only in a comment.
+    For a per-tick caller with a fail-count cascade this means a tick whose
+    10th Newton step is the first to land under ``tol`` no longer counts as a
+    failure and no longer substitutes a stale pose.  That is the intended
+    trade — the returned pose satisfies the tolerance the caller asked for, so
+    calling it a failure and handing back a staler pose instead was the worse
+    of the two — but it is a deliberate reduction in that cascade's
+    sensitivity, so it gets a test of its own rather than living only in a
+    comment.
 
     The two assertions that matter: the returned pose really is within the
     caller's ``tol`` (not merely "returned"), and the iteration budget really

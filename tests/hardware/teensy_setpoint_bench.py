@@ -38,7 +38,7 @@ PRECONDITIONS (the driver CHECKS these and refuses to arm otherwise):
     CLOSED_LOOP, which the ODrive auto-holds at the current pos — no jolt), needed
     after homing leaves the leg in VELOCITY mode; or bring it up yourself first.
   • fault_state == NONE, axis active_errors == 0.
-  • This driver is the SOLE setpoint/wire authority — do NOT run run_mpc.py or the
+  • This driver is the SOLE setpoint/wire authority — do NOT run the
     bridge's setpoint output at the same time (two authorities on the wire).
 
 This driver does NOT touch the ROS bridge's ``enable_setpoint_output`` param; it

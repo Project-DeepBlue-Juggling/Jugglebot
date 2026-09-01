@@ -193,8 +193,8 @@ Format and an example are in `TEMPLATE.md`.
 
 | Tag | Covers |
 |-----|--------|
-| `mpc` | `controller/mpc.py`, `controller/params.py` |
-| `controller` | `controller/` (non-MPC) |
+| `mpc` | HISTORICAL — `controller/mpc.py`, `controller/params.py` etc. were removed 2026-09-01 (tag `mpc-final`). The tag stays in the vocabulary: dozens of entries carry it, and it is the right tag for anything about that removed chain. Nothing live routes to it. |
+| `controller` | `controller/` — the shared motion primitives |
 | `motion` | `ros_ws/.../motion/` |
 | `can` | `ros_ws/.../can/`, `can_node.py` |
 | `tracking` | `ros_ws/.../tracking/` |

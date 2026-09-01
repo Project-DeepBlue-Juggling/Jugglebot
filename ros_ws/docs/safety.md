@@ -57,16 +57,20 @@ LEVELLING runs through the bridge's profiled gentle moves (relay path) — no
 MPC involvement; the gravity offset it measures is applied per the levelling
 contract, `ros_ws/docs/levelling_frame.md` (C-LEVEL-1).
 
-## Dormant record — the parked MPC-era chain
+## Historical record — the removed MPC-era chain
 
-> Nothing below runs today. `can_node` was deleted 2026-07-06 (SocketCAN
-> decommission); `motor_guard` + `motion_bridge_node` stopped launching
-> 2026-08-01 (MPC dormancy). The chain is parked, not deleted, for the MPC
-> revival (`controller/`, `run_mpc.py`); this section is its safety design
-> record.
+> Nothing below runs today, and most of it no longer exists. `can_node` was
+> deleted 2026-07-06 (SocketCAN decommission); `motor_guard` +
+> `motion_bridge_node` stopped launching 2026-08-01 (MPC dormancy); and on
+> **2026-09-01 the MPC chain was deleted outright** — `run_mpc.py`,
+> `controller/{mpc,params,runner,hardware_plant,generate_solver}.py` and
+> `motion_bridge_node` / `mpc_bridge_node` are gone, preserved at git tag
+> **`mpc-final`** (`logbook/2026-09-01-mpc-chain-removed.md`). `motor_guard.py`
+> survives as a parked fallback with neither feeder nor consumer. This section
+> is the safety design record of the removed chain, not a revival plan.
 
-**Chain:** `run_mpc.py → motor_guard (500 Hz) → motion_bridge_node →
-leg_lengths_topic → can_node → ODrives`.
+**Chain (as last shipped):** `run_mpc.py → motor_guard (500 Hz) →
+motion_bridge_node → leg_lengths_topic → can_node → ODrives`.
 
 **Motor guard telemetry gating** (`jugglebot/motion/motor_guard.py`): only
 publishes motor commands when `ENABLED`; silent in `DISABLED`/`ESTOP`. Its

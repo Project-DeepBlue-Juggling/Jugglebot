@@ -1,8 +1,10 @@
 """Pure ballistic geometry helpers — no drag, constant gravity.
 
-Hardware-safe (numpy only). Used by the hardware ``--toss-motion`` path in
-``run_mpc.py`` to compute throw / catch platform poses from throw position,
-catch position, and an apex-height constraint.
+Hardware-safe (numpy only). Computes throw / catch platform poses from throw
+position, catch position, and an apex-height constraint. (The original caller
+was ``run_mpc.py``'s ``--toss-motion`` path, removed 2026-09-01 with the MPC
+chain — tag ``mpc-final``. The geometry is caller-agnostic and is now consumed
+by ``sim/`` and the toss planner.)
 
 The symbols here were originally defined inside ``sim/hand/ballistics.py``
 but are equally applicable to the hardware layer (they are plain ballistics

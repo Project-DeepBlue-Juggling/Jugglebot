@@ -142,7 +142,8 @@ class StepRecord:
     # Reference clock — advances only on success-class solver status so the
     # reference does not run away from the platform during fallback chains.
     # Lags state.time during saturation; equals state.time during healthy
-    # operation.  See controller/runner.py (t_ref gating).
+    # operation.  (t_ref gating lived in the removed controller/runner.py —
+    # git tag ``mpc-final``.)
     t_ref_s: float = 0.0
 
 
@@ -184,14 +185,14 @@ def record_from_arrays(
 ) -> StepRecord:
     """Build a StepRecord from numpy arrays (convenience helper).
 
-    Allocates a fresh ``StepRecord``.  NOT hot-path safe — the 40 Hz MPC
+    Allocates a fresh ``StepRecord``.  NOT hot-path safe — a 40 Hz control
     loop uses ``fill_record_from_arrays`` against a pool slot instead.
     This function is retained for sim paths (``sim/main.py``,
-    ``sim/demo_mpc.py``) that predate the pool design.
+    ``sim/juggle_demo.py``) that predate the pool design.
 
     The ``leg_accelerations`` / ``ball_*`` / ``throw_*`` / ``catches_total``
-    kwargs are sim-juggle-demo additions; hardware MPC callers leave them
-    at their defaults and the corresponding StepRecord fields stay at 0.
+    kwargs are sim-juggle-demo additions; other callers leave them at their
+    defaults and the corresponding StepRecord fields stay at 0.
     """
     rec = StepRecord()
     fill_record_from_arrays(
@@ -264,7 +265,7 @@ def fill_record_from_arrays(
     """Fill a pre-existing StepRecord from numpy arrays — hot-loop body.
 
     Mutates ``rec`` in place; does not allocate a new StepRecord.  Used
-    by ``run_mpc_loop`` against a pool slot from ``logger.next_record()``.
+    by a control loop against a pool slot from ``logger.next_record()``.
 
     Field-by-field assignment uses ``float(arr[i])`` rather than
     ``arr[i]`` so the slot stores Python floats (size ~16 B) rather
@@ -386,7 +387,8 @@ class TelemetryLogger:
         Per-tick allocation is limited to the Python floats written into
         pool slots; once the pool wraps (every ``_POOL_SIZE`` ticks), new
         assignments free the prior floats and retention stays flat.  See
-        ``controller/HOT_LOOP_CONTRACT.md``.
+        the hot-loop allocation contract (``HOT_LOOP_CONTRACT.md``,
+            removed 2026-09-01 — git tag ``mpc-final``).
 
     Legacy API::
 
@@ -430,7 +432,8 @@ class TelemetryLogger:
             path is set, one flush per pool-wrap).  The hot-loop zero-
             allocation contract requires pool_size ≤ warmup ticks for
             the measurement window to see a steady-state wrap — see
-            ``controller/HOT_LOOP_CONTRACT.md``.
+            the hot-loop allocation contract (``HOT_LOOP_CONTRACT.md``,
+            removed 2026-09-01 — git tag ``mpc-final``).
             None = ``_DEFAULT_POOL_SIZE`` (500).
         """
         ps = int(pool_size) if pool_size is not None else self._DEFAULT_POOL_SIZE
@@ -503,10 +506,9 @@ class TelemetryLogger:
     def append(self, record: StepRecord) -> None:
         """Copy an externally-constructed StepRecord into the pool.
 
-        Allocates (field-by-field copy) and is NOT contract-compliant.
-        Retained so sim/demo_mpc.py and sim/main.py continue to work
-        without simultaneous migration.  Hot-path callers (run_mpc_loop)
-        MUST use ``next_record()`` + ``fill_record_from_arrays()``.
+        Allocates (field-by-field copy).  Convenience path for callers
+        that build a record themselves; hot-path callers MUST use
+        ``next_record()`` + ``fill_record_from_arrays()`` instead.
         """
         slot = self.next_record()
         for f in fields(StepRecord):

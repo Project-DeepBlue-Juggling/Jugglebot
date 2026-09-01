@@ -23,7 +23,7 @@ from controller.scheduler import (
 )
 from controller.hermite import quintic_interp_with_accel
 
-# MPC horizon times (simplified: 5 fine + 5 coarse from MPCParams defaults)
+# Horizon times (simplified: 5 fine + 5 coarse, the MPC's former defaults)
 _FINE_DT = 0.02
 _COARSE_DT = 0.25
 _DT_SCHEDULE = [_FINE_DT] * 5 + [_COARSE_DT] * 5

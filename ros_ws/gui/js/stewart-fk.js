@@ -185,9 +185,10 @@ let prevState = [0, 0, 0, 0, 0, 0];
  * FK: given motor positions (revolutions), solve for platform pose.
  * Uses Newton-Raphson iteration with warm-start from previous solution.
  *
- * Motor convention: positive revs = extension (motion_bridge_node publishes
- * positive revs via leg_lengths_topic, and ODrive reports positive pos_estimate
- * for extended legs after homing sets leg_abs_pos_rev = 0.1).
+ * Motor convention: positive revs = extension (motion_bridge_node published
+ * positive revs via leg_lengths_topic until that node was removed 2026-09-01,
+ * tag mpc-final; and ODrive reports positive pos_estimate for extended legs
+ * after homing sets leg_abs_pos_rev = 0.1 — that half still holds).
  *
  * @param {number[]} motorRevs - 6 motor positions in revolutions (positive = extension)
  * @returns {{ pos: number[], R: number[][], platNodes: number[][], converged: boolean }}

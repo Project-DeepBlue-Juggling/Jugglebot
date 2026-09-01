@@ -542,9 +542,9 @@ jugglebot_odrive_defaults:
   leg_vel_gains:     [0.20, 0.20, 0.20, 0.20, 0.20, 0.20]
   leg_vel_int_gains: [0.32, 0.32, 0.32, 0.32, 0.32, 0.32]
   # Leg motor incremental encoder resolution (counts per revolution).
-  # Consumed by controller/hardware_plant.py to compute the sub-LSB command
-  # dead-band: deadband_mm_per_leg = 1 / (enc_cpr * mm_to_rev).
-  # ODrive Pro leg encoder spec is 8192 CPR.
+  # Was consumed by the removed hardware_plant.py (2026-09-01, tag mpc-final)
+  # for the sub-LSB command dead-band; retained as the leg encoder hardware
+  # spec (ODrive Pro, 8192 CPR).
   leg_motor_enc_cpr: 8192
 
 # ============================================================

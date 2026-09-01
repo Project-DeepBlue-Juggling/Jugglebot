@@ -84,17 +84,15 @@ setup(
         'console_scripts': [
             # ── Core nodes ────────────────────────────────────
             'orchestrator_node = jugglebot.orchestrator_node:main',
-            'motion_bridge_node = jugglebot.motion_bridge_node:main',
             # The can-bridge Teensy node (owns the Jetson<->Teensy UDP link). Launched
             # by jugglebot_launch.py in production; also runnable standalone via
             # launch/teensy_bridge_launch.py.
             'teensy_bridge_node = jugglebot.teensy_bridge_node:main',
-            # MVP Jetson-side trajectory generator (replaces run_mpc.py's hot path;
-            # streams 40 Hz knots on :5557 → teensy_bridge_node → can-hub Teensy).
+            # Jetson-side trajectory generator: streams 40 Hz knots on :5557 →
+            # teensy_bridge_node → can-hub Teensy.  Sole owner of the leg path
+            # since the MVP cutover; the MPC chain it replaced was removed
+            # 2026-09-01 (git tag `mpc-final`).
             'trajectory_node = jugglebot.trajectory_node:main',
-            # mpc_bridge_node source retained (MPC return path is dormant, not
-            # deleted); dropped from jugglebot_launch.py in the MVP cutover.
-            'mpc_bridge_node = jugglebot.mpc_bridge_node:main',
             'mocap_node = jugglebot.mocap_node:main',
             'spacemouse_handler = jugglebot.spacemouse_handler:main',
             # ── Ball tracking & catch ──────────────────────────

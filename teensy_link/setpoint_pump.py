@@ -52,8 +52,9 @@ The leg torque feedforward — THE SINGLE WIRE ENFORCEMENT POINT
 Historically this was hard-zeroed (the *friction-FF drop* at the 2026-06-25 Teensy
 cutover). It is now a plumbed, live path (shipped ON since the 2026-07-16
 arming session): the producer
-(``jugglebot.motion.torque_ff.LegTorqueFeedforward``, via the trajectory emitter or
-``HardwarePlant``) publishes ``torque_Nm`` in **TRUE Nm, extension-positive**, and this
+(``jugglebot.motion.torque_ff.LegTorqueFeedforward``, via the trajectory emitter;
+``HardwarePlant`` was a second producer until it was removed 2026-09-01, tag
+mpc-final) publishes ``torque_Nm`` in **TRUE Nm, extension-positive**, and this
 pump is the ONE place that turns a physical torque into an ODrive wire value. Three
 transformations happen here and nowhere else, because this is the sole production
 producer of the leg ``Setpoint`` frame:
@@ -350,7 +351,9 @@ class SetpointPump:
             return None, None
 
         # ── v0: vel_mm_s × mm_to_rev (motor_guard's leg_velocities_to_motor_…) ──
-        # Production HardwarePlant always supplies vel_mm_s. motor_guard would
+        # The production producer (trajectory_node's emitter) always supplies
+        # vel_mm_s, as HardwarePlant did before it was removed 2026-09-01
+        # (tag mpc-final). motor_guard would
         # finite-difference a missing/bad velocity, but the pump has no per-tick
         # ext history to do so and a wrong feedforward velocity is unsafe, so a
         # missing/non-finite velocity is a SAFETY reject here (never silently 0).

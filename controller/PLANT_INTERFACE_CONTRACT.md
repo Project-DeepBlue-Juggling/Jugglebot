@@ -3,10 +3,18 @@
 This document is the **normative specification** of the invariants that
 every implementation of [PlantInterface (controller/plant.py)](plant.py)
 — and every consumer of one — must satisfy.  It is the structural sibling
-of the K1–K6 [REFERENCE_LAYER_CONTRACT.md](REFERENCE_LAYER_CONTRACT.md),
-the S1–S6 [SCHEDULER_CONTRACT.md](SCHEDULER_CONTRACT.md), and the
-zero-allocation [HOT_LOOP_CONTRACT.md](HOT_LOOP_CONTRACT.md), and uses
-the same RFC 2119 normative language (MUST, MUST NOT, MAY).
+of the K1–K6 [REFERENCE_LAYER_CONTRACT.md](REFERENCE_LAYER_CONTRACT.md) and
+the S1–S6 [SCHEDULER_CONTRACT.md](SCHEDULER_CONTRACT.md), and uses the same
+RFC 2119 normative language (MUST, MUST NOT, MAY).
+
+> **2026-09-01 — `HardwarePlant` and `HOT_LOOP_CONTRACT.md` were removed**
+> with the MPC chain (dormant since 2026-08-01; superseded by the unified
+> 7-DoF planner as the per-cycle replanner). Every `HardwarePlant` and
+> `hardware_plant.py` reference below is now **historical**: it records what
+> the second implementation did and why an invariant is worded as it is, and
+> its line links resolve only at git tag **`mpc-final`**. The contract itself
+> is unchanged and still binds `MuJoCoPlant` and any future implementation.
+> See `logbook/2026-09-01-mpc-chain-removed.md`.
 
 It exists so that future ``PlantInterface`` implementations (a digital-
 twin twin running alongside hardware, a remote-machine plant for

@@ -16,7 +16,8 @@
 #
 # ── TIERS ─────────────────────────────────────────────────────────────────────
 # The default gate deselects `-m nightly`: research/demo characterization and the
-# (dormant, Phase 3) MPC battery. Those still RUN — every night at 04:00 via
+# dormant ZMQ-target / catch-optimiser batteries (their live publisher and caller
+# went with the MPC chain on 2026-09-01). Those still RUN — every night at 04:00 via
 # tools/nightly_suite.sh, and on demand with `--full`. The hardware-safety
 # surface (teensy_link wire bytes, firmware natives, ROS nodes, motion) is NEVER
 # demoted; it is per-commit. ONE carve-out (2026-08-01): three tests/motion/ tests

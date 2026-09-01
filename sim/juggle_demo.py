@@ -66,10 +66,13 @@ Programmatic:
     from sim.juggle_demo import run, JuggleDemoConfig
     stats = run(JuggleDemoConfig(duration_s=5.0))
 
-Pure-Python, no ROS2. The runner is the **same architecture** the Phase 4
-hardware orchestrator will mirror, except the plant is ``HardwarePlant``
-instead of ``MuJoCoPlant`` and the hand/BB events go to ``can_node``
-services instead of the in-process sim model.
+Pure-Python, no ROS2. The runner was the **same architecture** the Phase 4
+hardware orchestrator was to mirror, except the plant would be ``HardwarePlant``
+instead of ``MuJoCoPlant`` and the hand/BB events would go to ``can_node``
+services instead of the in-process sim model. Both ``HardwarePlant`` and
+``can_node`` are gone — ``HardwarePlant`` removed 2026-09-01 with the MPC chain
+(tag ``mpc-final``), ``can_node`` on 2026-07-06 with the SocketCAN decommission —
+so read that comparison as historical.
 
 Why the runner has a "schedule lead" for hand events
 ----------------------------------------------------

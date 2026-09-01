@@ -31,7 +31,7 @@ tags: []               # from controlled vocabulary (see below)
 ### Controlled Vocabulary
 
 **Subsystem tags** (derived from file paths):
-- `mpc` — controller/mpc.py, controller/params.py
+- `mpc` — HISTORICAL (files removed 2026-09-01, tag `mpc-final`); use only for entries about the removed MPC chain
 - `controller` — controller/
 - `motion` — ros_ws/.../motion/
 - `can` — ros_ws/.../can/, can_node.py

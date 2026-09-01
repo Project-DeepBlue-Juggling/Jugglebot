@@ -402,7 +402,8 @@ def _casadi_rodrigues(rv):
     evaluate to their limits (1 and ½) at ``θ = 0``; the symbolic
     Jacobian stays finite there.
 
-    Mirrors ``controller.mpc._casadi_rodrigues`` but inlined here to
+    Mirrors the former ``controller.mpc._casadi_rodrigues`` (removed
+    2026-09-01; git tag ``mpc-final``) but inlined here to
     keep the optimiser's import graph self-contained.
     """
     # Normalise rv to a column vector for indexing.

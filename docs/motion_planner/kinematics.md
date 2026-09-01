@@ -1,5 +1,14 @@
 # Kinematics
 
+!!! note "Removed 2026-09-01"
+    The MPC chain was **deleted** on 2026-09-01:
+    `controller/{mpc,params,runner,hardware_plant,generate_solver}.py`, `run_mpc.py`,
+    the ROS2 `motion_bridge_node` / `mpc_bridge_node`, and `sim/main.py`'s `--mpc`
+    and `--hardware` modes. The `motion/` kinematics modules this page documents
+    **survive** — their MPC-era consumer does not, so every reference to the solver
+    below is historical and resolves only at git tag **`mpc-final`**. See
+    `logbook/2026-09-01-mpc-chain-removed.md`.
+
 This page covers how platform poses are converted to leg lengths (inverse kinematics), how velocities and accelerations are mapped through the Jacobian, and how leg lengths can be converted back to poses (forward kinematics).
 
 **Source files:**

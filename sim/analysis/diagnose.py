@@ -79,12 +79,20 @@ STEADY_STATE_RMS_THRESHOLD_MM = 0.5
 # Reference change detection (mm for position, rad for orientation)
 REF_CHANGE_THRESHOLD = 0.01
 
-# Plant telemetry collapse detection.  v_max mirrors
-# controller.params.MPCParams.max_leg_vel_mmps (the rate cap MPC enforces).
+# Plant telemetry collapse detection.
+#
+# HISTORICAL SURFACE (2026-09-01): the MPC chain that produced these logs was
+# removed — see logbook/2026-09-01-mpc-chain-removed.md, git tag `mpc-final`.
+# The MPC-era patterns below are RETAINED DELIBERATELY: this is a log analyser,
+# and the archived `mpc_*.csv` telemetry it reads did not change when the
+# producer went away.  Nothing here imports the deleted modules.
+#
+# v_max mirrored the old controller.params.MPCParams.max_leg_vel_mmps (the rate
+# cap the MPC enforced), now a literal below.
 # Free-fall signature: all 6 legs retract together at mean speed beyond the
-# rate cap (the MPC couldn't command that profile, so it's uncommanded).
-# The "all legs exactly 0.0" sentinel is what HardwarePlant's ZMQ SUB hands
-# back when telemetry stops flowing.
+# rate cap (the controller couldn't command that profile, so it's uncommanded).
+# The "all legs exactly 0.0" sentinel is what HardwarePlant's ZMQ SUB handed
+# back when telemetry stopped flowing.
 V_MAX_MM_S = 140.0
 PLANT_COLLAPSE_MEAN_SPEED_MM_S = V_MAX_MM_S  # mean(|leg_vel|) across 6 legs
 PLANT_COLLAPSE_SAME_SIGN_MIN = 5             # at least this many legs moving same direction
@@ -1888,8 +1896,9 @@ def _parse_companion_stdout_log(csv_path: str) -> Dict[str, Any]:
     raw line count.  Unmatched lines are reported as `unmatched_lines` count
     (not stored verbatim, to keep JSON output small).
 
-    Users can capture MPC stdout with:
-        python run_mpc.py --pose ... 2>&1 | tee temp/logs/mpc_<ts>.log
+    Historical: the MPC-era logs this parses were captured with
+    `python run_mpc.py --pose ... 2>&1 | tee temp/logs/mpc_<ts>.log`
+    (run_mpc.py removed 2026-09-01; tag `mpc-final`).
     """
     csv_dir = os.path.dirname(csv_path) or '.'
     stem = os.path.basename(csv_path)
@@ -1904,9 +1913,10 @@ def _parse_companion_stdout_log(csv_path: str) -> Dict[str, Any]:
     if log_path is None:
         return {'available': False,
                 'searched': candidates,
-                'hint': ("Capture MPC stdout with: "
-                         "`python run_mpc.py ... 2>&1 | tee "
-                         "temp/logs/mpc_<ts>.log`")}
+                'hint': ("No companion stdout log beside this CSV. Capture one "
+                         "by teeing the producing process's stdout to "
+                         "`temp/logs/<csv_stem>.log`. (MPC-era logs used "
+                         "run_mpc.py, removed 2026-09-01 — tag `mpc-final`.)")}
 
     result: Dict[str, Any] = {
         'available': True,

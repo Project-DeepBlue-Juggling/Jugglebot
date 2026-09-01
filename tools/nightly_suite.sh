@@ -61,7 +61,7 @@ LOG="$REPORTS/$DATE.log"
 # JB_NIGHTLY_IGNORE_SESSION=1 skips the guard (deliberate hand-run during a
 # sitting). JB_NIGHTLY_DEFER_BUDGET_S caps the wait; the default 2 h leaves
 # comfortable headroom under the unit's TimeoutStartSec=4h.
-LIVE_SESSION_RE='(ros2 launch jugglebot|jugglebot_launch\.py|teensy_bridge_node|trajectory_node|orchestrator_node|run_mpc\.py)'
+LIVE_SESSION_RE='(ros2 launch jugglebot|jugglebot_launch\.py|teensy_bridge_node|trajectory_node|orchestrator_node)'
 DEFER_BUDGET_S="${JB_NIGHTLY_DEFER_BUDGET_S:-7200}"
 DEFER_POLL_S="${JB_NIGHTLY_DEFER_POLL_S:-120}"
 

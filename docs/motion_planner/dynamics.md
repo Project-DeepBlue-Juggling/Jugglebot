@@ -1,5 +1,14 @@
 # Dynamics
 
+!!! note "Removed 2026-09-01"
+    The MPC chain was **deleted** on 2026-09-01:
+    `controller/{mpc,params,runner,hardware_plant,generate_solver}.py`, `run_mpc.py`,
+    the ROS2 `motion_bridge_node` / `mpc_bridge_node`, and `sim/main.py`'s `--mpc`
+    and `--hardware` modes. The `motion/dynamics.py` model this page documents
+    **survives** and still feeds the live `trajectory_node` → :5557 path — but every
+    reference to the solver or to `HardwarePlant` below is historical and resolves
+    only at git tag **`mpc-final`**. See `logbook/2026-09-01-mpc-chain-removed.md`.
+
 This page covers how the motion planner computes motor torques from the physics of the system — gravity, platform inertia, and reflected motor inertia.
 
 ## Are these torques actually sent to the motors?

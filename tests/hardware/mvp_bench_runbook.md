@@ -277,8 +277,9 @@ auto-tracks whatever threshold the firmware trips at):
 
 - **Purpose**: prove the platform holds the ACTIVE pose through the new trajectory path;
   clean runtime arm and disarm→deactivate.
-- **Entry**: powered, ODrives up, CAN3 healthy; `run_mpc.py` NOT running (sole :5557
-  binder). Fresh `colcon build` + `source`.
+- **Entry**: powered, ODrives up, CAN3 healthy; no second :5557 binder besides
+  `trajectory_node` (this read "`run_mpc.py` NOT running" until `run_mpc.py` was
+  removed 2026-09-01, tag `mpc-final`). Fresh `colcon build` + `source`.
 - **Commands** (summary — full protocol in the pointer):
   1. `ros2 launch jugglebot jugglebot_launch.py enable_setpoint_output:=false`
   2. `ros2 topic pub -t 3 -r 2 /orchestrator_command std_msgs/msg/String "data: 'activate'"`

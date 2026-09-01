@@ -1012,11 +1012,12 @@ def test_pump_torque_ff_max_nm_ceiling():
 
 
 def test_hardware_plant_honours_config_term_flags(monkeypatch):
-    """Review finding (the third producer): HardwarePlant read NONE of the
-    config flags — enabling the master switch would have armed the MPC path's
-    acceleration-proportional platform-inertia FF that
-    torque_ff_platform_inertia=false exists to gate. The skip flags must flow
-    from the generated config into compute_full_feedforward_torques."""
+    """Review finding (the third producer, since removed with the MPC chain on
+    2026-09-01): that producer read NONE of the config flags — enabling the
+    master switch would have armed the acceleration-proportional
+    platform-inertia FF that torque_ff_platform_inertia=false exists to gate.
+    The invariant outlives the producer: the skip flags must flow from the
+    generated config into compute_full_feedforward_torques."""
     from jugglebot.motion.motor_commands import cartesian_to_motor_commands
     from jugglebot.motion.dynamics import DynamicsParams as DP
     geom = _geom()

@@ -1,9 +1,15 @@
 """Abstract plant interface and state dataclass.
 
-The PlantInterface defines the contract between the controller (MPC) and the
-physical or simulated plant. Implementations:
-  - MuJoCoPlant: steps a MuJoCo simulation (Phase 1)
-  - HardwarePlant: sends commands via CAN to real ODrives (Phase 6)
+The PlantInterface defines the contract between a controller and the physical
+or simulated plant. The one live implementation is ``MuJoCoPlant``, which steps
+a MuJoCo simulation (``sim/plant/mujoco_plant.py``).
+
+``HardwarePlant`` — the ZMQ/CAN implementation that spoke to ``motor_guard`` —
+was removed 2026-09-01 with the rest of the MPC chain (dormant since
+2026-08-01, superseded by the unified 7-DoF planner as the per-cycle
+replanner). It is preserved at git tag ``mpc-final``; see
+``logbook/2026-09-01-mpc-chain-removed.md``. The contract below is unchanged
+and still binds any future implementation.
 
 The normative invariants P1 (PlantState aliasing), P2 (can_reset capability),
 P3 (trusted-callee command boundary), and P4 (control_dt awareness) are

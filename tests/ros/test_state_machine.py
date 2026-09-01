@@ -749,7 +749,7 @@ class TestActiveHandler:
         assert handler.execute(ctx) is None
         assert handler._activated is True
         # Default sub-mode on activation is STANDBY (ROS2 input sources
-        # silenced; platform responsive only to run_mpc.py).
+        # silenced).
         assert ctx.active_mode == ActiveMode.STANDBY
         assert ctx.control_mode == 'STANDBY'
 

@@ -8,7 +8,7 @@ callbacks, and we assert the node publishes the right (production-named) message
 ROS 2 is mocked by ``tests/ros/conftest.py`` (so ``create_publisher`` returns a
 recording ``MockPublisher`` and timers don't auto-fire — we call the publish
 methods directly). ``diagnostic_msgs`` is the real package (installed on the
-Jetson; used by the production ``motion_bridge_node`` too).
+Jetson).
 
 The single most important assertion here is ``test_heartbeat_mpc_active_zero``:
 the bridge MUST send ``mpc_active=0`` on every startup path.

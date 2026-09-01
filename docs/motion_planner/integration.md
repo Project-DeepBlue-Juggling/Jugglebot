@@ -1,5 +1,13 @@
 # System Integration
 
+!!! note "Removed 2026-09-01"
+    The MPC chain was **deleted** on 2026-09-01:
+    `controller/{mpc,params,runner,hardware_plant,generate_solver}.py`, `run_mpc.py`,
+    the ROS2 `motion_bridge_node` / `mpc_bridge_node`, and `sim/main.py`'s `--mpc`
+    and `--hardware` modes. The integration described below is **historical** and
+    resolves only at git tag **`mpc-final`**. See
+    `logbook/2026-09-01-mpc-chain-removed.md`.
+
 This page describes how the motion system connects to the rest of the Jugglebot system — the ROS2 bridges, the MPC solver, the motor guard, the CAN interface, and how the full system starts up and shuts down.
 
 **Source files:**
@@ -207,10 +215,16 @@ ros2 launch jugglebot jugglebot_launch.py record:=true
 | `spacemouse_handler` | Always | SpaceMouse input |
 | `sp_ik` | Always | Legacy Stewart platform IK node |
 | `rosbridge_websocket` | Always | WebSocket bridge for GUI |
-| `motion_bridge_node` | Always | Motor guard ↔ ROS2 bridge |
-| `mpc_bridge_node` | Always | MPC target ↔ ROS2 bridge |
-| `motor_guard` | Always | 500 Hz interpolator + safety |
+| `motion_bridge_node` | **Never — node removed 2026-09-01** | Motor guard ↔ ROS2 bridge |
+| `mpc_bridge_node` | **Never — node removed 2026-09-01** | MPC target ↔ ROS2 bridge |
+| `motor_guard` | **Never — dropped from the launch 2026-08-01** | 500 Hz interpolator + safety |
 | `rosbag record` | If `record:=true` | Records selected topics in MCAP format |
+
+The two bridge nodes were deleted with the MPC chain on 2026-09-01 (git tag
+`mpc-final`; `logbook/2026-09-01-mpc-chain-removed.md`). `motor_guard` survives as
+a parked fallback but is not launched. `can_node` was deleted 2026-07-06 with the
+SocketCAN decommission. The live leg path is `trajectory_node` → ZMQ :5557 →
+`teensy_bridge_node` → the can-bridge Teensy.
 
 ### Manual Startup (When Not Using Launch File)
 
@@ -218,7 +232,7 @@ For development or when running processes separately:
 
 1. **Launch ROS2 nodes** (via launch file or individually)
 2. **Start motor guard:** `python -m jugglebot.motion.motor_guard --rate 500` (separate terminal). Starts in `DISABLED` mode with zero outputs.
-3. **Start MPC process:** `python sim/main.py --hardware` (separate terminal). Defaults to `ZmqTargetSource` for receiving targets from `mpc_bridge_node`.
+3. **Start MPC process:** `python sim/main.py --hardware` (separate terminal). Defaults to `ZmqTargetSource` for receiving targets from `mpc_bridge_node`. *(historical — the `--hardware` mode and `mpc_bridge_node` were removed 2026-09-01, tag `mpc-final`.)*
 4. **IPC connection:** ZeroMQ handles connection/reconnection automatically on all ports.
 5. **Homing:** The orchestrator commands homing via the CAN node. ODrives find their encoder references.
 6. **Activate:** The orchestrator transitions to ACTIVE, publishing a mode on `control_mode_topic`. Both bridges forward enable commands. The MPC begins solving; the motor guard begins interpolating.

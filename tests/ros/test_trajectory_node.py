@@ -803,8 +803,9 @@ def test_a_restarted_node_reports_no_correction_although_the_teensy_flag_persist
 # ── leg_torques_diagnostic (gravity FF observability) ─────────
 # trajectory_node republishes each emitted frame's torque_Nm on the SAME topic
 # (leg_torques_diagnostic, Float64MultiArray, 6 leg values, TRUE Nm, extension-
-# positive) that motion_bridge_node uses on the MPC path — so the rosbag record
-# list / GUI / consumers see identical data regardless of producer. The 40 Hz
+# positive) that motion_bridge_node used on the MPC path before that node was
+# removed (2026-09-01) — so the rosbag record list / GUI / consumers see the
+# same data shape they always did. The 40 Hz
 # emitter only STASHES the vector; _publish_status (5 Hz) does the ROS publish.
 
 def test_publish_status_publishes_leg_torques_diagnostic():

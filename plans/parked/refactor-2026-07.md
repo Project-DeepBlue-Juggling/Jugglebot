@@ -151,6 +151,28 @@ timer, `.github/workflows` = docs.yml only).
 
 ## Phase 3 — MPC dormancy (LANDED 2026-08-01, with Phase 2)
 
+> **2026-09-01 — SUPERSEDED: the MPC chain was REMOVED OUTRIGHT, and the
+> revival path this phase preserved is retired.** The unified 7-DoF planner
+> (`plans/active/unified-7dof-planner.md`, landed 2026-09-01) *is* the
+> lower-rate replanner that parking held the option open for, so the "bring it
+> back later" intent below has been satisfied by a different design rather than
+> deferred. Deleted: `controller/{mpc,params,runner,hardware_plant,hardware_hooks,hot_loop_contract,generate_solver}.py`
+> + `controller/generated/`, `run_mpc.py`, `motion_bridge_node`,
+> `mpc_bridge_node`, `sim/main.py`'s `--mpc`/`--hardware` modes,
+> `HOT_LOOP_CONTRACT.md`, `DIAG_SCHEMA_CONTRACT.md`, and the MPC test battery.
+> Final implementation at git tag **`mpc-final`**; see
+> `logbook/2026-09-01-mpc-chain-removed.md`.
+>
+> Two claims below are now false and are left in place as the historical record
+> of *why the 2026-08-01 decision went the way it did*: "deletion is rejected"
+> (it was, then; the dependency map that justified it named only the five
+> non-MPC `controller/` modules and missed that `sim/main.py --mpc` reached
+> `mpc.py` too), and "revival is **both** launch entries" (there is nothing left
+> to revive — `motor_guard` survives as a parked fallback and as the validated
+> Python twin behind the `hermite_xref` firmware trust chain, with no feeder and
+> no consumer). Everything else in this phase — the demotions, the GUI badge
+> consequence, the doc re-framing — stands as landed.
+
 Same commit and same gate as Phase 2 above. Item 2 landed in full; the
 `test_motor_guard*.py` half followed on 2026-08-01 (logbook
 `2026-08-01-vacuous-tests-return-not-assert`), which empties the default serial

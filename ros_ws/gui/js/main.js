@@ -315,8 +315,8 @@ function subscribeAll() {
     ros.subscribe('rigid_body_poses', 'jugglebot_interfaces/msg/RigidBodyPoses', onRigidBodyPoses, 50);
 
     // Commanded leg setpoints — accepted u0 echoed by teensy_bridge_node from
-    // the :5557 funnel, so it covers BOTH trajectory_node and run_mpc.py
-    // (~40Hz -> throttle to 20Hz = 50ms)
+    // the :5557 funnel (trajectory_node is its sole binder since run_mpc.py
+    // was removed 2026-09-01). (~40Hz -> throttle to 20Hz = 50ms)
     ros.subscribe('leg_setpoint_echo', 'std_msgs/msg/Float64MultiArray', onLegSetpointEcho, 50);
 
     // Control mode (on change) — used to show/hide jog panel

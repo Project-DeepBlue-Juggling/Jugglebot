@@ -1,14 +1,25 @@
-"""Shared helpers for Plan 2 Tier-2 hardware bringup scripts.
+"""Shared helpers for operator-driven hardware scripts.
 
 Used by:
-* ``th_t2b1_publisher_kill_test.py`` — T-H-T2b-1 (encoder-publisher kill)
-* ``th_t2a1_can_unplug_test.py``    — T-H-T2a-1 (CAN unplug cascade)
+* ``tilt_cal_grid.py``    — tilt-map calibration grid
+* ``toss_cal_grid.py``    — toss aim-calibration grid
+* ``rescore_artifact.py`` — re-score a captured artefact offline
 
-These scripts OBSERVE the platform; the only state-changing action they
-perform is sending ``SIGSTOP``/``SIGCONT`` to a user-confirmed process
-(T-H-T2b-1) or instructing the operator to unplug a CAN cable
-(T-H-T2a-1).  They do NOT command motion, do NOT arm/disarm motors,
-and do NOT bypass the operator's E-stop button.
+Provides the pre-test safety checklist, the log tailer, artefact
+writing (paired JSON + Markdown into ``temp/reports/``) and process
+discovery.
+
+Its two original consumers, ``th_t2b1_publisher_kill_test.py``
+(T-H-T2b-1, encoder-publisher kill) and ``th_t2a1_can_unplug_test.py``
+(T-H-T2a-1, CAN unplug cascade), were **deleted 2026-09-01**: both had
+already PASSED and been recorded
+(``logbook/2026-05-18-hardware-bringup-t2b1-t2a1-cascade-validation.md``),
+and the telemetry-stale ESTOP cascade they instrumented lived in
+``controller/hardware_plant.py``, removed with the MPC chain.  A
+MEDIUM-HIGH-hazard procedure (T-H-T2a-1 freewheels the platform under
+gravity) that can no longer observe its own cascade is worse than dead
+code, so it went rather than sat.  Both are at git tag ``mpc-final``;
+see ``logbook/2026-09-01-mpc-chain-removed.md``.
 """
 
 from __future__ import annotations
@@ -26,9 +37,14 @@ from typing import Callable
 
 
 # ---------------------------------------------------------------------------
-# Log patterns from ``controller.hardware_plant`` (Plan 2 Phase 5 staleness
-# cascade at hardware_plant.py:627-702).  Compiled once at module import so
-# the tailer's hot path is a list of pre-compiled regexes.
+# Log patterns from the Plan 2 Phase 5 telemetry-staleness cascade, which lived
+# in ``controller/hardware_plant.py`` until that module was removed 2026-09-01
+# with the MPC chain (final implementation at git tag ``mpc-final``; see
+# ``logbook/2026-09-01-mpc-chain-removed.md``).  NO LIVE PROCESS EMITS THESE
+# LINES ANY MORE, and the two harnesses that matched on them were deleted with
+# it.  The table is RETAINED for reading ARCHIVED ``mpc_*.log`` captures, which
+# did not change when their producer went away.  Compiled once at module import
+# so the tailer's hot path is a list of pre-compiled regexes.
 # ---------------------------------------------------------------------------
 
 LOG_PATTERNS: dict[str, re.Pattern] = {
@@ -41,7 +57,7 @@ LOG_PATTERNS: dict[str, re.Pattern] = {
     # ESTOP: telem_age > 20× control_dt (default 0.500 s); fires e-stop
     'telem_stale_estop': re.compile(
         r'Telemetry stale \(([\d.]+)s > ([\d.]+)s\) . triggering e-stop'),
-    # Confirmation: HardwarePlant.estop() completed
+    # Confirmation: the plant's estop() completed
     'estop_sent': re.compile(
         r'HardwarePlant: sent E-STOP \(telemetry_stale\)'),
     # Optional: frozen-motor detector (separate cascade — should NOT fire
@@ -100,7 +116,7 @@ def wait_gate(prompt: str) -> None:
 # A discovered log whose mtime is older than this many seconds before the
 # script started is almost certainly NOT the live session's log.  ROS2
 # Foxy launch (jugglebot_launch.py) does NOT write temp/logs/*.log — the
-# controller.hardware_plant cascade messages go to the launch console via
+# cascade messages went to the launch console via
 # Python stdlib logging.  Without this guard, find_latest_mpc_log() silently
 # returns an ancient dead log and the tailer watches a corpse → false FAIL.
 # (Root-caused 2026-05-18: T-H-T2b-1 tailed an 8-day-stale mpc_*.log and
@@ -109,7 +125,7 @@ def wait_gate(prompt: str) -> None:
 LOG_STALENESS_GRACE_S = 120.0
 
 # The telemetry-stale watchdog's CONTRACT is "fire when telem_age crosses
-# the threshold".  telem_age is HardwarePlant's own measurement
+# the threshold".  telem_age is the plant's own measurement
 # (now - _last_telem_recv_time); the cascade log lines state it verbatim,
 # e.g. "Telemetry stale (0.525s > 0.5s) — triggering e-stop".
 #
@@ -187,9 +203,10 @@ def evaluate_estop_contract(estop_log_line: str) -> tuple[str, str, list[str]]:
 def find_latest_mpc_log(repo_root: Path | None = None) -> Path | None:
     """Return the most-recently-modified ``temp/logs/*.log`` file.
 
-    Per CLAUDE.md, ``run_mpc.py`` writes its companion ``.log`` files
-    there ONLY when stdout is teed.  ``jugglebot_launch.py`` (ROS2 Foxy)
-    does NOT — see ``LOG_STALENESS_GRACE_S``.  Returns None if no .log
+    ``run_mpc.py`` wrote its companion ``.log`` files there when stdout was
+    teed, until it was removed 2026-09-01 with the MPC chain.
+    ``jugglebot_launch.py`` (ROS2 Foxy) does NOT — see
+    ``LOG_STALENESS_GRACE_S``.  Returns None if no .log
     files exist (caller will prompt / abort).  Callers MUST pass the
     result through ``assert_log_is_live`` before tailing it.
     """
@@ -239,7 +256,7 @@ def assert_log_is_live(log_path: Path, script_start_s: float,
               "is dead.\n"
               "  Root cause: jugglebot_launch.py (ROS2 Foxy) does NOT write "
               "temp/logs/*.log —\n"
-              "  the controller.hardware_plant cascade messages go to the "
+              "  the plant cascade messages go to the "
               "LAUNCH CONSOLE.\n"
               "  Fix: tee the launch console to a file and pass it "
               "explicitly, e.g.\n\n"

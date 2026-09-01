@@ -1,7 +1,6 @@
 """Plan 2 Phase 6 (Tier 2c) — ZMQ corruption tests.
 
-Drives the production ``MpcTargetIPC`` consumer at :5558 (and
-``HardwarePlant._sub`` at :5556 for T-U-T2c-5) through a real
+Drives the production ``MpcTargetIPC`` consumer at :5558 through a real
 ``zmq.PUB`` socket on an ephemeral port, mutating msgpack payload bytes
 between ``msgpack.packb()`` and ``socket.send_multipart()`` to exercise
 the corruption paths:
@@ -10,11 +9,14 @@ the corruption paths:
 * T-U-T2c-2 — single byte flipped mid-frame (string-content corruption)
 * T-U-T2c-3 — extra field on send (forward-compat policy)
 * T-U-T2c-4 — required ``target_pose`` field missing on send
-* T-U-T2c-5 — connection drop mid-recv on the telemetry pipe; verifies
-  Phase 5's telemetry-stale cascade end-to-end through real ZMQ
 * T-U-T2c-6 — hypothesis property: random byte mutation on a valid
   frame never silently mis-decodes (decode-or-fail; never
   silent-partial-truth)
+
+T-U-T2c-5 (publisher death → telemetry-stale ESTOP cascade, driven
+through ``HardwarePlant._sub`` at :5556) was removed 2026-09-01 with the
+MPC chain; the final implementation is at git tag ``mpc-final`` — see
+``logbook/2026-09-01-mpc-chain-removed.md``.
 
 T-U-T2c-1, -2, -4 are xfail-strict pre-bugfix in this commit; the
 companion bugfix commit (logbook ``2026-05-11-tier2c-zmq-recv-resilience-bugfix.md``)
@@ -40,7 +42,6 @@ Per-test recipe (empirically validated, run 2026-05-11):
 | T-U-T2c-2| ``corrupt_send(msg, flip_mid_byte)`` on a frame with a string field    | ``UnicodeDecodeError`` raised   | warning logged; frame dropped                                  |
 | T-U-T2c-3| ``send_valid({..., 'experimental_field': '...'})``                     | forward-compat OK (no bug)      | same                                                           |
 | T-U-T2c-4| ``send_valid({'type': 'mpc_target', 'source': 'probe'})`` (no pose)    | silent drop, no warning         | warning logged naming ``target_pose``; message dropped         |
-| T-U-T2c-5| ``ZmqTelemetryPubHarness.close_pub()`` mid-cascade + ``freeze_perf_counter_at`` | telemetry-stale cascade fires through real ZMQ end-to-end (no bug) | same |
 | T-U-T2c-6| ``@given`` byte-index × byte-value × mutation-type on valid frame      | decode-or-fail invariant holds  | same                                                           |
 
 Marked ``nightly`` (2026-08-01) — see the pytestmark banner below.  The
@@ -69,22 +70,21 @@ from jugglebot.motion.ipc import (
 
 from tests.sim._zmq_test_harness import (
     ZmqTargetPubHarness,
-    ZmqTelemetryPubHarness,
     truncate_half,
     flip_mid_byte,
 )
 
 
-# NIGHTLY TIER — the MPC is operationally dormant (plans/parked/refactor-2026-07.md
-# Phase 3: jugglebot_launch.py no longer starts motor_guard/motion_bridge_node; the
-# leg path is trajectory_node -> teensy_bridge_node -> the Teensy MAX_DEVIATION
-# guard). The corruption surface here is MPC-only — `MpcTargetIPC` (:5558) has
-# exactly one consumer, `controller/zmq_target.py`, and `HardwarePlant._sub`
-# (:5556) belongs to the MPC hardware plant. The LIVE setpoint wire is a
-# different decode path: teensy_bridge_node's `_MpcCommandSetpointSource`
-# deliberately does not reuse BridgeIPC, and tests/ros covers it. So nothing live
-# loses coverage here. Runs nightly via tools/nightly_suite.sh and on
-# `./run_tests.sh --full`, which is mandatory before any hardware sitting.
+# NIGHTLY TIER — `MpcTargetIPC` (:5558) has exactly one consumer,
+# `controller/zmq_target.py`, and no live producer since the MPC chain was
+# removed (2026-09-01); the leg path is trajectory_node -> teensy_bridge_node
+# -> the Teensy MAX_DEVIATION guard. What this module still earns its keep for
+# is the msgpack/ZMQ frame-corruption methodology, which governs the live wire
+# format. The LIVE setpoint wire is a different decode path:
+# teensy_bridge_node's `_MpcCommandSetpointSource` deliberately does not reuse
+# BridgeIPC, and tests/ros covers it. So nothing live loses coverage here. Runs
+# nightly via tools/nightly_suite.sh and on `./run_tests.sh --full`, which is
+# mandatory before any hardware sitting.
 pytestmark = pytest.mark.nightly
 
 
@@ -110,7 +110,7 @@ _PHASE_6_SETTINGS = settings(
 
 
 # =====================================================================
-# Logging-capture helper — mirrors test_hardware_plant_failure_paths
+# Logging-capture helper
 # =====================================================================
 
 class _ListHandler(logging.Handler):
@@ -119,8 +119,7 @@ class _ListHandler(logging.Handler):
     pytest's ``caplog`` doesn't always propagate to the production
     loggers reliably across environments (especially when the test
     process loads ``jugglebot.motion.ipc`` lazily).  An explicit
-    handler attached to the named logger is the reliable pattern —
-    same one ``test_hardware_plant_failure_paths.py`` uses.
+    handler attached to the named logger is the reliable pattern.
     """
 
     def __init__(self):
@@ -400,131 +399,6 @@ class TestMissingRequiredField:
                     )
                 finally:
                     src.close()
-
-
-# =====================================================================
-# T-U-T2c-5 — publisher death + telemetry-stale cascade end-to-end
-# =====================================================================
-
-class TestPublisherDropTelemetryCascade:
-    """T-U-T2c-5 — close the telemetry publisher; verify the Phase 5
-    telemetry-stale cascade fires end-to-end through real ZMQ.
-
-    This is the real-ZMQ equivalent of Phase 5's
-    ``drain_recv_pump + freeze_perf_counter_at(20.5 × control_dt)``
-    test.  Phase 5 mocked the recv side and the time source; this test
-    mocks ONLY time (so the test doesn't have to wall-clock-sleep for
-    half a second per case).  The publisher death is **real**: the
-    harness binds a real PUB, the plant connects a real SUB, then the
-    PUB closes and the SUB sees no more frames.
-
-    The combination of real-ZMQ disconnect + Phase 5's time-freezing
-    is the "layered" option from the Phase 6 design discussion: real
-    transport for the failure mode under test (publisher death),
-    mocked for the trigger condition (telem_age > threshold).  Lets
-    us prove the cascade works through real ZMQ without paying 0.5 s
-    per test in wall-clock time.
-
-    No bug surfaced here — confirms the Phase 5 cascade is robust to
-    real publisher death, not just mocked recv-pump silence.
-    """
-
-    def test_t2c_5_pub_close_drives_estop_via_real_zmq(self):
-        """Real ZMQ disconnect + frozen perf_counter at 20.5× → ESTOP.
-
-        Recipe (empirically validated, run 2026-05-11):
-
-        1. Bind a real telemetry PUB on an ephemeral port via
-           ``ZmqTelemetryPubHarness``.
-        2. Construct a real ``HardwarePlant`` whose ZMQ context is
-           bound to the harness's port (no mock — real transport
-           both ends).
-        3. Send one valid telemetry frame; pump get_state() to record
-           ``_last_telem_recv_time``.
-        4. Close the publisher (real ZMQ disconnect).
-        5. Use Phase 5's ``freeze_perf_counter_at(20.5 × control_dt)``
-           to drive ``telem_age`` past the ESTOP threshold.
-        6. Call get_state() again; assert ``self.estop(reason=...)``
-           was called with ``reason='telemetry_stale'`` (recorded via
-           the same ``_EstopSpy`` pattern Phase 5 uses).
-        """
-        # We need to construct a HardwarePlant that uses REAL ZMQ, not
-        # the mocked ZMQ from build_hardware_plant_stub.  Build it inline
-        # here: real ZMQ context + sockets, point telemetry_addr at the
-        # harness's ephemeral port, mpc_command_addr at tcp://127.0.0.1:0
-        # so the OS picks a free port (no consumer needed).
-        from controller.hardware_plant import HardwarePlant
-        from tests.sim._hardware_plant_stub import (
-            _get_cached_motor_rev,
-            _DEFAULT_TARGET_POSE,
-            freeze_perf_counter_at,
-        )
-        from tests.sim.test_hardware_plant_failure_paths import _EstopSpy
-
-        with ZmqTelemetryPubHarness() as h:
-            # mpc_command_addr is the plant's PUB; bind to port 0 so the
-            # OS picks a free port.  Nothing consumes it in this test.
-            plant = HardwarePlant(
-                telemetry_addr=h.addr,
-                mpc_command_addr='tcp://127.0.0.1:0',
-                control_dt=0.025,
-            )
-            spy = _EstopSpy(plant)
-            try:
-                # Let SUB connect + subscribe handshake complete
-                h.settle()
-
-                # Send a valid telemetry frame with known motor positions
-                motor_rev = _get_cached_motor_rev(_DEFAULT_TARGET_POSE)
-                telem = {
-                    'motor_pos': list(motor_rev),
-                    'motor_vel': [0.0] * 6,
-                }
-                h.send_valid_telemetry(telem)
-
-                # Pump get_state() until the frame arrives — _drain_count
-                # > 0 sets _last_telem_recv_time.  Give it up to 0.5 s.
-                import time as _time
-                t0 = _time.perf_counter()
-                while plant._last_telem_recv_time is None:
-                    plant.get_state()
-                    if _time.perf_counter() - t0 > 0.5:
-                        pytest.fail(
-                            'telemetry frame never arrived through '
-                            'real ZMQ after 0.5 s settle')
-                    _time.sleep(0.01)
-
-                # Sanity: _fk_ever_succeeded should be True after a
-                # successful FK on the valid telemetry.
-                assert plant._fk_ever_succeeded, (
-                    'FK did not succeed on the valid telemetry frame'
-                )
-
-                # NOW close the publisher — real ZMQ disconnect
-                h.close_pub()
-
-                # Freeze time at 20.5 × control_dt past _last_telem_recv_time
-                # to drive the ESTOP threshold.
-                age_s = 20.5 * 0.025  # 0.5125 s — just above 20×
-
-                with _capture_logger('controller.hardware_plant',
-                                     level=logging.ERROR) as records:
-                    with freeze_perf_counter_at(plant, age_s):
-                        plant.get_state()
-
-                # ESTOP should have fired with reason='telemetry_stale'
-                assert plant._estop_requested, (
-                    'ESTOP did not fire after pub close + 20.5× control_dt'
-                )
-                assert 'telemetry_stale' in spy.reasons, (
-                    f'estop reasons were {spy.reasons!r}, '
-                    f"expected at least one 'telemetry_stale'"
-                )
-                # And an ERROR log should have been emitted
-                errs = [r for r in records if r.levelno >= logging.ERROR]
-                assert errs, 'expected an ERROR record on telemetry_stale'
-            finally:
-                plant.close()
 
 
 # =====================================================================

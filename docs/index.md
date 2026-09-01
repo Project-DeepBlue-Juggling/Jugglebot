@@ -66,11 +66,8 @@ Jugglebot/
 │       ├── motion/             # Motion planner (pure Python, no ROS2)
 │       ├── can_node.py         # ROS2 CAN interface node
 │       ├── orchestrator_node.py
-│       ├── state_machine.py
-│       └── motion_bridge_node.py
-├── controller/                 # MPC solver (portable, no ROS2, no MuJoCo)
-│   ├── mpc.py                  # MPCController (CasADi/IPOPT)
-│   ├── params.py               # Tuning parameters
+│       └── state_machine.py
+├── controller/                 # Reference/telemetry layer (portable, no ROS2, no MuJoCo)
 │   └── target.py               # TargetCommand + TargetSource protocol
 ├── sim/                        # MuJoCo simulation
 │   ├── plant/                  # MuJoCo + hardware plant interfaces

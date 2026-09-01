@@ -978,11 +978,21 @@ wrong number gets in. The full schema is reproduced in
 `jugglebot/motion/tilt_map.py`'s module docstring, which is the parser's own
 statement of it.
 
-### Revival obligations (no code today)
+### Revival obligations — NONE (cleared 2026-09-01)
 
-| # | Surface | Obligation before it may ship |
-|---|---|---|
-| B1 | `mpc_bridge_node._on_platform_pose` | Dropped from the launch and dormant (`plans/parked/refactor-2026-07.md` Phase 3). It holds a **second** copy of the C-LEVEL-1 application and today lacks even the offset validation `_on_gravity_offset` does. Reviving the MPC chain **must** give it the map and the same all-or-nothing validation, or the two pose paths will disagree about where level is — the original C-LEVEL-1 bug, re-created between nodes instead of within one. |
+This section held one row, B1 (`mpc_bridge_node._on_platform_pose`): a **second**
+copy of the C-LEVEL-1 application, dormant since 2026-08-01, which would have had
+to be given the map and the same all-or-nothing validation before the MPC chain
+could ship again — or the two pose paths would disagree about where level is.
+
+`mpc_bridge_node` was **deleted 2026-09-01** with the MPC chain (git tag
+`mpc-final`; `logbook/2026-09-01-mpc-chain-removed.md`), so the obligation is
+discharged by removal and `trajectory_node` is the sole applier. The
+consequence is a *stricter* rule, not a weaker one: B1 was the levelling
+manifest's single declared exception, and
+`tests/ros/test_levelling_frame.py::test_every_apply_has_a_build_in_the_same_scope`
+now runs with **no carve-out** — every `apply` must have a `build` in the same
+scope, unconditionally.
 
 ## Enforcement
 

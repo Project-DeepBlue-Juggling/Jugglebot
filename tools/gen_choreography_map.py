@@ -138,21 +138,19 @@ MULTI_PUBLISHER_TOPICS = (
 )
 
 #: Modules that ARE scanned (source present, endpoints real) but that
-#: ``jugglebot_launch.py`` does NOT start.  Phase 3 of
-#: ``plans/parked/refactor-2026-07.md`` made ``motion_bridge_node`` dormant and
-#: dropped ``mpc_bridge_node`` from the MVP bring-up; both keep their source and
-#: their ``setup.py`` entry point so ``run_mpc.py`` can be revived.
+#: ``jugglebot_launch.py`` does NOT start.  EMPTY since 2026-09-01: its two
+#: former members, ``motion_bridge_node`` and ``mpc_bridge_node``, were deleted
+#: outright with the MPC chain rather than kept dormant (git tag ``mpc-final``;
+#: see ``logbook/2026-09-01-mpc-chain-removed.md``), so there is no longer a
+#: scanned-but-unstarted node to tag.
 #:
-#: Without a marker the map answers "who consumes `platform_pose_topic`?" with a
-#: node the launch file never starts — lying by omission about exactly the thing
-#: Phase 3 changed.  Rendered as ``(not launched)`` beside the node name, and
-#: cross-checked against the launch file by
+#: Kept as a mechanism, not vestigially: without a marker the map would answer
+#: "who consumes `platform_pose_topic`?" with a node the launch file never
+#: starts — lying by omission.  Rendered as ``(not launched)`` beside the node
+#: name, and cross-checked against the launch file by
 #: ``tests/ros/test_choreography_map.py`` so the tuple cannot drift out of date
 #: in either direction.
-NOT_LAUNCHED_NODES = (
-    'motion_bridge_node',
-    'mpc_bridge_node',
-)
+NOT_LAUNCHED_NODES = ()
 
 _BANNER = (
     'Python-node graph only - GUI/rosbridge consumers are NOT included.'
@@ -172,13 +170,12 @@ _PREAMBLE = (
     'from a ROS parameter default is tagged `param:<key>` and can be overridden '
     'at launch.',
 
-    'Two scanned modules are NOT started by that launch file and are tagged '
-    '`(not launched)` wherever they appear: `motion_bridge_node` (dormant) and '
-    '`mpc_bridge_node` (dropped from the MVP bring-up) - Phase 3 of '
-    '`plans/parked/refactor-2026-07.md`. Their source and entry points are '
-    'retained for the MPC revival, so their wires are real in the source but '
-    'silent on a running robot: a wire whose publishers (or service servers) '
-    'are ALL tagged carries nothing today.',
+    'Every scanned module is started by that launch file. When one is not, it '
+    'is tagged `(not launched)` wherever it appears, because a wire whose '
+    'publishers (or service servers) are ALL tagged carries nothing on a '
+    'running robot. No module is tagged today: the last two - '
+    '`motion_bridge_node` and `mpc_bridge_node` - were deleted with the MPC '
+    'chain on 2026-09-01 (git tag `mpc-final`).',
 
     'Call-site line numbers are omitted on purpose - they rot silently and '
     'would make the drift test fire on unrelated edits; `grep -n` the name in '

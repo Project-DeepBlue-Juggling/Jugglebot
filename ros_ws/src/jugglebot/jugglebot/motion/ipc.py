@@ -11,14 +11,19 @@ Architecture::
       PUB  ─── tcp://localhost:5555 ──►  SUB   (mode cmds, motor feedback)
       SUB  ◄── tcp://localhost:5556 ───  PUB   (telemetry)
 
-    HardwarePlant (MPC process)
+    HardwarePlant (MPC process)  — REMOVED 2026-09-01, tag mpc-final
       PUB  ─── tcp://localhost:5557 ──►  SUB   (mpc commands + fallback enable)
       SUB  ◄── tcp://localhost:5556 ───        (telemetry, shared)
+      # The live :5557 publisher is now trajectory_node (MpcCommandPub); the
+      # :5556 producer (motor_guard) has no launcher.
 
     ROS2 MPC Bridge                      MPC Process
     ───────────────                     ───────────
     MpcBridgeIPC                        MpcTargetIPC
       PUB  ─── tcp://localhost:5558 ──►  SUB   (target poses, mode)
+      # Both ends removed 2026-09-01 (tag mpc-final): mpc_bridge_node is
+      # deleted, so :5558 has no producer.  controller/zmq_target.py's
+      # decode/clamp path is retained and independently tested.
 
     MPC Process                          Catch Coordinator Node
     ───────────                         ──────────────────────
@@ -27,10 +32,10 @@ Architecture::
       # DORMANT (MPC stack): the catch coordinator now consumes
       # trajectory/target_feedback (trajectory_node, Phase 5), not this :5559 SUB.
 
-    MPC Process (sim/main.py)            ROS2 MPC Bridge
-    ─────────────────────────           ───────────────
-    SessionMetadataPush                 SessionMetadataPull
-      PUSH ─── tcp://localhost:5560 ──►  PULL  (session CSV filename)
+    # Tombstone: the :5560 session-metadata channel (SessionMetadataPush /
+    # SessionMetadataPull / SESSION_ADDR / make_session_start) was deleted
+    # 2026-09-01 with the MPC chain — both endpoints (sim/main.py's MPC half
+    # and mpc_bridge_node) are gone.  At git tag mpc-final.
 
 Message types:
   - ModeCommand:   enable, disable, estop, fault, etc.
@@ -42,11 +47,13 @@ Message types:
   - TargetFeedback: accept/reject decision for catch targets (dormant MPC stack only;
                     the coordinator now consumes trajectory/target_feedback, Phase 5)
 
-Lifecycle authority:
-  - The ROS2 motion bridge on :5555 is the primary authority for motor guard
-    enable/disable/estop.  It sends disable+enable on every mode transition.
-  - HardwarePlant on :5557 sends a fallback enable for direct hardware mode
-    (no ROS2).  When the bridge is running, this resolves to a no-op at the
+Lifecycle authority (historical — motion_bridge_node and HardwarePlant were both
+removed 2026-09-01, tag mpc-final; motor_guard now has neither feeder nor
+lifecycle owner):
+  - The ROS2 motion bridge on :5555 was the primary authority for motor guard
+    enable/disable/estop.  It sent disable+enable on every mode transition.
+  - HardwarePlant on :5557 sent a fallback enable for direct hardware mode
+    (no ROS2).  When the bridge was running, this resolved to a no-op at the
     motor guard (enable-when-already-ENABLED is idempotent).
 
 No ROS2 dependency.  Requires: pyzmq, msgpack.
@@ -66,10 +73,13 @@ logger = logging.getLogger(__name__)
 # Default IPC addresses
 COMMAND_ADDR = 'tcp://127.0.0.1:5555'       # bridge PUB → motor guard SUB
 TELEMETRY_ADDR = 'tcp://127.0.0.1:5556'     # motor guard PUB → bridge SUB
-MPC_COMMAND_ADDR = 'tcp://127.0.0.1:5557'   # HardwarePlant PUB → motor guard SUB
-MPC_TARGET_ADDR = 'tcp://127.0.0.1:5558'    # mpc_bridge PUB → MPC process SUB
-MPC_FEEDBACK_ADDR = 'tcp://127.0.0.1:5559'  # MPC process PUB → catch coordinator SUB
-SESSION_ADDR = 'tcp://127.0.0.1:5560'       # MPC process PUSH → mpc_bridge PULL (session metadata)
+MPC_COMMAND_ADDR = 'tcp://127.0.0.1:5557'   # trajectory_node PUB → teensy_bridge_node SUB
+                                            # (was HardwarePlant PUB → motor guard SUB,
+                                            #  removed 2026-09-01, tag mpc-final)
+MPC_TARGET_ADDR = 'tcp://127.0.0.1:5558'    # was mpc_bridge PUB → MPC process SUB
+                                            # (producer removed 2026-09-01, tag mpc-final)
+MPC_FEEDBACK_ADDR = 'tcp://127.0.0.1:5559'  # was MPC process PUB → catch coordinator SUB
+# SESSION_ADDR (:5560) removed 2026-09-01 with the MPC chain — both endpoints gone.
 
 # Topic prefixes for ZMQ PUB/SUB filtering
 TOPIC_MODE = b'mode'
@@ -283,18 +293,8 @@ def make_mpc_target(target_pose: list | tuple,
     return msg
 
 
-def make_session_start(csv_filename: str) -> dict:
-    """Create a session-start metadata message.
-
-    Sent by the MPC process (sim/main.py) when a new telemetry CSV is
-    created, so that the MPC bridge node can log the filename into ROS2
-    logs for later correlation with hardware diagnosis.
-
-    Parameters
-    ----------
-    csv_filename : basename of the CSV file (e.g. 'mpc_20260330_093356.csv')
-    """
-    return {'type': 'session_start', 'csv_filename': csv_filename}
+# make_session_start() removed 2026-09-01 with the MPC chain (tag mpc-final) —
+# its only caller was SessionMetadataPush, itself removed below.
 
 
 def make_mpc_mode(mode: str) -> dict:
@@ -425,18 +425,18 @@ def _unpack(frames: list[bytes]) -> tuple[bytes, dict]:
 class MpcCommandPub:
     """PUB endpoint binding MPC_COMMAND_ADDR (:5557), topic ``mpccmd``.
 
-    Used by the MVP ``trajectory_node`` (in place of ``run_mpc.py``'s
-    ``HardwarePlant``) to stream ``make_mpc_command`` dicts on the exact seam the
-    bridge's ``_MpcCommandSetpointSource`` consumes. Frames are byte-compatible
-    with what ``HardwarePlant`` sends because both go through the shared
-    ``_pack`` (msgpack + ndarray default handler) on ``TOPIC_MPC_CMD``.
+    Used by ``trajectory_node`` to stream ``make_mpc_command`` dicts on the
+    exact seam the bridge's ``_MpcCommandSetpointSource`` consumes, through the
+    shared ``_pack`` (msgpack + ndarray default handler) on ``TOPIC_MPC_CMD``.
+    (The name is historical: the MPC's ``HardwarePlant`` was the original
+    binder, removed 2026-09-01 — git tag ``mpc-final``. The wire format is
+    unchanged.)
 
-    **Sole-binder interlock.** ``HardwarePlant`` *binds* this address today
-    (hardware_plant.py:272); ZMQ does not allow two PUB ``bind()``s on one
-    address, so constructing this while ``run_mpc.py`` is running raises
-    ``zmq.ZMQError`` — the intended, loud MPC/trajectory mutual-exclusion
-    interlock. The caller is expected to translate that into a fatal
-    "is run_mpc.py running?" startup error.
+    **Sole-binder interlock.** ZMQ does not allow two PUB ``bind()``s on one
+    address, so a second binder raises ``zmq.ZMQError`` rather than silently
+    interleaving two command streams onto the legs. ``trajectory_node`` is the
+    only binder today; the caller is still expected to translate a bind failure
+    into a loud, fatal startup error rather than continuing.
     """
 
     def __init__(self, addr: str = MPC_COMMAND_ADDR):
@@ -815,64 +815,9 @@ class TargetFeedbackSub:
 
 
 # ---------------------------------------------------------------------------
-# Session metadata (MPC process → mpc_bridge for ROS2 log correlation)
+# Session metadata — REMOVED 2026-09-01 with the MPC chain (git tag mpc-final).
+# SessionMetadataPush (sim/main.py --mpc) and SessionMetadataPull (mpc_bridge_node)
+# carried the telemetry-CSV filename over :5560 for ROS2 log correlation; both
+# endpoints are deleted, so the channel had no producer and no consumer.
+# See logbook/2026-09-01-mpc-chain-removed.md.
 # ---------------------------------------------------------------------------
-
-class SessionMetadataPush:
-    """PUSH endpoint for session metadata.
-
-    Used by the MPC process (sim/main.py) to send a one-shot session-start
-    message to the MPC bridge node, which logs the CSV filename into ROS2
-    logs for later correlation with hardware diagnosis.
-
-    Uses PUSH/PULL (not PUB/SUB) for guaranteed delivery of this single
-    important message — PUB/SUB can drop messages during the slow-joiner
-    window.
-    """
-
-    def __init__(self, session_addr: str = SESSION_ADDR):
-        self._ctx = zmq.Context()
-        self._push = self._ctx.socket(zmq.PUSH)
-        self._push.setsockopt(zmq.SNDTIMEO, 1000)  # 1s timeout
-        self._push.setsockopt(zmq.LINGER, 1000)
-        self._push.connect(session_addr)
-
-    def send_session_start(self, csv_filename: str) -> None:
-        """Send session-start metadata (CSV filename)."""
-        msg = make_session_start(csv_filename)
-        try:
-            self._push.send(msgpack.packb(msg, use_bin_type=True))
-        except zmq.Again:
-            logger.warning("Session metadata send timed out (bridge not running?)")
-
-    def close(self) -> None:
-        self._push.close()
-        self._ctx.term()
-
-
-class SessionMetadataPull:
-    """PULL endpoint for session metadata.
-
-    Used by mpc_bridge_node to receive session-start messages from the
-    MPC process.  The bridge logs the CSV filename via ROS2 so that
-    hardware diagnosis can correlate MPC telemetry CSVs with ROS2 log
-    sessions.
-    """
-
-    def __init__(self, session_addr: str = SESSION_ADDR):
-        self._ctx = zmq.Context()
-        self._pull = self._ctx.socket(zmq.PULL)
-        self._pull.setsockopt(zmq.RCVTIMEO, 0)  # non-blocking
-        self._pull.bind(session_addr)
-
-    def recv(self) -> dict | None:
-        """Non-blocking: receive a session metadata message, or None."""
-        try:
-            data = self._pull.recv(flags=zmq.NOBLOCK)
-            return msgpack.unpackb(data, raw=False)
-        except zmq.Again:
-            return None
-
-    def close(self) -> None:
-        self._pull.close()
-        self._ctx.term()

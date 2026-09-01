@@ -18,13 +18,12 @@
 > from a ROS parameter default is tagged `param:<key>` and can be overridden
 > at launch.
 >
-> Two scanned modules are NOT started by that launch file and are tagged
-> `(not launched)` wherever they appear: `motion_bridge_node` (dormant) and
-> `mpc_bridge_node` (dropped from the MVP bring-up) - Phase 3 of
-> `plans/parked/refactor-2026-07.md`. Their source and entry points are
-> retained for the MPC revival, so their wires are real in the source but
-> silent on a running robot: a wire whose publishers (or service servers)
-> are ALL tagged carries nothing today.
+> Every scanned module is started by that launch file. When one is not, it
+> is tagged `(not launched)` wherever it appears, because a wire whose
+> publishers (or service servers) are ALL tagged carries nothing on a
+> running robot. No module is tagged today: the last two -
+> `motion_bridge_node` and `mpc_bridge_node` - were deleted with the MPC
+> chain on 2026-09-01 (git tag `mpc-final`).
 >
 > Call-site line numbers are omitted on purpose - they rot silently and
 > would make the drift test fire on unrelated edits; `grep -n` the name in
@@ -184,14 +183,14 @@
 ### `control_mode_topic`
 
 - **publishers:** `orchestrator_node`
-- **subscribers:** `motion_bridge_node` (not launched), `mpc_bridge_node` (not launched), `reload_coordinator_node`, `spacemouse_handler`, `trajectory_node`
+- **subscribers:** `reload_coordinator_node`, `spacemouse_handler`, `trajectory_node`
 - **type:** `std_msgs.msg.String`
 - **name source:** `param:control_mode_topic`
 
 ### `gravity_offset`
 
 - **publishers:** `orchestrator_node`
-- **subscribers:** `mpc_bridge_node` (not launched), `trajectory_node`
+- **subscribers:** `trajectory_node`
 - **type:** `std_msgs.msg.Float64MultiArray`
 
 ### `hand_telemetry`
@@ -206,12 +205,6 @@
 - **subscribers:** _none_
 - **type:** `sensor_msgs.msg.JointState`
 
-### `leg_lengths_topic`
-
-- **publishers:** `motion_bridge_node` (not launched)
-- **subscribers:** _none_
-- **type:** `std_msgs.msg.Float64MultiArray`
-
 ### `leg_setpoint_echo`
 
 - **publishers:** `teensy_bridge_node`
@@ -220,7 +213,7 @@
 
 ### `leg_torques_diagnostic`
 
-- **publishers:** `motion_bridge_node` (not launched), `trajectory_node`
+- **publishers:** `trajectory_node`
 - **subscribers:** _none_
 - **type:** `std_msgs.msg.Float64MultiArray`
 
@@ -242,18 +235,6 @@
 - **subscribers:** `ball_tracker_node`
 - **type:** `jugglebot_interfaces.msg.MocapDataMulti`
 
-### `motion/diagnostics`
-
-- **publishers:** `motion_bridge_node` (not launched)
-- **subscribers:** _none_
-- **type:** `diagnostic_msgs.msg.DiagnosticStatus`
-
-### `motion/tracking_error`
-
-- **publishers:** `motion_bridge_node` (not launched)
-- **subscribers:** _none_
-- **type:** `std_msgs.msg.Float64MultiArray`
-
 ### `orchestrator_command`
 
 - **publishers:** _none_
@@ -269,7 +250,7 @@
 ### `platform_pose_topic`
 
 - **publishers:** `spacemouse_handler`
-- **subscribers:** `mpc_bridge_node` (not launched), `trajectory_node`
+- **subscribers:** `trajectory_node`
 - **type:** `jugglebot_interfaces.msg.PlatformPoseCommand`
 
 ### `profile`
@@ -299,7 +280,7 @@
 ### `robot_state`
 
 - **publishers:** `teensy_bridge_node`
-- **subscribers:** `motion_bridge_node` (not launched), `orchestrator_node`, `trajectory_node`
+- **subscribers:** `orchestrator_node`, `trajectory_node`
 - **type:** `jugglebot_interfaces.msg.RobotState`
 
 ### `set_level_state`
@@ -625,11 +606,8 @@ broken wire cannot hide among them.
 - `jugglebot/toss` — action with no clients
 - `jugglebot/toss_continuous` — action with no clients
 - `leg_cmd_executed` — topic with no subscribers
-- `leg_lengths_topic` — topic with no subscribers
 - `leg_setpoint_echo` — topic with no subscribers
 - `leg_torques_diagnostic` — topic with no subscribers
-- `motion/diagnostics` — topic with no subscribers
-- `motion/tracking_error` — topic with no subscribers
 - `orchestrator_command` — topic with no publishers
 - `orchestrator_state` — topic with no subscribers
 - `profile` — topic with no subscribers

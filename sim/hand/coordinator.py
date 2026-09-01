@@ -136,7 +136,10 @@ class HandCoordinator:
 
     def __init__(self, active_pose: np.ndarray | None = None, feasibility_checker=None):
         self._active = active_pose if active_pose is not None else np.zeros(6)
-        self._feasibility = feasibility_checker  # FeasibilityChecker or None
+        # Duck-typed checker, or None. The concrete FeasibilityChecker
+        # (sim/hand/feasibility.py) was removed 2026-09-01 with the MPC chain
+        # (tag mpc-final) — it imported controller.mpc. Callers pass None today.
+        self._feasibility = feasibility_checker
         self._targets: list[tuple[DynamicTarget, BallSpawn | None]] = []
         self._current_idx = -1
         self._phase = HandPhase.IDLE

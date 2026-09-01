@@ -5,8 +5,8 @@ emitter can produce is accepted by a real ``SetpointPump``** (the
 production-in-the-loop rule). If this holds, the entire validated :5557 →
 ``SetpointPump`` → Teensy-Hermite chain transfers to hardware for free. Also
 covers the FK seed roundtrip (activate revs → pose ≈ (0,0,170)), the ``motor_rev``
-= ext × mm_to_rev convention (byte-identical to ``HardwarePlant``), and
-byte-compatibility of the emitted frame via the shared ipc ``_pack``.
+= ext × mm_to_rev convention, and byte-compatibility of the emitted frame via
+the shared ipc ``_pack``.
 """
 
 from __future__ import annotations

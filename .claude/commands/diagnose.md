@@ -8,7 +8,7 @@ Analyse hardware test session data from MPC telemetry CSVs and rosbag (MCAP) rec
 
 **Data sources:**
 - **MPC telemetry CSV** (`temp/logs/mpc_*.csv`) — 55-field StepRecord at 40 Hz: pose, tracking error, solve times, leg extensions, torques, and `solve_status` (per-step IPOPT status — the structured equivalent of MPC stdout log lines).
-- **MPC stdout log** (`temp/logs/<csv_stem>.log` — OPTIONAL, only if the operator tees stdout with e.g. `python run_mpc.py ... 2>&1 | tee temp/logs/mpc_<ts>.log`). `diagnose.py` parses this automatically when present and surfaces session-level context not captured in the CSV (MPC config string, FK non-convergence warnings, session summary). Absence is reported with `available: false` and a hint for the operator.
+- **MPC stdout log** (`temp/logs/<csv_stem>.log` — OPTIONAL, present only in ARCHIVED sessions: the operator teed stdout with `python run_mpc.py ... 2>&1 | tee temp/logs/mpc_<ts>.log`, and `run_mpc.py` was removed 2026-09-01, tag `mpc-final`, so no new ones are produced). `diagnose.py` parses this automatically when present and surfaces session-level context not captured in the CSV (MPC config string, FK non-convergence warnings, session summary). Absence is reported with `available: false` and a hint for the operator.
 - **Rosbag MCAP** (`~/Desktop/rosbags/<timestamp>/`) — 19 ROS2 topics recorded automatically: motor state, leg commands, hand telemetry, state transitions, diagnostics, etc.
 
 Note: ROS2 Foxy does NOT write per-node text log files (that's a Humble+ feature).  The rosbag is the primary source for ROS2 event data.

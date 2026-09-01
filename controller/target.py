@@ -694,9 +694,9 @@ class StaticTargetSource:
         self._prev_ref_horizon_end_twist: np.ndarray | None = None
         # W4b: pre-allocated TargetCommand.  ``update`` mutates the
         # fields in place and returns the same instance every tick —
-        # consumers read synchronously, so aliasing is safe.  See
-        # ``controller/HOT_LOOP_CONTRACT.md`` for the
-        # "new TargetSource" template.
+        # consumers read synchronously, so aliasing is safe.  (The
+        # "new TargetSource" template lived in HOT_LOOP_CONTRACT.md,
+        # removed 2026-09-01 with the MPC chain — git tag ``mpc-final``.)
         self._tc = TargetCommand(
             target_pose=self._target,
             ref_events=None,

@@ -2,26 +2,25 @@
 
 Plan 2 Phase 6 (Tier 2c) — replaces the in-process ``FakeIPC`` stub used by
 ``tests/sim/test_zmq_target.py`` with a real ``zmq.PUB`` socket connected to
-a real ``MpcTargetIPC`` / ``HardwarePlant._sub`` consumer.  Lets us drive
-byte-level corruption (truncated frames, byte flips, schema skew) through
-the production serializer + transport.
+a real ``MpcTargetIPC`` consumer.  Lets us drive byte-level corruption
+(truncated frames, byte flips, schema skew) through the production
+serializer + transport.
 
-Two harness classes:
+One harness class:
 
 * ``ZmqTargetPubHarness`` — paired with :class:`MpcTargetIPC` on :5558.
-  Drives the corruption tests against the MPC target SUB consumer
+  Drives the corruption tests against the target SUB consumer
   (``ZmqTargetSource.poll`` → ``MpcTargetIPC.recv_all`` → ``_unpack`` →
   ``msgpack.unpackb``).
-* ``ZmqTelemetryPubHarness`` — paired with :class:`HardwarePlant._sub`
-  on :5556.  Drives the connection-drop test against Phase 5's
-  telemetry-stale watchdog cascade (real-ZMQ end-to-end equivalent of
-  the mocked-time + drain-pump driver used by Phase 5).
 
-Both harnesses bind to ephemeral ports (``bind('tcp://127.0.0.1:0')`` +
+``ZmqTelemetryPubHarness`` (paired with ``HardwarePlant._sub`` on :5556)
+was removed 2026-09-01 with the MPC chain, along with its only consumer
+T-U-T2c-5; final implementation at git tag ``mpc-final`` — see
+``logbook/2026-09-01-mpc-chain-removed.md``.
+
+The harness binds to an ephemeral port (``bind('tcp://127.0.0.1:0')`` +
 ``getsockname()`` to read back the OS-assigned port).  Ephemeral ports
-let multiple test workers run in parallel without 5556/5558 collisions
-and avoid colliding with any live ``mpc_bridge_node`` / ``motor_guard``
-on the development workstation.
+let multiple test workers run in parallel without a 5558 collision.
 
 Lifecycle discipline (Plan 2 Working Note #4):
   * Each harness owns its own ``zmq.Context``; ``close()`` calls
@@ -52,7 +51,6 @@ import zmq
 from jugglebot.motion.ipc import (
     MpcTargetIPC,
     TOPIC_MPC_TARGET,
-    TOPIC_TELEMETRY,
 )
 
 
@@ -206,94 +204,6 @@ class ZmqTargetPubHarness:
             pass
 
     def __enter__(self) -> ZmqTargetPubHarness:
-        return self
-
-    def __exit__(self, *exc_info) -> None:
-        self.close()
-
-
-# ---------------------------------------------------------------------------
-# Telemetry PUB harness — drives HardwarePlant._sub :5556 consumer
-# ---------------------------------------------------------------------------
-
-class ZmqTelemetryPubHarness:
-    """Real ZMQ PUB on an ephemeral port, paired with a real ``HardwarePlant``.
-
-    Used for T-U-T2c-5 — drives Phase 5's telemetry-stale cascade through
-    a real publisher-close, instead of the mocked time + drain-pump
-    Phase 5 used.  The harness binds the telemetry PUB; the consumer is
-    the production ``HardwarePlant`` constructed with ``telemetry_addr``
-    pointing at the harness's ephemeral port.
-
-    The harness owns the PUB only.  The consumer (``HardwarePlant``) is
-    passed in by the test fixture; the harness exposes ``close_pub()``
-    so tests can drive a real publisher-death without taking down the
-    consumer.
-
-    Usage::
-
-        h = ZmqTelemetryPubHarness()
-        plant = build_hardware_plant_stub(
-            telemetry_addr=h.addr, mpc_command_addr=...,
-        )
-        h.send_valid_telemetry(make_telemetry(...))
-        # Pump consumer's recv side
-        state = plant.get_state()
-        # Kill the publisher; cascade fires once telem_age > thresholds
-        h.close_pub()
-    """
-
-    def __init__(self):
-        self._ctx = zmq.Context()
-        self._pub = self._ctx.socket(zmq.PUB)
-        self._pub.setsockopt(zmq.LINGER, 0)
-        self._pub.bind(_ephemeral_addr())
-        self.addr = _resolve_endpoint(self._pub)
-        self._pub_closed = False
-        # No consumer constructed here — tests inject HardwarePlant via
-        # the existing _hardware_plant_stub factory pointing at self.addr.
-        # We still need a settle window after the consumer connects;
-        # tests must call ``settle()`` after stub construction.
-
-    def settle(self, settle_s: float = _BIND_SETTLE_S) -> None:
-        """Sleep to let SUB complete connect handshake."""
-        time.sleep(settle_s)
-
-    def send_valid_telemetry(self, msg: dict) -> bytes:
-        """Send a valid telemetry frame.  Returns the encoded payload."""
-        if self._pub_closed:
-            raise RuntimeError(
-                'send_valid_telemetry called after close_pub()')
-        payload = msgpack.packb(msg, use_bin_type=True)
-        self._pub.send_multipart(
-            [TOPIC_TELEMETRY, payload], flags=zmq.NOBLOCK)
-        return payload
-
-    def close_pub(self) -> None:
-        """Close the PUB socket — simulates publisher death.
-
-        After this call the consumer's SUB sees no more frames; its
-        ``recv_multipart(flags=NOBLOCK)`` returns ``zmq.Again`` on every
-        subsequent call.  The consumer's stale-watchdog should then
-        fire based on ``time.perf_counter() - _last_telem_recv_time``.
-        """
-        if self._pub_closed:
-            return
-        self._pub.close()
-        self._pub_closed = True
-
-    def close(self) -> None:
-        """Close PUB (if still open) + context.  Idempotent."""
-        try:
-            self.close_pub()
-        except Exception:
-            pass
-        try:
-            self._ctx.term()
-        except Exception:
-            pass
-
-    def __enter__(self) -> ZmqTelemetryPubHarness:
         return self
 
     def __exit__(self, *exc_info) -> None:

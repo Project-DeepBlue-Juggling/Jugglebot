@@ -12,7 +12,7 @@ class, verified live at ``sim/reload_gate.py`` vs ``tests/sim/test_reload_gate.p
 Division of responsibility:
 
 * **Runnable entry scripts** (``sim/main.py``, ``sim/juggle_*.py``, the gates,
-  ``sim/analysis/*`` CLIs, ``tools/probes/juggle_*.py``, ``run_mpc.py --sim``)
+  ``sim/analysis/*`` CLIs, ``tools/probes/juggle_*.py``)
   call :func:`bootstrap_paths` exactly once, before importing project code.
 * **Library modules** under ``sim/`` mutate ``sys.path`` never.  They import
   ``sim.*`` / ``controller.*`` / ``jugglebot.*`` and rely on their caller

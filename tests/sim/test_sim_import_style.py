@@ -33,7 +33,7 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
 #: the one hole through which the dual-identity class could re-open.
 #: ``tools`` is deliberately absent: ``tools.*`` is a real repo-root package.
 _SIM_TOP_LEVEL = frozenset({
-    'analysis', 'ball', 'ball_butler', 'demo_mpc', 'gate_common', 'hand',
+    'analysis', 'ball', 'ball_butler', 'gate_common', 'hand',
     'input', 'juggle_bb_catch', 'juggle_catch', 'juggle_demo', 'juggle_noise',
     'juggle_online', 'juggle_planner', 'juggle_selfcatch', 'juggle_throw',
     'juggle_tilt', 'model', 'plant', 'reload_gate', 'toss_gate', 'viz',
@@ -65,7 +65,6 @@ def _python_files():
                 if name.endswith('.py'):
                     path = os.path.join(root, name)
                     yield os.path.relpath(path, _REPO_ROOT), path
-    yield 'run_mpc.py', os.path.join(_REPO_ROOT, 'run_mpc.py')
 
 
 def _bare_sim_imports(tree):

@@ -227,21 +227,21 @@ def generate_launch_description():
         default_value='true',
     )
 
-    # DORMANT since 2026-08-01 (MPC dormancy, plans/parked/refactor-2026-07.md
-    # Phase 3).  This was PR 3a's per-launch override for motor_guard's
-    # --friction-ff CLI tri-state; motor_guard no longer launches, so nothing
-    # consumes it.  Kept DECLARED rather than deleted — same treatment as
-    # enable_setpoint_output below — so `ros2 launch ... --show-args` still
+    # INERT since 2026-08-01.  This was PR 3a's per-launch override for
+    # motor_guard's --friction-ff CLI tri-state; motor_guard no longer launches,
+    # so nothing consumes it.  Kept DECLARED rather than deleted — same treatment
+    # as enable_setpoint_output below — so `ros2 launch ... --show-args` still
     # names it and says it is inert.  Deleting the declaration would not make a
     # stale `friction_ff_enable:=true` an error either (Foxy silently ignores
     # unknown launch args), it would just make it invisible.  Friction FF itself
-    # is unaffected: it lives in motor_guard, which is parked with the MPC.
+    # is unaffected: it lives in motor_guard, which is retained as a parked
+    # fallback (the MPC chain it once served was removed 2026-09-01).
     friction_ff_enable_arg = DeclareLaunchArgument(
         'friction_ff_enable',
         default_value='yaml',
         description="DORMANT + INERT since the MPC dormancy (2026-08-01): its "
                     "only consumer was the motor_guard process, which this "
-                    "launch no longer starts. Restored by the MPC revival.",
+                    "launch no longer starts.",
     )
 
     # Throw aim-correction (the deployed 2D affine). This arg was documented
@@ -301,14 +301,16 @@ def generate_launch_description():
         }],
     )
 
-    # motion_bridge_node is DORMANT (2026-08-01, plans/parked/refactor-2026-07.md
-    # Phase 3 — "remove operationally, park the code"). It was the MPC leg path's
-    # ROS side: motor_guard's :5556 interpolated stream -> leg_lengths_topic ->
-    # can_node. can_node was deleted in the 2026-07-06 SocketCAN decommission and
-    # the bridge does not subscribe to leg_lengths_topic, so the topic has had no
-    # consumer since (ros_ws/docs/can-node-teensy-parity.md:410, :548). The node
-    # source, its setup.py entry point and tests/ros/test_motion_bridge_node.py
-    # all stay: revival is re-adding this Node entry.
+    # motion_bridge_node was DELETED 2026-09-01 with the rest of the MPC chain
+    # (dormant since 2026-08-01; the unified 7-DoF planner is the replanner the
+    # parking preserved the option for, so the revival path is retired). It was
+    # the MPC leg path's ROS side: motor_guard's :5556 interpolated stream ->
+    # leg_lengths_topic -> can_node. can_node was deleted in the 2026-07-06
+    # SocketCAN decommission and the bridge does not subscribe to
+    # leg_lengths_topic, so the topic had no consumer even before that
+    # (ros_ws/docs/can-node-teensy-parity.md:410, :548). Source, setup.py entry
+    # point and tests are at git tag `mpc-final`; see
+    # logbook/2026-09-01-mpc-chain-removed.md.
     #
     # ONE OPERATOR-VISIBLE CONSEQUENCE, deliberate and accepted: this node was
     # also the sole publisher of `motion/diagnostics` and `motion/tracking_error`.
@@ -371,12 +373,11 @@ def generate_launch_description():
         executable='reload_coordinator_node',
     )
 
-    # mpc_bridge_node is DROPPED from the MVP bring-up: the MPC hot path is replaced
-    # by trajectory_node (a simple Jetson-side trajectory generator streaming 40 Hz
-    # knots on the same :5557 seam). The MPC return path stays dormant — source is
-    # retained (setup.py entry point + jugglebot/mpc_bridge_node.py) so run_mpc.py can
-    # be relaunched with trajectory_node stopped (the single-binder :5557 interlock
-    # makes a conflict loud). See plans/active/mvp-trajectory-bringup.md § Deferred.
+    # trajectory_node is the sole owner of the :5557 leg funnel. It replaced the
+    # MPC hot path in the MVP cutover (a Jetson-side trajectory generator
+    # streaming 40 Hz knots on the same seam); mpc_bridge_node and run_mpc.py
+    # were deleted outright 2026-09-01, so there is no second binder left to
+    # contend for :5557. Source at git tag `mpc-final`.
     trajectory_node = Node(
         package='jugglebot',
         executable='trajectory_node',
@@ -407,9 +408,8 @@ def generate_launch_description():
         additional_env={'PYTHONPATH': _bridge_pythonpath},
     )
 
-    # ── motor_guard: DORMANT (2026-08-01) ────────────────────────
-    # plans/parked/refactor-2026-07.md Phase 3 — "remove operationally, park the
-    # code". The 500 Hz interpolator + safety monitor sat between the MPC and the
+    # ── motor_guard: NOT LAUNCHED (since 2026-08-01) ─────────────
+    # The 500 Hz interpolator + safety monitor sat between the MPC and the
     # motors on the OLD topology. In the MVP topology it drives nothing: the leg
     # path is trajectory_node -> :5557 -> teensy_bridge_node -> the can-bridge
     # Teensy, which does its own 500 Hz interpolation, and the guard's :5556
@@ -420,11 +420,13 @@ def generate_launch_description():
     # SAFETY AUTHORITY on the leg path is the Teensy-side MAX_DEVIATION guard,
     # not this process — it has been that way since the Teensy-side cutover;
     # launching motor_guard was not adding a safety layer, only a dead process.
-    # The console_scripts entry point + the module + its tests all stay; revival
-    # is re-adding this ExecuteProcess. Note the revival is BOTH entries, not one:
-    # HardwarePlant.enable() blocks on motor-feedback telemetry from the guard's
-    # :5556 (controller/hardware_plant.py ~:1033), and the guard is fed by
-    # motion_bridge_node, so run_mpc.py cannot come back without both.
+    # The console_scripts entry point + the module + its per-commit safety tests
+    # all stay, and motor_guard OUTLIVES the MPC: it is the validated Python twin
+    # that the hermite_xref firmware trust chain drives
+    # (tools/probes/teensy_link_profiling/hermite_xref/xref.py). Its former
+    # feeder (motion_bridge_node) and consumer (HardwarePlant) were deleted
+    # 2026-09-01, so re-adding this ExecuteProcess alone would start a process
+    # with no input and no reader — it is a parked fallback, not a revival path.
 
     # ── Rosbridge (WebSocket bridge for the GUI) ─────────────────
     # Launched as direct Nodes rather than including the stock
@@ -477,12 +479,12 @@ def generate_launch_description():
             # Accepted leg setpoints (u0, motor revs) echoed by teensy_bridge_node
             # from the :5557 funnel — the commanded side of the leg tracking
             # story for bag analysis. leg_lengths_topic stays in the record list
-            # even though its only publisher (motion_bridge_node) is dormant
-            # since 2026-08-01: recording a silent topic costs nothing, and it
-            # keeps bag schemas comparable across the dormancy boundary and after
-            # the MPC revival. Same applies to /motion/tracking_error and
+            # even though its only publisher (motion_bridge_node) has not run
+            # since 2026-08-01 and was deleted 2026-09-01: recording a silent
+            # topic costs nothing, and it keeps bag schemas comparable across the
+            # dormancy boundary. Same applies to /motion/tracking_error and
             # /motion/diagnostics below — motion_bridge_node was their sole
-            # publisher too, so all three record empty until the MPC revival.
+            # publisher too, so all three now record empty permanently.
             '/leg_setpoint_echo',
             '/hand_telemetry',
             '/mocap_data',
@@ -602,8 +604,8 @@ def generate_launch_description():
             # this box, and that is measured rather than assumed. rosbag2 0.3.11
             # (Foxy) recorded /motion/diagnostics into
             # ~/Desktop/rosbags/2026-08-10_16-30-44 with its type resolved and
-            # message_count 0, and motion_bridge_node — its SOLE publisher — has
-            # not been launched since 2026-08-01. The action topics below are a
+            # message_count 0, and motion_bridge_node — its SOLE publisher — had
+            # not been launched since 2026-08-01 and is now deleted. The action topics below are a
             # strictly easier case: their publishers exist from node startup, so
             # the only exposure was a startup race, and that evidence closes it.
             '/rosout',

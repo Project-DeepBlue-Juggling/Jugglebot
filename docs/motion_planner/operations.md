@@ -1,5 +1,13 @@
 # Operations Guide
 
+!!! note "Removed 2026-09-01"
+    The MPC chain was **deleted** on 2026-09-01:
+    `controller/{mpc,params,runner,hardware_plant,generate_solver}.py`, `run_mpc.py`,
+    the ROS2 `motion_bridge_node` / `mpc_bridge_node`, and `sim/main.py`'s `--mpc`
+    and `--hardware` modes. Every procedure below that invokes them is **historical**
+    and resolves only at git tag **`mpc-final`**. See
+    `logbook/2026-09-01-mpc-chain-removed.md`.
+
 This page covers how to work with the motion planner in practice — running tests, tuning ODrive gains, using the test harnesses, and extending the system.
 
 ## Running the Motor Guard
@@ -7,6 +15,7 @@ This page covers how to work with the motion planner in practice — running tes
 ### On the Jetson (Production)
 
 ```bash
+# historical — removed 2026-09-01 (tag mpc-final); sim/main.py has no --hardware mode
 # Start the motor guard (separate terminal from ROS2)
 python -m jugglebot.motion.motor_guard --rate 500 --log-level INFO
 
@@ -108,6 +117,7 @@ harness.disconnect()
 The canonical way to preview motion before running on hardware is through the MPC simulation:
 
 ```bash
+# historical — removed 2026-09-01 (tag mpc-final); sim/main.py has no --mpc or --keyboard mode
 # Preview a static pose target
 python sim/main.py --mpc --pose 20,0,30,0.05,0,0 --no-viewer --duration 3
 
@@ -237,6 +247,7 @@ On the ROS2 side, a new input source publishes target poses that the `mpc_bridge
 The MPC simulation is the canonical way to preview motion offline. Run with `--no-viewer` for headless mode or `--dashboard` for real-time telemetry:
 
 ```bash
+# historical — removed 2026-09-01 (tag mpc-final); sim/main.py has no --mpc mode
 # Quick check: does the MPC reach this pose smoothly?
 python sim/main.py --mpc --pose 20,0,30,0.05,0,0 --no-viewer --duration 3
 
@@ -301,7 +312,7 @@ if check.violations:
 - Check the MPC solver status in telemetry — `Solve_Succeeded` or `Solved_To_Acceptable_Level` are normal
 - Common causes of solver failure: target pose outside workspace, extreme tilts approaching singularity, target velocity too high
 - Check MPC tuning parameters in `controller/params.py` — cost weights and horizon length affect trajectory quality
-- Run `sim/main.py --mpc --pose <target>` to reproduce the issue in simulation before debugging on hardware
+- Ran `sim/main.py --mpc --pose <target>` to reproduce the issue in simulation before debugging on hardware (historical — both `controller/params.py` and the `--mpc` mode were removed 2026-09-01, tag `mpc-final`)
 
 ### Tracking error too high
 

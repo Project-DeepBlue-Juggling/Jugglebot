@@ -205,9 +205,10 @@ class MuJoCoPlant(PlantInterface):
         # P1: pre-allocated PlantState returned (aliased) by every
         # ``get_state()`` call.  Ndarray fields live across ticks; scalar
         # fields (time, hand_pos_mm, hand_vel_mmps) are re-assigned each
-        # call.  Mirrors the HardwarePlant pattern at
-        # controller/hardware_plant.py:262–272.  See
-        # controller/PLANT_INTERFACE_CONTRACT.md P1.
+        # call.  Mirrored the HardwarePlant pattern at
+        # controller/hardware_plant.py:262–272 — that module was removed
+        # 2026-09-01, tag mpc-final, so the line reference resolves only
+        # there.  See controller/PLANT_INTERFACE_CONTRACT.md P1.
         self._state = PlantState(
             leg_extensions_mm=np.zeros(6),
             leg_velocities_mmps=np.zeros(6),

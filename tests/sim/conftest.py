@@ -15,6 +15,7 @@ import sys
 
 _TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Allow `from helpers import ...` in test files within this directory
+# Allow sibling-module imports (`from _zmq_test_harness import ...`) in
+# test files within this directory
 if _TESTS_DIR not in sys.path:
     sys.path.insert(0, _TESTS_DIR)

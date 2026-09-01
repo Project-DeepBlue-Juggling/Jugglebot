@@ -43,7 +43,7 @@ Based on the type and files involved:
    - `sim/` → `sim`
    - `ros_ws/gui/` → `gui`
    - `config/` → `config`
-   - `controller/mpc.py` or `controller/params.py` → `mpc`
+   - (`mpc` is historical — its files were removed 2026-09-01, tag `mpc-final`)
    - `ros_ws/.../orchestrator_node.py` or `state_machine.py` → `ros`
 2. Auto-suggest additional `tags:` based on content:
    - Changes to `*_test.py` or `test_*.py` → `testing`
@@ -90,8 +90,6 @@ This mapping is used for auto-tagging. Entries are matched in order (first match
 for ambiguous paths):
 
 ```
-controller/mpc.py          → mpc, controller
-controller/params.py       → mpc, controller
 controller/                → controller
 ros_ws/.../motion/         → motion
 ros_ws/.../can/            → can

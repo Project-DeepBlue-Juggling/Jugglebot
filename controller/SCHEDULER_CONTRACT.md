@@ -4,7 +4,7 @@ This document is the **normative specification** of the invariants that
 ``EventScheduler`` (see [controller/scheduler.py](scheduler.py)) — and any
 future variant — must satisfy.  It is the structural sibling of the K1–K6
 [REFERENCE_LAYER_CONTRACT.md](REFERENCE_LAYER_CONTRACT.md) and the
-[HOT_LOOP_CONTRACT.md](HOT_LOOP_CONTRACT.md), and uses the same RFC 2119
+and uses the same RFC 2119
 normative language (MUST, MUST NOT, SHOULD, MAY).
 
 It exists so that future schedulers (juggling choreography, GUI input
@@ -437,7 +437,8 @@ session log:
   contract on ``ReferenceEvent`` lists.  Orthogonal to this contract:
   K1–K6 governs *what* events the MPC tracks, S1–S6 governs *when and
   in what order* they are submitted.  S4 is the single point of overlap.
-- [HOT_LOOP_CONTRACT.md](HOT_LOOP_CONTRACT.md) — hot-loop allocation
+- `HOT_LOOP_CONTRACT.md` — hot-loop allocation (removed 2026-09-01 with
+  the MPC chain; at git tag `mpc-final`)
   budget.  ``EventScheduler.update`` runs on the hot loop and MUST
   respect the budget; S1–S6 enforcement adds two integer comparisons
   and an ID-set membership check per ``submit_event`` (which is NOT on

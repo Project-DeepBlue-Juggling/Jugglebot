@@ -662,15 +662,19 @@ class TrajectoryNode(Node):
 
     def _emitter_loop(self) -> None:
         # Bind the PUB INSIDE the thread (sole-binder interlock). A bind failure
-        # ⇒ run_mpc.py is running; refuse to start rather than fight the wire.
+        # ⇒ something else already owns :5557; refuse to start rather than fight
+        # the wire. (Until 2026-09-01 that "something else" was run_mpc.py, now
+        # deleted — so a failure here is a stale trajectory_node or a stray
+        # process, not the MPC.)
         try:
             self._pub = (self._pub_factory() if self._pub_factory is not None
                          else MpcCommandPub())
         except Exception as e:  # noqa: BLE001
             self.get_logger().error(
                 "trajectory_node: could not bind the :5557 command PUB "
-                f"({e}). Is run_mpc.py running? The emitter will NOT start; "
-                "stop the MPC process and relaunch.")
+                f"({e}). Another process already owns that address — most "
+                "likely a stale trajectory_node. The emitter will NOT start; "
+                "stop the other process and relaunch.")
             return
 
         # The emitter period IS the knot spacing: the can-hub firmware pins its

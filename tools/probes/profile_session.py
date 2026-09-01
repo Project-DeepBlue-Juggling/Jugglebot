@@ -25,7 +25,7 @@ Captures (in temp/probes/profile_<timestamp>/):
 
 Example multi-tool session:
     python tools/probes/profile_session.py record \\
-        --py-spy-targets run_mpc.py,can_node \\
+        --py-spy-targets trajectory_node,teensy_bridge_node \\
         --candump can0
 
 Bottleneck detection:
@@ -35,7 +35,7 @@ Bottleneck detection:
     * EMC memory-bandwidth saturation (> 70 %)
     * RAM / swap pressure
     * Top processes by CPU / context-switch rate / IO wait
-    * Highlights run_mpc.py / motor_guard processes specifically
+    * Highlights the leg-path processes (trajectory_node, motor_guard) specifically
     * Python hotspots from py-spy flame graph if collected
 
 Run from anywhere - paths resolve relative to the repo root.
@@ -84,6 +84,8 @@ RAM_FREE_MIN_MB = 200       # <200 MB free = memory pressure
 CSWITCH_HIGH_PER_S = 5000   # voluntary context switches per s
 NVCSWITCH_HIGH_PER_S = 10000  # involuntary context switches per s
 
+# "run_mpc.py"/"mpc_bridge" retained as hints so this tool still recognises a
+# pre-2026-09-01 capture; neither process exists on this branch (tag mpc-final).
 MPC_PROC_HINTS = ("run_mpc.py", "motor_guard", "mpc_bridge", "can_node",
                   "_node", "ros2", "rclpy", "ros-args")
 
@@ -305,7 +307,7 @@ def _start_recorders(session: Path,
     recs.append(Recorder("ps-snapshots", ps_proc.pid, str(ps_log),
                          ps_proc.args))
 
-    # py-spy attach. The target processes (run_mpc.py, can_node, ...) almost
+    # py-spy attach. The target processes (trajectory_node, teensy_bridge_node, ...) almost
     # always start AFTER the profiler, so we cannot attach at start time.
     # Instead spawn one waiter per target: the `_pyspy_wait` subcommand polls
     # for the named process and exec()s py-spy onto itself once it appears
@@ -393,7 +395,7 @@ def _find_pids_by_name(name: str) -> list[int]:
     """All PIDs whose command line matches `name` (substring, via `pgrep -fa`).
 
     Skips the harness's own process and the pgrep invocation. Useful both for
-    auto-detecting run_mpc.py and for attaching py-spy to other named
+    auto-detecting the leg-path processes and for attaching py-spy to other named
     processes (can_node, motor_guard, etc) - many of which run as `python`
     in `ps`, so we match the full command line.
     """
@@ -1235,7 +1237,7 @@ def _analyze(session: Path, print_summary: bool) -> int:
                 )
         else:
             sections.append(
-                "_No run_mpc.py / motor_guard / ROS2 processes detected "
+                "_No trajectory_node / motor_guard / ROS2 processes detected "
                 "during recording. Was the session actually running?_\n"
             )
 

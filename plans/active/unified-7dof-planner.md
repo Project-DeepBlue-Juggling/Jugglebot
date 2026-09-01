@@ -204,7 +204,9 @@ torn-latch class the single-frame widening removes by construction.
 
 **ZMQ `mpc_cmd` dict** (`motion/ipc.py::make_mpc_command`): leg arrays stay
 6-wide (so `motor_guard.py`'s `shape == (6,)` asserts and
-`controller/hardware_plant.py` stay untouched and decodable). New optional keys:
+`controller/hardware_plant.py` stay untouched and decodable)
+[`hardware_plant.py` removed 2026-09-01 with the MPC chain (tag `mpc-final`);
+the constraint now applies to `motor_guard.py` alone]. New optional keys:
 
 ```python
 {
@@ -535,7 +537,9 @@ plumbing); `tools/probes/traj_stream_probe.py`; the full test set named in
 § 5.
 
 **Critical details:** leg arrays in the ZMQ dict stay 6-wide —
-`motor_guard.py` and `controller/hardware_plant.py` are untouched.
+`motor_guard.py` and `controller/hardware_plant.py` are untouched
+[`hardware_plant.py` removed 2026-09-01 with the MPC chain (tag `mpc-final`);
+the constraint now applies to `motor_guard.py` alone].
 `hardware_config.h` regeneration rides the same commit. The
 `extra_script.py` incremental-build hazard from the 4 → 5 bump applies:
 Phase 3's firmware build must be clean, not incremental. After this phase the

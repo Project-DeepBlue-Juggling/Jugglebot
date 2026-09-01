@@ -1,10 +1,14 @@
-"""Tests for multi-event MPC lookahead (Issue 3).
+"""Tests for multi-event reference lookahead (Issue 3).
 
 Validates:
   - TossLoopController._build_ref_events: correct event construction
     across all cycle phases (approach, flight, hold, transition)
   - ContinuousThrowCatchSource: ref_events pass-through to TargetCommand
-  - MPC integration: multi-event references are consumed by solve()
+
+The MPC-integration class (multi-event references consumed by
+``MPCController.solve()``) was removed 2026-09-01 with the MPC chain;
+final implementation at git tag ``mpc-final`` — see
+``logbook/2026-09-01-mpc-chain-removed.md``.
 """
 
 from __future__ import annotations
@@ -249,121 +253,3 @@ class TestUpdateReturnSignature:
         result = ctrl.update(0.1, np.zeros(6), 0.0)
         assert len(result) == 4
         assert result[3] is None
-
-
-# ---------------------------------------------------------------------------
-# Tests: MPC integration
-# ---------------------------------------------------------------------------
-
-class TestMPCIntegration:
-    """Test that multi-event references work end-to-end with the MPC."""
-
-    @pytest.fixture
-    def plant(self):
-        from sim.plant.mujoco_plant import MuJoCoPlant
-        return MuJoCoPlant()
-
-    @pytest.fixture
-    def mpc(self, plant):
-        from controller.mpc import MPCController
-        from controller.params import MPCParams
-        # max_leg_vel_mmps=280 (prior bringup value) so multi-event tests keep
-        # their prior dynamics budget; hardware default was lowered to 70 on
-        # 2026-04-17.
-        params = MPCParams(
-            max_cpu_time=2.0, max_iter=500, max_leg_vel_mmps=280.0,
-            prime_solver=False)
-        return MPCController.from_plant(params, plant)
-
-    def test_mpc_accepts_multi_event_list(self, plant, mpc):
-        """MPC.solve() should accept a multi-event list without error."""
-        state = plant.get_state()
-        target_pose = np.zeros(6)
-
-        events = [
-            ReferenceEvent(time=state.time + 0.3, pose=np.zeros(6)),
-            ReferenceEvent(time=state.time + 0.9, pose=np.array([10, 0, 0, 0, 0, 0.0])),
-            ReferenceEvent(time=state.time + 1.5, pose=np.zeros(6)),
-        ]
-
-        cmd, cmd_vel, diag = mpc.solve(
-            state, target_pose, ref_events=events)
-
-        assert diag['status'] in ('Solve_Succeeded', 'Solved_To_Acceptable_Level')
-
-    def test_multi_event_sees_future(self, plant, mpc):
-        """With multi-event refs, the MPC should plan toward future events.
-
-        Compare: single-event (catch only) vs multi-event (catch then throw).
-        The multi-event case should produce different trajectory predictions
-        because the MPC sees the subsequent throw event.
-        """
-        state = plant.get_state()
-        t = state.time
-
-        catch_pose = np.array([20.0, 0, -10.0, 0, 0, 0])
-        throw_pose = np.array([-20.0, 0, -10.0, 0, 0, 0])
-
-        # Single event: just catch
-        single_events = [
-            ReferenceEvent(time=t + 0.5, pose=catch_pose, twist=np.zeros(6)),
-        ]
-
-        cmd_single, _, diag_single = mpc.solve(
-            state, catch_pose, ref_events=single_events)
-
-        # Multi-event: catch then throw
-        multi_events = [
-            ReferenceEvent(time=t + 0.5, pose=catch_pose, twist=np.zeros(6)),
-            ReferenceEvent(time=t + 1.2, pose=throw_pose, twist=np.zeros(6)),
-        ]
-
-        cmd_multi, _, diag_multi = mpc.solve(
-            state, catch_pose, ref_events=multi_events)
-
-        # Both should solve successfully
-        assert diag_single['status'] in ('Solve_Succeeded', 'Solved_To_Acceptable_Level')
-        assert diag_multi['status'] in ('Solve_Succeeded', 'Solved_To_Acceptable_Level')
-
-        # The predicted trajectories should differ because the multi-event
-        # case is aware of the throw coming after the catch.  We compare
-        # the final predicted poses (which should lean toward throw_pose
-        # in the multi-event case).
-        poses_single = mpc.predicted_poses
-        poses_multi = mpc.predicted_poses  # gets overwritten by last solve
-
-        # Re-solve to get both predictions cleanly
-        mpc.solve(state, catch_pose, ref_events=single_events)
-        final_single = mpc.predicted_poses[-1].copy()
-
-        mpc.solve(state, catch_pose, ref_events=multi_events)
-        final_multi = mpc.predicted_poses[-1].copy()
-
-        # The multi-event final pose should be closer to throw_pose (x=-20)
-        # than the single-event one (which only sees catch at x=+20)
-        dist_single_to_throw = np.linalg.norm(final_single[:3] - throw_pose[:3])
-        dist_multi_to_throw = np.linalg.norm(final_multi[:3] - throw_pose[:3])
-
-        assert dist_multi_to_throw < dist_single_to_throw, (
-            f"Multi-event final pose should be closer to throw_pose. "
-            f"Single: {dist_single_to_throw:.1f}mm, Multi: {dist_multi_to_throw:.1f}mm"
-        )
-
-    def test_multi_event_with_boosted_weights(self, plant, mpc):
-        """Solve succeeds with ref_events and boosted velocity weights."""
-        state = plant.get_state()
-        t = state.time
-
-        events = [
-            ReferenceEvent(time=t + 0.3, pose=np.zeros(6)),
-            ReferenceEvent(time=t + 1.0, pose=np.array([10, 0, 0, 0, 0, 0.0])),
-        ]
-
-        cmd, cmd_vel, diag = mpc.solve(
-            state, np.zeros(6),
-            ref_events=events,
-            boost_vel_weights=True,
-        )
-
-        assert diag['status'] in ('Solve_Succeeded', 'Solved_To_Acceptable_Level')
-        assert np.all(np.isfinite(cmd))

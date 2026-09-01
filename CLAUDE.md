@@ -4,22 +4,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-Jugglebot is a real-time robotics control codebase (MPC planner, MuJoCo simulation, ODrive PID). Incorrect velocity, feedforward, or timing changes can cause dangerous jerky hardware movement. Always verify physics/control implications of changes, not just test passage.
+Jugglebot is a real-time robotics control codebase (trajectory planner, MuJoCo simulation, ODrive PID). Incorrect velocity, feedforward, or timing changes can cause dangerous jerky hardware movement. Always verify physics/control implications of changes, not just test passage.
 
 Jugglebot is a Stewart platform robot that catches and throws balls. The codebase has three main subsystems that share a common config layer:
 
 1. **ROS2 hardware stack** (`ros_ws/`) — runs on Jetson Orin Nano (Ubuntu 20.04, ROS2 Foxy, Python 3.8)
 2. **MuJoCo simulation** (`sim/`) — standalone Python 3.11+, no ROS2 dependency
-3. **MPC controller** (`controller/`) — pure Python with CasADi, imported by both sim and hardware
+3. **Motion primitives** (`controller/`) — pure Python, imported by both sim and hardware
 
 ## Architecture
 
 ```
 config/hardware_config.yaml  ← single source of truth for all physical parameters
 config/generate_config.py    ← generates .py/.h/.js constants → config/generated/ + consumer dirs
-controller/                  ← MPC runtime: solver, plant abstractions, telemetry, MPC loop, hardware plant
+controller/                  ← shared motion primitives: ballistics, catch-pose optimiser, hermite/quintic,
+                                reference feasibility, event scheduler, plant interface, targets, telemetry
 teensy_link/                 ← can-bridge UDP transport (protocol/client/rpc + the leg-op observers)
-run_mpc.py                   ← hardware MPC entry point (uses controller/) — DORMANT, not launched
 sim/                         ← MuJoCo simulation (plant/, hand/, ball/, input/, viz/, analysis/)
 ros_ws/src/jugglebot/        ← ROS2 package (can/, motion/, tracking/, nodes)
 tests/                       ← all tests (ros/, sim/, motion/, hardware/, archived/)
@@ -47,11 +47,13 @@ plans/archived/              ← completed or superseded plans
 **Key architectural boundaries:**
 - `ros_ws/.../motion/`, `controller/` and `teensy_link/` are pure Python — no ROS2 imports allowed
 - ROS2 nodes (`*_node.py`) are thin wrappers; business logic lives in pure-Python modules
-- `controller/plant.py` defines `PlantInterface` — implemented by `MuJoCoPlant` (sim) and `HardwarePlant` (real robot via ZMQ IPC)
+- `controller/plant.py` defines `PlantInterface` — implemented by `MuJoCoPlant` (sim). The hardware implementation (`HardwarePlant`, ZMQ IPC to `motor_guard`) went with the MPC chain on 2026-09-01
 - IPC between processes uses ZeroMQ PUB/SUB on tcp://localhost:5556 (telemetry) and :5557 (commands), msgpack serialization
-- **`teensy_link/` is a top-level package at the repo root, deliberately NOT installed into the ROS package** (moved out of `controller/` 2026-08-01, `plans/parked/refactor-2026-07.md` Phase 4). Both launch files inject the repo root on `PYTHONPATH` so `teensy_bridge_node` runs the LIVE tree: a wire-format edit is live at the next relaunch instead of sitting behind a `colcon build` whose omission is silent. Import it as `teensy_link…`; `controller/teensy_link.py` is a `sys.modules`-aliasing shim for the old path, to be **deleted after 2026-09**.
+- **`teensy_link/` is a top-level package at the repo root, deliberately NOT installed into the ROS package** (moved out of `controller/` 2026-08-01, `plans/parked/refactor-2026-07.md` Phase 4). Both launch files inject the repo root on `PYTHONPATH` so `teensy_bridge_node` runs the LIVE tree: a wire-format edit is live at the next relaunch instead of sitting behind a `colcon build` whose omission is silent. Import it as `teensy_link…`; the `controller/teensy_link.py` aliasing shim for the old path was **deleted 2026-09-01** as scheduled, so `controller.teensy_link` no longer resolves.
 - **Leg-path safety authority is the Teensy-side `MAX_DEVIATION` guard**, in can-bridge firmware. The MVP leg path is `trajectory_node` → :5557 → `teensy_bridge_node` → can-bridge Teensy (which does the 500 Hz interpolation). Nothing on the Jetson is in that safety loop.
-- **The MPC chain is parked DORMANT** (2026-08-01, `plans/parked/refactor-2026-07.md` Phase 3): `jugglebot_launch.py` no longer starts `motor_guard` or `motion_bridge_node`, and `run_mpc.py` is not launched. `motor_guard.py` was a 500 Hz interpolator + monitor on the *pre-cutover* leg path; it is a parked fallback, not the safety layer — do not describe it as one. All the code, entry points and tests stay; revival = re-add the two launch entries + promote the `nightly`-marked MPC battery. `controller/` is NOT MPC-only, so it is not deleted: live sim paths import `controller.{ballistics,target,telemetry,scheduler,plant}`.
+- **The MPC chain was REMOVED 2026-09-01** — deleted outright, not parked. It had been operationally dormant since 2026-08-01 (`plans/parked/refactor-2026-07.md` Phase 3 parked it *with* a revival path); the unified 7-DoF planner that landed 2026-09-01 (`plans/active/unified-7dof-planner.md`) is the lower-rate replanner that parking preserved the option for, so the revival path is retired rather than deferred. Gone: `controller/{mpc,params,runner,hardware_plant,hardware_hooks,hot_loop_contract,generate_solver}.py` + `controller/generated/`, `run_mpc.py`, the ROS2 `motion_bridge_node` / `mpc_bridge_node`, `sim/main.py`'s `--mpc` and `--hardware` modes, the `HOT_LOOP_CONTRACT.md` / `DIAG_SCHEMA_CONTRACT.md` normative docs, and the MPC test battery. **The final implementation is preserved at git tag `mpc-final`** — see `logbook/2026-09-01-mpc-chain-removed.md` and `controller/README.md`. Do not reintroduce a per-cycle optimiser on the leg path without reopening that decision.
+- **`motor_guard.py` survives the MPC and is NOT the leg-path safety layer** — do not describe it as one. It was a 500 Hz interpolator + monitor on the *pre-cutover* leg path; `jugglebot_launch.py` has not started it since 2026-08-01 and its former feeder and consumer are now deleted, so it is a parked fallback with no live wiring. It is retained deliberately: it is the validated Python twin that the `hermite_xref` firmware trust chain drives (`tools/probes/teensy_link_profiling/hermite_xref/xref.py`), and its safety tests (E-stops, NaN rejection, workspace limits, staleness) run per-commit.
+- **`controller/` is the shared motion-primitive layer**, not an MPC package: `ballistics`, `catch_optimizer`, `feasibility` (K1–K6), `hermite`, `plant`, `scheduler`, `target`, `telemetry`, `toss_motion_source`, `zmq_target`. Live sim and hardware paths import from it; it has no CasADi dependency since the MPC removal. See `controller/README.md`.
 
 ## Environment
 
@@ -68,34 +70,12 @@ The system `python3` (3.8.10) lacks MuJoCo and other project dependencies. The v
 python config/generate_config.py
 ```
 
-### MPC solver AOT compile (run on Jetson) — DORMANT
-```bash
-# DORMANT with the rest of the MPC chain (2026-08-01). Nothing launches the MPC,
-# so this is only needed when reviving it. Kept because the revival needs it.
-# Required after any change to controller/mpc.py or controller/params.py.
-# Produces controller/generated/mpc_gen.so (~15-30s), removing the 27-100ms
-# first-solve cold start. Missing → soft fall-back to in-process build;
-# stale (hash mismatch) → hard-fail with a clear message.
-python controller/generate_solver.py
-```
-
 ### Simulation
 ```bash
-python sim/main.py [--mpc] [--keyboard] [--pose 0,0,50,0,0,0] [--no-viewer --duration 5]
-python sim/main.py --dashboard --mpc --pose 0,0,50,0,0,0   # dashboard on :8082
-```
-
-### Hardware MPC (on Jetson) — DORMANT
-```bash
-# NOT part of bring-up (2026-08-01), and NOT runnable as written until revived:
-# HardwarePlant.enable() blocks up to 2 s on motor-feedback telemetry from
-# motor_guard's :5556 and then raises, and neither motor_guard nor its feeder
-# motion_bridge_node is launched any more. Reviving = re-add BOTH launch entries
-# (or start both by hand), THEN stop trajectory_node so run_mpc.py owns the :5557
-# funnel (the single-binder interlock makes a conflict loud). It fails closed —
-# RuntimeError before any command is published — so a mistaken attempt is safe.
-python run_mpc.py --pose 0,0,170,0,0,0 --duration 10   # hold at an active pose
-python run_mpc.py [--dashboard]                        # targets from mpc_bridge_node
+# Direct pose-command modes only — the MPC control modes (--mpc, --hardware,
+# --catch/--juggle/--keyboard/--spacemouse/--trajectory) were removed 2026-09-01.
+python sim/main.py [--pose 0,0,50,0,0,0] [--sequence "0,0,50,0,0,0@0.5"] [--no-viewer --duration 5]
+python sim/main.py --dashboard --pose 0,0,50,0,0,0   # dashboard on :8082
 ```
 
 ### Tests
@@ -110,7 +90,7 @@ tools/nightly_suite.sh                        # run the nightly by hand
 
 # Scoped (bare pytest is still right for iterating on one file)
 pytest tests/ros/ -v      # ROS2 node tests (conftest mocks ROS2)
-pytest tests/sim/ -v      # MPC + simulation tests
+pytest tests/sim/ -v      # simulation, scheduler, plant-interface, ZMQ tests
 pytest tests/motion/ -v   # kinematics, dynamics, motor_guard
 
 # Hardware test harnesses (standalone scripts, require real robot)
@@ -133,7 +113,7 @@ mkdocs serve   # local preview at http://localhost:8000
 ## Workflow Rules
 
 - **Grep before refactoring**: before renaming or refactoring any symbol, grep the entire codebase for all references first. List every file and line number, count total occurrences. After making changes, verify the count drops to zero. A partial find-and-replace is not acceptable.
-- **Analyze control-system implications before changes**: before implementing changes to MPC, feedforward, or timing code, analyze the control-system implications first. What happens to the feedforward path? Could this cause discontinuities, oscillation, or timing issues at 40 Hz? Walk through one MPC cycle step-by-step with the proposed change.
+- **Analyze control-system implications before changes**: before implementing changes to the trajectory planner, feedforward, or timing code, analyze the control-system implications first. What happens to the feedforward path? Could this cause discontinuities, oscillation, or timing issues at 40 Hz? Walk through one control cycle step-by-step with the proposed change.
 - **TodoWrite checklist for multi-file tasks**: for tasks involving changes to multiple files, create a TodoWrite checklist before starting. List every file that needs changes, every test that needs updating, and a final verification step. Check off each item as you complete it. Do not declare the task done until all items are checked.
 - **Run the full suite after code changes AND before `git commit`, automatically**: run `./run_tests.sh` after any change to `*.py` or `*.yaml` and again immediately before the commit is written, without being asked. **One run satisfies both obligations when no edit intervenes between the run and the commit**; any later edit invalidates it. (Parallel phase + a serial phase for `serial`-marked tests — **200 s measured 2026-08-01**, down from 478 s pre-tiering; `--full` is 485 s at ci-fast and **~26 min at ci-deep** (25m 52s on 2026-08-02 — don't hardcode a fresher number here, `cat temp/reports/nightly/latest.md` has the current one, re-measured nightly). Bare `pytest tests/ -q` is ~28 min and runs `nightly` too. `-q` for the gate, `-v` when debugging a failure.) **Use `./run_tests.sh --full` — every tier, `nightly` included — in three cases: (a) before ANY hardware sitting, (b) at plan-phase closure, and (c) pre-commit for any change under `controller/` or `sim/`.** Those are the paths the `nightly` tier covers, so the default gate cannot see a regression you just introduced there. Scoped subsets are fine for iteration; the full suite is the final pre-commit gate. `config/*.yaml` order: edit YAML → `python config/generate_config.py` → stage the regenerated artifacts → run tests → commit. Never commit known-failing code without the user's explicit acknowledgement; report count and result in the same response as the commit. **A "docs-only, so no tests needed" exemption is NOT automatically safe: name the tests that read the path you changed and trace what they actually assert** — never a bare appeal to the file extension, never a mechanism you haven't traced, never coverage inferred from a passing count. Worked example (logbook edits *are* inside the test surface, yet the obvious test misses the two failures you'd most expect it to catch): `logbook/README.md` § "What the logbook tests actually check".
 - **Audit multi-document narrative changes**: run `/audit --unstaged` before any commit touching **≥2 narrative `*.md` files** (logbook entries, plans, READMEs) **or any normative doc** (`CLAUDE.md`, `DOCUMENTATION_GUIDE.md`, `controller/REFERENCE_LAYER_CONTRACT.md`, per-plan tuning-methodology docs, **and any document a rule here delegates an obligation to** — currently `logbook/README.md` and `tools/probes/README.md`; the list is open-ended, so if you move an obligation out of this file the receiving doc joins it). Cross-document inconsistencies (swapped values, stale line refs, contradictory headlines) are common in narrative work and the audit catches them reliably. A single logbook entry landing alongside its code — the common case — does not trigger the gate; code-only commits never did.
@@ -210,4 +190,4 @@ codebase has actually been done — deviate from them only with clear reason.
 - Force decomposition: `f = J^{-T} * W` (use `np.linalg.solve(J.T, W)`), NOT `J^T * W`
 - All movements must use profiled trajectories — never command step position changes
 - CAN encoding must match the can-bridge firmware (`Teensy_code_canbridge/`) and the generated `protocol_config` constants: negate, scale by appropriate value, int16, clamp (`can_node.py` is deleted; the firmware is the encoding authority)
-- All runtime artifacts live under `temp/` (not `/tmp/`, not under `sim/`). Both `sim/main.py` and `run_mpc.py` write telemetry CSVs and companion `.log`/`.png`/`_report.html` files to `temp/logs/`. Cross-session comparison HTML reports go to `temp/reports/`. Nothing under `sim/` should accumulate runtime output.
+- All runtime artifacts live under `temp/` (not `/tmp/`, not under `sim/`). `sim/main.py` writes telemetry CSVs and companion `.log`/`.png`/`_report.html` files to `temp/logs/`. Cross-session comparison HTML reports go to `temp/reports/`. Nothing under `sim/` should accumulate runtime output.

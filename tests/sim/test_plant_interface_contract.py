@@ -17,10 +17,12 @@ Phase 6 covers the two invariants on ``command()`` and ``control_dt``:
     (default 0.025 s = 40 Hz); time-window thresholds derive from it,
     not hard-coded magic numbers.
 
-Tests are parameterised over both shipping implementations:
-  * ``MuJoCoPlant`` (sim)
-  * ``HardwarePlant`` (hardware) — via the in-memory ZMQ-mock helper
-    at ``tests/sim/_hardware_plant_stub.py``.
+Tests run against the one shipping implementation, ``MuJoCoPlant`` (sim).
+
+The ``HardwarePlant`` half (parameterised via the in-memory ZMQ-mock helper
+``tests/sim/_hardware_plant_stub.py``, plus the P4 control_dt/staleness
+cases) was removed 2026-09-01 with the MPC chain; final implementation at
+git tag ``mpc-final`` — see ``logbook/2026-09-01-mpc-chain-removed.md``.
 """
 
 from __future__ import annotations
@@ -32,11 +34,10 @@ import pytest
 
 from controller.plant import PlantInterface, PlantState
 from sim.plant.mujoco_plant import MuJoCoPlant
-from tests.sim._hardware_plant_stub import build_hardware_plant_stub
 
 
 # ---------------------------------------------------------------------
-# Plant fixture — parameterised over MuJoCoPlant + HardwarePlant
+# Plant fixture — MuJoCoPlant
 # ---------------------------------------------------------------------
 
 @contextlib.contextmanager
@@ -50,10 +51,6 @@ def _build_mujoco_plant():
         pytest.param(
             ('mujoco', _build_mujoco_plant, True),
             id='MuJoCoPlant',
-        ),
-        pytest.param(
-            ('hardware', build_hardware_plant_stub, False),
-            id='HardwarePlant',
         ),
     ],
 )
@@ -192,8 +189,7 @@ class TestP2ResetCapability:
     def test_can_reset_matches_implementation(self, plant_with_capability):
         """T-U-P2-1: ``can_reset`` returns the documented value per impl.
 
-        MuJoCoPlant: True (sim can rewind).
-        HardwarePlant: False (homing is owned by the orchestrator)."""
+        MuJoCoPlant: True (sim can rewind)."""
         name, plant, expected = plant_with_capability
         assert plant.can_reset is expected, (
             f"{name}: can_reset returned {plant.can_reset!r}, "
@@ -227,18 +223,6 @@ class TestP2ResetCapability:
         else:
             with pytest.raises(NotImplementedError):
                 plant.reset(target_pose)
-
-    def test_hardware_reset_error_message_names_alternative(self):
-        """The contract requires P2's NotImplementedError message to
-        name the implementation and point at the correct lifecycle API.
-        Audit the error text directly against the prose contract."""
-        with build_hardware_plant_stub() as plant:
-            with pytest.raises(NotImplementedError) as excinfo:
-                plant.reset()
-            msg = str(excinfo.value)
-            assert 'HardwarePlant' in msg
-            assert 'orchestrator' in msg
-            assert 'can_reset' in msg
 
 
 # ---------------------------------------------------------------------
@@ -275,11 +259,9 @@ class TestPlantInterfaceABC:
             _MissingCapability()
 
     def test_implementations_register_as_subclasses(self):
-        """Both shipped implementations are formal subclasses of
-        ``PlantInterface``.  This is what enables the parameterised
-        contract test — it guarantees the API surface is uniform."""
-        with build_hardware_plant_stub() as hw:
-            assert isinstance(hw, PlantInterface)
+        """The shipped implementation is a formal subclass of
+        ``PlantInterface``.  This is what guarantees the API surface
+        the contract tests audit."""
         assert issubclass(MuJoCoPlant, PlantInterface)
 
     def test_control_dt_is_abstract_on_the_abc(self):
@@ -313,24 +295,17 @@ class TestPlantInterfaceABC:
 # ---------------------------------------------------------------------
 
 # Helper: read the post-command "what got forwarded" snapshot from the
-# implementation under test.  Both implementations expose the forwarded
-# values via different surfaces; abstracting the read here keeps the
-# test bodies symmetric.
+# implementation under test.  Abstracting the read here keeps the test
+# bodies independent of the implementation's forwarding surface.
 
 def _read_forwarded_extensions(name: str, plant) -> np.ndarray:
     """Return the (6,) extensions that ``command()`` forwarded.
 
     For ``MuJoCoPlant``, this is ``self._data.ctrl[:6]`` translated
-    back to extensions via ``_slide_to_extensions``.
-    For ``HardwarePlant``, this is the pre-allocated ``_cmd_ext_buf``
-    that ``command()`` overwrites via ``np.copyto`` at the head of
-    the body; see ``hardware_plant.py``.  The buffer is not the
-    message but the canonical "what got forwarded" surface."""
+    back to extensions via ``_slide_to_extensions``."""
     if name == 'mujoco':
         slide_m = plant._data.ctrl[:6].copy()
         return plant._slide_to_extensions(slide_m)
-    elif name == 'hardware':
-        return plant._cmd_ext_buf.copy()
     else:
         raise AssertionError(f"unknown plant name {name!r}")
 
@@ -432,46 +407,6 @@ class TestP4ControlDtAwareness:
         """``MuJoCoPlant(control_dt=...)`` echoes the constructor arg."""
         plant = MuJoCoPlant(control_dt=0.05)
         assert plant.control_dt == pytest.approx(0.05)
-
-    def test_hardware_plant_explicit_control_dt(self):
-        """``HardwarePlant(control_dt=...)`` echoes the constructor arg."""
-        with build_hardware_plant_stub(control_dt=0.05) as plant:
-            assert plant.control_dt == pytest.approx(0.05)
-
-    def test_hardware_plant_staleness_thresholds_scale_with_control_dt(self):
-        """T-U-P4-1: ``HardwarePlant(control_dt=0.05)`` produces
-        staleness thresholds 2× the ``control_dt=0.025`` values.
-
-        At 40 Hz (control_dt=0.025): warn=0.075, hard=0.125, estop=0.5.
-        At 20 Hz (control_dt=0.050): warn=0.150, hard=0.250, estop=1.0.
-
-        The biconditional is the key property — every threshold
-        scales linearly, so a regression that hard-codes any one of
-        them trips the test."""
-        with build_hardware_plant_stub(control_dt=0.025) as plant_40hz:
-            warn_40 = plant_40hz._telem_stale_warn_s
-            hard_40 = plant_40hz._telem_stale_hard_s
-            estop_40 = plant_40hz._telem_stale_estop_s
-        with build_hardware_plant_stub(control_dt=0.05) as plant_20hz:
-            warn_20 = plant_20hz._telem_stale_warn_s
-            hard_20 = plant_20hz._telem_stale_hard_s
-            estop_20 = plant_20hz._telem_stale_estop_s
-        # Linear scaling (within float tolerance).
-        assert warn_20 == pytest.approx(2.0 * warn_40)
-        assert hard_20 == pytest.approx(2.0 * hard_40)
-        assert estop_20 == pytest.approx(2.0 * estop_40)
-
-    def test_hardware_plant_default_thresholds_match_pre_phase6_constants(
-            self):
-        """Regression guard: at the default ``control_dt=0.025`` the
-        derived thresholds reproduce the pre-Phase-6 magic numbers
-        (0.075 / 0.125 / 0.5).  This pins behaviour for the production
-        operating point — a refactor that changes the multipliers
-        without updating this test trips it."""
-        with build_hardware_plant_stub(control_dt=0.025) as plant:
-            assert plant._telem_stale_warn_s == pytest.approx(0.075)
-            assert plant._telem_stale_hard_s == pytest.approx(0.125)
-            assert plant._telem_stale_estop_s == pytest.approx(0.5)
 
 
 if __name__ == '__main__':

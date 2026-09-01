@@ -1,11 +1,16 @@
-"""ZMQ-based target source for hardware MPC operation.
+"""ZMQ-based target source: ingests ``TargetCommand`` messages off :5558.
 
-Receives MPC target commands from the MPC bridge node via ZeroMQ and
-presents them as a ``TargetSource`` for the MPC control loop.
+Presents a ZMQ subscription as a ``TargetSource``. Generic ingest plumbing —
+it decodes and rate-limits whatever a publisher puts on :5558 and returns the
+latest command per control step.
 
-The bridge node (``mpc_bridge_node.py``) converts ROS2 topics (spacemouse,
-GUI, catch coordinator) into ``TargetCommand`` messages and publishes
-them on :5558.  This source reads them and returns the latest each MPC step.
+NO LIVE PUBLISHER as of 2026-09-01: the ROS2 ``mpc_bridge_node`` that fed
+:5558 (spacemouse / GUI / catch-coordinator topics → ``TargetCommand``) was
+removed with the MPC chain — dormant since 2026-08-01, superseded by the
+unified 7-DoF planner. Kept because the decode/clamp path is publisher-
+agnostic and still covered by ``tests/sim/test_zmq_target.py``; the deleted
+producer is preserved at git tag ``mpc-final`` (see
+``logbook/2026-09-01-mpc-chain-removed.md``).
 
 Usage::
 

@@ -1,5 +1,6 @@
-"""Unit tests for controller.ballistics — pure-math helpers used by the
-``run_mpc.py --toss-motion`` hardware test path."""
+"""Unit tests for controller.ballistics — pure-math helpers for the toss
+motion path (formerly reached via ``run_mpc.py --toss-motion``, removed
+2026-09-01 with the MPC chain)."""
 
 from __future__ import annotations
 

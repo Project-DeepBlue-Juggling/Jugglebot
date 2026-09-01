@@ -2,15 +2,31 @@
 """Pre-flight diagnostic: confirm motor_guard's vel_ff and torque_ff IPC
 fields are populated with non-zero values during operational moves.
 
+DORMANT since 2026-08-01 — READ BEFORE USE
+------------------------------------------
+This tool SUBs ``motor_guard``'s telemetry on ``tcp://127.0.0.1:5556``.
+``jugglebot_launch.py`` stopped starting ``motor_guard`` on 2026-08-01, and
+since the MPC removal on 2026-09-01 (git tag ``mpc-final``;
+``logbook/2026-09-01-mpc-chain-removed.md``) **nothing publishes :5556 in the
+production launch at all** — the MPC feeder (``run_mpc.py`` → ``HardwarePlant``)
+and the ``motion_bridge_node`` consumer are both deleted.  The live leg path is
+``trajectory_node`` → ZMQ :5557 → ``teensy_bridge_node``, which never touches
+:5556, so a GUI move or a toss/reload gate run produces **no telemetry here**
+and this tool exits 1.
+
+It functions ONLY against a hand-started ``motor_guard`` — the parked fallback —
+driven by a hand-written setpoint source.  There is no supported end-to-end
+recipe on the current stack; the usage block below is retained as the historical
+procedure and is not runnable as written.
+
 Subscribes (read-only) to the motor_guard telemetry stream on
 ``tcp://127.0.0.1:5556``, captures samples for ``--duration`` seconds, and
-reports per-leg statistics on ``leg_vel`` and ``leg_torques``.  Designed
-to coexist with ``motion_bridge_node``'s SUB on the same address — ZMQ
-fanout is the primary distribution mechanism, so multiple subscribers
-read independently with no interference.
+reports per-leg statistics on ``leg_vel`` and ``leg_torques``.  ZMQ fanout is
+the primary distribution mechanism, so this SUB coexists with any other
+subscriber on the same address with no interference.
 
-Usage
------
+Usage (HISTORICAL — the MPC chain it drives was removed 2026-09-01, tag mpc-final)
+---------------------------------------------------------------------------------
     # Terminal A: start the platform stack as you normally would
     cd ros_ws && colcon build --packages-select jugglebot
     source install/setup.bash
@@ -250,8 +266,9 @@ def main() -> int:
     args = p.parse_args()
 
     print(f'Subscribing to {args.address} for {args.duration:.1f} s...')
-    print('(Run a move in another terminal — e.g. `python run_mpc.py --pose '
-          '0,0,170,0,0,0 --duration 10` — concurrently with this script.)')
+    print('(DORMANT: nothing publishes :5556 in the production launch since the '
+          '2026-09-01 MPC removal — this needs a hand-started motor_guard plus a '
+          'hand-written setpoint source. A GUI or gate-run move will NOT show up here.)')
     print()
 
     stats = capture(args.duration, args.address)

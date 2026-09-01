@@ -1,11 +1,11 @@
 # Motor Command Safety
 
-!!! danger "DORMANT — this is not the current safety architecture (banner added 2026-08-01)"
-    Everything below describes the **MPC leg path**: `motor_guard.py` → `motion_bridge_node` → `leg_lengths_topic` → `can_node.py`. **None of it runs today.** `can_node.py` was deleted on 2026-07-06 (SocketCAN decommission), and `jugglebot_launch.py` stopped starting `motor_guard` and `motion_bridge_node` on 2026-08-01 (MPC dormancy — `plans/parked/refactor-2026-07.md` Phase 3).
+!!! danger "REMOVED 2026-09-01 — this is not the current safety architecture"
+    Everything below describes the **MPC leg path**: `motor_guard.py` → `motion_bridge_node` → `leg_lengths_topic` → `can_node.py`. **None of it runs today, and most of it no longer exists.** `can_node.py` was deleted on 2026-07-06 (SocketCAN decommission); `jugglebot_launch.py` stopped starting `motor_guard` and `motion_bridge_node` on 2026-08-01 (MPC dormancy); and on **2026-09-01 the MPC chain was deleted outright** — `controller/{mpc,params,runner,hardware_plant,generate_solver}.py`, `run_mpc.py` and `motion_bridge_node` / `mpc_bridge_node` are gone. They are at git tag **`mpc-final`**; see `logbook/2026-09-01-mpc-chain-removed.md`. `motor_guard.py` survives as a parked fallback with neither feeder nor consumer.
 
     The live leg path is `trajectory_node` → ZMQ :5557 → `teensy_bridge_node` → the can-bridge Teensy, which does the 500 Hz interpolation. **Leg-path safety authority is the Teensy-side `MAX_DEVIATION` guard**, plus the bridge's arming contract (`ros_ws/src/jugglebot/jugglebot/ARMING_CONTRACT.md`). Nothing on the Jetson sits in that safety loop.
 
-    Read this page as a record of the parked MPC path, which the MPC revival restores — not as a description of current behaviour. A rewrite against the MVP topology is owed; the same caveat applies to [Motor Guard](control_loop.md) and to the architecture/integration/operations pages in this section.
+    Read this page as the historical record of the removed MPC path — not as a description of current behaviour. A rewrite against the MVP topology is owed; the same caveat applies to [Motor Guard](control_loop.md) and to the architecture/integration/operations pages in this section.
 
 This page describes the defense-in-depth safety system that prevents the Stewart platform from making dangerous movements — sudden slams, overspeed, or commands issued without current motor feedback.
 

@@ -7,6 +7,13 @@
 # For the full narrative (symptoms, discussion, fix, outcome), see the
 # linked logbook entry.  This file stays lean and machine-focused.
 #
+# HISTORICAL SIGNATURES (2026-09-01): the MPC chain was removed (see
+# logbook/2026-09-01-mpc-chain-removed.md; git tag `mpc-final`).  MPC_* entries
+# and any `reference:` naming controller/{mpc,params,runner,hardware_plant}.py
+# are RETAINED DELIBERATELY -- this is a catalogue for reading ARCHIVED
+# telemetry, and the recorded mpc_*.csv logs did not change when their producer
+# went away.  Those references resolve at the tag, not on this branch.
+#
 # Fields:
 #   id:            unique identifier (UPPER_SNAKE_CASE)
 #   name:          short human-readable name

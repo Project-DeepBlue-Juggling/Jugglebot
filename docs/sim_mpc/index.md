@@ -1,5 +1,20 @@
 # Simulation MPC Overview
 
+!!! danger "REMOVED 2026-09-01 — this section documents deleted code"
+    The MPC chain was **deleted outright** on 2026-09-01: `controller/mpc.py`,
+    `params.py`, `runner.py`, `hardware_plant.py`, `generate_solver.py`,
+    `run_mpc.py`, the ROS2 `motion_bridge_node` / `mpc_bridge_node`, and
+    `sim/main.py`'s `--mpc` and `--hardware` modes. It had been operationally
+    dormant since 2026-08-01, and the **unified 7-DoF planner**
+    (`plans/active/unified-7dof-planner.md`) is the lower-rate replanner that
+    superseded it.
+
+    These nine pages are **retained deliberately as the historical record** —
+    they are the fullest prose description of the design, and every code
+    reference in them resolves at git tag **`mpc-final`**. Nothing here
+    describes code you can run today. See
+    `logbook/2026-09-01-mpc-chain-removed.md`.
+
 !!! info "Scope: MuJoCo Simulation Only"
     This MPC controller runs in the **offline MuJoCo simulation** (`sim/`). It replaces the production motion planner's quintic trajectory + 500 Hz IK pipeline with a CasADi nonlinear MPC that jointly optimizes platform pose and leg commands. The production motion planner (documented in [Motion Planner](../motion_planner/index.md)) remains unchanged — this is a parallel development path for exploring optimal control strategies before porting to hardware.
 

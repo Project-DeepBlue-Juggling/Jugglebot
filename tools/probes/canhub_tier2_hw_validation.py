@@ -6,24 +6,38 @@ Companion to ``logbook/2026-07-02-canhub-hardening-tier2.md`` ("Hardware
 validation checklist"). It walks an operator through the 7 powered checks one at
 a time: it prints WHAT the test validates and WHAT PASS looks like, waits for the
 operator to press Enter, tells the operator exactly when to perform any external
-action (induce a fault, restart run_mpc, unplug CAN3, ...), watches the Teensy's
-live serial diagnostics to help judge the result, and records a PASS/FAIL/SKIP
-verdict + a serial snapshot per check into a timestamped Markdown report under
-``temp/logs/``.
+action (induce a fault, restart the setpoint stream, unplug CAN3, ...), watches
+the Teensy's live serial diagnostics to help judge the result, and records a
+PASS/FAIL/SKIP verdict + a serial snapshot per check into a timestamped Markdown
+report under ``temp/logs/``.
+
+STALE PROCEDURE — READ BEFORE FLYING (added 2026-09-01): this probe was written
+against the MPC stack, where ``run_mpc.py`` was the setpoint source. The MPC
+chain was removed on 2026-09-01 (git tag ``mpc-final``;
+``logbook/2026-09-01-mpc-chain-removed.md``) and the setpoint source is now
+``trajectory_node`` inside ``jugglebot_launch.py``. The prose below has been
+swept to name the launch / ``trajectory_node``, but **Part B of check 2 — the
+stream-source-restart seq-guard discriminator — predates the removal**: on the
+modern stack, restart the STREAM SOURCE only (kill and restart
+``trajectory_node``), NOT the whole launch, or you also restart
+``teensy_bridge_node`` and confound the seq-guard test with a link
+re-establishment. Re-derive that procedure against the current stack before the
+probe is next flown; until then treat check 2 Part B as historical-at
+``mpc-final``.
 
 WHY SERIAL (not the UDP link): the checklist's streaming checks (2/3/4) assume
-run_mpc drives setpoints through the production ROS2 stack, and the
+the launch drives setpoints through the production ROS2 stack, and the
 ``teensy_bridge_node`` OWNS the Jetson<->Teensy UDP link (binds ports 5005/5006).
 A second UDP peer cannot coexist. The Teensy's USB-serial debug console
 (``/dev/ttyACM0`` @ 115200) emits a 1 Hz block — ``[guard]`` / ``[diag]`` /
 ``[axes]`` / ``[canhealth]`` / ``[bb]`` — that is READ-ONLY, always-on, and
-available in EVERY configuration (bridge up or down, run_mpc streaming or not).
+available in EVERY configuration (bridge up or down, setpoints streaming or not).
 It exposes guard_mode, the interp output-gate, fault_state, drain_cap, and
 per-axis ODrive state directly — nearly every checklist observable.
 
 WHAT THIS SCRIPT DOES NOT DO: it never commands robot motion and never owns the
 UDP link. Per project convention the OPERATOR runs the robot-actuating commands
-(homing / activate / run_mpc / clear_errors / fault induction); this script preps
+(homing / activate / the launch / clear_errors / fault induction); this script preps
 the exact steps, observes read-only, and records. The single active thing it can
 do is fire a UDP junk-flood at the Teensy's ports for check 3 — sendto() only, no
 port binding, so it does not contend with the live bridge — and only after an
@@ -399,7 +413,7 @@ class Runner:
         self.operator_action([
             "Arm the robot and start the MPC setpoint stream so the Teensy is ENABLED with",
             "fresh setpoints, e.g. (your normal arming procedure):",
-            f"  {C.hd}python run_mpc.py --pose 0,0,170,0,0,0 --duration 180{C.rst}",
+            f"  {C.hd}ros2 launch jugglebot jugglebot_launch.py{C.rst}  (then command a move)",
             "I'll wait until [guard] shows mpc_active=1 and guard_mode=1:ENABLED.",
         ])
         self.wait_until(lambda s: s.get("mpc_active") == 1 and s.get("guard_mode") == 1,
@@ -408,7 +422,7 @@ class Runner:
         print()
         self.operator_action([
             "INDUCE a guard E-STOP. Either:",
-            "  - stop the setpoint stream for > 0.25 s (Ctrl-C run_mpc) → MPC_STALE, or",
+            "  - stop the setpoint stream for > 0.25 s (Ctrl-C trajectory_node) → MPC_STALE, or",
             "  - briefly exceed the overspeed limit → MOTOR_OVERSPEED.",
         ])
         self.enter("Press Enter once you've induced it")
@@ -448,23 +462,27 @@ class Runner:
         return self.verdict(1, "Guard E-STOP latch", sug)
 
     def check2(self):
-        self.head("CHECK 2 — Monotonic clock / clock-step + run_mpc-restart seq-guard")
+        self.head("CHECK 2 — Monotonic clock / clock-step + stream-restart seq-guard")
         print("Validates: (A) a wall-clock ANCHOR STEP must not perturb control (all interval")
-        print("arithmetic is on micros64() now); (B) restarting run_mpc must be accepted")
-        print("IMMEDIATELY — pre-fix, a persisted seq vs a host-reset stream bricked control")
-        print("for minutes after ~half of restarts (phantom MPC_STALE E-STOP).")
+        print("arithmetic is on micros64() now); (B) restarting the setpoint stream must be")
+        print("accepted IMMEDIATELY — pre-fix, a persisted seq vs a host-reset stream bricked")
+        print("control for minutes after ~half of restarts (phantom MPC_STALE E-STOP).")
+        print()
+        print("NOTE (2026-09-01): Part B's procedure predates the MPC removal (tag mpc-final)")
+        print("and is NOT yet re-derived for the trajectory_node stack — see the module header.")
         print()
         self.expect([
             "(A) across the bridge (re)connect, fault stays 0:NONE — no spurious MPC_STALE",
             "    /LINK_LOST, no deferred stow armed, and u0 / leg positions do not jump",
-            "(B) after a run_mpc restart, sp_age_ms drops back small and guard_mode returns",
-            "    to 1:ENABLED within ~2 s, fault stays 0:NONE (NOT stuck at MPC_STALE/ESTOP)",
+            "(B) after a stream-source restart, sp_age_ms drops back small and guard_mode",
+            "    returns to 1:ENABLED within ~2 s, fault stays 0:NONE (NOT stuck at",
+            "    MPC_STALE/ESTOP)",
         ])
         self.enter("Press Enter to begin check 2")
 
         print(f"{C.bold}Part A — wall-clock anchor step:{C.rst}")
         self.operator_action([
-            "With run_mpc streaming, restart the bridge/time-anchor: bring the",
+            "With setpoints streaming, restart the bridge/time-anchor: bring the",
             "teensy_bridge_node DOWN then UP (this forces a fresh wall-clock anchor step),",
             "e.g. Ctrl-C the bridge and relaunch:",
             f"  {C.hd}ros2 launch jugglebot teensy_bridge_launch.py{C.rst}",
@@ -475,17 +493,22 @@ class Runner:
         a_ok = sA.get("fault") == 0
 
         print()
-        print(f"{C.bold}Part B — run_mpc restart (seq-guard gap-reset):{C.rst}")
+        print(f"{C.bold}Part B — setpoint-stream restart (seq-guard gap-reset):{C.rst}")
         self.operator_action([
-            "Restart run_mpc: Ctrl-C it, then relaunch the SAME command:",
-            f"  {C.hd}python run_mpc.py --pose 0,0,170,0,0,0 --duration 180{C.rst}",
+            "Restart the SETPOINT SOURCE ONLY — on the modern stack that is trajectory_node,",
+            "not the whole launch (relaunching everything also restarts teensy_bridge_node",
+            "and confounds this test with a link re-establishment):",
+            f"  {C.hd}ros2 lifecycle/kill + restart jugglebot trajectory_node{C.rst}  (then command a move)",
+            "PROCEDURE NOT RE-DERIVED since the 2026-09-01 MPC removal (tag mpc-final) — the",
+            "original step was 'Ctrl-C run_mpc, relaunch jugglebot_launch.py'. Re-derive the",
+            "exact restart command against the current stack before trusting this result.",
             "The stream must be accepted immediately (no minutes-long MPC_STALE brick).",
         ])
-        self.enter("Press Enter once run_mpc has restarted")
+        self.enter("Press Enter once the setpoint stream has restarted")
         self.wait_until(lambda s: s.get("sp_age_ms", 9999) < 500 and s.get("fault") == 0,
                         "sp_age_ms small again and fault=0:NONE (stream re-accepted)",
                         timeout=30.0)
-        sB = self.snapshot_after("after run_mpc restart")
+        sB = self.snapshot_after("after setpoint-stream restart")
         b_ok = sB.get("fault") == 0 and sB.get("sp_age_ms", 9999) < 500
 
         sug = None
@@ -515,14 +538,15 @@ class Runner:
         self.enter("Press Enter to begin check 3")
 
         self.operator_action([
-            "Have run_mpc streaming at 40 Hz (mpc_active=1) so the flood competes with real",
+            "Have the launch streaming setpoints at 40 Hz (mpc_active=1) so the flood competes",
+            "with real",
             "traffic. In a SEPARATE terminal you can watch the interp counters + RTT:",
             f"  {C.hd}ros2 topic echo /teensy/profile{C.rst}",
             "  (KeyValues interp_deadline_misses / interp_max_jitter_us should stay 0;",
             "   udp_rtt_us stays bounded)",
         ])
         self.wait_until(lambda s: s.get("mpc_active") == 1,
-                        "mpc_active=1 (run_mpc streaming)")
+                        "mpc_active=1 (setpoints streaming from trajectory_node)")
 
         before = self.mon.snapshot() if not self.no_serial else {}
         dc0 = before.get("drain_cap")
@@ -584,7 +608,7 @@ class Runner:
         self.enter("Press Enter to begin check 4")
 
         self.operator_action([
-            "With mpc_active=1 (run_mpc streaming), issue a cold-start command and note the",
+            "With mpc_active=1 (setpoints streaming), issue a cold-start command and note the",
             "service RESULT — it must be REJECTED:",
             f"  {C.hd}ros2 service call /home std_srvs/srv/Trigger{C.rst}   (or /activate, /deactivate)",
             "Confirm from the service response that it was rejected, and that the legs did",

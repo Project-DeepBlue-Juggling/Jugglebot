@@ -38,9 +38,10 @@ assertion here would still pass while the post-catch return parked at plan-frame
 `rx = 0`. Hence: pose-bearing arguments, **plural**, per entry.
 
 The manifest also spans more than one module, and the module set is discovered
-rather than hard-coded: `follower.py` owns two planner entries and
-`mpc_bridge_node.py` owns a `levelling` call site, so an AST pass over
-`trajectory_node.py` alone could never equal the thing it freezes.
+rather than hard-coded: `follower.py` owns two planner entries, so an AST pass
+over `trajectory_node.py` alone could never equal the thing it freezes.
+(`mpc_bridge_node.py` owned three entries until 2026-09-01, when it was removed
+with the MPC chain.)
 
 Never key on line numbers: a line-numbered manifest becomes a maintenance tax and
 gets deleted the first time an unrelated edit shifts the file — which would
@@ -252,17 +253,6 @@ _PLANNER_MANIFEST = (
 # callback compiles, passes every behavioural test that uses ONE pose, and
 # applies the home node's residual to the whole workspace.
 _LEVELLING_MANIFEST = (
-    ('mpc_bridge_node.py', 'MpcBridgeNode.__init__',
-     'levelling.identity_correction', 'store'),
-    ('mpc_bridge_node.py', 'MpcBridgeNode._on_gravity_offset',
-     'levelling.correction_from_offset', 'store'),
-    # B1 applies a STORED correction with no `build` beside it — that is the
-    # dormant MPC bridge's revival obligation, written down in
-    # `ros_ws/docs/levelling_frame.md` § "Revival obligations", and it is why
-    # `test_every_apply_has_a_build_in_the_same_scope` excludes B1 by name
-    # rather than by accident.
-    ('mpc_bridge_node.py', 'MpcBridgeNode._on_platform_pose',
-     'levelling.correct_pose', 'apply:B1'),
     ('trajectory_node.py', 'TrajectoryNode.__init__',
      'levelling.identity_correction', 'store'),
     ('trajectory_node.py', 'TrajectoryNode._catch_target_from_msg',
@@ -597,16 +587,15 @@ def test_every_apply_has_a_build_in_the_same_scope():
     map while the other five honour it. That is "two meanings of level in one
     node" again, one refinement layer up.
 
-    `mpc_bridge_node`'s B1 is the single declared exception and stays one until
-    the MPC chain is revived — `ros_ws/docs/levelling_frame.md` § "Revival
-    obligations" is the written half of that debt. Adding a second exception here
-    means adding a row to that table too.
+    There is no declared exception any more: `mpc_bridge_node`'s B1 was the
+    only one, and it went with the MPC chain on 2026-09-01. Adding one back
+    means adding a row to `ros_ws/docs/levelling_frame.md` too.
     """
     builds = {(f, where) for f, where, callee, _k in _LEVELLING_MANIFEST
               if callee in _BUILD_FUNCS}
     unpaired = sorted(
         (f, where, kind) for f, where, callee, kind in _LEVELLING_MANIFEST
-        if callee in (_APPLY_FUNCS | _EGRESS_FUNCS) and kind != 'apply:B1'
+        if callee in (_APPLY_FUNCS | _EGRESS_FUNCS)
         and (f, where) not in builds)
     assert unpaired == [], (
         "an ingest applies the levelling correction without building it for "
@@ -1262,48 +1251,6 @@ def test_in_flight_plan_keeps_its_frame_when_a_new_offset_arrives():
     assert np.allclose(np.asarray(node._active_plan.final_pose)[3:6],
                        levelling.apply_gravity_correction(np.zeros(3), R_new),
                        atol=1e-12)
-
-
-def test_B1_mpc_bridge_forwards_a_corrected_msgpack_safe_target():
-    """`mpc_bridge_node`'s only pose surface, after its duplicate copy was deleted.
-
-    Constructed WITHOUT `__init__` deliberately: `MpcBridgeIPC.__init__` binds a
-    ZMQ PUB on :5558, and a test that binds a production socket can collide with
-    a live process on the same machine. Only the ingest path is under test here.
-
-    The `float()` conversion is asserted because the payload is msgpack-encoded
-    on the wire and `correct_pose` returns a numpy array — a numpy scalar would
-    raise at serialisation time, in the bridge, at runtime, with no test between
-    here and the robot (this node has no other coverage and is currently dropped
-    from the launch).
-    """
-    from jugglebot.mpc_bridge_node import MpcBridgeNode
-    from geometry_msgs.msg import PoseStamped
-
-    sent = []
-
-    class _FakeIPC:
-        def send_target(self, msg):
-            sent.append(msg)
-
-    node = MpcBridgeNode.__new__(MpcBridgeNode)
-    node._current_mode = 'SPACEMOUSE'
-    node._ipc = _FakeIPC()
-    node._gravity_correction = levelling.correction_from_offset(*_SESSION_OFFSET)
-
-    msg = PlatformPoseCommand()
-    msg.pose_stamped = PoseStamped()
-    msg.pose_stamped.pose = Pose(position=Point(x=3.0, y=-4.0, z=170.0),
-                                 orientation=Quaternion())
-    msg.publisher = 'SPACEMOUSE'
-    node._on_platform_pose(msg)
-
-    assert len(sent) == 1
-    pose = sent[0]['target_pose']
-    assert all(type(v) is float for v in pose), \
-        "target_pose must be plain floats — msgpack cannot encode numpy scalars"
-    assert np.allclose(pose[:3], [3.0, -4.0, 170.0], atol=1e-12)
-    assert np.allclose(pose[3:6], _expected_rotvec(), atol=1e-12)
 
 
 def test_correction_never_moves_the_catch_reach_envelope():

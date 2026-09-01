@@ -8,8 +8,9 @@
  * Shown only when the control mode is 'GUI'; hidden otherwise.
  *
  * Pose commands are published to platform_pose_topic with publisher='GUI'.
- * The motion_bridge_node forwards these to the control loop's stream
- * smoother, which generates C2-continuous quintic profiles.
+ * (Historical: motion_bridge_node forwarded these to the control loop's stream
+ * smoother for C2-continuous quintic profiles; that node was removed
+ * 2026-09-01, tag mpc-final. trajectory_node is the live consumer.)
  */
 
 import * as ros from './ros-bridge.js';

@@ -1115,8 +1115,8 @@ _create_mock_module('rclpy.action', {
 # Together these make tests/ros/ importable without a ROS2 installation
 # (this file's opening docstring claims exactly that, and until 2026-08-02
 # the claim was false for the four modules importing these two packages:
-# teensy_bridge_node, trajectory_node, orchestrator_node, motion_bridge_node,
-# plus ball_butler_node).
+# teensy_bridge_node, trajectory_node, orchestrator_node, motion_bridge_node
+# (removed 2026-09-01 with the MPC chain), plus ball_butler_node).
 
 try:  # pragma: no cover - exercised on the Jetson, where the real package wins
     import diagnostic_msgs.msg  # noqa: F401

@@ -84,13 +84,12 @@ from jugglebot.motion.ipc import TOPIC_MPC_TARGET, TOPIC_MPC_MODE
 
 
 
-# NIGHTLY TIER — the MPC is operationally dormant (plans/parked/refactor-2026-07.md
-# Phase 3: jugglebot_launch.py no longer starts motor_guard/motion_bridge_node; the
-# leg path is trajectory_node -> teensy_bridge_node -> the Teensy MAX_DEVIATION
-# guard). The code is parked, not deleted, so this battery is parked with it: it
-# runs nightly via tools/nightly_suite.sh and on `./run_tests.sh --full`, which is
-# mandatory before any hardware sitting. Promotion back to per-commit is step 4 of
-# the MPC revival.
+# NIGHTLY TIER — `ZmqTargetSource` has had no live producer since the MPC chain
+# was removed (2026-09-01); the leg path is trajectory_node ->
+# teensy_bridge_node -> the Teensy MAX_DEVIATION guard. The ZMQ/msgpack target
+# ingest is kept and still covered here, but off the per-commit gate: it runs
+# nightly via tools/nightly_suite.sh and on `./run_tests.sh --full`, which is
+# mandatory before any hardware sitting.
 pytestmark = pytest.mark.nightly
 
 
@@ -662,62 +661,3 @@ class TestW11TerminalHold:
         np.testing.assert_allclose(
             tc_late.ref_events[0].twist, np.zeros(6), atol=1e-6,
         )
-
-
-class TestOvershootSaturationRegression:
-    """Reproduce the Move-5 initial condition and verify Bundle A's invariant.
-
-    Move 5 (CSV mpc_20260418_015112) started from (8.57, 34.0, 169.3) with
-    residual upward motion carried over from Move 4; a new target of
-    (0, 0, 220) arriving in that state produced 50 consecutive ipopt_iter==0
-    steps because the solver was asked to unwind a 20 mm lead against an
-    accelerating ref within 22 ms.
-
-    The Bundle A fix anchors the ref at the live plant pose+twist at the
-    moment the target arrives, so ref[0] aligns with the plant and the NLP
-    is never given the "unwind vs accelerating ref" geometry.
-    """
-
-    def test_ref_aligns_with_plant_at_first_solve(self):
-        from sim.plant.mujoco_plant import MuJoCoPlant
-        from controller.mpc import MPCController
-        from controller.params import MPCParams
-
-        plant = MuJoCoPlant()
-        plant.reset(pose_6dof=np.array([8.57, 34.0, -0.7, 0, 0, 0]))
-        # Let MuJoCo settle the ctrl into qpos so get_state() is consistent
-        plant.step(0.025)
-        state = plant.get_state()
-
-        # Seed a residual-motion plant state by spoofing platform_twist —
-        # the geometry is what matters for this regression test, not the
-        # physics of how the twist was acquired.
-        state.platform_twist = np.array([0.0, 0.0, 80.0, 0.0, 0.0, 0.0])
-
-        with patch('controller.zmq_target.MpcTargetIPC', FakeIPC):
-            from controller.zmq_target import ZmqTargetSource
-            src = ZmqTargetSource(default_z_mm=170.0, v_max_mmps=140.0)
-            src._ipc.enqueue(TOPIC_MPC_MODE, {'mode': 'gui'})
-            src._ipc.enqueue(TOPIC_MPC_TARGET, {
-                'target_pose': [0.0, 0.0, 50.0, 0.0, 0.0, 0.0],
-                'source': 'gui',
-            })
-            tc = src.update(sim_time=state.time, state=state)
-
-        # Build a one-shot MPC and inspect ref_traj[0] — it must match the
-        # plant pose (the Bundle A invariant).  Without the fix, ref_events
-        # would be None and ref_traj[0] would be the target pose — a 50 mm
-        # step away from the plant.
-        mpc = MPCController.from_plant(
-            MPCParams(max_cpu_time=2.0, max_iter=500, prime_solver=False),
-            plant,
-        )
-        ref, twist, _ = mpc._build_reference(
-            state, tc.target_pose, ref_events=tc.ref_events, t_now=state.time,
-        )
-        plant_pose = np.concatenate([state.platform_pos_mm, state.platform_rot])
-
-        # ref[0] is anchored at plant pose (synthetic warm-up event)
-        np.testing.assert_allclose(ref[0], plant_pose, atol=1e-6)
-        # ref_twist[0] carries the (clamped) plant twist, not zero
-        np.testing.assert_allclose(twist[0, :3], [0.0, 0.0, 80.0], atol=1e-6)

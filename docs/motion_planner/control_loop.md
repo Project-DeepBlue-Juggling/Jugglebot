@@ -1,7 +1,16 @@
 # Motor Guard
 
+!!! note "Removed 2026-09-01"
+    The MPC chain was **deleted** on 2026-09-01:
+    `controller/{mpc,params,runner,hardware_plant,generate_solver}.py`, `run_mpc.py`,
+    the ROS2 `motion_bridge_node` / `mpc_bridge_node`, and `sim/main.py`'s `--mpc`
+    and `--hardware` modes. `motor_guard.py` itself **survives** as a parked fallback,
+    but the MPC feeder and the `motion_bridge_node` consumer shown below are gone —
+    those references are historical and resolve only at git tag **`mpc-final`**. See
+    `logbook/2026-09-01-mpc-chain-removed.md`.
+
 !!! danger "DORMANT — the motor guard is not launched (banner added 2026-08-01)"
-    `jugglebot_launch.py` stopped starting the `motor_guard` process on 2026-08-01 (MPC dormancy — `plans/parked/refactor-2026-07.md` Phase 3). In the MVP topology the 500 Hz interpolation happens on the can-bridge Teensy, fed by `trajectory_node` → ZMQ :5557 → `teensy_bridge_node`, and the leg-path safety authority is the Teensy-side `MAX_DEVIATION` guard — not this process. The code, its entry point and its tests are all parked, not deleted; revival is re-adding the launch entry. See [Motor Command Safety](safety.md) for the same caveat.
+    `jugglebot_launch.py` stopped starting the `motor_guard` process on 2026-08-01 (MPC dormancy — `plans/parked/refactor-2026-07.md` Phase 3). In the MVP topology the 500 Hz interpolation happens on the can-bridge Teensy, fed by `trajectory_node` → ZMQ :5557 → `teensy_bridge_node`, and the leg-path safety authority is the Teensy-side `MAX_DEVIATION` guard — not this process. The code, its entry point and its tests are all parked, not deleted — but since the 2026-09-01 removal it has **neither feeder nor consumer**, so reviving it is no longer just re-adding the launch entry. See [Motor Command Safety](safety.md) for the same caveat.
 
 This page describes the 500 Hz motor guard process — what happens every 2 ms, how IPC messages are handled, and how the guard protects the hardware.
 
@@ -27,6 +36,8 @@ python -m jugglebot.motion.motor_guard --rate 500 --log-level INFO
 The motor guard sits between the MPC solver and the CAN hardware:
 
 ```
+(historical — the MPC and motion_bridge_node ends were removed 2026-09-01, tag mpc-final)
+
 MPC (50 Hz)
     → HardwarePlant.command()
     → ZMQ :5557
@@ -271,7 +282,7 @@ class MotorGuard:
 | `seconds_since_last_recv` | Heartbeat watchdog property |
 | `close()` | Clean shutdown |
 
-**BridgeIPC** (used by motion_bridge_node.py):
+**BridgeIPC** (was used by `motion_bridge_node.py`, removed 2026-09-01, tag `mpc-final`):
 
 | Method | Description |
 |---|---|

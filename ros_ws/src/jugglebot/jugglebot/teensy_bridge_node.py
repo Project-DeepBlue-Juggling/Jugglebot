@@ -1065,11 +1065,15 @@ class _MpcCommandSetpointSource:
     leaves the leg path; its :5556 output simply goes unconsumed.
 
     Subscribes to the ``mpccmd`` topic specifically (not ``b''``): :5557 also
-    carries the HardwarePlant fallback-enable message, which is not a setpoint.
+    carried the HardwarePlant fallback-enable message, which is not a setpoint
+    (HardwarePlant was removed 2026-09-01, tag mpc-final; the topic filter stays
+    because it is the correct thing to do regardless).
 
     Deliberately does NOT reuse ``jugglebot.motion.ipc.BridgeIPC`` (that BINDS the
-    command PUB on :5555, which ``motion_bridge_node`` already binds — two binds
-    on one address fail) and does NOT import ``ipc`` at module scope (``ipc``
+    command PUB on :5555, which ``motion_bridge_node`` used to bind — two binds
+    on one address fail; that node was removed 2026-09-01, tag mpc-final, but the
+    BindIPC reuse is still wrong for other reasons below) and does NOT import
+    ``ipc`` at module scope (``ipc``
     imports zmq/msgpack eagerly; the address/topic literals below mirror
     ``ipc.MPC_COMMAND_ADDR`` / ``ipc.TOPIC_MPC_CMD``). Mirrors BridgeIPC's SUB
     tuning (RCVHWM=2 + drain-to-latest) and the msgpack wire format
@@ -1581,11 +1585,12 @@ class TeensyBridgeNode(Node):
         self.udp_diag_pub = self.create_publisher(
             DiagnosticStatus, 'udp_diag', 10)
         # GUI observability: the last ACCEPTED leg setpoint u0 (6 floats, motor
-        # revs), source-agnostic — trajectory_node and run_mpc.py both feed the
-        # :5557 funnel this echoes. No ROS topic otherwise carries commanded leg
-        # positions on the Teensy-side path (the GUI's old datasource,
-        # leg_lengths_topic, only publishes while the dormant run_mpc/motor_guard
-        # stack streams). See _publish_leg_setpoint_echo for the freshness gate.
+        # revs), source-agnostic — trajectory_node feeds the :5557 funnel this
+        # echoes (run_mpc.py did too until it was removed 2026-09-01, tag
+        # mpc-final). No ROS topic otherwise carries commanded leg positions on
+        # the Teensy-side path (the GUI's old datasource, leg_lengths_topic,
+        # only published while the now-removed run_mpc/motor_guard stack
+        # streamed). See _publish_leg_setpoint_echo for the freshness gate.
         self.leg_setpoint_echo_pub = self.create_publisher(
             Float64MultiArray, 'leg_setpoint_echo', 10)
 
@@ -6586,12 +6591,14 @@ class TeensyBridgeNode(Node):
         ACTIVATE folds a _run_configure AFTER the move (parity requirement per the
         can_node<->Teensy parity audit): _run_activate ends the legs in TRAP_TRAJ
         holding the active pose;
-        _run_configure switches them to POSITION/PASSTHROUGH so run_mpc.py's 40 Hz
-        interp is the sole setpoint source (can_node ended PASSTHROUGH; the bridge's
-        _run_activate alone ends TRAP_TRAJ). Order is activate-then-configure —
+        _run_configure switches them to POSITION/PASSTHROUGH so the 40 Hz setpoint
+        stream is the sole setpoint source (can_node ended PASSTHROUGH; the bridge's
+        _run_activate alone ends TRAP_TRAJ). That stream is trajectory_node's — it
+        was run_mpc.py's until the MPC chain was removed 2026-09-01, tag mpc-final.
+        Order is activate-then-configure —
         configure is safe post-move (legs CLOSED_LOOP holding pose, motion-free; see
         _run_configure). A configure failure fails the result (legs at pose but not
-        interp-ready is a real failure for run_mpc), mirroring _svc_home's fold. The
+        interp-ready is a real failure for the setpoint stream), mirroring _svc_home's fold. The
         configure scopes to activate_axes (the legs that moved; the hand is not part of
         ACTIVATE — it is rejected on axis 6)."""
         cmd = str(req.command)

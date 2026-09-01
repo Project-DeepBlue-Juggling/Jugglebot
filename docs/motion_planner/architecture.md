@@ -262,13 +262,15 @@ The Jacobian maps `[mm/s, mm/s, mm/s, rad/s, rad/s, rad/s]` to `[mm/s × 6]`, so
 | [workspace.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/workspace.py) | ~300 | Workspace limits |
 | [motor_commands.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/motor_commands.py) | ~85 | Cartesian → motor command mapping |
 
-### MPC Solver (top-level package)
+### MPC Solver (top-level package) — REMOVED 2026-09-01
+
+`controller/mpc.py` (MPCController, CasADi/IPOPT) and `controller/params.py`
+(MPCParams) were deleted with the MPC chain; they are at git tag `mpc-final`.
+See `logbook/2026-09-01-mpc-chain-removed.md`.
 
 | File | Lines | Purpose |
 |---|---|---|
-| [controller/mpc.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/controller/mpc.py) | — | MPCController class (CasADi/IPOPT) |
-| [controller/params.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/controller/params.py) | — | MPCParams tuning parameters |
-| [controller/target.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/controller/target.py) | — | TargetCommand + TargetSource protocol |
+| [controller/target.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/controller/target.py) | — | TargetCommand + TargetSource protocol (SURVIVES) |
 
 ### Archived (replaced by MPC)
 

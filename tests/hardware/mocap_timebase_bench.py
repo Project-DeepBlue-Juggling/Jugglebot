@@ -900,7 +900,7 @@ PREFLIGHT = """
       Keep recording uptime_ms anyway — it is the label that would expose a
       regression, and this measurement is about a clock.
   [ ] The bench leg is the SOLE wire authority. No ROS2 teensy_bridge_node, no
-      run_mpc.py, nothing else streaming heartbeats — mpc_active is a single
+      nothing else streaming heartbeats — mpc_active is a single
       firmware bool with no OR-ing of sources, so a second authority silently
       disarms this one mid-run (the script detects that and aborts loudly).
 
