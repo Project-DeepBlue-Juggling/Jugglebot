@@ -581,7 +581,8 @@ Python 3.8, and the sim phase gate passes on the production chain.
   `realize_tilted` at **exactly 0.0**.
 - **Phase 2 is cleared to start** (software-only: the v6 wire and the host
   7-channel path). Phases 1–2 are permitted while the plan is `proposed`;
-  **Phase 3 onward requires `active`**.
+  **Phase 3 onward requires `active`**. (Addendum, same day: the plan was
+  promoted to `active` on 2026-09-01, so the Phase 3+ status gate is met.)
 - **Four owner decisions are recorded below, and all four are RESOLVED**
   (owner, 2026-09-01) — none of them changes shipped behaviour.
 

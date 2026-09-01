@@ -1,9 +1,10 @@
 ---
 title: Unified whole-cycle 7-DoF motion planner (Scope B)
 created: 2026-08-29
-status: proposed   # 2026-08-29 — owner-commissioned (Scope B chosen over carry-only Scope A the same day);
-                   # promote to active when the Phase 0 probe results are recorded. The original MP-M2 gate
-                   # DISSOLVED later the same day: the owner halted toss-multi-catch-pose at the pre-M2
+status: active     # 2026-08-29 owner-commissioned (Scope B over carry-only Scope A the same day);
+                   # PROMOTED TO ACTIVE 2026-09-01 (owner) — the Phase 0 gate is satisfied: all four probe
+                   # results recorded incl. the bench A/B flown 2026-08-30; Phases 0-1 COMPLETE. The original
+                   # MP-M2 gate DISSOLVED 2026-08-29: the owner halted toss-multi-catch-pose at the pre-M2
                    # boundary (stop clean, no reverts) — see § 1 relationship table.
 owner: Harrison
 related_plan: toss-multi-catch-pose.md
@@ -265,9 +266,10 @@ mode; ball tracking, possession verdicts, `outcome_detail` discipline.
 | 5 | Hardware ladder: streamed hold → banked carry (ball seated) → planned catch → planned throw (low tier) → full cycles → two-pose constant beat | NOT STARTED | | High | Ball-smooth carry and the planned launch on hardware |
 | 6 | Exclusivity + close-out: Platform Teensy FW 4 stroke retirement, host RPC retirement, contract doc, ILC hand-off, docs | NOT STARTED | | Medium | Single-master end state |
 
-Phase 0 runs while this plan is `proposed` — its recorded results are the
-promotion gate (the MP-M2 gate dissolved 2026-08-29 with the MP halt).
-Phases 1–2 are software-only. Phase 3 onward requires `active`.
+Phase 0 ran while this plan was `proposed` — its recorded results were the
+promotion gate (the MP-M2 gate dissolved 2026-08-29 with the MP halt), and the
+gate was satisfied: **promoted to `active` 2026-09-01 (owner)**.
+Phases 1–2 are software-only. Phase 3 onward requires `active` — now met.
 
 ## 4. Implementation Phases (detailed)
 
@@ -375,7 +377,7 @@ four decisions with the (date, command, result) triples.
 
 **Phase 1's dependencies (decisions 1 and 2) are satisfied — Phase 1 is cleared
 to start.** Probe 3's bench numbers are now recorded, so the promotion gate
-(`proposed` → `active`) has its evidence and awaits only the owner's flip;
+(`proposed` → `active`) had its evidence — flipped to active 2026-09-01 (owner);
 Phase 3 carries **no** `leg-bus-frame-drops` prerequisite. The canonical records
 are
 [`logbook/2026-08-30-unified-7dof-planner-phase0-probes.md`](../../logbook/2026-08-30-unified-7dof-planner-phase0-probes.md)
@@ -514,8 +516,8 @@ ever fits); (3) the smoothing accel cap yielding to the endpoint pins on short
 cycles (2/30 grid cases ~6 % over); (4) `v_match` deferred mirroring
 `toss_gate` (uniform 0.316 = 1 − `catch_slider_vel_ratio`, by design).
 
-**Phase 2 is cleared to start (software-only).** Phases 1–2 are permitted while
-this plan is `proposed`; **Phase 3+ requires `active`.**
+**Phase 2 is cleared to start (software-only).** The plan was **promoted to
+`active` on 2026-09-01** (owner), so the Phase 3+ status gate is met.
 
 ### Phase 2: Wire v6 + host 7-channel path — NOT STARTED
 
