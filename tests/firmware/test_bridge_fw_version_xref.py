@@ -133,6 +133,18 @@ def test_the_bump_history_records_what_this_version_carries():
     # edit drops this phrase, the operator loses the one written warning that
     # BRIDGE_FW_CHECK — not link health — is the check that matters here.
     assert 'NO WIRE CHANGE' in history, history
+    # FW 17 — the unified-7dof hand lane.  The substance an operator needs is
+    # the INVERSE of the 9→16 warnings: this bump is wire-INCOMPATIBLE (UDP
+    # PROTOCOL_VERSION 5→6), so the failure mode of a non-lockstep flash is a
+    # totally dark link, not a silently-missing behaviour — and the recovery is
+    # named (reflash FW 16 + the pre-v6 host checkout).  The hand-mastery latch
+    # and the hand's own guard constants are what the flash actually carries.
+    assert '16→17' in history or '16->17' in history, history
+    assert 'PROTOCOL_VERSION 5→6' in history or 'PROTOCOL_VERSION 5->6' in history, history
+    assert 'LINK DARKNESS' in history, history
+    assert 'hand_source' in history, history
+    assert 'MAX_DEVIATION_HAND_REV' in history, history
+    assert 'MAX_LEAD_HAND_REV' in history, history
 
 
 def test_the_version_this_release_pins_is_actually_uplinked():

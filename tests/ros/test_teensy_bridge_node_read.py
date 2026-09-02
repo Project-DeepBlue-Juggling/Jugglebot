@@ -1157,3 +1157,30 @@ def test_link_status_surfaces_firmware_arm_took_bit(bridge):
     kv = {v.key: v.value for v in node.link_status_pub.published[-1].values}
     assert kv['teensy_mpc_active'] == '1'   # firmware says armed
     assert kv['mpc_active'] == '0'          # host disarmed — the split is visible
+
+
+def test_link_status_surfaces_hand_source_latch(bridge):
+    """FW 17 — HeartbeatT2J flags bit 6 (HAND_SOURCE_STREAMED) surfaces as the
+    'hand_source' row. LEGACY_STROKE with the bit clear is also what a pre-17
+    flash reads as, so the row stays honest against an unflashed board."""
+    teensy, node = bridge
+    hb = HeartbeatT2J(t_teensy_us=1, link_state=int(LinkState.UP),
+                      bus1_health=int(BusHealth.OK), bus2_health=int(BusHealth.OK),
+                      fault_state=int(FaultState.NONE),
+                      flags=0x1, uptime_ms=1)              # bit 6 clear → LEGACY
+    teensy.send_to_jetson(int(MsgType.HEARTBEAT_T2J), hb.pack())
+    assert _wait_until(lambda: node._latest_heartbeat is not None)
+    node._publish_link_status()
+    kv = {v.key: v.value for v in node.link_status_pub.published[-1].values}
+    assert kv['hand_source'] == 'LEGACY_STROKE'
+
+    hb2 = HeartbeatT2J(t_teensy_us=2, link_state=int(LinkState.UP),
+                       bus1_health=int(BusHealth.OK), bus2_health=int(BusHealth.OK),
+                       fault_state=int(FaultState.NONE),
+                       flags=0x1 | 0x40, uptime_ms=2)      # bit 6 → STREAMED
+    teensy.send_to_jetson(int(MsgType.HEARTBEAT_T2J), hb2.pack())
+    assert _wait_until(lambda: node._latest_heartbeat is not None
+                       and int(node._latest_heartbeat.flags) & 0x40)
+    node._publish_link_status()
+    kv = {v.key: v.value for v in node.link_status_pub.published[-1].values}
+    assert kv['hand_source'] == 'STREAMED'

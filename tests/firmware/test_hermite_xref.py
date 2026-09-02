@@ -135,6 +135,91 @@ def test_beta_pump_knots_match_motor_guard():
     assert g4._mpc_next_pos_rev is None and (sp4.flags & FLAG_HAS_U1) == 0
 
 
+def test_pump_hand_lane_rides_the_xref_knots_without_touching_the_guard():
+    """T-U9 (Phase 3): the v6 hand lane joins the xref chain WITHOUT modifying
+    motor_guard — the trust anchor. Two assertions carry it:
+
+    * hand keys present ⇒ the pump lands them at index 6 with HAS_HAND (and,
+      with the full v1 set, HAS_V1 + v1[6]) while the LEG lanes remain
+      byte-identical to the hand-less build of the same command — so the
+      motor_guard-validated leg knot derivation is provably undisturbed;
+    * motor_guard itself never sees the hand keys (its ``shape == (6,)``
+      contract is the Phase 2 critical detail): the guard's derivation from the
+      hand-bearing command equals its derivation from the hand-less one.
+
+    The 500 Hz reconstruction of these knots on the firmware side is pinned by
+    the native harness's identical-knots parity (test_leg_interp.cpp), which
+    transfers THIS chain's trust to the hand lane's ladder.
+    """
+    from unittest import mock
+    from jugglebot.motion.geometry import StewartGeometry
+    import jugglebot.motion.motor_guard as mg
+    from teensy_link.setpoint_pump import (
+        SetpointPump, FLAG_HAS_U1, FLAG_HAS_U2, FLAG_HAS_HAND, FLAG_HAS_V1,
+    )
+
+    geom = StewartGeometry()
+    mm = np.asarray(geom.mm_to_rev)
+    ext = np.array([100.0, 105.0, 110.0, 95.0, 120.0, 102.0])
+    nxt = ext + np.array([1.0, 1.2, 0.8, 1.5, 0.5, 1.1])
+    nxt2 = nxt + np.array([1.0, 1.2, 0.8, 1.5, 0.5, 1.1])
+    vel = (nxt - ext) / 0.025
+    vel_next = (nxt2 - nxt) / 0.025
+    pose = [0.0, 0.0, 170.0, 0.0, 0.0, 0.0]
+
+    base = {'type': 'mpc_cmd', 'ext_mm': ext, 'pose_6dof': pose,
+            'motor_rev': ext * mm, 'vel_mm_s': vel,
+            'cmd_next_mm': nxt, 'cmd_next2_mm': nxt2,
+            'vel_next_mm_s': vel_next,
+            'torque_Nm': np.zeros(6), 'acc_mm_s2': np.zeros(6), 'seq': 1}
+    hand = dict(base)
+    hand.update({'hand_rev': 9.9594, 'hand_vel_rps': -12.4,
+                 'hand_next_rev': 9.71, 'hand_next2_rev': 9.32,
+                 'hand_next_vel_rps': -9.8})
+
+    pump_a = SetpointPump(mm_to_rev=geom.mm_to_rev)
+    pump_b = SetpointPump(mm_to_rev=geom.mm_to_rev)
+    sp_a, ra_ = pump_a.build(base, t_origin_us=1)
+    sp_b, rb_ = pump_b.build(hand, t_origin_us=1)
+    assert ra_ is None and rb_ is None
+
+    # Leg lanes byte-identical with and without the hand keys.
+    assert sp_a.u0[:6] == sp_b.u0[:6]
+    assert sp_a.u1[:6] == sp_b.u1[:6]
+    assert sp_a.u2[:6] == sp_b.u2[:6]
+    assert sp_a.v0[:6] == sp_b.v0[:6]
+    assert sp_a.v1[:6] == sp_b.v1[:6]
+
+    # The hand lane landed at index 6, flagged, with the exact v1.
+    assert sp_b.flags == FLAG_HAS_U1 | FLAG_HAS_U2 | FLAG_HAS_HAND | FLAG_HAS_V1
+    assert sp_b.u0[6] == 9.9594     # the pump carries raw f64; f32 happens at pack()
+    assert sp_b.u1[6] == 9.71
+    assert sp_b.u2[6] == 9.32
+    assert sp_b.v0[6] == -12.4
+    assert sp_b.v1[6] == -9.8
+    assert (sp_a.flags & FLAG_HAS_HAND) == 0
+    assert sp_b.torque_ff[6] == 0.0        # the hand lane carries no torque FF
+
+    # motor_guard's 6-wide derivation is UNCHANGED by hand keys in the dict.
+    class _Clock:
+        t = 1.0
+        def perf_counter(self):  # noqa: D401
+            return self.t
+
+    def _guard_base(msg):
+        g = mg.MotorGuard(geom=geom, ipc=xref._DummyIPC())
+        g.mode = mg.GuardMode.ENABLED
+        with mock.patch.object(mg, "time", _Clock()):
+            g._on_mpc_command(msg)
+        return g
+
+    ga, gb = _guard_base(base), _guard_base(hand)
+    assert np.allclose(ga._mpc_base_pos_rev, gb._mpc_base_pos_rev, atol=0)
+    assert np.allclose(ga._mpc_next_pos_rev, gb._mpc_next_pos_rev, atol=0)
+    assert np.allclose(ga._mpc_next2_pos_rev, gb._mpc_next2_pos_rev, atol=0)
+    assert np.allclose(sp_b.u0[:6], gb._mpc_base_pos_rev, atol=1e-12)
+
+
 def _parse_float_array(header_text, name):
     m = re.search(rf"{name}\[\w+\]\s*=\s*\{{([^}}]*)\}}", header_text)
     assert m, f"{name} not found in canbridge_config.h"

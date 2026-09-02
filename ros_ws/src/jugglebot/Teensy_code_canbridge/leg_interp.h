@@ -18,13 +18,8 @@
 // =============================================================================
 
 #include <cstdint>
-// UNIFIED7_BENCH_BUILD gates the bench-only declarations at the bottom of this
-// header. It MUST be included here rather than left to the includer: an undefined
-// macro evaluates to 0 in `#if`, so a translation unit that reached this header
-// first would silently drop those declarations while leg_interp.cpp still defined
-// them — a link error at best, and an include-order-dependent build at worst.
-// (can_buses.h pulls the same header for BUS_PARTNER_STALENESS_US.)
-#include "canbridge_config.h"
+#include "canbridge_config.h"   // NUM_LEGS/NUM_AXES + the hand-lane guard constants
+                                // (can_buses.h pulls the same header for BUS_PARTNER_STALENESS_US)
 
 namespace CanBridge {
 
@@ -51,9 +46,10 @@ uint64_t interp_last_setpoint_us();
 // running is meaningless, not merely large.
 uint64_t interp_last_tick_us();
 
-// Latched interpolation base (= the incoming MPC command u0) for leg i, and
-// whether any setpoint has been latched — used by the fault machine's
-// max-deviation E-STOP (motor_guard.py:539-551, incoming-command vs encoder).
+// Latched interpolation base (= the incoming MPC command u0) for axis i
+// (legs 0-5 + the hand lane at 6), and whether any setpoint has been latched —
+// used by the fault machine's max-deviation E-STOP (motor_guard.py:539-551,
+// incoming-command vs encoder) and the [guard] diag line.
 float interp_base_pos(uint8_t i);
 bool  interp_have_latched();
 
@@ -85,9 +81,10 @@ uint32_t interp_tick_count();
 uint32_t interp_recover_slew_ticks();
 uint32_t interp_extrap_ticks();
 
-// Per-leg lead-clamp-engaged bitmask from the most recent computed 500 Hz tick
-// (bit i = leg i). Diagnostic telemetry (surfaced on HeartbeatT2J) for the
-// 2026-07-10 stutter/lead diagnosis.
+// Per-axis lead-clamp-engaged bitmask from the most recent computed 500 Hz tick
+// (bits 0-5 = legs, bit 6 = the hand lane since FW 17). Diagnostic telemetry
+// (surfaced on HeartbeatT2J) for the 2026-07-10 stutter/lead diagnosis and the
+// FW 17 hand lead-duty read.
 uint8_t  interp_lead_clamp_mask();
 
 // Per-leg torque_ff-ingest-clamp bitmask from the most recent ACCEPTED setpoint
@@ -106,42 +103,72 @@ void interp_end_stow();      // stop the descent (back to MPC ladder / hold)
 bool interp_stow_active();
 bool interp_stow_complete();  // true once all legs reached the off pose
 
-#if UNIFIED7_BENCH_BUILD
-// ── BENCH ONLY — 7th-frame bus-headroom probe (unified-7dof Phase 0 probe 3) ──
-// Compiled out of every production image (canbridge_config.h defaults the flag to
-// 0). See that header's UNIFIED7_BENCH_BUILD block for what the probe measures and
-// why it exists; the sitting runbook is
-// tests/hardware/session_unified7_bus_headroom.md.
-//
-// WHY THE SERIAL CONSOLE AND NOT AN ADDITIVE RPC / MsgType. Three reasons, in
-// descending weight. (1) The measurement channel is ALREADY the console: the
-// per-class [cantx] deferral census (Teensy_code_canbridge.ino), [canhealth]'s
-// defer=/txq= pair and the [handphase] stamp are all console-only, so the sitting
-// holds a `pio device monitor` open regardless — the toggle costs the operator no
-// new plumbing and no new host process to fight over the single-owner UDP link.
-// (2) An additive RpcMethod/MsgType is generated from config/generate_udp_protocol.py
-// and lands in the COMMITTED generated headers on BOTH ends, so a bench-only, one
-// sitting, never-flashed-to-production experiment would leave a permanent entry in
-// the production wire spec and in teensy_link — the opposite of "the bench image
-// leaves no trace". (3) The console seam already exists and has a settled idiom
-// (gpio_poll_console: own your prefix, print your own status line, return false for
-// anything else), so this is one more handler on an established dispatch chain
-// rather than a new mechanism.
-//
-// Console grammar, mirroring gpio_poll's:
-//   bench7        → print the status line (toggle state + counters), change nothing
-//   bench7 on     → arm the 7th frame   (arm B)
-//   bench7 off    → disarm it           (arm A / baseline; the BOOT DEFAULT)
-// Returns false for any line this handler does not own, so the caller can still
-// report an unknown command.
-bool interp_bench7_console(const char* line);
+// ── Hand lane (axis 6) — unified-7dof FW 17 ──────────────────────────────────
+// The 7th interpolated channel. Active only while a latched setpoint carried
+// HAS_HAND *and* hand_source == STREAMED (hand_source.h); inert otherwise.
+// Counters are CUMULATIVE SINCE BOOT (the interp census idiom above — the
+// consumer differences two reads; interp_reset() zeroes them with the rest).
 
-// 1 Hz console step (task_diag). Prints the repeating self-identification +
-// counter line. Repeating rather than one-shot for the gpio_poll_diag_step reason:
-// a boot banner has scrolled away long before an operator attaches a monitor, and a
-// bench image that looks stock on the console is exactly the hazard the
-// never-flash-bench-firmware discipline exists to prevent.
-void interp_bench7_diag_step();
-#endif  // UNIFIED7_BENCH_BUILD
+// True iff the hand lane holds latched state (a HAS_HAND frame was accepted
+// while STREAMED). The fault task gates its hand-deviation read on this.
+bool interp_hand_lane_active();
+
+// Ticks whose transmitted hand command engaged the MAX_LEAD_HAND_REV clamp —
+// THE REQUIRED lead-duty counter (Phase 0 Decision 4): non-zero duty during a
+// throw is a hard-abort-the-sitting signal (FW 14 clamp-duty-0 precedent).
+// Live per-tick engagement also rides interp_lead_clamp_mask() bit 6.
+uint32_t interp_hand_lead_clamp_ticks();
+
+// 7th-frame TX census, carried over from the retired UNIFIED7_BENCH_BUILD
+// probe because the real lane needs the same honesty: sent = hand frames
+// actually transmitted; unseen_skips = ticks the lane was active but axis 6's
+// encoder has NEVER been seen (commanding anything would be a guess — skip and
+// say so, never silently); stale_holds = ticks whose lead-clamp anchor age was
+// capped at MOTOR_FB_STALENESS_US because the axis-6 feedback went stale (the
+// frame still transmits; the counter is what makes the gap visible).
+uint32_t interp_hand_sent();
+uint32_t interp_hand_unseen_skips();
+uint32_t interp_hand_stale_holds();
+
+// Setpoint index-6 discards while hand_source == LEGACY — the § 2.4 "discarded
+// on a visible counter". A climbing value with a v6 host means the host is
+// emitting hand knots the firmware is refusing by mode: switch the source, or
+// stop the producer.
+uint32_t interp_hand_discard_legacy();
+
+// ── Hand deviation guard (MAX_DEVIATION_HAND_REV, observe-first) ─────────────
+// The residual is computed EVERY 500 Hz tick while the lane is active:
+//   dev = (raw interpolated hand command, pre-clamp) − (fb + fb_vel·age)
+// (velocity-compensated both sides — Phase 0 Decision 4). The tick's verdict
+// is a cumulative exceed-tick counter the 10 Hz fault task differences (race-
+// free single-writer census — no read-then-clear); the max |residual| and the
+// worst-tick snapshot are the observe-first sitting's read.
+uint32_t interp_hand_dev_over_ticks();   // ticks with |dev| > MAX_DEVIATION_HAND_REV
+float    interp_hand_dev_last();         // most recent tick's residual (rev)
+float    interp_hand_dev_max();          // max |residual| since boot/reset (signed value at the max)
+float    interp_hand_dev_snap_cmd();     // raw command at the worst-residual tick
+float    interp_hand_dev_snap_fb();      // age-extrapolated fb at that tick
+// Trip-dedicated snapshot (2026-09-02 review fix): the residual trio at the
+// most recent EXCEED tick (|dev| > MAX_DEVIATION_HAND_REV). The fault machine
+// freezes THESE into an armed MAX_DEVIATION latch — never the boot-cumulative
+// dev_max trio above, whose worst tick can predate the trip by a whole observe
+// block and misattribute the excursion in /link_status and bags.
+float    interp_hand_dev_trip_dev();     // residual at the most recent exceed tick
+float    interp_hand_dev_trip_cmd();     // raw command at that tick
+float    interp_hand_dev_trip_fb();      // age-extrapolated fb at that tick
+// Observe→arm switch (explicit, per the Phase 0 observe-first decision): boots
+// FALSE (observe — report only); `hand7 arm` on the console arms the E-STOP
+// trip for the second sitting. Runtime, not a build flag, so arming needs no
+// reflash and every boot returns to the safe observe state.
+bool interp_hand_dev_guard_armed();
+void interp_set_hand_dev_guard_armed(bool armed);
+
+// Console handler + 1 Hz status line (task_diag), the gpio_poll idiom: owns the
+// `hand7` prefix, prints its own status, returns false for anything else.
+//   hand7            → status line only
+//   hand7 arm        → arm the hand deviation E-STOP (second-sitting step)
+//   hand7 observe    → back to observe-only (the boot default)
+bool interp_hand7_console(const char* line);
+void interp_hand7_diag_step();
 
 }  // namespace CanBridge

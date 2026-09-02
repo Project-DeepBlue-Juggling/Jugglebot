@@ -33,6 +33,7 @@ from .protocol import (
     ArgBbThrow,
     ArgRobotState,
     ArgHandTraj,
+    ArgHandSource,
     ResultAxisVersions,
 )
 
@@ -44,6 +45,7 @@ __all__ = [
     "ArgAxisState", "ArgControllerMode", "ArgVelCurr", "ArgPosGain",
     "ArgVelGains", "ArgAbsPosition", "ArgAxisOnly", "ArgSdoRead", "ArgSdoWrite",
     "ResultTimeOfDay", "ArgBbThrow", "ArgRobotState", "ArgHandTraj",
+    "ArgHandSource",
     # encoders
     "encode_set_axis_state", "encode_set_controller_mode",
     "encode_set_vel_curr_limits", "encode_set_pos_gain", "encode_set_vel_gains",
@@ -51,6 +53,7 @@ __all__ = [
     "encode_encoder_search", "encode_home", "encode_activate", "encode_deactivate",
     "encode_sdo_read", "encode_sdo_write", "encode_state_write",
     "encode_hand_traj_cmd", "encode_smooth_move_hand", "decode_hand_cmd_echo",
+    "encode_hand_source_set", "HAND_SOURCE_LEGACY_STROKE", "HAND_SOURCE_STREAMED",
     "encode_bb_throw", "encode_bb_reload", "encode_bb_reset",
     "encode_bb_calibrate_loc",
     "decode_time_of_day_result", "ResultAxisVersions",
@@ -191,6 +194,30 @@ def encode_smooth_move_hand(target_rev: float) -> bytes:
     bytes 5-7 = 0."""
     payload = bytes([3]) + struct.pack('<f', float(target_rev)) + bytes(3)
     return ArgHandTraj(payload=tuple(payload)).pack()
+
+
+# ── Hand-mastery latch (HAND_SOURCE_SET, unified-7dof FW 17) ─────────────────
+# The firmware's hand_source latch decides which master may command the hand
+# ODrive: LEGACY_STROKE (boot default — the Platform-Teensy stroke engine, i.e.
+# the HAND_TRAJ_CMD conduit above) or STREAMED (the bridge's 500 Hz interp — the
+# 7th Setpoint lane). The switch is gated FIRMWARE-side (hand_source.cpp):
+# accepted only while !mpc_active and the hand is settled at a rest position on
+# fresh axis-6 telemetry — a refusal comes back ERR_REJECTED. While STREAMED,
+# HAND_TRAJ_CMD returns ERR_HAND_SOURCE. The latch state rides HeartbeatT2J
+# flags bit 6 (HeartbeatT2JFlags.HAND_SOURCE_STREAMED) → /link_status.
+
+HAND_SOURCE_LEGACY_STROKE = 0
+HAND_SOURCE_STREAMED = 1
+
+
+def encode_hand_source_set(streamed: bool) -> bytes:
+    """HAND_SOURCE_SET: request the firmware hand-mastery latch.
+
+    ``streamed=True`` → STREAMED (bridge masters the hand);
+    ``streamed=False`` → LEGACY_STROKE. Idempotent on the firmware side —
+    re-asserting the current mode acks OK without touching the gates."""
+    return ArgHandSource(source=HAND_SOURCE_STREAMED if streamed
+                         else HAND_SOURCE_LEGACY_STROKE).pack()
 
 
 def decode_hand_cmd_echo(data: bytes, vel_scale: float, tor_scale: float):
@@ -448,7 +475,24 @@ def decode_platform_fw_version(data: bytes) -> int:
 #: the bench has FW 15 — and it is advisory everywhere, never enforced (a
 #: BRIDGE_FW_CHECK log line and a ``link_status`` row; no gate, no refusal —
 #: pinned by ``tests/firmware/test_bridge_fw_version_xref.py``).
-EXPECTED_BRIDGE_FW_VERSION = 16
+#: 17 (2026-09-02) = the unified-7dof HAND LANE (plan Phase 3) — and the first
+#: INCOMPATIBLE wire bump since UDP protocol 4→5: FW 17 decodes the v6 Setpoint
+#: (208 B, seven lanes + the exact-v1 array; PROTOCOL_VERSION 5→6), so against
+#: an FW ≤ 16 board this host tree is in TOTAL LINK DARKNESS in both directions
+#: until the lockstep flash sitting — loud and fail-closed by design
+#: (decode_frame hard-rejects on version; there is no silent-struct-mismatch
+#: failure mode). Content: the 500 Hz interp's 7th (hand) lane behind
+#: HAS_HAND && hand_source == STREAMED, the owner-signed hand guard constants
+#: (MAX_DEVIATION_HAND_REV 2.5 observe-first / MAX_LEAD_HAND_REV 2.0
+#: freshness-aware + the lead-duty counter / HAND_VELFF_LIMIT_RPS 300 / hand
+#: overspeed 345), the additive HAND_SOURCE_SET RPC + ERR_HAND_SOURCE status,
+#: and the HeartbeatT2J HAND_SOURCE_STREAMED flag bit. Until the flash the live
+#: board reporting ≤ 16 raises the BRIDGE_FW_CHECK skew advisory on every
+#: launch — advisory only, never enforced, and CORRECT (the tree has FW 17, the
+#: board does not); unlike the wire-invisible bumps 9→16 the skew here is ALSO
+#: a dark link, so a v6 host against an old board shows no telemetry at all —
+#: roll back with the pre-v6 host checkout, or flash FW 17, never half.
+EXPECTED_BRIDGE_FW_VERSION = 17
 
 
 # ── Ball Butler ─────────────────────────────────────────────────────────────
@@ -500,6 +544,7 @@ METHOD = {
     RpcMethod.BB_THROW: ArgBbThrow,
     RpcMethod.STATE_WRITE: ArgRobotState,
     RpcMethod.HAND_TRAJ_CMD: ArgHandTraj,   # host builds the 8-byte 0x6D0 payload
+    RpcMethod.HAND_SOURCE_SET: ArgHandSource,   # the FW 17 hand-mastery latch
     # BB_RELOAD/RESET/CALIBRATE_LOC are payloadless — no entry (matches NOP).
     # TILT_READ/STATE_READ are payloadless too (reply arrives as a PLATFORM_FRAME).
 }

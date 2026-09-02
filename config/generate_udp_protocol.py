@@ -225,6 +225,14 @@ ENUMS = {
         ("STATE_READ",         0x0052, "Relay: read Platform-Teensy RobotState (is_homed/level/pose)"),
         ("STATE_WRITE",        0x0053, "Relay: write Platform-Teensy RobotState (read-modify-write via cache)"),
         ("HAND_TRAJ_CMD",      0x0054, "Hand traj + smooth-move (byte-0 discriminator → 0x6D0)"),
+        # ADDITIVE (2026-09-02, unified-7dof FW 17 — no PROTOCOL_VERSION bump,
+        # the LegCmd/HandSensor precedent: an FW ≤ 16 board answers the unknown
+        # method with ERR_UNKNOWN_METHOD, loudly). Switches the firmware
+        # hand-mastery latch (hand_source.cpp): 0 = LEGACY_STROKE (boot default,
+        # Platform-Teensy stroke engine masters the hand), 1 = STREAMED (the
+        # bridge's 500 Hz interp masters it as the 7th Setpoint lane). Accepted
+        # only while !mpc_active and the hand is settled at a rest position.
+        ("HAND_SOURCE_SET",    0x0055, "Switch the hand-mastery latch (0=LEGACY_STROKE, 1=STREAMED; gated, bridge-local)"),
     ],
     "RpcStatus": [
         ("OK",            0x0000, "Success"),
@@ -234,6 +242,7 @@ ENUMS = {
         ("ERR_TIMEOUT",   0x0004, "Downstream CAN op timed out"),
         ("ERR_REJECTED",  0x0005, "Refused by a safety gate"),
         ("ERR_NOT_IMPL",  0x0006, "Method not implemented in this firmware revision"),
+        ("ERR_HAND_SOURCE", 0x0007, "Refused by the hand-mastery latch: HAND_TRAJ_CMD while hand_source == STREAMED (unified-7dof FW 17)"),
     ],
     "LinkState": [
         ("INIT",     0, "Ethernet up, no Jetson heartbeat yet"),
@@ -327,9 +336,18 @@ ENUMS = {
         ("CONE_HEALTH_MASK",         0x30, "bits 4-5: cone (CAN2) BusHealth (UNKNOWN=0/OK=1/WARN=2/"
                                            "BUS_OFF=3) << HEARTBEAT_CONE_HEALTH_SHIFT; reads 0 = "
                                            "UNKNOWN from a pre-cone-uplink flash"),
+        # bit 6: the FW 17 hand-mastery latch. Set = STREAMED (the bridge's
+        # 500 Hz interp masters the hand — the 7th Setpoint lane is live and
+        # HAND_TRAJ_CMD refuses with ERR_HAND_SOURCE); clear = LEGACY_STROKE
+        # (the boot default, and what every pre-17 flash reads as — so the
+        # zero state is backward-self-describing, the CONE_HEALTH pattern).
+        ("HAND_SOURCE_STREAMED",     0x40, "bit 6: hand_source latch — set = STREAMED (bridge masters "
+                                           "the hand, 7th Setpoint lane live), clear = LEGACY_STROKE "
+                                           "(boot default; also what a pre-FW-17 flash reads as)"),
         # Per-leg torque_ff ingest-clamp mask, packed into free bits of the same u32
-        # (bits 6-7 stay reserved for future single-bit flags; the mask starts at
-        # bit 8 = HEARTBEAT_TORQUE_CLAMP_SHIFT so it stays byte-aligned/readable).
+        # (bit 6 became HAND_SOURCE_STREAMED at FW 17; bit 7 stays reserved; the
+        # mask starts at bit 8 = HEARTBEAT_TORQUE_CLAMP_SHIFT so it stays
+        # byte-aligned/readable).
         ("TORQUE_CLAMP_MASK",      0x3F00, "bits 8-13: bit (8+i) set = leg i's |torque_ff| was clamped to "
                                            "TORQUE_FF_FIRMWARE_CLAMP_WIRE_NM at UDP ingest on the last ACCEPTED "
                                            "setpoint frame (mirrors lead_clamp_mask; leg_interp.cpp interp_on_setpoint)"),
@@ -424,7 +442,7 @@ MESSAGES = [
             Field("bus1_health", "u8",  1, "wire slot 1 = CAN3 (Jugglebot core: legs+hand) BusHealth enum"),
             Field("bus2_health", "u8",  1, "wire slot 2 = CAN1 (Ball Butler) BusHealth enum (cone/CAN2 not yet on uplink)"),
             Field("fault_state", "u8",  1, "FaultState enum"),
-            Field("flags",       "u32", 1, "HeartbeatT2JFlags bitset: bits 0-3 TIME_SYNCED|STOW_PENDING_ON_RECONNECT|ALL_AXIS_HEARTBEATS_OK|MPC_ACTIVE; bits 4-5 CONE_HEALTH_MASK (cone/CAN2 BusHealth, see HEARTBEAT_CONE_HEALTH_SHIFT); bits 8-13 TORQUE_CLAMP_MASK (per-leg torque_ff ingest clamp, see HEARTBEAT_TORQUE_CLAMP_SHIFT)"),
+            Field("flags",       "u32", 1, "HeartbeatT2JFlags bitset: bits 0-3 TIME_SYNCED|STOW_PENDING_ON_RECONNECT|ALL_AXIS_HEARTBEATS_OK|MPC_ACTIVE; bits 4-5 CONE_HEALTH_MASK (cone/CAN2 BusHealth, see HEARTBEAT_CONE_HEALTH_SHIFT); bit 6 HAND_SOURCE_STREAMED (FW 17 hand-mastery latch — set = STREAMED, clear = LEGACY_STROKE/pre-17); bits 8-13 TORQUE_CLAMP_MASK (per-leg torque_ff ingest clamp, see HEARTBEAT_TORQUE_CLAMP_SHIFT)"),
             Field("uptime_ms",   "u32", 1, "ms since boot"),
             # Ball Butler heartbeat snapshot (CAN1 0x7D1 decoded by the
             # can-bridge into bb_state and forwarded here at heartbeat rate).
@@ -444,7 +462,7 @@ MESSAGES = [
             # future stutter/latch bag self-diagnosing. Bridge publishes them as
             # /link_status KeyValues (recorded in the rosbag).
             Field("live_deviation",  "f32", 6, "Per-leg live deviation u0-encoder (rev) — the MAX_DEVIATION guard quantity"),
-            Field("lead_clamp_mask", "u8",  1, "bit i set = leg i's interp lead clamp engaged on the last 500 Hz tick"),
+            Field("lead_clamp_mask", "u8",  1, "bit i set = axis i's interp lead clamp engaged on the last 500 Hz tick (bits 0-5 legs; bit 6 = the hand lane's MAX_LEAD_HAND_REV clamp since FW 17 — the lead-duty engagement bit)"),
             Field("max_dev_leg",     "u8",  1, "Leg that crossed MAX_DEVIATION at the last latch (0xFF = none since boot)"),
             Field("max_dev_value",   "f32", 1, "Deviation u0-encoder (rev) of max_dev_leg frozen at the latch crossing"),
             Field("max_dev_u0",      "f32", 1, "Commanded base u0 (rev) of max_dev_leg frozen at the latch crossing"),
@@ -1495,6 +1513,14 @@ RPC_ARGS = [
     # fires when its synced clock reaches the deadline).
     RpcArg("ArgHandTraj", "HAND_TRAJ_CMD", [
         Field("payload", "u8", 8, "Exact 8-byte 0x6D0 PLATFORM_TRAJ_CMD payload (host-built; byte-0 discriminator)"),
+    ]),
+    # HAND_SOURCE_SET (unified-7dof FW 17, additive): switch the firmware
+    # hand-mastery latch. Bridge-LOCAL (no CAN frame), gated firmware-side in
+    # hand_source_request: value valid, !mpc_active, hand settled at a rest
+    # position on fresh axis-6 telemetry. 0 = LEGACY_STROKE (boot default),
+    # 1 = STREAMED. The latch state rides HeartbeatT2J flags bit 6.
+    RpcArg("ArgHandSource", "HAND_SOURCE_SET", [
+        Field("source", "u8", 1, "0 = LEGACY_STROKE (Platform-Teensy stroke engine), 1 = STREAMED (bridge 500 Hz hand lane)"),
     ]),
 ]
 

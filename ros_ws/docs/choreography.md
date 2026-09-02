@@ -470,6 +470,12 @@
 - **clients:** `catch_coordinator_node`, `reload_coordinator_node`
 - **type:** `jugglebot_interfaces.srv.SetHandGains`
 
+### `set_hand_source`
+
+- **servers:** `teensy_bridge_node`
+- **clients:** _none_
+- **type:** `std_srvs.srv.SetBool`
+
 ### `set_hand_state`
 
 - **servers:** `teensy_bridge_node`
@@ -615,6 +621,7 @@ broken wire cannot hide among them.
 - `reboot_odrives` — service with no clients
 - `recover` — service with no clients
 - `ring_diag` — topic with no subscribers
+- `set_hand_source` — service with no clients
 - `set_hand_state` — service with no clients
 - `set_motor_vel_curr_limits` — topic with no publishers
 - `toss/calibration_status` — topic with no subscribers

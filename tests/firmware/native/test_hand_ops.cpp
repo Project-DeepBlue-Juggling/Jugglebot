@@ -43,6 +43,8 @@
 #include "odrive_protocol.h"
 #include "canbridge_config.h"
 #include "can_buses.h"
+#include "axis_state.h"   // axes[] — the hand_source settle gate reads axis 6
+#include "hand_source.h"  // the REAL latch (linked hand_source.o), FW 17
 #include "leg_interp.h"   // declares interp_last_tick_us (we fake it below)
 #include "fake_hal.h"
 
@@ -82,16 +84,33 @@ static JbUdp::RpcArgs::ArgHandTraj make_traj_arg() {
 // is under test too.
 static void check_counters(uint32_t calls, uint32_t rej, uint32_t down,
                            uint32_t pre1, uint32_t pre2, uint32_t traj,
-                           uint32_t ok) {
+                           uint32_t ok, uint32_t rej_source = 0) {
   const auto c = hand_ops_counters();
   CHECK(c.calls == calls);
+  CHECK(c.rej_source == rej_source);
   CHECK(c.rej_homing == rej);
   CHECK(c.bus_down == down);
   CHECK(c.pre1_fail == pre1);
   CHECK(c.pre2_fail == pre2);
   CHECK(c.traj_fail == traj);
+  // The five-counter identity the WIRE consumer derives OK from — rej_source is
+  // deliberately NOT in it (BridgeTxDiag cannot grow; hand_ops.h documents the
+  // overcount), so `ok` here is the wire-derived value, and a case that expects
+  // source refusals passes ok = ok_true + rej_source.
   CHECK(c.calls - c.rej_homing - c.bus_down - c.pre1_fail - c.pre2_fail
         - c.traj_fail == ok);
+}
+
+// Put axis 6 into the settled-at-rest state the hand_source gate requires
+// (fresh telemetry at the retract rest, not moving) — the REAL gate is under
+// test, so the latch can only be flipped the way production flips it.
+static void settle_hand_at_rest() {
+  // fake_reset() zeroes the fake clock, and a pos_timestamp of 0 IS the gate's
+  // never-seen sentinel — put the clock at a real instant first (the
+  // reset_interp_test idiom) so the freshness check sees a genuine sample.
+  if (fake_mono_us() == 0) fake_set_clock(1'000'000, 1'000'000);
+  hand_axis().heartbeat_seen = true;
+  write_pos_vel(hand_axis(), 0.0f, 0.0f, fake_mono_us());
 }
 
 TEST_CASE("valid hand traj emits the CLOSED_LOOP + PASSTHROUGH preamble then the 0x6D0 frame") {
@@ -387,4 +406,79 @@ TEST_CASE("a FAILED preamble still aborts: only FAILED means the frame never lef
   CHECK(fake_sent_count() == 0);          // nothing reached the bus at all
   check_counters(/*calls=*/1, /*rej=*/0, /*down=*/0,
                  /*pre1=*/1, /*pre2=*/0, /*traj=*/0, /*ok=*/0);
+}
+
+
+// ═══ FW 17 — the hand_source interlock refusal (ERR_HAND_SOURCE) ═════════════
+
+TEST_CASE("HAND_TRAJ_CMD while STREAMED → ERR_HAND_SOURCE, nothing on CAN3, rej_source counted") {
+  // The whole point of the latch: while the bridge masters the hand, the legacy
+  // 0x6D0 conduit must be STRUCTURALLY refused — before the preamble, so not a
+  // single CAN frame reaches the bus (a CLOSED_LOOP preamble alone would yank
+  // the hand ODrive out of whatever state the streamed lane put it in).
+  fake_reset();
+  hand_ops_counters_reset();
+  hand_source_reset();
+  settle_hand_at_rest();
+  REQUIRE(hand_source_request(HandSource::STREAMED, /*mpc_active=*/false)
+          == JbUdp::RpcStatus::OK);
+  REQUIRE(hand_source_streamed());
+
+  fake_set_commands_allowed(true);
+  const auto a = make_traj_arg();
+  CHECK(HandOps::hand_traj_cmd(a) == JbUdp::RpcStatus::ERR_HAND_SOURCE);
+  CHECK(fake_sent_count() == 0);                    // no preamble, no 0x6D0
+  check_counters(/*calls=*/1, /*rej=*/0, /*down=*/0,
+                 /*pre1=*/0, /*pre2=*/0, /*traj=*/0,
+                 /*ok(wire-derived)=*/1, /*rej_source=*/1);
+
+  // Back to LEGACY (still settled) → the conduit works again, end to end.
+  REQUIRE(hand_source_request(HandSource::LEGACY_STROKE, false) == JbUdp::RpcStatus::OK);
+  CHECK(HandOps::hand_traj_cmd(a) == JbUdp::RpcStatus::OK);
+  CHECK(fake_sent_count() == 3);                    // preamble ×2 + 0x6D0
+  hand_source_reset();
+}
+
+TEST_CASE("hand_source_request gates: mpc_active, unseen/stale/unsettled telemetry all refuse") {
+  fake_reset();
+  hand_source_reset();
+  // Return axis 6 to the factory state (fake_reset does not touch axes[], and
+  // the previous case legitimately left it seen + settled).
+  hand_axis().heartbeat_seen = false;
+  write_pos_vel(hand_axis(), 0.0f, 0.0f, 0);   // ts = 0 ⇒ never seen
+
+  // Never-seen axis 6 → refuse (0.0 rev is a real, reachable, WRONG position).
+  CHECK(hand_source_request(HandSource::STREAMED, false) == JbUdp::RpcStatus::ERR_REJECTED);
+  CHECK_FALSE(hand_source_streamed());
+
+  // Settled and fresh, but mpc_active → refuse (never swap masters mid-stream).
+  settle_hand_at_rest();
+  CHECK(hand_source_request(HandSource::STREAMED, /*mpc_active=*/true)
+        == JbUdp::RpcStatus::ERR_REJECTED);
+  CHECK_FALSE(hand_source_streamed());
+
+  // Mid-stroke (not at a rest position) → refuse.
+  write_pos_vel(hand_axis(), 5.0f, 0.0f, fake_mono_us());
+  CHECK(hand_source_request(HandSource::STREAMED, false) == JbUdp::RpcStatus::ERR_REJECTED);
+
+  // Moving (rest position, but above the settle velocity) → refuse.
+  write_pos_vel(hand_axis(), 0.0f, 2.0f, fake_mono_us());
+  CHECK(hand_source_request(HandSource::STREAMED, false) == JbUdp::RpcStatus::ERR_REJECTED);
+
+  // Stale telemetry (older than MOTOR_FB_STALENESS_US) → refuse.
+  write_pos_vel(hand_axis(), 0.0f, 0.0f, fake_mono_us());
+  fake_advance(MOTOR_FB_STALENESS_US + 1000);
+  CHECK(hand_source_request(HandSource::STREAMED, false) == JbUdp::RpcStatus::ERR_REJECTED);
+
+  // Catch-prime is a rest position too (a mid-session STREAMED→LEGACY rollback
+  // must not require a streamed move to 0 first).
+  write_pos_vel(hand_axis(), JBOp::HAND_CATCH_PRIME_REV, 0.0f, fake_mono_us());
+  CHECK(hand_source_request(HandSource::STREAMED, false) == JbUdp::RpcStatus::OK);
+  CHECK(hand_source_streamed());
+
+  // Bad value → ERR_BAD_ARGS; idempotent re-assert → OK with no state change.
+  CHECK(hand_source_request(2, false) == JbUdp::RpcStatus::ERR_BAD_ARGS);
+  CHECK(hand_source_request(HandSource::STREAMED, true) == JbUdp::RpcStatus::OK);  // same value: no-op even under mpc
+  CHECK(hand_source_streamed());
+  hand_source_reset();
 }

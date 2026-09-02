@@ -41,6 +41,14 @@ namespace CanBridge {
 //  to be revisited, not just the increments.
 struct HandOpsCounters {
   uint32_t calls;        // invocations, counted at entry before any gate
+  uint32_t rej_source;   // ERR_HAND_SOURCE: hand_source == STREAMED refused the legacy conduit (FW 17)
+                         // NOTE: NOT on the BridgeTxDiag wire (its payload is deployed and
+                         // exact-size-unpacked, so it cannot grow) — the host-side
+                         // "OK = calls − the five wire counters" derivation OVERCOUNTS OK
+                         // by exactly this value while refusals occur. The wire-visible
+                         // truth for a refused dispatch is the RPC ack itself
+                         // (hand_traj_acks fail_teensy names ERR_HAND_SOURCE); this
+                         // counter is the console/native census ([hand7]-adjacent).
   uint32_t rej_homing;   // ERR_REJECTED: the homing interlock refused
   uint32_t bus_down;     // ERR_BUS_DOWN: jugglebot_commands_allowed() refused
   uint32_t pre1_fail;    // ERR_TIMEOUT at send #1 (set_state CLOSED_LOOP)
@@ -93,6 +101,7 @@ enum HandPhaseOutcome : uint8_t {
   HAND_PHASE_PRE1       = 3,
   HAND_PHASE_PRE2       = 4,
   HAND_PHASE_TRAJ       = 5,
+  HAND_PHASE_REJ_SOURCE = 6,   // ERR_HAND_SOURCE: refused while hand_source == STREAMED (FW 17)
 };
 
 // Ring depth. 8 is one 1 Hz diag tick's worth at the bench ladder's ≥2 s dispatch
@@ -124,6 +133,7 @@ inline const char* hand_phase_outcome_name(uint8_t o) {
     case HAND_PHASE_PRE1:       return "pre1";
     case HAND_PHASE_PRE2:       return "pre2";
     case HAND_PHASE_TRAJ:       return "traj";
+    case HAND_PHASE_REJ_SOURCE: return "rej_source";
     default:                    return "?";
   }
 }

@@ -17,6 +17,7 @@
 #include "platform_relay.h"
 #include "version_check.h"
 #include "hand_ops.h"
+#include "hand_source.h"   // hand_source_request (HAND_SOURCE_SET, FW 17)
 
 namespace CanBridge {
 namespace Rpc {
@@ -352,6 +353,20 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
     case RpcMethod::HAND_TRAJ_CMD: {
       ArgHandTraj a; if (!take(args, arg_len, a)) return RpcStatus::ERR_BAD_ARGS;
       return HandOps::hand_traj_cmd(a);
+    }
+
+    // ── Hand-mastery latch (unified-7dof FW 17, plan § 2.4) ────────────────
+    // ADDITIVE method — no PROTOCOL_VERSION bump (the LegCmd/HandSensor
+    // precedent: an FW ≤ 16 board answers ERR_UNKNOWN_METHOD, loudly).
+    // Bridge-LOCAL: no CAN frame is sent, so no bus gate — the acceptance
+    // gates live in hand_source_request (single enforcement point): value
+    // valid, !mpc_active (passed from the fault machine here so hand_source.cpp
+    // stays fault-machine-free for the native harness), and the hand settled at
+    // a rest position on FRESH axis-6 telemetry. Boot default LEGACY_STROKE;
+    // only a reboot or this RPC moves the latch.
+    case RpcMethod::HAND_SOURCE_SET: {
+      ArgHandSource a; if (!take(args, arg_len, a)) return RpcStatus::ERR_BAD_ARGS;
+      return hand_source_request(a.source, fault_mpc_active());
     }
 
     // ── Ball Butler (CAN1) — typed commands ──────────────────────────────

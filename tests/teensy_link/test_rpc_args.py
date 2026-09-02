@@ -182,6 +182,15 @@ def test_axis_versions_result_roundtrip_and_layout():
         ra.encode_axis_versions_result({0: b"\x00" * 7})
 
 
+def test_hand_source_set_exact_bytes():
+    """HAND_SOURCE_SET (FW 17): one u8 — 0 = LEGACY_STROKE, 1 = STREAMED."""
+    assert ra.encode_hand_source_set(True) == b"\x01"
+    assert ra.encode_hand_source_set(False) == b"\x00"
+    assert ra.HAND_SOURCE_STREAMED == 1
+    assert ra.HAND_SOURCE_LEGACY_STROKE == 0
+    assert ra.ArgHandSource(source=1).pack() == b"\x01"
+
+
 def test_method_arg_association_covers_all_commandable_methods():
     """NON-tautological: partition the WHOLE RpcMethod enum into
     payloadless vs arg-carrying and freeze it, rather than hand-copying

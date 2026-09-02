@@ -261,7 +261,7 @@ mode; ball tracking, possession verdicts, `outcome_detail` discipline.
 | 0 | Probes + recorded decisions: QP solver runtime on Jetson 3.8, Hermite stroke-reconstruction fidelity, bus headroom with a 7th frame (+ leg-bus-frame-drops A/B), hand guard constants derivation | COMPLETE | 2026-08-30 | Low | In-process QP is feasible; 7-frame bus budget is safe |
 | 1 | Planner core port (pure Python): `cup_cycle` QP, tilt schedule, `realize` generalisation, `CyclePlan`, `validate_cycle`, sim parity + MuJoCo whole-cycle gate | COMPLETE | 2026-09-01 | Low (software only) | Ball-frame constraints hold; the Rung-3 "runway" failure is answered in sim |
 | 2 | Wire v6 + host 7-channel path: codegen, `SetpointPump`, emitter, `make_mpc_command`, tests; firmware-absent safe | COMPLETE | 2026-09-02 | Medium | Codec, per-channel step gates, backward-compatible producers |
-| 3 | Can-bridge FW 17: 7th interp lane, hand guards, `hand_source` interlock, dispatch; lockstep flash + bench ladder | NOT STARTED | | High | Hand streaming safety envelope on real hardware |
+| 3 | Can-bridge FW 17: 7th interp lane, hand guards, `hand_source` interlock, dispatch; lockstep flash + bench ladder | **SOFTWARE-COMPLETE 2026-09-02** (lockstep flash sitting + T-H1..T-H4 bench ladder PENDING, operator-owned) | 2026-09-02 | High | Hand streaming safety envelope on real hardware |
 | 4 | Jetson unified-cycle mode: orchestrator, node wiring, plan-derived announcements/suppression, outcome vocabulary; end-to-end sim gate | NOT STARTED | | Medium | Whole cycle through the production stack in sim |
 | 5 | Hardware ladder: streamed hold → banked carry (ball seated) → planned catch → planned throw (low tier) → full cycles → two-pose constant beat | NOT STARTED | | High | Ball-smooth carry and the planned launch on hardware |
 | 6 | Exclusivity + close-out: Platform Teensy FW 4 stroke retirement, host RPC retirement, contract doc, ILC hand-off, docs | NOT STARTED | | Medium | Single-master end state |
@@ -566,7 +566,7 @@ margin). Review finding 7 CARRIED to Phase 3: gap-re-entry bench case +
 normative `HAS_HAND` falling-edge decay. Gate: (2026-09-02, `./run_tests.sh`,
 6382 passed / 4 skipped, total 267 s — PASS).
 
-### Phase 3: Can-bridge FW 17 — 7th interp lane, hand guards, interlock — NOT STARTED
+### Phase 3: Can-bridge FW 17 — 7th interp lane, hand guards, interlock — SOFTWARE-COMPLETE 2026-09-02 (flash sitting + bench ladder PENDING, operator-owned)
 
 **Modified files** (`ros_ws/src/jugglebot/Teensy_code_canbridge/`):
 `leg_interp.cpp/.h` (Staging and all per-channel state arrays 6 → 7; latch,
@@ -597,6 +597,32 @@ poller-cadence flash — 16's behavioural content is carried forward into 17).
 **Dependencies:** Phase 2; Phase 0 probes 3 and 4; the `leg-bus-frame-drops`
 verdict (§ 1, prerequisite row) — **satisfied 2026-08-30, no source fix
 required first**.
+
+**Outcome (SOFTWARE-COMPLETE 2026-09-02 — canonical record:
+[`logbook/2026-09-02-unified-7dof-planner-phase3-fw17-hand-lane.md`](../../logbook/2026-09-02-unified-7dof-planner-phase3-fw17-hand-lane.md)).**
+FW 17 is built (clean-build md5s in the entry's Build evidence table) and
+**NEVER FLASHED**. The hand lane landed as a **separate ISR block on its own
+per-lane knot clock** (leg path byte-stable, parity transferred natively;
+`motor_guard.py` untouched); the carried finding 7 is discharged — the
+normative `HAS_HAND` falling-edge decay runs off the knot clock and covers
+plan expiry and stream stop for free. Guards exactly as owner-signed,
+**observe-first** with runtime `hand7 arm|observe` (arming is the named
+second-sitting step); `hand_source` interlock in its own TU behind the
+additive `HAND_SOURCE_SET` 0x0055 (no version bump), `ERR_HAND_SOURCE` before
+any CAN side-effect, 0x6D0 sniff retained as a second-master detector;
+`HAND_CMD_ECHO` re-sourced at `telemetry.cpp`'s uplink step (echo == wire
+bytes — a deliberate deviation from the drafted `can_buses.cpp` site). Host:
+`set_hand_source` (`std_srvs/SetBool`, no interfaces rebuild), the arming fold
+with the 0.625 rev pre-check, `EXPECTED_BRIDGE_FW_VERSION` 17 (T-R2 now fully
+landed). `UNIFIED7_BENCH_BUILD` retired outright. The lean 2-lens review
+adjudicated 14 findings → 10 fixes + 1 recorded skip. What remains is
+operator-owned: the **lockstep flash sitting** (FW 17 + host in ONE sitting;
+rollback = FW 16 + pre-v6 host) and the T-H1..T-H4 ladder — runbook
+`tests/hardware/session_unified7_hand_bringup.md` + driver
+`tests/hardware/hand_stream_bench.py` are ready, the driver pending operator
+review, and the settle-gate specifics pending owner ratification (entry § Open
+Questions). Gate: (2026-09-02, `./run_tests.sh`, 6392 passed / 4 skipped,
+261.13 s — PASS).
 
 ### Phase 4: Jetson unified-cycle mode — NOT STARTED
 
@@ -699,7 +725,8 @@ artifacts after retirement.
 (T-U1, T-U2), `tests/motion/test_cup_realize.py` (T-U3, T-U4),
 `tests/motion/test_validate_cycle.py` (T-U5), with
 `tests/motion/test_cycle_plan.py` and `tests/sim/test_cycle_gate.py` alongside
-them. **T-U6..T-U8 LANDED 2026-09-02** (Phase 2); T-U9 remains for Phase 3.
+them. **T-U6..T-U8 LANDED 2026-09-02** (Phase 2); **T-U9 LANDED 2026-09-02**
+(Phase 3).
 
 - **T-U1** ✅ **LANDED** (`tests/motion/test_cup_cycle.py`) `cup_cycle`
   constraint satisfaction: for a grid of cycle
@@ -746,11 +773,13 @@ them. **T-U6..T-U8 LANDED 2026-09-02** (Phase 2); T-U9 remains for Phase 3.
   Emitter: `CyclePlan` sampling emits hand keys with the same
   lookahead discipline as legs; plans without a hand track emit none (legacy
   plans byte-identical output — regression fixture against current emitter).
-- **T-U9** Firmware natives (`tests/firmware/native/test_leg_interp.cpp` +
-  `test_hermite_xref.py`): 7-lane Hermite parity with the Python reference;
-  both Mode 1 velocity rules pinned (`HAS_V1` transmitted-exact and the
-  forward-difference fallback); hand lane inert when `HAS_HAND` clear;
-  Mode 2/3 extrapolation on the hand lane decays like a leg.
+- **T-U9** ✅ **LANDED** (`tests/firmware/native/test_leg_interp.cpp` +
+  `test_hand_ops.cpp` + `test_fault_machine.cpp` + `test_rpc_dispatch.cpp`,
+  plus the `test_hermite_xref.py` extension): 7-lane Hermite parity with the
+  Python reference; both Mode 1 velocity rules pinned (`HAS_V1`
+  transmitted-exact and the forward-difference fallback); hand lane inert when
+  `HAS_HAND` clear; Mode 2/3 extrapolation on the hand lane decays like a leg;
+  leg guard constants natively pinned never to reach axis 6.
 
 ### Integration (real processes, no actuators)
 
@@ -772,6 +801,11 @@ them. **T-U6..T-U8 LANDED 2026-09-02** (Phase 2); T-U9 remains for Phase 3.
   only if it measures wall-clock against a threshold).
 
 ### Hardware (bench first, E-stop ready)
+
+T-H1..T-H4 are the Phase 3 bench ladder: the runbook
+`tests/hardware/session_unified7_hand_bringup.md` and the driver
+`tests/hardware/hand_stream_bench.py` **exist as of 2026-09-02**; the sitting
+itself is PENDING, operator-owned.
 
 - **T-H1** Streamed hand hold: `hand_source=STREAMED`, stream the current
   hand position for 10 min. Pass: zero motion, zero deviation-guard trips,
@@ -810,10 +844,10 @@ them. **T-U6..T-U8 LANDED 2026-09-02** (Phase 2); T-U9 remains for Phase 3.
   at HEAD `2aaaae1` before any edit (`tests/teensy_link/data/` +
   `tests/motion/data/`; the pump/emitter regression tests above are the
   enforcement).
-- **T-R2** **half-landed 2026-09-02**: the version-skew loud-reject (v5 host
-  vs v6 decode and inverse rejects every frame) is LANDED; the
-  "`BRIDGE_FW_CHECK` advisory names 17" half is Phase 3
-  (`EXPECTED_BRIDGE_FW_VERSION` is still 16).
+- **T-R2** ✅ **FULLY LANDED 2026-09-02**: the version-skew loud-reject (v5
+  host vs v6 decode and inverse rejects every frame) landed in Phase 2; the
+  "`BRIDGE_FW_CHECK` advisory names 17" half landed in Phase 3
+  (`EXPECTED_BRIDGE_FW_VERSION` is 17).
 - **T-R3** The full legacy toss battery (`tests/ros/test_toss_*`,
   `tests/sim/test_toss_gate.py`) passes unchanged in legacy mode after every
   phase — the fallback stays flyable until Phase 6.

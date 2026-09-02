@@ -43,6 +43,7 @@
 #include "odrive_protocol.h"
 #include "canbridge_config.h"
 #include "udp_protocol.h"
+#include "hand_source.h"   // the REAL latch (linked hand_source.o), FW 17
 #include "fake_hal.h"
 
 // The two safety-critical TUs under test (ODR-clean: disjoint symbol names).
@@ -81,6 +82,7 @@ static void reset_all() {
   clear_legs();
   fault_machine_init();
   interp_reset();
+  hand_source_reset();   // boot default LEGACY_STROKE (FW 17)
   fault_set_mpc_active(false);
 }
 
@@ -847,4 +849,160 @@ int main(int argc, char** argv) {
   doctest::Context ctx;
   ctx.applyCommandLine(argc, argv);
   return ctx.run();
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  FW 17 — hand guards join the fault machine with their OWN constants (T-U9)
+// ═══════════════════════════════════════════════════════════════════════════
+
+TEST_CASE("hand overspeed guards at HAND_MAX_MOTOR_VEL_RPS (345), never the legs' 16.5") {
+  reset_all();
+  fake_set_clock(10'000'000, 10'000'000);
+  fake_set_udp_last_rx_us(fake_mono_us());
+
+  // A legacy stroke's certified peak region (178–221 rev/s) sails through: the
+  // leg bound applied to axis 6 would E-STOP every hand move ever made.
+  axes[HAND_AXIS].vel_rps = 250.0f;
+  fault_step();
+  CHECK(fault_guard_mode() != JbUdp::GuardMode::ESTOP);
+  CHECK(fault_state() != JbUdp::FaultState::MOTOR_OVERSPEED);
+
+  // Past the hand's own bound (1.15 × the 300 rev/s ceiling) → E-STOP.
+  axes[HAND_AXIS].vel_rps = HAND_MAX_MOTOR_VEL_RPS + 5.0f;
+  fault_step();
+  CHECK(fault_guard_mode() == JbUdp::GuardMode::ESTOP);
+  CHECK(fault_state() == JbUdp::FaultState::MOTOR_OVERSPEED);
+
+  // And a LEG at hand speeds still trips its own 16.5 bound (separation is
+  // two-sided — widening the leg loop must not have loosened the legs).
+  reset_all();
+  fake_set_clock(10'000'000, 10'000'000);
+  fake_set_udp_last_rx_us(fake_mono_us());
+  axes[2].vel_rps = MAX_MOTOR_VEL_RPS + 1.0f;
+  fault_step();
+  CHECK(fault_state() == JbUdp::FaultState::MOTOR_OVERSPEED);
+}
+
+TEST_CASE("hand deviation: observe-first reports only; `hand7 arm`ed it LATCHES off the 500 Hz tick verdict") {
+  // The full chain: STREAMED via the real settle gate → a HAS_HAND frame whose
+  // command sits 3.0 rev from the (age-extrapolated) encoder → the interp tick
+  // counts the exceed → the 10 Hz fault task differences the counter and, only
+  // when armed, latches MAX_DEVIATION with the axis-6 snapshot.
+  reset_all();
+  fake_set_clock(10'000'000, 10'000'000);
+  fault_set_mpc_active(true);
+  fake_set_udp_last_rx_us(fake_mono_us());
+  // leg 0 present + fresh so the leg-side guards are quiet and present-scoped.
+  axes[0].heartbeat_seen = true;
+  axes[0].last_heartbeat_us = fake_mono_us();
+  axes[0].pos_timestamp_us = fake_mono_us();
+  // Hand settled at rest on fresh telemetry → the switch is accepted.
+  axes[HAND_AXIS].heartbeat_seen = true;
+  axes[HAND_AXIS].last_heartbeat_us = fake_mono_us();
+  write_pos_vel(hand_axis(), 0.0f, 0.0f, fake_mono_us());
+  REQUIRE(hand_source_request(HandSource::STREAMED, false) == JbUdp::RpcStatus::OK);
+
+  // Latch a v6 frame: legs at their encoders (dev 0), hand commanded 3.0 rev
+  // from its encoder (> MAX_DEVIATION_HAND_REV 2.5).
+  JbUdp::SetpointPayload sp; memset(&sp, 0, sizeof(sp));
+  sp.u0[HAND_AXIS] = 3.0f;
+  sp.flags = 0x4u;                                   // HAS_HAND
+  interp_on_setpoint(1, reinterpret_cast<const uint8_t*>(&sp), sizeof(sp));
+  interp_isr();
+  CHECK(interp_hand_dev_over_ticks() == 1);          // the tick's verdict
+  fake_set_udp_last_rx_us(fake_mono_us());
+
+  // OBSERVE (the boot default): the verdict is reported, never latched.
+  fault_step();
+  CHECK(fault_guard_mode() != JbUdp::GuardMode::ESTOP);
+  CHECK(interp_hand_dev_max() == doctest::Approx(3.0f).epsilon(0.01));
+
+  // ARMED (the second sitting's explicit step): the next exceed tick latches.
+  // FIX-1 interplay (2026-09-02): the fault_step above ENABLED output, so the
+  // next tick is an output-enable (arm) edge and CLEARS the hand-lane latch —
+  // exactly as a real armed session begins. The live 40 Hz stream re-latches
+  // with its next HAS_HAND frame; model that with a fresh frame here.
+  interp_set_hand_dev_guard_armed(true);
+  fake_advance(INTERP_PERIOD_US);
+  JbUdp::SetpointPayload sp2; memset(&sp2, 0, sizeof(sp2));
+  sp2.u0[HAND_AXIS] = 3.0f;
+  sp2.flags = 0x4u;                                  // HAS_HAND
+  interp_on_setpoint(2, reinterpret_cast<const uint8_t*>(&sp2), sizeof(sp2));
+  interp_isr();                                      // another exceed tick
+  CHECK(interp_hand_dev_over_ticks() == 2);
+  fake_set_udp_last_rx_us(fake_mono_us());
+  fault_step();
+  CHECK(fault_guard_mode() == JbUdp::GuardMode::ESTOP);
+  CHECK(fault_state() == JbUdp::FaultState::MAX_DEVIATION);
+  CHECK(fault_max_dev_leg() == HAND_AXIS);           // the snapshot names axis 6
+  CHECK(fault_max_dev_value() == doctest::Approx(3.0f).epsilon(0.01));
+  CHECK(fault_max_dev_u0() == doctest::Approx(3.0f).epsilon(0.01));
+  CHECK(fault_max_dev_enc() == doctest::Approx(0.0f).epsilon(0.01));
+  CHECK(interp_output_enabled() == false);
+
+  // CLEAR_ERRORS releases the latch; with the condition still live (the lane
+  // keeps commanding 3.0 against a 0.0 encoder) the next tick+poll re-latches —
+  // the leg guard's cannot-clear-through-a-live-condition contract, inherited.
+  fault_notify_clear_errors();
+  fake_advance(INTERP_PERIOD_US);
+  interp_isr();
+  fake_set_udp_last_rx_us(fake_mono_us());
+  fault_step();
+  CHECK(fault_guard_mode() == JbUdp::GuardMode::ESTOP);
+  CHECK(fault_state() == JbUdp::FaultState::MAX_DEVIATION);
+  hand_source_reset();
+}
+
+TEST_CASE("hand MAX_DEVIATION latch reports the TRIP's excursion, never the boot-cumulative max (2026-09-02 fix)") {
+  // An observe-block excursion (4.0 rev) precedes an ARMED trip whose own
+  // excursion is smaller (2.8 rev). Pre-fix, the latch froze the OLD 4.0 rev
+  // residual + its cmd/fb pair (interp_hand_dev_max) into max_dev_value/u0/enc,
+  // misattributing the trip in /link_status and bags. Post-fix the latch
+  // carries the exceed tick that fired THIS trip; the console's observe-first
+  // dev_max read is unchanged.
+  reset_all();
+  fake_set_clock(10'000'000, 10'000'000);
+  fault_set_mpc_active(true);
+  fake_set_udp_last_rx_us(fake_mono_us());
+  axes[0].heartbeat_seen = true;
+  axes[0].last_heartbeat_us = fake_mono_us();
+  axes[0].pos_timestamp_us = fake_mono_us();
+  axes[HAND_AXIS].heartbeat_seen = true;
+  axes[HAND_AXIS].last_heartbeat_us = fake_mono_us();
+  write_pos_vel(hand_axis(), 0.0f, 0.0f, fake_mono_us());
+  REQUIRE(hand_source_request(HandSource::STREAMED, false) == JbUdp::RpcStatus::OK);
+
+  // OBSERVE block: a 4.0 rev excursion becomes the boot-cumulative max.
+  JbUdp::SetpointPayload sp; memset(&sp, 0, sizeof(sp));
+  sp.u0[HAND_AXIS] = 4.0f;
+  sp.flags = 0x4u;                                   // HAS_HAND
+  interp_on_setpoint(1, reinterpret_cast<const uint8_t*>(&sp), sizeof(sp));
+  interp_isr();
+  CHECK(interp_hand_dev_over_ticks() == 1);
+  CHECK(interp_hand_dev_max() == doctest::Approx(4.0f).epsilon(0.01));
+  fault_step();                                      // observe: reported, never latched
+  CHECK(fault_guard_mode() != JbUdp::GuardMode::ESTOP);
+
+  // ARMED: a SMALLER exceed (2.8 > 2.5) fires the trip. (The fault_step above
+  // enabled output, so this tick is an arm edge — the fresh HAS_HAND frame
+  // re-latches the lane after the fix-1 edge clear, as the live stream would.)
+  interp_set_hand_dev_guard_armed(true);
+  fake_advance(INTERP_PERIOD_US);
+  JbUdp::SetpointPayload sp2; memset(&sp2, 0, sizeof(sp2));
+  sp2.u0[HAND_AXIS] = 2.8f;
+  sp2.flags = 0x4u;
+  interp_on_setpoint(2, reinterpret_cast<const uint8_t*>(&sp2), sizeof(sp2));
+  interp_isr();
+  CHECK(interp_hand_dev_over_ticks() == 2);
+  fake_set_udp_last_rx_us(fake_mono_us());
+  fault_step();
+  CHECK(fault_guard_mode() == JbUdp::GuardMode::ESTOP);
+  CHECK(fault_state() == JbUdp::FaultState::MAX_DEVIATION);
+  CHECK(fault_max_dev_leg() == HAND_AXIS);
+  CHECK(fault_max_dev_value() == doctest::Approx(2.8f).epsilon(0.01));   // the TRIP's excursion
+  CHECK(fault_max_dev_u0() == doctest::Approx(2.8f).epsilon(0.01));      // its own cmd …
+  CHECK(fault_max_dev_enc() == doctest::Approx(0.0f).epsilon(0.01));     // … and fb pair
+  CHECK(interp_hand_dev_max() == doctest::Approx(4.0f).epsilon(0.01));   // console read unchanged
+  hand_source_reset();
 }

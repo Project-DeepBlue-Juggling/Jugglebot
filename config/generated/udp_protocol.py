@@ -80,6 +80,7 @@ class RpcMethod(IntEnum):
     STATE_READ = 82  # Relay: read Platform-Teensy RobotState (is_homed/level/pose)
     STATE_WRITE = 83  # Relay: write Platform-Teensy RobotState (read-modify-write via cache)
     HAND_TRAJ_CMD = 84  # Hand traj + smooth-move (byte-0 discriminator → 0x6D0)
+    HAND_SOURCE_SET = 85  # Switch the hand-mastery latch (0=LEGACY_STROKE, 1=STREAMED; gated, bridge-local)
 
 class RpcStatus(IntEnum):
     OK = 0  # Success
@@ -89,6 +90,7 @@ class RpcStatus(IntEnum):
     ERR_TIMEOUT = 4  # Downstream CAN op timed out
     ERR_REJECTED = 5  # Refused by a safety gate
     ERR_NOT_IMPL = 6  # Method not implemented in this firmware revision
+    ERR_HAND_SOURCE = 7  # Refused by the hand-mastery latch: HAND_TRAJ_CMD while hand_source == STREAMED (unified-7dof FW 17)
 
 class LinkState(IntEnum):
     INIT = 0  # Ethernet up, no Jetson heartbeat yet
@@ -139,6 +141,7 @@ class HeartbeatT2JFlags(IntEnum):
     ALL_AXIS_HEARTBEATS_OK = 4  # bit2: every present axis heartbeat is fresh
     MPC_ACTIVE = 8  # bit3: firmware-side mpc_active (lets a setpoint source verify its arm took)
     CONE_HEALTH_MASK = 48  # bits 4-5: cone (CAN2) BusHealth (UNKNOWN=0/OK=1/WARN=2/BUS_OFF=3) << HEARTBEAT_CONE_HEALTH_SHIFT; reads 0 = UNKNOWN from a pre-cone-uplink flash
+    HAND_SOURCE_STREAMED = 64  # bit 6: hand_source latch — set = STREAMED (bridge masters the hand, 7th Setpoint lane live), clear = LEGACY_STROKE (boot default; also what a pre-FW-17 flash reads as)
     TORQUE_CLAMP_MASK = 16128  # bits 8-13: bit (8+i) set = leg i's |torque_ff| was clamped to TORQUE_FF_FIRMWARE_CLAMP_WIRE_NM at UDP ingest on the last ACCEPTED setpoint frame (mirrors lead_clamp_mask; leg_interp.cpp interp_on_setpoint)
 
 # ── Decode errors ──────────────────────────────────────────────────────
@@ -1048,6 +1051,25 @@ class ArgHandTraj:
         vals = _ARG_HAND_TRAJ_STRUCT.unpack(data[:8])
         it = iter(vals)
         return cls(tuple(next(it) for _ in range(8)))
+
+# ArgHandSource (HAND_SOURCE_SET)
+ARG_HAND_SOURCE_FMT = '<B'
+ARG_HAND_SOURCE_SIZE = 1
+_ARG_HAND_SOURCE_STRUCT = struct.Struct(ARG_HAND_SOURCE_FMT)
+assert _ARG_HAND_SOURCE_STRUCT.size == 1
+
+@dataclass
+class ArgHandSource:
+    source: int = 0
+
+    def pack(self) -> bytes:
+        return _ARG_HAND_SOURCE_STRUCT.pack(self.source)
+
+    @classmethod
+    def unpack(cls, data: bytes) -> 'ArgHandSource':
+        vals = _ARG_HAND_SOURCE_STRUCT.unpack(data[:1])
+        it = iter(vals)
+        return cls(next(it))
 
 # ── Hand axis-6 allow-table ──────────────────────────────────────────────
 # RpcMethod ids the can-bridge forwards to the hand ODrive (axis 6); the

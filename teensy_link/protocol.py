@@ -127,6 +127,7 @@ from udp_protocol import (  # noqa: E402, F401
     ArgBbThrow,
     ArgRobotState,
     ArgHandTraj,  # HAND_TRAJ_CMD — 8-byte 0x6D0 payload
+    ArgHandSource,  # HAND_SOURCE_SET — the FW 17 hand-mastery latch
     ResultAxisVersions,  # GET_AXIS_VERSIONS result blob
     # Hand axis-6 allow-table
     HAND_AXIS6_PERMITTED,

@@ -66,6 +66,11 @@ static uint16_t g_activate_ret = JbUdp::RpcStatus::OK;
 static uint16_t g_deactivate_ret = JbUdp::RpcStatus::OK;
 static uint16_t g_hand_traj_ret = JbUdp::RpcStatus::OK;
 static int      g_hand_traj_calls = 0;
+static bool     g_mpc_active = false;         // drives fault_mpc_active()
+static uint16_t g_hand_source_ret = JbUdp::RpcStatus::OK;   // hand_source_request stub
+static int      g_hand_source_calls = 0;
+static uint8_t  g_hand_source_arg = 0xFF;     // the source value rpc.cpp decoded
+static bool     g_hand_source_mpc = false;    // the mpc_active value rpc.cpp passed
 static uint16_t g_version_len = 8;            // version_fill_blob returned length
 static int      g_tilt_calls = 0, g_state_read_calls = 0, g_state_write_calls = 0;
 
@@ -77,6 +82,9 @@ static void drv_reset() {
   g_homing_axis = g_activate_axis = g_deactivate_axis = 0xFF;
   g_homing_ret = g_activate_ret = g_deactivate_ret = JbUdp::RpcStatus::OK;
   g_hand_traj_ret = JbUdp::RpcStatus::OK; g_hand_traj_calls = 0;
+  g_mpc_active = false;
+  g_hand_source_ret = JbUdp::RpcStatus::OK; g_hand_source_calls = 0;
+  g_hand_source_arg = 0xFF; g_hand_source_mpc = false;
   g_version_len = 8;
   g_tilt_calls = g_state_read_calls = g_state_write_calls = 0;
 }
@@ -92,6 +100,14 @@ TxResult can_bb_tx(const ODrive::CanFrame& f, uint8_t cls) {
 void fault_notify_clear_errors()  { g_clear_calls++; }
 void fault_notify_reboot_started() { g_reboot_calls++; }
 bool fault_stow_pending()          { return g_stow_pending; }
+bool fault_mpc_active()            { return g_mpc_active; }
+
+// ── hand_source.h (routing isolation — the REAL gate is exercised by
+//    test_leg_interp / test_hand_ops, which link the real hand_source.o) ──
+uint16_t hand_source_request(uint8_t source, bool mpc_active_now) {
+  g_hand_source_calls++; g_hand_source_arg = source; g_hand_source_mpc = mpc_active_now;
+  return g_hand_source_ret;
+}
 
 // ── leg_homing/activate/deactivate.h (entry points only — record + settable ret) ──
 uint16_t homing_request(uint8_t axis)     { g_homing_axis = axis; return g_homing_ret; }
@@ -146,6 +162,7 @@ using JbUdp::RpcArgs::ArgAxisOnly;
 using JbUdp::RpcArgs::ArgAbsPosition;
 using JbUdp::RpcArgs::ArgSdoRead;
 using JbUdp::RpcArgs::ArgBbThrow;
+using JbUdp::RpcArgs::ArgHandSource;
 using JbUdp::RpcArgs::AXIS_ALL;
 
 // ── routing + arg-decode ──────────────────────────────────────────────────────
@@ -459,4 +476,37 @@ TEST_CASE("the BB relay acks a DEFERRED CAN1 frame OK, charged to TxCls::RPC") {
   bb_state.heartbeat_seen = true; bb_state.heartbeat_stale = false;
   g_bb_send_ok = false;                  // → TxResult::FAILED
   CHECK(call(RpcMethod::BB_THROW, a) == RpcStatus::ERR_TIMEOUT);
+}
+
+
+// ── HAND_SOURCE_SET (FW 17): decode + pass-through routing ────────────────────
+//  The dispatch case must decode ArgHandSource, read fault_mpc_active() at the
+//  dispatch instant, and hand BOTH to hand_source_request — the single
+//  enforcement point. No CAN frame and no bus gate: the method is bridge-local
+//  (a dark bus must not block a LEGACY↔STREAMED switch decision that the
+//  firmware-side settle gate already guards with its own freshness check).
+TEST_CASE("HAND_SOURCE_SET routes to hand_source_request with source + mpc_active; no CAN TX; short arg rejects") {
+  reset_all();
+  ArgHandSource a{}; a.source = 1;   // STREAMED
+  CHECK(call(RpcMethod::HAND_SOURCE_SET, a) == RpcStatus::OK);
+  CHECK(g_hand_source_calls == 1);
+  CHECK(g_hand_source_arg == 1);
+  CHECK(g_hand_source_mpc == false);
+  CHECK(fake_sent_count() == 0);            // bridge-local — nothing on CAN3
+
+  // mpc_active at dispatch time is passed through (the !mpc gate lives in
+  // hand_source_request, but the VALUE must be the fault machine's, not a literal).
+  g_mpc_active = true;
+  a.source = 0;                             // LEGACY_STROKE
+  g_hand_source_ret = RpcStatus::ERR_REJECTED;
+  CHECK(call(RpcMethod::HAND_SOURCE_SET, a) == RpcStatus::ERR_REJECTED);
+  CHECK(g_hand_source_arg == 0);
+  CHECK(g_hand_source_mpc == true);
+
+  // Short arg → ERR_BAD_ARGS before the enforcement point is reached.
+  uint8_t result[64]; uint16_t res_len = 0;
+  const int before = g_hand_source_calls;
+  CHECK(Rpc::dispatch(RpcMethod::HAND_SOURCE_SET, nullptr, 0, result, res_len)
+        == RpcStatus::ERR_BAD_ARGS);
+  CHECK(g_hand_source_calls == before);
 }

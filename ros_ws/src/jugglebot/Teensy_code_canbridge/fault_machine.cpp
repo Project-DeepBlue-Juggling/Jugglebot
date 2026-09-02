@@ -47,6 +47,7 @@
 #include "odrive_protocol.h"
 #include "can_buses.h"
 #include "leg_interp.h"
+#include "hand_source.h"        // hand_source_streamed (hand-deviation guard gate, FW 17)
 #include "leg_homing.h"         // homing_active (mutual exclusion with deferred stow)
 #include "leg_activate.h"       // activate_active (mutual exclusion with deferred stow)
 #include "leg_deactivate.h"     // deactivate_active (mutual exclusion with deferred stow)
@@ -92,6 +93,15 @@ static uint8_t s_max_dev_latch_leg = 0xFF;
 static float   s_max_dev_latch_dev = 0.0f;
 static float   s_max_dev_latch_u0  = 0.0f;
 static float   s_max_dev_latch_enc = 0.0f;
+
+// ── Hand-deviation tick-verdict tracker (FW 17) ──────────────────────────────
+// The 500 Hz interp computes the hand residual and counts exceed ticks
+// (interp_hand_dev_over_ticks — cumulative, single-writer, never cleared by a
+// reader); this 10 Hz task DIFFERENCES it, so a one-tick excursion between
+// polls still latches (the census idiom — a read-then-clear flag would race the
+// ISR and could drop exactly the tick that mattered). Sampled unconditionally
+// every fault tick so a CLEAR_ERRORS never inherits a stale delta.
+static uint32_t s_hand_dev_over_prev = 0;
 
 // ── Reboot-in-progress watchdog-suppression latch ──────────────────
 // Armed ONLY by fault_notify_reboot_started() (the REBOOT_ODRIVES RPC), so a
@@ -344,10 +354,18 @@ static void evaluate_guard() {
   bool estop = false;
   uint8_t state = JbUdp::FaultState::NONE;
 
-  // Motor overspeed.
-  for (uint8_t i = 0; i < NUM_LEGS; ++i) {
+  // Motor overspeed. Legs against MAX_MOTOR_VEL_RPS (16.5); the hand against
+  // its OWN HAND_MAX_MOTOR_VEL_RPS (345 = 1.15× the 300 rev/s ceiling — FW 17,
+  // Phase 0 Decision 4). The leg bound must NEVER be applied to axis 6 (a legacy
+  // stroke peaks at 221 rev/s — 16.5 would trip on every hand move), and until
+  // this guard the planner cap was the only practical hand overspeed backstop
+  // short of the ODrive's own 1200 rev/s trip. Unconditional like the leg check
+  // (no mpc_active gate): 345 is above any physically-planned hand speed under
+  // EITHER master, so it never false-trips a legacy stroke.
+  for (uint8_t i = 0; i < NUM_AXES; ++i) {
     float v = axes[i].vel_rps; if (v < 0) v = -v;
-    if (v > MAX_MOTOR_VEL_RPS) { estop = true; state = JbUdp::FaultState::MOTOR_OVERSPEED; break; }
+    const float bound = (i == HAND_AXIS) ? HAND_MAX_MOTOR_VEL_RPS : MAX_MOTOR_VEL_RPS;
+    if (v > bound) { estop = true; state = JbUdp::FaultState::MOTOR_OVERSPEED; break; }
   }
   // MPC command staleness (the hard link-fault trigger).
   const uint64_t age = micros64() - interp_last_setpoint_us();   // interval: setpoint stamped mono
@@ -377,6 +395,38 @@ static void evaluate_guard() {
         break;
       }
     }
+  }
+
+  // ── Hand deviation (FW 17, MAX_DEVIATION_HAND_REV — observe-first) ──────────
+  // The residual itself is computed in the 500 Hz interp tick (velocity-
+  // compensated both sides: raw interpolated command vs the age-extrapolated
+  // encoder — Phase 0 Decision 4; the leg guard's u0-vs-raw-encoder shape would
+  // read 2.2–3.5 rev of honest telemetry lag as deviation at 221 rev/s). This
+  // task LATCHES off the tick's verdict: the exceed-tick counter advancing
+  // since the last poll is the trip. The delta is SAMPLED UNCONDITIONALLY every
+  // tick (before any gate) so a disarmed/observing/legacy window can never bank
+  // a stale delta that fires on the first armed poll.
+  const uint32_t hand_dev_over = interp_hand_dev_over_ticks();
+  const bool hand_dev_new = (hand_dev_over != s_hand_dev_over_prev);
+  s_hand_dev_over_prev = hand_dev_over;
+  // OBSERVE-FIRST: interp_hand_dev_guard_armed() boots false — the first
+  // sitting reads the max residual ([hand7] dev_max=); `hand7 arm` at the
+  // second sitting makes the same verdict an E-STOP. Same latch, same snapshot
+  // machinery, same CLEAR_ERRORS-only release as the leg guard — the snapshot's
+  // axis is HAND_AXIS (6), its "u0" the raw command and its "enc" the
+  // age-extrapolated feedback at the worst-residual tick.
+  if (!estop && hand_dev_new && interp_hand_dev_guard_armed()
+      && s_mpc_active && hand_source_streamed() && interp_hand_lane_active()) {
+    estop = true; state = JbUdp::FaultState::MAX_DEVIATION;
+    md_leg = HAND_AXIS;
+    // Trip-dedicated snapshot (2026-09-02 review fix): the residual trio at the
+    // exceed tick that fired THIS trip — NOT interp_hand_dev_max(), which is
+    // boot-cumulative and can freeze an older, larger observe-block excursion
+    // (with its cmd/fb pair) into the latch, misattributing the trip in
+    // /link_status and bags.
+    md_dev = interp_hand_dev_trip_dev();
+    md_u0  = interp_hand_dev_trip_cmd();
+    md_enc = interp_hand_dev_trip_fb();
   }
 
   // Motor feedback staleness (port of motor_guard MOTOR_FB_STALENESS_S=0.15,
@@ -470,6 +520,7 @@ void fault_machine_init() {
   s_estop_state = JbUdp::FaultState::NONE;
   s_max_dev_latch_leg = 0xFF;
   s_max_dev_latch_dev = s_max_dev_latch_u0 = s_max_dev_latch_enc = 0.0f;
+  s_hand_dev_over_prev = 0;
   s_reboot_in_progress = s_reboot_saw_stale = false;
   atomic_write_u64(&s_reboot_deadline_us, 0);
   s_guard_mode = JbUdp::GuardMode::DISABLED;

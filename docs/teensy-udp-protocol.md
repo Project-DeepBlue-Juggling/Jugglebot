@@ -118,6 +118,7 @@ Static IPs: Teensy `192.168.42.2`, Jetson `192.168.42.1` (`/30` point-to-point).
 | `STATE_READ` | 0x0052 | Relay: read Platform-Teensy RobotState (is_homed/level/pose) |
 | `STATE_WRITE` | 0x0053 | Relay: write Platform-Teensy RobotState (read-modify-write via cache) |
 | `HAND_TRAJ_CMD` | 0x0054 | Hand traj + smooth-move (byte-0 discriminator → 0x6D0) |
+| `HAND_SOURCE_SET` | 0x0055 | Switch the hand-mastery latch (0=LEGACY_STROKE, 1=STREAMED; gated, bridge-local) |
 
 ### RpcStatus
 
@@ -130,6 +131,7 @@ Static IPs: Teensy `192.168.42.2`, Jetson `192.168.42.1` (`/30` point-to-point).
 | `ERR_TIMEOUT` | 0x0004 | Downstream CAN op timed out |
 | `ERR_REJECTED` | 0x0005 | Refused by a safety gate |
 | `ERR_NOT_IMPL` | 0x0006 | Method not implemented in this firmware revision |
+| `ERR_HAND_SOURCE` | 0x0007 | Refused by the hand-mastery latch: HAND_TRAJ_CMD while hand_source == STREAMED (unified-7dof FW 17) |
 
 ### LinkState
 
@@ -204,6 +206,7 @@ Static IPs: Teensy `192.168.42.2`, Jetson `192.168.42.1` (`/30` point-to-point).
 | `ALL_AXIS_HEARTBEATS_OK` | 4 | bit2: every present axis heartbeat is fresh |
 | `MPC_ACTIVE` | 8 | bit3: firmware-side mpc_active (lets a setpoint source verify its arm took) |
 | `CONE_HEALTH_MASK` | 48 | bits 4-5: cone (CAN2) BusHealth (UNKNOWN=0/OK=1/WARN=2/BUS_OFF=3) << HEARTBEAT_CONE_HEALTH_SHIFT; reads 0 = UNKNOWN from a pre-cone-uplink flash |
+| `HAND_SOURCE_STREAMED` | 64 | bit 6: hand_source latch — set = STREAMED (bridge masters the hand, 7th Setpoint lane live), clear = LEGACY_STROKE (boot default; also what a pre-FW-17 flash reads as) |
 | `TORQUE_CLAMP_MASK` | 16128 | bits 8-13: bit (8+i) set = leg i's \|torque_ff\| was clamped to TORQUE_FF_FIRMWARE_CLAMP_WIRE_NM at UDP ingest on the last ACCEPTED setpoint frame (mirrors lead_clamp_mask; leg_interp.cpp interp_on_setpoint) |
 
 ## Messages
@@ -286,7 +289,7 @@ Payload **73 bytes**. Python struct fmt: `<QBBBBIIBBBfffffffffBBfff`.
 | `bus1_health` | u8 | 1 | wire slot 1 = CAN3 (Jugglebot core: legs+hand) BusHealth enum |
 | `bus2_health` | u8 | 1 | wire slot 2 = CAN1 (Ball Butler) BusHealth enum (cone/CAN2 not yet on uplink) |
 | `fault_state` | u8 | 1 | FaultState enum |
-| `flags` | u32 | 1 | HeartbeatT2JFlags bitset: bits 0-3 TIME_SYNCED\|STOW_PENDING_ON_RECONNECT\|ALL_AXIS_HEARTBEATS_OK\|MPC_ACTIVE; bits 4-5 CONE_HEALTH_MASK (cone/CAN2 BusHealth, see HEARTBEAT_CONE_HEALTH_SHIFT); bits 8-13 TORQUE_CLAMP_MASK (per-leg torque_ff ingest clamp, see HEARTBEAT_TORQUE_CLAMP_SHIFT) |
+| `flags` | u32 | 1 | HeartbeatT2JFlags bitset: bits 0-3 TIME_SYNCED\|STOW_PENDING_ON_RECONNECT\|ALL_AXIS_HEARTBEATS_OK\|MPC_ACTIVE; bits 4-5 CONE_HEALTH_MASK (cone/CAN2 BusHealth, see HEARTBEAT_CONE_HEALTH_SHIFT); bit 6 HAND_SOURCE_STREAMED (FW 17 hand-mastery latch — set = STREAMED, clear = LEGACY_STROKE/pre-17); bits 8-13 TORQUE_CLAMP_MASK (per-leg torque_ff ingest clamp, see HEARTBEAT_TORQUE_CLAMP_SHIFT) |
 | `uptime_ms` | u32 | 1 | ms since boot |
 | `bb_state` | u8 | 1 | BallButlerState enum (0..6, 127=ERROR) |
 | `bb_state_data` | u8 | 1 | BB error code when bb_state == ERROR, else 0 |
@@ -295,7 +298,7 @@ Payload **73 bytes**. Python struct fmt: `<QBBBBIIBBBfffffffffBBfff`.
 | `bb_pitch_deg` | f32 | 1 | BB pitch (deg) |
 | `bb_hand_mm` | f32 | 1 | BB hand position (mm) |
 | `live_deviation` | f32 | 6 | Per-leg live deviation u0-encoder (rev) — the MAX_DEVIATION guard quantity |
-| `lead_clamp_mask` | u8 | 1 | bit i set = leg i's interp lead clamp engaged on the last 500 Hz tick |
+| `lead_clamp_mask` | u8 | 1 | bit i set = axis i's interp lead clamp engaged on the last 500 Hz tick (bits 0-5 legs; bit 6 = the hand lane's MAX_LEAD_HAND_REV clamp since FW 17 — the lead-duty engagement bit) |
 | `max_dev_leg` | u8 | 1 | Leg that crossed MAX_DEVIATION at the last latch (0xFF = none since boot) |
 | `max_dev_value` | f32 | 1 | Deviation u0-encoder (rev) of max_dev_leg frozen at the latch crossing |
 | `max_dev_u0` | f32 | 1 | Commanded base u0 (rev) of max_dev_leg frozen at the latch crossing |
@@ -720,3 +723,11 @@ wraps the generated Python. `AXIS_ALL = 0xFF` broadcasts to all legs.
 | Field | Type | Notes |
 |-------|------|-------|
 | `payload` | u8 | Exact 8-byte 0x6D0 PLATFORM_TRAJ_CMD payload (host-built; byte-0 discriminator) |
+
+### ArgHandSource (`HAND_SOURCE_SET`)
+
+**1 bytes**. Python struct fmt: `<B`.
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `source` | u8 | 0 = LEGACY_STROKE (Platform-Teensy stroke engine), 1 = STREAMED (bridge 500 Hz hand lane) |

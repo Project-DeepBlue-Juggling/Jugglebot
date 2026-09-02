@@ -111,14 +111,17 @@ class FakeTeensy:
         sock.sendto(frame, dest)
         return seq
 
-    def send_heartbeat_t2j(self, link_state: int = int(p.LinkState.UP), fault_state: int = 0) -> None:
+    def send_heartbeat_t2j(self, link_state: int = int(p.LinkState.UP), fault_state: int = 0,
+                           flags: int = 0) -> None:
+        # `flags` (default 0) lets tests drive HeartbeatT2J flag bits — e.g.
+        # bit 6 HAND_SOURCE_STREAMED (0x40) for the FW 17 arm-fold tests.
         hb = p.HeartbeatT2J(
             t_teensy_us=int(time.time() * 1_000_000),
             link_state=link_state,
             bus1_health=int(p.BusHealth.OK),
             bus2_health=int(p.BusHealth.OK),
             fault_state=fault_state,
-            flags=0,
+            flags=flags,
             uptime_ms=0,
         )
         self.send_to_jetson(int(p.MsgType.HEARTBEAT_T2J), hb.pack())

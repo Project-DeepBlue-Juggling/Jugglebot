@@ -16,6 +16,7 @@
 #include "can_buses.h"         // can_jugglebot_tx / TxCls, jugglebot_commands_allowed
 #include "leg_homing.h"        // homing_active (HAND_TRAJ_CMD ↔ homing interlock)
 #include "leg_interp.h"        // interp_last_tick_us (the phase-stamp reference)
+#include "hand_source.h"       // hand_source_streamed (the § 2.4 mastery latch, FW 17)
 #include "time_base.h"         // micros64 (interval clock — the phase is an INTERVAL)
 
 namespace CanBridge {
@@ -73,7 +74,19 @@ uint16_t hand_traj_cmd(const JbUdp::RpcArgs::ArgHandTraj& a) {
   // rather than a compiler accident.
   const uint64_t tick_us  = interp_last_tick_us();
   const uint16_t phase_us = (uint16_t)(micros64() - tick_us);
-  // HAND_TRAJ_CMD ↔ homing interlock, checked FIRST: a hand
+  // ── hand_source interlock (§ 2.4, FW 17) — the FIRST gate ───────────────────
+  // While the bridge masters the hand (STREAMED), the legacy stroke conduit is
+  // structurally refused: a 0x6D0 dispatch would put the Platform Teensy's
+  // 500 Hz stroke on the wire AGAINST the interp's own 500 Hz hand frames —
+  // exactly the two-masters-one-CAN-id class the latch exists to make
+  // impossible. ERR_HAND_SOURCE (not ERR_REJECTED) so the host ack NAMES the
+  // mode as the reason; visible in hand_traj_acks (T-H4's observable).
+  if (hand_source_streamed()) {
+    s_counters.rej_source++;
+    phase_push(phase_us, HAND_PHASE_REJ_SOURCE);
+    return RpcStatus::ERR_HAND_SOURCE;
+  }
+  // HAND_TRAJ_CMD ↔ homing interlock, checked before any CAN send: a hand
   // catch-trajectory must not fire while the SAME firmware state machine is mid-
   // homing (axis 6 homes with the shared move-to-hardstop ladder). A concurrent
   // traj would fight the move-to-hardstop and corrupt the just-defined

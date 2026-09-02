@@ -291,6 +291,22 @@ def test_wire_layout_frozen(gen):
     for member, value, *_ in gen.ENUMS["MsgType"]:
         h.update(f"MT {member}={value};".encode())
     digest = h.hexdigest()
+    # Re-pinned for the ADDITIVE HAND_SOURCE_SET RPC arg (2026-09-02,
+    # unified-7dof-planner Phase 3, can-bridge FW 17): a new 1-byte
+    # ArgHandSource (u8 source: 0 = LEGACY_STROKE, 1 = STREAMED) for the new
+    # RpcMethod HAND_SOURCE_SET 0x0055 — the firmware hand-mastery latch's only
+    # switch. Additive on every axis of the contract: no existing message, arg
+    # or framing constant moved, no MsgType changed (RPC methods ride the
+    # RpcRequest envelope, not a MsgType), so PROTOCOL_VERSION deliberately
+    # stays at 6 (the LegCmd / HandSensor precedent — an FW ≤ 16 board answers
+    # the unknown method ERR_UNKNOWN_METHOD, loudly). The same commit also adds
+    # RpcStatus ERR_HAND_SOURCE 0x0007 and HeartbeatT2JFlags
+    # HAND_SOURCE_STREAMED 0x40 — neither is hashed here (statuses and flag
+    # enums are additive by construction), listed so the re-pin names the whole
+    # wire delta.
+    # Previous pin: 989e50132fdff55a20507e4ecbf58cc92d3cff4d5f01f62c7f4787ab6e54d946
+    #   (the INCOMPATIBLE Setpoint v6 widening — 2026-09-01, PROTOCOL_VERSION 6).
+    #
     # Re-pinned for the INCOMPATIBLE Setpoint v6 widening (2026-09-01,
     # unified-7dof-planner Phase 2): every Setpoint f32 array widens 6 → 7
     # (index 6 = the hand lane, ODrive-convention absolute rev, no sign flip —
@@ -396,7 +412,7 @@ def test_wire_layout_frozen(gen):
     # Previous pin: 8e1bd0a3dcd370859a781925487a9accee4109554494a40023dd1cf4549794df
     #   (additive BRIDGE_TX_DIAG 0x8D 42 B + BRIDGE_IDENTITY 0x8E 3 B —
     #    2026-08-02 ERR_TIMEOUT attribution instrumentation).
-    _EXPECTED = "989e50132fdff55a20507e4ecbf58cc92d3cff4d5f01f62c7f4787ab6e54d946"
+    _EXPECTED = "b5c54dbe1a44a464e48f691ac6be097c46c537832fd0c7706c02e21d23a9620c"
     assert digest == _EXPECTED, (
         "The UDP wire LAYOUT changed (a message/arg field layout, a framed MsgType "
         "value, or a framing constant). If INCOMPATIBLE, bump PROTOCOL_VERSION. Either "

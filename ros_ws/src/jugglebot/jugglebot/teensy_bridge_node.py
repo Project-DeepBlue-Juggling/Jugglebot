@@ -118,7 +118,7 @@ from teensy_link import (
 from teensy_link import protocol as p
 from teensy_link import rpc_args
 from teensy_link.fault_logic import LinkLossLatch
-from teensy_link.setpoint_pump import SetpointPump
+from teensy_link.setpoint_pump import SetpointPump, FLAG_HAS_HAND
 from teensy_link.encoder_search import (
     EncoderSearch, AxisStatus, AXIS_STATE_ENCODER_INDEX_SEARCH,
 )
@@ -805,6 +805,12 @@ _T2J_FLAG_MPC_ACTIVE = 0x8
 # as UNKNOWN — surfacing it is backward-compatible with an unflashed bridge.
 _T2J_CONE_HEALTH_MASK = 0x30
 _T2J_CONE_HEALTH_SHIFT = 4
+# Bit 6: the FW 17 hand-mastery latch (generated single source:
+# p.HeartbeatT2JFlags.HAND_SOURCE_STREAMED). Set = STREAMED (the bridge's 500 Hz
+# interp masters the hand — the 7th Setpoint lane is live and HAND_TRAJ_CMD is
+# refused with ERR_HAND_SOURCE); clear = LEGACY_STROKE, which is both the boot
+# default and what every pre-FW-17 flash reads as — backward-self-describing.
+_T2J_FLAG_HAND_SOURCE_STREAMED = int(p.HeartbeatT2JFlags.HAND_SOURCE_STREAMED)
 # Bits 8-13 carry the per-leg torque_ff ingest-clamp mask (bit 8+i = leg i clamped
 # at UDP ingest on the last ACCEPTED setpoint) — generated single source:
 # p.HeartbeatT2JFlags.TORQUE_CLAMP_MASK / p.HEARTBEAT_TORQUE_CLAMP_SHIFT.
@@ -974,6 +980,12 @@ _RECOVER_U0_TOL_REV = 0.03
 # 0.25.) The recovery path does NOT reuse this — a diverged command cleared onto a
 # latched guard is exactly what the tight 0.03 gate above must catch.
 _ARM_U0_TOL_REV = 0.25
+# The HAND lane's arm pre-check margin (FW 17): the same quarter-of-the-firmware-
+# deviation-backstop derivation as the leg 0.25 above, against the hand's OWN
+# MAX_DEVIATION_HAND_REV = 2.5 rev — 0.625 rev. NEVER the leg 0.25: the hand's
+# honest telemetry lag at speed dwarfs a leg's, and the firmware constants this
+# derives from are per-axis by design (the leg numbers must not touch axis 6).
+_ARM_U0_HAND_TOL_REV = 0.625
 # Bounded block on trajectory_node's reseed reply. The bridge runs a
 # MultiThreadedExecutor, so a bounded wait here (in a ReentrantCallbackGroup) is safe.
 _RECOVER_RESEED_TIMEOUT_S = 2.0
@@ -1253,6 +1265,20 @@ class TeensyBridgeNode(Node):
         # same one read twice. Counting a stale repeat would let a link that
         # died mid-clamp hold the duty at 1.0 forever.
         self._heartbeat_gen = 0
+        # FW 17 hand-mastery ack cache (adversarial-review fix, 2026-09-02):
+        # the latched hand_source state most recently ACKED by the firmware to
+        # THIS node (True=STREAMED / False=LEGACY / None=never switched here),
+        # plus the heartbeat generation at the moment of that ack. The arm
+        # fold's (c2) hand decision reads mastery from the cached 10 Hz
+        # heartbeat, which can PREDATE a just-acked HAND_SOURCE_SET by up to
+        # ~100 ms — a switch-then-arm inside that window (exactly the Phase 4
+        # programmatic sequence) would silently skip the hand CLOSED_LOOP
+        # preamble and the 0.625 rev u0 pre-check while the firmware lane goes
+        # live. The rule: trust heartbeat bit 6 only when the heartbeat is
+        # decisively NEWER than the ack; otherwise OR the acked latch state in.
+        # Guarded by self._lock (written by the RPC caller, read by the arm path).
+        self._hand_source_acked: bool | None = None
+        self._hand_source_ack_hb_gen = -1
         # Latest HAND_SENSOR frame (hand ball-present switch) + the JETSON
         # MONOTONIC arrival time. None until the first frame: that is the
         # tri-state UNKNOWN, and it is also what an unflashed bridge (no Phase
@@ -1839,6 +1865,11 @@ class TeensyBridgeNode(Node):
         self.create_service(SetString, 'set_hand_state', self._svc_set_hand_state)
         self.create_service(SetHandTrajCmd, 'set_hand_traj_cmd', self._svc_set_hand_traj)
         self.create_service(SetFloat, 'smooth_move_hand', self._svc_smooth_move_hand)
+        # FW 17 hand-mastery latch (SetBool: data=True → STREAMED, False →
+        # LEGACY_STROKE). SetBool rather than a new .srv so no interfaces
+        # rebuild rides this phase (the SetTrajectoryLimits precedent —
+        # deferred to Phase 4's rebuild).
+        self.create_service(SetBool, 'set_hand_source', self._svc_set_hand_source)
         self.create_service(SetHandGains, 'set_hand_gains', self._svc_set_hand_gains)
 
         # ── Ball Butler services (production names, cutover) ────
@@ -4059,6 +4090,9 @@ class TeensyBridgeNode(Node):
         # the guard latch.
         with self._lock:
             hb = self._latest_heartbeat
+            hb_gen = self._heartbeat_gen      # generation of THIS snapshot — the
+                                              # (c2) hand-mastery freshness rule
+                                              # compares it against the ack's
         if hb is not None and int(hb.fault_state) != int(FaultState.NONE):
             name = _enum_name(FaultState, int(hb.fault_state))
             return False, (
@@ -4127,6 +4161,79 @@ class TeensyBridgeNode(Node):
                     source.close()
                 return False, (f'{why} — non-finite or mismatched encoder — refuse '
                                'to arm (would risk MAX_DEVIATION E-STOP)')
+
+            # (c2) FW 17 hand lane. When the firmware hand-mastery latch reads
+            # STREAMED, arming also hands the interp's 7th lane a live hand —
+            # so the hand joins the same stream-then-arm contract:
+            #   * the hand ODrive must be brought to CLOSED_LOOP +
+            #     POSITION/PASSTHROUGH BEFORE mpc_active is raised (the
+            #     preamble hand_ops used to own per-dispatch; under STREAMED
+            #     it folds in HERE, the single arm gate) — a hand left IDLE
+            #     would silently swallow the streamed lane;
+            #   * a hand-bearing frame's u0[6] must sit within the hand's own
+            #     arm tolerance of the live hand encoder (quarter of
+            #     MAX_DEVIATION_HAND_REV — never the leg 0.25).
+            # LEGACY needs neither: the firmware discards index 6 by mode, and
+            # a hand-bearing frame then only earns a warning (visible intent
+            # the firmware will refuse).
+            hb_flags = int(hb.flags) if hb is not None else 0
+            hand_streamed = bool(hb_flags & _T2J_FLAG_HAND_SOURCE_STREAMED)
+            # ── Ack-freshness rule (adversarial-review fix, 2026-09-02) ─────
+            # The heartbeat is 10 Hz and the snapshot above may PREDATE a
+            # just-acked /set_hand_source: a switch-to-STREAMED-then-arm inside
+            # that ~100 ms window read bit 6 clear and silently skipped BOTH
+            # the hand CLOSED_LOOP/PASSTHROUGH preamble AND the 0.625 rev hand
+            # u0 pre-check while the firmware lane went live — exactly the
+            # sequence Phase 4 runs programmatically. Trust a LEGACY (clear)
+            # bit only from a heartbeat decisively newer than the node's last
+            # STREAMED ack; otherwise OR the acked latch state in. "Decisively
+            # newer" = at least TWO heartbeat generations past the ack: at
+            # 10 Hz at most one heartbeat is in flight when the ack lands, so
+            # gen ≥ ack_gen+2 guarantees a heartbeat SENT after the firmware
+            # flipped the latch. (A bit-6-SET heartbeat is trusted as-is — the
+            # over-inclusive direction only adds the benign preamble/gate.
+            # While this node runs it is the sole UDP owner, so every switch
+            # goes through teensy_hand_source_set and the cache tracks the
+            # true latch; a firmware reboot resets the latch to LEGACY, which
+            # fresh heartbeats then reassert within two generations.)
+            with self._lock:
+                ack_state = self._hand_source_acked
+                ack_gen = self._hand_source_ack_hb_gen
+            if (not hand_streamed and ack_state is True
+                    and hb_gen < ack_gen + 2):
+                hand_streamed = True
+            frame_has_hand = bool(int(sp.flags) & FLAG_HAS_HAND)
+            if hand_streamed:
+                if frame_has_hand:
+                    d = abs(float(sp.u0[6]) - float(telem.pos_rev[6]))
+                    if not (d <= _ARM_U0_HAND_TOL_REV):
+                        if created_here:
+                            source.close()
+                        return False, (
+                            f'hand u0 {float(sp.u0[6]):.3f} rev vs encoder '
+                            f'{float(telem.pos_rev[6]):.3f} rev = {d:.3f} rev '
+                            f'(> {_ARM_U0_HAND_TOL_REV} rev) — refuse to arm the '
+                            f'streamed hand lane (would risk the hand deviation '
+                            f'guard / a lead-clamped lurch)')
+                ok1, m1, _ = self.teensy_set_axis_state(
+                    _HAND_AXIS, proto.ODRIVE_STATES['CLOSED_LOOP'])
+                ok2, m2, _ = (self.teensy_set_controller_mode(
+                    _HAND_AXIS, proto.ODRIVE_CONTROL_MODES['POSITION'],
+                    proto.ODRIVE_INPUT_MODES['PASSTHROUGH'])
+                    if ok1 else (False, 'skipped (set_state failed)', b''))
+                if not (ok1 and ok2):
+                    if created_here:
+                        source.close()
+                    return False, ('hand arming preamble failed under '
+                                   'hand_source=STREAMED: '
+                                   + '; '.join(m for okx, m in ((ok1, m1), (ok2, m2))
+                                               if not okx))
+            elif frame_has_hand:
+                self.get_logger().warning(
+                    'arming with hand knots in the stream but '
+                    'hand_source=LEGACY_STROKE — the firmware will discard '
+                    'Setpoint index 6 (counted); switch with /set_hand_source '
+                    'if the streamed hand lane is intended')
         except Exception as e:  # noqa: BLE001 — arming must never crash the node
             if created_here:
                 try:
@@ -5001,6 +5108,13 @@ class TeensyBridgeNode(Node):
                     # persistent split means the arm/disarm never took on the wire.
                     KeyValue(key='teensy_mpc_active',
                              value=str(int(bool(hb.flags & _T2J_FLAG_MPC_ACTIVE)))),
+                    # FW 17 hand-mastery latch (HeartbeatT2J flags bit 6).
+                    # LEGACY_STROKE is also what a pre-17 flash reads as, so
+                    # the row is honest against an unflashed board.
+                    KeyValue(key='hand_source',
+                             value=('STREAMED'
+                                    if hb.flags & _T2J_FLAG_HAND_SOURCE_STREAMED
+                                    else 'LEGACY_STROKE')),
                     # Leg guard-deviation diagnostics (2026-07-10 forensics). Per-leg
                     # live deviation (u0-encoder, the MAX_DEVIATION guard quantity) +
                     # the lead-clamp bitmask, plus the frozen latch-event snapshot
@@ -5317,8 +5431,31 @@ class TeensyBridgeNode(Node):
         """HAND_TRAJ_CMD: forward a pre-built 8-byte 0x6D0 payload (from
         rpc_args.encode_hand_traj_cmd / encode_smooth_move_hand). The firmware sends
         the CLOSED_LOOP + POSITION/PASSTHROUGH preamble then forwards it on the
-        firmware-owned 0x6D0 id (aborting if a preamble send fails)."""
+        firmware-owned 0x6D0 id (aborting if a preamble send fails). While the
+        FW 17 hand-mastery latch reads STREAMED the firmware refuses this with
+        ERR_HAND_SOURCE — the streamed 7th Setpoint lane owns the hand then."""
         return self._call_rpc(RpcMethod.HAND_TRAJ_CMD, args)
+
+    def teensy_hand_source_set(self, streamed: bool):
+        """HAND_SOURCE_SET (FW 17): request the firmware hand-mastery latch —
+        True → STREAMED (the bridge's 500 Hz interp masters the hand), False →
+        LEGACY_STROKE (the Platform-Teensy stroke engine; the boot default).
+        Bridge-local and idempotent; the firmware gates acceptance on
+        !mpc_active + the hand settled at a rest position on fresh telemetry
+        (a refusal acks ERR_REJECTED). The latched state is visible on
+        /link_status `hand_source` (HeartbeatT2J flags bit 6).
+
+        A successful ack is CACHED (state + the heartbeat generation at the
+        ack) so the arm fold's hand-mastery decision cannot be fooled by a
+        cached heartbeat that predates the switch — see the freshness rule in
+        ``_arm_setpoint_output_locked`` (c2) (2026-09-02 review fix)."""
+        ok, m, blob = self._call_rpc(RpcMethod.HAND_SOURCE_SET,
+                                     rpc_args.encode_hand_source_set(streamed))
+        if ok:
+            with self._lock:
+                self._hand_source_acked = bool(streamed)
+                self._hand_source_ack_hb_gen = self._heartbeat_gen
+        return ok, m, blob
 
     def teensy_sdo_read(self, axis, endpoint):
         """SDO_READ — FIRE-AND-FORGET. The returned blob is ALWAYS empty: no SDO
@@ -6492,6 +6629,26 @@ class TeensyBridgeNode(Node):
             ok, m, _ = self.teensy_hand_traj_cmd(args)
             res.success = ok
             res.message = f"Smooth-move hand to {target_rev:.3f} rev" if ok else m
+        except Exception as e:  # noqa: BLE001
+            res.success = False
+            res.message = str(e)
+        return res
+
+    def _svc_set_hand_source(self, req, res):
+        # Switch the FW 17 hand-mastery latch (SetBool: data=True → STREAMED,
+        # False → LEGACY_STROKE). The GATES live in the firmware
+        # (hand_source_request — !mpc_active + settled-at-rest on fresh axis-6
+        # telemetry), so this handler only forwards and names the refusal; the
+        # firmware is the single enforcement point, exactly like the pump gate.
+        try:
+            streamed = bool(req.data)
+            ok, m, _ = self.teensy_hand_source_set(streamed)
+            mode = 'STREAMED' if streamed else 'LEGACY_STROKE'
+            res.success = ok
+            res.message = (f'hand_source → {mode}' if ok else
+                           f'hand_source → {mode} REFUSED: {m} (the firmware '
+                           f'accepts only while disarmed with the hand settled '
+                           f'at a rest position on fresh telemetry)')
         except Exception as e:  # noqa: BLE001
             res.success = False
             res.message = str(e)

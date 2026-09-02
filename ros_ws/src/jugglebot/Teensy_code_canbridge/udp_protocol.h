@@ -80,6 +80,7 @@ namespace RpcMethod {
   constexpr uint16_t STATE_READ = 0x0052u;  // Relay: read Platform-Teensy RobotState (is_homed/level/pose)
   constexpr uint16_t STATE_WRITE = 0x0053u;  // Relay: write Platform-Teensy RobotState (read-modify-write via cache)
   constexpr uint16_t HAND_TRAJ_CMD = 0x0054u;  // Hand traj + smooth-move (byte-0 discriminator → 0x6D0)
+  constexpr uint16_t HAND_SOURCE_SET = 0x0055u;  // Switch the hand-mastery latch (0=LEGACY_STROKE, 1=STREAMED; gated, bridge-local)
 }
 namespace RpcStatus {
   constexpr uint16_t OK = 0x0000u;  // Success
@@ -89,6 +90,7 @@ namespace RpcStatus {
   constexpr uint16_t ERR_TIMEOUT = 0x0004u;  // Downstream CAN op timed out
   constexpr uint16_t ERR_REJECTED = 0x0005u;  // Refused by a safety gate
   constexpr uint16_t ERR_NOT_IMPL = 0x0006u;  // Method not implemented in this firmware revision
+  constexpr uint16_t ERR_HAND_SOURCE = 0x0007u;  // Refused by the hand-mastery latch: HAND_TRAJ_CMD while hand_source == STREAMED (unified-7dof FW 17)
 }
 namespace LinkState {
   constexpr uint8_t INIT = 0u;  // Ethernet up, no Jetson heartbeat yet
@@ -139,6 +141,7 @@ namespace HeartbeatT2JFlags {
   constexpr uint32_t ALL_AXIS_HEARTBEATS_OK = 4u;  // bit2: every present axis heartbeat is fresh
   constexpr uint32_t MPC_ACTIVE = 8u;  // bit3: firmware-side mpc_active (lets a setpoint source verify its arm took)
   constexpr uint32_t CONE_HEALTH_MASK = 48u;  // bits 4-5: cone (CAN2) BusHealth (UNKNOWN=0/OK=1/WARN=2/BUS_OFF=3) << HEARTBEAT_CONE_HEALTH_SHIFT; reads 0 = UNKNOWN from a pre-cone-uplink flash
+  constexpr uint32_t HAND_SOURCE_STREAMED = 64u;  // bit 6: hand_source latch — set = STREAMED (bridge masters the hand, 7th Setpoint lane live), clear = LEGACY_STROKE (boot default; also what a pre-FW-17 flash reads as)
   constexpr uint32_t TORQUE_CLAMP_MASK = 16128u;  // bits 8-13: bit (8+i) set = leg i's |torque_ff| was clamped to TORQUE_FF_FIRMWARE_CLAMP_WIRE_NM at UDP ingest on the last ACCEPTED setpoint frame (mirrors lead_clamp_mask; leg_interp.cpp interp_on_setpoint)
 }
 
@@ -213,7 +216,7 @@ struct HeartbeatT2JPayload {
   uint8_t bus1_health;  // wire slot 1 = CAN3 (Jugglebot core: legs+hand) BusHealth enum
   uint8_t bus2_health;  // wire slot 2 = CAN1 (Ball Butler) BusHealth enum (cone/CAN2 not yet on uplink)
   uint8_t fault_state;  // FaultState enum
-  uint32_t flags;  // HeartbeatT2JFlags bitset: bits 0-3 TIME_SYNCED|STOW_PENDING_ON_RECONNECT|ALL_AXIS_HEARTBEATS_OK|MPC_ACTIVE; bits 4-5 CONE_HEALTH_MASK (cone/CAN2 BusHealth, see HEARTBEAT_CONE_HEALTH_SHIFT); bits 8-13 TORQUE_CLAMP_MASK (per-leg torque_ff ingest clamp, see HEARTBEAT_TORQUE_CLAMP_SHIFT)
+  uint32_t flags;  // HeartbeatT2JFlags bitset: bits 0-3 TIME_SYNCED|STOW_PENDING_ON_RECONNECT|ALL_AXIS_HEARTBEATS_OK|MPC_ACTIVE; bits 4-5 CONE_HEALTH_MASK (cone/CAN2 BusHealth, see HEARTBEAT_CONE_HEALTH_SHIFT); bit 6 HAND_SOURCE_STREAMED (FW 17 hand-mastery latch — set = STREAMED, clear = LEGACY_STROKE/pre-17); bits 8-13 TORQUE_CLAMP_MASK (per-leg torque_ff ingest clamp, see HEARTBEAT_TORQUE_CLAMP_SHIFT)
   uint32_t uptime_ms;  // ms since boot
   uint8_t bb_state;  // BallButlerState enum (0..6, 127=ERROR)
   uint8_t bb_state_data;  // BB error code when bb_state == ERROR, else 0
@@ -222,7 +225,7 @@ struct HeartbeatT2JPayload {
   float bb_pitch_deg;  // BB pitch (deg)
   float bb_hand_mm;  // BB hand position (mm)
   float live_deviation[6];  // Per-leg live deviation u0-encoder (rev) — the MAX_DEVIATION guard quantity
-  uint8_t lead_clamp_mask;  // bit i set = leg i's interp lead clamp engaged on the last 500 Hz tick
+  uint8_t lead_clamp_mask;  // bit i set = axis i's interp lead clamp engaged on the last 500 Hz tick (bits 0-5 legs; bit 6 = the hand lane's MAX_LEAD_HAND_REV clamp since FW 17 — the lead-duty engagement bit)
   uint8_t max_dev_leg;  // Leg that crossed MAX_DEVIATION at the last latch (0xFF = none since boot)
   float max_dev_value;  // Deviation u0-encoder (rev) of max_dev_leg frozen at the latch crossing
   float max_dev_u0;  // Commanded base u0 (rev) of max_dev_leg frozen at the latch crossing
@@ -570,6 +573,11 @@ struct ArgHandTraj {
   uint8_t payload[8];  // Exact 8-byte 0x6D0 PLATFORM_TRAJ_CMD payload (host-built; byte-0 discriminator)
 };
 static_assert(sizeof(ArgHandTraj) == 8, "ArgHandTraj size drift");
+// ArgHandSource (HAND_SOURCE_SET)
+struct ArgHandSource {
+  uint8_t source;  // 0 = LEGACY_STROKE (Platform-Teensy stroke engine), 1 = STREAMED (bridge 500 Hz hand lane)
+};
+static_assert(sizeof(ArgHandSource) == 1, "ArgHandSource size drift");
 #pragma pack(pop)
 constexpr uint16_t ARG_AXIS_STATE_SIZE = 5u;
 constexpr uint16_t ARG_CONTROLLER_MODE_SIZE = 9u;
@@ -585,6 +593,7 @@ constexpr uint16_t RESULT_AXIS_VERSIONS_SIZE = 57u;
 constexpr uint16_t ARG_BB_THROW_SIZE = 16u;
 constexpr uint16_t ARG_ROBOT_STATE_SIZE = 10u;
 constexpr uint16_t ARG_HAND_TRAJ_SIZE = 8u;
+constexpr uint16_t ARG_HAND_SOURCE_SIZE = 1u;
 }  // namespace RpcArgs
 
 // ── Hand axis-6 allow-table ──────────────────────────────────────────────

@@ -241,6 +241,11 @@ static void decode_into_cache(const CAN_message_t& msg) {
       // CAN3 SRX_DIS means we never receive our own leg-setpoint TX, so only
       // genuine Platform→hand commands reach here; the axis==HAND_AXIS guard is
       // belt-and-suspenders (and skips any stray leg-addressed set_input_pos).
+      // FW 17: while hand_source == STREAMED the bridge itself masters the
+      // hand, its TX is invisible here (SRX_DIS), and the echo is RE-SOURCED
+      // from axes[6].target_* in telemetry.cpp::hand_cmd_echo_uplink_step.
+      // This sniff stays live regardless — a Platform→hand frame arriving
+      // while STREAMED means a second master and MUST reach the host.
       // wire-bound absolute timestamp — wall by contract: t_bridge_us is
       // serialised into the HAND_CMD_ECHO uplink for host-side wall-clock correlation.
       if (axis == HAND_AXIS) hand_cmd_echo_record(d, now_wall_us());

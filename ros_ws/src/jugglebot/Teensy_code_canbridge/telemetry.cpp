@@ -14,6 +14,9 @@
 #include "leg_homing.h"   // homing_result() — uplinked in the Diagnostic (see logbook 2026-07-05-canhub-hardening-18a-homing-result-uplink)
 #include "gpio_poll.h"    // gpio_poll_snapshot() — the hand ball-sensor cache uplinked as HAND_SENSOR
 #include "hand_ops.h"     // hand_ops_counters() — per-stage HAND_TRAJ_CMD exits uplinked as BRIDGE_TX_DIAG
+#include "hand_source.h"  // hand_source_streamed() — HAND_CMD_ECHO re-source (FW 17)
+#include "leg_interp.h"   // interp_hand_sent() (streamed-echo freshness key) + interp_last_tick_us() (echo stamp age-correction) — FW 17
+#include "odrive_protocol.h"  // encode_leg_setpoint — re-encode the streamed hand echo bytes (FW 17)
 
 namespace CanBridge {
 
@@ -233,6 +236,10 @@ void platform_uplink_step() {
 // the host keeps the last value to fill hand_telemetry's command fields. Mirrors
 // platform_uplink_step's emit.
 void hand_cmd_echo_uplink_step() {
+  // The sniff path (LEGACY): the Platform Teensy's 0x0CC to axis 6, decoded by
+  // can_buses. Kept unconditionally — while STREAMED a sniffed hand command
+  // should be IMPOSSIBLE (hand_ops refuses 0x6D0 forwarding), so one arriving
+  // is evidence of a second master and must reach the host, not be filtered.
   HandCmdEchoRec r;
   if (can_hand_cmd_echo_pop(r)) {
     JbUdp::HandCmdEchoPayload p{};
@@ -240,6 +247,38 @@ void hand_cmd_echo_uplink_step() {
     memcpy(p.data, r.buf, 8);
     udp_send_stream(JbUdp::MsgType::HAND_CMD_ECHO, (const uint8_t*)&p, sizeof(p));
   }
+  // ── STREAMED re-source (FW 17, plan Phase 3 item E) ─────────────────────────
+  // Once the bridge masters the hand, its own 500 Hz set_input_pos TX is
+  // invisible to the sniff (CAN SRX_DIS — we never receive our own frames), so
+  // the echo would go silent exactly when the hand starts moving. Re-source it
+  // from axes[6].target_* — the very values the interp transmitted — re-encoded
+  // through the SAME encode_leg_setpoint path (clip + 100/100 scales, identity
+  // sign), so the echoed bytes are the wire bytes. Emitted only when the interp
+  // actually transmitted since the last emit (interp_hand_sent() delta — the
+  // event-driven contract: silent while the hand lane is idle), coalesced to
+  // one frame per telemetry tick like the sniff slot.
+  static uint32_t s_hand_echo_sent_prev = 0;
+  const uint32_t sent = interp_hand_sent();
+  if (hand_source_streamed() && sent != s_hand_echo_sent_prev) {
+    const ODrive::CanFrame f = ODrive::encode_leg_setpoint(
+        HAND_AXIS, hand_axis().target_pos_rev, hand_axis().target_vel_rps,
+        hand_axis().target_torque_Nm);
+    JbUdp::HandCmdEchoPayload p{};
+    // Age-corrected wall stamp (2026-09-03 audit fix): the stamp must date the
+    // SAMPLE, not the emit. The echoed axes[6].target_* bytes were written by
+    // an interp tick 0-2 ms before this telemetry emit; stamping now_wall_us()
+    // raw is a one-sided up-to-~6 mm skew at stroke speed (~95 rev/s) against
+    // T-H2b's 3.25 mm reconstruction bar. interp_last_tick_us() is the
+    // monotonic micros64 of that tick (torn-load-guarded, task-safe; 0 until
+    // the first tick — no correction then), so subtract its age from the wall
+    // clock. Wire-bound absolute timestamp — wall by contract.
+    const uint64_t tick = interp_last_tick_us();
+    const uint64_t age  = (tick != 0) ? (micros64() - tick) : 0;
+    p.t_bridge_us = now_wall_us() - age;
+    memcpy(p.data, f.buf, 8);
+    udp_send_stream(JbUdp::MsgType::HAND_CMD_ECHO, (const uint8_t*)&p, sizeof(p));
+  }
+  s_hand_echo_sent_prev = sent;
 }
 
 // ── Hand ball-sensor uplink — contract in telemetry.h ─────────────────────────
@@ -350,6 +389,12 @@ void bridge_tx_diag_uplink_step() {
   p.hand_pre1_fail   = hc.pre1_fail;
   p.hand_pre2_fail   = hc.pre2_fail;
   p.hand_traj_fail   = hc.traj_fail;
+  // NOTE (FW 17): hc.rej_source (ERR_HAND_SOURCE refusals while STREAMED) does
+  // NOT ride this frame — the payload is deployed and exact-size-unpacked, so
+  // it cannot grow. The host's "OK = calls − the five counters" derivation
+  // therefore overcounts OK by rej_source while refusals occur; the refused
+  // dispatches are wire-visible in the RPC acks (hand_traj_acks fail_teensy
+  // names ERR_HAND_SOURCE) and on the [hand7]-adjacent console census.
   udp_send_stream(JbUdp::MsgType::BRIDGE_TX_DIAG, (const uint8_t*)&p, sizeof(p));
 }
 

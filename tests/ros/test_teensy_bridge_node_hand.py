@@ -340,3 +340,47 @@ def test_run_deactivate_idles_the_hand():
         assert rpc_args.encode_set_axis_state(_HAND, IDLE) in hand_box['calls']
     finally:
         _teardown(teensy, client, node)
+
+
+# ── set_hand_source (FW 17 hand-mastery latch) ────────────────────────────────
+
+def test_set_hand_source_streamed_forwards_the_rpc():
+    teensy, client, node = _build_paired_node()
+    try:
+        box = _capture(teensy, RpcMethod.HAND_SOURCE_SET)
+        res = types.SimpleNamespace(success=None, message='')
+        out = node._svc_set_hand_source(types.SimpleNamespace(data=True), res)
+        assert out.success is True, out.message
+        assert 'STREAMED' in out.message
+        assert box['args'] == rpc_args.encode_hand_source_set(True) == b'\x01'
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_set_hand_source_legacy_forwards_zero_byte():
+    teensy, client, node = _build_paired_node()
+    try:
+        box = _capture(teensy, RpcMethod.HAND_SOURCE_SET)
+        res = types.SimpleNamespace(success=None, message='')
+        out = node._svc_set_hand_source(types.SimpleNamespace(data=False), res)
+        assert out.success is True, out.message
+        assert 'LEGACY_STROKE' in out.message
+        assert box['args'] == rpc_args.encode_hand_source_set(False) == b'\x00'
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_set_hand_source_firmware_refusal_is_named():
+    """The gates live FIRMWARE-side (mpc_active / settled-at-rest); the node
+    must surface a refusal with the gate conditions named, not a bare status."""
+    teensy, client, node = _build_paired_node()
+    try:
+        _capture(teensy, RpcMethod.HAND_SOURCE_SET,
+                 status=int(RpcStatus.ERR_REJECTED))
+        res = types.SimpleNamespace(success=None, message='')
+        out = node._svc_set_hand_source(types.SimpleNamespace(data=True), res)
+        assert out.success is False
+        assert 'REFUSED' in out.message
+        assert 'rest position' in out.message
+    finally:
+        _teardown(teensy, client, node)

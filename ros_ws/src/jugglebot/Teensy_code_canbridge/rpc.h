@@ -66,6 +66,7 @@ using JbUdp::RpcArgs::ResultTimeOfDay;
 using JbUdp::RpcArgs::ArgBbThrow;
 using JbUdp::RpcArgs::ArgRobotState;   // STATE_WRITE (Platform-Teensy relay)
 using JbUdp::RpcArgs::ArgHandTraj;     // HAND_TRAJ_CMD (hand traj + smooth-move)
+using JbUdp::RpcArgs::ArgHandSource;   // HAND_SOURCE_SET (the § 2.4 mastery latch, FW 17)
 
 using JbUdp::RpcArgs::AXIS_ALL;   // broadcast to all axes (CLEAR_ERRORS/REBOOT)
 

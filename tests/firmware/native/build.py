@@ -58,6 +58,12 @@ _OBJECTS = {
     # alongside fake_hal.o) for the leg_homing/activate/deactivate drivers — their
     # bus/fault gate + *_active() ODR needs differ from the fault/interp TUs.
     "coldstart_hal":     NATIVE_DIR / "coldstart_hal.cpp",
+    # The FW 17 hand-mastery latch (real TU, deliberately dependency-light: it
+    # links against only axis_state + the fake clock, so the interp/fault/hand
+    # drivers exercise the REAL gate rather than a stub). test_rpc_dispatch
+    # deliberately does NOT link it — that driver stubs hand_source_request for
+    # routing isolation, per its stub-everything discipline.
+    "hand_source":       FIRMWARE_DIR / "hand_source.cpp",
 }
 
 # Test binaries: (driver source, objects to link). Each driver #includes the .cpp
@@ -65,11 +71,11 @@ _OBJECTS = {
 _BINARIES = {
     "test_fault_machine": (
         NATIVE_DIR / "test_fault_machine.cpp",
-        ["axis_state", "ball_butler_state", "fake_hal"],
+        ["axis_state", "ball_butler_state", "fake_hal", "hand_source"],
     ),
     "test_leg_interp": (
         NATIVE_DIR / "test_leg_interp.cpp",
-        ["axis_state", "ball_butler_state", "fake_hal"],
+        ["axis_state", "ball_butler_state", "fake_hal", "hand_source"],
     ),
     # Platform-Teensy relay seam. #includes platform_relay.cpp; the
     # fake HAL supplies can_jugglebot_send + jugglebot_commands_allowed, and
@@ -100,7 +106,7 @@ _BINARIES = {
     # header-inline / generated.
     "test_hand_ops": (
         NATIVE_DIR / "test_hand_ops.cpp",
-        ["axis_state", "ball_butler_state", "fake_hal"],
+        ["axis_state", "ball_butler_state", "fake_hal", "hand_source"],
     ),
     # Cold-start move ladders. Each driver #includes ONE real
     # module .cpp (defining its own *_active) + supplies the two sibling predicates
