@@ -143,10 +143,14 @@ class HoldStreamer:
         nxt = time.monotonic()
         while not self._stream_stop.is_set():
             if self._stream_on.is_set():
-                pose = tuple(self.pose())
+                # v6 frame: 7 lanes — hand lane (index 6) packed 0.0 with
+                # HAS_HAND/HAS_V1 clear (behaviour-preserving on the bench).
+                pose = tuple(self.pose())[:p.NUM_LEGS] + (0.0,) * (
+                    p.NUM_AXES - p.NUM_LEGS)
                 sp = Setpoint(u0=pose, u1=pose, u2=pose,
-                              v0=(0.0,) * p.NUM_LEGS, accel=(0.0,) * p.NUM_LEGS,
-                              torque_ff=(0.0,) * p.NUM_LEGS, flags=_FLAG_HOLD,
+                              v0=(0.0,) * p.NUM_AXES, accel=(0.0,) * p.NUM_AXES,
+                              torque_ff=(0.0,) * p.NUM_AXES,
+                              v1=(0.0,) * p.NUM_AXES, flags=_FLAG_HOLD,
                               t_origin_us=int(time.monotonic() * 1e6))
                 try:
                     self._client.send_stream(int(MsgType.SETPOINT), sp.pack())

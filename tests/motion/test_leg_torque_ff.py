@@ -231,7 +231,7 @@ def test_wire_sign_reaches_the_odrive_as_platform_up():
     sp, reason = pump.build(_cmd(torque_Nm=tau), 0)
     assert reason is None and sp is not None
 
-    assert all(t > 0.0 for t in sp.torque_ff), (
+    assert all(t > 0.0 for t in sp.torque_ff[:6]), (  # leg lanes; [6] hand = 0
         f'the UDP wire carries extension-positive torque; got {sp.torque_ff}')
 
     for axis in range(6):
@@ -389,7 +389,7 @@ def test_pump_with_ff_off_is_byte_identical_to_the_pre_feature_frame():
     without_tq, r2 = _pump().build(_cmd(), 12345)
 
     assert r1 is None and r2 is None
-    assert with_tq.torque_ff == (0.0,) * 6
+    assert with_tq.torque_ff == (0.0,) * 7
     assert with_tq.pack() == without_tq.pack(), (
         'with the FF off, a frame carrying torque_Nm must pack byte-identically to '
         'one without it')
@@ -400,7 +400,7 @@ def test_pump_with_ff_off_ignores_a_malformed_torque_vector():
     for bad in ([float('nan')] * 6, [1.0, 2.0], 'not-a-vector', [None] * 6, 3.0):
         sp, reason = _pump().build(_cmd_raw_torque(bad), 0)
         assert reason is None, f'FF off must not reject on torque_Nm={bad!r}'
-        assert sp.torque_ff == (0.0,) * 6
+        assert sp.torque_ff == (0.0,) * 7
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -422,7 +422,7 @@ def test_wire_scale_delivers_the_physically_correct_current():
     sp, reason = _pump_ff().build(_cmd(torque_Nm=tau_true), 0)
     assert reason is None
 
-    wire = np.array(sp.torque_ff)
+    wire = np.array(sp.torque_ff[:6])   # leg lanes; [6] hand = 0
     assert np.allclose(wire, tau_true * (KT_ODRIVE / KT_TRUE))
 
     iq_delivered = wire / KT_ODRIVE          # what the ODrive firmware computes
@@ -588,7 +588,7 @@ def test_absurd_torque_is_clamped(bad):
     sp, reason = _pump_ff().build(_cmd(torque_Nm=[bad] * 6), 0)
     assert reason is None
     expected = math.copysign(lim, bad) * scale
-    assert all(t == pytest.approx(expected) for t in sp.torque_ff), (
+    assert all(t == pytest.approx(expected) for t in sp.torque_ff[:6]), (  # leg lanes
         f'torque_Nm={bad} must clamp to ±{lim} Nm true (±{expected:.5f} on the wire); '
         f'got {sp.torque_ff}')
 
@@ -678,7 +678,7 @@ def test_reset_restarts_the_ramp():
     pump.reset()
     assert pump.torque_ff_ramp_scale() == 0.0
     sp, _ = pump.build(_cmd(torque_Nm=tau), 0)
-    assert sp.torque_ff == (0.0,) * 6
+    assert sp.torque_ff == (0.0,) * 7
 
 
 def test_rejected_frames_do_not_advance_the_ramp():
@@ -715,11 +715,11 @@ def test_a_frame_without_feedforward_restarts_the_ramp():
 
     sp, reason = pump.build(_cmd(), 0)         # a frame with NO torque_Nm
     assert reason is None
-    assert sp.torque_ff == (0.0,) * 6
+    assert sp.torque_ff == (0.0,) * 7
     assert pump.torque_ff_ramp_scale() == 0.0, 'the ramp must restart'
 
     sp, _ = pump.build(_cmd(torque_Nm=tau), 0)  # feedforward resumes
-    assert sp.torque_ff == (0.0,) * 6, 'and the resumed FF must start from zero again'
+    assert sp.torque_ff == (0.0,) * 7, 'and the resumed FF must start from zero again'
 
 
 def test_ramp_disabled_gives_full_ff_on_the_first_frame():
@@ -763,7 +763,7 @@ def test_missing_torque_with_ff_on_is_not_a_reject():
     pump = _pump_ff()
     sp, reason = pump.build(_cmd(), 0)
     assert reason is None
-    assert sp.torque_ff == (0.0,) * 6
+    assert sp.torque_ff == (0.0,) * 7
     assert pump.frames_without_ff == 1
     assert pump.frames_rejected == 0
 
@@ -807,8 +807,9 @@ def test_emitter_frames_with_ff_on_are_accepted_by_a_real_pump():
     assert pump.torque_ff_ramp_scale() == 1.0
     tau = _ff().compute(ACTIVE_POSE[:3], rotvec_to_rot_matrix(ACTIVE_POSE[3:6]),
                         ZERO6, ZERO6)
-    assert np.allclose(np.array(sp.torque_ff),
+    assert np.allclose(np.array(sp.torque_ff[:6]),   # leg lanes; [6] hand = 0
                        tau * float(hw.ODRIVE_LEG_TORQUE_WIRE_SCALE))
+    assert sp.torque_ff[6] == 0.0
 
 
 def test_emitter_reuses_the_callers_jacobian_and_leg_accels():

@@ -260,7 +260,7 @@ mode; ball tracking, possession verdicts, `outcome_detail` discipline.
 |-------|-------|--------|------|------|-----------|
 | 0 | Probes + recorded decisions: QP solver runtime on Jetson 3.8, Hermite stroke-reconstruction fidelity, bus headroom with a 7th frame (+ leg-bus-frame-drops A/B), hand guard constants derivation | COMPLETE | 2026-08-30 | Low | In-process QP is feasible; 7-frame bus budget is safe |
 | 1 | Planner core port (pure Python): `cup_cycle` QP, tilt schedule, `realize` generalisation, `CyclePlan`, `validate_cycle`, sim parity + MuJoCo whole-cycle gate | COMPLETE | 2026-09-01 | Low (software only) | Ball-frame constraints hold; the Rung-3 "runway" failure is answered in sim |
-| 2 | Wire v6 + host 7-channel path: codegen, `SetpointPump`, emitter, `make_mpc_command`, tests; firmware-absent safe | NOT STARTED | | Medium | Codec, per-channel step gates, backward-compatible producers |
+| 2 | Wire v6 + host 7-channel path: codegen, `SetpointPump`, emitter, `make_mpc_command`, tests; firmware-absent safe | COMPLETE | 2026-09-02 | Medium | Codec, per-channel step gates, backward-compatible producers |
 | 3 | Can-bridge FW 17: 7th interp lane, hand guards, `hand_source` interlock, dispatch; lockstep flash + bench ladder | NOT STARTED | | High | Hand streaming safety envelope on real hardware |
 | 4 | Jetson unified-cycle mode: orchestrator, node wiring, plan-derived announcements/suppression, outcome vocabulary; end-to-end sim gate | NOT STARTED | | Medium | Whole cycle through the production stack in sim |
 | 5 | Hardware ladder: streamed hold → banked carry (ball seated) → planned catch → planned throw (low tier) → full cycles → two-pose constant beat | NOT STARTED | | High | Ball-smooth carry and the planned launch on hardware |
@@ -519,7 +519,7 @@ cycles (2/30 grid cases ~6 % over); (4) `v_match` deferred mirroring
 **Phase 2 is cleared to start (software-only).** The plan was **promoted to
 `active` on 2026-09-01** (owner), so the Phase 3+ status gate is met.
 
-### Phase 2: Wire v6 + host 7-channel path — NOT STARTED
+### Phase 2: Wire v6 + host 7-channel path — COMPLETE 2026-09-02
 
 **Modified files:** `config/generate_udp_protocol.py` (Setpoint 6 → 7 plus
 the `v1` f32[7] array, `HAS_HAND` bit 2, `HAS_V1` bit 3,
@@ -551,6 +551,20 @@ robot until Phase 3's flash sitting.
 
 **Dependencies:** Phase 1 (for `CyclePlan`; the pump/emitter changes
 themselves only need the key names).
+
+**Outcome (COMPLETE 2026-09-02 — canonical record:
+[`logbook/2026-09-02-unified-7dof-planner-phase2-wire-v6.md`](../../logbook/2026-09-02-unified-7dof-planner-phase2-wire-v6.md)).**
+Landed as one atomic commit, **COMMITTED NOT DEPLOYED** per the note above
+(link darkness against FW ≤ 16 is loud and fail-closed by design). Six f32
+arrays 6 → 7 (index 6 = hand, raw ODrive rev, no sign flip), v1 f32[7] behind
+`HAS_V1`, `SETPOINT_SIZE` 208; ZMQ leg arrays stay 6-wide. Pre-change v5 wire
+fixtures were captured at HEAD `2aaaae1` *before* any edit and the capture
+script refuses to run post-v6 (T-R1 enforcement). Hand path is
+reject-over-fallback (all-or-nothing keys, NaN rejects); the pump/validate
+step-gate pair is one derivation chain (5.0 / 4.0 rev — the legs' 20 %
+margin). Review finding 7 CARRIED to Phase 3: gap-re-entry bench case +
+normative `HAS_HAND` falling-edge decay. Gate: (2026-09-02, `./run_tests.sh`,
+6382 passed / 4 skipped, total 267 s — PASS).
 
 ### Phase 3: Can-bridge FW 17 — 7th interp lane, hand guards, interlock — NOT STARTED
 
@@ -621,6 +635,16 @@ Session choreography carries the 2026-08-28 owner directive re-homed from the
 superseded MP plan's Q-2: a survived MISS must not `go_home` — hold the pose,
 wait for the ball environment to settle, then resume.
 
+**Obligation riding the interfaces rebuild:** widening `SetTrajectoryLimits.srv`
+to the hand pair obligates re-deriving the bridge pump's `max_step_hand_rev`
+from the live session limit (or re-constructing the pump on `set_limits`) — the
+Phase 2 three-layer chain (pump gate 5.0, node backstop, `validate_cycle`'s 4.0)
+derives from one expression but from **different sources** (the pump gate is
+frozen at node construction from shipped config; the other two follow live
+`TrajectoryLimits`), and a live-raised hand limit would otherwise widen
+validate/backstop past the still-frozen pump gate, silently breaking the
+"a pump reject can't happen on a validated plan" margin invariant mid-stream.
+
 **Sim gate:** a unified-mode variant of `sim/toss_gate.py` running the
 production chain end-to-end (planner → emitter → real `SetpointPump` →
 firmware-mirror interpolation) for the single-toss cycle set; acceptance
@@ -675,7 +699,7 @@ artifacts after retirement.
 (T-U1, T-U2), `tests/motion/test_cup_realize.py` (T-U3, T-U4),
 `tests/motion/test_validate_cycle.py` (T-U5), with
 `tests/motion/test_cycle_plan.py` and `tests/sim/test_cycle_gate.py` alongside
-them. T-U6..T-U9 remain for Phases 2–3.
+them. **T-U6..T-U8 LANDED 2026-09-02** (Phase 2); T-U9 remains for Phase 3.
 
 - **T-U1** ✅ **LANDED** (`tests/motion/test_cup_cycle.py`) `cup_cycle`
   constraint satisfaction: for a grid of cycle
@@ -707,15 +731,19 @@ them. T-U6..T-U9 remain for Phases 2–3.
   (empirical-probe rule: confirm each code deterministically before
   asserting it); NaN cup input ⇒ `UNREACHABLE`; refusal strings satisfy
   `outcome_detail.base_outcome` round-trip.
-- **T-U6** Setpoint v6 codec: pack/unpack round-trip 7-wide including `v1`,
+- **T-U6** ✅ **LANDED** (`tests/teensy_link/test_protocol_codec.py`)
+  Setpoint v6 codec: pack/unpack round-trip 7-wide including `v1`,
   `HAS_HAND` and `HAS_V1` flag semantics, `SETPOINT_SIZE == 208`, version-5
-  frames rejected (extends `tests/teensy_link/test_protocol_codec.py`).
-- **T-U7** `SetpointPump` 7-channel: hand keys absent ⇒ flag clear and legs
+  frames rejected.
+- **T-U7** ✅ **LANDED** (`tests/teensy_link/test_setpoint_pump.py` +
+  `tests/teensy_link/test_v5_wire_regression.py`) `SetpointPump` 7-channel:
+  hand keys absent ⇒ flag clear and legs
   byte-identical to a v5-era build of the same command (regression fixture);
   per-channel step gates (leg 0.3, hand bound) reject independently; NaN in
   any hand key rejects the frame; a partial v1 key set (one required
   `vel_next` key present without the other) rejects the frame.
-- **T-U8** Emitter: `CyclePlan` sampling emits hand keys with the same
+- **T-U8** ✅ **LANDED** (`tests/motion/test_trajectory_emitter.py`)
+  Emitter: `CyclePlan` sampling emits hand keys with the same
   lookahead discipline as legs; plans without a hand track emit none (legacy
   plans byte-identical output — regression fixture against current emitter).
 - **T-U9** Firmware natives (`tests/firmware/native/test_leg_interp.cpp` +
@@ -776,11 +804,16 @@ them. T-U6..T-U9 remain for Phases 2–3.
 
 ### Regression
 
-- **T-R1** Legacy byte-exactness: with `unified_cycle_enabled` false and no
-  hand keys, the leg wire bytes are identical to pre-change fixtures (pump
-  and emitter fixture tests above are the enforcement).
-- **T-R2** Version skew is loud: v5 host vs v6 decode (and inverse) rejects
-  every frame; `BRIDGE_FW_CHECK` advisory names 17.
+- **T-R1** ✅ **enforcement LANDED 2026-09-02** — Legacy byte-exactness: with
+  `unified_cycle_enabled` false and no
+  hand keys, the leg wire bytes are identical to pre-change fixtures captured
+  at HEAD `2aaaae1` before any edit (`tests/teensy_link/data/` +
+  `tests/motion/data/`; the pump/emitter regression tests above are the
+  enforcement).
+- **T-R2** **half-landed 2026-09-02**: the version-skew loud-reject (v5 host
+  vs v6 decode and inverse rejects every frame) is LANDED; the
+  "`BRIDGE_FW_CHECK` advisory names 17" half is Phase 3
+  (`EXPECTED_BRIDGE_FW_VERSION` is still 16).
 - **T-R3** The full legacy toss battery (`tests/ros/test_toss_*`,
   `tests/sim/test_toss_gate.py`) passes unchanged in legacy mode after every
   phase — the fallback stays flyable until Phase 6.

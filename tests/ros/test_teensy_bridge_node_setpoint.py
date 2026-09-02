@@ -126,15 +126,16 @@ def test_enabled_sends_setpoint_frame():
         got = teensy.wait_for(int(MsgType.SETPOINT), count=1, timeout=2.0)
         assert got, "no SETPOINT frame sent"
         sp = Setpoint.unpack(got[0].payload)
-        # u0 = motor_rev verbatim (ODrive convention).
-        assert sp.u0 == pytest.approx(tuple(motor_rev), abs=1e-6)
+        # u0 = motor_rev verbatim (ODrive convention); leg lanes of the 7-wide
+        # v6 frame, hand lane (index 6) inert at 0.0 with HAS_HAND clear.
+        assert sp.u0 == pytest.approx(tuple(motor_rev) + (0.0,), abs=1e-6)
         # u1/u2/v0 = cmd_next(_2)/vel × mm_to_rev.
         assert sp.u1 == pytest.approx(
-            tuple(cmd_next[i] * mm[i] for i in range(6)), abs=1e-5)
+            tuple(cmd_next[i] * mm[i] for i in range(6)) + (0.0,), abs=1e-5)
         assert sp.v0 == pytest.approx(
-            tuple(vel[i] * mm[i] for i in range(6)), abs=1e-5)
-        assert sp.torque_ff == pytest.approx((0.0,) * 6, abs=1e-6)  # D9 drop
-        assert sp.flags == 0x3         # HAS_U1 | HAS_U2
+            tuple(vel[i] * mm[i] for i in range(6)) + (0.0,), abs=1e-5)
+        assert sp.torque_ff == pytest.approx((0.0,) * 7, abs=1e-6)  # D9 drop
+        assert sp.flags == 0x3         # HAS_U1 | HAS_U2 (no HAS_HAND/HAS_V1)
         assert sp.t_origin_us > 0
     finally:
         _teardown(teensy, client, node)
@@ -181,6 +182,51 @@ def test_step_violation_not_sent():
         n_after = len(teensy.received(int(MsgType.SETPOINT)))
         assert n_after == n_before        # the jumping frame was NOT sent
         assert node._sp_pump.frames_rejected == 1
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_pump_step_gates_constructed_from_config_chain():
+    """The production pump's per-channel step gates come from the CONFIG
+    CHAIN, not the module defaults: max_step_rev = JB_OP_MAX_POSITION_STEP_REV
+    and max_step_hand_rev = JB_TRAJ_HAND_VEL_LIMIT_RPS × JB_TRAJ_KNOT_DT_S
+    (the one derivation chain). The values coincide with the pump's module
+    defaults today, which is exactly why a dropped ctor param is behaviourally
+    invisible — so the construction is pinned directly."""
+    import jugglebot.hardware_config as hw
+    teensy, client, node = _node()
+    try:
+        assert node._sp_pump.max_step_rev == pytest.approx(
+            float(hw.JB_OP_MAX_POSITION_STEP_REV))
+        assert node._sp_pump.max_step_hand_rev == pytest.approx(
+            float(hw.JB_TRAJ_HAND_VEL_LIMIT_RPS) * float(hw.JB_TRAJ_KNOT_DT_S))
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_hand_step_violation_not_sent():
+    """The hand half of test_step_violation_not_sent: a hand u0 jump past the
+    constructed max_step_hand_rev is rejected by the node's pump (legs held
+    still — the per-channel gates reject independently)."""
+    teensy, client, node = _node()
+    try:
+        node._mpc_active = True
+        hand = {'hand_rev': 1.0, 'hand_vel_rps': 0.0,
+                'hand_next_rev': 1.0, 'hand_next2_rev': 1.0}
+        base = _cmd([0.0] * 6, cmd_next=[0.0] * 6, cmd_next2=[0.0] * 6)
+        base.update(hand)
+        node._process_setpoint(base)                   # hand baseline
+        time.sleep(0.02)
+        n_before = len(teensy.received(int(MsgType.SETPOINT)))
+        jump = _cmd([0.0] * 6, cmd_next=[0.0] * 6, cmd_next2=[0.0] * 6)
+        jump.update(dict(hand,
+                         hand_rev=1.0 + node._sp_pump.max_step_hand_rev + 0.1))
+        node._process_setpoint(jump)
+        time.sleep(0.05)
+        n_after = len(teensy.received(int(MsgType.SETPOINT)))
+        assert n_after == n_before        # the jumping frame was NOT sent
+        assert node._sp_pump.frames_rejected == 1
+        assert 'hand step' in node._sp_pump.last_reject_reason
     finally:
         _teardown(teensy, client, node)
 

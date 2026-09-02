@@ -1926,6 +1926,11 @@ class TeensyBridgeNode(Node):
         self._sp_pump = SetpointPump(
             mm_to_rev=hw.GEOM_MM_TO_REV,
             num_legs=p.NUM_LEGS, max_step_rev=hw.JB_OP_MAX_POSITION_STEP_REV,
+            # Hand step gate: the ONE derivation chain (hand_vel_limit_rps ×
+            # knot dt = 5.0 rev at the shipped config) — passed from the config
+            # like max_step_rev, never left riding the module default.
+            max_step_hand_rev=(float(hw.JB_TRAJ_HAND_VEL_LIMIT_RPS)
+                               * float(hw.JB_TRAJ_KNOT_DT_S)),
             torque_ff_enabled=bool(hw.DYNAMICS_TORQUE_FF_ENABLED),
             torque_ff_max_nm=float(hw.DYNAMICS_TORQUE_FF_MAX_NM),
             torque_wire_scale=float(hw.ODRIVE_LEG_TORQUE_WIRE_SCALE),
@@ -4093,6 +4098,12 @@ class TeensyBridgeNode(Node):
             # production pump's — with the FF on, a malformed torque_Nm is a reject,
             # and we must not arm on a frame the production pump would refuse.
             probe = SetpointPump(mm_to_rev=hw.GEOM_MM_TO_REV, num_legs=p.NUM_LEGS,
+                                 # Hand gate mirrored from the config chain for the
+                                 # same reason as torque_ff_enabled: the ACCEPTANCE
+                                 # decision must match the production pump's.
+                                 max_step_hand_rev=(
+                                     float(hw.JB_TRAJ_HAND_VEL_LIMIT_RPS)
+                                     * float(hw.JB_TRAJ_KNOT_DT_S)),
                                  torque_ff_enabled=bool(hw.DYNAMICS_TORQUE_FF_ENABLED))
             sp, reason = probe.build(frame, 0)
             if sp is None:
@@ -4394,7 +4405,10 @@ class TeensyBridgeNode(Node):
             # happen on the executor timer (_publish_leg_setpoint_echo), never
             # on this thread.
             with self._lock:
-                self._last_accepted_u0 = sp.u0
+                # Leg lanes only: the v6 Setpoint is 7-wide (index 6 = hand),
+                # but /leg_setpoint_echo is a 6-wide LEG observable and its GUI
+                # consumer stays so. A hand echo is Phase 3/4 territory.
+                self._last_accepted_u0 = sp.u0[:p.NUM_LEGS]
                 self._last_accepted_u0_mono = time.monotonic()
                 self._last_accepted_u0_seq += 1
             try:

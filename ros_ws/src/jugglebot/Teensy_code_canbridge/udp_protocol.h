@@ -9,7 +9,7 @@
 namespace JbUdp {
 
 // ── Constants ──────────────────────────────────────────────────────────
-constexpr uint8_t PROTOCOL_VERSION = 5u;  // Bumped on any incompatible wire change (4→5: 2026-07-31 Profile gains the 3rd CAN slot can3_* — cone traffic)
+constexpr uint8_t PROTOCOL_VERSION = 6u;  // Bumped on any incompatible wire change (4→5: 2026-07-31 Profile gains the 3rd CAN slot can3_* — cone traffic; 5→6: 2026-09-01 Setpoint widens 6→7 — index 6 = hand — and gains the v1[7] exact-knot-velocity array, unified-7dof-planner Phase 2. TOTAL LINK DARKNESS against any FW ≤ 16 board until the lockstep Phase 3 flash — loud and fail-closed by design)
 constexpr uint16_t MAGIC = 0x4A42u;  // "JB" little-endian preamble (bytes 0x42 0x4A)
 constexpr uint16_t HEADER_SIZE = 8u;  // Bytes before payload
 constexpr uint16_t CRC_SIZE = 2u;  // Trailing CRC-16 bytes
@@ -157,18 +157,19 @@ static_assert(sizeof(Header) == 8, "Header must be 8 bytes");
 
 // ── Payload structs (packed; little-endian native on M7 & x86) ─────────
 #pragma pack(push, 1)
-// Setpoint: 40 Hz MPC setpoint waypoints. Carries motor-rev-space quantities (Jugglebot convention: positive = leg extension) exactly as motor_guard's interpolator consumes them. The Jetson bridge does the same mm→rev / pose conversions motor_guard does today; the Teensy interpolator works purely in rev-space. `u1`/`u2` presence is signalled by the flags bits (NOT NaN sentinels).
+// Setpoint: 40 Hz setpoint knot waypoints, 7 channels (v6, 2026-09-01: legs 0..5 + hand at index 6, unified-7dof-planner Phase 2). Legs carry motor-rev-space quantities (Jugglebot convention: positive = leg extension) exactly as motor_guard's interpolator consumed them; the hand lane is ODrive-convention absolute rev, NO sign flip — the firmware's encode_leg_setpoint already applies the per-axis wire scales (legs: negate + 1000/10000; hand: 100/100), so the host puts RAW rev values in this frame for every axis. The Jetson bridge does the mm→rev / pose conversions; the Teensy interpolator works purely in rev-space. `u1`/`u2`/hand/`v1` presence is signalled by the flags bits (NOT NaN sentinels). With HAS_V1 the 500 Hz Hermite endpoint velocity is transmitted exactly (float-exact for knot-aligned piecewise cubics — Phase 0 decision 2); with it clear the firmware falls back to the (u2-u1)/SEGMENT_T_S forward difference, the flown path. With HAS_HAND clear the firmware ignores index 6 and emits no hand frame.
 struct SetpointPayload {
-  float u0[6];  // Current motor positions (rev)
-  float u1[6];  // Next waypoint (rev); valid iff flags bit0
-  float u2[6];  // Next-next waypoint (rev); valid iff flags bit1 — C1 continuity
-  float v0[6];  // Forward-looking velocity from MPC (rev/s)
-  float accel[6];  // Acceleration for Taylor extrapolation (rev/s^2)
-  float torque_ff[6];  // Gravity+inertia feedforward (Nm)
-  uint32_t flags;  // bit0: u1_present, bit1: u2_present
+  float u0[7];  // Current positions (rev); [0..5] legs, [6] hand
+  float u1[7];  // Next waypoint (rev); valid iff flags bit0
+  float u2[7];  // Next-next waypoint (rev); valid iff flags bit1 — C1 continuity
+  float v0[7];  // Velocity at the u0 knot (rev/s)
+  float accel[7];  // Acceleration for Taylor extrapolation (rev/s^2)
+  float torque_ff[7];  // Gravity+inertia feedforward (Nm); [6] always 0 in Phase 2
+  float v1[7];  // Exact velocity at the u1 knot (rev/s); valid iff flags bit3
+  uint32_t flags;  // bit0: HAS_U1, bit1: HAS_U2, bit2: HAS_HAND (index 6 live), bit3: HAS_V1 (v1 transmitted-exact)
   uint64_t t_origin_us;  // Jetson-side wall-clock timestamp (us)
 };
-static_assert(sizeof(SetpointPayload) == 156, "SetpointPayload size drift");
+static_assert(sizeof(SetpointPayload) == 208, "SetpointPayload size drift");
 
 // HeartbeatJ2T: Jetson → Teensy liveness, ~10 Hz.
 struct HeartbeatJ2TPayload {
@@ -452,7 +453,7 @@ static_assert(sizeof(RpcResponsePayload) == 8, "RpcResponsePayload size drift");
 #pragma pack(pop)
 
 // ── Per-message constants ──────────────────────────────────────────────
-constexpr uint16_t SETPOINT_SIZE = 156u;
+constexpr uint16_t SETPOINT_SIZE = 208u;
 constexpr uint16_t HEARTBEAT_J2T_SIZE = 12u;
 constexpr uint16_t TELEMETRY_SIZE = 64u;
 constexpr uint16_t DIAGNOSTIC_SIZE = 40u;

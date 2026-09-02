@@ -93,12 +93,14 @@ def test_beta_pump_knots_match_motor_guard():
     g = _guard_base(msg)
     sp, reason = pump.build(msg, t_origin_us=1)
     assert reason is None and sp is not None
-    assert np.allclose(sp.u0, g._mpc_base_pos_rev, atol=1e-12)
-    assert np.allclose(sp.u1, g._mpc_next_pos_rev, atol=1e-12)
-    assert np.allclose(sp.u2, g._mpc_next2_pos_rev, atol=1e-12)
-    assert np.allclose(sp.v0, g._mpc_base_vel_rps, atol=1e-12)
+    # Leg lanes only — the v6 Setpoint carries a 7th (hand) lane, 0.0 here.
+    assert np.allclose(sp.u0[:6], g._mpc_base_pos_rev, atol=1e-12)
+    assert np.allclose(sp.u1[:6], g._mpc_next_pos_rev, atol=1e-12)
+    assert np.allclose(sp.u2[:6], g._mpc_next2_pos_rev, atol=1e-12)
+    assert np.allclose(sp.v0[:6], g._mpc_base_vel_rps, atol=1e-12)
     assert sp.flags == FLAG_HAS_U1 | FLAG_HAS_U2
-    assert sp.torque_ff == (0.0,) * 6        # friction-FF dropped on the Teensy-side path
+    assert sp.torque_ff == (0.0,) * 7        # friction-FF dropped on the Teensy-side path
+    assert sp.u0[6] == 0.0                   # no hand keys => inert hand lane
 
     # ── Path 2: ext-fallback (no motor_rev) ──
     pump.reset()
@@ -107,8 +109,8 @@ def test_beta_pump_knots_match_motor_guard():
             'torque_Nm': np.zeros(6), 'acc_mm_s2': np.zeros(6), 'seq': 1}
     g2 = _guard_base(msg2)
     sp2, _ = pump.build(msg2, t_origin_us=1)
-    assert np.allclose(sp2.u0, g2._mpc_base_pos_rev, atol=1e-12)
-    assert np.allclose(sp2.u0, ext * mm, atol=1e-12)   # = ext × mm_to_rev
+    assert np.allclose(sp2.u0[:6], g2._mpc_base_pos_rev, atol=1e-12)
+    assert np.allclose(sp2.u0[:6], ext * mm, atol=1e-12)   # = ext × mm_to_rev
 
     # ── Path 3: cmd_next2 absent → guard clears _mpc_next2_pos_rev, pump HAS_U2 ──
     pump.reset()
@@ -118,7 +120,7 @@ def test_beta_pump_knots_match_motor_guard():
     sp3, _ = pump.build(msg3, t_origin_us=1)
     assert g3._mpc_next2_pos_rev is None and (sp3.flags & FLAG_HAS_U2) == 0
     assert (sp3.flags & FLAG_HAS_U1) == FLAG_HAS_U1
-    assert np.allclose(sp3.u1, g3._mpc_next_pos_rev, atol=1e-12)
+    assert np.allclose(sp3.u1[:6], g3._mpc_next_pos_rev, atol=1e-12)
 
     # ── Path 4: malformed >6-element lookahead → BOTH clear the flag ──
     # motor_guard requires cmd_next_arr.shape == (6,) (motor_guard.py:585) and

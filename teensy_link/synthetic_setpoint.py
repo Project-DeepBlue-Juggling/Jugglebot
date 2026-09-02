@@ -57,8 +57,12 @@ from .protocol import Setpoint
 # bounds. SEG_T must equal the firmware's compile-time SEGMENT_T_S or the knot
 # lookahead won't line up with the interp's `s = dt / SEG_T`.
 DEFAULT_SEG_T_S = 0.025          # SEGMENT_T_S (the 40 Hz MPC fine step)
-DEFAULT_MAX_STEP_REV = 0.15      # MAX_LEAD_REV — a single knot may never command
-                                 # a step the firmware lead-clamp would reject.
+DEFAULT_MAX_STEP_REV = 0.10      # MAX_LEAD_REV (canbridge_config.h:236) — a single
+                                 # knot may never command a step the firmware
+                                 # lead-clamp would reject. Was 0.15 (the
+                                 # pre-2026-07-10 lead clamp) until 2026-09-01 —
+                                 # stale vs the flown firmware; pinned against the
+                                 # header by tests/teensy_link/test_synthetic_setpoint.py.
 FLAG_HAS_U1 = 0x1
 FLAG_HAS_U2 = 0x2
 
@@ -174,7 +178,10 @@ class SyntheticKnotSource:
         """Build the Teensy-side knot Setpoint to transmit at ``t`` seconds since arm.
 
         ``u0/u1/u2`` are this and the next two 40 Hz knots; ``v0`` the current
-        velocity FF; non-target axes packed 0.0; ``flags = 0x3``.
+        velocity FF; non-target axes packed 0.0; ``flags = 0x3``. The v6 wire
+        Setpoint carries 7 lanes — the hand lane (index 6) is packed 0.0 with
+        neither ``HAS_HAND`` nor ``HAS_V1`` set (``v1`` all zeros), so the
+        firmware ignores it and the bench behaviour is unchanged.
         """
         ax = self.params.axis
         T = self.seg_t
@@ -182,17 +189,20 @@ class SyntheticKnotSource:
         p1 = self.position(t + T)
         p2 = self.position(t + 2.0 * T)
         v0 = self.velocity(t)
+        pad = p.NUM_AXES - self.n            # the inert hand lane
 
         def vec(val_at_axis: float) -> tuple:
-            return tuple(val_at_axis if i == ax else 0.0 for i in range(self.n))
+            return tuple(val_at_axis if i == ax else 0.0
+                         for i in range(self.n)) + (0.0,) * pad
 
         return Setpoint(
             u0=vec(p0),
             u1=vec(p1),
             u2=vec(p2),
             v0=vec(v0),
-            accel=(0.0,) * self.n,
-            torque_ff=(0.0,) * self.n,
+            accel=(0.0,) * p.NUM_AXES,
+            torque_ff=(0.0,) * p.NUM_AXES,
+            v1=(0.0,) * p.NUM_AXES,
             flags=FLAG_HAS_U1 | FLAG_HAS_U2,
             t_origin_us=int(t_origin_us),
         )

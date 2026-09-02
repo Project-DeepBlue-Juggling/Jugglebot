@@ -81,9 +81,13 @@ def run(teensy_ip, duration, send_output):
                 u0, v0, acc = _setpoint_at(tt)
                 u1, _, _ = _setpoint_at(tt + MPC_DT)
                 u2, _, _ = _setpoint_at(tt + 2 * MPC_DT)
+                # v6 frame: 7 lanes — hand lane (index 6) packed 0.0 with
+                # HAS_HAND/HAS_V1 clear, so the firmware ignores it.
+                pad = (0.0,) * (p.NUM_AXES - NUM_LEGS)
                 sp = p.Setpoint(
-                    u0=tuple(u0), u1=tuple(u1), u2=tuple(u2), v0=tuple(v0),
-                    accel=tuple(acc), torque_ff=tuple([0.0] * NUM_LEGS),
+                    u0=tuple(u0) + pad, u1=tuple(u1) + pad, u2=tuple(u2) + pad,
+                    v0=tuple(v0) + pad, accel=tuple(acc) + pad,
+                    torque_ff=(0.0,) * p.NUM_AXES, v1=(0.0,) * p.NUM_AXES,
                     flags=0b11, t_origin_us=int(now * 1e6))
                 stream.sendto(p.encode_frame(p.MsgType.SETPOINT, seq_sp & 0xFFFF, sp.pack()),
                               (teensy_ip, p.PORT_STREAM))

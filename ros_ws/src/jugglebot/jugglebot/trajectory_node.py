@@ -428,6 +428,7 @@ class TrajectoryNode(Node):
         self._is_homed = False
         self._seq = 0
         self._last_motor_rev = None       # prior emitted u0 (step-bound defence)
+        self._last_hand_rev = None        # prior emitted hand_rev (7th-channel step defence)
         self._last_pose = self._neutral_pose.copy()
         # Latest emitted frame's gravity-FF torque vector (TRUE Nm, extension-
         # positive) — stashed by the 40 Hz emitter, republished at 5 Hz on
@@ -758,8 +759,32 @@ class TrajectoryNode(Node):
                     self._plan_t0 = now
                 return
 
+        # The 7th-channel twin of the leg backstop, with its OWN bound from the
+        # same chain as the pump's hand step gate (hand_vel_limit_rps × knot_dt
+        # — the leg backstop likewise reuses the leg pump gate's max_step_rev;
+        # never a second invented number). Prior clears on a hand-less frame,
+        # mirroring the pump's hand-absent-gap rule. The freeze installs a
+        # HoldPlan, which carries no hand track, so recovery frames are
+        # hand-less by construction.
+        hand_rev = frame.get('hand_rev')
+        if hand_rev is not None and self._last_hand_rev is not None:
+            hand_bound = (self._limits.hand_vel_limit_rps
+                          * self._limits.knot_dt_s)
+            hand_step = abs(float(hand_rev) - self._last_hand_rev)
+            if hand_step > hand_bound:
+                self._last_rejection = (
+                    f"emitter hand step {hand_step:.3f} rev > {hand_bound:.3f} "
+                    "bound — froze to hold")
+                self.get_logger().error(
+                    self._last_rejection, throttle_duration_sec=1.0)
+                with self._plan_lock:
+                    self._active_plan = HoldPlan(self._last_pose)
+                    self._plan_t0 = now
+                return
+
         self._pub.send(frame)
         self._last_motor_rev = motor_rev
+        self._last_hand_rev = float(hand_rev) if hand_rev is not None else None
         self._last_pose = np.asarray(frame['pose_6dof'], dtype=float)
         # Stash (only) the FF torque vector this frame shipped, for the 5 Hz
         # leg_torques_diagnostic republish (_publish_status). This is the ONLY
@@ -1027,6 +1052,7 @@ class TrajectoryNode(Node):
                 self._streaming = False
                 self._seeded = False
                 self._last_motor_rev = None
+                self._last_hand_rev = None
                 # Drop the torque stash too (audit 2026-07-16): without this, a
                 # 5 Hz status tick landing in the re-entry window (reseeded but
                 # before the first new frame) would republish the PREVIOUS
@@ -1104,6 +1130,7 @@ class TrajectoryNode(Node):
             self._plan_t0 = now
             self._seeded = True
             self._last_motor_rev = None
+            self._last_hand_rev = None
             self._last_pose = pose
         # A fresh seed changes the commanded pose; the follower must not deadband
         # the first target against a stale one from a previous session.
@@ -1212,6 +1239,7 @@ class TrajectoryNode(Node):
             self._active_plan = HoldPlan(self._last_pose)
             self._plan_t0 = time.perf_counter()
             self._last_motor_rev = None
+            self._last_hand_rev = None
 
     def _build_descent_plan(self, seed, target):
         """Gate-validated profiled trajectory ``seed → target`` ending at rest.

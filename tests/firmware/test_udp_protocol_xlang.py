@@ -248,12 +248,17 @@ def test_protocol_version_frozen(gen, proto):
     Bumping it is an INCOMPATIBLE-wire change that requires reflashing the whole
     fleet — this makes the bump deliberate and keeps all three artifacts in lockstep."""
     spec_ver = _spec_const(gen, "PROTOCOL_VERSION")
-    assert spec_ver == 5, (   # 1→2: Diagnostic homing_result ([18A]); 2→3: HeartbeatT2J
+    assert spec_ver == 6, (   # 1→2: Diagnostic homing_result ([18A]); 2→3: HeartbeatT2J
                               # leg guard-deviation diagnostics (2026-07-10 forensics);
                               # 3→4: Diagnostic bus_current + heartbeat_seen flag
                               # (2026-07-24 BB robot_state restoration — payload 36→40 B);
                               # 4→5: Profile 3rd CAN slot can3_* (cone role traffic,
-                              # 2026-07-31 — payload 66→76 B, fields appended)
+                              # 2026-07-31 — payload 66→76 B, fields appended);
+                              # 5→6: Setpoint 6→7 lanes (index 6 = hand) + the v1[7]
+                              # exact-velocity array + HAS_HAND/HAS_V1 flag bits
+                              # (2026-09-01, unified-7dof-planner Phase 2 — payload
+                              # 156→208 B; total link darkness vs FW ≤ 16 until the
+                              # lockstep Phase 3 flash, loud and fail-closed by design)
         f"PROTOCOL_VERSION changed to {spec_ver}. If this is an intentional "
         "incompatible-wire bump: update this pin, re-pin test_wire_layout_frozen, and "
         "reflash the whole fleet (Jetson + Teensy ship the same version).")
@@ -286,6 +291,25 @@ def test_wire_layout_frozen(gen):
     for member, value, *_ in gen.ENUMS["MsgType"]:
         h.update(f"MT {member}={value};".encode())
     digest = h.hexdigest()
+    # Re-pinned for the INCOMPATIBLE Setpoint v6 widening (2026-09-01,
+    # unified-7dof-planner Phase 2): every Setpoint f32 array widens 6 → 7
+    # (index 6 = the hand lane, ODrive-convention absolute rev, no sign flip —
+    # the firmware's encode_leg_setpoint already owns the per-axis wire
+    # scales) and a new v1 f32[7] array — the exact velocity at the u1 knot —
+    # lands after torque_ff behind new flag bit 3 HAS_V1 (bit 2 = HAS_HAND).
+    # Payload 156 → 208 B. This is NOT an additive change: the Setpoint decode
+    # is an exact-size unpack on both ends, so PROTOCOL_VERSION bumps 5 → 6
+    # and the link is DELIBERATELY dark against any FW ≤ 16 board until the
+    # Phase 3 lockstep flash (decode_frame hard-rejects on version, both
+    # directions — loud and fail-closed, never a silent struct mismatch).
+    # Why one widened frame instead of an additive HandSetpoint MsgType: the
+    # ISR latches ONE staging slot atomically; two frames per knot would need
+    # cross-frame latch coherence, a torn-knot class (hand and legs from
+    # different knots in one tick) that single-frame widening makes
+    # structurally impossible. See plans/active/unified-7dof-planner.md § 2.3.
+    # Previous pin: e7af7d13a5be329319b7dc0715a3c5bba1c6318ea111be703ad697453c7ed624
+    #   (additive RING_DIAG 0x92 103 B — 2026-08-14 can-bridge FW 13).
+    #
     # Re-pinned for the additive RING_DIAG message (2026-08-14, can-bridge FW 13,
     # the bridge-temporal arc): MsgType RING_DIAG 0x92 + a 103 B payload, plus a
     # new RingDiagFlags enum. It carries, per bus and per 1 s window, the CAN RX
@@ -372,7 +396,7 @@ def test_wire_layout_frozen(gen):
     # Previous pin: 8e1bd0a3dcd370859a781925487a9accee4109554494a40023dd1cf4549794df
     #   (additive BRIDGE_TX_DIAG 0x8D 42 B + BRIDGE_IDENTITY 0x8E 3 B —
     #    2026-08-02 ERR_TIMEOUT attribution instrumentation).
-    _EXPECTED = "e7af7d13a5be329319b7dc0715a3c5bba1c6318ea111be703ad697453c7ed624"
+    _EXPECTED = "989e50132fdff55a20507e4ecbf58cc92d3cff4d5f01f62c7f4787ab6e54d946"
     assert digest == _EXPECTED, (
         "The UDP wire LAYOUT changed (a message/arg field layout, a framed MsgType "
         "value, or a framing constant). If INCOMPATIBLE, bump PROTOCOL_VERSION. Either "

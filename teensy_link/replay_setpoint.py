@@ -330,7 +330,9 @@ class RecordedThrowSource:
             return 0.0
         return (self.samples[k + 1] - self.samples[k]) / self.seg_t
 
-    # ── Frame construction (identical knot/flag layout to the synthetic source) ──
+    # ── Frame construction (identical knot/flag layout to the synthetic source;
+    # the v6 hand lane at index 6 is packed 0.0 with HAS_HAND/HAS_V1 clear, so
+    # the firmware ignores it and the bench behaviour is unchanged) ──
     def frame(self, t: float, t_origin_us: int) -> Setpoint:
         ax = self.axis
         T = self.seg_t
@@ -339,17 +341,20 @@ class RecordedThrowSource:
         p2 = self.position(t + 2.0 * T)
         v0 = self.velocity(t)
         tau = self._torque_ff_fn(v0) if self._torque_ff_fn is not None else 0.0
+        pad = p.NUM_AXES - self.n            # the inert hand lane
 
         def vec(val_at_axis: float) -> tuple:
-            return tuple(val_at_axis if i == ax else 0.0 for i in range(self.n))
+            return tuple(val_at_axis if i == ax else 0.0
+                         for i in range(self.n)) + (0.0,) * pad
 
         return Setpoint(
             u0=vec(p0),
             u1=vec(p1),
             u2=vec(p2),
             v0=vec(v0),
-            accel=(0.0,) * self.n,
+            accel=(0.0,) * p.NUM_AXES,
             torque_ff=vec(tau),
+            v1=(0.0,) * p.NUM_AXES,
             flags=FLAG_HAS_U1 | FLAG_HAS_U2,
             t_origin_us=int(t_origin_us),
         )

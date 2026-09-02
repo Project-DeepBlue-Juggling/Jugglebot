@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from enum import IntEnum
 
 # ── Constants ──────────────────────────────────────────────────────────
-PROTOCOL_VERSION = 5  # Bumped on any incompatible wire change (4→5: 2026-07-31 Profile gains the 3rd CAN slot can3_* — cone traffic)
+PROTOCOL_VERSION = 6  # Bumped on any incompatible wire change (4→5: 2026-07-31 Profile gains the 3rd CAN slot can3_* — cone traffic; 5→6: 2026-09-01 Setpoint widens 6→7 — index 6 = hand — and gains the v1[7] exact-knot-velocity array, unified-7dof-planner Phase 2. TOTAL LINK DARKNESS against any FW ≤ 16 board until the lockstep Phase 3 flash — loud and fail-closed by design)
 MAGIC = 19010  # "JB" little-endian preamble (bytes 0x42 0x4A)
 HEADER_SIZE = 8  # Bytes before payload
 CRC_SIZE = 2  # Trailing CRC-16 bytes
@@ -197,31 +197,32 @@ def decode_frame(frame: bytes):
     return msg_type, seq, payload
 
 # ── Payload structs ────────────────────────────────────────────────────
-# Setpoint: 40 Hz MPC setpoint waypoints. Carries motor-rev-space quantities (Jugglebot convention: positive = leg extension) exactly as motor_guard's interpolator consumes them. The Jetson bridge does the same mm→rev / pose conversions motor_guard does today; the Teensy interpolator works purely in rev-space. `u1`/`u2` presence is signalled by the flags bits (NOT NaN sentinels).
-SETPOINT_FMT = '<ffffffffffffffffffffffffffffffffffffIQ'
-SETPOINT_SIZE = 156
+# Setpoint: 40 Hz setpoint knot waypoints, 7 channels (v6, 2026-09-01: legs 0..5 + hand at index 6, unified-7dof-planner Phase 2). Legs carry motor-rev-space quantities (Jugglebot convention: positive = leg extension) exactly as motor_guard's interpolator consumed them; the hand lane is ODrive-convention absolute rev, NO sign flip — the firmware's encode_leg_setpoint already applies the per-axis wire scales (legs: negate + 1000/10000; hand: 100/100), so the host puts RAW rev values in this frame for every axis. The Jetson bridge does the mm→rev / pose conversions; the Teensy interpolator works purely in rev-space. `u1`/`u2`/hand/`v1` presence is signalled by the flags bits (NOT NaN sentinels). With HAS_V1 the 500 Hz Hermite endpoint velocity is transmitted exactly (float-exact for knot-aligned piecewise cubics — Phase 0 decision 2); with it clear the firmware falls back to the (u2-u1)/SEGMENT_T_S forward difference, the flown path. With HAS_HAND clear the firmware ignores index 6 and emits no hand frame.
+SETPOINT_FMT = '<fffffffffffffffffffffffffffffffffffffffffffffffffIQ'
+SETPOINT_SIZE = 208
 _SETPOINT_STRUCT = struct.Struct(SETPOINT_FMT)
-assert _SETPOINT_STRUCT.size == 156
+assert _SETPOINT_STRUCT.size == 208
 
 @dataclass
 class Setpoint:
-    u0: tuple = field(default_factory=lambda: (0.0,) * 6)
-    u1: tuple = field(default_factory=lambda: (0.0,) * 6)
-    u2: tuple = field(default_factory=lambda: (0.0,) * 6)
-    v0: tuple = field(default_factory=lambda: (0.0,) * 6)
-    accel: tuple = field(default_factory=lambda: (0.0,) * 6)
-    torque_ff: tuple = field(default_factory=lambda: (0.0,) * 6)
+    u0: tuple = field(default_factory=lambda: (0.0,) * 7)
+    u1: tuple = field(default_factory=lambda: (0.0,) * 7)
+    u2: tuple = field(default_factory=lambda: (0.0,) * 7)
+    v0: tuple = field(default_factory=lambda: (0.0,) * 7)
+    accel: tuple = field(default_factory=lambda: (0.0,) * 7)
+    torque_ff: tuple = field(default_factory=lambda: (0.0,) * 7)
+    v1: tuple = field(default_factory=lambda: (0.0,) * 7)
     flags: int = 0
     t_origin_us: int = 0
 
     def pack(self) -> bytes:
-        return _SETPOINT_STRUCT.pack(*self.u0, *self.u1, *self.u2, *self.v0, *self.accel, *self.torque_ff, self.flags, self.t_origin_us)
+        return _SETPOINT_STRUCT.pack(*self.u0, *self.u1, *self.u2, *self.v0, *self.accel, *self.torque_ff, *self.v1, self.flags, self.t_origin_us)
 
     @classmethod
     def unpack(cls, data: bytes) -> 'Setpoint':
-        vals = _SETPOINT_STRUCT.unpack(data[:156])
+        vals = _SETPOINT_STRUCT.unpack(data[:208])
         it = iter(vals)
-        return cls(tuple(next(it) for _ in range(6)), tuple(next(it) for _ in range(6)), tuple(next(it) for _ in range(6)), tuple(next(it) for _ in range(6)), tuple(next(it) for _ in range(6)), tuple(next(it) for _ in range(6)), next(it), next(it))
+        return cls(tuple(next(it) for _ in range(7)), tuple(next(it) for _ in range(7)), tuple(next(it) for _ in range(7)), tuple(next(it) for _ in range(7)), tuple(next(it) for _ in range(7)), tuple(next(it) for _ in range(7)), tuple(next(it) for _ in range(7)), next(it), next(it))
 
 # HeartbeatJ2T: Jetson → Teensy liveness, ~10 Hz.
 HEARTBEAT_J2T_FMT = '<QI'

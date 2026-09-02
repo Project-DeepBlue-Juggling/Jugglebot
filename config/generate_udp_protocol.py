@@ -104,7 +104,7 @@ class Message:
 # ───────────────────────────────────────────────────────────────────────────
 
 CONSTANTS = [
-    ("PROTOCOL_VERSION", 5,      "u8",  "Bumped on any incompatible wire change (4→5: 2026-07-31 Profile gains the 3rd CAN slot can3_* — cone traffic)"),
+    ("PROTOCOL_VERSION", 6,      "u8",  "Bumped on any incompatible wire change (4→5: 2026-07-31 Profile gains the 3rd CAN slot can3_* — cone traffic; 5→6: 2026-09-01 Setpoint widens 6→7 — index 6 = hand — and gains the v1[7] exact-knot-velocity array, unified-7dof-planner Phase 2. TOTAL LINK DARKNESS against any FW ≤ 16 board until the lockstep Phase 3 flash — loud and fail-closed by design)"),
     ("MAGIC",            0x4A42, "u16", '"JB" little-endian preamble (bytes 0x42 0x4A)'),
     ("HEADER_SIZE",      8,      "u16", "Bytes before payload"),
     ("CRC_SIZE",         2,      "u16", "Trailing CRC-16 bytes"),
@@ -344,20 +344,31 @@ MESSAGES = [
     Message(
         "Setpoint", "SETPOINT", "J2T", "STREAM",
         summary=(
-            "40 Hz MPC setpoint waypoints. Carries motor-rev-space quantities "
-            "(Jugglebot convention: positive = leg extension) exactly as "
-            "motor_guard's interpolator consumes them. The Jetson bridge does "
-            "the same mm→rev / pose conversions motor_guard does today; the "
-            "Teensy interpolator works purely in rev-space. `u1`/`u2` presence "
-            "is signalled by the flags bits (NOT NaN sentinels)."),
+            "40 Hz setpoint knot waypoints, 7 channels (v6, 2026-09-01: legs 0..5 "
+            "+ hand at index 6, unified-7dof-planner Phase 2). Legs carry "
+            "motor-rev-space quantities (Jugglebot convention: positive = leg "
+            "extension) exactly as motor_guard's interpolator consumed them; the "
+            "hand lane is ODrive-convention absolute rev, NO sign flip — the "
+            "firmware's encode_leg_setpoint already applies the per-axis wire "
+            "scales (legs: negate + 1000/10000; hand: 100/100), so the host puts "
+            "RAW rev values in this frame for every axis. The Jetson bridge does "
+            "the mm→rev / pose conversions; the Teensy interpolator works purely "
+            "in rev-space. `u1`/`u2`/hand/`v1` presence is signalled by the flags "
+            "bits (NOT NaN sentinels). With HAS_V1 the 500 Hz Hermite endpoint "
+            "velocity is transmitted exactly (float-exact for knot-aligned "
+            "piecewise cubics — Phase 0 decision 2); with it clear the firmware "
+            "falls back to the (u2-u1)/SEGMENT_T_S forward difference, the flown "
+            "path. With HAS_HAND clear the firmware ignores index 6 and emits no "
+            "hand frame."),
         fields=[
-            Field("u0",        "f32", 6, "Current motor positions (rev)"),
-            Field("u1",        "f32", 6, "Next waypoint (rev); valid iff flags bit0"),
-            Field("u2",        "f32", 6, "Next-next waypoint (rev); valid iff flags bit1 — C1 continuity"),
-            Field("v0",        "f32", 6, "Forward-looking velocity from MPC (rev/s)"),
-            Field("accel",     "f32", 6, "Acceleration for Taylor extrapolation (rev/s^2)"),
-            Field("torque_ff", "f32", 6, "Gravity+inertia feedforward (Nm)"),
-            Field("flags",     "u32", 1, "bit0: u1_present, bit1: u2_present"),
+            Field("u0",        "f32", 7, "Current positions (rev); [0..5] legs, [6] hand"),
+            Field("u1",        "f32", 7, "Next waypoint (rev); valid iff flags bit0"),
+            Field("u2",        "f32", 7, "Next-next waypoint (rev); valid iff flags bit1 — C1 continuity"),
+            Field("v0",        "f32", 7, "Velocity at the u0 knot (rev/s)"),
+            Field("accel",     "f32", 7, "Acceleration for Taylor extrapolation (rev/s^2)"),
+            Field("torque_ff", "f32", 7, "Gravity+inertia feedforward (Nm); [6] always 0 in Phase 2"),
+            Field("v1",        "f32", 7, "Exact velocity at the u1 knot (rev/s); valid iff flags bit3"),
+            Field("flags",     "u32", 1, "bit0: HAS_U1, bit1: HAS_U2, bit2: HAS_HAND (index 6 live), bit3: HAS_V1 (v1 transmitted-exact)"),
             Field("t_origin_us", "u64", 1, "Jetson-side wall-clock timestamp (us)"),
         ],
     ),

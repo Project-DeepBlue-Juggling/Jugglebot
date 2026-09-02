@@ -1351,8 +1351,12 @@ class BridgeSysID:
         return None if hb is None else bool(hb.flags & BRIDGE_T2J_FLAG_MPC_ACTIVE)
 
     def _vec(self, val: float):
+        # v6 wire Setpoint carries 7 lanes: legs + the hand at index 6, which
+        # this bench never drives — packed 0.0 with HAS_HAND/HAS_V1 clear
+        # (behaviour-preserving).
         ax = self.axis_id
-        return tuple(float(val) if i == ax else 0.0 for i in range(self._nlegs))
+        return tuple(float(val) if i == ax else 0.0
+                     for i in range(self._nlegs)) + (0.0,)
 
     def _arm(self):
         self._client.set_heartbeat_flags(1)   # mpc_active=1 — firmware output gate may ENABLE
@@ -1376,7 +1380,8 @@ class BridgeSysID:
     def _send_knot(self, u0, u1, u2, v0, t_origin_us):
         sp = self._Setpoint(
             u0=self._vec(u0), u1=self._vec(u1), u2=self._vec(u2), v0=self._vec(v0),
-            accel=(0.0,) * self._nlegs, torque_ff=(0.0,) * self._nlegs,
+            accel=(0.0,) * (self._nlegs + 1),
+            torque_ff=(0.0,) * (self._nlegs + 1),
             flags=0x3, t_origin_us=int(t_origin_us))
         self._client.send_stream(int(self._MsgType.SETPOINT), sp.pack())
 

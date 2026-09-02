@@ -410,7 +410,7 @@ class KtBench(BridgeSysID):
         self._last_streamed_u0 = float(u0)
         sp = self._Setpoint(
             u0=self._vec(u0), u1=self._vec(u1), u2=self._vec(u2), v0=self._vec(v0),
-            accel=(0.0,) * self._nlegs,
+            accel=(0.0,) * (self._nlegs + 1),
             torque_ff=self._vec(self._torque_ff_Nm),
             flags=0x3, t_origin_us=int(t_origin_us))
         self._client.send_stream(int(self._MsgType.SETPOINT), sp.pack())

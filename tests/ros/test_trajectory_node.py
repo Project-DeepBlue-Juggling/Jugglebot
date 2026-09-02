@@ -2702,3 +2702,104 @@ def test_accept_while_armed_has_no_disarmed_marker():
                                 GoToPose.Response())
     assert resp.accepted is True
     assert 'DISARMED' not in resp.message
+
+
+# ── The 7th-channel (hand) emitter step backstop (Phase 2, unified planner) ──
+#
+# The leg backstop's twin: its bound comes from the SAME chain as the pump's
+# hand step gate (hand_vel_limit_rps × knot_dt = 5.0 rev at the shipped
+# config), exactly as the leg backstop reuses the leg pump gate's
+# max_step_rev. A hand-carrying plan whose consecutive frames jump the hand
+# past that bound must freeze to a hold BEFORE the wire, and a hand-less
+# frame clears the hand prior (the pump's hand-absent-gap rule, mirrored).
+
+
+class _HandHoldPlan:
+    """A hold plan that also carries a hand track (the CyclePlan surface).
+
+    ``hand_fn(t) -> (rev, rev_s)`` lets a test script an arbitrary — even
+    discontinuous — hand trajectory against a well-behaved leg channel, so the
+    hand backstop can be driven without a leg violation muddying attribution.
+    (``HoldPlan`` is a factory function returning a ``__slots__`` plan, so this
+    delegates rather than subclassing.)
+    """
+
+    kind = 'move'
+
+    def __init__(self, pose, hand_fn):
+        self._base = HoldPlan(pose)
+        self._hand_fn = hand_fn
+        self.total_duration = self._base.total_duration
+        self.final_pose = self._base.final_pose
+
+    def state_at(self, t: float):
+        return self._base.state_at(t)
+
+    def hand_at(self, t: float):
+        return self._hand_fn(float(t))
+
+
+def _seeded_stream_node():
+    pub = _CapturePub()
+    node = _node(command_pub_factory=lambda: pub)
+    node._pub = pub
+    node._on_robot_state(_robot_state())
+    node._on_control_mode(String(data='STANDBY'))
+    return node, pub
+
+
+def test_hand_backstop_bound_derives_from_the_pump_gate_chain():
+    from teensy_link.setpoint_pump import DEFAULT_MAX_STEP_HAND_REV
+    node = _node()
+    assert (node._limits.hand_vel_limit_rps * node._limits.knot_dt_s
+            == pytest.approx(DEFAULT_MAX_STEP_HAND_REV))
+
+
+def test_hand_step_backstop_freezes_to_hold():
+    node, pub = _seeded_stream_node()
+    bound = node._limits.hand_vel_limit_rps * node._limits.knot_dt_s
+    # Hand steps by 1.5× the bound between the two frames; legs hold still.
+    hand_fn = lambda t: (0.0, 0.0) if t < 0.1 else (1.5 * bound, 0.0)
+    with node._plan_lock:
+        node._active_plan = _HandHoldPlan(node._last_pose.copy(), hand_fn)
+        node._plan_t0 = time.perf_counter() - 0.01     # first frames at t<0.1
+    node._emit_once(node._plan_t0 + 0.01)              # hand ≈ 0 — streams
+    assert len(pub.frames) == 1 and 'hand_rev' in pub.frames[0]
+    node._emit_once(node._plan_t0 + 0.2)               # hand jumps 1.5×bound
+    assert len(pub.frames) == 1                        # frame NOT sent
+    assert 'hand step' in node._last_rejection
+    assert node._active_plan.kind == 'hold'            # froze to a HoldPlan
+    # The installed hold carries no hand track, so the recovery stream is
+    # hand-less by construction and re-streams within one knot.
+    node._emit_once(node._plan_t0 + 0.25)
+    assert len(pub.frames) == 2
+    assert 'hand_rev' not in pub.frames[-1]
+
+
+def test_hand_step_within_bound_streams_and_tracks_prior():
+    node, pub = _seeded_stream_node()
+    bound = node._limits.hand_vel_limit_rps * node._limits.knot_dt_s
+    hand_fn = lambda t: (0.5 * bound * t / 0.025, 0.5 * bound / 0.025)
+    with node._plan_lock:
+        node._active_plan = _HandHoldPlan(node._last_pose.copy(), hand_fn)
+        node._plan_t0 = time.perf_counter()
+    t0 = node._plan_t0
+    for k in range(4):                                 # ½-bound steps: all pass
+        node._emit_once(t0 + k * 0.025)
+    assert len(pub.frames) == 4
+    assert node._last_hand_rev == pytest.approx(pub.frames[-1]['hand_rev'])
+
+
+def test_hand_prior_clears_on_handless_frame():
+    node, pub = _seeded_stream_node()
+    with node._plan_lock:
+        node._active_plan = _HandHoldPlan(node._last_pose.copy(),
+                                          lambda t: (3.0, 0.0))
+        node._plan_t0 = time.perf_counter()
+    node._emit_once(node._plan_t0)
+    assert node._last_hand_rev == pytest.approx(3.0)
+    with node._plan_lock:                              # legacy plan: no hand
+        node._active_plan = HoldPlan(node._last_pose.copy())
+        node._plan_t0 = time.perf_counter()
+    node._emit_once(node._plan_t0 + 0.025)
+    assert node._last_hand_rev is None                 # gap cleared the prior

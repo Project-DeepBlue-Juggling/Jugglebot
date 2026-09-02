@@ -1221,11 +1221,13 @@ def validate_cycle(cycle_plan, limits, geom, *,
 
     # ── Decide the code (priority order; first failure wins) ──
     step_bound = STEP_BOUND_MARGIN * float(limits.max_step_rev)
-    # The hand has no wire step constant of its own yet — Phase 2 adds a
-    # per-channel ``max_step_rev`` to the pump and Phase 3 the firmware's
-    # ``MAX_LEAD_HAND_REV``. Until then the bound is derived from the only hand
-    # rate authority this layer has, with the same 20 % margin the leg bound uses,
-    # so the gate refuses a step-heavy cycle BEFORE motion rather than mid-stream.
+    # The hand's wire step gate landed with plan Phase 2: the pump's
+    # per-channel ``max_step_hand_rev`` (``DEFAULT_MAX_STEP_HAND_REV`` =
+    # hand_vel_limit_rps × knot dt — the same derivation as this bound, so
+    # this sits at the same 20 % validate-below-pump margin the legs use
+    # (0.8 × 5.0 = 4.0 vs pump 5.0) and the gate refuses a step-heavy cycle
+    # BEFORE motion rather than mid-stream). Only the firmware half
+    # (``MAX_DEVIATION_HAND_REV`` / ``MAX_LEAD_HAND_REV``) remains Phase 3.
     hand_step_bound = (STEP_BOUND_MARGIN * hand_limit_v * dt)
     code = OK
     reasons: list = []
@@ -1262,7 +1264,9 @@ def validate_cycle(cycle_plan, limits, geom, *,
             'peak per-knot hand step', peak_hand_step, '>', hand_step_bound,
             unit='rev', knob='trajectory_op.hand_vel_limit_rps', digits=3,
             tail=("%d%% of hand_vel_limit_rps %.1f x the plan's knot dt %.3f — "
-                  'the hand has no wire step constant until plan Phase 2'
+                  'the same margin below the pump max_step_hand_rev gate that '
+                  'the legs use; the firmware MAX_DEVIATION_HAND_REV half '
+                  'lands in plan Phase 3'
                   % (int(STEP_BOUND_MARGIN * 100), hand_limit_v, dt)))]
 
     return FeasibilityReport(

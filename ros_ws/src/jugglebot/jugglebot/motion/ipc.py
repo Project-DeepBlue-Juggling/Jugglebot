@@ -187,6 +187,12 @@ def make_mpc_command(ext_mm: list | tuple,
                      cmd_next_mm: list | tuple | None = None,
                      cmd_next2_mm: list | tuple | None = None,
                      *,
+                     vel_next_mm_s: list | tuple | None = None,
+                     hand_rev: float | None = None,
+                     hand_vel_rps: float | None = None,
+                     hand_next_rev: float | None = None,
+                     hand_next2_rev: float | None = None,
+                     hand_next_vel_rps: float | None = None,
                      out: dict | None = None) -> dict:
     """Create an MPC command message.
 
@@ -219,6 +225,25 @@ def make_mpc_command(ext_mm: list | tuple,
         uses (u[2] - u[1]) / T as the endpoint velocity of the current
         Hermite segment, producing C1-continuous position across segment
         boundaries (eliminates 40 Hz velocity discontinuity).
+    vel_next_mm_s : 6 leg extension RATES (mm/s) at the u[1] knot, or None.
+        Fills the v6 Setpoint's exact ``v1[0:6]`` (behind ``HAS_V1``); absent
+        keeps the firmware forward-difference fallback (the flown path).
+    hand_rev, hand_vel_rps, hand_next_rev, hand_next2_rev, hand_next_vel_rps :
+        the 7th (hand) channel — ODrive-convention absolute rev / rev/s at
+        the u0, u0, u1, u2 and u1 knots respectively.  The pump maps them to
+        Setpoint index 6 behind ``HAS_HAND`` (and ``v1[6]`` behind
+        ``HAS_V1``).  All-or-nothing at the pump: see
+        ``teensy_link/setpoint_pump.py``.
+
+    NOTE — the six v6 keys (vel_next_mm_s + the five hand keys) have
+    ABSENT-when-None semantics even under ``out=`` reuse: a key a previous
+    tick wrote is DELETED when this tick passes None.  This deliberately
+    differs from the legacy fields' write-None-under-out behaviour, and it
+    is load-bearing: with ``out=`` reuse, a hand VALUE stashed by a previous
+    (hand-carrying) tick would otherwise survive into a later legacy frame
+    and silently arm ``HAS_HAND`` with a stale hand target — the exact
+    stale-key leak the emitter's byte-identity regression (T-U8/T-R1) pins
+    against.
     """
     # Values are passed through as-is (ndarrays, lists, etc.).
     # The _pack() serialiser handles ndarray → list conversion via its
@@ -261,6 +286,19 @@ def make_mpc_command(ext_mm: list | tuple,
         msg['cmd_next2_mm'] = cmd_next2_mm
     elif 'cmd_next2_mm' in msg:
         del msg['cmd_next2_mm']
+    # v6 keys (2026-09-01, unified-7dof-planner Phase 2): absent-when-None
+    # EVEN under out= reuse — see the docstring NOTE for why a previously
+    # written key must be deleted rather than overwritten with None.
+    for key, val in (('vel_next_mm_s', vel_next_mm_s),
+                     ('hand_rev', hand_rev),
+                     ('hand_vel_rps', hand_vel_rps),
+                     ('hand_next_rev', hand_next_rev),
+                     ('hand_next2_rev', hand_next2_rev),
+                     ('hand_next_vel_rps', hand_next_vel_rps)):
+        if val is not None:
+            msg[key] = val
+        elif key in msg:
+            del msg[key]
     return msg
 
 

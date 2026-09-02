@@ -78,14 +78,17 @@ def test_telemetry_roundtrip():
 
 
 def test_setpoint_roundtrip():
+    # v6 (2026-09-01): 7 lanes per array (legs 0..5 + hand at 6) + the v1
+    # exact-velocity array; all four flag bits set so no lane aliases another.
     sp = p.Setpoint(
-        u0=tuple(float(i) for i in range(6)),
-        u1=tuple(float(i + 10) for i in range(6)),
-        u2=tuple(float(i + 20) for i in range(6)),
-        v0=tuple(float(i + 30) for i in range(6)),
-        accel=tuple(float(i + 40) for i in range(6)),
-        torque_ff=tuple(float(i + 50) for i in range(6)),
-        flags=0b101,
+        u0=tuple(float(i) for i in range(7)),
+        u1=tuple(float(i + 10) for i in range(7)),
+        u2=tuple(float(i + 20) for i in range(7)),
+        v0=tuple(float(i + 30) for i in range(7)),
+        accel=tuple(float(i + 40) for i in range(7)),
+        torque_ff=tuple(float(i + 50) for i in range(7)),
+        v1=tuple(float(i + 60) for i in range(7)),
+        flags=0b1111,
         t_origin_us=987654321,
     )
     blob = sp.pack()
@@ -99,6 +102,63 @@ def test_setpoint_roundtrip():
     assert decoded.v0 == pytest.approx(sp.v0)
     assert decoded.accel == pytest.approx(sp.accel)
     assert decoded.torque_ff == pytest.approx(sp.torque_ff)
+    assert decoded.v1 == pytest.approx(sp.v1)
+
+
+# ── Setpoint v6 (2026-09-01, unified-7dof-planner Phase 2) — T-U6 ────────────
+#
+# The ONE incompatible wire change of the arc: every Setpoint array widens 6→7
+# (index 6 = hand) and the exact-u1-velocity v1[7] lands behind flag bit 3.
+# PROTOCOL_VERSION 5→6 ⇒ total link darkness against any FW ≤ 16 board — loud
+# and fail-closed BY DESIGN (decode_frame hard-rejects on version, both ends).
+
+
+def test_setpoint_v6_size_is_208():
+    # 49 f32 (7 arrays × 7 lanes) + u32 flags + u64 t_origin_us = 208 B.
+    # Pinned as a literal: a silent size drift is a memcpy-incompatible board.
+    assert p.SETPOINT_SIZE == 208
+    assert len(p.Setpoint().pack()) == 208
+
+
+def test_setpoint_arrays_are_seven_wide_legs_then_hand():
+    sp = p.Setpoint()
+    for arr in (sp.u0, sp.u1, sp.u2, sp.v0, sp.accel, sp.torque_ff, sp.v1):
+        assert len(arr) == p.NUM_AXES == 7
+
+
+def test_setpoint_flag_bits_are_the_four_documented_powers_of_two():
+    # HAS_U1/HAS_U2 (legacy) + HAS_HAND/HAS_V1 (v6). Mirrored constants live in
+    # teensy_link/setpoint_pump.py — this pins the wire-side contract the
+    # firmware decodes, so the two cannot drift apart silently.
+    from teensy_link.setpoint_pump import (
+        FLAG_HAS_U1, FLAG_HAS_U2, FLAG_HAS_HAND, FLAG_HAS_V1,
+    )
+    assert (FLAG_HAS_U1, FLAG_HAS_U2, FLAG_HAS_HAND, FLAG_HAS_V1) == (
+        0x1, 0x2, 0x4, 0x8)
+    # Independent bits: all four survive a wire round-trip together and alone.
+    for flags in (0x0, 0x1, 0x3, 0x4, 0x8, 0xF):
+        assert p.Setpoint.unpack(p.Setpoint(flags=flags).pack()).flags == flags
+
+
+def test_v6_decode_rejects_a_version5_frame():
+    # A v5 host's frame differs ONLY in the header version byte — build one by
+    # patching byte 2 of a valid v6 frame and re-CRCing, which is exactly what
+    # a not-yet-reflashed board's traffic looks like to this decoder. The
+    # reject must be the loud structural ValueError, not CrcError (version is
+    # checked before the CRC), and total: EVERY frame from a v5 peer dies here.
+    frame = bytearray(p.encode_frame(int(p.MsgType.SETPOINT), 3,
+                                     p.Setpoint().pack()))
+    assert frame[2] == p.PROTOCOL_VERSION == 6
+    frame[2] = 5
+    body = bytes(frame[:-2])
+    frame[-2:] = struct.pack('<H', p.crc16_ccitt(body))   # valid CRC, old version
+    with pytest.raises(ValueError, match="version") as exc:
+        p.decode_frame(bytes(frame))
+    assert not isinstance(exc.value, p.CrcError)
+    # The inverse direction (v6 frame at a v5 decoder) is representable the
+    # same way and is exercised against a frozen v5 reader in
+    # tests/teensy_link/test_v5_wire_regression.py — the live codec can no
+    # longer play the v5 side.
 
 
 def test_encode_then_decode_full_frame():
@@ -256,8 +316,15 @@ def test_clock_diag_is_additive_protocol_version_unchanged():
     is only worth anything if ``PROTOCOL_VERSION`` also stays put — a bump makes
     ``decode_frame`` reject EVERY frame in both directions (the 24608bb
     total-darkness failure), which would take the link down over a diagnostic.
+
+    (FW 11 itself bumped nothing; the LATER 5→6 bump — the 2026-09-01 Setpoint
+    widening — was a separate, deliberate incompatible change. The version
+    literal is deliberately NOT re-pinned here: its one canonical pin is
+    test_udp_protocol_xlang.py::test_protocol_version_frozen — the same
+    one-constant-one-pin rule recorded at the top of this file, whose
+    duplicated pins are exactly what went stale on the 4→5 bump and again,
+    in this test, on 5→6.)
     """
-    assert p.PROTOCOL_VERSION == 5
     # The frames that existed before FW 11 keep their exact sizes.
     assert p.PROFILE_SIZE == 76
     assert p.HEARTBEAT_T2J_SIZE == 73
@@ -429,8 +496,10 @@ def test_cache_diag_is_additive_protocol_version_unchanged():
     stays put — a bump makes ``decode_frame`` reject EVERY frame in both
     directions (the 24608bb total-darkness failure), which would take the link
     down over a diagnostic.
+
+    (Version literal deliberately not re-pinned here — one constant, one pin;
+    see the CLOCK_DIAG equivalent above for the 5→6 history.)
     """
-    assert p.PROTOCOL_VERSION == 5
     # Every frame that existed before FW 12 keeps its exact size — including
     # CLOCK_DIAG, which shipped one firmware revision earlier and is the one
     # most likely to be disturbed by an edit in the same region of the spec.
@@ -622,8 +691,10 @@ def test_ring_diag_is_additive_protocol_version_unchanged():
     earlier, sits adjacent in the spec, and carries the ring fields RING_DIAG
     exists to correct — so it is the frame most likely to be disturbed by an edit
     in this region.
+
+    (Version literal deliberately not re-pinned here — one constant, one pin;
+    see the CLOCK_DIAG equivalent above for the 5→6 history.)
     """
-    assert p.PROTOCOL_VERSION == 5
     assert p.CACHE_DIAG_SIZE == 129
     assert p.CLOCK_DIAG_SIZE == 49
     assert p.PROFILE_SIZE == 76

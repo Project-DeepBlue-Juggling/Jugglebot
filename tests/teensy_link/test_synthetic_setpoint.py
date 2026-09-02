@@ -15,6 +15,7 @@ import pytest
 from teensy_link.synthetic_setpoint import (
     SyntheticKnotSource,
     TrajectoryParams,
+    DEFAULT_MAX_STEP_REV,
     DEFAULT_SEG_T_S,
     FLAG_HAS_U1,
     FLAG_HAS_U2,
@@ -40,6 +41,31 @@ def _sine(center=0.3, amp=0.1, freq=0.25, approach_s=2.0):
         TrajectoryParams(axis=0, start_rev=HARDSTOP, center_rev=center,
                          amplitude_rev=amp, freq_hz=freq, approach_s=approach_s),
         stroke_min_rev=S_MIN, stroke_max_rev=S_MAX)
+
+
+# ── Mirrored firmware constant ────────────────────────────────────────────────
+
+def test_default_max_step_matches_firmware_max_lead_rev():
+    """DEFAULT_MAX_STEP_REV mirrors the FLOWN firmware lead clamp, pinned
+    against the header text itself.
+
+    The mirror sat stale at 0.15 (the pre-2026-07-10 clamp) until 2026-09-01
+    while the firmware flew 0.10 — a synthetic trajectory validated against
+    0.15 could command knot steps the live lead clamp then pinned, turning a
+    'validated' bench profile into a clamped one. Parsing MAX_LEAD_REV out of
+    canbridge_config.h makes the next firmware retune fail this test instead
+    of silently re-opening that gap. (replay_setpoint's 0.15 is documented-
+    historical — the pre-2026-07-10 bound its recordings were validated
+    against — and is deliberately NOT pinned to the header.)
+    """
+    import re
+    from pathlib import Path
+    header = (Path(__file__).resolve().parents[2] / 'ros_ws' / 'src'
+              / 'jugglebot' / 'Teensy_code_canbridge' / 'canbridge_config.h')
+    m = re.search(r'MAX_LEAD_REV\s*=\s*([0-9.]+)f?;', header.read_text())
+    assert m, "MAX_LEAD_REV not found in canbridge_config.h"
+    assert DEFAULT_MAX_STEP_REV == pytest.approx(float(m.group(1)))
+    assert DEFAULT_MAX_STEP_REV == pytest.approx(0.10)
 
 
 # ── Trajectory shape ──────────────────────────────────────────────────────────
@@ -107,14 +133,17 @@ def test_flags_signal_both_lookahead_knots():
 
 
 def test_non_target_axes_are_zero():
+    # v6: every array is 7 lanes — non-target legs AND the hand lane (index 6,
+    # HAS_HAND/HAS_V1 clear) are packed 0.0 so the firmware guards see rest.
     f = _sine().frame(3.1, t_origin_us=0)
-    for arr in (f.u0, f.u1, f.u2, f.v0, f.accel, f.torque_ff):
-        assert len(arr) == 6
-        for i in range(1, 6):
+    for arr in (f.u0, f.u1, f.u2, f.v0, f.accel, f.torque_ff, f.v1):
+        assert len(arr) == 7
+        for i in range(1, 7):
             assert arr[i] == 0.0
-    # accel + torque_ff are zero on every axis (no FF from the synthetic source).
+    # accel + torque_ff + v1 are zero on every axis (no FF from the synthetic source).
     assert all(a == 0.0 for a in f.accel)
     assert all(a == 0.0 for a in f.torque_ff)
+    assert all(a == 0.0 for a in f.v1)
 
 
 def test_targets_a_non_zero_axis():

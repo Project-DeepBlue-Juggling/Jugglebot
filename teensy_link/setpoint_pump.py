@@ -18,6 +18,62 @@ Teensy fault machine** (per-leg stroke / deviation / MPC-staleness E-STOP /
 deferred-stow — all bench-validated). See
 ``logbook/2026-06-25-phase11-u4-production-cutover.md``.
 
+The 7-channel v6 frame (2026-09-01, unified-7dof-planner Phase 2)
+-----------------------------------------------------------------
+The wire ``Setpoint`` carries **7 lanes** (legs 0..5 + hand at index 6) and a
+new ``v1`` f32[7] array — the exact velocity at the ``u1`` knot — behind flag
+bit 3 ``HAS_V1``. This pump fills them from six new OPTIONAL ``mpc_cmd`` keys:
+
+  * ``hand_rev`` / ``hand_vel_rps`` / ``hand_next_rev`` / ``hand_next2_rev``
+    → ``u0[6]`` / ``v0[6]`` / ``u1[6]`` / ``u2[6]``. **ODrive-convention
+    absolute rev, NO sign flip and NO host-side scaling** — the firmware's
+    ``encode_leg_setpoint`` already applies the hand's 100/100 wire scales
+    (vs the legs' negate + 1000/10000) for axis 6, so the host puts RAW rev
+    values on the wire.
+  * ``vel_next_mm_s`` (6-wide leg extension rates at the u1 knot, mm/s)
+    → ``v1[0:6]`` × mm_to_rev; ``hand_next_vel_rps`` → ``v1[6]``.
+
+Presence semantics (each documented rule is pinned by a test in
+``tests/teensy_link/test_setpoint_pump.py``):
+
+  * **Hand keys are ALL-OR-NOTHING.** If ANY ``hand_*`` key is present
+    (``hand_next_vel_rps`` included), then ``hand_rev`` + ``hand_vel_rps`` +
+    ``hand_next_rev`` + ``hand_next2_rev`` must ALL be present and finite —
+    anything else is a loud SAFETY REJECT. **NaN/non-finite in ANY hand key
+    REJECTS the frame** (never a flag-clear fallback: the hand is a
+    221 rev/s axis, and a silently-degraded hand lane is exactly the class
+    of failure the legs' deliberate u1/u2 flag-clear fallback — which stays
+    — is too gentle for).
+  * All four hand keys absent ⇒ ``HAS_HAND`` clear, index 6 of every array
+    packed 0.0 — the leg lanes are **byte-identical** to the pre-hand frame
+    (regression-pinned against the captured v5 fixtures).
+  * **Hand streaming requires the full Mode-1 knot set**: hand keys present
+    while the leg ``cmd_next_mm`` / ``cmd_next2_mm`` lookahead is absent (or
+    malformed ⇒ flag-cleared) is an incoherent producer state and REJECTS
+    the frame — the firmware interp cannot run a 7th Hermite lane against a
+    leg Taylor fallback, and a producer that knows the hand's next two knots
+    but not the legs' is broken, not degraded. The degenerate case rejects
+    the same way: hand keys aboard a frame with NO leg position command at
+    all (``motor_rev`` and ``ext_mm`` both absent) are a loud SAFETY reject,
+    never the silent ``frames_skipped`` exit a legs-only no-command tick
+    takes.
+  * **``HAS_V1`` requires EVERY active channel's v1**: ``vel_next_mm_s``
+    always, plus ``hand_next_vel_rps`` whenever the hand keys are present. A
+    partial set (either one without the other it needs) REJECTS the frame
+    loudly — counted and reasoned, per the NaN-reject precedent. Both v1
+    keys absent ⇒ ``HAS_V1`` clear and the firmware's ``(u2−u1)/SEG_T``
+    forward-difference fallback stays the flown path. A present-but-
+    non-finite/wrong-length ``vel_next_mm_s`` is a REJECT (the v0
+    precedent: a wrong velocity feedforward is unsafe, never silently
+    dropped to the fallback). ``HAS_V1`` also requires the full leg Mode-1
+    knot set (``HAS_U1`` AND ``HAS_U2``): v1 is the velocity AT the u1
+    knot, so ``vel_next_mm_s`` aboard a frame whose leg lookahead is
+    absent or flag-cleared describes a knot the frame does not carry —
+    incoherent, loud REJECT (counted + reasoned, per the hand coherence
+    rule above).
+  * ``torque_ff[6] = 0`` **always** in Phase 2 (no hand feedforward), and
+    ``accel[6] = 0`` (Mode-1 ignores accel on every lane).
+
 **Bumplessness — the load-bearing invariant.** The Teensy-side knots are derived to
 reproduce ``MotorGuard._on_mpc_command``'s EXACT knot latch
 (``motor_guard.py:541–603``), so the Teensy Hermite — cross-checked bit-for-bit
@@ -101,12 +157,20 @@ sets it true since 2026-07-16) this whole path is inert:
 pre-feature frame, including when the field is absent or malformed.
 
 Per-step safety gate — a port of ``can_node._sub_leg_lengths``'s
-``JB_OP_MAX_POSITION_STEP_REV`` clamp (can_node.py:1046-1056). Reject any frame
-whose commanded ``u0`` jumps more than ``max_step_rev`` from the PRIOR ACCEPTED
-frame. The first frame has no prior and is accepted; the firmware's own
-``MAX_DEVIATION`` gate (commanded-vs-encoder, fault_machine.cpp
-``evaluate_guard``) is the complementary defence-in-depth layer that catches a
-bad *first* command. Two independent layers: the bridge gates command-stream
+``JB_OP_MAX_POSITION_STEP_REV`` clamp (can_node.py:1046-1056), now PER-CHANNEL.
+Reject any frame whose commanded ``u0`` jumps more than ``max_step_rev`` (legs,
+0.3 rev) — or whose hand ``u0[6]`` jumps more than ``max_step_hand_rev``
+(5.0 rev at the shipped config) — from the PRIOR ACCEPTED frame's same channel.
+The two gates reject independently; a leg violation does not implicate the hand
+and vice versa. The first frame has no prior and is accepted — and the hand
+mirrors that rule per-channel: the first hand-carrying frame after construction
+/ :meth:`reset` / any accepted hand-absent frame has no hand prior and is
+accepted (a hand-absent gap CLEARS the hand baseline — comparing across a gap
+would gate against a position the plan legitimately left long ago). The
+firmware's own ``MAX_DEVIATION`` guards (commanded-vs-encoder,
+fault_machine.cpp ``evaluate_guard``; ``MAX_DEVIATION_HAND_REV`` joins in
+Phase 3) are the complementary defence-in-depth layer that catches a bad
+*first* command. Two independent layers: the bridge gates command-stream
 discontinuity (prior frame); the Teensy gates command-vs-encoder divergence.
 
 Whether the resulting frame is actually transmitted is gated separately by the
@@ -125,15 +189,36 @@ from typing import Optional, Sequence, Tuple
 from . import protocol as p
 from .protocol import Setpoint
 
-# Setpoint flag bits — u1/u2 lookahead presence (firmware convention: bits, not NaN).
+# Setpoint flag bits — u1/u2 lookahead + hand-lane + exact-v1 presence
+# (firmware convention: bits, not NaN).
 # Mirrors synthetic_setpoint.py / replay_setpoint.py (the bench Teensy-side sources).
 FLAG_HAS_U1 = 0x1
 FLAG_HAS_U2 = 0x2
+FLAG_HAS_HAND = 0x4   # v6: Setpoint index 6 (hand lane) is live
+FLAG_HAS_V1 = 0x8     # v6: v1[] carries the exact u1-knot velocity
 
 # Default per-step clamp (rev). The bridge passes the authoritative
 # hardware_config.JB_OP_MAX_POSITION_STEP_REV; this default mirrors it so the
 # module is usable standalone in tests.
 DEFAULT_MAX_STEP_REV = 0.3
+
+# Hand per-step gate (rev per 25 ms knot). ONE derivation chain — never a second
+# invented number: hand_vel_limit_rps × knot_dt = 200 × 0.025 = 5.0 rev at the
+# shipped config (JB_TRAJ_HAND_VEL_LIMIT_RPS × JB_TRAJ_KNOT_DT_S; the 200 rev/s
+# session cap is Phase 0 Decision 4, owner-signed 2026-08-30 — +12 % over the
+# C-HAND-3 certified 178.23 rev/s peak). feasibility.py's per-knot hand bound
+# (STEP_BOUND_MARGIN 0.80 × hand_vel_limit_rps × dt = 4.0 rev) then sits at
+# exactly the same 20 % margin below this gate that the legs use (validate
+# 0.8 × 0.3 = 0.24 vs pump 0.3), so a pump reject can't happen on a validated
+# plan. Pinned against the generated config AND the 0.80 relation by
+# tests/teensy_link/test_setpoint_pump.py (the DEFAULT_TORQUE_WIRE_SCALE
+# mirrored-constant pattern).
+DEFAULT_MAX_STEP_HAND_REV = 5.0
+
+# The all-or-nothing hand key set (u0/v0/u1/u2 for the hand lane).
+# 'hand_next_vel_rps' (the hand v1) is a hand_* key too for PRESENCE-triggering
+# purposes, but belongs to the HAS_V1 rule — see _build().
+_HAND_KEYS = ('hand_rev', 'hand_vel_rps', 'hand_next_rev', 'hand_next2_rev')
 
 # ── Leg torque-FF defaults (mirror the generated hardware_config constants so the
 # module stays pure + standalone-usable; pinned against them by
@@ -157,8 +242,12 @@ class SetpointPump:
             mm-space command fields (``ext_mm``/``cmd_next_mm``/``vel_mm_s``);
             kept as a constructor arg (not a per-build param or a
             ``jugglebot.motion`` import) so the module stays pure.
-        num_legs: number of leg axes (Setpoint carries 6).
+        num_legs: number of leg axes (the wire ``Setpoint`` carries 7 lanes —
+            ``num_legs`` leg lanes plus the hand at index 6).
         max_step_rev: per-leg per-frame ``u0`` step clamp (rev).
+        max_step_hand_rev: per-frame hand ``u0[6]`` step clamp (rev). Derived
+            from the hand session velocity cap — see the
+            ``DEFAULT_MAX_STEP_HAND_REV`` derivation comment above.
         torque_ff_enabled: master switch for the leg torque feedforward
             (``hardware_config.DYNAMICS_TORQUE_FF_ENABLED``). **Default False** — the
             pump then emits ``torque_ff = (0.0,)*n`` and never even reads
@@ -177,6 +266,7 @@ class SetpointPump:
     def __init__(self, mm_to_rev: Sequence[float],
                  num_legs: int = p.NUM_LEGS,
                  max_step_rev: float = DEFAULT_MAX_STEP_REV,
+                 max_step_hand_rev: float = DEFAULT_MAX_STEP_HAND_REV,
                  torque_ff_enabled: bool = False,
                  torque_ff_max_nm: float = DEFAULT_TORQUE_FF_MAX_NM,
                  torque_wire_scale: float = DEFAULT_TORQUE_WIRE_SCALE,
@@ -187,6 +277,7 @@ class SetpointPump:
             raise ValueError(
                 f"mm_to_rev needs >= {self.n} entries, got {len(self.mm_to_rev)}")
         self.max_step_rev = float(max_step_rev)
+        self.max_step_hand_rev = float(max_step_hand_rev)
 
         # ── Leg torque-FF configuration (see the module docstring) ──
         self.torque_ff_enabled = bool(torque_ff_enabled)
@@ -217,6 +308,7 @@ class SetpointPump:
                 f"torque_wire_scale must be finite and > 0, got {torque_wire_scale}")
 
         self._prev_pos: Optional[list] = None
+        self._prev_hand: Optional[float] = None   # prior ACCEPTED hand u0 (None = no baseline)
         self._ff_frames = 0          # accepted frames since reset — drives the FF ramp
         self.frames_built = 0
         self.frames_skipped = 0      # no-command ticks (not a fault)
@@ -230,9 +322,11 @@ class SetpointPump:
         Also RESTARTS the torque-FF ramp. That is the point: after a link loss the
         ODrive's velocity integrator has re-absorbed the gravity load on its own, so
         re-applying the full feedforward as a step would double-count it exactly as it
-        would at first arm.
+        would at first arm. The hand step-gate baseline clears too — same reasoning
+        as the legs', per channel.
         """
         self._prev_pos = None
+        self._prev_hand = None
         self._ff_frames = 0
 
     def restart_torque_ramp(self) -> None:
@@ -300,6 +394,24 @@ class SetpointPump:
             out.append(v)
         return out, None
 
+    @staticmethod
+    def _finite_scalar(val, name: str):
+        """Validate a scalar hand-lane value is numeric and finite.
+
+        The scalar sibling of :meth:`_finite_vec`, with the same
+        return-don't-raise robustness contract: a non-numeric / non-finite
+        value returns ``(None, reason)`` so one bad frame is a counted REJECT,
+        never a crash of the setpoint thread. NaN here is a REJECT by design —
+        the hand has no flag-clear fallback (see the module docstring).
+        """
+        try:
+            v = float(val)
+        except (TypeError, ValueError):
+            return None, f'non-numeric {name} ({val!r})'
+        if not math.isfinite(v):
+            return None, f'non-finite {name}'
+        return v, None
+
     def build(self, cmd: dict, t_origin_us: int
               ) -> Tuple[Optional[Setpoint], Optional[str]]:
         """Validate + pack one 40 Hz MPC command (:5557 ``mpc_cmd`` dict).
@@ -345,6 +457,17 @@ class SetpointPump:
                 return None, reason
             u0 = [ext_vals[i] * mr[i] for i in range(self.n)]
         else:
+            # A hand-carrying frame with NO leg position command is an
+            # incoherent producer state (the docstring's Mode-1 coherence
+            # rule), not an idle tick — loud SAFETY reject, mirroring the
+            # hand/Mode-1 knot-set reject below.
+            if (cmd.get('hand_next_vel_rps') is not None
+                    or any(cmd.get(k) is not None for k in _HAND_KEYS)):
+                self.frames_rejected += 1
+                self.last_reject_reason = (
+                    'hand keys without a position command '
+                    '(motor_rev/ext_mm both absent)')
+                return None, self.last_reject_reason
             # No position command in this message (e.g. a non-mpc_cmd frame that
             # slipped the topic filter). Nothing to command — skip, not a fault.
             self.frames_skipped += 1
@@ -422,7 +545,98 @@ class SetpointPump:
                 u2 = [cand[i] * mr[i] for i in range(self.n)]
                 flags |= FLAG_HAS_U2
 
-        # ── Per-step gate vs the prior ACCEPTED frame (NOT vs rejected frames) ──
+        # ── Hand lane (index 6): ALL-OR-NOTHING key set, NaN ⇒ reject ──
+        # Any hand_* key present (hand_next_vel_rps included) commits the
+        # producer to the full u0/v0/u1/u2 hand set. See the module docstring
+        # for why the hand never gets the legs' flag-clear fallback.
+        hand_vals = None            # (u0h, v0h, u1h, u2h) when the hand lane is live
+        hand_v1_raw = cmd.get('hand_next_vel_rps')
+        if hand_v1_raw is not None or any(cmd.get(k) is not None for k in _HAND_KEYS):
+            missing = [k for k in _HAND_KEYS if cmd.get(k) is None]
+            if missing:
+                self.frames_rejected += 1
+                self.last_reject_reason = (
+                    'hand keys are all-or-nothing: missing '
+                    + '/'.join(missing))
+                return None, self.last_reject_reason
+            parsed = []
+            for k in _HAND_KEYS:
+                v, reason = self._finite_scalar(cmd.get(k), k)
+                if reason is not None:
+                    self.frames_rejected += 1
+                    self.last_reject_reason = reason
+                    return None, reason
+                parsed.append(v)
+            hand_vals = tuple(parsed)
+            # Coherence: hand streaming requires the FULL leg Mode-1 knot set
+            # (u1 AND u2). A producer that knows the hand's next two knots but
+            # not the legs' is broken, not degraded — reject, never silent-drop.
+            if (flags & (FLAG_HAS_U1 | FLAG_HAS_U2)) != (FLAG_HAS_U1 | FLAG_HAS_U2):
+                self.frames_rejected += 1
+                self.last_reject_reason = (
+                    'hand keys present without the full leg Mode-1 knot set '
+                    '(cmd_next_mm/cmd_next2_mm absent or malformed)')
+                return None, self.last_reject_reason
+
+        # ── v1 (exact u1-knot velocity): every active channel or none ──
+        # vel_next_mm_s (legs, always required for HAS_V1) + hand_next_vel_rps
+        # (required exactly when the hand keys are present). Both absent ⇒
+        # HAS_V1 clear ⇒ the firmware forward-difference fallback (the flown
+        # path). A partial set rejects loudly; a present-but-bad vel_next is a
+        # reject (the v0 precedent), never a fallback.
+        vel_next = cmd.get('vel_next_mm_s')
+        v1_legs = [0.0] * self.n
+        v1_hand = 0.0
+        has_v1 = False
+        if vel_next is None and hand_v1_raw is None:
+            pass                     # no v1 anywhere — legal, flag stays clear
+        elif vel_next is None:
+            # hand_v1 present alone: with hand keys this is a partial v1 set;
+            # without them the all-or-nothing gate above already rejected.
+            self.frames_rejected += 1
+            self.last_reject_reason = (
+                'partial v1 set: hand_next_vel_rps without vel_next_mm_s')
+            return None, self.last_reject_reason
+        else:
+            if hand_vals is not None and hand_v1_raw is None:
+                self.frames_rejected += 1
+                self.last_reject_reason = (
+                    'partial v1 set: vel_next_mm_s with hand keys but no '
+                    'hand_next_vel_rps')
+                return None, self.last_reject_reason
+            # Coherence: v1 is the velocity AT the u1 knot, so HAS_V1 requires
+            # the full leg Mode-1 knot set (u1 AND u2) — vel_next_mm_s aboard
+            # a frame without the knot it describes is incoherent. Reject,
+            # never silent-drop (mirrors the hand/Mode-1 rule above; with hand
+            # keys aboard that gate has already fired, so this catches the
+            # hand-absent case).
+            if (flags & (FLAG_HAS_U1 | FLAG_HAS_U2)) != (
+                    FLAG_HAS_U1 | FLAG_HAS_U2):
+                self.frames_rejected += 1
+                self.last_reject_reason = (
+                    'vel_next_mm_s present without the full leg Mode-1 knot '
+                    'set (cmd_next_mm/cmd_next2_mm absent or malformed)')
+                return None, self.last_reject_reason
+            vn_vals, reason = self._finite_vec(vel_next, 'vel_next_mm_s')
+            if reason is not None:
+                self.frames_rejected += 1
+                self.last_reject_reason = reason
+                return None, reason
+            v1_legs = [vn_vals[i] * mr[i] for i in range(self.n)]
+            if hand_v1_raw is not None:
+                # hand_next_vel_rps is not in _HAND_KEYS (it belongs to the
+                # HAS_V1 rule, not the u0/v0/u1/u2 set) — validate it here.
+                v1_hand, reason = self._finite_scalar(hand_v1_raw,
+                                                      'hand_next_vel_rps')
+                if reason is not None:
+                    self.frames_rejected += 1
+                    self.last_reject_reason = reason
+                    return None, reason
+            has_v1 = True
+
+        # ── Per-step gates vs the prior ACCEPTED frame (NOT vs rejected frames) ──
+        # Per-CHANNEL: the leg gate and the hand gate reject independently,
+        # each against its own prior and its own bound.
         if self._prev_pos is not None:
             for i in range(self.n):
                 step = abs(u0[i] - self._prev_pos[i])
@@ -432,6 +646,14 @@ class SetpointPump:
                         f'leg {i} step {step:.4f} rev > {self.max_step_rev} '
                         f'limit (cmd={u0[i]:.4f}, prev={self._prev_pos[i]:.4f})')
                     return None, self.last_reject_reason
+        if hand_vals is not None and self._prev_hand is not None:
+            hand_step = abs(hand_vals[0] - self._prev_hand)
+            if hand_step > self.max_step_hand_rev:
+                self.frames_rejected += 1
+                self.last_reject_reason = (
+                    f'hand step {hand_step:.4f} rev > {self.max_step_hand_rev} '
+                    f'limit (cmd={hand_vals[0]:.4f}, prev={self._prev_hand:.4f})')
+                return None, self.last_reject_reason
 
         # ── torque_ff: clamp (TRUE Nm) → ramp → wire scale (ODrive-Nm) ──────────
         # Order matters. The clamp is a bound on the PHYSICAL torque we are willing to
@@ -468,16 +690,33 @@ class SetpointPump:
                 max(-lim, min(lim, tq_true[i])) * gain for i in range(self.n))
             self._ff_frames += 1
 
+        # ── Assemble the 7-lane v6 frame: legs 0..(n-1) + hand at index n ──
+        # Hand absent ⇒ index 6 packed 0.0 in every array with HAS_HAND clear
+        # (the firmware ignores the lane) — leg lanes byte-identical to the
+        # pre-hand frame. torque_ff[6] = 0 ALWAYS in Phase 2.
+        if hand_vals is not None:
+            flags |= FLAG_HAS_HAND
+            u0h, v0h, u1h, u2h = hand_vals
+        else:
+            u0h = v0h = u1h = u2h = 0.0
+        if has_v1:
+            flags |= FLAG_HAS_V1
+
         sp = Setpoint(
-            u0=tuple(u0),
-            u1=tuple(u1),
-            u2=tuple(u2),
-            v0=tuple(v0),
-            accel=(0.0,) * self.n,          # Mode-1 Hermite ignores accel
-            torque_ff=torque_ff,            # zeros unless torque_ff_enabled
+            u0=tuple(u0) + (u0h,),
+            u1=tuple(u1) + (u1h,),
+            u2=tuple(u2) + (u2h,),
+            v0=tuple(v0) + (v0h,),
+            accel=(0.0,) * (self.n + 1),        # Mode-1 Hermite ignores accel
+            torque_ff=torque_ff + (0.0,),       # zeros unless torque_ff_enabled; [6] always 0
+            v1=tuple(v1_legs) + (v1_hand,),     # zeros unless HAS_V1
             flags=flags,
             t_origin_us=int(t_origin_us),
         )
         self._prev_pos = list(u0)
+        # A hand-absent accepted frame CLEARS the hand baseline (a gap ends the
+        # stream; the next hand-carrying frame is a first frame again, with the
+        # firmware deviation guard as the complementary layer).
+        self._prev_hand = u0h if hand_vals is not None else None
         self.frames_built += 1
         return sp, None

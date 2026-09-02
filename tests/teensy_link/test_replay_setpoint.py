@@ -208,9 +208,12 @@ def test_frame_knot_lookahead_and_absent_legs():
     assert fr.u0[0] == pytest.approx(_SAMPLES[0])
     assert fr.u1[0] == pytest.approx(_SAMPLES[1])
     assert fr.u2[0] == pytest.approx(_SAMPLES[2])
-    # Non-target axes packed 0.0 (absent-ODrive safe).
-    for i in range(1, 6):
+    # Non-target axes packed 0.0 (absent-ODrive safe) — including the v6 hand
+    # lane at index 6 (HAS_HAND/HAS_V1 clear, v1 all zeros).
+    for i in range(1, 7):
         assert fr.u0[i] == 0.0 and fr.u1[i] == 0.0 and fr.v0[i] == 0.0
+    assert len(fr.u0) == 7
+    assert all(x == 0.0 for x in fr.v1)
     # Teensy-side path (no friction-FF fn) ⇒ zero torque FF on all axes.
     assert all(x == 0.0 for x in fr.torque_ff)
 
