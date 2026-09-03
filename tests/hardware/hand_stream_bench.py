@@ -39,6 +39,17 @@ runs. NO BALL, E-STOP IN HAND. Defence in depth, all active:
 PRECONDITIONS (checked; the driver refuses to arm otherwise):
   • the ROS launch is DOWN — this driver is the SOLE owner of the UDP link;
   • can-bridge FW 17 aboard (BRIDGE_IDENTITY reports 17 — v6 link, else dark);
+  • the hand ODrive ENERGISED: ``axis_state == CLOSED_LOOP`` (**checked** — at
+    entry, after the ``--close-loop`` bring-up, and every tick of the run) in
+    POSITION/PASSTHROUGH (**asserted, NEVER checked** — ``controller_mode`` /
+    ``input_mode`` (``axis_state.h:42-43``) are never written by any firmware
+    code, so the DIAGNOSTIC reports 0 forever; only ``--close-loop`` sending the
+    frame establishes the mode). The streamed lane only moves an energised axis;
+    an IDLE hand ignores every ``set_input_pos`` the lane puts on the wire and
+    looks EXACTLY like a perfect hold (the 2026-09-03 first-sitting failure —
+    the ``hold`` stage "passed" de-energised, T-H2a/b then aborted on the
+    deviation belt with the encoder dead flat under a ramping command). Pass
+    ``--close-loop`` to bring it up here; the driver verifies the bring-up took;
   • hand homed (encoder reference valid) and parked near a rest position —
     the firmware ``hand_source`` settle gate enforces this;
   • ``hand_source == STREAMED`` (this driver switches it via HAND_SOURCE_SET
@@ -93,16 +104,17 @@ Instruments: the driver also subscribes CacheDiag (0x91) and logs a 1 Hz
 windowed ``enc_frames`` deficit CSV beside the stage CSV (the headroom
 runbook's row-21 recipe) — T-H1's drop-episode criterion reads it.
 
-Usage (from the repo root):
+Usage (from the repo root; every streaming stage wants --close-loop unless the
+hand is ALREADY in CLOSED_LOOP — with the launch down nothing else energises it):
     source ~/Desktop/PDJ_venv/venv/bin/activate
-    python tests/hardware/hand_stream_bench.py --stage hold --duration 600
-    python tests/hardware/hand_stream_bench.py --stage triangle --duration 60
-    python tests/hardware/hand_stream_bench.py --stage stroke --event-vel 3.0
-    python tests/hardware/hand_stream_bench.py --stage step
-    python tests/hardware/hand_stream_bench.py --stage gap
+    python tests/hardware/hand_stream_bench.py --stage hold --duration 600 --close-loop
+    python tests/hardware/hand_stream_bench.py --stage triangle --duration 60 --close-loop
+    python tests/hardware/hand_stream_bench.py --stage stroke --event-vel 3.0 --close-loop
+    python tests/hardware/hand_stream_bench.py --stage step --close-loop
+    python tests/hardware/hand_stream_bench.py --stage gap --close-loop
     python tests/hardware/hand_stream_bench.py --source-only legacy
     python tests/hardware/hand_stream_bench.py --clear-errors
-    python tests/hardware/hand_stream_bench.py --stage hold --duration 3 --no-source-switch
+    python tests/hardware/hand_stream_bench.py --stage hold --duration 3 --no-source-switch --close-loop
 """
 import argparse
 import csv
@@ -140,6 +152,15 @@ SEG_T = 0.025                             # SEGMENT_T_S — knot cadence
 HAND_MAX_POS = float(hw.GEOM_HAND_MOTOR_HARD_STOP_REVS)   # 10.8, the metal
 HAND_MARGIN = 0.2                         # driver keeps commands this far off the metal
 ARM_VERIFY_GRACE_S = 0.7
+DIAG_WAIT_S = 2.5                         # TWO forced-refresh opportunities + margin.
+# The firmware's forced refresh is an AND of two INDEPENDENT clocks
+# (telemetry.cpp:676-678): (now − last_sent_us >= DIAG_FORCE_PERIOD_US) && (slot
+# == i·slots_per_axis). When the elapsed measurement lands just under 1 000 000 µs
+# at axis 6's slot 84 the send is VETOED and the next opportunity is a whole
+# second later — so the worst-case quiescent inter-diagnostic interval is ~2 s,
+# not ~1 s. A 1.5 s wait would fail closed on a HEALTHY link; 2.5 s covers two
+# opportunities plus margin. See _wait_hand_diag.
+BRINGUP_VERIFY_S = 3.0                    # post---close-loop CLOSED_LOOP poll (leg bench's 3.0)
 _T2J_FLAG_TIME_SYNCED = 0x1               # HeartbeatT2J flags bit 0
 _T2J_FLAG_MPC_ACTIVE = 0x8
 _T2J_FLAG_HAND_SOURCE_STREAMED = 0x40     # HeartbeatT2J flags bit 6 (FW 17)
@@ -268,6 +289,40 @@ def _fault_name(fs):
 def _hand_source_streamed():
     hb = _hb()
     return None if hb is None else bool(int(hb.flags) & _T2J_FLAG_HAND_SOURCE_STREAMED)
+
+
+def _hand_diag():
+    """The cached axis-6 DIAGNOSTIC, read UNDER ``_lock`` — the leg bench's
+    ``axis_diag()`` (teensy_setpoint_bench.py:129-131). Returns None until one
+    has arrived; the caches are written from the client's RX thread, so a
+    lock-free ``_cache["diag"].get(...)`` is the odd one out in this file."""
+    with _lock:
+        return _cache["diag"].get(HAND)
+
+
+def _wait_hand_diag(timeout_s=DIAG_WAIT_S):
+    """Bounded wait for an axis-6 DIAGNOSTIC (returns it, or None on timeout).
+
+    The cache being EMPTY is normal for up to a second and says NOTHING about
+    the axis: the firmware emits a Diagnostic on-change, or on a staggered
+    ~1 Hz forced refresh (``telemetry.cpp`` send-slot 84 for axis 6), and a
+    quiescent IDLE hand changes nothing. The startup wait loop only waits for
+    TELEMETRY + BRIDGE_IDENTITY, so whether a diagnostic has landed by the time
+    the preconditions are checked is a coin flip — which is precisely how the
+    2026-09-03 sitting ran a whole ladder against a de-energised hand, one run
+    printing ``axis_state=?`` and the next ``axis_state=1``. Waiting long enough
+    to cover TWO forced-refresh opportunities plus margin (``DIAG_WAIT_S``, and
+    see its derivation: the refresh is an AND of two independent clocks, so a
+    vetoed slot pushes the next send a whole second out) is what turns that gate
+    from a coin flip into a verdict."""
+    deadline = time.time() + float(timeout_s)
+    while True:
+        d = _hand_diag()
+        if d is not None:
+            return d
+        if time.time() >= deadline:
+            return None
+        time.sleep(0.05)
 
 
 def _diagnose_source_refusal():
@@ -401,7 +456,10 @@ def main():
     ap.add_argument("--close-loop", action="store_true",
                     help="bring the hand ODrive up first: POSITION/PASSTHROUGH + the "
                          "operational hand gains + CLOSED_LOOP (auto-holds at the "
-                         "current position — no jolt)")
+                         "current position — no jolt), then VERIFY it took. Needed "
+                         "for every streaming stage unless the hand is already in "
+                         "CLOSED_LOOP: the driver refuses to arm an IDLE hand, which "
+                         "ignores the streamed lane and mimics a perfect hold")
     ap.add_argument("--arm", action="store_true", help="skip the interactive ARM prompt")
     ap.add_argument("--source-only", choices=["streamed", "legacy"], default=None,
                     help="just switch the hand_source latch and exit (no stream, no arm)")
@@ -452,10 +510,10 @@ def main():
             print(f"ABORT: bridge_fw_version {fw} != expected "
                   f"{rpc_args.EXPECTED_BRIDGE_FW_VERSION} — lockstep flash first."); return 2
         start = _hand_pos()
-        d = _cache["diag"].get(HAND)
+        d0 = _hand_diag()               # non-blocking snapshot; '?' until one lands
         print(f"hand baseline: pos={start:+.4f} rev  "
-              f"axis_state={d.axis_state if d else '?'}  "
-              f"active_errors={d.active_errors if d else '?'}  "
+              f"axis_state={d0.axis_state if d0 else '?'}  "
+              f"active_errors={d0.active_errors if d0 else '?'}  "
               f"fault={_fault_name(_fault())}  hand_source_streamed={_hand_source_streamed()}")
         # ── Recovery verb: CLEAR_ERRORS + wait for fault_state NONE ──────────
         # Runs BEFORE the fault-latched abort below — it exists precisely for
@@ -477,11 +535,75 @@ def main():
                   f"(clear the CAUSE first).")
             return 2
 
-        if d is not None and int(d.active_errors) != 0:
-            print("ABORT: hand ODrive has active errors."); return 2
-        if _fault() not in (None, int(FaultState.NONE)):
-            print("ABORT: fault latched — run --clear-errors first "
-                  "(or /clear_errors when the launch is up)."); return 2
+        # ── Preconditions (refuse to arm otherwise) ──────────────────────────
+        # ROOT CAUSE this block exists for (2026-09-03, the first FW 17 hand
+        # sitting): the hand ODrive sat in IDLE for the WHOLE ladder, so it
+        # ignored every set_input_pos the streamed lane put on the wire. The
+        # hold stage "passed" — a de-energised axis holds beautifully — and
+        # T-H2a/T-H2b then aborted on the deviation belt with the encoder DEAD
+        # FLAT under a command ramping to +0.498 / +2.344 rev (the knots the
+        # aborts name; the last knot actually written to CSV is one tick
+        # earlier, because the belt breaks before the row is written). The
+        # firmware was blameless.
+        # The leg bench has refused to arm an axis that does not read
+        # CLOSED_LOOP since it was written (teensy_setpoint_bench.py:337-356);
+        # this driver dropped that gate on the ONE axis that must be energised,
+        # AND inverted its fail-closed sense — `if d is not None and ...`
+        # silently SKIPPED the only hand-ODrive health check whenever no
+        # DIAGNOSTIC had arrived, which is a coin flip at startup (see
+        # _wait_hand_diag). Both halves are closed here, leg-bench shape:
+        # accumulate every unmet precondition so one run shows the operator all
+        # of them.
+        #
+        # --source-only is EXEMPT from the energisation half: it is a latch verb
+        # that commands no motion and never arms (--clear-errors, the other such
+        # verb, has already returned above), and the gate exists only to stop a
+        # STREAM running against a dead axis. Its pre-existing error/fault gates
+        # are unchanged, off the same non-blocking snapshot as before.
+        will_stream = args.source_only is None
+        d = _wait_hand_diag() if will_stream else d0
+        problems = []
+        if d is None:
+            # Gate B (the post---close-loop verification below) is the AUTHORITY
+            # for a --close-loop run, so this entry abort stands down for one:
+            # the IDLE→CLOSED_LOOP (1→8) transition is itself a diag_changed()
+            # trigger (telemetry.cpp:61), so a --close-loop bring-up PRODUCES a
+            # diagnostic, and Gate B's own `dcl is None` arm already fails closed
+            # for exactly this shape. Keeping the abort here would make the
+            # runbook's ONLY invocation shape (every streaming row carries
+            # --close-loop) the likeliest spurious abort of the sitting.
+            if will_stream and not args.close_loop:
+                problems.append(
+                    f"no DIAGNOSTIC for the hand (axis {HAND}) in {DIAG_WAIT_S:.1f} s "
+                    f"— its axis_state and errors are UNKNOWN, and this gate fails "
+                    f"CLOSED rather than arm blind. The likeliest cause is a stale "
+                    f"or silent axis-6 DIAGNOSTIC slot, not a dead link: a quiescent "
+                    f"axis changes nothing, and the forced refresh can be vetoed a "
+                    f"slot at a time (see DIAG_WAIT_S). RE-RUN first; if it repeats, "
+                    f"pass --close-loop (the 1→8 transition forces a diagnostic and "
+                    f"hands the verdict to the post-bring-up check) and read [hand7] "
+                    f"on the console")
+        else:
+            if will_stream and int(d.axis_state) != CLOSED_LOOP and not args.close_loop:
+                problems.append(
+                    f"axis_state={d.axis_state}, need CLOSED_LOOP={CLOSED_LOOP} — "
+                    f"an IDLE hand ignores every streamed setpoint and its encoder "
+                    f"stays flat under a ramping command (pass --close-loop to bring "
+                    f"the hand up here: POSITION/PASSTHROUGH + gains + CLOSED_LOOP)")
+            if int(d.active_errors) != 0:
+                problems.append(
+                    f"active_errors={d.active_errors}, need 0 (run --clear-errors "
+                    f"first, or /clear_errors when the launch is up)")
+        fs = _fault()
+        if fs not in (None, int(FaultState.NONE)):
+            problems.append(
+                f"fault_state={_fault_name(fs)}, need NONE — a latch (run "
+                f"--clear-errors first, or /clear_errors when the launch is up)")
+        if problems:
+            print("ABORT: preconditions not met:")
+            for pb in problems:
+                print(f"  • {pb}")
+            return 2
 
         # ── Source-latch switch (before any arm — the gate requires !mpc) ────
         def set_source(streamed: bool) -> bool:
@@ -497,6 +619,20 @@ def main():
                 else:
                     print("  no gate implicated by the driver's caches — the "
                           "truth is firmware-side; read [hand7] on the console")
+                # Actionable exit (2026-09-04 audit fix). This switch runs
+                # BEFORE the --close-loop bring-up and returns hard, so a
+                # de-energised hand that has DRIFTED out of the firmware settle
+                # band can never reach the bring-up row 11b calls "the only
+                # route" — and the operator is left with no on-screen way out.
+                # (Not hypothetical: the 2026-09-03 baselines were −0.108 /
+                # +0.209 / −0.076 rev, and +0.209 sits outside the retract band.)
+                # The bring-up is deliberately NOT reordered ahead of this
+                # switch: that changes when a 48 V motor energises relative to
+                # the latch switch, which is an owner decision, not a bug fix.
+                print("  NEXT STEP: with the launch down an IDLE hand is "
+                      "BACKDRIVABLE and drifts — park it by hand inside the "
+                      "retract band, then re-run. --close-loop cannot run until "
+                      "this switch succeeds (it is sequenced after it).")
                 return False
             deadline = time.time() + 1.0
             want = bool(streamed)
@@ -537,6 +673,52 @@ def main():
             rpc.call(int(RpcMethod.SET_AXIS_STATE),
                      rpc_args.encode_set_axis_state(HAND, CLOSED_LOOP))
             time.sleep(0.5)
+            # Verify the bring-up TOOK (mirrors teensy_setpoint_bench.py:326-335).
+            # An RPC ack is the BRIDGE acking the CAN send, not the ODrive
+            # entering CLOSED_LOOP: an axis with an active error, a missing
+            # encoder index or a live undervoltage acks and stays in IDLE — the
+            # same silent de-energised state the precondition block above
+            # exists for, just reached one step later. The baseline printed at
+            # startup is a PRE-bring-up snapshot and is never refreshed, so
+            # re-read the cache; the 1→8 transition is itself a diag_changed()
+            # trigger (telemetry.cpp:61), so a healthy bring-up resolves in
+            # tens of ms and only a REAL failure spends the full poll.
+            t_cl = time.time()
+            while time.time() - t_cl < BRINGUP_VERIFY_S:
+                dcl = _hand_diag()
+                if dcl is not None and int(dcl.axis_state) == CLOSED_LOOP:
+                    break
+                time.sleep(0.05)
+            dcl = _hand_diag()
+            # Gate B gates on BOTH halves (2026-09-04 audit fix). The
+            # `post-bring-up: … ENERGISED and holding` line below is what runbook
+            # row 13 now instructs the operator to read as the sitting's POSITIVE
+            # evidence, so it must never print with a live error latched — an
+            # axis can report CLOSED_LOOP with active_errors set, and that line
+            # would then certify exactly the condition it exists to refuse.
+            bad_state = dcl is None or int(dcl.axis_state) != CLOSED_LOOP
+            bad_err = dcl is not None and int(dcl.active_errors) != 0
+            if bad_state or bad_err:
+                if dcl is None:
+                    why = "no DIAGNOSTIC arrived (axis_state and errors UNKNOWN)"
+                else:
+                    why = "; ".join(
+                        ([f"axis_state={dcl.axis_state}, need CLOSED_LOOP={CLOSED_LOOP}"]
+                         if bad_state else [])
+                        + ([f"active_errors={dcl.active_errors}, need 0"]
+                           if bad_err else []))
+                print(f"ABORT: hand bring-up did not take — {why} after "
+                      f"{BRINGUP_VERIFY_S:.0f} s (the RPC was acked by the BRIDGE, "
+                      f"not by the ODrive: an axis with an active error, a missing "
+                      f"encoder index or a live undervoltage acks and stays IDLE). "
+                      f"Read the hand ODrive's errors on the console and clear them "
+                      f"with --clear-errors before re-running.")
+                return 2
+            ep = _hand_pos()
+            print(f"post-bring-up: axis_state={dcl.axis_state} "
+                  f"(CLOSED_LOOP={CLOSED_LOOP})  active_errors={dcl.active_errors}  "
+                  f"pos={'?' if ep is None else f'{ep:+.4f}'} rev — the hand is "
+                  f"ENERGISED and holding")
 
         # ── Build the stage trajectory ───────────────────────────────────────
         start = _hand_pos()
@@ -657,7 +839,7 @@ def main():
         csv_f = open(csv_path, "w", newline="")
         w = csv.writer(csv_f)
         w.writerow(["t", "cmd_rev", "enc_rev", "vel_rps", "echo_rev",
-                    "fault", "lead_mask", "recon_mm"])
+                    "fault", "lead_mask", "recon_mm", "axis_state"])
         # CacheDiag companion CSV — the T-H1 drop-episode instrument (1 Hz
         # windowed enc_frames deficits, the headroom runbook row-21 recipe).
         cd_path = csv_path[:-4] + "_cachediag.csv" if csv_path.endswith(".csv") \
@@ -772,6 +954,19 @@ def main():
                           f"enc={float(hb_snap.max_dev_enc):+.4f}  "
                           f"(leg 255 = not a MAX_DEVIATION trip)")
                 break
+            # Mid-stage energisation check (2026-09-04 audit fix): the
+            # precondition block and the --close-loop verification are both
+            # ENTRY-only, and nothing re-read axis_state after them — not across
+            # the UNBOUNDED interactive ARM prompt, not during the run. A hand
+            # that drops to IDLE mid-stage makes a `hold` produce zero deviation,
+            # so the belt never fires and T-H1 passes on a dead axis again, one
+            # step later. Cached read; a state change is itself a diag_changed()
+            # trigger, so the verdict lands within a refresh.
+            dlive = _hand_diag()
+            if dlive is not None and int(dlive.axis_state) != CLOSED_LOOP:
+                print(f"ABORT: hand left CLOSED_LOOP mid-stage — axis_state={dlive.axis_state}, "
+                      f"active_errors={dlive.active_errors}; every reading after this point is a "
+                      f"de-energised axis (the 2026-09-03 class, one step later)"); break
             hb = _hb()
             with _lock:
                 echo = _cache["echo"]
@@ -799,7 +994,11 @@ def main():
                         "" if echo is None else f"{echo[1]:.5f}",
                         "" if fs is None else fs,
                         "" if hb is None else int(hb.lead_clamp_mask),
-                        "" if recon is None else f"{recon:.2f}"])
+                        "" if recon is None else f"{recon:.2f}",
+                        # live cached axis_state — empty until a DIAGNOSTIC has
+                        # arrived, same convention as echo_rev / recon_mm. The
+                        # energisation record is then auditable after the fact.
+                        "" if dlive is None else int(dlive.axis_state)])
             _drain_cd()                     # 1 Hz CacheDiag rows → companion CSV
 
             next_t += period

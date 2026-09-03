@@ -566,7 +566,7 @@ margin). Review finding 7 CARRIED to Phase 3: gap-re-entry bench case +
 normative `HAS_HAND` falling-edge decay. Gate: (2026-09-02, `./run_tests.sh`,
 6382 passed / 4 skipped, total 267 s — PASS).
 
-### Phase 3: Can-bridge FW 17 — 7th interp lane, hand guards, interlock — SOFTWARE-COMPLETE 2026-09-02 (flash sitting + bench ladder PENDING, operator-owned)
+### Phase 3: Can-bridge FW 17 — 7th interp lane, hand guards, interlock — SOFTWARE-COMPLETE 2026-09-02; FLASHED 2026-09-03 (bench ladder IN PROGRESS, resumes at row 12 — operator-owned)
 
 **Modified files** (`ros_ws/src/jugglebot/Teensy_code_canbridge/`):
 `leg_interp.cpp/.h` (Staging and all per-channel state arrays 6 → 7; latch,
@@ -623,6 +623,29 @@ rollback = FW 16 + pre-v6 host) and the T-H1..T-H4 ladder — runbook
 review, and the settle-gate specifics pending owner ratification (entry § Open
 Questions). Gate: (2026-09-02, `./run_tests.sh`, 6392 passed / 4 skipped,
 261.13 s — PASS).
+
+**First sitting attempt, 2026-09-03 — the flash LANDED; the ladder halted at
+T-H2a and resumes at row 12** (canonical record:
+[`logbook/2026-09-04-fw17-hand-sitting-unflashed-idle-axis.md`](../../logbook/2026-09-04-fw17-hand-sitting-unflashed-idle-axis.md)).
+The board runs FW 17 and the v6 link is alive, so the lockstep is discharged.
+Two **artifact** defects — not firmware — stopped the ladder, both fixed
+2026-09-04. (1) Runbook row 4 (`pio run -e teensy41`) BUILDS ONLY and was
+reasonably read as the flash; the board stayed on FW ≤ 16 against a v6 host and
+the resulting designed total link darkness cost a session (rows 4/5 relabelled).
+(2) Rows 14–19 omitted `--close-loop`, and the `hold` that ran was the driver's
+30 s default rather than row 13's 600 s T-H1 soak — so the whole ladder ran
+against a de-energised hand: the `hold` "passed" (a hold stage cannot
+distinguish holding in CLOSED_LOOP from unpowered and undisturbed — T-H1's pass
+criteria now lead with the driver's positive energisation evidence), then
+T-H2a/T-H2b aborted on the
+deviation belt with the encoder dead flat under a ramping command. **The
+firmware was exonerated in detail** — the streamed lane transmits `0x0CC`
+correctly and observe-first gates only the E-STOP latch, never the TX, so
+**no reflash**. `hand_stream_bench.py` now refuses to arm a hand that does not
+read CLOSED_LOOP (fail-closed on a missing DIAGNOSTIC) and verifies its own
+`--close-loop` bring-up; new runbook precondition row 11b records that with the
+launch down `--close-loop` is the ONLY route to an energised hand. Four owner
+items carried in the entry's § Open Questions.
 
 ### Phase 4: Jetson unified-cycle mode — NOT STARTED
 
