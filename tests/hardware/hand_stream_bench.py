@@ -87,7 +87,10 @@ Stages (one per invocation; the runbook sequences them):
             (default +1.0). The pump's gap re-baseline accepts it as a first
             frame; the firmware Mode-1s onto it inside the ±2.0 rev lead band.
             Watch the hand: one brisk, bounded ~32 mm catch-up move is the
-            expected picture.
+            expected picture. The re-entry is PROVEN, not assumed — the driver
+            aborts if the firmware's hand echo has not moved within
+            ``GAP_ECHO_DEADLINE_S`` of the re-entry knot (2026-09-04: a dropped
+            ``hand_override`` made this stage measure a fiction, silently).
 
 Source-latch / recovery utilities (no streaming, no arm):
   --source-only streamed|legacy   switch the firmware hand_source latch and
@@ -168,6 +171,29 @@ MM_PER_REV = 1000.0 / float(LINEAR_GAIN_REV_PER_M)   # ≈ 31.63 mm per hand rev
 ENC_BROADCAST_HZ = 100.0                  # ODrive get_encoder_estimate cadence (row-21 recipe)
 CD_EPISODE_DEFICIT = -20.0                # headroom runbook row 21: a window past −20 = episode
 
+# ── The gap stage's re-entry proof (2026-09-04 fix) ──────────────────────────
+# ROOT CAUSE this pair exists for: the gap stage cannot tell "the hand tracked
+# the re-entry" from "the re-entry was never sent" — both look like a flat
+# encoder under a CSV that logs the displacement, and the phantom's deviation is
+# exactly |gap_delta| while the stage's own belt is |gap_delta| + 0.5, so the
+# silent case sits UNDER every other bar in the loop and passes. Under STREAMED
+# the echo re-sources from axes[6].target_pos_rev and is emitted only when the
+# interp actually TXed (telemetry.cpp:250-281), so a re-entry that reached the
+# wire MUST move it: the stage asserts its premise instead of assuming it.
+#   MOVE: the gap stage rides a Hold, so the lane has zero velocity when the
+#     gap's decay ends and the pre-re-entry echo is STATIC by construction
+#     (2026-09-04: bit-identical 0.00018 rev for all 1200 rows). 0.05 rev
+#     (≈ 1.6 mm) is 5 % of the default 1.0 rev re-entry — unmissable if the knot
+#     reached the firmware, unreachable if it did not.
+#   DEADLINE: uplink ≤ ~1.5 ms (RTT 1-3 ms on this link) + the firmware Mode-1s
+#     onto the re-entry over ONE knot (SEG_T 25 ms), with the first 500 Hz tick
+#     after arrival (≤ 2 ms) already moving the target + one telemetry tick to
+#     emit the echo (TELEM_RATE_HZ 100 ⇒ ≤ 10 ms) + downlink ≤ ~1.5 ms ≈ 40 ms
+#     honest worst case. 0.25 s is ten knots — ~6× that — so the check can only
+#     fire on a re-entry that never happened, never on a slow one.
+GAP_ECHO_MOVE_REV = 0.05
+GAP_ECHO_DEADLINE_S = 0.25
+
 # Per-stage deviation-belt defaults (rev), used when --max-dev is not given.
 # Derivation (2026-09-02 review fix — the belt is velocity-compensated,
 # |cmd − (enc + vel·age)|, so encoder AGE no longer contributes):
@@ -244,9 +270,14 @@ def _on_cachediag(mt, seq, payload, addr):
         deltas = [int(d.enc_frames[i]) - int(prev.enc_frames[i]) for i in range(7)]
         deficits = [(deltas[i] - expect) if (d.seen_mask >> i) & 1 else None
                     for i in range(7)]
+        # t_local_us rides along (2026-09-04): the `t` column is the DRIVER's
+        # monotonic arrival stamp, which carries UDP delivery smear, so a
+        # cachediag row cannot be placed on the bridge's own timebase — the one
+        # the stage CSV's echoes are stamped in. Carrying the frame's own stamp
+        # makes a drop episode alignable against the stroke it belongs to.
         _cache["cd_rows"].append(
             (time.monotonic(), int(d.window_us), int(d.samples), deficits,
-             int(d.rx_depth_hwm_jb), int(d.rx_cap_hits_jb)))
+             int(d.rx_depth_hwm_jb), int(d.rx_cap_hits_jb), int(d.t_local_us)))
 
 
 def _telem():
@@ -838,8 +869,16 @@ def main():
         os.makedirs(os.path.dirname(csv_path), exist_ok=True)
         csv_f = open(csv_path, "w", newline="")
         w = csv.writer(csv_f)
+        # enc_age is the telemetry receive age the deviation belt extrapolates
+        # the cached encoder forward by, and WITHOUT IT THE BELT IS NOT
+        # RECONSTRUCTIBLE FROM THIS CSV. |cmd − (enc + vel·age)| carries a
+        # vel·age term worth ~0.7 rev at the stroke's ~95 rev/s plateau against
+        # a 1.5 rev bar, so an analyst re-deriving a run's deviation has to
+        # SOLVE for age rather than read it — which is precisely what blocked
+        # attributing the 0.5387 → 1.2348 rev stroke-deviation growth between
+        # two runs of one stage in the 2026-09-04 sitting forensics.
         w.writerow(["t", "cmd_rev", "enc_rev", "vel_rps", "echo_rev",
-                    "fault", "lead_mask", "recon_mm", "axis_state"])
+                    "fault", "lead_mask", "recon_mm", "axis_state", "enc_age"])
         # CacheDiag companion CSV — the T-H1 drop-episode instrument (1 Hz
         # windowed enc_frames deficits, the headroom runbook row-21 recipe).
         cd_path = csv_path[:-4] + "_cachediag.csv" if csv_path.endswith(".csv") \
@@ -848,14 +887,14 @@ def main():
         wcd = csv.writer(cd_f)
         wcd.writerow(["t", "window_us", "samples"]
                      + [f"deficit_{i}" for i in range(7)]
-                     + ["rx_depth_hwm_jb", "rx_cap_hits_jb"])
+                     + ["rx_depth_hwm_jb", "rx_cap_hits_jb", "t_local_us"])
         cd_stats = {'windows': 0, 'episodes': 0, 'worst': 0.0}
 
         def _drain_cd():
             with _lock:
                 rows = _cache["cd_rows"]
                 _cache["cd_rows"] = []
-            for (mono, win_us, samples, deficits, hwm, cap) in rows:
+            for (mono, win_us, samples, deficits, hwm, cap, t_local) in rows:
                 cd_stats['windows'] += 1
                 seen = [x for x in deficits if x is not None]
                 if seen:
@@ -865,7 +904,7 @@ def main():
                         cd_stats['episodes'] += 1
                 wcd.writerow([f"{mono - t_start_mono:.3f}", win_us, samples]
                              + ["" if x is None else f"{x:.1f}" for x in deficits]
-                             + [hwm, cap])
+                             + [hwm, cap, t_local])
 
         # ── The streamed run ─────────────────────────────────────────────────
         t_start = time.time()               # wall — echoes time-align against this
@@ -877,6 +916,9 @@ def main():
         echo_unsynced = 0                   # echoes skipped: bridge wall not TIME_SYNCED
         step_done = False
         pump_rejects_at_step = None
+        gap_reentry_t = None                # gap: stage time the re-entry was first commanded
+        gap_echo_ref = None                 # ... and the echo value it must move away from
+        gap_echo_moved = False              # ... proven to have reached the wire
         while True:
             t = time.time() - t_start
             if t > args.duration:
@@ -893,6 +935,16 @@ def main():
                     # otherwise command below the firmware's [0, 10.8] clip.
                     hand_override = min(max(start + args.gap_delta, 0.0),
                                         HAND_MAX_POS - HAND_MARGIN)
+                    # Arm the re-entry proof on the FIRST re-entry tick: snapshot
+                    # the echo the re-entry must move away from. Skipped for a
+                    # re-entry too small to be distinguishable from a static echo
+                    # (see GAP_ECHO_MOVE_REV's derivation).
+                    if (gap_reentry_t is None
+                            and abs(args.gap_delta) > 4.0 * GAP_ECHO_MOVE_REV):
+                        with _lock:
+                            e0 = _cache["echo"]
+                        gap_reentry_t = t
+                        gap_echo_ref = None if e0 is None else e0[1]
             if args.stage == "step" and not step_done and t >= 3.0:
                 # ONE deliberately-oversized knot: the pump MUST refuse it.
                 bad = frame(t, hand_override=None)
@@ -908,7 +960,18 @@ def main():
                 print(f"step probe: pump refused={spx is None} reason={whyx!r}")
                 # nothing sent for this knot — the hold continues below.
 
-            sp, why = pump.build(frame(t, with_hand=with_hand),
+            # hand_override MUST reach frame() (2026-09-04 fix). ROOT CAUSE: it
+            # was computed above and consumed below — the CSV's cmd_rev column
+            # and the deviation belt both read it — but was never passed HERE, so
+            # the gap stage streamed a constant Hold while the CSV logged a
+            # re-entry that never happened and the belt compared against that
+            # phantom. It failed SILENTLY because the phantom's deviation is
+            # |gap_delta| and the gap belt is |gap_delta| + 0.5: the fiction sits
+            # under the stage's own bar. Measured cost, 2026-09-04: echo frozen
+            # bit-identical at 0.00018 rev for all 1200 rows and 0.017 mm of
+            # encoder excursion, against a logged 1.0 rev step.
+            sp, why = pump.build(frame(t, with_hand=with_hand,
+                                       hand_override=hand_override),
                                  t_origin_us=int(time.time() * 1e6))
             if sp is None:
                 print(f"ABORT: pump refused a stage frame: {why}"); break
@@ -970,6 +1033,34 @@ def main():
             hb = _hb()
             with _lock:
                 echo = _cache["echo"]
+            # Did the gap re-entry actually reach the wire? (2026-09-04 fix, the
+            # POSITIVE half.) A dropped hand_override is invisible to every other
+            # belt in this loop — the deviation belt compares the phantom against
+            # itself — so the one surface that can tell a tracked re-entry from an
+            # unsent one is the firmware's own echo. See GAP_ECHO_MOVE_REV.
+            if gap_reentry_t is not None and not gap_echo_moved:
+                cur = None if echo is None else echo[1]
+                if (cur is not None and gap_echo_ref is not None
+                        and abs(cur - gap_echo_ref) > GAP_ECHO_MOVE_REV):
+                    gap_echo_moved = True
+                elif t > gap_reentry_t + GAP_ECHO_DEADLINE_S:
+                    print(f"ABORT: the gap re-entry never reached the wire — the hand "
+                          f"echo has not moved {GAP_ECHO_DEADLINE_S:.2f} s after the "
+                          f"re-entry knot. Observed echo "
+                          f"{'none' if cur is None else f'{cur:+.5f} rev'} vs "
+                          f"{'none' if gap_echo_ref is None else f'{gap_echo_ref:+.5f} rev'}"
+                          f" pre-re-entry; expected > {GAP_ECHO_MOVE_REV:.3f} rev of "
+                          f"movement for a commanded {args.gap_delta:+.3f} rev step. "
+                          f"Under STREAMED the echo re-sources from "
+                          f"axes[6].target_pos_rev and is emitted only when the interp "
+                          f"TXed, so a re-entry that reached the firmware MUST move it: "
+                          f"this stage has measured NOTHING and its CSV logs a re-entry "
+                          f"that never happened. REMEDY: read [hand7] — src=STREAMED "
+                          f"lane=active with sent= climbing means the knot reached the "
+                          f"firmware and the driver dropped hand_override on the way to "
+                          f"frame() again (the 2026-09-04 defect); src=LEGACY with "
+                          f"discard_legacy climbing means the latch, not the driver "
+                          f"(--source-only streamed first)."); break
             recon = None
             if args.stage == "stroke" and echo is not None and echo[0] != last_echo_key:
                 # Reconstruction error, TIME-ALIGNED (2026-09-02 review fix):
@@ -998,7 +1089,15 @@ def main():
                         # live cached axis_state — empty until a DIAGNOSTIC has
                         # arrived, same convention as echo_rev / recon_mm. The
                         # energisation record is then auditable after the fact.
-                        "" if dlive is None else int(dlive.axis_state)])
+                        "" if dlive is None else int(dlive.axis_state),
+                        # the belt's own age term (see the header comment).
+                        # Empty on the same convention when no telemetry is
+                        # cached — _telem_with_age() returns 0.0 there, which
+                        # would otherwise log as a REAL zero-age reading.
+                        # µs resolution: at 95 rev/s that is 1e-4 rev, below
+                        # the 5th decimal enc_rev is logged to, so the belt
+                        # re-derives exactly from this row.
+                        "" if tm_snap is None else f"{enc_age:.6f}"])
             _drain_cd()                     # 1 Hz CacheDiag rows → companion CSV
 
             next_t += period

@@ -261,7 +261,7 @@ mode; ball tracking, possession verdicts, `outcome_detail` discipline.
 | 0 | Probes + recorded decisions: QP solver runtime on Jetson 3.8, Hermite stroke-reconstruction fidelity, bus headroom with a 7th frame (+ leg-bus-frame-drops A/B), hand guard constants derivation | COMPLETE | 2026-08-30 | Low | In-process QP is feasible; 7-frame bus budget is safe |
 | 1 | Planner core port (pure Python): `cup_cycle` QP, tilt schedule, `realize` generalisation, `CyclePlan`, `validate_cycle`, sim parity + MuJoCo whole-cycle gate | COMPLETE | 2026-09-01 | Low (software only) | Ball-frame constraints hold; the Rung-3 "runway" failure is answered in sim |
 | 2 | Wire v6 + host 7-channel path: codegen, `SetpointPump`, emitter, `make_mpc_command`, tests; firmware-absent safe | COMPLETE | 2026-09-02 | Medium | Codec, per-channel step gates, backward-compatible producers |
-| 3 | Can-bridge FW 17: 7th interp lane, hand guards, `hand_source` interlock, dispatch; lockstep flash + bench ladder | **SOFTWARE-COMPLETE 2026-09-02** (lockstep flash sitting + T-H1..T-H4 bench ladder PENDING, operator-owned) | 2026-09-02 | High | Hand streaming safety envelope on real hardware |
+| 3 | Can-bridge FW 17: 7th interp lane, hand guards, `hand_source` interlock, dispatch; lockstep flash + bench ladder | **COMPLETE** (owner, 2026-09-04) — flashed 2026-09-03, ladder flown over two sittings; four items carried to sitting three | 2026-09-04 | High | Hand streaming safety envelope on real hardware |
 | 4 | Jetson unified-cycle mode: orchestrator, node wiring, plan-derived announcements/suppression, outcome vocabulary; end-to-end sim gate | NOT STARTED | | Medium | Whole cycle through the production stack in sim |
 | 5 | Hardware ladder: streamed hold → banked carry (ball seated) → planned catch → planned throw (low tier) → full cycles → two-pose constant beat | NOT STARTED | | High | Ball-smooth carry and the planned launch on hardware |
 | 6 | Exclusivity + close-out: Platform Teensy FW 4 stroke retirement, host RPC retirement, contract doc, ILC hand-off, docs | NOT STARTED | | Medium | Single-master end state |
@@ -546,8 +546,9 @@ the constraint now applies to `motor_guard.py` alone].
 `extra_script.py` incremental-build hazard from the 4 → 5 bump applies:
 Phase 3's firmware build must be clean, not incremental. After this phase the
 host cannot talk to an FW ≤ 16 board (version darkness is loud and
-fail-closed); the phase is therefore **committed but not deployed** to the
-robot until Phase 3's flash sitting.
+fail-closed); the phase was therefore **committed but not deployed** to the
+robot until Phase 3's flash sitting — **which landed 2026-09-03**, so the v6
+host and FW 17 are now the live pairing.
 
 **Dependencies:** Phase 1 (for `CyclePlan`; the pump/emitter changes
 themselves only need the key names).
@@ -566,7 +567,7 @@ margin). Review finding 7 CARRIED to Phase 3: gap-re-entry bench case +
 normative `HAS_HAND` falling-edge decay. Gate: (2026-09-02, `./run_tests.sh`,
 6382 passed / 4 skipped, total 267 s — PASS).
 
-### Phase 3: Can-bridge FW 17 — 7th interp lane, hand guards, interlock — SOFTWARE-COMPLETE 2026-09-02; FLASHED 2026-09-03 (bench ladder IN PROGRESS, resumes at row 12 — operator-owned)
+### Phase 3: Can-bridge FW 17 — 7th interp lane, hand guards, interlock — COMPLETE 2026-09-04 (software 2026-09-02; FLASHED 2026-09-03; bench ladder flown over two sittings)
 
 **Modified files** (`ros_ws/src/jugglebot/Teensy_code_canbridge/`):
 `leg_interp.cpp/.h` (Staging and all per-channel state arrays 6 → 7; latch,
@@ -615,20 +616,27 @@ bytes — a deliberate deviation from the drafted `can_buses.cpp` site). Host:
 `set_hand_source` (`std_srvs/SetBool`, no interfaces rebuild), the arming fold
 with the 0.625 rev pre-check, `EXPECTED_BRIDGE_FW_VERSION` 17 (T-R2 now fully
 landed). `UNIFIED7_BENCH_BUILD` retired outright. The lean 2-lens review
-adjudicated 14 findings → 10 fixes + 1 recorded skip. What remains is
-operator-owned: the **lockstep flash sitting** (FW 17 + host in ONE sitting;
-rollback = FW 16 + pre-v6 host) and the T-H1..T-H4 ladder — runbook
+adjudicated 14 findings → 10 fixes + 1 recorded skip. What remained
+operator-owned **at that date** — since discharged, see the close-out below —
+was the **lockstep flash sitting** (FW 17 + host in ONE sitting; rollback =
+FW 16 + pre-v6 host) and the T-H1..T-H4 ladder; runbook
 `tests/hardware/session_unified7_hand_bringup.md` + driver
-`tests/hardware/hand_stream_bench.py` are ready, the driver pending operator
-review, and the settle-gate specifics pending owner ratification (entry § Open
-Questions). Gate: (2026-09-02, `./run_tests.sh`, 6392 passed / 4 skipped,
-261.13 s — PASS).
+`tests/hardware/hand_stream_bench.py` were ready, with the driver awaiting
+operator review and the settle-gate specifics awaiting owner ratification
+(entry § Open Questions). Gate: (2026-09-02, `./run_tests.sh`, 6392 passed /
+4 skipped, 261.13 s — PASS).
 
-**First sitting attempt, 2026-09-03 — the flash LANDED; the ladder halted at
-T-H2a and resumes at row 12** (canonical record:
-[`logbook/2026-09-04-fw17-hand-sitting-unflashed-idle-axis.md`](../../logbook/2026-09-04-fw17-hand-sitting-unflashed-idle-axis.md)).
-The board runs FW 17 and the v6 link is alive, so the lockstep is discharged.
-Two **artifact** defects — not firmware — stopped the ladder, both fixed
+**Close-out — TWO sittings, declared COMPLETE by the owner 2026-09-04.**
+Canonical records:
+[`logbook/2026-09-04-fw17-hand-sitting-unflashed-idle-axis.md`](../../logbook/2026-09-04-fw17-hand-sitting-unflashed-idle-axis.md)
+(sitting one) and
+[`logbook/2026-09-04-fw17-hand-ladder-sitting-two.md`](../../logbook/2026-09-04-fw17-hand-ladder-sitting-two.md)
+(sitting two, the ladder proper); the per-row verdicts live in
+`tests/hardware/session_unified7_hand_bringup.md` § Results.
+
+**Sitting one, 2026-09-03 — the flash LANDED; the ladder halted at T-H2a.** The
+board runs FW 17 and the v6 link is alive, so the lockstep is discharged. Two
+**artifact** defects — not firmware — stopped the ladder, both fixed
 2026-09-04. (1) Runbook row 4 (`pio run -e teensy41`) BUILDS ONLY and was
 reasonably read as the flash; the board stayed on FW ≤ 16 against a v6 host and
 the resulting designed total link darkness cost a session (rows 4/5 relabelled).
@@ -646,6 +654,65 @@ read CLOSED_LOOP (fail-closed on a missing DIAGNOSTIC) and verifies its own
 `--close-loop` bring-up; new runbook precondition row 11b records that with the
 launch down `--close-loop` is the ONLY route to an energised hand. Four owner
 items carried in the entry's § Open Questions.
+
+**Sitting two, 2026-09-04 — the ladder flown; nine rows PASS.** Rows **12, 13,
+14, 16, 17 (re-entry half), 19(a), 19(c), 20, 21** pass; row 15's mechanism
+passes with two findings left open. The energisation fix is closed twice over
+(`axis_state == 8` on every row of every stage; `echo_rev ≡ cmd_rev`
+bit-identical on all 24 000 rows of the 600 s hold), and FW 17's hand lane
+behaved correctly throughout: `dev_max` **0.0013 rev = 0.041 mm** flat over ten
+minutes, a clean triangle, the first live confirmation of the Phase 2 pump
+derivation (200 rev/s × 0.025 s = 5.0 rev), a bounded single-move gap re-entry,
+an `ERR_HAND_SOURCE` refusal proven to precede any CAN side-effect, and a
+spotless validity sweep (`leak_* ≡ 0`, `interp_deadline_misses` 0, jitter
+≤ 2 µs, `lead_clamp_mask` 0 including bit 6). Rows 12, 19(c) and 21 were closed
+**post-sitting**, from the bags and the first `[hand7]` console capture this
+project has ever held.
+
+**Carried to sitting three — scheduled work, not phase blockers:** row 18's
+**arming half** (`hand7 arm` + restrain to the E-STOP; the operator stopped on
+motor temperature, which was the right call — the test is a deliberate stall by
+construction, and § Observe-then-arm names arming as the next sitting's step);
+row **19(b)** (never run — mis-invoked); row 17's **decay half**, which no
+current stage can exercise (the gap stage rides a Hold, so it needs a gap taken
+**while the hand is moving** — the only way to test the normative falling-edge
+rule this phase shipped); and a **bracketed** row-11c console capture (the one
+that exists was opened after the ladder ended, so it carries no per-row delta).
+
+**Defect carried as FW 18 work: `lead` and `dev_over` are gated wrong.** Both
+are documented as throw-**duty** counters (`canbridge_config.h:256-259`,
+`leg_interp.cpp:196`, runbook row 15) but their gate at `leg_interp.cpp:684` is
+`s_hand_active && hand_source_streamed()` with **no `s_output_enabled` term**,
+so they count ticks on which the firmware transmitted nothing — the sitting
+found `lead = 18 725 209` on an idle lane, reconciling to the wall-clock gap
+since the previous night's abort. **The runbook's "non-zero `lead` ⇒ hard
+abort" rule is unfalsifiable as written**; it is amended to a delta read as a
+stopgap, and the fix (add `out_en` to the gate, or a second output-enabled-only
+counter pair) needs a reflash. Related, same change-set: there is no runtime
+counter reset — `interp_reset()` has no caller — so the flash reboot is the
+only zero.
+
+**The number governing sitting three's arming decision** is **not** the
+alarming `dev_max = 10.9794` (dead boot-cumulative history, structurally unable
+to trip an arm — `fault_machine.cpp:409-411` banks the exceed-tick delta
+unconditionally, above the armed gate). It is the 14:47 stroke's worst
+`|cmd − enc|`: **1.9847 rev = 99.2 % of `MAX_LEAD_HAND_REV` and 79.4 % of the
+2.5 rev `MAX_DEVIATION_HAND_REV` band**, against 1.2067 rev on the morning
+stroke at the same `--event-vel`, with the encoder reaching 10.4693 rev against
+the 10.8 rev hard stop. **Armed, the band will be tight on strokes — budget for
+a trip**, and expect an aborted stroke to fire the guard by design. That growth
+(0.5387 → 1.2348 rev on the driver's belt, confirmed by two age-free measures)
+is itself unexplained and open, alongside a commanded 5.31 mm firmware-target
+overshoot inside the hand lane.
+
+**Close-out gate.** The close-out itself changed only documents (this plan, the
+runbook's § Results + amended row-15 rule, the sitting-two entry and the two
+INDEXes) plus the sitting-two driver fixes already recorded in that entry:
+(2026-09-04, `python -m pytest tests/sim/test_plans_index.py
+tests/sim/test_logbook_search.py tests/sim/test_logbook_front_matter.py -q`,
+**108 passed in 0.68 s**); the full `./run_tests.sh` gate rides the commit.
+**Phase 4 is CLEARED TO START** — it is software-only and needs nothing from
+the four carried sitting-three items.
 
 ### Phase 4: Jetson unified-cycle mode — NOT STARTED
 
@@ -827,25 +894,45 @@ them. **T-U6..T-U8 LANDED 2026-09-02** (Phase 2); **T-U9 LANDED 2026-09-02**
 
 T-H1..T-H4 are the Phase 3 bench ladder: the runbook
 `tests/hardware/session_unified7_hand_bringup.md` and the driver
-`tests/hardware/hand_stream_bench.py` **exist as of 2026-09-02**; the sitting
-itself is PENDING, operator-owned.
+`tests/hardware/hand_stream_bench.py` landed 2026-09-02, and the ladder was
+**FLOWN over two sittings, 2026-09-03 and 2026-09-04** — per-row verdicts in
+that runbook's § Results, narrative in the two sitting entries. Verdicts below
+are as of the owner's **Phase 3 COMPLETE** declaration, 2026-09-04.
 
-- **T-H1** Streamed hand hold: `hand_source=STREAMED`, stream the current
-  hand position for 10 min. Pass: zero motion, zero deviation-guard trips,
-  `tx_deferred == 0`, `leg-bus-frame-drops` episode rate not elevated vs the
-  6-frame baseline.
-- **T-H2** Slow streamed stroke (no ball): 0.5 rev/s triangle over 2 rev;
-  then Phase-0-probe-2 replay of a 3 m/s stroke. Pass: tracking error
-  matches the Hermite-fidelity prediction; hand deviation guard armed and
-  quiet.
-- **T-H3** Guard trips (deliberate): command a step past the hand step gate
-  host-side (must be refused by the pump); inject a deviation via a held
-  rotor (operator) — `MAX_DEVIATION_HAND` E-stops, latches, releases only on
-  CLEAR_ERRORS with the recovery slew.
-- **T-H4** Interlock on hardware: `HAND_TRAJ_CMD` while STREAMED ⇒
-  `ERR_HAND_SOURCE` (visible in `hand_traj_acks`); Setpoint hand channel
-  while LEGACY ⇒ discarded + counted; source switch refused while
-  `mpc_active`.
+- **T-H1** ✅ **PASS 2026-09-04** — Streamed hand hold: `hand_source=STREAMED`,
+  stream the current hand position for 10 min. Pass: zero motion, zero
+  deviation-guard trips, `tx_deferred == 0`, `leg-bus-frame-drops` episode rate
+  not elevated vs the 6-frame baseline. *Measured:* `dev_max`
+  **0.0013 rev = 0.041 mm**, flat over the full 600 s; `echo_rev ≡ cmd_rev`
+  bit-identical on all 24 000 rows; drop-episode rate inside the 2026-08-30
+  band once normalised to the same axis count.
+- **T-H2** ⚠ **mechanism PASS 2026-09-04, two findings OPEN** — Slow streamed
+  stroke (no ball): 0.5 rev/s triangle over 2 rev; then Phase-0-probe-2 replay
+  of a 3 m/s stroke. Pass: tracking error matches the Hermite-fidelity
+  prediction; hand deviation guard armed and quiet. *Measured:* triangle flat
+  to 0.8 % across six blocks; every scored stroke sample ≤ 1.85 mm against the
+  3.25 mm bar. *Open:* a real stroke tracking degradation (0.5387 → 1.2348 rev
+  on the driver's belt; **1.9847 rev of worst `|cmd − enc|` = 79.4 % of the
+  2.5 rev guard band**, the number sitting three's arming decision rests on)
+  and a commanded 5.31 mm firmware-target overshoot inside the hand lane.
+- **T-H3** ⚠ **step refusal + gap re-entry PASS 2026-09-04; held-rotor ARMING
+  half and the DECAY half CARRIED to sitting three** — Guard trips
+  (deliberate): command a step past the hand step gate host-side (must be
+  refused by the pump); inject a deviation via a held rotor (operator) —
+  `MAX_DEVIATION_HAND` E-stops, latches, releases only on CLEAR_ERRORS with the
+  recovery slew. *Carried:* the arming half stopped on motor temperature (the
+  correct call — the test is a deliberate stall by construction, and arming is
+  § Observe-then-arm's named next-sitting step); the falling-edge **decay** has
+  never been observed because the gap stage rides a Hold, so it needs a NEW
+  stage that takes the gap **while the hand is moving**.
+- **T-H4** ⚠ **(a) and (c) PASS 2026-09-04; (b) CARRIED — not run** — Interlock
+  on hardware: `HAND_TRAJ_CMD` while STREAMED ⇒ `ERR_HAND_SOURCE` (visible in
+  `hand_traj_acks`); Setpoint hand channel while LEGACY ⇒ discarded + counted;
+  source switch refused while `mpc_active`. *Measured:* the `ERR_HAND_SOURCE`
+  refusal is proven to precede any CAN side-effect (axis 6 IDLE for 20 s after
+  the refused call); the armed-refusal half closed post-sitting on the 15:41
+  bag. *Carried:* the LEGACY-discard half was mis-invoked and never ran —
+  `discard_legacy` is console-only, so it needs a bracketed row-11c capture.
 - **T-H5** Banked carry, seated ball (UH-3): two-pose re-pose with the ball
   in the cup, banking on, lean shaper off; by-eye cup watch + bag. Pass: no
   visible ball disturbance at a re-pose duration ≤ the legacy `GoToPose`
