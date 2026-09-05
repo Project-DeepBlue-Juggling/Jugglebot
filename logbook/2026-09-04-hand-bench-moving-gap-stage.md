@@ -2,7 +2,7 @@
 title: "Hand-stream bench gains a moving-gap stage to observe FW 17's falling-edge decay"
 type: feature
 date: 2026-09-04
-status: in-progress
+status: resolved
 phase: "unified-7dof-planner — Phase 3 (sitting three prep)"
 related_plan: unified-7dof-planner.md
 files_changed:
@@ -105,16 +105,25 @@ Question 8, out of scope here).
 
 ## Outcome
 
-Software-complete, not yet flown. Carried into sitting three alongside row
-18's arming half and row 19(b)
+**Flown 2026-09-05, and it did what it was built to do: G1–G5 PASS, prediction
+confirmed** — coast +0.05250 rev bit-equal to the closed-form `v·0.105`, target
+frozen with 0.00000 rev of span, re-entry +0.0725 rev against +0.0725 predicted
+([`2026-09-05-fw17-hand-ladder-sitting-three.md`](2026-09-05-fw17-hand-ladder-sitting-three.md)).
+It was carried into sitting three alongside row 18's arming half and row 19(b)
 ([`2026-09-04-fw17-hand-ladder-sitting-two.md`](2026-09-04-fw17-hand-ladder-sitting-two.md)
-§ Outcome). This is the stage that closes Open Questions item 6 there — once
-run, it settles whether the falling-edge decay behaves as the normative rule
-requires.
+§ Outcome), and it closed Open Questions item 6 there: the falling-edge decay
+behaves exactly as the normative rule requires, and the lane keeps transmitting
+its decayed target across the edge rather than going quiet.
 
-## Open Questions
+**Both Open Questions this entry carried are resolved.** (1) The sitting
+confirmed G1–G5 with no divergence from the closed-form DECAY model —
+`|coast − DECAY| = 0.00000`, four times the tolerance from the forbidden
+hold-at-endpoint mode and six from no-wind-down. (2) The `[hand7]` counter
+deltas this stage depended on now exist: sitting three produced the project's
+first bracketed row-11c console capture
+(`temp/logs/hand7_console_20260905_135613.log`, 313 blocks at 1 Hz), and this
+stage's deltas in it are `lead 0 dev_over 0 unseen 0 stale 0` with `sent`
+advancing by exactly 500 in every full second including the gap's own.
 
-- Does the sitting confirm G1–G5, or does the observed coast diverge from the
-  closed-form DECAY model?
-- `[hand7]` counter deltas for this stage still depend on runbook row 11c's
-  bracketed console capture.
+The caveats above stay carried: G3's bar is still derived at 0.5 rev/s only,
+and no `uptime_ms` CSV column exists.

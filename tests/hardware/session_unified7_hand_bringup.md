@@ -161,6 +161,19 @@ The sequencing is **named and scheduled, not open-ended**:
    observe until a later FW bump flips it — a decision for after the armed
    record exists.
 
+**Status, 2026-09-05 — step 2 is DONE.** `hand7 arm` was issued at ≈13:59:25 of
+sitting three and the sitting finished with `guard=ARMED`. What remains open is
+**not** the arming step but the **armed trip**: it has never fired on hardware,
+because the only test written to fire it (row 18's arming half) is a deliberate
+stall that the operator has closed permanently on thermal grounds. Whether
+Phase 5's unified rungs fly armed was therefore an owner decision — **RESOLVED
+(owner, 2026-09-05): ARMED from UH-3 on, and a trip is DATA**, so `hand7 arm`
+joins the Phase 5 session-start checklist too
+(`session_unified7_cycle_ladder.md`). The recommendation and the failure mode
+each choice prevents are in § Results
+§ "Sitting three (2026-09-05) — closure", item 1. The paragraphs below are the
+2026-09-04 framing, kept because their reasoning is still the reasoning.
+
 **Status note, 2026-09-04 — the arming step is now SITTING THREE's, and this is
 logged, not lost.** Sittings one (2026-09-03) and two (2026-09-04) both ran
 `guard=observe` start to finish; the console capture confirms it directly
@@ -193,7 +206,14 @@ prerequisites now exist in a form step 2 did not anticipate:
   substitute** — `temp/logs/hand7_console_20260904_153911.log` exists and gave
   rows 12 and 21 their verdicts plus the counter-gating find, but every
   `[hand7]` counter in it is bit-identical across all 264 blocks, so rows 13-19
-  got **no delta at all** from it.
+  got **no delta at all** from it. **The worked example of a capture done right
+  is `temp/logs/hand7_console_20260905_135613.log`** (sitting three): opened
+  before the first row, closed after the last, 313 `[hand7]` blocks at 1 Hz.
+  Note that it carries **no per-line timestamps** — the monitor ran without
+  `-f time` — so stage boundaries were recovered from the `[guard]`
+  `mpc_active` / `sp_age_ms` edges and anchored on the `script` header, which
+  cross-checks against each stage CSV's filename to ≤ 1 s. That worked, but
+  **add `-f time` next sitting** and the recovery step disappears.
 - Results go in this file's § Results, verdicts to the phase logbook entry.
   **§ Results is filled in for the 2026-09-03 / 2026-09-04 sittings** — append
   sitting three's rows there rather than overwriting.
@@ -222,37 +242,106 @@ sitting three is the first to run the ladder with them in place from row 6.
 | Row | Test | Verdict | Note |
 |---|---|---|---|
 | 12 | Source switch + refusals | **PASS** | Three requests, each a genuine state CHANGE (so no idempotent short-circuit): STREAMED→LEGACY in band OK; LEGACY→STREAMED at +0.9999 rev **REFUSED** with the driver's gate diagnosis naming both bands; LEGACY→STREAMED in band OK. |
-| 13 | **T-H1** streamed hold, 10 min | **PASS** | The real 600 s. `dev_max` **0.0013 rev = 0.041 mm**, flat over the full 10 min; `echo_rev ≡ cmd_rev` bit-identical on all 24 000 rows. |
+| 13 | **T-H1** streamed hold, 10 min | **PASS** | The real 600 s. `dev_max` **0.0013 rev = 0.041 mm**, flat over the full 10 min; `echo_rev ≡ cmd_rev` bit-identical on all 24 000 rows. **Sitting-three addendum — the FIRST-FRAME CLIP.** A hold armed with the hand parked at a NEGATIVE position does not hold there: the firmware clips the transmitted setpoint to `[0, HAND_MOTOR_MAX_POSITION]` (`leg_interp.cpp:824-827`), so a command of −0.0976 rev goes on the wire as exactly **0.0**, the recovery slew walks the hand up to 0, and it stays there. Measured 2026-09-05 (`hand_stream_hold_20260905_135732.csv`): `cmd_rev ≡ −0.09764` and `echo_rev ≡ 0.00000` on all 1200 rows, `echo − cmd = +0.09764` rev **exactly** the clip; the encoder reached \|enc\| < 0.005 rev by t = 0.125 s and then sat at +0.00003 ± 0.0003 rev for 29.9 s. **Both belts read that as deviation and neither is wrong-but-nor is it tracking error**: the driver's belt (`\|cmd − (enc+vel·age)\|`) reported **0.0995 rev = 3.15 mm**, and the firmware's own residual (`dev = raw h_pos − fb_ex`, computed PRE-clip) read −0.0965…−0.0988 on the console for the whole stage. Actual tracking against the *transmitted* target was ~0.0003 rev = 0.01 mm, i.e. 4× better than this row's own 600 s figure. **The rule to carry: a hand command that sits `x` rev below the clip floor produces a permanent guard residual of `x` rev with zero real error, 1:1** — 3.9 % of the 2.5 rev band here, but it scales, so never park-and-hold below 0 on an armed lane. |
 | 14 | **T-H2a** slow triangle | **PASS** | Tracking error flat to 0.8 % across six 10 s blocks, worst 1.92 mm. Caveat recorded: a real ~6.3 Hz ±0.73 mm velocity ripple. |
 | 15 | **T-H2b** legacy-stroke replay | **mechanism PASS; two open findings** | Every scored afternoon sample ≤ 1.85 mm. Open: a real tracking degradation (0.5387 → 1.2348 rev against a 1.5 rev belt) and a commanded 5.31 mm firmware-target overshoot. **Read the entry's finding (3) before arming** (see the box below). |
 | 16 | **T-H3a** host step refusal | **PASS** | `pump refused=True reason='hand step 6.0000 rev > 5.0 limit'`, twice; the 5.0 rev boundary accepted (the gate is `>`). First live confirmation of 200 rev/s × 0.025 s = 5.0 rev. |
 | 17 | **T-H3c** gap re-entry | **re-entry half PASS; decay half CARRIED** | 31.71 mm in one move, peak 19.86 rev/s, overshoot 0.26 %, echo moved within 25 ms. The **decay half is structurally untestable with the current stages** — the gap stage rides a Hold, so the hand is at rest when the gap opens; it needs a new stage that takes the gap **while the hand is moving**. |
-| 17b | **T-H3d** moving gap (the decay half) | **NOT RUN — new for sitting three** | Written 2026-09-04 to close row 17's carried decay half: no stage before it could take a gap while the hand was moving, so FW 17's normative falling-edge rule has never been observed on hardware. Nothing to record until sitting three runs it. |
-| 18 | **T-H3b** held-rotor deviation | **observe half PASS; arming half CARRIED** | Clean grow-then-recover curve, peak 0.1965 rev = 7.9 % of the 2.5 rev threshold, so the tick verdict was never exercised. The arming half was **not run: motor temperature rose very quickly under restraint and the operator stopped — correctly.** Holding the rotor to 2.5 rev of error at `pos_gain` 35 saturates current by construction; the test is a deliberate thermal event, not a 30-second step. It is also sitting three's step by this doc's own § Observe-then-arm. |
+| 17b | **T-H3d** moving gap (the decay half) | **PASS — flown 2026-09-05** | **The FW 17 normative falling-edge decay rule is CONFIRMED ON HARDWARE, to the reported precision of the closed-form prediction.** `hand_stream_moving_gap_20260905_135840.csv`, 400 rows, `axis_state ≡ 8`, `fault ≡ 0`, `lead_mask ≡ 0`. Falling edge at knot 80 (t = 2.000 s), 9 knots withheld (CSV rows 80–88 read the literal `withheld`), firmware gap 250 ms nominal / **249.4 ms measured**, knot velocity **+0.500 rev/s**. Re-derived independently from the CSV, matching the driver's own verdicts exactly: **G1 PASS** — coast **+0.05250 rev (1.66 mm)** at g = 225 ms against DECAY +0.05250 / HOLD-AT-ENDPOINT +0.01250 / NO-WIND-DOWN +0.11250, tol ±0.0100; \|coast − DECAY\| = **0.00000**, i.e. the observed target is bit-equal to `p0 + v·0.105` and sits 4× the tolerance from the forbidden mode and 6× from no-wind-down. **G2 PASS** — 4 echo samples past the 135 ms wind-down, span **0.00000 rev**, all four reading +1.04007. **G3 PASS** — worst \|enc+vel·age − model\| **0.0214 rev = 0.68 mm** (bar 0.100), the encoder AHEAD of the decaying target, i.e. plant momentum, at g = 125 ms. **G4 PASS** — re-entry step **+0.0725 rev = 2.29 mm** against a predicted +0.0725 (bar ±0.25), and the echo moved with it on the very next knot (+1.04007 → +1.12453). **G5 PASS** — `lead_clamp_mask` bit 6 on 0 of 400 sampled ticks; the console `lead` delta is 0 too. Driver-side belt max 0.0591 rev (1.87 mm); cachediag 13 windows, 0 episodes, worst deficit 0.0. The whole Mode-1 → Mode-2 → Mode-3 → frozen ladder is legible in the echo column: +0.0125/knot through Mode 2, +0.0085 then +0.0065 as the decay bites, then bit-identical. **Extra evidence the criteria do not cover: `[hand7] sent` advanced by exactly 500 in every full second of the stage, including the second containing the gap** — the lane keeps transmitting its decayed target through the falling edge rather than stopping, which is the half of the normative rule nobody had checked. |
+| 18 | **T-H3b** held-rotor deviation | **observe half PASS (re-flown ARMED); arming half CLOSED BY OPERATOR DECISION 2026-09-05 — armed trip UNOBSERVED** | Sitting two: peak 0.1965 rev. **Sitting three re-flew it, and the console shows the guard was `ARMED` for the whole run** — `hand7 arm` was issued at ≈13:59:25 (`[hand7] guard=observe → ARMED`, with the handler's own out-of-cadence status echo at capture line 2339) and the restraint stage streamed 14:00:19–14:00:51. `hand_stream_triangle_20260905_140020.csv`: peak residual **0.2515 rev = 7.95 mm at t = 10.30 s** (driver belt; the raw `|cmd − enc|` at that instant is 0.2505, from cmd +1.0938, enc +0.8434) = **10.1 % of `MAX_DEVIATION_HAND_REV` 2.5** and 12.6 % of `MAX_LEAD_HAND_REV` 2.0; clean grow-then-recover (1 s worst bins 0.035 → 0.133 over t = 0–10 s, the 0.2515 spike, then 0.018–0.043 for the remaining 19 s); `\|cmd − echo\|` max 0.0203 rev mean 0.0015, so the firmware target tracked the plan with no hand clip and no hand lead clamp; `[hand7]` deltas across the stage `lead = 0 dev_over = 0 unseen = 0 stale = 0`, `sent` +15 091 (= 500 Hz × 30.2 s). **So an armed lane ran a full restrained stage with ZERO nuisance trips — but the trip itself was never seen.** The operator stopped before the guard fired because motor temperature rose quickly, and has **DECIDED row 18's arming half will not be re-run**: holding the rotor to 2.5 rev of command error at `pos_gain` 35 saturates current by construction, so the test is a deliberate stall and a real thermal event, not a 30 s step. Physically the decision is sound — reaching the band needs ~10× this restraint displacement (79 mm of command travel against a stalled rotor). **Status: CLOSED BY OPERATOR DECISION, armed trip unobserved on hardware.** The consequence is carried as a Phase 5 arming-policy decision (see § Sitting three — closure, item 1). |
 | 19(a) | `set_hand_traj_cmd` under STREAMED | **PASS** | `hand_traj_acks = calls=1 ok=0 fail_teensy=1` with all five wire-visible `hand_ops` exit counters at 0 — uniquely `ERR_HAND_SOURCE`'s fingerprint. Axis 6 stayed IDLE for 20 s after, proving the refusal preceded any CAN side-effect. |
-| 19(b) | v6 hand stream against LEGACY | **CARRIED — not run** | Mis-invoked as one command; `--source-only` switches the latch and returns immediately, so the hold half never ran. `discard_legacy` is console-only, so this row has no bag surface even in principle — it needs row 11c's capture. |
+| 19(b) | v6 hand stream against LEGACY | **PASS — flown 2026-09-05** | Run as the two commands it always needed: `--source-only legacy` (established 13:38, `[hand7] src=LEGACY` confirmed at capture start), then `--stage hold --duration 3 --no-source-switch --close-loop` at 13:56:47–13:56:50. **`discard_legacy` delta = 222** (0 → 222 across the bracket, and it never moves again for the remaining 275 console blocks). **It counts FRAMES, not ticks** — `leg_interp.cpp:286-289` increments once per accepted Setpoint frame whose `HAS_HAND` flag is stripped, inside the frame decode. Predicted **223** = 103 pre-arm hold-pump frames (the driver's own `ARMED — streaming (hold thread sent 103 frames)` line) + 120 stage frames (3.0 s × 40 Hz, the CSV row count); observed 222, one short, consistent with the +3 `seq_gaps` the same window logged. A tick-counting counter would have read ≈2 788. **Three independent proofs the hand channel never reached the wire:** `[hand7] sent` delta **0** across the row (the lane transmitted nothing at all); `echo_rev` **empty on all 120 CSV rows** (no `HAND_CMD_ECHO` frame was emitted, because none was TXed); and the encoder span **0.00030 rev = 0.009 mm** over 3 s with `axis_state ≡ 8` — the hand was ENERGISED and did not move, which is what makes "does not move" mean something. Driver belt max 0.0010 rev (0.03 mm); legs unaffected; cachediag 7 windows, 0 episodes, worst −1.0. |
 | 19(c) | `/set_hand_source` while ARMED | **PASS** | Closed post-sitting on the 15:41 bag: over the 45.6 s armed window the hand held `pos_meas` inside **[−0.000219, +0.000271] rev** (0.27 % of the 0.3 rev band) and the firmware's own `hand_settled_at_rest()` predicate passes **0 failures / 4580 armed samples**, so the settle gate would have passed and only the arming gate can have refused — and `mpc_active` (`hand_source.cpp:60`) short-circuits above the settle gate (`:74`) regardless. `hand_source` STREAMED in 459/459 armed samples: the latch did not move. Caveat: rosbag2 records no services and nothing is logged, so the `ERR_REJECTED` byte is inferred from the latch not moving, not captured. |
 | 20 | Close-out validity sweep | **PASS** | `leak_*`/`leak_hwm_*` 0 across 401 `/ring_diag`; `interp_deadline_misses` 0 and `interp_max_jitter_us` max 2 µs across 402 `/profile`; `latency_monitor` OK 4029/4029; `tx_deferred` jb delta 0; `bridge_fw_version` **17 (proto 6)**; `lead_clamp_mask` 0 throughout, including bit 6. Console corroborates: jb bus `err=0 rec=0 tec=0 defer=0 txq=0`, **zero leg and zero hand deferrals**, heap flat. |
-| 21 | Close-out state | **PASS** | The console capture's final line reads `[hand7] src=LEGACY guard=observe lane=idle`, and `guard=observe` holds on all 264 blocks — `hand7 arm` was never issued. The robot left the sitting on the LEGACY path. |
+| 21 | Close-out state | **PASS** | The console capture's final line reads `[hand7] src=LEGACY guard=observe lane=idle`, and `guard=observe` holds on all 264 blocks — `hand7 arm` was never issued. The robot left the sitting on the LEGACY path. **Sitting three (2026-09-05): PASS, but only after two REFUSALS and a manual park — read this before Phase 5.** With the triangle stage ended the hand sat at **+1.056 rev**, which is in neither rest band, so `--source-only legacy` was **REFUSED twice** (`ERR_REJECTED`, the driver naming the gate: *not settled at a rest position — retract [−0.20, +0.10] or catch-prime 9.96 ± 0.10*). **The driver's bands are CORRECT** — `hand_source.cpp:42-47` computes retract as `[HAND_ABS_POS_REV − HAND_SETTLE_BAND_REV, HAND_RETRACT_REV + HAND_SETTLE_BAND_REV]` = `[−0.1 − 0.1, 0.0 + 0.1]` = **[−0.20, +0.10]** and prime as `\|pos − 9.9594\| ≤ 0.10`, with `HAND_SETTLE_BAND_REV = 0.10` (`canbridge_config.h:278`); no reconciliation is needed. The recovery, with the launch DOWN, was: deactivate → idle the hand axis via the ODrive GUI → push the hand by hand into the retract band to +0.0689 rev → `--source-only legacy`, which then succeeded at ≈14:01:20. The capture's final line reads `src=LEGACY … lane=active`. Note that `hand_stream_bench.py` has **no IDLE-on-exit path** (its only `SET_AXIS_STATE` is `--close-loop`'s 1 → 8), so idling the axis was always an operator action via the ODrive GUI, not a driver step — which matters because **with the launch UP the hand is CLOSED_LOOP and NOT backdrivable and this exact recovery route does not exist**. And `guard` was left **ARMED** (boot default is observe, so only a bridge reboot clears it) — intended under § Observe-then-arm step 2, but say it out loud at the next session start. |
 
-### Carried to sitting three
+### Sitting three (2026-09-05) — closure
 
-1. **Row 18's arming half** (`hand7 arm` + restrain to the E-STOP). This is the
-   step § Observe-then-arm names as the next sitting's, and the operator's
-   thermal stop was the correct call, not a skip.
-2. **Row 19(b)** — never run; needs the LEGACY latch established, *then* a
-   separate hold command, with the hand energised.
-3. **Row 17's decay half** — needed a NEW stage that takes the gap while the
-   hand is moving; no stage in the sitting-two ladder could exercise the
-   normative falling-edge rule at all. **That stage now exists**: `moving_gap`,
-   the ladder's **row 17b**, added 2026-09-04. Run it immediately after row 17
-   and before any `hand7 arm`; its verdict is the first hardware observation of
-   the rule Phase 3 shipped.
-4. **A bracketed row-11c capture.** A console file finally exists
-   (`temp/logs/hand7_console_20260904_153911.log`) but it was opened at 15:39,
-   after the last block closed at 15:09 — so it carries state and history and
-   **no per-row delta**. Sitting three is the first that can produce the
-   observe-first residual record from the counters themselves.
+All four carried items are discharged. Canonical record:
+`logbook/2026-09-05-fw17-hand-ladder-sitting-three.md`. The sitting ran
+13:56–14:01 in four streamed blocks, all with the hand `axis_state ≡ 8`, all
+`fault ≡ 0`, no guard trip, no abort.
+
+1. **Row 18's arming half → CLOSED BY OPERATOR DECISION; the armed trip is
+   UNOBSERVED.** `hand7 arm` **was** issued (≈13:59:25) and the restraint stage
+   then ran fully ARMED with zero nuisance trips at a 0.2515 rev peak — so
+   § Observe-then-arm step 2 is *taken*, not skipped. What was not observed is
+   the E-STOP itself, and the operator has ruled the test out permanently on
+   thermal grounds (see row 18). **The consequence was a Phase 5 arming-policy
+   decision; RESOLVED (owner, 2026-09-05): ARMED from UH-3 on, a trip is
+   DATA.** The recommendation it was taken on, with the failure mode each side
+   prevents: **run the unified rungs ARMED and treat any trip as data.** A
+   false trip is a fail-safe E-STOP — output gated, `CLEAR_ERRORS` to recover,
+   recovery path already written in row 18 — while staying observe-first means
+   the one guard standing between a mis-planned hand knot and 10.8 rev of
+   travel at up to 200 rev/s never actually stops anything, and the § 5 hazard
+   it was sized for arrives on a *ball-bearing* rung. The residual record now
+   supports arming: whole-sitting `dev_over` delta **0** and `lead` delta **0**,
+   carry-speed residuals **0.02–0.06 rev**, a restrained peak of **0.2515 rev**
+   and a hand-parked-by-hand excursion of **1.1494 rev**, all against a 2.5 rev
+   band. Staying observe-first prevents only one thing — an aborted stroke's
+   by-design trip costing a `CLEAR_ERRORS` mid-ladder — which sitting two
+   already predicted and priced. **Decided 2026-09-05 (owner): armed, as
+   recommended.**
+2. **Row 19(b) → PASS.** Run as two commands, `discard_legacy` delta **222**,
+   `sent` delta **0**, `echo_rev` empty on all 120 rows, encoder span 0.009 mm
+   on an energised axis. See the § Results row.
+3. **Row 17's decay half → PASS (row 17b).** G1–G5 all PASS, and the observed
+   coast is **bit-equal** to the closed-form `v·0.105 = +0.0525 rev`. The
+   normative falling-edge rule Phase 3 shipped is confirmed on hardware.
+4. **A bracketed row-11c capture → IT EXISTS.**
+   **`temp/logs/hand7_console_20260905_135613.log`** — opened 13:56:13, closed
+   14:01:26, 313 `[hand7]` blocks at 1 Hz (312 periodic + one out-of-cadence
+   status echo from the `hand7 arm` handler), bracketing every streamed block
+   from both sides. This is the first per-row `[hand7]` delta record the
+   project has ever held. Stage windows were recovered from `[guard]
+   sp_age_ms` / `mpc_active`, and cross-check against each stage CSV's
+   filename timestamp to ≤ 1 s.
+
+| Stage (console window) | `sent` | `discard_legacy` | `unseen` | `stale` | `lead` | `dev_over` | `dev_max` |
+|---|---|---|---|---|---|---|---|
+| 19(b) hold 3 s vs LEGACY (13:56:44–13:56:52) | **0** | **+222** | 0 | 0 | **0** | **0** | 0.0000 |
+| 30 s STREAMED hold (13:57:28–13:58:03) | +15 091 | 0 | 0 | 0 | **0** | **0** | 0.0000 |
+| 17b moving_gap (13:58:37–13:58:52) | +5 040 | 0 | 0 | 0 | **0** | **0** | 0.0000 |
+| 18 triangle restraint, ARMED (14:00:14–14:00:53) | +15 091 | 0 | 0 | 0 | **0** | **0** | 0.0000 |
+| **whole sitting** (13:56:13–14:01:25) | **+35 222** | **+222** | **0** | **0** | **0** | **0** | **0.0000** |
+
+The stage `sent` deltas sum to exactly the whole-sitting delta (35 222), so
+**every hand frame the firmware transmitted in this sitting belongs to one of
+the three STREAMED stages and nothing was transmitted outside them** — and
++15 091 over a 30.2 s bracket is 500 Hz to the tick. `dev_max` did not move at
+all: the boot-cumulative 10.9794 from the previous night is still the maximum,
+which is the correct reading of a sitting whose worst live residual was
+1.1494 rev.
+
+**Validity, from the same capture (row 20's criteria, re-read).** `[diag]`
+carries only two `(link, fault)` states all sitting — `(1, NONE)` while the
+driver held the link and `(3, LINK_LOST)` when it did not; never
+`MAX_DEVIATION`, `MPC_STALE`, `MOTOR_FB_STALE` or `ODRIVE_FATAL`. Jugglebot bus
+`err`/`rec`/`tec`/`defer`/`txq` all **0 → 0**, `drain_cap` 0, `hwm` flat at
+9/256, `cap_hits` 0; `[cantx] defer_by_class` unmoved (only the pre-existing
+bb-bus `timesync=1970`); heap flat 2216–2416. Unchanged and still unexplained:
+`decode_bad_axis` on the jugglebot bus climbed **+622 over 312 s = 1.99/s**, the
+same steady rate sitting two flagged, moving no other counter.
+
+**The FW 18 gate defect did not bite this time, and it is worth knowing why.**
+`lead` / `dev_over` still count on `s_hand_active && hand_source_streamed()`
+without `s_output_enabled`, so the idle windows between stages were inside
+their gate — but both are *exceed* counters (thresholds 2.0 / 2.5 rev), and the
+idle-window residual never got there. It came closest during the close-out
+manual park, where `dev_last` reached **+1.1494 rev = 57 % of
+`MAX_LEAD_HAND_REV`**. Park the hand from further away with the lane still
+latched STREAMED and `lead` starts ratcheting on a lane that transmits nothing
+— which is precisely how sitting two's 18 725 209 was banked. The FW 18 fix is
+still needed.
+
+> **The arm was taken, and the guard was LEFT ARMED.** `guard=ARMED` from
+> ≈13:59:25 to the end of the capture; row 18's *"then `hand7 observe`
+> immediately"* was not executed. Under § Observe-then-arm step 2 that is the
+> intended end state ("from then on armed is the sitting default"), and the
+> boot default is still observe, so a bridge reboot silently reverts it.
+> **Read `[hand7] guard=` at the start of the next session and say which it
+> is** rather than assuming either.
 
 > ### Before you type `hand7 arm` — the number that governs the decision
 >
@@ -273,3 +362,10 @@ sitting three is the first to run the ladder with them in place from row 6.
 > trip**, and know that an **aborted** stroke will fire the guard by design
 > (the lane decays; the residual passes 2.5 rev within ~30 ms of the last knot)
 > and needs `CLEAR_ERRORS`. Row 18's recovery path is already written for that.
+>
+> **DONE, 2026-09-05.** `hand7 arm` was issued at ≈13:59:25 and the sitting
+> finished armed. Sitting three flew no stroke, so the 1.9847 rev number above
+> was never re-tested under an armed guard — it stands unchanged as the tight
+> case, and the first armed stroke is still ahead of us. What sitting three
+> *did* establish is that an armed lane carries a restrained 0.2515 rev peak
+> and a full triangle with **zero** `dev_over` ticks.
