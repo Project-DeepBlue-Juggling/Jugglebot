@@ -880,22 +880,33 @@ jugglebot_operational:
                                          # Matches the tilt-calibration grid's own read_gap_s so
                                          # the covariate and the calibration capture sample the
                                          # SCL3300 the same way.
-  unified_cycle_enabled: false           # Route a toss cycle through the UNIFIED 7-DoF planner
+  unified_cycle_enabled: true            # Route a toss cycle through the UNIFIED 7-DoF planner
                                          # (jugglebot/motion/trajectory/cup_cycle.py ->
                                          # cup_realize.py -> cycle_plan.CyclePlan) instead of today's
                                          # separate platform plan + firmware hand stroke. Plan:
                                          # plans/active/unified-7dof-planner.md.
-                                         # SHIPS FALSE and stays false until the Phase-5 hardware
-                                         # ladder: the unified path puts the hand on the SAME 40 Hz
-                                         # streamed clock as the legs, which needs the v6 wire
-                                         # (Phase 2) and can-bridge FW 17's 7th interp lane plus its
-                                         # hand guards (Phase 3) underneath it. With those absent the
-                                         # flag has nothing to switch to, so it is a REVIEWED CONFIG
-                                         # COMMIT (same shape as toss_ilc_enabled above), never a
-                                         # runtime toggle — which build ran the unified planner has
-                                         # to be answerable from git alone when a bench trace is read
-                                         # back months later. Phase 1 (this key's landing) is the
-                                         # pure-Python planner core only; nothing reads the flag yet.
+                                         # SHIPPED FALSE from Phase 1 (2026-09-01) until 2026-09-05,
+                                         # when the Phase-5 hardware ladder opened: the prerequisites
+                                         # it was waiting on are all aboard — the v6 wire (Phase 2),
+                                         # can-bridge FW 17's 7th interp lane and its hand guards
+                                         # (Phase 3, FLASHED + nine ladder rows PASS 2026-09-04), and
+                                         # the Jetson-side unified cycle (Phase 4, sim-gated
+                                         # 2026-09-05). It remains a REVIEWED CONFIG COMMIT (same
+                                         # shape as toss_ilc_enabled above), never a runtime toggle —
+                                         # which build ran the unified planner has to be answerable
+                                         # from git alone when a bench trace is read back months
+                                         # later.
+                                         # TRUE HERE DOES NOT PUT THE HAND ON THE STREAM. The unified
+                                         # path is opt-in TWICE: this build-time key AND the per-goal
+                                         # `unified_cycle` field on TossContinuous.action, which
+                                         # defaults FALSE and is re-applied by the node. So every
+                                         # legacy goal still runs the legacy firmware stroke engine
+                                         # with this key true. THERE IS NO REFUSAL PATH: while this
+                                         # key is false a goal that ASKS for the unified path is not
+                                         # rejected, it silently runs on the legacy one — the two
+                                         # keys are ANDed fail-closed into a single bool
+                                         # (reload_coordinator_node.py:6732, one read per goal), and
+                                         # nothing downstream tells the operator which planner won.
   target_reached_pos_tol_rev: 0.01       # Position tolerance for target-reached check {rev}
   target_reached_vel_tol_rps: 0.1        # Velocity tolerance for target-reached check {rev/s}
   gentle_move_vel_limit_rps: 2.5         # Velocity limit during gentle moves {rev/s}

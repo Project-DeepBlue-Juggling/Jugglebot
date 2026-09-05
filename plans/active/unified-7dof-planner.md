@@ -261,9 +261,9 @@ mode; ball tracking, possession verdicts, `outcome_detail` discipline.
 | 0 | Probes + recorded decisions: QP solver runtime on Jetson 3.8, Hermite stroke-reconstruction fidelity, bus headroom with a 7th frame (+ leg-bus-frame-drops A/B), hand guard constants derivation | COMPLETE | 2026-08-30 | Low | In-process QP is feasible; 7-frame bus budget is safe |
 | 1 | Planner core port (pure Python): `cup_cycle` QP, tilt schedule, `realize` generalisation, `CyclePlan`, `validate_cycle`, sim parity + MuJoCo whole-cycle gate | COMPLETE | 2026-09-01 | Low (software only) | Ball-frame constraints hold; the Rung-3 "runway" failure is answered in sim |
 | 2 | Wire v6 + host 7-channel path: codegen, `SetpointPump`, emitter, `make_mpc_command`, tests; firmware-absent safe | COMPLETE | 2026-09-02 | Medium | Codec, per-channel step gates, backward-compatible producers |
-| 3 | Can-bridge FW 17: 7th interp lane, hand guards, `hand_source` interlock, dispatch; lockstep flash + bench ladder | **COMPLETE** (owner, 2026-09-04) — flashed 2026-09-03, ladder flown over two sittings; four items carried to sitting three | 2026-09-04 | High | Hand streaming safety envelope on real hardware |
+| 3 | Can-bridge FW 17: 7th interp lane, hand guards, `hand_source` interlock, dispatch; lockstep flash + bench ladder | **COMPLETE** (owner, 2026-09-04) — flashed 2026-09-03, ladder flown over two sittings; **sitting three closed 2026-09-05** (all four carried items discharged: the falling-edge decay rule confirmed bit-exact, row 19(b) PASS, row 18's arming half closed by operator decision with the armed trip unobserved, and the first bracketed `[hand7]` capture) | 2026-09-04 | High | Hand streaming safety envelope on real hardware |
 | 4 | Jetson unified-cycle mode: orchestrator, node wiring, plan-derived announcements/suppression, outcome vocabulary; end-to-end sim gate | **COMPLETE (software)** 2026-09-05 — four window kinds chaining at a release, planning inside `trajectory_node`'s `PlanCycle` service, the release-terminal cliff closed by joining LAUNCH+LANDING; sim gate PASS, NEVER FLOWN | 2026-09-05 | Medium | Whole cycle through the production stack in sim |
-| 5 | Hardware ladder: streamed hold → banked carry (ball seated) → planned catch → planned throw (low tier) → full cycles → two-pose constant beat | NOT STARTED | | High | Ball-smooth carry and the planned launch on hardware |
+| 5 | Hardware ladder: streamed hold → banked carry (ball seated) → planned catch → planned throw (low tier) → full cycles → two-pose constant beat | **PREPPED 2026-09-05, NOT FLOWN** | 2026-09-05 | High | Ball-smooth carry and the planned launch on hardware |
 | 6 | Exclusivity + close-out: Platform Teensy FW 4 stroke retirement, host RPC retirement, contract doc, ILC hand-off, docs | NOT STARTED | | Medium | Single-master end state |
 
 Phase 0 ran while this plan was `proposed` — its recorded results were the
@@ -433,7 +433,8 @@ Python, numpy-only, `from __future__ import annotations`, Python 3.8):
   join the existing vocabulary (`outcome_detail.bound_msg` discipline).
 
 **Config** (`config/hardware_config.yaml` → `python config/generate_config.py`):
-`jugglebot_operational.unified_cycle_enabled` (false),
+`jugglebot_operational.unified_cycle_enabled` (false as landed in Phase 1;
+**flipped true 2026-09-05** as Phase 5 prep — see the Rollback plan below),
 `trajectory_op.hand_vel_limit_rps`, `trajectory_op.hand_acc_limit_rps2`,
 `trajectory_op.unified_z_float_enabled` (false),
 `trajectory_op.unified_z_band_mm`.
@@ -679,6 +680,49 @@ current stage can exercise (the gap stage rides a Hold, so it needs a gap taken
 rule this phase shipped); and a **bracketed** row-11c console capture (the one
 that exists was opened after the ladder ended, so it carries no per-row delta).
 
+**Sitting three, 2026-09-05 — all four carried items DISCHARGED.** Canonical
+record:
+[`logbook/2026-09-05-fw17-hand-ladder-sitting-three.md`](../../logbook/2026-09-05-fw17-hand-ladder-sitting-three.md).
+One 5-minute bench block, launch down, hand `axis_state ≡ 8` throughout,
+`fault ≡ 0`, no guard trip, no abort. (1) **Row 17b `moving_gap` PASS — FW 17's
+normative falling-edge decay rule is CONFIRMED on hardware, bit-exact.** At
+0.500 rev/s across a 249.4 ms measured gap the firmware's own target coasted
+**+0.05250 rev (1.66 mm)** and froze, against `v·0.105 = +0.05250` predicted:
+`|coast − DECAY| = 0.00000`, four tolerances from the forbidden
+hold-at-endpoint mode and six from no-wind-down. G1–G5 all PASS (frozen span
+0.00000 rev over 4 samples; tracking 0.0214 rev = 0.68 mm; re-entry +0.0725 rev
+against +0.0725 predicted; lead-clamp bit 6 never set), re-derived
+independently from the CSV. `[hand7] sent` advanced by exactly 500 in the gap's
+own second, so **the lane transmits its decayed target rather than going quiet**
+— the half of the rule the criteria did not cover. (2) **Row 19(b) PASS** —
+`discard_legacy` delta **222**; it counts FRAMES (103 pre-arm hold-pump + 120
+stage = 223 predicted, one lost to a `seq_gap`; a tick counter would have read
+≈2 788), with `sent` delta **0**, `echo_rev` empty on all 120 CSV rows and
+0.009 mm of encoder motion on an ENERGISED axis. (3) **Row 18's arming half is
+CLOSED BY OPERATOR DECISION; the armed trip is UNOBSERVED.** `hand7 arm` **was**
+issued (≈13:59:25) and the restraint stage ran fully ARMED with **zero**
+`dev_over` ticks at a 0.2515 rev peak — driver belt; the raw `|cmd − enc|` at
+that instant is 0.2505, from cmd +1.0938, enc +0.8434 — 10.1 % of the 2.5 rev
+band, so
+§ Observe-then-arm step 2 is taken — but the E-STOP itself never fired and the
+operator has ruled the test out permanently on thermal grounds (reaching 2.5 rev
+of error at `pos_gain` 35 needs ~10× that restraint against a stalled rotor).
+**Phase 5 arming policy was therefore an owner decision; RESOLVED (owner,
+2026-09-05): the rungs fly ARMED from UH-3 on and a trip is data** — see the
+Phase 5 preconditions. (4) **A bracketed row-11c capture EXISTS** —
+`temp/logs/hand7_console_20260905_135613.log`, 313 `[hand7]` blocks at 1 Hz
+opened before the first row and closed after the last, with per-stage deltas
+tabulated in the runbook. Whole-sitting `lead 0 dev_over 0 unseen 0 stale 0`,
+`sent` +35 222 summing exactly to the three streamed stages. Two reframings
+carried into the runbook: the 30 s hold's 0.0995 rev belt reading is the
+`[0, HAND_MOTOR_MAX_POSITION]` **stroke clip**, not tracking error
+(`cmd ≡ −0.09764`, `echo ≡ 0.00000`, difference exactly the clip; real tracking
+0.0003 rev) — and since the firmware computes `dev` PRE-clip the guard residual
+carries the same 1:1 bias, so never park-and-hold a streamed hand below 0; and
+the `−42`-frame cachediag episode is on **leg 5**, not the hand, coinciding
+exactly with the sitting's only leg-5 lead-clamp engagement (the known
+`leg-bus-frame-drops` class).
+
 **Defect carried as FW 18 work: `lead` and `dev_over` are gated wrong.** Both
 are documented as throw-**duty** counters (`canbridge_config.h:256-259`,
 `leg_interp.cpp:196`, runbook row 15) but their gate at `leg_interp.cpp:684` is
@@ -770,9 +814,11 @@ mirrors the existing gate's `core_clean` bands.
 
 **Outcome (SOFTWARE-COMPLETE 2026-09-05 — canonical record:
 [`logbook/2026-09-05-unified-7dof-planner-phase4-unified-cycle-mode.md`](../../logbook/2026-09-05-unified-7dof-planner-phase4-unified-cycle-mode.md)).**
-Landed as one atomic commit; **NEVER FLOWN**, and both opt-in keys ship false
-(`unified_cycle_enabled` AND the goal's own field), so no legacy behaviour
-changes — `sim/toss_gate.py` is byte-unchanged, `throw_envelope`'s new
+Landed as one atomic commit; **NEVER FLOWN**, and at the time of landing both
+opt-in keys shipped false (`unified_cycle_enabled` AND the goal's own field), so
+no legacy behaviour changes (superseded 2026-09-05: the build key
+`unified_cycle_enabled` is now **true**; the per-goal `TossContinuous.unified_cycle`
+field is the one that still ships false, and it is what keeps legacy goals legacy) — `sim/toss_gate.py` is byte-unchanged, `throw_envelope`'s new
 `arm_window` kwarg defaults to legacy, `DEFAULT_SESSION_MISS_CLEANUP_S` is
 untouched, and the whole mocked-ROS toss battery passes.
 
@@ -851,7 +897,48 @@ plan rest-terminal and removes the class; `unified_cycle.latest_supersede_time_s
 and `trajectory_node._check_supersede_deadline` are retained as the alarm for
 Phase 5's release-terminal `STEADY` chaining.
 
-### Phase 5: Hardware ladder — NOT STARTED
+### Phase 5: Hardware ladder — PREPPED 2026-09-05, NOT FLOWN
+
+**Prep landed 2026-09-05** (canonical record:
+[`logbook/2026-09-05-unified-7dof-phase5-prep.md`](../../logbook/2026-09-05-unified-7dof-phase5-prep.md)).
+Nothing has been flown; what exists is everything the sitting needs.
+
+(i) **The arming decision is taken (owner, 2026-09-05): the rungs fly with
+`MAX_DEVIATION_HAND_REV` ARMED from UH-3 on, and a trip is DATA.** `hand7 arm`
+joins the session-start checklist; a false trip is a fail-safe E-STOP released by
+`CLEAR_ERRORS` and a re-arm.
+
+(ii) **Runbook and driver.** The operator runbook is
+[`tests/hardware/session_unified7_cycle_ladder.md`](../../tests/hardware/session_unified7_cycle_ladder.md),
+driven by [`tests/hardware/unified_cycle_bench.py`](../../tests/hardware/unified_cycle_bench.py):
+`--rung carry` is UH-3 and `--rung throw` is UH-5 — the two rungs the shipped
+`TossContinuous` session cannot express, because it only ever installs a joined
+LAUNCH + LANDING and has no way to ask for a bare carry or for a throw with no
+catch. The driver is a **request-only** ROS client on `trajectory/plan_cycle`
+with five fail-closed preconditions, each carrying the command that fixes it; it
+**never opens the UDP link**, never arms, never sets limits and never switches
+`hand_source`.
+
+(iii) **UH-4 is folded into UH-6's first cycles** rather than flown alone: the
+session is the only planned-catch path there is, so a standalone UH-4 would need
+a hand-off that does not exist.
+
+(iv) **The config flip.** `jugglebot_operational.unified_cycle_enabled` is now
+**true** (a reviewed config commit, so which build ran the unified planner is
+answerable from git alone). The ships-false element is the per-goal
+`TossContinuous.unified_cycle` field, so no legacy goal changes — and note there
+is no refusal path either way: with the unified path off, a goal that asks for it
+runs on the legacy path silently.
+
+(v) **One production defect the prep probe surfaced, fixed before the ball sees
+it**: a post-release KIND planned at `MODE_NEW` from rest was handed free fall as
+a hard QP boundary condition (75.42 mm of cup-z arc on a purely lateral carry),
+its rest predicate could not fire, and the detach-cone rows were assembled for a
+window following no release —
+[`logbook/2026-09-05-plan-cycle-settle-from-rest-free-fall.md`](../../logbook/2026-09-05-plan-cycle-settle-from-rest-free-fall.md).
+UH-3's whole pass criterion is *"no visible ball disturbance"*, which the plan
+contradicted before the machine moved.
+
 
 Each rung is a separate sitting with the full-suite pre-hardware rule
 (`./run_tests.sh --full`) and E-stop discipline; rungs UH-1..UH-7 map onto
@@ -872,12 +959,54 @@ switch it (the firmware refuses a transition while the setpoint output is armed)
 so a session started with it LEGACY is refused `REJECTED_HAND_SOURCE` rather than
 rescued. (b) The bench **`moving_gap` stage** (row 17's decay half, carried from
 Phase 3's sitting two) is flown **before any unified rung** — the unified cycle
-fires that falling edge once per throw, and it has never been observed. (c) A
-unified session leaves the hand at **0.3162 rev** (`SETTLE_CUP_Z_MM` 689.6 mm),
-inside `HAND_PARK_BAND_REV` but **outside** the firmware's ±0.10 rev settle band,
-which is unreachable from inside the QP's cup box — so returning the latch needs
-a can-bridge reboot (it boots LEGACY) or a streamed retract with the output
-disarmed; whether to inset the box or move the park height is an owner decision.
+fires that falling edge once per throw, and it has never been observed.
+**DISCHARGED 2026-09-05**: row 17b flew and PASSED G1–G5, with the coast
+bit-equal to the closed-form `v·0.105 = +0.0525 rev` and the lane proven to keep
+transmitting its decayed target through the gap. This precondition is met; do
+not re-run it as a gate. (b2) **RESOLVED (owner, 2026-09-05) — ARMED from UH-3
+on; a trip is DATA, not a failure.** `hand7 arm` joins the session-start
+checklist, and a false trip is a fail-safe E-STOP released by `CLEAR_ERRORS` and
+a re-arm. The reasoning that led there is kept below, unchanged, because it is
+what the decision was taken against. The
+`MAX_DEVIATION_HAND_REV` guard has been **armed** on hardware (sitting three,
+`hand7 arm` at ≈13:59:25, a full restrained stage with zero `dev_over` ticks at
+a 0.2515 rev peak — driver belt; raw `|cmd − enc|` 0.2505, from cmd +1.0938,
+enc +0.8434), but the **trip has never fired**, and the only bench test
+written to fire it — row 18's arming half — is now **closed by operator
+decision** on thermal grounds and will not be re-run. So the ladder must choose.
+**Recommendation: fly the unified rungs ARMED and treat any trip as data.** What
+that prevents is the one thing nothing else does — a mis-planned hand knot
+driving the slider through its travel at up to 200 rev/s, since
+`MAX_LEAD_HAND_REV` 2.0 clamps the *command* but does not stop the axis. What it
+costs is bounded and already specified: a false trip is a fail-safe E-STOP with
+the output gated, recovered by `CLEAR_ERRORS` plus a re-arm whose recovery slew
+is written into runbook row 18 and has been observed. The residual record
+supports it — whole-sitting `dev_over` **0**, carry-speed residuals
+**0.02–0.06 rev**, restrained peak **0.2515 rev**, worst excursion of any kind
+**1.1494 rev** (a hand parked by hand), all against 2.5; the known tight case is
+the legacy stroke's 1.9847 rev, which these rungs do not fly. Staying
+observe-first prevents exactly one thing (an aborted stroke's by-design trip
+costing a mid-ladder `CLEAR_ERRORS`) and costs the hand deviation guard on every
+ball-bearing rung from UH-3. **Decided 2026-09-05 (owner): armed, as
+recommended.**
+(c) A unified session leaves the hand at **0.3162 rev** (`SETTLE_CUP_Z_MM`
+689.6 mm), inside `HAND_PARK_BAND_REV` but **outside** the firmware's ±0.10 rev
+settle band (retract is `[−0.20, +0.10]`, prime `9.9594 ± 0.10` — driver and
+firmware reconciled 2026-09-05, they agree), which is unreachable from inside
+the QP's cup box — so returning the latch needs a can-bridge reboot (it boots
+LEGACY) or a streamed retract with the output disarmed; whether to inset the box
+or move the park height is an owner decision. **And the launch-down workaround
+does not transfer.** Sitting three recovered exactly this situation (hand at
++1.056 rev, `--source-only legacy` **REFUSED twice**) by making the hand **IDLE
+and backdrivable and pushing it by hand** to +0.0689 rev. **With the launch UP
+the hand is CLOSED_LOOP and not backdrivable, so that route is gone**: the
+remaining ones are disarm → drive the hand IDLE (the sitting-one "IDLE-on-exit"
+owner item, still open) → park → switch; a streamed retract with the output
+disarmed; or a bridge reboot. **Choose one and write it into the Phase 5 runbook
+before the first unified rung**, not at the end of one. (Related: the console
+shows axis 6 going 8 → 1 at ≈14:01:04 with `hand_stream_bench.py` having no
+IDLE-on-exit path at all, so even the launch-down mechanism is currently
+unattributed.)
 (d) **The coast note:** on the falling edge at 75–92 rev/s the hand's raw
 wind-down travels **6.4–7.4 rev (200–235 mm)** and the *only* thing bounding it
 is `MAX_LEAD_HAND_REV` 2.0 (gate-measured: raw 6.36 rev clamped to 2.000 over 185
@@ -1080,7 +1209,9 @@ are as of the owner's **Phase 3 COMPLETE** declaration, 2026-09-04.
 ### Regression
 
 - **T-R1** ✅ **enforcement LANDED 2026-09-02** — Legacy byte-exactness: with
-  `unified_cycle_enabled` false and no
+  the goal's `unified_cycle` field false (the antecedent as of 2026-09-05: the
+  build key `unified_cycle_enabled` is now true, and it is the per-goal field
+  that keeps a session legacy) and no
   hand keys, the leg wire bytes are identical to pre-change fixtures captured
   at HEAD `2aaaae1` before any edit (`tests/teensy_link/data/` +
   `tests/motion/data/`; the pump/emitter regression tests above are the
@@ -1173,8 +1304,14 @@ legs (single guard machine, single CLEAR_ERRORS release).
 
 ### Rollback plan
 
-Phases 0–2 and 4 are software behind ships-false flags — rollback is the
-flag. Phase 3 rollback: reflash FW 16 + check out the pre-v6 host (version
+Phases 0–2 and 4 are software behind an opt-in that is off by default —
+rollback is that opt-in. **Since 2026-09-05 the build-time
+`unified_cycle_enabled` is TRUE**, so the ships-false element is the per-goal
+`TossContinuous.unified_cycle` field: rollback is clearing that field on the
+goal (immediate, no rebuild), or reverting the YAML key +
+`python config/generate_config.py` + `colcon build` for a build-level revert.
+Note there is **no refusal path** on either — with the unified path off, a goal
+that asks for it runs on the legacy path silently. Phase 3 rollback: reflash FW 16 + check out the pre-v6 host (version
 darkness makes a half-rollback loud, not silent); `hand_source` boots LEGACY
 so a rolled-back host on FW 17 still flies the legacy path. Phase 6 is the
 point of no return for the stroke engine — the FW 3 Platform image and the

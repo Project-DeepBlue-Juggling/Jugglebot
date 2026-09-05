@@ -55,7 +55,8 @@ Phase 4 of [`plans/active/unified-7dof-planner.md`](../plans/active/unified-7dof
 the whole cycle now exists as **one 7-channel plan on one clock** — planned per
 cycle off the emitter thread, installed through the existing continuity
 machinery, streamed over Phase 2's v6 wire, interpolated by Phase 3's FW 17
-lane. **SOFTWARE-COMPLETE, NOT FLOWN.** Both opt-in keys ship false.
+lane. **SOFTWARE-COMPLETE, NOT FLOWN.** Both opt-in keys ship false
+(superseded 2026-09-05: the build key is now true — see § Withdrawn claims).
 
 - **Wave A — the planner layer.** `motion/unified_cycle.py` (1787 lines, `wc -l`
   2026-09-05), the pure-Python per-cycle orchestrator, plus the generalisation of
@@ -118,8 +119,10 @@ the hand.
    already streaming.
 2. **Opt-in is two keys, both must turn**: build-time
    `jugglebot_operational.unified_cycle_enabled`
-   (`config/hardware_config.yaml:883`, ships **false**) **AND** the goal's own
-   `unified_cycle` field (`TossContinuous.action:223`, default false).
+   (`config/hardware_config.yaml:883`, shipped **false** at this phase;
+   superseded 2026-09-05 — it is now **true**, see § Withdrawn claims) **AND**
+   the goal's own `unified_cycle` field (`TossContinuous.action:223`, default
+   false — this is the one that still ships false).
 3. **One atomic commit** for the phase; the unrelated bench `moving_gap` stage
    is its own commit and its own entry.
 4. **The budget splits.** Core (everything `unified_cycle` owns) **≤ 50 ms**,
@@ -554,8 +557,9 @@ cycle exists end to end: a goal becomes four window kinds, the windows chain at
 release instants, the plan is solved where the live state lives, installed
 through the continuity machinery it was designed to satisfy, streamed as seven
 channels over the v6 wire, and reconstructed by a mirror of the firmware lane
-that flew on the bench last week. Both opt-in keys ship false, so nothing about a
-legacy session changes: `sim/toss_gate.py` is byte-unchanged, `throw_envelope`'s
+that flew on the bench last week. Both opt-in keys ship false (superseded
+2026-09-05: the build key is now true and the goal field is the ships-false
+element — see § Withdrawn claims), so nothing about a legacy session changes: `sim/toss_gate.py` is byte-unchanged, `throw_envelope`'s
 new kwarg defaults to legacy behaviour, `DEFAULT_SESSION_MISS_CLEANUP_S` is
 untouched, and the whole mocked-ROS toss battery passes unchanged. T-I1, T-I2,
 T-I3 and T-I4 are landed. What Phase 5 inherits is a machine that has never moved
@@ -563,6 +567,16 @@ under this planner, plus the preconditions and open numbers below.
 
 ## Withdrawn claims
 
+- [2026-09-05] *"Both opt-in keys ship false"* (three places above).
+  **SUPERSEDED, not wrong when written:** the Phase 5 prep of 2026-09-05 flipped
+  the build-time `jugglebot_operational.unified_cycle_enabled` to **true** as a
+  reviewed config commit, so which build ran the unified planner is answerable
+  from git alone. The ships-false element is now the per-goal
+  `TossContinuous.unified_cycle` field, and it is what keeps every legacy goal
+  legacy. Note there is **no refusal path** on either key: with the unified path
+  off, a goal that asks for it runs on the legacy path silently.
+  **Superseded by:**
+  [`2026-09-05-unified-7dof-phase5-prep.md`](2026-09-05-unified-7dof-phase5-prep.md).
 - [2026-09-04] The plan's *"budget ≤ 50 ms"* read as covering the whole
   `plan_cycle` call.
   **WITHDRAWN:** `validate_cycle` is 156.7 of ~180 ms — the canonical gate, not
