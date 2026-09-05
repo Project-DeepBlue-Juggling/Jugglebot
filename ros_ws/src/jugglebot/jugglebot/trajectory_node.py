@@ -107,6 +107,7 @@ from jugglebot.motion.ik_solver import (
     rot_matrix_to_quat,
     rot_matrix_to_rotvec,
     rotvec_to_rot_matrix,
+    twist_to_leg_velocities,
 )
 from jugglebot.motion.ipc import MpcCommandPub
 from jugglebot.motion import levelling
@@ -495,6 +496,10 @@ class TrajectoryNode(Node):
         # GIL-atomic — no lock, no copy (the reader treats it as immutable).
         self._last_torque_Nm = None
         self._last_rejection = ''
+        # WHICH term `_install_continuity_ok` refused on, with its numbers. Set on
+        # every call to that guard; read by the refusal messages so an operator
+        # reading one knows whether it was a position or a VELOCITY discontinuity.
+        self._continuity_detail = ''
         # Latest robot_state seed source (pos_estimate rev, Jugglebot ext convention).
         self._latest_pos_rev = None
         self._robot_state_mono = 0.0
@@ -2176,6 +2181,18 @@ class TrajectoryNode(Node):
         rot = rotvec_to_rot_matrix(np.asarray(pose[3:6], dtype=float))
         return pose_to_leg_lengths(pos, rot, self._geom) * self._mm_to_rev
 
+    def _pose_twist_to_motor_rev_s(self, pose, twist) -> np.ndarray:
+        """(pose_6dof, twist) → motor rev/s — the RATE twin of
+        ``_pose_to_motor_rev``, and the exact chain the emitter ships
+        (``emitter.py``): twist → ``twist_to_leg_velocities`` (mm/s) × mm_to_rev.
+        Used by the install-continuity guard's velocity term so the comparison is
+        in the units the pump's v0 channel carries."""
+        pos = np.asarray(pose[:3], dtype=float)
+        rot = rotvec_to_rot_matrix(np.asarray(pose[3:6], dtype=float))
+        return (twist_to_leg_velocities(np.asarray(twist, dtype=float),
+                                        pos, rot, self._geom)
+                * self._mm_to_rev)
+
     def _active_move_in_flight(self) -> bool:
         """True iff the active plan is a MOVE (not a hold) with time remaining —
         inspected the way ``trajectory/status`` reports plan_kind/time_remaining."""
@@ -2612,26 +2629,82 @@ class TrajectoryNode(Node):
         40 % of the E-STOP band, with the same headroom-to-refusal ratio the legs
         have carried since the guard landed. A plan with no hand track skips the
         term entirely, so every legacy install is byte-identical to before.
+
+        **The velocity terms (2026-09-05), and why POSITION alone was a hole.**
+        Until they landed this compared POSITIONS only, so a plan whose knot-0
+        VELOCITY was a fiction installed unremarked — a position matches to the
+        micron across a velocity step, which is precisely what the emitter's v0/v1
+        channels then ship to the pump. That is a CLASS, not a case: the
+        settle-from-rest defect (``_cycle_start_state``, same day) was one
+        instance, where an inert rest predicate handed the QP an exact zero
+        acceleration and a forward-mapped non-zero velocity on the same window.
+        So the guard grows the rate twin of each term it already had, at the same
+        0.25 × ``STEP_BOUND_MARGIN`` fraction of the per-knot bound the pump
+        implies: legs ``0.25 × 0.80 × MAX_POSITION_STEP_REV / knot_dt`` =
+        **2.4 rev/s**, hand ``0.25 × 0.80 × hand_vel_limit_rps`` = **40 rev/s**.
+        MEASURED (2026-09-05, probe): NEW-from-rest Δ = 0.0000 rev/s, EXTEND and
+        REPLAN same-origin re-installs Δ = 0.0000 rev/s (their heads are
+        bit-identical by construction), so every path that passes today passes
+        with the whole bound as margin. The hand rate term is charged only when
+        the LIVE plan carries a hand track too — otherwise the reference rate is
+        the measured axis-6 velocity, i.e. encoder noise on a held slider.
         """
+        self._continuity_detail = ''
+        plan_pose, plan_twist, _ = plan.state_at(tau)
+        live_pose, live_twist, _ = self._current_state()
         drift = float(np.max(np.abs(
-            self._pose_to_motor_rev(plan.state_at(tau)[0])
-            - self._pose_to_motor_rev(self._current_state()[0]))))
+            self._pose_to_motor_rev(plan_pose)
+            - self._pose_to_motor_rev(live_pose))))
         bound = 0.25 * feas.STEP_BOUND_MARGIN * hw.JB_OP_MAX_POSITION_STEP_REV
         if drift > bound:
+            self._continuity_detail = ('leg position drift %.4f rev > %.4f'
+                                       % (drift, bound))
+            return False
+        vel_drift = float(np.max(np.abs(
+            self._pose_twist_to_motor_rev_s(plan_pose, plan_twist)
+            - self._pose_twist_to_motor_rev_s(live_pose, live_twist))))
+        vel_bound = (0.25 * feas.STEP_BOUND_MARGIN
+                     * hw.JB_OP_MAX_POSITION_STEP_REV / self._limits.knot_dt_s)
+        if vel_drift > vel_bound:
+            self._continuity_detail = ('leg velocity drift %.4f rev/s > %.4f'
+                                       % (vel_drift, vel_bound))
             return False
         hand_at = getattr(plan, 'hand_at', None)
         if hand_at is None:
             return True
-        reference = self._commanded_hand_state()[0]
+        reference, ref_vel = self._commanded_hand_state()
         if reference is None:
             # Neither commanded nor measured: nothing to be continuous WITH. Refuse
             # rather than wave it through — installing a hand track blind is exactly
             # the step the firmware's MAX_DEVIATION_HAND guard E-STOPs on.
+            self._continuity_detail = 'no hand reference (neither commanded nor measured)'
             return False
         hand_bound = (0.25 * feas.STEP_BOUND_MARGIN
                       * self._limits.hand_vel_limit_rps
                       * self._limits.knot_dt_s)
-        return abs(float(hand_at(tau)[0]) - float(reference)) <= hand_bound
+        hand_rev, hand_vel = hand_at(tau)
+        hand_drift = abs(float(hand_rev) - float(reference))
+        if hand_drift > hand_bound:
+            self._continuity_detail = ('hand position drift %.4f rev > %.4f'
+                                       % (hand_drift, hand_bound))
+            return False
+        # The hand VELOCITY term needs a reference that is itself a hand-track
+        # rate: sources (2) and (3) of `_commanded_hand_state` report the last
+        # shipped rev's measured rate, which is encoder noise on a held slider
+        # rather than a commanded velocity, so charging a plan against it would
+        # refuse the first cycle install of every session for a sensor reason.
+        with self._plan_lock:
+            live_hand_track = getattr(self._active_plan, 'hand_at', None) is not None
+        if not live_hand_track:
+            return True
+        hand_vel_bound = (0.25 * feas.STEP_BOUND_MARGIN
+                          * self._limits.hand_vel_limit_rps)
+        hand_vel_drift = abs(float(hand_vel) - float(ref_vel))
+        if hand_vel_drift > hand_vel_bound:
+            self._continuity_detail = ('hand velocity drift %.4f rev/s > %.4f'
+                                       % (hand_vel_drift, hand_vel_bound))
+            return False
+        return True
 
     def _publish_target_feedback(self, accepted: bool, code: str, reason: str,
                                  arrival_perf: float, source: str) -> None:
@@ -2675,7 +2748,8 @@ class TrajectoryNode(Node):
             self._publish_target_feedback(False, e.code, str(e), arrival_perf, source)
             return False, e.code, str(e), 0.0, float(e.min_duration_s)
         if not self._install_continuity_ok(plan):
-            msg = 'commanded state moved during planning — retry'
+            msg = ('commanded state moved during planning (%s) — retry'
+                   % (self._continuity_detail,))
             self._last_rejection = msg
             self.get_logger().error(msg)
             self._publish_target_feedback(
@@ -2732,7 +2806,8 @@ class TrajectoryNode(Node):
             self._publish_target_feedback(False, e.code, str(e), arrival_perf, source)
             return False, e.code, str(e), 0.0, float(e.min_duration_s)
         if not self._install_continuity_ok(plan):
-            msg = 'commanded state moved during planning — retry'
+            msg = ('commanded state moved during planning (%s) — retry'
+                   % (self._continuity_detail,))
             self._last_rejection = msg
             self.get_logger().error(msg)
             self._publish_target_feedback(
@@ -3283,10 +3358,13 @@ class TrajectoryNode(Node):
         velocity and acceleration EXACTLY (zeros) rather than routing them through
         the forward map — the QP's detach-cone rows treat the supplied acceleration
         as exact, and feeding a finite-differenced one into them puts noise straight
-        into the one constraint the ball's trajectory depends on. The post-release
-        kinds get a full state with ``post_release=True`` and no detach axis, which
-        is the honest description of "chain from a state we measured rather than
-        from a plan we hold": ``g`` for the acceleration, no seam tilt pin.
+        into the one constraint the ball's trajectory depends on. A post-release
+        KIND planned over a MOVING machine gets a full state with
+        ``post_release=True`` and no detach axis, which is the honest description
+        of "chain from a state we measured rather than from a plan we hold":
+        ``g`` for the acceleration, no seam tilt pin. Planned off a terminal hold
+        it gets ``post_release=False`` and exact zero acceleration instead —
+        there is no ball in the air to follow and none leaving the cup.
         """
         pose, twist, accel = self._current_state()
         # The RATE half of the same commanded-else-measured rule, and it is the
@@ -3300,42 +3378,103 @@ class TrajectoryNode(Node):
             return None, ('no hand position known (neither commanded nor measured '
                           'on robot_state axis %d)' % (_HAND_AXIS,))
         _has_throw, _has_catch, post_release = uc._KIND_SHAPE[kind]
+        # ── The rest predicate, computed ONCE for both branches ─────────────
+        # `CycleState.at_rest` supplies zero cup velocity and zero cup
+        # acceleration as EXACT values — that is its whole purpose, because
+        # the QP's detach-cone rows treat the supplied acceleration as exact.
+        # Called while the machine is actually moving it fabricates a
+        # boundary condition that is simply false, and the resulting plan's
+        # first knot carries zero velocity against a live one. The install
+        # guard would not catch it: it compares POSITIONS, and a position can
+        # match to the micron across a velocity step. So the claim is checked
+        # here, at the one place that makes it.
+        #
+        # THE BOUND IS A THOUSANDTH OF THE COMMANDED VELOCITY LIMIT, on each of
+        # the three channels a window is planned from — and it is scaled off the
+        # LIVE session limits, so a session that lowers its ceiling tightens the
+        # stopped-detector with it. `max_step_rev` is a PUMP SAFETY CEILING (the
+        # largest per-knot |Δu0| the firmware will accept), not a stopped-
+        # detector: read as a speed it is 841 mm/s here, above the 250 mm/s a
+        # unified sitting actually commands, so a predicate built on it could
+        # never fire and `at_rest` was true at every platform speed the machine
+        # can reach. The angular term is the same thousandth carried to the rim
+        # through the platform radius, so a tilt rate counts as motion at the
+        # linear speed it produces there; without it a pure rotation — which the
+        # banked carry is made of — reads as stopped no matter how fast it spins.
+        lin = float(np.max(np.abs(np.asarray(twist, dtype=float)[:3])))
+        ang = float(np.max(np.abs(np.asarray(twist, dtype=float)[3:])))
+        rest_bound = 1e-3 * self._limits.leg_vel_mmps
+        ang_bound = rest_bound / float(self._geom.plat_radius_mm)
+        hand_bound = 1e-3 * self._limits.hand_vel_limit_rps
+        at_rest = bool(lin <= rest_bound and ang <= ang_bound
+                       and abs(hand_vel) <= hand_bound)
+        # WHICH BRANCH SEEDED THE WINDOW, on the console, every time. The two
+        # branches hand the QP different boundary conditions (exact zeros vs a
+        # measured state with `g`), the choice is invisible in the plan that comes
+        # out, and the sitting-one lesson is that a bench reading needs its
+        # preconditions recorded next to it rather than inferred afterwards.
+        self.get_logger().info(
+            'cycle seed for %s: %s (platform %.4f mm/s, %.5f rad/s, '
+            'hand %.4f rev/s)'
+            % (kind, 'AT REST' if at_rest else 'IN MOTION',
+               lin, ang, hand_vel))
         if not post_release:
             # ── `at_rest` DECLARES rest; this VERIFIES it ──────────────────
-            # `CycleState.at_rest` supplies zero cup velocity and zero cup
-            # acceleration as EXACT values — that is its whole purpose, because
-            # the QP's detach-cone rows treat the supplied acceleration as exact.
-            # Called while the machine is actually moving it fabricates a
-            # boundary condition that is simply false, and the resulting plan's
-            # first knot carries zero velocity against a live one. The install
-            # guard would not catch it: it compares POSITIONS, and a position can
-            # match to the micron across a velocity step. So the claim is checked
-            # here, at the one place that makes it.
-            #
-            # The bound is the emitter's own resolution: one knot's worth of leg
-            # travel (`max_step_rev / mm_to_rev / knot_dt` is the leg-space
-            # equivalent), expressed as the speed below which the machine moves
-            # less than the pump's step gate in a knot and is therefore
-            # indistinguishable from stopped on the wire.
-            speed = float(np.max(np.abs(np.asarray(twist, dtype=float)[:3])))
-            rest_bound = (self._limits.max_step_rev
-                          / float(np.max(self._mm_to_rev))
-                          / self._limits.knot_dt_s)
-            hand_bound = self._limits.hand_vel_limit_rps * 1e-3
-            if speed > rest_bound or abs(hand_vel) > hand_bound:
+            if not at_rest:
                 return None, (
                     'kind %r starts from REST but the machine is moving '
-                    '(platform %.1f mm/s > %.1f, hand %.3f rev/s > %.3f) — '
-                    'chain from the previous window with EXTEND instead of '
-                    'planning a launch over a live plan'
-                    % (kind, speed, rest_bound, abs(hand_vel), hand_bound))
+                    '(platform %.4f mm/s > %.4f, %.5f rad/s > %.5f, '
+                    'hand %.4f rev/s > %.4f) — chain from the previous window '
+                    'with EXTEND instead of planning a launch over a live plan'
+                    % (kind, lin, rest_bound, ang, ang_bound,
+                       abs(hand_vel), hand_bound))
             return uc.CycleState.at_rest(pose, hand_rev), ''
+        # ── THE FREE-FALL FALLBACK IS A LIE ON A MACHINE AT REST ────────────
+        # `to_cup_state` defaults a post-release window's cup acceleration to
+        # `g` — right for the case it was written for (chain from a state we
+        # MEASURED just after a release, where the ball is in the air and the
+        # cup is following it), and simply false for a post-release KIND planned
+        # at MODE_NEW off a terminal hold, where there is no ball in the air and
+        # the cup is not accelerating at all.
+        #
+        # It is not cosmetic. MEASURED (2026-09-05, probe, 60 mm lateral
+        # `KIND_SETTLE`, 1.4 s, banking on, session limits 250/3000/150000):
+        # with the `g` fallback the QP is handed free fall as a HARD boundary
+        # condition, so knot 0 carries cup a_z = -9.806 m/s^2 — apparent gravity
+        # in the cup EXACTLY ZERO for one 25 ms knot, i.e. the seated ball goes
+        # weightless — knot 1 reverses to +19.61 m/s^2 (2 g up), and the cup
+        # arcs 75.4 mm UPWARD over a move that is purely lateral (hand 0.316 ->
+        # 2.70 rev, 75 mm of slider spent on nothing). Supplying the zero the
+        # machine is actually doing plans the same goal FLAT: a_z == 0 at every
+        # knot, 0.0 mm of z excursion. Nothing downstream refuses either one —
+        # `validate_cycle` passes both — so the guard against this is here or
+        # nowhere, and the rung whose whole pass criterion is "no visible ball
+        # disturbance" (T-H5/UH-3) is the first caller.
+        #
+        # The predicate is the SAME one the branch above already trusts to
+        # declare EXACT zero acceleration through `CycleState.at_rest`, so this
+        # asserts nothing new about the machine — it just stops the two branches
+        # describing the same stationary robot two different ways.
+        #
+        # AND `post_release` FOLLOWS THE SAME PREDICATE, for the same reason.
+        # `post_release` is not a property of the KIND, it is the claim "a ball
+        # left this cup at the window start", and that claim is false off a
+        # terminal hold. Asserting it anyway makes `cup_cycle` assemble the
+        # detach-cone equalities against knots 1..n_detach, which pin the
+        # acceleration DIRECTION for a ball that does not exist: MEASURED
+        # (2026-09-05, probe, the same 60 mm lateral SETTLE at 689.6 mm) knots
+        # 0..3 of cup a_x came out [0, 0, 0, 0.2013] m/s^2 with the rows against
+        # [0, 0.1870, 0.1801, 0.1732] without them — 50 ms of forbidden lateral
+        # acceleration at the start of a purely lateral carry, which is exactly
+        # what `cup_cycle.CupState`'s docstring says the rows must not be used
+        # for. Moving? Then the claim is true and the rows belong.
         return uc.CycleState(
             pose=np.asarray(pose, dtype=float),
             pose_vel=np.asarray(twist, dtype=float),
             pose_accel=np.asarray(accel, dtype=float),
             hand_rev=hand_rev, hand_vel_rps=hand_vel,
-            detach_axis=None, post_release=True), ''
+            detach_axis=None, post_release=(not at_rest),
+            cup_accel_mm_s2=(np.zeros(3) if at_rest else None)), ''
 
     @staticmethod
     def _cycle_goals_from_request(request) -> uc.CycleGoals:
@@ -3543,7 +3682,8 @@ class TrajectoryNode(Node):
         if not self._install_continuity_ok(plan, 0.0):
             return self._reject_cycle(
                 response, feas.STALE_STATE,
-                'commanded state moved during planning — retry', t_wall)
+                'commanded state moved during planning (%s) — retry'
+                % (self._continuity_detail,), t_wall)
         # ── THE ORIGIN IS THE INSTALL INSTANT, NOT THE SEED ──────────────────
         # `_plan_and_install_timed` / `_plan_and_install_catch` anchor at
         # `seed_mono` because their plans encode an ABSOLUTE arrival: the plan's
@@ -3591,7 +3731,8 @@ class TrajectoryNode(Node):
             return self._reject_cycle(
                 response, feas.STALE_STATE,
                 'extended plan is not continuous at the live plan time '
-                '(tau=%.3f s) — holding the last good plan' % (tau_now,), t_wall)
+                '(tau=%.3f s, %s) — holding the last good plan'
+                % (tau_now, self._continuity_detail), t_wall)
         self._install(joined, t0=t0)
         self._cycle = (joined, meta, t0)
         # A new terminal release ⇒ a new throw window ⇒ a fresh replan budget.
@@ -3628,7 +3769,8 @@ class TrajectoryNode(Node):
             return self._reject_cycle(
                 response, feas.STALE_STATE,
                 'spliced plan is not continuous at the live plan time '
-                '(tau=%.3f s) — holding the last good plan' % (t_now_s,), t_wall)
+                '(tau=%.3f s, %s) — holding the last good plan'
+                % (t_now_s, self._continuity_detail), t_wall)
         self._install(spliced, t0=t0)
         self._cycle = (spliced, meta2, t0)
         self._cycle_replans += 1

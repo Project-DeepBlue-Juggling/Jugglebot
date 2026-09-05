@@ -510,7 +510,11 @@ class CycleState:
     slider's, in the firmware's homed ODrive frame.  Together with
     ``detach_axis`` and ``post_release`` they are exactly what the plant reports
     and what the previous plan's terminal knot carries, so a state can be built
-    from a measurement or from a chain without changing shape.
+    from a measurement or from a chain without changing shape.  ``pose_accel``
+    is carried for that shape and for callers that keep the whole state, but
+    :meth:`to_cup_state` NEVER READS IT: the cup acceleration comes from
+    :attr:`cup_accel_mm_s2` or from the post-release fallback, deliberately, for
+    the reason the next paragraph gives.
 
     **``cup_pos_mm`` / ``cup_vel_mm_s`` / ``cup_accel_mm_s2`` — the exact-override
     fields, and why they exist.**  The QP's start-of-window rows treat the
@@ -1070,9 +1074,18 @@ def plan_cycle(kind: str, goals: CycleGoals, state: CycleState,
     realised motion breached the machine (``LIMIT_JERK``, ``HAND_STROKE``).
 
     ``kind`` is one of :data:`LAUNCH` / :data:`STEADY` / :data:`LANDING` /
-    :data:`SETTLE`; ``state.post_release`` must agree with it, because the two
-    say the same thing about the same window and a disagreement means the caller
-    believes something about the ball that the planner does not.
+    :data:`SETTLE`. ``state.post_release`` is the CALLER'S, and the check on it
+    is one-way: a state may not claim a release the kind cannot have had (that
+    disagreement means the caller believes something about the ball the planner
+    does not), but a post-release KIND may be planned from a state that did NOT
+    follow a release. That case is real — a :data:`SETTLE` or :data:`LANDING`
+    issued at ``MODE_NEW`` off a terminal hold — and it is not a formality:
+    ``post_release`` is what decides whether ``cup_cycle`` assembles the detach-
+    cone equalities, which pin the acceleration DIRECTION of the first knots so a
+    ball leaving the cup gets no lateral shove. Asserting it off a hold pins
+    those knots for a ball that does not exist (see
+    :class:`cup_cycle.CupState`), which on a lateral carry forbids the cup from
+    accelerating sideways out of rest at all.
 
     ``limits`` drives BOTH the gate and — through :func:`build_realize_config`
     when ``realize_cfg`` is not supplied — the banking schedule's acceleration
@@ -1090,7 +1103,7 @@ def plan_cycle(kind: str, goals: CycleGoals, state: CycleState,
         raise ValueError("unknown window kind %r (expected one of %s)"
                          % (kind, ', '.join(KINDS)))
     has_throw, has_catch, post_release = _KIND_SHAPE[kind]
-    if bool(state.post_release) != post_release:
+    if bool(state.post_release) and not post_release:
         raise ValueError(
             "kind %r requires state.post_release=%s, got %s — the two describe "
             "the same window and must agree"

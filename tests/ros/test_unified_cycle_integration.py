@@ -50,6 +50,7 @@ from jugglebot_interfaces.srv import PlanCycle
 import jugglebot.hardware_config as hw
 from jugglebot import reload_coordinator_node as rcn
 from jugglebot.catch_coordinator_node import CatchCoordinatorNode
+from jugglebot.motion import unified_cycle as uc
 from jugglebot.motion.trajectory import cup_realize as cr
 from jugglebot.motion.trajectory import feasibility as feas
 from jugglebot.motion.trajectory.cycle_plan import CyclePlan
@@ -263,6 +264,175 @@ def test_plan_cycle_new_launch_measures_its_own_wall_time():
     assert status.cycle_active is True
     assert status.cycle_plan_wall_ms == pytest.approx(resp.plan_wall_ms)
     assert status.cycle_hand_peak_rev > 0.0
+
+
+def _settle_req(period_s=1.4, dx_mm=60.0, dy_mm=0.0):
+    """MODE_NEW + KIND_SETTLE — the UH-3 banked-carry rung's request.
+
+    A pure lateral re-pose of the CUP at a fixed cup z, planned from rest. The
+    throw/catch fields are inert for this kind and are left at the zeros the
+    service defaults to, exactly as `unified_cycle_bench.py` builds it.
+
+    The cup z is `unified_cycle.SETTLE_CUP_Z_MM` (689.6 mm), NOT this module's
+    750 mm launch rest: that is the height the bench driver actually asks for and
+    the height every cycle settles at, and the free-fall defect below is an order
+    of magnitude larger there (MEASURED 2026-09-05, `/tmp/probe_a6_freefall.py`:
+    2.3845 rev of slider and a 75.42 mm cup-z arc at 689.6 mm, against 0.8012 rev
+    and 25.34 mm at 750 mm). A regression test wants the configuration the rung
+    flies at, and the one where the fault is loudest.
+    """
+    req = PlanCycle.Request()
+    req.mode = req.MODE_NEW
+    req.kind = req.KIND_SETTLE
+    req.period_s = period_s
+    req.throw_site_mm = [0.0, 0.0, 0.0]
+    req.throw_target_mm = [0.0, 0.0, 0.0]
+    req.flight_s = 0.0
+    req.catch_site_mm = [0.0, 0.0, 0.0]
+    req.catch_vel_mm_s = [0.0, 0.0, 0.0]
+    req.catch_frac = 0.0
+    req.settle_site_mm = [dx_mm, dy_mm, float(uc.SETTLE_CUP_Z_MM)]
+    req.banking_enabled = True
+    req.lead_s = 0.0
+    return req
+
+
+def _settle_node():
+    """A node whose hand sits at the SETTLE height the `_settle_req` asks for.
+
+    `_cycle_node`'s seed is the 750 mm launch rest; a SETTLE planned from there
+    to 689.6 mm would be a 60 mm CARRY plus a 60 mm DESCENT, and the descent is
+    slider travel the assertions below are trying to measure the absence of.
+    """
+    node = _cycle_node()
+    node._on_robot_state(_robot_state(
+        hand_rev=_hand_rev_for_cup_z(float(uc.SETTLE_CUP_Z_MM))))
+    return node
+
+
+def test_a_post_release_kind_planned_from_REST_is_not_given_free_fall():
+    """A `KIND_SETTLE` at MODE_NEW off a terminal hold plans FLAT, not falling.
+
+    `to_cup_state` defaults a post-release window's cup acceleration to `g` —
+    correct for the case it was written for (chain from a state measured just
+    after a release, ball in the air, cup following it) and simply false for a
+    post-release KIND planned at MODE_NEW from a stationary machine, where there
+    is no ball in the air.
+
+    It is not cosmetic, which is why this is a test and not a comment. MEASURED
+    (2026-09-05, `/tmp/probe_a6_freefall.py`, this same 60 mm lateral carry at
+    1.4 s, banking on, session limits 250/3000/150000), **at the request's own
+    cup height** `SETTLE_CUP_Z_MM` = 689.6 mm: with the `g` fallback knot 0
+    carried cup a_z = -9.806 m/s^2 — apparent gravity in the cup EXACTLY ZERO
+    for one 25 ms knot, i.e. the seated ball goes weightless — knot 1 reversed
+    to +19.612 m/s^2, and the cup arced 75.42 mm UPWARD across a move that is
+    purely lateral (hand 0.3161 -> 2.7007 rev, 2.3845 rev of travel = 9.5x the
+    bar below). The same carry at this module's 750 mm launch rest costs only
+    0.8012 rev and a 25.34 mm arc (3.2x the bar), which is why the request is
+    built at 689.6: it is both the height the bench rung flies at and the one
+    where the fault is loudest. `validate_cycle` accepts BOTH shapes, so nothing
+    downstream refuses the falling one; the guard is `_cycle_start_state` or
+    nowhere. UH-3's whole pass criterion is "no visible ball disturbance".
+
+    Asserted on the HAND channel because that is where a cup-z excursion lands
+    under the z = 170 centroid pin, and it is the channel the bench driver and
+    the firmware guards both watch.
+    """
+    node = _settle_node()
+    resp = node._svc_plan_cycle(_settle_req(), PlanCycle.Response())
+    assert resp.accepted is True, resp.message
+    plan, _meta, _t0 = node._cycle
+    start = float(plan.hand_rev[0])
+    # A flat carry moves the slider only by what the tilt schedule's lever-arm
+    # compensation asks for (sub-millimetre at these accelerations). The free-
+    # fall start cost 2.3845 rev; 0.25 rev (8 mm of slider) separates the two by
+    # an order of magnitude in both directions.
+    assert float(np.max(np.abs(plan.hand_rev - start))) < 0.25, (
+        'the carry bowed the cup: hand travelled %.3f rev from %.3f — the '
+        'free-fall boundary condition is back'
+        % (float(np.max(np.abs(plan.hand_rev - start))), start))
+    assert resp.hand_peak_rev == pytest.approx(start, abs=0.25)
+
+
+def test_a_post_release_kind_planned_over_a_LIVE_plan_keeps_free_fall():
+    """The `g` fallback survives where it is TRUE — a genuinely moving machine.
+
+    The fix above is scoped by the SAME rest predicate the LAUNCH branch already
+    trusts to declare exact zero acceleration, so it cannot leak into the case it
+    was written for. Here the machine is moving, `at_rest` is false, and the
+    state must carry no cup acceleration at all — leaving `to_cup_state` to
+    supply `g`, which is what a chain from a real release means.
+    """
+    node = _cycle_node()
+    # Ten times the node's own linear rest bound, read from the node rather than
+    # hardcoded — the bound is a thousandth of the LIVE session velocity limit,
+    # and a literal here would silently stop meaning "moving" the day the session
+    # raises or lowers that limit.
+    rest_bound = 1e-3 * node._limits.leg_vel_mmps
+    twist = np.zeros(6)
+    twist[0] = 10.0 * rest_bound
+    monkey = (np.zeros(6), twist, np.zeros(6))
+    node._current_state = lambda: monkey  # noqa: E731
+    state, err = node._cycle_start_state(uc.SETTLE)
+    assert err == '' and state is not None
+    assert state.post_release is True
+    assert state.cup_accel_mm_s2 is None
+    # And the LAUNCH branch still refuses outright over a live plan.
+    state, err = node._cycle_start_state(uc.LAUNCH)
+    assert state is None and 'starts from REST' in err
+
+
+def test_the_rest_predicate_is_scaled_off_the_LIVE_session_LIMITS():
+    """The stopped-detector's bound, on all three channels the state carries.
+
+    Until 2026-09-05 the platform bound was `max_step_rev / mm_to_rev / knot_dt`
+    — the largest per-knot |Δu0| the firmware will accept, read as a speed. That
+    is a PUMP SAFETY CEILING, not a stopped-detector: MEASURED (2026-09-05,
+    `/tmp/probe_a1_a3.py`) it is **841.04 mm/s**, against the **250 mm/s** a
+    unified sitting commands, so `at_rest` was true at every platform speed the
+    machine can reach and the predicate could not fire. A window planned during a
+    live move was then handed EXACT zero cup acceleration alongside a non-zero
+    forward-mapped velocity — a boundary condition describing no machine at all.
+
+    The bound is now a thousandth of the LIVE commanded velocity limit on each
+    channel: **0.25 mm/s** linear, **0.00114 rad/s** angular (that thousandth
+    carried to the platform rim through `GEOM_PLAT_RADIUS_MM` = 219.075 mm) and
+    **0.20 rev/s** on the hand. The angular term is not decoration: a banked
+    carry is largely rotation, and without it a platform tilting at any rate at
+    all read as stopped.
+    """
+    def seeded(twist=None, hand_vel=None):
+        node = _cycle_node()
+        tw = np.zeros(6) if twist is None else np.asarray(twist, dtype=float)
+        node._current_state = lambda: (np.zeros(6), tw, np.zeros(6))  # noqa: E731
+        if hand_vel is not None:
+            node._commanded_hand_state = (                            # noqa: E731
+                lambda: (_REST_HAND_REV, float(hand_vel)))
+        return node
+
+    # A true rest seeds the EXACT zeros — and, since no ball left this cup, a
+    # state that does not claim one did.
+    at_rest, err = seeded()._cycle_start_state(uc.SETTLE)
+    assert err == '' and at_rest is not None
+    assert at_rest.post_release is False
+    assert at_rest.cup_accel_mm_s2 is not None
+    assert float(np.max(np.abs(at_rest.cup_accel_mm_s2))) == 0.0
+    assert seeded()._cycle_start_state(uc.LAUNCH)[0] is not None
+
+    # And these three are NOT at rest. Each is a channel the old predicate was
+    # blind to: 5 mm/s is 20x the linear bound and 1/168th of the OLD one;
+    # 0.02 rad/s carries no linear component at all; 0.5 rev/s is the hand.
+    for label, twist, hand_vel in (
+            ('5 mm/s linear', [5.0, 0.0, 0.0, 0.0, 0.0, 0.0], None),
+            ('0.02 rad/s angular', [0.0, 0.0, 0.0, 0.02, 0.0, 0.0], None),
+            ('0.5 rev/s hand', None, 0.5)):
+        node = seeded(twist, hand_vel)
+        state, err = node._cycle_start_state(uc.SETTLE)
+        assert err == '' and state is not None, label
+        assert state.post_release is True, label
+        assert state.cup_accel_mm_s2 is None, label
+        state, err = node._cycle_start_state(uc.LAUNCH)
+        assert state is None and 'starts from REST' in err, label
 
 
 def test_plan_cycle_extend_keeps_the_origin_and_the_head():
@@ -712,6 +882,118 @@ def test_legacy_plans_skip_the_hand_term_entirely():
     node._last_hand_rev = None
     node._latest_hand_rev = None
     assert node._install_continuity_ok(plan, 0.0) is True
+
+
+class _VelocityFiction:
+    """A plan wrapper whose knot-0 VELOCITY is a lie and whose POSITION is not.
+
+    Exactly the class the position-only guard could not see: `state_at` returns
+    the real pose (so the leg-position term matches to the micron) with an added
+    twist. Only the two attributes the guard reads are forwarded.
+    """
+
+    def __init__(self, plan, dtwist):
+        self._plan = plan
+        self._dtwist = np.asarray(dtwist, dtype=float)
+
+    def state_at(self, tau):
+        pose, twist, accel = self._plan.state_at(tau)
+        return pose, np.asarray(twist, dtype=float) + self._dtwist, accel
+
+    def hand_at(self, tau):
+        return self._plan.hand_at(tau)
+
+
+def test_the_install_guard_charges_VELOCITY_as_well_as_position(monkeypatch):
+    """A plan whose knot-0 velocity is a fiction is REFUSED, not installed.
+
+    Until 2026-09-05 this guard compared POSITIONS only — and a position matches
+    to the micron across a velocity step, which is precisely what the emitter's
+    v0/v1 channels then ship to the pump. That is a CLASS, not a case: the
+    settle-from-rest defect (`_cycle_start_state`, same day) was one instance of
+    it, where the QP was handed an exact zero acceleration alongside a non-zero
+    forward-mapped velocity. So the guard grows the rate twin of each term it
+    already had, at the same 0.25 x STEP_BOUND_MARGIN fraction of the per-knot
+    bound the pump implies.
+
+    MEASURED (2026-09-05, `/tmp/probe_a3_replan.py`, session limits
+    250/3000/150000): the leg bound is **2.4 rev/s** and the hand bound
+    **40 rev/s**; a NEW install from rest and an EXTEND at its live plan time
+    both measure **0.000000 rev/s** of leg drift, and the two REPLANs of the
+    shipped install measure 0.000000 rev/s on the legs and 7.55 / 7.47 rev/s on
+    the HAND — 19 % of that term's bound, and it is the solve's own duration
+    against the hand's acceleration, not a discontinuity. Every path that
+    installs today installs with the whole bound as margin.
+    """
+    node = _cycle_node()
+    assert node._svc_plan_cycle(_launch_req(),
+                                PlanCycle.Response()).accepted is True
+    plan, _meta, _t0 = node._cycle
+    vel_bound = (0.25 * feas.STEP_BOUND_MARGIN
+                 * hw.JB_OP_MAX_POSITION_STEP_REV / node._limits.knot_dt_s)
+    assert vel_bound == pytest.approx(2.4)      # 0.25 x 0.80 x 0.3 / 0.025
+
+    # The honest install: exact, on both rate channels.
+    pose0, twist0, _ = plan.state_at(0.0)
+    live_pose, live_twist, _ = node._current_state()
+    assert float(np.max(np.abs(
+        node._pose_twist_to_motor_rev_s(pose0, twist0)
+        - node._pose_twist_to_motor_rev_s(live_pose, live_twist)))) < 1e-9
+    assert node._install_continuity_ok(plan, 0.0) is True
+
+    # Two bounds of leg velocity, with the POSE left exactly where it was.
+    unit = np.zeros(6)
+    unit[2] = 1.0
+    per_unit = float(np.max(np.abs(
+        node._pose_twist_to_motor_rev_s(pose0, unit))))
+    fiction = _VelocityFiction(plan, unit * (2.0 * vel_bound / per_unit))
+    assert node._install_continuity_ok(fiction, 0.0) is False
+    assert 'leg velocity drift' in node._continuity_detail
+    # The POSITION term is untouched by the fiction, which is the whole point.
+    assert float(np.max(np.abs(
+        node._pose_to_motor_rev(fiction.state_at(0.0)[0])
+        - node._pose_to_motor_rev(node._current_state()[0])))) < 1e-9
+
+    # And the SERVICE refusal an operator reads NAMES the velocity term.
+    real_plan_cycle = uc.plan_cycle
+
+    def _fictional(*a, **kw):
+        p, m = real_plan_cycle(*a, **kw)
+        return _VelocityFiction(p, unit * (2.0 * vel_bound / per_unit)), m
+
+    monkeypatch.setattr(tn.uc, 'plan_cycle', _fictional)
+    resp = _refresh(node)._svc_plan_cycle(_launch_req(), PlanCycle.Response())
+    assert resp.accepted is False
+    assert resp.code == feas.STALE_STATE
+    assert 'leg velocity drift' in resp.message, resp.message
+
+
+def test_the_velocity_term_passes_the_same_origin_re_installs(monkeypatch):
+    """EXTEND and REPLAN re-install a bit-identical head, so Δv is zero.
+
+    The bound is only safe if the paths that must pass do pass with margin, and
+    the two same-origin chains are the ones with the most to lose: a refusal
+    there holds the last good plan and the cycle stalls. Both are driven through
+    real solves rather than asserted on the expression.
+    """
+    node = _cycle_node()
+    assert node._svc_plan_cycle(_launch_req(),
+                                PlanCycle.Response()).accepted is True
+    resp, origin = _extend_alive(node, _landing_req())
+    assert resp.accepted is True, resp.message
+    joined = node._cycle[0]
+    tau = time.perf_counter() - origin
+    pose, twist, _ = joined.state_at(tau)
+    live_pose, live_twist, _ = node._current_state()
+    assert float(np.max(np.abs(
+        node._pose_twist_to_motor_rev_s(pose, twist)
+        - node._pose_twist_to_motor_rev_s(live_pose, live_twist)))) < 1e-6
+
+    # The REPLAN path, on the shape the machine actually flies.
+    shipped = _shipped_cycle()
+    fb = _landing_update(shipped, 10.0)
+    assert fb.accepted is True, fb.reason
+    assert shipped._continuity_detail == ''
 
 
 def test_robot_state_reads_the_hand_and_survives_a_six_axis_message():

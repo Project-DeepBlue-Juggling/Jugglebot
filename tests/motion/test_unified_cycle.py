@@ -388,22 +388,70 @@ def test_launch_is_not_planned_as_a_post_release_window(launch, limits, geom):
     assert float(np.max(np.abs(pinned.acc[1:n_detach + 1, :2]))) == 0.0
 
 
-def test_kind_and_post_release_must_agree(limits, geom):
-    """A goal whose state contradicts its kind is a caller bug, not a default.
+def test_a_state_may_not_claim_a_release_the_kind_cannot_have_had(limits, geom):
+    """The agreement check is ONE-WAY, and this is the direction it still refuses.
 
-    The two say the same thing about the same window — whether a ball just left
-    the cup — so silently believing one over the other would either apply a
-    detach cone to a launch or drop it from a steady cycle, and both are wrong
-    trajectories rather than refusals.
+    A :data:`LAUNCH` starts from rest by definition, so a state handed to it
+    claiming ``post_release=True`` is a caller that believes something about the
+    ball the planner does not — and believing the state over the kind would apply
+    a detach cone to a launch, which is a wrong trajectory rather than a refusal.
+
+    The OTHER direction is legal and is pinned by
+    :func:`test_a_post_release_kind_from_a_rest_state_drops_the_detach_cone`:
+    a post-release KIND planned from a state that did not follow a release.
     """
     with pytest.raises(ValueError):
         uc.plan_launch(_goals(period_s=0.6),
                        dataclasses.replace(_rest_state(), post_release=True),
                        limits, geom)
     with pytest.raises(ValueError):
-        uc.plan_steady(_goals(), _rest_state(), limits, geom)
-    with pytest.raises(ValueError):
         uc.plan_cycle('nonsense', _goals(), _rest_state(), limits, geom)
+
+
+def test_a_post_release_kind_from_a_rest_state_drops_the_detach_cone(limits,
+                                                                    geom):
+    """``post_release`` is the STATE's claim, not the kind's — and it decides rows.
+
+    A :data:`SETTLE` (or :data:`LANDING`) issued at ``MODE_NEW`` off a terminal
+    hold follows no release: no ball left this cup at the window start. Forcing
+    ``post_release`` from the kind made ``cup_cycle`` assemble the detach-cone
+    equalities anyway, pinning the acceleration DIRECTION at knots
+    ``1..n_detach`` for a ball that does not exist — which on a purely lateral
+    carry forbids the cup from accelerating sideways out of rest at all.
+
+    MEASURED (2026-09-05, ``/tmp/probe_a2_detach.py``, the 60 mm lateral SETTLE
+    at ``SETTLE_CUP_Z_MM`` = 689.6 mm, 1.4 s, banking on, session limits
+    250/3000/150000): cup ``acc_x`` at knots 0..3 came out
+    ``[0, 0, 0, 0.2013]`` m/s² with the rows against ``[0, 0.1870, 0.1801,
+    0.1732]`` without them — 50 ms of forbidden lateral acceleration at the head
+    of the move. Both plans pass ``validate_cycle``, so nothing downstream
+    refuses the pinned one.
+
+    The chained direction is asserted in the same test, because the fix is only
+    correct if it is scoped: a window chained through
+    :func:`release_state_from_meta` DID follow a release and must keep the rows.
+    """
+    n_detach = int(cc.CupCycleConfig.n_detach)
+    carry = np.array([REST_MM[0] + 60.0, REST_MM[1], REST_MM[2]])
+
+    # A post-release KIND, a rest state: the rows must be GONE.
+    _, settle = uc.plan_settle(_goals(settle_site_mm=carry),
+                               _rest_state(), limits, geom)
+    lateral = float(np.max(np.abs(settle.cup_plan.acc[1:n_detach + 1, :2])))
+    assert lateral > 0.1, (
+        'the SETTLE-from-rest start is laterally pinned (%.4e m/s^2) — it was '
+        'planned as a post-release window' % lateral)
+
+    # The same kind CHAINED off a real release: the rows must still be there.
+    plan_a, meta_a = uc.plan_launch(_goals(period_s=0.6), _rest_state(),
+                                    limits, geom)
+    chained = uc.release_state_from_meta(meta_a, plan_a)
+    assert chained.post_release is True
+    _, landed = uc.plan_landing(
+        _goals(period_s=1.0, catch_frac=None, catch_t_s=0.6),
+        chained, limits, geom)
+    assert float(np.max(np.abs(
+        landed.cup_plan.acc[1:n_detach + 1, :2]))) == 0.0
 
 
 def test_planning_is_deterministic(limits, geom, launch):
