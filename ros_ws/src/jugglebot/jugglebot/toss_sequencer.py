@@ -1688,6 +1688,34 @@ class TossSequencer:
                                                 # hw.JB_OP_TOSS_STAY_AT_POSE_ON_
                                                 # CAUGHT. NOT-caught terminals are
                                                 # unaffected in either setting.
+    unified: bool = False                       # UNIFIED 7-DoF cycle (plan Phase 4).
+                                                # Node-fed, resolved ONCE per session
+                                                # from JB_OP_UNIFIED_CYCLE_ENABLED AND
+                                                # the goal's own opt-in, and it changes
+                                                # exactly ONE decision in this FSM:
+                                                # contract C-HAND-3's ARM_WINDOW bound
+                                                # is not charged, because nothing will
+                                                # be armed. That bound asks whether a
+                                                # kind-1 catch stroke can still be
+                                                # dispatched after the kind-0 throw
+                                                # stroke has decelerated; under unified
+                                                # the throw and the catch are knots on
+                                                # ONE planned trajectory and
+                                                # feasibility.validate_cycle is the
+                                                # authority on whether it is
+                                                # executable. Charging it would refuse
+                                                # the whole short half of the flight
+                                                # band on a model of a stroke engine
+                                                # that is not running on that axis.
+                                                # The other six envelope bounds — the
+                                                # end stop, the motor limits, the wire
+                                                # band — still apply and are still
+                                                # checked: they describe the hand's
+                                                # METAL, which the unified path drives
+                                                # just as hard.
+                                                # Everything else about the FSM is
+                                                # bit-identical; the routing lives in
+                                                # the NODE's action seams.
     tilt_clamp_exceeded: bool = False           # BOTH tiers: node-fed flag — the
                                                 # authoritative clamp gate lives in
                                                 # motion/toss_release (compute_
@@ -2283,7 +2311,8 @@ class TossSequencer:
             # FLIGHT_TIME for the same reason: an END_STOP refusal is about the
             # hand's coast, not about the clock.
             envelope = throw_envelope.evaluate(self.flight_time_s,
-                                               self.event_vel_mps)
+                                               self.event_vel_mps,
+                                               arm_window=not self.unified)
             if not envelope.ok:
                 return self._reject('THROW_ENVELOPE', envelope.message)
             # The DERIVED lead gate (census A2), placed here for the same reason

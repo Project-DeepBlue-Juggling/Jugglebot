@@ -59,6 +59,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/GoToPose.srv"
   "srv/SetTrajectoryLimits.srv"
   "srv/TimedTarget.srv"
+  "srv/PlanCycle.srv"
 
   "msg/CanTrafficReportMessage.msg"
 

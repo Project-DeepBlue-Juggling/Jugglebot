@@ -864,6 +864,32 @@ class TossSessionSequencer:
                                                 #   so the shipped default's
                                                 #   decision stream is identical
                                                 #   to the pre-B4 tree.
+    unified: bool = False                       # is this a UNIFIED 7-DoF session?
+                                                #   Node-resolved ONCE per goal
+                                                #   (`_unified_enabled`), the same
+                                                #   value `TossSequencer.unified`
+                                                #   gets — handed down rather than
+                                                #   re-read, so the session and the
+                                                #   cycle FSM cannot disagree about
+                                                #   which planner is flying.
+                                                #
+                                                #   It reaches exactly ONE thing on
+                                                #   this FSM: the ARM_WINDOW carve-
+                                                #   out in `floor_event_vel_mps`.
+                                                #   Bound 7 of C-HAND-3 asks whether
+                                                #   a kind-1 catch stroke can still
+                                                #   be dispatched after the kind-0
+                                                #   throw stroke decelerates; under
+                                                #   unified there is no stroke
+                                                #   engine on that axis at all, so
+                                                #   the bound describes a device
+                                                #   that is not running — and it
+                                                #   refuses the whole short half of
+                                                #   the flight band for it.
+                                                #
+                                                #   Default FALSE = legacy, bit for
+                                                #   bit: every legacy caller keeps
+                                                #   the arm-window bound.
     ilc_speed_trim_possible: bool = True        # can layer 3 command a speed trim
                                                 #   on this goal (ILC enabled AND an
                                                 #   artifact loaded)? It is the only
@@ -999,20 +1025,32 @@ class TossSessionSequencer:
         so this returns the untrimmed speed or within a whisker of it; the charge
         only becomes visible at the long flights where the delay is seconds clear
         of every floor anyway.  The bridge's own [0.3, 7.0] m/s wire band is two
-        orders of magnitude away from binding here and is not re-checked."""
+        orders of magnitude away from binding here and is not re-checked.
+
+        **The ARM_WINDOW carve-out is applied here too** (``arm_window=not
+        unified``), because this bisection must ask the SAME question the apply
+        seam will: ``_ilc_vel_trim_refusal`` is what actually admits or drops the
+        trim, and if this floor charged a bound that seam does not, the session
+        would compute its cadence floors against a slowest-release the machine
+        would never be commanded at.  Under unified the paragraph above inverts —
+        the ARM_WINDOW term no longer refuses the negative side, so the floor
+        genuinely moves down to ``nominal · (1 − ILC_SPEED_AUTHORITY)`` and the
+        session's floors are computed against a release the trim can really ask
+        for."""
         nominal = vertical_event_vel_mps(self._flight_or_floor_s)
         if not self.ilc_speed_trim_possible:
             return nominal
         flight = self._flight_or_floor_s
+        arm_window = not self.unified
         lo = nominal * (1.0 - ILC_SPEED_AUTHORITY)
-        if throw_envelope.evaluate(flight, lo).ok:
+        if throw_envelope.evaluate(flight, lo, arm_window=arm_window).ok:
             return lo
         hi = nominal
         # Monotone: the ARM_WINDOW term that refuses a slow release only relaxes
         # as the release speeds up, so a bisection lands on the exact frontier.
         for _ in range(48):
             mid = 0.5 * (lo + hi)
-            if throw_envelope.evaluate(flight, mid).ok:
+            if throw_envelope.evaluate(flight, mid, arm_window=arm_window).ok:
                 hi = mid
             else:
                 lo = mid

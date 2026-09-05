@@ -1,0 +1,183 @@
+# Plan ONE unified 7-DoF cycle window and install it on the trajectory emitter
+# (trajectory/plan_cycle, TRAJECTORY mode only — plans/active/unified-7dof-planner.md
+# Phase 4).
+#
+# WHY THE PLANNING RUNS IN trajectory_node AND NOT IN THE CALLER (owner, 2026-09-04).
+# Only trajectory_node holds the LIVE COMMANDED state (`_current_state()` samples the
+# active plan on the emitter's own clock) and owns the plan origin. A caller planning
+# from the 5 Hz `trajectory/commanded_pose` sample would seed the window from a pose up
+# to 200 ms stale, and the install-continuity guard (0.06 rev of commanded drift) would
+# then refuse the install by construction. So the GOAL travels over the wire and the
+# solve happens where the state is.
+#
+# THE CALLBACK IS SLOW AND THAT IS DESIGNED FOR, NOT A DEFECT. `unified_cycle.plan_cycle`
+# measured ~180 ms on this Jetson (QP 11 ms + tilt 4 + decompose 3 + validate_cycle
+# ~157); budget ~250 ms end to end. The 40 Hz emitter is a SEPARATE THREAD and is never
+# affected — the wire keeps streaming the plan already installed — but the node's
+# single-threaded executor stalls ingest for the callback's duration. That is
+# precedent-compatible: `trajectory/go_to_pose` already blocks 90-377 ms today.
+#
+# Every refusal is LOUD and holds the last good plan: `accepted=false` with the layer's
+# own code, and the active plan is left exactly as it was.
+
+# ── Mode ────────────────────────────────────────────────────────────────────────
+uint8 MODE_NEW=0      # Plan a fresh window from the live state and install it at a NEW
+                      # origin. Resets the replan budget.
+uint8 MODE_EXTEND=1   # Chain a window onto the ACTIVE cycle's terminal release
+                      # (unified_cycle.release_state_from_meta -> plan_<kind> -> extend)
+                      # and re-install at the SAME origin. The joined plan's head is
+                      # bit-identical to what is already streaming, so the swap is a
+                      # no-op on every knot the emitter has already sent.
+uint8 MODE_REPLAN=2   # Re-solve the CATCH-SIDE tail of the active cycle against a new
+                      # landing (unified_cycle.replan_tail), spliced at the first knot at
+                      # or after now + lead_s, re-installed at the SAME origin. Bounded:
+                      # at most 2 per INSTALLED window (see `replans_used`).
+                      #
+                      # Works on BOTH plan shapes. A release-terminal plan has its tail
+                      # re-solved as a STEADY window holding the old throw fixed; a
+                      # REST-terminal one — which the shipped LAUNCH + chained LANDING
+                      # install is, deliberately, because rest-terminal is the fix for
+                      # the release-terminal cliff — has its tail re-solved as a LANDING
+                      # settling at the same rest. Refusing the second shape (which this
+                      # did until 2026-09-05) made the replan policy dead code on the
+                      # only shape the machine flies.
+
+# ── Window kind (unified_cycle's four; ignored for MODE_REPLAN) ─────────────────
+uint8 KIND_LAUNCH=0   # rest -> release
+uint8 KIND_STEADY=1   # release -> catch -> release
+uint8 KIND_LANDING=2  # release -> catch -> rest
+uint8 KIND_SETTLE=3   # release -> rest, no catch
+
+uint8 mode
+uint8 kind
+
+# ── The CycleGoals, verbatim (unified_cycle.CycleGoals) ────────────────────────
+# FRAME, stated once because mixing it is the easiest way to move the robot to the
+# wrong place: every site below is a CUP-OPENING position in MILLIMETRES, xy in the
+# PLATFORM frame, z GLOBAL. That is 1000x the SI vectors sim/cycle_gate.py plans with.
+# It is NOT the STOW-relative platform pose the rest of this package's services carry.
+float64 period_s              # Window duration (s). The release, when the kind has one,
+                              # is at exactly period_s on the window clock.
+float64[3] throw_site_mm      # Cup opening at the release. Required for LAUNCH/STEADY.
+float64[3] throw_target_mm    # Ballistic target of that release. Required with it.
+float64 flight_s              # Time of flight of the released ball (s). Required with it.
+float64[3] catch_site_mm      # Cup opening at touch-down. Required for STEADY/LANDING.
+float64[3] catch_vel_mm_s     # The BALL's observed arrival velocity (mm/s) — NOT a cup
+                              # velocity. The planner matches a configured fraction of it
+                              # and derives the receive tilt from its direction.
+float64 catch_frac            # Catch instant as a fraction of period_s. Ignored when the
+                              # kind carries no catch.
+float64[3] settle_site_mm     # Cup opening the window comes to rest at. Required for
+                              # SETTLE; defaults to catch_site_mm for a LANDING.
+bool banking_enabled          # Bank the cup into the apparent gravity. MUST be true at
+                              # session limits: zero-banking cannot plan a steady cycle
+                              # (measured LIMIT_VEL 529 mm/s against a 250 cap).
+
+# ── Chain a SECOND window into the SAME install (MODE_NEW only) ────────────────
+# WHY THIS EXISTS, and it is a safety property rather than a convenience.
+# A plan that ENDS AT A RELEASE commands a hard STOP at the throw if it is streamed
+# to its end: `CyclePlan.state_at/hand_at(t >= duration)` return the terminal hold
+# with ZERO twist, and the emitter samples tau + dt for the u1/v1 knot — so the
+# frame at `duration - dt` carries `hand_next_vel_rps = 0` and `vel_next_mm_s = 0`,
+# and that v1 is what the firmware's Hermite uses for the FINAL 25 ms segment, i.e.
+# the release stroke itself. Measured on a 0.6 s LAUNCH: true terminal hand
+# velocity 93.011 rev/s against an emitted 0.0, i.e. 0.3445 rev = 10.90 mm of
+# slider error inside the release segment plus a 93 rev/s velocity-feedforward step —
+# comfortably INSIDE `MAX_LEAD_HAND_REV` (2.0) and `MAX_DEVIATION_HAND_REV` (2.5),
+# so NO firmware guard fires and the throw is simply wrong.
+#
+# Only a REST-terminal plan is cliff-safe. Chaining the landing into the same
+# install makes the very first installed plan rest-terminal, which removes the
+# whole class rather than racing it: there is no window in which a correctly
+# planned launch is one late service call away from a stopped throw.
+bool chain                    # Plan a second window from this one's terminal release
+                              # (unified_cycle.release_state_from_meta -> plan_<kind>
+                              # -> extend) and install the JOINED plan as ONE. The
+                              # head is the first window, bit for bit.
+uint8 chain_kind              # KIND_STEADY / KIND_LANDING / KIND_SETTLE. KIND_LAUNCH
+                              # is refused: a launch starts from REST, and the state
+                              # a chain starts from is post-release by construction.
+float64 chain_period_s        # Duration (s) of the chained window.
+float64 chain_catch_frac      # Catch instant of the chained window, as a fraction of
+                              # chain_period_s. Ignored when chain_kind carries no
+                              # catch.
+
+float64 lead_s                # MODE_REPLAN only: how far ahead of now the splice knot
+                              # must sit. The head before it is carried bit for bit, so
+                              # this is the guarantee that no knot the emitter has
+                              # already sent can move. >= 0.30 s is the designed-for
+                              # value (one ~250 ms plan plus a knot).
+                              #
+                              # The splice must also land clear of every release the plan
+                              # carries AND of that release's detach cone (the tail is
+                              # re-solved without either), and short of the catch (past
+                              # it there is nothing to re-aim). On the shipped cycle that
+                              # is a window, not a floor: REPLAN_WINDOW names both ends
+                              # with the knots.
+---
+bool accepted                 # True iff a plan was produced, gated AND installed.
+string code                   # OK, or the refusal code. REJECTED_CYCLE_INFEASIBLE
+                              # subcodes come from whichever layer refused (CATCH_RUNWAY,
+                              # TILT_PIN, LIMIT_JERK, HAND_STROKE, REPLAN_WINDOW, ...);
+                              # the node's own service-level codes are WRONG_MODE,
+                              # STALE_STATE, GUARD_LATCHED, NO_CYCLE, REPLAN_BUDGET.
+string message                # Human-readable detail, on accept and reject alike.
+
+float64 t0_mono               # Plan origin on the emitter's perf_counter (monotonic)
+                              # clock. For EXTEND/REPLAN this is the ORIGINAL origin —
+                              # unchanged, which is what makes the head bit-identical.
+float64 t_release_mono        # Absolute instant of the first release STILL AHEAD OF NOW
+                              # on the installed plan, or 0.0 when it has none. THIS is
+                              # the announcement's throw_time — for a joined
+                              # LAUNCH+LANDING the first release IS the throw this cycle
+                              # announces, while the plan runs on past it to the catch
+                              # and the rest.
+                              # NOT simply releases[0]: MODE_EXTEND re-installs at the
+                              # SAME origin, so the joined plan carries every release it
+                              # has ever had — the earliest of them seconds in the past.
+                              # Reporting a spent instant makes the caller refuse
+                              # CHAIN_SKEW on every chained cycle and cuts the ball
+                              # sensor's arrival window around a throw that has already
+                              # happened. When every release has passed (a rest-terminal
+                              # plan sampled after its last throw) the LAST one is
+                              # reported rather than 0.0.
+float64 t_catch_mono          # Absolute instant of the first touch-down, or 0.0.
+float64[3] release_vel_mm_s   # The cup's take-off velocity the QP actually pinned at
+                              # that FIRST release — the announcement's
+                              # initial_velocity, read off the trajectory that will be
+                              # executed rather than off the goal.
+bool release_terminal         # The installed plan ENDS at a release. Such a plan
+                              # commands a hard STOP at the throw if it is streamed to
+                              # its end (see the `chain` block above), so it MUST be
+                              # superseded — extended, spliced or replaced — strictly
+                              # before `supersede_deadline_mono`. False for a
+                              # rest-terminal plan, which is cliff-safe and needs
+                              # nothing.
+float64 supersede_deadline_mono  # Absolute instant by which a release-terminal plan
+                              # must have been superseded: the plan origin plus
+                              # `unified_cycle.latest_supersede_time_s(meta)`
+                              # (= duration - dt, the last knot whose u1/v1 the emitter
+                              # reads from real trajectory rather than from the terminal
+                              # hold). 0.0 when `release_terminal` is false.
+float64 stroke_clear_s        # The plan's own twin of hand_stroke.stroke_clear_time,
+                              # relative to the release. 0.0 when the plan carries no
+                              # such instant (the deceleration is in the next window).
+float64 arm_lead_s            # The plan's own twin of hand_stroke.required_arm_lead_s:
+                              # how long before touch-down the planned hand motion into
+                              # the catch begins. 0.0 when the window has no catch.
+float64 duration_s            # The installed plan's total duration (s).
+float64 plan_wall_ms          # MEASURED wall time of this whole callback (ms) — the
+                              # number the ~250 ms budget is judged against, published
+                              # again on trajectory/status so a sitting can watch it.
+uint32 replans_used           # Catch-side replans spent on the CURRENTLY INSTALLED
+                              # window, after this call. Reset by MODE_NEW and
+                              # MODE_EXTEND — the two calls that give the cycle a fresh
+                              # terminal release — and by nothing else. Deliberately NOT
+                              # reset when the release passes: a landing update revises
+                              # where a ball ALREADY IN THE AIR comes down, so it always
+                              # arrives after that release and a time-based reset handed
+                              # the budget back on every call.
+
+float64 hand_peak_rev         # Peak commanded hand position over the installed plan
+                              # (rev, ODrive absolute).
+float64 hand_peak_vel_rps     # Peak |commanded hand velocity| over it (rev/s).

@@ -157,6 +157,7 @@ from jugglebot_interfaces.srv import (
     BallButlerThrow,
     GetTiltReadingService,
     GoToPose,
+    PlanCycle,
     SetFloat,
     SetHandGains,
     SetHandTrajCmd,
@@ -252,6 +253,8 @@ from jugglebot import clock_offset, toss_record, toss_trim
 from jugglebot.toss_record import latch_announced_ball
 from jugglebot.motion.tilt_map import find_repo_root
 from jugglebot.motion import toss_cal, toss_ilc
+from jugglebot.motion import unified_cycle as uc
+from jugglebot.motion.geometry import StewartGeometry
 from jugglebot.motion.trajectory import hand_stroke, throw_envelope
 from jugglebot.motion.trajectory.catch_reach import catch_reach_feasible
 from jugglebot.motion.trajectory.limits import TrajectoryLimits
@@ -487,6 +490,168 @@ _SEQUENCE_CEILING_MARGIN_S = 5.0
 # it told itself to start the next cycle. In healthy operation `step()` emits
 # START_CYCLE on the FIRST tick of that state.
 _SESSION_STALL_S = DEFAULT_SESSION_MISS_CLEANUP_S + _SEQUENCE_CEILING_MARGIN_S
+
+# ═════════════════════════════════════════════════════════════════════════════
+# UNIFIED 7-DoF CYCLE (plans/active/unified-7dof-planner.md Phase 4)
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# Everything below is reached ONLY when a TossContinuous goal opts in AND the
+# build-time `jugglebot_operational.unified_cycle_enabled` is true. On every
+# legacy path these names are unread.
+
+#: Cup-opening world height (m → mm here) at the RELEASE and at the CATCH.
+#: THE ONE PLACE these live on the Jetson side. They mirror `sim/cycle_gate.py`'s
+#: `THROW_CUP_Z_M = 0.86` / `CATCH_CUP_Z_M = 0.83`, which are MEASURED optima and
+#: not round numbers: the launch is made by the slider alone under the z = 170
+#: pin, so what sets the peak cup-z acceleration is the stroke available BELOW
+#: the release point — at 0.78 m the runway is 90 mm and a 0.7 s flight already
+#: needs 4280 rev/s², at 0.86 m the runway is 170 mm and 0.8 s fits in 3256, and
+#: above 0.88 m the pre-launch dip no longer fits under the ceiling at all.
+#:
+#: ⚠ NOT YAML KEYS, deliberately, and Phase 5 promotes them once the hardware
+#: ladder has tuned them. Adding config keys now would freeze two numbers that
+#: exist to be moved by UH-5/UH-6 — and a YAML key with no hardware behind it is
+#: a knob an operator can turn into an infeasible cycle with no gate to say so.
+#: `sim/cycle_gate.py` keeps its own literals so its Phase-1 numbers stay
+#: reproducible; these two are the production twins, stated once.
+_UNIFIED_THROW_CUP_Z_MM = 860.0
+_UNIFIED_CATCH_CUP_Z_MM = 830.0
+
+#: LAUNCH window duration (s) — rest → release, the way IN to a session.
+#: The value the Phase-1 chain is exercised at end to end
+#: (`tests/motion/test_unified_cycle.py`'s `launch` fixture: 0.6 s from a rest cup
+#: at 750 mm to a release at 860 mm), so it is a duration the QP is KNOWN to serve
+#: at session limits rather than one chosen here. It also has to be long enough to
+#: outrun the plan cost with room to spare, because the announcement's lead is
+#: this window: at ~250 ms of planning a shorter launch would announce a throw
+#: whose release is already inside the callback that planned it.
+_UNIFIED_LAUNCH_WINDOW_S = 0.6
+
+#: A deliberate UPPER bound (s) on what one `trajectory/plan_cycle` call costs.
+#:
+#: NOT the budget — the owner-confirmed budget is core ≤ 50 ms and total ≤ 250 ms.
+#: This is the number the LAUNCH trigger below is derived from, and for that job an
+#: OVER-estimate is the safe one. The reason is a sign:
+#:
+#:   the plan's release lands at `install + window`, i.e. `trigger + cost +
+#:   window`, while the FSM expects it at `trigger + lead`. So the skew is
+#:   `cost + window − lead`, and with `lead = window + B` it is `cost − B`.
+#:
+#: NEGATIVE skew = the ball leaves EARLY relative to the FSM's schedule; POSITIVE
+#: = LATE. **The two sides are NOT symmetric, and early is the free one:**
+#:
+#: * EARLY costs nothing. The FSM explicitly tolerates it — `_step_throwing`'s own
+#:   comment is "release evidence can beat t_release" — its `_settle_deadline` is
+#:   only made more generous, and the hand ball sensor's asymmetric arrival window
+#:   is not a constraint at all here because `_expected_landing_perf` follows the
+#:   PLAN's release under unified, not the FSM's.
+#: * LATE is bounded, hard, by `toss_sequencer.TOSS_RELEASE_GRACE_S` = 0.5 s:
+#:   release evidence later than that mints ABORTED_NO_RELEASE with the ball
+#:   already in the air.
+#:
+#: So B must be an UPPER bound on the cost. (An earlier draft had this exactly
+#: backwards — a lower bound, argued from the arrival band before
+#: `_expected_landing_perf` was made plan-following. Under concurrent load the
+#: joined solve reached 1.06 s and the release landed 0.708 s past the FSM's
+#: schedule, i.e. straight through the grace. The test below is what caught it.)
+#:
+#: **MEASURED** (2026-09-04, this Jetson, session limits 250/3000/150000, 6
+#: consecutive LAUNCH+LANDING joined installs — the shape the coordinator actually
+#: asks for): **idle min 423 ms, median 424 ms, max 432 ms; 1.06 s observed with a
+#: sim gate running on the other cores.** That is the honest price of the cliff
+#: fix — TWO solves plus the join's own `validate_cycle` in one callback, against
+#: the ~67 ms an unchained 0.6 s LAUNCH costs alone, and it EXCEEDS the
+#: owner-confirmed 250 ms total. Accepted because the alternative — a
+#: release-terminal plan racing a second service call — is the failure the finding
+#: names, and because nothing on the wire is affected (the emitter is a separate
+#: thread; the cost lands on the coordinator's own blocking cycle thread, where
+#: the legacy `go_to_pose` already spends 90-377 ms).
+#:
+#: 1.20 s is 2.8x the idle median and covers the loaded 1.06 s with margin. The
+#: price of over-estimating is only that the ball leaves `B − cost` seconds before
+#: the FSM's nominal instant, which nothing reads: the session schedules its next
+#: cycle off the PLAN's release (see `note_cycle_result`). Pinned by
+#: `test_the_launch_lead_makes_the_release_land_LATE_not_early`.
+_UNIFIED_PLAN_BUDGET_S = 1.20
+#: How far ahead of the FSM's scheduled release the LAUNCH plan is requested (s).
+_UNIFIED_LAUNCH_LEAD_S = _UNIFIED_LAUNCH_WINDOW_S + _UNIFIED_PLAN_BUDGET_S
+
+#: How far BEFORE the standing plan's terminal release the next window is chained
+#: on (s).  BEFORE, not after — and that is a correction to the obvious reading of
+#: "extend right after the release", forced by what `extend` actually guarantees.
+#:
+#: `unified_cycle.extend` re-installs at the SAME ORIGIN and keeps the head BIT FOR
+#: BIT, which is exactly what makes the swap free — every knot the emitter has
+#: already sent is still the knot it sent. That guarantee holds only while the head
+#: is still PLAYING. Install it after the head has run out and the emitter has been
+#: sitting on the head's terminal hold, so the joined plan's `tau` is already
+#: somewhere inside the NEW window: the swap then jumps the machine forward by
+#: however long the solve took. The install-continuity guard catches it (that is
+#: what it is for) and the refusal is loud — but a refusal on every chain is a
+#: session that cannot run, and the fix is to ask earlier rather than to relax the
+#: guard.
+#:
+#: **MEASURED** (2026-09-04, this Jetson, idle, session limits 250/3000/150000, 6
+#: consecutive MODE_EXTEND calls — one LANDING window plus the join's own
+#: `validate_cycle` over the whole 81-knot result): min 354 ms, median 355 ms,
+#: max 387 ms. The lead has to cover a WHOLE such call plus the service round trip
+#: and the coordinator's 40 ms poll, or the extend installs AFTER the cliff it was
+#: asked for and the guarantee is worthless. 0.60 s is that maximum plus ~55 %,
+#: which is the margin a loaded executor needs; it is pinned by
+#: `test_the_extend_safety_net_lands_before_the_published_deadline`.
+#:
+#: Asking early costs nothing in fidelity: the boundary condition the next window
+#: is planned FROM is the release state, which the standing plan pinned when it
+#: was gated — the chained window is identical whether it is solved 0.6 s before
+#: the deadline or 0.1 s before it.
+_UNIFIED_EXTEND_LEAD_S = 0.60
+
+#: What a survived MISS waits, under unified mode ONLY, before the session resumes
+#: (owner, 2026-08-28: a survived MISS must NOT `go_home` — hold the pose, wait for
+#: the ball environment to settle, then resume).
+#:
+#: Two terms, and BOTH are derived rather than picked:
+#:
+#: 1. **The machine term** — `DEFAULT_SESSION_MISS_CLEANUP_S` MINUS
+#:    `GO_HOME_DURATION_S`. The legacy constant is the cost of the go_home ladder
+#:    (confirm window + the ladder's dispatch cost + the 2.0 s recentre profile +
+#:    two loop periods); under unified the recentre PROFILE is exactly the part
+#:    that does not happen, so it is the part that comes off. Everything else —
+#:    the settle window the MISSED verdict is minted in, the ladder's own
+#:    dispatches, the observe-then-start loop periods — still happens.
+#: 2. **The ball term** — the dropped ball's own settle. It falls the catch cup
+#:    height (0.83 m) in `sqrt(2h/g)` = 0.411 s and then bounces; a geometric
+#:    series at a coefficient of restitution 0.5 (a juggling ball on a hard floor)
+#:    totals `t·(1 + 2e/(1−e))` = 3·0.411 = 1.23 s of airborne time before it is
+#:    rolling rather than bouncing. THAT is what "wait for the ball environment to
+#:    settle" means physically, and it is the term the legacy ladder never had to
+#:    charge because its 2.0 s go_home covered it by accident.
+#:
+#: LEGACY `DEFAULT_SESSION_MISS_CLEANUP_S` IS UNCHANGED. This is an additional,
+#: unified-only wait, so a legacy session's cadence accounting is untouched.
+_UNIFIED_BALL_SETTLE_S = 1.23
+_UNIFIED_MISS_SETTLE_S = (DEFAULT_SESSION_MISS_CLEANUP_S - GO_HOME_DURATION_S
+                          + _UNIFIED_BALL_SETTLE_S)
+
+#: Outcome codes minted on the unified path, all through `outcome_detail`'s
+#: contract so a guard can match on the bare code.
+#:   REJECTED_HAND_SOURCE — the can-bridge refused the STREAMED latch at session
+#:   start. Fail-closed and distinct: with the hand still LEGACY every Setpoint
+#:   hand channel is DISCARDED by the firmware (counted, silent to the plan), so
+#:   the platform would fly the cycle with a dead hand.
+_OUTCOME_HAND_SOURCE = 'REJECTED_HAND_SOURCE'
+#:   REJECTED_PLAN_SERVICE — trajectory/plan_cycle was unavailable or did not ack.
+#:   Distinct from an infeasible cycle: nothing was refused, nothing was planned,
+#:   and the fix is a node that is not running rather than a goal that cannot be
+#:   flown.
+_OUTCOME_PLAN_SERVICE = 'REJECTED_PLAN_SERVICE'
+#:   REJECTED_CYCLE_PLAN — trajectory_node refused BEFORE planning (wrong mode, an
+#:   unseeded or stale node, a latched guard, no active cycle to chain from, the
+#:   replan budget spent). Deliberately NOT folded into
+#:   REJECTED_CYCLE_INFEASIBLE: those are properties of the SERVICE's acceptance
+#:   state, not of a trajectory, and an operator reading "infeasible" would go
+#:   looking for a cycle the machine cannot fly instead of a node in the wrong mode.
+_OUTCOME_CYCLE_PLAN = 'REJECTED_CYCLE_PLAN'
 
 # ── Absolute-schedule tick pacing for the TWO toss loops (plan B5, lever 1) ────
 #
@@ -1285,6 +1450,34 @@ class TossCycleState:
     #: ITS record, not the committed cycle's.
     record_ctx: object = None
 
+    # ── Unified 7-DoF cycle (plan Phase 4) ───────────────────────────────────
+    # All three are inert on every legacy path (nothing writes them, nothing
+    # reads them) and live on the CYCLE rather than on the node for the same
+    # reason every field above does: two coexisting cycles would otherwise share
+    # one plan record. Under unified the pipeline is forced OFF, so there is only
+    # ever one — but a field whose safety depends on a flag somewhere else is how
+    # the two-slot bugs happened, so it is scoped correctly regardless.
+    #: True from the FSM's ``ACTION_ANNOUNCE`` tick until the LAUNCH plan is
+    #: installed and announced. Its whole job is to hold the announcement back to
+    #: the instant the throw becomes committed (see ``_tick_unified_launch``).
+    unified_launch_pending: bool = False
+    #: the composed outcome string of a refused plan, or ``''``. The session's
+    #: wrapper re-labels the resulting terminal with it, so an operator reads WHICH
+    #: LAYER refused instead of a generic ``ABORTED_CANT_MAKE_RELEASE``. Composed
+    #: at the refusal (``_unified_plan_outcome``) rather than stored as parts,
+    #: because the composition rule differs by family and the seam that re-labels
+    #: has no business knowing that.
+    unified_reject: str = ''
+    #: the last accepted ``PlanCycle.Response`` for this cycle (the installed
+    #: plan's release/catch instants and hand peaks). Record + choreography only —
+    #: the authority on what is streaming is trajectory_node's own active plan.
+    unified_plan: object = None
+    #: the post-release EXTEND has fired for this cycle. A one-shot latch and not
+    #: a re-derivation, because the EXTEND's own response REPLACES ``unified_plan``
+    #: — a LANDING carries ``t_release_mono == 0.0``, so "is the release past"
+    #: would answer yes forever and re-extend on every tick.
+    unified_extended: bool = False
+
     def clear(self) -> None:
         """Tear this cycle's state down IN PLACE.
 
@@ -1338,6 +1531,15 @@ class TossCycleState:
         self.census = None
         self.staged = False
         self.discarded_reason = ''
+        # The unified trio is cleared for the reason `prepare_pending` is: all
+        # three are per-CYCLE commitments, and a leftover `unified_launch_pending`
+        # would make the next cycle's announcement fire off this cycle's plan
+        # while a leftover `unified_reject` would re-label a healthy terminal with
+        # a previous cycle's refusal.
+        self.unified_launch_pending = False
+        self.unified_reject = ''
+        self.unified_plan = None
+        self.unified_extended = False
 
 
 class ReloadCoordinatorNode(Node):
@@ -1900,6 +2102,63 @@ class ReloadCoordinatorNode(Node):
         # existing correlation → catch path closes the loop unchanged.
         self._announce_pub = self.create_publisher(
             ThrowAnnouncement, 'throw_announcements', 10)
+        # ── UNIFIED 7-DoF cycle mode (plan Phase 4) ──────────────────────────
+        # The session-scoped declaration catch_coordinator_node reads: while True,
+        # the plan owns the hand for the whole cycle and CCN must not arm a
+        # reactive catch stroke. It mirrors `catch/pretilt_hold` exactly — same
+        # Bool, same latch shape, same "the publisher owns it, the reader never
+        # resets it locally" discipline — and for the same reason: a topic is the
+        # only way to tell a node that is not in this node's call graph.
+        #
+        # Stale True fails SAFE here, and that is the opposite of pretilt_hold's
+        # degradation: a stale True means CCN declines to arm a hand stroke, i.e.
+        # the machine does LESS. A stale FALSE would be the hazard (a legacy arm
+        # dispatched into a STREAMED hand_source, refused by the firmware with the
+        # ball already in the air). The session cannot close that hazard by
+        # ordering — it never hands the latch back (see the terminal `finally`),
+        # so `catch/unified_mode` goes False with the firmware still STREAMED.
+        # Returning the latch is an operator action (plan § 5 precondition (c));
+        # a legacy session started before that is refused by the firmware
+        # (`ERR_HAND_SOURCE`), not by this flag.
+        #
+        # TRANSIENT_LOCAL depth 1 — LATCHED, and it is the one QoS choice here that
+        # is load-bearing. This topic is published EXACTLY TWICE per session, both
+        # times at a session boundary; a catch_coordinator that starts or restarts
+        # between them (a crash-restart, a `ros2 run` for a bench probe, a late
+        # composition) would never see the True on a volatile connection and would
+        # go on arming legacy hand strokes into a STREAMED latch for the rest of the
+        # session — the exact hazard the comment above names, one process restart
+        # away. Latched, a late subscriber gets the standing declaration on
+        # connect. Matched at the reader (`catch_coordinator_node`): a
+        # VOLATILE subscription would silently receive nothing from a
+        # TRANSIENT_LOCAL publisher's history.
+        self._unified_mode_pub = self.create_publisher(
+            Bool, 'catch/unified_mode',
+            QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
+        # Cycle planning + the can-bridge hand-mastery latch. Both are unified-only
+        # and neither is touched on any legacy path.
+        self._plan_cycle_cli = self.create_client(
+            PlanCycle, 'trajectory/plan_cycle')
+        self._hand_source_cli = self.create_client(SetBool, 'set_hand_source')
+        # True for the whole of a unified session's try/finally — the SAME shape
+        # and lifetime as `_toss_session_live`, and read by `_step_toss_sequence`
+        # to route the three action seams. Resolved ONCE per goal (see
+        # `_execute_toss_continuous`) so a session cannot change planners halfway.
+        self._toss_unified_live = False
+        # True once the session-start VERIFICATION has confirmed the can-bridge is
+        # latched STREAMED — and it stays true through the terminal, because the
+        # session never hands the latch back (see the `finally`). Separate from
+        # `_toss_unified_live`, which is raised BEFORE the verification runs and is
+        # therefore also true on the refusal path: reporting "hand_source STREAMED"
+        # off that flag would state the one thing the refusal just disproved.
+        self._toss_hand_source_streamed = False
+        # The release a STEADY window has already planned and that the NEXT cycle
+        # will announce rather than re-plan. It spans a cycle boundary, so it is the
+        # ONE piece of unified state that cannot live on `TossCycleState`; it is safe
+        # to hold on the node because the pipeline is forced OFF under unified, so
+        # exactly one cycle is ever live. Cleared at every consumption, at every NEW
+        # launch and in the session's `finally`.
+        self._toss_unified_chain = None
         # ── The per-toss RECORD declaration (toss-selftuning § 3.4, D10) ──
         # std_msgs/String carrying JSON, deliberately NOT a typed message: a
         # schema tweak on a typed message needs a two-package colcon build, which
@@ -2486,6 +2745,24 @@ class ReloadCoordinatorNode(Node):
         consumer reading it mints ``MISSED_SENSOR_BLIND``, not ``MISSED``."""
         with self._lock:
             seq = self._active_seq
+            unified_plan = (self._toss_committed.unified_plan
+                            if self._toss_unified_live else None)
+        if unified_plan is not None and seq is not None:
+            # ── Under unified the PLAN is the announcer ──────────────────────
+            # The FSM's `landing_perf` is `its own scheduled release + flight`,
+            # and under unified the release is not the FSM's to schedule: it is
+            # `install + window` on the plan the emitter is streaming, which
+            # differs from the FSM's instant by however long the solve took. The
+            # arrival band is asymmetric and TIGHT on the early side
+            # (`ARRIVAL_BAND_MIN_S` 0.087 s), so looking for the edge around the
+            # FSM's number would mint a MISS on a real catch for a reason that is
+            # purely a clock. The plan's release is the instant the ball actually
+            # leaves — it is what the announcement carries and what the tracker
+            # correlates on — so it is what the cup is watched around too.
+            t_rel = float(getattr(unified_plan, 't_release_mono', 0.0) or 0.0)
+            if t_rel > 0.0:
+                land = t_rel + float(seq.flight_time_s)
+                return land if math.isfinite(land) else None
         if seq is None:
             return None
         land = getattr(seq, 'landing_perf', None)
@@ -4185,7 +4462,7 @@ class ReloadCoordinatorNode(Node):
 
     @staticmethod
     def _ilc_vel_trim_refusal(nominal_mps: float, trimmed_mps: float,
-                              flight_s: float) -> str:
+                              flight_s: float, arm_window: bool = True) -> str:
         """``''`` to APPLY the layer-3 speed trim, or the reason to drop it.
 
         THE apply-seam gate for the ``event_vel_trim`` channel (contradiction
@@ -4215,6 +4492,17 @@ class ReloadCoordinatorNode(Node):
            would stop being true of the outcome. A goal the machine cannot fly
            untrimmed is refused for its own reason, with the trim dropped.
 
+        ``arm_window`` is the C-HAND-3 carve-out, handed down from the session's
+        one unified resolution (False under unified). It matters HERE more than
+        anywhere: bound 7 refuses the whole SHORT half of the flight band, and it
+        refuses it from the NEGATIVE side of the trim first — measured, the
+        admissible negative headroom at the band floor T = 0.4949 s is exactly
+        +0.000 m/s. Charging it under unified, where no stroke engine is running on
+        that axis, therefore does not make layer 3 conservative: it makes it INERT
+        across the half of the band the carve-out exists to unlock, so an aim
+        artifact fitted there could never be applied. Default True keeps every
+        legacy caller bit-identical.
+
         Static and pure so it can be tested without a node.
         """
         if not validate_event_vel(trimmed_mps):
@@ -4222,10 +4510,12 @@ class ReloadCoordinatorNode(Node):
                     '(REJECTED_EVENT_VEL)'.format(
                         hw.TEENSY_TRAJ_MIN_EVENT_VEL_MPS,
                         hw.TEENSY_TRAJ_MAX_EVENT_VEL_MPS))
-        verdict = throw_envelope.evaluate(flight_s, trimmed_mps)
+        verdict = throw_envelope.evaluate(flight_s, trimmed_mps,
+                                          arm_window=arm_window)
         if not verdict.ok:
             return 'REJECTED_THROW_ENVELOPE({})'.format(verdict.message)
-        nominal = throw_envelope.evaluate(flight_s, nominal_mps)
+        nominal = throw_envelope.evaluate(flight_s, nominal_mps,
+                                          arm_window=arm_window)
         if not nominal.ok:
             return ('the UNTRIMMED goal is itself outside the throw envelope '
                     '({}) — layer 3 never decides whether a goal is flyable'
@@ -4578,7 +4868,16 @@ class ReloadCoordinatorNode(Node):
         # float the pre-Phase-2 expression produced.
         if event_vel and aim['ilc_vel_trim'] != 0.0:
             trimmed = event_vel * (1.0 + float(aim['ilc_vel_trim']))
-            refusal = self._ilc_vel_trim_refusal(event_vel, trimmed, flight)
+            # The C-HAND-3 carve-out reaches the APPLY seam, not just the CHECKING
+            # gate. `toss_sequencer` already drops the ARM_WINDOW bound under
+            # unified (there is no stroke engine on that axis to arm); charging it
+            # here as well would leave layer 3 inert across exactly the short half
+            # of the flight band the carve-out unlocks — the negative side of the
+            # trim is what bound 7 refuses first. Read from the session's ONE
+            # resolution, never re-derived.
+            refusal = self._ilc_vel_trim_refusal(
+                event_vel, trimmed, flight,
+                arm_window=not bool(self._toss_unified_live))
             if not refusal:
                 event_vel = trimmed
             else:
@@ -4666,6 +4965,11 @@ class ReloadCoordinatorNode(Node):
             # "do not stage a displaced cycle" test would be a second copy of
             # the same question, free to disagree with this one.
             staged=bool(staged) and stage_ok and not positioning_move,
+            # The session's ONE unified resolution, handed down rather than
+            # re-read: the FSM charges contract C-HAND-3's ARM_WINDOW bound only
+            # when something will actually be armed. See the field's own comment
+            # in `toss_sequencer` for why that is the only decision it changes.
+            unified=bool(self._toss_unified_live),
             stay_at_pose_on_caught=bool(hw.JB_OP_TOSS_STAY_AT_POSE_ON_CAUGHT),
             tilt_clamp_exceeded=tilt_clamp_exceeded,
             tilt_required_deg=tilt_required_deg,
@@ -5308,6 +5612,19 @@ class ReloadCoordinatorNode(Node):
         and reading 50 ms would credit it with 2.5x more headroom than it has
         before collapsing this split into one tick."""
         state = self._toss_committed if state is None else state
+        # ── The unified routing key, read ONCE per tick ──────────────────────
+        # It is the session's resolution (`_execute_toss_continuous` computed it
+        # from the two keys at accept and latched it for the whole try/finally),
+        # never a fresh config read: re-resolving here would let a mid-session
+        # change put the legacy stroke engine and the streamed plan on one axis.
+        unified = bool(self._toss_unified_live)
+        if unified and state.unified_launch_pending:
+            # POLLED, at the top of the tick and before `seq.step`, so the plan is
+            # installed and the announcement out BEFORE the FSM re-reads its own
+            # release-window guard on this tick's decision.
+            self._tick_unified_launch(seq, state, now)
+        elif unified:
+            self._tick_unified_extend(seq, state, now)
         if obs is None:
             obs = self._build_toss_observations(now, state)
             # INSTRUMENT ONLY (see LoopPeriodCensus): stamped here rather than
@@ -5435,15 +5752,35 @@ class ReloadCoordinatorNode(Node):
                 state.pretilt_hold_raised = True
             state.prepare_pending = True
         elif decision.action == TOSS_ACTION_ANNOUNCE:
-            self._announce_toss(seq, state)
+            if unified:
+                # ── The announcement is DEFERRED, not skipped ──
+                # Under unified the throw is not committed until a plan carrying
+                # it is installed, and the announcement must carry the instant the
+                # ball ACTUALLY leaves — which only the installed plan knows. So
+                # this tick arms the deferral and `_tick_unified_launch` (polled
+                # at the top of every later tick) plans, installs and announces
+                # together, at the release lead. The FSM stays in PREPARING until
+                # `note_announcement` lands, with its own release-window guard
+                # still live, so a plan that never installs terminalises loudly.
+                state.unified_launch_pending = True
+            else:
+                self._announce_toss(seq, state)
         elif decision.action == TOSS_ACTION_DISPATCH_THROW:
-            outcome, message = self._dispatch_toss_throw(seq, state)
+            outcome, message = self._dispatch_toss(seq, state, unified)
             seq.note_throw_dispatch(outcome, message)
         elif decision.action == TOSS_ACTION_REACH_CATCH:
             # Tier 8b's deferred A->B reach (time-triggered at t_release): the
             # ONE announcement-derived catch/dynamic_target for B (lead = the
             # flight time by construction). 8a never emits this action.
-            self._publish_toss_reach(state)
+            #
+            # NEVER under unified: the reach exists because the legacy platform
+            # has to translate A->B during the flight while a separate stroke
+            # engine owns the hand. A CyclePlan already contains that traverse AND
+            # the catch, on one clock, so publishing a catch/dynamic_target here
+            # would install a 6-channel reach over the 7-channel plan and drop the
+            # hand track with the ball in the air.
+            if not unified:
+                self._publish_toss_reach(state)
         elif decision.action == TOSS_ACTION_STAY:
             self._toss_stay(state)
         elif decision.action == TOSS_ACTION_RECENTER:
@@ -5476,7 +5813,12 @@ class ReloadCoordinatorNode(Node):
             # The only producer of `action_then` is `_step_committing`, and it
             # sets it only after the whole evidence gate has passed — so this
             # branch cannot be reached on evidence read at an earlier tick.
-            outcome, message = self._dispatch_toss_throw(seq, state)
+            #
+            # Unreachable under unified (the pipeline is forced off and only
+            # `_step_committing` produces `action_then`), but routed through the
+            # same helper so the "no legacy hand RPC while STREAMED" property is a
+            # property of the DISPATCH, not of one call site.
+            outcome, message = self._dispatch_toss(seq, state, unified)
             seq.note_throw_dispatch(outcome, message)
         if (decision.done and decision.result is not None
                 and (base_outcome(decision.result.outcome),
@@ -6366,6 +6708,714 @@ class ReloadCoordinatorNode(Node):
         self._announce_pub.publish(ann)
         seq.note_announcement()
 
+    # ═══════════════════════════════════════════════════════════
+    # UNIFIED 7-DoF cycle (plan Phase 4)
+    # ═══════════════════════════════════════════════════════════
+
+    def _unified_enabled(self, goal_req) -> bool:
+        """Is THIS goal a unified-cycle session?  Read ONCE per goal.
+
+        Two keys, and both must turn: the build-time
+        ``jugglebot_operational.unified_cycle_enabled`` (read fail-closed through
+        ``getattr``, the same reason ``_toss_ilc_enabled`` does — an install tree
+        that predates the codegen simply does not have the name, and an
+        ``AttributeError`` on a goal-build path would take the toss down instead of
+        leaving the feature off) AND the goal's own ``unified_cycle`` field.
+
+        **Once, not per branch.** The value decides which planner owns the hand for
+        the whole session; re-reading it at each seam would let a mid-session config
+        reload put the legacy stroke engine and the streamed plan on the same axis,
+        which is precisely the dual-mastery class the firmware's ``hand_source``
+        latch exists to make structurally impossible. The single read is pinned by
+        test, the way ``pipelined`` is.
+        """
+        return (bool(getattr(hw, 'JB_OP_UNIFIED_CYCLE_ENABLED', False))
+                and bool(getattr(goal_req, 'unified_cycle', False)))
+
+    def _publish_unified_mode(self, active: bool) -> None:
+        """Publish the session-scoped ``catch/unified_mode`` declaration."""
+        self._unified_mode_pub.publish(Bool(data=bool(active)))
+
+    def _unified_warm_planner(self) -> float:
+        """Solve ONE throwaway cycle at session start. Returns the wall time (s).
+
+        **This is not an optimisation; it removes a first-cycle abort.** The FIRST
+        `plan_cycle` in a process is dominated by one-off work — numpy/BLAS thread
+        pools, the QP's own first factorisation, `validate_cycle`'s first pass
+        through every gate — and it is an order of magnitude slower than the steady
+        state: **measured 2026-09-04 on this Jetson, 3267 ms cold against a 424 ms
+        warm median for the same LAUNCH+LANDING install.** The launch trigger fires
+        `window + _UNIFIED_PLAN_BUDGET_S` before the FSM's scheduled release, so a
+        3.3 s solve there lands the release ~2.1 s LATE — past
+        `TOSS_RELEASE_GRACE_S` (0.5 s) — and cycle 1 of every session aborts
+        ABORTED_NO_RELEASE with the ball in the air. Raising the ceiling to cover
+        the cold case instead would mis-shape every WARM cycle to pay for the first.
+        So the cost is moved to where it is free.
+
+        It is spent HERE — at session start, before the first cycle exists — where
+        nothing is armed, nothing is airborne and the operator is already waiting on
+        the hand-source handover. It commands NOTHING: this is a pure-Python solve
+        against a synthetic rest state, discarded immediately; no service is called
+        and no plan is installed. A failure is swallowed with a WARN for the same
+        reason — a warm-up that cannot run must not cost a session, it only costs
+        the first cycle its margin, which is exactly the pre-warm-up behaviour.
+        """
+        t0 = time.perf_counter()
+        try:
+            geom = self._toss_geometry()
+            limits = self._live_traj_limits(t0) or TrajectoryLimits.from_config(hw)
+            cfg = uc.cr.RealizeConfig()
+            rest_cup_z = _UNIFIED_CATCH_CUP_Z_MM - 80.0
+            # The level slider↔cup map, through the planner's own export rather
+            # than re-derived here: a second spelling of it is how a rest height
+            # drifts out of the box (or the park band) it is supposed to sit in.
+            hand_rev = uc.hand_rev_for_cup_z(rest_cup_z, cfg)
+            pose = np.array([0.0, 0.0, float(cfg.active_z_mm), 0.0, 0.0, 0.0])
+            goals = uc.CycleGoals(
+                period_s=_UNIFIED_LAUNCH_WINDOW_S,
+                throw_site_mm=np.array([0.0, 0.0, _UNIFIED_THROW_CUP_Z_MM]),
+                throw_target_mm=np.array([0.0, 0.0, _UNIFIED_THROW_CUP_Z_MM]),
+                flight_s=0.6,
+                catch_site_mm=np.array([0.0, 0.0, _UNIFIED_CATCH_CUP_Z_MM]),
+                catch_vel_mm_s=np.asarray(self._unified_catch_vel_mm_s(0.6)),
+                catch_frac=0.0,
+                settle_site_mm=np.array([0.0, 0.0, uc.SETTLE_CUP_Z_MM]))
+            uc.plan_launch(goals, uc.CycleState.at_rest(pose, hand_rev, cfg),
+                           limits, geom)
+        except Exception as exc:      # noqa: BLE001 — a warm-up must never fail a goal
+            self.get_logger().warning(
+                'unified planner warm-up did not complete (%s) — the first cycle '
+                'pays the cold-solve cost (~3.3 s measured) and may abort '
+                'ABORTED_NO_RELEASE; every later cycle is unaffected' % (exc,))
+            return time.perf_counter() - t0
+        elapsed = time.perf_counter() - t0
+        self.get_logger().info(
+            'unified planner warmed in %.0f ms — the first cycle now solves at '
+            'the steady-state cost instead of the cold one' % (elapsed * 1e3,))
+        return elapsed
+
+    def _toss_geometry(self):
+        """The :class:`StewartGeometry` the unified planner gates against.
+
+        Built once and cached: it is a pure function of the config, and the
+        warm-up would otherwise pay for its construction every session.
+        """
+        geom = getattr(self, '_unified_geom', None)
+        if geom is None:
+            geom = StewartGeometry()
+            self._unified_geom = geom
+        return geom
+
+    #: What an operator has to do when :meth:`_set_hand_source` is refused, stated
+    #: once because the session start and the session terminal both quote it and
+    #: because the FIRST clause is the one nobody guesses.
+    #:
+    #: ``hand_source.cpp:60`` refuses ANY real transition while ``mpc_active`` is
+    #: set — "never swap mastery while the setpoint stream is armed" — and the
+    #: setpoint output is armed for the WHOLE of the ACTIVE state (the orchestrator
+    #: arms it on ACTIVE entry and is its sole caller, ``ARMING_CONTRACT.md``
+    #: § A2). So a session cannot perform the handover, in either direction: from
+    #: inside one, the only call that can return OK is the idempotent re-assert
+    #: (``hand_source.cpp:56``, which short-circuits above every gate). The latch
+    #: has to be moved while the wire is DISARMED — before ACTIVATE with the launch
+    #: up, or through ``hand_stream_bench.py --source-only`` with it down, which is
+    #: the order that file documents as "switch the latch and exit — no stream, no
+    #: arm".
+    _HAND_SOURCE_RECOVERY = (
+        'the firmware refuses a hand_source switch whenever the setpoint output '
+        'is armed (hand_source.cpp:60, mpc_active) — DISARM first '
+        '(/set_setpoint_output false, or deactivate), then '
+        '/set_hand_source, then re-arm')
+
+    #: The session TERMINAL's note about the latch, quoted from
+    #: :data:`_HAND_SOURCE_RECOVERY` so the two cannot drift.
+    #:
+    #: The session does not hand mastery back and cannot: the wire is armed for
+    #: the whole ACTIVE state, so a ``LEGACY_STROKE`` call from in here could only
+    #: be refused. Stating where the latch is left — and that moving it is an
+    #: OPERATOR action with the output disarmed — is the whole of what this layer
+    #: can honestly say about it.
+    _HAND_SOURCE_TERMINAL_NOTE = (
+        ' hand_source REMAINS STREAMED, where the operator set it — a session '
+        'cannot return it, because ' + _HAND_SOURCE_RECOVERY +
+        '. Two routes, both with the output disarmed: /set_hand_source false '
+        'after a disarm, or a can-bridge reboot (the board boots LEGACY_STROKE).')
+
+    def _set_hand_source(self, streamed: bool) -> tuple:
+        """Assert the can-bridge hand-mastery latch. Returns ``(ok, message)``.
+
+        The firmware is the single enforcement point (it accepts a switch only
+        while DISARMED, with the hand settled at rest on fresh telemetry), so this
+        is a forward-and-name call exactly like ``_arm_catch``.
+
+        **It asserts; it cannot switch.** See :data:`_HAND_SOURCE_RECOVERY`: from
+        inside a live session the wire is armed, so the only call that returns OK
+        is the idempotent re-assert of the latch's current state. That makes this a
+        VERIFICATION of a precondition the operator set before ACTIVATE — which is
+        exactly what the bridge's own arming path is written for (its
+        ack-freshness rule at ``_arm_setpoint_output_locked`` exists to serve
+        "switch to STREAMED, THEN arm").
+
+        A refusal at session start is therefore FATAL to the session, and for the
+        original reason: with the latch still LEGACY the firmware DISCARDS every
+        Setpoint hand channel — counted, but silent to the plan — so the platform
+        would fly a full cycle with a dead hand and a seated ball.
+        """
+        if not self._hand_source_cli.wait_for_service(timeout_sec=_SERVICE_WAIT_S):
+            return False, 'set_hand_source service unavailable'
+        req = SetBool.Request()
+        req.data = bool(streamed)
+        resp = self._wait_future(self._hand_source_cli.call_async(req))
+        if resp is None:
+            return False, 'set_hand_source ack timeout'
+        return bool(resp.success), str(resp.message)
+
+    def _unified_cycle_request(self, mode, kind, *, period_s, throw_xy_mm,
+                               catch_xy_mm, flight_s, catch_frac,
+                               catch_vel_mm_s, lead_s=0.0,
+                               chain_kind=None, chain_period_s=0.0,
+                               chain_catch_frac=0.0):
+        """Build ONE ``PlanCycle.Request`` from the session's sites.
+
+        **The frame conversion happens HERE and nowhere else.** The session's sites
+        are STOW-relative PLATFORM xy in mm (the ``TossContinuous.catch_position``
+        convention); ``CycleGoals`` wants CUP-OPENING sites, xy in the platform
+        frame and z GLOBAL. The xy half needs no conversion at all —
+        ``toss_release.stow_to_global_mm`` adds the initial height to z and leaves x
+        and y alone, so "stow-relative xy" and "global xy" are the same numbers —
+        and the z half is the release/catch cup height, which is a PLANNER choice
+        (the two module constants above), not something the goal carries. Doing it
+        once, at this boundary, is what keeps a second spelling from drifting.
+        """
+        req = PlanCycle.Request()
+        req.mode = int(mode)
+        req.kind = int(kind)
+        req.period_s = float(period_s)
+        req.throw_site_mm = [float(throw_xy_mm[0]), float(throw_xy_mm[1]),
+                             _UNIFIED_THROW_CUP_Z_MM]
+        # Land the ball back where it was thrown from: a steady-state self-toss, the
+        # same shape the whole toss programme flies and the same one the Phase-1 sim
+        # gate plans. An AIMED unified cycle is a Phase-5 rung and needs the aim
+        # authority re-derived against MAX_TILT_DEG first, so nothing here invents it.
+        req.throw_target_mm = list(req.throw_site_mm)
+        req.flight_s = float(flight_s)
+        req.catch_site_mm = [float(catch_xy_mm[0]), float(catch_xy_mm[1]),
+                             _UNIFIED_CATCH_CUP_Z_MM]
+        req.catch_vel_mm_s = [float(v) for v in catch_vel_mm_s]
+        req.catch_frac = float(catch_frac)
+        # ── THE REST SITE IS THE PARK, NOT THE CATCH ─────────────────────────
+        # The cup stops where it CAUGHT in xy — that is the seat the ball is
+        # already in, and moving it sideways under a seated ball buys nothing —
+        # but it must come back DOWN in z, and that is not a cosmetic choice:
+        #
+        #  * `toss_sequencer`'s CHECKING gate refuses the next cycle
+        #    REJECTED_HAND_NOT_PARKED unless |hand| <= HAND_PARK_BAND_REV (0.5 rev).
+        #    A cup left at the 830 mm catch height is 4.755 rev — 9.5x the band —
+        #    so EVERY cycle from the second on would be refused before it planned;
+        #  * and a LAUNCH is planned from the live state, so the height the window
+        #    settles at is the height the NEXT window has to start from.
+        #
+        # `unified_cycle.SETTLE_CUP_Z_MM` is the parked cup height clamped up into
+        # the planner's own cup box (689.6 mm = 0.316 rev; the true park at
+        # 679.6 mm is 10 mm below the box and is refused SETTLE_SITE before it
+        # plans). Derived there, never restated here.
+        req.settle_site_mm = [float(catch_xy_mm[0]), float(catch_xy_mm[1]),
+                              uc.SETTLE_CUP_Z_MM]
+        # Banking is NOT optional at session limits: zero-banking cannot plan a
+        # steady cycle (measured LIMIT_VEL 529 mm/s against a 250 cap). It is
+        # hard-true here rather than a goal field for that reason — a knob whose
+        # only other setting refuses every cycle is not a knob.
+        req.banking_enabled = True
+        req.lead_s = float(lead_s)
+        # The chained second window, when one is asked for. It shares every goal
+        # field above (same sites, same flight, same banking) and overrides only
+        # its own duration and catch instant — which is the whole of what
+        # distinguishes a landing from the launch it follows.
+        if chain_kind is not None:
+            req.chain = True
+            req.chain_kind = int(chain_kind)
+            req.chain_period_s = float(chain_period_s)
+            req.chain_catch_frac = float(chain_catch_frac)
+        return req
+
+    def _call_plan_cycle(self, req):
+        """Call ``trajectory/plan_cycle``. Returns the response, or None.
+
+        None means the SERVICE failed (unavailable / no ack) — categorically
+        different from ``accepted=False``, which means the planner refused a goal it
+        understood. The caller mints different outcomes for the two because the
+        operator's next action is different: restart a node, versus fly a different
+        cycle.
+        """
+        if not self._plan_cycle_cli.wait_for_service(timeout_sec=_SERVICE_WAIT_S):
+            self.get_logger().error('trajectory/plan_cycle service unavailable')
+            return None
+        return self._wait_future(self._plan_cycle_cli.call_async(req))
+
+    @staticmethod
+    def _unified_plan_outcome(code, message) -> str:
+        """A refused ``PlanCycle`` response → ONE well-formed outcome string.
+
+        Two families, because they are two different findings and an operator's
+        next action differs:
+
+        * the PLANNER refused a goal it understood — the message is already the
+          composed ``REJECTED_CYCLE_INFEASIBLE(<LAYER>: …)`` that
+          ``CycleInfeasible.outcome()`` built, carrying which layer said no and its
+          numbers. It is passed through VERBATIM rather than re-wrapped: re-wrapping
+          would nest the parentheses and break ``outcome_subcode``, which reads the
+          leading all-caps token before the first ``:``;
+        * the NODE refused before planning — ``WRONG_MODE`` / ``STALE_STATE`` /
+          ``GUARD_LATCHED`` / ``NO_CYCLE`` / ``REPLAN_BUDGET``. Those describe the
+          service's acceptance state, not a plan's feasibility, so calling them
+          "infeasible" would be a lie; they get their own code with the node's own
+          code as the subcode.
+        """
+        code = str(code)
+        message = str(message)
+        if message.startswith(uc.OUTCOME_CODE + '('):
+            return message
+        return '{}({}: {})'.format(_OUTCOME_CYCLE_PLAN, code, message)
+
+    def _unified_catch_vel_mm_s(self, flight_s: float):
+        """The BALL's arrival velocity (mm/s) at the catch, from the ballistics.
+
+        A self-toss thrown to land where it left rises and falls symmetrically, so
+        the arrival velocity is vertical with magnitude ``g·T/2`` — derived from the
+        SAME gravity ``toss_release`` announces with, not restated. The planner uses
+        it twice: it matches a fraction of it so the seat is soft, and it derives
+        the receive tilt from its direction (straight down ⇒ level, which is what a
+        vertical self-toss wants).
+        """
+        return (0.0, 0.0, -float(hw.GRAVITY_MMPS2) * float(flight_s) / 2.0)
+
+    def _dispatch_toss(self, seq, state, unified: bool):
+        """THE dispatch seam. Legacy ⇒ the kind-0 hand RPC; unified ⇒ nothing.
+
+        One helper rather than two call-site branches, so "no legacy hand command
+        while the ``hand_source`` latch is STREAMED" is a property of the DISPATCH
+        and cannot be lost by a future third call site. Under unified there is
+        nothing to dispatch: the release is already a committed knot on the plan the
+        emitter has been streaming since ``_tick_unified_launch`` installed it, and
+        the firmware would refuse a ``HAND_TRAJ_CMD`` anyway (``ERR_HAND_SOURCE``).
+        It reports ``OK`` because the FSM's tri-state asks "did the throw get
+        armed", and under unified the answer is yes — it was armed the moment the
+        plan was installed, which is strictly EARLIER and strictly more certain than
+        an ack that may lie.
+        """
+        if not unified:
+            return self._dispatch_toss_throw(seq, state)
+        with self._lock:
+            # The release-evidence watches gate on this exactly as they do for the
+            # legacy dispatch: the hand telemetry rises as the streamed stroke
+            # executes, so `stroke_seen` fires from the same watch on the same
+            # channel — nothing about release EVIDENCE changes under unified.
+            state.throw_dispatched = True
+        return (THROW_DISPATCH_OK,
+                'unified cycle plan installed — the release is a committed knot, '
+                'no hand RPC issued (hand_source is STREAMED)')
+
+    def _tick_unified_launch(self, seq, state, now: float) -> None:
+        """Plan the LAUNCH, then announce it — ONCE per cycle, at the right instant.
+
+        Called every FSM tick while ``state.unified_launch_pending`` stands, i.e.
+        from the tick the FSM emitted ``ACTION_ANNOUNCE`` on until this fires. It
+        does nothing until ``now`` is within :data:`_UNIFIED_LAUNCH_LEAD_S` of the
+        FSM's scheduled release, and that wait is the whole point:
+
+        * the LAUNCH window is a fixed 0.6 s, so the plan's release lands at
+          ``t0 + 0.6``, and ``t0`` is stamped inside the service callback. Planning
+          at the FSM's announce tick — seconds before ``t_release`` — would put the
+          release seconds EARLY, and the FSM's landing schedule (which the ball
+          sensor's arrival window is cut from) would then look for the catch in the
+          wrong second entirely;
+        * and the announcement must carry the instant the ball ACTUALLY leaves. So
+          the announcement is published from the plan's own ``t_release_mono``,
+          immediately after the install, with the field discipline of
+          :meth:`_announce_toss` unchanged.
+
+        The FSM is held in PREPARING throughout by simply not calling
+        ``note_announcement`` — its own release-window guard is still live, so a
+        plan that never lands terminalises ``ABORTED_CANT_MAKE_RELEASE`` rather than
+        hanging. A REFUSAL stashes the planner's outcome on the cycle state; the
+        session's wrapper re-labels that terminal ``REJECTED_CYCLE_INFEASIBLE(...)``
+        so the operator reads which layer said no.
+        """
+        if seq.t_release - now > _UNIFIED_LAUNCH_LEAD_S:
+            return
+        state.unified_launch_pending = False
+        # ── The CHAINED case: the previous cycle's STEADY window already owns
+        # this release, so there is nothing to plan — only to announce.
+        # Planning a NEW LAUNCH here would be actively wrong: a LAUNCH is built
+        # through `CycleState.at_rest`, which DECLARES zero velocity, and the
+        # machine is mid-carry on the standing plan. trajectory_node refuses that
+        # (its rest check), so the failure would be loud rather than dangerous —
+        # but a loud refusal on every chained cycle is still a session that cannot
+        # run, and the plan the operator paid ~250 ms for is right there.
+        chained = self._toss_unified_chain
+        if chained is not None:
+            self._toss_unified_chain = None
+            skew = float(chained.t_release_mono) - float(seq.t_release)
+            # The tolerance is ONE solve's worth (`_UNIFIED_EXTEND_LEAD_S`), not
+            # the launch lead: a chained release and the session's beat are
+            # supposed to be the SAME instant by construction (see
+            # `_unified_beat_s`), so the only spread that should ever appear here
+            # is the jitter of the tick that scheduled them. Anything larger is a
+            # disagreement, not noise.
+            if (float(chained.t_release_mono) > now
+                    and abs(skew) <= _UNIFIED_EXTEND_LEAD_S):
+                with self._lock:
+                    state.unified_plan = chained
+                self._announce_unified(seq, state, chained)
+                return
+            # ── The chain and the FSM disagree about WHEN the ball leaves ──
+            # Refused loudly rather than announced. The FSM's `_t_release` is what
+            # its landing schedule — and therefore the hand ball sensor's arrival
+            # window (C-POSSESS-1 § 3.2) — is cut from, so announcing a release the
+            # FSM does not expect would put every catch of this cycle in the wrong
+            # window and read as a MISS with the ball in the cup. The two agree by
+            # construction when the session's beat is the plan's window (see
+            # `_unified_beat_s`); a disagreement means the session re-scheduled
+            # under the plan, and the honest answer is to stop, not to guess.
+            state.unified_reject = (
+                '{}(CHAIN_SKEW: the chained release is {:+.3f} s from the '
+                'cycle\'s scheduled one, past the {:.3f} s tolerance — the beat '
+                'the plan was extended on is not the beat the session is running)'
+                .format(_OUTCOME_CYCLE_PLAN, skew, _UNIFIED_EXTEND_LEAD_S))
+            self.get_logger().error('unified chain refused: %s'
+                                    % (state.unified_reject,))
+            return
+        throw_xy = self._toss_unified_throw_xy(seq)
+        flight = float(seq.flight_time_s)
+        # ── ONE install: LAUNCH **plus** its LANDING ─────────────────────────
+        # NOT a launch alone. A plan that ENDS AT A RELEASE commands a hard STOP at
+        # the throw if it is streamed to its end — the emitter reads its u1/v1 from
+        # the terminal HOLD for the final 25 ms segment, which IS the release
+        # stroke, and no firmware guard fires on the resulting error (measured on
+        # this exact 0.6 s launch: 93.011 rev/s of true terminal hand velocity
+        # emitted as 0.0, 10.90 mm of slider error). Chaining the landing into the
+        # same install makes the first installed plan REST-terminal, which removes
+        # the class instead of racing it: there is no window in which a correctly
+        # planned launch is one late service call away from a stopped throw.
+        #
+        # It also makes the shape the module documents — "a single toss is LAUNCH
+        # then LANDING" — the shape the machine actually flies, and it matches what
+        # the FSM already models: one release per cycle, with a quiescent dwell
+        # between. The STEADY chain (this cycle's release feeding the NEXT cycle's
+        # window) stays reachable through MODE_EXTEND and is Phase 5's UH-7 ring,
+        # where the session has to hand the beat to the FSM as well.
+        chain_period = flight + _UNIFIED_LAUNCH_WINDOW_S
+        req = self._unified_cycle_request(
+            PlanCycle.Request.MODE_NEW, PlanCycle.Request.KIND_LAUNCH,
+            period_s=_UNIFIED_LAUNCH_WINDOW_S,
+            throw_xy_mm=throw_xy, catch_xy_mm=throw_xy,
+            flight_s=flight,
+            # A LAUNCH carries no catch; catch_frac is inert for it and the site
+            # above is only there to keep the request fully specified.
+            catch_frac=0.0,
+            catch_vel_mm_s=self._unified_catch_vel_mm_s(flight),
+            chain_kind=PlanCycle.Request.KIND_LANDING,
+            chain_period_s=chain_period,
+            # The ball touches down a FLIGHT after the release, and the release is
+            # the seam the chained window starts at — so the catch instant on the
+            # landing's own clock is exactly the flight time.
+            chain_catch_frac=flight / chain_period)
+        resp = self._call_plan_cycle(req)
+        if resp is None:
+            state.unified_reject = '{}(UNAVAILABLE: {})'.format(
+                _OUTCOME_PLAN_SERVICE,
+                'trajectory/plan_cycle unavailable or unacked at the launch point')
+            self.get_logger().error(
+                'unified LAUNCH: %s — no plan installed, nothing was commanded'
+                % (state.unified_reject,))
+            return
+        if not bool(resp.accepted):
+            state.unified_reject = self._unified_plan_outcome(resp.code,
+                                                              resp.message)
+            self.get_logger().error(
+                'unified LAUNCH refused: %s — holding the last good plan'
+                % (state.unified_reject,))
+            return
+        with self._lock:
+            state.unified_plan = resp
+        self._announce_unified(seq, state, resp)
+
+    def _toss_unified_throw_xy(self, seq):
+        """The cycle's throw site as CUP xy (mm, platform frame).
+
+        The nominated catch pose IS the throw site for a chained self-toss (a CAUGHT
+        cycle stays at its pose, so cycle N+1 throws from where cycle N caught), and
+        ``catch_pose_stow_mm``'s x/y are already the numbers ``CycleGoals`` wants —
+        only z differs between the stow-relative and global conventions, and the cup
+        z is the planner's constant, not the goal's.
+        """
+        pose = seq.catch_pose_stow_mm
+        return (float(pose[0]), float(pose[1]))
+
+    def _announce_unified(self, seq, state, resp) -> None:
+        """The self-``ThrowAnnouncement``, with the PLAN's physics.
+
+        Same six physics fields, same units, same frame and the same
+        ``thrower_name == target_id == robot_name`` discipline as
+        :meth:`_announce_toss` — every downstream consumer (the tracker's
+        correlation, possession, suppression, C-HAND-1's stroke-busy window) is
+        untouched. Two things differ, and both are the point of the unified path:
+
+        * the numbers come from ``unified_cycle.announcement_fields``, i.e. off the
+          TRAJECTORY THAT WILL BE EXECUTED, rather than from a ``ReleaseState``
+          derived from the goal; and
+        * ``throw_time`` is the PLAN's release instant, converted through the SAME
+          perf→ROS crossing :meth:`_announce_toss` uses (``delta_s`` measured against
+          one ``perf_counter`` / ``get_clock().now()`` pair, added as a Duration), so
+          the two paths cannot drift on the one field the tracker keys on.
+
+        Exactly once per throw, and never for a throw that will not happen: it is
+        reached only after an ACCEPTED install, so by the time it publishes, the
+        release is a committed knot on a plan the emitter is already streaming.
+        """
+        now_perf = time.perf_counter()
+        now_ros = self.get_clock().now()
+        delta_s = float(resp.t_release_mono) - now_perf
+        # Build the physics from the plan's own release mark.
+        # ``unified_cycle.announcement_fields`` wants a ``CycleMeta``, which lives in
+        # trajectory_node; the service already reduced it to the wire, so the four
+        # derived fields are recomposed here through the SAME ``ballistics_bc``
+        # gravity the planner pinned the release velocity against — ONE gravity
+        # source on both sides of the wire, which is the property that makes the
+        # announced landing and the planned one the same point rather than two
+        # nearby ones.
+        vel = np.asarray(resp.release_vel_mm_s, dtype=float)
+        throw_xy = self._toss_unified_throw_xy(seq)
+        site = np.array([throw_xy[0], throw_xy[1], _UNIFIED_THROW_CUP_Z_MM])
+        tof = float(seq.flight_time_s)
+        lp = uc.ballistics_bc.position_at(site, vel, tof)
+        lv = uc.ballistics_bc.arrival_velocity(vel, tof)
+        ann = ThrowAnnouncement()
+        ann.header.stamp = now_ros.to_msg()
+        ann.header.frame_id = 'world'
+        ann.thrower_name = self._robot_name
+        ann.target_id = self._robot_name
+        ann.initial_position = Point(x=float(site[0]), y=float(site[1]),
+                                     z=float(site[2]))
+        ann.initial_velocity = Vector3(x=float(vel[0]), y=float(vel[1]),
+                                       z=float(vel[2]))
+        ann.landing_position = Point(x=float(lp[0]), y=float(lp[1]),
+                                     z=float(lp[2]))
+        ann.landing_velocity = Vector3(x=float(lv[0]), y=float(lv[1]),
+                                       z=float(lv[2]))
+        ann.predicted_tof_sec = tof
+        ann.throw_time = (now_ros + rclpy.time.Duration(seconds=delta_s)).to_msg()
+        ann.landing_time = (now_ros + rclpy.time.Duration(
+            seconds=delta_s + tof)).to_msg()
+        landing_time_ros_s = now_ros.nanoseconds * 1e-9 + delta_s + tof
+        with self._lock:
+            # The deferred-reach stash is deliberately NOT written: under unified
+            # there is no deferred A->B reach (the plan already contains the catch),
+            # and a stash nobody reads is a stash somebody will one day trust.
+            state.record_announce = (
+                now_ros.nanoseconds * 1e-9 + delta_s, landing_time_ros_s)
+        self._announce_pub.publish(ann)
+        seq.note_announcement()
+        self.get_logger().info(
+            'unified cycle announced: release in %.3f s, |v| %.3f m/s, '
+            'plan %.1f ms' % (delta_s, float(np.linalg.norm(vel)) / 1000.0,
+                              float(resp.plan_wall_ms)))
+
+    def _tick_unified_extend(self, seq, state, now: float) -> None:
+        """The SAFETY NET: extend a RELEASE-TERMINAL plan before its supersede
+        deadline.
+
+        Under the shipped choreography this never fires, and that is the design:
+        ``_tick_unified_launch`` installs LAUNCH+LANDING as ONE plan, so what is
+        streaming is rest-terminal and owes nothing. It exists for the plans that
+        are not — a bench ``PlanCycle`` call, and Phase 5's STEADY ring, where one
+        cycle's terminal release is the next cycle's window.
+
+        It fires ``_UNIFIED_EXTEND_LEAD_S`` before the deadline TRAJECTORY_NODE
+        published, not before the release: past that deadline the emitter reads
+        the final segment's u1/v1 from the plan's terminal HOLD and the release
+        stroke is commanded to a stop, with no firmware guard to say so.
+
+        TIME-triggered, never evidence-triggered, and for the reason
+        ``_reach_action_if_due`` gives for the legacy deferred reach: release
+        evidence can lag by up to the 0.5 s grace, which would eat most of the
+        flight — and here it would eat the window the ~250 ms solve has to fit in.
+        The instant used is the PLAN's (``t_release_mono``), which is when the ball
+        actually leaves, so the trigger is exact rather than scheduled.
+
+        **BEFORE the release, not after.** See :data:`_UNIFIED_EXTEND_LEAD_S` for
+        the full argument; in one line, ``extend``'s bit-identical-head guarantee
+        is only worth anything while the head is still PLAYING, and asking early
+        costs nothing because the release state the next window is planned from was
+        pinned when the standing plan was gated.
+
+        Fired even with NO release evidence, again like the legacy reach: if
+        something went wrong and no ball left, the extended window carries a seated
+        ball through a catch-shaped carry (the benign-accel class) and the FSM's
+        ``ABORTED_NO_RELEASE`` still cleans up at ``t_release + grace``.
+        """
+        plan = state.unified_plan
+        if plan is None or state.unified_extended:
+            return
+        if not bool(getattr(plan, 'release_terminal', False)):
+            # REST-terminal ⇒ cliff-safe ⇒ nothing owed. This is the shipped
+            # shape: `_tick_unified_launch` installs LAUNCH+LANDING as one plan,
+            # so the machine comes to rest on its own and there is no chain to
+            # keep alive. The branch below is the SAFETY net for a release-
+            # terminal plan (a bench call, a Phase-5 STEADY ring), not the
+            # everyday path.
+            return
+        # The deadline the NODE published, never a local re-derivation: it is a
+        # safety instant, and a second spelling of one is the thing that drifts.
+        deadline = float(getattr(plan, 'supersede_deadline_mono', 0.0) or 0.0)
+        if deadline <= 0.0:
+            return
+        if now < deadline - _UNIFIED_EXTEND_LEAD_S:
+            return
+        state.unified_extended = True
+        session = self._toss_session_ref
+        remaining = (int(getattr(session, 'num_throws', 1))
+                     - int(getattr(session, 'cycle_index', 1)))
+        self._extend_unified_cycle(seq, state, last_cycle=(remaining <= 0))
+
+    def _extend_unified_cycle(self, seq, state, last_cycle: bool) -> None:
+        """Chain the next window onto the release that just passed.
+
+        STEADY while cycles remain, LANDING for the last one — the two shapes that
+        differ only in whether the window ends at another release or at rest. It is
+        requested IMMEDIATELY after the release passes because that is where the
+        budget fits: the window being extended is >= 0.9 s long, so a ~250 ms plan
+        finishes with most of the flight to spare, and the joined plan's head is
+        bit-identical to what the emitter is already streaming, so the install moves
+        no knot that has been sent.
+
+        A refusal is loud and HOLDS THE LAST GOOD PLAN — which for a LAUNCH means
+        the plan's own terminal hold at the release pose. The ball is airborne and
+        the cup is where the planner left it; the cycle then terminalises through the
+        ordinary MISSED/settle ladder rather than through anything new.
+        """
+        catch_xy = self._toss_unified_throw_xy(seq)
+        flight = float(seq.flight_time_s)
+        if last_cycle:
+            kind = PlanCycle.Request.KIND_LANDING
+            # The window ends at rest just after the catch: the catch instant is the
+            # flight time from the release it chains off, and the settle tail is what
+            # is left. One flight plus the LAUNCH window's worth of decel is the
+            # shortest shape that both catches and stops.
+            period = flight + _UNIFIED_LAUNCH_WINDOW_S
+        else:
+            kind = PlanCycle.Request.KIND_STEADY
+            # A STEADY window is release -> catch -> release, so its period IS the
+            # beat and its catch sits a flight time in. The beat is the FSM's own
+            # cadence (see `_unified_beat_s`), so the plan and the session agree on
+            # when the next ball leaves.
+            period = self._unified_beat_s(seq)
+        catch_frac = flight / period if period > 0.0 else 0.0
+        req = self._unified_cycle_request(
+            PlanCycle.Request.MODE_EXTEND, kind,
+            period_s=period, throw_xy_mm=catch_xy, catch_xy_mm=catch_xy,
+            flight_s=flight, catch_frac=catch_frac,
+            catch_vel_mm_s=self._unified_catch_vel_mm_s(flight))
+        resp = self._call_plan_cycle(req)
+        if resp is None or not bool(resp.accepted):
+            detail = ('trajectory/plan_cycle unavailable' if resp is None
+                      else str(resp.message))
+            self.get_logger().error(
+                'unified EXTEND (%s) refused: %s — holding the last good plan; '
+                'the ball is airborne and the cup holds where the planner left it'
+                % ('LANDING' if last_cycle else 'STEADY', detail))
+            return
+        with self._lock:
+            state.unified_plan = resp
+        # A STEADY window's terminal release belongs to the NEXT cycle, so it is
+        # handed to the next cycle rather than re-planned there (see
+        # `_tick_unified_launch`'s chained branch). A LANDING ends at rest and hands
+        # nothing on — the next cycle plans a genuine LAUNCH from a genuinely
+        # stopped machine, which is the shape a quiescent dwell produces.
+        self._toss_unified_chain = None if last_cycle else resp
+        self.get_logger().info(
+            'unified %s extended: duration %.3f s, catch in %.3f s, plan %.1f ms'
+            % ('LANDING' if last_cycle else 'STEADY', float(resp.duration_s),
+               float(resp.t_catch_mono) - time.perf_counter(),
+               float(resp.plan_wall_ms)))
+
+    def _unified_beat_s(self, seq) -> float:
+        """The STEADY window's period — the session's beat, as the SESSION sees it.
+
+        DWELL semantics, not throw-delay semantics, and the distinction is the whole
+        answer: ``TossContinuous`` defines dwell as *previous SCHEDULED LANDING ->
+        next RELEASE* and schedules off it (``TossSessionSequencer.next_release_at``
+        is literally ``landing + dwell_time_s``), while ``throw_delay_s`` only moves
+        the FIRST release. So a beat (release to release) is ``flight + dwell``, read
+        off the live session — not off the cycle, which has no dwell of its own — and
+        the plan's terminal release then names the same instant the session's next
+        cycle does instead of a nearby one.
+
+        No live session (a bench call, a discarded slot) falls back to the flight
+        alone, which is the shortest beat the shape admits; the gate refuses it if
+        the machine cannot hold it.
+        """
+        session = self._toss_session_ref
+        dwell = float(getattr(session, 'dwell_time_s', 0.0) or 0.0)
+        return float(seq.flight_time_s) + dwell
+
+    def _unified_hold_after_abort(self, settle: bool = True) -> None:
+        """The unified transpose of :meth:`_safe_abort`: hold the pose, do not home.
+
+        Owner directive (2026-08-28, re-homed from the superseded MP plan's Q-2): a
+        survived MISS must NOT ``go_home``. Three of ``_safe_abort``'s four rungs are
+        kept and one is dropped, and the split is not arbitrary:
+
+        * ``catch/armed`` False FIRST — kept, and for its original reason: it stands
+          catch_coordinator's prime-retry tick down before anything else happens;
+        * the HAND RETRACT — DROPPED. It is a ``smooth_move_hand`` (kind-3) dispatch,
+          and under a STREAMED ``hand_source`` the firmware refuses every legacy hand
+          command; worse, the hand is not parked at the top of a stroke here because
+          the plan brought it wherever the window ended. The plan IS the retract;
+        * the arm-catch latch lower — kept (the latch is trajectory_node's, not the
+          firmware's, and leaving it up would arm a reach on the next stray target);
+        * ``go_home`` — DROPPED, the directive. The emitter's terminal hold already
+          holds the pose when nobody commands otherwise, so "not calling go_home" is
+          the whole mechanism, exactly as ``_toss_stay`` describes.
+
+        Then, and ONLY when ``settle`` is true, the settle wait:
+        :data:`_UNIFIED_MISS_SETTLE_S`, derived at its definition. It is a BLOCKING
+        wait on the cycle thread, which is where every other rung of this ladder
+        already blocks (each of the calls above waits on an ack), and it is bounded
+        by a constant rather than by an event because the thing being waited for — a
+        dropped ball finishing its bounces — has no sensor on this machine.
+
+        **Why ``settle`` is a parameter and not just what this method does.** The
+        wait buys the NEXT cycle a quiet floor, so it is worth 2.03 s only when
+        there IS a next cycle. This ladder also serves every way a session ENDS —
+        an honoured cancel, the session timeout, rclpy shutting down — and there the
+        wait is 2.03 s of a thread that is already being torn down, added to the
+        operator's stop, buying a quietness nothing will use. Worse on the cancel
+        path specifically: the operator has asked the machine to stop and the goal
+        cannot be reported cancelled until this returns.
+        The retained SAFING rungs above are unconditional in every case — they are
+        what makes the machine safe, and the wait is only about the ball.
+        """
+        self._publish_catch_armed(False)
+        if not self._arm_catch(False):
+            self.get_logger().error(
+                'unified SAFE_ABORT: trajectory/arm_catch lower FAILED — '
+                'trajectory_node force-disarms on any mode change as the backstop')
+        if not settle:
+            self.get_logger().warning(
+                'unified abort: HOLDING the pose (no retract, no go_home); the '
+                '%.2f s ball-settle wait is SKIPPED — the session is ending, so '
+                'no later cycle can spend it' % (_UNIFIED_MISS_SETTLE_S,))
+            return
+        self.get_logger().warning(
+            'unified survived MISS: HOLDING the pose (no retract, no go_home) and '
+            'waiting %.2f s for the ball environment to settle before the session '
+            'resumes' % (_UNIFIED_MISS_SETTLE_S,))
+        deadline = time.perf_counter() + _UNIFIED_MISS_SETTLE_S
+        while rclpy.ok() and time.perf_counter() < deadline:
+            time.sleep(min(TOSS_LOOP_PERIOD_S,
+                           max(0.0, deadline - time.perf_counter())))
+
     def _dispatch_toss_throw(self, seq, state=None):
         """THE throw dispatch (set_hand_traj_cmd traj_type=0) — single-shot,
         tri-state, NEVER retried (unlike the idempotent smooth-moves): an ambiguous
@@ -6768,7 +7818,7 @@ class ReloadCoordinatorNode(Node):
                 'next tick and its announcement must meet an armed coordinator')
         self._release_toss_holds(state)
 
-    def _toss_safe_abort(self, state=None):
+    def _toss_safe_abort(self, state=None, *, settle=True):
         """Toss SAFE_ABORT: the reload safing ladder verbatim (catch/armed False
         FIRST so the retry tick stands down, telemetry-verified retract — which
         deliberately also CLEARS any armed throw stroke on the last-writer-wins
@@ -6783,6 +7833,14 @@ class ReloadCoordinatorNode(Node):
         ``state`` is the cycle's :class:`TossCycleState` (None ⇒ the committed
         slot); the pretilt-hold release is keyed on its ``pretilt_hold_raised``.
 
+        ``settle`` reaches only the UNIFIED branch, and inside it only the
+        ball-settle wait (see :meth:`_unified_hold_after_abort`): true from the
+        FSM's own ``SAFE_ABORT`` terminal, where the session goes on to run another
+        cycle over whatever the dropped ball is doing, and false from
+        :meth:`_safe_toss_on_early_exit`, where the session is ENDING and 2.03 s of
+        blocking would only delay an operator's cancel. The safing itself is
+        unconditional either way, and the legacy branch has no such wait at all.
+
         **S7:** the drain runs FIRST, ahead of the whole safing ladder — the
         staged slot is discarded and the session arming lowered before the
         retract, the latch lower and the ``go_home``. That preserves the
@@ -6791,7 +7849,17 @@ class ReloadCoordinatorNode(Node):
         because the drain's first act is exactly that publish."""
         state = self._toss_committed if state is None else state
         self._drain_pipeline_and_disarm()
-        self._safe_abort()
+        if self._toss_unified_live:
+            # ── The owner directive, at its single enforcement point ──
+            # Every unified teardown reaches this method (the FSM's SAFE_ABORT and
+            # `_safe_toss_on_early_exit` both route through it), so gating HERE
+            # covers cancel, timeout, shutdown and the survived MISS with one
+            # branch — rather than at each of the six ladders, where the next one
+            # added would miss it. See `_unified_hold_after_abort` for which of
+            # `_safe_abort`'s rungs survive and why.
+            self._unified_hold_after_abort(settle)
+        else:
+            self._safe_abort()
         self._release_toss_holds(state)
 
     def _safe_toss_on_early_exit(self, seq, state=None):
@@ -6815,7 +7883,12 @@ class ReloadCoordinatorNode(Node):
             self.get_logger().warning(
                 'Toss early exit while prepared — safing (retract + lower latch '
                 '+ recenter + release prime hold).')
-            self._toss_safe_abort(state)
+            # `settle=False`: every path into this method is a session that is
+            # ENDING (cancel honoured, session timeout, rclpy shutdown, mode
+            # change), so the unified ball-settle wait would buy quiet for a cycle
+            # that will never run — while making an operator's cancel take 2.03 s
+            # longer to be reported.
+            self._toss_safe_abort(state, settle=False)
 
     def _log_toss_outcome(self, result) -> None:
         """The single authoritative per-toss outcome line (the reload discipline:
@@ -7845,6 +8918,14 @@ class ReloadCoordinatorNode(Node):
         # it could command; the exact trim is the cycle's business.
         with self._lock:
             ilc_loaded = self._toss_ilc is not None
+        # ── THE unified resolution, read ONCE for the whole session ─────────
+        # Both keys, resolved here and latched for the try/finally below. It is a
+        # SINGLE READ for exactly the reason `pipelined` is (see its argument
+        # below): the value decides which planner owns the hand, and a session
+        # that changed planners halfway would put the legacy stroke engine and
+        # the streamed plan on one axis — the dual-mastery class the firmware's
+        # `hand_source` latch exists to make structurally impossible.
+        unified = self._unified_enabled(req)
         # An accept-time REJECTED_CHAIN_UNREACHABLE pre-check sat here until
         # 2026-08-29. It compared _predicted_chain_site_mm against the lateral
         # planning box, refusing a chained session whose cycle-2 throw site would
@@ -7888,7 +8969,25 @@ class ReloadCoordinatorNode(Node):
             # accept gate that admitted its dwell was the pipelined or the
             # serial one, and a mid-session flip would leave a cadence accepted
             # under a floor the machine is no longer running.
-            pipelined=bool(hw.JB_OP_TOSS_PIPELINE_ENABLED),
+            #
+            # ── UNIFIED FORCES IT OFF, and that is a structural claim ──
+            # The two-slot pipeline exists to STAGE cycle N+1's whole preamble
+            # inside cycle N's flight. A unified CyclePlan already OWNS that
+            # interval — release, carry, catch and the next release are one
+            # trajectory on one clock — so running both would give one interval
+            # two owners, which is the class the pipeline lives inside rather
+            # than a cadence choice. It is forced here, at the single read, so a
+            # session cannot be admitted under a pipelined dwell floor and then
+            # run serially (or the reverse).
+            pipelined=(bool(hw.JB_OP_TOSS_PIPELINE_ENABLED)
+                       and not unified),
+            # The SAME resolution `_build_toss_cycle` hands the cycle FSM, handed
+            # down rather than re-read. It reaches one thing on the session: the
+            # ARM_WINDOW carve-out inside `floor_event_vel_mps`, which has to ask
+            # the same envelope question `_ilc_vel_trim_refusal` will actually
+            # apply — otherwise the session's cadence floors are computed against a
+            # slowest release the apply seam would refuse to command.
+            unified=unified,
             on_empty_cup=on_empty_cup,
             max_reloads=(max_reloads_raw if max_reloads_raw > 0
                          else int(hw.JB_OP_TOSS_SESSION_MAX_RELOADS)),
@@ -7939,6 +9038,57 @@ class ReloadCoordinatorNode(Node):
             self._toss_session_live = True
             self._toss_session_center_mm = None
             self._toss_session_armed = False
+            # ── S-UNIFIED ── The hand-mastery precondition, session-scoped.
+            # Inside the `try` for the same reason `_toss_session_live` is: the
+            # `finally` is what lowers the declaration and states where the latch
+            # was left, so no failure between here and the loop can skip either.
+            #
+            # FIRST of everything the session does, and that ordering is the whole
+            # of what this node can do about the firmware's rule. Nothing the
+            # session arms has happened yet — no `arm_catch`, no PREPARE, no plan,
+            # no cycle — so this assertion is taken against the machine state the
+            # OPERATOR set up before ACTIVATE. It cannot itself flip the latch: the
+            # setpoint output is armed for the whole ACTIVE state and the firmware
+            # refuses a transition under it (see `_HAND_SOURCE_RECOVERY`), so a
+            # session that reaches here with the latch LEGACY is refused rather
+            # than "switched".
+            #
+            # The declaration comes SECOND: `catch/unified_mode` is what stops
+            # catch_coordinator arming a legacy stroke, and it must not go out
+            # before the firmware would refuse one anyway.
+            self._toss_unified_live = unified
+            self._toss_hand_source_streamed = False
+            self._toss_unified_chain = None
+            if unified:
+                ok, why = self._set_hand_source(True)
+                if not ok:
+                    # FAIL CLOSED, with its own outcome. With the latch still
+                    # LEGACY the firmware DISCARDS every Setpoint hand channel —
+                    # counted, but invisible to the plan — so the platform would
+                    # fly the whole cycle with a dead hand and a seated ball.
+                    self.get_logger().error(
+                        'TossContinuous %s: %s — refusing the session before '
+                        'anything is armed or commanded. %s'
+                        % (_OUTCOME_HAND_SOURCE, why,
+                           self._HAND_SOURCE_RECOVERY))
+                    # `outcome_detail`'s shape: CODE(SUBCODE: detail), so a guard
+                    # can match on (code, subcode) rather than on the whole string.
+                    self._finish_session(
+                        result, session,
+                        '{}(REFUSED: {})'.format(_OUTCOME_HAND_SOURCE, why))
+                    goal_handle.abort()
+                    return result
+                self._toss_hand_source_streamed = True
+                self._publish_unified_mode(True)
+                # Pay the cold-solve cost HERE, where it is free. See
+                # `_unified_warm_planner` — without it cycle 1 of every session
+                # solves ~8x slower than the rest and releases past the FSM's
+                # grace.
+                self._unified_warm_planner()
+                self.get_logger().info(
+                    'unified 7-DoF cycle mode ENGAGED for this session: '
+                    'hand_source STREAMED, catch/unified_mode raised, pipeline '
+                    'forced OFF, reactive catch arming suppressed')
             # The drain's only way to reach the session (see the attribute's
             # comment in __init__): a staged slot it discards has to be given
             # back to the session's slot bookkeeping, and six teardown ladders
@@ -8087,6 +9237,21 @@ class ReloadCoordinatorNode(Node):
                                 lambda phase: self._publish_session_feedback(
                                     goal_handle, session, phase)),
                             state=cycle_state)
+                        # ── The unified refusal, re-labelled at its ONE seam ──
+                        # A plan refused at the launch point leaves the FSM to
+                        # terminalise through its own release-window guard
+                        # (ABORTED_CANT_MAKE_RELEASE), which is the correct LADDER
+                        # — nothing was armed, nothing flew, the safing runs — but
+                        # the wrong NAME: it says "the machine ran out of lead"
+                        # when what happened is "the planner refused this cycle,
+                        # and here is which layer said so". The ladder has already
+                        # run by the time this executes, so only the string moves.
+                        # Legacy is untouched: `unified_reject` is written on no
+                        # legacy path.
+                        if cycle_state.unified_reject:
+                            cycle_result = dataclass_replace(
+                                cycle_result,
+                                outcome=str(cycle_state.unified_reject))
                     finally:
                         # One cycle's node state never outlives its cycle, even
                         # on the raising path (the session's own finally is the
@@ -8102,9 +9267,28 @@ class ReloadCoordinatorNode(Node):
                     # and it is read HERE, after the cycle has torn down, so it
                     # describes the cup the retry would stroke over rather than
                     # some earlier moment's belief.
+                    # ── The instants the session schedules the NEXT cycle from ──
+                    # Legacy: the FSM's own scheduled release, because the FSM is
+                    # the announcer and its commanded release IS the prediction.
+                    # UNIFIED: the PLAN's release, for exactly the same reason one
+                    # level down — the plan is the announcer, and its release is
+                    # the instant the ball actually leaves. The two differ by the
+                    # solve time, and the session's dwell is measured landing → next
+                    # release, so scheduling off the FSM's number under unified
+                    # would build that solve time into every beat of the session.
+                    # The OBSERVED landing is still never used: it is what the
+                    # tracker is least trustworthy about, and a cadence must not
+                    # inherit that noise.
+                    t_rel_sched = float(seq.t_release)
+                    plan_resp = cycle_state.unified_plan
+                    if plan_resp is not None:
+                        t_plan_rel = float(getattr(plan_resp, 't_release_mono',
+                                                   0.0) or 0.0)
+                        if t_plan_rel > 0.0:
+                            t_rel_sched = t_plan_rel
                     session.note_cycle_result(
-                        cycle_result, seq.t_release,
-                        seq.t_release + float(seq.flight_time_s),
+                        cycle_result, t_rel_sched,
+                        t_rel_sched + float(seq.flight_time_s),
                         ball_evidence=self._ball_sensor.evidence(
                             time.perf_counter()))
                     if exit_kind != 'fsm':
@@ -8261,6 +9445,55 @@ class ReloadCoordinatorNode(Node):
             # drained already, and STAY (the chaining terminal) deliberately has
             # not.
             self._drain_pipeline_and_disarm()
+            # ── S-UNIFIED, the terminal ── The declaration comes DOWN; the
+            # hand-mastery latch is LEFT WHERE THE OPERATOR PUT IT.
+            #
+            # NO HAND-BACK IS ATTEMPTED, and that is not a relaxation — it is the
+            # only honest reading of who owns the latch. `hand_source.cpp:60`
+            # refuses ANY real transition while `mpc_active` is set, and the
+            # setpoint output is armed for the WHOLE of the ACTIVE state (the
+            # orchestrator arms it on ACTIVE entry and is its sole caller,
+            # `ARMING_CONTRACT.md` § A2) — a TossContinuous session runs entirely
+            # inside that. So a session can no more hand the latch back than it
+            # could take it: the STREAMED call at session start is a fail-closed
+            # VERIFICATION of a precondition set while disarmed (row 19(c) of the
+            # bench runbook, `hand_stream_bench.py --source-only`), and a
+            # LEGACY_STROKE call here could only ever be refused.
+            #
+            # It USED TO BE ATTEMPTED, and the refusal replaced the session
+            # terminal with `REJECTED_HAND_SOURCE(STUCK_STREAMED: …)`. That is
+            # wrong twice over: the latch is exactly where the operator left it
+            # (nothing is stuck), and since the refusal is the EXPECTED answer
+            # while the wire is armed, every successful session ended as a
+            # rejection with `success=False` — an alarm that fires on the happy
+            # path is an alarm the operator learns to read past.
+            #
+            # What replaces it is one INFO line and a note on the result: the
+            # latch is still STREAMED, and returning it is an operator action
+            # with the setpoint output disarmed.
+            #
+            # The DECLARATION still comes down, and unconditionally on
+            # `_toss_unified_live` rather than on `unified`, so it covers every
+            # way a session can end including the hand-source refusal above. A
+            # stale `catch/unified_mode` True only makes catch_coordinator do
+            # LESS (it declines to arm), but "less" is still not what a legacy
+            # goal needs.
+            if self._toss_unified_live:
+                # The STREAMED sentence is gated on the VERIFICATION, not on the
+                # session being unified: on the refusal path above the latch is
+                # whatever the bridge said no about, and "REMAINS STREAMED" would
+                # then state the one thing the refusal disproved.
+                self.get_logger().info(
+                    'unified 7-DoF cycle mode DISENGAGED: catch/unified_mode '
+                    'lowered.%s'
+                    % (self._HAND_SOURCE_TERMINAL_NOTE
+                       if self._toss_hand_source_streamed else '',))
+                self._publish_unified_mode(False)
+            self._toss_unified_live = False
+            # AFTER the session outcome line, which reads it (`_finish_session`
+            # runs inside the `try`, this `finally` after it).
+            self._toss_hand_source_streamed = False
+            self._toss_unified_chain = None
             self._toss_session_live = False
             self._toss_session_ref = None
             self._clear_toss_cycle_state()
@@ -9191,6 +10424,13 @@ class ReloadCoordinatorNode(Node):
             parts.append(f'dwell {min(dwells):.2f}-{max(dwells):.2f} s')
         if int(getattr(result, 'reloads_used', 0) or 0):
             parts.append(f'reloads {int(result.reloads_used)}')
+        # The latch the session leaves behind, carried in the ONE line an operator
+        # reads at the end of a goal. APPENDED to the stats, never folded into
+        # `result.outcome`: the latch is a machine-state FACT, not a verdict on
+        # the session, and putting it in the outcome would turn a clean COMPLETED
+        # into something every guard matching on the bare code has to re-learn.
+        if self._toss_hand_source_streamed:
+            parts.append('hand_source STREAMED')
         line = (f'TossContinuous {result.outcome} ({", ".join(parts)}); '
                 f'cycles: {list(result.per_cycle_outcomes)}')
         if result.success:

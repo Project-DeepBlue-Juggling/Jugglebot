@@ -301,12 +301,25 @@ class CupState:
     that release happened BEFORE this window and only its axis survives into it.
     ``None`` (or world +z) is the flat cup, for which the detach constraint
     reduces exactly to ``acc_xy == 0``.
+
+    ``post_release`` says whether this window actually FOLLOWS a release, and it
+    is what decides whether the detach-cone equalities are assembled at all. It
+    defaults to ``True`` because that is the only case v1 had: the steady-state
+    window starts the instant a ball leaves the cup, so knots ``1..n_detach``
+    must keep the cup's acceleration collinear with ``detach_axis`` or the ball
+    gets a lateral shove on its way out. A window that does NOT follow a release
+    — a launch from rest, or the tail half of a mid-cycle re-plan — has no ball
+    leaving, and imposing those rows there is not conservative: it pins the
+    *acceleration direction* of the first two knots for no physical reason, which
+    on a launch forbids the cup from accelerating laterally out of rest at all.
+    Set it False for those windows.
     """
 
     pos: np.ndarray
     vel: np.ndarray
     acc: np.ndarray
     detach_axis: Optional[np.ndarray] = None
+    post_release: bool = True
 
 
 @dataclasses.dataclass
@@ -335,6 +348,22 @@ class CupCyclePlan:
     planned release velocity. ``warm_start`` is an additive trailing field the
     sim dataclass does not have (default ``None``), carrying the solver working
     set for the next cycle.
+
+    **The two sentinels for a window that lacks an event** (see
+    :func:`plan_window`, which accepts 0 or 1 of each):
+
+    * ``catch_k == -1`` — no catch in this window. Every consumer in the tree
+      already tests ``0 <= catch_k`` before using it (``cup_realize.
+      tilt_schedule``'s catch pin, ``feasibility.validate_cycle``'s runway
+      pass), so the sentinel needs no new branches downstream.
+    * ``takeoff_vel == [0, 0, 0]`` — no throw in this window (the terminal
+      condition is rest, not a release). ZEROS rather than ``None`` because the
+      one consumer of this field is ``tilt_geometry.tilt_to_throw``, which maps
+      a zero-magnitude velocity to the LEVEL tilt ``(0, 0)`` — exactly the right
+      terminal cup attitude for a plan that ends at rest — whereas ``None``
+      would raise a ``TypeError`` inside ``np.asarray`` at every existing call
+      site. A caller that must distinguish "no throw" from "a throw with zero
+      take-off velocity" cannot: the latter is not a throw.
     """
 
     pos: np.ndarray
@@ -460,6 +489,46 @@ def _is_level(detach_axis) -> bool:
                            [0.0, 0.0, 1.0], atol=1e-9))
 
 
+def _as_site(value, name: str) -> np.ndarray:
+    """A finite ``(3,)`` position, or a ``ValueError`` naming the field."""
+    if value is None:
+        raise ValueError(
+            "%s is required for a window with no throw: the terminal condition "
+            "is REST at a pinned site, and there is no event to read it from"
+            % name)
+    arr = np.asarray(value, dtype=float).reshape(-1)
+    if arr.shape != (3,):
+        raise ValueError("%s must be a 3-vector, got shape %s"
+                         % (name, np.shape(value)))
+    if not np.all(np.isfinite(arr)):
+        raise ValueError("%s must be finite, got %r" % (name, arr.tolist()))
+    return arr
+
+
+def _gate_settle_site(settle: np.ndarray, cfg) -> None:
+    """Refuse a rest site outside the workspace boxes, WITH the numbers.
+
+    The terminal position equality and the knot-``n`` workspace box rows are
+    both hard, so a settle site outside the box makes the program infeasible —
+    but infeasible in the worst available way: the dual step runs to infinity a
+    hundred iterations deep and the operator gets ``INFEASIBLE`` with no clue
+    which of thirty knobs is wrong. Same reasoning as the analytic runway gate.
+    """
+    xy_box = float(_cfg(cfg, 'workspace_xy_m'))
+    z_min = float(_cfg(cfg, 'z_min_m'))
+    z_max = float(_cfg(cfg, 'z_max_m'))
+    if abs(settle[0]) > xy_box or abs(settle[1]) > xy_box:
+        raise CupCycleInfeasible(
+            "settle site xy (%.4f, %.4f) m is outside the +/-%.4f m workspace "
+            "box the same window's knots are held inside"
+            % (settle[0], settle[1], xy_box), reason='SETTLE_SITE')
+    if not z_min <= settle[2] <= z_max:
+        raise CupCycleInfeasible(
+            "settle site z %.4f m is outside the cup box [%.4f, %.4f] m the "
+            "same window's knots are held inside"
+            % (settle[2], z_min, z_max), reason='SETTLE_SITE')
+
+
 # ---------------------------------------------------------------------------
 # QP assembly
 # ---------------------------------------------------------------------------
@@ -479,14 +548,31 @@ class _Program:
     takeoff_vel: np.ndarray
 
 
-def _assemble(state0: CupState, throw: ThrowEvent, catch: CatchEvent,
-              period_s: float, cfg) -> _Program:
-    """Transcribe one cycle into a dense convex QP.
+def _assemble(state0: CupState, throw: Optional[ThrowEvent],
+              catch: Optional[CatchEvent],
+              period_s: float, cfg,
+              settle_site: Optional[np.ndarray] = None) -> _Program:
+    """Transcribe one window into a dense convex QP.
 
     Decision variables are the cup's per-axis jerk over ``n_steps`` knots,
     stacked axis-major. Every term below has a one-to-one counterpart in
     ``sim.juggle_planner.plan_cup_cycle``; the only addition is the catch-runway
     inequality row.
+
+    ``throw`` and ``catch`` are each optional (see :func:`plan_window`). The
+    three switches are structural and are the whole of the generalisation:
+
+    * **no throw** → the terminal 9 rows pin ``pos == settle_site``, ``vel == 0``
+      and ``acc == 0`` instead of the release triple (site / take-off velocity /
+      ``acc == g``);
+    * **no catch** → the catch-position equality, the soft velocity match, the
+      dwell term and the runway row are all absent, and ``catch_k`` is ``-1``;
+    * **not post-release** → the detach-cone equalities are absent.
+
+    Row ORDER is preserved exactly (terminal, then detach, then catch), and each
+    block is emitted under the same expression it always was, so a window with a
+    throw + a catch + a post-release start assembles the byte-identical program
+    v1 assembled. That is what keeps the T-U2 parity fixtures exact.
     """
     dt = float(_cfg(cfg, 'dt'))
     n = int(round(period_s / dt))
@@ -510,98 +596,134 @@ def _assemble(state0: CupState, throw: ThrowEvent, catch: CatchEvent,
         H[sl, sl] += 2.0 * w * (Aa.T @ Aa)
         f[sl] += 2.0 * w * (Aa.T @ ca[:, a])
 
-    # ---- the catch, at the INTERPOLATED touch-down time --------------------
-    catch_time_s = float(catch.t_s)
-    k_td = max(0, min(int(np.floor(catch_time_s / dt)), n - 1))
-    d_t = catch_time_s - k_td * dt
-
-    # A catch inside the detach block is RANK-DEFICIENT, not merely awkward. The
-    # detach equalities pin the acceleration at knots 1..n_detach, and their jerk
-    # support is the leading variables 0..n_detach-1; the interpolated catch-
-    # position row reaches only 0..k_td. With k_td <= n_detach those n_detach + 1
-    # equality rows (per axis, on the level path) live on a support too small to
-    # carry them, the KKT matrix is singular, and the solve is meaningless. Refuse
-    # here with the numbers rather than let it surface as a singular working set
-    # deep inside the solver — the same reasoning as the analytic runway gate.
     n_detach = int(_cfg(cfg, 'n_detach'))
-    if k_td <= n_detach:
-        raise CupCycleInfeasible(
-            "catch at t=%.3fs falls inside the %d-knot detach block — the "
-            "catch-position equality is rank-deficient against the detach rows"
-            % (catch_time_s, n_detach), reason='CATCH_TOO_EARLY')
-
-    e_td = np.zeros(n)
-    e_td[k_td] = 1.0
-    r_ptd = (Ap[k_td] + Av[k_td] * d_t + 0.5 * Aa[k_td] * d_t ** 2
-             + (d_t ** 3 / 6.0) * e_td)
-    c_ptd = cp[k_td] + cv[k_td] * d_t + 0.5 * ca[k_td] * d_t ** 2
-    r_vtd = Av[k_td] + Aa[k_td] * d_t + 0.5 * d_t ** 2 * e_td
-    c_vtd = cv[k_td] + ca[k_td] * d_t
-
-    # Velocity-matched catch, split by morphology axis (soft, as in the sim).
-    catch_vel = np.asarray(catch.vel, dtype=float)
-    lat_ratio = float(_cfg(cfg, 'catch_vel_ratio'))
+    catch_pos = None
     z_ratio = float(_cfg(cfg, 'catch_slider_vel_ratio'))
-    v_target = np.array([lat_ratio * catch_vel[0], lat_ratio * catch_vel[1],
-                         z_ratio * catch_vel[2]])
-    v_weights = [float(_cfg(cfg, 'catch_vel_weight'))] * 2 \
-        + [float(_cfg(cfg, 'catch_slider_vel_weight'))]
-    for a in range(3):
-        sl = slice(a * n, (a + 1) * n)
-        H[sl, sl] += 2.0 * v_weights[a] * np.outer(r_vtd, r_vtd)
-        f[sl] += 2.0 * v_weights[a] * (c_vtd[a] - v_target[a]) * r_vtd
+    k_td = -1
 
-    # Lateral DWELL at the catch (opt-in; disabled by default in both planners).
-    dwell_w = float(_cfg(cfg, 'catch_dwell_weight'))
-    dwell_pre = int(_cfg(cfg, 'catch_dwell_pre'))
-    dwell_post = int(_cfg(cfg, 'catch_dwell_post'))
-    catch_pos = np.asarray(catch.site, dtype=float)
-    if dwell_w > 0.0 and (dwell_pre or dwell_post):
-        for k in range(max(0, k_td - dwell_pre),
-                       min(n + 1, k_td + dwell_post + 1)):
-            for a in range(2):
-                sl = slice(a * n, (a + 1) * n)
-                H[sl, sl] += 2.0 * dwell_w * np.outer(Ap[k], Ap[k])
-                f[sl] += 2.0 * dwell_w * (cp[k, a] - catch_pos[a]) * Ap[k]
+    if catch is not None:
+        # ---- the catch, at the INTERPOLATED touch-down time ----------------
+        catch_time_s = float(catch.t_s)
+        k_td = max(0, min(int(np.floor(catch_time_s / dt)), n - 1))
+        d_t = catch_time_s - k_td * dt
+
+        # A catch inside the detach block is RANK-DEFICIENT, not merely awkward.
+        # The detach equalities pin the acceleration at knots 1..n_detach, and
+        # their jerk support is the leading variables 0..n_detach-1; the
+        # interpolated catch-position row reaches only 0..k_td. With
+        # k_td <= n_detach those n_detach + 1 equality rows (per axis, on the
+        # level path) live on a support too small to carry them, the KKT matrix
+        # is singular, and the solve is meaningless. Refuse here with the numbers
+        # rather than let it surface as a singular working set deep inside the
+        # solver — the same reasoning as the analytic runway gate.
+        #
+        # With NO detach rows (``post_release`` False) that argument is empty, but
+        # the floor does not drop to zero: at ``k_td == 0`` the catch-position row
+        # is ``(d_t³/6)·e_0`` alone, which vanishes identically when the catch
+        # lands exactly on knot 0 and would then be a zero row divided by a zero
+        # norm in the scaling below. So the floor is ``k_td >= 1`` there.
+        if state0.post_release and k_td <= n_detach:
+            raise CupCycleInfeasible(
+                "catch at t=%.3fs falls inside the %d-knot detach block — the "
+                "catch-position equality is rank-deficient against the detach "
+                "rows" % (catch_time_s, n_detach), reason='CATCH_TOO_EARLY')
+        if not state0.post_release and k_td <= 0:
+            raise CupCycleInfeasible(
+                "catch at t=%.3fs falls on the window's first knot — the "
+                "catch-position equality has no jerk support there"
+                % catch_time_s, reason='CATCH_TOO_EARLY')
+
+        e_td = np.zeros(n)
+        e_td[k_td] = 1.0
+        r_ptd = (Ap[k_td] + Av[k_td] * d_t + 0.5 * Aa[k_td] * d_t ** 2
+                 + (d_t ** 3 / 6.0) * e_td)
+        c_ptd = cp[k_td] + cv[k_td] * d_t + 0.5 * ca[k_td] * d_t ** 2
+        r_vtd = Av[k_td] + Aa[k_td] * d_t + 0.5 * d_t ** 2 * e_td
+        c_vtd = cv[k_td] + ca[k_td] * d_t
+
+        # Velocity-matched catch, split by morphology axis (soft, as in the sim).
+        catch_vel = np.asarray(catch.vel, dtype=float)
+        lat_ratio = float(_cfg(cfg, 'catch_vel_ratio'))
+        v_target = np.array([lat_ratio * catch_vel[0], lat_ratio * catch_vel[1],
+                             z_ratio * catch_vel[2]])
+        v_weights = [float(_cfg(cfg, 'catch_vel_weight'))] * 2 \
+            + [float(_cfg(cfg, 'catch_slider_vel_weight'))]
+        for a in range(3):
+            sl = slice(a * n, (a + 1) * n)
+            H[sl, sl] += 2.0 * v_weights[a] * np.outer(r_vtd, r_vtd)
+            f[sl] += 2.0 * v_weights[a] * (c_vtd[a] - v_target[a]) * r_vtd
+
+        # Lateral DWELL at the catch (opt-in; disabled by default in both planners).
+        dwell_w = float(_cfg(cfg, 'catch_dwell_weight'))
+        dwell_pre = int(_cfg(cfg, 'catch_dwell_pre'))
+        dwell_post = int(_cfg(cfg, 'catch_dwell_post'))
+        catch_pos = np.asarray(catch.site, dtype=float)
+        if dwell_w > 0.0 and (dwell_pre or dwell_post):
+            for k in range(max(0, k_td - dwell_pre),
+                           min(n + 1, k_td + dwell_post + 1)):
+                for a in range(2):
+                    sl = slice(a * n, (a + 1) * n)
+                    H[sl, sl] += 2.0 * dwell_w * np.outer(Ap[k], Ap[k])
+                    f[sl] += 2.0 * dwell_w * (cp[k, a] - catch_pos[a]) * Ap[k]
 
     # Throw COAST (opt-in; soft pull of the post-throw vertical accel to 0).
+    # Gated on ``post_release`` because the accel it pulls to zero is the one
+    # left over from the release the window FOLLOWS — on a launch-from-rest
+    # window there is no such release and the term would just bias the first
+    # knots of an ordinary acceleration profile toward zero. Both planners ship
+    # it off (``throw_coast_weight = 0``), so no existing solve is affected.
     coast_knots = int(_cfg(cfg, 'throw_coast_knots'))
     coast_w = float(_cfg(cfg, 'throw_coast_weight'))
-    if coast_knots > 0 and coast_w > 0.0:
+    if state0.post_release and coast_knots > 0 and coast_w > 0.0:
         sl = slice(2 * n, 3 * n)
         for i in range(1, min(coast_knots, n) + 1):
             H[sl, sl] += 2.0 * coast_w * np.outer(Aa[i], Aa[i])
             f[sl] += 2.0 * coast_w * ca[i, 2] * Aa[i]
 
     # ---- hard equalities ---------------------------------------------------
-    throw_pos = np.asarray(throw.site, dtype=float)
-    v_takeoff = takeoff_velocity(throw_pos, np.asarray(throw.target, float),
-                                 float(throw.flight_s))
     rows, rhs = [], []
-    for a in range(3):                       # throw: pos, vel, acc == g
-        rows.append(_axis_row(n, a, Ap[n])); rhs.append(throw_pos[a] - cp[n, a])
-        rows.append(_axis_row(n, a, Av[n])); rhs.append(v_takeoff[a] - cv[n, a])
-        rows.append(_axis_row(n, a, Aa[n])); rhs.append(GRAVITY[a] - ca[n, a])
-
-    if _is_level(state0.detach_axis):
-        for i in range(1, n_detach + 1):     # level: acc_xy == 0
-            for a in range(2):
-                rows.append(_axis_row(n, a, Aa[i]))
-                rhs.append(0.0 - ca[i, a])
+    if throw is not None:
+        throw_pos = np.asarray(throw.site, dtype=float)
+        v_takeoff = takeoff_velocity(throw_pos, np.asarray(throw.target, float),
+                                     float(throw.flight_s))
+        for a in range(3):                   # throw: pos, vel, acc == g
+            rows.append(_axis_row(n, a, Ap[n])); rhs.append(throw_pos[a] - cp[n, a])
+            rows.append(_axis_row(n, a, Av[n])); rhs.append(v_takeoff[a] - cv[n, a])
+            rows.append(_axis_row(n, a, Aa[n])); rhs.append(GRAVITY[a] - ca[n, a])
     else:
-        u1, u2 = _perpendicular_basis(state0.detach_axis)
-        for i in range(1, n_detach + 1):     # tilted: (acc − g) ∥ axis, rank 2
-            for u in (u1, u2):
-                row = np.zeros(nvar)
-                b = 0.0
-                for a in range(3):
-                    row[a * n:(a + 1) * n] = u[a] * Aa[i]
-                    b -= u[a] * (ca[i, a] - GRAVITY[a])
-                rows.append(row); rhs.append(b)
+        # Terminal REST. The three rows per axis are the same three rows in the
+        # same order — position, velocity, acceleration — so a caller reading
+        # ``Aeq`` by index sees one shape, not two. ``acc == 0`` (not ``g``) is
+        # the point: at rest the cup is HELD, and the ball, if any, stays seated.
+        v_takeoff = np.zeros(3)
+        settle = _as_site(settle_site, 'settle_site')
+        _gate_settle_site(settle, cfg)
+        for a in range(3):
+            rows.append(_axis_row(n, a, Ap[n])); rhs.append(settle[a] - cp[n, a])
+            rows.append(_axis_row(n, a, Av[n])); rhs.append(0.0 - cv[n, a])
+            rows.append(_axis_row(n, a, Aa[n])); rhs.append(0.0 - ca[n, a])
 
-    for a in range(3):                       # interpolated catch position
-        rows.append(_axis_row(n, a, r_ptd))
-        rhs.append(catch_pos[a] - c_ptd[a])
+    if state0.post_release:
+        if _is_level(state0.detach_axis):
+            for i in range(1, n_detach + 1):     # level: acc_xy == 0
+                for a in range(2):
+                    rows.append(_axis_row(n, a, Aa[i]))
+                    rhs.append(0.0 - ca[i, a])
+        else:
+            u1, u2 = _perpendicular_basis(state0.detach_axis)
+            for i in range(1, n_detach + 1):     # tilted: (acc − g) ∥ axis, rank 2
+                for u in (u1, u2):
+                    row = np.zeros(nvar)
+                    b = 0.0
+                    for a in range(3):
+                        row[a * n:(a + 1) * n] = u[a] * Aa[i]
+                        b -= u[a] * (ca[i, a] - GRAVITY[a])
+                    rows.append(row); rhs.append(b)
+
+    if catch is not None:
+        for a in range(3):                   # interpolated catch position
+            rows.append(_axis_row(n, a, r_ptd))
+            rhs.append(catch_pos[a] - c_ptd[a])
 
     Aeq = np.array(rows)
     beq = np.array(rhs)
@@ -643,7 +765,7 @@ def _assemble(state0: CupState, throw: ThrowEvent, catch: CatchEvent,
     cols = [-BR.T, BR.T]
     rhss = [BC - BHI, BLO - BC]
 
-    if _cfg(cfg, 'catch_runway_enabled'):
+    if catch is not None and _cfg(cfg, 'catch_runway_enabled'):
         floor_m, need_m = catch_runway_requirement(catch_vel, cfg)
         # The exact analytic gate: the catch-position equality pins the cup's
         # touch-down height to catch_pos[2], so the runway there is decided by
@@ -891,6 +1013,7 @@ def _solve_qp(prog: _Program, warm: Optional[SolverState], max_iter: int,
 def plan_window(events: Sequence, state0: CupState,
                 cfg: Optional[CupCycleConfig] = None, *,
                 period_s: Optional[float] = None,
+                settle_site: Optional[np.ndarray] = None,
                 warm_start: Optional[SolverState] = None) -> CupCyclePlan:
     """Plan the cup over one horizon window from an ordered event timeline.
 
@@ -898,28 +1021,63 @@ def plan_window(events: Sequence, state0: CupState,
     ----------
     events
         Ordered (non-decreasing ``t_s``) :class:`ThrowEvent` /
-        :class:`CatchEvent` objects, times measured from the window start. **v1
-        accepts exactly one throw and one catch** — the throw is the terminal
-        release and its ``t_s`` sets the window length unless ``period_s``
-        overrides it. More than one of either raises ``NotImplementedError``:
-        the timeline shape is already the 3-ball interface, only the solver's
-        constraint generation is not, and a silent single-ball approximation of
-        a 3-ball request would be far worse than a refusal.
+        :class:`CatchEvent` objects, times measured from the window start. **At
+        most one throw and at most one catch** — every combination of 0-or-1 of
+        each is accepted, and those four combinations are the four window kinds
+        a session needs (see below). More than one of either still raises
+        ``NotImplementedError``: the timeline shape is already the 3-ball
+        interface, only the solver's constraint generation is not, and a silent
+        single-ball approximation of a 3-ball request would be far worse than a
+        refusal.
     state0
         Cup boundary condition at the window start, including the detach axis of
-        the ball released just before it.
+        the ball released just before it and — since the four-kind
+        generalisation — ``post_release``, which says whether there WAS such a
+        release. See :class:`CupState`.
     cfg
         :class:`CupCycleConfig` (or a ``sim.juggle_planner.PlannerConfig``, for
         which the runway constraint reads as disabled — see ``_RUNWAY_DEFAULTS``).
     period_s
-        Window length (s). Defaults to the throw event's ``t_s``.
+        Window length (s). Defaults to the throw event's ``t_s``, and is
+        therefore **required when there is no throw** — with no terminal release
+        nothing else in the timeline knows where the window ends.
+    settle_site
+        Cup position (m) the window comes to REST at. Required when there is no
+        throw, ignored when there is one.
     warm_start
         The previous cycle's :attr:`CupCyclePlan.warm_start`. Ignored unless the
-        problem shape matches.
+        problem shape matches. NB the shape key fingerprints the INEQUALITY
+        structure only, so a warm start can cross between window kinds with the
+        same knot count and the same inequality block — which is harmless by
+        construction: a warm start biases only *which* violated constraint is
+        admitted next, so it buys iterations and can never change the answer
+        (see :func:`_solve_qp`).
+
+    The four window kinds, and what each one is for
+    ----------------------------------------------
+    ==================  ======  ======  =============  =========================
+    kind                throw   catch   ``post_release``  terminal condition
+    ==================  ======  ======  =============  =========================
+    launch (from rest)    1       0        False        release
+    steady                1       1        True         release
+    landing               0       1        True         rest at ``settle_site``
+    settle                0       0        True         rest at ``settle_site``
+    ==================  ======  ======  =============  =========================
+
+    A session is a CHAIN of these: windows abut at each release instant, where
+    the terminal state of one is exactly the ``state0`` of the next (position =
+    throw site, velocity = take-off, acceleration = ``g``, ``detach_axis`` = the
+    throw tilt's cup axis, ``post_release`` = True). v1 expressed only the
+    ``steady`` row, which is why a launch had to be faked as a steady cycle whose
+    "previous release" never happened — and that fake is not benign: it pins the
+    first two knots' acceleration direction against a detach axis for a ball that
+    is not there.
 
     Returns a :class:`CupCyclePlan`. Raises :class:`CupCycleInfeasible`
     (a ``RuntimeError``) when no feasible trajectory exists — the same
-    raise-on-infeasible contract as ``plan_cup_cycle``.
+    raise-on-infeasible contract as ``plan_cup_cycle``. See
+    :class:`CupCyclePlan` for the ``catch_k == -1`` / ``takeoff_vel == 0``
+    sentinels a window without the corresponding event returns.
     """
     if cfg is None:
         cfg = CupCycleConfig()
@@ -927,24 +1085,33 @@ def plan_window(events: Sequence, state0: CupState,
     catches = [e for e in events if isinstance(e, CatchEvent)]
     if len(throws) + len(catches) != len(events):
         raise TypeError("events must be ThrowEvent / CatchEvent instances")
-    if len(throws) != 1 or len(catches) != 1:
+    if len(throws) > 1 or len(catches) > 1:
         raise NotImplementedError(
-            "plan_window v1 handles exactly one throw and one catch per window "
+            "plan_window handles at most one throw and one catch per window "
             "(got %d throws, %d catches)" % (len(throws), len(catches)))
     times = [float(e.t_s) for e in events]
     if any(b < a for a, b in zip(times, times[1:])):
         raise ValueError("events must be ordered by non-decreasing t_s")
 
-    throw, catch = throws[0], catches[0]
-    window_s = float(throw.t_s) if period_s is None else float(period_s)
+    throw = throws[0] if throws else None
+    catch = catches[0] if catches else None
+    if period_s is not None:
+        window_s = float(period_s)
+    elif throw is not None:
+        window_s = float(throw.t_s)
+    else:
+        raise ValueError(
+            "period_s is required for a window with no throw: the window length "
+            "is otherwise read off the terminal release, and there isn't one")
     if window_s <= 0.0:
         raise ValueError("window length must be > 0 (got %r)" % (window_s,))
-    if not 0.0 <= float(catch.t_s) < window_s:
+    if catch is not None and not 0.0 <= float(catch.t_s) < window_s:
         raise ValueError(
             "catch at t=%.4f s is outside the window [0, %.4f)"
             % (catch.t_s, window_s))
 
-    prog = _assemble(state0, throw, catch, window_s, cfg)
+    prog = _assemble(state0, throw, catch, window_s, cfg,
+                     settle_site=settle_site)
     dt = float(_cfg(cfg, 'dt'))
     n = prog.n_steps
     key = (n, dt, prog.C.shape[1])

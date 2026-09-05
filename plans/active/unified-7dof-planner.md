@@ -262,7 +262,7 @@ mode; ball tracking, possession verdicts, `outcome_detail` discipline.
 | 1 | Planner core port (pure Python): `cup_cycle` QP, tilt schedule, `realize` generalisation, `CyclePlan`, `validate_cycle`, sim parity + MuJoCo whole-cycle gate | COMPLETE | 2026-09-01 | Low (software only) | Ball-frame constraints hold; the Rung-3 "runway" failure is answered in sim |
 | 2 | Wire v6 + host 7-channel path: codegen, `SetpointPump`, emitter, `make_mpc_command`, tests; firmware-absent safe | COMPLETE | 2026-09-02 | Medium | Codec, per-channel step gates, backward-compatible producers |
 | 3 | Can-bridge FW 17: 7th interp lane, hand guards, `hand_source` interlock, dispatch; lockstep flash + bench ladder | **COMPLETE** (owner, 2026-09-04) — flashed 2026-09-03, ladder flown over two sittings; four items carried to sitting three | 2026-09-04 | High | Hand streaming safety envelope on real hardware |
-| 4 | Jetson unified-cycle mode: orchestrator, node wiring, plan-derived announcements/suppression, outcome vocabulary; end-to-end sim gate | NOT STARTED | | Medium | Whole cycle through the production stack in sim |
+| 4 | Jetson unified-cycle mode: orchestrator, node wiring, plan-derived announcements/suppression, outcome vocabulary; end-to-end sim gate | **COMPLETE (software)** 2026-09-05 — four window kinds chaining at a release, planning inside `trajectory_node`'s `PlanCycle` service, the release-terminal cliff closed by joining LAUNCH+LANDING; sim gate PASS, NEVER FLOWN | 2026-09-05 | Medium | Whole cycle through the production stack in sim |
 | 5 | Hardware ladder: streamed hold → banked carry (ball seated) → planned catch → planned throw (low tier) → full cycles → two-pose constant beat | NOT STARTED | | High | Ball-smooth carry and the planned launch on hardware |
 | 6 | Exclusivity + close-out: Platform Teensy FW 4 stroke retirement, host RPC retirement, contract doc, ILC hand-off, docs | NOT STARTED | | Medium | Single-master end state |
 
@@ -714,7 +714,7 @@ tests/sim/test_logbook_search.py tests/sim/test_logbook_front_matter.py -q`,
 **Phase 4 is CLEARED TO START** — it is software-only and needs nothing from
 the four carried sitting-three items.
 
-### Phase 4: Jetson unified-cycle mode — NOT STARTED
+### Phase 4: Jetson unified-cycle mode — COMPLETE (software) 2026-09-05
 
 **New file:** `motion/unified_cycle.py` — the pure-Python per-cycle
 orchestrator (no ROS imports): given session goals (throw target, flight
@@ -768,6 +768,89 @@ mirrors the existing gate's `core_clean` bands.
 
 **Dependencies:** Phases 1–2 (software); Phase 3 only for hardware use.
 
+**Outcome (SOFTWARE-COMPLETE 2026-09-05 — canonical record:
+[`logbook/2026-09-05-unified-7dof-planner-phase4-unified-cycle-mode.md`](../../logbook/2026-09-05-unified-7dof-planner-phase4-unified-cycle-mode.md)).**
+Landed as one atomic commit; **NEVER FLOWN**, and both opt-in keys ship false
+(`unified_cycle_enabled` AND the goal's own field), so no legacy behaviour
+changes — `sim/toss_gate.py` is byte-unchanged, `throw_envelope`'s new
+`arm_window` kwarg defaults to legacy, `DEFAULT_SESSION_MISS_CLEANUP_S` is
+untouched, and the whole mocked-ROS toss battery passes.
+
+- **Wave A — the planner layer.** `motion/unified_cycle.py` (1787 lines), plus
+  the generalisation of `cup_cycle.plan_window` (+266/−99) from one window shape
+  to **four**: `LAUNCH` (rest → release), `STEADY` (release → catch → release),
+  `LANDING` (release → catch → rest), `SETTLE` (release → rest). v1's
+  `plan_window` was **steady-only** — it starts and ends at a release, so a
+  session had no way in and no way out. Windows **chain at a release instant**
+  (a free-fall terminal state, so one window's terminal state *is* the next's
+  start state): measured `extend` seam **0.0 mm** on the pose, **4.07e-13 rev**
+  on the hand. `cup_realize` gains a `start_tilt` seam pin (without it a chained
+  window opens with a 0.8035° tilt gap = a **1.586 mm centroid step in one
+  knot**) and a live-limits tilt-accel cap. Banking cannot be turned off on a
+  steady cycle (zero-banking refuses `LIMIT_VEL` 529 > 250), and the replan
+  envelope is narrower than the splice rule (knot 12 refuses `LIMIT_JERK`
+  186 215, knot 20 `LIMIT_ACC` 4233 — loud refusals from the canonical gate).
+- **Wave B — interfaces and three nodes.** New `PlanCycle.srv`
+  (NEW / EXTEND / REPLAN × the four kinds); `TossContinuous.action` gains
+  `unified_cycle`; `TrajectoryStatus.msg` five `cycle_*` fields;
+  `trajectory_node` +871 (the service, the hand continuity term at **1.0 rev** =
+  0.25 × 0.80 × 5.0, the supersede-deadline alarm), `reload_coordinator_node`
+  +1250 (hand-source verification, the latched `catch/unified_mode`, planner
+  warm-up, LAUNCH at `t_release − 1.80 s`, EXTEND at 0.60 s before a terminal
+  release, survived-MISS hold for `_UNIFIED_MISS_SETTLE_S` 2.03 s with no
+  `go_home`), `catch_coordinator_node` gating `_arm_hand_catch` twice.
+- **Wave C — the sim gate.** `sim/unified_gate.py` (1644 lines) drives planner →
+  real emitter → real `SetpointPump` → packed-and-unpacked v6 bytes → a 7-lane
+  firmware mirror (`teensy_interp.py` grew the hand block; no 7-lane Python
+  reference existed) → MuJoCo. Gate: **(2026-09-05,
+  `python sim/unified_gate.py --no-viewer`, PASS — SET 1 26/26 threshold 24,
+  SET 2 beat exact 4.441e-16 s)**. The full `./run_tests.sh` gate rides the
+  commit.
+
+**Corrections to the spec text above, stated explicitly:**
+
+1. **"the `JB_OP_TOSS_PIPELINE_ENABLED` ships-false precedent" is wrong on the
+   value.** That key ships **true** (`config/hardware_config.yaml:704`; the
+   "SHIPS FALSE" comment at `:706` is stale). The precedent taken is the
+   **mechanism** — one read per goal — not the value.
+2. **"the goal opts in" needed a field, and one landed**:
+   `TossContinuous.action:223`, `bool unified_cycle false`.
+3. **Planning runs inside `trajectory_node`, not the coordinator.** Root cause:
+   only `trajectory_node` holds the LIVE commanded state and owns the plan
+   origin; a coordinator planning from the 5 Hz `trajectory/commanded_pose`
+   sample seeds from a pose up to 200 ms stale, and the 0.06 rev
+   install-continuity guard then refuses every install **by construction**. The
+   goal travels over the wire; the solve happens where the state is.
+4. **The ≤ 50 ms budget split (owner, 2026-09-04): core ≤ 50 ms, total
+   plan+validate ≤ 250 ms** — measured **21.9 / 179.4 ms** — because
+   `validate_cycle` is **156.7 of ~180 ms** and is the canonical feasibility
+   gate, not Phase 4 surface. **DEVIATION RECORDED:** the shipped install is a
+   joined `LAUNCH + LANDING`, which costs **424 ms** warm (3267 ms cold, hence
+   the session-start warm-up). Follow-up: vectorise `validate_cycle` in its own
+   commit behind an output-identical pin.
+5. **The replan policy is live only because `replan_tail` was generalised to
+   rest-terminal tails.** It accepted release-terminal plans only, and the
+   shipped install is rest-terminal *by design* (that is the cliff fix below), so
+   every tracker update would have answered `REPLAN_WINDOW` — the policy would
+   have shipped as dead code. The terminal is pinned to `goals.settle_site_mm`,
+   not the realised knot (which sits 2.3e-11 mm below it, and the inclusive
+   `SETTLE_SITE` gate refused everything), with a second bound
+   `k_s <= k_release + n_detach`.
+6. **`STEADY` back-to-back chaining is DEFERRED to Phase 5.** It exists and is
+   tested, but the shipped session installs `LAUNCH + LANDING` joined; UH-7's
+   constant beat needs a `release_at_perf` hand-off that does not exist yet.
+
+**The finding that drove the shape** — a plan streamed to its last knot
+**commands a stop at the throw**. The emitter's `τ+dt` sample lands on
+`CyclePlan`'s terminal hold, so the release segment's transmitted `v1` collapses
+from **93.011 rev/s to 0.0** (0.3445 rev = **10.90 mm** of slider error, a
+93 rev/s `vel_ff` step) — inside `MAX_LEAD_HAND_REV` 2.0 and
+`MAX_DEVIATION_HAND_REV` 2.5, so **no guard fires** and the only symptom is a
+throw that went somewhere else. Joining the windows before install makes the
+plan rest-terminal and removes the class; `unified_cycle.latest_supersede_time_s`
+and `trajectory_node._check_supersede_deadline` are retained as the alarm for
+Phase 5's release-terminal `STEADY` chaining.
+
 ### Phase 5: Hardware ladder — NOT STARTED
 
 Each rung is a separate sitting with the full-suite pre-hardware rule
@@ -781,6 +864,27 @@ beat. The aimed rungs inherit the superseded MP plan's § 7 unlock: re-derive
 the aim-authority window against `tilt_geometry.MAX_TILT_DEG` (12°) before
 UH-7 flies aimed at the constant beat. The legacy mode remains one `hand_source` switch away
 at every rung.
+
+**Preconditions inherited from Phase 4.** (a) The `hand_source` latch must be
+**STREAMED before ACTIVATE**, set with the launch **down** via
+`hand_stream_bench.py --source-only` — a session VERIFIES the latch and cannot
+switch it (the firmware refuses a transition while the setpoint output is armed),
+so a session started with it LEGACY is refused `REJECTED_HAND_SOURCE` rather than
+rescued. (b) The bench **`moving_gap` stage** (row 17's decay half, carried from
+Phase 3's sitting two) is flown **before any unified rung** — the unified cycle
+fires that falling edge once per throw, and it has never been observed. (c) A
+unified session leaves the hand at **0.3162 rev** (`SETTLE_CUP_Z_MM` 689.6 mm),
+inside `HAND_PARK_BAND_REV` but **outside** the firmware's ±0.10 rev settle band,
+which is unreachable from inside the QP's cup box — so returning the latch needs
+a can-bridge reboot (it boots LEGACY) or a streamed retract with the output
+disarmed; whether to inset the box or move the park height is an owner decision.
+(d) **The coast note:** on the falling edge at 75–92 rev/s the hand's raw
+wind-down travels **6.4–7.4 rev (200–235 mm)** and the *only* thing bounding it
+is `MAX_LEAD_HAND_REV` 2.0 (gate-measured: raw 6.36 rev clamped to 2.000 over 185
+ticks) — read that before shortening or stopping a stream mid-throw. (e) The cup
+z constants `_UNIFIED_THROW_CUP_Z_MM` 860.0 / `_UNIFIED_CATCH_CUP_Z_MM` 830.0 are
+module-level literals deliberately (they exist to be moved by UH-5/UH-6); they
+promote to YAML once this ladder has tuned them.
 
 **Dependencies:** Phases 3–4; owner present (operator runs actuating
 commands).
@@ -873,22 +977,49 @@ them. **T-U6..T-U8 LANDED 2026-09-02** (Phase 2); **T-U9 LANDED 2026-09-02**
 
 ### Integration (real processes, no actuators)
 
-- **T-I1** :5557 end-to-end: `trajectory_node` (unified plan installed) →
+**T-I1..T-I4 LANDED 2026-09-05** (Phase 4).
+
+- **T-I1** ✅ **LANDED** (`tests/ros/test_unified_cycle_integration.py`, 77
+  tests) :5557 end-to-end: `trajectory_node` (unified plan installed) →
   `teensy_bridge_node` with a loopback UDP sink; assert 7-channel frames at
   40 Hz, `HAS_HAND` set only during hand-active segments.
-- **T-I2** Unified-mode sim gate (`sim/toss_gate.py` variant): production
-  chain end-to-end per § 4 Phase 4 under the **kinematic capture model**
-  (MuJoCo contact advisory-only, per the 2026-08-29 resolution); acceptance
-  `core_clean ≥ 9/10` on the band the legacy gate pins, plus the two-pose
-  constant-beat cycle set.
-- **T-I3** Interlock choreography (mocked-ROS): under unified mode the
+- **T-I2** ✅ **LANDED** (`sim/unified_gate.py`, 1644 lines, +
+  `tests/sim/test_unified_gate.py`, 16 unmarked tests ~27 s) Unified-mode sim
+  gate: production chain end-to-end per § 4 Phase 4 under the **kinematic
+  capture model** (MuJoCo contact advisory-only, per the 2026-08-29
+  resolution); acceptance `core_clean ≥ 9/10` on the band the legacy gate pins,
+  plus the two-pose constant-beat cycle set. **A NEW FILE, not a flag on
+  `toss_gate.py`** (which stays byte-unchanged): the unified gate must DROP
+  `catch_armed` and `hand_arm_infeasible`, because under unified mode there is
+  no reactive arm to have fired, and `flags_ok` + `mirror_ok` replace them as
+  the silent-dead-hand guard. *Measured (2026-09-05,
+  `python sim/unified_gate.py --no-viewer`, **PASS**, 73.4 s):* SET 1
+  `core_clean` **26/26** against a threshold of 24 (one advisory point — the
+  legacy z = 200 mm tier at 0.80 s, refused `HAND_LIMIT_ACC` 4666 vs the 3500
+  cap); SET 2's five-release beat **exact at 4.441e-16 s**; firmware-mirror
+  reconstruction **legs 1.065e-5 rev** (band 5e-4; non-vacuous only on the
+  ring — masking `HAS_V1` moves it to 5.836e-4 = 1.17× the band) and **hand
+  4.766e-7 rev** (one float32 half-ulp); capture 10.02 mm, hold 0.1257 mm /
+  0.00277°, seat 1.82°, hand `dev_max` 0.780 rev, clamps 0.
+- **T-I3** ✅ **LANDED** (`tests/ros/test_unified_cycle_integration.py`, same
+  file as T-I1) Interlock choreography (mocked-ROS): under unified mode the
   reactive hand-arm dispatch is provably never called (spy on the
   `SetHandTrajCmd` client); under legacy mode byte-identical behaviour to
   today (mocked-ROS tests are blind to real choreography — the hardware twin
   is T-H4).
-- **T-I4** Solver budget on-target: `unified_cycle` plan+validate wall time
-  ≤ 50 ms p99 on the Jetson under concurrent suite load (`serial`-marked
-  only if it measures wall-clock against a threshold).
+- **T-I4** ✅ **LANDED** (`tests/motion/test_unified_cycle_budget.py`,
+  `serial`-marked and per-commit, NOT `nightly`) Solver budget on-target,
+  asserted **in the owner's two halves**: **core ≤ 50 ms** and **total
+  plan+validate ≤ 250 ms** — measured **21.9 / 179.4 ms** (2026-09-04). The
+  single 50 ms bar could not be asserted on the whole call because
+  `validate_cycle` is **156.7 of ~180 ms** and is the canonical feasibility
+  gate shared with every other plan this stack builds; `samples_per_knot` is an
+  accuracy knob, not a speed knob. **The assertion is on the MINIMUM, not
+  p99**: planning is bit-for-bit deterministic, so the between-call spread is
+  the OS and the minimum is the tightest estimate of what the code costs —
+  under `pytest` this box produced a p90 of 354.9 ms on one run of eight and a
+  p50 of 278.8 with a 1554 ms max on another, so a p99 bar at N = 30 would be a
+  shipped load-flake.
 
 ### Hardware (bench first, E-stop ready)
 
@@ -960,7 +1091,14 @@ are as of the owner's **Phase 3 COMPLETE** declaration, 2026-09-04.
   (`EXPECTED_BRIDGE_FW_VERSION` is 17).
 - **T-R3** The full legacy toss battery (`tests/ros/test_toss_*`,
   `tests/sim/test_toss_gate.py`) passes unchanged in legacy mode after every
-  phase — the fallback stays flyable until Phase 6.
+  phase — the fallback stays flyable until Phase 6. **Holds after Phase 4**:
+  the whole mocked-ROS battery passed (2026-09-05, `python -m pytest tests/ros/
+  tests/motion/ -q`, **4895 passed / 4 skipped in 710.30 s**, of which
+  `tests/ros/` is **2813**), and `tests/sim/test_toss_gate.py` passed unchanged
+  (2026-09-05, `python -m pytest tests/sim/test_toss_gate.py -q`, **18 passed
+  in 24.19 s**) — `sim/toss_gate.py` is byte-unchanged and
+  `throw_envelope.evaluate`'s new `arm_window` kwarg defaults to the legacy
+  bound.
 
 ## 6. Notes for Collaborators
 
@@ -971,10 +1109,12 @@ are as of the owner's **Phase 3 COMPLETE** declaration, 2026-09-04.
 | Hand has **no sign flip** and wire scales 100/100 (legs: negate + 1000/10000) | `odrive_protocol.h::encode_leg_setpoint` (already correct for axis 6) | Sign/scale error commands a full-speed hand excursion |
 | Hand setpoint clip `[0, 10.8]` rev is the metal | `canbridge_config.h::HAND_MOTOR_MAX_POSITION` (FW 15's entire delta) | Commands past metal |
 | Leg guard constants must NOT be applied to the hand (`MAX_DEVIATION_REV 1.0`, `MAX_LEAD_REV 0.10`, `MAX_MOTOR_VEL_RPS 16.5` are leg numbers; hand `vel_limit` is 1000 rev/s) | `fault_machine.cpp`, `canbridge_config.h` | Either dead guard or constant false trips |
-| `SEGMENT_T_S == JB_TRAJ_KNOT_DT_S == 0.025` (comment-enforced, both ends) | `canbridge_config.h:148`, `hardware_config.py:175` | Distorted velocity profile on all 7 channels |
+| `SEGMENT_T_S == JB_TRAJ_KNOT_DT_S == 0.025` (comment-enforced, both ends) | `canbridge_config.h:157,159`, `hardware_config.py:180` | Distorted velocity profile on all 7 channels |
 | `PROTOCOL_VERSION` mismatch = total link darkness, by design | `udp_protocol.py:12` / `udp_protocol.h:12` | A non-lockstep flash strands the robot (loudly, fail-closed) |
 | Planning never runs on the emitter thread (owner determinism rule, 2026-08-10) | `motion/unified_cycle.py` call sites | 40 Hz jitter → lead-clamp engagement → commanded stops |
-| `TEENSY_TRAJ_HAND_STROKE_M` (0.355, throw-profile basis) ≠ `GEOM_HAND_STROKE_MM` (344.75, physical) — never substitute one for the other | `hardware_config.yaml:1117-1141` note | Silent geometry error in the slider decomposition |
+| A **release-terminal** plan must be superseded by `duration − dt`; the shipped install is joined and therefore rest-terminal, so it has no deadline | `unified_cycle.latest_supersede_time_s` (canonical export; `trajectory_node._check_supersede_deadline` is the alarm) | Past the deadline the emitter's `τ+dt` sample reads the terminal HOLD, so the release segment is **commanded to a stop** — 93.011 rev/s emitted as 0.0, 0.3445 rev = 10.90 mm of slider error, **inside every guard on the path**, so nothing latches and the only symptom is a throw that went somewhere else |
+| The settle site is the cup box's floor, **not** the hand's park | `unified_cycle.SETTLE_CUP_Z_MM` = `max(679.6, 689.6)` = 689.6 mm ⇒ **0.3162 rev** | Settling at the park (679.6 mm) is 10 mm outside the QP's cup box and is refused `SETTLE_SITE` before it plans. The shipped value is inside `HAND_PARK_BAND_REV` (0.5) but **outside** the firmware's ±0.10 rev `hand_source` settle band, so the latch cannot be returned from inside a session |
+| `TEENSY_TRAJ_HAND_STROKE_M` (0.355, throw-profile basis) ≠ `GEOM_HAND_STROKE_MM` (344.75, physical) — never substitute one for the other | `hardware_config.yaml:1182-1206` + `:354-368` note | Silent geometry error in the slider decomposition |
 | The z=170 pin has TWO chains: `JB_OP_DEFAULT_ACTIVE_Z_MM` consumers AND sim-side `Z_ACTIVE_MM` literals (`sim/juggle_tilt.py:58`, `sim/juggle_online.py:92`, `sim/gate_common.py:25`, plus `toss_sequencer.py:615`'s pinned local) | § 2.2 of the exploration; grep before touching | z-float toggle that misses a chain ships a contradiction |
 | `toss_workspace_xy_mm` was DELETED 2026-08-29 — the reach-feasibility gate is the sole lateral authority | `logbook/2026-08-29-displacement-caps-removed.md` | Referencing the dead key resurrects a retired policy |
 | Platform Teensy flash is Arduino IDE only (pio image is CAN-MUTE) | memory / bench facts | A pio flash silently kills the cold-start + inclinometer paths |
@@ -1027,8 +1167,8 @@ legs (single guard machine, single CLEAR_ERRORS release).
 
 | Action | Files |
 |---|---|
-| Create | `motion/trajectory/cup_cycle.py`, `cup_realize.py`, `cycle_plan.py`, `motion/unified_cycle.py`, `ros_ws/docs/unified_cycle_contract.md`, tests (`tests/motion/test_cup_cycle.py`, `test_cup_realize.py`, `test_cycle_plan.py`, `tests/ros/test_unified_cycle_node.py`, sim-gate variant) |
-| Modify | `config/generate_udp_protocol.py` + generated (`udp_protocol.py/.h`), `config/hardware_config.yaml` + generated config artifacts, `teensy_link/{setpoint_pump,synthetic_setpoint,replay_setpoint}.py`, `motion/ipc.py`, `motion/trajectory/{emitter,feasibility}.py`, `trajectory_node.py`, `teensy_bridge_node.py`, `reload_coordinator_node.py`, `catch_coordinator_node.py`, `Teensy_code_canbridge/{leg_interp.*,canbridge_config.h,fault_machine.cpp,hand_ops.cpp,can_buses.cpp,rpc.cpp}`, existing pump/emitter/codec/interp tests |
+| Create | `motion/trajectory/cup_cycle.py`, `cup_realize.py`, `cycle_plan.py`, `motion/unified_cycle.py`, `ros_ws/src/jugglebot_interfaces/srv/PlanCycle.srv`, `sim/cycle_gate.py`, `sim/unified_gate.py`, `ros_ws/docs/unified_cycle_contract.md` (Phase 6), tests (`tests/motion/test_cup_cycle.py`, `test_cup_realize.py`, `test_cycle_plan.py`, `test_validate_cycle.py`, `test_unified_cycle.py`, `test_unified_cycle_budget.py`, `tests/ros/test_unified_cycle_integration.py`, `tests/sim/test_cycle_gate.py`, `tests/sim/test_unified_gate.py`) |
+| Modify | `config/generate_udp_protocol.py` + generated (`udp_protocol.py/.h`), `config/hardware_config.yaml` + generated config artifacts, `teensy_link/{setpoint_pump,synthetic_setpoint,replay_setpoint}.py`, `motion/ipc.py`, `motion/trajectory/{emitter,feasibility,cup_cycle,cup_realize,throw_envelope}.py`, `trajectory_node.py`, `teensy_bridge_node.py`, `reload_coordinator_node.py`, `catch_coordinator_node.py`, `toss_sequencer.py`, `toss_session.py`, `jugglebot_interfaces/{CMakeLists.txt,action/TossContinuous.action,msg/TrajectoryStatus.msg}`, `ros_ws/docs/choreography.md`, `tools/probes/teensy_link_profiling/hermite_xref/teensy_interp.py`, `run_tests.sh`, `Teensy_code_canbridge/{leg_interp.*,canbridge_config.h,fault_machine.cpp,hand_ops.cpp,can_buses.cpp,rpc.cpp}`, existing pump/emitter/codec/interp/xref tests |
 | Retire (Phase 6) | `Teensy_code_platform` stroke engine + 0x6D0 decode + 0x0C9 sniff (FW 4), `set_hand_traj_cmd` host path, `hand_ops` 0x6D0 forwarding |
 
 ### Rollback plan

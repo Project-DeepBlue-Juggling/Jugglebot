@@ -86,31 +86,36 @@ _CONTRACT_NOTES = {
         'path closes unchanged (ros_ws/docs/ball_possession_contract.md).'
     ),
     'catch/armed': (
-        'HAND-OWNERSHIP LATCH (1/5). Mirror of the trajectory/arm_catch latch on '
+        'HAND-OWNERSHIP LATCH (1/6). Mirror of the trajectory/arm_catch latch on '
         'trajectory_node; while raised, catch/dynamic_target may actuate the '
         'platform and catch_coordinator_node may actuate the hand '
         '(ros_ws/docs/control_modes.md, ros_ws/docs/safety.md).'
     ),
     'catch/prime_hold': (
-        'HAND-OWNERSHIP LATCH (2/5). Raised at PREPARE, BEFORE catch/armed rises, '
+        'HAND-OWNERSHIP LATCH (2/6). Raised at PREPARE, BEFORE catch/armed rises, '
         'and released LAST at terminal: while True the reload/toss owns the hand '
         'and catch_coordinator_node must not prime it '
         '(ros_ws/docs/hand_command_continuity.md, ros_ws/docs/ball_possession_contract.md).'
     ),
     'catch/prime_dispatched': (
-        'HAND-OWNERSHIP LATCH (3/5). Announces every reload-side prime dispatch so '
+        'HAND-OWNERSHIP LATCH (3/6). Announces every reload-side prime dispatch so '
         'catch_coordinator_node holds its anti-stutter in-flight window instead of '
         'restarting a live ascent (ros_ws/docs/hand_command_continuity.md).'
     ),
     'catch/pretilt_hold': (
-        'HAND-OWNERSHIP LATCH (4/5). Raised on the same tick as prime_hold and '
+        'HAND-OWNERSHIP LATCH (4/6). Raised on the same tick as prime_hold and '
         'released with it; suppresses the pre-tilt while the toss owns the '
         'platform pose (ros_ws/docs/levelling_frame.md).'
     ),
     'catch/vel_scale': (
-        'HAND-OWNERSHIP LATCH (5/5). Catch-speed knob relayed at PREPARE, before '
+        'HAND-OWNERSHIP LATCH (5/6). Catch-speed knob relayed at PREPARE, before '
         'catch/armed rises, so catch_coordinator_node holds the value before any '
         'arm (ros_ws/docs/hand_command_continuity.md).'
+    ),
+    'catch/unified_mode': (
+        'HAND-OWNERSHIP LATCH (6/6). Session-scoped declaration; while raised '
+        'the cycle plan owns the hand and catch_coordinator_node must not arm '
+        'a reactive stroke — TRANSIENT_LOCAL depth 1 on both ends.'
     ),
     'catch/reach_center': (
         'NOT a hand latch - platform-side. Declares the reach-envelope centre '
@@ -120,7 +125,7 @@ _CONTRACT_NOTES = {
     ),
 }
 
-#: The five catch/* wires that gate hand ownership between reload_coordinator_node
+#: The six catch/* wires that gate hand ownership between reload_coordinator_node
 #: and catch_coordinator_node.  Named here (not just in the notes) so the drift
 #: test can assert the annotation set has not silently shrunk.
 HAND_OWNERSHIP_LATCH_TOPICS = (
@@ -129,6 +134,7 @@ HAND_OWNERSHIP_LATCH_TOPICS = (
     'catch/prime_dispatched',
     'catch/pretilt_hold',
     'catch/vel_scale',
+    'catch/unified_mode',
 )
 
 #: Topics deliberately written by more than one node.

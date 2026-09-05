@@ -69,6 +69,7 @@ import time
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile
 import numpy as np
 
 from std_msgs.msg import Bool, Float64
@@ -329,6 +330,42 @@ class CatchCoordinatorNode(Node):
         self._pretilt_hold_sub = self.create_subscription(
             Bool, 'catch/pretilt_hold', self._on_pretilt_hold, 10)
 
+        # ── UNIFIED 7-DoF cycle mode (plan Phase 4) ─────────────────────────
+        # The toss coordinator raises this for a whole unified session, BEFORE the
+        # first cycle exists, and lowers it in its terminal `finally`. While True
+        # the CYCLE PLAN owns the hand: the catch stroke is already a set of knots
+        # on the same 40 Hz stream the legs ride, and the can-bridge's `hand_source`
+        # latch is STREAMED, which makes the firmware REFUSE a legacy
+        # HAND_TRAJ_CMD outright (ERR_HAND_SOURCE).
+        #
+        # So this node must not arm one — not because the arm would be dangerous,
+        # but because it would be a silent no-op that looks like an arm: the ack
+        # path would log "Arming hand catch", the one-shot latch would close, and
+        # the ball would arrive at a cup that never moved. Absent topic → False →
+        # every legacy path bit-identical to today.
+        #
+        # Stale True fails SAFE, which is the OPPOSITE of pretilt_hold's
+        # degradation and worth stating: a stale True means this node declines to
+        # arm, i.e. the machine does LESS. A stale FALSE would be the hazard: the
+        # flag goes False while the firmware latch stays STREAMED (the session
+        # never hands it back — see the publisher's terminal `finally`), so it is
+        # the firmware's `ERR_HAND_SOURCE` refusal, not this flag, that makes a
+        # legacy arm safe until the operator returns the latch.
+        #
+        # TRANSIENT_LOCAL depth 1, MATCHING the publisher. The declaration goes out
+        # exactly twice per session, both times at a session boundary, so a node
+        # that starts between them — a crash-restart, a bench `ros2 run`, a late
+        # composition — would never see a volatile True and would arm legacy hand
+        # strokes into a STREAMED latch for the rest of that session. Latched, a
+        # late subscriber is handed the standing declaration on connect. The
+        # durability must be declared on BOTH ends: a VOLATILE subscription
+        # receives nothing from a TRANSIENT_LOCAL publisher's history, which would
+        # leave exactly the gap this fixes.
+        self._unified_mode = False
+        self._unified_mode_sub = self.create_subscription(
+            Bool, 'catch/unified_mode', self._on_unified_mode,
+            QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
+
         # Re-measure clock offset every REFRESH_PERIOD_S to track drift
         self._clock_timer = self.create_timer(clock_offset.REFRESH_PERIOD_S,
                                               self._refresh_clock_offset)
@@ -547,6 +584,30 @@ class CatchCoordinatorNode(Node):
                 else "catch/pretilt_hold released — platform pre-tilt re-enabled")
         self._pretilt_hold = hold
 
+    def _on_unified_mode(self, msg: Bool):
+        """``catch/unified_mode``: the unified session's hand-ownership declaration.
+
+        Mirrors :meth:`_on_pretilt_hold` exactly — one Bool, one latch, the
+        publisher owns it and this node never resets it locally. What it gates is
+        stated at the flag's definition in ``__init__``; the enforcement is at
+        :meth:`_arm_hand_catch` (and, belt and braces, at the ``_on_balls`` call
+        site that reaches it).
+
+        ANNOUNCEMENTS ARE STILL CONSUMED while it stands, deliberately: the
+        announcement drives the tracker's correlation, the possession/suppression
+        consumers and the open-loop landing latch, none of which command the hand.
+        Only the ARM is withheld.
+        """
+        active = bool(msg.data)
+        if active != self._unified_mode:
+            self.get_logger().info(
+                "catch/unified_mode raised — the cycle plan owns the hand; "
+                "reactive catch arming and the stroke-busy gate are suppressed "
+                "for this session" if active
+                else "catch/unified_mode lowered — reactive catch arming "
+                     "re-enabled")
+        self._unified_mode = active
+
     def _on_vel_scale(self, msg: Float64):
         """catch/vel_scale: the operator's per-attempt catch-speed knob (reload goal
         field, or published manually for bench throws). Clamped to the safe range —
@@ -658,6 +719,18 @@ class CatchCoordinatorNode(Node):
         thrower = str(getattr(msg, 'thrower_name', '') or '')
         if thrower != self._coordinator.robot_name:
             return                       # not our throw → no stroke → inert
+        if self._unified_mode:
+            # Under unified there IS no firmware stroke to be busy with: the throw
+            # and the catch are knots on one plan, and the plan's own twins
+            # (`unified_cycle.plan_stroke_clear_s` / `plan_arm_lead_s`) are facts
+            # about that trajectory rather than a MODEL of a device. Latching a
+            # window here would size a suppression from `hand_stroke`'s
+            # deceleration model of a stroke engine that is not running — and it
+            # would suppress nothing anyway, because the arm it gates is already
+            # withheld. Leaving the window None is the same INERT state a BallButler
+            # announcement produces, which is the established spelling of "no
+            # Jugglebot throw stroke exists here".
+            return
         tt = msg.throw_time
         throw_time = float(tt.sec) + float(tt.nanosec) * 1e-9
         iv = msg.initial_velocity
@@ -810,7 +883,13 @@ class CatchCoordinatorNode(Node):
         # ONLY when the arm was actually dispatched — a service-not-ready early return
         # must be retried next tick, not silently latched as armed (audit of the
         # 2026-07-23 re-test).
-        if (self._catch_armed and cmd.arm_hand
+        # `not self._unified_mode` is the CALL-SITE half of the unified gate (the
+        # other is inside _arm_hand_catch). Both, deliberately: the one inside the
+        # dispatch is the enforcement point a future third caller cannot bypass,
+        # and this one keeps the per-ball bookkeeping below — the dispatch counter,
+        # the one-shot latch, the _MIN_EVENT_DELAY_S log — from running for an arm
+        # that is never going to be attempted.
+        if (self._catch_armed and cmd.arm_hand and not self._unified_mode
                 and self._hand_traj_armed_for_ball != cmd.ball_id
                 and self._arm_landing_window_ok(cmd)):
             # New ball → reset the per-ball re-dispatch counter (bounds the re-arm
@@ -1127,7 +1206,28 @@ class CatchCoordinatorNode(Node):
         (``toss_sequencer``'s ORDERING PRINCIPLE). The toss's own
         prime-during-stroke hazard is owned by ``catch/prime_hold``, which is
         raised for the entire PREPARE→terminal span — a separate, already-enforced
-        gate, not this one."""
+        gate, not this one.
+
+        **Unified mode refuses BEFORE the stroke-busy gate, and the order matters.**
+        Under ``catch/unified_mode`` the hand belongs to the cycle plan and the
+        can-bridge's ``hand_source`` latch is STREAMED, so this dispatch would be
+        refused by the firmware (``ERR_HAND_SOURCE``) after this method had already
+        logged an arm. Refusing here returns False, which leaves the caller's
+        one-shot latch OPEN and its dispatch counter untouched — the same "a
+        deferral is never a drop" contract the stroke gate has, and the right one:
+        if the session ends and the flag drops mid-flight, the next balls tick arms
+        normally. Placing it FIRST also keeps ``_throw_stroke_gate_ok`` — whose
+        whole model is the legacy firmware stroke's deceleration, a stroke that does
+        not exist under unified — from being consulted about a device that is not
+        running, and keeps its arm-lead arithmetic (``required_arm_lead_s``) out of
+        a path where the plan already owns the lead."""
+        if self._unified_mode:
+            self.get_logger().info(
+                'hand catch arm withheld: catch/unified_mode is raised — the '
+                'cycle plan already contains this catch and the can-bridge is '
+                'mastering the hand from the setpoint stream',
+                throttle_duration_sec=5.0)
+            return False
         if not self._throw_stroke_gate_ok(event_delay, event_vel_mps):
             return False
         if not self._hand_traj_client.service_is_ready():

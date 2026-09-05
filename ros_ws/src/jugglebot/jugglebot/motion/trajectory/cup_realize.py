@@ -492,7 +492,8 @@ def _as_tilt_pair(value, name: str) -> np.ndarray:
     return arr
 
 
-def tilt_schedule(cup_plan, receive_tilt, throw_tilt, cfg=None) -> np.ndarray:
+def tilt_schedule(cup_plan, receive_tilt, throw_tilt, cfg=None, *,
+                  start_tilt=None) -> np.ndarray:
     """Per-knot cup tilt ``(rx, ry)`` for ``cup_plan``.  Returns an ``(n, 2)`` array.
 
     **Banking (``cfg.banking_enabled``, the default).**  A ball resting in the cup
@@ -548,6 +549,29 @@ def tilt_schedule(cup_plan, receive_tilt, throw_tilt, cfg=None) -> np.ndarray:
     cannot saturate them (the ``toss_release`` "gate the aim, don't rely on the
     clamp" precedent).
 
+    **``start_tilt`` — the seam pin (``None`` by default, so every pre-existing
+    caller is bit-identical).**  A window that abuts another one at knot 0 — the
+    second half of a chained pair, or the tail of a mid-cycle re-plan — must
+    start at the tilt the preceding window ENDED at, and the banking objective
+    cannot supply it.  Two independent reasons:
+
+    * At a release the cup is in free fall, so the apparent-gravity field
+      ``g − a_cup`` is exactly ZERO and ``tilt_to_receive`` of it is LEVEL.  That
+      is why the release knot is pinned to ``throw_tilt`` at the far end; the
+      same degeneracy sits at knot 0 of the window that follows, so the same pin
+      is needed there or the two windows disagree by the whole throw tilt
+      (up to 12°) at one shared instant.
+    * The disagreement is not cosmetic.  ``decompose`` turns a tilt into a
+      centroid offset through the 744.3 mm ``CUP_TILT_CENTER_Z_MM`` lever, so a
+      tilt step of θ at the seam is a centroid-xy step of ``arm·sin θ`` — tens of
+      millimetres of leg position inside one 25 ms knot, which is a step command
+      on six legs, the thing this stack refuses to emit anywhere else.
+
+    The pins resolve in knot order with the terminal pin strongest: ``start_tilt``
+    is applied first, then the catch pin, then the throw pin, so a collision (a
+    catch on knot 0, or a single-knot plan) leaves the physically stronger pin
+    standing rather than depending on list order.
+
     If ``catch_k`` coincides with the final knot the throw pin wins — release is
     the plan's terminal boundary condition and the next cycle chains off it.
     """
@@ -565,6 +589,8 @@ def tilt_schedule(cup_plan, receive_tilt, throw_tilt, cfg=None) -> np.ndarray:
 
     recv = _as_tilt_pair(receive_tilt, 'receive_tilt')
     throw = _as_tilt_pair(throw_tilt, 'throw_tilt')
+    start = (None if start_tilt is None
+             else _as_tilt_pair(start_tilt, 'start_tilt'))
 
     if cfg.banking_enabled:
         g_vec = np.array([0.0, 0.0, -float(cfg.gravity_mps2)])
@@ -576,17 +602,25 @@ def tilt_schedule(cup_plan, receive_tilt, throw_tilt, cfg=None) -> np.ndarray:
         idx = np.arange(n)
         raw = np.where((idx <= catch_k)[:, None], recv[None, :], throw[None, :])
 
-    # Pins, in knot order.  The release pin is unconditional; the catch pin only
-    # exists when the catch is a distinct interior knot.
-    anchors = []
+    # Pins, weakest first so a collision leaves the stronger pin standing (see
+    # the docstring): seam, then catch, then the terminal release.  The release
+    # pin is unconditional; the catch pin only exists when the catch is a
+    # distinct interior knot; the seam pin only when the caller supplied one.
+    pinned = {}
+    if start is not None:
+        pinned[0] = start
     if 0 <= catch_k < n - 1:
-        anchors.append((catch_k, recv))
-    anchors.append((n - 1, throw))
-    anchor_set = {j for j, _ in anchors}
+        pinned[catch_k] = recv
+    pinned[n - 1] = throw
+    anchors = [(j, pinned[j]) for j in sorted(pinned)]
+    anchor_set = set(pinned)
 
     cap = np.radians(float(cfg.max_tilt_deg))
     origin = np.zeros(2)
-    for name, v in (('receive_tilt', recv), ('throw_tilt', throw)):
+    checks = [('receive_tilt', recv), ('throw_tilt', throw)]
+    if start is not None:
+        checks.append(('start_tilt', start))
+    for name, v in checks:
         mag = float(np.hypot(v[0], v[1]))
         if mag > cap * (1.0 + 1e-9) + 1e-12:
             raise ValueError(

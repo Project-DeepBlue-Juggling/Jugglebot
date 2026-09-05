@@ -68,6 +68,7 @@ to an auto-disarm — is deferred to Phase 2 (orchestrator wiring).
 
 from __future__ import annotations
 
+import dataclasses
 import math
 import os
 import threading
@@ -89,7 +90,12 @@ from jugglebot_interfaces.msg import (
     TargetFeedback,
     TrajectoryStatus,
 )
-from jugglebot_interfaces.srv import GoToPose, SetTrajectoryLimits, TimedTarget
+from jugglebot_interfaces.srv import (
+    GoToPose,
+    PlanCycle,
+    SetTrajectoryLimits,
+    TimedTarget,
+)
 
 import jugglebot.hardware_config as hw
 from jugglebot import clock_offset
@@ -116,6 +122,8 @@ from jugglebot.motion.trajectory import (
 )
 from jugglebot.motion.trajectory import feasibility as feas
 from jugglebot.motion.trajectory import planner
+from jugglebot.motion import unified_cycle as uc
+from jugglebot.motion.trajectory.cycle_plan import CyclePlan
 
 # The control mode in which explicit move services (go_to_pose) are accepted. In
 # any other streaming mode (STANDBY holds; SPACEMOUSE has its own command
@@ -168,6 +176,55 @@ _FOLLOWER_MODES = frozenset({'SPACEMOUSE', 'GUI'})
 _MOTION_MODES = _FOLLOWER_MODES | {'TRAJECTORY'}
 
 _NUM_LEGS = 6
+
+# The hand's index in the wire's motor-state array. The link carries seven axes
+# (``teensy_bridge_node._NUM_AXES``); axis 6 is the hand ODrive, in the firmware's
+# homed ODrive frame (absolute rev, NO sign flip — the legs are negated, the hand
+# is not). Read for the unified cycle's start state only; nothing on the leg path
+# looks at it.
+_HAND_AXIS = 6
+
+# ── Unified-cycle service-level codes (plan Phase 4) ──────────────────────────
+# Properties of the SERVICE surface, not of any plan the gate reasons about — the
+# same distinction _BUSY / _FROZEN / _GUARD_LATCHED draw.
+#   NO_CYCLE — an EXTEND or REPLAN arrived with no active cycle record to build on.
+#   Chaining and splicing are both defined against a plan this node installed and
+#   still holds; without one there is nothing whose head could be preserved, and
+#   silently promoting the request to a fresh NEW would install a plan from a state
+#   the caller never asked about.
+_NO_CYCLE = 'NO_CYCLE'
+#   REPLAN_BUDGET — the bounded catch-side replan allowance for this throw window is
+#   spent. The replan policy is "plan at commit + BOUNDED catch-side replans" (owner,
+#   2026-08-29); an unbounded one is a receding horizon by another name, and a
+#   tracker that jitters every cycle would then re-solve until it missed a deadline.
+_REPLAN_BUDGET = 'REPLAN_BUDGET'
+
+# How many catch-side replans one throw window may spend (owner, 2026-08-29). Two,
+# not one: the first replan absorbs the tracker's initial landing revision, and the
+# second the late refinement it makes once the ball is past apex. A third would have
+# to splice inside ~0.3 s of touch-down, where `replan_tail`'s own measured envelope
+# already refuses (LIMIT_JERK at knot 12, LIMIT_ACC at knot 20 of the 1.4 s reference
+# cycle) — so the budget stops one short of the region the gate refuses anyway,
+# rather than spending a ~250 ms callback to be told no.
+_MAX_CYCLE_REPLANS = 2
+
+# Splice lead (s) a tracker-driven replan asks for — how far ahead of NOW the first
+# re-solved knot may sit. DERIVED, not chosen: the splice knot is computed at handler
+# ENTRY while the install lands at handler EXIT, so the head has to cover the whole
+# callback or the plan splices into a knot the emitter has already sent.
+#
+# MEASURED (2026-09-04, this Jetson, idle, session limits 250/3000/150000, 6
+# consecutive `replan_tail` calls on the 1.4 s reference cycle): min 178 ms, median
+# 180 ms, max 188 ms. 0.30 s is that maximum plus ~60 %, which is the margin a loaded
+# executor needs; the plan's own guidance is the same number ("REPLAN lead >= 0.30 s
+# before touchdown"). Below it the guarantee "no knot the emitter has sent can move"
+# stops being a guarantee and becomes a race.
+#
+# Erring LONG is doubly right here: `replan_tail`'s own feasible envelope NARROWS as
+# the splice knot moves later (measured on the same cycle: knot 4 validates, knot 12
+# refuses LIMIT_JERK, knot 20 refuses LIMIT_ACC), so a longer lead splices earlier,
+# which is the feasible direction as well as the safe one.
+_CYCLE_REPLAN_LEAD_S = 0.30
 
 # A3 — follower escalation backstop. Once the follower latches an escalation stop
 # (sustained chase rejects: a corrupt / boundary-wedged seed), the post-publish
@@ -441,6 +498,16 @@ class TrajectoryNode(Node):
         # Latest robot_state seed source (pos_estimate rev, Jugglebot ext convention).
         self._latest_pos_rev = None
         self._robot_state_mono = 0.0
+        # ── The hand's MEASURED state, axis 6 of the same robot_state ──
+        # The leg path never reads these. They exist for ONE consumer: the unified
+        # cycle's start state, which needs where the slider physically IS when no
+        # hand track is streaming (a legacy plan carries none, so `_last_hand_rev`
+        # is None and there is nothing commanded to seed from). None until a
+        # seven-axis robot_state arrives — an older/shorter message leaves them
+        # None rather than fabricating a zero, because a fabricated 0.0 rev is the
+        # BOTTOM of the stroke and would plan a launch from a place the hand is not.
+        self._latest_hand_rev = None
+        self._latest_hand_vel_rps = None
         # Emitter jitter diagnostic (max inter-tick gap over the last window).
         self._max_emit_gap_s = 0.0
         self._last_emit_mono = None
@@ -500,6 +567,44 @@ class TrajectoryNode(Node):
         # a spacemouse stream stays one window rather than thousands.
         self._move_seq = 0
 
+        # ── The ACTIVE unified cycle (plan Phase 4) ──────────────
+        # `(CyclePlan, CycleMeta, t0_mono)` for the cycle currently installed, or
+        # None. It is a RECORD of what was installed, not a second source of truth
+        # about what is streaming: `_active_plan` / `_plan_t0` stay the authority
+        # (the emitter reads only those), and this is cleared the moment any
+        # non-cycle install supersedes it — otherwise an EXTEND would chain onto a
+        # plan the emitter stopped playing minutes ago.
+        #
+        # Written on the executor thread (the service handlers) and read there;
+        # `_publish_status` reads it on the 5 Hz timer, which is the SAME thread
+        # (single-threaded executor, no callback groups — see `main`). No lock is
+        # needed and none is taken; adding a callback group later would change that.
+        self._cycle = None
+        # Absolute (perf) instant by which a RELEASE-TERMINAL cycle plan must have
+        # been superseded, or None when the active plan is rest-terminal (or there
+        # is none). Past it the emitter's u1/v1 come from the terminal HOLD, so the
+        # final 25 ms segment — the release stroke — is commanded to a stop, and NO
+        # firmware guard fires on that. The node does not fix it (the orchestrator
+        # owns the chain); it publishes it and it ALARMS, because this is the class
+        # of failure that otherwise leaves no trace at all.
+        self._cycle_supersede_deadline = None
+        self._cycle_deadline_alarmed = False
+        # Catch-side replans spent on the CURRENT INSTALLED WINDOW. Reset by a
+        # NEW install and by an EXTEND — i.e. by the two operations that give the
+        # cycle a fresh terminal release to re-aim toward — and by nothing else.
+        #
+        # It used to be reset on a TIME comparison against the release instant as
+        # well, and that made the bound unenforceable: a landing update is a
+        # revision of where the ball in the AIR will come down, so every one of
+        # them arrives AFTER the release it belongs to, and the epoch compare
+        # therefore handed the budget back on every single call. Counting against
+        # the install is also what the operator can reason about — "two re-aims
+        # per plan I asked for" — rather than against a clock they cannot see.
+        self._cycle_replans = 0
+        # Measured wall time of the last plan_cycle callback (ms) — the split
+        # budget's (core <= 50 ms, total <= 250 ms) observable.
+        self._cycle_plan_wall_ms = 0.0
+
         self._pub = None
         self._emit_stop = threading.Event()
         self._emit_thread = None
@@ -542,6 +647,13 @@ class TrajectoryNode(Node):
                             self._svc_set_limits)
         self.create_service(TimedTarget, 'trajectory/timed_target',
                             self._svc_timed_target)
+        # Unified 7-DoF cycle planning (plan Phase 4). The SOLVE runs inside this
+        # callback — ~250 ms budgeted — because only this node holds the live
+        # commanded state the window must start from. See PlanCycle.srv's header
+        # for the full root-cause note; the emitter is a separate thread and never
+        # stalls, but the executor does, exactly as go_to_pose already does.
+        self.create_service(PlanCycle, 'trajectory/plan_cycle',
+                            self._svc_plan_cycle)
         # Catch-armed latch (reload-action-catch-latch plan, Phase 1). SetBool:
         # data=True arms, data=False disarms. The RELOAD action drives it for the
         # catch flight window instead of a persistent control mode.
@@ -1074,6 +1186,14 @@ class TrajectoryNode(Node):
             return
         pos_rev = [float(states[i].pos_estimate) for i in range(_NUM_LEGS)]
         self._latest_pos_rev = pos_rev
+        # The 7th entry is the HAND (teensy_bridge_node builds NUM_AXES = 7
+        # MotorStateSingles). Guarded on length rather than assumed: this callback
+        # already accepts a >= 6 message, and a six-axis publisher (an old bag
+        # replay, a can_node-era recording) must leave the hand UNKNOWN rather than
+        # index past the end and take the whole seed path down with an IndexError.
+        if len(states) > _HAND_AXIS:
+            self._latest_hand_rev = float(states[_HAND_AXIS].pos_estimate)
+            self._latest_hand_vel_rps = float(states[_HAND_AXIS].vel_estimate)
         self._robot_state_mono = time.perf_counter()
         self._is_homed = bool(getattr(msg, 'is_homed', False))
         # Seed on the first telemetry after streaming is enabled — but never
@@ -2024,6 +2144,17 @@ class TrajectoryNode(Node):
             # per-tick replans.
             if not require_follower_mode:
                 self._move_seq += 1
+            # A non-cycle install SUPERSEDES the unified cycle, so the record dies
+            # with it. Without this a hold, a graceful stop or a guard descent would
+            # leave `_cycle` describing a plan the emitter has stopped playing, and
+            # the next EXTEND would chain a window onto a release that is never going
+            # to happen. `_svc_plan_cycle` re-installs the record immediately after
+            # its own `_install` returns — the same "clear here, the informed caller
+            # writes after" discipline `_last_peak_*` above uses.
+            if not isinstance(plan, CyclePlan):
+                self._cycle = None
+                self._cycle_supersede_deadline = None
+                self._cycle_deadline_alarmed = False
         return True
 
     def _make_shaper(self, gain: float) -> LeanShaper:
@@ -2439,9 +2570,10 @@ class TrajectoryNode(Node):
         ros_sec = float(ros_time.sec) + float(ros_time.nanosec) * 1e-9
         return ros_sec + self._ros_to_perf_offset
 
-    def _install_continuity_ok(self, plan) -> bool:
-        """True iff ``plan``'s t=0 commanded pose still matches the live commanded
-        state (in motor_rev, the pump's units).
+    def _install_continuity_ok(self, plan, tau: float = 0.0) -> bool:
+        """True iff ``plan`` at ``tau`` still matches the live commanded state — on
+        the LEGS (in motor_rev, the pump's units) and, when the plan carries one, on
+        the HAND.
 
         The seed is sampled at service/callback entry but the plan installs a few ms
         later while the emitter streams the OLD plan; if the commanded state drifted
@@ -2451,12 +2583,55 @@ class TrajectoryNode(Node):
         stop-stretch — so a normal supersede's drift stays ≪ bound and passes; this
         guard is what makes the claim safe, rejecting ``STALE_STATE`` on a drift
         > 0.06 rev rather than jumping u0. Same bound (0.06 rev) as ``go_to_pose``.
+
+        ``tau`` is where on the INCOMING plan's clock the comparison is taken. It is
+        0.0 for a fresh origin — the plan starts now — and ``now − t0`` for a
+        SAME-ORIGIN re-install (the unified cycle's EXTEND and REPLAN, whose head is
+        bit-identical to what is already streaming and whose t = 0 is therefore in
+        the past). Comparing a same-origin re-install at 0.0 would measure the whole
+        elapsed window as "drift" and refuse every chain.
+
+        **The hand term (plan Phase 4).** Until the unified cycle there was one
+        commanded channel and a pose check covered it. A ``CyclePlan`` swap also
+        steps the SLIDER, and a hand discontinuity is not visible in any leg
+        coordinate: the platform can be perfectly continuous while the hand jumps.
+        The reference is :meth:`_commanded_hand_state` — the active plan's hand when
+        one is streaming, the last shipped rev when a hand plan is installed but has
+        not emitted yet, the measured axis-6 position when neither.
+
+        **The bound is scaled exactly like the leg term above, and that is the
+        point.** The legs take ``0.25 × STEP_BOUND_MARGIN × MAX_POSITION_STEP_REV``
+        = 0.25 × 0.80 × 0.3 = **0.06 rev**, i.e. a quarter of the margin-discounted
+        step the pump would refuse. The hand's pump gate is
+        ``hand_vel_limit_rps × knot_dt`` = 200 × 0.025 = 5.0 rev, so the same
+        fraction of it is **1.0 rev**. Charging the FULL pump gate here (as this
+        did until 2026-09-04) admitted a 5.0 rev install discontinuity — 2× the
+        firmware's ``MAX_DEVIATION_HAND_REV`` (2.5) and 2.5× ``MAX_LEAD_HAND_REV``
+        (2.0), i.e. a step the guard would E-STOP on and this gate would wave
+        through. At 1.0 rev the admitted worst case sits at half the lead clamp and
+        40 % of the E-STOP band, with the same headroom-to-refusal ratio the legs
+        have carried since the guard landed. A plan with no hand track skips the
+        term entirely, so every legacy install is byte-identical to before.
         """
         drift = float(np.max(np.abs(
-            self._pose_to_motor_rev(plan.state_at(0.0)[0])
+            self._pose_to_motor_rev(plan.state_at(tau)[0])
             - self._pose_to_motor_rev(self._current_state()[0]))))
         bound = 0.25 * feas.STEP_BOUND_MARGIN * hw.JB_OP_MAX_POSITION_STEP_REV
-        return drift <= bound
+        if drift > bound:
+            return False
+        hand_at = getattr(plan, 'hand_at', None)
+        if hand_at is None:
+            return True
+        reference = self._commanded_hand_state()[0]
+        if reference is None:
+            # Neither commanded nor measured: nothing to be continuous WITH. Refuse
+            # rather than wave it through — installing a hand track blind is exactly
+            # the step the firmware's MAX_DEVIATION_HAND guard E-STOPs on.
+            return False
+        hand_bound = (0.25 * feas.STEP_BOUND_MARGIN
+                      * self._limits.hand_vel_limit_rps
+                      * self._limits.knot_dt_s)
+        return abs(float(hand_at(tau)[0]) - float(reference)) <= hand_bound
 
     def _publish_target_feedback(self, accepted: bool, code: str, reason: str,
                                  arrival_perf: float, source: str) -> None:
@@ -2634,19 +2809,42 @@ class TrajectoryNode(Node):
         catch (a parked, non-jittering rim seats the ball; the reload design). An
         operator abort lowers the latch, which clears the freeze via
         _reset_catch_reach_freeze.
+
+        **The gate ladder is SHARED with the unified cycle's replan.** Both
+        consumers of this topic answer the same two questions before they plan —
+        *is this target inside the committed reach-freeze* and *is it inside the
+        armed reach envelope* — and both must answer them BEFORE the plan call,
+        not after: `replan_tail` costs a full ~180 ms solve on the node's
+        single-threaded executor, so a target that was always going to be refused
+        would stall ingest for a fifth of a second to say so. Sharing the ladder
+        also keeps the two feedback vocabularies identical, which
+        catch_coordinator's feasibility blacklist depends on (it blacklists on
+        `WORKSPACE` and neither accepts nor blacklists on `_FROZEN`).
         """
-        if not self._catch_armed:
+        unified = self._cycle is not None
+        # ── The unified cycle owns this interval (plan Phase 4) ──
+        # A landing update while a CyclePlan is installed is EXACTLY the replan
+        # trigger the plan names: "on a tracker landing update, only the catch-side
+        # tail of the committed cycle re-plans" (owner, 2026-08-29). Routing it
+        # through `build_catch` instead would install a 6-channel reach over a
+        # 7-channel plan — dropping the hand track mid-flight with a ball in the
+        # air, which is the one thing the unified path exists to stop happening.
+        # Deliberately NOT gated on `_catch_armed`: under unified nothing arms a
+        # reactive catch, so the latch is down by design and gating on it would
+        # silence every replan.
+        if not unified and not self._catch_armed:
             return
+        source = 'cycle' if unified else 'catch'
         arrival_perf = float(msg.arrival_time)
         if self._guard_frozen:                       # FIX 1 — refuse while latched
             self._publish_target_feedback(
                 False, _GUARD_LATCHED, self._guard_frozen_msg(),
-                arrival_perf, 'catch')
+                arrival_perf, source)
             return
         if not (self._seeded and self._robot_state_fresh()):
             self._publish_target_feedback(
                 False, feas.STALE_STATE,
-                'not seeded / telemetry stale', arrival_perf, 'catch')
+                'not seeded / telemetry stale', arrival_perf, source)
             return
         # Reach-freeze window management. `_catch_arrival_perf` is the committed
         # arrival; the freeze runs from `arrival − reach_freeze` and holds through the
@@ -2667,7 +2865,7 @@ class TrajectoryNode(Node):
                 self._publish_target_feedback(
                     False, _FROZEN,
                     'within reach-freeze window — holding committed catch reach',
-                    arrival_perf, 'catch')
+                    arrival_perf, source)
                 return
         target, _twist, receive_tilt = self._catch_target_from_msg(msg)
         # Reach-envelope gate (the envelope build_catch documents as the caller's
@@ -2690,8 +2888,11 @@ class TrajectoryNode(Node):
                 self._last_rejection = reason
                 self.get_logger().error(f"catch target rejected: {reason}")
                 self._publish_target_feedback(
-                    False, feas.WORKSPACE, reason, arrival_perf, 'catch')
+                    False, feas.WORKSPACE, reason, arrival_perf, source)
                 return
+        if unified:
+            self._replan_cycle_from_target(msg)
+            return
         # Phase 7: build the tilt-through-seat catch (reach → through-seat decay →
         # quiescent hold) rather than the Phase-5 reach-only build_timed.
         # ``build_catch`` carries a small residual rate through the seat so the rim is
@@ -2706,6 +2907,70 @@ class TrajectoryNode(Node):
             target, arrival_perf, receive_tilt=receive_tilt, source='catch')
         if accepted:
             self._catch_arrival_perf = arrival_perf
+
+    def _replan_cycle_from_target(self, msg) -> None:
+        """A tracker landing update, routed to the cycle's bounded catch-side replan.
+
+        **What a ``DynamicTargetCommand`` can and cannot say about a cycle's catch.**
+        The message carries a STOW-relative PLATFORM pose and a zero arrival twist
+        (``build_catch`` forces translational arrival velocity to zero — velocity
+        matching is the hand's job on the legacy path). A ``CycleGoals`` catch is a
+        CUP-OPENING site with a GLOBAL z plus the BALL's arrival velocity. Two of
+        those four quantities are simply not on this wire:
+
+        * the cup-opening HEIGHT is not derivable from a platform centroid z without
+          the slider position the plan is about to choose, and
+        * the ball's arrival VELOCITY is not carried at all (the field that looks
+          like it is always zero here).
+
+        So the update moves the catch site **in xy and in nothing else**, and the
+        committed z and arrival velocity are carried across from the plan's own
+        catch mark. That is the honest reading of a landing revision — the tracker is
+        telling us WHERE on the catch plane the ball will arrive, not that it has
+        changed its mind about the plane or the speed — and it keeps the replan
+        strictly inside the envelope ``replan_tail`` was measured on. Widening it
+        needs a wider message, not a guess made here.
+
+        Refusals are quiet on the wire but loud in the log and always reported on
+        ``trajectory/target_feedback``, so the coordinator's existing accept/reject
+        correlation keeps working unchanged; the last good plan keeps streaming.
+        """
+        arrival_perf = float(msg.arrival_time)
+        if self._guard_frozen:                       # FIX 1 — refuse while latched
+            self._publish_target_feedback(
+                False, _GUARD_LATCHED, self._guard_frozen_msg(),
+                arrival_perf, 'cycle')
+            return
+        plan, meta, _t0 = self._cycle
+        committed = meta.catch_site_mm
+        if committed is None or not meta.releases:
+            self._publish_target_feedback(
+                False, _NO_CYCLE,
+                'active cycle has no catch to re-aim', arrival_perf, 'cycle')
+            return
+        site = np.asarray(committed, dtype=float).copy()
+        site[0] = float(msg.target_pos.x)
+        site[1] = float(msg.target_pos.y)
+        req = PlanCycle.Request()
+        req.mode = req.MODE_REPLAN
+        # The kind and the banking flag are stated rather than left at the IDL
+        # defaults (KIND_LAUNCH / banking off). `replan_tail` reads neither — it
+        # re-solves the catch-side tail of the plan already installed and inherits
+        # both from it — but a request that SAYS "an unbanked launch" while asking
+        # for a banked landing's tail is a request the next reader has to know to
+        # disbelieve, and the banking-off warning above was firing on every single
+        # landing update because of it.
+        req.kind = req.KIND_LANDING
+        req.banking_enabled = True
+        req.catch_site_mm = [float(v) for v in site]
+        req.catch_vel_mm_s = [float(v) for v in meta.catch_vel_mm_s]
+        req.catch_frac = 0.0          # the landing moved in space, not in time
+        req.period_s = float(plan.total_duration)
+        req.lead_s = _CYCLE_REPLAN_LEAD_S
+        resp = self._svc_plan_cycle(req, PlanCycle.Response())
+        self._publish_target_feedback(
+            bool(resp.accepted), str(resp.code), str(resp.message),
+            arrival_perf, 'cycle')
 
     def _svc_arm_catch(self, request, response):
         """``trajectory/arm_catch`` (SetBool): raise/lower the catch-armed latch.
@@ -2901,8 +3166,590 @@ class TrajectoryNode(Node):
         return response
 
     # ═══════════════════════════════════════════════════════════
+    # Unified 7-DoF cycle (plan Phase 4)
+    # ═══════════════════════════════════════════════════════════
+    #
+    # ⚠ NOTHING HERE SNAPS TO THE EMITTER TICK, DELIBERATELY.
+    # A CyclePlan's channels are piecewise-cubic Hermites between knots, so a
+    # KNOT-ALIGNED sample reproduces the planned curve exactly and an off-knot one
+    # reproduces it only to the Hermite's own interpolation. The emitter samples on
+    # ITS OWN absolute-deadline clock (`_emitter_loop`), which has no phase relation
+    # to a plan origin set inside a service callback, so plan installs land at an
+    # arbitrary sub-knot offset and every frame is an off-knot sample. That is
+    # accepted, not fixed: the interpolant IS the trajectory the firmware then
+    # re-interpolates at 500 Hz, `validate_cycle` measures the Hermite (not the
+    # knots), and the 25 ms grid is common to both ends. A phase-locking mechanism
+    # would buy exactness at the cost of a second timing authority on the wire.
+
+    #: Wire ``kind`` code → the window kind ``unified_cycle`` names. Mirrors the
+    #: KIND_* constants in PlanCycle.srv; a mismatch is caught by the srv's own
+    #: constants being compared against these in the integration test.
+    _CYCLE_KINDS = (uc.LAUNCH, uc.STEADY, uc.LANDING, uc.SETTLE)
+
+    @staticmethod
+    def _release_terminal(meta) -> bool:
+        """Does this plan END at a release?
+
+        The predicate ``replan_tail`` branches on to pick the tail's own terminal
+        (the throw it holds fixed, or the rest it settles at), named here because
+        it also answers the SAFETY question: a release-terminal plan streamed to
+        its end commands a hard STOP at the
+        throw. ``CyclePlan.state_at`` / ``hand_at`` return the terminal hold with
+        ZERO twist past the end, and the emitter reads the u1/v1 knot at
+        ``tau + dt`` — so the frame at ``duration - dt`` carries
+        ``hand_next_vel_rps = 0`` and ``vel_next_mm_s = 0``, and that v1 is what
+        the firmware's Hermite uses for the FINAL 25 ms segment, i.e. the release
+        stroke itself.
+
+        Measured on a 0.6 s LAUNCH: true terminal hand velocity 93.011 rev/s
+        against an emitted 0.0 — 0.3445 rev = 10.90 mm of slider error inside the
+        release segment, plus a 93 rev/s velocity-feedforward step. Both sit well
+        inside ``MAX_LEAD_HAND_REV`` (2.0) and ``MAX_DEVIATION_HAND_REV`` (2.5), so
+        NO firmware guard fires: the throw is simply wrong, silently. That is why
+        the deadline below is published and alarmed rather than merely documented.
+
+        Delegates to ``unified_cycle.is_release_terminal`` — the canonical export,
+        and the same predicate ``replan_tail`` branches on. A second spelling of a
+        safety predicate is exactly the thing that drifts.
+        """
+        return bool(uc.is_release_terminal(meta))
+
+    @staticmethod
+    def _supersede_deadline_s(meta) -> float:
+        """Plan-clock instant by which a release-terminal plan must be superseded.
+
+        Delegates to ``unified_cycle.latest_supersede_time_s`` — the canonical
+        export (``duration - dt``: the last knot whose ``tau + dt`` sample the
+        emitter still reads from real trajectory rather than from the terminal
+        hold). Called only for a release-terminal plan, which is the branch that
+        export returns a finite number for (it answers ``math.inf`` for a
+        rest-terminal one, which has no deadline to miss).
+        """
+        return float(uc.latest_supersede_time_s(meta))
+
+    def _commanded_hand_state(self):
+        """``(rev, rev_s)`` — the hand state the machine is being COMMANDED to, or
+        ``(None, 0.0)`` when nothing is known.
+
+        Three sources, in this order, and the order is the whole content:
+
+        1. **the ACTIVE PLAN, sampled now.** When a plan carrying a hand track is
+           installed, that is by definition what the emitter is shipping — the same
+           ``hand_at(tau)`` call the emitter itself makes. It is the only source
+           that is correct at every instant rather than at tick boundaries;
+        2. **``_last_hand_rev``** — the last rev the emitter actually put on the
+           wire. One tick old at worst, and it is the honest answer in the window
+           between a hand-carrying plan being installed and its first frame
+           shipping;
+        3. **the MEASURED axis-6 position.** With no hand track anywhere, the
+           firmware is holding the hand wherever it physically is, so the encoder
+           is the only truth there is.
+
+        Getting (1) wrong is not academic: with a cycle plan streaming, sources (2)
+        and (3) both lag it — (3) by the whole launch — and a continuity check
+        against a lagging reference refuses a plan whose head is bit-identical to
+        what is on the wire.
+        """
+        with self._plan_lock:
+            plan, t0 = self._active_plan, self._plan_t0
+        hand_at = getattr(plan, 'hand_at', None)
+        if hand_at is not None and t0 is not None:
+            rev, vel = hand_at(time.perf_counter() - t0)
+            return float(rev), float(vel)
+        vel = (float(self._latest_hand_vel_rps)
+               if self._latest_hand_vel_rps is not None else 0.0)
+        if self._last_hand_rev is not None:
+            return float(self._last_hand_rev), vel
+        if self._latest_hand_rev is not None:
+            return float(self._latest_hand_rev), vel
+        return None, 0.0
+
+    def _cycle_hand_reference(self):
+        """The hand position a new plan must be continuous WITH, or None."""
+        return self._commanded_hand_state()[0]
+
+    def _cycle_start_state(self, kind: str):
+        """``(CycleState, '')`` a NEW window is planned FROM, or ``(None, reason)``.
+
+        Position/velocity/acceleration come from ``_current_state()`` — the ACTIVE
+        PLAN sampled now, i.e. what the machine is being commanded to do, not what
+        the encoders say it did. That is the same seed every other install path on
+        this node uses and it is what makes the install continuous: a measured seed
+        would fold the tracking error into the plan's first knot and then ask the
+        legs to jump back onto it.
+
+        The hand half is the commanded-else-measured reference above. A LAUNCH is
+        built through ``CycleState.at_rest``, which supplies the cup position,
+        velocity and acceleration EXACTLY (zeros) rather than routing them through
+        the forward map — the QP's detach-cone rows treat the supplied acceleration
+        as exact, and feeding a finite-differenced one into them puts noise straight
+        into the one constraint the ball's trajectory depends on. The post-release
+        kinds get a full state with ``post_release=True`` and no detach axis, which
+        is the honest description of "chain from a state we measured rather than
+        from a plan we hold": ``g`` for the acceleration, no seam tilt pin.
+        """
+        pose, twist, accel = self._current_state()
+        # The RATE half of the same commanded-else-measured rule, and it is the
+        # load-bearing half of the rest check below: a unified LAUNCH moves the
+        # SLIDER ALONE under the z = 170 pin, so mid-launch the platform twist is
+        # ~zero and the hand rate is the only witness that the machine is moving at
+        # all. Reading the measured rate instead would let a launch be planned over
+        # a live launch whenever telemetry happened to sample near a turning point.
+        hand_rev, hand_vel = self._commanded_hand_state()
+        if hand_rev is None:
+            return None, ('no hand position known (neither commanded nor measured '
+                          'on robot_state axis %d)' % (_HAND_AXIS,))
+        _has_throw, _has_catch, post_release = uc._KIND_SHAPE[kind]
+        if not post_release:
+            # ── `at_rest` DECLARES rest; this VERIFIES it ──────────────────
+            # `CycleState.at_rest` supplies zero cup velocity and zero cup
+            # acceleration as EXACT values — that is its whole purpose, because
+            # the QP's detach-cone rows treat the supplied acceleration as exact.
+            # Called while the machine is actually moving it fabricates a
+            # boundary condition that is simply false, and the resulting plan's
+            # first knot carries zero velocity against a live one. The install
+            # guard would not catch it: it compares POSITIONS, and a position can
+            # match to the micron across a velocity step. So the claim is checked
+            # here, at the one place that makes it.
+            #
+            # The bound is the emitter's own resolution: one knot's worth of leg
+            # travel (`max_step_rev / mm_to_rev / knot_dt` is the leg-space
+            # equivalent), expressed as the speed below which the machine moves
+            # less than the pump's step gate in a knot and is therefore
+            # indistinguishable from stopped on the wire.
+            speed = float(np.max(np.abs(np.asarray(twist, dtype=float)[:3])))
+            rest_bound = (self._limits.max_step_rev
+                          / float(np.max(self._mm_to_rev))
+                          / self._limits.knot_dt_s)
+            hand_bound = self._limits.hand_vel_limit_rps * 1e-3
+            if speed > rest_bound or abs(hand_vel) > hand_bound:
+                return None, (
+                    'kind %r starts from REST but the machine is moving '
+                    '(platform %.1f mm/s > %.1f, hand %.3f rev/s > %.3f) — '
+                    'chain from the previous window with EXTEND instead of '
+                    'planning a launch over a live plan'
+                    % (kind, speed, rest_bound, abs(hand_vel), hand_bound))
+            return uc.CycleState.at_rest(pose, hand_rev), ''
+        return uc.CycleState(
+            pose=np.asarray(pose, dtype=float),
+            pose_vel=np.asarray(twist, dtype=float),
+            pose_accel=np.asarray(accel, dtype=float),
+            hand_rev=hand_rev, hand_vel_rps=hand_vel,
+            detach_axis=None, post_release=True), ''
+
+    @staticmethod
+    def _cycle_goals_from_request(request) -> uc.CycleGoals:
+        """``PlanCycle.Request`` → :class:`unified_cycle.CycleGoals`, verbatim.
+
+        No unit conversion and no frame change: the srv carries the goal in exactly
+        the frame ``CycleGoals`` documents (cup opening, mm, xy platform-frame, z
+        GLOBAL). One conversion point, and it is the caller's — a second one here
+        would be a place for the two to drift.
+        """
+        return uc.CycleGoals(
+            period_s=float(request.period_s),
+            throw_site_mm=np.asarray(request.throw_site_mm, dtype=float),
+            throw_target_mm=np.asarray(request.throw_target_mm, dtype=float),
+            flight_s=float(request.flight_s),
+            catch_site_mm=np.asarray(request.catch_site_mm, dtype=float),
+            catch_vel_mm_s=np.asarray(request.catch_vel_mm_s, dtype=float),
+            catch_frac=float(request.catch_frac),
+            settle_site_mm=np.asarray(request.settle_site_mm, dtype=float),
+            banking_enabled=bool(request.banking_enabled))
+
+    def _reject_cycle(self, response, code: str, message: str, t_wall: float):
+        """Fill ``response`` with a refusal. The ACTIVE PLAN IS UNTOUCHED.
+
+        That is the whole contract of a refusal on this path: ``replan_tail`` and
+        ``extend`` either return a re-validated plan or raise, so there is no partial
+        state to unwind, and the caller's correct response is to hold the last good
+        plan — which is what it is already streaming.
+        """
+        response.accepted = False
+        response.code = str(code)
+        response.message = str(message)
+        response.plan_wall_ms = (time.perf_counter() - t_wall) * 1e3
+        self._cycle_plan_wall_ms = response.plan_wall_ms
+        self._last_rejection = str(message)
+        self.get_logger().error('plan_cycle refused: %s' % (message,))
+        return response
+
+    def _cycle_replan_budget_left(self) -> int:
+        """Replans still available on the CURRENTLY INSTALLED window.
+
+        The budget is per INSTALL, not per session: ``_plan_cycle_new`` and
+        ``_plan_cycle_extend`` both zero the counter, so every window the
+        coordinator installs starts with a full budget and nothing else hands one
+        back. Two per installed window.
+
+        It is deliberately NOT a comparison against the release instant. A landing
+        update revises where a ball ALREADY IN THE AIR will come down, so it
+        arrives after the release it belongs to by construction — an epoch compare
+        against that release therefore fired on the first replan of every window
+        and the bound never bound at all.
+        """
+        return _MAX_CYCLE_REPLANS - int(self._cycle_replans)
+
+    def _svc_plan_cycle(self, request, response):
+        """``trajectory/plan_cycle``: plan ONE unified window and install it.
+
+        Guards are ``_svc_timed_target``'s, in the same order and for the same
+        reasons (guard latch → mode → seeded → telemetry fresh). Three modes:
+
+        * **NEW** — plan from the live commanded state at a FRESH origin.
+        * **EXTEND** — chain onto the active cycle's terminal release and re-install
+          at the SAME origin. The joined head is bit-identical to what is already
+          streaming (``unified_cycle.extend`` drops the duplicate knot and keeps
+          ``plan_a`` bit for bit), so the swap moves no knot the emitter has sent.
+        * **REPLAN** — re-solve the catch-side tail against a new landing, spliced at
+          the first knot past ``now + lead_s``, re-installed at the SAME origin.
+
+        EXTEND and REPLAN are ONE mechanism seen twice: *re-install a plan with the
+        same origin whose head is bit-identical up to now + lead* (owner, 2026-09-04).
+        The continuity guard still runs on both — the head being bit-identical is a
+        property of the planner, and this node's job is to check it rather than to
+        trust it.
+
+        **The refusal contract: a refusal HOLDS THE LAST GOOD PLAN.** Every
+        ``CycleInfeasible`` is loud and carries the layer that said so; nothing here
+        ever installs an ungated plan, and ``replan_tail``'s envelope being narrower
+        than the splice rule (measured: LIMIT_JERK at knot 12, LIMIT_ACC at knot 20
+        of the 1.4 s reference cycle) means mid-window refusals are EXPECTED, not
+        exceptional. The cost of one is a lost re-aim; the cost of relaxing the gate
+        would be a bad plan on seven channels.
+        """
+        t_wall = time.perf_counter()
+        response.accepted = False
+        response.code = ''
+        response.message = ''
+        response.t0_mono = 0.0
+        response.t_release_mono = 0.0
+        response.t_catch_mono = 0.0
+        response.release_vel_mm_s = [0.0, 0.0, 0.0]
+        response.stroke_clear_s = 0.0
+        response.arm_lead_s = 0.0
+        response.duration_s = 0.0
+        response.plan_wall_ms = 0.0
+        response.replans_used = 0
+        response.hand_peak_rev = 0.0
+        response.hand_peak_vel_rps = 0.0
+
+        if self._guard_frozen:                       # FIX 1 — refuse while latched
+            return self._reject_cycle(response, _GUARD_LATCHED,
+                                      self._guard_frozen_msg(), t_wall)
+        if self._current_mode != _MOVE_MODE:
+            return self._reject_cycle(
+                response, feas.WRONG_MODE,
+                "plan_cycle requires %s mode (current mode '%s')"
+                % (_MOVE_MODE, self._current_mode), t_wall)
+        if not self._seeded:
+            return self._reject_cycle(
+                response, feas.STALE_STATE,
+                'not streaming/seeded — cannot plan a cycle', t_wall)
+        if not self._robot_state_fresh():
+            return self._reject_cycle(
+                response, feas.STALE_STATE,
+                'robot_state telemetry stale — cannot plan a cycle', t_wall)
+        try:
+            kind = self._CYCLE_KINDS[int(request.kind)]
+        except (IndexError, ValueError, TypeError):
+            return self._reject_cycle(
+                response, feas.UNREACHABLE,
+                'unknown window kind %r (expected 0..%d)'
+                % (request.kind, len(self._CYCLE_KINDS) - 1), t_wall)
+        mode = int(request.mode)
+        goals = self._cycle_goals_from_request(request)
+        if mode != request.MODE_REPLAN and not goals.banking_enabled:
+            # MODE_REPLAN is excluded because it does not carry a banking DECISION:
+            # `replan_tail` re-solves the catch-side tail of the plan that is
+            # already installed and inherits that plan's banking, so the request's
+            # `banking_enabled` is inert for it. Warning on it would fire on every
+            # tracker landing update of every cycle and train the operator to
+            # ignore the line that matters.
+            #
+            # Not a refusal — `validate_cycle` is the gate and it will say so — but
+            # the operator gets told WHY it is about to: zero banking cannot plan a
+            # steady cycle at session limits (measured LIMIT_VEL 529 mm/s against a
+            # 250 cap), so a banking-off request is nearly always a mistake rather
+            # than an experiment.
+            self.get_logger().warning(
+                'plan_cycle asked for banking OFF — the tilt schedule will not '
+                'absorb the cup acceleration and the gate is likely to refuse '
+                'LIMIT_VEL; banking off is a Phase-0 A/B arm, not an operating '
+                'point')
+        try:
+            if mode == request.MODE_NEW:
+                return self._plan_cycle_new(request, response, kind, goals,
+                                            t_wall)
+            if mode == request.MODE_EXTEND:
+                return self._plan_cycle_extend(request, response, kind, goals,
+                                               t_wall)
+            if mode == request.MODE_REPLAN:
+                return self._plan_cycle_replan(request, response, t_wall)
+        except uc.CycleInfeasible as exc:
+            return self._reject_cycle(response, uc.OUTCOME_CODE, exc.outcome(),
+                                      t_wall)
+        except (ValueError, TrajectoryInfeasible) as exc:
+            # A malformed goal (a half-specified kind, a non-finite site) or the
+            # feasibility layer's own refusal reaching us as its native exception.
+            # Loud and non-fatal: the callback must never take the executor down.
+            return self._reject_cycle(response, feas.UNREACHABLE, str(exc),
+                                      t_wall)
+        return self._reject_cycle(
+            response, feas.UNREACHABLE,
+            'unknown plan_cycle mode %r (expected 0..2)' % (request.mode,),
+            t_wall)
+
+    def _plan_cycle_new(self, request, response, kind, goals, t_wall):
+        """MODE_NEW — plan from the live commanded state, install at a fresh origin."""
+        seed_mono = time.perf_counter()
+        state, err = self._cycle_start_state(kind)
+        if state is None:
+            return self._reject_cycle(
+                response, feas.STALE_STATE,
+                '%s — cannot seed a cycle' % (err,), t_wall)
+        plan, meta = uc.plan_cycle(kind, goals, state, self._limits, self._geom)
+        if bool(getattr(request, 'chain', False)):
+            # ── The CHAINED install (the cliff fix) ──────────────────────────
+            # A plan that ends at a release commands a hard STOP at the throw if
+            # it is streamed to its end (see `_release_terminal`). Chaining the
+            # next window into the SAME install makes the very FIRST installed
+            # plan rest-terminal, which removes that class rather than racing it:
+            # there is then no window in which a correctly planned launch is one
+            # late service call away from a stopped throw. It costs a second solve
+            # inside this callback, which is the honest price and is what
+            # `plan_wall_ms` reports.
+            try:
+                chain_kind = self._CYCLE_KINDS[int(request.chain_kind)]
+            except (IndexError, ValueError, TypeError):
+                return self._reject_cycle(
+                    response, feas.UNREACHABLE,
+                    'unknown chain_kind %r' % (request.chain_kind,), t_wall)
+            if chain_kind == uc.LAUNCH:
+                return self._reject_cycle(
+                    response, feas.UNREACHABLE,
+                    'chain_kind LAUNCH is refused: a launch starts from REST, and '
+                    'the state a chain starts from is post-release by construction',
+                    t_wall)
+            chain_goals = dataclasses.replace(
+                goals, period_s=float(request.chain_period_s),
+                catch_frac=float(request.chain_catch_frac), catch_t_s=None)
+            plan_b, meta_b = uc.plan_cycle(
+                chain_kind, chain_goals,
+                uc.release_state_from_meta(meta, plan),
+                self._limits, self._geom)
+            plan, meta = uc.extend(plan, meta, plan_b, meta_b,
+                                   self._limits, self._geom)
+        if not self._install_continuity_ok(plan, 0.0):
+            return self._reject_cycle(
+                response, feas.STALE_STATE,
+                'commanded state moved during planning — retry', t_wall)
+        # ── THE ORIGIN IS THE INSTALL INSTANT, NOT THE SEED ──────────────────
+        # `_plan_and_install_timed` / `_plan_and_install_catch` anchor at
+        # `seed_mono` because their plans encode an ABSOLUTE arrival: the plan's
+        # clock has to line up with the instant the ball gets there, and the few
+        # ms of solve are exactly the offset that keeps it lined up.
+        #
+        # A cycle window has NO absolute event in it. Its release is defined as
+        # "period_s after the window starts", so anchoring at the seed would throw
+        # away the whole solve time: the emitter's first sample would land at
+        # tau = solve_cost — jumping into the MIDDLE of the launch, past a
+        # stretch of trajectory that was never executed — and the guard above
+        # would not see it, because it checks tau = 0 while the emitter samples
+        # somewhere else. At the ~180-250 ms this solve costs against a 0.6 s
+        # window that is a third of the launch skipped, as a step, on seven
+        # channels.
+        #
+        # Anchoring at the install instant makes tau = 0 the first sample, which
+        # is exactly the point the continuity guard just checked. The state the
+        # plan was built from is `solve_cost` old — and that is what the guard is
+        # FOR: a machine that moved during the solve is refused, not absorbed.
+        install_mono = time.perf_counter()
+        self._install(plan, t0=install_mono)
+        self._cycle = (plan, meta, install_mono)
+        self._cycle_replans = 0
+        return self._accept_cycle(response, plan, meta, install_mono, t_wall)
+
+    def _plan_cycle_extend(self, request, response, kind, goals, t_wall):
+        """MODE_EXTEND — chain a window onto the active cycle's terminal release."""
+        if self._cycle is None:
+            return self._reject_cycle(
+                response, _NO_CYCLE,
+                'no active cycle to extend — plan a NEW window first', t_wall)
+        plan_a, meta_a, t0 = self._cycle
+        state = uc.release_state_from_meta(meta_a, plan_a)
+        plan_b, meta_b = uc.plan_cycle(kind, goals, state, self._limits,
+                                       self._geom)
+        joined, meta = uc.extend(plan_a, meta_a, plan_b, meta_b, self._limits,
+                                 self._geom)
+        # SAME origin, so the comparison is taken at the CURRENT plan time — not at
+        # 0.0, which is the start of a window the emitter left seconds ago. The head
+        # is bit-identical by construction; the guard runs anyway, because "the
+        # planner promises it" is not the same evidence as "we checked".
+        tau_now = time.perf_counter() - t0
+        if not self._install_continuity_ok(joined, tau_now):
+            return self._reject_cycle(
+                response, feas.STALE_STATE,
+                'extended plan is not continuous at the live plan time '
+                '(tau=%.3f s) — holding the last good plan' % (tau_now,), t_wall)
+        self._install(joined, t0=t0)
+        self._cycle = (joined, meta, t0)
+        # A new terminal release ⇒ a new throw window ⇒ a fresh replan budget.
+        self._cycle_replans = 0
+        return self._accept_cycle(response, joined, meta, t0, t_wall)
+
+    def _plan_cycle_replan(self, request, response, t_wall):
+        """MODE_REPLAN — re-solve the catch-side tail against a new landing."""
+        if self._cycle is None:
+            return self._reject_cycle(
+                response, _NO_CYCLE,
+                'no active cycle to replan — plan a NEW window first', t_wall)
+        if self._cycle_replan_budget_left() <= 0:
+            return self._reject_cycle(
+                response, _REPLAN_BUDGET,
+                'catch-side replan budget spent (%d of %d on this throw window) '
+                '— holding the committed plan'
+                % (self._cycle_replans, _MAX_CYCLE_REPLANS), t_wall)
+        plan, meta, t0 = self._cycle
+        t_now_s = time.perf_counter() - t0
+        # A moved catch INSTANT is optional and is nominated through catch_frac on
+        # the WHOLE plan's clock (`replan_tail` re-bases the goal's own field, which
+        # on a spliced plan describes the tail rather than the plan). 0.0 ⇒ "the
+        # landing moved in space, not in time" ⇒ keep the committed catch instant.
+        frac = float(request.catch_frac)
+        new_catch_t_s = (frac * float(request.period_s)) if frac > 0.0 else None
+        spliced, meta2 = uc.replan_tail(
+            plan, meta, t_now_s,
+            np.asarray(request.catch_site_mm, dtype=float),
+            np.asarray(request.catch_vel_mm_s, dtype=float),
+            self._limits, self._geom,
+            lead_s=float(request.lead_s), new_catch_t_s=new_catch_t_s)
+        if not self._install_continuity_ok(spliced, t_now_s):
+            return self._reject_cycle(
+                response, feas.STALE_STATE,
+                'spliced plan is not continuous at the live plan time '
+                '(tau=%.3f s) — holding the last good plan' % (t_now_s,), t_wall)
+        self._install(spliced, t0=t0)
+        self._cycle = (spliced, meta2, t0)
+        self._cycle_replans += 1
+        return self._accept_cycle(response, spliced, meta2, t0, t_wall)
+
+    def _accept_cycle(self, response, plan, meta, t0, t_wall):
+        """Fill ``response`` from an INSTALLED plan + its meta."""
+        response.accepted = True
+        response.code = feas.OK
+        response.t0_mono = float(t0)
+        # The first release STILL AHEAD of now — the throw this response is
+        # announcing. On a fresh LAUNCH+LANDING install that is `releases[0]` and
+        # nothing changes; on an EXTEND it is not, and that difference is the whole
+        # reason this is a search rather than an index.
+        #
+        # An EXTEND joins a NEW window onto the ACTIVE plan and re-installs at the
+        # SAME origin, so the joined meta carries every release the plan has ever
+        # had — including the one the ball already left on, seconds in the past.
+        # Reporting `releases[0]` there hands the caller a SPENT instant: the
+        # coordinator's chained branch compares it against the cycle's schedule and
+        # refuses `CHAIN_SKEW` on every cycle (`t_release_mono > now` fails by a
+        # whole beat), and `_expected_landing_perf` cuts the ball sensor's arrival
+        # window around a throw that has already happened.
+        #
+        # `releases[-1]` is the fallback rather than 0.0: a plan whose releases have
+        # ALL passed is a rest-terminal plan being sampled after its last throw, and
+        # the honest answer to "when does this plan throw" is then its final release,
+        # not "never".
+        tau_now = time.perf_counter() - float(t0)
+        first = None
+        for mark in (meta.releases or ()):
+            if float(mark.t_s) > tau_now:
+                first = mark
+                break
+        if first is None and meta.releases:
+            first = meta.releases[-1]
+        response.t_release_mono = (float(t0) + float(first.t_s)
+                                   if first is not None else 0.0)
+        t_catch = meta.t_catch_s
+        response.t_catch_mono = (float(t0) + float(t_catch)
+                                 if t_catch is not None else 0.0)
+        rel_v = first.vel_mm_s if first is not None else None
+        response.release_vel_mm_s = ([float(v) for v in rel_v]
+                                     if rel_v is not None else [0.0, 0.0, 0.0])
+        t_rel = meta.t_release_s
+        terminal = self._release_terminal(meta)
+        response.release_terminal = bool(terminal)
+        response.supersede_deadline_mono = (
+            float(t0) + self._supersede_deadline_s(meta) if terminal else 0.0)
+        # stroke_clear_s / arm_lead_s are the PLAN's twins of hand_stroke's
+        # firmware-stroke models. `None` means the plan carries no such instant (a
+        # window that ENDS at its release has its deceleration in the NEXT window),
+        # and 0.0 is the wire's spelling of that — the consumer's fallback is the
+        # legacy model, which is exactly what it had before.
+        sc = meta.releases[-1].stroke_clear_s if meta.releases else None
+        response.stroke_clear_s = float(sc) if sc is not None else 0.0
+        al = meta.arm_lead_s
+        response.arm_lead_s = float(al) if al is not None else 0.0
+        response.duration_s = float(plan.total_duration)
+        response.replans_used = int(self._cycle_replans)
+        response.hand_peak_rev = float(np.max(plan.hand_rev))
+        response.hand_peak_vel_rps = float(np.max(np.abs(plan.hand_vel_rps)))
+        response.plan_wall_ms = (time.perf_counter() - t_wall) * 1e3
+        self._cycle_plan_wall_ms = response.plan_wall_ms
+        # Arm (or clear) the supersede alarm for whatever is now installed. Every
+        # accepted install passes through here, so a plan that RESOLVES the cliff —
+        # a chain, an extend, a splice ending at rest — disarms it in the same
+        # breath that installed it.
+        self._cycle_supersede_deadline = (response.supersede_deadline_mono
+                                          if terminal else None)
+        self._cycle_deadline_alarmed = False
+        response.message = (
+            '%s cycle installed: %.3f s, %d knots, release +%.3f s, plan %.1f ms'
+            % (meta.kind, plan.total_duration, plan.n_knots,
+               float(t_rel) if t_rel is not None else float('nan'),
+               response.plan_wall_ms))
+        self.get_logger().info(response.message + self._wire_state_suffix())
+        return response
+
+    # ═══════════════════════════════════════════════════════════
     # Status + diagnostics (5 Hz)
     # ═══════════════════════════════════════════════════════════
+
+    def _check_supersede_deadline(self, is_cycle: bool) -> float:
+        """Seconds until the active cycle plan MUST have been superseded, and the
+        ALARM when that instant passes with it still installed.
+
+        The node does not fix this and must not try to: the orchestrator owns the
+        chain, and inventing a rescue plan here would put a second motion authority
+        on the wire. What the node owns is the alarm — and it is the whole point,
+        because this failure is otherwise INVISIBLE. Past the deadline the emitter's
+        u1/v1 come from the plan's terminal HOLD, so the final 25 ms segment (the
+        release stroke itself) is commanded to a stop; the resulting error is well
+        inside ``MAX_LEAD_HAND_REV`` and ``MAX_DEVIATION_HAND_REV``, so no firmware
+        guard fires, nothing latches, and the only symptom is a throw that went
+        somewhere else.
+
+        Returns 0.0 when there is nothing to watch (no cycle, or a rest-terminal
+        one, which is cliff-safe); a positive remaining time before the deadline; a
+        NEGATIVE one after it. Logged ONCE per install (``_cycle_deadline_alarmed``)
+        — this runs on the 5 Hz status timer and a per-tick line would bury itself.
+        """
+        deadline = self._cycle_supersede_deadline
+        if deadline is None or not is_cycle:
+            return 0.0
+        remaining = float(deadline) - time.perf_counter()
+        if remaining <= 0.0 and not self._cycle_deadline_alarmed:
+            self._cycle_deadline_alarmed = True
+            self._last_rejection = (
+                'cycle supersede deadline PASSED %.3f s ago with a '
+                'release-terminal plan still installed' % (-remaining,))
+            self.get_logger().error(
+                'UNIFIED CYCLE CLIFF: the active plan ENDS AT A RELEASE and its '
+                'supersede deadline passed %.3f s ago with nothing installed after '
+                'it. From that instant the emitter samples u1/v1 from the terminal '
+                'HOLD, so the final 25 ms segment — the release stroke — is being '
+                'commanded to a STOP (measured on a 0.6 s launch: 93.011 rev/s of '
+                'true terminal hand velocity emitted as 0.0, 10.90 mm of slider '
+                'error). NO firmware guard fires on that, so this line is the only '
+                'trace. The orchestrator owed an EXTEND before the deadline.')
+        return remaining
 
     def _publish_status(self):
         with self._plan_lock:
@@ -2954,6 +3801,19 @@ class TrajectoryNode(Node):
         msg.leg_vel_limit_mmps = float(limits.leg_vel_mmps)
         msg.leg_acc_limit_mmps2 = float(limits.leg_acc_mmps2)
         msg.leg_jerk_limit_mmps3 = float(limits.leg_jerk_mmps3)
+        # Unified-cycle discriminator. Keyed on the ACTIVE PLAN's type, not on the
+        # `_cycle` record: the record says "a cycle was installed", the plan says
+        # "a cycle is streaming", and the second is the one a consumer asking "is
+        # the hand on the wire" needs. `plan_kind` cannot answer it — CyclePlan.kind
+        # is deliberately 'move'.
+        is_cycle = isinstance(plan, CyclePlan)
+        msg.cycle_active = bool(is_cycle)
+        msg.cycle_plan_wall_ms = float(self._cycle_plan_wall_ms)
+        msg.cycle_hand_peak_rev = (float(np.max(plan.hand_rev))
+                                   if is_cycle else 0.0)
+        msg.cycle_hand_peak_vel_rps = (float(np.max(np.abs(plan.hand_vel_rps)))
+                                       if is_cycle else 0.0)
+        msg.cycle_supersede_deadline_s = self._check_supersede_deadline(is_cycle)
         self.status_pub.publish(msg)
 
         # Live COMMANDED platform position (see the publisher's comment in

@@ -13,6 +13,7 @@ no hardware.
 
 from __future__ import annotations
 
+import math
 import os
 import re
 import sys
@@ -241,3 +242,313 @@ def test_firmware_stroke_bounds_match_motor_guard():
         (fw_min, list(np.array(guard._stroke_min_rev)))
     assert np.allclose(fw_max, np.array(guard._stroke_max_rev), atol=1e-6), \
         (fw_max, list(np.array(guard._stroke_max_rev)))
+
+
+# ---------------------------------------------------------------------------
+# The 7th (hand) lane — unified-7dof Phase 4, sim/unified_gate.py's mirror
+# ---------------------------------------------------------------------------
+
+def _parse_scalar(header_text, name):
+    m = re.search(rf"constexpr\s+float\s+{name}\s*=\s*([0-9.eE+-]+)f?\s*;",
+                  header_text)
+    assert m, f"{name} not found in canbridge_config.h"
+    return float(m.group(1))
+
+
+def _parse_uint(header_text, name):
+    m = re.search(rf"constexpr\s+uint\d+_t\s+{name}\s*=\s*([0-9]+)u?\s*;",
+                  header_text)
+    assert m, f"{name} not found in canbridge_config.h"
+    return int(m.group(1))
+
+
+#: ``namespace::`` prefix in the header  →  the generated-config prefix the same
+#: symbol carries in ``jugglebot.hardware_config``.  ``config/generate_config.py``
+#: emits ``TrajOp::X`` as ``JB_TRAJ_X`` and ``Geometry::X`` as ``GEOM_X``.
+_ALIAS_NAMESPACES = {'TrajOp': 'JB_TRAJ_', 'Geometry': 'GEOM_'}
+
+
+def _parse_alias(header_text, name):
+    """The RHS SYMBOL of ``constexpr float <name> = <Namespace>::<SYMBOL>;``.
+
+    Returns ``(namespace, symbol)``.  A header constant defined as an alias has
+    no literal to compare against, and the previous test compared the mirror to
+    a generated constant CHOSEN BY HAND — so the header could be re-pointed at a
+    different symbol (``HAND_VEL_LIMIT_RPS`` instead of ``HAND_VEL_CEILING_RPS``,
+    say: 200 vs 300, both plausible, both present in the generated config) and
+    every assertion here would still pass while the firmware shipped a different
+    number.  Parsing the alias closes that.
+    """
+    m = re.search(
+        rf"constexpr\s+float\s+{name}\s*=\s*({'|'.join(_ALIAS_NAMESPACES)})"
+        rf"::(\w+)\s*;", header_text)
+    assert m, f"{name} is not a namespace alias in canbridge_config.h"
+    return m.group(1), m.group(2)
+
+
+def _generated(namespace, symbol):
+    """The generated-config constant a header alias resolves to."""
+    import jugglebot.hardware_config as hw
+    attr = _ALIAS_NAMESPACES[namespace] + symbol
+    assert hasattr(hw, attr), (
+        f"{namespace}::{symbol} has no generated counterpart {attr}")
+    return float(getattr(hw, attr))
+
+
+def test_hand_lane_constants_match_the_firmware():
+    """``teensy_interp``'s hand guard constants == canbridge_config.h's.
+
+    These are the constants that must NEVER be the legs': applying the legs'
+    ``MAX_LEAD_REV`` (0.10) or ``LEAD_CLAMP_VELFF_LIMIT_RPS`` (3.5) to axis 6
+    would be a 51x feedforward cut on a 200 rev/s axis, which is why the
+    firmware writes the hand as a separate block.  The Python mirror
+    ``sim/unified_gate.py`` drives has its own copies, so they are pinned to
+    the header the same way the stroke bounds above are.
+
+    Two of them are ALIASES in the header rather than literals
+    (``HAND_VELFF_LIMIT_RPS = TrajOp::HAND_VEL_CEILING_RPS``,
+    ``HAND_MOTOR_MAX_POSITION = Geometry::HAND_MOTOR_HARD_STOP_REVS``).  For
+    those, the RHS SYMBOL NAME is asserted as well as the value: comparing only
+    to a generated constant chosen by hand would let the header be re-pointed at
+    a different symbol of the same type — ``TrajOp::HAND_VEL_LIMIT_RPS`` (200) in
+    place of ``HAND_VEL_CEILING_RPS`` (300) is a live example, both exist — and
+    the firmware would ship a number this file still called a match.
+    """
+    import teensy_interp as ti
+
+    text = open(_CANBRIDGE_CFG).read()
+    assert ti.MAX_LEAD_HAND_REV == _parse_scalar(text, "MAX_LEAD_HAND_REV")
+    assert ti.MAX_DEVIATION_HAND_REV == _parse_scalar(
+        text, "MAX_DEVIATION_HAND_REV")
+
+    ns, sym = _parse_alias(text, "HAND_VELFF_LIMIT_RPS")
+    assert (ns, sym) == ('TrajOp', 'HAND_VEL_CEILING_RPS')
+    assert ti.HAND_VELFF_LIMIT_RPS == _generated(ns, sym)
+
+    ns, sym = _parse_alias(text, "HAND_MOTOR_MAX_POSITION")
+    assert (ns, sym) == ('Geometry', 'HAND_MOTOR_HARD_STOP_REVS')
+    assert ti.HAND_MOTOR_MAX_POSITION == _generated(ns, sym)
+
+    # The lead clamp's staleness cap (leg_interp.cpp:773-774) — microseconds in
+    # the header, seconds in the mirror.
+    assert ti.MOTOR_FB_STALENESS_S == pytest.approx(
+        _parse_uint(text, "MOTOR_FB_STALENESS_US") / 1e6)
+    assert ti.NUM_AXES == 7 and ti.HAND_AXIS == 6
+
+
+def test_transmitted_v1_changes_the_hermite_and_absent_v1_does_not():
+    """The ``HAS_V1`` rule, both directions, on the leg lanes.
+
+    The v6 wire transmits the u1-knot velocity; with the flag clear the
+    firmware falls back to ``(u2−u1)/T``.  Both halves are pinned because the
+    fallback is the FLOWN path (every frame before FW 17) and a port that
+    silently always used the transmitted value would break every pre-v6
+    replay — while a port that ignored it would make the exact-reconstruction
+    claim false with no test to say so.
+    """
+    from teensy_interp import TeensyLegInterp, NUM_LEGS
+    lo = [-1.0] * NUM_LEGS
+    hi = [20.0] * NUM_LEGS
+    u0 = [1.00] * NUM_LEGS
+    u1 = [1.05] * NUM_LEGS
+    u2 = [1.15] * NUM_LEGS         # forward difference (u2-u1)/T = 4.0 rev/s
+    v0 = [2.0] * NUM_LEGS
+    v1 = [0.5] * NUM_LEGS          # deliberately far from the fallback
+    zeros = [0.0] * NUM_LEGS
+    # Knots kept inside ONE lead-clamp band of the feedback below, so the clamp
+    # never engages and the comparison is of the LADDER, not of the guard.
+
+    a = TeensyLegInterp(lo, hi)
+    a.latch_setpoint(u0, v0, zeros, zeros, 0.0, u1=u1, u2=u2)
+    b = TeensyLegInterp(lo, hi)
+    b.latch_setpoint(u0, v0, zeros, zeros, 0.0, u1=u1, u2=u2, v1=v1)
+
+    fb = [1.03] * NUM_LEGS         # within MAX_LEAD_REV of every knot
+    mid = 0.0125                   # s = 0.5, where h11 is largest
+    pa, va, _ = a.tick(mid, fb)
+    pb, vb, _ = b.tick(mid, fb)
+    assert not np.isclose(pa[0], pb[0]), \
+        "the transmitted v1 made no difference — HAS_V1 is not wired through"
+
+    # ── The MID-SEGMENT closed form, both branches ────────────────────────────
+    # Written out longhand from leg_interp.cpp's basis rather than factored
+    # through the port, exactly as the hand ladder test below does, so the two
+    # cannot share a bug.  Without this the transmitted-v1 leg path had no
+    # closed-form assertion anywhere: `xref.py` never passes `v1=`, so the
+    # motor_guard cross-check cannot reach this branch, and the assertions above
+    # only pin that v1 is CONSULTED — a transposed h10/h11 term (or a T factor on
+    # the wrong basis function) would leave them all passing.
+    T = SEGMENT_T_S = 0.025
+    s = 0.5
+    s2, s3 = s * s, s * s * s
+    h00, h10 = 2 * s3 - 3 * s2 + 1, s3 - 2 * s2 + s
+    h01, h11 = -2 * s3 + 3 * s2, s3 - s2
+    dh00, dh10 = (6 * s2 - 6 * s) / T, 3 * s2 - 4 * s + 1
+    dh01, dh11 = (-6 * s2 + 6 * s) / T, 3 * s2 - 2 * s
+    v1_fallback = (u2[0] - u1[0]) / T          # (u2-u1)/T = 4.0 rev/s
+
+    def want_pos(v1_end):
+        return (h00 * u0[0] + h10 * (T * v0[0]) + h01 * u1[0]
+                + h11 * (T * v1_end))
+
+    def want_vel(v1_end):
+        return (dh00 * u0[0] + dh10 * v0[0] + dh01 * u1[0] + dh11 * v1_end)
+
+    # The lead clamp must not be what these measure: it would replace the
+    # ladder's answer with `fb + dev` and zero the velocity.
+    assert a.lead_clamp_ticks == 0 and b.lead_clamp_ticks == 0
+    assert a.raw_pos[0] == pytest.approx(want_pos(v1_fallback), abs=1e-12)
+    assert a.raw_vel[0] == pytest.approx(want_vel(v1_fallback), abs=1e-12)
+    assert b.raw_pos[0] == pytest.approx(want_pos(v1[0]), abs=1e-12)
+    assert b.raw_vel[0] == pytest.approx(want_vel(v1[0]), abs=1e-12)
+    assert pa[0] == pytest.approx(a.raw_pos[0], abs=1e-12)
+    assert pb[0] == pytest.approx(b.raw_pos[0], abs=1e-12)
+    assert va[0] == pytest.approx(a.raw_vel[0], abs=1e-12)
+    assert vb[0] == pytest.approx(b.raw_vel[0], abs=1e-12)
+
+    # At s = 1 the Hermite endpoint POSITION is u1 either way; the endpoint
+    # VELOCITY is what v1 sets, and that is the number the falling-edge rule
+    # then carries into Mode 2.
+    _, va_end, _ = a.tick(0.025, fb)
+    _, vb_end, _ = b.tick(0.025, fb)
+    assert va_end[0] == pytest.approx(4.0)
+    assert vb_end[0] == pytest.approx(0.5)
+
+
+def test_hand_lane_ladder_matches_the_firmware_closed_form():
+    """Mode 1 / Mode 2 / Mode 3 on the hand lane, against the C++ expressions.
+
+    Written out longhand from ``leg_interp.cpp``'s hand block rather than
+    factored through the port, so the two cannot share a bug.  ``accel[6]`` is
+    an exact 0.0 on every frame ``SetpointPump`` builds, so ``a0`` and the jerk
+    EMA are zero and Mode 2 is a straight line from the segment endpoint — the
+    property the falling-edge decay is measured against.
+    """
+    from teensy_interp import (TeensyLegInterp, EXTRAP_DECAY_DT_S,
+                               MAX_EXTRAP_DT_S, SEGMENT_T_S)
+    m = TeensyLegInterp([-1.0] * 6, [20.0] * 6)
+    p0, v0, p1, v1 = 5.0, 40.0, 6.0, 30.0
+    m.latch_hand(p0, v0, 0.0, u1=p1, u2=7.0, v1=v1)
+
+    # Mode 1 at s = 0.5 — the C++ basis, written out.
+    s = 0.5
+    s2, s3 = s * s, s * s * s
+    want = ((2 * s3 - 3 * s2 + 1) * p0 + (s3 - 2 * s2 + s) * (SEGMENT_T_S * v0)
+            + (-2 * s3 + 3 * s2) * p1 + (s3 - s2) * (SEGMENT_T_S * v1))
+    m.tick_hand(0.5 * SEGMENT_T_S, p0)
+    assert m.hand_raw_pos == pytest.approx(want, rel=0, abs=1e-12)
+
+    # Mode 2 — Taylor from the segment ENDPOINT (p1, v1), not from (p0, v0).
+    over = 0.02
+    m.tick_hand(SEGMENT_T_S + over, p0)
+    assert m.hand_raw_pos == pytest.approx(p1 + v1 * over, abs=1e-12)
+    assert m.hand_raw_vel == pytest.approx(v1, abs=1e-12)
+
+    # Mode 3 — velocity decays linearly to EXACTLY zero over EXTRAP_DECAY_DT_S.
+    half = MAX_EXTRAP_DT_S + 0.5 * EXTRAP_DECAY_DT_S
+    m.tick_hand(SEGMENT_T_S + half, p0)
+    assert m.hand_raw_vel == pytest.approx(0.5 * v1, abs=1e-9)
+    m.tick_hand(SEGMENT_T_S + MAX_EXTRAP_DT_S + EXTRAP_DECAY_DT_S, p0)
+    assert m.hand_raw_vel == 0.0
+    m.tick_hand(SEGMENT_T_S + 1.0, p0)
+    assert m.hand_raw_vel == 0.0
+
+
+def test_the_hand_lead_clamp_anchor_is_freshness_aware_and_age_capped():
+    """The anchor is ``fb + vel·age``, and the age is CAPPED and COUNTED.
+
+    ``leg_interp.cpp:766-777``.  A freshness-BLIND clamp is not an option here:
+    Phase 0 Decision 4 records that it would need a 5.0 rev band (46 % of the
+    stroke — not a guard) or it re-creates the S1/S2 stale-anchor commanded-stop,
+    at 13× leg speed on the hand.  So the clamp extrapolates the encoder forward
+    by its own age — and then caps that extrapolation at
+    ``MOTOR_FB_STALENESS_US`` (``leg_interp.cpp:773-774``), because past the cap
+    the extrapolation is following a feedback that may simply be dead.  The frame
+    still transmits; the cap is counted, which is what makes the telemetry gap
+    loud instead of silent.
+
+    Driven through the lead clamp because that is where the anchor is
+    OBSERVABLE: park the ladder far ahead of the encoder and the commanded
+    position is exactly ``anchor + MAX_LEAD_HAND_REV``, so the returned number
+    IS the anchor plus a constant.
+    """
+    from teensy_interp import (TeensyLegInterp, MAX_LEAD_HAND_REV,
+                               MOTOR_FB_STALENESS_S)
+    m = TeensyLegInterp([-1.0] * 6, [20.0] * 6)
+    m.latch_hand(9.0, 0.0, 0.0, u1=9.0, u2=9.0, v1=0.0)   # flat ladder at 9.0
+
+    # age = 0: the anchor is the raw feedback, whatever the velocity says.
+    pos, _ = m.tick_hand(0.0, 1.0, fb_vel_rps=4.0, age_s=0.0)
+    assert pos == pytest.approx(1.0 + MAX_LEAD_HAND_REV)
+    assert m.hand_stale_holds == 0
+
+    # A fresh-but-not-instant encoder: the anchor runs forward by vel x age.
+    age = 0.050
+    pos, _ = m.tick_hand(0.0, 1.0, fb_vel_rps=4.0, age_s=age)
+    assert pos == pytest.approx(1.0 + 4.0 * age + MAX_LEAD_HAND_REV)
+    assert m.hand_stale_holds == 0
+
+    # Past the cap the extrapolation STOPS at the cap, and the tick is counted.
+    stale = 4.0 * MOTOR_FB_STALENESS_S
+    pos, _ = m.tick_hand(0.0, 1.0, fb_vel_rps=4.0, age_s=stale)
+    assert pos == pytest.approx(
+        1.0 + 4.0 * MOTOR_FB_STALENESS_S + MAX_LEAD_HAND_REV)
+    assert m.hand_stale_holds == 1
+    # ...and the frame still transmitted: a capped anchor is not a skip.
+    assert pos is not None
+
+
+def test_a_non_finite_hand_command_is_backstopped_to_the_encoder():
+    """NaN/Inf holds at the encoder with zero feedforward, counted.
+
+    ``leg_interp.cpp:781-784``, the hand's mirror of the leg stroke-clamp
+    backstop at ``:659-661``.  It is not defence-in-depth theatre: NaN compares
+    false to EVERY comparison, so a non-finite command passes the lead clamp and
+    the stroke clip untouched and reaches the wire as a setpoint. The backstop
+    substitutes the encoder (hold), or 0.0 rev as a last resort, and zeroes the
+    feedforward — a command you do not trust is not a command to add velocity to.
+    """
+    from teensy_interp import TeensyLegInterp
+    for bad in (float('nan'), float('inf'), float('-inf')):
+        m = TeensyLegInterp([-1.0] * 6, [20.0] * 6)
+        m.latch_hand(5.0, 0.0, 0.0, u1=bad, u2=5.0, v1=0.0)
+        pos, vel = m.tick_hand(0.0, 5.0)
+        assert pos == pytest.approx(5.0), bad
+        assert vel == 0.0, bad
+        assert m.hand_nonfinite_ticks == 1, bad
+        # The RAW ladder output is left as it was — the backstop is a guard on
+        # what is TRANSMITTED, and a reconstruction score must still see the
+        # ladder's own (broken) answer rather than a laundered one.
+        assert not math.isfinite(m.hand_raw_pos), bad
+    # A finite command is untouched and the counter stays at zero.
+    m = TeensyLegInterp([-1.0] * 6, [20.0] * 6)
+    m.latch_hand(5.0, 0.0, 0.0, u1=5.0, u2=5.0, v1=0.0)
+    assert m.tick_hand(0.0, 5.0)[0] == pytest.approx(5.0)
+    assert m.hand_nonfinite_ticks == 0
+
+
+def test_hand_guards_use_the_hand_constants_and_never_the_legs():
+    """The lead clamp, the vel_ff bound and the stroke clip are the HAND's."""
+    from teensy_interp import (TeensyLegInterp, HAND_MOTOR_MAX_POSITION,
+                               HAND_VELFF_LIMIT_RPS, MAX_LEAD_HAND_REV)
+    m = TeensyLegInterp([-1.0] * 6, [20.0] * 6)
+    # A command far ahead of the encoder: clamped to the HAND's 2.0 rev, which
+    # the legs' 0.10 would have cut 20x harder.
+    m.latch_hand(9.0, 0.0, 0.0, u1=9.0, u2=9.0, v1=0.0)
+    pos, _ = m.tick_hand(0.0, 1.0)
+    assert pos == pytest.approx(1.0 + MAX_LEAD_HAND_REV)
+    assert m.hand_lead_clamp_ticks == 1
+    # A feedforward above the HAND ceiling is bounded there, not at the legs'
+    # 3.5 rev/s (which would be a 51x cut on a 200 rev/s axis).
+    m2 = TeensyLegInterp([-1.0] * 6, [20.0] * 6)
+    m2.latch_hand(5.0, 500.0, 0.0, u1=5.0, u2=5.0, v1=500.0)
+    _, vel = m2.tick_hand(0.0, 5.0)
+    assert vel == pytest.approx(HAND_VELFF_LIMIT_RPS)
+    # Past the metal: clipped, and the feedforward zeroed (a backstop hit means
+    # "hold at the limit", where feedforward is meaningless).
+    m3 = TeensyLegInterp([-1.0] * 6, [20.0] * 6)
+    m3.latch_hand(30.0, 50.0, 0.0, u1=30.0, u2=30.0, v1=50.0)
+    pos3, vel3 = m3.tick_hand(0.0, 29.0)
+    assert pos3 == pytest.approx(HAND_MOTOR_MAX_POSITION)
+    assert vel3 == 0.0
+    assert m3.hand_clip_ticks == 1

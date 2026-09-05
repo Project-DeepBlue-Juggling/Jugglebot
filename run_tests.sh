@@ -25,7 +25,9 @@
 # and IPC-latency characterizations and the friction-FF allocation budget.
 # motor_guard's safety logic (E-stops, NaN rejection, workspace limits, staleness)
 # is unmarked and stays per-commit. Those three were the entire default serial
-# phase, so the gate's phase 2 is now empty by design — see the guard below.
+# phase until 2026-09-04, when tests/motion/test_unified_cycle_budget.py joined it
+# (`serial`, NOT `nightly`: the unified planner's <= 50 ms per-cycle budget has to
+# fail the commit that breaks it). The guard below still handles an empty phase 2.
 #
 # `--full` is MANDATORY before any hardware sitting and at plan-phase closure,
 # and pre-commit for any change under controller/ or sim/ (CLAUDE.md).

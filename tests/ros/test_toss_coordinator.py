@@ -1966,7 +1966,7 @@ def test_a_drifted_cycle_terminalises_rejected_reach_center_drift(monkeypatch):
     _wire_session_recorder(node, order, monkeypatch)
     safed = []
     monkeypatch.setattr(node, '_toss_safe_abort',
-                        lambda state=None: safed.append(1))
+                        lambda state=None, **kw: safed.append(1))
     far = (0.0, _TOSS_SESSION_REACH_DRIFT_TOL_MM + 20.0, 170.0)
     seq = _fresh_seq(node, pose=far, start=100.0)
     monkeypatch.setattr(
@@ -2169,7 +2169,7 @@ def test_position_unverified_arrival_aborts(monkeypatch):
         lambda s, state=None: s.note_position_result(t0, True, 0.3))
     safed = []
     monkeypatch.setattr(node, '_toss_safe_abort',
-                        lambda state=None: safed.append(1))
+                        lambda state=None, **kw: safed.append(1))
     node._step_toss_sequence(seq, t0)
     _stamp_fresh(node, t0 + 0.6)
     d = node._step_toss_sequence(seq, t0 + 0.6)
@@ -2539,7 +2539,7 @@ def test_cancel_prepared_safes_before_canceled(monkeypatch):
         node, monkeypatch,
         side_effect=lambda: setattr(gh, 'is_cancel_requested', True))
     monkeypatch.setattr(node, '_toss_safe_abort',
-                        lambda state=None: order.append('safed'))
+                        lambda state=None, **kw: order.append('safed'))
     orig_canceled = gh.canceled
     gh.canceled = lambda: (order.append('canceled'), orig_canceled())
     result = node._execute_toss(gh)
@@ -2558,7 +2558,7 @@ def test_sequence_ceiling_timeout_aborts_and_safes(monkeypatch):
     _script_position_accept(node, monkeypatch)
     safed = []
     monkeypatch.setattr(node, '_toss_safe_abort',
-                        lambda state=None: safed.append(1))
+                        lambda state=None, **kw: safed.append(1))
     gh = _TossGoalHandle()
     result = node._execute_toss(gh)
     assert result.outcome == 'ABORTED_TIMEOUT'
@@ -2585,7 +2585,7 @@ def test_rclpy_shutdown_aborts_and_safes(monkeypatch):
     _script_position_accept(node, monkeypatch)
     safed = []
     monkeypatch.setattr(node, '_toss_safe_abort',
-                        lambda state=None: safed.append(1))
+                        lambda state=None, **kw: safed.append(1))
     calls = {'n': 0}
 
     def _ok():

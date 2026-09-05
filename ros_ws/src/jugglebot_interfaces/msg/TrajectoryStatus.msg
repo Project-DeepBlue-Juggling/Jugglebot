@@ -65,3 +65,36 @@ string tilt_map_version           # "<captured.date>-<sha256(content)[:8]>" of t
                                   # map is loaded. A non-empty version with
                                   # gravity_correction_loaded=false names a map
                                   # that is loaded but dormant (not yet applied).
+
+# ── Unified 7-DoF cycle observability (plan Phase 4) ──────────────────────────
+# `plan_kind` above cannot answer "is a unified cycle running": CyclePlan.kind is
+# deliberately 'move' (trajectory_node gates its is-a-move-still-running checks on
+# it), so a cycle is indistinguishable from a go_to_pose on that field alone. These
+# five are the discriminator and the numbers a unified sitting watches.
+bool cycle_active                 # True iff the ACTIVE plan is a 7-channel CyclePlan,
+                                  # i.e. the hand is on the 40 Hz stream. False on every
+                                  # legacy plan, so a bag from a legacy session is
+                                  # byte-identical to a pre-field one apart from the
+                                  # default.
+float64 cycle_plan_wall_ms        # Wall time of the LAST trajectory/plan_cycle callback
+                                  # (ms) — the measured number the split budget (core
+                                  # <= 50 ms, total <= 250 ms) is judged against. 0.0
+                                  # before the first call.
+float64 cycle_hand_peak_rev       # Peak commanded hand position over the active cycle
+                                  # plan (rev, ODrive absolute). 0.0 when none.
+float64 cycle_hand_peak_vel_rps   # Peak |commanded hand velocity| over it (rev/s). Read
+                                  # against JB_TRAJ_HAND_VEL_LIMIT_RPS; validate_cycle
+                                  # already refused anything past it, so a number at the
+                                  # cap here is a plan running at its ceiling, never a
+                                  # breach.
+float64 cycle_supersede_deadline_s  # Seconds until the ACTIVE cycle plan must have been
+                                  # superseded, or 0.0 when it is rest-terminal (and so
+                                  # cliff-safe) or absent. NEGATIVE means the deadline
+                                  # has PASSED with the plan still installed: from that
+                                  # instant the emitter's u1/v1 come from the terminal
+                                  # HOLD, so the final 25 ms segment — the release
+                                  # stroke itself — is commanded to a stop. No firmware
+                                  # guard fires on that (the error is well inside
+                                  # MAX_LEAD_HAND_REV and MAX_DEVIATION_HAND_REV), so
+                                  # this field and the node's ERROR line are the only
+                                  # trace it leaves.

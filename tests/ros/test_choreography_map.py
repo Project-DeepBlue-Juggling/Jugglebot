@@ -151,11 +151,11 @@ def test_multi_publisher_topics_are_annotated():
 
 def test_hand_ownership_latch_topics_are_annotated():
     text = _committed_text()
-    assert len(HAND_OWNERSHIP_LATCH_TOPICS) == 5
+    assert len(HAND_OWNERSHIP_LATCH_TOPICS) == 6
     for index, name in enumerate(HAND_OWNERSHIP_LATCH_TOPICS, start=1):
         note = _CONTRACT_NOTES.get(name)
         assert note is not None, name + ' lost its contract note'
-        assert 'HAND-OWNERSHIP LATCH (%d/5)' % index in note
+        assert 'HAND-OWNERSHIP LATCH (%d/6)' % index in note
         assert '### `' + name + '`' in text
 
 

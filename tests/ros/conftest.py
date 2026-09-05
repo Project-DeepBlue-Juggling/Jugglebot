@@ -266,6 +266,15 @@ class TrajectoryStatus:
     leg_vel_limit_mmps: float = 0.0
     leg_acc_limit_mmps2: float = 0.0
     leg_jerk_limit_mmps3: float = 0.0
+    # Unified 7-DoF cycle observability (plan Phase 4). `plan_kind` cannot answer
+    # "is a cycle running" — CyclePlan.kind is deliberately 'move' — so
+    # cycle_active is the discriminator. Defaults mirror the real message: no
+    # cycle, no measurement.
+    cycle_active: bool = False
+    cycle_plan_wall_ms: float = 0.0
+    cycle_hand_peak_rev: float = 0.0
+    cycle_hand_peak_vel_rps: float = 0.0
+    cycle_supersede_deadline_s: float = 0.0
 
 
 # ── jugglebot_interfaces DynamicTargetCommand / TargetFeedback (Phase 5) ──
@@ -546,6 +555,61 @@ SetTrajectoryLimits = _make_service(
 )
 
 
+class PlanCycle:
+    """Unified 7-DoF cycle-planning service mock (plan Phase 4).
+
+    Mirrors ``srv/PlanCycle.srv`` field for field, INCLUDING the mode/kind
+    constants — the node compares ``request.mode`` against ``PlanCycle.Request
+    .MODE_NEW`` and friends, so a mock that carried only the fields would let a
+    typo'd constant name pass silently in the mocked-ROS suite and fail only on
+    the real generated type.
+    """
+
+    class Request:
+        MODE_NEW = 0
+        MODE_EXTEND = 1
+        MODE_REPLAN = 2
+        KIND_LAUNCH = 0
+        KIND_STEADY = 1
+        KIND_LANDING = 2
+        KIND_SETTLE = 3
+
+        def __init__(self):
+            self.mode = 0
+            self.kind = 0
+            self.period_s = 0.0
+            self.throw_site_mm = [0.0, 0.0, 0.0]
+            self.throw_target_mm = [0.0, 0.0, 0.0]
+            self.flight_s = 0.0
+            self.catch_site_mm = [0.0, 0.0, 0.0]
+            self.catch_vel_mm_s = [0.0, 0.0, 0.0]
+            self.catch_frac = 0.0
+            self.settle_site_mm = [0.0, 0.0, 0.0]
+            self.banking_enabled = False
+            # Chain a second window into the SAME install (MODE_NEW only). Default
+            # OFF, so a single-window request is byte-identical to the pre-chain
+            # one. See the srv for why a release-terminal plan must not be left to
+            # expire.
+            self.chain = False
+            self.chain_kind = 0
+            self.chain_period_s = 0.0
+            self.chain_catch_frac = 0.0
+            self.lead_s = 0.0
+
+    Response = _make_service(
+        resp_fields={'accepted': False, 'code': '', 'message': '',
+                     't0_mono': 0.0, 't_release_mono': 0.0,
+                     't_catch_mono': 0.0,
+                     'release_vel_mm_s': None,
+                     'release_terminal': False,
+                     'supersede_deadline_mono': 0.0,
+                     'stroke_clear_s': 0.0, 'arm_lead_s': 0.0,
+                     'duration_s': 0.0, 'plan_wall_ms': 0.0,
+                     'replans_used': 0,
+                     'hand_peak_rev': 0.0,
+                     'hand_peak_vel_rps': 0.0}).Response
+
+
 class TimedTarget:
     """Timed target service mock (Phase 5): relative lead_time_s per Request
     (seconds from service receipt — the node anchors the absolute arrival at
@@ -692,6 +756,13 @@ class _TossContinuousGoal:
         self.on_empty_cup = 'STOP'
         # 0 => the config default (JB_OP_TOSS_SESSION_MAX_RELOADS, 3).
         self.max_reloads = 0
+        # MIRRORS `bool unified_cycle false` — the opt-in half of the two-key
+        # gate on the unified 7-DoF path (the other is the build-time
+        # JB_OP_UNIFIED_CYCLE_ENABLED). Default FALSE and load-bearing: an
+        # omitted field must never put the hand on the 40 Hz stream. Pinned
+        # equal to the .action file by tests/ros/test_unified_cycle_integration
+        # .py::test_unified_cycle_wire_default_is_false.
+        self.unified_cycle = False
 
 
 class _TossContinuousResult:
@@ -845,14 +916,18 @@ class MockNode:
         return client
 
     def create_subscription(self, *a, **kw):
-        # Record the subscription (topic, msg_type) for the same reason as
+        # Record the subscription (topic, msg_type, qos) for the same reason as
         # create_service. msg_type is the 1st positional (or 'msg_type'); topic the
-        # 2nd (or 'topic').
+        # 2nd (or 'topic'); the QoS the 4th (or 'qos_profile') — recorded because
+        # DURABILITY is behaviour, not decoration: a latched declaration published
+        # once per session is invisible to a VOLATILE subscriber that connects
+        # after it, so a test has to be able to see which one a node asked for.
         msg_type = a[0] if len(a) >= 1 else kw.get('msg_type')
         name = a[1] if len(a) >= 2 else kw.get('topic')
         sub = MagicMock()
         sub.topic_name = name
         sub.msg_type = msg_type
+        sub.qos = a[3] if len(a) >= 4 else kw.get('qos_profile')
         if name is not None:
             self._subscriptions[name] = sub
         return sub
@@ -861,6 +936,7 @@ class MockNode:
         pub = MockPublisher()
         pub.topic_name = topic
         pub.msg_type = msg_type
+        pub.qos = qos                       # see create_subscription
         self._publishers[topic] = pub
         return pub
 
@@ -1012,6 +1088,7 @@ _create_mock_module('jugglebot_interfaces.srv', {
     'GoToPose': GoToPose,
     'SetTrajectoryLimits': SetTrajectoryLimits,
     'TimedTarget': TimedTarget,
+    'PlanCycle': PlanCycle,
 })
 _create_mock_module('jugglebot_interfaces.action', {
     'HomeMotors': HomeMotors,

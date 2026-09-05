@@ -466,8 +466,8 @@ class ThrowEnvelopeVerdict(object):
 _OK = ThrowEnvelopeVerdict(True)
 
 
-def evaluate(flight_time_s: float, release_speed_mps: float
-             ) -> ThrowEnvelopeVerdict:
+def evaluate(flight_time_s: float, release_speed_mps: float,
+             arm_window: bool = True) -> ThrowEnvelopeVerdict:
     """Admit or refuse a throw.  THE enforcement point of contract C-HAND-3.
 
     ``flight_time_s`` is the nominated release-to-catch-plane time;
@@ -479,6 +479,19 @@ def evaluate(flight_time_s: float, release_speed_mps: float
     Bounds are checked machine-damage-first (``END_STOP`` before
     ``ARM_WINDOW``), so when several fail the operator hears about the one that
     breaks metal.
+
+    ``arm_window`` — pass ``False`` when NOTHING WILL BE ARMED.  Bound 7
+    (``ARM_WINDOW``) is the only one of the seven that models the *reactive*
+    catch: it asks whether a kind-1 stroke can still be dispatched after the
+    kind-0 throw stroke has finished decelerating, and both edges come from
+    :mod:`hand_stroke`'s model of the firmware stroke engine.  Under the unified
+    7-DoF planner there is no stroke engine on that axis — the throw and the catch
+    are knots on ONE trajectory, and ``feasibility.validate_cycle`` is the
+    authority on whether that trajectory is executable — so the bound is not
+    merely conservative there, it is a statement about a device that is not
+    running, and it refuses the whole short half of the flight band for it.
+    The other six bounds still apply and are still checked: they describe the
+    hand's METAL and its motor, which the unified path drives just as hard.
     """
     t = float(flight_time_s)
     v = float(release_speed_mps)
@@ -565,7 +578,7 @@ def evaluate(flight_time_s: float, release_speed_mps: float
 
     # 7. ARM_WINDOW — the catch must still be armable after the stroke clears.
     window = arm_window_s(t, v)
-    if window < ARM_WINDOW_MARGIN_S:
+    if arm_window and window < ARM_WINDOW_MARGIN_S:
         return ThrowEnvelopeVerdict(
             False, 'ARM_WINDOW',
             'catch-arm window {:.3f} s at T={:.3f} s is under the {:.3f} s '

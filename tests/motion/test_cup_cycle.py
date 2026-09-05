@@ -709,12 +709,18 @@ def test_mismatched_warm_start_is_ignored_not_misapplied(reference):
     assert np.allclose(reused.pos, tall.pos, atol=1e-12)
 
 
-def test_plan_window_rejects_timelines_v1_cannot_plan():
-    """Refuse what v1 cannot do, rather than approximating it.
+def test_plan_window_rejects_timelines_it_cannot_plan():
+    """Refuse what the solver cannot do, rather than approximating it.
 
     A multi-ball window silently planned as a single-ball one would be a wrong
     trajectory delivered on the ball's clock, so the refusal is the safe
     behaviour and the error type says which limitation was hit.
+
+    ``[throw]`` alone is NOT in this list any more: since the four-kind
+    generalisation a throw with no catch is a legal window (the launch/settle
+    rows of ``plan_window``'s table), and the tests that exercise it live in
+    :func:`test_launch_window_has_no_detach_rows_and_releases_in_free_fall` and
+    friends below.
     """
     case = _grid_case(0.8, 0.8, False)
     state0 = cc.CupState(case['pos0'], case['vel0'], case['acc0'], None)
@@ -724,8 +730,8 @@ def test_plan_window_rejects_timelines_v1_cannot_plan():
                           case['catch_vel'])
     with pytest.raises(NotImplementedError):
         cc.plan_window([catch, catch, throw], state0)
-    with pytest.raises(NotImplementedError):
-        cc.plan_window([throw], state0)
+    with pytest.raises(NotImplementedError):        # two balls thrown at once
+        cc.plan_window([throw, throw], state0, period_s=case['period_s'])
     with pytest.raises(TypeError):
         cc.plan_window([catch, throw, 'not-an-event'], state0)
     with pytest.raises(ValueError):        # out of time order
@@ -734,6 +740,229 @@ def test_plan_window_rejects_timelines_v1_cannot_plan():
                          case['catch_vel'])
     with pytest.raises(ValueError):        # catch outside the window
         cc.plan_window([throw, late], state0, period_s=case['period_s'])
+    with pytest.raises(ValueError):        # no throw ⇒ no window length
+        cc.plan_window([catch], state0)
+    with pytest.raises(ValueError):        # no throw ⇒ no terminal site
+        cc.plan_window([catch], state0, period_s=case['period_s'])
+
+
+# ---------------------------------------------------------------------------
+# The four window kinds (plan Phase 4, Wave A)
+# ---------------------------------------------------------------------------
+
+#: A slider-reachable window at the Phase-1 operating point, in the SI frame the
+#: QP works in.  The same numbers ``sim/cycle_gate.py`` runs its gate at.
+_W_THROW = np.array([0.0, 0.0, 0.86])
+_W_CATCH = np.array([0.02, 0.0, 0.83])
+_W_CATCH_VEL = np.array([0.10, -0.05, -2.50])
+_W_REST = np.array([0.0, 0.0, 0.75])
+_W_FLIGHT_S = 0.6
+
+
+def _window_cfg():
+    return cc.CupCycleConfig(z_min_m=0.690, z_max_m=0.985,
+                             catch_runway_z_floor_m=0.690,
+                             catch_runway_enabled=True)
+
+
+def _release_state():
+    """Just after a level release at ``_W_THROW`` — the post-release start."""
+    v = cc.takeoff_velocity(_W_THROW, _W_THROW, _W_FLIGHT_S)
+    return cc.CupState(pos=_W_THROW, vel=v, acc=cc.GRAVITY, detach_axis=None,
+                       post_release=True)
+
+
+def test_a_window_without_a_throw_ends_exactly_at_REST():
+    """The rest terminal is an EQUALITY, not a soft pull, on all three channels.
+
+    A landing or settle window is how a session STOPS, and "stops" has to mean
+    velocity and acceleration exactly zero at the pinned site — a cup left with a
+    residual velocity at the end of a plan hands the terminal-hold cliff
+    (``cycle_plan``'s documented ``final_pose`` + zero twist) a discontinuity, and
+    the next thing that samples past the end reads a hard stop that the machine
+    was not actually at.
+
+    MEASURED (probe, 2026-09-04, run twice with identical output): worst terminal
+    residual over the landing and settle kinds is 8.4e-15 m, 1.3e-14 m/s and
+    1.4e-14 m/s² (8.4e-12 mm, 1.3e-11 mm/s) — the QP's own equality-residual
+    floor, and three orders inside the 1e-12 SI bar asserted below.
+    """
+    cfg = _window_cfg()
+    catch = cc.CatchEvent(0, _W_FLIGHT_S, _W_CATCH, _W_CATCH_VEL)
+    for name, events, period in (('landing', [catch], 1.0),
+                                 ('settle', [], 0.6)):
+        plan = cc.plan_window(events, _release_state(), cfg,
+                              period_s=period, settle_site=_W_REST)
+        assert np.allclose(plan.pos[-1], _W_REST, atol=1e-12), name
+        assert np.allclose(plan.vel[-1], 0.0, atol=1e-12), name
+        assert np.allclose(plan.acc[-1], 0.0, atol=1e-12), name
+        # ...and NOT the release terminal: free fall would be acc == g.
+        assert not np.allclose(plan.acc[-1], cc.GRAVITY, atol=1e-3), name
+
+
+def test_the_sentinels_a_missing_event_leaves_behind():
+    """``catch_k == -1`` without a catch, ``takeoff_vel == 0`` without a throw.
+
+    Both are read downstream without a branch — ``cup_realize.tilt_schedule``
+    tests ``0 <= catch_k``, ``feasibility.validate_cycle``'s runway pass tests the
+    same, and ``tilt_geometry.tilt_to_throw`` maps a zero velocity to the LEVEL
+    tilt, which is the right terminal attitude for a plan that ends at rest.  If
+    either sentinel changed, those consumers would silently read a knot or an
+    attitude that means nothing.
+    """
+    cfg = _window_cfg()
+    throw = cc.ThrowEvent(1, 0.6, _W_THROW, _W_THROW, _W_FLIGHT_S)
+    catch = cc.CatchEvent(0, _W_FLIGHT_S, _W_CATCH, _W_CATCH_VEL)
+
+    launch = cc.plan_window([throw], cc.CupState(_W_REST, np.zeros(3),
+                                                 np.zeros(3), None,
+                                                 post_release=False),
+                            cfg, period_s=0.6)
+    assert launch.catch_k == -1
+    assert np.linalg.norm(launch.takeoff_vel) > 1.0     # a real release
+
+    landing = cc.plan_window([catch], _release_state(), cfg, period_s=1.0,
+                             settle_site=_W_REST)
+    assert landing.catch_k >= 0
+    assert np.array_equal(landing.takeoff_vel, np.zeros(3))
+
+    settle = cc.plan_window([], _release_state(), cfg, period_s=0.6,
+                            settle_site=_W_REST)
+    assert settle.catch_k == -1
+    assert np.array_equal(settle.takeoff_vel, np.zeros(3))
+
+
+def test_detach_rows_are_present_only_when_the_window_follows_a_release():
+    """``post_release`` is the switch, and the cup's own acceleration is the witness.
+
+    The detach equalities pin ``acc_xy == 0`` at knots ``1..n_detach`` on the level
+    branch, so their presence is directly observable in the plan.  Applying them to
+    a window that does NOT follow a release is not a conservative default — it
+    forbids the cup from accelerating laterally out of rest for the first two
+    knots, against a ball that is not there.
+
+    CONFIRMED RECIPE (probe, 2026-09-04, run twice with identical output): a
+    0.6 s window from ``(-0.06, 0, 0.80)`` to a release at ``(0, 0, 0.86)`` aimed
+    at ``(0.06, 0, 0.86)``.  With ``post_release=True`` the lateral acceleration at
+    knots 1–2 is EXACTLY 0.0; with it False the same window uses 0.6957 m/s².
+    """
+    cfg = _window_cfg()
+    events = [cc.ThrowEvent(1, 0.6, _W_THROW, np.array([0.06, 0.0, 0.86]),
+                            _W_FLIGHT_S)]
+    start = np.array([-0.06, 0.0, 0.80])
+    pinned = cc.plan_window(events, cc.CupState(start, np.zeros(3), cc.GRAVITY,
+                                                None, post_release=True),
+                            cfg, period_s=0.6)
+    free = cc.plan_window(events, cc.CupState(start, np.zeros(3), np.zeros(3),
+                                              None, post_release=False),
+                          cfg, period_s=0.6)
+    assert float(np.max(np.abs(pinned.acc[1:3, :2]))) == 0.0
+    assert float(np.max(np.abs(free.acc[1:3, :2]))) > 0.1
+
+
+def test_a_window_with_a_throw_still_releases_in_free_fall():
+    """Every kind that ENDS at a release still pins ``acc == g`` and the take-off.
+
+    The launch kind is new; the release boundary condition is not, and it is the
+    one the ball's whole flight rests on.  Re-asserted here on the launch shape so
+    the generalisation cannot have moved it while nobody was looking.
+    """
+    cfg = _window_cfg()
+    events = [cc.ThrowEvent(1, 0.6, _W_THROW, _W_THROW, _W_FLIGHT_S)]
+    plan = cc.plan_window(events, cc.CupState(_W_REST, np.zeros(3), np.zeros(3),
+                                              None, post_release=False),
+                          cfg, period_s=0.6)
+    assert np.allclose(plan.pos[-1], _W_THROW, atol=1e-9)
+    assert np.allclose(plan.vel[-1],
+                       cc.takeoff_velocity(_W_THROW, _W_THROW, _W_FLIGHT_S),
+                       atol=1e-9)
+    assert np.allclose(plan.acc[-1], cc.GRAVITY, atol=1e-9)
+
+
+def test_a_settle_site_outside_the_workspace_box_refuses_with_numbers():
+    """A rest site the same window's box forbids is refused BEFORE the solve.
+
+    The terminal position equality and the knot-``n`` box rows are both hard, so
+    such a request is infeasible — but infeasible in the worst way available: the
+    dual step runs away a hundred iterations deep and the operator gets a bare
+    ``INFEASIBLE`` with no clue which of thirty knobs is wrong.  Same reasoning as
+    the analytic runway gate.
+
+    The NUMBERS are asserted, not just the reason code.  "Which of thirty knobs"
+    is the whole point of this gate, and a reason code alone does not answer it:
+    the message has to carry the offending coordinate AND the box it missed, or
+    the operator is back to guessing.  A ``SETTLE_SITE`` refusal whose message
+    had lost its ``%.4f``s would still pass a code-only assertion.
+    """
+    cfg = _window_cfg()
+    for bad, want in (
+            (np.array([0.0, 0.0, 1.05]),          # above z_max
+             ('1.0500', '%.4f' % cfg.z_min_m, '%.4f' % cfg.z_max_m)),
+            (np.array([0.0, 0.0, 0.50]),          # below z_min
+             ('0.5000', '%.4f' % cfg.z_min_m, '%.4f' % cfg.z_max_m)),
+            (np.array([0.4, 0.0, 0.75]),          # outside the xy box
+             ('0.4000', '%.4f' % cfg.workspace_xy_m))):
+        with pytest.raises(cc.CupCycleInfeasible) as excinfo:
+            cc.plan_window([], _release_state(), cfg, period_s=0.6,
+                           settle_site=bad)
+        assert excinfo.value.reason == 'SETTLE_SITE'
+        msg = str(excinfo.value)
+        assert 'settle site' in msg
+        for token in want:
+            assert token in msg, (token, msg)
+
+
+def test_a_catch_on_the_first_knot_is_refused_without_detach_rows_too():
+    """``k_td == 0`` has no jerk support even when there are no detach rows.
+
+    With ``post_release`` False the rank argument against the detach block is
+    empty, but the floor does not drop to zero: at knot 0 the interpolated
+    catch-position row is ``(d_t³/6)·e_0`` alone, which vanishes identically when
+    the catch lands exactly on the knot and would then be a zero row divided by a
+    zero norm in the row scaling.  Refusing keeps that out of the linear algebra.
+    """
+    cfg = _window_cfg()
+    events = [cc.CatchEvent(0, 0.0, _W_CATCH, _W_CATCH_VEL),
+              cc.ThrowEvent(1, 0.6, _W_THROW, _W_THROW, _W_FLIGHT_S)]
+    state = cc.CupState(_W_REST, np.zeros(3), np.zeros(3), None,
+                        post_release=False)
+    with pytest.raises(cc.CupCycleInfeasible) as excinfo:
+        cc.plan_window(events, state, cfg, period_s=0.6)
+    assert excinfo.value.reason == 'CATCH_TOO_EARLY'
+
+
+def test_every_window_kind_is_deterministic():
+    """Same request, bit-identical jerk — for all four kinds.
+
+    Measured bit-identical over 5 repeats per kind in the probe; two repeats here
+    keep the gate fast while still catching any dictionary-ordering or
+    uninitialised-memory class of non-determinism.
+    """
+    cfg = _window_cfg()
+    throw = cc.ThrowEvent(1, 0.6, _W_THROW, _W_THROW, _W_FLIGHT_S)
+    catch = cc.CatchEvent(0, _W_FLIGHT_S, _W_CATCH, _W_CATCH_VEL)
+    rest = cc.CupState(_W_REST, np.zeros(3), np.zeros(3), None,
+                       post_release=False)
+    cases = (
+        ('launch', dict(events=[throw], state0=rest, period_s=0.6)),
+        ('steady', dict(events=[cc.CatchEvent(0, 0.77, _W_CATCH, _W_CATCH_VEL),
+                                cc.ThrowEvent(1, 1.4, _W_THROW, _W_THROW,
+                                              _W_FLIGHT_S)],
+                        state0=_release_state(), period_s=1.4)),
+        ('landing', dict(events=[catch], state0=_release_state(),
+                         period_s=1.0, settle_site=_W_REST)),
+        ('settle', dict(events=[], state0=_release_state(), period_s=0.6,
+                        settle_site=_W_REST)),
+    )
+    for name, kw in cases:
+        ref = cc.plan_window(kw['events'], kw['state0'], cfg,
+                             period_s=kw['period_s'],
+                             settle_site=kw.get('settle_site'))
+        again = cc.plan_window(kw['events'], kw['state0'], cfg,
+                               period_s=kw['period_s'],
+                               settle_site=kw.get('settle_site'))
+        assert np.array_equal(ref.jerk, again.jerk), name
+        assert np.array_equal(ref.pos, again.pos), name
 
 
 def test_level_axis_takes_the_level_path():

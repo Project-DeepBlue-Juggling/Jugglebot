@@ -220,6 +220,34 @@ int32 max_reloads                    # How many reload attempts the WHOLE sessio
                                      # refuses STOPPED_CUP_NOT_EMPTY and a sensor that cannot
                                      # see refuses STOPPED_SENSOR_UNKNOWN, rather than a
                                      # second ball being thrown at a loaded or unwatched cup.
+bool unified_cycle false             # Run every cycle through the UNIFIED 7-DoF planner
+                                     # (plans/active/unified-7dof-planner.md Phase 4)
+                                     # instead of the legacy firmware stroke engine.
+                                     # The IDL default is LOAD-BEARING and the node
+                                     # re-applies it: the unified path is opt-in TWICE —
+                                     # this field AND the build-time
+                                     # jugglebot_operational.unified_cycle_enabled — so an
+                                     # omitted or unreadable field can never put the hand
+                                     # on the 40 Hz stream. Root cause: under unified the
+                                     # can-bridge hand_source latch is flipped to STREAMED
+                                     # for the whole session, which REFUSES every legacy
+                                     # HAND_TRAJ_CMD; a goal that took that branch by
+                                     # accident would find the reactive catch arm silently
+                                     # rejected mid-flight with a ball in the air.
+                                     #
+                                     # Under unified the session is a DIFFERENT machine and
+                                     # the .action's other fields keep their meaning with
+                                     # two exceptions worth stating here:
+                                     #   * the two-slot pipeline is forced OFF regardless
+                                     #     of toss_pipeline_enabled — a whole-cycle plan
+                                     #     already owns the interval the pipeline stages
+                                     #     cycle N+1 in, and two owners of one interval is
+                                     #     the class the pipeline exists inside, not a
+                                     #     tuning choice;
+                                     #   * a survived MISS holds the pose instead of
+                                     #     running the go_home ladder (owner, 2026-08-28),
+                                     #     so per_cycle_dwell_s after a miss reports the
+                                     #     unified settle wait, not the 2.80 s legacy floor.
 ---
 bool success                         # True iff throws_completed == num_throws AND
                                      # catches_confirmed == num_throws (a clean session).
