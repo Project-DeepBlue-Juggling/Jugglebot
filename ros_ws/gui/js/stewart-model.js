@@ -43,13 +43,29 @@ let handFaultStartMs = 0;
 /** rAF handle for the fault-pulse animation loop — null when idle. */
 let faultPulseRAF = null;
 
+/** Per-part CLOSED_LOOP ("armed") state.  While armed and NOT faulted the
+ *  pulse loop owns the material and breathes it violet; a fault always wins. */
+const legArmed = [false, false, false, false, false, false];
+let handArmed = false;
+
 const FAULT_COLOR_HEX = 0xef4444;
 const FAULT_NEW_DURATION_MS = 2000;
+const ARMED_COLOR_HEX = 0xa78bfa;  // --accent-purple
+
+/** Scratch Colors reused by the per-frame armed lerp — no allocations in rAF. */
+const armedColor = new THREE.Color(ARMED_COLOR_HEX);
+const baseColorScratch = new THREE.Color();
 
 // Colours
 const BASE_COLOR = 0x3b82f6;
 const PLAT_COLOR = 0xd1d5db;
 const HAND_COLOR = 0xf59e0b;
+
+/** Per-leg extension-ratio hue as last computed by updateLegPositions().  This
+ *  is the leg's "normal" base colour — the armed pulse lerps away from it, and
+ *  the disarm path restores it.  Seeded with the fully-retracted hue so a very
+ *  early arm/disarm can't paint a leg black. */
+const legExtColorHex = Array.from({ length: 6 }, () => extensionColor(0));
 
 // Compute the longest platform edge (mm) for hand line sizing
 function computeLongestPlatEdge() {
@@ -223,17 +239,20 @@ function updateLegPositions() {
         const p2 = robotToThreeScaled(plat[0], plat[1], plat[2]);
         positionCylinder(legMeshes[i], p1, p2, legRadialScale[i]);
 
-        // Color by extension ratio — unless the leg is faulted, in which
-        // case the fault-pulse loop owns the colour and we skip here.
-        if (!legFaultState[i]) {
-            const dx = plat[0] - base[0];
-            const dy = plat[1] - base[1];
-            const dz = plat[2] - base[2];
-            const absLen = Math.sqrt(dx * dx + dy * dy + dz * dz);
-            const ext = absLen - INIT_LEG_LENGTHS_MM[i];
-            const ratio = Math.max(0, Math.min(1, ext / LEG_STROKE_MM));
+        // Colour by extension ratio.  The hue is ALWAYS computed and cached —
+        // the pulse loop reads it as the base colour while the leg is armed —
+        // but only applied directly when neither the fault pulse nor the armed
+        // pulse owns the material.
+        const dx = plat[0] - base[0];
+        const dy = plat[1] - base[1];
+        const dz = plat[2] - base[2];
+        const absLen = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        const ext = absLen - INIT_LEG_LENGTHS_MM[i];
+        const ratio = Math.max(0, Math.min(1, ext / LEG_STROKE_MM));
 
-            const color = extensionColor(ratio);
+        const color = extensionColor(ratio);
+        legExtColorHex[i] = color;
+        if (!legFaultState[i] && !legArmed[i]) {
             legMeshes[i].material.color.setHex(color);
         }
     }
@@ -380,9 +399,9 @@ export function setStewartHighlight(target) {
     for (let i = 0; i < 6; i++) {
         const isHi = target === `leg${i}`;
         legRadialScale[i] = isHi ? 2.4 : 1;
-        // Faulted legs own their own emissive/colour via the pulse loop —
-        // leave those properties alone so highlight doesn't stomp the red.
-        if (legFaultState[i]) continue;
+        // Faulted (or armed) legs own their own emissive/colour via the pulse
+        // loop — leave those properties alone so highlight doesn't stomp them.
+        if (legFaultState[i] || legArmed[i]) continue;
         const mat = legMeshes[i]?.material;
         if (mat) {
             mat.emissive.setHex(isHi ? 0xffffff : 0x000000);
@@ -391,7 +410,7 @@ export function setStewartHighlight(target) {
     }
     const isHandHi = target === 'hand';
     handRadialScale = isHandHi ? 2.4 : 1;
-    if (handLine && handFaultState == null) {
+    if (handLine && handFaultState == null && !handArmed) {
         handLine.material.emissive.setHex(HAND_COLOR);
         handLine.material.emissiveIntensity = isHandHi ? 1.2 : 0.3;
     }
@@ -407,10 +426,24 @@ export function setStewartHighlight(target) {
 // ---- Fault visualisation ------------------------------------------------
 
 /**
+ * Apply one frame of the "armed" (CLOSED_LOOP) breathing to a material:
+ * violet emissive at ~0.7 Hz, plus a colour lerp from the part's normal base
+ * hue toward violet.  Uses module-level scratch Colors — no per-frame alloc.
+ */
+function applyArmedFrame(mat, baseHex, now) {
+    const pulse = 0.5 + 0.5 * Math.sin(now / 230);  // ~0.7 Hz
+    mat.emissive.setHex(ARMED_COLOR_HEX);
+    mat.emissiveIntensity = 0.25 + 0.6 * pulse;
+    baseColorScratch.setHex(baseHex);
+    mat.color.lerpColors(baseColorScratch, armedColor, 0.35 + 0.4 * pulse);
+}
+
+/**
  * Animation loop for fault pulses.  A "new" fault oscillates the emissive
  * intensity for FAULT_NEW_DURATION_MS before falling back to a steady red
- * glow while the fault persists.  The loop self-exits when no leg/hand has
- * an active fault.
+ * glow while the fault persists.  The same loop drives the violet "armed"
+ * breathing for parts in CLOSED_LOOP — a fault always wins over armed.  The
+ * loop self-exits when no leg/hand is faulted OR armed.
  */
 function runFaultPulseLoop() {
     if (faultPulseRAF != null) return;
@@ -419,7 +452,14 @@ function runFaultPulseLoop() {
         let anyActive = false;
 
         for (let i = 0; i < 6; i++) {
-            if (!legFaultState[i] || !legMeshes[i]) continue;
+            if (!legMeshes[i]) continue;
+            if (!legFaultState[i]) {
+                if (legArmed[i]) {
+                    anyActive = true;
+                    applyArmedFrame(legMeshes[i].material, legExtColorHex[i], now);
+                }
+                continue;
+            }
             anyActive = true;
             const mat = legMeshes[i].material;
             if (legFaultState[i] === 'new') {
@@ -436,7 +476,10 @@ function runFaultPulseLoop() {
             }
         }
 
-        if (handFaultState && handLine) {
+        if (handLine && !handFaultState && handArmed) {
+            anyActive = true;
+            applyArmedFrame(handLine.material, HAND_COLOR, now);
+        } else if (handFaultState && handLine) {
             anyActive = true;
             const mat = handLine.material;
             if (handFaultState === 'new') {
@@ -483,7 +526,9 @@ export function setLegFault(legIdx, faulted) {
     } else if (!faulted && prev) {
         legFaultState[legIdx] = null;
         const mesh = legMeshes[legIdx];
-        if (mesh) {
+        // Still armed?  The pulse loop re-owns the material on the next frame —
+        // don't stomp it with a restore here (and the loop is still running).
+        if (mesh && !legArmed[legIdx]) {
             // Restore highlight glow if the chart cell is still hovered;
             // otherwise drop emissive entirely.
             const isHi = legRadialScale[legIdx] > 1;
@@ -510,13 +555,59 @@ export function setHandFault(faulted) {
         runFaultPulseLoop();
     } else if (!faulted && prev) {
         handFaultState = null;
-        if (handLine) {
+        // Still armed?  Leave the material to the pulse loop (see setLegFault).
+        if (handLine && !handArmed) {
             // Restore highlight intensity if hovered; otherwise base.
             const isHi = handRadialScale > 1;
             handLine.material.color.setHex(HAND_COLOR);
             handLine.material.emissive.setHex(HAND_COLOR);
             handLine.material.emissiveIntensity = isHi ? 1.2 : 0.3;
         }
+    }
+}
+
+// ---- Armed (CLOSED_LOOP) visualisation ----------------------------------
+
+/**
+ * Set the CLOSED_LOOP ("armed") state for a single Stewart leg (0..5).  While
+ * armed and unfaulted the pulse loop breathes the leg violet; on disarm the
+ * material is restored exactly as the fault-clear path restores it (plus the
+ * cached extension hue).  A fault always wins — arming never overrides red.
+ *
+ * @param {number} legIdx  – 0..5
+ * @param {boolean} armed  – whether the axis is in CLOSED_LOOP
+ */
+export function setLegArmed(legIdx, armed) {
+    if (legIdx < 0 || legIdx >= 6) return;
+    const on = !!armed;
+    if (legArmed[legIdx] === on) return;
+    legArmed[legIdx] = on;
+    if (on) {
+        runFaultPulseLoop();  // loop takes the material over on the next frame
+    } else if (!legFaultState[legIdx]) {
+        const mesh = legMeshes[legIdx];
+        if (mesh) {
+            const isHi = legRadialScale[legIdx] > 1;
+            mesh.material.emissive.setHex(isHi ? 0xffffff : 0x000000);
+            mesh.material.emissiveIntensity = isHi ? 0.6 : 0;
+            mesh.material.color.setHex(legExtColorHex[legIdx]);
+        }
+    }
+}
+
+/** Armed API for the Stewart hand axis (motor 6).  Same semantics as
+ *  setLegArmed — violet breathing while armed, fault takes precedence. */
+export function setHandArmed(armed) {
+    const on = !!armed;
+    if (handArmed === on) return;
+    handArmed = on;
+    if (on) {
+        runFaultPulseLoop();
+    } else if (!handFaultState && handLine) {
+        const isHi = handRadialScale > 1;
+        handLine.material.color.setHex(HAND_COLOR);
+        handLine.material.emissive.setHex(HAND_COLOR);
+        handLine.material.emissiveIntensity = isHi ? 1.2 : 0.3;
     }
 }
 

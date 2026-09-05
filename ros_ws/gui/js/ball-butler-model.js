@@ -283,12 +283,12 @@ export function setBallButlerVisible(visible) {
 export function setBallButlerHighlight(target) {
     bbPitchHighlighted = (target === 'pitch');
     bbHandHighlighted = (target === 'hand');
-    if (pitchFaultState == null) {
+    if (pitchFaultState == null && !bbPitchArmed) {
         pitchMat.emissive.setHex(0xffffff);
         pitchMat.emissiveIntensity = bbPitchHighlighted ? 0.8 : 0;
         pitchMat.opacity = bbPitchHighlighted ? 1.0 : 0.7;
     }
-    if (handSphere && bbHandFaultState == null) {
+    if (handSphere && bbHandFaultState == null && !bbHandArmed) {
         handSphere.material.emissiveIntensity = bbHandHighlighted ? 1.4 : 0.35;
     }
     if (handSphere) {
@@ -306,9 +306,32 @@ let bbHandFaultState = null;
 let bbHandFaultStartMs = 0;
 let bbFaultRAF = null;
 
+/** Per-part CLOSED_LOOP ("armed") state — the pulse loop breathes these
+ *  violet while unfaulted; a fault always wins. */
+let bbPitchArmed = false;
+let bbHandArmed = false;
+
+const ARMED_COLOR_HEX = 0xa78bfa;  // --accent-purple
+/** Scratch Colors reused by the per-frame armed lerp — no allocations in rAF. */
+const bbArmedColor = new THREE.Color(ARMED_COLOR_HEX);
+const bbBaseColorScratch = new THREE.Color();
+
 /** Cache of original pitch-mat colour so we can restore on fault clear. */
 const PITCH_ORIG_COLOR_HEX = COL_AXIS;  // white
 const HAND_ORIG_COLOR_HEX = COL_HAND;
+
+/**
+ * Apply one frame of the "armed" (CLOSED_LOOP) breathing to a material:
+ * violet emissive at ~0.7 Hz plus a colour lerp from the part's base hue
+ * toward violet.  Mirrors applyArmedFrame() in stewart-model.js.
+ */
+function applyBBArmedFrame(mat, baseHex, now) {
+    const pulse = 0.5 + 0.5 * Math.sin(now / 230);  // ~0.7 Hz
+    mat.emissive.setHex(ARMED_COLOR_HEX);
+    mat.emissiveIntensity = 0.25 + 0.6 * pulse;
+    bbBaseColorScratch.setHex(baseHex);
+    mat.color.lerpColors(bbBaseColorScratch, bbArmedColor, 0.35 + 0.4 * pulse);
+}
 
 function runBBFaultPulseLoop() {
     if (bbFaultRAF != null) return;
@@ -316,7 +339,10 @@ function runBBFaultPulseLoop() {
         const now = performance.now();
         let anyActive = false;
 
-        if (pitchFaultState) {
+        if (!pitchFaultState && bbPitchArmed) {
+            anyActive = true;
+            applyBBArmedFrame(pitchMat, PITCH_ORIG_COLOR_HEX, now);
+        } else if (pitchFaultState) {
             anyActive = true;
             if (pitchFaultState === 'new') {
                 const elapsed = now - pitchFaultStartMs;
@@ -332,7 +358,10 @@ function runBBFaultPulseLoop() {
             }
         }
 
-        if (bbHandFaultState && handSphere) {
+        if (handSphere && !bbHandFaultState && bbHandArmed) {
+            anyActive = true;
+            applyBBArmedFrame(handSphere.material, HAND_ORIG_COLOR_HEX, now);
+        } else if (bbHandFaultState && handSphere) {
             anyActive = true;
             const mat = handSphere.material;
             if (bbHandFaultState === 'new') {
@@ -367,6 +396,9 @@ export function setBBPitchFault(faulted) {
         runBBFaultPulseLoop();
     } else if (!faulted && prev) {
         pitchFaultState = null;
+        // Still armed?  The pulse loop re-owns the material on the next frame —
+        // don't stomp it with a restore here (and the loop keeps running).
+        if (bbPitchArmed) return;
         pitchMat.color.setHex(PITCH_ORIG_COLOR_HEX);
         if (bbPitchHighlighted) {
             // Restore highlight emissive — chart cell is still hovered.
@@ -393,9 +425,54 @@ export function setBBHandFault(faulted) {
         runBBFaultPulseLoop();
     } else if (!faulted && prev && handSphere) {
         bbHandFaultState = null;
+        // Still armed?  Leave the material to the pulse loop (see above).
+        if (bbHandArmed) return;
         handSphere.material.color.setHex(HAND_ORIG_COLOR_HEX);
         handSphere.material.emissive.setHex(HAND_ORIG_COLOR_HEX);
         // Restore highlight intensity if still hovered.
+        handSphere.material.emissiveIntensity = bbHandHighlighted ? 1.4 : 0.35;
+    }
+}
+
+// ---- Armed (CLOSED_LOOP) visualisation ----------------------------------
+
+/**
+ * Set the CLOSED_LOOP ("armed") state for the BB pitch group (motor 7).  While
+ * armed and unfaulted the pulse loop breathes it violet; on disarm the material
+ * is restored exactly as the fault-clear path restores it.  Fault beats armed.
+ */
+export function setBBPitchArmed(armed) {
+    const on = !!armed;
+    if (bbPitchArmed === on) return;
+    bbPitchArmed = on;
+    if (on) {
+        pitchMat.opacity = 1.0;  // solid while armed, mirroring the fault path
+        runBBFaultPulseLoop();
+    } else if (pitchFaultState == null) {
+        pitchMat.color.setHex(PITCH_ORIG_COLOR_HEX);
+        if (bbPitchHighlighted) {
+            pitchMat.emissive.setHex(0xffffff);
+            pitchMat.emissiveIntensity = 0.8;
+            pitchMat.opacity = 1.0;
+        } else {
+            pitchMat.emissive.setHex(0x000000);
+            pitchMat.emissiveIntensity = 0;
+            pitchMat.opacity = 0.7;
+        }
+    }
+}
+
+/** Armed API for the BB hand sphere (motor 8).  Same semantics as
+ *  setBBPitchArmed. */
+export function setBBHandArmed(armed) {
+    const on = !!armed;
+    if (bbHandArmed === on) return;
+    bbHandArmed = on;
+    if (on) {
+        runBBFaultPulseLoop();
+    } else if (bbHandFaultState == null && handSphere) {
+        handSphere.material.color.setHex(HAND_ORIG_COLOR_HEX);
+        handSphere.material.emissive.setHex(HAND_ORIG_COLOR_HEX);
         handSphere.material.emissiveIntensity = bbHandHighlighted ? 1.4 : 0.35;
     }
 }

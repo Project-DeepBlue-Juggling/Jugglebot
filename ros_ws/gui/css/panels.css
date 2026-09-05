@@ -1212,6 +1212,39 @@
     flex: 1;
     min-width: 0;
 }
+
+/* Free-coordinate throw target: X/Y/Z + release delay, shown only when the
+   "Coordinates" option is selected. */
+.bb-throw-coords {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+    margin-bottom: 6px;
+}
+/* An author-level `display` beats the UA sheet's [hidden] rule, so the hidden
+   attribute needs re-asserting here or the fields would never hide. */
+.bb-throw-coords[hidden] { display: none; }
+.bb-throw-coords label {
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+.bb-throw-coords input {
+    width: 5.5em;
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    padding: 4px 6px;
+    border-radius: 4px;
+}
+.bb-throw-coords .bb-throw-hint {
+    flex-basis: 100%;
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+}
 .bb-throw-status {
     font-size: var(--font-size-xs);
     font-family: var(--font-mono);

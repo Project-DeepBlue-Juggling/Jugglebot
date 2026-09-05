@@ -50,6 +50,28 @@
     cursor: not-allowed;
 }
 
+/* Axis is in CLOSED_LOOP ("armed") — violet.  Red stays reserved for faults. */
+.signal-toggle.armed {
+    border-color: var(--accent-purple);
+    background: rgba(167, 139, 250, 0.22);
+    color: var(--text-primary);
+}
+
+/* Isolated (long-press / Shift-click / number key) — solid blue fill.  When the
+   axis is also armed, the fill stays blue and the violet moves to the border so
+   both states read at once. */
+.signal-toggle.isolated {
+    background: var(--accent-blue);
+    border-color: var(--accent-blue);
+    color: #fff;
+}
+
+.signal-toggle.isolated.armed {
+    background: var(--accent-blue);
+    border: 2px solid var(--accent-purple);
+    color: #fff;
+}
+
 .signal-toggle .color-dot {
     width: 8px;
     height: 8px;
@@ -219,6 +241,17 @@
     pointer-events: none;
     text-transform: uppercase;
     letter-spacing: 0.06em;
+}
+
+/* Armed (CLOSED_LOOP) axis — violet outline + wash on the in-cell title.
+   Static by design: the 3D part carries the breathing, the chart does not. */
+.chart-cell-title.armed {
+    outline: 2px solid var(--accent-purple);
+    outline-offset: 0;
+    /* Layered over the opaque title backdrop so y-axis ticks stay hidden. */
+    background:
+        linear-gradient(rgba(167, 139, 250, 0.28), rgba(167, 139, 250, 0.28)),
+        var(--chart-title-bg);
 }
 
 /* No-data overlay */

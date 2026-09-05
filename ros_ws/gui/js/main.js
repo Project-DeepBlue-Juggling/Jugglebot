@@ -9,13 +9,14 @@ import * as ros from './ros-bridge.js';
 import { initViewer, sceneGroups, registerPickables, onMeshPick } from './viewer.js';
 import {
     initStewartModel, updateStewartPose, setLegFault, setHandFault,
-    getStewartPickables,
+    setLegArmed, setHandArmed, getStewartPickables,
 } from './stewart-model.js';
 import { legLengthsToPose } from './stewart-fk.js';
 import { initMocapMarkers, updateMocapMarkers, updateRigidBodyAxes } from './mocap-markers.js';
 import {
     initBallButlerModel, updateBallButler, updateBallButlerPose,
-    setBBPitchFault, setBBHandFault, getBallButlerPickables,
+    setBBPitchFault, setBBHandFault, setBBPitchArmed, setBBHandArmed,
+    getBallButlerPickables,
 } from './ball-butler-model.js';
 import {
     initAllPanels, initCollapsiblePanels, updateMotorGrid, updateOrchestratorState,
@@ -39,10 +40,12 @@ import {
     initStateMinimap, minimapOnOrchestratorState, minimapOnControlMode,
     minimapOnRobotState, minimapOnLinkStatus, minimapOnLegSetpointEcho,
 } from './state-minimap.js';
-import { INITIAL_HEIGHT_MM, MM_TO_REV, HAND_MM_PER_REV } from './geometry-config.js';
+import {
+    INITIAL_HEIGHT_MM, MM_TO_REV, HAND_MM_PER_REV, ODRIVE_STATE,
+} from './geometry-config.js';
 import {
     initTelemetryCharts, onTelemetryData, rebuildCharts, flashChart,
-    clearChartGridHidden,
+    clearChartGridHidden, setChartArmedStates,
 } from './telemetry-charts.js';
 import { initJogPanel, setJogPanelVisible,
          initSpeedLimitsPanel, setSpeedLimitsPanelVisible, resetSpeedLimitsForMode,
@@ -448,6 +451,22 @@ function onRobotState(msg) {
     // frozen last value (same discipline as the tracking-error panel).
     if (motors.length < 8) setBBPitchFault(false);
     if (motors.length < 9) setBBHandFault(false);
+
+    // Per-motor "armed" viz — a violet breathing pulse on the 3D part plus a
+    // violet chart pill/title while the axis is in CLOSED_LOOP.  A fault always
+    // wins over armed (handled inside the model modules).  An axis the bridge
+    // isn't publishing is NOT armed — same honest-silence discipline as the
+    // fault clears above, so a BB blackout disarms 7/8 rather than freezing.
+    const armed = [];
+    for (let i = 0; i < 9; i++) {
+        armed.push(i < motors.length &&
+                   motors[i].current_state === ODRIVE_STATE.CLOSED_LOOP);
+    }
+    for (let i = 0; i < 6; i++) setLegArmed(i, armed[i]);
+    setHandArmed(armed[6]);
+    setBBPitchArmed(armed[7]);
+    setBBHandArmed(armed[8]);
+    setChartArmedStates(armed);
 
     // Feed telemetry charts
     onTelemetryData(motors, latestCommandedLegs, latestHandTelemetry);

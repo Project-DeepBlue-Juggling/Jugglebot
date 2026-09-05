@@ -1577,6 +1577,17 @@ function drawConeSoundBar() {
 // rigid_body name published by mocap_node.
 const BB_THROW_TARGETS = ['Catching_Cone'];
 
+/** Dropdown sentinel for the free-coordinate target (no QTM lookup). */
+const BB_THROW_COORDS_VALUE = '__coords__';
+
+/** Show the coordinate fields iff the free-coordinate target is selected. */
+function syncBBThrowCoordsVisibility() {
+    const sel = document.getElementById('bb-throw-target-select');
+    const coords = document.getElementById('bb-throw-coords');
+    if (!sel || !coords) return;
+    coords.hidden = sel.value !== BB_THROW_COORDS_VALUE;
+}
+
 function onBBThrowClick() {
     const sel = document.getElementById('bb-throw-target-select');
     const btn = document.getElementById('bb-throw-btn');
@@ -1585,14 +1596,43 @@ function onBBThrowClick() {
     if (btn.disabled) return;
 
     const targetName = sel.value;
+    let request;
+    let pendingText;
+
+    if (targetName === BB_THROW_COORDS_VALUE) {
+        const x = parseFloat(document.getElementById('bb-throw-x')?.value);
+        const y = parseFloat(document.getElementById('bb-throw-y')?.value);
+        const z = parseFloat(document.getElementById('bb-throw-z')?.value);
+        if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+            // Bad input is a local error: don't call the service and don't
+            // disable the button — the user is mid-edit, not mid-throw.
+            status.textContent = 'Coordinates: X, Y, Z must be numbers';
+            status.className = 'bb-throw-status bb-throw-status-err';
+            return;
+        }
+        const rawDelay = parseFloat(document.getElementById('bb-throw-delay')?.value);
+        const delay = (Number.isFinite(rawDelay) && rawDelay > 0) ? rawDelay : 0;
+        request = {
+            target_name: 'Coordinates',
+            throw_delay_s: delay,
+            target_point_global_mm: { x, y, z },
+            use_target_point: true,
+            aim_only: false,
+        };
+        pendingText = `Calling bb/throw_at_target(${x}, ${y}, ${z} mm, delay ${delay} s)…`;
+    } else {
+        request = { target_name: targetName, throw_delay_s: 0.0 };
+        pendingText = `Calling bb/throw_at_target(${targetName})…`;
+    }
+
     btn.disabled = true;
     btn.textContent = 'Throwing…';
-    status.textContent = `Calling bb/throw_at_target(${targetName})…`;
+    status.textContent = pendingText;
     status.className = 'bb-throw-status bb-throw-status-pending';
 
     callService('bb/throw_at_target',
                 'jugglebot_interfaces/srv/BallButlerThrow',
-                { target_name: targetName, throw_delay_s: 0.0 })
+                request)
         .then((result) => {
             if (result.success) {
                 status.textContent = result.message;
@@ -1618,17 +1658,28 @@ export function initBBThrowPanel() {
     const content = document.getElementById('bb-throw-content');
     if (!content) return;
     const options = BB_THROW_TARGETS
-        .map(t => `<option value="${t}">${t}</option>`).join('');
+        .map(t => `<option value="${t}">${t}</option>`).join('')
+        + `<option value="${BB_THROW_COORDS_VALUE}">Coordinates</option>`;
     content.innerHTML = `
         <div class="bb-throw-row">
             <label class="bb-throw-label" for="bb-throw-target-select">Throw target</label>
             <select class="bb-throw-select" id="bb-throw-target-select">${options}</select>
             <button class="bb-calibrate-btn" id="bb-throw-btn">Throw</button>
         </div>
+        <div class="bb-throw-coords" id="bb-throw-coords" hidden>
+            <label for="bb-throw-x">X<input type="number" step="any" id="bb-throw-x" placeholder="mm"></label>
+            <label for="bb-throw-y">Y<input type="number" step="any" id="bb-throw-y" placeholder="mm"></label>
+            <label for="bb-throw-z">Z<input type="number" step="any" id="bb-throw-z" placeholder="mm"></label>
+            <label for="bb-throw-delay">Release delay<input type="number" step="any" min="0" id="bb-throw-delay" placeholder="s"></label>
+            <span class="bb-throw-hint">World frame, mm · delay 0 = node default</span>
+        </div>
         <div class="bb-throw-status" id="bb-throw-status">Ready.</div>
     `;
     const btn = document.getElementById('bb-throw-btn');
     if (btn) btn.addEventListener('click', onBBThrowClick);
+    const sel = document.getElementById('bb-throw-target-select');
+    if (sel) sel.addEventListener('change', syncBBThrowCoordsVisibility);
+    syncBBThrowCoordsVisibility();
 }
 
 
