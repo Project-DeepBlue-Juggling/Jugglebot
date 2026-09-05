@@ -91,6 +91,31 @@ Stages (one per invocation; the runbook sequences them):
             aborts if the firmware's hand echo has not moved within
             ``GAP_ECHO_DEADLINE_S`` of the re-entry knot (2026-09-04: a dropped
             ``hand_override`` made this stage measure a fiction, silently).
+            NOTE it rides a HOLD, so it can only ever exercise the RE-ENTRY —
+            the decay half is ``moving_gap``.
+  moving_gap
+            T-H3d (run BEFORE ``hand7 arm``): the row-14 triangle with the hand
+            channel withheld for --gap-knots frames starting at --gap-at s,
+            MID-RAMP — the hand moving at the full triangle speed when the
+            falling edge lands — then resumed on the triangle's OWN clock (no
+            override: the re-entry command is the CURRENT PLANNED position,
+            which is what the unified cycle will do).
+            ROOT CAUSE it exists: FW 17 shipped a NORMATIVE falling-edge rule
+            (``leg_interp.cpp:686-748`` — the hand lane runs its Hermite to the
+            u1 endpoint, Taylor-extrapolates ≤ MAX_EXTRAP_DT_S, then DECAYS the
+            velocity to zero over EXTRAP_DECAY_DT_S, all off its OWN knot
+            clock) and that rule has NEVER been observed on hardware: the
+            ``gap`` stage rides a Hold, so on 2026-09-04 the hand was at REST
+            when the gap opened (max |vel| 0.073 rev/s, 6.6 µm of encoder span
+            — it measured nothing). The unified cycle fires that falling edge
+            once per throw-catch, so a gap taken WHILE THE HAND IS MOVING is
+            normal operating behaviour, not an edge case.
+            The stage evaluates five pass criteria itself and prints them (see
+            ``evaluate_moving_gap``); the headline is a THREE-WAY discriminator
+            on how far the firmware's own target coasted past its last knot —
+            DECAY (the normative v·0.105 rev), HOLD-AT-ENDPOINT (v·SEG_T, the
+            forbidden mode the rule is written against) or NO WIND-DOWN (v·gap)
+            — which no earlier stage could separate.
 
 Source-latch / recovery utilities (no streaming, no arm):
   --source-only streamed|legacy   switch the firmware hand_source latch and
@@ -115,6 +140,7 @@ hand is ALREADY in CLOSED_LOOP — with the launch down nothing else energises i
     python tests/hardware/hand_stream_bench.py --stage stroke --event-vel 3.0 --close-loop
     python tests/hardware/hand_stream_bench.py --stage step --close-loop
     python tests/hardware/hand_stream_bench.py --stage gap --close-loop
+    python tests/hardware/hand_stream_bench.py --stage moving_gap --duration 10 --close-loop
     python tests/hardware/hand_stream_bench.py --source-only legacy
     python tests/hardware/hand_stream_bench.py --clear-errors
     python tests/hardware/hand_stream_bench.py --stage hold --duration 3 --no-source-switch --close-loop
@@ -194,6 +220,30 @@ CD_EPISODE_DEFICIT = -20.0                # headroom runbook row 21: a window pa
 GAP_ECHO_MOVE_REV = 0.05
 GAP_ECHO_DEADLINE_S = 0.25
 
+# ── The firmware hand lane's wind-down ladder (the moving_gap stage's model) ──
+# MIRRORED CONSTANTS, pinned against the firmware header by
+# tests/teensy_link/test_hand_stream_bench_gap.py (the mirrored-constant idiom
+# the pump's DEFAULT_TORQUE_WIRE_SCALE uses). They are NOT in the generated
+# config — canbridge_config.h is their only source — and the moving_gap stage's
+# whole verdict is arithmetic on them, so a silent firmware edit must break a
+# test rather than a sitting.
+MAX_EXTRAP_DT_S = 0.05            # canbridge_config.h MAX_EXTRAP_DT_S
+EXTRAP_DECAY_DT_S = 0.06          # canbridge_config.h EXTRAP_DECAY_DT_S
+# Total time from the last hand-bearing knot to a FROZEN, zero-velocity hand
+# target: Mode 1 runs the Hermite to the u1 endpoint (SEG_T), Mode 2 Taylors
+# from it (MAX_EXTRAP_DT_S), Mode 3 decays the velocity linearly to zero
+# (EXTRAP_DECAY_DT_S) — leg_interp.cpp:701-748. 0.135 s.
+HAND_WINDDOWN_S = SEG_T + MAX_EXTRAP_DT_S + EXTRAP_DECAY_DT_S
+# Coast the hand lane's own target travels past the last knot's u0 once the
+# wind-down completes, per rev/s of knot velocity, with accel == jerk == 0 (the
+# pump hard-zeroes accel[6] ALWAYS and the firmware's jerk EMA over a constant
+# accel is therefore identically 0, so this is exact, not approximate):
+#   SEG_T (Hermite, exactly linear for a constant-velocity ramp)
+# + MAX_EXTRAP_DT_S (Taylor with a = 0 ⇒ still constant velocity)
+# + EXTRAP_DECAY_DT_S/2 (the linear velocity ramp's area)
+# = 0.105 s worth of travel. THE prediction row 17b tests.
+HAND_COAST_S = SEG_T + MAX_EXTRAP_DT_S + 0.5 * EXTRAP_DECAY_DT_S
+
 # Per-stage deviation-belt defaults (rev), used when --max-dev is not given.
 # Derivation (2026-09-02 review fix — the belt is velocity-compensated,
 # |cmd − (enc + vel·age)|, so encoder AGE no longer contributes):
@@ -206,7 +256,18 @@ GAP_ECHO_DEADLINE_S = 0.25
 #     fires BELOW the firmware guards (lead clamp 2.0, deviation 2.5).
 #   gap: the sanctioned re-entry catch-up is itself ≈ |--gap-delta| of honest
 #     deviation, so the default widens to |gap_delta| + 0.5 (≤ the 2.0 cap).
-_MAX_DEV_DEFAULT = {'hold': 0.5, 'triangle': 0.5, 'step': 0.5, 'stroke': 1.5}
+#   moving_gap: the belt's reference is the FIRMWARE'S OWN decayed target
+#     during the withheld window (not the planned triangle, which the driver is
+#     deliberately not sending), so the honest residual there is the same
+#     tracking error the triangle sees. 0.5 rev holds — and it stays honest even
+#     if the decay model under test is WRONG: the widest disagreement the three
+#     candidate lane behaviours can produce at the shipped defaults is
+#     v·(gap − SEG_T) = 0.5 × 0.225 = 0.113 rev, a fifth of the belt, so a
+#     falsified prediction is reported by the criteria rather than aborted by
+#     the belt. (Rejecting the alternative: belting against the planned triangle
+#     would bake the 0.0725 rev of SANCTIONED divergence into every gap tick.)
+_MAX_DEV_DEFAULT = {'hold': 0.5, 'triangle': 0.5, 'step': 0.5, 'stroke': 1.5,
+                    'moving_gap': 0.5}
 
 _lock = threading.Lock()
 _cache = {"telem": None, "telem_mono": 0.0, "diag": {}, "hb": None,
@@ -460,10 +521,232 @@ class Stroke:
         return m.x3_m * self.gain, 0.0
 
 
+# ── moving_gap (row 17b): the falling-edge decay, taken while the hand MOVES ──
+
+def hand_gap_target(p0, v, g, seg_t=SEG_T, maxext=MAX_EXTRAP_DT_S,
+                    decay_t=EXTRAP_DECAY_DT_S):
+    """The FW 17 hand lane's OWN (pos, vel) ``g`` seconds after its last knot.
+
+    A 1:1 port of the hand block's Mode-1/2/3 ladder (``leg_interp.cpp``:
+    Mode 1 :706-719, Mode 2 :727-732, Mode 3 :733-747) for the ONE case the
+    moving_gap stage streams: a constant-velocity ramp, so ``accel[6] == 0``
+    (the pump hard-zeroes it on every frame) and hence ``s_jerk[6] == 0`` (the
+    firmware's jerk EMA over a constant acceleration, :416-424). With a = j = 0
+    the cubic terms vanish and the ladder collapses to closed form — which is
+    why this is an EXACT prediction rather than a fit, and why a disagreement
+    on the bench convicts the firmware rather than the model.
+
+    Mode 1 is exactly linear here and that is not an approximation: with
+    ``p1 = p0 + v·T`` and ``v0 == v1 == v`` the Hermite basis sums to
+    ``h01 + h10 + h11 = s``, so ``pos = p0 + v·g`` identically.
+    """
+    v = float(v)
+    p0 = float(p0)
+    g = float(g)
+    if g <= 0.0:
+        return p0, v
+    if g <= seg_t:                       # Mode 1 — Hermite to the u1 endpoint
+        return p0 + v * g, v
+    endp = p0 + v * seg_t                # the u1 endpoint state (endp, v)
+    over = g - seg_t
+    if over <= maxext:                   # Mode 2 — Taylor, a = j = 0 ⇒ constant v
+        return endp + v * over, v
+    dt_over = over - maxext              # Mode 3 — linear velocity decay to zero
+    dec = 1.0 - dt_over / decay_t
+    if dec < 0.0:
+        dec = 0.0
+    pos_b = endp + v * maxext
+    extra = (v * (decay_t * 0.5) if dt_over >= decay_t
+             else v * dt_over * (1.0 - dt_over / (2.0 * decay_t)))
+    return pos_b + extra, v * dec
+
+
+class MovingGapPlan:
+    """Which streamed frames carry the hand channel — the row-17b schedule.
+
+    Frame-INDEXED, not time-windowed like the ``gap`` stage, because "withhold
+    N knots" is a statement about frames: the 40 Hz loop's absolute-schedule
+    tick is the knot, and counting frames makes the withheld set exact under
+    scheduler jitter instead of approximately-right. The firmware-side gap is
+    therefore ``(N + 1) · SEG_T`` — from the LAST hand-bearing knot to the
+    re-entry knot, which is the interval the hand lane's own clock ages over.
+    """
+
+    def __init__(self, gap_at_s, gap_knots, knot_dt=SEG_T):
+        n = int(gap_knots)
+        if n < 1:
+            raise ValueError("gap_knots must be >= 1")
+        self.knot_dt = float(knot_dt)
+        self.n = n
+        self.first = int(round(float(gap_at_s) / self.knot_dt))
+        if self.first < 1:
+            # At least one hand-bearing frame must precede the gap or the lane
+            # never latches (s_hand_active stays false and there is nothing to
+            # decay — the stage would measure the un-armed case).
+            raise ValueError("gap_at_s must leave at least one hand-bearing frame")
+        self.last = self.first + n - 1
+        self.reentry = self.last + 1
+
+    def with_hand(self, idx):
+        return not (self.first <= int(idx) <= self.last)
+
+    def is_reentry(self, idx):
+        return int(idx) == self.reentry
+
+    @property
+    def fw_gap_s(self):
+        """Last hand-bearing knot → re-entry knot, i.e. the hand lane's own age."""
+        return (self.n + 1) * self.knot_dt
+
+
+# Pass-criteria bars. Every one is derived from a firmware constant or a
+# measured bench number — never a round number chosen for looking safe.
+#
+# MG_COAST_TOL_FLOOR_REV — the three candidate lane behaviours are separated by
+#   at least v·(HAND_COAST_S − SEG_T) = 0.08·v rev (DECAY 0.105·v vs
+#   HOLD-AT-ENDPOINT 0.025·v; NO-WIND-DOWN sits further out at gap·v). The
+#   tolerance is a QUARTER of that separation so the discriminator cannot be
+#   ambiguous, floored at 0.010 rev = 0.32 mm — 8x the largest static-target
+#   residual this instrument has ever recorded (dev_max 0.0013 rev over the
+#   600 s row-13 hold, 2026-09-04).
+# MG_FROZEN_SPAN_REV — past HAND_WINDDOWN_S the model says the target is
+#   EXACTLY constant, so this bar only has to exceed instrument noise on a
+#   static echo: 0.005 rev is ~4x that same 0.0013 rev floor, while a lane that
+#   failed to decay would sweep 0.5 rev/s × 0.09 s = 0.045 rev across the same
+#   window — 9x the bar.
+# MG_TRACK_BAR_REV — 0.10 rev = 3.16 mm, ~1.6x the worst hand tracking sample
+#   sitting two measured at ANY speed (1.92 mm on the row-14 triangle, 1.85 mm
+#   on the row-15 stroke) and 5 % of MAX_LEAD_HAND_REV. The decay decelerates
+#   the hand from 0.5 rev/s to rest in 0.11 s — 4.5 rev/s², an order below the
+#   stroke's ~1500 rev/s² — so the tracking task here is EASIER than row 14's.
+# MG_REENTRY_BAR_REV — the predicted step is v·(fw_gap − HAND_COAST_S) =
+#   0.5 × (0.250 − 0.105) = 0.0725 rev = 2.29 mm. 0.25 rev is 3.4x that, and
+#   sits at 12.5 % of MAX_LEAD_HAND_REV (2.0), 10 % of MAX_DEVIATION_HAND_REV
+#   (2.5) and 5 % of the pump's 5.0 rev hand step gate — so the driver's own
+#   refusal fires long before any firmware guard can, which is what makes it
+#   meaningful to run this stage OBSERVE-FIRST.
+MG_COAST_TOL_FLOOR_REV = 0.010
+MG_FROZEN_SPAN_REV = 0.005
+MG_TRACK_BAR_REV = 0.10
+MG_REENTRY_BAR_REV = 0.25
+
+
+def evaluate_moving_gap(samples, p0, v0, fw_gap_s, reentry_step_rev,
+                        lead_bit_ticks, total_ticks,
+                        reentry_bar_rev=MG_REENTRY_BAR_REV,
+                        coast_tol_floor=MG_COAST_TOL_FLOOR_REV,
+                        frozen_span_bar=MG_FROZEN_SPAN_REV,
+                        track_bar=MG_TRACK_BAR_REV):
+    """Score the five row-17b criteria on a recorded gap trace. PURE.
+
+    ``samples`` — one tuple per streamed tick inside the WITHHELD window:
+    ``(g_s, echo_rev|None, enc_ex_rev|None, pred_rev)``, with ``g_s`` measured
+    from the last hand-bearing SEND. Two timing terms sit on that: the uplink
+    (~1-1.5 ms) and the echo's own age (≤ 10 ms at TELEM_RATE_HZ 100). Together
+    they are worth ≤ 0.006 rev MID-DECAY at the bench speed and EXACTLY ZERO in
+    the two windows the tight bars live in — G1 reads the last sample and G2 the
+    frozen tail, where the target's velocity is 0 and a mis-timed sample of a
+    static value is the same value. G3's bar (0.10 rev) dwarfs the mid-decay
+    term by 16x.
+    ``p0`` / ``v0`` — the hand ``u0``/``v0`` of that last hand-bearing frame.
+    ``reentry_step_rev`` — planned(t_reentry) − the firmware's last gap target.
+
+    Returns a list of ``{'id', 'name', 'verdict', 'detail'}`` dicts; verdict is
+    ``PASS`` / ``FAIL`` / ``SKIP`` (SKIP always carries the reason it could not
+    be judged — never a silent omission, per the row-17 fiction).
+    """
+    out = []
+    echoes = [(g, e) for (g, e, _x, _p) in samples if e is not None]
+
+    # ── G1: the three-way coast discriminator (the headline) ─────────────────
+    if not echoes:
+        out.append({'id': 'G1', 'name': 'firmware-target coast',
+                    'verdict': 'SKIP',
+                    'detail': 'no HAND_CMD_ECHO landed inside the gap'})
+    elif fw_gap_s <= SEG_T + MAX_EXTRAP_DT_S:
+        out.append({'id': 'G1', 'name': 'firmware-target coast',
+                    'verdict': 'SKIP',
+                    'detail': (f'gap {fw_gap_s * 1e3:.0f} ms never reaches Mode 3 '
+                               f'(needs > {(SEG_T + MAX_EXTRAP_DT_S) * 1e3:.0f} ms) '
+                               f'— the decay and no-wind-down models coincide')})
+    else:
+        g_last, e_last = echoes[-1]
+        coast = e_last - p0
+        m_decay = hand_gap_target(0.0, v0, g_last)[0]
+        m_hold = v0 * SEG_T                     # the mode the rule forbids
+        m_none = v0 * g_last                    # no wind-down at all
+        tol = max(coast_tol_floor,
+                  0.25 * abs(v0) * (HAND_COAST_S - SEG_T))
+        cands = (('DECAY (normative)', m_decay), ('HOLD-AT-ENDPOINT', m_hold),
+                 ('NO WIND-DOWN', m_none))
+        nearest = min(cands, key=lambda c: abs(coast - c[1]))
+        ok = abs(coast - m_decay) <= tol and nearest[1] == m_decay
+        out.append({
+            'id': 'G1', 'name': 'firmware-target coast',
+            'verdict': 'PASS' if ok else 'FAIL',
+            'detail': (f'{coast:+.4f} rev at g={g_last * 1e3:.0f} ms vs '
+                       f'DECAY {m_decay:+.4f} / HOLD {m_hold:+.4f} / '
+                       f'NONE {m_none:+.4f} (tol ±{tol:.4f}) — nearest: '
+                       f'{nearest[0]}')})
+
+    # ── G2: the target is FROZEN once the wind-down completes ────────────────
+    frozen = [e for (g, e) in echoes if g >= HAND_WINDDOWN_S]
+    if len(frozen) < 2:
+        out.append({'id': 'G2', 'name': 'target frozen after wind-down',
+                    'verdict': 'SKIP',
+                    'detail': (f'{len(frozen)} echo sample(s) past '
+                               f'{HAND_WINDDOWN_S * 1e3:.0f} ms — need >= 2 '
+                               f'(lengthen --gap-knots)')})
+    else:
+        span = max(frozen) - min(frozen)
+        out.append({'id': 'G2', 'name': 'target frozen after wind-down',
+                    'verdict': 'PASS' if span <= frozen_span_bar else 'FAIL',
+                    'detail': (f'span {span:.5f} rev over {len(frozen)} samples '
+                               f'(bar {frozen_span_bar:.4f})')})
+
+    # ── G3: the encoder tracks the DECAYED target, not the planned one ───────
+    devs = [abs(x - pr) for (_g, _e, x, pr) in samples if x is not None]
+    if not devs:
+        out.append({'id': 'G3', 'name': 'encoder tracks the decayed target',
+                    'verdict': 'SKIP', 'detail': 'no telemetry inside the gap'})
+    else:
+        worst = max(devs)
+        out.append({'id': 'G3', 'name': 'encoder tracks the decayed target',
+                    'verdict': 'PASS' if worst <= track_bar else 'FAIL',
+                    'detail': (f'worst |enc+vel·age − model| {worst:.4f} rev '
+                               f'({worst * MM_PER_REV:.2f} mm, bar '
+                               f'{track_bar:.3f} rev)')})
+
+    # ── G4: the re-entry step is bounded ─────────────────────────────────────
+    if reentry_step_rev is None:
+        out.append({'id': 'G4', 'name': 're-entry step bounded',
+                    'verdict': 'SKIP', 'detail': 'the stage never re-entered'})
+    else:
+        pred = v0 * (fw_gap_s - HAND_COAST_S)
+        out.append({'id': 'G4', 'name': 're-entry step bounded',
+                    'verdict': ('PASS' if abs(reentry_step_rev) <= reentry_bar_rev
+                                else 'FAIL'),
+                    'detail': (f'{reentry_step_rev:+.4f} rev '
+                               f'({reentry_step_rev * MM_PER_REV:+.2f} mm) vs '
+                               f'predicted {pred:+.4f}, bar '
+                               f'±{reentry_bar_rev:.3f}')})
+
+    # ── G5: the hand lead clamp never engaged ────────────────────────────────
+    out.append({'id': 'G5', 'name': 'hand lead clamp never engaged',
+                'verdict': 'PASS' if lead_bit_ticks == 0 else 'FAIL',
+                'detail': (f'lead_clamp_mask bit 6 set on {lead_bit_ticks} of '
+                           f'{total_ticks} SAMPLED ticks — a 40 Hz sample of a '
+                           f'500 Hz flag, NOT a duty; the duty is the [hand7] '
+                           f'`lead` delta across the stage')})
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--stage", choices=["hold", "triangle", "stroke", "step", "gap"],
+    ap.add_argument("--stage",
+                    choices=["hold", "triangle", "stroke", "step", "gap",
+                             "moving_gap"],
                     default="hold")
     ap.add_argument("--duration", type=float, default=30.0,
                     help="run time after arm (s); T-H1 uses 600")
@@ -478,12 +761,36 @@ def main():
     ap.add_argument("--gap-s", type=float, default=1.0, help="gap stage: hand-less window (s)")
     ap.add_argument("--gap-delta", type=float, default=1.0,
                     help="gap stage: re-entry displacement (rev, ≤ 1.5)")
+    ap.add_argument("--gap-knots", type=int, default=9,
+                    help="moving_gap stage: consecutive 40 Hz frames whose "
+                         "HAS_HAND bit is CLEARED (default 9). The firmware-side "
+                         "gap is (N+1)·25 ms = 250 ms at the default — 1.85x the "
+                         "0.135 s wind-down (SEG_T + MAX_EXTRAP_DT_S + "
+                         "EXTRAP_DECAY_DT_S), so the decay COMPLETES and ~115 ms "
+                         "of frozen, zero-velocity hold is observed after it. "
+                         "N ≥ 5 is the floor for the decay to finish at all; "
+                         "N ≤ 2 never leaves Mode 2 and measures nothing")
+    ap.add_argument("--gap-at", type=float, default=None, metavar="SEC",
+                    help="moving_gap stage: stage time of the falling edge "
+                         "(default: --tri-span/(2·--tri-speed) = the MIDDLE of "
+                         "the first ascending ramp, where the hand is at the "
+                         "full triangle speed and furthest from a vertex). The "
+                         "whole withheld window must stay inside one ramp — the "
+                         "driver refuses otherwise, because the decay model "
+                         "assumes one constant knot velocity")
+    ap.add_argument("--reentry-max-rev", type=float, default=MG_REENTRY_BAR_REV,
+                    metavar="REV",
+                    help="moving_gap stage: refuse to COMMAND a re-entry step "
+                         f"larger than this (rev, default {MG_REENTRY_BAR_REV}); "
+                         "the driver aborts without sending that knot. See "
+                         "MG_REENTRY_BAR_REV for the derivation")
     ap.add_argument("--max-dev", type=float, default=None, metavar="REV",
                     help="driver deviation belt |cmd − (enc + vel·age)| abort (rev), "
                          "velocity-compensated like the firmware residual; ≤ 2.0 "
                          "(the firmware hand lead clamp) so the belt fires first. "
-                         "Default is per-stage (hold/triangle/step 0.5, stroke 1.5, "
-                         "gap |gap-delta|+0.5) — see _MAX_DEV_DEFAULT's derivation")
+                         "Default is per-stage (hold/triangle/step/moving_gap 0.5, "
+                         "stroke 1.5, gap |gap-delta|+0.5) — see "
+                         "_MAX_DEV_DEFAULT's derivation")
     ap.add_argument("--close-loop", action="store_true",
                     help="bring the hand ODrive up first: POSITION/PASSTHROUGH + the "
                          "operational hand gains + CLOSED_LOOP (auto-holds at the "
@@ -505,6 +812,47 @@ def main():
     args = ap.parse_args()
     if abs(args.gap_delta) > 1.5:
         ap.error("--gap-delta beyond ±1.5 rev — keep the re-entry catch-up bounded")
+    mg_plan = None
+    if args.stage == "moving_gap":
+        if args.tri_span <= 0.0 or args.tri_speed <= 0.0:
+            ap.error("--tri-span and --tri-speed must be positive for moving_gap")
+        if not 0.0 < args.reentry_max_rev <= 2.0:
+            ap.error("--reentry-max-rev out of (0, 2.0] "
+                     "(2.0 = the firmware MAX_LEAD_HAND_REV)")
+        if args.gap_at is None:
+            # Mid-ramp for ANY span/speed, not a hardcoded 2.0 s: half of one
+            # ramp's duration (span/speed), i.e. a quarter of the period. The
+            # hand is at the full triangle speed and maximally far from either
+            # vertex, which is what the constant-velocity decay model needs.
+            args.gap_at = args.tri_span / (2.0 * args.tri_speed)
+        if args.gap_at < 0.5:
+            ap.error("--gap-at below 0.5 s — the lane needs a hand-bearing "
+                     "lead-in to latch and settle before the falling edge")
+        try:
+            mg_plan = MovingGapPlan(args.gap_at, args.gap_knots)
+        except ValueError as e:
+            ap.error(f"--gap-at/--gap-knots: {e}")
+        # The decay model assumes ONE constant knot velocity across the whole
+        # gap, so the interval [last hand knot, re-entry knot] must lie inside a
+        # single ramp. Straddling a vertex would make every criterion below
+        # arithmetic on a velocity the hand never had — the row-17 lesson
+        # (a stage that measures a fiction and reports a plausible number).
+        ramp_s = args.tri_span / args.tri_speed
+        t_lo = (mg_plan.first - 1) * SEG_T
+        t_hi = mg_plan.reentry * SEG_T
+        if int(t_lo // ramp_s) != int(t_hi // ramp_s):
+            ap.error(f"the withheld window [{t_lo:.3f}, {t_hi:.3f}] s straddles a "
+                     f"triangle vertex (ramp = {ramp_s:.3f} s) — move --gap-at or "
+                     f"shorten --gap-knots")
+        if args.duration < t_hi + 1.0:
+            ap.error(f"--duration {args.duration:.1f} s leaves no post-re-entry "
+                     f"recovery to watch (need >= {t_hi + 1.0:.1f} s)")
+        if mg_plan.fw_gap_s <= HAND_WINDDOWN_S:
+            print(f"⚠  --gap-knots {args.gap_knots} ⇒ a "
+                  f"{mg_plan.fw_gap_s * 1e3:.0f} ms firmware gap, which does NOT "
+                  f"complete the {HAND_WINDDOWN_S * 1e3:.0f} ms wind-down: the "
+                  f"decay will be observed only partially (G2 will SKIP). "
+                  f"--gap-knots 9 is the row-17b default.")
     if args.max_dev is None:
         args.max_dev = (max(0.5, abs(args.gap_delta) + 0.5) if args.stage == "gap"
                         else _MAX_DEV_DEFAULT[args.stage])
@@ -755,7 +1103,11 @@ def main():
         start = _hand_pos()
         if args.stage == "hold":
             traj = Hold(start)
-        elif args.stage == "triangle":
+        elif args.stage in ("triangle", "moving_gap"):
+            # moving_gap rides the SAME row-14 triangle — same envelope check,
+            # and the firmware's whole coast past the falling edge is
+            # v·HAND_COAST_S (0.0525 rev = 1.66 mm at the defaults), far inside
+            # the margin this check already keeps off the 10.8 rev metal.
             if start + args.tri_span > HAND_MAX_POS - HAND_MARGIN:
                 print(f"ABORT: triangle would reach "
                       f"{start + args.tri_span:.2f} rev (> "
@@ -877,8 +1229,17 @@ def main():
         # SOLVE for age rather than read it — which is precisely what blocked
         # attributing the 0.5387 → 1.2348 rev stroke-deviation growth between
         # two runs of one stage in the 2026-09-04 sitting forensics.
+        # pred_rev is APPENDED, never inserted: every column an analyst already
+        # reads keeps its index, so a sitting-two CSV and a sitting-three CSV
+        # parse with the same offsets. It carries the moving_gap stage's model
+        # of the firmware target (hand_gap_target) on the withheld ticks and is
+        # empty everywhere else — and on those ticks cmd_rev reads the literal
+        # `withheld`, never a number, because logging a command the driver
+        # deliberately did NOT send is exactly the fiction row 17 shipped on
+        # 2026-09-04.
         w.writerow(["t", "cmd_rev", "enc_rev", "vel_rps", "echo_rev",
-                    "fault", "lead_mask", "recon_mm", "axis_state", "enc_age"])
+                    "fault", "lead_mask", "recon_mm", "axis_state", "enc_age",
+                    "pred_rev"])
         # CacheDiag companion CSV — the T-H1 drop-episode instrument (1 Hz
         # windowed enc_frames deficits, the headroom runbook row-21 recipe).
         cd_path = csv_path[:-4] + "_cachediag.csv" if csv_path.endswith(".csv") \
@@ -919,10 +1280,25 @@ def main():
         gap_reentry_t = None                # gap: stage time the re-entry was first commanded
         gap_echo_ref = None                 # ... and the echo value it must move away from
         gap_echo_moved = False              # ... proven to have reached the wire
+        # moving_gap state. mg_last_hand is the (wall, u0, v0) of the last
+        # hand-BEARING send — the origin of the firmware's own knot clock, which
+        # is the only clock the decay ladder ages against (leg_interp.cpp:696).
+        idx = -1                            # streamed-frame index (the knot index)
+        mg_last_hand = None
+        mg_origin = None                    # mg_last_hand FROZEN at the falling edge —
+                                            # mg_last_hand keeps advancing once the
+                                            # stream resumes, so everything about the
+                                            # gap must read this instead
+        mg_samples = []                     # (g_s, echo, enc_ex, pred) per withheld tick
+        mg_reentry_step = None              # planned(t_re) − the firmware's last gap target
+        mg_gap_wall = None                  # MEASURED last-hand-knot → re-entry interval
+        mg_lead_ticks = 0                   # ticks with lead_clamp_mask bit 6 set
+        mg_ticks = 0                        # ticks sampled (the bit-6 denominator)
         while True:
             t = time.time() - t_start
             if t > args.duration:
                 break
+            idx += 1
 
             with_hand = True
             hand_override = None
@@ -945,6 +1321,67 @@ def main():
                             e0 = _cache["echo"]
                         gap_reentry_t = t
                         gap_echo_ref = None if e0 is None else e0[1]
+            mg_pred = None                  # moving_gap: the firmware's own target, modelled
+            mg_g = None                     # ... and the hand knot age it was modelled at
+            if args.stage == "moving_gap":
+                with_hand = mg_plan.with_hand(idx)
+                if not with_hand:
+                    # The falling edge. NOTE hand_override stays None: the
+                    # re-entry command is the triangle's own sample, so this
+                    # stage cannot reproduce the 2026-09-04 dropped-override
+                    # class by construction — there is no override to drop.
+                    if mg_origin is None:
+                        mg_origin = mg_last_hand    # freeze the gap's origin knot
+                    if mg_origin is not None:
+                        mg_g = time.time() - mg_origin[0]
+                        mg_pred = hand_gap_target(
+                            mg_origin[1], mg_origin[2], mg_g)[0]
+                elif mg_plan.is_reentry(idx):
+                    if mg_origin is None:
+                        print("ABORT: moving_gap reached its re-entry knot with "
+                              "no recorded falling-edge origin — the withheld "
+                              "window never ran, so nothing about the gap can be "
+                              "measured and the re-entry cannot be bounded "
+                              "(fail closed)."); break
+                    # ── The bounded re-entry, checked BEFORE it is commanded ──
+                    # The resumed command is the CURRENT PLANNED position (the
+                    # triangle never paused), so the step the firmware sees is
+                    # planned(t) − its own decayed target. Predicted
+                    # v·(fw_gap − HAND_COAST_S) = 0.0725 rev at the defaults.
+                    # If it is larger than --reentry-max-rev the driver does NOT
+                    # send that knot: the guard band is observe-first, so the
+                    # firmware would NOT E-STOP (MAX_DEVIATION_HAND_REV 2.5 only
+                    # counts a dev_over tick until `hand7 arm`), and the lead
+                    # clamp would silently absorb anything up to 2.0 rev — i.e.
+                    # nothing downstream refuses a step this driver got wrong.
+                    # Fail closed here, and REPORT the number either way.
+                    # The cached echo is up to ~10 ms stale (TELEM_RATE_HZ 100)
+                    # and that costs NOTHING here: by the re-entry the lane's
+                    # target has been frozen for ~115 ms at the shipped default,
+                    # so a stale sample of a static value is the same value.
+                    with _lock:
+                        e0 = _cache["echo"]
+                    if e0 is None:
+                        print("ABORT: no hand echo cached at the moving_gap "
+                              "re-entry — the firmware's decayed target is "
+                              "unknown, so the re-entry step cannot be bounded "
+                              "before commanding it (fail closed)."); break
+                    mg_gap_wall = time.time() - mg_origin[0]
+                    mg_reentry_step = traj.sample(t)[0] - e0[1]
+                    if abs(mg_reentry_step) > args.reentry_max_rev:
+                        print(f"ABORT: moving_gap re-entry step "
+                              f"{mg_reentry_step:+.4f} rev "
+                              f"({mg_reentry_step * MM_PER_REV:+.2f} mm) exceeds "
+                              f"--reentry-max-rev {args.reentry_max_rev:.3f} — "
+                              f"NOT commanded. planned={traj.sample(t)[0]:+.4f} "
+                              f"vs firmware target {e0[1]:+.4f}. Predicted "
+                              f"{(mg_origin[2] * (mg_plan.fw_gap_s - HAND_COAST_S)):+.4f}"
+                              f" rev; a step this far off means the lane did NOT "
+                              f"wind down as leg_interp.cpp:701-748 says it "
+                              f"must, which is the finding — log it, do not "
+                              f"widen the bar."); break
+                    gap_reentry_t = t
+                    gap_echo_ref = e0[1]
             if args.stage == "step" and not step_done and t >= 3.0:
                 # ONE deliberately-oversized knot: the pump MUST refuse it.
                 bad = frame(t, hand_override=None)
@@ -976,13 +1413,25 @@ def main():
             if sp is None:
                 print(f"ABORT: pump refused a stage frame: {why}"); break
             client.send_stream(int(MsgType.SETPOINT), sp.pack())
+            if args.stage == "moving_gap" and with_hand:
+                # The origin of the firmware's hand knot clock: (send wall, u0,
+                # v0) of the last HAND-BEARING frame. Stamped after the send, so
+                # the model's g omits only the uplink (~1-1.5 ms, < 0.001 rev at
+                # the bench speed — an order below every bar in the criteria).
+                mg_last_hand = (time.time(),) + traj.sample(t)
 
             # belts + logging (10 Hz worth of work at 40 Hz cost is fine)
             tm_snap, enc_age = _telem_with_age()
             enc = None if tm_snap is None else float(tm_snap.pos_rev[HAND])
             encv = 0.0 if tm_snap is None else float(tm_snap.vel_rps[HAND])
             cmd_now = traj.sample(t)[0] if hand_override is None else hand_override
-            if enc is not None and with_hand:
+            # Inside a moving_gap the belt's honest reference is the FIRMWARE's
+            # own decayed target, not the planned triangle the driver is
+            # deliberately withholding: comparing against the plan would treat
+            # v·(gap − HAND_COAST_S) of SANCTIONED divergence as tracking error.
+            belt_ref = cmd_now if mg_pred is None else mg_pred
+            enc_ex = None if enc is None else enc + encv * enc_age
+            if enc is not None and (with_hand or mg_pred is not None):
                 # Velocity-compensated belt (2026-09-02 review fix), mirroring
                 # the firmware residual: extrapolate the cached encoder forward
                 # by its receive age before comparing. A static |cmd − enc|
@@ -991,13 +1440,14 @@ def main():
                 # static-bound arithmetic Phase 0 Decision 4 rejected for the
                 # firmware guard — and would abort a HEALTHY stroke (a
                 # commanded stop into a fast hand).
-                enc_ex = enc + encv * enc_age
-                dev = abs(cmd_now - enc_ex)
+                dev = abs(belt_ref - enc_ex)
                 max_dev = max(max_dev, dev)
                 if dev > args.max_dev:
-                    print(f"ABORT: driver deviation belt |{cmd_now:.3f} - "
+                    print(f"ABORT: driver deviation belt |{belt_ref:.3f} - "
                           f"({enc:.3f} + {encv:.1f}·{enc_age * 1e3:.0f}ms)| "
-                          f"= {dev:.3f} rev > {args.max_dev}"); break
+                          f"= {dev:.3f} rev > {args.max_dev}"
+                          f"{' (ref = the modelled gap target)' if mg_pred is not None else ''}")
+                    break
             fs = _fault()
             if fs not in (None, int(FaultState.NONE)):
                 print(f"ABORT: firmware fault {_fault_name(fs)} — disarming.")
@@ -1038,6 +1488,15 @@ def main():
             # belt in this loop — the deviation belt compares the phantom against
             # itself — so the one surface that can tell a tracked re-entry from an
             # unsent one is the firmware's own echo. See GAP_ECHO_MOVE_REV.
+            #   moving_gap re-uses the same 0.05 rev threshold, and the reason it
+            #   still holds there is worth stating rather than assuming: the
+            #   pre-re-entry echo is static only BECAUSE the lane decayed (that
+            #   IS criterion G2), and the post-re-entry echo keeps advancing at
+            #   the triangle speed, so the two are separated by ≥ the 0.0725 rev
+            #   re-entry step within one knot. The check is therefore NECESSARY
+            #   here but SUFFICIENT only alongside G2: if G2 fails the lane was
+            #   still coasting and a moving echo proves nothing — which is why
+            #   the stage reports the criteria rather than resting on this abort.
             if gap_reentry_t is not None and not gap_echo_moved:
                 cur = None if echo is None else echo[1]
                 if (cur is not None and gap_echo_ref is not None
@@ -1050,7 +1509,9 @@ def main():
                           f"{'none' if cur is None else f'{cur:+.5f} rev'} vs "
                           f"{'none' if gap_echo_ref is None else f'{gap_echo_ref:+.5f} rev'}"
                           f" pre-re-entry; expected > {GAP_ECHO_MOVE_REV:.3f} rev of "
-                          f"movement for a commanded {args.gap_delta:+.3f} rev step. "
+                          f"movement for a commanded "
+                          f"{(args.gap_delta if args.stage == 'gap' else (mg_reentry_step or 0.0)):+.3f}"
+                          f" rev step. "
                           f"Under STREAMED the echo re-sources from "
                           f"axes[6].target_pos_rev and is emitted only when the interp "
                           f"TXed, so a re-entry that reached the firmware MUST move it: "
@@ -1060,7 +1521,24 @@ def main():
                           f"firmware and the driver dropped hand_override on the way to "
                           f"frame() again (the 2026-09-04 defect); src=LEGACY with "
                           f"discard_legacy climbing means the latch, not the driver "
-                          f"(--source-only streamed first)."); break
+                          f"(--source-only streamed first)."
+                          + ("" if args.stage != "moving_gap" else
+                             " For moving_gap there is no hand_override to drop, so"
+                             " src/discard_legacy is the whole differential."));
+                    break
+            if args.stage == "moving_gap":
+                # The lead-clamp read (G5) and the gap trace (G1-G3). The mask is
+                # sampled at 40 Hz off a 500 Hz flag, so this is a SAMPLE, never a
+                # duty — the duty is the [hand7] `lead` DELTA across the stage,
+                # which is console-only and which the runbook brackets.
+                if hb is not None:
+                    mg_ticks += 1
+                    if int(hb.lead_clamp_mask) & 0x40:
+                        mg_lead_ticks += 1
+                if mg_pred is not None:
+                    mg_samples.append((mg_g,
+                                       None if echo is None else echo[1],
+                                       enc_ex, mg_pred))
             recon = None
             if args.stage == "stroke" and echo is not None and echo[0] != last_echo_key:
                 # Reconstruction error, TIME-ALIGNED (2026-09-02 review fix):
@@ -1079,7 +1557,15 @@ def main():
                     max_recon_mm = max(max_recon_mm, recon)
                 else:
                     echo_unsynced += 1
-            w.writerow([f"{t:.3f}", f"{cmd_now:.5f}",
+            w.writerow([f"{t:.3f}",
+                        # `withheld`, not a number, on a moving_gap tick whose
+                        # frame carried no hand channel — the CSV must never
+                        # state a command that was not sent (row 17,
+                        # 2026-09-04). Scoped to the new stage: the `gap`
+                        # stage's hand-less window rides a Hold, where cmd_now
+                        # IS the last commanded position, and its CSV format is
+                        # already the subject of sitting-two analysis.
+                        "withheld" if mg_pred is not None else f"{cmd_now:.5f}",
                         "" if enc is None else f"{enc:.5f}",
                         "" if tm_snap is None else f"{encv:.3f}",
                         "" if echo is None else f"{echo[1]:.5f}",
@@ -1097,7 +1583,10 @@ def main():
                         # µs resolution: at 95 rev/s that is 1e-4 rev, below
                         # the 5th decimal enc_rev is logged to, so the belt
                         # re-derives exactly from this row.
-                        "" if tm_snap is None else f"{enc_age:.6f}"])
+                        "" if tm_snap is None else f"{enc_age:.6f}",
+                        # pred_rev — the modelled firmware target, populated on
+                        # moving_gap's withheld ticks only (empty elsewhere).
+                        "" if mg_pred is None else f"{mg_pred:.5f}"])
             _drain_cd()                     # 1 Hz CacheDiag rows → companion CSV
 
             next_t += period
@@ -1119,6 +1608,39 @@ def main():
                   f"+ [hand7] dev_max together)")
         if args.stage == "step":
             print(f"  step probe result: {pump_rejects_at_step}")
+        if args.stage == "moving_gap":
+            if mg_origin is None:
+                print("  moving_gap: the stage never reached its falling edge — "
+                      "no verdict.")
+            else:
+                v0 = mg_origin[2]
+                print(f"  moving_gap: falling edge at knot {mg_plan.first} "
+                      f"(t≈{mg_plan.first * SEG_T:.2f} s), {mg_plan.n} knots "
+                      f"withheld ⇒ a {mg_plan.fw_gap_s * 1e3:.0f} ms firmware "
+                      f"gap against a {HAND_WINDDOWN_S * 1e3:.0f} ms wind-down "
+                      f"(MEASURED "
+                      f"{'n/a' if mg_gap_wall is None else f'{mg_gap_wall * 1e3:.1f} ms'}"
+                      f"); knot velocity {v0:+.3f} rev/s, {len(mg_samples)} gap "
+                      f"samples.")
+                print(f"  PREDICTION under test (leg_interp.cpp:701-748, "
+                      f"accel = jerk = 0): the firmware's own target coasts "
+                      f"{v0 * HAND_COAST_S:+.4f} rev "
+                      f"({v0 * HAND_COAST_S * MM_PER_REV:+.2f} mm) past the last "
+                      f"knot and then FREEZES — against "
+                      f"{v0 * SEG_T:+.4f} rev if it held the Mode-1 endpoint "
+                      f"(forbidden) and {v0 * mg_plan.fw_gap_s:+.4f} rev if it "
+                      f"never wound down.")
+                for c in evaluate_moving_gap(
+                        mg_samples, mg_origin[1], v0, mg_plan.fw_gap_s,
+                        mg_reentry_step, mg_lead_ticks, mg_ticks,
+                        reentry_bar_rev=args.reentry_max_rev):
+                    print(f"    {c['id']} {c['verdict']:<4} {c['name']}: "
+                          f"{c['detail']}")
+                print("  [hand7] is CONSOLE-ONLY and has no runtime reset: "
+                      "bracket the console capture either side of this stage "
+                      "and DIFFERENCE lead / dev_over / dev_max / sent / "
+                      "unseen / stale. Absolutes are boot-cumulative and, for "
+                      "lead/dev_over, gated wrong until the FW 18 fix.")
         print(f"  cachediag: {cd_stats['windows']} windows, "
               f"{cd_stats['episodes']} episode(s) past {CD_EPISODE_DEFICIT:.0f}, "
               f"worst deficit {cd_stats['worst']:.1f} frames "
