@@ -40,6 +40,10 @@ Four owner-requested GUI edits, `ros_ws/gui/` only, no Python touched:
    `.isolated`; any short click on any pill restores the snapshot; isolating another chart
    switches and keeps the original snapshot; localStorage persists the snapshot, not the
    lone chart. Replaces the stateless `toggleSoloChart` (0 references remain).
+   **Follow-up (owner, 2026-09-06, after first browser load — "working perfectly"):** the
+   pill shows the shared `.hold-fillable` left-to-right sweep (`viewer.css`, the same
+   affordance as the state-machine and command buttons) while held, timed to
+   `LONG_PRESS_MS`, with the 350 ms green `.hold-confirmed` flash when the isolate fires.
 4. **Show all charts** button between "Hide charts" and the pills; clears isolation, shows
    all 9, dims when already all-visible, no-ops without a rebuild in that state, and leaves
    the grid-hidden state alone.
@@ -79,6 +83,8 @@ no-op early return, and the layered title backdrop.
   `tests/ros/test_gui_geometry.py` and `tests/firmware/test_config_drift.py`
   (`geometry-config.js`) and `tests/ros/test_gui_fk_golden.py` (`stewart-fk.js`), all
   untouched here and all inside the gate above.
-- **Not yet loaded in a browser** — this was a headless session. The first operator page
-  load is the visual check; nothing here actuates hardware except the pre-existing
-  `bb/throw_at_target` service.
+- Loaded in a browser by the owner 2026-09-06: all four edits confirmed working; the
+  hold-progress sweep was requested on that first look and landed as the follow-up above
+  (`node --input-type=module --check` OK; no pytest reads the file — see the previous
+  bullet). Nothing here actuates hardware except the pre-existing `bb/throw_at_target`
+  service.

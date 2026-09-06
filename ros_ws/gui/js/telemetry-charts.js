@@ -596,7 +596,9 @@ function initChartVisibilityToggles() {
 
     for (let i = 0; i < MOTOR_COUNT; i++) {
         const btn = document.createElement('button');
-        btn.className = 'signal-toggle' + (visibleCharts.has(i) ? ' active' : '');
+        // hold-fillable = the shared left-to-right hold sweep (viewer.css),
+        // the same affordance the state-machine / command buttons use.
+        btn.className = 'signal-toggle hold-fillable' + (visibleCharts.has(i) ? ' active' : '');
         btn.dataset.chart = String(i);
         btn.textContent = CHART_LABELS[i];
         btn.title = `Toggle ${CHART_LABELS[i]} chart (click) · Long-press, Shift-click or key ${i + 1} to isolate · click any pill to restore`;
@@ -635,6 +637,7 @@ function initChartVisibilityToggles() {
                 clearTimeout(pressTimer);
                 pressTimer = null;
             }
+            btn.classList.remove('hold-active');
         };
         btn.addEventListener('pointerdown', (ev) => {
             // Primary button of the primary pointer only: a right/middle press
@@ -645,8 +648,16 @@ function initChartVisibilityToggles() {
             // A new press means no stale click from an earlier long-press is
             // still coming — drop any leftover swallow.
             disarmPillClickSwallow();
+            // Hold-progress sweep, timed to the same LONG_PRESS_MS the timer
+            // uses, so the fill reaching the right edge IS the trigger point.
+            btn.classList.remove('hold-confirmed');
+            btn.style.setProperty('--hold-ms', LONG_PRESS_MS + 'ms');
+            btn.classList.add('hold-active');
             pressTimer = setTimeout(() => {
                 pressTimer = null;
+                btn.classList.remove('hold-active');
+                btn.classList.add('hold-confirmed');
+                setTimeout(() => btn.classList.remove('hold-confirmed'), 350);
                 isolateChart(i);
                 // The release fires a click on top of this — swallow it once,
                 // with a timeout in case no click ever arrives (pointer moved
