@@ -263,7 +263,7 @@ mode; ball tracking, possession verdicts, `outcome_detail` discipline.
 | 2 | Wire v6 + host 7-channel path: codegen, `SetpointPump`, emitter, `make_mpc_command`, tests; firmware-absent safe | COMPLETE | 2026-09-02 | Medium | Codec, per-channel step gates, backward-compatible producers |
 | 3 | Can-bridge FW 17: 7th interp lane, hand guards, `hand_source` interlock, dispatch; lockstep flash + bench ladder | **COMPLETE** (owner, 2026-09-04) — flashed 2026-09-03, ladder flown over two sittings; **sitting three closed 2026-09-05** (all four carried items discharged: the falling-edge decay rule confirmed bit-exact, row 19(b) PASS, row 18's arming half closed by operator decision with the armed trip unobserved, and the first bracketed `[hand7]` capture) | 2026-09-04 | High | Hand streaming safety envelope on real hardware |
 | 4 | Jetson unified-cycle mode: orchestrator, node wiring, plan-derived announcements/suppression, outcome vocabulary; end-to-end sim gate | **COMPLETE (software)** 2026-09-05 — four window kinds chaining at a release, planning inside `trajectory_node`'s `PlanCycle` service, the release-terminal cliff closed by joining LAUNCH+LANDING; sim gate PASS, NEVER FLOWN | 2026-09-05 | Medium | Whole cycle through the production stack in sim |
-| 5 | Hardware ladder: streamed hold → banked carry (ball seated) → planned catch → planned throw (low tier) → full cycles → two-pose constant beat | **PREPPED 2026-09-05, NOT FLOWN** | 2026-09-05 | High | Ball-smooth carry and the planned launch on hardware |
+| 5 | Hardware ladder: streamed hold → banked carry (ball seated) → planned catch → planned throw (low tier) → full cycles → two-pose constant beat | **IN FLIGHT — UH-3/UH-5 PASS, UH-6 flown (6 of 7 caught), catch quality OPEN** 2026-09-06: every catch was a feedforward catch into a parked cup (ratio 0.001–0.059 vs the 0.7 design) and the whole cycle flew one levelling frame short; both convictions fixed, **NOT re-flown**. UH-7 not run | 2026-09-06 | High | Ball-smooth carry and the planned launch on hardware |
 | 6 | Exclusivity + close-out: Platform Teensy FW 4 stroke retirement, host RPC retirement, contract doc, ILC hand-off, docs | NOT STARTED | | Medium | Single-master end state |
 
 Phase 0 ran while this plan was `proposed` — its recorded results were the
@@ -1092,8 +1092,185 @@ the robot is the open item: confirm `blas threads: 1` in the launch terminal aft
 build`, and capture `/proc/loadavg` + `vmstat 1` alongside the rung, because the bag has no
 host-CPU channel.
 
+**First unified cycles 2026-09-06 (evening) — UH-3 PASS, UH-5 PASS, UH-6 FLOWN;
+the catch quality FAILS and the rung is NOT RE-FLOWN.** Canonical record:
+[`logbook/2026-09-06-unified-cycle-first-hardware-cycles.md`](../../logbook/2026-09-06-unified-cycle-first-hardware-cycles.md);
+per-rung verdicts in
+[`tests/hardware/session_unified7_cycle_ladder.md`](../../tests/hardware/session_unified7_cycle_ladder.md)
+§ Results. **UH-3**: both carries accepted and executed, ball undisturbed, hand
+flat (peak = the settle at 0.4949 rev), plan 213–222 ms. **UH-5**: three
+`--apex 0.5` throws, joined LAUNCH+SETTLE 2.0 s / 81 knots, plan 508/547/571 ms,
+commanded hand peak 9.6432 rev @ 99.01 rev/s. **UH-6**: four goals — G0
+`REJECTED_MOCAP_STALE` (QTM not up), **G1 3/3 CAUGHT, G2 3/3 CAUGHT, G3 one
+MISSED → `STOPPED_ON_MISS`**; guard ARMED and never tripped; **every cycle a
+fresh joined solve from rest — no `EXTEND` fired**, so the runbook's "cycles 2
+and 3 are ~200 ms extensions" was wrong. **UH-7 not run.** The host is
+exonerated: `blas threads: 1` on all three planner nodes, `max_emit_gap_ms` p50
+26.0 / max 35.4 with zero over 40, zero deadline misses, ≤ 3 µs jitter, zero TX
+deferrals — **the morning's E-STOP class did not recur**.
+
+**Two convictions, both fixed in the follow-up commit, neither re-flown.**
+(1) **Every catch was a FEEDFORWARD catch into a parked cup.** The ball arrives
+at 3961–4161 mm/s onto a hand doing −232…+4 mm/s — `catch_slider_vel_ratio`
+**0.001–0.059** against the **0.7** design — a 3730–4157 mm/s mismatch (~4×
+design speed, ~17× energy) taking 2–7.4 mm of the planned 120 mm runway. **The
+plan executed correctly** (cup at −1831…−2158 mm/s vs the −2199 target at the
+*planned* instant); the ball was **146–195 ms late**, because the throw left
+**+5.2…+16.7 %** fast (three independent methods) **and the closed loop that
+absorbs exactly that never opened** — `/catch/dynamic_target` published **zero
+messages all sitting**, held shut by the legacy `pretilt_hold` term in
+`catch_coordinator`'s `open_loop`, which has no unified branch. The consumer was
+ready throughout; the suite was green because the integration test never raises
+the hold. (2) **THE LEVELLING FRAME DROP.** `CyclePlan` never passed
+`levelling.correct_pose` — zero `levelling.*` calls existed in the cycle
+machinery for the whole of Phases 1–4, and the C-LEVEL-1 manifest never
+enumerated `plan_cycle`. It is a **drop, and not uniform**: knot 0's tilt pin was
+in the **plan** frame while release, catch and banking pins are **gravity**
+frame, so `tilt_schedule` interpolated across two frames. Measured: commanded
+release exactly mechanical zero against a platform physically at **+9.9…+10.3
+mrad**, ball leaving **−9 mrad into −y on 7/7** (legacy bias is +8.5 mrad into
++y — opposite sign), **9–38 mm** of lateral drift, rim strikes, 20–181 ms of
+bounce polluting every sensor-side catch estimator; predicted step 0.671° vs
+measured **+0.669°**. Fixed as **contract row E8** — built once at the seed
+(`trajectory_node._cycle_start_state`), **carried** on
+`CycleState`/`CycleMeta.levelling_correction`, applied exactly once in
+`unified_cycle._realize` between `tilt_schedule` and `decompose`, with
+`_joined_correction` refusing a mismatched splice (release physical 11.663 → 0.000
+mrad, step 0.6682° → 0.0000°, drift 23.325 → 0.000 mm at a 0.5 m apex;
+`correction=None` bit-identical). Also landed: the replan gate with a 5 mm
+movement gate and the coordinator's own cup lever at the consumer, the ILC speed
+trim on the unified launch, the plan-service UNACKED hold, and four driver
+corrections. **Blocked on the operator's QTM project before a re-fly** — the
+flying ball is bound to a stale `Catching Cone` rigid body 60–80 ms after release
+on 5/7 throws, so the replan path cannot be evaluated at all.
+
+**Second attempt 2026-09-06 23:55 — refused below the floor, and the aim was
+never going to be flown.** Four `TossContinuous` goals, no ball out of the cup.
+Three of the four are one number: the hand rested at **−0.1087 rev** (cup
+676.16 mm, **13.44 mm below** `SETTLE_CUP_Z_MM` 689.60), and because
+`cup_cycle._assemble` writes the z-box rows for knots 1..n while
+`_seed_relaxed_z_box`'s carve-out is REST-terminal only, a release-terminal LAUNCH
+must slam the cup into the box in ONE 25 ms knot — `|a| = 6·(0.3161715 −
+seed)/dt²`, which reproduces `HAND_LIMIT_ACC` **4077.2 / 4076.9 / 4063.2** and
+inverts back to the seed to four decimals. Goal #1 was byte-identical to a goal
+accepted twelve hours earlier; yesterday worked only because the bench carries had
+left the hand at **0.4865 rev**. Aim, E8 levelling, throw height and window length
+all measured **0.0 effect**. ⚠ The 3500 cap is crossed only at seed **−0.0485 rev**
+(11.53 mm low), so the band between there and the floor is **accepted and flown** —
+a 0.35 rev knot-1 step with the cup arcing 16–26 mm past its release site, and the
+12:05 park sat **0.33 mm** on the passing side. Fixed 2026-09-07 as choreography,
+**not re-flown**: the session installs one 1.0 s `KIND_SETTLE` lift to the floor at
+session start and before each cycle (0.654 rev/s / 2.55 rev/s² peak, 115 ms solve,
+verified on the *hand* rather than on the plan), and a pre-solve belt refuses every
+below-floor or unknown seed `REJECTED_CYCLE_PLAN(HAND_BELOW_FLOOR: …)`. Goal #3's
+`REJECTED_DISPLACEMENT` was separately a **legacy fiction** — a platform A→B reach
+bound (66.0 mm at T 0.495 s) charged against a path where the plan owns the whole
+traverse — and the aim on every displaced goal was **silently discarded**: the
+unified request pins `throw_target_mm = throw_site_mm`, but the legacy displaced
+preamble keys on `tier` and ran unbranched (mocap held +2.27° against 2.384°
+commanded; `_toss_unified_throw_xy` returned B while the platform stood at A). Now
+refused at acceptance, `REJECTED_UNIFIED_AIM_UNSUPPORTED`, with the unified
+pre-position forced LEVEL and the throw site read from the live pose. See
+`logbook/2026-09-07-unified-launch-refused-below-floor-seed.md`.
+
 **Dependencies:** Phases 3–4; owner present (operator runs actuating
 commands).
+
+### The per-knot escape floor for release-terminal windows (owner, 2026-09-07)
+
+**Named here rather than left inline, because the 23:55 sitting is what it costs.**
+`_seed_relaxed_z_box` relaxes knot 1's cup-z box for REST-terminal windows only, so
+a LAUNCH — release-terminal by construction — takes the CONFIGURED box and a seed
+below the 689.6 mm floor is *required* to slam. That asymmetry is the root cause of
+all three `HAND_LIMIT_ACC` refusals above **and** of the silent accepted band on the
+other side of the cap; the 2026-09-07 lift routes around it rather than closing it.
+
+The measurement that says the relaxation is the better machine is already recorded
+(2026-09-06): a relaxed launch peaks at **860.000 mm** and 45.3 m/s² against
+**886.166 mm** and 107.5 m/s² un-relaxed. What blocks it is that a floor-riding
+release-terminal window trips `HAND_STROKE` on a 0.22 mm continuum ripple, so the
+generalisation needs a **per-knot floor vector** (and probably a second solve),
+i.e. a planner change on the path whose terminal knot is the throw. **Owner item:
+it wants a bench, not a night before a sitting.** Until it lands, the lift is the
+guard and `HAND_BELOW_FLOOR` is the belt.
+
+### FW 18 bundle (owner, 2026-09-06)
+
+One flash, five items. Nothing here is a Phase 5 blocker; all of it is carried
+from the two 2026-09-06 sittings.
+
+1. **The hand clip becomes `stop − 0.2 rev`**, with the YAML stop set to the
+   **measured 10.701 rev**. Today `HAND_MOTOR_MAX_POSITION` is a zero-margin
+   alias of `Geometry::HAND_MOTOR_HARD_STOP_REVS` = 10.8, i.e. **0.099 rev
+   (3.2 mm) PAST the metal**, and **no firmware guard can see a stall in that
+   gap**: the deviation guard compares encoder to command (they agree once the
+   slider is jammed at the clip) and the lead clamp *anchors* the setpoint to the
+   encoder rather than refusing it.
+2. **Homing restores the axis-6 mode and limits.** `leg_homing.cpp:195` leaves
+   axis 6 in `VELOCITY`/`VEL_RAMP`, where `CLOSED_LOOP` alone still swallows the
+   stream — and it is invisible to every telemetry gate, because
+   `controller_mode`/`input_mode` are never written and read 0 forever. Homing
+   must restore `POSITION`/`PASSTHROUGH` and the shipped velocity/current limits.
+3. **The `lead` / `dev_over` counter gate.** `leg_interp.cpp:684` omits
+   `s_output_enabled`, so the counters count ticks that transmitted nothing and
+   read non-zero forever after any aborted stage. Until this lands, the runbook's
+   *"non-zero `lead` ⇒ abort"* rule is **unfalsifiable** and every reading must be
+   differenced across a stage.
+4. **A `hand7 reset` verb**, so the counters can be zeroed without a Teensy
+   reboot.
+5. **`MPC_STALE` → `SETPOINT_STALE`.** The MPC chain was deleted 2026-09-01; the
+   watchdog is the setpoint stream's and the prefix is only historical. **158
+   sites across 60 files**, driven by **one generator entry**
+   (`config/generate_udp_protocol.py:262`).
+
+### Hand geometry correction (owner, 2026-09-06 — its own planned change)
+
+**Not part of the Phase 5 fix commit, deliberately.** It moves numbers on paths
+this ladder has not flown, and pairing it with a frame fix and a replan gate
+would make all three unbisectable.
+
+**The measurement** (owner, bench, 2026-09-06): **stroke 352 mm, bottom
+−0.107 rev, top 10.701 rev ⇒ 32.57 mm/rev**, against the planner's **31.628**.
+That is **+2.98 %** of travel the machine has and the model does not, and it goes
+into every throw as excess release velocity. **The wrong part is
+`linear_gain_factor: 1.035`** (`hardware_config.yaml:1105`, commented *"just
+'cuz' factor"*) — and `hand_stroke_mm: 344.75` (`:368`), documented as *"a
+measured fact"*, is **derived in its own comment** as
+`(10.8 + 0.1) × 31.6284 = 344.7496`. It is an inference from the old hard-stop
+anchor, not a measurement.
+
+**Blast radius** (grep before touching any of it):
+
+- the planner's cup gain and the cup z ↔ rev map everywhere it appears;
+- `cup_cycle.HAND_MAX_DECEL_MPS2` (derived through `TEENSY_LINEAR_GAIN`) and the
+  catch-runway constraint that reads it;
+- `_CUP_Z_TOP_MM` — the tilt-accel cap moves **−2 %** and the runway **+3 %**;
+- `throw_envelope.PEAK_LIMIT_REV` = `HARD_STOP_REV − END_STOP_MARGIN_REV`:
+  **10.6 → 10.501** once the stop is the measured 10.701;
+- the coast ladder's v-axis;
+- `toss_release.HAND_THROW_OFFSET_MM = 58.044`, **hardcoded**;
+- the MJCF `hand_slide` joint range and `act_hand` ctrlrange
+  (`sim/model/jugglebot.xml:79,199`, generated from `hand_stroke_mm`);
+- `sim/plant/mujoco_plant.py`'s hand clip and its `_hand_prime_mm` fork;
+- the docs, including `docs/teensy-udp-protocol.md:360`'s BallButler
+  `HAND_SPOOL_RADIUS_M` map.
+
+**The flown positions, which is why this needs an audit and not a find-replace:**
+
+| Position | Nominal | Physically, at 32.57 mm/rev |
+|---|---|---|
+| `x2` (legacy release) | 5.9138 rev = 187.0 mm | **192.6 mm** |
+| Catch prime | 9.9594 rev = 315.0 mm | **324.4 mm** |
+| `_UNIFIED_THROW_CUP_Z_MM` | 860 mm | **~865 mm** |
+| `_UNIFIED_CATCH_CUP_Z_MM` | 830 mm | **~834 mm** |
+| `PEAK_LIMIT_REV` ceiling | 10.6 rev | **10.501 rev** |
+
+**The machine has been flying those positions successfully for months at the
+wrong nominal.** So the **acceptance criterion is a bench re-validation of the
+legacy release and catch points (`x2`, `x3`) BEFORE the correction ships** — not
+after. And note the correction is only **~3 %** of a **~11 %** measured throw
+excess: it will not close the throw error, and shipping it as though it would
+makes the next measurement unreadable (Open Question 1 of the sitting's entry).
 
 ### Phase 6: Exclusivity + close-out — NOT STARTED
 
@@ -1327,6 +1504,8 @@ are as of the owner's **Phase 3 COMPLETE** declaration, 2026-09-04.
 | `toss_workspace_xy_mm` was DELETED 2026-08-29 — the reach-feasibility gate is the sole lateral authority | `logbook/2026-08-29-displacement-caps-removed.md` | Referencing the dead key resurrects a retired policy |
 | Platform Teensy flash is Arduino IDE only (pio image is CAN-MUTE) | memory / bench facts | A pio flash silently kills the cold-start + inclinometer paths |
 | **Knot 0 == the machine, in EVERY channel** — position, velocity, hand, tilt AND acceleration. A plan may not open at a state the machine is not in, on any channel | `trajectory_node._cycle_start_state` (the seed, incl. the cup acceleration and `post_release` on BOTH the rest and moving branches) + `_install_continuity_ok` (position and velocity) + `unified_cycle._start_tilt_for` (tilt) + `feasibility._cycle_stroke_floor` (the hand, including a parked hand BELOW the homed zero) | Every one of these is a channel where knot 0 was once allowed to drift, and in each case the ONLY downstream guard is an install refusal — a gate that can say no and nothing else. A knot-0 tilt of 2.53° on a level machine is 0.1248 rev of leg drift against a 0.06 rev bound (`STALE_STATE`, 2026-09-06); a fictional knot-0 velocity installed unremarked until 2026-09-05; a parked hand at −0.031 rev was refused `HAND_STROKE` for being where the machine actually was; and a MOVING seed was told it was in free fall until 2026-09-06 — the identical lie fixed for the rest branch a day earlier, on the other branch of the same function, so **a fix that repairs one branch of a two-branch default has not closed the class** |
+| **Every commanded rotation that LEAVES the node passes the levelling correction (E8)** | `ros_ws/docs/levelling_frame.md` row E8: built once per cycle in `trajectory_node._cycle_start_state`, carried on `CycleState`/`CycleMeta.levelling_correction`, applied exactly once in `unified_cycle._realize` (`_tilt_to_gravity` on the seed pin, `_tilts_to_plan` on the finished series) between `tilt_schedule` and `decompose`; `_joined_correction` refuses a mismatched splice; pinned by `_LEVELLING_MANIFEST` + `_CARRIED_BUILDS` in `tests/ros/test_levelling_frame.py` | The unified cycle escaped the enumeration for four months because the contract asked *"which poses enter?"* and a cycle has no pose coming in — its attitude is DERIVED inside the planner from ballistics. The enumeration is **"commanded rotations that LEAVE"**, not poses that enter. Flown 2026-09-06: a commanded release of exactly mechanical zero on a platform physically at +9.9…+10.3 mrad, the ball leaving −9 mrad into −y on 7/7 throws (opposite sign to the legacy +8.5 mrad +y bias), 9–38 mm of lateral drift, rim strikes and 20–181 ms of bounce. And the drop was **not uniform** — knot 0 pinned in the PLAN frame beside gravity-frame release/catch/banking pins makes the smoother interpolate across two frames, so the observable is a 0.669° STEP that reads like a controller transient, not like a frame error |
+| **The firmware hand clip is a ZERO-MARGIN alias of the YAML stop until FW 18** | `canbridge_config.h::HAND_MOTOR_MAX_POSITION` = `Geometry::HAND_MOTOR_HARD_STOP_REVS` = 10.8, against the operator's **measured** metal at **10.701 rev** (bench, 2026-09-06) | The clip sits **0.099 rev (3.2 mm) PAST the metal**, and nothing in the firmware can see a stall in that gap: the deviation guard compares encoder to command (they agree once the slider is jammed at the clip) and the lead clamp *anchors* the setpoint to the encoder rather than refusing it. The bench driver scores V3 against `HAND_METAL_REV_MEASURED` 10.701 for exactly this reason; pulling the clip back to `stop − 0.2 rev` is FW 18 work |
 | **A seed OUTSIDE the cup z box may only re-enter at the jerk-limited rate, never in one `dt`** | `cup_cycle._seed_relaxed_z_box` — the box is widened to contain its own seed for a rest-terminal window; a seed further out than `SEED_OUTSIDE_BOX_MAX_M` (20 mm) is refused `START_BELOW_BOX` / `START_ABOVE_BOX` | The box rows bind knots 1…n only, so a seed below the floor is a one-`dt` re-entry demand the QP satisfies by slamming: measured 2026-09-06, an 11.2 mm deficit turned a flat 1.4 s carry into a 295 mm slider excursion to the box ceiling at 78 rev/s, **accepted by `validate_cycle`** with 0.311 rev of headroom, with a ball in the cup |
 
 ### Architecture decisions (root causes, not authority)

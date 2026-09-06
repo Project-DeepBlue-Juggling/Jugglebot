@@ -3183,6 +3183,33 @@ class TrajectoryNode(Node):
         strictly inside the envelope ``replan_tail`` was measured on. Widening it
         needs a wider message, not a guess made here.
 
+        **The xy that moves is the CUP's, and the wire carries the CENTROID's.**
+        ``catch_coordinator._compute_catch_command`` publishes the platform
+        centroid it wants, having already subtracted the cup-vs-centroid offset
+        from the ball's predicted landing::
+
+            centroid = landing − HAND_CATCH_OFFSET_MM · platform_z(quat)
+
+        (``build_catch`` then consumes that centroid VERBATIM, which is what pins
+        the frame). ``CycleGoals.catch_site_mm`` is a CUP-OPENING site, so copying
+        ``target_pos.x/y`` straight into it hands the planner a point that is the
+        offset short of where the ball is going, in the direction the receive tilt
+        leans — a SYSTEMATIC bias of ``64.78·sin θ`` mm: 13.5 mm at the 12° tilt
+        ceiling, and it is largest exactly when the ball is arriving fastest
+        sideways. Adding the offset back recovers the landing point the
+        coordinator started from, which is precisely the cup site the cycle should
+        catch at.
+
+        The offset used is the coordinator's OWN — ``hw.HAND_CATCH_OFFSET_MM``
+        against the wire quaternion's cup axis — and not the planner's
+        height-aware ``cup_lever_arm_mm(cup_z)`` (17.8 mm at the 830 mm catch cup
+        height), because the quantity wanted here is *where the ball will land*,
+        not *where this platform pose would put the cup*. Inverting the
+        coordinator's own compensation is exact; substituting a different lever
+        would land the cup 4.3 mm from the ball while looking more principled. The
+        planner then re-applies its own height-aware compensation when it realises
+        the site, which is where that lever belongs.
+
         Refusals are quiet on the wire but loud in the log and always reported on
         ``trajectory/target_feedback``, so the coordinator's existing accept/reject
         correlation keeps working unchanged; the last good plan keeps streaming.
@@ -3201,8 +3228,17 @@ class TrajectoryNode(Node):
                 'active cycle has no catch to re-aim', arrival_perf, 'cycle')
             return
         site = np.asarray(committed, dtype=float).copy()
-        site[0] = float(msg.target_pos.x)
-        site[1] = float(msg.target_pos.y)
+        # centroid → cup: undo `_compute_catch_command`'s own offset (docstring).
+        # The cup axis is the wire quaternion applied to +z — the same rotation,
+        # read the same way, that the coordinator used to subtract the offset, so
+        # the two cancel to float precision. xy only: z stays the committed cup
+        # height, which no centroid can tell us anything about.
+        q = msg.target_quat
+        cup_axis = quat_to_rot_matrix(
+            float(q.w), float(q.x), float(q.y), float(q.z)) @ np.array(
+                [0.0, 0.0, 1.0])
+        site[0] = float(msg.target_pos.x) + hw.HAND_CATCH_OFFSET_MM * cup_axis[0]
+        site[1] = float(msg.target_pos.y) + hw.HAND_CATCH_OFFSET_MM * cup_axis[1]
         req = PlanCycle.Request()
         req.mode = req.MODE_REPLAN
         # The kind and the banking flag are stated rather than left at the IDL
@@ -3696,10 +3732,39 @@ class TrajectoryNode(Node):
         the exact-override fields exist to prevent.
 
         A rest-KIND (LAUNCH) over a moving machine is refused as it always was.
+
+        **THE LEVELLING FRAME IS BUILT HERE — contract row E8**
+        (``ros_ws/docs/levelling_frame.md``, added 2026-09-06). Every other
+        surface in this node corrects a pose *coming in*; a cycle has no pose
+        coming in at all — it has a GOAL in gravity-referenced space and a SEED
+        in the commanded plan frame — so the correction cannot be applied to a
+        request here. What this method does instead is **build** it, exactly as
+        an ingest does, and hand it to the planner on the state; the single
+        application happens in ``unified_cycle._realize``, on the tilt series,
+        before ``decompose``.
+
+        **Once per cycle, keyed on the seed's x/y.** The C-LEVEL-2 residual is a
+        function of position and the correction never touches position, so the
+        commanded seed's x/y ARE the intent x/y — the same lookup key every
+        ingest uses. Re-evaluating per knot is forbidden by C-LEVEL-2 §
+        "Evaluation happens at ingest, per target", and re-evaluating per window
+        would make a chained pair disagree about the frame at its seam by the
+        map gradient; :func:`unified_cycle.release_state_from_meta` carries this
+        one across instead.
         """
         # ONE instant, every channel. See `_current_state`'s `at_mono`.
         seed_mono = time.perf_counter()
         pose, twist, accel = self._current_state(at_mono=seed_mono)
+        # Row E8 — BUILD (never apply: see the docstring). `_active_tilt_map()`
+        # and not `self._tilt_map`, because the accessor is the dormancy gate: an
+        # unlevelled node composes no residual, and passing the raw map here
+        # would re-create the unlevelled residual-only composition at exactly
+        # this new surface.
+        try:
+            correction = levelling.correction_for_pose(
+                self._gravity_offset, self._active_tilt_map(), pose)
+        except tilt_map.TiltMapError as exc:
+            correction = self._tilt_map_degraded('E8 cycle seed pose', exc)
         # The RATE half of the same commanded-else-measured rule, and it is the
         # load-bearing half of the rest check below: a unified LAUNCH moves the
         # SLIDER ALONE under the z = 170 pin, so mid-launch the platform twist is
@@ -3763,7 +3828,8 @@ class TrajectoryNode(Node):
                     'with EXTEND instead of planning a launch over a live plan'
                     % (kind, lin, rest_bound, ang, ang_bound,
                        abs(hand_vel), hand_bound))
-            return uc.CycleState.at_rest(pose, hand_rev), '', ''
+            return uc.CycleState.at_rest(
+                pose, hand_rev, levelling_correction=correction), '', ''
         # ── THE FREE-FALL FALLBACK IS A LIE EVERYWHERE MODE_NEW REACHES ─────
         # `to_cup_state` defaults a post-release window's cup acceleration to
         # `g` — right for the case it was written for (a CHAIN from a release,
@@ -3838,7 +3904,8 @@ class TrajectoryNode(Node):
             pose_accel=np.asarray(accel, dtype=float),
             hand_rev=hand_rev, hand_vel_rps=hand_vel,
             detach_axis=None, post_release=False,
-            cup_accel_mm_s2=cup_accel), '', ''
+            cup_accel_mm_s2=cup_accel,
+            levelling_correction=correction), '', ''
 
     @staticmethod
     def _cycle_goals_from_request(request) -> uc.CycleGoals:

@@ -42,6 +42,21 @@ disagree — on 2026-09-05 the source read `True` and the installed tree read
 `False`. Nothing refuses on it: with the installed copy `False`, a goal asking
 for `unified_cycle: true` silently runs the legacy path instead.
 
+**2c. START QTM, and set the project up for a FLYING BALL.** Two separate
+things, and both bit the 2026-09-06 sitting.
+
+- **QTM must be up before the launch.** On 2026-09-06 the very first goal (G0)
+  was refused `REJECTED_MOCAP_STALE` for no reason other than that QTM had not
+  been started yet. Start it, confirm it is streaming, *then* bring the launch up
+  at step 7.
+- **DISABLE the Catching Cone rigid body in the QTM project, and mask the Ball
+  Butler's reflectors.** With the Cone body enabled, QTM binds the flying ball to
+  it about **70 ms after release** — the ball stops existing as a ball and the
+  tracker is blind for the whole flight, which is exactly the window the catch
+  needs. The BB's reflectors are the other half: unmasked, they minted **seven
+  phantom balls** in one sitting. Neither is a tracker bug and neither can be
+  fixed from the Jetson side.
+
 **3. Reboot the can-bridge Teensy.** Press its reset button.
 
 **4. With the launch still DOWN, park the hand by hand.** Push the slider down
@@ -248,8 +263,22 @@ the cup settles back down.
 ```bash
 python3 tests/hardware/unified_cycle_bench.py --rung throw --apex 0.5
 ```
-- **Pass:** smooth stroke, nothing trips, all checks `PASS`. The encoder must
-  stay clear of the 10.8 rev hard stop — the driver prints the margin.
+- **Pass:** smooth stroke, nothing trips, all checks `PASS`.
+- **What you should see on the encoder.** A 0.5 m throw peaks at **9.76–9.87 rev**
+  — about **0.8 rev clear of the metal**. The metal is the stop *you measured* on
+  2026-09-06: stroke 352 mm, bottom **−0.107 rev**, top **10.701 rev**. The
+  driver now scores V3 against that 10.701, not against the firmware's clip.
+- ⚠ **Watch this one, because no firmware guard can.** The firmware clip
+  `HAND_MOTOR_MAX_POSITION` is a zero-margin alias of
+  `Geometry::HAND_MOTOR_HARD_STOP_REVS` = **10.8**, i.e. **0.099 rev (3.1 mm)
+  PAST the metal you measured**. Nothing in the firmware can see a stall in that
+  gap: the deviation guard compares the encoder to the *command* (and at the clip
+  they agree once the slider is jammed), and the lead clamp *anchors* the
+  setpoint to the encoder rather than refusing it. So between 10.701 and 10.8 the
+  slider can be pressed into the stop with every guard reading clean. Pulling the
+  clip back below the metal is FW 18 work. Until then: if the encoder gets within
+  ~0.2 rev of 10.701, stop the rung — the driver fails V3 there and prints the
+  margin in mm.
 - Then **put a ball in** and repeat: ~0.5 m straight up, lands on the floor.
 - I read throw accuracy from the bag afterwards; nothing for you to do here.
 - **Bracket the `[hand7]` line** either side of this rung. A non-zero `lead` or
@@ -280,14 +309,58 @@ ros2 action send_goal --feedback jugglebot/toss_continuous \
 `max_reloads: 0` means "use the config default (3)", and `catch_vel_scale: 0.0`
 likewise means "use the default" — neither is an off switch.
 
+> ⚠ **Aimed throws are NOT supported on the unified path yet — keep
+> `catch_position` at the pre-throw xy.** The unified launch throws *vertically*
+> by construction (the plan pins its ballistic target onto the release site) and
+> the plan owns the whole traverse, so a displaced `catch_position` is not an aim:
+> it is a site the machine would silently throw from somewhere else. Since
+> 2026-09-07 a unified goal whose `catch_position` is more than **5 mm** from the
+> platform's live commanded xy is refused at acceptance,
+> `REJECTED_UNIFIED_AIM_UNSUPPORTED`, **before** anything is armed or tilted. On
+> 2026-09-06 it was not: goal 4 asked for 2.384°, the *legacy* preamble physically
+> tilted the platform (mocap held +2.27°), the plan's own first knots tilted it
+> straight back, and the ball would have gone vertically up with nothing saying
+> so. If you want an aimed throw tonight, run the goal with `unified_cycle: false`.
+
+- **NEW 2026-09-07 — the session lifts the hand to the planner floor before the
+  first throw. You will see one ~1 s hand move UP first, before any cycle
+  starts, and a console line naming it.** The hand rests below its homed zero by
+  design and the planner's usable cup floor sits at **689.6 mm** (0.3162 rev), so
+  an ordinary parked machine starts a session *below* the floor. A LAUNCH seeded
+  there must slam the cup into the box inside one 25 ms knot — that is the whole
+  of what refused the 2026-09-06 23:55 sitting four times
+  (`HAND_LIMIT_ACC` 4063–4077 rev/s² against the 3500 cap), and worse, a seed
+  only ~11 mm low is **accepted** and flies a 0.35 rev step with the cup arcing
+  past its release site. The lift is a **pure z move** (the settle xy is wherever
+  the platform already is), takes 1.0 s, and is a **no-op on cycles 2 and 3** —
+  each cycle's chained LANDING settles the cup exactly on the floor, so a healthy
+  chain never lifts again. If you see a lift before every cycle, say so: something
+  is moving the hand between cycles.
 - **Expect:** feedback counting `cycle_index` 1, 2, 3, and one line at the end
   saying the hand latch **remains STREAMED**. In a second terminal:
   ```bash
   ros2 topic echo /trajectory/status | grep -E 'cycle_active|cycle_plan_wall_ms'
   ```
-  `cycle_active: true` while a cycle runs. **`cycle_plan_wall_ms` around 400 ms
-  applies to cycle 1 only** — cycles 2 and 3 are extensions of the first plan and
-  read about 200 ms, which is a healthy number, not a fault.
+  `cycle_active: true` while a cycle runs — and it **stays true after the window
+  ends**, because it is a type test on the plan that is installed, and a cycle
+  that has run out is still the plan holding the pose. Watch
+  `plan_time_remaining_s` reach 0, not `cycle_active` go false. (A `cycle_active:
+  false` mid-session means something *superseded* the cycle.)
+
+  **`cycle_plan_wall_ms` is 500–600 ms on EVERY cycle, not 400 then 200.**
+  Corrected 2026-09-06: the older note here said cycles 2 and 3 were "extensions
+  of the first plan" reading about 200 ms. At this cadence they are not. The
+  dwell is long enough that each cycle comes to rest, so every cycle is a fresh
+  **joined** LAUNCH+LANDING solve from rest — two solves plus the join's own
+  re-validate. 500–600 ms is the healthy number; the bench driver now fails a
+  chained install only past the coordinator's own 1200 ms release budget, and
+  says "ADVISORY" between 700 ms and that.
+
+  On the accept line's stage split (`[qp=… tilt=… dec=… val=… cont=… ms]`):
+  **`cont` is not overhead.** On a joined install it is the join's *third* full
+  `validate_cycle` pass, over the concatenated plan — measured 247 ms, 99.7 % of
+  the join — so expect `cont ≈ val` there. The driver now prints a note saying
+  so under the accept line.
 - **Pass:** 3 throws, 3 catches, no guard trips, catching as well as a legacy
   session at the same height.
 - **Bracket the `[hand7]` line** either side of this rung. A non-zero `lead` or
@@ -303,6 +376,93 @@ likewise means "use the default" — neither is an off switch.
 
 **Not in this sitting.** It needs the steady-chain plumbing, which does not exist
 yet.
+
+---
+
+## Results
+
+**Sitting one (2026-09-06 evening) — the first unified cycles.** Canonical
+record, and the place to read before the re-fly:
+`logbook/2026-09-06-unified-cycle-first-hardware-cycles.md`. Run on `ce14e2f`
+plus a `colcon build`. Artefacts: console
+`temp/logs/cycle_ladder_20260906_193029.log`; bags
+`~/Desktop/rosbags/2026-09-06_19-*` (two — a relaunch at ~19:32); driver
+CSV/meta `temp/logs/unified_cycle_bench_{carry_193247,carry_193313,throw_193345,throw_193400,throw_193407}*`.
+
+Before the rungs: P5 refused once at the shipped limits (precondition 11 fixed
+it), one relaunch, and the very first `toss_continuous` goal was refused
+`REJECTED_MOCAP_STALE` because QTM was not up — which is why precondition 2c now
+exists.
+
+| Rung | Verdict | Note |
+|---|---|---|
+| UH-3 | **PASS** | Both carries — `--dx 60` and `--dx 0 --dy 60` — **ACCEPTED and executed**, ball never disturbed. Plan **213–222 ms** (`qp` 7–11, `val` 191–202, `cont` 1–2), `load1` 3.7–4.7. The hand was **flat**: peak = the settle at **0.4949 rev**, driver printing *"0.0 mm above"*. V4 read 0.486 rev at t = 0.25 s on the first carry (the telemetry-stale ceiling) and 0.0049 rev on the second. **V6 FAILed on every rung and V7 SKIPped — both DRIVER defects, now fixed**, not machine findings. |
+| UH-4 | **folded into UH-6** | As designed — the session is the only planned-catch path. |
+| UH-5 | **PASS — with a release-velocity caveat that only the bag could see** | Three `--apex 0.5` throws. Joined LAUNCH+SETTLE, 2.0 s / 81 knots; plan **508 / 547 / 571 ms** (`val` 240–274, `cont` 237–268). Commanded hand peak **9.6432 rev @ 99.01 rev/s**; encoder worst **9.7591–9.8032 rev**, ~0.9 rev clear of the measured 10.701 metal. Guard ARMED, never tripped. **V2 FAILed against the driver's bare 500 ms bar — a driver defect** (a joined install is two solves plus the join's re-validate; the bar is now 1200 ms with an advisory at 700). ⚠ **The caveat: the throw left +5.2…+16.7 % fast** (mocap parabola, mean +10.9 %; flight time +10…+20 %; peak rev/s × empirical gain +12…+19 %) — flight **0.766–0.837 s** against 0.6387 planned, apex **556–682 mm** against the 500 asked. Nothing on the day showed it; it took the bag. |
+| UH-6 | **FLOWN — 6 of 7 caught, and the CATCH QUALITY FAILS** | Four goals: G0 `REJECTED_MOCAP_STALE`; **G1 3/3 CAUGHT** (plan 505/593/500 ms, `load1` 4.6–5.4); **G2 3/3 CAUGHT** (606/585/530, `load1` 5.4–6.0); **G3 one MISSED → `STOPPED_ON_MISS`** (500 ms, `load1` 7.4). Guard ARMED throughout, never tripped. **Every cycle was a fresh joined solve from rest — no `EXTEND` fired all sitting** (see the UH-6 note above; the older "extensions ~200 ms" claim is corrected). ⚠ **The catch verdict: every catch was a FEEDFORWARD catch into a parked cup.** The ball arrives at **3961–4161 mm/s** onto a hand doing **−232…+4 mm/s** — a velocity ratio of **0.001–0.059** against the **0.7** the planner asks for — a **3730–4157 mm/s** mismatch (~4× design speed, ~17× design energy) absorbed by **2–7.4 mm** of the planned 120 mm runway. The plan itself executed correctly (cup at −1831…−2158 mm/s vs the −2199 target at the *planned* instant); the receive stroke simply completed **172–185 ms** before the ball arrived, and the ball was **146–195 ms** late. |
+| UH-7 | **not run** | Still needs the steady-chain hand-off, which does not exist. |
+
+**The operator's three observations, all of which turned out to be the evidence.**
+*"The catches are rough — the ball lands before or after the receive motion"* (the
+feedforward catch, above). *"There is a small tilt step just before every throw"*
+(**a levelling-frame drop**: the unified cycle never passed
+`levelling.correct_pose`, and knot 0's tilt pin was in the plan frame while the
+release, catch and banking pins were gravity frame — predicted step 0.671°,
+measured **+0.669°**). *"The balls are thrown slightly backwards, hitting the top
+of the hand axis"* (the same drop: the platform was physically at **+9.9…+10.3
+mrad** at a release commanded to mechanical zero, and the ball left **−9 mrad
+into −y on 7/7 throws** — the *opposite sign* to the legacy path's +8.5 mrad +y
+bias — for **9–38 mm** of lateral drift and rim strikes on arrival).
+
+**What went well and should not be re-litigated.** The host and the wire were
+clean end to end: `blas threads: 1` on all three planner nodes, `max_emit_gap_ms`
+p50 **26.0** / max **35.4** ms with **zero** samples over 40, zero
+`interp_deadline_misses`, ≤ 3 µs of interp jitter, zero TX deferrals,
+`link=1 fault=0`. **The morning's `MPC_STALE` E-STOP class did not recur.** The
+tightest hardware number of the evening was the encoder: worst peak **9.8699
+rev**, **0.089 rev = 2.8 mm** below the 9.9594 band ceiling.
+
+### What changed since, and what must be true before the re-fly
+
+**Fixed in the commit that follows this sitting** (all software, none of it
+hardware-verified):
+
+- **The levelling frame** — contract row **E8**. The correction is built once at
+  the seed and carried on the cycle state and meta; the tilt schedule is built
+  single-frame and re-expressed into the plan frame exactly once, in
+  `unified_cycle._realize`. Measured on the probe: the release goes from
+  **+11.663 mrad physical** to **0.000000**, the pre-throw step from **0.6682°**
+  to **0.0000°**, and the flight's lateral drift at a 0.5 m apex from **23.325 mm**
+  to **0.000**.
+- **The catch replan gate opens under unified mode** — it had published zero
+  messages all sitting — with a 5 mm movement gate on the published target and the
+  cup/centroid lever applied at the consumer.
+- **The session speed trim is honoured on the unified launch.** The live channel
+  is the **ILC artifact**, not a knob.
+- **The plan-service timeout hazard is closed**: an UNACKED call now holds the
+  machine first and says so, instead of logging *"nothing was commanded"* while a
+  plan installs anyway.
+- **The driver stops crying wolf**: V6, V2 and V7 corrected, a new V2b on
+  `max_emit_gap_ms`, and V3 scored against the **measured** 10.701 metal.
+
+**Before the re-fly, all four:**
+
+1. **QTM must be fixed first — this is the blocker, and it is operator-side.**
+   Disable the `Catching Cone` rigid body and mask the Ball Butler's reflectors
+   (precondition **2c**). On 2026-09-06 QTM bound the flying ball to the stale
+   Cone body **60–80 ms after release on 5 of 7 throws**, and static BB reflectors
+   minted **seven phantom balls**. Until both are done the tracker is blind for
+   most of every flight and **the catch replan cannot be evaluated at all**.
+2. **`colcon build`** the two packages, and confirm the installed switch
+   (precondition 2b). The E8 fix is in `unified_cycle.py` and `trajectory_node.py`
+   — a stale install flies the frame drop again, silently.
+3. **Confirm `blas threads: 1`** in the launch terminal for `trajectory_node`
+   (§ "Before UH-3 can be retried"). Unchanged from last sitting; it held.
+4. **Drop the fitted ILC artifact** if you want the speed trim in the loop. The
+   trim is **not** a parameter — the node reads `ilc_vel_trim` from the artifact at
+   start-up behind a provenance match, bounded ±0.15. Last sitting every learned
+   correction was inactive (`ilc_vel_trim 0.0 no_artifact`) while the ILC's own fit
+   for this plant was **−0.1076**, which is most of the throw excess.
 
 ---
 
@@ -349,6 +509,8 @@ robot did not move.
 | `REJECTED_CYCLE_INFEASIBLE(SETTLE_SITE: settle site z … outside the cup box …)` | The settle height is under the planner's 689.6 mm floor. The driver lifts to that floor on its own, so seeing this means you passed a `--z-mm` below it | Drop the `--z-mm` and let the driver pick the height, or pass one ≥ 689.6 |
 | `REJECTED_CYCLE_INFEASIBLE(HAND_STROKE: hand position −0.0… rev … BELOW the homed zero)` | Pre-2026-09-06 only. The hand rests slightly below its homed zero after a retract (the homing reference is −0.1 rev by design) and the gate had no tolerance for it | Should no longer happen: the gate now takes the plan's own parked first knot as the floor. If it reappears, the hand is parked below −0.20 rev — outside the firmware's retract band — so re-home it |
 | `REJECTED_CYCLE_INFEASIBLE(HAND_STROKE: … DIVES past the bottom of travel)` | The plan goes DOWN from where the hand is parked, i.e. it commands travel the machine does not have | Not a tolerance to widen. Send me the request — the site or the kind is wrong |
+| `REJECTED_CYCLE_PLAN(HAND_BELOW_FLOOR: hand rests … < the planner floor 689.6 mm …; lift: …)` | **New 2026-09-07.** The hand is parked below the planner's 689.6 mm cup floor and the session's automatic lift did not land it. Nothing was solved and nothing was commanded — this is refused *before* the LAUNCH is planned. The message carries three numbers: how far below the floor the cup is, the hand rev, and the `6·Δ/dt²` acceleration the launch would have opened with (the 2026-09-06 refusals were 4063–4077 rev/s² against the 3500 cap). ⚠ A deficit of only ~11 mm is **still refused deliberately** — it is under the cap and would have been *flown*, with a 0.35 rev knot-1 step and the cup arcing past its release site | Read the `lift: …` tail — it says what went wrong with the fix. `not attempted` / `stale` ⇒ `/hand_telemetry` or `trajectory/commanded_position` is not arriving; `REFUSED` ⇒ the planner refused the lift itself, send me the message; `STILL … below the floor … did not move` ⇒ **the hand did not move when commanded** — check the hand ODrive is in CLOSED_LOOP (precondition 3/4), do not retry blind |
+| `REJECTED_UNIFIED_AIM_UNSUPPORTED(\|B-A\| = … mm > 5.0 mm …)` | **New 2026-09-07.** You sent a unified goal with a `catch_position` away from where the platform is standing. The unified launch throws vertically and the plan owns the whole traverse, so that displacement is not an aim — refused at acceptance, before anything is armed or tilted | Set `catch_position` to the platform's live xy (the message quotes it) — for a centred machine that is `{x: 0.0, y: 0.0, z: 170.0}` — or run the goal with `unified_cycle: false` if you actually want the legacy aimed throw |
 | `REJECTED_CYCLE_INFEASIBLE(START_BELOW_BOX: window starts at cup z … BELOW the cup box floor …)` | The cycle was asked to start from a cup height more than 20 mm under the planner's floor. A hand parked anywhere in its retract band is at most 16 mm under, so this says the START is wrong — a stale reading, or a hand outside its operating band — not the plan | Check the hand really is parked (`ros2 topic echo /hand_telemetry --once`) and re-home it if it is below −0.20 rev. Send me the number in the message either way |
 | `carry excursion refused — the planner wants to lift the hand … during a flat carry` | The driver's own belt, not a planner refusal: the accepted plan would have stroked the hand far above the settle height. The plan was already installed, so the driver holds the machine as it refuses | **Stop the rung and send me the line.** Confirm the machine actually held (`held: holding at current pose` on the next line); if it says the plan IS STILL RUNNING, E-stop |
 | `STALE_STATE` | Telemetry went quiet, or the machine moved during the solve | Wait two seconds and re-run. If it repeats, check the link: `ros2 topic echo /link_status --once` |

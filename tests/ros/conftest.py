@@ -1153,12 +1153,52 @@ _create_mock_module('tf2_ros', {
     'TransformBroadcaster': _MockStaticTransformBroadcaster,
 })
 
-# rclpy
+# ── rclpy ────────────────────────────────────────────────────────────────────
+# THE MODULE-LEVEL STAND-INS ARE PLAIN FUNCTIONS, NEVER Mocks.
+#
+# `rclpy.ok()` is the loop condition of twelve `while rclpy.ok():` waits in
+# reload_coordinator_node alone, and the tests that drive those waits patch
+# `time.sleep` to a no-op while the loop's exit stays a REAL wall-clock deadline
+# — so a single test spins the condition millions of times. A MagicMock records
+# every one of those calls in `mock_calls` forever, and this module is built ONCE
+# per worker process, so nothing ever frees them. Measured 2026-09-07
+# (`pytest tests/ros/test_toss_coordinator.py -q`): 2.41 M retained
+# `unittest.mock._Call` objects and a 1.21 GB peak RSS in that one file, ~960 MB
+# of it from four tier-8b tests that each spin a 5 s wait. Under
+# `./run_tests.sh --full` (4 xdist workers, `--dist loadfile`, so a file's whole
+# leak lands in one worker) that is what put a worker at 2.43 GB anon-rss and got
+# it OOM-killed — the `[gwN] node down: Not properly terminated` that wedged the
+# gate twice on 2026-09-06/07.
+#
+# Nothing is given up by dropping the Mock, and the reason is structural rather
+# than incidental: this module lives for the whole worker, so its call record is
+# SHARED by every test in every file that worker runs. A call-count assertion on
+# it could never have been sound — the count depends on which tests ran before —
+# and no test in this tree makes one. A test that needs `ok()` to go False
+# replaces the attribute (`test_toss_coordinator.py`'s
+# `monkeypatch.setattr(rclpy, 'ok', _ok)`), which behaves identically against a
+# function. The invariant is pinned by
+# `tests/ros/test_ros_mock_hygiene.py`.
+def _rclpy_ok(*_args, **_kwargs):
+    """``rclpy.ok()`` — always True, and deliberately NOT a Mock (see above)."""
+    return True
+
+
+def _rclpy_noop(*_args, **_kwargs):
+    """``init`` / ``shutdown`` / ``spin_once`` — no-ops, NOT Mocks (see above).
+
+    Same failure class as ``ok``: ``spacemouse_handler.main`` spins
+    ``rclpy.spin_once`` inside a ``while rclpy.ok():`` loop, so a Mock here is
+    the same unbounded process-lifetime call record one driver away.
+    """
+    return None
+
+
 mock_rclpy = _create_mock_module('rclpy')
-mock_rclpy.ok = MagicMock(return_value=True)
-mock_rclpy.init = MagicMock()
-mock_rclpy.shutdown = MagicMock()
-mock_rclpy.spin_once = MagicMock()
+mock_rclpy.ok = _rclpy_ok
+mock_rclpy.init = _rclpy_noop
+mock_rclpy.shutdown = _rclpy_noop
+mock_rclpy.spin_once = _rclpy_noop
 mock_rclpy.time = types.SimpleNamespace(Duration=MockDuration, Time=MockTime)
 
 _create_mock_module('rclpy.node', {'Node': MockNode})

@@ -37,6 +37,18 @@ safety behaviour of its own and it is a REFUSAL: it will not issue a request
 unless the preconditions below hold. Once a plan is installed, stopping it is
 the operator's E-stop or ``trajectory/go_home`` — not this process.
 
+⚠ **The stroke clip is 0.099 rev PAST the metal, and no guard covers the gap.**
+The operator measured the slider on 2026-09-06: 352 mm of stroke, bottom
+−0.107 rev, top **10.701 rev**. ``HAND_MOTOR_MAX_POSITION`` is a zero-margin
+alias of ``Geometry::HAND_MOTOR_HARD_STOP_REVS`` (10.8), so the firmware clips
+setpoints to a position the slider cannot reach — and neither firmware guard can
+see the resulting stall: ``MAX_DEVIATION_HAND_REV`` is COMMAND-relative (encoder
+and setpoint agree once the slider is jammed at the clip) and the lead clamp
+ANCHORS the setpoint to the encoder rather than refusing it. V3 therefore scores
+against the MEASURED 10.701 (:data:`HAND_METAL_REV_MEASURED`), and this driver's
+``--metal-margin`` is the only thing standing in that 3.1 mm. Pulling the clip
+back below the metal is FW 18 work; nothing here changes firmware.
+
 **It never opens the UDP link.** ``hand_stream_bench.py`` is the sole-owner
 raw-UDP driver and requires the launch DOWN; this one is an ordinary ROS client
 and requires the launch UP. Running them together would put two writers on one
@@ -207,17 +219,74 @@ CUP_Z_AT_HAND_ZERO_MM = 679.6
 #: without being a number the honest carry can reach.
 CARRY_HAND_EXCURSION_MAX_REV = 0.5
 
-#: How much clearance the ENCODER must keep from the hard stop (rev). Sitting
-#: two measured 10.4693 rev on a legacy stroke — 0.33 rev, ~10 mm — so the
-#: default is set just below what the machine has actually been seen to reach,
-#: and is a knob (``--metal-margin``) rather than a constant because the tier
-#: ramp is what moves it.
+#: THE METAL, as MEASURED — not as the firmware believes it.
+#:
+#: 2026-09-06, operator, on the machine: the slider's usable stroke is 352 mm
+#: between a bottom of **-0.107 rev** and a top of **10.701 rev**. The firmware's
+#: clip ``HAND_MOTOR_MAX_POSITION`` is a zero-margin alias of
+#: ``Geometry::HAND_MOTOR_HARD_STOP_REVS`` (10.8), so it sits **0.099 rev
+#: (3.1 mm) PAST the metal** — the firmware will happily clip a setpoint to a
+#: position the slider cannot physically reach.
+#:
+#: And no guard can see the resulting stall: ``MAX_DEVIATION_HAND_REV`` is
+#: COMMAND-relative (it compares the encoder to the setpoint, and at the clip
+#: they agree by construction once the slider is jammed against the stop), while
+#: the lead clamp ANCHORS the setpoint to the encoder rather than refusing it. So
+#: the 0.099 rev between the clip and the metal is unguarded by design, and this
+#: driver's margin is the only thing standing in it.
+#:
+#: Hence V3 scores against the MEASURED 10.701, not against the clip. Correcting
+#: the clip is FW 18 work (a firmware change, out of this driver's scope); until
+#: it lands, a margin quoted against 10.8 overstates the clearance by 3.1 mm.
+HAND_METAL_REV_MEASURED = 10.701
+#: The measurement's provenance, printed with any verdict that quotes it.
+HAND_METAL_PROVENANCE = ('measured 2026-09-06 by the operator: stroke 352 mm, '
+                         'bottom -0.107 rev, top 10.701 rev')
+
+#: How much clearance the ENCODER must keep from the MEASURED metal (rev).
+#: Sitting two measured 10.4693 rev on a legacy stroke — 0.23 rev, ~7.3 mm, to
+#: the measured stop (it was quoted as 0.33 rev when the reference was the
+#: firmware's 10.8 clip) — so the default is set just below what the machine has
+#: actually been seen to reach, and is a knob (``--metal-margin``) rather than a
+#: constant because the tier ramp is what moves it.
 DEFAULT_METAL_MARGIN_REV = 0.20
 
 #: Gravity, mm/s^2 — ``hardware_config.GRAVITY_MMPS2``. Restated rather than
 #: imported so the flight arithmetic works in ``--dry-run`` on a box with no
 #: generated config; pinned by the offline test.
 G_MM_S2 = 9806.0
+
+#: ── V2's budgets ────────────────────────────────────────────────────────────
+#: The FAIL bar is the COORDINATOR's, restated as a literal (the module
+#: convention: importing ``reload_coordinator_node`` would drag rclpy into the
+#: pure core, which ``test_the_pure_core_imports_no_ros_at_module_scope``
+#: forbids) and pinned to ``reload_coordinator_node._UNIFIED_PLAN_BUDGET_S`` by
+#: the offline test.
+#:
+#: Why THAT number and not a driver-local one: past it the production coordinator
+#: does not merely log a slow solve, it MISSES ITS RELEASE — the skew eats the
+#: 0.5 s release grace and the cycle terminalises ``ABORTED_NO_RELEASE`` with the
+#: ball in the air. A bench rung that solved slower than the budget has proven
+#: the machine cannot fly a session at these settings, whatever else it showed.
+#: The old bar was a bare 500 ms literal for a chained install, which is both
+#: under the budget that matters and over the cost that is normal.
+UNIFIED_PLAN_BUDGET_MS = 1200.0    # reload_coordinator_node._UNIFIED_PLAN_BUDGET_S
+#: The ADVISORY bar for a CHAINED (two-solve) install: the owner's 250 ms total
+#: doubled, plus the join's re-validate. Sitting three measured 500-600 ms for
+#: every joined solve, so a chained install over 700 ms is drifting toward the
+#: budget and is worth saying out loud — but it is not yet the failure above.
+CHAINED_PLAN_ADVISORY_MS = 700.0
+#: The single-window bar: the owner's total ceiling, unchanged.
+SINGLE_PLAN_BAR_MS = 250.0
+#: The worst inter-tick emitter gap a rung may show (ms), from
+#: ``TrajectoryStatus.max_emit_gap_ms``. The emitter ticks at 40 Hz (25 ms) and
+#: the can-bridge's setpoint watchdog latches ``MPC_STALE`` at 250 ms — so 125 ms
+#: is five nominal ticks and HALF the watchdog: far enough above the tick to
+#: never fire on scheduling noise, and far enough below the watchdog to be a
+#: warning rather than a post-mortem. This is the check that would have caught
+#: the 2026-09-06 UH-3 E-STOP as a bench FAIL: the solve gapped the emitter
+#: 225-942 ms while every other verdict on the run looked healthy.
+MAX_EMIT_GAP_MS = 125.0
 
 #: Defaults. ``--period`` 1.4 s is the LANDING window the sim gate found
 #: load-bearing (at 1.0 s the 50 mm ring refuses ``LIMIT_JERK`` at 155-198 k),
@@ -633,18 +702,58 @@ def evaluate(rung: str, plan: dict, trace: list, *,
     if wall is None:
         checks.append({'id': 'V2', 'name': 'plan wall time', 'verdict': 'SKIP',
                        'detail': 'no plan_wall_ms in the response'})
-    else:
-        # The owner's SPLIT budget: core <= 50 ms, total <= 250 ms. A chained
-        # install is two solves and its measured warm cost is 424 ms — recorded
-        # as a deviation, not waived — so the chained rung is judged against
-        # that and reported either way rather than failed on a known number.
-        bar = 500.0 if plan.get('chained') else 250.0
+    elif plan.get('chained'):
+        # A CHAINED install is two solves plus the join's re-validate. The FAIL
+        # bar is the COORDINATOR's release budget, because past it the production
+        # session does not log a slow solve — it misses its release and mints
+        # ABORTED_NO_RELEASE with the ball in the air. Between the advisory and
+        # the budget the rung still PASSES and says the number out loud.
+        w = float(wall)
+        advisory = ('' if w <= CHAINED_PLAN_ADVISORY_MS else
+                    ' — ADVISORY: over %.0f ms, drifting toward the %.0f ms '
+                    'coordinator release budget'
+                    % (CHAINED_PLAN_ADVISORY_MS, UNIFIED_PLAN_BUDGET_MS))
         checks.append({
-            'id': 'V2', 'name': 'plan wall time <= %.0f ms' % (bar,),
-            'verdict': 'PASS' if float(wall) <= bar else 'FAIL',
-            'detail': '%.1f ms%s' % (float(wall),
-                                     ' (chained: two solves)'
-                                     if plan.get('chained') else ''),
+            'id': 'V2',
+            'name': ('chained plan wall time <= %.0f ms (coordinator release '
+                     'budget)' % (UNIFIED_PLAN_BUDGET_MS,)),
+            'verdict': 'PASS' if w <= UNIFIED_PLAN_BUDGET_MS else 'FAIL',
+            'detail': ('%.1f ms (chained: two solves + the join\'s '
+                       're-validate)%s' % (w, advisory)),
+        })
+    else:
+        # The owner's SPLIT budget for ONE window: core <= 50 ms, total <= 250 ms.
+        w = float(wall)
+        checks.append({
+            'id': 'V2',
+            'name': 'plan wall time <= %.0f ms' % (SINGLE_PLAN_BAR_MS,),
+            'verdict': 'PASS' if w <= SINGLE_PLAN_BAR_MS else 'FAIL',
+            'detail': '%.1f ms' % (w,),
+        })
+
+    # ── V2b: what the solve did to the EMITTER ──────────────────────────────
+    # The other half of V2, and the half that E-STOPPED the machine on
+    # 2026-09-06: a solve that overruns does not only miss a deadline, it evicts
+    # the 40 Hz emitter thread and latches the can-bridge's 250 ms setpoint
+    # watchdog. Every other verdict on that run read healthy.
+    gaps = [float(r['max_emit_gap_ms']) for r in trace
+            if r.get('max_emit_gap_ms') is not None]
+    if not gaps:
+        checks.append({
+            'id': 'V2b', 'name': 'emitter gap during the solve',
+            'verdict': 'SKIP',
+            'detail': ('no max_emit_gap_ms in the trace — an old '
+                       'trajectory_node, or /trajectory/status never arrived'),
+        })
+    else:
+        worst_gap = max(gaps)
+        checks.append({
+            'id': 'V2b',
+            'name': 'worst emitter gap <= %.0f ms' % (MAX_EMIT_GAP_MS,),
+            'verdict': 'PASS' if worst_gap <= MAX_EMIT_GAP_MS else 'FAIL',
+            'detail': ('%.1f ms worst inter-tick gap over %d ticks (40 Hz = '
+                       '25 ms nominal; the Teensy setpoint watchdog latches '
+                       'MPC_STALE at 250 ms)' % (worst_gap, len(gaps))),
         })
 
     # ── V3: margin to METAL, measured on the ENCODER ────────────────────────
@@ -654,31 +763,49 @@ def evaluate(rung: str, plan: dict, trace: list, *,
     # HAND_STROKE, and the firmware clips every setpoint to [0, 10.8] after
     # that. A verdict on the command would restate two gates and could never
     # fail. What CAN reach metal is the physical slider overshooting its
-    # command, and sitting two measured exactly that: encoder 10.4693 rev
-    # against the 10.8 hard stop — 0.33 rev, 10 mm — on a legacy stroke at
-    # --event-vel 3.0. The commanded margin is reported beside it, never gated.
+    # command, and sitting two measured exactly that: encoder 10.4693 rev on a
+    # legacy stroke at --event-vel 3.0.
+    #
+    # THE REFERENCE IS THE MEASURED STOP (10.701), NOT THE FIRMWARE CLIP (10.8).
+    # The clip is a zero-margin alias of Geometry::HAND_MOTOR_HARD_STOP_REVS, so
+    # it sits 0.099 rev (3.1 mm) BEYOND the metal the operator measured on
+    # 2026-09-06 — and nothing in the firmware can see a stall in that gap: the
+    # deviation guard is COMMAND-relative (encoder and setpoint agree once the
+    # slider is jammed at the clip) and the lead clamp ANCHORS the setpoint to
+    # the encoder instead of refusing it. Quoting the clip therefore overstates
+    # the clearance by 3.1 mm at exactly the moment it matters. Moving the clip
+    # is FW 18 work; this driver's margin is what stands in the gap until then.
+    # Sitting two's 10.4693 rev is 0.23 rev / 7.3 mm to the measured stop.
+    # The commanded margin is reported beside it, never gated.
     peak = plan.get('hand_peak_rev')
     encs = [float(r['hand_enc_rev']) for r in ticks
             if r.get('hand_enc_rev') is not None]
     cmd_note = ('' if peak is None else
-                '; commanded peak %.4f (%.4f to metal, %.4f to the planner '
-                'band ceiling)' % (float(peak),
-                                   HAND_MOTOR_MAX_POSITION_REV - float(peak),
-                                   HAND_CATCH_PRIME_REV - float(peak)))
+                '; commanded peak %.4f (%.4f to the measured metal, %.4f to the '
+                'planner band ceiling)'
+                % (float(peak),
+                   HAND_METAL_REV_MEASURED - float(peak),
+                   HAND_CATCH_PRIME_REV - float(peak)))
     if not encs:
         checks.append({'id': 'V3', 'name': 'hand stayed clear of metal',
                        'verdict': 'SKIP',
                        'detail': 'no encoder ticks%s' % (cmd_note,)})
     else:
         worst_enc = max(encs)
-        margin = HAND_MOTOR_MAX_POSITION_REV - worst_enc
+        margin = HAND_METAL_REV_MEASURED - worst_enc
         checks.append({
             'id': 'V3',
-            'name': ('encoder stayed >= %.2f rev clear of the %.1f rev hard '
-                     'stop' % (metal_margin_rev, HAND_MOTOR_MAX_POSITION_REV)),
+            'name': ('encoder stayed >= %.2f rev clear of the %.3f rev MEASURED '
+                     'stop' % (metal_margin_rev, HAND_METAL_REV_MEASURED)),
             'verdict': 'PASS' if margin >= metal_margin_rev else 'FAIL',
-            'detail': ('worst encoder %.4f rev, margin %.4f rev (%.1f mm)%s'
-                       % (worst_enc, margin, margin / REV_PER_MM, cmd_note)),
+            'detail': ('worst encoder %.4f rev, margin %.4f rev (%.1f mm) to the '
+                       'measured stop (%s; the firmware clip %.1f is %.3f rev '
+                       'BEYOND it and no guard can see a stall in that gap — '
+                       'FW 18)%s'
+                       % (worst_enc, margin, margin / REV_PER_MM,
+                          HAND_METAL_PROVENANCE, HAND_MOTOR_MAX_POSITION_REV,
+                          HAND_MOTOR_MAX_POSITION_REV - HAND_METAL_REV_MEASURED,
+                          cmd_note)),
         })
 
     if not ticks:
@@ -741,19 +868,36 @@ def evaluate(rung: str, plan: dict, trace: list, *,
                        if idle else '%d ticks, all CLOSED_LOOP' % (len(ticks),)),
         })
 
+    # ── V6: the cycle ran, and ran OUT ──────────────────────────────────────
+    # `cycle_active` is a TYPE TEST on the active plan (`isinstance(...,
+    # CyclePlan)`) and is never cleared at expiry — a rest-terminal cycle IS the
+    # streaming plan and stays installed, holding its terminal pose, until
+    # something supersedes it. So "cycle_active went False" is not what finishing
+    # looks like; it is what being SUPERSEDED looks like, and this driver
+    # supersedes nothing. Requiring it made the rung's own success unreachable
+    # (and a `hold` abort, which DOES clear it, read as the clean finish).
+    #
+    # What finishing actually looks like is on the same status message and is
+    # already in the CSV: `plan_time_remaining_s` reaching 0.0 with the cycle
+    # STILL installed. Both halves are asserted — the remaining time proves the
+    # window ran out, and `cycle_active` still True proves it is the cycle's own
+    # terminal hold that is streaming rather than something else's plan.
     saw_cycle = any(bool(r.get('cycle_active')) for r in trace)
-    # "Finished" must be POSITIVE evidence: the last tick reported cycle_active
-    # and reported it FALSE. A tick with no status at all (None) says nothing
-    # about whether the window ended, and reading it as "ended" would call a
-    # cycle that is still installed a clean finish.
-    last = trace[-1].get('cycle_active') if trace else None
-    ended = last is False or last == 0
+    last = trace[-1] if trace else {}
+    last_active = last.get('cycle_active')
+    remaining = last.get('plan_time_remaining_s')
+    ran_out = remaining is not None and float(remaining) <= 0.0
+    still_ours = last_active is True or last_active == 1
     checks.append({
-        'id': 'V6', 'name': 'the cycle ran and finished',
-        'verdict': 'PASS' if (saw_cycle and ended) else
-                   ('FAIL' if saw_cycle else 'SKIP'),
-        'detail': ('cycle_active seen=%s, cleared at the end=%s (last tick '
-                   'reported %r)' % (saw_cycle, bool(ended), last)),
+        'id': 'V6', 'name': 'the cycle ran and its window ran out',
+        'verdict': ('PASS' if (saw_cycle and ran_out and still_ours) else
+                    ('FAIL' if saw_cycle else 'SKIP')),
+        'detail': ('cycle_active seen=%s; last tick plan_time_remaining_s=%r '
+                   '(ran out=%s), cycle_active=%r (still the cycle=%s). '
+                   'cycle_active is a TYPE TEST on the installed plan and is '
+                   'never cleared at expiry — a False here means something '
+                   'SUPERSEDED the cycle, not that it finished'
+                   % (saw_cycle, remaining, ran_out, last_active, still_ours)),
     })
 
     if rung == 'carry':
@@ -761,9 +905,12 @@ def evaluate(rung: str, plan: dict, trace: list, *,
             checks.append({
                 'id': 'V7', 'name': 'T-H5: re-pose duration <= legacy GoToPose',
                 'verdict': 'SKIP',
-                'detail': ('the legacy comparison could not be computed offline '
-                           '(motion package not importable here) — compute it '
-                           'from planner.build_move at lean_gain 0 desk-side'),
+                'detail': ('the legacy comparison could not be computed: %s. '
+                           'Compute it from planner.build_move at lean_gain 0 '
+                           'desk-side'
+                           % (_LEGACY_DURATION_ERR[0] if _LEGACY_DURATION_ERR
+                              else 'no reason recorded (it was never attempted '
+                                   'in this process)')),
             })
         else:
             dur = plan.get('duration_s')
@@ -821,6 +968,11 @@ def cup_site_now(pose6, hand_rev):
     return [float(v) for v in uc.cup_state_from_platform(pose6, float(hand_rev))]
 
 
+#: Why :func:`legacy_move_duration_s` returned None on 2026-09-06, filled in by
+#: the caller so the SKIP says what actually went wrong rather than guessing.
+_LEGACY_DURATION_ERR = []
+
+
 def legacy_move_duration_s(pose6, target_pose6, leg_limits):
     """Minimal feasible ``GoToPose`` duration for the same re-pose, lean OFF.
 
@@ -830,7 +982,16 @@ def legacy_move_duration_s(pose6, target_pose6, leg_limits):
     Returns ``None`` (never raises) if the package will not import or the pose
     is infeasible: this is a REPORTED comparison, not a gate, and a missing
     number must not stop a rung.
+
+    **The bare ``except`` used to swallow the reason.** On 2026-09-06 this
+    returned None on a box where the motion package imported perfectly — the
+    failure was ``plan.duration``, a field ``TrajectoryPlan.__slots__`` does not
+    have (it is ``total_duration``) — and V7 reported "motion package not
+    importable here", sending the operator to look at their colcon build. The
+    exception's ``repr`` is now recorded and printed, so a SKIP always names the
+    thing that failed.
     """
+    del _LEGACY_DURATION_ERR[:]
     try:
         import numpy as np
         from jugglebot.motion.trajectory.planner import build_move
@@ -843,14 +1004,43 @@ def legacy_move_duration_s(pose6, target_pose6, leg_limits):
         state0 = (np.asarray(pose6, dtype=float), np.zeros(6), np.zeros(6))
         plan, _report = build_move(state0, np.asarray(target_pose6, dtype=float),
                                    None, lim, StewartGeometry(), shaper=None)
-        return float(plan.duration)
-    except Exception:                              # noqa: BLE001 — advisory only
+        # `total_duration` — `TrajectoryPlan.__slots__` has no `duration`.
+        return float(plan.total_duration)
+    except Exception as exc:                       # noqa: BLE001 — advisory only
+        _LEGACY_DURATION_ERR.append(repr(exc))
         return None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Printing
 # ─────────────────────────────────────────────────────────────────────────────
+
+def stage_wall_note(message: str) -> str:
+    """One line explaining the ``cont=`` term in an accept message's stage split.
+
+    ``unified_cycle.STAGE_KEYS`` is ``qp tilt dec val cont`` and ``cont`` is
+    documented there as *the RESIDUAL* — "the rest of the construction", so the
+    five sum to ``plan_wall_s`` exactly. That description is honest for a single
+    window, where ``cont`` is a millisecond or two of object building, and
+    actively misleading for a JOINED (chained) install, where it is dominated by
+    something very specific: the join's **third full ``validate_cycle`` pass**,
+    over the concatenated plan. Sitting three measured ``cont`` = 247 ms on a
+    joined solve — 99.7 % of the join's cost — so an operator reading "residual"
+    goes looking for overhead that is not there and misses that the gate ran
+    three times.
+
+    Returns '' when the message carries no stage split (a refusal, an old node).
+    """
+    text = str(message or '')
+    if 'cont=' not in text:
+        return ''
+    if 'val=' in text:
+        return ('note: cont = the rest of the construction AND, on a joined '
+                'install, the join\'s own re-validate over the concatenated '
+                'plan — expect cont ~= val there (247 ms measured, 99.7 % of '
+                'the join), not a rounding residual')
+    return 'note: cont is the residual of the stage split'
+
 
 def print_request(spec: dict, *, prefix: str = '') -> None:
     print('%srequest:' % (prefix,))
@@ -881,6 +1071,7 @@ def print_checks(title: str, checks, *, stream=None) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 CSV_COLUMNS = ('t', 'phase', 'cycle_active', 'plan_time_remaining_s',
+               'max_emit_gap_ms',
                'cycle_plan_wall_ms', 'cycle_hand_peak_rev',
                'cycle_hand_peak_vel_rps', 'cycle_supersede_deadline_s',
                'hand_cmd_rev', 'hand_enc_rev', 'hand_vel_rps', 'hand_iq_a',
@@ -1003,6 +1194,12 @@ class _Runner:
             'cycle_active': None if st is None else bool(st.cycle_active),
             'plan_time_remaining_s': (None if st is None
                                       else round(st.plan_time_remaining_s, 4)),
+            # V2b's channel: what the solve did to the 40 Hz emitter. The one
+            # number on /trajectory/status that witnesses the 2026-09-06 E-STOP
+            # class (a solve evicting the emitter past the Teensy's 250 ms
+            # setpoint watchdog) while every other verdict reads healthy.
+            'max_emit_gap_ms': (None if st is None
+                                else round(float(st.max_emit_gap_ms), 2)),
             'cycle_plan_wall_ms': None if st is None else st.cycle_plan_wall_ms,
             'cycle_hand_peak_rev': None if st is None else st.cycle_hand_peak_rev,
             'cycle_hand_peak_vel_rps': (None if st is None
@@ -1200,6 +1397,9 @@ def run(args) -> int:                                            # noqa: C901
             plans.append(flat)
             print('  accepted=%s code=%s' % (flat['accepted'], flat['code']))
             print('  message: %s' % (flat['message'],))
+            note = stage_wall_note(flat['message'])
+            if note:
+                print('  %s' % (note,))
             if not flat['accepted']:
                 raise BenchError('plan_cycle REFUSED %s: %s'
                                  % (flat['code'], flat['message']))
@@ -1473,15 +1673,22 @@ def build_parser():
                    help='seconds to keep watching after the plan ends (1.5)')
     c.add_argument('--max-age-s', type=float, default=2.0,
                    help='precondition freshness bound (s, default 2.0)')
-    c.add_argument('--timeout-s', type=float, default=10.0,
-                   help='per-service-call timeout (s, default 10 — a chained '
-                        'install is two solves and measured 424 ms warm)')
+    # 2.0 s, not 10.0: this is how long the driver will wait for ONE plan_cycle
+    # answer, and the production coordinator gives up at `_SERVICE_WAIT_S` (2.0)
+    # and its release budget expires at 1.2. A bench that waits 10 s is waiting
+    # five times longer than the machine ever will, so it can call a solve
+    # "answered" that a session would have abandoned — with the plan installed
+    # and streaming either way.
+    c.add_argument('--timeout-s', type=float, default=2.0,
+                   help='per-service-call timeout (s, default 2.0 — the '
+                        'coordinator\'s own _SERVICE_WAIT_S; its release budget '
+                        'expires at 1.2 s)')
     c.add_argument('--metal-margin', type=float,
                    default=DEFAULT_METAL_MARGIN_REV,
-                   help='encoder clearance required from the %.1f rev hard '
-                        'stop (rev, default %.2f — sitting two measured '
-                        '10.4693 rev on a legacy stroke)'
-                        % (HAND_MOTOR_MAX_POSITION_REV,
+                   help='encoder clearance required from the %.3f rev '
+                        'MEASURED stop (rev, default %.2f — sitting two '
+                        'measured 10.4693 rev on a legacy stroke)'
+                        % (HAND_METAL_REV_MEASURED,
                            DEFAULT_METAL_MARGIN_REV))
     c.add_argument('--out-dir', default=None,
                    help='CSV/meta output directory (default temp/logs/)')

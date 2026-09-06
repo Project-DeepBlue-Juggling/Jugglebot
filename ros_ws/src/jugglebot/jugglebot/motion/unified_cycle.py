@@ -52,6 +52,18 @@ robot to the wrong place, so they are stated once, here:
 The cup QP itself is SI (metres) because the ballistics are natural there; the
 conversion happens once, at this module's boundary, and never inside a solve.
 
+There is a **fourth** frame, and it is a *rotational* one: the machine's
+levelling frame.  Everything this module aims at — the ballistic take-off
+velocity, the observed catch arrival, the apparent-gravity field the banking
+schedule tracks — is **gravity-referenced**, while ``CycleState.pose`` and every
+pose in the emitted plan are in the **PLAN frame** (``R_gravity @ R_request``),
+because that is what the emitter IKs and what ``trajectory_node``'s C-LEVEL-1
+ingests already produced.  :func:`_realize` is the single place the two meet:
+the tilt schedule is built gravity-referenced and re-expressed into the plan
+frame in one step before ``decompose``.  See ``ros_ws/docs/levelling_frame.md``
+row **E8**, and :attr:`CycleState.levelling_correction` for how the correction
+gets here.
+
 THE FOUR WINDOW KINDS, AND WHY A SESSION NEEDS ALL FOUR
 -------------------------------------------------------
 ``plan_window`` v1 expressed only the steady-state window: it STARTS at a release
@@ -84,6 +96,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 
 import jugglebot.hardware_config as hw
+from jugglebot.motion import levelling
 from jugglebot.motion.trajectory import ballistics_bc
 from jugglebot.motion.trajectory import cup_cycle as cc
 from jugglebot.motion.trajectory import cup_realize as cr
@@ -548,18 +561,37 @@ class CycleState:
     cup_pos_mm: Optional[np.ndarray] = None
     cup_vel_mm_s: Optional[np.ndarray] = None
     cup_accel_mm_s2: Optional[np.ndarray] = None
+    #: The gravity-levelling correction the PLAN frame is expressed in — the 3×3
+    #: matrix ``levelling.correction_for_pose`` builds, or ``None`` for "this
+    #: state's rotations ARE gravity-referenced" (every pure/sim caller, and an
+    #: unlevelled node).  Contract **C-LEVEL-1/2 row E8**,
+    #: ``ros_ws/docs/levelling_frame.md``.
+    #:
+    #: It is on the STATE rather than a keyword on :func:`plan_cycle` because it
+    #: describes :attr:`pose`: knot 0 must equal the machine's *commanded* pose,
+    #: which is plan-frame, while every aim this module pins is gravity-
+    #: referenced.  Carrying it here also means a chained or re-planned window
+    #: inherits the frame its predecessor was built in *for free* —
+    #: :func:`release_state_from_meta` copies it off the meta — which is
+    #: C-LEVEL-1's in-flight rule ("a live plan keeps the frame it was built
+    #: in") rather than a second policy.  A chain whose two halves disagreed
+    #: about the frame would put the whole correction (11.7 mrad ⇒ ~1.8 mm of
+    #: cup lever) into one 25 ms seam, and :func:`_seam_check` would refuse it.
+    levelling_correction: Optional[np.ndarray] = None
 
     # ── constructors ──
 
     @classmethod
-    def at_rest(cls, pose, hand_rev, cfg=None) -> 'CycleState':
+    def at_rest(cls, pose, hand_rev, cfg=None, *,
+                levelling_correction=None) -> 'CycleState':
         """A stationary platform + slider: the LAUNCH boundary condition."""
         pose = np.asarray(pose, dtype=float).reshape(6)
         return cls(pose=pose, pose_vel=np.zeros(6), pose_accel=np.zeros(6),
                    hand_rev=float(hand_rev), hand_vel_rps=0.0,
                    detach_axis=None, post_release=False,
                    cup_pos_mm=cup_state_from_platform(pose, hand_rev, cfg),
-                   cup_vel_mm_s=np.zeros(3), cup_accel_mm_s2=np.zeros(3))
+                   cup_vel_mm_s=np.zeros(3), cup_accel_mm_s2=np.zeros(3),
+                   levelling_correction=levelling_correction)
 
     # ── conversion ──
 
@@ -680,6 +712,19 @@ class CycleMeta:
     #: :func:`replan_tail` reads the exact cup state at the splice knot from.
     cup_plan: Optional['cc.CupCyclePlan'] = None
     goals: Optional[CycleGoals] = None
+    #: The levelling frame this plan was BUILT in — the same matrix
+    #: :attr:`CycleState.levelling_correction` carried in, recorded so that
+    #: everything that continues this plan re-uses it rather than re-reading a
+    #: correction that may have changed since.  ``None`` ⇒ the plan's rotations
+    #: are gravity-referenced (no correction was supplied).
+    #:
+    #: This IS C-LEVEL-1's in-flight rule, expressed as data: a `/gravity_offset`
+    #: or a `reload_tilt_map` landing mid-cycle does not re-frame the installed
+    #: plan, because :func:`release_state_from_meta` and :func:`replan_tail` both
+    #: read the frame from HERE.  Re-reading the node's live correction instead
+    #: would step the commanded tilt by the whole delta on one 25 ms knot, at a
+    #: seam whose two halves would then disagree by ~1.8 mm of cup lever.
+    levelling_correction: Optional[np.ndarray] = None
     #: Worst per-channel velocity disagreement at a splice seam (mm/s and rev/s).
     #: Zero for a single window.  Recorded rather than gated: ``validate_cycle``
     #: on the spliced whole is the authority on whether the seam is executable,
@@ -795,6 +840,12 @@ def release_state_from_meta(meta: CycleMeta, plan: CyclePlan,
     ``detach_axis`` is the throw tilt's cup axis: the direction the ball actually
     left along, which is what the next window's detach-cone rows are written
     against.
+
+    The levelling frame is carried across too (row E8): the next window is
+    planned in the frame this one was BUILT in, not in whatever correction the
+    node holds by the time it is called.  That is C-LEVEL-1's in-flight rule, and
+    it is also what keeps the seam exact — both halves apply the same matrix to
+    the same ``detach_axis``-derived tilt, so :func:`_seam_check` sees 0.0.
     """
     if not meta.releases:
         raise ValueError(
@@ -816,6 +867,7 @@ def release_state_from_meta(meta: CycleMeta, plan: CyclePlan,
         cup_pos_mm=np.asarray(mark.site_mm, dtype=float).copy(),
         cup_vel_mm_s=np.asarray(mark.vel_mm_s, dtype=float).copy(),
         cup_accel_mm_s2=_G_MM_S2.copy(),
+        levelling_correction=meta.levelling_correction,
     )
 
 
@@ -1267,6 +1319,77 @@ def _throw_tilt_for(cup, max_tilt_deg: float) -> np.ndarray:
                       dtype=float)
 
 
+def _tilt_to_gravity(tilt_xy, correction) -> np.ndarray:
+    """PLAN-frame ``(rx, ry)`` → the GRAVITY frame.  ``correction=None`` ⇒ a copy.
+
+    The inverse half of :func:`_tilts_to_plan`; see it for why the pair exists
+    and for what the ``rz`` projection costs.  This is the C-LEVEL-1.E direction
+    (``R_gravityᵀ @ R_commanded``) used INTERNALLY rather than on the wire: the
+    seed pose is a commanded, plan-frame quantity, and every other input to
+    ``tilt_schedule`` — the ballistic throw aim, the observed catch arrival, the
+    apparent-gravity field the banking objective tracks — is gravity-referenced.
+    Handing the schedule a plan-frame pin beside gravity-frame pins is exactly
+    the mixed-frame interpolation this row exists to close.
+    """
+    tilt = np.asarray(tilt_xy, dtype=float).reshape(2)
+    if correction is None:
+        return tilt.astype(float, copy=True)
+    pose = np.zeros(6)
+    pose[3:5] = tilt
+    return np.asarray(levelling.uncorrect_pose(pose, correction),
+                      dtype=float)[3:5]
+
+
+def _tilts_to_plan(tilts, correction) -> np.ndarray:
+    """GRAVITY-frame tilt series ``(n, 2)`` → the PLAN frame.  ``None`` ⇒ a copy.
+
+    One :func:`levelling.correct_pose` per knot, on a position-free 6-vector —
+    ``correct_pose`` rewrites the rotation only and copies position through
+    untouched, so a zero position is not a claim about anything.
+
+    **Why the whole SERIES and not just the pins.**  ``tilt_schedule``'s interior
+    is the banking solution, ``tilt_to_receive(g − a_cup)`` — an *apparent
+    gravity* direction, i.e. as gravity-referenced as the pins are.  Shifting
+    only the endpoints would leave the interior a fraction of a degree off the
+    field it is meant to track, and the schedule's whole job is that the seated
+    ball feels no lateral specific force.
+
+    **The ``rz`` projection, and why it is free here.**  ``R_gravity @ R_tilt``
+    of two pure-tilt rotations carries a second-order ``rz`` term
+    (``|offset × tilt| / 2``).  ``decompose`` pins ``rz`` to 0 by construction —
+    the cup is a surface of revolution and the realisation has no yaw to give —
+    so that term has nowhere to go, and this function drops it.
+
+    MEASURED over the whole regime (``/tmp/probe_level.py``, 2026-09-06: the
+    11.663 mrad session offset × every aim from 0 to the 12° ceiling, 17 azimuths
+    each):
+
+    * worst ``|rz|`` discarded — **1.221e-3 rad**;
+    * worst change in the commanded cup AXIS from dropping it —
+      **1.276e-4 rad** (0.0073°), i.e. **91× smaller** than the 11.663 mrad this
+      row corrects, and 0.005 mm of landing at the 0.5 m apex;
+    * worst departure of the ``(rx, ry)`` pair from the plain additive shift
+      ``tilt − offset`` — **4.266e-5 rad**, confirming BCH's prediction that the
+      whole first-order difference between the matrix composition and the
+      additive one lives in ``rz`` (``a × b`` of two pure-tilt vectors is pure
+      ``z``), so the projection costs third-order terms only.
+
+    The sweep is pinned by
+    ``tests/motion/test_unified_cycle.py::test_the_plan_frame_shift_drops_only_the_rz_second_order_term``
+    — a numeric claim no test measures is a claim that rots.
+    """
+    arr = np.asarray(tilts, dtype=float)
+    out = arr.astype(float, copy=True)
+    if correction is None:
+        return out
+    pose = np.zeros(6)
+    for k in range(out.shape[0]):
+        pose[3:5] = out[k]
+        out[k] = np.asarray(levelling.correct_pose(pose, correction),
+                            dtype=float)[3:5]
+    return out
+
+
 def _start_tilt_for(state: CycleState) -> Optional[np.ndarray]:
     """The tilt knot 0 must open at — the ATTITUDE half of the seed state.
 
@@ -1312,6 +1435,19 @@ def _start_tilt_for(state: CycleState) -> Optional[np.ndarray]:
     being silently clamped — the ``toss_release`` "gate the aim, don't rely on
     the clamp" precedent, and the honest answer for a pose the cup geometry
     cannot express.
+
+    ⚠ **THE TWO BRANCHES ANSWER IN TWO DIFFERENT FRAMES** (named 2026-09-06,
+    contract row E8; this function's behaviour is unchanged).  ``detach_axis`` is
+    the direction a ball physically left along, so the post-release branch is
+    **GRAVITY**-referenced.  ``state.pose`` is the machine's COMMANDED pose, i.e.
+    the **PLAN** frame ``R_gravity @ R_request`` that ``trajectory_node``'s
+    C-LEVEL-1 ingests produce.  That disagreement, carried into ``tilt_schedule``
+    beside gravity-referenced release/catch pins, IS the levelling defect E8
+    closes — and it is not fixed here, because a caller needs the raw seed pin
+    (``trajectory_node._install_continuity_ok`` compares against the commanded
+    pose, in the plan frame).  :func:`_realize` normalises the two into the
+    gravity frame at the one place the frames meet; read its docstring before
+    calling this from anywhere new.
     """
     if not state.post_release:
         return np.asarray(state.pose, dtype=float).reshape(6)[3:5].copy()
@@ -1327,19 +1463,113 @@ def _realize(kind, cup, goals, state, limits, geom, rcfg, *, t_wall,
     ``stages`` is the caller's per-stage wall-time accumulator (see
     :attr:`CycleMeta.stage_wall_s`); it is filled in place and left alone when
     ``None``.
+
+    **THE LEVELLING FRAME LIVES HERE — contract row E8** (added 2026-09-06,
+    ``ros_ws/docs/levelling_frame.md``).  This is the single point at which the
+    gravity frame the cycle *aims* in and the plan frame the cycle *commands* in
+    meet, and the whole tilt series crosses in one step:
+
+    1. the seed pin is normalised into the gravity frame, so ``tilt_schedule``
+       sees ONE frame — the seed, the receive pin, the throw pin and the banking
+       objective all gravity-referenced.  Only the ``post_release=False`` branch
+       of :func:`_start_tilt_for` needs it: that branch reads the COMMANDED
+       ``state.pose`` (plan frame), while the post-release branch is derived from
+       ``detach_axis``, a direction a ball physically left along, and is already
+       gravity-referenced.  Which branch ran is exactly ``state.post_release``,
+       so it is read here rather than pushed into that function — whose raw,
+       plan-frame answer step 4 also needs;
+    2. ``tilt_schedule`` runs unchanged and produces a gravity-referenced series;
+    3. :func:`_tilts_to_plan` re-expresses the whole series into the plan frame;
+    4. knot 0 is re-pinned to the seed's own float, exactly.
+
+    **Why here and not later.**  Before ``decompose``, so the pose, its
+    derivatives, the lever-arm shift and the slider are all computed from ONE
+    tilt series — a correction applied to ``pose[3:5]`` afterwards would leave
+    the declared velocities finite-differenced from a series the positions no
+    longer describe, which is the "desyncs the wire's own derivatives"
+    disqualifier C-LEVEL-2 already refuses for a per-knot lookup.  And before
+    ``validate_cycle``, so the gate measures the object that ships:
+    plan == emitted == gated.
+
+    **What it was before.**  MEASURED 2026-09-06 (bag ``2026-09-06_19-*``, and
+    ``/tmp/probe_level.py`` on the same offset): knot 0 was pinned in the PLAN
+    frame off the seed while the release pin was GRAVITY-frame, so
+    ``tilt_schedule`` interpolated between endpoints in two different frames.
+    A LAUNCH from a levelled prepare pose commanded exactly mechanical zero at
+    release — a platform physically **+11.663 mrad** off gravity, a **0.6682°**
+    tilt step across the window, and the ball thrown in **−y**.  The measured
+    bag agrees: +9.9…+10.3 mrad of lean at release, −9 mrad of launch error in
+    −y on 7/7 throws, 9–38 mm of lateral drift, rim strikes.
+
+    **The lever-arm residual this placement leaves — PRE-EXISTING and UNCHANGED,
+    stated so it is not re-discovered as a regression.**  ``decompose`` reads the
+    tilt it is handed for the cup lever arm (``shift = arm · cup_axis_xy``), so
+    the compensation is computed at the COMMANDED tilt while the platform
+    physically holds the gravity-frame one, and the cup opening lands
+    ``|arm| · |correction|`` from the site.  MEASURED (``/tmp/probe_level.py``,
+    2026-09-06, the 0.5 m-apex LAUNCH, ``arm`` = 115.7 mm at the 860 mm release):
+    **1.349379 mm** in −y — and the number is **identical before and after this
+    fix, to 1e-9 mm**, because before it the *centroid* was right and the
+    *attitude* was 11.663 mrad wrong, which lands the physical cup in exactly the
+    same place.  This fix removes the attitude error (23.3 mm of ballistic drift
+    at that apex → 0.000) and neither adds to nor subtracts from the lever term.
+
+    Closing the lever term as well means feeding ``decompose`` the GRAVITY tilt
+    for the geometry while writing the PLAN tilt into ``pose[3:5]`` — a
+    ``cup_realize`` change, and the reason it is not taken here is that one frame
+    downstream of ``decompose`` is the more valuable invariant:
+    ``cup_state_from_platform`` (the exact inverse of this position map),
+    :func:`_seam_check` and ``trajectory_node._install_continuity_ok`` all read
+    ``pose[3:5]`` beside ``pose[:2]`` and would then be reading two frames.  (The
+    legacy toss path does not carry this residual — ``toss_release`` computes its
+    shift from the gravity-referenced aim and ``trajectory_node`` corrects only
+    the rotation afterwards — so a future reader comparing the two paths at
+    ~1.35 mm is looking at this, and at a real difference.)
     """
+    correction = state.levelling_correction
     recv = (np.asarray(tg.tilt_to_receive(
         np.asarray(goals.catch_vel_mm_s, dtype=float),
         max_tilt_deg=rcfg.max_tilt_deg), dtype=float)
             if goals.catch_vel_mm_s is not None else np.zeros(2))
     throw_tilt = _throw_tilt_for(cup, rcfg.max_tilt_deg)
     start_tilt = _start_tilt_for(state)
+    if start_tilt is not None and not state.post_release:
+        # Plan frame → gravity frame.  See step 1 above for why only this branch.
+        start_tilt = _tilt_to_gravity(start_tilt, correction)
     t_stage = time.perf_counter()
     try:
-        tilts = cr.tilt_schedule(cup, recv, throw_tilt, rcfg,
-                                 start_tilt=start_tilt)
-    except ValueError as exc:
-        raise CycleInfeasible(TILT_PIN, [str(exc)])
+        # Only `tilt_schedule` is guarded: TILT_PIN means "the aim is outside the
+        # cup's usable cone", and laundering a frame-conversion bug into that code
+        # would send an operator to move the target when the defect is here.  The
+        # shift is inside the `finally` so its cost lands in the `tilt` stage,
+        # which is where a reader looking for it will look.
+        try:
+            tilts = cr.tilt_schedule(cup, recv, throw_tilt, rcfg,
+                                     start_tilt=start_tilt)
+        except ValueError as exc:
+            raise CycleInfeasible(TILT_PIN, [str(exc)])
+        tilts = _tilts_to_plan(tilts, correction)
+        if (start_tilt is not None and correction is not None
+                and not state.post_release):
+            # ``start_tilt is not None`` is load-bearing, not belt-and-braces:
+            # writing the seed back onto a knot 0 that ``tilt_schedule`` was NOT
+            # asked to pin leaves knot 0 on the seed while knot 1 follows the
+            # smoother, i.e. a manufactured step at the very seam this whole
+            # function exists to keep continuous — measured as LIMIT_JERK rather
+            # than as the STALE_STATE the un-pinned path is supposed to produce.
+            #
+            # THE CONTINUITY PIN SURVIVES EXACTLY.  The transpose round trip is
+            # exact as a ROTATION, but knot 0 is not a rotation claim — it is the
+            # assertion "this plan opens at the float the emitter is already
+            # streaming", which `trajectory_node._install_continuity_ok` measures
+            # in leg revolutions at 0.06 rev.  So the seed's own value is written
+            # back rather than recovered: 0.0000 rev of drift, by construction,
+            # not by a tolerance.  (The post-release branch needs no write-back:
+            # its pin comes from `detach_axis`, which never left the gravity
+            # frame, so its plan-frame image is a single forward application and
+            # both sides of the chained seam apply the SAME matrix to the SAME
+            # float.)
+            tilts[0] = np.asarray(state.pose, dtype=float).reshape(6)[3:5]
     finally:
         if stages is not None:
             stages['tilt'] = time.perf_counter() - t_stage
@@ -1349,12 +1579,14 @@ def _realize(kind, cup, goals, state, limits, geom, rcfg, *, t_wall,
         stages['dec'] = time.perf_counter() - t_stage
     plan = CyclePlan.from_realized(realized)
     meta = _meta_for(kind, plan, cup, goals, tilts, recv, throw_tilt,
-                     limits, geom, t_wall=t_wall, stages=stages)
+                     limits, geom, t_wall=t_wall, stages=stages,
+                     correction=correction)
     return plan, meta
 
 
 def _meta_for(kind, plan, cup, goals, tilts, recv, throw_tilt, limits, geom, *,
-              t_wall, stages: Optional[Dict[str, float]] = None):
+              t_wall, stages: Optional[Dict[str, float]] = None,
+              correction=None):
     t_stage = time.perf_counter()
     report = fz.validate_cycle(plan, limits, geom)
     if stages is not None:
@@ -1407,7 +1639,7 @@ def _meta_for(kind, plan, cup, goals, tilts, recv, throw_tilt, limits, geom, *,
                         else None),
         takeoff_vel_mps=np.asarray(cup.takeoff_vel, dtype=float),
         warm_start=getattr(cup, 'warm_start', None),
-        cup_plan=cup, goals=goals)
+        cup_plan=cup, goals=goals, levelling_correction=correction)
 
 
 def _runway_margin_rev(plan: CyclePlan, t_catch: float, limits) -> float:
@@ -1515,6 +1747,38 @@ def _seam_check(plan_a: CyclePlan, plan_b: CyclePlan) -> Tuple[float, float]:
     return d_pv, d_hv
 
 
+def _joined_correction(meta_a: CycleMeta, meta_b: CycleMeta):
+    """The levelling frame a splice inherits, or a refusal if the halves disagree.
+
+    Row E8.  Two windows spliced across different levelling frames put the whole
+    correction into one 25 ms knot — 11.7 mrad of commanded tilt, ~1.8 mm of cup
+    lever through the 744.3 mm tilt-centre arm — which is precisely the step
+    :func:`_seam_check` exists to refuse.  It WOULD refuse it (the two terminal
+    poses differ by that much), but by then the operator is reading a millimetre
+    gap and not the reason for it, so the frame is checked by identity first and
+    the message names the cause.  ``plan_b`` is chained through
+    :func:`release_state_from_meta`, which copies the frame off ``meta_a``, so
+    the only way to reach the refusal is to have built the second window from
+    somewhere else.
+    """
+    ca = meta_a.levelling_correction
+    cb = meta_b.levelling_correction
+    if ca is None and cb is None:
+        return None
+    same = (ca is not None and cb is not None
+            and np.array_equal(np.asarray(ca, dtype=float),
+                               np.asarray(cb, dtype=float)))
+    if not same:
+        raise CycleInfeasible(CHAIN_DISCONTINUITY, [
+            'the two windows were planned in DIFFERENT levelling frames '
+            '(%s vs %s) — chain the second from release_state_from_meta of the '
+            'first, which carries the frame across; splicing across a frame '
+            'change puts the whole correction on one knot'
+            % ('none' if ca is None else 'a correction',
+               'none' if cb is None else 'a correction')])
+    return ca
+
+
 def extend(plan_a: CyclePlan, meta_a: CycleMeta,
            plan_b: CyclePlan, meta_b: CycleMeta,
            limits, geom) -> Tuple[CyclePlan, CycleMeta]:
@@ -1543,6 +1807,7 @@ def extend(plan_a: CyclePlan, meta_a: CycleMeta,
         raise ValueError("cannot splice plans on different knot grids (%r, %r)"
                          % (plan_a.dt, plan_b.dt))
     t_wall = time.perf_counter()
+    correction = _joined_correction(meta_a, meta_b)
     seam = _seam_check(plan_a, plan_b)
 
     n_a = int(plan_a.n_knots)
@@ -1593,7 +1858,8 @@ def extend(plan_a: CyclePlan, meta_a: CycleMeta,
         warm_start=meta_b.warm_start,
         cup_plan=_concat_cup(meta_a.cup_plan, meta_b.cup_plan, joined.dt,
                              catch_k),
-        goals=meta_b.goals, seam_vel_mismatch=seam)
+        goals=meta_b.goals, seam_vel_mismatch=seam,
+        levelling_correction=correction)
 
 
 def splice_knot(meta: CycleMeta, t_now_s: float, lead_s: float) -> int:
@@ -1897,9 +2163,21 @@ def replan_tail(plan: CyclePlan, meta: CycleMeta, t_now_s: float,
                                          max_tilt_deg=rcfg.max_tilt_deg),
                       dtype=float)
     throw_tilt = _throw_tilt_for(cup_tail, rcfg.max_tilt_deg)
+    # Row E8: the tail is scheduled in the frame the PLAN was built in, read off
+    # its own meta rather than from the node's live correction — a re-level or a
+    # `reload_tilt_map` between the install and this re-plan must not re-frame a
+    # plan the emitter is already streaming (C-LEVEL-1's in-flight rule).  The
+    # splice pin `meta.tilts[k_s]` is a plan-frame knot, so it is un-corrected on
+    # the way in and the tail is re-corrected on the way out; knot `k_s` is then
+    # written back exactly, which is what keeps the head bit-identical.
+    correction = meta.levelling_correction
     try:
-        tail_tilts = cr.tilt_schedule(cup_tail, recv, throw_tilt, rcfg,
-                                      start_tilt=meta.tilts[k_s])
+        tail_tilts = cr.tilt_schedule(
+            cup_tail, recv, throw_tilt, rcfg,
+            start_tilt=_tilt_to_gravity(meta.tilts[k_s], correction))
+        tail_tilts = _tilts_to_plan(tail_tilts, correction)
+        if correction is not None:
+            tail_tilts[0] = np.asarray(meta.tilts[k_s], dtype=float)
     except ValueError as exc:
         raise CycleInfeasible(TILT_PIN, [str(exc)])
 
@@ -1965,6 +2243,7 @@ def replan_tail(plan: CyclePlan, meta: CycleMeta, t_now_s: float,
         stroke_clear_s=meta.stroke_clear_s,
         takeoff_vel_mps=np.asarray(cup_tail.takeoff_vel, dtype=float),
         warm_start=cup_tail.warm_start, cup_plan=cup_joined,
+        levelling_correction=correction,
         # Goals for the WHOLE spliced plan, on the whole plan's clock — so a
         # second re-plan reads a period and a catch time that describe what it is
         # actually holding, not the tail's.

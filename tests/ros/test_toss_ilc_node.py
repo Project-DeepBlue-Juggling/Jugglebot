@@ -15,7 +15,12 @@ phase's acceptance gates:
    nodes run the same Phase-2 composition. **Both are run with an aim map AND a
    session trim loaded** — without them ``_toss_aim_for_goal`` returns at its
    all-zero early guard and neither arm executes the code it is named after.
-2. **ONE apply point**, structurally — the D4 manifest shape, applied to layer 3.
+2. **ONE apply point per channel**, structurally — the D4 manifest shape, applied
+   to layer 3. The position/angle channels have exactly one lookup site
+   (``_toss_aim_for_goal``); the velocity channel has exactly one apply site
+   PER PATH (``_build_toss_cycle`` legacy, ``_unified_vel_trim`` unified) —
+   the two paths are mutually exclusive per goal, so this is a one-per-path
+   guard, not a relaxation of the constraint.
 3. **The clamp REFUSES layer 3; it never truncates it** (plan risk 5).
 4. **Provenance-mismatch dormancy**: loaded, NOT applied, loud, zero correction —
    including when the provenance verdict cannot be COMPUTED at all, which is a
@@ -653,11 +658,20 @@ def test_nothing_else_in_the_package_imports_the_ilc_loader():
     assert importers == {'reload_coordinator_node.py'}, sorted(importers)
 
 
-def test_the_event_vel_trim_is_applied_at_exactly_one_place():
+def test_the_event_vel_trim_is_applied_at_exactly_one_place_per_path():
     """The velocity channel does not ride the aim lookup — it multiplies the
-    commanded ``event_vel`` after the release state exists — so it needs its own
-    single-site guard. Anything else that scaled ``event_vel`` would be a second
-    authority over the number the hand is dispatched at."""
+    commanded launch speed after the release state exists — so it needs its own
+    apply-site guard. There are legitimately TWO apply sites, not one, because
+    there are two mutually-exclusive command paths for a throw: the legacy path
+    applies the trim to ``event_vel_mps`` in ``_build_toss_cycle``, and the
+    unified path applies it to the commanded take-off in ``_unified_vel_trim``
+    (read once per goal and forwarded to ``_unified_cycle_request(vel_trim=...)``).
+    ``unified`` is resolved exactly once per goal, so exactly one of the two
+    sites ever commits the trim to hardware for a given throw — this is a
+    one-per-path guard, not a relaxation of the one-apply-point design
+    constraint. Anything ELSE that scaled a launch speed by ``ilc_vel_trim``
+    would be a THIRD authority over the number the hand is dispatched at, and
+    this guard fails the moment one appears."""
     path = os.path.join(_PKG_DIR, 'reload_coordinator_node.py')
     with open(path, encoding='utf-8') as handle:
         tree = ast.parse(handle.read())
@@ -674,8 +688,12 @@ def test_the_event_vel_trim_is_applied_at_exactly_one_place():
             if isinstance(child, ast.Constant) and \
                     child.value == 'ilc_vel_trim':
                 scopes.add(node.name)
+    # The compute site (`_toss_aim_for_goal`, which resolves and stores the
+    # trim once per goal), the record site (`_toss_record_fields`, which reads
+    # it back for the toss record), and the two apply sites named above — and
+    # NOTHING ELSE. A fifth scope here means a new, unsanctioned reader landed.
     assert scopes == {'_toss_aim_for_goal', '_build_toss_cycle',
-                      '_toss_record_fields'}, scopes
+                      '_toss_record_fields', '_unified_vel_trim'}, scopes
 
 
 # ══════════════════════════════════════════════════════════════════════════════

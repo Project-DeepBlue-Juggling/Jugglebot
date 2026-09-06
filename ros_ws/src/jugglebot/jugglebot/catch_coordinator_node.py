@@ -160,6 +160,28 @@ _PRETILT_MIN_LEAD_S = 1.0
 # only fires on timing garbage beyond anything yet observed (a latent-class guard).
 _ARM_LANDING_WINDOW_S = 0.75
 
+# ── Unified-mode per-ball replan rate limit ──────────────────────────────────
+# Under `catch/unified_mode` the reactive per-ball path is LIVE (the cycle plan's
+# catch-side tail re-aims on it — see `_on_balls`), and each accepted target costs
+# trajectory_node a ~230 ms seven-channel `replan_tail` solve on its
+# single-threaded executor. The balls topic ticks at mocap rate, so an unfiltered
+# stream would ask for a fresh solve ~20x a second and starve the 40 Hz emitter —
+# the same shape as the 2026-09-06 UH-3 E-STOP, where a solve that outran the
+# emitter latched the Teensy's 250 ms setpoint watchdog.
+#
+# So a target is published only when the predicted landing has actually MOVED by
+# more than this. It is a MOVEMENT gate, not a timer, deliberately: a corrupt or
+# jittery track that is re-predicting the same point costs nothing, while a track
+# that is genuinely revising its landing gets every revision through. 5 mm is
+# ~1/16 of the 80 mm reach envelope and well under the ball's own radius, so
+# nothing a replan could usefully chase is filtered out.
+#
+# It is the OUTER of three bounds and does not replace either of the others:
+# trajectory_node still allows at most 2 replans per window and still refuses one
+# inside its 0.30 s commit lead. This one stops the SOLVES; those bound what a
+# solve is allowed to do.
+_UNIFIED_TARGET_MOVE_MM = 5.0
+
 # Per-ball hand-arm re-dispatch cap. HISTORY: this cap was sized against the
 # 2026-07-23 ERR_TIMEOUT epidemic, when the HAND_TRAJ_CMD ack failed ~40-60% per call
 # and lied (frames observed transmitted after a failed ack). That epidemic was
@@ -385,6 +407,13 @@ class CatchCoordinatorNode(Node):
         self._announced_landing_time: float | None = None   # ROS seconds, for the arm-window guard
         self._pretilt_cmd = None                             # cached CatchCommand for the refresh
 
+        # Unified-mode replan rate limit (_UNIFIED_TARGET_MOVE_MM): the
+        # (ball_id, target_pos) of the last target actually published on the
+        # unified reactive path. `None` ⇒ nothing published yet for this ball, so
+        # the next target goes out unconditionally — the FIRST estimate of a ball
+        # is the one the cycle has never seen and must never be filtered.
+        self._unified_last_target = None
+
         # C-HAND-1 stroke-busy window. Latched from OUR OWN announcement only
         # (thrower_name == robot_name): the ROS instant after which the hand is
         # guaranteed clear of its own throw stroke, = announced throw_time +
@@ -547,6 +576,10 @@ class CatchCoordinatorNode(Node):
             self._last_submitted_ball_id = None
             self._last_arrival_time = 0.0
             self._last_landing_position = np.zeros(3)
+            # ...and the unified replan rate limit, for the same reason: a stale
+            # "already published there" from the previous ball-op would filter
+            # the FIRST target of the next one.
+            self._unified_last_target = None
 
     def _on_prime_dispatched(self, msg: Bool):
         """catch/prime_dispatched: the reload coordinator dispatched its own hand
@@ -867,18 +900,51 @@ class CatchCoordinatorNode(Node):
         #     pretilt_hold _pretilt_cmd is None (see _on_throw_announcement), so
         #     _republish_pretilt no-ops (cmd None) — the platform simply holds while
         #     the toss coordinator owns the one deferred reach.
+        #
+        # ── and ONE trigger takes it back off: catch/unified_mode ──────────────
+        # Under unified the two triggers above are BOTH standing (the session
+        # raises pretilt_hold for its whole life and the reload flag ships True),
+        # so every ball tick took the open-loop branch — and `_pretilt_cmd` is
+        # None there, so `_republish_pretilt` no-opped and the topic carried ZERO
+        # messages for the whole 2026-09-06 sitting. The legacy path tolerates
+        # that because the toss coordinator's own `_publish_toss_reach` covers the
+        # platform; under unified that publish is deliberately switched off
+        # (reload_coordinator_node's TOSS_ACTION_REACH_CATCH branch), because a
+        # CyclePlan already contains the traverse AND the catch on one clock.
+        # So under unified NOTHING was re-aiming the catch and the cycle flew its
+        # committed catch site blind to the tracker.
+        #
+        # The reactive path is the RIGHT owner here: trajectory_node routes a
+        # unified dynamic_target to `_replan_cycle_from_target`, which re-solves
+        # only the catch-side tail of the installed 7-channel plan — it never
+        # installs a 6-channel reach over it. The freeze that open-loop exists to
+        # provide is provided instead by trajectory_node's own reach-freeze window
+        # plus the replan budget and lead, which are bounds on the CYCLE rather
+        # than a blanket refusal to look at the ball.
         open_loop = ((self._pretilt_hold or hw.JB_OP_RELOAD_PLATFORM_OPEN_LOOP)
-                     and self._catch_armed and self._announcement_seen)
+                     and self._catch_armed and self._announcement_seen
+                     and not self._unified_mode)
         if open_loop:
             # Re-assert the pre-tilt pose (same pose, recomputed arrival) so a dropped
             # pre-tilt still seats the cup; the reactive re-anchor + feasibility
             # blacklist stay dormant (never stamp _last_submitted_ball_id, so
             # _on_target_feedback early-returns and nothing is rejected).
             self._republish_pretilt()
+        elif self._unified_mode and not self._unified_target_moved(cmd):
+            # Rate-limited: the landing estimate has not moved far enough to be
+            # worth a ~230 ms seven-channel re-solve (see
+            # _UNIFIED_TARGET_MOVE_MM). The hand-arm bookkeeping below is
+            # unreachable under unified anyway (`not self._unified_mode` gates
+            # it), so there is nothing else this tick owes the cycle.
+            pass
         else:
             # Convert landing_time from ROS2 clock → perf_counter clock
             arrival_time_perf = cmd.landing_time + self._ros_to_perf_offset
             self._publish_dynamic_target(cmd, arrival_time_perf)
+            # Stamped AFTER the publish, so a target that was never published can
+            # never move the rate limit's reference (the next tick would then be
+            # measured against a pose the cycle has not been told about).
+            self._unified_last_target = (cmd.ball_id, cmd.target_pos.copy())
             self._last_submitted_ball_id = cmd.ball_id
             self._last_arrival_time = arrival_time_perf
             self._last_landing_position = cmd.target_pos.copy()
@@ -922,6 +988,27 @@ class CatchCoordinatorNode(Node):
                 self.get_logger().warning(
                     f"Ball {cmd.ball_id}: event_delay {event_delay:.2f} s below the "
                     f"{_MIN_EVENT_DELAY_S} s floor — hand catch NOT armed")
+
+    def _unified_target_moved(self, cmd) -> bool:
+        """Has the predicted catch pose moved enough to be worth a cycle replan?
+
+        The rate limit that makes the unified reactive path affordable
+        (:data:`_UNIFIED_TARGET_MOVE_MM` carries the root cause). ``True`` — publish
+        — on the first target of a ball and on any target more than the threshold
+        from the last one PUBLISHED for that ball, so the reference is what the
+        cycle was actually told rather than what the tracker last said.
+
+        Measured on ``target_pos``, the full 3-vector this node publishes, not on
+        the raw landing: that is the quantity trajectory_node re-plans against, so
+        a tilt-driven move of the commanded pose counts even when the ball's own
+        landing barely moved. Keyed on ``ball_id`` so a NEW ball's first estimate
+        is never filtered by the previous ball's last one.
+        """
+        last = self._unified_last_target
+        if last is None or last[0] != cmd.ball_id:
+            return True
+        return bool(np.linalg.norm(cmd.target_pos - last[1])
+                    > _UNIFIED_TARGET_MOVE_MM)
 
     def _arm_landing_window_ok(self, cmd) -> bool:
         """Gate the hand-arm on the ball's predicted landing being near the announced

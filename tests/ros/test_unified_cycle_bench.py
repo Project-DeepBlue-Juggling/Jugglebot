@@ -10,12 +10,14 @@ write rows. Only the pure core is tested — the ROS half is the part a hardware
 sitting exercises, and a mocked test of it would assert that the mocks were
 called, which is not evidence about a robot.
 
-Three of these tests are DRIFT PINS rather than behaviour tests: the driver
+Several of these tests are DRIFT PINS rather than behaviour tests: the driver
 mirrors ``PlanCycle.srv``'s mode/kind enums, the can-bridge's hand guard
-constants and the generated hard stop as module literals (a ``.srv`` and a C++
-header are not importable from the pure core, and a second generator is not
-worth it), so each mirrored number is pinned to the file it came from. A mirror
-that silently drifts is the failure mode this file exists to make impossible.
+constants, the generated hard stop and the coordinator's plan budget / service
+wait as module literals (a ``.srv`` and a C++ header are not importable from the
+pure core, and importing ``reload_coordinator_node`` would drag rclpy into it —
+which ``test_the_pure_core_imports_no_ros_at_module_scope`` forbids), so each
+mirrored number is pinned to the file it came from. A mirror that silently
+drifts is the failure mode this file exists to make impossible.
 
 Lives under ``tests/ros/`` rather than ``tests/motion/`` because the driver's
 subject is the ROS service contract, and the mocked-ROS conftest here is what
@@ -122,9 +124,8 @@ def test_the_hard_stop_and_gravity_match_the_generated_config():
     """The stroke clip and g are the generated numbers, not remembered ones.
 
     ``HAND_MOTOR_MAX_POSITION`` is ``GEOM_HAND_MOTOR_HARD_STOP_REVS`` on the
-    firmware side (10.8 — the operator-measured metal, corrected from 11.1 on
-    2026-08-18), and g feeds the flight arithmetic the throw rung's release
-    velocity is judged against.
+    firmware side (10.8), and g feeds the flight arithmetic the throw rung's
+    release velocity is judged against.
     """
     import jugglebot.hardware_config as hw
     assert ucb.HAND_MOTOR_MAX_POSITION_REV == pytest.approx(
@@ -132,6 +133,76 @@ def test_the_hard_stop_and_gravity_match_the_generated_config():
     assert ucb.G_MM_S2 == pytest.approx(float(hw.GRAVITY_MMPS2))
     assert ucb.HAND_CATCH_PRIME_REV == pytest.approx(
         float(hw.JB_OP_HAND_CATCH_PRIME_REV))
+
+
+def test_the_firmware_clip_sits_BEYOND_the_measured_metal():
+    """The clip is a zero-margin alias of the hard stop — and the stop moved.
+
+    2026-09-06, operator, on the machine: stroke 352 mm, bottom -0.107 rev, top
+    **10.701 rev**. ``HAND_MOTOR_MAX_POSITION`` is
+    ``Geometry::HAND_MOTOR_HARD_STOP_REVS`` with no margin subtracted, so the
+    firmware clips setpoints to a position **0.099 rev (3.1 mm) past the metal**
+    — and no firmware guard can see the resulting stall: the deviation guard is
+    COMMAND-relative (encoder and setpoint agree once the slider is jammed at the
+    clip) and the lead clamp anchors the setpoint to the encoder rather than
+    refusing it.
+
+    So V3 scores against the MEASURED stop. This pins the gap rather than the
+    driver's copy of it: when FW 18 pulls the clip back below the metal, this
+    test is what says so.
+    """
+    gap = ucb.HAND_MOTOR_MAX_POSITION_REV - ucb.HAND_METAL_REV_MEASURED
+    assert gap == pytest.approx(0.099, abs=5e-4)
+    assert gap > 0.0, (
+        'the clip is no longer past the metal — if FW 18 landed, retire this '
+        'test and V3 can score against the clip again')
+    assert '2026-09-06' in ucb.HAND_METAL_PROVENANCE
+    assert '352' in ucb.HAND_METAL_PROVENANCE
+
+
+def test_the_chained_plan_bar_is_the_COORDINATORS_release_budget():
+    """V2's FAIL bar mirrors ``reload_coordinator_node._UNIFIED_PLAN_BUDGET_S``.
+
+    Restated as a literal because importing the coordinator would drag rclpy into
+    the pure core, which ``test_the_pure_core_imports_no_ros_at_module_scope``
+    forbids; pinned here instead, on the same argument as every other mirror in
+    this file. It is load-bearing in one direction: a copy that drifted HIGH
+    would pass a rung the production session cannot fly.
+    """
+    from jugglebot import reload_coordinator_node as rcn
+    assert ucb.UNIFIED_PLAN_BUDGET_MS == pytest.approx(
+        float(rcn._UNIFIED_PLAN_BUDGET_S) * 1000.0)
+    assert ucb.CHAINED_PLAN_ADVISORY_MS < ucb.UNIFIED_PLAN_BUDGET_MS
+    assert ucb.SINGLE_PLAN_BAR_MS < ucb.CHAINED_PLAN_ADVISORY_MS
+
+
+def test_the_service_timeout_is_not_longer_than_the_machine_ever_waits():
+    """``--timeout-s`` must not outlast the coordinator's own client wait.
+
+    A bench that waits longer than ``_SERVICE_WAIT_S`` calls a solve "answered"
+    that a production session would already have abandoned — with the plan
+    installed and streaming either way.
+    """
+    from jugglebot import reload_coordinator_node as rcn
+    default = ucb.build_parser().parse_args(['--rung', 'carry']).timeout_s
+    assert default == pytest.approx(float(rcn._SERVICE_WAIT_S))
+
+
+def test_the_stage_split_note_explains_cont_on_a_JOINED_install():
+    """`cont` is documented as a residual and on a join it is a third gate pass.
+
+    ``unified_cycle.STAGE_KEYS`` calls it "the rest of the construction", which
+    is honest for one window (a millisecond or two) and misleading for a joined
+    install, where it is dominated by the join's own ``validate_cycle`` over the
+    concatenated plan — 247 ms measured, 99.7 % of the join. An operator reading
+    "residual" goes looking for overhead that is not there.
+    """
+    note = ucb.stage_wall_note(
+        'installed qp=181.2 tilt=3.4 dec=8.1 val=247.9 cont=247.0 ms')
+    assert 're-validate' in note
+    assert 'cont ~= val' in note
+    assert ucb.stage_wall_note('REJECTED_CYCLE_INFEASIBLE(HAND_STROKE: ...)') == ''
+    assert ucb.stage_wall_note(None) == ''
 
 
 def test_the_session_limits_match_the_gates_that_planned_them():
@@ -707,12 +778,23 @@ def _plan(**kw):
 
 
 def _trace(n=40, cmd=0.32, enc=0.32, state=ucb.AXIS_STATE_CLOSED_LOOP,
-           active=True, end_idle=True):
+           active=True, ran_out=True, gap_ms=24.0):
+    """A healthy run's trace.
+
+    ``ran_out`` shapes the LAST row the way a finished cycle actually looks:
+    ``plan_time_remaining_s`` at 0.0 with ``cycle_active`` STILL True. That is
+    not a stylistic choice — ``cycle_active`` is a type test on the installed
+    plan and is never cleared at expiry, so the pre-2026-09-06 shape (last row
+    ``cycle_active=False``) was a run that had been SUPERSEDED, which is what
+    this driver's own ``hold`` abort produces.
+    """
     rows = [{'t': i * 0.05, 'hand_cmd_rev': cmd, 'hand_enc_rev': enc,
              'hand_vel_rps': 0.0, 'hand_axis_state': state,
+             'max_emit_gap_ms': gap_ms,
+             'plan_time_remaining_s': max(0.0, 1.4 - i * 0.05),
              'cycle_active': active} for i in range(n)]
-    if end_idle and rows:
-        rows[-1]['cycle_active'] = False
+    if rows:
+        rows[-1]['plan_time_remaining_s'] = 0.0 if ran_out else 0.4
     return rows
 
 
@@ -723,9 +805,9 @@ def _v(checks):
 def test_a_clean_carry_scores_all_PASS():
     checks = ucb.evaluate('carry', _plan(), _trace(), legacy_duration_s=1.5)
     assert ucb.verdict_rc(checks) == 0
-    assert _v(checks) == {'V1': 'PASS', 'V2': 'PASS', 'V3': 'PASS',
-                          'V4': 'PASS', 'V5': 'PASS', 'V6': 'PASS',
-                          'V7': 'PASS'}
+    assert _v(checks) == {'V1': 'PASS', 'V2': 'PASS', 'V2b': 'PASS',
+                          'V3': 'PASS', 'V4': 'PASS', 'V5': 'PASS',
+                          'V6': 'PASS', 'V7': 'PASS'}
 
 
 def test_a_refused_plan_fails_V1_and_carries_the_planners_own_words():
@@ -816,18 +898,41 @@ def test_ticks_with_no_ENCODER_reading_SKIP_V4_rather_than_scoring_zero():
 
 
 def test_a_last_tick_with_no_status_is_not_read_as_the_cycle_FINISHING():
-    """V6 needs POSITIVE evidence that the window cleared.
+    """V6 needs POSITIVE evidence that the window ran out.
 
-    `cycle_active` is None on a tick where `trajectory/status` had not been seen;
-    `not None` is True, so the old expression called a run whose status vanished
-    a clean finish. The cycle may still be installed — and this driver supersedes
-    nothing, which is precisely why that shape has to be a FAIL.
+    `plan_time_remaining_s` and `cycle_active` are both None on a tick where
+    `trajectory/status` had not been seen, and neither says anything about
+    whether the window ended. The cycle may still be installed — and this driver
+    supersedes nothing, which is precisely why that shape has to be a FAIL.
     """
     trace = _trace()
     trace[-1]['cycle_active'] = None
+    trace[-1]['plan_time_remaining_s'] = None
     c = _by_id(ucb.evaluate('carry', _plan(), trace, legacy_duration_s=1.5))['V6']
     assert c['verdict'] == 'FAIL'
-    assert 'last tick reported None' in c['detail'], c
+    assert 'plan_time_remaining_s=None' in c['detail'], c
+
+
+def test_V6_reads_a_STILL_INSTALLED_expired_cycle_as_the_clean_finish():
+    """`cycle_active` is never cleared at expiry, so requiring False is a bug.
+
+    It is `isinstance(active_plan, CyclePlan)` — and a REST-terminal cycle IS the
+    streaming plan, holding its terminal pose until something supersedes it. The
+    old V6 could therefore only PASS on a run that had been superseded, which for
+    this driver means its own `hold` abort ran. Sitting three's UH-3 carry hit
+    exactly that: the window expired cleanly and V6 said FAIL.
+    """
+    finished = _by_id(ucb.evaluate('carry', _plan(), _trace(ran_out=True),
+                                   legacy_duration_s=1.5))['V6']
+    assert finished['verdict'] == 'PASS'
+    # SUPERSEDED (cycle_active False at the end) is NOT the clean finish — it is
+    # the abort path, and it must not read as success.
+    superseded = _trace(ran_out=True)
+    superseded[-1]['cycle_active'] = False
+    c = _by_id(ucb.evaluate('carry', _plan(), superseded,
+                            legacy_duration_s=1.5))['V6']
+    assert c['verdict'] == 'FAIL'
+    assert 'SUPERSEDED' in c['detail']
 
 
 def test_V3_scores_the_ENCODER_against_metal_not_the_commanded_peak():
@@ -850,7 +955,9 @@ def test_V3_scores_the_ENCODER_against_metal_not_the_commanded_peak():
     c = _by_id(ucb.evaluate('throw', _plan(hand_peak_rev=9.643),
                             _trace(enc=10.4693)))['V3']
     assert c['verdict'] == 'PASS'
-    assert '0.33' in c['detail']
+    # 0.2317 rev to the MEASURED 10.701 stop (it read 0.33 while the reference
+    # was the firmware's 10.8 clip, which is 3.1 mm past the metal).
+    assert '0.2317' in c['detail']
     assert '9.643' in c['detail'], 'the commanded margin is REPORTED beside it'
     # Into metal: FAIL.
     assert _by_id(ucb.evaluate('throw', _plan(hand_peak_rev=9.643),
@@ -867,17 +974,55 @@ def test_V3_skips_with_no_encoder_ticks_but_still_reports_the_command():
     assert 'commanded peak 9.6430' in c['detail']
 
 
-def test_the_chained_install_is_judged_against_the_recorded_two_solve_cost():
-    """424 ms warm for a joined install is a RECORDED deviation, not a failure.
+def test_the_chained_install_is_judged_against_the_COORDINATORS_release_budget():
+    """The chained bar is the number that decides whether a SESSION can fly.
 
-    The owner's budget is split core <= 50 / total <= 250 ms for ONE solve; the
-    chained throw pays two inside one callback. Failing it against 250 would
-    fail every throw rung on a number that is already written down.
+    Past `_UNIFIED_PLAN_BUDGET_S` the production coordinator does not log a slow
+    solve — it misses its release, the skew eats the 0.5 s grace, and the cycle
+    terminalises ABORTED_NO_RELEASE with the ball in the air. So a joined install
+    slower than that has proven the machine cannot run a session at these
+    settings, whatever else the rung showed. The old bar was a bare 500 ms
+    literal: under the budget that matters and over the cost that is normal.
     """
-    assert _by_id(ucb.evaluate('throw', _plan(plan_wall_ms=424.0, chained=True),
-                               []))['V2']['verdict'] == 'PASS'
+    # Sitting three's joined solves are 500-600 ms — PASS, and QUIET: that is
+    # the cost this shape actually has, so it must not read as a deviation.
+    quiet = _by_id(ucb.evaluate('throw', _plan(plan_wall_ms=560.0, chained=True),
+                                []))['V2']
+    assert quiet['verdict'] == 'PASS'
+    assert 'ADVISORY' not in quiet['detail']
+    # Past the advisory but under the budget: PASS, and says so out loud.
+    c = _by_id(ucb.evaluate('throw', _plan(plan_wall_ms=850.0, chained=True),
+                            []))['V2']
+    assert c['verdict'] == 'PASS'
+    assert 'ADVISORY' in c['detail']
+    # Past the coordinator's budget: FAIL.
+    assert _by_id(ucb.evaluate(
+        'throw', _plan(plan_wall_ms=ucb.UNIFIED_PLAN_BUDGET_MS + 1.0,
+                       chained=True), []))['V2']['verdict'] == 'FAIL'
+    # A SINGLE window is still judged against the owner's 250 ms total.
     assert _by_id(ucb.evaluate('carry', _plan(plan_wall_ms=424.0),
                                []))['V2']['verdict'] == 'FAIL'
+
+
+def test_V2b_FAILS_a_run_whose_solve_GAPPED_the_emitter():
+    """The verdict that would have caught the 2026-09-06 UH-3 E-STOP.
+
+    That run's solve evicted the 40 Hz emitter for 225-942 ms and latched the
+    can-bridge's 250 ms setpoint watchdog — while every other verdict on it read
+    healthy. 125 ms is five nominal ticks and half the watchdog.
+    """
+    ok = _by_id(ucb.evaluate('carry', _plan(), _trace(gap_ms=40.0),
+                             legacy_duration_s=1.5))['V2b']
+    assert ok['verdict'] == 'PASS'
+    bad = _trace(gap_ms=26.0)
+    bad[17]['max_emit_gap_ms'] = 804.0            # sitting three's own sp_age_ms
+    c = _by_id(ucb.evaluate('carry', _plan(), bad, legacy_duration_s=1.5))['V2b']
+    assert c['verdict'] == 'FAIL'
+    assert '804.0' in c['detail']
+    # A trace with no such column SKIPS rather than passing vacuously.
+    blind = [dict(r, max_emit_gap_ms=None) for r in _trace()]
+    assert _by_id(ucb.evaluate('carry', _plan(), blind,
+                               legacy_duration_s=1.5))['V2b']['verdict'] == 'SKIP'
 
 
 def test_the_release_velocity_check_compares_the_plan_with_the_ballistics():
@@ -908,24 +1053,45 @@ def test_a_missing_legacy_duration_SKIPS_rather_than_passing_T_H5():
     assert 'build_move' in c['detail']
 
 
+def test_the_legacy_duration_reads_total_duration_and_REPORTS_why_it_failed():
+    """`TrajectoryPlan` has `total_duration`, not `duration`.
+
+    On 2026-09-06 the bare `except Exception` turned that AttributeError into
+    "motion package not importable here" and sent the operator to check their
+    colcon build. The field name is fixed and the exception's repr now rides in
+    the SKIP detail, so the next failure names itself.
+    """
+    from jugglebot.motion.trajectory.plan import TrajectoryPlan
+    assert 'total_duration' in TrajectoryPlan.__slots__
+    assert 'duration' not in TrajectoryPlan.__slots__
+    # A failure inside the helper is RECORDED, and the SKIP quotes it.
+    ucb.legacy_move_duration_s('not a pose', 'nor this', (1.0, 1.0, 1.0))
+    assert ucb._LEGACY_DURATION_ERR, 'the reason was swallowed again'
+    c = _by_id(ucb.evaluate('carry', _plan(), _trace(),
+                            legacy_duration_s=None))['V7']
+    assert ucb._LEGACY_DURATION_ERR[0] in c['detail']
+
+
 def test_an_empty_trace_SKIPS_the_telemetry_checks_and_does_not_fail_them():
     checks = _by_id(ucb.evaluate('carry', _plan(), []))
     assert checks['V4']['verdict'] == 'SKIP'
     assert checks['V5']['verdict'] == 'SKIP'
     assert checks['V6']['verdict'] == 'SKIP'
+    assert checks['V2b']['verdict'] == 'SKIP'
     assert ucb.verdict_rc(ucb.evaluate('carry', _plan(), [])) == 0
 
 
-def test_a_cycle_that_never_cleared_FAILS_V6():
-    """A plan still installed after its duration + tail is a finding.
+def test_a_window_still_RUNNING_at_the_last_tick_FAILS_V6():
+    """The driver stopped watching while the window was still open.
 
-    Either the install never took (nothing streamed a cycle) or the machine is
-    still inside a window the driver stopped watching — and this tool
-    supersedes nothing, so the second one is the shape that matters.
+    Either the watch was too short or the plan is longer than its response said,
+    and this tool supersedes nothing — so the machine is still moving after the
+    run ended, which is the shape that matters.
     """
-    trace = _trace(end_idle=False)
-    assert _by_id(ucb.evaluate('carry', _plan(), trace,
-                               legacy_duration_s=1.5))['V6']['verdict'] == 'FAIL'
+    trace = _trace(ran_out=False)
+    c = _by_id(ucb.evaluate('carry', _plan(), trace, legacy_duration_s=1.5))['V6']
+    assert c['verdict'] == 'FAIL'
+    assert 'ran out=False' in c['detail']
 
 
 def test_verdict_rc_is_zero_iff_no_FAIL():

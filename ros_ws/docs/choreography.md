@@ -537,7 +537,7 @@
 ### `trajectory/hold`
 
 - **servers:** `trajectory_node`
-- **clients:** _none_
+- **clients:** `reload_coordinator_node`
 - **type:** `std_srvs.srv.Trigger`
 
 ### `trajectory/plan_cycle`
@@ -643,7 +643,6 @@ broken wire cannot hide among them.
 - `toss/record` — topic with no subscribers
 - `toss/reload_calibration` — service with no clients
 - `trajectory/diagnostics` — topic with no subscribers
-- `trajectory/hold` — service with no clients
 - `trajectory/reload_tilt_map` — service with no clients
 - `trajectory/set_limits` — service with no clients
 - `trajectory/timed_target` — service with no clients

@@ -45,8 +45,10 @@ import numpy as np
 import pytest
 
 import jugglebot.hardware_config as hw
+from jugglebot.motion import levelling
 from jugglebot.motion import unified_cycle as uc
 from jugglebot.motion.geometry import StewartGeometry
+from jugglebot.motion.ik_solver import rotvec_to_rot_matrix
 from jugglebot.motion.trajectory import KnotEmitter
 from jugglebot.motion.trajectory import ballistics_bc
 from jugglebot.motion.trajectory import cup_cycle as cc
@@ -1953,3 +1955,384 @@ def test_merge_stage_wall_is_none_only_when_neither_side_has_one():
     assert merged['qp'] == pytest.approx(1.0)
     assert merged['cont'] == pytest.approx(0.5)
     assert set(merged) == set(uc.STAGE_KEYS)
+
+
+# ---------------------------------------------------------------------------
+# The levelling frame — contract row E8 (2026-09-06)
+# ---------------------------------------------------------------------------
+#
+# WHAT THESE DEFEND.  Until 2026-09-06 the `CyclePlan` never passed through the
+# gravity-levelling correction at all: knot 0 was pinned in the PLAN frame off
+# the seed while the release and catch pins were GRAVITY-frame off the
+# ballistics, so `tilt_schedule` interpolated between endpoints in two different
+# frames.  On the bench (bag `2026-09-06_19-*`) that cost a 0.6682 deg tilt step
+# before every throw, a -9 mrad launch error in -y on 7/7 throws — the OPPOSITE
+# sign to the legacy path's +8.5 mrad — and 9-38 mm of lateral drift into the
+# rim.  `ros_ws/docs/levelling_frame.md` s "E8" carries the full argument.
+#
+# All numbers below were measured by `/tmp/probe_level.py` (uncommitted, venv
+# interpreter, 2026-09-06), run more than once with identical output.
+
+#: The correction measured on 2026-09-06.  The bag's commanded prepare attitude
+#: was rx = -11.663 mrad and the ingest writes ``rotvec(R) = [-tx, -ty, 0]``, so
+#: the offset behind it is +0.011663 rad about x.
+_E8_OFFSET = (0.011663, 0.0)
+
+
+def _e8_correction():
+    return levelling.correction_from_offset(*_E8_OFFSET)
+
+
+def _physical(pose6, correction):
+    """The platform's attitude against GRAVITY for a commanded plan-frame pose.
+
+    ``R_physical = R_gravity^T @ R_commanded`` — the exact inverse of what the
+    ingest composed, i.e. what the machine actually holds once its own mounting
+    error has had its say.  This is the frame a thrown ball leaves in.
+    """
+    return levelling.uncorrect_pose(np.asarray(pose6, dtype=float),
+                                    correction)[3:6]
+
+
+def _levelled_rest_state(correction, cup_mm=REST_MM):
+    """A resting state at the LEVELLED prepare pose — the seed the bench had.
+
+    The coordinator's PREPARE issues a `go_to_pose` whose INTENT orientation is
+    level; `trajectory_node`'s E3 ingest corrects it, so what the machine is
+    commanded to hold — and therefore what `_current_state` samples and what this
+    seed carries — is the PLAN-frame pose, tilted by the correction.
+    """
+    cfg = cr.RealizeConfig()
+    slider_mm = float(cup_mm[2]) - cfg.cup_z_base_mm
+    rev = ((slider_mm - cfg.slider_rev_zero_mm) / 1000.0
+           * cr.LINEAR_GAIN_REV_PER_M)
+    intent = np.array([cup_mm[0], cup_mm[1], cfg.active_z_mm, 0.0, 0.0, 0.0])
+    pose = levelling.correct_pose(intent, correction)
+    return uc.CycleState.at_rest(pose, rev, cfg,
+                                 levelling_correction=correction), pose
+
+
+#: A vertical throw to a 0.5 m apex: ``T = 2*sqrt(2h/g)``.
+_E8_APEX_M = 0.5
+_E8_FLIGHT_S = 2.0 * math.sqrt(2.0 * _E8_APEX_M / 9.806)
+
+
+def _e8_launch_goals():
+    return _goals(period_s=0.6, flight_s=_E8_FLIGHT_S, catch_frac=0.0,
+                  throw_site_mm=THROW_MM, throw_target_mm=THROW_MM)
+
+
+def test_the_plan_frame_shift_drops_only_the_rz_second_order_term(limits, geom):
+    """``_tilts_to_plan`` projects away an ``rz`` the realisation cannot express.
+
+    ``R_gravity @ R_tilt`` of two pure-tilt rotations carries a second-order
+    ``rz`` term, and ``decompose`` pins ``rz`` to 0 — the cup is a surface of
+    revolution and the realisation has no yaw to give — so the projection is
+    forced.  What it costs has to be MEASURED rather than asserted, because the
+    honest bound is not "it is small": it is "the whole first-order difference
+    between the matrix composition and the plain additive shift lives in ``rz``",
+    which is what BCH predicts (``a x b`` of two pure-tilt vectors is pure ``z``)
+    and what the third column below confirms.
+
+    The sweep is the regime, not a lucky point: the 11.663 mrad session offset
+    against every aim from level to the 12 deg ceiling, at 17 azimuths each.
+
+    MEASURED (2026-09-06, ``/tmp/probe_level.py``):
+      * worst ``|rz|`` discarded ................ 1.221e-3 rad
+      * worst change in the commanded cup AXIS .. 1.276e-4 rad  (0.0073 deg)
+      * worst ``(rx, ry)`` departure from additive 4.266e-5 rad
+
+    The middle number is the one that matters physically — it is 91x smaller
+    than the 11.663 mrad this row corrects, and 0.005 mm of landing at the 0.5 m
+    apex.
+    """
+    correction = _e8_correction()
+    worst_rz = worst_axis = worst_additive = 0.0
+    for deg in np.linspace(0.0, tg.MAX_TILT_DEG, 25):
+        for phi in np.linspace(0.0, 2.0 * math.pi, 17):
+            tilt = math.radians(deg) * np.array([math.cos(phi), math.sin(phi)])
+            pose = np.zeros(6)
+            pose[3:5] = tilt
+            full = levelling.correct_pose(pose, correction)[3:6]
+            projected = uc._tilts_to_plan(tilt.reshape(1, 2), correction)[0]
+            assert np.array_equal(projected, full[:2])
+            worst_rz = max(worst_rz, abs(float(full[2])))
+            worst_additive = max(worst_additive, float(np.max(np.abs(
+                projected - (tilt - np.asarray(_E8_OFFSET))))))
+            worst_axis = max(worst_axis, float(np.linalg.norm(
+                tg.cup_axis(*projected)
+                - rotvec_to_rot_matrix(full) @ np.array([0.0, 0.0, 1.0]))))
+    assert worst_rz == pytest.approx(1.221e-3, rel=0.02)
+    assert worst_axis == pytest.approx(1.276e-4, rel=0.02)
+    assert worst_additive == pytest.approx(4.266e-5, rel=0.02)
+    # The claim that makes the projection cheap, stated as a bound rather than
+    # as a measurement: the axis error is orders below the thing being fixed.
+    assert worst_axis < float(np.hypot(*_E8_OFFSET)) / 50.0
+
+
+def test_no_correction_and_the_identity_are_both_bit_identical(limits, geom):
+    """The pure and sim callers are untouched, to the last bit, both ways.
+
+    Two separate claims and both are load-bearing.  ``None`` must SHORT-CIRCUIT
+    (``sim/unified_gate.py``, ``sim/cycle_gate.py`` and every fixture in this
+    file pass no correction, and the Phase-1 acceptance bars are bit-for-bit
+    pins), and an IDENTITY correction — what an UNLEVELLED node builds, which is
+    the state every session starts in — must be a no-op rather than a
+    matrix round trip that perturbs the low bits.  If the second ever stopped
+    holding, an unlevelled bench would silently plan a *different* trajectory
+    from a levelled one at zero offset.
+    """
+    plan_none, meta_none = uc.plan_launch(_e8_launch_goals(), _rest_state(),
+                                          limits, geom)
+    assert meta_none.levelling_correction is None
+
+    cfg = cr.RealizeConfig()
+    ident = levelling.identity_correction()
+    state = dataclasses.replace(_rest_state(cfg=cfg),
+                                levelling_correction=ident)
+    plan_i, meta_i = uc.plan_launch(_e8_launch_goals(), state, limits, geom)
+    assert np.array_equal(plan_i.pose, plan_none.pose)
+    assert np.array_equal(plan_i.pose_vel, plan_none.pose_vel)
+    assert np.array_equal(plan_i.hand_rev, plan_none.hand_rev)
+    assert np.array_equal(plan_i.hand_vel_rps, plan_none.hand_vel_rps)
+    assert np.array_equal(meta_i.tilts, meta_none.tilts)
+
+
+def test_without_the_correction_the_release_leans_by_the_whole_offset(limits,
+                                                                     geom):
+    """THE DEFECT, planned from the seed the bench actually had.
+
+    The failing half of the pair.  Seed the LEVELLED prepare pose but hand the
+    planner no frame, and the plan is internally consistent and physically
+    wrong: knot 0 opens exactly where the machine is (the seed pin works), the
+    release is commanded at mechanical zero, and the platform therefore leans the
+    WHOLE correction at the one instant the ball leaves.
+
+    MEASURED (2026-09-06, ``/tmp/probe_level.py``, and matching the bag): the
+    physical attitude at release is 11.663 mrad about +x, i.e. the cup axis tips
+    toward **-y** — which is the sign the bag recorded (-9 mrad in -y) and the
+    OPPOSITE of the legacy path's +8.5 mrad aim bias.  As a tilt step across the
+    window that is 0.6682 deg, the step the operator reported seeing before every
+    throw, and as a landing it is ``4*h*sin(theta)`` = 23.3 mm at this apex —
+    against a ~35 mm cup radius.
+    """
+    correction = _e8_correction()
+    _, seed_pose = _levelled_rest_state(correction)
+    unframed = dataclasses.replace(
+        _levelled_rest_state(correction)[0], levelling_correction=None)
+    plan, meta = uc.plan_launch(_e8_launch_goals(), unframed, limits, geom)
+
+    # The seed pin works — this was never the bug.
+    assert np.array_equal(plan.pose[0][3:5], seed_pose[3:5])
+    assert np.allclose(_physical(plan.pose[0], correction), 0.0, atol=1e-12)
+    # ...and the release is mechanical zero, i.e. the whole offset off gravity.
+    assert np.allclose(plan.pose[-1][3:5], 0.0, atol=1e-12)
+    lean = _physical(plan.pose[-1], correction)
+    assert float(np.linalg.norm(lean)) == pytest.approx(0.011663, abs=1e-9)
+    assert lean[0] > 0.0 and abs(lean[1]) < 1e-12
+    step_deg = float(np.degrees(np.linalg.norm(
+        _physical(plan.pose[-1], correction)
+        - _physical(plan.pose[0], correction))))
+    assert step_deg == pytest.approx(0.6682, abs=1e-3)
+    drift_mm = 4.0 * _E8_APEX_M * 1e3 * math.sin(float(np.linalg.norm(lean)))
+    assert drift_mm == pytest.approx(23.3, abs=0.1)
+
+
+def test_the_release_is_gravity_level_and_knot_0_is_the_seed_exactly(limits,
+                                                                    geom):
+    """THE FIX.  Same seed, same goal, the frame carried — and both ends right.
+
+    The two assertions are in tension and that is the point: the release must be
+    LEVEL against gravity (so the ball leaves along the aim) while knot 0 must be
+    the seed's own float (so the install is continuous).  They can only both hold
+    if the schedule is built in one frame and re-expressed into the other, which
+    is what ``_realize`` does.
+
+    MEASURED (2026-09-06, ``/tmp/probe_level.py``): physical aim at release
+    11.663 -> 0.000000 mrad; knot-0 continuity drift 0.000e+00 rad, exactly, not
+    within a tolerance; commanded plan-frame attitude at release equal to the
+    correction itself.
+    """
+    correction = _e8_correction()
+    state, seed_pose = _levelled_rest_state(correction)
+    plan, meta = uc.plan_launch(_e8_launch_goals(), state, limits, geom)
+
+    # Knot 0 is the seed BIT FOR BIT — the transpose round trip is exact as a
+    # rotation, but `_install_continuity_ok` measures leg revolutions, so the
+    # seed's own float is written back rather than recovered.
+    assert np.array_equal(plan.pose[0][3:5], seed_pose[3:5])
+    assert np.array_equal(meta.tilts[0], seed_pose[3:5])
+
+    # The release is GRAVITY-level, and the commanded value is the correction.
+    assert np.allclose(_physical(plan.pose[-1], correction), 0.0, atol=3e-5)
+    assert np.allclose(plan.pose[-1][3:5], seed_pose[3:5], atol=1e-12)
+    assert float(np.linalg.norm(_physical(plan.pose[-1], correction))) < 3e-5
+
+    # No physical tilt step across the window at all — the operator's symptom.
+    step = _physical(plan.pose[-1], correction) - _physical(plan.pose[0],
+                                                            correction)
+    assert float(np.degrees(np.linalg.norm(step))) < 2e-3
+
+    # The frame is recorded on the meta, which is what every continuation reads.
+    assert meta.levelling_correction is correction
+
+
+def test_the_lever_arm_residual_is_unchanged_by_the_fix(limits, geom):
+    """A characterisation, so ~1.35 mm is not later re-diagnosed as a regression.
+
+    ``decompose`` computes the cup lever shift from the tilt it is HANDED, so
+    with a plan-frame series the compensation is taken at the commanded tilt
+    while the platform physically holds the gravity-frame one, and the cup
+    opening lands ``|arm| * |correction|`` from the site.  The number is the same
+    before and after this fix — before it the centroid was right and the attitude
+    was 11.663 mrad wrong, which puts the physical cup in exactly the same place
+    — so the fix is strictly non-regressive here and strictly better on aim.
+
+    MEASURED (2026-09-06, ``/tmp/probe_level.py``): 1.349379 mm at the 860 mm
+    release (arm = 115.7 mm), identical to 1e-9 mm across the fix.  Closing it
+    needs a ``cup_realize`` change (gravity tilt for the geometry, plan tilt for
+    the pose channel) and is argued in ``levelling_frame.md`` s E8.
+    """
+    correction = _e8_correction()
+    state, _ = _levelled_rest_state(correction)
+    unframed = dataclasses.replace(state, levelling_correction=None)
+    goals = _e8_launch_goals()
+    after, meta_a = uc.plan_launch(goals, state, limits, geom)
+    before, meta_b = uc.plan_launch(goals, unframed, limits, geom)
+
+    def cup_opening_xy(plan, meta):
+        arm = tg.cup_lever_arm_mm(float(meta.cup_plan.pos[-1, 2]) * 1000.0)
+        axis = (rotvec_to_rot_matrix(_physical(plan.pose[-1], correction))
+                @ np.array([0.0, 0.0, 1.0]))
+        return plan.pose[-1][:2] + arm * axis[:2]
+
+    goal_xy = np.asarray(THROW_MM[:2], dtype=float)
+    err_before = float(np.linalg.norm(cup_opening_xy(before, meta_b) - goal_xy))
+    err_after = float(np.linalg.norm(cup_opening_xy(after, meta_a) - goal_xy))
+    assert err_before == pytest.approx(1.349379, abs=1e-5)
+    assert err_after == pytest.approx(err_before, abs=1e-9)
+    arm = tg.cup_lever_arm_mm(float(meta_a.cup_plan.pos[-1, 2]) * 1000.0)
+    assert err_after == pytest.approx(abs(arm) * float(np.hypot(*_E8_OFFSET)),
+                                      rel=1e-4)
+
+
+def test_a_chained_window_inherits_the_frame_and_the_seam_holds(limits, geom):
+    """``release_state_from_meta`` carries the frame; the seam stays a seam.
+
+    The chained pin comes from ``detach_axis`` — a direction a ball physically
+    left along, so already gravity-referenced — and both halves therefore apply
+    the SAME matrix to the SAME float.  Without the carry the second window would
+    plan in the gravity frame off a plan-frame predecessor and put the whole
+    11.663 mrad (~1.8 mm of cup lever through the 744.3 mm arm) into one 25 ms
+    knot; with it the seam is 1.5e-13 mm.
+
+    MEASURED (2026-09-06, ``/tmp/probe_level.py``): worst seam |d| over all six
+    pose channels 1.512e-13, against the module's own ``_SEAM_POS_TOL_MM``.
+    """
+    correction = _e8_correction()
+    state, _ = _levelled_rest_state(correction)
+    plan_a, meta_a = uc.plan_launch(_e8_launch_goals(), state, limits, geom)
+    chained = uc.release_state_from_meta(meta_a, plan_a)
+    assert chained.levelling_correction is correction
+
+    plan_b, meta_b = uc.plan_landing(
+        _goals(period_s=1.0, catch_frac=None, catch_t_s=0.6), chained,
+        limits, geom)
+    seam = float(np.max(np.abs(plan_a.pose[-1] - plan_b.pose[0])))
+    assert seam < 1e-11
+    assert seam < uc._SEAM_POS_TOL_MM
+
+    joined, meta = uc.extend(plan_a, meta_a, plan_b, meta_b, limits, geom)
+    assert meta.levelling_correction is correction
+    assert np.array_equal(joined.pose[:plan_a.n_knots], plan_a.pose)
+    # The landing ends at rest and level AGAINST GRAVITY, not against the frame.
+    assert np.allclose(_physical(joined.pose[-1], correction), 0.0, atol=3e-5)
+
+
+def test_extend_refuses_two_windows_planned_in_different_frames(limits, geom):
+    """A splice across a frame change is refused by NAME, before the seam gap.
+
+    ``_seam_check`` would refuse it anyway — the two terminal poses differ by the
+    whole correction — but the operator would then be reading a millimetre gap
+    with no cause attached.  The frame is checked by identity first so the
+    message names what actually went wrong, and says how to fix it.
+    """
+    correction = _e8_correction()
+    state, _ = _levelled_rest_state(correction)
+    plan_a, meta_a = uc.plan_launch(_e8_launch_goals(), state, limits, geom)
+    chained = uc.release_state_from_meta(meta_a, plan_a)
+    plan_b, meta_b = uc.plan_landing(
+        _goals(period_s=1.0, catch_frac=None, catch_t_s=0.6), chained,
+        limits, geom)
+
+    with pytest.raises(uc.CycleInfeasible) as exc:
+        uc.extend(plan_a, meta_a, plan_b,
+                  dataclasses.replace(meta_b, levelling_correction=None),
+                  limits, geom)
+    assert base_outcome(exc.value.outcome()) == uc.OUTCOME_CODE
+    assert outcome_subcode(exc.value.outcome()) == uc.CHAIN_DISCONTINUITY
+    assert 'levelling frames' in str(exc.value)
+
+
+def test_replan_tail_reuses_the_plans_own_frame(limits, geom):
+    """A re-plan reads the frame off the META — C-LEVEL-1's in-flight rule.
+
+    The alternative — re-reading the node's live correction — would re-frame a
+    plan the emitter is ALREADY STREAMING the head of, stepping the commanded
+    tilt by the whole delta at the splice.  Reading `meta.levelling_correction`
+    makes the in-flight rule structural rather than a policy someone has to
+    remember, and it is what keeps the head bit-identical on all four channels.
+    """
+    correction = _e8_correction()
+    state, _ = _levelled_rest_state(correction)
+    plan_a, meta_a = uc.plan_launch(_e8_launch_goals(), state, limits, geom)
+    plan, meta = uc.plan_steady(_goals(),
+                                uc.release_state_from_meta(meta_a, plan_a),
+                                limits, geom)
+    assert meta.levelling_correction is correction
+
+    new_site = CATCH_MM + np.array([15.0, 8.0, 0.0])
+    spliced, new_meta = uc.replan_tail(plan, meta, 0.0, new_site,
+                                       CATCH_V_MM_S, limits, geom, lead_s=0.10)
+    k_s = uc.splice_knot(meta, 0.0, 0.10)
+    assert np.array_equal(spliced.pose[:k_s], plan.pose[:k_s])
+    assert np.array_equal(spliced.pose_vel[:k_s], plan.pose_vel[:k_s])
+    assert np.array_equal(spliced.hand_rev[:k_s], plan.hand_rev[:k_s])
+    assert np.array_equal(new_meta.tilts[k_s], meta.tilts[k_s])
+    assert new_meta.levelling_correction is correction
+    # The re-planned window still throws GRAVITY-level (its release pin is the
+    # old one, held fixed, re-expressed through the same frame).
+    assert np.allclose(_physical(spliced.pose[-1], correction),
+                       _physical(plan.pose[-1], correction), atol=1e-9)
+
+
+def test_the_knot_0_write_back_only_fires_when_a_pin_was_ASKED_for(
+        monkeypatch, limits, geom):
+    """The frame shift must not manufacture the step the seed pin prevents.
+
+    ``_realize`` writes the seed's own float back onto knot 0 after the frame
+    shift, so the continuity pin survives the round trip exactly.  That
+    write-back is only correct when ``tilt_schedule`` was actually PINNED there:
+    applied to a knot 0 the schedule was left free to choose, it leaves knot 0 on
+    the seed while knot 1 follows the smoother — a manufactured step at the exact
+    seam the pin exists to keep continuous.
+
+    Caught by ``tests/ros/test_unified_cycle_integration.py::
+    test_without_the_seed_pin_the_carry_is_REFUSED_at_the_install``, which drives
+    the un-pinned path deliberately and expects ``STALE_STATE`` from the install
+    guard; the write-back turned that into ``LIMIT_JERK`` from the gate — the
+    right refusal for the wrong reason, which is the kind of thing that reads as
+    a planner fault for a whole sitting.  Pinned here in the module that owns the
+    write-back so the two cannot drift apart.
+    """
+    correction = _e8_correction()
+    state, seed_pose = _levelled_rest_state(correction)
+    monkeypatch.setattr(uc, '_start_tilt_for', lambda st: None)
+    plan, meta = uc.plan_launch(_e8_launch_goals(), state, limits, geom)
+    # Knot 0 is whatever the schedule chose, shifted into the plan frame — NOT
+    # the seed, and above all not the seed beside an unshifted knot 1.
+    assert not np.array_equal(meta.tilts[0], seed_pose[3:5])
+    step = float(np.max(np.abs(meta.tilts[1] - meta.tilts[0])))
+    assert step < math.radians(1.0), (
+        'knot 0 is discontinuous with knot 1 — the write-back fired on an '
+        'unpinned schedule')

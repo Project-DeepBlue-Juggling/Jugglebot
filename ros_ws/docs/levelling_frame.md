@@ -126,6 +126,12 @@ entirely), and a choke point there has no way to tell them apart. It would
 double-apply on every FK-seeded hold. The discrimination is only available at
 ingest, where the pose's provenance is still known.
 
+(That census counts poses reaching a `planner.build_*` entry, and it is still
+exact. **E8 reaches none** — the unified cycle has its own planner and its
+attitude is derived from ballistics rather than ingested — which is precisely how
+it went unenumerated for four months. Read "six" here as "six of the surfaces
+this census can see", not as the size of the contract.)
+
 So the invariant is deliberately distributed across an *enumerated* set, and the
 enumeration is what `tests/ros/test_levelling_frame.py` freezes. Anyone reading
 "single enforcement point", counting six call sites and concluding the contract
@@ -158,6 +164,7 @@ normative and are reproduced here.
 | E4 | `trajectory/timed_target` | `_pose_from_msg` | `planner.build_timed` (`target_pose`) |
 | E5 | `trajectory/go_home` — the neutral constant | `_corrected_neutral_pose` | `planner.build_return_to_neutral` |
 | E6 | `trajectory/timed_target(hold_after=False)` — the neutral constant as the planner's RETURN target | `_corrected_neutral_pose` | `planner.build_timed` (`neutral_pose`) |
+| E8 | `trajectory/plan_cycle` — the unified cycle's **tilt schedule** (`CyclePlan`) | built in `_cycle_start_state`, applied in `unified_cycle._tilts_to_plan` (via `_realize`) | `unified_cycle.plan_cycle` / `extend` / `replan_tail` — not a `planner.build_*` entry at all |
 | B1 | `platform_pose_topic` in `mpc_bridge_node` | `_on_platform_pose` | none — a pure ZMQ translator, it reaches `planner` zero times |
 
 **E6 is why the enumeration matters.** It was found by the Phase 0 audit, not by
@@ -171,6 +178,138 @@ bypass test keys on the **pose-bearing arguments**, plural, per planner entry.
 (`hold_after=False, neutral_pose=…` in `_plan_and_install_catch`) would add a
 **seventh** external ingest inside an existing call. The widened key is what
 catches it.
+
+### E8 — the unified cycle, and how it escaped the enumeration for four months
+
+> **The `CyclePlan` is a commanded object and it must be in the plan frame. The
+> tilt schedule that produces it is built GRAVITY-referenced, and it is
+> re-expressed into the plan frame exactly once, in `unified_cycle._realize`,
+> after `tilt_schedule` and before `decompose`. The correction is built once per
+> cycle, at the seed, by `trajectory_node._cycle_start_state`, and CARRIED —
+> on `CycleState.levelling_correction` into the plan and on
+> `CycleMeta.levelling_correction` out of it.**
+
+**How it slipped.** Every row above is a *pose coming in*, and the enumeration
+was written in those terms — "an external pose entered through this converter".
+A cycle has no pose coming in. `PlanCycle.Request` carries cup **sites** and
+**velocities** (positions, which the correction never touches by rule) and the
+attitude is *derived inside the planner* from ballistics: `tilt_to_throw` of the
+take-off velocity, `tilt_to_receive` of the observed arrival, `tilt_to_receive`
+of the apparent-gravity field `g − a_cup` for the bank. Nothing on the request
+looks like an orientation, so nothing tripped the "is this pose external?"
+question — and `grep -rn "levelling\."` over the cycle machinery returned
+nothing for the whole of Phases 1–4. **The enumeration was of the wrong kind of
+thing: not "poses that enter" but "commanded rotations that leave".**
+
+**What it cost, measured 2026-09-06** (bag `~/Desktop/rosbags/2026-09-06_19-*`;
+reproduced offline by `/tmp/probe_level.py` on the same offset):
+
+| | commanded (plan frame) | physical, vs gravity |
+|---|---|---|
+| prepare pose (an E3 `go_to_pose`, corrected) | −11.663 mrad | **0** — level, correct |
+| release knot (the cycle's own terminal pin) | 0 (mechanical zero) | **+11.663 mrad** |
+
+The two ends of one window were pinned in **two different frames**: knot 0 in the
+plan frame off the seed (`_start_tilt_for` reads `state.pose[3:5]`, a commanded
+quantity), the release and catch pins in the gravity frame off the ballistics, and
+`tilt_schedule` dutifully interpolated between them. Consequences on the bench:
+a **0.6682°** tilt step before every throw — the operator saw it and said so — a
+launch error of **−9 mrad in −y** on 7/7 throws against the legacy path's
+**+8.5 mrad in +y** (*opposite sign*, which is what identifies it as a frame
+error and not a calibration one), 9–38 mm of lateral drift over the flight, rim
+strikes and 20–181 ms of bounce. The offline reproduction gives the same numbers
+exactly: 11.663 mrad of lean, 0.6682°, `4·h·sin θ` = **23.3 mm** of drift at the
+0.5 m apex → **0.000 mm** after the fix.
+
+It is a **DROP, not a double-count**. Every derived surface is still corrected
+exactly zero times; this one was corrected zero times and should have been
+corrected once.
+
+**Why the build and the apply are in different modules** — the first time in this
+contract, and the exception is structural, not convenient. The correction must be
+built where the node's `/gravity_offset` and tilt map live (`trajectory_node`) and
+applied where the tilt *series* is built (`motion/unified_cycle`), and those are
+different modules because `motion/` is pure and holds no offset — the same rule
+row `D9` states for `catch_reach.py`, with the same answer: **pass it in**. So
+`_cycle_start_state` builds it exactly as an ingest does —
+`levelling.correction_for_pose(self._gravity_offset, self._active_tilt_map(),
+pose)`, the dormancy accessor and not the raw map, `TiltMapError` degraded to
+offset-only through the shared `_tilt_map_degraded` — and hands over the matrix.
+`tests/ros/test_levelling_frame.py::_CARRIED_BUILDS` declares that pairing so
+`test_every_apply_has_a_build_in_the_same_scope` still enforces it (and now
+checks the E-numbers match); the behavioural half is
+`tests/ros/test_unified_cycle_levelling.py`, which drives the node and asserts on
+the plan.
+
+**Why ONE lookup per cycle, at the seed.** C-LEVEL-2 forbids a per-knot lookup
+outright (§ "Evaluation happens at ingest, per target"), and per-*window* is
+wrong for a second reason this row adds: a chained pair whose two halves each
+re-read the map at their own seed would differ by the map gradient at the seam,
+which puts that difference into one 25 ms knot. `release_state_from_meta` copies
+the frame off the meta instead, and `unified_cycle._joined_correction` refuses a
+splice whose halves disagree — naming the cause, before `_seam_check` reports it
+as an unexplained millimetre gap. This is C-LEVEL-1's in-flight rule expressed as
+data: a `/gravity_offset` or a `reload_tilt_map` arriving mid-cycle does not
+re-frame a plan the emitter is already streaming, because `replan_tail` reads the
+frame from `meta.levelling_correction` and never from the node.
+
+**The seed un-correction is the second EGRESS, and here is the argument
+C-LEVEL-1.E demands for it.** `_start_tilt_for`'s two branches answered in two
+different frames — `detach_axis` is a direction a ball physically left along
+(gravity), `state.pose[3:5]` is a commanded rotation (plan) — and that
+disagreement *is* the bug. The seed is un-corrected through
+`levelling.uncorrect_pose`, for exactly the reason the wire egress exists: the
+consumer (`tilt_schedule`, whose every other input is gravity-referenced) would
+otherwise have to re-derive the correction on its own side, and a re-derived
+copy in the wrong order is a silent frame error. It differs from E7 only in that
+the consumer is internal rather than on the wire. **It does not license
+un-correcting a plan for general use**: the pair `_tilt_to_gravity` /
+`_tilts_to_plan` is a closed round trip inside one function, and its result never
+leaves `_realize` un-re-corrected.
+
+**Knot 0 survives the round trip exactly, by writing back rather than by
+tolerance.** The transpose round trip is exact *as a rotation*, but knot 0 is a
+continuity claim measured in leg revolutions by `_install_continuity_ok` at
+0.06 rev, so `_realize` re-pins it to the seed's own float: drift **0.0000 rev**,
+by construction. (Before the pin existed at all, a knot-0 tilt of 2.5–3.1° cost
+0.12–0.15 rev and refused the install outright — `_start_tilt_for`'s own
+docstring.)
+
+**Two residuals this row does NOT close, both bounded and both named.**
+
+* **The `rz` projection.** `R_gravity @ R_tilt` of two pure-tilt rotations
+  carries a second-order `rz` term and `decompose` pins `rz` to 0, so
+  `_tilts_to_plan` drops it. Measured over the whole regime (11.663 mrad offset ×
+  every aim to the 12° ceiling, 17 azimuths): worst `|rz|` **1.221e-3 rad**,
+  worst resulting change in the commanded cup **axis** **1.276e-4 rad** (0.0073°,
+  91× below the error this row removes), and the `(rx, ry)` pair departs from the
+  plain additive shift by only **4.266e-5 rad** — i.e. the whole first-order
+  difference between the matrix composition and the additive one lives in `rz`,
+  which is BCH's prediction and is why the projection is cheap. Pinned by
+  `tests/motion/test_unified_cycle.py::test_the_plan_frame_shift_drops_only_the_rz_second_order_term`.
+* **The cup lever arm — PRE-EXISTING and UNCHANGED by this fix.** `decompose`
+  computes `shift = arm · cup_axis_xy` from the tilt it is handed, so with a
+  plan-frame series the compensation is taken at the commanded tilt while the
+  platform physically holds the gravity-frame one: the cup opening lands
+  `|arm| · |correction|` from the site — **1.349379 mm** at the 0.5 m-apex LAUNCH
+  (`arm` = 115.7 mm). The number is **identical before and after, to 1e-9 mm**,
+  because before the fix the centroid was right and the attitude was 11.663 mrad
+  wrong, which puts the physical cup in exactly the same place. The legacy toss
+  path does *not* carry it (`toss_release` computes its shift from the
+  gravity-referenced aim and only the rotation is corrected afterwards), so a
+  future reader comparing the two paths at ~1.35 mm is looking at a real
+  difference. Closing it means feeding `decompose` the gravity tilt for the
+  geometry while writing the plan tilt into `pose[3:5]` — a `cup_realize` change,
+  deliberately not taken here because one frame downstream of `decompose` is the
+  more valuable invariant: `cup_state_from_platform` (the exact inverse of that
+  position map), `unified_cycle._seam_check` and `_install_continuity_ok` all
+  read `pose[3:5]` beside `pose[:2]` and would otherwise be reading two frames.
+
+**The tilt ceiling behaves as § "Consequences at the machine" already says.**
+`tilt_schedule`'s 12° cap is checked on the **gravity-referenced** aim, before the
+shift, so the commanded plan-frame tilt can exceed it by the correction magnitude
+— the same divergence, with the same justification, that the ballistic aim clamp
+already documents. The fix does not widen it and does not move the clamp.
 
 ### The three neutral reads that are NOT targets
 
@@ -240,9 +379,21 @@ contribution, silently, on the one surface whose whole job is to answer
 "are these two poses the same".
 
 **What this does NOT license.** An egress is not a licence to publish corrected
-poses and let consumers un-correct them. There is one egress, it exists because
-one consumer needs to compare against its own *request*, and any second one has
-to make that same argument in this document first.
+poses and let consumers un-correct them. Every egress exists because one consumer
+speaks the intent frame and the alternative is that consumer re-deriving the
+correction, and any new one has to make that argument in this document first.
+
+There are **two**, as of 2026-09-06:
+
+| | Consumer | Why it speaks the intent frame |
+|---|---|---|
+| E7 | `reload_coordinator_node._toss_already_positioned`, across the wire | it compares the commanded pose against its own *request*, which will be corrected on the way in |
+| E8 | `cup_realize.tilt_schedule`, inside `unified_cycle._realize` | every other input it gets — the ballistic throw aim, the observed catch arrival, the apparent-gravity banking field — is gravity-referenced, so a plan-frame seed pin beside them is a mixed-frame interpolation |
+
+E8's argument is in full at § "E8 — the unified cycle". Note what it is *not*:
+its un-correction and its re-correction are a **closed round trip inside one
+function**, so no plan-frame quantity ever leaves `_realize` un-re-corrected.
+An egress whose result escapes is the thing this paragraph refuses.
 
 ## The in-flight rule
 
@@ -1012,6 +1163,12 @@ scope, unconditionally.
 | C-LEVEL-1.O — the applier's affirmation | `trajectory_node._publish_status` → `TrajectoryStatus.gravity_correction_loaded` |
 | C-LEVEL-1.O — the consumer + its expiry | `reload_coordinator_node._build_toss_observations` (`_TRAJ_STATUS_STALE_S`) |
 | C-LEVEL-1.O — the refusal | `toss_sequencer._step_checking` ⇒ `REJECTED_NOT_LEVELLED` |
+| E8 — the build, once per cycle at the seed | `trajectory_node._cycle_start_state` |
+| E8 — the carrier | `unified_cycle.CycleState.levelling_correction` in, `CycleMeta.levelling_correction` out; `release_state_from_meta` chains it, `_joined_correction` refuses a mismatched splice |
+| E8 — the single application point | `unified_cycle._realize` (`_tilt_to_gravity` on the seed pin, `_tilts_to_plan` on the finished series), between `tilt_schedule` and `decompose` |
+| E8 — the declared cross-scope pairing | `tests/ros/test_levelling_frame.py::_CARRIED_BUILDS` (+ `test_carried_builds_names_only_live_manifest_rows`) |
+| E8 — tests (frame algebra, `rz` bound, chaining, no-correction bit-identity) | `tests/motion/test_unified_cycle.py` |
+| E8 — tests (the node end-to-end: build, carry, level release, no knot-0 step) | `tests/ros/test_unified_cycle_levelling.py` |
 | C-LEVEL-1.O — tests | `tests/ros/test_trajectory_node.py` (loaded / zero-offset / malformed / restart), `tests/ros/test_toss_coordinator.py` (freshness table, restart end-to-end, persisted-push-alone passes), `tests/ros/test_toss_sequencer.py` (gate order) |
 
 The structural test `ast.parse`s the live package (never imports it, so it needs
@@ -1022,8 +1179,9 @@ classification. A new planner entry, a new pose-bearing argument on an existing
 entry, a planner entry in a new module, or a `levelling` application in a new
 function all fail until the author adds a row and *declares* the classification.
 
-Its `levelling` manifest carries **three kinds**, and C-LEVEL-2 is why there are
-three rather than two:
+Its `levelling` manifest carries **four kinds** — three of them because
+C-LEVEL-2 needs the per-message/per-pose distinction, the fourth because
+C-LEVEL-1.E needs the inverse direction:
 
 * `store` — once per `/gravity_offset` **message** (`correction_from_offset`,
   `identity_correction`).
@@ -1032,6 +1190,14 @@ three rather than two:
   cannot be hoisted to the offset callback.
 * `apply:` — once per external pose, at ingest (`correct_pose`,
   `apply_gravity_correction`).
+* `egress:` — the INVERSE (`uncorrect_pose`), C-LEVEL-1.E. It carries an
+  `apply`'s obligation to have a `build:` for its pose, for the reason that
+  section gives.
+
+A `build:` that sits in a different **scope** from the `apply:` it feeds must be
+declared in `_CARRIED_BUILDS`; E8 (the unified cycle) is the only one, and the
+declaration is checked — the named builder must exist, and its E-number must
+match the applier's.
 
 Declaring `correction_for_pose` a `store` would have been the one-word fix and
 would have retired the per-message vs per-pose distinction the manifest exists to
@@ -1088,10 +1254,21 @@ the manifest and the grep counts. Deleting archived code is a separate concern.
 
 ## If you are adding a new pose surface
 
+0. **First ask the E8 question, because it is the one that got missed**: does
+   this code path produce a **commanded rotation** — something that ends up in a
+   pose the emitter IKs? If it does, it is in scope even when *no pose entered
+   through it*. E8 escaped for four months because the enumeration was phrased as
+   "poses that come in" and a cycle has none: its attitude is *derived inside the
+   planner* from ballistics, so nothing on the request looked like an
+   orientation. A path that computes an attitude from a physical, gravity-
+   referenced quantity (a velocity, an apparent-gravity field, a measured
+   arrival) is producing a **gravity-frame** rotation and owes the correction
+   before it is commanded — no less than a `go_to_pose` does.
 1. Decide **E or D**: did this pose enter from outside the node (a service
-   request, a wire target, the neutral constant), or was it derived from
-   measurement or from an existing plan? If you cannot answer that in one
-   sentence, you have found a design problem, not a paperwork problem.
+   request, a wire target, the neutral constant), **or was it computed as a
+   gravity-referenced attitude inside the planner** (E8's shape), or was it
+   derived from measurement or from an existing plan? If you cannot answer that
+   in one sentence, you have found a design problem, not a paperwork problem.
 2. `E` ⇒ **build** the correction for that pose with
    `levelling.correction_for_pose(self._gravity_offset, self._active_tilt_map(), pose)`
    and **apply** it with `levelling.correct_pose(pose, correction)` — **once**,
@@ -1107,6 +1284,13 @@ the manifest and the grep counts. Deleting archived code is a separate concern.
    it. Catch `TiltMapError` and fall back to the stored correction — never let
    a lookup kill a callback.
    `D` ⇒ apply nothing.
+   If the build and the apply genuinely cannot share a scope — the only accepted
+   reason so far is E8's, that the offset lives in `trajectory_node` and the
+   thing being corrected is built in pure `motion/` — build at the node, **pass
+   the matrix in**, and declare the pairing in `_CARRIED_BUILDS`. Never build one
+   inside `motion/`, and never re-read the node's live correction from a
+   continuation of an installed plan (that breaks the in-flight rule and the
+   splice with it); carry it on the plan's own metadata instead.
 3. Add **both** rows to the manifest in `tests/ros/test_levelling_frame.py`
    (`build:` and `apply:`) with its classification, and add the row to the
    E-table above if it is external.

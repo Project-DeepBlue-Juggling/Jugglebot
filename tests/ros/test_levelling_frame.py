@@ -282,6 +282,23 @@ _LEVELLING_MANIFEST = (
      'levelling.correction_for_pose', 'build:E7'),
     ('trajectory_node.py', 'TrajectoryNode._intent_orientation',
      'levelling.uncorrect_pose', 'egress:E7'),
+    # ── E8 — the UNIFIED CYCLE (2026-09-06) ──────────────────────────────────
+    # The first surface whose build and apply sit in DIFFERENT modules, and the
+    # reason is structural rather than convenient: a cycle has no pose coming in
+    # to correct. It has a gravity-referenced GOAL and a plan-frame SEED, and the
+    # frames only meet inside `unified_cycle._realize`, where the tilt SERIES is
+    # built. So `trajectory_node` builds the correction at the seed (once per
+    # cycle, keyed on the seed's x/y like every other ingest) and hands it to the
+    # planner on `CycleState.levelling_correction`; `_realize` un-corrects the
+    # seed pin into the gravity frame, schedules, and re-expresses the finished
+    # series into the plan frame before `decompose`. `_CARRIED_BUILDS` below is
+    # what keeps the build↔apply obligation enforceable across that boundary.
+    ('trajectory_node.py', 'TrajectoryNode._cycle_start_state',
+     'levelling.correction_for_pose', 'build:E8'),
+    ('motion/unified_cycle.py', '_tilt_to_gravity',
+     'levelling.uncorrect_pose', 'egress:E8'),
+    ('motion/unified_cycle.py', '_tilts_to_plan',
+     'levelling.correct_pose', 'apply:E8'),
 )
 
 _APPLY_FUNCS = frozenset(
@@ -295,6 +312,31 @@ _BUILD_FUNCS = frozenset({'levelling.correction_for_pose'})
 _EGRESS_FUNCS = frozenset({'levelling.uncorrect_pose'})
 _STORE_FUNCS = frozenset(
     {'levelling.correction_from_offset', 'levelling.identity_correction'})
+
+# An apply/egress whose correction is BUILT in another scope and CARRIED to it,
+# mapped to the scope that must do the building. Added 2026-09-06 for E8.
+#
+# WHY THIS IS NOT A HOLE IN `test_every_apply_has_a_build_in_the_same_scope`.
+# That test protects ONE property: no surface may apply the stored C-LEVEL-1
+# offset while ignoring the C-LEVEL-2 residual map. Scope-locality was how the
+# property was checked, not the property itself — it worked because every ingest
+# so far both received a pose and corrected it in one function. E8 cannot: a
+# cycle's correction has to be built where the node's offset and map live and
+# applied where the tilt series is built, and those are different modules by the
+# `motion/` purity rule (see row D9's note — "the answer is to pass it in, not to
+# build one inside motion/"). So the pairing is DECLARED instead of inferred, and
+# the test still fails if the named builder loses its `correction_for_pose`, if
+# the E-numbers disagree, or if a NEW apply appears anywhere without an entry
+# here. What it can no longer catch by itself is the correction being mis-routed
+# between the two scopes — which is why the behavioural half carries
+# `tests/ros/test_unified_cycle_levelling.py`, driving the node end-to-end and
+# asserting on the PLAN.
+_CARRIED_BUILDS = {
+    ('motion/unified_cycle.py', '_tilt_to_gravity'):
+        ('trajectory_node.py', 'TrajectoryNode._cycle_start_state'),
+    ('motion/unified_cycle.py', '_tilts_to_plan'):
+        ('trajectory_node.py', 'TrajectoryNode._cycle_start_state'),
+}
 
 # Modules whose members must be reached by ATTRIBUTE access, never bound directly
 # by `from <module> import name`. Both AST manifests key on the dotted source name
@@ -587,20 +629,53 @@ def test_every_apply_has_a_build_in_the_same_scope():
     map while the other five honour it. That is "two meanings of level in one
     node" again, one refinement layer up.
 
-    There is no declared exception any more: `mpc_bridge_node`'s B1 was the
-    only one, and it went with the MPC chain on 2026-09-01. Adding one back
-    means adding a row to `ros_ws/docs/levelling_frame.md` too.
+    There is no blanket exception: `mpc_bridge_node`'s B1 was the only one, and
+    it went with the MPC chain on 2026-09-01. A build that sits in a DIFFERENT
+    scope from its apply must be declared in `_CARRIED_BUILDS` (E8 is the only
+    one, and its argument is in `ros_ws/docs/levelling_frame.md`); the pairing is
+    then checked through that map, E-number included, rather than skipped.
     """
-    builds = {(f, where) for f, where, callee, _k in _LEVELLING_MANIFEST
+    builds = {(f, where): kind
+              for f, where, callee, kind in _LEVELLING_MANIFEST
               if callee in _BUILD_FUNCS}
-    unpaired = sorted(
-        (f, where, kind) for f, where, callee, kind in _LEVELLING_MANIFEST
-        if callee in (_APPLY_FUNCS | _EGRESS_FUNCS)
-        and (f, where) not in builds)
-    assert unpaired == [], (
+    unpaired, mismatched = [], []
+    for f, where, callee, kind in _LEVELLING_MANIFEST:
+        if callee not in (_APPLY_FUNCS | _EGRESS_FUNCS):
+            continue
+        pair = _CARRIED_BUILDS.get((f, where), (f, where))
+        if pair not in builds:
+            unpaired.append((f, where, kind))
+        elif builds[pair].split(':', 1)[1] != kind.split(':', 1)[1]:
+            mismatched.append((f, where, kind, pair, builds[pair]))
+    assert sorted(unpaired) == [], (
         "an ingest applies the levelling correction without building it for "
         "that pose — it is applying the single offset and ignoring the "
-        f"C-LEVEL-2 residual map: {unpaired}")
+        f"C-LEVEL-2 residual map: {sorted(unpaired)}")
+    assert sorted(mismatched) == [], (
+        "an apply is paired with a build for a DIFFERENT ingest surface — the "
+        "correction it applies was built for another pose, which is the "
+        f"C-LEVEL-2 keying bug wearing the manifest's own clothes: {mismatched}")
+
+
+def test_carried_builds_names_only_live_manifest_rows():
+    """`_CARRIED_BUILDS` may not outlive the rows it excuses.
+
+    A stale entry is worse than no entry: it silently pre-authorises whatever
+    lands at that (file, scope) next. Both halves of every pair must exist in
+    `_LEVELLING_MANIFEST`, so deleting either end fails here rather than leaving
+    a dormant exemption behind.
+    """
+    applies = {(f, w) for f, w, c, _k in _LEVELLING_MANIFEST
+               if c in (_APPLY_FUNCS | _EGRESS_FUNCS)}
+    builds = {(f, w) for f, w, c, _k in _LEVELLING_MANIFEST
+              if c in _BUILD_FUNCS}
+    for applier, builder in _CARRIED_BUILDS.items():
+        assert applier in applies, (
+            f"_CARRIED_BUILDS excuses {applier}, which no longer applies the "
+            "correction — delete the entry")
+        assert builder in builds, (
+            f"_CARRIED_BUILDS points {applier} at {builder}, which does not "
+            "build a per-pose correction")
 
 
 def test_no_node_reimplements_the_transform():

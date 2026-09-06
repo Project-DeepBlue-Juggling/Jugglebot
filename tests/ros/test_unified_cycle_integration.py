@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import math
 import time
 import types
 from pathlib import Path
@@ -1513,6 +1514,83 @@ def test_dynamic_target_uses_the_legacy_catch_path_when_no_cycle_is_active():
     assert not isinstance(node._active_plan, CyclePlan)
 
 
+def _tilted_dyn_msg(rx=0.0, ry=0.0, x=0.0, y=0.0, z=170.0, lead_s=0.5):
+    """A ``catch/dynamic_target`` carrying a real receive tilt.
+
+    The quaternion is built from the rotation vector the same way
+    ``catch_coordinator.compute_catch_orientation`` builds it, so the axis the
+    replan recovers is the axis the coordinator compensated with.
+    """
+    from jugglebot.motion.ik_solver import rot_matrix_to_quat, rotvec_to_rot_matrix
+    q = rot_matrix_to_quat(
+        rotvec_to_rot_matrix(np.array([float(rx), float(ry), 0.0])))
+    msg = DynamicTargetCommand()
+    msg.target_pos = Point(x=float(x), y=float(y), z=float(z))
+    msg.target_quat = Quaternion(w=float(q[0]), x=float(q[1]), y=float(q[2]),
+                                 z=float(q[3]))
+    msg.target_vel = Vector3()
+    msg.arrival_time = time.perf_counter() + float(lead_s)
+    return msg
+
+
+def test_the_replan_converts_the_wire_CENTROID_into_the_planners_CUP_site(
+        monkeypatch):
+    """`catch_site_mm` is a CUP site; `target_pos` is the platform CENTROID.
+
+    `catch_coordinator._compute_catch_command` publishes
+    ``landing − HAND_CATCH_OFFSET_MM · platform_z``, and `build_catch` consumes
+    that centroid verbatim — that is what pins the frame. Copying `target_pos`
+    straight into `catch_site_mm` therefore aimed the cycle's catch at a point
+    the offset SHORT of the ball, leaning the way the receive tilt leans: a
+    systematic ``64.78·sin θ`` mm bias, 13.47 mm at the 12° ceiling and largest
+    exactly when the ball is arriving fastest sideways.
+
+    Pinned at the ceiling on both axes (the sign convention is load-bearing:
+    ``+ry`` swings the cup toward ``+x``, ``+rx`` toward ``−y``) and at level,
+    where the conversion must be an exact no-op.
+    """
+    sent = []
+
+    def _capture(node):
+        monkeypatch.setattr(
+            node, '_svc_plan_cycle',
+            lambda req, resp: sent.append(req) or _accepted(resp))
+
+    def _accepted(resp):
+        resp.accepted, resp.code, resp.message = True, 'OK', ''
+        return resp
+
+    # A sentinel cycle: `_replan_cycle_from_target` reads only the meta's catch
+    # mark and the plan's duration, and `_svc_plan_cycle` is captured below, so
+    # nothing here needs a real ~250 ms solve to pin a frame conversion.
+    node = _cycle_node()
+    node._cycle = (types.SimpleNamespace(total_duration=1.4),
+                   types.SimpleNamespace(
+                       catch_site_mm=np.array([0.0, 0.0, 830.0]),
+                       catch_vel_mm_s=np.array([0.0, 0.0, -2500.0]),
+                       releases=('r',)),
+                   0.0)
+    _capture(node)
+    theta = math.radians(12.0)
+
+    node._replan_cycle_from_target(_tilted_dyn_msg(ry=theta, x=100.0, y=-50.0))
+    assert sent[-1].catch_site_mm[0] == pytest.approx(100.0 + 13.4685, abs=1e-3)
+    assert sent[-1].catch_site_mm[1] == pytest.approx(-50.0, abs=1e-9)
+    # z is NEVER touched: a centroid says nothing about the cup height, which the
+    # slider the plan is about to choose owns.
+    assert sent[-1].catch_site_mm[2] == pytest.approx(830.0)
+
+    node._replan_cycle_from_target(_tilted_dyn_msg(rx=theta, x=100.0, y=-50.0))
+    assert sent[-1].catch_site_mm[0] == pytest.approx(100.0, abs=1e-9)
+    assert sent[-1].catch_site_mm[1] == pytest.approx(-50.0 - 13.4685, abs=1e-3)
+
+    # LEVEL: an exact no-op, so a vertical self-toss's replan is bit-identical to
+    # what it was before this conversion existed.
+    node._replan_cycle_from_target(_tilted_dyn_msg(x=100.0, y=-50.0))
+    assert sent[-1].catch_site_mm[0] == 100.0
+    assert sent[-1].catch_site_mm[1] == -50.0
+
+
 def test_a_non_cycle_install_clears_the_cycle_record():
     """A hold / stop / guard descent SUPERSEDES the cycle, so the record dies.
 
@@ -1928,12 +2006,33 @@ def test_a_single_toss_never_asks_the_unified_key_at_all(monkeypatch):
 # ── the three action seams ────────────────────────────────────────────────────
 
 def _seq_state(node, unified):
+    """A started sequencer plus the node's committed state, unified or not.
+
+    The hand seed is part of the fixture and not an incidental default. Since
+    2026-09-07 a unified LAUNCH is refused outright when the seed hand sits
+    below the planner's cup floor (``HAND_BELOW_FLOOR``) or when
+    ``/hand_telemetry`` is stale enough that the seed is UNKNOWN — the two
+    states in which a LAUNCH planned from that seed slams the cup into the box
+    on its first knot. ``_ready_node`` leaves the hand at 0.0 rev, the homed
+    zero, which is genuinely ~10 mm BELOW the floor, and stamps freshness on
+    the FAKE clock, which ``_unified_hand_seed_rev`` (a real ``perf_counter``
+    reader) cannot see. So a unified fixture that skipped this would exercise
+    the refusal on every one of these seam tests instead of the seam, and each
+    would be red for a reason that has nothing to do with what it asserts.
+    Seating the seed AT the floor and stamping it on the real clock is what a
+    machine parked ready actually looks like; the refusal itself is covered by
+    ``tests/ros/test_unified_launch_floor.py``.
+    """
     seq = TossSequencer(catch_pose_stow_mm=(0.0, 0.0, 170.0),
                         flight_time_s=0.8, throw_delay_s=5.0, unified=unified)
     seq.start(time.perf_counter())
     seq._prepare_dispatched = True
     state = node._toss_committed
     node._toss_unified_live = unified
+    if unified:
+        with node._lock:
+            node._hand_pos_meas = uc.hand_rev_for_cup_z(uc.SETTLE_CUP_Z_MM)
+            node._hand_telemetry_mono = time.perf_counter()
     return seq, state
 
 
@@ -2021,8 +2120,11 @@ def test_the_launch_tick_waits_for_the_release_lead(monkeypatch):
     seq, state = _seq_state(node, unified=True)
     state.unified_launch_pending = True
     calls = []
+    # `_call_plan_cycle` returns (response, dispatched) since 2026-09-06 — the
+    # second half is what separates "never sent" from "sent and unacked", and the
+    # UNAVAILABLE outcome this test asserts is the FALSE branch.
     monkeypatch.setattr(node, '_call_plan_cycle',
-                        lambda req: calls.append(req) or None)
+                        lambda req: calls.append(req) or (None, False))
     # 5 s of lead: far too early.
     node._tick_unified_launch(seq, state, seq.t_release - 5.0)
     assert calls == []
@@ -2039,6 +2141,234 @@ def test_the_launch_tick_waits_for_the_release_lead(monkeypatch):
     assert calls[0].catch_site_mm[2] == pytest.approx(rcn._UNIFIED_CATCH_CUP_Z_MM)
     # A service failure is a NAMED refusal, not a silent one.
     assert state.unified_reject.startswith('REJECTED_PLAN_SERVICE(')
+
+
+_SITTING_VEL_TRIM = -0.1076        # the ILC's independent fit, 2026-09-06
+
+
+def _launch_request_with_trim(monkeypatch, trim):
+    """The ``PlanCycle.Request`` a unified LAUNCH builds at ``trim``."""
+    node = _ready_node(_Clock())
+    seq, state = _seq_state(node, unified=True)
+    state.unified_launch_pending = True
+    state.aim = {'ilc_vel_trim': float(trim)}
+    sent = []
+    monkeypatch.setattr(node, '_call_plan_cycle',
+                        lambda req: sent.append(req) or (None, False))
+    node._tick_unified_launch(seq, state,
+                              seq.t_release - rcn._UNIFIED_LAUNCH_LEAD_S + 0.01)
+    assert len(sent) == 1
+    return sent[0]
+
+
+def test_the_unified_launch_carries_the_SESSION_SPEED_TRIM(monkeypatch):
+    """The unified launch scales its take-off by the trim the legacy path carries.
+
+    Owner, 2026-09-06. Every unified throw of that sitting left 11-15 % too fast
+    (achieved release +5…+17 % of plan) while the record declared
+    ``speed_bias_applied 1.0`` and ``ilc_vel_trim 0.0`` — every learned
+    correction inactive, because the trim was applied to ``event_vel_mps``, which
+    the unified path does not command.
+
+    It is a MODEL correction: the machine throws faster than it is told to, so
+    the COMMANDED release is scaled by ``1 + trim`` to get the physical one that
+    was asked for. ``flight_s`` and the throw SITE are untouched — the ball is
+    still meant to fly the requested flight and land where it left — and the
+    scale reaches the QP through the only field that carries the release
+    velocity: ``throw_target_mm``, from which
+    ``cup_cycle.takeoff_velocity`` derives it.
+    """
+    from jugglebot.motion.trajectory import ballistics_bc as bb
+    nominal = _launch_request_with_trim(monkeypatch, 0.0)
+    trimmed = _launch_request_with_trim(monkeypatch, _SITTING_VEL_TRIM)
+
+    # Untouched: the flight and the site the ball leaves from.
+    assert trimmed.flight_s == nominal.flight_s
+    assert list(trimmed.throw_site_mm) == list(nominal.throw_site_mm)
+    assert list(trimmed.catch_site_mm) == list(nominal.catch_site_mm)
+    assert list(trimmed.catch_vel_mm_s) == list(nominal.catch_vel_mm_s)
+
+    v_nom = bb.launch_velocity(nominal.throw_site_mm, nominal.throw_target_mm,
+                               nominal.flight_s)
+    v_cmd = bb.launch_velocity(trimmed.throw_site_mm, trimmed.throw_target_mm,
+                               trimmed.flight_s)
+    assert v_cmd[2] / v_nom[2] == pytest.approx(1.0 + _SITTING_VEL_TRIM)
+    assert v_cmd[2] / v_nom[2] == pytest.approx(0.8924)
+    # A pure MAGNITUDE knob: scaling v scales both its components, so the take-off
+    # direction — and the throw tilt the planner derives from it — is unchanged.
+    assert np.linalg.norm(np.cross(v_cmd, v_nom)) == pytest.approx(0.0, abs=1e-9)
+
+
+def test_trim_zero_leaves_the_unified_request_BIT_IDENTICAL(monkeypatch):
+    """An un-tuned session is the machine it was, to the last float.
+
+    The trim's round trip (`launch_velocity` then `position_at`) is exact at
+    ``1 + 0.0``, but it is guarded on ``!= 0.0`` anyway so the untrimmed request
+    is not merely equal but built by the same expression as before.
+    """
+    nominal = _launch_request_with_trim(monkeypatch, 0.0)
+    assert list(nominal.throw_target_mm) == list(nominal.throw_site_mm)
+
+
+def test_the_announcement_is_INVARIANT_under_the_speed_trim(monkeypatch):
+    """The announcement describes the BALL, so it un-trims the commanded release.
+
+    The plan's `release_vel_mm_s` is the COMMANDED velocity, which under a trim
+    is deliberately `1 + trim` times the nominal. The trim's premise is that the
+    machine then achieves the nominal — and the announcement feeds the tracker's
+    correlation, the possession plausibility reference and the landing schedule,
+    all of which are about the ball. Announcing the commanded value would put the
+    predicted landing ~190 mm low at a 0.6 s flight.
+    """
+    def _announced(trim):
+        node = _ready_node(_Clock())
+        seq, state = _seq_state(node, unified=True)
+        state.aim = {'ilc_vel_trim': float(trim)}
+        commanded = 3900.0 * (1.0 + float(trim))
+        resp = types.SimpleNamespace(
+            t_release_mono=time.perf_counter() + 1.0,
+            release_vel_mm_s=[0.0, 0.0, commanded], plan_wall_ms=175.0)
+        node._announce_unified(seq, state, resp)
+        return node._publishers['throw_announcements'].published[-1]
+
+    plain, trimmed = _announced(0.0), _announced(_SITTING_VEL_TRIM)
+    assert trimmed.initial_velocity.z == pytest.approx(
+        plain.initial_velocity.z, rel=1e-12)
+    assert trimmed.landing_position.z == pytest.approx(
+        plain.landing_position.z, rel=1e-12)
+
+
+def test_a_REFUSED_trim_is_not_flown_by_the_unified_launch(monkeypatch):
+    """Layer 3 is a refinement, never a gate — on this path too.
+
+    `_ilc_vel_trim_refusal` zeroes the aim block's `ilc_vel_trim` when the
+    trimmed speed would break the throw envelope, and the record then declares
+    0.0 because that is what was commanded. Reading the block (rather than
+    re-deriving the trim) is what keeps the unified launch on the same side of
+    that gate as the record.
+    """
+    req = _launch_request_with_trim(monkeypatch, 0.0)
+    assert list(req.throw_target_mm) == list(req.throw_site_mm)
+    node = _ready_node(_Clock())
+    assert node._unified_vel_trim(types.SimpleNamespace(aim=None)) == 0.0
+    assert node._unified_vel_trim(None) == 0.0
+    assert node._unified_vel_trim(
+        types.SimpleNamespace(aim={'ilc_vel_trim': -0.05})) == -0.05
+
+
+def test_the_record_names_the_UNIFIED_catch_knobs(monkeypatch):
+    """A corpus that pools two catch tunings is a corpus of two machines.
+
+    Under unified no `HAND_TRAJ_CMD` is dispatched at all, so the Teensy
+    catcher's `catch_vel_ratio` / `catch_vel_hold_pct` and the operator's
+    `catch_vel_scale` command NOTHING — the 2026-09-06 rows declared a 0.6 ratio
+    and a 0.9 scale no stroke ever used. The knob that DID shape every catch is
+    the planner's `catch_slider_vel_ratio`, and it appeared nowhere.
+    """
+    from jugglebot.motion.trajectory import cup_cycle as cc
+    node = _ready_node(_Clock())
+    legacy = node._toss_record_catch_knobs(0.9, unified=False)
+    unified = node._toss_record_catch_knobs(0.9, unified=True)
+    assert legacy['catch_vel_scale'] == 0.9
+    assert legacy['catch_vel_ratio'] == pytest.approx(
+        float(hw.TEENSY_TRAJ_CATCH_VEL_RATIO))
+    assert legacy['catch_slider_vel_ratio'] is None
+    for dead in ('catch_vel_scale', 'catch_vel_ratio', 'catch_vel_hold_pct'):
+        assert unified[dead] is None, dead
+    assert unified['catch_slider_vel_ratio'] == pytest.approx(
+        float(cc.CupCycleConfig().catch_slider_vel_ratio))
+    assert unified['catch_slider_vel_ratio'] == pytest.approx(0.7)
+    # The knobs that DO still bind under unified are unchanged.
+    for shared in ('catch_reach_freeze_s', 'catch_reach_envelope_mm',
+                   'hand_pos_gain'):
+        assert unified[shared] == legacy[shared], shared
+
+
+class _StubHoldClient:
+    """A `trajectory/hold` client that records the calls and answers at once."""
+
+    def __init__(self, ready=True, success=True, message='held'):
+        self.ready, self.success, self.message = ready, success, message
+        self.calls = []
+
+    def wait_for_service(self, timeout_sec=None):
+        return self.ready
+
+    def call_async(self, request):
+        self.calls.append(request)
+        return _ImmediateFuture(
+            types.SimpleNamespace(success=self.success, message=self.message))
+
+
+class _ImmediateFuture:
+    def __init__(self, result):
+        self._result = result
+
+    def done(self):
+        return True
+
+    def result(self):
+        return self._result
+
+    def add_done_callback(self, cb):
+        cb(self)
+
+
+def test_an_UNACKED_plan_call_HOLDS_the_machine_and_says_a_plan_may_be_running(
+        monkeypatch):
+    """A slow solve throws a ball the coordinator believes it never commanded.
+
+    `trajectory/plan_cycle` INSTALLS on accept and starts streaming BEFORE it
+    replies, and a solve on a loaded box was measured at 2.02-2.16 s on
+    2026-09-06 — past this node's 2.0 s client wait. Until then both halves of a
+    service failure returned a bare None and the LAUNCH logged *"no plan
+    installed, nothing was commanded"*, which is exactly false in the half that
+    matters: the plan is installed, it is streaming, and it will throw.
+
+    So a DISPATCHED-and-unacked call holds the machine FIRST — the same
+    `trajectory/hold` decel-to-rest the bench driver aborts with — and mints an
+    outcome that carries the hold's verdict rather than a denial.
+    """
+    node = _ready_node(_Clock())
+    seq, state = _seq_state(node, unified=True)
+    state.unified_launch_pending = True
+    hold = _StubHoldClient()
+    node._traj_hold_cli = hold
+    monkeypatch.setattr(node, '_call_plan_cycle', lambda req: (None, True))
+    node._tick_unified_launch(seq, state,
+                              seq.t_release - rcn._UNIFIED_LAUNCH_LEAD_S + 0.01)
+    assert len(hold.calls) == 1, 'the machine was not held'
+    assert state.unified_reject.startswith('REJECTED_PLAN_SERVICE(UNACKED:')
+    assert 'MAY' in state.unified_reject
+    assert 'held' in state.unified_reject
+    # ...and the OTHER half is unchanged: nothing dispatched ⇒ nothing to hold.
+    node2 = _ready_node(_Clock())
+    seq2, state2 = _seq_state(node2, unified=True)
+    state2.unified_launch_pending = True
+    hold2 = _StubHoldClient()
+    node2._traj_hold_cli = hold2
+    monkeypatch.setattr(node2, '_call_plan_cycle', lambda req: (None, False))
+    node2._tick_unified_launch(seq2, state2,
+                               seq2.t_release - rcn._UNIFIED_LAUNCH_LEAD_S + 0.01)
+    assert hold2.calls == []
+    assert state2.unified_reject.startswith('REJECTED_PLAN_SERVICE(UNAVAILABLE:')
+
+
+def test_a_hold_that_did_not_land_is_REPORTED_not_swallowed(monkeypatch):
+    """"I could not stop it" is the one fact the operator must not have to hunt.
+
+    A refused or unavailable hold leaves a plan streaming toward a release, and
+    an outcome that says only "unacked" sends the operator to the console to
+    discover that. The verdict rides in the outcome string itself.
+    """
+    node = _ready_node(_Clock())
+    seq, state = _seq_state(node, unified=True)
+    state.unified_launch_pending = True
+    node._traj_hold_cli = _StubHoldClient(ready=False)
+    monkeypatch.setattr(node, '_call_plan_cycle', lambda req: (None, True))
+    node._tick_unified_launch(seq, state,
+                              seq.t_release - rcn._UNIFIED_LAUNCH_LEAD_S + 0.01)
+    assert 'STILL STREAMING' in state.unified_reject
 
 
 def test_a_refused_plan_relabels_the_cycle_outcome(monkeypatch):
@@ -2431,6 +2761,106 @@ def test_unified_mode_still_consumes_announcements():
     assert unified['stroke_window'] is None
 
 
+def _unified_ball_node(monkeypatch, cmd_fn):
+    """A catch_coordinator in the state a unified session actually puts it in.
+
+    ALL THREE flags raised, which is the thing the pre-2026-09-06 tests never
+    did: `catch/armed` (the session's one raise), `catch/pretilt_hold` (raised
+    for the whole session at `_arm_session_declare`) and `catch/unified_mode`.
+    With only the first and third raised the open-loop branch is not reached at
+    all, so a test written that way passes whatever the branch does — which is
+    why the shipped gate carried zero `catch/dynamic_target` messages through a
+    whole sitting and every test stayed green.
+    """
+    ccn = CatchCoordinatorNode()
+    ccn._on_catch_armed(Bool(data=True))
+    ccn._on_pretilt_hold(Bool(data=True))
+    ccn._on_unified_mode(Bool(data=True))
+    ccn._announcement_seen = True                # the announcement has landed
+    monkeypatch.setattr(ccn._coordinator, 'update',
+                        lambda balls, current_time, exclude_ids=None: cmd_fn())
+    return ccn
+
+
+def test_a_unified_ball_tick_PUBLISHES_a_dynamic_target(monkeypatch):
+    """The unified catch re-aims off the tracker; the open-loop freeze is legacy.
+
+    Under unified BOTH open-loop triggers stand — `pretilt_hold` for the whole
+    session and `JB_OP_RELOAD_PLATFORM_OPEN_LOOP` by config — so every ball tick
+    took the open-loop branch, where `_pretilt_cmd` is None and
+    `_republish_pretilt` no-ops. The 2026-09-06 bag carried ZERO
+    `/catch/dynamic_target` messages, and the toss coordinator's own
+    `_publish_toss_reach` (which covers this on the legacy path) is deliberately
+    OFF under unified — so nothing at all was re-aiming the catch.
+
+    trajectory_node's consumer was already correct: it bypasses `_catch_armed`
+    under unified and routes to `_replan_cycle_from_target`, which re-solves only
+    the catch-side tail of the 7-channel plan.
+    """
+    from tests.ros.test_catch_coordinator_node import _balls_msg, _catchable_cmd
+    ccn = _unified_ball_node(monkeypatch, _catchable_cmd)
+    n0 = len(ccn._dyn_target_pub.published)
+    ccn._on_balls(_balls_msg())
+    assert len(ccn._dyn_target_pub.published) == n0 + 1
+
+    # LEGACY, same three flags minus unified_mode: the open-loop branch, and
+    # `_pretilt_cmd` is None under pretilt_hold, so NOTHING is published. Pinned
+    # as the reference so the change above cannot silently widen to legacy.
+    legacy = CatchCoordinatorNode()
+    legacy._on_catch_armed(Bool(data=True))
+    legacy._on_pretilt_hold(Bool(data=True))
+    legacy._announcement_seen = True
+    monkeypatch.setattr(legacy._coordinator, 'update',
+                        lambda balls, current_time, exclude_ids=None:
+                        _catchable_cmd())
+    m0 = len(legacy._dyn_target_pub.published)
+    legacy._on_balls(_balls_msg())
+    assert len(legacy._dyn_target_pub.published) == m0
+
+
+def test_the_unified_replan_is_rate_limited_by_LANDING_MOVEMENT(monkeypatch):
+    """Every mocap tick must not buy a ~230 ms seven-channel re-solve.
+
+    The balls topic ticks at mocap rate; each accepted target costs
+    trajectory_node a `replan_tail` on its single-threaded executor. Unfiltered,
+    that is the shape that gapped the emitter past the Teensy's 250 ms setpoint
+    watchdog on 2026-09-06. The gate is on MOVEMENT, not on a timer, so a track
+    that keeps re-predicting the same point costs nothing while one that is
+    genuinely revising gets every revision through.
+    """
+    from tests.ros.test_catch_coordinator_node import _balls_msg, _catchable_cmd
+    pos = {'v': np.array([0.0, 0.0, 809.08])}
+
+    def _cmd():
+        cmd = _catchable_cmd()
+        cmd.target_pos = pos['v'].copy()
+        return cmd
+
+    ccn = _unified_ball_node(monkeypatch, _cmd)
+    ccn._on_balls(_balls_msg())                       # the FIRST is never filtered
+    assert len(ccn._dyn_target_pub.published) == 1
+    # 4 mm: under the bar, no solve.
+    pos['v'] = pos['v'] + np.array([4.0, 0.0, 0.0])
+    ccn._on_balls(_balls_msg())
+    assert len(ccn._dyn_target_pub.published) == 1
+    # ...and the reference is what was PUBLISHED, not what was last seen: another
+    # 4 mm in the same direction is 8 mm from the published target and DOES go.
+    pos['v'] = pos['v'] + np.array([4.0, 0.0, 0.0])
+    ccn._on_balls(_balls_msg())
+    assert len(ccn._dyn_target_pub.published) == 2
+    # A NEW ball is never filtered by the previous ball's last target.
+    ccn._on_balls(_balls_msg())
+    assert len(ccn._dyn_target_pub.published) == 2
+    same_pos = pos['v'].copy()
+    monkeypatch.setattr(
+        ccn._coordinator, 'update',
+        lambda balls, current_time, exclude_ids=None:
+        types.SimpleNamespace(**dict(vars(_catchable_cmd(ball_id=6)),
+                                     target_pos=same_pos)))
+    ccn._on_balls(_balls_msg())
+    assert len(ccn._dyn_target_pub.published) == 3
+
+
 class _DoneFuture:
     def add_done_callback(self, cb):
         pass
@@ -2652,7 +3082,7 @@ def test_the_extend_kind_follows_how_many_cycles_are_left(monkeypatch,
         num_throws=3, cycle_index=3 - remaining, dwell_time_s=5.2)
     sent = []
     monkeypatch.setattr(node, '_call_plan_cycle',
-                        lambda req: sent.append(req) or None)
+                        lambda req: sent.append(req) or (None, False))
     state.unified_plan = types.SimpleNamespace(
         t_release_mono=1.0, release_terminal=True, supersede_deadline_mono=1.0)
     node._tick_unified_extend(seq, state, 1.0)
@@ -3040,7 +3470,7 @@ def test_a_chained_launch_is_what_the_coordinator_actually_asks_for():
     seq, state = _seq_state(node, unified=True)
     state.unified_launch_pending = True
     sent = []
-    node._call_plan_cycle = lambda req: sent.append(req) or None
+    node._call_plan_cycle = lambda req: sent.append(req) or (None, False)
     node._tick_unified_launch(seq, state,
                               seq.t_release - rcn._UNIFIED_LAUNCH_LEAD_S + 0.01)
     assert len(sent) == 1
@@ -3072,7 +3502,7 @@ def test_the_extend_safety_net_lands_before_the_published_deadline(monkeypatch):
     fired_at = []
     monkeypatch.setattr(
         node, '_call_plan_cycle',
-        lambda req: fired_at.append(req) or None)
+        lambda req: fired_at.append(req) or (None, False))
     # Step the injected clock across the trigger in 40 ms coordinator ticks.
     t = deadline - 2.0
     while t < deadline and not fired_at:
