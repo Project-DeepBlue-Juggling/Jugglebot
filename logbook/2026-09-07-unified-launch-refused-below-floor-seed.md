@@ -2,7 +2,7 @@
 title: "Four unified goals refused without a ball leaving the cup — all four were one number, where the hand was resting; and the two that named a displaced catch were refused for a reach the unified plan never performs"
 type: investigation
 date: 2026-09-07
-status: in-progress
+status: resolved
 phase: "unified-7dof-planner — Phase 5 (UH-6, second attempt)"
 related_plan: unified-7dof-planner.md
 files_changed:
@@ -286,6 +286,18 @@ machine. What to watch for, in order:
 2. the LAUNCH that follows accepted at the ordinary ~200–500 ms solve;
 3. no `HAND_BELOW_FLOOR` in any outcome — one means the lift did not land, and the outcome says why.
 
+**Re-fly 2026-09-07: UH-6 FLEW.** Operator report, after `colcon build` of `df153ff` with QTM fixed per
+runbook precondition 2c: `TossContinuous` with `unified_cycle: true`, `throw_height_m: 0.5`, three
+throws — the session installed the floor lift first, then launched and caught; no refusals and no
+guard trips were reported. No bag or telemetry numbers were provided for this run, and none are
+asserted here. One observation from the same session: lowering `dwell_time_s` / `throw_delay_s` below
+their defaults produced `ABORTED_NO_RELEASE` on the affected cycles. The operator was not concerned by
+this; the assessment here is that it is **expected** under the current serial per-cycle choreography —
+each cycle pays the 1.0 s floor lift, the 1.80 s `_UNIFIED_LAUNCH_LEAD_S` and a ~0.5 s joined solve
+before the release instant exists, so a beat shorter than that lets the scheduled release pass before a
+plan is installed and `TOSS_RELEASE_GRACE_S` expires. The structural remedy is UH-7's steady chaining
+(no per-cycle lift/prepare); a cheap honesty item in the meantime is carried to Open Questions.
+
 ## Open Questions
 
 1. **The per-knot escape floor, which would close the class rather than route around it.** The lift is
@@ -304,4 +316,13 @@ machine. What to watch for, in order:
 4. **`REJECT_WIRE_MAP` hygiene.** `tests/hardware/toss_trace_recorder.py` has no entry for
    `HAND_BELOW_FLOOR` or `UNIFIED_AIM_UNSUPPORTED`; nothing pins that map's completeness, so a trace read
    of the next sitting will show the codes without their operator hint.
-5. Closed 2026-09-07: the xdist worker was OOM-killed (journalctl: 2026-09-06 23:13 `Killed process … anon-rss:2484468kB`; 2026-09-07 00:13 `anon-rss:860228kB`). Root cause: the process-lifetime `rclpy` stand-in in `tests/ros/conftest.py` used `MagicMock` for `ok/init/shutdown/spin_once`; twelve `while rclpy.ok():` waits in `reload_coordinator_node` under a no-op `time.sleep` against real deadlines recorded 2 `_Call` objects per call (2,000,005 per 1,000,000 calls), and `--dist loadfile` lands a file's whole hoard in one worker — `tests/ros/test_toss_coordinator.py` peaked at 1129 MB (170 MB after), identical on a clean HEAD worktree, so latent since the mock existed. Fix: plain functions for the four names + `tests/ros/test_ros_mock_hygiene.py` (7 tests; 6 fail against the old conftest) pinning that no conftest stand-in records its calls. Verified: `tests/ros/` under `-n 4 --dist loadfile` 2849 passed, worker peaks 205/231/166/180 MB vs 1206 MB before; the no-op-sleep spin (~9 s per tier-8b test) remains a follow-up.
+5. **Refuse a too-short beat at acceptance, not mid-session.** The 2026-09-07 re-fly showed that a
+   `dwell_time_s` / `throw_delay_s` below the defaults produces a per-cycle `ABORTED_NO_RELEASE` once a
+   session is already running, rather than an upfront refusal — expected given the serial per-cycle
+   choreography (the 1.0 s floor lift, the 1.80 s launch lead and a ~0.5 s joined solve must all fit
+   before the scheduled release instant), but not an honest failure mode: an operator has no way to know
+   the beat is too short until a cycle aborts with a ball unthrown. Cheap fix: refuse the goal at
+   acceptance with a named floor (`REJECTED_BEAT_TOO_SHORT` or the closest existing vocabulary) instead
+   of a per-cycle `ABORTED_NO_RELEASE`. The structural fix is UH-7's steady chaining, which removes the
+   per-cycle lift/prepare entirely.
+6. Closed 2026-09-07: the xdist worker was OOM-killed (journalctl: 2026-09-06 23:13 `Killed process … anon-rss:2484468kB`; 2026-09-07 00:13 `anon-rss:860228kB`). Root cause: the process-lifetime `rclpy` stand-in in `tests/ros/conftest.py` used `MagicMock` for `ok/init/shutdown/spin_once`; twelve `while rclpy.ok():` waits in `reload_coordinator_node` under a no-op `time.sleep` against real deadlines recorded 2 `_Call` objects per call (2,000,005 per 1,000,000 calls), and `--dist loadfile` lands a file's whole hoard in one worker — `tests/ros/test_toss_coordinator.py` peaked at 1129 MB (170 MB after), identical on a clean HEAD worktree, so latent since the mock existed. Fix: plain functions for the four names + `tests/ros/test_ros_mock_hygiene.py` (7 tests; 6 fail against the old conftest) pinning that no conftest stand-in records its calls. Verified: `tests/ros/` under `-n 4 --dist loadfile` 2849 passed, worker peaks 205/231/166/180 MB vs 1206 MB before; the no-op-sleep spin (~9 s per tier-8b test) remains a follow-up.

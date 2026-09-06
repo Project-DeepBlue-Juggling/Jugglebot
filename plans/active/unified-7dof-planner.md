@@ -263,7 +263,7 @@ mode; ball tracking, possession verdicts, `outcome_detail` discipline.
 | 2 | Wire v6 + host 7-channel path: codegen, `SetpointPump`, emitter, `make_mpc_command`, tests; firmware-absent safe | COMPLETE | 2026-09-02 | Medium | Codec, per-channel step gates, backward-compatible producers |
 | 3 | Can-bridge FW 17: 7th interp lane, hand guards, `hand_source` interlock, dispatch; lockstep flash + bench ladder | **COMPLETE** (owner, 2026-09-04) — flashed 2026-09-03, ladder flown over two sittings; **sitting three closed 2026-09-05** (all four carried items discharged: the falling-edge decay rule confirmed bit-exact, row 19(b) PASS, row 18's arming half closed by operator decision with the armed trip unobserved, and the first bracketed `[hand7]` capture) | 2026-09-04 | High | Hand streaming safety envelope on real hardware |
 | 4 | Jetson unified-cycle mode: orchestrator, node wiring, plan-derived announcements/suppression, outcome vocabulary; end-to-end sim gate | **COMPLETE (software)** 2026-09-05 — four window kinds chaining at a release, planning inside `trajectory_node`'s `PlanCycle` service, the release-terminal cliff closed by joining LAUNCH+LANDING; sim gate PASS, NEVER FLOWN | 2026-09-05 | Medium | Whole cycle through the production stack in sim |
-| 5 | Hardware ladder: streamed hold → banked carry (ball seated) → planned catch → planned throw (low tier) → full cycles → two-pose constant beat | **IN FLIGHT — UH-3/UH-5 PASS, UH-6 flown (6 of 7 caught), catch quality OPEN** 2026-09-06: every catch was a feedforward catch into a parked cup (ratio 0.001–0.059 vs the 0.7 design) and the whole cycle flew one levelling frame short; both convictions fixed, **NOT re-flown**. UH-7 not run | 2026-09-06 | High | Ball-smooth carry and the planned launch on hardware |
+| 5 | Hardware ladder: streamed hold → banked carry (ball seated) → planned catch → planned throw (low tier) → full cycles → two-pose constant beat | **UH-3/UH-5 PASS, UH-6 FLOWN clean 2026-09-07 (catch quality vs T-H6 pending bag), UH-7 NEXT** — 2026-09-06 first cycles found every catch was a feedforward catch into a parked cup (ratio 0.001–0.059 vs the 0.7 design) and the whole cycle flew one levelling frame short; both convictions fixed 2026-09-07 and the re-fly flew UH-6 clean (operator report, no bag analysed yet) | 2026-09-07 | High | Ball-smooth carry and the planned launch on hardware |
 | 6 | Exclusivity + close-out: Platform Teensy FW 4 stroke retirement, host RPC retirement, contract doc, ILC hand-off, docs | NOT STARTED | | Medium | Single-master end state |
 
 Phase 0 ran while this plan was `proposed` — its recorded results were the
@@ -1172,6 +1172,13 @@ commanded; `_toss_unified_throw_xy` returned B while the platform stood at A). N
 refused at acceptance, `REJECTED_UNIFIED_AIM_UNSUPPORTED`, with the unified
 pre-position forced LEVEL and the throw site read from the live pose. See
 `logbook/2026-09-07-unified-launch-refused-below-floor-seed.md`.
+
+**Re-fly 2026-09-07: UH-6 clean (operator report).** Owner-agreed sequencing 2026-09-07: UH-7
+steady-chain plumbing NEXT (release_at_perf hand-off, beat-floor refusal at acceptance, replan on
+chained windows, the two-pose ring), then the FW 18 bundle + the hand geometry correction on one bench
+sitting, then the Teensy offload (knot FIFO with replace-from-sequence first) as its own plan designed
+against UH-7's measured install-lead and splice needs; Phase 6 after UH-7 acceptance (the plan's
+trigger).
 
 **Dependencies:** Phases 3–4; owner present (operator runs actuating
 commands).

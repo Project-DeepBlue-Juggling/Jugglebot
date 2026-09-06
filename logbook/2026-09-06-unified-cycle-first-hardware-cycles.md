@@ -2,7 +2,7 @@
 title: "First unified cycles on hardware — six catches of seven, every one of them a feedforward catch into a parked cup; the throw left ~11 % fast, the replan gate never opened, and the whole cycle flew one levelling frame short"
 type: investigation
 date: 2026-09-06
-status: in-progress
+status: resolved
 phase: "unified-7dof-planner — Phase 5 (UH-3 / UH-5 / UH-6 first cycles)"
 related_plan: unified-7dof-planner.md
 files_changed:
@@ -642,6 +642,10 @@ closed, the driver honest and the runbook carrying the QTM preconditions. **None
 hardware-verified.** The next sitting is the verification — and it needs the QTM project fixed first,
 because until the `Catching Cone` body is disabled and the Ball Butler's reflectors masked the tracker
 is blind for most of every flight and the replan path cannot be evaluated at all.
+
+**Re-fly 2026-09-07:** with the E8 levelling fix, the replan wiring and the launch-floor lift all in
+place, UH-6 flew cleanly (operator report; no bag analysed yet) — catch quality against T-H6's
+release-velocity criterion remains to be measured from the next bag.
 
 ---
 
