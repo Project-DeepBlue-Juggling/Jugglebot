@@ -86,6 +86,7 @@ from jugglebot.motion.trajectory import TrajectoryLimits
 from jugglebot.motion.trajectory import cup_cycle as cc
 from jugglebot.motion.trajectory import cup_realize as cr
 from jugglebot.motion.trajectory import feasibility as feas
+from jugglebot.motion.trajectory import hand_stroke
 from jugglebot.motion.trajectory import tilt_geometry as tg
 from jugglebot.motion.trajectory.cycle_plan import CyclePlan
 from jugglebot.outcome_detail import base_outcome, outcome_subcode
@@ -290,6 +291,119 @@ def test_hand_stroke_sees_an_excursion_hidden_BETWEEN_knots(geom):
     report = feas.validate_cycle(plan, _limits(), geom)
     assert report.code == feas.HAND_STROKE
     assert report.peak_hand_rev == pytest.approx(10.1875)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# HAND_STROKE — the PARKED START floor
+#
+# A freshly-homed hand rests AT ``HOMING_HAND_ABS_POS_REV`` = -0.1 rev, 0.1 rev
+# BELOW retract by construction, and after a retract it settles anywhere in the
+# firmware's own settled-at-retract window [-0.20, +0.10].  With a hard 0.0
+# floor EVERY unified window planned off a parked hand was refused before it
+# could be judged on its merits — measured on the bench 2026-09-06, where a hand
+# at -0.0380 rev refused HAND_STROKE at knot 0 on every attempt of UH-3.
+#
+# The floor is therefore the plan's OWN first knot when that knot is parked, and
+# the tolerance is anchored there rather than opened to a constant: a plan that
+# DIVES below where the machine is sitting is still commanding travel that does
+# not exist, and is still refused.
+# ═══════════════════════════════════════════════════════════════════════════
+
+def test_the_parked_floor_is_the_firmware_settle_bands_lower_edge(geom):
+    """The floor is spelled from the two constants the FIRMWARE uses.
+
+    ``hand_source.cpp::hand_settled_at_rest`` calls the hand settled at retract
+    over ``[Homing::HAND_ABS_POS_REV - HAND_SETTLE_BAND_REV, HAND_RETRACT_REV +
+    HAND_SETTLE_BAND_REV]``.  The gate's floor is that window's LOWER edge, so
+    the two layers cannot drift into disagreeing about what "parked" means.
+    """
+    assert feas.HAND_HOMED_REST_FLOOR_REV == pytest.approx(-0.20)
+    assert feas.HAND_HOMED_REST_FLOOR_REV == pytest.approx(
+        float(hw.HOMING_HAND_ABS_POS_REV) - hand_stroke.HAND_SETTLE_BAND_REV)
+
+
+def test_a_window_planned_off_a_PARKED_hand_is_accepted(geom):
+    """The 2026-09-06 refusal, as the bench actually produced it.
+
+    Knot 0 at -0.031 rev — inside the firmware retract band, below the homed
+    zero — with the track rising out of the park.  The firmware clips the
+    sub-zero command to 0.0, so this executes as a ~1 mm hold at the floor.
+
+    The rise is deliberately gentle (peak ~320 rev/s^2 against the shipped 3500
+    cap): the point of the fixture is the STROKE floor, so every other hand gate
+    has to stay silent or the test could pass for the wrong reason.
+    """
+    plan = _held([-0.031, 0.05, 0.25], [0.0, 6.0, 8.0])
+    assert plan.hand_rev[0] < feas.HAND_STROKE_MIN_REV
+    report = feas.validate_cycle(plan, _limits(), geom)
+    assert report.ok is True, report.reasons
+
+
+def test_a_plan_that_DIVES_below_its_parked_start_is_still_refused(geom):
+    """Parked at -0.03 and the track goes DOWN to -0.05: refused.
+
+    This is the half of the rule that keeps it a rule.  The floor follows the
+    machine to where it is parked; it does not follow a plan wherever it wants
+    to go, and the refusal names the parked start so the operator can see which
+    floor was applied.
+    """
+    report = feas.validate_cycle(
+        _held([-0.03, -0.05, 1.0], [0.0, 0.0, 0.0]), _limits(), geom)
+    assert report.code == feas.HAND_STROKE
+    assert 'DIVES past the bottom of travel' in report.reasons[0]
+    assert '-0.030' in report.reasons[0]
+
+
+def test_the_parked_floor_can_never_be_lowered_past_the_retract_band(geom):
+    """A start below -0.20 rev is NOT a parked hand and gets no tolerance.
+
+    -0.25 rev is outside the firmware's own settled-at-retract window, so the
+    machine is not where the rule assumes; the plan is refused at knot 0.
+
+    And it is refused with a DIFFERENT reason than a dive, because the operator's
+    fix is different: a dive is a bad plan, this is a hand that needs re-homing.
+    """
+    report = feas.validate_cycle(
+        _held([-0.25, 0.05, 0.25], [0.0, 6.0, 8.0]), _limits(), geom)
+    assert report.code == feas.HAND_STROKE
+    assert 'NOT parked at retract' in report.reasons[0]
+    assert 're-home' in report.reasons[0]
+    assert 'DIVES' not in report.reasons[0]
+
+
+def test_a_plan_starting_AT_OR_ABOVE_zero_keeps_the_strict_floor(geom):
+    """No parked start ⇒ no tolerance: every legacy plan is judged as before.
+
+    The middle knot dips 0.001 rev under the homed zero from a start of exactly
+    0.0, and is refused with the ORIGINAL wording.  This is the regression
+    fence for every fixture in this file that predates the parked floor.
+    """
+    report = feas.validate_cycle(
+        _held([0.0, -0.001, 1.0], [0.0, 0.0, 0.0]), _limits(), geom)
+    assert report.code == feas.HAND_STROKE
+    assert 'BELOW the homed zero' in report.reasons[0]
+
+
+def test_the_catch_runway_still_measures_to_the_TRUE_bottom_of_travel(geom):
+    """A lowered floor must NOT hand the catch runway stroke it does not have.
+
+    The runway asks how much travel is left to STOP a catch in, and the answer
+    is bounded by the physical bottom (0.0 rev) — not by wherever the hand was
+    parked before the window started.  Lowering that floor with the band's would
+    buy 0.031 rev (1 mm) of deceleration distance the firmware clip will never
+    deliver, and would silently disagree with ``cup_cycle``'s own
+    ``catch_runway_z_floor_m``.
+
+    Pinned on the reported ``available``: it is the catch knot's own 1.000 rev,
+    NOT 1.031.
+    """
+    plan = _held([-0.031, 3.5, 1.0], [0.0, -100.0, -100.0], catch_k=2)
+    assert feas._cycle_stroke_floor(plan) < 0.0        # the floor DID drop...
+    report = feas.validate_cycle(plan, _limits(), geom)
+    assert report.code == feas.HAND_STROKE
+    detail = report.reasons[0]
+    assert 'catch runway' in detail
+    assert '1.000 rev' in detail                       # ...and the runway did not
 
 
 # ═══════════════════════════════════════════════════════════════════════════

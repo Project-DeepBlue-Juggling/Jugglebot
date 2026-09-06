@@ -124,6 +124,39 @@ ARM_SUPPRESS_MARGIN_S = 0.040
 #: it is the DOWNWARD allowance, and it did not move.
 HAND_SETTLE_BAND_REV = 0.10
 
+#: THE canonical spelling of where the hand physically rests when it is parked
+#: at retract: the LOWER EDGE of the firmware's own settled-at-retract window,
+#: in hand motor revs. **−0.20 rev = −6.326 mm of slider.**
+#:
+#: ``hand_source.cpp::hand_settled_at_rest`` (:42-47) accepts a hand as parked
+#: at retract iff ``Homing::HAND_ABS_POS_REV - HAND_SETTLE_BAND_REV <= pos <=
+#: JBOp::HAND_RETRACT_REV + HAND_SETTLE_BAND_REV``. The lower edge is the one
+#: every planner-side consumer needs, because a freshly-homed hand rests AT the
+#: homing reference (``HOMING_HAND_ABS_POS_REV`` = −0.1 rev, 0.1 rev BELOW
+#: retract by construction) and settles anywhere down from there inside the
+#: band. A parked hand is therefore NEGATIVE in the firmware's homed frame as a
+#: matter of design, not of miscalibration.
+#:
+#: DERIVED, never a literal, and derived HERE and only here. This module is the
+#: lowest layer of ``motion/trajectory`` (``math`` + the generated config, no
+#: intra-package imports), so every consumer can reach it without a cycle:
+#: :mod:`~jugglebot.motion.trajectory.feasibility` uses it as the floor a parked
+#: plan's first knot may sit at, and
+#: :mod:`~jugglebot.motion.trajectory.cup_cycle` uses it to size the
+#: seed-outside-the-box allowance. It was spelled twice — once as an expression
+#: in ``feasibility`` and once as arithmetic inside a ``cup_cycle`` comment —
+#: until 2026-09-06, which is one spelling too many for a number the firmware
+#: owns.
+#:
+#: ``HOMING_HAND_ABS_POS_REV`` comes from the generated config (both firmware
+#: images and this file read the same YAML). ``HAND_SETTLE_BAND_REV`` above does
+#: NOT — it is a canbridge-only constant (``canbridge_config.h:278``) with no
+#: generated counterpart, so it stays a cited literal.
+#: ``tests/firmware/test_hermite_xref.py::
+#: test_hand_rest_floor_matches_the_firmware_settle_window`` parses BOTH out of
+#: the shipped firmware sources and pins this value against them.
+HAND_HOMED_REST_FLOOR_REV = float(hw.HOMING_HAND_ABS_POS_REV) - HAND_SETTLE_BAND_REV
+
 #: The BOTTOM park band — ``|pos - JB_OP_HAND_RETRACT_REV| <= this`` is what
 #: ``reload_coordinator_node`` calls ``hand_parked``, and it is a PRECONDITION of
 #: every kind-0 throw dispatch (``toss_sequencer`` refuses

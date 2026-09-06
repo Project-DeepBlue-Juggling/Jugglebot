@@ -259,6 +259,42 @@ def test_a_tilted_live_pose_is_used_but_FLAGGED():
     assert 'NOT level' in note
 
 
+def test_the_tilt_line_names_the_LEVELLING_CORRECTION_when_one_is_applied():
+    """The frame is the whole answer, and it runs the opposite way to the obvious.
+
+    ``trajectory/commanded_pose`` publishes ``_intent_orientation``, which
+    REMOVES the levelling correction — so a plan built WITH the correction reads
+    0.000 deg here, and a non-zero reading is the correction leaking back out of
+    a plan that was seeded (C-LEVEL-1 forbids correcting a seed). Measured
+    2026-09-06: offset [0.0126, 0.0011] rad = 0.725 deg, reported as 0.652 deg.
+
+    So on a machine that IS levelled the honest line says "expected", and the
+    "NOT level" warning is reserved for the case where no correction is applied
+    and a real tilt is the only explanation left. Telling an operator to go
+    hunting for a tilt that is the levelling map doing its job is how a rung
+    gets abandoned for a healthy reading.
+    """
+    import math as _m
+    tilted = _PoseMsg(_P(), _Q(x=_m.sin(0.0114 / 2.0), w=_m.cos(0.0114 / 2.0)))
+
+    _pose, note = ucb.live_pose(tilted, correction_applied=True,
+                                tilt_map_version='2026-08-10-3bf7964f')
+    assert 'LEVELLING CORRECTION' in note and 'Expected' in note
+    assert '2026-08-10-3bf7964f' in note
+    assert 'NOT level' not in note
+
+    _pose, note = ucb.live_pose(tilted, correction_applied=False)
+    assert 'NOT level' in note and 'real tilt' in note
+
+    # Status never seen: say so, rather than guessing either way.
+    _pose, note = ucb.live_pose(tilted, correction_applied=None)
+    assert 'was not read' in note
+
+    # A LEVEL pose is never explained at all, correction or no correction.
+    _pose, note = ucb.live_pose(_PoseMsg(_P()), correction_applied=True)
+    assert 'LEVELLING CORRECTION' not in note and 'NOT level' not in note
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # Ballistics
 # ═════════════════════════════════════════════════════════════════════════════
@@ -388,6 +424,156 @@ def test_the_return_helper_refuses_anything_but_a_bare_carry():
 
 
 # ═════════════════════════════════════════════════════════════════════════════
+# The settle-floor lift
+#
+# A rung's settle site is the live cup opening displaced in xy at the SAME z. Off
+# a retracted hand that z is BELOW the planner's cup box, so `_gate_settle_site`
+# refuses SETTLE_SITE before the QP runs. Measured 2026-09-06: hand -0.0380 rev
+# ⇒ cup 678.68 mm ⇒ three refusals in a row before the operator reached for
+# --z-mm. The driver now raises the site instead of minting a request the
+# planner is guaranteed to refuse.
+# ═════════════════════════════════════════════════════════════════════════════
+
+def test_the_settle_floor_matches_the_planners_own():
+    """689.6 mm is ``unified_cycle.SETTLE_CUP_Z_MM``, not a remembered number.
+
+    A copy that drifted below the planner's floor would put the driver back to
+    minting refusals; one that drifted above would lift further than it needs to
+    and quietly change the height every carry rung is flown at.
+    """
+    from jugglebot.motion import unified_cycle as uc
+    assert ucb.SETTLE_CUP_Z_MM == pytest.approx(float(uc.SETTLE_CUP_Z_MM))
+
+
+def test_a_carry_off_a_RETRACTED_hand_is_lifted_to_the_floor():
+    """The 2026-09-06 site, and the line the operator gets told."""
+    cup, note = ucb.lift_cup_to_settle_floor([-0.09, 0.94, 678.68])
+    assert cup[2] == pytest.approx(ucb.SETTLE_CUP_Z_MM)
+    assert cup[:2] == pytest.approx([-0.09, 0.94])       # xy untouched
+    assert '10.9 mm HIGHER' in note and '689.6' in note
+
+
+def test_a_site_already_inside_the_box_is_untouched_and_silent():
+    cup, note = ucb.lift_cup_to_settle_floor([12.0, -5.0, 700.0])
+    assert cup == pytest.approx([12.0, -5.0, 700.0])
+    assert note == ''
+
+
+def test_an_explicit_z_override_is_HONOURED_below_the_floor_but_warned():
+    """``--z-mm`` is an experiment, and silently moving it would hide a refusal.
+
+    The operator asked for a height; they get that height, plus the prediction
+    that the planner is about to refuse it. A driver that quietly corrected the
+    number would make the refusal look like a planner bug.
+    """
+    cup, note = ucb.lift_cup_to_settle_floor([0.0, 0.0, 678.68], z_override=650.0)
+    assert cup[2] == pytest.approx(650.0)
+    assert 'BELOW the planner floor' in note and 'SETTLE_SITE' in note
+    cup, note = ucb.lift_cup_to_settle_floor([0.0, 0.0, 678.68], z_override=690.0)
+    assert cup[2] == pytest.approx(690.0) and note == ''
+
+
+def test_the_return_move_settles_at_the_LIFTED_z_not_the_original():
+    """The carry does not try to come back down below the floor.
+
+    The lift happens ONCE, on the cup site both moves are built from, so the
+    return's recorded origin is the lifted point by construction — the outbound
+    and the return end at the same height and the pair can be repeated.
+    """
+    cup, _note = ucb.lift_cup_to_settle_floor([-0.09, 0.94, 678.68])
+    out = ucb.carry_request(cup, dx_mm=60.0, dy_mm=0.0)
+    out['_origin_cup_mm'] = list(cup)
+    back = ucb.return_request(out)
+    assert out['settle_site_mm'][2] == pytest.approx(ucb.SETTLE_CUP_Z_MM)
+    assert back['settle_site_mm'][2] == pytest.approx(ucb.SETTLE_CUP_Z_MM)
+    assert back['settle_site_mm'] == pytest.approx(list(cup))
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# The carry belt — the driver's own read of the planner's hand peak
+#
+# `plan_cycle` INSTALLS on accept, so the response's `hand_peak_rev` is the last
+# chance anything on this side has to notice that a 60 mm sideways carry is about
+# to be a 295 mm vertical stroke. It was exactly that on 2026-09-06, and every
+# planner gate passed it (`cup_cycle._seed_relaxed_z_box` closed the cause).
+# ═════════════════════════════════════════════════════════════════════════════
+
+def test_the_cup_height_to_hand_map_matches_the_planners_own():
+    """The mirrored gain and zero, against ``unified_cycle.hand_rev_for_cup_z``.
+
+    The belt's bar is "the hand at the settle height", so a drifted gain or zero
+    would move the bar itself — silently, and in the direction that matters
+    (a low map reads every plan as excursive, a high one reads a slam as flat).
+    """
+    from jugglebot.motion import unified_cycle as uc
+    for z in (679.6, 689.6, 700.0, 860.0, 984.6):
+        assert ucb.hand_rev_for_cup_z(z) == pytest.approx(
+            float(uc.hand_rev_for_cup_z(z)), abs=1e-4)
+
+
+def test_the_carry_belt_refuses_a_plan_that_LIFTS_the_ball():
+    """Settle + 1.0 rev is 32 mm of lift on a move that changes no height.
+
+    The message is asserted in the operator's units, not the planner's: a
+    refusal that only said "0.5 rev" would be a number nobody at the bench can
+    picture against a ball sitting in a cup.
+    """
+    settle = ucb.hand_rev_for_cup_z(ucb.SETTLE_CUP_Z_MM)
+    note = ucb.carry_excursion_refusal(settle + 1.0,
+                                       [12.0, -5.0, ucb.SETTLE_CUP_Z_MM])
+    assert note
+    assert 'lift the hand 31.6 mm' in note
+    assert 'REFUSING' in note
+    assert '689.6' in note                       # the settle height it compared to
+
+
+def test_the_carry_belt_passes_the_flat_carry():
+    """Settle + 0.1 rev — 3 mm — is the rounding between request and solve.
+
+    The bar has to admit that or the belt refuses every honest carry; the
+    2026-09-06 plan lands ON the settle hand (0.0e+00 rev of excess), so this is
+    already three millimetres of slack it does not use.
+    """
+    settle = ucb.hand_rev_for_cup_z(ucb.SETTLE_CUP_Z_MM)
+    assert ucb.carry_excursion_refusal(settle + 0.1,
+                                       [0.0, 0.0, ucb.SETTLE_CUP_Z_MM]) == ''
+    assert ucb.carry_excursion_refusal(settle,
+                                       [0.0, 0.0, ucb.SETTLE_CUP_Z_MM]) == ''
+    # A hand BELOW the settle is not an excursion — a carry that ends lower than
+    # it peaks is the normal shape when the rung was given `--z-mm`.
+    assert ucb.carry_excursion_refusal(settle - 2.0,
+                                       [0.0, 0.0, ucb.SETTLE_CUP_Z_MM]) == ''
+
+
+def test_the_carry_belt_reads_the_REQUESTED_settle_height_not_the_constant():
+    """``--z-mm`` moves the bar with it, or the belt refuses the experiment.
+
+    The operator can fly the rung at any height inside the box; the bar is "flat
+    relative to where this plan was told to settle", which is the only reading
+    that survives an override.
+    """
+    high = ucb.SETTLE_CUP_Z_MM + 100.0
+    settle_high = ucb.hand_rev_for_cup_z(high)
+    assert ucb.carry_excursion_refusal(settle_high + 0.1,
+                                       [0.0, 0.0, high]) == ''
+    # ...and the same absolute peak IS a refusal against the lower settle.
+    assert ucb.carry_excursion_refusal(settle_high + 0.1,
+                                       [0.0, 0.0, ucb.SETTLE_CUP_Z_MM])
+
+
+def test_the_2026_09_06_slam_would_have_been_refused_by_the_belt():
+    """The measured failure, as the driver would have seen it in the response.
+
+    ``hand_peak_rev`` 9.6482 against a 0.3162 rev settle: 295 mm of lift on a
+    flat carry, accepted by every planner gate (0.31 rev of stroke headroom
+    left). This is the case the belt exists for, so it is asserted with the
+    number the bench actually produced rather than a synthetic one.
+    """
+    note = ucb.carry_excursion_refusal(9.6482, [0.0, 0.0, ucb.SETTLE_CUP_Z_MM])
+    assert note and 'lift the hand 295' in note
+
+
+# ═════════════════════════════════════════════════════════════════════════════
 # The precondition evaluator
 # ═════════════════════════════════════════════════════════════════════════════
 
@@ -411,6 +597,27 @@ def test_a_healthy_machine_passes_every_precondition():
     checks = ucb.check_preconditions(_good())
     assert [c['id'] for c in checks] == ['P1', 'P2', 'P3', 'P4', 'P5']
     assert all(c['ok'] for c in checks), _by_id(checks)
+
+
+def test_P1_names_the_state_it_actually_found():
+    """P1 has three ways to fail and the operator needs to know which one.
+
+    ``mode='STANDBY'`` is the common one — the robot has not been activated yet
+    — and it cost the 2026-09-06 sitting its first attempt against a generic fix
+    line that listed all three conditions without saying which had failed.
+    """
+    standby = _by_id(ucb.check_preconditions(_good(mode='STANDBY')))['P1']
+    assert standby['ok'] is False
+    assert 'STANDBY' in standby['fix'] and 'ACTIVATE' in standby['fix']
+    assert 'runbook step 7' in standby['fix']
+
+    nostatus = _by_id(ucb.check_preconditions(_good(mode=None)))['P1']
+    assert 'is the launch up' in nostatus['fix']
+
+    notstreaming = _by_id(
+        ucb.check_preconditions(_good(streaming=False)))['P1']
+    assert 'NOT streaming' in notstreaming['fix']
+    assert 'STALE_STATE' in notstreaming['fix']
 
 
 @pytest.mark.parametrize('kw,failing', [

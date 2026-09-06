@@ -1015,6 +1015,67 @@ z constants `_UNIFIED_THROW_CUP_Z_MM` 860.0 / `_UNIFIED_CATCH_CUP_Z_MM` 830.0 ar
 module-level literals deliberately (they exist to be moved by UH-5/UH-6); they
 promote to YAML once this ladder has tuned them.
 
+**First UH-3 attempt 2026-09-06 — REFUSED THREE DEEP, then E-STOPped; the rung
+is NOT flown.** Canonical record:
+[`logbook/2026-09-06-uh3-first-attempt-refusals-and-estop.md`](../../logbook/2026-09-06-uh3-first-attempt-refusals-and-estop.md).
+Six `--rung carry` invocations 12:05–12:09, six aborts, the ball never moved: P1
+`mode='STANDBY'`; `SETTLE_SITE` twice (cup opening **678.68 mm** against the
+**689.6 mm** box floor); `HAND_STROKE` (knot 0 at **−0.031 rev**);
+`GUARD_LATCHED`; `HAND_STROKE` again. Three of those are **one physical fact seen
+through three layers** — a homed hand parks BELOW its own encoder zero by design
+(`HOMING_HAND_ABS_POS_REV = −0.1`, measured −0.038), and *even a hand at exactly
+0.0 rev leaves the cup 10 mm under the floor*, so the rung was unplannable from
+any non-negative hand position. **Four fixes, all at the root:** (1) one canonical
+`HAND_HOMED_REST_FLOOR_REV` (−0.20 rev) in `motion/trajectory/hand_stroke.py`,
+pinned to `hand_source.cpp`'s own expression by a new firmware xref, with
+`feasibility` and `cup_cycle` both reading it; (2) a stroke floor that follows
+knot 0 when the hand is parked (dive tolerance 1e-4 rev, sized off a measured
+79 nm interior-Hermite extremum; the catch runway deliberately keeps the true
+bottom of travel); (3) `_start_tilt_for` pinning knot 0's tilt to the seed's
+(3.0727° → 0.0000°, drift 0.1519 → 0.0000 rev); (4) `_seed_relaxed_z_box`, which
+closes a defect the operator never reached and which **would have moved the
+robot** — a seed 11.2 mm under a cup z box whose rows bind knots 1…n only makes a
+*flat* carry fire the cup to the ceiling (984.6 mm, hand to 9.6482 rev at
+78.4 rev/s, ~295 mm of slider with a ball in the cup), **accepted by
+`validate_cycle`** with 0.311 rev of headroom. **A fifth defect fell out of the
+follow-up measurement**: `_cycle_start_state`'s MOVING branch handed the planner
+FREE FALL as the boundary condition of a window planned over a live carry
+(`cup_accel_mm_s2=None`, `post_release=True`) — the identical lie fixed for the
+*rest* branch on 2026-09-05, on the other branch of the same function; the
+Hermite dipped 0.38 mm below knot 0 (120× the dive tolerance) and was correctly
+refused. It now samples the active cycle's own cup acceleration at τ and takes
+`post_release` from the cycle's release marks, refusing a moving seed with no
+active cycle rather than guessing. Plus a driver belt that HOLDS the machine
+(`trajectory/hold` first, then explain, then stop) and a start-up planner warm-up
+in `trajectory_node` (a 5 mm SETTLE carry, ~185 ms once, nothing installed).
+
+**Blocked on the E-STOP measurement, not on the fixes.** `MPC_STALE` (the 250 ms
+setpoint watchdog) latched twice, `sp_age_ms` **804** and **324**, both inside a
+full solve — **2158.89 / 2021.16 ms** against ~16 ms idle. The watchdog was
+right; CAN, deviation and axis freshness are all exonerated in the capture. The
+operator's follow-up (2026-09-06 14:08–14:11,
+`tools/probes/emitter_gap_under_solve.py --reps 3`, three arms) **did not
+reproduce it**: 190–250 ms solves and a **0 ms** emitter gap on every run, so
+BLAS threading, rosbag recording and `sys.setswitchinterval` are all withdrawn.
+**The cold-first-solve hypothesis is withdrawn too, on measurement** — a fresh
+process's first solve costs 191.0 / 189.8 / 185.4 ms against a second at 193.2 /
+183.5 / 178.9 ms, a 5–7 ms (~3 %) penalty — so the warm-up ships as insurance,
+not as the explanation, and **CPU oversubscription is the only class that
+reproduces a multi-second solve at all** (`--load 2` → 2209 ms → a 198 ms gap).
+The contention source at 12:08 is unidentified. **Two owner decisions, both taken
+2026-09-06:** measure under session load before choosing between SCHED_FIFO on
+the emitter thread and a worker process (done — see above); and bundle the
+`MPC_STALE` rename with FW 18, the mechanism being load-bearing and the prefix
+only historical (one generator entry, `config/generate_udp_protocol.py:262`,
+drives four delivered files; the site count is **158**, not the ~15 first
+estimated). **Follow-ups:** a per-knot floor vector so LAUNCH can take the
+relaxation too (the relaxed launch is better — 860.000 vs 886.166 mm peak, 45.3
+vs 107.5 m/s² — but a floor-riding release-terminal window trips `HAND_STROKE` on
+a 0.22 mm continuum ripple, so it needs a second solve); a `validate_only` field
+on `PlanCycle.srv`, since `accepted` means *gated **and installed*** and the
+driver's belt therefore inspects a plan that is already streaming; and, with the
+FW 18 rename, a fix for the `[hand7] lead`/`dev_over` counter gate. Re-attempt 15:25 after a colcon build: the carry was ACCEPTED with the hand flat (the refusal chain is closed on hardware) but the solve took 1655 ms in the launched node and the guard latched again — the solve-time discrepancy (launched node 1.6–2.2 s vs the probe's 190–250 ms) is the open item.
+
 **Dependencies:** Phases 3–4; owner present (operator runs actuating
 commands).
 
@@ -1249,6 +1310,8 @@ are as of the owner's **Phase 3 COMPLETE** declaration, 2026-09-04.
 | The z=170 pin has TWO chains: `JB_OP_DEFAULT_ACTIVE_Z_MM` consumers AND sim-side `Z_ACTIVE_MM` literals (`sim/juggle_tilt.py:58`, `sim/juggle_online.py:92`, `sim/gate_common.py:25`, plus `toss_sequencer.py:615`'s pinned local) | § 2.2 of the exploration; grep before touching | z-float toggle that misses a chain ships a contradiction |
 | `toss_workspace_xy_mm` was DELETED 2026-08-29 — the reach-feasibility gate is the sole lateral authority | `logbook/2026-08-29-displacement-caps-removed.md` | Referencing the dead key resurrects a retired policy |
 | Platform Teensy flash is Arduino IDE only (pio image is CAN-MUTE) | memory / bench facts | A pio flash silently kills the cold-start + inclinometer paths |
+| **Knot 0 == the machine, in EVERY channel** — position, velocity, hand, tilt AND acceleration. A plan may not open at a state the machine is not in, on any channel | `trajectory_node._cycle_start_state` (the seed, incl. the cup acceleration and `post_release` on BOTH the rest and moving branches) + `_install_continuity_ok` (position and velocity) + `unified_cycle._start_tilt_for` (tilt) + `feasibility._cycle_stroke_floor` (the hand, including a parked hand BELOW the homed zero) | Every one of these is a channel where knot 0 was once allowed to drift, and in each case the ONLY downstream guard is an install refusal — a gate that can say no and nothing else. A knot-0 tilt of 2.53° on a level machine is 0.1248 rev of leg drift against a 0.06 rev bound (`STALE_STATE`, 2026-09-06); a fictional knot-0 velocity installed unremarked until 2026-09-05; a parked hand at −0.031 rev was refused `HAND_STROKE` for being where the machine actually was; and a MOVING seed was told it was in free fall until 2026-09-06 — the identical lie fixed for the rest branch a day earlier, on the other branch of the same function, so **a fix that repairs one branch of a two-branch default has not closed the class** |
+| **A seed OUTSIDE the cup z box may only re-enter at the jerk-limited rate, never in one `dt`** | `cup_cycle._seed_relaxed_z_box` — the box is widened to contain its own seed for a rest-terminal window; a seed further out than `SEED_OUTSIDE_BOX_MAX_M` (20 mm) is refused `START_BELOW_BOX` / `START_ABOVE_BOX` | The box rows bind knots 1…n only, so a seed below the floor is a one-`dt` re-entry demand the QP satisfies by slamming: measured 2026-09-06, an 11.2 mm deficit turned a flat 1.4 s carry into a 295 mm slider excursion to the box ceiling at 78 rev/s, **accepted by `validate_cycle`** with 0.311 rev of headroom, with a ball in the cup |
 
 ### Architecture decisions (root causes, not authority)
 

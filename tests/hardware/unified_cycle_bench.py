@@ -137,6 +137,22 @@ SET_LIMITS_CMD = (
 THROW_CUP_Z_MM = 860.0
 CATCH_CUP_Z_MM = 830.0
 
+#: The PLANNER's cup-box FLOOR for a settle site — ``unified_cycle.SETTLE_CUP_Z_MM``
+#: (= ``_CUP_Z_BOTTOM_M + _CUP_Z_INSET_M``, i.e. 679.6 mm of stroke bottom plus a
+#: 10 mm inset). ``cup_cycle._gate_settle_site`` refuses ``SETTLE_SITE`` below it
+#: BEFORE any solve runs.
+#:
+#: This is why a carry-at-the-current-height cannot be planned off a retracted
+#: hand: at hand 0.0 rev the cup opening is 679.6 mm, still 10 mm under the
+#: floor, so EVERY settle site taken from the live cup z is refused until the
+#: hand is already up at >= 0.3162 rev. Measured 2026-09-06: a hand resting at
+#: -0.0380 rev put the cup at 678.68 mm and the rung was refused three times
+#: before the operator reached for ``--z-mm``. The driver now lifts the site
+#: instead of minting a request the planner is guaranteed to refuse.
+#: Restated as a literal (the module convention above) and pinned against
+#: ``unified_cycle.SETTLE_CUP_Z_MM`` by the offline test.
+SETTLE_CUP_Z_MM = 689.6
+
 #: Hand axis and its energised state. ``teensy_bridge_node._HAND_AXIS`` (= 6)
 #: and ``protocol_config.ODRIVE_STATES['CLOSED_LOOP']`` (= 8).
 HAND_AXIS = 6
@@ -157,9 +173,39 @@ HAND_MOTOR_MAX_POSITION_REV = 10.8  # canbridge_config.h HAND_MOTOR_MAX_POSITION
 #: much of the band a tier is using before the next one is asked for.
 HAND_CATCH_PRIME_REV = 9.9594     # hardware_config JB_OP_HAND_CATCH_PRIME_REV
 
-#: Slider revs per mm — ``LINEAR_GAIN_REV_PER_M`` / 1000, used only to print a
-#: margin in millimetres beside one in revs.
-REV_PER_MM = 31.65 / 1000.0
+#: Above this the driver explains the commanded tilt rather than passing it over
+#: in silence. NOT a gate — see :func:`tilt_explanation` for why a non-zero
+#: reading is the expected state at the head of a rung.
+TILT_NOTE_DEG = 0.5
+
+#: Slider revs per mm — ``hand_stroke.LINEAR_GAIN_REV_PER_M`` / 1000 (the same
+#: number as the generated ``TEENSY_LINEAR_GAIN``). Prints a margin in
+#: millimetres beside one in revs, and converts a cup height into the slider revs
+#: that reach it (:func:`hand_rev_for_cup_z`). Pinned to the planner's own gain
+#: by the offline test.
+REV_PER_MM = 31.6172 / 1000.0
+
+#: Cup-opening world z (mm) with the slider at hand zero, cup LEVEL and the
+#: platform at the active-z pin — ``unified_cycle._CUP_Z_BOTTOM_M``
+#: (``CUP_Z_BASE_MM + SLIDER_REV_ZERO_MM``). Pinned offline.
+CUP_Z_AT_HAND_ZERO_MM = 679.6
+
+#: How far ABOVE the settle height the planner's own ``hand_peak_rev`` may sit on
+#: a CARRY before this driver refuses to let the plan run (rev). 0.5 rev is 16 mm
+#: of slider.
+#:
+#: A carry is flat BY DEFINITION — the ball rides the cup from A to B at one
+#: height — so the planned hand peak IS the settle height, to within the
+#: millimetre or so of rounding between the request and the solve. Anything more
+#: is the planner lifting the ball, and the failure this exists for lifts it a
+#: very long way: seeded from the parked hand, 11.2 mm under the QP's cup box,
+#: the solve used to satisfy the box at knot 1 by launching the cup to the box
+#: CEILING and back — 0.3162 → **9.6482 rev at 78.4 rev/s**, ~295 mm of slider
+#: slam with a ball seated in the cup, accepted by every gate in the stack
+#: (``cup_cycle._seed_relaxed_z_box``, fixed 2026-09-06). 0.5 rev sits two
+#: orders below that and an order above the rounding, so it separates the two
+#: without being a number the honest carry can reach.
+CARRY_HAND_EXCURSION_MAX_REV = 0.5
 
 #: How much clearance the ENCODER must keep from the hard stop (rev). Sitting
 #: two measured 10.4693 rev on a legacy stroke — 0.33 rev, ~10 mm — so the
@@ -220,6 +266,88 @@ def release_speed_for_flight_mm_s(flight_s: float) -> float:
 # ─────────────────────────────────────────────────────────────────────────────
 # Pure core — request construction
 # ─────────────────────────────────────────────────────────────────────────────
+
+def lift_cup_to_settle_floor(cup_mm, *, z_override=None):
+    """``(cup, note)`` — the rung's cup site, raised to the planner's floor.
+
+    A rung's settle site is the live cup opening displaced in xy at the SAME z,
+    so when the hand is parked near retract that z sits below
+    :data:`SETTLE_CUP_Z_MM` and ``cup_cycle._gate_settle_site`` refuses
+    ``SETTLE_SITE`` before the QP ever runs. Raising the site is the honest
+    default: the rung is a CARRY, the ball rides the cup either way, and 11 mm
+    of lift is the price of planning it at all.
+
+    ``z_override`` (``--z-mm``) is honoured EXACTLY, floor or no floor — an
+    explicit height is an experiment, and silently moving it would hide the
+    refusal the operator asked for. It still gets a warning when it is under the
+    floor, because a predicted refusal beats a mystery one.
+
+    Returns the cup list (a copy) and a note to print, or ``''`` when the site
+    was already inside the box.
+    """
+    cup = [float(v) for v in cup_mm]
+    if z_override is not None:
+        cup[2] = float(z_override)
+        if cup[2] < SETTLE_CUP_Z_MM:
+            return cup, (
+                '--z-mm %.1f mm is BELOW the planner floor %.1f mm — honoured '
+                'as asked, but plan_cycle will refuse SETTLE_SITE before it '
+                'solves' % (cup[2], SETTLE_CUP_Z_MM))
+        return cup, ''
+    if cup[2] >= SETTLE_CUP_Z_MM:
+        return cup, ''
+    lift = SETTLE_CUP_Z_MM - cup[2]
+    cup[2] = SETTLE_CUP_Z_MM
+    return cup, (
+        'the carry ends %.1f mm HIGHER than it starts: the planner floor is '
+        '%.1f mm and the hand rests at %.1f mm after retract, so the site was '
+        'raised to the floor (pass --z-mm to override)'
+        % (lift, SETTLE_CUP_Z_MM, SETTLE_CUP_Z_MM - lift))
+
+
+def hand_rev_for_cup_z(cup_z_mm: float) -> float:
+    """Slider revs the cup opening reaches ``cup_z_mm`` at, cup LEVEL.
+
+    ``unified_cycle.hand_rev_for_cup_z`` in this module's mirrored constants:
+    the cup opening rides the slider one-for-one at level, so it is
+    ``(cup_z − CUP_Z_AT_HAND_ZERO_MM) × REV_PER_MM``. Pinned against the
+    planner's own function by the offline test.
+    """
+    return (float(cup_z_mm) - CUP_Z_AT_HAND_ZERO_MM) * REV_PER_MM
+
+
+def carry_excursion_refusal(hand_peak_rev, settle_site_mm) -> str:
+    """``''`` if the planned carry is flat, else the refusal to print.
+
+    THE BELT, AND WHY IT IS THE DRIVER'S JOB. ``PlanCycle`` **installs** on
+    accept — its own contract says ``accepted`` means "gated AND installed" —
+    so by the time this driver sees ``hand_peak_rev`` the plan is already
+    streaming. That makes the peak the last chance anything on this side has to
+    notice that a 60 mm sideways carry is about to become a 295 mm vertical
+    stroke, and the planner gates cannot: the slam was inside the jerk boxes,
+    inside the workspace box, and inside ``HAND_STROKE`` with 0.31 rev to spare.
+    ``cup_cycle._seed_relaxed_z_box`` closed the cause on 2026-09-06; this stays
+    as the independent witness, because the number it reads is the PLANNER's own
+    and needs no agreement about why the number is what it is.
+
+    Returns the operator-facing text (plain words, millimetres) so the caller can
+    print it, stop the run, and hold — never a bool a caller can drop.
+    """
+    settle_rev = hand_rev_for_cup_z(float(settle_site_mm[2]))
+    peak = float(hand_peak_rev)
+    excess = peak - settle_rev
+    if excess <= CARRY_HAND_EXCURSION_MAX_REV:
+        return ''
+    return (
+        'the planner wants to lift the hand %.1f mm during a flat carry '
+        '(peak %.4f rev vs %.4f rev at the settle height %.1f mm; the bar is '
+        '%.2f rev = %.0f mm). A carry keeps the ball at one height, so this is '
+        'the planner solving a different problem from the one the rung is '
+        'asking about. REFUSING.'
+        % (excess / REV_PER_MM, peak, settle_rev, float(settle_site_mm[2]),
+           CARRY_HAND_EXCURSION_MAX_REV,
+           CARRY_HAND_EXCURSION_MAX_REV / REV_PER_MM))
+
 
 def carry_request(cup_mm, *, dx_mm: float, dy_mm: float,
                   period_s: float = DEFAULT_PERIOD_S,
@@ -345,7 +473,9 @@ class Snapshot:
     def __init__(self, *, status_age_s=None, mode=None, streaming=None,
                  leg_vel=None, leg_acc=None, leg_jerk=None, cycle_active=None,
                  robot_state_age_s=None, hand_axis_state=None,
-                 hand_pos_rev=None, link_age_s=None, hand_source=None):
+                 hand_pos_rev=None, link_age_s=None, hand_source=None,
+                 gravity_correction_loaded=None, tilt_map_loaded=None,
+                 tilt_map_version=None):
         self.status_age_s = status_age_s
         self.mode = mode
         self.streaming = streaming
@@ -358,10 +488,41 @@ class Snapshot:
         self.hand_pos_rev = hand_pos_rev
         self.link_age_s = link_age_s
         self.hand_source = hand_source
+        # Levelling, read for the tilt line only — never gated on. "Applied" is
+        # gravity_correction_loaded AND tilt_map_loaded read together
+        # (TrajectoryStatus.msg); the correction alone is what actually moves a
+        # pose, so `tilt_explanation` keys on that one.
+        self.gravity_correction_loaded = gravity_correction_loaded
+        self.tilt_map_loaded = tilt_map_loaded
+        self.tilt_map_version = tilt_map_version
 
 
 def _fresh(age, max_age_s):
     return age is not None and float(age) <= float(max_age_s)
+
+
+def _p1_fix(snap: Snapshot) -> str:
+    """P1's fix line, named for the state the node is ACTUALLY in.
+
+    ``mode='STANDBY'`` is the overwhelmingly common P1 failure and it has one
+    cause and one cure — the robot has not been activated yet — so it gets the
+    step number rather than the generic three-way. Measured 2026-09-06: the
+    operator's first attempt of the sitting refused on exactly this, and the
+    generic line did not say which of the three conditions had failed.
+    """
+    if snap.mode == 'STANDBY':
+        return ('mode is STANDBY — ACTIVATE the robot first (runbook step 7), '
+                'then re-run. plan_cycle refuses WRONG_MODE outside TRAJECTORY')
+    if snap.mode is None:
+        return ('no trajectory/status seen at all — is the launch up? '
+                '(ros2 launch jugglebot jugglebot_launch.py)')
+    if not snap.streaming:
+        return ('mode is %r but the emitter is NOT streaming, so nothing is '
+                'seeded — plan_cycle refuses STALE_STATE. ACTIVATE the robot '
+                '(runbook step 7)' % (snap.mode,))
+    return ('is the launch up, and is the robot ACTIVATED? '
+            'trajectory/plan_cycle refuses WRONG_MODE outside TRAJECTORY '
+            'mode and STALE_STATE when the emitter is not seeded')
 
 
 def check_preconditions(snap: Snapshot, *, max_age_s: float = 2.0,
@@ -379,9 +540,7 @@ def check_preconditions(snap: Snapshot, *, max_age_s: float = 2.0,
                and snap.mode == 'TRAJECTORY' and bool(snap.streaming)),
         'detail': ('age=%s mode=%r streaming=%r'
                    % (_age(snap.status_age_s), snap.mode, snap.streaming)),
-        'fix': ('is the launch up, and is the robot ACTIVATED? '
-                'trajectory/plan_cycle refuses WRONG_MODE outside TRAJECTORY '
-                'mode and STALE_STATE when the emitter is not seeded'),
+        'fix': _p1_fix(snap),
     })
 
     out.append({
@@ -739,10 +898,12 @@ class _Runner:
         from jugglebot_interfaces.srv import PlanCycle
         from diagnostic_msgs.msg import DiagnosticStatus
         from geometry_msgs.msg import Pose
+        from std_srvs.srv import Trigger
 
         self.node = node
         self.args = args
         self._PlanCycle = PlanCycle
+        self._Trigger = Trigger
 
         self.status = None
         self.status_stamp = None
@@ -754,6 +915,14 @@ class _Runner:
         self.pose = None
 
         self.cli_plan = node.create_client(PlanCycle, '/trajectory/plan_cycle')
+        # The ABORT path. `plan_cycle` installs on accept, so a plan this driver
+        # refuses is ALREADY STREAMING when the refusal is decided; `trajectory/
+        # hold` is the only thing that stops it — it builds a profiled
+        # decel-to-rest from the live commanded state and installs THAT, which
+        # supersedes the cycle. Legacy plans carry no hand channel, so the
+        # setpoint frames stop asserting HAS_HAND and the firmware's falling-edge
+        # decay leaves the slider where it is rather than continuing the stroke.
+        self.cli_hold = node.create_client(Trigger, '/trajectory/hold')
         node.create_subscription(TrajectoryStatus, '/trajectory/status',
                                  self._on_status, 10)
         node.create_subscription(DiagnosticStatus, '/link_status',
@@ -817,7 +986,12 @@ class _Runner:
             hand_pos_rev=(None if ms is None or len(ms) <= HAND_AXIS
                           else float(ms[HAND_AXIS].pos_estimate)),
             link_age_s=self._age(self.link_stamp),
-            hand_source=self.link_kv.get('hand_source'))
+            hand_source=self.link_kv.get('hand_source'),
+            gravity_correction_loaded=(
+                None if st is None else bool(st.gravity_correction_loaded)),
+            tilt_map_loaded=(None if st is None
+                             else bool(st.tilt_map_loaded)),
+            tilt_map_version=(None if st is None else str(st.tilt_map_version)))
 
     def row(self, t0: float) -> dict:
         st, ms, h = self.status, self.motor_states, self.hand
@@ -872,6 +1046,34 @@ class _Runner:
             raise BenchError('trajectory/plan_cycle did not answer within '
                              '%.1f s' % (self.args.timeout_s,))
         return resp
+
+    def hold(self) -> str:
+        """Supersede whatever is installed with a profiled stop. Never raises.
+
+        Returns a line to print. Used on the refusal path, where the plan being
+        refused is already running — so this is called FIRST and the run stops
+        afterwards. It cannot raise, because a refusal that dies inside its own
+        abort tells the operator nothing about the machine.
+        """
+        import rclpy
+        try:
+            if not self.cli_hold.wait_for_service(timeout_sec=2.0):
+                return ('trajectory/hold is NOT AVAILABLE — the refused plan IS '
+                        'STILL RUNNING. Stop it by hand (E-stop, or '
+                        'ros2 service call /trajectory/hold std_srvs/srv/Trigger)')
+            future = self.cli_hold.call_async(self._Trigger.Request())
+            rclpy.spin_until_future_complete(self.node, future, timeout_sec=5.0)
+            resp = future.result()
+            if resp is None:
+                return ('trajectory/hold did not answer in 5 s — assume the '
+                        'refused plan IS STILL RUNNING')
+            if not bool(resp.success):
+                return ('trajectory/hold REFUSED (%s) — the refused plan IS '
+                        'STILL RUNNING' % (resp.message,))
+            return 'held: %s' % (resp.message,)
+        except Exception as exc:                       # noqa: BLE001 — abort path
+            return ('trajectory/hold raised (%s) — assume the refused plan IS '
+                    'STILL RUNNING' % (exc,))
 
 
 def _flat(resp, spec) -> dict:
@@ -934,18 +1136,28 @@ def run(args) -> int:                                            # noqa: C901
         # The cup site the rung is built around: the forward map of the LIVE
         # commanded pose and the LIVE hand. Read once, so the outbound and the
         # return share one origin.
-        pose6, pose_note = live_pose(runner.pose, args.pose)
+        pose6, pose_note = live_pose(
+            runner.pose, args.pose,
+            correction_applied=snap.gravity_correction_loaded,
+            tilt_map_version=(snap.tilt_map_version
+                              if snap.tilt_map_loaded else None))
         hand_rev = snap.hand_pos_rev
         # The forward map is the default; each override replaces ONE component,
         # so `--z-mm` alone raises the rung without also moving it in xy.
         cup = cup_site_now(pose6, hand_rev)
-        for idx, override in enumerate((args.cup_x, args.cup_y, args.z_mm)):
-            if override is not None:
-                cup[idx] = float(override)
         print('\npose %s: [%.2f, %.2f, %.2f] mm'
               % (pose_note, pose6[0], pose6[1], pose6[2]))
         print('cup opening now: [%.2f, %.2f, %.2f] mm (hand %.4f rev)'
               % (cup[0], cup[1], cup[2], hand_rev))
+        # xy overrides replace ONE component each; z goes through the floor rule
+        # so the rung is never built around a site the planner will refuse.
+        for idx, override in enumerate((args.cup_x, args.cup_y)):
+            if override is not None:
+                cup[idx] = float(override)
+        cup, lift_note = lift_cup_to_settle_floor(cup, z_override=args.z_mm)
+        if lift_note:
+            print('  %s' % (lift_note,))
+            print('  site: [%.2f, %.2f, %.2f] mm' % (cup[0], cup[1], cup[2]))
 
         specs = _build_specs(args, cup)
         legacy = None
@@ -991,10 +1203,30 @@ def run(args) -> int:                                            # noqa: C901
             if not flat['accepted']:
                 raise BenchError('plan_cycle REFUSED %s: %s'
                                  % (flat['code'], flat['message']))
+            # ── THE CARRY BELT — read the peak BEFORE watching it happen ─────
+            # `plan_cycle` installs on accept, so this plan is streaming now.
+            # A carry whose planned hand peak is far above its own settle height
+            # is not a carry, and the only way to un-install it is to supersede
+            # it: hold FIRST, explain second, stop third.
+            if args.rung == 'carry':
+                refusal = carry_excursion_refusal(flat['hand_peak_rev'],
+                                                  spec['settle_site_mm'])
+                if refusal:
+                    print('  !! %s' % (refusal,))
+                    print('  %s' % (runner.hold(),))
+                    raise BenchError('carry excursion refused — %s' % (refusal,))
             print('  duration=%.3f s  plan_wall=%.1f ms  hand_peak=%.4f rev  '
                   'hand_peak_vel=%.2f rev/s'
                   % (flat['duration_s'], flat['plan_wall_ms'],
                      flat['hand_peak_rev'], flat['hand_peak_vel_rps']))
+            if args.rung == 'carry':
+                settle_rev = hand_rev_for_cup_z(spec['settle_site_mm'][2])
+                print('  carry check: the hand peaks %.1f mm above the settle '
+                      'height (%.4f rev vs %.4f rev); the driver refuses past '
+                      '%.0f mm'
+                      % ((flat['hand_peak_rev'] - settle_rev) / REV_PER_MM,
+                         flat['hand_peak_rev'], settle_rev,
+                         CARRY_HAND_EXCURSION_MAX_REV / REV_PER_MM))
             print('  release_terminal=%s  t_release_mono=%.4f  '
                   'release_vel=[%.1f, %.1f, %.1f] mm/s'
                   % (flat['release_terminal'], flat['t_release_mono'],
@@ -1082,7 +1314,8 @@ def quat_to_rotvec(qx, qy, qz, qw):
     return [float(angle * q[i] / s) for i in range(3)]
 
 
-def live_pose(pose_msg, override=None):
+def live_pose(pose_msg, override=None, *, correction_applied=None,
+              tilt_map_version=None):
     """``(pose6, note)`` — the live commanded pose, or the ``--pose`` override.
 
     Used ONLY to build the cup site and the legacy-duration comparison. The plan
@@ -1114,10 +1347,45 @@ def live_pose(pose_msg, override=None):
                          pose_msg.orientation.z, pose_msg.orientation.w)
     tilt_deg = math.degrees(math.hypot(rot[0], rot[1]))
     note = 'live (tilt %.3f deg)' % (tilt_deg,)
-    if tilt_deg > 0.5:
-        note += ' — NOT level; both rungs are planned from rest and a settled ' \
-                'machine is level, so check this before trusting the cup site'
+    if tilt_deg > TILT_NOTE_DEG:
+        note += ' — ' + tilt_explanation(tilt_deg, correction_applied,
+                                         tilt_map_version)
     return [float(p.x), float(p.y), float(p.z)] + rot, note
+
+
+def tilt_explanation(tilt_deg: float, correction_applied, tilt_map_version):
+    """Why ``trajectory/commanded_pose`` reports a tilt on a level machine.
+
+    THE FRAME IS THE WHOLE ANSWER, and it is the opposite way round from the
+    obvious reading. ``trajectory/commanded_pose`` publishes
+    ``_intent_orientation``, which *removes* the levelling correction
+    (``levelling.uncorrect_pose``) — so a plan built WITH the current correction
+    reports 0.000 deg here, and a non-zero reading means the active plan was
+    built in an uncorrected frame and the correction is leaking back out.
+
+    That is the NORMAL state at the head of a rung, not a fault: C-LEVEL-1
+    forbids correcting a SEED, so a hold seeded from measured legs carries the
+    correction in the intent frame by design. Measured 2026-09-06: gravity
+    offset [0.0126, 0.0011] rad = 0.725 deg, less the loaded map's residual at
+    that pose, reported as 0.652 deg — the correction, negated.
+
+    So the honest line names the correction when one is applied, and only warns
+    when none is, because THAT is the case where a real tilt is the only
+    explanation left.
+    """
+    if correction_applied:
+        where = (' (map %s)' % (tilt_map_version,)) if tilt_map_version else ''
+        return ('this is the LEVELLING CORRECTION%s reported back in the '
+                'intent frame, not a tilted platform: commanded_pose removes '
+                'the correction, and a plan seeded from measured legs was '
+                'never given it. Expected at the head of a rung.' % (where,))
+    if correction_applied is None:
+        return ('NOT level, and trajectory/status was not read, so this could '
+                'be either a real tilt or a levelling correction reported back '
+                'in the intent frame — check before trusting the cup site')
+    return ('NOT level and NO levelling correction is applied, so this is a '
+            'real tilt: both rungs are planned from rest and a settled machine '
+            'is level, so check this before trusting the cup site')
 
 
 def _build_specs(args, cup):

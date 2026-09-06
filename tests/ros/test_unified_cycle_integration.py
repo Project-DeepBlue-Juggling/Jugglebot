@@ -32,6 +32,7 @@ REAL, on ephemeral ports, so the whole file is xdist-parallel-safe.
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import time
 import types
@@ -164,6 +165,68 @@ def _hold_head(node):
     node._cycle = (plan, meta, now)
     node._plan_t0 = now
     return node
+
+
+@contextlib.contextmanager
+def _frozen_perf():
+    """Freeze ``time.perf_counter()`` at entry — for the NODE and for this module.
+
+    Not a convenience. Two kinds of assertion in this file are otherwise about
+    the Jetson's scheduler rather than about the code: one samples a plan at a
+    ``tau`` captured on one line and compares it against ``_current_state()``,
+    which captures its own ``perf_counter()`` on the next (any preemption between
+    them reads as drift — that is how
+    ``test_the_velocity_term_passes_the_same_origin_re_installs`` failed once in a
+    full ``tests/ros/`` run on 2026-09-06 and passed in isolation); the other has
+    to know the exact ``tau`` the node seeded a window at, to compare the cup
+    acceleration it sampled against the running plan's own. Freezing makes both
+    exact instead of approximately true.
+
+    ``trajectory_node`` does ``import time`` and calls ``time.perf_counter()``
+    through the module, and this file imported the same module object, so setting
+    the attribute reaches both. That is process-wide for the duration, which is
+    safe here and nowhere near safe in general: these nodes are built with
+    ``start_emitter=False`` so no 40 Hz thread is reading the clock, ROS is
+    mocked so no timer is either, and pytest runs one test at a time per xdist
+    worker. Restore is in a ``finally``.
+    """
+    real = time.perf_counter
+    at = real()
+    time.perf_counter = lambda: at
+    try:
+        yield at
+    finally:
+        time.perf_counter = real
+
+
+#: How far into a running carry the "planned over a LIVE cycle" seeds sit. Far
+#: enough that the platform is unambiguously moving (42.8 mm/s measured, 171x the
+#: 0.25 mm/s rest bound) and the cup acceleration is a real number rather than a
+#: turning point, and short enough to leave most of the 1.4 s window ahead.
+_LIVE_TAU_S = 0.30
+
+
+def _running_carry(node, tau=_LIVE_TAU_S):
+    """Install a SETTLE and re-anchor its origin ``tau`` in the PAST. ``origin``.
+
+    The node is then in the state a second ``MODE_NEW`` arrives in on the bench:
+    a cycle plan streaming, ``tau`` seconds in, the platform mid-carry. Both
+    clocks are moved together — ``_plan_t0`` (what ``_current_state`` samples on)
+    and the cycle record's own origin — because a seed that read them apart is
+    the very defect these tests pin.
+
+    Re-anchoring rather than sleeping: a real 0.30 s sleep costs 0.30 s per test
+    and still lands wherever the scheduler puts it, and the plan is a pure
+    function of ``tau``, so there is nothing to be gained by waiting.
+    """
+    resp = node._svc_plan_cycle(_settle_req(), PlanCycle.Response())
+    assert resp.accepted is True, resp.message
+    plan, meta, _t0 = node._cycle
+    origin = time.perf_counter() - float(tau)
+    node._plan_t0 = origin
+    node._cycle = (plan, meta, origin)
+    _refresh(node)
+    return origin
 
 
 def _extend_alive(node, req, attempts=4):
@@ -354,15 +417,229 @@ def test_a_post_release_kind_planned_from_REST_is_not_given_free_fall():
     assert resp.hand_peak_rev == pytest.approx(start, abs=0.25)
 
 
-def test_a_post_release_kind_planned_over_a_LIVE_plan_keeps_free_fall():
-    """The `g` fallback survives where it is TRUE — a genuinely moving machine.
+def test_a_NEW_carry_from_a_level_rest_INSTALLS_continuously():
+    """The UH-3 rung, end to end: planned from a held pose, installed onto it.
 
-    The fix above is scoped by the SAME rest predicate the LAUNCH branch already
-    trusts to declare exact zero acceleration, so it cannot leak into the case it
-    was written for. Here the machine is moving, `at_rest` is false, and the
-    state must carry no cup acceleration at all — leaving `to_cup_state` to
-    supply `g`, which is what a chain from a real release means.
+    `_install_continuity_ok` is the last gate before a `CyclePlan` replaces what
+    the emitter is streaming, and it asks one question — does the plan's knot 0
+    match the live COMMANDED state? Until 2026-09-06 a NEW window's knot 0
+    carried whatever tilt the banking schedule's smoother left there (knot 0 is
+    not one of its anchors), and `cup_realize.decompose` turns tilt into centroid
+    through the 744.3 mm `CUP_TILT_CENTER_Z_MM` lever, so the plan opened at a
+    pose the machine was not at and this guard refused the install:
+
+        STALE_STATE: leg position drift 0.1248 rev > 0.0600   (bench, 2026-09-06)
+
+    The rung could not be flown at all. That is the shape of the whole finding:
+    the plan was never *wrong* by any downstream measure — `validate_cycle`
+    passes it — it just did not start where the robot was.
+
+    Both halves are asserted here because only the pair is a regression test:
+    the plan is accepted with the seed pin, and REFUSED without it. Removing the
+    pin is what reproduces the defect; asserting the pass alone would keep
+    passing if the pin were deleted and the request happened to stay under the
+    bound.
     """
+    # The shipped rung: 60 mm in +x, 1.4 s. Knot 0 lands exactly on the held
+    # pose, so the drift the guard measures is zero rather than merely small.
+    #
+    # The reference pose is read BEFORE the call: a successful install REPLACES
+    # the active plan, so `_current_state()` afterwards samples the plan that was
+    # just installed, a few ms in, and would measure the machine MOVING rather
+    # than the seam this test is about.
+    node = _settle_node()
+    live_pose = np.asarray(node._current_state()[0], dtype=float).copy()
+    resp = node._svc_plan_cycle(_settle_req(), PlanCycle.Response())
+    assert resp.accepted is True, resp.message
+    plan, _meta, _t0 = node._cycle
+    drift = float(np.max(np.abs(node._pose_to_motor_rev(plan.pose[0])
+                                - node._pose_to_motor_rev(live_pose))))
+    assert drift == pytest.approx(0.0, abs=1e-9), drift
+    # The tilt channel is the one that was lying, so name it.
+    assert np.array_equal(plan.pose[0][3:5], live_pose[3:5])
+
+
+def test_without_the_seed_pin_the_carry_is_REFUSED_at_the_install(monkeypatch):
+    """The same service call, with the pin removed: `STALE_STATE`, at the guard.
+
+    A HARDER carry than the shipped rung — 100 mm in +x over 0.8 s — because the
+    knot-0 tilt the smoother leaves scales with the cup acceleration, and this
+    node's seed sits at `SETTLE_CUP_Z_MM` where the shipped 60 mm / 1.4 s carry
+    leaves only 0.398° (0.0193 rev, UNDER the 0.06 bound). MEASURED (2026-09-06,
+    `/tmp/probe_knot0_tilt.py`, session limits 250/3000/150000): 100 mm / 0.8 s
+    leaves **1.7703°** on knot 0 and **0.0861 rev** of drift, against the guard's
+    0.06 — the same mechanism as the bench's 2.53° / 0.1248 rev at its own seed,
+    which the two share to 0.0494 rev per degree.
+
+    (The bench seed itself is a PARKED hand at -0.038 rev, whose cup sits 11.2 mm
+    BELOW the QP's cup-box floor. That start is outside the box the solver is
+    allowed to move in, and the plan it produces shoots the cup to the box
+    CEILING — 9.65 rev of slider on a carry that should be flat. That is a
+    separate, pre-existing defect, unrelated to the tilt pin and present with or
+    without it, so this test does not build on it.)
+    """
+    node = _settle_node()
+    monkeypatch.setattr(uc, '_start_tilt_for', lambda state: None)
+    resp = node._svc_plan_cycle(_settle_req(period_s=0.8, dx_mm=100.0),
+                                PlanCycle.Response())
+    assert resp.accepted is False
+    assert resp.code == feas.STALE_STATE
+    assert 'leg position drift' in resp.message, resp.message
+
+    # ...and with the pin back, the identical request installs.
+    monkeypatch.undo()
+    node = _settle_node()
+    live_pose = np.asarray(node._current_state()[0], dtype=float).copy()
+    resp = node._svc_plan_cycle(_settle_req(period_s=0.8, dx_mm=100.0),
+                                PlanCycle.Response())
+    assert resp.accepted is True, resp.message
+    plan, _meta, _t0 = node._cycle
+    assert float(np.max(np.abs(
+        node._pose_to_motor_rev(plan.pose[0])
+        - node._pose_to_motor_rev(live_pose)))) < 1e-9
+
+
+def test_a_NEW_window_over_a_LIVE_cycle_SAMPLES_the_running_cup_acceleration():
+    """A second SETTLE seeded mid-carry opens on the acceleration the cup HAS.
+
+    Until 2026-09-06 the moving branch of `_cycle_start_state` handed the QP
+    `post_release=True` with no cup acceleration, so `to_cup_state` supplied the
+    free-fall `g` as the EXACT start-of-window equality — the claim "a ball just
+    left this cup", asserted about a machine mid-lateral-carry with a seated ball
+    and nothing in the air. MEASURED (2026-09-06, `/tmp/probe_rep2e.py`, these
+    same fixtures, `tau` = 0.3001 s into the 1.4 s carry, banking on, session
+    limits 250/3000/150000): the running plan's own cup acceleration there is
+    **[110.80, 0.00, -0.00] mm/s^2** against the fabricated **[0, 0, -9806]** —
+    88x larger and pointing the other way. The twin test below is what that
+    costs; this one pins the source.
+
+    The equality against `meta.cup_plan.sample(tau)` is the whole claim: the
+    boundary condition is SAMPLED from the running cycle's own cup track (the
+    same object `unified_cycle.replan_tail` reads its splice state from), not
+    defaulted, not differentiated off a pose, and not zeroed. The clock is frozen
+    so `tau` here IS the `tau` the node seeded at — an approximate comparison
+    would pass with a *different* plan's acceleration in it.
+    """
+    node = _settle_node()
+    origin = _running_carry(node)
+    _plan, meta, _t0 = node._cycle
+    with _frozen_perf() as now:
+        tau = now - origin
+        state, code, err = node._cycle_start_state(uc.SETTLE)
+        assert (code, err) == ('', ''), (code, err)
+        assert state is not None
+        # It IS moving — the branch under test is the one this reaches.
+        assert float(np.max(np.abs(state.pose_vel[:3]))) > 10.0
+
+        expected = np.asarray(meta.cup_plan.sample(tau)[2], dtype=float) * 1000.0
+        assert state.cup_accel_mm_s2 is not None
+        assert state.cup_accel_mm_s2 == pytest.approx(expected, abs=1e-12)
+        # ...and that number is neither zero nor free fall.
+        assert float(np.max(np.abs(expected))) > 1.0
+        assert float(np.max(np.abs(expected))) < 0.05 * abs(uc._G_MM_S2[2])
+        # No ball left this cup mid-carry, so the detach cone is not asserted —
+        # the same claim `replan_tail` makes for its own splice state. That also
+        # restores the knot-0 TILT pin, which `_start_tilt_for` withholds from a
+        # post-release state carrying no detach axis.
+        assert state.post_release is False
+        assert state.detach_axis is None
+
+        # End to end, on the same frozen instant: the window installs.
+        resp = node._svc_plan_cycle(_settle_req(), PlanCycle.Response())
+        assert resp.accepted is True, resp.message
+        plan2, _meta2, _t2 = node._cycle
+
+    # The HEAD is monotone — no dip below knot 0. Sampled through `hand_at`,
+    # because the dip the fabrication produces lives BETWEEN knots 0 and 1 (the
+    # firmware's Hermite is what executes it) and a knot-array check cannot see
+    # it at all.
+    start = float(plan2.hand_rev[0])
+    dip = min(float(plan2.hand_at(t / 4000.0)[0]) for t in range(200)) - start
+    assert dip > -1e-4, 'the head dipped %.6f rev below knot 0' % dip
+    assert float(np.max(np.abs(plan2.hand_rev - start))) < 0.25
+
+
+def test_the_fabricated_free_fall_bows_the_SAME_seed_and_nothing_refuses_it():
+    """The regression twin: one seed, two boundary conditions, two plans.
+
+    Identical to the test above in every respect except the two fields the old
+    moving branch set — `post_release=True` and `cup_accel_mm_s2=None`, which is
+    exactly what `to_cup_state` turns into `g`. MEASURED (2026-09-06,
+    `/tmp/probe_rep2e.py`, the same seed):
+
+    * knot 1 - knot 0 = **-1.42e-07 rev** while the knot velocities run
+      **-0.0000 -> +3.8755 rev/s** — a head whose position does not move while
+      its velocity takes off, so the firmware's Hermite dips **-0.014353 rev**
+      (0.454 mm of slider) BELOW knot 0 before it climbs;
+    * the plan then bows **2.3845 rev** of slider (75 mm of cup z) across a move
+      that is purely lateral, and leaves **0.008014 rad** on knot 0's tilt
+      against the live pose (0.022293 rev of leg drift at the install gate)
+      because `_start_tilt_for` returns None for a post-release state with no
+      detach axis;
+    * the honest seed measures **-0.000000 rev** of dip, **0.0001 rev** of
+      travel and **0.000000** on both drift terms.
+
+    **And `validate_cycle` ACCEPTS BOTH.** That is why this is a test at the seed
+    and not a gate assertion: nothing downstream refuses the fabricated plan on
+    these fixtures. (It does at the bench's parked-hand seed, where the same dip
+    crosses the stroke floor — MEASURED 2026-09-06, `/tmp/probe_rep2d.py`:
+    `HAND_STROKE: hand position -0.002 rev outside [0.000, 9.959]`. A defect that
+    is a hard refusal at one seed and a silent 75 mm bow at another is worse than
+    one that is always loud, not better.)
+    """
+    node = _settle_node()
+    origin = _running_carry(node)
+    with _frozen_perf():
+        honest, code, err = node._cycle_start_state(uc.SETTLE)
+        assert (code, err) == ('', ''), (code, err)
+        goals = node._cycle_goals_from_request(_settle_req())
+        fabricated = dataclasses.replace(honest, post_release=True,
+                                         cup_accel_mm_s2=None)
+        plans = {}
+        for name, state in (('honest', honest), ('fabricated', fabricated)):
+            plan, _meta = uc.plan_cycle(uc.SETTLE, goals, state,
+                                        node._limits, node._geom)
+            plans[name] = plan
+
+    def _dip(plan):
+        start = float(plan.hand_rev[0])
+        return min(float(plan.hand_at(t / 4000.0)[0]) for t in range(200)) - start
+
+    def _travel(plan):
+        return float(np.max(np.abs(plan.hand_rev - plan.hand_rev[0])))
+
+    # The fabrication: a dip below knot 0 and a bow the carry never asked for.
+    assert _dip(plans['fabricated']) < -1e-3
+    assert _travel(plans['fabricated']) > 1.0
+    # The sampled boundary condition: neither.
+    assert _dip(plans['honest']) > -1e-4
+    assert _travel(plans['honest']) < 0.25
+    # The tilt pin follows `post_release`, so the fabrication loses it too.
+    live_tilt = np.asarray(honest.pose, dtype=float)[3:5]
+    assert np.array_equal(np.asarray(plans['honest'].pose[0])[3:5], live_tilt)
+    assert not np.array_equal(np.asarray(plans['fabricated'].pose[0])[3:5],
+                              live_tilt)
+
+
+def test_a_moving_machine_with_NO_cycle_to_sample_is_refused_IN_MOTION():
+    """No cup track, no boundary condition — and the node says so rather than
+    inventing one.
+
+    A legacy plan moving the machine (a `go_to_pose`, a hold's decel-to-rest, a
+    graceful stop) leaves this node with a pose, a twist and NO cup trajectory:
+    `CycleState.pose_accel` is carried but `to_cup_state` never reads it, and
+    differentiating a pose to recover a cup acceleration is precisely the
+    measurement noise the detach-cone rows must not be fed. So there is nothing
+    honest to put on knot 0 and the request is refused `IN_MOTION`, naming the
+    speeds and the remedy. The alternative is the defect the two tests above
+    measure — `g`, 88x the real number, in the one constraint a ball's flight
+    depends on.
+
+    `IN_MOTION` rather than `STALE_STATE` because the caller's mistake is a
+    different one: nothing here is stale, the state is perfectly fresh and
+    perfectly moving.
+    """
+    # (1) The unit shape: a moving seed with no cycle record at all.
     node = _cycle_node()
     # Ten times the node's own linear rest bound, read from the node rather than
     # hardcoded — the bound is a thousandth of the LIVE session velocity limit,
@@ -372,14 +649,34 @@ def test_a_post_release_kind_planned_over_a_LIVE_plan_keeps_free_fall():
     twist = np.zeros(6)
     twist[0] = 10.0 * rest_bound
     monkey = (np.zeros(6), twist, np.zeros(6))
-    node._current_state = lambda: monkey  # noqa: E731
-    state, err = node._cycle_start_state(uc.SETTLE)
-    assert err == '' and state is not None
-    assert state.post_release is True
-    assert state.cup_accel_mm_s2 is None
-    # And the LAUNCH branch still refuses outright over a live plan.
-    state, err = node._cycle_start_state(uc.LAUNCH)
-    assert state is None and 'starts from REST' in err
+    node._current_state = lambda **kw: monkey  # noqa: E731
+    assert node._cycle is None
+    state, code, err = node._cycle_start_state(uc.SETTLE)
+    assert state is None
+    assert code == tn._IN_MOTION
+    assert 'no unified cycle is active' in err, err
+    assert '%.4f mm/s' % (10.0 * rest_bound) in err, err
+    # And the LAUNCH branch still refuses outright over a live plan, as before.
+    state, code, err = node._cycle_start_state(uc.LAUNCH)
+    assert state is None and code == feas.STALE_STATE
+    assert 'starts from REST' in err
+
+    # (2) The real shape, through the service: a running carry, then a HOLD —
+    # which is a profiled decel-to-rest, i.e. a LEGACY plan that is still moving
+    # the machine — and `_install` drops the cycle record with it. The clock is
+    # frozen from before the hold so the seed lands at tau = 0 on that decel,
+    # where it is unambiguously moving; unfrozen the stop finishes in ~14 ms at
+    # the session's 3000 mm/s^2 and the test would race it.
+    node = _settle_node()
+    _running_carry(node)
+    with _frozen_perf():
+        node._svc_hold(Trigger.Request(), Trigger.Response())
+        assert node._cycle is None
+        assert float(np.max(np.abs(node._current_state()[1][:3]))) > 10.0
+        resp = node._svc_plan_cycle(_settle_req(), PlanCycle.Response())
+    assert resp.accepted is False
+    assert resp.code == tn._IN_MOTION, resp.message
+    assert 'no unified cycle is active' in resp.message, resp.message
 
 
 def test_the_rest_predicate_is_scaled_off_the_LIVE_session_LIMITS():
@@ -404,16 +701,17 @@ def test_the_rest_predicate_is_scaled_off_the_LIVE_session_LIMITS():
     def seeded(twist=None, hand_vel=None):
         node = _cycle_node()
         tw = np.zeros(6) if twist is None else np.asarray(twist, dtype=float)
-        node._current_state = lambda: (np.zeros(6), tw, np.zeros(6))  # noqa: E731
+        node._current_state = (                                       # noqa: E731
+            lambda **kw: (np.zeros(6), tw, np.zeros(6)))
         if hand_vel is not None:
             node._commanded_hand_state = (                            # noqa: E731
-                lambda: (_REST_HAND_REV, float(hand_vel)))
+                lambda **kw: (_REST_HAND_REV, float(hand_vel)))
         return node
 
     # A true rest seeds the EXACT zeros — and, since no ball left this cup, a
     # state that does not claim one did.
-    at_rest, err = seeded()._cycle_start_state(uc.SETTLE)
-    assert err == '' and at_rest is not None
+    at_rest, code, err = seeded()._cycle_start_state(uc.SETTLE)
+    assert (code, err) == ('', '') and at_rest is not None
     assert at_rest.post_release is False
     assert at_rest.cup_accel_mm_s2 is not None
     assert float(np.max(np.abs(at_rest.cup_accel_mm_s2))) == 0.0
@@ -422,17 +720,24 @@ def test_the_rest_predicate_is_scaled_off_the_LIVE_session_LIMITS():
     # And these three are NOT at rest. Each is a channel the old predicate was
     # blind to: 5 mm/s is 20x the linear bound and 1/168th of the OLD one;
     # 0.02 rad/s carries no linear component at all; 0.5 rev/s is the hand.
+    #
+    # These nodes carry no cycle record, so the post-release kind is REFUSED
+    # rather than seeded — there is no cup track to sample the boundary
+    # condition from, and the refusal is what proves the predicate FIRED on that
+    # channel. (Where a cycle IS running, the same predicate routes the seed to
+    # the sampled acceleration instead; that is the pair of tests above.)
     for label, twist, hand_vel in (
             ('5 mm/s linear', [5.0, 0.0, 0.0, 0.0, 0.0, 0.0], None),
             ('0.02 rad/s angular', [0.0, 0.0, 0.0, 0.02, 0.0, 0.0], None),
             ('0.5 rev/s hand', None, 0.5)):
         node = seeded(twist, hand_vel)
-        state, err = node._cycle_start_state(uc.SETTLE)
-        assert err == '' and state is not None, label
-        assert state.post_release is True, label
-        assert state.cup_accel_mm_s2 is None, label
-        state, err = node._cycle_start_state(uc.LAUNCH)
-        assert state is None and 'starts from REST' in err, label
+        state, code, err = node._cycle_start_state(uc.SETTLE)
+        assert state is None, label
+        assert code == tn._IN_MOTION, label
+        assert 'no unified cycle is active' in err, label
+        state, code, err = node._cycle_start_state(uc.LAUNCH)
+        assert state is None and code == feas.STALE_STATE, label
+        assert 'starts from REST' in err, label
 
 
 def test_plan_cycle_extend_keeps_the_origin_and_the_head():
@@ -975,6 +1280,17 @@ def test_the_velocity_term_passes_the_same_origin_re_installs(monkeypatch):
     the two same-origin chains are the ones with the most to lose: a refusal
     there holds the last good plan and the cycle stalls. Both are driven through
     real solves rather than asserted on the expression.
+
+    **The clock is frozen, and that is the difference between testing this code
+    and testing the Jetson's scheduler.** The comparison below reads the plan at
+    a `tau` captured on one line and `_current_state()` — which captures its own
+    `perf_counter()` — on the next, so any preemption between the two shows up as
+    velocity drift: this test failed once inside a full `tests/ros/` run on
+    2026-09-06 and passed in isolation, which is the signature. Frozen, both
+    sides are sampled at one instant and the claim reverts to the one that was
+    always intended: the EXTEND kept the ORIGIN, so a re-install measures no
+    drift. (If it re-anchored, `_plan_t0` would differ from `origin` and the
+    difference would be the whole elapsed window, frozen clock or not.)
     """
     node = _cycle_node()
     assert node._svc_plan_cycle(_launch_req(),
@@ -982,12 +1298,16 @@ def test_the_velocity_term_passes_the_same_origin_re_installs(monkeypatch):
     resp, origin = _extend_alive(node, _landing_req())
     assert resp.accepted is True, resp.message
     joined = node._cycle[0]
-    tau = time.perf_counter() - origin
-    pose, twist, _ = joined.state_at(tau)
-    live_pose, live_twist, _ = node._current_state()
-    assert float(np.max(np.abs(
-        node._pose_twist_to_motor_rev_s(pose, twist)
-        - node._pose_twist_to_motor_rev_s(live_pose, live_twist)))) < 1e-6
+    with _frozen_perf() as now:
+        tau = now - origin
+        pose, twist, _ = joined.state_at(tau)
+        live_pose, live_twist, _ = node._current_state()
+        assert float(np.max(np.abs(
+            node._pose_twist_to_motor_rev_s(pose, twist)
+            - node._pose_twist_to_motor_rev_s(live_pose, live_twist)))) < 1e-6
+        # ...and through the guard itself, which is what the service calls.
+        assert node._install_continuity_ok(joined, tau) is True
+        assert node._continuity_detail == ''
 
     # The REPLAN path, on the shape the machine actually flies.
     shipped = _shipped_cycle()

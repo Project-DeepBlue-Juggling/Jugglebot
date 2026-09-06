@@ -912,6 +912,167 @@ def test_a_settle_site_outside_the_workspace_box_refuses_with_numbers():
             assert token in msg, (token, msg)
 
 
+# ---------------------------------------------------------------------------
+# The seed-relaxed z box
+#
+# The box rows bind knots 1..n; knot 0 is the caller's pos0 and is skipped. For a
+# seed BELOW the floor that is not "unbounded", it is "be back inside within one
+# dt" — and the QP obeys, then coasts to the ceiling because the objective
+# penalises acceleration and coasting is free. Measured on the shipped UH-3 carry
+# 2026-09-06: 11.2 mm of seed deficit became a 295 mm slider stroke.
+# ---------------------------------------------------------------------------
+
+def _parked_seed_state(cfg, deficit_m):
+    """At rest, ``deficit_m`` BELOW the cup box floor — the parked-hand start."""
+    return cc.CupState(pos=np.array([0.0, 0.0, cfg.z_min_m - deficit_m]),
+                       vel=np.zeros(3), acc=np.zeros(3), detach_axis=None,
+                       post_release=False)
+
+
+def _unrelaxed(monkeypatch):
+    """Restore the pre-2026-09-06 box: the configured bounds, seed or no seed."""
+    monkeypatch.setattr(cc, '_seed_relaxed_z_box',
+                        lambda state0, z_min, z_max: (z_min, z_max))
+
+
+def test_a_window_seeded_below_the_box_floor_carries_flat(monkeypatch):
+    """The 11.2 mm parked seed carries at its own height instead of slamming.
+
+    Both halves are asserted against the SAME request, because the number that
+    matters is the difference: with the box demanding re-entry at knot 1 this
+    settle runs the cup to the ceiling (984.6 mm, +295 mm) and back inside its
+    1.4 s window; with the floor widened to contain the seed it rises
+    monotonically to the settle and stops there.
+
+    MEASURED 2026-09-06 (``/tmp/probe_below_floor.py``, venv, run twice
+    identically), on the shipped geometry rather than this module's: hand
+    0.3162 → **9.6482 rev at 78.4 rev/s** before, **0.3162 rev at 0.39 rev/s**
+    after. ``validate_cycle`` passed the slam — 0.31 rev of stroke headroom left
+    — so no gate downstream was ever going to catch it.
+    """
+    cfg = _window_cfg()
+    deficit = 0.0112
+    state = _parked_seed_state(cfg, deficit)
+    settle = np.array([0.060, 0.0, cfg.z_min_m])
+
+    plan = cc.plan_window([], state, cfg, period_s=1.4, settle_site=settle)
+    z = plan.pos[:, 2]
+    # It never climbs past where it is going, and never dips under where it is.
+    assert z.max() <= cfg.z_min_m + 0.0005, (z.max() - cfg.z_min_m) * 1e3
+    assert z.min() >= float(state.pos[2]) - 1e-9
+    # ...and it gets there by rising, not by an excursion: monotone to 1 um.
+    assert float(np.diff(z).min()) > -1e-6
+    assert z[-1] == pytest.approx(cfg.z_min_m, abs=1e-9)
+    # The lateral carry still happens — this is a relaxation, not a refusal.
+    assert plan.pos[-1, 0] == pytest.approx(0.060, abs=1e-9)
+
+    # The counterfactual, on the identical request: the box that demands
+    # re-entry at knot 1 is what produced the excursion.
+    _unrelaxed(monkeypatch)
+    slam = cc.plan_window([], state, cfg, period_s=1.4, settle_site=settle)
+    assert slam.pos[:, 2].max() > cfg.z_min_m + 0.100
+
+
+def test_a_seed_far_below_the_box_is_refused_with_the_numbers():
+    """Past the allowance it is a boundary condition to fix, not a plan to make.
+
+    The NUMBERS are the point, as with the settle-site gate: a bare
+    ``START_BELOW_BOX`` tells an operator nothing about which of the seed, the
+    box or the hand's park is wrong. Before this gate the same request reached
+    the solver and refused as *"unbounded dual step admitting inequality 112"*.
+    """
+    cfg = _window_cfg()
+    state = _parked_seed_state(cfg, 0.025)
+    with pytest.raises(cc.CupCycleInfeasible) as excinfo:
+        cc.plan_window([], state, cfg, period_s=1.4,
+                       settle_site=np.array([0.0, 0.0, cfg.z_min_m]))
+    assert excinfo.value.reason == 'START_BELOW_BOX'
+    msg = str(excinfo.value)
+    assert '25.0 mm BELOW' in msg
+    assert '20.0 mm' in msg                      # the allowance, named
+    assert '%.4f' % cfg.z_min_m in msg           # the floor it missed
+
+
+def test_a_seed_far_above_the_box_is_refused_with_the_numbers():
+    """The ceiling half, same allowance, same shape of message.
+
+    Reachable for real: the operating band's top is the catch prime, which is
+    exactly the box's 10 mm inset above the ceiling, so a window planned off a
+    primed hand starts outside the box at THAT end.
+    """
+    cfg = _window_cfg()
+    state = cc.CupState(pos=np.array([0.0, 0.0, cfg.z_max_m + 0.025]),
+                        vel=np.zeros(3), acc=np.zeros(3), detach_axis=None,
+                        post_release=False)
+    with pytest.raises(cc.CupCycleInfeasible) as excinfo:
+        cc.plan_window([], state, cfg, period_s=1.4,
+                       settle_site=np.array([0.0, 0.0, cfg.z_max_m]))
+    assert excinfo.value.reason == 'START_ABOVE_BOX'
+    msg = str(excinfo.value)
+    assert '25.0 mm ABOVE' in msg and '20.0 mm' in msg
+
+
+def test_a_seed_INSIDE_the_box_assembles_the_bit_identical_program(monkeypatch):
+    """Every steady and chained window is untouched, matrix for matrix.
+
+    ``min(z_min, seed)`` returns the configured float itself when the seed is
+    inside, so the relaxation is invisible there — but "invisible" has to mean
+    bit-identical, not close: the T-U2 parity fixtures and ``sim/cycle_gate.py``
+    compare numbers the solver produced, and a box bound that differed in the
+    last ulp would move them. Asserted against the pre-relaxation assembly on
+    the same request rather than against a stored constant.
+    """
+    cfg = _window_cfg()
+    state = _release_state()                     # seeded at 0.86 m, inside
+    events = [cc.CatchEvent(0, _W_FLIGHT_S, _W_CATCH, _W_CATCH_VEL),
+              cc.ThrowEvent(1, 1.0, _W_THROW, _W_THROW, _W_FLIGHT_S)]
+    now = cc._assemble(state, events[1], events[0], 1.0, cfg)
+    _unrelaxed(monkeypatch)
+    before = cc._assemble(state, events[1], events[0], 1.0, cfg)
+    for field in ('H', 'f', 'Aeq', 'beq', 'C', 'bc'):
+        assert np.array_equal(getattr(now, field), getattr(before, field)), field
+
+
+def test_a_release_terminal_window_keeps_the_configured_box(monkeypatch):
+    """A window that ends at a THROW is out of the relaxation's scope, exactly.
+
+    Deliberate: with the floor at the seed the QP is free to ride it, and a
+    release-terminal window wants to (it winds up at the bottom of the stroke
+    before the throw). The box binds the KNOTS while ``validate_cycle`` samples
+    the CONTINUUM against a floor anchored at the plan's first knot, so two
+    knots on the floor with opposite velocities put the cubic between them
+    0.22 mm under it and the launch is refused ``HAND_STROKE`` — where today it
+    plans. See ``cup_cycle._seed_relaxed_z_box`` for the full note and the way
+    out (a per-knot escape floor). Pinned so the scope cannot be widened by
+    accident.
+    """
+    cfg = _window_cfg()
+    state = _parked_seed_state(cfg, 0.0112)
+    throw = cc.ThrowEvent(1, 0.6, _W_THROW, _W_THROW, _W_FLIGHT_S)
+    now = cc._assemble(state, throw, None, 0.6, cfg)
+    _unrelaxed(monkeypatch)
+    before = cc._assemble(state, throw, None, 0.6, cfg)
+    for field in ('H', 'f', 'Aeq', 'beq', 'C', 'bc'):
+        assert np.array_equal(getattr(now, field), getattr(before, field)), field
+
+
+def test_the_seed_allowance_covers_the_whole_retract_band():
+    """20 mm is derived from the machine, not chosen: 10 mm inset + 6.33 mm band.
+
+    The box is inset 10 mm above the bottom of the slider's operating band, and
+    a retracted hand settles anywhere down to ``-0.20 rev`` — 6.33 mm through the
+    package's own gain — below that bottom. So the deepest a HEALTHY parked
+    machine can seed is 16.33 mm under the floor, and the allowance has to admit
+    it or the fix refuses the very case it exists for.
+    """
+    band_m = 0.20 / cc.LINEAR_GAIN_REV_PER_M
+    assert band_m == pytest.approx(0.006326, abs=1e-6)
+    assert cc.SEED_OUTSIDE_BOX_MAX_M >= 0.010 + band_m
+    # ...and not so wide that a genuinely wrong seed rides through: the shipped
+    # carry's 11.2 mm is comfortably inside, a hand outside its band is not.
+    assert cc.SEED_OUTSIDE_BOX_MAX_M < 0.030
+
+
 def test_a_catch_on_the_first_knot_is_refused_without_detach_rows_too():
     """``k_td == 0`` has no jerk support even when there are no detach rows.
 

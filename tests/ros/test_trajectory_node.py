@@ -2803,3 +2803,154 @@ def test_hand_prior_clears_on_handless_frame():
         node._plan_t0 = time.perf_counter()
     node._emit_once(node._plan_t0 + 0.025)
     assert node._last_hand_rev is None                 # gap cleared the prior
+
+
+# ── Planner warm-up (one-shot at node start) ──────────────────
+#
+# `_warm_planner_once` exists so the FIRST `trajectory/plan_cycle` of a process
+# is not the one that pays the one-off cost — the failure it guards is the
+# 2026-09-06 bench event, where the session's first two solves measured
+# 2158.89 / 2021.16 ms and the can-bridge's 250 ms setpoint watchdog latched
+# MPC_STALE twice. What these tests pin is the SHAPE of the warm-up (it runs,
+# once, off a timer, installing nothing, never raising), not its cost.
+#
+# THE COST ITSELF DOES NOT SUPPORT THE HYPOTHESIS, and that is recorded here so
+# a future reader does not re-derive it: measured 2026-09-06 on this Jetson
+# (`/tmp/probe_warmup.py`, fresh child process per measurement, 3+3 runs,
+# session limits 250/3000/150000, the same 1.4 s SETTLE), the first solve in a
+# COLD process took 182.9-184.7 ms against a 178.6-178.8 ms second solve — a
+# ~5 ms penalty, ~3 %. So the cold path costs ~5 ms and cannot be the 2 s; the
+# probe's own contention sweep (~2.2 s at 2-way CPU oversubscription) still can.
+# The warm-up stays because it is ~185 ms spent at start-up where nothing is
+# armed, i.e. insurance at a price worth paying, not because it explains the
+# event.
+
+
+class _RecLogger:
+    """A logger that records (level, message) so a test can assert level/count."""
+
+    def __init__(self):
+        self.records = []
+
+    def info(self, msg, **kw): self.records.append(('info', msg))
+    def warning(self, msg, **kw): self.records.append(('warning', msg))
+    def warn(self, msg, **kw): self.records.append(('warning', msg))
+    def error(self, msg, **kw): self.records.append(('error', msg))
+    def debug(self, msg, **kw): self.records.append(('debug', msg))
+    def fatal(self, msg, **kw): self.records.append(('fatal', msg))
+
+
+class _RecTimer:
+    def __init__(self):
+        self.cancels = 0
+
+    def cancel(self):
+        self.cancels += 1
+
+
+def _capture_timers(monkeypatch):
+    """Record every ``create_timer(period, cb)`` the node makes at construction."""
+    made = []
+
+    def _create_timer(self, period, cb, *a, **kw):
+        made.append((float(period), cb, _RecTimer()))
+        return made[-1][2]
+
+    monkeypatch.setattr(TrajectoryNode, 'create_timer', _create_timer,
+                        raising=False)
+    return made
+
+
+def _warmup_entry(made):
+    from jugglebot import trajectory_node as tn
+    hits = [(p, cb, t) for (p, cb, t) in made
+            if getattr(cb, '__func__', None) is tn.TrajectoryNode._warm_planner_once]
+    assert len(hits) == 1, 'exactly one warm-up timer, got %d' % (len(hits),)
+    return hits[0]
+
+
+def test_warmup_is_a_one_shot_timer_created_at_node_start(monkeypatch):
+    """The hook is a TIMER, not an __init__ call: only a SPINNING node pays."""
+    from jugglebot import trajectory_node as tn
+    made = _capture_timers(monkeypatch)
+    node = _node()
+    period, _cb, timer = _warmup_entry(made)
+    assert period == pytest.approx(tn._PLANNER_WARMUP_DELAY_S)
+    assert node._warmup_timer is timer
+    assert timer.cancels == 0            # construction alone must not solve
+
+
+def test_warmup_runs_exactly_once_and_cancels_its_own_timer(monkeypatch):
+    """One solve per process. The timer is cancelled BEFORE the solve, so an
+    exception cannot leave a multi-second solve re-firing every tick."""
+    from jugglebot import trajectory_node as tn
+    made = _capture_timers(monkeypatch)
+    node = _node()
+    _period, _cb, timer = _warmup_entry(made)
+    calls = []
+    monkeypatch.setattr(tn.uc, 'plan_cycle',
+                        lambda *a, **kw: calls.append(a) or (None, None))
+    node._warm_planner_once()
+    assert len(calls) == 1 and timer.cancels == 1
+    assert node._warmup_timer is None
+    # A second tick (a timer that fired before the cancel took) must not
+    # re-cancel a timer it no longer owns, and must not raise.
+    node._warm_planner_once()
+    assert timer.cancels == 1
+
+    # The synthetic window is a 1.4 s SETTLE from a REST state — a kind with no
+    # throw, no catch and no ball in the air, so nothing false is asserted about
+    # a machine that is standing still.
+    kind, goals, state, limits, geom = calls[0]
+    assert kind == tn.uc.SETTLE
+    assert goals.period_s == pytest.approx(tn._PLANNER_WARMUP_PERIOD_S)
+    assert goals.banking_enabled is True
+    assert goals.settle_site_mm[2] == pytest.approx(tn.uc.SETTLE_CUP_Z_MM)
+    assert state.post_release is False
+    assert np.allclose(state.pose_vel, 0.0) and np.allclose(state.pose_accel, 0.0)
+    # The node's OWN limits and geometry — so the warm pass walks the gate
+    # branches the live solve will, not a default set.
+    assert limits is node._limits and geom is node._geom
+
+
+def test_warmup_solves_the_real_planner_and_installs_nothing():
+    """The REAL solve, on the shipped config: it must succeed (an INFO line, not
+    the WARN), and it must leave the node's command state untouched."""
+    node = _node()
+    node._on_robot_state(_robot_state())
+    node._on_control_mode(String(data='TRAJECTORY'))
+    before_plan, before_t0 = node._active_plan, node._plan_t0
+    node._logger = _RecLogger()
+
+    elapsed = node._warm_planner_once()
+
+    assert elapsed > 0.0
+    levels = [lvl for lvl, _m in node._logger.records]
+    assert 'warning' not in levels, node._logger.records
+    assert any(lvl == 'info' and 'warm-up' in msg
+               for lvl, msg in node._logger.records), node._logger.records
+    # Nothing installed: the seeded hold is the SAME object at the SAME origin,
+    # no cycle record, no replan budget spent, no rejection recorded.
+    assert node._active_plan is before_plan and node._plan_t0 == before_t0
+    assert node._cycle is None and node._cycle_replans == 0
+    assert node._last_rejection == ''
+
+
+def test_warmup_failure_is_warned_not_raised(monkeypatch):
+    """A warm-up that cannot run must never stop the node — it costs the first
+    cycle its margin, which is exactly the pre-warm-up behaviour."""
+    from jugglebot import trajectory_node as tn
+
+    def _boom(*a, **kw):
+        raise RuntimeError('solver exploded')
+
+    monkeypatch.setattr(tn.uc, 'plan_cycle', _boom)
+    node = _node()
+    node._logger = _RecLogger()
+
+    elapsed = node._warm_planner_once()          # must NOT raise
+
+    assert elapsed >= 0.0
+    warns = [m for lvl, m in node._logger.records if lvl == 'warning']
+    assert len(warns) == 1 and 'solver exploded' in warns[0]
+    assert node._active_plan is None             # still nothing installed

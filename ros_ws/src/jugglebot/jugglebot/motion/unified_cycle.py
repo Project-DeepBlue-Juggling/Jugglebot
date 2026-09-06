@@ -118,7 +118,8 @@ _KIND_SHAPE = {
 # ── Refusal codes ────────────────────────────────────────────────────────────
 #: The planner refused the cycle. The SUBCODE carries which layer said so:
 #: a ``cup_cycle`` reason (``CATCH_RUNWAY``, ``CATCH_TOO_EARLY``, ``UNVERIFIED``,
-#: ``SINGULAR``, ``SETTLE_SITE``, ``ACC_BOX``, ``INFEASIBLE``), a
+#: ``SINGULAR``, ``SETTLE_SITE``, ``START_BELOW_BOX``, ``START_ABOVE_BOX``,
+#: ``ACC_BOX``, ``INFEASIBLE``), a
 #: ``validate_cycle`` code (``WORKSPACE``, ``LIMIT_JERK``, ``HAND_STROKE``, …) or
 #: one of the three below that this module owns.
 TILT_PIN = 'TILT_PIN'                    #: a tilt pin outside the 12° ceiling
@@ -1166,13 +1167,54 @@ def _throw_tilt_for(cup, max_tilt_deg: float) -> np.ndarray:
 
 
 def _start_tilt_for(state: CycleState) -> Optional[np.ndarray]:
-    """The seam pin for a window that follows a release, else ``None``.
+    """The tilt knot 0 must open at — the ATTITUDE half of the seed state.
 
-    ``tilt_to_throw`` is the exact inverse of ``cup_axis`` inside the 12° ceiling,
-    and every detach axis in this stack was produced by it, so the round trip
-    recovers the tilt the previous window ended at.
+    A plan's knot 0 must equal the machine's commanded state in EVERY channel:
+    position, velocity, hand AND tilt.  ``start_tilt`` is how the tilt channel
+    says so, and there are two ways to know the answer:
+
+    * **After a release** (the chained case) the previous window's terminal tilt
+      is recovered from ``detach_axis``: ``tilt_to_throw`` is the exact inverse
+      of ``cup_axis`` inside the 12° ceiling and every detach axis in this stack
+      was produced by it, so the round trip is exact.  Needed because at a
+      release the cup is in free fall, the apparent-gravity field ``g − a_cup``
+      is exactly ZERO and the banking objective is degenerate there.
+    * **Otherwise** the state's own pose carries it: ``decompose`` writes the
+      schedule's ``(rx, ry)`` straight into ``pose[3:5]`` (nothing else touches
+      those two channels — ``rz`` is pinned to 0), so ``pose[3:5]`` IS the tilt
+      the machine is being commanded to hold, in the same frame the schedule
+      produces.  A ``CycleState`` seeded from the live commanded state therefore
+      answers the question directly.
+
+    **The failure mode this second branch closes (MEASURED 2026-09-06).**  Until
+    it existed a NEW window planned from a machine at rest got ``None``, so knot
+    0 was left to the banking schedule.  Knot 0 is not an anchor, so the
+    accel-bounded smoother blends it toward the terminal pin and it comes out
+    tilted even though the raw banking value at ``a_cup = 0`` is exactly level.
+    On the UH-3 carry (``KIND_SETTLE``, banking on, 60 mm lateral, 1.4 s, settle
+    z ``SETTLE_CUP_Z_MM``, parked hand −0.038 rev, session limits
+    250/3000/150000) that was **3.0727° on knot 0** against a LEVEL held pose —
+    +3.5325 mm of centroid x through the 744.3 mm ``CUP_TILT_CENTER_Z_MM`` lever
+    — and ``trajectory_node._install_continuity_ok`` refused the install
+    ``STALE_STATE: leg position drift 0.1519 rev > 0.0600``.  The bench saw the
+    same defect at a marginally different seed (2.53°, **0.1248 rev** against the
+    same 0.06 bound); the two agree on the lever to four figures (0.0494 rev per
+    degree of knot-0 tilt), which is what identifies them as one mechanism.
+    Nothing downstream refuses the tilted plan on its own merits —
+    ``validate_cycle`` passes both — so the guard is this pin or the install
+    gate, and the install gate can only say no.
+
+    With the pin, knot 0 is the seed's tilt EXACTLY (drift 0.0000 rev), whether
+    that is level or the ~0.65° the levelling map leaves standing: the pin
+    carries what the machine is at, it does not assume level.  A seed tilted past
+    the 12° ceiling raises out of ``tilt_schedule`` as ``TILT_PIN`` rather than
+    being silently clamped — the ``toss_release`` "gate the aim, don't rely on
+    the clamp" precedent, and the honest answer for a pose the cup geometry
+    cannot express.
     """
-    if not state.post_release or state.detach_axis is None:
+    if not state.post_release:
+        return np.asarray(state.pose, dtype=float).reshape(6)[3:5].copy()
+    if state.detach_axis is None:
         return None
     return np.asarray(tg.tilt_to_throw(state.detach_axis), dtype=float)
 

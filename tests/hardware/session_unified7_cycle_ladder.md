@@ -111,11 +111,72 @@ venv for these.
 
 ## UH-3 — carry a seated ball
 
+### Before UH-3 can be retried — read this first
+
+**The first attempt (2026-09-06) refused three times and then E-STOPped the
+robot.** The three refusals are fixed. The E-STOP is understood but not closed,
+so there is one thing to check before you put a ball in the cup.
+
+**What `MPC_STALE` means.** The Teensy expects a setpoint frame every 25 ms. If
+none arrives for **250 ms** it E-STOPs and latches — that is the whole rule. On
+2026-09-06 the planner solved for **2.1 seconds** on the same CPU as the thing
+sending those frames, the stream went quiet for **804 ms**, and the guard fired.
+**It fired correctly.** Nothing was wrong with the hand, the legs, the CAN bus or
+the link; the Jetson simply stopped talking for long enough that the Teensy was
+right to stop trusting it.
+
+**The measurement has been DONE and it passes** (2026-09-06 14:08–14:11: solves
+190–250 ms, emitter gap **0 ms** on every run, all three arms). So you are clear
+to fly. We still do not know what made the solve take 2.1 s that morning — the
+obvious answer, a slow *first* solve in a fresh process, was measured and is only
+5–7 ms slower than the rest, so it is not the cause. The one thing that does
+reproduce a multi-second solve is **the box being busy**, so give it as little
+else to do as you reasonably can.
+
+Keep the three commands below as the recipe to **repeat if a latch recurs** — run
+them with the launch up and the robot activated, nothing moving. The bar is a max
+emitter gap **under 250 ms**; the script prints its own verdict.
+
+```bash
+source ~/Desktop/PDJ_venv/venv/bin/activate
+
+# 1. As-is, in the session you are about to fly.
+python tools/probes/emitter_gap_under_solve.py --reps 3
+
+# 2. Same session, BLAS pinned to one thread.
+python tools/probes/emitter_gap_under_solve.py --reps 3 --threads 1
+
+# 3. Relaunch with no rosbag recording, then repeat arm 1.
+python tools/probes/emitter_gap_under_solve.py --reps 3
+```
+
+**If the guard latches during a plan again, note the solve time the driver
+prints — a solve over about 1 second is the signature.** It is also on
+`/trajectory/status.cycle_plan_wall_ms`. Send me that number with the console
+capture; recovery is `/recover` (or `/clear_errors`) as usual.
+
+---
+
 **Put one ball in the cup.** The cup moves 60 mm sideways over 1.4 s, then back.
 ```bash
 python3 tests/hardware/unified_cycle_bench.py --rung carry --dx 60
 ```
 **Watch the ball, not the screen.** That is the whole test.
+
+**Expect the driver to say the carry ends ~11 mm higher than it starts.** That
+line is normal, not a fault. The planner's cup box has a floor at 689.6 mm, and
+a hand parked at retract puts the cup opening at ~678.7 mm — below it — so a
+carry taken at the live height cannot be planned at all. The driver raises the
+site to the floor and says so. The carry is still purely sideways; only its
+height is set once, at the start. `--z-mm` overrides it if you want a specific
+height.
+
+**Expect the `carry check:` line to read within about 1 mm of the settle
+height.** A carry is flat, so the hand the planner intends to command should be
+the settle height and nothing more; the driver prints the two side by side and
+**refuses to let the plan run past 16 mm of lift**, holding the machine before
+it stops. If you ever see that refusal, send me the line — the planner is
+solving a different problem from the one the rung is asking about.
 
 - **Pass:** the ball stays seated and does not visibly shift, roll or hop; the
   driver prints every check `PASS`; the move takes no longer than the legacy
@@ -239,7 +300,14 @@ robot did not move.
 | `P5 REFUSED … want 250 / 3000 / 150000` | Session limits are still the shipped defaults | Run precondition 11 |
 | `REJECTED_CYCLE_INFEASIBLE(LIMIT_JERK: …)` | The plan needs more jerk than the limits allow | Almost always precondition 11 was skipped or a relaunch reset it. Re-run it |
 | `REJECTED_HAND_NOT_PARKED` | The hand is outside the park band before a cycle | Let the previous cycle settle; if it will not, stop and tell me |
+| `IN_MOTION` | The machine was still moving (a legacy move or a hold's decel) when you asked for a new plan, and there is no unified cycle running to read the motion from | Wait for it to stop (the status shows the plan idle), then retry |
+| `REJECTED_CYCLE_INFEASIBLE(SETTLE_SITE: settle site z … outside the cup box …)` | The settle height is under the planner's 689.6 mm floor. The driver lifts to that floor on its own, so seeing this means you passed a `--z-mm` below it | Drop the `--z-mm` and let the driver pick the height, or pass one ≥ 689.6 |
+| `REJECTED_CYCLE_INFEASIBLE(HAND_STROKE: hand position −0.0… rev … BELOW the homed zero)` | Pre-2026-09-06 only. The hand rests slightly below its homed zero after a retract (the homing reference is −0.1 rev by design) and the gate had no tolerance for it | Should no longer happen: the gate now takes the plan's own parked first knot as the floor. If it reappears, the hand is parked below −0.20 rev — outside the firmware's retract band — so re-home it |
+| `REJECTED_CYCLE_INFEASIBLE(HAND_STROKE: … DIVES past the bottom of travel)` | The plan goes DOWN from where the hand is parked, i.e. it commands travel the machine does not have | Not a tolerance to widen. Send me the request — the site or the kind is wrong |
+| `REJECTED_CYCLE_INFEASIBLE(START_BELOW_BOX: window starts at cup z … BELOW the cup box floor …)` | The cycle was asked to start from a cup height more than 20 mm under the planner's floor. A hand parked anywhere in its retract band is at most 16 mm under, so this says the START is wrong — a stale reading, or a hand outside its operating band — not the plan | Check the hand really is parked (`ros2 topic echo /hand_telemetry --once`) and re-home it if it is below −0.20 rev. Send me the number in the message either way |
+| `carry excursion refused — the planner wants to lift the hand … during a flat carry` | The driver's own belt, not a planner refusal: the accepted plan would have stroked the hand far above the settle height. The plan was already installed, so the driver holds the machine as it refuses | **Stop the rung and send me the line.** Confirm the machine actually held (`held: holding at current pose` on the next line); if it says the plan IS STILL RUNNING, E-stop |
 | `STALE_STATE` | Telemetry went quiet, or the machine moved during the solve | Wait two seconds and re-run. If it repeats, check the link: `ros2 topic echo /link_status --once` |
 | `CHAIN_SKEW` | The session and the plan disagree about when the throw is | Stop the session. This is a finding — send the log |
 | `ERR_HAND_SOURCE` on a legacy goal | You sent a legacy goal while the latch is STREAMED | Expected. Either add `unified_cycle: true`, or do the "After the sitting" recovery first |
-| Guard trip / E-STOP latched | The hand deviated past 2.5 rev | `ros2 service call /clear_errors std_srvs/srv/Trigger` then re-activate. **Log it — this is the data we want** |
+| Guard trip / E-STOP latched, `fault_state=MAX_DEVIATION` | The hand deviated past 2.5 rev | `ros2 service call /clear_errors std_srvs/srv/Trigger` then re-activate. **Log it — this is the data we want** |
+| Guard trip / E-STOP latched, `fault_state=MPC_STALE`, right after a refusal | **Not a hand fault and not a link fault.** The 40 Hz setpoint stream gapped for more than 250 ms while the planner was solving in the same process, and the Teensy's staleness watchdog latched. Measured 2026-09-06: a 2.16 s solve on a loaded box left an 804 ms hole. The name is historical — the MPC was deleted 2026-09-01; the watchdog is the setpoint stream's, and it is doing its job | `ros2 service call /clear_errors std_srvs/srv/Trigger`, then re-activate. Give the box less to do (stop the rosbag, close the GUI) before retrying, and **send me the log** — the solve time is on `/trajectory/status.cycle_plan_wall_ms` |

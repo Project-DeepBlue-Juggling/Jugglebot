@@ -684,6 +684,248 @@ def test_the_start_tilt_pin_is_what_closes_the_seam(launch, landing):
     assert pose_gap_mm > 1.0, pose_gap_mm
 
 
+# ---------------------------------------------------------------------------
+# The seed pin — knot 0 of a NEW window is the ATTITUDE the machine holds
+# ---------------------------------------------------------------------------
+#
+# The seam pin above closes the CHAINED case.  A window planned from REST has no
+# preceding window, and until 2026-09-06 it got no pin at all — so knot 0 was
+# left to the banking schedule, which is not the same thing as level.  The raw
+# banking value at ``a_cup = 0`` IS level, but knot 0 is not an anchor, so the
+# accel-bounded smoother blends it toward the terminal pin and it comes out
+# tilted.  Through the 744.3 mm ``CUP_TILT_CENTER_Z_MM`` lever that is a centroid
+# step the machine is not at, and the install-continuity guard refuses it.
+# ---------------------------------------------------------------------------
+
+def _settle_carry_goals(seed_cup_mm, dx_mm=60.0, dy_mm=0.0):
+    """The UH-3 carry: displace the cup laterally, settle at the planner floor.
+
+    The same request ``tests/hardware/unified_cycle_bench.py::carry_request``
+    builds, including ``lift_cup_to_settle_floor``'s raise to
+    ``SETTLE_CUP_Z_MM`` — the height a parked hand cannot reach and the one the
+    rung actually flies at.
+    """
+    return _goals(settle_site_mm=np.array([float(seed_cup_mm[0]) + dx_mm,
+                                           float(seed_cup_mm[1]) + dy_mm,
+                                           float(uc.SETTLE_CUP_Z_MM)]))
+
+
+def _tilted_rest_state(tilt_rx_rad, hand_rev, cfg=None):
+    """A resting state whose platform holds ``rx`` — the levelling-map shape."""
+    cfg = cr.RealizeConfig() if cfg is None else cfg
+    pose = np.array([0.0, 0.0, cfg.active_z_mm, float(tilt_rx_rad), 0.0, 0.0])
+    return uc.CycleState.at_rest(pose, float(hand_rev), cfg), pose
+
+
+@pytest.mark.parametrize('seed_tilt_deg', [0.0, 0.65])
+def test_a_NEW_window_opens_at_the_tilt_the_MACHINE_holds(limits, geom,
+                                                          seed_tilt_deg):
+    """Knot 0's tilt is the SEED's tilt exactly — level or not.
+
+    A plan's knot 0 must equal the machine's commanded state in every channel,
+    and tilt is a channel: ``decompose`` writes ``(rx, ry)`` straight into
+    ``pose[3:5]``, so a knot-0 tilt the machine is not at is a knot-0 POSE the
+    machine is not at.
+
+    Both cases matter and they are different assertions. ``0.0`` is the machine
+    the bench actually sits at, and it is the one the defect was found on.
+    ``0.65°`` is the levelling map's residual base tilt — the pin must CARRY it
+    rather than assume level, or the fix trades one step for another on every
+    machine whose map is loaded.
+
+    MEASURED (2026-09-06, ``/tmp/probe_knot0_tilt.py``, this same 60 mm lateral
+    ``KIND_SETTLE`` at ``SETTLE_CUP_Z_MM`` = 689.6 mm, 1.4 s, banking on, parked
+    hand −0.038 rev, session limits 250/3000/150000): without the pin knot 0
+    came out at **3.0727°** for BOTH seeds — the schedule was answering the
+    smoother, not the machine — putting the centroid at x = **+3.5325 mm**
+    against a held 0.0. With it, knot 0 is the seed tilt to the last bit and the
+    centroid is 0.0000 mm.
+    """
+    hand = -0.038
+    state, pose = _tilted_rest_state(math.radians(seed_tilt_deg), hand)
+    cup0 = uc.cup_state_from_platform(pose, hand)
+    plan, meta = uc.plan_settle(_settle_carry_goals(cup0), state, limits, geom)
+
+    assert np.array_equal(meta.tilts[0], np.asarray(pose[3:5]))
+    assert np.array_equal(plan.pose[0][3:5], np.asarray(pose[3:5]))
+    # And therefore the centroid — the channel the install guard measures.
+    assert float(np.max(np.abs(plan.pose[0][:2] - pose[:2]))) == pytest.approx(
+        0.0, abs=1e-9)
+
+
+def test_without_the_seed_pin_the_carry_starts_where_the_machine_is_not(limits,
+                                                                       geom):
+    """The defect, measured against the plan the fix produces.
+
+    This is the failing half of the pair above: rebuild the SAME cycle with
+    ``_start_tilt_for`` returning ``None`` (what a non-post-release state got
+    until 2026-09-06) and the knot-0 centroid moves millimetres.
+
+    The bar is stated in the install guard's own units:
+    ``0.25 × STEP_BOUND_MARGIN × MAX_POSITION_STEP_REV`` = **0.06 rev**.
+
+    **THE OPERATOR NEVER SAW THIS ONE.** It sits BEHIND ``HAND_STROKE`` in
+    ``validate_cycle``, which refused first on 2026-09-06, so the install guard
+    was never reached on hardware; the refusal was found by replaying the
+    sitting's own live state offline. Two seeds: the bench's, ``STALE_STATE: leg
+    position drift 0.1248 rev > 0.0600`` at a 2.53° knot-0 tilt, and the probe's
+    synthetic one at 3.0727° / 0.1519 rev. The two agree at 0.0494 rev per
+    degree — one mechanism, two seeds.
+
+    **THE MAGNITUDE MOVED, AND THE REASON MATTERS.** Those figures were measured
+    against the carry as it was *before* ``cup_cycle._seed_relaxed_z_box``:
+    seeded 11.2 mm under the QP's cup box, that solve slammed the cup 295 mm to
+    the box ceiling and back, and the banking schedule — whose input is the
+    apparent-gravity field ``g − a_cup`` — was answering **that** acceleration,
+    which is where 3° of knot-0 tilt came from. With the carry flat (peak cup
+    acceleration 0.19 m/s²) the same unpinned schedule leaves **0.3971°** and
+    **0.4568 mm** of centroid (2026-09-06, this test) — ≈0.020 rev through the
+    same lever, i.e. INSIDE the 0.06 rev install bound. So on this rung the pin
+    is no longer what stands between the plan and a refused install; it is what
+    keeps knot 0 from being a place the machine is not, which is the invariant
+    it was always for. The amplifier returns on any window whose cup really does
+    accelerate — a launch is 45 m/s², two orders up from this carry.
+
+    ``validate_cycle`` passes the unpinned plan, which is the point: nothing
+    downstream judges it wrong, so the pin is the guard or the install gate is,
+    and the install gate can only say no.
+    """
+    hand = -0.038
+    state, pose = _tilted_rest_state(0.0, hand)
+    goals = _settle_carry_goals(uc.cup_state_from_platform(pose, hand))
+    rcfg = uc.build_realize_config(limits, banking=True)
+
+    pinned, meta = uc.plan_settle(goals, state, limits, geom)
+    unpinned_tilts = cr.tilt_schedule(meta.cup_plan, meta.receive_tilt,
+                                      meta.throw_tilt, rcfg)
+    unpinned = cr.decompose(meta.cup_plan, unpinned_tilts, rcfg)
+
+    # Bars set at half the measured values (0.3971 deg / 0.4568 mm), so the test
+    # asserts the mechanism rather than a solver digit — and the CARRY IS FLAT,
+    # which is the precondition the numbers above are quoted under.
+    assert float(np.max(np.abs(meta.cup_plan.acc))) < 1.0
+    assert float(np.degrees(np.hypot(*unpinned_tilts[0]))) > 0.2
+    # The step the machine would have been asked to take, in mm of centroid.
+    step_mm = float(np.max(np.abs(unpinned.pose[0][:2] - pose[:2])))
+    assert step_mm > 0.2, step_mm
+    assert float(np.max(np.abs(pinned.pose[0][:2] - pose[:2]))) < 1e-9
+    # ...and it was never going to be refused on its own merits.
+    assert fz.validate_cycle(
+        CyclePlan.from_realized(unpinned), limits, geom).ok is True
+
+
+def test_the_carry_off_a_PARKED_hand_keeps_the_hand_where_it_is(limits, geom):
+    """UH-3, end to end: a flat carry is flat in the channel that moves the ball.
+
+    The parked hand puts the cup at 678.398 mm, **11.20 mm below** the QP's own
+    cup-box floor (``SETTLE_CUP_Z_MM`` = 689.6 mm is that floor), and the box
+    binds knots 1..n only — so until ``cup_cycle._seed_relaxed_z_box`` the solve
+    satisfied the floor at knot 1 by launching the cup out of the seed and, with
+    the objective penalising acceleration and coasting free, ran it to the box
+    CEILING and back inside the 1.4 s window: hand 0.3162 → **9.6482 rev at
+    78.4 rev/s**, ~295 mm of slider, with a ball seated in the cup.
+
+    Nothing downstream could see it. ``validate_cycle`` passes that plan —
+    9.6482 rev against ``HAND_STROKE_MAX_REV`` 9.9594 leaves 0.31 rev of
+    headroom — so the bar here is the SETTLE height, not the stroke band: a
+    carry's planned hand peak IS its settle height, and anything else is the
+    planner lifting the ball. MEASURED after the fix (2026-09-06,
+    ``/tmp/probe_below_floor.py``): peak equals the settle hand to 0.0e+00 rev,
+    peak speed 0.3864 rev/s.
+    """
+    hand = -0.038
+    state, pose = _tilted_rest_state(0.0, hand)
+    cup0 = uc.cup_state_from_platform(pose, hand)
+    plan, meta = uc.plan_settle(_settle_carry_goals(cup0), state, limits, geom)
+
+    settle_rev = uc.hand_rev_for_cup_z(float(uc.SETTLE_CUP_Z_MM))
+    peak = float(np.max(plan.hand_rev))
+    assert peak <= settle_rev + 0.05, (peak, settle_rev)
+    # It starts at the park and never dives below it, either.
+    assert float(plan.hand_rev[0]) == pytest.approx(hand, abs=1e-9)
+    assert float(np.min(plan.hand_rev)) >= hand - 1e-9
+    # The carry still carries: the cup arrives where it was sent.
+    assert float(meta.cup_plan.pos[-1][0]) * 1000.0 == pytest.approx(
+        float(cup0[0]) + 60.0, abs=1e-6)
+    assert meta.report.ok, meta.report.reasons
+
+
+def test_a_seed_far_below_the_cup_box_round_trips_START_BELOW_BOX(limits, geom):
+    """The new refusal reaches the operator as a subcode a guard can match.
+
+    ``cup_cycle`` reasons are carried verbatim as :attr:`CycleInfeasible.code`,
+    and the whole point of that contract is that a guard matching on
+    ``(code, subcode)`` keeps matching once a refusal starts carrying its
+    numbers. A refusal that lost its subcode would simply stop being matched —
+    silently, which is how a guard fails.
+    """
+    hand = uc.hand_rev_for_cup_z(float(uc.SETTLE_CUP_Z_MM) - 25.0)
+    state, pose = _tilted_rest_state(0.0, hand)
+    goals = _settle_carry_goals(uc.cup_state_from_platform(pose, hand))
+    with pytest.raises(uc.CycleInfeasible) as excinfo:
+        uc.plan_settle(goals, state, limits, geom)
+
+    assert excinfo.value.code == 'START_BELOW_BOX'
+    out = excinfo.value.outcome()
+    assert base_outcome(out) == uc.OUTCOME_CODE
+    assert outcome_subcode(out) == 'START_BELOW_BOX'
+    assert '25.0 mm BELOW' in out and '20.0 mm' in out
+
+
+def test_the_seed_pin_leaves_the_CHAINED_pin_alone(launch, landing, limits,
+                                                   geom):
+    """A post-release state still pins to the previous window's terminal tilt.
+
+    The two branches answer the same question from different evidence, and the
+    chained one must keep using ``detach_axis``: at a release the cup is in free
+    fall, so ``pose[3:5]`` is right too but the QP's terminal equality is what
+    the next window's knot 0 has to match, and ``release_state_from_meta``
+    carries THAT. Scoping the fix to ``post_release=False`` is what keeps
+    ``extend``'s seam exactly 0.0 mm.
+    """
+    plan_a, meta_a = launch
+    plan_b, meta_b = landing
+    chained = uc.release_state_from_meta(meta_a, plan_a)
+    assert chained.post_release is True
+    assert np.allclose(uc._start_tilt_for(chained), meta_a.tilts[-1],
+                       atol=1e-12)
+    # The seam the pin exists for is still exact on every channel.
+    assert float(np.max(np.abs(plan_a.pose[-1] - plan_b.pose[0]))) == 0.0
+    joined, _ = uc.extend(plan_a, meta_a, plan_b, meta_b, limits, geom)
+    assert int(joined.n_knots) == int(plan_a.n_knots) + int(plan_b.n_knots) - 1
+
+
+def test_a_LAUNCH_from_rest_also_opens_level(limits, geom):
+    """The pin is on the STATE, not on the kind — every NEW window gets it.
+
+    ``LAUNCH`` is the other ``post_release=False`` kind, and it is installed off
+    a terminal hold exactly like a ``SETTLE`` is. Scoping the fix to ``SETTLE``
+    would have left the launch install to be refused the same way.
+    """
+    plan, meta = uc.plan_launch(_goals(period_s=0.6), _rest_state(), limits,
+                               geom)
+    assert np.array_equal(meta.tilts[0], np.zeros(2))
+    assert float(np.max(np.abs(plan.pose[0][:2] - REST_MM[:2]))) < 1e-9
+
+
+def test_a_seed_tilted_past_the_ceiling_is_REFUSED_not_clamped(limits, geom):
+    """A pose the cup geometry cannot express refuses ``TILT_PIN``, loudly.
+
+    ``tilt_schedule``'s pins are exact by contract, so a pin outside the 12°
+    ceiling raises rather than saturating — the ``toss_release`` "gate the aim,
+    don't rely on the clamp" precedent. Carrying that through to the seed pin
+    matters because a silent clamp would put the plan back at a tilt the machine
+    is not at, i.e. straight back into the defect this pin closes.
+    """
+    hand = -0.038
+    state, pose = _tilted_rest_state(math.radians(20.0), hand)
+    goals = _settle_carry_goals(uc.cup_state_from_platform(pose, hand))
+    with pytest.raises(uc.CycleInfeasible) as excinfo:
+        uc.plan_settle(goals, state, limits, geom)
+    assert excinfo.value.code == uc.TILT_PIN
+    assert 'start_tilt' in ' '.join(excinfo.value.reasons)
+
+
 def test_release_state_from_meta_carries_the_cup_state_exactly(launch):
     """The chain carries the pinned floats, not a round trip through the pose."""
     plan, meta = launch

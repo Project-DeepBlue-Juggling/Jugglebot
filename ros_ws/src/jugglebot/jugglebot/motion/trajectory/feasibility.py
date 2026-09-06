@@ -54,7 +54,10 @@ from jugglebot.motion.ik_solver import (
     rotvec_to_rot_matrix,
     twist_to_leg_velocities,
 )
-from jugglebot.motion.trajectory.hand_stroke import LINEAR_GAIN_REV_PER_M
+from jugglebot.motion.trajectory.hand_stroke import (
+    HAND_HOMED_REST_FLOOR_REV as _HAND_HOMED_REST_FLOOR_REV,
+    LINEAR_GAIN_REV_PER_M,
+)
 from jugglebot.motion.trajectory.shaping import _ShapedPlan, batched_shaped_states
 from jugglebot.motion.workspace import (
     WorkspaceLimits,
@@ -929,6 +932,43 @@ _CYCLE_SAMPLES_PER_KNOT = 4
 HAND_STROKE_MIN_REV = 0.0
 HAND_STROKE_MAX_REV = float(hw.JB_OP_HAND_CATCH_PRIME_REV)
 
+#: The floor a plan's FIRST knot may sit at, when the hand is parked below the
+#: homed zero. Not a relaxation of the operating band — a statement about where
+#: the machine actually rests.
+#:
+#: IMPORTED, not derived here: :data:`hand_stroke.HAND_HOMED_REST_FLOOR_REV` is
+#: the one canonical spelling of the firmware's settled-at-retract lower edge
+#: (``Homing::HAND_ABS_POS_REV - HAND_SETTLE_BAND_REV``, ``hand_source.cpp:42-47``)
+#: and carries the derivation. -0.20 rev = -6.326 mm of slider. Re-exported under
+#: this module's namespace because the refusal texts below quote it and every
+#: reader of a ``HAND_STROKE`` refusal comes here first.
+#:
+#: WHY A KNOT BELOW ZERO IS SAFE TO PLAN THROUGH, and only here: the firmware
+#: clips every commanded hand setpoint to ``[0, HAND_MOTOR_MAX_POSITION]``
+#: (``odrive_protocol.h::clip_position``), so a sub-zero knot is EXECUTED as a
+#: hold at the floor rather than as a command past the bottom of travel. The
+#: 2026-09-05 sitting measured exactly that: a hand parked at -0.0976 rev was
+#: pulled to 0.0 by the first streamed frame — 3 mm, benign, once.
+#:
+#: The tolerance is deliberately anchored to the plan's OWN first knot rather
+#: than opened to a constant: a track that DIVES below where it started is still
+#: refused, because that is a plan commanding travel the machine does not have.
+HAND_HOMED_REST_FLOOR_REV = _HAND_HOMED_REST_FLOOR_REV
+
+#: Dive tolerance below the parked start, in revs. The floor above is anchored to
+#: the plan's OWN first knot, and the hand track is a cubic Hermite: with a
+#: near-zero start velocity its interior stationary point can sit an
+#: infinitesimal distance BELOW knot 0 without the plan going anywhere. Measured
+#: on the 2026-09-06 carry: the first span's extremum landed 2.5e-06 rev under
+#: knot 0 at t = 0.000384 s. That is 79 NANOMETRES of slider — the interpolant's
+#: own curvature, not a command.
+#:
+#: 1e-4 rev = 3.2 um: three orders of magnitude above that interpolation noise
+#: and three below the ~1 mm the firmware clip actually produces on a sub-zero
+#: knot, so it admits the curvature and still refuses any dive a machine could
+#: execute or an encoder could see.
+_HAND_DIVE_TOL_REV = 1e-4
+
 #: The physical end stop. Crossing the operating band is a refusal; crossing THIS
 #: is a materially worse fact (the 2026-07-27 sitting made light physical contact
 #: with it), so the refusal names it separately rather than reporting one
@@ -1043,7 +1083,9 @@ def validate_cycle(cycle_plan, limits, geom, *,
        mutation); leg extensions outside the hard stroke → ``WORKSPACE``; Jacobian
        condition past the workspace bound → ``UNREACHABLE``; slider outside
        ``[HAND_STROKE_MIN_REV, HAND_STROKE_MAX_REV]`` → ``HAND_STROKE``, naming the
-       hard stop separately when that is crossed too.
+       hard stop separately when that is crossed too. The FLOOR of that band is
+       the plan's own first knot when the hand is parked below the homed zero
+       (:func:`_cycle_stroke_floor`); the ceiling is never relaxed.
     2. **The catch runway, re-checked with the ACHIEVED catch velocity** →
        ``HAND_STROKE``. ``cup_cycle`` bounds this inside the QP with the TARGET
        catch speed (``catch_slider_vel_ratio × |v_ball,z|``) against a cup-frame
@@ -1081,6 +1123,12 @@ def validate_cycle(cycle_plan, limits, geom, *,
     ts = _cycle_sample_times(n_knots, dt, total, m)
     hand_limit_v = float(limits.hand_vel_limit_rps)
     hand_limit_a = float(limits.hand_acc_limit_rps2)
+    # The stroke floor for THIS plan (see `_cycle_stroke_floor`). The catch
+    # runway below deliberately keeps HAND_STROKE_MIN_REV instead: the runway
+    # asks how much travel is left to STOP a catch in, and the answer is bounded
+    # by the physical bottom of travel, not by wherever the hand happened to be
+    # parked before the window started.
+    stroke_min = _cycle_stroke_floor(cycle_plan)
 
     peak_vel = 0.0
     peak_acc = 0.0
@@ -1106,7 +1154,7 @@ def validate_cycle(cycle_plan, limits, geom, *,
                          "at t=%.3fs" % t])
 
         peak_hand_rev = max(peak_hand_rev, abs(float(hand_rev)))
-        bad_stroke = _hand_stroke_reason(float(hand_rev), t)
+        bad_stroke = _hand_stroke_reason(float(hand_rev), t, stroke_min)
         if bad_stroke is not None:
             return FeasibilityReport(
                 ok=False, code=HAND_STROKE, reasons=[bad_stroke],
@@ -1174,7 +1222,7 @@ def validate_cycle(cycle_plan, limits, geom, *,
                     reasons=["hand channel contains non-finite values (NaN/Inf) "
                              "at t=%.3fs" % t_s])
             peak_hand_rev = max(peak_hand_rev, abs(float(rev_s)))
-            bad_stroke = _hand_stroke_reason(float(rev_s), t_s)
+            bad_stroke = _hand_stroke_reason(float(rev_s), t_s, stroke_min)
             if bad_stroke is not None:
                 return FeasibilityReport(
                     ok=False, code=HAND_STROKE, reasons=[bad_stroke],
@@ -1278,23 +1326,68 @@ def validate_cycle(cycle_plan, limits, geom, *,
         peak_hand_step_rev=peak_hand_step)
 
 
-def _hand_stroke_reason(rev: float, t: float):
+def _hand_stroke_reason(rev: float, t: float,
+                        stroke_min: float = HAND_STROKE_MIN_REV):
     """The ``HAND_STROKE`` refusal text for ``rev``, or ``None`` when it is inside.
 
     Two tiers, one refusal: leaving the OPERATING band is the refusal; also
     crossing the physical end stop is named in the tail, because "the plan asked
     for 0.3 rev past the prime" and "the plan asked for a rev past the end stop"
     are different conversations with the operator.
+
+    ``stroke_min`` is the floor for THIS plan. It defaults to the operating
+    band's own bottom, so every caller that does not pass one is unchanged;
+    :func:`validate_cycle` lowers it to the plan's first knot when the hand is
+    parked below the homed zero (see :data:`HAND_HOMED_REST_FLOOR_REV`). The
+    UPPER bound is never relaxed.
     """
-    if HAND_STROKE_MIN_REV <= rev <= HAND_STROKE_MAX_REV:
+    if stroke_min <= rev <= HAND_STROKE_MAX_REV:
         return None
     if rev > HAND_HARD_STOP_REV:
         tail = ('at t=%.3fs; PAST THE %.2f rev END STOP'
                 % (t, HAND_HARD_STOP_REV))
-    elif rev < HAND_STROKE_MIN_REV:
+    elif rev < stroke_min and stroke_min <= HAND_HOMED_REST_FLOOR_REV:
+        # The floor is sitting on its clamp, so the value below it is not a
+        # parked hand at all. Different fact, different fix: re-home, rather
+        # than re-plan.
+        tail = ('at t=%.3fs; below the %.2f rev retract band, i.e. the hand is '
+                'NOT parked at retract — re-home it'
+                % (t, HAND_HOMED_REST_FLOOR_REV))
+    elif rev < stroke_min and stroke_min < HAND_STROKE_MIN_REV:
+        # The floor was already lowered to the parked start and the track went
+        # BELOW it — a plan that dives past where the machine is sitting.
+        tail = ('at t=%.3fs; below the parked start (%.3f rev), i.e. the plan '
+                'DIVES past the bottom of travel' % (t, stroke_min))
+    elif rev < stroke_min:
         tail = ('at t=%.3fs; BELOW the homed zero, i.e. past the physical '
                 'bottom of travel' % t)
     else:
         tail = 'at t=%.3fs' % t
-    return range_msg('hand position', rev, HAND_STROKE_MIN_REV,
+    return range_msg('hand position', rev, stroke_min,
                      HAND_STROKE_MAX_REV, unit='rev', digits=3, tail=tail)
+
+
+def _cycle_stroke_floor(cycle_plan) -> float:
+    """The stroke floor for ``cycle_plan``: its own first knot, or the band's.
+
+    Returns :data:`HAND_STROKE_MIN_REV` for every plan that starts at or above
+    the homed zero — i.e. the overwhelming majority, and every legacy fixture.
+    Only a plan whose FIRST knot is parked in the firmware's settled-at-retract
+    window gets a lowered floor, and it is lowered exactly to that knot: the
+    plan may rise out of the park, hold, or come back to it, but it may not dive
+    below it, and it can never be lowered past
+    :data:`HAND_HOMED_REST_FLOOR_REV`.
+
+    Read through ``hand_at(0.0)`` rather than off ``hand_rev[0]`` so the floor
+    comes from the same curve the gate samples and the emitter will play — the
+    rule the interior-extrema pass already follows.
+    """
+    try:
+        hand0 = float(cycle_plan.hand_at(0.0)[0])
+    except Exception:  # noqa: BLE001 — a duck-typed plan keeps the strict floor
+        return HAND_STROKE_MIN_REV
+    if not np.isfinite(hand0):
+        return HAND_STROKE_MIN_REV
+    if hand0 >= HAND_STROKE_MIN_REV:
+        return HAND_STROKE_MIN_REV
+    return max(HAND_HOMED_REST_FLOOR_REV, hand0 - _HAND_DIVE_TOL_REV)

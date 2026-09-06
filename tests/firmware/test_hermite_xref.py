@@ -28,6 +28,12 @@ sys.path.insert(0, _XREF_DIR)
 xref = pytest.importorskip("xref")  # imports motor_guard + teensy_interp
 _CANBRIDGE_CFG = os.path.join(
     _REPO, "ros_ws", "src", "jugglebot", "Teensy_code_canbridge", "canbridge_config.h")
+#: The canbridge image's own copy of the shared hardware constants, and the
+#: source that computes the hand's settled-at-rest window from them.
+_CANBRIDGE_HW = os.path.join(
+    _REPO, "ros_ws", "src", "jugglebot", "Teensy_code_canbridge", "hardware_config.h")
+_HAND_SOURCE_CPP = os.path.join(
+    _REPO, "ros_ws", "src", "jugglebot", "Teensy_code_canbridge", "hand_source.cpp")
 
 
 def test_synthetic_all_modes_match_motor_guard():
@@ -293,6 +299,65 @@ def _generated(namespace, symbol):
     assert hasattr(hw, attr), (
         f"{namespace}::{symbol} has no generated counterpart {attr}")
     return float(getattr(hw, attr))
+
+
+def _generated_hw(attr):
+    """A generated-config constant by its generated NAME (no alias mapping)."""
+    import jugglebot.hardware_config as hw
+    assert hasattr(hw, attr), f"{attr} missing from the generated config"
+    return float(getattr(hw, attr))
+
+
+def test_hand_rest_floor_matches_the_firmware_settle_window():
+    """``hand_stroke.HAND_HOMED_REST_FLOOR_REV`` == ``hand_source.cpp``'s edge.
+
+    The planner side has ONE spelling of "where a parked hand actually rests"
+    (``motion/trajectory/hand_stroke.py``); ``feasibility`` gates a cycle's first
+    knot on it and ``cup_cycle`` sizes ``SEED_OUTSIDE_BOX_MAX_M`` from it.  The
+    firmware has its own, in ``hand_source.cpp::hand_settled_at_rest``, and the
+    two must be the same number or the host will plan from a position the
+    firmware refuses to call parked (or, worse, refuse a cycle the machine is
+    physically sitting in — which is what happened on 2026-09-06, three rungs
+    deep, and is why this constant is now derived in exactly one place).
+
+    Three assertions, because there are three ways for the pair to drift:
+
+      * the BAND (``canbridge_config.h``'s ``HAND_SETTLE_BAND_REV``) moves;
+      * the HOMING REFERENCE (``hardware_config.h``'s ``Homing::HAND_ABS_POS_REV``,
+        the canbridge image's own copy of the generated ``HOMING_HAND_ABS_POS_REV``)
+        moves;
+      * neither number moves but the firmware's EXPRESSION changes — e.g. the
+        lower edge is re-anchored to ``JBOp::HAND_RETRACT_REV`` like the upper
+        edge is.  A value-only check passes straight through that, so the
+        ``pos >=`` clause is matched as source text as well.  This is the same
+        reasoning as ``_parse_alias`` above: comparing to a hand-chosen number
+        lets the firmware be re-pointed and still "match".
+    """
+    from jugglebot.motion.trajectory import hand_stroke
+
+    cfg = open(_CANBRIDGE_CFG).read()
+    hw_h = open(_CANBRIDGE_HW).read()
+    src = open(_HAND_SOURCE_CPP).read()
+
+    band = _parse_scalar(cfg, "HAND_SETTLE_BAND_REV")
+    home = _parse_scalar(hw_h, "HAND_ABS_POS_REV")
+
+    # The band is a canbridge-only constant with no generated counterpart, so
+    # hand_stroke carries it as a cited literal — pin that literal to the header.
+    assert hand_stroke.HAND_SETTLE_BAND_REV == pytest.approx(band)
+    # The homing reference IS generated; the firmware image and the planner must
+    # both be reading the same YAML.
+    assert _generated_hw("HOMING_HAND_ABS_POS_REV") == pytest.approx(home)
+
+    assert hand_stroke.HAND_HOMED_REST_FLOOR_REV == pytest.approx(home - band)
+    assert hand_stroke.HAND_HOMED_REST_FLOOR_REV == pytest.approx(-0.20)
+
+    # The firmware's own expression for the LOWER edge, matched as source.
+    assert re.search(
+        r"pos\s*>=\s*Homing::HAND_ABS_POS_REV\s*-\s*HAND_SETTLE_BAND_REV",
+        src), ("hand_source.cpp no longer computes the retract band's lower "
+               "edge as Homing::HAND_ABS_POS_REV - HAND_SETTLE_BAND_REV; "
+               "hand_stroke.HAND_HOMED_REST_FLOOR_REV must be re-derived")
 
 
 def test_hand_lane_constants_match_the_firmware():

@@ -17,6 +17,14 @@ boxes. Parity against the frozen CasADi reference is the contract and is pinned
 by ``tests/motion/test_cup_cycle.py`` (T-U2) against the committed fixtures in
 ``tools/probes/data/cup_cycle_qp_refs.npz``.
 
+The one place the boxes are not the configured ones is a REST-TERMINAL window
+whose SEED already sits outside the cup z box — the parked-hand start, 11.2 mm
+under the floor, where holding knot 1 to the box turns an 11 mm deficit into a
+295 mm slider excursion. :func:`_seed_relaxed_z_box` widens the box to contain
+that seed and refuses one further out than :data:`SEED_OUTSIDE_BOX_MAX_M`; for
+every seed inside the box — which is every window the fixtures pin — it returns
+the configured bounds float for float, so the program is bit-identical.
+
 WHY A GOLDFARB–IDNANI DUAL ACTIVE SET
 -------------------------------------
 Phase 0 decision 1 (2026-08-30,
@@ -110,7 +118,10 @@ from typing import Optional, Sequence
 
 import numpy as np
 
-from jugglebot.motion.trajectory.hand_stroke import LINEAR_GAIN_REV_PER_M
+from jugglebot.motion.trajectory.hand_stroke import (
+    HAND_HOMED_REST_FLOOR_REV,
+    LINEAR_GAIN_REV_PER_M,
+)
 
 #: Ballistics gravity — the SAME value the sim planner uses, so the ported
 #: take-off velocities are bit-comparable. NOT the tracker's 9.81.
@@ -128,6 +139,49 @@ HAND_ACC_LIMIT_RPS2 = 3500.0
 #: drifts, and ``hand_stroke`` is already the module every other consumer of the
 #: gain reaches for.
 HAND_MAX_DECEL_MPS2 = HAND_ACC_LIMIT_RPS2 / LINEAR_GAIN_REV_PER_M
+
+#: How far BELOW the hand's homed zero a parked hand legitimately rests, as cup
+#: travel (m) — the firmware's settled-at-retract lower edge
+#: (:data:`hand_stroke.HAND_HOMED_REST_FLOOR_REV`, −0.20 rev) through the same
+#: slider gain used above. **6.326 mm.**
+#:
+#: Imported and converted rather than restated: this module used to carry the
+#: arithmetic ``−0.20 rev / 31.617 rev/m`` inside the comment on
+#: :data:`SEED_OUTSIDE_BOX_MAX_M`, which made the rest band a number spelled in
+#: two modules — and it is the SAME physical fact
+#: :mod:`~jugglebot.motion.trajectory.feasibility` gates the first knot on. The
+#: 2026-09-06 sitting refused three rungs deep on that one fact being unspelled
+#: in a third place (``unified_cycle``'s settle site); one canonical constant is
+#: the fix for that class.
+REST_FLOOR_BELOW_HAND_ZERO_M = abs(HAND_HOMED_REST_FLOOR_REV) / LINEAR_GAIN_REV_PER_M
+
+#: How far OUTSIDE the cup z box a window's own SEED may sit (m) before
+#: :func:`_seed_relaxed_z_box` refuses instead of absorbing it. 20 mm.
+#:
+#: WHY THERE IS AN ALLOWANCE AT ALL — see :func:`_seed_relaxed_z_box`. The size
+#: is the deepest and highest a HEALTHY machine can legitimately be resting
+#: outside the box, at either end, and nothing more:
+#:
+#: * **Below.** The box is inset 10 mm above the bottom of the slider's
+#:   operating band (``unified_cycle._CUP_Z_INSET_M``), and a hand that has just
+#:   retracted settles anywhere down to the firmware's settled-at-retract lower
+#:   edge — :data:`REST_FLOOR_BELOW_HAND_ZERO_M` above, **6.326 mm** of cup
+#:   travel, read from the one canonical constant rather than restated here.
+#:   Deepest legitimate seed: **16.33 mm** under the floor. The one the bench
+#:   actually flies is −0.038 rev ⇒ 11.20 mm under.
+#: * **Above.** The same 10 mm inset at the top, and the highest the operating
+#:   band goes is the catch prime (``JB_OP_HAND_CATCH_PRIME_REV``, 9.9594 rev),
+#:   which is exactly the band's top — so **10.00 mm** over the ceiling.
+#:
+#: 20 mm covers the worse of the two with 3.67 mm to spare, and is small enough
+#: that a seed further out is a genuinely wrong boundary condition (a stale
+#: state, a bad forward map, a hand outside its operating band) rather than a
+#: machine at rest — which is what the refusal says.
+#:
+#: NOT a config field on purpose: it describes the SEED, i.e. where the machine
+#: is, and no caller should be able to widen it for one window. A window whose
+#: start is further out than this has a state problem, not a planning problem.
+SEED_OUTSIDE_BOX_MAX_M = 0.020
 
 
 class CupCycleInfeasible(RuntimeError):
@@ -529,6 +583,118 @@ def _gate_settle_site(settle: np.ndarray, cfg) -> None:
             % (settle[2], z_min, z_max), reason='SETTLE_SITE')
 
 
+def _seed_relaxed_z_box(state0: CupState, z_min: float, z_max: float):
+    """The z box THIS window's knots are held inside, given where it STARTS.
+
+    ``(lo, hi)`` — the configured box, widened just far enough to contain the
+    seed, or a refusal when the seed is further out than
+    :data:`SEED_OUTSIDE_BOX_MAX_M`.
+
+    THE FAILURE THIS CLOSES (MEASURED 2026-09-06)
+    ---------------------------------------------
+    The box rows are written for knots ``1..n`` only — knot 0 is the caller's
+    ``pos0``, a constant, so bounding it can only be vacuous or unsatisfiable.
+    That is correct as far as it goes, but it means a seed BELOW the floor is
+    not merely unbounded: the box demands the cup be back inside by knot **1**,
+    one ``dt`` later. The QP cannot refuse that (the jerk box is wide), so it
+    satisfies it the only way it can — by launching the cup upward out of the
+    seed — and with jerk minimised over the window it then coasts to wherever
+    the objective likes, which on a long window is the box CEILING.
+
+    The shipped UH-3 carry is exactly this. Seeded from the parked hand
+    (−0.038 rev ⇒ cup z 678.398 mm, **11.20 mm** under the 689.6 mm floor), a
+    1.4 s ``SETTLE`` that should carry the cup 60 mm sideways at constant height
+    instead ran the cup to **984.600 mm** — the ceiling — and back: the hand
+    stroked 0.3162 → **9.6482 rev at 78.4 rev/s**, ~295 mm of slider, with a
+    ball seated in the cup. Nothing refused it: it is inside the jerk boxes,
+    inside the workspace box, and ``validate_cycle`` passes it (peak 9.6482 rev
+    against ``HAND_STROKE_MAX_REV`` 9.9594, 0.31 rev of headroom). A gate that
+    cannot fire is the worst kind of silence, and the operator's only warning
+    would have been the machine doing it.
+
+    THE FIX, AND WHY IT IS THE FLOOR RATHER THAN THE KNOT
+    -----------------------------------------------------
+    The box may not demand a jump the seed is already outside of. So the
+    effective bound for the whole window is ``min(z_min, seed_z)`` (and
+    symmetrically ``max(z_max, seed_z)``): the trajectory leaves the seed at the
+    jerk-limited rate the objective chooses, rather than being forced to be back
+    inside one knot later. Everything that pins where the window ENDS is
+    untouched — ``_gate_settle_site`` still refuses a rest site outside the TRUE
+    box, and a throw's release site is a hard equality — so a relaxed window can
+    only linger near where the machine already is, never travel somewhere new.
+    With the relaxation the same carry runs flat: cup z peak 689.600 mm (the
+    settle, never over it), hand peak 0.3162 rev at 0.39 rev/s.
+
+    A seed inside the box is the steady and chained case, and there
+    ``min``/``max`` return the configured bounds **unchanged** — the same
+    floats, so the assembled program is bit-identical and the T-U2 parity
+    fixtures stay exact.
+
+    The allowance is what keeps this a relaxation rather than a hole: a seed
+    more than :data:`SEED_OUTSIDE_BOX_MAX_M` out is refused with the numbers
+    (``START_BELOW_BOX`` / ``START_ABOVE_BOX``) rather than planned from. Before
+    this gate existed such a seed reached the solver, where it refused as
+    *"unbounded dual step admitting inequality 112"* — true, and useless.
+
+    WHY ONLY A REST-TERMINAL WINDOW GETS THIS (the scope, and its cost)
+    -------------------------------------------------------------------
+    ``_assemble`` calls this for a window with **no throw** and passes the
+    configured box through untouched for one that ends at a release. That is a
+    deliberate, measured scope, not a statement that a launch is immune — it is
+    not: the same 11.20 mm seed deficit makes the shipped 0.6 s ``LAUNCH`` peak
+    **886.2 mm** (26 mm past its own 860 mm release site) at a peak cup
+    acceleration of **107.5 m/s²** — 3400 rev/s² of hand, against the
+    owner-signed 3500 cap — where the relaxed solve reaches exactly 860.0 mm at
+    **45.3 m/s²**, half the acceleration for the same take-off velocity.
+
+    What stops it being applied there is a CROSS-LAYER collision, measured the
+    same day. With the floor at the seed, the QP is free to ride it, and a
+    release-terminal window wants to: it winds up at the bottom of the stroke
+    before the throw. The box binds the KNOTS, but ``validate_cycle`` samples
+    the CONTINUUM the firmware will interpolate, against a stroke floor anchored
+    at the plan's own first knot with a 1e-4 rev tolerance sized for knot-0
+    curvature (``feasibility._cycle_stroke_floor`` /
+    ``feasibility._HAND_DIVE_TOL_REV``). Two knots sitting ON the floor with
+    opposite velocities put the cubic between them **0.007 rev (0.22 mm)** under
+    it, and the launch is refused ``HAND_STROKE`` — *"the plan DIVES past the
+    bottom of travel"* — where today it plans. Turning a working rung into a
+    refusal is a worse trade than leaving a distortion that every gate already
+    accepts, so the launch keeps the plan it has.
+
+    A ``LANDING`` (catch, then rest) DOES get the relaxation, and from a parked
+    seed it now refuses that way instead of planning: measured, that window's
+    unrelaxed solve is the carry's failure exactly — cup to **984.6 mm**, hand
+    to **9.6437 rev at 78.3 rev/s** — so the choice there is a loud refusal
+    versus a silent 295 mm slam, and the refusal wins. Nothing shipped plans a
+    ``LANDING`` from the park (the coordinator's chained one is seeded at a
+    release, inside the box).
+
+    The way to close the scope properly is to keep the relaxed floor for the
+    ESCAPE and re-apply the true floor once the trajectory has climbed into the
+    box — a per-knot floor, which the row structure already supports. It needs
+    the knot at which the box is regained, i.e. a second solve, so it is left to
+    the owner rather than added under a sitting.
+    """
+    seed_z = float(np.asarray(state0.pos, dtype=float).reshape(-1)[2])
+    if seed_z < z_min - SEED_OUTSIDE_BOX_MAX_M:
+        raise CupCycleInfeasible(
+            "window starts at cup z %.4f m, %.1f mm BELOW the cup box floor "
+            "%.4f m — more than the %.1f mm a machine at rest can be under it, "
+            "so this is a boundary condition to fix (a stale state, or a hand "
+            "outside its operating band), not a window to plan"
+            % (seed_z, (z_min - seed_z) * 1e3, z_min,
+               SEED_OUTSIDE_BOX_MAX_M * 1e3), reason='START_BELOW_BOX')
+    if seed_z > z_max + SEED_OUTSIDE_BOX_MAX_M:
+        raise CupCycleInfeasible(
+            "window starts at cup z %.4f m, %.1f mm ABOVE the cup box ceiling "
+            "%.4f m — more than the %.1f mm a machine at rest can be over it, "
+            "so this is a boundary condition to fix (a stale state, or a hand "
+            "outside its operating band), not a window to plan"
+            % (seed_z, (seed_z - z_max) * 1e3, z_max,
+               SEED_OUTSIDE_BOX_MAX_M * 1e3), reason='START_ABOVE_BOX')
+    return min(z_min, seed_z), max(z_max, seed_z)
+
+
 # ---------------------------------------------------------------------------
 # QP assembly
 # ---------------------------------------------------------------------------
@@ -752,9 +918,19 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
     # it can only be vacuous or unsatisfiable. The sim planner writes the
     # constraint anyway (CasADi folds it away); here it is skipped, which is the
     # one structural difference and is invisible for any pos0 inside the box.
+    #
+    # ...but NOT invisible for a pos0 OUTSIDE it: with knot 0 unbounded and knot
+    # 1 bounded, the box demands the cup be back inside one dt after a start it
+    # was never asked to be inside, and the QP obeys by slamming. So a
+    # REST-TERMINAL window's z box is the configured one widened to contain its
+    # own seed — unchanged, float for float, whenever the seed is inside it, and
+    # untouched for a release-terminal window (see `_seed_relaxed_z_box` on why
+    # the scope is the terminal condition).
+    z_lo, z_hi = ((z_min, z_max) if throw is not None
+                  else _seed_relaxed_z_box(state0, z_min, z_max))
     for k in range(1, n + 1):
         for a in range(3):
-            lo, hi = (z_min, z_max) if a == 2 else (-xy_box, xy_box)
+            lo, hi = (z_lo, z_hi) if a == 2 else (-xy_box, xy_box)
             box_rows.append(_axis_row(n, a, Ap[k]))
             box_const.append(cp[k, a])
             box_lo.append(lo); box_hi.append(hi)

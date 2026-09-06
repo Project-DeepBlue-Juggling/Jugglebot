@@ -194,6 +194,19 @@ _HAND_AXIS = 6
 #   silently promoting the request to a fresh NEW would install a plan from a state
 #   the caller never asked about.
 _NO_CYCLE = 'NO_CYCLE'
+#   IN_MOTION — a MODE_NEW window was asked for over a MOVING machine whose cup
+#   acceleration this node cannot honestly answer. A post-release KIND's start
+#   state carries the cup acceleration as an EXACT boundary condition, and the only
+#   source for it is the running cycle's own cup track (``CycleMeta.cup_plan``,
+#   sampled at tau). With no such record — a legacy go_to_pose, a hold, a graceful
+#   stop moving the machine — there is nothing to sample: ``pose_accel`` is carried
+#   on the state but ``to_cup_state`` never reads it, and differentiating a pose to
+#   recover a cup acceleration is exactly the measurement noise the detach-cone rows
+#   must not be fed. The refusal names the speeds and the remedy (come to rest, or
+#   chain with EXTEND); it never invents the number. Distinct from NO_CYCLE because
+#   the caller's mistake is different: NO_CYCLE means "you asked to chain onto
+#   nothing", IN_MOTION means "you asked to start fresh on top of something".
+_IN_MOTION = 'IN_MOTION'
 #   REPLAN_BUDGET — the bounded catch-side replan allowance for this throw window is
 #   spent. The replan policy is "plan at commit + BOUNDED catch-side replans" (owner,
 #   2026-08-29); an unbounded one is a receding horizon by another name, and a
@@ -248,6 +261,35 @@ _STOP_RETRY_ITERS = 6
 # tolerance of zero would make this fire on noise and get ignored. A genuine
 # off-plane capture (the --z 200 case this exists for) misses by tens of mm.
 _TILT_MAP_Z_TOL_MM = 5.0
+
+# ── Planner warm-up (one-shot, at node start) ────────────────────────────────
+# See `TrajectoryNode._warm_planner_once` for WHY the throwaway solve exists.
+#
+# The delay is a start-up settle, not a tuned number: the executor has to be
+# spinning for the timer to tick at all, and half a second puts the solve after
+# the launch's own subscription/discovery churn instead of inside it. It is
+# still orders of magnitude before anything can call `trajectory/plan_cycle` —
+# that needs a homed robot, a TRAJECTORY mode and a seeded hold, i.e. an
+# operator.
+_PLANNER_WARMUP_DELAY_S = 0.5
+# The synthetic window the warm-up solves: a 1.4 s SETTLE carry of a few mm at
+# the cycle's own rest height. SETTLE because it is the ONE kind that needs no
+# throw, no catch and no ball in the air, so it can be planned from a fabricated
+# state without asserting anything false about a machine that is standing still;
+# 1.4 s because that is the reference cycle period the whole Phase-3/4 ladder is
+# measured at, so the warm pass walks the same knot count the live one will.
+_PLANNER_WARMUP_PERIOD_S = 1.4
+# The carry itself is MEASURED, not chosen: the warm-up fires ~0.5 s after
+# construction, i.e. long before any session calls `trajectory/set_limits`, so it
+# is gated against the CONFIG DEFAULTS (1000 / 5000 / 30000) and their jerk cap is
+# what binds. Probed 2026-09-06 on this Jetson at both limit sets — default:
+# 1/2/5 mm PASS, 7 mm refuses LIMIT_JERK (30833 > 30000), 10 mm refuses (44050);
+# session 250/3000/150000: every one of them passes. 5 mm therefore validates
+# under both with ~25 % of the default jerk budget to spare, and the wall time is
+# flat across the whole sweep (175-187 ms), so a bigger carry would buy nothing.
+# A refusal would still do the warming — the gate runs last — but it would print a
+# WARN at every launch, which is how a real warning gets trained out of an operator.
+_PLANNER_WARMUP_DX_MM = 5.0
 
 
 class TrajectoryNode(Node):
@@ -759,6 +801,17 @@ class TrajectoryNode(Node):
         self.create_timer(clock_offset.REFRESH_PERIOD_S,
                           self._refresh_clock_offset)
 
+        # ── Planner warm-up (one-shot, on the EXECUTOR thread) ──
+        # A timer and not a call from here: __init__ runs in every test that
+        # builds a node and in every tool that imports one, while only a node
+        # that is actually SPINNING — i.e. a launched one — is about to be asked
+        # for a cycle. The timer puts the cost exactly there. It cancels itself on
+        # its first tick (`_warm_planner_once`), so the solve happens once per
+        # process and never on the emitter thread.
+        self._warmup_timer = None
+        self._warmup_timer = self.create_timer(
+            _PLANNER_WARMUP_DELAY_S, self._warm_planner_once)
+
         if start_emitter:
             self._start_emitter()
 
@@ -767,6 +820,104 @@ class TrajectoryNode(Node):
             "emitter on :5557 (mpccmd); "
             f"stream modes={sorted(self._stream_modes)}, "
             f"go_home={self._go_home_duration_s}s")
+
+    # ═══════════════════════════════════════════════════════════
+    # Planner warm-up (one-shot, at node start)
+    # ═══════════════════════════════════════════════════════════
+
+    def _warm_planner_once(self) -> float:
+        """Solve ONE throwaway unified window at node start. Returns wall time (s).
+
+        **The first ``plan_cycle`` in a process is not the same cost as the
+        rest.** One-off work — numpy's first pass through each of the QP's
+        thousands of small calls, the solver's first factorisation,
+        ``validate_cycle``'s first walk of every gate — is paid by whichever
+        caller happens to be first, and on 2026-09-06 that caller was the bench
+        driver: the session's first two ``trajectory/plan_cycle`` solves measured
+        **2158.89 ms and 2021.16 ms** (``/trajectory/status.cycle_plan_wall_ms``)
+        against **190-250 ms** for the same request measured today under the same
+        session load (``tools/probes/emitter_gap_under_solve.py``, three runs).
+        A solve that long starves the executor long enough for the can-bridge's
+        250 ms setpoint watchdog (``MPC_CMD_STALENESS_US``) to latch
+        ``MPC_STALE`` — which it did, twice, E-STOPping a rung mid-ladder.
+
+        ``reload_coordinator_node._unified_warm_planner`` already does this for a
+        TossContinuous session (its own first joined solve measured 3267 ms cold
+        against a 424 ms warm median), but a bench driver calls this node's
+        service DIRECTLY and never goes through the coordinator, so that path had
+        no warm-up at all. This is the same medicine at the other door.
+
+        **BUT THE COLD PENALTY MEASURED HERE IS ~5 ms, NOT SECONDS — so this is
+        insurance, not the explanation.** Measured 2026-09-06 on this Jetson
+        (``/tmp/probe_warmup.py``, a FRESH child process per measurement, 3 cold +
+        3 warm, session limits, the same 1.4 s SETTLE): first solve in a cold
+        process 185.4-191.0 ms against a 178.9-193.2 ms second solve in the same
+        process, and 181.2-183.3 ms for the first solve behind this warm-up. The
+        one-off cost this removes is a few ms because everything expensive —
+        numpy, the module imports, the first array work — is already paid by node
+        construction and the seeding hold. So the 2026-09-06 2 s solves are NOT a
+        cold planner; the probe's contention sweep (~2.2 s at 2-way CPU
+        oversubscription, ~5 s at 3-way) still explains them and the fix for that
+        lives elsewhere. This stays because ~185 ms spent at start-up, where
+        nothing is armed and nothing is streaming, is a price worth paying to take
+        the class off the table entirely.
+
+        **It commands nothing and installs nothing.** A synthetic rest state at
+        the cycle's own settle height, a lateral carry of
+        :data:`_PLANNER_WARMUP_DX_MM`, and the result is dropped on the floor:
+        ``_install`` is not called, ``self._cycle`` is not touched, and nothing
+        here reads the live commanded state — so a warm-up that runs while the
+        node is already seeded still cannot move a knot. The limits and the
+        geometry are the node's OWN, so the warm pass walks the same shapes and
+        the same gate branches the live solve will.
+
+        **A failure is swallowed with a WARN**, for the same reason the
+        coordinator's is: a warm-up that cannot run must never cost a session. It
+        only costs the first cycle its margin, which is exactly the pre-warm-up
+        behaviour.
+
+        Runs on the EXECUTOR thread (a one-shot timer created in ``__init__``),
+        never on the emitter thread — the 40 Hz wire is a separate thread and is
+        not delayed by this. It cancels its own timer FIRST, so an exception
+        cannot leave a multi-second solve re-firing every
+        :data:`_PLANNER_WARMUP_DELAY_S`.
+        """
+        timer, self._warmup_timer = self._warmup_timer, None
+        if timer is not None:
+            try:
+                timer.cancel()
+            except Exception:  # noqa: BLE001 — a cancel failure must not raise here
+                pass
+        t0 = time.perf_counter()
+        try:
+            cfg = uc.cr.RealizeConfig()
+            # The level slider↔cup map through the planner's own export rather
+            # than re-derived here — a second spelling of it is how a rest height
+            # drifts out of the cup box it has to sit in.
+            hand_rev = uc.hand_rev_for_cup_z(uc.SETTLE_CUP_Z_MM, cfg)
+            pose = np.array([0.0, 0.0, float(cfg.active_z_mm), 0.0, 0.0, 0.0])
+            cup = uc.cup_state_from_platform(pose, hand_rev, cfg)
+            goals = uc.CycleGoals(
+                period_s=_PLANNER_WARMUP_PERIOD_S,
+                settle_site_mm=np.array(
+                    [cup[0] + _PLANNER_WARMUP_DX_MM, cup[1], cup[2]]),
+                banking_enabled=True)
+            uc.plan_cycle(uc.SETTLE, goals,
+                          uc.CycleState.at_rest(pose, hand_rev, cfg),
+                          self._limits, self._geom)
+        except Exception as exc:  # noqa: BLE001 — a warm-up must never stop the node
+            elapsed = time.perf_counter() - t0
+            self.get_logger().warning(
+                'planner warm-up did not complete after %.0f ms (%s) — the first '
+                'plan_cycle of this process pays the cold-solve cost (~2 s '
+                'measured 2026-09-06) and can starve the 250 ms setpoint '
+                'watchdog; every later solve is unaffected' % (elapsed * 1e3, exc))
+            return elapsed
+        elapsed = time.perf_counter() - t0
+        self.get_logger().info(
+            'planner warm-up %.0f ms — the first plan_cycle now solves at the '
+            'steady-state cost instead of the cold one' % (elapsed * 1e3,))
+        return elapsed
 
     # ═══════════════════════════════════════════════════════════
     # Emitter thread (dedicated; absolute-deadline 40 Hz)
@@ -2087,14 +2238,28 @@ class TrajectoryNode(Node):
     # Services (Trigger)
     # ═══════════════════════════════════════════════════════════
 
-    def _current_state(self):
-        """Sample the active plan at ``now`` → ``(pose, twist, accel)`` seed."""
+    def _current_state(self, *, at_mono=None):
+        """Sample the active plan at ``now`` → ``(pose, twist, accel)`` seed.
+
+        ``at_mono`` overrides the sample instant with a ``perf_counter()`` value
+        the CALLER captured. Every existing call site leaves it None and reads
+        "now", which is what a guard comparing against the live machine wants.
+        The one caller that passes it is :meth:`_cycle_start_state`, which has to
+        sample the pose, the hand and the running cup track at ONE instant: a
+        seed whose channels are read at three different ``perf_counter()`` calls
+        describes no machine at any of them, and the cup ACCELERATION it now
+        samples moves at the plan's own jerk — up to the session's 150 000 mm/s³
+        cap, so a millisecond of scheduling skew is worth as much as 150 mm/s² of
+        boundary-condition error, five times the 27.9 mm/s² a live carry was
+        measured carrying.
+        """
         with self._plan_lock:
             plan = self._active_plan
             t0 = self._plan_t0
         if plan is None or t0 is None:
             return (self._neutral_pose.copy(), np.zeros(6), np.zeros(6))
-        return plan.state_at(time.perf_counter() - t0)
+        now = time.perf_counter() if at_mono is None else float(at_mono)
+        return plan.state_at(now - t0)
 
     def _install(self, plan, *, t0=None, require_follower_mode=False) -> bool:
         """Install ``plan`` as the active plan. Returns True iff it was installed.
@@ -3302,9 +3467,13 @@ class TrajectoryNode(Node):
         """
         return float(uc.latest_supersede_time_s(meta))
 
-    def _commanded_hand_state(self):
+    def _commanded_hand_state(self, *, at_mono=None):
         """``(rev, rev_s)`` — the hand state the machine is being COMMANDED to, or
         ``(None, 0.0)`` when nothing is known.
+
+        ``at_mono`` overrides the sample instant exactly as
+        :meth:`_current_state`'s does, and for the same reason: the one caller
+        that passes it seeds a window and must read every channel at one instant.
 
         Three sources, in this order, and the order is the whole content:
 
@@ -3329,7 +3498,8 @@ class TrajectoryNode(Node):
             plan, t0 = self._active_plan, self._plan_t0
         hand_at = getattr(plan, 'hand_at', None)
         if hand_at is not None and t0 is not None:
-            rev, vel = hand_at(time.perf_counter() - t0)
+            now = time.perf_counter() if at_mono is None else float(at_mono)
+            rev, vel = hand_at(now - t0)
             return float(rev), float(vel)
         vel = (float(self._latest_hand_vel_rps)
                if self._latest_hand_vel_rps is not None else 0.0)
@@ -3343,40 +3513,192 @@ class TrajectoryNode(Node):
         """The hand position a new plan must be continuous WITH, or None."""
         return self._commanded_hand_state()[0]
 
-    def _cycle_start_state(self, kind: str):
-        """``(CycleState, '')`` a NEW window is planned FROM, or ``(None, reason)``.
+    def _live_cup_accel_mm_s2(self, at_mono: float):
+        """``(acc_mm_s2, '')`` the RUNNING cycle commands at ``at_mono``, or
+        ``(None, reason)``.
 
-        Position/velocity/acceleration come from ``_current_state()`` — the ACTIVE
-        PLAN sampled now, i.e. what the machine is being commanded to do, not what
-        the encoders say it did. That is the same seed every other install path on
-        this node uses and it is what makes the install continuous: a measured seed
-        would fold the tracking error into the plan's first knot and then ask the
-        legs to jump back onto it.
+        The one honest source for a moving machine's cup acceleration, and there
+        is exactly one: the active cycle's own cup track. ``CycleMeta.cup_plan``
+        is the QP's solution in cup coordinates — the same object
+        ``unified_cycle.replan_tail`` reads its splice state from, for the same
+        stated reason ("the plan's own numbers, not a round trip through the
+        platform, whose acceleration is not recoverable") — and
+        ``CupCyclePlan.sample`` is its jerk-constant interpolation, exact at the
+        knots and analytic between them. Nothing is differentiated and nothing is
+        measured, which is the requirement ``CycleState``'s docstring states for
+        this field.
 
-        The hand half is the commanded-else-measured reference above. A LAUNCH is
-        built through ``CycleState.at_rest``, which supplies the cup position,
-        velocity and acceleration EXACTLY (zeros) rather than routing them through
-        the forward map — the QP's detach-cone rows treat the supplied acceleration
-        as exact, and feeding a finite-differenced one into them puts noise straight
-        into the one constraint the ball's trajectory depends on. A post-release
-        KIND planned over a MOVING machine gets a full state with
-        ``post_release=True`` and no detach axis, which is the honest description
-        of "chain from a state we measured rather than from a plan we hold":
-        ``g`` for the acceleration, no seam tilt pin. Planned off a terminal hold
-        it gets ``post_release=False`` and exact zero acceleration instead —
-        there is no ball in the air to follow and none leaving the cup.
+        **Position and velocity are deliberately NOT overridden alongside it.**
+        Both are recoverable from the pose the seed already carries — the inverse
+        map for position, the analytic forward map for velocity — and MEASURED
+        (2026-09-06, ``/tmp/probe_rep2d.py``, tau = 0.3005 s into a 1.4 s carry)
+        the two position sources agree to **0.000000 mm**, so overriding them
+        would buy nothing and would risk the opposite: knot 0's pose is what
+        ``_install_continuity_ok`` compares against the live machine, and a cup
+        position taken off a different interpolation than the pose is how that
+        agreement gets lost. Acceleration is the one channel with no second
+        source, which is why it is the one channel supplied.
+
+        Four refusals, all fail-closed:
+
+        * **no active cycle record** — a legacy ``go_to_pose``, a hold or a
+          graceful stop is moving the machine. ``_install`` clears ``_cycle`` on
+          every non-``CyclePlan`` install precisely so this is knowable;
+        * **the record does not describe what is streaming** — the active plan is
+          not the one the record holds, so its cup track is about some other
+          motion;
+        * **the record carries no cup track** (``cup_plan is None``) — only a plan
+          built by ``plan_cycle`` / ``replan_tail`` / ``extend`` carries one;
+        * **``tau`` lies inside a release's DETACH WINDOW.** This is the case that
+          could be answered and is refused anyway, so it is the one that needs the
+          argument — and the argument is not this node's, it is
+          ``replan_tail``'s. A window that follows a release carries hard
+          equalities at knots 1..``n_detach`` pinning the cup's acceleration
+          DIRECTION, so the ball in flight gets no lateral shove off the lip, and
+          ``replan_tail`` refuses any splice at ``k_s <= k_release + n_detach``
+          for exactly that reason: re-solving those knots without their cone rows
+          left **1.126 m/s² of off-axis specific force** where the original plan
+          had 4.4e-16 (its own measurement, 2026-09-04), invisible to
+          ``validate_cycle`` because the cup track stays perfectly smooth. A
+          MODE_NEW seeded there faces the same fork with no better answer:
+          ``post_release=False`` re-solves the surviving cone knots away — that
+          defect exactly — while ``post_release=True`` extends a fresh cone from
+          ``tau``, pinning the direction for up to ``n_detach`` knots MORE than
+          the release earned, on a ball that has already cleared the lip. Neither
+          is the plan the ball is flying under, so this refuses, mirroring the one
+          function in the stack that has already faced the question rather than
+          inventing a second rule for it.
+
+          The wait is short and the refusal is loud: ``n_detach`` is 2, i.e.
+          **50 ms**, and MEASURED (2026-09-06, ``/tmp/probe_detach_window.py``)
+          the shipped chained LAUNCH+LANDING install carries exactly one mid-plan
+          release, at 0.6000 s of a 2.0000 s window, so the refused band is
+          **2.50 %** of it.
+
+          (One wrinkle for whoever revisits this: ``post_release=True`` would also
+          switch ``unified_cycle._start_tilt_for`` onto its ``detach_axis``
+          branch, pinning knot 0 to the tilt at the RELEASE rather than the tilt
+          the machine holds at ``tau``. That is a real change and NOT what forces
+          the refusal above — MEASURED 2026-09-06 on a 2.74°-aimed shipped throw
+          it is 0.000083–0.000608 rad across the window, i.e. 0.0002–0.0016 rev of
+          leg drift against the install guard's 0.06 bound, so it would pass. It
+          would simply stop knot 0 being the machine EXACTLY, which is the pin
+          that landed today.)
         """
-        pose, twist, accel = self._current_state()
+        with self._plan_lock:
+            active, t0 = self._active_plan, self._plan_t0
+        record = self._cycle
+        if record is None:
+            return None, ('no unified cycle is active, so this node holds no cup '
+                          'track to read the boundary condition from')
+        plan, meta, _record_t0 = record
+        if plan is not active or t0 is None:
+            return None, ('the active plan is not the cycle this node holds, so '
+                          'its cup track describes a different motion')
+        cup = getattr(meta, 'cup_plan', None)
+        if cup is None:
+            return None, ('the active cycle carries no cup track (kind %r) — only '
+                          'a plan built by plan_cycle/extend/replan_tail does'
+                          % (getattr(meta, 'kind', '?'),))
+        # `t0` is the ACTIVE PLAN's origin rather than the record's third element,
+        # because that is the clock `_current_state` samples the pose on: reading
+        # the two on different origins is the same same-origin defect this method
+        # exists to close, one level up.
+        tau = float(at_mono) - float(t0)
+        dt = float(meta.dt)
+        n_detach = int(uc.build_cup_config().n_detach)
+        for mark in getattr(meta, 'releases', ()):
+            t_rel = float(mark.t_s)
+            if t_rel <= tau <= t_rel + n_detach * dt:
+                return None, (
+                    'tau %.4f s is inside the detach window (%.4f, %.4f] s of the '
+                    'release this cycle makes at %.4f s — knot 0 would have to '
+                    'claim a ball at the cup lip AND hold the release tilt the '
+                    'schedule has already left, which the install guard refuses; '
+                    'wait %.1f ms for the cone to clear'
+                    % (tau, t_rel, t_rel + n_detach * dt, t_rel,
+                       1000.0 * (t_rel + n_detach * dt - tau)))
+        _pos, _vel, acc = cup.sample(tau)
+        return np.asarray(acc, dtype=float) * 1000.0, ''
+
+    def _cycle_start_state(self, kind: str):
+        """``(CycleState, '', '')`` a NEW window is planned FROM, else
+        ``(None, code, reason)``.
+
+        **The invariant: knot 0 IS the machine, in every channel, at ONE instant —
+        and every channel of it is SAMPLED, never defaulted.** Position, velocity
+        and acceleration come from ``_current_state()`` — the ACTIVE PLAN, i.e.
+        what the machine is being commanded to do, not what the encoders say it
+        did. That is the same seed every other install path on this node uses and
+        it is what makes the install continuous: a measured seed would fold the
+        tracking error into the plan's first knot and then ask the legs to jump
+        back onto it. The hand half is the commanded-else-measured reference
+        above. All three reads take the SAME captured ``perf_counter()``, because
+        a seed whose channels are read at three different instants describes no
+        machine at any of them.
+
+        A LAUNCH is built through ``CycleState.at_rest``, which supplies the cup
+        position, velocity and acceleration EXACTLY (zeros) rather than routing
+        them through the forward map — the QP's detach-cone rows treat the
+        supplied acceleration as exact, and feeding a finite-differenced one into
+        them puts noise straight into the one constraint the ball's trajectory
+        depends on.
+
+        **The MOVING branch used to fabricate free fall, and that is the defect
+        this method now closes.** Until 2026-09-06 a post-release KIND planned
+        over a MOVING machine was handed ``post_release=True`` with
+        ``cup_accel_mm_s2=None``, so ``CycleState.to_cup_state`` supplied the
+        free-fall ``g`` as the EXACT start-of-window equality — a claim that is
+        true only just after a release and false at every other instant of a live
+        carry. MEASURED (2026-09-06, ``/tmp/probe_rep2d.py``, a second
+        ``KIND_SETTLE`` seeded 0.3005 s into a running one; banking on, session
+        limits 250/3000/150000; hand +0.009749 rev at +0.259948 rev/s, platform
+        7.1193 mm/s):
+
+        * the running cycle's OWN cup acceleration there is
+          ``[18.447, -0.000, 20.994] mm/s^2`` (|a| = 27.9). The fabricated ``g``
+          is ``[0, 0, -9806]`` — **351x larger and pointing the other way**;
+        * with the fabrication, knot 1 - knot 0 = **-4.44e-9 rev** while the knot
+          velocities run **+0.2599 -> +3.3556 rev/s**: a head whose position does
+          not move while its velocity quadruples, so the firmware's Hermite dips
+          **-0.011960 rev** (0.378 mm of slider) BELOW knot 0 and ``validate_cycle``
+          refuses ``HAND_STROKE`` (-0.002 rev, below the floor). The whole carry is
+          lost;
+        * with the sampled acceleration, knot 1 - knot 0 = **+6.6598e-3 rev**
+          (~v0.dt), the dip is **0.000000 rev**, and the plan is ACCEPTED;
+        * and the fabrication cost the TILT PIN too, silently:
+          ``unified_cycle._start_tilt_for`` returns ``None`` for a
+          ``post_release=True`` state with no ``detach_axis``, so knot 0 was left
+          to the banking smoother — **0.001335 rad** of knot-0 tilt against the
+          live pose and **0.003753 rev** of leg drift at the install gate, where
+          the honest state measures 0.000000 on both.
+
+        So the moving branch now samples the running cycle's cup track for the one
+        channel that has no second source (:meth:`_live_cup_accel_mm_s2`, which
+        also states the four cases it refuses), and takes ``post_release=False``
+        — the same claim ``replan_tail`` makes for a mid-plan splice: no ball
+        leaves the cup mid-carry. With no cup track to sample there is nothing
+        honest to say, so the request is refused :data:`_IN_MOTION` naming the
+        speeds; ``pose_accel`` is carried on the state but ``to_cup_state`` never
+        reads it, and differentiating a pose to invent the number is exactly what
+        the exact-override fields exist to prevent.
+
+        A rest-KIND (LAUNCH) over a moving machine is refused as it always was.
+        """
+        # ONE instant, every channel. See `_current_state`'s `at_mono`.
+        seed_mono = time.perf_counter()
+        pose, twist, accel = self._current_state(at_mono=seed_mono)
         # The RATE half of the same commanded-else-measured rule, and it is the
         # load-bearing half of the rest check below: a unified LAUNCH moves the
         # SLIDER ALONE under the z = 170 pin, so mid-launch the platform twist is
         # ~zero and the hand rate is the only witness that the machine is moving at
         # all. Reading the measured rate instead would let a launch be planned over
         # a live launch whenever telemetry happened to sample near a turning point.
-        hand_rev, hand_vel = self._commanded_hand_state()
+        hand_rev, hand_vel = self._commanded_hand_state(at_mono=seed_mono)
         if hand_rev is None:
-            return None, ('no hand position known (neither commanded nor measured '
-                          'on robot_state axis %d)' % (_HAND_AXIS,))
+            return None, feas.STALE_STATE, (
+                'no hand position known (neither commanded nor measured '
+                'on robot_state axis %d)' % (_HAND_AXIS,))
         _has_throw, _has_catch, post_release = uc._KIND_SHAPE[kind]
         # ── The rest predicate, computed ONCE for both branches ─────────────
         # `CycleState.at_rest` supplies zero cup velocity and zero cup
@@ -3409,10 +3731,11 @@ class TrajectoryNode(Node):
         at_rest = bool(lin <= rest_bound and ang <= ang_bound
                        and abs(hand_vel) <= hand_bound)
         # WHICH BRANCH SEEDED THE WINDOW, on the console, every time. The two
-        # branches hand the QP different boundary conditions (exact zeros vs a
-        # measured state with `g`), the choice is invisible in the plan that comes
-        # out, and the sitting-one lesson is that a bench reading needs its
-        # preconditions recorded next to it rather than inferred afterwards.
+        # branches hand the QP different boundary conditions (exact zeros vs the
+        # running cycle's own sampled cup acceleration), the choice is invisible
+        # in the plan that comes out, and the sitting-one lesson is that a bench
+        # reading needs its preconditions recorded next to it rather than
+        # inferred afterwards.
         self.get_logger().info(
             'cycle seed for %s: %s (platform %.4f mm/s, %.5f rad/s, '
             'hand %.4f rev/s)'
@@ -3421,21 +3744,23 @@ class TrajectoryNode(Node):
         if not post_release:
             # ── `at_rest` DECLARES rest; this VERIFIES it ──────────────────
             if not at_rest:
-                return None, (
+                return None, feas.STALE_STATE, (
                     'kind %r starts from REST but the machine is moving '
                     '(platform %.4f mm/s > %.4f, %.5f rad/s > %.5f, '
                     'hand %.4f rev/s > %.4f) — chain from the previous window '
                     'with EXTEND instead of planning a launch over a live plan'
                     % (kind, lin, rest_bound, ang, ang_bound,
                        abs(hand_vel), hand_bound))
-            return uc.CycleState.at_rest(pose, hand_rev), ''
-        # ── THE FREE-FALL FALLBACK IS A LIE ON A MACHINE AT REST ────────────
+            return uc.CycleState.at_rest(pose, hand_rev), '', ''
+        # ── THE FREE-FALL FALLBACK IS A LIE EVERYWHERE MODE_NEW REACHES ─────
         # `to_cup_state` defaults a post-release window's cup acceleration to
-        # `g` — right for the case it was written for (chain from a state we
-        # MEASURED just after a release, where the ball is in the air and the
-        # cup is following it), and simply false for a post-release KIND planned
-        # at MODE_NEW off a terminal hold, where there is no ball in the air and
-        # the cup is not accelerating at all.
+        # `g` — right for the case it was written for (a CHAIN from a release,
+        # where `release_state_from_meta` hands over the exact `g` the finished
+        # window's terminal equality pinned, ball in the air, cup following it),
+        # and false for a post-release KIND planned at MODE_NEW off a terminal
+        # hold (no ball in the air and the cup not accelerating at all) — and
+        # false again mid-carry, where the cup IS accelerating but at 27.9 mm/s^2
+        # rather than at 9806.
         #
         # It is not cosmetic. MEASURED (2026-09-05, probe, 60 mm lateral
         # `KIND_SETTLE`, 1.4 s, banking on, session limits 250/3000/150000):
@@ -3456,25 +3781,52 @@ class TrajectoryNode(Node):
         # asserts nothing new about the machine — it just stops the two branches
         # describing the same stationary robot two different ways.
         #
-        # AND `post_release` FOLLOWS THE SAME PREDICATE, for the same reason.
-        # `post_release` is not a property of the KIND, it is the claim "a ball
-        # left this cup at the window start", and that claim is false off a
-        # terminal hold. Asserting it anyway makes `cup_cycle` assemble the
-        # detach-cone equalities against knots 1..n_detach, which pin the
-        # acceleration DIRECTION for a ball that does not exist: MEASURED
-        # (2026-09-05, probe, the same 60 mm lateral SETTLE at 689.6 mm) knots
-        # 0..3 of cup a_x came out [0, 0, 0, 0.2013] m/s^2 with the rows against
-        # [0, 0.1870, 0.1801, 0.1732] without them — 50 ms of forbidden lateral
-        # acceleration at the start of a purely lateral carry, which is exactly
-        # what `cup_cycle.CupState`'s docstring says the rows must not be used
-        # for. Moving? Then the claim is true and the rows belong.
+        # AND `post_release` FOLLOWS, for the same reason. `post_release` is not a
+        # property of the KIND, it is the claim "a ball left this cup at the
+        # window start", and that claim is false off a terminal hold. Asserting
+        # it anyway makes `cup_cycle` assemble the detach-cone equalities against
+        # knots 1..n_detach, which pin the acceleration DIRECTION for a ball that
+        # does not exist: MEASURED (2026-09-05, probe, the same 60 mm lateral
+        # SETTLE at 689.6 mm) knots 0..3 of cup a_x came out
+        # [0, 0, 0, 0.2013] m/s^2 with the rows against [0, 0.1870, 0.1801,
+        # 0.1732] without them — 50 ms of forbidden lateral acceleration at the
+        # start of a purely lateral carry, which is exactly what
+        # `cup_cycle.CupState`'s docstring says the rows must not be used for.
+        #
+        # It is false MID-CARRY too, which is what changed on 2026-09-06. A NEW
+        # window planned over a LIVE cycle starts in the middle of that cycle's
+        # motion, not just after a release: `replan_tail` makes exactly this call
+        # for its own splice state ("no ball leaves the cup mid-carry, so there is
+        # no detach cone to honour there") and this mirrors it rather than keeping
+        # a second, contradictory rule. The one instant where the claim WOULD be
+        # true — inside a release's detach window — is refused by
+        # `_live_cup_accel_mm_s2` instead of asserted, because seeding it honestly
+        # also needs the release's tilt on knot 0 and the machine has already left
+        # that tilt; the argument and the 50 ms / 2.50 % cost are recorded there.
+        #
+        # ── THE BOUNDARY CONDITION IS SAMPLED, NEVER DEFAULTED ──────────────
+        # At rest the answer is EXACT zeros. Moving, it is the running cycle's own
+        # cup track read at the same instant as the pose. There is no third case:
+        # with no track to read, this refuses rather than letting `to_cup_state`
+        # default to `g` (351x the real number and the wrong sign — see the
+        # method docstring for what that costs).
+        if at_rest:
+            cup_accel = np.zeros(3)
+        else:
+            cup_accel, why = self._live_cup_accel_mm_s2(seed_mono)
+            if cup_accel is None:
+                return None, _IN_MOTION, (
+                    'kind %r needs an EXACT cup acceleration and the machine is '
+                    'moving (platform %.4f mm/s, %.5f rad/s, hand %.4f rev/s): '
+                    '%s — come to rest, or chain from the running window with '
+                    'EXTEND' % (kind, lin, ang, hand_vel, why))
         return uc.CycleState(
             pose=np.asarray(pose, dtype=float),
             pose_vel=np.asarray(twist, dtype=float),
             pose_accel=np.asarray(accel, dtype=float),
             hand_rev=hand_rev, hand_vel_rps=hand_vel,
-            detach_axis=None, post_release=(not at_rest),
-            cup_accel_mm_s2=(np.zeros(3) if at_rest else None)), ''
+            detach_axis=None, post_release=False,
+            cup_accel_mm_s2=cup_accel), '', ''
 
     @staticmethod
     def _cycle_goals_from_request(request) -> uc.CycleGoals:
@@ -3535,7 +3887,11 @@ class TrajectoryNode(Node):
         Guards are ``_svc_timed_target``'s, in the same order and for the same
         reasons (guard latch → mode → seeded → telemetry fresh). Three modes:
 
-        * **NEW** — plan from the live commanded state at a FRESH origin.
+        * **NEW** — plan from the live commanded state at a FRESH origin. Over a
+          MOVING machine the cup acceleration knot 0 opens on is SAMPLED from the
+          running cycle's own cup track; with no track to sample it refuses
+          :data:`_IN_MOTION` rather than letting the free-fall default stand in
+          (see :meth:`_cycle_start_state` for what that default costs).
         * **EXTEND** — chain onto the active cycle's terminal release and re-install
           at the SAME origin. The joined head is bit-identical to what is already
           streaming (``unified_cycle.extend`` drops the duplicate knot and keeps
@@ -3642,11 +3998,14 @@ class TrajectoryNode(Node):
     def _plan_cycle_new(self, request, response, kind, goals, t_wall):
         """MODE_NEW — plan from the live commanded state, install at a fresh origin."""
         seed_mono = time.perf_counter()
-        state, err = self._cycle_start_state(kind)
+        # The CODE comes from the seed, not from here: a stale/unknown state is
+        # STALE_STATE as it always was, but "the machine is moving and I have no
+        # honest cup acceleration for it" is IN_MOTION — a different mistake with
+        # a different remedy, and the operator reads the code before the message.
+        state, code, err = self._cycle_start_state(kind)
         if state is None:
             return self._reject_cycle(
-                response, feas.STALE_STATE,
-                '%s — cannot seed a cycle' % (err,), t_wall)
+                response, code, '%s — cannot seed a cycle' % (err,), t_wall)
         plan, meta = uc.plan_cycle(kind, goals, state, self._limits, self._geom)
         if bool(getattr(request, 'chain', False)):
             # ── The CHAINED install (the cliff fix) ──────────────────────────
