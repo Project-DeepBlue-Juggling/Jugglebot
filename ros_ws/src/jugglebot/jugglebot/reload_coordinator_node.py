@@ -166,6 +166,7 @@ from jugglebot_interfaces.action import Reload, Toss, TossContinuous
 from geometry_msgs.msg import Point, Pose, Quaternion, Vector3
 
 import jugglebot.hardware_config as hw
+from jugglebot.motion import blas_threads
 from jugglebot.ball_possession import (
     EVIDENCE_EMPTY,
     EVIDENCE_SEATED,
@@ -2241,6 +2242,16 @@ class ReloadCoordinatorNode(Node):
             goal_callback=self._goal_callback,
             cancel_callback=self._cancel_callback,
             callback_group=self._cbgroup)
+
+        # BLAS thread-pool self-check. This node calls the unified planner
+        # directly (_unified_warm_planner and every joined LAUNCH+LANDING solve),
+        # and an uncapped OpenBLAS pool inflates a solve ~10x under box load
+        # (measured 2026-09-06) — which here overruns _UNIFIED_PLAN_BUDGET_S and
+        # mints ABORTED_NO_RELEASE with the ball already in the air. The cap is
+        # set in jugglebot_launch.py's additional_env; this reads back whether it
+        # landed. See jugglebot.motion.blas_threads.
+        self._blas_threads, self._blas_source = blas_threads.check_blas_threads(
+            self.get_logger(), 'reload_coordinator_node')
 
         self.get_logger().info(
             f"Ball-ops coordinator ready (jugglebot/reload + jugglebot/toss + "

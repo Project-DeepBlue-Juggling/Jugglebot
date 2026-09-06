@@ -9,27 +9,84 @@ attempts that refused BEFORE solving. The firmware threshold is
 ``/trajectory/status.cycle_plan_wall_ms`` measured the two solves at 2158.89 ms
 and 2021.16 ms.
 
-WHAT THE ROBOT SAID (2026-09-06 14:08-14:11, operator, launch UP, robot
-ACTIVATED, nothing moving — the measurement the E-STOP fix was gated on):
+⚠ **CAUSE PINNED 2026-09-06 (evening). THE ACTOR IS THE BLAS THREAD POOL, AND
+THE ARM THAT SHOWS IT IS ``--load 3`` (default) VS ``--threads 1``.** Read the
+dose-response table below before running this probe, and in particular before
+reading a null result as an exoneration — the 14:08 null (kept below, verbatim)
+was measured at 0-2 busy cores, which is BELOW THE KNEE where the two arms
+differ at all.
+
+THE DOSE-RESPONSE (2026-09-06 evening, 60+ reps, this box, 6 cores). Both the
+launched ``trajectory_node`` (``/usr/bin/python3`` 3.8.10, numpy 1.24.4 from
+``~/.local``) and this probe (venv) load the BYTE-IDENTICAL OpenBLAS 0.3.21 wheel
+(``libopenblas64_p-r0-cecebdce.3.21.so``, pthreads/armv8) with a DEFAULT 6-thread
+pool; no ``OPENBLAS/OMP/MKL/NUMEXPR_NUM_THREADS`` was set anywhere.
+
+    burners      default pool              --threads 1
+    ---------    ----------------------    ----------------------
+    0 (idle)      194- 223 ms              195-207 ms
+    1 core        520- 674 ms              200-203 ms
+    2 cores       506- 546 ms              207-210 ms
+    3 cores      1350-2314 ms  ⚠ LATCHES   214-217 ms  (gap 27-31 ms)
+                 gaps 225-942 ms
+    2 x 6-thread  876-4028 ms  ⚠ LATCHES   204-210 ms  (gap 126 ms)
+                 gap 1799 ms
+
+**Idle, the two arms are indistinguishable. At three busy cores of six they are
+a factor of ten apart and only one of them E-STOPs the machine.** The mechanism:
+the solve is thousands of SMALL numpy calls, each fanning out to a 6-way pool
+whose workers BUSY-SPIN between calls. Once anything else wants a core the
+spinners are descheduled, every call pays a scheduler round trip (6115-9461 ms of
+CPU burned for 2081-3381 ms of wall — ~2.9 cores), and the spinners EVICT the
+40 Hz emitter thread. The hardware's five slow solves (1655.1 / 2021.2 / 2158.9 /
+1461.5 / 1444.7 ms) sit inside the 3-busy-cores default band.
+
+THE FIX SHIPPED 2026-09-06: ``OPENBLAS_NUM_THREADS=1`` + ``OMP_NUM_THREADS=1``
+on the ``additional_env`` of the three planner-calling nodes in
+``ros_ws/src/jugglebot/launch/jugglebot_launch.py``, plus a start-up read-back
+(``jugglebot.motion.blas_threads``) that logs ``blas threads: N`` and WARNs if the
+cap did not land. **This probe stays as the diagnostic**, not as the gate.
+
+RE-CONFIRMED ON THE SHIPPED CODE (2026-09-06 evening, ``--reps 2 --load 3``),
+now with the per-stage split this probe prints:
+
+    uncapped  rep 1  solve 2920 ms   qp=2256.4 tilt=21.7 dec=3.7 val=636.7
+    uncapped  rep 2  solve  641 ms   qp=   6.7 tilt=18.6 dec=3.7 val=609.1
+    capped    rep 1  solve  209 ms   qp=  10.4 tilt= 4.8 dec=4.9 val=186.4
+    capped    rep 2  solve  217 ms   qp=   7.8 tilt= 6.3 dec=5.0 val=195.6
+
+**Capped is FLAT at 209-217 ms; uncapped runs 641-2920 ms on the same load.**
+And the split says something the wall time alone cannot: the GATE inflates ~3x
+under starvation (186 → 609-637 ms) while the COLD QP inflates **~200x**
+(10 → 2256 ms). So on a live log line, ``qp`` comparable to or larger than
+``val`` is the signature of thread-pool starvation, and ``val`` large with
+``qp`` small is just a big window. (Rep 2's ``qp`` is small even uncapped
+because it re-uses rep 1's warm start — the cold QP is the exposed one.)
+
+WHAT THE ROBOT SAID EARLIER THE SAME DAY (2026-09-06 14:08-14:11, operator,
+launch UP, robot ACTIVATED, nothing moving) — **kept because it is the shape of
+the mistake, not because it is still the verdict**:
 
     as-is, inside a RECORDED session   solve 245 / 21 / 214 ms   gap 0 ms
     --threads 1, same session          solve 223 / 20 / 186 ms   gap 0 ms
     as-is, FRESH unrecorded session    solve 247 / 76 / 215 ms   gap 0 ms
 
-**Every run survives.** The 12:08 latches did NOT reproduce: under real session
-load the solve is 190-250 ms, not 2 s, and at that length the emitter is not
-starved at all (gap 0 ms, i.e. no tick ever missed its 25 ms deadline). So BLAS
-thread count and rosbag recording are both RULED OUT as the actor — neither
-moved the number.
+Every run survived, so BLAS threading and rosbag recording were both written off.
+**The BLAS half of that was wrong.** Those three arms were taken on a box sitting
+at 0-2 busy cores, where the table above says the arms are IDENTICAL by
+construction — the measurement could not have separated them. Two further
+confounds: this probe's process is quieter than the launched node's (mocked
+rclpy, so no DDS threads and no 98 Hz ``/robot_state`` ingest), and the
+``--threads 1`` arm was never paired with a load arm. The lesson is the one this
+project has written down before: **a null result is only evidence where the two
+arms are known to differ.**
 
-A COLD first solve was the next candidate and it is RULED OUT TOO, by
-measurement: in a fresh process the first solve costs 191.0 / 189.8 / 185.4 ms
-against a second at 193.2 / 183.5 / 178.9 ms, and with
-``trajectory_node._warm_planner_once`` ahead of it 183.2 / 181.2 / 183.3 ms — a
-5-7 ms penalty, ~3 %, nothing like 2 s. (The warm-up still ships, as ~185 ms of
-cheap insurance at start-up. It is not the explanation.) So the sitting's own two
-2.1 s solves stay OPEN, and CPU oversubscription (``--load``, below) is the only
-class that reproduces a multi-second solve at all.
+The rosbag exoneration stands. So does the COLD-first-solve one: in a fresh
+process the first solve costs 191.0 / 189.8 / 185.4 ms against a second at
+193.2 / 183.5 / 178.9 ms, and with ``trajectory_node._warm_planner_once`` ahead of
+it 183.2 / 181.2 / 183.3 ms — a 5-7 ms penalty, ~3 %, nothing like 2 s. The
+warm-up still ships as ~185 ms of cheap insurance at start-up; it was never the
+explanation.
 
 Rep 2 of the recorded run refused ``HAND_STROKE: hand position -0.002 rev
 outside [0.000, 9.959] rev; at t=0.019s``, and chasing it found a real defect:
@@ -74,14 +131,21 @@ was always ``STALE_STATE`` — knot 0 carried a banking tilt the held pose did n
 
 Run:  source ~/Desktop/PDJ_venv/venv/bin/activate
 
-      # The three arms the 14:08 measurement used. Run 1 and 2 with the launch
-      # UP and the robot ACTIVATED; run 3 after relaunching with no rosbag.
+      # ── THE CAUSAL ARM. Run these two, in this order, and compare. ──
+      # This is the pair that separates. Anything at 0-2 busy cores does not.
+      python tools/probes/emitter_gap_under_solve.py --reps 2 --load 3
+      python tools/probes/emitter_gap_under_solve.py --reps 2 --load 3 --threads 1
+
+      # ⚠ --load spawns N CPU burners. A clean exit reaps them; a CRASHED or
+      # ^C-ed probe leaves them spinning. They are python -c processes, so:
+      #     pkill -f 'while True: a@a'
+      # then confirm the box is idle with `vmstat 1 3` before flying anything.
+
+      # The 14:08 arms, kept for provenance. They are BELOW THE KNEE: at 0-2
+      # busy cores the two thread arms are identical, so a null here means
+      # nothing. Do not re-run these as an exoneration.
       python tools/probes/emitter_gap_under_solve.py --reps 3
       python tools/probes/emitter_gap_under_solve.py --reps 3 --threads 1
-      python tools/probes/emitter_gap_under_solve.py --reps 3   # fresh, no bag
-
-      # The offline contention sweep that produced the mechanism above.
-      python tools/probes/emitter_gap_under_solve.py --load 2
 """
 from __future__ import annotations
 

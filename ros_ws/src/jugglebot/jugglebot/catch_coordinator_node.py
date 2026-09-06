@@ -84,6 +84,7 @@ from geometry_msgs.msg import Point, Quaternion, Vector3
 
 import jugglebot.hardware_config as hw
 from jugglebot import clock_offset
+from jugglebot.motion import blas_threads
 from jugglebot.motion.trajectory import hand_stroke
 from jugglebot.tracking.ball import Ball, BallStatus, TrackingConfidence
 from jugglebot.catch_coordinator import CatchCoordinator
@@ -432,6 +433,16 @@ class CatchCoordinatorNode(Node):
             SetHandTrajCmd, 'set_hand_traj_cmd')
         self._hand_gains_client = self.create_client(
             SetHandGains, 'set_hand_gains')
+
+        # BLAS thread-pool self-check. This node is on the catch path
+        # (trajectory_node build_catch + the hand-arm), which shares the box with
+        # the 40 Hz emitter; an uncapped OpenBLAS pool is what took a
+        # 2026-09-06 plan_cycle from ~200 ms to 1350-2314 ms and gapped the
+        # emitter past the can-bridge's 250 ms MPC_STALE watchdog. The cap is set
+        # in jugglebot_launch.py's additional_env; this reads back whether it
+        # landed. See jugglebot.motion.blas_threads.
+        self._blas_threads, self._blas_source = blas_threads.check_blas_threads(
+            self.get_logger(), 'catch_coordinator_node')
 
         self.get_logger().info(
             f"CatchCoordinatorNode ready: "

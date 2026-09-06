@@ -340,9 +340,49 @@ def generate_launch_description():
         executable='ball_tracker_node',
     )
 
+    # ── The BLAS thread cap for the three nodes that CALL THE PLANNER ──────
+    #
+    # MEASURED 2026-09-06 (60+ reps, dose-response) — canonical record:
+    # logbook/2026-09-06-uh3-first-attempt-refusals-and-estop.md § Diagnosis,
+    # "Cause pinned (2026-09-06 evening)".
+    #
+    # A unified `plan_cycle` is thousands of SMALL numpy calls. Each fans out to
+    # OpenBLAS's DEFAULT pool — six workers, one per core on this Jetson — and
+    # those workers BUSY-SPIN between calls. On an idle box that costs nothing
+    # (default 194-223 ms vs 195-207 ms capped: identical). Under load it is a
+    # cliff, because the spinners are descheduled, every call pays a scheduler
+    # round trip, and the spinners EVICT trajectory_node's own 40 Hz emitter
+    # thread — the thread feeding the can-bridge's 250 ms setpoint watchdog:
+    #
+    #   busy cores │ default pool           │ *_NUM_THREADS=1
+    #   ───────────┼────────────────────────┼─────────────────
+    #       0      │  194- 223 ms           │ 195-207 ms
+    #       1      │  520- 674 ms           │ 200-203 ms
+    #       2      │  506- 546 ms           │ 207-210 ms
+    #       3      │ 1350-2314 ms  ⚠ LATCH  │ 214-217 ms  (gap 27-31 ms)
+    #
+    # At three busy cores of six the emitter gaps 225-942 ms, MPC_STALE latches
+    # and the machine E-STOPs mid-rung. That is the band the UH-3 attempt's five
+    # slow solves (1655.1 / 2021.2 / 2158.9 / 1461.5 / 1444.7 ms) sit in. Capped,
+    # the solve is FLAT in box load.
+    #
+    # NOT set launch-wide, deliberately: mocap_node and ball_tracker_node do
+    # genuinely large-matrix work where a real thread pool earns its keep, and
+    # neither is on the setpoint stream's thread. Only the three planner callers
+    # get the cap.
+    #
+    # It must be set BEFORE numpy is imported, so a launch file is the only
+    # place it can go. Each node reads it back at start-up and WARNs if it did
+    # not land (jugglebot.motion.blas_threads.check_blas_threads) — grep the
+    # launch terminal for `blas threads: 1`.
+    _planner_blas_env = {'OPENBLAS_NUM_THREADS': '1', 'OMP_NUM_THREADS': '1'}
+
     catch_coordinator_node = Node(
         package='jugglebot',
         executable='catch_coordinator_node',
+        # Calls the planner (build_catch / the unified cycle) — see
+        # _planner_blas_env above and the 2026-09-06 UH-3 entry.
+        additional_env=dict(_planner_blas_env),
     )
 
     # Catch-timing correlation: matches each cone/catch_event against the nearest
@@ -371,6 +411,10 @@ def generate_launch_description():
     reload_coordinator_node = Node(
         package='jugglebot',
         executable='reload_coordinator_node',
+        # Calls the planner (_unified_warm_planner and every joined
+        # LAUNCH+LANDING solve) — see _planner_blas_env above and the
+        # 2026-09-06 UH-3 entry.
+        additional_env=dict(_planner_blas_env),
     )
 
     # trajectory_node is the sole owner of the :5557 leg funnel. It replaced the
@@ -383,6 +427,11 @@ def generate_launch_description():
         executable='trajectory_node',
         name='trajectory_node',
         output='screen',
+        # THE node the cap exists for: it owns BOTH the planner (plan_cycle) and
+        # the 40 Hz emitter thread the can-bridge's 250 ms MPC_STALE watchdog
+        # watches, so an uncapped BLAS pool here starves the wire from inside the
+        # same process. See _planner_blas_env above and the 2026-09-06 UH-3 entry.
+        additional_env=dict(_planner_blas_env),
     )
 
     # teensy_bridge_node imports the top-level ``teensy_link`` package, which

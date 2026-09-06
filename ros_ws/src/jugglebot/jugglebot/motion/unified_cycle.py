@@ -79,7 +79,7 @@ from __future__ import annotations
 import dataclasses
 import math
 import time
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -685,6 +685,61 @@ class CycleMeta:
     #: on the spliced whole is the authority on whether the seam is executable,
     #: and it measures the Hermite the emitter will actually sample.
     seam_vel_mismatch: Optional[Tuple[float, float]] = None
+    #: Per-stage wall time, seconds, keyed :data:`STAGE_KEYS`.  ``None`` when the
+    #: meta did not come from :func:`plan_cycle` (a ``replan_tail``).
+    #:
+    #: **Attribution, added 2026-09-06.** When a solve blows out — 1655.1 /
+    #: 2021.2 / 2158.9 ms on the UH-3 attempt against ~200 ms nominal — the
+    #: single ``plan_wall_s`` number cannot say WHERE, so every hypothesis has to
+    #: be tested by re-running the whole thing offline (and two of the 2026-09-06
+    #: hypotheses were withdrawn on measurements taken below the knee).  The
+    #: split makes the next slow solve attribute itself from its own log line.
+    #:
+    #: **The shape is not what the name suggests, and it was measured on the
+    #: first run of this field (2026-09-06, venv, idle box):**
+    #:
+    #: ===========  =====  ======  =====  =======  =====  =======
+    #: window        qp     tilt    dec     val     cont   total
+    #: ===========  =====  ======  =====  =======  =====  =======
+    #: 0.6 s LAUNCH   3.3     1.2    1.1     63.0    0.5    69.1
+    #: 1.0 s LANDING  6.7     3.9    2.6    117.7    0.6   131.5
+    #: 1.4 s STEADY  11.2     4.2    3.7    163.9    0.7   183.6
+    #: ===========  =====  ======  =====  =======  =====  =======
+    #:
+    #: **``validate_cycle`` is ~89 % of the solve and the QP is ~6 %** — so
+    #: "the planner is slow" has always meant "the GATE is slow".  That is not a
+    #: complaint (the gate walks every knot of a seven-channel plan through the
+    #: kinematics, and it is the reason nothing unexecutable reaches the wire).
+    #:
+    #: **UNDER STARVATION THE SHAPE INVERTS, which is what makes the split a
+    #: DIAGNOSTIC and not just a curiosity** (measured on the same day, three
+    #: busy cores of six, ``--load 3``):
+    #:
+    #: ===================  ========  ======  =====  =======  ========
+    #: arm                     qp      tilt    dec     val     total
+    #: ===================  ========  ======  =====  =======  ========
+    #: uncapped pool, rep 1  **2256.4**   21.7    3.7    636.7    2920.3
+    #: uncapped pool, rep 2       6.7   18.6    3.7    609.1     641.1
+    #: capped, rep 1             10.4    4.8    4.9    186.4     208.3
+    #: capped, rep 2              7.8    6.3    5.0    195.6     216.7
+    #: ===================  ========  ======  =====  =======  ========
+    #:
+    #: The gate inflates ~3x under starvation (186 → 609-637 ms) — bad but
+    #: proportionate.  The QP inflates **~200x** on the rep that has no warm
+    #: start (10 → 2256 ms), because that is where the densest run of tiny numpy
+    #: calls lives and every one of them pays a scheduler round trip.  So the
+    #: read is:
+    #:
+    #: * ``val`` large, ``qp`` small — the NORMAL shape, just a big window.
+    #: * ``qp`` comparable to or larger than ``val`` — **thread-pool
+    #:   starvation**: check the ``blas threads:`` line and ``load1``.
+    #:
+    #: (Note the warm start: rep 2's ``qp`` is 6.7 ms even uncapped, because it
+    #: re-uses rep 1's factorisation.  A cold QP is the exposed one.)
+    #:
+    #: The five keys **sum to** ``plan_wall_s`` by construction — ``cont`` is the
+    #: residual, so nothing can hide between the stages.
+    stage_wall_s: Optional[Dict[str, float]] = None
 
     # ── convenience views ──
 
@@ -1059,6 +1114,45 @@ def _events_for(kind: str, goals: CycleGoals):
     return events, settle_m
 
 
+#: The stages :attr:`CycleMeta.stage_wall_s` splits ``plan_wall_s`` into, in the
+#: order they run.  ``cont`` ("the rest of the construction") is the RESIDUAL —
+#: ``CyclePlan.from_realized``, the release/catch marks, the argument checks and
+#: the config builds — so the five always sum to ``plan_wall_s`` exactly and no
+#: time can hide between them.
+STAGE_KEYS: Tuple[str, ...] = ('qp', 'tilt', 'dec', 'val', 'cont')
+
+
+def format_stage_wall_ms(stage_wall_s: Optional[Dict[str, float]]) -> str:
+    """``qp=181.2 tilt=3.4 dec=8.1 val=6.0 cont=1.3 ms``, or ``''``.
+
+    The operator-facing spelling of :attr:`CycleMeta.stage_wall_s`.  Empty string
+    when the meta carries no split, so a caller can concatenate unconditionally.
+    """
+    if not stage_wall_s:
+        return ''
+    return ' '.join('%s=%.1f' % (k, 1e3 * float(stage_wall_s.get(k, 0.0)))
+                    for k in STAGE_KEYS) + ' ms'
+
+
+def merge_stage_wall(a: Optional[Dict[str, float]],
+                     b: Optional[Dict[str, float]],
+                     extra_cont_s: float = 0.0) -> Optional[Dict[str, float]]:
+    """Sum two splits stage-by-stage (a JOINED plan is two solves plus a join).
+
+    ``extra_cont_s`` is the join's own cost and lands in ``cont``, which keeps
+    the sum-to-``plan_wall_s`` invariant true for :func:`extend` as well.
+    ``None`` when neither side carries a split.
+    """
+    if a is None and b is None:
+        return None
+    out = {k: 0.0 for k in STAGE_KEYS}
+    for src in (a, b):
+        for k in STAGE_KEYS:
+            out[k] += float((src or {}).get(k, 0.0))
+    out['cont'] += float(extra_cont_s)
+    return out
+
+
 def plan_cycle(kind: str, goals: CycleGoals, state: CycleState,
                limits, geom, *,
                cup_cfg: Optional[cc.CupCycleConfig] = None,
@@ -1119,15 +1213,22 @@ def plan_cycle(kind: str, goals: CycleGoals, state: CycleState,
     events, settle_m = _events_for(kind, goals)
     state0 = state.to_cup_state(rcfg)
 
+    # Per-stage attribution (2026-09-06). See CycleMeta.stage_wall_s: one
+    # `plan_wall_s` cannot say WHERE a blown-out solve went. (Measured on the
+    # first run of this field: the gate, not the QP, is ~89 % of it.)
+    stages: Dict[str, float] = {}
+    t_stage = time.perf_counter()
     try:
         cup = cc.plan_window(events, state0, cup_cfg,
                              period_s=float(goals.period_s),
                              settle_site=settle_m, warm_start=warm_start)
     except cc.CupCycleInfeasible as exc:
         raise CycleInfeasible(exc.reason, [str(exc)])
+    finally:
+        stages['qp'] = time.perf_counter() - t_stage
 
     plan, meta = _realize(kind, cup, goals, state, limits, geom, rcfg,
-                          t_wall=t_wall)
+                          t_wall=t_wall, stages=stages)
     return plan, meta
 
 
@@ -1219,29 +1320,45 @@ def _start_tilt_for(state: CycleState) -> Optional[np.ndarray]:
     return np.asarray(tg.tilt_to_throw(state.detach_axis), dtype=float)
 
 
-def _realize(kind, cup, goals, state, limits, geom, rcfg, *, t_wall):
-    """Stages 2-4 plus the gate: tilt schedule, decomposition, plan, validate."""
+def _realize(kind, cup, goals, state, limits, geom, rcfg, *, t_wall,
+             stages: Optional[Dict[str, float]] = None):
+    """Stages 2-4 plus the gate: tilt schedule, decomposition, plan, validate.
+
+    ``stages`` is the caller's per-stage wall-time accumulator (see
+    :attr:`CycleMeta.stage_wall_s`); it is filled in place and left alone when
+    ``None``.
+    """
     recv = (np.asarray(tg.tilt_to_receive(
         np.asarray(goals.catch_vel_mm_s, dtype=float),
         max_tilt_deg=rcfg.max_tilt_deg), dtype=float)
             if goals.catch_vel_mm_s is not None else np.zeros(2))
     throw_tilt = _throw_tilt_for(cup, rcfg.max_tilt_deg)
     start_tilt = _start_tilt_for(state)
+    t_stage = time.perf_counter()
     try:
         tilts = cr.tilt_schedule(cup, recv, throw_tilt, rcfg,
                                  start_tilt=start_tilt)
     except ValueError as exc:
         raise CycleInfeasible(TILT_PIN, [str(exc)])
+    finally:
+        if stages is not None:
+            stages['tilt'] = time.perf_counter() - t_stage
+    t_stage = time.perf_counter()
     realized = cr.decompose(cup, tilts, rcfg)
+    if stages is not None:
+        stages['dec'] = time.perf_counter() - t_stage
     plan = CyclePlan.from_realized(realized)
     meta = _meta_for(kind, plan, cup, goals, tilts, recv, throw_tilt,
-                     limits, geom, t_wall=t_wall)
+                     limits, geom, t_wall=t_wall, stages=stages)
     return plan, meta
 
 
 def _meta_for(kind, plan, cup, goals, tilts, recv, throw_tilt, limits, geom, *,
-              t_wall):
+              t_wall, stages: Optional[Dict[str, float]] = None):
+    t_stage = time.perf_counter()
     report = fz.validate_cycle(plan, limits, geom)
+    if stages is not None:
+        stages['val'] = time.perf_counter() - t_stage
     if not report.ok:
         raise CycleInfeasible(report.code, report.reasons, report=report)
 
@@ -1267,11 +1384,22 @@ def _meta_for(kind, plan, cup, goals, tilts, recv, throw_tilt, limits, geom, *,
             arm_lead_s=plan_arm_lead_s(plan, t_catch),
             runway_margin_rev=_runway_margin_rev(plan, t_catch, limits)))
 
+    plan_wall_s = time.perf_counter() - t_wall
+    if stages is not None:
+        # `cont` is the residual, so the five keys sum to plan_wall_s EXACTLY —
+        # anything not attributed to a named stage (CyclePlan.from_realized, the
+        # marks, the config builds, the argument checks) shows up here rather
+        # than vanishing.  Clamped at 0 because perf_counter is monotonic but the
+        # arithmetic is not exact.
+        stages['cont'] = max(0.0, plan_wall_s - sum(
+            float(stages.get(k, 0.0)) for k in STAGE_KEYS if k != 'cont'))
+
     return CycleMeta(
         kind=kind, n_knots=int(plan.n_knots), dt=float(plan.dt),
         duration_s=float(plan.total_duration),
         releases=tuple(releases), catches=tuple(catches),
-        report=report, plan_wall_s=time.perf_counter() - t_wall,
+        report=report, plan_wall_s=plan_wall_s,
+        stage_wall_s=(dict(stages) if stages is not None else None),
         tilts=np.asarray(tilts, dtype=float),
         receive_tilt=np.asarray(recv, dtype=float),
         throw_tilt=np.asarray(throw_tilt, dtype=float),
@@ -1441,12 +1569,21 @@ def extend(plan_a: CyclePlan, meta_a: CycleMeta,
     catches = tuple(dataclasses.replace(
         m, arm_lead_s=plan_arm_lead_s(joined, m.t_s)) for m in catches)
 
+    join_wall_s = time.perf_counter() - t_wall
+
     return joined, CycleMeta(
         kind=JOINED, n_knots=int(joined.n_knots), dt=float(joined.dt),
         duration_s=float(joined.total_duration),
         releases=releases, catches=catches, report=report,
-        plan_wall_s=(meta_a.plan_wall_s + meta_b.plan_wall_s
-                     + (time.perf_counter() - t_wall)),
+        plan_wall_s=(meta_a.plan_wall_s + meta_b.plan_wall_s + join_wall_s),
+        # The joined split is the two windows' splits plus the join's own cost,
+        # so the coordinator's LAUNCH+LANDING log line attributes itself the same
+        # way a single window's does.  `join_wall_s` is read ONCE and shared with
+        # `plan_wall_s` above: two separate perf_counter reads put ~3 us between
+        # them and broke the sum-to-plan_wall_s invariant the split's
+        # trustworthiness rests on.
+        stage_wall_s=merge_stage_wall(meta_a.stage_wall_s, meta_b.stage_wall_s,
+                                      join_wall_s),
         tilts=np.vstack([meta_a.tilts, meta_b.tilts[1:]]),
         receive_tilt=(meta_a.receive_tilt if meta_a.catches
                       else meta_b.receive_tilt),

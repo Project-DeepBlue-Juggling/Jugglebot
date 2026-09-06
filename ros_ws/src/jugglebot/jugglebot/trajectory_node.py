@@ -110,6 +110,7 @@ from jugglebot.motion.ik_solver import (
     twist_to_leg_velocities,
 )
 from jugglebot.motion.ipc import MpcCommandPub
+from jugglebot.motion import blas_threads
 from jugglebot.motion import levelling
 from jugglebot.motion import tilt_map
 from jugglebot.motion.trajectory import (
@@ -814,6 +815,17 @@ class TrajectoryNode(Node):
 
         if start_emitter:
             self._start_emitter()
+
+        # ── BLAS thread-pool self-check ────────────────────────────────
+        # This node owns BOTH the planner and the 40 Hz emitter the can-bridge's
+        # 250 ms MPC_STALE watchdog watches, so an uncapped OpenBLAS pool starves
+        # the wire from inside this very process (measured 2026-09-06: three busy
+        # cores of six take plan_cycle from ~200 ms to 1350-2314 ms and gap the
+        # emitter 225-942 ms). The cap itself has to be set before numpy is
+        # imported, i.e. in jugglebot_launch.py's additional_env; all this can do
+        # is read back whether it landed and say so.
+        self._blas_threads, self._blas_source = blas_threads.check_blas_threads(
+            self.get_logger(), 'trajectory_node')
 
         self.get_logger().info(
             f"trajectory_node up — {1.0 / hw.JB_TRAJ_KNOT_DT_S:.0f} Hz hold "
@@ -4201,11 +4213,33 @@ class TrajectoryNode(Node):
         self._cycle_supersede_deadline = (response.supersede_deadline_mono
                                           if terminal else None)
         self._cycle_deadline_alarmed = False
+        # ── Solve attribution (2026-09-06) ────────────────────────────────
+        # A slow solve must attribute itself from its own log line. Five of
+        # these took 1.4-2.2 s on hardware against ~200 ms nominal and every
+        # hypothesis had to be tested by re-running the whole thing offline,
+        # because `plan %.1f ms` says only THAT it was slow. The per-stage split
+        # says WHERE, and the shape is a DISCRIMINATOR (measured 2026-09-06):
+        # healthy, `val` is ~89 % of the solve and `qp` ~6 %; under BLAS-pool
+        # starvation the gate inflates ~3x but the cold QP inflates ~200x
+        # (10 -> 2256 ms), so `qp` comparable to or larger than `val` means
+        # thread-pool starvation — check the `blas threads:` line and load1.
+        # The 1-minute load average says whether the box was
+        # busy, which is the other half: the bag carries NO host-CPU channel at
+        # all, so without this the answer is unrecoverable after the fact.
+        # `max_emit_gap_ms` (the other half of the story) already rides
+        # /trajectory/status.
         response.message = (
             '%s cycle installed: %.3f s, %d knots, release +%.3f s, plan %.1f ms'
             % (meta.kind, plan.total_duration, plan.n_knots,
                float(t_rel) if t_rel is not None else float('nan'),
                response.plan_wall_ms))
+        split = uc.format_stage_wall_ms(getattr(meta, 'stage_wall_s', None))
+        if split:
+            response.message += ' [' + split + ']'
+        try:
+            response.message += ' load1=%.2f' % (os.getloadavg()[0],)
+        except (OSError, AttributeError):  # pragma: no cover - non-Linux
+            pass
         self.get_logger().info(response.message + self._wire_state_suffix())
         return response
 

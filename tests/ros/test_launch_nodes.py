@@ -156,3 +156,109 @@ def test_consumer_wired_node_is_launched(launch_src, launch_description_body,
     assert re.search(rf'^\s*{var},\s*$', launch_description_body, re.M), (
         f"{var} (executable='{executable}') is defined but not a member of "
         f'the returned LaunchDescription([...]) — the node will never start.')
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# The BLAS thread cap on the planner-calling nodes
+# ═══════════════════════════════════════════════════════════════════════
+#
+# MEASURED 2026-09-06 (60+ reps, dose-response) —
+# logbook/2026-09-06-uh3-first-attempt-refusals-and-estop.md § Diagnosis,
+# "Cause pinned (2026-09-06 evening)".
+#
+# A unified `plan_cycle` is thousands of SMALL numpy calls, each fanning out to
+# OpenBLAS's DEFAULT six-worker pool whose workers BUSY-SPIN between calls. Idle,
+# that is free (194-223 ms default vs 195-207 ms capped). At THREE busy cores of
+# six the same solve takes 1350-2314 ms and gaps trajectory_node's 40 Hz emitter
+# 225-942 ms — past the can-bridge's 250 ms MPC_STALE watchdog, which latches and
+# E-STOPs the machine mid-rung. Capped to one thread: 214-217 ms at ANY load.
+#
+# The variables must be set BEFORE numpy is imported, so the launch file is the
+# ONLY place the cap can live — which makes its silent removal exactly the
+# regression class this file exists for. It is also invisible at runtime except
+# as a slow solve under load, i.e. only on the robot, only under load, only as an
+# E-STOP.
+#
+# NOT launch-wide, deliberately: mocap_node and ball_tracker_node do genuinely
+# large-matrix work where the pool earns its keep and neither is on the setpoint
+# stream's thread, so this list is exactly the three planner callers.
+PLANNER_NODES = ['trajectory_node', 'reload_coordinator_node',
+                 'catch_coordinator_node']
+
+#: Both spellings, because numpy 1.24.4 on this Jetson links OpenBLAS
+#: (``libopenblas64_p-r0-cecebdce.3.21.so``, pthreads/armv8) but an OpenMP-
+#: threaded build of any transitive dependency reads the other one.
+BLAS_CAP_VARS = ['OPENBLAS_NUM_THREADS', 'OMP_NUM_THREADS']
+
+
+def _node_block(launch_src, executable):
+    """The source text of the ONE ``Node(...)`` call for ``executable``.
+
+    Blocks are cut at the ``    var = Node(`` … ``    )`` indentation pair FIRST
+    and then filtered by executable, rather than searched for by executable —
+    the reverse order lets a non-greedy ``.*?`` span from the file's first
+    ``Node(`` all the way past the wanted one, which silently returns the whole
+    middle of the launch file and makes every assertion below it vacuous. (It
+    did, on the first draft of this test: every executable resolved to the same
+    200-line span, so the negative test passed by accident.)
+    """
+    blocks = re.findall(r'^    \w+ = Node\($\n(.*?)^    \)$',
+                        launch_src, re.S | re.M)
+    hits = [b for b in blocks if f"executable='{executable}'" in b]
+    assert len(hits) == 1, (
+        f'Expected exactly one Node(...) block for {executable}, found '
+        f'{len(hits)} (of {len(blocks)} blocks parsed).')
+    return hits[0]
+
+
+@pytest.mark.parametrize('executable', PLANNER_NODES)
+@pytest.mark.parametrize('var', BLAS_CAP_VARS)
+def test_planner_node_caps_its_blas_thread_pool(launch_src, executable, var):
+    """Each planner-calling node carries ``<var>=1`` in its ``additional_env``.
+
+    Resolves the launch file's ``_planner_blas_env`` indirection: the node block
+    must reference it (or spell the variable inline), and the dict it references
+    must map the variable to ``'1'``.
+    """
+    block = _node_block(launch_src, executable)
+    assert 'additional_env' in block, (
+        f'{executable} has no additional_env — it calls the unified planner, so '
+        f'an uncapped BLAS pool here can gap the 40 Hz emitter past the '
+        f'can-bridge 250 ms MPC_STALE watchdog under box load.')
+
+    inline = re.search(rf"'{var}'\s*:\s*'1'", block)
+    if inline:
+        return
+
+    ref = re.search(r'additional_env\s*=\s*(?:dict\(\s*)?(\w+)', block)
+    assert ref, (
+        f"{executable}'s additional_env is neither an inline "
+        f"'{var}': '1' nor a reference to a shared dict.")
+    env_name = ref.group(1)
+    env_m = re.search(rf'{env_name}\s*=\s*\{{(.*?)\}}', launch_src, re.S)
+    assert env_m, (
+        f"{executable} references additional_env dict `{env_name}`, which is "
+        f'not defined as a literal in the launch file.')
+    assert re.search(rf"'{var}'\s*:\s*'1'", env_m.group(1)), (
+        f'`{env_name}` does not set {var}=1, so {executable} inherits the '
+        f'DEFAULT 6-thread OpenBLAS pool. Measured 2026-09-06: at three busy '
+        f'cores that takes plan_cycle from ~200 ms to 1350-2314 ms and gaps the '
+        f'emitter 225-942 ms, latching MPC_STALE. See '
+        f'logbook/2026-09-06-uh3-first-attempt-refusals-and-estop.md.')
+
+
+@pytest.mark.parametrize('executable', ['mocap_node', 'ball_tracker_node'])
+def test_the_blas_cap_is_not_applied_launch_wide(launch_src, executable):
+    """The cap stops at the planner callers — this is a deliberate boundary.
+
+    mocap_node and ball_tracker_node do LARGE-matrix work (where a real thread
+    pool earns its keep) and neither is on the setpoint stream's thread, so
+    capping them would be a pure loss. If a future change makes the cap global,
+    this test is where that decision gets re-argued rather than absorbed.
+    """
+    block = _node_block(launch_src, executable)
+    for var in BLAS_CAP_VARS:
+        assert var not in block, (
+            f'{executable} now carries {var} — the cap was scoped to the three '
+            f'planner-calling nodes on purpose (PLANNER_NODES above). If that '
+            f'is intended, update this test and say why in the launch file.')

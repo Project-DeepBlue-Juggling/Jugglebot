@@ -89,6 +89,30 @@ def _ballistic_pos(pos0, vel0, t):
     ])
 
 
+def _telemetry_alive(traj):
+    """Re-stamp the trajectory node's ``/robot_state`` freshness at the real clock.
+
+    A live ``trajectory_node`` is re-stamped by ``/robot_state`` at telemetry
+    rate; a test node is stamped ONCE, when ``_traj_mode_node()`` seeds it. Every
+    catch entry point then gates on ``_robot_state_fresh()`` —
+    ``robot_state_stale_s``, **0.5 s** — measured against a live
+    ``time.perf_counter()``. So a test that seeds a node and then does half a
+    second of real work before its assertion (here: a second node construction, a
+    session arm, and three real catch solves) is refused ``STALE_STATE`` for a
+    reason that has nothing to do with what it asserts. That is how T-I3 failed
+    the 2026-09-06 full-tier gate under four xdist workers and passed in
+    isolation.
+
+    Only the freshness clock moves. The seed pose, the mode, ``_seeded`` and the
+    installed plan are left exactly as they were, so nothing the test asserts on
+    is manufactured by the call — a genuinely unseeded or wrong-mode node is
+    still refused, and the staleness gate itself is pinned by its own tests in
+    ``test_trajectory_node.py`` (which age the stamp out on purpose).
+    """
+    traj._robot_state_mono = _time.perf_counter()
+    return traj
+
+
 def _make_tracker():
     """A BallTracker configured exactly as ball_tracker_node configures it."""
     return BallTracker(
@@ -520,8 +544,11 @@ def test_the_session_declaration_is_captured_once_and_admits_every_cycle(
 
     for _ in range(3):
         assert toss_node._prepare_toss_catch(seq) is True
-        traj._on_dynamic_target(_dyn_target(traj, x=b[0], y=b[1], z=b[2],
-                                            lead_s=0.8))
+        # `_telemetry_alive` before each solve: three real catch solves plus the
+        # arm outlive the 0.5 s `robot_state_stale_s` window on a loaded box, and
+        # a STALE_STATE refusal here would say nothing about the envelope centre.
+        _telemetry_alive(traj)._on_dynamic_target(
+            _dyn_target(traj, x=b[0], y=b[1], z=b[2], lead_s=0.8))
         fb = traj.target_feedback_pub.published[-1]
         assert fb.accepted is True, 'a catch at the declared B must be admitted'
         assert np.allclose(traj._catch_envelope_center, captured, atol=1e-9)
@@ -541,8 +568,10 @@ def test_the_session_declaration_is_captured_once_and_admits_every_cycle(
     seq2 = TossSequencer(catch_pose_stow_mm=drifted)
     assert toss_node._prepare_toss_catch(seq2) is False
     assert toss_node._toss_prepare_reject == 'REACH_CENTER_DRIFT'
-    traj._on_dynamic_target(_dyn_target(traj, x=drifted[0], y=drifted[1],
-                                        z=drifted[2], lead_s=0.8))
+    # …and alive here too, or WORKSPACE — the code this row is ABOUT — would be
+    # pre-empted by STALE_STATE and the row would pass for the wrong reason.
+    _telemetry_alive(traj)._on_dynamic_target(
+        _dyn_target(traj, x=drifted[0], y=drifted[1], z=drifted[2], lead_s=0.8))
     fb = traj.target_feedback_pub.published[-1]
     assert fb.accepted is False and fb.code == feas.WORKSPACE
 

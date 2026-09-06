@@ -1846,3 +1846,110 @@ def test_timing_twins_are_insensitive_to_the_rest_band(steady):
               for e in (0.02, 0.1, 0.5, 1.0)]
     assert max(leads) - min(leads) < plan.dt, leads
     assert max(clears) - min(clears) < plan.dt, clears
+
+
+# ---------------------------------------------------------------------------
+# Solve attribution — CycleMeta.stage_wall_s
+# ---------------------------------------------------------------------------
+#
+# ADDED 2026-09-06. Five hardware solves took 1655.1 / 2021.2 / 2158.9 / 1461.5 /
+# 1444.7 ms against ~200 ms nominal, and `plan_wall_s` — one number — could say
+# only THAT they were slow. Every hypothesis (cold start, rosbag,
+# setswitchinterval, BLAS) then had to be tested by re-running the whole solve
+# offline, and one was withdrawn on a measurement taken below the knee (the BLAS
+# one, which turned out to be the cause). The split makes the next slow solve
+# attribute itself from its own log line, and the RATIO is the discriminator:
+# `val` >> `qp` is the healthy shape, `qp` >= `val` is thread-pool starvation.
+# See logbook/2026-09-06-uh3-first-attempt-refusals-and-estop.md § Diagnosis.
+
+
+def test_a_planned_window_carries_a_stage_split(steady):
+    """Every meta out of ``plan_cycle`` carries all five stages."""
+    _, meta = steady
+    assert meta.stage_wall_s is not None
+    assert set(meta.stage_wall_s) == set(uc.STAGE_KEYS)
+    assert all(v >= 0.0 for v in meta.stage_wall_s.values()), meta.stage_wall_s
+
+
+def test_the_stage_split_sums_to_plan_wall_s(steady):
+    """``cont`` is the RESIDUAL, so nothing can hide between the stages.
+
+    This is the property that makes the split trustworthy as attribution: if the
+    five did not sum, an unaccounted 1.5 s could sit between two of them and the
+    log line would still look reasonable. THRESHOLD 1 us — the only slack is
+    float addition, since every term comes from the same monotonic clock.
+    """
+    _, meta = steady
+    total = sum(meta.stage_wall_s[k] for k in uc.STAGE_KEYS)
+    assert total == pytest.approx(meta.plan_wall_s, abs=1e-6), (
+        meta.stage_wall_s, meta.plan_wall_s)
+
+
+def test_the_gate_and_not_the_qp_dominates_a_healthy_solve(steady):
+    """``validate_cycle`` is where the time goes — NOT the QP.
+
+    This is the first thing the split reported, and it overturned the assumption
+    it was written under. Measured 2026-09-06 (venv, idle box, ms):
+
+        0.6 s LAUNCH   qp=3.3   tilt=1.2  dec=1.1  val=63.0   cont=0.5  = 69.1
+        1.0 s LANDING  qp=6.7   tilt=3.9  dec=2.6  val=117.7  cont=0.6  = 131.5
+        1.4 s STEADY   qp=11.2  tilt=4.2  dec=3.7  val=163.9  cont=0.7  = 183.6
+
+    **The gate is ~89 % of the solve and the QP ~6 %**, a factor of ~15 apart.
+    So "the planner is slow" has always meant "the gate is slow". Pinning the
+    shape here means a future change that moves the bulk into the QP has to come
+    and re-argue the reading rather than silently invalidating it.
+
+    That reading is a DISCRIMINATOR, which is the point. Under BLAS thread-pool
+    starvation the shape INVERTS (measured the same day at three busy cores of
+    six): the gate inflates ~3x (186 -> 609-637 ms) but the cold QP inflates
+    ~200x (10 -> 2256 ms). So on a live log line `qp` >= `val` means starvation,
+    while `val` >> `qp` — what this test pins — is just a big window.
+
+    Not a performance budget — that is ``test_unified_cycle_budget.py``. The
+    threshold is a RATIO (3x), an order of magnitude below the measured 15x, so
+    it survives a loaded parallel worker.
+    """
+    _, meta = steady
+    stages = meta.stage_wall_s
+    assert stages['val'] == max(stages.values()), stages
+    assert stages['val'] > 3.0 * stages['qp'], stages
+    assert stages['val'] > 0.5 * meta.plan_wall_s, stages
+
+
+def test_the_split_formats_for_the_operator(steady):
+    """``format_stage_wall_ms`` is what reaches the launch terminal."""
+    _, meta = steady
+    line = uc.format_stage_wall_ms(meta.stage_wall_s)
+    for key in uc.STAGE_KEYS:
+        assert f'{key}=' in line, line
+    assert line.endswith(' ms')
+    # A meta with no split concatenates to nothing rather than to 'None'.
+    assert uc.format_stage_wall_ms(None) == ''
+    assert uc.format_stage_wall_ms({}) == ''
+
+
+def test_a_joined_plan_sums_both_windows_splits(launch, landing, limits, geom):
+    """``extend`` merges the two splits plus the join's own cost.
+
+    The coordinator installs JOINED plans, so a split that went ``None`` at the
+    join would blind exactly the path whose first solve measured 3267 ms cold.
+    """
+    plan_a, meta_a = launch
+    plan_b, meta_b = landing
+    _, meta = uc.extend(plan_a, meta_a, plan_b, meta_b, limits, geom)
+    assert meta.stage_wall_s is not None
+    for key in uc.STAGE_KEYS:
+        assert meta.stage_wall_s[key] >= (meta_a.stage_wall_s[key]
+                                          + meta_b.stage_wall_s[key]) - 1e-9
+    total = sum(meta.stage_wall_s[k] for k in uc.STAGE_KEYS)
+    assert total == pytest.approx(meta.plan_wall_s, abs=1e-6)
+
+
+def test_merge_stage_wall_is_none_only_when_neither_side_has_one():
+    """A ``replan_tail`` meta carries no split; merging must not invent one."""
+    assert uc.merge_stage_wall(None, None) is None
+    merged = uc.merge_stage_wall({'qp': 1.0}, None, extra_cont_s=0.5)
+    assert merged['qp'] == pytest.approx(1.0)
+    assert merged['cont'] == pytest.approx(0.5)
+    assert set(merged) == set(uc.STAGE_KEYS)

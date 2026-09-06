@@ -223,6 +223,37 @@ def _stamp_fresh(node, t, held=True, valid=True):
     _feed_ball_sensor(node, t, held=held, valid=valid)
 
 
+def _links_fresh_now(node):
+    """Re-stamp the LINK freshness clocks at the REAL clock. Sensor untouched.
+
+    ``_toss_ready_node(now)`` stamps its caches at the ``now`` the caller read
+    *before* the node was built, but a node build is not free (~50 ms idle here,
+    and the caller usually builds two or three), and the node's own gates compare
+    those stamps against a live ``time.perf_counter()`` at the call. So the
+    construction's cost is charged straight against ``_MOCAP_STALE_S`` (0.5 s),
+    and on a loaded box — the gate's four xdist workers — the window is gone
+    before the test's own subject is ever reached: the 2026-09-06 full-tier run
+    refused ``REJECTED_MOCAP_STALE`` from a test asserting on the BALL-SENSOR
+    gate several checks further down, and read ``positioning_move_expected`` off
+    a ``_commanded_pose_mono`` that had merely aged out. Calling this immediately
+    before the assertion puts the build time back.
+
+    Deliberately does NOT touch ``node._ball_sensor`` — which is the whole reason
+    it is not just ``_stamp_fresh(node, time.perf_counter())``. A test that made
+    its sensor stale on purpose must keep it stale; only the links the helper
+    promised were "fresh" are refreshed.
+    """
+    t = time.perf_counter()
+    with node._lock:
+        node._mocap_mono = t
+        node._balls_mono = t
+        node._hand_telemetry_mono = t
+        node._traj_status_mono = t
+        node._commanded_pos_mono = t
+        node._commanded_pose_mono = t
+    return node
+
+
 def _install_toss_goal(node, pose=(0.0, 0.0, 170.0), flight=0.8, vel_scale=0.0):
     """Install the per-goal toss state exactly as _execute_toss does (for tests
     that drive _step_toss_sequence / executors directly): goal-start phantom
@@ -915,13 +946,19 @@ def test_an_unknown_sensor_refuses_rather_than_passing(monkeypatch):
     node = _toss_ready_node(now)
     node._ball_possession = True                 # a stale belief must not rescue it
     _feed_ball_sensor(node, now, held=True, valid=False)
-    assert node._execute_toss(_TossGoalHandle()).outcome == 'REJECTED_BALL_UNKNOWN'
+    assert (_links_fresh_now(node)._execute_toss(_TossGoalHandle()).outcome
+            == 'REJECTED_BALL_UNKNOWN')
     # …and staleness is the same answer as invalidity: the node stopped hearing
     # the sensor, so it does not know, so it refuses.
-    node2 = _toss_ready_node(now)
-    _feed_ball_sensor(node2, now - 5.0, held=True)
-    node2._hand_telemetry_mono = now             # hand link "fresh", sensor is not
-    assert node2._execute_toss(_TossGoalHandle()).outcome == 'REJECTED_BALL_UNKNOWN'
+    # A FRESH clock read for the second node, and `_links_fresh_now` before the
+    # call: the sensor is the ONLY stale thing here, and both nodes' builds would
+    # otherwise be charged against `_MOCAP_STALE_S` — which is how this refused
+    # REJECTED_MOCAP_STALE in the 2026-09-06 full gate. See `_links_fresh_now`.
+    now2 = time.perf_counter()
+    node2 = _toss_ready_node(now2)
+    _feed_ball_sensor(node2, now2 - 5.0, held=True)
+    assert (_links_fresh_now(node2)._execute_toss(_TossGoalHandle()).outcome
+            == 'REJECTED_BALL_UNKNOWN')
 
 
 # ── Possession latch (D4a — no ball-in-cup sensor exists) ──────────────────────
@@ -3918,14 +3955,19 @@ def test_a_cycle_that_must_move_charges_the_moving_budget_at_CHECKING(monkeypatc
     monkeypatch.setattr(hw, 'JB_OP_TOSS_TIER', '8a')
     now = time.perf_counter()
     node = _toss_ready_node(now, commanded_pos=(0.0, 60.0, 170.0))
-    seq, _ = node._build_toss_cycle((0.0, 0.0, 170.0), 0.8, 5.0, 0.0)
+    seq, _ = _links_fresh_now(node)._build_toss_cycle((0.0, 0.0, 170.0),
+                                                      0.8, 5.0, 0.0)
     assert seq.positioning_move_expected is True
     assert seq.min_throw_delay_for_cycle_s == pytest.approx(
         seq.min_event_delay_for_throw_s + pre_dispatch_budget_s(True)
         + FLOOR_REPRESENTATION_SLACK_S, abs=1e-12)
     # …and the same goal from the pose it throws from charges the skip budget.
+    # `_links_fresh_now` because the skip is read off `_commanded_pose_mono`:
+    # aged out, this node cannot verify the pose either, so it charges the MOVE
+    # budget too and the difference the test measures collapses to zero.
     here = _toss_ready_node(now, commanded_pos=(0.0, 0.0, 170.0))
-    chained, _ = here._build_toss_cycle((0.0, 0.0, 170.0), 0.8, 5.0, 0.0)
+    chained, _ = _links_fresh_now(here)._build_toss_cycle((0.0, 0.0, 170.0),
+                                                          0.8, 5.0, 0.0)
     assert chained.min_throw_delay_for_cycle_s == pytest.approx(
         chained.min_event_delay_for_throw_s + pre_dispatch_budget_s(False)
         + FLOOR_REPRESENTATION_SLACK_S, abs=1e-12)
@@ -3959,7 +4001,8 @@ def test_a_session_cycle_that_must_move_is_GRANTED_the_lead_a_single_toss_is_ref
     now = time.perf_counter()
     delay = 0.45
     away = _toss_ready_node(now, commanded_pos=(0.0, 60.0, 170.0))
-    single, _ = away._build_toss_cycle((0.0, 0.0, 170.0), 0.8, delay, 0.0)
+    single, _ = _links_fresh_now(away)._build_toss_cycle(
+        (0.0, 0.0, 170.0), 0.8, delay, 0.0)
     assert single.throw_delay_s == pytest.approx(delay)     # untouched
     now2 = time.perf_counter()
     single.start(now2)
@@ -3967,17 +4010,21 @@ def test_a_session_cycle_that_must_move_is_GRANTED_the_lead_a_single_toss_is_ref
     assert d.done and d.result.outcome.startswith('REJECTED_CANT_MAKE_LEAD')
 
     away2 = _toss_ready_node(now, commanded_pos=(0.0, 60.0, 170.0))
-    chained, _ = away2._build_toss_cycle((0.0, 0.0, 170.0), 0.8, delay, 0.0,
-                                      delay_is_cadence=True)
+    chained, _ = _links_fresh_now(away2)._build_toss_cycle(
+        (0.0, 0.0, 170.0), 0.8, delay, 0.0, delay_is_cadence=True)
     assert chained.throw_delay_s > delay
     assert chained.throw_delay_s == pytest.approx(
         chained.min_throw_delay_for_cycle_s)
 
     # A session cycle that DOES take the skip keeps the operator's number
-    # exactly — the grant is for the move, not a blanket raise.
+    # exactly — the grant is for the move, not a blanket raise. `_links_fresh_now`
+    # because the skip is read off `_commanded_pose_mono`, and by the third build
+    # the caller's single `now` is old enough on a loaded box that the node
+    # declines the skip and this reads the GRANTED lead (0.801 s) instead of the
+    # operator's 0.45 s — which is how it failed a full `tests/ros/` run.
     here = _toss_ready_node(now, commanded_pos=(0.0, 0.0, 170.0))
-    kept, _ = here._build_toss_cycle((0.0, 0.0, 170.0), 0.8, delay, 0.0,
-                                  delay_is_cadence=True)
+    kept, _ = _links_fresh_now(here)._build_toss_cycle(
+        (0.0, 0.0, 170.0), 0.8, delay, 0.0, delay_is_cadence=True)
     assert kept.throw_delay_s == pytest.approx(delay)
 
 
@@ -4070,19 +4117,25 @@ def test_a_tilted_release_skips_only_when_the_platform_HOLDS_that_tilt():
 
     assert AIM_RAD > 3.0 * rcn._TOSS_ALREADY_THERE_TOL_RAD
 
-    level = _toss_ready_node(now)
+    # `_links_fresh_now` on all three: `_toss_already_positioned` reads
+    # `_commanded_pose_mono`, so an aged-out stamp answers False for every row.
+    # That silently REVERSES the middle row (the skip, which must be True — it is
+    # how this failed a full `tests/ros/` run) and, worse, would let the two
+    # False rows pass for the wrong reason. See `_links_fresh_now`.
+    level = _links_fresh_now(_toss_ready_node(now))
     assert level._release_is_tilted(_Tilted()) is True
     assert level._toss_already_positioned(0.0, 0.0, 170.0, _Tilted()) is False
 
-    holding = _toss_ready_node(now, commanded_rotvec=(AIM_RAD, 0.0, 0.0))
+    holding = _links_fresh_now(
+        _toss_ready_node(now, commanded_rotvec=(AIM_RAD, 0.0, 0.0)))
     assert holding._toss_already_positioned(0.0, 0.0, 170.0, _Tilted()) is True
     # …and a LEVEL release from that same tilted platform is refused, which is
     # the symmetric half: the old check would have skipped it on position alone.
     assert holding._toss_already_positioned(0.0, 0.0, 170.0, None) is False
 
-    other = _toss_ready_node(
+    other = _links_fresh_now(_toss_ready_node(
         now, commanded_rotvec=(AIM_RAD + 2 * rcn._TOSS_ALREADY_THERE_TOL_RAD,
-                               0.0, 0.0))
+                               0.0, 0.0)))
     assert other._toss_already_positioned(0.0, 0.0, 170.0, _Tilted()) is False
 
     # A sub-tolerance aim IS admitted, deliberately and symmetrically with the

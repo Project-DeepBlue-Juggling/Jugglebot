@@ -10,9 +10,17 @@ files_changed:
   - ros_ws/src/jugglebot/jugglebot/motion/trajectory/feasibility.py
   - ros_ws/src/jugglebot/jugglebot/motion/trajectory/cup_cycle.py
   - ros_ws/src/jugglebot/jugglebot/motion/unified_cycle.py
+  - ros_ws/src/jugglebot/jugglebot/motion/blas_threads.py
   - ros_ws/src/jugglebot/jugglebot/trajectory_node.py
+  - ros_ws/src/jugglebot/jugglebot/reload_coordinator_node.py
+  - ros_ws/src/jugglebot/jugglebot/catch_coordinator_node.py
+  - ros_ws/src/jugglebot/launch/jugglebot_launch.py
   - tests/hardware/unified_cycle_bench.py
   - tests/hardware/session_unified7_cycle_ladder.md
+  - tests/motion/test_blas_threads.py
+  - tests/motion/test_unified_cycle.py
+  - tests/ros/test_launch_nodes.py
+  - tests/ros/test_unified_cycle_integration.py
   - tools/probes/emitter_gap_under_solve.py
   - plans/active/unified-7dof-planner.md
   - plans/active/INDEX.md
@@ -52,11 +60,17 @@ seed was handed free fall as its boundary condition — the same lie fixed for t
 Seven things landed: one canonical constant for the rest band, a stroke floor that follows knot 0
 when the hand is parked, a knot-0 tilt pin, a seed-relaxed cup z box, an honest acceleration and
 `post_release` for a moving seed, a driver belt that holds the machine on a carry that is not a
-carry, and a start-up planner warm-up. The E-STOP is **diagnosed but not closed**: the operator's
-follow-up measurement (14:08–14:11) shows the emitter is *not* starved at the solve times a loaded
-session actually produces, and the cold-first-solve hypothesis was then **withdrawn by measurement
-too** (the cold penalty is 5–7 ms, not 2 s). What made the sitting's two solves take 2.1 s is
-still open. **UH-3 has not been flown.**
+carry, and a start-up planner warm-up.
+
+**The E-STOP's cause was then pinned by measurement the same evening: the default 6-thread OpenBLAS
+pool.** The solve is thousands of small numpy calls fanning out to six busy-spinning workers; idle
+that is free (194–223 ms capped or not), but at **three busy cores of six** the uncapped solve takes
+**1350–2314 ms** and gaps the 40 Hz emitter **225–942 ms**, past the can-bridge's 250 ms watchdog,
+while the capped one takes **214–217 ms** at any load. The earlier `--threads 1` null that withdrew
+this hypothesis was **sampled below the knee**, at 0–2 busy cores, where the two arms are identical
+by construction. Three more things landed for it: the cap in the launch file, a start-up read-back
+that WARNs when it did not land, and a per-stage solve split — which immediately showed that
+`validate_cycle`, not the QP, is ~89 % of a solve. **UH-3 has still not been flown.**
 
 ---
 
@@ -257,6 +271,67 @@ with `_plan_lock` **not held** (`trajectory_node.py:3650`, `:3676`, `:3680`), an
 that lock only for a four-field snapshot at 40 Hz (`:845-849`). The solve does not block the
 emitter through a lock. It starves it through the **CPU**, which is a different mechanism.
 
+### Cause pinned (2026-09-06 evening) — the BLAS thread pool, and the null that hid it
+
+**The actor is the default OpenBLAS thread pool.** Measured this evening, 60+ reps, dose-response.
+
+First, the two interpreters are the same underneath, which removes the leading candidate from
+Open Question 8 (*"the launched node's solve is ~7× slower than the probe's"*): the launched
+`trajectory_node` (`/usr/bin/python3` 3.8.10, numpy 1.24.4 from `~/.local`) and the probe (venv)
+load the **byte-identical** OpenBLAS 0.3.21 wheel — `libopenblas64_p-r0-cecebdce.3.21.so`,
+pthreads/armv8 — with a **default 6-thread pool**, and no `OPENBLAS_NUM_THREADS` /
+`OMP_NUM_THREADS` / `MKL_NUM_THREADS` / `NUMEXPR_NUM_THREADS` is set anywhere on this box. It was
+never an interpreter difference. It was what the two processes were competing with.
+
+| busy cores (of 6) | **default pool** | **`--threads 1`** |
+|---|---|---|
+| 0 — idle | 194–223 ms | 195–207 ms |
+| 1 | 520–674 ms | 200–203 ms |
+| 2 | 506–546 ms | 207–210 ms |
+| **3** | **1350–2314 ms**, emitter gap **225–942 ms** — **LATCHES** | 214–217 ms, gap 27–31 ms |
+| 2 × 6-thread burners | **876–4028 ms**, gap **1799 ms** — **LATCHES** | 204–210 ms, gap 126 ms |
+
+**Idle, the two arms are indistinguishable — 194–223 against 195–207 ms. At three busy cores of six
+they are a factor of ten apart, and only one of them E-STOPs the machine.**
+
+**The mechanism.** The solve is thousands of *small* numpy calls (that part of the earlier reading
+was right). Each one fans out to a 6-way pool whose workers **busy-spin** waiting for the next call.
+On an idle box the spinning is free. The moment anything else wants a core, the spinners are
+descheduled and every one of those thousands of calls pays a scheduler round trip — **6115–9461 ms
+of CPU burned for 2081–3381 ms of wall, i.e. ~2.9 cores of a 6-core box, for a solve that needs
+one** — and the same spinners **evict the 40 Hz emitter thread**, which is a different thread in the
+same process asking for a core every 25 ms. The hardware's five slow solves (**1655.1 / 2021.2 /
+2158.9 / 1461.5 / 1444.7 ms**) sit inside the 3-busy-cores default band.
+
+**Why the 14:08 measurement said the opposite.** It was sampled at **0–2 busy cores — below the
+knee**, exactly where the table says the two arms are identical by construction. The `--threads 1`
+arm was never paired with a load arm, so the experiment could not have separated them whatever the
+answer was. A second confound compounds it: the probe's process is *quieter* than the launched
+node's — mocked rclpy, so no DDS threads and no 98 Hz `/robot_state` ingest — so even the "same
+request, same box" comparison was not comparing the same thing.
+
+**The bag confirms the shape end to end** (`~/Desktop/rosbags/2026-09-06_15-24-53`, the 15:25
+re-attempt):
+
+| instant | event |
+|---|---|
+| 15:24:58 | warm-up solve **219 ms** — it ran, it was fast, and it did not help |
+| 15:25:20.612 | solve starts |
+| 15:25:21.339 | last setpoint before the hole |
+| 15:25:21.699 | `fault_state` NONE → **MPC_STALE** — **+1.088 s into a 1.655 s solve** |
+| 15:25:21.838 | stream self-resumes |
+| 15:25:22.267 | install, `max_emit_gap_ms=` **494.6** |
+
+`/trajectory/status` gapped **1667.7 ms** while `/robot_state` **never gapped** (35.8 ms worst) —
+so the blockage is **`trajectory_node`-local**, not a box-wide freeze and not the transport.
+Nothing moved (legs ≤ 0.00036 rev). The CAN side is clean again (`setpoints_rejected=0`,
+`seq_gaps=0`, `defer jb=0`). The operator's `clear_errors` came at 15:26:05 — **43.8 s latched**.
+The decisive field was `max_emit_gap_ms` on `/trajectory/status`; there is **no `sp_age_ms` on
+`/link_status`** (the nearest is `heartbeat_age_ms`), which is worth knowing before the next hunt.
+
+**The warm-up is now definitively insurance and not medicine**: it ran, at 219 ms, twenty-two
+seconds before the latch, and the next solve still took 1655 ms.
+
 ---
 
 ## Discussion
@@ -417,6 +492,45 @@ site is lifted to the floor with a plain sentence, P1 names which of its three c
 and the tilt line explains the levelling correction instead of telling the operator to distrust a
 correct reading.
 
+### (f) A null is only evidence where the two arms are known to differ
+
+This entry withdrew the BLAS hypothesis in the morning and reinstated it as *the cause* in the
+evening, on the same box, with the same probe. That is worth writing down carefully, because the
+error was not carelessness — it was a measurement that looked clean and conclusive and could not
+possibly have found the effect.
+
+The 14:08 arms were **`--reps 3` on a robot sitting idle**: launch up, activated, nothing moving,
+which is 0–2 busy cores of six. The dose-response table says the capped and uncapped arms at 0–2
+cores are **194–223 vs 195–207 ms** — indistinguishable, and *necessarily* so, because with cores to
+spare a spinning pool costs nothing. The experiment had **no power to reject anything**, and it was
+read as a rejection. The tell was available at the time and was not noticed: the null arm reported
+*the same solve time as the null hypothesis predicted for a healthy box*, i.e. the measurement
+reproduced the healthy case and not the failing one. **A probe that does not reproduce the symptom
+cannot exonerate a candidate for causing it.**
+
+The correction is procedural and cheap: the probe's `--load` knob already existed, and one arm —
+`--load 3`, default vs `--threads 1` — separates the two by a factor of ten. It was not run because
+the morning's framing was *"does the emitter survive a normal session?"* rather than *"what makes a
+solve take 2 s?"*, and the first question is answerable on an idle box while the second is not. The
+probe docstring now leads with the causal arm and marks the 14:08 arms as below-the-knee provenance,
+so the next reader cannot repeat the reading.
+
+Two further confounds are recorded because they were also invisible at the time. The probe's process
+is **quieter than the launched node's** — mocked rclpy, so no DDS threads and no 98 Hz
+`/robot_state` ingest — so "the same request in the probe takes 200 ms" was never the same
+experiment. And the `--threads 1` arm was never paired with a load arm, so even a genuine difference
+would have had nowhere to show up. `plans/active/unified-7dof-planner.md`'s own pre-registration
+rule ("pre-register the fallback and the decision criterion that flips you to it") has a sibling this
+episode names: **pre-register the condition under which the arms are expected to differ, and refuse
+to read a null taken outside it.**
+
+The second reframing in the same session is smaller but the same shape. The per-stage split was
+added on the assumption that the QP dominates a solve, and its first output said `validate_cycle` is
+~89 % and the QP ~6 %. Nothing depended on the assumption yet, which is the only reason it was
+cheap — had a fix been built on "optimise the QP" first, the split would have arrived after the
+work. Both corrections came from *instrumenting before concluding*, which is the same lesson from
+opposite ends.
+
 ---
 
 ## Fix
@@ -478,9 +592,75 @@ correct reading.
    medicine `reload_coordinator_node._unified_warm_planner` already takes at the other door — but
    say it plainly: **it does not explain the 2 s solves.** The measured cold penalty is 5–7 ms.
 
-8. **Two test-determinism fixes**, in the same commit:
-   `test_the_velocity_term_passes_the_same_origin_re_installs` is made deterministic (see
-   Verification), and the probe's mid-window reseeding is what surfaced defect 5.
+8. **Test-clock freeze and load-sensitivity documentation**, in the same commit:
+   `test_the_velocity_term_passes_the_same_origin_re_installs` had its clock frozen in this commit, but it remains load-sensitive (under an overlapping pytest run at ~83 % CPU it failed at τ = 0.929 s, in the wall-clock τ-overrun class the mocked-node tests share) — it passes on a quiet box; the gate runs alone by rule, and hardening the class (freezing every τ source in those tests) is a follow-up (see Verification and Open Questions, item 4); the probe's mid-window reseeding is what surfaced defect 5.
+
+### The E-STOP fix (2026-09-06 evening) — the measured one
+
+9. **The BLAS thread cap** (`ros_ws/src/jugglebot/launch/jugglebot_launch.py`).
+   `OPENBLAS_NUM_THREADS=1` and `OMP_NUM_THREADS=1` on the `additional_env` of the three nodes that
+   call the planner — `trajectory_node`, `reload_coordinator_node`, `catch_coordinator_node` —
+   through one shared `_planner_blas_env` dict carrying the dose-response table as its comment.
+   **The launch file is the only place this can go**: the variables have to be set before numpy is
+   imported, so by the time any node module executes it is far too late. **Deliberately not
+   launch-wide** — `mocap_node` and `ball_tracker_node` do genuinely large-matrix work where a real
+   pool earns its keep, and neither is on the setpoint stream's thread; a second test
+   (`test_the_blas_cap_is_not_applied_launch_wide`) makes a future globalisation re-argue that
+   rather than absorb it. Both variables, because numpy 1.24.4 here links OpenBLAS but an
+   OpenMP-threaded transitive dependency reads the other name.
+
+10. **The self-check** (`motion/blas_threads.py`, called by all three nodes at start-up). Reads the
+    effective pool — `threadpoolctl.threadpool_info()` when importable (**3.5.0 is present in BOTH
+    interpreters on this box, the venv and `/usr/bin/python3`, which is the one the launch actually
+    runs**), else the `*_NUM_THREADS` environment — logs one INFO line `blas threads: N (source)`,
+    and **WARNs loudly** when N > 1 *or unknown*, naming the two variables, the launch file and this
+    entry. A **WARN and not a refusal**: a developer running the node by hand has no launch file and
+    must still be able to work, and an uncapped pool is a slow solve rather than an unsafe command.
+    Unknown warns too — fail-closed means a node that cannot *prove* it is capped must not read as
+    capped. threadpoolctl is the authoritative reader because it inspects the loaded shared objects,
+    so it catches the case the env read cannot: a variable set too late to take effect.
+
+11. **Solve attribution** (`unified_cycle.CycleMeta.stage_wall_s`, additive; the split on
+    `trajectory_node._accept_cycle`'s INFO line). Five stages — `qp` (`cup_cycle.plan_window`),
+    `tilt` (`tilt_schedule`), `dec` (`decompose`), `val` (`validate_cycle`) and `cont`, the
+    **residual**, so the five sum to `plan_wall_s` exactly and nothing can hide between them. Plus
+    `os.getloadavg()[0]` as `load1`, because **the bag carries no host-CPU channel at all** and
+    after the fact there is no way to ask whether the box was busy. `max_emit_gap_ms` — the other
+    half — already rides `/trajectory/status`.
+
+    **The split's first act was to overturn the assumption it was written under.** It was added
+    expecting the QP to dominate. Measured (2026-09-06, venv, idle box, ms):
+
+    | window | qp | tilt | dec | val | cont | total |
+    |---|---|---|---|---|---|---|
+    | 0.6 s LAUNCH | 3.3 | 1.2 | 1.1 | **63.0** | 0.5 | 69.1 |
+    | 1.0 s LANDING | 6.7 | 3.9 | 2.6 | **117.7** | 0.6 | 131.5 |
+    | 1.4 s STEADY | 11.2 | 4.2 | 3.7 | **163.9** | 0.7 | 183.6 |
+
+    **`validate_cycle` is ~89 % of the solve and the QP ~6 %** — a factor of ~15. "The planner is
+    slow" has always meant "the *gate* is slow". That is not a complaint (the gate is why nothing
+    unexecutable reaches the wire), and it is pinned by
+    `test_the_gate_and_not_the_qp_dominates_a_healthy_solve` so a future change that moves the bulk
+    has to come and re-argue the reading.
+
+    **And under starvation the shape inverts — which is what turns the split from a curiosity into
+    a discriminator.** Measured on the shipped code the same evening (`--reps 2 --load 3`, three
+    busy cores of six, ms):
+
+    | arm | qp | tilt | dec | val | total |
+    |---|---|---|---|---|---|
+    | uncapped, rep 1 (cold QP) | **2256.4** | 21.7 | 3.7 | 636.7 | **2920.3** |
+    | uncapped, rep 2 (warm start) | 6.7 | 18.6 | 3.7 | 609.1 | **641.1** |
+    | capped, rep 1 | 10.4 | 4.8 | 4.9 | 186.4 | **208.3** |
+    | capped, rep 2 | 7.8 | 6.3 | 5.0 | 195.6 | **216.7** |
+
+    The gate inflates **~3×** under starvation (186 → 609–637 ms) — bad but proportionate. The
+    **cold QP inflates ~200×** (10 → 2256 ms), because that is the densest run of tiny numpy calls
+    and every one of them pays a scheduler round trip. So the operational read of a slow line is:
+    **`val` large with `qp` small is just a big window; `qp` comparable to or larger than `val` is
+    thread-pool starvation** — go and look at the `blas threads:` line and `load1`. (Rep 2's `qp` is
+    small even uncapped because it re-uses rep 1's factorisation; the *cold* QP is the exposed one,
+    which is also why the start-up warm-up is worth its 185 ms even though it explains nothing.)
 
 ---
 
@@ -502,8 +682,7 @@ on a loaded box τ can overrun the *live* 0.6 s LAUNCH it extends — the live p
 terminal HOLD while the joined plan reads the extension, and the continuity check correctly reports
 the difference. **Neither 2026-09-06 planner fix causes it**: a probe that neutered
 `_seed_relaxed_z_box` and restored the old `_start_tilt_for`, separately and together, PASSED in all
-four arms, and on a quiet box the test passes three times out of three in isolation. It is **made
-deterministic in this same commit** rather than left as a known flake.
+four arms, and on a quiet box the test passes three times out of three in isolation. its clock was frozen in this commit, but it remains load-sensitive (under an overlapping pytest run at ~83 % CPU it failed at τ = 0.929 s, in the wall-clock τ-overrun class the mocked-node tests share) — it passes on a quiet box; the gate runs alone by rule, and hardening the class (freezing every τ source in those tests) is a follow-up.
 
 Firmware pin (2026-09-06, `python -m pytest tests/firmware/test_hermite_xref.py -q -p
 no:randomly`) — **12 passed in 15.25 s**.
@@ -527,6 +706,7 @@ accepted, so nothing streamed); and the 14:08–14:11 emitter-gap measurement
 (`tools/probes/emitter_gap_under_solve.py --reps 3`, three arms), tabulated in § Diagnosis.
 
 - Full gate (2026-09-06, `./run_tests.sh --full`, parallel **6788 passed / 4 skipped / 2 xfailed in 440.01 s**, serial **4 passed in 26.08 s**, total 472 s, exit 0) — **GREEN**, on the tree carrying every fix in this entry.
+- A per-file run of `test_unified_cycle_integration.py` overlapping a background suite showed 4 load-artefact failures; the same file passed 239/239 three times alone (2026-09-06).
 
 ---
 
@@ -542,14 +722,22 @@ knot 0 (now spanning position, velocity, hand, tilt and acceleration), one rule 
 the box, and a driver that says true things — with the class closed rather than the instance in
 each case.
 
-The **E-STOP is open**, and is now open with fewer candidates than it started with. The watchdog
-behaved correctly and the mechanism is understood offline, but the sitting's 2.1 s solves did
-**not** reproduce under session load at 14:08, and the cold-start explanation was measured and
-withdrawn. The warm-up ships anyway, as insurance; **CPU oversubscription is the only class that
-reproduces a multi-second solve**, and what was competing for cores at 12:08 is unidentified.
-**The rung is blocked on that, not on the fixes.** The runbook carries the three-arm recipe and the
-rule that a solve over ~1 s is the signature; if the guard latches during a plan again, the number
-to capture is `/trajectory/status.cycle_plan_wall_ms`.
+**The E-STOP's cause is pinned and the fix is in** (2026-09-06 evening): the default 6-thread
+OpenBLAS pool, capped to one thread in the launch file for the three planner-calling nodes, with a
+start-up read-back that WARNs if the cap did not land and a per-stage split so the next slow solve
+attributes itself. The watchdog behaved correctly throughout; nothing about it changes. Two earlier
+readings are corrected in Withdrawn claims — the `--threads 1` null was measured **below the knee**
+where no effect could exist, and "CPU oversubscription is the only class" was necessary but not
+sufficient: it takes oversubscription *plus* the spinning pool, which is why a half-idle box was
+enough and why 12:08 never needed an exotic explanation.
+
+**What remains is verification on the robot, and it has not happened.** The fix is measured offline
+and on the bench, not in a launched session with a ball in the cup. The first thing the next sitting
+does after the `colcon build` is confirm `blas threads: 1` for `trajectory_node` in the launch
+terminal; the first thing it must *capture* is `/proc/loadavg` and `vmstat 1` alongside the rung,
+because the bag has no host-CPU channel and a recurrence would otherwise be unattributable again.
+The probe stays as the diagnostic if a latch recurs — `--load 3`, default vs `--threads 1`, is the
+arm that shows it.
 
 ---
 
@@ -566,37 +754,70 @@ to capture is `/trajectory/status.cycle_plan_wall_ms`.
   install bound). Fix 2 remains right — as an invariant, not as the guard against this refusal.
 * **"`sys.setswitchinterval` will recover the emitter."** Measured ineffective at 0.005, 0.001 and
   0.0002 — the gap stayed at 2.4–3.4 s.
-* **"BLAS thread pools are the contention."** `--threads 1` moved neither the solve (223 / 20 /
-  186 ms) nor the gap (0 ms).
+* ~~**"BLAS thread pools are the contention."**~~ **WITHDRAWAL REVERSED (2026-09-06 evening) —
+  the BLAS thread pool IS the actor.** The withdrawal rested on a `--threads 1` arm (223 / 20 /
+  186 ms, gap 0 ms) taken at **0–2 busy cores**, which the dose-response table shows is **below the
+  knee**: at 0–2 cores the capped and uncapped arms are *identical by construction* (194–223 vs
+  195–207 ms idle), so that measurement could not have separated them whatever the truth was. At
+  three busy cores of six the same pair is **1350–2314 ms vs 214–217 ms**, and only the uncapped
+  arm gaps the emitter past 250 ms. The claim was withdrawn on a null measured where no effect
+  could exist; it is reinstated as **the** cause. See Diagnosis § "Cause pinned".
+* **"CPU oversubscription is the only class that reproduces a multi-second solve."** **Incomplete,
+  not wrong.** Oversubscription is *necessary* — the solve is flat at 194–223 ms on an idle box in
+  both arms. But it is not *sufficient on its own*, and stating it that way is what made the
+  question look unanswerable: with the pool capped, **three busy cores buys 214–217 ms** and no gap
+  at all. It takes oversubscription **plus** a 6-way spinning pool. That is why "what was competing
+  for cores at 12:08?" felt like it needed an exotic answer — the box only had to be **half idle**,
+  which any session is.
+* **"The solve is ~16 ms on an idle box."** **Does not reproduce.** Every idle measurement this
+  evening, both arms, both interpreters, is **194–223 ms** — an order of magnitude off. The 16 ms
+  figure is not traceable to a run recorded anywhere in this entry and the "135× inflation" framing
+  built on it (Discussion (d)) is correspondingly wrong: the real inflation is **~10×**, from ~200 ms
+  to ~2 s. The conclusion that paragraph draws — that thread separation is necessary and not
+  sufficient — survives unchanged; only the multiplier was inflated.
 * **"Rosbag recording is the contention."** A fresh unrecorded session solved in 247 / 76 / 215 ms
-  with a 0 ms gap — indistinguishable from the recorded one.
+  with a 0 ms gap — indistinguishable from the recorded one. **Still withdrawn** (this one was an
+  arm the load did not confound: the two recorded/unrecorded arms sat at the same box load, and the
+  bag's own 15:25 timeline shows `/robot_state` never gapping while `/trajectory/status` did).
 * **"A cold first solve explains the 2.1 s."** It does not. Measured in a fresh process: first
   solve 191.0 / 189.8 / 185.4 ms, second solve 193.2 / 183.5 / 178.9 ms, and with a warm-up ahead
-  of it 183.2 / 181.2 / 183.3 ms — a cold penalty of **5–7 ms, about 3 %**. The warm-up still ships
-  (it is ~185 ms once at start-up and it is the medicine the coordinator already takes), but it is
-  insurance, not the explanation. `CPU oversubscription remains the only class that reproduces a
-  multi-second solve at all.`
+  of it 183.2 / 181.2 / 183.3 ms — a cold penalty of **5–7 ms, about 3 %**. **Confirmed on hardware
+  the same day**: the 15:24:58 warm-up ran at **219 ms** and the solve 22 s later still took
+  **1655 ms**. The warm-up still ships as insurance; it was never the explanation. (The trailing
+  clause this bullet used to carry — *"CPU oversubscription remains the only class that reproduces
+  a multi-second solve at all"* — is itself amended above: oversubscription is necessary, the
+  6-thread pool is what makes a half-idle box sufficient.)
 
 ---
 
 ## Open Questions
 
-1. **What made the sitting's two solves take 2.1 s?** Genuinely open, and now with one fewer
-   candidate. The 14:08 measurement puts the same request at 190–250 ms under session load with a
-   0 ms emitter gap; the cold-start hypothesis is withdrawn on measurement (5–7 ms of penalty, not
-   2 s). **CPU oversubscription is the only class that reproduces a multi-second solve at all**
-   (`--load 2` → 2209 ms), so the question is what was competing for cores at 12:08 that was not at
-   14:08. Worth capturing next sitting: `uptime` / `top` alongside the solve, and the three probe
-   arms run in the same session as the rung rather than after it.
-2. **The three candidate E-STOP fixes, and what each prevents.** (a) **The start-up warm-up**,
-   shipping today — prevents a cold first solve costing a rung its margin, and nothing else.
-   (b) **SCHED_FIFO on the emitter thread** — prevents CPU starvation of the wire by *any*
-   CPU-bound work in the process; the only one of the three that would have survived the 12:08
-   condition whatever caused it. (c) **The solve in a worker process** — prevents the GIL
-   interaction entirely, at the cost of an IPC hop and a much larger change. (b) is the fix if the
-   2 s solves recur. The owner's decision was to measure before choosing; the measurement is in,
-   and it has removed (a)'s claim to be the *explanation* without removing its value as insurance.
-   **(b) is now the only candidate that addresses the mechanism that actually reproduces.**
+1. ~~**What made the sitting's two solves take 2.1 s?**~~ **CLOSED 2026-09-06 (evening): the
+   default 6-thread OpenBLAS pool under partial CPU load.** Dose-response in Diagnosis § "Cause
+   pinned"; the fix is the launch-file cap. The sub-question — *"what was competing for cores at
+   12:08 that was not at 14:08?"* — is **answered for the 15:25 event by the bag's own rates**
+   (`/robot_state` at 98 Hz never gapping while `/trajectory/status` gapped 1667.7 ms puts the
+   contention inside `trajectory_node`'s own process, and the pool is what turns a half-idle box
+   into a 10× solve) and is **moot for 12:08**: it no longer takes an exotic answer, because with a
+   6-way spinning pool the box only has to be **half idle**, which every session is. Still open only
+   as a *verification* item, item 8 below.
+2. **The three candidate E-STOP fixes, and what each prevents. RE-RANKED 2026-09-06 evening.**
+   The cap (fix 9) is now the primary and it addresses the mechanism directly — measured 214–217 ms
+   at three busy cores against 1350–2314 ms uncapped. The others become **defence-in-depth,
+   sequenced AFTER it**, and one of them needs a correction:
+   (a) **The start-up warm-up**, shipped — insurance against a cold first solve, nothing more; the
+   15:24:58 warm-up ran at 219 ms and the next solve still took 1655 ms.
+   (b) **SCHED_FIFO on the emitter thread** — prevents starvation of the wire by *any* CPU-bound
+   work in the process, including work the cap does not cover. Cheap, and worth doing, but no longer
+   the only candidate that addresses the reproducing mechanism.
+   (c) **The solve in a worker process** — **note the correction: a worker process does NOT solve
+   this on its own.** A forked or spawned worker **inherits the same 6-thread pool**, so it would
+   move the spinning to another process and still oversubscribe the same six cores; it separates the
+   *GIL* and the emitter's scheduling fate from the solve, which is real value, but it must carry
+   the cap too. Defence-in-depth after the cap, not instead of it.
+   The long-term shape is neither: **whole-plan upload to the Teensy**, so the Jetson's scheduling
+   is not on the wire's critical path at all and no amount of box load can gap a stream the firmware
+   is generating from a plan it already holds.
 3. **Are there other one-branch fixes like defect 5?** `_cycle_start_state`'s rest branch was
    repaired on 2026-09-05 and its moving branch carried the identical lie for another day. Worth a
    deliberate sweep of every place a boundary condition is *defaulted* rather than measured — the
@@ -628,4 +849,15 @@ to capture is `/trajectory/status.cycle_plan_wall_ms`.
    **`ABORTED_NO_RELEASE`** — with the ball already in the air. Not hypothetical: a 1.06 s joined
    solve under concurrent load has already put a release 0.708 s late. **UH-6 must not be attempted
    while a 2 s solve is possible.**
-8. **The launched node's solve is ~7× slower than the probe's (1655 / 2021 / 2159 ms vs 190–250 ms):** interpreter/BLAS environment, thread-pool contention with the node's own threads, or something in the launched process — a system-python probe run and the 15:24:53 bag are being analysed; the structural fix (solve in a worker process so the emitter's process never runs it) and the firmware alternative (whole-plan upload to the Teensy) are the candidates once the cause is pinned.
+8. ~~**The launched node's solve is ~7× slower than the probe's (1655 / 2021 / 2159 ms vs
+   190–250 ms).**~~ **CLOSED 2026-09-06 (evening) — it was never an interpreter difference.** Both
+   processes load the byte-identical OpenBLAS 0.3.21 wheel with the same default 6-thread pool; the
+   difference was **what each was competing with**, and the probe's own process is the quieter of
+   the two (mocked rclpy — no DDS threads, no 98 Hz `/robot_state` ingest). The remaining item is
+   **verification on the robot, and it is a measurement the next sitting must take**: the bag has
+   **no host-CPU channel at all**, so `/proc/loadavg` and `vmstat 1` have to be captured alongside
+   the rung — otherwise a recurrence is again unattributable after the fact. `load1` on the accept
+   line (fix 11) is the in-band half of that; it is not a substitute for a sampled series. First
+   thing to confirm after the `colcon build`: `blas threads: 1` in the launch terminal for
+   `trajectory_node`.
+9. Four `tests/ros/test_unified_cycle_integration.py` tests are wall-clock load-sensitive (the τ-overrun class); they pass when the suite runs alone, as the gate does. Follow-up: freeze every τ source in them. Do not widen tolerances.

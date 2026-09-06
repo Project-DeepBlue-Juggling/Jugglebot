@@ -1074,7 +1074,23 @@ vs 107.5 m/s² — but a floor-riding release-terminal window trips `HAND_STROKE
 a 0.22 mm continuum ripple, so it needs a second solve); a `validate_only` field
 on `PlanCycle.srv`, since `accepted` means *gated **and installed*** and the
 driver's belt therefore inspects a plan that is already streaming; and, with the
-FW 18 rename, a fix for the `[hand7] lead`/`dev_over` counter gate. Re-attempt 15:25 after a colcon build: the carry was ACCEPTED with the hand flat (the refusal chain is closed on hardware) but the solve took 1655 ms in the launched node and the guard latched again — the solve-time discrepancy (launched node 1.6–2.2 s vs the probe's 190–250 ms) is the open item.
+FW 18 rename, a fix for the `[hand7] lead`/`dev_over` counter gate. Re-attempt 15:25 after a colcon build: the carry was ACCEPTED with the hand flat (the refusal chain is closed on hardware) but the solve took 1655 ms in the launched node and the guard latched again.
+
+**E-STOP cause PINNED and FIXED 2026-09-06 (evening); UH-3 still NOT flown.** *The cause:* the
+default **6-thread OpenBLAS pool**, whose workers busy-spin between the solve's thousands of small
+numpy calls — free on an idle box (194–223 ms capped or not) but at **three busy cores of six**
+worth **1350–2314 ms** and a **225–942 ms** emitter gap that latches the 250 ms `MPC_STALE`
+watchdog, against **214–217 ms** capped at any load (the earlier `--threads 1` null was sampled at
+0–2 cores, below the knee where the arms are identical by construction, and the two interpreters
+load the byte-identical OpenBLAS 0.3.21 wheel, so it was never an interpreter difference).
+*The fix:* `OPENBLAS_NUM_THREADS=1` + `OMP_NUM_THREADS=1` on the `additional_env` of the three
+planner-calling nodes in `jugglebot_launch.py` (not launch-wide — mocap and the ball tracker keep
+their pools), a start-up read-back that logs `blas threads: N` and WARNs if the cap did not land
+(`motion/blas_threads.py`), and a per-stage solve split plus `load1` on the accept line — which
+immediately showed that **`validate_cycle` is ~89 % of a solve and the QP ~6 %**. Verification on
+the robot is the open item: confirm `blas threads: 1` in the launch terminal after the `colcon
+build`, and capture `/proc/loadavg` + `vmstat 1` alongside the rung, because the bag has no
+host-CPU channel.
 
 **Dependencies:** Phases 3–4; owner present (operator runs actuating
 commands).

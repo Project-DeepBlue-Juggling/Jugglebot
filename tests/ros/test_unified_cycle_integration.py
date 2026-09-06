@@ -329,6 +329,37 @@ def test_plan_cycle_new_launch_measures_its_own_wall_time():
     assert status.cycle_hand_peak_rev > 0.0
 
 
+def test_the_accept_line_attributes_its_own_solve():
+    """The accept message carries the per-stage split AND the box's load.
+
+    ADDED 2026-09-06. The hardware's five slow solves (1655.1 / 2021.2 / 2158.9
+    / 1461.5 / 1444.7 ms against ~200 ms nominal) left exactly one number behind
+    — ``plan %.1f ms`` — so every hypothesis had to be re-tested offline, and two
+    were withdrawn on measurements taken below the knee. Two things fix that at
+    the source, and both have to be ON THE LINE ITSELF rather than in a topic a
+    session may or may not have bagged:
+
+    * the stage split, which says WHERE the time went (measured: ``val`` is
+      ~89 % of a healthy solve, ``qp`` ~6 %); and
+    * ``load1``, because **the bag carries no host-CPU channel at all** — after
+      the fact there is no way to ask whether the box was busy, which is the one
+      condition that reproduces a multi-second solve.
+    """
+    node = _cycle_node()
+    resp = node._svc_plan_cycle(_launch_req(), PlanCycle.Response())
+    assert resp.accepted is True, resp.message
+    for key in ('qp=', 'tilt=', 'dec=', 'val=', 'cont='):
+        assert key in resp.message, resp.message
+    assert 'load1=' in resp.message, resp.message
+    # The split is in ms and sums to the reported plan wall time, so a reader can
+    # check the line against itself.
+    import re as _re
+    parts = {k: float(v) for k, v in
+             _re.findall(r'(qp|tilt|dec|val|cont)=([0-9.]+)', resp.message)}
+    assert sum(parts.values()) == pytest.approx(resp.plan_wall_ms, rel=0.05), (
+        parts, resp.plan_wall_ms)
+
+
 def _settle_req(period_s=1.4, dx_mm=60.0, dy_mm=0.0):
     """MODE_NEW + KIND_SETTLE — the UH-3 banked-carry rung's request.
 

@@ -125,35 +125,80 @@ sending those frames, the stream went quiet for **804 ms**, and the guard fired.
 the link; the Jetson simply stopped talking for long enough that the Teensy was
 right to stop trusting it.
 
-**The measurement has been DONE and it passes** (2026-09-06 14:08–14:11: solves
-190–250 ms, emitter gap **0 ms** on every run, all three arms). So you are clear
-to fly. We still do not know what made the solve take 2.1 s that morning — the
-obvious answer, a slow *first* solve in a fresh process, was measured and is only
-5–7 ms slower than the rest, so it is not the cause. The one thing that does
-reproduce a multi-second solve is **the box being busy**, so give it as little
-else to do as you reasonably can.
+**The cause is now known and fixed** (2026-09-06 evening). The planner was using
+**all six CPU cores** for arithmetic that needs one, and the six workers *spin*
+— they sit burning a core waiting for the next piece of work. On an idle box
+that costs nothing. On a box with anything else running, those spinners shove
+the thing sending setpoints off the CPU, and the solve itself slows down about
+tenfold. Measured, with three of the six cores busy: **1350–2314 ms** and the
+stream gapping **225–942 ms** — versus **214–217 ms** with the planner held to
+one core, at any load. That is the whole story; the 2.1 s was never a slow
+planner, it was six threads fighting over a box that also had to talk to the
+robot.
 
-Keep the three commands below as the recipe to **repeat if a latch recurs** — run
-them with the launch up and the robot activated, nothing moving. The bar is a max
-emitter gap **under 250 ms**; the script prints its own verdict.
+The fix pins the three planner nodes to one thread in the launch file. **There
+is one thing to check, and it takes ten seconds.**
+
+**After the `colcon build`, start the launch and look in the launch terminal for
+this line:**
+
+```bash
+# In the launch terminal (or on a saved log):
+grep 'blas threads' <the launch output>
+```
+
+**You want `blas threads: 1` for trajectory_node.** The line looks like:
+
+```
+[trajectory_node-N] [INFO] [...] [trajectory_node]: blas threads: 1 (threadpoolctl:openblas)
+```
+
+**If it says anything other than 1**, a loud WARNING sits right underneath it
+saying so — do not fly the rung. It means the launch file's cap did not reach
+the node, and the E-STOP class is back. Send me the two lines.
+
+**If the guard latches during a plan anyway**, note the solve time the driver
+prints — a solve over about 1 second is still the signature — and it is also on
+`/trajectory/status.cycle_plan_wall_ms`. The accept line now also prints where
+the time went and how busy the box was, e.g. `[qp=11.2 tilt=4.2 dec=3.7 val=163.9
+cont=0.7 ms] load1=0.42`; send that whole line. Recovery is `/recover` (or
+`/clear_errors`) as usual.
+
+**Please also capture the box's own load this sitting** — the rosbag has no
+channel for it at all, so without this a repeat is unattributable after the
+fact. Leave this running in its own terminal for the sitting:
+
+```bash
+( while true; do echo "$(date +%H:%M:%S) $(cat /proc/loadavg)"; sleep 1; done ) \
+  | tee temp/logs/loadavg_$(date +%Y%m%d).txt &
+vmstat 1 | tee temp/logs/vmstat_$(date +%Y%m%d).txt
+```
+
+**The probe stays as the diagnostic, not as a gate — you do not need to run it
+to fly.** If a latch does recur, this is the pair that shows the problem (and
+the pair the morning of 2026-09-06 got wrong by running it on an idle box, where
+the two arms are identical and prove nothing):
 
 ```bash
 source ~/Desktop/PDJ_venv/venv/bin/activate
 
-# 1. As-is, in the session you are about to fly.
-python tools/probes/emitter_gap_under_solve.py --reps 3
-
-# 2. Same session, BLAS pinned to one thread.
-python tools/probes/emitter_gap_under_solve.py --reps 3 --threads 1
-
-# 3. Relaunch with no rosbag recording, then repeat arm 1.
-python tools/probes/emitter_gap_under_solve.py --reps 3
+# The causal pair: same load, different thread count. Expect the first to be
+# several times slower than the second if the cap is not working.
+python tools/probes/emitter_gap_under_solve.py --reps 2 --load 3
+python tools/probes/emitter_gap_under_solve.py --reps 2 --load 3 --threads 1
 ```
 
-**If the guard latches during a plan again, note the solve time the driver
-prints — a solve over about 1 second is the signature.** It is also on
-`/trajectory/status.cycle_plan_wall_ms`. Send me that number with the console
-capture; recovery is `/recover` (or `/clear_errors`) as usual.
+Measured on the shipped code (2026-09-06, `--reps 2 --load 3`): **capped 209 and
+217 ms; uncapped 2920 and 641 ms** on the identical load.
+
+⚠ **`--load 3` spawns CPU burners.** A clean exit tidies them up, but a crashed
+or `Ctrl-C`-ed probe leaves them spinning and they will slow down everything you
+do next. Kill them and check the box is quiet again before you fly anything:
+
+```bash
+pkill -f 'while True: a@a'
+vmstat 1 3          # the `id` column should be back near 99
+```
 
 ---
 
@@ -310,4 +355,4 @@ robot did not move.
 | `CHAIN_SKEW` | The session and the plan disagree about when the throw is | Stop the session. This is a finding — send the log |
 | `ERR_HAND_SOURCE` on a legacy goal | You sent a legacy goal while the latch is STREAMED | Expected. Either add `unified_cycle: true`, or do the "After the sitting" recovery first |
 | Guard trip / E-STOP latched, `fault_state=MAX_DEVIATION` | The hand deviated past 2.5 rev | `ros2 service call /clear_errors std_srvs/srv/Trigger` then re-activate. **Log it — this is the data we want** |
-| Guard trip / E-STOP latched, `fault_state=MPC_STALE`, right after a refusal | **Not a hand fault and not a link fault.** The 40 Hz setpoint stream gapped for more than 250 ms while the planner was solving in the same process, and the Teensy's staleness watchdog latched. Measured 2026-09-06: a 2.16 s solve on a loaded box left an 804 ms hole. The name is historical — the MPC was deleted 2026-09-01; the watchdog is the setpoint stream's, and it is doing its job | `ros2 service call /clear_errors std_srvs/srv/Trigger`, then re-activate. Give the box less to do (stop the rosbag, close the GUI) before retrying, and **send me the log** — the solve time is on `/trajectory/status.cycle_plan_wall_ms` |
+| Guard trip / E-STOP latched, `fault_state=MPC_STALE`, right after a refusal | **Not a hand fault and not a link fault.** The 40 Hz setpoint stream gapped for more than 250 ms while the planner was solving in the same process, and the Teensy's staleness watchdog latched. The name is historical — the MPC was deleted 2026-09-01; the watchdog is the setpoint stream's, and it is doing its job. **Cause found 2026-09-06: the planner was spreading over all six cores with spinning workers**, which shoved the setpoint sender off the CPU (1350–2314 ms solves, 225–942 ms gaps at three busy cores; 214–217 ms with the cap). Fixed in the launch file — so if this happens now, **check the `blas threads: 1` line first** (§ "Before UH-3 can be retried") | `ros2 service call /clear_errors std_srvs/srv/Trigger`, then re-activate. **Send me the whole accept/refuse line** — it now carries the per-stage split and `load1=` — plus `/trajectory/status.cycle_plan_wall_ms` and the `/proc/loadavg` capture |
