@@ -231,9 +231,18 @@ class ChartDataStore {
 
     /**
      * Build uPlot-compatible aligned data for active signals within the time window.
-     * Returns [timestamps, series1, series2, ...] as TypedArray views.
+     * Returns [timestamps, series1, series2, ...].
+     *
+     * By default these are zero-copy TypedArray *views* into the ring buffer.
+     * That is only safe when the chart will be handed fresh data before the
+     * next push: once the store is full, push() shifts the whole buffer left
+     * in place, so any view uPlot is still holding silently advances by one
+     * sample per push (50 ms per tick at 20 Hz).  The canvas isn't redrawn,
+     * so the curves look right, but cursor.idx → data[0][idx] and the
+     * callouts walk forward in real time.  Pass copy=true whenever the chart
+     * keeps the data across pushes (paused) so it owns an immutable snapshot.
      */
-    getAlignedData(signalKeys, windowStart) {
+    getAlignedData(signalKeys, windowStart, copy = false) {
         // Binary search for the first timestamp >= windowStart
         let lo = 0, hi = this.length;
         while (lo < hi) {
@@ -242,9 +251,12 @@ class ChartDataStore {
             else hi = mid;
         }
         const start = lo;
-        const data = [this.timestamps.subarray(start, this.length)];
+        const take = copy
+            ? (arr) => arr.slice(start, this.length)
+            : (arr) => arr.subarray(start, this.length);
+        const data = [take(this.timestamps)];
         for (const key of signalKeys) {
-            data.push(this.columns[key].subarray(start, this.length));
+            data.push(take(this.columns[key]));
         }
         return data;
     }
@@ -825,11 +837,19 @@ function applyPauseButtonUI() {
  */
 function pauseCharts() {
     if (paused) return;
+    // Capture the anchor BEFORE flipping `paused`: getViewAnchor() returns
+    // pausedWindowEnd once paused, and wall-clock now would jump the window
+    // past the data when the stream has already gone stale (>1 s).
+    const anchor = getViewAnchor();
     paused = true;
-    const now = Date.now() / 1000;
-    pausedWindowStart = now - liveWindowSec;
-    pausedWindowEnd = now;
+    pausedWindowEnd = anchor;
+    pausedWindowStart = anchor - liveWindowSec;
     applyPauseButtonUI();
+    // From here the chart KEEPS whatever data it holds across pushes, and
+    // what it holds right now is a zero-copy view from the last live repaint
+    // that the store will shift under it.  Force one repaint so
+    // getAlignedData (paused === true) hands it an owned copy.
+    repaintAllCharts(true);
 }
 
 /**
@@ -1183,7 +1203,7 @@ function buildAllCharts() {
         // Initialise with real buffered data so we never flash empty after a
         // toggle / window change — falls back to empty arrays before stores exist.
         const initialData = stores[i]
-            ? stores[i].getAlignedData(signalKeys, windowStart)
+            ? stores[i].getAlignedData(signalKeys, windowStart, paused)
             : [new Float64Array(0), ...signalKeys.map(() => new Float64Array(0))];
 
         charts[i] = new uPlot(opts, initialData, cell);
@@ -1414,13 +1434,26 @@ function setXRangeAllCharts(min, max, fromSelection = false) {
  * visible x range changes while paused (zoom / pan) so the newly-visible
  * region actually shows curves, not just event markers.
  */
+let pendingReloadStart = null;
 function reloadChartDataFromStores(windowStart) {
-    const signalKeys = getActiveSignalList().map(s => s.key);
-    for (let i = 0; i < MOTOR_COUNT; i++) {
-        if (!charts[i] || !stores[i]) continue;
-        const data = stores[i].getAlignedData(signalKeys, windowStart);
-        charts[i].setData(data, false);
-    }
+    // Coalesce through one rAF slot, latest-wins: the middle-drag pan calls
+    // this per mousemove, and each reload now COPIES (see below) — at the
+    // 600 s span that is up to ~2.6 MB per call, so per-frame is the cap.
+    const first = pendingReloadStart === null;
+    pendingReloadStart = windowStart;
+    if (!first) return;
+    requestAnimationFrame(() => {
+        const ws = pendingReloadStart;
+        pendingReloadStart = null;
+        const signalKeys = getActiveSignalList().map(s => s.key);
+        for (let i = 0; i < MOTOR_COUNT; i++) {
+            if (!charts[i] || !stores[i]) continue;
+            // Paused-only path: the chart keeps this data across pushes, so
+            // it must own a copy (see getAlignedData).
+            const data = stores[i].getAlignedData(signalKeys, ws, true);
+            charts[i].setData(data, false);
+        }
+    });
 }
 
 /** Drop out of manual view mode and snap back to the live-anchored window
@@ -2326,7 +2359,10 @@ function repaintAllCharts(force = false) {
 
     for (let i = 0; i < MOTOR_COUNT; i++) {
         if (!charts[i] || !stores[i]) continue;
-        const data = stores[i].getAlignedData(signalKeys, windowStart);
+        // Live mode: every push schedules a repaint, so zero-copy views are
+        // refreshed before the store can shift under them.  A forced repaint
+        // while paused hands the chart data it will keep — copy it.
+        const data = stores[i].getAlignedData(signalKeys, windowStart, paused);
         // In live mode we drive the x-scale every frame; in manual mode the
         // user owns the scale (already set by setXRangeAllCharts) — don't
         // fight them.

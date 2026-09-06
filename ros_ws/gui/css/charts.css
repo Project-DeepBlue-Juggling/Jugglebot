@@ -57,6 +57,16 @@
     color: var(--text-primary);
 }
 
+/* Armed but its chart is hidden: keep the violet so the axis state still
+   reads, but dim it so it can't be mistaken for a visible chart's pill.
+   `opacity` dims the whole subtree, so the transients are exempted: the
+   long-press sweep (::before, itself 0.25), its confirm flash, and the
+   3D-pick flash that is the ONLY feedback when a pick lands on a hidden
+   chart — all pop to full strength while they run. */
+.signal-toggle.armed:not(.active):not(.hold-active):not(.hold-confirmed):not(.chart-pick-flash) {
+    opacity: 0.5;
+}
+
 /* Isolated (long-press / Shift-click / number key) — solid blue fill.  When the
    axis is also armed, the fill stays blue and the violet moves to the border so
    both states read at once. */
