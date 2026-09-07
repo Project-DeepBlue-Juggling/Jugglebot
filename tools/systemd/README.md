@@ -31,7 +31,8 @@ sudo loginctl enable-linger "$USER"       # if it is not
 ```bash
 systemctl --user list-timers jugglebot-nightly.timer --all
 systemctl --user status jugglebot-nightly.service     # last run's exit
-cat temp/reports/nightly/status                       # GREEN|RED <counts> <date>
+tools/nightly_ticker.sh check --who "<session>"        # CLAIMED|LOWERED|STALE|UNRAISED|NEVER — the once-per-day claim; read status only on CLAIMED
+cat temp/reports/nightly/status                       # GREEN|RED|DEFERRED <counts> <date>
 ```
 
 ## Keeping these in sync

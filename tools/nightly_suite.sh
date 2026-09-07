@@ -97,6 +97,7 @@ if [[ "${JB_NIGHTLY_IGNORE_SESSION:-0}" != "1" ]] && live_session; then
     mkdir -p "$REPORTS"
     echo "DEFERRED live robot session held the box for ${waited}s; suite NOT run" \
       "$(date -Iseconds)" >"$REPORTS/status"
+    "$REPO_ROOT/tools/nightly_ticker.sh" raise || true   # once-per-day claim flag
     echo "nightly_suite: still live after ${waited}s — deferred to the next run" >&2
     exit 0
   fi
@@ -276,6 +277,11 @@ fi
 
 # `latest.md` — relative target so the symlink survives a repo move.
 ln -sfn "$DATE.md" "$REPORTS/latest.md"
+
+# Raise the once-per-day ticker AFTER `status` is final (renderer or fallback):
+# the first session to `tools/nightly_ticker.sh check` claims it and surfaces the
+# result; every later session that day sees LOWERED and reads nothing.
+"$REPO_ROOT/tools/nightly_ticker.sh" raise || echo "nightly_suite: ticker raise failed" >&2
 
 # Retention: date-named artifacts only. `latest.md` and `status` are never
 # matched by the 20* glob, so a long gap in runs cannot delete the status file.
