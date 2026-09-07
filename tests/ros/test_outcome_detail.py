@@ -43,6 +43,28 @@ from jugglebot.outcome_detail import (
     # two poses) still yields the code.
     ('REJECTED_REACH_CENTER_DRIFT(B (0.0, 86.5, 170.0) mm is 86.5 mm)',
      'REJECTED_REACH_CENTER_DRIFT'),
+    # UH-7a's two. The beat floor is a Layer-B (node) refusal that aborts the
+    # goal before any cycle exists, so it reaches the result UNWRAPPED; the chain
+    # loss is minted on a cycle and reaches it through the session's prefix.
+    # Both have to round-trip, because `_TOSS_POSITION_UNKNOWN_TERMINALS`-style
+    # (code, subcode) matching is how a guard tells one from another.
+    ('REJECTED_BEAT_TOO_SHORT(dwell 0.750 s < unified chain floor (the next '
+     "cycle's lead) 0.800 s; the chain has TWO requirements)",
+     'REJECTED_BEAT_TOO_SHORT'),
+    ('ABORTED_CYCLE_REJECTED_CHAIN_LOST(NO_WINDOW: STEADY: … | LANDING: … '
+     '— held (trajectory/hold: ok))', 'ABORTED_CYCLE_REJECTED_CHAIN_LOST'),
+    # The ring that lost its window ENTIRELY: nothing chained, the machine held,
+    # and the session stopped. A SESSION terminal, so unwrapped.
+    ('STOPPED_CHAIN_LOST(NO_WINDOW: UNACKED after 0.980 s — held '
+     '(trajectory/hold: holding at current pose))', 'STOPPED_CHAIN_LOST'),
+    ('STOPPED_CHAIN_LOST', 'STOPPED_CHAIN_LOST'),        # bare, no detail
+    # …and the ring that was TRUNCATED rather than lost: the fall-back LANDING
+    # installed, the ball was caught, and the session stopped by name. It is a
+    # SESSION terminal, so it reaches the result unwrapped like COMPLETED and
+    # STOPPED_ON_MISS do, and it carries the planner's own composed refusal —
+    # which has its own parentheses, so this row is also the nested-detail case.
+    ('STOPPED_CHAIN_REFUSED(REJECTED_CYCLE_INFEASIBLE(LIMIT_JERK: 198431 > '
+     '150000 mm/s^3))', 'STOPPED_CHAIN_REFUSED'),
     ('', ''),
 ])
 def test_base_outcome_recovers_the_code(outcome, code):
@@ -73,6 +95,30 @@ def test_base_outcome_coerces_rather_than_raises():
     ('REJECTED_NOT_CENTERED(the live commanded pose is UNKNOWN or stale)', ''),
     ('REJECTED_NO_BALL', ''),                    # no parenthetical at all
     ('ABORTED_POSITION_TIMEOUT', ''),
+    # UH-7a: the chain-loss refusal leads with a RELAYED-shaped subcode so an
+    # operator guard can match (code, subcode) without parsing the two nested
+    # refusals it carries…
+    ('REJECTED_CHAIN_LOST(NO_WINDOW: STEADY: REJECTED_CYCLE_INFEASIBLE'
+     '(LIMIT_JERK: …) | LANDING: NO_CYCLE — held)', 'NO_WINDOW'),
+    # …while the beat floor's detail is PROSE, so it has no subcode to be
+    # mistaken for one. That asymmetry is the point of the two rows: the first
+    # names a mechanism a guard routes on, the second names a number an operator
+    # reads.
+    ('REJECTED_BEAT_TOO_SHORT(dwell 0.750 s < unified chain floor (the next '
+     "cycle's lead) 0.800 s; the chain has TWO requirements)", ''),
+    # STOPPED_CHAIN_LOST leads its detail with a flat, matchable NO_WINDOW…
+    ('STOPPED_CHAIN_LOST(NO_WINDOW: UNACKED after 0.980 s — held)',
+     'NO_WINDOW'),
+    # …and carries none when there is no detail at all.
+    ('STOPPED_CHAIN_LOST', ''),
+    # A truncated ring carries the planner's ALREADY-COMPOSED refusal, so its
+    # detail opens with a nested `CODE(` rather than a bare relayed token — and
+    # this contract answers "no subcode", correctly. That is worth pinning
+    # rather than working around: it is the difference between a guard reading
+    # (code, subcode) and one that would have to parse two levels of
+    # parentheses. The routable fact is the base outcome; the layer that refused
+    # is read out of the detail as prose, exactly as the operator reads it.
+    ('STOPPED_CHAIN_REFUSED(REJECTED_CYCLE_INFEASIBLE(LIMIT_JERK: …))', ''),
 ])
 def test_outcome_subcode_tells_a_relayed_code_from_prose(outcome, sub):
     assert outcome_subcode(outcome) == sub
@@ -142,3 +188,46 @@ def test_an_omitted_knob_leaves_no_empty_brackets():
     # range_msg's own brackets are the BAND, so the check is for a trailing
     # empty knob rather than for brackets at all.
     assert range_msg('n', 3, 1, 2, digits=0) == 'n 3 outside [1, 2]'
+
+
+# ── the wire map's COMPLETENESS ───────────────────────────────────────────────
+
+def test_every_minted_outcome_code_has_an_operator_hint():
+    """``REJECT_WIRE_MAP`` is the only enumeration of these codes anywhere, and
+    nothing pinned that it was complete.
+
+    That is how ``HAND_BELOW_FLOOR`` and ``UNIFIED_AIM_UNSUPPORTED`` sat unhinted
+    from the day they were minted, and how ``STOPPED_CHAIN_LOST`` joined them
+    within a session of being written: minting a code is one line, and the map
+    lives in another file that nobody is forced to open. An operator reading a
+    trace for an unhinted code gets a bare token and no next action — which is
+    precisely the thing the table exists to prevent.
+
+    So the check is structural rather than a list: every module constant on the
+    two producers whose VALUE looks like an operator-facing terminal must have a
+    key. A new code fails this the moment it is written, in the same commit,
+    which is the only time the author knows what the hint should say.
+    """
+    import jugglebot.toss_session as tsess
+    from jugglebot import reload_coordinator_node as rcn
+    from tests.hardware.toss_trace_recorder import REJECT_WIRE_MAP
+
+    codes = set()
+    for mod in (tsess, rcn):
+        for name in dir(mod):
+            if not (name.startswith('OUTCOME_STOPPED_')
+                    or name.startswith('_OUTCOME_')):
+                continue
+            value = getattr(mod, name)
+            if isinstance(value, str) and value:
+                codes.add(value)
+    # COMPLETED / STOPPED_ON_MISS are not refusals and predate the table; every
+    # other terminal an operator can read off a trace needs its next action.
+    codes -= {tsess.OUTCOME_COMPLETED, tsess.OUTCOME_STOPPED_ON_MISS}
+    missing = sorted(c for c in codes if c not in REJECT_WIRE_MAP)
+    assert not missing, (
+        'these outcome codes are minted but have no REJECT_WIRE_MAP hint, so a '
+        'trace shows the operator a bare token and no next action: %s' % missing)
+    # …and non-vacuity: the sweep must actually be finding the UH-7a codes.
+    assert {'REJECTED_BEAT_TOO_SHORT', 'REJECTED_CHAIN_LOST',
+            'STOPPED_CHAIN_LOST', 'STOPPED_CHAIN_REFUSED'} <= codes

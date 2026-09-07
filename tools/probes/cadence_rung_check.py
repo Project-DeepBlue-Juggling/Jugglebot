@@ -377,7 +377,19 @@ def session_accepts(T: float, dwell_s: float, delay_s: float,
     ``ilc_trim`` is ``ilc_speed_trim_possible``: with a layer-3 artifact loaded
     the session judges every floor at the SLOWEST release the apply seam could
     command, not the untrimmed one. Defaults False — the shipped machine
-    (``JB_OP_TOSS_ILC_ENABLED`` is false) and the ladder's published rungs."""
+    (``JB_OP_TOSS_ILC_ENABLED`` is false) and the ladder's published rungs.
+
+    ⚠ **LEGACY ONLY, and deliberately so.** It calls the shipped
+    ``_checking_reject`` rather than re-implementing it, so it models exactly the
+    gates that live on the session FSM. UH-7a's ``REJECTED_BEAT_TOO_SHORT`` is
+    NOT one of them: it is a Layer-B gate on ``reload_coordinator_node``,
+    unified-only, built out of planner constants (``_UNIFIED_EXTEND_LEAD_S``),
+    and it fires BEFORE this FSM is constructed. So a unified rung's true accept
+    verdict is ``this AND that`` — which this probe does not model, because
+    adding a second owner for the beat here is the exact drift the
+    ``_checking_reject`` delegation exists to avoid. The cadence ladder this
+    probe publishes is the legacy one; a unified beat sweep belongs in a probe
+    that drives the node."""
     sess = tsess.TossSessionSequencer(
         num_throws=5, dwell_time_s=float(dwell_s),
         throw_delay_s=float(delay_s), flight_time_s=float(T),

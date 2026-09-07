@@ -263,7 +263,7 @@ mode; ball tracking, possession verdicts, `outcome_detail` discipline.
 | 2 | Wire v6 + host 7-channel path: codegen, `SetpointPump`, emitter, `make_mpc_command`, tests; firmware-absent safe | COMPLETE | 2026-09-02 | Medium | Codec, per-channel step gates, backward-compatible producers |
 | 3 | Can-bridge FW 17: 7th interp lane, hand guards, `hand_source` interlock, dispatch; lockstep flash + bench ladder | **COMPLETE** (owner, 2026-09-04) — flashed 2026-09-03, ladder flown over two sittings; **sitting three closed 2026-09-05** (all four carried items discharged: the falling-edge decay rule confirmed bit-exact, row 19(b) PASS, row 18's arming half closed by operator decision with the armed trip unobserved, and the first bracketed `[hand7]` capture) | 2026-09-04 | High | Hand streaming safety envelope on real hardware |
 | 4 | Jetson unified-cycle mode: orchestrator, node wiring, plan-derived announcements/suppression, outcome vocabulary; end-to-end sim gate | **COMPLETE (software)** 2026-09-05 — four window kinds chaining at a release, planning inside `trajectory_node`'s `PlanCycle` service, the release-terminal cliff closed by joining LAUNCH+LANDING; sim gate PASS, NEVER FLOWN | 2026-09-05 | Medium | Whole cycle through the production stack in sim |
-| 5 | Hardware ladder: streamed hold → banked carry (ball seated) → planned catch → planned throw (low tier) → full cycles → two-pose constant beat | **UH-3/UH-5 PASS, UH-6 FLOWN clean 2026-09-07 (catch quality vs T-H6 pending bag), UH-7 NEXT** — 2026-09-06 first cycles found every catch was a feedforward catch into a parked cup (ratio 0.001–0.059 vs the 0.7 design) and the whole cycle flew one levelling frame short; both convictions fixed 2026-09-07 and the re-fly flew UH-6 clean (operator report, no bag analysed yet) | 2026-09-07 | High | Ball-smooth carry and the planned launch on hardware |
+| 5 | Hardware ladder: streamed hold → banked carry (ball seated) → planned catch → planned throw (low tier) → full cycles → constant beat (UH-7a single pose, UH-7b two poses) | **UH-3/UH-5 PASS, UH-6 FLOWN clean 2026-09-07 (catch quality vs T-H6 pending bag); UH-7a PLUMBING LANDED 2026-09-07, NOT FLOWN; UH-7b DEFINED and blocked on three prerequisites** — 2026-09-06 first cycles found every catch was a feedforward catch into a parked cup (ratio 0.001–0.059 vs the 0.7 design) and the whole cycle flew one levelling frame short; both convictions fixed 2026-09-07 and the re-fly flew UH-6 clean (operator report, no bag analysed yet). UH-7a chains a `STEADY` per cycle so the beat is the planner's window rather than a settle-plus-relaunch tail (~2.5–2.7 s at flight 0.8), with the replan policy kept alive on a chain, both feasibility gates bounded by range, and `trajectory/hold` able to pre-empt an in-flight solve. UH-7b needs the aim authority, a `TossContinuous` goal-surface change and the FSM's `REJECTED_DISPLACEMENT` bound | 2026-09-07 | High | Ball-smooth carry, the planned launch, and a constant beat on hardware |
 | 6 | Exclusivity + close-out: Platform Teensy FW 4 stroke retirement, host RPC retirement, contract doc, ILC hand-off, docs | NOT STARTED | | Medium | Single-master end state |
 
 Phase 0 ran while this plan was `proposed` — its recorded results were the
@@ -882,9 +882,18 @@ untouched, and the whole mocked-ROS toss battery passes.
    not the realised knot (which sits 2.3e-11 mm below it, and the inclusive
    `SETTLE_SITE` gate refused everything), with a second bound
    `k_s <= k_release + n_detach`.
-6. **`STEADY` back-to-back chaining is DEFERRED to Phase 5.** It exists and is
-   tested, but the shipped session installs `LAUNCH + LANDING` joined; UH-7's
-   constant beat needs a `release_at_perf` hand-off that does not exist yet.
+6. **`STEADY` back-to-back chaining was DEFERRED to Phase 5 and landed there
+   (UH-7a, 2026-09-07).** Through Phase 4 the shipped session installed
+   `LAUNCH + LANDING` joined, and the constant beat wanted a `release_at_perf`
+   hand-off the unified path did not make. **The hand-off was the only missing
+   piece: the chaining machinery already existed.** `_tick_unified_extend`,
+   `_extend_unified_cycle`, `_unified_beat_s`, `_toss_unified_chain` and the
+   `CHAIN_SKEW` guard were all written, all commented as Phase 5's ring, and all
+   inert for exactly one reason — `_tick_unified_launch` installed a
+   **rest-terminal** join and `_tick_unified_extend` returns immediately on one.
+   UH-7a is therefore the shape change (chain a `STEADY` while releases remain)
+   plus the absolute release, not new primitives. See
+   `logbook/2026-09-07-unified-7dof-uh7-steady-chain-plumbing.md`.
 
 **The finding that drove the shape** — a plan streamed to its last knot
 **commands a stop at the throw**. The emitter's `τ+dt` sample lands on
@@ -1179,6 +1188,97 @@ chained windows, the two-pose ring), then the FW 18 bundle + the hand geometry c
 sitting, then the Teensy offload (knot FIFO with replace-from-sequence first) as its own plan designed
 against UH-7's measured install-lead and splice needs; Phase 6 after UH-7 acceptance (the plan's
 trigger).
+
+**UH-7a steady-chain plumbing LANDED 2026-09-07, NOT FLOWN.** Canonical record:
+[`logbook/2026-09-07-unified-7dof-uh7-steady-chain-plumbing.md`](../../logbook/2026-09-07-unified-7dof-uh7-steady-chain-plumbing.md);
+operator rung in
+[`tests/hardware/session_unified7_cycle_ladder.md`](../../tests/hardware/session_unified7_cycle_ladder.md)
+§ UH-7a. Owner decisions taken the same day: **all three replan-mechanism changes land**, in **ONE
+atomic commit**; the ring **holds immediately on a MISS**; and the **single-pose** ring flies first,
+with the two-pose ring behind the aim authority AND a goal-surface change. What landed:
+
+- **The shape.** A session with releases still owed installs `LAUNCH + STEADY` and extends a `STEADY`
+  per cycle, once the live catch has passed; the last cycle chains a `LANDING`. The
+  settle-plus-relaunch tail (0.6 s settle + a 0.5–0.606 s hardware solve + a 0.6 s launch window +
+  the FSM preamble, **~2.5–2.7 s at flight 0.8**) comes off the beat, which becomes the `STEADY`
+  window's own period — floored by the planner, not by the choreography (the sim gate records
+  `LIMIT_JERK` at a 1.0 s window against the 150 k session cap and carries the whole ring at 1.4 s).
+- **The release hand-off**, so `CHAIN_SKEW` is a check rather than a negotiation (tolerance one 40 ms
+  tick, not the 0.60 s extend lead), and `TossSessionSequencer.beat_s` hoisted once at accept so the
+  plan's period and the FSM's schedule cannot be two additions of the same floats.
+- **`REJECTED_BEAT_TOO_SHORT` at goal acceptance** (Layer B), refusing on two derived floors and
+  naming which one bound: the **chain dwell floor 0.800 s**, whose binding term is *the next cycle's
+  lead* — `max(verdict 0.560, extend 0.600) + preamble 0.160 + tick 0.040` — rather than the extend
+  carry `dwell − dt ≥ _UNIFIED_EXTEND_LEAD_S` (0.625 s, which does not bind); and the **cycle-1
+  `throw_delay_s` floor 0.866 s** = `preamble 0.160 + measured joined solve 0.606 + launch window
+  0.600 − release grace 0.500`, since cycle 1 is the only cycle whose release is derived. Both are
+  the *plumbing* floor, not the planner's feasibility floor, which stays per cycle and is safe to
+  take late because the ladder holds the machine before the deadline. The legacy
+  `dwell ≥ throw_delay + handoff_margin_s` floor applies on top and is flight-dependent (0.141 s at
+  flight 0.80, 0.177 s at the 0.639 s flight of `throw_height_m 0.5`), so a unified session's real
+  minimum beat is **≈1.81 s at flight 0.80 and ≈1.68 s at flight 0.639** — against the ~2.5–2.7 s the
+  serial choreography needed.
+- **A non-blocking extend and a deadline-driven fail-safe ladder** (STEADY → LANDING → `trajectory/hold`
+  + stop), with a **refused STEADY stopping the session** (`STOPPED_CHAIN_REFUSED`) rather than
+  silently reverting to the serial cadence.
+- **The replan policy kept alive on a chain**: the live-catch selection, the mid-plan-release detach
+  bound made unconditional, and the catch-side still-ahead search.
+- **Both feasibility gates bounded by range** (`_VALIDATE_STENCIL_KNOTS = 1`, derived from
+  `validate_cycle`'s four passes and re-derived empirically per pass by the tripwire test): per-extend
+  **58 knots flat, 163 ms** across six chained windows against a whole-plan **220 → 1017 ms**;
+  per-replan **43 knots** (one knot wider than the extend's — at a splice the knot at `k_s` itself
+  moves, so the leg-jerk difference across `(k_s−2 | k_s−1)` is new content), **136–155 ms** against
+  **222 → 1022 ms**, where it had been **399 ms at 137 knots — already past its own 0.30 s commit
+  lead**.
+- **`trajectory/hold` able to pre-empt an in-flight solve** — its own reentrant callback group, a
+  two-thread executor in `trajectory_node.main`, and an install epoch refusing the pre-hold solve
+  `SUPERSEDED_BY_HOLD`. The epoch is bumped **inside the same `_plan_lock` block that swaps the active
+  plan** (`_install(..., bump_epoch=True)`); a second acquisition after the install left a window in
+  which a solve blocked on the lock could wake, read the OLD epoch and put the release-terminal plan
+  back on the wire while the hold returned `success=True` — the operator's cancel silently undone,
+  with a success response to say otherwise. The epoch guard also covers `go_home`, `go_to_pose`, the
+  timed target and the catch install, all of which take hundreds of ms during which a hold can land.
+  Measured hold latency **0.8 ms alone, 1.0–4.4 ms during a 307–314 ms solve**.
+
+**The audit: one pass, fourteen findings, all owner-approved and all fixed.** Beyond the lock and the
+stencil above, three shaped the operator surface. **B1 —** the runtime release-window guard charged a
+chained cycle the kind-0 dispatch budget (0.281 s at the nominal flight) for a stroke it never
+dispatches, so **every chained cycle aborted `ABORTED_CANT_MAKE_RELEASE` at a dwell the accept gate
+had admitted**; it is now one loop period on a chain. **A2 —** a hold landing between the `_cycle`
+check and its unpack raised a `TypeError` that `_svc_plan_cycle`'s except ladder does not catch, so
+Foxy's executor would have unwound `spin()` into `main()`'s finally, **stopped the emitter thread and
+E-STOPped the Teensy on its setpoint watchdog**; the three paths now take one snapshot under the lock,
+and the post-install bookkeeping moved inside the install's own lock block. **B2 —** an armed ring
+terminal was consumed only on a successful cycle, so with `stop_on_miss: false` the ring reverted
+silently after all.
+
+**What the Teensy offload will be designed against, once UH-7a flies.** The two numbers that plan needs
+are measurable only on a real ring, and the UH-7a rung is written to capture both:
+
+- **the achieved install lead** — the console's *"installed X s before the superseded deadline"* per
+  cycle, against the 0.60 s budget. That is the window a knot FIFO would have to accept a replacement
+  in, and it is what decides whether replace-from-sequence can be a normal operation or only a
+  recovery one;
+- **the splice** — how often a `catch/dynamic_target` replan actually fires on a chained window, at
+  what lead, and how many knots it rewrites. A whole-plan upload makes the plan *harder* to change
+  mid-flight, which is exactly why the owner sequenced the offload after the closed loop works; the
+  ring is the first shape that produces the mid-flight-change statistics to design the FIFO's
+  replacement semantics from.
+
+**Open owner items carried out of UH-7a:**
+
+1. **The two-pose ring (UH-7b) is a GOAL-SURFACE decision as well as an aim one.**
+   `TossContinuous.action` carries exactly one `catch_position`, and its own field comment calls a
+   per-cycle waypoint list *"the obvious v2 and explicitly OUT OF SCOPE here"*. So UH-7b needs (a) the
+   aim-authority re-derivation against `tilt_geometry.MAX_TILT_DEG` (12°), (b) a change to the action
+   so a second site can be *stated*, and (c) `toss_sequencer`'s `REJECTED_DISPLACEMENT` bound deleted
+   or unified-branched. Any one of them alone unblocks nothing.
+2. **The hold's pre-emption lives in `trajectory_node.main`.** A reentrant callback group is inert
+   under `rclpy.spin`, so anything that spins the node without `main` — a test harness, a future
+   composable-node container, a bench driver that constructs the node itself — loses the pre-emption
+   **silently** and re-opens the "hold queued behind a solve" hazard.
+   `test_main_runs_a_multi_threaded_executor_not_plain_spin` guards the shipped entry point and
+   nothing else can.
 
 **Dependencies:** Phases 3–4; owner present (operator runs actuating
 commands).

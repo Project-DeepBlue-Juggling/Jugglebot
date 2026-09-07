@@ -1609,6 +1609,54 @@ class TossSequencer:
                                                 # FSM, which is what makes
                                                 # `toss_pipeline_enabled: false`
                                                 # a decision-stream identity.
+    chained: bool = False                       # UH-7a: this cycle's RELEASE is
+                                                # already a committed knot on the
+                                                # unified CyclePlan the emitter is
+                                                # streaming — the previous cycle
+                                                # chained a STEADY window whose
+                                                # terminal release is ours. Set by
+                                                # the node alongside a non-zero
+                                                # `release_at_perf`, which is that
+                                                # very instant.
+                                                #
+                                                # It reaches exactly ONE thing on
+                                                # this FSM: the `hand_parked`
+                                                # precondition. That gate asks
+                                                # whether the hand sits in the
+                                                # BOTTOM park band, and it asks it
+                                                # because a kind-0 throw stroke
+                                                # commands ABSOLUTE positions from
+                                                # 0 rev — dispatching one with the
+                                                # hand off the band is a physical
+                                                # hazard. A chained cycle
+                                                # dispatches NO kind-0 stroke
+                                                # (`_dispatch_toss` issues no RPC
+                                                # under unified; the release is a
+                                                # knot), and its hand is mid-carry
+                                                # between the previous catch and
+                                                # the next throw BY CONSTRUCTION —
+                                                # a cup held at the 830 mm catch
+                                                # height is 4.755 rev, 9.5x the
+                                                # 0.5 rev band. So the gate would
+                                                # refuse every chained cycle for a
+                                                # hazard that is not there, which
+                                                # is the same "describes a device
+                                                # that is not running" carve-out
+                                                # `unified` already makes for
+                                                # C-HAND-3's ARM_WINDOW bound.
+                                                #
+                                                # It is NOT keyed on `unified`
+                                                # alone: cycle 1 of a unified
+                                                # session plans a real LAUNCH from
+                                                # the live hand state, and there
+                                                # the park band is exactly the
+                                                # right question. Only a cycle
+                                                # whose release the PLAN already
+                                                # owns is exempt.
+                                                #
+                                                # Default False = every legacy
+                                                # caller, and every unified LAUNCH,
+                                                # keeps the gate unchanged.
     tier: str = TIER_8A                         # config-resolved (JB_OP_TOSS_TIER)
     event_vel_mps: float = 0.0                  # 0 => computed from the Tier-8a vertical
                                                 # closed form; the node normally passes
@@ -1871,6 +1919,38 @@ class TossSequencer:
         # whose default lands here and whose sign typo dies at the gate.
 
     # ── derived floors ─────────────────────────────────────────────────────────
+
+    @property
+    def release_window_floor_s(self) -> float:
+        """The lead the RUNTIME release-window guard requires (s).
+
+        Two answers, because two different things happen at ``_t_release``.
+
+        **Legacy / unified LAUNCH — the kind-0 dispatch budget.** The guard
+        fronts a ``set_hand_traj_cmd`` whose stroke needs a prelude, a safety gap
+        and a windup before the ball leaves; too little lead and the frame is
+        packed for an instant that has passed. That is
+        :attr:`min_event_delay_for_throw_s` (0.281 s at the 0.80 s nominal).
+
+        **CHAINED — one loop period, and no more.** A chained cycle dispatches NO
+        kind-0 stroke: its release is already a KNOT on the plan the emitter is
+        streaming, and ``_dispatch_toss`` issues no RPC at all (it sets
+        ``throw_dispatched`` and reports OK, because the throw was armed when the
+        plan installed). So the windup this guard measures belongs to a device
+        that is not running — the same "describes a device that is not running"
+        carve-out :attr:`chained` already makes for the park band. What a chained
+        cycle genuinely still needs is to get its ANNOUNCEMENT out before the
+        ball leaves, which is one tick.
+
+        **This was a real accept-vs-runtime hole** (audit B1, 2026-09-07). Charging
+        the kind-0 budget on a chain put the runtime floor 0.28 s above what the
+        cycle needs, and since a chained cycle cannot start until
+        ``catch + max(verdict, extend)``, EVERY chained cycle aborted
+        ``ABORTED_CANT_MAKE_RELEASE`` at a dwell the accept gate had admitted —
+        the machine refusing, mid-ring, a cadence it had promised to fly.
+        """
+        return (NODE_LOOP_PERIOD_S if self.chained
+                else self.min_event_delay_for_throw_s)
 
     @property
     def min_event_delay_for_throw_s(self) -> float:
@@ -2538,7 +2618,11 @@ class TossSequencer:
             self._position_busy_deadline = now + TOSS_POSITION_BUSY_PATIENCE_S
             return TossDecision(PHASE_POSITIONING, ACTION_POSITION_PLATFORM,
                                 False, None)
-        if not obs.hand_parked:
+        if not obs.hand_parked and not self.chained:
+            # See `chained`: the band is a precondition for the kind-0 stroke
+            # this cycle would dispatch, and a chained cycle dispatches none —
+            # its release is a knot on a plan the emitter is already streaming,
+            # and its hand is mid-carry by construction.
             return self._reject('HAND_NOT_PARKED')
         if not obs.ball_seated:
             # TWO codes, because they send the operator to different subsystems.
@@ -2708,7 +2792,7 @@ class TossSequencer:
         # REJECTED_TRACK_ACTIVE would then refuse on until it expires), and again
         # on the post-announce tick (a stall between announce and dispatch must
         # not push event_delay under the stroke's windup floor).
-        if self._t_release - now < self.min_event_delay_for_throw_s:
+        if self._t_release - now < self.release_window_floor_s:
             return self._abort('CANT_MAKE_RELEASE')
         if not self._announce_dispatched:
             # Armed confirmed → explicit ≥1-tick gap → announce: the armed edge
@@ -2743,12 +2827,19 @@ class TossSequencer:
             return TossDecision(PHASE_PREPARING, ACTION_ANNOUNCE, False, None)
         if not self._announced:
             return TossDecision(PHASE_PREPARING, ACTION_NONE, False, None)
-        if not obs.hand_parked:
+        if not obs.hand_parked and not self.chained:
             # Re-verify at THROWING entry, before the dispatch commitment:
             # CHECKING's park-band gate is seconds old by now (positioning +
             # prepare), and a kind-0 stroke commands ABSOLUTE positions from
             # 0 rev — dispatching with the hand off the bottom band is a
             # physical hazard. Prepared ⇒ SAFE_ABORT cleans up.
+            #
+            # The `chained` carve-out is the SAME one CHECKING makes and for the
+            # same reason (see the field): no kind-0 stroke is dispatched, so
+            # there is no absolute-position commitment for the band to protect.
+            # Both sites are branched together deliberately — exempting one and
+            # not the other would admit a chained cycle at CHECKING and then
+            # abort it here, with the catch latch up and the announcement out.
             return self._abort('HAND_NOT_PARKED')
         return self._enter_throwing(now)
 
@@ -2861,6 +2952,14 @@ class TossSequencer:
             # rebuild re-nominates from a live read and COMMANDS the move.
             return self._reject('SITE_MOVED')
         if not obs.hand_parked:
+            # NOT branched on `chained`, and deliberately: this is the PIPELINED
+            # commit gate, and unified forces the pipeline off at the session's
+            # single resolution (`_execute_toss_continuous`'s `pipelined=` — one
+            # CyclePlan already owns the interval the pipeline exists to stage
+            # into). So no chained cycle can ever be staged and this line is
+            # unreachable for one. Adding the carve-out here anyway would be a
+            # third copy of a rule with no caller to exercise it, and the first
+            # thing to rot if the pipeline is ever unified.
             return self._slip(now, 'hand not back inside the park band',
                               reject_code='HAND_NOT_PARKED')
         if not obs.ball_seated:
@@ -2871,7 +2970,7 @@ class TossSequencer:
                              else 'NO_BALL'))
         if obs.track_active:
             return self._reject('TRACK_ACTIVE')
-        if self._t_release - now < self.min_event_delay_for_throw_s:
+        if self._t_release - now < self.release_window_floor_s:
             return self._slip(now, 'the iteration that reached the commit ran '
                                    'longer than one nominal loop period',
                               abort_code='CANT_MAKE_RELEASE')

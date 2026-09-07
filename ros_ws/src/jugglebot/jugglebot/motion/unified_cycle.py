@@ -247,6 +247,34 @@ _SEAM_MARGIN = 10.0
 _SEAM_POS_TOL_MM = _SEAM_MARGIN * _SEAM_FEAS_TOL_M * 1000.0
 _SEAM_POS_TOL_REV = _SEAM_MARGIN * _SEAM_FEAS_TOL_M * LINEAR_GAIN_REV_PER_M
 
+#: Knots BEFORE the seam that :func:`extend`'s gate must still visit, so its
+#: verdict over the new window is identical to a whole-plan run's.
+#:
+#: DERIVED from ``feasibility.validate_cycle``'s own stencils, not chosen — it is
+#: the widest distance backwards, in knots, that any of its passes reaches:
+#:
+#: * **the per-sample pass** (geometry, leg vel/acc) reads ``state_at`` /
+#:   ``hand_at``, and ``CyclePlan._locate`` resolves a sample to the SINGLE
+#:   enclosing span (``k = int(t/dt)``, Hermite over knots ``k`` and ``k+1``).
+#:   Reach: **0 knots**;
+#: * **the leg-jerk pass** finite-differences consecutive SUB-samples
+#:   (``np.diff(acc_samples)/sub_dt``, ``sub_dt = dt/samples_per_knot``), so the
+#:   difference landing ON the seam needs the sample one ``dt/m`` earlier.
+#:   Reach: **1 sub-sample**, strictly inside one knot;
+#: * **the hand-span pass** iterates spans ``k → k+1``, so the span that touches
+#:   the seam from below is ``k_seam − 1``.  Reach: **1 knot**;
+#: * **the per-knot step pass** compares knot ``k`` with knot ``k−1``, so the step
+#:   INTO the seam needs knot ``k_seam − 1``.  Reach: **1 knot**;
+#: * the catch-runway pass is a single indexed lookup, not a difference, and is
+#:   left to run over the whole plan (it is O(1)).
+#:
+#: One knot is therefore the exact bound, and it is deliberately expressed as a
+#: constant with this derivation attached rather than inlined: if a future pass
+#: widens its stencil, THIS is the number that has to move with it, and
+#: ``test_the_extend_gate_range_covers_every_validate_cycle_stencil`` fails if it
+#: does not.
+_VALIDATE_STENCIL_KNOTS = 1
+
 
 class CycleInfeasible(RuntimeError):
     """No trustworthy plan for this cycle — with the layer and the numbers.
@@ -730,6 +758,22 @@ class CycleMeta:
     #: on the spliced whole is the authority on whether the seam is executable,
     #: and it measures the Hermite the emitter will actually sample.
     seam_vel_mismatch: Optional[Tuple[float, float]] = None
+    #: Which knots :attr:`report`'s ``peak_*`` fields describe, as ``[a, b)``.
+    #:
+    #: ``None`` means **the whole plan**, which is the case for every window
+    #: :func:`plan_cycle` produces and for :func:`extend`'s output (its head is
+    #: unchanged, so the head's own peaks are still true and are merged back in
+    #: exactly — every ``peak_*`` is a maximum, so the max of the two halves' maxima
+    #: IS the whole plan's).
+    #:
+    #: A :func:`replan_tail` output carries a RANGE, and it must: a re-plan
+    #: REPLACES the tail, so the source report's peaks describe trajectory that no
+    #: longer exists.  Merging them would report a deleted tail's number as live —
+    #: a peak above a limit sitting next to ``ok=True``, which is the worst kind of
+    #: diagnostic.  So the re-gated range's peaks are reported alone and this field
+    #: says so, and a consumer that needs a whole-plan peak must ask for one
+    #: (``validate_cycle`` on the plan) rather than assume.
+    report_range_knots: Optional[Tuple[int, int]] = None
     #: Per-stage wall time, seconds, keyed :data:`STAGE_KEYS`.  ``None`` when the
     #: meta did not come from :func:`plan_cycle` (a ``replan_tail``).
     #:
@@ -1779,6 +1823,175 @@ def _joined_correction(meta_a: CycleMeta, meta_b: CycleMeta):
     return ca
 
 
+def extend_gate_range(plan_a: CyclePlan, plan_b: CyclePlan) -> Tuple[int, int]:
+    """``(k_from, n_gated)`` — the knot range :func:`extend`'s gate visits.
+
+    Exposed so a test can assert the bound without timing anything: on a chain of
+    equal windows this is CONSTANT per extend, which is what makes a constant
+    beat's install cost constant too.
+    """
+    n_a, n_b = int(plan_a.n_knots), int(plan_b.n_knots)
+    k_from = max(0, (n_a - 1) - _VALIDATE_STENCIL_KNOTS)
+    return k_from, (n_a + n_b - 1) - k_from
+
+
+def _gate_view(plan: CyclePlan, k_from: int) -> CyclePlan:
+    """A :class:`CyclePlan` over ``plan``'s knots ``[k_from, end]``, no copy.
+
+    numpy slices are VIEWS and ``CyclePlan.__init__`` keeps them, so this costs
+    one finiteness scan over the retained range and nothing else.  The curve on
+    the retained span is bit-identical — ``_locate``/``_hermite`` read only the
+    enclosing knot pair, so every sample inside the view reads exactly the floats
+    the full plan would have handed the same sample.
+    """
+    ck = int(plan.catch_k)
+    return CyclePlan(pose=plan.pose[k_from:], pose_vel=plan.pose_vel[k_from:],
+                     hand_rev=plan.hand_rev[k_from:],
+                     hand_vel_rps=plan.hand_vel_rps[k_from:], dt=plan.dt,
+                     catch_k=(ck - k_from if ck >= k_from else -1))
+
+
+def _merged_peaks(head: 'fz.FeasibilityReport', tail: 'fz.FeasibilityReport'):
+    """``tail``'s verdict carrying the whole plan's peaks.
+
+    Every ``peak_*`` field is a MAXIMUM over the sampled path, so the maximum of
+    the two halves' maxima IS the whole plan's — exactly, not approximately.  The
+    verdict (``ok``/``code``/``reasons``) comes from ``tail`` alone because the
+    head's was OK by construction (a window that failed its own gate raised
+    ``CycleInfeasible`` and never became a ``plan_a``), which :func:`extend`
+    asserts rather than assumes.
+    """
+    return dataclasses.replace(
+        tail,
+        peak_leg_vel_mmps=max(head.peak_leg_vel_mmps, tail.peak_leg_vel_mmps),
+        peak_leg_acc_mmps2=max(head.peak_leg_acc_mmps2,
+                               tail.peak_leg_acc_mmps2),
+        peak_leg_jerk_mmps3=max(head.peak_leg_jerk_mmps3,
+                                tail.peak_leg_jerk_mmps3),
+        peak_leg_ext_mm=max(head.peak_leg_ext_mm, tail.peak_leg_ext_mm),
+        peak_step_rev=max(head.peak_step_rev, tail.peak_step_rev),
+        peak_hand_rev=max(head.peak_hand_rev, tail.peak_hand_rev),
+        peak_hand_vel_rps=max(head.peak_hand_vel_rps, tail.peak_hand_vel_rps),
+        peak_hand_acc_rps2=max(head.peak_hand_acc_rps2,
+                               tail.peak_hand_acc_rps2),
+        peak_hand_step_rev=max(head.peak_hand_step_rev,
+                               tail.peak_hand_step_rev))
+
+
+def _needs_whole_plan_gate(plan: CyclePlan) -> bool:
+    """True when a RANGE gate would ask a different question than a whole-plan one.
+
+    Exactly one case, and it is about the hand-stroke FLOOR.
+    ``feasibility._cycle_stroke_floor`` lowers that floor to the plan's own FIRST
+    knot when the hand is parked below the homed zero — a statement about the
+    whole plan — so a view starting mid-plan would silently re-derive a STRICTER
+    floor from its own first knot and could refuse a plan the whole-plan gate
+    accepts.  Tested by the condition that triggers it rather than by reaching
+    into that private derivation.
+
+    It does not hold on any shape the coordinator installs: the shipped settle
+    site sits ~10 mm ABOVE the homed zero.  So this is a correctness backstop,
+    not a live path.
+    """
+    return float(plan.hand_at(0.0)[0]) < fz.HAND_STROKE_MIN_REV
+
+
+def _gate_from_knot(plan: CyclePlan, k_from: int, limits, geom):
+    """``validate_cycle`` over ``[k_from, end]``, with the refusal's clock named."""
+    if k_from <= 0:
+        return fz.validate_cycle(plan, limits, geom)
+    rep = fz.validate_cycle(_gate_view(plan, k_from), limits, geom)
+    if rep.ok:
+        return rep
+    # The view has its OWN clock starting at knot `k_from`, so every `t=` in the
+    # refusal is that much earlier than the plan's. Say so at the front rather
+    # than let an operator hunt for a defect at 0.006 s that is really at
+    # 0.581 s. The CODE is untouched — guards match on that.
+    return dataclasses.replace(rep, reasons=(
+        ["times below are on the re-gated range's own clock, which starts at "
+         'knot %d = %.4f s of the plan (the head before it was gated when it was '
+         'built and is carried bit for bit)'
+         % (k_from, k_from * float(plan.dt))] + list(rep.reasons)))
+
+
+def _gate_joined(joined: CyclePlan, plan_a: CyclePlan, plan_b: CyclePlan,
+                 meta_a: CycleMeta, limits, geom):
+    """Re-gate a splice over the SEAM AND THE NEW WINDOW, inheriting the head.
+
+    **Why not the whole plan.**  ``validate_cycle`` is ~89 % of a solve and is
+    linear in the knot count, so gating the whole joined plan makes every extend
+    on a ring dearer than the last: 81 → 137 → 193 → … knots, one window at a
+    time, forever.  A constant beat whose install cost grows every beat is not a
+    constant beat, and the install lead is the number the firmware-offload work
+    will be designed against, so it has to be FLAT.
+
+    **Why it is sound.**  ``plan_a`` was gated as a whole when it was produced
+    (``plan_cycle`` raises ``CycleInfeasible`` on a failing report, and a joined
+    ``plan_a`` came through this same function), and ``plan_b`` was gated as a
+    whole on its own clock by its own ``plan_cycle`` call — the argument this
+    module already makes about the catch, applied to every pass.  What NEITHER
+    gate has seen is the SEAM: the per-knot step from ``k_seam − 1`` into
+    ``k_seam``, the hand span across it, and the leg-jerk difference through it.
+    So the range starts :data:`_VALIDATE_STENCIL_KNOTS` before the seam, which is
+    derived from those stencils, and runs to the end.
+
+    **What is NOT inherited.**  The peaks: they are maxima, so
+    :func:`_merged_peaks` recombines them exactly, and the range they describe is
+    the union (see below).
+
+    **A TIGHTENED LIMIT does not retro-judge the head, and that is deliberate**
+    (a consequence of inheriting the verdict, so it is stated rather than
+    discovered).  If ``set_limits`` lowers a bound mid-session to something the
+    already-streaming head violates, the whole-plan gate would have refused the
+    next extend; this one accepts it, and judges only the NEW window against the
+    new limits.  That is the right answer on this path: the head is ALREADY ON THE
+    WIRE and cannot be un-emitted, and refusing the extend of a release-terminal
+    plan does not make the machine safer — it re-opens the supersede cliff
+    (:func:`latest_supersede_time_s`), which ends in a throw commanded to a dead
+    stop that no firmware guard sees.  A tightened limit therefore applies from
+    the next window, which is the first window it can apply to.  Pinned by
+    ``test_a_tightened_limit_applies_from_the_NEXT_window_not_retroactively``.
+
+    **The one case that falls back to the whole plan** is a joined plan whose
+    FIRST knot is parked below the homed zero.  ``_cycle_stroke_floor`` lowers the
+    hand-stroke floor to that knot for the WHOLE plan, and a view starting at the
+    seam would silently re-derive a STRICTER floor from its own first knot — a
+    different question, and one that could refuse a ring the full gate accepts.
+    Rather than reach into that private derivation, the condition that triggers it
+    is tested directly and the whole plan is gated when it holds.  It does not
+    hold on any shape the coordinator installs (the shipped settle sits ~10 mm
+    ABOVE the homed zero), so this is a correctness backstop, not a live path.
+    """
+    if not (meta_a.report is not None and meta_a.report.ok) \
+            or _needs_whole_plan_gate(joined):
+        # Defensive: a head whose own verdict is missing or not OK has nothing to
+        # inherit (unreachable from plan_cycle/extend), and the parked-floor case
+        # asks a different question. Either way, gate the whole thing.
+        return fz.validate_cycle(joined, limits, geom), None
+    k_from, _n = extend_gate_range(plan_a, plan_b)
+    tail = _gate_from_knot(joined, k_from, limits, geom)
+    if not tail.ok:
+        return tail, None
+    # ── The merged range, and it is NOT always the whole plan ─────────────────
+    # ``meta_a`` may itself carry a RANGE — a chain that was re-planned before it
+    # was extended is the ordinary case on a ring, one re-plan and one extend per
+    # beat.  Merging a range report's peaks and then labelling the result
+    # "whole plan" under-reports: MEASURED (2026-09-07) on a six-window ring
+    # re-planned at ``k_s = 320`` and then extended once, ``peak_leg_jerk_mmps3``
+    # came out 75 356 against a whole-plan 95 101 mm/s³ — **20.8 % low, wearing a
+    # whole-plan label**, which is a diagnostic that lies in the dangerous
+    # direction.
+    #
+    # The union is contiguous by construction, so it is an interval and not a set:
+    # a re-plan's range runs to ``plan_a``'s END, and this gate's range starts one
+    # stencil BEFORE the seam, which is ``plan_a``'s last knot.  So the two overlap
+    # and the union is ``[meta_a's start, n_joined)``.
+    merged = _merged_peaks(meta_a.report, tail)
+    prior = meta_a.report_range_knots
+    rng = None if prior is None else (int(prior[0]), int(joined.n_knots))
+    return merged, rng
+
+
 def extend(plan_a: CyclePlan, meta_a: CycleMeta,
            plan_b: CyclePlan, meta_b: CycleMeta,
            limits, geom) -> Tuple[CyclePlan, CycleMeta]:
@@ -1789,7 +2002,18 @@ def extend(plan_a: CyclePlan, meta_a: CycleMeta,
     ``plan_a``'s terminal knot rather than merely a nearby one; :func:`_seam_check`
     refuses anything else.  The duplicate knot is dropped, ``plan_a`` survives
     **bit for bit** in the head (a caller can therefore splice repeatedly without
-    the head drifting), and the joined plan is re-validated as one.
+    the head drifting), and the SEAM AND THE NEW WINDOW are re-validated.
+
+    **The gate range is bounded, and that is what keeps a ring's beat constant.**
+    ``validate_cycle`` is ~89 % of a solve and linear in the knot count, so
+    re-gating the whole joined plan made every extend on a chain dearer than the
+    last.  Both halves were already gated whole by their own ``plan_cycle`` calls;
+    what neither had seen is the seam.  So the range runs from
+    :data:`_VALIDATE_STENCIL_KNOTS` knots before the seam to the end — a constant
+    ``n_b + 1`` knots per extend, whatever the chain depth — and the head's
+    verdict is inherited with its peaks merged back in, so ``meta.report`` still
+    describes the whole plan exactly.  :func:`_gate_joined` carries the argument
+    and the one fall-back case; :func:`extend_gate_range` exposes the range.
 
     The joined ``catch_k`` is the FIRST catch on the joint clock, because
     ``CyclePlan`` carries one and ``validate_cycle``'s runway pass reads that one.
@@ -1816,7 +2040,10 @@ def extend(plan_a: CyclePlan, meta_a: CycleMeta,
                else (int(plan_b.catch_k) + n_a - 1 if int(plan_b.catch_k) >= 0
                      else -1))
     joined = _concat_plans(plan_a, plan_b, catch_k)
-    report = fz.validate_cycle(joined, limits, geom)
+    # The seam and the new window, not the whole plan — see `_gate_joined` for
+    # why that is both sound and necessary (a ring's install cost must be flat).
+    report, report_range = _gate_joined(joined, plan_a, plan_b, meta_a, limits,
+                                        geom)
     if not report.ok:
         raise CycleInfeasible(report.code, report.reasons, report=report)
 
@@ -1859,7 +2086,11 @@ def extend(plan_a: CyclePlan, meta_a: CycleMeta,
         cup_plan=_concat_cup(meta_a.cup_plan, meta_b.cup_plan, joined.dt,
                              catch_k),
         goals=meta_b.goals, seam_vel_mismatch=seam,
-        levelling_correction=correction)
+        levelling_correction=correction,
+        # `None` (whole plan) unless the head ALREADY carried a range — see
+        # `_gate_joined`. A ring re-plans and extends once per beat, so a joined
+        # meta inheriting a re-planned head is the ordinary case, not an edge one.
+        report_range_knots=report_range)
 
 
 def splice_knot(meta: CycleMeta, t_now_s: float, lead_s: float) -> int:
@@ -1912,20 +2143,60 @@ def replan_tail(plan: CyclePlan, meta: CycleMeta, t_now_s: float,
     ``k_s`` (``post_release=False`` — no ball leaves the cup mid-carry, so there
     is no detach cone to honour there) with the new catch and the old terminal;
     the cup track and the tilt series are spliced and decomposed as ONE series
-    (see the comment at the splice); and the whole plan goes back through
-    ``validate_cycle``.
+    (see the comment at the splice); and the NEW TAIL AND THE SPLICE SEAM go back
+    through ``validate_cycle``.
+
+    **The re-gate range is bounded, and on a ring it has to be.**  The gate is
+    ~89 % of a solve and linear in the knot count, so a whole-plan re-gate made
+    every catch re-plan dearer than the last: MEASURED 399 ms on a 137-knot chain,
+    already past the 0.30 s commit lead, which means the install lands behind the
+    emitter and the continuity guard answers ``STALE_STATE``.  The head is carried
+    bit for bit and was gated when its plan was installed, so the range starts
+    :data:`_VALIDATE_STENCIL_KNOTS` knots before the splice and runs to the end.
+    Consequently ``meta.report``'s ``peak_*`` describe THAT RANGE and not the whole
+    plan, and :attr:`CycleMeta.report_range_knots` says so — deliberately NOT
+    merged with the source plan's peaks, because a re-plan replaces the tail and
+    those peaks describe trajectory that no longer exists.
+
+    **WHICH catch is re-aimed, on a chain.**  A joined plan carries one catch per
+    window and only one of them is live, so the caller NAMES the instant it means
+    through ``new_catch_t_s`` and every catch-side bound below is taken against
+    THAT one.  Left unnamed, the target is ``meta.catches[0]`` — permanently the
+    FIRST catch on a joined meta, which from the second chained window onward is
+    a touch-down that happened a beat ago.
 
     Every refusal is a :data:`REPLAN_WINDOW`: no source cup track (the plan was
     not produced by this module), no goals to inherit the banking and the ball id
-    from, a splice knot with no usable tail — at or past the catch (there is
-    nothing left to re-aim), before knot 1 (there would be no head), inside a
-    detach cone (``k_s <= n_detach``, and on a rest-terminal plan also
-    ``k_s <= k_release + n_detach`` for the release the plan carries in its
-    middle — see the comments at those checks), or within three knots of the end
-    (a window that short is not a trajectory) — or a ``new_catch_t_s`` outside
-    the tail's own window.  There is deliberately no path out of here that is not
-    a ``CycleInfeasible``: a bare ``ValueError`` would carry no subcode and escape
-    every guard matching on this module's outcome.
+    from, a splice knot with no usable tail — at or past the NOMINATED catch
+    (there is nothing left to re-aim), before knot 1 (there would be no head),
+    inside a detach cone (``k_s <= n_detach``, and on EVERY shape also
+    ``k_s <= k_release + n_detach`` for each release the plan carries before its
+    terminal — see the comments at those checks), skipping over a nearer catch
+    (the tail holds exactly one touch-down, so a nominated catch that is not the
+    first one after the splice would erase the ones between), or within three
+    knots of the end (a window that short is not a trajectory) — or a
+    ``new_catch_t_s`` outside the tail's own window.  There is deliberately no
+    path out of here that is not a ``CycleInfeasible``: a bare ``ValueError``
+    would carry no subcode and escape every guard matching on this module's
+    outcome.
+
+    **The TERMINAL RELEASE is preserved as an EVENT, and the chain depends on
+    it.**  On the release-terminal branch the tail is planned with the original
+    mark's ``(site, target, flight)`` and a ``period_s`` that puts the throw back
+    on the plan's own last knot, so the release INSTANT and the whole release
+    event survive bit for bit: MEASURED (2026-09-07,
+    ``/tmp/probe_uh7_planner.py``, run twice with identical output) on a joined
+    LAUNCH(0.6) + STEADY(1.4) spliced at ``k_s = 28``, ``|Δ t_s| = 0.0``,
+    ``|Δ site_mm| = 0.0``, ``|Δ vel_mm_s| = 0.0``, ``|Δ tilt| = 0.0`` and
+    ``|Δ total_duration| = 0.0`` — all exact equalities, not approximations, so
+    the BEAT a chain is built on cannot drift through a re-plan.  The REALISED
+    terminal knot is re-solved and agrees to ``1.1e-13 mm`` of pose,
+    ``5.9e-13 rev`` of slider and ``1.9e-11 mm`` of cup position; only
+    ``pose_vel[-1]`` moves measurably (``0.032 mm/s`` translational,
+    ``2.7e-4 rad/s`` rotational), and that is ``decompose``'s ONE-SIDED finite
+    difference at the last knot reading a re-solved neighbour rather than a
+    release that moved.  :func:`release_state_from_meta` reads the SPLICED plan's
+    own terminal, so the next chained window's seam is exact either way.
 
     **The replan envelope is narrower than the splice rule, and the gate is what
     says so.**  Measured on the 1.4 s reference cycle (2026-09-04, banking on,
@@ -1965,7 +2236,40 @@ def replan_tail(plan: CyclePlan, meta: CycleMeta, t_now_s: float,
     n = int(plan.n_knots)
     dt = float(plan.dt)
     k_s = splice_knot(meta, t_now_s, lead_s)
-    catch_k = int(meta.catch_k)
+    # ── WHICH catch this re-plan is aiming at, as a knot ─────────────────────
+    # A JOINED plan carries one catch per window and only ONE of them is LIVE.
+    # ``meta.catch_k`` is permanently the FIRST of them — ``extend`` pins it
+    # there because ``CyclePlan`` carries a single ``catch_k`` and
+    # ``validate_cycle``'s runway pass reads that one — so on a chain it names a
+    # touch-down that happened a beat ago.  Bounding the splice against it
+    # refused EVERY landing update from the second chained window onward with
+    # "the catch is inside the committed head", while the catch the update was
+    # actually talking about was still most of a second in the future.  So the
+    # caller NAMES the catch it is re-aiming through ``new_catch_t_s`` and the
+    # bound is against that one.
+    #
+    # The knot comes from the MARK the nomination names, not from
+    # ``floor(t/dt)`` — and it has to, because the two disagree.  ``cup_cycle``
+    # takes ``k_td = floor(catch_time_s / dt)`` on the WINDOW's own clock and
+    # ``extend`` then re-bases the index by ``+ n_a - 1``; recomputing the floor
+    # on the JOINED clock is a different arithmetic on different floats.
+    # MEASURED (2026-09-07): the ring's second catch is at 2.6 s with
+    # ``dt = 0.025``, and ``2.6/0.025`` is exactly ``104.0`` while the window's
+    # own ``0.6/0.025`` is ``23.999999999999996`` — floor 23, re-based to knot
+    # **103**.  One knot of disagreement, entirely float representation, and it
+    # made this bound refuse the very re-plan it was written to allow.  A
+    # nomination within half a knot of a mark IS that mark; only a free
+    # nomination (no mark at that instant) falls back to the floor, and for that
+    # case the nominated-catch window bound below already guarantees
+    # ``knot > k_s``, which is all this is used for.
+    if new_catch_t_s is None:
+        catch_k = int(meta.catch_k)
+    else:
+        named = next((m for m in meta.catches
+                      if abs(float(m.t_s) - float(new_catch_t_s)) <= 0.5 * dt),
+                     None)
+        catch_k = (int(named.knot) if named is not None
+                   else int(math.floor(float(new_catch_t_s) / dt)))
     if k_s < 1:
         raise CycleInfeasible(REPLAN_WINDOW, [
             bound_msg('splice knot', k_s, '<', 1, knob='lead_s',
@@ -1998,20 +2302,37 @@ def replan_tail(plan: CyclePlan, meta: CycleMeta, t_now_s: float,
                             'release this window follows and the tail is solved '
                             'without them; raise lead_s so the splice lands '
                             'after them' % n_detach))])
-    # ── The SAME rule, applied to a release the plan carries in its MIDDLE ────
-    # Only a rest-terminal plan can have one (on a release-terminal plan the last
-    # release IS the terminal, and any earlier one is separated from the splice
-    # by a whole catch).  The chained LAUNCH + LANDING the coordinator installs is
-    # exactly that shape: its launch release sits at knot 24 of 81, and knots
-    # 25..24+n_detach carry that ball's detach-cone equalities.  The tail is
-    # solved with `post_release=False` and no throw event at all, so a splice
-    # landing on or before those knots would (a) re-solve the cone rows away —
-    # the same lateral-shove-to-a-ball-in-flight defect the check above measures —
-    # and (b) ERASE the release itself, since a LANDING window has no throw to
-    # put back.  One bound closes both: the splice must land strictly after the
-    # last release AND after its cone.
-    if not release_terminal and meta.releases:
-        k_rel = max(int(round(float(r.t_s) / dt)) for r in meta.releases)
+    # ── The SAME rule, applied to every release the plan carries MID-PLAN ─────
+    # "Mid-plan" means every release that is not the plan's TERMINAL one, and the
+    # bound is unconditional — it used to be skipped whenever the plan ended at a
+    # release (`if not release_terminal`), on the argument that such a plan's only
+    # release IS its terminal.  That is true of a single window and FALSE of every
+    # chain: a joined LAUNCH + STEADY ends at a release AND carries the launch's
+    # spent release at knot 24 of 81, so the guard skipped exactly the shape UH-7
+    # flies.  MEASURED (2026-09-07, /tmp/probe_uh7_planner.py, run twice with
+    # identical output) on that join at session limits: a re-plan at
+    # ``t_now = 0.00`` / ``lead = 0.30`` (k_s = 12) and at ``t_now = 0.30``
+    # (k_s = 24) were both ACCEPTED and both returned ``releases = [2.0]`` — the
+    # 0.6 s throw silently deleted from a plan the emitter is streaming.
+    #
+    # The tail is re-solved with `post_release=False` and with at most the
+    # plan's TERMINAL throw event, so a splice landing on or before a mid-plan
+    # release would (a) re-solve that ball's detach-cone rows away — the same
+    # lateral-shove-to-a-ball-in-flight defect the check above measures at
+    # 1.126 m/s² — and (b) ERASE the release itself, because the tail has no
+    # second throw to put back.  One bound closes both on every shape: the splice
+    # must land strictly after the LAST mid-plan release and after its cone.
+    #
+    # The terminal release is excluded because the tail RE-CREATES it (the
+    # release-terminal branch below pins the same throw event at the same
+    # terminal knot); including it would refuse every re-plan of every
+    # release-terminal plan, since its knot is ``n - 1`` by definition.
+    k_terminal = n - 1
+    mid_release_knots = [k for k in
+                         (int(round(float(r.t_s) / dt)) for r in meta.releases)
+                         if k < k_terminal]
+    if mid_release_knots:
+        k_rel = max(mid_release_knots)
         if k_s <= k_rel + n_detach:
             raise CycleInfeasible(REPLAN_WINDOW, [
                 bound_msg('splice knot', k_s, '<=', k_rel + n_detach,
@@ -2022,7 +2343,15 @@ def replan_tail(plan: CyclePlan, meta: CycleMeta, t_now_s: float,
                                 'tail is re-solved with neither, so the splice '
                                 'has to land after them'
                                 % (k_rel, k_rel + 1, k_rel + n_detach)))])
-    if catch_k >= 0 and k_s >= catch_k:
+    # Only when NOTHING was nominated: then the sole catch this function knows
+    # about is ``meta.catches[0]``, and a splice past it means the caller is
+    # simply too late — ``lead_s`` is the knob and "catch knot" is the message.
+    # When a catch WAS nominated the same bound is enforced one check later and
+    # more precisely, by the nominated-catch window (``t_catch_full`` must reach
+    # ``(k_s + 1)·dt``, which is exactly ``knot > k_s``): applying THIS one to a
+    # chain refused every landing update from the second chained window onward,
+    # because ``meta.catch_k`` is pinned to the first — spent — catch forever.
+    if new_catch_t_s is None and catch_k >= 0 and k_s >= catch_k:
         raise CycleInfeasible(REPLAN_WINDOW, [
             bound_msg('splice knot', k_s, '>=', catch_k, knob='lead_s',
                       digits=0, limit_label='catch knot',
@@ -2083,6 +2412,41 @@ def replan_tail(plan: CyclePlan, meta: CycleMeta, t_now_s: float,
                             '(splice knot %d of %d); a catch outside it is not '
                             'a catch this window can make'
                             % (t_catch_lo, t_catch_hi, k_s, n - 1)))])
+    # ── One catch per tail, so a NEARER one may not be skipped over ───────────
+    # The same class as the mid-plan-release bound above, one event over.  The
+    # tail is a single STEADY (catch → throw) or LANDING (catch → rest) window,
+    # so it holds back exactly ONE touch-down.  A chained plan carries one catch
+    # per window; nominating a LATER one while an earlier one still sits at or
+    # after the splice would drop that earlier catch out of a plan the emitter is
+    # already streaming — the cup simply would not be there for a ball already in
+    # the air — and ``validate_cycle`` cannot see it, because what is left is a
+    # perfectly smooth track.  A caller that nominates the LIVE catch (the first
+    # still ahead of the splice, which is what
+    # ``trajectory_node._replan_cycle_from_target`` selects) satisfies this by
+    # construction; this is the bound that says so out loud.  It runs LAST of the
+    # catch-side bounds so that a nomination which is not even inside the tail
+    # keeps the more specific `nominated catch` message and its knob.
+    #
+    # NOTHING this module can currently BUILD reaches it, and that is a property
+    # worth writing down rather than rediscovering: every kind that carries a
+    # catch is entered FROM a release, so on any chain the releases interleave
+    # the catches and the mid-plan-release bound above already forces the splice
+    # past the release preceding the second catch — which is past the first.
+    # This is therefore a structural backstop for a future kind carrying two
+    # catches, pinned by
+    # `test_replan_tail_refuses_a_nomination_that_would_ERASE_a_nearer_catch`,
+    # which reaches it on a hand-built meta and asserts the subsumption on a real
+    # one.
+    skipped = [m for m in meta.catches if k_s <= int(m.knot) < catch_k]
+    if skipped:
+        raise CycleInfeasible(REPLAN_WINDOW, [
+            'the nominated catch at %.4f s (knot %d) is not the FIRST one after '
+            'the splice: catch knot(s) %s still sit ahead of splice knot %d and '
+            'the tail carries exactly one touch-down, so re-solving would erase '
+            'them — re-aim the LIVE catch (the first still ahead of '
+            't_now + lead_s) instead'
+            % (float(t_catch_full), catch_k,
+               ', '.join(str(int(m.knot)) for m in skipped), k_s)])
     # ── The terminal the tail has to end on, one branch each ─────────────────
     # Release-terminal: the throw goals come from the release MARK, for the same
     # reason the catch time did — on a spliced plan the mark is on the joint
@@ -2206,29 +2570,115 @@ def replan_tail(plan: CyclePlan, meta: CycleMeta, t_now_s: float,
         t=np.arange(n, dtype=float) * dt, dt=dt,
         catch_k=k_s + int(cup_tail.catch_k),
         takeoff_vel=cup_tail.takeoff_vel, warm_start=cup_tail.warm_start)
-    spliced = CyclePlan.from_realized(cr.decompose(cup_joined, tilts, rcfg))
-    report = fz.validate_cycle(spliced, limits, geom)
+    # ── The head is carried VERBATIM, and that is a construction not a hope ────
+    # Decomposing the JOINT series (above) is right for the seam, but it does NOT
+    # leave the head bit-identical, and the difference is invisible until you look
+    # for it.  ``cup_realize._knot_derivative`` is a CENTRAL difference inside a
+    # series and a second-order ONE-SIDED difference at its ends, and it is applied
+    # to the tilt-rate term.  A plan built by ``extend`` therefore carries, at every
+    # PRIOR seam knot, a velocity that came from a one-sided difference (that knot
+    # was the END of the half it was decomposed in).  Re-decomposing the whole
+    # series makes those knots interior, so they pick up a CENTRAL difference and
+    # move — MEASURED (2026-09-07) 4.41e-2 mm/s at knots 24, 80 and 136 of a
+    # six-window ring, every one of them OUTSIDE the re-gated range.
+    #
+    # The gate impact is nil at that magnitude, but the INVARIANT the bounded gate
+    # rests on — "every knot that can change is inside the range" — was false as
+    # written, and an invariant that is only true by accident of magnitude is not
+    # one.  So the head's four channels are taken from the LIVE PLAN, and the
+    # re-decomposed series supplies knots ``k_s`` onward.  ``k_s`` itself is a tail
+    # knot: its position is pinned to the head's (the ``start_tilt`` pin above) but
+    # its velocity legitimately moves, because its forward neighbour is new — and
+    # it sits inside the gate range, which is exactly where it belongs.
+    realized = cr.decompose(cup_joined, tilts, rcfg)
+    spliced = CyclePlan(
+        pose=np.vstack([plan.pose[:k_s], realized.pose[k_s:]]),
+        pose_vel=np.vstack([plan.pose_vel[:k_s], realized.pose_vel[k_s:]]),
+        hand_rev=np.concatenate([plan.hand_rev[:k_s],
+                                 realized.slider_rev[k_s:]]),
+        hand_vel_rps=np.concatenate([plan.hand_vel_rps[:k_s],
+                                     realized.slider_vel_rev_s[k_s:]]),
+        dt=realized.dt, catch_k=int(getattr(realized, 'catch_k', -1)))
+    # ── Re-gate the NEW TAIL and the splice seam, not the whole plan ──────────
+    # ``validate_cycle`` is ~89 % of a solve and LINEAR in the knot count, and on
+    # a ring the plan grows a window per beat — so a whole-plan re-gate made every
+    # catch re-plan dearer than the last.  MEASURED (2026-09-07): 399 ms on a
+    # 137-knot chain, already past the 0.30 s ``_CYCLE_REPLAN_LEAD_S``, so the
+    # splice knot the tail was solved for is behind the emitter by the time the
+    # install is attempted and the continuity guard answers ``STALE_STATE``.  From
+    # the second chained window on, EVERY landing update would have died that way
+    # — the replan policy dead on the ring, which is exactly the failure the
+    # live-catch selection above exists to end.
+    #
+    # The head ``[0, k_s)`` is carried BIT FOR BIT and was gated when the plan it
+    # came from was installed, so the range starts one stencil before the splice
+    # (:data:`_VALIDATE_STENCIL_KNOTS`, derived from ``validate_cycle``'s own
+    # differences) and runs to the end.  That covers everything the splice
+    # actually changed: the new tail, the per-knot step and hand span across the
+    # splice, and the leg-jerk difference through it — the acceleration AT knot
+    # ``k_s`` moves when the splice happens, because ``_locate`` puts that sample
+    # at ``s = 0`` of the NEW span.  The new catch's runway is inside the range
+    # too (``spliced.catch_k >= k_s`` by construction).
+    #
+    # The induction holds over repeated re-plans: every knot of the head was gated
+    # by SOME pass — a knot before an earlier splice by that plan's own gate, one
+    # after it as part of that re-plan's tail range.
+    # ── ONE KNOT WIDER THAN THE EXTEND PATH, and the asymmetry is real ────────
+    # On an EXTEND the seam knot's position AND velocity are bit-identical (it is
+    # ``plan_a``'s terminal knot, carried through ``_concat_plans`` untouched), so
+    # a view from ``k_seam − 1`` recomputes every difference that can have moved.
+    # On a SPLICE the knot at ``k_s`` legitimately moves: its position is pinned
+    # but its VELOCITY is not, because its forward neighbour is new.  That changes
+    # the Hermite acceleration at ``s = 0`` of the span ``[k_s − 1, k_s]``, and the
+    # leg-jerk difference across the sub-sample boundary ``(k_s − 2 | k_s − 1)``
+    # therefore reads one new value — a difference a view starting at ``k_s − 1``
+    # never forms, because that sample is its first.  One more knot is the whole
+    # cost, and it keeps the range's own claim ("every difference that can have
+    # moved is recomputed") true on this path as well.
+    k_gate = (0 if _needs_whole_plan_gate(spliced)
+              else max(0, k_s - _VALIDATE_STENCIL_KNOTS - 1))
+    report = _gate_from_knot(spliced, k_gate, limits, geom)
     if not report.ok:
         raise CycleInfeasible(report.code, report.reasons, report=report)
 
     t_catch_new = k_s * dt + tail_goals.catch_time_s()
+    # ── The marks the BIT-IDENTICAL HEAD still owns are carried, on both shapes ─
+    # Every release and catch at a knot before ``k_s`` describes trajectory this
+    # splice did not touch, so it describes the spliced plan unchanged — same
+    # instant, same clock, same site.  Carrying them is what keeps
+    # `announcement_fields` / `_accept_cycle` able to name the throw this plan
+    # made (dropping them would report a cycle that never threw), and on a CHAIN
+    # it is also what keeps the two bounds above meaningful across REPEATED
+    # re-plans: they are computed from ``meta.releases`` / ``meta.catches``, so a
+    # meta that forgot the launch's release would let the NEXT re-plan splice
+    # into that ball's detach cone.
+    #
+    # One honest caveat, unchanged from the rest-terminal branch this generalises:
+    # a carried mark keeps the ``stroke_clear_s`` / ``arm_lead_s`` it was measured
+    # with, and those twins can reach a few knots PAST ``k_s`` into re-solved
+    # trajectory.  Nothing in production reads a carried mark's twin, on either
+    # branch: ``_accept_cycle`` takes ``stroke_clear_s`` from ``releases[-1]`` and
+    # the catch twin from the mark still ahead of now, which is the new one.
+    # ``releases[-1]`` is freshly measured on the RELEASE-TERMINAL branch (the new
+    # terminal mark below re-runs ``plan_stroke_clear_s`` on the spliced plan); on
+    # the REST-terminal branch it is a carried mark like any other, and carries a
+    # pre-splice value — which is correct there, because a rest-terminal plan's
+    # last release and its whole deceleration sit inside the bit-identical head.
+    # So re-measuring would be motion nobody asked for.  Say it here rather than
+    # leave a reader to assume they are fresh on both branches.
     if release_terminal:
         mark = meta.releases[-1]
         t_rel = float(spliced.total_duration)
-        releases = (ReleaseMark(
+        releases = tuple(meta.releases[:-1]) + (ReleaseMark(
             t_s=t_rel, site_mm=mark.site_mm, tilt=throw_tilt,
             vel_mm_s=np.asarray(cup_tail.takeoff_vel, dtype=float) * 1000.0,
             flight_s=mark.flight_s, target_mm=mark.target_mm,
             stroke_clear_s=plan_stroke_clear_s(spliced, t_rel)),)
     else:
-        # Every release this plan carries sits in the BIT-IDENTICAL head (the
-        # guard above refuses a splice that does not clear the last one and its
-        # detach cone), so the marks describe the spliced plan unchanged — same
-        # instants, same clock, same site.  Carrying them is what keeps
-        # `announcement_fields` / `_accept_cycle` able to name the throw this
-        # plan made; dropping them would report a cycle that never threw.
+        # Every release a rest-terminal plan carries sits in the head by the same
+        # bound, so the whole tuple survives.
         releases = meta.releases
-    catches = (CatchMark(
+    catches = tuple(m for m in meta.catches if int(m.knot) < k_s) + (CatchMark(
         t_s=t_catch_new, knot=k_s + int(cup_tail.catch_k),
         site_mm=tail_goals.catch_site_mm, vel_mm_s=tail_goals.catch_vel_mm_s,
         arm_lead_s=plan_arm_lead_s(spliced, t_catch_new),
@@ -2238,6 +2688,9 @@ def replan_tail(plan: CyclePlan, meta: CycleMeta, t_now_s: float,
         kind=REPLANNED, n_knots=int(spliced.n_knots), dt=dt,
         duration_s=float(spliced.total_duration),
         releases=releases, catches=catches, report=report,
+        # The peaks describe the RE-GATED RANGE, not the whole plan — see the
+        # field. `None` when the parked-floor fallback gated the whole thing.
+        report_range_knots=(None if k_gate <= 0 else (k_gate, int(spliced.n_knots))),
         plan_wall_s=time.perf_counter() - t_wall,
         tilts=tilts, receive_tilt=recv, throw_tilt=throw_tilt,
         stroke_clear_s=meta.stroke_clear_s,

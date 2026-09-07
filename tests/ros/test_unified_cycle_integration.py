@@ -852,6 +852,475 @@ def test_plan_cycle_extend_without_an_active_cycle_is_refused():
                                                        CyclePlan)
 
 
+# ═════════════════════════════════════════════════════════════════════════════
+# The UH-7 STEADY ring, through the REAL service
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# Nothing else in the suite drives a `KIND_STEADY` solve through
+# `trajectory/plan_cycle`: the coordinator-side tests stub `_call_plan_cycle` and
+# inspect the request, and `tests/motion/` exercises `plan_steady` in-process with
+# no origin, no install-continuity guard and no supersede alarm. So the chain the
+# constant beat is made of — a plan that STAYS release-terminal beat after beat,
+# with its streaming deadline moving forward rather than being retired — has
+# never been executed end to end. These are the tests that execute it.
+
+#: The ring's beat (s). The sim gate's `CYCLE_PERIOD_S`, and it is a MEASURED
+#: floor rather than a round number: `sim/unified_gate.py:240-244` records that a
+#: 1.0 s window cannot absorb a displaced catch (LIMIT_JERK 155-198 k against the
+#: 150 k session cap) while 1.4 s carries the whole ring at 81-90 k.
+_RING_BEAT_S = 1.4
+#: Time of flight the ring throws for, and `_launch_req`'s own default.
+_RING_FLIGHT_S = 0.6
+
+
+def _steady_chain_req():
+    """`MODE_NEW` LAUNCH with a STEADY chained in — the ring's FIRST install.
+
+    The shipped install chains a LANDING and is rest-terminal by design; this one
+    chains a STEADY and is therefore release-terminal from cycle 1, which is the
+    whole shape change UH-7 makes and the reason the supersede deadline arms for
+    the first time.
+    """
+    req = _launch_req(flight_s=_RING_FLIGHT_S)
+    req.chain = True
+    req.chain_kind = req.KIND_STEADY
+    req.chain_period_s = _RING_BEAT_S
+    req.chain_catch_frac = _RING_FLIGHT_S / _RING_BEAT_S
+    return req
+
+
+def _steady_extend_req():
+    """`MODE_EXTEND` KIND_STEADY — one more beat onto the terminal release."""
+    req = _launch_req(flight_s=_RING_FLIGHT_S)
+    req.mode = req.MODE_EXTEND
+    req.kind = req.KIND_STEADY
+    req.period_s = _RING_BEAT_S
+    req.catch_frac = _RING_FLIGHT_S / _RING_BEAT_S
+    return req
+
+
+def _landing_extend_req():
+    """`MODE_EXTEND` KIND_LANDING — the last cycle, which brings the ring to rest."""
+    req = _steady_extend_req()
+    req.kind = req.KIND_LANDING
+    return req
+
+
+@pytest.fixture(scope='module')
+def ring_stages():
+    """The three real service calls that fly a two-cycle ring, recorded.
+
+    ``[(plan, meta, response), …]`` after MODE_NEW(LAUNCH+STEADY),
+    MODE_EXTEND(STEADY) and MODE_EXTEND(LANDING) respectively.
+
+    Module-scoped because the three solves cost ~3.5 s together (MEASURED
+    2026-09-07 on this Jetson: 1935 / 904 / 659 ms, the first paying the cold QP).
+    The plans and metas are immutable products, so the tests below install them
+    into their OWN fresh nodes rather than sharing this one — the node is the part
+    that gets poked.
+    """
+    node = _cycle_node()
+    node._catch_armed = False                      # the unified state
+    out = []
+    resp = node._svc_plan_cycle(_steady_chain_req(), PlanCycle.Response())
+    assert resp.accepted is True, resp.message
+    out.append(node._cycle[:2] + (resp,))
+    for req in (_steady_extend_req(), _landing_extend_req()):
+        resp, _origin = _extend_alive(node, req)
+        assert resp.accepted is True, resp.message
+        out.append(node._cycle[:2] + (resp,))
+    return out
+
+
+def _install_ring(node, stage, tau):
+    """Put ``stage``'s plan on ``node`` with the plan clock reading ``tau``.
+
+    The same poke `_anchor_mid_flight` performs, against a pre-solved plan: both
+    clocks are moved together — `_plan_t0` (what `_current_state` samples on) and
+    the cycle record's own origin — because a seed that read them apart is the
+    defect those tests pin. Re-installing a finished plan is exactly what the
+    service would have left behind, without paying for the solve again.
+    """
+    plan, meta = stage[0], stage[1]
+    t0 = time.perf_counter() - float(tau)
+    node._install(plan, t0=t0)
+    node._cycle = (plan, meta, t0)
+    node._plan_t0 = t0
+    _refresh(node)
+    return t0
+
+
+def test_a_real_KIND_STEADY_ring_installs_and_keeps_its_deadline_armed(
+        ring_stages):
+    """LAUNCH+STEADY, +STEADY, +LANDING — release-terminal until the last one.
+
+    The claim UH-7 rests on, executed rather than asserted about a stub: chaining
+    a STEADY keeps the installed plan RELEASE-terminal, so
+    `latest_supersede_time_s` returns `duration - dt` instead of `inf` and the
+    node's supersede alarm ARMS — for the first time in this codebase's life, the
+    shipped LAUNCH+LANDING install being rest-terminal by design. Each extend
+    moves that deadline forward by exactly one beat; the terminal LANDING retires
+    it. Anything else is the release-terminal cliff left un-managed: past the
+    deadline the emitter's u1 sample reads the plan's terminal HOLD, so the
+    release stroke ships `v1 = 0` against a true 93 rev/s — inside every firmware
+    guard, so the only symptom is a throw that went somewhere else.
+
+    MEASURED (2026-09-07, /tmp/probe_uh7_ros.py, run twice with identical
+    output): durations 2.0 / 3.4 / 4.8 s; releases 0.6, 2.0, 3.4; catches 1.2,
+    2.6, 4.0; supersede at t0 + 1.975 then t0 + 3.375 then retired.
+    """
+    (p1, m1, r1), (p2, m2, r2), (p3, m3, r3) = ring_stages
+    dt = float(p1.dt)
+
+    # Cycle 1: LAUNCH + STEADY, release-terminal, deadline armed at duration - dt.
+    assert r1.duration_s == pytest.approx(0.6 + _RING_BEAT_S, abs=1e-9)
+    assert r1.release_terminal is True
+    assert (r1.supersede_deadline_mono - r1.t0_mono) == pytest.approx(
+        float(p1.total_duration) - dt, abs=1e-9)
+    assert [float(m.t_s) for m in m1.releases] == [pytest.approx(0.6),
+                                                   pytest.approx(2.0)]
+    assert [float(m.t_s) for m in m1.catches] == [pytest.approx(1.2)]
+
+    # Cycle 2: one more beat. STILL release-terminal; the deadline MOVED, and by
+    # exactly the window — not retired, and not left where it was.
+    assert r2.duration_s == pytest.approx(float(r1.duration_s) + _RING_BEAT_S,
+                                          abs=1e-9)
+    assert r2.release_terminal is True
+    assert ((r2.supersede_deadline_mono - r2.t0_mono)
+            - (r1.supersede_deadline_mono - r1.t0_mono)) == pytest.approx(
+                _RING_BEAT_S, abs=1e-9)
+    assert [float(m.t_s) for m in m2.releases] == [
+        pytest.approx(0.6), pytest.approx(2.0), pytest.approx(3.4)]
+    assert [float(m.t_s) for m in m2.catches] == [pytest.approx(1.2),
+                                                  pytest.approx(2.6)]
+    assert np.array_equal(p2.pose[:p1.n_knots], p1.pose)   # head bit-identical
+
+    # The last cycle brings it to rest and RETIRES the deadline in the same call.
+    assert r3.release_terminal is False
+    assert r3.supersede_deadline_mono == 0.0
+    assert uc.is_release_terminal(m3) is False
+    assert uc.latest_supersede_time_s(m3) == math.inf
+    assert [float(m.t_s) for m in m3.catches] == [
+        pytest.approx(1.2), pytest.approx(2.6), pytest.approx(4.0)]
+    assert np.array_equal(p3.pose[:p2.n_knots], p2.pose)
+
+
+def test_the_reported_CATCH_is_the_one_still_AHEAD_not_a_spent_one(ring_stages):
+    """`t_catch_mono` / `arm_lead_s` after an EXTEND name the NEXT touch-down.
+
+    The mirror of `test_the_reported_release_is_the_one_still_AHEAD_not_a_spent_
+    one`, and the same defect one field over. `meta.t_catch_s` and
+    `meta.arm_lead_s` read `catches[0]`, and `extend` pins that to the FIRST catch
+    on the joined clock permanently — so on a ring both fields reported a
+    touch-down a beat in the past. `arm_lead_s` is not cosmetic: under unified
+    `catch_coordinator` takes its stroke-busy window from the plan's own
+    `stroke_clear_s`/`arm_lead_s` rather than the legacy firmware model, so a
+    spent instant sizes that window around a catch that has already happened.
+
+    Driven on `_accept_cycle` against the REAL three-catch ring meta at three
+    plan times, with the clock frozen so the boundary cases are exact rather than
+    approximately true.
+
+    MEASURED (2026-09-07, /tmp/probe_uh7_ros.py, run twice with identical
+    output): at tau 0.10 → catch 1.2, at 2.20 → 2.6, at 3.50 → 4.0.
+    """
+    plan, meta, _r = ring_stages[2]
+    node = _cycle_node()
+    with _frozen_perf() as at:
+        def _reported(tau):
+            t0 = at - float(tau)
+            r = node._accept_cycle(PlanCycle.Response(), plan, meta, t0, at)
+            return r.t_catch_mono - t0, r.arm_lead_s
+
+        assert _reported(0.10)[0] == pytest.approx(1.2, abs=1e-9)
+        assert _reported(2.20)[0] == pytest.approx(2.6, abs=1e-9)
+        # Past every catch the LAST is reported, never 0.0 — a plan that caught
+        # still caught, and "never" is a lie the consumer's `> now` test would
+        # swallow silently.
+        assert _reported(4.50)[0] == pytest.approx(4.0, abs=1e-9)
+        # `arm_lead_s` follows the SAME mark rather than `catches[0]`.
+        for tau, mark in ((0.10, meta.catches[0]), (2.20, meta.catches[1]),
+                          (3.50, meta.catches[2])):
+            assert _reported(tau)[1] == pytest.approx(float(mark.arm_lead_s))
+
+
+def test_a_landing_update_on_a_RING_re_aims_the_SECOND_windows_catch(
+        ring_stages):
+    """The replan follows the LIVE catch, and the first window is left alone.
+
+    On a LAUNCH + STEADY join `catches[0]` happens to BE the live catch, so the
+    defect is invisible; it appears the moment a second STEADY is chained and the
+    plan carries two. Before this, `_replan_cycle_from_target` read
+    `meta.catch_site_mm` (i.e. `catches[0]`) and left `catch_frac = 0.0`, so
+    `replan_tail` bounded the splice against the SPENT catch's knot and refused
+    every landing update from the second chained window onward with *"the catch
+    is inside the committed head"* — the replan policy dead code on the ring
+    shape exactly as it was dead code on the rest-terminal shape before
+    2026-09-05.
+
+    Three claims: the SECOND catch moves, the FIRST window is bit-identical
+    through the splice (which is what protects the launch release at knot 24 and
+    its detach cone at 25-26 — a splice into that cone delivers 1.126 m/s² of
+    off-axis force to a ball already in the air), and the plan stays
+    release-terminal with its beat intact.
+
+    MEASURED (2026-09-07, /tmp/probe_ring_knots.py, run twice with identical
+    output) on this exact ring: 137 knots at dt 0.025, releases at knots 24, 80
+    and 136, catches at 47 and 103; `tau = 2.10` with the node's own 0.30 s lead
+    splices at knot 96 — clear of the second release's 80 + 2 detach cone and
+    short of the live catch at 103.
+    """
+    node = _cycle_node()
+    node._catch_armed = False
+    plan, meta, _r = ring_stages[1]
+    live = meta.catches[1]
+    k_s = uc.splice_knot(meta, 2.10, tn._CYCLE_REPLAN_LEAD_S)
+    assert meta.catches[0].knot < k_s < live.knot
+
+    # The clock is frozen for the same reason the other same-origin re-install
+    # tests freeze it: `_plan_cycle_replan` captures `tau` at handler ENTRY while
+    # `_commanded_hand_state` samples the live plan on its own `perf_counter()`
+    # call several hundred ms later, so an unfrozen run measures the SOLVE
+    # (1.9 rev of slider travel through the carry, measured) as continuity drift
+    # and refuses for a reason that is about the Jetson's clock, not the splice.
+    with _frozen_perf():
+        t0 = _install_ring(node, ring_stages[1], tau=2.10)
+        msg = _dyn_msg(x=10.0)
+        msg.arrival_time = t0 + float(live.t_s)
+        node._on_dynamic_target(msg)
+    fb = node._publishers['trajectory/target_feedback'].published[-1]
+    assert fb.accepted is True, fb.reason
+    assert fb.source == 'cycle'
+    assert node._cycle_replans == 1
+
+    spliced, meta2, t0_after = node._cycle
+    assert t0_after == pytest.approx(t0)
+    assert spliced is not plan
+    # The whole first window — release, detach cone, catch — is carried bit for
+    # bit, on all four channels.
+    assert np.array_equal(spliced.pose[:k_s], plan.pose[:k_s])
+    assert np.array_equal(spliced.pose_vel[:k_s], plan.pose_vel[:k_s])
+    assert np.array_equal(spliced.hand_rev[:k_s], plan.hand_rev[:k_s])
+    assert np.array_equal(spliced.hand_vel_rps[:k_s], plan.hand_vel_rps[:k_s])
+    # The SECOND catch moved; the first is carried, and so are all three
+    # releases — the beat the next EXTEND chains onto is untouched.
+    assert len(meta2.catches) == 2
+    assert meta2.catches[0].t_s == pytest.approx(float(meta.catches[0].t_s))
+    assert np.allclose(meta2.catches[0].site_mm, meta.catches[0].site_mm)
+    assert meta2.catches[1].t_s == pytest.approx(float(live.t_s))
+    assert meta2.catches[1].site_mm[0] == pytest.approx(10.0, abs=0.1)
+    assert [float(r.t_s) for r in meta2.releases] == [
+        pytest.approx(0.6), pytest.approx(2.0), pytest.approx(3.4)]
+    assert uc.is_release_terminal(meta2) is True
+
+
+@pytest.mark.parametrize('arrival_tau,needle', [
+    (1.2, 'inside the committed head'),      # the SPENT catch of window 1
+    (2.0, 'some other ball'),                # a landing no catch of this plan makes
+])
+def test_a_landing_update_that_names_no_LIVE_catch_is_refused(
+        ring_stages, arrival_tau, needle):
+    """Being ahead of now is not enough to name a catch: the update must MATCH one.
+
+    Two failures this closes, both specific to a ring and neither visible on a
+    single-window plan:
+
+    * **the spent ball.** After cycle k's touch-down the tracker keeps seeing
+      ball k — now sitting in the cup and moving WITH it, so it clears
+      `catch_coordinator`'s 5 mm movement gate and keeps publishing. Selecting
+      "the first catch still ahead of now" would re-aim cycle k+1's catch onto
+      wherever the LAST ball ended up, and the next ball would be caught at the
+      previous ball's landing point. Selecting by TIME refuses it instead.
+    * **a foreign or corrupt track.** Nothing else filters one under unified:
+      `catch_coordinator`'s own announced-landing guard gates the HAND ARM, which
+      unified never dispatches. An update whose predicted landing matches no
+      catch this plan makes is not this cycle's ball.
+
+    Refused at the routing layer, so neither costs the ~230 ms seven-channel
+    solve on the single-threaded executor to say no, and the last good plan keeps
+    streaming untouched.
+    """
+    node = _cycle_node()
+    node._catch_armed = False
+    plan, _meta, _r = ring_stages[1]
+    node._svc_plan_cycle = lambda *a, **k: pytest.fail(
+        'a landing update that names no live catch paid for a solve')
+
+    # Frozen so `tau_now` is exactly 2.10 and the two boundary cases below are
+    # decided by the rule rather than by how long the harness took to get here.
+    with _frozen_perf():
+        t0 = _install_ring(node, ring_stages[1], tau=2.10)
+        msg = _dyn_msg(x=10.0)
+        msg.arrival_time = t0 + float(arrival_tau)
+        node._on_dynamic_target(msg)
+    fb = node._publishers['trajectory/target_feedback'].published[-1]
+    assert fb.accepted is False
+    assert fb.code == tn._NO_LIVE_CATCH
+    assert needle in fb.reason
+    assert fb.source == 'cycle'
+    assert node._cycle[0] is plan               # the last good plan still stands
+    assert node._cycle_replans == 0
+
+
+def test_the_match_band_must_stay_INSIDE_the_commit_lead():
+    """The stale-ball refusal works BECAUSE the match band is under the lead.
+
+    The coupling is easy to break by tuning either constant alone, and what
+    breaks is silent and physical, so it is pinned rather than left as a comment.
+
+    The stale ball: after cycle k's touch-down the tracker keeps seeing ball k,
+    now sitting in the cup and moving WITH it, so it clears `catch_coordinator`'s
+    5 mm movement gate and keeps publishing. Its arrival instant is close to
+    catch k, so the match selects catch k — which is exactly what we want, because
+    the SPENT test then refuses it. And that test refuses it precisely because
+    `_CYCLE_CATCH_MATCH_S` (0.25) < `_CYCLE_REPLAN_LEAD_S` (0.30): a mark within
+    the band of NOW is inside the commit lead by construction, so any catch a
+    stale update can select is already spent.
+
+    Raise the band above the lead and a stale ball's update selects a catch the
+    spent test still calls live — and the cup for the NEXT ball gets dragged to
+    wherever the LAST one ended up, which reads as a physics fault and is
+    bookkeeping.
+    """
+    assert tn._CYCLE_CATCH_MATCH_S < tn._CYCLE_REPLAN_LEAD_S
+    # ...and the consequence, driven rather than asserted about the constants: a
+    # catch that has JUST passed cannot be selected, at any arrival within the
+    # band of it.
+    node = _cycle_node()
+    with _frozen_perf() as at:
+        mark = uc.CatchMark(t_s=0.50, knot=20,
+                            site_mm=np.array([0.0, 0.0, 830.0]),
+                            vel_mm_s=np.array([0.0, 0.0, -2500.0]))
+        meta = types.SimpleNamespace(catches=(mark,), releases=('r',))
+        # tau_now sits just past the catch: the ball is in the cup.
+        t0 = at - (float(mark.t_s) + 0.01)
+        for slack in (0.0, 0.1, -0.1, tn._CYCLE_CATCH_MATCH_S * 0.99):
+            got, why = node._live_catch_mark(
+                meta, t0, t0 + float(mark.t_s) + slack)
+            assert got is None, slack
+            assert 'inside the committed head' in why
+
+
+def test_two_catches_inside_the_match_band_are_refused_not_guessed():
+    """A tie is refused by name, because nearest-wins would be a coin flip.
+
+    The band is sized to stay under half the shortest beat the planner can fly,
+    so on every shape it can build today there is at most one candidate and this
+    never fires. "Never fires on today's shapes" is not "cannot fire": the ring's
+    whole purpose is to SHORTEN the beat, and a beat under twice the band walks
+    straight into it. What it would become is a tie broken by float noise that
+    re-aims one of two real catches — and the wrong one drags the cup away from a
+    ball already in flight, with nothing in the log to say a choice was made.
+
+    So both candidates are named and the update is refused. `AMBIGUOUS` leads the
+    message so an operator greps one word to tell it from the two ordinary
+    refusals.
+    """
+    node = _cycle_node()
+    with _frozen_perf() as at:
+        def _mark(t_s, knot):
+            return uc.CatchMark(t_s=t_s, knot=knot,
+                                site_mm=np.array([0.0, 0.0, 830.0]),
+                                vel_mm_s=np.array([0.0, 0.0, -2500.0]))
+        # Two catches 0.30 s apart — a beat well under 2 x the 0.25 s band.
+        meta = types.SimpleNamespace(catches=(_mark(1.00, 40), _mark(1.30, 52)),
+                                     releases=('r',))
+        t0 = at                                  # tau_now = 0, both still live
+        got, why = node._live_catch_mark(meta, t0, t0 + 1.15)
+        assert got is None
+        assert why.startswith('AMBIGUOUS')
+        assert '1.000 s' in why and '1.300 s' in why
+        # ...and it is not blanket paranoia: an arrival that matches exactly one
+        # of them still selects, so the ordinary case is untouched.
+        # 1.45 s is 0.15 from the second mark and 0.45 from the first.
+        got, why = node._live_catch_mark(meta, t0, t0 + 1.45)
+        assert got is not None and float(got.t_s) == 1.30, why
+
+
+def test_the_extend_hands_back_the_replan_budget_ONCE_PER_WINDOW(ring_stages):
+    """A ring extends every beat, so the budget is two replans PER BEAT.
+
+    Deliberate, and the only reading that keeps the policy meaning what it says:
+    the bound exists so ONE ball's landing is not chased without limit, and every
+    extend brings a new window carrying a new catch for a NEW ball. A
+    session-wide budget would spend itself on the first two balls and fly every
+    remaining catch blind to the tracker; a TIME-based reset was tried and
+    removed, because every landing update arrives after the release by
+    construction, so the counter reset on every call and the bound never bound
+    (`test_the_replan_budget_is_restored_by_AN_INSTALL_and_never_by_the_clock`).
+
+    The reset is safe because an EXTEND cannot move a committed knot: the joined
+    head is bit-identical and `_install_continuity_ok` re-checks it at the LIVE
+    plan time, so the two replans the fresh budget buys can only reach the window
+    this call just added.
+    """
+    node = _cycle_node()
+    node._catch_armed = False
+    _install_ring(node, ring_stages[0], tau=0.0)
+    head_plan = node._cycle[0]
+    n_head = int(head_plan.n_knots)
+    node._cycle_replans = tn._MAX_CYCLE_REPLANS
+    assert node._cycle_replan_budget_left() == 0
+
+    resp, _origin = _extend_alive(node, _steady_extend_req())
+    assert resp.accepted is True, resp.message
+    assert resp.replans_used == 0
+    assert node._cycle_replans == 0
+    assert node._cycle_replan_budget_left() == tn._MAX_CYCLE_REPLANS
+    # ...and everything the spent budget had already committed is still there.
+    assert np.array_equal(node._cycle[0].pose[:n_head], head_plan.pose)
+    assert np.array_equal(node._cycle[0].hand_rev[:n_head], head_plan.hand_rev)
+
+
+def test_a_LATE_extend_is_refused_STALE_STATE_and_the_last_plan_keeps_streaming():
+    """The failure a ring meets every beat if the extend lead is wrong.
+
+    `_UNIFIED_EXTEND_LEAD_S` exists to ask for the next window BEFORE the release,
+    not after. When it is asked for too late the emitter has already run off the
+    end of the head: the live plan is clamped to its terminal HOLD (zero twist,
+    zero hand rate) while the joined plan at the same `tau` is well inside the NEW
+    window at full speed, so installing it would jump the machine forward by
+    however long the solve took — on seven channels, as a step. The continuity
+    guard refuses it and the last good plan keeps streaming.
+
+    Until now the suite RETRIED past this: `_extend_alive` re-anchors and tries
+    again (up to four times), and its docstring says the refusal is correct — but
+    nothing asserted it, and nothing asserted the last good plan survives it. So
+    this drives `tau` past the seam DELIBERATELY, through the real service, with
+    no retry.
+
+    MEASURED (2026-09-07, /tmp/probe_uh7_ros.py, run twice with identical output)
+    on the 0.6 s LAUNCH at three taus past its end: refused STALE_STATE every
+    time, on the HAND position term (3.20-4.24 rev of drift against the 1.00 rev
+    bound) — the legs alone would not have caught it, which is the whole reason
+    that term exists.
+    """
+    node = _cycle_node()
+    node._catch_armed = False
+    assert node._svc_plan_cycle(_launch_req(),
+                                PlanCycle.Response()).accepted is True
+    plan, meta, _t0 = node._cycle
+    assert float(plan.total_duration) == pytest.approx(0.6)
+
+    for tau in (0.65, 0.80, 1.20):
+        _refresh(node)
+        past = time.perf_counter() - tau
+        node._cycle = (plan, meta, past)
+        node._plan_t0 = past
+        resp = node._svc_plan_cycle(_landing_req(), PlanCycle.Response())
+        assert resp.accepted is False, resp.message
+        assert resp.code == feas.STALE_STATE
+        assert 'not continuous at the live plan time' in resp.message
+        assert 'holding the last good plan' in resp.message
+        # The LAST GOOD PLAN keeps streaming: same object on the emitter, same
+        # cycle record, same origin. A refusal that quietly installed anything
+        # would be worse than the cliff it was refusing.
+        assert node._active_plan is plan
+        assert node._cycle[0] is plan
+        assert node._cycle[1] is meta
+        assert node._cycle[2] == pytest.approx(past)
+
+
 #: The shipped cycle's flight time, and the numbers below are quoted at it.
 _SHIPPED_FLIGHT_S = 0.8
 #: `reload_coordinator_node._UNIFIED_LAUNCH_WINDOW_S`.
@@ -922,9 +1391,16 @@ def _landing_update(node, x_mm, y_mm=0.0):
     Driven at the SUBSCRIBER, not at the service, because the wiring under test
     is the routing as much as the splice: `_on_dynamic_target` is what decides a
     cycle update is a replan rather than a `build_catch` reach.
+
+    `arrival_time` is read off the installed plan (`_live_catch_perf`), which is
+    what the coordinator publishes: the ball's own predicted landing, i.e. the
+    instant the plan committed to catch it. That is the field the node now uses
+    to decide WHICH catch of a chained plan is being re-aimed.
     """
     _anchor_mid_flight(_refresh(node))
-    node._on_dynamic_target(_dyn_msg(x=x_mm, y=y_mm))
+    msg = _dyn_msg(x=x_mm, y=y_mm)
+    msg.arrival_time = _live_catch_perf(node)
+    node._on_dynamic_target(msg)
     return node._publishers['trajectory/target_feedback'].published[-1]
 
 
@@ -1387,7 +1863,13 @@ def test_dynamic_target_routes_to_the_cycle_replan_not_build_catch(monkeypatch):
     msg.target_pos = Point(x=12.0, y=-4.0, z=170.0)
     msg.target_quat = Quaternion()
     msg.target_vel = Vector3()
-    msg.arrival_time = time.perf_counter() + 0.5
+    # The tracker's predicted landing for THIS ball, which is what selects the
+    # catch mark being re-aimed. Read off the installed plan rather than invented
+    # as `now + 0.5`: the coordinator publishes the ball's own predicted landing,
+    # and a made-up instant more than `_CYCLE_CATCH_MATCH_S` from any catch the
+    # plan makes is refused NO_LIVE_CATCH — correctly, and for a reason that has
+    # nothing to do with the routing under test.
+    msg.arrival_time = _live_catch_perf(node)
     node._on_dynamic_target(msg)
     assert len(seen) == 1
     req = seen[0]
@@ -1429,6 +1911,23 @@ def _dyn_msg(x=0.0, y=0.0, z=170.0, lead_s=0.5):
     msg.target_vel = Vector3()
     msg.arrival_time = time.perf_counter() + float(lead_s)
     return msg
+
+
+def _live_catch_perf(node):
+    """The perf instant of the first catch on the installed plan still AHEAD.
+
+    What the tracker's `arrival_time` carries on the real graph: its own
+    predicted landing for the ball in flight, which the plan committed to catch.
+    `_replan_cycle_from_target` selects the catch mark NEAREST that instant, so a
+    harness that invents one unrelated to the plan gets `NO_LIVE_CATCH` — the
+    correct answer to a made-up question, and never the wiring under test.
+    """
+    _plan, meta, t0 = node._cycle
+    tau_now = time.perf_counter() - float(t0)
+    for mark in meta.catches:
+        if float(mark.t_s) > tau_now:
+            return float(t0) + float(mark.t_s)
+    raise AssertionError('the installed cycle has no catch left ahead of now')
 
 
 def _cycle_installed_sentinel(node):
@@ -1561,34 +2060,50 @@ def test_the_replan_converts_the_wire_CENTROID_into_the_planners_CUP_site(
         return resp
 
     # A sentinel cycle: `_replan_cycle_from_target` reads only the meta's catch
-    # mark and the plan's duration, and `_svc_plan_cycle` is captured below, so
-    # nothing here needs a real ~250 ms solve to pin a frame conversion.
+    # MARKS and the plan's duration, and `_svc_plan_cycle` is captured below, so
+    # nothing here needs a real ~250 ms solve to pin a frame conversion. The clock
+    # is frozen so the mark's liveness (`t_s > tau_now + lead`) and the message's
+    # arrival instant are exact rather than approximately true — the selection is
+    # by TIME now, and a scheduler stall between the origin and the call would
+    # otherwise read as a spent catch.
     node = _cycle_node()
-    node._cycle = (types.SimpleNamespace(total_duration=1.4),
-                   types.SimpleNamespace(
-                       catch_site_mm=np.array([0.0, 0.0, 830.0]),
-                       catch_vel_mm_s=np.array([0.0, 0.0, -2500.0]),
-                       releases=('r',)),
-                   0.0)
-    _capture(node)
     theta = math.radians(12.0)
+    _T_CATCH = 0.77
+    with _frozen_perf() as at:
+        node._cycle = (types.SimpleNamespace(total_duration=1.4),
+                       types.SimpleNamespace(
+                           catches=(uc.CatchMark(
+                               t_s=_T_CATCH, knot=30,
+                               site_mm=np.array([0.0, 0.0, 830.0]),
+                               vel_mm_s=np.array([0.0, 0.0, -2500.0])),),
+                           releases=('r',)),
+                       at)
+        _capture(node)
 
-    node._replan_cycle_from_target(_tilted_dyn_msg(ry=theta, x=100.0, y=-50.0))
-    assert sent[-1].catch_site_mm[0] == pytest.approx(100.0 + 13.4685, abs=1e-3)
-    assert sent[-1].catch_site_mm[1] == pytest.approx(-50.0, abs=1e-9)
-    # z is NEVER touched: a centroid says nothing about the cup height, which the
-    # slider the plan is about to choose owns.
-    assert sent[-1].catch_site_mm[2] == pytest.approx(830.0)
+        node._replan_cycle_from_target(
+            _tilted_dyn_msg(ry=theta, x=100.0, y=-50.0, lead_s=_T_CATCH), node._cycle)
+        assert sent[-1].catch_site_mm[0] == pytest.approx(100.0 + 13.4685,
+                                                          abs=1e-3)
+        assert sent[-1].catch_site_mm[1] == pytest.approx(-50.0, abs=1e-9)
+        # z is NEVER touched: a centroid says nothing about the cup height, which
+        # the slider the plan is about to choose owns.
+        assert sent[-1].catch_site_mm[2] == pytest.approx(830.0)
 
-    node._replan_cycle_from_target(_tilted_dyn_msg(rx=theta, x=100.0, y=-50.0))
-    assert sent[-1].catch_site_mm[0] == pytest.approx(100.0, abs=1e-9)
-    assert sent[-1].catch_site_mm[1] == pytest.approx(-50.0 - 13.4685, abs=1e-3)
+        node._replan_cycle_from_target(
+            _tilted_dyn_msg(rx=theta, x=100.0, y=-50.0, lead_s=_T_CATCH), node._cycle)
+        assert sent[-1].catch_site_mm[0] == pytest.approx(100.0, abs=1e-9)
+        assert sent[-1].catch_site_mm[1] == pytest.approx(-50.0 - 13.4685,
+                                                          abs=1e-3)
 
-    # LEVEL: an exact no-op, so a vertical self-toss's replan is bit-identical to
-    # what it was before this conversion existed.
-    node._replan_cycle_from_target(_tilted_dyn_msg(x=100.0, y=-50.0))
-    assert sent[-1].catch_site_mm[0] == 100.0
-    assert sent[-1].catch_site_mm[1] == -50.0
+        # LEVEL: an exact no-op, so a vertical self-toss's replan is
+        # bit-identical to what it was before this conversion existed.
+        node._replan_cycle_from_target(
+            _tilted_dyn_msg(x=100.0, y=-50.0, lead_s=_T_CATCH), node._cycle)
+        assert sent[-1].catch_site_mm[0] == 100.0
+        assert sent[-1].catch_site_mm[1] == -50.0
+        # The catch INSTANT is nominated, unchanged, as a fraction of the whole
+        # plan's duration — that is how the planner is told WHICH catch this is.
+        assert sent[-1].catch_frac * sent[-1].period_s == pytest.approx(_T_CATCH)
 
 
 def test_a_non_cycle_install_clears_the_cycle_record():
@@ -3080,9 +3595,17 @@ def test_the_extend_kind_follows_how_many_cycles_are_left(monkeypatch,
     seq, state = _seq_state(node, unified=True)
     node._toss_session_ref = types.SimpleNamespace(
         num_throws=3, cycle_index=3 - remaining, dwell_time_s=5.2)
+    # The extend is NON-BLOCKING (UH-7a): it dispatches through the client and
+    # polls the future on later ticks, so "what did it ask for" is a question
+    # about `call_async`, not about `_call_plan_cycle`. A future that never
+    # resolves is what a dispatched-and-unanswered request looks like, and it
+    # keeps this test on the DISPATCH, which is all it asserts.
     sent = []
-    monkeypatch.setattr(node, '_call_plan_cycle',
-                        lambda req: sent.append(req) or (None, False))
+    monkeypatch.setattr(node, '_plan_cycle_cli', types.SimpleNamespace(
+        service_is_ready=lambda: True,
+        wait_for_service=lambda timeout_sec=None: True,
+        call_async=lambda req: (sent.append(req),
+                                types.SimpleNamespace(done=lambda: False))[1]))
     state.unified_plan = types.SimpleNamespace(
         t_release_mono=1.0, release_terminal=True, supersede_deadline_mono=1.0)
     node._tick_unified_extend(seq, state, 1.0)
@@ -3499,10 +4022,16 @@ def test_the_extend_safety_net_lands_before_the_published_deadline(monkeypatch):
     state.unified_plan = types.SimpleNamespace(
         t_release_mono=deadline - 1.0, release_terminal=True,
         supersede_deadline_mono=deadline)
+    # UH-7a: the ask is a `call_async` on the client, not a blocking
+    # `_call_plan_cycle`. What this test measures — WHEN the request goes out
+    # relative to the published deadline — is unchanged by that, and the future
+    # deliberately never resolves so the trigger is all that is exercised.
     fired_at = []
-    monkeypatch.setattr(
-        node, '_call_plan_cycle',
-        lambda req: fired_at.append(req) or (None, False))
+    monkeypatch.setattr(node, '_plan_cycle_cli', types.SimpleNamespace(
+        service_is_ready=lambda: True,
+        wait_for_service=lambda timeout_sec=None: True,
+        call_async=lambda req: (fired_at.append(req),
+                                types.SimpleNamespace(done=lambda: False))[1]))
     # Step the injected clock across the trigger in 40 ms coordinator ticks.
     t = deadline - 2.0
     while t < deadline and not fired_at:

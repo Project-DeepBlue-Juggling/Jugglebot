@@ -713,6 +713,35 @@ _MISS_PREFIX = 'MISSED'
 OUTCOME_COMPLETED = 'COMPLETED'
 OUTCOME_STOPPED_ON_MISS = 'STOPPED_ON_MISS'
 
+#: UH-7a — a unified STEADY ring whose next window the planner REFUSED. The
+#: coordinator's fall-back LANDING installed, so the machine caught the ball in
+#: the air and settled; the session then stops here rather than continuing.
+#:
+#: **Why it stops instead of degrading.** Continuing is physically safe — the
+#: LANDING parks the cup at the floor and the next cycle plans a genuine
+#: `MODE_NEW` LAUNCH from a stopped machine — but it silently reverts the beat
+#: to the settle-plus-relaunch cadence for the rest of the sitting. These are
+#: MEASUREMENT sessions: the achieved cadence, the per-cycle catch error and the
+#: ILC corpus are all read per session, and a corpus with two cadences in it is a
+#: corpus with two machines in it. The operator's correct response to a refused
+#: window is to raise `dwell_time_s` and re-run, and that is only obvious if the
+#: session says so by name (owner, 2026-09-07).
+#:
+#: It carries the PLANNER's own refusal string, so the detail names which layer
+#: said no and its numbers, exactly as a cycle terminal would.
+OUTCOME_STOPPED_CHAIN_REFUSED = 'STOPPED_CHAIN_REFUSED'
+
+#: UH-7a — the ring lost its next window ENTIRELY: the STEADY failed, the LANDING
+#: fall-back could not be planned (or there was no time left to try it), and the
+#: coordinator HELD the machine. Distinct from CHAIN_REFUSED, where a window did
+#: install and the ball was caught by a plan: here nothing was chained and the
+#: stop is what a `trajectory/hold` left behind.
+#:
+#: The CYCLE keeps its own verdict — a catch that happened still counts — because
+#: the failure is the ring's, not the throw's. The session stops on the cycle
+#: this is armed during, since the hold has already ended any further motion.
+OUTCOME_STOPPED_CHAIN_LOST = 'STOPPED_CHAIN_LOST'
+
 # ── The reload interlude's terminals (§ 3.9) ──────────────────────────────────
 # Every one of them STOPS the session, and every one names WHICH rung refused, so
 # the operator routes the failure without reading a log. The two below are the
@@ -960,8 +989,32 @@ class TossSessionSequencer:
     _flights: List[float] = field(default_factory=list, init=False)
     _dwells: List[float] = field(default_factory=list, init=False)
     _stop_outcome: Optional[str] = field(default=None, init=False)
+    #: UH-7a — the composed ``STOPPED_CHAIN_REFUSED(...)`` armed by
+    #: :meth:`note_chain_refused`, consumed by the NEXT
+    #: :meth:`note_cycle_result`. It is a two-step (arm here, stop there) rather
+    #: than an immediate ``_stop_outcome`` because the cycle that has to run
+    #: FIRST is the one the fall-back window carries: its ball is already
+    #: airborne when the refusal is known, and that window is what catches it.
+    _chain_refused: Optional[str] = field(default=None, init=False)
     _finished: bool = field(default=False, init=False)
     _result: Optional[TossSessionResult] = field(default=None, init=False)
+    #: THE BEAT, release to release (s) — hoisted ONCE, at accept.
+    #:
+    #: ``flight_time_s + dwell_time_s``, computed in ``__post_init__`` AFTER the
+    #: dwell's default substitution, and it is the same statement
+    #: :meth:`next_release_at` makes one term over: dwell is landing → next
+    #: release, and a landing is a release plus a flight, so release → release is
+    #: flight + dwell. Two spellings of one cadence.
+    #:
+    #: **Why it is a field and not a second addition at the reader.** Under a
+    #: unified STEADY chain (UH-7a) this number is the PERIOD of the window the
+    #: planner is asked for, while ``next_release_at`` is the instant the FSM is
+    #: scheduled against — and ``reload_coordinator_node``'s CHAIN_SKEW guard
+    #: refuses the cycle when the two disagree by more than one tick. The
+    #: coordinator therefore reads THIS (``_unified_beat_s``) rather than adding
+    #: the two floats again on its side of the wire; a second addition is exactly
+    #: the shape that produces a skew nobody can account for.
+    beat_s: float = field(default=0.0, init=False)
 
     def __post_init__(self):
         # Default-substitution ONLY on exactly 0.0/0 (the goal's "unset" sentinel).
@@ -974,6 +1027,9 @@ class TossSessionSequencer:
             self.throw_delay_s = DEFAULT_TOSS_THROW_DELAY_S
         if self.catch_vel_scale == 0.0:
             self.catch_vel_scale = DEFAULT_CATCH_VEL_SCALE
+        # LAST, so it is computed from the RESOLVED dwell rather than from the
+        # goal's 0.0 sentinel.
+        self.beat_s = float(self.flight_time_s) + float(self.dwell_time_s)
 
     # ── derived ────────────────────────────────────────────────────────────────
 
@@ -1372,7 +1428,21 @@ class TossSessionSequencer:
 
         ``landing_perf`` is a SCHEDULED landing, never an observed one — the
         observed one is exactly what the tracker is least trustworthy about and
-        a cadence must not inherit that noise."""
+        a cadence must not inherit that noise.
+
+        **UH-7a note.** Under a unified STEADY chain this stays the session's
+        EXPECTATION and stops being the hand-off: the cycle is started with
+        ``release_at_perf`` taken from the chained plan's own terminal release
+        (the plan is the authority on when the hand throws), and this number is
+        what the coordinator's CHAIN_SKEW guard checks that against. The two
+        agree by construction because the window was planned at
+        :attr:`beat_s` — hence ``next_release_at(landing) − landing ==
+        beat_s − flight_time_s``, one identity, both sides.
+
+        The body is deliberately still ``landing + dwell`` rather than
+        ``landing + (beat_s − flight_time_s)``: the two are the same number in
+        exact arithmetic and NOT bit-identical in floating point, and every
+        legacy cadence in the corpus was scheduled by this expression."""
         return float(landing_perf) + float(self.dwell_time_s)
 
     @property
@@ -1834,12 +1904,38 @@ class TossSessionSequencer:
             return
 
         self._last_landing = float(landing_perf)
+        if self._chain_refused and bool(result.success):
+            # UH-7a. Placed above the COMPLETED count because it is the
+            # strictest true statement about this session: the ring was cut short
+            # by a refused or lost window, so it did not deliver the cadence the
+            # goal asked for even if the count happened to reach `num_throws`
+            # (it cannot, but a terminal that depends on "it cannot" is a
+            # terminal one refactor from lying). The FAILED half is handled below
+            # the stop_on_miss clause, so a MISS still wins when the operator
+            # asked it to.
+            self._stop_outcome = self._chain_refused
+            return
         if not bool(result.success) and self.stop_on_miss:
             # S3: "stopping" is literally not starting cycle N+1. The cycle's own
             # ACTION_SAFE_ABORT has already retracted the hand, lowered the latch
             # and gone home before this hook is reached — there is nothing left
             # to safe, and nothing new is commanded.
+            #
+            # A MISS wins over an armed chain terminal, deliberately: a machine
+            # fault is the louder finding, and this ladder has already safed.
             self._stop_outcome = OUTCOME_STOPPED_ON_MISS
+            return
+        if self._chain_refused:
+            # …and with `stop_on_miss` FALSE a MISS must NOT fall through (audit
+            # B2). It used to: the armed terminal was consumed only on a
+            # successful result, so a miss on the arming cycle scheduled the next
+            # one, that cycle found no chain and planned a fresh `MODE_NEW`
+            # LAUNCH — the silent revert to the settle-plus-relaunch cadence the
+            # owner rejected — and the stale terminal then fired cycles later,
+            # naming a refusal that had nothing to do with where the session
+            # stopped. The ring is over either way; only the NAME depends on how
+            # the cycle went, and the name is already composed.
+            self._stop_outcome = self._chain_refused
             return
         if self._throws >= self.num_throws:
             # Keyed on THROWS, not on cycle_index — and the two are IDENTICAL for
@@ -1861,6 +1957,20 @@ class TossSessionSequencer:
         # `throw_delay_s`. If that instant is already past (a handoff that ran
         # long), the next cycle starts immediately and simply reports a longer
         # achieved dwell. Lateness is absorbed; it never aborts.
+        #
+        # ── UH-7a: WHAT `throw_delay_s` MEANS ON A CHAIN ─────────────────────
+        # On the legacy path this line converts a RELEASE instant into a cycle
+        # START, and the cycle then derives its release back out as `now +
+        # throw_delay_s` — so the delay really is "how long after the FSM starts
+        # does the ball leave". On a unified chain the cycle is TOLD its release
+        # (the plan owns it), so the delay stops being a lead the cycle spends
+        # and becomes exactly what this line already computes: **how far before
+        # the PLANNED release cycle k+1's FSM spins up.** The loop polls at or
+        # after `_next_cycle_at`, and the previous cycle's verdict is a hard
+        # floor on when that poll can happen, so the effective start is
+        # `max(verdict, R_next − throw_delay_s)`. Nothing here changes; what
+        # changes is that the number is a SPIN-UP margin rather than a lead, and
+        # the release no longer moves when the poll runs late.
         next_at = (self.next_release_at(landing_perf)
                    - float(self.throw_delay_s))
         if not bool(result.success):
@@ -1884,6 +1994,36 @@ class TossSessionSequencer:
             next_at = max(next_at,
                           float(landing_perf) + float(self.miss_cleanup_s))
         self._next_cycle_at = next_at
+
+    def note_chain_refused(self, detail: str,
+                           outcome: str = OUTCOME_STOPPED_CHAIN_REFUSED
+                           ) -> None:
+        """UH-7a: the unified ring cannot go on; STOP, and say why.
+
+        Armed here, consumed by the NEXT :meth:`note_cycle_result`, which mints
+        it instead of scheduling another cycle. **WHEN it is called is what
+        decides how many more cycles run**, and both timings are deliberate:
+
+        * :data:`OUTCOME_STOPPED_CHAIN_REFUSED` — called at the START of a cycle,
+          so that cycle runs first. Its ball is already airborne when the STEADY
+          is refused, and the fall-back LANDING that DID install is what catches
+          it; stopping before it would abandon a catch the machine is committed
+          to;
+        * :data:`OUTCOME_STOPPED_CHAIN_LOST` — called DURING a cycle, so that
+          cycle's own `note_cycle_result` stops the session. Nothing was chained
+          and the machine has been held, so there is nothing further to run.
+
+        **The CYCLE's own verdict is untouched either way.** A cycle that caught
+        its ball still counts as a catch: the ring failed, the throw did not, and
+        collapsing the two would hide a good catch inside a plumbing fault.
+
+        First call wins: a second failure on a session already stopping cannot
+        replace the first detail, which is the one that explains the stop.
+        """
+        if self._finished or self._chain_refused is not None:
+            return
+        self._chain_refused = ('{}({})'.format(outcome, str(detail)) if detail
+                               else str(outcome))
 
     def _reload_precheck(self) -> Optional[str]:
         """The SESSION's half of the interlude precondition gate — the two rungs

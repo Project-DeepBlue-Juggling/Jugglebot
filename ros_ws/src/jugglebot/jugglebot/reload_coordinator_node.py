@@ -211,6 +211,7 @@ from jugglebot.toss_sequencer import (
     ACTION_SAFE_ABORT as TOSS_ACTION_SAFE_ABORT,
     ACTION_STAY as TOSS_ACTION_STAY,
     CENSUS_FIELD_NAMES,
+    DEFAULT_TOSS_THROW_DELAY_S,
     FLIGHT_TIME_MAX_S as TOSS_FLIGHT_TIME_MAX_S,
     LoopPeriodCensus,
     NODE_LOOP_PERIOD_S as TOSS_LOOP_PERIOD_S,
@@ -230,6 +231,8 @@ from jugglebot.toss_sequencer import (
     TossObservations,
     TossResult,
     TossSequencer,
+    CATCH_CONFIRM_WINDOW_S as TOSS_CATCH_CONFIRM_WINDOW_S,
+    TOSS_RELEASE_GRACE_S,
     min_throw_delay_for_release_s,
     pre_dispatch_budget_s,
 )
@@ -237,6 +240,8 @@ from jugglebot.toss_session import (
     DEFAULT_SESSION_MISS_CLEANUP_S,
     GO_HOME_DURATION_S,
     ON_EMPTY_CUP_RELOAD,
+    OUTCOME_STOPPED_CHAIN_LOST,
+    OUTCOME_STOPPED_CHAIN_REFUSED,
     OUTCOME_STOPPED_RELOAD_BUDGET,
     SAFE_ABORT_LADDER_S,
     SESSION_ACTION_NONE,
@@ -607,6 +612,92 @@ _UNIFIED_LAUNCH_LEAD_S = _UNIFIED_LAUNCH_WINDOW_S + _UNIFIED_PLAN_BUDGET_S
 #: the deadline or 0.1 s before it.
 _UNIFIED_EXTEND_LEAD_S = 0.60
 
+#: How far a CHAINED release may sit from the cycle's own scheduled one before
+#: the two are a disagreement rather than noise (s).
+#:
+#: **ONE TICK, not one extend lead** (UH-7a). Until the release hand-off landed,
+#: a chained cycle's ``_t_release`` was ``START_CYCLE_poll_instant +
+#: throw_delay_s`` while the plan's was ``R_{k-1} + beat``, and the two agreed
+#: only to within however late the poll ran — so the tolerance had to be wide
+#: enough to absorb a scheduling difference. It no longer is: the cycle is
+#: STARTED with ``release_at_perf = t_release_mono`` off the very response this
+#: is compared against (see ``_build_toss_cycle``'s ``chained`` argument), so the
+#: two numbers are the SAME float and the expected skew is exactly 0.0.
+#:
+#: What is left to tolerate is the case the hand-off is not in force — a bench
+#: call, or a chain that survived a re-scheduling — where the spread is the
+#: jitter of the tick that scheduled them, i.e. one ``NODE_LOOP_PERIOD_S``
+#: (imported here as ``TOSS_LOOP_PERIOD_S``, and aliased below as
+#: ``_PACE_PERIOD_S`` — one number, three names, none of them re-typed).
+#: Sizing it at ``_UNIFIED_EXTEND_LEAD_S`` instead would admit 0.60 s of
+#: disagreement about when the ball leaves, which is most of a flight: the FSM's
+#: landing schedule (and with it the hand ball sensor's asymmetric arrival band,
+#: ``ARRIVAL_BAND_MIN_S`` 0.087 s) is cut from ``_t_release``, so a skew that
+#: large would mint MISSED on a caught ball. The refusal is what stops that.
+_UNIFIED_CHAIN_SKEW_TOL_S = TOSS_LOOP_PERIOD_S
+
+#: How long before the supersede deadline the chain ladder must STOP waiting so
+#: its last rung — ``trajectory/hold`` — can still land in front of the cliff.
+#:
+#: Derived, in the project's own unit, and every term is a real cost:
+#:
+#:  * **one tick to observe.** The poll is level-triggered on the coordinator's
+#:    ``NODE_LOOP_PERIOD_S`` grid, so the instant the bound is crossed is seen up
+#:    to one period late;
+#:  * **one tick to dispatch.** ``_hold_after_unacked_plan`` runs on the same
+#:    thread, after the classification;
+#:  * **the hold's own planning work.** ``planner.build_hold`` from a MOVING seed
+#:    at session limits (250/3000/150000) — the real case, a hold issued
+#:    mid-carry over a streaming plan — **MEASURED 2026-09-07 on this Jetson, 300
+#:    calls: min 46.7 ms, p50 47.0, p95 47.4, max 49.2.** It is a single C2
+#:    quintic plus ``_gate``, not a QP, which is why it is tens of milliseconds
+#:    and not hundreds;
+#:  * **one tick of slack for the server.** ``trajectory/hold`` is serviced on a
+#:    REENTRANT group, so it does not queue behind an in-flight solve — but it
+#:    still shares a GIL-bound process with one, and the tick absorbs that.
+#:
+#: 4 x 0.040 = 0.160 s covers the measured 49.2 ms build ~3x over and is the same
+#: charge ``pre_dispatch_budget_s`` makes for a dispatch ladder observed on this
+#: loop. Bigger would abandon a LANDING that could still have landed; smaller
+#: buys the cliff (v1 emitted 0.0 against 93.011 rev/s, 10.90 mm of slider error,
+#: inside every firmware guard) in exchange for nothing.
+_UNIFIED_HOLD_MARGIN_S = 4 * TOSS_LOOP_PERIOD_S
+
+#: The planner's knot grid (s) — the width of the gap between a
+#: release-terminal plan's last knot and its release, which is what
+#: ``latest_supersede_time_s`` subtracts. Two accept gates and one ladder need it
+#: and none of them has a ``CyclePlan`` in hand, so it is read from the SAME
+#: config key the planner is built from rather than restated as a literal.
+_UNIFIED_KNOT_DT_S = float(hw.JB_TRAJ_KNOT_DT_S)
+
+#: MEASURED worst cost (s) of the JOINED ``MODE_NEW`` install a unified cycle 1
+#: pays — LAUNCH plus its chained window, two solves and the join's own
+#: ``validate_cycle`` in one callback.
+#:
+#: **500-606 ms on hardware at load1 3.7-7.4**
+#: (`tests/hardware/session_unified7_cycle_ladder.md:407`), against 423-432 ms
+#: idle on this Jetson (2026-09-04, 6 consecutive installs — see
+#: `_UNIFIED_PLAN_BUDGET_S`) and 1.06 s once with a sim gate on the other cores.
+#:
+#: ⚠ It is deliberately NOT ``_UNIFIED_PLAN_BUDGET_S`` (1.20 s), even though that
+#: constant bounds the same call. That one is an OVER-estimate on purpose,
+#: because the only thing over-estimating costs THERE is an early release, which
+#: is free. Here the number sets an ACCEPT FLOOR, where over-estimating refuses
+#: cadences the machine can fly — the opposite direction — so the honest input is
+#: the measured worst and not the safe-side bound. The loaded 1.06 s case is not
+#: ignored: a goal accepted at this floor and then run on a loaded box aborts
+#: cycle 1 ``ABORTED_NO_RELEASE`` with the ball unthrown, which is loud, safe and
+#: named, and the refusal message says so.
+_UNIFIED_JOINED_SOLVE_S = 0.606
+
+#: What a CHAINED cycle's FSM spends between START_CYCLE and its announcement (s).
+#: ``pre_dispatch_budget_s(False)`` — the census-B1 SKIP charge, which is exactly
+#: this ladder: CHECKING, POSITIONING (no service call; a chained cycle declares
+#: arrival through ``note_position_noop``), the PREPARE bundle's two ticks, and
+#: the announce tick. Read from the FSM's own derivation rather than re-counted
+#: here, so a re-cut of the ladder moves this floor with it.
+_UNIFIED_CHAIN_PREAMBLE_S = pre_dispatch_budget_s(False)
+
 #: What a survived MISS waits, under unified mode ONLY, before the session resumes
 #: (owner, 2026-08-28: a survived MISS must NOT `go_home` — hold the pose, wait for
 #: the ball environment to settle, then resume).
@@ -742,6 +833,112 @@ _UNIFIED_BELOW_FLOOR = 'HAND_BELOW_FLOOR'
 #: aim-authority re-derivation against `tilt_geometry.MAX_TILT_DEG` (12°; the 1°
 #: constants are the ILC/calibration correction channel, not an aim ceiling).
 _OUTCOME_UNIFIED_AIM = 'REJECTED_UNIFIED_AIM_UNSUPPORTED'
+#: REJECTED_BEAT_TOO_SHORT — a UNIFIED goal whose dwell leaves the chain no room
+#: to plan the next window (UH-7a). Refused at goal ACCEPTANCE, before anything
+#: is armed or commanded.
+#:
+#: **This is the PLUMBING floor, not the planner's feasibility floor**, and the
+#: distinction is the whole reason it can be this low. A steady chain plans
+#: window k+1 inside window k: the extend is requested once the live catch has
+#: passed, at ``R_{k-1} + flight``, and must INSTALL before the standing plan's
+#: supersede deadline at ``R_k − dt``. The carry between those two instants is
+#: exactly ``dwell − dt``, so a dwell under one :data:`_UNIFIED_EXTEND_LEAD_S`
+#: cannot fit the extend it is supposed to carry — the chain would ask for a
+#: window it has no time to receive, and every beat would fall through to the
+#: LANDING fail-safe.
+#:
+#: It does NOT claim the beat is FLYABLE. A window the QP refuses (the sim gate
+#: records LIMIT_JERK at a 1.0 s window against the 150 k session cap,
+#: `sim/unified_gate.py:240-244`) is refused per cycle by the planner, and that
+#: refusal is safe because the chain's fail-safe ladder holds the machine before
+#: the deadline. So this gate exists only to catch the case the ladder cannot
+#: make safe — no time to ASK — and the planner owns the rest.
+_OUTCOME_BEAT_TOO_SHORT = 'REJECTED_BEAT_TOO_SHORT'
+#: REJECTED_CHAIN_LOST — a standing STEADY chain could not be extended, the
+#: LANDING fall-back could not be planned either, and the machine was HELD.
+#:
+#: Its own code rather than a subcode of `_OUTCOME_CYCLE_PLAN` because the
+#: operator's finding is neither "the node refused" nor "the trajectory cannot be
+#: flown": it is *the ring lost its next window and was stopped on purpose*. The
+#: detail carries both refusals and the hold's own verdict, because whether the
+#: machine actually stopped is the single fact this path has to report.
+_OUTCOME_CHAIN_LOST = 'REJECTED_CHAIN_LOST'
+
+
+def _unified_chain_dwell_floor_s():
+    """The DWELL a chained cycle actually needs (s), and which term binds.
+
+    Returns ``(floor_s, binding_term_name)``. Two independent requirements, and
+    the floor is the larger — they bind in different regimes, so naming only one
+    would mislead an operator turning the knob.
+
+    **(A) The extend has to fit in the carry.** Window ``k+1`` is planned inside
+    window ``k``: requested once the live catch has passed and installed before
+    the standing plan's supersede deadline, which sits ONE KNOT before its
+    terminal release. That carry is ``dwell - dt``, and one
+    ``_UNIFIED_EXTEND_LEAD_S`` has to fit in it. ⇒ ``dwell >= lead + dt``
+    = 0.625 s.
+
+    **(B) The NEXT CYCLE has to reach its announcement before the release.** This
+    is the one the accept gate was blind to until the 2026-09-07 audit, and it is
+    the bigger of the two. Cycle ``k+1`` cannot start until cycle ``k`` has
+    terminalised AND any pending extend has been settled, so its start is
+    ``C_k + max(verdict, extend)``:
+
+    * ``verdict`` — the CAUGHT terminal is minted at the earliest
+      ``landing + ARRIVAL_BAND_MIN_S`` (0.087) and at the latest
+      ``landing + CATCH_CONFIRM_WINDOW_S``; the floor charges the LATEST, because
+      a floor built on the fast case is a floor that holds on good days;
+    * ``extend`` — ``_settle_unified_extend`` waits out a solve that outlived its
+      cycle. Charged at ``_UNIFIED_EXTEND_LEAD_S``, the constant that already
+      means "a whole ``MODE_EXTEND`` plus the round trip and the 40 ms poll",
+      rather than at a second copy of the measured 354-387 ms.
+
+    From that start the chained FSM still needs ``_UNIFIED_CHAIN_PREAMBLE_S`` to
+    reach ANNOUNCE and one more tick to DISPATCH before the release — which is
+    all it needs, because a chained cycle spends NO kind-0 dispatch budget (see
+    ``TossSequencer.chained``: the release is a knot, not an RPC). ⇒
+    ``dwell >= max(verdict, extend) + preamble + tick`` = 0.800 s.
+    """
+    carry = _UNIFIED_EXTEND_LEAD_S + _UNIFIED_KNOT_DT_S
+    lead = (max(TOSS_CATCH_CONFIRM_WINDOW_S, _UNIFIED_EXTEND_LEAD_S)
+            + _UNIFIED_CHAIN_PREAMBLE_S + TOSS_LOOP_PERIOD_S)
+    return ((carry, 'the extend carry') if carry >= lead
+            else (lead, "the next cycle's lead"))
+
+
+def _unified_cycle1_delay_floor_s():
+    """The ``throw_delay_s`` a unified CYCLE 1 needs (s) — a LATENESS bound.
+
+    Cycle 1 is the one cycle whose release is DERIVED (``now + throw_delay_s``,
+    stamped once in ``TossSequencer.start`` and never re-stamped) while the
+    LAUNCH that actually throws lands its release at ``install + 0.6``. Below
+    ``_UNIFIED_LAUNCH_LEAD_S`` the launch trigger fires on the first tick after
+    ANNOUNCE, so the release lands ``preamble + solve + window`` after the cycle
+    started, against an FSM that expected it at ``throw_delay``:
+
+        lateness = preamble + solve + window - throw_delay
+
+    and lateness past ``TOSS_RELEASE_GRACE_S`` mints ``ABORTED_NO_RELEASE`` with
+    the ball unthrown. So ``throw_delay >= preamble + solve + window - grace``
+    = 0.160 + 0.606 + 0.600 - 0.500 = **0.866 s**.
+
+    EARLY costs nothing (``_UNIFIED_PLAN_BUDGET_S`` spells out why), so this is a
+    one-sided bound and a generous ``throw_delay`` is always safe.
+
+    ⚠ The legacy session floor ``required_dwell_s = max(throw_delay +
+    handoff_margin_s, hand_floor_dwell_s)`` still applies on top, and it is what
+    actually sets a unified session's minimum beat, not the chain floor above it.
+    ``handoff_margin_s`` is FLIGHT-DEPENDENT (``TossSessionSequencer`` derives it
+    from the catch stroke's park re-entry: ~0.141 s at flight 0.80, ~0.177 s at
+    the 0.639 s flight of ``throw_height_m`` 0.5), so this function does NOT
+    restate it — the number is the sequencer's, and ``REJECTED_DWELL`` quotes it
+    for the goal in hand. Restating it here as a literal is exactly the drift the
+    2026-09-07 docs pass caught (a hardcoded 0.120 was 20–60 ms optimistic).
+    """
+    return (_UNIFIED_CHAIN_PREAMBLE_S + _UNIFIED_JOINED_SOLVE_S
+            + _UNIFIED_LAUNCH_WINDOW_S - TOSS_RELEASE_GRACE_S)
+
 
 #: How far a unified goal's nominated catch pose B may sit from the LIVE throw
 #: site A before it counts as AIMED (mm).
@@ -1487,6 +1684,20 @@ class TossCycleState:
     #: is no evidence the platform is anywhere in particular, and a stale False
     #: would skip a move the next cycle needs.
     positioning_move: bool = True
+    #: UH-7a — this cycle's RELEASE is already a committed knot on the plan the
+    #: emitter is streaming (a STEADY window chained by the previous cycle), so
+    #: the cycle's whole job is to observe it. Set at build, from the standing
+    #: chain, and read by the three seams that would otherwise COMMAND something
+    #: into a mid-plan machine: the per-cycle floor lift, the positioning move
+    #: and the LAUNCH plan. Also carried onto the FSM (``TossSequencer.chained``)
+    #: for the park-band gate, which describes a kind-0 stroke that no chained
+    #: cycle dispatches.
+    chained: bool = False
+    #: UH-7a — this cycle's chain failure has ALREADY been armed as a SESSION
+    #: terminal (``STOPPED_CHAIN_LOST``), so the per-cycle relabel must not fire.
+    #: The ring failed and the throw may not have: a cycle that caught its ball
+    #: keeps CAUGHT, and the session says by name why there will be no next one.
+    unified_chain_stop_armed: bool = False
     #: trace-only ball-evidence waiver, resolved per cycle at build.
     waiver: bool = False
     #: PREPARE-bundle deferral (one FSM tick) — see ``_step_toss_sequence``.
@@ -1572,14 +1783,28 @@ class TossCycleState:
     #: because the composition rule differs by family and the seam that re-labels
     #: has no business knowing that.
     unified_reject: str = ''
-    #: the last accepted ``PlanCycle.Response`` for this cycle (the installed
-    #: plan's release/catch instants and hand peaks). Record + choreography only —
-    #: the authority on what is streaming is trajectory_node's own active plan.
+    #: the accepted ``PlanCycle.Response`` describing **THIS CYCLE'S OWN
+    #: WINDOW** — the one whose release this cycle throws on and whose catch it
+    #: catches. Record + choreography only; the authority on what is streaming is
+    #: trajectory_node's own active plan.
+    #:
+    #: ⚠ It is NOT the newest install, and since UH-7a that distinction is
+    #: load-bearing. The chained extend fired inside this cycle installs the NEXT
+    #: cycle's window, and its response's ``t_release_mono`` names the NEXT
+    #: release (the search returns the first release still ahead of now, which
+    #: after our catch is cycle k+1's). Overwriting this with it would move three
+    #: things onto the wrong beat at once: ``_expected_landing_perf`` — and with
+    #: it the hand ball sensor's arrival band — would look for OUR catch a whole
+    #: beat late; ``note_cycle_result``'s ``t_rel_sched`` would schedule cycle
+    #: k+1 off cycle k+1's own release and lose a beat every cycle; and the
+    #: record would declare the wrong release. The extend's response goes to
+    #: ``_toss_unified_chain``, which is exactly the field for "the NEXT cycle's
+    #: release", and reaches ``unified_plan`` when that cycle claims it.
     unified_plan: object = None
-    #: the post-release EXTEND has fired for this cycle. A one-shot latch and not
-    #: a re-derivation, because the EXTEND's own response REPLACES ``unified_plan``
-    #: — a LANDING carries ``t_release_mono == 0.0``, so "is the release past"
-    #: would answer yes forever and re-extend on every tick.
+    #: the chained EXTEND has fired for this cycle. A one-shot latch and not a
+    #: re-derivation from the plan, because the plan below deliberately does not
+    #: move when the extend lands — so there is no observable state change to
+    #: re-derive "already extended" from.
     unified_extended: bool = False
 
     def clear(self) -> None:
@@ -1630,6 +1855,11 @@ class TossCycleState:
         self.prepare_pending = False
         self.throw_dispatched = False
         self.positioning_move = True
+        # FAIL-CLOSED with `positioning_move`, and for the same reason: a stale
+        # True would tell the NEXT cycle its release is already planned and skip
+        # the LAUNCH that has to plan it.
+        self.chained = False
+        self.unified_chain_stop_armed = False
         self.next_release_perf = None
         self.next_landing_perf = None
         self.census = None
@@ -1644,6 +1874,32 @@ class TossCycleState:
         self.unified_reject = ''
         self.unified_plan = None
         self.unified_extended = False
+
+
+@dataclass
+class _UnifiedChainCall:
+    """ONE in-flight ``MODE_EXTEND`` request, and everything the tick that
+    answers it needs to know.
+
+    It is a record rather than five node attributes because it is consumed as a
+    unit and, above all, ABANDONED as a unit: the discard rule is "drop the
+    record", and a rule spread across five fields is a rule that gets half
+    applied. ``owner`` is the :class:`TossCycleState` the request belongs to —
+    the identity check that stops a previous cycle's answer from being read by
+    this one.
+    """
+    future: object
+    sent_at: float
+    last_cycle: bool
+    deadline: float
+    prior_detail: str
+    owner: object
+    label: str
+    #: The chained window's own period (s). Carried because
+    #: `_accept_unified_chain` needs it to compute the LAST release the joined
+    #: plan will hold — a STEADY window ends at one a `period` past the release
+    #: it starts at — and that instant is the teardown's hold predicate.
+    period: float
 
 
 class ReloadCoordinatorNode(Node):
@@ -2279,6 +2535,48 @@ class ReloadCoordinatorNode(Node):
         # exactly one cycle is ever live. Cleared at every consumption, at every NEW
         # launch and in the session's `finally`.
         self._toss_unified_chain = None
+        # ── UH-7a: is a RELEASE-TERMINAL plan standing right now? ────────────
+        # True from the instant a plan that ENDS AT A RELEASE is installed under
+        # this session (the LAUNCH+STEADY join, and every STEADY extend), false
+        # again the moment a LANDING extend makes the standing plan rest-terminal
+        # — and at session start and teardown.
+        #
+        # It exists because a plan with a release STILL AHEAD OF NOW will throw
+        # again on its own. Every teardown that is safe on the shipped shape
+        # (where the plan settles the cup and stops) is NOT safe here: "hold the
+        # pose" is what the emitter's terminal hold does, and there is no
+        # terminal hold in front of a stroke that has not fired yet. So this is
+        # the single predicate `_unified_hold_after_abort` reads to decide
+        # whether the teardown owes a `trajectory/hold`.
+        #
+        # ⚠ IT IS AN INSTANT, NOT `release_terminal` (audit H1, 2026-09-07). The
+        # response field means "the plan's LAST KNOT is a release", which is a
+        # different question and is FALSE for the two most dangerous cycles of
+        # every ring: the final LANDING window is installed a whole beat BEFORE
+        # the release it starts at, so from that install until R_N the machine
+        # has a full stroke ahead of it and `release_terminal` says False. A MISS
+        # on cycle N-1, or a cancel / session ceiling / stall watchdog / exception
+        # anywhere in cycle N before R_N, would then take the `if not live` early
+        # return, issue NO hold, and let the plan throw a full stroke over an
+        # empty cup ~1.2 s after the session had already reported
+        # STOPPED_ON_MISS. So what is stored is the LAST RELEASE INSTANT the
+        # standing plan carries, and the predicate is `now < that`.
+        self._toss_unified_release_ahead = 0.0
+        # How many windows the standing chain is deep (0 = none). Instrument
+        # only — logged with every extend so a ring is visible in the console,
+        # which `cycle_active` alone cannot show (it stays true across the whole
+        # chain, being a type test on the installed plan).
+        self._toss_unified_chain_depth = 0
+        #: The in-flight ``MODE_EXTEND`` (a :class:`_UnifiedChainCall`) or None.
+        #: Polled once per FSM tick by `_tick_unified_extend`; ABANDONED — never
+        #: awaited, never acted on — by `_hold_live_unified_chain`.
+        self._toss_unified_extend = None
+        #: The planner's refusal string from a STEADY that fell back to a
+        #: LANDING, or ''. It arms the session's `STOPPED_CHAIN_REFUSED`
+        #: terminal ONE cycle later — the cycle the fall-back window carries —
+        #: because the ball for that cycle is already airborne and this window is
+        #: what catches it. Cleared when it is handed to the session.
+        self._toss_unified_chain_stop = ''
         # Why the LAST hand-floor lift did not land the hand in the planner's cup
         # box, or '' when it did (including "it was already there, nothing was
         # commanded"). Written by `_unified_floor_lift`, read ONLY by the
@@ -4695,7 +4993,7 @@ class ReloadCoordinatorNode(Node):
 
     def _build_toss_cycle(self, catch_pose, flight, throw_delay, vel_scale,
                           *, delay_is_cadence=False, release_at_perf=0.0,
-                          staged=False):
+                          staged=False, chained=False):
         """Build ONE toss cycle: resolve the tier / throw site / release state,
         construct + start the ``TossSequencer``, and mint the
         :class:`TossCycleState` the observation builder, the action handlers and
@@ -5063,6 +5361,27 @@ class ReloadCoordinatorNode(Node):
         positioning_move = not (
             release_cmd is not None
             and self._toss_already_positioned(px, py, pz, release_cmd))
+        if chained:
+            # ── UH-7a: A CHAINED CYCLE NEVER COMMANDS A POSITIONING MOVE ─────
+            # Not "it happens to be already there" — it structurally must not
+            # move. The platform is mid-plan on a `CyclePlan` that owns the
+            # whole beat, so a `go_to_pose` here is either refused BUSY (the
+            # cycle then dies REJECTED_POSITION with a ball in the cup) or
+            # ACCEPTED, in which case it SUPERSEDES the cycle plan and the
+            # release the FSM is about to announce stops existing. Both are the
+            # one-interval-two-owners class, and the honest answer is that there
+            # is nothing to position: the plan already carries the whole
+            # traverse, exactly as it does for the catch and the release.
+            #
+            # It is forced at the SINGLE decision seam rather than inside
+            # `_position_platform_for_toss` because the CHECKING lead floor is
+            # charged off this same boolean (`pre_dispatch_budget_s`): deciding
+            # "no move" here and "move" there is the accept-vs-runtime split the
+            # 2026-08-23 single-decision rule closed. The FSM path below is
+            # unchanged — POSITIONING still runs, the reach-envelope declaration
+            # still goes out at PREPARE — only the service call is skipped, via
+            # the same `note_position_noop` seam the census-B1 chain uses.
+            positioning_move = False
         # ── and the lead that decision needs (SESSION cycles only) ──
         # See the `delay_is_cadence` paragraph in the docstring for why this is
         # a grant here and a refusal on the single-Toss path. In one line: a
@@ -5116,6 +5435,11 @@ class ReloadCoordinatorNode(Node):
             # when something will actually be armed. See the field's own comment
             # in `toss_sequencer` for why that is the only decision it changes.
             unified=bool(self._toss_unified_live),
+            # UH-7a — this cycle's release is a committed knot on a plan the
+            # emitter is already streaming. It reaches exactly ONE thing on the
+            # FSM: the park-band gate, which describes a kind-0 stroke no chained
+            # cycle dispatches. See `TossSequencer.chained`.
+            chained=bool(chained),
             stay_at_pose_on_caught=bool(hw.JB_OP_TOSS_STAY_AT_POSE_ON_CAUGHT),
             tilt_clamp_exceeded=tilt_clamp_exceeded,
             tilt_required_deg=tilt_required_deg,
@@ -5168,6 +5492,7 @@ class ReloadCoordinatorNode(Node):
             # republished in between — could take the cheap branch under an
             # expensive budget, or the reverse. One decision, one place.
             positioning_move=positioning_move,
+            chained=bool(chained),
             waiver=waiver,
             # The slot's own clock and ceiling (B4). `_run_toss_cycle` kept both
             # on its stack; with two slots they travel WITH the cycle, so a
@@ -6099,6 +6424,22 @@ class ReloadCoordinatorNode(Node):
         # re-ask at the last honest moment, not at an arbitrary later one.
         with self._lock:
             already_positioned = not bool(state.positioning_move)
+            chained = bool(state.chained)
+        if chained:
+            # UH-7a: the same no-op seam, a DIFFERENT reason, said out loud. The
+            # census-B1 line below claims "the platform is already at the pose",
+            # which is a measurement; here the claim is structural — the plan
+            # owns the platform for the whole beat and there is no pose to move
+            # to. Reporting the measurement would send an operator looking at a
+            # tolerance when what happened is that nothing was ever going to move.
+            self.get_logger().info(
+                'POSITIONING skipped — CHAINED cycle: the standing CyclePlan '
+                'owns the platform through this whole beat (release, carry, '
+                'catch and the next release are one trajectory on one clock), '
+                'so there is no pre-positioning move to command. Nothing '
+                'commanded.')
+            seq.note_position_noop(time.perf_counter())
+            return
         if already_positioned:
             # CENSUS B1 — the no-op move. For a chain with
             # stay_at_pose_on_caught the platform is ALREADY at the
@@ -7571,7 +7912,20 @@ class ReloadCoordinatorNode(Node):
         session's wrapper re-labels that terminal ``REJECTED_CYCLE_INFEASIBLE(...)``
         so the operator reads which layer said no.
         """
-        if seq.t_release - now > _UNIFIED_LAUNCH_LEAD_S:
+        # ── THE WAIT IS THE PLANNER'S, SO A CHAINED CYCLE DOES NOT SERVE IT ──
+        # The lead exists to stop a NEW LAUNCH from being solved seconds before
+        # its release, because a LAUNCH's release lands at `install + 0.6` and an
+        # early install therefore throws early. A chained cycle installs nothing:
+        # its release is already a knot on the plan the emitter is streaming, and
+        # the only thing left to do is ANNOUNCE it. Serving the lead there would
+        # hold the announcement back for no gain, and on a short beat the
+        # announcement is what catch_coordinator's stroke-busy window is cut
+        # from. So the chained branch is reached FIRST, and the gate below it
+        # guards only the branch it was derived for. (UH-7a; before it, the gate
+        # was unconditional and the chained branch simply inherited a wait that
+        # had nothing to do with it.)
+        chained = self._toss_unified_chain
+        if chained is None and seq.t_release - now > _UNIFIED_LAUNCH_LEAD_S:
             return
         state.unified_launch_pending = False
         # ── The CHAINED case: the previous cycle's STEADY window already owns
@@ -7582,18 +7936,42 @@ class ReloadCoordinatorNode(Node):
         # (its rest check), so the failure would be loud rather than dangerous —
         # but a loud refusal on every chained cycle is still a session that cannot
         # run, and the plan the operator paid ~250 ms for is right there.
-        chained = self._toss_unified_chain
         if chained is not None:
             self._toss_unified_chain = None
             skew = float(chained.t_release_mono) - float(seq.t_release)
-            # The tolerance is ONE solve's worth (`_UNIFIED_EXTEND_LEAD_S`), not
-            # the launch lead: a chained release and the session's beat are
-            # supposed to be the SAME instant by construction (see
-            # `_unified_beat_s`), so the only spread that should ever appear here
-            # is the jitter of the tick that scheduled them. Anything larger is a
-            # disagreement, not noise.
-            if (float(chained.t_release_mono) > now
-                    and abs(skew) <= _UNIFIED_EXTEND_LEAD_S):
+            # ── THE CROSS-CHECK, not the hand-off ────────────────────────────
+            # Since UH-7a the cycle was STARTED with `release_at_perf =
+            # chained.t_release_mono` (see `_build_toss_cycle`'s `chained`
+            # argument), so `seq.t_release` IS this number and the expected skew
+            # is exactly 0.0. That does not make the comparison redundant — it
+            # makes it a CHECK rather than a negotiation: it is the one place
+            # that says the plan the emitter is streaming and the schedule the
+            # FSM (and through it the ball sensor's arrival band) is cut from are
+            # the same instant. The tolerance is ONE TICK, not one extend lead;
+            # see `_UNIFIED_CHAIN_SKEW_TOL_S` for why 0.60 s was 15x too wide to
+            # catch the failure this exists for.
+            if float(chained.t_release_mono) <= now:
+                # ── ITS OWN NAME, because the number reads innocent ──────────
+                # With the hand-off in force `seq.t_release` IS the chained
+                # release, so a release that has already PASSED produces a skew
+                # of exactly +0.000 s — and a CHAIN_SKEW refusal quoting +0.000
+                # against a 0.040 tolerance is a sentence that cannot be acted
+                # on. The fact is different in kind: not "the two disagree" but
+                # "the throw this cycle was going to announce has already
+                # happened", which means the cycle spun up late (a long verdict,
+                # a slow settle, a stalled loop) rather than that the beat is
+                # wrong (audit B7d).
+                state.unified_reject = (
+                    '{}(CHAIN_PAST: the chained release was {:.3f} s ago — this '
+                    'cycle started after the ball had already left, so there is '
+                    'nothing left to announce. The beat is not wrong; the cycle '
+                    'was late. Look at the previous cycle\'s verdict and settle '
+                    'times, not at dwell_time_s)'
+                    .format(_OUTCOME_CYCLE_PLAN, now - float(chained.t_release_mono)))
+                self.get_logger().error('unified chain refused: %s'
+                                        % (state.unified_reject,))
+                return
+            if abs(skew) <= _UNIFIED_CHAIN_SKEW_TOL_S:
                 with self._lock:
                     state.unified_plan = chained
                 self._announce_unified(seq, state, chained)
@@ -7611,7 +7989,7 @@ class ReloadCoordinatorNode(Node):
                 '{}(CHAIN_SKEW: the chained release is {:+.3f} s from the '
                 'cycle\'s scheduled one, past the {:.3f} s tolerance — the beat '
                 'the plan was extended on is not the beat the session is running)'
-                .format(_OUTCOME_CYCLE_PLAN, skew, _UNIFIED_EXTEND_LEAD_S))
+                .format(_OUTCOME_CYCLE_PLAN, skew, _UNIFIED_CHAIN_SKEW_TOL_S))
             self.get_logger().error('unified chain refused: %s'
                                     % (state.unified_reject,))
             return
@@ -7649,10 +8027,46 @@ class ReloadCoordinatorNode(Node):
         # It also makes the shape the module documents — "a single toss is LAUNCH
         # then LANDING" — the shape the machine actually flies, and it matches what
         # the FSM already models: one release per cycle, with a quiescent dwell
-        # between. The STEADY chain (this cycle's release feeding the NEXT cycle's
-        # window) stays reachable through MODE_EXTEND and is Phase 5's UH-7 ring,
-        # where the session has to hand the beat to the FSM as well.
-        chain_period = flight + _UNIFIED_LAUNCH_WINDOW_S
+        # between.
+        #
+        # ── UH-7a: WHICH window is chained here decides whether this is a toss
+        # or a RING ────────────────────────────────────────────────────────────
+        # A LANDING chained onto the launch ends the plan AT REST, and the ring
+        # is over after one throw. A STEADY chained onto it ends the plan at
+        # ANOTHER RELEASE — cycle 2's — so the machine never stops, the beat is
+        # the STEADY window's own period, and the whole settle-plus-relaunch tail
+        # (0.6 s of settle + a fresh 0.6 s launch window + a joined solve, ~1.6-2 s
+        # at flight 0.8) comes off the beat.
+        #
+        # It is chosen by HOW MANY CYCLES THIS SESSION STILL OWES, and the count
+        # is the one the extend uses one level down (see `_tick_unified_extend`):
+        # `num_throws − cycle_index` is the number of releases after this one, so
+        # zero of them means this launch is the whole session and the LANDING is
+        # right. **At `num_throws == 1` that reproduces the pre-UH-7a request bit
+        # for bit** — same kind, same `flight + 0.6` period, same catch frac —
+        # which is deliberate: the single-toss shape is the one the 2026-09-04
+        # ladder flew nine clean rows on, and nothing here is worth re-proving it.
+        #
+        # ⚠ Chaining a STEADY deliberately RE-OPENS the release-terminal cliff
+        # (`unified_cycle.latest_supersede_time_s`): the installed plan now ends
+        # at a release, so the emitter WILL command the final stroke to a stop if
+        # nothing supersedes it. That is not an oversight — it is the property
+        # the whole extend ladder below exists to serve, and the mitigations arm
+        # for the first time here: `supersede_deadline_mono` on the response,
+        # trajectory_node's once-per-install alarm, and `_tick_unified_extend`'s
+        # own 0.60 s lead. A supersede alarm firing is a PLUMBING DEFECT report,
+        # not an acceptance signal.
+        remaining_after = self._unified_cycles_after_this()
+        if remaining_after > 0:
+            chain_kind = PlanCycle.Request.KIND_STEADY
+            # The STEADY window's period IS the beat, and its catch sits a flight
+            # in — the same two numbers `_extend_unified_cycle` uses, read off
+            # the same `_unified_beat_s`, so the launch's chained window and
+            # every extended one are the same shape.
+            chain_period = self._unified_beat_s(seq)
+        else:
+            chain_kind = PlanCycle.Request.KIND_LANDING
+            chain_period = flight + _UNIFIED_LAUNCH_WINDOW_S
         vel_trim = self._unified_vel_trim(state)
         if vel_trim:
             self.get_logger().info(
@@ -7669,12 +8083,14 @@ class ReloadCoordinatorNode(Node):
             # above is only there to keep the request fully specified.
             catch_frac=0.0,
             catch_vel_mm_s=self._unified_catch_vel_mm_s(flight),
-            chain_kind=PlanCycle.Request.KIND_LANDING,
+            chain_kind=chain_kind,
             chain_period_s=chain_period,
             # The ball touches down a FLIGHT after the release, and the release is
             # the seam the chained window starts at — so the catch instant on the
-            # landing's own clock is exactly the flight time.
-            chain_catch_frac=flight / chain_period)
+            # chained window's own clock is exactly the flight time, whether that
+            # window is a LANDING or a STEADY.
+            chain_catch_frac=(flight / chain_period
+                              if chain_period > 0.0 else 0.0))
         resp, dispatched = self._call_plan_cycle(req)
         if resp is None and not dispatched:
             state.unified_reject = '{}(UNAVAILABLE: {})'.format(
@@ -7709,7 +8125,44 @@ class ReloadCoordinatorNode(Node):
             return
         with self._lock:
             state.unified_plan = resp
+            # THE ring's arming point: from here every teardown owes a
+            # `trajectory/hold` until the last release this plan carries has
+            # fired. The install carries TWO releases when it chained a STEADY —
+            # this cycle's at `t_release_mono` and the next cycle's one
+            # `chain_period` later — and one when it chained a LANDING. The later
+            # of them is what a teardown has to outlive, and it is computed HERE,
+            # where the chained window's period is in hand, rather than inferred
+            # from the response (see `_toss_unified_release_ahead`).
+            self._toss_unified_release_ahead = float(
+                getattr(resp, 't_release_mono', 0.0) or 0.0) + (
+                    chain_period
+                    if chain_kind == PlanCycle.Request.KIND_STEADY else 0.0)
+            self._toss_unified_chain_depth = (
+                1 if bool(getattr(resp, 'release_terminal', False)) else 0)
         self._announce_unified(seq, state, resp)
+
+    def _unified_cycles_after_this(self) -> int:
+        """How many RELEASES this session still owes after the live cycle's.
+
+        ``num_throws − cycle_index`` off the live session, and the ONE place that
+        subtraction is written: the launch reads it to decide whether to chain a
+        STEADY or a LANDING, and the extend reads it to decide which window to
+        chain next. Two copies of it would be two answers to "is this the last
+        throw", and the two are one tick apart on the same ring.
+
+        **No live session ⇒ 0**, which routes a bench ``PlanCycle`` call down the
+        LANDING branch — the safety net's correct answer: with nobody to schedule
+        another cycle, the only useful thing to chain onto a release-terminal
+        plan is a window that brings the machine to rest.
+        """
+        session = self._toss_session_ref
+        if session is None:
+            return 0
+        try:
+            return (int(getattr(session, 'num_throws', 1))
+                    - int(getattr(session, 'cycle_index', 1)))
+        except (TypeError, ValueError):
+            return 0
 
     def _toss_unified_throw_xy(self, seq):
         """The cycle's throw site as CUP xy (mm, platform frame) — where the
@@ -7829,78 +8282,187 @@ class ReloadCoordinatorNode(Node):
                               float(resp.plan_wall_ms)))
 
     def _tick_unified_extend(self, seq, state, now: float) -> None:
-        """The SAFETY NET: extend a RELEASE-TERMINAL plan before its supersede
-        deadline.
+        """Chain the NEXT window onto a RELEASE-TERMINAL plan, once per cycle.
 
-        Under the shipped choreography this never fires, and that is the design:
-        ``_tick_unified_launch`` installs LAUNCH+LANDING as ONE plan, so what is
-        streaming is rest-terminal and owes nothing. It exists for the plans that
-        are not — a bench ``PlanCycle`` call, and Phase 5's STEADY ring, where one
-        cycle's terminal release is the next cycle's window.
+        Under the pre-UH-7a choreography this never fired, and that was the
+        design: ``_tick_unified_launch`` installed LAUNCH+LANDING as ONE plan, so
+        what streamed was rest-terminal and owed nothing. Since UH-7a a session
+        with cycles to come installs LAUNCH+STEADY instead, and this is the
+        method that keeps the ring alive: window ``k+1`` is planned INSIDE window
+        ``k``, so the beat is the STEADY window's own period rather than a
+        settle, a relaunch and a joined solve laid end to end.
 
-        It fires ``_UNIFIED_EXTEND_LEAD_S`` before the deadline TRAJECTORY_NODE
-        published, not before the release: past that deadline the emitter reads
-        the final segment's u1/v1 from the plan's terminal HOLD and the release
-        stroke is commanded to a stop, with no firmware guard to say so.
+        **THE TRIGGER — after the live CATCH, and never later than the
+        deadline.** Two clauses, and each closes something the other cannot:
 
-        TIME-triggered, never evidence-triggered, and for the reason
-        ``_reach_action_if_due`` gives for the legacy deferred reach: release
-        evidence can lag by up to the 0.5 s grace, which would eat most of the
-        flight — and here it would eat the window the ~250 ms solve has to fit in.
-        The instant used is the PLAN's (``t_release_mono``), which is when the ball
-        actually leaves, so the trigger is exact rather than scheduled.
+        * ``now >= t_release_mono + flight`` — the ball is in the cup on the
+          PLAN's own clock, the same instant ``_expected_landing_perf`` hands the
+          hand ball sensor. Waiting for it buys the one thing the deadline clause
+          cannot: **no race with a replan.** ``catch/dynamic_target`` re-aims the
+          LIVE catch through ``MODE_REPLAN``, and both a replan and an extend
+          re-install ``trajectory_node``'s single ``_cycle`` record — so an
+          extend asked while a replan may still fire is two writers on one
+          install. After the catch instant there is nothing left to re-aim
+          (``_CYCLE_REPLAN_LEAD_S`` closes the replan window 0.30 s before it
+          anyway), so the two are ordered by construction rather than by luck.
+          It also spends the extend's cost where the cycle has nothing else to
+          do: the whole dwell (``beat − flight``) is ahead of it.
+        * ``now >= supersede_deadline_mono − _UNIFIED_EXTEND_LEAD_S`` — the
+          BACKSTOP, and the reason the trigger cannot be the catch alone. If the
+          catch instant is somehow never reached (a plan whose response carried a
+          release but whose flight is longer than the window, a bench call with
+          no session), the chain must still be asked for before the cliff.
+          Whichever clause fires first wins, so the ask is bounded on both ends.
 
-        **BEFORE the release, not after.** See :data:`_UNIFIED_EXTEND_LEAD_S` for
-        the full argument; in one line, ``extend``'s bit-identical-head guarantee
-        is only worth anything while the head is still PLAYING, and asking early
-        costs nothing because the release state the next window is planned from was
-        pinned when the standing plan was gated.
+        **TIME-triggered on the plan's clock, never evidence-triggered**, and for
+        two reasons. First the one ``_reach_action_if_due`` gives for the legacy
+        deferred reach: catch evidence can lag by the whole arrival band, which
+        here would eat the window the ~370 ms solve has to fit in. Second, and
+        decisive: a MISS produces NO catch evidence, and a ring that waited for
+        it would simply never chain — while what a MISS actually needs is the
+        opposite of a chain (the teardown HOLDS the plan, so the next stroke
+        never fires over an empty cup; see ``_unified_hold_after_abort``).
 
-        Fired even with NO release evidence, again like the legacy reach: if
-        something went wrong and no ball left, the extended window carries a seated
-        ball through a catch-shaped carry (the benign-accel class) and the FSM's
+        ``t_catch_mono`` is deliberately NOT used for the catch instant even
+        though the response carries it: on a joined plan it reports
+        ``meta.catches[0]``, which is SPENT from the second chained window onward
+        (the release side got a "still ahead of now" search; the catch side did
+        not). ``t_release_mono + flight`` is the same instant computed from the
+        field that DOES search, and it is the number the announcement and the
+        arrival band already agree on.
+
+        Fired even with no release evidence, like the legacy reach: if something
+        went wrong and no ball left, the extended window carries a seated ball
+        through a catch-shaped carry (the benign-accel class) and the FSM's
         ``ABORTED_NO_RELEASE`` still cleans up at ``t_release + grace``.
+
+        **NON-BLOCKING, and that is a safety property rather than a latency
+        one.** The request is dispatched with ``call_async`` and the future is
+        POLLED here, one tick at a time, bounded by the same
+        :data:`_SERVICE_WAIT_S` a blocking wait would have used. The reason is
+        the MISS: while this thread sits in a service wait it cannot step the
+        FSM, so it cannot OBSERVE a missed catch — and at a dwell near the floor
+        a hold issued after a 354-387 ms stall arrives after the chained stroke
+        has begun, which is precisely the empty-cup stroke the whole ladder
+        exists to prevent. Polling keeps the cycle observable for the entire
+        solve, so the hold is issued on the tick the miss is seen.
         """
+        if self._toss_unified_extend is not None:
+            self._poll_unified_chain(seq, state, now)
+            return
         plan = state.unified_plan
         if plan is None or state.unified_extended:
             return
         if not bool(getattr(plan, 'release_terminal', False)):
-            # REST-terminal ⇒ cliff-safe ⇒ nothing owed. This is the shipped
-            # shape: `_tick_unified_launch` installs LAUNCH+LANDING as one plan,
-            # so the machine comes to rest on its own and there is no chain to
-            # keep alive. The branch below is the SAFETY net for a release-
-            # terminal plan (a bench call, a Phase-5 STEADY ring), not the
-            # everyday path.
+            # REST-terminal ⇒ cliff-safe ⇒ nothing owed. This is the LAST cycle
+            # of every ring (its window is the LANDING) and the whole of a
+            # single-throw session, whose plan is still LAUNCH+LANDING.
             return
         # The deadline the NODE published, never a local re-derivation: it is a
         # safety instant, and a second spelling of one is the thing that drifts.
         deadline = float(getattr(plan, 'supersede_deadline_mono', 0.0) or 0.0)
         if deadline <= 0.0:
             return
-        if now < deadline - _UNIFIED_EXTEND_LEAD_S:
+        t_rel = float(getattr(plan, 't_release_mono', 0.0) or 0.0)
+        catch_passed = (t_rel > 0.0
+                        and now >= t_rel + float(seq.flight_time_s))
+        if not catch_passed and now < deadline - _UNIFIED_EXTEND_LEAD_S:
             return
         state.unified_extended = True
-        session = self._toss_session_ref
-        remaining = (int(getattr(session, 'num_throws', 1))
-                     - int(getattr(session, 'cycle_index', 1)))
-        self._extend_unified_cycle(seq, state, last_cycle=(remaining <= 0))
+        # WHICH window to chain, and it is one index further along than the
+        # launch's own choice. The extend fires during cycle k and installs
+        # window k+1 — the one carrying cycle k+1's CATCH and ending at cycle
+        # k+2's release. So a LANDING is owed when there is exactly ONE release
+        # left after this cycle's: window k+1 then carries the last catch and
+        # comes to rest, and no window k+2 is ever needed.
+        #
+        # `<= 1` rather than `== 1` on purpose. Zero cycles left with a
+        # release-terminal plan standing should be unreachable (the previous
+        # extend chained the LANDING, which is rest-terminal and returns above),
+        # so reaching here at zero means the chain lost its landing somewhere —
+        # and the safety net's answer to that is the same as the bench call's:
+        # bring the machine to rest.
+        self._extend_unified_cycle(
+            seq, state, last_cycle=(self._unified_cycles_after_this() <= 1))
 
     def _extend_unified_cycle(self, seq, state, last_cycle: bool) -> None:
-        """Chain the next window onto the release that just passed.
+        """THE FAIL-SAFE LADDER around one chain request. Three rungs, downhill.
+
+        1. ask for the window this cycle owes — STEADY while releases remain,
+           LANDING for the one that ends the ring;
+        2. a STEADY that is REFUSED or does not answer falls back to a LANDING
+           **immediately**, on the same trigger. That is not a retry of the same
+           request: it is a strictly easier one (a window that ends at REST needs
+           no terminal release and no next beat), and it converts "the ring
+           cannot continue" into "the ring stops cleanly with the ball caught"
+           rather than into a cliff;
+        3. if the LANDING is refused too, the machine is HELD
+           (``trajectory/hold``, a profiled decel-to-rest that supersedes the
+           cycle) and the session stops by name — :data:`_OUTCOME_CHAIN_LOST`.
+
+        **Why the hold is the floor and not "hold the last good plan".** On a
+        rest-terminal plan the phrase is true: the emitter's terminal hold parks
+        the cup and nothing else happens. On a RELEASE-terminal one it is false
+        in the way that matters — the standing plan's last act is a throw stroke,
+        so doing nothing means throwing again, over a cup that may be empty and
+        with no window planned to catch what leaves. So the ladder's last rung
+        commands, and it commands a stop.
+
+        ⚠ Rung 2 after an UNACKED rung 1 is deliberate and is not a double
+        install. ``plan_cycle`` installs on accept and replies afterwards, so an
+        overrun STEADY may already be streaming; the LANDING then chains off
+        whatever ``trajectory_node`` actually holds, and if that is not a
+        coherent seam the service refuses (``NO_CYCLE`` / ``STALE_STATE``) and
+        rung 3 stops the machine. Fail-closed at every rung.
+
+        ⚠ Rung 2 is SKIPPED when the service was never up. A request that never
+        left this node means no request left this node at all, and a second one
+        to a service that is not there is not a fail-safe — it is a duplicate,
+        and it spends ``_SERVICE_WAIT_S`` of a budget the deadline is already
+        eating. That case drops straight to the hold, which is the rung that can
+        still act.
+
+        This method DISPATCHES rung 1 and returns; rungs 2 and 3 are run by
+        :meth:`_poll_unified_chain` on a later tick, because the answer arrives
+        on a later tick. The name and signature are unchanged so the FSM seam and
+        its tests still address one method.
+        """
+        deadline = float(getattr(state.unified_plan,
+                                 'supersede_deadline_mono', 0.0) or 0.0)
+        failure = self._dispatch_unified_chain(seq, state, last_cycle)
+        if failure is not None:
+            # The request never left. Nothing is pending, so the ladder's
+            # remaining rungs run right here.
+            self._unified_chain_failed(seq, state, last_cycle, '', failure,
+                                       deadline)
+
+    def _dispatch_unified_chain(self, seq, state, last_cycle: bool,
+                                prior_detail: str = ''):
+        """DISPATCH one chained window, without blocking.
+
+        Returns ``None`` when the request is in flight (the future is stashed and
+        :meth:`_poll_unified_chain` owns it from here), else
+        ``(detail, service_up)`` for a request that never left — ``service_up``
+        False being the one failure a second request cannot improve on (see the
+        ladder above).
+
+        The readiness check is :meth:`service_is_ready`, NOT
+        ``wait_for_service(_SERVICE_WAIT_S)``. A blocking readiness wait is the
+        same defect as a blocking call one layer down: this runs inside a LIVE
+        cycle, and two seconds of not stepping the FSM because a service is down
+        is two seconds of not being able to see a miss.
 
         STEADY while cycles remain, LANDING for the last one — the two shapes that
         differ only in whether the window ends at another release or at rest. It is
-        requested IMMEDIATELY after the release passes because that is where the
-        budget fits: the window being extended is >= 0.9 s long, so a ~250 ms plan
-        finishes with most of the flight to spare, and the joined plan's head is
-        bit-identical to what the emitter is already streaming, so the install moves
-        no knot that has been sent.
-
-        A refusal is loud and HOLDS THE LAST GOOD PLAN — which for a LAUNCH means
-        the plan's own terminal hold at the release pose. The ball is airborne and
-        the cup is where the planner left it; the cycle then terminalises through the
-        ordinary MISSED/settle ladder rather than through anything new.
+        requested once the live CATCH has passed because that is where the
+        budget fits AND where nothing else is writing the install: the whole dwell
+        is ahead of it, and the catch-side replan window has already closed (see
+        :meth:`_tick_unified_extend`). The joined plan's head is bit-identical to
+        what the emitter is already streaming, so the install moves no knot that
+        has been sent.
         """
+        prev = state.unified_plan
+        deadline = float(getattr(prev, 'supersede_deadline_mono', 0.0) or 0.0)
         catch_xy = self._toss_unified_throw_xy(seq)
         flight = float(seq.flight_time_s)
         if last_cycle:
@@ -7930,39 +8492,406 @@ class ReloadCoordinatorNode(Node):
             flight_s=flight, catch_frac=catch_frac,
             vel_trim=self._unified_vel_trim(state),
             catch_vel_mm_s=self._unified_catch_vel_mm_s(flight))
-        resp, dispatched = self._call_plan_cycle(req)
-        if resp is None and dispatched:
-            # Same hazard as the LAUNCH, one seam later: an EXTEND that overran
-            # the client wait may have SPLICED and installed. "Holding the last
-            # good plan" would then be false — the last good plan has been
-            # superseded by one this node cannot see. Stop the machine instead.
+        label = 'LANDING' if last_cycle else 'STEADY'
+        if not self._plan_cycle_cli.service_is_ready():
             self.get_logger().error(
-                'unified EXTEND (%s) UNACKED after %.1f s — a spliced plan MAY '
-                'be installed and streaming; %s'
-                % ('LANDING' if last_cycle else 'STEADY', _SERVICE_WAIT_S,
-                   self._hold_after_unacked_plan()))
-            return
-        if resp is None or not bool(resp.accepted):
-            detail = ('trajectory/plan_cycle unavailable' if resp is None
-                      else str(resp.message))
-            self.get_logger().error(
-                'unified EXTEND (%s) refused: %s — holding the last good plan; '
-                'the ball is airborne and the cup holds where the planner left it'
-                % ('LANDING' if last_cycle else 'STEADY', detail))
-            return
+                'unified %s extend: trajectory/plan_cycle is not up — nothing '
+                'was dispatched and nothing can have been installed' % (label,))
+            return 'trajectory/plan_cycle unavailable', False
         with self._lock:
-            state.unified_plan = resp
-        # A STEADY window's terminal release belongs to the NEXT cycle, so it is
-        # handed to the next cycle rather than re-planned there (see
-        # `_tick_unified_launch`'s chained branch). A LANDING ends at rest and hands
-        # nothing on — the next cycle plans a genuine LAUNCH from a genuinely
-        # stopped machine, which is the shape a quiescent dwell produces.
-        self._toss_unified_chain = None if last_cycle else resp
+            self._toss_unified_extend = _UnifiedChainCall(
+                future=self._plan_cycle_cli.call_async(req),
+                sent_at=time.perf_counter(),
+                last_cycle=bool(last_cycle),
+                deadline=deadline,
+                prior_detail=str(prior_detail),
+                owner=state,
+                label=label,
+                period=float(period))
+        return None
+
+    def _poll_unified_chain(self, seq, state, now: float) -> None:
+        """One tick's worth of waiting on the in-flight chain request.
+
+        Three outcomes and no fourth: the future is DONE (classify it), the
+        future has been pending for ``_SERVICE_WAIT_S`` (treat as UNACKED — the
+        same bound the blocking wait used, so nothing about the timeout budget
+        changed when the wait stopped blocking), or it is still in flight (return
+        and let the FSM have the tick, which is the whole point).
+
+        **THE DISCARD RULE.** The record is dropped — not acted on — whenever it
+        no longer belongs to the cycle being polled (``owner is not state``), and
+        it is dropped outright by :meth:`_hold_live_unified_chain`, which every
+        teardown and every hold runs through. So a response that lands after the
+        chain has been torn down (a MISS, a cancel, a hold) is read by nobody:
+        it cannot re-arm ``_toss_unified_chain``, cannot raise
+        ``_toss_unified_release_ahead``, and cannot hand a release to a cycle that
+        will never run. That matters because the response may be an ACCEPT — the
+        service installs on accept and replies afterwards, so "the extend failed"
+        and "the extend was abandoned" are different facts and only the second
+        one is what a torn-down chain has.
+
+        **The server-side ordering, and why the client still checks.**
+        ``trajectory/hold`` is serviced on a REENTRANT callback group, so it
+        PRE-EMPTS a ``plan_cycle`` solve that is already running rather than
+        queueing behind it, and an install-epoch guard then refuses that
+        pre-hold solve ``SUPERSEDED_BY_HOLD`` instead of letting it install over
+        the stop. So the server does guarantee the outcome this client wants.
+
+        The client checks anyway, and the reason is scope rather than doubt: the
+        pre-emption is a property of the NODE THIS SESSION IS TALKING TO, and the
+        thing being protected is a stroke. :meth:`_hold_live_unified_chain`
+        DRAINS the abandoned future and holds if it came back accepted — one
+        service round trip on a terminal path, against a class of failure
+        (a window installed behind a hold nobody polled) that has no other
+        detector. The belt costs a teardown a few milliseconds; the alternative
+        costs a stroke over an empty cup.
+        """
+        with self._lock:
+            rec = self._toss_unified_extend
+        if rec is None:
+            return
+        if rec.owner is not state:
+            # A previous cycle's request, still in flight into this one. Its
+            # answer describes a chain that has already been superseded or torn
+            # down — but "not this cycle's business" is not "harmless": an
+            # accepted EXTEND installs a window that CARRIES a release, and
+            # dropping the record unread leaves that install unaccounted for.
+            # So it goes through the same discard-and-hold contract every other
+            # abandonment does (audit B7a).
+            with self._lock:
+                if self._toss_unified_extend is rec:
+                    self._toss_unified_extend = None
+            self._settle_abandoned_chain(rec, held_already=False)
+            return
+        failure = None
+        resp = None
+        if rec.future.done():
+            try:
+                resp = rec.future.result()
+            except Exception as exc:                            # noqa: BLE001
+                failure = ('the plan_cycle call raised ({})'.format(exc), True)
+        elif now >= self._chain_poll_bound(rec):
+            # DISPATCHED and unacked. `plan_cycle` installs on accept and replies
+            # afterwards, so this is NOT "nothing happened": a spliced plan may
+            # be streaming right now. The ladder decides; it is reported as a
+            # failure with the service UP, so the LANDING fall-back still runs
+            # (if it can still fit — see `_unified_chain_failed`).
+            failure = ('UNACKED after {:.3f} s ({}) — a spliced plan MAY be '
+                       'installed and streaming'.format(
+                           now - rec.sent_at, self._chain_bound_why(rec)), True)
+        else:
+            return                                  # still in flight; next tick
+        with self._lock:
+            if self._toss_unified_extend is rec:
+                self._toss_unified_extend = None
+        if failure is None:
+            if resp is None:
+                failure = ('trajectory/plan_cycle answered with no response',
+                           True)
+            elif not bool(resp.accepted):
+                failure = (str(resp.message), True)
+        if failure is None:
+            self._accept_unified_chain(seq, state, rec, resp)
+            return
+        self._unified_chain_failed(seq, state, rec.last_cycle,
+                                   rec.prior_detail, failure, rec.deadline)
+
+    def _settle_unified_extend(self, seq, state) -> None:
+        """Finish an extend that is STILL PENDING when its cycle terminalises.
+
+        The poll's bound is :meth:`_chain_poll_bound` — ``min(sent_at +
+        _SERVICE_WAIT_S, deadline - _UNIFIED_HOLD_MARGIN_S)`` — while the cycle it
+        belongs to has only its settle window left after the catch, roughly
+        ``catch_confirm_window_s``. Either bound can outlast the cycle, so a slow
+        solve can outlive the request that asked for it. Without this the ring
+        would end that cycle with
+        NO window chained, ``_toss_unified_chain`` None, and a standing
+        release-terminal plan: the next cycle would plan a fresh ``MODE_NEW``
+        LAUNCH over a machine that is mid-carry (refused ``STALE_STATE``) while
+        the standing plan threw anyway. That is the silent degrade the ring is
+        not allowed to do.
+
+        So the answer is WAITED for here, and blocking here is the right trade:
+        the FSM has already terminalised, so there is nothing left to observe —
+        which is the whole reason the poll is non-blocking during the cycle and
+        not after it. Bounded by **the request's own** :meth:`_chain_poll_bound`,
+        never by a fresh wait — so a settle that starts late inherits whatever is
+        left rather than restarting the clock, and it cannot hold the session
+        thread past the supersede deadline it was racing. Driven through the SAME
+        :meth:`_poll_unified_chain` so the classification and the ladder cannot
+        drift from the in-cycle path.
+
+        Twice at most: the STEADY, then the LANDING its failure falls back to.
+        """
+        for _ in range(2):
+            with self._lock:
+                rec = self._toss_unified_extend
+            if rec is None or rec.owner is not state:
+                return
+            bound = self._chain_poll_bound(rec)
+            while (not rec.future.done() and rclpy.ok()
+                   and time.perf_counter() < bound):
+                time.sleep(0.005)
+            self._poll_unified_chain(seq, state, time.perf_counter())
+
+    @staticmethod
+    def _chain_poll_bound(rec) -> float:
+        """The instant a pending chain request STOPS being "still in flight" (s).
+
+        ``min(sent_at + _SERVICE_WAIT_S, deadline - _UNIFIED_HOLD_MARGIN_S)``,
+        and the second term is the one that matters (audit H2).
+
+        The client wait alone is 2.0 s, while the whole carry a ring has between
+        its catch and its supersede deadline is ``dwell - dt`` — 1.175 s at the
+        shipped beat 2.0. A wedged ``plan_cycle`` was therefore not declared
+        UNACKED until 0.8 s PAST the cliff, so the LANDING fall-back and the hold
+        both landed after the emitter had already read the release segment's
+        endpoint from the terminal hold and commanded a 93.011 rev/s stroke to
+        0.0 — 10.90 mm of slider error, inside every firmware guard.
+        `_SERVICE_WAIT_S` is a client-patience number; it knows nothing about
+        this plan's cliff. The deadline does.
+
+        Waiting to ``deadline - _UNIFIED_HOLD_MARGIN_S`` and no less is
+        deliberate: it gives the solve every millisecond that is actually
+        available and still leaves the LAST rung — the hold — room to do ITS OWN
+        work in front of the cliff. **The margin covers exactly that and no
+        more**: the ticks to observe and dispatch, and the measured
+        ``planner.build_hold`` (max 49.2 ms). It does NOT, and cannot, cover a
+        `plan_cycle` SOLVE that is still executing when the hold arrives — that
+        is `trajectory_node`'s to guarantee, and it does: `trajectory/hold` is
+        serviced on a reentrant group so it pre-empts an in-flight solve, and the
+        install-epoch guard refuses the pre-hold solve ``SUPERSEDED_BY_HOLD``
+        rather than letting it install over the stop. Two mechanisms, two
+        different hazards; stating only the margin would credit it with a
+        guarantee it does not provide.
+
+        Whether the MIDDLE rung (the LANDING fall-back) can also fit is a
+        question asked at the moment of failure, not now, because by then the
+        real remaining time is known.
+
+        A response with no published deadline (0.0) keeps the client wait alone,
+        which is the pre-ring behaviour and correct: with no cliff to race there
+        is nothing for a deadline term to protect.
+        """
+        bound = float(rec.sent_at) + _SERVICE_WAIT_S
+        if rec.deadline > 0.0:
+            bound = min(bound, float(rec.deadline) - _UNIFIED_HOLD_MARGIN_S)
+        return bound
+
+    @staticmethod
+    def _chain_bound_why(rec) -> str:
+        """Which of the two bounds bit — the operator's first question.
+
+        The wording is careful about what the margin buys: room for the hold's
+        OWN work (the ticks plus a measured 49.2 ms ``build_hold``), not immunity
+        from a solve still running when it arrives. That second hazard is
+        `trajectory_node`'s pre-emption, and saying so here is what stops an
+        operator concluding the margin was mis-sized when a solve was the cause.
+        """
+        if (rec.deadline > 0.0
+                and float(rec.deadline) - _UNIFIED_HOLD_MARGIN_S
+                < float(rec.sent_at) + _SERVICE_WAIT_S):
+            return ('the supersede deadline minus the {:.3f} s margin the '
+                    'hold\'s OWN work needs, not the {:.1f} s client wait (a '
+                    'solve still in flight is pre-empted by trajectory/hold, '
+                    'not covered by this margin)'
+                    .format(_UNIFIED_HOLD_MARGIN_S, _SERVICE_WAIT_S))
+        return 'the {:.1f} s client wait'.format(_SERVICE_WAIT_S)
+
+    def _unified_chain_failed(self, seq, state, last_cycle: bool,
+                              prior_detail: str, failure, deadline: float = 0.0
+                              ) -> None:
+        """Rungs 2 and 3 of the ladder — see :meth:`_extend_unified_cycle`.
+
+        Rung 2 is attempted only when it can still FINISH: a LANDING needs one
+        ``_UNIFIED_EXTEND_LEAD_S`` to solve and install (that constant is
+        literally "a whole such call plus the service round trip and the 40 ms
+        poll") and the hold behind it needs ``_UNIFIED_HOLD_MARGIN_S``. Asking
+        for a window that cannot arrive in time is not a fail-safe — it spends
+        the only budget the HOLD had, which is the rung that always works.
+        """
+        detail, service_up = failure
+        now = time.perf_counter()
+        room = (deadline <= 0.0
+                or now + _UNIFIED_EXTEND_LEAD_S + _UNIFIED_HOLD_MARGIN_S
+                <= deadline)
+        if not last_cycle and service_up and not room:
+            self.get_logger().error(
+                'unified STEADY extend FAILED (%s) with only %.3f s to the '
+                'supersede deadline — SKIPPING the LANDING fall-back, which '
+                'needs %.3f s to solve and install, and holding instead. A '
+                'window that cannot arrive in time is not a fall-back; it is '
+                'the hold\'s budget spent on nothing.'
+                % (detail, deadline - now,
+                   _UNIFIED_EXTEND_LEAD_S + _UNIFIED_HOLD_MARGIN_S))
+        if not last_cycle and service_up and room:
+            self.get_logger().error(
+                'unified STEADY extend FAILED (%s) — falling back to a LANDING '
+                'so the ring stops with the ball caught instead of on a '
+                'release-terminal cliff' % (detail,))
+            again = self._dispatch_unified_chain(seq, state, True,
+                                                 prior_detail=detail)
+            if again is None:
+                return                       # the LANDING is in flight now
+            detail = 'STEADY: {} | LANDING: {}'.format(detail, again[0])
+        elif prior_detail:
+            detail = 'STEADY: {} | LANDING: {}'.format(prior_detail, detail)
+        held = self._hold_after_unacked_plan()
+        state.unified_reject = '{}({}: {} — {})'.format(
+            _OUTCOME_CHAIN_LOST, 'NO_WINDOW', detail, held)
+        self.get_logger().error(
+            'unified chain LOST: %s. The standing plan had a release still '
+            'ahead, so doing nothing would have thrown again with no window to '
+            'catch it — the machine was held.' % (state.unified_reject,))
+        # ── AND THE SESSION STOPS, without stealing this cycle's verdict ─────
+        # The ring is over: nothing was chained and the machine has been held, so
+        # no later cycle can run. It is armed on the SESSION rather than written
+        # over `cycle_result` because the two facts are independent — this cycle
+        # may have caught its ball perfectly, and a relabel would hide that catch
+        # inside a plumbing fault AND (with `success` still True) leave
+        # `note_cycle_result` reading a REJECTED_* string as a successful throw,
+        # which is how a lost chain quietly became a COMPLETED session.
+        if self._arm_chain_stop(self._toss_session_ref,
+                                '{}: {} — {}'.format('NO_WINDOW', detail, held),
+                                OUTCOME_STOPPED_CHAIN_LOST):
+            with self._lock:
+                # The relabel in the session loop reads this: a cycle whose
+                # SESSION terminal is armed keeps its OWN verdict, because the
+                # ring failed and the throw did not.
+                state.unified_chain_stop_armed = True
+
+    def _arm_chain_stop(self, session, detail: str, outcome: str) -> bool:
+        """Arm a ring terminal on the session. True when it actually landed.
+
+        ⚠ NEVER a silent pass, at EITHER call site (audit B7c). This is what
+        stops the session; without it the ring's failure is a log line and the
+        goal can still report COMPLETED — the exact bug the arming replaced. The
+        only way to fail is a STALE INSTALL (a `colcon`-built `toss_session`
+        older than this node, missing the hook or carrying its one-argument
+        predecessor), and an operator who is TOLD that fixes it in one command.
+        """
+        if session is None:
+            return False                             # a bench call, no session
+        notify = getattr(session, 'note_chain_refused', None)
+        if notify is None:
+            self.get_logger().error(
+                'toss_session has NO note_chain_refused: this is a STALE '
+                'INSTALL (the built jugglebot package is older than this node). '
+                'The chain was stopped, but the SESSION will not stop by name '
+                'and may report COMPLETED after losing its ring. Rebuild the '
+                'package (colcon build --packages-select jugglebot) '
+                'before flying.')
+            return False
+        try:
+            notify(detail, outcome)
+        except TypeError as exc:                     # a one-argument stale copy
+            self.get_logger().error(
+                'toss_session.note_chain_refused refused the outcome argument '
+                '(%s) — same STALE INSTALL story as above; the session will not '
+                'stop by name. Rebuild the jugglebot package.' % (exc,))
+            return False
+        return True
+
+    def _accept_unified_chain(self, seq, state, rec, resp) -> None:
+        """An installed chained window: the bookkeeping, the hand-off, the line."""
+        label = rec.label
+        deadline = rec.deadline
+        installed_at = time.perf_counter()
+        with self._lock:
+            # ⚠ `state.unified_plan` is deliberately NOT written here. See its
+            # own comment: this response describes the NEXT cycle's window and
+            # reports the NEXT release, while that field is the authority on THIS
+            # cycle's landing schedule and on the instant the session's cadence
+            # is measured from. The two are one beat apart, and conflating them
+            # moves the ball sensor's arrival band and the whole session cadence
+            # onto the wrong one.
+            #
+            # ── The ring's own liveness: the LAST RELEASE this plan carries ──
+            # A STEADY window starts at the next cycle's release and ENDS at the
+            # one after; a LANDING starts at the next cycle's release and ends at
+            # rest. So both carry `t_release_mono`, and only the STEADY carries a
+            # second one a `period` later. The teardown owes a hold until the
+            # LATER of them has fired — which for the ring's final LANDING is a
+            # full beat after the install, the window `release_terminal` would
+            # have called safe (audit H1).
+            self._toss_unified_release_ahead = float(
+                getattr(resp, 't_release_mono', 0.0) or 0.0) + (
+                    0.0 if rec.last_cycle else float(rec.period))
+            self._toss_unified_chain_depth = (
+                self._toss_unified_chain_depth + 1
+                if bool(getattr(resp, 'release_terminal', False)) else 0)
+            depth = self._toss_unified_chain_depth
+            # ── The hand-off, and it is made by BOTH kinds ───────────────────
+            # The window just chained STARTS at the next cycle's release, whether it
+            # is a STEADY (which also ends at one) or the ring's final LANDING (which
+            # ends at rest). So the response's `t_release_mono` — the first release
+            # still ahead of now, which after our own catch is cycle k+1's — is cycle
+            # k+1's release in both cases, and cycle k+1 announces it rather than
+            # re-planning it (see `_tick_unified_launch`'s chained branch).
+            #
+            # This is the one place UH-7a inverts the pre-existing rule. Before it,
+            # the extend fired at THIS cycle's release and a LANDING chained THIS
+            # cycle's own settle tail, so a LANDING genuinely handed nothing on. Now
+            # the extend fires after this cycle's CATCH and chains the window the
+            # NEXT cycle lives in — so a LANDING hands on the last release of the
+            # ring, and dropping it there would make the final cycle plan a fresh
+            # `MODE_NEW` LAUNCH over a machine that is mid-carry (refused
+            # STALE_STATE, one throw short of the goal the operator asked for).
+            #
+            # INSIDE the lock (audit B7b) with the two flags it is read beside:
+            # `_hold_live_unified_chain` clears all three under one acquisition,
+            # so writing this one outside left a window in which a teardown could
+            # observe a cleared release-instant and a live chain response.
+            self._toss_unified_chain = resp
+        # ── C3: the three numbers an operator judges a ring by ───────────────
+        # The ACHIEVED lead (how much of the old plan's deadline was still ahead
+        # when this install landed) is the one that says whether the chain is
+        # healthy: it is what `_UNIFIED_EXTEND_LEAD_S` budgets, and a ring whose
+        # achieved lead is drifting toward zero is one solve away from a
+        # supersede alarm. The solve time says WHY it is drifting, and the depth
+        # says how far the ring has run — `cycle_active` cannot, being a type
+        # test on the installed plan that stays true across the whole chain.
+        lead_achieved = (deadline - installed_at) if deadline > 0.0 else float('nan')
         self.get_logger().info(
-            'unified %s extended: duration %.3f s, catch in %.3f s, plan %.1f ms'
-            % ('LANDING' if last_cycle else 'STEADY', float(resp.duration_s),
-               float(resp.t_catch_mono) - time.perf_counter(),
-               float(resp.plan_wall_ms)))
+            'unified %s chained (depth %d): duration %.3f s, solve %.1f ms, '
+            'installed %.3f s before the superseded deadline (budget %.2f s)'
+            % (label, depth, float(resp.duration_s), float(resp.plan_wall_ms),
+               lead_achieved, _UNIFIED_EXTEND_LEAD_S))
+        if deadline > 0.0 and lead_achieved < 0.0:
+            self.get_logger().error(
+                'unified %s chained %.3f s AFTER the deadline it was racing — '
+                'the emitter has already read the release segment\'s endpoint '
+                'from the terminal hold, so this beat carries the supersede '
+                'cliff. A firing here is a PLUMBING defect (the lead is too '
+                'short for the measured solve), not a tuning finding.'
+                % (label, -lead_achieved))
+        if rec.prior_detail:
+            # ── THE RING STOPS, IT DOES NOT DEGRADE (owner, 2026-09-07) ──────
+            # This LANDING is the FALL-BACK: the STEADY this cycle owed was
+            # refused, so the ring is one window shorter than the goal asked
+            # for. Left alone the session would keep going — the LANDING settles
+            # the cup at the floor, the next cycle plans a genuine `MODE_NEW`
+            # LAUNCH from a stopped machine, and the beat quietly reverts to the
+            # settle-plus-relaunch cadence for the rest of the sitting.
+            #
+            # That is the wrong behaviour for a MEASUREMENT rung. A beat that
+            # silently lengthens mid-session muddles every number the sitting
+            # exists to produce — the achieved cadence, the per-cycle catch
+            # error, the ILC corpus — and the operator's correct response to a
+            # refused window is to raise `dwell_time_s`, not to keep flying a
+            # cadence they did not ask for. So the session STOPS after the cycle
+            # this window carries, by name, with the planner's own refusal
+            # string in the outcome. One more cycle runs, deliberately: the ball
+            # is airborne and this window is what catches it.
+            self._toss_unified_chain_stop = rec.prior_detail
+            self.get_logger().warning(
+                'unified ring TRUNCATED: the STEADY was refused (%s) and the '
+                'LANDING fall-back installed, so the machine will catch and '
+                'settle and the session will then STOP %s. It does NOT continue '
+                'at a longer beat — a cadence that changes mid-sitting is a '
+                'corpus with two machines in it. Raise dwell_time_s and re-run.'
+                % (rec.prior_detail, OUTCOME_STOPPED_CHAIN_REFUSED))
 
     def _unified_beat_s(self, seq) -> float:
         """The STEADY window's period — the session's beat, as the SESSION sees it.
@@ -7976,13 +8905,225 @@ class ReloadCoordinatorNode(Node):
         the plan's terminal release then names the same instant the session's next
         cycle does instead of a nearby one.
 
+        **ONE number, hoisted onto the session at accept** (UH-7a, A4). The
+        session exposes it as ``TossSessionSequencer.beat_s``, computed once in
+        ``__post_init__`` after the goal's ``dwell_time_s`` default substitution,
+        and this reads it rather than re-adding ``flight + dwell`` here. That
+        matters because the two sides of a chained cycle are compared against
+        each other every beat: the plan's terminal release comes from a window
+        planned at THIS period, and the FSM's schedule comes from
+        ``next_release_at``, and ``_tick_unified_launch``'s CHAIN_SKEW guard
+        refuses the cycle when they disagree by more than a tick. Two additions
+        of the same two floats is exactly the shape that produces a skew nobody
+        can explain.
+
         No live session (a bench call, a discarded slot) falls back to the flight
         alone, which is the shortest beat the shape admits; the gate refuses it if
-        the machine cannot hold it.
+        the machine cannot hold it. A session-shaped object that carries a dwell
+        but no ``beat_s`` — a bench stand-in, never a real
+        ``TossSessionSequencer``, which always has the field — falls back to the
+        pre-hoist expression so the bench reads the same number the machine does.
         """
         session = self._toss_session_ref
+        beat = float(getattr(session, 'beat_s', 0.0) or 0.0)
+        if beat > 0.0:
+            return beat
         dwell = float(getattr(session, 'dwell_time_s', 0.0) or 0.0)
         return float(seq.flight_time_s) + dwell
+
+    def _hold_live_unified_chain(self, why: str) -> bool:
+        """STOP a plan with a release STILL AHEAD. Returns whether one was held.
+
+        **The one hazard the whole unified teardown vocabulary did not have a
+        word for.** Every other teardown rung answers "what is armed?" — the
+        catch latch, the prime hold, a dispatched stroke. A steady chain is not
+        armed; it is *scheduled*. The plan the emitter is streaming carries a
+        release that has not fired, so a throw stroke happens on the emitter's
+        own clock whether or not anything on the Jetson is still ticking. "Hold
+        the pose by not commanding anything", which is exactly right once the
+        machine is settling, is here an instruction to throw again.
+
+        **THE PREDICATE IS AN INSTANT, NOT ``release_terminal``** (audit H1,
+        2026-09-07). The response flag means "the plan's LAST KNOT is a release",
+        which is a different question and answers False for the two most
+        dangerous cycles of every ring: the final LANDING window is installed a
+        whole beat before the release it starts at, so from that install until
+        R_N there is a full stroke ahead and the flag says the machine is safe. A
+        MISS on cycle N-1, or a cancel / ceiling / stall watchdog / exception in
+        cycle N before R_N, took the early return, issued no hold, and let the
+        plan throw over an empty cup ~1.2 s after STOPPED_ON_MISS was reported.
+        So the question asked is *is a release still ahead of now* —
+        ``now < _toss_unified_release_ahead``, the last release the standing plan
+        carries, computed where the chained window's period is in hand.
+
+        Idempotent by construction: the instant is read AND zeroed under one lock
+        acquisition, so the call sites below can each run unconditionally and
+        only the first one to arrive pays for the hold.
+
+        The call sites, and why it takes all of them:
+
+        * :meth:`_unified_hold_after_abort` — the FSM's own SAFE_ABORT terminal,
+          i.e. the survived MISS and every cycle fault. This is the path that
+          matters most and the one the ordering argument is written for;
+        * :meth:`_safe_toss_on_early_exit` — cancel / timeout / shutdown taken
+          INSIDE a cycle. It is called here **outside** that method's
+          ``seq.prepared`` gate on purpose: ``prepared`` answers "did this cycle
+          arm anything", and a chained cycle that has not reached PREPARE yet has
+          armed nothing while the PREVIOUS cycle's plan is still carrying a
+          release toward it. Gating the hold on it would leave the one case
+          where the operator has explicitly asked the machine to stop;
+        * the session's ``finally`` — the belt, for every way out that reaches no
+          cycle terminal at all: the between-cycles cancel, the session ceiling,
+          the F3 stall watchdog, and the exception path. Each of those is
+          commented "nothing is armed and nothing is airborne", which was true of
+          the shipped shape and is not true of a ring;
+        * :meth:`_hold_chain_before_session_motion` — every SESSION-loop action
+          that commands motion of its own (audit M3). The reload interlude
+          go_homes and recentres the platform; doing that over a streaming plan
+          with a release ahead gives one interval two owners AND still throws.
+        """
+        now = time.perf_counter()
+        with self._lock:
+            ahead = float(self._toss_unified_release_ahead or 0.0)
+            # ── THE DISCARD, and it happens under the SAME lock acquisition ──
+            # An in-flight extend is ABANDONED here, not awaited: whatever it
+            # answers describes a chain that no longer exists, and acting on an
+            # ACCEPT would re-arm `_toss_unified_chain` and hand a release to a
+            # cycle that will never run. Dropping the record is the whole
+            # mechanism — `_poll_unified_chain` reads nothing else.
+            pending = self._toss_unified_extend
+            self._toss_unified_extend = None
+            self._toss_unified_release_ahead = 0.0
+            self._toss_unified_chain = None
+            self._toss_unified_chain_depth = 0
+            self._toss_unified_chain_stop = ''
+        live = ahead > 0.0 and now < ahead
+        # THE HOLD GOES FIRST, on this tick — before the drain below, and before
+        # `catch/armed` False. The stroke is the hazard with a clock on it.
+        if live:
+            self.get_logger().warning(
+                'unified %s with a RELEASE %.3f s AHEAD on the standing plan: '
+                'the chain is being STOPPED, because a stroke that has not '
+                'fired yet has no terminal hold in front of it. %s'
+                % (why, ahead - now, self._hold_after_unacked_plan()))
+        # ── THE DRAIN IS ABOVE THE EARLY RETURN (audit M4) ───────────────────
+        # The discard-and-re-hold contract is about a request THIS NODE
+        # dispatched, and it is owed whatever the liveness predicate says. A
+        # future abandoned while no release was ahead can still be ACCEPTED — and
+        # an accepted EXTEND installs a window that CARRIES a release, so the
+        # very act of ignoring it re-creates the hazard the predicate had just
+        # (correctly) said was absent. Below the return this was skipped in
+        # exactly the cases called safe, which is where an unread ACCEPT is least
+        # expected and therefore worst.
+        if pending is not None:
+            self._settle_abandoned_chain(pending, held_already=live)
+        if not live:
+            return False
+        # ── THE BELT, and what it is a belt FOR ──────────────────────────────
+        # `trajectory/hold` is serviced on a REENTRANT group in trajectory_node,
+        # so it pre-empts an in-flight `plan_cycle` solve, and an install-epoch
+        # guard refuses that pre-hold solve `SUPERSEDED_BY_HOLD` rather than
+        # letting it install over the stop. The server therefore already
+        # guarantees the ordering this method wants.
+        #
+        # The drain above stays anyway, and not out of distrust: it is the only
+        # detector for a window that installed behind a hold NOBODY POLLED — an
+        # abandoned future whose accept nothing on this node would otherwise
+        # read. It costs one service round trip on a terminal path, where
+        # `_hold_after_unacked_plan` and the ball-settle wait already block, and
+        # it is the FSM TICK's blocking the non-blocking extend exists to
+        # prevent, not this one. (The call itself is ABOVE, with the discard —
+        # see the M4 note there.)
+        return True
+
+    def _hold_chain_before_session_motion(self, what: str) -> None:
+        """Stop a live chain before the SESSION LOOP commands motion of its own.
+
+        **The class, not the instance** (audit M3). Every cycle-level teardown
+        already routes through :meth:`_hold_live_unified_chain`; what was missing
+        is the loop OUTSIDE a cycle, whose motion-bearing branches each carry a
+        comment saying "nothing is armed and nothing is airborne". That sentence
+        is a claim about the CYCLE. It is true of the shipped rest-terminal
+        shape, where the plan settles the cup and stops, and false of a ring,
+        where the standing plan is carrying a release nobody has thrown.
+
+        The branches, enumerated rather than sampled:
+
+        * ``SESSION_ACTION_RELOAD`` — the interlude go_homes and recentres. THE
+          instance the audit found: a chained cycle mints ``REJECTED_NO_BALL`` in
+          CHECKING, terminalises with ``ACTION_NONE`` (so no SAFE_ABORT, so no
+          hold), and with ``on_empty_cup RELOAD`` the session drives the platform
+          under a streaming plan that then throws at ``R_{k+1}``;
+        * ``SESSION_ACTION_START_CYCLE`` with no chain to announce — the floor
+          lift and a ``MODE_NEW`` LAUNCH, both motion. Belt only: on a healthy
+          ring this is cycle 1, with nothing streaming;
+        * ``SESSION_ACTION_NONE`` commands nothing — the Layer-1.5 dwell tilt
+          read is a service READ, and the feedback publish is a topic. Neither
+          moves the machine, so neither is a site;
+        * the session ``finally`` and every ``_finish_session`` exit already hold
+          through :meth:`_unified_hold_after_abort` or the terminal belt.
+
+        Idempotent, so a future branch that adds a call costs one lock
+        acquisition when there is nothing to stop.
+        """
+        if self._hold_live_unified_chain('session motion (%s)' % (what,)):
+            self.get_logger().warning(
+                'the chain was stopped BEFORE %s commanded anything: one '
+                'interval may not have two owners, and the standing plan still '
+                'had a stroke ahead of it.' % (what,))
+
+    def _settle_abandoned_chain(self, pending, held_already: bool) -> None:
+        """Drain an abandoned extend and hold if it installed anyway.
+
+        The response is read for exactly ONE fact — did the service accept, i.e.
+        may a plan have been installed — and is otherwise discarded: no
+        ``_toss_unified_chain``, no ``_toss_unified_release_ahead``, no release
+        handed on. See :meth:`_hold_live_unified_chain` for why the drain exists.
+
+        A hold is issued when it accepted, in BOTH cases and for two different
+        reasons. If one was already issued, this one supersedes an install that
+        may have landed after it (the registration-order hazard below). If none
+        was — the predicate said no release was ahead — then the accept has just
+        put one there, and this is the first hold, not a second.
+
+        Fail-closed on a drain that times out: "it may still install" is not "it
+        did not", so the machine is reported as not provably stopped.
+        """
+        bound = self._chain_poll_bound(pending)
+        while (not pending.future.done() and rclpy.ok()
+               and time.perf_counter() < bound):
+            time.sleep(0.005)
+        if not pending.future.done():
+            # ⚠ FAIL-CLOSED MEANS COMMANDING, not narrating (audit B4). "It may
+            # still install a window with a release in it" is the strongest
+            # reason there is to hold, and the branch used to only SAY it. When
+            # no hold has been issued yet — the predicate had called the machine
+            # safe — this is the only rung left, so it takes it.
+            verdict = ('the hold already issued stands'
+                       if held_already else self._hold_after_unacked_plan())
+            self.get_logger().error(
+                'unified %s extend never answered and the chain was abandoned '
+                '— it MAY still install a window with a release in it. Holding: '
+                '%s. Until that verdict says the machine stopped, treat it as '
+                'moving.' % (pending.label, verdict))
+            return
+        try:
+            resp = pending.future.result()
+        except Exception as exc:                                # noqa: BLE001
+            self.get_logger().info(
+                'abandoned unified %s extend raised (%s) — nothing installed'
+                % (pending.label, exc))
+            return
+        if resp is None or not bool(getattr(resp, 'accepted', False)):
+            return
+        self.get_logger().error(
+            'the abandoned unified %s extend was ACCEPTED — %s. Holding%s. %s'
+            % (pending.label,
+               'it may have superseded the hold just issued' if held_already
+               else 'and an accepted EXTEND installs a window that CARRIES a '
+                    'release, so the machine that was safe a moment ago is not',
+               ' again' if held_already else '',
+               self._hold_after_unacked_plan()))
 
     def _unified_hold_after_abort(self, settle: bool = True) -> None:
         """The unified transpose of :meth:`_safe_abort`: hold the pose, do not home.
@@ -8020,7 +9161,30 @@ class ReloadCoordinatorNode(Node):
         cannot be reported cancelled until this returns.
         The retained SAFING rungs above are unconditional in every case — they are
         what makes the machine safe, and the wait is only about the ball.
+
+        ── UH-7a: A LIVE CHAIN GETS A HOLD, AND IT GOES FIRST ──────────────────
+        Every sentence above about "not calling go_home is the whole mechanism"
+        is true of a REST-terminal plan and false of a release-terminal one. On a
+        steady chain the standing plan's last act is a THROW STROKE: doing
+        nothing means the machine throws again — over a cup this teardown was
+        reached because the ball was MISSED out of, with no window planned to
+        catch what leaves and with the FSM already torn down. So when a chain is
+        live the ladder opens with ``trajectory/hold``, a profiled decel-to-rest
+        that supersedes the cycle plan outright.
+
+        It goes BEFORE ``catch/armed`` False, which is the one place this ladder
+        departs from ``_safe_abort``'s ordering rule, and the reason is a race
+        the ordering rule does not cover: ``catch/armed`` False stands
+        catch_coordinator's retry tick down, which costs a topic round trip,
+        while the next stroke is on a plan that is streaming NOW. The stroke is
+        the hazard with a clock on it; the retry tick is not.
+
+        Gated on the flag rather than run unconditionally so the shipped
+        rest-terminal shape is untouched: there, a hold on every teardown would
+        be a service call that supersedes a plan already settling to rest, and
+        the one thing it could change is to make a cancel slower.
         """
+        self._hold_live_unified_chain('teardown')
         self._publish_catch_armed(False)
         if not self._arm_catch(False):
             self.get_logger().error(
@@ -8502,7 +9666,14 @@ class ReloadCoordinatorNode(Node):
         question on 2026-08-27.
 
         ``state`` is the cycle's :class:`TossCycleState`; None ⇒ the committed
-        slot."""
+        slot.
+
+        ⚠ UH-7a: the CHAIN hold is taken OUTSIDE the ``prepared`` gate, first.
+        ``prepared`` asks "did THIS cycle arm anything", and a chained cycle that
+        has not reached PREPARE has armed nothing — while the plan carrying its
+        release is streaming and will throw on its own. See
+        :meth:`_hold_live_unified_chain`."""
+        self._hold_live_unified_chain('early exit')
         self._drain_pipeline_and_disarm()
         if seq.prepared:
             self.get_logger().warning(
@@ -9644,6 +10815,118 @@ class ReloadCoordinatorNode(Node):
                     with self._lock:
                         self._goal_claimed = False
                     return result
+        # ── THE BEAT FLOOR, AT ACCEPTANCE (UH-7a) ────────────────────────────
+        # A unified session CHAINS: cycle k's window is planned inside cycle
+        # k−1's, once the live catch has passed and before the standing plan's
+        # supersede deadline. The carry between those two instants is exactly
+        # `dwell − dt`, so a dwell under one `_UNIFIED_EXTEND_LEAD_S` asks the
+        # chain to receive a window it has no time to receive — and the failure
+        # is not a slow beat, it is the LANDING fail-safe firing on every cycle
+        # and the session stopping after one throw with the operator reading a
+        # planner refusal instead of a cadence one.
+        #
+        # ⚠ THIS IS THE PLUMBING FLOOR, NOT THE FLYABLE ONE. It says the chain
+        # has time to ASK; it says nothing about whether the QP can serve a
+        # window that short (the sim gate records LIMIT_JERK at a 1.0 s window
+        # against the 150 k session cap). That question is answered per cycle by
+        # the planner, and the answer is SAFE to take late because
+        # `_extend_unified_cycle`'s ladder holds the machine before the deadline
+        # — which is precisely why this gate is allowed to be this low instead of
+        # guessing the planner's floor here and refusing beats that would fly.
+        #
+        # LAYER B, not the session FSM's CHECKING, and for a structural reason:
+        # this floor is built out of PLANNER constants (`_UNIFIED_EXTEND_LEAD_S`,
+        # the knot dt) and applies to the unified path only, while
+        # `TossSessionSequencer` carries `unified` as one narrow carve-out inside
+        # `floor_event_vel_mps`. Pushing planner constants into the FSM would
+        # give the beat two owners — the exact failure `_unified_beat_s` and the
+        # hoisted `session.beat_s` exist to prevent one level up.
+        #
+        # Only FINITE, NON-NEGATIVE dwells are judged here. A NaN or a sign typo
+        # is `REJECTED_DWELL`'s, at the session FSM, and stealing it would name
+        # the wrong knob for the wrong reason.
+        if unified:
+            dwell_eff = (dwell if dwell != 0.0
+                         else float(hw.JB_OP_TOSS_SESSION_DWELL_DEFAULT_S))
+            delay_eff = (throw_delay if throw_delay != 0.0
+                         else DEFAULT_TOSS_THROW_DELAY_S)
+            floor, binding = _unified_chain_dwell_floor_s()
+            bad = None
+            if (math.isfinite(dwell_eff) and dwell_eff >= 0.0
+                    and dwell_eff < floor):
+                # ── (1) THE BEAT ── Two requirements, and the message names the
+                # one that BINDS, because they move under different knobs and an
+                # operator told only the number cannot tell which to turn.
+                bad = bound_msg(
+                    'dwell', dwell_eff, '<', floor, 's', digits=3,
+                    limit_label='unified chain floor ({})'.format(binding),
+                    tail=('the chain has TWO requirements and the larger holds. '
+                          '(a) the carry `dwell - dt` = {:.3f} must hold one '
+                          '{:.3f} s extend, since window k+1 is planned inside '
+                          'window k and must install before the supersede '
+                          'deadline one knot before its release; (b) cycle k+1 '
+                          'cannot start before `catch + max(verdict {:.3f}, '
+                          'extend {:.3f})` and then needs {:.3f} s of preamble '
+                          'plus one {:.3f} s tick to announce and dispatch. '
+                          'This is the PLUMBING floor, not the planner\'s: '
+                          'whether the beat {:.3f} s = flight {:.3f} + dwell is '
+                          'FLYABLE is answered per cycle by the planner. Raise '
+                          'dwell_time_s to at least {:.3f} s, or throw_height_m '
+                          'for a longer flight'
+                          .format(dwell_eff - _UNIFIED_KNOT_DT_S,
+                                  _UNIFIED_EXTEND_LEAD_S,
+                                  TOSS_CATCH_CONFIRM_WINDOW_S,
+                                  _UNIFIED_EXTEND_LEAD_S,
+                                  _UNIFIED_CHAIN_PREAMBLE_S,
+                                  TOSS_LOOP_PERIOD_S,
+                                  flight + dwell_eff, flight, floor)))
+            if bad is None and math.isfinite(delay_eff) and delay_eff > 0.0:
+                # ── (2) CYCLE 1 ── A different failure with a different knob:
+                # the FIRST cycle's release is DERIVED (`now + throw_delay_s`)
+                # while the LAUNCH's lands at `install + 0.6`, so too small a
+                # delay makes the ball leave LATE against the 0.5 s grace and
+                # cycle 1 aborts NO_RELEASE before any chain exists. Refusing
+                # here names `throw_delay_s`; letting it through names
+                # ABORTED_NO_RELEASE, which sends the operator to the hand.
+                d_floor = _unified_cycle1_delay_floor_s()
+                if delay_eff < d_floor:
+                    bad = bound_msg(
+                        'throw_delay', delay_eff, '<', d_floor, 's', digits=3,
+                        limit_label='unified cycle-1 floor',
+                        tail=('cycle 1 is the only cycle whose release is '
+                              'DERIVED (now + throw_delay_s) while the LAUNCH '
+                              'that throws lands its release at install + '
+                              '{:.3f} s, so the ball leaves `preamble {:.3f} + '
+                              'solve {:.3f} + window {:.3f} - throw_delay` LATE '
+                              'against the {:.3f} s release grace. The solve is '
+                              'the MEASURED worst joined install on hardware '
+                              '(500-606 ms at load1 3.7-7.4); a LOADED box has '
+                              'reached 1.06 s and will still abort cycle 1 '
+                              'ABORTED_NO_RELEASE at this floor, with the ball '
+                              'unthrown and nothing armed — raise throw_delay_s '
+                              'further if the box is busy. Note the session '
+                              'dwell floor `max(throw_delay + handoff margin, '
+                              'hand floor)` applies on top — the handoff margin '
+                              'is flight-dependent (~0.14-0.18 s), so the dwell '
+                              'this delay needs is the number REJECTED_DWELL '
+                              'quotes for this goal, not one restated here'
+                              .format(_UNIFIED_LAUNCH_WINDOW_S,
+                                      _UNIFIED_CHAIN_PREAMBLE_S,
+                                      _UNIFIED_JOINED_SOLVE_S,
+                                      _UNIFIED_LAUNCH_WINDOW_S,
+                                      TOSS_RELEASE_GRACE_S)))
+            if bad is not None:
+                outcome = '{}({})'.format(_OUTCOME_BEAT_TOO_SHORT, bad)
+                self.get_logger().error(
+                    'TossContinuous goal %s — refusing before anything is '
+                    'armed, lifted or commanded.' % (outcome,))
+                self._fill_session_result(result, TossSessionResult(
+                    success=False, outcome=outcome))
+                self._log_toss_session_outcome(result)
+                goal_handle.abort()
+                with self._lock:
+                    self._goal_claimed = False
+                return result
         # An accept-time REJECTED_CHAIN_UNREACHABLE pre-check sat here until
         # 2026-08-29. It compared _predicted_chain_site_mm against the lateral
         # planning box, refusing a chained session whose cycle-2 throw site would
@@ -9777,6 +11060,13 @@ class ReloadCoordinatorNode(Node):
             self._toss_unified_live = unified
             self._toss_hand_source_streamed = False
             self._toss_unified_chain = None
+            # The ring's liveness, per SESSION. A leftover True from a previous
+            # goal would make this session's first teardown hold a plan that has
+            # not been installed yet.
+            self._toss_unified_release_ahead = 0.0
+            self._toss_unified_chain_depth = 0
+            self._toss_unified_extend = None
+            self._toss_unified_chain_stop = ''
             if unified:
                 ok, why = self._set_hand_source(True)
                 if not ok:
@@ -9876,6 +11166,15 @@ class ReloadCoordinatorNode(Node):
                     # REJECTED_NO_BALL terminal, i.e. from a machine that
                     # commanded nothing — every rung below is an existing,
                     # validated mechanism, and every refusal names itself.
+                    #
+                    # ⚠ "commanded nothing" is a claim about the CYCLE, not about
+                    # the machine (audit M3). A chained cycle can mint
+                    # REJECTED_NO_BALL in CHECKING while the previous cycle's
+                    # STEADY window is streaming with a release still ahead — and
+                    # the interlude go_homes and recentres the platform. That is
+                    # one interval with two owners AND a stroke still coming, so
+                    # the chain is stopped before the interlude commands anything.
+                    self._hold_chain_before_session_motion('the reload interlude')
                     self._publish_session_feedback(goal_handle, session,
                                                    SESSION_PHASE_RELOAD)
                     ok, stop_code, attempts = self._run_reload_interlude(
@@ -9949,7 +11248,33 @@ class ReloadCoordinatorNode(Node):
                     # choose. Placed before the cycle is BUILT, so it is outside
                     # `_UNIFIED_LAUNCH_LEAD_S` entirely and the release schedule
                     # the FSM is about to cut is untouched by it.
-                    if unified:
+                    #
+                    # ── UH-7a (C1): NOT ON A CHAINED CYCLE ─────────────────
+                    # The lift's whole premise is a hand at rest that a
+                    # `MODE_NEW` LAUNCH is about to be SEEDED from. A chained
+                    # cycle seeds nothing: its window was planned from the
+                    # standing plan's terminal release state, which the QP
+                    # already gated, and the hand is mid-carry somewhere between
+                    # a catch and the next throw. Reading the floor there
+                    # measures a machine in motion against a park height and
+                    # would command a `KIND_SETTLE` window over a plan that is
+                    # streaming — a second owner for one interval, which is the
+                    # class the whole unified path is built to make impossible.
+                    # It is a NO-OP here, not a refusal (the belt in
+                    # `_tick_unified_launch` is likewise not reached, because a
+                    # chained cycle takes the announce-only branch above it).
+                    chained_resp = self._toss_unified_chain if unified else None
+                    if unified and chained_resp is None:
+                        # A cycle with no chain to announce is about to LIFT the
+                        # hand and plan a `MODE_NEW` LAUNCH — both motion, both
+                        # over whatever is streaming. On a healthy ring this is
+                        # cycle 1 and nothing is streaming; reaching it with a
+                        # release still ahead means the ladder lost the chain
+                        # without stopping the plan, and planning a LAUNCH there
+                        # is the two-owner class. Belt, not mechanism: the ladder
+                        # already holds on every failure path (audit M3).
+                        self._hold_chain_before_session_motion(
+                            'an un-chained unified cycle')
                         self._unified_lift_detail = self._unified_floor_lift(
                             'cycle %d' % (session.cycle_index,))
                         if self._unified_lift_detail:
@@ -9959,9 +11284,56 @@ class ReloadCoordinatorNode(Node):
                                 'LAUNCH will be refused before it solves'
                                 % (session.cycle_index,
                                    self._unified_lift_detail))
+                    # ── UH-7a: THE RELEASE HAND-OFF ────────────────────────
+                    # On a chained cycle the plan is the authority on when the
+                    # hand throws — the release is a knot the emitter is already
+                    # streaming toward — so the cycle is TOLD its release rather
+                    # than deriving `now + throw_delay_s` from whenever the
+                    # START_CYCLE poll happened. That derivation is right for a
+                    # LAUNCH (the cycle really does decide when to throw) and
+                    # wrong for a chain in the way that matters: the FSM's
+                    # `_t_release` is what its landing schedule, the hand ball
+                    # sensor's asymmetric arrival band and the release-grace
+                    # deadline are all cut from, and a poll that ran one loop
+                    # period late would put every one of them a loop period off
+                    # the ball. `throw_delay_s` keeps a meaning on this branch,
+                    # a narrower one: it is how far before the PLANNED release
+                    # this FSM spins up, because the session scheduled
+                    # `next_cycle_at = R_next − throw_delay_s` and the loop only
+                    # polls at or after it. LEGACY IS UNTOUCHED — with no chain
+                    # standing this is 0.0, the "derive it" sentinel, and the
+                    # branch is bit-for-bit the pre-UH-7a one.
+                    #
+                    # Passed as **kwargs that are EMPTY off the chain, so the
+                    # legacy (and unified-LAUNCH) call is the pre-UH-7a call
+                    # argument for argument. That is not cosmetic: a chained
+                    # cycle is a different cycle, and a builder invocation that
+                    # carries two extra "off" flags on every legacy session
+                    # invites the next reader to wonder which of them a legacy
+                    # cycle depends on. It depends on neither.
+                    handoff = {}
+                    if chained_resp is not None:
+                        handoff['release_at_perf'] = float(
+                            getattr(chained_resp, 't_release_mono', 0.0) or 0.0)
+                        handoff['chained'] = True
+                        # ── UH-7a: the TRUNCATED ring's last cycle ───────────
+                        # A STEADY was refused during the previous cycle and the
+                        # fall-back LANDING installed. THIS is the cycle that
+                        # window carries: its ball is already airborne, so it
+                        # runs — and then the session stops by name instead of
+                        # quietly reverting to the settle-plus-relaunch cadence
+                        # for the rest of the sitting. Armed here, at the START
+                        # of the cycle, so the session's own
+                        # `note_cycle_result` mints the terminal at exactly the
+                        # place every other session terminal is minted.
+                        if self._toss_unified_chain_stop:
+                            self._arm_chain_stop(
+                                session, self._toss_unified_chain_stop,
+                                OUTCOME_STOPPED_CHAIN_REFUSED)
+                            self._toss_unified_chain_stop = ''
                     seq, cycle_state = self._build_toss_cycle(
                         catch_pose, flight, session.throw_delay_s, vel_scale,
-                        delay_is_cadence=True)
+                        delay_is_cadence=True, **handoff)
                     # The cadence clamp (C-POSSESS-1 § 3.4). Set HERE and not
                     # inside _build_toss_cycle because the dwell is the SESSION's
                     # number and a single Toss has none — passing the session in
@@ -9995,6 +11367,18 @@ class ReloadCoordinatorNode(Node):
                                 lambda phase: self._publish_session_feedback(
                                     goal_handle, session, phase)),
                             state=cycle_state)
+                        # ── UH-7a: no extend may outlive the cycle that asked ──
+                        # The poll is bounded by `_SERVICE_WAIT_S` and the cycle
+                        # by its settle window, so a slow solve can still be in
+                        # flight here. Left pending, the ring would go into the
+                        # next cycle with no window chained and a standing
+                        # release-terminal plan — a fresh LAUNCH refused
+                        # STALE_STATE while the old plan threw anyway. Waiting
+                        # is free at this instant: the FSM has terminalised, so
+                        # there is nothing left to observe. See
+                        # `_settle_unified_extend`.
+                        if unified:
+                            self._settle_unified_extend(seq, cycle_state)
                         # ── The unified refusal, re-labelled at its ONE seam ──
                         # A plan refused at the launch point leaves the FSM to
                         # terminalise through its own release-window guard
@@ -10006,7 +11390,19 @@ class ReloadCoordinatorNode(Node):
                         # run by the time this executes, so only the string moves.
                         # Legacy is untouched: `unified_reject` is written on no
                         # legacy path.
-                        if cycle_state.unified_reject:
+                        #
+                        # ⚠ NOT when the SESSION terminal was armed. A lost chain
+                        # is the RING's failure, not the throw's: that cycle may
+                        # have caught its ball, and overwriting its outcome with
+                        # `REJECTED_CHAIN_LOST(...)` while `success` stays True
+                        # records a REJECTED string for a catch AND hands
+                        # `note_cycle_result` a rejection it reads as a
+                        # successful throw. The stop is already armed on the
+                        # session, by name; the cycle keeps CAUGHT and the record
+                        # keeps the catch. `unified_reject` still carries the
+                        # detail for the record and the bench.
+                        if (cycle_state.unified_reject
+                                and not cycle_state.unified_chain_stop_armed):
                             cycle_result = dataclass_replace(
                                 cycle_result,
                                 outcome=str(cycle_state.unified_reject))
@@ -10202,6 +11598,16 @@ class ReloadCoordinatorNode(Node):
             # idempotent — the terminating cycle's own ladder has usually
             # drained already, and STAY (the chaining terminal) deliberately has
             # not.
+            # ── UH-7a, AND IT GOES FIRST ── A release-terminal plan throws
+            # again on its own, so before anything else is stood down the chain
+            # is stopped. Idempotent: every cycle-terminal ladder has already
+            # called this and cleared the flag, so on the ordinary path it is one
+            # lock acquisition and a False. It is here for the ways out that
+            # reach no cycle terminal at all — the between-cycles cancel, the
+            # session ceiling, the F3 stall watchdog, the exception path — each
+            # of which is commented "nothing is armed and nothing is airborne",
+            # true of the shipped rest-terminal shape and false of a ring.
+            self._hold_live_unified_chain('session terminal')
             self._drain_pipeline_and_disarm()
             # ── S-UNIFIED, the terminal ── The declaration comes DOWN; the
             # hand-mastery latch is LEFT WHERE THE OPERATOR PUT IT.
@@ -10251,7 +11657,14 @@ class ReloadCoordinatorNode(Node):
             # AFTER the session outcome line, which reads it (`_finish_session`
             # runs inside the `try`, this `finally` after it).
             self._toss_hand_source_streamed = False
+            # Already cleared by `_hold_live_unified_chain` above; restated here
+            # only so a future reader auditing "what does the session terminal
+            # reset" finds the whole set in one place.
             self._toss_unified_chain = None
+            self._toss_unified_release_ahead = 0.0
+            self._toss_unified_chain_depth = 0
+            self._toss_unified_extend = None
+            self._toss_unified_chain_stop = ''
             self._toss_session_live = False
             self._toss_session_ref = None
             self._clear_toss_cycle_state()

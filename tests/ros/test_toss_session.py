@@ -44,6 +44,7 @@ from jugglebot.toss_sequencer import (
     pre_dispatch_budget_s,
     vertical_event_vel_mps,
 )
+import jugglebot.toss_session as tsess
 from jugglebot.toss_session import (
     DEFAULT_SESSION_DWELL_MARGIN_S,
     DEFAULT_SESSION_DWELL_S,
@@ -1993,3 +1994,76 @@ def test_no_reload_interlude_starts_while_a_cycle_owns_the_hand():
     # …once the hand is free it runs, exactly as it always did.
     s.note_cycle_result(_caught(), 1.0, 1.8)
     assert s.step(9.0).action == SESSION_ACTION_RELOAD
+
+
+# ── UH-7a: the armed ring terminal, on EVERY cycle outcome ────────────────────
+
+@pytest.mark.parametrize('terminal', [
+    tsess.OUTCOME_STOPPED_CHAIN_REFUSED, tsess.OUTCOME_STOPPED_CHAIN_LOST])
+@pytest.mark.parametrize('stop_on_miss', [True, False])
+def test_an_armed_ring_terminal_is_consumed_on_a_MISSED_cycle_too(
+        terminal, stop_on_miss):
+    """The armed terminal must not survive the cycle it was armed for.
+
+    It used to be consumed only on a SUCCESSFUL result. With ``stop_on_miss``
+    False a MISS on the arming cycle therefore fell straight through: the session
+    scheduled the next cycle, that cycle found no chain standing and planned a
+    fresh ``MODE_NEW`` LAUNCH — the silent revert to the settle-plus-relaunch
+    cadence the owner rejected — and the stale terminal then fired several cycles
+    later, naming a refusal that had nothing to do with where the session
+    actually stopped.
+
+    The ring is over either way; only the NAME depends on how the cycle went, and
+    a MISS the operator asked to stop on is the louder finding so it still wins.
+    """
+    session = tsess.TossSessionSequencer(
+        num_throws=5, dwell_time_s=2.0, throw_delay_s=1.0, flight_time_s=0.8,
+        stop_on_miss=stop_on_miss, ilc_speed_trim_possible=False)
+    session.start(0.0)
+    session.step(0.0)
+    session.step(0.0)
+    session.note_chain_refused('the planner said no', terminal)
+    session.note_cycle_result(
+        TossResult(False, 'MISSED', float('nan'), float('nan')), 1.0, 1.8)
+    decision = session.step(100.0)
+    assert decision.done
+    expected = (tsess.OUTCOME_STOPPED_ON_MISS if stop_on_miss
+                else '{}(the planner said no)'.format(terminal))
+    assert decision.result.outcome == expected, decision.result.outcome
+    # Either way the session is FINISHED here — no later cycle, and therefore no
+    # stale terminal left to fire out of place.
+    assert session.finished
+
+
+def test_an_armed_ring_terminal_still_yields_to_a_caught_cycles_accounting():
+    """…and on a CAUGHT cycle it is the terminal, with the catch still counted.
+
+    The ring failed and the throw did not: the cycle's own verdict is untouched,
+    so the corpus keeps the catch, and the SESSION says why there will be no
+    next one."""
+    session = tsess.TossSessionSequencer(
+        num_throws=5, dwell_time_s=2.0, throw_delay_s=1.0, flight_time_s=0.8,
+        ilc_speed_trim_possible=False)
+    session.start(0.0)
+    session.step(0.0)
+    session.step(0.0)
+    session.note_chain_refused('LIMIT_JERK', tsess.OUTCOME_STOPPED_CHAIN_LOST)
+    session.note_cycle_result(TossResult(True, 'CAUGHT', 2.0, 0.81), 1.0, 1.8)
+    decision = session.step(100.0)
+    assert decision.result.outcome == 'STOPPED_CHAIN_LOST(LIMIT_JERK)'
+    assert decision.result.catches_confirmed == 1
+    assert decision.result.throws_completed == 1
+
+
+def test_the_first_armed_terminal_wins():
+    """A second failure on a session already stopping cannot rewrite the first
+    detail — the first one is what explains the stop."""
+    session = tsess.TossSessionSequencer(
+        num_throws=5, dwell_time_s=2.0, throw_delay_s=1.0, flight_time_s=0.8,
+        ilc_speed_trim_possible=False)
+    session.start(0.0)
+    session.step(0.0)
+    session.note_chain_refused('first', tsess.OUTCOME_STOPPED_CHAIN_LOST)
+    session.note_chain_refused('second', tsess.OUTCOME_STOPPED_CHAIN_REFUSED)
+    session.note_cycle_result(TossResult(True, 'CAUGHT', 2.0, 0.81), 1.0, 1.8)
+    assert session.step(100.0).result.outcome == 'STOPPED_CHAIN_LOST(first)'
