@@ -320,18 +320,22 @@ def test_the_stroke_top_agrees(self=None):
 
 
 def test_the_end_stop_ceiling_agrees_with_the_firmware_expression():
-    """10.8 - 0.2 = 10.6 rev, from the header, in both places.
+    """10.701 - 0.2 = 10.501 rev, from the header, in both places.
 
     The ceiling did not move at the 2026-08-18 hard-stop correction: the base
     went 11.1 -> 10.8 and the margin 0.5 -> 0.2 in the same commit, so the
     product is bit-identical.  This docstring read "11.1 - 0.5" until 2026-08-21.
+    It DID move at the FW 18 (2026-09-08) correction: the base moved again,
+    10.8 -> 10.701, with no compensating margin widening this time, so the
+    ceiling moved 10.6 -> 10.501 -- see
+    logbook/2026-09-08-fw18-bundle-hand-clip-homing-counters-rename.md.
     """
     want = (_GEO['HAND_MOTOR_HARD_STOP_REVS']
             - _TT['SMOOTH_MOVE_EXCURSION_MARGIN_REV'])
     got = (mirror.HAND_MOTOR_HARD_STOP_REVS
            - mirror.SMOOTH_MOVE_EXCURSION_MARGIN_REV)
     assert got == pytest.approx(want, abs=1e-12)
-    assert want == pytest.approx(10.6, abs=1e-12)
+    assert want == pytest.approx(10.501, abs=1e-12)
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -530,8 +534,14 @@ def test_velocity_continuity_is_actually_achieved_at_the_seam():
     The first two samples' finite difference must approach the LIVE velocity, not
     zero.  Pre-fix it approached zero from any live velocity, which is the
     commanded velocity step that produced the measured 10.7-55.3 mm dip.
+
+    ``v0=9.0`` no longer fits: FW 18 (2026-09-08) shrank the headroom above
+    ``_X3`` (ceiling 10.6 -> 10.501 rev), moving the max continuous |v0| at the
+    stroke top from ~9.07 to ~8.34 rev/s, so 9.0 now takes the rest-to-rest
+    fallback instead of the continuous seam this test asserts. Replaced with
+    -8.2, still comfortably under the new limit.
     """
-    for v0 in (8.0, -8.0, 9.0):
+    for v0 in (8.0, -8.0, -8.2):
         ts, xs, T, seed, empty = fw_make_smooth_move(_X3, v0, _X3)
         assert not empty and float(seed) == pytest.approx(v0, abs=1e-5)
         v_seam = (xs[1] - xs[0]) / (ts[1] - ts[0])

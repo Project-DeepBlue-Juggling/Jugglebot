@@ -910,7 +910,11 @@ TEST_CASE("hand deviation: observe-first reports only; `hand7 arm`ed it LATCHES 
   sp.flags = 0x4u;                                   // HAS_HAND
   interp_on_setpoint(1, reinterpret_cast<const uint8_t*>(&sp), sizeof(sp));
   interp_isr();
-  CHECK(interp_hand_dev_over_ticks() == 1);          // the tick's verdict
+  // FW 18 gate: output is still SUPPRESSED on this tick (the first fault_step
+  // below is what enables it), so the tick computes the residual and reports
+  // it — dev_max/dev_last are ungated observations — but counts NOTHING. Pre
+  // FW 18 it counted a clamp on a frame that never reached the wire.
+  CHECK(interp_hand_dev_over_ticks() == 0);           // suppressed ⇒ uncounted
   fake_set_udp_last_rx_us(fake_mono_us());
 
   // OBSERVE (the boot default): the verdict is reported, never latched.
@@ -930,7 +934,7 @@ TEST_CASE("hand deviation: observe-first reports only; `hand7 arm`ed it LATCHES 
   sp2.flags = 0x4u;                                  // HAS_HAND
   interp_on_setpoint(2, reinterpret_cast<const uint8_t*>(&sp2), sizeof(sp2));
   interp_isr();                                      // another exceed tick
-  CHECK(interp_hand_dev_over_ticks() == 2);
+  CHECK(interp_hand_dev_over_ticks() == 1);          // the first counted tick
   fake_set_udp_last_rx_us(fake_mono_us());
   fault_step();
   CHECK(fault_guard_mode() == JbUdp::GuardMode::ESTOP);
@@ -945,8 +949,19 @@ TEST_CASE("hand deviation: observe-first reports only; `hand7 arm`ed it LATCHES 
   // keeps commanding 3.0 against a 0.0 encoder) the next tick+poll re-latches —
   // the leg guard's cannot-clear-through-a-live-condition contract, inherited.
   fault_notify_clear_errors();
+  fake_set_udp_last_rx_us(fake_mono_us());
+  fault_step();                                      // the clear re-ENABLES output
+  // FW 18: re-latching now takes one more poll than it did, and that is the
+  // gate working. While output was suppressed the lane commanded nothing, so
+  // its ticks count nothing; the trip can only be re-armed by a tick that
+  // actually transmits. The clear's own output-enable is an arm edge, so the
+  // lane needs a fresh HAS_HAND frame exactly as a live 40 Hz stream provides.
   fake_advance(INTERP_PERIOD_US);
-  interp_isr();
+  JbUdp::SetpointPayload sp3; memset(&sp3, 0, sizeof(sp3));
+  sp3.u0[HAND_AXIS] = 3.0f;
+  sp3.flags = 0x4u;                                  // HAS_HAND
+  interp_on_setpoint(3, reinterpret_cast<const uint8_t*>(&sp3), sizeof(sp3));
+  interp_isr();                                      // transmitting ⇒ counted
   fake_set_udp_last_rx_us(fake_mono_us());
   fault_step();
   CHECK(fault_guard_mode() == JbUdp::GuardMode::ESTOP);
@@ -979,7 +994,11 @@ TEST_CASE("hand MAX_DEVIATION latch reports the TRIP's excursion, never the boot
   sp.flags = 0x4u;                                   // HAS_HAND
   interp_on_setpoint(1, reinterpret_cast<const uint8_t*>(&sp), sizeof(sp));
   interp_isr();
-  CHECK(interp_hand_dev_over_ticks() == 1);
+  // FW 18 gate: output is still SUPPRESSED on this tick (the first fault_step
+  // below is what enables it), so the tick computes the residual and reports
+  // it — dev_max/dev_last are ungated observations — but counts NOTHING. Pre
+  // FW 18 it counted a clamp on a frame that never reached the wire.
+  CHECK(interp_hand_dev_over_ticks() == 0);           // suppressed ⇒ uncounted
   CHECK(interp_hand_dev_max() == doctest::Approx(4.0f).epsilon(0.01));
   fault_step();                                      // observe: reported, never latched
   CHECK(fault_guard_mode() != JbUdp::GuardMode::ESTOP);
@@ -994,7 +1013,7 @@ TEST_CASE("hand MAX_DEVIATION latch reports the TRIP's excursion, never the boot
   sp2.flags = 0x4u;
   interp_on_setpoint(2, reinterpret_cast<const uint8_t*>(&sp2), sizeof(sp2));
   interp_isr();
-  CHECK(interp_hand_dev_over_ticks() == 2);
+  CHECK(interp_hand_dev_over_ticks() == 1);          // the first counted tick
   fake_set_udp_last_rx_us(fake_mono_us());
   fault_step();
   CHECK(fault_guard_mode() == JbUdp::GuardMode::ESTOP);

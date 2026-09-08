@@ -20,7 +20,7 @@ watchdog.
       2×6t  │  876–4028 ms  ⚠LATCH  │  204–210 ms   (gap 126 ms)
 
 At three busy cores of six the solve inflates ~10× and the emitter gaps
-225–942 ms — past the 250 ms threshold, which latches ``MPC_STALE`` and E-STOPs
+225–942 ms — past the 250 ms threshold, which latches ``SETPOINT_STALE`` and E-STOPs
 the machine. That is exactly the band the 2026-09-06 UH-3 attempt's five slow
 solves (1655.1 / 2021.2 / 2158.9 / 1461.5 / 1444.7 ms) sit in. Capping the pool
 to one thread removes the whole class: the solve becomes *flat* in box load.
@@ -130,7 +130,7 @@ def format_blas_warning(num_threads: Optional[int], source: str,
         'evict the 40 Hz emitter once anything else wants a core: MEASURED '
         '2026-09-06, three busy cores of six take the solve from ~200 ms to '
         '1350-2314 ms and gap the emitter 225-942 ms, past the can-bridge 250 ms '
-        'MPC_STALE watchdog. Capped to one thread the same solve is 214-217 ms '
+        'SETPOINT_STALE watchdog. Capped to one thread the same solve is 214-217 ms '
         'at any load. FIX: set OPENBLAS_NUM_THREADS=1 and OMP_NUM_THREADS=1 in '
         "this node's additional_env in %s (they must be set BEFORE numpy is "
         'imported, so a launch file is the only place that works). See %s. '

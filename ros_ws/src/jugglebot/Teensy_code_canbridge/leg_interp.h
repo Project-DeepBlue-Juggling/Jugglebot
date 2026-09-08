@@ -46,7 +46,7 @@ uint64_t interp_last_setpoint_us();
 // running is meaningless, not merely large.
 uint64_t interp_last_tick_us();
 
-// Latched interpolation base (= the incoming MPC command u0) for axis i
+// Latched interpolation base (= the incoming setpoint command u0) for axis i
 // (legs 0-5 + the hand lane at 6), and whether any setpoint has been latched —
 // used by the fault machine's max-deviation E-STOP (motor_guard.py:539-551,
 // incoming-command vs encoder) and the [guard] diag line.
@@ -168,6 +168,17 @@ void interp_set_hand_dev_guard_armed(bool armed);
 //   hand7            → status line only
 //   hand7 arm        → arm the hand deviation E-STOP (second-sitting step)
 //   hand7 observe    → back to observe-only (the boot default)
+//   hand7 reset      → zero every [hand7] counter + residual, then print
+//
+// `hand7 reset` (FW 18) exists so a stage can be read as an ABSOLUTE — before it,
+// the only way to zero these was a Teensy reboot, which also destroys the uptime
+// state a sitting is often there to interrogate, so every reading had to be
+// differenced across the stage by hand. It clears counters and observations
+// ONLY: the observe/arm switch, the hand_source latch and the lane's knot state
+// are untouched, so a reset can neither arm nor disarm the guard. The armed
+// MAX_DEVIATION census tolerates it because the fault machine trips on a
+// counter INCREASE, never on a change (fault_machine.cpp).
+void interp_hand_counters_reset();
 bool interp_hand7_console(const char* line);
 void interp_hand7_diag_step();
 

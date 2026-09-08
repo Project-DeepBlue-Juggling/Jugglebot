@@ -262,7 +262,7 @@ BRIDGE_SEG_T_S = 0.025                  # canbridge_config.h:116 SEGMENT_T_S (40
 BRIDGE_SETPOINT_HZ = 40.0               # 1 / SEG_T — the knot stream rate
 BRIDGE_MAX_LEAD_REV = 0.10              # canbridge_config.h:139 MAX_LEAD_REV (interp lead clamp)
 BRIDGE_MAX_DEVIATION_REV = 1.0          # canbridge_config.h MAX_DEVIATION_REV (E-STOP backstop; raised 0.5→1.0 on 2026-07-16 for velocity-loop-lag headroom under coordinated moves)
-BRIDGE_MPC_STALENESS_S = 0.25           # canbridge_config.h:154 MPC_CMD_STALENESS_US (E-STOP backstop)
+BRIDGE_SETPOINT_STALENESS_S = 0.25           # canbridge_config.h SETPOINT_STALENESS_US (FW 18, 2026-09-08; was MPC_CMD_STALENESS_US) (E-STOP backstop)
 BRIDGE_LEAD_MARGIN_FRAC = 0.5           # approach/return/settle knot-ramp step at 0.5×lead clamp (2× margin ⇒ 2.0 rev/s)
 BRIDGE_STEP_LEAD_MARGIN_FRAC = 0.9      # MEASUREMENT steps (pos_steps + ladder step) ramp at 0.9×lead clamp
 BRIDGE_RAMP_VEL_TARGET_RPS = 2.0        # design velocity the 0.5 margin implies at 40 Hz knots — held across --knot-hz
@@ -1111,7 +1111,7 @@ class BridgeSysID:
                 'setpoint_hz': self.setpoint_hz,
                 'max_lead_rev': BRIDGE_MAX_LEAD_REV,
                 'max_deviation_rev': BRIDGE_MAX_DEVIATION_REV,
-                'mpc_staleness_s': BRIDGE_MPC_STALENESS_S,
+                'mpc_staleness_s': BRIDGE_SETPOINT_STALENESS_S,
                 'knot_frame_step_rev': self.frame_step_rev,
                 'step_frame_step_rev': self.step_frame_step_rev,
                 'lead_margin_frac': BRIDGE_LEAD_MARGIN_FRAC,
@@ -1520,7 +1520,7 @@ class BridgeSysID:
         THEN hold FLAT armed at ``pos`` for the arm-settle window. Returns the settle
         stream-result so a caller can detect a latch during the settle itself.
 
-        The DISARMED warmup closes the arm-before-stream MPC_STALE race the known-good
+        The DISARMED warmup closes the arm-before-stream SETPOINT_STALE race the known-good
         ``teensy_setpoint_bench.py`` idiom avoids: because the Teensy stays powered on
         Jetson 5V, ``interp_last_setpoint_us`` is stale from a prior run, so arming
         FIRST and streaming SECOND lets the firmware 250 ms staleness E-STOP latch in
@@ -1573,7 +1573,7 @@ class BridgeSysID:
             return False
         if plan.action == 'wait_recover':
             return self._wait_fault_clear(BRIDGE_STARTUP_CLEAR_TIMEOUT_S)
-        # plan.action == 'clear' — a latching guard E-STOP (MAX_DEVIATION / MPC_STALE /
+        # plan.action == 'clear' — a latching guard E-STOP (MAX_DEVIATION / SETPOINT_STALE /
         # MOTOR_OVERSPEED). Clear it DISARMED after re-baselining the interp base to the
         # live encoder, so the clear + any later re-arm cannot lurch the leg.
         self._disarm()   # belt-and-braces: never touch the latch while armed
@@ -1748,7 +1748,7 @@ class BridgeSysID:
         # freshen the firmware staleness clock + re-baseline the interp base, arm, THEN
         # hold flat armed so the firmware re-enable recovery slew converges at the encoder
         # before any climb — arming first and immediately ramping races BOTH the 250 ms
-        # MPC_STALE E-STOP and the 1.0 rev/s recovery slew (which the old 2.0 rev/s ramp
+        # SETPOINT_STALE E-STOP and the 1.0 rev/s recovery slew (which the old 2.0 rev/s ramp
         # outran into a MAX_DEVIATION latch — the operator's "moved up slightly, stopped").
         settle = self._warm_and_arm(start)
         if settle['aborted'] or settle['guard_latched']:
@@ -2047,7 +2047,7 @@ class BridgeSysID:
     def stage_ladder(self) -> bool:
         print("\n=== Stage 1b: escalate-until-unstable gain ladder (bridge) ===")
         print(f"  guard backstop ACTIVE: firmware MAX_DEVIATION {BRIDGE_MAX_DEVIATION_REV} "
-              f"rev + MPC-staleness {BRIDGE_MPC_STALENESS_S}s E-STOP; a latch → back off "
+              f"rev + MPC-staleness {BRIDGE_SETPOINT_STALENESS_S}s E-STOP; a latch → back off "
               f"+ CLEAR_ERRORS (budget {self.guard.max_recoveries}).")
         # Extended ceiling-hunt ladder (Feature 4): base 25→90 + high rungs 110→210.
         # High rungs FREEZE vel_int (windup during current saturation reads as a
@@ -2105,7 +2105,7 @@ class BridgeSysID:
                 # Apply gains DISARMED: the two blocking SET_*_GAIN RPCs (up to ~1.5 s
                 # worst-case with retries) can straddle the firmware 250 ms MPC-staleness
                 # window while armed, latching a (now correctly-classified latching)
-                # MPC_STALE E-STOP — which would burn a guard recovery and gate the
+                # SETPOINT_STALE E-STOP — which would burn a guard recovery and gate the
                 # following step's output. Dropping mpc_active=0 across the RPC gap
                 # suppresses the staleness check (fault_machine.cpp:351 gates on
                 # s_mpc_active), then re-arm to stream (sysid_bridge finding #1).
@@ -2118,7 +2118,7 @@ class BridgeSysID:
                 cur = cur if cur is not None else self.center_rev
                 # Stream-then-arm: warm up DISARMED at the live pos to freshen the staleness
                 # clock + re-baseline the interp base before raising mpc_active, so the re-arm
-                # after the disarmed gain-apply gap cannot race the 250 ms MPC_STALE E-STOP.
+                # after the disarmed gain-apply gap cannot race the 250 ms SETPOINT_STALE E-STOP.
                 self._warm_and_arm(cur)
                 self._stream_and_sample(
                     self._knot_ramp(cur, self.center_rev,
@@ -2179,7 +2179,7 @@ class BridgeSysID:
             if survey and best_unstable:
                 # Park safe between survey points: disarmed at BASELINE so buzzing
                 # gains never hold an armed leg through the bookkeeping gap (the
-                # stalled knot stream would otherwise latch MPC_STALE at 250 ms).
+                # stalled knot stream would otherwise latch SETPOINT_STALE at 250 ms).
                 self._disarm()
                 self._apply_gains(BASELINE_GAINS)
             onset_for_record = sid.OnsetResult(
@@ -3059,7 +3059,7 @@ class BridgeSysID:
                   f"(a parallel agent is adding it) — the stock 40 Hz-knot firmware will NOT "
                   f"honour a {self.knot_hz:.0f} Hz stream. **")
         print(f"  guard BACKSTOP: firmware MAX_DEVIATION {BRIDGE_MAX_DEVIATION_REV} rev + "
-              f"MPC-staleness {BRIDGE_MPC_STALENESS_S}s E-STOP; latch → back off + "
+              f"MPC-staleness {BRIDGE_SETPOINT_STALENESS_S}s E-STOP; latch → back off + "
               f"CLEAR_ERRORS (budget {self.guard.max_recoveries})")
         print(f"  telemetry: measured live over {BRIDGE_WARMUP_S:.0f}s RX-only warmup FIRST; "
               f"dry-run assumes nominal {BRIDGE_TELEM_NOMINAL_HZ:.0f} Hz")

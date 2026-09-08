@@ -256,7 +256,8 @@ def test_hand_stroke_refuses_above_the_operating_top(geom):
 
 
 def test_hand_stroke_names_the_end_stop_separately(geom):
-    """Recipe: BOTH knots at 11.5 rev — past the 10.8 rev physical stop.
+    """Recipe: BOTH knots at 11.5 rev — past the 10.701 rev physical stop (the
+    operator's 2026-09-06 measurement, in the YAML since FW 18; 10.8 before).
 
     The first sample must already be past the end stop.  On a ramp OUT of the
     band the gate refuses at the first out-of-band sample, which is inside the end
@@ -266,7 +267,7 @@ def test_hand_stroke_names_the_end_stop_separately(geom):
         _held([11.5, 11.5], [0.0, 0.0]), _limits(), geom)
     assert report.code == feas.HAND_STROKE
     assert 'END STOP' in report.reasons[0]
-    assert '10.80 rev' in report.reasons[0]
+    assert '10.70 rev' in report.reasons[0]   # the YAML stop, 10.701, at 2 dp
 
 
 def test_hand_stroke_refuses_below_the_homed_zero(geom):

@@ -24,7 +24,7 @@ detectors run concurrently.
 
 | Guard | Timeout | Effect |
 |---|---|---|
-| MPC command staleness | 250 ms (`MPC_CMD_STALENESS_US`) | **Latches** guard E-STOP (`MPC_STALE`) |
+| MPC command staleness | 250 ms (`MPC_CMD_STALENESS_US`) | **Latches** guard E-STOP (`SETPOINT_STALE`) |
 | Motor (encoder) feedback staleness | 150 ms (`MOTOR_FB_STALENESS_US`) | Suppresses output only — deliberately **not** latched, "recoverable" |
 | CAN3 leg heartbeat (bus-down detector) | 2.0 s (`CAN_HEARTBEAT_TIMEOUT_US`) | `CAN_BUS_DOWN`, arms the deferred-stow latch |
 | Jetson↔Teensy UDP link | 500 ms (10 Hz heartbeat × 5 missed, `JETSON_LINK_TIMEOUT_US`) | `LINK_LOST`, output disabled (not latched) |
@@ -46,7 +46,7 @@ see the CAN-bus-down row below for the reasoning.
 
 ## E-STOP / fault enumeration
 
-`FaultState` values: `NONE`, `MPC_STALE`, `LINK_LOST`, `MOTOR_OVERSPEED`,
+`FaultState` values: `NONE`, `SETPOINT_STALE`, `LINK_LOST`, `MOTOR_OVERSPEED`,
 `MAX_DEVIATION`, `ODRIVE_FATAL`, `CAN_BUS_DOWN`, `MOTOR_FB_STALE`.
 Priority when multiple conditions are true simultaneously (highest wins):
 `CAN_BUS_DOWN > ODRIVE_FATAL > {latched guard reason} > MOTOR_FB_STALE > LINK_LOST > NONE`.

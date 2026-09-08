@@ -36,7 +36,7 @@ This session validates the **software already merged** on branch
 - E-STOP is always available. Any ABORT criterion ⇒ cut power / trigger the guard,
   then debrief before re-trying.
 - **Disarm before any control-mode change away from streaming** (leaving a
-  streaming mode while ARMED latches an `MPC_STALE` E-STOP within 250 ms).
+  streaming mode while ARMED latches an `SETPOINT_STALE` E-STOP within 250 ms).
 
 ## Preconditions
 

@@ -1,7 +1,7 @@
 """Does a unified ``plan_cycle`` solve starve the 40 Hz setpoint emitter?
 
 Reproduces the 2026-09-06 UH-3 hardware event offline. On the bench the
-can-bridge Teensy latched ``fault_state=MPC_STALE`` TWICE, each time during a
+can-bridge Teensy latched ``fault_state=SETPOINT_STALE`` TWICE, each time during a
 ``trajectory/plan_cycle`` MODE_NEW + KIND_SETTLE solve, and never during the two
 attempts that refused BEFORE solving. The firmware threshold is
 ``MPC_CMD_STALENESS_US = 250000`` (250 ms with no accepted Setpoint frame while

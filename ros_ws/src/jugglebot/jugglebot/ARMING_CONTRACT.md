@@ -22,7 +22,7 @@ work (2026-07-15) hit three distinct doors into that hole:
    subscription).
 2. **The boot-arm trap**: `enable_setpoint_output:=true` armed at `__init__`
    with **zero preconditions**, before any producer could stream (the workspace
-   gate refuses to seed at STOW) → MPC_STALE latched within one guard tick →
+   gate refuses to seed at STOW) → SETPOINT_STALE latched within one guard tick →
    every leg command refused.
 3. **The stale-latch wedge**: a guard latch left by an earlier bench session
    (the can-bridge Teensy is Jetson-5V-powered — latches survive ROS relaunches)
@@ -68,7 +68,7 @@ work (2026-07-15) hit three distinct doors into that hole:
 - **A4 — the stream outlives the armed window.** `control_mode` stays in the
   streaming set until the deactivate **completes**: ActiveHandler.on_exit no
   longer blanks it; IdleHandler blanks it only after the pending operation
-  resolves. This removes the 250 ms race (blank → emitter stops → MPC_STALE
+  resolves. This removes the 250 ms race (blank → emitter stops → SETPOINT_STALE
   beats the disarm) instead of merely winning it. A guard-only FAULT preserves
   the mode for the same reason (pre-existing).
 - **A5 — illegal states are loud.** trajectory_node reads `mpc_active` from
@@ -125,7 +125,7 @@ work (2026-07-15) hit three distinct doors into that hole:
 
 ## What this deliberately does NOT change
 
-- The **MPC_STALE watchdog** (250 ms, firmware) is untouched — it remains the
+- The **SETPOINT_STALE watchdog** (250 ms, firmware) is untouched — it remains the
   backstop against a dead Jetson while armed. The contract's job is to make the
   legal orderings structural so the watchdog only ever fires on real faults.
 - The **guard latch semantics** (latch-until-CLEAR_ERRORS) are untouched. The

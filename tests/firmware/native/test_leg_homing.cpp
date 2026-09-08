@@ -262,3 +262,118 @@ TEST_CASE("a mid-homing CAN3 loss aborts and leaves the axis in IDLE") {
   CHECK(cs_sent_at(0).id == idle.id);
   CHECK(memcmp(cs_sent_at(0).buf, idle.buf, 8) == 0);
 }
+
+// ── FW 18: the RESTORE step (the axis-6 mode/limit hazard) ────────────────────
+//
+// SETUP leaves the axis in VELOCITY/VEL_RAMP on the HOMING limits. Until FW 18
+// nothing put that back, so the next thing to command CLOSED_LOOP inherited
+// VELOCITY — where an ODrive SWALLOWS set_input_pos and the whole streamed lane
+// is silently inert. leg_activate masks it for the legs; nothing did for the
+// hand. These pin the restore itself, the per-axis limit dispatch (the hand must
+// NEVER get the legs' 12 rev/s / 10 A), the commanded-mode record that made the
+// old state invisible to telemetry, and fail-the-home-on-a-failed-restore.
+
+static void run_to_home_ok(uint8_t axis) {
+  REQUIRE(homing_request(axis) == JbUdp::RpcStatus::OK);
+  homing_step();                                  // SETUP → DRIVE
+  cs_advance(SETTLE_DRIVE_US + 1);
+  homing_step();                                  // DRIVE → MONITOR
+  REQUIRE(s_phase == Phase::MONITOR);
+  axes[axis].iq_measured = homing_curr_limit_a(axis) * 3.0f;
+  int guard = 0;
+  while (s_phase == Phase::MONITOR && guard++ < 1000) homing_step();
+  REQUIRE(s_phase == Phase::STOP_SETTLE);
+  cs_advance(SETTLE_STOP_US + 1);
+  homing_step();                                  // STOP_SETTLE → SET_REF
+  cs_clear_sent();                                // count only the SET_REF tick
+  homing_step();                                  // SET_REF (+ RESTORE)
+}
+
+static bool saw_frame(const ODrive::CanFrame& want) {
+  for (size_t i = 0; i < cs_sent_count(); ++i)
+    if (cs_sent_at(i).id == want.id && memcmp(cs_sent_at(i).buf, want.buf, 8) == 0)
+      return true;
+  return false;
+}
+
+TEST_CASE("SET_REF restores POSITION/PASSTHROUGH and the shipped limits (hand)") {
+  full_reset();
+  run_to_home_ok(HAND_AXIS);
+
+  CHECK(homing_result(HAND_AXIS) == HOMING_OK);
+  CHECK(saw_frame(ODrive::encode_set_absolute_position(
+      HAND_AXIS, homing_abs_pos_rev(HAND_AXIS))));
+  CHECK(saw_frame(ODrive::encode_set_controller_mode(
+      HAND_AXIS, ODriveControlMode::POSITION, ODriveInputMode::PASSTHROUGH)));
+  // The SHIPPED hand limits — 1000 rev/s / 50 A — not the homing ones, and
+  // emphatically not the legs'. This is the port-bug surface: the member
+  // initialisers this used to read were the LEG defaults for all seven axes.
+  CHECK(axis_shipped_vel_limit(HAND_AXIS) == ODriveDefaults::HAND_VEL_LIMIT_RPS);
+  CHECK(axis_shipped_curr_limit(HAND_AXIS) == ODriveDefaults::HAND_CURR_LIMIT_A);
+  CHECK(axis_shipped_vel_limit(HAND_AXIS) != axis_shipped_vel_limit(0));
+  CHECK(saw_frame(ODrive::encode_set_vel_curr_limits(
+      HAND_AXIS, ODriveDefaults::HAND_VEL_LIMIT_RPS,
+      ODriveDefaults::HAND_CURR_LIMIT_A)));
+  // The homing limit frame must NOT be what the axis is left on.
+  CHECK_FALSE(saw_frame(ODrive::encode_set_vel_curr_limits(
+      HAND_AXIS, fabsf(homing_speed_rps(HAND_AXIS)) * 2.0f,
+      homing_curr_limit_a(HAND_AXIS) + homing_headroom_a(HAND_AXIS))));
+  // …and the commanded-mode record, which read 0 forever before FW 18 and is
+  // why a hand parked in VELOCITY/VEL_RAMP was invisible to every gate.
+  CHECK(axes[HAND_AXIS].controller_mode == (uint8_t)ODriveControlMode::POSITION);
+  CHECK(axes[HAND_AXIS].input_mode == (uint8_t)ODriveInputMode::PASSTHROUGH);
+}
+
+TEST_CASE("SET_REF restores the LEG shipped limits on a leg home") {
+  full_reset();
+  run_to_home_ok(0);
+  CHECK(homing_result(0) == HOMING_OK);
+  CHECK(saw_frame(ODrive::encode_set_vel_curr_limits(
+      0, ODriveDefaults::LEG_VEL_LIMIT_RPS, ODriveDefaults::LEG_CURR_LIMIT_A)));
+  CHECK(axes[0].controller_mode == (uint8_t)ODriveControlMode::POSITION);
+  CHECK(axes[0].input_mode == (uint8_t)ODriveInputMode::PASSTHROUGH);
+}
+
+TEST_CASE("a live SET_VEL_CURR_LIMITS override is what the restore puts back") {
+  // The operator's runtime override (recorded by the RPC into axes[]) must beat
+  // the config default — otherwise a re-home silently reverts their setting.
+  full_reset();
+  axes[HAND_AXIS].vel_limit_rps = 123.0f;
+  axes[HAND_AXIS].curr_limit_A  = 7.0f;
+  CHECK(axis_shipped_vel_limit(HAND_AXIS) == 123.0f);
+  run_to_home_ok(HAND_AXIS);
+  CHECK(saw_frame(ODrive::encode_set_vel_curr_limits(HAND_AXIS, 123.0f, 7.0f)));
+}
+
+TEST_CASE("during the home the axis reports VELOCITY/VEL_RAMP, not a boot zero") {
+  full_reset();
+  axes[HAND_AXIS].controller_mode = 0;           // full_reset() leaves it alone
+  axes[HAND_AXIS].input_mode = 0;
+  REQUIRE(homing_request(HAND_AXIS) == JbUdp::RpcStatus::OK);
+  CHECK(axes[HAND_AXIS].controller_mode == 0);   // never-commanded sentinel
+  homing_step();                                 // SETUP
+  CHECK(axes[HAND_AXIS].controller_mode == (uint8_t)ODriveControlMode::VELOCITY);
+  CHECK(axes[HAND_AXIS].input_mode == (uint8_t)ODriveInputMode::VEL_RAMP);
+}
+
+TEST_CASE("a failed RESTORE fails the home rather than reporting OK") {
+  // Reporting HOMING_OK on an axis left in VELOCITY/VEL_RAMP is precisely the
+  // silent state this change removes, so the restore is part of the contract.
+  full_reset();
+  REQUIRE(homing_request(HAND_AXIS) == JbUdp::RpcStatus::OK);
+  homing_step();
+  cs_advance(SETTLE_DRIVE_US + 1);
+  homing_step();
+  REQUIRE(s_phase == Phase::MONITOR);
+  axes[HAND_AXIS].iq_measured = homing_curr_limit_a(HAND_AXIS) * 3.0f;
+  int guard = 0;
+  while (s_phase == Phase::MONITOR && guard++ < 1000) homing_step();
+  REQUIRE(s_phase == Phase::STOP_SETTLE);
+  cs_advance(SETTLE_STOP_US + 1);
+  homing_step();                                  // → SET_REF
+  cs_clear_sent();
+  cs_set_send_fail_index(1);                      // the controller_mode restore
+  homing_step();                                  // SET_REF (+ failing RESTORE)
+  CHECK(homing_result(HAND_AXIS) == HOMING_FAILED);
+  CHECK_FALSE(homing_active());
+}

@@ -13,6 +13,7 @@
 #include "canbridge_config.h"  // HAND_AXIS
 #include "protocol_config.h"   // ODriveState / ODriveControlMode / ODriveInputMode / PlatformCanId
 #include "odrive_protocol.h"   // ODrive::encode_set_state / encode_set_controller_mode / CanFrame
+#include "axis_state.h"   // commanded-mode / shipped-limit record
 #include "can_buses.h"         // can_jugglebot_tx / TxCls, jugglebot_commands_allowed
 #include "leg_homing.h"        // homing_active (HAND_TRAJ_CMD ↔ homing interlock)
 #include "leg_interp.h"        // interp_last_tick_us (the phase-stamp reference)
@@ -131,6 +132,8 @@ uint16_t hand_traj_cmd(const JbUdp::RpcArgs::ArgHandTraj& a) {
     phase_push(phase_us, HAND_PHASE_PRE2);
     return RpcStatus::ERR_TIMEOUT;
   }
+  hand_axis().controller_mode = (uint8_t)ODriveControlMode::POSITION;   // commanded-mode
+  hand_axis().input_mode      = (uint8_t)ODriveInputMode::PASSTHROUGH;  // record (axis_state.h)
 
   // Forward the host-built 8-byte payload on the FIRMWARE-OWNED 0x6D0 id. The Jetson
   // supplies the payload (incl. the absolute wall_time_ms deadline baked in); the

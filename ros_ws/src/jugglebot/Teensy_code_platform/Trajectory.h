@@ -376,8 +376,9 @@ inline float smoothMoveDuration(float delta_rev, float v0_rps)
    Arresting v0 costs time as well as travel: the duration grows linearly in |v0|
    without bound, so the excursion clamp alone does not stop a prelude from
    outlasting a move the firmware could previously command.  The cap is the
-   longest REST-TO-REST smooth move the stroke admits (full travel, 0 -> 10.8
-   rev = 0.78964 s), so an honoured prelude can never take longer than a profile
+   longest REST-TO-REST smooth move the stroke admits (full travel, 0 -> 10.701
+   rev = 0.78602 s as of FW 18, 2026-09-08; was 0 -> 10.8 rev = 0.78964 s), so
+   an honoured prelude can never take longer than a profile
    this firmware already emitted before the change — which means every host-side
    window sized on a commanded hand move stays valid without moving.
 

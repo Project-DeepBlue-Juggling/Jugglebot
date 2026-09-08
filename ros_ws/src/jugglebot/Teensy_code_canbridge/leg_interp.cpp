@@ -250,14 +250,14 @@ void interp_on_setpoint(uint16_t seq, const uint8_t* payload, uint16_t len) {
   // every TeensyLinkClient construction (a routine bridge-node/ROS2 restart). Without
   // this reset, after ~50% of restarts the guard below would drop EVERY setpoint until
   // the counter climbed past the stale high-water — up to ~32767 frames (~13 min) — a
-  // phantom, self-re-latching MPC_STALE E-STOP with the link showing up. If the last
+  // phantom, self-re-latching SETPOINT_STALE E-STOP with the link showing up. If the last
   // ACCEPTED setpoint is already older than the staleness bound, the prior stream is
   // DEAD (a restart, or a >250 ms gap): there is no in-flight reordering left to
   // protect, so forget the high-water and re-baseline on the next frame. A live 40 Hz
-  // stream (~25 ms gaps) never crosses MPC_CMD_STALENESS_US, so this never
+  // stream (~25 ms gaps) never crosses SETPOINT_STALENESS_US, so this never
   // false-resets within a session.
   if (s_have_sp_seq &&
-      (micros64() - atomic_read_u64(&s_last_setpoint_us)) > MPC_CMD_STALENESS_US)
+      (micros64() - atomic_read_u64(&s_last_setpoint_us)) > SETPOINT_STALENESS_US)
     s_have_sp_seq = false;
 
   // ── Wrap-safe monotonic-seq guard ──────────────────────────────────────────
@@ -281,7 +281,7 @@ void interp_on_setpoint(uint16_t seq, const uint8_t* payload, uint16_t len) {
   // While the Platform Teensy stroke engine masters the hand, a v6 frame's hand
   // channel is DISCARDED — the frame itself (the legs) is still accepted, so a
   // producer that wrongly ships hand knots can never starve the leg stream into
-  // MPC_STALE. Counted on a visible counter ([hand7] console): a climbing value
+  // SETPOINT_STALE. Counted on a visible counter ([hand7] console): a climbing value
   // means the host is emitting hand knots the firmware refuses by mode.
   if (has_hand_flag && !hand_source_streamed()) {
     has_hand_flag = false;
@@ -294,7 +294,7 @@ void interp_on_setpoint(uint16_t seq, const uint8_t* payload, uint16_t len) {
   // → the CAN wire. DROP the whole frame like a lost UDP frame — do NOT sanitize to
   // zero (a zeroed setpoint could trip MAX_DEVIATION or lurch a leg). CRITICAL: a
   // dropped frame does NOT advance s_last_setpoint_us below, so a stream of all-NaN
-  // frames still eventually trips MPC_STALE (the staleness watchdog fires as if the
+  // frames still eventually trips SETPOINT_STALE (the staleness watchdog fires as if the
   // link went quiet), and does NOT advance s_last_sp_seq (only an accepted frame does).
   // Scope: legs always; v1 lanes only when HAS_V1; the hand lane's fields only
   // when HAS_HAND survives the interlock above — with it clear the firmware
@@ -316,7 +316,7 @@ void interp_on_setpoint(uint16_t seq, const uint8_t* payload, uint16_t len) {
   // ── torque_ff ingest clamp (2026-07-14 gravity-FF firmware backstop) ────────
   // Bound |torque_ff[i]| to TORQUE_CLAMP (wire-Nm) BEFORE staging. CLAMP, DON'T
   // REJECT: an oversized torque with valid pos/vel is a torque-path bug — dropping
-  // the whole frame would starve the interp into the MPC_STALE E-STOP, converting
+  // the whole frame would starve the interp into the SETPOINT_STALE E-STOP, converting
   // a torque bug into a position-control outage mid-motion. (A NaN torque still
   // drops the whole frame above — NaN means the frame is garbage.) Without this,
   // the only firmware bound is int16 saturation at ±3.2767 wire-Nm ≈ 59 A of
@@ -798,7 +798,23 @@ static void interp_isr() {
         s_hand_dev_snap_cmd = h_pos;
         s_hand_dev_snap_fb  = fb_ex;
       }
-      if (adev > MAX_DEVIATION_HAND_REV) {
+      // ── The counter gate (FW 18) ──────────────────────────────────────────
+      // The two CUMULATIVE counters below (dev_over, lead) count only ticks
+      // whose command ACTUALLY REACHED THE WIRE — the same
+      // `s_output_enabled && !coldstart` gate the TX itself uses further down.
+      // Until FW 18 they were ungated, so every tick of a suppressed lane (a
+      // guard-latched E-STOP, a firmware homing/activate/deactivate move, an
+      // aborted bench stage) counted a clamp on a frame nobody sent. Once
+      // non-zero they stayed non-zero, which made the runbook's "non-zero lead
+      // during a throw ⇒ hard-abort the sitting" rule UNFALSIFIABLE and forced
+      // every reading to be differenced across a stage. Gated, an aborted stage
+      // leaves them at zero and an absolute read is meaningful again.
+      // The residual itself (dev_last / dev_max / the snapshot trio) is NOT
+      // gated: it is an observation of the interpolator's own output and is
+      // exactly what the observe-first sitting wants during a suppressed lane.
+      // The CLAMPS are not gated either — only the counting is.
+      const bool hand_counts = out_en && !coldstart;
+      if (hand_counts && adev > MAX_DEVIATION_HAND_REV) {
         ++s_hand_dev_over_ticks;
         // The trip's OWN excursion (most recent exceed tick) — what the fault
         // machine freezes into the MAX_DEVIATION latch snapshot. Multiple
@@ -811,8 +827,8 @@ static void interp_isr() {
 
       // ── Hand lead clamp (MAX_LEAD_HAND_REV, against fb_ex) + lead-duty ─────
       float d = dev;
-      if (d > MAX_LEAD_HAND_REV)       { d = MAX_LEAD_HAND_REV;  clamp_mask |= 0x40u; ++s_hand_lead_clamp_ticks; }
-      else if (d < -MAX_LEAD_HAND_REV) { d = -MAX_LEAD_HAND_REV; clamp_mask |= 0x40u; ++s_hand_lead_clamp_ticks; }
+      if (d > MAX_LEAD_HAND_REV)       { d = MAX_LEAD_HAND_REV;  clamp_mask |= 0x40u; if (hand_counts) ++s_hand_lead_clamp_ticks; }
+      else if (d < -MAX_LEAD_HAND_REV) { d = -MAX_LEAD_HAND_REV; clamp_mask |= 0x40u; if (hand_counts) ++s_hand_lead_clamp_ticks; }
       h_pos = fb_ex + d;
       // vel_ff bound: HAND_VELFF_LIMIT_RPS (300) — NEVER the legs' 3.5 (a 51× cut).
       if (h_vel > HAND_VELFF_LIMIT_RPS)       h_vel = HAND_VELFF_LIMIT_RPS;
@@ -982,7 +998,7 @@ static void interp_isr() {
     hand_axis().target_vel_rps   = h_vel;
     hand_axis().target_torque_Nm = 0.0f;
   }
-  // Cold-start interlock: suppress the whole MPC leg TX while a
+  // Cold-start interlock: suppress the whole streamed leg TX while a
   // firmware homing/activate/deactivate move is driving the same ODrives (see the
   // interlock note above). The target cache was written for all legs regardless.
   if (s_output_enabled && !coldstart) {
@@ -1210,12 +1226,39 @@ static void hand7_print_status() {
                 (double)s_hand_dev_snap_fb);
 }
 
+// Zero every counter and residual the [hand7] line prints, so a stage can be
+// read as an absolute instead of a difference — without the Teensy reboot that
+// was the only alternative before FW 18. DELIBERATELY NOT reset: the observe/arm
+// switch (a reset must never arm or disarm the guard), the hand_source latch,
+// s_hand_active and the lane's knot state (resetting those would be a control
+// action dressed up as a diagnostic one). Plain volatile writes from task
+// context, like the console's existing arm/observe writes: each is a single
+// word, the 500 Hz ISR is the only other writer, and the worst case is losing or
+// keeping one tick's increment across the reset instant — which is exactly the
+// precision a counter-zeroing verb has anyway.
+void interp_hand_counters_reset() {
+  s_hand_sent             = 0;
+  s_hand_discard_legacy   = 0;
+  s_hand_unseen_skips     = 0;
+  s_hand_stale_holds      = 0;
+  s_hand_lead_clamp_ticks = 0;
+  s_hand_dev_over_ticks   = 0;
+  s_hand_dev_last         = 0.0f;
+  s_hand_dev_max          = 0.0f;
+  s_hand_dev_snap_cmd     = 0.0f;
+  s_hand_dev_snap_fb      = 0.0f;
+  s_hand_dev_trip_dev     = 0.0f;
+  s_hand_dev_trip_cmd     = 0.0f;
+  s_hand_dev_trip_fb      = 0.0f;
+}
+
 bool interp_hand7_console(const char* line) {
   if (line == nullptr || strncmp(line, "hand7", 5) != 0) return false;
   const char* arg = line + 5;
   while (*arg == ' ') ++arg;
   if      (strcmp(arg, "arm")     == 0) s_hand_dev_guard_armed = true;   // the second sitting's explicit step
   else if (strcmp(arg, "observe") == 0) s_hand_dev_guard_armed = false;
+  else if (strcmp(arg, "reset")   == 0) interp_hand_counters_reset();    // counters only — never the arm state
   else if (*arg != '\0')                return false;   // not this command after all
   hand7_print_status();
   return true;

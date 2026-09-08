@@ -401,11 +401,17 @@ def test_hand_targets_are_within_bridge_service_range():
     assert hw.HOMING_HAND_ABS_POS_REV < 0.0
     # Headroom, not just membership: the prime moved 3.2 mm UP on 2026-07-26 when
     # it became the derived stroke top, and the overextension guard is the wall it
-    # moved toward. 0.8406 rev = 26.6 mm of clearance to the 10.8 rev hard stop
-    # (this read 1.1406 rev / 36.1 mm until 2026-08-18, when the stop itself was
-    # corrected 11.1 -> 10.8 — the clearance never was 36.1 mm).
+    # moved toward. 0.7416 rev = 23.5 mm of clearance to the MEASURED 10.701 rev
+    # metal (this read 0.8406 / 26.6 mm against the 10.8 rev nominal until FW 18
+    # set the stop to the operator's 2026-09-06 measurement, and 1.1406 / 36.1 mm
+    # until 2026-08-18, when the stop was corrected 11.1 -> 10.8 — the clearance
+    # never was 36.1 mm).
     assert (hw.GEOM_HAND_MOTOR_HARD_STOP_REVS
-            - hw.JB_OP_HAND_CATCH_PRIME_REV) == pytest.approx(0.8406, abs=1e-3)
+            - hw.JB_OP_HAND_CATCH_PRIME_REV) == pytest.approx(0.7416, abs=1e-3)
+    # And below the FW 18 wire clip (stop - margin = 10.501 rev), which is the
+    # wall the firmware actually enforces now: 0.5416 rev = 17.1 mm of headroom.
+    assert (hw.JB_OP_HAND_CATCH_PRIME_REV
+            <= hw.GEOM_HAND_MOTOR_HARD_STOP_REVS - hw.GEOM_HAND_CLIP_MARGIN_REV)
 
 
 def test_prime_move_leaves_the_park_band_windows_open():

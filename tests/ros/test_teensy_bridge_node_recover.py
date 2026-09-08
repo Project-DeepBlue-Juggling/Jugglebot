@@ -285,7 +285,7 @@ def test_recover_re_descends_when_u0_plateaus_off_the_drifted_encoder():
 # ── Bare /clear_errors reroute: converge-first when armed, direct when not ────
 # Operator decision (2026-07-11): the armed bare /clear_errors is REROUTED through the
 # converge-first sequence (no raw escape hatch); the unarmed clear passes straight
-# through (the benign boot-time MPC_STALE latch — output not evaluated, no jolt).
+# through (the benign boot-time SETPOINT_STALE latch — output not evaluated, no jolt).
 
 def test_armed_bare_clear_errors_routes_through_converge_first():
     teensy, client, node = _node()
@@ -333,7 +333,7 @@ def test_armed_bare_clear_errors_on_diverged_command_disarms_then_clears():
 
 
 def test_unarmed_bare_clear_errors_passes_straight_through():
-    """When NOT armed (mpc_active=0 — the benign boot-time MPC_STALE latch), the bare
+    """When NOT armed (mpc_active=0 — the benign boot-time SETPOINT_STALE latch), the bare
     /clear_errors clears DIRECTLY: output is not being evaluated so no jolt is possible,
     and routing through reseed would needlessly refuse (nothing is streaming)."""
     teensy, client, node = _node()

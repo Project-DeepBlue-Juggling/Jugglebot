@@ -203,6 +203,11 @@ void homing_step() {
                a, fabsf(homing_speed_rps(a)) * 2.0f,
                homing_curr_limit_a(a) + homing_headroom_a(a))) && ok;
       if (!ok) { finish(HOMING_FAILED); return; }
+      // Record what we just commanded (see axis_state.h): during the home this
+      // axis really IS in VELOCITY/VEL_RAMP on the homing limits, and telemetry
+      // should say so rather than reporting a boot zero.
+      axes[a].controller_mode = (uint8_t)ODriveControlMode::VELOCITY;
+      axes[a].input_mode      = (uint8_t)ODriveInputMode::VEL_RAMP;
       s_t_phase_us = now;
       s_phase = Phase::DRIVE;
       break;
@@ -237,6 +242,39 @@ void homing_step() {
       // Define the hardstop as the post-homing reference (LEG_ABS_POS_REV for legs,
       // HAND_ABS_POS_REV for the hand).
       can_jugglebot_send(ODrive::encode_set_absolute_position(a, homing_abs_pos_rev(a)));
+      // ── RESTORE the operating mode and limits (FW 18) ─────────────────────
+      // SETUP put this axis in VELOCITY/VEL_RAMP on the homing vel/curr limits,
+      // and until FW 18 nothing put it back. The axis is left IDLE here, so the
+      // next thing to command CLOSED_LOOP inherits VELOCITY/VEL_RAMP — and in
+      // VELOCITY mode an ODrive SWALLOWS set_input_pos: the 500 Hz stream would
+      // be accepted on the wire, acked by nothing, and simply not move the axis.
+      // For the legs that hazard is masked by leg_activate re-sending
+      // POSITION/TRAP_TRAJ before it enters CLOSED_LOOP; for the HAND nothing
+      // did, so a homed hand sat in a mode where the whole unified-7dof lane was
+      // silently inert. Worse, it was UNOBSERVABLE: controller_mode/input_mode
+      // were never written by anything and read 0 forever, so no telemetry gate
+      // could see it (the fault the FW 18 bundle names).
+      //
+      // POSITION/PASSTHROUGH is the streaming mode (what the host's cold-start
+      // _run_configure pushes and what hand_ops uses); the limits come from
+      // axis_shipped_*_limit(), i.e. the live SET_VEL_CURR_LIMITS override if
+      // one was pushed this session, else the generated per-axis config default
+      // — never a literal, and never the legs' numbers on axis 6.
+      //
+      // A failed restore FAILS THE HOME. Reporting HOMING_OK on an axis left in
+      // VELOCITY/VEL_RAMP is exactly the silent state this change exists to
+      // remove; the sends can only fail when the bus partner is absent, in which
+      // case the home had already failed earlier in the ladder.
+      {
+        bool rok = true;
+        rok = can_jugglebot_send(ODrive::encode_set_controller_mode(
+                  a, ODriveControlMode::POSITION, ODriveInputMode::PASSTHROUGH)) && rok;
+        rok = can_jugglebot_send(ODrive::encode_set_vel_curr_limits(
+                  a, axis_shipped_vel_limit(a), axis_shipped_curr_limit(a))) && rok;
+        if (!rok) { finish(HOMING_FAILED); return; }
+        axes[a].controller_mode = (uint8_t)ODriveControlMode::POSITION;
+        axes[a].input_mode      = (uint8_t)ODriveInputMode::PASSTHROUGH;
+      }
       s_result[a] = HOMING_OK;
       s_phase = Phase::IDLE;
       s_axis  = 0xFF;

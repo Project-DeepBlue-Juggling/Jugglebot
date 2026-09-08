@@ -573,7 +573,7 @@ class TestIdleHandler:
     def test_blanks_control_mode_only_after_pending_operation(self):
         """A4 (ARMING_CONTRACT): the streaming mode must survive until the
         deactivate RESOLVES — blanking it at IDLE entry stopped the emitter
-        while the bridge could still be armed (the 250 ms MPC_STALE race)."""
+        while the bridge could still be armed (the 250 ms SETPOINT_STALE race)."""
         handler = IdleHandler()
         ctx = Context()
         ctx.control_mode = 'STANDBY'          # left published by ActiveHandler

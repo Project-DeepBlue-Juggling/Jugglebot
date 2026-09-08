@@ -524,7 +524,9 @@ def test_prime_inflight_window_covers_the_commanded_prime_ascent():
     cap = math.sqrt(float(hw.GEOM_HAND_MOTOR_HARD_STOP_REVS)
                     * float(hw.TEENSY_TRAJ_QUINTIC_S2_MAX)
                     / float(hw.TEENSY_TRAJ_MAX_SMOOTH_MOVE_HAND_ACCEL_RPS2))
-    assert cap == pytest.approx(0.78964, abs=1e-4)
+    # 0.78602 s at the measured 10.701 rev stop (FW 18); it read 0.78964 s at the
+    # 10.8 rev nominal — the cap scales with sqrt(stop), so -0.46 %.
+    assert cap == pytest.approx(0.78602, abs=1e-4)
     assert _PRIME_INFLIGHT_S >= cap, (
         'the in-flight window no longer covers the longest hand move the '
         'firmware can command')

@@ -177,7 +177,7 @@ auto-tracks whatever threshold the firmware trips at):
 
 **ABORT any session immediately on:**
 
-- any **E-STOP** (MPC_STALE / MAX_DEVIATION latch in the bridge/firmware log);
+- any **E-STOP** (SETPOINT_STALE / MAX_DEVIATION latch in the bridge/firmware log);
 - any **oscillation** or audible snap, at a hold or in transit;
 - tracking error > 0.1 rev **at a hold**. During a move the criterion is
   different (operator-confirmed 2026-07-16 — see the S4 ABORT recalibration
@@ -209,7 +209,7 @@ auto-tracks whatever threshold the firmware trips at):
 
 ## ⚠ Sharp edges — read before any session
 
-1. **Leaving a streaming mode while armed latches MPC_STALE within 250 ms.** The
+1. **Leaving a streaming mode while armed latches SETPOINT_STALE within 250 ms.** The
    emitter stops publishing when you leave a streaming mode, so the bridge stops
    receiving frames and self-E-STOPs. **Structurally closed 2026-07-15**
    (ARMING_CONTRACT A3/A4): in the production flow the mode now stays published
@@ -261,7 +261,7 @@ auto-tracks whatever threshold the firmware trips at):
 6. **`deactivate` while ARMED — CLOSED 2026-07-15** (ARMING_CONTRACT A3/A4; kept for
    the historical record — observed 2026-07-09 at 13:29:47 during the S2 session).
    The old failure: ACTIVE→IDLE blanked `control_mode` instantly, the emitter
-   stopped, MPC_STALE latched within 250 ms, and the firmware rejected the DEACTIVATE
+   stopped, SETPOINT_STALE latched within 250 ms, and the firmware rejected the DEACTIVATE
    while `mpc_active=1` — orchestrator in IDLE, platform still standing, latched
    fault. Now: the bridge disarms in-process at the head of `_run_deactivate` (A3)
    and the streaming mode stays published until the deactivate resolves (A4 —
@@ -326,7 +326,7 @@ auto-tracks whatever threshold the firmware trips at):
   4. **VERIFY `/control_mode_topic` reads `TRAJECTORY` before arming.** A lost mode
      publish (Sharp Edge #5) is silent, and arming into STANDBY means every battery move
      returns `WRONG_MODE` — harmless in itself, but the armed cleanup that follows is how
-     the 2026-07-09 session tripped an `MPC_STALE` E-STOP (Sharp Edge #6).
+     the 2026-07-09 session tripped an `SETPOINT_STALE` E-STOP (Sharp Edge #6).
   5. `ros2 service call /set_setpoint_output std_srvs/srv/SetBool "{data: true}"` (arm).
      *(Superseded 2026-07-15: automatic on ACTIVE entry under auto-arm — see the
      ARMING CONTRACT banner above. Needed only with `auto_arm:=false`.)*

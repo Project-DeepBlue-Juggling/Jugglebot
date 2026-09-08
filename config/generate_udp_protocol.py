@@ -156,7 +156,7 @@ ENUM_WIDTH = {
 ENUMS = {
     "MsgType": [
         # Downlink (Jetson → Teensy): high bit 0
-        ("SETPOINT",       0x01, "40 Hz MPC setpoint waypoints (STREAM, J→T)"),
+        ("SETPOINT",       0x01, "40 Hz setpoint waypoints (STREAM, J→T)"),
         ("HEARTBEAT_J2T",  0x02, "Jetson liveness (STREAM, J→T)"),
         ("RPC_REQUEST",    0x10, "RPC request (RPC port, J→T)"),
         # Uplink (Teensy → Jetson): high bit 1
@@ -259,7 +259,7 @@ ENUMS = {
     # Mirrors motor_guard GuardMode + can_node fault concepts on the Teensy side.
     "FaultState": [
         ("NONE",            0, "Nominal"),
-        ("MPC_STALE",       1, "MPC setpoint older than staleness threshold → E-STOP"),
+        ("SETPOINT_STALE",  1, "Setpoint stream older than staleness threshold → E-STOP"),
         ("LINK_LOST",       2, "Jetson link lost → safe behaviour on legs"),
         ("MOTOR_OVERSPEED", 3, "A leg exceeded the overspeed limit"),
         ("MAX_DEVIATION",   4, "Commanded pos diverged too far from encoder"),

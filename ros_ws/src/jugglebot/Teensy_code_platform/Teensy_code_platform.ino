@@ -86,9 +86,25 @@
  *
  *  Bump on any behavioural change worth telling a bench operator about, and add a
  *  line above saying WHAT changed and WHEN (the can-bridge's comment style).
+ *
+ *    4 = 2026-09-08.  FW 18 BUNDLE hand-clip re-measurement — BEHAVIOURAL.
+ *        Geometry::HAND_MOTOR_HARD_STOP_REVS 10.8 → 10.701 rev (operator
+ *        re-measurement, config/hardware_config.yaml). Trajectory.h consumes it
+ *        directly (no compensating margin widening this time, unlike 2→3):
+ *        SMOOTH_MOVE_POS_CEIL_REV moves 10.60 → 10.501 rev, and
+ *        smoothMoveMaxDuration() 0.78964 → 0.78602 s, tightening which branch
+ *        makeSmoothMove takes for a prelude whose honoured duration lands in
+ *        (0.78602, 0.78964] s, i.e. |v0| in (20.03, 20.14] rev/s. Conservative:
+ *        that (now slightly wider) band takes the rest-to-rest fallback. This
+ *        version bump is a HOST-side ripple of the can-bridge's FW 18 (which
+ *        added `hand_clip_margin_rev` for its OWN, differently-shaped clip
+ *        guard) — this board carries no clip-margin logic of its own; only the
+ *        shared `hand_motor_hard_stop_revs` moved. Plan:
+ *        plans/active/unified-7dof-planner.md § FW 18 bundle. Logbook:
+ *        logbook/2026-09-08-fw18-bundle-hand-clip-homing-counters-rename.md
  */
 constexpr char     FW_NAME[]  = "jugglebot-platform";
-constexpr uint16_t FW_VERSION = 3;   // 1→2: 2026-07-29 throwDecelToTorque (post-release decel
+constexpr uint16_t FW_VERSION = 4;   // 1→2: 2026-07-29 throwDecelToTorque (post-release decel
                                      //      feedforward, C-HAND-2).
                                      // 2→3: 2026-08-18 hand END-STOP correction — BEHAVIOURAL.
                                      //      Geometry::HAND_MOTOR_HARD_STOP_REVS 11.1 → 10.8 rev
@@ -101,6 +117,11 @@ constexpr uint16_t FW_VERSION = 3;   // 1→2: 2026-07-29 throwDecelToTorque (po
                                      //      (0.78964, 0.80054] s, i.e. |v0| in (20.04, 20.32] rev/s.
                                      //      Conservative: that band now takes the rest-to-rest
                                      //      fallback. See logbook/2026-08-18-hand-end-stop-corrected.md
+                                     // 3→4: 2026-09-08 FW 18 BUNDLE hand-clip re-measurement —
+                                     //      BEHAVIOURAL. HAND_MOTOR_HARD_STOP_REVS 10.8 → 10.701
+                                     //      rev; SMOOTH_MOVE_POS_CEIL_REV 10.60 → 10.501 rev;
+                                     //      smoothMoveMaxDuration() 0.78964 → 0.78602 s. See the
+                                     //      identity-block entry above for the full derivation.
 
 /*----------------------------------------------------------------------------*/
 /*                                CAN BUS SET‑UP                              */

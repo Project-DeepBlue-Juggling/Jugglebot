@@ -132,7 +132,7 @@ venv for these.
 robot.** The three refusals are fixed. The E-STOP is understood but not closed,
 so there is one thing to check before you put a ball in the cup.
 
-**What `MPC_STALE` means.** The Teensy expects a setpoint frame every 25 ms. If
+**What `SETPOINT_STALE` means.** The Teensy expects a setpoint frame every 25 ms. If
 none arrives for **250 ms** it E-STOPs and latches — that is the whole rule. On
 2026-09-06 the planner solved for **2.1 seconds** on the same CPU as the thing
 sending those frames, the stream went quiet for **804 ms**, and the guard fired.
@@ -652,7 +652,7 @@ bias — for **9–38 mm** of lateral drift and rim strikes on arrival).
 clean end to end: `blas threads: 1` on all three planner nodes, `max_emit_gap_ms`
 p50 **26.0** / max **35.4** ms with **zero** samples over 40, zero
 `interp_deadline_misses`, ≤ 3 µs of interp jitter, zero TX deferrals,
-`link=1 fault=0`. **The morning's `MPC_STALE` E-STOP class did not recur.** The
+`link=1 fault=0`. **The morning's `SETPOINT_STALE` E-STOP class did not recur.** The
 tightest hardware number of the evening was the encoder: worst peak **9.8699
 rev**, **0.089 rev = 2.8 mm** below the 9.9594 band ceiling.
 
@@ -751,4 +751,4 @@ robot did not move.
 | `CHAIN_SKEW` | The session and the plan disagree about when the throw is | Stop the session. This is a finding — send the log |
 | `ERR_HAND_SOURCE` on a legacy goal | You sent a legacy goal while the latch is STREAMED | Expected. Either add `unified_cycle: true`, or do the "After the sitting" recovery first |
 | Guard trip / E-STOP latched, `fault_state=MAX_DEVIATION` | The hand deviated past 2.5 rev | `ros2 service call /clear_errors std_srvs/srv/Trigger` then re-activate. **Log it — this is the data we want** |
-| Guard trip / E-STOP latched, `fault_state=MPC_STALE`, right after a refusal | **Not a hand fault and not a link fault.** The 40 Hz setpoint stream gapped for more than 250 ms while the planner was solving in the same process, and the Teensy's staleness watchdog latched. The name is historical — the MPC was deleted 2026-09-01; the watchdog is the setpoint stream's, and it is doing its job. **Cause found 2026-09-06: the planner was spreading over all six cores with spinning workers**, which shoved the setpoint sender off the CPU (1350–2314 ms solves, 225–942 ms gaps at three busy cores; 214–217 ms with the cap). Fixed in the launch file — so if this happens now, **check the `blas threads: 1` line first** (§ "Before UH-3 can be retried") | `ros2 service call /clear_errors std_srvs/srv/Trigger`, then re-activate. **Send me the whole accept/refuse line** — it now carries the per-stage split and `load1=` — plus `/trajectory/status.cycle_plan_wall_ms` and the `/proc/loadavg` capture |
+| Guard trip / E-STOP latched, `fault_state=SETPOINT_STALE`, right after a refusal | **Not a hand fault and not a link fault.** The 40 Hz setpoint stream gapped for more than 250 ms while the planner was solving in the same process, and the Teensy's staleness watchdog latched. The name is historical — the MPC was deleted 2026-09-01; the watchdog is the setpoint stream's, and it is doing its job. **Cause found 2026-09-06: the planner was spreading over all six cores with spinning workers**, which shoved the setpoint sender off the CPU (1350–2314 ms solves, 225–942 ms gaps at three busy cores; 214–217 ms with the cap). Fixed in the launch file — so if this happens now, **check the `blas threads: 1` line first** (§ "Before UH-3 can be retried") | `ros2 service call /clear_errors std_srvs/srv/Trigger`, then re-activate. **Send me the whole accept/refuse line** — it now carries the per-stage split and `load1=` — plus `/trajectory/status.cycle_plan_wall_ms` and the `/proc/loadavg` capture |

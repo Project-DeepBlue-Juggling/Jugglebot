@@ -434,8 +434,15 @@ class TestSmoothMoveExcursion:
         ``QUINTIC_H_MAX = 0.19753086`` is 16/81 ROUNDED TO 8 DIGITS, so the
         agreement is to 2e-8 relative, not to machine precision — anything
         tighter would be pinning the rounding rather than the physics.
+
+        ``v0=9.0`` no longer fits: FW 18 (2026-09-08) shrank the headroom above
+        the stroke top (ceiling 10.6 -> 10.501 rev), moving the max continuous
+        |v0| there from ~9.07 to ~8.34 rev/s, so 9.0 now takes the
+        excursion-would-leave-the-stroke fallback instead of the continuous
+        brake this test is about. Replaced with 8.2, still comfortably under
+        the new limit.
         """
-        for v0 in (6.01, 8.0, 9.0):
+        for v0 in (6.01, 8.0, 8.2):
             plan = plan_smooth_move(_X3_REV, _X3_REV, v0)
             exact = abs(v0) * plan.duration_s * (16.0 / 81.0)
             bound = abs(v0) * plan.duration_s * QUINTIC_H_MAX
@@ -502,10 +509,11 @@ class TestSmoothMoveExcursion:
         """
         # Corrected 2026-08-18: the sensorised hand's hard stop is 10.8 rev
         # (metal contact, operator-measured); this mirrored 11.1 before.
-        assert HAND_MOTOR_HARD_STOP_REVS == 10.8
-        assert rev_to_mm(HAND_MOTOR_HARD_STOP_REVS) == pytest.approx(341.59,
+        # Corrected again FW 18 (2026-09-08): re-measured at 10.701 rev.
+        assert HAND_MOTOR_HARD_STOP_REVS == 10.701
+        assert rev_to_mm(HAND_MOTOR_HARD_STOP_REVS) == pytest.approx(338.46,
                                                                        abs=0.01)
-        assert mm_to_rev(341.59) == pytest.approx(10.8, abs=1e-3)
+        assert mm_to_rev(338.46) == pytest.approx(10.701, abs=1e-3)
         # the inset is NOT part of the mapping
         assert mm_to_rev(HAND_STROKE_M * 1000.0 - 2 * STROKE_MARGIN_M * 1000.0) \
             == pytest.approx(_X3_REV, abs=1e-9)
@@ -670,26 +678,27 @@ class TestSmoothMoveBranches:
         """How wide the affordable band actually is, at the two live geometries.
 
         Pinned because it is the operator's decision input: continuity is
-        affordable only up to ~9 rev/s at the stroke top and ~20 rev/s from a
-        mid-stroke freeze, and that ceiling is set by
+        affordable only up to ~8.3 rev/s at the stroke top and ~19.6 rev/s from
+        a mid-stroke freeze, and that ceiling is set by
         MAX_SMOOTH_MOVE_HAND_ACCEL_RPS2 = 100 rev/s^2 — a COMFORT limit, 19x
         below the 1908 rev/s^2 the throw profile itself commands at 3.93 m/s.
 
         These are the EXCURSION-limited figures.  The duration cap
         (:func:`smooth_move_max_duration_s`, pinned by
         ``test_an_honoured_prelude_never_outlasts_a_rest_to_rest_move``) binds
-        first anywhere it is tighter, at 20.04 rev/s — which since 2026-08-18 is
-        ABOVE ``v_mid`` (19.96), so mid-stroke the EXCURSION limit is now the
-        binding one and ``v_mid`` is the number to quote.  The ordering was the
-        other way round before the 11.1 -> 10.8 hard-stop correction (v_mid 20.90,
-        cap 20.32), when the cap bound first.
+        first anywhere it is tighter, at 19.95 rev/s (FW 18, 2026-09-08: was
+        20.04 before the stop moved 10.8 -> 10.701) — which since 2026-08-18 is
+        ABOVE ``v_mid`` (19.63, was 19.96), so mid-stroke the EXCURSION limit is
+        still the binding one and ``v_mid`` is still the number to quote. The
+        ordering was the other way round before the 11.1 -> 10.8 hard-stop
+        correction (v_mid 20.90, cap 20.32), when the cap bound first.
         """
         k = QUINTIC_H_MAX * QUINTIC_H2_MAX / MAX_SMOOTH_MOVE_HAND_ACCEL_RPS2
         assert k == pytest.approx(0.0077832, rel=1e-4)
         v_top = math.sqrt((_CEIL_REV - _X3_REV) / k)
         v_mid = math.sqrt((HAND_MOTOR_HARD_STOP_REVS - 7.7004) / k)
-        assert v_top == pytest.approx(9.07, abs=0.05)
-        assert v_mid == pytest.approx(19.96, abs=0.05)
+        assert v_top == pytest.approx(8.34, abs=0.05)
+        assert v_mid == pytest.approx(19.63, abs=0.05)
         # and the boundary is real: just below fits, just above does not
         assert plan_smooth_move(_X3_REV, _X3_REV, v_top - 0.3).velocity_continuous
         assert not plan_smooth_move(_X3_REV, _X3_REV, v_top + 0.3).velocity_continuous
@@ -715,7 +724,9 @@ class TestSmoothMoveBranches:
         assert cap == pytest.approx(
             math.sqrt(HAND_MOTOR_HARD_STOP_REVS * QUINTIC_S2_MAX
                       / MAX_SMOOTH_MOVE_HAND_ACCEL_RPS2), rel=1e-12)
-        assert cap == pytest.approx(0.78964, abs=1e-4)
+        # FW 18 (2026-09-08): the stop moved 10.8 -> 10.701 rev, so the cap
+        # moved with it, 0.78964 -> 0.78602 s.
+        assert cap == pytest.approx(0.78602, abs=1e-4)
 
         prime = plan_smooth_move(5.04, _X3_REV, -24.62)
         assert not prime.velocity_continuous
@@ -738,15 +749,17 @@ class TestSmoothMoveBranches:
         whether a downward command is the ARMED CATCH descent or a
         ``makeSmoothMove`` brake, and a brake read as the descent makes the
         end-stop ``peak`` row under-report — a false PASS on the row that guards
-        the 10.8 rev hard stop.  Its threshold is sized against THIS number, so if the
-        accel limit or the duration cap moves and this bound grows past
-        ``x3 - (x5 + 0.33)`` = 3.502 rev, that separator must move with it.
+        the 10.701 rev hard stop (FW 18, 2026-09-08; was 10.8).  Its threshold
+        is sized against THIS number, so if the accel limit or the duration cap
+        moves and this bound grows past ``x3 - (x5 + 0.33)`` = 3.502 rev, that
+        separator must move with it.
         """
         cap = smooth_move_max_duration_s()
         v0_cap = MAX_SMOOTH_MOVE_HAND_ACCEL_RPS2 * cap / QUINTIC_H2_MAX
         deepest = v0_cap * cap * QUINTIC_H_MAX
-        assert v0_cap == pytest.approx(20.04, abs=0.02)
-        assert deepest == pytest.approx(3.126, abs=0.005)
+        # FW 18 (2026-09-08): the stop moved 10.8 -> 10.701 rev, shrinking both.
+        assert v0_cap == pytest.approx(19.95, abs=0.02)
+        assert deepest == pytest.approx(3.097, abs=0.005)
         assert deepest < _X3_REV - (6.1267 + 0.33), (
             'the probe brake/descent separator no longer clears the deepest '
             'brake the firmware can honour')

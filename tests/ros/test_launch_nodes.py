@@ -170,7 +170,7 @@ def test_consumer_wired_node_is_launched(launch_src, launch_description_body,
 # OpenBLAS's DEFAULT six-worker pool whose workers BUSY-SPIN between calls. Idle,
 # that is free (194-223 ms default vs 195-207 ms capped). At THREE busy cores of
 # six the same solve takes 1350-2314 ms and gaps trajectory_node's 40 Hz emitter
-# 225-942 ms — past the can-bridge's 250 ms MPC_STALE watchdog, which latches and
+# 225-942 ms — past the can-bridge's 250 ms SETPOINT_STALE watchdog, which latches and
 # E-STOPs the machine mid-rung. Capped to one thread: 214-217 ms at ANY load.
 #
 # The variables must be set BEFORE numpy is imported, so the launch file is the
@@ -224,7 +224,7 @@ def test_planner_node_caps_its_blas_thread_pool(launch_src, executable, var):
     assert 'additional_env' in block, (
         f'{executable} has no additional_env — it calls the unified planner, so '
         f'an uncapped BLAS pool here can gap the 40 Hz emitter past the '
-        f'can-bridge 250 ms MPC_STALE watchdog under box load.')
+        f'can-bridge 250 ms SETPOINT_STALE watchdog under box load.')
 
     inline = re.search(rf"'{var}'\s*:\s*'1'", block)
     if inline:
@@ -243,7 +243,7 @@ def test_planner_node_caps_its_blas_thread_pool(launch_src, executable, var):
         f'`{env_name}` does not set {var}=1, so {executable} inherits the '
         f'DEFAULT 6-thread OpenBLAS pool. Measured 2026-09-06: at three busy '
         f'cores that takes plan_cycle from ~200 ms to 1350-2314 ms and gaps the '
-        f'emitter 225-942 ms, latching MPC_STALE. See '
+        f'emitter 225-942 ms, latching SETPOINT_STALE. See '
         f'logbook/2026-09-06-uh3-first-attempt-refusals-and-estop.md.')
 
 

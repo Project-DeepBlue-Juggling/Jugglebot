@@ -640,7 +640,7 @@ ros2 topic pub -t 3 -r 2 /orchestrator_command std_msgs/msg/String "data: 'traje
 
 - **PASS**: 3a–3e as stated. The robot is homed, ACTIVE, armed, holding at 40 Hz in
   TRAJECTORY.
-- **ABORT**: any E-STOP, any MAX_DEVIATION / MPC_STALE latch, visible motion at the arm
+- **ABORT**: any E-STOP, any MAX_DEVIATION / SETPOINT_STALE latch, visible motion at the arm
   edge, or drift you can see at the hold. Recovery: `ros2 service call /clear_errors
   std_srvs/srv/Trigger` (the latch survives ROS relaunches — only CLEAR_ERRORS or a Teensy
   power-cycle clears it).

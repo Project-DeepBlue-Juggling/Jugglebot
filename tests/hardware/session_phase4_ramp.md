@@ -58,7 +58,7 @@ sessions; the code does not change between steps, only the YAML session limits d
 - E-STOP is always available. Any ABORT criterion ⇒ cut power / trigger the guard,
   then **revert the YAML session limits to the last-good values** before retrying.
 - **Disarm before any control-mode change away from a streaming mode** (leaving a
-  streaming mode while armed drops the stream → `MPC_STALE` E-STOP within 250 ms).
+  streaming mode while armed drops the stream → `SETPOINT_STALE` E-STOP within 250 ms).
 
 ## Preconditions
 

@@ -1296,7 +1296,7 @@ def bridge_chirp_top_freq(requested_f1_hz: float, telem_effective_hz: float,
 # against the generated ``FaultState`` enum in
 # ``tests/motion/test_bench_sysid_bridge.py``.
 FAULT_NONE = 0
-FAULT_MPC_STALE = 1
+FAULT_SETPOINT_STALE = 1
 FAULT_LINK_LOST = 2
 FAULT_MOTOR_OVERSPEED = 3
 FAULT_MAX_DEVIATION = 4
@@ -1305,7 +1305,7 @@ FAULT_CAN_BUS_DOWN = 6
 FAULT_MOTOR_FB_STALE = 7
 
 FAULT_NAMES = {
-    FAULT_NONE: 'NONE', FAULT_MPC_STALE: 'MPC_STALE', FAULT_LINK_LOST: 'LINK_LOST',
+    FAULT_NONE: 'NONE', FAULT_SETPOINT_STALE: 'SETPOINT_STALE', FAULT_LINK_LOST: 'LINK_LOST',
     FAULT_MOTOR_OVERSPEED: 'MOTOR_OVERSPEED', FAULT_MAX_DEVIATION: 'MAX_DEVIATION',
     FAULT_ODRIVE_FATAL: 'ODRIVE_FATAL', FAULT_CAN_BUS_DOWN: 'CAN_BUS_DOWN',
     FAULT_MOTOR_FB_STALE: 'MOTOR_FB_STALE',
@@ -1318,15 +1318,15 @@ FAULT_NAMES = {
 # and LINK_LOST from the instantaneous ``jetson_link_up()`` — NEITHER latched.
 _FAULT_RECOVERABLE = frozenset({FAULT_LINK_LOST, FAULT_MOTOR_FB_STALE})
 # Latching: a guard E-STOP crossed — revert + CLEAR_ERRORS to recover. ALL THREE of
-# MOTOR_OVERSPEED / MPC_STALE / MAX_DEVIATION latch (sticky ``s_estop_latched``,
+# MOTOR_OVERSPEED / SETPOINT_STALE / MAX_DEVIATION latch (sticky ``s_estop_latched``,
 # fault_machine.cpp:69-80,403-418): guard_mode holds ESTOP and the 500 Hz output stays
-# gated off until an EXPLICIT ``fault_notify_clear_errors()``. MPC_STALE is reachable in
+# gated off until an EXPLICIT ``fault_notify_clear_errors()``. SETPOINT_STALE is reachable in
 # normal operation — a blocking RPC gain-apply (two SET_*_GAIN calls, up to ~1.5 s with
 # retries) between streams can straddle the 250 ms MPC_CMD_STALENESS window while armed;
 # the driver disarms across gain application (``mpc_active=0`` suppresses the staleness
-# check) so it does not spuriously latch, and a genuine MPC_STALE latch then runs the
+# check) so it does not spuriously latch, and a genuine SETPOINT_STALE latch then runs the
 # same back-off + CLEAR_ERRORS recovery as MAX_DEVIATION rather than a passive watch.
-_FAULT_LATCHING = frozenset({FAULT_MPC_STALE, FAULT_MAX_DEVIATION, FAULT_MOTOR_OVERSPEED})
+_FAULT_LATCHING = frozenset({FAULT_SETPOINT_STALE, FAULT_MAX_DEVIATION, FAULT_MOTOR_OVERSPEED})
 # Fatal: cede authority so the firmware deferred stow / fatal handling runs alone.
 _FAULT_FATAL = frozenset({FAULT_ODRIVE_FATAL, FAULT_CAN_BUS_DOWN})
 
@@ -1370,7 +1370,7 @@ class GuardLatchBackoff:
       self-recovers when the stream/feedback returns); but if the SAME recoverable
       fault persists past ``recoverable_grace`` consecutive ticks the link itself is
       broken → ``abort``.
-    * ``latching``    (MPC_STALE / MAX_DEVIATION / MOTOR_OVERSPEED) → on the rising edge,
+    * ``latching``    (SETPOINT_STALE / MAX_DEVIATION / MOTOR_OVERSPEED) → on the rising edge,
       ``backoff_recover`` (revert to last-good, disarm, CLEAR_ERRORS). While it
       stays latched awaiting our clear → ``watch`` (do not re-fire). The
       ``(max_recoveries+1)``-th distinct latch → ``abort`` (stop climbing into a
@@ -1445,7 +1445,7 @@ class GuardLatchBackoff:
 # The firmware guard E-STOP latch (``s_estop_latched``) is STICKY: it survives a
 # harness restart because the can-bridge Teensy runs on Jetson 5V and is never
 # power-cycled between runs, and it is released ONLY by an explicit CLEAR_ERRORS
-# (fault_machine.cpp:180-186). So a MAX_DEVIATION / MPC_STALE / MOTOR_OVERSPEED
+# (fault_machine.cpp:180-186). So a MAX_DEVIATION / SETPOINT_STALE / MOTOR_OVERSPEED
 # latch from ANY prior run makes every later run read fault_state != NONE from the
 # first heartbeat — the approach stream observes it on iteration 0, backs off, and
 # aborts "during approach: guard latch" with the leg in CLOSED_LOOP but never
@@ -1471,7 +1471,7 @@ def warmup_knot_series(pos_rev: float, n_frames: int = BRIDGE_ARM_WARMUP_FRAMES
     Streamed with mpc_active=0 it (a) freshens the firmware MPC-staleness clock
     (``interp_on_setpoint`` stamps ``s_last_setpoint_us`` on EVERY accepted frame,
     regardless of arm — leg_interp.cpp:196) so the FOLLOWING arm cannot race the
-    250 ms MPC_STALE E-STOP, and (b) re-baselines the interp base to the measured
+    250 ms SETPOINT_STALE E-STOP, and (b) re-baselines the interp base to the measured
     encoder so arming causes no jump and no MAX_DEVIATION. Output is gated while
     disarmed, so these knots command NO motion — this is why streaming FIRST then
     arming (the ``teensy_setpoint_bench.py`` idiom) is safe, and arming FIRST then
@@ -1505,7 +1505,7 @@ def plan_startup_latch(fault_state: int) -> StartupLatchPlan:
     """Decide what a startup ``fault_state`` demands, BEFORE any stage arms.
 
     * ``none``        → ``proceed`` (already clear to arm).
-    * ``latching``    (MAX_DEVIATION / MPC_STALE / MOTOR_OVERSPEED) → ``clear``: a
+    * ``latching``    (MAX_DEVIATION / SETPOINT_STALE / MOTOR_OVERSPEED) → ``clear``: a
       sticky guard E-STOP persists across restarts and blocks every run; the driver
       re-baselines + verifies u0≈enc (disarmed) then issues CLEAR_ERRORS.
     * ``recoverable`` (LINK_LOST / MOTOR_FB_STALE) → ``wait_recover``: the firmware

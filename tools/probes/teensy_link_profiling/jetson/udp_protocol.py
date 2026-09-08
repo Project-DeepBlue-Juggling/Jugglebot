@@ -32,7 +32,7 @@ HEARTBEAT_CONE_HEALTH_SHIFT = 4  # Bit offset of CONE_HEALTH_MASK inside Heartbe
 
 # ── Enums ──────────────────────────────────────────────────────────────
 class MsgType(IntEnum):
-    SETPOINT = 1  # 40 Hz MPC setpoint waypoints (STREAM, J→T)
+    SETPOINT = 1  # 40 Hz setpoint waypoints (STREAM, J→T)
     HEARTBEAT_J2T = 2  # Jetson liveness (STREAM, J→T)
     RPC_REQUEST = 16  # RPC request (RPC port, J→T)
     TELEMETRY = 129  # 100 Hz motor state (STREAM, T→J)
@@ -106,7 +106,7 @@ class BusHealth(IntEnum):
 
 class FaultState(IntEnum):
     NONE = 0  # Nominal
-    MPC_STALE = 1  # MPC setpoint older than staleness threshold → E-STOP
+    SETPOINT_STALE = 1  # Setpoint stream older than staleness threshold → E-STOP
     LINK_LOST = 2  # Jetson link lost → safe behaviour on legs
     MOTOR_OVERSPEED = 3  # A leg exceeded the overspeed limit
     MAX_DEVIATION = 4  # Commanded pos diverged too far from encoder

@@ -333,7 +333,13 @@ PLATFORM_FW_VERSION_UNVERSIONED = 0
 #: 0.5 -> 0.2 with the base — but smoothMoveMaxDuration() moves 0.80054 -> 0.78964 s,
 #: so a board on 2 still emits preludes up to 0.8005 s and bench row H4.10 scores it
 #: as unflashed.
-PLATFORM_FW_VERSION_EXPECTED = 3
+#: 4 (2026-09-08) = FW 18 bundle hand-clip re-measurement, a host-side ripple of the
+#: can-bridge's FW 18 (see ros_ws/src/jugglebot/Teensy_code_canbridge/canbridge_config.h).
+#: Geometry::HAND_MOTOR_HARD_STOP_REVS 10.8 -> 10.701 rev, this time with NO
+#: compensating margin widening, so SMOOTH_MOVE_POS_CEIL_REV moves too: 10.60 ->
+#: 10.501 rev, and smoothMoveMaxDuration() 0.78964 -> 0.78602 s. A board on 3 emits
+#: preludes past the new ceiling.
+PLATFORM_FW_VERSION_EXPECTED = 4
 
 
 def decode_platform_fw_version(data: bytes) -> int:
@@ -492,7 +498,21 @@ def decode_platform_fw_version(data: bytes) -> int:
 #: board does not); unlike the wire-invisible bumps 9→16 the skew here is ALSO
 #: a dark link, so a v6 host against an old board shows no telemetry at all —
 #: roll back with the pre-v6 host checkout, or flash FW 17, never half.
-EXPECTED_BRIDGE_FW_VERSION = 17
+#:
+#: 18 (2026-09-06) = the FW 18 bundle: the hand setpoint clip stands off the
+#: metal (HAND_MOTOR_MAX_POSITION = hand_motor_hard_stop_revs 10.701 −
+#: hand_clip_margin_rev 0.2 = 10.501 rev, where FW 17 clipped AT a stop that
+#: itself read 0.099 rev high); homing restores axis 6 to POSITION/PASSTHROUGH
+#: on the shipped vel/curr limits and every mode-commanding site now records
+#: controller_mode/input_mode, which read 0 forever before; the cumulative hand
+#: lead / dev_over counters count only ticks that actually transmitted; and
+#: `hand7 reset` zeroes them without a Teensy reboot. **NO WIRE CHANGE —
+#: PROTOCOL_VERSION STAYS 6**, so unlike 16→17 this skew is NOT a dark link: an
+#: FW 17 board and this host tree still talk in both directions, and the only
+#: symptom before the flash is the BRIDGE_FW_CHECK advisory. That makes a
+#: healthy link no evidence at all that FW 18 is aboard — read
+#: link_status/bridge_fw_version or the boot banner.
+EXPECTED_BRIDGE_FW_VERSION = 18
 
 
 # ── Ball Butler ─────────────────────────────────────────────────────────────

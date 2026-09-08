@@ -443,7 +443,40 @@ jugglebot_geometry:
   # 10.8601-11.0621 rev: against 11.1 those read as headroom; against 10.8 they
   # are 0.06-0.26 rev PAST the stop, and they are the contact the operator felt.
   # Logbook: 2026-08-18-hand-end-stop-corrected.md
-  hand_motor_hard_stop_revs: 10.8
+  #
+  # 10.8 -> 10.701 on 2026-09-06 (operator re-measurement of the SAME metal, with
+  # the slider driven onto each stop and the encoder read): bottom stop -0.107 rev,
+  # top stop 10.701 rev, stroke 352 mm between them. 10.8 was the previous, coarser
+  # read of the top stop; this key is the TOP stop in post-homing encoder revs and
+  # nothing else.
+  hand_motor_hard_stop_revs: 10.701
+
+  # Headroom the FIRMWARE SETPOINT CLIP keeps below the top stop {rev}.
+  # can-bridge FW 18: HAND_MOTOR_MAX_POSITION = hand_motor_hard_stop_revs
+  #                                            - hand_clip_margin_rev = 10.501 rev.
+  #
+  # Why the clip needs a margin AT ALL — no firmware guard can see a stall in the
+  # gap between the clip and the metal, so a zero-margin clip is a guard that
+  # cannot fire:
+  #   * the deviation guard (MAX_DEVIATION_HAND_REV) compares encoder to command,
+  #     and once the slider is jammed against the stop at the clip value those two
+  #     AGREE — residual ~0, guard silent, motor pushing into metal;
+  #   * the lead clamp (MAX_LEAD_HAND_REV) anchors the setpoint TO the encoder
+  #     (fb + clamped lead), so it re-issues the jam rather than refusing it.
+  # Until FW 17 this key did not exist and the clip was a ZERO-margin alias of the
+  # stop -- and, with the stop itself reading 0.099 rev high, the clip sat 3.2 mm
+  # PAST the metal. 0.2 rev = 6.3 mm of slider travel: comfortably outside encoder
+  # noise and the age-extrapolation the clamps use, and far below any legitimate
+  # target (catch prime 9.959 rev, retract 0.0).
+  #
+  # DELIBERATELY ITS OWN KEY, not shared with
+  # `teensy_trajectory.smooth_move_excursion_margin_rev` or
+  # `hand_throw_envelope.end_stop_margin_rev` (both also 0.2 today): those two
+  # bound a PLANNED excursion computed host-side and are tuned against trajectory
+  # scatter, while this one is the last-resort clamp on whatever reaches the wire.
+  # Their equality is a coincidence of history (see the note on end_stop_margin_rev)
+  # and each must stay independently movable.
+  hand_clip_margin_rev: 0.2
 
 # ============================================================
 # 3. Jugglebot Homing

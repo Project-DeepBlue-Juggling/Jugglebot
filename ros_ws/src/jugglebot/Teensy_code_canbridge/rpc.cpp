@@ -10,6 +10,7 @@
 #include "ball_butler_protocol.h"
 #include "ball_butler_state.h"
 #include "can_buses.h"
+#include "axis_state.h"   // commanded-mode / shipped-limit record
 #include "fault_machine.h"
 #include "leg_homing.h"
 #include "leg_activate.h"
@@ -169,11 +170,27 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
     }
     case RpcMethod::SET_CONTROLLER_MODE: {
       ArgControllerMode a; if (!take(args, arg_len, a)) return RpcStatus::ERR_BAD_ARGS;
-      return send_axis_frame(method, a.axis, ODrive::encode_set_controller_mode(a.axis, a.ctrl, a.input));
+      const uint16_t st = send_axis_frame(method, a.axis,
+                              ODrive::encode_set_controller_mode(a.axis, a.ctrl, a.input));
+      // Record the COMMANDED mode (axis_state.h) so telemetry's ctrl_mode /
+      // input_mode stop reading 0 forever. Only on a frame that reached the wire.
+      if (st == RpcStatus::OK && a.axis < NUM_AXES) {
+        axes[a.axis].controller_mode = (uint8_t)a.ctrl;
+        axes[a.axis].input_mode      = (uint8_t)a.input;
+      }
+      return st;
     }
     case RpcMethod::SET_VEL_CURR_LIMITS: {
       ArgVelCurr a; if (!take(args, arg_len, a)) return RpcStatus::ERR_BAD_ARGS;
-      return send_axis_frame(method, a.axis, ODrive::encode_set_vel_curr_limits(a.axis, a.vel_limit, a.curr_limit));
+      const uint16_t st = send_axis_frame(method, a.axis,
+                              ODrive::encode_set_vel_curr_limits(a.axis, a.vel_limit, a.curr_limit));
+      // Cache the operator's live override so a later cold-start restore
+      // (leg_homing's RESTORE) puts THIS back rather than the config default.
+      if (st == RpcStatus::OK && a.axis < NUM_AXES) {
+        axes[a.axis].vel_limit_rps = a.vel_limit;
+        axes[a.axis].curr_limit_A  = a.curr_limit;
+      }
+      return st;
     }
     case RpcMethod::SET_POS_GAIN: {
       ArgPosGain a; if (!take(args, arg_len, a)) return RpcStatus::ERR_BAD_ARGS;

@@ -250,7 +250,7 @@ def main():
 
     # Fatal/CAN faults: in --observe we cede wire authority so the firmware's
     # deferred stow / fatal handling runs uncontested. Recoverable faults
-    # (MPC_STALE, MOTOR_FB_STALE, LINK_LOST) keep streaming to show self-recovery.
+    # (SETPOINT_STALE, MOTOR_FB_STALE, LINK_LOST) keep streaming to show self-recovery.
     _FATAL_FAULTS = {int(FaultState.CAN_BUS_DOWN), int(FaultState.ODRIVE_FATAL)}
 
     client = TeensyLinkClient(teensy_addr=(TEENSY_IP, p.PORT_STREAM), bind_host="0.0.0.0")
@@ -475,7 +475,7 @@ def main():
                     client.send_stream(int(MsgType.SETPOINT), frame.pack())
                 except OSError as e:
                     # Ethernet unplug (link-drop test) can make sendto raise. In
-                    # observe mode that's expected — the firmware MPC_STALE-gates
+                    # observe mode that's expected — the firmware SETPOINT_STALE-gates
                     # output; keep observing. Otherwise it's a real abort.
                     if not args.observe:
                         abort_reason = f"setpoint send failed: {e}"

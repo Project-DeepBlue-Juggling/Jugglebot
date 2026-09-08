@@ -68,7 +68,7 @@ static uint8_t s_guard_mode = JbUdp::GuardMode::DISABLED;
 static uint8_t s_fault_state = JbUdp::FaultState::NONE;
 
 // ── Guard E-STOP latch (motor_guard sticky-self.mode semantics) ──
-// The three guard E-STOP conditions (MOTOR_OVERSPEED / MPC_STALE / MAX_DEVIATION)
+// The three guard E-STOP conditions (MOTOR_OVERSPEED / SETPOINT_STALE / MAX_DEVIATION)
 // LATCH once tripped: guard_mode stays ESTOP and 500 Hz output stays gated off until
 // an EXPLICIT operator CLEAR_ERRORS (fault_notify_clear_errors) — mirroring
 // motor_guard._trigger_estop's sticky self.mode (motor_guard.py:1137-1142), whose
@@ -367,13 +367,15 @@ static void evaluate_guard() {
     const float bound = (i == HAND_AXIS) ? HAND_MAX_MOTOR_VEL_RPS : MAX_MOTOR_VEL_RPS;
     if (v > bound) { estop = true; state = JbUdp::FaultState::MOTOR_OVERSPEED; break; }
   }
-  // MPC command staleness (the hard link-fault trigger).
+  // Setpoint staleness (the hard link-fault trigger). The `MPC_` prefix this
+  // constant carried until FW 18 was historical: the producer is the trajectory
+  // node's 40 Hz Setpoint stream, and has been since the MPC chain was removed.
   const uint64_t age = micros64() - interp_last_setpoint_us();   // interval: setpoint stamped mono
   const bool ever_cmd = interp_last_setpoint_us() != 0;
-  if (!estop && ever_cmd && s_mpc_active && age > MPC_CMD_STALENESS_US) {
-    estop = true; state = JbUdp::FaultState::MPC_STALE;
+  if (!estop && ever_cmd && s_mpc_active && age > SETPOINT_STALENESS_US) {
+    estop = true; state = JbUdp::FaultState::SETPOINT_STALE;
   }
-  // Max deviation: the incoming MPC command (interp base = u0) diverged too far
+  // Max deviation: the incoming setpoint command (interp base = u0) diverged too far
   // from the encoder — catches stale zeros / sign errors / runaway command
   // sources (motor_guard.py:539-551, checked at command-arrival not per-tick).
   // Capture the crossing (leg/dev/u0/enc) locally; it is frozen into the latch
@@ -407,7 +409,14 @@ static void evaluate_guard() {
   // tick (before any gate) so a disarmed/observing/legacy window can never bank
   // a stale delta that fires on the first armed poll.
   const uint32_t hand_dev_over = interp_hand_dev_over_ticks();
-  const bool hand_dev_new = (hand_dev_over != s_hand_dev_over_prev);
+  // STRICTLY GREATER, not `!=` (FW 18). The counter is cumulative and
+  // single-writer, so it can only ever RISE — except across the `hand7 reset`
+  // console verb, which zeroes it. Under `!=` that zeroing looked exactly like
+  // fresh exceed ticks and would have latched a spurious MAX_DEVIATION E-STOP on
+  // the next 10 Hz tick whenever the guard was armed. `>` makes any DECREASE
+  // (a reset, or the 2^32 wrap that needs 99 days of continuous exceed ticks at
+  // 500 Hz) a no-op instead of a trip, and is otherwise identical.
+  const bool hand_dev_new = (hand_dev_over > s_hand_dev_over_prev);
   s_hand_dev_over_prev = hand_dev_over;
   // OBSERVE-FIRST: interp_hand_dev_guard_armed() boots false — the first
   // sitting reads the max residual ([hand7] dev_max=); `hand7 arm` at the

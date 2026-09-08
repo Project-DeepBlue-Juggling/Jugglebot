@@ -317,7 +317,7 @@ which is the correct reading of a sitting whose worst live residual was
 **Validity, from the same capture (row 20's criteria, re-read).** `[diag]`
 carries only two `(link, fault)` states all sitting — `(1, NONE)` while the
 driver held the link and `(3, LINK_LOST)` when it did not; never
-`MAX_DEVIATION`, `MPC_STALE`, `MOTOR_FB_STALE` or `ODRIVE_FATAL`. Jugglebot bus
+`MAX_DEVIATION`, `SETPOINT_STALE`, `MOTOR_FB_STALE` or `ODRIVE_FATAL`. Jugglebot bus
 `err`/`rec`/`tec`/`defer`/`txq` all **0 → 0**, `drain_cap` 0, `hwm` flat at
 9/256, `cap_hits` 0; `[cantx] defer_by_class` unmoved (only the pre-existing
 bb-bus `timesync=1970`); heap flat 2216–2416. Unchanged and still unexplained:

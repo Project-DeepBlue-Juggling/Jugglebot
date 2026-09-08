@@ -718,7 +718,7 @@ class TestShutdown:
     # Publishing control_mode='ERROR' on Ctrl-C is a dead can_node-era path that is
     # now actively harmful — ERROR leaves trajectory_node's streaming set, stopping
     # the 40 Hz emitter; if the bridge is still armed, the stream silence latches an
-    # MPC_STALE E-STOP within 250 ms, which is exactly what makes the bridge's own
+    # SETPOINT_STALE E-STOP within 250 ms, which is exactly what makes the bridge's own
     # profiled DEACTIVATE impossible. The profiled stow is owned by
     # teensy_bridge_node.on_shutdown, which disarms first.
 
@@ -824,7 +824,7 @@ class TestTickIntegration:
 # ════════════════════════════════════════════════════════════════
 # FIX 2 — Teensy guard awareness: a latched guard forces FAULT from ACTIVE and
 # routes the existing clear_errors recovery, WITHOUT wedging the benign
-# prior-session MPC_STALE latch at BOOT. See the 2026-07-10 blind-orchestrator
+# prior-session SETPOINT_STALE latch at BOOT. See the 2026-07-10 blind-orchestrator
 # incident (the guard suppresses leg output without disarming, so it never
 # reaches /robot_state.error).
 # ════════════════════════════════════════════════════════════════
@@ -860,10 +860,10 @@ class TestGuardLatch:
         assert orch.sm.state == RobotState.FAULT
 
     def test_guard_latch_does_not_fault_from_boot(self, orch):
-        """Benign case: a prior-session MPC_STALE latch at BOOT must NOT FAULT the
+        """Benign case: a prior-session SETPOINT_STALE latch at BOOT must NOT FAULT the
         machine (that latch is caught by the ACTIVATE arming pre-check)."""
         orch._tick()  # BOOT
-        orch._on_link_status(_link_status('MPC_STALE'))
+        orch._on_link_status(_link_status('SETPOINT_STALE'))
         orch._tick()
         assert orch.sm.state == RobotState.BOOT
 
@@ -878,7 +878,7 @@ class TestGuardLatch:
         orch._odrive_cmd_client = spy
 
         orch._tick()  # BOOT
-        orch._on_link_status(_link_status('MPC_STALE'))
+        orch._on_link_status(_link_status('SETPOINT_STALE'))
         msg = _make_robot_state_msg(all_heartbeats=True, firmware_validated=True)
         orch._on_robot_state(msg)
         orch._tick()

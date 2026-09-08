@@ -281,7 +281,7 @@ class KtBench(BridgeSysID):
 
     Subclasses :class:`BridgeSysID` to inherit — rather than re-implement — the machinery
     that took a whole session to get right: the UDP transport, the stream-then-arm-then-
-    settle dance (which closes the MPC_STALE race AND lets the firmware re-enable recovery
+    settle dance (which closes the SETPOINT_STALE race AND lets the firmware re-enable recovery
     slew converge before any motion), the startup guard-latch clear, the output-engagement
     verify, the guard-latch backoff state machine, the 250 Hz telemetry-frame CSV logger,
     and the manifest writer.
@@ -301,7 +301,7 @@ class KtBench(BridgeSysID):
     * ``_park_low`` is reworked around an armed fast path plus an explicit
       disarm→clear→bring-up→stream-then-arm slow path with a bounded retry — the
       pre-fix version ran ``_bringup_closed_loop()`` (RPCs + ``time.sleep(0.3)``)
-      while armed and silent, guaranteeing the MPC_STALE latch it then tripped over
+      while armed and silent, guaranteeing the SETPOINT_STALE latch it then tripped over
       ("CANNOT PARK", 2026-07-14).
     * Mode 2's measurement core is EDGE CAPTURE (square-wave ``torque_ff`` toggles,
       matched-filter edges, decay-corrected jumps) — see the module docstring.
@@ -433,7 +433,7 @@ class KtBench(BridgeSysID):
         between-streams pause — summarizing a traverse, opening the next CSV, the
         incremental manifest write, and above all ``_park_low``'s old still-armed
         ``_bringup_closed_loop()`` with its RPC round-trips + ``time.sleep(0.3)`` —
-        could starve the interpolator and latch MPC_STALE, which is exactly how that
+        could starve the interpolator and latch SETPOINT_STALE, which is exactly how that
         night's kt runs died between rep 1 and rep 2 and then "CANNOT PARK"-ed. An
         armed stream must NEVER go silent; a disarm must be explicit (mpc_active=0
         suppresses the staleness check).
@@ -764,7 +764,7 @@ class KtBench(BridgeSysID):
         reinventing it:
 
         1. **explicit disarm** — ``mpc_active=0`` suppresses the firmware staleness
-           check, so everything below may take its time without latching MPC_STALE
+           check, so everything below may take its time without latching SETPOINT_STALE
            (the pre-fix park ran ``_bringup_closed_loop()`` — RPC round-trips plus a
            hard ``time.sleep(0.3)`` — while still ARMED and silent, which GUARANTEED a
            staleness latch; ``_warm_and_arm``'s settle then saw the latch and the park
@@ -830,7 +830,7 @@ class KtBench(BridgeSysID):
           entry checks run under ``_keep_stream_alive`` so the armed stream is never
           silent. The pre-fix code re-ran ``_bringup_closed_loop()`` here while armed
           and silent (RPCs + ``time.sleep(0.3)`` >> the 250 ms staleness window), which
-          latched MPC_STALE on every healthy stage end and then failed its own re-arm:
+          latched SETPOINT_STALE on every healthy stage end and then failed its own re-arm:
           the operator's "CANNOT PARK — could not re-arm for the descent (arm-settle
           latched)".
         * **slow path** — disarmed or a fault latched (the load has already dropped to

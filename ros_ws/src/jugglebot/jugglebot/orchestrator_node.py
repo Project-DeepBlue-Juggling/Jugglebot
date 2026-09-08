@@ -330,7 +330,7 @@ class OrchestratorNode(Node):
 
         # 2. Force FAULT on errors (from any non-FAULT state).
         #    A latched Teensy guard forces FAULT too (FIX 2), but ONLY from ACTIVE:
-        #    the guard's MAX_DEVIATION/MPC_STALE only latch while armed (an ACTIVE
+        #    the guard's MAX_DEVIATION/SETPOINT_STALE only latch while armed (an ACTIVE
         #    concern), and gating on ACTIVE lets BootHandler's stale-latch
         #    pre-flight CLEAR a prior-session latch at BOOT (ARMING_CONTRACT A5)
         #    instead of the machine wedging on it. FaultHandler then holds
@@ -771,7 +771,7 @@ class OrchestratorNode(Node):
         ``can_node`` would stow. In the can-bridge architecture that publish is not
         just dead but ACTIVELY HARMFUL: ``ERROR`` is outside ``trajectory_node``'s
         streaming set, so it stops the 40 Hz emitter — and if the bridge is still
-        armed (mpc_active=1), the resulting stream silence latches an MPC_STALE
+        armed (mpc_active=1), the resulting stream silence latches an SETPOINT_STALE
         E-STOP within 250 ms (trajectory_node Sharp Edge #1). That latched guard is
         exactly what makes the bridge's own profiled DEACTIVATE impossible. So the
         safest shutdown action for the orchestrator is to command NOTHING and let

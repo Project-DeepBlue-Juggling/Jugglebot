@@ -150,7 +150,7 @@ present at the FW 16 tree) rather than re-adding a parallel 7th-frame producer.
 
 * **Clamps, never rejects.** An oversized torque with valid pos/vel is a
   torque-path bug; rejecting the frame would starve the interp into the
-  `MPC_STALE` E-STOP — converting a torque bug into a position-control outage
+  `SETPOINT_STALE` E-STOP — converting a torque bug into a position-control outage
   mid-motion. (A NaN in any field still drops the whole frame — the isfinite
   trust-boundary gate is unchanged.)
 * **Layer 2 of 3.** The Jetson `SetpointPump` clamp (0.15 true-Nm × 0.9673 Kt
@@ -188,7 +188,7 @@ second from `task_diag`. Every field, line by line:
 | field | meaning |
 |---|---|
 | `link` | Jetson UDP link state: 0 INIT (no Jetson heartbeat yet), 1 UP, 2 DEGRADED (missed heartbeats), 3 LOST |
-| `fault` | fault-machine state: 0 NONE, 1 MPC_STALE, 2 LINK_LOST, 3 MOTOR_OVERSPEED, 4 MAX_DEVIATION, 5 ODRIVE_FATAL (active error/disarm — incl. plain undervoltage when 45 V is off), 6 CAN_BUS_DOWN (CAN3 RX silent > 2 s), 7 MOTOR_FB_STALE |
+| `fault` | fault-machine state: 0 NONE, 1 SETPOINT_STALE, 2 LINK_LOST, 3 MOTOR_OVERSPEED, 4 MAX_DEVIATION, 5 ODRIVE_FATAL (active error/disarm — incl. plain undervoltage when 45 V is off), 6 CAN_BUS_DOWN (CAN3 RX silent > 2 s), 7 MOTOR_FB_STALE |
 | `rx` / `tx` | cumulative UDP frames received from / sent to the Jetson (tx runs ~320/s: 100 Hz telemetry + 100 Hz hand echo + 100 Hz platform/BB traffic + 10 Hz heartbeat + diagnostics) |
 | `crc_err` / `seq_gaps` | UDP frames dropped on bad CRC-16 / gaps seen in the Jetson's frame sequence counter |
 | `drain_cap` | ticks the UDP RX drain budget bound with datagrams still queued (0 in health) |

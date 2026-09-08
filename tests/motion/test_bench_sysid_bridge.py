@@ -272,7 +272,7 @@ def test_fault_codes_match_generated_enum():
     # would be misclassified. This is the guard against silent drift.
     from teensy_link import FaultState
     assert sid.FAULT_NONE == int(FaultState.NONE)
-    assert sid.FAULT_MPC_STALE == int(FaultState.MPC_STALE)
+    assert sid.FAULT_SETPOINT_STALE == int(FaultState.SETPOINT_STALE)
     assert sid.FAULT_LINK_LOST == int(FaultState.LINK_LOST)
     assert sid.FAULT_MOTOR_OVERSPEED == int(FaultState.MOTOR_OVERSPEED)
     assert sid.FAULT_MAX_DEVIATION == int(FaultState.MAX_DEVIATION)
@@ -284,7 +284,7 @@ def test_fault_codes_match_generated_enum():
 def test_classify_fault_buckets():
     # The recoverable-vs-latching PARTITION must match the firmware latch set, not just
     # the enum values (test_fault_codes_match_generated_enum covers those). fault_machine
-    # .cpp:69-80,403-418 makes MOTOR_OVERSPEED / MPC_STALE / MAX_DEVIATION all sticky guard
+    # .cpp:69-80,403-418 makes MOTOR_OVERSPEED / SETPOINT_STALE / MAX_DEVIATION all sticky guard
     # E-STOPs (s_estop_latched, released only by fault_notify_clear_errors), while
     # MOTOR_FB_STALE (fb_stale, :388-419) and LINK_LOST (instantaneous jetson_link_up,
     # :420) self-recover. Pinning the partition here means a future firmware drift that
@@ -293,9 +293,9 @@ def test_classify_fault_buckets():
     # Only MOTOR_FB_STALE and LINK_LOST self-recover.
     for f in (sid.FAULT_LINK_LOST, sid.FAULT_MOTOR_FB_STALE):
         assert sid.classify_fault(f) == 'recoverable'
-    # MPC_STALE LATCHES alongside MAX_DEVIATION / MOTOR_OVERSPEED (it is NOT recoverable) —
+    # SETPOINT_STALE LATCHES alongside MAX_DEVIATION / MOTOR_OVERSPEED (it is NOT recoverable) —
     # so a latch runs the revert + CLEAR_ERRORS recovery, not a passive watch.
-    for f in (sid.FAULT_MPC_STALE, sid.FAULT_MAX_DEVIATION, sid.FAULT_MOTOR_OVERSPEED):
+    for f in (sid.FAULT_SETPOINT_STALE, sid.FAULT_MAX_DEVIATION, sid.FAULT_MOTOR_OVERSPEED):
         assert sid.classify_fault(f) == 'latching'
     for f in (sid.FAULT_ODRIVE_FATAL, sid.FAULT_CAN_BUS_DOWN):
         assert sid.classify_fault(f) == 'fatal'
@@ -347,25 +347,25 @@ def test_guard_fatal_aborts_and_cedes():
 
 
 def test_guard_mpc_stale_latches_and_recovers():
-    # MPC_STALE is a LATCHING firmware guard E-STOP (fault_machine.cpp:69-80,403-418),
+    # SETPOINT_STALE is a LATCHING firmware guard E-STOP (fault_machine.cpp:69-80,403-418),
     # reachable when a blocking RPC gain-apply straddles the 250 ms staleness window while
     # armed. On the rising edge it must drive the revert + CLEAR_ERRORS recovery — NOT the
     # passive 'watch' the pre-fix (mis)classification produced.
     g = sid.GuardLatchBackoff(max_recoveries=2)
-    act = g.observe(sid.FAULT_MPC_STALE)
+    act = g.observe(sid.FAULT_SETPOINT_STALE)
     assert act.kind == 'backoff_recover'
     assert act.revert is True and act.clear_errors is True
     assert act.classification == 'latching'
     assert g.recoveries_used == 1
     # Held latched awaiting our clear → watch, not a second recovery.
-    assert g.observe(sid.FAULT_MPC_STALE).kind == 'watch'
+    assert g.observe(sid.FAULT_SETPOINT_STALE).kind == 'watch'
     assert g.recoveries_used == 1
 
 
 def test_guard_recoverable_watches_then_aborts_on_persistence():
     # MOTOR_FB_STALE is a genuinely self-recovering fault (fault_machine.cpp fb_stale
     # re-enables output when feedback returns) — the correct fault to drive the watch-then-
-    # abort path. MPC_STALE must NOT be used here: it latches (see the test above).
+    # abort path. SETPOINT_STALE must NOT be used here: it latches (see the test above).
     g = sid.GuardLatchBackoff(recoverable_grace=5)
     for _ in range(5):
         assert g.observe(sid.FAULT_MOTOR_FB_STALE).kind == 'watch'   # firmware self-recovers
@@ -436,10 +436,10 @@ def test_plan_startup_latch_none_proceeds():
 
 
 def test_plan_startup_latch_latching_clears():
-    # A sticky guard E-STOP (MAX_DEVIATION / MPC_STALE / MOTOR_OVERSPEED) must drive
+    # A sticky guard E-STOP (MAX_DEVIATION / SETPOINT_STALE / MOTOR_OVERSPEED) must drive
     # the verify-u0≈enc + CLEAR_ERRORS path — NOT abort, NOT proceed. This is the
     # operator's case: the persisted MAX_DEVIATION latch that blocked every run.
-    for f in (sid.FAULT_MAX_DEVIATION, sid.FAULT_MPC_STALE, sid.FAULT_MOTOR_OVERSPEED):
+    for f in (sid.FAULT_MAX_DEVIATION, sid.FAULT_SETPOINT_STALE, sid.FAULT_MOTOR_OVERSPEED):
         plan = sid.plan_startup_latch(f)
         assert plan.action == 'clear', sid.fault_name(f)
         assert plan.classification == 'latching'
@@ -468,7 +468,7 @@ def test_plan_startup_latch_action_matches_classification():
     # mis-route a startup clear (e.g. auto-clearing a newly-fatal code).
     expect = {'none': 'proceed', 'latching': 'clear',
               'recoverable': 'wait_recover', 'fatal': 'abort'}
-    for f in (sid.FAULT_NONE, sid.FAULT_MPC_STALE, sid.FAULT_LINK_LOST,
+    for f in (sid.FAULT_NONE, sid.FAULT_SETPOINT_STALE, sid.FAULT_LINK_LOST,
               sid.FAULT_MOTOR_OVERSPEED, sid.FAULT_MAX_DEVIATION,
               sid.FAULT_ODRIVE_FATAL, sid.FAULT_CAN_BUS_DOWN, sid.FAULT_MOTOR_FB_STALE):
         plan = sid.plan_startup_latch(f)
@@ -599,8 +599,8 @@ def test_approach_abort_diagnostic_names_fault_and_live_quantities():
 
 def test_approach_abort_diagnostic_omits_optional_fields_when_absent():
     s = sid.approach_abort_diagnostic(
-        fault_state=sid.FAULT_MPC_STALE, u0_rev=0.5, enc_rev=0.5)
-    assert 'MPC_STALE' in s
+        fault_state=sid.FAULT_SETPOINT_STALE, u0_rev=0.5, enc_rev=0.5)
+    assert 'SETPOINT_STALE' in s
     assert 'dev(u0-enc)=+0.0000' in s
     assert 'lead_clamp' not in s
     assert 'fw_mpc_active' not in s

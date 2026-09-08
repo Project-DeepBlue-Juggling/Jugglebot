@@ -32,7 +32,7 @@ constexpr uint8_t HEARTBEAT_CONE_HEALTH_SHIFT = 4u;  // Bit offset of CONE_HEALT
 
 // ── Enums ──────────────────────────────────────────────────────────────
 namespace MsgType {
-  constexpr uint8_t SETPOINT = 1u;  // 40 Hz MPC setpoint waypoints (STREAM, J→T)
+  constexpr uint8_t SETPOINT = 1u;  // 40 Hz setpoint waypoints (STREAM, J→T)
   constexpr uint8_t HEARTBEAT_J2T = 2u;  // Jetson liveness (STREAM, J→T)
   constexpr uint8_t RPC_REQUEST = 16u;  // RPC request (RPC port, J→T)
   constexpr uint8_t TELEMETRY = 129u;  // 100 Hz motor state (STREAM, T→J)
@@ -106,7 +106,7 @@ namespace BusHealth {
 }
 namespace FaultState {
   constexpr uint8_t NONE = 0u;  // Nominal
-  constexpr uint8_t MPC_STALE = 1u;  // MPC setpoint older than staleness threshold → E-STOP
+  constexpr uint8_t SETPOINT_STALE = 1u;  // Setpoint stream older than staleness threshold → E-STOP
   constexpr uint8_t LINK_LOST = 2u;  // Jetson link lost → safe behaviour on legs
   constexpr uint8_t MOTOR_OVERSPEED = 3u;  // A leg exceeded the overspeed limit
   constexpr uint8_t MAX_DEVIATION = 4u;  // Commanded pos diverged too far from encoder

@@ -9,7 +9,7 @@ OpenBLAS's DEFAULT six-worker pool whose workers busy-spin between calls. Idle,
 the pool is free (194-223 ms default vs 195-207 ms capped — identical). At THREE
 busy cores of six the same solve takes **1350-2314 ms** and gaps
 ``trajectory_node``'s 40 Hz emitter **225-942 ms**, past the can-bridge's 250 ms
-``MPC_STALE`` watchdog — which latches and E-STOPs the machine mid-rung. Capped
+``SETPOINT_STALE`` watchdog — which latches and E-STOPs the machine mid-rung. Capped
 to one thread: 214-217 ms at ANY load.
 
 The cap itself lives in ``jugglebot_launch.py``'s ``additional_env`` (it has to
@@ -94,7 +94,7 @@ def test_the_warning_names_the_node_the_launch_file_and_the_entry():
     assert 'OMP_NUM_THREADS=1' in warn
     # The measured numbers, so the reader can judge the stakes rather than
     # taking the warning's word for it.
-    assert '250 ms' in warn and 'MPC_STALE' in warn
+    assert '250 ms' in warn and 'SETPOINT_STALE' in warn
 
 
 def test_an_unknown_pool_warns_too():

@@ -2490,7 +2490,7 @@ def test_guard_latch_drops_fresh_spacemouse_target():
 
 
 def test_guard_latch_emit_streams_descent_without_supersede():
-    """While frozen the emitter keeps PUBLISHING (no MPC_STALE) and plays out the
+    """While frozen the emitter keeps PUBLISHING (no SETPOINT_STALE) and plays out the
     installed descent — u0 ADVANCES down toward measured — but a fresh follower target
     must NOT supersede the descent (which would re-diverge u0 on the next clear)."""
     pub = _CapturePub()
@@ -2811,7 +2811,7 @@ def test_hand_prior_clears_on_handless_frame():
 # is not the one that pays the one-off cost — the failure it guards is the
 # 2026-09-06 bench event, where the session's first two solves measured
 # 2158.89 / 2021.16 ms and the can-bridge's 250 ms setpoint watchdog latched
-# MPC_STALE twice. What these tests pin is the SHAPE of the warm-up (it runs,
+# SETPOINT_STALE twice. What these tests pin is the SHAPE of the warm-up (it runs,
 # once, off a timer, installing nothing, never raising), not its cost.
 #
 # THE COST ITSELF DOES NOT SUPPORT THE HYPOTHESIS, and that is recorded here so

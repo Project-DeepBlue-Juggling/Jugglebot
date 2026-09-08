@@ -32,22 +32,27 @@ on the streamed hand lane — ``MAX_DEVIATION_HAND_REV`` 2.5 rev **armed** for
 Phase 5 from UH-3 on (owner, 2026-09-05: ``hand7 arm`` on the Teensy console
 joins the session-start checklist, and a trip is DATA — a fail-safe E-STOP
 released by ``CLEAR_ERRORS``), ``MAX_LEAD_HAND_REV`` 2.0, the stroke clip
-[0, 10.8] rev and the 345 rev/s overspeed E-STOP. This driver adds exactly one
+[0, 10.501] rev (FW 18, 2026-09-08 — stop minus ``hand_clip_margin_rev``) and
+the 345 rev/s overspeed E-STOP. This driver adds exactly one
 safety behaviour of its own and it is a REFUSAL: it will not issue a request
 unless the preconditions below hold. Once a plan is installed, stopping it is
 the operator's E-stop or ``trajectory/go_home`` — not this process.
 
-⚠ **The stroke clip is 0.099 rev PAST the metal, and no guard covers the gap.**
-The operator measured the slider on 2026-09-06: 352 mm of stroke, bottom
-−0.107 rev, top **10.701 rev**. ``HAND_MOTOR_MAX_POSITION`` is a zero-margin
-alias of ``Geometry::HAND_MOTOR_HARD_STOP_REVS`` (10.8), so the firmware clips
-setpoints to a position the slider cannot reach — and neither firmware guard can
-see the resulting stall: ``MAX_DEVIATION_HAND_REV`` is COMMAND-relative (encoder
-and setpoint agree once the slider is jammed at the clip) and the lead clamp
-ANCHORS the setpoint to the encoder rather than refusing it. V3 therefore scores
-against the MEASURED 10.701 (:data:`HAND_METAL_REV_MEASURED`), and this driver's
-``--metal-margin`` is the only thing standing in that 3.1 mm. Pulling the clip
-back below the metal is FW 18 work; nothing here changes firmware.
+**RESOLVED, FW 18 (2026-09-08, NOT YET FLASHED): the clip now stands OFF the
+metal instead of past it.** The operator measured the slider on 2026-09-06: 352
+mm of stroke, bottom −0.107 rev, top **10.701 rev**. Until FW 18,
+``HAND_MOTOR_MAX_POSITION`` was a zero-margin alias of
+``Geometry::HAND_MOTOR_HARD_STOP_REVS`` (10.8), so the firmware clipped
+setpoints to a position 0.099 rev (3.1 mm) PAST the metal — a gap no firmware
+guard could see (``MAX_DEVIATION_HAND_REV`` is COMMAND-relative and the lead
+clamp ANCHORS the setpoint to the encoder rather than refusing it). FW 18 adds
+``hand_clip_margin_rev`` (0.2 rev) so ``HAND_MOTOR_MAX_POSITION`` is now
+``stop − margin`` = **10.501 rev**, 0.2 rev shy of the measured metal
+(:data:`HAND_METAL_REV_MEASURED` 10.701). V3 still scores against the MEASURED
+stop rather than the clip (belt-and-braces once the board is flashed), and this
+driver's ``--metal-margin`` is unchanged. **The fix is built but not flashed —
+until the operator flashes it, the board is still FW 17 and the gap above is
+still live.**
 
 **It never opens the UDP link.** ``hand_stream_bench.py`` is the sole-owner
 raw-UDP driver and requires the launch DOWN; this one is an ordinary ROS client
@@ -176,8 +181,10 @@ AXIS_STATE_CLOSED_LOOP = 8
 #: pinned to the header by ``test_the_firmware_hand_guards_match_the_header``.
 MAX_DEVIATION_HAND_REV = 2.5      # canbridge_config.h MAX_DEVIATION_HAND_REV
 MAX_LEAD_HAND_REV = 2.0           # canbridge_config.h MAX_LEAD_HAND_REV
-HAND_MOTOR_MAX_POSITION_REV = 10.8  # canbridge_config.h HAND_MOTOR_MAX_POSITION
-                                    # (= GEOM_HAND_MOTOR_HARD_STOP_REVS)
+HAND_MOTOR_MAX_POSITION_REV = 10.501  # canbridge_config.h HAND_MOTOR_MAX_POSITION
+                                    # FW 18 (2026-09-08): stop - hand_clip_margin_rev
+                                    # (= GEOM_HAND_MOTOR_HARD_STOP_REVS - GEOM_HAND_CLIP_MARGIN_REV,
+                                    # was a zero-margin alias of the stop before FW 18)
 
 #: The PLANNER's own slider ceiling — ``JB_OP_HAND_CATCH_PRIME_REV``, the top of
 #: the operating band ``validate_cycle`` refuses outside with ``HAND_STROKE``.
@@ -222,22 +229,20 @@ CARRY_HAND_EXCURSION_MAX_REV = 0.5
 #: THE METAL, as MEASURED — not as the firmware believes it.
 #:
 #: 2026-09-06, operator, on the machine: the slider's usable stroke is 352 mm
-#: between a bottom of **-0.107 rev** and a top of **10.701 rev**. The firmware's
-#: clip ``HAND_MOTOR_MAX_POSITION`` is a zero-margin alias of
-#: ``Geometry::HAND_MOTOR_HARD_STOP_REVS`` (10.8), so it sits **0.099 rev
-#: (3.1 mm) PAST the metal** — the firmware will happily clip a setpoint to a
-#: position the slider cannot physically reach.
+#: between a bottom of **-0.107 rev** and a top of **10.701 rev**. Before FW 18
+#: the firmware's clip ``HAND_MOTOR_MAX_POSITION`` was a zero-margin alias of
+#: ``Geometry::HAND_MOTOR_HARD_STOP_REVS`` (10.8), so it sat **0.099 rev
+#: (3.1 mm) PAST the metal** — the firmware would happily clip a setpoint to a
+#: position the slider could not physically reach, and no guard could see the
+#: resulting stall (``MAX_DEVIATION_HAND_REV`` is COMMAND-relative — encoder and
+#: setpoint agree once the slider is jammed against the stop — and the lead
+#: clamp ANCHORS the setpoint to the encoder rather than refusing it).
 #:
-#: And no guard can see the resulting stall: ``MAX_DEVIATION_HAND_REV`` is
-#: COMMAND-relative (it compares the encoder to the setpoint, and at the clip
-#: they agree by construction once the slider is jammed against the stop), while
-#: the lead clamp ANCHORS the setpoint to the encoder rather than refusing it. So
-#: the 0.099 rev between the clip and the metal is unguarded by design, and this
-#: driver's margin is the only thing standing in it.
-#:
-#: Hence V3 scores against the MEASURED 10.701, not against the clip. Correcting
-#: the clip is FW 18 work (a firmware change, out of this driver's scope); until
-#: it lands, a margin quoted against 10.8 overstates the clearance by 3.1 mm.
+#: FW 18 (2026-09-08, built NOT YET FLASHED) fixes this: the clip is now
+#: ``stop - hand_clip_margin_rev`` = 10.501, 0.2 rev SHORT of the metal instead
+#: of past it. V3 still scores against the MEASURED 10.701
+#: (:data:`HAND_METAL_REV_MEASURED`) rather than the clip — belt-and-braces once
+#: the board is flashed, and still the only correct reference while it isn't.
 HAND_METAL_REV_MEASURED = 10.701
 #: The measurement's provenance, printed with any verdict that quotes it.
 HAND_METAL_PROVENANCE = ('measured 2026-09-06 by the operator: stroke 352 mm, '
@@ -280,7 +285,7 @@ CHAINED_PLAN_ADVISORY_MS = 700.0
 SINGLE_PLAN_BAR_MS = 250.0
 #: The worst inter-tick emitter gap a rung may show (ms), from
 #: ``TrajectoryStatus.max_emit_gap_ms``. The emitter ticks at 40 Hz (25 ms) and
-#: the can-bridge's setpoint watchdog latches ``MPC_STALE`` at 250 ms — so 125 ms
+#: the can-bridge's setpoint watchdog latches ``SETPOINT_STALE`` at 250 ms — so 125 ms
 #: is five nominal ticks and HALF the watchdog: far enough above the tick to
 #: never fire on scheduling noise, and far enough below the watchdog to be a
 #: warning rather than a post-mortem. This is the check that would have caught
@@ -753,30 +758,27 @@ def evaluate(rung: str, plan: dict, trace: list, *,
             'verdict': 'PASS' if worst_gap <= MAX_EMIT_GAP_MS else 'FAIL',
             'detail': ('%.1f ms worst inter-tick gap over %d ticks (40 Hz = '
                        '25 ms nominal; the Teensy setpoint watchdog latches '
-                       'MPC_STALE at 250 ms)' % (worst_gap, len(gaps))),
+                       'SETPOINT_STALE at 250 ms)' % (worst_gap, len(gaps))),
         })
 
     # ── V3: margin to METAL, measured on the ENCODER ────────────────────────
     # Scored on the encoder and not on the commanded peak, because the commanded
     # peak cannot reach metal: `validate_cycle` already refuses a plan outside
     # the operating band [0, JB_OP_HAND_CATCH_PRIME_REV] (9.9594 rev) with
-    # HAND_STROKE, and the firmware clips every setpoint to [0, 10.8] after
-    # that. A verdict on the command would restate two gates and could never
-    # fail. What CAN reach metal is the physical slider overshooting its
-    # command, and sitting two measured exactly that: encoder 10.4693 rev on a
-    # legacy stroke at --event-vel 3.0.
+    # HAND_STROKE, and the firmware clips every setpoint to [0, 10.501] after
+    # that (FW 18, 2026-09-08 — was [0, 10.8] before). A verdict on the command
+    # would restate two gates and could never fail. What CAN reach metal is the
+    # physical slider overshooting its command, and sitting two measured
+    # exactly that: encoder 10.4693 rev on a legacy stroke at --event-vel 3.0
+    # (pre-FW-18, when the clip still sat past the metal).
     #
-    # THE REFERENCE IS THE MEASURED STOP (10.701), NOT THE FIRMWARE CLIP (10.8).
-    # The clip is a zero-margin alias of Geometry::HAND_MOTOR_HARD_STOP_REVS, so
-    # it sits 0.099 rev (3.1 mm) BEYOND the metal the operator measured on
-    # 2026-09-06 — and nothing in the firmware can see a stall in that gap: the
-    # deviation guard is COMMAND-relative (encoder and setpoint agree once the
-    # slider is jammed at the clip) and the lead clamp ANCHORS the setpoint to
-    # the encoder instead of refusing it. Quoting the clip therefore overstates
-    # the clearance by 3.1 mm at exactly the moment it matters. Moving the clip
-    # is FW 18 work; this driver's margin is what stands in the gap until then.
-    # Sitting two's 10.4693 rev is 0.23 rev / 7.3 mm to the measured stop.
-    # The commanded margin is reported beside it, never gated.
+    # THE REFERENCE IS STILL THE MEASURED STOP (10.701), NOT THE FIRMWARE CLIP
+    # (10.501). FW 18 (2026-09-08, built NOT YET FLASHED) moved the clip to
+    # stop - hand_clip_margin_rev, so it now sits 0.2 rev SHORT of the metal
+    # instead of 0.099 rev (3.1 mm) past it — but scoring against the measured
+    # stop rather than the clip is belt-and-braces regardless, so this driver
+    # keeps doing it. Sitting two's 10.4693 rev is 0.23 rev / 7.3 mm to the
+    # measured stop. The commanded margin is reported beside it, never gated.
     peak = plan.get('hand_peak_rev')
     encs = [float(r['hand_enc_rev']) for r in ticks
             if r.get('hand_enc_rev') is not None]

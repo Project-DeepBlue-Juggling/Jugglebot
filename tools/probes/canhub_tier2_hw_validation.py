@@ -78,7 +78,7 @@ from datetime import datetime
 
 # ── Enum decode tables (mirror config/generated/udp_protocol.py) ──────────────
 FAULT_STATE = {
-    0: "NONE", 1: "MPC_STALE", 2: "LINK_LOST", 3: "MOTOR_OVERSPEED",
+    0: "NONE", 1: "SETPOINT_STALE", 2: "LINK_LOST", 3: "MOTOR_OVERSPEED",
     4: "MAX_DEVIATION", 5: "ODRIVE_FATAL", 6: "CAN_BUS_DOWN", 7: "MOTOR_FB_STALE",
 }
 GUARD_MODE = {0: "DISABLED", 1: "ENABLED", 2: "ESTOP"}
@@ -422,7 +422,7 @@ class Runner:
         print()
         self.operator_action([
             "INDUCE a guard E-STOP. Either:",
-            "  - stop the setpoint stream for > 0.25 s (Ctrl-C trajectory_node) → MPC_STALE, or",
+            "  - stop the setpoint stream for > 0.25 s (Ctrl-C trajectory_node) → SETPOINT_STALE, or",
             "  - briefly exceed the overspeed limit → MOTOR_OVERSPEED.",
         ])
         self.enter("Press Enter once you've induced it")
@@ -466,17 +466,17 @@ class Runner:
         print("Validates: (A) a wall-clock ANCHOR STEP must not perturb control (all interval")
         print("arithmetic is on micros64() now); (B) restarting the setpoint stream must be")
         print("accepted IMMEDIATELY — pre-fix, a persisted seq vs a host-reset stream bricked")
-        print("control for minutes after ~half of restarts (phantom MPC_STALE E-STOP).")
+        print("control for minutes after ~half of restarts (phantom SETPOINT_STALE E-STOP).")
         print()
         print("NOTE (2026-09-01): Part B's procedure predates the MPC removal (tag mpc-final)")
         print("and is NOT yet re-derived for the trajectory_node stack — see the module header.")
         print()
         self.expect([
-            "(A) across the bridge (re)connect, fault stays 0:NONE — no spurious MPC_STALE",
+            "(A) across the bridge (re)connect, fault stays 0:NONE — no spurious SETPOINT_STALE",
             "    /LINK_LOST, no deferred stow armed, and u0 / leg positions do not jump",
             "(B) after a stream-source restart, sp_age_ms drops back small and guard_mode",
             "    returns to 1:ENABLED within ~2 s, fault stays 0:NONE (NOT stuck at",
-            "    MPC_STALE/ESTOP)",
+            "    SETPOINT_STALE/ESTOP)",
         ])
         self.enter("Press Enter to begin check 2")
 
@@ -502,7 +502,7 @@ class Runner:
             "PROCEDURE NOT RE-DERIVED since the 2026-09-01 MPC removal (tag mpc-final) — the",
             "original step was 'Ctrl-C run_mpc, relaunch jugglebot_launch.py'. Re-derive the",
             "exact restart command against the current stack before trusting this result.",
-            "The stream must be accepted immediately (no minutes-long MPC_STALE brick).",
+            "The stream must be accepted immediately (no minutes-long SETPOINT_STALE brick).",
         ])
         self.enter("Press Enter once the setpoint stream has restarted")
         self.wait_until(lambda s: s.get("sp_age_ms", 9999) < 500 and s.get("fault") == 0,
@@ -530,7 +530,7 @@ class Runner:
             "crc_err CLIMBS (junk rejected) — proves the flood is reaching + being handled",
             "interp_deadline_misses / interp_max_jitter_us stay 0 (via /teensy/profile) — the"
             " bounded RX drain keeps the 500 Hz interp undisturbed",
-            "fault stays 0:NONE — the flood does not starve the real 40 Hz stream into MPC_STALE",
+            "fault stays 0:NONE — the flood does not starve the real 40 Hz stream into SETPOINT_STALE",
             "drain_cap MAY climb (soft signal — only moves under bursty >8-deep delivery)",
         ])
         self.note("Note: junk-flood packets bump crc_err (bad magic → rejected), NOT rx (rx counts"
@@ -580,7 +580,7 @@ class Runner:
             landed = after["crc_err"] > crc0             # junk rejected → flood reached the Teensy
             drain_moved = dc0 is not None and after.get("drain_cap", dc0) > dc0
             alive = not self.mon.stale()                 # [diag] still updating → no hardfault
-            no_estop = after.get("fault") == 0           # flood didn't starve into MPC_STALE
+            no_estop = after.get("fault") == 0           # flood didn't starve into SETPOINT_STALE
             if not landed:
                 self.note("crc_err did NOT climb — the flood may not be reaching the Teensy. "
                           "Confirm the Jetson<->Teensy link is up (bridge running / mpc_active=1).")

@@ -384,7 +384,7 @@ class IdleHandler(StateHandler):
         # streaming mode published so the 40 Hz emitter keeps feeding the (by
         # then disarmed, A3) wire through the descent; blanking it at IDLE entry
         # would stop the emitter while the bridge could still be armed for up to
-        # a service round-trip — the 250 ms MPC_STALE race this ordering removes.
+        # a service round-trip — the 250 ms SETPOINT_STALE race this ordering removes.
         if ctx.control_mode != '':
             ctx.control_mode = ''
 
@@ -672,7 +672,7 @@ class FaultHandler(StateHandler):
             # ActiveHandler.on_exit's blank; re-assert from active_mode so a forced
             # transition from any prior value is safe). Publishing 'ERROR' here — a
             # mode OUTSIDE trajectory_node's streaming set — would silence the 40 Hz
-            # emitter, abandon the in-flight profiled descent, and re-latch MPC_STALE on
+            # emitter, abandon the in-flight profiled descent, and re-latch SETPOINT_STALE on
             # top of the guard: the self-sustaining 2026-07-10 deadlock this fix removes.
             # active_mode is untouched across the forced ACTIVE→FAULT transition, and
             # every ActiveMode value is inside trajectory_node's streaming set.

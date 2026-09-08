@@ -292,6 +292,24 @@ def _parse_alias(header_text, name):
     return m.group(1), m.group(2)
 
 
+def _parse_alias_diff(header_text, name):
+    """The two RHS SYMBOLS of ``constexpr float <name> = <NsA>::<A> - <NsB>::<B>;``.
+
+    Returns ``((ns_a, sym_a), (ns_b, sym_b))``.  Same reasoning as
+    :func:`_parse_alias`, one term further: ``HAND_MOTOR_MAX_POSITION`` became a
+    DIFFERENCE at FW 18 (hard stop minus clip margin), and a test that only
+    checked its value would pass just as happily on a header that had dropped
+    the margin term — which is the exact regression the margin exists to prevent.
+    Whitespace and newlines between the terms are tolerated; the header wraps.
+    """
+    m = re.search(
+        rf"constexpr\s+float\s+{name}\s*=\s*"
+        rf"({'|'.join(_ALIAS_NAMESPACES)})::(\w+)\s*-\s*"
+        rf"({'|'.join(_ALIAS_NAMESPACES)})::(\w+)\s*;", header_text)
+    assert m, f"{name} is not a namespace-alias difference in canbridge_config.h"
+    return (m.group(1), m.group(2)), (m.group(3), m.group(4))
+
+
 def _generated(namespace, symbol):
     """The generated-config constant a header alias resolves to."""
     import jugglebot.hardware_config as hw
@@ -372,7 +390,8 @@ def test_hand_lane_constants_match_the_firmware():
 
     Two of them are ALIASES in the header rather than literals
     (``HAND_VELFF_LIMIT_RPS = TrajOp::HAND_VEL_CEILING_RPS``,
-    ``HAND_MOTOR_MAX_POSITION = Geometry::HAND_MOTOR_HARD_STOP_REVS``).  For
+    ``HAND_MOTOR_MAX_POSITION = Geometry::HAND_MOTOR_HARD_STOP_REVS
+    - Geometry::HAND_CLIP_MARGIN_REV``).  For
     those, the RHS SYMBOL NAME is asserted as well as the value: comparing only
     to a generated constant chosen by hand would let the header be re-pointed at
     a different symbol of the same type — ``TrajOp::HAND_VEL_LIMIT_RPS`` (200) in
@@ -390,9 +409,20 @@ def test_hand_lane_constants_match_the_firmware():
     assert (ns, sym) == ('TrajOp', 'HAND_VEL_CEILING_RPS')
     assert ti.HAND_VELFF_LIMIT_RPS == _generated(ns, sym)
 
-    ns, sym = _parse_alias(text, "HAND_MOTOR_MAX_POSITION")
-    assert (ns, sym) == ('Geometry', 'HAND_MOTOR_HARD_STOP_REVS')
-    assert ti.HAND_MOTOR_MAX_POSITION == _generated(ns, sym)
+    # FW 18: no longer a bare alias — the clip STANDS OFF the metal by
+    # Geometry::HAND_CLIP_MARGIN_REV. Both operand symbols are asserted for the
+    # same reason a bare alias's is (a re-point to a different same-typed symbol
+    # would otherwise still "match"), and so is the subtraction itself: pinning
+    # only the value would let the header go back to clipping AT the stop the
+    # moment the margin key happened to read 0.
+    (ns1, sym1), (ns2, sym2) = _parse_alias_diff(text, "HAND_MOTOR_MAX_POSITION")
+    assert (ns1, sym1) == ('Geometry', 'HAND_MOTOR_HARD_STOP_REVS')
+    assert (ns2, sym2) == ('Geometry', 'HAND_CLIP_MARGIN_REV')
+    assert _generated(ns2, sym2) > 0.0, (
+        'the hand clip margin must be non-zero: a zero-margin clip is a guard '
+        'that cannot fire — jammed at the clip, command and encoder agree')
+    assert ti.HAND_MOTOR_MAX_POSITION == pytest.approx(
+        _generated(ns1, sym1) - _generated(ns2, sym2), abs=1e-9)
 
     # The lead clamp's staleness cap (leg_interp.cpp:773-774) — microseconds in
     # the header, seconds in the mirror.

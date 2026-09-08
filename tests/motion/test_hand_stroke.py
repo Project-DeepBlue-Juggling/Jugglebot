@@ -448,31 +448,35 @@ def test_the_overshoot_and_the_affordable_velocity_band():
     ``smooth_move_overshoot_rev`` is the bulge a live velocity adds;
     ``smooth_move_max_continuous_v0_rps`` inverts it against the room available.
     Both are pinned because the headline finding of Phase 4 is that the band is
-    NARROW: ~9.1 rev/s at the stroke top, ~20.0 rev/s from a mid-stroke freeze,
+    NARROW: ~8.3 rev/s at the stroke top, ~19.6 rev/s from a mid-stroke freeze,
     against the ~120 rev/s a mid-throw command actually lands on.  (The
     mid-stroke figure was 20.9 until the 2026-08-18 hard-stop correction moved
-    the base 11.1 -> 10.8; the stroke-top figure is unchanged because the
-    ceiling stayed at 10.6.)
+    the base 11.1 -> 10.8, then 19.96 until the FW 18 (2026-09-08) correction
+    moved it again, 10.8 -> 10.701; the stroke-top figure moved too, this time,
+    because FW 18 pulls the ceiling down with the base — 10.6 -> 10.501 — where
+    2026-08-18 had held it fixed by widening the margin to compensate.)
     """
-    # braking at the stroke top: 10.8 - 0.2 ceiling leaves 0.6406 rev (unchanged)
+    # braking at the stroke top: 10.701 - 0.2 ceiling leaves 0.5416 rev
+    # (FW 18, 2026-09-08 -- was 10.8 - 0.2 = 10.6 leaving 0.6406 rev before)
     ceil_rev = (hw.GEOM_HAND_MOTOR_HARD_STOP_REVS
                 - hw.TEENSY_TRAJ_SMOOTH_MOVE_EXCURSION_MARGIN_REV)
-    assert ceil_rev == pytest.approx(10.6, abs=1e-9)
+    assert ceil_rev == pytest.approx(10.501, abs=1e-9)
     headroom_top = ceil_rev - hand_stroke.STROKE_TOP_REV
-    assert headroom_top == pytest.approx(0.6406, abs=1e-4)
+    assert headroom_top == pytest.approx(0.5416, abs=1e-4)
     v_top = hand_stroke.smooth_move_max_continuous_v0_rps(headroom_top)
-    assert v_top == pytest.approx(9.07, abs=0.05)
+    assert v_top == pytest.approx(8.34, abs=0.05)
     # and the inverse agrees: at v_top the overshoot exactly fills the headroom
     T = hand_stroke.smooth_move_duration_s(0.0, v_top)
     assert hand_stroke.smooth_move_overshoot_rev(v_top, T) == pytest.approx(
         headroom_top, rel=1e-6)
-    # from the measured mid-stroke freeze, against the 10.8 rev hard stop
+    # from the measured mid-stroke freeze, against the 10.701 rev hard stop
+    # (FW 18, 2026-09-08 -- was 10.8 rev before)
     v_mid = hand_stroke.smooth_move_max_continuous_v0_rps(
         hw.GEOM_HAND_MOTOR_HARD_STOP_REVS - 7.7004)
-    assert v_mid == pytest.approx(19.96, abs=0.05)
-    # the measured release speed is 5.7x beyond even that, which is WHY the
+    assert v_mid == pytest.approx(19.63, abs=0.05)
+    # the measured release speed is ~6.1x beyond even that, which is WHY the
     # cannot-fit branch is the high-v0 behaviour rather than an edge case
-    assert 119.6 / v_mid == pytest.approx(5.99, abs=0.05)
+    assert 119.6 / v_mid == pytest.approx(6.09, abs=0.05)
     assert hand_stroke.smooth_move_overshoot_rev(
         119.6, hand_stroke.smooth_move_duration_s(0.0, 119.6)) > 100.0
 

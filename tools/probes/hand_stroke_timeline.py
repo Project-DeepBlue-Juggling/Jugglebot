@@ -578,8 +578,8 @@ _CATCH_DESC_ABOVE_X5_REV = 0.33  # how far into the CATCH REGION the COMMANDED
                               # rev/s, where Trajectory.h's duration cap takes
                               # over).  A brake read as the descent collapses the
                               # peak/pullback/dip window onto itself and makes the
-                              # end-stop `peak` row — the one guarding the 10.8
-                              # rev hard stop, bench row H4.5 — UNDER-report.
+                              # end-stop `peak` row — the one guarding the 10.701
+                              # rev hard stop (FW 18, 2026-09-08; was 10.8), bench row H4.5 — UNDER-report.
                               #
                               # x5 + 0.33 rev = 6.457 rev = x3 - 3.502 rev, so it
                               # sits 0.38 rev clear of the deepest brake the
@@ -598,7 +598,7 @@ _CATCH_DESC_ABOVE_X5_REV = 0.33  # how far into the CATCH REGION the COMMANDED
                               # dip/peak window collapsed from ~600 ms to ~130 ms
                               # and the end-stop `peak` row read 10.1298 rev
                               # against a real 10.1588 — i.e. the one row guarding
-                              # the 10.8 rev hard stop under-reports the excursion.
+                              # the 10.701 rev hard stop (FW 18, 2026-09-08; was 10.8) under-reports the excursion.
 _DIP_BELOW_X3_BAND_REV = 0.10    # `dip_below_x3_rev` at or under this reads as "no
                               # dip": the hand settled onto the stroke end rather
                               # than being yanked below it.  Same 0.10 rev the
@@ -975,7 +975,7 @@ def analyse_throw(session: Session, ann: Announcement) -> ThrowTimeline:
     #    exactly on a POST-FIX capture, the one shape this probe exists to
     #    score, where it would emit a spurious trunc/seed/dip/pullback and
     #    measure `peak` at the descent onset instead of the coasting peak (a
-    #    false PASS on the row that guards the 10.8 rev end stop).
+    #    false PASS on the row that guards the 10.701 rev end stop, FW 18 2026-09-08; was 10.8).
     #    Verified on temp/logs/toss_trace_2026-07-25_15-24-25.jsonl: the
     #    predicate is TRUE from the descent's second sample onward (pos_cmd
     #    9.7253 rev, vel_ff_cmd -17.31 rev/s); the pre-fix data hides it only
@@ -1608,9 +1608,10 @@ def run_fixed_shape_gate() -> int:
 
       clean            command follows the ramp to x3, hand settles at x3.
       overshoot        same command, hand coasts to 10.60 rev (past the runbook's
-                       10.5 rev HARD ABORT).  `peak` must report the real
-                       excursion — otherwise the one row guarding the 10.8 rev
-                       end stop reads PASS with the hand 0.5 rev from it.
+                       10.501 rev HARD ABORT, FW 18 2026-09-08; was 10.5).
+                       `peak` must report the real excursion — otherwise the
+                       one row guarding the 10.701 rev end stop (was 10.8)
+                       reads PASS with the hand near it.
       short-flight     a 0.55 s flight — the shortest the band admitted when this
                        case was written; C-HAND-3 moved the floor to 0.4949 s on
                        2026-08-18, and `band-floor` below tests the live one.

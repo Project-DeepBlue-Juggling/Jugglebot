@@ -39,6 +39,14 @@ struct AxisState {
   volatile uint32_t disarm_reason    = 0;      // bitmask
   volatile uint8_t  axis_state       = 0;      // ODrive current_state (IDLE=1, CLOSED_LOOP=8)
   volatile uint8_t  procedure_result = 0;
+  // COMMANDED mode, not a readback: the ODrive broadcasts no controller/input
+  // mode, so the only honest source is "what this firmware last told it to be".
+  // Every site that sends encode_set_controller_mode records here (leg_activate,
+  // leg_deactivate, leg_homing, hand_ops, the SET_CONTROLLER_MODE RPC), so
+  // telemetry's ctrl_mode/input_mode finally track reality. Until FW 18 nothing
+  // wrote them and they read 0 forever — which is why a hand left in
+  // VELOCITY/VEL_RAMP by a home was invisible to every telemetry gate.
+  // 0 is the "never commanded since boot" sentinel (no ODriveControlMode is 0).
   volatile uint8_t  controller_mode  = 0;      // ODriveControlMode
   volatile uint8_t  input_mode       = 0;      // ODriveInputMode
   volatile bool     trajectory_done  = false;
@@ -52,8 +60,13 @@ struct AxisState {
   volatile float    target_torque_Nm = 0.0f;
 
   // ── Configured limits / gains (set via RPC) ────────────────────────────────
-  float vel_limit_rps = ODriveDefaults::LEG_VEL_LIMIT_RPS;
-  float curr_limit_A  = ODriveDefaults::LEG_CURR_LIMIT_A;
+  // 0 = "never set by a SET_VEL_CURR_LIMITS RPC since boot" — read through
+  // axis_shipped_vel_limit()/axis_shipped_curr_limit() below, which fall back to
+  // the shipped per-axis config default. They were LEG_* member initialisers
+  // until FW 18, which was wrong for axis 6 (the hand ships 1000 rev/s / 50 A,
+  // not the legs' 12 / 10) and, since nothing ever wrote them, dead either way.
+  float vel_limit_rps = 0.0f;
+  float curr_limit_A  = 0.0f;
   float pos_gain      = 0.0f;
   float vel_p_gain    = 0.0f;
   float vel_i_gain    = 0.0f;
@@ -68,6 +81,25 @@ extern AxisState axes[NUM_AXES];
 
 inline AxisState& leg(uint8_t i)  { return axes[i]; }
 inline AxisState& hand_axis()     { return axes[HAND_AXIS]; }
+
+// ── The limits this axis is SHIPPED with ──────────────────────────────────────
+// The value a cold-start restore must put back: the operator's live override if
+// one was pushed over SET_VEL_CURR_LIMITS this session, else the generated
+// config default for that axis class. NO literals — legs take ODriveDefaults::
+// LEG_*, the hand takes ODriveDefaults::HAND_* (1000 rev/s, 50 A), which is the
+// same pair the host's cold-start _run_configure pushes.
+inline float axis_shipped_vel_limit(uint8_t a) {
+  const float v = (a < NUM_AXES) ? axes[a].vel_limit_rps : 0.0f;
+  if (v > 0.0f) return v;
+  return (a == HAND_AXIS) ? ODriveDefaults::HAND_VEL_LIMIT_RPS
+                          : ODriveDefaults::LEG_VEL_LIMIT_RPS;
+}
+inline float axis_shipped_curr_limit(uint8_t a) {
+  const float c = (a < NUM_AXES) ? axes[a].curr_limit_A : 0.0f;
+  if (c > 0.0f) return c;
+  return (a == HAND_AXIS) ? ODriveDefaults::HAND_CURR_LIMIT_A
+                          : ODriveDefaults::LEG_CURR_LIMIT_A;
+}
 
 // Present-axis predicate. A leg is "present" iff we have ever received
 // a CAN3 heartbeat from its ODrive (heartbeat_seen is latched-once by the RX

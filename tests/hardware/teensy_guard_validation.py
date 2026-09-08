@@ -8,7 +8,7 @@ setpoint stream, arming ``mpc_active`` at RUNTIME — the correct
 cold-start-independent order (stream first, THEN arm). This is the pattern the
 2026-07-15 ARMING_CONTRACT made the ONLY arming path: the old
 ``enable_setpoint_output:=true`` boot-arm (which armed before any stream → the
-MPC_STALE self-E-STOP) is now inert.
+SETPOINT_STALE self-E-STOP) is now inert.
 
 ZERO MOTION BY CONSTRUCTION: the legs are left IDLE and the tool HARD-REFUSES to arm
 if any leg is CLOSED_LOOP. The firmware's MPC-staleness watchdog, seq-guard, and
@@ -22,7 +22,7 @@ Observation is the read-only serial monitor from
 zero contention). Checks:
 
   1  E-STOP latch: arm+stream → STARVE the stream >250 ms (heartbeats KEPT alive
-     so it's MPC_STALE, not LINK_LOST) → guard latches ESTOP; RESUME the stream and
+     so it's SETPOINT_STALE, not LINK_LOST) → guard latches ESTOP; RESUME the stream and
      confirm it STAYS latched (pre-fix it auto-recovered); CLEAR_ERRORS → clean recover.
   2  Seq-guard restart: tear down the client + rebuild the stream from a fresh seq
      (== a setpoint-source restart; this was written as "a run_mpc restart" before
@@ -72,7 +72,7 @@ from teensy_link.protocol import MsgType, RpcMethod, RpcStatus, Setpoint, Teleme
 CLOSED_LOOP = 8
 _FLAG_HOLD = 0x1 | 0x2   # FLAG_HAS_U1 | FLAG_HAS_U2
 _STREAM_HZ = 40.0
-MPC_STALENESS_MS = 250   # firmware MPC_CMD_STALENESS_US = 250000
+SETPOINT_STALENESS_MS = 250   # firmware SETPOINT_STALENESS_US = 250000 (FW 18, 2026-09-08; was MPC_CMD_STALENESS_US)
 
 
 class HoldStreamer:
@@ -101,7 +101,7 @@ class HoldStreamer:
         self._tod = TimeOfDayServer(self._rpc_srv)
         self._rpc = RpcClient(self._client, default_timeout=0.5, default_retries=2)
         self._client.subscribe(int(MsgType.TELEMETRY), self._on_telem)
-        # DISARMED heartbeat (mpc_active=0): keeps the link UP + the MPC_STALE
+        # DISARMED heartbeat (mpc_active=0): keeps the link UP + the SETPOINT_STALE
         # watchdog un-armed + cold-start permitted. Structural double-write matches
         # the bridge.
         self._client.start_heartbeat(hz=float(p.HEARTBEAT_HZ), flags=0)
@@ -164,7 +164,7 @@ class HoldStreamer:
                 nxt = time.monotonic()
 
     def starve(self):
-        """Stop SETPOINT frames but KEEP the heartbeat (→ MPC_STALE, not LINK_LOST)."""
+        """Stop SETPOINT frames but KEEP the heartbeat (→ SETPOINT_STALE, not LINK_LOST)."""
         self._stream_on.clear()
 
     def resume(self):
@@ -325,7 +325,7 @@ class Runner:
     # ── checks ──────────────────────────────────────────────────────────────────
     def check1(self):
         self.head("CHECK 1 — E-STOP LATCH  (zero-motion)")
-        print("arm+stream → STARVE (heartbeats kept) → MPC_STALE → guard latches ESTOP;")
+        print("arm+stream → STARVE (heartbeats kept) → SETPOINT_STALE → guard latches ESTOP;")
         print("RESUME the stream → confirm it STAYS latched (pre-fix it auto-recovered);")
         print("CLEAR_ERRORS → clean recover.")
         self.enter("Enter to begin (arms mpc_active=1 — legs stay IDLE)")
@@ -334,7 +334,7 @@ class Runner:
         print(f"\n{C.warn}Starving the setpoint stream (>250 ms), heartbeats kept alive...{C.rst}")
         self.s.starve()
         time.sleep(0.6)
-        s1 = self.after("after starve (expect fault=MPC_STALE, guard=ESTOP, output=0)")
+        s1 = self.after("after starve (expect fault=SETPOINT_STALE, guard=ESTOP, output=0)")
         tripped = s1.get("guard_mode") == 2 and s1.get("fault") == 1
 
         print(f"\n{C.warn}Resuming the stream — the STALE condition clears, but the E-STOP "
@@ -365,7 +365,7 @@ class Runner:
         self.head("CHECK 2 — SEQ-GUARD RESTART  (zero-motion)")
         print("Tear down the link + rebuild the stream from a FRESH seq (== a setpoint-")
         print("source restart) → confirm immediate re-accept: fault stays NONE, sp_age drops.")
-        print("(Pre-fix: persisted seq vs host-reset stream → phantom MPC_STALE for minutes.)")
+        print("(Pre-fix: persisted seq vs host-reset stream → phantom SETPOINT_STALE for minutes.)")
         self.enter("Enter to begin")
         if not self.arm_sequence():
             return self.verdict(2, "Seq-guard restart", "arm failed")
@@ -381,7 +381,7 @@ class Runner:
 
         sug = (f"{'looks PASS' if (base_ok and reaccepted) else 'REVIEW'} — "
                f"baseline-clean:{base_ok}, fresh-seq-reaccepted(fault=NONE, sp_age small):"
-               f"{reaccepted} — NOT stuck at MPC_STALE.")
+               f"{reaccepted} — NOT stuck at SETPOINT_STALE.")
         v = self.verdict(2, "Seq-guard restart", sug)
         self.s.disarm()
         return v

@@ -315,7 +315,7 @@ ros2 topic echo /link_status
 ```
 
 Watch these KeyValue keys through the stroke:
-- **`fault_state`** — must stay `NONE`. Any `MAX_DEVIATION` / `MPC_STALE` ⇒ ABORT.
+- **`fault_state`** — must stay `NONE`. Any `MAX_DEVIATION` / `SETPOINT_STALE` ⇒ ABORT.
 - **`lead_clamp_mask`** — must stay `0`. A nonzero bit means that leg's output hit the 0.10-rev
   lead clamp — the bang-bang mechanism that manufactures the ring. Persistent/rising mask ⇒ ABORT.
 - **`live_deviation`** — per-leg u0−encoder (rev). Watch the max magnitude: PASS wants it
@@ -368,7 +368,7 @@ ros2 service call /trajectory/go_to_pose jugglebot_interfaces/srv/GoToPose \
 
 ## ABORT criteria (immediately) + revert-to-last-good
 
-**ABORT on:** any `MAX_DEVIATION` / `MPC_STALE` latch, any oscillation / audible snap /
+**ABORT on:** any `MAX_DEVIATION` / `SETPOINT_STALE` latch, any oscillation / audible snap /
 tracking error > 0.1 rev, `lead_clamp_mask` persistently nonzero with rising `live_deviation`,
 or any unexplained bus fault.
 

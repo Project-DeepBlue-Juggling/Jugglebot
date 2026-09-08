@@ -356,8 +356,9 @@ class TestChartUnitConstants:
     def test_hand_gain_spans_the_physical_stroke(self, yaml_config, js_source):
         """Sanity: hard stop x mm/rev must land inside the physical stroke.
 
-        10.8 rev x 31.63 mm/rev = 341.6 mm against a 344.75 mm stroke — a
-        wrong-axis factor (the leg's 70.5 mm/rev) would give 762 mm and fail.
+        10.701 rev x 31.63 mm/rev = 338.4 mm against a 344.75 mm stroke (FW 18,
+        2026-09-08; was 10.8 rev / 341.6 mm) — a wrong-axis factor (the leg's
+        70.5 mm/rev) would give 762 mm and fail.
         """
         mm_per_rev = _extract_js_number(js_source, 'HAND_MM_PER_REV')
         hard_stop = yaml_config['jugglebot_geometry']['hand_motor_hard_stop_revs']
@@ -1000,7 +1001,7 @@ class TestStateMinimapTripwires:
     tests (the behavioural gate is the synthetic-stack GUI probe harness).
     They pin (a) the asset wiring, (b) the SAFETY-CRITICAL teardown order
     (disarm strictly before deactivate — mvp_bench_runbook.md Sharp Edge
-    #6: DEACTIVATE while mpc_active=1 latches MPC_STALE and leaves the
+    #6: DEACTIVATE while mpc_active=1 latches SETPOINT_STALE and leaves the
     legs un-stowed), and (c) the /link_status KeyValue names the minimap
     consumes against the teensy_bridge_node producer.
     """

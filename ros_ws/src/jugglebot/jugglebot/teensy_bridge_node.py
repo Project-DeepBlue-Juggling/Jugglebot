@@ -2013,7 +2013,7 @@ class TeensyBridgeNode(Node):
             self.get_logger().error(
                 "enable_setpoint_output:=true is INERT since the arming contract "
                 "(2026-07-15): boot-arming had zero preconditions and self-E-STOPd "
-                "(MPC_STALE) before any producer could stream. The bridge starts "
+                "(SETPOINT_STALE) before any producer could stream. The bridge starts "
                 "DISARMED; arming is runtime-only via /set_setpoint_output — "
                 "automatic on ACTIVE entry (orchestrator auto-arm) or manual. "
                 "Remove the launch arg.")
@@ -4316,7 +4316,7 @@ class TeensyBridgeNode(Node):
         ~0.5+ rev from the frozen encoder, so every bare /clear_errors re-latched
         MAX_DEVIATION within one 10 Hz fault tick. This does the recovery in the ONLY
         order that survives, WITHOUT disarming (mpc_active stays 1 — stopping the
-        stream would trip MPC_STALE at 250 ms):
+        stream would trip SETPOINT_STALE at 250 ms):
           1. ask trajectory_node to install a PROFILED DESCENT that walks the
              commanded u0 down onto the frozen encoder
              (``trajectory/reseed_from_measured``);
@@ -6385,7 +6385,7 @@ class TeensyBridgeNode(Node):
         # current rail. Route the armed bare /clear_errors through the SAME converge-first
         # sequence as /recover (reseed → verify u0 on the encoder → clear) so no clear can
         # re-trip or jolt — there is no raw armed escape hatch (operator decision).
-        # WHEN NOT ARMED (mpc_active=0 — e.g. the benign boot-time MPC_STALE latch: output
+        # WHEN NOT ARMED (mpc_active=0 — e.g. the benign boot-time SETPOINT_STALE latch: output
         # is not being evaluated, no setpoint is streaming), there is nothing to converge
         # and no jolt is possible, so clear DIRECTLY as before (a reseed would refuse —
         # not streaming — and needlessly block the clear).
@@ -7347,7 +7347,7 @@ class TeensyBridgeNode(Node):
           1. DISARM — ``_stop_setpoint_output`` stops the 40 Hz setpoint thread THEN
              drops mpc_active=0 on the WIRE (the in-process 'set_setpoint_output
              false'). Done FIRST so mpc_active reaches 0 before the emitter-stop
-             stream silence can latch MPC_STALE (trajectory_node Sharp Edge #1).
+             stream silence can latch SETPOINT_STALE (trajectory_node Sharp Edge #1).
           2. SETTLE — a bounded couple of heartbeat periods so the flags=0 J→T
              heartbeat is transmitted + registered before the DEACTIVATE RPC (the
              firmware rejects DEACTIVATE while mpc_active=1).

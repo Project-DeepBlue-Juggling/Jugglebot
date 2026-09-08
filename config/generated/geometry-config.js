@@ -55,7 +55,7 @@ export const MM_TO_REV = [0.01418332, 0.01419076, 0.01408956, 0.01418684, 0.0142
 
 // Motor position limits
 export const LEG_MOTOR_MAX_POS_REVS = 4.2;
-export const HAND_MOTOR_HARD_STOP_REVS = 10.8;
+export const HAND_MOTOR_HARD_STOP_REVS = 10.701;
 
 // Motor-rev -> physical-unit conversions for the non-leg axes.
 // Legs use 1/MM_TO_REV[i] (per leg, above); these are the hand/BB axes.

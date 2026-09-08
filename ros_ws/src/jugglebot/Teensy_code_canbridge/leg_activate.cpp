@@ -200,6 +200,8 @@ void activate_step() {
       ok = can_jugglebot_send(
                ODrive::encode_set_state(i, ODriveState::CLOSED_LOOP)) && ok;
       if (!ok) { abort_all(ACTIVATE_FAILED); return; }
+      axes[i].controller_mode = (uint8_t)ODriveControlMode::POSITION;   // commanded-mode record
+      axes[i].input_mode      = (uint8_t)ODriveInputMode::TRAP_TRAJ;    // (axis_state.h)
       ++s_setup_idx;   // next target leg on the next tick
       break;
     }

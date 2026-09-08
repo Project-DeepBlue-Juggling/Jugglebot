@@ -123,39 +123,43 @@ def test_the_firmware_hand_guards_match_the_header():
 def test_the_hard_stop_and_gravity_match_the_generated_config():
     """The stroke clip and g are the generated numbers, not remembered ones.
 
-    ``HAND_MOTOR_MAX_POSITION`` is ``GEOM_HAND_MOTOR_HARD_STOP_REVS`` on the
-    firmware side (10.8), and g feeds the flight arithmetic the throw rung's
-    release velocity is judged against.
+    ``HAND_MOTOR_MAX_POSITION`` is ``GEOM_HAND_MOTOR_HARD_STOP_REVS -
+    GEOM_HAND_CLIP_MARGIN_REV`` on the firmware side since FW 18 (2026-09-08,
+    10.501) — it was a zero-margin alias of the bare stop (10.8) before.
+    g feeds the flight arithmetic the throw rung's release velocity is judged
+    against.
     """
     import jugglebot.hardware_config as hw
     assert ucb.HAND_MOTOR_MAX_POSITION_REV == pytest.approx(
-        float(hw.GEOM_HAND_MOTOR_HARD_STOP_REVS))
+        float(hw.GEOM_HAND_MOTOR_HARD_STOP_REVS - hw.GEOM_HAND_CLIP_MARGIN_REV))
     assert ucb.G_MM_S2 == pytest.approx(float(hw.GRAVITY_MMPS2))
     assert ucb.HAND_CATCH_PRIME_REV == pytest.approx(
         float(hw.JB_OP_HAND_CATCH_PRIME_REV))
 
 
-def test_the_firmware_clip_sits_BEYOND_the_measured_metal():
-    """The clip is a zero-margin alias of the hard stop — and the stop moved.
+def test_the_firmware_clip_now_sits_SHORT_of_the_measured_metal():
+    """FW 18 (2026-09-08, built NOT YET FLASHED): the clip moved off the metal.
 
-    2026-09-06, operator, on the machine: stroke 352 mm, bottom -0.107 rev, top
-    **10.701 rev**. ``HAND_MOTOR_MAX_POSITION`` is
+    Before FW 18, ``HAND_MOTOR_MAX_POSITION`` was
     ``Geometry::HAND_MOTOR_HARD_STOP_REVS`` with no margin subtracted, so the
-    firmware clips setpoints to a position **0.099 rev (3.1 mm) past the metal**
-    — and no firmware guard can see the resulting stall: the deviation guard is
-    COMMAND-relative (encoder and setpoint agree once the slider is jammed at the
-    clip) and the lead clamp anchors the setpoint to the encoder rather than
-    refusing it.
+    firmware clipped setpoints to a position 0.099 rev (3.1 mm) PAST the
+    2026-09-06 measured metal (10.701 rev) — and no firmware guard could see
+    the resulting stall: the deviation guard is COMMAND-relative (encoder and
+    setpoint agree once the slider is jammed at the clip) and the lead clamp
+    anchors the setpoint to the encoder rather than refusing it.
 
-    So V3 scores against the MEASURED stop. This pins the gap rather than the
-    driver's copy of it: when FW 18 pulls the clip back below the metal, this
-    test is what says so.
+    FW 18 adds ``hand_clip_margin_rev`` (0.2 rev), so the clip is now
+    ``stop - margin`` = 10.501, SHORT of the metal rather than past it. This
+    replaces the old "clip is past the metal" pin (this test's previous form,
+    ``test_the_firmware_clip_sits_BEYOND_the_measured_metal``) now that the gap
+    it pinned no longer exists. V3 still scores against the MEASURED stop
+    rather than the clip regardless — belt-and-braces once the board is
+    flashed.
     """
-    gap = ucb.HAND_MOTOR_MAX_POSITION_REV - ucb.HAND_METAL_REV_MEASURED
-    assert gap == pytest.approx(0.099, abs=5e-4)
+    gap = ucb.HAND_METAL_REV_MEASURED - ucb.HAND_MOTOR_MAX_POSITION_REV
+    assert gap == pytest.approx(0.2, abs=5e-4)
     assert gap > 0.0, (
-        'the clip is no longer past the metal — if FW 18 landed, retire this '
-        'test and V3 can score against the clip again')
+        'the clip is past the metal again — the FW 18 margin fix regressed')
     assert '2026-09-06' in ucb.HAND_METAL_PROVENANCE
     assert '352' in ucb.HAND_METAL_PROVENANCE
 

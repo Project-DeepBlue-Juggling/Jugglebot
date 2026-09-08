@@ -30,7 +30,7 @@ runs. NO BALL, E-STOP IN HAND. Defence in depth, all active:
     start (any residual is walked by the firmware recovery slew at ≤ 1 rev/s),
     and the 40 Hz hold stream runs in a BACKGROUND thread through the
     ARM prompt + verify window (true stream-then-arm — a stalled stream at the
-    mpc_active edge latches MPC_STALE before the first loop frame).
+    mpc_active edge latches SETPOINT_STALE before the first loop frame).
   • firmware (FW 17): hand lead clamp ±2.0 rev against the age-extrapolated
     encoder, vel_ff cap 300 rev/s, stroke clip [0, 10.8] rev, hand overspeed
     E-STOP at 345 rev/s, MPC staleness E-STOP, and the observe-first
@@ -121,7 +121,7 @@ Source-latch / recovery utilities (no streaming, no arm):
   --source-only streamed|legacy   switch the firmware hand_source latch and
             exit — the T-H4 setup / close-out verb.
   --clear-errors   send CLEAR_ERRORS (all axes) and wait for fault_state NONE —
-            the recovery verb after a latched guard E-STOP (MPC_STALE /
+            the recovery verb after a latched guard E-STOP (SETPOINT_STALE /
             MAX_DEVIATION from T-H3b). The next re-arm's output-enable edge
             runs the firmware recovery slew (bounded walk-back, ≤ 1 rev/s).
   --no-source-switch   stream WITHOUT forcing hand_source to STREAMED — the
@@ -178,7 +178,7 @@ HAND = int(p.NUM_LEGS)                    # axis 6
 CLOSED_LOOP = 8
 SETPOINT_HZ = 40.0
 SEG_T = 0.025                             # SEGMENT_T_S — knot cadence
-HAND_MAX_POS = float(hw.GEOM_HAND_MOTOR_HARD_STOP_REVS)   # 10.8, the metal
+HAND_MAX_POS = float(hw.GEOM_HAND_MOTOR_HARD_STOP_REVS)   # 10.701, the metal (FW 18, 2026-09-08)
 HAND_MARGIN = 0.2                         # driver keeps commands this far off the metal
 ARM_VERIFY_GRACE_S = 0.7
 DIAG_WAIT_S = 2.5                         # TWO forced-refresh opportunities + margin.
@@ -896,7 +896,7 @@ def main():
               f"fault={_fault_name(_fault())}  hand_source_streamed={_hand_source_streamed()}")
         # ── Recovery verb: CLEAR_ERRORS + wait for fault_state NONE ──────────
         # Runs BEFORE the fault-latched abort below — it exists precisely for
-        # that state (e.g. a MAX_DEVIATION latched in T-H3b, or an MPC_STALE).
+        # that state (e.g. a MAX_DEVIATION latched in T-H3b, or an SETPOINT_STALE).
         # The next re-arm's output-enable edge then runs the firmware recovery
         # slew (bounded walk-back toward the streamed command).
         if args.clear_errors:
@@ -1158,7 +1158,7 @@ def main():
         # 2026-09-02 review fix: the interactive path used to stop streaming at
         # input(), so by the time mpc_active rose the last setpoint was >250 ms
         # old and — with ever_cmd already set by the pre-stream — the firmware
-        # latched MPC_STALE at the arm edge, before the first loop frame. The
+        # latched SETPOINT_STALE at the arm edge, before the first loop frame. The
         # hold stream now runs in a BACKGROUND thread through the prompt AND
         # the arm-verify window (the production stream-then-arm contract), and
         # is joined just before the main loop takes the stream over — the pump

@@ -281,7 +281,7 @@ def generate_launch_description():
         'enable_setpoint_output', default_value='false',
         description='DEPRECATED + INERT since the arming contract (2026-07-15): '
                     'boot-arming had zero preconditions and self-E-STOPd '
-                    '(MPC_STALE). The bridge logs an ERROR if true and stays '
+                    '(SETPOINT_STALE). The bridge logs an ERROR if true and stays '
                     'disarmed. Arming is runtime-only via /set_setpoint_output.')
     auto_arm = LaunchConfiguration('auto_arm')
     auto_arm_arg = DeclareLaunchArgument(
@@ -361,7 +361,7 @@ def generate_launch_description():
     #       2      │  506- 546 ms           │ 207-210 ms
     #       3      │ 1350-2314 ms  ⚠ LATCH  │ 214-217 ms  (gap 27-31 ms)
     #
-    # At three busy cores of six the emitter gaps 225-942 ms, MPC_STALE latches
+    # At three busy cores of six the emitter gaps 225-942 ms, SETPOINT_STALE latches
     # and the machine E-STOPs mid-rung. That is the band the UH-3 attempt's five
     # slow solves (1655.1 / 2021.2 / 2158.9 / 1461.5 / 1444.7 ms) sit in. Capped,
     # the solve is FLAT in box load.
@@ -428,7 +428,7 @@ def generate_launch_description():
         name='trajectory_node',
         output='screen',
         # THE node the cap exists for: it owns BOTH the planner (plan_cycle) and
-        # the 40 Hz emitter thread the can-bridge's 250 ms MPC_STALE watchdog
+        # the 40 Hz emitter thread the can-bridge's 250 ms SETPOINT_STALE watchdog
         # watches, so an uncapped BLAS pool here starves the wire from inside the
         # same process. See _planner_blas_env above and the 2026-09-06 UH-3 entry.
         additional_env=dict(_planner_blas_env),
@@ -542,7 +542,7 @@ def generate_launch_description():
             '/orchestrator_state',
             '/control_mode_topic',
             '/orchestrator_command',
-            # The fault channel. Without it a latched guard E-STOP (MPC_STALE /
+            # The fault channel. Without it a latched guard E-STOP (SETPOINT_STALE /
             # MAX_DEVIATION) leaves NO trace in the bag — the 2026-07-09 S2 session's
             # E-STOP was only visible on the live topic, making the bag unable to
             # explain its own gap. Carries fault_state, mpc_active, setpoints_sent/

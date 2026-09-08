@@ -287,7 +287,7 @@ TEST_CASE("deferred-stow descent: converges to the off pose, completes, present-
 //  CLAMP_WIRE_NM (wire-Nm) per leg BEFORE staging, and publishes a per-leg
 //  engagement mask (interp_torque_clamp_mask, mirrored onto HeartbeatT2J flags
 //  bits 8-13). CLAMP-not-reject: an oversized torque with valid pos/vel must
-//  degrade to a bounded torque, never starve the interp into an MPC_STALE
+//  degrade to a bounded torque, never starve the interp into an SETPOINT_STALE
 //  E-STOP mid-motion. A NaN torque still drops the WHOLE frame (isfinite gate).
 
 TEST_CASE("torque_ff ingest clamp: binds at ±TORQUE_FF_FIRMWARE_CLAMP_WIRE_NM, preserves sign, sets the mask") {
@@ -480,7 +480,7 @@ TEST_CASE("a setpoint with a non-finite field is DROPPED (never staged / streame
     CHECK(std::isfinite(axes[i].target_vel_rps));
   }
   // CRITICAL: a dropped frame must NOT bump the staleness clock — a stream of all-NaN
-  // frames must still eventually trip MPC_STALE (as if the link went quiet).
+  // frames must still eventually trip SETPOINT_STALE (as if the link went quiet).
   CHECK(interp_last_setpoint_us() == 0);
 }
 
@@ -534,7 +534,7 @@ TEST_CASE("setpoint seq guard is strictly-greater + wrap-safe (shared host strea
 TEST_CASE("seq guard RE-BASELINES after a stream gap (host restart), review fix") {
   // The host resets its shared _tx_seq_stream to 0 each launch while the Jetson-5V
   // Teensy persists s_last_sp_seq — without the gap-reset, a LOW seq after a restart
-  // would be dropped for minutes as 'stale' → a phantom MPC_STALE E-STOP.
+  // would be dropped for minutes as 'stale' → a phantom SETPOINT_STALE E-STOP.
   reset_interp_test();
   float a[6] = {0.10f, 0.10f, 0.10f, 0.10f, 0.10f, 0.10f};
   float c[6] = {0.30f, 0.30f, 0.30f, 0.30f, 0.30f, 0.30f};
@@ -547,7 +547,7 @@ TEST_CASE("seq guard RE-BASELINES after a stream gap (host restart), review fix"
   CHECK(interp_base_pos(0) == doctest::Approx(0.10f));
 
   // A gap longer than the staleness bound = the prior stream is dead (a restart).
-  fake_advance(MPC_CMD_STALENESS_US + 1);
+  fake_advance(SETPOINT_STALENESS_US + 1);
 
   // A LOW seq (host restarted its counter to ~0) must be ACCEPTED, not dropped —
   // (int16_t)(5 - 20000) = -19995 <= 0 would drop it WITHOUT the gap-reset.
@@ -1005,9 +1005,13 @@ TEST_CASE("guard separation: the LEG constants never touch axis 6") {
     interp_isr();
     CHECK(axes[HAND_AXIS].target_pos_rev == doctest::Approx(1.0f + MAX_LEAD_HAND_REV));
     CHECK((interp_lead_clamp_mask() & 0x40u) != 0);
-    CHECK(interp_hand_lead_clamp_ticks() == 1);
-    // And the deviation verdict saw the RAW 3.0 rev residual (> 2.5): counted.
-    CHECK(interp_hand_dev_over_ticks() == 1);
+    // FW 18: output is SUPPRESSED here (this subcase never arms it), so the
+    // clamp binds, the mask bit sets and the residual is observed — but the
+    // CUMULATIVE counters stay at zero, because nothing reached the wire. The
+    // transmitting case is the "a TRANSMITTING stage does count…" test below.
+    CHECK(interp_hand_lead_clamp_ticks() == 0);
+    CHECK(interp_hand_dev_over_ticks() == 0);
+    // The deviation verdict still saw the RAW 3.0 rev residual (> 2.5).
     CHECK(interp_hand_dev_max() == doctest::Approx(3.0f).epsilon(0.01));
   }
 
@@ -1275,4 +1279,121 @@ TEST_CASE("per-axis-group recovery slew: legs resume full FF while the hand stil
   CHECK(legs_ff_held);
   CHECK(max_hand_vel <= RECOVER_SLEW_VEL_RPS + 1e-3f);
   CHECK(axes[HAND_AXIS].target_pos_rev == doctest::Approx(1.5f).epsilon(0.01));
+}
+
+// ═══ FW 18: the hand counter gate + `hand7 reset` ════════════════════════════
+//
+//  The [hand7] lead / dev_over counters are cumulative and boot-zero, and the
+//  runbook reads them as ABSOLUTES ("non-zero lead during a throw ⇒ hard-abort
+//  the sitting"). Until FW 18 they counted every tick the lane computed, whether
+//  or not the resulting frame reached the wire — so an aborted stage (an E-STOP
+//  latch, a cold-start move, a bench stage stopped early) left them non-zero
+//  forever and the abort rule was unfalsifiable: every reading had to be
+//  differenced across the stage by hand. Gated on the SAME
+//  `s_output_enabled && !coldstart` condition as the TX, a suppressed lane
+//  counts nothing and an absolute read means something again.
+
+// Park the encoder at 0 and command the hand far away, so the deviation exceeds
+// MAX_DEVIATION_HAND_REV (2.5) AND the lead clamp exceeds MAX_LEAD_HAND_REV
+// (2.0) on every tick the lane computes.
+static void stage_hand_far_from_encoder(uint16_t seq) {
+  static const float u0[6] = {0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f};
+  static const float zeros[6] = {0, 0, 0, 0, 0, 0};
+  HandKnots hk{6.0f, 6.0f, 0.0f, 0.0f, 0.0f, 0.0f};   // 6 rev away from fb = 0
+  stage_hand(u0, u0, zeros, &hk, seq);
+}
+
+TEST_CASE("an ABORTED (output-suppressed) stage leaves the hand counters at ZERO") {
+  reset_interp_test();
+  arm_hand_streamed();
+  axes[HAND_AXIS].heartbeat_seen = true;
+  axes[0].heartbeat_seen = true; axes[0].pos_rev = 0.5f;
+  write_pos_vel(hand_axis(), 0.0f, 0.0f, fake_mono_us());
+
+  interp_set_output_enabled(false);          // the stage aborted / guard latched
+  uint16_t seq = 1;
+  for (int k = 0; k < 20; ++k) {
+    fake_advance(INTERP_PERIOD_US);
+    write_pos_vel(hand_axis(), 0.0f, 0.0f, fake_mono_us());   // keep fb fresh
+    stage_hand_far_from_encoder(seq++);
+    interp_isr();
+  }
+  // The lane really did compute (this is not a vacuous pass): the residual is
+  // observed and huge — it is only the CUMULATIVE counters that are gated.
+  CHECK(interp_hand_lane_active());
+  CHECK(interp_hand_dev_last() > MAX_DEVIATION_HAND_REV);
+  CHECK(interp_hand_lead_clamp_ticks() == 0u);
+  CHECK(interp_hand_dev_over_ticks() == 0u);
+  // …and nothing reached the wire, which is what the counters now mean.
+  bool hand_frame = false;
+  for (size_t i = 0; i < fake_sent_count(); ++i)
+    if (ODrive::axis_of(fake_sent_at(i).id) == HAND_AXIS) hand_frame = true;
+  CHECK_FALSE(hand_frame);
+}
+
+TEST_CASE("a TRANSMITTING stage does count the lead clamp and the dev_over ticks") {
+  reset_interp_test();
+  arm_hand_streamed();
+  axes[HAND_AXIS].heartbeat_seen = true;
+  axes[0].heartbeat_seen = true; axes[0].pos_rev = 0.5f;
+  write_pos_vel(hand_axis(), 0.0f, 0.0f, fake_mono_us());
+
+  interp_set_output_enabled(true);
+  uint16_t seq = 1;
+  for (int k = 0; k < 5; ++k) {
+    fake_advance(INTERP_PERIOD_US);
+    write_pos_vel(hand_axis(), 0.0f, 0.0f, fake_mono_us());
+    stage_hand_far_from_encoder(seq++);
+    interp_isr();
+  }
+  CHECK(interp_hand_lead_clamp_ticks() == 5u);
+  CHECK(interp_hand_dev_over_ticks() == 5u);
+  CHECK(interp_hand_sent() == 5u);
+}
+
+TEST_CASE("hand7 reset zeroes the counters and residual, and NOT the arm state") {
+  reset_interp_test();
+  arm_hand_streamed();
+  axes[HAND_AXIS].heartbeat_seen = true;
+  axes[0].heartbeat_seen = true; axes[0].pos_rev = 0.5f;
+  write_pos_vel(hand_axis(), 0.0f, 0.0f, fake_mono_us());
+  interp_set_output_enabled(true);
+  uint16_t seq = 1;
+  for (int k = 0; k < 4; ++k) {
+    fake_advance(INTERP_PERIOD_US);
+    write_pos_vel(hand_axis(), 0.0f, 0.0f, fake_mono_us());
+    stage_hand_far_from_encoder(seq++);
+    interp_isr();
+  }
+  interp_set_hand_dev_guard_armed(true);              // the second sitting's state
+  REQUIRE(interp_hand_lead_clamp_ticks() > 0u);
+  REQUIRE(interp_hand_dev_over_ticks() > 0u);
+  REQUIRE(interp_hand_sent() > 0u);
+
+  CHECK(interp_hand7_console("hand7 reset"));         // the verb is recognised
+
+  CHECK(interp_hand_lead_clamp_ticks() == 0u);
+  CHECK(interp_hand_dev_over_ticks() == 0u);
+  CHECK(interp_hand_sent() == 0u);
+  CHECK(interp_hand_dev_last() == doctest::Approx(0.0f));
+  CHECK(interp_hand_dev_max() == doctest::Approx(0.0f));
+  CHECK(interp_hand_dev_trip_dev() == doctest::Approx(0.0f));
+  // A diagnostic verb must never be a control action: the guard stays ARMED, the
+  // source latch stays STREAMED and the lane keeps its knot state, so a reset
+  // mid-sitting cannot silently disarm the E-STOP the sitting is relying on.
+  CHECK(interp_hand_dev_guard_armed());
+  CHECK(hand_source_streamed());
+  CHECK(interp_hand_lane_active());
+
+  // And it keeps counting afterwards, from zero.
+  fake_advance(INTERP_PERIOD_US);
+  write_pos_vel(hand_axis(), 0.0f, 0.0f, fake_mono_us());
+  stage_hand_far_from_encoder(seq++);
+  interp_isr();
+  CHECK(interp_hand_lead_clamp_ticks() == 1u);
+}
+
+TEST_CASE("hand7 reset does not swallow an unrelated console line") {
+  CHECK_FALSE(interp_hand7_console("hand7 resetx"));
+  CHECK_FALSE(interp_hand7_console("gpio"));
 }

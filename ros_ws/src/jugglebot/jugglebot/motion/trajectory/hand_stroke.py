@@ -405,9 +405,10 @@ def smooth_move_max_continuous_v0_rps(headroom_rev: float) -> float:
     Solving ``QUINTIC_H_MAX * H2 * v0^2 / a_max = headroom`` (the braking case,
     ``delta = 0``, where ``T = |v0|*H2/a_max``).  **This is the width of the
     velocity band over which Phase 4's continuity is actually affordable**, and
-    it is narrow: 9.1 rev/s against the 0.6406 rev the stroke top leaves below
-    the 10.6 rev ceiling, 19.96 rev/s against the 3.10 rev a mid-stroke freeze
-    leaves.  Above it the profile falls back to rest-to-rest, because the
+    it is narrow: 8.3 rev/s against the 0.5416 rev the stroke top leaves below
+    the 10.501 rev ceiling (FW 18, 2026-09-08 -- was 0.6406 rev below 10.6
+    before), 19.6 rev/s against the 3.00 rev a mid-stroke freeze leaves.
+    Above it the profile falls back to rest-to-rest, because the
     acceleration needed to arrest sooner is not bounded by anything the firmware
     declares — ``MAX_SMOOTH_MOVE_HAND_ACCEL_RPS2 = 100`` rev/s² is a COMFORT
     limit 19-60x below what the throw profile itself commands (1908 rev/s² at

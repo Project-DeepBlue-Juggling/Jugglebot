@@ -179,7 +179,7 @@ can-bridge Teensy FW 17: 500 Hz Hermite ×7 → 6× leg set_input_pos + 1× hand
       ▼
 leg ODrives (0–5) + hand ODrive (6)
 
-Platform Teensy (end state, FW 4): stroke engine + 0x6D0 decode + 0x0C9 hand-encoder
+Platform Teensy (end state, FW 5): stroke engine + 0x6D0 decode + 0x0C9 hand-encoder
 cache RETIRED.  RETAINED: 0x6E0 cold-start state + FW identity, SCL3300 inclinometer
 (the only tilt sensor), time-sync slave.
 ```
@@ -264,7 +264,7 @@ mode; ball tracking, possession verdicts, `outcome_detail` discipline.
 | 3 | Can-bridge FW 17: 7th interp lane, hand guards, `hand_source` interlock, dispatch; lockstep flash + bench ladder | **COMPLETE** (owner, 2026-09-04) — flashed 2026-09-03, ladder flown over two sittings; **sitting three closed 2026-09-05** (all four carried items discharged: the falling-edge decay rule confirmed bit-exact, row 19(b) PASS, row 18's arming half closed by operator decision with the armed trip unobserved, and the first bracketed `[hand7]` capture) | 2026-09-04 | High | Hand streaming safety envelope on real hardware |
 | 4 | Jetson unified-cycle mode: orchestrator, node wiring, plan-derived announcements/suppression, outcome vocabulary; end-to-end sim gate | **COMPLETE (software)** 2026-09-05 — four window kinds chaining at a release, planning inside `trajectory_node`'s `PlanCycle` service, the release-terminal cliff closed by joining LAUNCH+LANDING; sim gate PASS, NEVER FLOWN | 2026-09-05 | Medium | Whole cycle through the production stack in sim |
 | 5 | Hardware ladder: streamed hold → banked carry (ball seated) → planned catch → planned throw (low tier) → full cycles → constant beat (UH-7a single pose, UH-7b two poses) | **UH-3/UH-5 PASS, UH-6 FLOWN clean 2026-09-07 (catch quality vs T-H6 pending bag); UH-7a PLUMBING LANDED 2026-09-07, NOT FLOWN; UH-7b DEFINED and blocked on three prerequisites** — 2026-09-06 first cycles found every catch was a feedforward catch into a parked cup (ratio 0.001–0.059 vs the 0.7 design) and the whole cycle flew one levelling frame short; both convictions fixed 2026-09-07 and the re-fly flew UH-6 clean (operator report, no bag analysed yet). UH-7a chains a `STEADY` per cycle so the beat is the planner's window rather than a settle-plus-relaunch tail (~2.5–2.7 s at flight 0.8), with the replan policy kept alive on a chain, both feasibility gates bounded by range, and `trajectory/hold` able to pre-empt an in-flight solve. UH-7b needs the aim authority, a `TossContinuous` goal-surface change and the FSM's `REJECTED_DISPLACEMENT` bound | 2026-09-07 | High | Ball-smooth carry, the planned launch, and a constant beat on hardware |
-| 6 | Exclusivity + close-out: Platform Teensy FW 4 stroke retirement, host RPC retirement, contract doc, ILC hand-off, docs | NOT STARTED | | Medium | Single-master end state |
+| 6 | Exclusivity + close-out: Platform Teensy FW 5 stroke retirement, host RPC retirement, contract doc, ILC hand-off, docs | NOT STARTED | | Medium | Single-master end state |
 
 Phase 0 ran while this plan was `proposed` — its recorded results were the
 promotion gate (the MP-M2 gate dissolved 2026-08-29 with the MP halt), and the
@@ -1058,7 +1058,7 @@ active cycle rather than guessing. Plus a driver belt that HOLDS the machine
 (`trajectory/hold` first, then explain, then stop) and a start-up planner warm-up
 in `trajectory_node` (a 5 mm SETTLE carry, ~185 ms once, nothing installed).
 
-**Blocked on the E-STOP measurement, not on the fixes.** `MPC_STALE` (the 250 ms
+**Blocked on the E-STOP measurement, not on the fixes.** `SETPOINT_STALE` (the 250 ms
 setpoint watchdog) latched twice, `sp_age_ms` **804** and **324**, both inside a
 full solve — **2158.89 / 2021.16 ms** against ~16 ms idle. The watchdog was
 right; CAN, deviation and axis freshness are all exonerated in the capture. The
@@ -1074,7 +1074,7 @@ reproduces a multi-second solve at all** (`--load 2` → 2209 ms → a 198 ms ga
 The contention source at 12:08 is unidentified. **Two owner decisions, both taken
 2026-09-06:** measure under session load before choosing between SCHED_FIFO on
 the emitter thread and a worker process (done — see above); and bundle the
-`MPC_STALE` rename with FW 18, the mechanism being load-bearing and the prefix
+`SETPOINT_STALE` rename with FW 18, the mechanism being load-bearing and the prefix
 only historical (one generator entry, `config/generate_udp_protocol.py:262`,
 drives four delivered files; the site count is **158**, not the ~15 first
 estimated). **Follow-ups:** a per-knot floor vector so LAUNCH can take the
@@ -1088,7 +1088,7 @@ FW 18 rename, a fix for the `[hand7] lead`/`dev_over` counter gate. Re-attempt 1
 **E-STOP cause PINNED and FIXED 2026-09-06 (evening); UH-3 still NOT flown.** *The cause:* the
 default **6-thread OpenBLAS pool**, whose workers busy-spin between the solve's thousands of small
 numpy calls — free on an idle box (194–223 ms capped or not) but at **three busy cores of six**
-worth **1350–2314 ms** and a **225–942 ms** emitter gap that latches the 250 ms `MPC_STALE`
+worth **1350–2314 ms** and a **225–942 ms** emitter gap that latches the 250 ms `SETPOINT_STALE`
 watchdog, against **214–217 ms** capped at any load (the earlier `--threads 1` null was sampled at
 0–2 cores, below the knee where the arms are identical by construction, and the two interpreters
 load the byte-identical OpenBLAS 0.3.21 wheel, so it was never an interpreter difference).
@@ -1303,6 +1303,19 @@ guard and `HAND_BELOW_FLOOR` is the belt.
 
 ### FW 18 bundle (owner, 2026-09-06)
 
+**Status: BUILT 2026-09-08, NOT FLASHED.** Can-bridge `firmware.hex` md5
+`b4ab52dcaddd3f60da1a6d2f70660f99` (766264 B); all five items below plus the
+host-side ripple landed in the same session (`config/hardware_config.yaml`'s
+new `hand_clip_margin_rev`, `ros_ws/.../can/odrive.py`, `sim/hand/trajectory.py`,
+and the wider test/runbook sweep — see
+`logbook/2026-09-08-fw18-bundle-hand-clip-homing-counters-rename.md`). The
+smooth-move ceiling ripple also forced a Platform Teensy version bump (FW 3 ->
+4, behavioural: `SMOOTH_MOVE_POS_CEIL_REV` 10.6 -> 10.501 rev), which consumes
+the `FW 4` this plan had reserved for Phase 6's stroke-engine retirement — every
+`FW 4` reference below for that retirement is now `FW 5`. Neither Teensy has
+been flashed; the board still runs can-bridge FW 17 / Platform FW 3 until the
+operator flashes both per `tests/hardware/session_fw18_flash.md`.
+
 One flash, five items. Nothing here is a Phase 5 blocker; all of it is carried
 from the two 2026-09-06 sittings.
 
@@ -1325,7 +1338,7 @@ from the two 2026-09-06 sittings.
    differenced across a stage.
 4. **A `hand7 reset` verb**, so the counters can be zeroed without a Teensy
    reboot.
-5. **`MPC_STALE` → `SETPOINT_STALE`.** The MPC chain was deleted 2026-09-01; the
+5. **`SETPOINT_STALE` → `SETPOINT_STALE`.** The MPC chain was deleted 2026-09-01; the
    watchdog is the setpoint stream's and the prefix is only historical. **158
    sites across 60 files**, driven by **one generator entry**
    (`config/generate_udp_protocol.py:262`).
@@ -1381,7 +1394,7 @@ makes the next measurement unreadable (Open Question 1 of the sitting's entry).
 
 ### Phase 6: Exclusivity + close-out — NOT STARTED
 
-Platform Teensy **FW 4**: retire the 0x6D0 decode, stroke engine
+Platform Teensy **FW 5**: retire the 0x6D0 decode, stroke engine
 (`Trajectory.h` generators) and the 0x0C9 hand-encoder sniff; **retain** the
 0x6E0 cold-start state + FW identity (bump `PLATFORM_FW_VERSION_EXPECTED`
 3 → 4, contract `ros_ws/docs/platform_fw_version.md`), the SCL3300
@@ -1665,7 +1678,7 @@ legs (single guard machine, single CLEAR_ERRORS release).
 |---|---|
 | Create | `motion/trajectory/cup_cycle.py`, `cup_realize.py`, `cycle_plan.py`, `motion/unified_cycle.py`, `ros_ws/src/jugglebot_interfaces/srv/PlanCycle.srv`, `sim/cycle_gate.py`, `sim/unified_gate.py`, `ros_ws/docs/unified_cycle_contract.md` (Phase 6), tests (`tests/motion/test_cup_cycle.py`, `test_cup_realize.py`, `test_cycle_plan.py`, `test_validate_cycle.py`, `test_unified_cycle.py`, `test_unified_cycle_budget.py`, `tests/ros/test_unified_cycle_integration.py`, `tests/sim/test_cycle_gate.py`, `tests/sim/test_unified_gate.py`) |
 | Modify | `config/generate_udp_protocol.py` + generated (`udp_protocol.py/.h`), `config/hardware_config.yaml` + generated config artifacts, `teensy_link/{setpoint_pump,synthetic_setpoint,replay_setpoint}.py`, `motion/ipc.py`, `motion/trajectory/{emitter,feasibility,cup_cycle,cup_realize,throw_envelope}.py`, `trajectory_node.py`, `teensy_bridge_node.py`, `reload_coordinator_node.py`, `catch_coordinator_node.py`, `toss_sequencer.py`, `toss_session.py`, `jugglebot_interfaces/{CMakeLists.txt,action/TossContinuous.action,msg/TrajectoryStatus.msg}`, `ros_ws/docs/choreography.md`, `tools/probes/teensy_link_profiling/hermite_xref/teensy_interp.py`, `run_tests.sh`, `Teensy_code_canbridge/{leg_interp.*,canbridge_config.h,fault_machine.cpp,hand_ops.cpp,can_buses.cpp,rpc.cpp}`, existing pump/emitter/codec/interp/xref tests |
-| Retire (Phase 6) | `Teensy_code_platform` stroke engine + 0x6D0 decode + 0x0C9 sniff (FW 4), `set_hand_traj_cmd` host path, `hand_ops` 0x6D0 forwarding |
+| Retire (Phase 6) | `Teensy_code_platform` stroke engine + 0x6D0 decode + 0x0C9 sniff (FW 5), `set_hand_traj_cmd` host path, `hand_ops` 0x6D0 forwarding |
 
 ### Rollback plan
 

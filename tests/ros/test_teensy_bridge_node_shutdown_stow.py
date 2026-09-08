@@ -113,7 +113,7 @@ def test_on_shutdown_honours_disabled_flag():
 def test_on_shutdown_disarms_before_stow():
     """on_shutdown must DISARM (stop setpoint output + mpc_active→0) BEFORE firing
     the profiled DEACTIVATE — the ordering that stops the firmware rejecting the
-    stow while mpc_active=1 (and avoids the emitter-stop MPC_STALE latch)."""
+    stow while mpc_active=1 (and avoids the emitter-stop SETPOINT_STALE latch)."""
     teensy, client, node = _node_with_stow()
     try:
         calls = []

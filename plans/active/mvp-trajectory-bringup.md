@@ -144,7 +144,7 @@ Envelope requirements (verified against `HardwarePlant` and the pump):
   it). `motor_rev = ext_mm × GEOM_MM_TO_REV` (no extra offsets —
   hardware_plant.py:413). `cmd_next_mm`/`cmd_next2_mm` populate the u1/u2 knots
   (firmware Mode-1 Hermite with C1 endpoint velocity).
-- Firmware interlocks (verified): `MPC_STALE` arms only after a first command AND
+- Firmware interlocks (verified): `SETPOINT_STALE` arms only after a first command AND
   `mpc_active` (fault_machine.cpp:338); `MAX_DEVIATION` (0.5 rev) requires
   `mpc_active` + a latched frame; ACTIVATE/DEACTIVATE RPCs are **rejected while
   `mpc_active=1`** (leg_activate.cpp:112) — the firmware itself enforces
@@ -591,7 +591,7 @@ rate/u0/steps):
    revs. *(Superseded 2026-07-15: under the default `auto_arm:=true` the arm
    happens automatically on ACTIVE entry — see ARMING_CONTRACT.md.)*
 2. `set_setpoint_output true` → PASS: success response, `mpc_active=1`, **zero
-   motion at arm**, steady tracking. ABORT: any E-STOP (MPC_STALE /
+   motion at arm**, steady tracking. ABORT: any E-STOP (SETPOINT_STALE /
    MAX_DEVIATION), any visible motion, pump-reject spam in the bridge log.
 3. Hold 120 s → PASS: no rejects, no faults, leg drift < 0.02 rev.
 4. `trajectory/go_home` (no-op from hold) → disarm → deactivate → shutdown.
@@ -694,7 +694,7 @@ Two process findings, neither blocking. (1) A lost `ros2 topic pub --once` mode 
 left the platform in STANDBY; the operator armed without re-checking, so all 11 moves
 came back `WRONG_MODE` (no motion — the gate did its job). The cleanup then sent
 `deactivate` **while still armed**, which transitions the state machine to IDLE
-instantly (so `control_mode=''`, the emitter stops, and the guard latches `MPC_STALE`
+instantly (so `control_mode=''`, the emitter stops, and the guard latches `SETPOINT_STALE`
 within 250 ms) while the firmware *rejects* the DEACTIVATE because `mpc_active=1` — so
 the legs never stowed. Recovered with `/clear_errors` + re-activate; the retry passed
 clean. Both hazards are now runbook Sharp Edges #5 and #6, and the protocol gained an
@@ -1209,7 +1209,7 @@ phase is reached, informed by Phases 6–8 evidence.
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| 40 Hz emitter jitter on the non-RT Jetson | velocity ripple at knots; worst-case MPC_STALE | dedicated thread + absolute deadlines (the discipline the validated 40 Hz MPC path used); jitter published in diagnostics; 250 ms staleness ⇒ 10× margin |
+| 40 Hz emitter jitter on the non-RT Jetson | velocity ripple at knots; worst-case SETPOINT_STALE | dedicated thread + absolute deadlines (the discipline the validated 40 Hz MPC path used); jitter published in diagnostics; 250 ms staleness ⇒ 10× margin |
 | Arm-time u0/encoder mismatch | MAX_DEVIATION E-STOP at arm | measured-telemetry seeding + 0.25 rev service pre-check; firmware 0.5 rev backstop |
 | RPC/stream interlock ordering mistakes | rejected ACTIVATE/DEACTIVATE mid-session | firmware already rejects loudly; ops sequences documented; disarm-before-deactivate enforced by firmware |
 | rotvec-rate ≈ angular-velocity approximation | leg-vel FF error at large tilt | MVP tilts ≤ 12°; the gate checks true sampled leg velocities |

@@ -48,7 +48,10 @@ INPUT_MODES = proto.ODRIVE_INPUT_MODES
 # ═══════════════════════════════════════════════════════════════
 
 LEG_MOTOR_MAX_POSITION = hw.GEOM_LEG_MOTOR_MAX_POSITION_REVS
-HAND_MOTOR_MAX_POSITION = hw.GEOM_HAND_MOTOR_HARD_STOP_REVS
+# The host's own clip must equal the firmware's: stop minus the clip margin
+# (FW 18, 2026-09-08) — never the bare metal-stop constant, or the two clips
+# disagree by GEOM_HAND_CLIP_MARGIN_REV (0.2 rev).
+HAND_MOTOR_MAX_POSITION = hw.GEOM_HAND_MOTOR_HARD_STOP_REVS - hw.GEOM_HAND_CLIP_MARGIN_REV
 
 DEFAULT_VEL_CURR = {
     'leg_vel': hw.ODRIVE_LEG_VEL_LIMIT_RPS,

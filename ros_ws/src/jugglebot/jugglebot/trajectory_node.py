@@ -60,7 +60,7 @@ perf-domain from ``catch_coordinator_node`` — no ROS-clock crossing remains
 
 **Armed-mode-exit is a sharp edge (Phase 1).** Leaving the streaming mode set
 while the bridge is ARMED stops the emitter publishing (``_streaming=False``), so
-the bridge stops receiving frames and latches an ``MPC_STALE`` E-STOP within
+the bridge stops receiving frames and latches an ``SETPOINT_STALE`` E-STOP within
 250 ms. Always **disarm** (``set_setpoint_output false``) before changing the
 control mode away from a streaming mode. The structural fix — coupling mode-exit
 to an auto-disarm — is deferred to Phase 2 (orchestrator wiring).
@@ -579,7 +579,7 @@ class TrajectoryNode(Node):
         self._streaming = False           # current mode is a streaming mode
         # FIX 1 — Teensy guard-latch freeze. Set True on the RISING edge of a latched
         # guard fault (read off the bridge's /link_status) WHILE streaming: the
-        # emitter keeps publishing (so the stream never trips MPC_STALE) but no
+        # emitter keeps publishing (so the stream never trips SETPOINT_STALE) but no
         # planning advances u0 — hold-at-measured persists — until CLEAR_ERRORS
         # releases the guard. Written on the executor thread (_on_link_status /
         # _on_control_mode), read on the emitter thread (_post_publish_planning); a
@@ -928,7 +928,7 @@ class TrajectoryNode(Node):
 
         # ── BLAS thread-pool self-check ────────────────────────────────
         # This node owns BOTH the planner and the 40 Hz emitter the can-bridge's
-        # 250 ms MPC_STALE watchdog watches, so an uncapped OpenBLAS pool starves
+        # 250 ms SETPOINT_STALE watchdog watches, so an uncapped OpenBLAS pool starves
         # the wire from inside this very process (measured 2026-09-06: three busy
         # cores of six take plan_cycle from ~200 ms to 1350-2314 ms and gap the
         # emitter 225-942 ms). The cap itself has to be set before numpy is
@@ -961,7 +961,7 @@ class TrajectoryNode(Node):
         session load (``tools/probes/emitter_gap_under_solve.py``, three runs).
         A solve that long starves the executor long enough for the can-bridge's
         250 ms setpoint watchdog (``MPC_CMD_STALENESS_US``) to latch
-        ``MPC_STALE`` — which it did, twice, E-STOPping a rung mid-ladder.
+        ``SETPOINT_STALE`` — which it did, twice, E-STOPping a rung mid-ladder.
 
         ``reload_coordinator_node._unified_warm_planner`` already does this for a
         TossContinuous session (its own first joined solve measured 3267 ms cold
@@ -1745,14 +1745,14 @@ class TrajectoryNode(Node):
         (each knot inside the pump step gate — an instant reseed there is a
         >max_step_rev jump the pump rejects) and FREEZE target advancement, so a later
         /clear_errors recovers with no re-trip; the emitter keeps streaming throughout
-        (stopping it would trip MPC_STALE at 250 ms), playing out the descent. On the
+        (stopping it would trip SETPOINT_STALE at 250 ms), playing out the descent. On the
         CLEAR edge (fault back to NONE while still streaming) we reseed a hold at
         measured — but ONLY once the descent has collapsed u0 within the pump gate
         (the /recover happy path); a still-in-flight descent is left to finish.
 
         A latch OUTSIDE a streaming mode is a NO-OP for us: the emitter is not
         publishing, so there is nothing to freeze or reseed. This is also what keeps
-        the benign prior-session MPC_STALE latch at BOOT (streaming not yet enabled)
+        the benign prior-session SETPOINT_STALE latch at BOOT (streaming not yet enabled)
         from freezing anything — coherent with the arming pre-check, which is where
         that latch is meant to be caught.
         """

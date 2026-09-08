@@ -467,7 +467,7 @@ class CatchCoordinatorNode(Node):
         # (trajectory_node build_catch + the hand-arm), which shares the box with
         # the 40 Hz emitter; an uncapped OpenBLAS pool is what took a
         # 2026-09-06 plan_cycle from ~200 ms to 1350-2314 ms and gapped the
-        # emitter past the can-bridge's 250 ms MPC_STALE watchdog. The cap is set
+        # emitter past the can-bridge's 250 ms SETPOINT_STALE watchdog. The cap is set
         # in jugglebot_launch.py's additional_env; this reads back whether it
         # landed. See jugglebot.motion.blas_threads.
         self._blas_threads, self._blas_source = blas_threads.check_blas_threads(

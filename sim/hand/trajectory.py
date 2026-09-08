@@ -23,6 +23,8 @@ import logging
 import math
 from dataclasses import dataclass
 
+from jugglebot import hardware_config as hw
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -69,14 +71,17 @@ SMOOTH_MOVE_MIN_DURATION_S = 0.05  # fmaxf(T, 0.05f) — Trajectory.h:54/:557
 # ``STROKE_MARGIN_MM`` inset below is a sim-side *placement* of the stroke inside
 # the travel, not a frame offset the firmware shares (the firmware homes DOWNWARD
 # into the bottom stop and sets zero 0.1 rev above it, and
-# ``hand_motor_hard_stop_revs = 10.8`` is 341.59 mm above that zero).  Carrying
+# ``hand_motor_hard_stop_revs = 10.701`` is 338.46 mm above that zero).  Carrying
 # the inset across would put the ceiling 0.63 rev too high, PAST the hard stop.
 # See plans/archived/hand-command-continuity.md § Phase 0 — Outcome, Confirmation 2.
 #
 # CORRECTED 2026-08-18: this mirror read 11.1 (and the margin 0.5) until the
 # operator measured the sensorised hand's hard stop at 10.8 rev — metal contact.
-# The CEILING is UNCHANGED at 10.6 rev because the margin moved with the base
-# (0.5 -> 0.2) -- bit-identical in float32 (0x41299a9a).  The ceiling only,
+# CORRECTED AGAIN, FW 18 (2026-09-08): re-measured at 10.701 rev, with a new
+# ``hand_clip_margin_rev`` (0.2) standing the clip off the metal — see
+# ``config/hardware_config.yaml`` and ``logbook/2026-09-08-fw18-bundle-hand-clip-homing-counters-rename.md``.
+# The CEILING moved 10.6 -> 10.501 rev because this correction, unlike 2026-08-18's,
+# changed the base without a compensating margin widening.  The ceiling only,
 # though: ``smooth_move_max_duration_s()`` moves 0.80054 -> 0.78964 s, so a
 # prelude whose honoured duration lands in (0.78964, 0.80054] s -- |v0| in
 # (20.04, 20.32] rev/s -- now takes the rest-to-rest fallback where it was
@@ -97,7 +102,11 @@ SMOOTH_MOVE_MIN_DURATION_S = 0.05  # fmaxf(T, 0.05f) — Trajectory.h:54/:557
 # (This note said ``hand_stroke_mm = 355.0`` until 2026-08-21 — it named the
 # geometry key while meaning the trajectory one, i.e. exactly the conflation the
 # 2026-08-18 split exists to prevent.  See sim/plant/mujoco_plant.py.)
-HAND_MOTOR_HARD_STOP_REVS = 10.8     # geometry.hand_motor_hard_stop_revs
+# Read from the generated config (not a literal) so this mirror and the
+# Platform Teensy's compiled ``Trajectory.h`` — both derived from
+# ``geometry.hand_motor_hard_stop_revs`` — can never silently diverge; see
+# ``tests/firmware/test_hand_smooth_move_xref.py``.
+HAND_MOTOR_HARD_STOP_REVS = hw.GEOM_HAND_MOTOR_HARD_STOP_REVS
 HAND_HOME_ABS_POS_REV = -0.1            # Homing::HAND_ABS_POS_REV — the bottom stop
 # The smooth-move excursion FLOOR is encoder zero (JBOp::HAND_RETRACT_REV), NOT
 # HAND_HOME_ABS_POS_REV.  -0.1 rev IS the bottom stop (the axis homes downward

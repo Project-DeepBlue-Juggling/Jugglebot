@@ -24,7 +24,7 @@ This session validates the **software already merged** on branch
   guard, then debrief before re-trying.
 - **Disarm before any control-mode change away from streaming.** Leaving the
   stream-mode set while the bridge is ARMED stops the emitter publishing, so the
-  bridge stops receiving frames and latches an `MPC_STALE` E-STOP within 250 ms.
+  bridge stops receiving frames and latches an `SETPOINT_STALE` E-STOP within 250 ms.
   Always run the Step 4 disarm (`set_setpoint_output false`) before changing the
   control mode out of a streaming mode. (A structural auto-disarm on mode-exit is
   a deferred Phase 2 item.)
@@ -147,7 +147,7 @@ backstop) of every leg's live `pos_estimate`. Only then does it stream-then-arm.
 - No pump-reject spam in the `teensy_bridge_node` log.
 
 **ABORT** (immediately disarm — Step 4 first line — then debrief):
-- Any E-STOP (MPC_STALE / MAX_DEVIATION) in the bridge/firmware log.
+- Any E-STOP (SETPOINT_STALE / MAX_DEVIATION) in the bridge/firmware log.
 - Any visible platform motion at arm.
 - `success: false` — read the message; it names the failing precondition
   (link / no-stream / u0-vs-encoder). Fix and retry; do NOT force-arm.

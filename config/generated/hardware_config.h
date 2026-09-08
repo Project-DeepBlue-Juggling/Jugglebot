@@ -86,7 +86,8 @@ namespace Geometry {
   constexpr float INIT_LEG_LENGTHS_MM[6] = {648.419f, 648.419f, 648.419f, 648.419f, 648.419f, 648.419f};
   constexpr float MM_TO_REV[6] = {0.01418332f, 0.01419076f, 0.01408956f, 0.01418684f, 0.01426801f, 0.01424951f};
   constexpr float LEG_MOTOR_MAX_POSITION_REVS = 4.2f;
-  constexpr float HAND_MOTOR_HARD_STOP_REVS = 10.8f;
+  constexpr float HAND_MOTOR_HARD_STOP_REVS = 10.701f;
+  constexpr float HAND_CLIP_MARGIN_REV = 0.2f;
 }
 
 // ==========================================================================

@@ -155,9 +155,12 @@ def test_the_host_coast_margin_is_never_looser_than_the_firmware_clamp():
         'deterministic excursion clamp')
     assert te.PEAK_LIMIT_REV <= (hw.GEOM_HAND_MOTOR_HARD_STOP_REVS
                                  - hw.TEENSY_TRAJ_SMOOTH_MOVE_EXCURSION_MARGIN_REV)
-    # Today they coincide, so the envelope's ceiling IS the runbook's hard-abort
-    # line. Recorded as an observation, not pinned as a requirement.
-    assert te.PEAK_LIMIT_REV == pytest.approx(10.60, abs=1e-9)
+    # FW 18 (2026-09-08): the stop moved 10.8 -> 10.701 rev (operator
+    # re-measurement); the margin did not, so the ceiling moved with it,
+    # 10.60 -> 10.501. Still an observation, not a pinned requirement.
+    assert te.PEAK_LIMIT_REV == pytest.approx(
+        hw.GEOM_HAND_MOTOR_HARD_STOP_REVS - hw.HAND_ENV_END_STOP_MARGIN_REV,
+        abs=1e-9)
 
 
 def test_the_declared_inertias_bracket_the_measurement_in_opposite_directions():
@@ -291,7 +294,9 @@ def test_the_end_stop_claim_survives_a_strict_upper_envelope():
     the family: a single ``C*v^2`` curve forced at or above EVERY measured
     point (C = 0.015362, set by the 3.714 m/s outlier rather than the top rung).
 
-    That curve binds at 6.458 m/s — still above ``DECEL_AUTHORITY``. So the
+    That curve binds at 5.938 m/s (FW 18, 2026-09-08: was 6.458 m/s before the
+    stop moved 10.8 -> 10.701 rev and shrank ``PEAK_LIMIT_REV`` with it) —
+    still above ``DECEL_AUTHORITY``, though the margin is now tighter. So the
     conclusion does not depend on the anchoring choice, which is what makes the
     extrapolation caveat tolerable.
     """
@@ -300,7 +305,7 @@ def test_the_end_stop_claim_survives_a_strict_upper_envelope():
     C = max(c / v ** 2.0 for v, c in pts)
     assert C == pytest.approx(0.015362, rel=1e-3)
     strict_bound = ((te.PEAK_LIMIT_REV - te.STROKE_TOP_REV) / C) ** 0.5
-    assert strict_bound == pytest.approx(6.458, abs=5e-3)
+    assert strict_bound == pytest.approx(5.938, abs=5e-3)
     assert strict_bound > te.MAX_RELEASE_SPEED_MPS
 
 
@@ -356,10 +361,13 @@ def test_the_torque_bounds_bind_and_end_stop_does_not():
 
     On the pre-fix coast ladder END_STOP bound at 4.357 m/s and torque had
     1.46 m/s of slack. On the measured post-fix ladder END_STOP does not bind
-    until 7.468 m/s and the TORQUE bounds bind first — ``DECEL_FF_HEADROOM`` at
-    **5.637 m/s**, just ahead of ``DECEL_AUTHORITY``'s 5.816. The machine's
-    throw height is limited by what the drive can brake with, exactly as the
-    owner's directive said it should be.
+    until 6.867 m/s (FW 18, 2026-09-08: was 7.468 m/s before the stop moved
+    10.8 -> 10.701 rev and shrank ``PEAK_LIMIT_REV`` with it) and the TORQUE
+    bounds bind first — ``DECEL_FF_HEADROOM`` at **5.637 m/s**, just ahead of
+    ``DECEL_AUTHORITY``'s 5.816. The machine's throw height is limited by what
+    the drive can brake with, exactly as the owner's directive said it should
+    be — END_STOP's margin over REGEN shrank (6.867 vs 6.574, was 7.468 vs
+    6.574) but the order held.
 
     The order is pinned because it is the contract's whole claim. If END_STOP
     ever re-enters the front, the plant has regressed toward its pre-fix
@@ -375,7 +383,7 @@ def test_the_torque_bounds_bind_and_end_stop_does_not():
     assert v_decel == pytest.approx(5.816, abs=5e-3)
     assert v_accel == pytest.approx(5.945, abs=5e-3)
     assert v_regen == pytest.approx(6.574, abs=5e-3)
-    assert v_end == pytest.approx(7.468, abs=5e-3)
+    assert v_end == pytest.approx(6.867, abs=5e-3)
     v_ff = math.sqrt(te.DECEL_FF_HEADROOM_RPS2 / 123.5466)
     assert v_ff == pytest.approx(5.637, abs=5e-3)
     assert v_ff < v_decel < v_accel < v_regen < v_end, (
@@ -564,8 +572,10 @@ def test_the_clamp_was_the_coast_mechanism():
     assert v == pytest.approx(5.399, abs=2e-3)
     assert te.peak_rev(v) == pytest.approx(10.294, abs=5e-3)
     assert te.peak_rev(v) < te.PEAK_LIMIT_REV
+    # FW 18 (2026-09-08): the metal moved 10.8 -> 10.701 rev, so the same
+    # peak_rev is now 3.1 mm closer to it (16.0 -> 12.9 mm).
     assert hand_stroke.rev_to_mm(te.HARD_STOP_REV - te.peak_rev(v)) == (
-        pytest.approx(16.0, abs=0.5))
+        pytest.approx(12.9, abs=0.5))
 
 
 def test_the_shipped_working_point_is_now_admitted():
@@ -573,15 +583,16 @@ def test_the_shipped_working_point_is_now_admitted():
 
     The 2026-08-18 draft REFUSED this — the pre-fix ladder put its peak at
     10.660 rev, 4.4 mm from metal. Measured on the flashed plant it peaks at
-    **10.185 rev, 19.4 mm from metal**, and it is admitted with room. n = 14 at
-    exactly this speed, so it is the best-characterised point in the model.
+    **10.185 rev, 16.3 mm from metal** (FW 18, 2026-09-08: was 19.4 mm before
+    the metal moved 10.8 -> 10.701 rev), and it is admitted with room. n = 14
+    at exactly this speed, so it is the best-characterised point in the model.
     """
     v = te.vertical_release_speed_mps(0.9032)
     assert v == pytest.approx(4.4360, abs=1e-3)
     assert te.evaluate(0.9032, v).ok
     assert te.peak_rev(v) == pytest.approx(10.185, abs=5e-3)
     assert hand_stroke.rev_to_mm(te.HARD_STOP_REV - te.peak_rev(v)) == (
-        pytest.approx(19.4, abs=0.3))
+        pytest.approx(16.3, abs=0.3))
 
 
 def test_the_default_toss_is_admitted():

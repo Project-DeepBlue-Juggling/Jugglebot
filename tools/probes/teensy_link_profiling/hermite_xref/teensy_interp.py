@@ -72,7 +72,12 @@ MAX_LEAD_REV = 0.15
 # tests/firmware/test_hermite_xref.py::test_hand_lane_constants_match_the_firmware.
 MAX_LEAD_HAND_REV = 2.0
 HAND_VELFF_LIMIT_RPS = 300.0
-HAND_MOTOR_MAX_POSITION = 10.8
+# = Geometry::HAND_MOTOR_HARD_STOP_REVS (10.701) - Geometry::HAND_CLIP_MARGIN_REV
+# (0.2). FW 18 stood the clip off the metal; through FW 17 it was a ZERO-margin
+# alias of the hard stop, i.e. a clip AT the stop, where neither hand guard can
+# see a stall (the deviation guard's command and encoder AGREE once the slider
+# is jammed there, and the lead clamp anchors the setpoint to that encoder).
+HAND_MOTOR_MAX_POSITION = 10.501
 MAX_DEVIATION_HAND_REV = 2.5
 # Age cap on the lead clamp's freshness-aware anchor (canbridge_config.h
 # MOTOR_FB_STALENESS_US = 150000 us; leg_interp.cpp:773-774). Past the cap the

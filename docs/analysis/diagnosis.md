@@ -164,7 +164,7 @@ As of 2026-04-01:
 | VEL_FF_BUG | critical | fixed | Velocity feedforward semantic mismatch |
 | COLD_HOLD_STROKE_MIN | critical | fixed | Cold-hold fallback to stroke minimum |
 | ASSIGNMENT_ORDER | critical | fixed | Assignment-order bug in feedforward |
-| MPC_STALENESS | high | active | Solve time exceeding 24ms budget |
+| SETPOINT_STALENESS | high | active | Solve time exceeding 24ms budget |
 | LEG2_TRACKING | medium | active | Leg 2 consistently worst tracker |
 | CAN_BUS_WATCHDOG | high | persistent | CAN bus watchdog restore |
 | ODRIVE_DISARM | critical | persistent | ODrive axis disarmed in CLOSED_LOOP |
