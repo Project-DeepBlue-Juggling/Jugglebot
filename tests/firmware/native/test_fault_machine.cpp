@@ -969,6 +969,119 @@ TEST_CASE("hand deviation: observe-first reports only; `hand7 arm`ed it LATCHES 
   hand_source_reset();
 }
 
+TEST_CASE("`hand7 reset` with a banked baseline and the latch already cleared does not re-trip (A-N1)") {
+  // Reaches the exact state the fix is guarding: s_hand_dev_over_prev banked to
+  // 1 by a prior exceed tick, the ESTOP already released by CLEAR_ERRORS, guard
+  // still ARMED. `hand7 reset` must leave the guard quiet — it always did here
+  // (this is the ORIGINAL masking-safe direction: a reset that only zeroes
+  // going forward). The real regression case for the one-poll masking window
+  // this fix closes is the NEXT test.
+  reset_all();
+  fake_set_clock(10'000'000, 10'000'000);
+  fault_set_mpc_active(true);
+  fake_set_udp_last_rx_us(fake_mono_us());
+  axes[0].heartbeat_seen = true;
+  axes[0].last_heartbeat_us = fake_mono_us();
+  axes[0].pos_timestamp_us = fake_mono_us();
+  axes[HAND_AXIS].heartbeat_seen = true;
+  axes[HAND_AXIS].last_heartbeat_us = fake_mono_us();
+  write_pos_vel(hand_axis(), 0.0f, 0.0f, fake_mono_us());
+  REQUIRE(hand_source_request(HandSource::STREAMED, false) == JbUdp::RpcStatus::OK);
+  interp_set_hand_dev_guard_armed(true);
+
+  // Enable output (a quiet first poll), then transmit ONE exceeding frame so
+  // s_hand_dev_over_prev banks to 1 and the guard latches.
+  fault_step();
+  JbUdp::SetpointPayload sp; memset(&sp, 0, sizeof(sp));
+  sp.u0[HAND_AXIS] = 3.0f;
+  sp.flags = 0x4u;                                    // HAS_HAND
+  interp_on_setpoint(1, reinterpret_cast<const uint8_t*>(&sp), sizeof(sp));
+  interp_isr();
+  CHECK(interp_hand_dev_over_ticks() == 1);
+  fake_set_udp_last_rx_us(fake_mono_us());
+  fault_step();
+  CHECK(fault_guard_mode() == JbUdp::GuardMode::ESTOP);
+
+  // Release the latch — the condition itself is not re-driven (no fresh
+  // frame), so this fault_step re-enables output and leaves the guard quiet:
+  // exactly "banked s_hand_dev_over_prev == 1 with the latch cleared".
+  fault_notify_clear_errors();
+  fake_set_udp_last_rx_us(fake_mono_us());
+  fault_step();
+  CHECK(fault_guard_mode() != JbUdp::GuardMode::ESTOP);
+
+  CHECK(interp_hand7_console("hand7 reset"));
+  fake_set_udp_last_rx_us(fake_mono_us());
+  fault_step();
+  CHECK(fault_guard_mode() != JbUdp::GuardMode::ESTOP);
+  CHECK(fault_state() != JbUdp::FaultState::MAX_DEVIATION);
+  hand_source_reset();
+}
+
+TEST_CASE("`hand7 reset` re-baselines BOTH sides of the `>` comparison — closes the one-poll masking window (A-N1)") {
+  // THE regression case: without fault_hand_dev_prev_reset(), a `hand7 reset`
+  // zeroes leg_interp.cpp's s_hand_dev_over_ticks but NOT fault_machine.cpp's
+  // own s_hand_dev_over_prev baseline. Bank prev = 5 via five exceed ticks,
+  // reset, then drive exactly 3 FRESH exceed ticks before the next poll: post
+  // reset the counter reads 3, and 3 > 5 is false, so a genuine, armed
+  // exceedance would be silently swallowed for one whole 10 Hz poll window.
+  // The fix (fault_hand_dev_prev_reset() called from
+  // interp_hand_counters_reset()) re-baselines s_hand_dev_over_prev to 0 at
+  // the same instant, so 3 > 0 is true and the trip fires as it must.
+  reset_all();
+  fake_set_clock(10'000'000, 10'000'000);
+  fault_set_mpc_active(true);
+  fake_set_udp_last_rx_us(fake_mono_us());
+  axes[0].heartbeat_seen = true;
+  axes[0].last_heartbeat_us = fake_mono_us();
+  axes[0].pos_timestamp_us = fake_mono_us();
+  axes[HAND_AXIS].heartbeat_seen = true;
+  axes[HAND_AXIS].last_heartbeat_us = fake_mono_us();
+  write_pos_vel(hand_axis(), 0.0f, 0.0f, fake_mono_us());
+  REQUIRE(hand_source_request(HandSource::STREAMED, false) == JbUdp::RpcStatus::OK);
+  interp_set_hand_dev_guard_armed(true);
+  fault_step();                                       // enable output (quiet)
+
+  auto exceed_tick = [&](uint16_t seq) {
+    JbUdp::SetpointPayload sp; memset(&sp, 0, sizeof(sp));
+    sp.u0[HAND_AXIS] = 3.0f;
+    sp.flags = 0x4u;                                  // HAS_HAND
+    interp_on_setpoint(seq, reinterpret_cast<const uint8_t*>(&sp), sizeof(sp));
+    interp_isr();
+    fake_advance(INTERP_PERIOD_US);
+  };
+
+  // Five exceed ticks, banked into s_hand_dev_over_prev by a poll BEFORE the
+  // reset — CLEAR_ERRORS after each latch so the loop can keep ticking without
+  // the guard blocking output.
+  uint16_t seq = 1;
+  for (int i = 0; i < 5; ++i) {
+    exceed_tick(seq++);
+    fake_set_udp_last_rx_us(fake_mono_us());
+    fault_step();
+    if (fault_guard_mode() == JbUdp::GuardMode::ESTOP) {
+      fault_notify_clear_errors();
+      fake_set_udp_last_rx_us(fake_mono_us());
+      fault_step();                                   // re-enable output
+    }
+  }
+  CHECK(interp_hand_dev_over_ticks() == 5);
+
+  CHECK(interp_hand7_console("hand7 reset"));
+  CHECK(interp_hand_dev_over_ticks() == 0);
+
+  // Exactly 3 fresh exceed ticks post-reset — fewer than the pre-reset baseline
+  // of 5. Pre-fix this would NOT trip (3 > 5 is false); post-fix it must,
+  // because the baseline reset to 0 alongside the counter.
+  for (int i = 0; i < 3; ++i) exceed_tick(seq++);
+  CHECK(interp_hand_dev_over_ticks() == 3);
+  fake_set_udp_last_rx_us(fake_mono_us());
+  fault_step();
+  CHECK(fault_guard_mode() == JbUdp::GuardMode::ESTOP);
+  CHECK(fault_state() == JbUdp::FaultState::MAX_DEVIATION);
+  hand_source_reset();
+}
+
 TEST_CASE("hand MAX_DEVIATION latch reports the TRIP's excursion, never the boot-cumulative max (2026-09-02 fix)") {
   // An observe-block excursion (4.0 rev) precedes an ARMED trip whose own
   // excursion is smaller (2.8 rev). Pre-fix, the latch froze the OLD 4.0 rev

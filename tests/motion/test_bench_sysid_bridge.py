@@ -346,7 +346,7 @@ def test_guard_fatal_aborts_and_cedes():
     assert act.classification == 'fatal'
 
 
-def test_guard_mpc_stale_latches_and_recovers():
+def test_guard_setpoint_stale_latches_and_recovers():
     # SETPOINT_STALE is a LATCHING firmware guard E-STOP (fault_machine.cpp:69-80,403-418),
     # reachable when a blocking RPC gain-apply straddles the 250 ms staleness window while
     # armed. On the rising edge it must drive the revert + CLEAR_ERRORS recovery — NOT the

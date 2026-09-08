@@ -1322,7 +1322,7 @@ _FAULT_RECOVERABLE = frozenset({FAULT_LINK_LOST, FAULT_MOTOR_FB_STALE})
 # fault_machine.cpp:69-80,403-418): guard_mode holds ESTOP and the 500 Hz output stays
 # gated off until an EXPLICIT ``fault_notify_clear_errors()``. SETPOINT_STALE is reachable in
 # normal operation — a blocking RPC gain-apply (two SET_*_GAIN calls, up to ~1.5 s with
-# retries) between streams can straddle the 250 ms MPC_CMD_STALENESS window while armed;
+# retries) between streams can straddle the 250 ms SETPOINT_STALENESS window while armed;
 # the driver disarms across gain application (``mpc_active=0`` suppresses the staleness
 # check) so it does not spuriously latch, and a genuine SETPOINT_STALE latch then runs the
 # same back-off + CLEAR_ERRORS recovery as MAX_DEVIATION rather than a passive watch.

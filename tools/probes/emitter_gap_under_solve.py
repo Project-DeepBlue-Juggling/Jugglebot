@@ -4,7 +4,7 @@ Reproduces the 2026-09-06 UH-3 hardware event offline. On the bench the
 can-bridge Teensy latched ``fault_state=SETPOINT_STALE`` TWICE, each time during a
 ``trajectory/plan_cycle`` MODE_NEW + KIND_SETTLE solve, and never during the two
 attempts that refused BEFORE solving. The firmware threshold is
-``MPC_CMD_STALENESS_US = 250000`` (250 ms with no accepted Setpoint frame while
+``SETPOINT_STALENESS_US = 250000`` (250 ms with no accepted Setpoint frame while
 ``s_mpc_active``); the Teensy console measured 804 ms and 324 ms holes, and
 ``/trajectory/status.cycle_plan_wall_ms`` measured the two solves at 2158.89 ms
 and 2021.16 ms.
@@ -295,7 +295,7 @@ def main():
 
     worst = max(g for _w, g in results)
     print('\nWORST emitter gap over %d reps: %.0f ms' % (len(results), worst * 1e3))
-    print('Firmware MPC_CMD_STALENESS_US threshold: 250 ms')
+    print('Firmware SETPOINT_STALENESS_US threshold: 250 ms')
     print('VERDICT: %s' % ('LATCHES (gap > 250 ms)' if worst > 0.250
                            else 'survives (gap <= 250 ms)'))
     node._emit_stop.set()

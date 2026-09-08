@@ -24,7 +24,7 @@ detectors run concurrently.
 
 | Guard | Timeout | Effect |
 |---|---|---|
-| MPC command staleness | 250 ms (`MPC_CMD_STALENESS_US`) | **Latches** guard E-STOP (`SETPOINT_STALE`) |
+| Setpoint staleness | 250 ms (`SETPOINT_STALENESS_US`) | **Latches** guard E-STOP (`SETPOINT_STALE`) |
 | Motor (encoder) feedback staleness | 150 ms (`MOTOR_FB_STALENESS_US`) | Suppresses output only — deliberately **not** latched, "recoverable" |
 | CAN3 leg heartbeat (bus-down detector) | 2.0 s (`CAN_HEARTBEAT_TIMEOUT_US`) | `CAN_BUS_DOWN`, arms the deferred-stow latch |
 | Jetson↔Teensy UDP link | 500 ms (10 Hz heartbeat × 5 missed, `JETSON_LINK_TIMEOUT_US`) | `LINK_LOST`, output disabled (not latched) |

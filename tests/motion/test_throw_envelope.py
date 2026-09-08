@@ -157,10 +157,10 @@ def test_the_host_coast_margin_is_never_looser_than_the_firmware_clamp():
                                  - hw.TEENSY_TRAJ_SMOOTH_MOVE_EXCURSION_MARGIN_REV)
     # FW 18 (2026-09-08): the stop moved 10.8 -> 10.701 rev (operator
     # re-measurement); the margin did not, so the ceiling moved with it,
-    # 10.60 -> 10.501. Still an observation, not a pinned requirement.
-    assert te.PEAK_LIMIT_REV == pytest.approx(
-        hw.GEOM_HAND_MOTOR_HARD_STOP_REVS - hw.HAND_ENV_END_STOP_MARGIN_REV,
-        abs=1e-9)
+    # 10.60 -> 10.501. Absolute pin, not the derivation restated as a
+    # tautology (a bare A == A check against the same hw fields would not
+    # catch a regression in either constant).
+    assert te.PEAK_LIMIT_REV == pytest.approx(10.501, abs=1e-9)
 
 
 def test_the_declared_inertias_bracket_the_measurement_in_opposite_directions():

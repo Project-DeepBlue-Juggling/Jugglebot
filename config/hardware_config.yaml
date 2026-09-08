@@ -464,8 +464,9 @@ jugglebot_geometry:
   #   * the lead clamp (MAX_LEAD_HAND_REV) anchors the setpoint TO the encoder
   #     (fb + clamped lead), so it re-issues the jam rather than refusing it.
   # Until FW 17 this key did not exist and the clip was a ZERO-margin alias of the
-  # stop -- and, with the stop itself reading 0.099 rev high, the clip sat 3.2 mm
-  # PAST the metal. 0.2 rev = 6.3 mm of slider travel: comfortably outside encoder
+  # stop -- and, with the stop itself reading 0.099 rev high, the clip sat 3.1 mm
+  # PAST the metal (3.2 / 6.5 mm at the measured 32.5685 mm/rev once the geometry
+  # correction lands). 0.2 rev = 6.3 mm of slider travel: comfortably outside encoder
   # noise and the age-extrapolation the clamps use, and far below any legitimate
   # target (catch prime 9.959 rev, retract 0.0).
   #

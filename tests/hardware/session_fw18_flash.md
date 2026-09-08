@@ -3,9 +3,11 @@
 Flash-and-verify checklist for the FW 18 bundle
 (`plans/active/unified-7dof-planner.md` § "FW 18 bundle",
 `logbook/2026-09-08-fw18-bundle-hand-clip-homing-counters-rename.md`). PROTOCOL_VERSION
-stays 6 — this is a can-bridge-only flash, wire-identical to FW 17. No planner
-work depends on this landing; it closes four bench findings from the FW 17
-sitting.
+stays 6 — wire-identical to FW 17. Can-bridge FW 18 is **required** (the
+hand-lane fixes below); Platform FW 4 is **optional** (its only change is the
+smooth-move ceiling 10.6 → 10.501 — see the Platform section below). No
+planner work depends on either landing; the can-bridge flash closes four bench
+findings from the FW 17 sitting.
 
 ## What changes for the operator
 
@@ -89,9 +91,14 @@ is legacy-path only — skip this if you only want the can-bridge fixes above.
 
 Per CLAUDE.md, rehearse before running for real:
 
-- [ ] `python3 tests/hardware/hand_stream_bench.py --dry-run` (no ROS calls)
-      to confirm the CLI and the generated constants it reads
+- [ ] `python3 tests/hardware/unified_cycle_bench.py --rung throw --dry-run`
+      (no ROS calls) to confirm the CLI and the generated constants it reads
       (`HAND_MOTOR_MAX_POSITION_REV` should now print 10.501) resolve.
+      (`hand_stream_bench.py` has no `--dry-run` and no
+      `HAND_MOTOR_MAX_POSITION_REV` — its constant is `HAND_MAX_POS` = 10.701,
+      the metal, at `tests/hardware/hand_stream_bench.py:181`.)
+- [ ] `python3 tests/hardware/hand_stream_bench.py --help` to confirm the CLI
+      resolves.
 - [ ] Re-read "What changes for the operator" above so the expected telemetry
       and console strings are fresh before they appear live.
 

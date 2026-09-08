@@ -326,7 +326,7 @@ auto-tracks whatever threshold the firmware trips at):
   4. **VERIFY `/control_mode_topic` reads `TRAJECTORY` before arming.** A lost mode
      publish (Sharp Edge #5) is silent, and arming into STANDBY means every battery move
      returns `WRONG_MODE` — harmless in itself, but the armed cleanup that follows is how
-     the 2026-07-09 session tripped an `SETPOINT_STALE` E-STOP (Sharp Edge #6).
+     the 2026-07-09 session tripped a `SETPOINT_STALE` E-STOP (Sharp Edge #6).
   5. `ros2 service call /set_setpoint_output std_srvs/srv/SetBool "{data: true}"` (arm).
      *(Superseded 2026-07-15: automatic on ACTIVE entry under auto-arm — see the
      ARMING CONTRACT banner above. Needed only with `auto_arm:=false`.)*

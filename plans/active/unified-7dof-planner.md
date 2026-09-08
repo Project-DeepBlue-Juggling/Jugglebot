@@ -1304,7 +1304,10 @@ guard and `HAND_BELOW_FLOOR` is the belt.
 ### FW 18 bundle (owner, 2026-09-06)
 
 **Status: BUILT 2026-09-08, NOT FLASHED.** Can-bridge `firmware.hex` md5
-`b4ab52dcaddd3f60da1a6d2f70660f99` (766264 B); all five items below plus the
+`11468209dfca6fa91f12169889fcb24a` (766264 B) — rebuilt 2026-09-08 after this
+unit's own audit fixes (A-N1's `fault_hand_dev_prev_reset()` hook + two
+comment-only header edits); the earlier same-day receipt is superseded and no
+longer matches the tree. All five items below plus the
 host-side ripple landed in the same session (`config/hardware_config.yaml`'s
 new `hand_clip_margin_rev`, `ros_ws/.../can/odrive.py`, `sim/hand/trajectory.py`,
 and the wider test/runbook sweep — see
@@ -1313,8 +1316,10 @@ smooth-move ceiling ripple also forced a Platform Teensy version bump (FW 3 ->
 4, behavioural: `SMOOTH_MOVE_POS_CEIL_REV` 10.6 -> 10.501 rev), which consumes
 the `FW 4` this plan had reserved for Phase 6's stroke-engine retirement — every
 `FW 4` reference below for that retirement is now `FW 5`. Neither Teensy has
-been flashed; the board still runs can-bridge FW 17 / Platform FW 3 until the
-operator flashes both per `tests/hardware/session_fw18_flash.md`.
+been flashed; the board still runs can-bridge FW 17 / Platform FW 3.
+Can-bridge FW 18 is required (the hand-lane fixes); Platform FW 4 is optional
+(its only change is the smooth-move ceiling 10.6 → 10.501) — see
+`tests/hardware/session_fw18_flash.md`.
 
 One flash, five items. Nothing here is a Phase 5 blocker; all of it is carried
 from the two 2026-09-06 sittings.
@@ -1322,7 +1327,8 @@ from the two 2026-09-06 sittings.
 1. **The hand clip becomes `stop − 0.2 rev`**, with the YAML stop set to the
    **measured 10.701 rev**. Today `HAND_MOTOR_MAX_POSITION` is a zero-margin
    alias of `Geometry::HAND_MOTOR_HARD_STOP_REVS` = 10.8, i.e. **0.099 rev
-   (3.2 mm) PAST the metal**, and **no firmware guard can see a stall in that
+   (3.1 mm; 3.2 mm at the measured 32.5685 mm/rev once the geometry correction
+   lands) PAST the metal**, and **no firmware guard can see a stall in that
    gap**: the deviation guard compares encoder to command (they agree once the
    slider is jammed at the clip) and the lead clamp *anchors* the setpoint to the
    encoder rather than refusing it.
@@ -1338,7 +1344,7 @@ from the two 2026-09-06 sittings.
    differenced across a stage.
 4. **A `hand7 reset` verb**, so the counters can be zeroed without a Teensy
    reboot.
-5. **`SETPOINT_STALE` → `SETPOINT_STALE`.** The MPC chain was deleted 2026-09-01; the
+5. **`MPC_STALE` → `SETPOINT_STALE`.** The MPC chain was deleted 2026-09-01; the
    watchdog is the setpoint stream's and the prefix is only historical. **158
    sites across 60 files**, driven by **one generator entry**
    (`config/generate_udp_protocol.py:262`).
@@ -1397,7 +1403,7 @@ makes the next measurement unreadable (Open Question 1 of the sitting's entry).
 Platform Teensy **FW 5**: retire the 0x6D0 decode, stroke engine
 (`Trajectory.h` generators) and the 0x0C9 hand-encoder sniff; **retain** the
 0x6E0 cold-start state + FW identity (bump `PLATFORM_FW_VERSION_EXPECTED`
-3 → 4, contract `ros_ws/docs/platform_fw_version.md`), the SCL3300
+4 → 5, contract `ros_ws/docs/platform_fw_version.md`), the SCL3300
 inclinometer path, and time-sync. Flash via **Arduino IDE only** (the pio
 image is CAN-MUTE). Host: retire `set_hand_traj_cmd`; `smooth_move_hand`
 re-implements as a planned single-channel move through the streamed lane.
@@ -1625,7 +1631,7 @@ are as of the owner's **Phase 3 COMPLETE** declaration, 2026-09-04.
 | Platform Teensy flash is Arduino IDE only (pio image is CAN-MUTE) | memory / bench facts | A pio flash silently kills the cold-start + inclinometer paths |
 | **Knot 0 == the machine, in EVERY channel** — position, velocity, hand, tilt AND acceleration. A plan may not open at a state the machine is not in, on any channel | `trajectory_node._cycle_start_state` (the seed, incl. the cup acceleration and `post_release` on BOTH the rest and moving branches) + `_install_continuity_ok` (position and velocity) + `unified_cycle._start_tilt_for` (tilt) + `feasibility._cycle_stroke_floor` (the hand, including a parked hand BELOW the homed zero) | Every one of these is a channel where knot 0 was once allowed to drift, and in each case the ONLY downstream guard is an install refusal — a gate that can say no and nothing else. A knot-0 tilt of 2.53° on a level machine is 0.1248 rev of leg drift against a 0.06 rev bound (`STALE_STATE`, 2026-09-06); a fictional knot-0 velocity installed unremarked until 2026-09-05; a parked hand at −0.031 rev was refused `HAND_STROKE` for being where the machine actually was; and a MOVING seed was told it was in free fall until 2026-09-06 — the identical lie fixed for the rest branch a day earlier, on the other branch of the same function, so **a fix that repairs one branch of a two-branch default has not closed the class** |
 | **Every commanded rotation that LEAVES the node passes the levelling correction (E8)** | `ros_ws/docs/levelling_frame.md` row E8: built once per cycle in `trajectory_node._cycle_start_state`, carried on `CycleState`/`CycleMeta.levelling_correction`, applied exactly once in `unified_cycle._realize` (`_tilt_to_gravity` on the seed pin, `_tilts_to_plan` on the finished series) between `tilt_schedule` and `decompose`; `_joined_correction` refuses a mismatched splice; pinned by `_LEVELLING_MANIFEST` + `_CARRIED_BUILDS` in `tests/ros/test_levelling_frame.py` | The unified cycle escaped the enumeration for four months because the contract asked *"which poses enter?"* and a cycle has no pose coming in — its attitude is DERIVED inside the planner from ballistics. The enumeration is **"commanded rotations that LEAVE"**, not poses that enter. Flown 2026-09-06: a commanded release of exactly mechanical zero on a platform physically at +9.9…+10.3 mrad, the ball leaving −9 mrad into −y on 7/7 throws (opposite sign to the legacy +8.5 mrad +y bias), 9–38 mm of lateral drift, rim strikes and 20–181 ms of bounce. And the drop was **not uniform** — knot 0 pinned in the PLAN frame beside gravity-frame release/catch/banking pins makes the smoother interpolate across two frames, so the observable is a 0.669° STEP that reads like a controller transient, not like a frame error |
-| **The firmware hand clip is a ZERO-MARGIN alias of the YAML stop until FW 18** | `canbridge_config.h::HAND_MOTOR_MAX_POSITION` = `Geometry::HAND_MOTOR_HARD_STOP_REVS` = 10.8, against the operator's **measured** metal at **10.701 rev** (bench, 2026-09-06) | The clip sits **0.099 rev (3.2 mm) PAST the metal**, and nothing in the firmware can see a stall in that gap: the deviation guard compares encoder to command (they agree once the slider is jammed at the clip) and the lead clamp *anchors* the setpoint to the encoder rather than refusing it. The bench driver scores V3 against `HAND_METAL_REV_MEASURED` 10.701 for exactly this reason; pulling the clip back to `stop − 0.2 rev` is FW 18 work |
+| **The firmware hand clip is a ZERO-MARGIN alias of the YAML stop until FW 18** | `canbridge_config.h::HAND_MOTOR_MAX_POSITION` = `Geometry::HAND_MOTOR_HARD_STOP_REVS` = 10.8, against the operator's **measured** metal at **10.701 rev** (bench, 2026-09-06) | The clip sits **0.099 rev (3.1 mm; 3.2 mm at the measured 32.5685 mm/rev once the geometry correction lands) PAST the metal**, and nothing in the firmware can see a stall in that gap: the deviation guard compares encoder to command (they agree once the slider is jammed at the clip) and the lead clamp *anchors* the setpoint to the encoder rather than refusing it. The bench driver scores V3 against `HAND_METAL_REV_MEASURED` 10.701 for exactly this reason; pulling the clip back to `stop − 0.2 rev` is FW 18 work |
 | **A seed OUTSIDE the cup z box may only re-enter at the jerk-limited rate, never in one `dt`** | `cup_cycle._seed_relaxed_z_box` — the box is widened to contain its own seed for a rest-terminal window; a seed further out than `SEED_OUTSIDE_BOX_MAX_M` (20 mm) is refused `START_BELOW_BOX` / `START_ABOVE_BOX` | The box rows bind knots 1…n only, so a seed below the floor is a one-`dt` re-entry demand the QP satisfies by slamming: measured 2026-09-06, an 11.2 mm deficit turned a flat 1.4 s carry into a 295 mm slider excursion to the box ceiling at 78 rev/s, **accepted by `validate_cycle`** with 0.311 rev of headroom, with a ball in the cup |
 
 ### Architecture decisions (root causes, not authority)

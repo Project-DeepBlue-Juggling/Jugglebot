@@ -338,7 +338,7 @@ def smooth_move_duration_s(delta_rev: float, v0_rps: float = 0.0) -> float:
     **Not the whole of what the firmware emits at non-zero ``v0``.**
     ``makeSmoothMove`` substitutes the rest-to-rest duration whenever the honoured
     profile's excursion would leave the stroke or its duration would exceed
-    ``smoothMoveMaxDuration() = 0.78964`` s, so this function over-reports on the
+    ``smoothMoveMaxDuration() = 0.78602`` s, so this function over-reports on the
     fallback branch (at 119.6 rev/s it returns 4.71 s where the firmware emits a
     0.05 s floored hold).  Harmless today — every caller in this repository passes
     ``v0 = 0``, where the two agree exactly — but a caller that starts feeding the

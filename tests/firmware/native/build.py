@@ -64,6 +64,14 @@ _OBJECTS = {
     # deliberately does NOT link it — that driver stubs hand_source_request for
     # routing isolation, per its stub-everything discipline.
     "hand_source":       FIRMWARE_DIR / "hand_source.cpp",
+    # A-N1: leg_interp.cpp's `hand7 reset` now calls fault_machine.h's
+    # fault_hand_dev_prev_reset() so a reset re-baselines fault_machine.cpp's
+    # own exceed-tick baseline too. test_leg_interp #includes leg_interp.cpp
+    # but not fault_machine.cpp, so it needs SOME definition of that symbol —
+    # this no-op stub. NEVER link it into test_fault_machine: that driver
+    # #includes the REAL fault_machine.cpp, which defines the symbol itself,
+    # and linking both would be a duplicate-definition error.
+    "fault_hand_dev_stub": NATIVE_DIR / "fault_hand_dev_stub.cpp",
 }
 
 # Test binaries: (driver source, objects to link). Each driver #includes the .cpp
@@ -75,7 +83,8 @@ _BINARIES = {
     ),
     "test_leg_interp": (
         NATIVE_DIR / "test_leg_interp.cpp",
-        ["axis_state", "ball_butler_state", "fake_hal", "hand_source"],
+        ["axis_state", "ball_butler_state", "fake_hal", "hand_source",
+         "fault_hand_dev_stub"],
     ),
     # Platform-Teensy relay seam. #includes platform_relay.cpp; the
     # fake HAL supplies can_jugglebot_send + jugglebot_commands_allowed, and

@@ -96,7 +96,9 @@ class CANInterface:
     # differs from the one that was renamed. Kept as a literal rather than
     # imported: this file is deliberately standalone (see the header banner) and
     # runs outside the repo's generated-config path setup.
-    _HAND_MOTOR_MAX_POSITION = 10.701 # Revs
+    # = hand_motor_hard_stop_revs 10.701 - hand_clip_margin_rev 0.2 (FW 18);
+    # never the bare metal.
+    _HAND_MOTOR_MAX_POSITION = 10.501 # Revs
 
     # Set the limits for trapezoidal trajectory control (used only for the legs)
     _DEFAULT_TRAP_TRAJ_LIMITS = {'vel_limit': 3.0, 'acc_limit': 10.0, 'dec_limit': 10.0} # rev/s, rev/s^2

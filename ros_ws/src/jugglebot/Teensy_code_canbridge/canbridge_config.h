@@ -387,9 +387,10 @@ constexpr float STROKE_MAX_REV[NUM_LEGS] =
 // ── ODrive position clip bounds (odrive.clip_position) ───────────────────────
 constexpr float LEG_MOTOR_MAX_POSITION  = Geometry::LEG_MOTOR_MAX_POSITION_REVS;   // 4.2
 // The hand setpoint clip STANDS OFF the metal by Geometry::HAND_CLIP_MARGIN_REV
-// (FW 18, 2026-09-06): 10.701 − 0.2 = 10.501 rev. Until FW 17 this was a
+// (FW 18, 2026-09-06): 10.701 − 0.2 = 10.501 rev. Through FW 17 this was a
 // ZERO-margin alias of the hard stop, i.e. a clip AT the metal — and with the
-// stop itself then reading 0.099 rev high, a clip 3.2 mm PAST it.
+// stop itself then reading 0.099 rev high, a clip 3.1 mm PAST it (3.2 mm at
+// the measured 32.5685 mm/rev once the geometry correction lands).
 //
 // A zero-margin clip is a guard that cannot fire. Neither hand guard can see a
 // stall in the gap between the clip and the stop: MAX_DEVIATION_HAND_REV compares

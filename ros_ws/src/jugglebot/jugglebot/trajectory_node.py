@@ -960,7 +960,7 @@ class TrajectoryNode(Node):
         against **190-250 ms** for the same request measured today under the same
         session load (``tools/probes/emitter_gap_under_solve.py``, three runs).
         A solve that long starves the executor long enough for the can-bridge's
-        250 ms setpoint watchdog (``MPC_CMD_STALENESS_US``) to latch
+        250 ms setpoint watchdog (``SETPOINT_STALENESS_US``) to latch
         ``SETPOINT_STALE`` — which it did, twice, E-STOPping a rung mid-ladder.
 
         ``reload_coordinator_node._unified_warm_planner`` already does this for a

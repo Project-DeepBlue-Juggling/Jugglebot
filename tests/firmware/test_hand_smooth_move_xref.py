@@ -539,9 +539,12 @@ def test_velocity_continuity_is_actually_achieved_at_the_seam():
     ``_X3`` (ceiling 10.6 -> 10.501 rev), moving the max continuous |v0| at the
     stroke top from ~9.07 to ~8.34 rev/s, so 9.0 now takes the rest-to-rest
     fallback instead of the continuous seam this test asserts. Replaced with
-    -8.2, still comfortably under the new limit.
+    +8.2 (peak 10.4827 < 10.501), still comfortably under the new limit. The
+    limit binds only on the positive side (diving away from ``_X3`` toward 0
+    never approaches the stroke top), so a negative replacement here would be
+    vacuous.
     """
-    for v0 in (8.0, -8.0, -8.2):
+    for v0 in (8.0, -8.0, 8.2):
         ts, xs, T, seed, empty = fw_make_smooth_move(_X3, v0, _X3)
         assert not empty and float(seed) == pytest.approx(v0, abs=1e-5)
         v_seam = (xs[1] - xs[0]) / (ts[1] - ts[0])

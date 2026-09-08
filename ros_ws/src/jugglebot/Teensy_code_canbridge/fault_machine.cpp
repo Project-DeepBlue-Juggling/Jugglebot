@@ -415,7 +415,13 @@ static void evaluate_guard() {
   // fresh exceed ticks and would have latched a spurious MAX_DEVIATION E-STOP on
   // the next 10 Hz tick whenever the guard was armed. `>` makes any DECREASE
   // (a reset, or the 2^32 wrap that needs 99 days of continuous exceed ticks at
-  // 500 Hz) a no-op instead of a trip, and is otherwise identical.
+  // 500 Hz) a no-op instead of a trip, and is otherwise identical. `>` alone
+  // reopens a one-poll masking window across a reset, though: if s_hand_dev_over_prev
+  // (this task's baseline) is P at the moment of `hand7 reset` and k genuine
+  // exceed ticks land before the next 10 Hz poll, `k > P` is false whenever
+  // k <= P, so no trip fires despite the guard being armed. Closed by having
+  // `interp_hand_counters_reset()` call fault_hand_dev_prev_reset() so a reset
+  // re-baselines BOTH sides of this comparison atomically, not just the counter.
   const bool hand_dev_new = (hand_dev_over > s_hand_dev_over_prev);
   s_hand_dev_over_prev = hand_dev_over;
   // OBSERVE-FIRST: interp_hand_dev_guard_armed() boots false — the first
@@ -519,6 +525,10 @@ static void evaluate_guard() {
             && !s_fatal_error && !s_estop_latched && !fb_stale;
   }
   interp_set_output_enabled(allow);
+}
+
+void fault_hand_dev_prev_reset() {
+  s_hand_dev_over_prev = 0;
 }
 
 void fault_machine_init() {

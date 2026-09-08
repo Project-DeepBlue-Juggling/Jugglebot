@@ -6,6 +6,17 @@ status: resolved
 phase: "unified-7dof-planner — FW 18 bundle"
 related_plan: unified-7dof-planner.md
 files_changed:
+  - ros_ws/src/jugglebot/Teensy_code_canbridge/leg_homing.cpp
+  - ros_ws/src/jugglebot/Teensy_code_canbridge/leg_interp.cpp
+  - ros_ws/src/jugglebot/Teensy_code_canbridge/fault_machine.cpp
+  - ros_ws/src/jugglebot/Teensy_code_canbridge/fault_machine.h
+  - ros_ws/src/jugglebot/Teensy_code_canbridge/axis_state.h
+  - ros_ws/src/jugglebot/Teensy_code_canbridge/rpc.cpp
+  - ros_ws/src/jugglebot/Teensy_code_canbridge/hand_ops.cpp
+  - tests/firmware/native/test_fault_machine.cpp
+  - tests/firmware/native/test_leg_interp.cpp
+  - tests/firmware/native/fault_hand_dev_stub.cpp
+  - tests/firmware/native/build.py
   - ros_ws/src/jugglebot/jugglebot/can/odrive.py
   - sim/hand/trajectory.py
   - ros_ws/src/jugglebot/jugglebot/motion/trajectory/hand_stroke.py
@@ -61,6 +72,63 @@ follows through its own version-bump rule and reserved-number consequences.
 
 ## Fix
 
+**Firmware (F1, commit `ae2d632` — built + receipted the same day, NOT
+FLASHED; see "Open" below and `tests/hardware/session_fw18_flash.md`).**
+Owner's five items, all landed on one image, nothing on the wire moved
+(PROTOCOL_VERSION stays 6):
+
+1. **Hand clip = stop − margin.**
+   `ros_ws/src/jugglebot/Teensy_code_canbridge/canbridge_config.h:404` —
+   `HAND_MOTOR_MAX_POSITION = Geometry::HAND_MOTOR_HARD_STOP_REVS −
+   Geometry::HAND_CLIP_MARGIN_REV` (10.501), replacing the old zero-margin
+   alias of the stop. A new key rather than reusing
+   `smooth_move_excursion_margin_rev`: that one bounds a PLANNED host-side
+   excursion; this one is the last-resort wire clamp sized by what the
+   deviation guard and lead clamp cannot see once the slider is jammed at the
+   clip.
+2. **Homing restores axis-6 mode + limits.**
+   `ros_ws/src/jugglebot/Teensy_code_canbridge/leg_homing.cpp:271-276` —
+   `SET_REF` now sends `POSITION`/`PASSTHROUGH` plus the shipped vel/current
+   limits (`axis_shipped_*_limit()` — the live `SET_VEL_CURR_LIMITS` override
+   if one was pushed this session, else the per-axis generated default, the
+   hand's 1000 rev/s / 50 A, never the legs' 12/10) and fails the home if
+   either send fails. Newly observable:
+   `ros_ws/src/jugglebot/Teensy_code_canbridge/axis_state.h:50-51`
+   (`controller_mode`/`input_mode` fields, written by nothing before this) is
+   now written at every mode-commanding site —
+   `ros_ws/src/jugglebot/Teensy_code_canbridge/rpc.cpp:178-179`
+   (`SET_CONTROLLER_MODE`) and
+   `ros_ws/src/jugglebot/Teensy_code_canbridge/hand_ops.cpp:135-136` — so
+   telemetry's `ctrl_mode`/`input_mode` finally track reality.
+3. **The counter gate.**
+   `ros_ws/src/jugglebot/Teensy_code_canbridge/leg_interp.cpp:817` — the
+   cumulative hand lead-clamp and `dev_over` counters now count inside the
+   same `out_en && !coldstart` gate the TX itself uses, so an aborted stage
+   leaves them at zero instead of non-zero forever. Clamps and the residual
+   observations (`dev_last`/`dev_max`/snapshots) are deliberately NOT gated —
+   only the counting.
+4. **`hand7 reset`.**
+   `ros_ws/src/jugglebot/Teensy_code_canbridge/leg_interp.cpp:1239-1253`
+   (`interp_hand_counters_reset()`) zeroes every `[hand7]` counter and
+   residual without a Teensy reboot. This forced a real safety fix in
+   `ros_ws/src/jugglebot/Teensy_code_canbridge/fault_machine.cpp:412-419`:
+   the hand-deviation trip compared the exceed-tick counter with `!=` rather
+   than `>`, so the zeroing itself would have latched a spurious
+   `MAX_DEVIATION` E-STOP on the next 10 Hz poll while armed.
+5. **`MPC_CMD_STALENESS_US` → `SETPOINT_STALENESS_US`.** Driven by the one
+   generator entry (`config/generate_udp_protocol.py:262`) and regenerated
+   into `config/generated/udp_protocol.{h,py}` and
+   `ros_ws/src/jugglebot/Teensy_code_canbridge/udp_protocol.h` (this diff also
+   renames the `FaultState` enum member `MPC_STALE` → `SETPOINT_STALE` — see
+   the correction below); `canbridge_config.h`'s constant renamed to match.
+
+Native test coverage added for items 3 and 4 (A-W3, this unit's own audit
+fix):
+`tests/firmware/native/test_leg_interp.cpp` (the output-enabled +
+`homing_active()` coldstart leg of the counter gate) and
+`tests/firmware/native/test_fault_machine.cpp` (the `hand7 reset` masking-
+window regression — see A-N1 below).
+
 **Urgent items (named by the firmware handoff):**
 
 - `ros_ws/src/jugglebot/jugglebot/can/odrive.py:54` — `HAND_MOTOR_MAX_POSITION`
@@ -94,9 +162,12 @@ follows through its own version-bump rule and reserved-number consequences.
   `MAX_DEVIATION_HAND_REV` sizing-rationale comment's stroke reference updated
   10.8 → 10.701 (conclusion unchanged, arithmetic now correct).
 - `plans/active/unified-7dof-planner.md` — Phase 6's reserved "Platform Teensy
-  FW 4" (stroke-engine retirement) renumbered to **FW 5** at all four sites
+  FW 4" (stroke-engine retirement) renumbered to **FW 5** at all five sites
   (the exclusivity diagram, the phase table, the Phase 6 prose, the retire-list
-  table), since this unit consumed FW 4. A one-paragraph status update was
+  table, and the `PLATFORM_FW_VERSION_EXPECTED` bump inside the Phase 6 prose,
+  which read stale as `3 → 4`, missed by the first sweep — the tree is already
+  at 4, so the bump Phase 6 performs is `4 → 5`), since this unit consumed FW 4.
+  A one-paragraph status update was
   added to § "FW 18 bundle": BUILT 2026-09-08, NOT FLASHED, hex md5, and a
   pointer to this entry.
 
@@ -131,9 +202,11 @@ also moved 10.8 → 10.701), `tools/probes/hand_stroke_timeline.py`,
 
 **The historical `MPC_` rename, host side:** `config/generate_udp_protocol.py`
 line 159's `SETPOINT` MsgType comment ("40 Hz MPC setpoint waypoints" → "40 Hz
-setpoint waypoints"), regenerated into `config/generated/udp_protocol.{h,py}`
-and the canbridge consumer header (comment-only diff, confirmed with `git
-diff`). `tests/hardware/bench_leg_sysid.py` and
+setpoint waypoints") AND line 262's `FaultState` enum entry, `MPC_STALE` →
+`SETPOINT_STALE`, regenerated into `config/generated/udp_protocol.{h,py}` and
+the canbridge consumer header — NOT comment-only: the regenerated diff also
+renames the `FaultState.MPC_STALE` member to `FaultState.SETPOINT_STALE`
+(confirmed with `git diff`). `tests/hardware/bench_leg_sysid.py` and
 `tests/hardware/teensy_guard_validation.py`'s stale `MPC_CMD_STALENESS_US`
 comments updated to `SETPOINT_STALENESS_US`.
 
@@ -211,6 +284,70 @@ derivation in the comment; the fixed files alone (2026-09-08,
 **6965 passed / 4 skipped / 2 xfailed in 456.21 s**, serial **4 passed in 26.33 s**, total 489 s,
 **exit 0**.
 
+**Audit fixes (2026-09-08).** A same-day audit of this unit found nineteen
+findings (A-W1–A-W9, A-N1–A-N4), all applied here: the `MPC_CMD_STALENESS_US`
+/ "MPC command staleness" / `MPC_STALENESS` rename leftovers in
+`docs/can_bridge/safety.md`, `trajectory_node.py`, `tools/probes/
+emitter_gap_under_solve.py`, `tests/hardware/sysid_lib.py`, `plans/active/
+unified-7dof-planner.md` (the sed-eaten `SETPOINT_STALE → SETPOINT_STALE`
+line restored to `MPC_STALE → SETPOINT_STALE`), a test function rename in
+`tests/motion/test_bench_sysid_bridge.py`, and a grammar fix in
+`tests/hardware/mvp_bench_runbook.md`; `docs/analysis/diagnosis.md`'s
+`/diagnose` known-issue id reverted `SETPOINT_STALENESS` → `MPC_STALENESS`
+(it names the sim solve-time signature, not the watchdog); **A-N1, a real
+firmware fix** — `fault_machine.cpp`'s hand-deviation `>` comparison had a
+one-poll masking window across a `hand7 reset` (the fault task's own
+`s_hand_dev_over_prev` baseline was not re-zeroed with the counter, so `k`
+genuine post-reset exceed ticks could read as `k > stale_prev` = false and
+never trip), closed by a new `fault_hand_dev_prev_reset()` hook called from
+`interp_hand_counters_reset()`, with two new native `test_fault_machine.cpp`
+cases (the masking regression, and the already-safe cleared-latch path) and
+build-graph wiring (`fault_hand_dev_stub.cpp`, `build.py`) so
+`test_leg_interp.cpp` links without pulling in `fault_machine.cpp`; **A-W3(b)**
+— a new native `test_leg_interp.cpp` case pinning the coldstart
+(`homing_active()`) leg of the `out_en && !coldstart` counter gate, previously
+untested; the session runbook's dry-run step corrected to the driver that
+actually has `--dry-run`; the standalone `can_interface.py` actuating
+script's zero-margin `10.701` literal corrected to `10.501`; stale
+`0.78964 s` smooth-move-duration-cap comments (now `0.78602 s`, FW 18's
+10.701 rev stop) fixed in `sim/hand/trajectory.py`, `hand_stroke.py` and
+`catch_coordinator_node.py`; `unified-7dof-planner.md`'s Phase 6
+`PLATFORM_FW_VERSION_EXPECTED` bump corrected `3 → 4` to `4 → 5` (a fifth
+renumbering site the original sweep missed); a vacuous negative test velocity
+in `test_hand_smooth_move_xref.py` fixed to a real positive-side probe; a
+tautology in `test_throw_envelope.py` replaced with an absolute
+`pytest.approx(10.501, abs=1e-9)` pin; the `tests/hardware/hand_stream_bench.py`
+docstrings' stale `10.8`/"MPC staleness" corrected to `10.701`/`10.501`/
+"setpoint staleness"; mixed gain-basis mm figures in `hardware_config.yaml`,
+`canbridge_config.h` and the plan standardised on tree A's 31.628 mm/rev
+(3.1 mm / 6.3 mm, with a parenthetical for the 32.5685 mm/rev geometry-branch
+figures); the can-bridge Platform-flash optionality settled consistently
+across `session_fw18_flash.md`, the plan and this entry
+("can-bridge required, Platform optional"); two misquoted `SETPOINT_STALE`
+strings in `ros_ws/docs/can-node-teensy-parity.md` restored to the source
+logbook's actual `MPC_STALE`; and this entry's own F1 section / `files_changed`
+gap closed (see "Fix" above) plus the "at all four sites" renumbering count
+corrected to five. Firmware rebuilt after the `fault_machine.cpp`/
+`leg_interp.cpp` edits (2026-09-08, `cd
+ros_ws/src/jugglebot/Teensy_code_canbridge && pio run -e teensy41 -t clean &&
+pio run -e teensy41`): **SUCCESS, 33.56 s**, `firmware.hex` md5
+**`11468209dfca6fa91f12169889fcb24a`, 766264 B** — supersedes the
+`b4ab52dcaddd3f60da1a6d2f70660f99` receipt quoted above and in the plan
+before this paragraph landed; updated in the plan, `session_fw18_flash.md`
+(no receipt was quoted there) and the `project_canbridge_facts.md` /
+`MEMORY.md` memory notes. Still NOT FLASHED.
+
+Verification triples:
+- (2026-09-08, `/home/jetson/Desktop/Jugglebot/temp/firmware_native/test_fault_machine`, run directly): **18 test cases / 271 assertions, all passed.**
+- (2026-09-08, `/home/jetson/Desktop/Jugglebot/temp/firmware_native/test_leg_interp`, run directly): **36 test cases / 365 assertions, all passed.**
+- (2026-09-08, `pytest tests/firmware -q`): **414 passed in 20.92 s.**
+- (2026-09-08, `pytest tests/firmware tests/motion/test_throw_envelope.py tests/motion/test_bench_sysid_bridge.py tests/sim/test_hand_trajectory.py tests/ros/test_catch_coordinator_node.py tests/ros/test_trajectory_node.py tests/sim/test_plans_index.py tests/sim/test_logbook_search.py tests/sim/test_logbook_front_matter.py tests/ros/test_choreography_map.py -q`): **1168 passed in 44.48 s.**
+- (2026-09-08, `pytest tests/firmware tests/motion/test_throw_envelope.py tests/motion/test_bench_sysid_bridge.py tests/motion/test_bench_sysid_logic.py tests/sim/test_hand_trajectory.py tests/ros/test_catch_coordinator_node.py tests/ros/test_trajectory_node.py tests/sim/test_plans_index.py tests/sim/test_logbook_search.py tests/sim/test_logbook_front_matter.py tests/ros/test_choreography_map.py tests/motion/test_hand_stroke.py tests/teensy_link/test_hand_stream_bench_gap.py -q`, the touched-file superset): **1278 passed in 44.22 s.**
+
+**Full gate after audit fixes** (2026-09-08 15:56–16:04, `./run_tests.sh --full`): parallel
+**6965 passed / 4 skipped / 2 xfailed in 466.76 s**, serial **4 passed in 26.65 s**, total 500 s,
+**exit 0**.
+
 ## Open items
 
 - `ros_ws/gui/js/state-minimap.js`'s three `MPC_STALE` comments are
@@ -230,7 +367,9 @@ derivation in the comment; the fixed files alone (2026-09-08,
   archival document under time budget. Flagged here rather than silently
   skipped; a future session should either sweep it or explicitly mark it
   superseded.
-- The flash itself (both Teensies) is the operator's — see
-  `tests/hardware/session_fw18_flash.md`. Neither Teensy has been flashed by
+- The flash itself is the operator's — see
+  `tests/hardware/session_fw18_flash.md`. Can-bridge FW 18 is required (the
+  hand-lane fixes); Platform FW 4 is optional (its only change is the
+  smooth-move ceiling 10.6 → 10.501). Neither Teensy has been flashed by
   this unit; the can-bridge board still runs FW 17 and the Platform Teensy
   still runs FW 3.

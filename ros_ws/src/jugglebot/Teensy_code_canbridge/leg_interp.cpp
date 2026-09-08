@@ -51,6 +51,7 @@
 #include "leg_activate.h"     // activate_active   (in-progress-move interlock)
 #include "leg_deactivate.h"   // deactivate_active (in-progress-move interlock)
 #include "hand_source.h"      // hand_source_streamed (the § 2.4 mastery latch)
+#include "fault_machine.h"    // fault_hand_dev_prev_reset (hand7 reset re-baseline)
 
 namespace CanBridge {
 
@@ -1250,6 +1251,12 @@ void interp_hand_counters_reset() {
   s_hand_dev_trip_dev     = 0.0f;
   s_hand_dev_trip_cmd     = 0.0f;
   s_hand_dev_trip_fb      = 0.0f;
+  // Re-baseline the fault task's own copy of this counter ATOMICALLY with the
+  // zeroing above, so a reset can never open a one-poll masking window where
+  // genuine post-reset exceed ticks read as "not yet past the old baseline"
+  // (fault_machine.cpp's s_hand_dev_over_prev, `>` comparison — see its
+  // comment for the mechanism).
+  fault_hand_dev_prev_reset();
 }
 
 bool interp_hand7_console(const char* line) {

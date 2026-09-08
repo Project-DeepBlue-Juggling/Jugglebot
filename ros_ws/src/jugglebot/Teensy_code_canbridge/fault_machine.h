@@ -65,6 +65,19 @@ void fault_notify_clear_errors();
 // real loss coinciding with a reboot is still caught, at most one window late).
 void fault_notify_reboot_started();
 
+// Re-baseline the hand-deviation exceed-tick counter's fault-task-side
+// baseline. Called from interp_hand_counters_reset() (the `hand7 reset`
+// console verb) so a reset zeroes BOTH sides of the `>` comparison atomically
+// — leg_interp.cpp's s_hand_dev_over_ticks AND this task's s_hand_dev_over_prev
+// — instead of only the counter. Without this hook, `k` genuine exceed ticks
+// landing in the first 10 Hz poll window after a reset (prev = P, counter now
+// k) would be silently swallowed whenever k <= P: `k > P` is false, so no trip
+// fires even though the guard is armed and the hand really did exceed. One
+// small write, same discipline as the other `hand7` console writes (task
+// context, single word, worst case losing or keeping one tick's increment
+// across the reset instant).
+void fault_hand_dev_prev_reset();
+
 // Reported up via HeartbeatT2J.
 uint8_t  fault_state();                  // JbUdp::FaultState
 uint8_t  fault_guard_mode();             // JbUdp::GuardMode (ESTOP ⟺ estop || fatal_error)

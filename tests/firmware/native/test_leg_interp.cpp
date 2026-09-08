@@ -1036,7 +1036,7 @@ TEST_CASE("guard separation: the LEG constants never touch axis 6") {
     }
   }
 
-  SUBCASE("hand stroke clip is [0, HAND_MOTOR_MAX_POSITION] (10.8), never the leg stroke table") {
+  SUBCASE("hand stroke clip is [0, HAND_MOTOR_MAX_POSITION] (10.501), never the leg stroke table") {
     reset_interp_test();
     arm_hand_streamed();
     write_pos_vel(hand_axis(), 10.5f, 0.0f, fake_mono_us());
@@ -1349,6 +1349,47 @@ TEST_CASE("a TRANSMITTING stage does count the lead clamp and the dev_over ticks
   CHECK(interp_hand_lead_clamp_ticks() == 5u);
   CHECK(interp_hand_dev_over_ticks() == 5u);
   CHECK(interp_hand_sent() == 5u);
+}
+
+TEST_CASE("coldstart (homing_active) suppresses the hand counter gate exactly like output-disabled") {
+  // The counter gate is `s_output_enabled && !coldstart`
+  // (leg_interp.cpp's `out_en && !coldstart`). The output-disabled leg of the
+  // gate is covered above (the ABORTED-stage test); this pins the OTHER leg —
+  // homing_active() true with output ENABLED must also leave the counters at
+  // zero, because a cold-start move (leg_homing's SETUP owning axis 6) holds
+  // the streamed lane's command off the wire regardless of s_output_enabled.
+  reset_interp_test();
+  arm_hand_streamed();
+  axes[HAND_AXIS].heartbeat_seen = true;
+  axes[0].heartbeat_seen = true; axes[0].pos_rev = 0.5f;
+  write_pos_vel(hand_axis(), 0.0f, 0.0f, fake_mono_us());
+
+  interp_set_output_enabled(true);
+  fake_set_homing(true);
+  uint16_t seq = 1;
+  for (int k = 0; k < 20; ++k) {
+    fake_advance(INTERP_PERIOD_US);
+    write_pos_vel(hand_axis(), 0.0f, 0.0f, fake_mono_us());
+    stage_hand_far_from_encoder(seq++);
+    interp_isr();
+  }
+  // Non-vacuity: the lane really did compute a huge residual throughout —
+  // it is only the CUMULATIVE counters that coldstart gates.
+  CHECK(interp_hand_dev_last() > MAX_DEVIATION_HAND_REV);
+  CHECK(interp_hand_lead_clamp_ticks() == 0u);
+  CHECK(interp_hand_dev_over_ticks() == 0u);
+  CHECK(interp_hand_sent() == 0u);
+
+  // Coldstart falling is the same kind of edge as output re-enabling: the very
+  // next tick counts.
+  fake_set_homing(false);
+  fake_advance(INTERP_PERIOD_US);
+  write_pos_vel(hand_axis(), 0.0f, 0.0f, fake_mono_us());
+  stage_hand_far_from_encoder(seq++);
+  interp_isr();
+  CHECK(interp_hand_lead_clamp_ticks() == 1u);
+  CHECK(interp_hand_dev_over_ticks() == 1u);
+  CHECK(interp_hand_sent() == 1u);
 }
 
 TEST_CASE("hand7 reset zeroes the counters and residual, and NOT the arm state") {

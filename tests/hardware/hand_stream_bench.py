@@ -31,9 +31,10 @@ runs. NO BALL, E-STOP IN HAND. Defence in depth, all active:
     and the 40 Hz hold stream runs in a BACKGROUND thread through the
     ARM prompt + verify window (true stream-then-arm — a stalled stream at the
     mpc_active edge latches SETPOINT_STALE before the first loop frame).
-  • firmware (FW 17): hand lead clamp ±2.0 rev against the age-extrapolated
-    encoder, vel_ff cap 300 rev/s, stroke clip [0, 10.8] rev, hand overspeed
-    E-STOP at 345 rev/s, MPC staleness E-STOP, and the observe-first
+  • firmware (FW 18): hand lead clamp ±2.0 rev against the age-extrapolated
+    encoder, vel_ff cap 300 rev/s, stroke clip [0, 10.501] rev (10.701 rev
+    metal), hand overspeed E-STOP at 345 rev/s, setpoint staleness E-STOP,
+    and the observe-first
     ``MAX_DEVIATION_HAND_REV`` residual census on the ``[hand7]`` console line.
 
 PRECONDITIONS (checked; the driver refuses to arm otherwise):
@@ -1107,7 +1108,7 @@ def main():
             # moving_gap rides the SAME row-14 triangle — same envelope check,
             # and the firmware's whole coast past the falling edge is
             # v·HAND_COAST_S (0.0525 rev = 1.66 mm at the defaults), far inside
-            # the margin this check already keeps off the 10.8 rev metal.
+            # the margin this check already keeps off the 10.701 rev metal.
             if start + args.tri_span > HAND_MAX_POS - HAND_MARGIN:
                 print(f"ABORT: triangle would reach "
                       f"{start + args.tri_span:.2f} rev (> "
@@ -1308,7 +1309,7 @@ def main():
                 elif t >= args.gap_pre + args.gap_s:
                     # Clamp BOTH ends (2026-09-03 audit fix): --gap-delta may be
                     # negative (±1.5 accepted), and a hand parked near 0 would
-                    # otherwise command below the firmware's [0, 10.8] clip.
+                    # otherwise command below the firmware's [0, 10.501] clip.
                     hand_override = min(max(start + args.gap_delta, 0.0),
                                         HAND_MAX_POS - HAND_MARGIN)
                     # Arm the re-entry proof on the FIRST re-entry tick: snapshot

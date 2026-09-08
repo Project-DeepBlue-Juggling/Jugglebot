@@ -81,15 +81,16 @@ SMOOTH_MOVE_MIN_DURATION_S = 0.05  # fmaxf(T, 0.05f) — Trajectory.h:54/:557
 # ``hand_clip_margin_rev`` (0.2) standing the clip off the metal — see
 # ``config/hardware_config.yaml`` and ``logbook/2026-09-08-fw18-bundle-hand-clip-homing-counters-rename.md``.
 # The CEILING moved 10.6 -> 10.501 rev because this correction, unlike 2026-08-18's,
-# changed the base without a compensating margin widening.  The ceiling only,
-# though: ``smooth_move_max_duration_s()`` moves 0.80054 -> 0.78964 s, so a
-# prelude whose honoured duration lands in (0.78964, 0.80054] s -- |v0| in
-# (20.04, 20.32] rev/s -- now takes the rest-to-rest fallback where it was
-# honoured before.  Conservative, but a behaviour change.  It moves because it is
-# defined as the longest REST-TO-REST move the stroke admits and the stroke got
-# shorter.  That is the conservative direction (a tighter cap fires the
-# rest-to-rest fallback slightly sooner) and the host window that consumes it,
-# ``_PRIME_INFLIGHT_S``, was sized against the larger number.
+# changed the base without a compensating margin widening.  The cap moves with
+# the stop too (proportional to sqrt(stop)): ``smooth_move_max_duration_s()``
+# moves 0.78964 -> 0.78602 s, so a prelude whose honoured duration lands in
+# (0.78602, 0.78964] s -- |v0| in (20.03, 20.14] rev/s -- now takes the
+# rest-to-rest fallback where it was honoured before.  Conservative, but a
+# behaviour change.  It moves because it is defined as the longest REST-TO-REST
+# move the stroke admits and the stroke got shorter.  That is the conservative
+# direction (a tighter cap fires the rest-to-rest fallback slightly sooner) and
+# the host window that consumes it, ``_PRIME_INFLIGHT_S``, was sized against
+# the larger number.
 #
 # NOTE, deliberately not acted on here: this module's ``HAND_STROKE_M = 0.355``
 # implies a top of 11.224 rev, which is 0.42 rev ABOVE this measured stop.  That
@@ -486,7 +487,7 @@ def smooth_move_accel_limited_duration_s(delta_rev: float,
 
 
 def smooth_move_max_duration_s() -> float:
-    """Longest duration a velocity-continuous prelude may take (``0.78964`` s).
+    """Longest duration a velocity-continuous prelude may take (``0.78602`` s).
 
     The longest REST-TO-REST smooth move the stroke admits (full travel,
     ``HAND_MOTOR_HARD_STOP_REVS``), so an honoured prelude can never take
