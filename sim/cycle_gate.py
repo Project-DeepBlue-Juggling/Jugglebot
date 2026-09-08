@@ -112,10 +112,10 @@ from sim.gate_common import (                                      # noqa: E402
 #: the caller to override ``z_min_m``/``z_max_m`` to this: with its 0.45/1.10
 #: defaults the realisation saturates the stroke clamp at 31 of 41 knots and the
 #: gate refuses (measured 2026-08-30, ``tests/motion/test_validate_cycle.py``).
-#: The operating band [0, JB_OP_HAND_CATCH_PRIME_REV] maps to slider 20…324.4 mm
+#: The operating band [0, JB_OP_HAND_CATCH_PRIME_REV] maps to slider 20…344.4 mm
 #: (was 20…335 pre-2026-09-08 hand-geometry correction, at the time of that
 #: correction still expressed as 20...335 under the OLD gain), i.e. cup z
-#: 679.6…1003.97 mm at level (was 679.6…994.6 mm); the inset covers the tilt
+#: 689.6…994.0 mm at level (was 690.0…985.0 mm); the inset covers the tilt
 #: drop (~6 mm).
 #:
 #: 2026-09-08: these two literals now FOLLOW ``unified_cycle``'s derived box

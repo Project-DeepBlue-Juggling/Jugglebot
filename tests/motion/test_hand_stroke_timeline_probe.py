@@ -123,9 +123,19 @@ def probe():
 
 
 def _arm_prelude_capture(probe, hold_s):
-    """The POST-FIX shape with the gated arm's own prelude ``hold_s`` past x3."""
+    """The POST-FIX shape with the gated arm's own prelude ``hold_s`` past x3.
+
+    ``phase_s=0.0`` PINNED explicitly (B-N3, 2026-09-08 audit): the coast
+    minimum this drives (``coast_below_x3_rev``) depends on which discrete
+    100 Hz sample lands nearest the sag's bottom, so leaving ``phase_s`` to
+    default silently made the downstream assertion's exact value a property
+    of an unstated default rather than a documented one. At this pinned
+    phase the value is deterministic and reproducible to machine precision
+    (0.20364198540147882 for both ``_HOLDS_S`` entries, verified 2026-09-08)
+    — see the tight-tolerance asserts below.
+    """
     session, t_desc = probe._synth_fixed_session(0.0, tof_s=0.80, v_mps=3.9308,
-                                                 arm_hold_s=hold_s)
+                                                 arm_hold_s=hold_s, phase_s=0.0)
     tl = probe.analyse_throw(session, session.announcements[0])
     return tl, t_desc
 
@@ -480,7 +490,7 @@ def test_the_coast_row_sees_the_sag_the_gated_row_misses(probe, hold_s):
     # ``v_mps`` is converted to rev/s through the corrected gain) shifted
     # enough to move which discrete sample lands nearest the ramp's bottom —
     # same built sag, different phase against the coarse sampling grid.
-    assert tl.coast_below_x3_rev == pytest.approx(0.204, abs=0.020)
+    assert tl.coast_below_x3_rev == pytest.approx(0.20364198540147882, abs=1e-6)
     assert tl.coast_below_x3_rev > probe._DIP_BELOW_X3_BAND_REV
     assert probe._coast_disagrees(tl) is True
 
@@ -497,9 +507,11 @@ def test_the_coast_row_is_bounded_at_the_stroke_end_not_the_release(probe,
     tl, _ = _arm_prelude_capture(probe, hold_s)
     model = probe.StrokeModel(3.9308)
     assert tl.coast_min_rev > model.x2_rev
-    # 0.204 as of 2026-09-08 (was 0.156) — same sampling-phase shift as
-    # test_the_coast_row_sees_the_sag_the_gated_row_misses above.
-    assert tl.coast_min_rev == pytest.approx(model.x3_rev - 0.204, abs=0.020)
+    # 0.20364198540147882 as of 2026-09-08 (was 0.156) — same pinned
+    # phase_s=0.0 as test_the_coast_row_sees_the_sag_the_gated_row_misses
+    # above, deterministic to machine precision (B-N3, 2026-09-08 audit).
+    assert tl.coast_min_rev == pytest.approx(
+        model.x3_rev - 0.20364198540147882, abs=1e-6)
     assert tl.coast_peak_rev <= model.x3_rev + 0.010
 
 

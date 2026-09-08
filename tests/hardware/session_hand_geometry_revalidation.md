@@ -1,7 +1,10 @@
 # Bench session — hand geometry re-validation (G3)
 
-Bench checklist for `plans/active/hand-geometry-correction.md` phase G3
-(`logbook/2026-09-08-hand-geometry-flown-position-audit.md` § (e)). The
+Bench checklist for `plans/active/hand-geometry-correction.md` phase G3 (see
+that plan's "G3 — Bench re-validation" phase and its "Confirm before Part B"
+section above, and the full rationale in
+`logbook/2026-09-08-hand-geometry-flown-position-audit.md`'s Diagnosis
+section). The
 owner's acceptance criterion is explicit: the legacy `x2` (release) and `x3`
 (catch prime / stroke top) points get re-validated on the **current** gain
 **before** the geometry correction ships, so that any later difference is
@@ -46,10 +49,14 @@ readings and do not proceed to Part B.
 (`JB_OP_HAND_CATCH_PRIME_REV` = 9.9594 rev) via the legacy `smooth_move_hand`
 path. Record:
 - settled encoder position (expect 9.9594 ± 0.10 rev),
-- physical cup height if a ruler or mocap can see it (expect **≈1003.97 mm**
-  — a reading near 994.6 mm would indicate the old, wrong gain is still what
-  the hand is doing, not the newly-measured one — record whichever it is,
-  do not force agreement),
+- physical cup height if a ruler or mocap can see it — **expect ≈1003.97 mm
+  in Part A too**: this height is a property of the mechanism (9.9594 rev ×
+  the measured 32.5685 mm/rev) and does not change with which software model
+  is running. Part A's own model still *predicts* ≈994.6 mm at this rev (the
+  old, wrong gain) — that is a label, not a measurement. If the ruler reads
+  near 994.6 mm instead of ≈1003.97 mm, the MEASUREMENT is suspect (wrong
+  reference plane, parallax), not "the hand doing the old gain" — the
+  mechanism has no gain model to run,
 - hand `iq_rms` at rest.
 
 **Step 3 — x2 / release, static then dynamic.** Command a legacy kind-0
@@ -65,8 +72,8 @@ pre-correction baseline the audit's ~11 % excess-throw-velocity number was
 measured against — without it, nothing in Part B has anything to compare to.
 
 **Stop rules (any one → power down, do not continue):**
-- peak hand position > 10.60 rev (10.501 with FW 18 aboard) — E-STOP per the
-  runbook's HAND-4 / HAND-7 rows;
+- peak hand position > 10.501 rev (FW 18's clip; 10.60 was the pre-FW-18
+  ceiling) — E-STOP per the runbook's HAND-4 / HAND-7 rows;
 - `dip_below_x3` > 0.100 rev;
 - top-stop reading off 10.701 by more than 0.05 rev;
 - audible contact with either end stop;
@@ -88,6 +95,13 @@ switching branches:
   ~5.7 % conservative afterwards, not re-scaled).
 - **D5** — `sim/cycle_gate.py`'s 0.690 / 0.985 m literals follow the re-base
   to 0.6896 / 0.9940.
+- **D6** — the C-HAND-2 open-loop undershoot ceiling is NOT raised: the
+  corrected gain lifts the worst open-loop commanded undershoot at the band
+  floor to 0.629 rev against the landed 0.60 rev ceiling
+  (`test_wire_quantisation_cannot_produce_a_visible_undershoot`), and the
+  test stays `xfail(strict=True)` pending an owner decision (raise the
+  ceiling, document-first, or reduce the feedforward) — not a bench item,
+  flagged here only so Part B's checklist matches the plan's D1-D6 set.
 
 ## Part B — switch to the correction
 
@@ -130,28 +144,46 @@ checkout you used for Part A).
    itself is gain-blind (re-running it on the corrected config reproduces
    −0.1076 unchanged, because `d(flight_time_err)/d(event_vel_trim) = 2/g`
    never touches the rev/m gain), so this artifact's trim was hand-rescaled
-   by the measured `TEENSY_LINEAR_GAIN` ratio (×1.029748) rather than
+   via `(1 + old_trim) × 1.029748 − 1 = −0.081044` (the measured
+   `TEENSY_LINEAR_GAIN` ratio applied to the trim's multiplicative factor —
+   NOT `old_trim × 1.029748`, which gives the wrong −0.1108) rather than
    re-derived from the fit; see the staged file's own `captured.note` field
    for the full arithmetic. If the staged file is ever missing, re-derive it
    from `tests/hardware/ilc_corpus_fixture.py` per that same note.
+
+   Note: the trim is keyed to the ILC corpus's captured cell (z=160 mm,
+   flight ≈0.9 s) — if Part B's tiers don't land in that cell, the applied
+   trim is 0 (not −0.0810), and the release-velocity comparison below reads
+   differently (see Compare).
 6. Repeat Steps 1–3 above exactly, same tiers, same recording harness.
 
 **Compare Part A vs. Part B:**
 - **Commanded rev must be IDENTICAL** at the metal-stop reading, x3, and x2
   (that identity is the re-base's whole promise — a difference here means
   D3 did not land as designed, not that the machine moved).
-- **Release velocity should read ~3 % lower** relative to the old model,
-  i.e. the achieved-vs-commanded gap from Part A should shrink, moving
-  closer to plan.
-- **Physical cup-z readings (Step 2/3) should now agree with the model on
-  the first try** — Part A's near-994.6 mm reading should become ≈1003.97 mm
-  under the same commanded rev.
+- **The achieved-vs-commanded velocity ratio should drop from ~1.03 to
+  ~1.00** — that is the fix. Whether *absolute* release velocity moves
+  depends on whether the ILC cell (z=160 mm, flight ≈0.9 s) admits: **if it
+  admits, the re-fitted trim cancels the ratio change by design and absolute
+  release velocity is unchanged from Part A** (trimmed = event_vel ×
+  (1 + trim), 0.9190 × base = A); **if it does not admit, trim is 0 and
+  absolute release velocity reads ~2.9 % lower than Part A.** Record which
+  case obtained.
+- **Physical cup-z readings (Step 2/3) should be unchanged between A and
+  B** — ≈1003.97 mm in both, since the commanded rev and the mechanism are
+  identical in both parts. What changes is the *model's* stated prediction,
+  from ≈994.6 mm (Part A, the old wrong gain) to ≈1003.97 mm (Part B, the
+  corrected gain): the model-vs-ruler gap should close from ~9.4 mm in
+  Part A to ~0 in Part B.
 
 ## Part C — pass / fail
 
-**Pass** means: rev positions bit-identical across A/B, release velocity
-measurably lower (closer to plan) in B, mm/cup-z readings agree with the
-corrected model in B, no stop rule triggered in either part. Merge
+**Pass** means: rev positions bit-identical across A/B, the
+achieved-vs-commanded velocity ratio measurably closer to 1.00 in B
+(absolute release velocity unchanged from A if the ILC cell admitted,
+~2.9 % lower if it did not — either is a pass, record which), mm/cup-z
+readings unchanged from A and agreeing with the corrected model's
+prediction in B, no stop rule triggered in either part. Merge
 `hand-geometry-correction` into `mvp-trajectory-bringup`.
 
 **Fail** means: any rev position differs between A and B, or a stop rule

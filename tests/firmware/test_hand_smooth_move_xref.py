@@ -320,9 +320,9 @@ def test_the_stroke_top_agrees(self=None):
     # RE-BASED (0.355 -> 0.3643707) specifically so this rev value holds
     # bit-identical across the linear_gain_factor correction (1.035 -> 1.0051).
     # It moved from the old 9.95940313 to the exact regenerated
-    # HAND_STROKE_TOP_REV (config/generated/hardware_config.py) by 2.9e-7 rev,
-    # which is why the tolerance tightens from the old comfortable 1e-8 slack
-    # down to matching the generated constant exactly at this precision.
+    # HAND_STROKE_TOP_REV (config/generated/hardware_config.py) by 2.9e-7 rev —
+    # the pinned VALUE changed, but the tolerance is UNCHANGED at abs=1e-8
+    # (the same slack the old pin used; re-basing does not need it tighter).
     assert total * gain == pytest.approx(9.95940284466489, abs=1e-8)
 
 

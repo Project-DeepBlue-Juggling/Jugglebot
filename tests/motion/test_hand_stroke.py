@@ -517,7 +517,15 @@ def test_the_comfort_limit_is_far_below_what_the_throw_itself_commands():
         decel_rps2 = abs(m.throwD) * gain
         assert decel_rps2 == pytest.approx(expect, rel=0.01), v
         ratio = decel_rps2 / hw.TEENSY_TRAJ_MAX_SMOOTH_MOVE_HAND_ACCEL_RPS2
-        assert ratio > 18.0   # was > 19.0 pre-2026-09-08 hand-geometry correction
+        # Derived from `expect` at the SAME rel=0.01 as the assert above, not a
+        # second, independent magic number: the nominal-flight case computes to
+        # 18.0026 (was 19.x pre-2026-09-08 hand-geometry correction), so a bare
+        # `> 18.0` floor left only 0.014% of real headroom below the actual
+        # value while silently claiming the far looser 1% the line above
+        # grants `decel_rps2` — a knife edge (B-N3, 2026-09-08 audit). Asserting
+        # against `expect`'s own tolerance keeps the two consistent instead.
+        assert ratio == pytest.approx(
+            expect / hw.TEENSY_TRAJ_MAX_SMOOTH_MOVE_HAND_ACCEL_RPS2, rel=0.01), v
 
 
 # ── the Phase-1 window ──────────────────────────────────────────────────────
@@ -568,7 +576,10 @@ def test_required_arm_lead_is_the_teensy_budget():
             hand_stroke.catch_lead_s(v) + hand_stroke.PRELUDE_ALLOWANCE_S + 0.020,
             rel=1e-12)
     # 0.225031 -> 0.228870 on 2026-09-08 (hand-geometry correction): catch_lead_s
-    # and PRELUDE_ALLOWANCE_S both grew ~2.97% at fixed commanded speeds.
+    # grew ~2.97% at a fixed commanded speed; PRELUDE_ALLOWANCE_S is BIT-IDENTICAL
+    # (it is consulted at v0 = 0, hand at rest — see
+    # test_every_rest_to_rest_host_number_is_unchanged_by_phase_4 above), so the
+    # whole shift in required_arm_lead_s comes from catch_lead_s alone.
     assert hand_stroke.required_arm_lead_s(3.1312) == pytest.approx(0.228870,
                                                                    abs=1e-5)
 

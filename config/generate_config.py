@@ -605,6 +605,29 @@ def compute_derived(cfg: dict) -> dict:
     tt = cfg["teensy_trajectory"]
     derived["TEENSY_LINEAR_GAIN"] = tt["linear_gain_factor"] / (math.pi * tt["hand_spool_radius_m"] * 2.0)
 
+    # Hand travel ABOVE ENCODER ZERO (mm) — the single source for every
+    # runtime consumer that clips a commanded hand position: the joint is
+    # single-sided from encoder zero, not from the physical bottom stop, so
+    # the clip is hand_motor_hard_stop_revs / gain, NOT geometry.hand_stroke_mm
+    # (the stop-to-stop measurement, which is 3.48 mm MORE than this — the
+    # firmware's 0.107 rev homing offset). sim/model/generate_mjcf.py derives
+    # the MJCF joint range/ctrlrange with the identical formula directly from
+    # the YAML (it runs standalone, before this constant exists on disk);
+    # tests/sim/test_mjcf_drift.py pins the two against each other so they
+    # cannot silently diverge. See config/hardware_config.yaml's comment on
+    # jugglebot_geometry.hand_stroke_mm for the full split rationale.
+    derived["HAND_TRAVEL_ABOVE_ZERO_MM"] = (
+        geom["hand_motor_hard_stop_revs"] / derived["TEENSY_LINEAR_GAIN"] * 1000.0)
+    # The furthest slider position the can-bridge will ever COMMAND (mm above
+    # encoder zero): the FW 18 wire clip, stop − hand_clip_margin_rev, in the
+    # planner's own units. Every planner-side stroke bound (cup_realize's
+    # slider clamp, the four sim juggle planners) reads THIS, never the metal
+    # (HAND_TRAVEL_ABOVE_ZERO_MM) and never the stop-to-stop hand_stroke_mm:
+    # a knot planned past the clip is a knot the wire silently saturates.
+    derived["HAND_WIRE_CLIP_TRAVEL_MM"] = (
+        (geom["hand_motor_hard_stop_revs"] - geom["hand_clip_margin_rev"])
+        / derived["TEENSY_LINEAR_GAIN"] * 1000.0)
+
     # Hand catch/throw positions — derived from Trajectory.h algebra.
     # These are velocity-independent (v_throw cancels out).
     total_stroke = tt["hand_stroke_m"] - 2.0 * tt["stroke_margin_m"]
@@ -716,6 +739,12 @@ def generate_hw_python(cfg: dict) -> str:
     lines.append(f"INIT_LEG_LENGTHS_WITH_OFFSET_MM = {derived['INIT_LEG_LENGTHS_WITH_OFFSET_MM']}")
     lines.append(f"JB_OP_ACTIVATE_POSITION_REVS = {derived['ACTIVATE_POSITION_REVS']}")
     lines.append(f"TEENSY_LINEAR_GAIN = {derived['TEENSY_LINEAR_GAIN']}")
+    lines.append("# Hand travel above ENCODER ZERO (mm) = hand_motor_hard_stop_revs /")
+    lines.append("# TEENSY_LINEAR_GAIN * 1000 — the single source for every runtime clip")
+    lines.append("# of a commanded hand position (mirrors generate_mjcf.py's joint range;")
+    lines.append("# see the YAML comment on jugglebot_geometry.hand_stroke_mm).")
+    lines.append(f"HAND_TRAVEL_ABOVE_ZERO_MM = {derived['HAND_TRAVEL_ABOVE_ZERO_MM']!r}")
+    lines.append(f"HAND_WIRE_CLIP_TRAVEL_MM = {derived['HAND_WIRE_CLIP_TRAVEL_MM']!r}")
     lines.append(f"HAND_THROW_POS_M = {derived['HAND_THROW_POS_M']}")
     lines.append(f"HAND_CATCH_POS_M = {derived['HAND_CATCH_POS_M']}")
     lines.append(f"HAND_CATCH_OFFSET_MM = {derived['HAND_CATCH_OFFSET_MM']}")

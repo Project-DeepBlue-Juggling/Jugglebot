@@ -87,9 +87,12 @@ the machine has and the model does not.
 ### G1 — Audit. **DONE 2026-09-08.**
 Gain derived, `hand_stroke_mm` decided, all 24 commanded-vs-label positions
 classified with file:line, blast radius and pinned tests enumerated, bench
-checklist written, ILC interaction analysed. Deliverable `geometry_audit.md`
-(session scratchpad; fold into the G2 logbook entry) — it carries the full
-derivation and the G2 handoff. Three hardcoded literals the owner's blast-radius
+checklist written, ILC interaction analysed. Deliverable was `geometry_audit.md`
+(session scratchpad, not a repo file) — folded into
+`logbook/2026-09-08-hand-geometry-flown-position-audit.md` (its "The
+flown-position table (full)" section carries the 24-row table; the rest of
+its Diagnosis section carries the derivation and the G2 handoff). Three
+hardcoded literals the owner's blast-radius
 list did not have: `sim/hand/trajectory.py:53 HAND_STROKE_M = 0.355` (a
 hand-typed mirror whose omission silently forks sim from planner),
 `toss_sequencer.py:751 HAND_THROW_RELEASE_OFFSET_MM = 58.044` (the real hardcoded
@@ -97,7 +100,7 @@ copy), `test_hand_smooth_move_xref.py:373`'s hand-typed `_X3`.
 
 ### G2 — Software correction. **IN PROGRESS on branch `hand-geometry-correction`
 (worktree `~/Desktop/Jugglebot-geometry`); merge to `mvp-trajectory-bringup`
-BLOCKED on G3 flying/passing and D1-D5 being confirmed or flipped.**
+BLOCKED on G3 flying/passing and D1-D6 being confirmed or flipped.**
 Built on its own branch, not `mvp-trajectory-bringup`, so the operator can
 take the G3 baseline sitting on the current branch first (runsheet's Part A /
 Part B). One commit: YAML (3 keys + comments) → `generate_config.py
@@ -125,8 +128,9 @@ top stop **10.701 ± 0.02 rev**, bottom **−0.107**; catch prime **9.9594 ±
 0.10 rev**, cup z ≈**1003.97 mm** (not 994.6); x2 release **5.9138 rev**, cup
 z **872.21 mm**; then a two/three-tier commanded-vs-achieved velocity and
 apex baseline. Abort: peak > 10.60 rev (10.501 post-FW-18), `dip_below_x3` >
-0.100 rev, end-stop contact, hand fault. Full checklist in the G1 logbook
-entry § (e) / `geometry_audit.md`.
+0.100 rev, end-stop contact, hand fault. Full checklist:
+`tests/hardware/session_hand_geometry_revalidation.md`; full rationale in the
+G1 logbook entry's Diagnosis section.
 
 ## Acceptance
 
@@ -137,6 +141,20 @@ entry § (e) / `geometry_audit.md`.
 - Post-G2 bench: rev unchanged, release velocity **−2.97 %**, mm/cup-z agree
   with the model first time; ILC trim re-fitted, inside its band.
 
+## Known stale references (not blocking G2/G3)
+
+- `tests/hardware/ilc_fit_lib.py` self-declares (its own :151 comment) that its
+  own Δz bullet is re-verified live on this branch (6.932 mm/rad excess over
+  4h) but that `toss_trim` and `toss_fit_lib`/`toss_cal_grid` still quote the
+  PRE-correction Δz = 6.736 mm/rad (as **3126.639** mm/rad at T = 0.7977 s in
+  `toss_trim`, **3126.5 / 3126.53** in `toss_fit_lib` / `toss_cal_grid`) — a
+  ~0.006 % gain drift, not safety-relevant, but a second re-measurement pass
+  audit-fixer B-N4 (2026-09-08) found and did not fix (out of scope for that
+  pass; flagged here so it isn't lost). Needs its own bench/probe
+  re-measurement of `toss_trim` and `toss_fit_lib`/`toss_cal_grid`'s quoted
+  gains against the corrected geometry before either module's own numbers are
+  trusted post-merge.
+
 ## What this does NOT do
 **~3 points of an ~11 % measured throw excess.** After it the machine still
 throws ~8 % fast — do not ship it as "the throw fix"; the remainder stays
@@ -144,7 +162,7 @@ open and conflating the two makes the next measurement unreadable.
 
 ## Assumptions pending owner confirmation (all block merging G2)
 
-Software on `hand-geometry-correction` is built against these five
+Software on `hand-geometry-correction` is built against these six
 orchestrator assumptions (2026-09-06/08), not owner-confirmed facts — each
 flippable, with its alternative named.
 

@@ -180,6 +180,22 @@ def test_the_chained_plan_bar_is_the_COORDINATORS_release_budget():
     assert ucb.SINGLE_PLAN_BAR_MS < ucb.CHAINED_PLAN_ADVISORY_MS
 
 
+def test_the_throw_and_catch_cup_z_mirror_the_coordinator():
+    """``THROW_CUP_Z_MM`` / ``CATCH_CUP_Z_MM`` must equal the coordinator's own.
+
+    D1 (2026-09-08 hand-geometry correction) re-set the coordinator's
+    ``_UNIFIED_THROW/CATCH_CUP_Z_MM`` from the round 860/830 to the
+    physically-flown 865.37/834.47 mm. This bench harness is a literal-mirror
+    twin (rclpy is not importable here at module scope), and a drifted twin
+    at the old round numbers would command 5.539/5.436 rev instead of the
+    validated 5.7038/5.5985, flying the lane 5.37/4.47 mm below the
+    2026-09-04 ladder without any test noticing.
+    """
+    from jugglebot import reload_coordinator_node as rcn
+    assert ucb.THROW_CUP_Z_MM == pytest.approx(float(rcn._UNIFIED_THROW_CUP_Z_MM))
+    assert ucb.CATCH_CUP_Z_MM == pytest.approx(float(rcn._UNIFIED_CATCH_CUP_Z_MM))
+
+
 def test_the_service_timeout_is_not_longer_than_the_machine_ever_waits():
     """``--timeout-s`` must not outlast the coordinator's own client wait.
 

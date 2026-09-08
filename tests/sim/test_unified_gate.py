@@ -357,9 +357,13 @@ def test_the_hand_lane_decays_on_the_falling_edge(smoke_plan, gate):
         'the hand lane never left Mode 1 — it is holding the segment endpoint '
         'and its up-to-200 rev/s feedforward, which is the exact failure the '
         'falling-edge rule forbids')
+    # Ages are measured against the wire's latched frame time (integer µs), so
+    # the bound carries the wire's quantum, not an arbitrary 1e-9 — see
+    # sim.unified_gate.WIRE_TIME_QUANTUM_S for why 1e-9 was rounding luck.
+    from sim.unified_gate import WIRE_TIME_QUANTUM_S
     assert ti.SEGMENT_T_S < d['age_left_mode1_s'] <= (ti.SEGMENT_T_S
                                                       + d['sampling_slack_s']
-                                                      + 1e-9), (
+                                                      + WIRE_TIME_QUANTUM_S), (
         'left Mode 1 at %.4f s, not at the %.3f s segment boundary'
         % (d['age_left_mode1_s'], ti.SEGMENT_T_S))
     # ... winds down monotonically ...
@@ -367,7 +371,8 @@ def test_the_hand_lane_decays_on_the_falling_edge(smoke_plan, gate):
     # ... and reaches EXACTLY zero inside the firmware's own deadline.
     assert d['age_velocity_zero_s'] is not None
     assert d['age_velocity_zero_s'] <= (d['decay_deadline_s']
-                                        + d['sampling_slack_s'] + 1e-9)
+                                        + d['sampling_slack_s']
+                                        + WIRE_TIME_QUANTUM_S)
     assert d['final_vel_rps'] == 0.0
     # The lead clamp is what bounds the wind-down, and by a wide margin: the
     # raw ladder coasts several rev from a fast cut.  Three assertions, because
@@ -381,8 +386,24 @@ def test_the_hand_lane_decays_on_the_falling_edge(smoke_plan, gate):
         'vacuous' % (d['travel_after_cut_rev'], d['max_lead_hand_rev']))
     assert d['lead_clamp_ticks'] > 0, (
         'the hand lead clamp never engaged during the wind-down')
-    assert abs(d['clamped_travel_after_cut_rev']) <= d['max_lead_hand_rev'] \
-        + 1e-9
+    # The clamp's invariant is against the (frozen) ENCODER: the command may lead
+    # it by at most the band.  The clamped TRAVEL is that band plus the
+    # encoder-minus-command offset at the cut sample (the mirror's ~1e-7 rev
+    # tracking offset, either sign) — asserting "travel <= band" alone held only
+    # while that offset happened to be non-positive (2026-09-08: +2.3e-7 rev
+    # after the cup-z re-expression moved the cut, and the bound went red).
+    # ...and hand positions cross the wire as float32 (every Setpoint and
+    # Telemetry field), so the band is met to one float32 ULP at the command's
+    # magnitude (~4.8e-7 rev at 8 rev) — what the wire can represent — not 1e-9.
+    ulp = d['f32_ulp_at_cmd_rev']
+    assert 0.0 < ulp < 2e-6, ulp
+    assert d['clamped_lead_over_frozen_encoder_rev'] <= d['max_lead_hand_rev'] \
+        + ulp
+    assert abs(d['clamped_travel_after_cut_rev']) <= (
+        d['max_lead_hand_rev'] + abs(d['enc_minus_cmd_at_cut_rev']) + ulp)
+    assert abs(d['enc_minus_cmd_at_cut_rev']) < 1e-5, (
+        'the mirror lagged the command by %.3e rev at the cut — that is a '
+        'tracking defect, not a clamp question' % d['enc_minus_cmd_at_cut_rev'])
 
 
 def test_the_hand_lane_is_inert_until_a_has_hand_frame_latches():

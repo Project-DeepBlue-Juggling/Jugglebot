@@ -125,19 +125,22 @@ class MuJoCoPlant(PlantInterface):
         # ``command_hand``.  It read a hardcoded 355.0 until 2026-08-21, which
         # let the simulated hand be commanded 10.25 mm further than the real one
         # can go — the geometry key moved to 344.75 mm on 2026-08-18 when the
-        # operator measured the sensorised hand and the deliberate split landed:
-        # ``jugglebot_geometry.hand_stroke_mm`` (344.75) is physical travel,
-        # ``teensy_trajectory.hand_stroke_m`` (0.3643707, re-based 2026-09-08 —
-        # was 0.355) is the THROW-PROFILE basis that feeds x2/x3/x5.  They are
-        # different numbers on purpose; do not re-merge them.  (``sim/model/
-        # jugglebot.xml``'s joint range/ctrlrange were reconciled with the MJCF
-        # generator on 2026-08-21; since 2026-09-08 the generator emits the
-        # travel ABOVE ENCODER ZERO derived from ``hand_motor_hard_stop_revs``
-        # / gain — 0.348524 m — rather than ``hand_stroke_mm`` (352.0, the
-        # stop-to-stop measurement) directly, because the joint is single-sided
-        # from encoder zero and the two spans differ by the firmware's 0.107 rev
-        # homing offset.  ``tests/sim/test_mjcf_drift.py`` keeps generator and
-        # committed model agreeing.)
+        # operator measured the sensorised hand, then to 352.0 on 2026-09-08
+        # (hand-geometry correction, re-measured stop-to-stop travel).
+        # ``jugglebot_geometry.hand_stroke_mm`` (352.0) is that STOP-TO-STOP
+        # physical travel; ``teensy_trajectory.hand_stroke_m`` (0.3643707,
+        # re-based 2026-09-08 — was 0.355) is the THROW-PROFILE basis that
+        # feeds x2/x3/x5.  Neither is what this clip needs: the MJCF joint is
+        # single-sided from ENCODER ZERO, which sits 0.107 rev above the
+        # physical bottom stop, so the clip is the travel ABOVE ENCODER ZERO —
+        # ``hand_motor_hard_stop_revs`` / gain = 348.524 mm, 3.48 mm LESS than
+        # ``hand_stroke_mm``. Reading ``hand_stroke_mm`` here let a command in
+        # (348.524, 352] mm pass this clip and saturate silently inside
+        # MuJoCo instead. Uses the generated ``HAND_TRAVEL_ABOVE_ZERO_MM``,
+        # the same source ``sim/model/generate_mjcf.py`` derives the joint
+        # range/ctrlrange from (identical formula, independently computed
+        # since the MJCF generator runs standalone); ``tests/sim/
+        # test_mjcf_drift.py`` pins the two against each other.
         #
         # ``_hand_prime_mm`` is the top of the sim's stroke = where
         # ``sim/hand/trajectory.py``'s catch trajectory takes its first sample,
@@ -164,7 +167,7 @@ class MuJoCoPlant(PlantInterface):
                 hw.TEENSY_TRAJ_LINEAR_GAIN_FACTOR
                 / (2.0 * np.pi * hw.TEENSY_TRAJ_HAND_SPOOL_RADIUS_M)
             )
-            self._hand_stroke_mm = float(hw.GEOM_HAND_STROKE_MM)
+            self._hand_stroke_mm = float(hw.HAND_TRAVEL_ABOVE_ZERO_MM)
             self._hand_prime_mm = float(
                 hw.TEENSY_TRAJ_STROKE_MARGIN_M * 1000.0
                 + hw.HAND_STROKE_TOP_REV / linear_gain_rev_per_m * 1000.0

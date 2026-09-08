@@ -78,12 +78,13 @@ GRAVITY_VEC_MPS2 = np.array([0.0, 0.0, -float(hw.GRAVITY_MPS2)])
 #: ⚠ This is the 20 mm frame divergence documented at
 #: ``sim/plant/mujoco_plant.py:130-152`` and owned by
 #: ``plans/parked/hand-trajectory-generator-overhaul.md``: the firmware homes
-#: downward and measures its stroke from the physical bottom (x3 = 315 mm), while
-#: the sim insets its stroke by ``TEENSY_TRAJ_STROKE_MARGIN_M`` (20 mm) inside the
-#: 352.0 mm travel (was 344.75 mm pre-2026-09-08 hand-geometry correction).
+#: downward and measures its stroke from the physical bottom (x3 = 324.37 mm,
+#: was 315 mm pre-2026-09-08 hand-geometry correction), while the sim insets
+#: its stroke by ``TEENSY_TRAJ_STROKE_MARGIN_M`` (20 mm) inside the 352.0 mm
+#: travel (was 344.75 mm pre-2026-09-08 hand-geometry correction).
 #: The sim's own plant already resolves the two exactly this
 #: way — ``_hand_prime_mm = 20 mm + HAND_STROKE_TOP_REV/gain`` — so the same
-#: relation is used here, which is what makes slider 335 mm land on
+#: relation is used here, which is what makes slider 344.37 mm land on
 #: ``JB_OP_HAND_CATCH_PRIME_REV`` (9.9594 rev) instead of somewhere arbitrary.
 #: The unified planner's whole cup-height model (:data:`CUP_Z_BASE_MM`) is in the
 #: sim's mm frame, so the offset cannot be dropped without moving the cup.
@@ -217,8 +218,21 @@ class RealizeConfig:
     #: the bound and restores the pre-WP4 (rate-limited-only) schedule.
     #: See :data:`TILT_ACCEL_LIMIT_DEFAULT_RAD_S2` for where the default comes from.
     tilt_accel_limit_rad_s2: float = TILT_ACCEL_LIMIT_DEFAULT_RAD_S2
-    #: Usable slider travel (mm).
-    slider_stroke_mm: float = float(hw.GEOM_HAND_STROKE_MM)
+    #: Usable slider travel (mm) — the WIRE CLIP, not the metal and not the
+    #: bare joint travel. ``hw.GEOM_HAND_STROKE_MM`` (352.0 mm, 10.808 rev) is
+    #: the physical stop-to-stop measurement, and the encoder-zero joint travel
+    #: (``hw.HAND_TRAVEL_ABOVE_ZERO_MM``, 348.524 mm, 10.701 rev) is the metal
+    #: from encoder zero — but the realizer must not plan the hand all the way
+    #: to either: the can-bridge firmware clips commanded position at
+    #: ``HAND_MOTOR_MAX_POSITION`` = ``hand_motor_hard_stop_revs −
+    #: hand_clip_margin_rev`` = 10.501 rev (FW 18), and
+    #: ``jugglebot.motion.trajectory.throw_envelope.PEAK_LIMIT_REV`` is that
+    #: same 10.501 rev ceiling for the throw envelope. A realizer clamp above
+    #: the wire clip can plan a slider position the wire silently truncates.
+    #: Derived, never a literal, so it moves with the two generated inputs;
+    #: pinned against the wire clip (in mm) by
+    #: ``test_slider_stroke_default_equals_the_wire_clip``.
+    slider_stroke_mm: float = float(hw.HAND_WIRE_CLIP_TRAVEL_MM)
     #: Cup world z (mm) at zero slider, platform at ``active_z_mm``.
     cup_z_base_mm: float = CUP_Z_BASE_MM
     #: Slider mm that maps to 0 motor rev (see :data:`SLIDER_REV_ZERO_MM`).

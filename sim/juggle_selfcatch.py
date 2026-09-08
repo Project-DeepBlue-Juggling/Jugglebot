@@ -115,8 +115,10 @@ from sim.juggle_online import (
 CONTROL_DT = 0.025
 CUP_Z_BASE_MM = 659.6
 # Slider travel [0, stroke] mm — DERIVED (see sim/juggle_tilt.py for why; it read
-# a hardcoded 355.0 until 2026-08-21, 10.25 mm above what the plant will execute).
-SLIDER_STROKE_MM = float(_hw.GEOM_HAND_STROKE_MM)
+# a hardcoded 355.0 until 2026-08-21, 10.25 mm above what the plant will execute.
+# NOT hand_stroke_mm (352.0, stop-to-stop) — the plant clips at the travel ABOVE
+# ENCODER ZERO instead, 3.48 mm less; HAND_TRAVEL_ABOVE_ZERO_MM is that one source).
+SLIDER_STROKE_MM = float(_hw.HAND_WIRE_CLIP_TRAVEL_MM)  # the wire clip, not the metal — matches cup_realize's clamp
 SEAT_RADIUS_MM = 40.0
 WORKSPACE_XY_M = 0.15
 # A ball whose centre is more than this far from the cup opening after the

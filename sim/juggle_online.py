@@ -92,8 +92,10 @@ _KEY_LEFT_ARROW = 263      # accepted but no-op (sim can't run backwards)
 Z_ACTIVE_MM = 170.0
 CUP_Z_BASE_MM = 659.6
 # Slider travel [0, stroke] mm — DERIVED (see sim/juggle_tilt.py for why; it read
-# a hardcoded 355.0 until 2026-08-21, 10.25 mm above what the plant will execute).
-SLIDER_STROKE_MM = float(_hw.GEOM_HAND_STROKE_MM)
+# a hardcoded 355.0 until 2026-08-21, 10.25 mm above what the plant will execute.
+# NOT hand_stroke_mm (352.0, stop-to-stop) — the plant clips at the travel ABOVE
+# ENCODER ZERO instead, 3.48 mm less; HAND_TRAVEL_ABOVE_ZERO_MM is that one source).
+SLIDER_STROKE_MM = float(_hw.HAND_WIRE_CLIP_TRAVEL_MM)  # the wire clip, not the metal — matches cup_realize's clamp
 
 
 @dataclasses.dataclass

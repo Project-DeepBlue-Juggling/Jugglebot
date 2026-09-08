@@ -210,8 +210,11 @@ from sim.cycle_gate import (                                      # noqa: E402
 #: site: low enough that the pre-launch dip fits, high enough to be inside the
 #: cup-z box.  It is where each set's cycle STARTS from; where it comes to REST
 #: is :func:`_settle_site`, which is a different height and deliberately so.
-THROW_CUP_Z_MM = 860.0
-CATCH_CUP_Z_MM = 830.0
+#: D1 (2026-09-08 hand-geometry correction) re-set both to the
+#: physically-flown heights — see ``reload_coordinator_node``'s
+#: ``_UNIFIED_THROW_CUP_Z_MM`` / ``_UNIFIED_CATCH_CUP_Z_MM``, which these mirror.
+THROW_CUP_Z_MM = 865.37
+CATCH_CUP_Z_MM = 834.47
 REST_CUP_Z_MM = 750.0
 
 
@@ -221,8 +224,9 @@ def _settle_site(catch_site_mm):
     ``reload_coordinator_node._unified_cycle_request`` settles every window at
     *the catch xy, at the parked cup height*, and this gate exists to run the
     choreography the coordinator actually asks for.  The z half is the load-
-    bearing one: a cycle that stops at the 830 mm catch height leaves the hand at
-    4.755 rev, and ``toss_sequencer``'s CHECKING gate then refuses the NEXT cycle
+    bearing one: a cycle that stops at the 834.47 mm catch height leaves the hand
+    at 4.755 rev (unchanged by D1 — the mm label moved, the commanded rev did
+    not), and ``toss_sequencer``'s CHECKING gate then refuses the NEXT cycle
     ``REJECTED_HAND_NOT_PARKED`` (band 0.5 rev) before it plans — so a gate that
     settled at the catch would be scoring a cycle the machine can only fly once.
 
@@ -246,6 +250,14 @@ CYCLE_PERIOD_S = 1.4
 
 #: Firmware interpolation tick (s) — 500 Hz, ``leg_interp.cpp``'s ISR rate.
 TICK_S = 0.002
+#: The wire's own time quantum (s). Setpoint timestamps travel as integer
+#: microseconds, and the hand-lane mirror's ``hand_ts`` is the latched frame
+#: time, so any AGE computed against it carries up to 1 µs of quantisation.
+#: The decay-deadline comparisons below add this, not an arbitrary 1e-9: the
+#: 1e-9 that stood until 2026-09-08 was BELOW the wire's resolution and passed
+#: by rounding luck (a 2.3e-7 s excess appeared the moment the sim gate's
+#: cup-z literals were re-expressed and the cut's phase within a tick moved).
+WIRE_TIME_QUANTUM_S = 1e-6
 
 #: How long the host keeps quiet after the last frame, in seconds.  Covers the
 #: firmware's whole wind-down ladder (``SEGMENT_T_S`` 0.025 + ``MAX_EXTRAP_DT_S``
@@ -684,6 +696,22 @@ def hand_decay_probe(plan, geom) -> dict:
         # way from a fast cut and MAX_LEAD_HAND_REV is the only thing that
         # bounds it, which is why that constant is 2.0 rev and not 5.0.
         'clamped_travel_after_cut_rev': float(cmd_last - cmd_at_cut),
+        # The clamp's invariant is stated against the (frozen) ENCODER, not the
+        # command at the cut: cmd <= enc + MAX_LEAD_HAND_REV.  So the clamped
+        # TRAVEL above equals the band plus whatever the encoder led or lagged
+        # the command by at the cut sample — the mirror's tracking offset,
+        # ~1e-7 rev either sign.  Both witnesses are exposed so the bound can
+        # be asserted exactly instead of on the lucky sign of that offset.
+        'clamped_lead_over_frozen_encoder_rev': float(cmd_last - pos_at_cut),
+        'enc_minus_cmd_at_cut_rev': float(pos_at_cut - cmd_at_cut),
+        # Hand positions cross the WIRE as float32 (Setpoint v6 and Telemetry
+        # are all-float32 fields), so the encoder the clamp anchors to and the
+        # command it emits each carry up to half a float32 ULP of quantisation
+        # at ~8 rev (~2.4e-7 rev, either sign); a float64 comparison against
+        # the band therefore needs one float32 ULP at the command's magnitude,
+        # not an arbitrary 1e-9 (which passed only on the lucky rounding sign
+        # until the 2026-09-08 cup-z re-expression moved the cut).
+        'f32_ulp_at_cmd_rev': float(np.spacing(np.float32(abs(cmd_last)))),
         'max_lead_hand_rev': ti.MAX_LEAD_HAND_REV,
         # The clamp's own witness.  A wind-down travel merely LARGER than 1 rev
         # would not say the clamp engaged (the band is 2.0 rev); this counts the
@@ -1414,7 +1442,7 @@ class UnifiedGate:
                         and decay.get('age_velocity_zero_s') is not None
                         and decay['age_velocity_zero_s']
                         <= (decay['decay_deadline_s']
-                            + decay['sampling_slack_s'] + 1e-9)
+                            + decay['sampling_slack_s'] + WIRE_TIME_QUANTUM_S)
                         and decay['monotone_after_mode1']
                         and decay['final_vel_rps'] == 0.0)
         checked = [v for v in (pump_ok, mirror_ok, flags_ok,

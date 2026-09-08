@@ -449,9 +449,10 @@ def test_z_float_absorbs_the_shortfall_it_can_and_clamps_the_rest():
     pinned = cr.decompose(plan, tilts, cr.RealizeConfig(z_float_enabled=False))
     floated = cr.decompose(plan, tilts,
                            cr.RealizeConfig(z_float_enabled=True, z_band_mm=band))
-    # cup_z 1.0 m ⇒ slider demand 340.4 mm, inside the 352.0 stroke (was 344.75
-    # pre-2026-09-08 hand-geometry correction): no clamp, no excursion.  Push
-    # it higher to force the shortfall.
+    # cup_z 1.0 m ⇒ slider demand 340.4 mm, inside the wire-clip stroke
+    # (~342.0 mm — was 344.75 mm pre-2026-09-08 hand-geometry correction,
+    # then briefly 352.0 mm before B-N4 tightened the default to the wire
+    # clip): no clamp, no excursion.  Push it higher to force the shortfall.
     assert not pinned.slider_saturated.any()
     np.testing.assert_array_equal(floated.z_excursion_mm,
                                   np.zeros(len(plan.pos)))
@@ -465,6 +466,29 @@ def test_z_float_absorbs_the_shortfall_it_can_and_clamps_the_rest():
     assert pinned_tall.slider_saturated.all()
     np.testing.assert_allclose(floated_tall.z_excursion_mm, band, atol=0.0)
     assert np.all(floated_tall.slider_mm == cr.RealizeConfig().slider_stroke_mm)
+
+
+def test_slider_stroke_default_equals_the_wire_clip():
+    """``RealizeConfig().slider_stroke_mm`` must equal the wire clip, in mm.
+
+    B-N4 (2026-09-08 hand-geometry audit): the default used to be
+    ``hw.GEOM_HAND_STROKE_MM`` (352.0 mm, the stop-to-stop metal), which sits
+    above both the joint's encoder-zero travel (348.524 mm) and the can-bridge
+    firmware's wire clip (10.501 rev = ``hand_motor_hard_stop_revs −
+    hand_clip_margin_rev``). A realizer that plans up to the metal can plan a
+    slider position the wire silently truncates. This pins the default to the
+    SAME 10.501 rev ceiling ``throw_envelope.PEAK_LIMIT_REV`` uses, converted
+    to mm with the one shared gain.
+    """
+    from jugglebot.motion.trajectory import throw_envelope as te
+    wire_clip_rev = (float(hw.GEOM_HAND_MOTOR_HARD_STOP_REVS)
+                      - float(hw.GEOM_HAND_CLIP_MARGIN_REV))
+    assert wire_clip_rev == pytest.approx(te.PEAK_LIMIT_REV, abs=1e-9)
+    wire_clip_mm = wire_clip_rev / hand_stroke.LINEAR_GAIN_REV_PER_M * 1000.0
+    assert cr.RealizeConfig().slider_stroke_mm == pytest.approx(wire_clip_mm, abs=1e-9)
+    # Sits strictly under both looser bounds — never widen this default back up.
+    assert cr.RealizeConfig().slider_stroke_mm < float(hw.HAND_TRAVEL_ABOVE_ZERO_MM)
+    assert cr.RealizeConfig().slider_stroke_mm < float(hw.GEOM_HAND_STROKE_MM)
 
 
 # ── decomposition bookkeeping ────────────────────────────────────────────────

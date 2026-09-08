@@ -160,7 +160,7 @@ _CUP_Z_TOP_M = (_CUP_Z_BOTTOM_M
 #: The box is on the cup opening, but the slider is what has to reach it, and a
 #: TILTED cup sits lower than a level one by ``arm·(1 − cos θ)`` — at the 12°
 #: ceiling and the (2026-09-08 hand-geometry correction) 259.7 mm top-of-band
-#: lever that is 5.6 mm (was 250 mm lever / 5.5 mm pre-correction).  10 mm
+#: lever that is 5.7 mm (was 250 mm lever / 5.5 mm pre-correction).  10 mm
 #: covers it with room for the solve's own residual, and keeps the box
 #: strictly inside the band so a knot on the box boundary is still realisable
 #: rather than exactly at the stroke clamp.  Lands at 0.6896 / 0.9940 m (was

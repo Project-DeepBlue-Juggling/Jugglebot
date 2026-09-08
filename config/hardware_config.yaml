@@ -374,8 +374,10 @@ jugglebot_geometry:
   # (0.3643707). Read that key's comment before touching either. The two are
   # DIFFERENT NUMBERS ON PURPOSE: this one is the physical geometry (stop-to-
   # stop), that one is a throw-profile basis re-based to preserve commanded rev.
-  # Consumers of THIS key are the GUI render and the MuJoCo model's hand
-  # joint range/ctrlrange (sim/model/generate_mjcf.py) — geometry, not control.
+  # Consumers of THIS key are the GUI render — geometry, not control. The
+  # MuJoCo model's hand joint range/ctrlrange does NOT read this key directly
+  # (D2): it derives the travel-above-encoder-zero split itself, per the note
+  # above.
   hand_stroke_mm: 352.0
   hand_radius_mm: 35.0               # Radius of hand {mm}. Approximate.
   hand_axis_bottom_offset_mm: -129.0  # Hand axis bottom position relative to platform centroid {mm} (CAD measurement)
@@ -1153,7 +1155,7 @@ teensy_trajectory:
   # residual against the exact measurement is 0.0008 mm/rev, three orders of
   # magnitude below the measurement's own ~1 mm / 0.3% resolution).
   # Its physical content is an effective wrap radius r_eff = r/factor =
-  # 0.00521/1.0051 = 0.0051834 m = 5.183 mm against the 5.21 mm bare spool —
+  # 0.00521/1.0051 = 0.0051836 m = 5.183 mm against the 5.21 mm bare spool —
   # 0.027 mm (0.51%) under the bare drum, roughly half a cable diameter, which
   # is what a cable that does not wrap on the bare drum looks like. The old
   # 1.035 implied r_eff = 5.034 mm, 3.4% UNDER the drum — physically
@@ -1200,8 +1202,10 @@ teensy_trajectory:
                                         #       four flown tiers => 1.050e-5 kg m^2.
                                         # The geometric load-only floor (m_hand * (1/(2*pi*LINEAR_GAIN))^2
                                         # = 7.5503e-6, was 7.120e-6 pre-correction) is a hard lower bound
-                                        # and agrees, though more narrowly now (~1.95e-6 residual above
-                                        # it, was ~2.9e-6) — the "agrees" claim narrows but still holds.
+                                        # and agrees, against the ~1.0e-5 decel-side evidence used
+                                        # consistently on both sides: ~2.45e-6 residual above it now,
+                                        # was ~2.88e-6 pre-correction — the "agrees" claim narrows but
+                                        # still holds.
                                         # DO NOT reinstate the accel-phase torque balance (1.015e-5) as
                                         # an identification of THIS inertia.  Release is at x2, the end
                                         # of the velocity hold, so the ball is in the cup for the whole
@@ -1252,12 +1256,15 @@ teensy_trajectory:
   # basis, `total = hand_stroke_m - 2*stroke_margin_m`, and
   # `x3 = total * LINEAR_GAIN`. The gain dropped 2.888% (31.6172 -> 30.7038
   # rev/m), so holding 0.355 would have dropped x3 from 9.9594 to 9.6719 rev
-  # (-9.35 mm) and x2 from 5.9138 to 5.7430 rev (-5.4 mm), i.e. moved the
+  # (-9.35 mm) and x2 from 5.9138 to 5.7430 rev (-5.56 mm), i.e. moved the
   # entire legacy throw/catch calibration set the machine has flown for
   # months. Solving `total = 9.959403 / 30.703768 = 0.324371` and adding back
-  # 2 x 0.020 gives 0.3643707. Every commanded rev is bit-preserved; what
-  # changes is that a given `event_vel` now produces 2.97% LESS rev/s, which
-  # IS the correction (the excess release velocity was the gain error).
+  # 2 x 0.020 gives 0.3643707. Commanded rev at x2/x3/x5/prime, PEAK_LIMIT_REV
+  # and the flown cup-z literals is preserved (<=1.3e-5 rev); mm-anchored
+  # derived sites (SETTLE 689.6 mm, the 10 mm box inset) move <=0.3 mm — D1.
+  # What changes for the preserved sites is that a given `event_vel` now
+  # produces 2.97% LESS rev/s, which IS the correction (the excess release
+  # velocity was the gain error).
   #
   # WHY THIS IS SAFE. x3 = 9.9594 rev still sits 0.742 rev (24.2 mm) below the
   # 10.701 rev hard stop, so the profile still never commands into metal —

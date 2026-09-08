@@ -151,8 +151,15 @@ SET_LIMITS_CMD = (
 #: ``reload_coordinator_node._UNIFIED_THROW_CUP_Z_MM`` / ``_UNIFIED_CATCH_CUP_Z_MM``.
 #: Deliberately module literals there ("they exist to be moved by UH-5/UH-6"),
 #: so they are literals here too and are exposed as ``--throw-z`` / ``--catch-z``.
-THROW_CUP_Z_MM = 860.0
-CATCH_CUP_Z_MM = 830.0
+#: D1 (2026-09-08 hand-geometry correction) re-set both to the
+#: physically-flown heights (860/830 would now command 5.539/5.436 rev
+#: instead of the validated 5.7038/5.5985, flying the lane 5.37/4.47 mm
+#: below the 2026-09-04 ladder) — pinned against
+#: ``reload_coordinator_node._UNIFIED_THROW_CUP_Z_MM`` /
+#: ``_UNIFIED_CATCH_CUP_Z_MM`` by
+#: ``test_unified_cycle_bench.py::test_the_throw_and_catch_cup_z_mirror_the_coordinator``.
+THROW_CUP_Z_MM = 865.37
+CATCH_CUP_Z_MM = 834.47
 
 #: The PLANNER's cup-box FLOOR for a settle site — ``unified_cycle.SETTLE_CUP_Z_MM``
 #: (= ``_CUP_Z_BOTTOM_M + _CUP_Z_INSET_M``, i.e. 679.6 mm of stroke bottom plus a
@@ -203,9 +210,12 @@ TILT_NOTE_DEG = 0.5
 #: that reach it (:func:`hand_rev_for_cup_z`). Pinned to the planner's own gain
 #: by the offline test.
 #: Was 31.6172 pre-2026-09-08 hand-geometry correction
-#: (``teensy_trajectory.linear_gain_factor`` 1.035 -> 1.0051); NO drift-guard
-#: test pins this mirror against the generated value, so a future regen must
-#: update it here BY HAND — see ``config/generated/hardware_config.py``'s
+#: (``teensy_trajectory.linear_gain_factor`` 1.035 -> 1.0051);
+#: ``test_the_cup_height_to_hand_map_matches_the_planners_own``
+#: (tests/ros/test_unified_cycle_bench.py) pins this mirror indirectly by
+#: comparing ``hand_rev_for_cup_z`` against the planner's own
+#: ``unified_cycle.hand_rev_for_cup_z``, so a future regen that drifts this
+#: literal fails that test — see ``config/generated/hardware_config.py``'s
 #: ``TEENSY_LINEAR_GAIN`` for the current source of truth.
 REV_PER_MM = 30.703768 / 1000.0
 

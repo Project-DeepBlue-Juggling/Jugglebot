@@ -2,12 +2,11 @@
 title: Hand geometry correction — the flown-position audit that withdrew "hand_stroke_mm is measured"
 type: investigation
 date: 2026-09-08
-status: in-progress
-phase: hand-geometry-correction — G1
+status: G2 landed on branch (hand-geometry-correction, 2a25b98) — G3 not flown
+phase: hand-geometry-correction — G2
 related_plan: hand-geometry-correction.md
 files_changed:
   - config/hardware_config.yaml
-  - ros_ws/src/jugglebot/jugglebot/motion/trajectory/hand_stroke.py
   - ros_ws/src/jugglebot/jugglebot/motion/trajectory/cup_realize.py
   - ros_ws/src/jugglebot/jugglebot/motion/trajectory/cup_cycle.py
   - ros_ws/src/jugglebot/jugglebot/motion/trajectory/toss_release.py
@@ -37,8 +36,9 @@ carries the resulting +2.97 % gain error, and whether `hand_stroke_mm`
 answers both, classifies all 24 config/code sites the gain touches by
 whether the change moves a **commanded rev** or only a **label**, and writes
 the operator bench checklist (G3) the owner requires flown *before* G2 ships.
-This entry carries the G1 findings (`geometry_audit.md`, session scratchpad,
-folded in here per the plan) plus G2's software-correction status.
+This entry carries the G1 findings (folded in here from the session
+scratchpad per the plan — see the full 24-row table under "The
+flown-position table (full)" below) plus G2's software-correction status.
 
 ## Symptoms
 
@@ -130,8 +130,8 @@ fixed, gain-independent anchor: `CUP_Z_BASE_MM` 659.6 + `SLIDER_REV_ZERO_MM`
 20.0), a constant stored **in rev** is a label change under the gain
 correction; a constant stored **in mm/cup-z** is a **command** change
 (−2.888 % in rev, since 1/1.029748 − 1 = −0.02888). Twenty-four sites were
-classified by file:line (full table in `geometry_audit.md`, session
-scratchpad). The rows that matter:
+classified by file:line — full table below, “The flown-position table
+(full)”. The rows that matter:
 
 | Position | Stored as | Commanded rev moves? |
 |---|---|---|
@@ -144,13 +144,51 @@ scratchpad). The rows that matter:
 | `HAND_MAX_DECEL_MPS2` | derived | BEHAVIOUR +2.97 %; rev/s² limit (owner-signed) unchanged |
 | coast ladder v-axis | measured table | see below — a decision, not a mechanical edit |
 
+### The flown-position table (full)
+
+All 24 sites the gain touches, classified by file:line — folded in here from the G1 session scratchpad (`geometry_audit.md`, not a repo file) per the plan, so this entry is the only durable copy. Rows 6/7 (D1),
+15/16/23 (owned by the FW 18 unit, already landed on `mvp-trajectory-bringup`) and 19 (`hand_stroke_mm` 344.75 -> 352.0) reflect the decisions this correction actually landed with; the table otherwise records the audit's as-measured state.
+
+Gain constants used throughout: old 31.6284 mm/rev (31.6172 rev/m), new
+**32.5693 mm/rev** (30.7038 rev/m), ratio **1.029748**.
+
+### Table
+
+| # | Position | file:line | Stored as | Value | mm @ OLD | mm @ NEW | Commanded rev moves? |
+|---|---|---|---|---|---|---|---|
+| 1 | `x2` legacy release (`HAND_THROW_POS_M`) | `config/generated/` (derived, `generate_config.py`); consumed `toss_release.py:55` | m (profile) | 0.187044 m = **5.9138 rev** | 187.04 | **192.61** | **LABEL** if `hand_stroke_m` is re-based (recommended); **COMMAND −0.171 rev** if not |
+| 2 | `x3` stroke top / catch prime | `hand_stroke.py:65-73` (`STROKE_TOP_REV`); YAML override `hardware_config.yaml:559` | rev (override) + m (derived) | **9.9594 rev** | 315.00 | **324.37** | **LABEL** if re-based; **COMMAND −0.288 rev** if not |
+| 3 | `x5` legacy catch point | derived in `generate_config.py` | m (profile) | ~6.129 rev | ~193.8 | **~199.6** | same as x2 |
+| 4 | `JB_OP_HAND_CATCH_PRIME_REV` | `hardware_config.yaml:559` | **rev** | 9.9594 | 315.00 | **324.37** | **LABEL** — it is already in rev |
+| 5 | `SETTLE_CUP_Z_MM` | `unified_cycle.py:196-198` | cup z mm (derived: `679.6 + 10.0` inset) | **689.6 mm** | rev 0.31618 | rev **0.30704** | **COMMAND −0.0091 rev = −0.30 mm** (hand settles 0.30 mm lower; was physically 689.90, becomes 689.60) |
+| 6 | `_UNIFIED_THROW_CUP_Z_MM` | `reload_coordinator_node.py:523` | cup z mm | **860.0** | rev 5.7037 | rev **5.5390** | **COMMAND −0.1648 rev = −5.37 mm.** Physically the machine has been throwing from **865.37 mm**. Leaving the literal at 860 moves the flown throw site DOWN 5.37 mm |
+| 7 | `_UNIFIED_CATCH_CUP_Z_MM` | `reload_coordinator_node.py:524` | cup z mm | **830.0** | rev 4.7552 | rev **4.6178** | **COMMAND −0.1374 rev = −4.47 mm.** Physically flown at **834.47 mm** |
+| 8 | `rest_cup_z` = catch − 80 | `reload_coordinator_node.py:7294` | cup z mm | 750.0 | rev 2.2258 | rev **2.1615** | **COMMAND −0.064 rev = −2.09 mm** (follows #7) |
+| 9 | `_CUP_Z_TOP_MM` | `cup_realize.py:145-147` | derived from prime rev | **994.60** | — | **1003.97** | **LABEL** (derived); but it drives #10 and #11 |
+| 10 | `TILT_ACCEL_LIMIT_DEFAULT_RAD_S2` | `cup_realize.py:148-153` | derived | **5.3262** rad/s² | — | **5.2220** | **BEHAVIOUR −1.96 %** — the planner's tilt-accel cap tightens (lever 469.4 → 478.7 mm). Owner's "−2 %" confirmed |
+| 11 | cup operating band `_CUP_Z_TOP_M − _CUP_Z_BOTTOM_M` | `unified_cycle.py:155-157` | derived | 315.0 mm | — | **324.37 mm** | **BEHAVIOUR +2.97 %** — the runway/box grows. Owner's "runway +3 %" confirmed. Box lands `[0.6896, 0.9940]` m instead of `[0.6896, 0.9846]` |
+| 12 | `HAND_THROW_OFFSET_MM` | `toss_release.py:55-56` = `GEOM_HAND_AXIS_BOTTOM_OFFSET_MM` (−129.0) + `HAND_THROW_POS_M`×1000 | derived mm | **58.044** | — | **63.608** | **BEHAVIOUR +5.564 mm** — the ball's release plane in the ballistics model rises 5.56 mm, i.e. it has been 5.56 mm too LOW for the life of the constant. **NOT hardcoded** — the owner's blast-radius note says "hardcoded"; it is in fact derived, and `HAND_THROW_POS_M` (0.187044, generated: `generate_config.py`, x2 in metres) is a function of `hand_stroke_m`, **not** of the gain. So it moves *because of the re-base*: 0.187044 × 1.029748 = 0.192608 m. It follows automatically on regenerate |
+| 13 | `HAND_MAX_DECEL_MPS2` | `cup_cycle.py:141` (`HAND_ACC_LIMIT_RPS2 / LINEAR_GAIN_REV_PER_M`) | derived | **110.699** m/s² | — | **113.993** | **BEHAVIOUR +2.97 %** — the catch-runway decel budget grows; the runway constraint (`cup_cycle.py:246,296` → `feasibility`) admits slightly more. The rev/s² limit (3500, owner-signed) is unchanged, so the *machine* is unchanged; only the model's m/s² label of it was wrong |
+| 14 | `CATCH_RUNWAY_MARGIN_REV` | `feasibility.py:984-985` | derived (`0.020 m × gain`) | **0.63234 rev** | — | **0.61408** | **COMMAND −0.018 rev** — a 20 mm margin is now correctly 0.614 rev instead of 0.632 |
+| 15 | `PEAK_LIMIT_REV` | `throw_envelope.py:118-120` | rev | 10.8 − 0.2 = **10.60** | 335.3 | — | **COMMAND, but owned by the FW 18 unit** — becomes 10.701 − 0.2 = **10.501 rev**. Not this unit's edit |
+| 16 | smooth-move excursion ceiling | `hardware_config.yaml:1276` (`smooth_move_excursion_margin_rev: 0.2`) + firmware `SMOOTH_MOVE_POS_CEIL_REV` | rev | 10.8 − 0.2 = **10.60** | 335.3 | — | **COMMAND, owned by the FW 18 unit** (and it needs a FLASH). Gain-independent |
+| 17 | coast ladder v-axis | `hardware_config.yaml` `hand_throw_envelope.measured_coast_rev`, loaded `throw_envelope.py:219-266` | (m/s, rev) pairs | top rung 4.436 m/s | — | true speed was **4.568 m/s** | **See § "The coast ladder" below — a decision, not a mechanical edit** |
+| 18 | `TOP_RUNG_ACHIEVED_DECEL_RPS2` | `throw_envelope.py:270-274` | derived (`(v·gain)²`) | — | — | ×**0.9431** | **BEHAVIOUR −5.7 %** (v_rev² scales as gain²). Feeds the aliasing budget; check the report line |
+| 19 | `hand_stroke_mm` (geometry) | `hardware_config.yaml:368` | mm | 344.75 | — | **352.0** | **MODEL ONLY** — consumers are the GUI render and the MJCF joint range/ctrlrange, per the key's own comment. No commanded rev |
+| 20 | `HAND_STROKE_MIN_REV` = 0.0, `HAND_STROKE_MAX_REV` = prime | `feasibility.py:932-933` | **rev** | 0.0 / 9.9594 | 0 / 315.0 | 0 / **324.37** | **LABEL** — both in rev. `feasibility.py` owns the operating-band gate; there is no separate zone module |
+| 21 | `HAND_HOMED_REST_FLOOR_REV`, `HAND_PARK_BAND_REV` (0.5), `HAND_HARD_STOP_REV` | `hand_stroke.py:158,172`; `feasibility.py:956,976` | **rev** | — | — | — | **LABEL** — pure rev arithmetic off `HOMING_HAND_ABS_POS_REV` (−0.1) |
+| 22 | `_UNIFIED_FLOOR_TOL_REV` = 0.01 → `_UNIFIED_FLOOR_TOL_MM` | `reload_coordinator_node.py:787-791` | rev → derived mm | 0.01 rev | 0.316 mm | **0.326 mm** | **LABEL** — the commanded tolerance is in rev |
+| 23 | `G4_STROKE_PEAK_MAX_REV` | `toss_trim.py:444-457` = `HARD_STOP_REV − SMOOTH_MOVE_EXCURSION_MARGIN_REV` | rev | 10.6 | — | — | **FW 18 unit** — gain-independent |
+| 24 | `hand_rev_for_cup_z` / `cup_z_for_hand_rev` | `unified_cycle.py:433-465`; tilted inverse `:385-430`; realisation `cup_realize.py:742,789` | functions | — | — | — | **THE map.** Every cup-z → rev command in the tree goes through these. Three test-local re-spellings exist and must follow: `tests/hardware/unified_cycle_bench.py:377`, `tests/ros/test_unified_cycle_levelling.py:110`, `tests/ros/test_unified_cycle_integration.py:87` |
+
+
 **The one decision that decides most of the table: is `hand_stroke_m` a
 measured stroke or a tuned profile basis?** `hardware_config.yaml:1192-1217`
 already says explicitly it is "NOT the physical stroke … a TUNED PROFILE
 PARAMETER whose units happen to be metres," and the firmware computes
 `x2/x3/x5` as `(hand_stroke_m − 2·stroke_margin_m) × LINEAR_GAIN`. Holding
 `hand_stroke_m: 0.355` while correcting the gain drops x3 from 9.9594 to
-9.6719 rev (−9.35 mm) and x2 from 5.9138 to 5.7430 rev — moving the entire
+9.6719 rev (−9.35 mm) and x2 from 5.9138 to 5.7429 rev — moving the entire
 legacy calibration set the machine has flown successfully for months.
 **Re-basing beat the naive gain-only fix.** Solving for the basis that
 preserves x3 in rev:
@@ -219,7 +257,7 @@ currently absorbing the excess the gain error causes. After the correction
 the same commanded `event_vel` produces 2.97 % less physical speed, so:
 
 ```
-k_v_new = (1 − 0.1076) × 1.029748 = 0.91896  →  event_vel_trim ≈ −0.0810
+k_v_new = (1 − 0.1076) × 1.029748 = 0.91895  →  event_vel_trim ≈ −0.0810
 ```
 
 **If the trim is not re-fitted in the same commit, the first throw after G2
@@ -283,9 +321,14 @@ unilaterally):**
   instead of the literals.
 
 All five are recorded as **assumptions pending owner confirmation** in
-`plans/active/hand-geometry-correction.md`, not as decided facts — no
-commanded hand position changes are made on hardware in this software-only
-commit; the assumptions govern only what a future G2 commit would write.
+`plans/active/hand-geometry-correction.md`, not as decided facts. They landed
+in G2 (2a25b98, software-only, branch `hand-geometry-correction`) — that
+commit IS the future G2 commit this section originally described in the
+future tense; it has landed but **not flown**: no commanded hand position has
+changed on hardware, because the branch has not been flashed or merged, and
+G3 (bench re-validation) must fly and pass before it merges to
+`mvp-trajectory-bringup`. A sixth assumption, D6, was found afterward
+(G2a-2) and is recorded alongside these five.
 
 ## Verification
 
@@ -324,7 +367,7 @@ parallel **6955 passed / 9 skipped / 7 xfailed in 462.50 s**, serial **4 passed 
 494 s, **exit 0**. The seven xfails are the two pre-existing ones, D6, and the four of open item 7.
 **G2 software** (all 2026-09-08, worktree `~/Desktop/Jugglebot-geometry`, branch
 `hand-geometry-correction`): G2a-1 `pytest tests/motion/test_throw_envelope.py -q` **39 passed**,
-`tests/motion/test_hand_throw_decel_ff.py` **22 passed**, `tests/motion/test_hand_stroke.py`
+`tests/sim/test_hand_throw_decel_ff.py` **22 passed**, `tests/motion/test_hand_stroke.py`
 **25 passed**, `tests/sim/test_hand_trajectory.py` **224 passed**; G2a-2 the combined set
 (`test_toss_release`, `test_reload_coordinator_node`, `test_toss_sequencer`,
 `test_unified_cycle_integration`, `test_toss_coordinator`, `test_gui_geometry`, `test_mjcf_drift`,
@@ -336,6 +379,44 @@ parallel **6955 passed / 9 skipped / 7 xfailed in 462.50 s**, serial **4 passed 
 corrected config reproduces **−0.107592** (the fit's sensitivity is 2/g, pure ballistics — the gain
 never enters), so the audit's pre-registered fallback applied: rescaled by the measured gain ratio
 31.6172 / 30.7038 = 1.02975 to **−0.081044**, `admit_command()` True at every goal cell.
+
+**`MIRROR_TOL_LEG_REV` tightened 5e-4 -> 3e-4** (`sim/unified_gate.py:335`,
+B-N2, 2026-09-08 audit finding). Measured (2026-09-08,
+`python sim/unified_gate.py --no-viewer`): worst HONEST leg residual over the
+full 27-point grid (SET 1 single-toss + SET 2 two-pose ring) is **2.837e-05
+rev** — 10.6x below the new 3e-4 band, real headroom preserved — while the
+ring's fault footprint is **4.068e-04 rev**, now 1.36x OVER the new band,
+restoring the non-vacuity the old 5e-4 band had lost (the fault footprint
+used to sit comfortably inside it). 3e-4 is the tightest round number that
+clears both the >=10x honest-headroom floor and the fault-exceeds-band
+requirement — the honest worst already spends over a tenth of that margin,
+and a smaller round number (1e-4) would leave under 4x headroom.
+
+**Audit fixes (2026-09-08).** One phase audit over the G2 commit (one BLOCKING, seven WARNING,
+four NOTE findings, all applied on this branch). The blocking one was the G3 runsheet itself: it
+told the operator a physical cup-z reading should move between Part A and Part B, when the
+physical height at 9.9594 rev is a property of the mechanism and only the model's label moves —
+the merge gate was inverted, and is now stated as the model-vs-ruler gap closing. Code changes:
+the bench and sim twins of the unified cup-z heights follow production (865.37 / 834.47, pinned
+bench == production); one generated source for the hand's travel — `HAND_TRAVEL_ABOVE_ZERO_MM`
+(stop / gain, the metal, for the sim plant's clip and the MJCF) and `HAND_WIRE_CLIP_TRAVEL_MM`
+((stop − clip margin) / gain = 342.0 mm, the furthest position the wire will command, for
+`cup_realize`'s clamp and the four sim juggle planners) — the realizer/sim parity test caught the
+two bounds disagreeing by 6.5 mm while the fixes were in flight; the three knife-edge bounds made
+deterministic (the timeline probe pins its sampling phase and asserts exact values). Two bounds
+in the sim gate's decay probe were found to be below what the wire can represent and were
+restated at the wire's own quanta rather than widened: the deadline comparisons add the 1 µs
+timestamp quantum, and the lead-clamp comparison adds one float32 ULP at the command's
+magnitude (every Setpoint and Telemetry field is float32; the old `+1e-9` had passed only on the
+rounding sign, which flipped when the cup-z re-expression moved the cut). The probe now exposes
+the lead over the frozen encoder and the encoder-minus-command offset at the cut so the clamp's
+real invariant is what is asserted. Runs (2026-09-08, worktree): the fixer's seventeen-file set
+**575 passed / 3 xfailed** (one failure, the lead-clamp bound, then fixed);
+`pytest tests/sim/test_unified_gate.py tests/motion/test_cup_realize.py -q` **64 passed in 16.45 s**.
+
+**Full gate after audit fixes** (2026-09-08 19:02–19:10, `./run_tests.sh --full` in the worktree):
+parallel **6957 passed / 9 skipped / 7 xfailed in 463.32 s**, serial **4 passed in 26.08 s**,
+total 494 s, **exit 0**.
 
 ## Open items
 

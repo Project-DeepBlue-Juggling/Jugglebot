@@ -60,13 +60,20 @@ CUP_Z_BASE_MM = 659.6        # cup_z_world = CUP_Z_BASE_MM + slider_mm at level
 # Slider travel [0, stroke] mm — DERIVED, never a literal.  It read a hardcoded
 # 355.0 until 2026-08-21; `jugglebot_geometry.hand_stroke_mm` moved to 344.75 on
 # 2026-08-18 (operator-measured travel between hard stops), then to 352.0 on
-# 2026-09-08 (hand-geometry correction, re-measured stop-to-stop travel) and
-# `MuJoCoPlant.command_hand` clips to that value, so a planner sized on a stale
-# stroke would ask for travel the plant will silently refuse to execute.  Do
-# NOT substitute `teensy_trajectory.hand_stroke_m` (0.3643707) here — that is
-# the THROW-PROFILE basis feeding x2/x3/x5, deliberately a different number
-# since 2026-08-18.
-SLIDER_STROKE_MM = float(_hw.GEOM_HAND_STROKE_MM)
+# 2026-09-08 (hand-geometry correction, re-measured stop-to-stop travel). But
+# `hand_stroke_mm` is the STOP-TO-STOP span, and `MuJoCoPlant.command_hand`
+# clips at the travel ABOVE ENCODER ZERO instead (348.524 mm, 3.48 mm less —
+# the joint is single-sided from encoder zero, which sits 0.107 rev above the
+# physical bottom stop). A stroke sized on `hand_stroke_mm` therefore let a
+# command into (348.524, 352] mm through this ceiling to saturate silently in
+# MuJoCo. `HAND_TRAVEL_ABOVE_ZERO_MM` is the one generated source both this
+# and the plant clip read (also what `sim/model/generate_mjcf.py` derives the
+# joint range/ctrlrange from, independently, by the identical formula;
+# `tests/sim/test_mjcf_drift.py` pins the two against each other). Do NOT
+# substitute `teensy_trajectory.hand_stroke_m` (0.3643707) here — that is the
+# THROW-PROFILE basis feeding x2/x3/x5, deliberately a different number since
+# 2026-08-18.
+SLIDER_STROKE_MM = float(_hw.HAND_WIRE_CLIP_TRAVEL_MM)  # the wire clip, not the metal — matches cup_realize's clamp
 
 # ---- Tilt geometry (from Rung 0 characterisation) ---------------------------
 # Usable tilt ceiling — leg headroom is fine to >24 deg, but tilt tracking and
