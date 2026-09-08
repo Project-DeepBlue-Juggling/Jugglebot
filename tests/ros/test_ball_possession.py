@@ -77,7 +77,7 @@ def _judge(xyz, tol=TOL, ref=CATCH_POINT):
 def test_every_real_self_toss_catch_is_confirmed(ball_id, x, y, z):
     """All 17 self-tosses of 2026-07-27 were catches the operator watched land, and
     all 17 reported MISSED. Each failed on the z bound alone: xy error 0.30-3.88 mm
-    against z error 305-1007 mm, because a tracker CAUGHT estimate is a dead-reckoned
+    against z error 310.8-1012.9 mm, because a tracker CAUGHT estimate is a dead-reckoned
     free-fall extrapolation from the moment the marker vanished (C-POSSESS-1 § 1).
 
     This test is RED against the pre-2026-07-28 gate for every one of the 17."""
@@ -90,17 +90,19 @@ def test_every_real_self_toss_catch_is_confirmed(ball_id, x, y, z):
 def test_the_z_bound_that_broke_it_would_still_reject_all_seventeen():
     """Pins WHY the fix is a deletion, not a re-tune: no z bound survives this data.
 
-    The tightest plane drop over the 17 real catches is 305 mm — twice the 150 mm
+    The tightest plane drop over the 17 real catches is 310.8 mm (was 305 mm
+    pre-2026-09-08 — CATCH_POINT rose with HAND_CATCH_OFFSET_MM's 64.78->70.54
+    correction, widening every drop by the same 5.76 mm) — twice the 150 mm
     bound that shipped, and 2.0x any bound that would also reject the corrupt
     tracks. A future 'let's just loosen z a bit' edit has to face this number."""
     drops = [abs(z - CATCH_POINT[2]) for _i, _x, _y, z in fx.SELF_TOSS_CAUGHT]
-    assert min(drops) == pytest.approx(305.03, abs=0.5)
-    assert max(drops) == pytest.approx(1007.14, abs=0.5)
+    assert min(drops) == pytest.approx(310.79, abs=0.5)
+    assert max(drops) == pytest.approx(1012.90, abs=0.5)
     assert min(drops) > 150.0 * 2.0                 # the shipped bound, doubled
 
 
 def test_plane_drop_is_report_only_and_cannot_veto():
-    """The deepest-extrapolated real catch in the session (ball 123, 1007 mm below
+    """The deepest-extrapolated real catch in the session (ball 123, 1012.9 mm below
     the catch plane) is still CONFIRMED. If a future edit reintroduces a z bound in
     any form, this goes red."""
     ball = next(b for b in fx.SELF_TOSS_CAUGHT if b[0] == 123)

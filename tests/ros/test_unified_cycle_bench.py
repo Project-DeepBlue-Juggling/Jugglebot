@@ -587,7 +587,8 @@ def test_the_cup_height_to_hand_map_matches_the_planners_own():
 
 
 def test_the_carry_belt_refuses_a_plan_that_LIFTS_the_ball():
-    """Settle + 1.0 rev is 32 mm of lift on a move that changes no height.
+    """Settle + 1.0 rev is 32.6 mm of lift on a move that changes no height (was
+    31.6 mm pre-2026-09-08, at the pre-correction 31.6172 rev/m).
 
     The message is asserted in the operator's units, not the planner's: a
     refusal that only said "0.5 rev" would be a number nobody at the bench can
@@ -597,7 +598,7 @@ def test_the_carry_belt_refuses_a_plan_that_LIFTS_the_ball():
     note = ucb.carry_excursion_refusal(settle + 1.0,
                                        [12.0, -5.0, ucb.SETTLE_CUP_Z_MM])
     assert note
-    assert 'lift the hand 31.6 mm' in note
+    assert 'lift the hand 32.6 mm' in note
     assert 'REFUSING' in note
     assert '689.6' in note                       # the settle height it compared to
 
@@ -639,13 +640,15 @@ def test_the_carry_belt_reads_the_REQUESTED_settle_height_not_the_constant():
 def test_the_2026_09_06_slam_would_have_been_refused_by_the_belt():
     """The measured failure, as the driver would have seen it in the response.
 
-    ``hand_peak_rev`` 9.6482 against a 0.3162 rev settle: 295 mm of lift on a
-    flat carry, accepted by every planner gate (0.31 rev of stroke headroom
-    left). This is the case the belt exists for, so it is asserted with the
-    number the bench actually produced rather than a synthetic one.
+    ``hand_peak_rev`` 9.6482 against a 0.3070 rev settle: 304.2 mm of lift on a
+    flat carry (was 0.3162 rev settle / 295 mm pre-2026-09-08, at the
+    pre-correction 31.6172 rev/m), accepted by every planner gate (0.31 rev of
+    stroke headroom left). This is the case the belt exists for, so it is
+    asserted with the number the bench actually produced rather than a
+    synthetic one.
     """
     note = ucb.carry_excursion_refusal(9.6482, [0.0, 0.0, ucb.SETTLE_CUP_Z_MM])
-    assert note and 'lift the hand 295' in note
+    assert note and 'lift the hand 304.2' in note
 
 
 # ═════════════════════════════════════════════════════════════════════════════

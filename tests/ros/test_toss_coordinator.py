@@ -2021,9 +2021,12 @@ def test_a_drifted_cycle_terminalises_rejected_reach_center_drift(monkeypatch):
     # The three numbers that make this refusal actionable — the B this cycle
     # nominated, the centre the SESSION captured cycles ago, and the distance
     # against the tolerance. The operator chose none of them but B.
+    # (2026-09-08 hand-geometry correction moved the swing offset and, with it,
+    # the derived tolerance: was 66.5 mm / far 86.5 mm before HAND_CATCH_OFFSET_MM
+    # 64.78 -> 70.54 mm widened the pre-tilt swing subtracted from the envelope.)
     msg = d.result.outcome
-    assert 'B (0.0, 86.5, 170.0) mm is 86.5 mm' in msg, msg
-    assert 'tolerance 66.5 mm' in msg, msg
+    assert 'B (0.0, 85.3, 170.0) mm is 85.3 mm' in msg, msg
+    assert 'tolerance 65.3 mm' in msg, msg
     assert 'reach centre (0.0, 0.0, 170.0)' in msg, msg
     assert 're-arm at the new B' in msg, msg
     assert safed == [1]
@@ -2049,11 +2052,13 @@ def test_announcement_content_and_frames():
     assert ann.thrower_name == 'jugglebot'
     assert ann.target_id == 'jugglebot'
     assert (ann.landing_position.x, ann.landing_position.y) == (30.0, -40.0)
-    assert ann.landing_position.z == pytest.approx(809.08)
-    assert ann.initial_position.z == pytest.approx(802.344)
+    # 2026-09-08 hand-geometry correction: HAND_CATCH_OFFSET_MM moved
+    # 64.78 -> 70.54 mm, so the catch plane moved 809.08 -> 814.84 mm.
+    assert ann.landing_position.z == pytest.approx(814.84)
+    assert ann.initial_position.z == pytest.approx(807.908)
     assert ann.initial_velocity.x == pytest.approx(0.0)
-    assert ann.initial_velocity.z == pytest.approx(3930.82, abs=0.01)
-    assert ann.landing_velocity.z == pytest.approx(-3913.98, abs=0.01)
+    assert ann.initial_velocity.z == pytest.approx(3931.065, abs=0.01)
+    assert ann.landing_velocity.z == pytest.approx(-3913.735, abs=0.01)
     assert ann.predicted_tof_sec == pytest.approx(0.8)
     # Mock clock: ros now = 0 → the stamps are the perf deltas in ns; the
     # landing stamp is release + ToF on the same clock.
@@ -3299,8 +3304,10 @@ def test_the_displaced_regime_is_separated_by_more_than_the_bound():
 
     # THE ANSWERED SUB-QUESTION of `session_cadence_ladder.md`'s finding 2: the
     # reach's POSITION never broke the 17.5 mm half of the B1 test. At a full ±1°
-    # aim the next cycle's swing-compensated pre-tilt pose sits 1.013 mm from the
-    # centroid the catch parks at — the cup swing alone, 17x inside the bound.
+    # aim the next cycle's swing-compensated pre-tilt pose sits 1.110 mm from the
+    # centroid the catch parks at — the cup swing alone, ~15.8x inside the bound.
+    # (2026-09-08 hand-geometry correction: was 1.013 mm / ~17x before
+    # HAND_THROW_OFFSET_MM's arm grew 58.044 -> 63.608 mm.)
     off = aim_target_offset_mm(toss_cal.TOTAL_MAX_RAD, 0.0, flight, B[2])
     saturated = compute_release_state_tilted(
         (B[0] + off[0], B[1] + off[1], B[2]), flight, throw_site_xy_mm=(0.0, 0.0))
@@ -3310,7 +3317,7 @@ def test_the_displaced_regime_is_separated_by_more_than_the_bound():
         np.asarray(fields['landing_velocity'], dtype=float), flight).target_pos
     pre = np.asarray(saturated.pretilt_pose_stow, dtype=float)
     residual_mm = math.hypot(pre[0] - float(parked[0]), pre[1] - float(parked[1]))
-    assert residual_mm == pytest.approx(1.013, abs=0.005)
+    assert residual_mm == pytest.approx(1.110, abs=0.005)
     assert residual_mm < rcn._TOSS_ALREADY_THERE_TOL_MM / 10.0
 
 

@@ -22,10 +22,12 @@ already-tested Tier-8b geometry instead of a second copy of it.
 
 **Full ballistic inverse, not the idealised magnitude.** The launch velocity is
 the full release-plane → catch-plane solution ``vz = Δz/T + g·T/2`` with
-``Δz = HAND_CATCH_OFFSET_MM − HAND_THROW_OFFSET_MM = 6.736 mm`` (the cup plane
+``Δz = HAND_CATCH_OFFSET_MM − HAND_THROW_OFFSET_MM = 6.932 mm`` (the cup plane
 sits above the release plane) — that is what the throw must actually deliver.
-The plan's ``v = g·T/2`` sanity magnitude is the Δz→0 limit (Δ = Δz/T ≈ 8.4 mm/s
+The plan's ``v = g·T/2`` sanity magnitude is the Δz→0 limit (Δ = Δz/T ≈ 8.7 mm/s
 at T = 0.8 s) and is pinned as a test identity, never returned here.
+(Was 6.736 mm / ≈8.4 mm/s before the 2026-09-08 hand-geometry correction moved
+HAND_THROW_OFFSET_MM and HAND_CATCH_OFFSET_MM by different amounts.)
 
 Pure Python + numpy. No ROS2 / repo-root / ``controller`` imports — ballistics
 comes from ``ballistics_bc`` (the motion-side copy of ``controller/ballistics``)
@@ -49,9 +51,11 @@ from jugglebot.motion.trajectory import tilt_geometry
 # HAND_CATCH_POS_M·1000). No generated constant exists for the throw case, so
 # it is derived here, once, from the same two generated inputs:
 #   hw.GEOM_HAND_AXIS_BOTTOM_OFFSET_MM = -129.0    (hand axis bottom vs centroid)
-#   hw.HAND_THROW_POS_M                =  0.187044 (x2 — "hand pos at ball
+#   hw.HAND_THROW_POS_M                =  0.192608 (x2 — "hand pos at ball
 #       release", the Trajectory.h stroke algebra in generate_config.py)
-# = -129.0 + 187.044 = 58.044 mm.
+# = -129.0 + 192.608 = 63.608 mm.
+# (Was 0.187044 -> 58.044 mm pre-2026-09-08 hand-geometry correction: x2 is
+# unchanged in REV, but hand_stroke_m was re-based, moving x2 in METRES.)
 HAND_THROW_OFFSET_MM = hw.GEOM_HAND_AXIS_BOTTOM_OFFSET_MM \
     + hw.HAND_THROW_POS_M * 1000.0
 
@@ -95,8 +99,9 @@ def flight_time_from_height(throw_height_m: float) -> float:
     variable; everything downstream stays flight-time-native).
 
     Idealised co-located relation ``T = sqrt(8·h/g)`` (apex ``h = g·T²/8``). The
-    ``Δz = 6.736 mm`` release↔cup offset is negligible at juggling heights
-    (~0.8 % at 0.8 m) and is still carried EXACTLY downstream by
+    ``Δz = 6.932 mm`` release↔cup offset (was 6.736 mm pre-2026-09-08) is
+    negligible at juggling heights (~0.9 % at 0.8 m) and is still carried
+    EXACTLY downstream by
     :func:`compute_release_state`'s ``vz = Δz/T + g·T/2`` from this T. Note
     ``h ∝ T²`` — NOT linear (4× height is 2× flight time)."""
     h_mm = float(throw_height_m) * 1000.0

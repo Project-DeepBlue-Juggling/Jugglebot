@@ -6,9 +6,11 @@ launch solution against its idealised g·T/2 limit, the announced-landing fields
 and the 9806-vs-9810 gravity-source guard — a drifted constant or a re-added
 active-z lift anywhere in the toss math fails loudly here.
 
-Worked constants: initial_height = 574.3, HAND_THROW_OFFSET_MM = 58.044
-(= −129.0 + 187.044), HAND_CATCH_OFFSET_MM = 64.78, Δz = 6.736 mm,
-g = 9806.0 mm/s².
+Worked constants: initial_height = 574.3, HAND_THROW_OFFSET_MM = 63.608
+(= −129.0 + 192.608), HAND_CATCH_OFFSET_MM = 70.54, Δz = 6.932 mm,
+g = 9806.0 mm/s². (2026-09-08 hand-geometry correction: was 58.044
+(= −129.0 + 187.044) / 64.78 / 6.736 mm before `linear_gain_factor`
+1.035 -> 1.0051 moved the two offsets by different amounts.)
 """
 
 from __future__ import annotations
@@ -54,10 +56,14 @@ def test_conversion_parity_with_reload_catch_point():
 
 
 def test_hand_throw_offset_pin():
-    """HAND_THROW_OFFSET_MM = 58.044, derived from the two generated inputs
-    (−129.0 + 0.187044·1000) — a hardware_config regeneration that moves either
-    input shifts the release plane and must be re-examined."""
-    assert tr.HAND_THROW_OFFSET_MM == pytest.approx(58.044, abs=1e-9)
+    """HAND_THROW_OFFSET_MM = 63.608, derived from the two generated inputs
+    (−129.0 + 0.192608·1000) — a hardware_config regeneration that moves either
+    input shifts the release plane and must be re-examined.
+
+    2026-09-08 hand-geometry correction: was 58.044 (−129.0 + 0.187044·1000).
+    x2 is unchanged in REV (the re-based hand_stroke_m holds it fixed), but
+    hand_stroke_m moved in METRES, so HAND_THROW_POS_M moved with it."""
+    assert tr.HAND_THROW_OFFSET_MM == pytest.approx(63.608, abs=1e-9)
     assert tr.HAND_THROW_OFFSET_MM == pytest.approx(
         hw.GEOM_HAND_AXIS_BOTTOM_OFFSET_MM + hw.HAND_THROW_POS_M * 1000.0,
         abs=1e-12)
@@ -66,32 +72,41 @@ def test_hand_throw_offset_pin():
 # ── release-state worked examples (full solution) ──
 
 def test_release_state_worked_example_center():
-    """Plan sanity example: (0, 0, 170) at T = 0.8 s — release plane 802.344 mm,
-    launch (0, 0, 3930.82) mm/s (FULL solution), event_vel 3.931 m/s."""
+    """Plan sanity example: (0, 0, 170) at T = 0.8 s — release plane 807.908 mm,
+    launch (0, 0, 3931.065) mm/s (FULL solution), event_vel 3.931 m/s.
+
+    2026-09-08 hand-geometry correction moved this from 802.344 mm / 3930.82 mm/s
+    (an exact +5.564 mm release-plane shift, matching HAND_THROW_OFFSET_MM's
+    58.044 -> 63.608 mm move; the catch plane also rose, by +5.76 mm to 814.84 mm,
+    so the release->catch gap widened slightly and launch speed rose to match)."""
     rs = tr.compute_release_state((0.0, 0.0, 170.0), 0.8)
-    assert np.allclose(rs.release_pos_global_mm, (0.0, 0.0, 802.344), atol=1e-9)
-    assert np.allclose(rs.catch_point_global_mm, (0.0, 0.0, 809.08), atol=1e-9)
+    assert np.allclose(rs.release_pos_global_mm, (0.0, 0.0, 807.908), atol=1e-9)
+    assert np.allclose(rs.catch_point_global_mm, (0.0, 0.0, 814.84), atol=1e-9)
     assert rs.launch_vel_mms[0] == 0.0 and rs.launch_vel_mms[1] == 0.0
-    assert rs.launch_vel_mms[2] == pytest.approx(3930.82, abs=1e-6)
-    assert rs.event_vel_mps == pytest.approx(3.93082, abs=1e-6)
+    assert rs.launch_vel_mms[2] == pytest.approx(3931.065, abs=1e-6)
+    assert rs.event_vel_mps == pytest.approx(3.931065, abs=1e-6)
     assert rs.flight_time_s == 0.8
 
 
 def test_full_vs_idealised_launch_identity():
     """The production function returns the FULL release-plane→catch-plane
     solution vz = Δz/T + g·T/2; the plan's idealised v = g·T/2 (3922.4 mm/s at
-    T = 0.8) is its Δz→0 limit, offset by exactly Δz/T = 8.42 mm/s. Apex above
-    release: idealised g·T²/8 = 784.48 mm, full vz²/2g ≈ 787.85 mm (the plan's
-    "≈0.78 m")."""
+    T = 0.8) is its Δz→0 limit, offset by exactly Δz/T = 8.665 mm/s. Apex above
+    release: idealised g·T²/8 = 784.48 mm, full vz²/2g ≈ 787.95 mm (the plan's
+    "≈0.78 m").
+
+    2026-09-08 hand-geometry correction: Δz was 6.736 mm (64.78 - 58.044), now
+    6.932 mm (70.54 - 63.608) — both offsets moved, by different amounts, so the
+    gap widened rather than staying fixed."""
     T = 0.8
-    dz = 64.78 - tr.HAND_THROW_OFFSET_MM          # 6.736 mm, cup above release
+    dz = hw.HAND_CATCH_OFFSET_MM - tr.HAND_THROW_OFFSET_MM  # 6.932 mm, cup above release
     vz = tr.compute_release_state((0.0, 0.0, 170.0), T).launch_vel_mms[2]
     idealised = G * T / 2.0
     assert idealised == pytest.approx(3922.4, abs=1e-9)
     assert vz == pytest.approx(idealised + dz / T, abs=1e-9)
-    assert vz - idealised == pytest.approx(8.42, abs=1e-3)
+    assert vz - idealised == pytest.approx(8.665, abs=1e-3)
     assert G * T * T / 8.0 == pytest.approx(784.48, abs=1e-9)
-    assert vz * vz / (2.0 * G) == pytest.approx(787.85, abs=0.01)
+    assert vz * vz / (2.0 * G) == pytest.approx(787.95, abs=0.01)
 
 
 def test_flight_time_from_height_roundtrip():
@@ -111,13 +126,17 @@ def test_flight_time_from_height_roundtrip():
 
 def test_release_state_offcenter_colocated():
     """Off-center (60, −60, 170) at T = 0.6 s: x/y ride through to both planes,
-    launch is purely vertical (co-located throw/catch ⇒ zero horizontal)."""
+    launch is purely vertical (co-located throw/catch ⇒ zero horizontal).
+
+    2026-09-08 hand-geometry correction moved the planes to 807.908 / 814.84 mm
+    (see test_release_state_worked_example_center) and the shorter T = 0.6 s
+    flight amplifies the widened release->catch gap's contribution to vz."""
     rs = tr.compute_release_state((60.0, -60.0, 170.0), 0.6)
-    assert np.allclose(rs.release_pos_global_mm, (60.0, -60.0, 802.344), atol=1e-9)
-    assert np.allclose(rs.catch_point_global_mm, (60.0, -60.0, 809.08), atol=1e-9)
+    assert np.allclose(rs.release_pos_global_mm, (60.0, -60.0, 807.908), atol=1e-9)
+    assert np.allclose(rs.catch_point_global_mm, (60.0, -60.0, 814.84), atol=1e-9)
     assert rs.launch_vel_mms[0] == 0.0 and rs.launch_vel_mms[1] == 0.0
-    assert rs.launch_vel_mms[2] == pytest.approx(2953.03, abs=0.01)
-    assert rs.event_vel_mps == pytest.approx(2.953, abs=1e-3)
+    assert rs.launch_vel_mms[2] == pytest.approx(2953.353, abs=0.01)
+    assert rs.event_vel_mps == pytest.approx(2.953353, abs=1e-3)
 
 
 @pytest.mark.parametrize('xy', [(0.0, 0.0), (60.0, 60.0), (60.0, -60.0),
@@ -145,17 +164,21 @@ def test_ballistic_roundtrip_lands_in_cup():
 # ── announced-landing construction ──
 
 def test_announcement_fields_worked_examples():
-    """Landing velocity is the ballistic arrival: (0, 0, −3913.98) mm/s for
-    example A (3930.82 − 9806·0.8) and (0, 0, −2930.57) for example B."""
+    """Landing velocity is the ballistic arrival: (0, 0, −3913.735) mm/s for
+    example A (3931.065 − 9806·0.8) and (0, 0, −2930.247) for example B.
+
+    2026-09-08 hand-geometry correction: was −3913.98 / −2930.57 against the
+    pre-correction launch velocities (see test_release_state_worked_example_center
+    / test_release_state_offcenter_colocated)."""
     rs_a = tr.compute_release_state((0.0, 0.0, 170.0), 0.8)
     f_a = tr.build_announcement_fields(rs_a, 10.0)
     assert np.allclose(f_a['initial_position'], rs_a.release_pos_global_mm)
     assert np.allclose(f_a['initial_velocity'], rs_a.launch_vel_mms)
-    assert np.allclose(f_a['landing_position'], (0.0, 0.0, 809.08), atol=1e-9)
-    assert f_a['landing_velocity'][2] == pytest.approx(-3913.98, abs=1e-6)
+    assert np.allclose(f_a['landing_position'], (0.0, 0.0, 814.84), atol=1e-9)
+    assert f_a['landing_velocity'][2] == pytest.approx(-3913.735, abs=1e-6)
     rs_b = tr.compute_release_state((60.0, -60.0, 170.0), 0.6)
     f_b = tr.build_announcement_fields(rs_b, 10.0)
-    assert f_b['landing_velocity'][2] == pytest.approx(-2930.57, abs=0.01)
+    assert f_b['landing_velocity'][2] == pytest.approx(-2930.247, abs=0.01)
 
 
 def test_announcement_landing_time_semantics():
@@ -172,36 +195,44 @@ def test_announcement_landing_time_semantics():
 def test_tilted_release_worked_example_displaced():
     """Phase-4 spec worked example: B = (100, 0, 170), A = (0, 0), T = 0.8 s.
     Level inverse gives v_x = d/T = 125 mm/s exactly; the tilted release sits
-    at nominal A xy (swing-compensated) and arm·(1−cos θ) ≈ 0.029 mm BELOW the
-    802.344 level plane, so v_z rides 0.037 mm/s above the 8a 3930.82. Aim
-    θ ≈ 1.82° from vertical, +x displacement ⇒ ry > 0, rx == 0."""
+    at nominal A xy (swing-compensated) and arm·(1−cos θ) ≈ 0.032 mm BELOW the
+    807.908 level plane, so v_z rides 0.040 mm/s above the 8a 3931.065. Aim
+    θ ≈ 1.821° from vertical, +x displacement ⇒ ry > 0, rx == 0.
+
+    2026-09-08 hand-geometry correction moved the level plane / vz baseline
+    from 802.344 mm / 3930.82 mm/s to 807.908 mm / 3931.065 mm/s (see
+    test_release_state_worked_example_center) and the throw-side arm from
+    58.044 to 63.608 mm, which is why the tilt drop/vz-rise grew slightly."""
     rs = tr.compute_release_state_tilted((100.0, 0.0, 170.0), 0.8,
                                          throw_site_xy_mm=(0.0, 0.0))
-    assert np.allclose(rs.release_pos_global_mm, (0.0, 0.0, 802.31467),
+    assert np.allclose(rs.release_pos_global_mm, (0.0, 0.0, 807.875868),
                        atol=1e-4)
     assert rs.launch_vel_mms[0] == pytest.approx(125.0, abs=1e-9)
     assert rs.launch_vel_mms[1] == 0.0
-    assert rs.launch_vel_mms[2] == pytest.approx(3930.857, abs=1e-3)
-    assert rs.event_vel_mps == pytest.approx(3.93284, abs=1e-5)
-    assert np.allclose(rs.catch_point_global_mm, (100.0, 0.0, 809.08),
+    assert rs.launch_vel_mms[2] == pytest.approx(3931.105, abs=1e-3)
+    assert rs.event_vel_mps == pytest.approx(3.933092, abs=1e-5)
+    assert np.allclose(rs.catch_point_global_mm, (100.0, 0.0, 814.84),
                        atol=1e-9)
     assert rs.tilt_ry > 0.0 and rs.tilt_rx == 0.0
     assert np.degrees(np.hypot(rs.tilt_rx, rs.tilt_ry)) == pytest.approx(
-        1.8214, abs=1e-3)
+        1.8213, abs=1e-3)
     assert rs.displacement_mm == pytest.approx(100.0, abs=1e-12)
     assert rs.flight_time_s == 0.8
 
 
 def test_tilted_pretilt_pose_swing_compensation_magnitude():
-    """The commanded centroid pulls back by arm·sin θ = 58.044·sin 1.8214° ≈
-    1.845 mm along −x, so the TILTED release point lands exactly AT A = (0, 0)
-    — the throw-side lever-arm compensation pin (release-plane arm ≈ +58 mm
-    against the fixed 744.3 mm world tilt centre, the catch-side convention)."""
+    """The commanded centroid pulls back by arm·sin θ = 63.608·sin 1.8213° ≈
+    2.022 mm along −x, so the TILTED release point lands exactly AT A = (0, 0)
+    — the throw-side lever-arm compensation pin (release-plane arm ≈ +64 mm
+    against the fixed 744.3 mm world tilt centre, the catch-side convention).
+
+    2026-09-08 hand-geometry correction: the arm was 58.044 mm (pullback
+    ≈1.845 mm) before HAND_THROW_OFFSET_MM moved to 63.608 mm."""
     rs = tr.compute_release_state_tilted((100.0, 0.0, 170.0), 0.8,
                                          throw_site_xy_mm=(0.0, 0.0))
     pose = rs.pretilt_pose_stow
     assert pose.shape == (6,)
-    assert pose[0] == pytest.approx(-1.8448, abs=1e-3)
+    assert pose[0] == pytest.approx(-2.0216, abs=1e-3)
     assert pose[1] == 0.0 and pose[2] == 170.0
     assert pose[3] == rs.tilt_rx and pose[4] == rs.tilt_ry and pose[5] == 0.0
     # The compensation's whole point: the release xy sits AT nominal A.
@@ -258,8 +289,9 @@ def test_tilted_clamp_gate_rejects_loudly():
     # Never-binds-in-envelope evidence: 300 mm @ 0.55 s stays under the clamp.
     rs = tr.compute_release_state_tilted((150.0, 0.0, 170.0), 0.55,
                                          throw_site_xy_mm=(-150.0, 0.0))
+    # 2026-09-08 hand-geometry correction: was 11.376 deg.
     assert np.degrees(np.hypot(rs.tilt_rx, rs.tilt_ry)) == pytest.approx(
-        11.376, abs=1e-3)
+        11.374, abs=1e-3)
 
 
 def test_tilted_degenerates_to_8a_bitwise_when_colocated():
@@ -288,7 +320,8 @@ def test_tilted_announcement_landing_is_B():
     rs = tr.compute_release_state_tilted((100.0, 0.0, 170.0), 0.8,
                                          throw_site_xy_mm=(0.0, 0.0))
     f = tr.build_announcement_fields(rs, 100.0)
-    assert np.allclose(f['landing_position'], (100.0, 0.0, 809.08), atol=1e-9)
+    # 2026-09-08 hand-geometry correction: catch plane was 809.08 mm.
+    assert np.allclose(f['landing_position'], (100.0, 0.0, 814.84), atol=1e-9)
     assert np.allclose(f['initial_position'], rs.release_pos_global_mm)
     assert f['initial_velocity'][0] == pytest.approx(125.0, abs=1e-9)
     assert f['landing_velocity'][0] == pytest.approx(125.0, abs=1e-9)

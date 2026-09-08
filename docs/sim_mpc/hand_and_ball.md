@@ -20,7 +20,7 @@ Both catch and throw trajectories use the same 3-segment structure: **accelerate
 
 | Constant | Value | Meaning |
 |---|---|---|
-| `HAND_STROKE_M` | 0.355 m | **Throw-profile basis** (`teensy_trajectory.hand_stroke_m`) — feeds `x2`/`x3`/`x5`. **NOT** physical travel: that is `jugglebot_geometry.hand_stroke_mm` = **344.75 mm**, a separate key since 2026-08-18. This row read "Physical hand stroke" until 2026-08-21 |
+| `HAND_STROKE_M` | 0.3643707 m | **Throw-profile basis** (`teensy_trajectory.hand_stroke_m`) — feeds `x2`/`x3`/`x5`. **NOT** physical travel: that is `jugglebot_geometry.hand_stroke_mm` = **352.0 mm**, a separate key since 2026-08-18. This row read "Physical hand stroke" until 2026-08-21; both values moved (0.355 -> 0.3643707 m / 344.75 -> 352.0 mm) on 2026-09-08's hand-geometry correction |
 | `STROKE_MARGIN_M` | 0.02 m | Safety margin at each end |
 | `CATCH_VEL_RATIO` | 0.9 | Hand velocity = 90% of ball speed |
 | `INERTIA_RATIO` | 0.747 | Decel/accel duration ratio (asymmetric profile) |

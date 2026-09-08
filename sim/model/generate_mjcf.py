@@ -24,6 +24,7 @@ written up in ``logbook/2026-08-21-mjcf-generator-reconciled.md``.
 """
 
 import itertools
+import math
 import numpy as np
 import yaml
 import os
@@ -121,13 +122,26 @@ def generate_mjcf(config, mesh_dir=None):
     # ---- Extract geometry values (convert mm → m) ----
     initial_height_m = geom['initial_height_mm'] / 1000.0
     leg_stroke_m = geom['leg_stroke_mm'] / 1000.0
-    # PHYSICAL travel (0.34475 m since 2026-08-18), NOT
-    # teensy_trajectory.hand_stroke_m (0.355) -- different numbers on purpose.
-    hand_stroke_m = geom['hand_stroke_mm'] / 1000.0
+    # NOT hand_stroke_mm (352.0 mm) directly, and NOT
+    # teensy_trajectory.hand_stroke_m (0.3643707) -- both are different
+    # numbers on purpose (see hardware_config.yaml's comments on each key).
+    #
+    # hand_stroke_mm is the STOP-TO-STOP measurement (10.808 rev, bottom stop
+    # at -0.107 rev to top stop at 10.701 rev). The MJCF joint is single-
+    # sided from zero, and zero here is ENCODER zero -- 0.107 rev ABOVE the
+    # bottom stop -- so the clip the joint needs is the travel ABOVE ENCODER
+    # ZERO (hand_motor_hard_stop_revs / gain), not the full stop-to-stop span.
+    # Using hand_stroke_mm directly would give the modelled hand ~3.48 mm of
+    # travel above zero that the real machine does not have. Deriving it from
+    # the hard stop instead makes the clip a CONSEQUENCE of the measured stop,
+    # not a second, independently-drifting number.
+    teensy_traj = config['teensy_trajectory']
+    linear_gain_rev_per_m = (teensy_traj['linear_gain_factor']
+                              / (2.0 * math.pi * teensy_traj['hand_spool_radius_m']))
+    hand_travel_above_zero_m = geom['hand_motor_hard_stop_revs'] / linear_gain_rev_per_m
     hand_radius_m = geom['hand_radius_mm'] / 1000.0   # ~0.035 m
 
     # Hand dynamics
-    teensy_traj = config['teensy_trajectory']
     hand_mass_kg = teensy_traj['inertia_hand_only_kg']  # 0.281 kg
     hand_bottom_z_m = -0.129  # Bottom of travel in platform-local Z (from hardware_config hand_axis_bottom_offset_mm)
 
@@ -321,8 +335,8 @@ def generate_mjcf(config, mesh_dir=None):
     # ---- Hand body (child of platform) ----
     # Hand is a 1-DOF prismatic actuator on the platform's local Z axis.
     # Bottom of travel at Z = hand_axis_bottom_offset_mm in the platform frame,
-    # top of travel at that plus hand_stroke_mm -- both read from config above,
-    # so this comment does not need a number in it to go stale.
+    # top of travel at that plus hand_travel_above_zero_m -- both read from
+    # config above, so this comment does not need a number in it to go stale.
     hand_body = ET.SubElement(platform, 'body', name='hand',
                                pos=f'0 0 {hand_bottom_z_m:.6f}')
     ET.SubElement(hand_body, 'inertial',
@@ -331,7 +345,7 @@ def generate_mjcf(config, mesh_dir=None):
     # Prismatic joint along platform-local Z
     ET.SubElement(hand_body, 'joint', name='hand_slide',
                   type='slide', axis='0 0 1', limited='true',
-                  range=f'0 {hand_stroke_m:.6f}',
+                  range=f'0 {hand_travel_above_zero_m:.6f}',
                   damping='50', armature='0.001')
     # Hand geometry — the hand is a truncated cone (cup) with a concave
     # interior.  MuJoCo convex-hulls each mesh, so a single mesh would fill
@@ -571,7 +585,7 @@ def generate_mjcf(config, mesh_dir=None):
     ET.SubElement(actuator, 'position', name='act_hand',
                   joint='hand_slide',
                   kp='100000', kv='350',
-                  ctrlrange=f'0 {hand_stroke_m:.6f}',
+                  ctrlrange=f'0 {hand_travel_above_zero_m:.6f}',
                   ctrllimited='true')
 
     # ---- Keyframe: home position ----

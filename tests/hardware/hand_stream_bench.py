@@ -193,7 +193,9 @@ BRINGUP_VERIFY_S = 3.0                    # post---close-loop CLOSED_LOOP poll (
 _T2J_FLAG_TIME_SYNCED = 0x1               # HeartbeatT2J flags bit 0
 _T2J_FLAG_MPC_ACTIVE = 0x8
 _T2J_FLAG_HAND_SOURCE_STREAMED = 0x40     # HeartbeatT2J flags bit 6 (FW 17)
-MM_PER_REV = 1000.0 / float(LINEAR_GAIN_REV_PER_M)   # ≈ 31.63 mm per hand rev
+MM_PER_REV = 1000.0 / float(LINEAR_GAIN_REV_PER_M)   # ≈ 32.57 mm per hand rev
+                                                      # (was ≈31.63 pre-2026-09-08
+                                                      # hand-geometry correction)
 ENC_BROADCAST_HZ = 100.0                  # ODrive get_encoder_estimate cadence (row-21 recipe)
 CD_EPISODE_DEFICIT = -20.0                # headroom runbook row 21: a window past −20 = episode
 

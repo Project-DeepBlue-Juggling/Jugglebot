@@ -396,16 +396,19 @@ def tier_8b(monkeypatch):
 
 
 @pytest.mark.parametrize('bx,expect_x', [
-    (0.0, 0.000), (70.0, 71.448), (140.0, 142.894),
-    (146.0, 149.017), (147.0, 150.038), (150.0, 153.100)])
+    (0.0, 0.000), (70.0, 71.577), (140.0, 143.151),
+    (146.0, 149.286), (147.0, 150.308), (150.0, 153.376)])
 def test_predicted_chain_site_matches_the_production_policy(bx, expect_x,
                                                             monkeypatch,
                                                             tier_8b):
     """The prediction is single-sourced through the SAME
     ``predicted_catch_command`` the deferred A->B reach publishes from, so it
     cannot drift from where the machine will actually be commanded. These values
-    are the measured ground truth (probe, 2026-07-29) and reproduce Phase E's
-    own -153.10 at the 150 mm cap."""
+    are the measured ground truth (probe, 2026-07-29; re-measured 2026-09-08 for
+    the hand-geometry gain correction — the catch-plane tilt swing this chain
+    site is projected through moved with HAND_CATCH_OFFSET_MM 64.78->70.54) and
+    reproduce Phase E's own -153.38 (was -153.10 pre-correction) at the 150 mm
+    cap."""
     clock = _Clock()
     monkeypatch.setattr(rcn, 'time', clock)
     node = _ready_node(clock)
@@ -424,9 +427,11 @@ def test_the_predicted_chain_residual_stays_a_few_mm(monkeypatch, tier_8b):
     2026-08-29, so there is no frontier left to pin; what survives is the
     quantity itself, and it is the reason the accept-time chain gate was NOT
     re-keyed on the reach bound when the box went. At |B| ≈ 147 mm the residual
-    is ~3 mm against a reach bound of 256 mm at this flight — a gate keyed on the
-    bound could never fire, and a gate that can never fire teaches readers the
-    chain is checked when it is not.
+    is ~3.3 mm (was ~3 mm pre-2026-09-08, at the pre-correction 31.6172 rev/m —
+    the catch-plane swing this chain site is projected through moved with
+    HAND_CATCH_OFFSET_MM 64.78->70.54) against a reach bound of 256 mm at this
+    flight — a gate keyed on the bound could never fire, and a gate that can
+    never fire teaches readers the chain is checked when it is not.
 
     The predicted site itself still matters: it is what a STAGED cycle nominates
     as its throw site (2026-08-28), so a drift here is a mis-aimed throw."""
@@ -436,7 +441,7 @@ def test_the_predicted_chain_residual_stays_a_few_mm(monkeypatch, tier_8b):
     for bx in (146.5, 147.0):
         site = node._predicted_chain_site_mm((bx, 0.0, 170.0), FLIGHT)
         assert site is not None
-        assert math.hypot(bx - site[0], site[1]) < 3.2
+        assert math.hypot(bx - site[0], site[1]) < 3.4
 
 
 

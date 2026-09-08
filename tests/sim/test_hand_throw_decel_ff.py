@@ -161,7 +161,8 @@ def _band():
 # ══════════════════════════════════════════════════════════════════════════
 
 def test_legacy_conversion_implies_a_reflected_inertia_below_the_load_alone():
-    """``a*m*r`` implies 7.3695e-6 kg m^2 — and that is the whole defect.
+    """``a*m*r`` implies 7.5888e-6 kg m^2 (was 7.3695e-6 pre-2026-09-08
+    hand-geometry correction) — and that is the whole defect.
 
     Two errors compound: the rotor is missing entirely, and the RAW spool
     radius is used where the effective radius (one motor rev moves
@@ -169,7 +170,7 @@ def test_legacy_conversion_implies_a_reflected_inertia_below_the_load_alone():
     and in the *helpful* direction, which is exactly why it hid the first.
     """
     implied = mirror.LEGACY_IMPLIED_INERTIA_KGM2
-    assert implied == pytest.approx(7.3695e-6, rel=1e-4)
+    assert implied == pytest.approx(7.5888e-6, rel=1e-4)
 
     # Re-derived independently of the mirror's own expression.
     m = hw.TEENSY_TRAJ_INERTIA_HAND_ONLY_KG
@@ -177,11 +178,12 @@ def test_legacy_conversion_implies_a_reflected_inertia_below_the_load_alone():
     gain = hw.TEENSY_TRAJ_LINEAR_GAIN_FACTOR / (math.pi * r * 2.0)
     assert implied == pytest.approx(m * r / (2.0 * math.pi * gain), rel=1e-12)
 
-    # The load alone, with the EFFECTIVE radius.  The legacy value sits 3.5 %
-    # above it — that is the radius error, and nothing else.
+    # The load alone, with the EFFECTIVE radius.  The legacy value sits above
+    # it by the linear_gain_factor — that is the radius error, and nothing
+    # else.  7.120e-6 -> 7.5503e-6 on 2026-09-08 (hand-geometry correction).
     r_eff = 1.0 / (2.0 * math.pi * gain)
     j_load = m * r_eff ** 2
-    assert j_load == pytest.approx(7.120e-6, rel=1e-3)
+    assert j_load == pytest.approx(7.5503e-6, rel=1e-3)
     assert implied / j_load == pytest.approx(
         hw.TEENSY_TRAJ_LINEAR_GAIN_FACTOR, rel=1e-9)
 
@@ -233,7 +235,10 @@ def test_declared_inertia_is_above_the_legacy_implied_one():
     declared = hw.TEENSY_TRAJ_THROW_DECEL_REFLECTED_INERTIA_KGM2
     assert declared > mirror.LEGACY_IMPLIED_INERTIA_KGM2
     boost = declared / mirror.LEGACY_IMPLIED_INERTIA_KGM2
-    assert boost == pytest.approx(1.2891, rel=1e-3)
+    # 1.2891 -> 1.2518 on 2026-09-08 (hand-geometry correction): the declared
+    # 9.5e-6 is unchanged, but LEGACY_IMPLIED_INERTIA_KGM2 rose with the
+    # corrected gain, narrowing the boost.
+    assert boost == pytest.approx(1.2518, rel=1e-3)
 
 
 def test_the_declared_inertia_reaches_the_mirror_and_the_shipped_firmware():
@@ -467,7 +472,11 @@ def test_the_2026_07_band_ceiling_was_already_near_the_axis_torque_ceiling():
     v = _v_for_flight(_HISTORICAL_FLIGHT_CEILING_S)
     thr = mirror.HandThrowTrajectory(v)
     a_cmd_rev = abs(thr._throwD) * mirror._LINEAR_GAIN
-    assert a_cmd_rev == pytest.approx(3597.0, rel=0.02)
+    # 3597.0 -> 3391.8 on 2026-09-08 (hand-geometry correction): a commanded
+    # rev/s^2 at a fixed SPEED v drops with the gain (a_cmd_rev ~ gain^2, a
+    # -5.7% shift here — outside this test's own 2% tolerance band, which is
+    # why the literal moves rather than merely re-passing).
+    assert a_cmd_rev == pytest.approx(3391.8, rel=0.02)
 
     for j_true in (_MEASURED_REFLECTED_INERTIA_MIN_KGM2,
                    _MEASURED_REFLECTED_INERTIA_MAX_KGM2):

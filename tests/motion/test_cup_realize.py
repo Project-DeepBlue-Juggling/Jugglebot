@@ -449,8 +449,9 @@ def test_z_float_absorbs_the_shortfall_it_can_and_clamps_the_rest():
     pinned = cr.decompose(plan, tilts, cr.RealizeConfig(z_float_enabled=False))
     floated = cr.decompose(plan, tilts,
                            cr.RealizeConfig(z_float_enabled=True, z_band_mm=band))
-    # cup_z 1.0 m ⇒ slider demand 340.4 mm, inside the 344.75 stroke: no clamp,
-    # no excursion.  Push it higher to force the shortfall.
+    # cup_z 1.0 m ⇒ slider demand 340.4 mm, inside the 352.0 stroke (was 344.75
+    # pre-2026-09-08 hand-geometry correction): no clamp, no excursion.  Push
+    # it higher to force the shortfall.
     assert not pinned.slider_saturated.any()
     np.testing.assert_array_equal(floated.z_excursion_mm,
                                   np.zeros(len(plan.pos)))

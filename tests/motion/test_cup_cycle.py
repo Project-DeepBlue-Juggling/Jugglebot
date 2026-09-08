@@ -1057,16 +1057,17 @@ def test_a_release_terminal_window_keeps_the_configured_box(monkeypatch):
 
 
 def test_the_seed_allowance_covers_the_whole_retract_band():
-    """20 mm is derived from the machine, not chosen: 10 mm inset + 6.33 mm band.
+    """20 mm is derived from the machine, not chosen: 10 mm inset + 6.51 mm band.
 
     The box is inset 10 mm above the bottom of the slider's operating band, and
-    a retracted hand settles anywhere down to ``-0.20 rev`` — 6.33 mm through the
-    package's own gain — below that bottom. So the deepest a HEALTHY parked
-    machine can seed is 16.33 mm under the floor, and the allowance has to admit
+    a retracted hand settles anywhere down to ``-0.20 rev`` — 6.51 mm through the
+    package's own gain (was 6.33 mm pre-2026-09-08, at the pre-correction
+    31.6172 rev/m) — below that bottom. So the deepest a HEALTHY parked
+    machine can seed is 16.51 mm under the floor, and the allowance has to admit
     it or the fix refuses the very case it exists for.
     """
     band_m = 0.20 / cc.LINEAR_GAIN_REV_PER_M
-    assert band_m == pytest.approx(0.006326, abs=1e-6)
+    assert band_m == pytest.approx(0.006514, abs=1e-6)
     assert cc.SEED_OUTSIDE_BOX_MAX_M >= 0.010 + band_m
     # ...and not so wide that a genuinely wrong seed rides through: the shipped
     # carry's 11.2 mm is comfortably inside, a hand outside its band is not.

@@ -61,8 +61,9 @@ code                 recipe (dt = 0.025 s, pose held at NEUTRAL throughout)
                      acceleration identically zero, so the runway is the only
                      thing that can answer).  The achieved catch speed of
                      100 rev/s needs ``100²/(2·3500) = 1.429`` rev to stop, plus
-                     the 0.632 rev margin = 2.061 rev, against 1.000 rev of stroke
-                     below the catch.  ⚠ Do NOT open ``hand_acc_limit_rps2`` to
+                     the 0.614 rev margin (was 0.632 rev pre-2026-09-08, at the
+                     pre-correction 31.6172 rev/m) = 2.043 rev, against 1.000 rev
+                     of stroke below the catch.  ⚠ Do NOT open ``hand_acc_limit_rps2`` to
                      isolate this gate: that limit IS the runway's deceleration
                      authority, so opening it makes the requirement vanish.
 ===================  =========================================================
@@ -588,8 +589,9 @@ def _descent(p0, *, catch_k=1):
 def test_catch_runway_refuses_with_the_achieved_catch_velocity(geom):
     """Recipe: ``catch_k = 1``, hand ``[3.5, 1.0]`` rev at a constant -100 rev/s.
 
-    100 rev/s needs ``100²/(2·3500) = 1.429`` rev to stop, plus the 0.632 rev
-    margin = 2.061 rev, against 1.000 rev of stroke below the catch.  Reported as
+    100 rev/s needs ``100²/(2·3500) = 1.429`` rev to stop, plus the 0.614 rev
+    margin (was 0.632 rev pre-2026-09-08, at the pre-correction 31.6172 rev/m)
+    = 2.043 rev, against 1.000 rev of stroke below the catch.  Reported as
     ``HAND_STROKE`` because the fact IS a stroke fact: the travel below the catch
     is insufficient.  The SHIPPED ``hand_acc_limit_rps2`` is used deliberately —
     it is the deceleration authority the requirement is sized against.
@@ -598,7 +600,7 @@ def test_catch_runway_refuses_with_the_achieved_catch_velocity(geom):
     assert report.code == feas.HAND_STROKE
     detail = report.reasons[0]
     assert 'catch runway' in detail
-    assert '1.000 rev' in detail and '2.061 rev' in detail
+    assert '1.000 rev' in detail and '2.043 rev' in detail
     assert 'achieved catch speed 100.0 rev/s' in detail
 
 

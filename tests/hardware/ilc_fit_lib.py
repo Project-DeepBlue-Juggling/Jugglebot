@@ -130,33 +130,46 @@ and ``T = sqrt(8h/g)`` makes ``g.T²/2`` exactly ``4h``, so the derivative at ze
 is::
 
     dL/dtheta = 4h + Δz        Δz = HAND_CATCH_OFFSET_MM - HAND_THROW_OFFSET_MM
-                               = 64.78 - 58.044 = 6.736 mm
+                               = 70.54 - 63.608 = 6.932 mm
 
-Measured through this module: 3126.736 mm/rad at h = 0.78 against 4h = 3120.0,
-and 4006.736 at h = 1.00 against 4000.0 — the excess is 6.736 in both, to the
+(Was 64.78 - 58.044 = 6.736 mm pre-2026-09-08 hand-geometry correction: both
+offsets moved because the re-based ``hand_stroke_m`` shifted the throw/catch
+planes in METRES, but they did not move by the same amount, so Δz itself
+shifted too — verified live, ``hw.HAND_CATCH_OFFSET_MM - toss_release.
+HAND_THROW_OFFSET_MM == 6.932`` to the last digit on this branch.)
+
+Measured through this module: 3126.932 mm/rad at h = 0.78 against 4h = 3120.0,
+and 4006.932 at h = 1.00 against 4000.0 — the excess is 6.932 in both, to the
 last digit. The "0.21 % / 0.23 % above 4h" quoted in several places in this
 codebase is therefore exactly ``Δz/4h``, which is height-dependent; the constant
-is the 6.736.
+is the 6.932 (was 6.736 pre-correction — see above).
 
 **THE CANONICAL STATEMENT OF THIS GAIN (D3, resolved 2026-08-21).** Every other
-site in the tree now points here. Three facts, all measured
-(``/tmp/probe_d3_gain.py``, run 2026-08-21):
+site in the tree now points here. Three facts, measured
+(``/tmp/probe_d3_gain.py``, run 2026-08-21; Δz re-verified live on the
+2026-09-08 hand-geometry-correction branch, THIS MODULE's bullet only —
+``toss_trim`` and ``toss_fit_lib``/``toss_cal_grid`` still quote the
+pre-correction Δz = 6.736 below and need their own re-measurement, not done
+here):
 
-1. the excess over ``4h`` is the CONSTANT ``Δz`` = 6.7360 mm at every h, so
-   "0.21 % above 4h" is ``Δz/4h`` and is height-dependent — quote the constant,
-   not the percentage;
+1. the excess over ``4h`` is the CONSTANT ``Δz`` at every h (6.932 mm on the
+   corrected geometry, was 6.7360 mm), so "0.21 % above 4h" is ``Δz/4h`` and is
+   height-dependent — quote the constant, not the percentage;
 2. the gain does **not depend on the catch z** at all (identical to 4 decimals
    over z ∈ {0, 100, 170, 250} mm). ``aim_landing_jacobian(T, z)`` takes z
    because the production seam does, not because the answer moves;
 3. so the three numbers in the tree are **three geometries of one exact rule**,
    not three roundings of one number:
 
-   * **3126.736** mm/rad — h = *exactly* 0.78 m (T = 0.79771241 s). This module.
+   * **3126.932** mm/rad — h = *exactly* 0.78 m (T = 0.79771241 s). This module
+     (was 3126.736 pre-correction).
    * **3126.639** mm/rad — T = *exactly* 0.7977 s (h = 0.779976 m). ``toss_trim``
      (which quoted it as "3126.64"); its reference geometry rounds T, not h.
+     STALE pending the same Δz re-measurement as point 1.
    * **3126.5 / 3126.53** — ``toss_fit_lib`` / ``toss_cal_grid``, a 4-s.f.
      rounding at "h = 0.78" with no T. Reproduces no geometry exactly; those
-     headers now say so, and nothing there turns on the fifth digit.
+     headers now say so, and nothing there turns on the fifth digit. Also
+     STALE pending the same re-measurement.
 
 A fourth number, ``aim_target_offset_mm``'s **54.578 mm/deg**, is a different
 QUANTITY altogether — the SECANT gain to a full 1° aim, larger by

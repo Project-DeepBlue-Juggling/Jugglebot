@@ -1023,8 +1023,10 @@ _V_LAND_080 = 3.913980           # m/s — |arrival velocity| of the same toss
 _T_ANNOUNCE = 100.0              # ROS s
 _T_RELEASE = 101.0               # ROS s (announced throw_time)
 _T_LANDING = _T_RELEASE + 0.80   # ROS s
-# throw_decel_s(3.930820) = 65.104 ms; + the 40 ms margin
-_T_CLEAR = _T_RELEASE + 0.105104
+# throw_decel_s(3.930820) = 67.041 ms (was 65.104 ms pre-2026-09-08, at the
+# pre-correction 31.6172 rev/m — the same event_vel now converts to fewer
+# rev/s, shortening the decel-time-in-rev computation); + the 40 ms margin
+_T_CLEAR = _T_RELEASE + 0.107041
 
 
 class _FakeClock:
@@ -1111,8 +1113,10 @@ def test_self_toss_announcement_latches_the_stroke_window():
     # flight band gives a materially different window (2x the decel ramp), which
     # is why a fixed conservative delay was rejected.
     slow = _toss_node(v_throw_mps=2.708897)
+    # throw_decel_s(2.708897) = 0.097282 (was 0.094471 pre-2026-09-08, at the
+    # pre-correction 31.6172 rev/m).
     assert (slow._throw_stroke_clear_ros - _T_RELEASE) == pytest.approx(
-        0.094471 + 0.040, abs=1e-5)
+        0.097282 + 0.040, abs=1e-5)
 
 
 def test_reload_announcement_leaves_the_stroke_window_inert():
@@ -1306,12 +1310,14 @@ def test_window_closed_dispatches_immediately_and_loudly(monkeypatch):
 def test_window_still_fits_at_the_shortest_shipped_flight(monkeypatch):
     """FLIGHT_TIME_MIN_S = 0.55 is the binding case (slower throw ⇒ longer decel
     ramp, shorter flight ⇒ less room). The arm is withheld at release + 10 ms and
-    dispatches by release + 135 ms, ~115 ms inside the deadline."""
+    dispatches by release + 137 ms (was 135 ms pre-2026-09-08, at the
+    pre-correction 31.6172 rev/m), ~113 ms inside the deadline."""
     from jugglebot.toss_sequencer import FLIGHT_TIME_MIN_S
     v_throw, v_land = 2.708897, 2.684366
     landing = _T_RELEASE + FLIGHT_TIME_MIN_S
     node = _toss_node(v_throw_mps=v_throw, landing_time=landing)
-    clear = _T_RELEASE + 0.094471 + 0.040
+    # throw_decel_s(2.708897) = 0.097282 (was 0.094471 pre-correction).
+    clear = _T_RELEASE + 0.097282 + 0.040
     assert node._throw_stroke_clear_ros == pytest.approx(clear, abs=1e-5)
     sent = _capture_arm_dispatch(node, monkeypatch)
     node._clock.t = _T_RELEASE + 0.010

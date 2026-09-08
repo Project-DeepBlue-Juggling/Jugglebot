@@ -285,13 +285,21 @@ def test_the_model_reproduces_the_commanded_launch_velocity_in_the_bags():
     claim.
 
     Recipe confirmed by probe (2026-08-12, ``/tmp/probe_ilc_forward.py``): at
-    T = 0.9032314457914598 s and z = 170 mm the production chain returns
-    ``vz = 4436.0014`` mm/s against the reference bag's 4436.0014.
+    T = 0.9032314457914598 s and z = 170 mm the production chain returned
+    ``vz = 4436.0014`` mm/s against the (pre-2026-09-08) reference bag's
+    4436.0014.
+
+    2026-09-08 hand-geometry correction: Δz (``HAND_CATCH_OFFSET_MM −
+    HAND_THROW_OFFSET_MM``) moved 6.736 -> 6.932 mm, so the CURRENT production
+    chain returns ``vz = Δz/T + g·T/2 = 6.932/0.9032314457914598 +
+    9806.0·0.9032314457914598/2 = 4436.2184`` at the same T — the historical
+    bag row this recipe was checked against pre-correction is superseded, not
+    re-verified against a fresh bag here.
     """
     rel = compute_release_state((0.0, 150.0, 170.0), lib.CORPUS_FLIGHT_TIME_S)
     assert rel.launch_vel_mms[0] == pytest.approx(0.0, abs=1e-12)
     assert rel.launch_vel_mms[1] == pytest.approx(0.0, abs=1e-12)
-    assert rel.launch_vel_mms[2] == pytest.approx(4436.0014, abs=1e-3)
+    assert rel.launch_vel_mms[2] == pytest.approx(4436.2184, abs=1e-3)
 
 
 def test_e_model_is_exactly_zero_at_the_nominal_command():
@@ -404,8 +412,14 @@ def test_v1_aim_block_reproduces_4h_theta(h_m):
 
 def test_v1_the_secant_gain_at_one_degree_is_the_docstrings_number():
     """The 54.578 mm/deg in ``aim_target_offset_mm``'s docstring, reproduced —
-    so the 0.011 % gap against V1's derivative is documented as arithmetic and
-    never mistaken for a discrepancy."""
+    so the 0.005 % gap against V1's derivative is documented as arithmetic and
+    never mistaken for a discrepancy.
+
+    2026-09-08 hand-geometry correction: the secant (54.578, from
+    ``aim_target_offset_mm``, a pure tilt-geometry quantity independent of
+    HAND_THROW_OFFSET_MM/HAND_CATCH_OFFSET_MM) is unaffected; the derivative
+    (from ``lib.sensitivity``'s finite-difference release-plane model) moved
+    54.5718 -> 54.5753, narrowing the gap from 0.011 % to 0.005 %."""
     from jugglebot.motion.trajectory.toss_release import aim_target_offset_mm
     T = math.sqrt(8.0 * 0.78 * 1000.0 / ballistics_bc.GRAVITY_MMS2)
     secant = float(np.linalg.norm(
@@ -414,7 +428,7 @@ def test_v1_the_secant_gain_at_one_degree_is_the_docstrings_number():
     derivative = abs(float(lib.sensitivity(
         goal=lib.TossGoal(catch_pose_stow_mm=(0.0, 0.0, 170.0),
                           flight_time_s=T))[0, 1])) * math.pi / 180.0
-    assert derivative == pytest.approx(54.5718, abs=0.001)
+    assert derivative == pytest.approx(54.5753, abs=0.001)
     assert secant > derivative
 
 
@@ -802,6 +816,15 @@ def test_the_speed_authority_band_is_derived_per_flight_time():
     at the SHORT-flight end (``ARM_WINDOW``) and the POSITIVE side at the
     LONG-flight end (``DECEL_FF_HEADROOM``), so there is no single scalar that is
     admissible everywhere — which is C2 in one sentence.
+
+    2026-09-08 hand-geometry correction moved ``MAX_FLIGHT_TIME_S`` 1.1485 ->
+    1.1827 s (the ceiling ``DECEL_FF_HEADROOM`` ``T`` sees, see
+    test_throw_envelope.py), pushing both interior points' positive edge OUT:
+    T = 1.00 s sits far enough from the new ceiling that the outer
+    ``ILC_SPEED_AUTHORITY`` (0.15) now binds instead of the envelope (was
+    0.148, envelope-bound); T = 1.10 s is now farther from the ceiling than it
+    was from the old 1.1485 one, so its envelope-bound headroom grew
+    0.043 -> 0.075.
     """
     v = throw_envelope.vertical_release_speed_mps
     lo_T, hi_T = throw_envelope.MIN_FLIGHT_TIME_S, throw_envelope.MAX_FLIGHT_TIME_S
@@ -812,8 +835,9 @@ def test_the_speed_authority_band_is_derived_per_flight_time():
     assert lib.speed_authority_band(lo_T, v(lo_T))[0] == pytest.approx(0.0, abs=1e-9)
     assert lib.speed_authority_band(hi_T, v(hi_T))[1] == pytest.approx(0.0, abs=1e-9)
 
-    # Interior points, against the probe's published numbers.
-    for T, expect_hi in ((1.00, 0.148), (1.10, 0.043)):
+    # Interior points, against the probe's published numbers (was
+    # (1.00, 0.148), (1.10, 0.043) pre-2026-09-08 hand-geometry correction).
+    for T, expect_hi in ((1.00, 0.150), (1.10, 0.075)):
         assert lib.speed_authority_band(T, v(T))[1] == pytest.approx(
             expect_hi, abs=0.001)
     # ... and where the envelope is wide, the ILC ceiling is what binds — 0.15 is
@@ -1361,7 +1385,13 @@ def test_the_documented_corpus_glob_yields_one_row_per_toss(corpus):
 
 def test_the_goal_key_quantises_onto_the_aim_maps_own_grid(corpus):
     """A pose cell and an aim-map node name the same physical pose (150 mm
-    pitch), while z and the flight time get their own finer cells."""
+    pitch), while z and the flight time get their own finer cells.
+
+    2026-09-08 hand-geometry correction: HAND_CATCH_OFFSET_MM moved
+    64.78 -> 70.54 mm, walking the recovered catch-pose z down from the
+    ACTIVE plane (170.0 mm) to 164.24 mm (see
+    test_the_goal_is_recovered_from_mined_only_rows) — which quantises onto
+    the 10 mm z cell as 160.0, not 170.0."""
     admitted = [r for r in corpus if lib.admit_record(r)[0]]
     keys = {lib.goal_key(r) for r in admitted} - {None}
     assert keys, 'no recoverable goal cell in the corpus'
@@ -1369,7 +1399,7 @@ def test_the_goal_key_quantises_onto_the_aim_maps_own_grid(corpus):
         x, y, z, t = key
         assert abs(x / lib.POSE_CELL_MM - round(x / lib.POSE_CELL_MM)) < 1e-9
         assert abs(y / lib.POSE_CELL_MM - round(y / lib.POSE_CELL_MM)) < 1e-9
-        assert z == pytest.approx(170.0)            # the ACTIVE plane, 10 mm cell
+        assert z == pytest.approx(160.0)            # the ACTIVE plane, 10 mm cell
         assert t == pytest.approx(0.90)             # 50 ms cell
     import tilt_cal_grid                                            # noqa: E402
     nodes = tilt_cal_grid.build_axis(tilt_cal_grid.DEFAULT_BOX_MM, 3, 'x')
@@ -1379,13 +1409,18 @@ def test_the_goal_key_quantises_onto_the_aim_maps_own_grid(corpus):
 def test_the_goal_is_recovered_from_mined_only_rows(corpus):
     """``goal_catch_xyz_stow_mm`` is a declaration field and every mined-only row
     has it null, so the pose comes from ``land_xy_global_mm − land_err_mm`` and
-    the plane walked back down the two GENERATED offsets."""
+    the plane walked back down the two GENERATED offsets.
+
+    2026-09-08 hand-geometry correction: HAND_CATCH_OFFSET_MM moved
+    64.78 -> 70.54 mm (+5.76 mm), so the recovered z moved 170.0 -> 164.24 mm
+    (the corpus's declared ACTIVE plane is unchanged; the offset walking it
+    back down grew)."""
     admitted = [r for r in corpus if lib.admit_record(r)[0]]
     recovered = [lib.goal_of(r) for r in admitted]
     got = [g for g in recovered if g is not None]
     assert len(got) >= 15
     for g in got:
-        assert g.catch_pose_stow_mm[2] == pytest.approx(170.0, abs=1e-6)
+        assert g.catch_pose_stow_mm[2] == pytest.approx(164.24, abs=1e-6)
         assert abs(g.catch_pose_stow_mm[0]) <= 150.0 + 1e-6
         assert abs(g.catch_pose_stow_mm[1]) <= 150.0 + 1e-6
 

@@ -63,7 +63,7 @@ namespace Geometry {
   constexpr float LEG_STROKE_MM = 280.0f;
   constexpr float ARM_RADIUS_MM = 70.0f;
   constexpr float ARM_HEIGHT_FROM_PLATFORM_MM = 210.25f;
-  constexpr float HAND_STROKE_MM = 344.75f;
+  constexpr float HAND_STROKE_MM = 352.0f;
   constexpr float HAND_RADIUS_MM = 35.0f;
   constexpr float HAND_AXIS_BOTTOM_OFFSET_MM = -129.0f;
   constexpr float BALL_JOINT_OFFSET_MM = 0.0f;
@@ -229,14 +229,14 @@ namespace Spacemouse {
 
 namespace TeensyTraj {
   constexpr float HAND_SPOOL_RADIUS_M = 0.00521f;
-  constexpr float LINEAR_GAIN_FACTOR = 1.035f;
+  constexpr float LINEAR_GAIN_FACTOR = 1.0051f;
   constexpr float INERTIA_HAND_ONLY_KG = 0.281f;
   constexpr float INERTIA_RATIO = 0.747f;
   constexpr float THROW_DECEL_REFLECTED_INERTIA_KGM2 = 9.5e-06f;
   constexpr float THROW_VEL_HOLD_PCT = 0.05f;
   constexpr float CATCH_VEL_RATIO = 0.6f;
   constexpr float CATCH_VEL_HOLD_PCT = 0.1f;
-  constexpr float HAND_STROKE_M = 0.355f;
+  constexpr float HAND_STROKE_M = 0.3643707f;
   constexpr float STROKE_MARGIN_M = 0.02f;
   constexpr float END_PROFILE_HOLD_S = 0.1f;
   constexpr uint32_t SAMPLE_RATE_HZ = 500u;

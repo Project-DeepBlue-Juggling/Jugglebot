@@ -21,7 +21,7 @@ export const BALL_JOINT_OFFSET_MM = 0.0;
 // Arm / hand structure
 export const ARM_RADIUS_MM = 70.0;
 export const ARM_HEIGHT_FROM_PLATFORM_MM = 210.25;
-export const HAND_STROKE_MM = 344.75;
+export const HAND_STROKE_MM = 352.0;
 export const HAND_RADIUS_MM = 35.0;
 
 // Base node positions in the base frame (mm)
@@ -60,7 +60,7 @@ export const HAND_MOTOR_HARD_STOP_REVS = 10.701;
 // Motor-rev -> physical-unit conversions for the non-leg axes.
 // Legs use 1/MM_TO_REV[i] (per leg, above); these are the hand/BB axes.
 // Spool gains are derived, NOT literals: mm/rev = 1000 / (rev/m gain).
-export const HAND_MM_PER_REV = 31.628401;
+export const HAND_MM_PER_REV = 32.569292;
 export const BB_HAND_MM_PER_REV = 32.982325;
 
 // BB pitch is affine in motor revs: deg = 90 + 360*rev (absolute barrel

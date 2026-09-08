@@ -2041,8 +2041,11 @@ def test_the_replan_converts_the_wire_CENTROID_into_the_planners_CUP_site(
     that centroid verbatim — that is what pins the frame. Copying `target_pos`
     straight into `catch_site_mm` therefore aimed the cycle's catch at a point
     the offset SHORT of the ball, leaning the way the receive tilt leans: a
-    systematic ``64.78·sin θ`` mm bias, 13.47 mm at the 12° ceiling and largest
+    systematic ``70.54·sin θ`` mm bias, 14.666 mm at the 12° ceiling and largest
     exactly when the ball is arriving fastest sideways.
+
+    2026-09-08 hand-geometry correction moved HAND_CATCH_OFFSET_MM 64.78 ->
+    70.54 mm, so the bias was 13.4685 mm at the ceiling before.
 
     Pinned at the ceiling on both axes (the sign convention is load-bearing:
     ``+ry`` swings the cup toward ``+x``, ``+rx`` toward ``−y``) and at level,
@@ -2082,7 +2085,7 @@ def test_the_replan_converts_the_wire_CENTROID_into_the_planners_CUP_site(
 
         node._replan_cycle_from_target(
             _tilted_dyn_msg(ry=theta, x=100.0, y=-50.0, lead_s=_T_CATCH), node._cycle)
-        assert sent[-1].catch_site_mm[0] == pytest.approx(100.0 + 13.4685,
+        assert sent[-1].catch_site_mm[0] == pytest.approx(100.0 + 14.6661,
                                                           abs=1e-3)
         assert sent[-1].catch_site_mm[1] == pytest.approx(-50.0, abs=1e-9)
         # z is NEVER touched: a centroid says nothing about the cup height, which
@@ -2092,7 +2095,7 @@ def test_the_replan_converts_the_wire_CENTROID_into_the_planners_CUP_site(
         node._replan_cycle_from_target(
             _tilted_dyn_msg(rx=theta, x=100.0, y=-50.0, lead_s=_T_CATCH), node._cycle)
         assert sent[-1].catch_site_mm[0] == pytest.approx(100.0, abs=1e-9)
-        assert sent[-1].catch_site_mm[1] == pytest.approx(-50.0 - 13.4685,
+        assert sent[-1].catch_site_mm[1] == pytest.approx(-50.0 - 14.6661,
                                                           abs=1e-3)
 
         # LEVEL: an exact no-op, so a vertical self-toss's replan is

@@ -339,7 +339,15 @@ PLATFORM_FW_VERSION_UNVERSIONED = 0
 #: compensating margin widening, so SMOOTH_MOVE_POS_CEIL_REV moves too: 10.60 ->
 #: 10.501 rev, and smoothMoveMaxDuration() 0.78964 -> 0.78602 s. A board on 3 emits
 #: preludes past the new ceiling.
-PLATFORM_FW_VERSION_EXPECTED = 4
+#: 5 (2026-09-08) = the hand-geometry correction (plans/active/hand-geometry-
+#: correction.md G2). TeensyTraj::LINEAR_GAIN_FACTOR 1.035 -> 1.0051 (measured
+#: cable/spool calibration replacing the "just 'cuz" fudge) and
+#: TeensyTraj::HAND_STROKE_M 0.355 -> 0.3643707 m (re-based so every commanded
+#: rev is preserved). Trajectory.h derives LINEAR_GAIN and HAND_STROKE from
+#: these at compile time, so the board's throw profile moves with no source
+#: edit in Trajectory.h itself — a board still on 4 throws ~2.97% fast against
+#: the corrected model.
+PLATFORM_FW_VERSION_EXPECTED = 5
 
 
 def decode_platform_fw_version(data: bytes) -> int:

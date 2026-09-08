@@ -159,12 +159,16 @@ _CUP_Z_TOP_M = (_CUP_Z_BOTTOM_M
 #: Inset (m) applied to both ends of that band to get the cup QP's position box.
 #: The box is on the cup opening, but the slider is what has to reach it, and a
 #: TILTED cup sits lower than a level one by ``arm·(1 − cos θ)`` — at the 12°
-#: ceiling and the 250 mm top-of-band lever that is 5.5 mm.  10 mm covers it with
-#: room for the solve's own residual, and keeps the box strictly inside the band
-#: so a knot on the box boundary is still realisable rather than exactly at the
-#: stroke clamp.  Lands at 0.6896 / 0.9846 m, reproducing ``sim/cycle_gate.py``'s
-#: hand-set 0.690 / 0.985 to within 0.4 mm at both ends; that gate keeps its own
-#: literals so its Phase-1 numbers stay reproducible.
+#: ceiling and the (2026-09-08 hand-geometry correction) 259.7 mm top-of-band
+#: lever that is 5.6 mm (was 250 mm lever / 5.5 mm pre-correction).  10 mm
+#: covers it with room for the solve's own residual, and keeps the box
+#: strictly inside the band so a knot on the box boundary is still realisable
+#: rather than exactly at the stroke clamp.  Lands at 0.6896 / 0.9940 m (was
+#: 0.6896 / 0.9846 pre-correction).  ``sim/cycle_gate.py``'s CUP_Z_LO_M /
+#: CUP_Z_HI_M were re-pointed on 2026-09-08 (owner decision D5) to FOLLOW this
+#: box exactly (0.6896 / 0.9940) rather than keeping independently-frozen
+#: Phase-1 literals that only agreed to within 0.4 mm — so the two are now the
+#: same physical band read two ways, exactly, not approximately.
 _CUP_Z_INSET_M = 0.010
 
 #: Cup-opening world z (mm) a cycle SETTLES at — the rest site every LANDING and
@@ -183,7 +187,9 @@ _CUP_Z_INSET_M = 0.010
 #: the cup box [0.6896, 0.9846] m"*).
 #:
 #: So the settle is the parked height CLAMPED UP into the box: 689.6 mm =
-#: **0.3162 rev**, which is inside ``HAND_PARK_BAND_REV`` with 37 % of the band to
+#: **0.3070 rev** (was 0.3162 rev pre-2026-09-08 hand-geometry correction —
+#: the mm is a COMMAND, unchanged, and the rev conversion moves), which is
+#: inside ``HAND_PARK_BAND_REV`` with 37 % of the band to
 #: spare, and is a state the NEXT cycle's LAUNCH can also be planned FROM (probed
 #: at 689.60 / 690.0 / 692.0 / 695.0 mm — all ACCEPT), so a session's cycle N+1
 #: starts where cycle N stopped.  Written as ``max`` rather than as the box floor
@@ -236,7 +242,8 @@ _SEAM_MARGIN = 10.0
 #: never been near either value, but it was licensed to be.
 #:
 #: The rev bar is the same residual through the slider gain
-#: (``LINEAR_GAIN_REV_PER_M``, 31.62 rev/m), because a cup-z disagreement is what
+#: (``LINEAR_GAIN_REV_PER_M``, 30.70 rev/m, was 31.62 pre-2026-09-08
+#: hand-geometry correction), because a cup-z disagreement is what
 #: reaches the hand channel.  The ROTATION channels are compared against the mm
 #: bar too: they come from the PINNED tilt series and not from the solve, so
 #: their gap is exactly zero, and 1e-3 rad still catches the failure this check

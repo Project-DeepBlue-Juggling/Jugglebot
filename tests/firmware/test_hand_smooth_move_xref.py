@@ -316,7 +316,14 @@ def test_the_stroke_top_agrees(self=None):
     total = _TT['HAND_STROKE_M'] - 2.0 * _TT['STROKE_MARGIN_M']
     gain = _TT['LINEAR_GAIN_FACTOR'] / (math.pi * _TT['HAND_SPOOL_RADIUS_M'] * 2.0)
     assert mirror.mm_to_rev(total * 1000.0) == pytest.approx(total * gain, abs=1e-12)
-    assert total * gain == pytest.approx(9.95940313, abs=1e-8)
+    # Re-pinned 2026-09-08 (hand-geometry correction): hand_stroke_m was
+    # RE-BASED (0.355 -> 0.3643707) specifically so this rev value holds
+    # bit-identical across the linear_gain_factor correction (1.035 -> 1.0051).
+    # It moved from the old 9.95940313 to the exact regenerated
+    # HAND_STROKE_TOP_REV (config/generated/hardware_config.py) by 2.9e-7 rev,
+    # which is why the tolerance tightens from the old comfortable 1e-8 slack
+    # down to matching the generated constant exactly at this precision.
+    assert total * gain == pytest.approx(9.95940284466489, abs=1e-8)
 
 
 def test_the_end_stop_ceiling_agrees_with_the_firmware_expression():
@@ -374,7 +381,13 @@ def test_the_v0_zero_branch_is_the_historical_expression_in_the_firmware_too():
 #  3. the excursion clamp and the BRANCH DECISION
 # ══════════════════════════════════════════════════════════════════════════
 
-_X3 = (0.355 - 2 * 0.02) * (1.035 / (math.pi * 0.00521 * 2.0))
+
+# 2026-09-08 hand-geometry correction: hand_stroke_m 0.355 -> 0.3643707,
+# linear_gain_factor 1.035 -> 1.0051 (re-based so this value stays 9.9594 rev
+# bit-for-bit — see test_the_stroke_top_agrees above). Updated so the
+# hand-typed literals here match the shipped config instead of quietly lying
+# about it while still passing.
+_X3 = (0.3643707 - 2 * 0.02) * (1.0051 / (math.pi * 0.00521 * 2.0))
 
 _CASES = [
     (_X3, _X3, 0.0),            # clean catch-from-rest: empty

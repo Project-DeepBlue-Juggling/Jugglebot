@@ -142,7 +142,7 @@ def test_the_gate_catches_a_hand_edit(tmp_path):
 
     for label, mutation in (
             ("one attribute value",
-             lambda x: x.replace('range="0 0.344750"', 'range="0 0.355000"', 1)),
+             lambda x: x.replace('range="0 0.348524"', 'range="0 0.355000"', 1)),
             ("the whole ball2 body",
              lambda x: x[:x.index('<body name="ball2"')]
                        + x[x.index('</body>', x.index('<body name="ball2"')) + 8:]),

@@ -31,8 +31,15 @@ logger = logging.getLogger(__name__)
 # Constants — from config/hardware_config.yaml  teensy_trajectory section
 # ---------------------------------------------------------------------------
 GRAVITY_MPS2 = 9.806
-HAND_SPOOL_RADIUS_M = 0.00521
-LINEAR_GAIN_FACTOR = 1.035
+# Derived from config (was a hardcoded local mirror until 2026-09-08 — the
+# 2026-09-06 measured cable/spool calibration correction: 1.035 -> 1.0051,
+# see hardware_config.yaml's teensy_trajectory.linear_gain_factor comment).
+# A hardcoded copy here had NO cross-check against jugglebot.hardware_config,
+# so a config-only edit would silently desync the sim's gain from the
+# planner's — deriving it removes that hazard structurally, matching the
+# existing pattern for HAND_MOTOR_HARD_STOP_REVS below.
+HAND_SPOOL_RADIUS_M = hw.TEENSY_TRAJ_HAND_SPOOL_RADIUS_M   # 0.00521 m, measured part
+LINEAR_GAIN_FACTOR = hw.TEENSY_TRAJ_LINEAR_GAIN_FACTOR     # 1.0051, measured calibration
 INERTIA_HAND_ONLY_KG = 0.281
 INERTIA_RATIO = 0.747
 # Total reflected inertia of the hand axis at the motor (rotor + cable-driven
@@ -52,7 +59,14 @@ THROW_DECEL_REFLECTED_INERTIA_KGM2 = 9.5e-6
 # velocity-matching at contact.
 CATCH_VEL_RATIO = 0.6
 CATCH_VEL_HOLD_PCT = 0.10
-HAND_STROKE_M = 0.355
+# Derived from config (was a hardcoded local mirror = 0.355 until 2026-09-08).
+# THE MOST DANGEROUS MISSED EDIT the G1 audit found: updating LINEAR_GAIN_FACTOR
+# without this would have dropped the sim's x3 to 9.6717 rev while the
+# planner's stayed at 9.9594 -- sim and machine silently disagreeing about the
+# stroke top, with no test able to catch it. Deriving it removes that hazard
+# structurally. Value is the re-based throw-profile basis (0.3643707 m, was
+# 0.355) -- see hardware_config.yaml's teensy_trajectory.hand_stroke_m comment.
+HAND_STROKE_M = hw.TEENSY_TRAJ_HAND_STROKE_M
 STROKE_MARGIN_M = 0.02
 END_PROFILE_HOLD_S = 0.10
 MAX_SMOOTH_MOVE_HAND_ACCEL_RPS2 = 100.0
@@ -91,14 +105,17 @@ SMOOTH_MOVE_MIN_DURATION_S = 0.05  # fmaxf(T, 0.05f) — Trajectory.h:54/:557
 # rest-to-rest fallback slightly sooner) and the host window that consumes it,
 # ``_PRIME_INFLIGHT_S``, was sized against the larger number.
 #
-# NOTE, deliberately not acted on here: this module's ``HAND_STROKE_M = 0.355``
-# implies a top of 11.224 rev, which is 0.42 rev ABOVE this measured stop.  That
-# is not a contradiction — 0.355 is ``teensy_trajectory.hand_stroke_m``, the
+# NOTE, deliberately not acted on here: this module's ``HAND_STROKE_M`` (now
+# 0.3643707, re-based 2026-09-08 alongside ``linear_gain_factor``) implies a
+# top of 11.1876 rev, which is 0.4866 rev ABOVE this measured stop.  That is
+# not a contradiction — 0.3643707 is ``teensy_trajectory.hand_stroke_m``, the
 # THROW-PROFILE basis (it feeds total_stroke -> x2/x3/x5, all empirically
-# validated on hardware), NOT a measurement of physical travel.  Physical travel
-# is ``jugglebot_geometry.hand_stroke_mm`` = **344.75 mm**, a separate key since
-# 2026-08-18.  Re-deriving the profile basis would move the release and catch
-# points and needs its own validation.
+# validated on hardware; the 2026-09-08 re-base holds every one of those REV
+# values bit-identical), NOT a measurement of physical travel.  Physical
+# travel is ``jugglebot_geometry.hand_stroke_mm`` = **352.0 mm** stop-to-stop
+# (348.52 mm above encoder zero), a separate key since 2026-08-18.
+# Re-deriving the profile basis would move the release and catch points and
+# needs its own validation.
 # (This note said ``hand_stroke_mm = 355.0`` until 2026-08-21 — it named the
 # geometry key while meaning the trajectory one, i.e. exactly the conflation the
 # 2026-08-18 split exists to prevent.  See sim/plant/mujoco_plant.py.)
@@ -128,8 +145,8 @@ THROW_VEL_HOLD_PCT = 0.05  # 5% of effective stroke for velocity hold
 
 # Derived
 _LINEAR_GAIN = LINEAR_GAIN_FACTOR / (math.pi * HAND_SPOOL_RADIUS_M * 2.0)  # rev/m
-_TOTAL_STROKE_M = HAND_STROKE_M - 2.0 * STROKE_MARGIN_M  # 0.315 m
-_TOTAL_STROKE_MM = _TOTAL_STROKE_M * 1000.0  # 315 mm
+_TOTAL_STROKE_M = HAND_STROKE_M - 2.0 * STROKE_MARGIN_M  # 0.324371 m (was 0.315)
+_TOTAL_STROKE_MM = _TOTAL_STROKE_M * 1000.0  # 324.37 mm (was 315)
 STROKE_MARGIN_MM = STROKE_MARGIN_M * 1000.0  # 20 mm
 
 
@@ -154,9 +171,10 @@ def rev_to_mm(rev: float) -> float:
 # ``_TORQUE_K_LEGACY`` is ``Trajectory.h``'s historical ``accelToTorque``:
 # ``a_lin * INERTIA_HAND_ONLY_KG * HAND_SPOOL_RADIUS_M``.  It models the axis as
 # a pure translating mass on a spool, so its IMPLIED reflected inertia is
-# ``m*r/(2*pi*LINEAR_GAIN)`` = 7.3695e-6 kg m^2 — it omits the rotor entirely and
-# uses the raw spool radius rather than the effective one the 1.035 gain factor
-# implies.  Against a measured 1.02e-5 - 1.05e-5 that is ~70 % of the torque the
+# ``m*r/(2*pi*LINEAR_GAIN)`` = 7.5888e-6 kg m^2 (was 7.3695e-6 pre-2026-09-08
+# correction) — it omits the rotor entirely and uses the raw spool radius
+# rather than the effective one the 1.0051 gain factor implies (was 1.035).
+# Against a measured 1.02e-5 - 1.05e-5 that is ~70 % of the torque the
 # commanded acceleration physically needs.
 #
 # ``_TORQUE_K_THROW_DECEL`` is the corrected conversion, applied ONLY to the
@@ -168,7 +186,7 @@ def rev_to_mm(rev: float) -> float:
 
 #: N.m per (m/s^2) of hand-axis linear acceleration — historical conversion.
 _TORQUE_K_LEGACY = INERTIA_HAND_ONLY_KG * HAND_SPOOL_RADIUS_M
-#: Reflected inertia the legacy conversion implies (kg m^2).  7.3695e-6.
+#: Reflected inertia the legacy conversion implies (kg m^2).  7.5888e-6 (was 7.3695e-6).
 #: ``torque = J * alpha_rad = J * 2*pi * a_lin * LINEAR_GAIN``, so equating that
 #: to ``a_lin * m * r`` gives ``J = m*r / (2*pi*LINEAR_GAIN)``.
 LEGACY_IMPLIED_INERTIA_KGM2 = _TORQUE_K_LEGACY / (2.0 * math.pi * _LINEAR_GAIN)
@@ -195,7 +213,7 @@ class HandCatchTrajectory:
     """3-segment catch trajectory matching Teensy buildCatch().
 
     The trajectory moves the hand downward from ``start_pos_mm`` over the
-    effective stroke (315 mm).  The hand velocity during the hold phase is
+    effective stroke (324.37 mm, was 315).  The hand velocity during the hold phase is
     ``-CATCH_VEL_RATIO * event_vel_mps`` (negative = downward).
 
     Timeline: t=0 is the midpoint of the velocity-hold phase — the instant
@@ -1048,8 +1066,8 @@ class HandThrowTrajectory:
         self._start_pos_mm = start_pos_mm
 
         # --- port of calcThrow() ---
-        accel_stroke_m = (1.0 - THROW_VEL_HOLD_PCT) * _TOTAL_STROKE_M  # 0.95 * 0.315
-        vel_hold_m = THROW_VEL_HOLD_PCT * _TOTAL_STROKE_M               # 0.05 * 0.315
+        accel_stroke_m = (1.0 - THROW_VEL_HOLD_PCT) * _TOTAL_STROKE_M  # 0.95 * 0.324371
+        vel_hold_m = THROW_VEL_HOLD_PCT * _TOTAL_STROKE_M               # 0.05 * 0.324371
 
         # Segment durations (positive)
         t_acc = 2.0 / (INERTIA_RATIO + 1.0) * accel_stroke_m / v_throw

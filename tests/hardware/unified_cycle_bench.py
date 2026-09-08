@@ -202,7 +202,12 @@ TILT_NOTE_DEG = 0.5
 #: millimetres beside one in revs, and converts a cup height into the slider revs
 #: that reach it (:func:`hand_rev_for_cup_z`). Pinned to the planner's own gain
 #: by the offline test.
-REV_PER_MM = 31.6172 / 1000.0
+#: Was 31.6172 pre-2026-09-08 hand-geometry correction
+#: (``teensy_trajectory.linear_gain_factor`` 1.035 -> 1.0051); NO drift-guard
+#: test pins this mirror against the generated value, so a future regen must
+#: update it here BY HAND — see ``config/generated/hardware_config.py``'s
+#: ``TEENSY_LINEAR_GAIN`` for the current source of truth.
+REV_PER_MM = 30.703768 / 1000.0
 
 #: Cup-opening world z (mm) with the slider at hand zero, cup LEVEL and the
 #: platform at the active-z pin — ``unified_cycle._CUP_Z_BOTTOM_M``

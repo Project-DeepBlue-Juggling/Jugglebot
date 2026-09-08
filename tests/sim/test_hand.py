@@ -37,25 +37,40 @@ class TestHandModel:
         assert hand_id >= 0, "hand body not found"
 
     def test_hand_slide_joint(self, plant):
-        """Joint range is 0 .. the CONFIGURED physical travel.
+        """Joint range is 0 .. the travel ABOVE ENCODER ZERO, derived from the
+        measured hard stop and gain — NOT ``jugglebot_geometry.hand_stroke_mm``
+        directly.
 
-        Read from ``jugglebot_geometry.hand_stroke_mm`` rather than written down
-        here.  This assertion hardcoded 0.355 and went stale on 2026-08-18 when
-        the operator measured the sensorised hand and the key moved to 344.75 —
-        making it the third place that correction failed to reach, after
-        ``mujoco_plant.py``'s clip bound and the MJCF itself.  Hardcoding it
-        again would just reset that clock.
+        Re-pointed 2026-09-08 (hand-geometry correction, owner decision D2).
+        The joint is single-sided from zero, and zero is ENCODER zero, which
+        sits 0.107 rev ABOVE the bottom hard stop. ``hand_stroke_mm`` (352.0)
+        is the STOP-TO-STOP measurement (10.808 rev): pinning the joint range
+        to it directly would give the modelled hand ~3.48 mm of travel the
+        real machine does not have above its encoder zero. The correct clip is
+        ``hand_motor_hard_stop_revs / gain`` = 10.701 / 30.703768 = 0.348524 m,
+        which is what ``sim/model/generate_mjcf.py`` now emits.
 
-        NOT ``teensy_trajectory.hand_stroke_m`` (0.355) — that is the
-        throw-profile basis and is a different number on purpose.
+        Before 2026-08-18 this assertion hardcoded 0.355 and went stale when
+        the operator measured the sensorised hand — one of three places
+        (alongside ``mujoco_plant.py``'s clip bound and the MJCF itself) that
+        correction had to reach. Deriving it from the hard stop instead of a
+        stroke literal is meant to end that recurring drift for good.
+
+        NOT ``teensy_trajectory.hand_stroke_m`` (0.3643707) either — that is
+        the throw-profile basis and is a different number on purpose.
         """
+        linear_gain_rev_per_m = (
+            hw.TEENSY_TRAJ_LINEAR_GAIN_FACTOR
+            / (2.0 * np.pi * hw.TEENSY_TRAJ_HAND_SPOOL_RADIUS_M)
+        )
+        expected_travel_m = hw.GEOM_HAND_MOTOR_HARD_STOP_REVS / linear_gain_rev_per_m
         m = plant.model
         jid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, 'hand_slide')
         assert jid >= 0, "hand_slide joint not found"
         assert m.jnt_range[jid][0] == pytest.approx(0.0, abs=1e-6)
         assert m.jnt_range[jid][1] == pytest.approx(
-            hw.GEOM_HAND_STROKE_MM / 1000.0, abs=1e-6), (
-            "hand_slide range disagrees with jugglebot_geometry.hand_stroke_mm — "
+            expected_travel_m, abs=1e-6), (
+            "hand_slide range disagrees with hand_motor_hard_stop_revs/gain — "
             "regenerate the model: python sim/model/generate_mjcf.py")
 
     def test_hand_actuator(self, plant):
@@ -96,7 +111,11 @@ class TestHandCommand:
         )
         prime_mm = (hw.TEENSY_TRAJ_STROKE_MARGIN_M * 1000.0
                     + hw.HAND_STROKE_TOP_REV / linear_gain_rev_per_m * 1000.0)
-        assert prime_mm == pytest.approx(335.0, abs=1e-6)
+        # 335.0 -> 344.371 on 2026-09-08 (hand-geometry correction): x3 itself
+        # is unchanged in rev (the re-based hand_stroke_m holds it fixed), but
+        # x3 in mm moved with the gain (315.0 -> 324.371 mm), which this
+        # formula adds STROKE_MARGIN_MM (20 mm) on top of.
+        assert prime_mm == pytest.approx(344.3707, abs=1e-4)
         plant.hand_to_prime()
         # Step for 500 ms at 20 ms intervals
         for _ in range(25):

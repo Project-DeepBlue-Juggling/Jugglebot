@@ -206,16 +206,41 @@ def test_the_mirror_band_is_non_vacuous(smoke_plan, smoke_ring_plan, gate):
     ring, leg           9.131e-07 rev   5.836e-04 rev   5e-4
     ==================  ==============  ==============  ==============
 
+    RE-MEASURED 2026-09-08 (hand-geometry correction — see
+    ``sim/unified_gate.py``'s ``MIRROR_TOL_LEG_REV`` docstring for the full
+    decision). The hand column moved with the corrected gain (still four+
+    orders past its band either way); the leg column's fault footprint on the
+    ring dropped from 1.17× the old 5e-4 band to UNDER it (0.81×) — a v1
+    regression on the ring would no longer be caught. The honest values did not
+    move outside float noise:
+
+    ==================  ==============  ==============  ==============
+    plan / lane         honest          HAS_V1 masked   band
+    ==================  ==============  ==============  ==============
+    toss, hand          4.487e-07 rev   5.963e-02 rev   4e-6
+    toss, leg           9.891e-08 rev   9.891e-08 rev   3e-4
+    ring, hand          4.551e-07 rev   5.967e-02 rev   4e-6
+    ring, leg           5.562e-07 rev   4.068e-04 rev   3e-4
+    ==================  ==============  ==============  ==============
+
+    ``MIRROR_TOL_LEG_REV`` was tightened 5e-4 -> 3e-4 to restore non-vacuity:
+    the worst HONEST leg residual over the full 27-point grid (single-toss SET
+    1 + the two-pose ring SET 2, ``python sim/unified_gate.py --no-viewer``,
+    2026-09-08) is 2.837e-05 rev — 10.6x below the new 3e-4 band, still real
+    headroom — while the ring's fault footprint (4.068e-4 rev) now sits 1.36x
+    OVER it, so the band catches the regression again.
+
     **The leg lane is asserted on the RING, and the co-located toss row is why.**
     Masking ``HAS_V1`` moves the co-located toss's leg reconstruction by
     *nothing at all* — bit-identical, because with the platform nearly stationary
     the leg extension is nearly linear across a 25 ms knot and the
     ``(u2−u1)/T`` fallback IS the transmitted v1 to within the mirror's own
     resolution.  On the 60 mm ring, where the platform strokes, the same fault
-    puts the leg band 1.17× outside its bound.  So the leg band does catch a v1
-    regression, but only where there is platform motion to catch it in — which is
-    a real property of the chain, not slack in the number, and it is stated here
-    rather than left for a future reader to rediscover on a co-located rung.
+    puts the leg band 1.36× outside its bound (was 1.17× of the old 5e-4 band).
+    So the leg band does catch a v1 regression, but only where there is
+    platform motion to catch it in — which is a real property of the chain,
+    not slack in the number, and it is stated here rather than left for a
+    future reader to rediscover on a co-located rung.
 
     Pure: no plant, no MuJoCo — it is a statement about the ladder.
     """

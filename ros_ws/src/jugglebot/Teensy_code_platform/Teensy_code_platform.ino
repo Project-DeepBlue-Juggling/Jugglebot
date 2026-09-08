@@ -104,7 +104,7 @@
  *        logbook/2026-09-08-fw18-bundle-hand-clip-homing-counters-rename.md
  */
 constexpr char     FW_NAME[]  = "jugglebot-platform";
-constexpr uint16_t FW_VERSION = 4;   // 1→2: 2026-07-29 throwDecelToTorque (post-release decel
+constexpr uint16_t FW_VERSION = 5;   // 1→2: 2026-07-29 throwDecelToTorque (post-release decel
                                      //      feedforward, C-HAND-2).
                                      // 2→3: 2026-08-18 hand END-STOP correction — BEHAVIOURAL.
                                      //      Geometry::HAND_MOTOR_HARD_STOP_REVS 11.1 → 10.8 rev
@@ -122,6 +122,18 @@ constexpr uint16_t FW_VERSION = 4;   // 1→2: 2026-07-29 throwDecelToTorque (po
                                      //      rev; SMOOTH_MOVE_POS_CEIL_REV 10.60 → 10.501 rev;
                                      //      smoothMoveMaxDuration() 0.78964 → 0.78602 s. See the
                                      //      identity-block entry above for the full derivation.
+                                     // 4→5: 2026-09-08 hand-geometry correction — BEHAVIOURAL.
+                                     //      TeensyTraj::LINEAR_GAIN_FACTOR 1.035 → 1.0051 (the
+                                     //      "just 'cuz" fudge replaced by the measured cable/
+                                     //      spool calibration) and TeensyTraj::HAND_STROKE_M
+                                     //      0.355 → 0.3643707 m (re-based so every commanded rev
+                                     //      is preserved). Trajectory.h ~30-32 derives LINEAR_GAIN
+                                     //      and HAND_STROKE from these at compile time, so this
+                                     //      board's throw profile changes with no source edit here
+                                     //      — a board still on FW 4 throws ~2.97 % fast against the
+                                     //      corrected model. plans/active/hand-geometry-correction.md
+                                     //      G2. Flash via Arduino IDE only — the pio image is
+                                     //      CAN-MUTE.
 
 /*----------------------------------------------------------------------------*/
 /*                                CAN BUS SET‑UP                              */

@@ -356,8 +356,9 @@ class TestChartUnitConstants:
     def test_hand_gain_spans_the_physical_stroke(self, yaml_config, js_source):
         """Sanity: hard stop x mm/rev must land inside the physical stroke.
 
-        10.701 rev x 31.63 mm/rev = 338.4 mm against a 344.75 mm stroke (FW 18,
-        2026-09-08; was 10.8 rev / 341.6 mm) — a wrong-axis factor (the leg's
+        10.701 rev x 32.57 mm/rev = 348.5 mm against a 352.0 mm stroke
+        (2026-09-08 hand-geometry correction: was 31.63 mm/rev / 338.4 mm
+        against a 344.75 mm stroke) — a wrong-axis factor (the leg's
         70.5 mm/rev) would give 762 mm and fail.
         """
         mm_per_rev = _extract_js_number(js_source, 'HAND_MM_PER_REV')

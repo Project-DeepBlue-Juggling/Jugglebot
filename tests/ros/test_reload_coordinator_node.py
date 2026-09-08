@@ -166,14 +166,18 @@ def test_catch_point_includes_hand_cup_offset():
     """The reload aim must be the CUP plane (platform centroid + HAND_CATCH_OFFSET_MM),
     matching throw_ballistics/_landing_z/catch_coordinator — NOT the bare centroid.
     Regression for the 2026-07-20 fix: aiming at the centroid (744.3) delivered the ball
-    64.78 mm below where the hand intercepts it (809.08)."""
+    HAND_CATCH_OFFSET_MM below where the hand intercepts it. HAND_CATCH_OFFSET_MM was
+    64.78 mm (intercept 809.08) before the 2026-09-08 hand-gain correction
+    (`linear_gain_factor` 1.035 -> 1.0051) moved HAND_CATCH_POS_M and, with it, this
+    offset to 70.54 mm (intercept 814.84) — the offset's REV is unchanged, only its
+    mm expression moved with the corrected gain."""
     node = ReloadCoordinatorNode()
     expected_z = (hw.GEOM_INITIAL_HEIGHT_MM + hw.JB_OP_DEFAULT_ACTIVE_Z_MM
                   + hw.HAND_CATCH_OFFSET_MM)
     assert node._catch_point_mm[0] == pytest.approx(0.0)
     assert node._catch_point_mm[1] == pytest.approx(0.0)
     assert node._catch_point_mm[2] == pytest.approx(expected_z)
-    assert node._catch_point_mm[2] == pytest.approx(809.08)
+    assert node._catch_point_mm[2] == pytest.approx(814.84)
 
 
 # ── Observation assembly ───────────────────────────────────────
@@ -587,12 +591,15 @@ def test_centered_tolerance_leaves_room_for_the_reload_pretilt_swing():
     pre-tilt catch pose, whose centroid sits hand_catch_offset*sin(tilt) off the
     catch point, and compute_catch_orientation CLAMPS at MAX_TILT_DEG for every
     real BB arrival (18-40 deg off vertical). So the shift SATURATES at
-    64.78*sin(12 deg) = 13.47 mm on every single reload.
+    HAND_CATCH_OFFSET_MM*sin(12 deg) on every single reload — 14.67 mm now;
+    at the original 2026-07-23 incident HAND_CATCH_OFFSET_MM was 64.78 mm
+    (13.47 mm), before the 2026-09-08 hand-gain correction moved it to 70.54 mm.
 
     With the tolerance set to the bare envelope radius (what shipped in review)
     a park at 70 mm was ADMITTED and the resulting excursion was 83.5 mm ->
     rejected WORKSPACE with BB's countdown already started and the ball
-    unsavable. This test fails against that version."""
+    unsavable (both measured at the pre-correction 64.78 mm offset). This test
+    fails against that version."""
     import math
     import jugglebot.hardware_config as hw
     import jugglebot.reload_coordinator_node as _rcn
@@ -600,7 +607,7 @@ def test_centered_tolerance_leaves_room_for_the_reload_pretilt_swing():
 
     env = float(hw.JB_TRAJ_CATCH_REACH_ENVELOPE_MM)
     swing = float(hw.HAND_CATCH_OFFSET_MM) * math.sin(math.radians(MAX_TILT_DEG))
-    assert swing == pytest.approx(13.469, abs=0.01)
+    assert swing == pytest.approx(14.666, abs=0.01)
     # The tolerance is the envelope MINUS the worst-case swing — derived, not a
     # magic number, and strictly tighter than the envelope.
     assert _rcn._RELOAD_CENTERED_TOL_MM == pytest.approx(env - swing)

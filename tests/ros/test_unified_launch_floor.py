@@ -182,21 +182,37 @@ def test_the_closed_form_reproduces_the_sittings_three_refusals():
     Not a tautology: it says the four `HAND_LIMIT_ACC` numbers are ONE fact —
     where the hand was — rather than four goals that happened to be infeasible.
     If this ever stops holding, the lift is fixing the wrong thing.
+
+    **2026-09-08 hand-geometry gain correction: this now SUPERSEDES rather than
+    exactly re-verifies the pre-correction historical bag row.** ``FLOOR_REV``
+    is `unified_cycle.SETTLE_CUP_Z_MM` (a fixed mm target) taken through the
+    corrected gain, so it moved 0.3161715 -> 0.3070377; re-running the SAME
+    closed form against the sitting's real seed (-0.1087 rev, raw encoder
+    data, unchanged) now gives a genuinely different required acceleration
+    (3991.1 rev/s^2, not the 4078.8 rev/s^2 actually commanded that night
+    under the old gain) and no longer four-decimal-inverts the three historical
+    refusals back to -0.108 (the module docstring's worked example above is
+    left as the historical record of that night; this test pins what the
+    SHIPPED code computes today).
     """
     assert uc.SETTLE_CUP_Z_MM == pytest.approx(689.6)
-    assert FLOOR_REV == pytest.approx(0.3161715, abs=1e-6)
-    # The sitting's seed, forward.
+    assert FLOOR_REV == pytest.approx(0.3070377, abs=1e-6)
+    # The sitting's seed, forward — against the CURRENT floor (was 4078.8
+    # pre-correction).
     assert rcn.ReloadCoordinatorNode._unified_floor_slam_rps2(
-        SEED_SITTING_REV) == pytest.approx(4078.8, abs=0.2)
-    # ...and the three refusals, inverted back to it.
+        SEED_SITTING_REV) == pytest.approx(3991.1, abs=0.2)
+    # ...and the three historical refusals, inverted through the CURRENT floor
+    # (was -0.108 pre-correction; the three measured accelerations are the real
+    # bag numbers from that night and do not move).
     dt = float(uc.cc.CupCycleConfig.dt)
     for measured in (4077.2, 4076.9, 4063.2):
         seed = FLOOR_REV - measured * dt * dt / 6.0
-        assert seed == pytest.approx(-0.108, abs=0.002)
+        assert seed == pytest.approx(-0.117, abs=0.002)
     # THE SILENT BAND: the cap is crossed only at -0.0485 rev, so a seed 11.2 mm
     # low is ACCEPTED. This is the number that makes the rule a floor.
+    # 3312.4 as of 2026-09-08 (was 3400.0 pre-correction).
     assert rcn.ReloadCoordinatorNode._unified_floor_slam_rps2(
-        SEED_SILENT_REV) == pytest.approx(3400.0, abs=1.0)
+        SEED_SILENT_REV) == pytest.approx(3312.4, abs=1.0)
     assert (rcn.ReloadCoordinatorNode._unified_floor_slam_rps2(SEED_SILENT_REV)
             < float(rcn.hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2))
 
@@ -237,14 +253,18 @@ def test_a_hand_parked_ON_the_floor_is_not_refused_by_noise(monkeypatch):
     tolerance.
 
     **The settle site IS the floor** — the lift's, and every chained LANDING's —
-    so a hand that has just done exactly what it was told sits at 0.3162 rev with
+    so a hand that has just done exactly what it was told sits at 0.3070 rev
+    (was 0.3162 rev pre-2026-09-08, at the pre-correction 31.6172 rev/m) with
     the measurement straddling the line. An exact `<` test would refuse roughly
     every other cycle of a perfectly healthy session in the name of a hazard that
-    is not there. The tolerance is 0.01 rev: ~8x the MEASURED 0.0013 rev hold
+    is not there. The tolerance is 0.01 rev (unchanged — an engineering margin
+    fixed in rev, not derived from the gain): ~8x the MEASURED 0.0013 rev hold
     error (600 s hold, 2026-09-04) and worth 96 rev/s² of knot-1 acceleration,
     **2.7 % of the cap**, against the 4078 the sitting hit.
     """
-    assert rcn._UNIFIED_FLOOR_TOL_MM == pytest.approx(0.3163, abs=1e-3)
+    # 0.3257 mm as of 2026-09-08 (was 0.3163 mm pre-correction) — the tolerance
+    # is a fixed 0.01 rev, so only its mm expression moves with the gain.
+    assert rcn._UNIFIED_FLOOR_TOL_MM == pytest.approx(0.3257, abs=1e-3)
     dt = float(uc.cc.CupCycleConfig.dt)
     slam = 6.0 * rcn._UNIFIED_FLOOR_TOL_REV / (dt * dt)
     assert slam == pytest.approx(96.0, abs=0.5)
@@ -287,9 +307,12 @@ def test_the_silent_band_is_lifted_and_not_launched(monkeypatch):
     """F2's headline: a seed the 3500 cap does NOT catch is still refused a
     launch until it is lifted.
 
-    At −0.038 rev the launch is FEASIBLE — 3400 rev/s², under the cap — and it
-    is exactly the throw nobody would have questioned: a 0.354 rev knot-1 step
-    and a cup peaking 15.7 mm past its release site. The rule is the floor.
+    At −0.038 rev the launch is FEASIBLE — 3312 rev/s² (was 3400 rev/s²
+    pre-2026-09-08, at the pre-correction 31.6172 rev/m), under the cap — and
+    it is exactly the throw nobody would have questioned: a 0.345 rev knot-1
+    step (was 0.354 rev pre-correction — the step is ``FLOOR_REV - seed``, and
+    ``FLOOR_REV`` moved) and a cup peaking near its release site (not
+    independently re-measured here). The rule is the floor.
     """
     node = _node(SEED_SILENT_REV)
     seq, state = _seq_state(node)
@@ -302,7 +325,7 @@ def test_the_silent_band_is_lifted_and_not_launched(monkeypatch):
     assert state.unified_reject.startswith(
         '{}({}:'.format(rcn._OUTCOME_CYCLE_PLAN, rcn._UNIFIED_BELOW_FLOOR))
     assert '11.2 mm low' in state.unified_reject
-    assert '3400' in state.unified_reject
+    assert '3312' in state.unified_reject
 
     # Lifted, the same cycle plans.
     state.unified_reject = ''
@@ -338,7 +361,9 @@ def test_a_refused_lift_refuses_the_launch_and_says_why(monkeypatch):
     assert _launches(sent) == [], 'a launch was requested from a below-floor seed'
     assert rcn.base_outcome(state.unified_reject) == rcn._OUTCOME_CYCLE_PLAN
     assert rcn.outcome_subcode(state.unified_reject) == rcn._UNIFIED_BELOW_FLOOR
-    assert '13.4 mm low' in state.unified_reject
+    # 13.5 mm as of 2026-09-08 (was 13.4 mm pre-correction, at the
+    # pre-correction 31.6172 rev/m) — same seed (-0.1087 rev), FLOOR_REV moved.
+    assert '13.5 mm low' in state.unified_reject
     assert 'SETTLE_SITE' in state.unified_reject       # the lift's verdict rides along
 
 
@@ -355,7 +380,8 @@ def test_a_lift_that_installs_but_does_not_move_the_hand_is_not_a_pass(
     sent = _spy_plan_cycle(node, monkeypatch, lands=False)
     detail = node._unified_floor_lift('test')
     assert len(_settles(sent)) == 1
-    assert 'STILL 13.4 mm below the floor' in detail
+    # 13.5 mm as of 2026-09-08 (was 13.4 mm pre-correction).
+    assert 'STILL 13.5 mm below the floor' in detail
     assert 'did not move' in detail
 
 

@@ -1379,7 +1379,10 @@ _GATE_EXPECT = [
     ('quintic_T_model_s',         0.369,   0.005, 's'),
     ('peak',                     20.992,   0.020, 's'),
     ('peak_pos_rev',             10.174,   0.010, 'rev'),
-    ('peak_pos_mm',             321.8,     0.5,   'mm'),
+    # 331.4 as of the 2026-09-08 hand-geometry gain correction (was 321.8 at
+    # the pre-correction 31.6172 rev/m) — the rev row above is unchanged
+    # (real captured data); only its mm conversion moved with the gain.
+    ('peak_pos_mm',             331.4,     0.5,   'mm'),
     # DERIVED, not a literal.  This row read a literal 0.93 (= 11.1 - 10.174)
     # and the 2026-08-18 hard-stop correction (11.1 -> 10.8 rev, metal contact)
     # left it behind, so `--gate` — the operator runbook's MANDATORY instrument
@@ -1397,7 +1400,9 @@ _GATE_EXPECT = [
     ('dip_bottom',               21.077,   0.020, 's'),
     ('dip_bottom_pos_rev',        8.814,   0.010, 'rev'),
     ('dip_depth_rev',             1.36,    0.010, 'rev'),
-    ('dip_depth_mm',             43.0,     0.5,   'mm'),
+    # 44.3 as of the 2026-09-08 hand-geometry gain correction (was 43.0 at
+    # the pre-correction 31.6172 rev/m) — same re-expression as peak_pos_mm.
+    ('dip_depth_mm',             44.3,     0.5,   'mm'),
     ('dip_depth_pct_stroke',     14.0,     0.5,   '%'),
     # the GATED row: how far under the stroke end the position loop pulled the
     # hand.  x3 9.9594 - dip_bottom 8.814.  Pinned here so a change to the

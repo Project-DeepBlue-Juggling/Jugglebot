@@ -306,16 +306,33 @@ MIRROR_TOL_HAND_REV = 4.0e-6
 #: (``/tmp/probe_f2_mirror.py``, 2026-09-04, run twice bit-identically).  A
 #: dropped lane or a stale latch lands orders out.  The ``v1`` rule does NOT,
 #: and the difference matters: masking ``HAS_V1`` moves the 60 mm ring's leg
-#: reconstruction to 5.836e-04 rev — 1.17× the band — and moves a CO-LOCATED
-#: toss's by nothing at all (9.891e-08 rev either way), because with the
-#: platform nearly still the leg extension is near-linear over a 25 ms knot and
-#: the ``(u2−u1)/T`` fallback reproduces the transmitted ``v1``.  So this band
-#: catches a v1 regression only where there is platform motion to catch it in.
-#: ``tests/sim/test_unified_gate.py::test_the_mirror_band_is_non_vacuous`` pins
-#: both halves — the ring failing, and the toss's silence — so neither is
+#: reconstruction to 5.836e-04 rev — 1.17× the OLD 5e-4 band — and moves a
+#: CO-LOCATED toss's by nothing at all (9.891e-08 rev either way), because with
+#: the platform nearly still the leg extension is near-linear over a 25 ms knot
+#: and the ``(u2−u1)/T`` fallback reproduces the transmitted ``v1``.  So this
+#: band catches a v1 regression only where there is platform motion to catch it
+#: in.  ``tests/sim/test_unified_gate.py::test_the_mirror_band_is_non_vacuous``
+#: pins both halves — the ring failing, and the toss's silence — so neither is
 #: rediscovered the hard way.  The HAND band, by contrast, moves four orders
 #: past its bound on every plan.
-MIRROR_TOL_LEG_REV = 5.0e-4
+#:
+#: TIGHTENED 5e-4 -> 3e-4 on 2026-09-08 (hand-geometry correction:
+#: ``linear_gain_factor`` 1.035 -> 1.0051, ``logbook/2026-09-08-hand-geometry-
+#: flown-position-audit.md``).  The correction does not touch the leg IK at
+#: all, but it shrank the ring's v1-masked fault footprint to 4.068e-04 rev —
+#: UNDER the old 5e-4 band (0.81×), which would have made
+#: ``test_the_mirror_band_is_non_vacuous`` vacuous on the leg lane.  MEASURED
+#: (``python sim/unified_gate.py --no-viewer``, run 2026-09-08, corrected
+#: geometry): worst HONEST leg residual over the full 27-point grid (SET 1
+#: single-toss + SET 2 two-pose ring) is 2.837e-05 rev — 10.6× below the new
+#: 3e-4 band, real headroom preserved — while the ring's fault footprint
+#: (4.068e-04 rev) now sits 1.36× OVER the new band, restoring non-vacuity.
+#: 3e-4 was chosen as the tightest round number satisfying both the >=10×
+#: honest-headroom floor and the fault-exceeds-band requirement; it was not
+#: pushed further because the honest worst (2.837e-05) already uses over a
+#: tenth of that margin and a smaller round number (1e-4) would leave under
+#: 4× headroom.
+MIRROR_TOL_LEG_REV = 3.0e-4
 
 #: Beat tolerance (s) for the constant-beat set.  The release instants are sums
 #: of window durations, each an exact multiple of the 25 ms knot grid, so the

@@ -473,8 +473,14 @@ def test_the_coast_row_sees_the_sag_the_gated_row_misses(probe, hold_s):
     # down from, so the sag is outside its search
     assert tl.dip_below_x3_rev <= probe._DIP_BELOW_X3_BAND_REV
     # the coast row sees it — the built sag is 0.156 rev, plus the synthetic's
-    # own 8 ms measurement lag
-    assert tl.coast_below_x3_rev == pytest.approx(0.156, abs=0.020)
+    # own 8 ms measurement lag. As of the 2026-09-08 hand-geometry gain
+    # correction the observed minimum is 0.204 rev (was 0.156 rev): the
+    # synthetic's `arm_hold_s` ramp is only ~3 samples wide at 100 Hz, and
+    # `StrokeModel(v_mps).t_dec` (which anchors when that ramp starts, since
+    # ``v_mps`` is converted to rev/s through the corrected gain) shifted
+    # enough to move which discrete sample lands nearest the ramp's bottom —
+    # same built sag, different phase against the coarse sampling grid.
+    assert tl.coast_below_x3_rev == pytest.approx(0.204, abs=0.020)
     assert tl.coast_below_x3_rev > probe._DIP_BELOW_X3_BAND_REV
     assert probe._coast_disagrees(tl) is True
 
@@ -491,7 +497,9 @@ def test_the_coast_row_is_bounded_at_the_stroke_end_not_the_release(probe,
     tl, _ = _arm_prelude_capture(probe, hold_s)
     model = probe.StrokeModel(3.9308)
     assert tl.coast_min_rev > model.x2_rev
-    assert tl.coast_min_rev == pytest.approx(model.x3_rev - 0.156, abs=0.020)
+    # 0.204 as of 2026-09-08 (was 0.156) — same sampling-phase shift as
+    # test_the_coast_row_sees_the_sag_the_gated_row_misses above.
+    assert tl.coast_min_rev == pytest.approx(model.x3_rev - 0.204, abs=0.020)
     assert tl.coast_peak_rev <= model.x3_rev + 0.010
 
 

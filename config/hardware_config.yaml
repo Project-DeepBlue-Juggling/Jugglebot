@@ -351,21 +351,32 @@ jugglebot_geometry:
   arm_radius_mm: 70.0                # Radius of opening where the ball comes in {mm}. Approximate.
   arm_height_from_platform_mm: 210.25  # Height of ball entry opening above the platform leg nodes {mm}
   # The hand's PHYSICAL travel between hard stops {mm} — a measured fact.
-  # 344.75 = hand_motor_hard_stop_revs 10.8 rev (metal contact, operator-measured
-  # 2026-08-18) + the 0.1 rev the firmware sets encoder zero above the BOTTOM stop,
-  # converted at 31.6284 mm/rev: (10.8 + 0.1) x 31.6284 = 344.7496 mm.
+  # 352.0 = the operator's direct stop-to-stop bench measurement, 2026-09-06:
+  # bottom stop at -0.107 rev, top stop at 10.701 rev, span 10.808 rev, span
+  # measured directly as 352 mm end to end (not inferred through a gain).
   #
-  # It read 355.0 until 2026-08-18, self-consistent with the old (wrong) 11.1 rev
-  # anchor: (11.1 + 0.1) x 31.6284 = 354.24 mm ~ 355. Correcting the anchor without
-  # correcting this would have left the sim's modelled hand able to travel ~10 mm
-  # further than the real one.
+  # This is STOP-TO-STOP (10.808 rev), which is NOT the same span as travel
+  # ABOVE ENCODER ZERO (10.701 rev = 348.52 mm at the corrected gain): the
+  # firmware homes downward onto the bottom stop and sets encoder zero 0.1 rev
+  # above it (measured -0.107 rev, confirming that offset). The 3.48 mm
+  # difference is the firmware's homing offset, not stroke. Every consumer
+  # anchored at rev 0 (the sim/planner frame — hand_retract_rev: 0.0 is the
+  # floor) needs the travel-above-zero number, 348.52 mm, not this one; see
+  # `sim/model/generate_mjcf.py` for how the MJCF derives that split instead of
+  # reading this key directly.
   #
-  # ⚠ DELIBERATELY NOT PROPAGATED TO `teensy_trajectory.hand_stroke_m` (0.355).
-  # Read that key's comment before touching either. The two are now DIFFERENT
-  # NUMBERS ON PURPOSE and the old "Matches geometry hand_stroke_mm" claim is
-  # retired. Consumers of THIS key are the GUI render and the MuJoCo model's hand
+  # Previously 344.75 mm, an INFERENCE through the old (wrong) 31.6284 mm/rev
+  # gain and the old 10.8 rev hard-stop anchor: (10.8 + 0.1) x 31.6284 =
+  # 344.7496. That was a derived number wearing a measurement's clothes; 352.0
+  # is the actual measurement the correction is built on.
+  #
+  # ⚠ DELIBERATELY NOT PROPAGATED TO `teensy_trajectory.hand_stroke_m`
+  # (0.3643707). Read that key's comment before touching either. The two are
+  # DIFFERENT NUMBERS ON PURPOSE: this one is the physical geometry (stop-to-
+  # stop), that one is a throw-profile basis re-based to preserve commanded rev.
+  # Consumers of THIS key are the GUI render and the MuJoCo model's hand
   # joint range/ctrlrange (sim/model/generate_mjcf.py) — geometry, not control.
-  hand_stroke_mm: 344.75
+  hand_stroke_mm: 352.0
   hand_radius_mm: 35.0               # Radius of hand {mm}. Approximate.
   hand_axis_bottom_offset_mm: -129.0  # Hand axis bottom position relative to platform centroid {mm} (CAD measurement)
 
@@ -1134,8 +1145,20 @@ jugglebot_spacemouse:
 #    These differ from Ball Butler trajectory constants (different hardware).
 # ============================================================
 teensy_trajectory:
-  hand_spool_radius_m: 0.00521          # Hand spool radius {m}
-  linear_gain_factor: 1.035             # Multiplier on linear gain ("just 'cuz" factor)
+  hand_spool_radius_m: 0.00521          # Hand spool radius {m} — measured part, do not touch.
+  # Measured cable/spool calibration, NOT a fudge. From the operator's
+  # stop-to-stop bench measurement (2026-09-06): 352 mm between hard stops,
+  # bottom -0.107 rev, top 10.701 rev => 10.808 rev / 0.352 m = 30.7045 rev/m,
+  # and factor = 30.7045 x 2*pi x 0.00521 = 1.00513 -> 1.0051 (4 dp; the
+  # residual against the exact measurement is 0.0008 mm/rev, three orders of
+  # magnitude below the measurement's own ~1 mm / 0.3% resolution).
+  # Its physical content is an effective wrap radius r_eff = r/factor =
+  # 0.00521/1.0051 = 0.0051834 m = 5.183 mm against the 5.21 mm bare spool —
+  # 0.027 mm (0.51%) under the bare drum, roughly half a cable diameter, which
+  # is what a cable that does not wrap on the bare drum looks like. The old
+  # 1.035 implied r_eff = 5.034 mm, 3.4% UNDER the drum — physically
+  # implausible for this cable, which is the tell that it was never geometry.
+  linear_gain_factor: 1.0051            # Measured cable/spool calibration (see above) — was 1.035.
   inertia_hand_only_kg: 0.281           # Hand-only inertia {kg}
   inertia_ratio: 0.747                  # Inertia ratio for throw dynamics
   throw_decel_reflected_inertia_kgm2: 9.5e-6
@@ -1149,9 +1172,9 @@ teensy_trajectory:
                                         # feedforward as `a_lin * INERTIA_HAND_ONLY_KG * HAND_SPOOL_RADIUS_M`
                                         # — a pure translating mass on a spool.  That model omits the
                                         # motor's own rotor inertia entirely and uses the RAW spool
-                                        # radius rather than the effective radius the 1.035
+                                        # radius rather than the effective radius the 1.0051
                                         # linear_gain_factor implies, so its implied reflected inertia is
-                                        #   m*r/(2*pi*LINEAR_GAIN) = 0.281*0.00521/198.6588 = 7.3695e-6
+                                        #   m*r/(2*pi*LINEAR_GAIN) = 0.281*0.00521/192.9175 = 7.5888e-6
                                         # against a MEASURED 1.02e-5 - 1.05e-5.  The braking feedforward
                                         # was therefore ~70 % of what the commanded deceleration
                                         # physically requires, and the shortfall has to be closed by a
@@ -1176,8 +1199,9 @@ teensy_trajectory:
                                         #   (b) regression of achieved-vs-commanded decel across the
                                         #       four flown tiers => 1.050e-5 kg m^2.
                                         # The geometric load-only floor (m_hand * (1/(2*pi*LINEAR_GAIN))^2
-                                        # = 7.120e-6) is a hard lower bound and agrees; the ~2.9e-6
-                                        # residual above it is the rotor.
+                                        # = 7.5503e-6, was 7.120e-6 pre-correction) is a hard lower bound
+                                        # and agrees, though more narrowly now (~1.95e-6 residual above
+                                        # it, was ~2.9e-6) — the "agrees" claim narrows but still holds.
                                         # DO NOT reinstate the accel-phase torque balance (1.015e-5) as
                                         # an identification of THIS inertia.  Release is at x2, the end
                                         # of the velocity hold, so the ball is in the cup for the whole
@@ -1222,32 +1246,36 @@ teensy_trajectory:
   throw_vel_hold_pct: 0.05              # Fraction of throw profile at constant velocity
   catch_vel_ratio: 0.6                  # Catch velocity as fraction of throw velocity
   catch_vel_hold_pct: 0.10              # Fraction of catch profile at constant velocity
-  # ⚠ DELIBERATELY LEFT AT 0.355 — owner decision, 2026-08-18. DO NOT "fix" this to
-  # match jugglebot_geometry.hand_stroke_mm (344.75). They are different numbers on
-  # purpose, and the divergence is the point.
+  # Re-based 0.355 -> 0.3643707 on 2026-09-08 with the linear_gain_factor
+  # correction, SPECIFICALLY SO THAT x2/x3/x5 DO NOT MOVE IN COMMANDED REV.
+  # This key is still NOT the physical stroke — it is the throw profile's
+  # basis, `total = hand_stroke_m - 2*stroke_margin_m`, and
+  # `x3 = total * LINEAR_GAIN`. The gain dropped 2.888% (31.6172 -> 30.7038
+  # rev/m), so holding 0.355 would have dropped x3 from 9.9594 to 9.6719 rev
+  # (-9.35 mm) and x2 from 5.9138 to 5.7430 rev (-5.4 mm), i.e. moved the
+  # entire legacy throw/catch calibration set the machine has flown for
+  # months. Solving `total = 9.959403 / 30.703768 = 0.324371` and adding back
+  # 2 x 0.020 gives 0.3643707. Every commanded rev is bit-preserved; what
+  # changes is that a given `event_vel` now produces 2.97% LESS rev/s, which
+  # IS the correction (the excess release velocity was the gain error).
   #
-  # WHY. This key is NOT a measurement of the hand's travel; it is the BASIS OF THE
-  # THROW PROFILE. It feeds `total_stroke = hand_stroke_m - 2*stroke_margin_m` in
-  # config/generate_config.py, which derives x2 (ball release), x3 (stroke top, and
-  # therefore the catch prime) and x5 (catch point). Every one of those has been
-  # validated on hardware at the values 0.355 produces, and the tilt map, the toss
-  # calibration in config/toss_calibration.yaml, the catch tuning and the runbook's
-  # `peak <= 10.060` band (which IS x3 + 0.10) are all keyed to them.
+  # WHY THIS IS SAFE. x3 = 9.9594 rev still sits 0.742 rev (24.2 mm) below the
+  # 10.701 rev hard stop, so the profile still never commands into metal —
+  # unchanged, because the re-base holds rev fixed by construction.
   #
-  # WHAT "CORRECTING" IT WOULD COST. Setting 0.34475 moves, in rev:
-  #     x2  5.9159 -> 5.7234   (-0.193 rev, -6.1 mm)  ball release
-  #     x3  9.9629 -> 9.6387   (-0.324 rev, -10.3 mm) stroke top / prime
-  #     x5  6.1289 -> 5.9295   (-0.199 rev, -6.3 mm)  catch point
-  # i.e. it invalidates the whole calibration set and needs its own re-validation
-  # round. That is a scheduled piece of work, not a tidy-up.
+  # Its units are now honest too: 324.37 mm (total_stroke_m * 1000) really is
+  # the stroke in real millimetres, and it fits inside the real 348.52 mm of
+  # travel above encoder zero (10.701 rev / 30.7038 rev/m) with 24.15 mm to
+  # spare — under the old numbers 315 mm sat inside a BELIEVED 344.75 mm with
+  # 29.75 mm to spare. The margin shrinks in mm but NOT in rev (0.84 rev below
+  # the stop is now stated correctly as 0.742 rev — same physical margin,
+  # corrected label), so nothing gets closer to metal.
   #
-  # IS IT SAFE AS-IS? Yes. x3 = 9.9594 rev sits 0.84 rev (26.6 mm) BELOW the 10.8 rev
-  # hard stop, so the profile never commands into metal. What 0.355 no longer means
-  # is "the physical stroke"; the 20 mm `stroke_margin_m` insets it describes were
-  # already fictional in the firmware's frame (see sim/hand/trajectory.py's note —
-  # the sim CENTRES the stroke in the travel, the firmware starts it at encoder
-  # zero). Treat this as a TUNED PROFILE PARAMETER whose units happen to be metres.
-  hand_stroke_m: 0.355                  # Throw-profile basis {m} — NOT the physical stroke.
+  # Still NOT jugglebot_geometry.hand_stroke_mm (352.0, the stop-to-stop
+  # measurement) — the two are different numbers on purpose; this one is a
+  # tuned profile parameter whose units happen to be metres, not a geometry
+  # fact. Do not "fix" this to match hand_stroke_mm.
+  hand_stroke_m: 0.3643707               # Throw-profile basis {m} — NOT the physical stroke.
   stroke_margin_m: 0.02                 # Safety margin at ends of stroke {m}
   end_profile_hold_s: 0.10              # Hold time at end of motion profile {s}
   sample_rate_hz: 500                   # Trajectory sample rate {Hz}
@@ -1468,6 +1496,28 @@ hand_throw_envelope:
                                         # AUTHORITY-limited to TRACKING-limited, and
                                         # END_STOP stopped binding entirely.
                                         # ⚠ DO NOT mix rungs from the two ladders.
+                                        #
+                                        # ═══ 2026-09-08 GEOMETRY CORRECTION — LEFT UNCHANGED ═══
+                                        # linear_gain_factor moved 1.035 -> 1.0051 (30.7045 rev/m,
+                                        # was 31.6172). This table's v-axis is COMMANDED event_vel
+                                        # (m/s), and the true physical release speed at any given
+                                        # rung was actually 2.97% HIGHER than the label — e.g. the
+                                        # top rung's true speed was 4.568 m/s, not 4.436. Its y-axis
+                                        # stays valid ONLY because hand_stroke_m was RE-BASED (not
+                                        # just re-gained) so x3 = 9.9594 rev is unchanged; had x3
+                                        # moved, every rung's zero reference (coast = peak - x3)
+                                        # would be wrong.
+                                        # Commanding v after the correction produces 2.888% less
+                                        # rev/s, and coast scales as v_rev^2, so the REAL coast at a
+                                        # given commanded v is now ~5.7% lower than these rows say.
+                                        # Left UNTOUCHED deliberately: re-scaling the v-axis would be
+                                        # more accurate but opens a safety envelope (C-HAND-3, see
+                                        # ros_ws/docs/hand_throw_envelope.md) by desk algebra rather
+                                        # than measurement. The table is now FAIL-SAFE-CONSERVATIVE
+                                        # by that ~5.7%: peak_rev(v) over-predicts by ~0.013 rev
+                                        # (0.4 mm) at the top rung — negligible against the 0.171 rev
+                                        # residual headroom above, and END_STOP does not bind today
+                                        # regardless (ceiling set by REGEN). Re-measure, don't rescale.
     - [3.142, 0.1342]                   # n=2 (0.1342, 0.1315); a_ach 1181 of a_cmd 1220
     - [3.714, 0.2119]                   # n=2 (0.1803, 0.2119); a_ach 1625 of a_cmd 1704
     - [4.436, 0.2260]                   # n=14, max; a_ach 2312 of a_cmd 2431 (eta 0.951)

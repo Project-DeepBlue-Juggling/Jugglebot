@@ -108,9 +108,14 @@ def test_closed_form_coefficients_match_the_header_derivation():
     accs_c = total - tt['CATCH_VEL_HOLD_PCT'] * total
     k_acc_catch = (2.0 / (1.0 / ir + 1.0)) * accs_c / tt['CATCH_VEL_RATIO']
 
-    assert k_acc == pytest.approx(0.342587293, abs=1e-9)
-    assert k_dec == pytest.approx(0.255912707, abs=1e-9)
-    assert k_acc_catch == pytest.approx(0.404072696, abs=1e-9)
+    # 2026-09-08 hand-geometry correction re-based hand_stroke_m (0.355 ->
+    # 0.3643707) so every commanded REV holds fixed, but these coefficients
+    # are METRES-based (a stroke SHAPE, not a rev position), so they move with
+    # the metres stroke (0.315 -> 0.324371 total_stroke_m) even though the rev
+    # positions they feed do not.
+    assert k_acc == pytest.approx(0.352778666, abs=1e-9)
+    assert k_dec == pytest.approx(0.263525664, abs=1e-9)
+    assert k_acc_catch == pytest.approx(0.416093153, abs=1e-9)
 
     for v in (0.3, 1.0, 2.7089, 3.9308, 5.3994, 7.0):
         m = hand_stroke.HandStrokeModel(v)
@@ -224,7 +229,10 @@ def test_catch_prime_equals_the_stroke_top():
 
     # The tolerance is a resolution statement, not slack: state it in mm so a
     # future reader can judge it without re-deriving the gain.
-    assert hand_stroke.rev_to_mm(_PRIME_DRIFT_TOL_REV) == pytest.approx(1.58e-3,
+    # 1.58e-3 -> 1.628e-3 mm on 2026-09-08 (hand-geometry correction): the
+    # tolerance itself is a fixed 5e-5 rev policy value, unchanged; its mm
+    # equivalent grew because mm/rev grew with the corrected gain.
+    assert hand_stroke.rev_to_mm(_PRIME_DRIFT_TOL_REV) == pytest.approx(1.628e-3,
                                                                        rel=0.02)
 
 
@@ -297,8 +305,11 @@ def test_prime_at_the_stroke_top_costs_no_commanded_prelude_travel():
     assert hand_stroke.smooth_move_duration_s(
         abs(hand_stroke.STROKE_TOP_REV - 9.858)) == pytest.approx(0.0765,
                                                                   abs=1e-4)
+    # 3.207 -> 3.303 mm on 2026-09-08 (hand-geometry correction): the rev
+    # residual (STROKE_TOP_REV - 9.858) is unchanged in rev, but converts to
+    # more mm at the corrected (larger) mm/rev gain.
     assert hand_stroke.rev_to_mm(
-        abs(hand_stroke.STROKE_TOP_REV - 9.858)) == pytest.approx(3.207,
+        abs(hand_stroke.STROKE_TOP_REV - 9.858)) == pytest.approx(3.303,
                                                                   abs=1e-3)
 
     # The floor also covers whatever settle error remains, up to the band the
@@ -309,11 +320,14 @@ def test_prime_at_the_stroke_top_costs_no_commanded_prelude_travel():
 
 
 def test_throw_stroke_spans_the_measured_window():
-    """At the nominal 0.80 s flight the stroke runs release −91.2 ms → +65.1 ms,
-    the span the 2026-07-25 captures were measured against."""
+    """At the nominal 0.80 s flight the stroke runs release −93.9 ms → +67.0 ms
+    (was −91.2 -> +65.1 ms pre-2026-09-08 hand-geometry correction — the
+    stroke durations grew ~2.97% at a fixed commanded event_vel, one of the
+    correction's direct, intended consequences), the span the 2026-07-25
+    captures were measured against."""
     m = hand_stroke.HandStrokeModel(3.930820)
-    assert m.stroke_start_rel == pytest.approx(-0.0911605, abs=2e-5)
-    assert m.stroke_end_rel == pytest.approx(0.065104, abs=2e-5)
+    assert m.stroke_start_rel == pytest.approx(-0.0938728, abs=2e-5)
+    assert m.stroke_end_rel == pytest.approx(0.0670409, abs=2e-5)
     assert m.pos_rev(m.stroke_start_rel) == pytest.approx(0.0, abs=1e-9)
     assert m.pos_rev(0.0) == pytest.approx(m.x2_rev, rel=1e-9)     # release
     assert m.pos_rev(m.stroke_end_rel) == pytest.approx(m.x3_rev, rel=1e-9)
@@ -323,14 +337,15 @@ def test_throw_stroke_spans_the_measured_window():
 # ── makeSmoothMove: the dead-band and the FLOOR ─────────────────────────────
 
 def test_smooth_move_deadband_is_unreachably_narrow():
-    """``|delta| < 1e-6`` rev is 3.16e-5 mm — 0.03 microns of cable travel.
+    """``|delta| < 1e-6`` rev is 3.26e-5 mm (was 3.16e-5 pre-2026-09-08
+    hand-geometry correction) — 0.03 microns of cable travel.
 
     An "empty prelude" therefore never actually happens against a live float
     encoder reading, which is why the arm-fit check budgets a prelude rather than
     assuming zero. (The plan's "prelude EXACTLY empty" is the idealisation; the
     physics of the fix does not depend on it, only the timing budget does.)
     """
-    assert hand_stroke.rev_to_mm(1e-6) == pytest.approx(3.163e-5, rel=1e-3)
+    assert hand_stroke.rev_to_mm(1e-6) == pytest.approx(3.257e-5, rel=1e-3)
     assert hand_stroke.smooth_move_duration_s(0.0) == 0.0
     assert hand_stroke.smooth_move_duration_s(9e-7) == 0.0
     assert hand_stroke.smooth_move_duration_s(1.1e-6) > 0.0
@@ -369,8 +384,10 @@ def test_prelude_allowance_covers_the_bench_pass_band():
     Read ``tests/hardware/session_anomaly_fixes.md`` § PASS/ABORT row 3.
     """
     assert hand_stroke.HAND_SETTLE_BAND_REV == 0.10
+    # 3.163 -> 3.257 mm on 2026-09-08 (hand-geometry correction): the rev band
+    # is unchanged; its mm conversion grew with the corrected gain.
     assert hand_stroke.rev_to_mm(hand_stroke.HAND_SETTLE_BAND_REV) == pytest.approx(
-        3.163, abs=1e-3)
+        3.257, abs=1e-3)
 
 
 # ── makeSmoothMove: the velocity-continuous form (Phase 4) ──────────────────
@@ -486,19 +503,21 @@ def test_the_comfort_limit_is_far_below_what_the_throw_itself_commands():
 
     ``MAX_SMOOTH_MOVE_HAND_ACCEL_RPS2 = 100`` rev/s² is a COMFORT limit for
     point-to-point moves, not an actuator limit: the shipped throw profile
-    commands ``|throwD| = throwA / INERTIA_RATIO`` on its own decel ramp — 19x
-    that at the nominal 0.80 s flight and 60x at the band top.  So the arithmetic
-    that says "119.6 rev/s cannot be arrested inside the stroke" is a statement
-    about the declared limit, not about the hand.  Raising it is the operator's
-    envelope decision; this pins the gap so the decision has a number.
+    commands ``|throwD| = throwA / INERTIA_RATIO`` on its own decel ramp — 18x
+    that at the nominal 0.80 s flight and 57x at the band top (was 19x / 60x
+    pre-2026-09-08 hand-geometry correction: a_cmd_rps2 at a fixed commanded
+    speed v scales down with the corrected gain).  So the arithmetic that says
+    "119.6 rev/s cannot be arrested inside the stroke" is a statement about the
+    declared limit, not about the hand.  Raising it is the operator's envelope
+    decision; this pins the gap so the decision has a number.
     """
     gain = hand_stroke.LINEAR_GAIN_REV_PER_M
-    for v, expect in ((3.930820, 1908.0), (hw.TEENSY_TRAJ_MAX_EVENT_VEL_MPS, 6055.0)):
+    for v, expect in ((3.930820, 1800.3), (hw.TEENSY_TRAJ_MAX_EVENT_VEL_MPS, 5709.1)):
         m = hand_stroke.HandStrokeModel(v)
         decel_rps2 = abs(m.throwD) * gain
         assert decel_rps2 == pytest.approx(expect, rel=0.01), v
         ratio = decel_rps2 / hw.TEENSY_TRAJ_MAX_SMOOTH_MOVE_HAND_ACCEL_RPS2
-        assert ratio > 19.0
+        assert ratio > 18.0   # was > 19.0 pre-2026-09-08 hand-geometry correction
 
 
 # ── the Phase-1 window ──────────────────────────────────────────────────────
@@ -534,7 +553,9 @@ def test_margin_covers_the_measured_dispatch_latency():
                 == pytest.approx(1.709, abs=0.01))
     # And the window it opens is measured from the ANNOUNCED release.
     clear = hand_stroke.stroke_clear_time(1000.0, 3.930820)
-    assert clear - 1000.0 == pytest.approx(0.065104 + 0.040, abs=2e-5)
+    # 0.065104 -> 0.0670409 on 2026-09-08 (hand-geometry correction): the same
+    # stroke_end_rel shift as test_throw_stroke_spans_the_measured_window.
+    assert clear - 1000.0 == pytest.approx(0.0670409 + 0.040, abs=2e-5)
 
 
 def test_required_arm_lead_is_the_teensy_budget():
@@ -546,7 +567,9 @@ def test_required_arm_lead_is_the_teensy_budget():
         assert hand_stroke.required_arm_lead_s(v) == pytest.approx(
             hand_stroke.catch_lead_s(v) + hand_stroke.PRELUDE_ALLOWANCE_S + 0.020,
             rel=1e-12)
-    assert hand_stroke.required_arm_lead_s(3.1312) == pytest.approx(0.225031,
+    # 0.225031 -> 0.228870 on 2026-09-08 (hand-geometry correction): catch_lead_s
+    # and PRELUDE_ALLOWANCE_S both grew ~2.97% at fixed commanded speeds.
+    assert hand_stroke.required_arm_lead_s(3.1312) == pytest.approx(0.228870,
                                                                    abs=1e-5)
 
 
@@ -566,8 +589,9 @@ def _band_case(flight_s: float):
 
 @pytest.mark.parametrize('flight_s, expect_window_s', [
     (FLIGHT_TIME_MIN_S, throw_envelope.ARM_WINDOW_MARGIN_S),
-    (0.80, 0.394896),
-    (FLIGHT_TIME_MAX_S, 0.763068),
+    (0.80, 0.392963),   # was 0.394896 pre-2026-09-08 hand-geometry correction
+    (FLIGHT_TIME_MAX_S, 0.797269),   # was 0.763068 (FLIGHT_TIME_MAX_S itself
+                                     # also moved, 1.1485 -> 1.1827 s)
 ])
 def test_arm_window_positive_across_the_shipped_flight_band(flight_s,
                                                             expect_window_s):
@@ -609,13 +633,14 @@ def test_arm_window_closes_only_below_a_far_slower_armed_velocity():
     """``t_acc_catch = 0.404 / v_armed``, so a LOW tracker landing-speed estimate
     lengthens the lead and moves the window's right edge earlier. At
     ``FLIGHT_TIME_MIN_S`` the window closes only once ``v_armed`` falls below
-    ~1.59 m/s — a tracker landing speed under ~1.77 m/s for a 2.44 m/s throw,
-    i.e. the tracker under-reading by more than 25 %.
+    ~1.64 m/s (was ~1.59 pre-2026-09-08 hand-geometry correction).
 
     That headroom SHRANK when the band floor became derived (2026-08-18,
     C-HAND-3): the floor moved 0.55 → 0.4949 s, which is 55 ms taken straight
-    out of this budget, and the closing velocity rose 1.2645 → 1.5907 m/s. The
-    knob sweep below moved with it and is re-measured, not re-asserted.
+    out of this budget, and the closing velocity rose 1.2645 → 1.5907 m/s (now
+    1.6381 m/s: FLIGHT_TIME_MIN_S itself also moved slightly, 0.4949 -> 0.4974
+    s, on 2026-09-08). The knob sweep below moved with it and is re-measured,
+    not re-asserted.
 
     Pinned because the node evaluates the fit against the RUNTIME ``event_vel``,
     not this nominal.
@@ -640,7 +665,7 @@ def test_arm_window_closes_only_below_a_far_slower_armed_velocity():
     budget = (FLIGHT_TIME_MIN_S - earliest - hand_stroke.PRELUDE_ALLOWANCE_S
               - hand_stroke.SAFETY_GAP_S)
     v_close = hand_stroke.catch_lead_s(1.0) / budget      # coeff / budget
-    assert v_close == pytest.approx(1.5907, abs=1e-3)
+    assert v_close == pytest.approx(1.6381, abs=1e-3)
     # Just above it the window is (barely) open; just below it is closed.
     for v, want_open in ((v_close * 1.02, True), (v_close * 0.98, False)):
         latest = FLIGHT_TIME_MIN_S - max(_MIN_EVENT_DELAY_S,
@@ -733,10 +758,12 @@ def test_catch_park_reentry_beats_the_arrival_band_at_the_cadence_rungs():
         v_throw, _ = _band_case(flight)
         park[flight] = hand_stroke.catch_park_reentry_s(v_throw, scale)
 
-    assert park[FLIGHT_TIME_MIN_S] == pytest.approx(0.1933, abs=1e-3)
-    assert park[0.5029] == pytest.approx(0.1903, abs=1e-3)
-    assert park[0.6059] == pytest.approx(0.1582, abs=1e-3)
-    assert park[0.7977] == pytest.approx(0.1204, abs=1e-3)
+    # All four rungs shifted ~2.5-3% on 2026-09-08 (hand-geometry correction):
+    # 0.1933->0.1980, 0.1903->0.1959, 0.1582->0.1629, 0.1204->0.1239.
+    assert park[FLIGHT_TIME_MIN_S] == pytest.approx(0.1980, abs=1e-3)
+    assert park[0.5029] == pytest.approx(0.1959, abs=1e-3)
+    assert park[0.6059] == pytest.approx(0.1629, abs=1e-3)
+    assert park[0.7977] == pytest.approx(0.1239, abs=1e-3)
 
     # Strictly decreasing in flight time — the fail-closed fallback rests on it.
     flights = sorted(park)

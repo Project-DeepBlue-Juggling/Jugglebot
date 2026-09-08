@@ -59,11 +59,13 @@ Z_ACTIVE_MM = 170.0          # platform centroid height for the juggle pattern
 CUP_Z_BASE_MM = 659.6        # cup_z_world = CUP_Z_BASE_MM + slider_mm at level
 # Slider travel [0, stroke] mm — DERIVED, never a literal.  It read a hardcoded
 # 355.0 until 2026-08-21; `jugglebot_geometry.hand_stroke_mm` moved to 344.75 on
-# 2026-08-18 (operator-measured travel between hard stops) and
-# `MuJoCoPlant.command_hand` clips to that value, so a planner sized on 355 asks
-# for 10.25 mm the plant will silently refuse to execute.  Do NOT substitute
-# `teensy_trajectory.hand_stroke_m` (0.355) here — that is the THROW-PROFILE
-# basis feeding x2/x3/x5, deliberately a different number since 2026-08-18.
+# 2026-08-18 (operator-measured travel between hard stops), then to 352.0 on
+# 2026-09-08 (hand-geometry correction, re-measured stop-to-stop travel) and
+# `MuJoCoPlant.command_hand` clips to that value, so a planner sized on a stale
+# stroke would ask for travel the plant will silently refuse to execute.  Do
+# NOT substitute `teensy_trajectory.hand_stroke_m` (0.3643707) here — that is
+# the THROW-PROFILE basis feeding x2/x3/x5, deliberately a different number
+# since 2026-08-18.
 SLIDER_STROKE_MM = float(_hw.GEOM_HAND_STROKE_MM)
 
 # ---- Tilt geometry (from Rung 0 characterisation) ---------------------------

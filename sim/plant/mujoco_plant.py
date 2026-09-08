@@ -127,12 +127,17 @@ class MuJoCoPlant(PlantInterface):
         # can go — the geometry key moved to 344.75 mm on 2026-08-18 when the
         # operator measured the sensorised hand and the deliberate split landed:
         # ``jugglebot_geometry.hand_stroke_mm`` (344.75) is physical travel,
-        # ``teensy_trajectory.hand_stroke_m`` (0.355) is the THROW-PROFILE basis
-        # that feeds x2/x3/x5.  They are different numbers on purpose; do not
-        # re-merge them.  (``sim/model/jugglebot.xml`` carried a stale 0.355 m
-        # joint range until 2026-08-21, when the MJCF generator was reconciled
-        # with the model and regenerated; the two now agree at 344.75 mm, and
-        # ``tests/sim/test_mjcf_drift.py`` keeps them agreeing.)
+        # ``teensy_trajectory.hand_stroke_m`` (0.3643707, re-based 2026-09-08 —
+        # was 0.355) is the THROW-PROFILE basis that feeds x2/x3/x5.  They are
+        # different numbers on purpose; do not re-merge them.  (``sim/model/
+        # jugglebot.xml``'s joint range/ctrlrange were reconciled with the MJCF
+        # generator on 2026-08-21; since 2026-09-08 the generator emits the
+        # travel ABOVE ENCODER ZERO derived from ``hand_motor_hard_stop_revs``
+        # / gain — 0.348524 m — rather than ``hand_stroke_mm`` (352.0, the
+        # stop-to-stop measurement) directly, because the joint is single-sided
+        # from encoder zero and the two spans differ by the firmware's 0.107 rev
+        # homing offset.  ``tests/sim/test_mjcf_drift.py`` keeps generator and
+        # committed model agreeing.)
         #
         # ``_hand_prime_mm`` is the top of the sim's stroke = where
         # ``sim/hand/trajectory.py``'s catch trajectory takes its first sample,
@@ -140,13 +145,18 @@ class MuJoCoPlant(PlantInterface):
         # ``9.858 * 2π * 5.21`` until 2026-08-21: the pre-Phase-3 prime, and with
         # the wrong gain (no ``LINEAR_GAIN_FACTOR``).  Derived now from
         # ``HAND_STROKE_TOP_REV`` — x3, the constant Phase 3 added exactly so
-        # this stops being hand-maintained.
+        # this stops being hand-maintained.  Value moved 335.0 -> 344.371 mm on
+        # 2026-09-08: x3 itself is unchanged in rev (the geometry correction
+        # re-based ``hand_stroke_m`` precisely to hold it fixed), but x3 in mm
+        # moved with the gain (315.0 -> 324.371 mm), which this formula adds
+        # ``STROKE_MARGIN_MM`` on top of.
         #
         # ⚠ The +``STROKE_MARGIN_MM`` inset is the SIM's own placement of the
         # stroke inside the travel, not the firmware's frame (the firmware homes
-        # downward and measures x from the physical bottom, so its x3 is 315 mm,
-        # not 335).  That 20 mm absolute divergence is a live open question owned
-        # by plans/parked/hand-trajectory-generator-overhaul.md; it is preserved
+        # downward and measures x from the physical bottom, so its x3 is
+        # 324.37 mm, not 344.371).  That 20 mm absolute divergence is a live
+        # open question owned by
+        # plans/parked/hand-trajectory-generator-overhaul.md; it is preserved
         # here rather than silently resolved, because resolving it moves the
         # sim's catch height.
         if self._has_hand:

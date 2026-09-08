@@ -56,6 +56,7 @@ from jugglebot.toss_sequencer import (
     TOSS_POSITION_BUSY_PATIENCE_S,
     TOSS_POSITION_BUSY_REPOLL_S,
     HAND_THROW_RELEASE_OFFSET_MM,
+    HAND_CATCH_OFFSET_MM,
     REACH_VEL_LIMIT_MMPS,
     REACH_ACC_LIMIT_MMPS2,
     REACH_JERK_LIMIT_MMPS3,
@@ -297,9 +298,13 @@ def test_throw_delay_floor_is_the_derived_dispatch_budget_not_a_constant():
     makes, which refused every cadence rung for a budget it did not have.
 
     Pinned at both ends of the C-HAND-3 band, because a constant would pass one
-    end and fail the other: the DISPATCH budget is 0.337 s at the 0.4949 s band
-    floor and 0.253 s at the 1.1485 s ceiling, a 1.33x spread driven entirely by
-    the windup term (0.147 s -> 0.064 s).
+    end and fail the other: the DISPATCH budget is 0.340 s at the 0.4974 s band
+    floor and 0.253 s at the 1.1827 s ceiling, a 1.34x spread driven entirely by
+    the windup term.
+
+    2026-09-08 hand-geometry correction moved the band itself (floor 0.4949 ->
+    0.4974 s, ceiling 1.1485 -> 1.1827 s, see test_throw_envelope.py) and, with
+    it, the dispatch budget at each end (was 0.337 s / 0.253 s, a 1.33x spread).
 
     Since 2026-08-23 the GATE charges that budget PLUS the pre-dispatch sequence
     (:func:`pre_dispatch_budget_s`), because the runtime guard applies the same
@@ -309,8 +314,8 @@ def test_throw_delay_floor_is_the_derived_dispatch_budget_not_a_constant():
     ``min_throw_delay_for_cycle_s`` is what CHECKING refuses against."""
     from jugglebot.toss_sequencer import (
         FLIGHT_TIME_MAX_S, FLIGHT_TIME_MIN_S, pre_dispatch_budget_s)
-    for flight, budget in ((FLIGHT_TIME_MIN_S, 0.3368),
-                           (0.80, 0.2811),
+    for flight, budget in ((FLIGHT_TIME_MIN_S, 0.3403),
+                           (0.80, 0.2838),
                            (FLIGHT_TIME_MAX_S, 0.2535)):
         seq = TossSequencer(catch_pose_stow_mm=CATCH_POSE,
                             flight_time_s=flight, throw_delay_s=5.0)
@@ -639,9 +644,9 @@ def test_the_slip_reads_zero_until_the_commit_phase_exists():
 
 @pytest.mark.parametrize('flight_t, bound', [
     (0.40, 'ARM_WINDOW'),       # below the derived floor — the catch cannot be armed
-    (1.16, 'DECEL_FF_HEADROOM'),  # between the FF line and hard authority
-    (1.20, 'DECEL_AUTHORITY'),    # above the ceiling, inside the 7.0 m/s wire
-                                  #   band (5.89 m/s), so it is the ENVELOPE that
+    (1.19, 'DECEL_FF_HEADROOM'),  # between the FF line and hard authority
+    (1.23, 'DECEL_AUTHORITY'),    # above the ceiling, inside the 7.0 m/s wire
+                                  #   band (6.04 m/s), so it is the ENVELOPE that
                                   #   refuses and not the bridge copy — 1.50 s
                                   #   would read EVENT_VEL and prove nothing
 ])
@@ -649,7 +654,13 @@ def test_flight_time_outside_the_derived_envelope_is_rejected(flight_t, bound):
     """The derived envelope (C-HAND-3) refuses BY NAME, and the two ends refuse
     for different physical reasons — which is exactly what the old
     ``[0.55, 1.10]`` band could not say: too SHORT and the catch cannot be
-    armed; too LONG and the decel feedforward saturates the drive."""
+    armed; too LONG and the decel feedforward saturates the drive.
+
+    2026-09-08 hand-geometry correction moved the ceiling (1.1485 -> 1.1827 s,
+    see test_throw_envelope.py) and shrank the FF-headroom margin, so the old
+    (1.16, DECEL_FF_HEADROOM) / (1.20, DECEL_AUTHORITY) probe points now land
+    at 1.16 s INSIDE the envelope (no rejection at all) and 1.20 s still on
+    the DECEL_FF_HEADROOM side, not DECEL_AUTHORITY."""
     seq = TossSequencer(catch_pose_stow_mm=CATCH_POSE, flight_time_s=flight_t,
                         throw_delay_s=5.0)
     seq.start(0.0)
@@ -710,11 +721,14 @@ def test_event_vel_bound_rejected():
 
 def test_default_event_vel_full_geometry_pin():
     """event_vel_mps = 0 resolves via the full vertical ballistic inverse
-    (Δz/T + g·T/2 with Δz = 64.78 − 58.044 = 6.736 mm), matching
-    motion/toss_release: T = 0.8 s ⇒ 3930.82 mm/s — NOT the idealised
-    g·T/2 = 3922.4."""
+    (Δz/T + g·T/2 with Δz = 70.54 − 63.608 = 6.932 mm), matching
+    motion/toss_release: T = 0.8 s ⇒ 3931.065 mm/s — NOT the idealised
+    g·T/2 = 3922.4.
+
+    2026-09-08 hand-geometry correction: was Δz = 64.78 − 58.044 = 6.736 mm
+    ⇒ 3930.82 mm/s."""
     seq = _fresh()
-    assert seq.event_vel_mps == pytest.approx(3.93082, abs=1e-4)
+    assert seq.event_vel_mps == pytest.approx(3.931065, abs=1e-4)
 
 
 @pytest.mark.parametrize('pose,names,knob', [
@@ -1168,16 +1182,17 @@ def test_cant_make_release_aborts_before_announcing():
     This is census B5 and it is the REAL enforcement: it measures the ACTUAL
     remaining lead, so it stays correct however the sequence's elapsed cost
     changes. The CHECKING gate is only its loud+early copy. Since 2026-08-22 the
-    number it compares against is 0.281 s at T = 0.80 (was a flat 1.0 s), so the
-    stall this test injects has to be correspondingly deeper."""
+    number it compares against is 0.2838 s at T = 0.80 (was a flat 1.0 s, then
+    0.281 s pre-2026-09-08 hand-geometry correction), so the stall this test
+    injects has to be correspondingly deeper."""
     seq = _fresh(throw_delay_s=3.5)                   # t_release = 3.5
-    assert seq.min_event_delay_for_throw_s == pytest.approx(0.2811, abs=1e-3)
+    assert seq.min_event_delay_for_throw_s == pytest.approx(0.2838, abs=1e-3)
     _to_positioning(seq)
     seq.note_position_result(0.05, True, 3.1)         # arrival = 3.35
     d = seq.step(3.35, _obs(3.35))
     assert d.phase == PHASE_PREPARING and d.action == ACTION_PREPARE_CATCH
     seq.note_prepare_result(True)
-    d = seq.step(3.4, _obs(3.4))                      # 3.5 − 3.4 = 0.1 < 0.281
+    d = seq.step(3.4, _obs(3.4))                      # 3.5 − 3.4 = 0.1 < 0.284
     assert d.done and d.result.outcome == 'ABORTED_CANT_MAKE_RELEASE'
     assert d.action == ACTION_SAFE_ABORT
     assert seq._announce_dispatched is False          # no phantom announcement
@@ -1653,7 +1668,11 @@ def test_local_constants_match_generated_config():
     assert hw.TEENSY_TRAJ_MIN_EVENT_VEL_MPS == pytest.approx(0.3)
     assert hw.TEENSY_TRAJ_MAX_EVENT_VEL_MPS == pytest.approx(7.0)
     assert hw.JB_OP_DEFAULT_ACTIVE_Z_MM == pytest.approx(170.0)
-    assert hw.HAND_CATCH_OFFSET_MM == pytest.approx(64.78)
+    # Relational, not a literal pin (2026-09-08: was a bare 64.78 pin, which
+    # silently went stale when the hand-geometry correction moved
+    # hw.HAND_CATCH_OFFSET_MM to 70.54 without this module's own mirror
+    # noticing) — mirrors the HAND_THROW_RELEASE_OFFSET_MM check below.
+    assert HAND_CATCH_OFFSET_MM == pytest.approx(hw.HAND_CATCH_OFFSET_MM)
     assert HAND_THROW_RELEASE_OFFSET_MM == pytest.approx(
         hw.GEOM_HAND_AXIS_BOTTOM_OFFSET_MM + hw.HAND_THROW_POS_M * 1000.0)
     assert hw.JB_OP_TOSS_FLIGHT_TIME_DEFAULT_S == pytest.approx(

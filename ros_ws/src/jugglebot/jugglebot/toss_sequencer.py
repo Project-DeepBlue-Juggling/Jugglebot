@@ -744,15 +744,25 @@ def reach_displacement_bound(flight_time_s: float,
 # config drift-guard test pins them against the generated inputs. The authoritative
 # release-state math (frames, announcement fields) is motion/trajectory/toss_release —
 # the node passes its event_vel_mps in; this closed form is the 0 ⇒ default fallback
-# and pins the same worked example (T = 0.8 s ⇒ 3.93082 m/s).
+# and pins the same worked example (T = 0.8 s ⇒ 3.931065 m/s, was 3.93082
+# pre-2026-09-08 hand-geometry correction).
 GRAVITY_MMS2 = 9806.0                # ballistics-side gravity (NEVER the tracker's 9810)
-HAND_CATCH_OFFSET_MM = 64.78         # cup plane above platform centroid (generated:
-                                     # hw.HAND_CATCH_OFFSET_MM)
-HAND_THROW_RELEASE_OFFSET_MM = 58.044  # release plane above platform centroid =
+HAND_CATCH_OFFSET_MM = 70.54          # cup plane above platform centroid (generated:
+                                     # hw.HAND_CATCH_OFFSET_MM). Was 64.78 pre-2026-09-08
+                                     # hand-geometry correction — HAND_CATCH_POS_M moved
+                                     # in metres with the re-based hand_stroke_m, same as
+                                     # the throw offset below, but by a different amount
+                                     # (64.78 -> 70.54 vs 58.044 -> 63.608), so Δz widened.
+HAND_THROW_RELEASE_OFFSET_MM = 63.608  # release plane above platform centroid =
                                      # hw.GEOM_HAND_AXIS_BOTTOM_OFFSET_MM (−129.0) +
-                                     # hw.HAND_THROW_POS_M (0.187044)·1000 — no
+                                     # hw.HAND_THROW_POS_M (0.192608)·1000 — no
                                      # generated constant exists for the throw case
                                      # (derivation shared with toss_release.py).
+                                     # Was 58.044 (HAND_THROW_POS_M 0.187044) pre-
+                                     # 2026-09-08 hand-geometry correction; moved
+                                     # because the re-based hand_stroke_m shifted
+                                     # x2 in metres (0.187044 -> 0.192608), even
+                                     # though x2 in REV is unchanged.
 
 
 def vertical_event_vel_mps(flight_time_s: float) -> float:
@@ -761,8 +771,8 @@ def vertical_event_vel_mps(flight_time_s: float) -> float:
     Launch is purely vertical, so ``|launch| = vz = Δz/T + g·T/2`` with
     ``Δz = cup plane − release plane`` — the FULL ballistic inverse, matching
     ``motion/trajectory/toss_release.compute_release_state``, NOT the idealised
-    ``g·T/2`` magnitude (which is the Δz → 0 limit, ≈ 8.4 mm/s adrift at
-    T = 0.8 s).
+    ``g·T/2`` magnitude (which is the Δz → 0 limit, ≈ 8.7 mm/s adrift at
+    T = 0.8 s; was ≈ 8.4 mm/s pre-2026-09-08 hand-geometry correction).
 
     A module function since 2026-08-22 because it has a SECOND caller: the
     session's hand-geometry dwell floor (``toss_session.hand_floor_dwell_s``)

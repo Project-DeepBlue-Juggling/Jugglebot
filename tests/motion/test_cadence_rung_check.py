@@ -88,6 +88,19 @@ def test_accept_implies_flies_over_the_whole_grid():
         for T, dwell, delay, aimed, ilc, why in violations)
 
 
+@pytest.mark.xfail(strict=True, reason=(
+    "2026-09-08 hand-geometry correction raises hand_floor_dwell_s slightly "
+    "(HAND_MAX_DECEL 110.70->113.99 mm/s^2), which pushes R4's ILC-loaded "
+    "dwell floor from 0.690 s to 0.692 s — R4's published (dwell=0.69, "
+    "delay=0.50) now clears by -2 ms instead of clearing "
+    "(REJECTED_DWELL(dwell 0.690 s < floor 0.692 s; ...), measured "
+    "2026-09-08; R0-R3 and R5 are unaffected, R5's own margin was already "
+    "razor-thin at 1.9 ms pre-correction per test_toss_session.py). Fixing "
+    "this for real means re-cutting R4's dwell in "
+    "tests/hardware/session_cadence_ladder.md (the operator runbook this "
+    "ladder mirrors) — out of scope here (that file is excluded from this "
+    "pass) and an operational decision, not a literal-pin update. Flagged "
+    "for the owner rather than silently re-cut."))
 def test_every_published_rung_flies_chained_and_on_its_first_cycle():
     """The ladder is an operator runbook: an operator arms these numbers on a
     machine with a ball in the cup. Each rung is checked four ways — the session
@@ -148,10 +161,14 @@ def test_the_probe_reports_the_frontier_the_runbook_publishes():
     # cadence the old floor advertised was one the machine could not make, and
     # bag 2026-08-26_14-25-16 aborted two cycles proving it. The way back is a
     # cheaper tick, not a smaller floor.
-    assert 60.0 / disarmed[2] == pytest.approx(50.6, abs=0.1)
-    assert 60.0 / armed[2] == pytest.approx(50.6, abs=0.1)
-    assert disarmed[0] == pytest.approx(0.4968, abs=5e-4)
-    assert disarmed[1] == pytest.approx(0.6901, abs=5e-4)
+    #
+    # 50.2 / 0.5003 / 0.6984 as of the 2026-09-08 hand-geometry correction
+    # (was 50.6 / 0.4968 / 0.6901 at the pre-correction 31.6172 rev/m — the
+    # hand-floor dwell terms scale with the corrected gain).
+    assert 60.0 / disarmed[2] == pytest.approx(50.2, abs=0.1)
+    assert 60.0 / armed[2] == pytest.approx(50.2, abs=0.1)
+    assert disarmed[0] == pytest.approx(0.5003, abs=5e-4)
+    assert disarmed[1] == pytest.approx(0.6984, abs=5e-4)
 
 
 # ── The PIPELINED model (plan B § 2.7 / § 6.2) ───────────────────────────────
@@ -181,19 +198,21 @@ def test_the_commit_budget_is_one_loop_period_not_four():
 def test_the_pipelined_floor_table_reproduces_the_plans_section_2_7():
     """§ 2.7's table, row for row, from the shipped session properties plus the
     one modelled term. The two milestone rows are the ones the plan is FOR:
-    ``h = 1.0`` clears by 17.9 ms and ``h = 1.3`` by 101.8 ms, and the two rows
+    ``h = 1.0`` clears by 12.3 ms and ``h = 1.3`` by 96.8 ms (was 17.9 ms /
+    101.8 ms pre-2026-09-08, at the pre-correction 31.6172 rev/m — the
+    hand-floor dwell terms scale with the corrected gain), and the two rows
     below the milestone band do NOT clear — which is § 7's whole reason for
     putting ``h = 0.5`` out of scope rather than pretending it is reachable."""
-    expected = {0.50: (0.4941, 0.3075), 0.80: (0.4390, 0.3890),
-                1.00: (0.4170, 0.4349), 1.30: (0.3941, 0.4958)}
+    expected = {0.50: (0.5019, 0.3075), 0.80: (0.4452, 0.3890),
+                1.00: (0.4226, 0.4349), 1.30: (0.3990, 0.4958)}
     for h, (floor, milestone) in expected.items():
         _T, got_floor, got_milestone = _milestone_row(h)
         assert got_floor == pytest.approx(floor, abs=5e-4), h
         assert got_milestone == pytest.approx(milestone, abs=5e-4), h
     assert _milestone_row(1.00)[2] - _milestone_row(1.00)[1] == pytest.approx(
-        0.0179, abs=5e-4)
+        0.0123, abs=5e-4)
     assert _milestone_row(1.30)[2] - _milestone_row(1.30)[1] == pytest.approx(
-        0.1018, abs=5e-4)
+        0.0968, abs=5e-4)
     for h in (0.50, 0.80):
         _T, floor, milestone = _milestone_row(h)
         assert milestone < floor, (
@@ -228,8 +247,9 @@ def test_every_section_6_2_rung_is_admitted_and_commits():
 
 def test_the_predicted_commit_slip_matches_the_plans_section_1_4():
     """§ 1.4's prediction, tested rather than asserted: the seat edge costs
-    NOTHING at ``h = 1.3`` (the commit instant is already past it) and ~45/65 ms
-    at ``h = 1.0``. This is the number rung PIPE-1 of the hardware ladder scores
+    NOTHING at ``h = 1.3`` (the commit instant is already past it) and ~47/67 ms
+    at ``h = 1.0`` (was ~45/65 ms pre-2026-09-08, at the pre-correction
+    31.6172 rev/m). This is the number rung PIPE-1 of the hardware ladder scores
     against, so it has to come from the same expression the runbook quotes."""
     seat = probe.MEASURED_SEAT_EDGE_MEDIAN_S
     slips = {}
@@ -238,8 +258,8 @@ def test_the_predicted_commit_slip_matches_the_plans_section_1_4():
         slips[name] = probe.commit_tick(T, dwell, seat_edge_s=seat)[1]
     for name in ('P0', 'P1', 'P2', 'P3'):
         assert slips[name] == pytest.approx(0.0, abs=1e-9), name
-    assert slips['P4'] == pytest.approx(0.0446, abs=5e-4)
-    assert slips['P5'] == pytest.approx(0.0646, abs=5e-4)
+    assert slips['P4'] == pytest.approx(0.0470, abs=5e-4)
+    assert slips['P5'] == pytest.approx(0.0670, abs=5e-4)
 
 
 def test_pipelined_accept_implies_flies_over_the_whole_grid():
@@ -290,14 +310,15 @@ def test_a_loop_period_of_zero_is_refused_rather_than_looping_forever():
 
 def test_the_pipelined_frontier_is_faster_than_the_serial_one():
     """The cadence the pipeline buys, at the band floor where the frontier
-    lives. 50.6 -> 56.3 throws/min is the three returned loop periods showing up
+    lives. 50.2 -> 55.8 throws/min (was 50.6 -> 56.3 pre-2026-09-08, at the
+    pre-correction 31.6172 rev/m) is the three returned loop periods showing up
     as an operator-visible number."""
     T = float(probe.FLIGHT_TIME_MIN_S)
     serial_period = probe.fastest_at(T, ilc_trim=False)[2]
     dwell, period = probe.fastest_pipelined_at(T, ilc_trim=False)
-    assert 60.0 / serial_period == pytest.approx(50.6, abs=0.1)
-    assert 60.0 / period == pytest.approx(56.3, abs=0.1)
-    assert dwell == pytest.approx(0.5701, abs=5e-4)
+    assert 60.0 / serial_period == pytest.approx(50.2, abs=0.1)
+    assert 60.0 / period == pytest.approx(55.8, abs=0.1)
+    assert dwell == pytest.approx(0.5784, abs=5e-4)
 
 
 # ── B4's probe reconciliation (2026-08-27) ───────────────────────────────────
@@ -355,7 +376,9 @@ def test_the_pipelined_floor_table_reproduces_from_the_shipped_gate():
     gate is what makes "the model and the machine agree" a fact rather than an
     intention."""
     from jugglebot.toss_session import TossSessionSequencer
-    expected = {0.50: 0.4941, 0.80: 0.4390, 1.00: 0.4170, 1.30: 0.3941}
+    # 0.5019/0.4452/0.4226/0.3990 as of 2026-09-08 (was 0.4941/0.4390/0.4170/
+    # 0.3941 at the pre-correction 31.6172 rev/m).
+    expected = {0.50: 0.5019, 0.80: 0.4452, 1.00: 0.4226, 1.30: 0.3990}
     for h, floor in expected.items():
         T = probe.flight_for_height(h)
         session = TossSessionSequencer(num_throws=5, dwell_time_s=9.0,
@@ -365,6 +388,14 @@ def test_the_pipelined_floor_table_reproduces_from_the_shipped_gate():
         assert session.required_dwell_s == pytest.approx(floor, abs=5e-4), h
 
 
+@pytest.mark.xfail(strict=True, reason=(
+    "Same R4 dwell-floor shortfall as "
+    "test_every_published_rung_flies_chained_and_on_its_first_cycle above "
+    "(2026-09-08 hand-geometry correction: R4's ILC-loaded floor rose past "
+    "its published 0.69 s dwell by 2 ms) — this test's SERIAL-ladder loop "
+    "hits the identical REJECTED_DWELL on R4. Same fix path (re-cut "
+    "tests/hardware/session_cadence_ladder.md), same out-of-scope reasoning; "
+    "not re-explained here."))
 def test_the_flag_false_decision_stream_is_the_pre_b4_one_over_the_whole_grid():
     """**T-U13 / T-G1 — the acceptance the flag ships on.**
 

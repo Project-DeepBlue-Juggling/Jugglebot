@@ -112,10 +112,20 @@ from sim.gate_common import (                                      # noqa: E402
 #: the caller to override ``z_min_m``/``z_max_m`` to this: with its 0.45/1.10
 #: defaults the realisation saturates the stroke clamp at 31 of 41 knots and the
 #: gate refuses (measured 2026-08-30, ``tests/motion/test_validate_cycle.py``).
-#: The operating band [0, JB_OP_HAND_CATCH_PRIME_REV] maps to slider 20…335 mm,
-#: i.e. cup z 679.6…994.6 mm at level; the inset covers the tilt drop (~6 mm).
-CUP_Z_LO_M = 0.690
-CUP_Z_HI_M = 0.985
+#: The operating band [0, JB_OP_HAND_CATCH_PRIME_REV] maps to slider 20…324.4 mm
+#: (was 20…335 pre-2026-09-08 hand-geometry correction, at the time of that
+#: correction still expressed as 20...335 under the OLD gain), i.e. cup z
+#: 679.6…1003.97 mm at level (was 679.6…994.6 mm); the inset covers the tilt
+#: drop (~6 mm).
+#:
+#: 2026-09-08: these two literals now FOLLOW ``unified_cycle``'s derived box
+#: (owner decision D5 of the hand-geometry correction) rather than keeping
+#: independently-frozen Phase-1 numbers, so the gate's commanded rev matches
+#: the realisation exactly instead of only to within ~0.4 mm. Re-derive with
+#: ``python -c "from jugglebot.motion.unified_cycle import build_cup_config as b; c=b(); print(c.z_min_m, c.z_max_m)"``
+#: if the geometry ever moves again.
+CUP_Z_LO_M = 0.6896
+CUP_Z_HI_M = 0.9940
 
 #: Cup opening height (m) at the release.  NOT the middle of the band: the launch
 #: is made by the slider alone under the z = 170 pin, so what sets the peak cup-z

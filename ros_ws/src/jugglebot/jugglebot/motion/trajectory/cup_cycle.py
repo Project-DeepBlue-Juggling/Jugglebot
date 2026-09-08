@@ -131,19 +131,21 @@ GRAVITY = np.array([0.0, 0.0, -9.806])
 #: 3500 rev/s², under the C-HAND-2 authority bound of 3925.5 rev/s².
 HAND_ACC_LIMIT_RPS2 = 3500.0
 
-#: Default ``a_hand_max`` for the catch runway (m/s²) ≈ 110.70 — the hand
-#: acceleration limit converted through the package's existing slider gain
+#: Default ``a_hand_max`` for the catch runway (m/s²) ≈ 113.99 (was ≈ 110.70
+#: pre-2026-09-08 hand-geometry correction) — the hand acceleration limit
+#: converted through the package's existing slider gain
 #: (``hand_stroke.LINEAR_GAIN_REV_PER_M``, derived from the firmware spool
 #: geometry and equal to the generated ``TEENSY_LINEAR_GAIN``). Imported rather
-#: than restated: a second spelling of the same 31.617 rev/m is a number that
-#: drifts, and ``hand_stroke`` is already the module every other consumer of the
-#: gain reaches for.
+#: than restated: a second spelling of the same 30.704 rev/m (was 31.617) is a
+#: number that drifts, and ``hand_stroke`` is already the module every other
+#: consumer of the gain reaches for.
 HAND_MAX_DECEL_MPS2 = HAND_ACC_LIMIT_RPS2 / LINEAR_GAIN_REV_PER_M
 
 #: How far BELOW the hand's homed zero a parked hand legitimately rests, as cup
 #: travel (m) — the firmware's settled-at-retract lower edge
 #: (:data:`hand_stroke.HAND_HOMED_REST_FLOOR_REV`, −0.20 rev) through the same
-#: slider gain used above. **6.326 mm.**
+#: slider gain used above. **6.514 mm** (was 6.326 mm pre-2026-09-08
+#: hand-geometry correction).
 #:
 #: Imported and converted rather than restated: this module used to carry the
 #: arithmetic ``−0.20 rev / 31.617 rev/m`` inside the comment on

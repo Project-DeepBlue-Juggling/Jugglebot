@@ -506,13 +506,29 @@ _SESSION_STALL_S = DEFAULT_SESSION_MISS_CLEANUP_S + _SEQUENCE_CEILING_MARGIN_S
 # legacy path these names are unread.
 
 #: Cup-opening world height (m → mm here) at the RELEASE and at the CATCH.
-#: THE ONE PLACE these live on the Jetson side. They mirror `sim/cycle_gate.py`'s
-#: `THROW_CUP_Z_M = 0.86` / `CATCH_CUP_Z_M = 0.83`, which are MEASURED optima and
-#: not round numbers: the launch is made by the slider alone under the z = 170
-#: pin, so what sets the peak cup-z acceleration is the stroke available BELOW
-#: the release point — at 0.78 m the runway is 90 mm and a 0.7 s flight already
-#: needs 4280 rev/s², at 0.86 m the runway is 170 mm and 0.8 s fits in 3256, and
-#: above 0.88 m the pre-launch dip no longer fits under the ceiling at all.
+#: THE ONE PLACE these live on the Jetson side. They were round numbers
+#: (860.0 / 830.0) mirroring `sim/cycle_gate.py`'s `THROW_CUP_Z_M = 0.86` /
+#: `CATCH_CUP_Z_M = 0.83` under the pre-2026-09-08 hand gain — MEASURED optima
+#: and not round numbers themselves: the launch is made by the slider alone
+#: under the z = 170 pin, so what sets the peak cup-z acceleration is the
+#: stroke available BELOW the release point — at 0.78 m the runway is 90 mm
+#: and a 0.7 s flight already needs 4280 rev/s², at 0.86 m the runway is
+#: 170 mm and 0.8 s fits in 3256, and above 0.88 m the pre-launch dip no
+#: longer fits under the ceiling at all.
+#:
+#: ⚠ RE-EXPRESSED, NOT MOVED, on 2026-09-08: the hand's `linear_gain_factor`
+#: was corrected (1.035 → 1.0051, measured cable/spool calibration, see
+#: `logbook/2026-09-08-hand-geometry-flown-position-audit.md`), and these two
+#: constants were re-stated at the corrected gain so the COMMANDED HAND REV is
+#: unchanged — the machine has physically been flying cup heights of
+#: 865.37 mm / 834.47 mm all along; only their mm labels were wrong under the
+#: stale gain. Leaving the round 860.0 / 830.0 here would instead command a
+#: real ~5.37 mm / ~4.47 mm hand-position CHANGE relative to what has actually
+#: been flown and validated. `sim/cycle_gate.py` is left at its own frozen
+#: 0.86 / 0.83 (its Phase-1 literals, reproducible on their own terms), so the
+#: two no longer mirror exactly in mm — restoring the round numbers here is
+#: the owner's call, on a freshly laddered lane, not done as part of this
+#: correction.
 #:
 #: ⚠ NOT YAML KEYS, deliberately, and Phase 5 promotes them once the hardware
 #: ladder has tuned them. Adding config keys now would freeze two numbers that
@@ -520,8 +536,8 @@ _SESSION_STALL_S = DEFAULT_SESSION_MISS_CLEANUP_S + _SEQUENCE_CEILING_MARGIN_S
 #: a knob an operator can turn into an infeasible cycle with no gate to say so.
 #: `sim/cycle_gate.py` keeps its own literals so its Phase-1 numbers stay
 #: reproducible; these two are the production twins, stated once.
-_UNIFIED_THROW_CUP_Z_MM = 860.0
-_UNIFIED_CATCH_CUP_Z_MM = 830.0
+_UNIFIED_THROW_CUP_Z_MM = 865.37
+_UNIFIED_CATCH_CUP_Z_MM = 834.47
 
 #: LAUNCH window duration (s) — rest → release, the way IN to a session.
 #: The value the Phase-1 chain is exercised at end to end
@@ -7703,13 +7719,13 @@ class ReloadCoordinatorNode(Node):
         #
         #  * `toss_sequencer`'s CHECKING gate refuses the next cycle
         #    REJECTED_HAND_NOT_PARKED unless |hand| <= HAND_PARK_BAND_REV (0.5 rev).
-        #    A cup left at the 830 mm catch height is 4.755 rev — 9.5x the band —
+        #    A cup left at the 834.47 mm catch height is 4.755 rev — 9.5x the band —
         #    so EVERY cycle from the second on would be refused before it planned;
         #  * and a LAUNCH is planned from the live state, so the height the window
         #    settles at is the height the NEXT window has to start from.
         #
         # `unified_cycle.SETTLE_CUP_Z_MM` is the parked cup height clamped up into
-        # the planner's own cup box (689.6 mm = 0.316 rev; the true park at
+        # the planner's own cup box (689.6 mm = 0.307 rev; the true park at
         # 679.6 mm is 10 mm below the box and is refused SETTLE_SITE before it
         # plans). Derived there, never restated here.
         req.settle_site_mm = [float(catch_xy_mm[0]), float(catch_xy_mm[1]),

@@ -80,7 +80,8 @@ GRAVITY_VEC_MPS2 = np.array([0.0, 0.0, -float(hw.GRAVITY_MPS2)])
 #: ``plans/parked/hand-trajectory-generator-overhaul.md``: the firmware homes
 #: downward and measures its stroke from the physical bottom (x3 = 315 mm), while
 #: the sim insets its stroke by ``TEENSY_TRAJ_STROKE_MARGIN_M`` (20 mm) inside the
-#: 344.75 mm travel.  The sim's own plant already resolves the two exactly this
+#: 352.0 mm travel (was 344.75 mm pre-2026-09-08 hand-geometry correction).
+#: The sim's own plant already resolves the two exactly this
 #: way — ``_hand_prime_mm = 20 mm + HAND_STROKE_TOP_REV/gain`` — so the same
 #: relation is used here, which is what makes slider 335 mm land on
 #: ``JB_OP_HAND_CATCH_PRIME_REV`` (9.9594 rev) instead of somewhere arbitrary.
@@ -122,20 +123,23 @@ TILT_RATE_LIMIT_DEFAULT_RAD_S = 3.0
 #:   1. A tilt swings the cup opening about the fixed rotation centre
 #:      :data:`tilt_geometry.CUP_TILT_CENTER_Z_MM` (744.3 mm), so the platform
 #:      centroid is offset by ``arm · cup_axis_xy`` with ``arm = cup_z −
-#:      744.3``.  Over the slider-reachable cup band (cup z ≈ 679.6…994.6 mm at
-#:      the pinned centroid — see :data:`CUP_Z_BASE_MM` and
-#:      ``GEOM_HAND_STROKE_MM``) the largest lever is ``994.6 − 744.3 =
-#:      250.3 mm``.
+#:      744.3``.  Over the slider-reachable cup band (cup z ≈ 679.6…1003.97 mm
+#:      at the pinned centroid — see :data:`CUP_Z_BASE_MM` and
+#:      ``GEOM_HAND_STROKE_MM``; was 679.6…994.6 mm pre-2026-09-08
+#:      hand-geometry correction) the largest lever is ``1003.97 − 744.3 =
+#:      259.67 mm`` (was 250.3 mm).
 #:   2. A leg attachment also sees the platform's own angular acceleration
 #:      through its radius, ``GEOM_PLAT_RADIUS_MM = 219.075 mm``.
 #:   3. The two add, so a tilt acceleration ``α`` costs at most
-#:      ``L · α`` of leg acceleration with ``L = 250.3 + 219.075 = 469.4 mm``.
+#:      ``L · α`` of leg acceleration with ``L = 259.67 + 219.075 =
+#:      478.7 mm`` (was 469.4 mm).
 #:   4. The cup's own translation needs the rest of the budget, so the tilt term
 #:      is allowed **half** of ``JB_TRAJ_LEG_ACC_LIMIT_MMPS2`` (a 2× reserve; the
 #:      measured level-platform baseline on the WP3 demo cycle is 394 mm/s², ~8 %,
 #:      leaving the factor comfortable rather than tight).
 #:
-#: ``α_max = 0.5 · 5000 / 469.4 = 5.33 rad/s²`` — and the WP4 sweep confirms the
+#: ``α_max = 0.5 · 5000 / 478.7 = 5.222 rad/s²`` (was 5.33 pre-2026-09-08
+#: hand-geometry correction, -1.96%) — and the WP4 sweep confirms the
 #: derivation lands where the machine actually is: a banking schedule held near
 #: 5–7 rad/s² validates, one at 10 rad/s² does not.  Config-derived, not a
 #: literal, so a change to the leg limit or the platform radius ripples here.

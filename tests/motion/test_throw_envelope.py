@@ -77,7 +77,7 @@ def test_commanded_ramps_match_the_shipped_stroke_model():
     re-derived ``123.55*v^2``. Pinned against the coefficient anyway, so that a
     change to the stroke constants shows up here as the envelope shift it is."""
     for v in (2.742, 3.969, 4.858):
-        assert te.commanded_decel_rps2(v) == pytest.approx(123.5466 * v * v,
+        assert te.commanded_decel_rps2(v) == pytest.approx(116.5115 * v * v,
                                                            rel=1e-5)
         assert te.commanded_accel_rps2(v) == pytest.approx(
             hw.TEENSY_TRAJ_INERTIA_RATIO * te.commanded_decel_rps2(v), rel=1e-9)
@@ -363,11 +363,20 @@ def test_the_torque_bounds_bind_and_end_stop_does_not():
     1.46 m/s of slack. On the measured post-fix ladder END_STOP does not bind
     until 6.867 m/s (FW 18, 2026-09-08: was 7.468 m/s before the stop moved
     10.8 -> 10.701 rev and shrank ``PEAK_LIMIT_REV`` with it) and the TORQUE
-    bounds bind first — ``DECEL_FF_HEADROOM`` at **5.637 m/s**, just ahead of
-    ``DECEL_AUTHORITY``'s 5.816. The machine's throw height is limited by what
+    bounds bind first — ``DECEL_FF_HEADROOM`` at **5.804 m/s**, just ahead of
+    ``DECEL_AUTHORITY``'s 5.989. The machine's throw height is limited by what
     the drive can brake with, exactly as the owner's directive said it should
-    be — END_STOP's margin over REGEN shrank (6.867 vs 6.574, was 7.468 vs
+    be — END_STOP's margin over REGEN shrank (6.867 vs 6.769, was 7.468 vs
     6.574) but the order held.
+
+    (2026-09-08 hand-geometry correction: DECEL_FF_HEADROOM, DECEL_AUTHORITY,
+    ACCEL_AUTHORITY and REGEN all moved with the ``event_vel -> rev/s``
+    conversion — DECEL_FF_HEADROOM 5.637 -> 5.804, DECEL_AUTHORITY 5.816 ->
+    5.989, ACCEL_AUTHORITY 5.945 -> 6.087, REGEN 6.574 -> 6.769 m/s. END_STOP
+    (v_end) is unaffected: it comes from the measured coast ladder in REV,
+    which the correction deliberately left untouched — see
+    hardware_config.yaml's ``measured_coast_rev`` comment. The binding order
+    is unchanged, which is the whole point of re-checking it here.)
 
     The order is pinned because it is the contract's whole claim. If END_STOP
     ever re-enters the front, the plant has regressed toward its pre-fix
@@ -375,17 +384,17 @@ def test_the_torque_bounds_bind_and_end_stop_does_not():
     """
     v_end = ((te.PEAK_LIMIT_REV - te.STROKE_TOP_REV) / te._TOP_COAST) ** (
         1.0 / te.COAST_EXPONENT) * te._TOP_V
-    v_decel = math.sqrt(te.DECEL_AUTHORITY_RPS2 / 123.5466)
+    v_decel = math.sqrt(te.DECEL_AUTHORITY_RPS2 / 116.5115)
     v_accel = math.sqrt(te.ACCEL_AUTHORITY_RPS2
-                        / (123.5466 * hw.TEENSY_TRAJ_INERTIA_RATIO))
+                        / (116.5115 * hw.TEENSY_TRAJ_INERTIA_RATIO))
     v_regen = te.REGEN_POWER_W / te.BRAKING_TORQUE_LIMIT_NM / (
         2.0 * math.pi * hand_stroke.LINEAR_GAIN_REV_PER_M)
-    assert v_decel == pytest.approx(5.816, abs=5e-3)
-    assert v_accel == pytest.approx(5.945, abs=5e-3)
-    assert v_regen == pytest.approx(6.574, abs=5e-3)
+    assert v_decel == pytest.approx(5.989, abs=5e-3)
+    assert v_accel == pytest.approx(6.087, abs=5e-3)
+    assert v_regen == pytest.approx(6.769, abs=5e-3)
     assert v_end == pytest.approx(6.867, abs=5e-3)
-    v_ff = math.sqrt(te.DECEL_FF_HEADROOM_RPS2 / 123.5466)
-    assert v_ff == pytest.approx(5.637, abs=5e-3)
+    v_ff = math.sqrt(te.DECEL_FF_HEADROOM_RPS2 / 116.5115)
+    assert v_ff == pytest.approx(5.804, abs=5e-3)
     assert v_ff < v_decel < v_accel < v_regen < v_end, (
         f'the binding order moved: FF {v_ff:.3f} / DECEL {v_decel:.3f} / '
         f'ACCEL {v_accel:.3f} / REGEN {v_regen:.3f} / END_STOP {v_end:.3f} m/s '
@@ -443,18 +452,19 @@ def test_the_current_limit_binds_not_the_torque_soft_limit():
 def test_the_ascent_never_binds_before_the_decel_at_the_top_of_the_band():
     """Proven, not assumed — and the crossing is stated.
 
-    Ascent torque is ``IR * (J_ascent/J)`` = 0.919 of the decel torque at the
-    same speed, plus a constant gravity term, so the two demands cross at
-    ~4.09 m/s: BELOW that the ascent asks for more (but both are far inside the
-    limit), ABOVE it the decel does. Since every bound that matters lives above
-    4.09 m/s, the decel side is always the one that binds at the top.
+    Ascent torque is ``IR * (J_ascent/J)`` = 0.929 (was 0.919 pre-2026-09-08
+    correction) of the decel torque at the same speed, plus a constant gravity
+    term, so the two demands cross at ~4.50 m/s (was ~4.09): BELOW that the
+    ascent asks for more (but both are far inside the limit), ABOVE it the
+    decel does. Since every bound that matters lives above 4.50 m/s, the decel
+    side is always the one that binds at the top.
     """
     ratio = (hw.TEENSY_TRAJ_INERTIA_RATIO * te.J_ASCENT_KGM2 / te.J_MEASURED_KGM2)
-    assert ratio == pytest.approx(0.919, abs=2e-3)
+    assert ratio == pytest.approx(0.929, abs=2e-3)
     crossing = math.sqrt(te.ASCENT_GRAVITY_TORQUE_NM
                          / ((1.0 - ratio) * te.J_MEASURED_KGM2 * 2.0 * math.pi
-                            * 123.5466))
-    assert crossing == pytest.approx(4.09, abs=0.05)
+                            * 116.5115))
+    assert crossing == pytest.approx(4.502, abs=0.05)
     for v in (4.5, 5.0, 5.5, 5.8):
         decel_frac = te.commanded_decel_rps2(v) / te.DECEL_AUTHORITY_RPS2
         accel_frac = te.commanded_accel_rps2(v) / te.ACCEL_AUTHORITY_RPS2
@@ -466,7 +476,10 @@ def test_the_ball_mass_comes_from_the_inertia_ratio_identity():
     ``throwD = -throwA/IR`` a constant-motor-torque design. So the ball mass is
     DERIVED, not a fifth declared number, and C-HAND-2's 0.0952 kg falls out."""
     assert te.BALL_MASS_KG == pytest.approx(0.0952, abs=5e-4)
-    assert te.J_ASCENT_KGM2 - te.J_MEASURED_KGM2 == pytest.approx(2.412e-6,
+    # 2.412e-6 -> 2.557e-6 on 2026-09-08 (hand-geometry correction): the ball
+    # mass itself is unchanged (a config declared value), but J_ASCENT and
+    # J_MEASURED both shift with the gain, and not by the same factor.
+    assert te.J_ASCENT_KGM2 - te.J_MEASURED_KGM2 == pytest.approx(2.557e-6,
                                                                   rel=5e-3)
 
 
@@ -477,7 +490,11 @@ def test_the_arm_window_bound_sizes_the_floor():
     placed at all — the throw stroke is still decelerating when the Teensy's
     :533 budget already needed the command — so the ball flies uncatchable.
     """
-    assert te.ARM_WINDOW_CLOSES_AT_S == pytest.approx(0.4542, abs=1e-3)
+    # 0.4542 -> 0.4591 on 2026-09-08 (hand-geometry correction): a stroke-
+    # duration consequence of the re-based hand_stroke_m (rev distances are
+    # unchanged, but rev/s for a given event_vel dropped 2.97%, so the same
+    # stroke now takes marginally longer to traverse).
+    assert te.ARM_WINDOW_CLOSES_AT_S == pytest.approx(0.4591, abs=1e-3)
     assert te.MIN_FLIGHT_TIME_S > te.ARM_WINDOW_CLOSES_AT_S
     at_floor = te.arm_window_s(te.MIN_FLIGHT_TIME_S,
                                te.vertical_release_speed_mps(
@@ -536,17 +553,22 @@ def test_the_derived_band_and_what_it_replaced():
     """The shipped envelope, and the direction it moved.
 
     Both edges now sit OUTSIDE the old hand-picked ``[0.55, 1.10]``: floor
-    0.4949 s (the arm window does not close until 0.4542), ceiling 1.1850 s
+    0.4974 s (the arm window does not close until 0.4591), ceiling 1.1827 s
     (torque). The ceiling passed through 0.8871 s on 2026-08-18, when the model
     was still the pre-fix coast ladder; the measured post-fix ladder moved it
     back out past where it started.
+
+    (2026-09-08 hand-geometry correction: floor 0.4949 -> 0.4974 s, ceiling
+    1.1485 -> 1.1827 s, apex band [0.300, 1.617] -> [0.303, 1.714] m — all
+    stroke-duration / torque-authority consequences of the corrected
+    ``event_vel -> rev/s`` gain, recomputed from config, not asserted.)
     """
     lo, hi = te.flight_time_band_s()
-    assert lo == pytest.approx(0.4949, abs=1e-3)
-    assert hi == pytest.approx(1.1485, abs=1e-3)
+    assert lo == pytest.approx(0.4974, abs=1e-3)
+    assert hi == pytest.approx(1.1827, abs=1e-3)
     apex_lo, apex_hi = te.apex_height_band_m()
-    assert apex_lo == pytest.approx(0.300, abs=2e-3)
-    assert apex_hi == pytest.approx(1.617, abs=3e-3)
+    assert apex_lo == pytest.approx(0.303, abs=2e-3)
+    assert apex_hi == pytest.approx(1.7145, abs=3e-3)
     assert lo < 0.55 and hi > 1.10
 
 
@@ -583,16 +605,17 @@ def test_the_shipped_working_point_is_now_admitted():
 
     The 2026-08-18 draft REFUSED this — the pre-fix ladder put its peak at
     10.660 rev, 4.4 mm from metal. Measured on the flashed plant it peaks at
-    **10.185 rev, 16.3 mm from metal** (FW 18, 2026-09-08: was 19.4 mm before
-    the metal moved 10.8 -> 10.701 rev), and it is admitted with room. n = 14
-    at exactly this speed, so it is the best-characterised point in the model.
+    **10.185 rev, 16.8 mm from metal** (2026-09-08 hand-geometry correction:
+    was 16.3 mm — the rev gap to the stop is unchanged, but its mm conversion
+    grew with the corrected gain), and it is admitted with room. n = 14 at
+    exactly this speed, so it is the best-characterised point in the model.
     """
     v = te.vertical_release_speed_mps(0.9032)
     assert v == pytest.approx(4.4360, abs=1e-3)
     assert te.evaluate(0.9032, v).ok
     assert te.peak_rev(v) == pytest.approx(10.185, abs=5e-3)
     assert hand_stroke.rev_to_mm(te.HARD_STOP_REV - te.peak_rev(v)) == (
-        pytest.approx(16.3, abs=0.3))
+        pytest.approx(16.8, abs=0.3))
 
 
 def test_the_default_toss_is_admitted():
@@ -642,7 +665,10 @@ def test_the_speed_gate_is_independent_of_the_flight_time():
     throw, which is the failure this signature exists to prevent."""
     t = 0.80                      # comfortably inside the band on its own
     assert te.evaluate(t, te.vertical_release_speed_mps(t)).ok
-    faster = te.evaluate(t, 5.7)  # an 8b aim that releases far harder
+    # 5.7 -> 5.9 on 2026-09-08 (hand-geometry correction): DECEL_FF_HEADROOM
+    # moved 5.637 -> 5.804 m/s, so 5.7 is now BELOW it and admitted — 5.9 is
+    # the smallest round speed still past the new FF line.
+    faster = te.evaluate(t, 5.9)  # an 8b aim that releases far harder
     assert not faster.ok and faster.bound == 'DECEL_FF_HEADROOM'
 
 
@@ -653,9 +679,11 @@ def test_the_speed_gate_is_independent_of_the_flight_time():
 @pytest.mark.parametrize('flight_s, speed, bound', [
     (0.80, 7.6, 'END_STOP'),    # only reachable above the wire band; bounds are
                                 #   ordered machine-damage-first so it still wins
-    (0.80, 5.70, 'DECEL_FF_HEADROOM'),  # between the FF line (5.637) and the
-                                        #   hard authority line (5.816)
-    (0.80, 6.20, 'DECEL_AUTHORITY'),    # past both; the harder limit reports
+    (0.80, 5.90, 'DECEL_FF_HEADROOM'),  # between the FF line (5.804) and the
+                                        #   hard authority line (5.989) — was
+                                        #   5.70/5.637/5.816 pre-2026-09-08
+    (0.80, 6.20, 'DECEL_AUTHORITY'),    # past both (DECEL_AUTHORITY now 5.989,
+                                        #   was 5.816); the harder limit reports
     (0.40, None, 'ARM_WINDOW'),
     (float('nan'), 3.0, 'INPUT'),
     (-0.8, 3.0, 'INPUT'),

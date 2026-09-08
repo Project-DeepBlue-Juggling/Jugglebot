@@ -225,21 +225,23 @@ def test_the_floor_is_the_larger_of_the_handoff_and_the_hand_geometry():
         DELAY + slow.handoff_margin_s)
     # 5.137 until the 2026-08-24 band re-measure, when the arrival term (0.137 ⇒
     # 0.087) fell under the PARK term and the max() changed hands. The number is
-    # now hand geometry at this flight, not sensor latency.
-    assert slow.required_dwell_s == pytest.approx(5.1200, abs=1e-4)
+    # now hand geometry at this flight, not sensor latency. 5.1236 as of
+    # 2026-09-08 (was 5.1200 pre-correction, at the pre-correction 31.6172
+    # rev/m) — the hand-floor dwell terms scale with the corrected gain.
+    assert slow.required_dwell_s == pytest.approx(5.1236, abs=1e-4)
     assert slow.handoff_margin_s > DEFAULT_SESSION_DWELL_MARGIN_S
     assert slow.hand_floor_dwell_s < slow.required_dwell_s
 
     # (b) FAST regime — the hand geometry binds. Isolated by zeroing the
     # handoff margin AND dropping the delay under the park term, because
-    # `handoff_margin_s` floors the margin at `catch_park_reentry_s` (0.1933 s
-    # here) whatever `dwell_margin_s` says, so a zeroed margin alone no longer
-    # isolates anything. A test that could not tell the two terms apart would
-    # pass with the max() deleted.
+    # `handoff_margin_s` floors the margin at `catch_park_reentry_s` (0.1980 s
+    # here, was 0.1933 s pre-2026-09-08) whatever `dwell_margin_s` says, so a
+    # zeroed margin alone no longer isolates anything. A test that could not
+    # tell the two terms apart would pass with the max() deleted.
     fast = TossSessionSequencer(num_throws=2, throw_delay_s=0.20,
                                 flight_time_s=FLIGHT_TIME_MIN_S, **NO_ILC_TRIM,
                                 catch_vel_scale=0.9, dwell_margin_s=0.0)
-    assert fast.hand_floor_dwell_s == pytest.approx(0.4871, abs=1e-3)
+    assert fast.hand_floor_dwell_s == pytest.approx(0.4972, abs=1e-3)
     assert fast.required_dwell_s == pytest.approx(fast.hand_floor_dwell_s)
     assert fast.required_dwell_s > 0.20 + fast.handoff_margin_s
 
@@ -264,7 +266,8 @@ def test_the_hand_floor_is_dominated_by_the_plumbing_term():
        speed (see its docstring), and that choice is only safe while this margin
        covers the term's worst-case 0.0715 s sensitivity to a maximal negative
        ILC speed trim (measured over the band, 2026-08-23; the margin's own worst
-       case is **0.2030 s** at ``T = 0.4949``, so the ratio is **2.8x** — it was
+       case is **0.2011 s** at ``T = 0.4949`` (was 0.2030 s pre-2026-09-08, at
+       the pre-correction 31.6172 rev/m), so the ratio is **2.8x** — it was
        0.1230 s and 1.7x until D3 raised the plumbing term on 2026-08-26). If a
        future change shrinks the
        plumbing term back under the hand floor, this reds and the argument gets
@@ -285,10 +288,11 @@ def test_the_hand_floor_is_dominated_by_the_plumbing_term():
 
       * the dominance HOLDS — the plumbing term still exceeds the hand floor at
         every admitted flight;
-      * but its worst-case margin falls from **0.2030 s** to **0.0830 s** (both
-        at ``T = 0.4949``, the C-HAND-3 band floor);
+      * but its worst-case margin falls from **0.2011 s** to **0.0811 s**
+        (was 0.2030 s / 0.0830 s pre-2026-09-08, at the pre-correction
+        31.6172 rev/m; both at ``T = 0.4949``, the C-HAND-3 band floor);
       * so the ratio over the term's 0.0715 s worst-case ILC-trim sensitivity
-        falls from **2.8x** to **1.16x**.
+        falls from **2.8x** to **1.13x** (was 1.16x pre-2026-09-08).
 
     ⚠ **The plan's § 5.6 T-G4 row predicts 0.0947 s and 1.3x, and it is WRONG
     by 11.7 ms** (measured 2026-08-27, over the whole C-HAND-3 band at
@@ -300,7 +304,7 @@ def test_the_hand_floor_is_dominated_by_the_plumbing_term():
     ``0.2030 - 0.120 = 0.0830`` and can be nothing else. The plan's number
     would require the gap to be 0.1083 s, which is not three of anything.
 
-    1.16x is THIN and is recorded as thin — thinner than the plan believed when
+    1.16x (now 1.13x, post-2026-09-08) is THIN and is recorded as thin — thinner than the plan believed when
     it called this "the one existing test this plan genuinely stresses". It is
     still a cover rather than a coincidence: the sensitivity is a WORST CASE at
     a maximal negative trim, and the throw envelope refuses almost the whole
@@ -322,7 +326,8 @@ def test_the_hand_floor_is_dominated_by_the_plumbing_term():
         assert plumbing > s.hand_floor_dwell_s, (flight, plumbing,
                                                  s.hand_floor_dwell_s)
         worst = min(worst, plumbing - s.hand_floor_dwell_s)
-    # 0.2030 s at T = 0.4949 (0.1230 s before D3). Asserted with a floor rather
+    # 0.2011 s at T = 0.4949 (was 0.2030 s pre-2026-09-08, at the
+    # pre-correction 31.6172 rev/m; 0.1230 s before D3). Asserted with a floor rather
     # than an approx so a change that WIDENS the margin is not a failure — the
     # thing that must not happen is it shrinking back onto the 0.0715 s trim
     # sensitivity this dominance argument spends it on.
@@ -351,7 +356,9 @@ def test_the_hand_floor_is_dominated_by_the_plumbing_term():
     assert worst_pipe > 0.0715, (
         'the pipelined dominance no longer covers the ILC trim sensitivity: '
         '{} <= 0.0715'.format(worst_pipe))
-    assert worst_pipe > 0.082, worst_pipe
+    # 0.0811 measured 2026-09-08 (was 0.0830 pre-correction, at 31.6172 rev/m);
+    # threshold rounded down from the measured number, same pattern as before.
+    assert worst_pipe > 0.081, worst_pipe
     assert worst_pipe < worst, 'the pipelined margin must be the NARROWER one'
     # …and the gap between the two branches is EXACTLY the three loop periods
     # the preamble stopped spending on the critical path. Asserting the
@@ -419,12 +426,14 @@ def test_the_decided_r5_prime_operating_point_is_REFUSED_and_by_how_much():
     :attr:`handoff_margin_s` moved the floor, because 0.137 s (the earliest
     instant a possession VERDICT can exist) was never the whole handoff: cycle
     N+1's CHECKING also needs ``hand_parked``, and the catch stroke does not
-    bring the hand back inside the park band until **0.1933 s** past the landing
+    bring the hand back inside the park band until **0.1980 s** (was 0.1933 s
+    pre-2026-09-08, at the pre-correction 31.6172 rev/m) past the landing
     at this flight. The 0.6 s margin this rung was designed under covered that
     by accident; 0.137 s does not.
 
-    So the decided point needed ``0.34 + 0.1933 = 0.5333 s`` of dwell against
-    the 0.49 s asked for — 43 ms short. Refusing is the correct outcome:
+    So the decided point needed ``0.34 + 0.1980 = 0.5380 s`` (was
+    ``0.34 + 0.1933 = 0.5333 s`` pre-2026-09-08) of dwell against
+    the 0.49 s asked for — 48 ms short. Refusing is the correct outcome:
     accepting it schedules cycle N+1's CHECKING 50 ms inside cycle N's live
     catch stroke, where it reads ~1.5 rev and mints REJECTED_HAND_NOT_PARKED on
     a healthy catch.
@@ -457,11 +466,13 @@ def test_the_decided_r5_prime_operating_point_is_REFUSED_and_by_how_much():
     s.start(0.0)
     assert s.step(0.0).action != SESSION_ACTION_START_CYCLE
     assert base_outcome(s._checking_reject()) == 'REJECTED_THROW_DELAY'
-    assert s.min_throw_delay_s == pytest.approx(0.4968, abs=5e-4)
-    assert s.min_throw_delay_s - 0.34 == pytest.approx(0.1568, abs=5e-4)
+    # 0.5003 as of 2026-09-08 (was 0.4968 pre-correction, at 31.6172 rev/m) —
+    # the hand-floor dwell terms scale with the corrected gain.
+    assert s.min_throw_delay_s == pytest.approx(0.5003, abs=5e-4)
+    assert s.min_throw_delay_s - 0.34 == pytest.approx(0.1603, abs=5e-4)
     # The dwell was short too, and by the amount the 2026-08-22 audit named.
-    assert s.required_dwell_s == pytest.approx(0.5333, abs=5e-4)
-    assert s.required_dwell_s - 0.49 == pytest.approx(0.0433, abs=5e-4)
+    assert s.required_dwell_s == pytest.approx(0.5380, abs=5e-4)
+    assert s.required_dwell_s - 0.49 == pytest.approx(0.0480, abs=5e-4)
 
     # …and the smallest (delay, dwell) pair that IS accepted at this flight,
     # which is the number the runbook's corrected rung is built from.
@@ -481,7 +492,8 @@ def test_the_decided_r5_prime_operating_point_is_REFUSED_and_by_how_much():
     assert ok.step(0.0).action == SESSION_ACTION_START_CYCLE
     # 0.6101 s until 2026-08-26; the D3 delay-floor rise (+0.080 s) carries
     # straight through the dwell floor, which is DERIVED from the delay.
-    assert ok.required_dwell_s == pytest.approx(0.6901, abs=5e-4)
+    # 0.6984 as of 2026-09-08 (was 0.6901 pre-correction, at 31.6172 rev/m).
+    assert ok.required_dwell_s == pytest.approx(0.6984, abs=5e-4)
 
 
 def test_no_accepted_session_starts_a_cycle_inside_the_live_catch_stroke():
@@ -686,13 +698,14 @@ def test_the_all_defaults_combination_is_legal():
     never jump cadence. Lowering the floor makes a faster rung LEGAL; the ladder
     runbook selects it explicitly, per goal.
 
-    5.1933, not 5.137: an all-defaults session has no resolved flight time, so
+    5.1980, not 5.137: an all-defaults session has no resolved flight time, so
     `handoff_margin_s` is judged at the C-HAND-3 band FLOOR (the strictest case,
     the same fail-closed fallback the other two derived floors use) where the
-    hand's park re-entry is 0.1933 s and beats the 0.137 s arrival term."""
+    hand's park re-entry is 0.1980 s (was 0.1933 s pre-2026-09-08, at the
+    pre-correction 31.6172 rev/m) and beats the 0.137 s arrival term."""
     s = TossSessionSequencer(num_throws=3)
     s.start(0.0)
-    assert s.required_dwell_s == pytest.approx(5.1933, abs=5e-4)
+    assert s.required_dwell_s == pytest.approx(5.1980, abs=5e-4)
     assert s.dwell_time_s == pytest.approx(6.0)
     assert s.step(0.0).action == SESSION_ACTION_START_CYCLE
 
@@ -1743,10 +1756,15 @@ def test_the_pipelined_dwell_floor_admits_the_milestone():
 
     The two milestone heights clear; the two below the band do NOT, which is
     § 7's whole reason for putting h = 0.5 out of scope rather than pretending
-    it is reachable."""
+    it is reachable.
+
+    Floor column re-measured 2026-09-08 for the hand-geometry gain correction
+    (was 0.4941/0.4390/0.4170/0.3941 at the pre-correction 31.6172 rev/m —
+    the hand-floor dwell terms scale with the corrected gain); the milestone
+    column is untouched and still clears every floor with room to spare."""
     from jugglebot.motion.trajectory.toss_release import flight_time_from_height
-    expected = {0.50: (0.4941, 0.3075), 0.80: (0.4390, 0.3890),
-                1.00: (0.4170, 0.4349), 1.30: (0.3941, 0.4958)}
+    expected = {0.50: (0.5019, 0.3075), 0.80: (0.4452, 0.3890),
+                1.00: (0.4226, 0.4349), 1.30: (0.3990, 0.4958)}
     for h, (floor, milestone) in expected.items():
         T = flight_time_from_height(h)
         s = _pipelined(flight_time_s=T, dwell_time_s=milestone)
@@ -1757,8 +1775,10 @@ def test_the_pipelined_dwell_floor_admits_the_milestone():
         else:
             assert base_outcome(s._checking_reject()) == 'REJECTED_DWELL', h
     # …and the two clearances the plan publishes, which are what B5 exists to
-    # widen at h = 1.0 (17.9 ms is the same razor-edge class as R5's 1.9 ms).
-    for h, clearance in ((1.00, 0.0179), (1.30, 0.1018)):
+    # widen at h = 1.0 (12.3 ms is the same razor-edge class as R5's 1.9 ms;
+    # was 17.9 ms pre-2026-09-08, at the pre-correction 31.6172 rev/m — the
+    # hand-floor dwell terms scale with the corrected gain).
+    for h, clearance in ((1.00, 0.0123), (1.30, 0.0968)):
         T = flight_time_from_height(h)
         s = _pipelined(flight_time_s=T, dwell_time_s=expected[h][1])
         assert s.dwell_time_s - s.required_dwell_s == pytest.approx(

@@ -502,18 +502,20 @@ class TestSmoothMoveExcursion:
     def test_the_ceiling_is_converted_with_no_stroke_margin_term(self):
         """rev = mm/1000 * LINEAR_GAIN, no 20 mm inset.
 
-        The sim CENTRES the 315 mm stroke in the 355 mm travel; the firmware
-        starts it at zero.  Carrying the sim's 20 mm inset into the end-stop
-        bound would put the ceiling 0.63 rev too high — 0.53 rev PAST the
-        overextension guard, on a system already measured 0.775 rev from it.
+        The sim CENTRES the 324.37 mm stroke in the 364.37 mm travel; the
+        firmware starts it at zero.  Carrying the sim's 20 mm inset into the
+        end-stop bound would put the ceiling too high on the overextension
+        guard.
         """
         # Corrected 2026-08-18: the sensorised hand's hard stop is 10.8 rev
         # (metal contact, operator-measured); this mirrored 11.1 before.
         # Corrected again FW 18 (2026-09-08): re-measured at 10.701 rev.
+        # 2026-09-08 hand-geometry correction: 338.46 -> 348.52 mm (the rev
+        # value is unchanged; its mm conversion grew with the corrected gain).
         assert HAND_MOTOR_HARD_STOP_REVS == 10.701
-        assert rev_to_mm(HAND_MOTOR_HARD_STOP_REVS) == pytest.approx(338.46,
+        assert rev_to_mm(HAND_MOTOR_HARD_STOP_REVS) == pytest.approx(348.52,
                                                                        abs=0.01)
-        assert mm_to_rev(338.46) == pytest.approx(10.701, abs=1e-3)
+        assert mm_to_rev(348.52) == pytest.approx(10.701, abs=1e-3)
         # the inset is NOT part of the mapping
         assert mm_to_rev(HAND_STROKE_M * 1000.0 - 2 * STROKE_MARGIN_M * 1000.0) \
             == pytest.approx(_X3_REV, abs=1e-9)

@@ -96,9 +96,11 @@ extern volatile float current_hand_velocity;
 
    accelToTorque is the HISTORICAL conversion and models the axis as a pure
    translating mass on a spool.  Its IMPLIED reflected inertia is
-       m*r / (2*pi*LINEAR_GAIN) = 0.281*0.00521 / 198.6588 = 7.3695e-6 kg m^2
+       m*r / (2*pi*LINEAR_GAIN) = 0.281*0.00521 / 192.92 = 7.588e-6 kg m^2
+   (7.3695e-6 at the old 198.6588, i.e. LINEAR_GAIN_FACTOR 1.035; the factor
+   became the MEASURED 1.0051 on 2026-09-08, FW 5)
    — it omits the motor's rotor entirely and uses the RAW spool radius instead
-   of the effective radius LINEAR_GAIN_FACTOR = 1.035 implies.  Measured
+   of the effective radius LINEAR_GAIN_FACTOR implies.  Measured
    reflected inertia is 1.02e-5 - 1.05e-5 (two independent identifications off
    the 2026-07-27 sitting; see ros_ws/docs/hand_decel_feedforward.md), so the
    feedforward delivered ~70 % of the torque the commanded acceleration

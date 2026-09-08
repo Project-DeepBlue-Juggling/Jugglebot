@@ -568,11 +568,15 @@ def test_a_release_terminal_plan_has_a_streaming_deadline(launch, geom):
     deadline is exported (:func:`unified_cycle.latest_supersede_time_s`) instead
     of being left to the caller to notice.
 
-    MEASURED (2026-09-04, the reference 0.6 s LAUNCH): terminal hand knot
-    velocity **93.011 rev/s**; reconstructing that 25 ms segment with ``v1 = 0``
-    displaces the firmware's Hermite by up to ``|h11|·T·Δv`` = **0.3445 rev =
-    10.90 mm** of slider — inside ``MAX_LEAD_HAND_REV`` (2.0 rev) and inside
-    ``HAND_VELFF_LIMIT_RPS`` (300 rev/s), i.e. invisible to every guard.
+    MEASURED (2026-09-04, the reference 0.6 s LAUNCH; re-measured 2026-09-08
+    after the hand-geometry correction — terminal knot velocity for a fixed
+    commanded plan drops with the corrected gain): terminal hand knot velocity
+    **90.324 rev/s** (was 93.011); reconstructing that 25 ms segment with
+    ``v1 = 0`` displaces the firmware's Hermite by up to ``|h11|·T·Δv`` =
+    **0.3345 rev = 10.90 mm** of slider (was 0.3445 rev, also ~10.90 mm — the
+    mm figure is nearly unchanged because rev dropped and mm/rev grew by
+    roughly offsetting amounts) — inside ``MAX_LEAD_HAND_REV`` (2.0 rev) and
+    inside ``HAND_VELFF_LIMIT_RPS`` (300 rev/s), i.e. invisible to every guard.
     """
     plan, meta = launch
     assert uc.is_release_terminal(meta) is True
@@ -594,7 +598,7 @@ def test_a_release_terminal_plan_has_a_streaming_deadline(launch, geom):
     # The Hermite displacement that mis-statement buys, in slider revolutions.
     worst_s = 2.0 / 3.0            # |h11(s)| = |s^3 - s^2| peaks at s = 2/3
     err_rev = abs((worst_s ** 3 - worst_s ** 2) * float(plan.dt) * v_knot)
-    assert err_rev == pytest.approx(0.3445, abs=5e-3), err_rev
+    assert err_rev == pytest.approx(0.3345, abs=5e-3), err_rev
     # ...and it stays INSIDE the firmware's hand lead-clamp band, which is why
     # no guard on the path reports it.  2.0 rev = MAX_LEAD_HAND_REV, restated
     # here rather than imported (``motion/`` must not reach into the firmware
@@ -615,7 +619,8 @@ def test_a_rest_terminal_plan_has_no_streaming_deadline(launch, landing,
 
     MEASURED (2026-09-04): the joined 1.6 s plan's terminal hand rate is
     **6.1e-07 rev/s** and its terminal frame reports 0.0 — a difference of
-    0.0000006 rev/s, against the 93.011 rev/s the un-joined LAUNCH would have
+    0.0000006 rev/s, against the 90.324 rev/s (was 93.011 pre-2026-09-08
+    hand-geometry correction) the un-joined LAUNCH would have
     thrown away.
     """
     plan_a, meta_a = launch
@@ -2684,10 +2689,12 @@ def test_build_realize_config_follows_the_live_leg_acc_limit():
 
     MEASURED (2026-09-04): 2000 → 2.1305, 3000 → 3.1957, 5000 → 5.3262 rad/s²,
     the last being exactly the shipped constant, which is the identity that says
-    the expression was not re-derived by hand.
+    the expression was not re-derived by hand. RE-MEASURED 2026-09-08 after the
+    hand-geometry correction (the lever grew 469.4 -> 478.7 mm): 2000 → 2.0888,
+    3000 → 3.1332, 5000 → 5.2220 rad/s².
     """
     base = TrajectoryLimits.from_config(hw)
-    for leg_acc, expect in ((2000.0, 2.1305), (3000.0, 3.1957),
+    for leg_acc, expect in ((2000.0, 2.0888), (3000.0, 3.1332),
                             (5000.0, cr.TILT_ACCEL_LIMIT_DEFAULT_RAD_S2)):
         cfg = uc.build_realize_config(
             base.with_session_limits(leg_acc_mmps2=leg_acc))
@@ -2701,9 +2708,12 @@ def test_build_cup_config_boxes_the_slider_reachable_band():
     ``CupCycleConfig``'s 0.45 / 1.10 defaults are far outside what the slider can
     reach; with them the realisation saturates the stroke clamp at most knots and
     the gate refuses the cycle.  The box here is derived from the same config the
-    realisation uses, and it must land on ``sim/cycle_gate.py``'s hand-set
-    0.690 / 0.985 — the two are the same physical band read two ways, so a drift
-    between them is a bug in one of them.
+    realisation uses, and it must land on ``sim/cycle_gate.py``'s
+    0.6896 / 0.9940 (was 0.690 / 0.985 pre-2026-09-08 hand-geometry correction,
+    when the two matched only to within 0.4 mm; owner decision D5 re-pointed
+    ``sim/cycle_gate.py``'s literals to follow this box exactly) — the two are
+    the same physical band read two ways, so a drift between them is a bug in
+    one of them.
 
     The RUNWAY floor is a different number from the BOX floor, deliberately.
     ``catch_runway_z_floor_m`` is "cup z with the slider at the bottom of its
@@ -2717,8 +2727,8 @@ def test_build_cup_config_boxes_the_slider_reachable_band():
     disagreeing about where the same physical stop is.
     """
     cfg = uc.build_cup_config()
-    assert cfg.z_min_m == pytest.approx(0.690, abs=0.001)
-    assert cfg.z_max_m == pytest.approx(0.985, abs=0.001)
+    assert cfg.z_min_m == pytest.approx(0.6896, abs=0.001)
+    assert cfg.z_max_m == pytest.approx(0.9940, abs=0.001)
     assert cfg.catch_runway_z_floor_m == pytest.approx(uc._CUP_Z_BOTTOM_M)
     assert cfg.catch_runway_z_floor_m == pytest.approx(
         cfg.z_min_m - uc._CUP_Z_INSET_M)
