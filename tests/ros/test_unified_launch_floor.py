@@ -147,7 +147,7 @@ def _spy_plan_cycle(node, monkeypatch, *, lands=True, accepted=True):
     """
     sent = []
 
-    def fake(req):
+    def fake(req, **kw):
         sent.append(req)
         if not accepted:
             resp = _accepted_response()

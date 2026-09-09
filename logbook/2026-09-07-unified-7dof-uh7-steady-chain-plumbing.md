@@ -790,3 +790,79 @@ around it.
     ~0.5 s solve and the `_on_dynamic_target` call, so a loaded box walks past the 0.5 s freshness
     bound). The gate runs alone by rule, which is the condition every number above was taken under.
     **Do not widen the tolerances.**
+
+---
+
+## Follow-up 2026-09-09 — first sitting threw nothing: the joined solve grows with the beat, and two fixed budgets did not
+
+**What happened.** Two sessions (Platform FW 3, then FW 4; bridge FW 18), `throw_delay 1.0 / dwell 3.0 /
+num_throws 3`, six launches solved, zero balls thrown. The Platform FW version was irrelevant — every
+failure is coordinator-side, in this entry's plumbing. Console evidence (`~/.ros/log`, 14:03–14:30):
+
+| launch | `trajectory_node` | coordinator |
+|---|---|---|
+| 14:04:01, 14:04:05 | `joined cycle installed: 4.250 s, 171 knots, plan 1154.8 / 1146.8 ms [val=542 cont=449] load1=7.3` | `ABORTED_NO_RELEASE` — the FSM's derived release (`accept + 1.0`) plus the 0.5 s grace expired 0.4 s **before** the plan's release; the teardown installed a graceful stop with a good plan streaming |
+| 14:04:67, 14:05:04, 14:29:48 | `plan_cycle refused: a trajectory/hold landed while this MODE_NEW was solving` | `REJECTED_PLAN_SERVICE(UNACKED: … did not answer in 2.0 s)` → hold → `ABORTED_CANT_MAKE_RELEASE (tick_max=2052 ms)` |
+| 14:29:50 | 3.27 s, then `LIMIT_JERK 62495 > 30000` on the STEADY range | (refused) |
+
+**Discussion — the hypothesis this entry shipped, and why it does not survive the data.** The cycle-1 floor
+(`0.866 s = preamble 0.160 + solve 0.606 + window 0.600 − grace 0.500`) treated the joined solve as a
+fixed number: the 500–606 ms measured on UH-6's 75-knot LAUNCH+LANDING. But under UH-7a the first
+install is LAUNCH+**STEADY**, and the STEADY window *is* the beat: `flight 0.639 + dwell 3.0 = 3.64 s`
+→ a 4.25 s / 171-knot joined plan. The gates cost ~6.5 ms per knot on this box (75 knots: 500–606 ms
+at load1 4.6–7.5 on 09-06/07; 171 knots: 1147–1155 ms at load1 7.3 today — the same load, so the shape
+is the whole difference), which put the plan's release 0.9 s past the FSM's placeholder. The flat 2.0 s
+`_SERVICE_WAIT_S` was the second cliff, crossed by the slower half of the solves. No parameter set was
+robust: at the runsheet's dwell 1.5 the 111-knot plan is ~0.75 s, still 0.51 s late at throw_delay 1.0,
+and the legacy `dwell ≥ throw_delay + handoff` floor drags dwell up with any throw_delay large enough
+to cover it. Both budgets were derived from a cost that scales with the knob the rung exists to shorten.
+(Rehearsal gap, owned here: the joined install was never dress-rehearsed at a realistic beat on the
+loaded Jetson — the rule this repo already has.)
+
+**Fix (smallest change that removes the class rather than re-tuning it).**
+
+1. **Cycle 1 adopts the plan's release** — `TossSequencer.adopt_release(t)`, called by
+   `_tick_unified_launch` on the install path before the announcement. A chained cycle is *started*
+   with `release_at_perf` off the response that owns its release; cycle 1 could not be, because its
+   LAUNCH did not exist yet, so its derived release is now a placeholder until the plan answers.
+   `_t_release`, `release_at_perf` (so `scheduled_lead_s` and the session ceiling follow) and
+   `_commit_at` (B4, derived from the release — the SLIP path's own move) move together; every other
+   consumer reads `_t_release`. Accepted only before the announcement and dispatch, so the announce
+   tick's release-window guard judges the adopted instant. The solve cost now decides *when* the ball
+   leaves, never whether; the console says `release ADOPTED from the plan, +X.XXX s` when it moved by
+   more than a tick.
+2. **The first-install wait is the plan's** — `_unified_first_install_wait_s(chain_period)` =
+   `max(2.0, knots × _UNIFIED_PLAN_BUDGET_S / 75)` with `knots = (0.6 + chain_period) / 0.025 + 1`:
+   16 ms per knot, the loaded worst on the 75-knot shape the 1.20 s budget was measured on. 2.73 s at
+   the sitting's beat, the flat 2.0 s at any beat under ~2.1 s. Safe to lengthen because the first
+   install is planned from rest: nothing moves while the coordinator blocks. The chain's extends keep
+   `_chain_poll_bound`. `_call_plan_cycle` grew a `timeout_s`; every test stub gained `**kw`.
+3. **The cycle-1 floor is retired**, not re-derived. With the lateness gone, what the placeholder must
+   survive is the pre-launch ladder (preamble, then PREPARING's release-window guard) — and that is
+   exactly the session's existing `REJECTED_THROW_DELAY` floor,
+   `min_throw_delay_for_release_s(v, False)` (0.464 s at this rung's flight, 0.824 s with a positioning
+   move), the ONE derivation the 2026-08-22 audit made both gates import. A second copy in the
+   coordinator would be the drift that audit closed. `_UNIFIED_JOINED_SOLVE_S` goes with it.
+
+**Tradeoff accepted.** A slow solve is now a late first throw rather than an abort — at `throw_delay
+1.0 / dwell 3.0` the ball leaves ~0.9 s after the metronome implied, once. The alternative (bounding
+the solve) would have to grow the floor with the beat, against the rung's purpose. The real cost, the
+per-knot gate, is unchanged: at the cadence the programme needs (beat ≈ flight + the 0.800 s chain
+floor ≈ 1.44 s at 0.5 m) the joined plan is ~83 knots ≈ 0.55 s, and the binding term is the extend
+budget inside the chain floor — the gates' vectorisation is what lowers *that*, and it is a separate,
+planner-safety-bearing unit.
+
+**Open, unexplained, not fixed here:** the two hand-lift refusals at the start of the second session
+(`HAND_STROKE: −0.087 rev outside [−0.087, 9.959] at t=0.006 s` — a rounding hair below the parked
+start — then `LIMIT_JERK 159120` on a hand-only lift) and the STEADY window refused `LIMIT_JERK 62495`
+at 14:29:50 after a 3.27 s solve.
+
+**Verification (2026-09-09).** Scoped: `pytest tests/ros/test_unified_ring.py tests/ros/test_toss_sequencer.py -q`
+→ 213 passed in 5.93 s; `pytest tests/ros/test_unified_launch_floor.py tests/ros/test_toss_continuous_node.py
+tests/ros/test_unified_cycle_integration.py -q` → 299 passed in 33.05 s. Full gate (`./run_tests.sh --full`,
+2026-09-09, log `temp/logs/gate_20260909_uh7a_canflash.log`): parallel **6978 passed / 4 skipped /
+2 xfailed in 462.02 s**, serial 4 passed in 26.15 s, exit 0 — the same tree carries the over-CAN
+firmware-update work of the relay-seam entry's 2026-09-09 addendum.
+**Not flown.** The re-fly is the sitting's own `throw_delay 1.0 / dwell 3.0 / num_throws 3` first —
+expect one `release ADOPTED … +0.9 s` line and a `cycle installed … 171 knots` at ~1.1–1.2 s — then
+`dwell 1.5`.

@@ -3445,8 +3445,48 @@ class TossSequencer:
         (``t_release − now`` at dispatch) and the cancel cutoff from it.
 
         Written ONCE, by :meth:`start`, from :attr:`release_at_perf` or the
-        derived default. Read everywhere; re-derived nowhere."""
+        derived default — and moved at most once more, by
+        :meth:`adopt_release`, when a unified cycle 1's LAUNCH answers with the
+        instant it will actually throw at. Read everywhere; re-derived
+        nowhere."""
         return self._t_release
+
+    def adopt_release(self, t_release: float) -> bool:
+        """Move the scheduled release to the instant the installed plan throws
+        at — the unified cycle-1 hand-off (2026-09-09).
+
+        A CHAINED cycle is STARTED with :attr:`release_at_perf` off the response
+        that already owns its release. Cycle 1 cannot be: its LAUNCH is solved
+        INSIDE the cycle (the node's blocking ``plan_cycle`` call sits in the
+        PREPARING tick) and the plan's release lands at ``install + 0.6 s``, so
+        until the plan answers the derived ``now + throw_delay_s`` is a
+        PLACEHOLDER. Left in force it was a cliff: a joined LAUNCH+STEADY at a
+        3.6 s beat solved in 1.15 s (171 knots, 2026-09-09) and put the plan's
+        release 0.9 s past the derived one; the 0.5 s grace ran out first and the
+        cycle minted ``ABORTED_NO_RELEASE`` with a good plan streaming, then the
+        teardown silenced it 0.4 s before the ball would have left.
+
+        So the placeholder is replaced by the plan's own instant: ``_t_release``
+        moves, ``_commit_at`` is re-derived from it (B4 — the commit instant is
+        DERIVED FROM the release, never the reverse, exactly as the SLIP path
+        does), and :attr:`release_at_perf` takes the value so
+        :attr:`scheduled_lead_s` reports the lead the cycle now runs on. Every
+        other consumer — the landing schedule and through it the ball sensor's
+        arrival band, the release-window guard, the release and settle
+        deadlines, the record — READS ``_t_release`` (see :attr:`t_release`),
+        so moving it moves all of them together by construction.
+
+        Accepted only while the cycle is live, before the announcement has gone
+        out and before the throw is dispatched: the release-window guard on the
+        announce tick then judges the ADOPTED instant. Returns whether it
+        applied; a refused adoption leaves the schedule untouched."""
+        if (self._finished or self._announce_dispatched or self._throw_dispatched
+                or not math.isfinite(t_release) or t_release <= 0.0):
+            return False
+        self._t_release = float(t_release)
+        self.release_at_perf = float(t_release)
+        self._commit_at = self._t_release - self.commit_budget_for_cycle_s
+        return True
 
     @property
     def scheduled_lead_s(self) -> float:

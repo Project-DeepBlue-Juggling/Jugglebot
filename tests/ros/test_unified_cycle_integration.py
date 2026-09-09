@@ -2639,7 +2639,7 @@ def test_the_launch_tick_waits_for_the_release_lead(monkeypatch):
     # second half is what separates "never sent" from "sent and unacked", and the
     # UNAVAILABLE outcome this test asserts is the FALSE branch.
     monkeypatch.setattr(node, '_call_plan_cycle',
-                        lambda req: calls.append(req) or (None, False))
+                        lambda req, **kw: calls.append(req) or (None, False))
     # 5 s of lead: far too early.
     node._tick_unified_launch(seq, state, seq.t_release - 5.0)
     assert calls == []
@@ -2669,7 +2669,7 @@ def _launch_request_with_trim(monkeypatch, trim):
     state.aim = {'ilc_vel_trim': float(trim)}
     sent = []
     monkeypatch.setattr(node, '_call_plan_cycle',
-                        lambda req: sent.append(req) or (None, False))
+                        lambda req, **kw: sent.append(req) or (None, False))
     node._tick_unified_launch(seq, state,
                               seq.t_release - rcn._UNIFIED_LAUNCH_LEAD_S + 0.01)
     assert len(sent) == 1
@@ -2849,7 +2849,7 @@ def test_an_UNACKED_plan_call_HOLDS_the_machine_and_says_a_plan_may_be_running(
     state.unified_launch_pending = True
     hold = _StubHoldClient()
     node._traj_hold_cli = hold
-    monkeypatch.setattr(node, '_call_plan_cycle', lambda req: (None, True))
+    monkeypatch.setattr(node, '_call_plan_cycle', lambda req, **kw: (None, True))
     node._tick_unified_launch(seq, state,
                               seq.t_release - rcn._UNIFIED_LAUNCH_LEAD_S + 0.01)
     assert len(hold.calls) == 1, 'the machine was not held'
@@ -2862,7 +2862,7 @@ def test_an_UNACKED_plan_call_HOLDS_the_machine_and_says_a_plan_may_be_running(
     state2.unified_launch_pending = True
     hold2 = _StubHoldClient()
     node2._traj_hold_cli = hold2
-    monkeypatch.setattr(node2, '_call_plan_cycle', lambda req: (None, False))
+    monkeypatch.setattr(node2, '_call_plan_cycle', lambda req, **kw: (None, False))
     node2._tick_unified_launch(seq2, state2,
                                seq2.t_release - rcn._UNIFIED_LAUNCH_LEAD_S + 0.01)
     assert hold2.calls == []
@@ -2880,7 +2880,7 @@ def test_a_hold_that_did_not_land_is_REPORTED_not_swallowed(monkeypatch):
     seq, state = _seq_state(node, unified=True)
     state.unified_launch_pending = True
     node._traj_hold_cli = _StubHoldClient(ready=False)
-    monkeypatch.setattr(node, '_call_plan_cycle', lambda req: (None, True))
+    monkeypatch.setattr(node, '_call_plan_cycle', lambda req, **kw: (None, True))
     node._tick_unified_launch(seq, state,
                               seq.t_release - rcn._UNIFIED_LAUNCH_LEAD_S + 0.01)
     assert 'STILL STREAMING' in state.unified_reject
@@ -3639,7 +3639,7 @@ def test_a_steady_extend_hands_its_release_to_the_next_cycle(monkeypatch):
     node._toss_unified_chain = chained
     monkeypatch.setattr(
         node, '_call_plan_cycle',
-        lambda req: pytest.fail('a chained release was re-planned'))
+        lambda req, **kw: pytest.fail('a chained release was re-planned'))
     node._tick_unified_launch(seq, state,
                               seq.t_release - rcn._UNIFIED_LAUNCH_LEAD_S + 0.01)
     assert state.unified_plan is chained
@@ -3668,7 +3668,7 @@ def test_a_skewed_chain_is_refused_rather_than_announced(monkeypatch):
         supersede_deadline_mono=seq.t_release + 10.0)
     monkeypatch.setattr(
         node, '_call_plan_cycle',
-        lambda req: pytest.fail('a skewed chain fell through to a NEW launch'))
+        lambda req, **kw: pytest.fail('a skewed chain fell through to a NEW launch'))
     node._tick_unified_launch(seq, state,
                               seq.t_release - rcn._UNIFIED_LAUNCH_LEAD_S + 0.01)
     assert node._publishers['throw_announcements'].published == []
@@ -3993,7 +3993,7 @@ def test_a_chained_launch_is_what_the_coordinator_actually_asks_for():
     seq, state = _seq_state(node, unified=True)
     state.unified_launch_pending = True
     sent = []
-    node._call_plan_cycle = lambda req: sent.append(req) or (None, False)
+    node._call_plan_cycle = lambda req, **kw: sent.append(req) or (None, False)
     node._tick_unified_launch(seq, state,
                               seq.t_release - rcn._UNIFIED_LAUNCH_LEAD_S + 0.01)
     assert len(sent) == 1

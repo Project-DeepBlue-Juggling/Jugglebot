@@ -98,6 +98,12 @@ class _Planner:
         #: Futures handed out by `client`, newest last — a test that abandons one
         #: resolves it here to prove the answer is DISCARDED rather than acted on.
         self.futures = []
+        #: Seconds of fake-clock latency the BLOCKING seam (`__call__`) takes
+        #: before it answers — the LAUNCH's own solve. 2026-09-09: 1.15-3.3 s
+        #: at a 3.6 s beat, against a cycle-1 schedule that had assumed 0.606.
+        self.launch_latency_s = 0.0
+        #: The `timeout_s` each blocking call was given, in order.
+        self.timeouts = []
 
     # ── the two faces of this stub ───────────────────────────────────────────
     # `__call__` is the BLOCKING seam (`_call_plan_cycle`), still used by the
@@ -152,8 +158,11 @@ class _Planner:
         return _Cli()
 
     # The signature `_call_plan_cycle` presents: (req) -> (response, dispatched)
-    def __call__(self, req):
+    def __call__(self, req, **kw):
         self.requests.append(req)
+        self.timeouts.append(kw.get('timeout_s'))
+        if self.launch_latency_s > 0.0:
+            self.clock.sleep(self.launch_latency_s)
         return self._serve(req)
 
     def _serve(self, req):
@@ -1510,52 +1519,58 @@ def test_the_chained_release_guard_is_a_tick_not_a_kind0_windup():
 # 6. THE ACCEPT-TIME BEAT FLOOR
 # ═════════════════════════════════════════════════════════════════════════════
 
-def test_a_short_cycle1_throw_delay_is_REJECTED_BEAT_TOO_SHORT(monkeypatch):
-    """B1(c) — the OTHER accept-time floor this code carries.
+def test_cycle_1_adopts_the_plans_release_and_waits_for_the_plan_it_asked_for(
+        monkeypatch):
+    """The 2026-09-09 hand-off, and the two cliffs it closes.
 
-    Cycle 1 is the only cycle whose release is DERIVED — ``now +
-    throw_delay_s``, stamped once in ``start()`` and never re-stamped — while the
-    LAUNCH that actually throws lands its release at ``install + 0.6``. Below
-    ``_UNIFIED_LAUNCH_LEAD_S`` the launch fires on the first tick after ANNOUNCE,
-    so the ball leaves ``preamble + solve + window - throw_delay`` LATE against
-    the 0.5 s grace, and cycle 1 aborts ``ABORTED_NO_RELEASE`` with the ball
-    unthrown — before any chain exists for the ring floor to protect.
+    Cycle 1 is started on a DERIVED release (``now + throw_delay_s``) because
+    its LAUNCH does not exist yet, while the plan's release lands at
+    ``install + 0.6`` whatever the solve cost. On hardware a 171-knot
+    LAUNCH+STEADY at a 3.6 s beat solved in 1.15 s: the FSM minted
+    ``ABORTED_NO_RELEASE`` 0.4 s before the plan's release with the plan
+    streaming, and three of six launches crossed the flat 2.0 s client wait
+    and were answered by a hold that cancelled the solve. So (1) once the
+    LAUNCH answers, the sequencer ADOPTS the plan's own instant —
+    ``t_release``, ``release_at_perf`` and the landing schedule move together —
+    and (2) the blocking wait is sized by the plan the request produces, knot
+    for knot, never below the flat wait.
 
-    Refusing here names ``throw_delay_s``, the field that is wrong. Letting it
-    through names ``ABORTED_NO_RELEASE``, which sends the operator to the hand.
+    The old accept-time "cycle-1 floor" (0.866 s, a lateness bound built from a
+    75-knot solve measurement) is gone with the lateness; the session's own
+    ``REJECTED_THROW_DELAY`` floor is the one delay floor left.
     """
     clock = _Clock()
     planner = _Planner(clock)
+    # A solve that outlives the derived schedule AND its 0.5 s grace — the
+    # pre-fix FSM minted ABORTED_NO_RELEASE before the plan's release.
+    planner.launch_latency_s = DELAY + 0.9
     node = _ring_node(monkeypatch, clock, planner)
-    monkeypatch.setattr(
-        node, '_build_toss_cycle',
-        lambda *a, **k: pytest.fail('a cycle was built under the delay floor'))
-    floor = rcn._unified_cycle1_delay_floor_s()
-    assert floor == pytest.approx(0.866, abs=5e-4), floor
+    dwell = 3.0                                  # beat 3.8 s: a ~177-knot install
+    trace = _install_ring_replay(node, monkeypatch, clock,
+                                 outcomes=[_caught()] * 3)
     result = node._execute_toss_continuous(
-        _unified_goal(num_throws=3, dwell=6.0, delay=floor - 0.05))
-    assert result.outcome.startswith(rcn._OUTCOME_BEAT_TOO_SHORT), result.outcome
-    # The knobs, and the terms the floor is made of.
-    assert 'throw_delay' in result.outcome
-    assert '{:.3f}'.format(floor) in result.outcome
-    assert 'ABORTED_NO_RELEASE' in result.outcome       # what it prevents
-    assert '1.06' in result.outcome                     # the loaded caveat
-    # The dwell it needs is NOT restated as a literal: the handoff margin is
-    # flight-dependent and the sequencer owns it, so the message points at the
-    # gate that quotes the real number (a hardcoded 0.120 was 20-60 ms wrong).
-    assert 'handoff margin' in result.outcome
-    assert 'REJECTED_DWELL' in result.outcome
-    assert '0.120' not in result.outcome
-    assert planner.requests == []
-    # …and a delay AT the floor is accepted (the gate is not a blanket refusal).
-    monkeypatch.undo()
-    clock2 = _Clock()
-    planner2 = _Planner(clock2)
-    node2 = _ring_node(monkeypatch, clock2, planner2)
-    _install_ring_replay(node2, monkeypatch, clock2, outcomes=[_caught()])
-    assert node2._execute_toss_continuous(
-        _unified_goal(num_throws=1, dwell=6.0,
-                      delay=floor + 0.01)).outcome == 'COMPLETED'
+        _unified_goal(num_throws=3, dwell=dwell, delay=DELAY))
+    assert result.outcome == 'COMPLETED', result.outcome
+    first = trace[0]
+    seq = first['seq']
+    # (1) the hand-off: the FSM runs on the PLAN's release, not the placeholder
+    # it was started on — and the placeholder really was left behind.
+    assert first['plan_release'] > first['t_release'] + 0.5, first
+    assert seq.t_release == pytest.approx(first['plan_release'])
+    assert seq.release_at_perf == pytest.approx(first['plan_release'])
+    assert seq.landing_perf == pytest.approx(first['plan_release'] + FLIGHT)
+    # (2) the wait is the plan's: launch window + the chained STEADY (the
+    # beat) at the budget's per-knot rate, above the flat wait at this beat…
+    expected = rcn._unified_first_install_wait_s(FLIGHT + dwell)
+    assert planner.timeouts[0] == pytest.approx(expected)
+    assert expected > rcn._SERVICE_WAIT_S
+    assert expected == pytest.approx(
+        ((rcn._UNIFIED_LAUNCH_WINDOW_S + FLIGHT + dwell) / KNOT_DT_S + 1.0)
+        * rcn._UNIFIED_PLAN_BUDGET_S / rcn._UNIFIED_PLAN_BUDGET_KNOTS)
+    # …and a short beat keeps the flat wait: nothing that fit before waits less.
+    assert rcn._unified_first_install_wait_s(FLIGHT + 0.8) == pytest.approx(
+        rcn._SERVICE_WAIT_S)
+    assert not hasattr(rcn, '_unified_cycle1_delay_floor_s')
 
 
 def test_a_dwell_under_the_extend_lead_is_REJECTED_BEAT_TOO_SHORT(monkeypatch):

@@ -1206,18 +1206,22 @@ with the two-pose ring behind the aim authority AND a goal-surface change. What 
 - **The release hand-off**, so `CHAIN_SKEW` is a check rather than a negotiation (tolerance one 40 ms
   tick, not the 0.60 s extend lead), and `TossSessionSequencer.beat_s` hoisted once at accept so the
   plan's period and the FSM's schedule cannot be two additions of the same floats.
-- **`REJECTED_BEAT_TOO_SHORT` at goal acceptance** (Layer B), refusing on two derived floors and
-  naming which one bound: the **chain dwell floor 0.800 s**, whose binding term is *the next cycle's
+- **`REJECTED_BEAT_TOO_SHORT` at goal acceptance** (Layer B), refusing on the derived chain floor
+  (and, until 2026-09-09, on a second one): the **chain dwell floor 0.800 s**, whose binding term is *the next cycle's
   lead* — `max(verdict 0.560, extend 0.600) + preamble 0.160 + tick 0.040` — rather than the extend
-  carry `dwell − dt ≥ _UNIFIED_EXTEND_LEAD_S` (0.625 s, which does not bind); and the **cycle-1
-  `throw_delay_s` floor 0.866 s** = `preamble 0.160 + measured joined solve 0.606 + launch window
-  0.600 − release grace 0.500`, since cycle 1 is the only cycle whose release is derived. Both are
+  carry `dwell − dt ≥ _UNIFIED_EXTEND_LEAD_S` (0.625 s, which does not bind); and — **retired
+  2026-09-09** — a cycle-1 `throw_delay_s` floor 0.866 s that bounded the lateness of a solve cycle 1
+  no longer runs on: cycle 1 adopts the plan's own release once the LAUNCH answers
+  (`TossSequencer.adopt_release`), the blocking wait is sized by the plan's knot count, and the
+  session's `REJECTED_THROW_DELAY` floor is the only delay floor (see the 2026-09-07 entry's
+  2026-09-09 follow-up). This is
   the *plumbing* floor, not the planner's feasibility floor, which stays per cycle and is safe to
   take late because the ladder holds the machine before the deadline. The legacy
   `dwell ≥ throw_delay + handoff_margin_s` floor applies on top and is flight-dependent (0.141 s at
-  flight 0.80, 0.177 s at the 0.639 s flight of `throw_height_m 0.5`), so a unified session's real
-  minimum beat is **≈1.81 s at flight 0.80 and ≈1.68 s at flight 0.639** — against the ~2.5–2.7 s the
-  serial choreography needed.
+  flight 0.80, 0.177 s at the 0.639 s flight of `throw_height_m 0.5`); with the cycle-1 floor gone it
+  no longer binds, so a unified session's real minimum beat is flight + the 0.800 s chain floor —
+  **≈1.60 s at flight 0.80 and ≈1.44 s at flight 0.639** (≈1.81 / ≈1.68 s before 2026-09-09) — against
+  the ~2.5–2.7 s the serial choreography needed.
 - **A non-blocking extend and a deadline-driven fail-safe ladder** (STEADY → LANDING → `trajectory/hold`
   + stop), with a **refused STEADY stopping the session** (`STOPPED_CHAIN_REFUSED`) rather than
   silently reverting to the serial cadence.

@@ -446,35 +446,39 @@ the arithmetic rather than the authority.
   the carry `dwell − 0.025` hold one 0.600 s extend, is only 0.625 s and does not
   bind.) It says the chain has time to *ask* for the next window; it does **not**
   say the beat is flyable — that is answered per cycle by the planner.
-- **The cycle-1 delay floor: `throw_delay_s ≥ 0.866 s`**, also refused
-  `REJECTED_BEAT_TOO_SHORT` (the message names `throw_delay_s`). Cycle 1 is the
-  only cycle whose release is *derived* (`now + throw_delay_s`) while the LAUNCH
-  that throws lands its release at `install + 0.600`, so the ball leaves
-  `preamble 0.160 + solve 0.606 + window 0.600 − throw_delay` **late** against
-  the `0.500 s` release grace. Below this floor cycle 1 aborts
-  `ABORTED_NO_RELEASE` with the ball unthrown. The 0.606 s is the **measured
-  worst joined install on hardware** (500–606 ms at load1 3.7–7.4); a loaded box
-  has reached **1.06 s**, so **raise `throw_delay_s` further if the box is
-  busy** — being early costs nothing.
+- **The cycle-1 delay floor is the session's own `throw_delay_s` floor**
+  (`REJECTED_THROW_DELAY` at acceptance, naming `throw_delay_s`): the kind-0
+  dispatch budget at this speed plus the 0.160 s pre-dispatch budget —
+  **0.464 s at this rung's flight**, 0.824 s if cycle 1 has to position the
+  platform. The 0.866 s unified floor of 2026-09-07 is **retired
+  (2026-09-09)**: it bounded the LATENESS of a solve that cycle 1 no longer
+  runs on. Once the LAUNCH answers, the sequencer adopts the plan's own
+  release instant (`TossSequencer.adopt_release`; the console line is
+  `unified cycle 1: release ADOPTED from the plan, +X.XXX s …`), so the joined
+  solve decides *when* the ball leaves, never whether — and the blocking wait
+  for that solve is sized by the plan (16 ms per knot, floor 2.0 s: 2.7 s at a
+  3.6 s beat) instead of a flat 2.0 s. Being early still costs nothing.
 - **The legacy dwell floor (unchanged, still live): `dwell ≥ throw_delay_s +
   handoff_margin_s`.** The handoff margin depends on the flight: **0.177 s at
   this rung's flight** (`throw_height_m: 0.5` ⇒ flight 0.639 s) and 0.141 s at a
   0.80 s flight. So at this rung's flight it binds at **`dwell ≥ 1.177 s` when
   `throw_delay 1.0`**, and at **`dwell ≥ 1.047 s` when `throw_delay 0.87`**.
   Below it the goal is refused `REJECTED_DWELL`. **To lower the dwell you must
-  lower `throw_delay_s` in step — but not below 0.866.**
+  lower `throw_delay_s` in step — but not below the session's floor (0.464 s
+  at this rung's flight).**
 
-⚠ **The cycle-1 refusal message does not quote the dwell it needs — read that
-from `REJECTED_DWELL`.** The handoff margin in the session's dwell floor is
-flight-dependent, so the message only says the floor applies on top. At
-`throw_height_m: 0.5` the real margin is **0.177 s**, so the true minimum dwell
-at `throw_delay_s` 0.866 is **1.043 s**, and a dwell of 0.99 will be refused by
-`REJECTED_DWELL` one layer down, which names the exact number for the goal.
+⚠ **The dwell a given `throw_delay_s` needs is the number `REJECTED_DWELL`
+quotes for the goal.** The handoff margin in the session's dwell floor is
+flight-dependent: at `throw_height_m: 0.5` it is **0.177 s**, so `throw_delay
+0.50` needs `dwell ≥ 0.677 s` — below the chain floor, which then binds.
 
-**So the shortest beat this rung can ask for is about 1.69 s**
-(`throw_delay 0.87` + `dwell 1.05` + flight 0.639), against the ~2.5–2.7 s the
-one-throw-per-cycle shape needed. A shorter beat than that needs a longer
-flight, not a smaller knob.
+**So the shortest beat this rung can ask for is about 1.44 s**
+(`throw_delay 0.50`, `dwell 0.80` — the chain floor — + flight 0.639), against
+the ~2.5–2.7 s the one-throw-per-cycle shape needed. The chain floor is the
+extend's own budget (`max(verdict 0.560, extend 0.600) + preamble + tick`); a
+shorter beat than that needs a longer flight or a cheaper extend, not a smaller
+knob. ⚠ Not yet flown at that beat: the first re-fly is at the sitting's own
+`throw_delay 1.0 / dwell 3.0`, which is what the 2026-09-09 fix was cut against.
 
 ### The rungs
 
@@ -554,7 +558,8 @@ UH-7a gate in it at all.
 | What you see | What it means | What to do |
 |---|---|---|
 | `REJECTED_BEAT_TOO_SHORT(dwell … < unified chain floor (the next cycle's lead) 0.800 s …)` | The beat leaves the next cycle no time to reach its announcement. Refused at acceptance — **nothing was armed, lifted or commanded** | Raise `dwell_time_s` to at least **0.800** (and mind the legacy floor above it), or raise `throw_height_m` for a longer flight. The message quotes both requirements and says which one bound |
-| `REJECTED_BEAT_TOO_SHORT(throw_delay … < unified cycle-1 floor 0.866 s …)` | Different knob, different failure: **cycle 1's** release is derived from `throw_delay_s`, and below this floor the ball would leave later than the 0.5 s release grace allows and cycle 1 would abort `ABORTED_NO_RELEASE` | Raise `throw_delay_s` to at least **0.866**, and higher if the box is busy — early costs nothing. ⚠ Its "needs dwell >= 0.986 s" tail uses a representative handoff; at this rung's flight the real dwell floor is **1.047 s** |
+| `REJECTED_THROW_DELAY(throw_delay … < …)` | The session's own delay floor (the kind-0 dispatch budget at this speed + the pre-dispatch budget): cycle 1 runs on `now + throw_delay_s` only until its LAUNCH answers, and that placeholder has to outlive the pre-launch ladder. The 2026-09-07 `unified cycle-1 floor 0.866 s` refusal no longer exists — cycle 1 adopts the plan's release (2026-09-09) | Raise `throw_delay_s` to the number quoted (**0.464 s** at this rung's flight) — early costs nothing |
+| `unified cycle 1: release ADOPTED from the plan, +X.XXX s from the derived schedule (plan N ms)` (INFO, not a refusal) | The LAUNCH's solve took longer than `throw_delay_s` allowed for and the FSM moved its schedule to the plan's instant — the ball leaves X s later than the metronome implied. Expected at `throw_delay 1.0` with a 3.6 s beat (+0.9 s at a 1.15 s solve) | Nothing. A large `plan N ms` (over ~1.5 s at this beat) says the box is busy — check `load1` on the `cycle installed` line |
 | `REJECTED_CYCLE_PLAN(CHAIN_PAST: the chained release was … s ago …)` | **The beat is not wrong; the cycle was late.** This cycle spun up after its ball had already left, so there was nothing left to announce | Look at the *previous* cycle's verdict and settle times, not at `dwell_time_s`. Send me the line and the two cycles around it |
 | `STOPPED_CHAIN_REFUSED(<the planner's own refusal>)` | **Expected, not a fault.** The planner refused the next STEADY window, the fall-back LANDING installed instead, the ball was caught and the machine settled — and the session then STOPPED rather than quietly carrying on at a longer beat. You will see `unified ring TRUNCATED` first, then exactly one more throw | **Raise `dwell_time_s` and re-run** (or the session limits if the refusal names `LIMIT_*`). The throws before the stop are good data — the point of stopping is that they are all at the SAME beat |
 | `STOPPED_CHAIN_LOST(NO_WINDOW: STEADY: … \| LANDING: … — held …)` | Both windows were refused (or the planner never answered) and **the machine was HELD**. The cycle's own catch still counts | **Read the hold verdict at the end of the string first.** Anything other than a clean hold means a stroke may still be coming — treat the machine as moving. Send me the whole line |
@@ -633,7 +638,7 @@ exists.
 | UH-4 | **folded into UH-6** | As designed — the session is the only planned-catch path. |
 | UH-5 | **PASS — with a release-velocity caveat that only the bag could see** | Three `--apex 0.5` throws. Joined LAUNCH+SETTLE, 2.0 s / 81 knots; plan **508 / 547 / 571 ms** (`val` 240–274, `cont` 237–268). Commanded hand peak **9.6432 rev @ 99.01 rev/s**; encoder worst **9.7591–9.8032 rev**, ~0.9 rev clear of the measured 10.701 metal. Guard ARMED, never tripped. **V2 FAILed against the driver's bare 500 ms bar — a driver defect** (a joined install is two solves plus the join's re-validate; the bar is now 1200 ms with an advisory at 700). ⚠ **The caveat: the throw left +5.2…+16.7 % fast** (mocap parabola, mean +10.9 %; flight time +10…+20 %; peak rev/s × empirical gain +12…+19 %) — flight **0.766–0.837 s** against 0.6387 planned, apex **556–682 mm** against the 500 asked. Nothing on the day showed it; it took the bag. |
 | UH-6 | **FLOWN — 6 of 7 caught, and the CATCH QUALITY FAILS** | Four goals: G0 `REJECTED_MOCAP_STALE`; **G1 3/3 CAUGHT** (plan 505/593/500 ms, `load1` 4.6–5.4); **G2 3/3 CAUGHT** (606/585/530, `load1` 5.4–6.0); **G3 one MISSED → `STOPPED_ON_MISS`** (500 ms, `load1` 7.4). Guard ARMED throughout, never tripped. **Every cycle was a fresh joined solve from rest — no `EXTEND` fired all sitting** (see the UH-6 note above; the older "extensions ~200 ms" claim is corrected). ⚠ **The catch verdict: every catch was a FEEDFORWARD catch into a parked cup.** The ball arrives at **3961–4161 mm/s** onto a hand doing **−232…+4 mm/s** — a velocity ratio of **0.001–0.059** against the **0.7** the planner asks for — a **3730–4157 mm/s** mismatch (~4× design speed, ~17× design energy) absorbed by **2–7.4 mm** of the planned 120 mm runway. The plan itself executed correctly (cup at −1831…−2158 mm/s vs the −2199 target at the *planned* instant); the receive stroke simply completed **172–185 ms** before the ball arrived, and the ball was **146–195 ms** late. **Re-fly 2026-09-07 with the fixes: FLOWN — clean (operator).** Dwell/delay below the defaults produced `ABORTED_NO_RELEASE`, expected with the serial per-cycle choreography (lift + 1.80 s lead + solve); UH-7's steady chaining removes it. |
-| UH-7a | **NOT FLOWN** | The steady-chain plumbing landed 2026-09-07 and has never moved a machine. The session now installs `LAUNCH + STEADY` and plans each cycle's window inside the previous one, so the beat is the number the operator asks for rather than the ~2.5–2.7 s the settle-plus-relaunch choreography needed. New at acceptance, both minting `REJECTED_BEAT_TOO_SHORT`: a chain **dwell floor of 0.800 s** (binding term "the next cycle's lead" — `max(verdict 0.560, extend 0.600) + preamble 0.160 + tick 0.040`) and a **cycle-1 `throw_delay_s` floor of 0.866 s** (`preamble 0.160 + measured joined solve 0.606 + window 0.600 − grace 0.500`); the legacy `dwell ≥ throw_delay + handoff` floor sits on top, so the shortest beat this rung can ask for is **~1.69 s** at `throw_height_m 0.5`. Also new: `REJECTED_CYCLE_PLAN(CHAIN_PAST: …)` for a cycle that spun up after its own release had passed, and a chained cycle's runtime release-window guard is one tick (0.040 s) instead of the legacy kind-0 dispatch budget (0.281 s) — charging the latter had aborted every chained cycle `ABORTED_CANT_MAKE_RELEASE` at a dwell the accept gate had admitted. New terminals: `STOPPED_CHAIN_REFUSED` (a window was refused, the fall-back LANDING caught the ball, the session stopped rather than quietly lengthening its beat) and `STOPPED_CHAIN_LOST` (nothing chained, machine held). ⚠ The release-terminal **supersede cliff is armed for the first time** — a `chained … AFTER the deadline it was racing` line, or `trajectory_node`'s `CLIFF` error, is a plumbing defect: stop and raise the dwell. First sitting capped at `num_throws` **3 then 5** (hand thermal — a ring never lets the hand rest, and nothing models that load). See the UH-7a rung above and `logbook/2026-09-07-unified-7dof-uh7-steady-chain-plumbing.md`. |
+| UH-7a | **NOT FLOWN** | The steady-chain plumbing landed 2026-09-07 and has never moved a machine. The session now installs `LAUNCH + STEADY` and plans each cycle's window inside the previous one, so the beat is the number the operator asks for rather than the ~2.5–2.7 s the settle-plus-relaunch choreography needed. New at acceptance, both minting `REJECTED_BEAT_TOO_SHORT`: a chain **dwell floor of 0.800 s** (binding term "the next cycle's lead" — `max(verdict 0.560, extend 0.600) + preamble 0.160 + tick 0.040`) and a **cycle-1 `throw_delay_s` floor of 0.866 s** — **retired 2026-09-09** after the first sitting threw nothing: the joined LAUNCH+STEADY solve grows with the beat (171 knots, 1.15–3.3 s at dwell 3.0) and walked through both that floor and the flat 2.0 s service wait; cycle 1 now adopts the plan's own release once the LAUNCH answers and the wait is sized per knot, so the session's `REJECTED_THROW_DELAY` floor (0.464 s at this flight) is the only delay floor and the shortest beat this rung can ask for is **~1.44 s** at `throw_height_m 0.5` (chain floor 0.800 + flight). Also new: `REJECTED_CYCLE_PLAN(CHAIN_PAST: …)` for a cycle that spun up after its own release had passed, and a chained cycle's runtime release-window guard is one tick (0.040 s) instead of the legacy kind-0 dispatch budget (0.281 s) — charging the latter had aborted every chained cycle `ABORTED_CANT_MAKE_RELEASE` at a dwell the accept gate had admitted. New terminals: `STOPPED_CHAIN_REFUSED` (a window was refused, the fall-back LANDING caught the ball, the session stopped rather than quietly lengthening its beat) and `STOPPED_CHAIN_LOST` (nothing chained, machine held). ⚠ The release-terminal **supersede cliff is armed for the first time** — a `chained … AFTER the deadline it was racing` line, or `trajectory_node`'s `CLIFF` error, is a plumbing defect: stop and raise the dwell. First sitting capped at `num_throws` **3 then 5** (hand thermal — a ring never lets the hand rest, and nothing models that load). See the UH-7a rung above and `logbook/2026-09-07-unified-7dof-uh7-steady-chain-plumbing.md`. |
 | UH-7b | **not run** | Two-pose ring. Blocked on three things, not one: the aim-authority re-derivation against `MAX_TILT_DEG` (12°), a goal-surface change (`TossContinuous` has exactly one catch site), and the FSM's legacy `REJECTED_DISPLACEMENT` bound. |
 
 **The operator's three observations, all of which turned out to be the evidence.**

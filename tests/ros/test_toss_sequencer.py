@@ -600,6 +600,36 @@ def test_an_unset_release_schedule_still_derives_the_shipped_lead():
     assert seq.scheduled_lead_s == 5.0
 
 
+def test_cycle_1_adopts_the_plans_release_and_every_consumer_follows_it():
+    """The unified cycle-1 hand-off (2026-09-09): the derived release is a
+    PLACEHOLDER until the LAUNCH answers, and ``adopt_release`` replaces it
+    with the plan's own instant — ``t_release``, ``release_at_perf``,
+    ``scheduled_lead_s``, the landing schedule and the commit instant (B4,
+    derived FROM the release) move together, exactly as a SLIP moves them.
+    Refused inputs, and a cycle past its dispatch, leave the schedule
+    untouched."""
+    seq = TossSequencer(catch_pose_stow_mm=CATCH_POSE, flight_time_s=0.8,
+                        throw_delay_s=1.0)
+    seq.start(1000.0)
+    assert seq.t_release == pytest.approx(1001.0)
+    budget = seq.commit_budget_for_cycle_s
+    # The plan answered 1.15 s after accept and throws 0.6 s later: 0.75 s past
+    # the placeholder, i.e. through the 0.5 s grace the old schedule died at.
+    assert seq.adopt_release(1001.75) is True
+    assert seq.t_release == pytest.approx(1001.75)
+    assert seq.release_at_perf == pytest.approx(1001.75)
+    assert seq.scheduled_lead_s == pytest.approx(1.75)
+    assert seq.landing_perf == pytest.approx(1001.75 + 0.8)
+    assert seq._commit_at == pytest.approx(1001.75 - budget)
+    for bad in (float('nan'), float('inf'), 0.0, -1.0):
+        assert seq.adopt_release(bad) is False
+    assert seq.t_release == pytest.approx(1001.75)
+    # Once the throw is dispatched the schedule is no longer the plan's to move.
+    seq._throw_dispatched = True
+    assert seq.adopt_release(1002.5) is False
+    assert seq.t_release == pytest.approx(1001.75)
+
+
 @pytest.mark.parametrize('bad', [-5.0, float('nan'), float('inf')])
 def test_a_release_schedule_that_is_not_an_instant_dies_at_checking(bad):
     """The absolute schedule's half of the never-coerce doctrine: a negative

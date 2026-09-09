@@ -211,7 +211,6 @@ from jugglebot.toss_sequencer import (
     ACTION_SAFE_ABORT as TOSS_ACTION_SAFE_ABORT,
     ACTION_STAY as TOSS_ACTION_STAY,
     CENSUS_FIELD_NAMES,
-    DEFAULT_TOSS_THROW_DELAY_S,
     FLIGHT_TIME_MAX_S as TOSS_FLIGHT_TIME_MAX_S,
     LoopPeriodCensus,
     NODE_LOOP_PERIOD_S as TOSS_LOOP_PERIOD_S,
@@ -579,6 +578,39 @@ _UNIFIED_LAUNCH_WINDOW_S = 0.6
 #: cycle off the PLAN's release (see `note_cycle_result`). Pinned by
 #: `test_the_launch_lead_makes_the_release_land_LATE_not_early`.
 _UNIFIED_PLAN_BUDGET_S = 1.20
+#: The knot count of the shape ``_UNIFIED_PLAN_BUDGET_S`` was measured on — the
+#: 1.850 s joined LAUNCH+LANDING at the 0.025 s grid — so the budget can be read
+#: PER KNOT. The gates are ~89 % of a solve and cost ~6.5 ms per knot on this
+#: Jetson at load1 5-7.5 (75 knots: 500-606 ms, 2026-09-06/07; 171 knots:
+#: 1147-1155 ms, 2026-09-09), so a plan's cost is its knot count, and the beat
+#: sets it: a chained STEADY window IS the beat.
+_UNIFIED_PLAN_BUDGET_KNOTS = 75
+
+
+def _unified_first_install_wait_s(chain_period_s: float) -> float:
+    """How long the LAUNCH's blocking ``plan_cycle`` call waits before the
+    coordinator declares it UNACKED and holds (s) — sized by the PLAN it asked
+    for, never by a flat client patience.
+
+    ``_SERVICE_WAIT_S`` (2.0 s) was that flat number, and it was the second
+    cliff of 2026-09-09: a 171-knot LAUNCH+STEADY at a 3.6 s beat solved in
+    1.15-3.3 s under the sitting's load, three of six launches crossed 2.0 s,
+    and each was answered by a hold that cancelled the solve it had already
+    paid for. The first install is planned FROM REST, so a longer wait costs
+    nothing but patience: nothing is moving while the coordinator blocks. The
+    chain's extends keep their own bound (``_chain_poll_bound``) — those are
+    gated to ~58 knots and race a deadline this call does not have.
+
+    ``_UNIFIED_PLAN_BUDGET_S`` per knot (16 ms, the loaded worst on the 75-knot
+    shape) times the knots the request will produce — the launch window plus
+    the chained window — with the flat wait as the floor, so nothing that fit
+    before waits less now."""
+    knots = ((_UNIFIED_LAUNCH_WINDOW_S + max(0.0, float(chain_period_s)))
+             / _UNIFIED_KNOT_DT_S + 1.0)
+    return max(_SERVICE_WAIT_S,
+               knots * _UNIFIED_PLAN_BUDGET_S / _UNIFIED_PLAN_BUDGET_KNOTS)
+
+
 #: How far ahead of the FSM's scheduled release the LAUNCH plan is requested (s).
 _UNIFIED_LAUNCH_LEAD_S = _UNIFIED_LAUNCH_WINDOW_S + _UNIFIED_PLAN_BUDGET_S
 
@@ -670,25 +702,6 @@ _UNIFIED_HOLD_MARGIN_S = 4 * TOSS_LOOP_PERIOD_S
 #: config key the planner is built from rather than restated as a literal.
 _UNIFIED_KNOT_DT_S = float(hw.JB_TRAJ_KNOT_DT_S)
 
-#: MEASURED worst cost (s) of the JOINED ``MODE_NEW`` install a unified cycle 1
-#: pays — LAUNCH plus its chained window, two solves and the join's own
-#: ``validate_cycle`` in one callback.
-#:
-#: **500-606 ms on hardware at load1 3.7-7.4**
-#: (`tests/hardware/session_unified7_cycle_ladder.md:407`), against 423-432 ms
-#: idle on this Jetson (2026-09-04, 6 consecutive installs — see
-#: `_UNIFIED_PLAN_BUDGET_S`) and 1.06 s once with a sim gate on the other cores.
-#:
-#: ⚠ It is deliberately NOT ``_UNIFIED_PLAN_BUDGET_S`` (1.20 s), even though that
-#: constant bounds the same call. That one is an OVER-estimate on purpose,
-#: because the only thing over-estimating costs THERE is an early release, which
-#: is free. Here the number sets an ACCEPT FLOOR, where over-estimating refuses
-#: cadences the machine can fly — the opposite direction — so the honest input is
-#: the measured worst and not the safe-side bound. The loaded 1.06 s case is not
-#: ignored: a goal accepted at this floor and then run on a loaded box aborts
-#: cycle 1 ``ABORTED_NO_RELEASE`` with the ball unthrown, which is loud, safe and
-#: named, and the refusal message says so.
-_UNIFIED_JOINED_SOLVE_S = 0.606
 
 #: What a CHAINED cycle's FSM spends between START_CYCLE and its announcement (s).
 #: ``pre_dispatch_budget_s(False)`` — the census-B1 SKIP charge, which is exactly
@@ -905,39 +918,6 @@ def _unified_chain_dwell_floor_s():
             + _UNIFIED_CHAIN_PREAMBLE_S + TOSS_LOOP_PERIOD_S)
     return ((carry, 'the extend carry') if carry >= lead
             else (lead, "the next cycle's lead"))
-
-
-def _unified_cycle1_delay_floor_s():
-    """The ``throw_delay_s`` a unified CYCLE 1 needs (s) — a LATENESS bound.
-
-    Cycle 1 is the one cycle whose release is DERIVED (``now + throw_delay_s``,
-    stamped once in ``TossSequencer.start`` and never re-stamped) while the
-    LAUNCH that actually throws lands its release at ``install + 0.6``. Below
-    ``_UNIFIED_LAUNCH_LEAD_S`` the launch trigger fires on the first tick after
-    ANNOUNCE, so the release lands ``preamble + solve + window`` after the cycle
-    started, against an FSM that expected it at ``throw_delay``:
-
-        lateness = preamble + solve + window - throw_delay
-
-    and lateness past ``TOSS_RELEASE_GRACE_S`` mints ``ABORTED_NO_RELEASE`` with
-    the ball unthrown. So ``throw_delay >= preamble + solve + window - grace``
-    = 0.160 + 0.606 + 0.600 - 0.500 = **0.866 s**.
-
-    EARLY costs nothing (``_UNIFIED_PLAN_BUDGET_S`` spells out why), so this is a
-    one-sided bound and a generous ``throw_delay`` is always safe.
-
-    ⚠ The legacy session floor ``required_dwell_s = max(throw_delay +
-    handoff_margin_s, hand_floor_dwell_s)`` still applies on top, and it is what
-    actually sets a unified session's minimum beat, not the chain floor above it.
-    ``handoff_margin_s`` is FLIGHT-DEPENDENT (``TossSessionSequencer`` derives it
-    from the catch stroke's park re-entry: ~0.141 s at flight 0.80, ~0.177 s at
-    the 0.639 s flight of ``throw_height_m`` 0.5), so this function does NOT
-    restate it — the number is the sequencer's, and ``REJECTED_DWELL`` quotes it
-    for the goal in hand. Restating it here as a literal is exactly the drift the
-    2026-09-07 docs pass caught (a hardcoded 0.120 was 20–60 ms optimistic).
-    """
-    return (_UNIFIED_CHAIN_PREAMBLE_S + _UNIFIED_JOINED_SOLVE_S
-            + _UNIFIED_LAUNCH_WINDOW_S - TOSS_RELEASE_GRACE_S)
 
 
 #: How far a unified goal's nominated catch pose B may sit from the LIVE throw
@@ -7759,8 +7739,12 @@ class ReloadCoordinatorNode(Node):
         except (TypeError, ValueError):
             return 0.0
 
-    def _call_plan_cycle(self, req):
+    def _call_plan_cycle(self, req, timeout_s: float = _SERVICE_WAIT_S):
         """Call ``trajectory/plan_cycle``. Returns ``(response, dispatched)``.
+
+        ``timeout_s`` is how long the answer is waited for once dispatched; the
+        LAUNCH passes :func:`_unified_first_install_wait_s`, sized by the plan
+        it asked for, and everything else the flat ``_SERVICE_WAIT_S``.
 
         A ``None`` response means the SERVICE failed — categorically different
         from ``accepted=False``, which means the planner refused a goal it
@@ -7793,7 +7777,8 @@ class ReloadCoordinatorNode(Node):
         if not self._plan_cycle_cli.wait_for_service(timeout_sec=_SERVICE_WAIT_S):
             self.get_logger().error('trajectory/plan_cycle service unavailable')
             return None, False
-        resp = self._wait_future(self._plan_cycle_cli.call_async(req))
+        resp = self._wait_future(self._plan_cycle_cli.call_async(req),
+                                 timeout_s=float(timeout_s))
         return resp, True
 
     def _hold_after_unacked_plan(self) -> str:
@@ -8091,7 +8076,11 @@ class ReloadCoordinatorNode(Node):
             # window is a LANDING or a STEADY.
             chain_catch_frac=(flight / chain_period
                               if chain_period > 0.0 else 0.0))
-        resp, dispatched = self._call_plan_cycle(req)
+        # The wait is the PLAN's, not a flat client patience: a 171-knot
+        # LAUNCH+STEADY solved in 1.15-3.3 s on 2026-09-09 and the flat 2.0 s
+        # answered three of six launches with a hold that cancelled the solve.
+        wait_s = _unified_first_install_wait_s(chain_period)
+        resp, dispatched = self._call_plan_cycle(req, timeout_s=wait_s)
         if resp is None and not dispatched:
             state.unified_reject = '{}(UNAVAILABLE: {})'.format(
                 _OUTCOME_PLAN_SERVICE,
@@ -8108,13 +8097,13 @@ class ReloadCoordinatorNode(Node):
                 _OUTCOME_PLAN_SERVICE,
                 'trajectory/plan_cycle did not answer in {:.1f} s; a plan MAY '
                 'have been installed and streaming — {}'.format(
-                    _SERVICE_WAIT_S, held))
+                    wait_s, held))
             self.get_logger().error(
                 'unified LAUNCH: %s. This is NOT "nothing was commanded": '
                 'plan_cycle installs on accept and replies afterwards, so a '
                 'solve that overran the %.1f s client wait can have thrown the '
                 'ball. Treat the machine as having moved.'
-                % (state.unified_reject, _SERVICE_WAIT_S))
+                % (state.unified_reject, wait_s))
             return
         if not bool(resp.accepted):
             state.unified_reject = self._unified_plan_outcome(resp.code,
@@ -8139,6 +8128,24 @@ class ReloadCoordinatorNode(Node):
                     if chain_kind == PlanCycle.Request.KIND_STEADY else 0.0)
             self._toss_unified_chain_depth = (
                 1 if bool(getattr(resp, 'release_terminal', False)) else 0)
+        # ── THE HAND-OFF (2026-09-09): cycle 1 runs on the PLAN's release ──
+        # A chained cycle is started with `release_at_perf` off the response
+        # that owns its release; this cycle was started on `now + throw_delay_s`
+        # because its LAUNCH did not exist yet. It exists now, and its release
+        # lands at `install + 0.6` regardless of how long the solve took — so
+        # the derived placeholder is replaced before the announcement, the
+        # guard on the announce tick and the release deadline are judged on the
+        # plan's own instant, and the solve cost decides WHEN the ball leaves,
+        # never whether. (The 171-knot install of 2026-09-09 put the plan's
+        # release 0.9 s past the placeholder and the FSM aborted NO_RELEASE with
+        # the plan streaming.)
+        derived = float(seq.t_release)
+        t_plan = float(getattr(resp, 't_release_mono', 0.0) or 0.0)
+        if seq.adopt_release(t_plan) and abs(t_plan - derived) > TOSS_LOOP_PERIOD_S:
+            self.get_logger().info(
+                'unified cycle 1: release ADOPTED from the plan, %+.3f s from '
+                'the derived schedule (plan %.0f ms)'
+                % (t_plan - derived, float(resp.plan_wall_ms)))
         self._announce_unified(seq, state, resp)
 
     def _unified_cycles_after_this(self) -> int:
@@ -10848,8 +10855,6 @@ class ReloadCoordinatorNode(Node):
         if unified:
             dwell_eff = (dwell if dwell != 0.0
                          else float(hw.JB_OP_TOSS_SESSION_DWELL_DEFAULT_S))
-            delay_eff = (throw_delay if throw_delay != 0.0
-                         else DEFAULT_TOSS_THROW_DELAY_S)
             floor, binding = _unified_chain_dwell_floor_s()
             bad = None
             if (math.isfinite(dwell_eff) and dwell_eff >= 0.0
@@ -10880,41 +10885,6 @@ class ReloadCoordinatorNode(Node):
                                   _UNIFIED_CHAIN_PREAMBLE_S,
                                   TOSS_LOOP_PERIOD_S,
                                   flight + dwell_eff, flight, floor)))
-            if bad is None and math.isfinite(delay_eff) and delay_eff > 0.0:
-                # ── (2) CYCLE 1 ── A different failure with a different knob:
-                # the FIRST cycle's release is DERIVED (`now + throw_delay_s`)
-                # while the LAUNCH's lands at `install + 0.6`, so too small a
-                # delay makes the ball leave LATE against the 0.5 s grace and
-                # cycle 1 aborts NO_RELEASE before any chain exists. Refusing
-                # here names `throw_delay_s`; letting it through names
-                # ABORTED_NO_RELEASE, which sends the operator to the hand.
-                d_floor = _unified_cycle1_delay_floor_s()
-                if delay_eff < d_floor:
-                    bad = bound_msg(
-                        'throw_delay', delay_eff, '<', d_floor, 's', digits=3,
-                        limit_label='unified cycle-1 floor',
-                        tail=('cycle 1 is the only cycle whose release is '
-                              'DERIVED (now + throw_delay_s) while the LAUNCH '
-                              'that throws lands its release at install + '
-                              '{:.3f} s, so the ball leaves `preamble {:.3f} + '
-                              'solve {:.3f} + window {:.3f} - throw_delay` LATE '
-                              'against the {:.3f} s release grace. The solve is '
-                              'the MEASURED worst joined install on hardware '
-                              '(500-606 ms at load1 3.7-7.4); a LOADED box has '
-                              'reached 1.06 s and will still abort cycle 1 '
-                              'ABORTED_NO_RELEASE at this floor, with the ball '
-                              'unthrown and nothing armed — raise throw_delay_s '
-                              'further if the box is busy. Note the session '
-                              'dwell floor `max(throw_delay + handoff margin, '
-                              'hand floor)` applies on top — the handoff margin '
-                              'is flight-dependent (~0.14-0.18 s), so the dwell '
-                              'this delay needs is the number REJECTED_DWELL '
-                              'quotes for this goal, not one restated here'
-                              .format(_UNIFIED_LAUNCH_WINDOW_S,
-                                      _UNIFIED_CHAIN_PREAMBLE_S,
-                                      _UNIFIED_JOINED_SOLVE_S,
-                                      _UNIFIED_LAUNCH_WINDOW_S,
-                                      TOSS_RELEASE_GRACE_S)))
             if bad is not None:
                 outcome = '{}({})'.format(_OUTCOME_BEAT_TOO_SHORT, bad)
                 self.get_logger().error(
