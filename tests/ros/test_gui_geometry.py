@@ -233,6 +233,7 @@ class TestGUIFileStructure:
         'js/udp-traffic.js',
         'js/state-minimap.js',
         'css/state-minimap.css',
+        'js/hardware-versions.js',
         'lib/roslib.min.js',
     ]
 
@@ -420,6 +421,7 @@ class TestLegacyFilesRemoved:
 BRIDGE_NODE_PY = (ROOT / 'ros_ws' / 'src' / 'jugglebot' / 'jugglebot'
                   / 'teensy_bridge_node.py')
 CAN_TRAFFIC_JS = ROOT / 'ros_ws' / 'gui' / 'js' / 'can-traffic.js'
+HARDWARE_VERSIONS_JS = ROOT / 'ros_ws' / 'gui' / 'js' / 'hardware-versions.js'
 UDP_TRAFFIC_JS = ROOT / 'ros_ws' / 'gui' / 'js' / 'udp-traffic.js'
 PANELS_CSS = ROOT / 'ros_ws' / 'gui' / 'css' / 'panels.css'
 CANBRIDGE_FW = ROOT / 'ros_ws' / 'src' / 'jugglebot' / 'Teensy_code_canbridge'
@@ -451,6 +453,12 @@ def can_traffic_js():
 
 
 @pytest.fixture(scope='module')
+def hardware_versions_js():
+    """Read hardware-versions.js as text."""
+    return HARDWARE_VERSIONS_JS.read_text()
+
+
+@pytest.fixture(scope='module')
 def tilt_cal_grid_py():
     """Read the offline capture harness as text.
 
@@ -462,8 +470,13 @@ def tilt_cal_grid_py():
 
 def _extract_method_source(py_text, name):
     """Slice one method body out of the node source (up to the next
-    top-of-class ``def`` at 4-space indent)."""
-    m = re.search(rf'\n    def {name}\(self\):(.*?)\n    def ', py_text, re.S)
+    top-of-class ``def`` at 4-space indent).
+
+    Tolerates a return annotation: the ``*_str`` renderers are declared
+    ``def _x(self) -> str:``, and a signature-shape mismatch here reads as
+    'method missing', which is a confusing way to fail a contract test."""
+    m = re.search(rf'\n    def {name}\(self\)(?:\s*->[^:\n]+)?:(.*?)\n    def ',
+                  py_text, re.S)
     assert m, f'Could not find method {name} in teensy_bridge_node.py'
     return m.group(1)
 
@@ -1577,3 +1590,135 @@ class TestBBCalibrateMocapGate:
         assert 'applyBBCalibrateGate()' in m.group(1), \
             'updateBBPanel() no longer routes the Calibrate enable rule ' \
             'through applyBBCalibrateGate()'
+
+
+# ---- Hardware panel: models (config) and firmware (link_status) ----
+
+
+def _js_object_entries(js_text, name):
+    """Extract `export const NAME = { k: 'v', ... };` into a dict."""
+    m = re.search(rf'export const {name} = \{{(.*?)\n\}};', js_text, re.S)
+    assert m, f'{name} object not found in geometry-config.js'
+    return dict(re.findall(r"(\w+):\s*'([^']*)'", m.group(1)))
+
+
+class TestHardwareModels:
+    """Pin the GUI's board-model table to hardware_config.yaml.
+
+    The models are INFORMATIONAL — nothing verifies them against the hardware,
+    by the owner's explicit decision (they change only when a board is
+    physically swapped, and two of the five devices report nothing to check
+    against).  What IS worth pinning is the CODEGEN: geometry-config.js is
+    generated from the YAML, so this catches a stale delivered copy — someone
+    editing the YAML and not re-running generate_config.py — which is the same
+    drift every other constant in this file guards.
+    """
+
+    def test_every_yaml_model_reaches_the_gui(self, yaml_config, js_source):
+        yaml_models = yaml_config['hardware_models']
+        js_models = _js_object_entries(js_source, 'HARDWARE_MODELS')
+        assert js_models == yaml_models, (
+            'HARDWARE_MODELS in geometry-config.js does not match '
+            'hardware_config.yaml -> hardware_models. Re-run '
+            'python config/generate_config.py')
+
+    def test_every_odrive_axis_has_a_model(self, yaml_config):
+        """One model per CAN node id, matching the expected-version table.
+
+        Section 4 (odrive_expected_versions) is the inventory of ODrive axes
+        that exist; a model missing here would render as 'unknown model' in the
+        panel rather than failing anywhere, so the omission has to be caught at
+        test time or not at all.
+        """
+        axes = {k.replace('axis_', '') for k in yaml_config['odrive_expected_versions']}
+        modelled = {k.replace('odrive_axis_', '')
+                    for k in yaml_config['hardware_models']
+                    if k.startswith('odrive_axis_')}
+        assert modelled == axes, (
+            f'ODrive axes without a hardware_models entry: {axes - modelled}; '
+            f'models for non-existent axes: {modelled - axes}')
+
+    def test_device_registry_keys_all_resolve(self, yaml_config, hardware_versions_js):
+        """Every `key:` in hardware-versions.js DEVICES exists in the YAML.
+
+        The join is by string, and a typo'd key renders 'unknown model' with no
+        error anywhere — the exact silent-failure class the KeyValue contract
+        tests below exist for.
+        """
+        keys = set(re.findall(r"key: '([\w]+)'", _strip_js_comments(hardware_versions_js)))
+        assert len(keys) == 11, f'DEVICES key extraction went stale: {keys}'
+        missing = keys - set(yaml_config['hardware_models'])
+        assert not missing, f'DEVICES keys with no hardware_models entry: {missing}'
+
+
+class TestHardwareVersionKeyValueContract:
+    """Pin the KeyValue-name contract: ``_publish_link_status`` (producer) ↔
+    ``hardware-versions.js`` (consumer).
+
+    Same honesty note as the two contract classes above: a string-level
+    tripwire, not a behavioural test.  It catches the rename that leaves the
+    Hardware panel permanently reading 'unknown' with no error anywhere — and
+    that failure is especially quiet here, because 'unknown' is also a
+    LEGITIMATE value (a bridge that has never sent BRIDGE_IDENTITY renders
+    exactly that), so a broken key looks like a normal pre-connection panel.
+    """
+
+    #: The three KeyValues the panel reads, and the node method that renders each.
+    EXPECTED = {
+        'bridge_fw_version': '_bridge_fw_version_str',
+        'platform_fw_version': '_platform_fw_version_str',
+        'odrive_fw_versions': '_odrive_fw_versions_str',
+    }
+
+    def _consumed_keys(self, js):
+        js = _strip_js_comments(js)
+        # Whole-KeyValue sources come from the DEVICES registry's `kv:` field;
+        # the per-axis one is read as kv.<name>.
+        kv_keys = set(re.findall(r"kv: '(\w+)'", js))
+        assert kv_keys == {'bridge_fw_version', 'platform_fw_version'}, \
+            f'DEVICES kv-field extraction went stale: {kv_keys}'
+        direct = set(re.findall(r'\bkv\.(\w+)\b', js))
+        assert 'odrive_fw_versions' in direct, \
+            f'direct kv.<key> extraction went stale: {direct}'
+        return kv_keys | {'odrive_fw_versions'}
+
+    def test_consumer_subset_of_producer(self, bridge_py, hardware_versions_js):
+        produced = _keyvalue_keys(_extract_method_source(bridge_py,
+                                                         '_publish_link_status'))
+        consumed = self._consumed_keys(hardware_versions_js)
+        missing = consumed - produced
+        assert not missing, (
+            f'hardware-versions.js reads link_status keys the node no longer '
+            f'publishes: {sorted(missing)}')
+
+    @pytest.mark.parametrize('key,method', sorted(EXPECTED.items()))
+    def test_each_key_is_rendered_by_its_method(self, bridge_py, key, method):
+        """The row must still be fed by the renderer whose FORMAT the panel parses.
+
+        The panel splits '19 (proto 6)' into a number plus the node's own
+        qualifier, and '0:0.6.11-0 1:...' into per-axis fields.  A row rewired
+        to a different renderer would keep the key and silently change the
+        shape, which the subset test above cannot see.
+        """
+        src = _extract_method_source(bridge_py, '_publish_link_status')
+        assert re.search(rf"KeyValue\(key='{key}',\s*\n?\s*value=self\.{method}\(\)",
+                         src), \
+            f"link_status row '{key}' is no longer rendered by self.{method}()"
+
+    def test_odrive_rendering_is_axis_keyed_and_dash_separated(self, bridge_py):
+        """The per-axis format the panel's parser depends on.
+
+        parseAxisVersions splits on whitespace and on the FIRST ':'; the
+        unreleased byte is taken after the LAST '-'.  Both come from this one
+        f-string, so pin its shape rather than trusting the docstring.
+        """
+        src = _extract_method_source(bridge_py, '_odrive_fw_versions_str')
+        assert "f'{axis}:?'" in src, \
+            'unread axes no longer render as "<axis>:?" — the panel would show ' \
+            'them as a real version'
+        assert "f'{axis}:{fw[0]}.{fw[1]}.{fw[2]}'" in src, \
+            'per-axis version no longer renders as "<axis>:<M>.<m>.<r>"'
+        assert "-{'?' if unrel is None else unrel}" in src, \
+            'the fw_unreleased byte is no longer appended after a "-"'
+        assert "' '.join(parts)" in src, \
+            'per-axis fields are no longer space-separated'

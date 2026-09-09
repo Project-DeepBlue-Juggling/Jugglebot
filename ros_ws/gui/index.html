@@ -249,6 +249,26 @@
                 </div>
             </div>
 
+            <!-- Hardware: board model + live firmware version per device.
+                 Rows built by js/hardware-versions.js — one row per
+                 (model, firmware) pair, so same-model devices collapse into a
+                 single row while they agree and split out with an ODD badge
+                 when they don't. -->
+            <div class="panel" id="panel-hardware">
+                <div class="panel-header">
+                    <span class="panel-title">Hardware</span>
+                    <span class="badge hwver-stale-badge" id="hardware-stale-badge"
+                          style="display:none"
+                          title="Firmware versions are LAST KNOWN, not live; tooltip shows the live cause while lit">STALE</span>
+                </div>
+                <div class="hwver-grid hwver-head" aria-hidden="true">
+                    <span>Model</span>
+                    <span>Device</span>
+                    <span>Firmware</span>
+                </div>
+                <div id="hardware-rows"></div>
+            </div>
+
         </div>
 
         <!-- Horizontal resize handle for chart panel -->

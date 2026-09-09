@@ -1257,3 +1257,132 @@
 .bb-throw-status-pending { color: var(--accent-amber); }
 .bb-throw-status-ok      { color: var(--accent-green); }
 .bb-throw-status-err     { color: var(--accent-red, #d44); }
+
+/* ---- Hardware panel (#panel-hardware, below the Event Log) ----
+   One row per (board model, firmware version) pair — see
+   js/hardware-versions.js.  Same shared-grid idiom as .can-bus-grid: the
+   static header in index.html and every JS-built row carry .hwver-grid, so
+   the three columns stay aligned without the row builder knowing the
+   template. */
+.hwver-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+    gap: 2px 8px;
+    align-items: baseline;
+}
+
+.hwver-head span {
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding-bottom: 2px;
+    border-bottom: 1px solid var(--border-color);
+}
+.hwver-head span:last-child { text-align: right; }
+
+.hwver-row {
+    font-size: var(--font-size-sm);
+    padding: 3px 2px;
+    border-bottom: 1px dashed var(--border-color);
+}
+.hwver-row:last-child { border-bottom: none; }
+
+.hwver-model {
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Multiplicity of a grouped row ("ODrive Pro ×7").  Subdued: the model is
+   the identity, the count is a detail of it. */
+.hwver-count {
+    margin-left: 4px;
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+}
+
+.hwver-members {
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.hwver-version {
+    text-align: right;
+    white-space: nowrap;
+}
+
+.hwver-fw {
+    font-family: var(--font-mono);
+    color: var(--text-primary);
+}
+
+/* "n/a" (nothing reports this device's firmware) and "unknown"/"not reported"
+   (something should have, and hasn't yet) are both ABSENCE, not fault — muted,
+   never amber.  Amber here would fire on every launch while the bus-paced
+   Get_Version sweep runs, and a badge that cries wolf at boot is a badge
+   nobody reads at the sitting where it matters. */
+.hwver-fw-na,
+.hwver-fw-unknown {
+    color: var(--text-muted);
+    font-style: italic;
+}
+
+/* Trailing qualifier the bridge node itself emitted ("proto 6", "dev"). */
+.hwver-note {
+    margin-left: 4px;
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+}
+
+/* The node's own SKEW / PRE-VERSIONING verdict — board disagrees with the
+   tree.  Filled amber chip for ~9.8:1 black-on-amber in both themes, matching
+   .can-stale-badge; identity is never colour-alone (the chip carries the
+   word). */
+.hwver-note-flag {
+    background: var(--accent-amber);
+    color: #000;
+    padding: 0 4px;
+    border-radius: var(--border-radius-sm);
+    font-style: normal;
+}
+
+.hwver-row-muted .hwver-model,
+.hwver-row-muted .hwver-members {
+    color: var(--text-muted);
+}
+
+/* A device whose firmware differs from the rest of its model group.  Amber
+   left rule + chip: the one condition in this panel that is a real finding. */
+.hwver-row-odd {
+    border-left: 2px solid var(--accent-amber);
+    padding-left: 4px;
+    background: rgba(245, 158, 11, 0.07);
+}
+
+.hwver-odd-badge {
+    margin-left: 6px;
+    background: var(--accent-amber);
+    color: #000;
+    font-size: var(--font-size-xs);
+    font-weight: 600;
+    padding: 0 4px;
+    border-radius: var(--border-radius-sm);
+}
+
+/* Stale: versions are LAST KNOWN, not live.  Values stay on screen (a firmware
+   version is a constant — the last read is still the best answer available);
+   the dimming plus the header badge say so. */
+.hwver-stale .hwver-version { opacity: 0.45; }
+
+.hwver-stale-badge {
+    background: var(--accent-amber);
+    color: #000;
+}

@@ -400,6 +400,7 @@ export function updateBallHeld(msg) {
 const COLLAPSIBLE_PANEL_IDS = [
     'panel-orchestrator', 'panel-flags', 'panel-motion',
     'panel-bb', 'panel-catching-cone', 'panel-tracking',
+    'panel-hardware',
 ];
 
 /** Panels that DEFAULT collapsed — the two device panels that start

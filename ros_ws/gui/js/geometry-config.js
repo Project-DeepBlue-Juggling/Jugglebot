@@ -91,6 +91,26 @@ export const BB_PITCH_Z_OFFSET_MM = 17.5;
 // Ball Butler trajectory
 export const BB_HAND_STROKE_MM = 280.0;
 
+// ---- Hardware models (hardware_config.yaml -> hardware_models) ----
+// INFORMATIONAL ONLY.  The physical board on each node; nothing
+// verifies these and nothing gates on them.  See the YAML section's
+// header for why the Teensy models and the two Ball Butler ODrives
+// are declared here rather than read off the wire.
+
+export const HARDWARE_MODELS = {
+    teensy_can_bridge: 'Teensy 4.1',
+    teensy_platform: 'Teensy 4.0',
+    odrive_axis_0: 'ODrive Pro',
+    odrive_axis_1: 'ODrive Pro',
+    odrive_axis_2: 'ODrive Pro',
+    odrive_axis_3: 'ODrive Pro',
+    odrive_axis_4: 'ODrive Pro',
+    odrive_axis_5: 'ODrive Pro',
+    odrive_axis_6: 'ODrive Pro',
+    odrive_axis_7: 'ODrive Micro X4',
+    odrive_axis_8: 'ODrive S1',
+};
+
 // ---- Catching cone (hardware_config.yaml -> catching_cone) ----
 
 export const CC_DELTA_OK_MS = 5.0;

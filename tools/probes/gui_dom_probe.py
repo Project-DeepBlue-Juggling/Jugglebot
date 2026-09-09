@@ -1282,8 +1282,164 @@ async def scenario_cone(stack, cdp, gui_url, run_dir):
     return R.results
 
 
+# ---------------------------------------------------------------------------
+# scenario hardware — Hardware panel: model/firmware grouping, ODD split,
+#                     skew chips, absence renderings, staleness persistence
+# ---------------------------------------------------------------------------
+
+# Expected values derive from gui_synthetic_stack.VERSIONS_* and from
+# hardware_config.yaml -> hardware_models (delivered to the GUI as
+# geometry-config.js HARDWARE_MODELS).  The panel builds its rows from
+# innerHTML, so these probes read the row DOM directly rather than by id.
+
+JS_HW = js_probe(
+    "{ rows: Array.from(document.querySelectorAll('#hardware-rows .hwver-row'))"
+    "   .map(r => ({ cls: r.className,"
+    "                model: (r.querySelector('.hwver-model') || {}).textContent || '',"
+    "                members: (r.querySelector('.hwver-members') || {}).textContent || '',"
+    "                fw: (r.querySelector('.hwver-fw') || {}).textContent || '',"
+    "                note: (r.querySelector('.hwver-note') || {}).textContent || '',"
+    "                flag: !!r.querySelector('.hwver-note-flag'),"
+    "                odd: !!r.querySelector('.hwver-odd-badge') })),"
+    "  badge: g('hardware-stale-badge') }")
+
+
+def _row_by_model(v, needle):
+    return [r for r in v["rows"] if needle in r["model"]]
+
+
+def check_hw_models_present(v):
+    """Every declared board reaches the panel, before any grouping question.
+
+    Models come from config, not the wire, so this must hold even with the
+    versions unknown — it is the check that the YAML -> codegen -> GUI join
+    actually resolved rather than silently rendering 'unknown model'.
+    """
+    models = " ".join(r["model"] for r in v["rows"])
+    ok = ("Teensy 4.1" in models and "Teensy 4.0" in models
+          and "ODrive Pro" in models and "ODrive Micro X4" in models
+          and "ODrive S1" in models and "unknown model" not in models)
+    return ok, _ev({"models": [r["model"] for r in v["rows"]]})
+
+
+def check_hw_bb_not_available(v):
+    """The two BB ODrives report 'n/a' — no wire carries their firmware.
+
+    They must be PRESENT and explicit: dropping the rows would make 'not
+    checked' indistinguishable from 'not present'.
+    """
+    bb = _row_by_model(v, "Micro X4") + _row_by_model(v, "ODrive S1")
+    ok = len(bb) == 2 and all(r["fw"] == "n/a" for r in bb)
+    return ok, _ev({"bb": bb})
+
+
+def check_hw_unseen(v):
+    """Absence renderings are DISTINCT: the Teensys carry the node's own
+    'unknown' verdict, the un-swept ODrive axes read 'not reported'."""
+    tee = _row_by_model(v, "Teensy")
+    pro = _row_by_model(v, "ODrive Pro")
+    ok = (len(tee) == 2 and all(r["fw"] == "unknown" for r in tee)
+          and len(pro) == 1 and pro[0]["fw"] == "not reported"
+          and not any(r["odd"] for r in v["rows"]))
+    return ok, _ev({"teensy": tee, "pro": pro})
+
+
+def check_hw_grouped(v):
+    """KEYSTONE: seven agreeing ODrive Pros collapse into ONE row.
+
+    This is the panel's whole premise — same model + same firmware is one
+    line, not seven.  A regression here is invisible in every other check.
+    """
+    pro = _row_by_model(v, "ODrive Pro")
+    ok = (len(pro) == 1 and "\u00d77" in pro[0]["model"]
+          and pro[0]["fw"] == "0.6.11" and not pro[0]["odd"])
+    return ok, _ev({"pro": pro})
+
+
+def check_hw_teensy_versions(v):
+    """The two Teensys are separate models, so never grouped, and each shows
+    its own live firmware with no skew chip."""
+    t41 = _row_by_model(v, "Teensy 4.1")
+    t40 = _row_by_model(v, "Teensy 4.0")
+    ok = (len(t41) == 1 and t41[0]["fw"] == "19" and not t41[0]["flag"]
+          and len(t40) == 1 and t40[0]["fw"] == "6" and not t40[0]["flag"])
+    return ok, _ev({"t41": t41, "t40": t40})
+
+
+def check_hw_odd_split(v):
+    """KEYSTONE: one leg on an older build SPLITS the group and is flagged.
+
+    Six-versus-one, so there IS a consensus: exactly the minority row carries
+    the ODD badge, and the majority row must NOT.
+    """
+    pro = _row_by_model(v, "ODrive Pro")
+    if len(pro) != 2:
+        return False, _ev({"pro": pro})
+    odd = [r for r in pro if r["odd"]]
+    maj = [r for r in pro if not r["odd"]]
+    ok = (len(odd) == 1 and len(maj) == 1
+          and odd[0]["fw"] == "0.6.9" and "L3" in odd[0]["members"]
+          and maj[0]["fw"] == "0.6.11" and "\u00d76" in maj[0]["model"])
+    return ok, _ev({"odd": odd, "majority": maj})
+
+
+def check_hw_skew_chips(v):
+    """The node's board-vs-tree verdict reaches the panel as a flag chip,
+    with the number still readable beside it."""
+    t41 = _row_by_model(v, "Teensy 4.1")
+    t40 = _row_by_model(v, "Teensy 4.0")
+    ok = (len(t41) == 1 and t41[0]["fw"] == "15"
+          and t41[0]["flag"] and t41[0]["note"] == "SKEW"
+          and len(t40) == 1 and t40[0]["fw"] == "0"
+          and t40[0]["flag"] and t40[0]["note"] == "UNVERSIONED")
+    return ok, _ev({"t41": t41, "t40": t40})
+
+
+def check_hw_stale_persists(v):
+    """Versions are CONSTANTS: the last read stays on screen when link_status
+    stops, and the badge names the cause.  Blanking them here would be less
+    informative, not more honest — the deliberate divergence from the two
+    traffic panels."""
+    pro = _row_by_model(v, "ODrive Pro")
+    ok = (v["badge"]["disp"] != "none"
+          and "no 'link_status'" in v["badge"]["title"]
+          and len(pro) == 1 and pro[0]["fw"] == "0.6.11")
+    return ok, _ev({"badge": v["badge"], "pro": pro})
+
+
+SCENARIO_HARDWARE = [
+    StageSpec("hw-unseen", "hw-unseen", [
+        Assertion("hw-models-all-present", JS_HW, _safe(check_hw_models_present),
+                  timeout=30.0),
+        Assertion("hw-bb-odrives-not-available", JS_HW,
+                  _safe(check_hw_bb_not_available), timeout=8.0),
+        Assertion("hw-absence-renderings-distinct", JS_HW, _safe(check_hw_unseen),
+                  timeout=8.0),
+    ]),
+    StageSpec("hw-nominal", "hw-nominal", [
+        Assertion("hw-seven-pros-collapse-to-one-row", JS_HW,
+                  _safe(check_hw_grouped), timeout=8.0),
+        Assertion("hw-teensy-versions-live", JS_HW,
+                  _safe(check_hw_teensy_versions), timeout=8.0),
+    ]),
+    StageSpec("hw-odd-leg", "hw-odd-leg", [
+        Assertion("hw-odd-leg-splits-and-is-flagged", JS_HW,
+                  _safe(check_hw_odd_split), timeout=8.0),
+    ]),
+    StageSpec("hw-skew", "hw-skew", [
+        Assertion("hw-skew-verdicts-become-chips", JS_HW,
+                  _safe(check_hw_skew_chips), timeout=8.0),
+        Assertion("no-page-errors", None, check_no_page_errors, kind="page-errors"),
+    ]),
+    StageSpec("hw-stale", "hw-stale", [
+        Assertion("hw-versions-persist-while-stale", JS_HW,
+                  _safe(check_hw_stale_persists), timeout=12.0),
+    ]),
+]
+
+
 SCENARIOS = {"scenario1": SCENARIO1, "minimap": scenario_minimap,
-             "cone": scenario_cone}
+             "cone": scenario_cone, "hardware": SCENARIO_HARDWARE}
 
 
 # ---------------------------------------------------------------------------

@@ -100,6 +100,43 @@ PROFILE_DISTINCT = {
     "can2_rx": "7", "can2_tx": "3", "can2_util_pct": "1.1",
 }
 
+# Hardware-panel version rows.  The real bridge publishes all three on EVERY
+# link_status (teensy_bridge_node._publish_link_status), so they belong in the
+# BASE fixtures rather than only in the hardware scenario — a stage omitting
+# them would model a bridge that does not exist, and would let the panel's
+# "not reported" path pass for the wrong reason.  Formats are the node's own
+# renderings verbatim (_bridge_fw_version_str / _platform_fw_version_str /
+# _odrive_fw_versions_str), pinned by TestHardwareVersionKeyValueContract.
+VERSIONS_NOMINAL = {
+    "bridge_fw_version": "19 (proto 6)",
+    "platform_fw_version": "6",
+    "odrive_fw_versions": ("0:0.6.11-0 1:0.6.11-0 2:0.6.11-0 3:0.6.11-0 "
+                           "4:0.6.11-0 5:0.6.11-0 6:0.6.11-0"),
+}
+# Never-seen: no BRIDGE_IDENTITY frame has ever arrived, the Platform relay
+# read failed, and the bus-paced Get_Version sweep has not run — all three of
+# the panel's absence paths at once, and the state a fresh launch starts in.
+VERSIONS_UNSEEN = {
+    "bridge_fw_version": "unknown (never seen)",
+    "platform_fw_version": "unknown",
+    "odrive_fw_versions": "0:? 1:? 2:? 3:? 4:? 5:? 6:?",
+}
+# Leg 3 left behind on an older ODrive build — the half-flashed set the panel
+# exists to make visible.  Six axes agree, one does not.
+VERSIONS_ODD_LEG = dict(
+    VERSIONS_NOMINAL,
+    odrive_fw_versions=("0:0.6.11-0 1:0.6.11-0 2:0.6.11-0 3:0.6.9-0 "
+                        "4:0.6.11-0 5:0.6.11-0 6:0.6.11-0"),
+)
+# Board-vs-tree skew on BOTH Teensys: the can-bridge reports older than
+# EXPECTED_BRIDGE_FW_VERSION, and the Platform predates its identity block.
+VERSIONS_SKEW = dict(
+    VERSIONS_NOMINAL,
+    bridge_fw_version="15 (SKEW \u2014 expected v19, proto 6)",
+    platform_fw_version="0 (PRE-VERSIONING)",
+)
+
+
 # link_status fixtures model the REAL bridge (teensy_bridge_node.py
 # _publish_link_status, ~:2020): bridge_link is ALWAYS present (UP / LOST /
 # NO_HEARTBEAT) alongside heartbeat_age_ms and the per-bus healths, published
@@ -107,15 +144,18 @@ PROFILE_DISTINCT = {
 # link-down (honest-UNKNOWN over frozen-green), so a fixture omitting the key
 # would be modelling a bridge that doesn't exist.
 LINK_UP_UNKNOWN = {"bridge_link": "UP", "heartbeat_age_ms": "55",
-                   "bus1_health": "UNKNOWN", "bus2_health": "UNKNOWN"}
+                   "bus1_health": "UNKNOWN", "bus2_health": "UNKNOWN",
+                   **VERSIONS_NOMINAL}
 LINK_UP_HEALTH = {"bridge_link": "UP", "heartbeat_age_ms": "55",
-                  "bus1_health": "WARN", "bus2_health": "OK"}
+                  "bus1_health": "WARN", "bus2_health": "OK",
+                  **VERSIONS_NOMINAL}
 # The cached-republish deception case: uplink LOST but the bridge keeps
 # republishing its frozen last-heartbeat healths at 10 Hz (and its cached
 # profile at 1 Hz) — the panel must show '--'/UNKNOWN/STALE despite
 # fresh-looking messages flowing.
 LINK_LOST_FROZEN = {"bridge_link": "LOST", "heartbeat_age_ms": "4023",
-                    "bus1_health": "WARN", "bus2_health": "OK"}
+                    "bus1_health": "WARN", "bus2_health": "OK",
+                    **VERSIONS_NOMINAL}
 
 # Minimap-scenario link fixtures: state-minimap.js additionally reads
 # fault_state / mpc_active / bridge_link (minimapOnLinkStatus); bridge_stow_pending
@@ -213,6 +253,31 @@ STAGES = {
     # BOTH publishers stop (bridge node / rosbridge / subscription death) ->
     # the >3 s message watchdogs must fire: '--' + STALE badge + UNKNOWN dots.
     "can-staleness": {},
+    # ---- Hardware panel (hardware-versions.js) ----
+    # Fresh launch: link_status is flowing but nothing has reported a version
+    # yet.  Distinguishes the panel's three absence renderings from each other.
+    "hw-unseen": {
+        "link_status": {"enabled": True, "values": dict(
+            LINK_UP_UNKNOWN, **VERSIONS_UNSEEN)},
+    },
+    # Everything agrees: the seven ODrive Pros must collapse to ONE row.
+    "hw-nominal": {
+        "link_status": {"enabled": True},
+    },
+    # Leg 3 on an older build: the Pro group must SPLIT, minority flagged ODD.
+    "hw-odd-leg": {
+        "link_status": {"enabled": True, "values": dict(
+            LINK_UP_UNKNOWN, **VERSIONS_ODD_LEG)},
+    },
+    # Board-vs-tree skew on both Teensys: the node's own verdict words must
+    # reach the panel as flag chips.
+    "hw-skew": {
+        "link_status": {"enabled": True, "values": dict(
+            LINK_UP_UNKNOWN, **VERSIONS_SKEW)},
+    },
+    # link_status stops: versions must PERSIST (they are constants) while the
+    # STALE badge names the watchdog cause.
+    "hw-stale": {},
     # robot_state + leg echo flowing -> tracking-error panel shows values.
     "pos-cmd-echo": {
         "robot_state": {"enabled": True},

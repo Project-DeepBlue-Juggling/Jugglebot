@@ -35,6 +35,10 @@ import {
     initUdpTrafficPanel, udpTrafficOnDiag, udpTrafficOnLinkStatus,
     udpTrafficOnClockDiag, setUdpTrafficRosLink,
 } from './udp-traffic.js';
+import {
+    initHardwareVersionsPanel, hardwareVersionsOnLinkStatus,
+    setHardwareVersionsRosLink,
+} from './hardware-versions.js';
 import { initCommands, updateCommandStates } from './commands.js';
 import {
     initStateMinimap, minimapOnOrchestratorState, minimapOnControlMode,
@@ -98,6 +102,12 @@ function init() {
     //     panels.js is already 1600 lines).  After initAllPanels() so the ROS
     //     topic monitor exists before the mode switch decides which one shows.
     initUdpTrafficPanel();
+
+    // 2c. Init the Hardware panel (board model + live firmware per device,
+    //     below the Event Log).  Own module for the same reason as the two
+    //     above; it renders its static MODEL rows immediately, so the panel is
+    //     readable before rosbridge connects.
+    initHardwareVersionsPanel();
 
     // 3. Init commands.  The old mode command buttons (Standby/SpaceMouse/
     //    Shell/GUI) are gone — jog + speed-limit panel visibility is driven
@@ -214,6 +224,11 @@ function onConnectionStateChange(state) {
     // than keep differencing a ring whose newest sample is however old the
     // outage is.
     setUdpTrafficRosLink(isUp);
+    // Hardware panel: unlike the two above it KEEPS its values while the
+    // websocket is down — a firmware version is a constant, so the last read
+    // stays the best answer available.  This only lights the STALE badge, so
+    // the operator reads them as last-known rather than live.
+    setHardwareVersionsRosLink(isUp);
 
     const dot = document.getElementById('conn-dot');
     const text = document.getElementById('conn-text');
@@ -590,6 +605,7 @@ function onLinkStatus(msg) {
     canTrafficOnLinkStatus(msg);
     minimapOnLinkStatus(msg);
     udpTrafficOnLinkStatus(msg);
+    hardwareVersionsOnLinkStatus(msg);
 }
 
 function onUdpDiag(msg) {

@@ -824,6 +824,11 @@ def _js_array(val, indent=4) -> str:
     return "[" + ", ".join(str(v) for v in val) + "]"
 
 
+def _js_string(val) -> str:
+    """Format a Python str as a single-quoted JS string literal."""
+    return "'" + str(val).replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+
 def generate_gui_js(hw_cfg: dict, proto_cfg: dict) -> str:
     """Generate geometry-config.js for the web GUI from both YAML configs.
 
@@ -928,6 +933,27 @@ def generate_gui_js(hw_cfg: dict, proto_cfg: dict) -> str:
         "// Ball Butler trajectory",
         f"export const BB_HAND_STROKE_MM = {bb_hand_stroke_mm};",
     ]
+
+    # Hardware models (hardware_config.yaml -> hardware_models).  Emitted as an
+    # OBJECT, not one export per device: the GUI's Hardware panel iterates it to
+    # build its rows, so a board added to the YAML must appear in the panel
+    # without a matching JS edit.  Keys are carried through verbatim — the
+    # panel's own device registry joins them by key.
+    models = hw_cfg.get("hardware_models", {})
+    if models:
+        lines += [
+            "",
+            "// ---- Hardware models (hardware_config.yaml -> hardware_models) ----",
+            "// INFORMATIONAL ONLY.  The physical board on each node; nothing",
+            "// verifies these and nothing gates on them.  See the YAML section's",
+            "// header for why the Teensy models and the two Ball Butler ODrives",
+            "// are declared here rather than read off the wire.",
+            "",
+            "export const HARDWARE_MODELS = {",
+        ]
+        for key, val in models.items():
+            lines.append(f"    {key}: {_js_string(val)},")
+        lines.append("};")
 
     # Catching cone panel constants (delta thresholds + sound-bar axis)
     cc = hw_cfg.get("catching_cone", {})
