@@ -480,6 +480,31 @@ def platform_fw_rewind_frame(current_frame_idx: int, expected_seq: int) -> int:
     return int(current_frame_idx) - delta
 
 
+PLATFORM_FW_ACK_CADENCE = 16
+"""The Platform receiver ACKs a DATA frame only when ``seq % 16 == 15`` (and on
+the frame that completes the image); every other accepted frame is silent."""
+
+
+def platform_fw_window_end(window_start_frame: int, total_frames: int) -> int:
+    """The exclusive end of the DATA window that starts at ``window_start_frame``
+    (absolute, unwrapped): the next ACK point, i.e. the smallest multiple of 16
+    above the start, capped at the image's last frame — so every window ends on a
+    frame the board will answer.
+
+    2026-09-09, first flash attempt: after a genuine BAD_SEQ rewind (a sector
+    flush overran the board's RX queue) the host resumed with full 16-frame
+    windows from the arbitrary seq the board named, so the window's last frame
+    was no longer ``seq % 16 == 15``, the one ACK inside the window was thrown
+    away, the host waited a full second for an ACK the board would never send,
+    re-sent, took the retry's NAK as the rewind, and repeated that once per
+    window until a retry's NAK was lost as well. A partial first window up to
+    the next ACK point is the whole fix; 65536 is a multiple of 16, so the
+    cadence is continuous across the seq wrap."""
+    start = int(window_start_frame)
+    aligned_end = (start // PLATFORM_FW_ACK_CADENCE + 1) * PLATFORM_FW_ACK_CADENCE
+    return min(int(total_frames), aligned_end)
+
+
 # ── Can-bridge firmware identity (BRIDGE_IDENTITY 0x8E, fw_version) ───────────
 # The can-bridge Teensy has carried `FW_VERSION` in canbridge_config.h since the
 # beginning, but it reached only the USB serial boot banner — so from a Jetson

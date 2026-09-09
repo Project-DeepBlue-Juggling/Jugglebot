@@ -138,9 +138,16 @@ class _TelemetryRateLogger:
 _PLATFORM_FLASH_BASE = 0x60000000
 _PLATFORM_FW_IDENTITY = b"jugglebot-platform"
 _FW_DATA_CHUNK = 5          # payload bytes per PLATFORM_FW_DATA RPC
-_FW_DATA_WINDOW = 16        # ACK cadence: firmware ACKs seq % 16 == 15
 _FW_REPLY_TIMEOUT_S = 1.0   # a sector flush can stall the board tens of ms
 _FW_WINDOW_RETRIES = 1      # retry a stalled window once before aborting
+_FW_SECTOR_BYTES = 4096     # the receiver flushes a 4 KB sector when its buffer fills
+#: Pause after the frame that fills a sector. The flush (erase 45 ms typ /
+#: 400 ms worst, 16 page writes, read-back) runs with the board's interrupts
+#: OFF, and frames arriving then are lost from the CAN hardware FIFO — the
+#: 2026-09-09 rehearsal lost frames 823..831 right after the first 4 KB, the
+#: ACK among them. Sending nothing during the flush is cheaper than the
+#: retry-and-rewind it costs; 30 sectors of pause per image.
+_FW_SECTOR_FLUSH_PAUSE_S = 0.5
 
 
 def _load_intel_hex(path) -> Tuple[int, bytes]:
@@ -247,6 +254,37 @@ def _log_platform_fw_refusal(step: str, status: int, detail: int, crc: Optional[
         logging.error("fw-update: %s — %s", step, name)
 
 
+def _wait_for_window_reply(waiter: PlatformFrameWaiter, reply_id: int,
+                           window_start_frame: int, window_end: int) -> Optional[bytes]:
+    """Wait for the reply that belongs to THIS window: the OK ACK for its last
+    frame, or a BAD_SEQ whose expected frame is inside or at the end of it. A
+    reply about an OLDER frame is a straggler from the previous window's
+    duplicates (the NAK burst a retry provokes arrives one frame at a time,
+    after the window that provoked it has been read) and is skipped, not
+    acted on — acting on it re-sent an already-accepted window, provoked
+    another burst, and so on: two rewinds per window for the whole
+    2026-09-09 rehearsal. Returns None on timeout."""
+    deadline = time.monotonic() + _FW_REPLY_TIMEOUT_S
+    last_seq = (window_end - 1) & 0xFFFF
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0.0:
+            return None
+        reply = waiter.wait(reply_id, expected_dlc=8, timeout=remaining)
+        if reply is None:
+            return None
+        opcode, status, seq, _ = rpc_args.decode_platform_fw_reply(reply)
+        if opcode == 0x02 and status == rpc_args.PLATFORM_FW_STATUS_OK and seq == last_seq:
+            return reply
+        if status == rpc_args.PLATFORM_FW_STATUS_BAD_SEQ:
+            expected = rpc_args.platform_fw_rewind_frame(window_end, seq)
+            if expected >= window_start_frame:
+                return reply
+        elif status != rpc_args.PLATFORM_FW_STATUS_OK:
+            return reply                            # a refusal is always for us
+        waiter.clear(reply_id)                      # stale — wait for the next one
+
+
 def _send_data_window(rpc: RpcClient, waiter: PlatformFrameWaiter, reply_id: int,
                       image: bytes, window_start_frame: int, total: int):
     """Send one DATA window (up to 16 frames) starting at
@@ -255,18 +293,26 @@ def _send_data_window(rpc: RpcClient, waiter: PlatformFrameWaiter, reply_id: int
     wire contract documents as the DESIGNED recovery path). Returns
     (new_frame_idx, reply_bytes) on success, or None after exhausting
     retries — the caller aborts."""
+    total_frames = (total + _FW_DATA_CHUNK - 1) // _FW_DATA_CHUNK
+    # The window ENDS on an ACK point (seq % 16 == 15, or the final frame) —
+    # after a BAD_SEQ rewind that makes the first window a partial one. And the
+    # waiter is cleared ONCE per window, not per frame: the reply the board
+    # sends for the window's last frame (or the NAK burst of a retry) must not
+    # be thrown away by the next send. Both were the 2026-09-09 first-attempt
+    # failure; see rpc_args.platform_fw_window_end.
+    window_end = rpc_args.platform_fw_window_end(window_start_frame, total_frames)
     for attempt in range(_FW_WINDOW_RETRIES + 1):
         frame_idx = window_start_frame
-        n = 0
-        while n < _FW_DATA_WINDOW and _offset_for_frame(frame_idx, total) < total:
+        waiter.clear(reply_id)
+        while frame_idx < window_end:
             off = _offset_for_frame(frame_idx, total)
             chunk = image[off: off + _FW_DATA_CHUNK]
-            waiter.clear(reply_id)
             rpc.call(int(p.RpcMethod.PLATFORM_FW_DATA),
                     rpc_args.encode_platform_fw_data(frame_idx & 0xFFFF, chunk))
             frame_idx += 1
-            n += 1
-        reply = waiter.wait(reply_id, expected_dlc=8, timeout=_FW_REPLY_TIMEOUT_S)
+            if (off + len(chunk)) % _FW_SECTOR_BYTES < len(chunk):
+                time.sleep(_FW_SECTOR_FLUSH_PAUSE_S)      # the board is flushing a sector
+        reply = _wait_for_window_reply(waiter, reply_id, window_start_frame, window_end)
         if reply is not None:
             return frame_idx, reply
         if attempt < _FW_WINDOW_RETRIES:

@@ -382,6 +382,33 @@ path proven before the one-way COMMIT; after the reboot the next launch homes al
 re-latch `hand_source` STREAMED before arming. The geometry branch's Platform image is now two versions
 behind (it says 5): at merge it becomes 7, carrying this receiver.
 
+**Flown 2026-09-09 20:17 — FW 6 is on the board, over CAN, from the Jetson build.** The first attempt
+(operator, 20:05) failed at 10 % after 30 s with a "no ACK, retrying / BAD_SEQ expects <window end> /
+rewind" line pair per window; the second rehearsal here (`--verify-only`, 20:12) reached VERIFY OK but
+with **1362 rewinds** in 51.8 s. Both were host defects, and the log placed them: the first trouble was at
+frame 816–823 ≈ 4 KB, the board's **first sector flush** — frames sent while the board had interrupts off
+for the erase were lost from the CAN hardware FIFO, the ACK frame (seq 831) among them. Then (1) the host
+resumed after the rewind with full 16-frame windows from the arbitrary seq the board named, so windows no
+longer ended on a `seq % 16 == 15` frame and the one ACK inside each window was discarded by a
+`waiter.clear()` issued before every frame; and (2) once a retry had provoked a NAK burst, the read after
+the next window returned a straggler from that burst, was acted on as a rewind, re-sent an accepted
+window and provoked the next burst — two rewinds per window, forever. Fixes, all in the tool:
+`rpc_args.platform_fw_window_end` ends every window on an ACK point (a partial first window after a
+rewind); the waiter is cleared once per window; `_wait_for_window_reply` accepts only the window's own
+ACK or a BAD_SEQ naming a frame inside or at its end and skips older stragglers; and the host sleeps
+0.5 s after the frame that fills a 4 KB sector so nothing is on the wire during the flush. Third run
+(`--verify-only`, 20:15): **0 rewinds, 0 retries, 45.7 s, VERIFY OK**. Then
+
+```
+cd ros_ws/src/jugglebot/Teensy_code_platform && pio run -e teensy40 -t upload
+```
+
+at 20:16: BEGIN OK, DATA complete at 20:17:00 (0 rewinds), VERIFY OK crc32 `0xADBD39DB`, COMMIT OK,
+and three seconds later `Platform FW version: 5 -> 6` over STATE_READ — the board rebooted into the
+Jetson-built image and its CAN transmit path answers, so the July CAN-mute question is closed on this
+build recipe too. `[SUCCESS] Took 53.59 seconds`. Logs: `temp/logs/platform_fw6_{verify_only,
+verify_only_2, upload}_20260909.log`.
+
 **Pins and receipts (2026-09-09, both boards BUILT, NEVER FLASHED).** Bridge: `pio run -e teensy41` →
 `firmware.hex` md5 `116b8e08241d4214bbd8a55b1b9744ca`, 769144 B, reproducible across two builds;
 `EXPECTED_BRIDGE_FW_VERSION` 19. Platform: `pio run -e teensy40` (clean) → md5

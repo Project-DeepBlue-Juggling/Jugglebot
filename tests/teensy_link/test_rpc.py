@@ -247,6 +247,70 @@ def test_platform_fw_data_window_rewinds_on_bad_seq():
     assert new_frame_idx == 40
 
 
+def test_platform_fw_window_end_lands_on_an_ack_point():
+    """Every DATA window must end where the board will answer: seq % 16 == 15
+    or the image's last frame. Aligned starts get a full window; a start the
+    board named on a BAD_SEQ rewind (2026-09-09: 2407, 2439, 2455 — all 7 mod
+    16) gets a PARTIAL window up to the next ACK point, never a full one."""
+    end = rpc_args.platform_fw_window_end
+    assert end(0, 24576) == 16
+    assert end(16, 24576) == 32
+    assert end(2407, 24576) == 2416          # the sitting's own rewind seq
+    assert end(2455, 24576) == 2464
+    assert (end(2407, 24576) - 1) % rpc_args.PLATFORM_FW_ACK_CADENCE == 15
+    assert end(24570, 24576) == 24576       # the final partial window
+    assert end(24575, 24576) == 24576
+    assert end(65535, 70000) == 65536       # continuous across the seq wrap
+
+
+def test_platform_fw_window_reply_skips_stragglers_from_the_previous_window():
+    """The reply read after a window must be THAT window's: its last frame's OK
+    ACK, or a BAD_SEQ naming a frame inside it. A NAK about an older frame is a
+    straggler from the previous window's duplicate burst and is skipped. The
+    2026-09-09 rehearsal without this: 1362 rewinds in 51 s, two per window,
+    each re-sending an already-accepted window and provoking the next burst."""
+    import tools.teensy_link_bridge as tlb
+
+    class _Waiter:
+        def __init__(self, replies):
+            self.replies = list(replies)
+            self.cleared = 0
+
+        def clear(self, can_id):
+            self.cleared += 1
+
+        def wait(self, can_id, expected_dlc, timeout):
+            return self.replies.pop(0) if self.replies else None
+
+    def nak(expected):
+        return struct.pack('<BBHI', 2, rpc_args.PLATFORM_FW_STATUS_BAD_SEQ, expected, 0)
+
+    def ack(seq):
+        return struct.pack('<BBHI', 2, rpc_args.PLATFORM_FW_STATUS_OK, seq, 0)
+
+    # Window [832..848): two stragglers naming 823 and 832 (older than / at
+    # the previous boundary), then the real ACK for frame 847.
+    w = _Waiter([nak(823), nak(831), ack(847)])
+    reply = tlb._wait_for_window_reply(w, 0x6F1, 832, 848)
+    _, status, seq, _ = rpc_args.decode_platform_fw_reply(reply)
+    assert status == rpc_args.PLATFORM_FW_STATUS_OK and seq == 847
+    assert w.cleared == 2                    # each straggler was cleared, not acted on
+    # A NAK INSIDE the window is fresh and is returned at once.
+    w = _Waiter([nak(840)])
+    _, status, seq, _ = rpc_args.decode_platform_fw_reply(
+        tlb._wait_for_window_reply(w, 0x6F1, 832, 848))
+    assert status == rpc_args.PLATFORM_FW_STATUS_BAD_SEQ and seq == 840
+    # A NAK naming the window's END (the board took everything, the ACK was
+    # lost) is fresh too: the caller rewinds to 848, i.e. moves on.
+    w = _Waiter([nak(848)])
+    assert tlb._wait_for_window_reply(w, 0x6F1, 832, 848) == nak(848)
+    # A refusal is always for us.
+    refused = struct.pack('<BBHI', 2, rpc_args.PLATFORM_FW_STATUS_BAD_STATE, 0, 0)
+    assert tlb._wait_for_window_reply(_Waiter([refused]), 0x6F1, 832, 848) == refused
+    # Nothing but stragglers → None (the caller's retry path).
+    assert tlb._wait_for_window_reply(_Waiter([nak(823)]), 0x6F1, 832, 848) is None
+
+
 def test_platform_fw_rewind_frame_across_seq_wrap():
     """seq wraps mod 65536 (65536 % 16 == 0, so the ACK cadence is continuous
     across the wrap, per the firmware's own wire-contract note); the rewind
