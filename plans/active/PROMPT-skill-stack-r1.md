@@ -87,7 +87,7 @@ rehearsal on the loaded Jetson is not on the runsheet. If `hand-geometry-correct
 merge that branch before unit 3 (its gain becomes the new constant's value); if not, proceed and note it.
 
 ## Definition of done
-Software committed and pushed unflashed with green gates; the runbook written; the two owner decisions
+Software committed and pushed unflashed with green gates; the runbook written; the three owner decisions
 answered; then the operator's sitting: bench rows re-pass on the new firmware pair (banners recorded) and one
 streamed self-toss is caught with no latch step. Close with the logbook entry carrying the (date, command,
 result) triple, the plan rows updated, and a one-paragraph handoff for R2 at the end of that entry.
