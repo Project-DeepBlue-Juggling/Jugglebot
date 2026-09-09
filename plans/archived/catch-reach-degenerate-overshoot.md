@@ -1,7 +1,8 @@
 ---
 title: Catch-reach near-degenerate overshoot — a 0.78° target produced a 2.32° excursion
 created: 2026-07-25
-status: parked   # 2026-08-15 — all five phases DONE, the fix (C-CATCH-1 + seat rate 0.0) shipped. Residue = the pre-registered seat-rate A/B (SEAT-EXP), blocked by catch-robustness § Constraints ("no catch-parameter tuning until Phase 0 lands") and by the unsolved +25-35 mm BB x-bias prerequisite; runs as a catch-robustness Phase 3 row when reached.
+status: superseded   # 2026-09-09 — superseded by two-ball-skill-stack.md (owner decision); see the Archival note below
+archived: 2026-09-09
 related_logbook:
   - 2026-07-25-toss-phase3-trace-validated.md
   - 2026-07-24-phase7-fourth-sitting-openloop-telemetry-ladders.md
@@ -12,6 +13,12 @@ related_code:
 ---
 
 # Plan — Catch-reach near-degenerate overshoot
+
+## Archival note (2026-09-09)
+
+Superseded by `two-ball-skill-stack.md` (owner decision 2026-09-09). The fix (C-CATCH-1 + seat rate 0.0) shipped and stays in force wherever `planner.build_catch` survives; the SEAT-EXP residue rode the FSM catch path (`catch_reach`, `catch_coordinator`) which retires at R4, so the experiment is retired with it.
+
+The filename is unchanged (DOCUMENTATION_GUIDE § 2.6); every `related_plan:` and prose reference keeps resolving. Read the successor plan first: `two-ball-skill-stack.md`.
 
 **Branch:** `mvp-trajectory-bringup`
 **Covers:** fix item 8 from the 2026-07-25 self-toss anomaly investigation.

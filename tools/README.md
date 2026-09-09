@@ -204,7 +204,7 @@ threshold.
 ### Toss aim calibration — toss_cal_fit.py + toss_cal_analyse.py
 
 Layer **1** of the same stack: `config/toss_calibration.yaml`, contract
-C-TOSS-CAL-1 (`plans/active/toss-selftuning.md`). Where the tilt map is
+C-TOSS-CAL-1 (`plans/archived/toss-selftuning.md`). Where the tilt map is
 INCLINOMETER-measured and answers *"where is gravity at this pose?"*, the aim map
 is BALL-measured and answers *"where does the ball actually go?"* — the residual
 that is left after levelling, and that an inclinometer is structurally blind to
@@ -217,7 +217,7 @@ that is left after levelling, and that an inclinometer is structurally blind to
 | `tools/toss_cal_analyse.py` | Offline. Heat map + quiver (drawn in **landing** space), per-node n/sd, anchor series, residual-vs-uptime scatter, `--diff` map-invariance, `--group` A/B scoring on the continuous observables. `--json`; reports go to `temp/reports/toss_cal/`. |
 
 The corpus comes from `tools/probes/toss_record_miner.py`, which mines a rosbag
-into `toss_record/1` rows. Plan: `plans/active/toss-selftuning.md`. Build log:
+into `toss_record/1` rows. Plan: `plans/archived/toss-selftuning.md`. Build log:
 `logbook/2026-08-10-toss-selftuning-build.md`.
 
 ⚠ `N_MIN` (8), the 10 % trim, the 1.0 mm node-snap tolerance and the 200 ms

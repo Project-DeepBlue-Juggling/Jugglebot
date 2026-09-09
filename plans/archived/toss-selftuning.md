@@ -1,7 +1,8 @@
 ---
 title: Toss self-tuning loop — per-toss record, persistent aim map, session trim
 created: 2026-08-10
-status: active
+status: superseded   # 2026-09-09 — superseded by two-ball-skill-stack.md (owner decision); see the Archival note below
+archived: 2026-09-09
 related_plan: catch-robustness.md
 related_logbook:
   - 2026-08-21-ilc-primary-foldin.md
@@ -20,6 +21,12 @@ related_code:
 ---
 
 # Plan — Toss self-tuning loop
+
+## Archival note (2026-09-09)
+
+Superseded by `two-ball-skill-stack.md` (owner decision 2026-09-09). The learning half was already superseded 2026-08-21; the monitor-only estimators, the per-toss record miner and the session trim retire with the FSM toss stack at R3/R4 of the new plan. The D5 discipline (kinematic truth mined from tracker output, never closed live) is inverted deliberately: the learner consumes the tracker's observed landing per throw, online — the paper's evidence (cascade in 7–8 resets) is the reason, and the determinism rule is honoured by running once per throw off the 40 Hz path.
+
+The filename is unchanged (DOCUMENTATION_GUIDE § 2.6); every `related_plan:` and prose reference keeps resolving. Read the successor plan first: `two-ball-skill-stack.md`.
 
 **Parent plan:** [catch-robustness.md](catch-robustness.md) Phase 2.
 **Branch:** `mvp-trajectory-bringup`.

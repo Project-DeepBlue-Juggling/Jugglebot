@@ -2,7 +2,7 @@
 
 Node under test: ``reload_coordinator_node._publish_toss_record`` and friends.
 Schema: ``jugglebot/toss_record.py``. Plan:
-``plans/active/toss-selftuning.md`` §§ 3.3, 3.4, D10.
+``plans/archived/toss-selftuning.md`` §§ 3.3, 3.4, D10.
 Logbook: ``logbook/2026-08-10-toss-selftuning-build.md`` § Phase 2a.
 
 THE PROPERTY THESE TESTS PROTECT

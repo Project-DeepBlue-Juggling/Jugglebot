@@ -18,7 +18,7 @@ files_changed:
   - tests/ros/test_unified_cycle_levelling.py
   - tests/ros/test_unified_cycle_bench.py
   - tests/ros/test_unified_cycle_integration.py
-  - plans/active/unified-7dof-planner.md
+  - plans/archived/unified-7dof-planner.md
   - plans/active/INDEX.md
   - logbook/2026-09-06-unified-cycle-first-hardware-cycles.md
   - logbook/INDEX.md
@@ -699,7 +699,7 @@ release-velocity criterion remains to be measured from the next bag.
    (e) **`MPC_STALE` → `SETPOINT_STALE`** — 158 sites across 60 files, driven by one generator entry.
 4. **The hand geometry correction is its own planned change** (owner, 2026-09-06). Measurement,
    blast radius, the flown-position audit and the acceptance criterion are enumerated in
-   `plans/active/unified-7dof-planner.md` § "Hand geometry correction". **The acceptance is a bench
+   `plans/archived/unified-7dof-planner.md` § "Hand geometry correction". **The acceptance is a bench
    re-validation of the legacy release and catch points before it ships** — the machine has been
    flying `x2 = 5.9138 rev` (physically **192.6 mm**, not 187.0) and a catch prime of `9.9594 rev`
    (physically **324.4 mm**, not 315) successfully for months.

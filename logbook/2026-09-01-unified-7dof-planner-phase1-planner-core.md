@@ -30,7 +30,7 @@ files_changed:
   - tools/probes/capture_cup_cycle_refs.py
   - tools/probes/data/cup_cycle_qp_refs.npz
   - tools/probes/README.md
-  - plans/active/unified-7dof-planner.md
+  - plans/archived/unified-7dof-planner.md
   - plans/active/INDEX.md
   - logbook/2026-09-01-unified-7dof-planner-phase1-planner-core.md
   - logbook/INDEX.md
@@ -52,7 +52,7 @@ tags:
 
 ## Summary
 
-Phase 1 of [`plans/active/unified-7dof-planner.md`](../plans/active/unified-7dof-planner.md)
+Phase 1 of [`plans/archived/unified-7dof-planner.md`](../plans/archived/unified-7dof-planner.md)
 is the software-only planner core: the whole-cycle cup QP, the tilt schedule and
 cup→platform+slider decomposition, the 7-channel plan object, the 7-channel
 feasibility gate, and the sim phase gate that accepts them. All four work
@@ -527,7 +527,7 @@ as a solution to the tier lid.
 `config/hardware_config.yaml` + the six regenerated artifacts;
 `tests/motion/test_shaped_batch.py` and `test_trajectory_feasibility.py`
 (`TrajectoryLimits` construction); `tools/probes/README.md`;
-`plans/active/unified-7dof-planner.md`, `plans/active/INDEX.md`,
+`plans/archived/unified-7dof-planner.md`, `plans/active/INDEX.md`,
 `logbook/INDEX.md`.
 
 **Not in the tree, by design:** `/tmp/probe_validate_codes.py` — a one-off code

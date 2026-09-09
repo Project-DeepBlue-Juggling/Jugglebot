@@ -230,7 +230,7 @@ _MAX_ARM_DISPATCHES = 2
 # hold), and all seven measured truncations sit PAST the commanded x2 crossing
 # (6.1965-7.7825 rev against x2 = 5.9138 rev), so the ball had most likely
 # already left the cup before the queue was cleared. The release model itself is
-# unmeasured — that is plans/active/single-ball-toss.md Phase 5 T0's measurand.
+# unmeasured — that is plans/archived/single-ball-toss.md Phase 5 T0's measurand.
 # The dip is this gate's deliverable; the flight error may well survive it.
 #
 # The firmware-side obligation (a prelude continuous with the live VELOCITY)

@@ -229,7 +229,7 @@ carried — *"the flip is forbidden until Phase 7 validates"* — is **SUPERSEDE
 that authorisation; Phase 7 steps 4–5 remain open as bench work, not as blockers.
 Recorded at the plan's own statement of the gate
 (`plans/archived/hand-ball-sensor.md` § Notes for collaborators → Out of scope) and
-in `plans/active/catch-robustness.md`.
+in `plans/archived/catch-robustness.md`.
 
 ### 3.2 Merging two sources — the tick-driven kind, and the merge rules
 
@@ -1002,7 +1002,7 @@ parked (§ 5). No commanded magnitude changes.
 > shipped code is what a future reader needs in order to check that the edits
 > actually went where the gap was. Read § 3.3 for what the code does today.
 
-`TossContinuous` (`plans/active/single-ball-toss.md` Phase F) runs `num_throws`
+`TossContinuous` (`plans/archived/single-ball-toss.md` Phase F) runs `num_throws`
 toss-catch cycles from one goal, with a dwell between them. **Between a catch and
 the next throw the ball sits in the cup with the platform holding, and NOTHING
 re-verifies possession there.** The verdict this contract mints is ARRIVAL-only

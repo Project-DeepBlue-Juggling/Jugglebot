@@ -6,7 +6,7 @@
     `run_mpc.py`, the ROS2 `motion_bridge_node` / `mpc_bridge_node`, and
     `sim/main.py`'s `--mpc` and `--hardware` modes. It had been operationally
     dormant since 2026-08-01, and the **unified 7-DoF planner**
-    (`plans/active/unified-7dof-planner.md`) is the lower-rate replanner that
+    (`plans/archived/unified-7dof-planner.md`) is the lower-rate replanner that
     superseded it.
 
     These nine pages are **retained deliberately as the historical record** —

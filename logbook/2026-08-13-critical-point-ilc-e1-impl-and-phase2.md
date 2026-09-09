@@ -6,7 +6,7 @@ status: resolved
 phase: "critical-point-ilc — E-1 implementation + Phase 2 (post-Gate-1)"
 related_plan: critical-point-ilc.md
 files_changed:
-  - plans/active/critical-point-ilc.md
+  - plans/archived/critical-point-ilc.md
   - logbook/2026-08-13-critical-point-ilc-e1-impl-and-phase2.md
   - logbook/INDEX.md
   - tools/probes/toss_record_miner.py

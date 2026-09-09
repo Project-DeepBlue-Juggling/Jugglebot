@@ -6,7 +6,7 @@ status: in-progress
 phase: "critical-point-ilc — plan kickoff (pre-Phase-0)"
 related_plan: critical-point-ilc.md
 files_changed:
-  - plans/active/critical-point-ilc.md
+  - plans/archived/critical-point-ilc.md
   - plans/active/INDEX.md
   - logbook/2026-08-11-critical-point-ilc-plan-kickoff.md
   - logbook/INDEX.md
@@ -19,7 +19,7 @@ tags:
 
 # Critical-point ILC arc opened
 
-Planning change only, no code. `plans/active/critical-point-ilc.md` is created:
+Planning change only, no code. `plans/archived/critical-point-ilc.md` is created:
 task-level iterative learning control on the throw and catch critical points,
 adapted from Suresh & Atkeson's flying-knots method (arXiv:2602.21302, reference
 code `github.com/krish-suresh/flying_knots_public`). The owner brought the paper

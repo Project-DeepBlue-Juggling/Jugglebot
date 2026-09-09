@@ -1,6 +1,6 @@
 # Hardware Sessions — MVP Phase 7: BB→Jugglebot Reload (staged 7a / 7b / 7c)
 
-**Plan**: `plans/active/mvp-trajectory-bringup.md` § Phase 7
+**Plan**: `plans/archived/mvp-trajectory-bringup.md` § Phase 7
 **Logbook**: `logbook/2026-07-08-mvp-phase7-reload-action.md`,
 `logbook/2026-07-20-reload-action-catch-latch.md` (the action-driven reframe),
 `logbook/2026-07-23-phase7-reload-first-hardware-session.md` (first session's findings + fixes)

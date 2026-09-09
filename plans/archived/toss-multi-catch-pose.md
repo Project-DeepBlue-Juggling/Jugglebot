@@ -41,7 +41,7 @@ related_code:
 
 ## Archival note (2026-08-30)
 
-Superseded outright by `plans/active/unified-7dof-planner.md` (owner decision,
+Superseded outright by `plans/archived/unified-7dof-planner.md` (owner decision,
 2026-08-29): the whole-cycle 7-DoF planner natively provides what M3/M4 and
 § 7's constant-beat fast path would have built, so the ring programme stopped
 at the pre-M2 boundary. **No M0–M6 deliverable exists in code** (verified
@@ -319,7 +319,7 @@ than hoped away:
 * the validation ladder (§ 6) starts at short legs and scores *systematic,
   repeatable* landing error rather than a catch rate;
 * the ladder's aim rows are exactly the aim-excited corpus
-  `plans/active/critical-point-ilc.md` needs — a fixed-B session excites one
+  `plans/archived/critical-point-ilc.md` needs — a fixed-B session excites one
   spatial cell, a ring excites `n`, which is the corpus the ILC build ladder's
   step 3 has been waiting on. **Sequencing: this plan lands, its sittings
   produce the corpus, and the ILC unpark consumes it** (§ 8.1 P-5);
@@ -1111,7 +1111,7 @@ three Discussion triggers before it starts — the commissioning dwell premise
 withdrawn in § 1.4, the *free-pipelining* premise withdrawn in the same section
 and re-adjudicated as § 4's M4, and the accepted tradeoff in § 2.8a); hand the
 sitting's corpus to
-`plans/active/critical-point-ilc.md` build step 3; archive this plan.
+`plans/archived/critical-point-ilc.md` build step 3; archive this plan.
 
 ---
 
@@ -1384,7 +1384,7 @@ escape before the first ring sitting.
   separate change with its own evidence and its own logbook, and this plan
   charges the cost honestly instead of removing it.
 * **Capturing the aim map, or unparking ILC.** § 1.6. This plan produces the
-  corpus; `plans/active/critical-point-ilc.md` consumes it.
+  corpus; `plans/archived/critical-point-ilc.md` consumes it.
 * **The mocap NaN-misalignment anomaly**, **`/trajectory/commanded_pose` missing
   from the bag recorder** (`jugglebot_launch.py`'s `record:=true` topic list
   carries `/trajectory/commanded_position` but not its 2026-08-23 sibling, so a
@@ -1413,7 +1413,7 @@ escape before the first ring sitting.
 | **P-2** | **Two-package deploy**: `cd ros_ws && colcon build --packages-select jugglebot_interfaces jugglebot` | **hard** | M2 changes `TossContinuous.action`. A `jugglebot`-only build raises `ImportError` at module scope in `reload_coordinator_node` and takes `Reload`, `Toss` and `TossContinuous` down together — the documented split-build failure. `ros2 action list \| grep -c jugglebot/toss` (expect 2) is what detects it |
 | **P-3** | **M0/P2 confirms the lean attribution on the machine** | **hard for the turning rungs** | if `planned_duration_s` does not collapse at `lean_gain = 0.0`, § 2.7's moving column reverts to 1.31–1.36 s and MP-5/MP-6 re-cut before they are booked |
 | **P-4** | **A cancel path exists** (GUI button, or an accepted watchdog-only escape) | **hard** | the 2026-08-28 entry's open follow-up 1. A ring session is longer and more novel than a fixed-B one |
-| **P-5** | `plans/active/critical-point-ilc.md` is **not** a prerequisite — it is the consumer | — | recorded here so the sequencing is unambiguous: multi-pose lands first, its sittings are the aim-excited corpus, and the ILC unpark follows |
+| **P-5** | `plans/archived/critical-point-ilc.md` is **not** a prerequisite — it is the consumer | — | recorded here so the sequencing is unambiguous: multi-pose lands first, its sittings are the aim-excited corpus, and the ILC unpark follows |
 | **P-6** | the drive-restoration state of 2026-08-18 (`b084f98`) holds | **hard** | pre-2026-08-18 braking-clamp behaviour invalidates every catch-tail number the floors are built on |
 
 ### 8.2 Open questions — decisions required before the phase named

@@ -5,7 +5,7 @@ WHAT IT DOES
 ------------
 For every labelled catch in a rosbag it extracts ``/hand_telemetry``
 ``vel_meas`` and ``iq_meas`` around the arrival instant and answers, in the
-order ``plans/active/critical-point-ilc.md`` § Phase 0b fixes:
+order ``plans/archived/critical-point-ilc.md`` § Phase 0b fixes:
 
 1. **The CADENCE CENSUS, first, before any noise question.** ``iq_meas`` reaches
    the bag through the on-change / 1 Hz DIAGNOSTIC path and is *republished at

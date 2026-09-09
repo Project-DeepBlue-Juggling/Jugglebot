@@ -1,6 +1,6 @@
 """Pure fit core for the toss AIM calibration map — contract **C-TOSS-CAL-1**.
 
-Normative design: ``plans/active/toss-selftuning.md`` §§ 3.6.2, 3.7 and 3.8, build
+Normative design: ``plans/archived/toss-selftuning.md`` §§ 3.6.2, 3.7 and 3.8, build
 phase **2c**. This module is the hardware-free half of
 ``tests/hardware/toss_cal_fit.py`` (a thin CLI over it) and is imported unchanged
 by ``tools/toss_cal_analyse.py`` and by ``tests/motion/test_toss_cal_fit.py``.
@@ -1064,7 +1064,7 @@ def dump_map_yaml(doc: Dict[str, Any]) -> str:
     reason this file is committed."""
     header = (
         '# Pose-dependent toss AIM calibration map — contract C-TOSS-CAL-1\n'
-        '# (plans/active/toss-selftuning.md). MACHINE-WRITTEN by\n'
+        '# (plans/archived/toss-selftuning.md). MACHINE-WRITTEN by\n'
         '# {} — do not hand-edit: the fit tool\n'
         '# rewrites this file wholesale, and a hand-edited node has no\n'
         '# measurement behind it. aim_rad is the COMMANDED aim tilt and the\n'

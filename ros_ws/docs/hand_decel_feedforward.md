@@ -230,7 +230,7 @@ which pins the declared value under the **1.0126e-5 decel-side bound**.
 
 ### The re-derivation on the UNCLAMPED drive (2026-08-23) — and why no new value landed
 
-`plans/active/catch-robustness.md`'s conditional Open row fired on 2026-08-18:
+`plans/archived/catch-robustness.md`'s conditional Open row fired on 2026-08-18:
 every capture in the repo predated the removal of the hand ODrive's −10.00 A
 torque clamp, so the decel-side bound above was measured through it. The
 operator flew a HAND-7 ladder on the restored drive on 2026-08-23 —

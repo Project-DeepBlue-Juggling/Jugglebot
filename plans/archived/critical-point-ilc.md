@@ -1,7 +1,8 @@
 ---
 title: Critical-Point ILC — Task-Level Iterative Learning on the Throw and Catch Events
 created: 2026-08-11
-status: active
+status: superseded   # 2026-09-09 — superseded by two-ball-skill-stack.md (owner decision); see the Archival note below
+archived: 2026-09-09
 related_logbook:
   - 2026-08-11-critical-point-ilc-plan-kickoff.md
   - 2026-08-21-ilc-primary-foldin.md
@@ -16,6 +17,12 @@ related_code:
 ---
 
 # Critical-Point ILC — Task-Level Iterative Learning on the Throw and Catch Events
+
+## Archival note (2026-09-09)
+
+Superseded OUTRIGHT by the memory-based learner in `two-ball-skill-stack.md` § 2.5 (owner decision 2026-09-09: "I accept this replacement outright"). The command is re-parameterised as the desired outcome (commanded landing position + flight time), which makes the prior Jacobian the identity and removes the finite-difference sensitivity chain, the per-cell artifact, the provenance keys and the batch-between-sessions discipline this plan was built around. Learning runs online, once per throw at skill onset, off the emitter thread. The corpus tooling (`tests/hardware/ilc_fit*.py`, `motion/toss_ilc.py`, `config/toss_ilc.yaml`) retires at R3 of the new plan. The headline measurements this arc produced (+11 % launch-speed excess, +8.5 mrad +y aim bias) are exactly the errors the learner corrects and stay cited there.
+
+The filename is unchanged (DOCUMENTATION_GUIDE § 2.6); every `related_plan:` and prose reference keeps resolving. Read the successor plan first: `two-ball-skill-stack.md`.
 
 **Status: THE PRIMARY toss learning architecture** (owner decision, 2026-08-21 —
 see § The 2026-08-21 fold-in). Phases 0–2 are DONE, audited and shipped DORMANT;
@@ -102,7 +109,7 @@ ball's flight needs none of it.
      admission/abort gate, never as a differenced error channel.
    - **Landing / arrival kinematics**: mined offline from bagged mocap +
      tracker output — the toss-selftuning design's D5 discipline
-     (`plans/active/toss-selftuning.md`, `mvp-trajectory-bringup` only)
+     (`plans/archived/toss-selftuning.md`, `mvp-trajectory-bringup` only)
      carries over: live closure stays forbidden.
    - **Contact softness**: hand-drive channels pending the Phase-0b probe —
      `vel_meas` (TELEMETRY frame, nominally 100 Hz — the 0b census measured
@@ -191,7 +198,7 @@ pose-keyed like the aim map's grid, with the cell value generalized from a
 
 Pinned cross-check: the landing-position/aim block of `F` must reproduce the
 known small-angle identity `b = 4·h·θ` (derived in
-`plans/active/toss-selftuning.md` § F1 on `mvp-trajectory-bringup` — not in
+`plans/archived/toss-selftuning.md` § F1 on `mvp-trajectory-bringup` — not in
 this tree until G-3; the in-tree statement of the same geometry is
 `ros_ws/docs/levelling_frame.md`'s `4·h·sin θ`) within tolerance — the one
 block with an independent analytic answer.
@@ -949,7 +956,7 @@ natural Jugglebot home.
   base, 2026-08-11). Consequence: modules **and design-document sections**
   this plan cites from those arcs — the per-toss record, the miner, the aim
   map/trim, the sensor-source merge, and every `§ F*` / `§ D*` / phase-`2*`
-  reference, all of which resolve to `plans/active/toss-selftuning.md` — are
+  reference, all of which resolve to `plans/archived/toss-selftuning.md` — are
   **not in this tree** until the G-3 merge; their cited state is `7cb818d`
   on `mvp-trajectory-bringup`.
 - The method reference and its code map: arXiv:2602.21302 §§ IV-B/C/G

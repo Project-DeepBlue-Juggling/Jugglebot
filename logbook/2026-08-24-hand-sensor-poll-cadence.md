@@ -32,7 +32,7 @@ poll cadence has no diagnosis — own investigation, can-bridge side"* for two
 weeks, and at commit `24c7551` (2026-08-22) **two** documents still repeated the
 71 ms as a standing property of this robot: the hardware runbook
 (`tests/hardware/session_cadence_ladder.md` § 3.2, headed "⬜ NOT DIAGNOSED") and
-`plans/active/toss-selftuning.md`'s open row. It is not one. A census of the
+`plans/archived/toss-selftuning.md`'s open row. It is not one. A census of the
 existing bags settles it offline, with no new sittings: the pre-FW-14 FlexCAN_T4
 RX-ring `_available` leak inflated the hand-sensor SDO round trip with bridge
 uptime, and the bridge's **one-in-flight** poll loop converts round-trip latency
@@ -62,7 +62,7 @@ tables below are re-derivable rather than trusted.
   (`test_the_fixture_records_the_measured_poll_cadence_gap`) as a property of the
   plant. Two documents still read that way at `24c7551`: the hardware runbook
   (`tests/hardware/session_cadence_ladder.md` § 3.2) and
-  `plans/active/toss-selftuning.md`'s open row. Two others had said it and then
+  `plans/archived/toss-selftuning.md`'s open row. Two others had said it and then
   withdrawn it on their own evidence — see Open Questions — so the framing was
   already half-retracted; what was missing was the mechanism and the closure.
 
@@ -454,7 +454,7 @@ Deliberately deferred, each with what would settle it:
 - **Cross-recordings held back — two documents, not four.** At `24c7551` only
   two still describe the 71 ms as a standing property: the runbook
   (`tests/hardware/session_cadence_ladder.md` § 3.2, headed "⬜ NOT DIAGNOSED")
-  and `plans/active/toss-selftuning.md`'s open row. Both are under active
+  and `plans/archived/toss-selftuning.md`'s open row. Both are under active
   modification by a parallel workstream, so they were not touched here; updating
   them is a one-paragraph follow-up once that work lands. **DONE 2026-08-24**:
   both now carry the mechanism and the closure, and the runbook's § 3 preamble
@@ -463,7 +463,7 @@ Deliberately deferred, each with what would settle it:
   "✅ MEASURED AWAY 2026-08-23" by the parallel workstream before this pass
   ran; what was missing was the mechanism, not the status.) The other two need **no
   edit**, and nothing here should be read as claiming otherwise:
-  `plans/active/critical-point-ilc.md` retracted the framing itself on 2026-08-12
+  `plans/archived/critical-point-ilc.md` retracted the framing itself on 2026-08-12
   off the Phase-0d eleven-bag census — `:161-163` *"the sensor poll cadence is
   session-dependent (per-bag p50 spans 20–76 ms; the reference bag's 71 ms is not
   a standing property — read `sensor_poll_dt_ms_median` per record)"* and

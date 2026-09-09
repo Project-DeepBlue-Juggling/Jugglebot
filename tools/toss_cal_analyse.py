@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Read a toss-record corpus and/or a toss aim map, and say what it means.
 
-Build phase 2c of ``plans/active/toss-selftuning.md`` (§ 3.4, § 3.8). The
+Build phase 2c of ``plans/archived/toss-selftuning.md`` (§ 3.4, § 3.8). The
 sibling of ``tools/tilt_cal_analyse.py``, deliberately: same location, same
 ``--json`` / ``--report-dir`` / ``--no-plot`` shape, same "print the table even
 when matplotlib is missing" posture.
@@ -566,7 +566,7 @@ def write_html(data: Dict[str, Any], images: Sequence[str], report_dir: str,
         '<table><tr><th>y \\ x</th>{head}</tr>{rows}</table>'
         '{groups}{diff}<h2>Plots</h2>{images}'
         '<p style="color:#666">Contract C-TOSS-CAL-1 &mdash; '
-        'plans/active/toss-selftuning.md. The grid is HOME-REFERENCED; the '
+        'plans/archived/toss-selftuning.md. The grid is HOME-REFERENCED; the '
         'absolute home residual is the session trim&rsquo;s warm-start prior, '
         'not a correction. Generated {now}.</p>'
     ).format(title=title, n=data['n_records'], adm=data['n_admitted'],

@@ -18,7 +18,7 @@ files_changed:
   - tests/ros/test_unified_cycle_bench.py
   - logbook/2026-09-05-unified-7dof-phase5-prep.md
   - logbook/INDEX.md
-  - plans/active/unified-7dof-planner.md
+  - plans/archived/unified-7dof-planner.md
 subsystem:
   - ros
   - motion

@@ -23,7 +23,7 @@ files_changed:
   - tests/motion/test_trajectory_shaping.py
   - tests/hardware/mvp_bench_runbook.md
   - tests/hardware/session_phase4_ramp.md
-  - plans/active/mvp-trajectory-bringup.md
+  - plans/archived/mvp-trajectory-bringup.md
 commits:
   - b6391c1
 subsystem:

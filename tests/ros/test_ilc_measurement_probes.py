@@ -2,7 +2,7 @@
 
 Probes: ``tools/probes/hand_contact_softness.py`` (0b — is the catch impact
 measurable on the hand drive channels?) and ``tools/probes/hand_sensor_settle.py``
-(0d — the messy-catch score). Plan: ``plans/active/critical-point-ilc.md``
+(0d — the messy-catch score). Plan: ``plans/archived/critical-point-ilc.md``
 §§ Phase 0b, Phase 0d.
 
 WHY THESE TESTS EXIST ALONGSIDE THE PROBES' ``--self-check``

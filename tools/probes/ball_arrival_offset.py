@@ -30,7 +30,7 @@ not re-runnable.
 This is that instrument. Same estimator applied to both arms of the A/B is what
 makes "matched offsets" mean something.
 
-Plan: ``plans/parked/catch-reach-degenerate-overshoot.md`` (follow-on phase C).
+Plan: ``plans/archived/catch-reach-degenerate-overshoot.md`` (follow-on phase C).
 Protocol: ``tests/hardware/session_anomaly_fixes.md`` SECTION SEAT-EXP, rows
 ``SEAT-EXP-4`` / ``SEAT-EXP-6`` / ``SEAT-EXP-7.1``.
 Evidence base: ``logbook/2026-07-28-anomaly-fixes-validation-sitting.md``.
@@ -233,7 +233,7 @@ def fit_plane_crossing_full(samples, plane, band):
     ``rms_mm`` is the RMS of the fitted residual over the band rows, taken as
     ``hypot(dx, dy)`` per row — one number for "did x(z) and y(z) actually look
     like straight lines?". Added 2026-08-10 for the toss-record miner
-    (``plans/active/toss-selftuning.md`` § 3.6.2 guard G2: fit RMS <= 3 mm); the
+    (``plans/archived/toss-selftuning.md`` § 3.6.2 guard G2: fit RMS <= 3 mm); the
     2-sample degenerate case reports 0.0, which is arithmetically true and is why
     G2 pairs the RMS with a minimum sample count rather than trusting it alone.
     """

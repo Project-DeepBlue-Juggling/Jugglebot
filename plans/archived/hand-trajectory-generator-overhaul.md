@@ -1,10 +1,17 @@
 ---
 title: Hand trajectory generator overhaul — jerk-limited, time-budget parameterised
 created: 2026-05-22
-status: parked   # 2026-08-15 — untouched since creation, self-declared "a strict improvement, not a prerequisite". NOTE for resumption: the hand firmware changed THREE times underneath this plan (hand-command-continuity Phase 4 velocity-continuous makeSmoothMove seeding, Phase 7 throwDecelToTorque, and the 2026-08-18 hand end-stop correction), so Phase 1's baseline characterisation must be re-taken against Platform FW 3, not FW 0. (Read the live expected version off teensy_link/rpc_args.py::PLATFORM_FW_VERSION_EXPECTED rather than this line, which is a snapshot.) 2026-08-21: this plan also inherited three unowned findings from hand-command-continuity at that plan's archival — see § 6 Inherited findings.
+status: superseded   # 2026-09-09 — superseded by two-ball-skill-stack.md (owner decision); see the Archival note below
+archived: 2026-09-09
 ---
 
 # Hand trajectory generator overhaul
+
+## Archival note (2026-09-09)
+
+Superseded by `two-ball-skill-stack.md` (owner decision 2026-09-09). After R1 the hand has no standalone trajectory generator: it is the 7th channel of the cup segment, planned by the same QP as the platform and interpolated by the same firmware lane. The Platform Teensy stroke engine (`Trajectory.h`) this plan would have overhauled is deleted at R1.
+
+The filename is unchanged (DOCUMENTATION_GUIDE § 2.6); every `related_plan:` and prose reference keeps resolving. Read the successor plan first: `two-ball-skill-stack.md`.
 
 ## 1. Context
 

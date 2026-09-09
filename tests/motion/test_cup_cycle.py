@@ -31,7 +31,7 @@ Unmarked and parallel-safe: this is production planner code on the unified
 No timing assertions live here (the Phase 0 logbook entry owns the runtime
 numbers) and nothing touches the filesystem outside ``tmp_path``.
 
-Plan: ``plans/active/unified-7dof-planner.md`` § 4 Phase 1.
+Plan: ``plans/archived/unified-7dof-planner.md`` § 4 Phase 1.
 Phase 0 record: ``logbook/2026-08-30-unified-7dof-planner-phase0-probes.md``.
 """
 

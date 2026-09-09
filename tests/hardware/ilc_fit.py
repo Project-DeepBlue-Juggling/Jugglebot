@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Critical-point ILC fit — the operator CLI over ``ilc_fit_lib``.
 
-``plans/active/critical-point-ilc.md`` Phases 1 and 2. A THIN wrapper: every
+``plans/archived/critical-point-ilc.md`` Phases 1 and 2. A THIN wrapper: every
 number it prints comes from :mod:`ilc_fit_lib`, which is where the arguments live
 and where the tests point. Nothing here touches the robot — the fit is offline by
 construction (design constraint 2), and this file has no ROS import and no

@@ -24,7 +24,7 @@ files_changed:
   - tests/ros/test_toss_session.py
   - tests/ros/test_toss_coordinator.py
   - tests/ros/test_trajectory_node.py
-  - plans/active/critical-point-ilc.md
+  - plans/archived/critical-point-ilc.md
   - tools/probes/hand_decel_authority.py
   - tools/probes/hand_stroke_timeline.py
   - tests/motion/test_hand_decel_authority_probe.py
@@ -37,9 +37,9 @@ files_changed:
   - tests/ros/test_ball_possession.py
   - logbook/2026-08-21-ilc-primary-foldin.md
   - tests/hardware/session_anomaly_fixes.md
-  - plans/active/catch-robustness.md
+  - plans/archived/catch-robustness.md
   - plans/active/INDEX.md
-  - plans/active/toss-selftuning.md
+  - plans/archived/toss-selftuning.md
   - tests/sim/test_hand_throw_decel_ff.py
 subsystem:
   - ros
@@ -952,7 +952,7 @@ an operator will read it.
    artifact loaded — the binding column, and **4× what the retired pair
    reported**, which is exactly the kind of drift a collapsed-column edit hides
    if the numbers are carried across by hand.
-3. **LOW — `plans/active/critical-point-ilc.md` decision-3's "Why" cell asserted
+3. **LOW — `plans/archived/critical-point-ilc.md` decision-3's "Why" cell asserted
    that the ACCEPTED operating point is refused.** The Decision column was
    rewritten to R5-prime `dwell 0.66 / delay 0.44`; the Why column still carried
    the arithmetic for the retired 0.49 s definition, ending "R5-prime as decided
@@ -965,7 +965,7 @@ an operator will read it.
    "~71 ms poll cadence vs the configured 20 ms, 3.5× gap, no diagnosis" — while
    § "Bonus measurements" above reports the same quantity at **median 20.0 ms,
    exactly the configured cadence**, on the FW-15 capture. Marked done in the
-   runbook and struck in `plans/active/toss-selftuning.md` § 11.4's pre-R3 list,
+   runbook and struck in `plans/archived/toss-selftuning.md` § 11.4's pre-R3 list,
    both carrying the explicit warning that the **asymmetric-debounce** numbers it
    was cited beside (232/241/295 ms fall, 0 ms rise) are NOT re-measured: the
    poll cadence was one candidate explanation for them and is now *excluded*,

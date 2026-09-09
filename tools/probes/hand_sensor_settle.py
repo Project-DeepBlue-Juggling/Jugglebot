@@ -3,7 +3,7 @@
 
 WHAT IT DOES
 ------------
-The owner's framing (2026-08-12, ``plans/active/critical-point-ilc.md`` § Command
+The owner's framing (2026-08-12, ``plans/archived/critical-point-ilc.md`` § Command
 vector, third catch channel): the hand ball sensor is highly reliable, so a catch
 whose reading **bounces between BALL and EMPTY after arrival is a messy catch**.
 This probe builds and scores that metric from bagged sittings, in the order the

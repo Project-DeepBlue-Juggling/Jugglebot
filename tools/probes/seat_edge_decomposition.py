@@ -8,7 +8,7 @@ and that edge lands **+87.6 … +554.7 ms past the SCHEDULED landing, median
 pipelined preamble the earliest honest release for cycle ``k+1`` is
 ``seat_edge(k) + commit_budget_s``, so that bias sets the achieved cadence no
 matter how much preamble is moved off the critical path
-(``plans/active/toss-pipelined-preamble.md`` § 1.4).
+(``plans/archived/toss-pipelined-preamble.md`` § 1.4).
 
 **Phase B0 / probe P2.**  The plan asks for a three-way split — release
 execution lateness, flight-time model error, sensor detection lag — because
@@ -299,7 +299,7 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
 
     print('SEAT-EDGE DECOMPOSITION — probe P2 of '
-          'plans/active/toss-pipelined-preamble.md')
+          'plans/archived/toss-pipelined-preamble.md')
     paths, missing = list(args.corpus), []
     if not paths:
         for bag in (args.bag or list(DEFAULT_BAGS)):

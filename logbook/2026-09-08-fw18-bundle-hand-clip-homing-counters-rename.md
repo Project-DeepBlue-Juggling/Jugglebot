@@ -42,7 +42,7 @@ files_changed:
   - tests/hardware/bench_leg_sysid.py
   - tests/hardware/teensy_guard_validation.py
   - tests/hardware/session_fw18_flash.md
-  - plans/active/unified-7dof-planner.md
+  - plans/archived/unified-7dof-planner.md
 subsystem:
   - can
   - motion
@@ -161,7 +161,7 @@ window regression — see A-N1 below).
   `ros_ws/src/jugglebot/Teensy_code_canbridge/canbridge_config.h:246` — the
   `MAX_DEVIATION_HAND_REV` sizing-rationale comment's stroke reference updated
   10.8 → 10.701 (conclusion unchanged, arithmetic now correct).
-- `plans/active/unified-7dof-planner.md` — Phase 6's reserved "Platform Teensy
+- `plans/archived/unified-7dof-planner.md` — Phase 6's reserved "Platform Teensy
   FW 4" (stroke-engine retirement) renumbered to **FW 5** at all five sites
   (the exclusivity diagram, the phase table, the Phase 6 prose, the retire-list
   table, and the `PLATFORM_FW_VERSION_EXPECTED` bump inside the Phase 6 prose,

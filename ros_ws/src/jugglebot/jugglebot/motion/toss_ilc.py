@@ -1,6 +1,6 @@
 """Per-goal critical-point ILC correction — the **layer 3** artifact.
 
-Normative design: ``plans/active/critical-point-ilc.md`` — design constraints
+Normative design: ``plans/archived/critical-point-ilc.md`` — design constraints
 2 (one apply point, nothing in the 40 Hz path), 3 (updated commands are
 validated by the REAL gates, never by a linearised surrogate) and 5
 (provenance-keyed, dormant on mismatch, byte-identical OFF); § "Sensitivity and

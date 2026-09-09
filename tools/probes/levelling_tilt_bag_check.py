@@ -103,7 +103,7 @@ Two consequences, both of which the first version of this probe got wrong:
   is lead-independent.
 
 Removing the swing means changing ``build_catch``'s arrival twist — see
-``plans/parked/catch-reach-degenerate-overshoot.md``, not this plan. **That is
+``plans/archived/catch-reach-degenerate-overshoot.md``, not this plan. **That is
 what C-CATCH-1 did on 2026-07-26**: on a post-fix capture ``peak_above_park`` for
 a level catch is the requested displacement (0 for a fully level goal), not
 ``0.789132 * lead``. The linear-in-the-lead model above still describes every

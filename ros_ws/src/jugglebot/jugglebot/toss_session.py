@@ -372,7 +372,7 @@ chain is checked when it is not.
 
 If a future capability gives a session a per-leg B (the superseded
 ``plans/archived/toss-multi-catch-pose.md`` ring, now owned by
-``plans/active/unified-7dof-planner.md``), the code comes back on a DIFFERENT
+``plans/archived/unified-7dof-planner.md``), the code comes back on a DIFFERENT
 premise — an unpredictable park, i.e. ``_predicted_chain_site_mm`` returning None
 at some hop — and not on a box.
 

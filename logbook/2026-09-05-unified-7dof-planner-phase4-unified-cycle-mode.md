@@ -31,7 +31,7 @@ files_changed:
   - tests/ros/test_unified_cycle_integration.py
   - tests/sim/test_unified_gate.py
   - run_tests.sh
-  - plans/active/unified-7dof-planner.md
+  - plans/archived/unified-7dof-planner.md
   - plans/active/INDEX.md
   - logbook/2026-09-05-unified-7dof-planner-phase4-unified-cycle-mode.md
   - logbook/INDEX.md
@@ -51,7 +51,7 @@ tags:
 
 ## Summary
 
-Phase 4 of [`plans/active/unified-7dof-planner.md`](../plans/active/unified-7dof-planner.md):
+Phase 4 of [`plans/archived/unified-7dof-planner.md`](../plans/archived/unified-7dof-planner.md):
 the whole cycle now exists as **one 7-channel plan on one clock** — planned per
 cycle off the emitter thread, installed through the existing continuity
 machinery, streamed over Phase 2's v6 wire, interpolated by Phase 3's FW 17

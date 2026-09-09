@@ -373,7 +373,7 @@ nine are fixed in one follow-up commit (SHA backfilled to `commits:` above).
 
 ## Related
 
-- Plan: [`plans/active/mvp-trajectory-bringup.md`](../plans/active/mvp-trajectory-bringup.md) — Phase 1 detail + the command-seam architecture.
+- Plan: [`plans/archived/mvp-trajectory-bringup.md`](../plans/archived/mvp-trajectory-bringup.md) — Phase 1 detail + the command-seam architecture.
 - [2026-06-25-phase11-u4-production-cutover.md](2026-06-25-phase11-u4-production-cutover.md) — the validated `SetpointPump` + Teensy-Hermite chain this streams into.
 - [2026-06-29-canbridge-phase0-native-harness.md](2026-06-29-canbridge-phase0-native-harness.md) — format precedent for this entry.
 - Hardware protocol: [`tests/hardware/session_phase1_hold.md`](../tests/hardware/session_phase1_hold.md); probe: [`tools/probes/traj_stream_probe.py`](../tools/probes/traj_stream_probe.py).

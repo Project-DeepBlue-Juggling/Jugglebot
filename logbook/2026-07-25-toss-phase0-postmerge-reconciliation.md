@@ -13,14 +13,14 @@ files_changed:
   - logbook/INDEX.md
   - sim/JUGGLE_DEMO.md
   - plans/archived/bb-led-two-ball-juggle-demo.md
-  - plans/active/single-ball-toss.md
+  - plans/archived/single-ball-toss.md
 ---
 
 # Single-ball toss Phase 0: post-merge reconciliation
 
 ## Summary
 
-Phase 0 of `plans/active/single-ball-toss.md` closes: the doc pointers the
+Phase 0 of `plans/archived/single-ball-toss.md` closes: the doc pointers the
 2026-07-24 merge left dangling are reconciled, and the full suite is green as
 the phase gate. Four ladder logbook entries that were never indexed on the
 demo branch get their `logbook/INDEX.md` rows backfilled; `sim/JUGGLE_DEMO.md`
@@ -51,13 +51,13 @@ run (operator-authorized 2026-07-24) executing
 - **`sim/JUGGLE_DEMO.md`** — status banner under the title: the README
   describes the PAUSED offline demo (`sim/juggle_demo.py`, CasADi optimiser —
   paused, not deleted); the online tilt-ladder work merged 2026-07-24
-  continues on the production stack under `plans/active/single-ball-toss.md`;
-  two-ball authority remains `plans/active/bb-online-juggle-tilt-rearchitecture.md`;
+  continues on the production stack under `plans/archived/single-ball-toss.md`;
+  two-ball authority remains `plans/archived/bb-online-juggle-tilt-rearchitecture.md`;
   the demo branch referenced in §2 is merged and retired.
 - **`plans/archived/bb-led-two-ball-juggle-demo.md`** — merged-location note
   under the title: branch merged into `mvp-trajectory-bringup` (merge commit
   `20fcc9e`), branch + worktree retired, frontier pointers as above.
-- **`plans/active/single-ball-toss.md`** — phase table: Phase 0
+- **`plans/archived/single-ball-toss.md`** — phase table: Phase 0
   `IN PROGRESS (2026-07-24 merge)` → `COMPLETE (2026-07-25)`.
 
 ## Discussion

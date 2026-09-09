@@ -1,6 +1,6 @@
 # Bench session — unified-7DOF hand-lane bring-up (FW 17 lockstep flash + T-H1..T-H4)
 
-Phase 3 of `plans/active/unified-7dof-planner.md` — the lockstep flash sitting
+Phase 3 of `plans/archived/unified-7dof-planner.md` — the lockstep flash sitting
 and its bench ladder (§ 5 T-H1..T-H4). Modeled on
 `session_unified7_bus_headroom.md` (the Phase 0 sitting).
 

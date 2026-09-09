@@ -1,7 +1,8 @@
 ---
 title: Phase B — pipelining the toss preamble out of the critical path
 created: 2026-08-26
-status: active
+status: superseded   # 2026-09-09 — superseded by two-ball-skill-stack.md (owner decision); see the Archival note below
+archived: 2026-09-09
 owner: Harrison
 last_updated: 2026-08-27
 related_logbook:
@@ -32,6 +33,12 @@ related_code:
 ---
 
 # Phase B — pipelining the toss preamble out of the critical path
+
+## Archival note (2026-09-09)
+
+Superseded by `two-ball-skill-stack.md` (owner decision 2026-09-09). The pipelined preamble, the two-slot pipeline, the commit gate and its slip semantics are properties of the FSM choreography; the schedule-driven orchestrator has no preamble on the beat path (each skill is one segment planned at its onset), so there is nothing left to pipeline. Phase A's sensor-only possession verdict SURVIVES as contract C-POSSESS-1.
+
+The filename is unchanged (DOCUMENTATION_GUIDE § 2.6); every `related_plan:` and prose reference keeps resolving. Read the successor plan first: `two-ball-skill-stack.md`.
 
 ## 1. Context
 
@@ -121,7 +128,7 @@ analysis:
   ≤ 0.10 s latency), **F7** (invariant S5 re-argued **in writing** — at this dwell
   the 'quiescent wait' is under 0.2 s and the reactive catch path is effectively
   always live). **None of these has landed. R5 is NOT reachable today.**"*
-* `plans/active/toss-selftuning.md` § 11.2, **Layer F**: *"session invariant S1,
+* `plans/archived/toss-selftuning.md` § 11.2, **Layer F**: *"session invariant S1,
   `_run_toss_cycle` being a **blocking** call, which is the structural reason the
   verdict handoff is a floor and not just a number — any dwell below ~0.5 s
   requires **pipelining** cycle N+1's CHECKING/PREPARE into cycle N's flight."*

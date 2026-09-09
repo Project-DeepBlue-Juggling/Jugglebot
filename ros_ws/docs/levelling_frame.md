@@ -73,7 +73,7 @@ belong to `planner.build_catch`, and both survive the fix:
   0.7788° → +3.0992° peak, post-fix 0° → +2.9198°. A 0.18° improvement in a 2.9°
   swing, plus a park that is finally gravity-level. Removing the swing means
   changing the arrival twist —
-  `plans/parked/catch-reach-degenerate-overshoot.md`, not this contract.
+  `plans/archived/catch-reach-degenerate-overshoot.md`, not this contract.
 * **The 16 mm.** `build_catch` aims its tilt-through-seat residual along
   `catch_pose[3:5]`, which *with a correction loaded is the correction itself*, so
   a gravity-level catch settles `0.5 × 0.07 × 0.15 = 0.005250 rad = ` **0.3008°

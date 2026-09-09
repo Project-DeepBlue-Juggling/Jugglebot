@@ -497,7 +497,7 @@ _SEQUENCE_CEILING_MARGIN_S = 5.0
 _SESSION_STALL_S = DEFAULT_SESSION_MISS_CLEANUP_S + _SEQUENCE_CEILING_MARGIN_S
 
 # ═════════════════════════════════════════════════════════════════════════════
-# UNIFIED 7-DoF CYCLE (plans/active/unified-7dof-planner.md Phase 4)
+# UNIFIED 7-DoF CYCLE (plans/archived/unified-7dof-planner.md Phase 4)
 # ═════════════════════════════════════════════════════════════════════════════
 #
 # Everything below is reached ONLY when a TossContinuous goal opts in AND the
@@ -1209,7 +1209,7 @@ _RELOAD_CENTERED_TOL_MM = (
     float(hw.JB_TRAJ_CATCH_REACH_ENVELOPE_MM)
     - float(hw.HAND_CATCH_OFFSET_MM) * math.sin(math.radians(MAX_TILT_DEG)))
 
-# ── S6's reach-centre DRIFT GUARD (plans/active/toss-pipelined-preamble.md B3) ─
+# ── S6's reach-centre DRIFT GUARD (plans/archived/toss-pipelined-preamble.md B3) ─
 # How far a CHAINED cycle's nominated catch B may sit from the centre the SESSION
 # declared before its one ``trajectory/arm_catch`` raise.
 #
@@ -1624,7 +1624,7 @@ class TossCycleState:
     once by :meth:`ReloadCoordinatorNode._build_toss_cycle` and read by the
     observation builder, the action handlers and the record builder. That is
     exactly the state TWO coexisting cycles would silently share (the two-slot
-    pipeline, ``plans/active/toss-pipelined-preamble.md`` Phase B4), so it is
+    pipeline, ``plans/archived/toss-pipelined-preamble.md`` Phase B4), so it is
     lifted out first, on its own, with no behaviour change: the single-slot
     callers build one object, install it as the node's COMMITTED slot, and pass
     it explicitly down the same code path.
@@ -1952,7 +1952,7 @@ class ReloadCoordinatorNode(Node):
         self._toss_trim_t0 = 0.0
         self._toss_trim_belt_warned = False
         # ── Layer 3: the critical-point ILC correction (motion/toss_ilc.py) ──
-        # plans/active/critical-point-ilc.md Phase 2. Persistent, per-GOAL keyed,
+        # plans/archived/critical-point-ilc.md Phase 2. Persistent, per-GOAL keyed,
         # fitted offline between sessions — so it lives here beside the aim map
         # for the same reason the aim map does (it rewrites a GOAL), and NOT
         # beside the session trim, which is RAM-only and dies with its goal.
@@ -2187,7 +2187,7 @@ class ReloadCoordinatorNode(Node):
         # session through six ladders and their tests) buys nothing.
         self._toss_session_ref = None
         # ── S6: the SESSION-SCOPED catch arming (chained TossContinuous only) ──
-        # `plans/active/toss-pipelined-preamble.md` § 2.3, S6. A contiguous run of
+        # `plans/archived/toss-pipelined-preamble.md` § 2.3, S6. A contiguous run of
         # chained cycles raises `trajectory/arm_catch`, `catch/prime_hold` and
         # `catch/pretilt_hold` EXACTLY ONCE and lowers them exactly once, so there
         # is no per-cycle re-raise left to land inside a `go_home` — the
@@ -5204,7 +5204,7 @@ class ReloadCoordinatorNode(Node):
         # *Unblocking the loop from the positioning service round trip*
         # (plans/archived/toss-multi-catch-pose.md § Explicit non-goals) and is
         # owned, since that plan's supersession, by
-        # plans/active/unified-7dof-planner.md (its Phase 4 plans off the FSM
+        # plans/archived/unified-7dof-planner.md (its Phase 4 plans off the FSM
         # tick) — not by this gate, which is two orders of magnitude below the
         # round trip.
         #

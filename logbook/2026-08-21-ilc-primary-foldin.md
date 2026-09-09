@@ -4,9 +4,9 @@ type: refactor
 date: 2026-08-21
 status: resolved
 files_changed:
-  - plans/active/critical-point-ilc.md
-  - plans/active/toss-selftuning.md
-  - plans/active/catch-robustness.md
+  - plans/archived/critical-point-ilc.md
+  - plans/archived/toss-selftuning.md
+  - plans/archived/catch-robustness.md
   - plans/active/INDEX.md
   - logbook/INDEX.md
   - tools/probes/README.md
@@ -37,7 +37,7 @@ files_changed:
   - ros_ws/src/jugglebot/jugglebot/toss_session.py
   - tools/probes/toss_record_miner.py
   - tests/hardware/session_anomaly_fixes.md
-  - plans/active/single-ball-toss.md
+  - plans/archived/single-ball-toss.md
 subsystem:
   - motion
   - ros
@@ -200,7 +200,7 @@ point in history rather than a silent replay of 37 commits.
 **Zero conflicts.** The delta onto the mainline is exactly the arc and nothing
 else — 33 paths:
 
-- the plan `plans/active/critical-point-ilc.md` and its row on the main board;
+- the plan `plans/archived/critical-point-ilc.md` and its row on the main board;
 - 5 logbook entries (the 4 arc entries plus this one) and the `logbook/INDEX.md`
   rows;
 - `ros_ws/.../motion/toss_ilc.py` (the layer-3 artifact + loader) and the one
@@ -355,9 +355,9 @@ surface alone reaches the same conclusions without this entry.
 
 | Document | What landed |
 |---|---|
-| `plans/active/critical-point-ilc.md` | Status → **THE PRIMARY** learning architecture; a new **§ The 2026-08-21 fold-in** carrying the six decisions with the failure each one prevents, the **C1–C8 contradiction ledger** with each resolution and where it lands, C1's design spelled out in three parts, **two derived consequences** (below), and the five-step build ladder. Phase 3 **re-frozen** against a no-correction baseline with five pre-registered criteria (P-1…P-5). H2's retirement written where the E-1 caveat proposed it. Risk 3 sharpened — it was live, in both directions, and provenance keys were never going to catch it |
-| `plans/active/toss-selftuning.md` | A **SUPERSESSION NOTICE** at the top: what retires *as an update law* (the § 3.6 aim estimator → monitor-only, `speed_gain` → ILC, § 3.7's never-captured map, § 3.8's SC-0…SC-3, § 5's 2c per-node fit), what is **retained as substrate** (the record, the miner, G1–G11, the CUSUM/freeze machinery, auto-reload, Layer 1.5, the D7 clamp, § 3.2's doctrine), and what § 3.2 becomes under ILC. Plus a new **§ 11** — the whole cadence census, the hard-floor table, the R0→R5 ladder to R5-prime, and the most-dangerous-change warning |
-| `plans/active/catch-robustness.md` | A 2026-08-21 programme-status section: Phase 2's substrate untouched, its update laws retired, Phase 3 **re-scoped** (the re-baseline sitting is *also* ILC's no-correction A/B baseline, ≥2 flight-time cells, R0→R5 cadence), the catch-channel condition restated, and the `MIN_TOSS_THROW_DELAY_S` clause of § Constraints superseded — with the rest of that bullet (hand ladders, `_MAX_ARM_DISPATCHES`, kind-3 clobber rights) explicitly left standing |
+| `plans/archived/critical-point-ilc.md` | Status → **THE PRIMARY** learning architecture; a new **§ The 2026-08-21 fold-in** carrying the six decisions with the failure each one prevents, the **C1–C8 contradiction ledger** with each resolution and where it lands, C1's design spelled out in three parts, **two derived consequences** (below), and the five-step build ladder. Phase 3 **re-frozen** against a no-correction baseline with five pre-registered criteria (P-1…P-5). H2's retirement written where the E-1 caveat proposed it. Risk 3 sharpened — it was live, in both directions, and provenance keys were never going to catch it |
+| `plans/archived/toss-selftuning.md` | A **SUPERSESSION NOTICE** at the top: what retires *as an update law* (the § 3.6 aim estimator → monitor-only, `speed_gain` → ILC, § 3.7's never-captured map, § 3.8's SC-0…SC-3, § 5's 2c per-node fit), what is **retained as substrate** (the record, the miner, G1–G11, the CUSUM/freeze machinery, auto-reload, Layer 1.5, the D7 clamp, § 3.2's doctrine), and what § 3.2 becomes under ILC. Plus a new **§ 11** — the whole cadence census, the hard-floor table, the R0→R5 ladder to R5-prime, and the most-dangerous-change warning |
+| `plans/archived/catch-robustness.md` | A 2026-08-21 programme-status section: Phase 2's substrate untouched, its update laws retired, Phase 3 **re-scoped** (the re-baseline sitting is *also* ILC's no-correction A/B baseline, ≥2 flight-time cells, R0→R5 cadence), the catch-channel condition restated, and the `MIN_TOSS_THROW_DELAY_S` clause of § Constraints superseded — with the rest of that bullet (hand ladders, `_MAX_ARM_DISPATCHES`, kind-3 clobber rights) explicitly left standing |
 | `plans/active/INDEX.md` | All three rows rewritten; `catch-robustness` and `toss-selftuning` re-dated to 2026-08-21 |
 | `tools/probes/ilc_speed_band.py` (+ its README row) | **New committed probe**, promoted out of `/tmp` because build step 1 has to re-run it: it sweeps `event_vel_trim` against the real `throw_envelope` gate and reports the admitted band and the bound that closes each side. It is also what refuted this ripple's own first-draft mechanism — see the Discussion |
 
@@ -1388,7 +1388,7 @@ Reproduced 2026-08-21/22 over the three newest-mine files in the ILC worktree
 
 **The narrative audit, and what it caught.** CLAUDE.md's audit gate fires on any
 commit touching ≥ 2 narrative markdown files; this phase touches three (the entry,
-`logbook/INDEX.md`, `plans/active/critical-point-ilc.md`). `/audit`'s pipeline
+`logbook/INDEX.md`, `plans/archived/critical-point-ilc.md`). `/audit`'s pipeline
 needs interactive approval gates that an unattended runner cannot satisfy, so its
 read-only stage was run directly: every numeric claim in the narrative was
 cross-checked against the source it was measured from. Three inconsistencies, all
@@ -1439,7 +1439,7 @@ The § 11 cadence census closes with a warning that is unusually specific about
 > `track_active`, which the docstring already claims is the intent) **before R3,
 > not after**.
 >
-> — `plans/active/toss-selftuning.md` § 11.4
+> — `plans/archived/toss-selftuning.md` § 11.4
 
 This phase is that block: census **D1, D2, D3, D4, D6, D7 + F3**, plus the one
 HIGH the Phase-2 audit left unfixed (the deferred-cancel discipline had never been
@@ -2512,5 +2512,5 @@ matters rather than passing on one side of it.
    armed aim** and the accepted operating point is R5-prime **`dwell 0.66 /
    throw_delay 0.44` at `throw_height_m 0.31`, 51.6 throws/min either way**
    (was 53.0 level / 39.7 aimed). Recorded in
-   `plans/active/critical-point-ilc.md` decision 3 and
+   `plans/archived/critical-point-ilc.md` decision 3 and
    `tests/hardware/session_cadence_ladder.md` § 2.0.

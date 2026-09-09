@@ -220,5 +220,5 @@ All runs on the Jetson in the project venv (`~/Desktop/PDJ_venv/venv`), pinned M
 * `logbook/2026-06-30-rung1-clean-single-catch.md` — the Rung-1 catch this improves.
 * `logbook/2026-07-01-rung2b-kinematic-release.md` — the self-catch MAKE preserved here.
 * `tools/probes/juggle_fastcatch.py` — the recipe probe (SOFT vs FIRM × arrival speed).
-* `plans/active/bb-online-juggle-tilt-rearchitecture.md` — the parent plan (not updated
+* `plans/archived/bb-online-juggle-tilt-rearchitecture.md` — the parent plan (not updated
   here; the parent will).

@@ -10,7 +10,7 @@ sessions:
   - 2026-08-10_16-13-48 (rosbag)
   - 2026-08-10_16-30-44 (rosbag)
 files_changed:
-  - plans/active/catch-robustness.md
+  - plans/archived/catch-robustness.md
   - plans/archived/hand-command-continuity.md
   - plans/active/INDEX.md
   - logbook/INDEX.md
@@ -320,7 +320,7 @@ The catch seat decelerates the hand in the **same regen direction** as the throw
 brake. If the drive is clamped, catch-knob values tuned against today's plant
 are fitted to a defect, and every one of them would have to be re-tuned after
 restoration. The 60 % catch rate is therefore a measurement of a degraded plant,
-not a baseline, and `plans/active/catch-robustness.md` carries it as a hard
+not a baseline, and `plans/archived/catch-robustness.md` carries it as a hard
 constraint on Phases 1–3.
 
 ## Fix
@@ -330,7 +330,7 @@ a bench sitting the operator runs.
 
 Documentation changes only:
 
-- `plans/active/catch-robustness.md` (new) — the programme plan, with Phase 0
+- `plans/archived/catch-robustness.md` (new) — the programme plan, with Phase 0
   naming the config read and the restoration gate;
 - `plans/archived/hand-command-continuity.md` — a dated addendum at Phase 5
   recording that the dip recurred and why it is not a Phase 1–4 regression;
@@ -427,7 +427,7 @@ forward. All runs 2026-08-10, project venv (`source ~/Desktop/PDJ_venv/venv/bin/
 
 The dip is characterised, the Phase 1–4 fix is exonerated, and the next action
 is a 30-second read on the live hand axis rather than another tuning sitting.
-`plans/active/catch-robustness.md` Phase 0 carries it: dump and diff the hand
+`plans/archived/catch-robustness.md` Phase 0 carries it: dump and diff the hand
 ODrive config against `config/ODrive config Files/odrive_pro_hand_config.json`
 (`torque_soft_min` first, then the regen/`dc_max_negative_current` family and
 `torque_constant`), restore, fresh can-bridge boot, then the HAND-7 R0→R5 ladder

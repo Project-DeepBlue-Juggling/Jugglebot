@@ -30,7 +30,7 @@
 > clamp-engaged). Step 2's ABORT criterion below is recalibrated accordingly.
 
 
-**Plan**: `plans/active/mvp-trajectory-bringup.md` § Phase 4
+**Plan**: `plans/archived/mvp-trajectory-bringup.md` § Phase 4
 **Logbook**: `logbook/2026-07-08-mvp-phase4-shaping-ramp-tooling.md`
 **Goal**: raise the session leg vel/acc/jerk limits toward the levels Phase 6
 publishes as required for catching, one small step per session; run one lean

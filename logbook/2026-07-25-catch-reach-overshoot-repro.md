@@ -12,7 +12,7 @@ files_changed:
   - ros_ws/src/jugglebot/jugglebot/trajectory_node.py
   - tests/hardware/session_anomaly_fixes.md
   - tests/hardware/mvp_bench_runbook.md
-  - plans/parked/catch-reach-degenerate-overshoot.md
+  - plans/archived/catch-reach-degenerate-overshoot.md
 commits:
   - a680298
 subsystem:

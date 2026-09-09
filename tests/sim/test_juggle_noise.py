@@ -1,6 +1,6 @@
 """Unit tests for the §3 hardware-faithful noise model (``sim.juggle_noise``).
 
-Plan: plans/active/bb-online-juggle-tilt-rearchitecture.md §3 (cross-cutting
+Plan: plans/archived/bb-online-juggle-tilt-rearchitecture.md §3 (cross-cutting
 noise) + Phase 1 / Rung 1. Two independent, seed-reproducible noise sources
 (BB throw initial-condition noise + ball-tracking observation noise) plus the
 known-gravity ballistic least-squares estimator that turns the noisy

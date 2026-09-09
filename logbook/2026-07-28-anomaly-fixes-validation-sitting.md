@@ -13,7 +13,7 @@ files_changed:
   - logbook/INDEX.md
   - plans/parked/levelling-frame-contract.md
   - plans/archived/hand-command-continuity.md
-  - plans/parked/catch-reach-degenerate-overshoot.md
+  - plans/archived/catch-reach-degenerate-overshoot.md
   - tests/hardware/session_anomaly_fixes.md
 commits:
   - 2655b8a
@@ -1097,9 +1097,9 @@ None is planned yet; they are recorded there rather than duplicated here.
   `related_plan:` was re-pointed at `hand-command-continuity.md` on 2026-08-21),
   `plans/parked/levelling-frame-contract.md` (Phase 4),
   `plans/archived/hand-command-continuity.md` (Phase 5),
-  `plans/parked/catch-reach-degenerate-overshoot.md` (Phase 4),
+  `plans/archived/catch-reach-degenerate-overshoot.md` (Phase 4),
   `plans/archived/fk-convergence-tolerance.md`,
-  `plans/active/single-ball-toss.md` (Phase 5 T-rungs).
+  `plans/archived/single-ball-toss.md` (Phase 5 T-rungs).
 - Runbooks: `tests/hardware/session_anomaly_fixes.md` (§ THE RUN SHEET — the executed
   document), `tests/hardware/session_phase8_toss_hardware.md` (the T-rung ladder run
   afterwards).
@@ -1143,7 +1143,7 @@ since been scored, or has an owner that is not this entry:
 
 **`tuned`, not `resolved`**, because three verdicts this sitting produced are
 owned elsewhere and are deliberately still open: **`ZSEAT-2`** (ABORT on its
-bounce-out arm, attribution INCONCLUSIVE) → `plans/active/catch-robustness.md`;
+bounce-out arm, attribution INCONCLUSIVE) → `plans/archived/catch-robustness.md`;
 **`LVL-2` and `LG-3`** (never run / precondition never established) →
 `plans/parked/levelling-frame-contract.md`, whose index row names them as two of
 its unpark triggers; and the **dispatch-shift** finding (`+54…+63 ms`, exceeding

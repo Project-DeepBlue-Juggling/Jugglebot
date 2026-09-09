@@ -13,7 +13,7 @@ files_changed:
   - ros_ws/src/jugglebot/Teensy_code_canbridge/platformio.ini
   - ros_ws/src/jugglebot/Teensy_code_canbridge/README.md
   - tests/hardware/session_unified7_bus_headroom.md
-  - plans/active/unified-7dof-planner.md
+  - plans/archived/unified-7dof-planner.md
   - plans/active/leg-bus-frame-drops.md
   - plans/active/INDEX.md
   - logbook/2026-08-30-unified-7dof-planner-phase0-probes.md
@@ -33,7 +33,7 @@ tags:
 
 ## Summary
 
-Phase 0 of [`plans/active/unified-7dof-planner.md`](../plans/active/unified-7dof-planner.md)
+Phase 0 of [`plans/archived/unified-7dof-planner.md`](../plans/archived/unified-7dof-planner.md)
 is the plan's desk phase: four probes whose recorded results are the promotion
 gate (`proposed` → `active`) and the dependency of Phases 1 and 3. Three of the
 four are **closed at the desk**; the fourth is **prepared and awaits one operator
@@ -481,7 +481,7 @@ robust to someone later proposing to relax rule 1.
   build.**
 - `tests/hardware/session_unified7_bus_headroom.md` — the 28-row operator
   runbook (new).
-- `plans/active/unified-7dof-planner.md` — Phase 0 marked
+- `plans/archived/unified-7dof-planner.md` — Phase 0 marked
   `DESK-COMPLETE (bench arm pending)` with an Outcome paragraph; the probe-4
   spec's unsourced latency figure corrected; the signed-off two-tier caps
   noted; Phase 1's `cup_cycle.py` bullet bound to Goldfarb–Idnani.

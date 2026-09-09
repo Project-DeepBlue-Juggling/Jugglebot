@@ -19,7 +19,7 @@ files_changed:
   - ros_ws/docs/safety.md
   - tests/hardware/session_phase7_reload.md
   - tests/hardware/mvp_bench_runbook.md
-  - plans/active/mvp-trajectory-bringup.md
+  - plans/archived/mvp-trajectory-bringup.md
   - plans/archived/reload-action-catch-latch.md
 commits:
   - bdbd186

@@ -23,7 +23,7 @@ tags:
 
 ## Summary
 
-Phase B5 lever 1 of `plans/active/toss-pipelined-preamble.md`. Both toss loops —
+Phase B5 lever 1 of `plans/archived/toss-pipelined-preamble.md`. Both toss loops —
 `_run_toss_cycle` and the session loop in `_execute_toss_continuous`, which is
 what actually drives `_tick_toss_pipeline` — ended in a fixed
 `time.sleep(_TICK_S)`. An iteration therefore cost `work + 0.020 + scheduler

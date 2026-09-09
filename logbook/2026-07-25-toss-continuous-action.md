@@ -27,7 +27,7 @@ files_changed:
   - tests/hardware/session_anomaly_fixes.md
   - tools/probes/toss_trace_synth.py
   - tools/probes/README.md
-  - plans/active/single-ball-toss.md
+  - plans/archived/single-ball-toss.md
 commits:
   - 5e8db9a
 subsystem:

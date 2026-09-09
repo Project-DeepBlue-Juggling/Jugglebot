@@ -716,7 +716,7 @@ jugglebot_operational:
                                          # value before any non-zero entry lands here.
   toss_ilc_enabled: false                # Apply the learned critical-point ILC correction
                                          # (config/toss_ilc.yaml, jugglebot/motion/toss_ilc.py) at the toss
-                                         # goal-build seam. Plan: plans/active/critical-point-ilc.md Phase 2.
+                                         # goal-build seam. Plan: plans/archived/critical-point-ilc.md Phase 2.
                                          # FALSE ships, and turning it true is a REVIEWED CONFIG COMMIT, not
                                          # a runtime toggle — the same shape dynamics.torque_ff_enabled had
                                          # before its 2026-07-16 arming session, and for the same root cause:
@@ -788,7 +788,7 @@ jugglebot_operational:
                                          # therefore refuses REJECTED_NOT_CENTERED before asking BB to
                                          # throw — see reload_sequencer's platform_centered gate.
   toss_pipeline_enabled: true            # Whether a TossContinuous session runs the TWO-SLOT PIPELINE
-                                         # (plans/active/toss-pipelined-preamble.md Phase B4) instead of
+                                         # (plans/archived/toss-pipelined-preamble.md Phase B4) instead of
                                          # the serial one-cycle-at-a-time loop. SHIPS FALSE.
                                          # FALSE = today's machine, bit-for-bit: one live cycle, its whole
                                          # CHECKING/POSITIONING/PREPARING preamble spent BETWEEN the
@@ -970,7 +970,7 @@ jugglebot_operational:
                                          # (jugglebot/motion/trajectory/cup_cycle.py ->
                                          # cup_realize.py -> cycle_plan.CyclePlan) instead of today's
                                          # separate platform plan + firmware hand stroke. Plan:
-                                         # plans/active/unified-7dof-planner.md.
+                                         # plans/archived/unified-7dof-planner.md.
                                          # SHIPPED FALSE from Phase 1 (2026-09-01) until 2026-09-05,
                                          # when the Phase-5 hardware ladder opened: the prerequisites
                                          # it was waiting on are all aboard — the v6 wire (Phase 2),
@@ -1018,7 +1018,7 @@ jugglebot_operational:
 #    currently-commanded ceiling (ramped up across hardware sessions via
 #    trajectory/set_limits); the *_ceiling is the YAML-pinned absolute max a
 #    set_limits request is clamped to. Jerk is the binding actuator constraint.
-#    See plans/active/mvp-trajectory-bringup.md.
+#    See plans/archived/mvp-trajectory-bringup.md.
 # ============================================================
 trajectory_op:
   # S4 WORKING POINT persisted 2026-07-17 (operator decision, closes the S4 ladder):

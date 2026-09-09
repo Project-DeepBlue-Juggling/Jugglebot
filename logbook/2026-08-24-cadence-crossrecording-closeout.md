@@ -9,7 +9,7 @@ files_changed:
   - logbook/2026-08-24-hand-sensor-poll-cadence.md
   - tests/hardware/session_cadence_ladder.md
   - tests/hardware/session_anomaly_fixes.md
-  - plans/active/toss-selftuning.md
+  - plans/archived/toss-selftuning.md
   - ros_ws/docs/ball_possession_contract.md
   - ros_ws/src/jugglebot/jugglebot/toss_trim.py
   - ros_ws/src/jugglebot/jugglebot/ball_possession.py

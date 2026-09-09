@@ -7,7 +7,7 @@ phase: "unified-7dof-planner — Phase 0"
 related_plan: unified-7dof-planner.md
 files_changed:
   - tests/hardware/session_unified7_bus_headroom.md
-  - plans/active/unified-7dof-planner.md
+  - plans/archived/unified-7dof-planner.md
   - plans/active/leg-bus-frame-drops.md
   - logbook/2026-08-30-unified7-bus-headroom-sitting.md
   - logbook/INDEX.md

@@ -14,7 +14,7 @@ Usage examples:
 History: the MPC control modes (``--mpc``, ``--hardware``, and the
 catch/toss/juggle/keyboard/spacemouse/trajectory modes that implied them)
 were removed 2026-09-01 — dormant since 2026-08-01 and superseded by the
-unified 7-DoF planner (``plans/active/unified-7dof-planner.md``) as the
+unified 7-DoF planner (``plans/archived/unified-7dof-planner.md``) as the
 per-cycle replanner.  The final MPC implementation lives at git tag
 ``mpc-final``; see ``logbook/2026-09-01-mpc-chain-removed.md``.
 """

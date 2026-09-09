@@ -24,7 +24,7 @@ tags:
 
 ## Summary
 
-Phase B0 of `plans/active/toss-pipelined-preamble.md`: three offline
+Phase B0 of `plans/archived/toss-pipelined-preamble.md`: three offline
 measurements, no production code, taken before B1–B5 design against any number.
 Two of them contradict a premise the plan was commissioned on.
 

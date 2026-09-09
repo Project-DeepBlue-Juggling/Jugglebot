@@ -551,7 +551,7 @@ class HandBallSensorSource:
 
       the debounce is **asymmetric and much slower than its nominal 100 ms** —
       measured ``held->empty`` **232 / 241 / 295 ms**, ``empty->held``
-      **0 / 0 / 0 ms** (`plans/active/toss-selftuning.md` § Open findings).
+      **0 / 0 / 0 ms** (`plans/archived/toss-selftuning.md` § Open findings).
 
     Those debounce numbers are NOT re-measured and still stand. What HAS moved is
     the poll cadence they were once explained by: this docstring used to add

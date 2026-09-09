@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Toss AIM-calibration acquisition — contract **C-TOSS-CAL-1**, build phase 2f
-of ``plans/active/toss-selftuning.md`` § 3.8 (OPERATOR-run, at the robot).
+of ``plans/archived/toss-selftuning.md`` § 3.8 (OPERATOR-run, at the robot).
 
 Drives the four capture rungs of § 3.8 by sending ``TossContinuous`` goals and
 **observing**.  It never arms, never changes control mode, never dispatches a

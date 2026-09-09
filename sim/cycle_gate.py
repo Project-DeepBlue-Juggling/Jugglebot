@@ -1,6 +1,6 @@
 """Whole-cycle 7-DoF gate — the Phase-1 sim acceptance for the unified planner.
 
-Plan: ``plans/active/unified-7dof-planner.md`` § 4 Phase 1 ("Sim validation", the
+Plan: ``plans/archived/unified-7dof-planner.md`` § 4 Phase 1 ("Sim validation", the
 phase gate) and § 1 owner resolution 1, which is what this file resolves: the
 Rung-3 collision between "the slam is the seat's runway" and every cleanup of the
 whole-cycle sim catch dropping MAKE to 0/12.

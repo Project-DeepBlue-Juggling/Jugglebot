@@ -100,7 +100,7 @@ Read `sim/analysis/known_issues.yaml`.  For each flag in the analysis output:
 
 ### Step 5: Gather context
 
-Read `plans/active/mvp-trajectory-bringup.md` (the current bringup plan; the
+Read `plans/archived/mvp-trajectory-bringup.md` (the current bringup plan; the
 older MPC bringup plan is archived at
 `plans/archived/hardware-bringup.md`) to understand:
 - What bringup phase this test belongs to

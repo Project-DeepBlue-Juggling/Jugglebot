@@ -12,8 +12,8 @@ commits:
   - d91a40e
 files_changed:
   - "(merge) controller/demo/*, sim/juggle_*.py, sim/juggle_tilt.py, tools/probes/juggle_*, tests/sim/test_juggle_*, tests/sim/test_demo_*, 17 logbook entries, 3 plans"
-  - plans/active/single-ball-toss.md
-  - plans/active/mvp-trajectory-bringup.md
+  - plans/archived/single-ball-toss.md
+  - plans/archived/mvp-trajectory-bringup.md
 ---
 
 # Phase 8 kickoff: BB juggle branch merged; single-ball-toss plan created
@@ -25,7 +25,7 @@ files_changed:
 tilt-ladder primitives — throw-to-nominated-target (Rung 2a), catch-at-position
 (Rung 1), the 12/12 kinematic-release self-catch loop (Rung 2b) — plus their
 tests, probes, plans, and logbook history in the working branch. A new plan,
-`plans/active/single-ball-toss.md`, expands MVP Phase 8 into a two-tier
+`plans/archived/single-ball-toss.md`, expands MVP Phase 8 into a two-tier
 `Toss.action` bring-up (8a toss-at-position on the level platform; 8b
 tilt-aimed displaced throw→catch) that re-hosts these primitives on the
 production trajectory stack behind a `reload_gate.py`-style sim gate. The
@@ -54,10 +54,10 @@ starts.
   - `sim/hand/trajectory.py` — kept HEAD (both sides independently converged on
     `CATCH_VEL_RATIO = 0.6`; HEAD carries the provenance comment);
   - `sim/juggle_noise.py` — byte-identical on both sides.
-- **New plan** `plans/active/single-ball-toss.md` — Phase 8 expansion:
+- **New plan** `plans/archived/single-ball-toss.md` — Phase 8 expansion:
   `Toss.action` goal = nominated catch state ⟨position, flight time⟩, tiered
   8a/8b, production-in-the-loop `sim/toss_gate.py`, hardware staging T0–T4.
-- **Amended** `plans/active/mvp-trajectory-bringup.md` § Phase 8 + phase table
+- **Amended** `plans/archived/mvp-trajectory-bringup.md` § Phase 8 + phase table
   to point at the expansion.
 
 ## Discussion

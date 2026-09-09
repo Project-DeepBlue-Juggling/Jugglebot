@@ -1,6 +1,6 @@
 """Rung 2b — single-ball tilt-aimed self-catch loop: the GATE SMOKE.
 
-Phase 3 of plans/active/bb-online-juggle-tilt-rearchitecture.md. Drives the real
+Phase 3 of plans/archived/bb-online-juggle-tilt-rearchitecture.md. Drives the real
 contact-physics self-catch loop (``sim.juggle_selfcatch.run_self_catch``): compose
 the Rung-2a tilt-aimed throw with the Rung-1 catch into a single-ball
 toss->catch->toss loop, re-planned each cycle under the §3 tracking noise.

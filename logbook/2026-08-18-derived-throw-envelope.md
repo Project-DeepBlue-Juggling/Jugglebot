@@ -18,7 +18,7 @@ files_changed:  # sources of truth + the docs that carried the old band; the
   - tests/hardware/session_anomaly_fixes.md
   - tests/hardware/session_phase8_toss_hardware.md
   - tests/hardware/toss_trace_recorder.py
-  - plans/active/single-ball-toss.md
+  - plans/archived/single-ball-toss.md
 subsystem:
   - motion
   - config

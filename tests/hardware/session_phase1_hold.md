@@ -1,6 +1,6 @@
 # Hardware Session — MVP Phase 1: Streaming Foundation (arm + 120 s hold)
 
-**Plan**: `plans/active/mvp-trajectory-bringup.md` § Phase 1
+**Plan**: `plans/archived/mvp-trajectory-bringup.md` § Phase 1
 **Logbook**: `logbook/2026-07-07-mvp-phase1-streaming-foundation.md`
 **Goal**: `trajectory_node` streams 40 Hz hold frames on :5557; the bridge arms at
 runtime via `set_setpoint_output`; the platform holds the ACTIVE pose through the

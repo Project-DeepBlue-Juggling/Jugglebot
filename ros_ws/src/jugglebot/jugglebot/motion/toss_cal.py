@@ -1,6 +1,6 @@
 """Pose-dependent toss AIM calibration map — contract **C-TOSS-CAL-1**.
 
-Normative design: ``plans/active/toss-selftuning.md`` §§ 3.1, 3.2, 3.7 and
+Normative design: ``plans/archived/toss-selftuning.md`` §§ 3.1, 3.2, 3.7 and
 decisions D1–D4. Read § 3.1 before adding a caller: **where** this map may be
 evaluated is the load-bearing half of the contract and is not inferable from
 these functions. It is evaluated **exactly once per toss GOAL**, in

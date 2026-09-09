@@ -10,7 +10,7 @@ files_changed:
   - tools/probes/juggle_selfcatch_loopgain.py
   - tools/probes/README.md
   - tests/sim/test_juggle_selfcatch.py
-  - plans/active/bb-online-juggle-tilt-rearchitecture.md
+  - plans/archived/bb-online-juggle-tilt-rearchitecture.md
 commits:
   - 6308689
 subsystem:
@@ -28,7 +28,7 @@ tags:
 
 ## Summary
 
-Phase 3 / Rung 2b of `plans/active/bb-online-juggle-tilt-rearchitecture.md`, the
+Phase 3 / Rung 2b of `plans/archived/bb-online-juggle-tilt-rearchitecture.md`, the
 **make-or-break** gate. The prior Rung-2b run (`f745f29`) was a pure single-ball
 **column** self-catch; it diverged, but the load-bearing finding was that a column
 commands **~0 tilt**, so the tilt mechanism never *engages* — the column is a

@@ -1,6 +1,6 @@
 # Hardware Session — MVP Phase 5: Timed Target States (±25 ms arrival + supersede)
 
-**Plan**: `plans/active/mvp-trajectory-bringup.md` § Phase 5
+**Plan**: `plans/archived/mvp-trajectory-bringup.md` § Phase 5
 **Logbook**: `logbook/2026-07-08-mvp-phase5-timed-targets.md`
 **Goal**: `trajectory/timed_target` reaches a pose `lead_time_s` seconds after
 service receipt within ±25 ms (mocap-measured); a too-tight lead is loudly

@@ -83,7 +83,7 @@ start state of the next, which is what :func:`release_state_from_meta` and
 :func:`extend` exist to make precise rather than approximate.  A "single toss"
 is ``LAUNCH`` then ``LANDING``.
 
-Plan: ``plans/active/unified-7dof-planner.md`` § 4 Phase 4.
+Plan: ``plans/archived/unified-7dof-planner.md`` § 4 Phase 4.
 """
 
 from __future__ import annotations

@@ -6,7 +6,7 @@ status: resolved
 phase: "critical-point-ilc — G-3 + Phase 0 (0a–0d)"
 related_plan: critical-point-ilc.md
 files_changed:
-  - plans/active/critical-point-ilc.md
+  - plans/archived/critical-point-ilc.md
   - plans/active/INDEX.md
   - logbook/INDEX.md
   - logbook/2026-08-10-toss-selftuning-build.md

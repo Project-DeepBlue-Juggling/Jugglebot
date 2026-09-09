@@ -1,6 +1,6 @@
 """Rung 2b — single-ball tilt-aimed self-catch loop (the MAKE-OR-BREAK gate).
 
-Phase 3 of plans/active/bb-online-juggle-tilt-rearchitecture.md. Composes the
+Phase 3 of plans/archived/bb-online-juggle-tilt-rearchitecture.md. Composes the
 Rung-2a **throw** with the Rung-1 **catch** into the minimal closed loop — one
 ball, thrown up and caught by the SAME cup, cycle after cycle, re-planned each
 cycle from the achieved cup state + the noisy observed ball:

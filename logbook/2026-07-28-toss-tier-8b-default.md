@@ -18,7 +18,7 @@ files_changed:
   - tests/hardware/toss_trace_recorder.py
   - tests/hardware/session_phase8_toss_hardware.md
   - tests/hardware/session_anomaly_fixes.md
-  - plans/parked/catch-reach-degenerate-overshoot.md
+  - plans/archived/catch-reach-degenerate-overshoot.md
   - logbook/INDEX.md
 commits:
   - 9247a33
@@ -209,7 +209,7 @@ prose, not in a symbol.
    `REJECT_WIRE_MAP` hygiene follow-up; adding two codes the new default makes
    reachable is not the same as pre-empting that phase.
 
-3. **`plans/parked/catch-reach-degenerate-overshoot.md` Phase 4 (two lenses).** Its
+3. **`plans/archived/catch-reach-degenerate-overshoot.md` Phase 4 (two lenses).** Its
    status cell still said "**STILL OPEN: nobody has asked the operator whether they
    SAW the balls touch the cup and leave** — decays by the hour", answered on
    2026-07-28; and "Score any CAP-WORK replay from a **clean 8a worktree**", which
@@ -296,7 +296,7 @@ from a bag that lacked the topic.
 - `tests/hardware/session_anomaly_fixes.md` — new **§ SECTION TIER** (`TIER-PREREQ`,
   `TIER-A`, `TIER-B`, `TIER-C`, `TIER-D`, `TIER-E`); `/catch/pretilt_hold` added to
   the shared recording list.
-- `plans/parked/catch-reach-degenerate-overshoot.md` — Phase 4 cell annotated, Phase 4
+- `plans/archived/catch-reach-degenerate-overshoot.md` — Phase 4 cell annotated, Phase 4
   detail section with an Outcome paragraph added.
 
 **Mutation check (the anti-vacuity gate).** With the YAML scratch-flipped back to
@@ -367,7 +367,7 @@ operator**, in the order the runbook executes it:
    tracked hygiene follow-up in `logbook/2026-07-25-toss-rejected-not-levelled.md`
    § Follow-ups, which also proposes a drift guard for the map. Worth scheduling: the
    map has no test pinning it against the FSM's reject codes, so it will rot again.
-3. **`plans/active/single-ball-toss.md` still records 8b as shipping behind
+3. **`plans/archived/single-ball-toss.md` still records 8b as shipping behind
    `JB_OP_TOSS_TIER='8a'`** (lines 186, 294) and its T4 instruction at line 330 ("Set
    `JB_OP_TOSS_TIER=8b` for the session") is now a no-op. None of it is misleading —
    they are historical Phase-4 records — but that plan's Phase-4 status cell wants a
@@ -383,9 +383,9 @@ operator**, in the order the runbook executes it:
 - `logbook/2026-07-28-anomaly-fixes-validation-sitting.md` — the sitting whose T4 rung
   is the evidence for this default, and whose § Discussion → *Operator testimony and
   decisions* records the operator's decision (d) that this flip serves.
-- `plans/parked/catch-reach-degenerate-overshoot.md` § Phase 4 — the plan phase this
+- `plans/archived/catch-reach-degenerate-overshoot.md` § Phase 4 — the plan phase this
   lands under.
-- `plans/active/single-ball-toss.md` § Phase 4 — where Tier 8b itself was implemented
+- `plans/archived/single-ball-toss.md` § Phase 4 — where Tier 8b itself was implemented
   (2026-07-25).
 - `logbook/2026-07-25-toss-rejected-not-levelled.md` § Follow-ups — owns the remaining
   `REJECT_WIRE_MAP` hygiene.

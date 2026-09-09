@@ -8,7 +8,7 @@ record.  Nothing read them back: that entry's § Outcome says *"No probe-side
 reader yet either — the first sitting means reading the JSONL directly."*
 
 This is that reader.  It is **Phase B0 / probe P1** of
-``plans/active/toss-pipelined-preamble.md`` § 5.1, and it exists as a committed
+``plans/archived/toss-pipelined-preamble.md`` § 5.1, and it exists as a committed
 probe rather than a one-off because B5 (the loop-cost trim) and B6 (the hardware
 ladder) re-run it on later sittings to score the trim — ``tools/probes/README.md``
 § "Why committed probes exist".
@@ -369,7 +369,7 @@ def main(argv=None) -> int:
     if not args.keep_synthetic:
         rows = live_only(rows)
     records = census_bearing(rows)
-    print('TOSS LOOP CENSUS — probe P1 of plans/active/toss-pipelined-preamble.md')
+    print('TOSS LOOP CENSUS — probe P1 of plans/archived/toss-pipelined-preamble.md')
     print('corpus {}  |  {} record(s), {} census-bearing'
           .format(os.path.join(args.logs, 'toss_records_{}*.jsonl'
                                .format(args.date or '')),

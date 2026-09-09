@@ -1,5 +1,5 @@
 """Node seams for the LAYER-2 session trim — build phase **2e** of
-``plans/active/toss-selftuning.md``.
+``plans/archived/toss-selftuning.md``.
 
 The estimator itself is covered in ``tests/motion/test_toss_trim.py`` (pure, no
 ROS). Here we test the six things only the NODE can be asked:

@@ -1,6 +1,6 @@
 """Whole-cycle 7-DoF gate — ``sim/cycle_gate.py``.
 
-Plan: ``plans/active/unified-7dof-planner.md`` § 4 Phase 1, the phase gate.
+Plan: ``plans/archived/unified-7dof-planner.md`` § 4 Phase 1, the phase gate.
 
 Unmarked (per-commit), matching ``tests/sim/test_toss_gate.py``: the gate drives
 the production planning chain, which is the hardware-safety surface Phase 2 ships,

@@ -409,7 +409,7 @@ scored a real post-fix capture yet". It has, several times over:
 **`tuned`, not `resolved`, deliberately.** Two of this entry's Phase-0 findings —
 the catch time-origin divergence (0.498 rev = 15.75 mm) and the 20 mm absolute
 catch-height placement — are real, unresolved, and now owned by
-`plans/parked/hand-trajectory-generator-overhaul.md` § 6 *Inherited findings*.
+`plans/archived/hand-trajectory-generator-overhaul.md` § 6 *Inherited findings*.
 They were unowned by any plan until that re-home. The derivations stay in
 `plans/archived/hand-command-continuity.md` § Phase 0 — Outcome, Confirmation 2.
 

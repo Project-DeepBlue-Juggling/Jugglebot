@@ -1,7 +1,7 @@
 """The per-toss record schema, labeller, latch and join.
 
 Module under test: ``ros_ws/src/jugglebot/jugglebot/toss_record.py``.
-Plan: ``plans/active/toss-selftuning.md`` §§ 3.3, 3.4, D10-D13.
+Plan: ``plans/archived/toss-selftuning.md`` §§ 3.3, 3.4, D10-D13.
 Logbook: ``logbook/2026-08-10-toss-selftuning-build.md``.
 
 WHY THESE TESTS AND NOT OTHERS

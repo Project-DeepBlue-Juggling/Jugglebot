@@ -10,7 +10,7 @@ files_changed:
   - tools/probes/juggle_selfcatch_loopgain.py
   - tools/probes/README.md
   - tests/sim/test_juggle_selfcatch.py
-  - plans/active/bb-online-juggle-tilt-rearchitecture.md
+  - plans/archived/bb-online-juggle-tilt-rearchitecture.md
 commits:
   - f745f29
 subsystem:
@@ -28,7 +28,7 @@ tags:
 
 ## Summary
 
-Phase 3 / Rung 2b of `plans/active/bb-online-juggle-tilt-rearchitecture.md`: the
+Phase 3 / Rung 2b of `plans/archived/bb-online-juggle-tilt-rearchitecture.md`: the
 **make-or-break** rung. Compose the Rung-2a tilt-aimed **throw** with the Rung-1
 **catch** into the minimal closed loop — one ball, thrown up and caught by the
 **same** cup, cycle after cycle, re-planned each cycle from the achieved cup state

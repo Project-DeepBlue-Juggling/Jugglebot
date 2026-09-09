@@ -212,7 +212,7 @@ with frozen profiles, or dormant.
   matches, which is the correct behaviour.
 - Catch trajectories with per-throw varying targets: BB scatter breaks exact
   keying. The natural first juggling consumer is
-  `plans/active/single-ball-toss.md` Tier 8a (toss-at-position — fixed
+  `plans/archived/single-ball-toss.md` Tier 8a (toss-at-position — fixed
   nominated targets, genuinely repeated). Revisit catch-side learning only
   with evidence from that tier.
 - Leg gains (FROZEN per `plans/active/leg-gain-tuning-methodology.md`); the

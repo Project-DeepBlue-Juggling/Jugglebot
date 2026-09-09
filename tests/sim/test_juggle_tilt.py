@@ -1,6 +1,6 @@
 """Unit tests for the tilt-aimed cup geometry (``sim.juggle_tilt``).
 
-Plan: plans/active/bb-online-juggle-tilt-rearchitecture.md Phase 1 / Rung 1.
+Plan: plans/archived/bb-online-juggle-tilt-rearchitecture.md Phase 1 / Rung 1.
 Covers the collinear catch tilt (:func:`tilt_to_receive`), the cup-axis / lever-
 arm helpers, and the lever-arm-compensated realisation (:func:`realize_tilted`)
 that lands the cup OPENING on the commanded target. The realisation accuracy is

@@ -1,6 +1,6 @@
 """Rung 2a — single-ball tilt-aimed throw, the throw primitive in isolation.
 
-Phase 2 of plans/active/bb-online-juggle-tilt-rearchitecture.md. A focused
+Phase 2 of plans/archived/bb-online-juggle-tilt-rearchitecture.md. A focused
 single-ball harness that validates the **throw** primitive on its own, OPEN-LOOP
 (no catch), so the throw's accuracy can be characterised before it is closed into
 the Rung-2b self-catch loop:

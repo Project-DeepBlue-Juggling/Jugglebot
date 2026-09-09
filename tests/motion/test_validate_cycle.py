@@ -1,6 +1,6 @@
 """T-U5 — ``feasibility.validate_cycle``, the unified 7-DoF cycle gate.
 
-Plan: ``plans/active/unified-7dof-planner.md`` § 4 Phase 1 (WP3).
+Plan: ``plans/archived/unified-7dof-planner.md`` § 4 Phase 1 (WP3).
 
 WHAT THESE TESTS DEFEND
 -----------------------

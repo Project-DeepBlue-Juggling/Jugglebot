@@ -6,7 +6,7 @@ status: resolved
 phase: "critical-point-ilc — Phase 1 core + E-1 discrimination (Gate 1 open)"
 related_plan: critical-point-ilc.md
 files_changed:
-  - plans/active/critical-point-ilc.md
+  - plans/archived/critical-point-ilc.md
   - logbook/2026-08-13-critical-point-ilc-phase1-and-e1.md
   - logbook/INDEX.md
   - tests/hardware/ilc_fit_lib.py

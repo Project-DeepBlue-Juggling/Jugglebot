@@ -422,6 +422,6 @@ false-reject regression).
 
 ## Related
 
-- Plan: [`plans/active/mvp-trajectory-bringup.md`](../plans/active/mvp-trajectory-bringup.md) — Phase 2 detail + the feasibility-gate architecture.
+- Plan: [`plans/archived/mvp-trajectory-bringup.md`](../plans/archived/mvp-trajectory-bringup.md) — Phase 2 detail + the feasibility-gate architecture.
 - [2026-07-07-mvp-phase1-streaming-foundation.md](2026-07-07-mvp-phase1-streaming-foundation.md) — the streaming substrate this builds on; the minimal gate this completes.
 - [2026-06-29-canbridge-phase0-native-harness.md](2026-06-29-canbridge-phase0-native-harness.md) — format precedent.

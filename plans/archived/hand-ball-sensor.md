@@ -673,7 +673,7 @@ predates the direction and ran the full gate: 4256 passed, 3 xfailed,
   are gated on a tracker `CAUGHT`, and `judge()` carries no time argument.
 
   > **LANDED 2026-08-10** as `ball_possession.HandBallSensorSource`, in
-  > `plans/active/catch-robustness.md` Phase 1. Both recon facts held and both
+  > `plans/archived/catch-robustness.md` Phase 1. Both recon facts held and both
   > shaped the design: the source is **tick-driven** (`observe(now, landing_t)`),
   > a second source kind the contract now specifies in § 3.2, precisely because
   > `judge()` carries no time; and the ball-evidence precondition became a live
@@ -688,7 +688,7 @@ predates the direction and ran the full gate: 4256 passed, 3 xfailed,
   > position that the flip is forbidden until **Phase 7** validates the sensor is
   > superseded: the operator validated the sensor **in situ** and authorised both
   > the sensor-primary possession source and the flip (recorded in
-  > `plans/active/catch-robustness.md` § Owner decisions). The default is now
+  > `plans/archived/catch-robustness.md` § Owner decisions). The default is now
   > `true`. **Phase 7 steps 4–5 remain open as bench work, not as blockers** —
   > they size the debounce/poll knobs and measure SDO RTT, which is tuning on a
   > sensor already known to work, not permission to use it. The supporting
@@ -722,4 +722,4 @@ stroke-jitter observation with polling on/off; 5 — ball soak to size
 `max_missing_samples`/poll rate) are bench TUNING, not blockers, and live on in
 `tests/hardware/session_hand_ball_sensor.md`, now also pointed to by
 `catch-robustness.md`'s bench-phase notes. Authority for downstream possession
-work: `plans/active/catch-robustness.md`.
+work: `plans/archived/catch-robustness.md`.

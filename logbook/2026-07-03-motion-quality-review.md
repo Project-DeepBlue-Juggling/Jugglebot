@@ -8,7 +8,7 @@ related_plan: "bb-online-juggle-tilt-rearchitecture.md"
 files_changed:
   - tools/probes/juggle_motion_quality.py
   - tools/probes/README.md
-  - plans/active/bb-online-juggle-tilt-rearchitecture.md
+  - plans/archived/bb-online-juggle-tilt-rearchitecture.md
 commits:
   - 86fa33f
 subsystem:

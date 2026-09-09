@@ -5,7 +5,7 @@ WHAT THIS CAPTURES
 Two fixture families, produced by RUNNING THE CURRENT (pre-v6) production
 code, frozen as hex so the Phase 2 v6 widening can prove legacy
 byte-exactness (T-R1 / T-U7 / T-U8 of
-``plans/active/unified-7dof-planner.md`` § 5):
+``plans/archived/unified-7dof-planner.md`` § 5):
 
 1. **Pump wire fixtures** (``tests/teensy_link/data/v5_pump_wire_fixtures.json``)
    — representative :5557 ``mpc_cmd`` dicts driven through the real
@@ -36,7 +36,7 @@ regenerate at a later checkout — a regenerated file is a different baseline,
 not a refresh.
 
 MOTIVATING PLAN / LOGBOOK
-    ``plans/active/unified-7dof-planner.md`` § 4 Phase 2, § 5 T-R1;
+    ``plans/archived/unified-7dof-planner.md`` § 4 Phase 2, § 5 T-R1;
     ``logbook/2026-09-01-unified-7dof-planner-phase1-planner-core.md``
     (the ``CyclePlan`` contract these regressions fence).
 

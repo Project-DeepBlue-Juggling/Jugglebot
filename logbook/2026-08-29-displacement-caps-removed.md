@@ -28,7 +28,7 @@ files_changed:
   - tools/probes/displaced_reach_frontier.py
   - tools/probes/cadence_rung_check.py
   - tools/probes/README.md
-  - plans/active/single-ball-toss.md
+  - plans/archived/single-ball-toss.md
   - plans/active/toss-multi-catch-pose.md
   - plans/active/INDEX.md
   - tests/motion/test_catch_reach.py
@@ -113,7 +113,7 @@ test attached.
 
 | key | provenance | what it bounded |
 | --- | --- | --- |
-| `toss_max_displacement_mm` (150) | **chosen** — the operator's own ordered working range, set 2026-07-28 (`plans/active/single-ball-toss.md` Phase E, sub-change 3) | the displacement `\|B − A\|`, as `min(cap, reach_displacement_limit_mm(T))` |
+| `toss_max_displacement_mm` (150) | **chosen** — the operator's own ordered working range, set 2026-07-28 (`plans/archived/single-ball-toss.md` Phase E, sub-change 3) | the displacement `\|B − A\|`, as `min(cap, reach_displacement_limit_mm(T))` |
 | `toss_workspace_xy_mm` (160) | **chosen** — a ±xy planning box added 2026-08-14, sized at `cap × 1.03` so the centroid-vs-cup chain divergence could not re-bind at the cap edge | `\|B.x\|`, `\|B.y\|`, and `\|A\|` |
 
 Neither is derived from anything. The **reach bound** beside them is: it is the
@@ -420,7 +420,7 @@ sub-degree, ~1 mm of cup lever against a hundreds-of-mm leg-stroke verdict. The 
 closes the door explicitly — *if a future probe of this shape needs the correction,
 pass it in; building one inside `motion/` would be the DOUBLE-apply, not the fix.*
 
-`plans/active/single-ball-toss.md`
+`plans/archived/single-ball-toss.md`
 Phase E gets a **⚠ SUPERSEDED IN PART** banner at its head (the 2026-07-28 text is
 left standing as the record of what was decided and why, marked as no longer a
 description of the machine), and sub-change 3's cap paragraph is banner-marked
@@ -562,7 +562,7 @@ supersedes), [[2026-08-29-position-busy-repoll]] and
   a chosen cap stands between us and an airborne refusal" is to build the
   un-chosen gate, not to keep the chosen one.
   **Superseded by**: this entry's Fix (`motion/trajectory/catch_reach.py`) and
-  `plans/active/single-ball-toss.md` Phase E's SUPERSEDED banner.
+  `plans/archived/single-ball-toss.md` Phase E's SUPERSEDED banner.
 
 - [2026-08-29 midday] The deletion's own premise, as written into the first draft
   of the Phase E banner: *"a far-lateral goal is refused pre-throw by the
@@ -573,7 +573,7 @@ supersedes), [[2026-08-29-position-busy-repoll]] and
   `B = (250, 0)` at `T = 0.80` and `B = (500, 0)` at `T = 1.00` were admitted and
   then refused `WORKSPACE` mid-flight.
   **Superseded by**: Diagnosis § D3 and the build-time reach gate. The banner in
-  `plans/active/single-ball-toss.md` records the gap explicitly as *"a gap for one
+  `plans/archived/single-ball-toss.md` records the gap explicitly as *"a gap for one
   day"* rather than quietly rewriting the premise.
 
 ## Open questions / follow-ups

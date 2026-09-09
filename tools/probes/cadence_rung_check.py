@@ -106,7 +106,7 @@ observation build — and each of them is measurable by re-running the grep this
 constant was cut from.  Relaxing the floor instead just re-buys the abort.
 
 **``--pipeline`` (2026-08-27, Phase B0 / probe P3 of
-``plans/active/toss-pipelined-preamble.md``).**  The other way back is to stop
+``plans/archived/toss-pipelined-preamble.md``).**  The other way back is to stop
 spending the preamble on the critical path at all: stage cycle ``k+1``'s
 CHECKING / POSITIONING / PREPARING inside cycle ``k``'s flight and charge the
 cadence only the COMMIT tick.  That mode models the plan's § 2.7 floors and

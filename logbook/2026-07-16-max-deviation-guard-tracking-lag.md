@@ -26,7 +26,7 @@ files_changed:
   - tests/hardware/session_phase4_ramp.md
   - tests/hardware/sysid_lib.py
   - plans/active/leg-gain-tuning-methodology.md
-  - plans/active/mvp-trajectory-bringup.md
+  - plans/archived/mvp-trajectory-bringup.md
   - plans/parked/accel-ff-inertia.md
   - docs/can_bridge/safety.md
 commits:

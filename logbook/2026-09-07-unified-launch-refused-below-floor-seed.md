@@ -9,7 +9,7 @@ files_changed:
   - ros_ws/src/jugglebot/jugglebot/reload_coordinator_node.py
   - tests/ros/test_unified_launch_floor.py
   - tests/hardware/session_unified7_cycle_ladder.md
-  - plans/active/unified-7dof-planner.md
+  - plans/archived/unified-7dof-planner.md
   - plans/active/INDEX.md
   - logbook/2026-09-07-unified-launch-refused-below-floor-seed.md
   - logbook/INDEX.md

@@ -19,7 +19,7 @@ files_changed:
   - tests/ros/test_unified_ring.py
   - tools/probes/cadence_rung_check.py
   - tests/hardware/session_unified7_cycle_ladder.md
-  - plans/active/unified-7dof-planner.md
+  - plans/archived/unified-7dof-planner.md
   - logbook/2026-09-07-unified-7dof-uh7-steady-chain-plumbing.md
   - logbook/INDEX.md
 subsystem:

@@ -104,7 +104,7 @@ def test_detach_no_lateral_acceleration_just_after_release(plan):
 
 
 # ---- Rung 2a: tilted-axis detach ----------------------------------------
-# plans/active/bb-online-juggle-tilt-rearchitecture.md Phase 2. The throw is
+# plans/archived/bb-online-juggle-tilt-rearchitecture.md Phase 2. The throw is
 # aimed by TILTING the cup so its symmetry axis points along the ballistic
 # take-off velocity; the detach constraint generalises from "cup_acc_xy == 0"
 # (flat cup, world +z axis) to "cross(cup_acc - g, axis) == 0" (the net applied

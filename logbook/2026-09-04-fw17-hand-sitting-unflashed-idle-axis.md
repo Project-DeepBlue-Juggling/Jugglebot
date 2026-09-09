@@ -8,7 +8,7 @@ related_plan: unified-7dof-planner.md
 files_changed:
   - tests/hardware/hand_stream_bench.py
   - tests/hardware/session_unified7_hand_bringup.md
-  - plans/active/unified-7dof-planner.md
+  - plans/archived/unified-7dof-planner.md
   - logbook/2026-09-04-fw17-hand-sitting-unflashed-idle-axis.md
   - logbook/INDEX.md
 subsystem:
@@ -26,7 +26,7 @@ tags:
 ## Summary
 
 The evening of **2026-09-03** carried the first operator sitting of
-[`plans/active/unified-7dof-planner.md`](../plans/active/unified-7dof-planner.md)
+[`plans/archived/unified-7dof-planner.md`](../plans/archived/unified-7dof-planner.md)
 Phase 3 — the lockstep FW 17 flash plus the T-H1..T-H4 hand ladder (runbook
 `tests/hardware/session_unified7_hand_bringup.md`). It produced **two
 independent failures, neither of them a defect in FW 17 or in the v6 wire**:
@@ -332,7 +332,7 @@ number** from `logbook/2026-09-02-unified-7dof-planner-phase3-fw17-hand-lane.md`
 — row 1 at `:223`, rows 18–19 at `:156`. (The inbound set is exactly that: the
 plan cited **zero** hand-runbook rows before this change, and the only other
 "row 16" in the tree belongs to a *different* runbook,
-`session_unified7_bus_headroom.md`, via `plans/active/unified-7dof-planner.md:369`.)
+`session_unified7_bus_headroom.md`, via `plans/archived/unified-7dof-planner.md:369`.)
 Rows 18–19 fall **inside the renumber range** (12–21, everything after the
 insertion point), so renumbering would have shifted them and silently broken
 those inbound references: the same failure class as the plan-filename convention in CLAUDE.md,

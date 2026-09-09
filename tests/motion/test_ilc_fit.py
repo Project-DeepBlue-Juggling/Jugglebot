@@ -1,6 +1,6 @@
 """Tests for the critical-point ILC fit core — ``tests/hardware/ilc_fit_lib.py``
 and its thin CLI ``tests/hardware/ilc_fit.py`` (Phase 1 of
-``plans/active/critical-point-ilc.md``).
+``plans/archived/critical-point-ilc.md``).
 
 THE FOUR TESTS THAT MATTER
 --------------------------
@@ -894,7 +894,7 @@ def test_the_speed_authority_is_the_ILCs_own_and_toss_trims_is_untouched():
     """Gate 1's decision, pinned from both sides.
 
     The operator widened the ILC's accumulated speed trim to ±0.15 on
-    2026-08-13 (``plans/active/critical-point-ilc.md``, "Gate 1 CLOSED") because
+    2026-08-13 (``plans/archived/critical-point-ilc.md``, "Gate 1 CLOSED") because
     the measured corpus asks for −0.1076 and two of three goal cells exceed
     ±0.10 on their own. The decision was ILC-SPECIFIC, and the thing that makes
     it safe rather than convenient is that it did NOT touch

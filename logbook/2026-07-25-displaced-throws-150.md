@@ -32,7 +32,7 @@ files_changed:
   - tests/sim/test_toss_gate.py
   - tests/hardware/session_anomaly_fixes.md
   - tests/hardware/toss_trace_recorder.py
-  - plans/active/single-ball-toss.md
+  - plans/archived/single-ball-toss.md
   - plans/active/PROMPT-anomaly-fixes-orchestration.md
 commits:
   - ad80ff0
@@ -358,7 +358,7 @@ constant) and **no `jugglebot_interfaces` rebuild** (both new topics carry
 ## Related
 
 - Contract: `ros_ws/docs/catch_reach_envelope.md` (**C-REACH-1**)
-- Plan: `plans/active/single-ball-toss.md` § Phase E
+- Plan: `plans/archived/single-ball-toss.md` § Phase E
 - Operator ladder: `tests/hardware/session_anomaly_fixes.md` § SECTION DISP
 - Sibling commit: the `sim/toss_gate.py` asymmetry-map seed bugfix —
   `logbook/2026-07-29-toss-gate-asymmetry-seed.md`

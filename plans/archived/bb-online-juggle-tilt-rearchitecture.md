@@ -1,7 +1,8 @@
 ---
 title: Online-juggle capability bring-up — clean catch → single-ball toss → two-ball (tilt-aimed, hardware-bringup order)
 created: 2026-06-29
-status: active
+status: superseded   # 2026-09-09 — superseded by two-ball-skill-stack.md (owner decision); see the Archival note below
+archived: 2026-09-09
 related_plan: bb-led-two-ball-juggle-demo.md
 related_logbook:
   - 2026-06-29-platform-tilt-tracking-characterisation
@@ -11,6 +12,12 @@ related_logbook:
 ---
 
 # Online-juggle capability bring-up
+
+## Archival note (2026-09-09)
+
+Superseded by `two-ball-skill-stack.md` (owner decision 2026-09-09). The capability ladder (clean catch → single toss → self-catch → two-ball columns) is re-cut as rungs R3–R5 of the new plan on the skill stack, driven by the SAME orchestrator code in sim and on hardware. "Tilt is the engine" stands: aim is a tilt of the release state inside the throw segment. Columns before the oval is now an owner decision (2026-09-09), not a sim finding.
+
+The filename is unchanged (DOCUMENTATION_GUIDE § 2.6); every `related_plan:` and prose reference keeps resolving. Read the successor plan first: `two-ball-skill-stack.md`.
 
 ## 1. Context
 

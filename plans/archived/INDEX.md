@@ -56,7 +56,18 @@ next touches that plan, not a mechanical edit. The vocabulary going forward is
 | 2026-08-21 | [hand-command-continuity.md](hand-command-continuity.md) | completed | Hand-command continuity — stop clobbering a live stroke (post-throw dip + throw truncation) |
 | 2026-08-25 | [operator-observability.md](operator-observability.md) | completed | Operator observability quartet — chart units, UDP message rates, ODrive error propagation, QTM calibrate gate |
 | 2026-08-25 | [udp-channel-health.md](udp-channel-health.md) | completed | UDP channel-health metrics — four independently-landable phases |
-| 2026-08-30 | [toss-multi-catch-pose.md](toss-multi-catch-pose.md) | superseded | Multi-pose catch cycling — halted at the pre-M2 boundary, superseded outright by `plans/active/unified-7dof-planner.md`; M0–M6 never ran |
+| 2026-08-30 | [toss-multi-catch-pose.md](toss-multi-catch-pose.md) | superseded | Multi-pose catch cycling — halted at the pre-M2 boundary, superseded outright by `plans/archived/unified-7dof-planner.md`; M0–M6 never ran |
+| 2026-09-09 | [unified-7dof-planner.md](unified-7dof-planner.md) | superseded | Unified whole-cycle 7-DoF motion planner (Scope B) |
+| 2026-09-09 | [critical-point-ilc.md](critical-point-ilc.md) | superseded | Critical-Point ILC — Task-Level Iterative Learning on the Throw and Catch Events |
+| 2026-09-09 | [toss-selftuning.md](toss-selftuning.md) | superseded | Toss self-tuning loop — per-toss record, persistent aim map, session trim |
+| 2026-09-09 | [toss-pipelined-preamble.md](toss-pipelined-preamble.md) | superseded | Phase B — pipelining the toss preamble out of the critical path |
+| 2026-09-09 | [single-ball-toss.md](single-ball-toss.md) | superseded | Single-ball toss — nominated catch state via a Toss action (MVP Phase 8 expansion) |
+| 2026-09-09 | [catch-robustness.md](catch-robustness.md) | superseded | Catch robustness — sensor-truth verdicts, hand-drive restoration, toss self-tuning |
+| 2026-09-09 | [bb-online-juggle-tilt-rearchitecture.md](bb-online-juggle-tilt-rearchitecture.md) | superseded | Online-juggle capability bring-up — clean catch → single-ball toss → two-ball (tilt-aimed, hardware-bringup order) |
+| 2026-09-09 | [mvp-trajectory-bringup.md](mvp-trajectory-bringup.md) | superseded | MVP Trajectory Bringup — Simple Streaming Control to Two-Ball Juggling |
+| 2026-09-09 | [hand-trajectory-generator-overhaul.md](hand-trajectory-generator-overhaul.md) | superseded | Hand trajectory generator overhaul — jerk-limited, time-budget parameterised |
+| 2026-09-09 | [catch-reach-degenerate-overshoot.md](catch-reach-degenerate-overshoot.md) | superseded | Catch-reach near-degenerate overshoot — a 0.78° target produced a 2.32° excursion |
+| 2026-09-09 | [inertia-ratio-reconciliation.md](inertia-ratio-reconciliation.md) | superseded | INERTIA_RATIO does not reconcile with the measured masses — what it actually is, and whether it matters |
 
 ## Where the other plans are
 

@@ -468,7 +468,7 @@ key measurement:
 
 ## Related
 
-- Plan: [`plans/active/mvp-trajectory-bringup.md`](../plans/active/mvp-trajectory-bringup.md) — Phase 4 detail + the "Kinetics-aware shaping" architecture section.
+- Plan: [`plans/archived/mvp-trajectory-bringup.md`](../plans/archived/mvp-trajectory-bringup.md) — Phase 4 detail + the "Kinetics-aware shaping" architecture section.
 - [2026-07-08-mvp-phase3-spacemouse-streaming.md](2026-07-08-mvp-phase3-spacemouse-streaming.md) — the follower supersede that lifts the Phase-2 `BUSY` restriction this phase's `go_to_pose` still carries.
 - [2026-07-07-mvp-phase2-waypoint-moves.md](2026-07-07-mvp-phase2-waypoint-moves.md) — the `validate` gate + `build_move` the shaper feeds, and the `GoToPose.srv` this phase extends.
 - Reference geometry: `Jugglebot-bb/sim/juggle_tilt.py` (`realize_tilted`, `cup_lateral_shift_mm`) — the lever-arm derivation the shaper ports.

@@ -1,6 +1,6 @@
 """Unified 7-DoF planner, Phase 1 — the ``CyclePlan`` 7-channel plan object.
 
-Plan: plans/active/unified-7dof-planner.md § 4 Phase 1.
+Plan: plans/archived/unified-7dof-planner.md § 4 Phase 1.
 
 Two things have to hold or Phase 2/4 cannot reuse the existing machinery:
 

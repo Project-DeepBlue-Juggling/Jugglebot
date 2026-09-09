@@ -8,7 +8,7 @@ related_plan: unified-7dof-planner.md
 files_changed:
   - tests/hardware/hand_stream_bench.py
   - tests/hardware/session_unified7_hand_bringup.md
-  - plans/active/unified-7dof-planner.md
+  - plans/archived/unified-7dof-planner.md
   - logbook/2026-09-04-fw17-hand-ladder-sitting-two.md
   - logbook/INDEX.md
 subsystem:
@@ -867,7 +867,7 @@ work** — the fix is three tokens, the deployment is another lockstep-class
 flash. Recording it as a named defect with its fix site is the whole of what
 this session can do about it.
 
-**`plans/active/unified-7dof-planner.md`** — Phase 3 recorded **COMPLETE
+**`plans/archived/unified-7dof-planner.md`** — Phase 3 recorded **COMPLETE
 2026-09-04** (owner's declaration) in the § 3 status table, the phase heading,
 the § 5 hardware-ladder rows, and a close-out paragraph covering both sittings.
 
@@ -923,7 +923,7 @@ which is untestable with the current stages.
 **The owner declared Phase 3 COMPLETE on 2026-09-04** on that record — the
 lockstep flash is discharged, the streamed hand lane is validated on real
 hardware, and what remains is scheduled into sitting three rather than blocking
-the phase. `plans/active/unified-7dof-planner.md` carries the close-out.
+the phase. `plans/archived/unified-7dof-planner.md` carries the close-out.
 
 **The number that governs the arming decision, stated once more because it is
 the thing a future reader must not miss:** it is **not** the 10.9794 `dev_max`

@@ -156,7 +156,7 @@ the answer is that **it is two limits wearing one name**:
   and the remedy for a velocity-bound one is not.
 * **the 150 mm cap** (`toss_max_displacement_mm`) — **chosen**, and the honest
   provenance is that it is *the operator's own ordered working range*, set
-  2026-07-28 (`plans/active/single-ball-toss.md` Phase E).
+  2026-07-28 (`plans/archived/single-ball-toss.md` Phase E).
 
 So: chosen, but **not arbitrary, and not removed**. It is kept for two reasons
 that the closed-form bound cannot cover. The bound is **measured-optimistic above

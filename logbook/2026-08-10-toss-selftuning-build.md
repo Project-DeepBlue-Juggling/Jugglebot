@@ -15,7 +15,7 @@ tags:
 
 # Toss self-tuning loop — the build
 
-**One entry for the whole build.** `plans/active/toss-selftuning.md` § 5 lands in
+**One entry for the whole build.** `plans/archived/toss-selftuning.md` § 5 lands in
 six phases (2a–2f); each appends its own section here rather than minting a
 separate entry, because the phases share one design, one corpus format and one
 acceptance story, and a reader reconstructing "how did the toss calibration loop
@@ -1171,7 +1171,7 @@ Nine surfaces, in dependency order.
    minted.
 7. **`ros_ws/docs/choreography.md`** — regenerated; it picks up both new wires.
 8. **Tests** — 34 new (see Verification).
-9. **`plans/active/toss-selftuning.md`** — the 2d row marked landed, § 10 gains
+9. **`plans/archived/toss-selftuning.md`** — the 2d row marked landed, § 10 gains
    the dwell-window finding.
 
 ### Verification

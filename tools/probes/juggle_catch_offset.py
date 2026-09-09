@@ -9,7 +9,7 @@ harness that grounds the catch realisation constants in
 ``tests/sim/test_juggle_catch.py``.
 
 Motivating logbook: ``logbook/2026-06-30-rung1-clean-single-catch.md``
-(Phase 1 / Rung 1 of ``plans/active/bb-online-juggle-tilt-rearchitecture.md``).
+(Phase 1 / Rung 1 of ``plans/archived/bb-online-juggle-tilt-rearchitecture.md``).
 
 Headless MuJoCo plant, no hardware. Writes a CSV summary to
 ``temp/probes/juggle_catch_offset.csv`` (gitignored under ``temp/``).

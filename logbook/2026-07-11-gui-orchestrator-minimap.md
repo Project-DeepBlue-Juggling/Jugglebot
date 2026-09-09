@@ -291,7 +291,7 @@ contextual-button rule 6 then.
   doc note from the refuted HIGH.
 - [[2026-07-02-canbridge-phase4-orchestrator-wiring]] — the orchestrator wiring
   whose state machine this minimap renders and drives.
-- Plan: [`mvp-trajectory-bringup.md`](../plans/active/mvp-trajectory-bringup.md)
+- Plan: [`mvp-trajectory-bringup.md`](../plans/archived/mvp-trajectory-bringup.md)
   — the deferred 'orchestrator-automated arming' item: the minimap ships
   manual Arm only (nothing to double-arm when that lands; adjust
   contextual-button rule 6 then).

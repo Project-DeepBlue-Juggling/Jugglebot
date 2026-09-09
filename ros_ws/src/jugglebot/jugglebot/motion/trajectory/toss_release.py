@@ -1,7 +1,7 @@
 """Toss release state — STOW→global conversion + toss ballistics (Tiers 8a/8b).
 
 Pure numpy release-state math for the self-toss (``Toss.action``,
-``plans/active/single-ball-toss.md`` Phase 1): where the ball leaves the hand,
+``plans/archived/single-ball-toss.md`` Phase 1): where the ball leaves the hand,
 the launch velocity that lands it back in the cup after ``flight_time_s``, and
 the physics fields of the self-``ThrowAnnouncement`` that closes the existing
 correlation → catch loop unchanged. Phase 4 adds the Tier-8b displaced case
@@ -355,7 +355,7 @@ def aim_target_offset_mm(aim_rx: float, aim_ry: float, flight_time_s: float,
     ``(aim_rx, aim_ry)``.
 
     THE aim → displacement conversion for contract C-TOSS-CAL-1
-    (``plans/active/toss-selftuning.md`` D1): the toss aim map stores a
+    (``plans/archived/toss-selftuning.md`` D1): the toss aim map stores a
     *commanded tilt* in radians, and the only sanctioned way to command it is to
     displace the tilted path's target by this offset and let the existing,
     test-pinned Tier-8b math derive the tilt. Riding the shipped path is what

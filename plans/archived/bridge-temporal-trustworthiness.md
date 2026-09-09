@@ -371,7 +371,7 @@ Implementation constraints, both verified on this box:
 
 ### S1 — the aged-bridge sitting (operator)
 
-*This arc's S1. `plans/active/mvp-trajectory-bringup.md` has its own S1–S8
+*This arc's S1. `plans/archived/mvp-trajectory-bringup.md` has its own S1–S8
 sitting ladder; there is no relation between the two labels.*
 
 **Preconditions (all before the aging window starts):** P0 and P2 landed,

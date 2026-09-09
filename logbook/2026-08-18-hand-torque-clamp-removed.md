@@ -8,7 +8,7 @@ related_plan: catch-robustness.md
 files_changed:
   - config/ODrive config Files/odrive_pro_hand_config.json
   - tools/probes/hand_decel_authority.py
-  - plans/active/catch-robustness.md
+  - plans/archived/catch-robustness.md
 subsystem:
   - motion
 tags:
@@ -111,7 +111,7 @@ over the preceding days and judges it extremely reliable, and ran many reloads a
 self-tosses in the same period with occasional drops but nothing of concern. The
 sensor is accepted as the possession source of truth on that basis, and
 `tests/hardware/session_anomaly_fixes.md` § SECTION POSS / Stage 6 CAP-WORK are
-declared complete **in `plans/active/catch-robustness.md`, without a scored
+declared complete **in `plans/archived/catch-robustness.md`, without a scored
 capture** — the runbook rows themselves are left in place, unmarked. Two rows are
 therefore never
 exercised against their written criteria and the runbook keeps them for later:
@@ -126,7 +126,7 @@ hardware) and `POSS-1.8` (the blind-sensor paths, test-only in this build).
   `HAND_TORQUE_SOFT_MIN_NM_PRE_2026_08_18` so the instrument can still reason about
   old captures; the "probably not binding" paragraph is replaced by the confirmed
   finding plus an explicit warning that pre-2026-08-18 bags are clamp-limited.
-- `plans/active/catch-robustness.md` — new § 2026-08-18 section, Phase 0 status
+- `plans/archived/catch-robustness.md` — new § 2026-08-18 section, Phase 0 status
   split into done/remaining, Open-row trigger marked FIRED, catch-tuning constraint
   rewritten to "re-measure" rather than "frozen".
 

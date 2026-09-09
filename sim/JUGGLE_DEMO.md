@@ -7,9 +7,9 @@
 > (per-throw planner, tilt-aimed throws, single-ball self-catch — Rungs 0–2b)
 > was merged into `mvp-trajectory-bringup` on 2026-07-24 and now continues on
 > the **production trajectory stack** under
-> [`plans/active/single-ball-toss.md`](../plans/active/single-ball-toss.md);
+> [`plans/archived/single-ball-toss.md`](../plans/archived/single-ball-toss.md);
 > the authority for the two-ball frontier remains
-> [`plans/active/bb-online-juggle-tilt-rearchitecture.md`](../plans/active/bb-online-juggle-tilt-rearchitecture.md).
+> [`plans/archived/bb-online-juggle-tilt-rearchitecture.md`](../plans/archived/bb-online-juggle-tilt-rearchitecture.md).
 > The `demo/bb-led-two-ball-juggle` branch referenced in §2 is merged and
 > retired — everything here now lives on `mvp-trajectory-bringup`.
 

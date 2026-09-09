@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """toss_trace_recorder — real-ordering trace recorder + offline checker for the
-single-ball-toss choreography (Phase 3 of ``plans/active/single-ball-toss.md``).
+single-ball-toss choreography (Phase 3 of ``plans/archived/single-ball-toss.md``).
 
 **This script OBSERVES the graph; it never commands motion, never publishes on
 any production topic, never calls any service.**  The goal trigger is the
@@ -2376,7 +2376,7 @@ def cmd_record(args: argparse.Namespace) -> int:
 def main() -> int:
     p = argparse.ArgumentParser(
         description='Toss choreography real-ordering trace recorder + checker '
-                    '(Phase 3, plans/active/single-ball-toss.md)')
+                    '(Phase 3, plans/archived/single-ball-toss.md)')
     sub = p.add_subparsers(dest='cmd', required=True)
 
     pr = sub.add_parser('record', help='record a live trace (needs the ROS '

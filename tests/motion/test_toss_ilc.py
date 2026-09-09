@@ -1,6 +1,6 @@
 """The layer-3 critical-point ILC artifact — ``jugglebot/motion/toss_ilc.py``.
 
-``plans/active/critical-point-ilc.md`` **Phase 2**. This file covers the PURE
+``plans/archived/critical-point-ilc.md`` **Phase 2**. This file covers the PURE
 half: the schema, the all-or-nothing validation, the provenance-dormancy verdict,
 the key quantisation, the exact-zero miss, and the constants this module shares
 with the offline fit. The NODE half — byte-identical OFF, the single apply point,

@@ -7,7 +7,7 @@ phase: "Online-juggle tilt re-architecture — motion-quality course-correction 
 related_plan: "bb-online-juggle-tilt-rearchitecture.md"
 files_changed:
   - logbook/2026-07-03-p2-selfcatch-reunification-tension.md
-  - plans/active/bb-online-juggle-tilt-rearchitecture.md
+  - plans/archived/bb-online-juggle-tilt-rearchitecture.md
 commits:
   - 9db5312
 subsystem:

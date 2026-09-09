@@ -1,12 +1,12 @@
 """Session AIM trim — **layer 2** of contract C-TOSS-CAL-1, and the shared
 reduction/admission core the offline fit runs on.
 
-Normative design: ``plans/active/toss-selftuning.md`` §§ 3.2, 3.6, 3.6.1, 3.6.2,
+Normative design: ``plans/archived/toss-selftuning.md`` §§ 3.2, 3.6, 3.6.1, 3.6.2,
 3.6.3 and decisions D5, D6, D7. Build phase **2e**.
 
 ⚠ **THE AIM ESTIMATOR IS MONITOR-ONLY SINCE 2026-08-21.** See
 :data:`AIM_AUTHORITY` for the whole argument and
-``plans/active/critical-point-ilc.md`` § "The 2026-08-21 fold-in" for the owner
+``plans/archived/critical-point-ilc.md`` § "The 2026-08-21 fold-in" for the owner
 decision. In one line: the critical-point ILC is the primary learning law, two
 converging estimators of one quantity double-count in both directions (C4), and
 this one keeps the observation and loses the authority. ``speed_gain`` retires
@@ -195,7 +195,7 @@ TRIM_SCHEMA = 'toss_trim_proposal/1'
 
 #: **The layer-2 AIM estimator's authority over the commanded aim: none.**
 #: Owner decision 1 of the 2026-08-21 ILC-primary fold-in
-#: (``plans/active/critical-point-ilc.md`` § "The six decisions"), closing
+#: (``plans/archived/critical-point-ilc.md`` § "The six decisions"), closing
 #: contradiction **C4**.
 #:
 #: Root cause, not the decision by name: two converging estimators of ONE

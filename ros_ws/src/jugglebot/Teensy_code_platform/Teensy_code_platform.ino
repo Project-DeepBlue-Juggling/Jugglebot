@@ -100,7 +100,7 @@
  *        added `hand_clip_margin_rev` for its OWN, differently-shaped clip
  *        guard) — this board carries no clip-margin logic of its own; only the
  *        shared `hand_motor_hard_stop_revs` moved. Plan:
- *        plans/active/unified-7dof-planner.md § FW 18 bundle. Logbook:
+ *        plans/archived/unified-7dof-planner.md § FW 18 bundle. Logbook:
  *        logbook/2026-09-08-fw18-bundle-hand-clip-homing-counters-rename.md
  *    5 = 2026-09-09.  FIRST IMAGE THAT CAN BE UPDATED OVER CAN.  Adds the
  *        0x6F0/0x6F1 firmware-update endpoint (§ FIRMWARE UPDATE OVER CAN

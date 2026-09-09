@@ -20,7 +20,7 @@ files_changed:
   - tests/ros/test_catch_coordinator_node.py
   - ros_ws/src/jugglebot_interfaces/action/Reload.action
   - tests/hardware/session_phase7_reload.md
-  - plans/active/mvp-trajectory-bringup.md
+  - plans/archived/mvp-trajectory-bringup.md
   - logbook/INDEX.md
 commits:
   - 8dbd3a0
@@ -216,7 +216,7 @@ consumer and assert the physical quantity (a commanded pose), not the call patte
 ## Related
 
 - `logbook/2026-07-20-reload-action-catch-latch.md` — the refactor this session validated
-- `plans/active/mvp-trajectory-bringup.md` — Phase-7 plan text corrected by this entry
+- `plans/archived/mvp-trajectory-bringup.md` — Phase-7 plan text corrected by this entry
 - `tests/hardware/session_phase7_reload.md` — updated re-test runbook
 - Rosbag: `~/Desktop/rosbags/2026-07-23_09-13-51` (310 dynamic targets, 7 WORKSPACE rejects, 6 throws)
 - OPEN: BB-ball landing-estimate drift (435–605 mm/s) — needs its own investigation

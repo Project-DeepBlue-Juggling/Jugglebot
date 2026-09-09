@@ -1,7 +1,7 @@
 """trajectory_node — thin ROS 2 wrapper around the MVP trajectory generator.
 
 The Jetson-side replacement for ``run_mpc.py``'s hot path (Phase 1 of
-``plans/active/mvp-trajectory-bringup.md``). A dedicated 40 Hz emitter thread
+``plans/archived/mvp-trajectory-bringup.md``). A dedicated 40 Hz emitter thread
 streams ``make_mpc_command`` knot frames on ZMQ :5557 — the exact seam
 ``HardwarePlant`` used — which ``teensy_bridge_node``'s ``_MpcCommandSetpointSource``
 consumes unchanged, feeding ``SetpointPump`` → the can-hub Teensy's 500 Hz

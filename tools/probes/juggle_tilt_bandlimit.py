@@ -29,7 +29,7 @@ not symmetric between x and y, so the leg spread (hence headroom) differs.
 
 Motivating logbook entry:
   logbook/2026-06-29-platform-tilt-tracking-characterisation.md
-  (Phase 0 of plans/active/bb-online-juggle-tilt-rearchitecture.md)
+  (Phase 0 of plans/archived/bb-online-juggle-tilt-rearchitecture.md)
 
 Outputs: printed to stdout (no files). Headless MuJoCo plant — no hardware,
 side-effect-free. Run from the repo root:

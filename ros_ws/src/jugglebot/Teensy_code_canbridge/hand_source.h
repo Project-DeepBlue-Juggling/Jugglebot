@@ -2,7 +2,7 @@
 // =============================================================================
 //  hand_source.h — the hand-mastery interlock latch (unified-7dof FW 17)
 // =============================================================================
-//  plans/active/unified-7dof-planner.md § 2.4. ONE latched mode decides which
+//  plans/archived/unified-7dof-planner.md § 2.4. ONE latched mode decides which
 //  master may command the hand ODrive (axis 6):
 //
 //    LEGACY_STROKE (boot default) — the Platform Teensy stroke engine masters

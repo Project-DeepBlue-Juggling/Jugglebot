@@ -608,7 +608,7 @@ class ReloadSequencer:
         and a late arrival measured from the fallback anchor CAN fall outside the
         window. The failure direction is the safe one — a real catch read MISSED,
         never a false CAUGHT — but it is a bench-watch item, not a proof:
-        ``plans/active/catch-robustness.md`` Phase 1 open items. In practice the
+        ``plans/archived/catch-robustness.md`` Phase 1 open items. In practice the
         FSM only reaches ``BALL_IN_FLIGHT`` after ``_announced``, so the fallback
         anchor is what a query sees during ``THROW_PENDING``, before BB's
         announcement lands."""

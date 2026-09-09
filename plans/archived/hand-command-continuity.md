@@ -36,7 +36,7 @@ related_code:
 self-toss anomaly investigation.
 **Sibling plans:** `plans/parked/levelling-frame-contract.md` (items 1–2),
 `plans/archived/fk-convergence-tolerance.md` (7),
-`plans/parked/catch-reach-degenerate-overshoot.md` (8).
+`plans/archived/catch-reach-degenerate-overshoot.md` (8).
 
 ## Context
 
@@ -1574,7 +1574,7 @@ the Phase-0 probe.
   release-speed scatter. Expect achieved flight to move toward the commanded 0.8 s
   from the current 0.887–1.091 s. Record the numbers; do not gate on a specific
   value this round, since the release model is still unmeasured (Phase 5 T0 of
-  `plans/active/single-ball-toss.md`).
+  `plans/archived/single-ball-toss.md`).
 - No `Not enough time for smooth-move` on the Teensy serial.
 
 **ABORT:** any second stroke or mid-ascent yank; hand position exceeding 10.5 rev;
@@ -1600,7 +1600,7 @@ and C-HAND-2 § *The negative torque clamp*: the drive was **swapped on
 Nothing in Phases 1–7 changes on this basis. Details, numbers and the open
 question about C-HAND-2's declared inertia:
 `logbook/2026-08-10-hand-drive-braking-clamp-diagnosis.md`; programme plan:
-`plans/active/catch-robustness.md`.
+`plans/archived/catch-robustness.md`.
 
 ### Phase 6 — Platform Teensy `FW_VERSION` (added 2026-07-27, operator-requested)
 
@@ -2095,7 +2095,7 @@ only by argument).
 * **The three unowned Phase-0 findings** — the catch time-origin divergence
   (0.498 rev = 15.75 mm, velocity-independent), the 20 mm absolute catch-height
   placement, and the benign catch `end_time` gap — are **re-homed to
-  `plans/parked/hand-trajectory-generator-overhaul.md` § 6 *Inherited findings***.
+  `plans/archived/hand-trajectory-generator-overhaul.md` § 6 *Inherited findings***.
   That plan rewrites this generator and its sim port wholesale, so it is the
   change that has to decide them. The derivations stay here (§ Phase 0 — Outcome,
   Confirmation 2) as the evidence.
@@ -2111,7 +2111,7 @@ only by argument).
   error; `buildSegment`'s residual terminal velocity feedforward) are pinned in
   code and in C-HAND-2 rather than fixed, because no live host dispatches kind 2.
 * **The braking-clamp arc** the Phase-5 addendum opened is owned by
-  `plans/active/catch-robustness.md`. The clamp itself was real and is fixed
+  `plans/archived/catch-robustness.md`. The clamp itself was real and is fixed
   (`torque_soft_min` −0.0551 → symmetric ±0.7 N·m, saved), so bench row H7.0c is
   now a regression check.
 * **The dispatch-shift finding** (`+54…+63 ms`, exceeding the 40 ms margin the arm

@@ -31,7 +31,7 @@ files_changed:
   - tests/ros/test_teensy_bridge_node_setpoint.py
   - controller/teensy_link/setpoint_pump.py
   - ros_ws/docs/can-node-teensy-parity.md
-  - plans/active/mvp-trajectory-bringup.md
+  - plans/archived/mvp-trajectory-bringup.md
   - docs/can_bridge/index.md
 commits:
   - 5cc8fc9

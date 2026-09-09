@@ -1,7 +1,8 @@
 ---
 title: Catch robustness — sensor-truth verdicts, hand-drive restoration, toss self-tuning
 created: 2026-08-10
-status: active
+status: superseded   # 2026-09-09 — superseded by two-ball-skill-stack.md (owner decision); see the Archival note below
+archived: 2026-09-09
 related_logbook:
   - 2026-08-10-hand-drive-braking-clamp-diagnosis.md
   - 2026-08-21-ilc-primary-foldin.md
@@ -11,11 +12,17 @@ related_code:
   - ros_ws/src/jugglebot/jugglebot/toss_sequencer.py
   - tools/probes/hand_stroke_timeline.py
   - plans/archived/hand-ball-sensor.md
-  - plans/active/single-ball-toss.md
+  - plans/archived/single-ball-toss.md
   - plans/archived/hand-command-continuity.md
 ---
 
 # Plan — Catch robustness programme
+
+## Archival note (2026-09-09)
+
+Superseded by `two-ball-skill-stack.md` (owner decision 2026-09-09). Phases 0–1 CLOSED 2026-08-18 (the braking clamp). The sensor-truth possession verdict contract (C-POSSESS-1) SURVIVES as a normative doc and is ported into the new plan's invariant checklist (R0); the toss self-tuning loop phase is retired with the FSM stack.
+
+The filename is unchanged (DOCUMENTATION_GUIDE § 2.6); every `related_plan:` and prose reference keeps resolving. Read the successor plan first: `two-ball-skill-stack.md`.
 
 **Branch:** `mvp-trajectory-bringup`
 **Goal:** highly repeatable single-ball tosses across most of the workspace at

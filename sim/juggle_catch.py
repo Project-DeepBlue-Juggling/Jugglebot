@@ -1,6 +1,6 @@
 """Rung 1 — clean single catch (BB-reload), the catch primitive in isolation.
 
-Phase 1 of plans/active/bb-online-juggle-tilt-rearchitecture.md. A focused,
+Phase 1 of plans/archived/bb-online-juggle-tilt-rearchitecture.md. A focused,
 single-ball harness that validates the **catch** primitive on its own, fed a
 known-clean BB throw, before any throw or 2-ball confound is introduced:
 

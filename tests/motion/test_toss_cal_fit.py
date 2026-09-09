@@ -1,6 +1,6 @@
 """Tests for the toss AIM calibration fit — ``tests/hardware/toss_fit_lib.py``
 and its thin CLI ``tests/hardware/toss_cal_fit.py`` (build phase 2c of
-``plans/active/toss-selftuning.md``).
+``plans/archived/toss-selftuning.md``).
 
 THE TEST THAT MATTERS
 ---------------------

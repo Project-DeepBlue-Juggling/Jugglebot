@@ -10,7 +10,7 @@ files_changed:
   - tests/ros/test_toss_coordinator.py
   - tests/ros/test_toss_continuous_node.py
   - tests/hardware/session_cadence_ladder.md
-  - plans/active/toss-pipelined-preamble.md
+  - plans/archived/toss-pipelined-preamble.md
 subsystem:
   - ros
 tags:
@@ -280,7 +280,7 @@ right.
 
 `tests/hardware/session_cadence_ladder.md` — carried finding 2 CLOSED (root
 cause, the answered position sub-question, the fix and its bound, the owner's
-acceptance, the 8a/8b divergence). `plans/active/toss-pipelined-preamble.md` —
+acceptance, the 8a/8b divergence). `plans/archived/toss-pipelined-preamble.md` —
 § 8.1 P-4 ✅ CLOSED, § 6.1's booking gate satisfied, § 2.4.1's ⚠ annotated.
 
 ## Verification

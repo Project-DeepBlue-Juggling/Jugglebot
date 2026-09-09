@@ -12,8 +12,8 @@ archived: 2026-08-15
 > `demo/bb-led-two-ball-juggle` was merged into `mvp-trajectory-bringup` on
 > 2026-07-24 (merge commit `20fcc9e`); the branch and its worktree are retired.
 > The single-ball frontier continues on the production trajectory stack in
-> `plans/active/single-ball-toss.md`; the two-ball frontier authority remains
-> `plans/active/bb-online-juggle-tilt-rearchitecture.md`. Branch references
+> `plans/archived/single-ball-toss.md`; the two-ball frontier authority remains
+> `plans/archived/bb-online-juggle-tilt-rearchitecture.md`. Branch references
 > throughout this plan are historical — everything now lives on
 > `mvp-trajectory-bringup`.
 
@@ -55,7 +55,7 @@ motion *smooth*.
 - **Not in scope (parallel side-quest):** the hand-trajectory-generator
   overhaul (`Trajectory.h`: piecewise-constant-acceleration → jerk-limited,
   parameterised by release velocity / time budget / stroke portion). That work
-  has its own plan document, `plans/parked/hand-trajectory-generator-overhaul.md`
+  has its own plan document, `plans/archived/hand-trajectory-generator-overhaul.md`
   (to be created), and proceeds independently. This demo is built against the
   *current* hand generator; the overhaul, when landed, improves hand smoothness
   and lowers the achievable throw height but is not a prerequisite.
@@ -899,7 +899,7 @@ The demo is additive and on a dedicated branch. Rollback of any phase:
 
 ## Archival note (2026-08-15)
 
-Superseded by `plans/active/bb-online-juggle-tilt-rearchitecture.md`, which
+Superseded by `plans/archived/bb-online-juggle-tilt-rearchitecture.md`, which
 this plan itself names "the two-ball frontier authority" (merged-location note,
 2026-07-24) — its Rung 3 (two-ball columns → oval, BB-seeded, ≥30 catches /
 0 drops) is unblocked as of 2026-07-04 and is the live home for the two-ball

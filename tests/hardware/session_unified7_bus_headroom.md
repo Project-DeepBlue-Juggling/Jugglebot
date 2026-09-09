@@ -1,6 +1,6 @@
 # Bench session — unified-7DOF bus headroom + leg-bus frame-drop A/B
 
-Phase 0, probe 3 of `plans/active/unified-7dof-planner.md`, run jointly with
+Phase 0, probe 3 of `plans/archived/unified-7dof-planner.md`, run jointly with
 workstream B of `plans/active/leg-bus-frame-drops.md` § 4.1.
 
 ## Purpose
@@ -211,7 +211,7 @@ absolute.
 | `interp_max_jitter_us` / `interp_deadline_misses` | pre-arm budget | unchanged | 0 | The 7th frame adds one `can_jugglebot_tx` inside the 500 Hz ISR's existing PRIMASK region. A rise here is the ISR-cost read; the throughput read is `can1_tx` above and this row cannot see it. |
 | Per-axis encoder deficit | baseline | **the question** | — | See the decision rule. |
 
-## The decision rule (verbatim, from `plans/active/unified-7dof-planner.md` § Phase 0.3)
+## The decision rule (verbatim, from `plans/archived/unified-7dof-planner.md` § Phase 0.3)
 
 > **If the drop rate scales with TX rate, the `leg-bus-frame-drops` source fix
 > sequences before Phase 3.**

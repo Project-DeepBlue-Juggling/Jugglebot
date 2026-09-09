@@ -1,6 +1,6 @@
 """Unified-mode sim gate — ``sim/unified_gate.py`` (T-I2).
 
-Plan: ``plans/active/unified-7dof-planner.md`` § 4 Phase 4 and § 5 T-I2.
+Plan: ``plans/archived/unified-7dof-planner.md`` § 4 Phase 4 and § 5 T-I2.
 
 **Marker policy: UNMARKED (per-commit)**, matching ``tests/sim/test_toss_gate.py``
 and ``tests/sim/test_cycle_gate.py``.  The demotion rule is on CONTENT, not

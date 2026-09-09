@@ -1,7 +1,8 @@
 ---
 title: MVP Trajectory Bringup — Simple Streaming Control to Two-Ball Juggling
 created: 2026-07-07
-status: active
+status: superseded   # 2026-09-09 — superseded by two-ball-skill-stack.md (owner decision); see the Archival note below
+archived: 2026-09-09
 related_code:
   - ros_ws/src/jugglebot/jugglebot/motion/ipc.py::make_mpc_command
   - ros_ws/src/jugglebot/jugglebot/teensy_bridge_node.py::_MpcCommandSetpointSource
@@ -11,6 +12,12 @@ related_code:
 ---
 
 # MVP Trajectory Bringup
+
+## Archival note (2026-09-09)
+
+Superseded by `two-ball-skill-stack.md` (owner decision 2026-09-09). S1–S4 delivered the streaming transport (ZMQ :5557 → SetpointPump → UDP Setpoint → can-bridge 500 Hz Hermite → ODrives) and the arming contract; both are RETAINED unchanged and are the floor the skill stack stands on. The toss and juggle phases (S5 onward) are re-cut in the new plan. The `mvp-trajectory-bringup` git branch stays as the parallel firmware-validation line; the skill stack lives on `skill-stack`.
+
+The filename is unchanged (DOCUMENTATION_GUIDE § 2.6); every `related_plan:` and prose reference keeps resolving. Read the successor plan first: `two-ball-skill-stack.md`.
 
 ## Context
 
@@ -509,7 +516,7 @@ passes; results recorded in the logbook with seeds and configs):
 | 5 | Timed target states | — | timed moves ±25 ms | CODE COMPLETE (hardware deferred) |
 | 6 | Sim port + catch trajectory + hand-model fidelity | Reload gate | none | SIM GATE CORE PASS (vel-match criterion deferred — see Phase 6/7) |
 | 7 | Reload on hardware (action) | — | 7a aim-only / 7b static catch / 7c full | **HARDWARE RUN — four sittings through 2026-07-24** (15/19 caught, open-loop-platform pivot landed; arc continued in `single-ball-toss.md` § Context and the logbook) |
-| 8 | *(stretch)* Single-ball self-toss | Self-toss gate | staged | PLANNED — expanded in `plans/active/single-ball-toss.md` (2026-07-24) |
+| 8 | *(stretch)* Single-ball self-toss | Self-toss gate | staged | PLANNED — expanded in `plans/archived/single-ball-toss.md` (2026-07-24) |
 | 9 | *(extra stretch)* Two-ball juggling | Two-ball gate | staged | NOT STARTED (stretch) |
 
 ## Build-run status (2026-07-08)
@@ -1173,7 +1180,7 @@ loop. Hardware: single toss-and-catch, then N-loop. Starts only after Phase 7
 exits.
 
 **Expanded (2026-07-24):** this sketch is superseded in detail by
-`plans/active/single-ball-toss.md` — the level-platform throw above is retained
+`plans/archived/single-ball-toss.md` — the level-platform throw above is retained
 as Tier 8a (toss-at-position: the platform translates to the nominated catch
 (x, y) before a vertical throw), and a Tier 8b (tilt-aimed displaced
 throw→catch, re-hosting the merged `demo/bb-led-two-ball-juggle` Rung-2a/2b
@@ -1230,12 +1237,12 @@ phase is reached, informed by Phases 6–8 evidence.
   stopped; the single-binder interlock makes conflicts loud).
   `mpc_bridge_node.py` source retained.~~
   **CLOSED 2026-09-01 — the MPC chain was removed outright**, superseded by
-  `plans/active/unified-7dof-planner.md`. `run_mpc.py` and `mpc_bridge_node.py`
+  `plans/archived/unified-7dof-planner.md`. `run_mpc.py` and `mpc_bridge_node.py`
   are deleted, so `trajectory_node` is the only :5557 binder and there is no
   return path to relaunch. Final implementation at git tag `mpc-final`; see
   `logbook/2026-09-01-mpc-chain-removed.md`.
 - **Full jerk-limited hand-generator overhaul**
-  (`Jugglebot-bb/plans/parked/hand-trajectory-generator-overhaul.md`); only the
+  (`Jugglebot-bb/plans/archived/hand-trajectory-generator-overhaul.md`); only the
   slim `makeCatch()` parameterisation remains pre-scoped, and only on hardware
   evidence.
 - ~~**motor_guard + motion_bridge_node launch retirement** — both are off the leg
@@ -1252,7 +1259,7 @@ phase is reached, informed by Phases 6–8 evidence.
 - **Choreography-layer event vocabulary** (added 2026-07-24). Phases 8–9's
   throw/catch surfaces should stay shaped as *named, timed events*: a goal of
   the nominated catch state ⟨position, flight time⟩ (as
-  `plans/active/single-ball-toss.md`'s `Toss.action` already is) plus
+  `plans/archived/single-ball-toss.md`'s `Toss.action` already is) plus
   perf-domain **absolute** deadlines — which `Toss.action`'s relative
   `throw_delay_s` does not yet provide; the precedent is
   `catch/dynamic_target`'s perf-domain `arrival_time`. A future

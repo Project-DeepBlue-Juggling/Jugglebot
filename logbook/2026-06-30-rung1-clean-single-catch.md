@@ -30,7 +30,7 @@ tags:
 
 ## Summary
 
-Phase 1 / Rung 1 of `plans/active/bb-online-juggle-tilt-rearchitecture.md`:
+Phase 1 / Rung 1 of `plans/archived/bb-online-juggle-tilt-rearchitecture.md`:
 validate the **catch** primitive standalone — catch one BB-thrown ball cleanly
 (seated AND held, small characterised in-cup offset) from a BB **placeable
 anywhere**, by **translate-to-reach** (slow centroid translation to the observed

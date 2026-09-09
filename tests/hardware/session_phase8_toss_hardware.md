@@ -1,6 +1,6 @@
 # Hardware Session — MVP Phase 8 (single-ball-toss § Phase 5): staged throw testing (T0–T4)
 
-**Plan**: `plans/active/single-ball-toss.md` § Phase 5
+**Plan**: `plans/archived/single-ball-toss.md` § Phase 5
 **Action**: `jugglebot/toss` (`Toss.action`) — goal nominates a **throw height**
 **Depends on**: Phase-3 trace VALIDATED (`logbook/2026-07-25-toss-phase3-trace-validated.md`);
 Toss.action height + operator-guaranteed-ball changes

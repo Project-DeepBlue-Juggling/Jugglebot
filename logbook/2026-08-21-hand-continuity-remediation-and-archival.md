@@ -10,7 +10,7 @@ files_changed:
   - plans/active/INDEX.md
   - plans/archived/INDEX.md
   - plans/parked/INDEX.md
-  - plans/parked/hand-trajectory-generator-overhaul.md
+  - plans/archived/hand-trajectory-generator-overhaul.md
   - tests/hardware/session_anomaly_fixes.md
   - ros_ws/docs/hand_command_continuity.md
   - ros_ws/docs/platform_fw_version.md
@@ -145,7 +145,7 @@ does by default.
 4. The three unowned Phase-0 findings — the catch **time-origin** divergence
    (0.498 rev = 15.75 mm, velocity-independent), the **20 mm absolute
    catch-height** placement, and the benign catch `end_time` gap — re-homed to
-   `plans/parked/hand-trajectory-generator-overhaul.md` § 6 *Inherited findings*.
+   `plans/archived/hand-trajectory-generator-overhaul.md` § 6 *Inherited findings*.
    Two things fixed in that file in the same edit: its § *Safety-critical
    invariants* instruction to keep `hand_stroke_mm` *"authoritative"* for
    over-extension detection, which now contradicts the deliberate 2026-08-18
@@ -373,7 +373,7 @@ because it has not been regenerated.
 ## Related
 
 - Plan: `plans/archived/hand-command-continuity.md` (§ Archival note — 2026-08-21)
-- Re-homed findings: `plans/parked/hand-trajectory-generator-overhaul.md` § 6
+- Re-homed findings: `plans/archived/hand-trajectory-generator-overhaul.md` § 6
   *Inherited findings*
 - Withdrawn claim: `logbook/2026-08-18-hand-end-stop-corrected.md`
   § *Withdrawn claims*

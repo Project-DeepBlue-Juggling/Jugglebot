@@ -153,7 +153,7 @@ timer, `.github/workflows` = docs.yml only).
 
 > **2026-09-01 — SUPERSEDED: the MPC chain was REMOVED OUTRIGHT, and the
 > revival path this phase preserved is retired.** The unified 7-DoF planner
-> (`plans/active/unified-7dof-planner.md`, landed 2026-09-01) *is* the
+> (`plans/archived/unified-7dof-planner.md`, landed 2026-09-01) *is* the
 > lower-rate replanner that parking held the option open for, so the "bring it
 > back later" intent below has been satisfied by a different design rather than
 > deferred. Deleted: `controller/{mpc,params,runner,hardware_plant,hardware_hooks,hot_loop_contract,generate_solver}.py`

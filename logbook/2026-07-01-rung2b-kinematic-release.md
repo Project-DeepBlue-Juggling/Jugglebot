@@ -15,7 +15,7 @@ files_changed:
   - tools/probes/juggle_allkinematic_loop.py
   - tools/probes/juggle_selfcatch_loopgain.py
   - tools/probes/README.md
-  - plans/active/bb-online-juggle-tilt-rearchitecture.md
+  - plans/archived/bb-online-juggle-tilt-rearchitecture.md
 commits:
   - 37a47e5
 subsystem:

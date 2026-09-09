@@ -15,7 +15,7 @@ reach. So the question this probe answers is "is the throw accurate enough (erro
 well inside ~60-80 mm) for the self-catch loop to sustain?".
 
 Motivating logbook: ``logbook/2026-06-30-rung2a-single-ball-tilt-throw.md``
-(Phase 2 / Rung 2a of ``plans/active/bb-online-juggle-tilt-rearchitecture.md``).
+(Phase 2 / Rung 2a of ``plans/archived/bb-online-juggle-tilt-rearchitecture.md``).
 
 Headless MuJoCo plant, no hardware. Writes a CSV summary to
 ``temp/probes/juggle_throw_accuracy.csv`` (gitignored under ``temp/``).

@@ -6,7 +6,7 @@ One cup cycle (just-after-throw → catch → next throw) planned in task space 
 a **convex quadratic program** over the cup's Cartesian jerk, solved in-process
 with numpy alone. It is the production port of
 ``sim/juggle_planner/juggle_planner.py::plan_cup_cycle`` (a CasADi/IPOPT
-program) required by ``plans/active/unified-7dof-planner.md`` Phase 1: this
+program) required by ``plans/archived/unified-7dof-planner.md`` Phase 1: this
 package is pure-Python / numpy-only / Python 3.8 by architectural rule, and
 CasADi is not importable here.
 

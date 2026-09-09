@@ -27,7 +27,7 @@ related_code:
 from the 2026-07-25 self-toss anomaly investigation.
 **Sibling plans:** `plans/archived/hand-command-continuity.md` (items 3–6),
 `plans/archived/fk-convergence-tolerance.md` (item 7),
-`plans/parked/catch-reach-degenerate-overshoot.md` (item 8).
+`plans/archived/catch-reach-degenerate-overshoot.md` (item 8).
 
 > The retrospective diagnosis for this plan has **not yet been written to the
 > logbook**. Whoever starts Phase 0 should either write it first or confirm with
@@ -184,7 +184,7 @@ residual.
 > What this plan does close is the **park**: the platform rested 0.78° off
 > gravity and `go_to_pose` and `catch/dynamic_target` disagreed about where level
 > was. That is real and worth having, and it is what CHECK LVL-3 gates on.
-> Removing the swing is `plans/parked/catch-reach-degenerate-overshoot.md` —
+> Removing the swing is `plans/archived/catch-reach-degenerate-overshoot.md` —
 > which the finalize pass also re-scoped (§ Notes for collaborators).
 >
 > Two downstream corrections this forced: Phase 4's `peak_above_park` ABORT at
@@ -197,7 +197,7 @@ residual.
 > > analysis above stands as written (it is what made the second contract
 > > necessary), but its operator-facing conclusion is now false. C-CATCH-1
 > > (`ros_ws/docs/catch_arrival_contract.md`, landed with
-> > `plans/parked/catch-reach-degenerate-overshoot.md` Phase 2) passes the
+> > `plans/archived/catch-reach-degenerate-overshoot.md` Phase 2) passes the
 > > gravity-referenced receive tilt to `build_catch` as its own argument, so a
 > > gravity-level catch gets **no through-seat at all** and its reach is FLAT:
 > > `2.3218–2.3340° → 0.0000°` on all five self-toss reaches of the reference
@@ -607,7 +607,7 @@ below the current 16 mm catch error the plan is closing.
 > than assuming.
 
 **Relevant to
-`plans/parked/catch-reach-degenerate-overshoot.md` Phase 0** only as a note: that
+`plans/archived/catch-reach-degenerate-overshoot.md` Phase 0** only as a note: that
 plan's near-degenerate reach is the same `build_catch` path, and after this plan the
 commanded rotvec excursion on the toss reach goes to ~0, which is exactly the
 degenerate case it studies — its Phase 0 should re-read its reproduction against a
@@ -1410,7 +1410,7 @@ so its wiring wants a real-ordering check (the existing
   `+3.0992°` to `+2.9198°` against gravity at the reference session's 3.70 s lead
   — 0.18° of 2.9°. The reload's real 11.08° BB pre-tilt was verified clean
   (monotonic, no overshoot) in the same session.
-  **`plans/parked/catch-reach-degenerate-overshoot.md` now owns the swing**, and
+  **`plans/archived/catch-reach-degenerate-overshoot.md` now owns the swing**, and
   should re-read its reproduction against two facts: the arrival twist
   `build_catch` injects is a *specified* part of the reach's boundary conditions,
   not an artefact; and its own "degenerate reach" case is what a post-Phase-2 toss

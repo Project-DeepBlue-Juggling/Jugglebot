@@ -753,7 +753,7 @@ def test_session_exception_preserves_accounting_and_reraises(monkeypatch):
 
 
 # ── S6/S7: session-scoped arming and drain-before-go_home ────────────────────
-# plans/active/toss-pipelined-preamble.md § 2.3. The per-cycle choreography and
+# plans/archived/toss-pipelined-preamble.md § 2.3. The per-cycle choreography and
 # the drift guard are pinned in test_toss_coordinator.py; here we pin the
 # SESSION lifecycle (raised inside the execute call, lowered on every exit) and
 # the structural invariant S7 rests on.
@@ -2794,7 +2794,7 @@ def test_the_shipped_default_is_the_two_slot_pipeline():
     sitting, and it rides as the committed default — so the assertion that used
     to read ``is False`` reads ``is True``, and it is the ONE assertion in this
     file the flip is allowed to move. Its intent is unchanged and is the reason
-    it exists: `plans/active/toss-pipelined-preamble.md` § 9.5 level 1 says one
+    it exists: `plans/archived/toss-pipelined-preamble.md` § 9.5 level 1 says one
     YAML key plus a colcon build selects the machine, and this is what proves
     the key is really what selects rather than a second switch somewhere.
 

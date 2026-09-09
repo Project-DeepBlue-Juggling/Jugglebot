@@ -15,7 +15,7 @@ files_changed:
   - ros_ws/docs/catch_arrival_contract.md
   - plans/parked/levelling-frame-contract.md
   - plans/archived/hand-command-continuity.md
-  - plans/parked/catch-reach-degenerate-overshoot.md
+  - plans/archived/catch-reach-degenerate-overshoot.md
   - plans/archived/fk-convergence-tolerance.md
   - plans/active/PROMPT-anomaly-fixes-orchestration.md
   - CLAUDE.md

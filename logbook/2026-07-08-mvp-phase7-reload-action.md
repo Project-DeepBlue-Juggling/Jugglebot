@@ -334,7 +334,7 @@ every late tick). The new tests now encode that production ordering explicitly.
 
 ## Related
 
-- Plan: `plans/active/mvp-trajectory-bringup.md` § Phase 7, § Reload sequence,
+- Plan: `plans/archived/mvp-trajectory-bringup.md` § Phase 7, § Reload sequence,
   § The command seam, § Hand-catch smoothness.
 - Predecessor: `logbook/2026-07-08-mvp-phase6-catch-trajectory-sim-gate.md`
   (`build_catch`, the reload gate, the `CATCH_VEL_RATIO` finding this phase closes).

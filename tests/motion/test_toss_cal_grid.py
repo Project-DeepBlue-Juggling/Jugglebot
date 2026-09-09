@@ -1,6 +1,6 @@
 """Tests for the toss AIM-calibration acquisition tool —
 ``tests/hardware/toss_cal_grid.py`` (build phase 2f of
-``plans/active/toss-selftuning.md`` § 3.8).
+``plans/archived/toss-selftuning.md`` § 3.8).
 
 WHAT THIS FILE IS PROTECTING
 ----------------------------

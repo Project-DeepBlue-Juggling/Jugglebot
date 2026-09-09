@@ -49,7 +49,7 @@ logbook entry that captures the full arc: symptom, diagnosis, discussion, fix, o
 Run the `/diagnose` protocol on the target session(s):
 1. Run `python3 sim/analysis/diagnose.py <csv_path> [--rosbag <path>] --json`
 2. Cross-reference against `sim/analysis/known_issues.yaml`
-3. Read `plans/active/mvp-trajectory-bringup.md` for phase context (the older MPC
+3. Read `plans/archived/mvp-trajectory-bringup.md` for phase context (the older MPC
    bringup plan is archived at `plans/archived/hardware-bringup.md`)
 
 **Flush `sim/analysis/log_index.json` immediately** after each diagnose run, not
@@ -198,7 +198,7 @@ nonsense data that wastes a hardware session.
 1. Run `./run_tests.sh` (the blessed full-suite gate)
 2. Report results as a (date, command, result) triple
 3. If hardware-specific changes, suggest which hardware test to re-run
-   (referencing the relevant phase from `plans/active/mvp-trajectory-bringup.md`)
+   (referencing the relevant phase from `plans/archived/mvp-trajectory-bringup.md`)
 
 ---
 

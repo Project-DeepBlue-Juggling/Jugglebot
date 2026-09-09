@@ -464,7 +464,7 @@ the −27.2 A the feedforward asks for. Diagnosed 2026-08-10
 now a symmetric ±0.7 N·m with `save_configuration()` run — so bench row **H7.0c**
 is a regression check rather than an open question. The *sibling* investigation
 that opened (catch-seat harshness, and how much of the pre-fix behaviour was the
-clamp rather than the feedforward) is owned by `plans/active/catch-robustness.md`,
+clamp rather than the feedforward) is owned by `plans/archived/catch-robustness.md`,
 not by this entry.
 
 **Also open, unchanged**: the settled `pos_meas − pos_cmd` offset whose first

@@ -2,7 +2,7 @@
 
 Probe: ``tools/probes/toss_record_miner.py``. Fixture:
 ``tests/ros/toss_record_fixtures.py`` (generated — do not hand-edit).
-Plan: ``plans/active/toss-selftuning.md`` §§ 3.3, 3.4.
+Plan: ``plans/archived/toss-selftuning.md`` §§ 3.3, 3.4.
 Logbook: ``logbook/2026-08-10-toss-selftuning-build.md``.
 
 WHY A BAG-BACKED TEST EXISTS ALONGSIDE tests/motion/test_toss_record.py

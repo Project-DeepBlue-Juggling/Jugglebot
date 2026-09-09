@@ -1,6 +1,6 @@
 """Pure fit core for the critical-point ILC — throw-side sensitivity + update law.
 
-Normative design: ``plans/active/critical-point-ilc.md``, **Phase 1**. This module
+Normative design: ``plans/archived/critical-point-ilc.md``, **Phase 1**. This module
 is the hardware-free half of ``tests/hardware/ilc_fit.py`` (a thin CLI over it)
 and is imported unchanged by ``tests/motion/test_ilc_fit.py``. Nothing here opens
 a socket, launches a node, or imports ``rclpy`` — it reads a mined JSONL corpus
@@ -313,7 +313,7 @@ class UChannel(NamedTuple):
 
 
 #: **The ILC's own accumulated-``event_vel_trim`` authority. OWNER DECISION,
-#: 2026-08-13, Gate 1** (``plans/active/critical-point-ilc.md``, "Gate 1 CLOSED
+#: 2026-08-13, Gate 1** (``plans/archived/critical-point-ilc.md``, "Gate 1 CLOSED
 #: 2026-08-13 (owner decisions): (1) the speed-authority question below is
 #: DECIDED as option (a) — an ILC-specific ±0.15 authority").
 #:
@@ -331,7 +331,7 @@ class UChannel(NamedTuple):
 #: ⚠ **DEMOTED 2026-08-21 to an OUTER CEILING. It is no longer the authority.**
 #: The authority is :func:`speed_authority_band`, derived per flight time from
 #: ``throw_envelope.evaluate`` — contradiction **C2** of the ILC-primary fold-in
-#: (``plans/active/critical-point-ilc.md`` § "The 2026-08-21 fold-in", build
+#: (``plans/archived/critical-point-ilc.md`` § "The 2026-08-21 fold-in", build
 #: step 1). This constant survives as the ceiling the band is intersected with,
 #: so a future envelope that opened up cannot silently widen a learned trim past
 #: the number the owner actually approved.
@@ -710,7 +710,7 @@ FULL_MASK = np.ones(N_E, dtype=float)
 #: full-size between 2026-08-13 (E-1 closed) and then.
 #:
 #: E-1 CLOSED 2026-08-13. Owner-adopted resolution, evidence in
-#: ``plans/active/critical-point-ilc.md`` § Phase 1 E-1 and reproducible from
+#: ``plans/archived/critical-point-ilc.md`` § Phase 1 E-1 and reproducible from
 #: ``tools/probes/mocap_parity_bias.py``: the lateral branch-to-branch artefact
 #: was a height-locked **measurement** bias (the tracked point is the centroid of
 #: the visible retroreflective cap), CONFIRMED by parity decomposition about the
@@ -2209,7 +2209,7 @@ TIER_8B = str(toss_sequencer.TIER_8B)
 
 #: How far an 8b throw site may sit from its own cup xy and still be written into
 #: a v1 artifact cell, mm — the plan's **zero-displacement admission gate**
-#: (``plans/active/critical-point-ilc.md``, contradiction ledger C7).
+#: (``plans/archived/critical-point-ilc.md``, contradiction ledger C7).
 #:
 #: **This is not a physical tolerance — it is the width of "the key can still
 #: name this geometry".** The v1 key is ``(x, y, z, T)`` on the CATCH pose

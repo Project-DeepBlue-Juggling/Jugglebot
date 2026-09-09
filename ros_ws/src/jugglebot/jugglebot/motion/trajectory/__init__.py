@@ -4,7 +4,7 @@ A deliberately simple, shallowly kinetics-aware Jetson-side trajectory generator
 that streams 40 Hz waypoint knots to the can-hub Teensy over the validated
 setpoint path — the MVP replacement for the compute-marginal MPC hot loop
 (``controller/`` stays dormant and untouched). See
-``plans/active/mvp-trajectory-bringup.md``.
+``plans/archived/mvp-trajectory-bringup.md``.
 
 This package is **pure**: numpy only, no ROS2 imports, no repo-root /
 ``controller`` imports. The thin ROS wrapper lives in

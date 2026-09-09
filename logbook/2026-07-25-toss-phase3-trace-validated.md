@@ -12,7 +12,7 @@ commits:
 files_changed:
   - tests/hardware/toss_trace_recorder.py
   - tests/hardware/session_phase8_toss_trace.md
-  - plans/active/single-ball-toss.md
+  - plans/archived/single-ball-toss.md
 ---
 
 # Toss Phase 3 validated: self-announcement seeds a predicted track — checker contract corrected

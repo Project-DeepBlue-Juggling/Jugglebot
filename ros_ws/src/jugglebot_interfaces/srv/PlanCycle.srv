@@ -1,5 +1,5 @@
 # Plan ONE unified 7-DoF cycle window and install it on the trajectory emitter
-# (trajectory/plan_cycle, TRAJECTORY mode only — plans/active/unified-7dof-planner.md
+# (trajectory/plan_cycle, TRAJECTORY mode only — plans/archived/unified-7dof-planner.md
 # Phase 4).
 #
 # WHY THE PLANNING RUNS IN trajectory_node AND NOT IN THE CALLER (owner, 2026-09-04).

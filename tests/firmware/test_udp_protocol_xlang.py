@@ -366,7 +366,7 @@ def test_wire_layout_frozen(gen):
     # ISR latches ONE staging slot atomically; two frames per knot would need
     # cross-frame latch coherence, a torn-knot class (hand and legs from
     # different knots in one tick) that single-frame widening makes
-    # structurally impossible. See plans/active/unified-7dof-planner.md § 2.3.
+    # structurally impossible. See plans/archived/unified-7dof-planner.md § 2.3.
     # Previous pin: e7af7d13a5be329319b7dc0715a3c5bba1c6318ea111be703ad697453c7ed624
     #   (additive RING_DIAG 0x92 103 B — 2026-08-14 can-bridge FW 13).
     #

@@ -1391,7 +1391,7 @@ A post-fix reading anywhere near 0.2–0.3 rev is not a clean PASS — capture i
 debrief rather than waving it through.
 
 Also capture, without gating on it this round (the release model is still
-unmeasured — `plans/active/single-ball-toss.md` Phase 5 T0): the achieved flight
+unmeasured — `plans/archived/single-ball-toss.md` Phase 5 T0): the achieved flight
 per toss over **>= 5** tosses at one commanded height, and the `shift` column.
 
 ### Pre-fix baseline — 7 self-tosses, 2026-07-25 (what must go away)
@@ -1531,7 +1531,7 @@ separates at the decel ONSET (`x2`), and all seven measured truncations sit past
 the commanded `x2` crossing (6.1965-7.7825 rev against `x2` = 5.9138 rev) — so
 the ball had most likely already left the cup before the queue was cleared, and a
 **null result here is expected and is NOT a Phase-1 failure**. The release model
-is unmeasured; it is `plans/active/single-ball-toss.md` Phase 5 T0's measurand.
+is unmeasured; it is `plans/archived/single-ball-toss.md` Phase 5 T0's measurand.
 
 #### Optional HAND-1b — the short-flight corner (do this last, if HAND-1 passed)
 
@@ -2292,7 +2292,7 @@ changed). **No firmware flash. No interface change *in this section*** — but b
 >    improvement in a 2.9° swing — plus the thing that actually mattered, a park
 >    that is finally gravity-level and two ingest surfaces that finally agree.
 >
->    Removing the swing is `plans/parked/catch-reach-degenerate-overshoot.md`.
+>    Removing the swing is `plans/archived/catch-reach-degenerate-overshoot.md`.
 >
 > ### ⚠ AND ONE THING THIS FIX DOES **NOT** CLOSE — the criteria below are revised
 >
@@ -3001,7 +3001,7 @@ seat — the regime where an incorrectly-scaled bound silently de-rates the seat
 - **ABORT**: the commanded tilt in the last 0.8 s is **flat** (< 0.1° of motion)
   where the pre-fix capture showed `≈0.9°` — that is the throttled-seat signature,
   and it means the bound's scale regressed to the residual travel. Route back to
-  `plans/parked/catch-reach-degenerate-overshoot.md` Phase 2 /
+  `plans/archived/catch-reach-degenerate-overshoot.md` Phase 2 /
   `ros_ws/docs/catch_arrival_contract.md` § "Why the scale is a MAX".
 - Not an abort, but worth logging: `N == 0` means the open-loop republish path did
   not run (check `JB_OP_RELOAD_PLATFORM_OPEN_LOOP` and that the announcement was
@@ -3782,8 +3782,8 @@ timing rather than by inspection of a trace alone):
 > **Appended 2026-07-28.** This section is an **operator decision**, not a bug fix,
 > and it lands after § Section ZSEAT. `jugglebot_operational.toss_tier` is now
 > **`"8b"`** (was `"8a"`). Validates
-> `plans/parked/catch-reach-degenerate-overshoot.md` **Phase 4** and
-> `plans/active/single-ball-toss.md` **Phase 4**; a failure routes to whichever of
+> `plans/archived/catch-reach-degenerate-overshoot.md` **Phase 4** and
+> `plans/archived/single-ball-toss.md` **Phase 4**; a failure routes to whichever of
 > the two the failing row names.
 >
 > It changes **no criterion in any section above**. Every row above nominates a
@@ -4060,7 +4060,7 @@ ros2 action send_goal /jugglebot/toss jugglebot_interfaces/action/Toss \
 > **⚠ AMENDED 2026-08-10 — READ BEFORE SCORING ANY ROW BELOW.** The **hand ball
 > sensor is now the PRIMARY possession source** and the tracker is demoted to the
 > arrival corroborator (`logbook/2026-08-10-sensor-truth-possession.md`,
-> `plans/active/catch-robustness.md` Phase 1, contract §§ 2.1 / 3.2 / 3.3). Three
+> `plans/archived/catch-robustness.md` Phase 1, contract §§ 2.1 / 3.2 / 3.3). Three
 > consequences for this section, all of them scoring-critical:
 > 1. **`POSS-1.3` and the reload half of the top-level `POSS-1` row are
 >    INVERTED.** A reload reading `CAUGHT` was the ABORT and is now the expected
@@ -4185,7 +4185,7 @@ with both windows closed, the coordinator answers on the first confirmed tick).
 | POSS-1.4 | log discipline | exactly **one** `Ball N: possession …` line per (ball, verdict); all at INFO | duplicates, or any at WARN/ERROR |
 | POSS-1.5 | probe vs live agreement | the probe's `CAUGHT` count **==** the log's `possession CONFIRMED` count | any difference ⇒ the installed copy is stale (re-run the deployment grep above) |
 | POSS-1.6 | **reload arrival errors, watched not gated** — the probe's `arrival_mm` column for reload attempts | today: **204.9 – 752.9 mm** ("all refused" **meant the TRACKER refused**, and since 2026-08-10 that no longer suppresses the verdict — the same numbers now print as REPORT-only cross-check on a line that can still read `CAUGHT`). Just record the range | *(no ABORT)* — but if any reload arrival error lands in the **30 – 100 mm** band, **stop and read this**: that is the signature of the tracker mis-association *healing*, and the 70 mm bound is **knowingly under-sized** for a healthy reload path. The reload era's real-marker tracks measure **34.4 / 34.9 / 37.6 / 68.4 mm**, so a genuine reload catch sits **1.6 mm inside** the bound — a 1.02x margin, plus up to 80 mm of catch-reach displacement the reference point does not follow. Route to `ros_ws/docs/ball_possession_contract.md` § 4; the bound must be re-derived by the tracker phase, **not** nudged at the bench |
-| POSS-1.7 | **NEW AND UNGATED, 2026-08-10 — the reload's `CAUGHT` terminal executes for the first time in the machine's history.** A successful reload runs `ACTION_RECENTER`: lower the catch latch + `go_home`, deliberately **no** hand retract (the hand is holding the ball). Every reload ever run terminated `SAFE_ABORT` instead, because the tracker refused every reload catch by construction — so `POSS-1.3` flipping is what makes this path live | **REPORT — no PASS/ABORT is set here on purpose.** Record three things: (a) does the `go_home` after a caught reload behave like LVL-2 — same profiled move, no step rejection; (b) does the BALL stay in the cup through it (mocap ball marker within `GEOM_HAND_RADIUS_MM` = **35 mm** of the cup axis) — this is POSS-2.4's question on the reload path; (c) is the hand left inside the **±0.5 rev** park band the next goal's `hand_parked` precondition needs | a `MAX_DEVIATION` or guard E-STOP during that `go_home` is a **hard stop for the section**. Nothing else here aborts: the row deliberately sets no threshold, because the path has no measured baseline and gating it is an operator decision (`plans/active/catch-robustness.md` Phase 1 open items). If you want zero new risk on the first run, do the reload rungs with `go_home` issued manually and score (b) on the held pose first |
+| POSS-1.7 | **NEW AND UNGATED, 2026-08-10 — the reload's `CAUGHT` terminal executes for the first time in the machine's history.** A successful reload runs `ACTION_RECENTER`: lower the catch latch + `go_home`, deliberately **no** hand retract (the hand is holding the ball). Every reload ever run terminated `SAFE_ABORT` instead, because the tracker refused every reload catch by construction — so `POSS-1.3` flipping is what makes this path live | **REPORT — no PASS/ABORT is set here on purpose.** Record three things: (a) does the `go_home` after a caught reload behave like LVL-2 — same profiled move, no step rejection; (b) does the BALL stay in the cup through it (mocap ball marker within `GEOM_HAND_RADIUS_MM` = **35 mm** of the cup axis) — this is POSS-2.4's question on the reload path; (c) is the hand left inside the **±0.5 rev** park band the next goal's `hand_parked` precondition needs | a `MAX_DEVIATION` or guard E-STOP during that `go_home` is a **hard stop for the section**. Nothing else here aborts: the row deliberately sets no threshold, because the path has no measured baseline and gating it is an operator decision (`plans/archived/catch-robustness.md` Phase 1 open items). If you want zero new risk on the first run, do the reload rungs with `go_home` issued manually and score (b) on the held pose first |
 | POSS-1.8 | **the blind-sensor paths, which are TEST-ONLY in this build** (203,922 real samples across three bags were 100 % `ball_held_valid`). Two operator-visible signatures, and they are NOT the same line: (a) `REJECTED_BALL_UNKNOWN` on a *toss goal* — the live `evidence()` read at CHECKING could not answer; (b) `SENSOR_BLIND` inside the `[reason]` bracket of a possession line — the verdict silently fell back to the tracker (a bare `possession UNKNOWN` line is effectively unreachable through today's caller: it only runs on a tracker CAUGHT, and the tracker always has an estimate to fall back to) | **zero of each** on a healthy sensor. To exercise it deliberately, **kill the SDO poller, not the link**: `hand_fresh` gates *before* `ball_seated`, so dropping the whole bridge gives `REJECTED_HAND_STALE`, not `REJECTED_BALL_UNKNOWN` | *(no ABORT on the deliberate test)* — but either signature during normal running is a **finding**: record the surrounding `ball_held_valid` stream and route to `plans/archived/hand-ball-sensor.md`. A goal refused `REJECTED_BALL_UNKNOWN` is the gate working (fail-closed by design, deliberately NOT BallButler's fail-open boot default); `toss_require_ball_evidence: false` is the documented total bypass if you need to finish a sitting |
 
 Record the raw counts either way. This is the row that retires "judge by eye"
@@ -4270,7 +4270,7 @@ unexpected hand ascent after a caught toss and record it if you see one.
 > *"throw across large translations, at least ±150 mm at z = 170, from oblique
 > platform positions, with the platform STAYING at its catch pose so sessions chain
 > A → B → C"* — implemented as one phase because its four parts interlock. Validates
-> `plans/active/single-ball-toss.md` **Phase E**. Run it **after** § SECTION TIER
+> `plans/archived/single-ball-toss.md` **Phase E**. Run it **after** § SECTION TIER
 > (which proves the 8b wrapper deployed) and after § SECTION POSS (whose verdicts
 > are the instrument every rung below is scored with).
 >
@@ -4723,7 +4723,7 @@ cap only. Take that as a watch-item for DISP-5, not as a prohibition.
 
 > **Appended 2026-07-29.** This is operator decision **(c)** of 2026-07-28 —
 > *`toss_continuous {catch_position, throw_height_m, num_throws, dwell_time_s}`,
-> `stop_on_miss` defaults **TRUE***. Validates `plans/active/single-ball-toss.md`
+> `stop_on_miss` defaults **TRUE***. Validates `plans/archived/single-ball-toss.md`
 > **Phase F**. Run it **last**: it is the only section that repeats an actuation
 > unattended, so it must come after § SECTION POSS (whose verdicts it consumes and
 > which is how `stop_on_miss` knows anything at all) and after § SECTION DISP

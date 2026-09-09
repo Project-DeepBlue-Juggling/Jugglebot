@@ -402,4 +402,4 @@ same literal. Both are **derived from `HAND_STROKE_TOP_REV` since 2026-08-21**.
 The remaining question — whether the sim should keep its 20 mm stroke inset at
 all, which is what makes the derived prime 335 mm rather than the firmware's
 315 mm — is re-homed to
-`plans/parked/hand-trajectory-generator-overhaul.md` § 6 *Inherited findings*.
+`plans/archived/hand-trajectory-generator-overhaul.md` § 6 *Inherited findings*.

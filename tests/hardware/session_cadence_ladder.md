@@ -1,7 +1,7 @@
 # Hardware Session — the CADENCE LADDER (R0 → R5)
 
-**Plan**: `plans/active/toss-selftuning.md` § 11 (the timing census) and
-`plans/active/critical-point-ilc.md` (operator decision 3, 2026-08-21)
+**Plan**: `plans/archived/toss-selftuning.md` § 11 (the timing census) and
+`plans/archived/critical-point-ilc.md` (operator decision 3, 2026-08-21)
 **Action**: `jugglebot/toss_continuous` (`TossContinuous.action`)
 **Depends on**: `session_anomaly_fixes.md` § SECTION CONT green at the shipped
 6.0 s dwell. This file starts from that baseline and walks the dwell DOWN.
@@ -229,7 +229,7 @@ ABORT at each.
 > sits below that (`:2757`) and is never reached, so "the staging assertion sees
 > an empty list" is not what the counterfactual actually shows), the 0.36 s
 > per-cycle B1 saving now holds on the SHIPPED tier, and
-> `plans/active/toss-pipelined-preamble.md` § 6.1's "do not book any rung" gate is
+> `plans/archived/toss-pipelined-preamble.md` § 6.1's "do not book any rung" gate is
 > satisfied **in the tree** — on the machine it needs
 > `cd ros_ws && colcon build --packages-select jugglebot` first (§ 8 P-2). What is still true is the last line of the box below: **every
 > cadence number published in this file was produced on the 8a-equivalent path**,
@@ -1124,7 +1124,7 @@ this number again** — not another sitting at the ladder's own flights.
 
 **What it said**: `jugglebot_ball_detect.check_interval_ms` is **20** (50 Hz
 nominal); the measured poll cadence was **~71 ms** — a 3.5× gap with no
-diagnosis (`plans/active/toss-selftuning.md` § Open findings). It was a
+diagnosis (`plans/archived/toss-selftuning.md` § Open findings). It was a
 prerequisite because at the R5 dwell 71 ms is **9 % of the whole dwell**
 (71 ms of 0.76 s), sitting directly under the `ball_seated` precondition. (It
 read "11 % … of 0.66 s" against the retired R5-prime rung.)

@@ -11,7 +11,7 @@ files_changed:
   - tests/sim/test_juggle_selfcatch.py
   - tools/probes/juggle_motion_quality.py
   - tools/probes/README.md
-  - plans/active/bb-online-juggle-tilt-rearchitecture.md
+  - plans/archived/bb-online-juggle-tilt-rearchitecture.md
   - logbook/INDEX.md
 commits:
   - 3126c6d

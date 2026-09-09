@@ -56,7 +56,7 @@ come from the SYNCHRONOUS ``go_to_pose`` round trip in the same loop. That whole
 class — "the FSM tick does blocking work" — is described as *Unblocking the
 loop from the positioning service round trip* in
 ``plans/archived/toss-multi-catch-pose.md`` § Explicit non-goals; since that
-plan's supersession the class is owned by ``plans/active/unified-7dof-planner.md``
+plan's supersession the class is owned by ``plans/archived/unified-7dof-planner.md``
 (its Phase 4 plans off the FSM tick). It is not this gate's to solve, and this gate
 does not move its needle.
 

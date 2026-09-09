@@ -34,7 +34,7 @@ files_changed:
 
 ## Summary
 
-Phase 1 of `plans/active/single-ball-toss.md` lands software-complete: the
+Phase 1 of `plans/archived/single-ball-toss.md` lands software-complete: the
 `Toss.action` interface (goal/result/feedback exactly as the plan's locked
 spec), the pure-Python `toss_sequencer` FSM (7 phases, 65 tests), the
 release-state math module `motion/trajectory/toss_release.py` (the single

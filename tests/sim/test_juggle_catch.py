@@ -1,6 +1,6 @@
 """Integration tests for the Rung-1 single catch (``sim.juggle_catch``).
 
-Plan: plans/active/bb-online-juggle-tilt-rearchitecture.md Phase 1 / Rung 1 —
+Plan: plans/archived/bb-online-juggle-tilt-rearchitecture.md Phase 1 / Rung 1 —
 catch one BB-thrown ball cleanly (seated AND held, small characterised in-cup
 offset) by translate-to-reach (position) + tilt-to-receive (orientation), robust
 to the §3 noise (2% BB throw + 0.5 mm tracking, on by default).

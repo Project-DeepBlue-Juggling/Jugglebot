@@ -1,5 +1,5 @@
 """Headless, seeded single-ball-toss gate — the Phase-2 production-in-the-loop
-harness (``plans/active/single-ball-toss.md`` § Sim gate, Tier 8a).
+harness (``plans/archived/single-ball-toss.md`` § Sim gate, Tier 8a).
 
 Each trial drives the **actual** production stack end-to-end: the platform is
 pre-positioned to the nominated catch pose through ``planner.build_move`` →

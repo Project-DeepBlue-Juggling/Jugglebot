@@ -1,6 +1,6 @@
 # Hardware Session — MVP Phase 8 (single-ball-toss § Phase 3): real-ordering dry trace (powered bench, NO ball)
 
-**Plan**: `plans/active/single-ball-toss.md` § Phase 3
+**Plan**: `plans/archived/single-ball-toss.md` § Phase 3
 **Logbook**: `logbook/2026-07-25-toss-phase1-action-sequencer-coordinator.md`
 (the Phase-1 baseline, commit `5447f03`) + the Phase-3 prep entry (see
 `logbook/INDEX.md`)

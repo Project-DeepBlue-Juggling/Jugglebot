@@ -146,7 +146,7 @@ class MuJoCoPlant(PlantInterface):
         # stroke inside the travel, not the firmware's frame (the firmware homes
         # downward and measures x from the physical bottom, so its x3 is 315 mm,
         # not 335).  That 20 mm absolute divergence is a live open question owned
-        # by plans/parked/hand-trajectory-generator-overhaul.md; it is preserved
+        # by plans/archived/hand-trajectory-generator-overhaul.md; it is preserved
         # here rather than silently resolved, because resolving it moves the
         # sim's catch height.
         if self._has_hand:

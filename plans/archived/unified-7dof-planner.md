@@ -1,11 +1,8 @@
 ---
 title: Unified whole-cycle 7-DoF motion planner (Scope B)
 created: 2026-08-29
-status: active     # 2026-08-29 owner-commissioned (Scope B over carry-only Scope A the same day);
-                   # PROMOTED TO ACTIVE 2026-09-01 (owner) — the Phase 0 gate is satisfied: all four probe
-                   # results recorded incl. the bench A/B flown 2026-08-30; Phases 0-1 COMPLETE. The original
-                   # MP-M2 gate DISSOLVED 2026-08-29: the owner halted toss-multi-catch-pose at the pre-M2
-                   # boundary (stop clean, no reverts) — see § 1 relationship table.
+status: superseded   # 2026-09-09 — superseded by two-ball-skill-stack.md (owner decision); see the Archival note below
+archived: 2026-09-09
 owner: Harrison
 related_plan: toss-multi-catch-pose.md
 related_code:
@@ -17,6 +14,12 @@ related_code:
 ---
 
 # Unified whole-cycle 7-DoF motion planner (Scope B)
+
+## Archival note (2026-09-09)
+
+Superseded by `two-ball-skill-stack.md` (owner decision 2026-09-09, after the RAI juggling paper review). What SURVIVES, unchanged: the cup QP (`cup_cycle.plan_window`), `cup_realize`, `cycle_plan.CyclePlan`, the 7-channel emitter and Setpoint v6, the FW 17+ hand lane and its guards, and `validate_cycle` re-cast as an offline certifier plus a cheap runtime assert. What RETIRES: the STEADY ring (chaining, `extend`, `replan_tail`, the supersede cliff, the planner-owned beat), the Phase 5 UH-7a/UH-7b rungs, and Phase 6 as sequenced here — the stroke-engine decommission is now the FIRST rung of the new plan (R1), not the last. Root cause recorded in the new plan § 1: the beat needed for two balls in one hand is half a flight, and the joined-window solve plus the 0.800 s chain floor put the ring's floor at 2.5–3× that by construction.
+
+The filename is unchanged (DOCUMENTATION_GUIDE § 2.6); every `related_plan:` and prose reference keeps resolving. Read the successor plan first: `two-ball-skill-stack.md`.
 
 ## 1. Context
 

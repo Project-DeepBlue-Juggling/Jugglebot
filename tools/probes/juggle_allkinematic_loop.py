@@ -30,7 +30,7 @@ Writes ``temp/probes/juggle_allkinematic_loop.csv``. Run from the repo root:
     python tools/probes/juggle_allkinematic_loop.py [--seeds N] [--cycles N]
 
 See ``logbook/2026-07-01-rung2b-kinematic-release.md`` (Phase 3 / Rung 2b of
-``plans/active/bb-online-juggle-tilt-rearchitecture.md``).
+``plans/archived/bb-online-juggle-tilt-rearchitecture.md``).
 """
 from __future__ import annotations
 

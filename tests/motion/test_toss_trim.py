@@ -1,5 +1,5 @@
 """Tests for the LAYER-2 session trim — ``jugglebot/toss_trim.py``, build phase
-**2e** of ``plans/active/toss-selftuning.md``.
+**2e** of ``plans/archived/toss-selftuning.md``.
 
 THE FIVE GATES THIS PHASE IS ACCEPTED ON
 ----------------------------------------

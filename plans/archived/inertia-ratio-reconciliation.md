@@ -1,6 +1,7 @@
 ---
 title: INERTIA_RATIO does not reconcile with the measured masses — what it actually is, and whether it matters
-status: parked   # 2026-08-21 — throws work across the whole envelope; parked on priority, not on a blocker
+status: superseded   # 2026-09-09 — superseded by two-ball-skill-stack.md (owner decision); see the Archival note below
+archived: 2026-09-09
 created: 2026-08-21
 related_logbook:
   - 2026-08-18-derived-throw-envelope.md
@@ -13,6 +14,12 @@ related_code:
 ---
 
 # Plan — reconcile `INERTIA_RATIO`
+
+## Archival note (2026-09-09)
+
+Superseded by `two-ball-skill-stack.md` (owner decision 2026-09-09). `inertia_ratio` is a constant of the Platform Teensy stroke engine's closed form; the stroke engine is deleted at R1 and the streamed hand carries no inertia-ratio model, so there is nothing left to reconcile.
+
+The filename is unchanged (DOCUMENTATION_GUIDE § 2.6); every `related_plan:` and prose reference keeps resolving. Read the successor plan first: `two-ball-skill-stack.md`.
 
 **Branch:** `mvp-trajectory-bringup`
 **Status:** PARKED 2026-08-21. Nothing here is blocked; the throw profile is
@@ -83,7 +90,7 @@ Any of:
 * a throw-profile change that touches `x2`/`x5` for another reason — do this
   reconciliation in the same pass rather than tuning on top of an unexplained
   constant;
-* `plans/parked/hand-trajectory-generator-overhaul.md` resuming, since it
+* `plans/archived/hand-trajectory-generator-overhaul.md` resuming, since it
   rewrites the generator that consumes `INERTIA_RATIO`;
 * the accel-FF or learned-FF arcs resuming, both of which model hand inertia and
   would inherit the discrepancy;

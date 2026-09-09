@@ -12,7 +12,7 @@ commits:
 files_changed:
   - tests/hardware/toss_trace_recorder.py
   - tests/hardware/session_phase8_toss_trace.md
-  - plans/active/single-ball-toss.md
+  - plans/archived/single-ball-toss.md
   - tools/probes/toss_trace_synth.py
   - tools/probes/README.md
   - ros_ws/src/jugglebot/jugglebot/reload_coordinator_node.py
@@ -79,7 +79,7 @@ Phase-1 orderings.
   `toss_mocap_body` bench task (resolve the platform QTM body name +
   platform_start frame, do NOT enable the parameter); `uptime_ms` logged
   via the recorder's link_status capture.
-- **`plans/active/single-ball-toss.md`** — Phase 3 amended (unpowered →
+- **`plans/archived/single-ball-toss.md`** — Phase 3 amended (unpowered →
   powered no-ball bench, with the grounded reason) and flipped to
   PREPARED (operator execution pending).
 

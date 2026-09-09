@@ -28,7 +28,7 @@ Normative documents: `PLANT_INTERFACE_CONTRACT.md`,
 normative docs were deleted outright. The chain had been operationally dormant
 since 2026-08-01 (`plans/parked/refactor-2026-07.md` Phase 3, which parked it
 with a revival path), and the unified 7-DoF planner that landed 2026-09-01
-(`plans/active/unified-7dof-planner.md`) is the lower-rate replanner that
+(`plans/archived/unified-7dof-planner.md`) is the lower-rate replanner that
 parking preserved the option for — so the revival path is retired, not deferred.
 
 The final implementation is preserved at git tag **`mpc-final`**; the removal is

@@ -1,5 +1,5 @@
 """Node seams for the LAYER-3 critical-point ILC correction — Phase 2 of
-``plans/active/critical-point-ilc.md``.
+``plans/archived/critical-point-ilc.md``.
 
 The artifact itself is covered in ``tests/motion/test_toss_ilc.py`` (pure, no
 ROS). Here we test the seven things only the NODE can be asked, and they are the

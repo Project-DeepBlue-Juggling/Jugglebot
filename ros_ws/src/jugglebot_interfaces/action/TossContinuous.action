@@ -40,7 +40,7 @@
 # timing the hardware ladder has ever measured), and it keeps the catch latch DOWN
 # between cycles instead of leaving the reactive-catch path armed over a loaded cup.
 #
-# See plans/active/single-ball-toss.md Phase F and
+# See plans/archived/single-ball-toss.md Phase F and
 # tests/hardware/session_anomaly_fixes.md SECTION CONT.
 
 geometry_msgs/Point catch_position   # nominated catch point for EVERY cycle, mm,
@@ -221,7 +221,7 @@ int32 max_reloads                    # How many reload attempts the WHOLE sessio
                                      # see refuses STOPPED_SENSOR_UNKNOWN, rather than a
                                      # second ball being thrown at a loaded or unwatched cup.
 bool unified_cycle false             # Run every cycle through the UNIFIED 7-DoF planner
-                                     # (plans/active/unified-7dof-planner.md Phase 4)
+                                     # (plans/archived/unified-7dof-planner.md Phase 4)
                                      # instead of the legacy firmware stroke engine.
                                      # The IDL default is LOAD-BEARING and the node
                                      # re-applies it: the unified path is opt-in TWICE —

@@ -392,6 +392,6 @@ the 0.6 config truth in the same pass. Verification: scoped
 ## Related
 
 - Operator runbook: [`tests/hardware/mvp_bench_runbook.md`](../tests/hardware/mvp_bench_runbook.md) — the single consolidated bench sequencing + checklists layer.
-- Plan: [`plans/active/mvp-trajectory-bringup.md`](../plans/active/mvp-trajectory-bringup.md) — the full architecture + every phase Outcome + Deferred section.
+- Plan: [`plans/archived/mvp-trajectory-bringup.md`](../plans/archived/mvp-trajectory-bringup.md) — the full architecture + every phase Outcome + Deferred section.
 - Phase entries: [P1](2026-07-07-mvp-phase1-streaming-foundation.md) · [P2](2026-07-07-mvp-phase2-waypoint-moves.md) · [P3](2026-07-08-mvp-phase3-spacemouse-streaming.md) · [P4](2026-07-08-mvp-phase4-shaping-ramp-tooling.md) · [P5](2026-07-08-mvp-phase5-timed-targets.md) · [P6](2026-07-08-mvp-phase6-catch-trajectory-sim-gate.md) · [P7](2026-07-08-mvp-phase7-reload-action.md).
 - Phase-6 gate evidence (committed): `logbook/artifacts/2026-07-08-mvp-phase6/` — the five scored reload-gate JSONs (nominal + arm ±30 ms + event_vel ±10 %) with the deterministic regenerate recipe in the Phase-6 entry.

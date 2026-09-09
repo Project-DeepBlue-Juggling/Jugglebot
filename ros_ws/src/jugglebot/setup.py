@@ -40,7 +40,7 @@ _HW_CONFIG_YAML = os.path.join('..', '..', '..', 'config', 'hardware_config.yaml
 # included, and says so when a map survives.
 _TILT_CAL_YAML = os.path.join('..', '..', '..', 'config', 'tilt_calibration.yaml')
 # The machine-written toss AIM calibration map (contract C-TOSS-CAL-1,
-# jugglebot/motion/toss_cal.py, plans/active/toss-selftuning.md § 3.7).  Same
+# jugglebot/motion/toss_cal.py, plans/archived/toss-selftuning.md § 3.7).  Same
 # shape and the same three reasons as the tilt map above: CONDITIONAL because
 # the file does not exist until a capture has run and an ament data_files entry
 # naming a missing source is a hard `colcon build` failure; source-tree-first

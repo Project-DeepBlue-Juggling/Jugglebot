@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Is a mocap object's tracked point BIASED, or is a FORCE acting on it?
 
-    plans/active/critical-point-ilc.md § Phase 1, entry condition E-1
+    plans/archived/critical-point-ilc.md § Phase 1, entry condition E-1
     logbook/2026-08-12-critical-point-ilc-g3-and-phase0.md § 0c
 
 THE ONE MEASUREMENT THAT SEPARATES THEM

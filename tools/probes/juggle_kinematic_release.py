@@ -25,7 +25,7 @@ reference stays live. Headless MuJoCo plant, no hardware. Writes
     python tools/probes/juggle_kinematic_release.py
 
 See ``logbook/2026-07-01-rung2b-kinematic-release.md`` (Phase 3 / Rung 2b of
-``plans/active/bb-online-juggle-tilt-rearchitecture.md``).
+``plans/archived/bb-online-juggle-tilt-rearchitecture.md``).
 """
 from __future__ import annotations
 

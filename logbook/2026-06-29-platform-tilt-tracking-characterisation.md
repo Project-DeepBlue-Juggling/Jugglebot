@@ -24,7 +24,7 @@ tags:
 
 ## Summary
 
-The online-juggle tilt re-architecture (`plans/active/bb-online-juggle-tilt-rearchitecture.md`)
+The online-juggle tilt re-architecture (`plans/archived/bb-online-juggle-tilt-rearchitecture.md`)
 aims each throw by **tilting the cup** and detaching the ball along the tilted
 axis: the lateral take-off velocity becomes `slider_speed × sin(tilt)`, delivered
 by the fast/accurate slider along a roughly-constant tilt, instead of by the

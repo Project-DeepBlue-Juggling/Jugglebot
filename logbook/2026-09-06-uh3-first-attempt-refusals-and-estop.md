@@ -22,7 +22,7 @@ files_changed:
   - tests/ros/test_launch_nodes.py
   - tests/ros/test_unified_cycle_integration.py
   - tools/probes/emitter_gap_under_solve.py
-  - plans/active/unified-7dof-planner.md
+  - plans/archived/unified-7dof-planner.md
   - plans/active/INDEX.md
   - logbook/2026-09-06-uh3-first-attempt-refusals-and-estop.md
   - logbook/INDEX.md
@@ -519,7 +519,7 @@ Two further confounds are recorded because they were also invisible at the time.
 is **quieter than the launched node's** — mocked rclpy, so no DDS threads and no 98 Hz
 `/robot_state` ingest — so "the same request in the probe takes 200 ms" was never the same
 experiment. And the `--threads 1` arm was never paired with a load arm, so even a genuine difference
-would have had nowhere to show up. `plans/active/unified-7dof-planner.md`'s own pre-registration
+would have had nowhere to show up. `plans/archived/unified-7dof-planner.md`'s own pre-registration
 rule ("pre-register the fallback and the decision criterion that flips you to it") has a sibling this
 episode names: **pre-register the condition under which the arms are expected to differ, and refuse
 to read a null taken outside it.**

@@ -10,7 +10,7 @@ DECLARATIONS joined on ``announce_throw_time_ros``. (The PLANT block is deferred
 see ``mine_bag``.)
 
 Since 2026-08-12 it also mines the **throw critical point** for
-``plans/active/critical-point-ilc.md`` Phase 0a/0c: the ball's arrival velocity
+``plans/archived/critical-point-ilc.md`` Phase 0a/0c: the ball's arrival velocity
 at the catch-plane crossing and its direction/speed error against the nominal,
 the flight-time error, the **release-state backcast** (measured release
 position, velocity and instant from the ascending branch), and the exact
@@ -224,7 +224,7 @@ GRAVITY_MMS2 = ballistics_bc.GRAVITY_MMS2
 # it as a release-vs-arrival speed difference.
 #
 # THE LATERAL CHANNELS DO NOT USE THE SPLIT (E-1, resolved 2026-08-13).
-# ``plans/active/critical-point-ilc.md`` § Phase 1, entry condition E-1: the
+# ``plans/archived/critical-point-ilc.md`` § Phase 1, entry condition E-1: the
 # tracked point is the centroid of the visible retroreflective cap, biased by a
 # height-locked b(z) of ~20 mm — CONFIRMED by parity decomposition (probe:
 # ``tools/probes/mocap_parity_bias.py``). The parity argument, which is the whole
@@ -907,7 +907,7 @@ def mine_arc(data: BagData, ann: dict, plane_mm: float,
     """Arrival kinematics (0a) + release-state backcast (0c) for ONE toss.
 
     THE definition point for every ``arrival`` / ``backcast`` / ``split`` field
-    (``plans/active/critical-point-ilc.md`` Phase 0a/0c). Two ballistic fits over
+    (``plans/archived/critical-point-ilc.md`` Phase 0a/0c). Two ballistic fits over
     the SAME ball rows `land_xy` is derived from (:func:`ball_rows`), split at
     the apex by :func:`branches`:
 
@@ -1744,7 +1744,7 @@ Regenerate with:
     python tools/probes/toss_record_miner.py --bag {bag} --emit-fixture
 
 Consumed by tests/ros/test_toss_record_miner.py. Schema: {schema}
-(jugglebot/toss_record.py). Plan: plans/active/toss-selftuning.md § 3.3.
+(jugglebot/toss_record.py). Plan: plans/archived/toss-selftuning.md § 3.3.
 
 The bag itself is machine-local and gitignored, so the bag-backed test skips on
 any machine without it — including a fresh clone. These constants are what

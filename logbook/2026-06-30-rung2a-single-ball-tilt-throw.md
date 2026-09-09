@@ -31,7 +31,7 @@ tags:
 
 ## Summary
 
-Phase 2 / Rung 2a of `plans/active/bb-online-juggle-tilt-rearchitecture.md`:
+Phase 2 / Rung 2a of `plans/archived/bb-online-juggle-tilt-rearchitecture.md`:
 validate the **throw** primitive standalone — throw one ball **tilt-aimed** to a
 scoped workspace target, accurately and at settable cadence, measured
 **open-loop** (no catch), under the §3 tracking noise. This is where tilt enters

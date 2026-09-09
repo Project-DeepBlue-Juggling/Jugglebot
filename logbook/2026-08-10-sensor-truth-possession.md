@@ -21,9 +21,9 @@ files_changed:
   - tests/ros/test_toss_coordinator.py
   - tests/ros/test_toss_sequencer.py
   - tests/ros/test_reload_coordinator_node.py
-  - plans/active/catch-robustness.md
+  - plans/archived/catch-robustness.md
   - plans/archived/hand-ball-sensor.md
-  - plans/active/single-ball-toss.md
+  - plans/archived/single-ball-toss.md
   - tests/hardware/session_phase8_toss_hardware.md
   - tests/hardware/session_phase8_toss_trace.md
   - tests/hardware/session_anomaly_fixes.md
@@ -61,7 +61,7 @@ Three things landed together, per the repo's contract pattern:
    and node level, and a bag-replay test on a committed fixture cut.
 
 Operator authorisation for the flip (2026-08-10, recorded in
-`plans/active/catch-robustness.md` § Owner decisions): the sensor is validated in
+`plans/archived/catch-robustness.md` § Owner decisions): the sensor is validated in
 situ, so the hand-ball-sensor plan's *"flip forbidden until Phase 7 validates"*
 gate is **superseded**; Phase 7 steps 4–5 stay open as bench tuning, not blockers.
 The supersession is recorded at that plan's own statement of the gate.

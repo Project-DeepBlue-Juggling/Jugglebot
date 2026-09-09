@@ -1703,7 +1703,7 @@ def test_reach_centre_declared_for_tier_8b_too(monkeypatch):
 
 
 # ── S6/S7: the SESSION-scoped catch arming ────────────────────────────────────
-# plans/active/toss-pipelined-preamble.md § 2.3 (S6, S7) and § 4 (Phase B3).
+# plans/archived/toss-pipelined-preamble.md § 2.3 (S6, S7) and § 4 (Phase B3).
 # A contiguous run of chained cycles raises trajectory/arm_catch, the two
 # catch_coordinator holds and the ONE catch/reach_center declaration EXACTLY
 # once, and lowers them exactly once — so there is no per-cycle re-raise left to

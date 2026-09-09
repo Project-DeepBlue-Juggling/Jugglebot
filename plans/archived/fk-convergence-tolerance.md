@@ -19,7 +19,7 @@ Deliberately small — it is separated from the sibling plans to keep rollback
 granularity, not because it is large.
 **Sibling plans:** `plans/parked/levelling-frame-contract.md` (items 1–2),
 `plans/archived/hand-command-continuity.md` (3–6),
-`plans/parked/catch-reach-degenerate-overshoot.md` (8).
+`plans/archived/catch-reach-degenerate-overshoot.md` (8).
 
 ## Context
 

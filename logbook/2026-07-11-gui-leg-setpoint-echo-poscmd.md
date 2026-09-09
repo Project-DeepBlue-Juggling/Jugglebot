@@ -242,7 +242,7 @@ before the node is removed; this change clears the leg-output half only.
 
 ## Related
 
-- Plan: [`mvp-trajectory-bringup.md`](../plans/active/mvp-trajectory-bringup.md)
+- Plan: [`mvp-trajectory-bringup.md`](../plans/archived/mvp-trajectory-bringup.md)
   — the migration that dormanted run_mpc (orphaning the datasource) and the
   deferred motion_bridge retirement item this unblocks.
 - [[2026-07-08-mvp-autonomous-build-run]] — MPC removed from the leg path (why

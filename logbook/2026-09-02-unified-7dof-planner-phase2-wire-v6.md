@@ -40,7 +40,7 @@ files_changed:
   - tools/probes/teensy_link_profiling/jetson/setpoint_stub.py
   - tools/probes/teensy_link_profiling/jetson/udp_protocol.py
   - tools/probes/traj_stream_probe.py
-  - plans/active/unified-7dof-planner.md
+  - plans/archived/unified-7dof-planner.md
   - plans/active/INDEX.md
   - logbook/2026-09-02-unified-7dof-planner-phase2-wire-v6.md
   - logbook/INDEX.md
@@ -61,7 +61,7 @@ tags:
 
 ## Summary
 
-Phase 2 of [`plans/active/unified-7dof-planner.md`](../plans/active/unified-7dof-planner.md):
+Phase 2 of [`plans/archived/unified-7dof-planner.md`](../plans/archived/unified-7dof-planner.md):
 the v6 Setpoint wire and the 7-channel host path, firmware-absent safe, and
 **COMMITTED BUT NOT DEPLOYED** — after this commit the host cannot talk to any
 FW ≤ 16 board (`PROTOCOL_VERSION` 5 → 6; the total link darkness is **loud and

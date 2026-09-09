@@ -22,10 +22,10 @@ files_changed:
   - plans/active/INDEX.md
   - plans/parked/refactor-2026-07.md
   - plans/active/PROMPT-anomaly-fixes-orchestration.md
-  - plans/active/bb-online-juggle-tilt-rearchitecture.md
+  - plans/archived/bb-online-juggle-tilt-rearchitecture.md
   - tests/sim/test_plans_index.py
   - tests/hardware/mvp_bench_runbook.md
-  - plans/active/mvp-trajectory-bringup.md
+  - plans/archived/mvp-trajectory-bringup.md
   - plans/archived/teensy-can-offload.md
   - plans/active/PROMPT-single-ball-toss-software-run.md
   - ros_ws/src/jugglebot_interfaces/action/Reload.action
@@ -65,7 +65,7 @@ The programme's premise is that process ceremony, not architecture, is the drag.
    *describe* it gets re-injected by the next generator run. A follow-up
    `git ls-files | xargs grep` then caught two more live instruction sites —
    `plans/active/PROMPT-anomaly-fixes-orchestration.md` and
-   `plans/active/bb-online-juggle-tilt-rearchitecture.md` — also fixed.
+   `plans/archived/bb-online-juggle-tilt-rearchitecture.md` — also fixed.
    Historical *records* of past backfill commits (in
    `catch-reach-degenerate-overshoot.md`, `hand-command-continuity.md`, older
    logbook entries) are left verbatim: they say what happened, not what to do.

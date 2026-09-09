@@ -5,7 +5,7 @@ Pure Python: **no ROS2, no file I/O, no config imports** — the
 needs is *injected* by its caller, so the live node and the offline miner cannot
 drift onto different constants without a test noticing.
 
-Plan: ``plans/active/toss-selftuning.md`` §§ 3.3, 3.4 (schema and dataflow),
+Plan: ``plans/archived/toss-selftuning.md`` §§ 3.3, 3.4 (schema and dataflow),
 D10-D13 (why the record has this shape). Logbook:
 ``logbook/2026-08-10-toss-selftuning-build.md``.
 Consumers: ``reload_coordinator_node`` (declaration half) and
@@ -502,7 +502,7 @@ FIELDS: Tuple[Field, ...] = (
     # on exactly the aim channels, repeatably. A whole-arc slope cancels that by
     # parity, leaving only the sample coverage's asymmetry about the apex — which
     # is what `coverage_asym_s` measures and what gates `usable_for_lateral_fit`.
-    # Evidence and the refuted alternatives: plans/active/critical-point-ilc.md
+    # Evidence and the refuted alternatives: plans/archived/critical-point-ilc.md
     # § Phase 1 E-1; probe tools/probes/mocap_parity_bias.py.
     Field('arc_fit_n', 'arc', 'M', 'i',
           'rows in the WHOLE-ARC fit (both branches, apex row de-duplicated)'),

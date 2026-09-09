@@ -1,7 +1,7 @@
 # Bench session — FW 18 flash (hand clip, homing restore, counter gate, hand7 reset)
 
 Flash-and-verify checklist for the FW 18 bundle
-(`plans/active/unified-7dof-planner.md` § "FW 18 bundle",
+(`plans/archived/unified-7dof-planner.md` § "FW 18 bundle",
 `logbook/2026-09-08-fw18-bundle-hand-clip-homing-counters-rename.md`). PROTOCOL_VERSION
 stays 6 — wire-identical to FW 17. Can-bridge FW 18 is **required** (the
 hand-lane fixes below); Platform FW 4 is **optional** (its only change is the

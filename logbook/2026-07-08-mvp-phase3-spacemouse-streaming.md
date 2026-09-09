@@ -417,6 +417,6 @@ fully accounted for by the new audit-fix tests: +9 in `test_trajectory_follower.
 
 ## Related
 
-- Plan: [`plans/active/mvp-trajectory-bringup.md`](../plans/active/mvp-trajectory-bringup.md) — Phase 3 detail + the two orchestration prerequisites.
+- Plan: [`plans/archived/mvp-trajectory-bringup.md`](../plans/archived/mvp-trajectory-bringup.md) — Phase 3 detail + the two orchestration prerequisites.
 - [2026-07-07-mvp-phase2-waypoint-moves.md](2026-07-07-mvp-phase2-waypoint-moves.md) — the audit that deferred the fast gate + supersede to this phase; the `validate` gate this parallels.
 - [2026-07-07-mvp-phase1-streaming-foundation.md](2026-07-07-mvp-phase1-streaming-foundation.md) — the streaming substrate + the `JB_TRAJ_SPACEMOUSE_HORIZON_S` config this reuses.

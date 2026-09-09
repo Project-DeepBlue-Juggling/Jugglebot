@@ -1,6 +1,6 @@
 """Rung 2a — single-ball tilt-aimed open-loop throw (the throw primitive).
 
-Phase 2 of plans/active/bb-online-juggle-tilt-rearchitecture.md. Drives the real
+Phase 2 of plans/archived/bb-online-juggle-tilt-rearchitecture.md. Drives the real
 contact-physics throw (``sim.juggle_throw.run_single_throw``): carry the seated
 ball up the TILTED cup axis on a ``plan_cup_cycle`` trajectory, detach along the
 tilted axis, fly free, measure the landing. These tests pin the OPEN-LOOP

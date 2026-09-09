@@ -427,6 +427,6 @@ firmware.
   versus a `TrajectoryStatus` field. Deliberately left open here; see Discussion.
 - **Sibling-plan interaction.** After Phase 2 the commanded rotvec excursion on the
   toss catch reach goes to approximately zero, which *is* the near-degenerate case
-  `plans/parked/catch-reach-degenerate-overshoot.md` studies. Its Phase 0 should
+  `plans/archived/catch-reach-degenerate-overshoot.md` studies. Its Phase 0 should
   re-verify its reproduction against a post-Phase-2 tree rather than assume the
   pre-fix `+2.32°` excursion still exists to measure.

@@ -37,7 +37,7 @@
 # mid-flight drops a ball on the robot; a pre-release abort retracts the hand to park
 # and re-centers. Tier 8a (platform level, toss-at-position) only until Tier 8b
 # (tilt-aimed displaced throw→catch) lands — config-selected; otherwise REJECTED_TIER.
-# See plans/active/single-ball-toss.md.
+# See plans/archived/single-ball-toss.md.
 
 geometry_msgs/Point catch_position   # nominated catch point, mm, STOW-relative
                                      # platform frame (same convention as

@@ -47,7 +47,7 @@ files_changed:
   - tests/teensy_link/conftest.py
   - tests/teensy_link/test_rpc_args.py
   - tools/probes/teensy_link_profiling/jetson/udp_protocol.py
-  - plans/active/unified-7dof-planner.md
+  - plans/archived/unified-7dof-planner.md
   - plans/active/INDEX.md
   - logbook/2026-09-02-unified-7dof-planner-phase3-fw17-hand-lane.md
   - logbook/INDEX.md
@@ -67,7 +67,7 @@ tags:
 
 ## Summary
 
-Phase 3 of [`plans/active/unified-7dof-planner.md`](../plans/active/unified-7dof-planner.md):
+Phase 3 of [`plans/archived/unified-7dof-planner.md`](../plans/archived/unified-7dof-planner.md):
 can-bridge **FW 17** — the 7th (hand, axis 6) 500 Hz interp lane, the
 owner-signed hand guards, and the `hand_source` mastery latch —
 **SOFTWARE-COMPLETE, NEVER FLASHED.** The flash event is **lockstep**: FW 17 +

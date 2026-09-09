@@ -33,7 +33,7 @@ cell that had any seated trial. A stochastic sweep does not produce that.
 
 The map was being cited as directional evidence: the 2026-07-25 vintage flagged
 `+y`/NW as failing at 70 mm, and that guidance had propagated into
-`plans/active/single-ball-toss.md`'s hardware ladder as live operator direction
+`plans/archived/single-ball-toss.md`'s hardware ladder as live operator direction
 advice.
 
 ## Root Cause
@@ -84,7 +84,7 @@ Re-run at the current machine (`python sim/toss_gate.py --tier 8b
 --trials-per-point 10 --seed 0`, run 2026-07-29,
 `temp/reports/toss_8b_phaseE_seed0.json`): `+y` is 10/10 at 70 mm, 10/10 at 100 mm,
 9/10 at 150 mm, and NW is 10/10 at every radius. The only sub-9/10 cell anywhere is
-SW at the 150 mm cap (8/10). `plans/active/single-ball-toss.md` T4 carries a
+SW at the 150 mm cap (8/10). `plans/archived/single-ball-toss.md` T4 carries a
 REFUTED banner over its old `+y`/NW guidance.
 
 **Tests:** `python -m pytest tests/sim/test_toss_gate.py -q`, run 2026-07-29 in the
@@ -97,4 +97,4 @@ in 1409.60 s (0:23:29)**.
 
 - `logbook/2026-07-25-displaced-throws-150.md` — Phase E, which this bug's cells
   would otherwise have been cited as evidence for
-- `plans/active/single-ball-toss.md` § Phase E
+- `plans/archived/single-ball-toss.md` § Phase E

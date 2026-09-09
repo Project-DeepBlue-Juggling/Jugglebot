@@ -47,7 +47,7 @@ So the budget is asserted in two halves rather than waived, and the OWNER SPLIT
   never been under 50 ms, and closing the gap is a change to
   ``feasibility.validate_cycle`` that needs its own owner decision.
 
-Plan: ``plans/active/unified-7dof-planner.md`` § 4 Phase 4.
+Plan: ``plans/archived/unified-7dof-planner.md`` § 4 Phase 4.
 """
 
 from __future__ import annotations

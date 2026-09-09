@@ -455,7 +455,7 @@ completed 2026-03-30 and carry their own PASS/COMPLETE markers in the text
 motions). Phases 4–7 (moderate motions, tau calibration, dynamic trajectories,
 production path) were never executed as written: platform control moved off the
 `run_mpc.py` entry point onto the trajectory-node streaming path tracked by
-`plans/active/mvp-trajectory-bringup.md`, and the MPC is being parked
+`plans/archived/mvp-trajectory-bringup.md`, and the MPC is being parked
 operationally (`plans/parked/refactor-2026-07.md` § Phase 3). The residual
 hardware obligations still tracked against this plan — T-H-T2b-1 / T-H-T2a-1
 CAN-loss and cascade validation — were discharged 2026-05-18

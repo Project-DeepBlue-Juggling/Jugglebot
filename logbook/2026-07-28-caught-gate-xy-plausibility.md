@@ -18,8 +18,8 @@ files_changed:
   - tests/hardware/session_phase7_reload.md
   - tests/hardware/session_phase8_toss_hardware.md
   - plans/active/PROMPT-anomaly-fixes-orchestration.md
-  - plans/parked/catch-reach-degenerate-overshoot.md
-  - plans/active/single-ball-toss.md
+  - plans/archived/catch-reach-degenerate-overshoot.md
+  - plans/archived/single-ball-toss.md
   - plans/parked/levelling-frame-contract.md
 commits:
   - 463a031

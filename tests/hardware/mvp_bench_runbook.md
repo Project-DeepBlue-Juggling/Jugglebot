@@ -1,6 +1,6 @@
 # MVP Trajectory Bringup — Consolidated Bench Runbook
 
-**Plan**: `plans/active/mvp-trajectory-bringup.md`
+**Plan**: `plans/archived/mvp-trajectory-bringup.md`
 **Closing logbook**: `logbook/2026-07-08-mvp-autonomous-build-run.md`
 **Audience**: Harrison, returning to the bench to validate the software built while away.
 
@@ -390,7 +390,7 @@ auto-tracks whatever threshold the firmware trips at):
     in the launch's rosbag record list**, so the E-STOP that occurred at 13:29:47 is
     absent from the bag — the fault channel is invisible to post-hoc analysis. Adding it
     is a one-line launch change and would have made this session self-documenting.
-- **Detailed protocol**: `plans/active/mvp-trajectory-bringup.md` § Phase 2 "Hardware
+- **Detailed protocol**: `plans/archived/mvp-trajectory-bringup.md` § Phase 2 "Hardware
   session" (Phase 2 has no separate session file — its protocol lives in the plan). Use
   `tools/probes/traj_stream_probe.py` for read-only knot inspection.
 
@@ -422,7 +422,7 @@ auto-tracks whatever threshold the firmware trips at):
   a production dependency. (If a disconnect test is ever wanted: power the SpaceMouse
   off mid-flight, or kill the `spacemouse_handler` node — both drive the same
   input-loss → graceful-stop path.)
-- **Detailed protocol**: `plans/active/mvp-trajectory-bringup.md` § Phase 3 "Hardware
+- **Detailed protocol**: `plans/archived/mvp-trajectory-bringup.md` § Phase 3 "Hardware
   session" (no separate session file — protocol lives in the plan).
 
 ### S4 — Phase-4 limit ramp (multiple short sessions + one lean A/B)

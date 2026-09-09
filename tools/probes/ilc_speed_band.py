@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Where is the ILC `event_vel_trim` actually ADMISSIBLE, and what bounds it?
 
-    plans/active/critical-point-ilc.md § The 2026-08-21 fold-in (C2, and
+    plans/archived/critical-point-ilc.md § The 2026-08-21 fold-in (C2, and
         "Two consequences the fold-in derives" (b))
-    plans/active/toss-selftuning.md § 11.5a
+    plans/archived/toss-selftuning.md § 11.5a
     logbook/2026-08-21-ilc-primary-foldin.md § Discussion
 
 THE QUESTION

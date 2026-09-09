@@ -1,7 +1,8 @@
 ---
 title: Single-ball toss — nominated catch state via a Toss action (MVP Phase 8 expansion)
 created: 2026-07-24
-status: active
+status: superseded   # 2026-09-09 — superseded by two-ball-skill-stack.md (owner decision); see the Archival note below
+archived: 2026-09-09
 related_logbook:
   - 2026-07-24-phase7-fourth-sitting-openloop-telemetry-ladders.md
   - 2026-07-01-rung2b-kinematic-release.md
@@ -21,13 +22,19 @@ related_code:
 
 # Plan — Single-ball toss to a nominated catch state (`Toss.action`)
 
+## Archival note (2026-09-09)
+
+Superseded by `two-ball-skill-stack.md` (owner decision 2026-09-09). `Toss.action`, tiers 8a/8b and the toss FSM retire with the FSM stack at R4. The derived throw envelope's PHYSICAL limits (end stop, regen, torque, the measured coast ladder) survive as inputs to the offline admissible command box (§ 2.6 of the new plan); the stroke-engine timing model they were coupled to retires at R1.
+
+The filename is unchanged (DOCUMENTATION_GUIDE § 2.6); every `related_plan:` and prose reference keeps resolving. Read the successor plan first: `two-ball-skill-stack.md`.
+
 **Branch:** `mvp-trajectory-bringup`
-**Expands:** `plans/active/mvp-trajectory-bringup.md` § Phase 8 (the stretch
+**Expands:** `plans/archived/mvp-trajectory-bringup.md` § Phase 8 (the stretch
 "self-toss loop" sketch becomes this staged plan; the level-platform MVP throw is
 retained as Tier 8a, and nominated-catch-position throws become Tier 8b).
 **Carries forward (merged 2026-07-24 from `demo/bb-led-two-ball-juggle`):**
 the online-juggle tilt-ladder primitives and their evidence —
-`plans/active/bb-online-juggle-tilt-rearchitecture.md` Rungs 0–2b
+`plans/archived/bb-online-juggle-tilt-rearchitecture.md` Rungs 0–2b
 (tilt-aim geometry, single-catch-at-position, throw-to-target, 12/12 self-catch
 with kinematic release).
 
@@ -882,7 +889,7 @@ toss it repeats) → CONT-STEP-1 (the no-ball dry trace, the one sanctioned use 
 
 ## Notes for Collaborators
 - Rung evidence and design bases live in the merged ladder logbook entries
-  (2026-06-24 → 2026-07-04) and `plans/active/bb-online-juggle-tilt-rearchitecture.md`;
+  (2026-06-24 → 2026-07-04) and `plans/archived/bb-online-juggle-tilt-rearchitecture.md`;
   that plan remains the authority for the two-ball frontier (Rung 3), which is
   **out of scope here** (MVP Phase 9 re-plans it against this plan's evidence).
 - The offline juggle demo (`sim/juggle_demo.py`, CasADi optimiser) is paused,

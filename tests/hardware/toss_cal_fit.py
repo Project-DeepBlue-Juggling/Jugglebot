@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Fit ``config/toss_calibration.yaml`` from a per-toss corpus — contract
-**C-TOSS-CAL-1**, build phase 2c of ``plans/active/toss-selftuning.md``.
+**C-TOSS-CAL-1**, build phase 2c of ``plans/archived/toss-selftuning.md``.
 
     # what would be written, node by node — writes NOTHING, makes no ROS call
     python tests/hardware/toss_cal_fit.py --corpus temp/probes/toss_records_*.jsonl --dry-run

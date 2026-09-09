@@ -268,7 +268,7 @@ Architecture requirement and prevents the mistimed-catch class of bugs.
 
 ## Related
 
-- Plan: `plans/active/mvp-trajectory-bringup.md` § Phase 5 (+ Architecture: the command
+- Plan: `plans/archived/mvp-trajectory-bringup.md` § Phase 5 (+ Architecture: the command
   seam, the feasibility gate, `trajectory_node`).
 - Predecessors: `logbook/2026-07-08-mvp-phase3-spacemouse-streaming.md` (the fast
   `validate_follow` gate + `build_follow`/`build_graceful_stop` this phase reuses),

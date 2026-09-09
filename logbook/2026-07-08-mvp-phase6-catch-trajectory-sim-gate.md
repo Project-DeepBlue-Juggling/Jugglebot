@@ -313,7 +313,7 @@ velocity is characterised (~0.26, root-caused).
 
 ## Related
 
-- Plan: `plans/active/mvp-trajectory-bringup.md` § Phase 6, § Hand-catch smoothness,
+- Plan: `plans/archived/mvp-trajectory-bringup.md` § Phase 6, § Hand-catch smoothness,
   § Sim strategy, § Reload sequence.
 - Predecessor: `logbook/2026-07-08-mvp-phase5-timed-targets.md` (the `build_timed`
   catch reach + reach-freeze this phase's `build_catch` extends; the fast

@@ -1,6 +1,6 @@
 """Unified 7-DoF planner, Phase 1 — ``cup_realize`` tilt schedule + decomposition.
 
-Plan: plans/active/unified-7dof-planner.md § 4 Phase 1, tests T-U3 and T-U4.
+Plan: plans/archived/unified-7dof-planner.md § 4 Phase 1, tests T-U3 and T-U4.
 
 T-U3 covers :func:`cup_realize.tilt_schedule` — apparent-gravity alignment inside
 the saturation band, the 12° cap, the exact receive/throw endpoint pins, the rate

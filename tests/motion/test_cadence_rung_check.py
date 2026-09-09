@@ -18,7 +18,7 @@ What it pins, in order of how much it costs to get wrong:
 3. **the pre-audit ladder still reds** — the regression the probe was written to
    find has to stay findable, or the probe has lost it.
 4. **the PIPELINED model reproduces the plan's own floor table** (2026-08-27,
-   Phase B0 / probe P3 of ``plans/active/toss-pipelined-preamble.md``), and its
+   Phase B0 / probe P3 of ``plans/archived/toss-pipelined-preamble.md``), and its
    grid holds the same accept-implies-flies contract the serial one does.
 
 ✅ **The pipelined half now pins SHIPPED code, not a model** (B4, 2026-08-27).

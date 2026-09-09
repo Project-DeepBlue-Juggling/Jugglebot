@@ -33,7 +33,7 @@ Unmarked and parallel-safe: this is production planner code on the unified 7-DoF
 path.  Nothing touches the filesystem; the wall-clock budget lives in the
 sibling ``test_unified_cycle_budget.py``, which is ``serial`` for that reason.
 
-Plan: ``plans/active/unified-7dof-planner.md`` § 4 Phase 4.
+Plan: ``plans/archived/unified-7dof-planner.md`` § 4 Phase 4.
 """
 
 from __future__ import annotations

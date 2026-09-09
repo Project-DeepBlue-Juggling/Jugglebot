@@ -1,7 +1,7 @@
 """The 7-channel cycle plan — six legs and the hand on ONE clock.
 
 ``CyclePlan`` is what the unified planner
-(`plans/active/unified-7dof-planner.md` § 4, Phase 1) hands to
+(`plans/archived/unified-7dof-planner.md` § 4, Phase 1) hands to
 ``trajectory_node``.  Today's plans carry 6 DoF and the hand is a separate
 actor with its own timeline; a cycle plan carries all seven channels sampled
 from a single ``t``, so "the hand strokes while the platform is here" is a

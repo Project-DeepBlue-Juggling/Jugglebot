@@ -1,6 +1,6 @@
 """Unified-mode sim gate — the Phase-4 production-chain-in-the-loop harness.
 
-Plan: ``plans/active/unified-7dof-planner.md`` § 4 Phase 4 ("Sim gate") and
+Plan: ``plans/archived/unified-7dof-planner.md`` § 4 Phase 4 ("Sim gate") and
 § 5 **T-I2**.  This is the unified-mode variant of ``sim/toss_gate.py``: where
 that gate drives the LEGACY stack (``toss_release`` + ``planner.build_catch`` +
 the firmware stroke engine's Python mirror), this one drives the UNIFIED one,

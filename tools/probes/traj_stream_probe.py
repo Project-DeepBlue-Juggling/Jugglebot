@@ -21,7 +21,7 @@ Feeds the exact frame each observed knot carries through a real ``SetpointPump``
 so the printed "pump" column mirrors what ``teensy_bridge_node`` would decide —
 the same production-in-the-loop check the tests assert, but live on the bench.
 
-Motivated by: ``plans/active/mvp-trajectory-bringup.md`` Phase 1 (hardware
+Motivated by: ``plans/archived/mvp-trajectory-bringup.md`` Phase 1 (hardware
 session ``tests/hardware/session_phase1_hold.md``); logbook
 ``2026-07-07-mvp-phase1-streaming-foundation.md``.
 

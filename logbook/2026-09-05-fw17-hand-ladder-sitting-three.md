@@ -7,7 +7,7 @@ phase: "unified-7dof-planner — Phase 3 (third hand bring-up sitting)"
 related_plan: unified-7dof-planner.md
 files_changed:
   - tests/hardware/session_unified7_hand_bringup.md
-  - plans/active/unified-7dof-planner.md
+  - plans/archived/unified-7dof-planner.md
   - plans/active/INDEX.md
   - logbook/2026-09-04-hand-bench-moving-gap-stage.md
   - logbook/2026-09-05-fw17-hand-ladder-sitting-three.md

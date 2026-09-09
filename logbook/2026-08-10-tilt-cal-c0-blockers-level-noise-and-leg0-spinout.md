@@ -19,8 +19,8 @@ files_changed:
   - config/tilt_calibration.yaml
   - config/hardware_config.yaml
   - plans/active/INDEX.md
-  - plans/active/single-ball-toss.md
-  - plans/parked/catch-reach-degenerate-overshoot.md
+  - plans/archived/single-ball-toss.md
+  - plans/archived/catch-reach-degenerate-overshoot.md
   - tests/hardware/session_phase8_toss_hardware.md
   - tests/hardware/session_anomaly_fixes.md
 subsystem:
@@ -432,8 +432,8 @@ that decision and is not edited). The three config changes — tier `8a`,
 `levelling_settle_s` 1.0, `catch_vel_scale_default` 0.9 — are committed by the
 coordinating session. Live documents that asserted the 8b default each carry a
 dated one-line correction (`tests/hardware/session_phase8_toss_hardware.md`,
-`tests/hardware/session_anomaly_fixes.md`, `plans/active/single-ball-toss.md`,
-`plans/parked/catch-reach-degenerate-overshoot.md`); a stale tier claim in a
+`tests/hardware/session_anomaly_fixes.md`, `plans/archived/single-ball-toss.md`,
+`plans/archived/catch-reach-degenerate-overshoot.md`); a stale tier claim in a
 runbook is not cosmetic, because the tier is not selectable per goal — it comes
 from the build, so a rung scored against the wrong choreography measures nothing.
 

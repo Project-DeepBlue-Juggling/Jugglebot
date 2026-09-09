@@ -7,7 +7,7 @@ Regenerate with:
     python tools/probes/toss_record_miner.py --bag 2026-08-10_16-30-44 --emit-fixture
 
 Consumed by tests/ros/test_toss_record_miner.py. Schema: toss_record/1
-(jugglebot/toss_record.py). Plan: plans/active/toss-selftuning.md § 3.3.
+(jugglebot/toss_record.py). Plan: plans/archived/toss-selftuning.md § 3.3.
 
 The bag itself is machine-local and gitignored, so the bag-backed test skips on
 any machine without it — including a fresh clone. These constants are what

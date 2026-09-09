@@ -1,6 +1,6 @@
 """Stage 2+3 of the unified 7-DoF cycle: tilt schedule, then cup → platform+slider.
 
-The unified planner (`plans/active/unified-7dof-planner.md` § 4, Phase 1) works in
+The unified planner (`plans/archived/unified-7dof-planner.md` § 4, Phase 1) works in
 three stages. Stage 1 (``cup_cycle``) solves ONE cup-opening Cartesian trajectory
 for a whole cycle. This module is stages 2 and 3 — the part that turns that
 single 3-DoF cup track into the 7 channels the machine actually has:
@@ -77,7 +77,7 @@ GRAVITY_VEC_MPS2 = np.array([0.0, 0.0, -float(hw.GRAVITY_MPS2)])
 #:
 #: ⚠ This is the 20 mm frame divergence documented at
 #: ``sim/plant/mujoco_plant.py:130-152`` and owned by
-#: ``plans/parked/hand-trajectory-generator-overhaul.md``: the firmware homes
+#: ``plans/archived/hand-trajectory-generator-overhaul.md``: the firmware homes
 #: downward and measures its stroke from the physical bottom (x3 = 315 mm), while
 #: the sim insets its stroke by ``TEENSY_TRAJ_STROKE_MARGIN_M`` (20 mm) inside the
 #: 344.75 mm travel.  The sim's own plant already resolves the two exactly this

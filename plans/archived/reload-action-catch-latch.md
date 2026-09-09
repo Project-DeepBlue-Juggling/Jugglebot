@@ -11,7 +11,7 @@ owns latch+hand `790e943`, Phase 3 CATCH delete `5d5f4ae`, Phase 4 docs+logbook 
 commit; Q1 cup-plane fix `bdbd186` landed as groundwork. Phase 5 hardware validation
 is operator-run and deferred. Logbook: `logbook/2026-07-20-reload-action-catch-latch.md`.)
 **Branch:** `mvp-trajectory-bringup`
-**Supersedes the CATCH-mode framing in:** `plans/active/mvp-trajectory-bringup.md` § Phase 7,
+**Supersedes the CATCH-mode framing in:** `plans/archived/mvp-trajectory-bringup.md` § Phase 7,
 `tests/hardware/session_phase7_reload.md`, `ros_ws/docs/control_modes.md`.
 
 ## Motivation (the reframe)
@@ -134,7 +134,7 @@ Each phase is full-`pytest tests/ -q`-gated and committed separately (rollback g
 ### Phase 4 — Docs + logbook + audit
 - Rewrite `tests/hardware/session_phase7_reload.md` (no "operator keeps CATCH"; the action drives
   everything; 7a aim = 809.08). Update `docs/control_modes.md`, `docs/safety.md`,
-  `plans/active/mvp-trajectory-bringup.md` § Phase 7, `mvp_bench_runbook.md`. `/audit --unstaged`.
+  `plans/archived/mvp-trajectory-bringup.md` § Phase 7, `mvp_bench_runbook.md`. `/audit --unstaged`.
 
 ### Phase 5 — Hardware validation (operator-run)
 - New/updated Phase-7 session: aim-only frame+z check (809.08), static catch, full reload action
@@ -169,7 +169,7 @@ has since been run — see `logbook/2026-07-23-phase7-reload-first-hardware-sess
 and `logbook/2026-07-24-phase7-fourth-sitting-openloop-telemetry-ladders.md`
 (15/19 caught; the reload platform pivoted to open-loop by config default).
 
-Continuing catch work is tracked by `plans/active/mvp-trajectory-bringup.md`
+Continuing catch work is tracked by `plans/archived/mvp-trajectory-bringup.md`
 and the hand-ball-sensor / single-ball-toss plans, not here. One known-stale
 detail is deliberately left in place: the 9.858 rev hand prime cited near the
 top of this plan was superseded by the rev-derived prime

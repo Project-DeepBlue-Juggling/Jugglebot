@@ -6,7 +6,7 @@ status: resolved
 phase: "unified-7dof-planner — commissioning"
 related_plan: unified-7dof-planner.md
 files_changed:
-  - plans/active/unified-7dof-planner.md
+  - plans/archived/unified-7dof-planner.md
   - plans/active/toss-multi-catch-pose.md
   - plans/active/INDEX.md
   - logbook/INDEX.md
@@ -25,7 +25,7 @@ tags:
 ## Summary
 
 The implementation plan for the Scope-B unified whole-cycle 7-DoF motion planner
-(`plans/active/unified-7dof-planner.md`) was written and owner-commissioned
+(`plans/archived/unified-7dof-planner.md`) was written and owner-commissioned
 2026-08-29: platform + hand planned as **one cup trajectory per cycle** (throw +
 carry + catch), ball-frame constraints hard, banking free during carry, a 7th
 hand channel in the knot stream (Setpoint v6, PROTOCOL_VERSION 5→6), exclusive
