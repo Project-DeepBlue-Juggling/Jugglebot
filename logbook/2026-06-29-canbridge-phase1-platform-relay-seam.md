@@ -351,6 +351,15 @@ the bridge heartbeat reports the setpoint output armed, streams 16-frame windows
 and prints the Platform's FW version before and after (STATE_READ, ~3 s after COMMIT). Dry-run against
 the built image: 122880 B, crc32 `0x50EDD638`, identity OK.
 
+Two additions the same evening, once the board had been USB-flashed with FW 5 and the port declared
+dead: **`--verify-only`** runs BEGIN, DATA and VERIFY on the real board and stops — the CAN transport, the
+relay, the staging erase/write/read-back and the CRC + identity check all run, nothing touches the program
+region, and the board discards the staged image on its own 60 s timeout — so the whole path can be proven
+before the first one-way COMMIT. And **any hex under a `.pio/` build directory is refused** unless
+`--allow-pio-image`: the PlatformIO image of this sketch was CAN-MUTE on the hardware (platformio.ini,
+2026-07-31, unresolved), and a CAN-mute image on a board with no USB is a brick nothing can reach again.
+There is no default image path any more; the operator passes the `.hex` the Arduino IDE exports.
+
 **Pins and receipts (2026-09-09, both boards BUILT, NEVER FLASHED).** Bridge: `pio run -e teensy41` →
 `firmware.hex` md5 `116b8e08241d4214bbd8a55b1b9744ca`, 769144 B, reproducible across two builds;
 `EXPECTED_BRIDGE_FW_VERSION` 19. Platform: `pio run -e teensy40` (clean) → md5
