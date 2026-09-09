@@ -251,12 +251,15 @@ def test_method_arg_association_covers_all_commandable_methods():
     from teensy_link import RpcMethod
     # The authoritative protocol fact: methods that carry NO request args (correctly
     # absent from METHOD). TIME_OF_DAY_QUERY is Teensy→Jetson (server-side); the
-    # reads (TILT_READ/STATE_READ) + BB reload/reset/calibrate + GET_AXIS_VERSIONS
-    # are payloadless requests.
+    # reads (TILT_READ/STATE_READ) + BB reload/reset/calibrate +
+    # GET_AXIS_VERSIONS / GET_BB_AXIS_VERSIONS are payloadless requests — the two
+    # version pulls carry a RESULT blob but no ARGS, which is the distinction
+    # this partition is about.
     payloadless = {
         RpcMethod.NOP, RpcMethod.TIME_OF_DAY_QUERY,
         RpcMethod.BB_RELOAD, RpcMethod.BB_RESET, RpcMethod.BB_CALIBRATE_LOC,
-        RpcMethod.GET_AXIS_VERSIONS, RpcMethod.TILT_READ, RpcMethod.STATE_READ,
+        RpcMethod.GET_AXIS_VERSIONS, RpcMethod.GET_BB_AXIS_VERSIONS,
+        RpcMethod.TILT_READ, RpcMethod.STATE_READ,
         RpcMethod.PLATFORM_FW_COMMIT,
     }
     have = set(ra.METHOD.keys())

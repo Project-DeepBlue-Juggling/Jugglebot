@@ -24,14 +24,19 @@ namespace CanBridge {
 namespace Rpc {
 
 // RPC response result-blob buffer capacity (the `result[]` in on_request). The
-// only method that returns a result blob today is GET_AXIS_VERSIONS
-// (ResultAxisVersions = 57 B); keep this ≥ the largest result blob.
+// methods that return a result blob today are GET_AXIS_VERSIONS
+// (ResultAxisVersions = 57 B) and GET_BB_AXIS_VERSIONS (ResultBbAxisVersions =
+// 17 B); keep this ≥ the largest result blob.
 static constexpr uint16_t RESULT_BUF_CAP = 64;
 // Build-time guard: fail the build if the largest RPC result blob outgrows the buffer, so a
 // future growth of ResultAxisVersions (or a new result-bearing method) can never
 // silently truncate in version_fill_blob / dispatch instead of being caught here.
+// EVERY result-bearing method must be listed: a new one that outgrows the buffer
+// would otherwise fail at run time, on hardware, as a silent truncation.
 static_assert(RESULT_BUF_CAP >= sizeof(JbUdp::RpcArgs::ResultAxisVersions),
               "RESULT_BUF_CAP too small for the largest RPC result blob");
+static_assert(RESULT_BUF_CAP >= sizeof(JbUdp::RpcArgs::ResultBbAxisVersions),
+              "RESULT_BUF_CAP too small for ResultBbAxisVersions");
 
 // ── Envelope ──────────────────────────────────────────────────────────────────
 uint16_t pack_request(uint16_t method, uint16_t req_id,
@@ -357,6 +362,15 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
     // here. version_fill_blob caps to RESULT_BUF_CAP defensively.
     case RpcMethod::GET_AXIS_VERSIONS:
       res_len = version_fill_blob(result, RESULT_BUF_CAP);
+      return res_len ? RpcStatus::OK : RpcStatus::ERR_BAD_ARGS;
+
+    // The Ball Butler twin (FW 20, ADDITIVE — an FW ≤ 19 board answers this id
+    // with ERR_UNKNOWN_METHOD and the Jetson renders the two BB rows as
+    // never-seen, which is the honest report). Same contract as above: a
+    // bridge-LOCAL cache read, no CAN1 round-trip on the pull, zero version
+    // semantics here.
+    case RpcMethod::GET_BB_AXIS_VERSIONS:
+      res_len = bb_version_fill_blob(result, RESULT_BUF_CAP);
       return res_len ? RpcStatus::OK : RpcStatus::ERR_BAD_ARGS;
 
     // ── Hand trajectory / smooth-move ──────────────────────────────

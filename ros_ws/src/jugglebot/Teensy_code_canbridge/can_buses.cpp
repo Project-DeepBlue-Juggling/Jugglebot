@@ -324,6 +324,17 @@ static void decode_bb_odrive(const CAN_message_t& msg) {
       write_pos_vel(a, p.a, p.b, micros64());   // BB is not a leg → no sign flip; pos_timestamp_us monotonic
       break;
     }
+    case ODriveCmd::get_version:
+      // Cache the raw 8-byte Get_Version payload for the GET_BB_AXIS_VERSIONS
+      // pull — the CAN1 twin of decode_into_cache's get_version case, and the
+      // half of can_node's BOOT firmware check that commit 5875531 deferred to
+      // "phase B". Version SEMANTICS stay on the Jetson, exactly as for the
+      // Jugglebot axes. `node` is the absolute id (7/8); bb_version_record
+      // range-checks and converts to its BB-relative slot. The reply is DLC 8
+      // (our empty-payload request was len 0 and the `< 8` guard above already
+      // dropped it), so `d` is a full 8-byte version frame.
+      bb_version_record(node, d);
+      break;
     case ODriveCmd::get_iq: {
       auto q = ODrive::decode_iq(d);
       a.iq_setpoint = q.a; a.iq_measured = q.b;

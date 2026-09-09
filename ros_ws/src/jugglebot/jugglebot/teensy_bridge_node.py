@@ -1556,6 +1556,15 @@ class TeensyBridgeNode(Node):
         # Get_Version's fourth byte (fw_unreleased) per axis, kept node-local —
         # the tracker stores only the (major, minor, rev) triple.
         self._fw_unreleased = {}
+        # Ball Butler ODrive version handshake (FW 20+). Separate state from the
+        # Jugglebot one on purpose: BB is OPTIONAL hardware on a different bus,
+        # so its verdict is ADVISORY and must never touch _firmware_validated /
+        # _firmware_mismatch_error — those gate the orchestrator out of BOOT,
+        # and an absent or mismatched Ball Butler must not stop the robot.
+        # None = not yet resolved; True = pulled + validated; a string = the
+        # reason the pull cannot resolve (rendered on link_status verbatim).
+        self._bb_versions_resolved = None
+        self._bb_version_unavailable = None
 
         # ── F3/C2: per-(axis, error-code) log throttle for _log_odrive_errors ──
         # A SECOND tracker, deliberately NOT self._versions. The tracker above is
@@ -1933,6 +1942,7 @@ class TeensyBridgeNode(Node):
         self.create_timer(1.0, self._publish_udp_diag)         # 1 Hz per-type UDP census
         self.create_timer(1.0, self._health_check)             # 1 Hz link watchdog
         self.create_timer(1.0, self._version_check_poll)       # 1 Hz firmware-version handshake (no-op once resolved)
+        self.create_timer(1.0, self._bb_version_check_poll)    # 1 Hz Ball Butler ODrive versions (advisory; no-op once resolved)
 
         # ── Setpoint downlink (Commit 3) — STARTS DISARMED ────
         # The 40/500 Hz hot path. The SetpointPump (pure packing + per-step
@@ -3751,6 +3761,107 @@ class TeensyBridgeNode(Node):
                              f"-{'?' if unrel is None else unrel}")
         return ' '.join(parts)
 
+    def _bb_version_check_poll(self):
+        """Pull the bridge's cached BALL BUTLER ODrive versions and validate them.
+
+        The Ball Butler twin of :meth:`_version_check_poll`, restoring the half
+        of can_node's BOOT firmware check that commit 5875531 dropped when BB
+        moved off USB-CAN ("phase B ... by decoding axes 7+8 on CAN1 and
+        surfacing the result via teensy_bridge_node (a new T2J flag or RPC)").
+
+        THREE DELIBERATE DIFFERENCES FROM THE JUGGLEBOT POLL:
+
+        1. **Advisory, never a gate.** The verdict is logged and surfaced on
+           link_status; it never touches ``_firmware_validated`` or
+           ``_firmware_mismatch_error``. Those hold the orchestrator out of BOOT
+           (state_machine waits on them), and the Ball Butler is optional
+           hardware on a different bus — a missing or mismatched BB must not
+           stop the robot from juggling. can_node drew the same line.
+        2. **ERR_UNKNOWN_METHOD is a RESOLVED state, not a retry.** Against a
+           bridge older than FW 20 the method does not exist, and retrying at
+           1 Hz forever would be a permanent pointless RPC. The reason is
+           latched and rendered, so the row says WHY it is empty.
+        3. **Absence is not failure.** With no Ball Butler powered, no BB axis
+           heartbeats, the firmware sweep never queries, and the mask stays 0.
+           That keeps retrying (a BB switched on later must still resolve) but
+           is never logged as an error.
+        """
+        if self._bb_versions_resolved or self._bb_version_unavailable:
+            return
+        try:
+            ok, msg, blob = self._call_rpc(
+                RpcMethod.GET_BB_AXIS_VERSIONS, timeout=0.3, retries=1)
+        except Exception as e:  # noqa: BLE001 — never let a timer die
+            self.get_logger().error(f"BB version check pull errored: {e}",
+                                    throttle_duration_sec=5.0)
+            return
+        if not ok:
+            # A bridge older than FW 20 has no such method. Latch it: the answer
+            # will not change until the board is reflashed, and this node does
+            # not outlive a flash.
+            if 'UNKNOWN_METHOD' in str(msg).upper() or 'NOT_IMPL' in str(msg).upper():
+                self._bb_version_unavailable = (
+                    f'unsupported (bridge FW < {rpc_args.EXPECTED_BRIDGE_FW_VERSION})')
+                self.get_logger().info(
+                    'Ball Butler ODrive version check unavailable: the bridge '
+                    f'answered GET_BB_AXIS_VERSIONS with "{msg}" — this board '
+                    f'predates FW {rpc_args.EXPECTED_BRIDGE_FW_VERSION}. Advisory '
+                    'only; BB commands are unaffected.')
+            return
+        if not blob:
+            return  # transient — retry next tick
+        try:
+            per_axis = rpc_args.decode_bb_axis_versions_result(blob)
+            for axis, raw in per_axis.items():
+                (_proto, hw_product, hw_ver, hw_variant,
+                 fw_major, fw_minor, fw_rev, unrel) = odrive.decode_get_version(raw)
+                self._fw_unreleased[axis] = unrel
+                self._versions.record_version(
+                    axis, (fw_major, fw_minor, fw_rev),
+                    (hw_product, hw_ver, hw_variant))
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().error(f"BB version decode errored: {e}",
+                                    throttle_duration_sec=5.0)
+            return
+        if not self._versions.all_bb_versions_received():
+            # Either the sweep is still running or no Ball Butler is powered.
+            # Both keep retrying; neither is an error.
+            return
+        error = self._versions.validate_group(odrive.BB_AXES, "Ball Butler")
+        self._bb_versions_resolved = True
+        versions = self._bb_odrive_fw_versions_str()
+        if error:
+            # WARNING, not ERROR: nothing downstream refuses on this.
+            self.get_logger().warning(
+                f"Ball Butler firmware check MISMATCH: {error} (fw {versions}) "
+                f"— advisory only, BB commands are not refused")
+        else:
+            self.get_logger().info(
+                "Ball Butler firmware check PASSED — both axes match expected "
+                f"versions (fw {versions})")
+
+    def _bb_odrive_fw_versions_str(self) -> str:
+        """``/link_status`` rendering of the Ball Butler ODrive firmware.
+
+        Same ``axis:major.minor.rev-unreleased`` shape as
+        :meth:`_odrive_fw_versions_str` so one consumer parser serves both. The
+        unavailable case renders its REASON rather than a row of ``?``: against
+        a pre-FW-20 bridge the axes are not silent, the question was never
+        asked, and those are different facts.
+        """
+        if self._bb_version_unavailable:
+            return self._bb_version_unavailable
+        parts = []
+        for axis in odrive.BB_AXES:
+            fw = self._versions.firmware_versions.get(axis)
+            if fw is None:
+                parts.append(f'{axis}:?')
+            else:
+                unrel = self._fw_unreleased.get(axis)
+                parts.append(f'{axis}:{fw[0]}.{fw[1]}.{fw[2]}'
+                             f"-{'?' if unrel is None else unrel}")
+        return ' '.join(parts)
+
     def _hand_ball_sensor_str(self) -> str:
         """``/link_status`` rendering of the hand ball sensor.
 
@@ -4966,6 +5077,14 @@ class TeensyBridgeNode(Node):
                 # bench evidence of what the drives are running.
                 KeyValue(key='odrive_fw_versions',
                          value=self._odrive_fw_versions_str()),
+                # Ball Butler ODrives (axes 7-8, CAN1) — a SEPARATE row from the
+                # Jugglebot one above because they come from a separate RPC on a
+                # separate bus with a separate (advisory) verdict, and because a
+                # pre-FW-20 bridge can answer one and not the other. Merging them
+                # would make "the bridge cannot be asked" indistinguishable from
+                # "the axes did not answer".
+                KeyValue(key='bb_odrive_fw_versions',
+                         value=self._bb_odrive_fw_versions_str()),
                 # Hand ball-present sensor: tri-state word + miss count + the
                 # RAW get_gpio_states word in hex. Rendered unconditionally
                 # (never-seen reads 'unknown (never seen)') so an unflashed or

@@ -6,8 +6,8 @@
 // =============================================================================
 #include "version_check.h"
 
-#include "axis_state.h"        // axes[], NUM_AXES, HAND_AXIS, heartbeat_seen
-#include "can_buses.h"         // can_jugglebot_tx / TxCls, jugglebot_commands_allowed
+#include "axis_state.h"        // axes[], NUM_AXES, HAND_AXIS, heartbeat_seen, bb_axes[], BB_FIRST_NODE, NUM_BB_AXES
+#include "can_buses.h"         // can_jugglebot_tx / can_bb_tx / TxCls, jugglebot_commands_allowed
 #include "odrive_protocol.h"   // ODrive::encode_get_version
 #include "udp_protocol.h"      // JbUdp::RpcArgs::ResultAxisVersions
 #include "time_base.h"         // micros64 (re-query pacing)
@@ -124,5 +124,86 @@ bool version_raw_copy(uint8_t axis, uint8_t* out8) {
 
 uint8_t version_received_mask()   { return s_received_mask; }
 uint8_t version_query_sent_mask() { return s_query_sent_mask; }
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Ball Butler ODrives (CAN1 axes 7-8) — the BB twin of everything above.
+//  See version_check.h for why this is separate state rather than a widening.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Indexed BB-RELATIVE (0 = BB_FIRST_NODE = node 7, 1 = node 8), matching the
+// bb_axes[] convention next door and the wire mask's bit numbering.
+static volatile uint8_t s_bb_version_raw[NUM_BB_AXES][8] = {{0}};
+static volatile uint8_t s_bb_received_mask   = 0;
+static volatile uint8_t s_bb_query_sent_mask = 0;
+static uint64_t         s_bb_last_query_us   = 0;
+
+void bb_version_check_init() {
+  s_bb_received_mask   = 0;
+  s_bb_query_sent_mask = 0;
+  s_bb_last_query_us   = 0;
+  for (uint8_t i = 0; i < NUM_BB_AXES; ++i)
+    for (uint8_t j = 0; j < 8; ++j) s_bb_version_raw[i][j] = 0;
+}
+
+void bb_version_record(uint8_t axis, const uint8_t* d8) {
+  // `axis` is the ABSOLUTE node id off the wire (7 or 8); the cache is
+  // BB-relative. Reject out-of-range rather than wrapping — a stray frame from
+  // an unexpected node id must not land in another axis's slot.
+  if (d8 == nullptr) return;
+  if (axis < BB_FIRST_NODE || axis >= (uint8_t)(BB_FIRST_NODE + NUM_BB_AXES)) return;
+  const uint8_t i = (uint8_t)(axis - BB_FIRST_NODE);
+  for (uint8_t j = 0; j < 8; ++j) s_bb_version_raw[i][j] = d8[j];
+  asm volatile("" ::: "memory");                 // publish bytes before the bit
+  s_bb_received_mask |= (uint8_t)(1u << i);
+}
+
+void bb_version_check_step() {
+  // No jugglebot_commands_allowed() equivalent is needed: can_bb_tx already
+  // refuses when the BB partner has not been heard from recently
+  // (partner_recent), which is the CAN1 analogue of the same protection — an
+  // absent Ball Butler makes this a no-op instead of an un-ACKed TX climbing
+  // the FlexCAN TEC.
+  const uint64_t now = micros64();
+  // First pass: one Get_Version to the next present-but-unqueried BB axis.
+  for (uint8_t i = 0; i < NUM_BB_AXES; ++i) {
+    const uint8_t bit = (uint8_t)(1u << i);
+    if ((s_bb_query_sent_mask & bit) || !bb_axes[i].heartbeat_seen) continue;
+    const uint8_t node = (uint8_t)(BB_FIRST_NODE + i);
+    if (tx_reached_the_wire(can_bb_tx(ODrive::encode_get_version(node), TxCls::RPC))) {
+      s_bb_query_sent_mask |= bit;
+      s_bb_last_query_us = now;
+    }
+    return;   // one Get_Version per tick (bus pacing)
+  }
+  // Re-query pass: a single lost reply must not leave a version permanently
+  // missing. Same 1 s pacing as the Jugglebot sweep, keyed on the RECEIVED mask
+  // so a replied axis is never re-queried.
+  if (now - s_bb_last_query_us < VERSION_REQUERY_INTERVAL_US) return;
+  for (uint8_t i = 0; i < NUM_BB_AXES; ++i) {
+    const uint8_t bit = (uint8_t)(1u << i);
+    if ((s_bb_received_mask & bit) || !bb_axes[i].heartbeat_seen) continue;
+    const uint8_t node = (uint8_t)(BB_FIRST_NODE + i);
+    if (tx_reached_the_wire(can_bb_tx(ODrive::encode_get_version(node), TxCls::RPC)))
+      s_bb_last_query_us = now;
+    return;   // one re-query per tick (bus pacing)
+  }
+}
+
+uint16_t bb_version_fill_blob(uint8_t* out, uint16_t cap) {
+  using JbUdp::RpcArgs::ResultBbAxisVersions;
+  static_assert(sizeof(ResultBbAxisVersions) == 1 + NUM_BB_AXES * 8,
+                "ResultBbAxisVersions layout drift vs NUM_BB_AXES*8 raw bytes");
+  if (out == nullptr || cap < sizeof(ResultBbAxisVersions)) return 0;
+  ResultBbAxisVersions r{};
+  r.received_mask = s_bb_received_mask;
+  for (uint8_t i = 0; i < NUM_BB_AXES; ++i)
+    for (uint8_t j = 0; j < 8; ++j)
+      r.raw[i * 8 + j] = s_bb_version_raw[i][j];
+  memcpy(out, &r, sizeof(r));
+  return (uint16_t)sizeof(r);
+}
+
+uint8_t bb_version_received_mask()   { return s_bb_received_mask; }
+uint8_t bb_version_query_sent_mask() { return s_bb_query_sent_mask; }
 
 }  // namespace CanBridge

@@ -244,6 +244,7 @@ static void task_homing(void*) {
     activate_step();
     deactivate_step();
     version_check_step();   // bus-paced Get_Version sweep (no-op once swept)
+    bb_version_check_step();  // same, on CAN1 for the BB ODrives (no-op once swept)
     gpio_poll_step();       // hand ball-sensor SDO poll (rate-limited, ≤1 TX/tick)
     vTaskDelayUntil(&last, period);
   }
@@ -532,6 +533,7 @@ void setup() {
   activate_init();                 // idle until an ACTIVATE RPC latches a start
   deactivate_init();               // idle until a DEACTIVATE RPC latches a start
   version_check_init();            // clears the version sweep masks
+  bb_version_check_init();         // ditto for the Ball Butler ODrive sweep
   gpio_poll_init();                // hand ball-sensor poller (boots ON)
   profiling_init();                // instrumentation baselines
 

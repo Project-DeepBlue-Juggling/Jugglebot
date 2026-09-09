@@ -85,6 +85,7 @@ class RpcMethod(IntEnum):
     PLATFORM_FW_DATA = 87  # Platform FW-over-CAN: one image chunk, 1..5 bytes (relay → 0x6F0 op 0x02)
     PLATFORM_FW_VERIFY = 88  # Platform FW-over-CAN: CRC-32 over the staged image (relay → 0x6F0 op 0x03)
     PLATFORM_FW_COMMIT = 89  # Platform FW-over-CAN: apply the staged image + reboot (relay → 0x6F0 op 0x04)
+    GET_BB_AXIS_VERSIONS = 90  # Pull cached raw Get_Version bytes + received bitmask for the Ball Butler ODrives (CAN1 axes 7-8)
 
 class RpcStatus(IntEnum):
     OK = 0  # Success
@@ -992,6 +993,26 @@ class ResultAxisVersions:
         vals = _RESULT_AXIS_VERSIONS_STRUCT.unpack(data[:57])
         it = iter(vals)
         return cls(next(it), tuple(next(it) for _ in range(56)))
+
+# ResultBbAxisVersions (GET_BB_AXIS_VERSIONS (result))
+RESULT_BB_AXIS_VERSIONS_FMT = '<BBBBBBBBBBBBBBBBB'
+RESULT_BB_AXIS_VERSIONS_SIZE = 17
+_RESULT_BB_AXIS_VERSIONS_STRUCT = struct.Struct(RESULT_BB_AXIS_VERSIONS_FMT)
+assert _RESULT_BB_AXIS_VERSIONS_STRUCT.size == 17
+
+@dataclass
+class ResultBbAxisVersions:
+    received_mask: int = 0
+    raw: tuple = field(default_factory=lambda: (0,) * 16)
+
+    def pack(self) -> bytes:
+        return _RESULT_BB_AXIS_VERSIONS_STRUCT.pack(self.received_mask, *self.raw)
+
+    @classmethod
+    def unpack(cls, data: bytes) -> 'ResultBbAxisVersions':
+        vals = _RESULT_BB_AXIS_VERSIONS_STRUCT.unpack(data[:17])
+        it = iter(vals)
+        return cls(next(it), tuple(next(it) for _ in range(16)))
 
 # ArgBbThrow (BB_THROW)
 ARG_BB_THROW_FMT = '<ffff'

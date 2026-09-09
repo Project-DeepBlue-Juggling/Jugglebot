@@ -546,12 +546,12 @@ odrive_expected_versions:
 #        board byte to either would be a wire change, a PROTOCOL_VERSION bump
 #        and a lockstep flash sitting — a wildly disproportionate price for a
 #        display label.
-#      * The two Ball Butler ODrives (axes 7-8) have no reachable firmware
-#        version AT ALL: the can-bridge's Get_Version sweep covers the
-#        Jugglebot axes only (Teensy_code_canbridge/version_check.h — the
-#        GET_AXIS_VERSIONS blob is a fixed 7-axis array) and BB's heartbeat
-#        carries none. The GUI still lists them, with the version reported as
-#        not-available rather than the rows silently vanishing.
+#      * The two Ball Butler ODrives (axes 7-8) DO report firmware, since
+#        can-bridge FW 20 (2026-09-09) added the CAN1 Get_Version sweep and the
+#        additive GET_BB_AXIS_VERSIONS RPC — the "phase B" that commit 5875531
+#        deferred when BB moved off USB-CAN. Their MODEL is still declared here
+#        for the same reason every other model is: it is a fact about the metal,
+#        not something the drive is asked.
 # ============================================================
 hardware_models:
   # Teensys — model from the platformio.ini `board =` line of each firmware tree.

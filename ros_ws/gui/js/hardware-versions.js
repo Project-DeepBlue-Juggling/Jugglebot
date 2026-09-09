@@ -20,20 +20,22 @@
  *            FW_VERSION).  See the YAML section header for the full rationale.
  *
  *   FIRMWARE — live, from 'link_status' (10 Hz, diagnostic_msgs/DiagnosticStatus,
- *            teensy_bridge_node._publish_link_status).  Three KeyValues:
- *              bridge_fw_version    _bridge_fw_version_str()
- *              platform_fw_version  _platform_fw_version_str()
- *              odrive_fw_versions   _odrive_fw_versions_str()
+ *            teensy_bridge_node._publish_link_status).  Four KeyValues:
+ *              bridge_fw_version      _bridge_fw_version_str()
+ *              platform_fw_version    _platform_fw_version_str()
+ *              odrive_fw_versions     _odrive_fw_versions_str()      axes 0-6
+ *              bb_odrive_fw_versions  _bb_odrive_fw_versions_str()   axes 7-8
  *            Their exact rendering is pinned producer-side by
  *            TestHardwareVersionKeyValueContract (tests/ros/test_gui_geometry.py).
  *
- * The two Ball Butler ODrives (axes 7-8) have NO firmware version on any wire:
- * the can-bridge's Get_Version sweep covers the Jugglebot axes only
- * (Teensy_code_canbridge/version_check.h — the GET_AXIS_VERSIONS blob is a
- * fixed 7-axis array) and BB's heartbeat carries none.  They are listed anyway,
- * with the version column reading 'n/a' and a tooltip saying why.  Dropping the
- * rows would make "not checked" indistinguishable from "not present", which is
- * the failure mode every never-seen rendering in this codebase exists to avoid.
+ * The two Ball Butler ODrives ride a SEPARATE row because they are swept on a
+ * separate bus (CAN1) by a separate RPC — GET_BB_AXIS_VERSIONS, can-bridge
+ * FW 20+, the "phase B" that commit 5875531 deferred when BB moved off USB-CAN.
+ * That RPC is ADDITIVE, so a bridge older than FW 20 simply has no such method
+ * and the node renders the row as 'unsupported (bridge FW < 20)' — which this
+ * module shows verbatim.  Keeping it distinct from a per-axis '?' matters: the
+ * question could not be ASKED, which is not the same as the axes not answering,
+ * and collapsing the two would blame the Ball Butler for an old bridge.
  *
  * SKEW is surfaced, never judged here.  The bridge and Platform rows carry the
  * node's own verdict text verbatim ('SKEW — expected v19', '0 (PRE-VERSIONING)')
@@ -54,8 +56,8 @@ import { HARDWARE_MODELS } from './geometry-config.js';
 //
 // `src` says where the firmware version comes from:
 //   'kv'     a whole link_status KeyValue, rendered by the bridge node
-//   'axis'   one field of the odrive_fw_versions KeyValue, keyed by `axis`
-//   null     nothing reports it (see the BB note in the file header)
+//   'axis'   one field of a per-axis KeyValue (`axisKv`, default
+//            odrive_fw_versions), keyed by `axis`
 const DEVICES = [
     {
         key: 'teensy_can_bridge', label: 'can-bridge', short: 'can-bridge',
@@ -74,27 +76,37 @@ const DEVICES = [
     { key: 'odrive_axis_4', label: 'Leg 4', short: 'L4', src: 'axis', axis: 4 },
     { key: 'odrive_axis_5', label: 'Leg 5', short: 'L5', src: 'axis', axis: 5 },
     { key: 'odrive_axis_6', label: 'Hand', short: 'Hand', src: 'axis', axis: 6 },
+    // The two Ball Butler ODrives read a SEPARATE KeyValue: they are swept on
+    // CAN1 by a separate RPC (GET_BB_AXIS_VERSIONS, can-bridge FW 20+) with its
+    // own advisory verdict, and a pre-FW-20 bridge can answer the Jugglebot
+    // pull and not this one.  `axisKv` names the row; `axis` indexes into it.
     {
-        key: 'odrive_axis_7', label: 'BB pitch', short: 'BB pitch', src: null,
-        tip: 'Ball Butler pitch ODrive — no firmware version on any wire: the '
-           + "can-bridge's Get_Version sweep covers the Jugglebot axes only "
-           + '(version_check.h) and the BB heartbeat carries none',
+        key: 'odrive_axis_7', label: 'BB pitch', short: 'BB pitch',
+        src: 'axis', axis: 7, axisKv: 'bb_odrive_fw_versions',
+        tip: 'Ball Butler pitch ODrive — swept on CAN1 by the can-bridge '
+           + '(FW 20+). Against an older bridge the row reads unsupported: the '
+           + 'question cannot be asked, which is not the same as no answer.',
     },
     {
-        key: 'odrive_axis_8', label: 'BB hand', short: 'BB hand', src: null,
-        tip: 'Ball Butler hand ODrive — no firmware version on any wire: the '
-           + "can-bridge's Get_Version sweep covers the Jugglebot axes only "
-           + '(version_check.h) and the BB heartbeat carries none',
+        key: 'odrive_axis_8', label: 'BB hand', short: 'BB hand',
+        src: 'axis', axis: 8, axisKv: 'bb_odrive_fw_versions',
+        tip: 'Ball Butler hand ODrive — swept on CAN1 by the can-bridge '
+           + '(FW 20+). Against an older bridge the row reads unsupported: the '
+           + 'question cannot be asked, which is not the same as no answer.',
     },
 ];
+
+/** Default KeyValue for a `src: 'axis'` device that names no `axisKv`. */
+const DEFAULT_AXIS_KV = 'odrive_fw_versions';
 
 /** link_status is 10 Hz; 3 s of silence matches can-traffic / udp-traffic. */
 const STALE_TIMEOUT_MS = 3000;
 
-// Bucket keys for the two NON-version states.  NUL-prefixed so they can never
-// collide with a real version string off the wire (the bridge / platform
-// buckets key off a whole KeyValue value, which is arbitrary text).
-const BUCKET_UNAVAILABLE = '\u0000unavailable';
+// Bucket key for the NO-VERSION state.  NUL-prefixed so it can never collide
+// with a real version string off the wire (the bridge / platform buckets key
+// off a whole KeyValue value, which is arbitrary text).  Sub-keyed by the
+// node's own words in buildRows, so two devices that are version-less for
+// DIFFERENT reasons never share a row.
 const BUCKET_UNKNOWN = '\u0000unknown';
 
 // ---- State ----
@@ -181,16 +193,24 @@ function parseKv(raw) {
  * per cold-start tick, so a fresh launch legitimately shows '?' for a moment).
  */
 function parseAxisVersions(raw) {
-    const out = {};
-    if (!raw) return out;
-    for (const tok of String(raw).trim().split(/\s+/)) {
+    const fields = {};
+    if (!raw) return { fields, reason: null };
+    const text = String(raw).trim();
+    for (const tok of text.split(/\s+/)) {
         const idx = tok.indexOf(':');
         if (idx <= 0) continue;
         const axis = parseInt(tok.slice(0, idx), 10);
         if (!Number.isInteger(axis)) continue;
-        out[axis] = tok.slice(idx + 1);
+        fields[axis] = tok.slice(idx + 1);
     }
-    return out;
+    // A non-empty value that yields NO axis fields is the node speaking for the
+    // whole row rather than per axis — today that is the BB row's
+    // 'unsupported (bridge FW < 20)' against a bridge that has no
+    // GET_BB_AXIS_VERSIONS method.  Surfacing it verbatim keeps "the question
+    // cannot be asked" distinct from "the axes did not answer"; collapsing them
+    // would blame the Ball Butler for the bridge being old.
+    const reason = Object.keys(fields).length === 0 ? text : null;
+    return { fields, reason };
 }
 
 /**
@@ -256,7 +276,9 @@ function collapseMembers(shorts) {
  * arrived yet does not DISAGREE with anything — treating absence as a mismatch
  * would raise an ODD badge on every launch while the bus-paced sweep runs, and
  * a badge that cries wolf at boot is a badge nobody reads at the one sitting
- * where it matters.  Unknown and unavailable get their own muted buckets.
+ * where it matters.  Version-less devices get their own muted bucket, sub-keyed
+ * by the node's own words so two devices silent for different reasons never
+ * share a row.
  *
  * When a model group's known buckets disagree, the strictly-largest one is the
  * consensus and every other is flagged ODD.  On a TIE there is no consensus, so
@@ -268,8 +290,7 @@ function buildRows() {
     const resolved = DEVICES.map(d => ({
         dev: d,
         model: HARDWARE_MODELS[d.key] || 'unknown model',
-        fw: d.src === null ? null : (latestFw[d.key] || null),
-        unavailable: d.src === null,
+        fw: latestFw[d.key] || null,
     }));
 
     // 2. Group by model, preserving registry order.
@@ -285,9 +306,7 @@ function buildRows() {
         // 3. Bucket by the RAW version string, so two axes that differ only in
         //    the fw_unreleased byte are correctly seen as different firmware.
         let bucketKey;
-        if (r.unavailable) {
-            bucketKey = BUCKET_UNAVAILABLE;
-        } else if (!r.fw || r.fw.version === null) {
+        if (!r.fw || r.fw.version === null) {
             // Sub-keyed by the node's own words: 'unknown (never seen)' (no
             // BRIDGE_IDENTITY frame has EVER arrived) and a bare 'unknown' (the
             // Platform relay read failed) are different facts, and merging them
@@ -308,9 +327,8 @@ function buildRows() {
     // 4. Per group: find the consensus bucket among the known ones.
     const rows = [];
     for (const g of groups) {
-        const isNonVersion = b => b.key === BUCKET_UNAVAILABLE
-            || b.key.startsWith(BUCKET_UNKNOWN);
-        const known = [...g.buckets.values()].filter(b => !isNonVersion(b));
+        const known = [...g.buckets.values()]
+            .filter(b => !b.key.startsWith(BUCKET_UNKNOWN));
         let consensus = null;
         if (known.length > 1) {
             const sorted = [...known].sort((a, b) => b.members.length - a.members.length);
@@ -321,7 +339,6 @@ function buildRows() {
 
         for (const b of g.buckets.values()) {
             const shorts = b.members.map(m => m.short);
-            const isUnavailable = b.key === BUCKET_UNAVAILABLE;
             const isUnknown = b.key.startsWith(BUCKET_UNKNOWN);
             rows.push({
                 model: g.model,
@@ -329,11 +346,10 @@ function buildRows() {
                 membersFull: b.members.map(m => m.label).join(', '),
                 count: b.members.length,
                 fw: b.fw,
-                unavailable: isUnavailable,
                 unknown: isUnknown,
                 // Flagged when this bucket is a minority (or there is no
-                // majority at all).  Never for the two non-version buckets.
-                odd: mixed && !isUnavailable && !isUnknown && b !== consensus,
+                // majority at all).  Never for a bucket with no version.
+                odd: mixed && !isUnknown && b !== consensus,
                 mixed,
                 // A single-device group carries that device's own tooltip; a
                 // multi-device one names its full membership instead.
@@ -348,26 +364,37 @@ function buildRows() {
 
 // ---- Rendering ----
 
+/**
+ * The leading verdict of a node-supplied absence string, for the narrow cell.
+ * 'unsupported (bridge FW < 20)' -> 'unsupported'; 'unknown (never seen)' ->
+ * 'unknown'; a bare 'unknown' is unchanged.  The full text always survives in
+ * the cell's tooltip, so nothing is lost — only shortened.
+ */
+function verdictWord(text) {
+    const head = String(text).split('(')[0].trim();
+    return head || String(text);
+}
+
+
 function versionCell(row) {
-    if (row.unavailable) {
-        return '<span class="hwver-fw hwver-fw-na" '
-             + 'title="No firmware version is reported for this device on any wire">n/a</span>';
-    }
     if (row.unknown) {
         if (!seenLinkStatus) {
             return '<span class="hwver-fw hwver-fw-unknown" '
                  + 'title="Waiting for the first link_status message">--</span>';
         }
-        // The node's OWN words when it gave any.  'unknown (never seen)' (the
-        // bridge has never sent a BRIDGE_IDENTITY frame) and a bare 'unknown'
-        // (the Platform relay read failed, which also forces a re-home) are
-        // different diagnoses, and the generic sweep explanation below is
-        // simply untrue for either — it describes the ODrive Get_Version sweep.
-        // Shown as 'unknown' with the verbatim text in the tooltip: the column
-        // is a sidebar's width, not a sentence's.
+        // The node's OWN words when it gave any.  These are DIFFERENT
+        // diagnoses and must not collapse into one another:
+        //   'unknown (never seen)'          no BRIDGE_IDENTITY frame, ever
+        //   'unknown'                       the Platform relay read failed
+        //   'unsupported (bridge FW < 20)'  the bridge has no such RPC method
+        // The last one especially: rendering it as 'unknown' would say the Ball
+        // Butler drives went silent, when in fact the question could not be
+        // asked.  Cell shows the VERDICT WORD, tooltip the whole sentence —
+        // the same split parseKv makes for SKEW / UNVERSIONED, because the
+        // column is a sidebar's width and not a sentence's.
         if (row.fw && row.fw.note) {
             return '<span class="hwver-fw hwver-fw-unknown" '
-                 + `title="${esc(row.fw.raw)}">unknown</span>`;
+                 + `title="${esc(row.fw.raw)}">${esc(verdictWord(row.fw.note))}</span>`;
         }
         const tip = "This axis's Get_Version reply has not been cached yet. The "
             + "can-bridge's sweep is bus-paced (one frame per cold-start tick), "
@@ -389,7 +416,7 @@ function rowHtml(row) {
     // three columns stay aligned (the .can-bus-grid precedent).
     const cls = ['hwver-grid', 'hwver-row'];
     if (row.odd) cls.push('hwver-row-odd');
-    if (row.unavailable || row.unknown) cls.push('hwver-row-muted');
+    if (row.unknown) cls.push('hwver-row-muted');
     const count = row.count > 1
         ? `<span class="hwver-count">×${row.count}</span>`
         : '';
@@ -459,11 +486,17 @@ export function hardwareVersionsOnLinkStatus(msg) {
             latestFw[d.key] = parseKv(kv[d.kv]);
         }
     }
-    const perAxis = parseAxisVersions(kv.odrive_fw_versions);
+    // Parse each per-axis KeyValue once, then hand every device its field.
+    const perAxis = {};
     for (const d of DEVICES) {
-        if (d.src === 'axis') {
-            latestFw[d.key] = renderAxisVersion(perAxis[d.axis]);
-        }
+        if (d.src !== 'axis') continue;
+        const key = d.axisKv || DEFAULT_AXIS_KV;
+        if (!(key in perAxis)) perAxis[key] = parseAxisVersions(kv[key]);
+        const parsed = perAxis[key];
+        latestFw[d.key] = parsed.reason
+            ? { version: null, note: parsed.reason, noteShort: parsed.reason,
+                flag: false, raw: parsed.reason }
+            : renderAxisVersion(parsed.fields[d.axis]);
     }
 
     staleState.msgStale = false;

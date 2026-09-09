@@ -92,12 +92,20 @@ ROSBRIDGE_PORT = 9090
 # ---------------------------------------------------------------------------
 
 # KEYSTONE slot-mapping fixture: DISTINCT per-wire-slot values so a future
-# slot swap in the GUI is caught end-to-end.  Wire slot can1_* is physical
-# CAN3 (Jugglebot core), wire slot can2_* is physical CAN1 (Ball Butler) —
-# see ros_ws/gui/js/can-traffic.js BUSES registry.
+# slot swap in the GUI is caught end-to-end.  ROLE-keyed wire slots, per
+# ros_ws/gui/js/can-traffic.js BUSES:
+#   can1_* = jugglebot role -> the physical CAN2 row (the loom moved off the
+#            faulty CAN3 drive path on 2026-07-31)
+#   can2_* = bb role        -> the physical CAN1 row
+#   can3_* = cone role      -> the physical CAN3 row (slot added 2026-07-31,
+#            PROTOCOL_VERSION 5; before that the cone row had no traffic slot
+#            at all and read 'n/a')
+# All THREE carry distinct values so the mapping is pinned three ways: any
+# future slot swap moves a number onto the wrong row and fails loudly.
 PROFILE_DISTINCT = {
     "can1_rx": "100", "can1_tx": "20", "can1_util_pct": "13.3",
     "can2_rx": "7", "can2_tx": "3", "can2_util_pct": "1.1",
+    "can3_rx": "50", "can3_tx": "10", "can3_util_pct": "6.7",
 }
 
 # Hardware-panel version rows.  The real bridge publishes all three on EVERY
@@ -108,10 +116,16 @@ PROFILE_DISTINCT = {
 # renderings verbatim (_bridge_fw_version_str / _platform_fw_version_str /
 # _odrive_fw_versions_str), pinned by TestHardwareVersionKeyValueContract.
 VERSIONS_NOMINAL = {
-    "bridge_fw_version": "19 (proto 6)",
+    "bridge_fw_version": "20 (proto 6)",
     "platform_fw_version": "6",
     "odrive_fw_versions": ("0:0.6.11-0 1:0.6.11-0 2:0.6.11-0 3:0.6.11-0 "
                            "4:0.6.11-0 5:0.6.11-0 6:0.6.11-0"),
+    # Ball Butler ODrives (can-bridge FW 20+).  Deliberately DIFFERENT versions
+    # from each other and from the legs: they are different products (Micro X4 /
+    # S1), so they are different model groups and never group together — a
+    # fixture that made all nine agree would let a grouping bug that merges
+    # across models pass unnoticed.
+    "bb_odrive_fw_versions": "7:0.6.10-0 8:0.6.11-0",
 }
 # Never-seen: no BRIDGE_IDENTITY frame has ever arrived, the Platform relay
 # read failed, and the bus-paced Get_Version sweep has not run — all three of
@@ -120,7 +134,17 @@ VERSIONS_UNSEEN = {
     "bridge_fw_version": "unknown (never seen)",
     "platform_fw_version": "unknown",
     "odrive_fw_versions": "0:? 1:? 2:? 3:? 4:? 5:? 6:?",
+    "bb_odrive_fw_versions": "7:? 8:?",
 }
+# A bridge older than FW 20 has no GET_BB_AXIS_VERSIONS method, so the node
+# latches the reason and renders it for the whole row.  Distinct from "7:? 8:?"
+# above on purpose: the question could not be ASKED, which is not the same as
+# the axes not answering.
+VERSIONS_BB_UNSUPPORTED = dict(
+    VERSIONS_NOMINAL,
+    bridge_fw_version="19 (SKEW \u2014 expected v20, proto 6)",
+    bb_odrive_fw_versions="unsupported (bridge FW < 20)",
+)
 # Leg 3 left behind on an older ODrive build — the half-flashed set the panel
 # exists to make visible.  Six axes agree, one does not.
 VERSIONS_ODD_LEG = dict(
@@ -132,7 +156,7 @@ VERSIONS_ODD_LEG = dict(
 # EXPECTED_BRIDGE_FW_VERSION, and the Platform predates its identity block.
 VERSIONS_SKEW = dict(
     VERSIONS_NOMINAL,
-    bridge_fw_version="15 (SKEW \u2014 expected v19, proto 6)",
+    bridge_fw_version="15 (SKEW \u2014 expected v20, proto 6)",
     platform_fw_version="0 (PRE-VERSIONING)",
 )
 
@@ -148,6 +172,7 @@ LINK_UP_UNKNOWN = {"bridge_link": "UP", "heartbeat_age_ms": "55",
                    **VERSIONS_NOMINAL}
 LINK_UP_HEALTH = {"bridge_link": "UP", "heartbeat_age_ms": "55",
                   "bus1_health": "WARN", "bus2_health": "OK",
+                  "bus3_health": "BUS_OFF",
                   **VERSIONS_NOMINAL}
 # The cached-republish deception case: uplink LOST but the bridge keeps
 # republishing its frozen last-heartbeat healths at 10 Hz (and its cached
@@ -274,6 +299,12 @@ STAGES = {
     "hw-skew": {
         "link_status": {"enabled": True, "values": dict(
             LINK_UP_UNKNOWN, **VERSIONS_SKEW)},
+    },
+    # Pre-FW-20 bridge: the BB row carries a REASON rather than per-axis
+    # fields, and it must not read as the BB ODrives having failed to answer.
+    "hw-bb-unsupported": {
+        "link_status": {"enabled": True, "values": dict(
+            LINK_UP_UNKNOWN, **VERSIONS_BB_UNSUPPORTED)},
     },
     # link_status stops: versions must PERSIST (they are constants) while the
     # STALE badge names the watchdog cause.

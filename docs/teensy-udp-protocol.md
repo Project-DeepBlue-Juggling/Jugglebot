@@ -123,6 +123,7 @@ Static IPs: Teensy `192.168.42.2`, Jetson `192.168.42.1` (`/30` point-to-point).
 | `PLATFORM_FW_DATA` | 0x0057 | Platform FW-over-CAN: one image chunk, 1..5 bytes (relay → 0x6F0 op 0x02) |
 | `PLATFORM_FW_VERIFY` | 0x0058 | Platform FW-over-CAN: CRC-32 over the staged image (relay → 0x6F0 op 0x03) |
 | `PLATFORM_FW_COMMIT` | 0x0059 | Platform FW-over-CAN: apply the staged image + reboot (relay → 0x6F0 op 0x04) |
+| `GET_BB_AXIS_VERSIONS` | 0x005A | Pull cached raw Get_Version bytes + received bitmask for the Ball Butler ODrives (CAN1 axes 7-8) |
 
 ### RpcStatus
 
@@ -697,6 +698,15 @@ wraps the generated Python. `AXIS_ALL = 0xFF` broadcasts to all legs.
 |-------|------|-------|
 | `received_mask` | u8 | bit i set ⇒ axis i Get_Version reply cached |
 | `raw` | u8 | raw 8-byte Get_Version payload per axis (NUM_AXES*8, axis-major) |
+
+### ResultBbAxisVersions (`GET_BB_AXIS_VERSIONS (result)`)
+
+**17 bytes**. Python struct fmt: `<BBBBBBBBBBBBBBBBB`.
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `received_mask` | u8 | bit i set ⇒ axis BB_FIRST_NODE+i Get_Version reply cached |
+| `raw` | u8 | raw 8-byte Get_Version payload per BB axis (NUM_BB_AXES*8, axis-major from BB_FIRST_NODE) |
 
 ### ArgBbThrow (`BB_THROW`)
 

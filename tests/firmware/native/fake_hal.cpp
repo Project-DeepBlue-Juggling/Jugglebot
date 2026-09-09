@@ -113,6 +113,25 @@ TxResult can_jugglebot_tx(const ODrive::CanFrame& f, uint8_t cls) {   // HAL: ca
   if (g_send_defer_all || attempt == g_send_defer_index) return TxResult::DEFERRED;
   return TxResult::MAILBOX;
 }
+// ── CAN1 (Ball Butler) TX — WEAK default ─────────────────────────────────────
+//  version_check.cpp's BB sweep calls can_bb_tx, so every binary that compiles
+//  that TU needs the symbol — including test_gpio_poll, which #includes
+//  version_check.cpp only for the Get_Version cache its gate reads and has no
+//  interest in the BB bus at all.
+//
+//  WEAK, so a driver that actually EXERCISES the BB path can define its own
+//  recording version and win the link: test_version_check.cpp (the sweep) and
+//  test_rpc_dispatch.cpp (the BB relay methods) both do. A strong definition
+//  here would instead be a multiple-definition error in exactly those two.
+//
+//  The default is inert on purpose — it records nothing and always succeeds. A
+//  driver that has not thought about the BB bus should not be able to make an
+//  assertion about it.
+__attribute__((weak))
+TxResult can_bb_tx(const ODrive::CanFrame&, uint8_t) {   // HAL: can_buses.h
+  return TxResult::MAILBOX;
+}
+
 int fake_last_tx_class() { return g_last_tx_class; }
 size_t fake_sent_count_cls(uint8_t cls) {
   size_t n = 0;

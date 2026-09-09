@@ -249,6 +249,16 @@ ENUMS = {
         ("PLATFORM_FW_DATA",   0x0057, "Platform FW-over-CAN: one image chunk, 1..5 bytes (relay → 0x6F0 op 0x02)"),
         ("PLATFORM_FW_VERIFY", 0x0058, "Platform FW-over-CAN: CRC-32 over the staged image (relay → 0x6F0 op 0x03)"),
         ("PLATFORM_FW_COMMIT", 0x0059, "Platform FW-over-CAN: apply the staged image + reboot (relay → 0x6F0 op 0x04)"),
+        # ADDITIVE (2026-09-09, FW 20 — no PROTOCOL_VERSION bump, the
+        # HAND_SOURCE_SET / PLATFORM_FW_* precedent: an FW ≤ 19 board answers
+        # the unknown method with ERR_UNKNOWN_METHOD, loudly).  The Ball Butler
+        # half of the Get_Version sweep, deliberately a SEPARATE method rather
+        # than a widening of GET_AXIS_VERSIONS: that blob is a fixed
+        # NUM_AXES*8 = 56-byte array, so growing it to cover axes 7-8 would
+        # change an existing result's size — an incompatible wire change
+        # needing a PROTOCOL_VERSION bump and a lockstep flash, to add a
+        # display row.  A new method costs neither.
+        ("GET_BB_AXIS_VERSIONS", 0x005A, "Pull cached raw Get_Version bytes + received bitmask for the Ball Butler ODrives (CAN1 axes 7-8)"),
     ],
     "RpcStatus": [
         ("OK",            0x0000, "Success"),
@@ -1492,6 +1502,21 @@ RPC_ARGS = [
     RpcArg("ResultAxisVersions", "GET_AXIS_VERSIONS (result)", [
         Field("received_mask", "u8", 1, "bit i set ⇒ axis i Get_Version reply cached"),
         Field("raw", "u8", 56, "raw 8-byte Get_Version payload per axis (NUM_AXES*8, axis-major)"),
+    ]),
+    # GET_BB_AXIS_VERSIONS result — the Ball Butler twin of ResultAxisVersions
+    # above, and deliberately a separate struct for the same reason the method is
+    # separate (see the id table).  Same shape, same semantics-free contract: raw
+    # 8-byte ODrive Get_Version payloads, axis-major from BB_FIRST_NODE, plus a
+    # received bitmask whose bit i is axis BB_FIRST_NODE+i.  raw is
+    # u8[NUM_BB_AXES*8] = u8[16] (NUM_BB_AXES=2: bb_pitch 7, bb_hand 8).
+    #
+    # WHY THE MASK IS BB-RELATIVE, not absolute axis ids: it mirrors
+    # ResultAxisVersions bit-for-bit (bit i ⇒ the i-th axis of THIS blob), so the
+    # host decoder is the same function with a different base.  An absolute mask
+    # would waste seven bits and invite an off-by-BB_FIRST_NODE on both sides.
+    RpcArg("ResultBbAxisVersions", "GET_BB_AXIS_VERSIONS (result)", [
+        Field("received_mask", "u8", 1, "bit i set ⇒ axis BB_FIRST_NODE+i Get_Version reply cached"),
+        Field("raw", "u8", 16, "raw 8-byte Get_Version payload per BB axis (NUM_BB_AXES*8, axis-major from BB_FIRST_NODE)"),
     ]),
     # Ball Butler — typed firmware-side encoders own the wire format (the can-bridge
     # refuses a malformed throw before it hits CAN1).

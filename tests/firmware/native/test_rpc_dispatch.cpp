@@ -139,6 +139,14 @@ uint16_t version_fill_blob(uint8_t* out, uint16_t cap) {
   for (uint16_t i = 0; i < n; ++i) out[i] = 0;
   return n;
 }
+// The Ball Butler twin (FW 20). Shares g_version_len so a case can drive both
+// GET_AXIS_VERSIONS and GET_BB_AXIS_VERSIONS down the zero-length branch that
+// makes dispatch answer ERR_BAD_ARGS.
+uint16_t bb_version_fill_blob(uint8_t* out, uint16_t cap) {
+  const uint16_t n = g_version_len < cap ? g_version_len : cap;
+  for (uint16_t i = 0; i < n; ++i) out[i] = 0;
+  return n;
+}
 
 // ── udp_link.h (link deps pulled in by rpc_server_init/on_request; never called) ──
 bool udp_send_rpc(uint8_t, const uint8_t*, uint16_t) { return true; }

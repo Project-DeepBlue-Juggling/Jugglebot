@@ -546,12 +546,12 @@ async def poll_dom(cdp, assertion):
 
 JS_CONN = js_probe("{ dot: g('conn-dot'), txt: g('conn-text') }")
 JS_CAN = js_probe(
-    "{ can3: {m: g('can-msgs-can3'), k: g('can-kbits-can3'), u: g('can-util-can3'),"
-    "  h: g('can-health-can3')},"
-    " can1: {m: g('can-msgs-can1'), k: g('can-kbits-can1'), u: g('can-util-can1'),"
-    "  h: g('can-health-can1')},"
-    " can2: {m: g('can-msgs-can2'), row: g('can-row-can2'), label: g('can-label-can2'),"
-    "  h: g('can-health-can2')},"
+    "{ can1: {m: g('can-msgs-can1'), k: g('can-kbits-can1'), u: g('can-util-can1'),"
+    "  h: g('can-health-can1'), row: g('can-row-can1'), label: g('can-label-can1')},"
+    " can2: {m: g('can-msgs-can2'), k: g('can-kbits-can2'), u: g('can-util-can2'),"
+    "  h: g('can-health-can2'), row: g('can-row-can2'), label: g('can-label-can2')},"
+    " can3: {m: g('can-msgs-can3'), k: g('can-kbits-can3'), u: g('can-util-can3'),"
+    "  h: g('can-health-can3'), row: g('can-row-can3'), label: g('can-label-can3')},"
     " badge: g('can-stale-badge') }")
 JS_TRACK = js_probe(
     "{ vals: [0,1,2,3,4,5,6].map(i => g('track-val-' + i)) }")
@@ -566,25 +566,42 @@ def check_connected(v):
     return ok, _ev(v)
 
 
-def check_can3_slot(v):
-    c = v["can3"]
+def check_can2_shows_jugglebot_slot(v):
+    """Wire slot can1_* (jugglebot role) lands on the PHYSICAL CAN2 row.
+
+    The loom moved onto the CAN2 controller on 2026-07-31 because the bridge's
+    CAN3 analog drive path has a load-dependent hardware fault.  Wire names are
+    role-keyed at the firmware source and connector-keyed in the GUI, so this
+    pair of assertions is the only place the mapping is pinned end-to-end.
+    """
+    c = v["can2"]
     ok = (c["m"]["txt"] == "120" and c["k"]["txt"] == "13.3"
           and c["u"]["txt"] == "13.3")
-    return ok, _ev({"can3": c})
+    return ok, _ev({"can2": c})
 
 
 def check_can1_slot(v):
+    """Wire slot can2_* (bb role) lands on the physical CAN1 row."""
     c = v["can1"]
     ok = (c["m"]["txt"] == "10" and c["k"]["txt"] == "1.1"
           and c["u"]["txt"] == "1.1")
     return ok, _ev({"can1": c})
 
 
-def check_can2_na(v):
-    c = v["can2"]
-    ok = (c["m"]["txt"] == "n/a" and "can-row-na" in c["row"]["cls"].split()
-          and c["label"]["dis"] is True)
-    return ok, _ev({"can2": c})
+def check_can3_shows_cone_slot(v):
+    """Wire slot can3_* (cone role) lands on the physical CAN3 row.
+
+    The cone gained a traffic slot on 2026-07-31 (PROTOCOL_VERSION 5); before
+    that this row had slot=null and rendered 'n/a' with its chart toggle
+    disabled, which is what this assertion used to check.  It has real traffic
+    now, so 'n/a' would be a regression, not a pass.
+    """
+    c = v["can3"]
+    ok = (c["m"]["txt"] == "60" and c["k"]["txt"] == "6.7"
+          and c["u"]["txt"] == "6.7"
+          and "can-row-na" not in c["row"]["cls"].split()
+          and c["label"]["dis"] is not True)
+    return ok, _ev({"can3": c})
 
 
 def check_badge_hidden(v):
@@ -592,17 +609,20 @@ def check_badge_hidden(v):
 
 
 def check_health_dots(v):
-    ok = (v["can3"]["h"]["cls"] == "can-health-dot warn"
+    """bus1_health -> CAN2 (jugglebot), bus2_health -> CAN1 (bb),
+    bus3_health -> CAN3 (cone).  Same role-vs-connector mapping as the slots
+    above, and equally invisible if it silently swaps."""
+    ok = (v["can2"]["h"]["cls"] == "can-health-dot warn"
           and v["can1"]["h"]["cls"] == "can-health-dot ok"
-          and v["can2"]["h"]["cls"] == "can-health-dot unknown")
-    return ok, _ev({b: v[b]["h"] for b in ("can3", "can1", "can2")})
+          and v["can3"]["h"]["cls"] == "can-health-dot busoff")
+    return ok, _ev({b: v[b]["h"] for b in ("can1", "can2", "can3")})
 
 
 def check_stale_readouts(v):
     ok = all(v[b][f]["txt"] == "--"
-             for b in ("can3", "can1") for f in ("m", "k", "u"))
+             for b in ("can1", "can2", "can3") for f in ("m", "k", "u"))
     return ok, _ev({b: {f: v[b][f]["txt"] for f in ("m", "k", "u")}
-                    for b in ("can3", "can1")})
+                    for b in ("can1", "can2", "can3")})
 
 
 def check_badge_visible(v):
@@ -630,8 +650,9 @@ def check_watchdog_badge(v):
 
 
 def check_dots_unknown(v):
-    ok = all(v[b]["h"]["cls"] == "can-health-dot unknown" for b in ("can3", "can1"))
-    return ok, _ev({b: v[b]["h"] for b in ("can3", "can1")})
+    ok = all(v[b]["h"]["cls"] == "can-health-dot unknown"
+             for b in ("can1", "can2", "can3"))
+    return ok, _ev({b: v[b]["h"] for b in ("can1", "can2", "can3")})
 
 
 def check_tracking_live(v):
@@ -671,12 +692,18 @@ SCENARIO1 = [
         Assertion("gui-connected", JS_CONN, _safe(check_connected), timeout=30.0),
     ]),
     StageSpec("can-slot-mapping", "can-slot-mapping", [
-        # KEYSTONE: wire slot can1_* (100+20 msg/s, util 13.3) must land on
-        # the CAN3 'Jugglebot core' row; wire slot can2_* (7+3, util 1.1) on
-        # the CAN1 'Ball Butler' row.  Catches any future slot swap.
-        Assertion("can3-shows-can1-slot-values", JS_CAN, _safe(check_can3_slot), timeout=12.0),
-        Assertion("can1-shows-can2-slot-values", JS_CAN, _safe(check_can1_slot), timeout=6.0),
-        Assertion("can2-na-and-disabled", JS_CAN, _safe(check_can2_na), timeout=6.0),
+        # KEYSTONE: three role-keyed wire slots onto three connector-keyed
+        # rows, all with distinct values.  can1_* (100+20 msg/s, util 13.3) ->
+        # CAN2 'Jugglebot core'; can2_* (7+3, util 1.1) -> CAN1 'Ball Butler';
+        # can3_* (50+10, util 6.7) -> CAN3 'Catching cone'.  Catches any future
+        # slot swap.  (Updated 2026-09-09: these expectations still described
+        # the pre-2026-07-31 wiring, when the loom was on CAN3 and the cone had
+        # no traffic slot, so all three failed against a correct GUI.)
+        Assertion("can2-shows-jugglebot-slot-values", JS_CAN,
+                  _safe(check_can2_shows_jugglebot_slot), timeout=12.0),
+        Assertion("can1-shows-bb-slot-values", JS_CAN, _safe(check_can1_slot), timeout=6.0),
+        Assertion("can3-shows-cone-slot-values", JS_CAN,
+                  _safe(check_can3_shows_cone_slot), timeout=6.0),
         Assertion("stale-badge-hidden-while-fresh", JS_CAN, _safe(check_badge_hidden), timeout=6.0),
     ]),
     StageSpec("can-health", "can-health", [
@@ -1300,7 +1327,18 @@ JS_HW = js_probe(
     "                fw: (r.querySelector('.hwver-fw') || {}).textContent || '',"
     "                note: (r.querySelector('.hwver-note') || {}).textContent || '',"
     "                flag: !!r.querySelector('.hwver-note-flag'),"
-    "                odd: !!r.querySelector('.hwver-odd-badge') })),"
+    "                odd: !!r.querySelector('.hwver-odd-badge'),"
+    # Geometry, for the column-alignment pin: each row is its own grid
+    # container, so equal track sizing has to be MEASURED, not assumed.
+    "                mx: Math.round(((r.querySelector('.hwver-members')"
+    "                       || {getBoundingClientRect: () => ({left: -1})})"
+    "                       .getBoundingClientRect()).left),"
+    "                vx: Math.round(((r.querySelector('.hwver-version')"
+    "                       || {getBoundingClientRect: () => ({right: -1})})"
+    "                       .getBoundingClientRect()).right) })),"
+    "  headMx: Math.round((document.querySelector('.hwver-head span:nth-child(2)')"
+    "            || {getBoundingClientRect: () => ({left: -1})})"
+    "            .getBoundingClientRect().left),"
     "  badge: g('hardware-stale-badge') }")
 
 
@@ -1322,14 +1360,34 @@ def check_hw_models_present(v):
     return ok, _ev({"models": [r["model"] for r in v["rows"]]})
 
 
-def check_hw_bb_not_available(v):
-    """The two BB ODrives report 'n/a' — no wire carries their firmware.
+def check_hw_bb_versions_live(v):
+    """The two Ball Butler ODrives report real firmware (can-bridge FW 20+).
 
-    They must be PRESENT and explicit: dropping the rows would make 'not
-    checked' indistinguishable from 'not present'.
+    They are different PRODUCTS (Micro X4 / S1), so they are different model
+    groups and must stay on separate rows even when their versions happen to
+    match — this fixture gives them different ones so a grouping bug that
+    merges across models cannot pass here.
+    """
+    pitch = _row_by_model(v, "Micro X4")
+    hand = _row_by_model(v, "ODrive S1")
+    ok = (len(pitch) == 1 and pitch[0]["fw"] == "0.6.10"
+          and len(hand) == 1 and hand[0]["fw"] == "0.6.11")
+    return ok, _ev({"bb_pitch": pitch, "bb_hand": hand})
+
+
+def check_hw_bb_unsupported(v):
+    """Against a pre-FW-20 bridge the BB row carries a REASON, not per-axis '?'.
+
+    'the question could not be asked' must stay distinguishable from 'the axes
+    did not answer' — collapsing them blames the Ball Butler for an old bridge.
+    Both BB rows show the node's verdict WORD ('unsupported', with the full
+    'unsupported (bridge FW < 20)' in the cell tooltip), and neither is flagged
+    ODD — an unanswerable question is not a firmware mismatch.
     """
     bb = _row_by_model(v, "Micro X4") + _row_by_model(v, "ODrive S1")
-    ok = len(bb) == 2 and all(r["fw"] == "n/a" for r in bb)
+    ok = (len(bb) == 2
+          and all(r["fw"] == "unsupported" for r in bb)
+          and not any(r["odd"] for r in bb))
     return ok, _ev({"bb": bb})
 
 
@@ -1338,10 +1396,12 @@ def check_hw_unseen(v):
     'unknown' verdict, the un-swept ODrive axes read 'not reported'."""
     tee = _row_by_model(v, "Teensy")
     pro = _row_by_model(v, "ODrive Pro")
+    bb = _row_by_model(v, "Micro X4") + _row_by_model(v, "ODrive S1")
     ok = (len(tee) == 2 and all(r["fw"] == "unknown" for r in tee)
           and len(pro) == 1 and pro[0]["fw"] == "not reported"
+          and len(bb) == 2 and all(r["fw"] == "not reported" for r in bb)
           and not any(r["odd"] for r in v["rows"]))
-    return ok, _ev({"teensy": tee, "pro": pro})
+    return ok, _ev({"teensy": tee, "pro": pro, "bb": bb})
 
 
 def check_hw_grouped(v):
@@ -1361,7 +1421,7 @@ def check_hw_teensy_versions(v):
     its own live firmware with no skew chip."""
     t41 = _row_by_model(v, "Teensy 4.1")
     t40 = _row_by_model(v, "Teensy 4.0")
-    ok = (len(t41) == 1 and t41[0]["fw"] == "19" and not t41[0]["flag"]
+    ok = (len(t41) == 1 and t41[0]["fw"] == "20" and not t41[0]["flag"]
           and len(t40) == 1 and t40[0]["fw"] == "6" and not t40[0]["flag"])
     return ok, _ev({"t41": t41, "t40": t40})
 
@@ -1395,6 +1455,25 @@ def check_hw_skew_chips(v):
     return ok, _ev({"t41": t41, "t40": t40})
 
 
+def check_hw_columns_aligned(v):
+    """Every row's Device cell starts at the same x, and every Firmware cell
+    ends at the same x — including the header.
+
+    Not cosmetic pedantry: the header and each row are SEPARATE grid
+    containers, so they share no track sizing.  With a content-sized first
+    track the Device column drifted row to row, and nothing but a measurement
+    catches that (the DOM is identical either way).
+    """
+    rows = [r for r in v["rows"] if r["mx"] > 0]
+    if len(rows) < 2:
+        return False, _ev({"rows": rows})
+    mxs = {r["mx"] for r in rows} | ({v["headMx"]} if v["headMx"] > 0 else set())
+    vxs = {r["vx"] for r in rows}
+    # 1 px of sub-pixel rounding is tolerable; a drifting track is tens of px.
+    ok = (max(mxs) - min(mxs) <= 1) and (max(vxs) - min(vxs) <= 1)
+    return ok, _ev({"device_left_xs": sorted(mxs), "firmware_right_xs": sorted(vxs)})
+
+
 def check_hw_stale_persists(v):
     """Versions are CONSTANTS: the last read stays on screen when link_status
     stops, and the badge names the cause.  Blanking them here would be less
@@ -1411,8 +1490,6 @@ SCENARIO_HARDWARE = [
     StageSpec("hw-unseen", "hw-unseen", [
         Assertion("hw-models-all-present", JS_HW, _safe(check_hw_models_present),
                   timeout=30.0),
-        Assertion("hw-bb-odrives-not-available", JS_HW,
-                  _safe(check_hw_bb_not_available), timeout=8.0),
         Assertion("hw-absence-renderings-distinct", JS_HW, _safe(check_hw_unseen),
                   timeout=8.0),
     ]),
@@ -1421,15 +1498,28 @@ SCENARIO_HARDWARE = [
                   _safe(check_hw_grouped), timeout=8.0),
         Assertion("hw-teensy-versions-live", JS_HW,
                   _safe(check_hw_teensy_versions), timeout=8.0),
+        Assertion("hw-columns-aligned-across-rows", JS_HW,
+                  _safe(check_hw_columns_aligned), timeout=8.0),
+        Assertion("hw-bb-odrive-versions-live", JS_HW,
+                  _safe(check_hw_bb_versions_live), timeout=8.0),
     ]),
     StageSpec("hw-odd-leg", "hw-odd-leg", [
         Assertion("hw-odd-leg-splits-and-is-flagged", JS_HW,
                   _safe(check_hw_odd_split), timeout=8.0),
+        # Re-run the alignment pin with an ODD row on screen: its amber rule is
+        # the decoration most likely to steal layout space and step its text
+        # right of the others.
+        Assertion("hw-columns-aligned-with-odd-row", JS_HW,
+                  _safe(check_hw_columns_aligned), timeout=8.0),
     ]),
     StageSpec("hw-skew", "hw-skew", [
         Assertion("hw-skew-verdicts-become-chips", JS_HW,
                   _safe(check_hw_skew_chips), timeout=8.0),
         Assertion("no-page-errors", None, check_no_page_errors, kind="page-errors"),
+    ]),
+    StageSpec("hw-bb-unsupported", "hw-bb-unsupported", [
+        Assertion("hw-bb-unsupported-shows-the-reason", JS_HW,
+                  _safe(check_hw_bb_unsupported), timeout=8.0),
     ]),
     StageSpec("hw-stale", "hw-stale", [
         Assertion("hw-versions-persist-while-stale", JS_HW,

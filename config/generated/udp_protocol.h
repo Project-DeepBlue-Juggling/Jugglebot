@@ -85,6 +85,7 @@ namespace RpcMethod {
   constexpr uint16_t PLATFORM_FW_DATA = 0x0057u;  // Platform FW-over-CAN: one image chunk, 1..5 bytes (relay → 0x6F0 op 0x02)
   constexpr uint16_t PLATFORM_FW_VERIFY = 0x0058u;  // Platform FW-over-CAN: CRC-32 over the staged image (relay → 0x6F0 op 0x03)
   constexpr uint16_t PLATFORM_FW_COMMIT = 0x0059u;  // Platform FW-over-CAN: apply the staged image + reboot (relay → 0x6F0 op 0x04)
+  constexpr uint16_t GET_BB_AXIS_VERSIONS = 0x005Au;  // Pull cached raw Get_Version bytes + received bitmask for the Ball Butler ODrives (CAN1 axes 7-8)
 }
 namespace RpcStatus {
   constexpr uint16_t OK = 0x0000u;  // Success
@@ -556,6 +557,12 @@ struct ResultAxisVersions {
   uint8_t raw[56];  // raw 8-byte Get_Version payload per axis (NUM_AXES*8, axis-major)
 };
 static_assert(sizeof(ResultAxisVersions) == 57, "ResultAxisVersions size drift");
+// ResultBbAxisVersions (GET_BB_AXIS_VERSIONS (result))
+struct ResultBbAxisVersions {
+  uint8_t received_mask;  // bit i set ⇒ axis BB_FIRST_NODE+i Get_Version reply cached
+  uint8_t raw[16];  // raw 8-byte Get_Version payload per BB axis (NUM_BB_AXES*8, axis-major from BB_FIRST_NODE)
+};
+static_assert(sizeof(ResultBbAxisVersions) == 17, "ResultBbAxisVersions size drift");
 // ArgBbThrow (BB_THROW)
 struct ArgBbThrow {
   float yaw_rad;  // Yaw angle in radians [-pi, pi)
@@ -611,6 +618,7 @@ constexpr uint16_t ARG_SDO_READ_SIZE = 3u;
 constexpr uint16_t ARG_SDO_WRITE_SIZE = 7u;
 constexpr uint16_t RESULT_TIME_OF_DAY_SIZE = 8u;
 constexpr uint16_t RESULT_AXIS_VERSIONS_SIZE = 57u;
+constexpr uint16_t RESULT_BB_AXIS_VERSIONS_SIZE = 17u;
 constexpr uint16_t ARG_BB_THROW_SIZE = 16u;
 constexpr uint16_t ARG_ROBOT_STATE_SIZE = 10u;
 constexpr uint16_t ARG_HAND_TRAJ_SIZE = 8u;

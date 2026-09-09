@@ -35,6 +35,7 @@ from .protocol import (
     ArgHandTraj,
     ArgHandSource,
     ResultAxisVersions,
+    ResultBbAxisVersions,
     ArgPlatformFwBegin,
     ArgPlatformFwData,
     ArgPlatformFwVerify,
@@ -60,6 +61,7 @@ __all__ = [
     "encode_bb_throw", "encode_bb_reload", "encode_bb_reset",
     "encode_bb_calibrate_loc",
     "decode_time_of_day_result", "ResultAxisVersions",
+    "ResultBbAxisVersions", "decode_bb_axis_versions_result", "BB_FIRST_NODE",
     "encode_axis_versions_result", "decode_axis_versions_result",
     # Platform firmware-over-CAN (2026-09-09)
     "encode_platform_fw_begin", "encode_platform_fw_data",
@@ -287,6 +289,36 @@ def decode_axis_versions_result(blob: bytes) -> dict:
         if r.received_mask & (1 << axis):
             off = axis * _VERSION_BYTES_PER_AXIS
             out[axis] = raw[off:off + _VERSION_BYTES_PER_AXIS]
+    return out
+
+
+#: First Ball Butler CAN node id. The GET_BB_AXIS_VERSIONS mask is BB-RELATIVE
+#: (bit i ⇒ the i-th axis of that blob), mirroring ResultAxisVersions bit-for-bit
+#: so one decoder shape serves both; this is the base that turns it back into an
+#: absolute axis id. Kept as a module constant rather than read from
+#: protocol_config so teensy_link stays free of the ROS package's imports.
+BB_FIRST_NODE = 7
+
+
+def decode_bb_axis_versions_result(blob: bytes) -> dict:
+    """Decode a GET_BB_AXIS_VERSIONS result blob → {absolute_axis: raw8} for
+    every Ball Butler axis whose received bit is set.
+
+    The Ball Butler twin of :func:`decode_axis_versions_result`, and the same
+    contract: the caller decodes each 8-byte payload via
+    ``jugglebot.can.odrive.decode_get_version`` (ODrive semantics stay in one
+    place). The only difference is the mask base — the wire mask counts from
+    ``BB_FIRST_NODE``, so bit 0 is axis 7 — which is converted here rather than
+    at the call site, so no consumer has to remember the offset.
+    """
+    r = ResultBbAxisVersions.unpack(blob)
+    raw = bytes(r.raw)
+    out = {}
+    n_axes = len(raw) // _VERSION_BYTES_PER_AXIS
+    for i in range(n_axes):
+        if r.received_mask & (1 << i):
+            off = i * _VERSION_BYTES_PER_AXIS
+            out[BB_FIRST_NODE + i] = raw[off:off + _VERSION_BYTES_PER_AXIS]
     return out
 
 
@@ -665,7 +697,21 @@ def platform_fw_window_end(window_start_frame: int, total_frames: int) -> int:
 #: against either; what an FW 18 board does NOT have is the four methods, so
 #: it answers them with ERR_UNKNOWN_METHOD. Same as every wire-invisible bump
 #: before it: a healthy link is not evidence this build is aboard.
-EXPECTED_BRIDGE_FW_VERSION = 19
+#: 20 (2026-09-09) = the BALL BUTLER Get_Version sweep on CAN1, restoring the
+#: half of can_node's BOOT firmware check that commit 5875531 dropped: BB moved
+#: to teensy_bridge_node over the now-removed USB-CAN and BB ODrive validation
+#: was deferred to a "phase B ... by decoding axes 7+8 on CAN1 and surfacing the
+#: result via teensy_bridge_node (a new T2J flag or RPC)". The RX decode landed
+#: long ago; this is the version half, arriving as exactly the RPC that message
+#: anticipated. ONE ADDITIVE RpcMethod (GET_BB_AXIS_VERSIONS) plus a new
+#: ResultBbAxisVersions blob — NO wire change to any existing frame, so
+#: PROTOCOL_VERSION stays 6 and an FW 19 board is wire-identical. What an FW 19
+#: board lacks is the method, so it answers ERR_UNKNOWN_METHOD and both BB axes
+#: read never-seen — the honest report, and the reason this bump is safe to land
+#: unflashed. Deliberately NOT a widening of ResultAxisVersions: that blob is a
+#: fixed NUM_AXES*8 array, so growing it would be an incompatible change needing
+#: a lockstep flash to add two display rows.
+EXPECTED_BRIDGE_FW_VERSION = 20
 
 
 # ── Ball Butler ─────────────────────────────────────────────────────────────

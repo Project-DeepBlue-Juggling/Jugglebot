@@ -78,4 +78,50 @@ bool version_raw_copy(uint8_t axis, uint8_t* out8);
 uint8_t version_received_mask();    // bit i ⇒ axis i's Get_Version reply cached
 uint8_t version_query_sent_mask();  // bit i ⇒ Get_Version sent to axis i
 
+// ── Ball Butler ODrives (CAN1 axes 7-8) ─────────────────────────────────────
+//  The BB twin of everything above, restoring the half of can_node's BOOT
+//  firmware check that commit 5875531 dropped. That cutover moved BB from
+//  can_node (USB-CAN, now physically removed) to teensy_bridge_node and
+//  deferred BB ODrive validation to a "phase B ... by decoding axes 7+8 on CAN1
+//  and surfacing the result via teensy_bridge_node (a new T2J flag or RPC)".
+//  The RX decode landed; this is the version half, arriving as the new RPC that
+//  message anticipated.
+//
+//  SEPARATE STATE, SEPARATE BLOB, SEPARATE SWEEP — not a widening of the
+//  Jugglebot arrays above:
+//    * the wire blob is a fixed NUM_AXES*8 array, so growing it would be an
+//      INCOMPATIBLE change (PROTOCOL_VERSION bump + lockstep flash) to add a
+//      display row; a new method is additive and costs neither.
+//    * the two sweeps ride different buses with different presence gates
+//      (jugglebot_commands_allowed() vs can_bb_tx's own partner_recent), and a
+//      dead BB must never stall the Jugglebot sweep or vice versa.
+//  Concurrency/determinacy is identical: bb_version_check_step() runs in the
+//  cold-start MONITOR task, at most one CAN1 TX per tick; bb_version_record()
+//  runs in the CAN1 RX decode context; the received bit is published AFTER the
+//  bytes (same barrier), so a set bit always implies valid bytes.
+
+// Init / re-arm: clears the BB received + query-sent bitmasks.
+void bb_version_check_init();
+
+// Cold-start monitor tick. Sends ONE Get_Version to the next present-but-
+// unqueried BB axis on CAN1 (one frame/tick → bus-paced), then re-queries one
+// unreceived axis per interval until every present axis has replied. can_bb_tx
+// carries its own partner-presence gate, so an absent Ball Butler is a no-op
+// rather than an un-ACKed TX climbing the FlexCAN TEC.
+void bb_version_check_step();
+
+// CAN1 RX decode seam: cache a BB Get_Version reply's raw 8 bytes for absolute
+// node id `axis` (7 or 8) and set its received bit. Idempotent. Called from
+// can_buses.cpp decode_bb_odrive's get_version case.
+void bb_version_record(uint8_t axis, const uint8_t* d8);
+
+// GET_BB_AXIS_VERSIONS RPC result: pack ResultBbAxisVersions (received_mask +
+// the raw 8-byte payload per BB axis, axis-major from BB_FIRST_NODE) into
+// `out`. Returns the byte count, or 0 if `cap` is too small. Never touches CAN1.
+uint16_t bb_version_fill_blob(uint8_t* out, uint16_t cap);
+
+// Diagnostics / test accessors. Bit i ⇒ the i-th BB axis (BB_FIRST_NODE + i).
+uint8_t bb_version_received_mask();
+uint8_t bb_version_query_sent_mask();
+
 }  // namespace CanBridge

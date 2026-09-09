@@ -1266,9 +1266,23 @@
    template. */
 .hwver-grid {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+    /* FIRST COLUMN IS FIXED, NOT 1fr, ON PURPOSE.  The header and every row are
+       SEPARATE grid containers (each carries .hwver-grid), so they do not share
+       track sizing — a content-sized track resolves to a different width in
+       every row, which slid the Device column left and right down the list.
+       A fixed first track makes every row's Device cell start at the same x.
+       The last track stays auto and the middle one absorbs the slack, so the
+       right-aligned firmware column still ends flush with the panel edge. */
+    grid-template-columns: 9rem minmax(0, 1fr) auto;
     gap: 2px 8px;
     align-items: baseline;
+}
+
+/* Same horizontal padding as .hwver-row below: these are separate grid
+   containers, so the header's cells only line up with the rows' if the boxes
+   they sit in are inset identically. */
+.hwver-head {
+    padding: 0 2px;
 }
 
 .hwver-head span {
@@ -1288,6 +1302,11 @@
 }
 .hwver-row:last-child { border-bottom: none; }
 
+/* The model is EQUALLY certain on every row — it is config, not telemetry —
+   so it is primary everywhere, including on rows whose VERSION is unknown.
+   Dimming the model of a Ball Butler row implied uncertainty about the board
+   itself, which there is none of; the uncertainty belongs to the version cell
+   and is carried there by the italic 'n/a' / 'unknown'. */
 .hwver-model {
     color: var(--text-primary);
     overflow: hidden;
@@ -1295,13 +1314,14 @@
     white-space: nowrap;
 }
 
-/* Multiplicity of a grouped row ("ODrive Pro ×7").  Subdued: the model is
-   the identity, the count is a detail of it. */
+/* Multiplicity of a grouped row ("ODrive Pro ×7").  A step down from the model
+   name it qualifies, but never --text-muted: at #64748b on the dark ground it
+   read as disabled rather than secondary. */
 .hwver-count {
     margin-left: 4px;
     font-family: var(--font-mono);
     font-size: var(--font-size-xs);
-    color: var(--text-muted);
+    color: var(--text-secondary);
 }
 
 .hwver-members {
@@ -1323,14 +1343,13 @@
     color: var(--text-primary);
 }
 
-/* "n/a" (nothing reports this device's firmware) and "unknown"/"not reported"
-   (something should have, and hasn't yet) are both ABSENCE, not fault — muted,
-   never amber.  Amber here would fire on every launch while the bus-paced
-   Get_Version sweep runs, and a badge that cries wolf at boot is a badge
-   nobody reads at the sitting where it matters. */
-.hwver-fw-na,
+/* Absence of a version — "unknown", "not reported", "unsupported (bridge
+   FW < 20)" — is ABSENCE, not fault: italic and secondary, never amber.  Amber
+   here would fire on every launch while the bus-paced Get_Version sweep runs,
+   and a badge that cries wolf at boot is a badge nobody reads at the sitting
+   where it matters. */
 .hwver-fw-unknown {
-    color: var(--text-muted);
+    color: var(--text-secondary);
     font-style: italic;
 }
 
@@ -1339,7 +1358,7 @@
     margin-left: 4px;
     font-family: var(--font-mono);
     font-size: var(--font-size-xs);
-    color: var(--text-muted);
+    color: var(--text-secondary);
 }
 
 /* The node's own SKEW / PRE-VERSIONING verdict — board disagrees with the
@@ -1354,16 +1373,18 @@
     font-style: normal;
 }
 
-.hwver-row-muted .hwver-model,
-.hwver-row-muted .hwver-members {
-    color: var(--text-muted);
-}
+/* .hwver-row-muted is retained as a semantic hook (a row whose version is
+   absent rather than known) but no longer recolours anything — see the
+   .hwver-model note above.  The italic version cell is the whole signal. */
 
 /* A device whose firmware differs from the rest of its model group.  Amber
-   left rule + chip: the one condition in this panel that is a real finding. */
+   left rule + chip: the one condition in this panel that is a real finding.
+   The rule is an INSET SHADOW, not a border: a border-left occupies layout
+   space and a compensating padding-left cannot restore the original inset, so
+   the flagged row's text stepped right of every other row's.  An inset shadow
+   paints in the padding box and costs no layout at all. */
 .hwver-row-odd {
-    border-left: 2px solid var(--accent-amber);
-    padding-left: 4px;
+    box-shadow: inset 2px 0 0 var(--accent-amber);
     background: rgba(245, 158, 11, 0.07);
 }
 

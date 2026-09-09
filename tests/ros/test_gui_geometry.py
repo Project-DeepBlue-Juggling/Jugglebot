@@ -1663,24 +1663,30 @@ class TestHardwareVersionKeyValueContract:
     exactly that), so a broken key looks like a normal pre-connection panel.
     """
 
-    #: The three KeyValues the panel reads, and the node method that renders each.
+    #: The four KeyValues the panel reads, and the node method that renders each.
     EXPECTED = {
         'bridge_fw_version': '_bridge_fw_version_str',
         'platform_fw_version': '_platform_fw_version_str',
         'odrive_fw_versions': '_odrive_fw_versions_str',
+        'bb_odrive_fw_versions': '_bb_odrive_fw_versions_str',
     }
 
     def _consumed_keys(self, js):
         js = _strip_js_comments(js)
-        # Whole-KeyValue sources come from the DEVICES registry's `kv:` field;
-        # the per-axis one is read as kv.<name>.
+        # Whole-KeyValue sources come from the DEVICES registry's `kv:` field.
         kv_keys = set(re.findall(r"kv: '(\w+)'", js))
         assert kv_keys == {'bridge_fw_version', 'platform_fw_version'}, \
             f'DEVICES kv-field extraction went stale: {kv_keys}'
-        direct = set(re.findall(r'\bkv\.(\w+)\b', js))
-        assert 'odrive_fw_versions' in direct, \
-            f'direct kv.<key> extraction went stale: {direct}'
-        return kv_keys | {'odrive_fw_versions'}
+        # Per-axis rows are read indirectly (kv[d.axisKv || DEFAULT_AXIS_KV]),
+        # so the names come from the registry's `axisKv:` plus the default —
+        # never from a kv.<name> literal, which no longer exists for these.
+        axis_keys = set(re.findall(r"axisKv: '(\w+)'", js))
+        default = re.search(r"DEFAULT_AXIS_KV = '(\w+)'", js)
+        assert default, 'DEFAULT_AXIS_KV extraction went stale'
+        axis_keys.add(default.group(1))
+        assert axis_keys == {'odrive_fw_versions', 'bb_odrive_fw_versions'}, \
+            f'per-axis key extraction went stale: {axis_keys}'
+        return kv_keys | axis_keys
 
     def test_consumer_subset_of_producer(self, bridge_py, hardware_versions_js):
         produced = _keyvalue_keys(_extract_method_source(bridge_py,
@@ -1705,6 +1711,37 @@ class TestHardwareVersionKeyValueContract:
                          src), \
             f"link_status row '{key}' is no longer rendered by self.{method}()"
 
+    def test_bb_row_is_a_separate_key_from_the_jugglebot_row(self, bridge_py):
+        """The two axis rows must stay SEPARATE KeyValues.
+
+        They come from different RPCs on different buses with different
+        verdicts, and a pre-FW-20 bridge answers one and not the other. Merged
+        into one row, 'the bridge cannot be asked' would be indistinguishable
+        from 'the axes did not answer' — the distinction the BB row exists to
+        preserve.
+        """
+        src = _extract_method_source(bridge_py, '_publish_link_status')
+        keys = _keyvalue_keys(src)
+        assert {'odrive_fw_versions', 'bb_odrive_fw_versions'} <= keys, \
+            f'the two axis-version rows are no longer both published: {keys}'
+
+    def test_bb_verdict_never_gates_boot(self, bridge_py):
+        """The Ball Butler check is ADVISORY and must never latch the flags
+        that hold the orchestrator out of BOOT.
+
+        BB is optional hardware on a different bus; a missing or mismatched
+        Ball Butler must not stop the robot. can_node drew the same line, and
+        losing it would be invisible until the day a BB is unplugged.
+        """
+        src = _extract_method_source(bridge_py, '_bb_version_check_poll')
+        # Assignment, not mention: the method's own docstring names both flags
+        # to explain why it leaves them alone, and a bare substring check would
+        # fail on that prose (it did, first time out).
+        for forbidden in ('_firmware_validated', '_firmware_mismatch_error'):
+            assert not re.search(rf'self\.{forbidden}\s*=[^=]', src), (
+                f'_bb_version_check_poll ASSIGNS self.{forbidden} — the Ball '
+                f'Butler verdict would gate the orchestrator out of BOOT')
+
     def test_odrive_rendering_is_axis_keyed_and_dash_separated(self, bridge_py):
         """The per-axis format the panel's parser depends on.
 
@@ -1722,3 +1759,13 @@ class TestHardwareVersionKeyValueContract:
             'the fw_unreleased byte is no longer appended after a "-"'
         assert "' '.join(parts)" in src, \
             'per-axis fields are no longer space-separated'
+
+    def test_bb_rendering_matches_the_jugglebot_shape(self, bridge_py):
+        """One consumer parser serves both rows, so both must render the same
+        'axis:M.m.r-unreleased' shape."""
+        src = _extract_method_source(bridge_py, '_bb_odrive_fw_versions_str')
+        assert "f'{axis}:?'" in src, 'BB unread axes no longer render as "<axis>:?"'
+        assert "f'{axis}:{fw[0]}.{fw[1]}.{fw[2]}'" in src, \
+            'BB per-axis version no longer renders as "<axis>:<M>.<m>.<r>"'
+        assert "' '.join(parts)" in src, \
+            'BB per-axis fields are no longer space-separated'

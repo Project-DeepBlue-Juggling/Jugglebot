@@ -291,6 +291,33 @@ def test_wire_layout_frozen(gen):
     for member, value, *_ in gen.ENUMS["MsgType"]:
         h.update(f"MT {member}={value};".encode())
     digest = h.hexdigest()
+    # Re-pinned for the ADDITIVE Ball Butler Get_Version RPC (2026-09-09,
+    # can-bridge FW 20): one new arg struct, ResultBbAxisVersions (u8
+    # received_mask + u8 raw[16] = NUM_BB_AXES*8, 17 B), behind one new
+    # RpcMethod GET_BB_AXIS_VERSIONS 0x005A. It restores the Ball Butler half of
+    # can_node's BOOT firmware check, which commit 5875531 dropped when BB moved
+    # to teensy_bridge_node over the now-removed USB-CAN and deferred to a
+    # "phase B ... by decoding axes 7+8 on CAN1 and surfacing the result via
+    # teensy_bridge_node (a new T2J flag or RPC)" that never landed. The RX
+    # decode arrived long ago; this is the version half, as exactly the RPC that
+    # message anticipated.
+    # WHY A NEW STRUCT RATHER THAN WIDENING ResultAxisVersions. That blob is a
+    # fixed u8[NUM_AXES*8] = u8[56] and its decode is an exact-size unpack on
+    # both ends, so growing it to 9 axes would be an INCOMPATIBLE change — a
+    # PROTOCOL_VERSION bump and a lockstep flash, to add two display rows and a
+    # BB validation the orchestrator does not gate on. A second struct behind a
+    # second method costs neither.
+    # No MsgType is added and no existing message, arg or framing constant moves
+    # — this is a new RpcMethod id inside the existing RpcRequest envelope — so
+    # PROTOCOL_VERSION deliberately stays at 6 (the PLATFORM_FW_* /
+    # HAND_SOURCE_SET precedent directly below: a board that predates the id
+    # answers ERR_UNKNOWN_METHOD, loudly, and the two ends deploy in either
+    # order — which here they again explicitly DO, the host decode shipping
+    # while FW 20 is written and NOT flashed).
+    # Previous pin: aed51051d7004a0d2809da9c3f62e16a5444e949fa055b806fdcd3db54096d45
+    #   (the ADDITIVE Platform firmware-over-CAN RPC args — 2026-09-09,
+    #    can-bridge FW 19).
+    #
     # Re-pinned for the ADDITIVE Platform firmware-over-CAN RPC args (2026-09-09,
     # can-bridge FW 19): three new arg structs behind four new RpcMethods —
     # ArgPlatformFwBegin (u32 image_len, 4 B), ArgPlatformFwData (u16 seq, u8 n,
@@ -429,7 +456,7 @@ def test_wire_layout_frozen(gen):
     # Previous pin: 8e1bd0a3dcd370859a781925487a9accee4109554494a40023dd1cf4549794df
     #   (additive BRIDGE_TX_DIAG 0x8D 42 B + BRIDGE_IDENTITY 0x8E 3 B —
     #    2026-08-02 ERR_TIMEOUT attribution instrumentation).
-    _EXPECTED = "aed51051d7004a0d2809da9c3f62e16a5444e949fa055b806fdcd3db54096d45"
+    _EXPECTED = "0e1a4a8ea375ddc1155cfb6a75377af527cce98df3e7e8c3a593d37d20a86b31"
     assert digest == _EXPECTED, (
         "The UDP wire LAYOUT changed (a message/arg field layout, a framed MsgType "
         "value, or a framing constant). If INCOMPATIBLE, bump PROTOCOL_VERSION. Either "
