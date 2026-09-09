@@ -44,5 +44,42 @@ uint16_t state_read();
 // mirroring Teensy_code_platform.ino createStateCANMessage). No reply. Returns RpcStatus.
 uint16_t state_write(const JbUdp::RpcArgs::ArgRobotState& s);
 
+// ── Platform firmware-over-CAN (2026-09-09) ──────────────────────────────────
+// The Platform Teensy's USB port is damaged, so its firmware now arrives over
+// CAN3 through this same typed seam. Four ops on PlatformCanId::FW_UPDATE_CMD
+// (0x6F0), byte 0 = opcode; the Platform answers every op on FW_UPDATE_REPLY
+// (0x6F1, dlc 8: [opcode][status][seq LE][detail u32 LE]) and on_jugglebot_rx
+// forwards that reply VERBATIM as a PLATFORM_FRAME — so these calls return only
+// the synchronous queued-on-CAN3 ack, exactly like the relay writes above, and
+// the host correlates the outcome from the uplinked reply.
+//
+// TYPED, not a raw forwarder: the host supplies image_len / seq+payload / crc32
+// and the FIRMWARE lays out the frame (the same least-privilege reason
+// state_write re-encodes 0x6E0 rather than forwarding Jetson bytes).
+//
+// GATE: every op is refused with ERR_REJECTED while `mpc_active_now` — an armed
+// setpoint output means the legs are being driven, and a Platform Teensy that is
+// erasing flash or rebooting mid-update is not a partner to have on the bus then.
+// mpc_active is passed IN (from fault_mpc_active() in rpc.cpp) rather than read
+// here, so this TU stays fault-machine-free for the native harness — the same
+// wiring HAND_SOURCE_SET uses. The CAN3 bus gate (ERR_BUS_DOWN) still applies
+// underneath, and PLATFORM_FW_DATA additionally rejects n outside 1..5 with
+// ERR_BAD_ARGS before a byte reaches the wire.
+//
+// One DATA frame per RPC is deliberate: no bulk framing, no queue (~25k RPCs for
+// a 120 KB image, under a minute), and every chunk keeps its own ack.
+
+// PLATFORM_FW_BEGIN → 0x6F0 dlc 8: [0x01][image_len u32 LE][0,0,0].
+uint16_t platform_fw_begin(const JbUdp::RpcArgs::ArgPlatformFwBegin& a, bool mpc_active_now);
+
+// PLATFORM_FW_DATA → 0x6F0 dlc 3+n: [0x02][seq u16 LE][payload[0..n)].
+uint16_t platform_fw_data(const JbUdp::RpcArgs::ArgPlatformFwData& a, bool mpc_active_now);
+
+// PLATFORM_FW_VERIFY → 0x6F0 dlc 8: [0x03][crc32 u32 LE][0,0,0].
+uint16_t platform_fw_verify(const JbUdp::RpcArgs::ArgPlatformFwVerify& a, bool mpc_active_now);
+
+// PLATFORM_FW_COMMIT → 0x6F0 dlc 8: [0x04][0 × 7]. No args.
+uint16_t platform_fw_commit(bool mpc_active_now);
+
 }  // namespace Relay
 }  // namespace CanBridge

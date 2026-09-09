@@ -119,6 +119,10 @@ Static IPs: Teensy `192.168.42.2`, Jetson `192.168.42.1` (`/30` point-to-point).
 | `STATE_WRITE` | 0x0053 | Relay: write Platform-Teensy RobotState (read-modify-write via cache) |
 | `HAND_TRAJ_CMD` | 0x0054 | Hand traj + smooth-move (byte-0 discriminator → 0x6D0) |
 | `HAND_SOURCE_SET` | 0x0055 | Switch the hand-mastery latch (0=LEGACY_STROKE, 1=STREAMED; gated, bridge-local) |
+| `PLATFORM_FW_BEGIN` | 0x0056 | Platform FW-over-CAN: declare image length (relay → 0x6F0 op 0x01) |
+| `PLATFORM_FW_DATA` | 0x0057 | Platform FW-over-CAN: one image chunk, 1..5 bytes (relay → 0x6F0 op 0x02) |
+| `PLATFORM_FW_VERIFY` | 0x0058 | Platform FW-over-CAN: CRC-32 over the staged image (relay → 0x6F0 op 0x03) |
+| `PLATFORM_FW_COMMIT` | 0x0059 | Platform FW-over-CAN: apply the staged image + reboot (relay → 0x6F0 op 0x04) |
 
 ### RpcStatus
 
@@ -731,3 +735,29 @@ wraps the generated Python. `AXIS_ALL = 0xFF` broadcasts to all legs.
 | Field | Type | Notes |
 |-------|------|-------|
 | `source` | u8 | 0 = LEGACY_STROKE (Platform-Teensy stroke engine), 1 = STREAMED (bridge 500 Hz hand lane) |
+
+### ArgPlatformFwBegin (`PLATFORM_FW_BEGIN`)
+
+**4 bytes**. Python struct fmt: `<I`.
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `image_len` | u32 | Total image length in bytes |
+
+### ArgPlatformFwData (`PLATFORM_FW_DATA`)
+
+**8 bytes**. Python struct fmt: `<HBBBBBB`.
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `seq` | u16 | Chunk sequence number (0-based) |
+| `n` | u8 | Valid payload bytes in this chunk, 1..5 |
+| `payload` | u8 | Image bytes; only payload[0..n) reach the CAN frame |
+
+### ArgPlatformFwVerify (`PLATFORM_FW_VERIFY`)
+
+**4 bytes**. Python struct fmt: `<I`.
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `crc32` | u32 | CRC-32 over the whole staged image |

@@ -248,12 +248,16 @@ struct HandCmdEchoRec {
 };
 bool can_hand_cmd_echo_pop(HandCmdEchoRec& out);  // true + clears the dirty flag when a fresh cmd is pending
 
-// True iff `id` is a Platform-Teensy relay-reply arbitration id (0x6E0 / 0x7DE).
+// True iff `id` is a Platform-Teensy relay-reply arbitration id (0x6E0 / 0x7DE,
+// plus 0x6F1 FW_UPDATE_REPLY since the 2026-09-09 firmware-over-CAN seam — the
+// Platform answers every 0x6F0 FW-update op on its own reply id, and the host
+// correlates BEGIN/DATA/VERIFY/COMMIT outcomes from those uplinked frames).
 // Single classifier shared by the CAN3 RX ring filter (can_buses.cpp) and the
 // native harness. Inline (header-only) so the relay test can reach it without
 // compiling can_buses.cpp (which pulls FlexCAN_T4) on the host.
 inline bool is_platform_reply_id(uint32_t id) {
-  return id == PlatformCanId::STATE_UPDATE || id == PlatformCanId::TILT_READING;
+  return id == PlatformCanId::STATE_UPDATE || id == PlatformCanId::TILT_READING ||
+         id == PlatformCanId::FW_UPDATE_REPLY;
 }
 
 // ── Bus-partner presence predicate (the TX-gate contract, 2026-07-05) ─────────

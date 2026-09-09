@@ -78,5 +78,77 @@ uint16_t state_write(const JbUdp::RpcArgs::ArgRobotState& s) {
   return send_gated(f);
 }
 
+// ── Platform firmware-over-CAN (2026-09-09) ─────────────────────────────────
+// See platform_relay.h for the seam contract. Byte 0 of every FW_UPDATE_CMD
+// frame is the opcode; the Platform receiver mirrors these four values.
+static constexpr uint8_t FW_OP_BEGIN  = 0x01;
+static constexpr uint8_t FW_OP_DATA   = 0x02;
+static constexpr uint8_t FW_OP_VERIFY = 0x03;
+static constexpr uint8_t FW_OP_COMMIT = 0x04;
+
+// Max image bytes one FW_OP_DATA frame carries (8 - 1 opcode - 2 seq).
+static constexpr uint8_t FW_DATA_MAX_N = 5;
+
+// The FW-update gate, in front of the shared CAN3 gate. An armed setpoint output
+// means the legs are under 500 Hz command; a Platform Teensy erasing flash or
+// rebooting mid-update is not a bus partner to have then, so refuse outright
+// (ERR_REJECTED — the same condition and status HAND_SOURCE_SET uses).
+static uint16_t send_fw_update(const ODrive::CanFrame& f, bool mpc_active_now) {
+  if (mpc_active_now) return JbUdp::RpcStatus::ERR_REJECTED;
+  return send_gated(f);
+}
+
+// Start an FW_UPDATE_CMD frame: opcode in byte 0, the rest zeroed so every
+// unused byte is deterministic on the wire (the receiver reads a fixed layout).
+static ODrive::CanFrame fw_cmd_frame(uint8_t opcode) {
+  ODrive::CanFrame f;
+  f.id = PlatformCanId::FW_UPDATE_CMD;
+  f.len = 8;
+  f.buf[0] = opcode;
+  for (uint8_t i = 1; i < 8; ++i) f.buf[i] = 0;
+  return f;
+}
+
+static void put_u32_le(uint8_t* dst, uint32_t v) {
+  dst[0] = (uint8_t)(v & 0xFF);
+  dst[1] = (uint8_t)((v >> 8) & 0xFF);
+  dst[2] = (uint8_t)((v >> 16) & 0xFF);
+  dst[3] = (uint8_t)((v >> 24) & 0xFF);
+}
+
+uint16_t platform_fw_begin(const JbUdp::RpcArgs::ArgPlatformFwBegin& a, bool mpc_active_now) {
+  ODrive::CanFrame f = fw_cmd_frame(FW_OP_BEGIN);
+  put_u32_le(&f.buf[1], a.image_len);   // bytes 5-7 stay zero
+  return send_fw_update(f, mpc_active_now);
+}
+
+uint16_t platform_fw_data(const JbUdp::RpcArgs::ArgPlatformFwData& a, bool mpc_active_now) {
+  // Trust-boundary length validation BEFORE the frame exists: n == 0 would emit a
+  // payload-less dlc-3 chunk the receiver would have to special-case, and n > 5
+  // would read past the 5-byte arg payload into the next struct bytes. Refuse
+  // both here so a malformed chunk never reaches CAN3 (the throw_args_valid /
+  // state_write isfinite pattern; ERR_BAD_ARGS, checked ahead of the mpc gate
+  // exactly as hand_source_request validates its value before !mpc_active).
+  if (a.n < 1 || a.n > FW_DATA_MAX_N) return JbUdp::RpcStatus::ERR_BAD_ARGS;
+  ODrive::CanFrame f = fw_cmd_frame(FW_OP_DATA);
+  f.len = (uint8_t)(3 + a.n);           // short dlc — the receiver takes the length from the frame
+  f.buf[1] = (uint8_t)(a.seq & 0xFF);
+  f.buf[2] = (uint8_t)((a.seq >> 8) & 0xFF);
+  for (uint8_t i = 0; i < a.n; ++i) f.buf[3 + i] = a.payload[i];
+  return send_fw_update(f, mpc_active_now);
+}
+
+uint16_t platform_fw_verify(const JbUdp::RpcArgs::ArgPlatformFwVerify& a, bool mpc_active_now) {
+  ODrive::CanFrame f = fw_cmd_frame(FW_OP_VERIFY);
+  put_u32_le(&f.buf[1], a.crc32);       // bytes 5-7 stay zero
+  return send_fw_update(f, mpc_active_now);
+}
+
+uint16_t platform_fw_commit(bool mpc_active_now) {
+  // Payloadless: opcode only, bytes 1-7 zero (dlc 8, so the receiver's frame
+  // shape is uniform across BEGIN/VERIFY/COMMIT).
+  return send_fw_update(fw_cmd_frame(FW_OP_COMMIT), mpc_active_now);
+}
+
 }  // namespace Relay
 }  // namespace CanBridge

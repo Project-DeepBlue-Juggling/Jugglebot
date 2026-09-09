@@ -67,6 +67,9 @@ using JbUdp::RpcArgs::ArgBbThrow;
 using JbUdp::RpcArgs::ArgRobotState;   // STATE_WRITE (Platform-Teensy relay)
 using JbUdp::RpcArgs::ArgHandTraj;     // HAND_TRAJ_CMD (hand traj + smooth-move)
 using JbUdp::RpcArgs::ArgHandSource;   // HAND_SOURCE_SET (the § 2.4 mastery latch, FW 17)
+using JbUdp::RpcArgs::ArgPlatformFwBegin;    // PLATFORM_FW_BEGIN  (FW-over-CAN relay, FW 19)
+using JbUdp::RpcArgs::ArgPlatformFwData;     // PLATFORM_FW_DATA   (FW-over-CAN relay, FW 19)
+using JbUdp::RpcArgs::ArgPlatformFwVerify;   // PLATFORM_FW_VERIFY (FW-over-CAN relay, FW 19)
 
 using JbUdp::RpcArgs::AXIS_ALL;   // broadcast to all axes (CLEAR_ERRORS/REBOOT)
 

@@ -386,6 +386,34 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
       return hand_source_request(a.source, fault_mpc_active());
     }
 
+    // ── Platform firmware-over-CAN (2026-09-09, FW 19) ─────────────────────
+    // ADDITIVE methods — no PROTOCOL_VERSION bump (the HAND_SOURCE_SET
+    // precedent above). The Platform Teensy's USB port is damaged, so its
+    // firmware arrives over CAN3 through the SAME typed relay as STATE_WRITE:
+    // the host supplies only the semantic arguments and platform_relay lays out
+    // the 0x6F0 frame (least-privilege — never a Jetson-supplied raw frame).
+    // Each returns the synchronous queued-on-CAN3 ack; the Platform's own
+    // per-op answer arrives on 0x6F1 and is uplinked verbatim as a
+    // PLATFORM_FRAME for the host to correlate (on_jugglebot_rx).
+    // fault_mpc_active() is passed IN — as with HAND_SOURCE_SET — so
+    // platform_relay.cpp stays fault-machine-free for the native harness; the
+    // relay refuses every op with ERR_REJECTED while the setpoint output is
+    // armed, and PLATFORM_FW_DATA additionally refuses n outside 1..5.
+    case RpcMethod::PLATFORM_FW_BEGIN: {
+      ArgPlatformFwBegin a; if (!take(args, arg_len, a)) return RpcStatus::ERR_BAD_ARGS;
+      return Relay::platform_fw_begin(a, fault_mpc_active());
+    }
+    case RpcMethod::PLATFORM_FW_DATA: {
+      ArgPlatformFwData a; if (!take(args, arg_len, a)) return RpcStatus::ERR_BAD_ARGS;
+      return Relay::platform_fw_data(a, fault_mpc_active());
+    }
+    case RpcMethod::PLATFORM_FW_VERIFY: {
+      ArgPlatformFwVerify a; if (!take(args, arg_len, a)) return RpcStatus::ERR_BAD_ARGS;
+      return Relay::platform_fw_verify(a, fault_mpc_active());
+    }
+    case RpcMethod::PLATFORM_FW_COMMIT:
+      return Relay::platform_fw_commit(fault_mpc_active());
+
     // ── Ball Butler (CAN1) — typed commands ──────────────────────────────
     // Each gated on BB presence to prevent the un-ACKed-TX bus-off failure
     // mode (analogous to the CAN2 cone-absent gate). Bridge node

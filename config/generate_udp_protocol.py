@@ -233,6 +233,22 @@ ENUMS = {
         # bridge's 500 Hz interp masters it as the 7th Setpoint lane). Accepted
         # only while !mpc_active and the hand is settled at a rest position.
         ("HAND_SOURCE_SET",    0x0055, "Switch the hand-mastery latch (0=LEGACY_STROKE, 1=STREAMED; gated, bridge-local)"),
+        # ADDITIVE (2026-09-09, Platform firmware-over-CAN — no PROTOCOL_VERSION
+        # bump, the FW 17 HAND_SOURCE_SET precedent above: a board that predates
+        # these ids answers ERR_UNKNOWN_METHOD, loudly). The Platform Teensy's USB
+        # port is damaged, so all future Platform firmware arrives over CAN3
+        # through the TYPED relay (platform_relay.*): BEGIN (declare image length)
+        # → DATA×N (≤5 image bytes per frame) → VERIFY (CRC-32 over the image) →
+        # COMMIT (apply + reboot). The BRIDGE owns the 0x6F0 frame layout — the
+        # host never supplies a raw frame (same least-privilege principle as
+        # STATE_WRITE re-encoding 0x6E0). The Platform answers each op on 0x6F1
+        # and on_jugglebot_rx forwards that reply verbatim as a PLATFORM_FRAME,
+        # so these four RPCs return only the synchronous queued-on-CAN3 ack.
+        # All four are refused while the setpoint output is armed (mpc_active).
+        ("PLATFORM_FW_BEGIN",  0x0056, "Platform FW-over-CAN: declare image length (relay → 0x6F0 op 0x01)"),
+        ("PLATFORM_FW_DATA",   0x0057, "Platform FW-over-CAN: one image chunk, 1..5 bytes (relay → 0x6F0 op 0x02)"),
+        ("PLATFORM_FW_VERIFY", 0x0058, "Platform FW-over-CAN: CRC-32 over the staged image (relay → 0x6F0 op 0x03)"),
+        ("PLATFORM_FW_COMMIT", 0x0059, "Platform FW-over-CAN: apply the staged image + reboot (relay → 0x6F0 op 0x04)"),
     ],
     "RpcStatus": [
         ("OK",            0x0000, "Success"),
@@ -1522,6 +1538,26 @@ RPC_ARGS = [
     RpcArg("ArgHandSource", "HAND_SOURCE_SET", [
         Field("source", "u8", 1, "0 = LEGACY_STROKE (Platform-Teensy stroke engine), 1 = STREAMED (bridge 500 Hz hand lane)"),
     ]),
+    # Platform firmware-over-CAN (2026-09-09). Same typed-relay shape as
+    # STATE_WRITE: the host supplies only the SEMANTIC arguments, and the bridge
+    # encodes the dlc-8 0x6F0 FW_UPDATE_CMD frame itself (byte 0 = opcode
+    # 0x01..0x04). One DATA frame per RPC is deliberate — no bulk framing, no
+    # queue: ~25k RPCs for a 120 KB image, under a minute, and every chunk keeps
+    # its own synchronous ack. `n` is validated 1..5 firmware-side (ERR_BAD_ARGS
+    # out of range) so a malformed chunk never reaches CAN3.
+    RpcArg("ArgPlatformFwBegin", "PLATFORM_FW_BEGIN", [
+        Field("image_len", "u32", 1, "Total image length in bytes"),
+    ]),
+    RpcArg("ArgPlatformFwData", "PLATFORM_FW_DATA", [
+        Field("seq",     "u16", 1, "Chunk sequence number (0-based)"),
+        Field("n",       "u8",  1, "Valid payload bytes in this chunk, 1..5"),
+        Field("payload", "u8",  5, "Image bytes; only payload[0..n) reach the CAN frame"),
+    ]),
+    RpcArg("ArgPlatformFwVerify", "PLATFORM_FW_VERIFY", [
+        Field("crc32", "u32", 1, "CRC-32 over the whole staged image"),
+    ]),
+    # PLATFORM_FW_COMMIT is payloadless — no Arg struct (caller sends b"", the
+    # NOP / BB_RELOAD pattern).
 ]
 
 # ───────────────────────────────────────────────────────────────────────────

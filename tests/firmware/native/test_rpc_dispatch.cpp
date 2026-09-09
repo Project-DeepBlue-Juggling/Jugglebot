@@ -119,6 +119,13 @@ namespace Relay {
 uint16_t tilt_read()  { g_tilt_calls++; return JbUdp::RpcStatus::OK; }
 uint16_t state_read() { g_state_read_calls++; return JbUdp::RpcStatus::OK; }
 uint16_t state_write(const JbUdp::RpcArgs::ArgRobotState&) { g_state_write_calls++; return JbUdp::RpcStatus::OK; }
+// Platform firmware-over-CAN (FW 19). Link stubs only — the real gating
+// (mpc_active ⇒ ERR_REJECTED, n outside 1..5 ⇒ ERR_BAD_ARGS, the CAN3 gate) lives
+// in platform_relay.cpp and is exercised through test_platform_relay.cpp.
+uint16_t platform_fw_begin(const JbUdp::RpcArgs::ArgPlatformFwBegin&, bool) { return JbUdp::RpcStatus::OK; }
+uint16_t platform_fw_data(const JbUdp::RpcArgs::ArgPlatformFwData&, bool) { return JbUdp::RpcStatus::OK; }
+uint16_t platform_fw_verify(const JbUdp::RpcArgs::ArgPlatformFwVerify&, bool) { return JbUdp::RpcStatus::OK; }
+uint16_t platform_fw_commit(bool) { return JbUdp::RpcStatus::OK; }
 }  // namespace Relay
 
 // ── hand_ops.h ──

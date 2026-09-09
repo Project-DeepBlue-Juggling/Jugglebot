@@ -102,9 +102,24 @@
  *        shared `hand_motor_hard_stop_revs` moved. Plan:
  *        plans/active/unified-7dof-planner.md § FW 18 bundle. Logbook:
  *        logbook/2026-09-08-fw18-bundle-hand-clip-homing-counters-rename.md
+ *    5 = 2026-09-09.  FIRST IMAGE THAT CAN BE UPDATED OVER CAN.  Adds the
+ *        0x6F0/0x6F1 firmware-update endpoint (§ FIRMWARE UPDATE OVER CAN
+ *        below): BEGIN/DATA/VERIFY/COMMIT, flash staging above the running
+ *        image, CRC-32 + identity gate, then a FlasherX-style self-copy and
+ *        reboot.  Motion behaviour is BIT-IDENTICAL to FW 4 — no trajectory,
+ *        tilt, time-sync or RobotState path was touched — with one deliberate
+ *        exception: while an update session is open this board REFUSES to arm
+ *        new 0x6D0 trajectories (a sector flush stalls the streamer for tens
+ *        of ms, which is not a thing to do mid-throw).
+ *        ⚠ THIS IMAGE MUST BE FLASHED OVER USB ONCE, from the Arduino IDE.  A
+ *        board running FW ≤ 4 has no 0x6F0 listener, so it cannot be given its
+ *        own successor over CAN; FW 5 is the bootstrap that opens the path.
+ *        Why the path exists at all: this board's micro-USB port is physically
+ *        damaged and the Teensy bootloader chip speaks ONLY USB, so after this
+ *        one flash, CAN is the only remaining route in.
  */
 constexpr char     FW_NAME[]  = "jugglebot-platform";
-constexpr uint16_t FW_VERSION = 4;   // 1→2: 2026-07-29 throwDecelToTorque (post-release decel
+constexpr uint16_t FW_VERSION = 5;   // 1→2: 2026-07-29 throwDecelToTorque (post-release decel
                                      //      feedforward, C-HAND-2).
                                      // 2→3: 2026-08-18 hand END-STOP correction — BEHAVIOURAL.
                                      //      Geometry::HAND_MOTOR_HARD_STOP_REVS 11.1 → 10.8 rev
@@ -122,6 +137,12 @@ constexpr uint16_t FW_VERSION = 4;   // 1→2: 2026-07-29 throwDecelToTorque (po
                                      //      rev; SMOOTH_MOVE_POS_CEIL_REV 10.60 → 10.501 rev;
                                      //      smoothMoveMaxDuration() 0.78964 → 0.78602 s. See the
                                      //      identity-block entry above for the full derivation.
+                                     // 4→5: 2026-09-09 FIRMWARE UPDATE OVER CAN (0x6F0/0x6F1).
+                                     //      Motion paths bit-identical to FW 4; the only
+                                     //      behavioural change outside the new endpoint is that
+                                     //      0x6D0 trajectory arming is refused while an update
+                                     //      session is open. FW 5 must be USB-flashed once — a
+                                     //      FW ≤ 4 board cannot receive its own successor.
 
 /*----------------------------------------------------------------------------*/
 /*                                CAN BUS SET‑UP                              */
@@ -144,6 +165,8 @@ constexpr uint32_t timeSyncID      = SharedCanId::TIME_SYNC;
 constexpr uint32_t stateUpdateID   = PlatformCanId::STATE_UPDATE;
 constexpr uint32_t CMD_TRAJ_ID     = PlatformCanId::TRAJ_CMD;
 constexpr uint32_t TRAJ_OUT_ID     = (NodeId::JUGGLEBOT_HAND << 5) | ODriveCmd::set_input_pos;
+constexpr uint32_t FW_UPD_CMD_ID   = PlatformCanId::FW_UPDATE_CMD;    // host → this board
+constexpr uint32_t FW_UPD_REPLY_ID = PlatformCanId::FW_UPDATE_REPLY;  // this board → host
 
 /*----------------------------------------------------------------------------*/
 /*                            TRAFFIC MONITOR                                 */
@@ -376,6 +399,418 @@ void packTrajectory(const Trajectory &tr, uint64_t abs_t0_us) {
 }
 
 /*----------------------------------------------------------------------------*/
+/*              F I R M W A R E   U P D A T E   O V E R   C A N               */
+/*----------------------------------------------------------------------------*/
+/*  WHY THIS EXISTS.  This board's micro-USB port is physically damaged, and the
+ *  Teensy bootloader chip speaks ONLY USB — there is no serial, no HID, no
+ *  half-speed fallback once the connector is gone.  So every image after FW 5
+ *  has to arrive over CAN, through the one conduit this board still has: the
+ *  can-bridge already relays typed RPCs to us and uplinks our reply frames
+ *  verbatim, so the update path is
+ *
+ *      host tool ── UDP ──▶ can-bridge ── CAN 0x6F0 ──▶ here
+ *                                       ◀── CAN 0x6F1 ──
+ *
+ *  FW 5 ITSELF MUST BE FLASHED OVER USB ONCE (Arduino IDE, from this .ino).  A
+ *  board running FW ≤ 4 has no 0x6F0 listener at all, so it cannot be handed its
+ *  own successor.  Miss that one flash and the CAN path never opens.
+ *
+ *  MECHANISM: mirrors FlasherX (joepasquariello/FlasherX) without vendoring it —
+ *  the same three moves, written inline in ~200 lines.  The new image is staged
+ *  into the unused flash ABOVE the running image, CRC-32 and identity checked
+ *  there, and only then copied down over the program region with interrupts
+ *  masked, followed by a reboot.  On a Teensy 4.x every function runs from ITCM
+ *  RAM unless it is FLASHMEM/PROGMEM, and .rodata is copied to DTCM at boot, so
+ *  nothing on the commit path — not this code, not memcpy, not the core's flash
+ *  primitives (cores/teensy4/eeprom.c carries no FLASHMEM at all) — needs to
+ *  read the flash it is busy rewriting.
+ *
+ *  ⚠ THE COMMIT COPY IS THE ONE UNPROTECTED MOMENT.  It erases sector 0, which
+ *  holds the FlexSPI configuration block and the IVT.  A power cut between that
+ *  first erase and the end of the copy leaves an unbootable board that ONLY a
+ *  USB reflash can recover — which is exactly what this board no longer has.
+ *  Do not COMMIT on a flaky supply.  Everything BEFORE commit is free: the
+ *  staging region is scratch, and an abandoned session costs nothing.
+ *
+ *  WIRE CONTRACT (little-endian throughout; mirrored by the can-bridge relay and
+ *  the host tool — this comment, the bridge's and the host's are one document):
+ *
+ *    Command, id 0x6F0, byte 0 = opcode
+ *      0x01 BEGIN   [op][image_len u32 @1..4][0,0,0]
+ *      0x02 DATA    [op][seq u16 @1..2][payload @3..7], n = dlc-3, 1..5 bytes
+ *      0x03 VERIFY  [op][crc32 u32 @1..4][0,0,0]
+ *      0x04 COMMIT  [op][0...]
+ *
+ *    Reply, id 0x6F1, dlc 8
+ *      [opcode echoed @0][status @1][seq u16 @2..3][detail u32 @4..7]
+ *      seq    = last accepted DATA seq, or the EXPECTED seq on BAD_SEQ
+ *      detail = staged byte count (BEGIN/DATA), computed crc (VERIFY), else 0
+ *
+ *  SEQUENCING.  DATA is strictly in order.  `seq` counts DATA frames from 0 and
+ *  wraps mod 65536; the receiver tracks the absolute byte offset separately, so
+ *  the wrap is invisible to the image.  A frame whose seq != expected is NAKed
+ *  (BAD_SEQ, seq field = the expected seq), dropped, and the receiver keeps
+ *  waiting for that same seq — the host rewinds to it.  ACK (OK) is sent on
+ *  every 16th accepted frame (seq % 16 == 15) and on the frame that completes
+ *  image_len; every other accepted frame is silent.  65536 % 16 == 0, so the ACK
+ *  cadence is continuous across the seq wrap.
+ *
+ *  WHY THE HOST WILL SEE THE ODD BURST OF NAKs.  Staging a 4 KB sector means a
+ *  sector erase (typ. 45 ms, up to 400 ms on a W25Q16) plus sixteen page writes,
+ *  and this handler runs in the main loop, so `can1.events()` is not pumped for
+ *  that whole window.  FlexCAN_T4's 256-frame software RX queue absorbs a
+ *  typical erase; a worst-case one can overrun it.  That is DESIGNED-FOR, not a
+ *  fault: the next frame to arrive NAKs with the expected seq and the host
+ *  rewinds.  Do not "fix" it by widening the queue.
+ */
+
+extern "C" {
+/*  cores/teensy4/eeprom.c — "To be called from LittleFS_Program, any other use
+ *  at your own risk!".  Both mask interrupts internally and RE-ENABLE them on
+ *  the way out (via that file's flash_wait()), which is why the commit loop
+ *  re-masks after every single call rather than once at the top. */
+void eepromemu_flash_write(void *addr, const void *data, uint32_t len);
+void eepromemu_flash_erase_sector(void *addr);
+}
+
+/*  Linker symbol from cores/teensy4/imxrt1062.ld:
+ *      _flashimagelen = __text_csf_end - ORIGIN(FLASH);
+ *  i.e. the byte length of the RUNNING image.  Its ADDRESS is the value. */
+extern unsigned long _flashimagelen;
+
+namespace FwUpdate {
+
+constexpr uint32_t FLASH_BASE   = 0x60000000u;
+constexpr uint32_t SECTOR_SIZE  = 4096u;
+constexpr uint32_t WRITE_CHUNK  = 256u;  // one QSPI page — LittleFS_Program's prog_size,
+                                         // so a proven length for eepromemu_flash_write
+/*  Top of usable program flash = base of the core's EEPROM-emulation reserve.
+ *  Two independent sources agree on this number for a Teensy 4.0: eeprom.c's
+ *  FLASH_BASEADDR under ARDUINO_TEENSY40, and ORIGIN(FLASH) + LENGTH(FLASH)
+ *  = 0x60000000 + 1984K.  Nothing may be staged at or above it. */
+constexpr uint32_t EEPROM_RESERVE = 0x601F0000u;
+
+constexpr uint32_t COMMIT_DRAIN_MS   = 50;      // let the COMMIT reply reach the bridge
+constexpr uint32_t SESSION_IDLE_MS   = 60000;   // abandoned-session escape hatch
+
+/*  Opcodes (host → platform, byte 0 of a 0x6F0 frame). */
+constexpr uint8_t OP_BEGIN = 0x01, OP_DATA = 0x02, OP_VERIFY = 0x03, OP_COMMIT = 0x04;
+
+/*  Status codes (byte 1 of the 0x6F1 reply).  THE CAN-BRIDGE RELAY AND THE HOST
+ *  TOOL MIRROR THIS TABLE VERBATIM — never renumber a code, only append. */
+constexpr uint8_t ST_OK           = 0;
+constexpr uint8_t ST_BUSY         = 1;  // trajectory engine not idle (BEGIN, COMMIT)
+constexpr uint8_t ST_BAD_STATE    = 2;  // no session open, wrong phase, or malformed dlc
+constexpr uint8_t ST_BAD_SEQ      = 3;  // out-of-order DATA; seq field = the expected seq
+constexpr uint8_t ST_TOO_BIG      = 4;  // image_len > staging capacity, or DATA past image_len
+constexpr uint8_t ST_BAD_CRC      = 5;
+constexpr uint8_t ST_BAD_IDENTITY = 6;  // staged image is not a jugglebot-platform build
+constexpr uint8_t ST_FLASH_ERR    = 7;  // staging write failed its read-back
+
+/*  Session state.  IDLE → (BEGIN) → RECEIVING → (VERIFY ok) → VERIFIED → (COMMIT).
+ *  A failed VERIFY drops back to RECEIVING; a failed staging write drops all the
+ *  way to IDLE; BEGIN resets from anywhere. */
+enum Phase : uint8_t { P_IDLE = 0, P_RECEIVING = 1, P_VERIFIED = 2 };
+
+Phase    phase       = P_IDLE;
+uint32_t image_len   = 0;   // declared at BEGIN
+uint32_t stage_base  = 0;   // computed at BEGIN
+uint32_t stage_cap   = 0;   // EEPROM_RESERVE - stage_base
+uint32_t flushed     = 0;   // image bytes already committed to the staging flash
+uint32_t buf_fill    = 0;   // image bytes held in sector_buf
+uint16_t expect_seq  = 0;   // next DATA seq we will accept
+uint16_t last_seq    = 0;   // last DATA seq accepted (reported in replies)
+uint32_t last_cmd_ms = 0;   // millis() of the last 0x6F0 frame, for the idle timeout
+
+/*  One 4 KB sector, reused for staging AND for the commit copy (the commit reads
+ *  a staged sector into here before erasing its destination — the flash cannot
+ *  be read while it is being programmed). */
+alignas(4) uint8_t sector_buf[SECTOR_SIZE];
+
+inline uint32_t staged() { return flushed + buf_fill; }
+inline bool sessionOpen() { return phase != P_IDLE; }
+
+/*  Staging starts at the first sector boundary ABOVE the running image, so the
+ *  staged copy never overlaps the code that is doing the staging. */
+inline uint32_t stagingBase() {
+  const uint32_t img_end = FLASH_BASE + (uint32_t)&_flashimagelen;
+  return (img_end + (SECTOR_SIZE - 1u)) & ~(SECTOR_SIZE - 1u);
+}
+
+/*  The trajectory streamer must be quiet before we touch flash: a sector flush
+ *  stalls this loop for tens of milliseconds, and the streamer's whole job is to
+ *  put frames on the wire at absolute wall-clock times. */
+inline bool engineIdle() {
+  return !trajActive && nextIdx >= packedMsgs.size();
+}
+
+void reply(uint8_t op, uint8_t status, uint16_t seq, uint32_t detail) {
+  CAN_message_t m;
+  m.id  = FW_UPD_REPLY_ID;
+  m.len = 8;
+  m.buf[0] = op;
+  m.buf[1] = status;
+  m.buf[2] = uint8_t(seq & 0xFF);
+  m.buf[3] = uint8_t(seq >> 8);
+  m.buf[4] = uint8_t(detail & 0xFF);
+  m.buf[5] = uint8_t((detail >> 8) & 0xFF);
+  m.buf[6] = uint8_t((detail >> 16) & 0xFF);
+  m.buf[7] = uint8_t((detail >> 24) & 0xFF);
+  can1.write(m);
+}
+
+/*  Erase + write the buffered bytes into the staging flash, then READ THEM BACK.
+ *  The read-back is the only way a failed erase or write can be noticed at all:
+ *  the core's primitives return void and the QSPI status register is consumed
+ *  inside them.  Erasing lazily — here, rather than blanking the whole region at
+ *  BEGIN — keeps BEGIN's reply immediate and spreads the stall over the
+ *  transfer instead of concentrating a multi-second freeze at its start. */
+bool flushBuffer() {
+  if (buf_fill == 0) return true;
+
+  const uint32_t addr = stage_base + flushed;
+  const uint32_t n    = (buf_fill + 3u) & ~3u;          // pad up to a 4-byte write
+  for (uint32_t i = buf_fill; i < n; ++i) sector_buf[i] = 0xFF;
+
+  eepromemu_flash_erase_sector((void *)addr);
+  for (uint32_t off = 0; off < n; off += WRITE_CHUNK) {
+    uint32_t len = n - off;
+    if (len > WRITE_CHUNK) len = WRITE_CHUNK;
+    eepromemu_flash_write((void *)(addr + off), sector_buf + off, len);
+  }
+
+  arm_dcache_delete((void *)addr, n);                   // read from flash, not from cache
+  if (memcmp((const void *)addr, sector_buf, n) != 0) {
+    Serial.printf("[fwupd] FLASH_ERR: read-back mismatch at 0x%08lX\n", (unsigned long)addr);
+    return false;
+  }
+
+  flushed  += buf_fill;   // padding is NOT image content
+  buf_fill  = 0;
+  return true;
+}
+
+/*  CRC-32/IEEE 802.3 — the zlib / binascii.crc32 flavour the host computes:
+ *  reflected polynomial 0xEDB88320, init 0xFFFFFFFF, final xor 0xFFFFFFFF.
+ *  Bitwise, so it needs no 1 KB table in RAM; ~20 ms for a 150 KB image. */
+uint32_t crc32(const uint8_t *p, uint32_t n) {
+  uint32_t crc = 0xFFFFFFFFu;
+  while (n--) {
+    crc ^= *p++;
+    for (uint8_t k = 0; k < 8; ++k)
+      crc = (crc >> 1) ^ (0xEDB88320u & (uint32_t)(-(int32_t)(crc & 1u)));
+  }
+  return ~crc;
+}
+
+/*  Identity gate: the staged image must contain this board's own FW_NAME marker.
+ *  That single byte string is what separates a jugglebot-platform build from a
+ *  can-bridge image (Teensy 4.1, "jugglebot-canbridge" — which does NOT contain
+ *  "jugglebot-platform" as a substring), a bench-sysid image, or any foreign hex
+ *  that happened to CRC correctly because the host hashed what it sent.  The
+ *  CRC proves the transfer; only this proves the INTENT. */
+bool identityOk() {
+  const uint8_t *img  = (const uint8_t *)stage_base;
+  const uint32_t nlen = sizeof(FW_NAME) - 1u;   // 18 bytes, NUL excluded
+  if (image_len < nlen) return false;
+  for (uint32_t i = 0; i + nlen <= image_len; ++i) {
+    if (img[i] == (uint8_t)FW_NAME[0] && memcmp(img + i, FW_NAME, nlen) == 0) return true;
+  }
+  return false;
+}
+
+/*  Copy staged → program flash, sector by sector, low to high, then reboot.
+ *  Never returns.
+ *
+ *  THE OVERLAP INVARIANT.  Destination sector s spans [FLASH_BASE + s*4096,
+ *  +4096); its source is [stage_base + s*4096, +4096).  stage_base is at least
+ *  one sector above FLASH_BASE, so dst_s + 4096 <= src_s for every s: erasing a
+ *  destination sector can only destroy source bytes that were read one iteration
+ *  EARLIER, never bytes still to come.  A new image LONGER than the staging
+ *  offset therefore overwrites its own tail's source region safely — those bytes
+ *  are already in the destination by the time the writer reaches them.  This is
+ *  the whole reason the copy must run low to high and must never be reordered.
+ *
+ *  Each sector is read into RAM before its destination is touched, because the
+ *  QSPI cannot serve an AHB read while an erase or page-program is in flight. */
+void commitAndReboot() {
+  const uint32_t sectors = (image_len + SECTOR_SIZE - 1u) / SECTOR_SIZE;
+
+  __disable_irq();
+  for (uint32_t s = 0; s < sectors; ++s) {
+    const uint32_t src = stage_base + s * SECTOR_SIZE;
+    const uint32_t dst = FLASH_BASE  + s * SECTOR_SIZE;
+
+    arm_dcache_delete((void *)src, SECTOR_SIZE);
+    memcpy(sector_buf, (const void *)src, SECTOR_SIZE);
+
+    __disable_irq();                                  // the primitives re-enable on exit
+    eepromemu_flash_erase_sector((void *)dst);
+    __disable_irq();
+    for (uint32_t off = 0; off < SECTOR_SIZE; off += WRITE_CHUNK) {
+      eepromemu_flash_write((void *)(dst + off), sector_buf + off, WRITE_CHUNK);
+      __disable_irq();
+    }
+  }
+
+  SCB_AIRCR = 0x05FA0004;   // system reset
+  while (1) {}
+}
+
+/*  Handle one 0x6F0 command frame.  Runs in main-loop context: FlexCAN_T4 queues
+ *  frames in the ISR and dispatches them from can1.events(), so blocking here
+ *  costs latency, not received frames. */
+void handleCommand(const CAN_message_t &msg) {
+  if (msg.len < 1) return;
+  const uint8_t op = msg.buf[0];
+  last_cmd_ms = millis();
+
+  switch (op) {
+
+    case OP_BEGIN: {
+      if (msg.len < 5) { reply(op, ST_BAD_STATE, 0, 0); return; }
+      if (!engineIdle()) {
+        Serial.println("[fwupd] BEGIN refused: trajectory engine busy");
+        reply(op, ST_BUSY, 0, 0);
+        return;
+      }
+      const uint32_t len = uint32_t(msg.buf[1]) | (uint32_t(msg.buf[2]) << 8)
+                         | (uint32_t(msg.buf[3]) << 16) | (uint32_t(msg.buf[4]) << 24);
+
+      stage_base = stagingBase();
+      stage_cap  = EEPROM_RESERVE - stage_base;
+      if (len == 0 || len > stage_cap) {
+        phase = P_IDLE;
+        /* detail carries the CAPACITY here, not the staged count — a bare 0
+         * would tell the operator nothing, and the 0x6F1 reply is this board's
+         * only voice (the USB console is gone with the connector). */
+        reply(op, ST_TOO_BIG, 0, stage_cap);
+        return;
+      }
+
+      image_len  = len;
+      flushed    = 0;
+      buf_fill   = 0;
+      expect_seq = 0;
+      last_seq   = 0;
+      phase      = P_RECEIVING;
+      reply(op, ST_OK, 0, 0);
+      Serial.printf("[fwupd] BEGIN %lu B  staging 0x%08lX..0x%08lX (%lu KB free)\n",
+                    (unsigned long)image_len, (unsigned long)stage_base,
+                    (unsigned long)EEPROM_RESERVE, (unsigned long)(stage_cap / 1024u));
+      return;
+    }
+
+    case OP_DATA: {
+      if (phase != P_RECEIVING)         { reply(op, ST_BAD_STATE, expect_seq, staged()); return; }
+      if (msg.len < 4 || msg.len > 8)   { reply(op, ST_BAD_STATE, expect_seq, staged()); return; }
+
+      const uint16_t seq = uint16_t(msg.buf[1]) | (uint16_t(msg.buf[2]) << 8);
+      const uint32_t n   = uint32_t(msg.len) - 3u;
+      if (seq != expect_seq)            { reply(op, ST_BAD_SEQ, expect_seq, staged()); return; }
+      if (staged() + n > image_len)     { reply(op, ST_TOO_BIG, seq, staged()); return; }
+
+      /* A payload can straddle a sector boundary (n is 1..5 and need not divide
+       * 4096), so take it in two bites when it does. */
+      uint32_t off = 0;
+      while (off < n) {
+        uint32_t take = SECTOR_SIZE - buf_fill;
+        if (take > n - off) take = n - off;
+        memcpy(sector_buf + buf_fill, &msg.buf[3 + off], take);
+        buf_fill += take;
+        off      += take;
+        if (buf_fill == SECTOR_SIZE && !flushBuffer()) {
+          phase = P_IDLE;
+          reply(op, ST_FLASH_ERR, seq, staged());
+          return;
+        }
+      }
+
+      last_seq   = seq;
+      expect_seq = uint16_t(seq + 1u);
+
+      const bool complete = (staged() == image_len);
+      if ((seq % 16u) == 15u || complete) reply(op, ST_OK, seq, staged());
+      return;
+    }
+
+    case OP_VERIFY: {
+      if (phase == P_IDLE || msg.len < 5) { reply(op, ST_BAD_STATE, last_seq, 0); return; }
+
+      if (!flushBuffer()) {               // push the tail out before hashing
+        phase = P_IDLE;
+        reply(op, ST_FLASH_ERR, last_seq, 0);
+        return;
+      }
+      if (staged() != image_len) {        // short image — nothing to verify yet
+        phase = P_RECEIVING;
+        reply(op, ST_BAD_STATE, expect_seq, staged());
+        return;
+      }
+
+      const uint32_t want = uint32_t(msg.buf[1]) | (uint32_t(msg.buf[2]) << 8)
+                          | (uint32_t(msg.buf[3]) << 16) | (uint32_t(msg.buf[4]) << 24);
+      arm_dcache_delete((void *)stage_base, image_len);
+      const uint32_t got = crc32((const uint8_t *)stage_base, image_len);
+
+      if (got != want) {
+        phase = P_RECEIVING;
+        Serial.printf("[fwupd] BAD_CRC want=0x%08lX got=0x%08lX\n",
+                      (unsigned long)want, (unsigned long)got);
+        reply(op, ST_BAD_CRC, last_seq, got);
+        return;
+      }
+      if (!identityOk()) {
+        phase = P_RECEIVING;
+        Serial.println("[fwupd] BAD_IDENTITY: staged image carries no FW_NAME marker");
+        reply(op, ST_BAD_IDENTITY, last_seq, got);
+        return;
+      }
+
+      phase = P_VERIFIED;
+      Serial.printf("[fwupd] VERIFY ok, crc=0x%08lX — COMMIT armed\n", (unsigned long)got);
+      reply(op, ST_OK, last_seq, got);
+      return;
+    }
+
+    case OP_COMMIT: {
+      if (phase != P_VERIFIED) { reply(op, ST_BAD_STATE, last_seq, 0); return; }
+      if (!engineIdle()) {     // never reboot into the middle of a throw
+        reply(op, ST_BUSY, last_seq, 0);
+        return;
+      }
+      /* Reply BEFORE the copy and let it drain: once the erase starts, this
+       * board answers nothing until it comes back up on the new image. */
+      reply(op, ST_OK, last_seq, 0);
+      Serial.println("[fwupd] COMMIT — copying staged image over program flash");
+      delay(COMMIT_DRAIN_MS);
+      commitAndReboot();       // never returns
+      return;
+    }
+
+    default:
+      reply(op, ST_BAD_STATE, last_seq, 0);
+      return;
+  }
+}
+
+/*  Called from loop().  An abandoned session (host crashed, cable pulled) would
+ *  otherwise keep the trajectory refusal in canSniff in force for ever — and
+ *  this board has no console left to explain why it went deaf — so time it out.
+ *  60 s is long enough that no live transfer, and no operator pausing between
+ *  VERIFY and COMMIT, can trip it. */
+void tick() {
+  if (phase == P_IDLE) return;
+  if (millis() - last_cmd_ms > SESSION_IDLE_MS) {
+    phase    = P_IDLE;
+    buf_fill = 0;
+    Serial.println("[fwupd] session idle — aborted, trajectories re-enabled");
+  }
+}
+
+}  // namespace FwUpdate
+
+/*----------------------------------------------------------------------------*/
 /*                          T R A F F I C   R E P O R T                       */
 /*----------------------------------------------------------------------------*/
 void reportStatus() {
@@ -561,6 +996,15 @@ void canSniff(const CAN_message_t &msg) {
     TimeSync::handleSyncFrame(msg);
   }
 
+  /* ── firmware update over CAN  ID 0x6F0 ──────────────────────────
+   * See § FIRMWARE UPDATE OVER CAN.  Returns early: the id has no other
+   * meaning on this board, and a BEGIN/DATA burst has no business walking
+   * the trajectory unpacker below. */
+  if (msg.id == FW_UPD_CMD_ID) {
+    FwUpdate::handleCommand(msg);
+    return;
+  }
+
   /* ── hand encoder estimates (axis 6) ───────────────────────────── */
   if (msg.id == HAND_ENC_EST_ID && msg.len == 8) {
     float pos, vel;
@@ -586,6 +1030,20 @@ void canSniff(const CAN_message_t &msg) {
   Byte 5-7 : reserved (0)
   */
   if (msg.id == CMD_TRAJ_ID && msg.len == 8) {
+
+    /* ---- firmware-update interlock -------------------------------- *
+     * A staging flush erases and programs a 4 KB sector, which stalls this
+     * loop — and therefore the trajectory streamer — for tens of ms.  The
+     * streamer's entire contract is to put frames on the wire at absolute
+     * wall-clock times, so a stall mid-throw is a hand that stops dead and
+     * then jumps.  Refuse to ARM while a session is open (an already-armed
+     * trajectory is impossible: BEGIN is gated on `engineIdle()`).  The
+     * refusal is self-clearing — FwUpdate::tick() times an abandoned session
+     * out after SESSION_IDLE_MS. */
+    if (FwUpdate::sessionOpen()) {
+      Serial.println("! traj command ignored: firmware-update session open");
+      return;
+    }
 
     /* ---- unpack kind ---- */
     uint8_t kind = msg.buf[0];
@@ -737,6 +1195,7 @@ void setup() {
 void loop() {
   can1.events();   // dispatch CAN callbacks
   reportStatus();  // traffic monitor
+  FwUpdate::tick();  // time out an abandoned firmware-update session
 
   #if DEBUG_TIME_SYNC
     TimeSync::maybePrintStats();  // console jitter read‑out, if desired.

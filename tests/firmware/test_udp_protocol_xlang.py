@@ -291,6 +291,23 @@ def test_wire_layout_frozen(gen):
     for member, value, *_ in gen.ENUMS["MsgType"]:
         h.update(f"MT {member}={value};".encode())
     digest = h.hexdigest()
+    # Re-pinned for the ADDITIVE Platform firmware-over-CAN RPC args (2026-09-09,
+    # can-bridge FW 19): three new arg structs behind four new RpcMethods —
+    # ArgPlatformFwBegin (u32 image_len, 4 B), ArgPlatformFwData (u16 seq, u8 n,
+    # u8 payload[5] — 8 B) and ArgPlatformFwVerify (u32 crc32, 4 B); the fourth
+    # method, PLATFORM_FW_COMMIT, is payloadless and has no struct. The Platform
+    # Teensy's USB port is damaged, so its firmware now arrives over CAN3 through
+    # the bridge's TYPED relay (BEGIN → DATA×N → VERIFY → COMMIT, each RPC laid
+    # out firmware-side onto one 0x6F0 frame; the Platform answers on 0x6F1 and
+    # the bridge uplinks that reply verbatim as an existing PLATFORM_FRAME).
+    # No MsgType is added and no existing message, arg or framing constant moves
+    # — these are new RpcMethod ids 0x0056-0x0059 inside the existing RpcRequest
+    # envelope — so PROTOCOL_VERSION deliberately stays at 6 (the HAND_SOURCE_SET
+    # precedent directly below: a board that predates the ids answers the unknown
+    # method ERR_UNKNOWN_METHOD, loudly, and the two ends deploy in either order).
+    # Previous pin: b5c54dbe1a44a464e48f691ac6be097c46c537832fd0c7706c02e21d23a9620c
+    #   (the ADDITIVE HAND_SOURCE_SET RPC arg — 2026-09-02, can-bridge FW 17).
+    #
     # Re-pinned for the ADDITIVE HAND_SOURCE_SET RPC arg (2026-09-02,
     # unified-7dof-planner Phase 3, can-bridge FW 17): a new 1-byte
     # ArgHandSource (u8 source: 0 = LEGACY_STROKE, 1 = STREAMED) for the new
@@ -412,7 +429,7 @@ def test_wire_layout_frozen(gen):
     # Previous pin: 8e1bd0a3dcd370859a781925487a9accee4109554494a40023dd1cf4549794df
     #   (additive BRIDGE_TX_DIAG 0x8D 42 B + BRIDGE_IDENTITY 0x8E 3 B —
     #    2026-08-02 ERR_TIMEOUT attribution instrumentation).
-    _EXPECTED = "b5c54dbe1a44a464e48f691ac6be097c46c537832fd0c7706c02e21d23a9620c"
+    _EXPECTED = "aed51051d7004a0d2809da9c3f62e16a5444e949fa055b806fdcd3db54096d45"
     assert digest == _EXPECTED, (
         "The UDP wire LAYOUT changed (a message/arg field layout, a framed MsgType "
         "value, or a framing constant). If INCOMPATIBLE, bump PROTOCOL_VERSION. Either "

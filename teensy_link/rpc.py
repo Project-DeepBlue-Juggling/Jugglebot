@@ -228,6 +228,67 @@ class RpcClient:
         pending.event.set()
 
 
+class PlatformFrameWaiter:
+    """Awaits Platform-Teensy relay replies (PLATFORM_FRAME uplinks) by
+    ``(can_id, dlc)`` — the correlation TILT_READ/STATE_READ already use
+    (``teensy_bridge_node.py``'s ``_await_platform_reply`` /
+    ``_on_platform_frame`` / ``_platform_replies`` is the tested mechanism this
+    reimplements for standalone, non-ROS callers such as the Platform
+    firmware-over-CAN update flow, which correlates FW_UPDATE_REPLY 0x6F1 the
+    same way).
+
+    :meth:`clear` drops any stale latched reply for a can_id — call it BEFORE
+    sending the triggering RPC so a leftover reply from an earlier read can't
+    satisfy a new one. :meth:`wait` then blocks the calling thread for a fresh
+    reply on that can_id/dlc.
+    """
+
+    def __init__(self, link: TeensyLinkClient):
+        self._replies: Dict[int, Tuple[bytes, int]] = {}
+        self._cv = threading.Condition()
+        self._unsubscribe = link.subscribe(int(p.MsgType.PLATFORM_FRAME), self._on_frame)
+
+    def close(self) -> None:
+        if self._unsubscribe is not None:
+            self._unsubscribe()
+            self._unsubscribe = None
+
+    def __enter__(self) -> "PlatformFrameWaiter":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+    def _on_frame(self, msg_type: int, seq: int, payload: bytes, addr: Address) -> None:
+        try:
+            pf = p.PlatformFrame.unpack(payload)
+        except Exception:  # noqa: BLE001 — never kill the RX thread on a malformed frame
+            return
+        data = bytes(pf.data[: pf.dlc])
+        with self._cv:
+            self._replies[int(pf.can_id)] = (data, int(pf.dlc))
+            self._cv.notify_all()
+
+    def clear(self, can_id: int) -> None:
+        """Drop any latched reply for ``can_id``."""
+        with self._cv:
+            self._replies.pop(int(can_id), None)
+
+    def wait(self, can_id: int, expected_dlc: int, timeout: float) -> Optional[bytes]:
+        """Block for a fresh reply on ``can_id`` with ``expected_dlc``.
+        Returns the raw reply bytes, or ``None`` on timeout."""
+        deadline = time.monotonic() + timeout
+        with self._cv:
+            while True:
+                entry = self._replies.get(int(can_id))
+                if entry is not None and entry[1] == expected_dlc:
+                    return entry[0]
+                remaining = deadline - time.monotonic()
+                if remaining <= 0.0:
+                    return None
+                self._cv.wait(remaining)
+
+
 # ── Incoming RPCs (Teensy → Jetson) ───────────────────────────────────────
 
 

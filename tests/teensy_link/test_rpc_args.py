@@ -28,7 +28,7 @@ from teensy_link import rpc_args as ra
 from teensy_link.protocol import (
     ArgAxisState, ArgControllerMode, ArgVelCurr, ArgPosGain, ArgVelGains,
     ArgAbsPosition, ArgAxisOnly, ArgSdoRead, ArgSdoWrite, ResultTimeOfDay,
-    ArgBbThrow,
+    ArgBbThrow, ArgPlatformFwBegin, ArgPlatformFwData, ArgPlatformFwVerify,
 )
 
 
@@ -191,6 +191,57 @@ def test_hand_source_set_exact_bytes():
     assert ra.ArgHandSource(source=1).pack() == b"\x01"
 
 
+# ── Platform firmware-over-CAN (2026-09-09) ────────────────────────────────
+
+def test_platform_fw_begin_exact_bytes():
+    blob = ra.encode_platform_fw_begin(image_len=122880)
+    assert blob == struct.pack('<I', 122880)
+    assert len(blob) == 4
+    assert ArgPlatformFwBegin.unpack(blob).image_len == 122880
+
+
+def test_platform_fw_data_exact_bytes():
+    blob = ra.encode_platform_fw_data(seq=3, payload=b'abcde')
+    assert blob == struct.pack('<HBBBBBB', 3, 5, *b'abcde')
+    assert len(blob) == 8
+    a = ArgPlatformFwData.unpack(blob)
+    assert a.seq == 3 and a.n == 5 and bytes(a.payload) == b'abcde'
+
+
+def test_platform_fw_data_short_payload_zero_padded():
+    blob = ra.encode_platform_fw_data(seq=65535, payload=b'x')
+    assert blob == struct.pack('<HBBBBBB', 65535, 1, ord('x'), 0, 0, 0, 0)
+    assert len(blob) == 8
+
+
+def test_platform_fw_data_n_out_of_range_refused_host_side():
+    with pytest.raises(ValueError):
+        ra.encode_platform_fw_data(seq=0, payload=b'')          # n=0
+    with pytest.raises(ValueError):
+        ra.encode_platform_fw_data(seq=0, payload=b'abcdef')    # n=6
+
+
+def test_platform_fw_verify_exact_bytes():
+    blob = ra.encode_platform_fw_verify(crc32=0xDEADBEEF)
+    assert blob == struct.pack('<I', 0xDEADBEEF)
+    assert len(blob) == 4
+    assert ArgPlatformFwVerify.unpack(blob).crc32 == 0xDEADBEEF
+
+
+def test_platform_fw_commit_is_payloadless():
+    assert ra.encode_platform_fw_commit() == b""
+
+
+def test_platform_fw_method_map_entries():
+    """The method->arg map carries the three arg-bearing PLATFORM_FW_* methods
+    (COMMIT is payloadless — see the partition test below)."""
+    from teensy_link import RpcMethod
+    assert ra.METHOD[RpcMethod.PLATFORM_FW_BEGIN] is ArgPlatformFwBegin
+    assert ra.METHOD[RpcMethod.PLATFORM_FW_DATA] is ArgPlatformFwData
+    assert ra.METHOD[RpcMethod.PLATFORM_FW_VERIFY] is ArgPlatformFwVerify
+    assert RpcMethod.PLATFORM_FW_COMMIT not in ra.METHOD
+
+
 def test_method_arg_association_covers_all_commandable_methods():
     """NON-tautological: partition the WHOLE RpcMethod enum into
     payloadless vs arg-carrying and freeze it, rather than hand-copying
@@ -206,6 +257,7 @@ def test_method_arg_association_covers_all_commandable_methods():
         RpcMethod.NOP, RpcMethod.TIME_OF_DAY_QUERY,
         RpcMethod.BB_RELOAD, RpcMethod.BB_RESET, RpcMethod.BB_CALIBRATE_LOC,
         RpcMethod.GET_AXIS_VERSIONS, RpcMethod.TILT_READ, RpcMethod.STATE_READ,
+        RpcMethod.PLATFORM_FW_COMMIT,
     }
     have = set(ra.METHOD.keys())
     missing = {m for m in RpcMethod if m not in payloadless and m not in have}

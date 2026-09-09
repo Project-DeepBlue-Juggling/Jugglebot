@@ -81,6 +81,10 @@ namespace RpcMethod {
   constexpr uint16_t STATE_WRITE = 0x0053u;  // Relay: write Platform-Teensy RobotState (read-modify-write via cache)
   constexpr uint16_t HAND_TRAJ_CMD = 0x0054u;  // Hand traj + smooth-move (byte-0 discriminator → 0x6D0)
   constexpr uint16_t HAND_SOURCE_SET = 0x0055u;  // Switch the hand-mastery latch (0=LEGACY_STROKE, 1=STREAMED; gated, bridge-local)
+  constexpr uint16_t PLATFORM_FW_BEGIN = 0x0056u;  // Platform FW-over-CAN: declare image length (relay → 0x6F0 op 0x01)
+  constexpr uint16_t PLATFORM_FW_DATA = 0x0057u;  // Platform FW-over-CAN: one image chunk, 1..5 bytes (relay → 0x6F0 op 0x02)
+  constexpr uint16_t PLATFORM_FW_VERIFY = 0x0058u;  // Platform FW-over-CAN: CRC-32 over the staged image (relay → 0x6F0 op 0x03)
+  constexpr uint16_t PLATFORM_FW_COMMIT = 0x0059u;  // Platform FW-over-CAN: apply the staged image + reboot (relay → 0x6F0 op 0x04)
 }
 namespace RpcStatus {
   constexpr uint16_t OK = 0x0000u;  // Success
@@ -578,6 +582,23 @@ struct ArgHandSource {
   uint8_t source;  // 0 = LEGACY_STROKE (Platform-Teensy stroke engine), 1 = STREAMED (bridge 500 Hz hand lane)
 };
 static_assert(sizeof(ArgHandSource) == 1, "ArgHandSource size drift");
+// ArgPlatformFwBegin (PLATFORM_FW_BEGIN)
+struct ArgPlatformFwBegin {
+  uint32_t image_len;  // Total image length in bytes
+};
+static_assert(sizeof(ArgPlatformFwBegin) == 4, "ArgPlatformFwBegin size drift");
+// ArgPlatformFwData (PLATFORM_FW_DATA)
+struct ArgPlatformFwData {
+  uint16_t seq;  // Chunk sequence number (0-based)
+  uint8_t n;  // Valid payload bytes in this chunk, 1..5
+  uint8_t payload[5];  // Image bytes; only payload[0..n) reach the CAN frame
+};
+static_assert(sizeof(ArgPlatformFwData) == 8, "ArgPlatformFwData size drift");
+// ArgPlatformFwVerify (PLATFORM_FW_VERIFY)
+struct ArgPlatformFwVerify {
+  uint32_t crc32;  // CRC-32 over the whole staged image
+};
+static_assert(sizeof(ArgPlatformFwVerify) == 4, "ArgPlatformFwVerify size drift");
 #pragma pack(pop)
 constexpr uint16_t ARG_AXIS_STATE_SIZE = 5u;
 constexpr uint16_t ARG_CONTROLLER_MODE_SIZE = 9u;
@@ -594,6 +615,9 @@ constexpr uint16_t ARG_BB_THROW_SIZE = 16u;
 constexpr uint16_t ARG_ROBOT_STATE_SIZE = 10u;
 constexpr uint16_t ARG_HAND_TRAJ_SIZE = 8u;
 constexpr uint16_t ARG_HAND_SOURCE_SIZE = 1u;
+constexpr uint16_t ARG_PLATFORM_FW_BEGIN_SIZE = 4u;
+constexpr uint16_t ARG_PLATFORM_FW_DATA_SIZE = 8u;
+constexpr uint16_t ARG_PLATFORM_FW_VERIFY_SIZE = 4u;
 }  // namespace RpcArgs
 
 // ── Hand axis-6 allow-table ──────────────────────────────────────────────

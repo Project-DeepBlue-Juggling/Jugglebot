@@ -466,7 +466,8 @@ uint32_t can_cone_fwd_drops() { return s_cone_fwd_drops; }
 // ── Platform-Teensy relay-reply uplink ring ─────────────────────────
 // SPSC mirror of the cone ring: producer is on_jugglebot_rx (task_can_rx), consumer
 // is platform_uplink_step() on task_telem. The Platform Teensy answers a relay read
-// on the SAME arbitration id it was triggered on (0x6E0 RobotState, 0x7DE tilt), so
+// on the SAME arbitration id it was triggered on (0x6E0 RobotState, 0x7DE tilt) and
+// answers the 0x6F0 FW-update ops on 0x6F1 (2026-09-09), so
 // every CAN3 frame whose id is a Platform reply id is copied here verbatim and
 // uplinked as a PLATFORM_FRAME for the host to decode + correlate. Replies are
 // low-rate (one per operator relay read), so a small ring is ample; sustained
@@ -537,8 +538,9 @@ bool can_hand_cmd_echo_pop(HandCmdEchoRec& out) {
 // is_platform_reply_id() is an inline classifier in can_buses.h (shared with the
 // native harness without compiling this TU host-side).
 
-// CAN3 Jugglebot core: a Platform-Teensy relay reply (0x6E0 / 0x7DE) is forwarded
-// verbatim to the host via the relay ring; every other frame is a leg/hand ODrive
+// CAN3 Jugglebot core: a Platform-Teensy relay reply (0x6E0 / 0x7DE, and 0x6F1
+// FW_UPDATE_REPLY since 2026-09-09) is forwarded verbatim to the host via the
+// relay ring; every other frame is a leg/hand ODrive
 // frame and decodes into the cache. (axis_of(0x6E0)=55 >= NUM_AXES, so before this
 // filter the relay replies were silently counted as decode_bad_axis and dropped.)
 static void on_jugglebot_rx(const CAN_message_t& msg) {

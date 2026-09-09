@@ -274,3 +274,106 @@ policy-only change with the same gating (`jugglebot_commands_allowed`) the legs 
 - [2026-06-29-canbridge-phase0-native-harness.md](2026-06-29-canbridge-phase0-native-harness.md) — the reserved wire ids + the growable HAL injection hook this phase builds on.
 - [2026-06-27-can-node-teensy-parity-audit.md](2026-06-27-can-node-teensy-parity-audit.md) — the hand/tilt/cold-start GAP rows this phase's conduit re-closes.
 - Harness usage + scope: [`tests/firmware/native/README.md`](../tests/firmware/native/README.md).
+
+---
+
+## Addendum 2026-09-09 — firmware update over the relay seam (BUILT, NOT FLASHED)
+
+**Why.** The Platform Teensy's micro-USB connector is damaged (found while flashing FW 4 for the UH-7a
+sitting; replacing the board is impractical). The Teensy 4.0's bootloader chip only speaks USB, so the
+one non-USB path is the running application rewriting its own flash — the FlasherX approach — with the
+bytes arriving over CAN through this entry's typed relay. The owner's decision: one last USB flash, then
+every Platform update goes over CAN. This addendum extends the seam; nothing in Phase 1's scope changes,
+so the entry's status stands and the new capability's own status is **built and never exercised on a
+board**.
+
+**Wire contract (all little-endian).** Two new Platform ids in `config/protocol_config.yaml`:
+`FW_UPDATE_CMD 0x6F0` (host → Platform, via the bridge) and `FW_UPDATE_REPLY 0x6F1` (Platform → host,
+uplinked verbatim as a `PLATFORM_FRAME` — `is_platform_reply_id()` in `can_buses.h` classifies three
+ids now). Four typed RPCs, `0x0056..0x0059`, additive after `HAND_SOURCE_SET` (PROTOCOL_VERSION stays 6;
+the wire-layout digest in `tests/firmware/test_udp_protocol_xlang.py` re-pinned):
+
+| RPC | args | CAN 0x6F0 frame |
+|---|---|---|
+| `PLATFORM_FW_BEGIN` | `image_len u32` | `[0x01][len @1..4][0,0,0]` |
+| `PLATFORM_FW_DATA` | `seq u16, n u8 (1..5), payload[5]` | `[0x02][seq @1..2][payload @3..3+n)`, dlc 3+n |
+| `PLATFORM_FW_VERIFY` | `crc32 u32` | `[0x03][crc @1..4][0,0,0]` |
+| `PLATFORM_FW_COMMIT` | — | `[0x04][0×7]` |
+
+Reply frames (0x6F1, dlc 8): `[opcode][status][seq u16][detail u32]`; status `0 OK, 1 BUSY, 2 BAD_STATE,
+3 BAD_SEQ, 4 TOO_BIG (detail = staging capacity), 5 BAD_CRC (detail = computed crc), 6 BAD_IDENTITY,
+7 FLASH_ERR`. DATA is strictly in order; the board ACKs every 16th accepted frame and the last, and
+NAKs `BAD_SEQ` with the *expected* seq whenever a frame is out of order — a 4 KB sector flush (erase
+45 ms typ, 400 ms worst) can overrun the board's 256-frame RX queue, so BAD_SEQ bursts are the designed
+recovery and the host rewinds. One CAN frame per RPC by design (~25 k RPCs for a 120 KB image, under a
+minute); no bulk framing, no bridge-side queue.
+
+**Bridge (FW 19, `canbridge_config.h`).** `platform_relay.{h,cpp}`: `platform_fw_begin/data/verify/commit`
+encode the frame from typed args (the host never supplies a raw frame — the seam's rule) and go through a
+`send_fw_update()` that refuses `ERR_REJECTED` while `fault_mpc_active()` (the setpoint output armed —
+the `HAND_SOURCE_SET` condition, passed in from `rpc.cpp` so the relay stays fault-machine-free for the
+native harness) ahead of `send_gated()`'s `ERR_BUS_DOWN`; `n` outside 1..5 is `ERR_BAD_ARGS` before the
+gate. `rpc.h` gained the three `using` declarations; `tests/firmware/native/test_rpc_dispatch.cpp` the
+four link stubs. Nothing on the interp, fault machine or leg path changes.
+
+**Platform (FW 5, `Teensy_code_platform.ino` § FwUpdate, ~460 lines, no vendored library).** State
+machine `IDLE →(BEGIN, gated on the stroke engine idle: `!trajActive && nextIdx >= packedMsgs.size()`)→
+RECEIVING →(VERIFY passes)→ VERIFIED →(COMMIT)→ copy + reboot`; BEGIN resets from anywhere; an abandoned
+session times out after 60 s; while a session is open, 0x6D0 trajectory arming is refused (a flush stalls
+the loop for tens of ms and the streamer's frames are wall-clock-timed). Staging region: from
+`align_up(0x60000000 + _flashimagelen, 4 KB)` (`0x6001E000` on this build) to the EEPROM-emulation
+reserve `0x601F0000` — 1864 KB for a 120 KB image; TOO_BIG at BEGIN if it would not fit. DATA bytes
+accumulate in a 4 KB RAM sector buffer; each full sector is erased + written with the Teensy core's
+`eepromemu_flash_erase_sector` / `eepromemu_flash_write` and **read back (`memcmp`) — the primitives
+return `void`, so the read-back is the only way a failed erase or write is detectable (`FLASH_ERR`)**.
+VERIFY flushes the tail, computes CRC-32 over the staged bytes and scans them for the `FW_NAME` string
+`jugglebot-platform` (present exactly once in a genuine image at offset 110812 of 122880; absent from
+any can-bridge image, so a Teensy 4.1 hex is refused). COMMIT (also `BUSY` unless idle) replies, lets
+the reply drain, then copies low-to-high sector by sector with interrupts disabled — re-disabled after
+every primitive call, because the core's primitives re-enable on exit — each sector read into RAM before
+its destination is touched (QSPI cannot serve an AHB read during an erase or page-program), then
+`SCB_AIRCR = 0x05FA0004`. Low-to-high with the staging region above the running image is the overlap
+invariant: a longer new image only ever overwrites source bytes already copied. All code on Teensy 4.x
+runs from ITCM and `.rodata` sits in DTCM, so nothing on the commit path reads flash.
+
+**Host.** `teensy_link/rpc_args.py`: `encode_platform_fw_*`, `decode_platform_fw_reply`, the status
+table, a wrap-safe `platform_fw_rewind_frame`; `teensy_link/rpc.py`: `PlatformFrameWaiter` (the node's
+`_await_platform_reply` pattern for non-ROS callers); `teensy_link/protocol.py` re-exports the three
+generated arg classes. The operator verb lives on the existing bridge tool:
+
+```bash
+python tools/teensy_link_bridge.py --fw-update --dry-run          # parse + identity + CRC, no network
+python tools/teensy_link_bridge.py --fw-update /path/to/firmware.hex
+```
+
+It refuses a hex whose base is not `0x60000000` or that lacks the identity string, refuses to start while
+the bridge heartbeat reports the setpoint output armed, streams 16-frame windows and rewinds on BAD_SEQ,
+and prints the Platform's FW version before and after (STATE_READ, ~3 s after COMMIT). Dry-run against
+the built image: 122880 B, crc32 `0x50EDD638`, identity OK.
+
+**Pins and receipts (2026-09-09, both boards BUILT, NEVER FLASHED).** Bridge: `pio run -e teensy41` →
+`firmware.hex` md5 `116b8e08241d4214bbd8a55b1b9744ca`, 769144 B, reproducible across two builds;
+`EXPECTED_BRIDGE_FW_VERSION` 19. Platform: `pio run -e teensy40` (clean) → md5
+`06b2657e4399e055efea7348a22668b6`, 345707 B; `PLATFORM_FW_VERSION_EXPECTED` 5 (the operator flashes the
+Platform from the Arduino IDE, a different binary with the same source — the staging bounds are
+computed at runtime, so they are right for either build).
+
+**The two things to know before the one USB flash.** (1) FW 5 is the first image that can *receive* an
+update, so FW 5 itself must go in over USB — and it should be the last USB flash: the geometry branch's
+Platform image also calls itself FW 5 (the stroke re-base) and must become FW 6 *carrying this
+receiver* at merge, or the merged image cannot be flashed at all. (2) The final staged→program copy is
+the one unrecoverable window — sector 0 holds the FlexSPI config block and the IVT, and a power cut
+there leaves a board that only USB can recover — so never run an update on a doubtful supply, and the
+bridge's own USB port stays the bridge's path.
+
+**Verification (2026-09-09).** `pytest tests/teensy_link/ tests/firmware/test_bridge_fw_version_xref.py
+tests/firmware/test_platform_fw_version_xref.py -q` → 362 passed; `pytest tests/firmware/ -q` at the
+bridge agent's hand-off → 409 passed / 5 failed, all five the version pins that the host half then moved.
+Full gate over the finished tree (`./run_tests.sh --full`, 2026-09-09, log
+`temp/logs/gate_20260909_uh7a_canflash.log`): parallel **6978 passed / 4 skipped / 2 xfailed in
+462.02 s**, serial 4 passed in 26.15 s, exit 0. Native harness: `python tests/firmware/native/build.py`
+→ all 15 binaries. A loopback smoke against a fake bridge peer exercised BEGIN → DATA with a forced
+BAD_SEQ mid-transfer (rewind confirmed) → VERIFY → COMMIT → version read 4 → 5, exit 0. **Not exercised
+on a board: the first CAN update is the sitting after the USB flash of FW 5 — run `--dry-run` first,
+then the real update with the setpoint output disarmed, and expect the `[boot] jugglebot-platform v5`
+banner to be the only receipt that the copy landed.**

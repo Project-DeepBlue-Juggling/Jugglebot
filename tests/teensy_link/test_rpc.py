@@ -17,6 +17,8 @@ from teensy_link import (
     TimeOfDayServer,
 )
 from teensy_link import protocol as p
+from teensy_link import rpc_args
+from teensy_link.rpc import PlatformFrameWaiter
 
 
 # Import the fake-teensy fixture
@@ -180,6 +182,80 @@ def test_inbound_rpc_handler_exception_returns_rejected(fake_teensy_and_client):
         assert resp_head.status == int(RpcStatus.ERR_REJECTED)
     finally:
         rpc_server.close()
+
+
+# ── Platform-Teensy relay reply correlation (PlatformFrameWaiter) ───────────
+# Same (can_id, dlc) technique teensy_bridge_node.py uses for TILT_READ/
+# STATE_READ, reused here for the Platform firmware-over-CAN update flow's
+# FW_UPDATE_REPLY (0x6F1) correlation.
+
+def test_platform_frame_waiter_receives_matching_reply(fake_teensy_and_client):
+    teensy, client = fake_teensy_and_client
+    waiter = PlatformFrameWaiter(client)
+    try:
+        can_id = 0x6F1
+        waiter.clear(can_id)
+        pf = p.PlatformFrame(t_bridge_us=0, can_id=can_id, dlc=8,
+                             data=(1, 0, 7, 0, 5, 0, 0, 0))
+        teensy.send_to_jetson(int(p.MsgType.PLATFORM_FRAME), pf.pack())
+        got = waiter.wait(can_id, expected_dlc=8, timeout=1.0)
+        assert got == bytes([1, 0, 7, 0, 5, 0, 0, 0])
+    finally:
+        waiter.close()
+
+
+def test_platform_frame_waiter_clear_drops_stale_reply(fake_teensy_and_client):
+    teensy, client = fake_teensy_and_client
+    waiter = PlatformFrameWaiter(client)
+    try:
+        can_id = 0x6E0
+        pf = p.PlatformFrame(t_bridge_us=0, can_id=can_id, dlc=8, data=(0,) * 8)
+        teensy.send_to_jetson(int(p.MsgType.PLATFORM_FRAME), pf.pack())
+        assert waiter.wait(can_id, expected_dlc=8, timeout=1.0) is not None
+        waiter.clear(can_id)
+        # No new frame sent — a short wait must time out, not return the stale one.
+        assert waiter.wait(can_id, expected_dlc=8, timeout=0.1) is None
+    finally:
+        waiter.close()
+
+
+# ── Platform firmware-over-CAN: reply decoder + DATA-window rewind ──────────
+
+def test_platform_fw_reply_decoder_maps_status_to_name():
+    ok_reply = struct.pack('<BBHI', 2, rpc_args.PLATFORM_FW_STATUS_OK, 41, 128)
+    opcode, status, seq, detail = rpc_args.decode_platform_fw_reply(ok_reply)
+    assert (opcode, seq, detail) == (2, 41, 128)
+    assert rpc_args.PLATFORM_FW_STATUS_NAMES[status] == "OK"
+
+    bad_seq_reply = struct.pack('<BBHI', 2, rpc_args.PLATFORM_FW_STATUS_BAD_SEQ, 40, 0)
+    _, status, seq, _ = rpc_args.decode_platform_fw_reply(bad_seq_reply)
+    assert rpc_args.PLATFORM_FW_STATUS_NAMES[status] == "BAD_SEQ"
+    assert seq == 40
+
+
+def test_platform_fw_data_window_rewinds_on_bad_seq():
+    """One send-window boundary: the host has sent frames up to 48 (a whole
+    16-frame window), and a fake BAD_SEQ reply — the sector-flush-stall NAK
+    the firmware's wire contract documents — reports the board only accepted
+    up to frame 40. Decoding the reply and feeding it to the rewind helper
+    must land the host back at exactly the frame the board is waiting for."""
+    reply = struct.pack('<BBHI', 2, rpc_args.PLATFORM_FW_STATUS_BAD_SEQ, 40, 0)
+    _, status, expected_seq, _ = rpc_args.decode_platform_fw_reply(reply)
+    assert status == rpc_args.PLATFORM_FW_STATUS_BAD_SEQ
+    new_frame_idx = rpc_args.platform_fw_rewind_frame(current_frame_idx=48,
+                                                       expected_seq=expected_seq)
+    assert new_frame_idx == 40
+
+
+def test_platform_fw_rewind_frame_across_seq_wrap():
+    """seq wraps mod 65536 (65536 % 16 == 0, so the ACK cadence is continuous
+    across the wrap, per the firmware's own wire-contract note); the rewind
+    must resolve correctly even when the window straddled the wrap. Host sent
+    frames ...65534, 65535, 0, 1, 2, 3 (current_frame_idx=65540, absolute,
+    never wraps); the board wants frame 65534 (wire seq 65534) back."""
+    new_frame_idx = rpc_args.platform_fw_rewind_frame(current_frame_idx=65540,
+                                                       expected_seq=65534)
+    assert new_frame_idx == 65534
 
 
 # ── [8] non-idempotent methods are never re-dispatched (firmware has no dedup) ──

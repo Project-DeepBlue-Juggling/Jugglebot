@@ -92,6 +92,11 @@ can_ids:
     STATE_UPDATE:   0x6E0
     TILT_READING:   0x7DE
     TRAFFIC_REPORT: 0x7DF
+    # Over-CAN firmware update (2026-09-09): host -> Platform via the bridge's typed
+    # relay on FW_UPDATE_CMD; the Platform answers on FW_UPDATE_REPLY, which the
+    # bridge uplinks verbatim as a PLATFORM_FRAME. The USB port is damaged.
+    FW_UPDATE_CMD:   0x6F0
+    FW_UPDATE_REPLY: 0x6F1
 
   # Ball Butler Teensy <-> Host
   ball_butler:

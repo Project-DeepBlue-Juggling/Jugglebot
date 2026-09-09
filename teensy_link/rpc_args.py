@@ -35,6 +35,9 @@ from .protocol import (
     ArgHandTraj,
     ArgHandSource,
     ResultAxisVersions,
+    ArgPlatformFwBegin,
+    ArgPlatformFwData,
+    ArgPlatformFwVerify,
 )
 
 RpcMethod = p.RpcMethod
@@ -58,6 +61,15 @@ __all__ = [
     "encode_bb_calibrate_loc",
     "decode_time_of_day_result", "ResultAxisVersions",
     "encode_axis_versions_result", "decode_axis_versions_result",
+    # Platform firmware-over-CAN (2026-09-09)
+    "encode_platform_fw_begin", "encode_platform_fw_data",
+    "encode_platform_fw_verify", "encode_platform_fw_commit",
+    "decode_platform_fw_reply", "platform_fw_rewind_frame",
+    "PLATFORM_FW_STATUS_NAMES",
+    "PLATFORM_FW_STATUS_OK", "PLATFORM_FW_STATUS_BUSY",
+    "PLATFORM_FW_STATUS_BAD_STATE", "PLATFORM_FW_STATUS_BAD_SEQ",
+    "PLATFORM_FW_STATUS_TOO_BIG", "PLATFORM_FW_STATUS_BAD_CRC",
+    "PLATFORM_FW_STATUS_BAD_IDENTITY", "PLATFORM_FW_STATUS_FLASH_ERR",
     # method association
     "METHOD",
 ]
@@ -339,7 +351,13 @@ PLATFORM_FW_VERSION_UNVERSIONED = 0
 #: compensating margin widening, so SMOOTH_MOVE_POS_CEIL_REV moves too: 10.60 ->
 #: 10.501 rev, and smoothMoveMaxDuration() 0.78964 -> 0.78602 s. A board on 3 emits
 #: preludes past the new ceiling.
-PLATFORM_FW_VERSION_EXPECTED = 4
+#: 5 (2026-09-09) = FIRMWARE UPDATE OVER CAN: the board's USB port is damaged, so
+#: every image after this one has to arrive over the 0x6F0/0x6F1 seam (see the
+#: PLATFORM_FW_* encoders below) instead of a USB reflash. No behavioural change
+#: to the flight code — a board on 4 flies identically — it simply has no
+#: 0x6F0 listener yet, so it cannot be handed its own successor and the one
+#: flash to 5 must happen over USB.
+PLATFORM_FW_VERSION_EXPECTED = 5
 
 
 def decode_platform_fw_version(data: bytes) -> int:
@@ -360,6 +378,102 @@ def decode_platform_fw_version(data: bytes) -> int:
     if len(data) < 7:
         return PLATFORM_FW_VERSION_UNVERSIONED
     return int.from_bytes(data[5:7], "little")
+
+
+# ── Platform firmware-over-CAN (2026-09-09) ───────────────────────────────────
+# The Platform Teensy's USB port is damaged, so every image after FW 5 arrives
+# over CAN through the relay seam: PLATFORM_FW_BEGIN/DATA/VERIFY/COMMIT ride
+# 0x6F0 (host -> board), and the board answers every op on 0x6F1 (dlc 8), which
+# the bridge forwards verbatim as a PLATFORM_FRAME — the SAME (can_id, dlc)
+# correlation TILT_READ/STATE_READ already use (see PlatformFrameWaiter in
+# teensy_link/rpc.py). Wire contract (little-endian throughout) is the single
+# document in Teensy_code_platform.ino's "FIRMWARE UPDATE OVER CAN" header
+# comment; this module mirrors it, never re-derives it.
+
+def encode_platform_fw_begin(image_len: int) -> bytes:
+    """PLATFORM_FW_BEGIN: declare the image length (bytes) about to be staged."""
+    return ArgPlatformFwBegin(image_len=int(image_len)).pack()
+
+
+def encode_platform_fw_data(seq: int, payload: bytes) -> bytes:
+    """PLATFORM_FW_DATA: one image chunk. ``seq`` counts DATA frames from 0 and
+    wraps mod 65536 (the receiver tracks the absolute byte offset separately, so
+    the wrap is invisible to the staged image). ``payload`` is 1..5 bytes —
+    refused HOST-SIDE outside that range (ValueError) so a malformed chunk never
+    reaches the wire; the firmware would ERR_BAD_ARGS the same call, but this is
+    the cheaper place to catch it. Short payloads are zero-padded to the fixed
+    5-byte wire slot; ``n`` (not the padding) tells the firmware how many of
+    those bytes are real."""
+    n = len(payload)
+    if not (1 <= n <= 5):
+        raise ValueError(f"platform fw data payload must be 1..5 bytes, got {n}")
+    padded = bytes(payload) + bytes(5 - n)
+    return ArgPlatformFwData(seq=int(seq) & 0xFFFF, n=n, payload=tuple(padded)).pack()
+
+
+def encode_platform_fw_verify(crc32: int) -> bytes:
+    """PLATFORM_FW_VERIFY: CRC-32 (zlib/``binascii.crc32`` flavour) over the
+    whole staged image, computed host-side over the same bytes it sent."""
+    return ArgPlatformFwVerify(crc32=int(crc32) & 0xFFFFFFFF).pack()
+
+
+def encode_platform_fw_commit() -> bytes:
+    """PLATFORM_FW_COMMIT: copy the verified staged image over program flash and
+    reboot. Payloadless — matches the BB_RELOAD/RESET/CALIBRATE_LOC NOP shape."""
+    return b""
+
+
+#: Status codes, byte 1 of the 0x6F1 reply — mirrors
+#: Teensy_code_platform.ino FwUpdate::ST_* VERBATIM (never renumber, only
+#: append) and Teensy_code_canbridge/rpc.cpp's RpcStatus is a SEPARATE code
+#: space: these travel inside the RPC result blob, once the RPC itself has
+#: already returned OK.
+PLATFORM_FW_STATUS_OK = 0
+PLATFORM_FW_STATUS_BUSY = 1            # trajectory engine not idle (BEGIN, COMMIT)
+PLATFORM_FW_STATUS_BAD_STATE = 2       # no session open, wrong phase, or malformed dlc
+PLATFORM_FW_STATUS_BAD_SEQ = 3         # out-of-order DATA; seq field = the expected seq
+PLATFORM_FW_STATUS_TOO_BIG = 4         # image_len > staging capacity, or DATA past image_len
+PLATFORM_FW_STATUS_BAD_CRC = 5
+PLATFORM_FW_STATUS_BAD_IDENTITY = 6    # staged image is not a jugglebot-platform build
+PLATFORM_FW_STATUS_FLASH_ERR = 7       # staging write failed its read-back
+
+PLATFORM_FW_STATUS_NAMES = {
+    PLATFORM_FW_STATUS_OK: "OK",
+    PLATFORM_FW_STATUS_BUSY: "BUSY",
+    PLATFORM_FW_STATUS_BAD_STATE: "BAD_STATE",
+    PLATFORM_FW_STATUS_BAD_SEQ: "BAD_SEQ",
+    PLATFORM_FW_STATUS_TOO_BIG: "TOO_BIG",
+    PLATFORM_FW_STATUS_BAD_CRC: "BAD_CRC",
+    PLATFORM_FW_STATUS_BAD_IDENTITY: "BAD_IDENTITY",
+    PLATFORM_FW_STATUS_FLASH_ERR: "FLASH_ERR",
+}
+
+
+def decode_platform_fw_reply(data: bytes):
+    """Decode a FW_UPDATE_REPLY (0x6F1, dlc 8) frame:
+    ``[opcode][status][seq u16 LE][detail u32 LE]``. Returns
+    ``(opcode, status, seq, detail)`` as raw ints — the caller maps ``status``
+    via :data:`PLATFORM_FW_STATUS_NAMES`. ``seq`` is the last accepted DATA seq
+    on OK, or the EXPECTED seq on BAD_SEQ; ``detail`` is the staged byte count
+    (BEGIN/DATA), the computed CRC (VERIFY), or 0."""
+    if len(data) < 8:
+        raise ValueError(f"platform fw reply frame too short ({len(data)} bytes, need 8)")
+    opcode, status, seq, detail = struct.unpack('<BBHI', bytes(data[:8]))
+    return opcode, status, seq, detail
+
+
+def platform_fw_rewind_frame(current_frame_idx: int, expected_seq: int) -> int:
+    """On a BAD_SEQ reply, return the absolute DATA frame index to resume
+    sending from. ``current_frame_idx`` is the host's own unwrapped frame
+    counter (never wraps — only the wire ``seq`` does, mod 65536); the board's
+    ``expected_seq`` is mod-65536, so recovering the absolute index means
+    finding the frame at or before ``current_frame_idx`` whose wire seq matches.
+    A NAK only ever looks back one or two windows (16-32 frames, per the
+    ACK-every-16th cadence), so the true rewind distance is always tiny —
+    assuming it is under 32768 frames (half the wrap period) resolves the
+    ambiguity correctly with enormous margin, including across a seq wrap."""
+    delta = (int(current_frame_idx) - int(expected_seq)) & 0xFFFF
+    return int(current_frame_idx) - delta
 
 
 # ── Can-bridge firmware identity (BRIDGE_IDENTITY 0x8E, fw_version) ───────────
@@ -512,7 +626,17 @@ def decode_platform_fw_version(data: bytes) -> int:
 #: symptom before the flash is the BRIDGE_FW_CHECK advisory. That makes a
 #: healthy link no evidence at all that FW 18 is aboard — read
 #: link_status/bridge_fw_version or the boot banner.
-EXPECTED_BRIDGE_FW_VERSION = 18
+#: 19 (2026-09-09) = the Platform firmware-over-CAN RELAY: four ADDITIVE
+#: RpcMethods (PLATFORM_FW_BEGIN/DATA/VERIFY/COMMIT) that the bridge turns into
+#: 0x6F0 frames (byte 0 = opcode) and answers via the existing PLATFORM_FRAME
+#: uplink of the board's 0x6F1 reply — see the PLATFORM_FW_* encoders and
+#: decode_platform_fw_reply above. NO WIRE CHANGE of any kind — no MsgType, no
+#: payload move, PROTOCOL_VERSION stays 6 — so an FW 18 board and an FW 19
+#: board are wire-identical and a host that predates these ids is NOT dark
+#: against either; what an FW 18 board does NOT have is the four methods, so
+#: it answers them with ERR_UNKNOWN_METHOD. Same as every wire-invisible bump
+#: before it: a healthy link is not evidence this build is aboard.
+EXPECTED_BRIDGE_FW_VERSION = 19
 
 
 # ── Ball Butler ─────────────────────────────────────────────────────────────
@@ -565,6 +689,10 @@ METHOD = {
     RpcMethod.STATE_WRITE: ArgRobotState,
     RpcMethod.HAND_TRAJ_CMD: ArgHandTraj,   # host builds the 8-byte 0x6D0 payload
     RpcMethod.HAND_SOURCE_SET: ArgHandSource,   # the FW 17 hand-mastery latch
+    RpcMethod.PLATFORM_FW_BEGIN: ArgPlatformFwBegin,
+    RpcMethod.PLATFORM_FW_DATA: ArgPlatformFwData,
+    RpcMethod.PLATFORM_FW_VERIFY: ArgPlatformFwVerify,
     # BB_RELOAD/RESET/CALIBRATE_LOC are payloadless — no entry (matches NOP).
     # TILT_READ/STATE_READ are payloadless too (reply arrives as a PLATFORM_FRAME).
+    # PLATFORM_FW_COMMIT is payloadless too — no entry (matches NOP).
 }

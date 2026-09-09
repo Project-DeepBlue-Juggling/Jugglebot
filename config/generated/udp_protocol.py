@@ -81,6 +81,10 @@ class RpcMethod(IntEnum):
     STATE_WRITE = 83  # Relay: write Platform-Teensy RobotState (read-modify-write via cache)
     HAND_TRAJ_CMD = 84  # Hand traj + smooth-move (byte-0 discriminator → 0x6D0)
     HAND_SOURCE_SET = 85  # Switch the hand-mastery latch (0=LEGACY_STROKE, 1=STREAMED; gated, bridge-local)
+    PLATFORM_FW_BEGIN = 86  # Platform FW-over-CAN: declare image length (relay → 0x6F0 op 0x01)
+    PLATFORM_FW_DATA = 87  # Platform FW-over-CAN: one image chunk, 1..5 bytes (relay → 0x6F0 op 0x02)
+    PLATFORM_FW_VERIFY = 88  # Platform FW-over-CAN: CRC-32 over the staged image (relay → 0x6F0 op 0x03)
+    PLATFORM_FW_COMMIT = 89  # Platform FW-over-CAN: apply the staged image + reboot (relay → 0x6F0 op 0x04)
 
 class RpcStatus(IntEnum):
     OK = 0  # Success
@@ -1068,6 +1072,65 @@ class ArgHandSource:
     @classmethod
     def unpack(cls, data: bytes) -> 'ArgHandSource':
         vals = _ARG_HAND_SOURCE_STRUCT.unpack(data[:1])
+        it = iter(vals)
+        return cls(next(it))
+
+# ArgPlatformFwBegin (PLATFORM_FW_BEGIN)
+ARG_PLATFORM_FW_BEGIN_FMT = '<I'
+ARG_PLATFORM_FW_BEGIN_SIZE = 4
+_ARG_PLATFORM_FW_BEGIN_STRUCT = struct.Struct(ARG_PLATFORM_FW_BEGIN_FMT)
+assert _ARG_PLATFORM_FW_BEGIN_STRUCT.size == 4
+
+@dataclass
+class ArgPlatformFwBegin:
+    image_len: int = 0
+
+    def pack(self) -> bytes:
+        return _ARG_PLATFORM_FW_BEGIN_STRUCT.pack(self.image_len)
+
+    @classmethod
+    def unpack(cls, data: bytes) -> 'ArgPlatformFwBegin':
+        vals = _ARG_PLATFORM_FW_BEGIN_STRUCT.unpack(data[:4])
+        it = iter(vals)
+        return cls(next(it))
+
+# ArgPlatformFwData (PLATFORM_FW_DATA)
+ARG_PLATFORM_FW_DATA_FMT = '<HBBBBBB'
+ARG_PLATFORM_FW_DATA_SIZE = 8
+_ARG_PLATFORM_FW_DATA_STRUCT = struct.Struct(ARG_PLATFORM_FW_DATA_FMT)
+assert _ARG_PLATFORM_FW_DATA_STRUCT.size == 8
+
+@dataclass
+class ArgPlatformFwData:
+    seq: int = 0
+    n: int = 0
+    payload: tuple = field(default_factory=lambda: (0,) * 5)
+
+    def pack(self) -> bytes:
+        return _ARG_PLATFORM_FW_DATA_STRUCT.pack(self.seq, self.n, *self.payload)
+
+    @classmethod
+    def unpack(cls, data: bytes) -> 'ArgPlatformFwData':
+        vals = _ARG_PLATFORM_FW_DATA_STRUCT.unpack(data[:8])
+        it = iter(vals)
+        return cls(next(it), next(it), tuple(next(it) for _ in range(5)))
+
+# ArgPlatformFwVerify (PLATFORM_FW_VERIFY)
+ARG_PLATFORM_FW_VERIFY_FMT = '<I'
+ARG_PLATFORM_FW_VERIFY_SIZE = 4
+_ARG_PLATFORM_FW_VERIFY_STRUCT = struct.Struct(ARG_PLATFORM_FW_VERIFY_FMT)
+assert _ARG_PLATFORM_FW_VERIFY_STRUCT.size == 4
+
+@dataclass
+class ArgPlatformFwVerify:
+    crc32: int = 0
+
+    def pack(self) -> bytes:
+        return _ARG_PLATFORM_FW_VERIFY_STRUCT.pack(self.crc32)
+
+    @classmethod
+    def unpack(cls, data: bytes) -> 'ArgPlatformFwVerify':
+        vals = _ARG_PLATFORM_FW_VERIFY_STRUCT.unpack(data[:4])
         it = iter(vals)
         return cls(next(it))
 
