@@ -866,3 +866,35 @@ firmware-update work of the relay-seam entry's 2026-09-09 addendum.
 **Not flown.** The re-fly is the sitting's own `throw_delay 1.0 / dwell 3.0 / num_throws 3` first —
 expect one `release ADOPTED … +0.9 s` line and a `cycle installed … 171 knots` at ~1.1–1.2 s — then
 `dwell 1.5`.
+
+### Second sitting, 2026-09-09 evening — the hand was IDLE for the whole session
+
+Bridge FW 19 and Platform FW 5 flashed (the bridge over USB, the Platform's last USB flash), `colcon build`,
+five goals at 18:53–18:56: `REJECTED_HAND_SOURCE`, then lifts refused / `HAND_BELOW_FLOOR`, then
+`REJECTED_HAND_NOT_PARKED` twice, then a lift that "ran but the hand is STILL 2.0 mm below the floor". The
+bag (`rosbags/2026-09-09_18-53-12`) says why in one field: `/robot_state.motor_states[6].current_state`
+was **1 (IDLE)** from 18:53:25 to the end while the six legs sat at 8; the hand's `iq` fields froze at the
+homing-stall values (−9.10 / −9.35 A) the moment it went IDLE; every position change afterwards is a step
+with `pos_cmd = 0` (the cup being moved by hand), and the one streamed command the session did issue
+(18:55:54, 0.284 → 0.316 rev) produced no motion. Not a FW 19 / FW 5 defect — the sequence:
+
+1. The Platform reflash reset its cold-start state (`is_homed=0`), so the bridge homed all seven axes;
+   homing leaves axis 6 IDLE by design (`leg_homing.cpp`).
+2. The bridge reflash reset the `hand_source` latch to its boot default LEGACY.
+3. The output was armed at 18:53:46 with the latch LEGACY. On the streamed path the ONLY thing that puts
+   the hand into CLOSED_LOOP is the arm fold under a STREAMED latch (`_arm_setpoint_output_locked` (c2)) —
+   both working sessions today show axis 6 going 1 → 8 at the exact second of `mpc_active set to 1`
+   (14:03:06, 18:40:29), with the latch already STREAMED from the morning. Tonight the arm skipped the hand.
+4. Goal 1 (18:53:52) was refused `REJECTED_HAND_SOURCE`: the firmware refuses a latch SWITCH while armed.
+   The latch was then switched anyway (how is an open question — the output never disarmed per
+   `/link_status`), and from goal 2 on the session's idempotent re-assert answered OK against an IDLE hand:
+   nothing on the path checked the axis state.
+
+**Fix (fail-closed, at the node, where the axis state lives):** `_svc_set_hand_source` refuses a STREAMED
+assert while the output is armed unless axis 6 reports CLOSED_LOOP, naming the recovery (deactivate,
+keep the latch, re-arm). Test `test_set_hand_source_streamed_while_armed_refuses_an_idle_hand`. Runsheet
+step 5 now says the latch resets on every bridge reboot and must precede arming. **Open:** the two lift
+refusals recurred (`LIMIT_JERK 120151` on a hand-only lift; `HAND_STROKE −0.007 outside [−0.007, …] at
+t=0.006 s` — a rounding hair below the seed, a gate without tolerance at its own lower bound) — with the
+hand IDLE they were moot tonight, but they refused the 14:29 session's lift too and need their own probe.
+Also open: how the latch flipped while armed.

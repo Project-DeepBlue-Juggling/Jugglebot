@@ -71,6 +71,17 @@ cd ~/Desktop/Jugglebot
 python3 tests/hardware/hand_stream_bench.py --source-only streamed
 ```
 
+⚠ **After ANY can-bridge reflash or reboot the latch is LEGACY again** (the boot
+default) — redo this step **before** `activate`/arming, every time. On the
+streamed path the hand ODrive is put into CLOSED_LOOP by the ARM under a
+STREAMED latch and by nothing else, so "arm, then latch" leaves the hand IDLE:
+the second 2026-09-09 sitting ran three minutes of `REJECTED_HAND_NOT_PARKED`
+and `HAND_BELOW_FLOOR` while every streamed setpoint landed on an ODrive that
+ignored it (the cup only moved when pushed by hand). Since 2026-09-09 the
+session refuses that state by name (`hand_source → STREAMED REFUSED: … not in
+CLOSED_LOOP …`): deactivate, keep the latch STREAMED, re-arm. Before the first
+goal, `/robot_state` must show `motor_states[6].current_state == 8`.
+
 **6. Start the console capture and leave it running all sitting.**
 ```bash
 mkdir -p ~/Desktop/Jugglebot/temp/logs
@@ -560,6 +571,7 @@ UH-7a gate in it at all.
 | `REJECTED_BEAT_TOO_SHORT(dwell … < unified chain floor (the next cycle's lead) 0.800 s …)` | The beat leaves the next cycle no time to reach its announcement. Refused at acceptance — **nothing was armed, lifted or commanded** | Raise `dwell_time_s` to at least **0.800** (and mind the legacy floor above it), or raise `throw_height_m` for a longer flight. The message quotes both requirements and says which one bound |
 | `REJECTED_THROW_DELAY(throw_delay … < …)` | The session's own delay floor (the kind-0 dispatch budget at this speed + the pre-dispatch budget): cycle 1 runs on `now + throw_delay_s` only until its LAUNCH answers, and that placeholder has to outlive the pre-launch ladder. The 2026-09-07 `unified cycle-1 floor 0.866 s` refusal no longer exists — cycle 1 adopts the plan's release (2026-09-09) | Raise `throw_delay_s` to the number quoted (**0.464 s** at this rung's flight) — early costs nothing |
 | `unified cycle 1: release ADOPTED from the plan, +X.XXX s from the derived schedule (plan N ms)` (INFO, not a refusal) | The LAUNCH's solve took longer than `throw_delay_s` allowed for and the FSM moved its schedule to the plan's instant — the ball leaves X s later than the metronome implied. Expected at `throw_delay 1.0` with a 3.6 s beat (+0.9 s at a 1.15 s solve) | Nothing. A large `plan N ms` (over ~1.5 s at this beat) says the box is busy — check `load1` on the `cycle installed` line |
+| `REJECTED_HAND_SOURCE(… the latch is STREAMED and the setpoint output is ARMED, but the hand ODrive (axis 6) is not in CLOSED_LOOP (axis_state=1) …)` | The latch was switched to STREAMED **after** the output was armed (a bridge reflash resets it to LEGACY), so the arm never energised the hand; every streamed setpoint would be ignored | Deactivate, leave the latch STREAMED, re-arm; confirm `/robot_state` axis 6 `current_state == 8` |
 | `REJECTED_CYCLE_PLAN(CHAIN_PAST: the chained release was … s ago …)` | **The beat is not wrong; the cycle was late.** This cycle spun up after its ball had already left, so there was nothing left to announce | Look at the *previous* cycle's verdict and settle times, not at `dwell_time_s`. Send me the line and the two cycles around it |
 | `STOPPED_CHAIN_REFUSED(<the planner's own refusal>)` | **Expected, not a fault.** The planner refused the next STEADY window, the fall-back LANDING installed instead, the ball was caught and the machine settled — and the session then STOPPED rather than quietly carrying on at a longer beat. You will see `unified ring TRUNCATED` first, then exactly one more throw | **Raise `dwell_time_s` and re-run** (or the session limits if the refusal names `LIMIT_*`). The throws before the stop are good data — the point of stopping is that they are all at the SAME beat |
 | `STOPPED_CHAIN_LOST(NO_WINDOW: STEADY: … \| LANDING: … — held …)` | Both windows were refused (or the planner never answered) and **the machine was HELD**. The cycle's own catch still counts | **Read the hold verdict at the end of the string first.** Anything other than a clean hold means a stroke may still be coming — treat the machine as moving. Send me the whole line |

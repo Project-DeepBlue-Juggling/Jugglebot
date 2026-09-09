@@ -6644,6 +6644,34 @@ class TeensyBridgeNode(Node):
             streamed = bool(req.data)
             ok, m, _ = self.teensy_hand_source_set(streamed)
             mode = 'STREAMED' if streamed else 'LEGACY_STROKE'
+            if ok and streamed and self._mpc_active:
+                # ── Latch STREAMED and output ARMED: is the hand energised?
+                # (2026-09-09, second UH-7a sitting.) The firmware's gate refuses
+                # a SWITCH while armed, so an OK here is the idempotent re-assert
+                # a unified session makes at start — and it says nothing about
+                # axis 6. On the streamed path the hand is put into CLOSED_LOOP
+                # by the ARM fold under a STREAMED latch (c2) and by nothing
+                # else; a bridge reflash resets the latch to LEGACY, so "arm,
+                # then latch" leaves the hand IDLE and every streamed setpoint
+                # lands on an ODrive that ignores it — no fault, no motion,
+                # three minutes of REJECTED_HAND_NOT_PARKED / HAND_BELOW_FLOOR
+                # against a cup the operator was moving by hand. Fail closed
+                # here, where the axis state lives.
+                with self._lock:
+                    d = self._latest_diag.get(_HAND_AXIS)
+                state = None if d is None else int(d.axis_state)
+                if state != _AXIS_STATE_CLOSED_LOOP:
+                    res.success = False
+                    res.message = (
+                        f'hand_source → STREAMED REFUSED: the latch is STREAMED '
+                        f'and the setpoint output is ARMED, but the hand ODrive '
+                        f'(axis 6) is not in CLOSED_LOOP (axis_state='
+                        f'{"unknown" if state is None else state}) — the latch '
+                        f'was switched AFTER arming, so the arm never energised '
+                        f'the hand and every streamed setpoint is being ignored. '
+                        f'Recover: deactivate (disarm), keep the latch STREAMED, '
+                        f're-arm — the arm path puts the hand in CLOSED_LOOP')
+                    return res
             res.success = ok
             res.message = (f'hand_source → {mode}' if ok else
                            f'hand_source → {mode} REFUSED: {m} (the firmware '

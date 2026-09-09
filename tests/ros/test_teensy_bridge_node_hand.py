@@ -384,3 +384,41 @@ def test_set_hand_source_firmware_refusal_is_named():
         assert 'rest position' in out.message
     finally:
         _teardown(teensy, client, node)
+
+
+# ── set_hand_source × an IDLE hand (2026-09-09, second UH-7a sitting) ─────────
+
+def test_set_hand_source_streamed_while_armed_refuses_an_idle_hand():
+    """2026-09-09 (second UH-7a sitting): a bridge reflash resets the latch to
+    LEGACY; the output was armed BEFORE the latch was switched, so the arm fold
+    never energised axis 6 and the session ran three minutes of streamed
+    setpoints into an IDLE ODrive — no fault, no motion. The firmware's gate
+    only refuses a SWITCH while armed; the idempotent re-assert a session makes
+    at start answered OK. The node owns the axis state, so it fails closed."""
+    teensy, client, node = _build_paired_node()
+    try:
+        _capture(teensy, RpcMethod.HAND_SOURCE_SET)
+        node._mpc_active = True
+        teensy.send_to_jetson(int(MsgType.DIAGNOSTIC),
+                              Diagnostic(axis_id=_HAND, axis_state=IDLE,
+                                         active_errors=0).pack())
+        assert _poll(lambda: _HAND in node._latest_diag
+                     and int(node._latest_diag[_HAND].axis_state) == IDLE)
+        res = types.SimpleNamespace(success=None, message='')
+        out = node._svc_set_hand_source(types.SimpleNamespace(data=True), res)
+        assert out.success is False
+        assert 'not in CLOSED_LOOP' in out.message and 're-arm' in out.message
+        # …and an energised hand passes the same assert.
+        teensy.send_to_jetson(int(MsgType.DIAGNOSTIC),
+                              Diagnostic(axis_id=_HAND, axis_state=CLOSED_LOOP,
+                                         active_errors=0).pack())
+        assert _poll(lambda: int(node._latest_diag[_HAND].axis_state) == CLOSED_LOOP)
+        res = types.SimpleNamespace(success=None, message='')
+        out = node._svc_set_hand_source(types.SimpleNamespace(data=True), res)
+        assert out.success is True, out.message
+        # A LEGACY assert while armed is the legacy path's own business.
+        res = types.SimpleNamespace(success=None, message='')
+        out = node._svc_set_hand_source(types.SimpleNamespace(data=False), res)
+        assert out.success is True, out.message
+    finally:
+        _teardown(teensy, client, node)
