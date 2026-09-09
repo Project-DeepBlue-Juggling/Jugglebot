@@ -439,10 +439,10 @@ triple of the final gate.
 
 | Cluster | Files | Importers | Rung |
 |---|---|---|---|
-| Offline juggle demo | `sim/juggle_demo.py`, `sim/juggle_planner/{juggle_optimizer,player,timeline,trajectory,pattern}.py` | each other only | R0 |
-| MPC-era sim sources | `controller/{scheduler,target,zmq_target,toss_motion_source,catch_optimizer}.py`, `controller/SCHEDULER_CONTRACT.md`, `sim/hand/`, `sim/input/` (trace `sim/main.py` first: it imports only `sim.plant` and `sim.viz.telemetry`) | `controller/__init__.py`, each other | R0 |
-| MPC telemetry analysis | `controller/telemetry.py`, `sim/analysis/`, `/diagnose` (trace: keep any rosbag path) | `sim/analysis`, `sim/juggle_demo.py` | R0, trace first |
-| Historical MPC docs | `docs/sim_mpc/` + its mkdocs nav | none | R0 |
+| Offline juggle demo | `sim/juggle_demo.py`, `sim/juggle_planner/{juggle_optimizer,player,timeline,trajectory,pattern}.py` | each other only | R0 — **done 2026-09-09** |
+| MPC-era sim sources | `controller/{scheduler,target,zmq_target,toss_motion_source,catch_optimizer}.py`, `controller/SCHEDULER_CONTRACT.md`, `sim/hand/`, `sim/input/` (trace `sim/main.py` first: it imports only `sim.plant` and `sim.viz.telemetry`) | `controller/__init__.py`, each other | R0 — **done 2026-09-09 (partial — census missed live importers; `controller/target.py`, `sim/hand/{ballistics,coordinator,planner,trajectory}.py`, `sim/input/{toss_loop,sim_control,scripted}.py` kept, see logbook)** |
+| MPC telemetry analysis | `controller/telemetry.py`, `sim/analysis/`, `/diagnose` (trace: keep any rosbag path) | `sim/analysis`, `sim/juggle_demo.py` | R0, trace first — **traced 2026-09-09, kept in full: `sim/analysis/diagnose.py` does live rosbag (MCAP) analysis integrated with MPC-CSV analysis; `controller/telemetry.py` required by the protected `sim/viz/telemetry.py` shim; see logbook** |
+| Historical MPC docs | `docs/sim_mpc/` + its mkdocs nav | none | R0 — **done 2026-09-09** |
 | Phase-runner workflows | `.claude/workflows/*.js` | none | **done** |
 | Stroke engine + latch | `Teensy_code_platform/Trajectory.h`, `hand_source.*`, `hand_ops.*`, `hand_stroke.py`, `SetHandTrajCmd.srv` | R1 list | R1 |
 | Learning stack | `toss_ilc.py`, `toss_trim.py`, `toss_cal.py`, `toss_record.py`, `ilc_fit*.py`, yaml artifacts | `reload_coordinator_node.py` | R3 |

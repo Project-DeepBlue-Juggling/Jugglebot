@@ -252,10 +252,13 @@ Caveats:
 - Never build ``ReferenceEvent`` lists directly without going through
   ``make_feasible_events`` or ``flat_target_to_events``.  If you do, you
   are opting out of K1–K6 and likely reintroducing a failure mode.
-- The scheduler (``controller/scheduler.py``) is a special case: it builds
-  its own quintics via ``_QuinticSegment`` but each one is verified against
-  K2/K3 at construction time via ``_verify_segment_feasibility``.  New
-  segment-building code in the scheduler MUST call that method too.
+- The scheduler (``controller/scheduler.py``) was a special case: it built
+  its own quintics via ``_QuinticSegment`` but verified each one against
+  K2/K3 at construction time via ``_verify_segment_feasibility``. Deleted
+  2026-09-09 (R0 dead-layer deletion, no non-test importer left after the
+  MPC chain removal) — this caveat is now historical, but the pattern (any
+  future segment-building code that bypasses ``make_feasible_events`` MUST
+  call an equivalent per-segment verification) still applies.
 - ``sample_ref_fn`` in ``controller/target.py`` (callback-based sampling)
   is NOT routed through ``make_feasible_events``.  Callers of it are
   responsible for feasibility; it exists for tests and prototype code
@@ -290,12 +293,16 @@ it returns the raw two-event proposal and **never calls `make_feasible_events`**
 so no peak-velocity (K2) or acceleration (K3) bound is applied. It emits a
 one-shot `DeprecationWarning` and nothing else.
 
-Two live call sites reach it:
+Live call sites (at the time this carve-out was recorded, 2026-08-21):
 
-* `sim/main.py:309` omits both arguments outright.
-* `controller/zmq_target.py:363` passes `v_max_mmps=self._v_max_mmps`, which can
-  be `None` at runtime — the warning fires from this line during the test suite,
-  which is how it was noticed.
+* `sim/main.py:309` omits both arguments outright — line number is stale
+  (file has since shortened); the omission itself is unverified against the
+  current tree.
+* `controller/zmq_target.py:363` passed `v_max_mmps=self._v_max_mmps`, which
+  could be `None` at runtime — the warning fired from this line during the
+  test suite, which is how it was noticed. **`zmq_target.py` was deleted
+  2026-09-09** (R0 dead-layer deletion, no non-test importer left after the
+  MPC chain removal) — this call site no longer exists.
 
 This is a carve-out in a landed contract, which the Engineering Philosophy says
 to resist: *"just relax this one invariant for this one case" is how contracts

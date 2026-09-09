@@ -9,8 +9,9 @@ The cup traces a continuous carry oval (no stop/starts); the throw/catch use the
 same contact physics (`contact_carry`) as the old demo. See logbook
 2026-06-27-online-replanning-architecture-and-cup-bandlimit.
 
-This is a WIP standalone runner (kept beside the old `juggle_demo.py` so its
-tests stay green) — the new architecture under development.
+This is a WIP standalone runner — the new architecture under development.
+(`juggle_demo.py`, the old offline runner this replaced, was deleted
+2026-09-09 — R0 dead-layer deletion, no non-test importer left.)
 
 STATUS (2026-06-27): the loop runs end-to-end and catches **5 / 0** (seed 0) —
 up from 0, and better than the old offline demo's 2 (whose ≥30 headline test
@@ -147,11 +148,12 @@ def realize(cup_m, rx: float = 0.0, ry: float = 0.0):
 
 
 # --------------------------------------------------------------------------
-# Offscreen video recording — adapted verbatim from sim/juggle_demo.py's
-# ``_build_record_camera`` / ``_VideoRecorder``. Duplicated (rather than
-# imported) to keep this runner standalone — importing juggle_demo would pull
-# in the CasADi offline optimiser. UNIFY into a shared module when juggle_demo
-# is retired (the online runner is meant to replace it).
+# Offscreen video recording — originally adapted verbatim from the old
+# sim/juggle_demo.py's ``_build_record_camera`` / ``_VideoRecorder`` (kept
+# duplicated, rather than imported, to keep this runner standalone from the
+# CasADi offline optimiser). juggle_demo.py was deleted 2026-09-09 (R0
+# dead-layer deletion) — the UNIFY-on-retirement TODO this comment used to
+# carry is now moot; this stays the sole implementation.
 # --------------------------------------------------------------------------
 def build_record_camera(model, cfg: "OnlineJuggleConfig"):
     """Fixed free camera for ``--record``: the model's default free camera with

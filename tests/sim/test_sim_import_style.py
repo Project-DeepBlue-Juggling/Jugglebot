@@ -34,7 +34,7 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
 #: ``tools`` is deliberately absent: ``tools.*`` is a real repo-root package.
 _SIM_TOP_LEVEL = frozenset({
     'analysis', 'ball', 'ball_butler', 'gate_common', 'hand',
-    'input', 'juggle_bb_catch', 'juggle_catch', 'juggle_demo', 'juggle_noise',
+    'input', 'juggle_bb_catch', 'juggle_catch', 'juggle_noise',
     'juggle_online', 'juggle_planner', 'juggle_selfcatch', 'juggle_throw',
     'juggle_tilt', 'model', 'plant', 'reload_gate', 'toss_gate', 'viz',
 })

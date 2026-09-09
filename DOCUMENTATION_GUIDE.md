@@ -72,7 +72,7 @@ docs/
 
 Every new page must be registered in `mkdocs.yml → nav:`. Section names map
 to directories; filenames are lowercase, hyphenated (or underscore where
-matching existing style — `motion_planner/`, `sim_mpc/`, `analysis/`).
+matching existing style — `motion_planner/`, `can_bridge/`, `analysis/`).
 
 **When to add here:** a stable piece of knowledge about how a subsystem
 works that will be referenced more than once. If the content is specific to

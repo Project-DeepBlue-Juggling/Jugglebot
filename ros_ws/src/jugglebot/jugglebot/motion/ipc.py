@@ -22,8 +22,9 @@ Architecture::
     MpcBridgeIPC                        MpcTargetIPC
       PUB  ─── tcp://localhost:5558 ──►  SUB   (target poses, mode)
       # Both ends removed 2026-09-01 (tag mpc-final): mpc_bridge_node is
-      # deleted, so :5558 has no producer.  controller/zmq_target.py's
-      # decode/clamp path is retained and independently tested.
+      # deleted, so :5558 has no producer.  controller/zmq_target.py (its
+      # decode/clamp path) was itself deleted 2026-09-09 — no non-test
+      # importer left after the MPC chain removal.
 
     MPC Process                          Catch Coordinator Node
     ───────────                         ──────────────────────

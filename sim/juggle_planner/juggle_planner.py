@@ -23,7 +23,7 @@ space:
   **collinear** with the ball's arrival velocity (velocity-matched catch).
 
 Realisation onto our morphology is a separate concern (see
-``cup_traj_to_platform_slider`` in :mod:`sim.juggle_demo`): a **level** platform
+``realize`` in :mod:`sim.juggle_online`): a **level** platform
 tracks the cup's lateral (xy) motion and the **slider** does the fast vertical
 (z) stroke — chosen because the band-limit characterisation (2026-06-27) found
 the slider tracks 1:1 to >4 m/s while the platform tracks only *smooth* lateral

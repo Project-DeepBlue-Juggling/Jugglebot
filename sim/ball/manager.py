@@ -18,8 +18,9 @@ hold regimes depending on the manager's ``contact_carry`` mode:
   persists for N substeps AND the ball is within the cup radius of the
   opening AND it is co-moving with the cup), and the throw *emerges* from
   the hand stroke (``begin_physics_throw()`` — no velocity is set).  Used
-  by the BB-led juggle demo (``sim/juggle_demo.py``) to raise the catch /
-  carry / throw to hardware fidelity.  See logbook
+  by the BB-led juggle demo (``sim/juggle_demo.py``, deleted 2026-09-09 —
+  R0 dead-layer deletion) to raise the catch / carry / throw to hardware
+  fidelity.  See logbook
   ``2026-06-26-contact-mechanics-integration`` (concern 1).
 
 A ball collides with both ground (bit 0) and hand (bit 1):
@@ -64,7 +65,8 @@ _HAND_OPENING_OFFSET = np.array([0.0, 0.0, 0.0444])
 # contact-anywhere check fires on peripheral cup-rim contacts and the
 # kinematic hold then snaps the ball from the rim to the cup centre —
 # visually ugly at low-apex juggles. The juggle demo's runner
-# (``sim.juggle_demo``) sets this to ``0.030`` (30 mm) by default
+# (``sim.juggle_demo``, deleted 2026-09-09 — R0 dead-layer deletion) set
+# this to ``0.030`` (30 mm) by default
 # since Phase 2 cuts #4 / #5 make the optimiser produce trajectories
 # that land balls at the cup centre rather than the rim. The
 # *module-level* default below stays ``None`` (gate off) so non-

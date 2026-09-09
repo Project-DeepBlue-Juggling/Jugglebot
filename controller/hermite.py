@@ -1,8 +1,9 @@
 """Quintic Hermite interpolation for C2-continuous motion planning.
 
 Provides position/velocity/acceleration-matching interpolation between
-two boundary states.  Used by the EventScheduler and TossLoopController
-to build smooth, jerk-minimised platform trajectories.
+two boundary states.  Copied verbatim into
+``ros_ws/.../motion/trajectory/quintic.py`` for the hardware leg path; see
+that module's docstring for the sync contract.
 
 This module has NO sim or ROS2 dependencies — pure Python + numpy.
 """
@@ -97,8 +98,9 @@ def quintic_interp_with_accel(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Like :func:`quintic_interp` but also returns acceleration.
 
-    Needed by the scheduler to read the current acceleration when replanning
-    mid-segment (preserving C2 continuity across replan boundaries).
+    Needed by segment replanning (see ``motion/trajectory/segment.py``) to
+    read the current acceleration mid-segment (preserving C2 continuity
+    across replan boundaries).
 
     Returns
     -------

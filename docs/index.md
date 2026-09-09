@@ -32,18 +32,15 @@ It talks to the Jetson over UDP/Ethernet and owns three isolated CAN buses
 - **[Control Flow](can_bridge/control.md)** — the 40 Hz→500 Hz leg interpolation ladder and the hand's separate relay path
 - **[Safety Mechanisms](can_bridge/safety.md)** — staleness watchdogs, the E-STOP fault machine, and CAN bus health monitoring
 
-### [Simulation MPC](sim_mpc/index.md) — CasADi Nonlinear MPC
+### Simulation MPC (REMOVED 2026-09-01, historical)
 
-The MPC solver uses CasADi/IPOPT to solve a **receding-horizon nonlinear MPC** at 50 Hz. It is the sole motion planner for all modes (spacemouse, GUI, shell, catch). It models actuator dynamics, IK constraints, and variable-resolution horizons for ball catching. The solver lives in `controller/` and runs identically in MuJoCo simulation (`sim/`) and on hardware (Jetson).
-
-- **[Usage](sim_mpc/usage.md)** — Installation, running the simulation, telemetry analysis
-- **[NLP Formulation](sim_mpc/nlp_formulation.md)** — Decision variables, cost function, IK constraints, warm-starting
-- **[Variable Horizon](sim_mpc/variable_horizon.md)** — Fine/coarse timestep schedule, urgency ramp, feasibility checking
-- **[Hand & Ball Physics](sim_mpc/hand_and_ball.md)** — Hand motor simulation, ball spawning, catch coordination
-- **[Control Loop](sim_mpc/control_loop.md)** — 50 Hz loop, target source adapters, hand coordination
-- **[Plant Interface](sim_mpc/plant.md)** — MuJoCo plant, coordinate conventions, ball management
-- **[Velocity Tracking](sim_mpc/velocity_tracking.md)** — MPC velocity tracking problem scope and analysis
-- **[Tuning Guide](sim_mpc/tuning.md)** — Parameters, weights, solver options, common scenarios
+The CasADi/IPOPT receding-horizon MPC described here was deleted 2026-09-01
+— dormant since 2026-08-01 and superseded by the unified 7-DoF planner. The
+final implementation is preserved at git tag `mpc-final`; see
+`logbook/2026-09-01-mpc-chain-removed.md`. Its documentation pages
+(`docs/sim_mpc/`) were deleted 2026-09-09 (R0 dead-layer deletion,
+`plans/active/two-ball-skill-stack.md` § 6) along with the mkdocs nav
+section that linked them.
 
 ### [Hardware Analysis](analysis/index.md) -- Diagnosis & Engineering Logbook
 

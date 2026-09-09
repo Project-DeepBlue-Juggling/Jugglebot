@@ -52,10 +52,12 @@ path itself, and production always supplies `u1`, so those fields are not
 load-bearing for continuity in normal operation.
 
 !!! note "A genuine C2 (quintic) scheme does exist — elsewhere"
-    `controller/hermite.py`, `controller/scheduler.py`, and
-    `controller/target.py` use quintic (C2) Hermite interpolation to splice
-    the MPC's *reference* trajectory across catch/throw/return events,
-    matching position, velocity, **and** acceleration at event boundaries.
+    `controller/hermite.py` and `controller/target.py` use quintic (C2)
+    Hermite interpolation to splice the MPC's *reference* trajectory across
+    catch/throw/return events, matching position, velocity, **and**
+    acceleration at event boundaries (`controller/scheduler.py`, the third
+    module in this splicing layer, was deleted 2026-09-09 — no non-test
+    importer left after the MPC chain removal).
     That is a separate, upstream layer on the Jetson generating what the
     MPC tracks. `leg_interp.cpp` is a downstream, unrelated component that
     just upsamples the MPC's own 40 Hz output for the wire — different

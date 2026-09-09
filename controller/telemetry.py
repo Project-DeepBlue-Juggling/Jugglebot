@@ -187,11 +187,13 @@ def record_from_arrays(
 
     Allocates a fresh ``StepRecord``.  NOT hot-path safe — a 40 Hz control
     loop uses ``fill_record_from_arrays`` against a pool slot instead.
-    This function is retained for sim paths (``sim/main.py``,
-    ``sim/juggle_demo.py``) that predate the pool design.
+    This function is retained for sim paths (``sim/main.py``) that predate
+    the pool design. (``sim/juggle_demo.py``, the other predating caller,
+    was deleted 2026-09-09 — R0 dead-layer deletion, no non-test importer
+    left after the MPC chain removal.)
 
     The ``leg_accelerations`` / ``ball_*`` / ``throw_*`` / ``catches_total``
-    kwargs are sim-juggle-demo additions; other callers leave them at their
+    kwargs were sim-juggle-demo additions; other callers leave them at their
     defaults and the corresponding StepRecord fields stay at 0.
     """
     rec = StepRecord()

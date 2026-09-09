@@ -6,18 +6,24 @@ the ROS2 hardware stack (`ros_ws/`). No ROS2 imports, no CasADi.
 | module | what it is |
 |---|---|
 | `ballistics.py` | Free-flight solutions; throw/catch pose geometry, `TILT_LIMIT_RAD` |
-| `catch_optimizer.py` | `CatchHeightOptimizer`, catch orientation/pose from ball state |
 | `feasibility.py` | Segment feasibility for the K1–K6 reference contract |
 | `hermite.py` | Quintic / Hermite interpolation with accel and jerk integrals |
 | `plant.py` | `PlantInterface` / `PlantState` — the plant contract |
-| `scheduler.py` | `EventScheduler` — catch/throw event sequencing |
 | `target.py` | `TargetSource` / `TargetCommand` / `ReferenceEvent` |
 | `telemetry.py` | `TelemetryLogger`, `StepRecord`, CSV round-trip |
-| `toss_motion_source.py` | Toss motion generation |
-| `zmq_target.py` | `ZmqTargetSource` — ZMQ target ingest |
 
 Normative documents: `PLANT_INTERFACE_CONTRACT.md`,
-`REFERENCE_LAYER_CONTRACT.md`, `SCHEDULER_CONTRACT.md`.
+`REFERENCE_LAYER_CONTRACT.md`.
+
+## Removed: MPC-era sim sources (2026-09-09)
+
+`scheduler.py` (+ `SCHEDULER_CONTRACT.md`), `zmq_target.py`,
+`toss_motion_source.py` and `catch_optimizer.py` were deleted (R0 dead-layer
+deletion, `plans/active/two-ball-skill-stack.md` § 6) — each had no
+non-test importer left after the 2026-09-01 MPC chain removal below.
+`target.py` is retained: `sim/input/toss_loop.py` (kept — the census found a
+live importer, `sim/viz/reference_plot.py`) still imports `ReferenceEvent`
+from it. See `logbook/2026-09-09-skill-stack-r0-dead-layer-deletion.md`.
 
 ## Removed: the MPC chain (2026-09-01)
 

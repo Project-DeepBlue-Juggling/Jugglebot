@@ -3,9 +3,11 @@
 This document is the **normative specification** of the invariants that
 every implementation of [PlantInterface (controller/plant.py)](plant.py)
 — and every consumer of one — must satisfy.  It is the structural sibling
-of the K1–K6 [REFERENCE_LAYER_CONTRACT.md](REFERENCE_LAYER_CONTRACT.md) and
-the S1–S6 [SCHEDULER_CONTRACT.md](SCHEDULER_CONTRACT.md), and uses the same
-RFC 2119 normative language (MUST, MUST NOT, MAY).
+of the K1–K6 [REFERENCE_LAYER_CONTRACT.md](REFERENCE_LAYER_CONTRACT.md) — the
+S1–S6 `SCHEDULER_CONTRACT.md` sibling was deleted 2026-09-09 along with
+`controller/scheduler.py` (R0 dead-layer deletion, no non-test importer left
+after the MPC chain removal) — and uses the same RFC 2119 normative language
+(MUST, MUST NOT, MAY).
 
 > **2026-09-01 — `HardwarePlant` and `HOT_LOOP_CONTRACT.md` were removed**
 > with the MPC chain (dormant since 2026-08-01; superseded by the unified
@@ -248,10 +250,10 @@ shape derives them from ``self._control_dt``:
     self._telem_stale_estop_s = 20.0 * self._control_dt
 
 Implementations MUST expose ``control_dt`` as a read-only property so
-external consumers (the runner, the scheduler's S1 ``τ_grace`` default
-which today derives from
-[scheduler.py:238–244](scheduler.py)) can read the canonical period
-from one source.
+external consumers (the runner and the scheduler's S1 ``τ_grace``
+default — both MPC-era, removed 2026-09-01 and 2026-09-09 respectively;
+the derivation this paragraph describes is now historical) can read the
+canonical period from one source.
 
 **Why.** Pre-contract, the staleness thresholds in
 ``HardwarePlant`` were hard-coded magic numbers with comments naming
@@ -263,8 +265,8 @@ fire on every tick at 10 Hz (100 ms period) and never fire at 100 Hz
 (10 ms period), in both cases without anyone noticing the magic
 number drifted from the operating point.
 
-P4 also unifies the source of truth for ``control_dt``.  Today the
-scheduler derives ``τ_grace`` from
+P4 also unifies the source of truth for ``control_dt``.  Historically the
+(now-deleted) scheduler derived ``τ_grace`` from
 ``cumulative_times[1] - cumulative_times[0]``, which is the MPC's
 horizon discretisation, not its actuation period.  These happen to
 match in the current configuration but need not — and the divergence
@@ -526,10 +528,10 @@ If a ``PlantInterface``-related symptom surfaces in a session log:
   K1–K6 governs *what* trajectory the MPC tracks; P1–P4 governs the
   *interface* through which the MPC reads plant state and writes
   commands.
-- [SCHEDULER_CONTRACT.md](SCHEDULER_CONTRACT.md) — S1–S6 scheduler
-  contract.  P4 will be the source of truth for the period that
-  S1's ``τ_grace`` default derives from (currently derived from the
-  MPC's horizon discretisation; Phase 6 unifies them).
+- `SCHEDULER_CONTRACT.md` (S1–S6 scheduler contract) was deleted
+  2026-09-09 along with ``controller/scheduler.py`` — no non-test importer
+  remained after the MPC chain removal. This paragraph's `τ_grace`
+  discussion is now historical.
 - [HOT_LOOP_CONTRACT.md](HOT_LOOP_CONTRACT.md) — hot-loop
   zero-allocation contract.  P1 lifts the aliasing requirement from
   HOT_LOOP_CONTRACT.md:434–442 into the canonical interface

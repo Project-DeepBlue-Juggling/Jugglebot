@@ -1,7 +1,12 @@
 """Shared loopback harness for the teensy_bridge_node test family.
 
 Not collected by pytest (leading underscore, no ``test_`` prefix) — this is a
-support module, following the ``tests/sim/_zmq_test_harness.py`` pattern.
+support module, following the sibling-module test-harness pattern (see
+``tests/sim/conftest.py``'s sys.path note). ``tests/sim/_zmq_test_harness.py``,
+the original example of this pattern, was deleted 2026-09-09 along with its
+only consumers, ``test_zmq_target.py`` / ``test_zmq_corruption.py`` (R0
+dead-layer deletion, no importer left after ``controller/zmq_target.py``'s
+removal).
 
 Until 2026-08-01 these helpers lived inside
 ``tests/ros/test_teensy_bridge_node_read.py`` and 21 sibling files imported
