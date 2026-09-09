@@ -119,7 +119,7 @@
  *        one flash, CAN is the only remaining route in.
  */
 constexpr char     FW_NAME[]  = "jugglebot-platform";
-constexpr uint16_t FW_VERSION = 5;   // 1→2: 2026-07-29 throwDecelToTorque (post-release decel
+constexpr uint16_t FW_VERSION = 6;   // 1→2: 2026-07-29 throwDecelToTorque (post-release decel
                                      //      feedforward, C-HAND-2).
                                      // 2→3: 2026-08-18 hand END-STOP correction — BEHAVIOURAL.
                                      //      Geometry::HAND_MOTOR_HARD_STOP_REVS 11.1 → 10.8 rev
@@ -143,6 +143,12 @@ constexpr uint16_t FW_VERSION = 5;   // 1→2: 2026-07-29 throwDecelToTorque (po
                                      //      0x6D0 trajectory arming is refused while an update
                                      //      session is open. FW 5 must be USB-flashed once — a
                                      //      FW ≤ 4 board cannot receive its own successor.
+                                     // 5→6: 2026-09-09 the first image BUILT ON THE JETSON
+                                     //      (`pio run -e teensy40 -t upload`) and flashed over
+                                     //      CAN. No code change beyond this number: the bump IS
+                                     //      the receipt — with the USB console gone, the
+                                     //      STATE_READ version (5 → 6) is the only proof the
+                                     //      copy landed and the new image runs.
 
 /*----------------------------------------------------------------------------*/
 /*                                CAN BUS SET‑UP                              */

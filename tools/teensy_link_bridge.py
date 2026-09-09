@@ -58,14 +58,10 @@ from teensy_link import rpc_args  # noqa: E402
 from teensy_link.rpc import RpcClient, RpcError, RpcTimeout, PlatformFrameWaiter  # noqa: E402
 from config.generated import protocol_config as pc  # noqa: E402
 
-#: There is deliberately NO default image. The only images this board has ever
-#: run are Arduino-IDE builds; the PlatformIO build of the same sketch was
-#: CAN-MUTE on the hardware (2026-07-31, see Teensy_code_platform/platformio.ini
-#: — the suspicion is Teensy-4.1-flavoured pin-mux leakage from the patched
-#: linker script), and with the USB port gone a CAN-mute image is a one-way
-#: brick: it boots, it never answers 0x6F0, and nothing can reach it again.
-#: So the path is explicit, and anything under a `.pio/` build directory is
-#: refused unless --allow-pio-image says the image was bench-proven.
+#: There is deliberately NO default image: the path is whatever the caller
+#: built. The normal caller is `pio run -e teensy40 -t upload` in
+#: Teensy_code_platform/, whose upload_command hands the fresh firmware.hex
+#: here (platformio.ini, 2026-09-09).
 
 
 def _setup_logging(verbose: bool) -> None:
@@ -383,17 +379,8 @@ def _read_platform_fw_version(rpc: RpcClient, waiter: PlatformFrameWaiter,
 
 
 def run_fw_update(teensy_ip: str, hex_path, dry_run: bool, verbose: bool,
-                  bind_host: str = "0.0.0.0", verify_only: bool = False,
-                  allow_pio: bool = False) -> int:
+                  bind_host: str = "0.0.0.0", verify_only: bool = False) -> int:
     _setup_logging(verbose)
-    if ".pio" in Path(hex_path).parts and not allow_pio:
-        logging.error(
-            "fw-update: refused — %s is a PlatformIO build. The pio image of this "
-            "sketch was CAN-MUTE on the hardware (platformio.ini, 2026-07-31) and "
-            "the USB port is gone, so a CAN-mute image cannot be recovered. Use "
-            "the .hex the Arduino IDE exports, or pass --allow-pio-image for an "
-            "image that has been proven on a bench board.", hex_path)
-        return 1
     logging.info("fw-update: loading %s", hex_path)
     try:
         image, crc = _prepare_image(hex_path)
@@ -528,8 +515,8 @@ def main() -> int:
                         help="DEBUG-level logging")
     parser.add_argument("--fw-update", metavar="HEX_PATH",
                         help="Update the Platform Teensy firmware over CAN from HEX_PATH "
-                             "(the .hex the Arduino IDE exports — never the .pio build, "
-                             "see --allow-pio-image) and exit; see --dry-run and "
+                             "(normally the firmware.hex `pio run -e teensy40 -t upload` "
+                             "just built and handed over) and exit; see --dry-run and "
                              "--verify-only. The daemon loop above does not run in "
                              "this mode.")
     parser.add_argument("--dry-run", action="store_true",
@@ -540,10 +527,6 @@ def main() -> int:
                              "board but never COMMIT — proves the whole path except "
                              "the one-way copy; the board discards the staged image "
                              "after 60 s")
-    parser.add_argument("--allow-pio-image", action="store_true",
-                        help="With --fw-update: permit a HEX_PATH under a .pio/ build "
-                             "directory (refused by default: that image family was "
-                             "CAN-mute on this board)")
     args = parser.parse_args()
 
     # Graceful Ctrl-C without a stack trace
@@ -552,8 +535,7 @@ def main() -> int:
     if args.fw_update is not None:
         return run_fw_update(args.teensy_ip, args.fw_update, args.dry_run,
                              args.verbose, args.bind_host,
-                             verify_only=args.verify_only,
-                             allow_pio=args.allow_pio_image)
+                             verify_only=args.verify_only)
 
     return run(args.teensy_ip, args.duration, args.verbose, args.bind_host)
 

@@ -357,7 +357,11 @@ PLATFORM_FW_VERSION_UNVERSIONED = 0
 #: to the flight code — a board on 4 flies identically — it simply has no
 #: 0x6F0 listener yet, so it cannot be handed its own successor and the one
 #: flash to 5 must happen over USB.
-PLATFORM_FW_VERSION_EXPECTED = 5
+#: 6 (2026-09-09) = the first image built on the Jetson (`pio run -e teensy40
+#: -t upload`) and flashed over CAN; no code change beyond the number, which is
+#: the receipt: the STATE_READ version going 5 -> 6 is the only visible proof the
+#: copy landed now that the boot banner cannot be read.
+PLATFORM_FW_VERSION_EXPECTED = 6
 
 
 def decode_platform_fw_version(data: bytes) -> int:

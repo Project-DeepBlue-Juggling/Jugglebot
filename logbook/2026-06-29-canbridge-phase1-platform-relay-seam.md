@@ -360,6 +360,28 @@ before the first one-way COMMIT. And **any hex under a `.pio/` build directory i
 2026-07-31, unresolved), and a CAN-mute image on a board with no USB is a brick nothing can reach again.
 There is no default image path any more; the operator passes the `.hex` the Arduino IDE exports.
 
+**Later the same evening — the build moves onto the Jetson (owner's call).** The owner judged the July
+CAN-mute image circumstantial rather than a property of the pio build, and the facts agree: the resolved
+defines are `-D__IMXRT1062__ -DARDUINO_TEENSY40 TEENSYDUINO=160` on core 1.160.0 with gcc 11.3.1 — the
+IDE's own recipe; the only deltas are `-O2` vs `-Os`, the exception/unwind flags and the `.ARM.extab`
+linker-script patch. So `platformio.ini` now carries `upload_protocol = custom` with
+`upload_command = $PYTHONEXE …/tools/teensy_link_bridge.py --fw-update $SOURCE`, and
+
+```bash
+cd ros_ws/src/jugglebot/Teensy_code_platform && pio run -e teensy40 -t upload
+```
+
+is build + CAN flash in one call, the way `pio run -t upload` always read. The `.pio/` refusal added two
+paragraphs up is withdrawn (the pio image is now the normal image; `--verify-only` stays). The Platform
+goes to **FW 6** with no code change: the version bump *is* the receipt — the tool prints the STATE_READ
+version 5 → 6, which is the only visible proof the copy landed now that the boot banner cannot be read.
+Built 2026-09-09 (`pio run -e teensy40`): `firmware.hex` md5 `0ae667e6a6df03793c5f5469bab147e5`,
+345707 B, 122880 B image, crc32 `0xADBD39DB`, identity OK on `--dry-run`. **Not flashed.** Run it with
+the ROS launch down and the setpoint output disarmed; `--verify-only` first if you want the staging
+path proven before the one-way COMMIT; after the reboot the next launch homes all seven axes, so
+re-latch `hand_source` STREAMED before arming. The geometry branch's Platform image is now two versions
+behind (it says 5): at merge it becomes 7, carrying this receiver.
+
 **Pins and receipts (2026-09-09, both boards BUILT, NEVER FLASHED).** Bridge: `pio run -e teensy41` →
 `firmware.hex` md5 `116b8e08241d4214bbd8a55b1b9744ca`, 769144 B, reproducible across two builds;
 `EXPECTED_BRIDGE_FW_VERSION` 19. Platform: `pio run -e teensy40` (clean) → md5
