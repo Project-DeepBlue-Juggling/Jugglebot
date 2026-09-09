@@ -279,7 +279,7 @@ preconditions: the cone rigid body disabled, the Ball Butler reflectors masked.
 
 | Rung | Name | Builds | Deletes | Gate |
 |---|---|---|---|---|
-| R0 | Board and substrate | invariant checklist; census-backed dead-layer deletion | dead clusters (§ 6) | `./run_tests.sh --full` green; grep counts zero |
+| R0 | Board and substrate | invariant checklist; census-backed dead-layer deletion | dead clusters (§ 6) | `./run_tests.sh --full` green; grep counts zero — **checklist landed 2026-09-10; deletion done 2026-09-09** |
 | R1 | One hand master | can-bridge FW (STREAMED only), Platform FW (no stroke engine), lockstep runbook | `Trajectory.h`, `hand_source`, `hand_ops`, `HAND_TRAJ_CMD`, `hand_stroke.py` twin | bench ladder re-pass; a streamed self-toss caught with no latch step |
 | R2 | Skills, schedule, stream (sim) | `motion/skills/`, `install_segment`, vectorised gate, admissible sweep, apex ≥ 1.0 m, `sim/skills_gate.py` | `PlanCycle` modes, ring machinery | 20 columns cycles in sim, no drops; plan < 50 ms on the loaded Jetson |
 | R3 | Learner + single site | `learner.py`, `memory.py`, outcome capture | ILC/trim/cal/record stack, `toss_ilc_enabled` | in-band within 5 throws from cold, sim and hardware; 10 consecutive catches |

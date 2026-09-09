@@ -63,6 +63,7 @@ setup(
         f'{package_name}.can',
         f'{package_name}.motion',
         f'{package_name}.motion.trajectory',
+        f'{package_name}.motion.skills',
         f'{package_name}.tracking',
     ],
     data_files=[
