@@ -288,15 +288,19 @@ preconditions: the cone rigid body disabled, the Ball Butler reflectors masked.
 
 ## 3. Implementation Phase Summary
 
-| Rung | Name | Builds | Deletes | Gate |
-|---|---|---|---|---|
-| R0 | Board and substrate | invariant checklist; census-backed dead-layer deletion | dead clusters (§ 6) | `./run_tests.sh --full` green; grep counts zero — **checklist landed 2026-09-10; deletion done 2026-09-09** |
-| R1 | One hand master | can-bridge FW 21 (lane follows `HAS_HAND`, guard boots ARMED, ACTIVATE parks the hand at 0 rev), Platform FW 7 (no stroke engine), PROTOCOL_VERSION 7, `hand_mm_per_rev` measured key, lockstep runbook `tests/hardware/session_skill_stack_r1_flash.md` | `Trajectory.h`, `hand_source`, `hand_ops`, `HAND_TRAJ_CMD`/`HAND_SOURCE_SET`, `SetHandTrajCmd.srv`, `hand_stroke.py` twin, the legacy kind-0 toss device (its FSM branch refused at accept until R4) | **DONE 2026-09-11** — flashed, sat, one streamed self-toss caught with no latch step; a levelling-frame tilt snap found + fixed (`_unified_prelevel`); multi-throw chaining + live guard cold-trip → R2 (`logbook/2026-09-11-skill-stack-r1-sitting-prelevel.md`, `…-one-hand-master.md`) |
-| R2 | Skills, schedule, stream (sim) | `motion/skills/`, `install_segment`, vectorised gate, admissible sweep, apex ≥ 1.0 m, `sim/skills_gate.py` | `PlanCycle` modes, ring machinery | 20 columns cycles in sim, no drops; plan < 50 ms on the loaded Jetson |
-| R3 | Learner + single site | `learner.py`, `memory.py`, outcome capture | ILC/trim/cal/record stack, `toss_ilc_enabled` | in-band within 5 throws from cold, sim and hardware; 10 consecutive catches |
-| R4 | Two sites, one ball, BB reset | alternating schedule, reload as a CATCH skill, `Juggle.action`, GUI surface | FSM stack (tag `fsm-final`), `catch_coordinator`, `catch_reach`, old sim gates | 10 consecutive alternating catches; BB reload → catch → throw chain |
-| R5 | Two-ball columns | Start/Stop phases, limits ramp as sized at R2 | — | five consecutive cycles, then 30 catches; learning curve logged |
-| R6 | Close-out | docs, memory, archival | whatever R5 left dead | plan archived `completed` |
+The **Status** column is the one source of truth for where each rung stands;
+`Gate` states the acceptance criteria only. (Rung = phase; the column is named
+`Rung` for the R0–R6 language used throughout this plan.)
+
+| Rung | Name | Builds | Deletes | Gate | Status |
+|---|---|---|---|---|---|
+| R0 | Board and substrate | invariant checklist; census-backed dead-layer deletion | dead clusters (§ 6) | `./run_tests.sh --full` green; grep counts zero | ✅ **DONE** — checklist landed 2026-09-10, deletion done 2026-09-09 (`429c660`, `3bfec0b`) |
+| R1 | One hand master | can-bridge FW 21 (lane follows `HAS_HAND`, guard boots ARMED, ACTIVATE parks the hand at 0 rev), Platform FW 7 (no stroke engine), PROTOCOL_VERSION 7, `hand_mm_per_rev` measured key, lockstep runbook `tests/hardware/session_skill_stack_r1_flash.md` (completed) | `Trajectory.h`, `hand_source`, `hand_ops`, `HAND_TRAJ_CMD`/`HAND_SOURCE_SET`, `SetHandTrajCmd.srv`, `hand_stroke.py` twin, the legacy kind-0 toss device (its FSM branch refused at accept until R4) | bench ladder re-passes on the FW 21 / Platform 7 pair; a streamed self-toss caught with no latch step | ✅ **DONE 2026-09-11** (`1e2c0c9`, `c52dc27`) — flashed, sat, one streamed self-toss caught with no latch step; a levelling-frame tilt snap found + fixed (`_unified_prelevel`); multi-throw chaining + live guard cold-trip → R2 (`logbook/2026-09-11-skill-stack-r1-sitting-prelevel.md`, `…-one-hand-master.md`) |
+| R2 | Skills, schedule, stream (sim) | `motion/skills/`, `install_segment`, vectorised gate, admissible sweep, apex ≥ 1.0 m, `sim/skills_gate.py` | `PlanCycle` modes, ring machinery | 20 columns cycles in sim, no drops; plan < 50 ms on the loaded Jetson | ⬜ **NOT STARTED** (next; R1-carried items folded in — see the R2 section) |
+| R3 | Learner + single site | `learner.py`, `memory.py`, outcome capture | ILC/trim/cal/record stack, `toss_ilc_enabled` | in-band within 5 throws from cold, sim and hardware; 10 consecutive catches | ⬜ **NOT STARTED** |
+| R4 | Two sites, one ball, BB reset | alternating schedule, reload as a CATCH skill, `Juggle.action`, GUI surface | FSM stack (tag `fsm-final`), `catch_coordinator`, `catch_reach`, old sim gates | 10 consecutive alternating catches; BB reload → catch → throw chain | ⬜ **NOT STARTED** |
+| R5 | Two-ball columns | Start/Stop phases, limits ramp as sized at R2 | — | five consecutive cycles, then 30 catches; learning curve logged | ⬜ **NOT STARTED** |
+| R6 | Close-out | docs, memory, archival | whatever R5 left dead | plan archived `completed` | ⬜ **NOT STARTED** |
 
 ## 4. Implementation Phases (detailed)
 

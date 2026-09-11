@@ -1,5 +1,17 @@
 # R1 sitting — flash the pair, run the ladder, catch one streamed self-toss
 
+> ✅ **COMPLETED 2026-09-11 — this runbook has served its purpose; kept as a
+> record, not a live runsheet.** The pair was flashed (bridge FW 21 / proto 7,
+> Platform FW 7), the ladder re-passed, and one streamed self-toss was thrown and
+> caught with no latch step — the R1 gate. The sitting surfaced and fixed a
+> levelling-frame tilt snap (the launch was seeded from a level-to-base rest;
+> `_unified_prelevel` now pre-levels the platform first) and carried two items to
+> R2 (chained multi-throw cold-solve; a live guard cold-trip affordance). Full
+> account: `logbook/2026-09-11-skill-stack-r1-sitting-prelevel.md`. Row 18 below
+> is not runnable through the bench driver — the ARMED guard trip is proven in
+> `tests/firmware/native/test_fault_machine.cpp` instead. Do not re-run this sheet
+> as-is; a future R1-class reflash should start from the R2 runbook when it exists.
+
 Skill-stack R1 (`plans/active/two-ball-skill-stack.md` § 4 R1, entry
 `logbook/2026-09-11-skill-stack-r1-one-hand-master.md`). Everything here is run
 by the operator. Every number carries its source in the linked entry.
