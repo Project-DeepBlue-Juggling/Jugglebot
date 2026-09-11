@@ -415,6 +415,9 @@ def test_the_session_lifts_once_at_start_before_any_cycle_is_built(monkeypatch):
     monkeypatch.setattr(node, '_unified_warm_planner',
                         lambda: order.append('warm') or 0.0)
     monkeypatch.setattr(
+        node, '_unified_prelevel',
+        lambda why: (order.append(('prelevel', why)), '')[1])
+    monkeypatch.setattr(
         node, '_unified_floor_lift',
         lambda why: (order.append(('lift', why)),
                      _seed_hand(node, FLOOR_REV), '')[2])
@@ -431,10 +434,90 @@ def test_the_session_lifts_once_at_start_before_any_cycle_is_built(monkeypatch):
 
     assert result.outcome == 'COMPLETED', result.outcome
     assert order[0] == 'warm'
-    assert order[1] == ('lift', 'session start')
-    # ...and once more per cycle, still before the cycle is BUILT.
-    assert order[2] == ('lift', 'cycle 1')
-    assert order[3] == 'build'
+    # The platform is pre-levelled to gravity-level BEFORE the session-start
+    # lift, so that lift's banking KIND_SETTLE seeds from the gravity frame it is
+    # built in rather than from the un-positioned STANDBY hold (2026-09-11).
+    assert order[1] == ('prelevel', 'session start')
+    assert order[2] == ('lift', 'session start')
+    # ...and once more per cycle, still before the cycle is BUILT. The per-cycle
+    # POSITIONING move already carries the pre-level for cycles 2..n, so there is
+    # no second prelevel here.
+    assert order[3] == ('lift', 'cycle 1')
+    assert order[4] == 'build'
+
+
+def _fake_go_to_pose(node, monkeypatch, *, accepted=True, available=True,
+                     answers=True, planned_s=0.3):
+    """Capture the go_to_pose request and return a canned response.
+
+    Mirrors the go_to_pose faking in ``test_the_legacy_pretilt_runs_*`` — the
+    request is captured for its ORIENTATION and POSITION, and the wait is stubbed
+    so the test drives one method without a live service.
+    """
+    captured = {}
+    monkeypatch.setattr(node._go_to_pose_cli, 'wait_for_service',
+                        lambda timeout_sec=None: available)
+    monkeypatch.setattr(node._go_to_pose_cli, 'call_async',
+                        lambda req: captured.__setitem__('req', req))
+    resp = None if not answers else types.SimpleNamespace(
+        accepted=accepted, code='OK' if accepted else 'LIMIT_JERK',
+        planned_duration_s=planned_s,
+        message='planned OK' if accepted else 'peak leg jerk 152455 > 30000')
+    monkeypatch.setattr(node, '_wait_future',
+                        lambda fut, timeout_s=2.0: resp)
+    return captured
+
+
+def test_prelevel_commands_a_pure_attitude_move_with_a_level_intent(monkeypatch):
+    """The pre-level move holds the LIVE xy/z and sends an IDENTITY orientation.
+
+    Identity is what the node's E3 ingest corrects into the gravity-level
+    counter-tilt, so the launch is seeded from the frame its banking schedule is
+    built in. Position is left where the machine stands — a pure attitude move,
+    the same primitive `_position_platform_for_toss` sends under unified.
+    """
+    node = _node(SEED_IN_BOX_REV, commanded_pos=(42.0, -7.0, 170.0))
+    captured = _fake_go_to_pose(node, monkeypatch)
+
+    assert node._unified_prelevel('session start') == ''
+
+    req = captured['req']
+    assert (req.pose.position.x, req.pose.position.y, req.pose.position.z) == \
+        pytest.approx((42.0, -7.0, 170.0))
+    q = req.pose.orientation
+    level = Quaternion()
+    assert (q.x, q.y, q.z, q.w) == (level.x, level.y, level.z, level.w)
+
+
+def test_prelevel_reports_a_refusal_and_is_non_fatal(monkeypatch):
+    """A refused pre-level returns the reason (the caller only WARNs on it).
+
+    The session must not die on a pre-level it could not make: the floor lift and
+    launch that follow refuse loudly by name, exactly as they did before this
+    move existed, so the pre-level's contract is to REPORT, never to abort.
+    """
+    node = _node(SEED_IN_BOX_REV)
+    _fake_go_to_pose(node, monkeypatch, accepted=False)
+    detail = node._unified_prelevel('session start')
+    assert 'REFUSED' in detail and 'LIMIT_JERK' in detail
+
+
+def test_prelevel_without_a_live_pose_refuses_rather_than_guessing(monkeypatch):
+    """A stale `commanded_position` refuses — a guessed xy would MOVE the platform."""
+    node = _node(SEED_IN_BOX_REV)
+    with node._lock:
+        node._commanded_pos_mono = 0.0          # never heard
+    _fake_go_to_pose(node, monkeypatch)
+    detail = node._unified_prelevel('session start')
+    assert 'stale' in detail and 'guessed' in detail
+
+
+def test_prelevel_unavailable_service_is_reported(monkeypatch):
+    """No go_to_pose service ⇒ a reason, not an exception."""
+    node = _node(SEED_IN_BOX_REV)
+    _fake_go_to_pose(node, monkeypatch, available=False)
+    detail = node._unified_prelevel('session start')
+    assert 'unavailable' in detail
 
 
 # ═════════════════════════════════════════════════════════════════════════════

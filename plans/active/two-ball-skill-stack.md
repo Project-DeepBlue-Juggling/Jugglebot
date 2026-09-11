@@ -291,7 +291,7 @@ preconditions: the cone rigid body disabled, the Ball Butler reflectors masked.
 | Rung | Name | Builds | Deletes | Gate |
 |---|---|---|---|---|
 | R0 | Board and substrate | invariant checklist; census-backed dead-layer deletion | dead clusters (§ 6) | `./run_tests.sh --full` green; grep counts zero — **checklist landed 2026-09-10; deletion done 2026-09-09** |
-| R1 | One hand master | can-bridge FW 21 (lane follows `HAS_HAND`, guard boots ARMED, ACTIVATE parks the hand at 0 rev), Platform FW 7 (no stroke engine), PROTOCOL_VERSION 7, `hand_mm_per_rev` measured key, lockstep runbook `tests/hardware/session_skill_stack_r1_flash.md` | `Trajectory.h`, `hand_source`, `hand_ops`, `HAND_TRAJ_CMD`/`HAND_SOURCE_SET`, `SetHandTrajCmd.srv`, `hand_stroke.py` twin, the legacy kind-0 toss device (its FSM branch refused at accept until R4) | **software landed 2026-09-11, UNFLASHED** (`logbook/2026-09-11-skill-stack-r1-one-hand-master.md`); gate = bench ladder re-pass on the FW 21 / Platform 7 pair + a streamed self-toss caught with no latch step — sitting pending |
+| R1 | One hand master | can-bridge FW 21 (lane follows `HAS_HAND`, guard boots ARMED, ACTIVATE parks the hand at 0 rev), Platform FW 7 (no stroke engine), PROTOCOL_VERSION 7, `hand_mm_per_rev` measured key, lockstep runbook `tests/hardware/session_skill_stack_r1_flash.md` | `Trajectory.h`, `hand_source`, `hand_ops`, `HAND_TRAJ_CMD`/`HAND_SOURCE_SET`, `SetHandTrajCmd.srv`, `hand_stroke.py` twin, the legacy kind-0 toss device (its FSM branch refused at accept until R4) | **DONE 2026-09-11** — flashed, sat, one streamed self-toss caught with no latch step; a levelling-frame tilt snap found + fixed (`_unified_prelevel`); multi-throw chaining + live guard cold-trip → R2 (`logbook/2026-09-11-skill-stack-r1-sitting-prelevel.md`, `…-one-hand-master.md`) |
 | R2 | Skills, schedule, stream (sim) | `motion/skills/`, `install_segment`, vectorised gate, admissible sweep, apex ≥ 1.0 m, `sim/skills_gate.py` | `PlanCycle` modes, ring machinery | 20 columns cycles in sim, no drops; plan < 50 ms on the loaded Jetson |
 | R3 | Learner + single site | `learner.py`, `memory.py`, outcome capture | ILC/trim/cal/record stack, `toss_ilc_enabled` | in-band within 5 throws from cold, sim and hardware; 10 consecutive catches |
 | R4 | Two sites, one ball, BB reset | alternating schedule, reload as a CATCH skill, `Juggle.action`, GUI surface | FSM stack (tag `fsm-final`), `catch_coordinator`, `catch_reach`, old sim gates | 10 consecutive alternating catches; BB reload → catch → throw chain |
@@ -342,9 +342,21 @@ the rung's tests passing or a handoff file in the scratchpad.
 - **Owner decisions.** The hand E-STOP band arming policy (observe-first vs
   armed) — row 18 of the hand ladder was closed on thermal grounds, so the trip
   has never been observed on hardware. Whether homing parks the hand at 0 rev.
-- **Gate.** Bench ladder rows 12–21 re-pass on the new firmware pair, recorded
-  with the boot banners; then a streamed self-toss through the existing unified
-  path, caught, with no operator latch step in the runsheet.
+- **Gate — MET 2026-09-11** (`logbook/2026-09-11-skill-stack-r1-sitting-prelevel.md`).
+  Bench ladder rows re-passed on the flashed FW 21 / Platform 7 pair; a streamed
+  self-toss flew and was caught through the unified path with no latch step (the
+  latch is deleted). The sitting surfaced and closed a levelling-frame seam: the
+  banking launch is built gravity-referenced but was seeded from the machine's
+  level-to-base rest, snapping the whole correction angle into knot 0 (5× leg-jerk
+  inflation — refused the session-start floor lift at 152 k, inflated the launch to
+  the ceiling). Fixed by pre-levelling the platform (`_unified_prelevel`, a
+  corrected `go_to_pose`) before the session's first lift, reusing the per-cycle
+  positioning's own E3 machinery. **Two items carried to R2:** the chained
+  multi-throw solve is not warm-started and overruns the launch lead
+  (`ABORTED_NO_RELEASE` on `num_throws>1` — the UH-7a rung); and a live bench-driver
+  cold-trip of the ARMED hand guard needs an explicit affordance (`hand_stream_bench`
+  clamps `--gap-delta` at 1.5 and its belt caps below the 2.5 firmware band, so the
+  trip is proven per-commit in `test_fault_machine.cpp`, not live).
 
 ### R2 — Skills, schedule, stream (sim first)
 
@@ -374,6 +386,14 @@ the rung's tests passing or a handoff file in the scratchpad.
 - **Gate.** 20 consecutive columns cycles in sim at apex 1.0 m, separation
   100 mm, zero drops on five seeds; per-skill plan < 50 ms measured on the
   Jetson with the launch up and a bag recording; the sweep completes in < 5 min.
+- **Carried from the R1 sitting (2026-09-11).** (a) Warm-start the chained launch
+  solve — a cold chained solve ballooned to ~2.2 s against the 1.8 s launch lead
+  and aborted `ABORTED_NO_RELEASE` on `num_throws>1`; the schedule/segment install
+  must not pay the cold cost inside the beat. (b) A live bench-driver cold-trip
+  affordance for the ARMED hand guard: `hand_stream_bench` clamps `--gap-delta` at
+  1.5 and its belt caps at 2.0 rev below the 2.5 firmware band, so the trip can only
+  be commanded through a new opt-in that raises both together; until then the
+  ARMED trip is proven per-commit in `test_fault_machine.cpp`, not live.
 
 ### R3 — Learner, then single-site hardware
 

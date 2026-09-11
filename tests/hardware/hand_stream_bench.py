@@ -666,11 +666,17 @@ def main():
     ap.add_argument("--gap-pre", type=float, default=3.0, help="gap stage: hand-bearing lead-in (s)")
     ap.add_argument("--gap-s", type=float, default=1.0, help="gap stage: hand-less window (s)")
     ap.add_argument("--gap-delta", type=float, default=1.0,
-                    help="gap stage: re-entry displacement (rev, <= 1.5). NOTE: "
-                         "3.0 rev passes the 5 rev pump gate and exceeds the "
-                         "2.5 rev MAX_DEVIATION_HAND_REV band, so it trips the "
-                         "hand deviation guard, which now boots ARMED (R1) — "
-                         "the runbook's cold-trip row")
+                    help="gap stage: re-entry displacement (rev, |value| <= 1.5, "
+                         "clamped to keep the bench re-entry catch-up bounded). "
+                         "A LIVE driver cold-trip of the ARMED MAX_DEVIATION_HAND "
+                         "guard (2.5 rev) is NOT reachable through this stage: the "
+                         "delta is capped at 1.5, and the driver's own deviation "
+                         "belt (--max-dev) caps at 2.0 rev < 2.5, so the belt "
+                         "aborts before the firmware guard by design. The ARMED "
+                         "cold-trip is proven per-commit by the native firmware "
+                         "test (tests/firmware/native/test_fault_machine.cpp, "
+                         "'hand deviation: observe-first reports only; hand7 armed "
+                         "it LATCHES'); a live-driver trip affordance is an R2 item")
     ap.add_argument("--gap-knots", type=int, default=9,
                     help="moving_gap stage: consecutive 40 Hz frames whose "
                          "HAS_HAND bit is CLEARED (default 9). The firmware-side "

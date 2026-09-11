@@ -7393,6 +7393,84 @@ class ReloadCoordinatorNode(Node):
         return 6.0 * (uc.hand_rev_for_cup_z(uc.SETTLE_CUP_Z_MM)
                       - float(hand_rev)) / (dt * dt)
 
+    def _unified_prelevel(self, why: str) -> str:
+        """Bring the platform to its gravity-level rest BEFORE the session's first
+        lift and launch. ``''`` on success, else why not.
+
+        **Why, in one control cycle.** The unified launch's banking schedule is
+        built GRAVITY-referenced and re-expressed into the plan frame with the
+        levelling correction (C-LEVEL-1 E8), so a healthy launch rests the cup at
+        the gravity-level counter-tilt — ``−0.762°`` in plan terms at the
+        2026-09-11 offset ``[0.0133, 0.0009] rad``. Knot 0 of that plan is pinned
+        to the SEED (``_cycle_start_state`` reads ``state.pose[3:5]``), and at
+        session start the seed is the FK-seeded STANDBY hold: level to the BASE,
+        not to gravity. The whole correction angle then lands as a tilt STEP
+        across the first few knots, and through the 744.3 mm ``CUP_TILT_CENTER_Z``
+        lever that step is ``arm·sinθ`` of leg centroid motion per knot — a
+        leg-jerk spike. MEASURED 2026-09-11 (bag ``~/Desktop/rosbags/2026-09-11_
+        19-36-52``, reproduced offline): the KIND_SETTLE floor lift refused
+        ``LIMIT_JERK`` at **152 455 mm/s³** (5× the honest 14 499 the same launch
+        plans from a gravity-level seed), so the hand never rose and every LAUNCH
+        then refused ``HAND_BELOW_FLOOR``.
+
+        **Why this is the one window that needs it.** The per-cycle POSITIONING
+        move (:meth:`_position_platform_for_toss`) already closes this for cycles
+        2..n: it sends an IDENTITY ("level") intent that ``trajectory_node``'s E3
+        ingest (``_pose_from_msg``) corrects into the gravity-level counter-tilt,
+        so the platform physically holds gravity-level before those launches. The
+        SESSION-START floor lift is the only window that runs BEFORE any
+        positioning, so it is the only one that must be pre-levelled here — the
+        SAME corrected ``go_to_pose``, at the LIVE xy and z, done once. (The
+        single caught throw of 2026-09-11 flew precisely because its positioning
+        ran first; the fresh-launch sittings failed because the session-start
+        lift ran from an un-positioned, level hold.)
+
+        **A pure attitude move.** The position is the live commanded xy/z, so
+        nothing about where the machine stands changes; only the platform's
+        attitude comes to gravity-level (worst leg ~2.8 mm, the same visible move
+        ``go_home`` makes after a ``level``). Non-fatal like the lift: a refusal
+        is recorded and the lift/launch then refuse loudly by name, exactly as
+        they did before this move existed.
+        """
+        if not self._go_to_pose_cli.wait_for_service(timeout_sec=_SERVICE_WAIT_S):
+            return ('trajectory/go_to_pose unavailable — the platform was not '
+                    'pre-levelled and the %s lift will seed from the standing '
+                    'hold' % why)
+        live = self._live_commanded_position(time.perf_counter())
+        if live is None:
+            return ('trajectory/commanded_position is stale — the pre-level move '
+                    'has no xy/z to hold and one that guessed a pose would move '
+                    'the platform')
+        req = GoToPose.Request()
+        # Identity intent: the E3 ingest applies the gravity-levelling correction
+        # (C-LEVEL-1 E3, `_pose_from_msg`), turning "level" into the gravity-level
+        # counter-tilt. Position left exactly where the machine is — a pure
+        # attitude move, the same primitive `_position_platform_for_toss` sends.
+        req.pose = Pose(
+            position=Point(x=float(live[0]), y=float(live[1]), z=float(live[2])),
+            orientation=Quaternion())
+        req.duration_s = 0.0                    # minimal feasible duration
+        resp = self._wait_future(self._go_to_pose_cli.call_async(req))
+        if resp is None:
+            return ('trajectory/go_to_pose did not answer in {:.1f} s — the '
+                    'platform may be mid-move'.format(_SERVICE_WAIT_S))
+        if not bool(resp.accepted):
+            return 'the pre-level move was REFUSED: {} ({})'.format(
+                resp.code, resp.message)
+        self.get_logger().info(
+            'platform pre-levelled to gravity-level over %.2f s before the %s '
+            'lift (identity intent, E3-corrected) so the launch is seeded from '
+            'the frame its banking schedule is built in'
+            % (float(resp.planned_duration_s), why))
+        # go_to_pose returns at plan INSTALL; wait out the planned move so the
+        # lift and launch seed from a STOPPED, gravity-level machine — a seed read
+        # mid-move is refused IN_MOTION. Bounded by the plan's own duration (the
+        # node caps it), because a wait that can hang is a session that can hang.
+        end_at = time.perf_counter() + float(resp.planned_duration_s)
+        while rclpy.ok() and time.perf_counter() < end_at:
+            time.sleep(min(_TICK_S, max(0.0, end_at - time.perf_counter())))
+        return ''
+
     def _unified_floor_lift(self, why: str) -> str:
         """Lift the hand into the planner's cup box. ``''`` on success, else why not.
 
@@ -10967,6 +11045,23 @@ class ReloadCoordinatorNode(Node):
                 # solves ~8x slower than the rest and releases past the FSM's
                 # grace.
                 self._unified_warm_planner()
+                # ── PRE-LEVEL THE PLATFORM, ONCE PER SESSION, BEFORE THE LIFT ─
+                # The session-start floor lift below is the one window that runs
+                # before any POSITIONING move, so it is the one that would seed
+                # its banking KIND_SETTLE from the un-positioned STANDBY hold —
+                # level to the base, not to gravity — and refuse LIMIT_JERK the
+                # moment a levelling correction is loaded (152k measured
+                # 2026-09-11, the whole of what stopped that sitting throwing).
+                # A corrected go_to_pose at the live xy/z brings the platform to
+                # the gravity-level rest first, exactly as the per-cycle
+                # positioning does for cycles 2..n. See `_unified_prelevel`.
+                prelevel = self._unified_prelevel('session start')
+                if prelevel:
+                    self.get_logger().warning(
+                        'unified session: the platform could NOT be pre-levelled '
+                        '(%s); the floor lift and first LAUNCH will seed from the '
+                        'standing hold and may refuse LIMIT_JERK if a levelling '
+                        'correction is loaded' % prelevel)
                 # ── THE HAND-FLOOR LIFT, ONCE PER SESSION ────────────────────
                 # Immediately after the warm-up and for the same reason: this is
                 # the last moment before the session's clock starts at which a

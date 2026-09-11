@@ -67,7 +67,7 @@ before and after each row; every refusal in a row is reported, not stopped at.
 | 16 | Host step refusal | `--stage step --step-rev 6.0 --close-loop` | `pump refused=True`, nothing on the wire, hold unbroken, firmware counters unmoved. |
 | 17 | Gap re-entry | `--stage gap --gap-pre 3 --gap-s 1.0 --gap-delta 1.0 --close-loop` | Lane decays to rest in the gap, one bounded ~32 mm re-entry, `sent` climbs, the driver's echo-moved proof passes. No trip at 1.0 rev against the 2.5 rev band. |
 | 17b | Moving gap (the decay rule) | `--stage moving_gap --duration 10 --close-loop` | Driver criteria G1–G5 pass (coast `+0.0525 rev` at the defaults, same rule as FW 17); deltas `lead=0 dev_over=0`. |
-| 18 | ARMED guard, trip observed COLD | `--stage gap --gap-delta 3.0 --gap-pre 3 --gap-s 1.0 --close-loop`, recover with `--clear-errors`, then re-run row 14 | The 3.0 rev re-entry passes the 5 rev pump gate and exceeds the 2.5 rev band on the first tick: E-STOP latches with the hand free, the driver's abort line names leg 6. After `--clear-errors`: `fault_state NONE`, recovery slew ≤ 1 rev/s. Row 14 re-run ARMED: zero trips (2026-09-05 worst residual was 10 % of band). |
+| 18 | ARMED guard — proven in firmware, NOT live here | (no driver command) | The ARMED `MAX_DEVIATION_HAND` cold-trip is **proven per-commit** by the native firmware test `tests/firmware/native/test_fault_machine.cpp` ("hand deviation: observe-first reports only; `hand7 arm`ed it LATCHES"), at a genuine >2.5 rev exceed. It is **not reachable through the bench driver**: `--gap-delta` is clamped at 1.5 rev, and the driver's own deviation belt (`--max-dev`) caps at 2.0 rev, below the 2.5 rev firmware band, so the belt aborts before the guard by design. A live-driver trip affordance is an R2 item. Skip this row; the guard is covered. |
 | 19 | Sole writer | Read the Platform banner / `/link_status` Platform version | Platform reads **7** (the only code that could write node 6 is deleted). No dedicated second-master counter exists yet; that is an open R2 item. |
 | 20 | Close-out sweep | `/link_status` + console | `can3_errors` 0, `leak_* ≡ 0`, `interp_deadline_misses` 0, jitter in envelope, `latency_monitor` OK, `tx_deferred` 0, `bridge_fw_version 21 (proto 7)`. |
 | 21 | Close-out state | `/deactivate` | Hand IDLE on the stop. Nothing to restore. |
@@ -76,9 +76,23 @@ Row 15 (legacy stroke replay) no longer exists: the stroke it replayed is delete
 
 ## 4. The R1 gate: one streamed self-toss, caught, no latch step
 
-Launch UP, ball in the cup, session limits and preconditions as UH-6
-(`tests/hardware/session_unified7_cycle_ladder.md` § "UH-6", rows 10–11, minus
-`hand7 arm`, which is now the boot state). ONE throw:
+Launch UP, ball in the cup. Two preconditions, in order, then ONE throw:
+
+1. **Level** (so `/robot_state` reads `levelling_complete: true`). The session
+   now tilts the platform to gravity-level in place before it launches — you will
+   see one small attitude move before the first cycle. That pre-level is what
+   keeps the launch off the leg-jerk ceiling; without it a loaded correction
+   inflates the launch jerk ~5× (2026-09-11).
+2. **Raise the session limits — do not skip this.** A launch needs ~65 k mm/s³
+   of leg jerk, over the 30 k default, so an un-raised session aborts every cycle
+   `ABORTED_NO_RELEASE` or refuses `LIMIT_JERK`. Run UH-6 row 11:
+   ```bash
+   ros2 service call /trajectory/set_limits jugglebot_interfaces/srv/SetTrajectoryLimits \
+     "{leg_vel_limit_mmps: 250.0, leg_acc_limit_mmps2: 3000.0, leg_jerk_limit_mmps3: 150000.0}"
+   ```
+   Expect `250 / 3000 / 150000` echoed as the `applied_*` values.
+
+There is no `hand7 arm` step — the guard boots ARMED (R1). Then ONE throw:
 
 ```bash
 ros2 action send_goal --feedback jugglebot/toss_continuous \

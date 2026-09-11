@@ -722,6 +722,11 @@ def test_cancel_between_cycles_is_honoured_and_commands_nothing(monkeypatch):
                  '_prime_hand_with_retries', '_position_platform_for_toss'):
         monkeypatch.setattr(node, name,
                             lambda *a, _n=name, **k: moved.append(_n))
+        # `_unified_prelevel` runs at SESSION START (a corrected go_to_pose
+        # to gravity-level), not as a between-cycle command; stub it to a
+        # success no-op so it neither records as 'moved' nor waits on the
+        # unmocked go_to_pose client.
+        monkeypatch.setattr(node, '_unified_prelevel', lambda why: '')
     gh = _ContGoalHandle(num_throws=3)
 
     def fake_run(seq, *, deadline_s, cancel_now_fn, feedback_fn, state=None):
@@ -2937,6 +2942,11 @@ def test_a_wedged_session_aborts_STALLED_in_seconds_and_releases_the_claim(
                  '_prime_hand_with_retries', '_position_platform_for_toss'):
         monkeypatch.setattr(node, name,
                             lambda *a, _n=name, **k: moved.append(_n))
+        # `_unified_prelevel` runs at SESSION START (a corrected go_to_pose
+        # to gravity-level), not as a between-cycle command; stub it to a
+        # success no-op so it neither records as 'moved' nor waits on the
+        # unmocked go_to_pose client.
+        monkeypatch.setattr(node, '_unified_prelevel', lambda why: '')
     gh = _ContGoalHandle(num_throws=5, dwell=DWELL, delay=DELAY)
     with node._lock:
         node._goal_claimed = True          # what `_goal_callback` takes at accept
