@@ -154,8 +154,8 @@ survives): `unified-7dof-planner.md`, `critical-point-ilc.md`,
 `catch-robustness.md`, `bb-online-juggle-tilt-rearchitecture.md`,
 `mvp-trajectory-bringup.md`, `hand-trajectory-generator-overhaul.md`,
 `catch-reach-degenerate-overshoot.md`, `inertia-ratio-reconciliation.md`.
-Retained active: `hand-geometry-correction.md` (corrects the prior's rev↔mm
-gain; merge into `skill-stack` when its G3 bench passes),
+`hand-geometry-correction.md` was archived 2026-09-11 with its measurement absorbed
+into R1 (32.567 mm/rev; see its archival note). Retained active:
 `leg-gain-tuning-methodology.md`, `leg-bus-frame-drops.md`,
 `odrive-config-drift-assertion.md`, `bridge-clock-frequency-discipline.md`.
 Parked plans are untouched.
@@ -324,7 +324,10 @@ the rung's tests passing or a handoff file in the scratchpad.
   (the rev↔mm gain moves to one named constant in `hardware_config`), and the
   stroke-engine coupling in `throw_envelope.py` (its physical limits — end stop,
   regen, torque, the measured coast ladder — survive as inputs to the
-  admissible sweep). `hand-geometry-correction.md` merges here if G3 has passed.
+  admissible sweep). The hand geometry measurement lands here as the new
+  constant's value: `hand_mm_per_rev: 32.567` (two owner readings, 2026-09-06 and
+  2026-09-11, agreeing to 0.01 %), replacing `linear_gain_factor` and
+  `hand_spool_radius_m`; the runbook confirms it on the streamed lane.
 - **Owner decisions.** The hand E-STOP band arming policy (observe-first vs
   armed) — row 18 of the hand ladder was closed on thermal grounds, so the trip
   has never been observed on hardware. Whether homing parks the hand at 0 rev.
@@ -466,8 +469,9 @@ firmware guards, the Ball Butler and cone stacks.
   vehicle, and the main-tree memory file `project_two_ball_skill_stack.md` is
   the pointer.
 - **Parallel lines.** `mvp-trajectory-bringup` continues as the firmware
-  validation line; `hand-geometry-correction` merges into `skill-stack` at R1
-  once G3 passes. `git fetch && git status -sb` before every push.
+  validation line; the `hand-geometry-correction` branch and worktree are a record
+  only (archived 2026-09-11, measurement absorbed at R1) — remove the worktree once
+  R1 lands. `git fetch && git status -sb` before every push.
 - **Risks, ranked.** (1) The tracker's per-throw landing observation is the
   learner's food; a blind flight is a lost row and the QTM preconditions are
   non-negotiable. (2) The transit sizing may force a jerk ramp beyond what the

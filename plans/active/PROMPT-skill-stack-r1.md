@@ -57,7 +57,13 @@ R0-close commit; if it is not clean, stop and ask. Use the venv: `source ~/Deskt
    `hand_stream_bench.py`, and every `hand_source` / `[hand7] src=` / HeartbeatT2J bit-6 surface (enumerate
    with `grep -rlE 'hand_source|HAND_SOURCE|hand7'` over the same roots; it includes `unified_cycle.py`'s
    latch precondition text and `feasibility.py:941`); replace `hand_stroke.py` with ONE
-   generated constant pair (`LINEAR_GAIN_REV_PER_M`, `HAND_HOMED_REST_FLOOR_REV`) in `hardware_config` and
+   generated constant pair (`HAND_REV_PER_M`, `HAND_HOMED_REST_FLOOR_REV`) in `hardware_config`, where
+   `HAND_REV_PER_M` derives from a NEW measured key `jugglebot_geometry.hand_mm_per_rev: 32.567` (owner
+   readings 2026-09-06 top 10.701 / bottom −0.107 rev and 2026-09-11 top 10.691 / bottom −0.118 rev over
+   352.0 mm stop-to-stop; the 0.011 rev end shift is homing-zero variation) and the `linear_gain_factor`
+   and `hand_spool_radius_m` keys are DELETED, not re-valued (`sim/plant/mujoco_plant.py` reads the new
+   key too); this absorbs the archived `hand-geometry-correction.md` — read its archival note, do NOT
+   merge its branch; and
    re-point its five surviving importers (`cup_cycle`, `cup_realize`, `feasibility`, `unified_cycle`,
    `throw_envelope`); strip `throw_envelope.py` of the stroke-engine timing model, keeping the physical limits
    (end stop, regen, torque, the measured coast ladder). Grep before, count to zero after.
@@ -65,7 +71,9 @@ R0-close commit; if it is not clean, stop and ask. Use the venv: `source ~/Deskt
    flash → Platform flash → relaunch), the darkness check, then the bench ladder rows 12–21 re-cut for a
    latch-less lane (row 12 becomes "no latch exists: HAS_HAND drives the lane"), every refusal reported at once,
    then one streamed self-toss through the existing unified path, caught, with no operator latch step. Boot
-   banners and bag ids recorded.
+   banners and bag ids recorded. One extra row replaces the archived geometry plan's G3: on the streamed
+   lane, jog the hand to each hard stop and read the encoder — expect a span of 10.81 ± 0.01 rev with the
+   ends near −0.11 / 10.69 rev; a span outside that band stops the sitting.
 5. **Owner decisions to surface BEFORE unit 3**, as one AskUserQuestion with a recommendation each:
    (a) the hand E-STOP arming policy (observe-first vs armed); (b) whether homing parks the hand at 0 rev;
    (c) **the reload consequence** — the Ball Butler reload's reactive catch stroke is dispatched through
@@ -83,8 +91,9 @@ the unit touches, never the whole plan; one logbook entry per change (short form
 before every commit (firmware natives included); commit software UNFLASHED with the `Logbook-Entry:` trailer,
 push in the same response after `git fetch && git status -sb`; `/audit --unstaged` once, at the rung's end;
 the plan's § 3 R1 row and § 6 ledger updated in the closing commit; a rung that has not passed its dress
-rehearsal on the loaded Jetson is not on the runsheet. If `hand-geometry-correction`'s G3 bench has passed,
-merge that branch before unit 3 (its gain becomes the new constant's value); if not, proceed and note it.
+rehearsal on the loaded Jetson is not on the runsheet. The `hand-geometry-correction` branch and worktree
+(`~/Desktop/Jugglebot-geometry`) are a record only: never merge them; remove the worktree in the closing
+commit's session once R1 has landed.
 
 ## Definition of done
 Software committed and pushed unflashed with green gates; the runbook written; the three owner decisions

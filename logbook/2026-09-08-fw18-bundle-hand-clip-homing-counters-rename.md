@@ -352,7 +352,7 @@ Verification triples:
 
 - `ros_ws/gui/js/state-minimap.js`'s three `MPC_STALE` comments are
   deliberately untouched — a parallel session owns `ros_ws/gui/` this session.
-- The geometry correction queued next (`plans/active/hand-geometry-correction.md`
+- The geometry correction queued next (`plans/archived/hand-geometry-correction.md`
   — `hand_stroke_mm`, `linear_gain_factor`, `hand_spool_radius_m`,
   `teensy_trajectory.hand_stroke_m`) was deliberately not touched here; several
   comments this unit edited (e.g. `config/hardware_config.yaml`'s

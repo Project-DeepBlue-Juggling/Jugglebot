@@ -1,7 +1,8 @@
 ---
 title: Hand geometry correction — the measured linear gain replaces the "just 'cuz" factor
 created: 2026-09-08
-status: active
+status: superseded   # 2026-09-11 — measurement absorbed into two-ball-skill-stack.md R1 (owner decision); see the Archival note below
+archived: 2026-09-11
 related_plan: unified-7dof-planner.md
 related_logbook:
   - 2026-09-06-unified-cycle-first-hardware-cycles.md
@@ -19,6 +20,41 @@ related_code:
 ---
 
 # Plan — Hand geometry correction
+
+## Archival note (2026-09-11)
+
+Superseded by `two-ball-skill-stack.md` (owner decision 2026-09-11). The G2 build on branch
+`hand-geometry-correction` (worktree `~/Desktop/Jugglebot-geometry`, 70 files) targets the FSM toss
+stack and the Platform Teensy stroke engine, both retired by the skill stack: R0 already deleted five of
+the test files it touches, and R1 deletes `hand_stroke.py`, `Trajectory.h` and the ILC. The branch is
+therefore **not merged**; it and its worktree stay as the record of G1/G2 and the worktree is removed
+once R1 lands.
+
+**What survives is the measurement, and it lands at R1** as one measured key,
+`hand_mm_per_rev`, from which the generated `HAND_REV_PER_M` is derived; `linear_gain_factor` and
+`hand_spool_radius_m` are deleted rather than re-valued (one number per physical fact, no fudge knob —
+plan § 0). The only firmware consumer of the old factor was `Trajectory.h`, which R1 deletes; the sim
+plant's slider gain reads the new key.
+
+| Reading | Top | Bottom | Span | mm/rev |
+|---|---|---|---|---|
+| 2026-09-06 (owner, bench) | 10.701 rev | −0.107 rev | 10.808 rev | 32.5685 |
+| 2026-09-11 (owner, manual slide, encoder read) | 10.691 rev | −0.118 rev | 10.809 rev | 32.5654 |
+
+The two agree on the scale to 0.01 %; the 0.011 rev shift at both ends is homing-zero variation (about
+0.36 mm), a fact the rest floor and the clip bands must tolerate. R1 adopts the mean, **32.567 mm/rev
+(30.705 rev/m)**, with both readings in the config comment.
+
+Of the five assumptions: **D1** survives by construction (skill-stack sites are stated in true
+millimetres); **D2** (the MJCF hand-joint clip is travel above encoder zero, ≈ 348.2–348.5 mm, not the
+stop-to-stop 352 mm) becomes an R2 sim item; **D3** dies with the stroke engine; **D4** (the coast
+ladder's v-axis left untouched, reading ≈ 5.7 % conservative) is carried as a note on the admissible
+sweep's inputs; **D5** dies with `sim/cycle_gate.py` at R2. **G3 is replaced by one row in R1's flash
+runbook**: on the streamed lane, jog the hand to each hard stop and read the encoder — expect a span of
+10.81 ± 0.01 rev with the ends near −0.11 / 10.69 rev.
+
+The ≈ 3 % gain error is about a quarter of the measured +11 % launch-speed excess; the learner owns the
+rest. The filename is unchanged (DOCUMENTATION_GUIDE § 2.6); every reference keeps resolving.
 
 **Parent plan:** [unified-7dof-planner.md](unified-7dof-planner.md) § "Hand
 geometry correction" (owner, 2026-09-06). **Branch:** `mvp-trajectory-bringup`.

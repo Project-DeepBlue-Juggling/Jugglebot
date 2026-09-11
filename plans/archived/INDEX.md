@@ -68,6 +68,7 @@ next touches that plan, not a mechanical edit. The vocabulary going forward is
 | 2026-09-09 | [hand-trajectory-generator-overhaul.md](hand-trajectory-generator-overhaul.md) | superseded | Hand trajectory generator overhaul — jerk-limited, time-budget parameterised |
 | 2026-09-09 | [catch-reach-degenerate-overshoot.md](catch-reach-degenerate-overshoot.md) | superseded | Catch-reach near-degenerate overshoot — a 0.78° target produced a 2.32° excursion |
 | 2026-09-09 | [inertia-ratio-reconciliation.md](inertia-ratio-reconciliation.md) | superseded | INERTIA_RATIO does not reconcile with the measured masses — what it actually is, and whether it matters |
+| 2026-09-11 | [hand-geometry-correction.md](hand-geometry-correction.md) | superseded | Hand geometry correction — the measured linear gain replaces the "just 'cuz" factor |
 
 ## Where the other plans are
 
