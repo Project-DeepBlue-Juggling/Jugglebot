@@ -32,7 +32,7 @@ Rollback is the pair: this commit's parent for the host, FW 20, Platform FW 6.
 | 2 | Bridge: `cd ros_ws/src/jugglebot/Teensy_code_canbridge && pio run -e teensy41 -t upload` (builds, then flashes; the only USB Teensy is the bridge). | Boot banner `jugglebot-canbridge v21` on the console; the 1 Hz `[hand7]` line reads `guard=ARMED` and has no `src=` field. |
 | 3 | Platform, over CAN through the freshly flashed bridge: `cd ../Teensy_code_platform && pio run -e teensy40 -t upload` (image already built: FW 7; ~55 s; a first-attempt failure was host windowing last time, just re-run). | The tool prints `STATE_READ 6 → 7`. |
 | 4 | Host: `cd ~/Desktop/Jugglebot-skills/ros_ws && colcon build --packages-select jugglebot_interfaces jugglebot && source install/setup.bash` (the srv deletion needs both packages). | |
-| 5 | `ros2 launch jugglebot jugglebot_launch.py record:=true`, then `ros2 topic echo /link_status --once`. | `bridge_fw_version: 21 (proto 7)`, `BRIDGE_FW_CHECK: OK`, Platform `7`, NO `hand_source` row. Note the bag id. |
+| 5 | `ros2 launch jugglebot jugglebot_launch.py record:=true`, then `timeout 5 ros2 topic echo /link_status | head -80` (Foxy has no `--once`). | `bridge_fw_version: 21 (proto 7)`, `BRIDGE_FW_CHECK: OK`, Platform `7`, NO `hand_source` row. Note the bag id. |
 
 Start a console capture before row 2 and leave it running to the end:
 `pio device monitor -b 115200 | tee ~/Desktop/Jugglebot-skills/temp/logs/r1_console_$(date +%Y%m%d_%H%M).txt`

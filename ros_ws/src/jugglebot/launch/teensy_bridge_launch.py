@@ -53,7 +53,12 @@ from launch_ros.actions import Node
 # firmware with no error, which is precisely the staleness trap Phase 5's
 # drift check exists to shout about. The cost accepted in exchange is that the
 # bridge runs live-tree teensy_link beside the frozen installed jugglebot.*.
-_JUGGLEBOT_REPO = os.environ.get('JUGGLEBOT_REPO', '/home/jetson/Desktop/Jugglebot')
+# 2026-09-11: the default is the repo that produced THIS install (walk-up from
+# this installed script), never the literal main-checkout path — a worktree
+# launch against a hard-coded root ran the other tree's PROTOCOL_VERSION and
+# went dark against the freshly flashed board. JUGGLEBOT_REPO still overrides.
+from jugglebot.repo_root import resolve_repo_root  # noqa: E402
+_JUGGLEBOT_REPO = resolve_repo_root(__file__)
 
 
 def generate_launch_description():

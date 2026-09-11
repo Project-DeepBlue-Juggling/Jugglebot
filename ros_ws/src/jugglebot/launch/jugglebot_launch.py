@@ -68,21 +68,8 @@ def _repo_root():
     diagnostic. Falling back to the canonical path keeps the old behaviour when
     the install tree lives outside the repo.
     """
-    override = os.environ.get('JUGGLEBOT_REPO')
-    if override:
-        return override
-    try:
-        here = os.path.dirname(os.path.abspath(__file__))
-        while True:
-            if os.path.isfile(os.path.join(here, 'config', 'generate_config.py')):
-                return here
-            parent = os.path.dirname(here)
-            if parent == here:
-                break
-            here = parent
-    except Exception:  # noqa: BLE001 — diagnostics never raise
-        pass
-    return '/home/jetson/Desktop/Jugglebot'
+    from jugglebot.repo_root import resolve_repo_root   # shared with teensy_bridge_launch.py
+    return resolve_repo_root(__file__)
 
 
 def _installed_jugglebot_dir():
@@ -441,7 +428,7 @@ def generate_launch_description():
     # the ROS package: live-tree freshness for the hottest wire-format code,
     # instead of putting every protocol.py edit behind a `colcon build` whose
     # omission fails silently). Override host path via JUGGLEBOT_REPO.
-    _jugglebot_repo = os.environ.get('JUGGLEBOT_REPO', '/home/jetson/Desktop/Jugglebot')
+    _jugglebot_repo = _repo_root()   # the tree that produced THIS install, never a fixed path (2026-09-11)
     _existing_pp = os.environ.get('PYTHONPATH', '')
     _bridge_pythonpath = (f"{_jugglebot_repo}:{_existing_pp}"
                           if _existing_pp else _jugglebot_repo)
