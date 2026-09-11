@@ -58,12 +58,6 @@ _OBJECTS = {
     # alongside fake_hal.o) for the leg_homing/activate/deactivate drivers — their
     # bus/fault gate + *_active() ODR needs differ from the fault/interp TUs.
     "coldstart_hal":     NATIVE_DIR / "coldstart_hal.cpp",
-    # The FW 17 hand-mastery latch (real TU, deliberately dependency-light: it
-    # links against only axis_state + the fake clock, so the interp/fault/hand
-    # drivers exercise the REAL gate rather than a stub). test_rpc_dispatch
-    # deliberately does NOT link it — that driver stubs hand_source_request for
-    # routing isolation, per its stub-everything discipline.
-    "hand_source":       FIRMWARE_DIR / "hand_source.cpp",
     # A-N1: leg_interp.cpp's `hand7 reset` now calls fault_machine.h's
     # fault_hand_dev_prev_reset() so a reset re-baselines fault_machine.cpp's
     # own exceed-tick baseline too. test_leg_interp #includes leg_interp.cpp
@@ -79,12 +73,11 @@ _OBJECTS = {
 _BINARIES = {
     "test_fault_machine": (
         NATIVE_DIR / "test_fault_machine.cpp",
-        ["axis_state", "ball_butler_state", "fake_hal", "hand_source"],
+        ["axis_state", "ball_butler_state", "fake_hal"],
     ),
     "test_leg_interp": (
         NATIVE_DIR / "test_leg_interp.cpp",
-        ["axis_state", "ball_butler_state", "fake_hal", "hand_source",
-         "fault_hand_dev_stub"],
+        ["axis_state", "ball_butler_state", "fake_hal", "fault_hand_dev_stub"],
     ),
     # Platform-Teensy relay seam. #includes platform_relay.cpp; the
     # fake HAL supplies can_jugglebot_send + jugglebot_commands_allowed, and
@@ -108,14 +101,6 @@ _BINARIES = {
     "test_gpio_poll": (
         NATIVE_DIR / "test_gpio_poll.cpp",
         ["axis_state", "ball_butler_state", "fake_hal"],
-    ),
-    # Hand traj / smooth-move conduit. #includes hand_ops.cpp; the fake
-    # HAL supplies can_jugglebot_send + jugglebot_commands_allowed (+ the send-fail
-    # hook for the preamble-abort test). The ODrive encoders + 0x6D0 id are
-    # header-inline / generated.
-    "test_hand_ops": (
-        NATIVE_DIR / "test_hand_ops.cpp",
-        ["axis_state", "ball_butler_state", "fake_hal", "hand_source"],
     ),
     # Cold-start move ladders. Each driver #includes ONE real
     # module .cpp (defining its own *_active) + supplies the two sibling predicates

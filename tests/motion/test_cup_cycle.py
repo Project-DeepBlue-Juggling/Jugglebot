@@ -470,16 +470,15 @@ def test_runway_default_decel_is_the_signed_off_hand_limit():
     """3500 rev/s² ÷ the package's slider gain, and the gain's two sources agree.
 
     3500 rev/s² is the owner-signed hand acceleration limit (Phase 0 decision 4,
-    2026-08-30), under the C-HAND-2 authority bound of 3925.5. The gain is taken
-    from ``hand_stroke``, which DERIVES it from the firmware spool geometry;
-    ``TEENSY_LINEAR_GAIN`` is the generated constant the firmware itself uses.
-    They must be the same number — the runway distance is sized against one and
-    the hardware obeys the other.
+    2026-08-30), under the C-HAND-2 authority bound of 3925.5. R1 (2026-09-11):
+    the gain is the MEASURED ``hw.HAND_REV_PER_M`` (jugglebot_geometry.
+    hand_mm_per_rev, inverted) — ``hand_stroke`` and the retired
+    ``TEENSY_LINEAR_GAIN`` fudge-factor gain it derived are both deleted.
     """
-    assert cc.LINEAR_GAIN_REV_PER_M == hw.TEENSY_LINEAR_GAIN
+    assert cc.HAND_REV_PER_M == hw.HAND_REV_PER_M
     assert cc.HAND_ACC_LIMIT_RPS2 == 3500.0
     assert cc.HAND_ACC_LIMIT_RPS2 == hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2
-    assert cc.HAND_MAX_DECEL_MPS2 == pytest.approx(3500.0 / hw.TEENSY_LINEAR_GAIN)
+    assert cc.HAND_MAX_DECEL_MPS2 == pytest.approx(3500.0 / hw.HAND_REV_PER_M)
     assert cc.CupCycleConfig().catch_runway_decel_mps2 == cc.HAND_MAX_DECEL_MPS2
 
 
@@ -1057,16 +1056,16 @@ def test_a_release_terminal_window_keeps_the_configured_box(monkeypatch):
 
 
 def test_the_seed_allowance_covers_the_whole_retract_band():
-    """20 mm is derived from the machine, not chosen: 10 mm inset + 6.33 mm band.
+    """20 mm is derived from the machine, not chosen: 10 mm inset + 6.51 mm band.
 
     The box is inset 10 mm above the bottom of the slider's operating band, and
-    a retracted hand settles anywhere down to ``-0.20 rev`` — 6.33 mm through the
-    package's own gain — below that bottom. So the deepest a HEALTHY parked
-    machine can seed is 16.33 mm under the floor, and the allowance has to admit
-    it or the fix refuses the very case it exists for.
+    a retracted hand settles anywhere down to ``-0.20 rev`` — 6.51 mm through the
+    package's own (R1, 2026-09-11: measured) gain — below that bottom. So the
+    deepest a HEALTHY parked machine can seed is 16.51 mm under the floor, and
+    the allowance has to admit it or the fix refuses the very case it exists for.
     """
-    band_m = 0.20 / cc.LINEAR_GAIN_REV_PER_M
-    assert band_m == pytest.approx(0.006326, abs=1e-6)
+    band_m = 0.20 / cc.HAND_REV_PER_M
+    assert band_m == pytest.approx(0.0065134, abs=1e-6)
     assert cc.SEED_OUTSIDE_BOX_MAX_M >= 0.010 + band_m
     # ...and not so wide that a genuinely wrong seed rides through: the shipped
     # carry's 11.2 mm is comfortably inside, a hand outside its band is not.

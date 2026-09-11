@@ -88,7 +88,7 @@ can_ids:
 
   # Platform Teensy <-> Host
   platform:
-    TRAJ_CMD:       0x6D0
+    # TRAJ_CMD 0x6D0 (the hand stroke-engine command) RETIRED 2026-09-11 at skill-stack R1 — the id is never reused.
     STATE_UPDATE:   0x6E0
     TILT_READING:   0x7DE
     TRAFFIC_REPORT: 0x7DF

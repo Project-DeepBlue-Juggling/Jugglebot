@@ -296,7 +296,6 @@ def _ring_node(monkeypatch, clock, planner, *, lifts=None):
     # actually looks like; the refusal itself is `tests/ros/test_unified_launch_floor.py`'s.
     with node._lock:
         node._hand_pos_meas = uc.hand_rev_for_cup_z(uc.SETTLE_CUP_Z_MM)
-    monkeypatch.setattr(node, '_set_hand_source', lambda streamed: (True, 'ok'))
     monkeypatch.setattr(node, '_unified_warm_planner', lambda: 0.0)
     # Both seams, one state machine: the LAUNCH and the floor lift still go
     # through the blocking `_call_plan_cycle`, the EXTEND through the client.
@@ -1497,13 +1496,15 @@ def test_a_REAL_chained_sequencer_announces_and_releases_at_the_floor_dwell():
 
 
 def test_the_chained_release_guard_is_a_tick_not_a_kind0_windup():
-    """…and the reason it fits: a chained cycle spends no dispatch budget.
-
-    The guard fronts a ``set_hand_traj_cmd`` whose stroke needs a prelude, a
-    safety gap and a windup. Under a chain there is no such command — the release
-    is a KNOT on a streaming plan and ``_dispatch_toss`` issues no RPC — so the
-    windup measures a device that is not running, exactly as the park band does.
-    What is genuinely still needed is the announcement, one tick ahead.
+    """R1 (owner decision 4): NEITHER path fronts a dispatch-side windup any
+    more — ``set_hand_traj_cmd`` and the stroke it needed a prelude/gap/windup
+    for are retired, so ``_dispatch_toss`` issues no RPC on either path and
+    ``min_event_delay_for_throw_s`` is a flat zero. The PLAIN floor is that
+    zero directly; the CHAINED floor is one tick (``NODE_LOOP_PERIOD_S`), for
+    the announcement it still has to get out before the ball leaves — so the
+    two floors are no longer "windup vs tick", they are "zero vs one tick",
+    with chained now the (slightly) LARGER of the two — the inverse of the
+    pre-R1 relationship, where the reactive windup made plain the larger one.
     """
     plain = TossSequencer(catch_pose_stow_mm=(0.0, 0.0, 170.0),
                           flight_time_s=FLIGHT, throw_delay_s=DELAY)
@@ -1511,8 +1512,9 @@ def test_the_chained_release_guard_is_a_tick_not_a_kind0_windup():
                             flight_time_s=FLIGHT, throw_delay_s=DELAY,
                             chained=True)
     assert plain.release_window_floor_s == plain.min_event_delay_for_throw_s
-    assert plain.release_window_floor_s > 0.25          # the kind-0 windup
+    assert plain.release_window_floor_s == 0.0          # R1: no more windup
     assert chained.release_window_floor_s == rcn._PACE_PERIOD_S
+    assert chained.release_window_floor_s > plain.release_window_floor_s
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1641,14 +1643,16 @@ def test_the_beat_floor_is_LAYER_B_and_fires_before_the_sessions_dwell_gate(
 
 def test_the_beat_floor_leaves_a_LEGACY_goal_alone(monkeypatch):
     """The floor is a property of the CHAIN, so a goal with no chain never meets
-    it. A legacy session with the same dwell is refused by the session FSM, by
-    its own name, exactly as it was before UH-7a."""
+    it. A legacy session with the same dwell is refused by its own name — since
+    R1 (2026-09-11) that name is REJECTED_STROKE_ENGINE_RETIRED at accept (the
+    device the legacy branch dispatched to is deleted), which fires before the
+    session FSM's REJECTED_DWELL ever could; the beat floor is never consulted."""
     clock = _Clock()
     node = _ring_node(monkeypatch, clock, _Planner(clock))
     goal = _ContGoalHandle(num_throws=3, dwell=0.5, delay=DELAY)
     goal.request.unified_cycle = False
     result = node._execute_toss_continuous(goal)
-    assert result.outcome.startswith('REJECTED_DWELL'), result.outcome
+    assert result.outcome.startswith('REJECTED_STROKE_ENGINE_RETIRED'), result.outcome
     assert rcn._OUTCOME_BEAT_TOO_SHORT not in result.outcome
 
 

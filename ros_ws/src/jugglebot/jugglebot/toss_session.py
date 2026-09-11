@@ -212,85 +212,59 @@ an expression repeated at its two call sites, and that is the Phase-C seam: the
 beat is replaced by replacing that body (plan § 2.6), while the cycle takes its
 release as an input (``TossSequencer.release_at_perf``) either way.
 
-The floor is the LARGER of a plumbing term and a physics term, and neither is
-chosen::
+**R1 (2026-09-11) deletes the physics term outright, not just its stroke-engine
+dependency.** Until then the floor was the LARGER of a plumbing term and a
+physics term::
 
     dwell_floor = max(throw_delay + handoff_margin_s,        # the handoff
                       hand_floor_dwell_s(flight, vel_scale))  # the stroke
 
     handoff_margin_s = max(dwell_margin_s,                   # verdict exists
-                           catch_park_reentry_s(v, scale))   # hand back at park
+                           <park-reentry term>)               # hand back at park
+
+``hand_floor_dwell_s`` modelled the reactive stroke engine decelerating the
+caught ball to rest and then prelude+gap+winding up the next throw IN SERIES
+(any kind-0/1/2 command cleared the whole packed queue, and overlapping the
+two was the 2026-07-25 clobbered-stroke defect); the retired park-reentry term
+modelled that same engine's return to the park band after a catch. Both
+describe a device R1 deletes with the mastery latch — the streamed hand lane
+tracks continuously rather than executing a discrete catch-then-park stroke —
+so neither term has anything left to compute, and ``motion/trajectory/
+feasibility``'s ``validate_cycle`` is the authority on cadence feasibility now
+(the same shift the ``unified`` field already made for ``ARM_WINDOW``).
+
+What survives is the plumbing term alone::
+
+    dwell_floor = throw_delay + handoff_margin_s
+    handoff_margin_s = dwell_margin_s
 
 * ``throw_delay`` is gated by the cycle FSM at ``TOSS_DISPATCH_DEBOUNCE_S``
   (0.10 s, a goal-storm debounce) and, once the release speed is known, at
-  ``toss_sequencer.min_throw_delay_for_release_s`` — the Teensy's own ``:642``
-  budget for the kind-0 dispatch (``hand_stroke.min_throw_event_delay_s``,
-  0.281 s at the 0.80 s nominal flight) **plus the pre-dispatch sequence that
-  budget is measured after** (``pre_dispatch_budget_s``: 0.160 s when POSITIONING
-  takes the census-B1 skip, 0.520 s when it commands a move — 0.080 / 0.460 until
-  owner decision D3 re-based both on the loop's measured PERIOD on 2026-08-26).
-  The second term landed 2026-08-23. Without it the accept gate was systematically looser than
-  the runtime guard it fronts for, and a goal could be ACCEPTED and then abort
-  ``ABORTED_CANT_MAKE_RELEASE`` on every cycle — which is what three published
-  rungs of ``tests/hardware/session_cadence_ladder.md`` did. Until 2026-08-22
-  the gate was ``MIN_TOSS_THROW_DELAY_S`` = 3.5 s, a generic fit over a
-  worst-case POSITIONING move a co-located chain never makes; retiring it is
-  operator decision 3 of the ILC-primary fold-in.
-* ``dwell_margin_s`` covers ONE HALF of the landing → next-cycle-start handoff —
-  the verdict half; see the ``handoff_margin_s`` bullet below for the other, and
-  note that the floor consumes THAT and not this. It was 0.6 s
-  from 2026-07-29 to 2026-08-22, sized on the MOCAP TRACKER's CAUGHT verdict
-  (*landing + 0.202–0.442 s*, median 0.209; 17/17 self-tosses of the 2026-07-27
-  sitting, ``logbook/2026-07-28-caught-gate-xy-plausibility.md``) plus two node
-  ticks. Since the possession verdict became sensor-PRIMARY (C-POSSESS-1,
-  2026-08-10) the handoff is the HAND SENSOR's arrival edge, which is a
-  different and much faster channel — 0 ms debounce on ``empty→held``, earliest
-  observed edge **+87.6 ms** past the announced landing. It is
-  ``ARRIVAL_BAND_MIN_S`` itself — the earliest instant a verdict can EXIST, with
-  the old derivation's 2-tick allowance dropped because invariant S1 already
-  enforces that ordering structurally. **No longer PROVISIONAL**: the post-FW14
-  band re-measure it was waiting on landed 2026-08-24 (+137…+798 ms ⇒
-  +87.6…+554.7 ms, n=33 over four bags), and this number moved 0.137 ⇒ 0.087
-  with it. It bought no cadence — see ``handoff_margin_s`` below, where the park
-  term binds first at every rung. It is a LOWER bound on the verdict and not an
-  upper one, deliberately: the LATEST edge is +554.7 ms, and a margin sized on
-  THAT would put the floor 0.47 s above where it sits and forbid every rung. The late-seat case is protected by the C-POSSESS-1 § 3.4/§ 3.6
+  ``toss_sequencer.min_throw_delay_for_release_s`` — a dispatch budget that is
+  now zero unless explicitly overridden (R1: the device it used to be derived
+  from is gone) **plus the pre-dispatch sequence that budget is measured
+  after** (``pre_dispatch_budget_s``: 0.160 s when POSITIONING takes the
+  census-B1 skip, 0.520 s when it commands a move — unchanged by R1, it counts
+  FSM ticks, not stroke geometry).
+* ``dwell_margin_s`` is ``ARRIVAL_BAND_MIN_S`` (**0.087 s**, the 2026-08-24
+  re-measure) — the earliest instant the possession verdict for cycle N can
+  exist, from the hand sensor's arrival edge (C-POSSESS-1, sensor-PRIMARY
+  since 2026-08-10). It is a LOWER bound on the verdict and not an upper one,
+  deliberately: the late-seat case is protected by the C-POSSESS-1 § 3.4/§ 3.6
   machinery, not by this number.
-* ``handoff_margin_s`` is what the floor ACTUALLY uses, and it is
-  ``max(dwell_margin_s, hand_stroke.catch_park_reentry_s(v, scale))`` (audit fix,
-  2026-08-22). The verdict is only half of what the next cycle's CHECKING needs;
-  the other half is ``hand_parked``, and the catch stroke does not bring the hand
-  back inside the park band until **+0.190 s** at the R5-prime flight (+0.208 s
-  with a layer-3 speed trim possible, which is the binding column). The retired
-  0.6 s margin covered that by accident and 0.087 s does not, so at every cadence
-  rung the bare arrival term would schedule cycle N+1 inside cycle N's live catch
-  stroke.  Since 2026-08-24 the park term binds at **every** published rung on
-  both columns — the arrival term is now 0.087 s against a park term that never
-  drops below 0.1204 s — so the re-measured floor is inert here by construction,
-  not by accident. See :attr:`TossSessionSequencer.handoff_margin_s`.
-* ``hand_floor_dwell_s`` is the C-HAND-1 term, and below ~0.5 s it is the ONLY
-  one that binds. Between a landing and the next release the hand must
-  decelerate the caught ball to rest at 0 rev, then prelude + gap + wind up the
-  next throw — in SERIES, because any kind-0/1/2 command clears the whole packed
-  queue (``Teensy_code_platform.ino:648``) and overlapping the two is the
-  2026-07-25 clobbered-stroke defect. See
-  ``hand_stroke.min_turnaround_dwell_s``.
+* ``handoff_margin_s`` is now ``dwell_margin_s`` alone (R1: the park-reentry
+  term above is deleted, not just zeroed — see
+  :attr:`TossSessionSequencer.handoff_margin_s`).
 
-At the shipped defaults (delay 5.0, flight 0.80) the floor is **5.1416 s** with
-a layer-3 speed trim possible and **5.1204 s** without — the PARK term, not the
-0.087 s arrival margin, on both — and the default dwell is 6.0 s, so an
-all-defaults goal is unchanged.
-At the tuning-phase operating point (flight 0.4949 s, ``catch/vel_scale`` 0.9)
-the hand floor is **0.4871 s**, which is what makes a 0.49 s dwell — 61
-throws/min — the fastest cadence this firmware can be asked for. It clears by
-**2.9 ms**; the bench runbook (``tests/hardware/session_cadence_ladder.md``)
-logs the per-cycle ``dispatch → catch-stroke-end`` gap for exactly that reason.
-
-**A 0.25 s dwell is not reachable at ANY admitted flight time.** The hand floor
-bottoms at 0.2505 s at the very top of the C-HAND-3 band (T = 1.1485 s, apex
-1.62 m) and rises from there. Reaching it needs a Platform Teensy flash changing
-``calcCatch``'s geometry — deferred by operator decision 3, deliberately not
-built here.
+At the shipped defaults (delay 5.0, flight 0.80) the floor is **5.087 s**
+(throw_delay 5.0 + handoff 0.087; verified 2026-09-11 against
+``TossSessionSequencer(num_throws=1).required_dwell_s``) — and the default
+dwell is 6.0 s, so an all-defaults goal is unchanged. At the tuning-phase operating point
+(flight 0.4949 s, throw_delay 0.30 s) the floor is **0.387 s** (same
+computation), well under the shipped 0.49 s cadence — the physics term this
+rung deletes was already dominated by the plumbing term at every published
+rung (see the retired ``test_the_hand_floor_is_dominated_by_the_plumbing_term``),
+so no admitted cadence becomes reachable that was not already legal.
 
 A dwell under the floor is REFUSED (``REJECTED_DWELL``), never silently stretched:
 a cadence the machine quietly ignores is a lie about what it did. Lateness in the
@@ -403,7 +377,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 
 from jugglebot.ball_possession import ARRIVAL_BAND_MIN_S
-from jugglebot.motion.trajectory import hand_stroke, throw_envelope
+from jugglebot.motion.trajectory import throw_envelope
 # THE shared refusal vocabulary. `base_outcome` is load-bearing here, not
 # cosmetic: this FSM matches cycle terminals by EQUALITY to decide whether to
 # run a reload interlude or a no-release retry, and an enriched terminal would
@@ -835,17 +809,16 @@ class TossSessionSequencer:
     catch_vel_scale: float = 0.0                # this session's catch/vel_scale knob;
                                                 #   0 ⇒ JB_OP_CATCH_VEL_SCALE_DEFAULT
                                                 #   (0.9), which the node resolves and
-                                                #   passes in. It belongs to the FLOOR
-                                                #   because the catch is armed at
-                                                #   event_vel x scale and the catch
-                                                #   tail is inversely proportional to
-                                                #   it: a SLOWER catch (a smaller
-                                                #   scale) makes the turnaround
-                                                #   LONGER, so a session that ignored
-                                                #   it would under-state its own floor
-                                                #   for exactly the operator setting
-                                                #   most likely to be reached for when
-                                                #   catches are being missed.
+                                                #   passes in. R1 (2026-09-11): no
+                                                #   longer read by this class — it
+                                                #   used to widen the dwell FLOOR
+                                                #   (a slower catch made the reactive
+                                                #   stroke's turnaround longer), and
+                                                #   that floor term is deleted with
+                                                #   the stroke engine. Kept as a field
+                                                #   because the goal/action IDL still
+                                                #   carries it for the node's own
+                                                #   vel_scale relay.
     stop_on_miss: bool = True                   # operator decision (c). The ctor
                                                 #   default matches the ACTION's IDL
                                                 #   default; both are load-bearing —
@@ -1075,38 +1048,26 @@ class TossSessionSequencer:
         admits.  Bisected here because the envelope's negative-side bound is
         strongly flight-dependent and has no closed form.
 
-        **It costs nothing where the cadence lives.** At the ladder's flights the
-        envelope's ``ARM_WINDOW`` term refuses the negative side almost entirely
-        (0.0 mm/s of headroom at the 0.4949 s band floor, 0.21 m/s at 0.5029 s),
-        so this returns the untrimmed speed or within a whisker of it; the charge
-        only becomes visible at the long flights where the delay is seconds clear
-        of every floor anyway.  The bridge's own [0.3, 7.0] m/s wire band is two
-        orders of magnitude away from binding here and is not re-checked.
-
-        **The ARM_WINDOW carve-out is applied here too** (``arm_window=not
-        unified``), because this bisection must ask the SAME question the apply
-        seam will: ``_ilc_vel_trim_refusal`` is what actually admits or drops the
-        trim, and if this floor charged a bound that seam does not, the session
-        would compute its cadence floors against a slowest-release the machine
-        would never be commanded at.  Under unified the paragraph above inverts —
-        the ARM_WINDOW term no longer refuses the negative side, so the floor
-        genuinely moves down to ``nominal · (1 − ILC_SPEED_AUTHORITY)`` and the
-        session's floors are computed against a release the trim can really ask
-        for."""
+        **R1 (2026-09-11): the envelope's ``ARM_WINDOW`` term is deleted** with
+        the reactive stroke engine it modelled (throw_envelope.py), so
+        ``evaluate`` no longer takes an ``arm_window`` argument and no longer
+        refuses a slow release on that ground — the remaining six bounds (end
+        stop, decel/accel authority, regen, the wire band) are what a
+        negative-side trim can still hit, and bisecting against them keeps this
+        property honest without restating their arithmetic here."""
         nominal = vertical_event_vel_mps(self._flight_or_floor_s)
         if not self.ilc_speed_trim_possible:
             return nominal
         flight = self._flight_or_floor_s
-        arm_window = not self.unified
         lo = nominal * (1.0 - ILC_SPEED_AUTHORITY)
-        if throw_envelope.evaluate(flight, lo, arm_window=arm_window).ok:
+        if throw_envelope.evaluate(flight, lo).ok:
             return lo
         hi = nominal
-        # Monotone: the ARM_WINDOW term that refuses a slow release only relaxes
-        # as the release speeds up, so a bisection lands on the exact frontier.
+        # Monotone: a term that refuses a slow release only relaxes as the
+        # release speeds up, so a bisection lands on the exact frontier.
         for _ in range(48):
             mid = 0.5 * (lo + hi)
-            if throw_envelope.evaluate(flight, mid, arm_window=arm_window).ok:
+            if throw_envelope.evaluate(flight, mid).ok:
                 hi = mid
             else:
                 lo = mid
@@ -1118,8 +1079,9 @@ class TossSessionSequencer:
 
         One derivation, shared with the cycle FSM's own CHECKING gate
         (:func:`toss_sequencer.min_throw_delay_for_release_s`):
-        ``max(TOSS_DISPATCH_DEBOUNCE_S, kind-0 dispatch budget + pre-dispatch
-        sequence)``.  Until 2026-08-23 it charged the dispatch budget alone, which
+        ``max(TOSS_DISPATCH_DEBOUNCE_S, dispatch budget + pre-dispatch
+        sequence)`` (R1: the dispatch budget is zero unless overridden — see
+        :func:`toss_sequencer.commit_budget_s`).  Until 2026-08-23 it charged the dispatch budget alone, which
         is the floor the RUNTIME guard measures the *remaining* lead against — so
         the session admitted delays whose cycles then aborted
         ``ABORTED_CANT_MAKE_RELEASE`` every time (the whole reason three published
@@ -1156,120 +1118,48 @@ class TossSessionSequencer:
                                              positioning_move=False)
 
     @property
-    def hand_floor_dwell_s(self) -> float:
-        """The C-HAND-1 dwell floor: catch tail + prelude + gap + throw windup.
-
-        THE physics term, and below ~0.5 s the only one that binds (census § 0).
-        Delegates to ``hand_stroke.min_turnaround_dwell_s`` — see it for why the
-        four terms are additive rather than overlappable, and for the verified
-        finding that the catch profile ends at ``t7`` and not at
-        ``t8 = t7 + END_PROFILE_HOLD`` (which would add 0.10 s to every number
-        here and make the 0.49 s operating point infeasible).
-
-        The release speed comes from ``toss_sequencer.vertical_event_vel_mps`` —
-        the SAME closed form the cycle FSM resolves its own ``event_vel_mps``
-        with, so the session cannot refuse a cadence the cycle can make.
-
-        **UNTRIMMED, unlike the two floors either side of it** (2026-08-23), and
-        the asymmetry is deliberate. This is THE named C-HAND-1 geometry number:
-        the census, the cadence runbook's § 0 table and
-        ``ros_ws/docs/hand_decel_feedforward.md`` all quote it per flight time,
-        and re-basing it onto a speed that depends on whether an ILC artifact
-        happens to be loaded would make "the hand floor at T = 0.5029 s" two
-        different numbers on one machine. It is safe to leave nominal because it
-        is **not the binding term at any admitted flight**: since the delay floor
-        grew the pre-dispatch sequence, ``throw_delay + handoff_margin`` exceeds
-        this by **0.1230 s at its worst** across the whole C-HAND-3 band (probe,
-        2026-08-23), which covers this term's entire **0.0715 s** worst-case
-        sensitivity to a maximal negative speed trim with 1.7x margin.
-        ``test_the_hand_floor_is_dominated_by_the_plumbing_term``
-        pins that dominance, so if the plumbing term ever shrinks back under it
-        the argument is re-taken rather than silently relied on.
-
-        ``flight_time_s`` is 0.0 when nothing resolved it (standalone/test
-        construction). The fallback is the C-HAND-3 band FLOOR, not the nominal
-        0.80 s default, because the floor is monotonically DECREASING in flight
-        time: the shortest admitted flight has the largest hand floor, so an
-        un-resolved session is judged against the strictest case it could be.
-        Fail-closed, the same doctrine as ``throw_site_known``."""
-        return hand_stroke.min_turnaround_dwell_s(
-            vertical_event_vel_mps(self._flight_or_floor_s),
-            float(self.catch_vel_scale))
-
-    @property
     def handoff_margin_s(self) -> float:
-        """THE landing → next-cycle-CHECKING floor: the LARGER of the possession
-        verdict's earliest instant and the hand's return to the park band.
+        """THE landing → next-cycle-CHECKING floor: the possession verdict's
+        earliest instant.
 
-        Two independent things have to be true before cycle N+1's CHECKING can
-        pass, and until 2026-08-22 only one of them was modelled:
+        Until 2026-08-22 this also carried a second term — the reactive catch
+        stroke's own return to the park band — because ``hand_parked`` is a
+        hard CHECKING precondition. R1 (2026-09-11) deletes that stroke engine
+        with the mastery latch: the hand is now continuously tracked by the
+        streamed lane rather than executing a discrete catch-then-park motion,
+        so there is no stroke-return term left to charge here. What remains is
+        the possession term alone: ``dwell_margin_s``, re-based onto
+        ``ARRIVAL_BAND_MIN_S`` (**0.087 s** since the 2026-08-24 re-measure)
+        when the channel went sensor-PRIMARY — a possession VERDICT for cycle N
+        has to exist before cycle N+1's CHECKING can pass.
 
-        * a possession VERDICT for cycle N has to exist — ``dwell_margin_s``,
-          re-based onto ``ARRIVAL_BAND_MIN_S`` (0.137 s then, **0.087 s** since
-          the 2026-08-24 re-measure) when the channel went sensor-PRIMARY.
-          Correct about the quantity it models.
-        * the HAND has to be back inside the park band — ``hand_parked`` is a
-          hard CHECKING precondition (a kind-0 stroke commands absolute positions
-          from 0 rev), and the catch stroke is still running well past +87.6 ms:
-          ``hand_stroke.catch_park_reentry_s`` is **0.1903 s** at the R5-prime
-          flight, 0.1582 at R4's, 0.1204 at R0–R3's — and 0.2081 / 0.1861 /
-          0.1416 at the same three flights once a layer-3 speed trim is possible,
-          which is the column that binds. Since the 2026-08-24 re-measure took
-          the arrival term to 0.087 s, this term is the max() winner at EVERY
-          published rung on BOTH columns.
-
-        **Why this is a separate property and not a bigger literal** (audit fix,
-        2026-08-22). The retired 0.6 s ``DEFAULT_SESSION_DWELL_MARGIN_S`` covered
-        the park re-entry by accident — 0.6 s is past every value the geometry
-        can produce — so nothing ever had to name it. Re-basing the margin onto
-        the arrival band removed the accident without replacing it, and at the
-        cadence rungs the gap is decisive: R5-prime schedules cycle N+1 at
-        ``landing + 0.140`` against a hand that re-enters the band at +0.190,
-        i.e. 50 ms INSIDE the live catch stroke. CHECKING then reads ~1.5 rev and
-        mints ``REJECTED_HAND_NOT_PARKED`` on a healthy catch — a machine-fault
-        verdict for a cadence fault, which ends the sitting and routes the
-        operator to the wrong subsystem.
-
-        The only thing standing between that schedule and that verdict today is
-        that the cycle terminal still waits for a TRACKER ``CAUGHT`` at
-        *landing + 0.202…0.442 s* — the FALLBACK channel this same fold-in
-        demoted, and whose 0.442 s figure it retired. An accidental fence, 12 ms
-        wide at R4/R5, that disappears the moment the sensor alone is allowed to
-        terminate a cycle. Derived, so it cannot drift away again.
-
-        The speed is :attr:`floor_event_vel_mps` (2026-08-23): the catch is armed
-        for the ball the throw put up, so a layer-3 speed trim moves the park
-        re-entry with it, and the fail-closed value is the slow one."""
-        return max(float(self.dwell_margin_s),
-                   hand_stroke.catch_park_reentry_s(
-                       self.floor_event_vel_mps,
-                       float(self.catch_vel_scale)))
+        ``REJECTED_HAND_NOT_PARKED`` is unaffected by this change: it still
+        gates on ``obs.hand_parked``, whose invariant R1 re-points to the
+        hand's rest band (see ``toss_sequencer``'s CHECKING docstring) rather
+        than to a stroke that no longer runs."""
+        return float(self.dwell_margin_s)
 
     @property
     def required_dwell_s(self) -> float:
-        """The smallest dwell this session can honour — the LARGER of the
-        plumbing handoff and the hand's own geometry.
+        """The smallest dwell this session can honour — the plumbing handoff.
 
-        The plumbing term is ``throw_delay + handoff_margin``: the release is
-        accept + throw_delay, and the session cannot start cycle N+1 before the
-        previous cycle's possession verdict has landed AND the hand has come back
-        to the park band (see :attr:`handoff_margin_s` — the second half was
-        unmodelled until 2026-08-22). The physics term is
-        :attr:`hand_floor_dwell_s`.
+        ``throw_delay + handoff_margin``: the release is accept + throw_delay,
+        and the session cannot start cycle N+1 before the previous cycle's
+        possession verdict has landed (:attr:`handoff_margin_s`).
 
-        **Why the max() and not just the plumbing term.** Until 2026-08-22 the
-        plumbing term alone was the floor, and it was safe only by accident: at
-        ``MIN_TOSS_THROW_DELAY_S`` = 3.5 s it evaluated to 4.10 s, an order of
-        magnitude above anything the hand could not make, so the physics never
-        had to be consulted. Retiring that constant (operator decision 3) removes
-        the accident. Without this term a goal with ``throw_delay 0.30 / dwell
-        0.45`` at the 0.4949 s band floor satisfies ``dwell >= delay + margin``,
-        is ACCEPTED, and then dispatches cycle N+1's kind-0 throw INSIDE cycle
-        N's live catch stroke — which clears the packed queue and reseeds the
-        prelude from an encoder reading taken at 41-96 rev/s. That is the
-        2026-07-25 defect exactly (hand overshot to 10.17-10.33 rev, then was
-        yanked 0.34-1.75 rev below x3), and it is a hardware event, not a
-        refusal. Derived, never chosen; see the module docstring.
+        **R1 (2026-09-11): the physics term is deleted, not just zeroed.** Until
+        then this was ``max(plumbing, hand_floor_dwell_s)``, where the physics
+        term modelled the reactive stroke engine decelerating the caught ball
+        to rest and then prelude+gap+winding up the next throw IN SERIES — a
+        device this rung deletes with the mastery latch. Under the streamed
+        hand lane there is no discrete catch-then-throw stroke sequence to
+        serialise a floor against; ``motion/trajectory/feasibility``'s
+        ``validate_cycle`` is the authority on whether a planned cadence is
+        executable (the same shift the ``unified`` field already made for
+        ``ARM_WINDOW``). Dropping the max() is therefore not a relaxation of
+        this file's own floor — it is retiring a term whose device is gone,
+        consistent with "the floors are re-derived, never relaxed" (§ 9.2):
+        nothing here is derived from a stroke engine that no longer exists.
 
         **The PIPELINED branch (B4, plan § 2.7).** Under the two-slot pipeline
         the plumbing term is ``commit_budget_s + handoff_margin`` rather than
@@ -1300,11 +1190,9 @@ class TossSessionSequencer:
         pipeline it behind — § 2.4.1) and its release really is
         ``accept + throw_delay``."""
         if self.pipelined:
-            return max(commit_budget_s(self.floor_event_vel_mps)
-                       + self.handoff_margin_s,
-                       self.hand_floor_dwell_s)
-        return max(float(self.throw_delay_s) + self.handoff_margin_s,
-                   self.hand_floor_dwell_s)
+            return (commit_budget_s(self.floor_event_vel_mps)
+                    + self.handoff_margin_s)
+        return float(self.throw_delay_s) + self.handoff_margin_s
 
     @property
     def cycle_index(self) -> int:
@@ -1656,27 +1544,25 @@ class TossSessionSequencer:
             # the rungs are legal. Naming the property rather than a literal is
             # what keeps this sentence true through the next re-derivation.
             #
-            # And the message carries the max()'s DECOMPOSITION, because the two
-            # terms have different remedies: a plumbing-bound floor falls when
-            # throw_delay does, while a hand-floor-bound one does not move at
-            # all until the flight time changes. Without the split the operator
-            # cannot tell which lever is even connected. `required_dwell_s`
-            # substitutes the commit budget for throw_delay on the pipelined
-            # branch, so the label follows the branch rather than being pinned
-            # to the serial wording.
+            # And the message carries the plumbing DECOMPOSITION (R1, 2026-09-11:
+            # the hand-floor term is deleted with the reactive stroke engine it
+            # modelled — see the module docstring and required_dwell_s). The
+            # remedy is now unconditional: raising dwell or lowering throw_delay
+            # both move the same single term. `required_dwell_s` substitutes the
+            # commit budget for throw_delay on the pipelined branch, so the
+            # label follows the branch rather than being pinned to the serial
+            # wording.
             plumbing = (commit_budget_s(self.floor_event_vel_mps)
                         if self.pipelined else float(self.throw_delay_s))
             label = 'commit budget' if self.pipelined else 'throw_delay'
             return self._reject('DWELL', bound_msg(
                 'dwell', self.dwell_time_s, '<', self.required_dwell_s, 's',
                 digits=3, limit_label='floor',
-                tail='max({} {:.3f} + handoff {:.3f}, hand floor {:.3f}) — '
-                     'raise dwell_time_s{}'.format(
-                         label, plumbing, self.handoff_margin_s,
-                         self.hand_floor_dwell_s,
-                         '' if self.pipelined
-                         else ' or lower throw_delay_s toward {:.3f}'.format(
-                             self.min_throw_delay_s))))
+                tail='{} {:.3f} + handoff {:.3f} — raise dwell_time_s{}'.format(
+                    label, plumbing, self.handoff_margin_s,
+                    '' if self.pipelined
+                    else ' or lower throw_delay_s toward {:.3f}'.format(
+                        self.min_throw_delay_s))))
         # The REJECTED_CHAIN_UNREACHABLE pre-check stood here until 2026-08-29.
         # It refused, before a ball flew, a session whose PREDICTED cycle-2 throw
         # site (the catch centroid of cycle 1) fell outside the lateral planning

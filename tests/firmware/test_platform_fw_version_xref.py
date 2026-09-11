@@ -19,8 +19,9 @@ drifted pair is worse than no check — it either cries wolf on a correctly-flas
 board or, in the other direction, silently blesses a stale one.  **This file is
 the pin.**
 
-Same shape as ``test_hand_traj_xref.py`` / ``test_hand_smooth_move_xref.py``:
-read the SHIPPED firmware source rather than a copy of it.
+Same shape as ``test_bridge_fw_version_xref.py``: read the SHIPPED firmware
+source rather than a copy of it.  (It used to cite ``test_hand_traj_xref.py``,
+which was deleted at skill-stack R1 with the hand conduit it cross-referenced.)
 
 WHAT IS DELIBERATELY NOT ASSERTED
 ---------------------------------

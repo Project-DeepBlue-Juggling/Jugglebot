@@ -626,7 +626,7 @@ FIELDS: Tuple[Field, ...] = (
           'channel since E-1 (2026-08-13) — an estimator-agreement diagnostic; '
           'see the block comment above'),
 
-    # ── Plant (mined; row builder IMPORTED from hand_stroke_timeline) ─────────
+    # ── Plant (mined; row builder imported from the bench-mining probe) ──────
     Field('stroke_peak_rev', 'plant', 'M', 'f', ''),
     Field('dip_below_x3_rev', 'plant', 'M', 'f', 'the Phase-0 gate row'),
     Field('pullback_rps', 'plant', 'M', 'f', ''),
@@ -634,7 +634,6 @@ FIELDS: Tuple[Field, ...] = (
     Field('seeds', 'plant', 'M', 'i', ''),
     Field('iq_brake_min_a', 'plant', 'M', 'f', 'the braking-clamp diagnostic'),
     Field('dispatch_shift_ms', 'plant', 'M', 'f', 'rel_fit - rel_ann'),
-    Field('hand_traj_acks', 'plant', 'M', 'i', 'per-cycle delta'),
     Field('can_errors', 'plant', 'M', 'i', 'per-cycle delta'),
     Field('bridge_tx_diag', 'plant', 'M', 's', 'per-cycle delta, verbatim'),
     Field('plant_block_source', 'plant', 'M', 's', 'trace | bag'),

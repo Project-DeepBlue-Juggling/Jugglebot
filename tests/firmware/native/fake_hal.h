@@ -80,8 +80,8 @@ size_t            fake_sent_count_cmd(uint8_t cmd_id);
 //  TxResult::FAILED and does NOT record the frame. FAILED is the bus-partner
 //  presence gate refusing — the ONE outcome in which no frame reaches the wire — so
 //  not recording it is the faithful model. -1 (the fake_reset default) = never.
-//  Used by the hand_ops preamble-abort test: a failed preamble send must abort the
-//  traj TX, so the 0x6D0 frame is never sent.
+//  Used by any driver that needs a send to fail mid-ladder (e.g. an aborted
+//  multi-frame preamble).
 void              fake_set_send_fail_index(int attempt_index);
 
 //  DEFER the Nth attempt (0-based): it returns TxResult::DEFERRED and IS RECORDED.
@@ -103,7 +103,7 @@ int               fake_last_tx_class();   // -1 ⇒ nothing attempted since the 
 //  leg_interp.cpp *and* link fake_hal.o, so any leg_interp definition added here is
 //  a duplicate-symbol link failure in those two binaries — the ODR rule stated at
 //  build.py:16-24. Stub such symbols in the DRIVER that needs them instead
-//  (test_hand_ops.cpp does this for interp_last_tick_us; test_udp_link.cpp does it
+//  (test_udp_link.cpp does it
 //  for micros64/net_ethernet_service). The link error is loud, so this note exists
 //  to save the diagnosis, not to prevent a silent bug.
 

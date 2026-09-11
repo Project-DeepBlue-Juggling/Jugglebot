@@ -12,8 +12,7 @@ application's responsibility. This module provides two halves of that:
   NON-idempotent method after a LOST RESPONSE would re-dispatch a
   physically-running op: HOME/ACTIVATE/DEACTIVATE would hit the busy latch and
   surface a spurious ``ERR_REJECTED``, BB_THROW would duplicate a throw,
-  REBOOT_ODRIVES would re-arm the watchdog-suppression latch, HAND_TRAJ_CMD would
-  re-issue the preamble mid-trajectory. Those methods
+  REBOOT_ODRIVES would re-arm the watchdog-suppression latch. Those methods
   (:data:`NON_IDEMPOTENT_METHODS`) are forced to ``retries=0``; their callers
   recover a genuinely lost *request* via the higher-level telemetry-completion
   monitors / CMD_RESULT loop, not an RPC re-dispatch. (A firmware
@@ -45,8 +44,8 @@ logger = logging.getLogger(__name__)
 
 
 # Methods the firmware does NOT dedup and that have SIDE EFFECTS (or hit a busy
-# latch) on re-dispatch: retrying after a LOST RESPONSE would double-fire (throw /
-# hand trajectory), spuriously ERR_REJECT a physically-running move
+# latch) on re-dispatch: retrying after a LOST RESPONSE would double-fire a
+# throw, spuriously ERR_REJECT a physically-running move
 # (home/activate/deactivate hit the firmware busy latch), or re-arm the reboot
 # watchdog-suppression latch. call() forces retries=0 for these; their callers
 # recover a genuinely lost REQUEST via telemetry-completion monitors / CMD_RESULT,
@@ -58,7 +57,6 @@ NON_IDEMPOTENT_METHODS = frozenset({
     int(p.RpcMethod.DEACTIVATE),
     int(p.RpcMethod.REBOOT_ODRIVES),
     int(p.RpcMethod.BB_THROW),
-    int(p.RpcMethod.HAND_TRAJ_CMD),
 })
 
 

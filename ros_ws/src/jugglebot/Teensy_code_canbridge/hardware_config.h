@@ -88,6 +88,7 @@ namespace Geometry {
   constexpr float LEG_MOTOR_MAX_POSITION_REVS = 4.2f;
   constexpr float HAND_MOTOR_HARD_STOP_REVS = 10.701f;
   constexpr float HAND_CLIP_MARGIN_REV = 0.2f;
+  constexpr float HAND_MM_PER_REV = 32.567f;
 }
 
 // ==========================================================================
@@ -103,6 +104,8 @@ namespace Homing {
   constexpr float HAND_CURRENT_LIMIT_A = 8.0f;
   constexpr float HAND_CURRENT_HEADROOM_A = 3.0f;
   constexpr float HAND_ABS_POS_REV = -0.1f;
+  constexpr float HAND_SETTLE_BAND_REV = 0.1f;
+  constexpr float HAND_PARK_BAND_REV = 0.5f;
   constexpr float EMA_WEIGHT = 0.7f;
   constexpr float MOTOR_TIMEOUT_S = 30.0f;
   constexpr uint32_t STOP_SETTLE_MS = 5u;
@@ -152,6 +155,7 @@ namespace ODriveDefaults {
 namespace JBOp {
   constexpr float DEFAULT_ACTIVE_Z_MM = 170.0f;
   constexpr float HAND_CATCH_PRIME_REV = 9.9594f;
+  constexpr float HAND_ACTIVATE_POSITION_REV = 0.0f;
   constexpr float HAND_RETRACT_REV = 0.0f;
   constexpr float CATCH_VEL_SCALE_DEFAULT = 0.9f;
   constexpr bool RELOAD_PLATFORM_OPEN_LOOP = true;
@@ -228,8 +232,6 @@ namespace Spacemouse {
 // ==========================================================================
 
 namespace TeensyTraj {
-  constexpr float HAND_SPOOL_RADIUS_M = 0.00521f;
-  constexpr float LINEAR_GAIN_FACTOR = 1.035f;
   constexpr float INERTIA_HAND_ONLY_KG = 0.281f;
   constexpr float INERTIA_RATIO = 0.747f;
   constexpr float THROW_DECEL_REFLECTED_INERTIA_KGM2 = 9.5e-06f;
@@ -238,13 +240,6 @@ namespace TeensyTraj {
   constexpr float CATCH_VEL_HOLD_PCT = 0.1f;
   constexpr float HAND_STROKE_M = 0.355f;
   constexpr float STROKE_MARGIN_M = 0.02f;
-  constexpr float END_PROFILE_HOLD_S = 0.1f;
-  constexpr uint32_t SAMPLE_RATE_HZ = 500u;
-  constexpr float MAX_SMOOTH_MOVE_HAND_ACCEL_RPS2 = 100.0f;
-  constexpr float QUINTIC_S2_MAX = 5.7735027f;
-  constexpr float QUINTIC_H_MAX = 0.19753086f;
-  constexpr float QUINTIC_H2_MAX = 3.940234f;
-  constexpr float SMOOTH_MOVE_V0_DEADBAND_RPS = 6.0f;
   constexpr float SMOOTH_MOVE_EXCURSION_MARGIN_REV = 0.2f;
   constexpr float MIN_EVENT_VEL_MPS = 0.3f;
   constexpr float MAX_EVENT_VEL_MPS = 7.0f;
@@ -264,7 +259,6 @@ namespace HandEnv {
   constexpr float COAST_EXTRAPOLATION_EXPONENT = 2.0f;
   constexpr float DECEL_FF_CURRENT_HEADROOM_FRAC = 0.85f;
   constexpr float MEASURED_REFLECTED_INERTIA_KGM2 = 1.05e-05f;
-  constexpr float ARM_WINDOW_MARGIN_S = 0.05f;
   constexpr float DC_BUS_NOMINAL_V = 45.0f;
   constexpr float REGEN_RAIL_CAPACITY_W = 300.0f;
   constexpr float HAND_TORQUE_CONSTANT_NM_PER_A = 0.0055133f;

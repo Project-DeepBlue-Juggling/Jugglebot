@@ -273,7 +273,7 @@ def _cycle_fingerprint(node, seq):
     """EVERY number one built toss cycle puts in front of the machine.
 
     The FSM's public goal parameters (which carry ``event_vel_mps`` — the number
-    ``_dispatch_toss_throw`` actually sends), BOTH release states (the
+    the retired kind-0 dispatch actually sent), BOTH release states (the
     announcement's and the COMMANDED one, which are different objects the moment
     an aim applies), the whole aim block, the POSITIONING target and the whole
     per-toss record. Compared with ``==`` and nothing else: this is the
@@ -384,7 +384,7 @@ def test_the_disabled_cycle_is_BIT_IDENTICAL_to_a_node_with_no_artifact(
       a field is added, silently.
 
     ``event_vel_mps`` is in there and is the number the hand is dispatched at
-    (``_dispatch_toss_throw`` sends ``seq.event_vel_mps``), so it is the one that
+    (the retired kind-0 dispatch sent ``seq.event_vel_mps``), so it is the one that
     would move first if the velocity trim had been wired outside the flag gate.
     """
     with_art = _aimed_node(monkeypatch, tmp_path, ilc_doc=_ilc_doc(),
@@ -759,7 +759,7 @@ def test_the_event_vel_trim_scales_the_dispatched_speed(monkeypatch, tmp_path):
     sensitivity ``F`` describes a different command than the one that flies.
 
     The assertion is on ``seq.event_vel_mps`` because that is what
-    ``_dispatch_toss_throw`` sends; asserting on ``release_cmd`` would pass on a
+    the retired kind-0 dispatch sent; asserting on ``release_cmd`` would pass on a
     build that computed the trim and never dispatched it.
     """
     node = _node(monkeypatch, tmp_path,

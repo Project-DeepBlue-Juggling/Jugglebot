@@ -2,9 +2,22 @@
 // =============================================================================
 //  leg_activate.h — firmware activate (TRAP_TRAJ move to active pose)
 // =============================================================================
-//  Moves the legs from the homed hardstop (≈ −0.10 rev, below the workspace) to
-//  the active pose (JBOp::ACTIVATE_POSITION_REVS ≈ 2.19 rev — the IK of
-//  [0,0,default_active_z,0,0,0]) using the ODrive's onboard TRAP_TRAJ planner.
+//  Moves every PRESENT axis from its homed hardstop (≈ −0.10 rev, below the
+//  workspace) to its active pose using the ODrive's onboard TRAP_TRAJ planner:
+//  the six legs to JBOp::ACTIVATE_POSITION_REVS ≈ 2.19 rev (the IK of
+//  [0,0,default_active_z,0,0,0]) and the HAND (axis 6) to
+//  JBOp::HAND_ACTIVATE_POSITION_REV = 0.0 rev — the clip floor, ~3.3 mm of
+//  carriage travel off the homed stop at Homing::HAND_ABS_POS_REV = −0.10.
+//
+//  ACTIVATE ENERGISES THE HAND (skill-stack R1, owner decision 2026-09-11). Before
+//  R1 the operator energised axis 6 by hand (`--close-loop`) and the hand_source
+//  latch decided who owned it; both are gone. There is now exactly one hand master
+//  — the streamed lane in leg_interp.cpp — and ACTIVATE is its handover: it parks
+//  the hand at 0 rev and leaves axis 6 in POSITION/PASSTHROUGH, the mode that lane
+//  commands in. The park is a ONE-SHOT second writer of an axis-6 setpoint, and it
+//  can never overlap the streamed one: leg_interp's `coldstart` interlock
+//  (homing_active() || activate_active() || deactivate_active()) suppresses the
+//  whole 7-frame burst, hand included, for the entire duration of this op.
 //  The Teensy-side architecture has no per-leg "move" RPC and only the gated 40 Hz setpoint
 //  stream moves a leg under command; like HOME, the activation move is a
 //  bounded, single-purpose firmware op rather than a general SET_INPUT_POS RPC
@@ -55,8 +68,9 @@ enum ActivateResult : uint8_t {
 
 void activate_init();
 
-// RPC entry (net-task context). `axis` == AXIS_ALL activates every PRESENT leg
-// (parallel even-rise); a single leg index activates just that leg iff present.
+// RPC entry (net-task context). `axis` == AXIS_ALL activates every PRESENT axis
+// — the six legs in parallel (even platform rise) AND the hand; a single axis
+// index (0..6) activates just that axis iff present.
 // Validates bus health + targets, rejects a concurrent ACTIVATE/HOME, then
 // latches a non-blocking start. Returns a JbUdp::RpcStatus (OK = accepted).
 uint16_t activate_request(uint8_t axis);
@@ -67,6 +81,6 @@ uint16_t activate_request(uint8_t axis);
 void activate_step();
 
 bool    activate_active();             // an activate is pending or running
-uint8_t activate_result(uint8_t axis); // last ActivateResult for a leg axis (0..5)
+uint8_t activate_result(uint8_t axis); // last ActivateResult for an axis (0..6, hand included)
 
 }  // namespace CanBridge

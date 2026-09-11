@@ -26,8 +26,11 @@ import pytest
 
 import jugglebot.hardware_config as hw
 from jugglebot.motion.trajectory import cup_realize as cr
-from jugglebot.motion.trajectory import hand_stroke
 from jugglebot.motion.trajectory import tilt_geometry as tg
+
+
+def _mm_to_rev(mm: float) -> float:
+    return float(mm) / 1000.0 * float(hw.HAND_REV_PER_M)
 
 
 # ── fixture cup plans (the CupCyclePlan field contract, duck-typed) ───────────
@@ -268,7 +271,7 @@ def test_the_default_tilt_accel_cap_is_derived_from_the_leg_budget():
     """The default is config-derived, not a literal — a change to the leg limit or
     the platform radius must ripple into it instead of silently disagreeing."""
     lever = ((cr.CUP_Z_BASE_MM + cr.SLIDER_REV_ZERO_MM
-              + hw.JB_OP_HAND_CATCH_PRIME_REV / hand_stroke.LINEAR_GAIN_REV_PER_M
+              + hw.JB_OP_HAND_CATCH_PRIME_REV / float(hw.HAND_REV_PER_M)
               * 1000.0)
              - tg.CUP_TILT_CENTER_Z_MM + hw.GEOM_PLAT_RADIUS_MM)
     assert cr.TILT_ACCEL_LEVER_MM == pytest.approx(lever)
@@ -469,24 +472,30 @@ def test_z_float_absorbs_the_shortfall_it_can_and_clamps_the_rest():
 # ── decomposition bookkeeping ────────────────────────────────────────────────
 
 def test_slider_rev_matches_hand_stroke_mm_to_rev():
-    """``slider_rev`` is ``hand_stroke.mm_to_rev`` vectorised over the offset frame
+    """``slider_rev`` is the mm->rev conversion vectorised over the offset frame
     — one conversion authority, not a second copy of the gain."""
     plan = _make_cup_plan(n_knots=13, catch_k=5)
     tilts = np.zeros((len(plan.pos), 2))
     out = cr.decompose(plan, tilts)
-    want = np.array([hand_stroke.mm_to_rev(mm - cr.SLIDER_REV_ZERO_MM)
+    want = np.array([_mm_to_rev(mm - cr.SLIDER_REV_ZERO_MM)
                      for mm in out.slider_mm])
     np.testing.assert_allclose(out.slider_rev, want, rtol=0.0, atol=0.0)
 
 
-def test_slider_frame_lands_the_sim_prime_on_the_production_prime_rev():
-    """The 20 mm sim/firmware stroke-frame divergence is honoured, not papered over:
-    the sim's prime slider (20 mm inset + 315 mm stroke) must land exactly on
-    ``JB_OP_HAND_CATCH_PRIME_REV``.  A dropped offset would put it 0.63 rev high."""
+def test_slider_frame_lands_the_sim_prime_on_the_stroke_top():
+    """The 20 mm sim/firmware stroke-frame divergence is honoured, not papered
+    over: the sim's prime slider (20 mm inset + 315 mm stroke) must land
+    exactly on ``HAND_STROKE_TOP_REV``.
+
+    R1 (2026-09-11): no longer pinned against ``JB_OP_HAND_CATCH_PRIME_REV`` —
+    that invariant (the two MUST be equal) retired with hand_stroke.py and the
+    reactive kind-1 catch it described; see the YAML comment on
+    jugglebot_operational.hand_catch_prime_rev. This test keeps the surviving
+    half: the sim's own frame conversion is self-consistent.
+    """
     prime_mm = (hw.TEENSY_TRAJ_STROKE_MARGIN_M * 1000.0
-                + hw.HAND_STROKE_TOP_REV / hand_stroke.LINEAR_GAIN_REV_PER_M * 1000.0)
-    rev = hand_stroke.mm_to_rev(prime_mm - cr.SLIDER_REV_ZERO_MM)
-    assert rev == pytest.approx(hw.JB_OP_HAND_CATCH_PRIME_REV, abs=1e-4)
+                + hw.HAND_STROKE_TOP_REV / float(hw.HAND_REV_PER_M) * 1000.0)
+    rev = _mm_to_rev(prime_mm - cr.SLIDER_REV_ZERO_MM)
     assert rev == pytest.approx(hw.HAND_STROKE_TOP_REV, abs=1e-9)
 
 
@@ -502,7 +511,7 @@ def test_level_untilted_velocities_are_the_analytic_cup_velocities():
                                rtol=0.0, atol=1e-9)
     np.testing.assert_allclose(out.slider_vel_rev_s,
                                plan.vel[:, 2] * 1000.0 / 1000.0
-                               * hand_stroke.LINEAR_GAIN_REV_PER_M,
+                               * float(hw.HAND_REV_PER_M),
                                rtol=0.0, atol=1e-12)
     np.testing.assert_array_equal(out.pose_vel[:, 5], np.zeros(len(plan.pos)))
 

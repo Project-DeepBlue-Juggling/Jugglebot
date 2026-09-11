@@ -47,7 +47,6 @@
 #include "odrive_protocol.h"
 #include "can_buses.h"
 #include "leg_interp.h"
-#include "hand_source.h"        // hand_source_streamed (hand-deviation guard gate, FW 17)
 #include "leg_homing.h"         // homing_active (mutual exclusion with deferred stow)
 #include "leg_activate.h"       // activate_active (mutual exclusion with deferred stow)
 #include "leg_deactivate.h"     // deactivate_active (mutual exclusion with deferred stow)
@@ -399,7 +398,7 @@ static void evaluate_guard() {
     }
   }
 
-  // ── Hand deviation (FW 17, MAX_DEVIATION_HAND_REV — observe-first) ──────────
+  // ── Hand deviation (FW 17, MAX_DEVIATION_HAND_REV — ARMED at boot since FW 21; `hand7 observe` for a bench read) ──────────
   // The residual itself is computed in the 500 Hz interp tick (velocity-
   // compensated both sides: raw interpolated command vs the age-extrapolated
   // encoder — Phase 0 Decision 4; the leg guard's u0-vs-raw-encoder shape would
@@ -424,14 +423,18 @@ static void evaluate_guard() {
   // re-baselines BOTH sides of this comparison atomically, not just the counter.
   const bool hand_dev_new = (hand_dev_over > s_hand_dev_over_prev);
   s_hand_dev_over_prev = hand_dev_over;
-  // OBSERVE-FIRST: interp_hand_dev_guard_armed() boots false — the first
-  // sitting reads the max residual ([hand7] dev_max=); `hand7 arm` at the
-  // second sitting makes the same verdict an E-STOP. Same latch, same snapshot
+  // ARMED BY DEFAULT since FW 21 (skill-stack R1): interp_hand_dev_guard_armed()
+  // boots true, so the first tick of the first sitting can already E-STOP.
+  // `hand7 observe` lowers it for a bench read of the max residual
+  // ([hand7] dev_max=) and `hand7 arm` puts it back. Same latch, same snapshot
   // machinery, same CLEAR_ERRORS-only release as the leg guard — the snapshot's
   // axis is HAND_AXIS (6), its "u0" the raw command and its "enc" the
   // age-extrapolated feedback at the worst-residual tick.
+  // The gate is the LANE, not a mastery latch: the bridge is the only hand
+  // master, so "the interp is driving the hand under an armed output" is the
+  // whole precondition.
   if (!estop && hand_dev_new && interp_hand_dev_guard_armed()
-      && s_mpc_active && hand_source_streamed() && interp_hand_lane_active()) {
+      && s_mpc_active && interp_hand_lane_active()) {
     estop = true; state = JbUdp::FaultState::MAX_DEVIATION;
     md_leg = HAND_AXIS;
     // Trip-dedicated snapshot (2026-09-02 review fix): the residual trio at the

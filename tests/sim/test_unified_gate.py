@@ -194,16 +194,19 @@ def test_the_mirror_band_is_non_vacuous(smoke_plan, smoke_ring_plan, gate):
     The firmware then falls back to the ``(u2−u1)/T`` forward difference, whose
     endpoint velocity is not the plan's.
 
-    MEASURED (re-measured 2026-09-05 against the PRODUCTION settle site, which
-    moved the toss's hand row and left the ring's three untouched):
+    MEASURED (re-measured 2026-09-11 under the measured hand gain
+    ``hand_mm_per_rev`` 32.567 — skill-stack R1 — which moved every hand row
+    and the ring's leg row; the 2026-09-05 table read 5.836e-04 for the masked
+    ring leg against a 5e-4 band, and the band was re-cut to 1e-4 the day the
+    fault fell inside it, see ``sim/unified_gate.py::MIRROR_TOL_LEG_REV``):
 
     ==================  ==============  ==============  ==============
     plan / lane         honest          HAS_V1 masked   band
     ==================  ==============  ==============  ==============
-    toss, hand          4.697e-07 rev   6.713e-02 rev   4e-6
-    toss, leg           9.891e-08 rev   9.891e-08 rev   5e-4
-    ring, hand          4.693e-07 rev   6.719e-02 rev   4e-6
-    ring, leg           9.131e-07 rev   5.836e-04 rev   5e-4
+    toss, hand          4.556e-07 rev   5.965e-02 rev   4e-6
+    toss, leg           9.891e-08 rev   9.891e-08 rev   1e-4
+    ring, hand          4.325e-07 rev   5.968e-02 rev   4e-6
+    ring, leg           5.154e-07 rev   4.067e-04 rev   1e-4
     ==================  ==============  ==============  ==============
 
     **The leg lane is asserted on the RING, and the co-located toss row is why.**
@@ -212,7 +215,7 @@ def test_the_mirror_band_is_non_vacuous(smoke_plan, smoke_ring_plan, gate):
     the leg extension is nearly linear across a 25 ms knot and the
     ``(u2−u1)/T`` fallback IS the transmitted v1 to within the mirror's own
     resolution.  On the 60 mm ring, where the platform strokes, the same fault
-    puts the leg band 1.17× outside its bound.  So the leg band does catch a v1
+    puts the leg band 4.1× outside its bound.  So the leg band does catch a v1
     regression, but only where there is platform motion to catch it in — which is
     a real property of the chain, not slack in the number, and it is stated here
     rather than left for a future reader to rediscover on a co-located rung.
@@ -356,8 +359,13 @@ def test_the_hand_lane_decays_on_the_falling_edge(smoke_plan, gate):
         'vacuous' % (d['travel_after_cut_rev'], d['max_lead_hand_rev']))
     assert d['lead_clamp_ticks'] > 0, (
         'the hand lead clamp never engaged during the wind-down')
+    # 1e-6 = one float32 ulp at the hand's ~10 rev operating point (2^3·2^-23 =
+    # 9.5e-7): the twin clamps the float32 WIRE value, so the residual above the
+    # band is rounding, not travel.  Measured 9.2e-8 over on 2026-09-11 once the
+    # measured hand gain moved the plan; the old 1e-9 slack only ever passed
+    # because the previous plan happened to round the other way.
     assert abs(d['clamped_travel_after_cut_rev']) <= d['max_lead_hand_rev'] \
-        + 1e-9
+        + 1e-6
 
 
 def test_the_hand_lane_is_inert_until_a_has_hand_frame_latches():
@@ -504,9 +512,9 @@ def test_the_legacy_height_tier_maps_onto_the_cup_not_the_platform(gate):
     assert np.allclose(np.asarray(plan1.pose)[:, 2], z_pin, atol=0.0)
     # The slider carries the whole 30 mm instead.
     d_rev = float(plan0.hand_rev[0] - plan1.hand_rev[0])
-    from jugglebot.motion.trajectory.hand_stroke import LINEAR_GAIN_REV_PER_M
-    assert d_rev / LINEAR_GAIN_REV_PER_M * 1000.0 == pytest.approx(30.0,
-                                                                   abs=1e-6)
+    from jugglebot import hardware_config as hw
+    assert d_rev / hw.HAND_REV_PER_M * 1000.0 == pytest.approx(30.0,
+                                                                abs=1e-6)
 
 
 def test_pass_threshold_agrees_with_both_sibling_gates():

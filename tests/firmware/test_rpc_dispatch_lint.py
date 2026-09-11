@@ -93,16 +93,26 @@ def test_no_reserved_stub_block_remains():
         "shared reserved stub.")
 
 
-def test_hand_traj_cmd_is_implemented():
-    """HAND_TRAJ_CMD is no longer a reserved ERR_NOT_IMPL stub — it dispatches
-    to the hand_ops conduit (CLOSED_LOOP + POSITION/PASSTHROUGH preamble → 0x6D0
-    forward). Guards against a regression that re-stubs it (which would silently
-    re-break the hand catch/smooth-move surface)."""
-    body = _dispatch_case_body("HAND_TRAJ_CMD")
-    assert "HandOps::hand_traj_cmd" in body, (
-        "HAND_TRAJ_CMD must dispatch to HandOps::hand_traj_cmd, not stub it")
-    assert "ERR_NOT_IMPL" not in body, (
-        "HAND_TRAJ_CMD must not route to ERR_NOT_IMPL (the hand conduit implemented it)")
+def test_no_hand_master_rpc_survives():
+    """No RPC can command the hand. There is ONE hand master (skill-stack R1).
+
+    ``HAND_TRAJ_CMD`` and ``HAND_SOURCE_SET`` were the second and third writers
+    of an axis-6 setpoint: a host-driven stroke conduit and the latch that chose
+    between it and the streamed lane. Both are deleted, and the reason they can
+    never come back as an RPC is the one this test pins: an RPC arrives on the
+    net task, out of phase with the 2 ms interp tick that owns the hand setpoint,
+    so any RPC that writes axis 6 is by construction a race with the lane. The
+    only sanctioned second writer is the one-shot ACTIVATE park, which runs
+    behind leg_interp's ``coldstart`` interlock.
+    """
+    # CODE only: rpc.cpp keeps a tombstone comment naming the two dead ids (so a
+    # future reader knows 0x54/0x55 are holes, not free), and a substring scan over
+    # the raw text would read that tombstone as a resurrection.
+    text = re.sub(r"//[^\n]*", "", _RPC_CPP.read_text())
+    text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
+    for dead in ("HAND_TRAJ_CMD", "HAND_SOURCE_SET", "HandOps::", "hand_ops"):
+        assert dead not in text, (
+            f"{dead} is back in rpc.cpp — the hand has a second master again")
 
 
 def _dispatch_case_body(name: str) -> str:

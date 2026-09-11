@@ -376,18 +376,22 @@ REJECT_WIRE_MAP = {
     # 2026-09-07 and this table did not follow them until UH-7a; an operator
     # reading a trace for one of these got a bare code with no hint, which is the
     # one thing this table exists to prevent.
-    'REJECTED_HAND_SOURCE': 'the can-bridge refused the STREAMED hand-mastery '
-                            'latch at session start. UNIFIED ONLY, and it FAILS '
-                            'CLOSED for a reason: with the latch still LEGACY '
-                            'the firmware DISCARDS every Setpoint hand channel '
-                            '(counted, invisible to the plan), so the platform '
-                            'would fly the whole cycle with a dead hand and a '
-                            'seated ball. The firmware refuses a hand_source '
-                            'transition while the setpoint output is armed, and '
-                            'the wire is armed for the whole ACTIVE state — so '
-                            'this is an OPERATOR precondition, not something the '
-                            'session can switch. Settle the hand, disarm, set '
-                            'the latch, re-arm',
+    # RETIRED at PROTOCOL_VERSION 7 (2026-09-11, skill-stack R1): the FW 17
+    # hand-mastery latch (and the code below it) is gone — the hand lane is
+    # active whenever a frame carries HAS_HAND, no session-start switch to
+    # refuse. Key kept, literal string unchanged, so a PRE-R1 bag still
+    # decodes; a session recorded on or after R1 can never emit this code.
+    'REJECTED_HAND_SOURCE': '[PRE-R1 ONLY] the can-bridge refused the STREAMED '
+                            'hand-mastery latch at session start. The firmware '
+                            'refused a hand_source transition while the '
+                            'setpoint output was armed, and the wire was armed '
+                            'for the whole ACTIVE state — so this was an '
+                            'OPERATOR precondition. This code cannot occur on '
+                            'a session recorded at or after skill-stack R1',
+    'REJECTED_STROKE_ENGINE_RETIRED': (
+        'this goal would dispatch through the Platform stroke engine, which was '
+        'deleted at skill-stack R1 (2026-09-11); re-issue the session with '
+        'unified_cycle: true — the legacy branch is unreachable until R4 deletes it'),
     'REJECTED_CYCLE_PLAN': 'trajectory_node refused BEFORE planning, and the '
                            'SUBCODE is the whole finding. WRONG_MODE / '
                            'STALE_STATE / GUARD_LATCHED / NO_CYCLE / '
@@ -865,7 +869,7 @@ def build_context(rows: List[dict], win: GoalWindow, eps_s: float) -> TraceConte
 
     ctx.episodes = stroke_episodes(topic_rows(rows, T_HAND, p0, p1))
 
-    # DT-5 dispatch-time proxy: the true set_hand_traj_cmd call instant is
+    # DT-5 dispatch-time proxy: the true hand-dispatch call instant is
     # UNOBSERVABLE (the dispatch leaves no log line and no topic trace).  The
     # coordinator publishes action feedback at the END of the FSM tick that
     # executes the dispatch (reload_coordinator_node._step_toss_sequence), and
@@ -967,7 +971,7 @@ def check_dt5(rows: List[dict], win: GoalWindow, ctx: TraceContext) -> Finding:
     """Announcement precedes the THROWING transition (dispatch-time proxy,
     ~1 tick); no stroke-command evidence before the announcement.
 
-    What is honestly proven: the true ``set_hand_traj_cmd`` call time is
+    What is honestly proven: the true hand-dispatch call time is
     UNOBSERVABLE — the dispatch leaves no log line and no topic trace — so
     the positive ordering is checked against a proxy: the coordinator
     publishes action feedback at the end of the FSM tick that executes the
@@ -1020,7 +1024,7 @@ def check_dt5(rows: List[dict], win: GoalWindow, ctx: TraceContext) -> Finding:
         subs.append((v, 'announcement(t=%.4f) -> THROWING-transition proxy '
                         '[%s](t=%.4f) gap %.1f ms (the throw is the LAST '
                         'commitment; the proxy trails the true '
-                        'set_hand_traj_cmd instant, which is unobservable, '
+                        'hand-dispatch instant, which is unobservable, '
                         'by <=1 tick)'
                      % (t_ann, ctx.dispatch_kind, ctx.t_dispatch, gap)))
     return combine('DT-5', subs)
@@ -2204,20 +2208,22 @@ def cmd_record(args: argparse.Namespace) -> int:
                 self.uptime_last = uptime
             # Whitelist, not the whole kv dict — /link_status carries ~40 keys at
             # 10 Hz and a toss trace only needs the ones a post-session read
-            # actually joins against. can3_errors, hand_traj_acks and
-            # bridge_tx_diag are the CAN3/hand instruments: all cumulative, so a
-            # trace that brackets a sitting yields the per-sitting delta by
-            # subtraction. Without them a trace can show a stroke that never
-            # landed and say nothing about whether the bridge refused the arm or
-            # the ack was simply lost — and bridge_tx_diag is the only one of the
-            # three that can name WHICH of hand_ops' three sends refused.
+            # actually joins against. can3_errors and bridge_tx_diag are the
+            # CAN3 TX-pressure instruments: cumulative, so a trace that
+            # brackets a sitting yields the per-sitting delta by subtraction.
+            # (hand_traj_acks and bridge_tx_diag's hand_* attribution — the
+            # hand_ops request/ack conduit's own instruments — were removed at
+            # PROTOCOL_VERSION 7, 2026-09-11, skill-stack R1; a bag from before
+            # that date can still carry hand_traj_acks and this whitelist
+            # dropping it only means a post-R1 read of an old bag loses that
+            # one field, never that the read breaks.)
             # bridge_fw_version rides along because every one of those deltas is
             # meaningless if the board was not running the firmware that has the
             # counters; a trace should carry its own provenance.
             keep = {k: kv[k] for k in
                     ('uptime_ms', 'mpc_active', 'teensy_mpc_active',
                      'time_synced', 'bus1_health', 'bus2_health',
-                     'can3_errors', 'hand_traj_acks', 'bridge_tx_diag',
+                     'can3_errors', 'bridge_tx_diag',
                      'bridge_fw_version') if k in kv}
             return {'uptime_ms': uptime, 'level': int(msg.level.hex(), 16)
                     if isinstance(msg.level, bytes) else int(msg.level),

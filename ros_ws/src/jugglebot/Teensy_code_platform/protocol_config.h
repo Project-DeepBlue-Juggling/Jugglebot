@@ -104,7 +104,6 @@ namespace SharedCanId {
 
 // Platform Teensy <-> Host
 namespace PlatformCanId {
-  constexpr uint32_t TRAJ_CMD = 0x6D0;
   constexpr uint32_t STATE_UPDATE = 0x6E0;
   constexpr uint32_t TILT_READING = 0x7DE;
   constexpr uint32_t TRAFFIC_REPORT = 0x7DF;

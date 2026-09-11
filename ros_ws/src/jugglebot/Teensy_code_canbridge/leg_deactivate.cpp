@@ -56,7 +56,7 @@ static uint8_t  s_targets = 0;        // bitmask of legs being deactivated (bit 
 static uint8_t  s_setup_idx = 0;      // SETUP cursor — configure ONE leg per tick
 static uint64_t s_t_start_us = 0;     // ladder start (overall timeout clock)
 static uint64_t s_t_phase_us = 0;     // current sub-phase entry (settle clock)
-static uint8_t  s_result[NUM_LEGS] = { DEACTIVATE_NONE };
+static uint8_t  s_result[NUM_AXES] = { DEACTIVATE_NONE };
 
 // ── Bus / fault gate (mirror leg_activate::activate_allowed). Never drive a
 //    confirmed-dead bus or an E-STOP'd system. ───────────────────────────────
@@ -73,23 +73,41 @@ static bool deactivate_allowed() {
   return true;
 }
 
-// Build the target-leg bitmask: AXIS_ALL → every present leg; a single leg →
-// that leg iff present. Returns 0 if there is no valid target.
+// Build the target-axis bitmask: AXIS_ALL → every present axis (six legs AND the
+// hand, bit HAND_AXIS); a single axis → that axis iff present. Returns 0 if there
+// is no valid target.
 static uint8_t resolve_targets(uint8_t axis) {
   uint8_t mask = 0;
   if (axis == JbUdp::RpcArgs::AXIS_ALL) {
-    for (uint8_t i = 0; i < NUM_LEGS; ++i) if (leg_present(i)) mask |= (uint8_t)(1u << i);
-  } else if (axis < NUM_LEGS && leg_present(axis)) {
+    for (uint8_t i = 0; i < NUM_AXES; ++i) if (leg_present(i)) mask |= (uint8_t)(1u << i);
+  } else if (axis < NUM_AXES && leg_present(axis)) {
     mask = (uint8_t)(1u << axis);
   }
   return mask;
+}
+
+// ── The hand's deactivate: IDLE where it stands, immediately ──────────────────
+// The hand does NOT descend with the legs. A leg carries the platform's weight and
+// must be lowered under profile or it drops it; the hand's carriage hangs on a
+// spool and gravity takes it to the bottom stop on its own the instant the axis
+// de-energises — a TRAP_TRAJ descent to 0 rev would be a second, slower path to
+// the same physical rest, with the axis powered the whole way down beside six legs
+// that are also moving. So: de-energise it FIRST, before the legs start their
+// descent, and drop it from the ladder's target mask. If the leg descent later
+// aborts, the hand is already in its safe state.
+// Returns the mask with HAND_AXIS cleared.
+static uint8_t idle_hand_now(uint8_t mask) {
+  if (!(mask & (uint8_t)(1u << HAND_AXIS))) return mask;
+  can_jugglebot_send(ODrive::encode_set_state(HAND_AXIS, ODriveState::IDLE));
+  s_result[HAND_AXIS] = DEACTIVATE_OK;
+  return (uint8_t)(mask & (uint8_t)~(1u << HAND_AXIS));
 }
 
 // Stop every targeted leg and record the outcome. Called on every abort path —
 // the legs are ALWAYS left in IDLE, never driving. (A deactivate that aborts is
 // the same end-state — IDLE — it just got there without the controlled profile.)
 static void abort_all(uint8_t result) {
-  for (uint8_t i = 0; i < NUM_LEGS; ++i) {
+  for (uint8_t i = 0; i < NUM_AXES; ++i) {
     if (!(s_targets & (uint8_t)(1u << i))) continue;
     can_jugglebot_send(ODrive::encode_set_state(i, ODriveState::IDLE));
     s_result[i] = result;
@@ -102,7 +120,7 @@ void deactivate_init() {
   s_start_req = false;
   s_phase = DPhase::IDLE;
   s_targets = 0;
-  for (uint8_t i = 0; i < NUM_LEGS; ++i) s_result[i] = DEACTIVATE_NONE;
+  for (uint8_t i = 0; i < NUM_AXES; ++i) s_result[i] = DEACTIVATE_NONE;
 }
 
 uint16_t deactivate_request(uint8_t axis) {
@@ -130,7 +148,7 @@ uint16_t deactivate_request(uint8_t axis) {
 bool deactivate_active() { return s_phase != DPhase::IDLE || s_start_req; }
 
 uint8_t deactivate_result(uint8_t axis) {
-  return (axis < NUM_LEGS) ? s_result[axis] : (uint8_t)DEACTIVATE_NONE;
+  return (axis < NUM_AXES) ? s_result[axis] : (uint8_t)DEACTIVATE_NONE;
 }
 
 void deactivate_step() {
@@ -144,9 +162,13 @@ void deactivate_step() {
     __set_PRIMASK(pm);
     if (!start) return;
     s_targets = resolve_targets(ax);
-    if (s_targets == 0) { s_phase = DPhase::IDLE; return; }  // legs vanished between request and consume
-    for (uint8_t i = 0; i < NUM_LEGS; ++i)
+    if (s_targets == 0) { s_phase = DPhase::IDLE; return; }  // axes vanished between request and consume
+    for (uint8_t i = 0; i < NUM_AXES; ++i)
       if (s_targets & (uint8_t)(1u << i)) s_result[i] = DEACTIVATE_RUNNING;
+    // The hand de-energises here and leaves the ladder (see idle_hand_now). A
+    // hand-only DEACTIVATE (axis == HAND_AXIS) is therefore complete in this tick.
+    s_targets = idle_hand_now(s_targets);
+    if (s_targets == 0) { s_phase = DPhase::IDLE; return; }
     s_setup_idx = 0;   // SETUP configures one leg per tick starting here
     s_t_start_us = micros64();
     s_t_phase_us = s_t_start_us;
@@ -166,7 +188,7 @@ void deactivate_step() {
       // The COMMAND phase still fires all targets in one tick AFTER every leg is
       // configured, so the physical descent is parallel (even platform lowering).
       while (s_setup_idx < NUM_LEGS && !(s_targets & (uint8_t)(1u << s_setup_idx)))
-        ++s_setup_idx;
+        ++s_setup_idx;   // NUM_LEGS, not NUM_AXES: the hand already left the mask
       if (s_setup_idx >= NUM_LEGS) {
         s_t_phase_us = now;          // start the settle clock for COMMAND
         s_phase = DPhase::COMMAND;

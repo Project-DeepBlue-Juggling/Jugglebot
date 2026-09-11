@@ -43,7 +43,6 @@
 #include "odrive_protocol.h"
 #include "canbridge_config.h"
 #include "udp_protocol.h"
-#include "hand_source.h"   // the REAL latch (linked hand_source.o), FW 17
 #include "fake_hal.h"
 
 // The two safety-critical TUs under test (ODR-clean: disjoint symbol names).
@@ -82,7 +81,6 @@ static void reset_all() {
   clear_legs();
   fault_machine_init();
   interp_reset();
-  hand_source_reset();   // boot default LEGACY_STROKE (FW 17)
   fault_set_mpc_active(false);
 }
 
@@ -499,6 +497,50 @@ TEST_CASE("guard E-STOP LATCHES until an explicit operator clear") {
     fake_set_udp_last_rx_us(fake_mono_us());   // keep the link fresh after the tick
   };
 
+  // ── INVARIANTS Gap 5: the setpoint-staleness E-STOP had no compiled test ─────
+  //  The 40 Hz Setpoint stream dying mid-flight is the hard link-fault trigger —
+  //  the one that must stop a moving robot when the Jetson, the network or the
+  //  trajectory node goes away. Recipe (all four freshness clocks are separate,
+  //  and only ONE is allowed to age or the assert proves the wrong thing):
+  //    arm() stamps interp_last_setpoint_us at mono = 10.000 s, then
+  //    fake_advance(SETPOINT_STALENESS_US + 1) ages the MONO clock past 0.25 s
+  //    while last_heartbeat_us / pos_timestamp_us / udp_last_rx_us are re-stamped
+  //    to the NEW now — so the CAN watchdog, MOTOR_FB_STALE and the link check all
+  //    stay satisfied and SETPOINT_STALE is the only reachable verdict.
+  //  `ever_cmd` (interp_last_setpoint_us() != 0) is why arm()'s setpoint matters:
+  //  a board that has never been commanded must not E-STOP on boot.
+  SUBCASE("setpoint staleness E-STOPs and LATCHES until an explicit clear (Gap 5)") {
+    arm();
+    fault_step();
+    REQUIRE(fault_state() == JbUdp::FaultState::NONE);      // fresh stream, no trip
+
+    fake_advance(SETPOINT_STALENESS_US + 1);                // ONLY the setpoint ages
+    axes[0].last_heartbeat_us = fake_mono_us();
+    axes[0].pos_timestamp_us  = fake_mono_us();
+    fake_set_udp_last_rx_us(fake_mono_us());
+    fault_step();
+    CHECK(fault_state() == JbUdp::FaultState::SETPOINT_STALE);
+    CHECK(fault_guard_mode() == JbUdp::GuardMode::ESTOP);
+    CHECK(interp_output_enabled() == false);
+
+    // A fresh setpoint does NOT release it — unlike MOTOR_FB_STALE (recoverable),
+    // this is a LATCHED guard E-STOP: the stream returning is not the operator
+    // saying it is safe to move again.
+    JbUdp::SetpointPayload sp; memset(&sp, 0, sizeof(sp));
+    interp_on_setpoint(0, reinterpret_cast<const uint8_t*>(&sp), sizeof(sp));
+    interp_isr();
+    axes[0].last_heartbeat_us = fake_mono_us();
+    axes[0].pos_timestamp_us  = fake_mono_us();
+    fake_set_udp_last_rx_us(fake_mono_us());
+    fault_step();
+    CHECK(fault_guard_mode() == JbUdp::GuardMode::ESTOP);   // still latched
+
+    // Only an explicit operator CLEAR_ERRORS releases it.
+    fault_notify_clear_errors();
+    fault_step();
+    CHECK(fault_guard_mode() != JbUdp::GuardMode::ESTOP);
+  }
+
   SUBCASE("overspeed latches, PERSISTS after the condition clears, releases only on clear-errors") {
     arm();
     axes[0].vel_rps = MAX_MOTOR_VEL_RPS + 1.0f;   // overspeed
@@ -897,11 +939,10 @@ TEST_CASE("hand deviation: observe-first reports only; `hand7 arm`ed it LATCHES 
   axes[0].heartbeat_seen = true;
   axes[0].last_heartbeat_us = fake_mono_us();
   axes[0].pos_timestamp_us = fake_mono_us();
-  // Hand settled at rest on fresh telemetry → the switch is accepted.
+  // Axis 6 fresh on the encoder — the I-HAND-5 precondition for the lane.
   axes[HAND_AXIS].heartbeat_seen = true;
   axes[HAND_AXIS].last_heartbeat_us = fake_mono_us();
   write_pos_vel(hand_axis(), 0.0f, 0.0f, fake_mono_us());
-  REQUIRE(hand_source_request(HandSource::STREAMED, false) == JbUdp::RpcStatus::OK);
 
   // Latch a v6 frame: legs at their encoders (dev 0), hand commanded 3.0 rev
   // from its encoder (> MAX_DEVIATION_HAND_REV 2.5).
@@ -917,7 +958,10 @@ TEST_CASE("hand deviation: observe-first reports only; `hand7 arm`ed it LATCHES 
   CHECK(interp_hand_dev_over_ticks() == 0);           // suppressed ⇒ uncounted
   fake_set_udp_last_rx_us(fake_mono_us());
 
-  // OBSERVE (the boot default): the verdict is reported, never latched.
+  // OBSERVE — forced explicitly, since the guard boots ARMED since FW 21: the
+  // verdict is reported, never latched. (Boot ARMED is pinned by the leg_interp
+  // disarm-edge test; this block proves observe SUPPRESSES a genuine exceed.)
+  interp_set_hand_dev_guard_armed(false);
   fault_step();
   CHECK(fault_guard_mode() != JbUdp::GuardMode::ESTOP);
   CHECK(interp_hand_dev_max() == doctest::Approx(3.0f).epsilon(0.01));
@@ -966,7 +1010,6 @@ TEST_CASE("hand deviation: observe-first reports only; `hand7 arm`ed it LATCHES 
   fault_step();
   CHECK(fault_guard_mode() == JbUdp::GuardMode::ESTOP);
   CHECK(fault_state() == JbUdp::FaultState::MAX_DEVIATION);
-  hand_source_reset();
 }
 
 TEST_CASE("`hand7 reset` with a banked baseline and the latch already cleared does not re-trip (A-N1)") {
@@ -986,7 +1029,6 @@ TEST_CASE("`hand7 reset` with a banked baseline and the latch already cleared do
   axes[HAND_AXIS].heartbeat_seen = true;
   axes[HAND_AXIS].last_heartbeat_us = fake_mono_us();
   write_pos_vel(hand_axis(), 0.0f, 0.0f, fake_mono_us());
-  REQUIRE(hand_source_request(HandSource::STREAMED, false) == JbUdp::RpcStatus::OK);
   interp_set_hand_dev_guard_armed(true);
 
   // Enable output (a quiet first poll), then transmit ONE exceeding frame so
@@ -1015,7 +1057,6 @@ TEST_CASE("`hand7 reset` with a banked baseline and the latch already cleared do
   fault_step();
   CHECK(fault_guard_mode() != JbUdp::GuardMode::ESTOP);
   CHECK(fault_state() != JbUdp::FaultState::MAX_DEVIATION);
-  hand_source_reset();
 }
 
 TEST_CASE("`hand7 reset` re-baselines BOTH sides of the `>` comparison — closes the one-poll masking window (A-N1)") {
@@ -1038,7 +1079,6 @@ TEST_CASE("`hand7 reset` re-baselines BOTH sides of the `>` comparison — close
   axes[HAND_AXIS].heartbeat_seen = true;
   axes[HAND_AXIS].last_heartbeat_us = fake_mono_us();
   write_pos_vel(hand_axis(), 0.0f, 0.0f, fake_mono_us());
-  REQUIRE(hand_source_request(HandSource::STREAMED, false) == JbUdp::RpcStatus::OK);
   interp_set_hand_dev_guard_armed(true);
   fault_step();                                       // enable output (quiet)
 
@@ -1079,7 +1119,6 @@ TEST_CASE("`hand7 reset` re-baselines BOTH sides of the `>` comparison — close
   fault_step();
   CHECK(fault_guard_mode() == JbUdp::GuardMode::ESTOP);
   CHECK(fault_state() == JbUdp::FaultState::MAX_DEVIATION);
-  hand_source_reset();
 }
 
 TEST_CASE("hand MAX_DEVIATION latch reports the TRIP's excursion, never the boot-cumulative max (2026-09-02 fix)") {
@@ -1099,7 +1138,6 @@ TEST_CASE("hand MAX_DEVIATION latch reports the TRIP's excursion, never the boot
   axes[HAND_AXIS].heartbeat_seen = true;
   axes[HAND_AXIS].last_heartbeat_us = fake_mono_us();
   write_pos_vel(hand_axis(), 0.0f, 0.0f, fake_mono_us());
-  REQUIRE(hand_source_request(HandSource::STREAMED, false) == JbUdp::RpcStatus::OK);
 
   // OBSERVE block: a 4.0 rev excursion becomes the boot-cumulative max.
   JbUdp::SetpointPayload sp; memset(&sp, 0, sizeof(sp));
@@ -1136,5 +1174,4 @@ TEST_CASE("hand MAX_DEVIATION latch reports the TRIP's excursion, never the boot
   CHECK(fault_max_dev_u0() == doctest::Approx(2.8f).epsilon(0.01));      // its own cmd …
   CHECK(fault_max_dev_enc() == doctest::Approx(0.0f).epsilon(0.01));     // … and fb pair
   CHECK(interp_hand_dev_max() == doctest::Approx(4.0f).epsilon(0.01));   // console read unchanged
-  hand_source_reset();
 }

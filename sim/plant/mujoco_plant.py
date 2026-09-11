@@ -150,10 +150,7 @@ class MuJoCoPlant(PlantInterface):
         # here rather than silently resolved, because resolving it moves the
         # sim's catch height.
         if self._has_hand:
-            linear_gain_rev_per_m = (
-                hw.TEENSY_TRAJ_LINEAR_GAIN_FACTOR
-                / (2.0 * np.pi * hw.TEENSY_TRAJ_HAND_SPOOL_RADIUS_M)
-            )
+            linear_gain_rev_per_m = float(hw.HAND_REV_PER_M)
             self._hand_stroke_mm = float(hw.GEOM_HAND_STROKE_MM)
             self._hand_prime_mm = float(
                 hw.TEENSY_TRAJ_STROKE_MARGIN_M * 1000.0

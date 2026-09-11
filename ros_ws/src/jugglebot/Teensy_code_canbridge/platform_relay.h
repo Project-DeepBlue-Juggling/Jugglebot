@@ -62,7 +62,7 @@ uint16_t state_write(const JbUdp::RpcArgs::ArgRobotState& s);
 // erasing flash or rebooting mid-update is not a partner to have on the bus then.
 // mpc_active is passed IN (from fault_mpc_active() in rpc.cpp) rather than read
 // here, so this TU stays fault-machine-free for the native harness — the same
-// wiring HAND_SOURCE_SET uses. The CAN3 bus gate (ERR_BUS_DOWN) still applies
+// wiring STATE_WRITE uses. The CAN3 bus gate (ERR_BUS_DOWN) still applies
 // underneath, and PLATFORM_FW_DATA additionally rejects n outside 1..5 with
 // ERR_BAD_ARGS before a byte reaches the wire.
 //

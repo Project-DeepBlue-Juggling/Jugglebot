@@ -57,7 +57,16 @@ static uint8_t  s_targets = 0;        // bitmask of legs being activated (bit i 
 static uint8_t  s_setup_idx = 0;      // SETUP cursor — configure ONE leg per tick
 static uint64_t s_t_start_us = 0;     // ladder start (overall timeout clock)
 static uint64_t s_t_phase_us = 0;     // current sub-phase entry (settle clock)
-static uint8_t  s_result[NUM_LEGS] = { ACTIVATE_NONE };
+static uint8_t  s_result[NUM_AXES] = { ACTIVATE_NONE };
+
+// ── Per-axis activate target (no second copy of any constant) ─────────────────
+// Legs: the IK of [0,0,default_active_z,0,0,0]. Hand: JBOp::HAND_ACTIVATE_POSITION_REV
+// (0.0 rev = the clip floor, one clean revolution-count above the homed hardstop
+// at HAND_ABS_POS_REV = -0.10). Both are codegen'd — never a literal here.
+static inline float activate_target_rev(uint8_t a) {
+  return (a == HAND_AXIS) ? JBOp::HAND_ACTIVATE_POSITION_REV
+                          : JBOp::ACTIVATE_POSITION_REVS[a];
+}
 
 // ── Bus / fault gate (mirror leg_homing::homing_allowed). Never drive a
 //    confirmed-dead bus or an E-STOP'd system. ───────────────────────────────
@@ -74,13 +83,16 @@ static bool activate_allowed() {
   return true;
 }
 
-// Build the target-leg bitmask: AXIS_ALL → every present leg; a single leg →
-// that leg iff present. Returns 0 if there is no valid target.
+// Build the target-axis bitmask: AXIS_ALL → every present axis (six legs AND the
+// hand, bit HAND_AXIS); a single axis → that axis iff present. Returns 0 if there
+// is no valid target. Absent-tolerant by construction (leg_present is the single
+// presence predicate for all NUM_AXES): a hand-less bench still activates its legs,
+// and a leg-less hand bench still parks the hand.
 static uint8_t resolve_targets(uint8_t axis) {
   uint8_t mask = 0;
   if (axis == JbUdp::RpcArgs::AXIS_ALL) {
-    for (uint8_t i = 0; i < NUM_LEGS; ++i) if (leg_present(i)) mask |= (uint8_t)(1u << i);
-  } else if (axis < NUM_LEGS && leg_present(axis)) {
+    for (uint8_t i = 0; i < NUM_AXES; ++i) if (leg_present(i)) mask |= (uint8_t)(1u << i);
+  } else if (axis < NUM_AXES && leg_present(axis)) {
     mask = (uint8_t)(1u << axis);
   }
   return mask;
@@ -89,7 +101,7 @@ static uint8_t resolve_targets(uint8_t axis) {
 // Stop every targeted leg and record the outcome. Called on every abort path —
 // the legs are ALWAYS left in IDLE, never driving.
 static void abort_all(uint8_t result) {
-  for (uint8_t i = 0; i < NUM_LEGS; ++i) {
+  for (uint8_t i = 0; i < NUM_AXES; ++i) {
     if (!(s_targets & (uint8_t)(1u << i))) continue;
     can_jugglebot_send(ODrive::encode_set_state(i, ODriveState::IDLE));
     s_result[i] = result;
@@ -102,7 +114,7 @@ void activate_init() {
   s_start_req = false;
   s_phase = APhase::IDLE;
   s_targets = 0;
-  for (uint8_t i = 0; i < NUM_LEGS; ++i) s_result[i] = ACTIVATE_NONE;
+  for (uint8_t i = 0; i < NUM_AXES; ++i) s_result[i] = ACTIVATE_NONE;
 }
 
 uint16_t activate_request(uint8_t axis) {
@@ -129,7 +141,7 @@ uint16_t activate_request(uint8_t axis) {
 bool activate_active() { return s_phase != APhase::IDLE || s_start_req; }
 
 uint8_t activate_result(uint8_t axis) {
-  return (axis < NUM_LEGS) ? s_result[axis] : (uint8_t)ACTIVATE_NONE;
+  return (axis < NUM_AXES) ? s_result[axis] : (uint8_t)ACTIVATE_NONE;
 }
 
 void activate_step() {
@@ -144,7 +156,7 @@ void activate_step() {
     if (!start) return;
     s_targets = resolve_targets(ax);
     if (s_targets == 0) { s_phase = APhase::IDLE; return; }  // legs vanished between request and consume
-    for (uint8_t i = 0; i < NUM_LEGS; ++i)
+    for (uint8_t i = 0; i < NUM_AXES; ++i)
       if (s_targets & (uint8_t)(1u << i)) s_result[i] = ACTIVATE_RUNNING;
     s_setup_idx = 0;   // SETUP configures one leg per tick starting here
     s_t_start_us = micros64();
@@ -167,9 +179,9 @@ void activate_step() {
       // pattern (~few frames/tick). The COMMAND phase still fires all targets in
       // one tick AFTER every leg is configured + holding, so the physical move is
       // parallel (even platform rise).
-      while (s_setup_idx < NUM_LEGS && !(s_targets & (uint8_t)(1u << s_setup_idx)))
+      while (s_setup_idx < NUM_AXES && !(s_targets & (uint8_t)(1u << s_setup_idx)))
         ++s_setup_idx;
-      if (s_setup_idx >= NUM_LEGS) {
+      if (s_setup_idx >= NUM_AXES) {
         // Every target leg configured + in CLOSED_LOOP/TRAP_TRAJ holding its seed.
         s_t_phase_us = now;          // start the settle clock for COMMAND
         s_phase = APhase::COMMAND;
@@ -188,6 +200,14 @@ void activate_step() {
       bool ok = true;
       ok = can_jugglebot_send(
                ODrive::encode_set_input_pos(i, ODrive::leg_sign(i, cur), 0, 0)) && ok;
+      // TRAP_TRAJ speed ceiling, axis-agnostic on purpose. JBOp::GENTLE_MOVE_VEL_LIMIT_RPS
+      // is the op's OWN constant (not a LEG_* number), and it is the right one for
+      // axis 6 too: 2.5 rev/s × Geometry::HAND_MM_PER_REV ≈ 81 mm/s of carriage travel,
+      // so even a re-activate from catch-prime (9.96 rev) is a 4 s controlled walk
+      // inside the 10 s GENTLE_MOVE_TIMEOUT_S rather than a blind lunge. The
+      // streaming lane's 200-300 rev/s ceilings are for a planned, guarded throw;
+      // a cold-start park must never inherit them. (There is no generated hand
+      // trap-traj limit; if one is ever added this is its single consumer.)
       ok = can_jugglebot_send(
                ODrive::encode_set_traj_vel_limit(i, JBOp::GENTLE_MOVE_VEL_LIMIT_RPS)) && ok;
       ok = can_jugglebot_send(
@@ -207,13 +227,15 @@ void activate_step() {
     }
     case APhase::COMMAND: {
       if (now - s_t_phase_us < SETTLE_SETUP_US) break;  // let CLOSED_LOOP + mode/limits settle
-      for (uint8_t i = 0; i < NUM_LEGS; ++i) {
+      for (uint8_t i = 0; i < NUM_AXES; ++i) {
         if (!(s_targets & (uint8_t)(1u << i))) continue;
         // Position-only target (vel_ff = tor_ff = 0). encode_leg_setpoint clips to
-        // [0,max] (defence against a bad target) + applies leg_sign. The ODrive
-        // TRAP_TRAJ planner trajectories from the seeded current pos to here.
+        // the axis's [0,max] (defence against a bad target) + applies leg_sign
+        // (identity on axis 6). The ODrive TRAP_TRAJ planner trajectories from the
+        // seeded current pos to here. It is the SAME encoder the 500 Hz hand lane
+        // uses — one wire path per axis, no second hand codec.
         can_jugglebot_send(
-            ODrive::encode_leg_setpoint(i, JBOp::ACTIVATE_POSITION_REVS[i], 0.0f, 0.0f));
+            ODrive::encode_leg_setpoint(i, activate_target_rev(i), 0.0f, 0.0f));
       }
       s_phase = APhase::MONITOR;  // stay active through the physical move
       break;
@@ -225,17 +247,36 @@ void activate_step() {
       // up far from target (|pos−target| large), so it cannot satisfy both until
       // the move has actually completed. Timeout (above) bounds a stall.
       bool all_done = true;
-      for (uint8_t i = 0; i < NUM_LEGS; ++i) {
+      for (uint8_t i = 0; i < NUM_AXES; ++i) {
         if (!(s_targets & (uint8_t)(1u << i))) continue;
-        const float pos = axes[i].pos_rev;  // Jugglebot conv (== ACTIVATE_POSITION_REVS conv)
+        const float pos = axes[i].pos_rev;  // Jugglebot conv (== activate_target_rev conv)
         const float vel = axes[i].vel_rps;
-        if (fabsf(pos - JBOp::ACTIVATE_POSITION_REVS[i]) > JBOp::TARGET_REACHED_POS_TOL_REV ||
+        if (fabsf(pos - activate_target_rev(i)) > JBOp::TARGET_REACHED_POS_TOL_REV ||
             fabsf(vel) > JBOp::TARGET_REACHED_VEL_TOL_RPS) {
           all_done = false;
         }
       }
       if (all_done) {
-        for (uint8_t i = 0; i < NUM_LEGS; ++i)
+        // ── Hand hand-off to the streamed lane (skill-stack R1) ───────────────
+        // The hand is the ONE axis whose next commander is the 2 ms interp tick,
+        // and that lane commands in POSITION/PASSTHROUGH. Leaving axis 6 in
+        // TRAP_TRAJ is the FW 18 fault class in a new dress: the ODrive would
+        // treat every streamed set_input_pos as a fresh trajectory target and
+        // the lane would move the hand late and softly with nothing in telemetry
+        // saying why. So ACTIVATE hands over explicitly, here, after the park has
+        // ARRIVED — input_pos is already the parked target, so the mode change is
+        // motion-free (pos_setpoint == input_pos == HAND_ACTIVATE_POSITION_REV).
+        // The legs stay in TRAP_TRAJ holding the active pose exactly as before;
+        // the host's post-activate _run_configure is still their hand-off.
+        if (s_targets & (uint8_t)(1u << HAND_AXIS)) {
+          if (!can_jugglebot_send(ODrive::encode_set_controller_mode(
+                  HAND_AXIS, ODriveControlMode::POSITION,
+                  ODriveInputMode::PASSTHROUGH))) {
+            abort_all(ACTIVATE_FAILED); return;   // a hand left in TRAP_TRAJ is a
+          }                                       // silently-inert lane — fail loudly
+          axes[HAND_AXIS].input_mode = (uint8_t)ODriveInputMode::PASSTHROUGH;
+        }
+        for (uint8_t i = 0; i < NUM_AXES; ++i)
           if (s_targets & (uint8_t)(1u << i)) s_result[i] = ACTIVATE_OK;
         s_phase = APhase::IDLE;
         s_targets = 0;

@@ -24,7 +24,6 @@ from __future__ import annotations
 import dataclasses
 import struct
 import time
-import types
 from unittest.mock import MagicMock
 
 from teensy_link import RpcMethod, RpcStatus, MsgType, PlatformFrame
@@ -792,86 +791,6 @@ def test_a_failed_reread_keeps_the_last_known_version():
                       lambda rid, a: (int(RpcStatus.OK), b""))
         assert node._refresh_cold_start_state('reconnect') is False
         assert node._platform_fw_version == rpc_args.PLATFORM_FW_VERSION_EXPECTED
-    finally:
-        _teardown(teensy, client, node)
-
-
-def test_a_skew_does_not_gate_the_hand_dispatch_path():
-    """The version WARNS; it never refuses. Pinned, because the tempting "safety"
-    change here is actively dangerous.
-
-    ``_svc_set_hand_traj`` carries the kind-3 retract, and a kind-3 clobbering an
-    armed kind-0 is the ONLY un-arm mechanism the Teensy offers — a pre-release
-    SAFE_ABORT depends on it. A version gate in front of it would turn a skipped
-    flash into "the abort path no longer works". The other refusal shapes are no
-    better: refusing kind-1 after the throw has flown drops a ball the pre-fix
-    stack would have caught, and the version's own input (a cached relay read) has
-    a documented benign-transient failure mode of its own.
-    """
-    teensy, client, node = _node()
-    try:
-        _wire_state_read(teensy, is_homed=True, levelling=False, x_milli=0,
-                         y_milli=0,
-                         fw_version=rpc_args.PLATFORM_FW_VERSION_UNVERSIONED)
-        assert node._refresh_cold_start_state('boot') is True
-        assert node._platform_fw_version == 0
-
-        sent = []
-        teensy.on_rpc(int(RpcMethod.HAND_TRAJ_CMD),
-                      lambda rid, a: (sent.append(a), (int(RpcStatus.OK), b""))[1])
-
-        # kind 3 — the SAFE_ABORT retract, the only un-arm mechanism there is.
-        ok, _msg, _ = node._call_rpc(
-            RpcMethod.HAND_TRAJ_CMD, rpc_args.encode_smooth_move_hand(0.0))
-        assert ok, 'the kind-3 retract must dispatch on a version-skewed board'
-        # kind 1 — an armed catch, dispatched mid-sequence after a throw has flown.
-        ok, _msg, _ = node._call_rpc(
-            RpcMethod.HAND_TRAJ_CMD,
-            rpc_args.encode_hand_traj_cmd(1, 3.13, 1_800_000_000_000))
-        assert ok, 'a scheduled catch must dispatch on a version-skewed board'
-        assert len(sent) == 2
-        assert sent[0][0] == 3      # the kind-3 payload reached the wire verbatim
-
-        # ── The REAL dispatch path ────────────────────────────────────────────
-        # The two _call_rpc calls above prove the transport works on a skewed
-        # board, but they enter BELOW the funnel a refusal would be written into.
-        # Both hand services route through node.teensy_hand_traj_cmd, so drive the
-        # SERVICE HANDLERS — the actual entry points an operator/orchestrator hits.
-        sent.clear()
-        # kind 3 via /smooth_move_hand — the SAFE_ABORT retract.
-        res = types.SimpleNamespace(success=None, message='')
-        out = node._svc_smooth_move_hand(types.SimpleNamespace(data=0.0), res)
-        assert out.success is True, (
-            'the kind-3 retract must dispatch through the SERVICE on a '
-            f'version-skewed board; got: {out.message}')
-        # kind 1 via /set_hand_traj_cmd — an armed catch, after a throw has flown.
-        res = types.SimpleNamespace(success=None, message='')
-        out = node._svc_set_hand_traj(
-            types.SimpleNamespace(event_delay=0.5, event_vel=3.13, traj_type=1),
-            res)
-        assert out.success is True, (
-            'a scheduled catch must dispatch through the SERVICE on a '
-            f'version-skewed board; got: {out.message}')
-        assert len(sent) == 2, 'both service dispatches must reach the wire'
-        assert sent[0][0] == 3      # the kind-3 payload reached the wire verbatim
-        assert sent[1][0] == 1
-
-        # Tripwire (not a proof): no host-side gate point on the 0x6D0 conduit may
-        # so much as READ the version. teensy_hand_traj_cmd is included and is the
-        # one that matters — it is the SINGLE FUNNEL both services call, so it is
-        # where this repo's own "one enforcement point" convention would put a
-        # gate, and a gate there is invisible to a tripwire that inspects only the
-        # two leaf handlers.
-        import inspect
-        for fn in (node._svc_set_hand_traj, node._svc_smooth_move_hand,
-                   node.teensy_hand_traj_cmd):
-            src = inspect.getsource(fn)
-            assert '_platform_fw_version' not in src, (
-                f'{fn.__name__} reads the Platform FW version — a version gate on '
-                'the hand path was added. Read '
-                'ros_ws/docs/platform_fw_version.md § Warn, never refuse first: '
-                'this path carries the kind-3 retract, the only un-arm mechanism '
-                'the Teensy offers.')
     finally:
         _teardown(teensy, client, node)
 

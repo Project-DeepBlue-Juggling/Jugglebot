@@ -59,7 +59,8 @@ never from a re-derived cup axis.
 THE FOUR THROW-SIDE CHANNELS, AND WHY ONE OF THEM IS REFUSED
 ------------------------------------------------------------
 ``release_timing_offset`` (δt) has a real production seam —
-``reload_coordinator_node._dispatch_toss_throw`` shifts ``event_delay`` by
+the retired kind-0 dispatch (reload_coordinator_node, deleted at skill-stack
+R1) shifted ``event_delay`` by
 ``hw.JB_OP_TOSS_RELEASE_LATENCY_MS`` (*"while the announced landing stays
 un-shifted"*) — and it is still **refused from v1**, for a reason stronger than
 "no seam": its column of ``F`` is zero on all five task channels.
@@ -80,8 +81,9 @@ column as "the model has no δt dependence" and not as "the machine has none".
 
 What δt *does* move — the announcement-versus-physical release shift, mined as
 ``release_time_err_ms`` — is a **scheduling** error, not a task error: it sizes
-the catch-arm window (``hand_stroke.stroke_clear_time``,
-``required_arm_lead_s``) and it is already owned by another lane
+the catch-arm window (the pre-R1 stroke engine's ``stroke_clear_time`` /
+``required_arm_lead_s``, deleted at skill-stack R1) and it is already owned by
+another lane
 (``toss_trim.SessionTrim.release_latency_ms``, itself NOT WIRED, and the bridge
 temporal-trustworthiness arc behind gate G-1). Putting it in ``e`` would import
 that lane's problem into this one. The column is still **computed rather than
@@ -512,7 +514,8 @@ U_CHANNELS: Tuple[UChannel, ...] = (
         tau0=0.040),
     UChannel(
         name='release_timing_offset', unit='s',
-        seam=('reload_coordinator_node._dispatch_toss_throw: event_delay -= '
+        seam=('the retired kind-0 dispatch (deleted at skill-stack R1): '
+              'event_delay -= '
               'hw.JB_OP_TOSS_RELEASE_LATENCY_MS/1000 (ships 0.0) — NOT routed '
               'through this model; see the module docstring'),
         authority=toss_trim.TAU_AUTHORITY_MS / 1e3,
@@ -559,7 +562,8 @@ AUTHORITY = np.array([c.authority for c in U_CHANNELS], dtype=float)
 #: 2. **an analytic ``∂e/∂u`` through the production chain** (design constraint
 #:    1: never a symbolic twin). This is the one that fails. ``e_model`` is
 #:    release-side and analytic to the plane — ballistic flight plus the
-#:    ``hand_stroke`` closed form — and it stops there. The seat instant is a
+#:    pre-R1 stroke engine's closed form (deleted at skill-stack R1) — and it
+#:    stops there. The seat instant is a
 #:    function of the hand's DESCENT profile, which lives in the Teensy's
 #:    ``calcCatch`` geometry; differentiating it would mean importing or
 #:    re-deriving firmware, and re-deriving it is exactly the twin the constraint

@@ -52,7 +52,6 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/ActivateOrDeactivate.srv"
   "srv/SetFloat.srv"
   "srv/SetString.srv"
-  "srv/SetHandTrajCmd.srv"
   "srv/SendBallButlerCommand.srv"
   "srv/SetHandGains.srv"
   "srv/BallButlerThrow.srv"

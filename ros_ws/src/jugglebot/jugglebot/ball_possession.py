@@ -269,8 +269,9 @@ ARRIVAL_BAND_MAX_S = 0.56
 #: re-discovering it as a contradiction.
 #:
 #: **It is inert at every published rung, and that is worth knowing before
-#: anyone spends a sitting on it.** ``toss_session.handoff_margin_s`` is
-#: ``max(dwell_margin_s, hand_stroke.catch_park_reentry_s(...))`` and the park
+#: anyone spends a sitting on it.** ``toss_session.handoff_margin_s`` WAS
+#: ``max(dwell_margin_s, hand_stroke.catch_park_reentry_s(...))`` pre-R1
+#: (``hand_stroke`` and the FSM callers of it are deleted at R1); the park
 #: term is >= 0.1416 s at every rung R0-R5 once layer 3 can trim the speed
 #: (0.1204 s at R0-R3 with the aim disarmed). So the 50 ms this floor just gave
 #: back buys **0 ms of dwell on the binding column** and 16.6 ms at R0-R3 on the

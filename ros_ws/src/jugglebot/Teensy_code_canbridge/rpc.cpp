@@ -17,8 +17,6 @@
 #include "leg_deactivate.h"
 #include "platform_relay.h"
 #include "version_check.h"
-#include "hand_ops.h"
-#include "hand_source.h"   // hand_source_request (HAND_SOURCE_SET, FW 17)
 
 namespace CanBridge {
 namespace Rpc {
@@ -373,43 +371,23 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
       res_len = bb_version_fill_blob(result, RESULT_BUF_CAP);
       return res_len ? RpcStatus::OK : RpcStatus::ERR_BAD_ARGS;
 
-    // ── Hand trajectory / smooth-move ──────────────────────────────
-    // set_hand_traj_cmd + smooth_move_hand both ride this one RPC. The host builds
-    // the exact 8-byte 0x6D0 payload (byte-0 discriminator: 0/1/2 = catch-traj type,
-    // 3 = smooth-move, byte-identical to can_node); hand_ops sends the CLOSED_LOOP +
-    // POSITION/PASSTHROUGH preamble then forwards it on the firmware-owned 0x6D0 id,
-    // aborting if a preamble send fails. This is the last of the reserved
-    // ERR_NOT_IMPL stubs to land — no reserved methods remain (the dispatch lint's
-    // reserved list is now empty; every id has a real case).
-    case RpcMethod::HAND_TRAJ_CMD: {
-      ArgHandTraj a; if (!take(args, arg_len, a)) return RpcStatus::ERR_BAD_ARGS;
-      return HandOps::hand_traj_cmd(a);
-    }
-
-    // ── Hand-mastery latch (unified-7dof FW 17, plan § 2.4) ────────────────
-    // ADDITIVE method — no PROTOCOL_VERSION bump (the LegCmd/HandSensor
-    // precedent: an FW ≤ 16 board answers ERR_UNKNOWN_METHOD, loudly).
-    // Bridge-LOCAL: no CAN frame is sent, so no bus gate — the acceptance
-    // gates live in hand_source_request (single enforcement point): value
-    // valid, !mpc_active (passed from the fault machine here so hand_source.cpp
-    // stays fault-machine-free for the native harness), and the hand settled at
-    // a rest position on FRESH axis-6 telemetry. Boot default LEGACY_STROKE;
-    // only a reboot or this RPC moves the latch.
-    case RpcMethod::HAND_SOURCE_SET: {
-      ArgHandSource a; if (!take(args, arg_len, a)) return RpcStatus::ERR_BAD_ARGS;
-      return hand_source_request(a.source, fault_mpc_active());
-    }
+    // (HAND_TRAJ_CMD 0x54 and HAND_SOURCE_SET 0x55 lived here until FW 21,
+    // skill-stack R1. Both ids are HOLES now and deliberately have no case:
+    // one arriving from a stale host falls through to the dispatcher's
+    // ERR_UNKNOWN_METHOD default, which is exactly the loud answer a
+    // second hand master deserves. Never renumber a surviving method into
+    // either id.)
 
     // ── Platform firmware-over-CAN (2026-09-09, FW 19) ─────────────────────
-    // ADDITIVE methods — no PROTOCOL_VERSION bump (the HAND_SOURCE_SET
-    // precedent above). The Platform Teensy's USB port is damaged, so its
+    // ADDITIVE methods — no PROTOCOL_VERSION bump (the LegCmd/HandSensor
+    // precedent). The Platform Teensy's USB port is damaged, so its
     // firmware arrives over CAN3 through the SAME typed relay as STATE_WRITE:
     // the host supplies only the semantic arguments and platform_relay lays out
     // the 0x6F0 frame (least-privilege — never a Jetson-supplied raw frame).
     // Each returns the synchronous queued-on-CAN3 ack; the Platform's own
     // per-op answer arrives on 0x6F1 and is uplinked verbatim as a
     // PLATFORM_FRAME for the host to correlate (on_jugglebot_rx).
-    // fault_mpc_active() is passed IN — as with HAND_SOURCE_SET — so
+    // fault_mpc_active() is passed IN so
     // platform_relay.cpp stays fault-machine-free for the native harness; the
     // relay refuses every op with ERR_REJECTED while the setpoint output is
     // armed, and PLATFORM_FW_DATA additionally refuses n outside 1..5.

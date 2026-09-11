@@ -530,10 +530,6 @@ SetHandGains = _make_service(
     req_fields={'pos_gain': 35.0, 'vel_gain': 0.007, 'vel_integrator_gain': 0.07},
     resp_fields={'success': False, 'message': ''},
 )
-SetHandTrajCmd = _make_service(
-    req_fields={'event_delay': 0.0, 'event_vel': 0.0, 'traj_type': 0},
-    resp_fields={'success': False, 'message': ''},
-)
 SetString = _make_service(
     req_fields={'data': ''},
     resp_fields={'success': False, 'message': ''},
@@ -1082,7 +1078,6 @@ _create_mock_module('jugglebot_interfaces.srv', {
     'SendBallButlerCommand': SendBallButlerCommand,
     'SetFloat': SetFloat,
     'SetHandGains': SetHandGains,
-    'SetHandTrajCmd': SetHandTrajCmd,
     'SetString': SetString,
     'BallButlerThrow': BallButlerThrow,
     'GoToPose': GoToPose,

@@ -40,7 +40,7 @@ Static IPs: Teensy `192.168.42.2`, Jetson `192.168.42.1` (`/30` point-to-point).
 
 | Name | Value | Notes |
 |------|------:|-------|
-| `PROTOCOL_VERSION` | 6 | Bumped on any incompatible wire change (4→5: 2026-07-31 Profile gains the 3rd CAN slot can3_* — cone traffic; 5→6: 2026-09-01 Setpoint widens 6→7 — index 6 = hand — and gains the v1[7] exact-knot-velocity array, unified-7dof-planner Phase 2. TOTAL LINK DARKNESS against any FW ≤ 16 board until the lockstep Phase 3 flash — loud and fail-closed by design) |
+| `PROTOCOL_VERSION` | 7 | Bumped on any incompatible wire change (4→5: 2026-07-31 Profile gains the 3rd CAN slot can3_* — cone traffic; 5→6: 2026-09-01 Setpoint widens 6→7 — index 6 = hand — and gains the v1[7] exact-knot-velocity array, unified-7dof-planner Phase 2; 6→7: 2026-09-11 skill-stack R1 — HAND_TRAJ_CMD/HAND_SOURCE_SET/ERR_HAND_SOURCE removed, HeartbeatT2J bit 6 retired, BridgeTxDiag hand_ops counters removed. Removing message types and shrinking a struct are incompatible wire changes: darkness against any FW ≤ 20 board is the INTENDED failure. TOTAL LINK DARKNESS against any FW ≤ 16 board until the lockstep Phase 3 flash — loud and fail-closed by design) |
 | `MAGIC` | 0x4A42 | "JB" little-endian preamble (bytes 0x42 0x4A) |
 | `HEADER_SIZE` | 8 | Bytes before payload |
 | `CRC_SIZE` | 2 | Trailing CRC-16 bytes |
@@ -117,8 +117,6 @@ Static IPs: Teensy `192.168.42.2`, Jetson `192.168.42.1` (`/30` point-to-point).
 | `TILT_READ` | 0x0051 | Relay: read Platform-Teensy inclinometer tilt |
 | `STATE_READ` | 0x0052 | Relay: read Platform-Teensy RobotState (is_homed/level/pose) |
 | `STATE_WRITE` | 0x0053 | Relay: write Platform-Teensy RobotState (read-modify-write via cache) |
-| `HAND_TRAJ_CMD` | 0x0054 | Hand traj + smooth-move (byte-0 discriminator → 0x6D0) |
-| `HAND_SOURCE_SET` | 0x0055 | Switch the hand-mastery latch (0=LEGACY_STROKE, 1=STREAMED; gated, bridge-local) |
 | `PLATFORM_FW_BEGIN` | 0x0056 | Platform FW-over-CAN: declare image length (relay → 0x6F0 op 0x01) |
 | `PLATFORM_FW_DATA` | 0x0057 | Platform FW-over-CAN: one image chunk, 1..5 bytes (relay → 0x6F0 op 0x02) |
 | `PLATFORM_FW_VERIFY` | 0x0058 | Platform FW-over-CAN: CRC-32 over the staged image (relay → 0x6F0 op 0x03) |
@@ -136,7 +134,6 @@ Static IPs: Teensy `192.168.42.2`, Jetson `192.168.42.1` (`/30` point-to-point).
 | `ERR_TIMEOUT` | 0x0004 | Downstream CAN op timed out |
 | `ERR_REJECTED` | 0x0005 | Refused by a safety gate |
 | `ERR_NOT_IMPL` | 0x0006 | Method not implemented in this firmware revision |
-| `ERR_HAND_SOURCE` | 0x0007 | Refused by the hand-mastery latch: HAND_TRAJ_CMD while hand_source == STREAMED (unified-7dof FW 17) |
 
 ### LinkState
 
@@ -211,7 +208,6 @@ Static IPs: Teensy `192.168.42.2`, Jetson `192.168.42.1` (`/30` point-to-point).
 | `ALL_AXIS_HEARTBEATS_OK` | 4 | bit2: every present axis heartbeat is fresh |
 | `MPC_ACTIVE` | 8 | bit3: firmware-side mpc_active (lets a setpoint source verify its arm took) |
 | `CONE_HEALTH_MASK` | 48 | bits 4-5: cone (CAN2) BusHealth (UNKNOWN=0/OK=1/WARN=2/BUS_OFF=3) << HEARTBEAT_CONE_HEALTH_SHIFT; reads 0 = UNKNOWN from a pre-cone-uplink flash |
-| `HAND_SOURCE_STREAMED` | 64 | bit 6: hand_source latch — set = STREAMED (bridge masters the hand, 7th Setpoint lane live), clear = LEGACY_STROKE (boot default; also what a pre-FW-17 flash reads as) |
 | `TORQUE_CLAMP_MASK` | 16128 | bits 8-13: bit (8+i) set = leg i's \|torque_ff\| was clamped to TORQUE_FF_FIRMWARE_CLAMP_WIRE_NM at UDP ingest on the last ACCEPTED setpoint frame (mirrors lead_clamp_mask; leg_interp.cpp interp_on_setpoint) |
 
 ## Messages
@@ -294,7 +290,7 @@ Payload **73 bytes**. Python struct fmt: `<QBBBBIIBBBfffffffffBBfff`.
 | `bus1_health` | u8 | 1 | wire slot 1 = CAN3 (Jugglebot core: legs+hand) BusHealth enum |
 | `bus2_health` | u8 | 1 | wire slot 2 = CAN1 (Ball Butler) BusHealth enum (cone/CAN2 not yet on uplink) |
 | `fault_state` | u8 | 1 | FaultState enum |
-| `flags` | u32 | 1 | HeartbeatT2JFlags bitset: bits 0-3 TIME_SYNCED\|STOW_PENDING_ON_RECONNECT\|ALL_AXIS_HEARTBEATS_OK\|MPC_ACTIVE; bits 4-5 CONE_HEALTH_MASK (cone/CAN2 BusHealth, see HEARTBEAT_CONE_HEALTH_SHIFT); bit 6 HAND_SOURCE_STREAMED (FW 17 hand-mastery latch — set = STREAMED, clear = LEGACY_STROKE/pre-17); bits 8-13 TORQUE_CLAMP_MASK (per-leg torque_ff ingest clamp, see HEARTBEAT_TORQUE_CLAMP_SHIFT) |
+| `flags` | u32 | 1 | HeartbeatT2JFlags bitset: bits 0-3 TIME_SYNCED\|STOW_PENDING_ON_RECONNECT\|ALL_AXIS_HEARTBEATS_OK\|MPC_ACTIVE; bits 4-5 CONE_HEALTH_MASK (cone/CAN2 BusHealth, see HEARTBEAT_CONE_HEALTH_SHIFT); bits 6-7 reserved (bit 6 was the FW 17 hand-mastery latch, retired at PROTOCOL_VERSION 7); bits 8-13 TORQUE_CLAMP_MASK (per-leg torque_ff ingest clamp, see HEARTBEAT_TORQUE_CLAMP_SHIFT) |
 | `uptime_ms` | u32 | 1 | ms since boot |
 | `bb_state` | u8 | 1 | BallButlerState enum (0..6, 127=ERROR) |
 | `bb_state_data` | u8 | 1 | BB error code when bb_state == ERROR, else 0 |
@@ -449,9 +445,9 @@ Payload **48 bytes**. Python struct fmt: `<IIIIIIIIIIIBBBB`.
 
 ### BridgeTxDiag (`MsgType.BRIDGE_TX_DIAG`, T2J, STREAM port)
 
-CAN TX-path pressure per bus, plus per-stage attribution of the HAND_TRAJ_CMD conduit's exits, 1 Hz. Built for the 2026-08-01 ERR_TIMEOUT recount, which could establish THAT the hand arm-ack fails about half the time (139 of 266 arm dispatches pooled across 16 sessions) but not WHICH of hand_ops' three CAN sends refused, nor whether a refusal meant a lost frame. tx_deferred is named for what it measures, and the name is load-bearing: FlexCAN_T4::write(const CAN_message_t&) returns 1 or -1 and NEVER 0, and -1 means no TX mailbox was free so the frame was pushed into the 64-slot software txBuffer that the TX-complete ISR drains. A refused send is therefore a DEFERRAL of ~0.1-1 ms, not a drop — which is what makes catch_coordinator's 'the ack lies, frames were observed transmitted after a failed ack' premise and hand_ops' ERR_TIMEOUT compatible rather than contradictory. The two paths that genuinely LOSE a frame are (a) txBuffer overflow, where a 65th pending entry silently overwrites the oldest, and (b) the vendored events() TX drain, which writes one peeked frame into every free mailbox while popping one queue entry per mailbox; tx_q_hwm approaching 64 is the observable for (a). ALL THREE buses carry both fields — a deliberate contrast with CanErrors' CAN3-only choice, whose per-bus cost was 15 fields against these 2. hand_* attribute every invocation to its exit, so the success count is derivable: OK = hand_calls - hand_rej_homing - hand_bus_down - hand_pre1_fail - hand_pre2_fail - hand_traj_fail. All counters are CUMULATIVE SINCE BOOT (the consumer differences them) except tx_q_hwm_*, which are high-water marks. Unconditional 1 Hz from task_telem rather than on-change, for the same reason as CanErrors: an operator differencing an A/B needs a continuous baseline, and 'silence means healthy' is exactly the ambiguity that cost the 2026-07-29 investigation a session. Additive — no existing frame changes, so NO PROTOCOL_VERSION bump (the LegCmd / HandSensor precedent): an old Jetson ignores the unknown msg_type and a new Jetson renders never-seen as unknown.
+CAN TX-path pressure per bus, 1 Hz. The per-stage hand_* attribution counters it also carried were removed at PROTOCOL_VERSION 7 (2026-09-11, skill-stack R1) with the HAND_TRAJ_CMD conduit they measured: there is no longer a request/ack hand dispatch to attribute — the hand is the 7th lane of the 2 ms interp tick and its health is the lane's own telemetry. The struct shrinking is itself the wire change the version bump announces. tx_deferred is named for what it measures, and the name is load-bearing: FlexCAN_T4::write(const CAN_message_t&) returns 1 or -1 and NEVER 0, and -1 means no TX mailbox was free so the frame was pushed into the 64-slot software txBuffer that the TX-complete ISR drains. A refused send is therefore a DEFERRAL of ~0.1-1 ms, not a drop. The two paths that genuinely LOSE a frame are (a) txBuffer overflow, where a 65th pending entry silently overwrites the oldest, and (b) the vendored events() TX drain, which writes one peeked frame into every free mailbox while popping one queue entry per mailbox; tx_q_hwm approaching 64 is the observable for (a). ALL THREE buses carry both fields — a deliberate contrast with CanErrors' CAN3-only choice, whose per-bus cost was 15 fields against these 2. All counters are CUMULATIVE SINCE BOOT (the consumer differences them) except tx_q_hwm_*, which are high-water marks. Unconditional 1 Hz from task_telem rather than on-change, for the same reason as CanErrors: an operator differencing an A/B needs a continuous baseline, and 'silence means healthy' is exactly the ambiguity that cost the 2026-07-29 investigation a session. Additive — no existing frame changes, so NO PROTOCOL_VERSION bump (the LegCmd / HandSensor precedent): an old Jetson ignores the unknown msg_type and a new Jetson renders never-seen as unknown.
 
-Payload **42 bytes**. Python struct fmt: `<IIIHHHIIIIII`.
+Payload **18 bytes**. Python struct fmt: `<IIIHHH`.
 
 | Field | Type | Count | Notes |
 |-------|------|------:|-------|
@@ -461,12 +457,6 @@ Payload **42 bytes**. Python struct fmt: `<IIIHHHIIIIII`.
 | `tx_q_hwm_jb` | u16 | 1 | Jugglebot bus: peak software txBuffer occupancy, sampled at SEND instants inside the send critical section (max 64; at/near 64 ⇒ overwrite-loss occurred or is imminent) |
 | `tx_q_hwm_bb` | u16 | 1 | Ball Butler bus: same high-water mark |
 | `tx_q_hwm_cone` | u16 | 1 | Cone bus: same high-water mark |
-| `hand_calls` | u32 | 1 | hand_traj_cmd invocations, counted at ENTRY before any gate (the denominator the other hand_* fields subtract from) |
-| `hand_rej_homing` | u32 | 1 | Exits with ERR_REJECTED: the homing interlock refused |
-| `hand_bus_down` | u32 | 1 | Exits with ERR_BUS_DOWN: jugglebot_commands_allowed() refused |
-| `hand_pre1_fail` | u32 | 1 | Exits with ERR_TIMEOUT at send #1 (set_state CLOSED_LOOP) |
-| `hand_pre2_fail` | u32 | 1 | Exits with ERR_TIMEOUT at send #2 (set_controller_mode) |
-| `hand_traj_fail` | u32 | 1 | Exits with ERR_TIMEOUT at send #3 (the 0x6D0 traj frame) |
 
 ### BridgeIdentity (`MsgType.BRIDGE_IDENTITY`, T2J, STREAM port)
 
@@ -729,22 +719,6 @@ wraps the generated Python. `AXIS_ALL = 0xFF` broadcasts to all legs.
 | `levelling_complete` | u8 | Platform levelling complete |
 | `pose_offset_tiltX` | f32 | Levelling pose offset, tilt about X (rad) |
 | `pose_offset_tiltY` | f32 | Levelling pose offset, tilt about Y (rad) |
-
-### ArgHandTraj (`HAND_TRAJ_CMD`)
-
-**8 bytes**. Python struct fmt: `<BBBBBBBB`.
-
-| Field | Type | Notes |
-|-------|------|-------|
-| `payload` | u8 | Exact 8-byte 0x6D0 PLATFORM_TRAJ_CMD payload (host-built; byte-0 discriminator) |
-
-### ArgHandSource (`HAND_SOURCE_SET`)
-
-**1 bytes**. Python struct fmt: `<B`.
-
-| Field | Type | Notes |
-|-------|------|-------|
-| `source` | u8 | 0 = LEGACY_STROKE (Platform-Teensy stroke engine), 1 = STREAMED (bridge 500 Hz hand lane) |
 
 ### ArgPlatformFwBegin (`PLATFORM_FW_BEGIN`)
 

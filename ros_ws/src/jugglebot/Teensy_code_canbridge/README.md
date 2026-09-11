@@ -129,8 +129,8 @@ each Hermite segment before it completes and distorts the velocity profile.
 The Phase 0 probe-3 bench variant (`UNIFIED7_BENCH_BUILD`, the runtime-toggled
 7th hold frame with the `bench7` console toggle) was **retired on 2026-09-02**
 when FW 17 landed the real streamed hand lane: the 7th frame is now a
-first-class interpolated channel (`leg_interp.cpp`, gated on `HAS_HAND` &&
-`hand_source == STREAMED`), so the probe would have been a second producer of
+first-class interpolated channel (`leg_interp.cpp`, gated on `HAS_HAND` alone
+since FW 21), so the probe would have been a second producer of
 the very frame it existed to measure. Its safety accounting survives in the
 real lane: the unseen-skip rule (never transmit before the first axis-6 encoder
 frame) and the stale-hold counting both live on in the `[hand7]` console census.

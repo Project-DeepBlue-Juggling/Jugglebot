@@ -19,7 +19,6 @@ SKIPS, not fails — the Jetson run is authoritative):
     RobotState re-encode parity, the never-command-a-dead-bus fail-fast,
     is_platform_reply_id, the generated hand axis-6 allow-table;
   * `test_version_check` — Get_Version sweep + raw-version cache;
-  * `test_hand_ops` — hand traj/smooth-move conduit + preamble-abort;
   * `test_leg_activate` / `test_leg_deactivate` / `test_leg_homing` — the
     cold-start move ladders (request validation, SETUP preamble byte-parity, the
     active/STOW COMMAND, the homing float32 Iq-EMA trip + HAND-vs-LEG dispatch, and
@@ -130,23 +129,13 @@ def test_native_gpio_poll_binary_passes(binaries):
         f"normative ball-sensor signal semantics:\n{r.stdout}\n{r.stderr}")
 
 
-def test_native_hand_ops_binary_passes(binaries):
-    """The compiled hand_ops.cpp passes every behaviour assertion (hand
-    conduit: the CLOSED_LOOP + POSITION/PASSTHROUGH preamble to axis 6, the 0x6D0
-    payload forwarded verbatim on the firmware-owned id, the never-command-a-dead-
-    bus gate, and — the safety crux — the traj TX ABORTS with no 0x6D0 frame if a
-    preamble send fails)."""
-    r = _run(binaries["test_hand_ops"])
-    assert r.returncode == 0, (
-        "native test_hand_ops FAILED — hand_ops.cpp / the hand traj conduit "
-        f"diverged from the expected behaviour:\n{r.stdout}\n{r.stderr}")
-
-
 def test_native_leg_activate_binary_passes(binaries):
     """The compiled leg_activate.cpp passes every behaviour assertion
     (ACTIVATE: request validation — dead-bus/E-STOP/concurrent-move/no-present-leg/
     idempotent — the 5-frame SETUP preamble byte-parity, the active-pose COMMAND, and
-    the safety crux that ANY abort leaves the leg in IDLE). Previously uncompiled by any test."""
+    the safety crux that ANY abort leaves the leg in IDLE), INCLUDING the axis-6
+    widening: ACTIVATE energises the hand, parks it at JBOp::HAND_ACTIVATE_POSITION_REV
+    and hands it to the streamed lane in POSITION/PASSTHROUGH (skill-stack R1)."""
     r = _run(binaries["test_leg_activate"])
     assert r.returncode == 0, (
         "native test_leg_activate FAILED — leg_activate.cpp diverged from the "

@@ -289,29 +289,29 @@ def test_tier_gate_rejects_unknown_tier():
     assert seq.prepared is False
 
 
-def test_throw_delay_floor_is_the_derived_dispatch_budget_not_a_constant():
-    """CANT_MAKE_LEAD is the loud+early copy of the Teensy's own ``:642``
-    dispatch budget — prelude(park band) + SAFETY_GAP + windup(v) — and it MOVES
-    with the release speed. It was a flat 3.5 s until 2026-08-22 (census A1): a
-    generic fit over a worst-case POSITIONING move a co-located chain never
-    makes, which refused every cadence rung for a budget it did not have.
+def test_throw_delay_floor_is_the_dispatch_budget_plus_the_pre_dispatch_ladder():
+    """CANT_MAKE_LEAD is the loud+early copy of the runtime release-window
+    guard's own inequality.
 
-    Pinned at both ends of the C-HAND-3 band, because a constant would pass one
-    end and fail the other: the DISPATCH budget is 0.337 s at the 0.4949 s band
-    floor and 0.253 s at the 1.1485 s ceiling, a 1.33x spread driven entirely by
-    the windup term (0.147 s -> 0.064 s).
-
-    Since 2026-08-23 the GATE charges that budget PLUS the pre-dispatch sequence
+    Until 2026-08-22 the gate was a flat 3.5 s (census A1): a generic fit over
+    a worst-case POSITIONING move a co-located chain never makes, which refused
+    every cadence rung for a budget it did not have. From 2026-08-23 the
+    dispatch term was DERIVED from the reactive stroke engine's own prelude +
+    gap + windup and MOVED with release speed; R1 (2026-09-11) deletes that
+    device with the mastery latch, so the dispatch term is flat ZERO now
+    (unless explicitly overridden) — every release happens off the streamed
+    hand lane's own plan. What survives, unchanged, is that the GATE charges
+    the dispatch term PLUS the pre-dispatch sequence
     (:func:`pre_dispatch_budget_s`), because the runtime guard applies the same
-    budget to the lead REMAINING after the sequence has run. The two quantities
-    are pinned separately here: ``min_event_delay_for_throw_s`` is still the
-    dispatch budget alone (it is what ``_step_preparing`` measures), and
-    ``min_throw_delay_for_cycle_s`` is what CHECKING refuses against."""
+    term to the lead REMAINING after the sequence has run: ``min_event_delay_
+    for_throw_s`` is the dispatch term alone (it is what ``_step_preparing``
+    measures), and ``min_throw_delay_for_cycle_s`` is what CHECKING refuses
+    against."""
     from jugglebot.toss_sequencer import (
         FLIGHT_TIME_MAX_S, FLIGHT_TIME_MIN_S, pre_dispatch_budget_s)
-    for flight, budget in ((FLIGHT_TIME_MIN_S, 0.3368),
-                           (0.80, 0.2811),
-                           (FLIGHT_TIME_MAX_S, 0.2535)):
+    for flight, budget in ((FLIGHT_TIME_MIN_S, 0.0),
+                           (0.80, 0.0),
+                           (FLIGHT_TIME_MAX_S, 0.0)):
         seq = TossSequencer(catch_pose_stow_mm=CATCH_POSE,
                             flight_time_s=flight, throw_delay_s=5.0)
         assert seq.min_event_delay_for_throw_s == pytest.approx(budget, abs=1e-3)
@@ -392,39 +392,16 @@ def test_the_loop_period_is_a_bound_over_the_measured_iteration():
     assert NODE_LOOP_PERIOD_S >= NODE_TICK_S
 
 
-@pytest.mark.parametrize(
-    'event_vel_mps,throw_delay_s,label',
-    [(2.48, 0.44, 'run 2 c1'),
-     (3.92, 0.40, 'run 10 c2')])
-def test_the_two_2026_08_26_aborts_are_refused_at_accept_now(
-        event_vel_mps, throw_delay_s, label):
-    """THE D3 acceptance, driven from the two cycles that failed.
-
-    Both ``ABORTED_CANT_MAKE_RELEASE`` cycles of bag ``2026-08-26_14-25-16``
-    cleared the accept-time floor — by 26 ms and 39 ms — and then died at the
-    runtime guard in PREPARING, with the catch latch raised, the announcement
-    published and a phantom tracker expectation left behind for the next cycle's
-    ``REJECTED_TRACK_ACTIVE`` to trip over. That is precisely what
-    ``min_throw_delay_for_release_s`` exists to make unreachable from static
-    arithmetic, and it stayed reachable because both gates agreed on a
-    pre-dispatch budget that was 0.080 s short.
-
-    The acceptance the brief asked for is stated as the choice it is: with the
-    honest budget these two are **REFUSED AT ACCEPT**, not cleared. Refusing is
-    the correct half of "loud and early" — the operator asked for a lead the
-    machine demonstrably cannot make, and the alternative is the armed abort they
-    actually got."""
-    from jugglebot.toss_sequencer import min_throw_delay_for_release_s
-    floor = min_throw_delay_for_release_s(event_vel_mps, False)
-    assert throw_delay_s < floor, (
-        '{}: throw_delay {:.3f} s must now be REFUSED against the {:.4f} s floor'
-        .format(label, throw_delay_s, floor))
-    # ... and it was ACCEPTED under the old 0.080 s budget, which is the
-    # regression this pins. (The old floor is reconstructed from the same
-    # function, at the old unit, rather than typed in.)
-    old_floor = min_throw_delay_for_release_s(event_vel_mps, False,
-                                              loop_period_s=0.02)
-    assert throw_delay_s >= old_floor
+# test_the_two_2026_08_26_aborts_are_refused_at_accept_now DELETED at R1
+# (2026-09-11): it pinned a regression against the reactive stroke engine's
+# dispatch-side windup budget (bag 2026-08-26_14-25-16's two
+# ABORTED_CANT_MAKE_RELEASE cycles). That device — and the hazard of dispatching
+# it with too little lead — is deleted with the mastery latch; every release
+# now happens off the streamed hand lane's own plan, so the two historical
+# throw_delay values (0.44 s, 0.40 s) are legitimately admissible under the
+# current floor and asserting they must be REFUSED would pin a hazard that no
+# longer exists. The regression itself is preserved in
+# logbook/2026-08-23-cadence-floor-and-inertia.md.
 
 
 def test_the_planner_min_move_floor_matches_the_generated_config():
@@ -668,18 +645,22 @@ def test_the_slip_reads_zero_until_the_commit_phase_exists():
 
 
 @pytest.mark.parametrize('flight_t, bound', [
-    (0.40, 'ARM_WINDOW'),       # below the derived floor — the catch cannot be armed
-    (1.16, 'DECEL_FF_HEADROOM'),  # between the FF line and hard authority
-    (1.20, 'DECEL_AUTHORITY'),    # above the ceiling, inside the 7.0 m/s wire
-                                  #   band (5.89 m/s), so it is the ENVELOPE that
-                                  #   refuses and not the bridge copy — 1.50 s
-                                  #   would read EVENT_VEL and prove nothing
+    # R1 (2026-09-11): the short-flight ARM_WINDOW case is deleted along with
+    # the bound itself — the reactive catch-stroke arming it modelled no
+    # longer exists, and the C-HAND-3 band floor drops to 0.05 s with nothing
+    # left to refuse a short flight on that ground. Both surviving bounds
+    # refuse the LONG end only; probed against the current envelope
+    # (2026-09-11) rather than carried over from the pre-R1 numbers.
+    (1.18, 'DECEL_FF_HEADROOM'),  # between the FF line and hard authority
+    (1.25, 'DECEL_AUTHORITY'),    # above the ceiling, inside the 7.0 m/s wire
+                                  #   band, so it is the ENVELOPE that refuses
+                                  #   and not the bridge copy
 ])
 def test_flight_time_outside_the_derived_envelope_is_rejected(flight_t, bound):
-    """The derived envelope (C-HAND-3) refuses BY NAME, and the two ends refuse
-    for different physical reasons — which is exactly what the old
-    ``[0.55, 1.10]`` band could not say: too SHORT and the catch cannot be
-    armed; too LONG and the decel feedforward saturates the drive."""
+    """The derived envelope (C-HAND-3) refuses BY NAME, and the two surviving
+    bounds refuse for different physical reasons on the LONG end: one where the
+    decel feedforward alone approaches saturation, the other past hard current
+    authority."""
     seq = TossSequencer(catch_pose_stow_mm=CATCH_POSE, flight_time_s=flight_t,
                         throw_delay_s=5.0)
     seq.start(0.0)
@@ -1189,25 +1170,27 @@ def test_prepare_ok_announces_after_gap_then_dispatches():
 
 
 def test_cant_make_release_aborts_before_announcing():
-    """Positioning ate the delay budget: t_release − now < the DERIVED
-    event-delay floor at prepare-confirm time. The abort fires BEFORE the
-    announcement goes out — an announced-then-aborted toss would leave a phantom
-    tracker expectation that REJECTED_TRACK_ACTIVE then refuses on until it
-    expires. Ball still seated ⇒ safe to stand down.
+    """Positioning ate the delay budget: t_release − now <= the release-window
+    floor at prepare-confirm time. The abort fires BEFORE the announcement goes
+    out — an announced-then-aborted toss would leave a phantom tracker
+    expectation that REJECTED_TRACK_ACTIVE then refuses on until it expires.
+    Ball still seated ⇒ safe to stand down.
 
     This is census B5 and it is the REAL enforcement: it measures the ACTUAL
     remaining lead, so it stays correct however the sequence's elapsed cost
-    changes. The CHECKING gate is only its loud+early copy. Since 2026-08-22 the
-    number it compares against is 0.281 s at T = 0.80 (was a flat 1.0 s), so the
-    stall this test injects has to be correspondingly deeper."""
+    changes. The CHECKING gate is only its loud+early copy. R1 (2026-09-11):
+    the floor this test's stall has to beat is now zero (the reactive dispatch
+    device it used to be derived from is deleted), so the stall must put
+    ``now`` AT OR PAST ``t_release`` itself rather than merely inside a
+    physical windup window."""
     seq = _fresh(throw_delay_s=3.5)                   # t_release = 3.5
-    assert seq.min_event_delay_for_throw_s == pytest.approx(0.2811, abs=1e-3)
+    assert seq.min_event_delay_for_throw_s == pytest.approx(0.0, abs=1e-3)
     _to_positioning(seq)
     seq.note_position_result(0.05, True, 3.1)         # arrival = 3.35
     d = seq.step(3.35, _obs(3.35))
     assert d.phase == PHASE_PREPARING and d.action == ACTION_PREPARE_CATCH
     seq.note_prepare_result(True)
-    d = seq.step(3.4, _obs(3.4))                      # 3.5 − 3.4 = 0.1 < 0.281
+    d = seq.step(3.51, _obs(3.51))                    # 3.5 − 3.51 = −0.01 < 0.0
     assert d.done and d.result.outcome == 'ABORTED_CANT_MAKE_RELEASE'
     assert d.action == ACTION_SAFE_ABORT
     assert seq._announce_dispatched is False          # no phantom announcement
@@ -2512,16 +2495,15 @@ def test_the_commit_budget_is_one_loop_period_not_four():
     ticks into the PREVIOUS cycle's flight and satisfies the armed->announce gap
     by construction instead of with a tick. So the commit budget must be exactly
     three loop periods smaller than the serial delay floor — not "about", and
-    not by a hand-typed 0.120.
-
-    Probe: ``python tools/probes/cadence_rung_check.py --pipeline`` (P3,
-    2026-08-27), which now IMPORTS this function rather than modelling it."""
+    not by a hand-typed 0.120. This holds independent of the dispatch-side term
+    (R1, 2026-09-11: zero, since the reactive stroke engine it used to be
+    derived from is deleted with the mastery latch), because both budgets
+    charge the SAME dispatch term and it cancels in the difference."""
     from jugglebot import toss_sequencer as ts
     for flight in (0.4949, 0.6387, 0.9032, 1.0298):
         v = ts.vertical_event_vel_mps(flight)
-        dispatch = ts.hand_stroke.min_throw_event_delay_s(v)
         assert ts.commit_budget_s(v) == pytest.approx(
-            dispatch + ts.NODE_LOOP_PERIOD_S + ts.FLOOR_REPRESENTATION_SLACK_S,
+            ts.NODE_LOOP_PERIOD_S + ts.FLOOR_REPRESENTATION_SLACK_S,
             abs=1e-12)
         serial = ts.min_throw_delay_for_release_s(v, False)
         assert serial - ts.commit_budget_s(v) == pytest.approx(
@@ -2564,7 +2546,7 @@ def test_the_staged_ladder_reaches_staged_in_the_budgeted_three_ticks():
 
 def test_a_staged_cycle_never_emits_a_hand_bearing_action():
     """T-U2 (the deterministic half; the property test is
-    tests/ros/test_toss_pipeline_properties.py).
+    tests/ros/test_toss_pipeline_properties.py (deleted at R1, 2026-09-11 — the pipeline is unreachable under unified sessions)).
 
     S1′: while a cycle is staged its emittable action set is
     {NONE, POSITION_PLATFORM(skip), PREPARE_CATCH} and nothing else. Not one of
@@ -3036,7 +3018,11 @@ def test_the_late_tick_shortfall_is_independent_of_the_release_speed():
     threshold is ``NODE_LOOP_PERIOD_S + slack`` at EVERY flight time — a slower
     throw does not buy headroom and a faster one does not lose it. Anyone
     reaching for a bigger lead, a longer dwell or a lower cadence to make this
-    go away is tuning a quantity the failure does not depend on."""
+    go away is tuning a quantity the failure does not depend on. R1 (2026-09-11):
+    ``dispatch_budget`` is now flat zero (the reactive stroke engine it used to
+    be derived from is deleted), so the cancellation is trivial rather than
+    merely exact — but the threshold identity below is the same one, and it is
+    what actually matters."""
     from jugglebot.toss_sequencer import (FLOOR_REPRESENTATION_SLACK_S,
                                           NODE_LOOP_PERIOD_S)
     thresholds = []
@@ -3047,8 +3033,8 @@ def test_the_late_tick_shortfall_is_independent_of_the_release_speed():
         # The exact lateness at which the guard first fails, from the crossing.
         thresholds.append(seq.commit_budget_for_cycle_s
                           - seq.min_event_delay_for_throw_s)
-        # …and it really is the whole budget minus the dispatch term.
-        assert seq.min_event_delay_for_throw_s > 0.0
+        # …and it really is the whole budget minus the (now zero) dispatch term.
+        assert seq.min_event_delay_for_throw_s == pytest.approx(0.0)
     assert thresholds == pytest.approx(
         [NODE_LOOP_PERIOD_S + FLOOR_REPRESENTATION_SLACK_S] * 3, abs=1e-12)
 
@@ -3095,9 +3081,11 @@ def test_the_staged_lead_gate_replaces_the_delay_gate_loudly():
     ``stage_budget_s + commit_budget_s`` of real lead is REJECTED_CANT_MAKE_LEAD
     there, not ABORTED_CANT_MAKE_RELEASE four ticks later with the announcement
     out. A retired gate that nothing replaces is how the pre-dispatch budget
-    went uncharged in the first place."""
-    seq = _staged(release_at_perf=0.30)          # 0.30 s of lead at start(0.0)
-    assert seq.min_stage_lead_for_cycle_s > 0.30
+    went uncharged in the first place. R1 (2026-09-11): the floor is smaller
+    now that the dispatch term is zero (~0.16 s, four loop periods, vs ~0.30 s
+    pre-R1), so the lead this test injects is scaled down to stay under it."""
+    seq = _staged(release_at_perf=0.10)          # 0.10 s of lead at start(0.0)
+    assert seq.min_stage_lead_for_cycle_s > 0.10
     d = seq.step(0.0, _obs(0.0))
     assert d.done is True
     assert d.result.outcome.startswith('REJECTED_CANT_MAKE_LEAD')

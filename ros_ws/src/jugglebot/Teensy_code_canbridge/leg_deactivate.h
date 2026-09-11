@@ -23,6 +23,16 @@
 //  Parallel even-descent: ALL present legs fire together so the platform lowers
 //  straight down (no tilt/binding), mirroring ACTIVATE's even-rise.
 //
+//  THE HAND (axis 6) DE-ENERGISES, IT DOES NOT DESCEND (skill-stack R1). ACTIVATE
+//  energises axis 6 and parks it at 0 rev, so DEACTIVATE is what puts it back —
+//  but the choreography is not symmetric, because the physics is not. A leg
+//  carries the platform and must be lowered under profile; the hand's carriage
+//  hangs on a spool and gravity takes it to the bottom stop the moment the axis
+//  IDLEs. So the hand is IDLE'd in the very first tick of the op, BEFORE the legs
+//  begin their descent, and then leaves the target mask entirely — it is never in
+//  SETUP, COMMAND or MONITOR, and a later leg abort finds it already safe. A
+//  hand-only DEACTIVATE (axis == HAND_AXIS) therefore completes in one tick.
+//
 //  The IDLE on arrival is the one behavioural difference from ACTIVATE (which
 //  leaves the legs in CLOSED_LOOP holding the active pose). Deactivate's whole
 //  purpose is to safe the robot: a controlled descent ending de-energised. The
@@ -66,9 +76,10 @@ enum DeactivateResult : uint8_t {
 
 void deactivate_init();
 
-// RPC entry (net-task context). `axis` == AXIS_ALL deactivates every PRESENT leg
-// (parallel even-descent); a single leg index deactivates just that leg iff
-// present. Validates bus health + targets, rejects a concurrent
+// RPC entry (net-task context). `axis` == AXIS_ALL deactivates every PRESENT axis
+// — the hand IDLEs immediately, the legs lower in parallel (even descent); a
+// single axis index (0..6) deactivates just that axis iff present. Validates bus
+// health + targets, rejects a concurrent
 // DEACTIVATE/ACTIVATE/HOME, then latches a non-blocking start. Returns a
 // JbUdp::RpcStatus (OK = accepted).
 uint16_t deactivate_request(uint8_t axis);
@@ -79,6 +90,6 @@ uint16_t deactivate_request(uint8_t axis);
 void deactivate_step();
 
 bool    deactivate_active();             // a deactivate is pending or running
-uint8_t deactivate_result(uint8_t axis); // last DeactivateResult for a leg axis (0..5)
+uint8_t deactivate_result(uint8_t axis); // last DeactivateResult for an axis (0..6, hand included)
 
 }  // namespace CanBridge

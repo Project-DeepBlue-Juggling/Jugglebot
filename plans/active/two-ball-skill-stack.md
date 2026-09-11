@@ -145,6 +145,17 @@ hardware. Facts that size the work:
 5. **The ILC is replaced outright** by the memory-based learner.
 6. **Resets are cheap**: the Ball Butler reload is the reset, and the learning
    loop assumes it.
+7. **R1 decisions (2026-09-11)**: the hand deviation guard boots ARMED (an
+   observing guard on a single-master lane is no guard; `hand7 observe` is a
+   bench verb that lasts one armed session — the disarm edge re-arms; the
+   first trip is observed COLD via a 3 rev gap re-entry);
+   ACTIVATE parks the hand at 0 rev, the clip floor (homing unchanged, the
+   0.1 rev first-frame residual of FW 17 row 13 is gone by construction, the
+   operator energise step retires from the launch-up path); the Ball Butler
+   reload's reactive catch is deleted with the stroke engine and operator
+   placement is R3's reset (no LANDING port); the legacy kind-0 toss branch's
+   device leaves at R1 and the branch is refused at goal accept (one code: the
+   stroke engine is deleted); the FSM itself still goes at R4 under `fsm-final`.
 
 ### 1.4 Relationship to other plans
 
@@ -280,7 +291,7 @@ preconditions: the cone rigid body disabled, the Ball Butler reflectors masked.
 | Rung | Name | Builds | Deletes | Gate |
 |---|---|---|---|---|
 | R0 | Board and substrate | invariant checklist; census-backed dead-layer deletion | dead clusters (§ 6) | `./run_tests.sh --full` green; grep counts zero — **checklist landed 2026-09-10; deletion done 2026-09-09** |
-| R1 | One hand master | can-bridge FW (STREAMED only), Platform FW (no stroke engine), lockstep runbook | `Trajectory.h`, `hand_source`, `hand_ops`, `HAND_TRAJ_CMD`, `hand_stroke.py` twin | bench ladder re-pass; a streamed self-toss caught with no latch step |
+| R1 | One hand master | can-bridge FW 21 (lane follows `HAS_HAND`, guard boots ARMED, ACTIVATE parks the hand at 0 rev), Platform FW 7 (no stroke engine), PROTOCOL_VERSION 7, `hand_mm_per_rev` measured key, lockstep runbook `tests/hardware/session_skill_stack_r1_flash.md` | `Trajectory.h`, `hand_source`, `hand_ops`, `HAND_TRAJ_CMD`/`HAND_SOURCE_SET`, `SetHandTrajCmd.srv`, `hand_stroke.py` twin, the legacy kind-0 toss device (its FSM branch refused at accept until R4) | **software landed 2026-09-11, UNFLASHED** (`logbook/2026-09-11-skill-stack-r1-one-hand-master.md`); gate = bench ladder re-pass on the FW 21 / Platform 7 pair + a streamed self-toss caught with no latch step — sitting pending |
 | R2 | Skills, schedule, stream (sim) | `motion/skills/`, `install_segment`, vectorised gate, admissible sweep, apex ≥ 1.0 m, `sim/skills_gate.py` | `PlanCycle` modes, ring machinery | 20 columns cycles in sim, no drops; plan < 50 ms on the loaded Jetson |
 | R3 | Learner + single site | `learner.py`, `memory.py`, outcome capture | ILC/trim/cal/record stack, `toss_ilc_enabled` | in-band within 5 throws from cold, sim and hardware; 10 consecutive catches |
 | R4 | Two sites, one ball, BB reset | alternating schedule, reload as a CATCH skill, `Juggle.action`, GUI surface | FSM stack (tag `fsm-final`), `catch_coordinator`, `catch_reach`, old sim gates | 10 consecutive alternating catches; BB reload → catch → throw chain |
@@ -447,7 +458,7 @@ triple of the final gate.
 | MPC telemetry analysis | `controller/telemetry.py`, `sim/analysis/`, `/diagnose` (trace: keep any rosbag path) | `sim/analysis`, `sim/juggle_demo.py` | R0, trace first — **traced 2026-09-09, kept in full: `sim/analysis/diagnose.py` does live rosbag (MCAP) analysis integrated with MPC-CSV analysis; `controller/telemetry.py` required by the protected `sim/viz/telemetry.py` shim; see logbook** |
 | Historical MPC docs | `docs/sim_mpc/` + its mkdocs nav | none | R0 — **done 2026-09-09** |
 | Phase-runner workflows | `.claude/workflows/*.js` | none | **done** |
-| Stroke engine + latch | `Teensy_code_platform/Trajectory.h`, `hand_source.*`, `hand_ops.*`, `hand_stroke.py`, `SetHandTrajCmd.srv` | R1 list | R1 |
+| Stroke engine + latch | `Teensy_code_platform/Trajectory.h`, `hand_source.*`, `hand_ops.*`, `hand_stroke.py`, `SetHandTrajCmd.srv` (+ `tools/probes/{hand_stroke_timeline,cadence_rung_check,ilc_speed_band}.py`, `ros_ws/docs/hand_decel_feedforward.md`, the kind-0 timing model in `toss_sequencer`/`toss_session`, the reactive arm in `catch_coordinator_node`; `reload_coordinator_node`'s non-unified goals are REFUSED at accept, the branch itself dies at R4) | R1 list | R1 — **done 2026-09-11** (deleted, importers re-pointed to the generated `HAND_REV_PER_M` / `HAND_HOMED_REST_FLOOR_REV` / `HOMING_HAND_{SETTLE,PARK}_BAND_REV`; grep-to-zero on the code, dated retirement notes remain) |
 | Learning stack | `toss_ilc.py`, `toss_trim.py`, `toss_cal.py`, `toss_record.py`, `ilc_fit*.py`, yaml artifacts | `reload_coordinator_node.py` | R3 |
 | FSM choreography | `toss_sequencer.py` (3 577), `toss_session.py` (2 127), `reload_sequencer.py`, `catch_coordinator*.py`, `catch_reach.py`, ring half of `unified_cycle.py` (2 711), `PlanCycle.srv`, old sim gates | `reload_coordinator_node.py` (12 955) | R4 |
 

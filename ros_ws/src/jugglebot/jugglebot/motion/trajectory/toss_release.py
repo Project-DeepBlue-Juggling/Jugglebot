@@ -436,9 +436,9 @@ def aim_target_offset_mm(aim_rx: float, aim_ry: float, flight_time_s: float,
 def validate_event_vel(event_vel_mps: float, *,
                        vmin: float = hw.TEENSY_TRAJ_MIN_EVENT_VEL_MPS,
                        vmax: float = hw.TEENSY_TRAJ_MAX_EVENT_VEL_MPS) -> bool:
-    """True iff the teensy bridge will accept it: ``teensy_bridge_node``'s
-    ``_svc_set_hand_traj`` raises outside [0.3, 7.0] m/s (bounds
-    inclusive-accept, ``hw.TEENSY_TRAJ_MIN/MAX_EVENT_VEL_MPS``)."""
+    """True iff the teensy bridge will accept it: the streamed hand lane
+    raises outside [0.3, 7.0] m/s (bounds inclusive-accept,
+    ``hw.TEENSY_TRAJ_MIN/MAX_EVENT_VEL_MPS``)."""
     return float(vmin) <= float(event_vel_mps) <= float(vmax)
 
 

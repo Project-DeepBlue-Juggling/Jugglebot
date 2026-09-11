@@ -4,7 +4,7 @@ The coordinator node (``reload_coordinator_node``, the merged ball-ops node) is 
 thin ROS wrapper around this FSM: it feeds observations in (control mode, streaming,
 mocap/hand freshness, ball possession, tracker state) and executes the actions the
 FSM asks for (``go_to_pose``, the PREPARE bundle, the self-``ThrowAnnouncement``
-publish, the ``SetHandTrajCmd`` throw dispatch, RECENTER, SAFE_ABORT). The FSM
+publish, the throw dispatch, RECENTER, SAFE_ABORT). The FSM
 itself imports NO ROS — every transition is a pure function of ``(now,
 observations, discrete events)`` so the whole sequence is unit-testable without a
 running graph.
@@ -50,9 +50,9 @@ where the reload receives from BB):
    Teensy-persisted ``RobotState.levelling_complete``, which survives the
    relaunch that empties the correction),
    hand telemetry fresh (``REJECTED_HAND_STALE`` — a dead hand link blinds
-   release verification), hand at the bottom park band
-   (``REJECTED_HAND_NOT_PARKED`` — a kind-0 stroke commands ABSOLUTE positions
-   from 0 rev, so a throw dispatched off-band is a physical hazard), ball
+   release verification), hand within its rest band
+   (``REJECTED_HAND_NOT_PARKED`` — R1: the segment was planned from a seed the
+   hand has since left), ball
    evidence from the LIVE hand ball sensor — ``REJECTED_NO_BALL`` on a
    valid-empty cup, ``REJECTED_BALL_UNKNOWN`` on a sensor that cannot answer
    (two codes because they send the operator to two different subsystems) —
@@ -105,10 +105,10 @@ where the reload receives from BB):
    per-cycle bundle. A cycle whose nominated B has drifted out of the session's
    declared reach envelope refuses here, ``REJECTED_REACH_CENTER_DRIFT``.
 4. **THROWING** — entered only after a hand-parked RE-VERIFY (positioning +
-   prepare took seconds; a kind-0 stroke commands ABSOLUTE positions from
-   0 rev, so a hand that drifted/was moved off the bottom band since CHECKING
-   is a physical dispatch hazard ⇒ ``ABORTED_HAND_NOT_PARKED`` via
-   SAFE_ABORT). Then ``ACTION_DISPATCH_THROW`` exactly once, ever. The dispatch is
+   prepare took seconds; the segment was planned from a seed the hand has
+   since left if it drifted/was moved off the rest band since CHECKING ⇒
+   ``ABORTED_HAND_NOT_PARKED`` via SAFE_ABORT). Then ``ACTION_DISPATCH_THROW``
+   exactly once, ever. The dispatch is
    tri-state (``ok`` / ``ambiguous`` / ``rejected``): a definitive bridge-side
    validation reject (no CAN frame exists) SAFE_ABORTs with the ball still
    seated; ``ok`` and ``ambiguous`` are treated identically — the hand ack lies
@@ -245,12 +245,11 @@ from jugglebot.outcome_detail import bound_msg, range_msg
 # math, the generated config, and motion.trajectory (numpy, no rclpy).
 from jugglebot.motion.trajectory import throw_envelope
 
-# The firmware stroke model, for the SAME reason as throw_envelope above: since
-# 2026-08-22 the event-delay floor is DERIVED from the stroke geometry rather than
-# declared as a constant, and a pinned local copy of "prelude + gap + windup"
-# would be a second place for the Teensy's :642 budget check to be wrong.  Also
-# ROS-free (math + the generated config).
-from jugglebot.motion.trajectory import hand_stroke
+# R1 (2026-09-11): the reactive kind-0 stroke-dispatch device and its host-side
+# timing model are deleted with the mastery latch (owner decision 4) — every
+# toss now releases off the streamed hand lane's own plan, so the dispatch-side
+# prelude/gap/windup budget below is retired to zero rather than derived from a
+# device that no longer exists.
 
 # ── Feedback phases (Toss.action feedback.phase — LOCKED strings) ──────────────
 PHASE_CHECKING = 'CHECKING'
@@ -292,7 +291,9 @@ ACTION_PREPARE_CATCH = 'prepare_catch'          # node: prime-hold raise on THIS
                                                 #   cycle than the armed edge
 ACTION_ANNOUNCE = 'announce'                    # publish the self-ThrowAnnouncement
                                                 #   (≥1 tick AFTER the armed confirm)
-ACTION_DISPATCH_THROW = 'dispatch_throw'        # SetHandTrajCmd traj_type=0 (ONCE, ever)
+ACTION_DISPATCH_THROW = 'dispatch_throw'        # R1: no RPC — the throw already
+                                                # released off the streamed
+                                                # hand lane's own plan (ONCE, ever)
 ACTION_REACH_CATCH = 'reach_catch'              # Tier 8b only: publish the ONE deferred
                                                 #   A→B catch/dynamic_target (arrival =
                                                 #   the announced landing). Emitted
@@ -372,8 +373,7 @@ TOSS_DISPATCH_DEBOUNCE_S = 0.10      # GOAL-STORM debounce, NOT a readiness floo
                                      #     track_active, mocap/status freshness,
                                      #     platform_levelled;
                                      #   * the ARITHMETIC that used to hide inside
-                                     #     the 3.5 s — hand_stroke.
-                                     #     min_throw_event_delay_s(v_throw),
+                                     #     the 3.5 s — the dispatch-side budget,
                                      #     enforced at runtime by
                                      #     ABORTED_CANT_MAKE_RELEASE against the
                                      #     REAL remaining lead (census B5,
@@ -386,13 +386,16 @@ TOSS_DISPATCH_DEBOUNCE_S = 0.10      # GOAL-STORM debounce, NOT a readiness floo
                                      #     dispatch budget alone made the accept
                                      #     gate loose by 0.160-0.520 s and shipped
                                      #     three cadence rungs that abort every
-                                     #     cycle);
+                                     #     cycle). R1 (2026-09-11) retires the
+                                     #     device that budget modelled (the
+                                     #     reactive stroke engine); the term is
+                                     #     now zero, not derived, but the same two
+                                     #     enforcement points still charge it;
                                      #   * the HAND GEOMETRY — toss_session's
-                                     #     required_dwell_s now carries
-                                     #     hand_stroke.min_turnaround_dwell_s, so a
-                                     #     cadence the stroke cannot physically make
-                                     #     is refused at goal-accept instead of
-                                     #     clobbering a live stroke (C-HAND-1).
+                                     #     required_dwell_s used to carry the same
+                                     #     device's turnaround model; R1 drops that
+                                     #     physics term (C-HAND-1's device is gone)
+                                     #     and keeps the plumbing term alone.
                                      #
                                      # What is LEFT for this constant: a dispatch
                                      # debounce. A throw_delay at or below ~0 lets a
@@ -406,28 +409,25 @@ TOSS_DISPATCH_DEBOUNCE_S = 0.10      # GOAL-STORM debounce, NOT a readiness floo
                                      # deliberately NOT enough to imply readiness.
                                      # It also still catches the sign typo the FSM's
                                      # __post_init__ preserves (a negative delay).
-MIN_THROW_EVENT_DELAY_S = 0.0        # 0 ⇒ DERIVE from the resolved event_vel via
-                                     # hand_stroke.min_throw_event_delay_s. A
-                                     # positive value is an explicit OVERRIDE (tests
-                                     # and the standalone harnesses).
+MIN_THROW_EVENT_DELAY_S = 0.0        # 0 ⇒ the dispatch-side budget below is zero
+                                     # (R1, 2026-09-11: the reactive stroke engine
+                                     # this term used to be derived from is
+                                     # deleted with the mastery latch — every
+                                     # release now happens off the streamed
+                                     # hand lane's own plan, at the planned
+                                     # instant, with no separate dispatch-side
+                                     # prelude/gap/windup to charge). A positive
+                                     # value is an explicit OVERRIDE (tests and
+                                     # the standalone harnesses).
                                      #
-                                     # It was a hand-written 1.0 s from 2026-07-25
-                                     # until 2026-08-22, sized off the WORST prelude
-                                     # the firmware can build — a full-stroke smooth
-                                     # move from the top, 0.758 s. That prelude is
-                                     # unreachable on the throw path and always was:
-                                     # a kind-0 dispatch is admitted only with
-                                     # hand_parked true (CHECKING, and re-checked at
-                                     # THROWING entry), which caps the prelude at
-                                     # smooth_move_duration_s(HAND_PARK_BAND_REV) =
-                                     # 0.170 s. The old comment conceded exactly
-                                     # that ("conservative twice over") and shipped
-                                     # the unreachable number anyway. Derived, the
-                                     # floor is 0.337 s at the C-HAND-3 band floor
-                                     # and 0.281 s at the 0.80 s nominal — and it
-                                     # MOVES WITH v_throw, which a constant cannot:
-                                     # the windup term alone spans 0.064–0.147 s
-                                     # across the admitted band, a 2.3x spread.
+                                     # Historical note: from 2026-07-25 to
+                                     # 2026-08-22 this was a hand-written 1.0 s
+                                     # sized off the worst reactive-stroke prelude
+                                     # the firmware could build (0.758 s); from
+                                     # 2026-08-22 to 2026-09-11 it was DERIVED from
+                                     # that stroke's geometry (0.281-0.337 s across
+                                     # the admitted band). R1 deletes the device
+                                     # both numbers described.
 DEFAULT_TOSS_FLIGHT_TIME_S = 0.8     # 0 => this — the NO-CONFIG fallback only: the
                                      # coordinator resolves a zero goal field against
                                      # the generated JB_OP_TOSS_FLIGHT_TIME_DEFAULT_S
@@ -1094,8 +1094,8 @@ def pre_dispatch_budget_s(positioning_move: bool,
 
     **The quantity the accept-time delay floor was missing.**  Until 2026-08-23
     both delay gates — ``TossSequencer``'s CHECKING mirror and
-    ``toss_session.min_throw_delay_s`` — charged the kind-0 dispatch budget
-    alone (``hand_stroke.min_throw_event_delay_s``).  The runtime guard in
+    ``toss_session.min_throw_delay_s`` — charged the dispatch-side budget
+    alone.  The runtime guard in
     :meth:`TossSequencer._step_preparing` applies that SAME budget to the lead
     *remaining* after CHECKING, POSITIONING and the PREPARE ladder have already
     elapsed, so a goal could clear the accept gate by construction and then abort
@@ -1204,14 +1204,13 @@ def commit_budget_s(event_vel_mps: float, min_event_delay_s: float = 0.0,
     0.10 s floor for a hazard that is not on this path. Omitted deliberately, not
     by transcription.
 
-    ``tools/probes/cadence_rung_check.py`` MODELLED this function through Phase
-    B0 and now imports it — the reconciliation its docstring demanded, pinned
-    equal by ``tests/motion/test_cadence_rung_check.py``. A probe that keeps its
-    own copy of a shipped floor is the 2026-08-22 audit's finding wearing a
-    different hat."""
+    R1 (2026-09-11): ``dispatch_s`` no longer derives a windup from the reactive
+    stroke engine — that device is deleted with the mastery latch, and every
+    release now happens off the streamed hand lane's own plan, so the only
+    dispatch-side term left is an explicit override (tests, standalone
+    harnesses); the unoverridden case is zero."""
     override = float(min_event_delay_s)
-    dispatch_s = (override if override > 0.0
-                  else hand_stroke.min_throw_event_delay_s(event_vel_mps))
+    dispatch_s = override if override > 0.0 else 0.0
     return dispatch_s + float(loop_period_s) + FLOOR_REPRESENTATION_SLACK_S
 
 
@@ -1297,26 +1296,29 @@ def min_throw_delay_for_release_s(event_vel_mps: float,
 
     ``max(TOSS_DISPATCH_DEBOUNCE_S, dispatch budget + pre-dispatch budget)``:
 
-    * the **dispatch budget** is ``hand_stroke.min_throw_event_delay_s(v)``, the
-      Teensy's own ``:642`` check written from the throw side (prelude + gap +
-      windup).  It is what the runtime guard measures the REMAINING lead against;
+    * the **dispatch budget** used to be derived from the reactive stroke
+      engine's own prelude + gap + windup (the Teensy's ``:642`` check, written
+      from the throw side); R1 (2026-09-11) deletes that device with the
+      mastery latch, so the budget is zero unless explicitly overridden — every
+      release now happens off the streamed hand lane's own plan. It is what
+      the runtime guard measures the REMAINING lead against;
     * the **pre-dispatch budget** is :func:`pre_dispatch_budget_s`, the lead the
-      sequence spends BEFORE that guard runs.
+      sequence spends BEFORE that guard runs — unchanged, it counts FSM ticks,
+      not stroke geometry.
 
     Adding them is the whole fix: a ``throw_delay_s`` at or above this floor
     cannot die ``ABORTED_CANT_MAKE_RELEASE`` from static arithmetic, because the
     guard's own inequality (``t_release − now ≥ dispatch budget``) is implied by
-    it at the last tick the guard runs.  ``min_event_delay_s > 0`` is the same
-    explicit override ``TossSequencer.min_event_delay_s`` is (tests, standalone
-    harnesses); the shipped 0.0 derives the dispatch budget from the speed.
+    it at the last tick the guard runs.  ``min_event_delay_s > 0`` is an
+    explicit override (tests, standalone harnesses); the shipped 0.0 is now a
+    zero dispatch budget rather than a derived one.
 
     Both gates import THIS function rather than restating it, for the reason the
     2026-08-22 audit found the hard way: the session's mirror and the cycle's own
     gate were two expressions of one floor, and they had already drifted from the
     guard they front for."""
     override = float(min_event_delay_s)
-    dispatch_s = (override if override > 0.0
-                  else hand_stroke.min_throw_event_delay_s(event_vel_mps))
+    dispatch_s = override if override > 0.0 else 0.0
     return max(TOSS_DISPATCH_DEBOUNCE_S,
                dispatch_s + pre_dispatch_budget_s(positioning_move, loop_period_s)
                + FLOOR_REPRESENTATION_SLACK_S)
@@ -1926,28 +1928,30 @@ class TossSequencer:
 
         Two answers, because two different things happen at ``_t_release``.
 
-        **Legacy / unified LAUNCH — the kind-0 dispatch budget.** The guard
-        fronts a ``set_hand_traj_cmd`` whose stroke needs a prelude, a safety gap
-        and a windup before the ball leaves; too little lead and the frame is
-        packed for an instant that has passed. That is
-        :attr:`min_event_delay_for_throw_s` (0.281 s at the 0.80 s nominal).
+        **Pre-R1, non-chained — the reactive dispatch budget.** The guard fronted
+        a discrete stroke command that needed a prelude, a safety gap and a
+        windup before the ball left; too little lead and the frame was packed
+        for an instant that had passed. That device is deleted at R1
+        (2026-09-11, owner decision 4): every release now happens off the
+        streamed hand lane's own plan, so :attr:`min_event_delay_for_throw_s`
+        is zero unless explicitly overridden.
 
-        **CHAINED — one loop period, and no more.** A chained cycle dispatches NO
-        kind-0 stroke: its release is already a KNOT on the plan the emitter is
-        streaming, and ``_dispatch_toss`` issues no RPC at all (it sets
-        ``throw_dispatched`` and reports OK, because the throw was armed when the
-        plan installed). So the windup this guard measures belongs to a device
-        that is not running — the same "describes a device that is not running"
-        carve-out :attr:`chained` already makes for the park band. What a chained
-        cycle genuinely still needs is to get its ANNOUNCEMENT out before the
-        ball leaves, which is one tick.
+        **CHAINED — one loop period, and no more.** A chained cycle's release is
+        already a KNOT on the plan the emitter is streaming, and
+        ``_dispatch_toss`` issues no RPC at all (it sets ``throw_dispatched`` and
+        reports OK, because the throw was armed when the plan installed). What a
+        chained cycle genuinely still needs is to get its ANNOUNCEMENT out
+        before the ball leaves, which is one tick.
 
-        **This was a real accept-vs-runtime hole** (audit B1, 2026-09-07). Charging
-        the kind-0 budget on a chain put the runtime floor 0.28 s above what the
-        cycle needs, and since a chained cycle cannot start until
-        ``catch + max(verdict, extend)``, EVERY chained cycle aborted
-        ``ABORTED_CANT_MAKE_RELEASE`` at a dwell the accept gate had admitted —
-        the machine refusing, mid-ring, a cadence it had promised to fly.
+        **This was a real accept-vs-runtime hole** (audit B1, 2026-09-07). Before
+        R1 charging the reactive-dispatch budget on a chain put the runtime
+        floor 0.28 s above what the cycle needs, and since a chained cycle
+        cannot start until ``catch + max(verdict, extend)``, EVERY chained cycle
+        aborted ``ABORTED_CANT_MAKE_RELEASE`` at a dwell the accept gate had
+        admitted — the machine refusing, mid-ring, a cadence it had promised to
+        fly. R1 removes the discrepancy at its root: the non-chained floor is
+        now the same zero the chained branch already used, plus its own
+        one-tick announcement need.
         """
         return (NODE_LOOP_PERIOD_S if self.chained
                 else self.min_event_delay_for_throw_s)
@@ -1957,21 +1961,20 @@ class TossSequencer:
         """The event-delay floor THIS toss's release speed actually needs.
 
         ``min_event_delay_s > 0`` is an explicit override (tests, standalone
-        harnesses); the shipped 0.0 derives it from
-        ``hand_stroke.min_throw_event_delay_s(event_vel_mps)`` — the Teensy's own
-        ``:642`` budget written from the throw side, prelude(park band) +
-        SAFETY_GAP + windup(v).
+        harnesses); the shipped 0.0 is now a flat zero. Until R1 (2026-09-11)
+        this derived a windup from the reactive stroke engine's own closed
+        form; that device is deleted with the mastery latch, so there is no
+        longer a dispatch-side prelude/gap/windup to model — every release
+        happens off the streamed hand lane's own plan, at the planned instant.
 
-        ``event_vel_mps`` is resolved in ``__post_init__`` and is therefore always
-        finite here, but it is not yet TRUSTWORTHY at that point: CHECKING's
-        EVENT_VEL / THROW_ENVELOPE / TILT_CLAMP gates are what establish that.
-        ``hand_stroke`` clamps to the bridge's accepted band internally, so an
-        out-of-band value yields a bounded floor rather than a divide-by-zero —
-        the goal still dies at the gate that names the real fault."""
+        ``event_vel_mps`` is resolved in ``__post_init__`` and is therefore
+        always finite here, but it is not yet TRUSTWORTHY at that point:
+        CHECKING's EVENT_VEL / THROW_ENVELOPE / TILT_CLAMP gates are what
+        establish that."""
         override = float(self.min_event_delay_s)
         if override > 0.0:
             return override
-        return hand_stroke.min_throw_event_delay_s(self.event_vel_mps)
+        return 0.0
 
     @property
     def commit_budget_for_cycle_s(self) -> float:
@@ -2391,8 +2394,7 @@ class TossSequencer:
             # FLIGHT_TIME for the same reason: an END_STOP refusal is about the
             # hand's coast, not about the clock.
             envelope = throw_envelope.evaluate(self.flight_time_s,
-                                               self.event_vel_mps,
-                                               arm_window=not self.unified)
+                                               self.event_vel_mps)
             if not envelope.ok:
                 return self._reject('THROW_ENVELOPE', envelope.message)
             # The DERIVED lead gate (census A2), placed here for the same reason
@@ -2454,17 +2456,13 @@ class TossSequencer:
                 return self._reject(
                     'CANT_MAKE_LEAD',
                     'throw_delay {:.3f} s is under the {:.3f} s this cycle '
-                    'needs at {:.2f} m/s: the kind-0 dispatch budget {:.3f} '
-                    '(prelude {:.3f} + gap {:.3f} + windup {:.3f}) plus the '
-                    '{:.3f} s pre-dispatch sequence ({} positioning move)'
+                    'needs at {:.2f} m/s: the dispatch budget {:.3f} (R1: '
+                    'zero unless overridden — the streamed hand lane has no '
+                    'reactive stroke to prelude) plus the {:.3f} s '
+                    'pre-dispatch sequence ({} positioning move)'
                     .format(
                         self.throw_delay_s, lead_floor, self.event_vel_mps,
                         dispatch_s,
-                        hand_stroke.smooth_move_duration_s(
-                            hand_stroke.HAND_PARK_BAND_REV),
-                        hand_stroke.SAFETY_GAP_S,
-                        -hand_stroke.HandStrokeModel(
-                            self.event_vel_mps).stroke_start_rel,
                         pre_dispatch_budget_s(
                             bool(self.positioning_move_expected)),
                         'with a' if self.positioning_move_expected
@@ -2619,10 +2617,11 @@ class TossSequencer:
             return TossDecision(PHASE_POSITIONING, ACTION_POSITION_PLATFORM,
                                 False, None)
         if not obs.hand_parked and not self.chained:
-            # See `chained`: the band is a precondition for the kind-0 stroke
-            # this cycle would dispatch, and a chained cycle dispatches none —
-            # its release is a knot on a plan the emitter is already streaming,
-            # and its hand is mid-carry by construction.
+            # See `chained`: the segment this cycle would dispatch was planned
+            # from a seed at the rest band, so a hand that has since left it
+            # invalidates that seed. A chained cycle carries no such
+            # precondition — its release is a knot on a plan the emitter is
+            # already streaming, and its hand is mid-carry by construction.
             return self._reject('HAND_NOT_PARKED')
         if not obs.ball_seated:
             # TWO codes, because they send the operator to different subsystems.
@@ -2829,14 +2828,15 @@ class TossSequencer:
             return TossDecision(PHASE_PREPARING, ACTION_NONE, False, None)
         if not obs.hand_parked and not self.chained:
             # Re-verify at THROWING entry, before the dispatch commitment:
-            # CHECKING's park-band gate is seconds old by now (positioning +
-            # prepare), and a kind-0 stroke commands ABSOLUTE positions from
-            # 0 rev — dispatching with the hand off the bottom band is a
-            # physical hazard. Prepared ⇒ SAFE_ABORT cleans up.
+            # CHECKING's rest-band gate is seconds old by now (positioning +
+            # prepare), and the segment about to dispatch was planned from a
+            # seed at that band — a hand that has since left it invalidates
+            # the seed. Prepared ⇒ SAFE_ABORT cleans up.
             #
             # The `chained` carve-out is the SAME one CHECKING makes and for the
-            # same reason (see the field): no kind-0 stroke is dispatched, so
-            # there is no absolute-position commitment for the band to protect.
+            # same reason (see the field): a chained release is a knot on a
+            # plan already streaming, seeded from wherever the hand already is,
+            # so there is no rest-band seed for a drift to invalidate.
             # Both sites are branched together deliberately — exempting one and
             # not the other would admit a chained cycle at CHECKING and then
             # abort it here, with the catch latch up and the announcement out.

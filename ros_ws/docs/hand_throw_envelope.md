@@ -2,12 +2,22 @@
 
 **Status:** normative. Landed 2026-08-18, replacing the hand-picked
 `FLIGHT_TIME_MIN_S = 0.55` / `FLIGHT_TIME_MAX_S = 1.10` literals in
-`toss_sequencer.py`.
+`toss_sequencer.py`. **INVARIANTS C-HAND-3 PORT@R2 (2026-09-11):** skill-stack
+R1 deleted the reactive-catch stroke engine (`Trajectory.h`, `hand_stroke.py`)
+this contract's `ARM_WINDOW` bound modelled, and with it the only per-throw
+*runtime* caller on the beat path. What survives — `END_STOP`,
+`DECEL_AUTHORITY`, `DECEL_FF_HEADROOM`, `ACCEL_AUTHORITY`, `REGEN`,
+`WIRE_BAND` — are physical facts about the hand's metal and motor, unconditional
+on which planner produced the release; R2's admissible-command sweep (plan
+§ 2.6) takes them as ITS inputs rather than calling `evaluate()` per throw. The
+enforcement point below is therefore historical for `ARM_WINDOW` and dormant
+(no live caller) for the rest until R2 wires the sweep.
 **Sibling contracts:** `ros_ws/docs/hand_command_continuity.md` (**C-HAND-1**),
-which governs *when* a hand command may be dispatched, and
-`ros_ws/docs/hand_decel_feedforward.md` (**C-HAND-2**), which governs *how hard
-the throw brakes once it has been*. This one governs **which throws may be
-dispatched at all**.
+which governs *when* a hand command may be dispatched, and this document's own
+§ *Surviving measurements* (formerly **C-HAND-2**, `hand_decel_feedforward.md`,
+retired at R1 with the firmware that enforced it — its physical facts survive
+there), which governs *how hard the throw brakes once it has been*. This one
+governs **which throws may be dispatched at all**.
 
 ## The contract
 
@@ -34,8 +44,10 @@ bridge-band check.
 stroke constants it derives the profile from).
 **Tests that fail without it:** `tests/motion/test_throw_envelope.py`, plus the
 band rows in `tests/ros/test_toss_sequencer.py`,
-`tests/ros/test_toss_coordinator.py`, `tests/motion/test_hand_stroke.py`,
+`tests/ros/test_toss_coordinator.py`,
 `tests/sim/test_hand_throw_decel_ff.py` and `tests/sim/test_toss_gate.py`.
+(`tests/motion/test_hand_stroke.py` — the ``ARM_WINDOW``/stroke-timing tests —
+was deleted with the stroke engine at R1.)
 **Deployment:** `python config/generate_config.py` +
 `colcon build --packages-select jugglebot` + relaunch. **No flash** — no firmware
 reads any of these keys; the generated `HandEnv::` C++ namespace is inert.
@@ -84,22 +96,29 @@ somewhere else.
 ## The bounds
 
 Notation: `v` = commanded release speed (m/s); `v_rev = v · G` with
-`G = LINEAR_GAIN_REV_PER_M` = 31.6172 rev/m; `T` = flight time (s).
+`G = hw.HAND_REV_PER_M` = 30.7059 rev/m (the measured spool gain,
+`jugglebot_geometry.hand_mm_per_rev = 32.567 mm/rev`, replacing the retired
+`LINEAR_GAIN_REV_PER_M` fudge pair at skill-stack R1 — see
+`plans/archived/hand-geometry-correction.md`); `T` = flight time (s).
 
 ### The stroke landmarks all three bounds hang off
 
-Both are **velocity-independent**, which is a property of `calcThrow`'s algebra,
-not a coincidence:
+`x2`/`x3` are still generated from the same `teensy_trajectory` keys — R1 only
+deleted `hand_stroke.HandStrokeModel` (the class that wrapped this algebra) and
+its gain fudge; the closed-form ascent/decel algebra survives inline in
+`throw_envelope.py` (`_throw_accel_mps2`, `commanded_decel_rps2`,
+`commanded_accel_rps2`). Both landmarks are **velocity-independent**, a
+property of the algebra, not a coincidence:
 
-| landmark | value | why velocity-independent |
+| landmark | value (post-R1 gain) | why velocity-independent |
 |---|---|---|
-| `x2` (ball release) | **5.9138 rev** | `x1 = accelSt/(1+IR)` and `v·t_vel = velHold`; neither carries `v` |
-| `x3` (stroke top) | **9.9594 rev** | `x3 = totalStroke` identically |
-| `d_dec = x3 − x2` | **4.0456 rev** | `IR·accelSt/(1+IR)` |
+| `x2` (ball release) | **5.7434 rev** | `x1 = accelSt/(1+IR)` and `v·t_vel = velHold`; neither carries `v` |
+| `x3` (stroke top) | **9.6724 rev** | `x3 = totalStroke` identically |
+| `d_dec = x3 − x2` | **3.9290 rev** | `IR·accelSt/(1+IR)` |
 
-`d_dec` is the whole reason a tracking shortfall becomes end-stop travel:
-`calcThrow` allocates the *ideal* stopping distance and ends exactly on the top
-of the usable stroke, with **zero** allowance for error.
+`d_dec` is the whole reason a tracking shortfall becomes end-stop travel: the
+profile allocates the *ideal* stopping distance and ends exactly on the top of
+the usable stroke, with **zero** allowance for error.
 
 And one identity the contract leans on throughout:
 
@@ -107,9 +126,14 @@ And one identity the contract leans on throughout:
 v_rev² / (2 · a_cmd(v))  =  d_dec       exactly, at every v
 ```
 
-because `a_cmd(v) = G(1+IR)/(2·accelSt·IR) · v²` = 123.55·v² rev/s². So
-`peak = x2 + v_rev²/(2·a_ach)` and `over = d_dec·(a_cmd/a_ach − 1)` are the same
-statement, and both are exact restatements of the measurement.
+because `a_cmd(v) = G(1+IR)/(2·accelSt·IR) · v²`. **The numbers below this point
+in this section were computed under the retired `G = 31.6172 rev/m` and are NOT
+re-derived** — the landmark table above is the only part refreshed to the
+measured gain; a full re-derivation is R2's job (the admissible sweep), not
+this rung's. Re-run `python -c "from jugglebot.motion.trajectory import
+throw_envelope as te; print(vars(te))"`-style introspection (or see the probe
+pattern in `tools/probes/hand_decel_authority.py`) before trusting a v-bound
+below to more than one significant figure.
 
 ### B1 — `END_STOP`. The bound the old constants missed.
 
@@ -143,8 +167,10 @@ Each rung is that speed's **MAXIMUM** observed coast, not its mean:
 | 3.714 | 0.7 m | 2 | **0.2119** | bag `2026-08-20_21-51-39` |
 | 4.436 | 1.0 m | 14 | **0.2260** (min 0.1796, mean 0.2079) | + bag `2026-08-18_18-42-19` |
 
-Re-derive any row with
-`python tools/probes/hand_stroke_timeline.py --bag ~/Desktop/rosbags/<id> --json`.
+Re-derive any row with the coast/peak columns of
+`python tools/probes/hand_decel_authority.py --bag ~/Desktop/rosbags/<id> --json`
+(`hand_stroke_timeline.py`, the tool this row originally cited, was deleted
+with the stroke engine at R1).
 
 **One throw is excluded, and it is the most informative datum in the set.**
 Bag `2026-08-18_18-42-19` contains a **clamp change mid-session**: braking
@@ -344,41 +370,30 @@ line earlier so the operator gets `REJECTED_EVENT_VEL` and routes at the wire;
 the copy inside `evaluate` exists so any *future* caller inherits the whole
 envelope.
 
-### B6 — `ARM_WINDOW`. What actually sizes the floor.
+### B6 — `ARM_WINDOW` — DELETED at skill-stack R1 (2026-09-11)
 
-```
-window(T, v) = [T − max(0.3, required_arm_lead(v_armed))]
-             − [throw_decel(v) + ARM_SUPPRESS_MARGIN_S]
-             ≥ arm_window_margin_s
-```
-
-Both edges are `hand_stroke`'s: the left is when the throw stroke has provably
-cleared, the right is the Teensy's `:533` budget check. The window narrows
-monotonically toward short flights and **closes entirely at T = 0.4542 s** —
-below that the catch arm cannot be placed at all and the ball flies uncatchable.
-
-`arm_window_margin_s = 0.050` is the **same number the bench gates every withheld
-arm on** (runbook row H1.5, `slack > 0.050 s`) — one number, two surfaces. That
-is its *only* job, and the consequence has to be stated: since the floor is
-defined as the flight where the window equals this margin, **a goal admitted at
-the floor sits exactly on H1.5's gate**. It is a bench boundary, not a
-comfortable operating point.
-
-An earlier draft of this section also claimed the margin "covers the ~23 ms
-announcement-to-release transit that `required_arm_lead_s` documents as
-excluded". **It cannot do both jobs.** Subtract that transit from a 50 ms window
-and the real slack at the floor is ~27 ms, which fails H1.5 outright. The
-honest reading is the first one: the margin equals the bench gate, the transit is
-still excluded, and short flights near the floor are where that bites.
-
-`v_armed` is the flight's **vertical** arrival speed times
-`catch_vel_scale_default`, so it is identical for a displaced Tier-8b throw of
-the same flight time: a horizontal launch component changes neither the vertical
-launch component nor the fall.
-
-**Result: `T ≥ 0.4949 s`** ⇒ apex `≥ 0.300 m`.
+It modelled whether a reactive kind-1 catch stroke could still be dispatched
+after a kind-0 throw stroke finished decelerating — both edges were
+`hand_stroke`'s (`required_arm_lead_s`, `throw_decel_s`) and the device itself
+(the stroke engine, `Trajectory.h`) is deleted at R1. It was **what actually
+sized the floor** of the admitted flight-time band (`T ≥ 0.4949 s` under the
+pre-R1 gain); `feasibility.validate_cycle` is now the sole authority on
+whether a planned catch is executable, and the six remaining bounds (which
+describe the hand's metal and motor, not the reactive catch) no longer have an
+`ARM_WINDOW`-shaped floor at all — see `throw_envelope.py`'s own R1 note on
+`_flight_ok`. Do not reintroduce this bound without reopening the R1 decision
+that a stroke engine no longer exists to model.
 
 ## What the envelope comes out as
+
+**⚠ The table and binding-order numbers below were computed 2026-08-18/20,
+before the R1 gain correction (§ *stroke landmarks* above) and before
+`ARM_WINDOW` was deleted. Both changed a floor or a threshold this section
+states as fact. They are retained as the shape of the argument — five
+physical bounds crossing in a fixed order, well above the shipped ceiling —
+not as current numbers. R2's admissible-command sweep re-derives the live
+values; do not quote a number below as current without re-running the
+module.**
 
 | | shipped (hand-picked) | derived (C-HAND-3) | change |
 |---|---|---|---|
@@ -477,9 +492,9 @@ The ceiling is now `DECEL_FF_HEADROOM`, so the levers are different from before:
 | surface | state | why |
 |---|---|---|
 | any firmware | **untouched** | no firmware reads a `HandEnv::` constant; the emitted namespace is inert. Deploying is codegen + `colcon build` + relaunch |
-| ~~`MIN_TOSS_THROW_DELAY_S = 3.5`~~ | **retired 2026-08-22**, outside this contract | it was out of scope here and stayed so: C-HAND-3 bounds *how big* a throw may be, the cadence work bounds *when* the next one may fire. The retirement (census A1) replaced it with a 0.10 s goal-storm debounce plus the derived `hand_stroke.min_throw_event_delay_s`, and it did not move any bound on this page |
+| ~~`MIN_TOSS_THROW_DELAY_S = 3.5`~~ | **retired 2026-08-22**, outside this contract | it was out of scope here and stayed so: C-HAND-3 bounds *how big* a throw may be, the cadence work bounds *when* the next one may fire. The retirement (census A1) replaced it with a 0.10 s goal-storm debounce plus a derived per-throw dispatch budget (formerly `hand_stroke.min_throw_event_delay_s`; that module is deleted at R1 — see `toss_sequencer.py` for the current owner), and it did not move any bound on this page |
 | `throw_decel_reflected_inertia_kgm2` (9.5e-6) | untouched | it sizes the FIRMWARE feedforward and is deliberately LOW; this contract's `measured_reflected_inertia_kgm2` (1.050e-5) sizes a HOST authority ceiling and is deliberately HIGH. Both are conservative *for their own use*, and the pair is pinned ordered |
-| the catch-side `catch_vel_scale` knob | **not an envelope input** | the floor is sized against `catch_vel_scale_default`. A knob at its 0.3 floor can still close the arm window at an admitted flight — the runbook's H1.4 corner, unchanged. Closing it means plumbing the goal's `catch_vel_scale` into the FSM, which is a coordinator change |
+| the catch-side `catch_vel_scale` knob | **moot — `ARM_WINDOW` deleted at R1** | it was not an envelope input even before R1 (the floor was sized against `catch_vel_scale_default`, not the live knob); with `ARM_WINDOW` gone there is no arm window left for the knob to close |
 | Tier-8b displacement gates | untouched | orthogonal — they bound *where*, this bounds *how hard*. **But note the interaction:** the reported flight band is the Tier-8a CO-LOCATED projection, and an 8b goal is AIMED, so it releases faster than its flight time alone implies. At the 8a ceiling a 50 mm displacement already lifts the commanded release from 4.35683 to 4.35742 m/s and is refused. **Tier 8b's usable ceiling is therefore strictly below the reported band**, by an amount that grows with displacement — which is precisely why `evaluate` takes the commanded speed and not the flight time |
 | commanded positions/velocities/torques | **bit-identical** | this is an admission gate. A throw it admits is byte-for-byte the throw the machine made before |
 | `REJECTED_FLIGHT_TIME` | **narrowed, not removed** | it now means "the flight time is not a positive finite number". Keeping it is what lets a sign typo still report as a sign typo instead of as an end-stop fault |
@@ -488,12 +503,13 @@ The ceiling is now `DECEL_FF_HEADROOM`, so the levers are different from before:
 
 `REJECTED_THROW_ENVELOPE(<BOUND>:<numbers>)`, where `<BOUND>` is one of
 `END_STOP`, `DECEL_AUTHORITY`, `DECEL_FF_HEADROOM`, `ACCEL_AUTHORITY`,
-`REGEN`, `WIRE_BAND`, `ARM_WINDOW`, `INPUT`. Bounds are evaluated machine-damage-first, so when several
-fail the operator hears about the one that breaks metal.
+`REGEN`, `WIRE_BAND`, `INPUT`. (`ARM_WINDOW` was deleted at R1 — see § B6.)
+Bounds are evaluated machine-damage-first, so when several fail the operator
+hears about the one that breaks metal.
 
 The detail string always carries the offending quantity, the derived limit, and
-the units — never a bare "too high", because "too high" sends an operator to the
-wrong knob (throw *lower* for `END_STOP`, *higher* for `ARM_WINDOW`).
+the units — never a bare "too high", because "too high" sends an operator to
+the wrong knob.
 
 ## Open questions
 
@@ -508,7 +524,35 @@ wrong knob (throw *lower* for `END_STOP`, *higher* for `ARM_WINDOW`).
   cadence floor or to a continuous-throw mode would make it live.
 * **The two lower coast rungs are the max of two throws each.** The rung that
   anchors the extrapolation has n = 14; the others do not.
-* **`catch_vel_scale` is not an envelope input.** The floor is sized against
-  `catch_vel_scale_default`, so a knob at its 0.3 floor can still close the arm
-  window at an admitted flight (runbook H1.4). Closing it means plumbing the
-  goal's `catch_vel_scale` into the FSM — a coordinator change.
+* **R2 owes this document a full re-derivation.** The measured gain
+  (30.7059 rev/m, replacing 31.6172) and the `ARM_WINDOW` deletion both moved
+  numbers this page states as fact under the pre-R1 values (§ *What the
+  envelope comes out as*). Land it alongside the admissible-command sweep
+  (plan § 2.6), not before — a hand recompute here would be a second copy of
+  the sweep's own arithmetic.
+
+## Surviving measurements (from `hand_decel_feedforward.md`, retired at R1)
+
+C-HAND-2 was the Platform Teensy's post-release braking feedforward
+(`Trajectory.h::throwDecelToTorque`). Skill-stack R1 deleted that firmware, so
+the contract retired with its enforcement point (2026-09-11). Its **physical
+fact** did not: *a feedforward that out-brakes its own profile drags the hand
+backwards, so any declared inertia must be ≤ the measured reflected inertia.*
+Anything that sizes hand braking — the admissible-command sweep included —
+inherits that one-sided bound.
+
+The measurements, with provenance:
+
+| quantity | value | provenance |
+|---|---|---|
+| reflected inertia at the motor, decel-side torque balance | **≥ 1.0126e-5 kg·m²** | `temp/logs/toss_trace_2026-07-27_15-39-50.jsonl`, 2026-07-27 sitting — measured **through** the −10.00 A braking clamp |
+| same, regression of achieved-vs-commanded decel (slope 0.702) | 1.050e-5 kg·m² | same trace |
+| geometric load-only floor `m_hand·(1/(2π·LINEAR_GAIN))²` — a hard lower bound | 7.120e-6 kg·m² | derivation, `m_hand = 0.281 kg`, `r = 0.00521 m` |
+| re-derivation on the **unclamped** drive: per-tier *upper* bounds | 1.004e-5 / 1.025e-5 / 9.41e-6 / 9.63e-6 / **9.04e-6** kg·m² | bag `~/Desktop/rosbags/2026-08-23_19-14-54`, 15 throws, 5 tiers × 3, 2026-08-23 (`tools/probes/hand_decel_authority.py --bag …`) |
+| same bag, regression slope 0.9415 (R² 0.9999) | `J_ff/slope` = 1.009e-5; on wire torque `1/(2π·slope)` = 1.027e-5 kg·m² | same bag |
+| **declared** inertia the retired firmware shipped | 9.5e-6 kg·m² | `teensy_trajectory.throw_decel_reflected_inertia_kgm2` — deliberately low; the 2026-08-23 channels bound `J_true ≤ 9.04e-6` (encoder) and `≤ ~7.5e-6` (ball), i.e. it was **over-braking** when the firmware died |
+| hand deceleration **authority bound** | **3925.5 rev/s²** | `hand_curr_limit_a = 50.0` × hand Kt 0.0055133 N·m/A ÷ (2π·J). `hand_acc_ceiling_rps2 = 3900.0` sits just under it, and `cup_cycle.HAND_ACC_LIMIT_RPS2 = 3500.0` under that |
+
+⚠ Pre-2026-08-18 numbers were measured through the hand ODrive's −10.00 A
+braking clamp (`torque_soft_min`, fixed to a symmetric ±0.7 N·m on 2026-08-18)
+and are bounds on a *clamp-limited* plant. The 2026-08-23 rows are not.

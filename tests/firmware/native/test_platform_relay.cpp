@@ -140,7 +140,7 @@ TEST_CASE("relay sends fail-fast when CAN3 is down (never command a dead bus)") 
 TEST_CASE("is_platform_reply_id classifies exactly the three relay reply ids") {
   CHECK(is_platform_reply_id(PlatformCanId::STATE_UPDATE));   // 0x6E0
   CHECK(is_platform_reply_id(PlatformCanId::TILT_READING));   // 0x7DE
-  CHECK_FALSE(is_platform_reply_id(PlatformCanId::TRAJ_CMD)); // 0x6D0 (hand traj — not a reply)
+  CHECK_FALSE(is_platform_reply_id(0x6D0u));  // the RETIRED hand-traj id (skill-stack R1) — never a reply, never reused
   CHECK_FALSE(is_platform_reply_id(ODrive::arb_id(0, ODriveCmd::heartbeat_message)));  // a leg frame
   CHECK_FALSE(is_platform_reply_id(0x000u));
 }

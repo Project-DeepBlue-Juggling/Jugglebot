@@ -118,7 +118,7 @@ def _rest_state(cup_mm=REST_MM, cfg=None) -> uc.CycleState:
     cfg = cr.RealizeConfig() if cfg is None else cfg
     slider_mm = float(cup_mm[2]) - cfg.cup_z_base_mm
     rev = ((slider_mm - cfg.slider_rev_zero_mm) / 1000.0
-           * cr.LINEAR_GAIN_REV_PER_M)
+           * cr.HAND_REV_PER_M)
     pose = np.array([cup_mm[0], cup_mm[1], cfg.active_z_mm, 0.0, 0.0, 0.0])
     return uc.CycleState.at_rest(pose, rev, cfg)
 
@@ -206,7 +206,7 @@ def test_cup_state_from_platform_inverts_a_tilted_pose_grid():
         arm = tg.cup_lever_arm_mm(cup_mm[2])
         slider_raw = cup_mm[2] - cfg.cup_z_base_mm + arm * (1.0 - axis[2])
         rev_back = ((slider_raw - cfg.slider_rev_zero_mm) / 1000.0
-                    * cr.LINEAR_GAIN_REV_PER_M)
+                    * cr.HAND_REV_PER_M)
         centroid = cup_mm[:2] - arm * axis[:2]
         worst = max(worst, abs(rev_back - rev),
                     float(np.max(np.abs(centroid - pose[:2]))))
@@ -570,8 +570,8 @@ def test_a_release_terminal_plan_has_a_streaming_deadline(launch, geom):
 
     MEASURED (2026-09-04, the reference 0.6 s LAUNCH): terminal hand knot
     velocity **93.011 rev/s**; reconstructing that 25 ms segment with ``v1 = 0``
-    displaces the firmware's Hermite by up to ``|h11|·T·Δv`` = **0.3445 rev =
-    10.90 mm** of slider — inside ``MAX_LEAD_HAND_REV`` (2.0 rev) and inside
+    displaces the firmware's Hermite by up to ``|h11|·T·Δv`` = **10.90 mm** of
+    slider (0.3445 rev at the pre-R1 gain, 0.3346 rev at the measured one) — inside ``MAX_LEAD_HAND_REV`` (2.0 rev) and inside
     ``HAND_VELFF_LIMIT_RPS`` (300 rev/s), i.e. invisible to every guard.
     """
     plan, meta = launch
@@ -594,7 +594,12 @@ def test_a_release_terminal_plan_has_a_streaming_deadline(launch, geom):
     # The Hermite displacement that mis-statement buys, in slider revolutions.
     worst_s = 2.0 / 3.0            # |h11(s)| = |s^3 - s^2| peaks at s = 2/3
     err_rev = abs((worst_s ** 3 - worst_s ** 2) * float(plan.dt) * v_knot)
-    assert err_rev == pytest.approx(0.3445, abs=5e-3), err_rev
+    # Pinned in SLIDER MILLIMETRES, which the rev↔mm gain does not move: the
+    # 2026-09-04 reference read 0.3445 rev at the pre-R1 gain (31.617 rev/m);
+    # at the measured gain (hand_mm_per_rev 32.567, R1) the same 10.90 mm is
+    # 0.3346 rev.  The launch's mm/s is the physics; the revs follow the gain.
+    assert err_rev * 1000.0 / float(hw.HAND_REV_PER_M) == pytest.approx(
+        10.90, abs=0.16), err_rev
     # ...and it stays INSIDE the firmware's hand lead-clamp band, which is why
     # no guard on the path reports it.  2.0 rev = MAX_LEAD_HAND_REV, restated
     # here rather than imported (``motion/`` must not reach into the firmware
@@ -2682,12 +2687,16 @@ def test_build_realize_config_follows_the_live_leg_acc_limit():
     tilt accelerations the session's own gate will then refuse.  Not a safety
     failure (``validate_cycle`` still gates), but a silent one.
 
-    MEASURED (2026-09-04): 2000 → 2.1305, 3000 → 3.1957, 5000 → 5.3262 rad/s²,
-    the last being exactly the shipped constant, which is the identity that says
-    the expression was not re-derived by hand.
+    MEASURED (2026-09-04, pre-R1 gain 31.617 rev/m): 2000 → 2.1305, 3000 → 3.1957,
+    5000 → 5.3262 rad/s²; at the measured gain (R1, ``hand_mm_per_rev`` 32.567)
+    the same cap reads 2.0889 / 3.1333 / 5.2222.  What is pinned is the RELATION
+    — the cap is linear in the session leg limit, and 5000 returns exactly the
+    shipped constant, the identity that says the expression was not re-derived
+    by hand — not the literals, which follow the gain.
     """
     base = TrajectoryLimits.from_config(hw)
-    for leg_acc, expect in ((2000.0, 2.1305), (3000.0, 3.1957),
+    shipped = float(cr.TILT_ACCEL_LIMIT_DEFAULT_RAD_S2)
+    for leg_acc, expect in ((2000.0, shipped * 0.4), (3000.0, shipped * 0.6),
                             (5000.0, cr.TILT_ACCEL_LIMIT_DEFAULT_RAD_S2)):
         cfg = uc.build_realize_config(
             base.with_session_limits(leg_acc_mmps2=leg_acc))
@@ -2718,20 +2727,25 @@ def test_build_cup_config_boxes_the_slider_reachable_band():
     """
     cfg = uc.build_cup_config()
     assert cfg.z_min_m == pytest.approx(0.690, abs=0.001)
-    assert cfg.z_max_m == pytest.approx(0.985, abs=0.001)
+    # 0.985 at the pre-R1 gain; at the measured gain the catch-prime knot
+    # (9.9594 rev) sits 324.3 mm above hand zero, not 315.0, so the box top
+    # rises with it: the band is the operating stroke in TRUE millimetres.
+    assert cfg.z_max_m == pytest.approx(
+        0.6796 + float(hw.JB_OP_HAND_CATCH_PRIME_REV) / float(hw.HAND_REV_PER_M)
+        - 0.010, abs=1e-4)
     assert cfg.catch_runway_z_floor_m == pytest.approx(uc._CUP_Z_BOTTOM_M)
     assert cfg.catch_runway_z_floor_m == pytest.approx(
         cfg.z_min_m - uc._CUP_Z_INSET_M)
     # The runway floor IS the realisation of feasibility's stroke floor.
     assert cfg.catch_runway_z_floor_m * 1000.0 == pytest.approx(
         cr.CUP_Z_BASE_MM + cr.SLIDER_REV_ZERO_MM
-        + fz.HAND_STROKE_MIN_REV / cr.LINEAR_GAIN_REV_PER_M * 1000.0)
+        + fz.HAND_STROKE_MIN_REV / cr.HAND_REV_PER_M * 1000.0)
     assert cfg.catch_runway_enabled is True
     # The band really is the operating stroke, top and bottom.
     assert uc._CUP_Z_BOTTOM_M * 1000.0 == pytest.approx(
         cr.CUP_Z_BASE_MM + cr.SLIDER_REV_ZERO_MM)
     assert (uc._CUP_Z_TOP_M - uc._CUP_Z_BOTTOM_M) * 1000.0 == pytest.approx(
-        float(hw.JB_OP_HAND_CATCH_PRIME_REV) / cr.LINEAR_GAIN_REV_PER_M * 1000.0)
+        float(hw.JB_OP_HAND_CATCH_PRIME_REV) / cr.HAND_REV_PER_M * 1000.0)
 
 
 # ---------------------------------------------------------------------------
@@ -2949,7 +2963,7 @@ def _levelled_rest_state(correction, cup_mm=REST_MM):
     cfg = cr.RealizeConfig()
     slider_mm = float(cup_mm[2]) - cfg.cup_z_base_mm
     rev = ((slider_mm - cfg.slider_rev_zero_mm) / 1000.0
-           * cr.LINEAR_GAIN_REV_PER_M)
+           * cr.HAND_REV_PER_M)
     intent = np.array([cup_mm[0], cup_mm[1], cfg.active_z_mm, 0.0, 0.0, 0.0])
     pose = levelling.correct_pose(intent, correction)
     return uc.CycleState.at_rest(pose, rev, cfg,

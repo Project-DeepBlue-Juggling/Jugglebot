@@ -54,10 +54,6 @@ from jugglebot.motion.ik_solver import (
     rotvec_to_rot_matrix,
     twist_to_leg_velocities,
 )
-from jugglebot.motion.trajectory.hand_stroke import (
-    HAND_HOMED_REST_FLOOR_REV as _HAND_HOMED_REST_FLOOR_REV,
-    LINEAR_GAIN_REV_PER_M,
-)
 from jugglebot.motion.trajectory.shaping import _ShapedPlan, batched_shaped_states
 from jugglebot.motion.workspace import (
     WorkspaceLimits,
@@ -924,7 +920,7 @@ def _pose_to_rev(pose, geom, mm_to_rev) -> np.ndarray:
 _CYCLE_SAMPLES_PER_KNOT = 4
 
 #: Operating slider band, in HAND MOTOR revs (the firmware's homed frame). The top
-#: is the catch prime = the derived stroke top ``hand_stroke.STROKE_TOP_REV``; the
+#: is the catch prime (``hw.JB_OP_HAND_CATCH_PRIME_REV``); the
 #: bottom is the homed zero. A cycle whose slider leaves this band is refused —
 #: not clamped — because the realisation (``cup_realize.decompose``) already
 #: clamps, and a clamped slider silently moves the cup somewhere other than where
@@ -936,12 +932,13 @@ HAND_STROKE_MAX_REV = float(hw.JB_OP_HAND_CATCH_PRIME_REV)
 #: homed zero. Not a relaxation of the operating band — a statement about where
 #: the machine actually rests.
 #:
-#: IMPORTED, not derived here: :data:`hand_stroke.HAND_HOMED_REST_FLOOR_REV` is
-#: the one canonical spelling of the firmware's settled-at-retract lower edge
-#: (``Homing::HAND_ABS_POS_REV - HAND_SETTLE_BAND_REV``, ``hand_source.cpp:42-47``)
-#: and carries the derivation. -0.20 rev = -6.326 mm of slider. Re-exported under
-#: this module's namespace because the refusal texts below quote it and every
-#: reader of a ``HAND_STROKE`` refusal comes here first.
+#: IMPORTED, not derived here: :data:`hw.HAND_HOMED_REST_FLOOR_REV` is
+#: the one canonical spelling of the settled-at-retract lower edge
+#: (``jugglebot_homing.hand_abs_pos_rev - jugglebot_homing.hand_settle_band_rev``,
+#: ``config/hardware_config.yaml``) and carries the derivation. -0.20 rev =
+#: -6.326 mm of slider. Re-exported under this module's namespace because the
+#: refusal texts below quote it and every reader of a ``HAND_STROKE`` refusal
+#: comes here first.
 #:
 #: WHY A KNOT BELOW ZERO IS SAFE TO PLAN THROUGH, and only here: the firmware
 #: clips every commanded hand setpoint to ``[0, HAND_MOTOR_MAX_POSITION]``
@@ -953,7 +950,7 @@ HAND_STROKE_MAX_REV = float(hw.JB_OP_HAND_CATCH_PRIME_REV)
 #: The tolerance is deliberately anchored to the plan's OWN first knot rather
 #: than opened to a constant: a track that DIVES below where it started is still
 #: refused, because that is a plan commanding travel the machine does not have.
-HAND_HOMED_REST_FLOOR_REV = _HAND_HOMED_REST_FLOOR_REV
+HAND_HOMED_REST_FLOOR_REV = float(hw.HAND_HOMED_REST_FLOOR_REV)
 
 #: Dive tolerance below the parked start, in revs. The floor above is anchored to
 #: the plan's OWN first knot, and the hand track is a cubic Hermite: with a
@@ -982,7 +979,7 @@ HAND_HARD_STOP_REV = float(hw.GEOM_HAND_MOTOR_HARD_STOP_REVS)
 #: importing upward would invert the layering. ``test_validate_cycle.py`` pins the
 #: two against each other so the second spelling cannot drift.
 CATCH_RUNWAY_MARGIN_M = 0.020
-CATCH_RUNWAY_MARGIN_REV = CATCH_RUNWAY_MARGIN_M * LINEAR_GAIN_REV_PER_M
+CATCH_RUNWAY_MARGIN_REV = CATCH_RUNWAY_MARGIN_M * float(hw.HAND_REV_PER_M)
 
 
 def _hand_span_extrema(p0, v0, p1, v1, h):

@@ -248,7 +248,7 @@ def test_protocol_version_frozen(gen, proto):
     Bumping it is an INCOMPATIBLE-wire change that requires reflashing the whole
     fleet — this makes the bump deliberate and keeps all three artifacts in lockstep."""
     spec_ver = _spec_const(gen, "PROTOCOL_VERSION")
-    assert spec_ver == 6, (   # 1→2: Diagnostic homing_result ([18A]); 2→3: HeartbeatT2J
+    assert spec_ver == 7, (   # 1→2: Diagnostic homing_result ([18A]); 2→3: HeartbeatT2J
                               # leg guard-deviation diagnostics (2026-07-10 forensics);
                               # 3→4: Diagnostic bus_current + heartbeat_seen flag
                               # (2026-07-24 BB robot_state restoration — payload 36→40 B);
@@ -258,7 +258,13 @@ def test_protocol_version_frozen(gen, proto):
                               # exact-velocity array + HAS_HAND/HAS_V1 flag bits
                               # (2026-09-01, unified-7dof-planner Phase 2 — payload
                               # 156→208 B; total link darkness vs FW ≤ 16 until the
-                              # lockstep Phase 3 flash, loud and fail-closed by design)
+                              # lockstep Phase 3 flash, loud and fail-closed by design);
+                              # 6→7: HAND_TRAJ_CMD / HAND_SOURCE_SET / ERR_HAND_SOURCE
+                              # REMOVED, HeartbeatT2J flags bit 6 (hand_source) retired
+                              # and the BridgeTxDiag hand_ops counters dropped
+                              # (2026-09-11, skill-stack R1 one-hand-master — removing
+                              # message types is a wire change and darkness against any
+                              # FW ≤ 20 board is the intended failure)
         f"PROTOCOL_VERSION changed to {spec_ver}. If this is an intentional "
         "incompatible-wire bump: update this pin, re-pin test_wire_layout_frozen, and "
         "reflash the whole fleet (Jetson + Teensy ship the same version).")
@@ -456,7 +462,12 @@ def test_wire_layout_frozen(gen):
     # Previous pin: 8e1bd0a3dcd370859a781925487a9accee4109554494a40023dd1cf4549794df
     #   (additive BRIDGE_TX_DIAG 0x8D 42 B + BRIDGE_IDENTITY 0x8E 3 B —
     #    2026-08-02 ERR_TIMEOUT attribution instrumentation).
-    _EXPECTED = "0e1a4a8ea375ddc1155cfb6a75377af527cce98df3e7e8c3a593d37d20a86b31"
+    # Previous pin: 0e1a4a8ea375ddc1155cfb6a75377af527cce98df3e7e8c3a593d37d20a86b31
+    #   (Setpoint 6→7 lanes + v1[7], PROTOCOL_VERSION 6 — 2026-09-01).
+    # Current pin re-taken 2026-09-11 (skill-stack R1): HAND_TRAJ_CMD /
+    #   HAND_SOURCE_SET / ERR_HAND_SOURCE removed, HeartbeatT2J bit 6 retired,
+    #   BridgeTxDiag 42→18 B. SUBTRACTIVE, hence PROTOCOL_VERSION 6→7.
+    _EXPECTED = "c84b3388c3f43041cf019eb666ad4c7ef7a041ab89dc33189fd5283e82e53b05"
     assert digest == _EXPECTED, (
         "The UDP wire LAYOUT changed (a message/arg field layout, a framed MsgType "
         "value, or a framing constant). If INCOMPATIBLE, bump PROTOCOL_VERSION. Either "

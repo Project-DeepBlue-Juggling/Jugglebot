@@ -122,7 +122,7 @@ def _rest_state():
     cfg = cr.RealizeConfig()
     slider_mm = float(REST_MM[2]) - cfg.cup_z_base_mm
     rev = ((slider_mm - cfg.slider_rev_zero_mm) / 1000.0
-           * cr.LINEAR_GAIN_REV_PER_M)
+           * cr.HAND_REV_PER_M)
     pose = np.array([REST_MM[0], REST_MM[1], cfg.active_z_mm, 0.0, 0.0, 0.0])
     return uc.CycleState.at_rest(pose, rev, cfg)
 

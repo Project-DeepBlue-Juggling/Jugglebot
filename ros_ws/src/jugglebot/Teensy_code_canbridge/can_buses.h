@@ -66,7 +66,7 @@ void can_buses_service();   // pump bb/cone/jugglebot events(); call from CAN RX
 //  It NEVER returns 0 (only the write(FLEXCAN_MAILBOX, ...) overload does, for a
 //  FIFO/non-transmit mailbox — and nothing in this tree calls it). So -1 is a
 //  DEFERRAL of ~0.1-1 ms, not a drop: the frame reaches the wire. Reading it as
-//  failure is what made hand_ops answer ERR_TIMEOUT for dispatches that the bench
+//  failure is what made the (now deleted) hand_ops conduit answer ERR_TIMEOUT for dispatches that the bench
 //  then observed transmitting (the 2026-08-09 "lying ack"), and it is why the
 //  only genuinely-failed send — the bus-partner presence gate refusing, because
 //  there is no partner to ACK — could not be told apart from ordinary TX pressure.
@@ -105,14 +105,17 @@ inline bool tx_was_deferred(TxResult r)     { return r == TxResult::DEFERRED; }
 namespace TxCls {
   constexpr uint8_t POLLER   = 0u;  // gpio_poll's hand ball-sensor SDO request
   constexpr uint8_t LEGS     = 1u;  // leg_interp's 500 Hz setpoint burst
-  constexpr uint8_t HAND     = 2u;  // hand_ops' trajectory relay + its preamble
-  constexpr uint8_t RPC      = 3u;  // RPC-dispatched axis/BB frames + the version sweep
-  constexpr uint8_t SAFETY   = 4u;  // fault machine, CLEAR_ERRORS/REBOOT, platform relay ops
-  constexpr uint8_t TIMESYNC = 5u;  // the 100 Hz 0x7DD beacon fan-out
-  constexpr uint8_t OTHER    = 6u;  // today EXACTLY the three cold-start move ladders
+  // (HAND = 2 was hand_ops' trajectory relay + its preamble. Deleted with the
+  // conduit at FW 21, skill-stack R1: the hand's only TX is now the interp
+  // tick's own burst, which is already TxCls::LEGS. Renumbering the survivors
+  // is safe — the census is console-only and never on the wire.)
+  constexpr uint8_t RPC      = 2u;  // RPC-dispatched axis/BB frames + the version sweep
+  constexpr uint8_t SAFETY   = 3u;  // fault machine, CLEAR_ERRORS/REBOOT, platform relay ops
+  constexpr uint8_t TIMESYNC = 4u;  // the 100 Hz 0x7DD beacon fan-out
+  constexpr uint8_t OTHER    = 5u;  // today EXACTLY the three cold-start move ladders
                                     // (leg_homing / leg_activate / leg_deactivate), which
                                     // reach the bus through the bool wrapper's default
-  constexpr uint8_t COUNT    = 7u;
+  constexpr uint8_t COUNT    = 6u;
 }
 
 // Cumulative-since-boot deferral counts, one per TxCls. Console-only today
@@ -326,7 +329,7 @@ inline uint8_t classify_bus_health(uint64_t last_rx_us, uint64_t now_us,
 //      poll, cycling 213 times in 83.5 s.
 //   2. AMPLIFICATION. Every CAN3 consumer shares this one predicate, so a
 //      low-rate wire-error source became a 42.4 %-duty outage across
-//      platform_relay (0x6D0 hand traj + STATE_READ), hand_ops, rpc.cpp leg
+//      platform_relay (STATE_READ), rpc.cpp leg
 //      frames, leg_homing and version_check at once — from an error source whose
 //      actual rate was not even measurable at the time (the per-class counters
 //      were serial-console-only; the CanErrors uplink now fixes that).

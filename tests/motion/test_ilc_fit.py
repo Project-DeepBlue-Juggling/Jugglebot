@@ -433,8 +433,9 @@ def test_the_release_timing_column_is_structurally_zero():
     non-zero entry would mean someone had wired one in without a production
     seam behind it), and what it does NOT pin is the physical claim that the
     platform holds its pose through the flight. That claim is assumed by the
-    model, not tested by it; routing δt through
-    ``reload_coordinator_node._dispatch_toss_throw`` is deferred.
+    model, not tested by it; routing δt through the retired kind-0 dispatch is
+    moot now (R1 deleted it; see
+    reload_coordinator_node._OUTCOME_STROKE_ENGINE_RETIRED).
     """
     F = lib.sensitivity(goal=GOAL)
     assert np.array_equal(F[:, 3], np.zeros(lib.N_E))
@@ -774,14 +775,19 @@ def test_the_scalar_speed_authority_is_inadmissible_near_both_band_ends():
     assert validate_event_vel(ev_slow)
     ok, why = lib.admit_command(u_slow, goal_lo)
     assert not ok
-    assert 'ADMISSIBLE band' in why and 'ARM_WINDOW' in why
+    # R1 (2026-09-11): ARM_WINDOW died with the stroke engine, so the short end
+    # of the derived band is the search-bracket floor and no envelope bound
+    # closes the negative side there; the trim is refused downstream by the
+    # production chain's ballistics instead (the ball never reaches the catch
+    # height).  The ILC stack is deleted at R3; this pins what refuses it now.
+    assert 'never reaches' in why or 'ADMISSIBLE band' in why
 
     # And the corpus's own measured demand, -0.1076, is inadmissible at exactly
     # the R5-prime cadence target. This is fold-in consequence (b): the channel
     # has ZERO authority in the only direction the plant asks for, at the flight
     # time the cadence ladder is aiming at.
     ok, why = lib.admit_command(np.array([0.0, 0.0, -0.1076, 0.0]), goal_lo)
-    assert not ok and 'ARM_WINDOW' in why
+    assert not ok    # refused by ballistics at the R1 floor (ARM_WINDOW retired)
 
     # The gates themselves are real, driven directly rather than inferred.
     assert not validate_event_vel(hw.TEENSY_TRAJ_MIN_EVENT_VEL_MPS - 0.01)
@@ -809,11 +815,18 @@ def test_the_speed_authority_band_is_derived_per_flight_time():
     # At the two derived edges the binding side is EXACTLY zero: the band edge is
     # the flight time at which that bound reaches equality, so by construction no
     # trim in that direction survives.
-    assert lib.speed_authority_band(lo_T, v(lo_T))[0] == pytest.approx(0.0, abs=1e-9)
+    # R1 (2026-09-11): the SHORT edge is no longer a physical bound — ARM_WINDOW
+    # (the bound that closed the negative side there) died with the stroke
+    # engine — so the negative side is fully open at lo_T; only the LONG edge
+    # still closes, at DECEL_FF_HEADROOM.  R2's admissible sweep owns the floor.
+    assert lib.speed_authority_band(lo_T, v(lo_T))[0] == pytest.approx(
+        -lib.ILC_SPEED_AUTHORITY, abs=1e-9)
     assert lib.speed_authority_band(hi_T, v(hi_T))[1] == pytest.approx(0.0, abs=1e-9)
 
     # Interior points, against the probe's published numbers.
-    for T, expect_hi in ((1.00, 0.148), (1.10, 0.043)):
+    # (1.00, 0.148), (1.10, 0.043) on the 2026-08-21 probe at the pre-R1 gain;
+    # at the measured gain (R1 2026-09-11) the DECEL_FF_HEADROOM edge moved:
+    for T, expect_hi in ((1.00, 0.150), (1.10, 0.0593)):
         assert lib.speed_authority_band(T, v(T))[1] == pytest.approx(
             expect_hi, abs=0.001)
     # ... and where the envelope is wide, the ILC ceiling is what binds — 0.15 is

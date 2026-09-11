@@ -22,8 +22,8 @@ A plan seed state is ``(pose, twist, accel)`` — each a 6-vector, matching
 the previous plan's sampled state.
 
 Pure Python + numpy, plus the generated ``jugglebot.hardware_config`` constants
-module (itself pure Python — the same import ``hand_stroke``/``limits`` already
-make in this package). No ROS2 / repo-root imports.
+module (itself pure Python — the same import ``limits`` already
+makes in this package). No ROS2 / repo-root imports.
 """
 
 from __future__ import annotations

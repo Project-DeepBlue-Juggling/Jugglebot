@@ -4668,11 +4668,12 @@ class TrajectoryNode(Node):
         response.release_terminal = bool(terminal)
         response.supersede_deadline_mono = (
             float(t0) + self._supersede_deadline_s(meta) if terminal else 0.0)
-        # stroke_clear_s / arm_lead_s are the PLAN's twins of hand_stroke's
-        # firmware-stroke models. `None` means the plan carries no such instant (a
-        # window that ENDS at its release has its deceleration in the NEXT window),
-        # and 0.0 is the wire's spelling of that — the consumer's fallback is the
-        # legacy model, which is exactly what it had before.
+        # stroke_clear_s / arm_lead_s are facts read off the PLAN itself (R1,
+        # 2026-09-11: no reactive-arm timing model behind them any more —
+        # hand_stroke.py and the device it modelled are deleted). `None` means
+        # the plan carries no such instant (a window that ENDS at its release
+        # has its deceleration in the NEXT window), and 0.0 is the wire's
+        # spelling of that.
         sc = meta.releases[-1].stroke_clear_s if meta.releases else None
         response.stroke_clear_s = float(sc) if sc is not None else 0.0
         al = c_first.arm_lead_s if c_first is not None else None

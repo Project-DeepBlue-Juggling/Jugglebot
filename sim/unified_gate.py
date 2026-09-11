@@ -175,9 +175,6 @@ from jugglebot.motion.trajectory import cup_cycle as cc           # noqa: E402
 from jugglebot.motion.trajectory import feasibility as fz         # noqa: E402
 from jugglebot.motion.trajectory import throw_envelope            # noqa: E402
 from jugglebot.motion.trajectory import tilt_geometry as tg       # noqa: E402
-from jugglebot.motion.trajectory.hand_stroke import (             # noqa: E402
-    LINEAR_GAIN_REV_PER_M,
-)
 
 from teensy_link.protocol import Setpoint                         # noqa: E402
 from teensy_link.setpoint_pump import (                           # noqa: E402
@@ -290,8 +287,8 @@ MIRROR_TOL_HAND_REV = 4.0e-6
 #: production settle site): 9.891e-08 rev on a co-located toss (where the
 #: platform barely moves), 9.46e-07 on the 50 mm displaced ring and 1.065e-05 rev
 #: on the 60 mm two-pose ring (where it moves most) — i.e. 7.5e-4 mm of leg
-#: extension at the worst point on the grid.  5e-4 rev (35 µm) is ~47x the worst
-#: observed and still two orders below the 0.10 rev firmware lead clamp.
+#: extension at the worst point on the grid.  The band was 5e-4 rev (35 µm, ~47x
+#: that worst) until 2026-09-11 — see the RE-BANDED note below for why it is 1e-4.
 #:
 #: Those three numbers were 9.891e-08 / 2.94e-05 / 8.086e-05 before the settle
 #: site became the production one (2026-09-05).  The gate used to bring the cup
@@ -315,7 +312,19 @@ MIRROR_TOL_HAND_REV = 4.0e-6
 #: both halves — the ring failing, and the toss's silence — so neither is
 #: rediscovered the hard way.  The HAND band, by contrast, moves four orders
 #: past its bound on every plan.
-MIRROR_TOL_LEG_REV = 5.0e-4
+#: RE-BANDED 2026-09-11 (skill-stack R1): the measured hand gain
+#: (``hand_mm_per_rev`` 32.567 replacing the 1.035 fudge factor) moved the
+#: 60 mm ring's plan, and the masked-``HAS_V1`` fault on its leg lane now lands
+#: at **4.067e-04 rev** — INSIDE the old 5e-4 band, which the non-vacuity test
+#: correctly refused ("a tolerance nothing can violate is not a band").  The
+#: honest reconstruction stayed three orders below any band (ring leg
+#: 9.131e-07 → 5.154e-07, co-located toss unchanged at 9.891e-08; re-measured
+#: the same day through
+#: ``tests/sim/test_unified_gate.py``'s own ``_replay_mirror``).  1e-4 rev
+#: (7 µm of leg extension) keeps the fault 4.1× outside, the ring's honest
+#: floor 200× inside, the 2026-09-05 grid worst (1.065e-05) 9.4× inside, and
+#: is three orders below the 0.10 rev firmware lead clamp.
+MIRROR_TOL_LEG_REV = 1.0e-4
 
 #: Beat tolerance (s) for the constant-beat set.  The release instants are sums
 #: of window durations, each an exact multiple of the 25 ms knot grid, so the
@@ -753,13 +762,13 @@ def _latch(mirror, sp: Setpoint, t_latch: float) -> None:
 
 def slider_mm_of_rev(rev: float, cfg) -> float:
     """Hand motor rev → sim slider mm (``cup_realize``'s relation, inverted)."""
-    return (float(rev) / LINEAR_GAIN_REV_PER_M * 1000.0
+    return (float(rev) / hw.HAND_REV_PER_M * 1000.0
             + float(cfg.slider_rev_zero_mm))
 
 
 def rev_of_slider_mm(mm: float, cfg) -> float:
     return (float(mm) - float(cfg.slider_rev_zero_mm)) / 1000.0 \
-        * LINEAR_GAIN_REV_PER_M
+        * hw.HAND_REV_PER_M
 
 
 # ---------------------------------------------------------------------------
@@ -924,7 +933,7 @@ class UnifiedGate:
         cfg = self.rcfg
         slider_mm = float(cup_z_mm) - float(cfg.cup_z_base_mm)
         rev = ((slider_mm - float(cfg.slider_rev_zero_mm)) / 1000.0
-               * LINEAR_GAIN_REV_PER_M)
+               * hw.HAND_REV_PER_M)
         pose = np.array([float(xy[0]), float(xy[1]), float(cfg.active_z_mm),
                          0.0, 0.0, 0.0])
         return uc.CycleState.at_rest(pose, rev, cfg)

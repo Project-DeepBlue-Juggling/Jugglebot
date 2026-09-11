@@ -53,7 +53,7 @@ WHAT IS IMPORTED RATHER THAN RE-IMPLEMENTED (plan D11)
   extracted verbatim from ``reload_coordinator_node``;
 * the mocap arrival estimator — ``ball_arrival_offset.fit_plane_crossing_full``.
 
-The PLANT block (``hand_stroke_timeline``) is **not wired in 2a** — see
+The PLANT block (the bench-mining probe's row builder) is **not wired in 2a** — see
 ``mine_bag`` for why, and the plan's § 10 for the field mapping it will use.
 
 If any of those were re-implemented here, the live and offline definitions would
@@ -1157,6 +1157,11 @@ def mine_link(data: BagData, t_ros: float) -> dict:
         out['bridge_fw_version'] = str(values['bridge_fw_version'])
     if values.get('platform_fw_version'):
         out['platform_fw_version'] = str(values['platform_fw_version'])
+    # 'hand_traj_acks' was a /link_status row that no longer exists on any
+    # bridge past PROTOCOL_VERSION 7 (2026-09-11, skill-stack R1) — it was the
+    # hand_ops request/ack conduit's own instrument. Kept here (not removed)
+    # so a PRE-R1 bag still mines it; values.get returns None on a post-R1
+    # bag and the field is simply absent from the output.
     for key, field in (('hand_traj_acks', 'hand_traj_acks'),
                        ('can3_errors', 'can_errors')):
         raw = values.get(key)
@@ -1250,7 +1255,7 @@ def mine_bag(data: BagData, *, robot: str = 'jugglebot',
         # The PLANT block ships NULL in 2a, and `plant_block_source` with it —
         # a source string on an empty block would assert a provenance that does
         # not exist. It is not re-implementable here by design (§ 3.4 says the
-        # row builder is IMPORTED), and wiring `hand_stroke_timeline` needs its
+        # row builder is IMPORTED), and wiring it in needs its
         # session-relative clock mapped back onto these ROS instants. Getting
         # that mapping wrong writes plausible WRONG numbers into a corpus, which
         # is precisely the failure class this whole phase exists to prevent, and

@@ -59,14 +59,13 @@ raw-UDP driver and requires the launch DOWN; this one is an ordinary ROS client
 and requires the launch UP. Running them together would put two writers on one
 link (`project_hardware_bench_facts`), so they are never both running.
 
-**It never arms, never changes control mode, never sets limits, never switches
-`hand_source`.** All four are the operator's, per
-``ros_ws/docs/ARMING_CONTRACT.md`` and the Phase 4 latch finding (the firmware
-refuses a ``hand_source`` switch while the setpoint output is armed, so a
-session — and this driver — can only VERIFY it). Same request-only posture as
-``traj_ramp_battery.py`` and ``tilt_cal_grid.py``.
+**It never arms, never changes control mode, never sets limits.** All three
+are the operator's, per ``ros_ws/docs/ARMING_CONTRACT.md``. Same request-only
+posture as ``traj_ramp_battery.py`` and ``tilt_cal_grid.py``. (R1, 2026-09-11:
+there is no ``hand_source`` mastery latch any more to switch or verify — the
+hand lane is active whenever a frame carries HAS_HAND.)
 
-PRECONDITIONS (all five are checked every run; a failure REFUSES and prints the
+PRECONDITIONS (all four are checked every run; a failure REFUSES and prints the
 exact command that fixes it):
 
   P1  ``trajectory/status`` seen inside ``--max-age`` and reporting
@@ -79,15 +78,9 @@ exact command that fixes it):
       streamed lane puts on the wire and looks EXACTLY like a perfect hold —
       the 2026-09-03 first-sitting failure. With the launch UP the bridge's own
       arming preamble brings axis 6 to CLOSED_LOOP + POSITION/PASSTHROUGH at
-      ACTIVATE whenever the latch reads STREAMED (``teensy_bridge_node.py``
-      ~:4205), so this check is normally a confirmation that ACTIVATE took.
-  P4  the ``hand_source`` latch reads ``STREAMED`` on ``/link_status``
-      (``KeyValue`` key ``hand_source``, values ``STREAMED`` /
-      ``LEGACY_STROKE``, sourced from HeartbeatT2J flags bit 6). While LEGACY
-      the firmware DISCARDS Setpoint index 6 — counted, but silent to the plan —
-      so the platform would fly the whole window with a dead hand and a seated
-      ball.
-  P5  the session leg limits are the CATCH-CAPABLE set 250 / 3000 / 150000,
+      ACTIVATE whenever the frame carries HAS_HAND, so this check is normally a
+      confirmation that ACTIVATE took.
+  P4  the session leg limits are the CATCH-CAPABLE set 250 / 3000 / 150000,
       read back off ``trajectory/status``. At the shipped 1000/5000/30000 every
       unified cycle reads ``LIMIT_JERK`` for a structural reason (the z-launch
       jerk leaks ``sin(tilt) x 744.3 mm`` into centroid xy), so this is a
@@ -197,12 +190,14 @@ HAND_CATCH_PRIME_REV = 9.9594     # hardware_config JB_OP_HAND_CATCH_PRIME_REV
 #: reading is the expected state at the head of a rung.
 TILT_NOTE_DEG = 0.5
 
-#: Slider revs per mm — ``hand_stroke.LINEAR_GAIN_REV_PER_M`` / 1000 (the same
-#: number as the generated ``TEENSY_LINEAR_GAIN``). Prints a margin in
-#: millimetres beside one in revs, and converts a cup height into the slider revs
-#: that reach it (:func:`hand_rev_for_cup_z`). Pinned to the planner's own gain
-#: by the offline test.
-REV_PER_MM = 31.6172 / 1000.0
+#: Slider revs per mm — the generated ``hardware_config.HAND_REV_PER_M`` / 1000,
+#: i.e. 1000 / ``jugglebot_geometry.hand_mm_per_rev`` (32.567, two owner
+#: readings 2026-09-06 and 2026-09-11; skill-stack R1). Was 31.6172 (the 1.035
+#: fudge-factor gain) until 2026-09-11. Prints a margin in millimetres beside
+#: one in revs, and converts a cup height into the slider revs that reach it
+#: (:func:`hand_rev_for_cup_z`). Pinned to the planner's own gain by the
+#: offline test.
+REV_PER_MM = 30.7059 / 1000.0
 
 #: Cup-opening world z (mm) with the slider at hand zero, cup LEVEL and the
 #: platform at the active-z pin — ``unified_cycle._CUP_Z_BOTTOM_M``
@@ -547,7 +542,7 @@ class Snapshot:
     def __init__(self, *, status_age_s=None, mode=None, streaming=None,
                  leg_vel=None, leg_acc=None, leg_jerk=None, cycle_active=None,
                  robot_state_age_s=None, hand_axis_state=None,
-                 hand_pos_rev=None, link_age_s=None, hand_source=None,
+                 hand_pos_rev=None, link_age_s=None,
                  gravity_correction_loaded=None, tilt_map_loaded=None,
                  tilt_map_version=None):
         self.status_age_s = status_age_s
@@ -561,7 +556,6 @@ class Snapshot:
         self.hand_axis_state = hand_axis_state
         self.hand_pos_rev = hand_pos_rev
         self.link_age_s = link_age_s
-        self.hand_source = hand_source
         # Levelling, read for the tilt line only — never gated on. "Applied" is
         # gravity_correction_loaded AND tilt_map_loaded read together
         # (TrajectoryStatus.msg); the correction alone is what actually moves a
@@ -601,7 +595,7 @@ def _p1_fix(snap: Snapshot) -> str:
 
 def check_preconditions(snap: Snapshot, *, max_age_s: float = 2.0,
                         limit_tol: float = 1e-6) -> list:
-    """Five checks. Returns ``[{'id','ok','detail','fix'}, ...]``, in order.
+    """Four checks. Returns ``[{'id','ok','detail','fix'}, ...]``, in order.
 
     Every failure carries the command that fixes it, because a refusal an
     operator has to go and look up is a refusal that gets bypassed.
@@ -633,24 +627,8 @@ def check_preconditions(snap: Snapshot, *, max_age_s: float = 2.0,
         'fix': ('the hand is NOT energised — an IDLE hand ignores every '
                 'set_input_pos the streamed lane sends and looks exactly like '
                 'a perfect hold. With the launch UP the bridge energises it at '
-                'ACTIVATE whenever hand_source reads STREAMED, so this means '
-                'ACTIVATE did not take (or the latch was LEGACY at ACTIVATE): '
-                'deactivate, confirm hand_source, ACTIVATE again'),
-    })
-
-    out.append({
-        'id': 'P4', 'name': 'hand_source latch STREAMED',
-        'ok': (_fresh(snap.link_age_s, max_age_s)
-               and snap.hand_source == 'STREAMED'),
-        'detail': ('/link_status hand_source=%r (age=%s)'
-                   % (snap.hand_source, _age(snap.link_age_s))),
-        'fix': ('while LEGACY_STROKE the firmware DISCARDS Setpoint index 6 — '
-                'counted, silent to the plan — so the platform flies the whole '
-                'window with a dead hand. The latch cannot be switched while '
-                'the setpoint output is armed, so: bring the launch DOWN, run  '
-                'python tests/hardware/hand_stream_bench.py --source-only '
-                'streamed  (expect "hand_source -> STREAMED: OK"), then launch '
-                'and ACTIVATE again'),
+                'ACTIVATE whenever the frame carries HAS_HAND, so this means '
+                'ACTIVATE did not take: deactivate, ACTIVATE again'),
     })
 
     lim_ok = all(
@@ -659,7 +637,7 @@ def check_preconditions(snap: Snapshot, *, max_age_s: float = 2.0,
                           (snap.leg_acc, SESSION_LEG_ACC_MMPS2),
                           (snap.leg_jerk, SESSION_LEG_JERK_MMPS3)))
     out.append({
-        'id': 'P5', 'name': 'catch-capable session limits',
+        'id': 'P4', 'name': 'catch-capable session limits',
         'ok': bool(lim_ok),
         'detail': ('vel=%s acc=%s jerk=%s (want %.0f / %.0f / %.0f)'
                    % (snap.leg_vel, snap.leg_acc, snap.leg_jerk,
@@ -1179,7 +1157,6 @@ class _Runner:
             hand_pos_rev=(None if ms is None or len(ms) <= HAND_AXIS
                           else float(ms[HAND_AXIS].pos_estimate)),
             link_age_s=self._age(self.link_stamp),
-            hand_source=self.link_kv.get('hand_source'),
             gravity_correction_loaded=(
                 None if st is None else bool(st.gravity_correction_loaded)),
             tilt_map_loaded=(None if st is None
@@ -1218,7 +1195,11 @@ class _Runner:
             'leg_vel_limit_mmps': None if st is None else st.leg_vel_limit_mmps,
             'leg_jerk_limit_mmps3': (None if st is None
                                      else st.leg_jerk_limit_mmps3),
-            'hand_source': self.link_kv.get('hand_source'),
+            # Always empty now: the FW 17 hand-mastery latch this column read
+            # was retired at PROTOCOL_VERSION 7 (2026-09-11, skill-stack R1).
+            # Column kept (never removed) so a sitting-two/-three CSV keeps its
+            # offsets, matching hand_stream_bench.py's recon_mm precedent.
+            'hand_source': None,
             'last_rejection': None if st is None else st.last_rejection,
         }
 

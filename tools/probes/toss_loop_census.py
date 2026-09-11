@@ -86,7 +86,7 @@ import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.abspath(os.path.join(_HERE, '..', '..'))
-# FIRST on sys.path, deliberately — the same reason cadence_rung_check.py gives:
+# FIRST on sys.path, deliberately — the same reason every probe under tools/probes gives:
 # the shell profile exports a PYTHONPATH pointing at the colcon INSTALL tree,
 # and a probe that silently measured the last `colcon build` instead of the
 # working tree would be worse than no probe.

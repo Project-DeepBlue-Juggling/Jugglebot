@@ -15,7 +15,8 @@ seeded below the floor is therefore not refused for being low: the QP is require
 to put the cup inside the box inside ONE 25 ms knot, and the hand acceleration
 that takes is
 
-    |a| = 6·(floor_rev − seed)/dt²,  floor_rev = 0.3161715, dt = 0.025 s
+    |a| = 6·(floor_rev − seed)/dt²,  floor_rev = 0.3161715 at the sitting
+    (0.3071 since R1's measured gain), dt = 0.025 s
 
 which is a family, not a threshold. MEASURED (sitting 2026-09-06 23:55, hand at
 −0.1087 rev): 4077.2 / 4076.9 / 4063.2 rev/s² against the 3500 cap, and inverting
@@ -66,6 +67,11 @@ from jugglebot.toss_sequencer import TossResult
 # ── The seeds the sitting actually produced ──────────────────────────────────
 #: Where the hand rested at 23:55 on 2026-09-06. Cup 676.16 mm — 13.44 mm below
 #: the floor — and the seed every one of the four refusals inverts back to.
+#: The floor the SITTING's code computed (pre-R1 gain 31.617 rev/m = 1.035 /
+#: (2π·0.00521)): the bag's printed HAND_LIMIT_ACC numbers were made with it,
+#: so the inversion below uses it and NOT the live floor. Frozen provenance,
+#: 2026-09-08 sitting; superseded for planning by hand_mm_per_rev (R1).
+FLOOR_REV_SITTING_2026_09_08 = 0.3161715
 SEED_SITTING_REV = -0.1087
 #: The 12:05 park the same day: 11.20 mm low, |a| 3400 rev/s², which the cap does
 #: NOT catch. THE SILENT BAND, and the reason this is a floor rule.
@@ -184,19 +190,24 @@ def test_the_closed_form_reproduces_the_sittings_three_refusals():
     If this ever stops holding, the lift is fixing the wrong thing.
     """
     assert uc.SETTLE_CUP_Z_MM == pytest.approx(689.6)
-    assert FLOOR_REV == pytest.approx(0.3161715, abs=1e-6)
-    # The sitting's seed, forward.
-    assert rcn.ReloadCoordinatorNode._unified_floor_slam_rps2(
-        SEED_SITTING_REV) == pytest.approx(4078.8, abs=0.2)
-    # ...and the three refusals, inverted back to it.
+    # 10 mm above the hand zero at the MEASURED gain (R1: hand_mm_per_rev).
+    assert FLOOR_REV == pytest.approx(0.010 * float(rcn.hw.HAND_REV_PER_M),
+                                      abs=1e-6)
     dt = float(uc.cc.CupCycleConfig.dt)
+    # The sitting's seed, forward, under the LIVE floor: 3991.3 rev/s², an
+    # ABSOLUTE computed once by hand on 2026-09-11 from FLOOR_REV 0.30706 and
+    # dt 0.025 (it read 4078.8 on the sitting itself, whose floor was
+    # FLOOR_REV_SITTING_2026_09_08).  A literal, not the formula re-run.
+    assert rcn.ReloadCoordinatorNode._unified_floor_slam_rps2(
+        SEED_SITTING_REV) == pytest.approx(3991.3, abs=0.5)
+    # ...and the three refusals, inverted back to it.
     for measured in (4077.2, 4076.9, 4063.2):
-        seed = FLOOR_REV - measured * dt * dt / 6.0
+        seed = FLOOR_REV_SITTING_2026_09_08 - measured * dt * dt / 6.0
         assert seed == pytest.approx(-0.108, abs=0.002)
     # THE SILENT BAND: the cap is crossed only at -0.0485 rev, so a seed 11.2 mm
     # low is ACCEPTED. This is the number that makes the rule a floor.
     assert rcn.ReloadCoordinatorNode._unified_floor_slam_rps2(
-        SEED_SILENT_REV) == pytest.approx(3400.0, abs=1.0)
+        SEED_SILENT_REV) == pytest.approx(3312.6, abs=1.0)   # 3400.0 pre-R1
     assert (rcn.ReloadCoordinatorNode._unified_floor_slam_rps2(SEED_SILENT_REV)
             < float(rcn.hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2))
 
@@ -244,7 +255,8 @@ def test_a_hand_parked_ON_the_floor_is_not_refused_by_noise(monkeypatch):
     error (600 s hold, 2026-09-04) and worth 96 rev/s² of knot-1 acceleration,
     **2.7 % of the cap**, against the 4078 the sitting hit.
     """
-    assert rcn._UNIFIED_FLOOR_TOL_MM == pytest.approx(0.3163, abs=1e-3)
+    # 0.01 rev expressed in mm at the measured gain: 0.3257 mm (0.3163 pre-R1).
+    assert rcn._UNIFIED_FLOOR_TOL_MM == pytest.approx(0.3257, abs=1e-3)
     dt = float(uc.cc.CupCycleConfig.dt)
     slam = 6.0 * rcn._UNIFIED_FLOOR_TOL_REV / (dt * dt)
     assert slam == pytest.approx(96.0, abs=0.5)
@@ -302,7 +314,7 @@ def test_the_silent_band_is_lifted_and_not_launched(monkeypatch):
     assert state.unified_reject.startswith(
         '{}({}:'.format(rcn._OUTCOME_CYCLE_PLAN, rcn._UNIFIED_BELOW_FLOOR))
     assert '11.2 mm low' in state.unified_reject
-    assert '3400' in state.unified_reject
+    assert '3313' in state.unified_reject     # 6·(0.30706+0.038)/dt², was '3400'
 
     # Lifted, the same cycle plans.
     state.unified_reject = ''
@@ -338,7 +350,7 @@ def test_a_refused_lift_refuses_the_launch_and_says_why(monkeypatch):
     assert _launches(sent) == [], 'a launch was requested from a below-floor seed'
     assert rcn.base_outcome(state.unified_reject) == rcn._OUTCOME_CYCLE_PLAN
     assert rcn.outcome_subcode(state.unified_reject) == rcn._UNIFIED_BELOW_FLOOR
-    assert '13.4 mm low' in state.unified_reject
+    assert '13.5 mm low' in state.unified_reject   # (0.30706+0.1087) rev at 30.706 rev/m; '13.4' pre-R1
     assert 'SETTLE_SITE' in state.unified_reject       # the lift's verdict rides along
 
 
@@ -355,7 +367,7 @@ def test_a_lift_that_installs_but_does_not_move_the_hand_is_not_a_pass(
     sent = _spy_plan_cycle(node, monkeypatch, lands=False)
     detail = node._unified_floor_lift('test')
     assert len(_settles(sent)) == 1
-    assert 'STILL 13.4 mm below the floor' in detail
+    assert 'STILL 13.5 mm below the floor' in detail   # '13.4' pre-R1
     assert 'did not move' in detail
 
 
@@ -383,8 +395,9 @@ def test_an_unknown_hand_position_refuses_the_launch_rather_than_guessing(
 
 
 def test_the_session_lifts_once_at_start_before_any_cycle_is_built(monkeypatch):
-    """WHERE the lift sits, as an order: after the hand-source latch and the
-    planner warm-up, BEFORE the first cycle exists.
+    """WHERE the lift sits, as an order: after the planner warm-up (R1: there
+    is no more hand-source latch to sit after — owner decision 4), BEFORE the
+    first cycle exists.
 
     It is 1.0 s of motion plus a service round trip, and the only place that is
     free is here — the LAUNCH trigger fires `_UNIFIED_LAUNCH_LEAD_S` (1.80 s)
@@ -399,8 +412,6 @@ def test_the_session_lifts_once_at_start_before_any_cycle_is_built(monkeypatch):
     node = _ready_node(clock)
     _seed_hand(node, SEED_SITTING_REV)
     order = []
-    monkeypatch.setattr(node, '_set_hand_source',
-                        lambda s: (order.append('hand_source'), (True, 'ok'))[1])
     monkeypatch.setattr(node, '_unified_warm_planner',
                         lambda: order.append('warm') or 0.0)
     monkeypatch.setattr(
@@ -419,12 +430,11 @@ def test_the_session_lifts_once_at_start_before_any_cycle_is_built(monkeypatch):
     result = node._execute_toss_continuous(goal)
 
     assert result.outcome == 'COMPLETED', result.outcome
-    assert order[0] == 'hand_source'
-    assert order[1] == 'warm'
-    assert order[2] == ('lift', 'session start')
+    assert order[0] == 'warm'
+    assert order[1] == ('lift', 'session start')
     # ...and once more per cycle, still before the cycle is BUILT.
-    assert order[3] == ('lift', 'cycle 1')
-    assert order[4] == 'build'
+    assert order[2] == ('lift', 'cycle 1')
+    assert order[3] == 'build'
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -441,9 +451,10 @@ def test_a_displaced_unified_goal_is_refused_before_anything_is_tilted(
         monkeypatch):
     """F3(a): |B − A| past the co-location tolerance ⇒ refused at ACCEPTANCE.
 
-    Before the hand-source latch, before the warm-up, before the FSM's own
-    displacement gate — and above all before the legacy preamble physically
-    tilts the platform to an aim the unified plan will discard.
+    Before the warm-up, before the FSM's own displacement gate — and above
+    all before the legacy preamble physically tilts the platform to an aim
+    the unified plan will discard. R1 (owner decision 4): there is no more
+    hand-source latch to check before either.
     """
     monkeypatch.setattr(rcn.hw, 'JB_OP_UNIFIED_CYCLE_ENABLED', True,
                         raising=False)
@@ -452,9 +463,6 @@ def test_a_displaced_unified_goal_is_refused_before_anything_is_tilted(
         node, '_position_platform_for_toss',
         lambda *a, **k: pytest.fail('the platform was positioned for a goal '
                                     'that must be refused at acceptance'))
-    monkeypatch.setattr(
-        node, '_set_hand_source',
-        lambda s: pytest.fail('the hand latch was touched after a refusal'))
     monkeypatch.setattr(
         node, '_build_toss_cycle',
         lambda *a, **k: pytest.fail('a cycle was built for a refused goal'))
@@ -481,7 +489,6 @@ def test_a_co_located_unified_goal_still_runs(monkeypatch):
                         raising=False)
     node = _ready_node(clock, commanded_pos=(30.0, 0.0, 170.0))
     _seed_hand(node, FLOOR_REV)
-    monkeypatch.setattr(node, '_set_hand_source', lambda s: (True, 'ok'))
     monkeypatch.setattr(node, '_unified_warm_planner', lambda: 0.0)
     monkeypatch.setattr(node, '_unified_floor_lift', lambda why: '')
     built = _stub_cycles(node, monkeypatch, clock,
@@ -506,10 +513,11 @@ def test_an_unknown_platform_pose_does_not_mint_a_second_pose_unknown(
     node = _node(SEED_IN_BOX_REV)
     with node._lock:
         node._commanded_pos_mono = 0.0          # never heard
-    monkeypatch.setattr(node, '_set_hand_source', lambda s: (False, 'stop here'))
     result = node._execute_toss_continuous(_unified_goal(x=100.0, num_throws=1))
-    # It got PAST the aim gate (and stopped at the latch, which is the next one).
-    assert rcn.base_outcome(result.outcome) == rcn._OUTCOME_HAND_SOURCE
+    # It got PAST the aim gate (no second refusal minted there) — the FSM's
+    # own REJECTED_POSE_UNKNOWN, wrapped as a cycle abort, is what stops it.
+    # R1: there is no hand_source latch to stop at any more (owner decision 4).
+    assert rcn.base_outcome(result.outcome) == 'ABORTED_CYCLE_REJECTED_POSE_UNKNOWN'
 
 
 @pytest.mark.parametrize('unified,expect_tilt', [(False, True), (True, False)])

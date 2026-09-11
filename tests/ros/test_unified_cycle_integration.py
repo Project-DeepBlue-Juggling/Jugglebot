@@ -93,7 +93,7 @@ def _hand_rev_for_cup_z(cup_z_mm: float) -> float:
     """
     cfg = cr.RealizeConfig()
     slider_mm = float(cup_z_mm) - cfg.cup_z_base_mm
-    return (slider_mm - cfg.slider_rev_zero_mm) / 1000.0 * cr.LINEAR_GAIN_REV_PER_M
+    return (slider_mm - cfg.slider_rev_zero_mm) / 1000.0 * cr.HAND_REV_PER_M
 
 
 _REST_HAND_REV = _hand_rev_for_cup_z(_REST_CUP_Z_MM)
@@ -2220,95 +2220,17 @@ def _unified_session_node(monkeypatch, clock, *, enabled=True):
     return node
 
 
-def test_TI3_the_session_verifies_the_hand_latch_and_leaves_it_alone(monkeypatch):
-    """T-I3 (a): hand mastery is VERIFIED once and never switched, in either
-    direction.
-
-    The firmware refuses a `hand_source` transition whenever the setpoint output
-    is armed (`hand_source.cpp:60`, `mpc_active`) and the wire is armed for the
-    whole ACTIVE state (`ARMING_CONTRACT.md` § A2), so the latch is an
-    OPERATOR-owned precondition and the single STREAMED call is the idempotent
-    re-assert of it. Exactly ONE call, and the order against the declaration is
-    still load-bearing: the assertion precedes `catch/unified_mode` going up (the
-    declaration must not precede the firmware refusal it stands in for) and the
-    declaration comes down at the terminal on its own.
+def test_the_terminal_drain_still_runs_after_a_unified_cycle(monkeypatch):
+    """R1 (owner decision 4): there is no more `hand_source` latch to assert or
+    order against (the T-I3 (a′) ordering this test used to pin against it is
+    retired with the latch). What survives: the terminal DRAIN — it puts the
+    staged slot back and lowers the catch latch — must still run on every way
+    out of a unified session, after the cycle.
     """
     clock = _Clock()
     monkeypatch.setattr(rcn, 'time', clock)
     node = _unified_session_node(monkeypatch, clock)
     events = []
-    monkeypatch.setattr(
-        node, '_set_hand_source',
-        lambda streamed: (events.append(('hand_source', bool(streamed))),
-                          (True, 'ok'))[1])
-    pub = node._publishers['catch/unified_mode']
-    monkeypatch.setattr(
-        pub, 'publish',
-        lambda msg: events.append(('unified_mode', bool(msg.data))))
-    _stub_cycles(node, monkeypatch, clock, [TossResult(True, 'CAUGHT', 2.0, .8)])
-    result = node._execute_toss_continuous(_unified_goal(num_throws=1))
-    assert events == [('hand_source', True), ('unified_mode', True),
-                      ('unified_mode', False)], events
-    assert node._toss_unified_live is False
-    assert node._toss_hand_source_streamed is False   # session-scoped, cleared
-    assert result.outcome == 'COMPLETED'
-
-
-def test_TI3_a_refused_hand_latch_stops_the_session_before_anything_runs(
-        monkeypatch):
-    """FAIL CLOSED, with its own outcome.
-
-    With the latch still LEGACY the firmware DISCARDS every Setpoint hand channel
-    — counted, but invisible to the plan — so the platform would fly a whole cycle
-    with a dead hand and a seated ball. The distinct outcome matters because the
-    operator's next action (settle the hand, disarm, retry) is nothing like the
-    one an infeasible cycle calls for.
-    """
-    clock = _Clock()
-    monkeypatch.setattr(rcn, 'time', clock)
-    node = _unified_session_node(monkeypatch, clock)
-    monkeypatch.setattr(node, '_set_hand_source',
-                        lambda streamed: (False, 'hand not settled at rest'))
-    monkeypatch.setattr(
-        node, '_build_toss_cycle',
-        lambda *a, **k: pytest.fail('a cycle was built after a refused latch'))
-    result = node._execute_toss_continuous(_unified_goal(num_throws=2))
-    assert result.success is False
-    assert result.outcome.startswith('REJECTED_HAND_SOURCE(')
-    assert 'hand not settled' in result.outcome
-    assert node._goal_claimed is False
-
-
-def test_TI3_the_latch_is_asserted_before_a_cycle_and_the_drain_still_runs(
-        monkeypatch):
-    """T-I3 (a′): WHERE the one `_set_hand_source` call sits, as an order.
-
-    **The firmware refuses a hand_source TRANSITION whenever the setpoint output
-    is armed** (`hand_source.cpp:60`, `mpc_active`), and the wire is armed for the
-    whole ACTIVE state — the orchestrator arms it on ACTIVE entry and is its sole
-    caller (`ARMING_CONTRACT.md` § A2). So this node cannot switch the latch from
-    inside a session at all: the STREAMED call can only ever be the idempotent
-    re-assert of a latch the operator set before ACTIVATE, and it is placed where
-    it is so that a session which finds the latch LEGACY is refused BEFORE
-    anything is armed rather than after a cycle has flown with a dead hand.
-
-    So there is exactly ONE placement left to defend, and it is asserted as an
-    order: the assertion precedes the FIRST CYCLE — nothing the session arms (the
-    `arm_catch` raise, the PREPARE bundle, the plan install) happens before it.
-
-    The terminal DRAIN is asserted here too, because deleting the hand-back is
-    what made this test's second half look optional: the drain is what puts the
-    staged slot back and lowers the catch latch, and it must still run on every
-    way out of a unified session.
-    """
-    clock = _Clock()
-    monkeypatch.setattr(rcn, 'time', clock)
-    node = _unified_session_node(monkeypatch, clock)
-    events = []
-    monkeypatch.setattr(
-        node, '_set_hand_source',
-        lambda streamed: (events.append(('hand_source', bool(streamed))),
-                          (True, 'ok'))[1])
     monkeypatch.setattr(node, '_drain_pipeline_and_disarm',
                         lambda: events.append('drain'))
 
@@ -2320,65 +2242,7 @@ def test_TI3_the_latch_is_asserted_before_a_cycle_and_the_drain_still_runs(
 
     monkeypatch.setattr(node, '_run_toss_cycle', fake_run)
     node._execute_toss_continuous(_unified_goal(num_throws=1))
-    assert events.index(('hand_source', True)) < events.index('cycle')
     assert events.index('cycle') < events.index('drain')
-    assert events.count(('hand_source', True)) == 1
-    assert ('hand_source', False) not in events
-
-
-def test_TI3_the_teardown_never_attempts_a_hand_back(monkeypatch):
-    """The session leaves the latch where the OPERATOR put it — no RPC, no verdict.
-
-    `hand_source.cpp:60` refuses any real transition while `mpc_active` is set,
-    and the setpoint output is armed for the whole ACTIVE state (its sole caller
-    is the ACTIVE-state orchestrator, `ARMING_CONTRACT.md` § A2), so a session
-    cannot switch the latch in either direction. A teardown hand-back could
-    therefore only ever be refused — and the previous behaviour turned that
-    EXPECTED refusal into `REJECTED_HAND_SOURCE(STUCK_STREAMED: …)` with
-    `success=False`, i.e. every clean session ended as a rejection. An alarm that
-    fires on the happy path is an alarm an operator learns to read past, and
-    nothing was stuck: the latch was exactly where it was set.
-
-    So: no call at all, and the session's own verdict is untouched.
-    """
-    clock = _Clock()
-    monkeypatch.setattr(rcn, 'time', clock)
-    node = _unified_session_node(monkeypatch, clock)
-    calls = []
-
-    def _spy(streamed):
-        calls.append(bool(streamed))
-        # Answer a hand-back the way the firmware would, so a re-introduced call
-        # fails HERE rather than passing on a lenient stub.
-        return (True, 'ok') if streamed else (False, 'ERR_REJECTED')
-
-    monkeypatch.setattr(node, '_set_hand_source', _spy)
-    infos = []
-    monkeypatch.setattr(
-        node, 'get_logger',
-        lambda: types.SimpleNamespace(
-            info=lambda msg, **kw: infos.append(str(msg)),
-            warning=lambda msg, **kw: None, warn=lambda msg, **kw: None,
-            error=lambda msg, **kw: None, debug=lambda msg, **kw: None))
-    _stub_cycles(node, monkeypatch, clock, [TossResult(True, 'CAUGHT', 2.0, .8)])
-    result = node._execute_toss_continuous(_unified_goal(num_throws=1))
-    assert calls == [True], calls          # the start verification, and nothing else
-    assert result.outcome == 'COMPLETED'
-    assert result.success is True
-    # The declaration still comes down; only the latch is left alone.
-    assert node._publishers['catch/unified_mode'].published[-1].data is False
-    # The latch state reaches the operator through the session's own OUTCOME
-    # line — appended to the stats, never folded into the outcome code.
-    outcome_lines = [ln for ln in infos if ln.startswith('TossContinuous ')]
-    assert len(outcome_lines) == 1, infos
-    assert 'COMPLETED' in outcome_lines[0]
-    assert 'hand_source STREAMED' in outcome_lines[0]
-    # ...and the terminal names the two operator routes back to LEGACY.
-    disengaged = [ln for ln in infos if 'DISENGAGED' in ln]
-    assert len(disengaged) == 1, infos
-    assert 'REMAINS STREAMED' in disengaged[0]
-    assert '/set_hand_source false' in disengaged[0]
-    assert 'reboot' in disengaged[0]
 
 
 def test_TI3_the_pipeline_is_forced_off_under_unified(monkeypatch):
@@ -2394,7 +2258,6 @@ def test_TI3_the_pipeline_is_forced_off_under_unified(monkeypatch):
     monkeypatch.setattr(rcn.hw, 'JB_OP_TOSS_PIPELINE_ENABLED', True,
                         raising=False)
     node = _unified_session_node(monkeypatch, clock)
-    monkeypatch.setattr(node, '_set_hand_source', lambda s: (True, 'ok'))
     seen = {}
     real = rcn.TossSessionSequencer
 
@@ -2408,31 +2271,37 @@ def test_TI3_the_pipeline_is_forced_off_under_unified(monkeypatch):
     assert seen['pipelined'] is False
 
 
-def test_TI3_legacy_sessions_never_touch_the_hand_latch(monkeypatch):
-    """T-R3's half of T-I3: with the goal field off, nothing above happens.
+def test_TI3_legacy_sessions_never_declare_unified_mode(monkeypatch):
+    """T-R3's half of T-I3: with the goal field off, nothing above happens —
+    including running at all.
 
-    The pipeline flag is stated rather than inherited (the discipline
-    `test_toss_continuous_node`'s autouse fixture enforces in its own file): the
-    shipped default is TRUE, and `_stub_cycles` patches the SERIAL runner, so an
-    inherited default would take the pipelined branch and fail for a harness
-    reason. The unified tests above do not need it — unified forces the pipeline
-    off, which is itself part of what they assert.
-    """
+    **Updated 2026-09-11 (audit finding, BLOCKING; skill-stack R1, owner
+    decision 1)**: before R1 a legacy (`unified_cycle` off) goal ran the
+    session to completion over the SERIAL path, and this test's whole point
+    was that it did so without ever declaring `catch/unified_mode`. R1
+    retires the Platform stroke engine outright, so there is no serial path
+    left to run — the accept gate refuses every such goal with
+    `REJECTED_STROKE_ENGINE_RETIRED` before `_stub_cycles`'s scripted result
+    is ever consulted. The non-declaration this test pins is therefore no
+    longer an interesting property of a session that RAN — it is a
+    consequence of the session never running at all, which
+    `test_a_legacy_session_is_refused_at_accept` in test_toss_continuous_node.py
+    already covers structurally. Kept here, narrowed, as the belt on this
+    specific topic (the mode-publish channel) rather than deleted outright."""
     clock = _Clock()
     monkeypatch.setattr(rcn, 'time', clock)
     monkeypatch.setattr(rcn.hw, 'JB_OP_TOSS_PIPELINE_ENABLED', False,
                         raising=False)
     node = _unified_session_node(monkeypatch, clock)
-    monkeypatch.setattr(
-        node, '_set_hand_source',
-        lambda s: pytest.fail('a legacy session touched the hand_source latch'))
     pub = node._publishers['catch/unified_mode']
     monkeypatch.setattr(
         pub, 'publish',
         lambda msg: pytest.fail('a legacy session declared unified_mode'))
     _stub_cycles(node, monkeypatch, clock, [TossResult(True, 'CAUGHT', 2.0, .8)])
-    result = node._execute_toss_continuous(_ContGoalHandle(num_throws=1))
-    assert result.outcome == 'COMPLETED'
+    from jugglebot.outcome_detail import base_outcome
+    result = node._execute_toss_continuous(
+        _ContGoalHandle(num_throws=1, unified_cycle=False))
+    assert base_outcome(result.outcome) == 'REJECTED_STROKE_ENGINE_RETIRED'
     assert node._toss_unified_live is False
 
 
@@ -2445,9 +2314,6 @@ def test_TI3_the_goal_field_alone_does_not_engage_unified(monkeypatch):
     clock = _Clock()
     monkeypatch.setattr(rcn, 'time', clock)
     node = _unified_session_node(monkeypatch, clock, enabled=False)
-    monkeypatch.setattr(
-        node, '_set_hand_source',
-        lambda s: pytest.fail('unified engaged with the build flag off'))
     _stub_cycles(node, monkeypatch, clock, [TossResult(True, 'CAUGHT', 2.0, .8)])
     node._execute_toss_continuous(_unified_goal(num_throws=1))
     assert node._toss_unified_live is False
@@ -2479,7 +2345,7 @@ def test_the_session_asks_the_unified_key_exactly_once_per_goal(monkeypatch):
 
     Re-resolving at a branch would let a mid-session config change put the legacy
     stroke engine and the streamed plan on one axis — the dual-mastery class the
-    firmware's `hand_source` latch exists to make structurally impossible. A
+    pre-R1 firmware's `hand_source` latch existed to make structurally impossible. A
     second read is also a second DECISION, free to disagree with the first about
     a session that is already flying.
     """
@@ -2488,7 +2354,6 @@ def test_the_session_asks_the_unified_key_exactly_once_per_goal(monkeypatch):
     node = _ready_node(clock)               # built before the proxy: __init__
     counting = _CountingHw(rcn.hw, True)    # reads plenty of other keys
     monkeypatch.setattr(rcn, 'hw', counting)
-    monkeypatch.setattr(node, '_set_hand_source', lambda s: (True, 'ok'))
     _stub_cycles(node, monkeypatch, clock,
                  [TossResult(True, 'CAUGHT', 2.0, .8)] * 2)
     result = node._execute_toss_continuous(_unified_goal(num_throws=2))
@@ -2561,29 +2426,42 @@ def _drive(node, seq, state, action):
     return decision
 
 
-@pytest.mark.parametrize('unified', [False, True])
-def test_the_dispatch_seam_never_issues_a_legacy_hand_rpc_under_unified(
-        monkeypatch, unified):
-    """`_dispatch_toss_throw` is the ONE kind-0 write and it must not run.
+def test_the_dispatch_seam_never_issues_a_legacy_hand_rpc(monkeypatch):
+    """R1 (owner decision 4): the legacy kind-0 hand RPC (`set_hand_traj_cmd`)
+    is retired outright — there is no firmware call left for a legacy
+    dispatch to make. The unified caller gets the no-RPC OK: the release is a
+    committed knot on the plan the emitter is already streaming, not a
+    discrete stroke command.
 
-    The firmware would refuse it anyway (ERR_HAND_SOURCE while STREAMED), which
-    is exactly why it must not be attempted: the ack path would log an arm, the
-    FSM would advance on a dispatch that never reached the motor, and the failure
-    would surface as a ball that never left.
+    **Updated 2026-09-11 (audit finding, BLOCKING)**: this test used to
+    parametrize over `unified` and assert `outcome == 'ok'` for BOTH — that
+    was the bug. `unified=False` has no plan installed and no RPC left to
+    call, so reporting OK was a LIE (`state.throw_dispatched = True` with
+    nothing armed). The seam now refuses `unified=False` with
+    `REJECTED_STROKE_ENGINE_RETIRED` and never sets `throw_dispatched`; the
+    accept-gate tests in test_toss_continuous_node.py /
+    test_toss_coordinator.py cover why a legacy caller can no longer reach
+    this seam in production.
     """
     node = _ready_node(_Clock())
-    seq, state = _seq_state(node, unified)
-    calls = []
-    monkeypatch.setattr(node, '_dispatch_toss_throw',
-                        lambda s, st=None: calls.append(1) or ('ok', 'legacy'))
-    outcome, message = node._dispatch_toss(seq, state, unified)
+    seq, state = _seq_state(node, unified=True)
+    outcome, message = node._dispatch_toss(seq, state, True)
     assert outcome == 'ok'
-    if unified:
-        assert calls == []
-        assert 'no hand RPC issued' in message
-        assert state.throw_dispatched is True   # release evidence still armed
-    else:
-        assert calls == [1]
+    assert 'no hand RPC issued' in message
+    assert state.throw_dispatched is True   # release evidence still armed
+
+
+def test_the_dispatch_seam_refuses_a_legacy_session_rather_than_lying_ok():
+    """The belt: `_dispatch_toss(..., unified=False)` never reports OK, even
+    called directly — see the module note above."""
+    from jugglebot.outcome_detail import base_outcome
+
+    node = _ready_node(_Clock())
+    seq, state = _seq_state(node, unified=False)
+    outcome, message = node._dispatch_toss(seq, state, False)
+    assert outcome == rcn.THROW_DISPATCH_REJECTED
+    assert base_outcome(message) == rcn._OUTCOME_STROKE_ENGINE_RETIRED
+    assert state.throw_dispatched is False
 
 
 @pytest.mark.parametrize('unified', [False, True])
@@ -2897,7 +2775,6 @@ def test_a_refused_plan_relabels_the_cycle_outcome(monkeypatch):
     clock = _Clock()
     monkeypatch.setattr(rcn, 'time', clock)
     node = _unified_session_node(monkeypatch, clock)
-    monkeypatch.setattr(node, '_set_hand_source', lambda s: (True, 'ok'))
     refusal = 'REJECTED_CYCLE_INFEASIBLE(CATCH_RUNWAY: no runway below 0.83 m)'
 
     def fake_run(seq, *, deadline_s, cancel_now_fn, feedback_fn, state=None):
@@ -2942,14 +2819,13 @@ def test_the_cycle_comes_to_rest_INSIDE_the_hand_park_band():
     second on was refused before it planned. Asserted on the PLAN rather than on
     the request, because the request is only a wish until the QP agrees.
 
-    Not inside the FIRMWARE's ±0.10 rev `hand_source` settle band, and that is
+    Not inside the pre-R1 firmware's ±0.10 rev `hand_source` settle band (now `jugglebot_homing.hand_settle_band_rev`), and that is
     structural rather than a shortfall: the true park (0.0 rev, cup 679.6 mm)
     sits 10 mm BELOW this planner's own cup box and is refused SETTLE_SITE before
     it plans (MEASURED 2026-09-05). Nothing depends on reaching it — the latch
     switch is refused while the wire is armed regardless, so it is never
     attempted from inside a session.
     """
-    from jugglebot.motion.trajectory import hand_stroke
     node = _cycle_node()
     req = _launch_req()
     req.settle_site_mm = [0.0, 0.0, rcn.uc.SETTLE_CUP_Z_MM]
@@ -2961,15 +2837,15 @@ def test_the_cycle_comes_to_rest_INSIDE_the_hand_park_band():
     assert resp.accepted is True, resp.message
     plan, _meta, _t0 = node._cycle
     rest_rev = float(plan.hand_rev[-1])
-    assert abs(rest_rev) <= hand_stroke.HAND_PARK_BAND_REV, (
+    assert abs(rest_rev) <= hw.HOMING_HAND_PARK_BAND_REV, (
         'the cycle rests at %.3f rev — outside the %.2f rev park band, so the '
         'NEXT cycle is refused REJECTED_HAND_NOT_PARKED'
-        % (rest_rev, hand_stroke.HAND_PARK_BAND_REV))
+        % (rest_rev, hw.HOMING_HAND_PARK_BAND_REV))
     # And it is genuinely low: the catch height would have left it 9.5x out.
     assert rest_rev == pytest.approx(
         rcn.uc.hand_rev_for_cup_z(rcn.uc.SETTLE_CUP_Z_MM), abs=1e-3)
     assert _hand_rev_for_cup_z(rcn._UNIFIED_CATCH_CUP_Z_MM) > (
-        9.0 * hand_stroke.HAND_PARK_BAND_REV)
+        9.0 * hw.HOMING_HAND_PARK_BAND_REV)
 
 
 def test_the_coordinators_request_settles_at_the_park_over_the_catch_xy():
@@ -3029,14 +2905,12 @@ def test_the_session_warms_the_planner_before_its_first_cycle(monkeypatch):
     monkeypatch.setattr(rcn, 'time', clock)
     node = _unified_session_node(monkeypatch, clock)
     order = []
-    monkeypatch.setattr(node, '_set_hand_source',
-                        lambda s: order.append('hand_source') or (True, 'ok'))
     monkeypatch.setattr(node, '_unified_warm_planner',
                         lambda: order.append('warm') or 0.4)
     _stub_cycles(node, monkeypatch, clock, [TossResult(True, 'CAUGHT', 2.0, .8)])
     node._execute_toss_continuous(_unified_goal(num_throws=1))
-    # Warmed once, after the hand latch and before anything else.
-    assert order[:2] == ['hand_source', 'warm']
+    # Warmed once, before anything else (R1: no more hand latch to come after).
+    assert order[:1] == ['warm']
     assert order.count('warm') == 1
     # And it really does SOLVE — a warm-up that returned without planning would
     # leave the cold cost exactly where it was, silently. Spied on the planner
@@ -3060,7 +2934,6 @@ def test_a_warm_up_failure_never_costs_the_session(monkeypatch):
     clock = _Clock()
     monkeypatch.setattr(rcn, 'time', clock)
     node = _unified_session_node(monkeypatch, clock)
-    monkeypatch.setattr(node, '_set_hand_source', lambda s: (True, 'ok'))
     monkeypatch.setattr(rcn.uc, 'plan_launch',
                         lambda *a, **k: (_ for _ in ()).throw(RuntimeError('boom')))
     _stub_cycles(node, monkeypatch, clock, [TossResult(True, 'CAUGHT', 2.0, .8)])
@@ -3186,69 +3059,38 @@ def test_a_legacy_miss_still_runs_the_full_safe_abort_ladder(monkeypatch):
 # catch_coordinator_node — the reactive arm is off
 # ═════════════════════════════════════════════════════════════════════════════
 
-def test_unified_mode_withholds_the_reactive_hand_arm(monkeypatch):
-    """Belt AND braces: the call site skips it and the dispatch refuses it.
-
-    The dispatch-side gate is the enforcement point a future third caller cannot
-    bypass; the call-site gate keeps the per-ball bookkeeping (the one-shot latch,
-    the dispatch counter) from running for an arm that will never be attempted.
-    """
+def test_the_reactive_hand_arm_never_exists(monkeypatch):
+    """R1 (owner decision 3): the reactive hand-catch arm is DELETED outright,
+    not withheld under `unified_mode` — this node never arms a hand stroke,
+    under unified_mode or off it, because the plan owns the hand until R4's
+    CATCH skill lands. The old belt-and-braces (call-site gate + dispatch-side
+    refusal) has nothing left to gate: neither mechanism exists any more."""
     from tests.ros.test_catch_coordinator_node import _balls_msg, _catchable_cmd
     ccn = CatchCoordinatorNode()
+    assert not hasattr(ccn, '_arm_hand_catch')
+    assert not hasattr(ccn, '_hand_traj_client')
+    assert not hasattr(ccn, '_hand_traj_armed_for_ball')
     ccn._catch_armed = True
-    dispatched = []
-    monkeypatch.setattr(ccn._hand_traj_client, 'call_async',
-                        lambda req: dispatched.append(req) or _DoneFuture())
     monkeypatch.setattr(ccn._coordinator, 'update',
                         lambda balls, current_time, exclude_ids=None:
                         _catchable_cmd())
-    ccn._on_unified_mode(Bool(data=True))
-    assert ccn._unified_mode is True
-    ccn._on_balls(_balls_msg())
-    assert dispatched == []
-    # Directly, too — the enforcement point, not just the call site.
-    assert ccn._arm_hand_catch(0.5, 2.0) is False
-    assert dispatched == []
-    # A DEFERRAL, never a drop: the one-shot latch is left open, so the next
-    # balls tick after the session ends arms normally.
-    assert ccn._hand_traj_armed_for_ball is None
-    ccn._on_unified_mode(Bool(data=False))
-    ccn._on_balls(_balls_msg())
-    assert len(dispatched) == 1
-
-
-def test_unified_mode_leaves_the_stroke_busy_window_inert(monkeypatch):
-    """There is no firmware stroke to be busy with.
-
-    `_latch_throw_stroke_window` sizes a suppression from `hand_stroke`'s model of
-    the legacy stroke engine's deceleration. Under unified that engine is not
-    running on this axis, and the plan's own twins are facts about the trajectory
-    instead. Leaving the window None is the same INERT state a BallButler
-    announcement produces.
-    """
-    ccn = CatchCoordinatorNode()
-    ccn._on_unified_mode(Bool(data=True))
-    msg = types.SimpleNamespace(
-        thrower_name=ccn._coordinator.robot_name,
-        throw_time=types.SimpleNamespace(sec=100, nanosec=0),
-        initial_velocity=types.SimpleNamespace(x=0.0, y=0.0, z=3900.0))
-    ccn._latch_throw_stroke_window(msg)
-    assert ccn._throw_stroke_clear_ros is None
-    # Legacy: the window latches exactly as today.
-    ccn._on_unified_mode(Bool(data=False))
-    ccn._latch_throw_stroke_window(msg)
-    assert ccn._throw_stroke_clear_ros is not None
+    for unified in (True, False):
+        ccn._on_unified_mode(Bool(data=unified))
+        assert ccn._unified_mode is unified
+        ccn._on_balls(_balls_msg())   # must not raise — there is nothing to arm
 
 
 def test_unified_mode_still_consumes_announcements():
-    """Only the ARM is withheld — the announcement itself is consumed in full.
+    """`catch/unified_mode` never gates the announcement itself.
 
     It drives the tracker's correlation, the possession latch and the open-loop
     pre-tilt, none of which command the hand; dropping it would break the catch
     this mode exists to make. Asserted on the SIDE EFFECTS rather than on the
-    handler's source text, and against the legacy run as the reference, so the
-    claim is "identical, except the stroke window" rather than "the string does
-    not appear".
+    handler's source text, against the ``unified_mode=False`` run as the
+    reference, so the claim is "identical" rather than "the string does not
+    appear". R1 (owner decision 3): there is no more hand-arm / stroke-window
+    side effect to distinguish the two by — the reactive arm is deleted
+    outright, not gated on this flag.
     """
     from tests.ros.test_catch_coordinator_node import _announcement
 
@@ -3263,7 +3105,6 @@ def test_unified_mode_still_consumes_announcements():
             'landing': ccn._announced_landing_time,
             'pretilt': ccn._pretilt_cmd is not None,
             'targets': len(ccn._dyn_target_pub.published) - n0,
-            'stroke_window': ccn._throw_stroke_clear_ros,
         }
 
     legacy, unified = _consume(False), _consume(True)
@@ -3271,9 +3112,6 @@ def test_unified_mode_still_consumes_announcements():
     assert unified['targets'] == 1
     for key in ('seen', 'landing', 'pretilt', 'targets'):
         assert unified[key] == legacy[key], key
-    # The ONE deliberate difference, pinned so the equality above cannot quietly
-    # start covering it: there is no firmware stroke to be busy with.
-    assert unified['stroke_window'] is None
 
 
 def _unified_ball_node(monkeypatch, cmd_fn):
@@ -3376,11 +3214,6 @@ def test_the_unified_replan_is_rate_limited_by_LANDING_MOVEMENT(monkeypatch):
     assert len(ccn._dyn_target_pub.published) == 3
 
 
-class _DoneFuture:
-    def add_done_callback(self, cb):
-        pass
-
-
 # ═════════════════════════════════════════════════════════════════════════════
 # Wire defaults + the envelope carve-out
 # ═════════════════════════════════════════════════════════════════════════════
@@ -3402,80 +3235,6 @@ def test_unified_cycle_wire_default_is_false():
     assert TossContinuous.Goal().unified_cycle is False
 
 
-def test_the_arm_window_bound_is_the_only_envelope_carve_out():
-    """Under unified only C-HAND-3's ARM_WINDOW bound is dropped.
-
-    It is the one bound of the seven that models the REACTIVE catch — whether a
-    kind-1 stroke can still be dispatched after the kind-0 throw stroke has
-    decelerated. The other six describe the hand's METAL and its motor, which the
-    unified path drives just as hard, so they still gate.
-    """
-    from jugglebot.motion.trajectory import throw_envelope as te
-    # A flight short enough that the arm window closes but the metal is fine.
-    t = te.MIN_FLIGHT_TIME_S - 0.05
-    v = te.vertical_release_speed_mps(t)
-    assert te.evaluate(t, v).ok is False
-    assert te.evaluate(t, v).bound == 'ARM_WINDOW'
-    assert te.evaluate(t, v, arm_window=False).ok is True
-    # A speed that breaks metal is still refused with the carve-out applied.
-    fast = te.evaluate(te.MAX_FLIGHT_TIME_S, 9.0, arm_window=False)
-    assert fast.ok is False
-    assert fast.bound != 'ARM_WINDOW'
-
-
-def test_the_arm_window_carve_out_reaches_ALL_THREE_of_its_call_sites():
-    """Bound 7 is dropped everywhere under unified, or layer 3 goes inert.
-
-    `throw_envelope.evaluate(..., arm_window=)` is consulted in three places and
-    they have to agree, because they are three views of ONE question — *may this
-    release speed be commanded?*:
-
-    1. `toss_sequencer`'s CHECKING gate — is this goal flyable at all;
-    2. `toss_session.floor_event_vel_mps` — the SLOWEST release the ILC speed
-       trim could ask for, which every cadence floor is computed against;
-    3. `reload_coordinator._ilc_vel_trim_refusal` — the APPLY seam that admits or
-       drops the trim.
-
-    Bound 7 refuses the whole SHORT half of the flight band, and it refuses the
-    NEGATIVE side of the trim first: at the band floor T = 0.4949 s the
-    admissible negative headroom is exactly +0.000 m/s. So charging it at (2) and
-    (3) under unified — where there is no stroke engine on that axis to arm —
-    does not make layer 3 conservative, it makes it INERT across exactly the half
-    of the band the carve-out exists to unlock.
-
-    Legacy keeps the bound at all three, and that half is pinned too.
-    """
-    from jugglebot.motion.trajectory import throw_envelope as te
-    from jugglebot.toss_session import ILC_SPEED_AUTHORITY, TossSessionSequencer
-    # A flight where bound 7 binds and nothing else does — the carve-out's own
-    # territory, and where a disagreement between the three is visible.
-    flight = te.MIN_FLIGHT_TIME_S + 0.005
-    nominal = te.vertical_release_speed_mps(flight)
-    slow = nominal * (1.0 - ILC_SPEED_AUTHORITY)
-    assert te.evaluate(flight, slow).bound == 'ARM_WINDOW'
-    assert te.evaluate(flight, slow, arm_window=False).ok is True
-
-    # (2) the session's floor. Legacy cannot reach the slow end; unified can.
-    def _floor(unified):
-        return TossSessionSequencer(
-            num_throws=1, flight_time_s=flight,
-            ilc_speed_trim_possible=True, unified=unified).floor_event_vel_mps
-
-    assert _floor(False) > slow * 1.001, (
-        'legacy already reached the trim floor, so this flight does not '
-        'exercise the carve-out')
-    assert _floor(True) == pytest.approx(slow)
-
-    # (3) the apply seam. Same trim, opposite verdicts.
-    refusal = rcn.ReloadCoordinatorNode._ilc_vel_trim_refusal
-    assert 'ARM_WINDOW' in refusal(nominal, slow, flight)
-    assert refusal(nominal, slow, flight, arm_window=False) == ''
-    # A speed that breaks METAL is still refused with the carve-out applied —
-    # the other six bounds describe the hand's motor, which unified drives just
-    # as hard.
-    assert refusal(nominal, 9.0, te.MAX_FLIGHT_TIME_S, arm_window=False) != ''
-
-
 def test_the_unified_flag_reaches_the_session_FSM_as_well_as_the_cycle_FSM(
         monkeypatch):
     """One resolution, handed to BOTH sequencers — never re-read at either.
@@ -3487,7 +3246,6 @@ def test_the_unified_flag_reaches_the_session_FSM_as_well_as_the_cycle_FSM(
     clock = _Clock()
     monkeypatch.setattr(rcn, 'time', clock)
     node = _unified_session_node(monkeypatch, clock)
-    monkeypatch.setattr(node, '_set_hand_source', lambda s: (True, 'ok'))
     seen = {}
     real = rcn.TossSessionSequencer
     monkeypatch.setattr(rcn, 'TossSessionSequencer',
@@ -3511,7 +3269,7 @@ def test_the_sequencer_is_TOLD_the_carve_out_and_never_re_reads_it(monkeypatch,
     The FSM must also never ask the config key itself. A second read there would
     be a second decision, free to disagree with the session's — and it would
     disagree exactly when a config reload lands mid-session, which is the
-    dual-mastery case the `hand_source` latch exists to make impossible.
+    dual-mastery case the pre-R1 `hand_source` latch existed to make impossible.
     """
     import jugglebot.toss_sequencer as ts
     node = _ready_node(_Clock())
@@ -3842,7 +3600,6 @@ def test_the_session_schedules_off_the_plans_release_under_unified(monkeypatch):
     clock = _Clock()
     monkeypatch.setattr(rcn, 'time', clock)
     node = _unified_session_node(monkeypatch, clock)
-    monkeypatch.setattr(node, '_set_hand_source', lambda s: (True, 'ok'))
     seen = []
     real = rcn.TossSessionSequencer.note_cycle_result
     monkeypatch.setattr(

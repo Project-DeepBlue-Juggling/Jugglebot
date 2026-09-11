@@ -1,4 +1,10 @@
-"""Hand trajectory generator — Python port of Teensy Trajectory.h.
+"""Hand trajectory generator for the MuJoCo hand.
+
+Originally a Python port of the Platform Teensy's ``Trajectory.h``.  That
+firmware was DELETED at skill-stack R1 (Platform FW 7, 2026-09-11) when the
+can-bridge became the sole axis-6 writer, so this module is no longer a mirror
+of anything: it is the sole implementation, and the ``Trajectory.h`` references
+below are historical provenance for the math, not a live cross-reference.
 
 Provides both catch and throw trajectories:
 
@@ -31,8 +37,9 @@ logger = logging.getLogger(__name__)
 # Constants — from config/hardware_config.yaml  teensy_trajectory section
 # ---------------------------------------------------------------------------
 GRAVITY_MPS2 = 9.806
-HAND_SPOOL_RADIUS_M = 0.00521
-LINEAR_GAIN_FACTOR = 1.035
+HAND_SPOOL_RADIUS_M = 0.00521   # the spool's measured radius — used ONLY by the
+                                # historical hand-mass-on-a-spool torque conversion
+                                # below; the rev↔m gain is the generated HAND_REV_PER_M
 INERTIA_HAND_ONLY_KG = 0.281
 INERTIA_RATIO = 0.747
 # Total reflected inertia of the hand axis at the motor (rotor + cable-driven
@@ -40,7 +47,8 @@ INERTIA_RATIO = 0.747
 # DECELERATION segment of a throw.  Mirror of
 # ``teensy_trajectory.throw_decel_reflected_inertia_kgm2`` →
 # ``TeensyTraj::THROW_DECEL_REFLECTED_INERTIA_KGM2``.  See
-# ``ros_ws/docs/hand_decel_feedforward.md`` (contract C-HAND-2) for the
+# ``ros_ws/docs/hand_throw_envelope.md`` § Surviving measurements (contract
+# C-HAND-2, retired 2026-09-11 with the firmware that enforced it) for the
 # identification and for why it is deliberately 7-10 % BELOW the measured value.
 THROW_DECEL_REFLECTED_INERTIA_KGM2 = 9.5e-6
 # Catch velocity as a fraction of the incoming ball speed. Source of truth is
@@ -128,7 +136,7 @@ SMOOTH_MOVE_END_STOP_EPS_REV = 1e-4
 THROW_VEL_HOLD_PCT = 0.05  # 5% of effective stroke for velocity hold
 
 # Derived
-_LINEAR_GAIN = LINEAR_GAIN_FACTOR / (math.pi * HAND_SPOOL_RADIUS_M * 2.0)  # rev/m
+_LINEAR_GAIN = float(hw.HAND_REV_PER_M)  # rev/m — 1000 / hand_mm_per_rev (32.567, measured; R1 2026-09-11 replaced the 1.035 fudge factor / (2π·r) = 31.617)
 _TOTAL_STROKE_M = HAND_STROKE_M - 2.0 * STROKE_MARGIN_M  # 0.315 m
 _TOTAL_STROKE_MM = _TOTAL_STROKE_M * 1000.0  # 315 mm
 STROKE_MARGIN_MM = STROKE_MARGIN_M * 1000.0  # 20 mm
@@ -165,7 +173,8 @@ def rev_to_mm(rev: float) -> float:
 # velocity-hold segments, the whole kind-1 catch, and every ``makeSmoothMove``
 # prelude — keeps the legacy conversion, deliberately: correcting the ASCENT
 # feedforward would raise the achieved release velocity and re-calibrate every
-# throw height the machine has flown.  See ros_ws/docs/hand_decel_feedforward.md.
+# throw height the machine has flown.  See ros_ws/docs/hand_throw_envelope.md
+# § Surviving measurements.
 
 #: N.m per (m/s^2) of hand-axis linear acceleration — historical conversion.
 _TORQUE_K_LEGACY = INERTIA_HAND_ONLY_KG * HAND_SPOOL_RADIUS_M

@@ -51,11 +51,10 @@ Toss …). The choreography difference that shapes everything here: the toss is 
 thrower AND its own announcer, so every Jugglebot-side arming step (profiled
 ``go_to_pose`` pre-positioning with a timed arrival — plus a config-keyed mocap
 cross-check, disabled by default (see _TOSS_MOCAP_BODY_PARAM) — the latch raise, the
-self-``ThrowAnnouncement``) precedes the one hand-stroke dispatch
-(``set_hand_traj_cmd`` traj_type=0), which is the sequence's LAST commitment and is
-NEVER re-dispatched — an ambiguous ack may have armed the stroke, and a re-dispatch
-would replace it (or, post-release, clobber the armed catch stroke) on the Teensy's
-last-writer-wins queue. The existing catch pipeline (tracker correlation →
+self-``ThrowAnnouncement``) precedes the release. R1 retires the legacy
+hand-stroke dispatch (``set_hand_traj_cmd`` traj_type=0) outright: the release
+is now a committed knot on the streamed cycle plan, installed strictly earlier
+and more certainly than any RPC ack (see ``_dispatch_toss``). The existing catch pipeline (tracker correlation →
 catch_coordinator → ``catch/dynamic_target``) closes the loop unchanged; the
 ``catch/prime_hold`` topic suppresses catch_coordinator's auto-prime paths from
 PREPARE to terminal so the ball-laden hand is never carried up mid-toss.
@@ -160,7 +159,6 @@ from jugglebot_interfaces.srv import (
     PlanCycle,
     SetFloat,
     SetHandGains,
-    SetHandTrajCmd,
 )
 from jugglebot_interfaces.action import Reload, Toss, TossContinuous
 from geometry_msgs.msg import Point, Pose, Quaternion, Vector3
@@ -220,7 +218,6 @@ from jugglebot.toss_sequencer import (
     PHASE_PREPARING as TOSS_PHASE_PREPARING,
     PHASE_STAGED as TOSS_PHASE_STAGED,
     PHASE_THROWING as TOSS_PHASE_THROWING,
-    THROW_DISPATCH_AMBIGUOUS,
     THROW_DISPATCH_OK,
     THROW_DISPATCH_REJECTED,
     TIER_8B,
@@ -260,7 +257,7 @@ from jugglebot.motion.tilt_map import find_repo_root
 from jugglebot.motion import toss_cal, toss_ilc
 from jugglebot.motion import unified_cycle as uc
 from jugglebot.motion.geometry import StewartGeometry
-from jugglebot.motion.trajectory import hand_stroke, throw_envelope
+from jugglebot.motion.trajectory import throw_envelope
 from jugglebot.motion.trajectory.catch_reach import catch_reach_feasible
 from jugglebot.motion.trajectory.limits import TrajectoryLimits
 from jugglebot.motion.trajectory.tilt_geometry import MAX_TILT_DEG
@@ -377,9 +374,12 @@ _HAND_DISPATCH_ATTEMPTS = 4
 # by tests/ros/test_reload_coordinator_node.py::
 # test_prime_move_leaves_the_park_band_windows_open.
 _HAND_ACK_SETTLE_S = 0.25          # let a lied-ack move begin before reading telemetry
-_HAND_NEAR_TARGET_REV = hand_stroke.HAND_PARK_BAND_REV
+_HAND_NEAR_TARGET_REV = float(hw.HOMING_HAND_PARK_BAND_REV)   # 0.5 rev
                                    # |pos - target| within this ⇒ already at the
-                                   # target. Sourced from hand_stroke since
+                                   # target. Was `hand_stroke.HAND_PARK_BAND_REV`
+                                   # until R1 deleted that module; single-sourced
+                                   # as `jugglebot_homing.hand_park_band_rev`
+                                   # (2026-09-11) — see
                                    # 2026-08-22: the same band now sizes the kind-0
                                    # dispatch's PRELUDE BUDGET
                                    # (min_throw_event_delay_s), so the gate that
@@ -805,11 +805,9 @@ _UNIFIED_FLOOR_TOL_MM = (uc.cup_z_for_hand_rev(_UNIFIED_FLOOR_TOL_REV)
 
 #: Outcome codes minted on the unified path, all through `outcome_detail`'s
 #: contract so a guard can match on the bare code.
-#:   REJECTED_HAND_SOURCE — the can-bridge refused the STREAMED latch at session
-#:   start. Fail-closed and distinct: with the hand still LEGACY every Setpoint
-#:   hand channel is DISCARDED by the firmware (counted, silent to the plan), so
-#:   the platform would fly the cycle with a dead hand.
-_OUTCOME_HAND_SOURCE = 'REJECTED_HAND_SOURCE'
+#:   R1: REJECTED_HAND_SOURCE is RETIRED — there is no `hand_source` latch to
+#:   negotiate at session start any more; the hand lane is unconditionally
+#:   active whenever a HAS_HAND frame is latched.
 #:   REJECTED_PLAN_SERVICE — trajectory/plan_cycle was unavailable or did not ack.
 #:   Distinct from an infeasible cycle: nothing was REFUSED, and the fix is a node
 #:   that is not running (or one whose solve overran) rather than a goal that
@@ -876,6 +874,32 @@ _OUTCOME_BEAT_TOO_SHORT = 'REJECTED_BEAT_TOO_SHORT'
 #: detail carries both refusals and the hold's own verdict, because whether the
 #: machine actually stopped is the single fact this path has to report.
 _OUTCOME_CHAIN_LOST = 'REJECTED_CHAIN_LOST'
+#: REJECTED_STROKE_ENGINE_RETIRED — the ONE physical fact behind every legacy
+#: (``unified_cycle`` false, or a bare ``Toss``, which has no such field) toss
+#: goal: the Platform stroke engine and its hand RPC (``set_hand_traj_cmd``)
+#: were deleted at skill-stack R1 (2026-09-11), so there is no firmware call
+#: left for the legacy per-cycle dispatch to make. Minted at goal ACCEPT —
+#: `_execute_toss` unconditionally, `_execute_toss_continuous` when
+#: `_unified_enabled` reads false — before a cycle exists, nothing is armed,
+#: and no per-goal state is installed. `_dispatch_toss` carries the SAME code
+#: as its own belt: `unified` is threaded through every caller, and if one
+#: ever reaches the dispatch seam with it false despite the accept gate, the
+#: seam refuses rather than lying OK. R1 (owner decision 4) hollows the FSM's
+#: other `if unified` branches in place rather than deleting them now — this
+#: refusal is what makes them unreachable — and R4 deletes the whole legacy
+#: FSM stack under tag `fsm-final`.
+_OUTCOME_STROKE_ENGINE_RETIRED = 'REJECTED_STROKE_ENGINE_RETIRED'
+
+
+def _stroke_engine_retired_detail() -> str:
+    """The one sentence every stroke-engine-retired refusal carries, verbatim,
+    so the three mint sites (`_execute_toss`, `_execute_toss_continuous`,
+    `_dispatch_toss`) cannot drift into three different explanations of the
+    same fact."""
+    return ('the Platform stroke engine and its hand RPC were deleted at '
+            'skill-stack R1 (2026-09-11); only unified_cycle=true sessions '
+            'can throw — the FSM legacy branch is unreachable until it is '
+            'deleted at R4')
 
 
 def _unified_chain_dwell_floor_s():
@@ -1114,7 +1138,8 @@ _HAND_STATE_STALE_S = 0.5
 # of the bottom park band reads as the throw stroke underway. Sits ABOVE the kind-1
 # smooth-move prelude's peak ascent — so a concurrent prime/retract ascent can never
 # fake release evidence. TWO figures, deliberately, because they are not
-# interchangeable (hand_stroke.smooth_move_peak_vel_rps / _bound_rps):
+# interchangeable (computed historically by the now-deleted hand_stroke.py's
+# smooth_move_peak_vel_rps / _bound_rps; the numbers below are carried over):
 #   * COMMANDED peak, what the firmware's quintic actually emits over the full
 #     9.9594 rev stroke: |Δ|·1.875/T = 24.63 rev/s (was 24.50 at 9.858). This is
 #     the figure a BENCH capture is scored against.
@@ -1404,13 +1429,8 @@ _TOSS_SOFT_CATCH_GAINS = {
     'vel_gain': float(hw.ODRIVE_HAND_VEL_GAIN),
     'vel_integrator_gain': float(hw.ODRIVE_HAND_VEL_INT_GAIN),
 }
-# teensy_bridge_node._svc_set_hand_traj raises these ValueErrors BEFORE any CAN
-# frame exists — an ack failure carrying one of them is a DEFINITIVE no-arm reject
-# (everything else is ambiguous: the ERR_TIMEOUT class may have transmitted).
-# String-coupled to the bridge's literals; the classification test drives the
-# bridge's real validation path so drift breaks the test, never silently.
-_BRIDGE_HAND_TRAJ_REJECT_PREFIXES = (
-    'Invalid event delay', 'Invalid event velocity', 'Invalid trajectory type')
+# R1: the legacy hand-traj dispatch this classified (set_hand_traj_cmd) is
+# retired outright — see _dispatch_toss.
 # Trace-only ball-evidence waiver (single-ball-toss plan, Phase-3 dry trace): a node
 # PARAMETER, never a goal field. Waives ONLY the possession-latch precondition
 # (REJECTED_NO_BALL) so a POWERED no-ball bench can emit the full post-CHECKING
@@ -2363,11 +2383,12 @@ class ReloadCoordinatorNode(Node):
         #   trajectory/go_to_pose — POSITIONING's profiled move to the nominated
         #     catch pose (validated through the single feasibility gate; the
         #     response's planned_duration_s anchors the timed arrival);
-        #   set_hand_traj_cmd     — THE throw dispatch (traj_type=0, once, ever);
         #   set_hand_gains        — soft catch gains at PREPARE (best-effort; see
         #     _TOSS_SOFT_CATCH_GAINS for why the toss owns them).
+        # R1: the legacy throw dispatch (set_hand_traj_cmd, traj_type=0) is
+        # retired — the unified plan's release is a committed knot on the
+        # streamed lane instead. See _dispatch_toss.
         self._go_to_pose_cli = self.create_client(GoToPose, 'trajectory/go_to_pose')
-        self._hand_traj_cli = self.create_client(SetHandTrajCmd, 'set_hand_traj_cmd')
         self._hand_gains_cli = self.create_client(SetHandGains, 'set_hand_gains')
         # Layer-1.5 COVARIATE ONLY (§ 3.10): the same get_platform_tilt the
         # orchestrator's levelling handler drives. Called ONLY from the session's
@@ -2451,39 +2472,29 @@ class ReloadCoordinatorNode(Node):
             ThrowAnnouncement, 'throw_announcements', 10)
         # ── UNIFIED 7-DoF cycle mode (plan Phase 4) ──────────────────────────
         # The session-scoped declaration catch_coordinator_node reads: while True,
-        # the plan owns the hand for the whole cycle and CCN must not arm a
-        # reactive catch stroke. It mirrors `catch/pretilt_hold` exactly — same
+        # the plan owns the platform reach for the whole cycle. It mirrors
+        # `catch/pretilt_hold` exactly — same
         # Bool, same latch shape, same "the publisher owns it, the reader never
         # resets it locally" discipline — and for the same reason: a topic is the
         # only way to tell a node that is not in this node's call graph.
         #
-        # Stale True fails SAFE here, and that is the opposite of pretilt_hold's
-        # degradation: a stale True means CCN declines to arm a hand stroke, i.e.
-        # the machine does LESS. A stale FALSE would be the hazard (a legacy arm
-        # dispatched into a STREAMED hand_source, refused by the firmware with the
-        # ball already in the air). The session cannot close that hazard by
-        # ordering — it never hands the latch back (see the terminal `finally`),
-        # so `catch/unified_mode` goes False with the firmware still STREAMED.
-        # Returning the latch is an operator action (plan § 5 precondition (c));
-        # a legacy session started before that is refused by the firmware
-        # (`ERR_HAND_SOURCE`), not by this flag.
+        # R1 (owner decision 3): catch_coordinator_node no longer arms any hand
+        # stroke, legacy or unified, so this flag no longer carries a
+        # hand-mastery hazard — it gates only the reactive PLATFORM path there.
         #
         # TRANSIENT_LOCAL depth 1 — LATCHED, and it is the one QoS choice here that
         # is load-bearing. This topic is published EXACTLY TWICE per session, both
         # times at a session boundary; a catch_coordinator that starts or restarts
         # between them (a crash-restart, a `ros2 run` for a bench probe, a late
-        # composition) would never see the True on a volatile connection and would
-        # go on arming legacy hand strokes into a STREAMED latch for the rest of the
-        # session — the exact hazard the comment above names, one process restart
-        # away. Latched, a late subscriber gets the standing declaration on
-        # connect. Matched at the reader (`catch_coordinator_node`): a
-        # VOLATILE subscription would silently receive nothing from a
+        # composition) would miss the True on a volatile connection for the rest
+        # of that session. Latched, a late subscriber gets the standing
+        # declaration on connect. Matched at the reader (`catch_coordinator_node`):
+        # a VOLATILE subscription would silently receive nothing from a
         # TRANSIENT_LOCAL publisher's history.
         self._unified_mode_pub = self.create_publisher(
             Bool, 'catch/unified_mode',
             QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
-        # Cycle planning + the can-bridge hand-mastery latch. Both are unified-only
-        # and neither is touched on any legacy path.
+        # Cycle planning. Unified-only; not touched on any legacy path.
         self._plan_cycle_cli = self.create_client(
             PlanCycle, 'trajectory/plan_cycle')
         # The FAIL-SAFE for a plan_cycle call that was DISPATCHED and never
@@ -2495,19 +2506,11 @@ class ReloadCoordinatorNode(Node):
         # same abort `tests/hardware/unified_cycle_bench.py` uses for the same
         # reason. See `_call_plan_cycle`.
         self._traj_hold_cli = self.create_client(Trigger, 'trajectory/hold')
-        self._hand_source_cli = self.create_client(SetBool, 'set_hand_source')
         # True for the whole of a unified session's try/finally — the SAME shape
         # and lifetime as `_toss_session_live`, and read by `_step_toss_sequence`
         # to route the three action seams. Resolved ONCE per goal (see
         # `_execute_toss_continuous`) so a session cannot change planners halfway.
         self._toss_unified_live = False
-        # True once the session-start VERIFICATION has confirmed the can-bridge is
-        # latched STREAMED — and it stays true through the terminal, because the
-        # session never hands the latch back (see the `finally`). Separate from
-        # `_toss_unified_live`, which is raised BEFORE the verification runs and is
-        # therefore also true on the refusal path: reporting "hand_source STREAMED"
-        # off that flag would state the one thing the refusal just disproved.
-        self._toss_hand_source_streamed = False
         # The release a STEADY window has already planned and that the NEXT cycle
         # will announce rather than re-plan. It spans a cycle boundary, so it is the
         # ONE piece of unified state that cannot live on `TossCycleState`; it is safe
@@ -3954,6 +3957,26 @@ class ReloadCoordinatorNode(Node):
     # ── Toss action (jugglebot/toss) ───────────────────────────────────────────
 
     def _execute_toss(self, goal_handle):
+        # R1 (owner decision 4): `Toss.action` has no `unified_cycle` field —
+        # a legacy single-toss goal has no path to a throw any more, so every
+        # goal on this action is refused here, before anything runs (no
+        # record opened, no per-goal state installed). See
+        # `_OUTCOME_STROKE_ENGINE_RETIRED`.
+        detail = _stroke_engine_retired_detail()
+        outcome = '{}({})'.format(_OUTCOME_STROKE_ENGINE_RETIRED, detail)
+        self.get_logger().error(
+            'Toss goal %s — refusing before anything runs.' % (outcome,))
+        result = Toss.Result()
+        result.success = False
+        result.outcome = outcome
+        result.catch_error_mm = float('nan')
+        result.achieved_flight_s = float('nan')
+        self._log_toss_outcome(result)
+        goal_handle.abort()
+        with self._lock:
+            self._goal_claimed = False
+        return result
+
         req = goal_handle.request
         catch_pose = (float(req.catch_position.x), float(req.catch_position.y),
                       float(req.catch_position.z))
@@ -4886,7 +4909,7 @@ class ReloadCoordinatorNode(Node):
 
     @staticmethod
     def _ilc_vel_trim_refusal(nominal_mps: float, trimmed_mps: float,
-                              flight_s: float, arm_window: bool = True) -> str:
+                              flight_s: float) -> str:
         """``''`` to APPLY the layer-3 speed trim, or the reason to drop it.
 
         THE apply-seam gate for the ``event_vel_trim`` channel (contradiction
@@ -4916,16 +4939,10 @@ class ReloadCoordinatorNode(Node):
            would stop being true of the outcome. A goal the machine cannot fly
            untrimmed is refused for its own reason, with the trim dropped.
 
-        ``arm_window`` is the C-HAND-3 carve-out, handed down from the session's
-        one unified resolution (False under unified). It matters HERE more than
-        anywhere: bound 7 refuses the whole SHORT half of the flight band, and it
-        refuses it from the NEGATIVE side of the trim first — measured, the
-        admissible negative headroom at the band floor T = 0.4949 s is exactly
-        +0.000 m/s. Charging it under unified, where no stroke engine is running on
-        that axis, therefore does not make layer 3 conservative: it makes it INERT
-        across the half of the band the carve-out exists to unlock, so an aim
-        artifact fitted there could never be applied. Default True keeps every
-        legacy caller bit-identical.
+        R1: the ``arm_window`` carve-out is retired along with the legacy
+        stroke engine it existed to except — ``throw_envelope.evaluate`` no
+        longer takes the parameter, and its bound now applies unconditionally
+        (there is no stroke engine left for it to be conservative about).
 
         Static and pure so it can be tested without a node.
         """
@@ -4934,12 +4951,10 @@ class ReloadCoordinatorNode(Node):
                     '(REJECTED_EVENT_VEL)'.format(
                         hw.TEENSY_TRAJ_MIN_EVENT_VEL_MPS,
                         hw.TEENSY_TRAJ_MAX_EVENT_VEL_MPS))
-        verdict = throw_envelope.evaluate(flight_s, trimmed_mps,
-                                          arm_window=arm_window)
+        verdict = throw_envelope.evaluate(flight_s, trimmed_mps)
         if not verdict.ok:
             return 'REJECTED_THROW_ENVELOPE({})'.format(verdict.message)
-        nominal = throw_envelope.evaluate(flight_s, nominal_mps,
-                                          arm_window=arm_window)
+        nominal = throw_envelope.evaluate(flight_s, nominal_mps)
         if not nominal.ok:
             return ('the UNTRIMMED goal is itself outside the throw envelope '
                     '({}) — layer 3 never decides whether a goal is flyable'
@@ -5292,16 +5307,10 @@ class ReloadCoordinatorNode(Node):
         # float the pre-Phase-2 expression produced.
         if event_vel and aim['ilc_vel_trim'] != 0.0:
             trimmed = event_vel * (1.0 + float(aim['ilc_vel_trim']))
-            # The C-HAND-3 carve-out reaches the APPLY seam, not just the CHECKING
-            # gate. `toss_sequencer` already drops the ARM_WINDOW bound under
-            # unified (there is no stroke engine on that axis to arm); charging it
-            # here as well would leave layer 3 inert across exactly the short half
-            # of the flight band the carve-out unlocks — the negative side of the
-            # trim is what bound 7 refuses first. Read from the session's ONE
-            # resolution, never re-derived.
-            refusal = self._ilc_vel_trim_refusal(
-                event_vel, trimmed, flight,
-                arm_window=not bool(self._toss_unified_live))
+            # R1: the ARM_WINDOW carve-out this used to pass through is retired
+            # with the legacy stroke engine — `_ilc_vel_trim_refusal` no longer
+            # takes it.
+            refusal = self._ilc_vel_trim_refusal(event_vel, trimmed, flight)
             if not refusal:
                 event_vel = trimmed
             else:
@@ -6215,6 +6224,10 @@ class ReloadCoordinatorNode(Node):
                 # still live, so a plan that never installs terminalises loudly.
                 state.unified_launch_pending = True
             else:
+                # Unreachable: the accept gate refuses every unified=False
+                # goal with REJECTED_STROKE_ENGINE_RETIRED before a cycle
+                # exists, so `unified` is always True here. R4 deletes this
+                # branch with the rest of the legacy FSM stack.
                 self._announce_toss(seq, state)
         elif decision.action == TOSS_ACTION_DISPATCH_THROW:
             outcome, message = self._dispatch_toss(seq, state, unified)
@@ -6230,6 +6243,10 @@ class ReloadCoordinatorNode(Node):
             # the catch, on one clock, so publishing a catch/dynamic_target here
             # would install a 6-channel reach over the 7-channel plan and drop the
             # hand track with the ball in the air.
+            #
+            # Unreachable for the same reason as TOSS_ACTION_ANNOUNCE's `else`
+            # above: the accept gate's REJECTED_STROKE_ENGINE_RETIRED refusal
+            # means `unified` is always True here. R4 deletes this branch too.
             if not unified:
                 self._publish_toss_reach(state)
         elif decision.action == TOSS_ACTION_STAY:
@@ -7230,9 +7247,9 @@ class ReloadCoordinatorNode(Node):
 
         **Once, not per branch.** The value decides which planner owns the hand for
         the whole session; re-reading it at each seam would let a mid-session config
-        reload put the legacy stroke engine and the streamed plan on the same axis,
-        which is precisely the dual-mastery class the firmware's ``hand_source``
-        latch exists to make structurally impossible. The single read is pinned by
+        reload put the legacy stroke engine and the streamed plan on the same axis
+        — a dual-mastery class R1 retires by deleting the legacy stroke engine
+        outright, but the single-read discipline stays. The single read is pinned by
         test, the way ``pipelined`` is.
         """
         return (bool(getattr(hw, 'JB_OP_UNIFIED_CYCLE_ENABLED', False))
@@ -7541,70 +7558,6 @@ class ReloadCoordinatorNode(Node):
                               float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2)))),
             lift_detail or 'not attempted')
 
-    #: What an operator has to do when :meth:`_set_hand_source` is refused, stated
-    #: once because the session start and the session terminal both quote it and
-    #: because the FIRST clause is the one nobody guesses.
-    #:
-    #: ``hand_source.cpp:60`` refuses ANY real transition while ``mpc_active`` is
-    #: set — "never swap mastery while the setpoint stream is armed" — and the
-    #: setpoint output is armed for the WHOLE of the ACTIVE state (the orchestrator
-    #: arms it on ACTIVE entry and is its sole caller, ``ARMING_CONTRACT.md``
-    #: § A2). So a session cannot perform the handover, in either direction: from
-    #: inside one, the only call that can return OK is the idempotent re-assert
-    #: (``hand_source.cpp:56``, which short-circuits above every gate). The latch
-    #: has to be moved while the wire is DISARMED — before ACTIVATE with the launch
-    #: up, or through ``hand_stream_bench.py --source-only`` with it down, which is
-    #: the order that file documents as "switch the latch and exit — no stream, no
-    #: arm".
-    _HAND_SOURCE_RECOVERY = (
-        'the firmware refuses a hand_source switch whenever the setpoint output '
-        'is armed (hand_source.cpp:60, mpc_active) — DISARM first '
-        '(/set_setpoint_output false, or deactivate), then '
-        '/set_hand_source, then re-arm')
-
-    #: The session TERMINAL's note about the latch, quoted from
-    #: :data:`_HAND_SOURCE_RECOVERY` so the two cannot drift.
-    #:
-    #: The session does not hand mastery back and cannot: the wire is armed for
-    #: the whole ACTIVE state, so a ``LEGACY_STROKE`` call from in here could only
-    #: be refused. Stating where the latch is left — and that moving it is an
-    #: OPERATOR action with the output disarmed — is the whole of what this layer
-    #: can honestly say about it.
-    _HAND_SOURCE_TERMINAL_NOTE = (
-        ' hand_source REMAINS STREAMED, where the operator set it — a session '
-        'cannot return it, because ' + _HAND_SOURCE_RECOVERY +
-        '. Two routes, both with the output disarmed: /set_hand_source false '
-        'after a disarm, or a can-bridge reboot (the board boots LEGACY_STROKE).')
-
-    def _set_hand_source(self, streamed: bool) -> tuple:
-        """Assert the can-bridge hand-mastery latch. Returns ``(ok, message)``.
-
-        The firmware is the single enforcement point (it accepts a switch only
-        while DISARMED, with the hand settled at rest on fresh telemetry), so this
-        is a forward-and-name call exactly like ``_arm_catch``.
-
-        **It asserts; it cannot switch.** See :data:`_HAND_SOURCE_RECOVERY`: from
-        inside a live session the wire is armed, so the only call that returns OK
-        is the idempotent re-assert of the latch's current state. That makes this a
-        VERIFICATION of a precondition the operator set before ACTIVATE — which is
-        exactly what the bridge's own arming path is written for (its
-        ack-freshness rule at ``_arm_setpoint_output_locked`` exists to serve
-        "switch to STREAMED, THEN arm").
-
-        A refusal at session start is therefore FATAL to the session, and for the
-        original reason: with the latch still LEGACY the firmware DISCARDS every
-        Setpoint hand channel — counted, but silent to the plan — so the platform
-        would fly a full cycle with a dead hand and a seated ball.
-        """
-        if not self._hand_source_cli.wait_for_service(timeout_sec=_SERVICE_WAIT_S):
-            return False, 'set_hand_source service unavailable'
-        req = SetBool.Request()
-        req.data = bool(streamed)
-        resp = self._wait_future(self._hand_source_cli.call_async(req))
-        if resp is None:
-            return False, 'set_hand_source ack timeout'
-        return bool(resp.success), str(resp.message)
-
     def _unified_cycle_request(self, mode, kind, *, period_s, throw_xy_mm,
                                catch_xy_mm, flight_s, catch_frac,
                                catch_vel_mm_s, lead_s=0.0,
@@ -7846,30 +7799,39 @@ class ReloadCoordinatorNode(Node):
         return (0.0, 0.0, -float(hw.GRAVITY_MMPS2) * float(flight_s) / 2.0)
 
     def _dispatch_toss(self, seq, state, unified: bool):
-        """THE dispatch seam. Legacy ⇒ the kind-0 hand RPC; unified ⇒ nothing.
+        """THE dispatch seam.
 
-        One helper rather than two call-site branches, so "no legacy hand command
-        while the ``hand_source`` latch is STREAMED" is a property of the DISPATCH
-        and cannot be lost by a future third call site. Under unified there is
-        nothing to dispatch: the release is already a committed knot on the plan the
-        emitter has been streaming since ``_tick_unified_launch`` installed it, and
-        the firmware would refuse a ``HAND_TRAJ_CMD`` anyway (``ERR_HAND_SOURCE``).
-        It reports ``OK`` because the FSM's tri-state asks "did the throw get
-        armed", and under unified the answer is yes — it was armed the moment the
-        plan was installed, which is strictly EARLIER and strictly more certain than
-        an ack that may lie.
+        R1 (owner decision 4): the legacy kind-0 hand RPC (set_hand_traj_cmd)
+        is retired outright — there is no firmware RPC left for it to call.
+        For a UNIFIED cycle there is nothing to dispatch: the release is
+        already a committed knot on the plan the emitter has been streaming
+        since ``_tick_unified_launch`` installed it. It reports ``OK`` because
+        the FSM's tri-state asks "did the throw get armed", and the answer is
+        yes — it was armed the moment the plan was installed, which is
+        strictly EARLIER and strictly more certain than an ack that may lie.
+
+        ``unified=False`` NEVER reports OK. The accept gates in
+        ``_execute_toss`` (unconditionally) and ``_execute_toss_continuous``
+        (via ``_unified_enabled``) refuse every legacy goal with
+        ``REJECTED_STROKE_ENGINE_RETIRED`` before a cycle exists, so this
+        branch should be unreachable in production — it exists as the seam's
+        own belt: if a caller ever threads ``unified=False`` in here anyway
+        (a legacy FSM path, owned by toss_sequencer/toss_session, that the
+        accept gate failed to cover), the seam refuses rather than lying that
+        a throw it never issued was armed.
         """
         if not unified:
-            return self._dispatch_toss_throw(seq, state)
+            return (THROW_DISPATCH_REJECTED,
+                    '{}({})'.format(_OUTCOME_STROKE_ENGINE_RETIRED,
+                                    _stroke_engine_retired_detail()))
         with self._lock:
-            # The release-evidence watches gate on this exactly as they do for the
-            # legacy dispatch: the hand telemetry rises as the streamed stroke
-            # executes, so `stroke_seen` fires from the same watch on the same
-            # channel — nothing about release EVIDENCE changes under unified.
+            # The release-evidence watches gate on this: the hand telemetry
+            # rises as the streamed stroke executes, so `stroke_seen` fires
+            # from the same watch on the same channel.
             state.throw_dispatched = True
         return (THROW_DISPATCH_OK,
-                'unified cycle plan installed — the release is a committed knot, '
-                'no hand RPC issued (hand_source is STREAMED)')
+                'unified cycle plan installed — the release is a committed '
+                'knot, no hand RPC issued')
 
     def _tick_unified_launch(self, seq, state, now: float) -> None:
         """Plan the LAUNCH, then announce it — ONCE per cycle, at the right instant.
@@ -9141,10 +9103,11 @@ class ReloadCoordinatorNode(Node):
 
         * ``catch/armed`` False FIRST — kept, and for its original reason: it stands
           catch_coordinator's prime-retry tick down before anything else happens;
-        * the HAND RETRACT — DROPPED. It is a ``smooth_move_hand`` (kind-3) dispatch,
-          and under a STREAMED ``hand_source`` the firmware refuses every legacy hand
-          command; worse, the hand is not parked at the top of a stroke here because
-          the plan brought it wherever the window ended. The plan IS the retract;
+        * the HAND RETRACT — DROPPED. It would be a ``smooth_move_hand`` (kind-3)
+          dispatch, but the hand is not parked at the top of a stroke here
+          because the plan brought it wherever the window ended, so a
+          retract-to-top would be wrong under unified regardless. The plan IS
+          the retract;
         * the arm-catch latch lower — kept (the latch is trajectory_node's, not the
           firmware's, and leaving it up would arm a reach on the next stray target);
         * ``go_home`` — DROPPED, the directive. The emitter's terminal hold already
@@ -9211,60 +9174,6 @@ class ReloadCoordinatorNode(Node):
         while rclpy.ok() and time.perf_counter() < deadline:
             time.sleep(min(TOSS_LOOP_PERIOD_S,
                            max(0.0, deadline - time.perf_counter())))
-
-    def _dispatch_toss_throw(self, seq, state=None):
-        """THE throw dispatch (set_hand_traj_cmd traj_type=0) — single-shot,
-        tri-state, NEVER retried (unlike the idempotent smooth-moves): an ambiguous
-        ack may have armed the stroke, and a re-dispatch re-packs a new wall_time /
-        replaces a live stroke / post-release clobbers the armed catch stroke on
-        the last-writer-wins queue. Returns (classification, message):
-
-          - 'rejected'  — service unavailable, or an ack failure carrying one of
-            the bridge's own validation ValueErrors (raised BEFORE any CAN frame —
-            a definitive no-arm);
-          - 'ok'        — ack success (may still be a lie; treated identically to
-            ambiguous downstream — only release EVIDENCE advances the FSM);
-          - 'ambiguous' — any other failure (the ERR_TIMEOUT class: the frame may
-            have transmitted) or a response timeout.
-
-        event_delay is recomputed from the ABSOLUTE scheduled release at dispatch
-        time (invariant to earlier stalls), shifted EARLY by the T0-measured
-        release latency (ships 0.0) while the announced landing stays un-shifted —
-        the BB pattern.
-
-        ``state`` is the cycle's :class:`TossCycleState` (None ⇒ the committed
-        slot); it carries the dispatch gate the release-evidence watches read."""
-        state = self._toss_committed if state is None else state
-        if not self._hand_traj_cli.wait_for_service(timeout_sec=_SERVICE_WAIT_S):
-            return (THROW_DISPATCH_REJECTED,
-                    'set_hand_traj_cmd service unavailable')
-        req = SetHandTrajCmd.Request()
-        req.traj_type = 0
-        req.event_delay = float(
-            seq.t_release - time.perf_counter()
-            - float(hw.JB_OP_TOSS_RELEASE_LATENCY_MS) / 1000.0)
-        req.event_vel = float(seq.event_vel_mps)
-        with self._lock:
-            # Before the call, not after: the frame may fire while we wait on the
-            # ack, and the release-stroke telemetry watch must already be armed.
-            state.throw_dispatched = True
-        resp = self._wait_future(self._hand_traj_cli.call_async(req))
-        if resp is None:
-            return THROW_DISPATCH_AMBIGUOUS, 'set_hand_traj_cmd ack timeout'
-        message = str(resp.message)
-        if bool(resp.success):
-            return THROW_DISPATCH_OK, message
-        return self._classify_hand_traj_reject(message), message
-
-    @staticmethod
-    def _classify_hand_traj_reject(message: str) -> str:
-        """Classify a failed set_hand_traj_cmd ack: the bridge's validation
-        ValueErrors mean no CAN frame ever existed ('rejected'); anything else may
-        have transmitted ('ambiguous'). Pinned against the bridge's REAL validation
-        path by test (no silently-drifting copies)."""
-        if str(message).startswith(_BRIDGE_HAND_TRAJ_REJECT_PREFIXES):
-            return THROW_DISPATCH_REJECTED
-        return THROW_DISPATCH_AMBIGUOUS
 
     def _publish_prime_hold(self, hold: bool):
         """Publish the catch/prime_hold suppression gate (see the publisher's
@@ -10204,8 +10113,8 @@ class ReloadCoordinatorNode(Node):
 
         **``unified`` selects the knob set, and the two barely overlap.** Under
         ``catch/unified_mode`` the catch is a set of knots on the cycle plan's own
-        hand channel: no ``HAND_TRAJ_CMD`` is dispatched (the firmware would refuse
-        one, ``ERR_HAND_SOURCE``), so ``catch_vel_scale``, the Teensy catcher's
+        hand channel: R1 retires the legacy ``HAND_TRAJ_CMD`` dispatch outright,
+        so ``catch_vel_scale``, the Teensy catcher's
         ``catch_vel_ratio`` and its ``catch_vel_hold_pct`` command NOTHING. The
         2026-09-06 sitting recorded all three anyway, so its rows declare a
         0.6 ratio and a 0.9 scale that no stroke ever used, and the knob that DID
@@ -10760,9 +10669,32 @@ class ReloadCoordinatorNode(Node):
         # SINGLE READ for exactly the reason `pipelined` is (see its argument
         # below): the value decides which planner owns the hand, and a session
         # that changed planners halfway would put the legacy stroke engine and
-        # the streamed plan on one axis — the dual-mastery class the firmware's
-        # `hand_source` latch exists to make structurally impossible.
+        # the streamed plan on one axis — a dual-mastery class R1 retires by
+        # deleting the legacy stroke engine outright, but the single-read
+        # discipline stays.
         unified = self._unified_enabled(req)
+        # ── R1 (owner decision 4), THE ONE MANDATORY GATE ───────────────────
+        # A `unified_cycle=false` session has no path to a throw any more: the
+        # Platform stroke engine and its hand RPC are retired outright (see
+        # `_OUTCOME_STROKE_ENGINE_RETIRED`). Refused HERE — after the goal's
+        # own numerics/dwell/num_throws are judged (those are input validation,
+        # not "anything running"; a wrong number is still the wrong number on
+        # a retired action) but before a single cycle is built, armed or
+        # commanded. Every AIM/BEAT gate below this line is UNIFIED-only
+        # reasoning, so it must never be reached with `unified` false.
+        if not unified:
+            detail = _stroke_engine_retired_detail()
+            outcome = '{}({})'.format(_OUTCOME_STROKE_ENGINE_RETIRED, detail)
+            self.get_logger().error(
+                'TossContinuous goal %s — refusing before a cycle is built, '
+                'armed or commanded.' % (outcome,))
+            self._fill_session_result(result, TossSessionResult(
+                success=False, outcome=outcome))
+            self._log_toss_session_outcome(result)
+            goal_handle.abort()
+            with self._lock:
+                self._goal_claimed = False
+            return result
         # ── AIM HONESTY, AT ACCEPTANCE (2026-09-07) ─────────────────────────
         # A DISPLACED `catch_position` on a unified goal is refused HERE — before
         # anything is armed, before the FSM's own displacement gate, and above all
@@ -10808,8 +10740,9 @@ class ReloadCoordinatorNode(Node):
                               'Phase-5 rung pending the aim-authority '
                               're-derivation against MAX_TILT_DEG; set '
                               'catch_position to the pre-throw xy '
-                              '({:.1f}, {:.1f}) mm, or run this goal with '
-                              'unified_cycle false'
+                              '({:.1f}, {:.1f}) mm — unified_cycle false is no '
+                              'longer an alternative (R1 retires the stroke '
+                              'engine outright, REJECTED_STROKE_ENGINE_RETIRED)'
                               .format(float(live_a[0]), float(live_a[1]))))
                     outcome = '{}({})'.format(_OUTCOME_UNIFIED_AIM, detail)
                     self.get_logger().error(
@@ -11009,26 +10942,16 @@ class ReloadCoordinatorNode(Node):
             self._toss_session_live = True
             self._toss_session_center_mm = None
             self._toss_session_armed = False
-            # ── S-UNIFIED ── The hand-mastery precondition, session-scoped.
+            # ── S-UNIFIED ── session-scoped unified-mode declaration.
             # Inside the `try` for the same reason `_toss_session_live` is: the
-            # `finally` is what lowers the declaration and states where the latch
-            # was left, so no failure between here and the loop can skip either.
+            # `finally` is what lowers the declaration, so no failure between
+            # here and the loop can skip it.
             #
-            # FIRST of everything the session does, and that ordering is the whole
-            # of what this node can do about the firmware's rule. Nothing the
-            # session arms has happened yet — no `arm_catch`, no PREPARE, no plan,
-            # no cycle — so this assertion is taken against the machine state the
-            # OPERATOR set up before ACTIVATE. It cannot itself flip the latch: the
-            # setpoint output is armed for the whole ACTIVE state and the firmware
-            # refuses a transition under it (see `_HAND_SOURCE_RECOVERY`), so a
-            # session that reaches here with the latch LEGACY is refused rather
-            # than "switched".
-            #
-            # The declaration comes SECOND: `catch/unified_mode` is what stops
-            # catch_coordinator arming a legacy stroke, and it must not go out
-            # before the firmware would refuse one anyway.
+            # R1 (owner decision 3): there is no `hand_source` latch left to
+            # assert — the hand lane is unconditionally active whenever a
+            # HAS_HAND frame is latched, so this precondition and its refusal
+            # path are retired outright.
             self._toss_unified_live = unified
-            self._toss_hand_source_streamed = False
             self._toss_unified_chain = None
             # The ring's liveness, per SESSION. A leftover True from a previous
             # goal would make this session's first teardown hold a plan that has
@@ -11038,25 +10961,6 @@ class ReloadCoordinatorNode(Node):
             self._toss_unified_extend = None
             self._toss_unified_chain_stop = ''
             if unified:
-                ok, why = self._set_hand_source(True)
-                if not ok:
-                    # FAIL CLOSED, with its own outcome. With the latch still
-                    # LEGACY the firmware DISCARDS every Setpoint hand channel —
-                    # counted, but invisible to the plan — so the platform would
-                    # fly the whole cycle with a dead hand and a seated ball.
-                    self.get_logger().error(
-                        'TossContinuous %s: %s — refusing the session before '
-                        'anything is armed or commanded. %s'
-                        % (_OUTCOME_HAND_SOURCE, why,
-                           self._HAND_SOURCE_RECOVERY))
-                    # `outcome_detail`'s shape: CODE(SUBCODE: detail), so a guard
-                    # can match on (code, subcode) rather than on the whole string.
-                    self._finish_session(
-                        result, session,
-                        '{}(REFUSED: {})'.format(_OUTCOME_HAND_SOURCE, why))
-                    goal_handle.abort()
-                    return result
-                self._toss_hand_source_streamed = True
                 self._publish_unified_mode(True)
                 # Pay the cold-solve cost HERE, where it is free. See
                 # `_unified_warm_planner` — without it cycle 1 of every session
@@ -11084,8 +10988,7 @@ class ReloadCoordinatorNode(Node):
                            _UNIFIED_BELOW_FLOOR))
                 self.get_logger().info(
                     'unified 7-DoF cycle mode ENGAGED for this session: '
-                    'hand_source STREAMED, catch/unified_mode raised, pipeline '
-                    'forced OFF, reactive catch arming suppressed')
+                    'catch/unified_mode raised, pipeline forced OFF')
             # The drain's only way to reach the session (see the attribute's
             # comment in __init__): a staged slot it discards has to be given
             # back to the session's slot bookkeeping, and six teardown ladders
@@ -11579,54 +11482,19 @@ class ReloadCoordinatorNode(Node):
             # true of the shipped rest-terminal shape and false of a ring.
             self._hold_live_unified_chain('session terminal')
             self._drain_pipeline_and_disarm()
-            # ── S-UNIFIED, the terminal ── The declaration comes DOWN; the
-            # hand-mastery latch is LEFT WHERE THE OPERATOR PUT IT.
+            # ── S-UNIFIED, the terminal ── The declaration comes DOWN.
             #
-            # NO HAND-BACK IS ATTEMPTED, and that is not a relaxation — it is the
-            # only honest reading of who owns the latch. `hand_source.cpp:60`
-            # refuses ANY real transition while `mpc_active` is set, and the
-            # setpoint output is armed for the WHOLE of the ACTIVE state (the
-            # orchestrator arms it on ACTIVE entry and is its sole caller,
-            # `ARMING_CONTRACT.md` § A2) — a TossContinuous session runs entirely
-            # inside that. So a session can no more hand the latch back than it
-            # could take it: the STREAMED call at session start is a fail-closed
-            # VERIFICATION of a precondition set while disarmed (row 19(c) of the
-            # bench runbook, `hand_stream_bench.py --source-only`), and a
-            # LEGACY_STROKE call here could only ever be refused.
-            #
-            # It USED TO BE ATTEMPTED, and the refusal replaced the session
-            # terminal with `REJECTED_HAND_SOURCE(STUCK_STREAMED: …)`. That is
-            # wrong twice over: the latch is exactly where the operator left it
-            # (nothing is stuck), and since the refusal is the EXPECTED answer
-            # while the wire is armed, every successful session ended as a
-            # rejection with `success=False` — an alarm that fires on the happy
-            # path is an alarm the operator learns to read past.
-            #
-            # What replaces it is one INFO line and a note on the result: the
-            # latch is still STREAMED, and returning it is an operator action
-            # with the setpoint output disarmed.
-            #
-            # The DECLARATION still comes down, and unconditionally on
-            # `_toss_unified_live` rather than on `unified`, so it covers every
-            # way a session can end including the hand-source refusal above. A
-            # stale `catch/unified_mode` True only makes catch_coordinator do
-            # LESS (it declines to arm), but "less" is still not what a legacy
-            # goal needs.
+            # R1 (owner decision 3): there is no `hand_source` latch to hand
+            # back or note the position of — the hand lane is unconditionally
+            # active whenever a HAS_HAND frame is latched. The declaration
+            # still comes down unconditionally on `_toss_unified_live` rather
+            # than on `unified`, so it covers every way a session can end.
             if self._toss_unified_live:
-                # The STREAMED sentence is gated on the VERIFICATION, not on the
-                # session being unified: on the refusal path above the latch is
-                # whatever the bridge said no about, and "REMAINS STREAMED" would
-                # then state the one thing the refusal disproved.
                 self.get_logger().info(
                     'unified 7-DoF cycle mode DISENGAGED: catch/unified_mode '
-                    'lowered.%s'
-                    % (self._HAND_SOURCE_TERMINAL_NOTE
-                       if self._toss_hand_source_streamed else '',))
+                    'lowered.')
                 self._publish_unified_mode(False)
             self._toss_unified_live = False
-            # AFTER the session outcome line, which reads it (`_finish_session`
-            # runs inside the `try`, this `finally` after it).
-            self._toss_hand_source_streamed = False
             # Already cleared by `_hold_live_unified_chain` above; restated here
             # only so a future reader auditing "what does the session terminal
             # reset" finds the whole set in one place.
@@ -12565,13 +12433,6 @@ class ReloadCoordinatorNode(Node):
             parts.append(f'dwell {min(dwells):.2f}-{max(dwells):.2f} s')
         if int(getattr(result, 'reloads_used', 0) or 0):
             parts.append(f'reloads {int(result.reloads_used)}')
-        # The latch the session leaves behind, carried in the ONE line an operator
-        # reads at the end of a goal. APPENDED to the stats, never folded into
-        # `result.outcome`: the latch is a machine-state FACT, not a verdict on
-        # the session, and putting it in the outcome would turn a clean COMPLETED
-        # into something every guard matching on the bare code has to re-learn.
-        if self._toss_hand_source_streamed:
-            parts.append('hand_source STREAMED')
         line = (f'TossContinuous {result.outcome} ({", ".join(parts)}); '
                 f'cycles: {list(result.per_cycle_outcomes)}')
         if result.success:

@@ -3,19 +3,16 @@
 Both frames exist because of what the 2026-08-01 ``ERR_TIMEOUT`` recount could
 NOT establish (``logbook/2026-08-01-err-timeout-recount.md``).
 
-``MsgType.BRIDGE_TX_DIAG`` (0x8D) carries two things the host could never see:
-
-* **per-bus TX pressure.** ``FlexCAN_T4::write()`` on the overload the bridge
-  uses returns 1 or -1 and never 0, and -1 means the frame went into the 64-slot
-  software TX queue rather than a mailbox — a DEFERRAL of ~0.1-1 ms, not a drop.
-  That single fact is what makes ``hand_ops`` returning ``ERR_TIMEOUT`` and
-  ``catch_coordinator``'s "frames were observed transmitted after a failed ack"
-  compatible instead of contradictory, so the row's job is to report deferral
-  pressure honestly rather than to look like a loss count.
-* **per-stage hand attribution.** ``hand_traj_cmd`` has five failure exits and
-  THREE of them return an identical bare ``ERR_TIMEOUT``; the recount therefore
-  knew the arm ack failed about half the time (139 of 266 arm dispatches
-  pooled across 16 sessions) but not which CAN send refused.
+``MsgType.BRIDGE_TX_DIAG`` (0x8D) carries **per-bus TX pressure**:
+``FlexCAN_T4::write()`` on the overload the bridge uses returns 1 or -1 and
+never 0, and -1 means the frame went into the 64-slot software TX queue
+rather than a mailbox — a DEFERRAL of ~0.1-1 ms, not a drop, so the row's job
+is to report deferral pressure honestly rather than to look like a loss
+count. It also used to carry a **per-stage hand attribution** tally
+(``hand_traj_cmd`` had five failure exits, three of which returned an
+identical bare ``ERR_TIMEOUT``) — that tally was removed at PROTOCOL_VERSION 7
+(2026-09-11, skill-stack R1) with the ``hand_ops`` request/ack conduit it
+measured.
 
 ``MsgType.BRIDGE_IDENTITY`` (0x8E) puts the can-bridge's ``FW_VERSION`` on the
 wire for the first time — until now it reached only the USB serial boot banner,
@@ -76,7 +73,7 @@ def _send_diag(teensy, node, **kw):
     # match a cached frame from a previous _send_diag in the same test.
     assert _wait_until(
         lambda: node._latest_bridge_tx_diag is not None
-        and int(node._latest_bridge_tx_diag.hand_calls) == int(d.hand_calls)
+        and int(node._latest_bridge_tx_diag.tx_q_hwm_jb) == int(d.tx_q_hwm_jb)
         and int(node._latest_bridge_tx_diag.tx_deferred_jb) == int(d.tx_deferred_jb))
     return d
 
@@ -100,48 +97,17 @@ def test_bridge_tx_diag_row_renders_every_counter():
 
     Distinct non-zero values per field on purpose. A uniform payload would still
     "look plausible" with two fields transposed, and the whole point of this row
-    is to say WHICH bus and WHICH send stage — a jb/cone swap or a pre1/pre2 swap
-    would send the next bench session after the wrong thing entirely.
+    is to say WHICH bus a jb/cone swap would send the next bench session after
+    the wrong thing entirely.
     """
     teensy, client, node = _node()
     try:
         _send_diag(teensy, node,
                    tx_deferred_jb=11, tx_deferred_bb=22, tx_deferred_cone=33,
-                   tx_q_hwm_jb=44, tx_q_hwm_bb=55, tx_q_hwm_cone=64,
-                   hand_calls=100, hand_rej_homing=1, hand_bus_down=2,
-                   hand_pre1_fail=3, hand_pre2_fail=4, hand_traj_fail=5)
+                   tx_q_hwm_jb=44, tx_q_hwm_bb=55, tx_q_hwm_cone=64)
         row = _link_kv(node)['bridge_tx_diag']
         assert 'defer jb=11 bb=22 cone=33' in row
         assert 'txq jb=44 bb=55 cone=64' in row
-        assert 'calls=100' in row
-        assert 'rej=1' in row and 'busdown=2' in row
-        assert 'pre1=3' in row and 'pre2=4' in row and 'traj=5' in row
-    finally:
-        _teardown(teensy, client, node)
-
-
-def test_bridge_tx_diag_derives_ok_from_the_failure_classes():
-    """``ok`` is arithmetic, not a wire field.
-
-    The firmware counts ``hand_calls`` at function entry and one counter per
-    failure exit; the success count is the remainder. Deriving it here rather
-    than adding a seventh wire field means the row is self-checking — if the
-    firmware ever stopped counting an exit, ``ok`` would silently inflate and
-    that is visible, whereas a separately-counted ``ok`` could disagree with the
-    others without anything noticing.
-    """
-    teensy, client, node = _node()
-    try:
-        _send_diag(teensy, node, hand_calls=51, hand_rej_homing=0,
-                   hand_bus_down=0, hand_pre1_fail=10, hand_pre2_fail=10,
-                   hand_traj_fail=10)
-        assert 'ok=21' in _link_kv(node)['bridge_tx_diag']
-
-        # Every call failed: ok must reach exactly 0, not go negative or wrap.
-        _send_diag(teensy, node, tx_deferred_jb=1, hand_calls=4,
-                   hand_rej_homing=1, hand_bus_down=1, hand_pre1_fail=1,
-                   hand_pre2_fail=0, hand_traj_fail=1)
-        assert 'ok=0' in _link_kv(node)['bridge_tx_diag']
     finally:
         _teardown(teensy, client, node)
 
@@ -151,8 +117,7 @@ def test_bridge_tx_diag_never_seen_is_explicit_not_silent():
 
     This is the steady state against any bridge older than FW 9, so it must be
     unmistakable. A vanished row or a row of zeros would read as "no TX
-    pressure and no hand failures" — the exact false negative this instrument
-    exists to prevent.
+    pressure" — the exact false negative this instrument exists to prevent.
     """
     teensy, client, node = _node()
     try:
@@ -163,7 +128,6 @@ def test_bridge_tx_diag_never_seen_is_explicit_not_silent():
         # Explicitly NOT the all-zeros rendering, which is what a healthy FW 9
         # bridge looks like; never-seen must not impersonate it.
         assert 'defer' not in kv['bridge_tx_diag']
-        assert 'calls=' not in kv['bridge_tx_diag']
     finally:
         _teardown(teensy, client, node)
 
@@ -180,7 +144,7 @@ def test_bridge_tx_diag_survives_a_malformed_frame():
     teensy, client, node = _node()
     try:
         teensy.send_to_jetson(int(MsgType.BRIDGE_TX_DIAG), b'\x01\x02\x03')
-        _send_diag(teensy, node, tx_deferred_jb=7, hand_calls=9)
+        _send_diag(teensy, node, tx_deferred_jb=7, tx_q_hwm_jb=1)
         assert 'defer jb=7' in _link_kv(node)['bridge_tx_diag']
     finally:
         _teardown(teensy, client, node)

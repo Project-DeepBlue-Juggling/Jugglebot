@@ -113,8 +113,9 @@ class FakeTeensy:
 
     def send_heartbeat_t2j(self, link_state: int = int(p.LinkState.UP), fault_state: int = 0,
                            flags: int = 0) -> None:
-        # `flags` (default 0) lets tests drive HeartbeatT2J flag bits — e.g.
-        # bit 6 HAND_SOURCE_STREAMED (0x40) for the FW 17 arm-fold tests.
+        # `flags` (default 0) lets tests drive HeartbeatT2J flag bits (e.g. bit3
+        # MPC_ACTIVE). Bit 6 (HAND_SOURCE_STREAMED, the FW 17 hand-mastery
+        # latch) was retired at PROTOCOL_VERSION 7 (2026-09-11, skill-stack R1).
         hb = p.HeartbeatT2J(
             t_teensy_us=int(time.time() * 1_000_000),
             link_state=link_state,

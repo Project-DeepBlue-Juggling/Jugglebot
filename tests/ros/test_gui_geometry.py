@@ -308,7 +308,10 @@ class TestChartUnitConstants:
     """
 
     def test_hand_mm_per_rev(self, yaml_config, js_source):
-        expected = _mm_per_rev_from_yaml(yaml_config['teensy_trajectory'])
+        """R1 (2026-09-11): the hand's gain is MEASURED directly
+        (jugglebot_geometry.hand_mm_per_rev), not derived from a spool
+        radius/gain-factor pair (that pair is deleted; only BB still has one)."""
+        expected = yaml_config['jugglebot_geometry']['hand_mm_per_rev']
         js_val = _extract_js_number(js_source, 'HAND_MM_PER_REV')
         assert js_val == pytest.approx(expected, rel=1e-6)
 
@@ -355,17 +358,21 @@ class TestChartUnitConstants:
         assert 0.0 < span_rev < 0.25
 
     def test_hand_gain_spans_the_physical_stroke(self, yaml_config, js_source):
-        """Sanity: hard stop x mm/rev must land inside the physical stroke.
+        """Sanity: hard stop x mm/rev, plus the homing offset above the true
+        bottom stop, must reproduce the measured stop-to-stop span (352.0 mm,
+        R1 2026-09-11 — see jugglebot_geometry.hand_mm_per_rev's comment).
 
-        10.701 rev x 31.63 mm/rev = 338.4 mm against a 344.75 mm stroke (FW 18,
-        2026-09-08; was 10.8 rev / 341.6 mm) — a wrong-axis factor (the leg's
-        70.5 mm/rev) would give 762 mm and fail.
+        NOT checked against jugglebot_geometry.hand_stroke_mm (344.75): that
+        key is computed with the pre-correction gain and deliberately not
+        re-based at R1 (plans/archived/hand-geometry-correction.md § D2, an
+        R2 sim item) — a wrong-axis factor (the leg's 70.5 mm/rev) would blow
+        the 352 mm target by 2x+ and still fail this bound.
         """
         mm_per_rev = _extract_js_number(js_source, 'HAND_MM_PER_REV')
         hard_stop = yaml_config['jugglebot_geometry']['hand_motor_hard_stop_revs']
-        stroke = yaml_config['jugglebot_geometry']['hand_stroke_mm']
-        travel = hard_stop * mm_per_rev
-        assert 0.9 * stroke < travel <= stroke
+        homing_offset = abs(yaml_config['jugglebot_homing']['hand_abs_pos_rev'])
+        travel = (hard_stop + homing_offset) * mm_per_rev
+        assert travel == pytest.approx(352.0, abs=1.0)
 
 
 # ---- Generated-copy identity ----

@@ -1,7 +1,9 @@
 """Tests for hand catch trajectory generator (sim/hand/trajectory.py).
 
-Validates that the Python port matches the Teensy Trajectory.h math for
-buildCatch() and makeSmoothMove().
+Validates the catch and smooth-move profiles the MuJoCo hand runs.  These
+were a port of the Platform Teensy's ``Trajectory.h``; that firmware was
+deleted at skill-stack R1 (2026-09-11), so this module is now the sole
+implementation rather than a mirror, and these tests are its contract.
 """
 
 from __future__ import annotations
@@ -255,9 +257,9 @@ class TestSmoothMove:
 # plans/archived/hand-command-continuity.md Phase 4.  The firmware seeded every
 # smooth move v = a = 0 from current_hand_position while current_hand_velocity
 # sat declared and unread, so any command landing while the hand moved commanded
-# a VELOCITY STEP.  These tests are the gate: they run in the sim mirror, and
-# tests/firmware/test_hand_smooth_move_xref.py pins the mirror against the
-# shipped Trajectory.h.
+# a VELOCITY STEP.  These tests are the gate.  (Until 2026-09-11 a second gate,
+# tests/firmware/test_hand_smooth_move_xref.py, pinned this code against the
+# shipped Trajectory.h; both died with the stroke engine at Platform FW 7.)
 
 class TestQuinticShapeIdentities:
     """The two fixed shapes the profile decomposes into, and their landmarks.
@@ -511,9 +513,11 @@ class TestSmoothMoveExcursion:
         # (metal contact, operator-measured); this mirrored 11.1 before.
         # Corrected again FW 18 (2026-09-08): re-measured at 10.701 rev.
         assert HAND_MOTOR_HARD_STOP_REVS == 10.701
-        assert rev_to_mm(HAND_MOTOR_HARD_STOP_REVS) == pytest.approx(338.46,
+        # 338.46 mm at the pre-R1 gain; 348.50 mm at the measured gain (R1,
+        # 2026-09-11: hand_mm_per_rev 32.567 — the stop is 10.701 rev either way).
+        assert rev_to_mm(HAND_MOTOR_HARD_STOP_REVS) == pytest.approx(348.50,
                                                                        abs=0.01)
-        assert mm_to_rev(338.46) == pytest.approx(10.701, abs=1e-3)
+        assert mm_to_rev(348.50) == pytest.approx(10.701, abs=1e-3)
         # the inset is NOT part of the mapping
         assert mm_to_rev(HAND_STROKE_M * 1000.0 - 2 * STROKE_MARGIN_M * 1000.0) \
             == pytest.approx(_X3_REV, abs=1e-9)
@@ -697,7 +701,10 @@ class TestSmoothMoveBranches:
         assert k == pytest.approx(0.0077832, rel=1e-4)
         v_top = math.sqrt((_CEIL_REV - _X3_REV) / k)
         v_mid = math.sqrt((HAND_MOTOR_HARD_STOP_REVS - 7.7004) / k)
-        assert v_top == pytest.approx(8.34, abs=0.05)
+        # 8.34 rev/s pre-R1 (x3 9.959 under the fudge gain); 10.32 at the measured
+        # gain (x3 9.672, so 0.83 rev of headroom under the 10.501 clip instead
+        # of 0.54).  v_mid and the 19.95 cap do not move with the gain.
+        assert v_top == pytest.approx(10.32, abs=0.05)
         assert v_mid == pytest.approx(19.63, abs=0.05)
         # and the boundary is real: just below fits, just above does not
         assert plan_smooth_move(_X3_REV, _X3_REV, v_top - 0.3).velocity_continuous

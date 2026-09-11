@@ -148,7 +148,7 @@ def test_v6_decode_rejects_a_version5_frame():
     # checked before the CRC), and total: EVERY frame from a v5 peer dies here.
     frame = bytearray(p.encode_frame(int(p.MsgType.SETPOINT), 3,
                                      p.Setpoint().pack()))
-    assert frame[2] == p.PROTOCOL_VERSION == 6
+    assert frame[2] == p.PROTOCOL_VERSION == 7
     frame[2] = 5
     body = bytes(frame[:-2])
     frame[-2:] = struct.pack('<H', p.crc16_ccitt(body))   # valid CRC, old version
@@ -329,7 +329,7 @@ def test_clock_diag_is_additive_protocol_version_unchanged():
     assert p.PROFILE_SIZE == 76
     assert p.HEARTBEAT_T2J_SIZE == 73
     assert p.LEG_CMD_SIZE == 56
-    assert p.BRIDGE_TX_DIAG_SIZE == 42
+    assert p.BRIDGE_TX_DIAG_SIZE == 18   # 42 → 18 at R1: the hand_ops per-stage counters left the struct
     assert p.BRIDGE_IDENTITY_SIZE == 3
 
 
@@ -507,7 +507,7 @@ def test_cache_diag_is_additive_protocol_version_unchanged():
     assert p.PROFILE_SIZE == 76
     assert p.HEARTBEAT_T2J_SIZE == 73
     assert p.LEG_CMD_SIZE == 56
-    assert p.BRIDGE_TX_DIAG_SIZE == 42
+    assert p.BRIDGE_TX_DIAG_SIZE == 18   # 42 → 18 at R1: the hand_ops per-stage counters left the struct
     assert p.BRIDGE_IDENTITY_SIZE == 3
 
 
@@ -700,7 +700,7 @@ def test_ring_diag_is_additive_protocol_version_unchanged():
     assert p.PROFILE_SIZE == 76
     assert p.HEARTBEAT_T2J_SIZE == 73
     assert p.LEG_CMD_SIZE == 56
-    assert p.BRIDGE_TX_DIAG_SIZE == 42
+    assert p.BRIDGE_TX_DIAG_SIZE == 18   # 42 → 18 at R1: the hand_ops per-stage counters left the struct
     assert p.BRIDGE_IDENTITY_SIZE == 3
 
 

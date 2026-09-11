@@ -116,7 +116,7 @@ def _hand_rev_for_cup_z(cup_z_mm: float) -> float:
     """
     cfg = cr.RealizeConfig()
     slider_mm = float(cup_z_mm) - cfg.cup_z_base_mm
-    return (slider_mm - cfg.slider_rev_zero_mm) / 1000.0 * cr.LINEAR_GAIN_REV_PER_M
+    return (slider_mm - cfg.slider_rev_zero_mm) / 1000.0 * cr.HAND_REV_PER_M
 
 
 _REST_HAND_REV = _hand_rev_for_cup_z(_REST_CUP_Z_MM)

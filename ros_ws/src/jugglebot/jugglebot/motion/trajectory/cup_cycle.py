@@ -107,7 +107,7 @@ Units are SI (m, s) throughout — the ballistics are natural in SI and this
 mirrors the sim planner and Kai Ploeger's original. Callers in the mm-based
 trajectory stack convert at the boundary.
 
-Pure Python + numpy, plus the package's own ``hand_stroke`` for the slider
+Pure Python + numpy, plus the generated ``hardware_config`` for the slider
 gain. No ROS2, no repo-root / ``controller`` / ``sim`` imports.
 """
 
@@ -118,10 +118,10 @@ from typing import Optional, Sequence
 
 import numpy as np
 
-from jugglebot.motion.trajectory.hand_stroke import (
-    HAND_HOMED_REST_FLOOR_REV,
-    LINEAR_GAIN_REV_PER_M,
-)
+import jugglebot.hardware_config as hw
+
+HAND_HOMED_REST_FLOOR_REV = float(hw.HAND_HOMED_REST_FLOOR_REV)
+HAND_REV_PER_M = float(hw.HAND_REV_PER_M)
 
 #: Ballistics gravity — the SAME value the sim planner uses, so the ported
 #: take-off velocities are bit-comparable. NOT the tracker's 9.81.
@@ -132,17 +132,15 @@ GRAVITY = np.array([0.0, 0.0, -9.806])
 HAND_ACC_LIMIT_RPS2 = 3500.0
 
 #: Default ``a_hand_max`` for the catch runway (m/s²) ≈ 110.70 — the hand
-#: acceleration limit converted through the package's existing slider gain
-#: (``hand_stroke.LINEAR_GAIN_REV_PER_M``, derived from the firmware spool
-#: geometry and equal to the generated ``TEENSY_LINEAR_GAIN``). Imported rather
-#: than restated: a second spelling of the same 31.617 rev/m is a number that
-#: drifts, and ``hand_stroke`` is already the module every other consumer of the
-#: gain reaches for.
-HAND_MAX_DECEL_MPS2 = HAND_ACC_LIMIT_RPS2 / LINEAR_GAIN_REV_PER_M
+#: acceleration limit converted through the measured hand geometry
+#: (``hw.HAND_REV_PER_M``, derived from ``jugglebot_geometry.hand_mm_per_rev`` —
+#: two owner readings, 2026-09-06/09-11, agreeing to 0.01 %). Imported rather
+#: than restated: a second spelling of the same gain is a number that drifts.
+HAND_MAX_DECEL_MPS2 = HAND_ACC_LIMIT_RPS2 / HAND_REV_PER_M
 
 #: How far BELOW the hand's homed zero a parked hand legitimately rests, as cup
 #: travel (m) — the firmware's settled-at-retract lower edge
-#: (:data:`hand_stroke.HAND_HOMED_REST_FLOOR_REV`, −0.20 rev) through the same
+#: (:data:`hw.HAND_HOMED_REST_FLOOR_REV`, −0.20 rev) through the same
 #: slider gain used above. **6.326 mm.**
 #:
 #: Imported and converted rather than restated: this module used to carry the
@@ -153,7 +151,7 @@ HAND_MAX_DECEL_MPS2 = HAND_ACC_LIMIT_RPS2 / LINEAR_GAIN_REV_PER_M
 #: 2026-09-06 sitting refused three rungs deep on that one fact being unspelled
 #: in a third place (``unified_cycle``'s settle site); one canonical constant is
 #: the fix for that class.
-REST_FLOOR_BELOW_HAND_ZERO_M = abs(HAND_HOMED_REST_FLOOR_REV) / LINEAR_GAIN_REV_PER_M
+REST_FLOOR_BELOW_HAND_ZERO_M = abs(HAND_HOMED_REST_FLOOR_REV) / HAND_REV_PER_M
 
 #: How far OUTSIDE the cup z box a window's own SEED may sit (m) before
 #: :func:`_seed_relaxed_z_box` refuses instead of absorbing it. 20 mm.

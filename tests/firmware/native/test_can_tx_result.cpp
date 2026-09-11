@@ -93,7 +93,7 @@ TEST_CASE("the old bool is exactly `not FAILED`, for every write() return") {
 // ── 3. The census class vocabulary ───────────────────────────────────────────
 
 TEST_CASE("every TxCls is distinct and inside the census array") {
-  const uint8_t all[] = {TxCls::POLLER, TxCls::LEGS, TxCls::HAND, TxCls::RPC,
+  const uint8_t all[] = {TxCls::POLLER, TxCls::LEGS, TxCls::RPC,
                          TxCls::SAFETY, TxCls::TIMESYNC, TxCls::OTHER};
   const size_t n = sizeof(all) / sizeof(all[0]);
   CHECK(n == (size_t)TxCls::COUNT);          // the vocabulary is complete

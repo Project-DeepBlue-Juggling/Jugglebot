@@ -19,7 +19,7 @@ The hand pair (``hand_vel_limit_rps`` / ``hand_vel_ceiling_rps`` and
 ``logbook/2026-08-30-unified-7dof-planner-phase0-probes.md`` decision 4) is the
 SAME shape for the same reason: a raise has to be bounded by something the YAML
 pins, or "ramp the limit" becomes "there is no envelope". Units are hand MOTOR
-revs, matching the firmware's homed frame and everything in ``hand_stroke.py``.
+revs, matching the firmware's homed frame used throughout this package.
 ``feasibility.validate_cycle`` is the enforcement point on a ``CyclePlan``'s
 7th channel.
 

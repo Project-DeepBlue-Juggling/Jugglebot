@@ -28,9 +28,9 @@
 # state, RAISES the trajectory/arm_catch latch and confirms it, then publishes a
 # self-ThrowAnnouncement (thrower_name='jugglebot', predicted landing = the nominated
 # catch) so the existing correlation → catch path closes the loop unchanged
-# (PREPARING); then dispatches the hand stroke (SetHandTrajCmd traj_type=0) through
-# the telemetry-verified ladder — the hand ack lies ~59% both ways, so a dispatch is
-# never blind-re-sent (THROWING). In flight the platform holds open-loop at the
+# (PREPARING); then hands release timing to the hand lane, which is the one
+# master post-R1 (no `hand_source` latch, no dispatch race — the hand lane is
+# always active while a HAS_HAND frame is latched) (THROWING). In flight the platform holds open-loop at the
 # pre-positioned pose (live tracking never moves it); hand-stroke catch timing stays
 # tracker-driven through catch_coordinator's latch-gated arm, exactly the reload path.
 # In-flight cancellation is honoured at the next phase boundary — aborting a catch

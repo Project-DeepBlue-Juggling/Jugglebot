@@ -1,11 +1,13 @@
 """Contract C-HAND-2 — the throw's post-release deceleration feedforward.
 
-Normative statement: ``ros_ws/docs/hand_decel_feedforward.md``.
-Enforcement point: ``Teensy_code_platform/Trajectory.h::throwDecelToTorque``, consumed by
-exactly one caller (``buildThrow``'s ``torA[2]``), mirrored in
-``sim/hand/trajectory.py``.
-Firmware cross-reference (compiles and runs the shipped header):
-``tests/firmware/test_hand_throw_decel_xref.py``.
+Normative statement: RETIRED 2026-09-11 (skill-stack R1) together with its
+enforcement point, ``Teensy_code_platform/Trajectory.h::throwDecelToTorque``,
+which was deleted when the Platform Teensy stopped writing axis 6 (I-FW-15).
+The measurements and the one-sided-safety fact survive at
+``ros_ws/docs/hand_throw_envelope.md`` § *Surviving measurements*.  What this
+file still pins is the SIM mirror, ``sim/hand/trajectory.py``, which the
+MuJoCo throw path continues to run.  The firmware cross-reference
+(``tests/firmware/test_hand_throw_decel_xref.py``) went with the header.
 
 WHAT THIS FILE IS FOR
 ---------------------
@@ -56,8 +58,7 @@ way of getting this wrong:
    **No new constant was landed, deliberately**: the reconciling measurement is
    the rev->mm gain taken statically, and each candidate value costs a Platform
    Teensy flash (Arduino IDE; ``pio`` is CAN-mute) plus a re-validation ladder.
-   See ``ros_ws/docs/hand_decel_feedforward.md`` § *The re-derivation on the
-   UNCLAMPED drive*.
+   See ``ros_ws/docs/hand_throw_envelope.md`` § *Surviving measurements*.
 
    So ``test_declared_inertia_cannot_over_brake`` still PASSES against
    ``_MEASURED_REFLECTED_INERTIA_MIN_KGM2``, and **that pass is a regression
@@ -146,6 +147,15 @@ _HISTORICAL_FLIGHT_CEILING_S = 1.10
 
 _GRAVITY = 9.81
 
+# R1 (2026-09-11): throw_envelope.MIN_FLIGHT_TIME_S (re-exported by
+# toss_sequencer as FLIGHT_TIME_MIN_S) collapsed to the search bracket (0.05 s)
+# when ARM_WINDOW died with the stroke engine.  Below the wire band's floor
+# (TEENSY_TRAJ_MIN_EVENT_VEL_MPS 0.3 m/s ⇒ T = 2v/g = 0.0612 s) the mirror CLAMPS
+# the release speed, so the algebraic identities below are only meaningful from
+# the wire floor up.  R2's admissible sweep owns the real floor.
+FLIGHT_TIME_MIN_S = max(FLIGHT_TIME_MIN_S,
+                        2.0 * float(hw.TEENSY_TRAJ_MIN_EVENT_VEL_MPS) / _GRAVITY)
+
 
 def _v_for_flight(T: float) -> float:
     """Commanded release speed for a flight time (ballistic, up and back)."""
@@ -169,21 +179,29 @@ def test_legacy_conversion_implies_a_reflected_inertia_below_the_load_alone():
     and in the *helpful* direction, which is exactly why it hid the first.
     """
     implied = mirror.LEGACY_IMPLIED_INERTIA_KGM2
-    assert implied == pytest.approx(7.3695e-6, rel=1e-4)
+    # 7.3695e-6 at the pre-R1 gain (31.617 rev/m); 7.5881e-6 at the measured
+    # gain (30.706, R1 2026-09-11) — the spool radius in the legacy conversion
+    # is the spool's, the gain is the measured one, so the implied J moved 3 %.
+    assert implied == pytest.approx(7.5881e-6, rel=1e-4)
 
     # Re-derived independently of the mirror's own expression.
     m = hw.TEENSY_TRAJ_INERTIA_HAND_ONLY_KG
-    r = hw.TEENSY_TRAJ_HAND_SPOOL_RADIUS_M
-    gain = hw.TEENSY_TRAJ_LINEAR_GAIN_FACTOR / (math.pi * r * 2.0)
+    r = mirror.HAND_SPOOL_RADIUS_M
+    gain = float(hw.HAND_REV_PER_M)
     assert implied == pytest.approx(m * r / (2.0 * math.pi * gain), rel=1e-12)
 
-    # The load alone, with the EFFECTIVE radius.  The legacy value sits 3.5 %
-    # above it — that is the radius error, and nothing else.
+    # The load alone, with the EFFECTIVE radius (1/(2π·gain) = 5.183 mm at the
+    # measured gain; 5.034 mm under the 1.035 fudge factor).  7.120e-6 pre-R1,
+    # 7.549e-6 at the measured gain (R1, 2026-09-11).  The legacy value sits
+    # r_spool/r_eff = 0.5 % above it — the spool-vs-effective radius error and
+    # nothing else (it was 3.5 % when the fudge factor shrank r_eff).  Either
+    # way it is far below the MEASURED lower bound (1.0126e-5, hand_throw_envelope.md
+    # § Surviving measurements): the legacy conversion omits the rotor.
     r_eff = 1.0 / (2.0 * math.pi * gain)
     j_load = m * r_eff ** 2
-    assert j_load == pytest.approx(7.120e-6, rel=1e-3)
-    assert implied / j_load == pytest.approx(
-        hw.TEENSY_TRAJ_LINEAR_GAIN_FACTOR, rel=1e-9)
+    assert j_load == pytest.approx(7.549e-6, rel=1e-3)
+    assert implied / j_load == pytest.approx(r / r_eff, rel=1e-9)
+    assert implied < 1.0126e-5
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -233,7 +251,9 @@ def test_declared_inertia_is_above_the_legacy_implied_one():
     declared = hw.TEENSY_TRAJ_THROW_DECEL_REFLECTED_INERTIA_KGM2
     assert declared > mirror.LEGACY_IMPLIED_INERTIA_KGM2
     boost = declared / mirror.LEGACY_IMPLIED_INERTIA_KGM2
-    assert boost == pytest.approx(1.2891, rel=1e-3)
+    # 1.2891 pre-R1 (legacy implied 7.3695e-6); 1.2519 at the measured gain
+    # (legacy implied 7.5881e-6, R1 2026-09-11) — same declared 9.5e-6.
+    assert boost == pytest.approx(1.2519, rel=1e-3)
 
 
 def test_the_declared_inertia_reaches_the_mirror_and_the_shipped_firmware():
@@ -354,8 +374,7 @@ def test_the_catch_and_smooth_move_conversions_are_untouched():
     """kind-1 and every ``makeSmoothMove`` prelude keep ``accelToTorque``.
 
     Failure mode this closes: widening the corrected conversion to the
-    smooth-move path, whose torque stream is separately pinned by
-    ``tests/firmware/test_hand_smooth_move_xref.py``'s ``_K_TOR`` — and whose
+    smooth-move path — whose
     kind-3 form is the ONLY un-arm mechanism the Teensy offers.
     """
     k_legacy = mirror.INERTIA_HAND_ONLY_KG * mirror.HAND_SPOOL_RADIUS_M
@@ -390,7 +409,9 @@ def test_the_commanded_decel_distance_is_velocity_independent():
         thr = mirror.HandThrowTrajectory(v)
         dists.append(0.5 * v * thr._t_dec * mirror._LINEAR_GAIN)
     assert max(dists) - min(dists) < 1e-9
-    assert dists[0] == pytest.approx(4.046, abs=5e-3)
+    # 4.046 rev pre-R1; 3.929 rev at the measured gain (R1 2026-09-11) — the
+    # same 127.96 mm of slider, the revs follow the gain.
+    assert dists[0] == pytest.approx(3.929, abs=5e-3)
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -467,7 +488,9 @@ def test_the_2026_07_band_ceiling_was_already_near_the_axis_torque_ceiling():
     v = _v_for_flight(_HISTORICAL_FLIGHT_CEILING_S)
     thr = mirror.HandThrowTrajectory(v)
     a_cmd_rev = abs(thr._throwD) * mirror._LINEAR_GAIN
-    assert a_cmd_rev == pytest.approx(3597.0, rel=0.02)
+    # 3597 rev/s² pre-R1; 3493 at the measured gain (R1 2026-09-11): the same
+    # linear deceleration in fewer revs per metre.
+    assert a_cmd_rev == pytest.approx(3493.0, rel=0.02)
 
     for j_true in (_MEASURED_REFLECTED_INERTIA_MIN_KGM2,
                    _MEASURED_REFLECTED_INERTIA_MAX_KGM2):

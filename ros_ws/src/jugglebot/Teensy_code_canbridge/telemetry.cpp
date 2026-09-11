@@ -13,8 +13,6 @@
 #include "time_base.h"
 #include "leg_homing.h"   // homing_result() — uplinked in the Diagnostic (see logbook 2026-07-05-canhub-hardening-18a-homing-result-uplink)
 #include "gpio_poll.h"    // gpio_poll_snapshot() — the hand ball-sensor cache uplinked as HAND_SENSOR
-#include "hand_ops.h"     // hand_ops_counters() — per-stage HAND_TRAJ_CMD exits uplinked as BRIDGE_TX_DIAG
-#include "hand_source.h"  // hand_source_streamed() — HAND_CMD_ECHO re-source (FW 17)
 #include "leg_interp.h"   // interp_hand_sent() (streamed-echo freshness key) + interp_last_tick_us() (echo stamp age-correction) — FW 17
 #include "odrive_protocol.h"  // encode_leg_setpoint — re-encode the streamed hand echo bytes (FW 17)
 
@@ -236,10 +234,11 @@ void platform_uplink_step() {
 // the host keeps the last value to fill hand_telemetry's command fields. Mirrors
 // platform_uplink_step's emit.
 void hand_cmd_echo_uplink_step() {
-  // The sniff path (LEGACY): the Platform Teensy's 0x0CC to axis 6, decoded by
-  // can_buses. Kept unconditionally — while STREAMED a sniffed hand command
-  // should be IMPOSSIBLE (hand_ops refuses 0x6D0 forwarding), so one arriving
-  // is evidence of a second master and must reach the host, not be filtered.
+  // The sniff path: the Platform Teensy's 0x0CC to axis 6, decoded by
+  // can_buses. Kept unconditionally — the bridge is the ONE hand master since
+  // FW 21, so a sniffed Platform→hand command should be IMPOSSIBLE; one
+  // arriving is evidence of a second master and must reach the host, not be
+  // filtered.
   HandCmdEchoRec r;
   if (can_hand_cmd_echo_pop(r)) {
     JbUdp::HandCmdEchoPayload p{};
@@ -247,8 +246,8 @@ void hand_cmd_echo_uplink_step() {
     memcpy(p.data, r.buf, 8);
     udp_send_stream(JbUdp::MsgType::HAND_CMD_ECHO, (const uint8_t*)&p, sizeof(p));
   }
-  // ── STREAMED re-source (FW 17, plan Phase 3 item E) ─────────────────────────
-  // Once the bridge masters the hand, its own 500 Hz set_input_pos TX is
+  // ── Interp-lane re-source (FW 17, plan Phase 3 item E) ──────────────────────
+  // The bridge masters the hand, so its own 500 Hz set_input_pos TX is
   // invisible to the sniff (CAN SRX_DIS — we never receive our own frames), so
   // the echo would go silent exactly when the hand starts moving. Re-source it
   // from axes[6].target_* — the very values the interp transmitted — re-encoded
@@ -259,7 +258,7 @@ void hand_cmd_echo_uplink_step() {
   // one frame per telemetry tick like the sniff slot.
   static uint32_t s_hand_echo_sent_prev = 0;
   const uint32_t sent = interp_hand_sent();
-  if (hand_source_streamed() && sent != s_hand_echo_sent_prev) {
+  if (sent != s_hand_echo_sent_prev) {
     const ODrive::CanFrame f = ODrive::encode_leg_setpoint(
         HAND_AXIS, hand_axis().target_pos_rev, hand_axis().target_vel_rps,
         hand_axis().target_torque_Nm);
@@ -375,7 +374,6 @@ void bridge_tx_diag_uplink_step() {
   s_bridge_tx_diag_sent_us = now;
 
   const CanRxHealth h = can_buses_rx_health();
-  const HandOpsCounters hc = hand_ops_counters();
   JbUdp::BridgeTxDiagPayload p{};
   p.tx_deferred_jb   = h.jugglebot.tx_deferred;
   p.tx_deferred_bb   = h.bb.tx_deferred;
@@ -383,18 +381,9 @@ void bridge_tx_diag_uplink_step() {
   p.tx_q_hwm_jb      = h.jugglebot.tx_q_hwm;
   p.tx_q_hwm_bb      = h.bb.tx_q_hwm;
   p.tx_q_hwm_cone    = h.cone.tx_q_hwm;
-  p.hand_calls       = hc.calls;
-  p.hand_rej_homing  = hc.rej_homing;
-  p.hand_bus_down    = hc.bus_down;
-  p.hand_pre1_fail   = hc.pre1_fail;
-  p.hand_pre2_fail   = hc.pre2_fail;
-  p.hand_traj_fail   = hc.traj_fail;
-  // NOTE (FW 17): hc.rej_source (ERR_HAND_SOURCE refusals while STREAMED) does
-  // NOT ride this frame — the payload is deployed and exact-size-unpacked, so
-  // it cannot grow. The host's "OK = calls − the five counters" derivation
-  // therefore overcounts OK by rej_source while refusals occur; the refused
-  // dispatches are wire-visible in the RPC acks (hand_traj_acks fail_teensy
-  // names ERR_HAND_SOURCE) and on the [hand7]-adjacent console census.
+  // (The per-stage hand_* attribution counters left this frame at FW 21 /
+  // PROTOCOL_VERSION 7 with the hand_ops conduit they measured — there is no
+  // request/ack hand dispatch to attribute any more.)
   udp_send_stream(JbUdp::MsgType::BRIDGE_TX_DIAG, (const uint8_t*)&p, sizeof(p));
 }
 

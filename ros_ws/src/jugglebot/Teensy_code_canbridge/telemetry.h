@@ -63,7 +63,7 @@ void hand_sensor_uplink_step();
 void can_errors_uplink_step();
 
 // Call at TELEM_RATE_HZ (100 Hz), after telemetry_step(). Emits the per-bus CAN
-// TX deferral/queue counters plus hand_ops' per-stage exit tally as a
+// TX deferral/queue counters as a
 // BRIDGE_TX_DIAG frame at a flat 1 Hz. Unconditional for the same reason as
 // can_errors_uplink_step: the consumer reads this by DIFFERENCING two captures
 // (e.g. with and without the 500 Hz leg stream), which needs a continuous

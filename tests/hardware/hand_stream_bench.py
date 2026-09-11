@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
-"""Bench driver: FIRST streamed hand lane over the can-bridge (FW 17, T-H1..T-H3).
+"""Bench driver: streamed hand lane over the can-bridge (T-H1..T-H3).
 
-Drives the unified-7dof Phase 3 bench ladder
-(``tests/hardware/session_unified7_hand_bringup.md``): the hand ODrive (axis 6)
-commanded by the can-bridge's 500 Hz 7th interpolated lane, fed by this
-driver's 40 Hz v6 knot stream. Every frame goes through the REAL
-``SetpointPump`` (production-in-the-loop — the host hand step gate T-H3
-exercises IS this pump), and the leg lanes are PINNED HOLDS at the legs' live
-encoder positions so the six leg ODrives — CLOSED_LOOP or IDLE — see a
-zero-deviation no-op throughout.
+Drives the skill-stack R1 bench ladder: the hand ODrive (axis 6) commanded by
+the can-bridge's 500 Hz 7th interpolated lane, fed by this driver's 40 Hz v6
+knot stream. Every frame goes through the REAL ``SetpointPump``
+(production-in-the-loop — the host hand step gate T-H3 exercises IS this
+pump), and the leg lanes are PINNED HOLDS at the legs' live encoder positions
+so the six leg ODrives — CLOSED_LOOP or IDLE — see a zero-deviation no-op
+throughout.
+
+R1 (2026-09-11): there is no hand-mastery latch any more — the hand lane is
+ACTIVE whenever a frame carries HAS_HAND, so this driver no longer switches
+anything before streaming (the old ``--source-only`` / ``--no-source-switch``
+verbs and the FW 17 ``hand_source`` settle-gate diagnosis are gone with it).
+The hand deviation guard now boots ARMED (was observe-first).
 
 Lives in tests/hardware/ (not tools/probes/) because it COMMANDS THE MOTOR —
 per ``tools/probes/README.md``; the ``*_bench.py`` name keeps it out of pytest
@@ -23,23 +28,24 @@ runs. NO BALL, E-STOP IN HAND. Defence in depth, all active:
     minus margin, deviation belt (``--max-dev``, per-stage default ≤ the
     firmware lead clamp 2.0; VELOCITY-COMPENSATED like the firmware residual —
     ``|cmd − (enc + vel·age)|`` — because a static compare against the
-    10-45 ms-stale telemetry cache reads ~0.95-4.3 rev of pure latency at the
-    3 m/s stroke's ~95 rev/s plateau and would spuriously abort mid-stroke,
-    commanding a stop into a fast hand), instant disarm on fault/Ctrl-C,
-    bounded duration, first frame within the stated park gate of the commanded
-    start (any residual is walked by the firmware recovery slew at ≤ 1 rev/s),
-    and the 40 Hz hold stream runs in a BACKGROUND thread through the
-    ARM prompt + verify window (true stream-then-arm — a stalled stream at the
-    mpc_active edge latches SETPOINT_STALE before the first loop frame).
-  • firmware (FW 18): hand lead clamp ±2.0 rev against the age-extrapolated
-    encoder, vel_ff cap 300 rev/s, stroke clip [0, 10.501] rev (10.701 rev
-    metal), hand overspeed E-STOP at 345 rev/s, setpoint staleness E-STOP,
-    and the observe-first
-    ``MAX_DEVIATION_HAND_REV`` residual census on the ``[hand7]`` console line.
+    10-45 ms-stale telemetry cache reads real latency error and would
+    spuriously abort mid-stage, commanding a stop into a moving hand),
+    instant disarm on fault/Ctrl-C, bounded duration, first frame within the
+    stated park gate of the commanded start (any residual is walked by the
+    firmware recovery slew at ≤ 1 rev/s), and the 40 Hz hold stream runs in a
+    BACKGROUND thread through the ARM prompt + verify window (true
+    stream-then-arm — a stalled stream at the mpc_active edge latches
+    SETPOINT_STALE before the first loop frame).
+  • firmware: hand lead clamp ±2.0 rev against the age-extrapolated encoder,
+    vel_ff cap 300 rev/s, position clip [0, HAND_MOTOR_MAX_POSITION], hand
+    overspeed E-STOP at 345 rev/s, setpoint staleness E-STOP, and the (R1:
+    ARMED-by-default) ``MAX_DEVIATION_HAND_REV`` residual census on the
+    ``[hand7]`` console line.
 
 PRECONDITIONS (checked; the driver refuses to arm otherwise):
   • the ROS launch is DOWN — this driver is the SOLE owner of the UDP link;
-  • can-bridge FW 17 aboard (BRIDGE_IDENTITY reports 17 — v6 link, else dark);
+  • the can-bridge FW aboard matches ``EXPECTED_BRIDGE_FW_VERSION`` (else the
+    link is dark or version-skewed);
   • the hand ODrive ENERGISED: ``axis_state == CLOSED_LOOP`` (**checked** — at
     entry, after the ``--close-loop`` bring-up, and every tick of the run) in
     POSITION/PASSTHROUGH (**asserted, NEVER checked** — ``controller_mode`` /
@@ -51,11 +57,7 @@ PRECONDITIONS (checked; the driver refuses to arm otherwise):
     the ``hold`` stage "passed" de-energised, T-H2a/b then aborted on the
     deviation belt with the encoder dead flat under a ramping command). Pass
     ``--close-loop`` to bring it up here; the driver verifies the bring-up took;
-  • hand homed (encoder reference valid) and parked near a rest position —
-    the firmware ``hand_source`` settle gate enforces this;
-  • ``hand_source == STREAMED`` (this driver switches it via HAND_SOURCE_SET
-    before arming; the switch is refused while armed or unsettled). With
-    ``--no-source-switch`` the latch is left as-is — the T-H4(b) discard run;
+  • hand homed (encoder reference valid);
   • hand axis error-free, ``fault_state == NONE``.
 
 Stages (one per invocation; the runbook sequences them):
@@ -65,18 +67,6 @@ Stages (one per invocation; the runbook sequences them):
   triangle  T-H2a: ±(--tri-span/2) rev around (start + span/2) at --tri-speed
             rev/s (defaults: 2.0 rev span at 0.5 rev/s), repeated for
             --duration.
-  stroke    T-H2b: the Phase-0-probe-2 replay — the LEGACY closed-form throw
-            stroke (``hand_stroke.HandStrokeModel``) at --event-vel (default
-            3.0 m/s), sampled to 40 Hz knots with ANALYTIC piecewise
-            velocities (v6 HAS_V1 carries them). Tolerance context: the
-            Phase 0 desk probe measured ≤ 3.25 mm worst-case reconstruction
-            error for exactly this stroke with v1 carriage (≤ 11.84 mm
-            without) — the HONEST prediction; do NOT expect float-exactness
-            here (that applies to knot-aligned planner output only).
-            PRECONDITION: hand parked within the ±0.10 rev settle band of 0
-            (the stroke commands absolute positions from 0, like a kind-0
-            throw; any residual inside the band is walked by the firmware
-            recovery slew at ≤ 1 rev/s).
   step      T-H3a: attempt ONE hand knot --step-rev (default 6.0) past the
             pump gate mid-hold. Pass: the PUMP refuses host-side (reject
             counted, reason printed, nothing reaches the wire) and the hold
@@ -118,16 +108,15 @@ Stages (one per invocation; the runbook sequences them):
             forbidden mode the rule is written against) or NO WIND-DOWN (v·gap)
             — which no earlier stage could separate.
 
-Source-latch / recovery utilities (no streaming, no arm):
-  --source-only streamed|legacy   switch the firmware hand_source latch and
-            exit — the T-H4 setup / close-out verb.
+Recovery utility (no streaming, no arm):
   --clear-errors   send CLEAR_ERRORS (all axes) and wait for fault_state NONE —
             the recovery verb after a latched guard E-STOP (SETPOINT_STALE /
-            MAX_DEVIATION from T-H3b). The next re-arm's output-enable edge
-            runs the firmware recovery slew (bounded walk-back, ≤ 1 rev/s).
-  --no-source-switch   stream WITHOUT forcing hand_source to STREAMED — the
-            T-H4(b) verb: a v6 hand-bearing stream against a LEGACY latch must
-            increment [hand7] discard_legacy and move nothing.
+            MAX_DEVIATION). The next re-arm's output-enable edge runs the
+            firmware recovery slew (bounded walk-back, ≤ 1 rev/s). The R1 hand
+            deviation guard boots ARMED, so the first cold gap re-entry that
+            passes the 5 rev pump gate but exceeds the 2.5 rev
+            MAX_DEVIATION_HAND_REV band (e.g. --gap-delta 3.0) is expected to
+            trip it — the runbook's cold-trip row; recover with --clear-errors.
 
 Instruments: the driver also subscribes CacheDiag (0x91) and logs a 1 Hz
 windowed ``enc_frames`` deficit CSV beside the stage CSV (the headroom
@@ -138,13 +127,10 @@ hand is ALREADY in CLOSED_LOOP — with the launch down nothing else energises i
     source ~/Desktop/PDJ_venv/venv/bin/activate
     python tests/hardware/hand_stream_bench.py --stage hold --duration 600 --close-loop
     python tests/hardware/hand_stream_bench.py --stage triangle --duration 60 --close-loop
-    python tests/hardware/hand_stream_bench.py --stage stroke --event-vel 3.0 --close-loop
     python tests/hardware/hand_stream_bench.py --stage step --close-loop
     python tests/hardware/hand_stream_bench.py --stage gap --close-loop
     python tests/hardware/hand_stream_bench.py --stage moving_gap --duration 10 --close-loop
-    python tests/hardware/hand_stream_bench.py --source-only legacy
     python tests/hardware/hand_stream_bench.py --clear-errors
-    python tests/hardware/hand_stream_bench.py --stage hold --duration 3 --no-source-switch --close-loop
 """
 import argparse
 import csv
@@ -156,8 +142,10 @@ import time
 
 # LIVE tree first (incl. ros_ws/src — the installed colcon copy of
 # jugglebot.hardware_config can lag the generated keys this driver needs).
-for _p in ("/home/jetson/Desktop/Jugglebot",
-           "/home/jetson/Desktop/Jugglebot/ros_ws/src/jugglebot"):
+# Derived from __file__ (never hardcoded) so this runs correctly from any
+# worktree, not only the main checkout.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+for _p in (_REPO_ROOT, os.path.join(_REPO_ROOT, "ros_ws", "src", "jugglebot")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 from teensy_link import (  # noqa: E402
@@ -170,9 +158,6 @@ from teensy_link import rpc_args  # noqa: E402
 from teensy_link.setpoint_pump import SetpointPump  # noqa: E402
 import jugglebot.hardware_config as hw  # noqa: E402
 import jugglebot.protocol_config as pc  # noqa: E402
-from jugglebot.motion.trajectory.hand_stroke import (  # noqa: E402
-    HandStrokeModel, LINEAR_GAIN_REV_PER_M, HAND_SETTLE_BAND_REV,
-)
 
 TEENSY_IP = "192.168.42.2"
 HAND = int(p.NUM_LEGS)                    # axis 6
@@ -193,8 +178,10 @@ DIAG_WAIT_S = 2.5                         # TWO forced-refresh opportunities + m
 BRINGUP_VERIFY_S = 3.0                    # post---close-loop CLOSED_LOOP poll (leg bench's 3.0)
 _T2J_FLAG_TIME_SYNCED = 0x1               # HeartbeatT2J flags bit 0
 _T2J_FLAG_MPC_ACTIVE = 0x8
-_T2J_FLAG_HAND_SOURCE_STREAMED = 0x40     # HeartbeatT2J flags bit 6 (FW 17)
-MM_PER_REV = 1000.0 / float(LINEAR_GAIN_REV_PER_M)   # ≈ 31.63 mm per hand rev
+# Bit 6 (HAND_SOURCE_STREAMED, the FW 17 hand-mastery latch) was retired at
+# PROTOCOL_VERSION 7 (2026-09-11, skill-stack R1) — there is no latch to read;
+# the hand lane is active whenever a frame carries HAS_HAND.
+MM_PER_REV = float(hw.GEOM_HAND_MM_PER_REV)   # 32.567 mm per hand rev (two owner readings)
 ENC_BROADCAST_HZ = 100.0                  # ODrive get_encoder_estimate cadence (row-21 recipe)
 CD_EPISODE_DEFICIT = -20.0                # headroom runbook row 21: a window past −20 = episode
 
@@ -250,11 +237,6 @@ HAND_COAST_S = SEG_T + MAX_EXTRAP_DT_S + 0.5 * EXTRAP_DECAY_DT_S
 # |cmd − (enc + vel·age)|, so encoder AGE no longer contributes):
 #   hold/triangle/step: motion ≤ 0.5 rev/s ⇒ every latency term ≤ ~0.01 rev —
 #     a tight 0.5 rev static-ish belt holds.
-#   stroke: residual budget at the ~95 rev/s plateau = vel × (transport 1-3 ms
-#     + servo lag a few ms) ≈ 0.3-0.6 rev, plus vel-staleness extrapolation
-#     error during the ~1500 rev/s² accel/decel phases (stale vel × 10-45 ms
-#     age) ≤ ~1.0 rev worst-case ⇒ 1.5 rev clears the honest terms and still
-#     fires BELOW the firmware guards (lead clamp 2.0, deviation 2.5).
 #   gap: the sanctioned re-entry catch-up is itself ≈ |--gap-delta| of honest
 #     deviation, so the default widens to |gap_delta| + 0.5 (≤ the 2.0 cap).
 #   moving_gap: the belt's reference is the FIRMWARE'S OWN decayed target
@@ -267,7 +249,7 @@ HAND_COAST_S = SEG_T + MAX_EXTRAP_DT_S + 0.5 * EXTRAP_DECAY_DT_S
 #     falsified prediction is reported by the criteria rather than aborted by
 #     the belt. (Rejecting the alternative: belting against the planned triangle
 #     would bake the 0.0725 rev of SANCTIONED divergence into every gap tick.)
-_MAX_DEV_DEFAULT = {'hold': 0.5, 'triangle': 0.5, 'step': 0.5, 'stroke': 1.5,
+_MAX_DEV_DEFAULT = {'hold': 0.5, 'triangle': 0.5, 'step': 0.5,
                     'moving_gap': 0.5}
 
 _lock = threading.Lock()
@@ -379,11 +361,6 @@ def _fault_name(fs):
         return str(fs)
 
 
-def _hand_source_streamed():
-    hb = _hb()
-    return None if hb is None else bool(int(hb.flags) & _T2J_FLAG_HAND_SOURCE_STREAMED)
-
-
 def _hand_diag():
     """The cached axis-6 DIAGNOSTIC, read UNDER ``_lock`` — the leg bench's
     ``axis_diag()`` (teensy_setpoint_bench.py:129-131). Returns None until one
@@ -418,47 +395,6 @@ def _wait_hand_diag(timeout_s=DIAG_WAIT_S):
         time.sleep(0.05)
 
 
-def _diagnose_source_refusal():
-    """Host-side gate diagnosis for a HAND_SOURCE_SET ERR_REJECTED (2026-09-03
-    audit fix). The firmware's refusal is ONE opaque status by design (a single
-    enforcement point, hand_source.cpp::hand_source_request), but every gate it
-    checks has a proxy in the caches this driver already holds — so the driver
-    disambiguates before printing rather than asking the operator to guess.
-    Mirrors the firmware gates: mpc_active, axis-6 telemetry seen + fresh
-    (MOTOR_FB_STALENESS_US = 150 ms), |pos − rest| ≤ HAND_SETTLE_BAND_REV for
-    rest ∈ {retract, catch-prime}, |vel| ≤ HAND_SOURCE_SETTLE_VEL_RPS = 0.5.
-    Returns the likely gate(s) as strings (empty = no gate implicated by the
-    driver's caches — the truth is firmware-side; read [hand7])."""
-    likely = []
-    hb = _hb()
-    if hb is not None and (int(hb.flags) & _T2J_FLAG_MPC_ACTIVE):
-        likely.append("mpc_active — the setpoint stream is ARMED (disarm first)")
-    tm, age = _telem_with_age()
-    if tm is None:
-        likely.append("axis-6 telemetry never seen by this driver (the firmware "
-                      "refuses an unseen/zero-timestamp encoder cache)")
-    else:
-        if age > 0.15:
-            likely.append(f"axis-6 telemetry stale (driver receive age "
-                          f"{age * 1e3:.0f} ms vs the firmware's 150 ms "
-                          f"MOTOR_FB_STALENESS gate)")
-        pos = float(tm.pos_rev[HAND])
-        vel = float(tm.vel_rps[HAND])
-        band = HAND_SETTLE_BAND_REV
-        retract_lo = float(hw.HOMING_HAND_ABS_POS_REV) - band   # homed rest, −0.1
-        retract_hi = float(hw.JB_OP_HAND_RETRACT_REV) + band    # retract, 0.0
-        prime = float(hw.JB_OP_HAND_CATCH_PRIME_REV)            # 9.9594
-        if not ((retract_lo <= pos <= retract_hi)
-                or abs(pos - prime) <= band):
-            likely.append(f"not settled at a rest position (pos {pos:+.3f} rev "
-                          f"vs retract [{retract_lo:+.2f}, {retract_hi:+.2f}] "
-                          f"or catch-prime {prime:.2f}±{band:.2f})")
-        if abs(vel) > 0.5:
-            likely.append(f"hand moving (|vel| = {abs(vel):.2f} rev/s > the "
-                          f"0.5 rev/s settle gate)")
-    return likely
-
-
 def _fw_version():
     with _lock:
         bi = _cache["ident"]
@@ -491,35 +427,6 @@ class Triangle:
         if ph < half:
             return self.p0 + self.v * ph, self.v
         return self.p0 + self.span - self.v * (ph - half), -self.v
-
-
-class Stroke:
-    """The legacy closed-form throw stroke (HandStrokeModel) with ANALYTIC
-    piecewise velocities (central differencing is wrong at the phase
-    boundaries — Phase 0 decision 2). Starts from rest at 0, ends holding x3."""
-
-    def __init__(self, v_mps, lead_s=1.0):
-        self.m = HandStrokeModel(v_mps)
-        self.lead = float(lead_s)          # settle time at 0 before the stroke
-        self.t_total = (self.m.t_acc + self.m.t_vel + self.m.t_dec)
-        self.gain = float(LINEAR_GAIN_REV_PER_M)
-
-    def sample(self, t):
-        ts = t - self.lead                 # 0 = accel start
-        m = self.m
-        if ts <= 0.0:
-            return 0.0, 0.0
-        if ts <= m.t_acc:
-            return (0.5 * m.throwA * ts * ts * self.gain,
-                    m.throwA * ts * self.gain)
-        if ts <= m.t_acc + m.t_vel:
-            tau = ts - m.t_acc
-            return ((m.x1_m + m.v * tau) * self.gain, m.v * self.gain)
-        if ts <= self.t_total:
-            tau = ts - (m.t_acc + m.t_vel)
-            return ((m.x2_m + m.v * tau + 0.5 * m.throwD * tau * tau) * self.gain,
-                    (m.v + m.throwD * tau) * self.gain)
-        return m.x3_m * self.gain, 0.0
 
 
 # ── moving_gap (row 17b): the falling-edge decay, taken while the hand MOVES ──
@@ -746,22 +653,24 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--stage",
-                    choices=["hold", "triangle", "stroke", "step", "gap",
+                    choices=["hold", "triangle", "step", "gap",
                              "moving_gap"],
                     default="hold")
     ap.add_argument("--duration", type=float, default=30.0,
                     help="run time after arm (s); T-H1 uses 600")
     ap.add_argument("--tri-span", type=float, default=2.0, help="triangle span (rev)")
     ap.add_argument("--tri-speed", type=float, default=0.5, help="triangle speed (rev/s)")
-    ap.add_argument("--event-vel", type=float, default=3.0,
-                    help="stroke stage: legacy event_vel (m/s)")
     ap.add_argument("--step-rev", type=float, default=6.0,
                     help="step stage: hand knot jump (rev) — must exceed the pump "
                          "gate (5.0) to demonstrate the host-side refusal")
     ap.add_argument("--gap-pre", type=float, default=3.0, help="gap stage: hand-bearing lead-in (s)")
     ap.add_argument("--gap-s", type=float, default=1.0, help="gap stage: hand-less window (s)")
     ap.add_argument("--gap-delta", type=float, default=1.0,
-                    help="gap stage: re-entry displacement (rev, ≤ 1.5)")
+                    help="gap stage: re-entry displacement (rev, <= 1.5). NOTE: "
+                         "3.0 rev passes the 5 rev pump gate and exceeds the "
+                         "2.5 rev MAX_DEVIATION_HAND_REV band, so it trips the "
+                         "hand deviation guard, which now boots ARMED (R1) — "
+                         "the runbook's cold-trip row")
     ap.add_argument("--gap-knots", type=int, default=9,
                     help="moving_gap stage: consecutive 40 Hz frames whose "
                          "HAS_HAND bit is CLEARED (default 9). The firmware-side "
@@ -790,8 +699,7 @@ def main():
                          "velocity-compensated like the firmware residual; ≤ 2.0 "
                          "(the firmware hand lead clamp) so the belt fires first. "
                          "Default is per-stage (hold/triangle/step/moving_gap 0.5, "
-                         "stroke 1.5, gap |gap-delta|+0.5) — see "
-                         "_MAX_DEV_DEFAULT's derivation")
+                         "gap |gap-delta|+0.5) — see _MAX_DEV_DEFAULT's derivation")
     ap.add_argument("--close-loop", action="store_true",
                     help="bring the hand ODrive up first: POSITION/PASSTHROUGH + the "
                          "operational hand gains + CLOSED_LOOP (auto-holds at the "
@@ -800,15 +708,9 @@ def main():
                          "CLOSED_LOOP: the driver refuses to arm an IDLE hand, which "
                          "ignores the streamed lane and mimics a perfect hold")
     ap.add_argument("--arm", action="store_true", help="skip the interactive ARM prompt")
-    ap.add_argument("--source-only", choices=["streamed", "legacy"], default=None,
-                    help="just switch the hand_source latch and exit (no stream, no arm)")
     ap.add_argument("--clear-errors", action="store_true",
                     help="send CLEAR_ERRORS (all axes) and exit — the recovery verb "
                          "after a latched guard E-STOP (no stream, no arm)")
-    ap.add_argument("--no-source-switch", action="store_true",
-                    help="do NOT force hand_source to STREAMED before streaming — "
-                         "the T-H4(b) verb (a hand-bearing stream against a LEGACY "
-                         "latch must be discarded + counted, and move nothing)")
     ap.add_argument("--csv", default=None, help="per-tick CSV (default: auto under temp/logs/)")
     args = ap.parse_args()
     if abs(args.gap_delta) > 1.5:
@@ -894,7 +796,7 @@ def main():
         print(f"hand baseline: pos={start:+.4f} rev  "
               f"axis_state={d0.axis_state if d0 else '?'}  "
               f"active_errors={d0.active_errors if d0 else '?'}  "
-              f"fault={_fault_name(_fault())}  hand_source_streamed={_hand_source_streamed()}")
+              f"fault={_fault_name(_fault())}")
         # ── Recovery verb: CLEAR_ERRORS + wait for fault_state NONE ──────────
         # Runs BEFORE the fault-latched abort below — it exists precisely for
         # that state (e.g. a MAX_DEVIATION latched in T-H3b, or an SETPOINT_STALE).
@@ -934,14 +836,7 @@ def main():
         # _wait_hand_diag). Both halves are closed here, leg-bench shape:
         # accumulate every unmet precondition so one run shows the operator all
         # of them.
-        #
-        # --source-only is EXEMPT from the energisation half: it is a latch verb
-        # that commands no motion and never arms (--clear-errors, the other such
-        # verb, has already returned above), and the gate exists only to stop a
-        # STREAM running against a dead axis. Its pre-existing error/fault gates
-        # are unchanged, off the same non-blocking snapshot as before.
-        will_stream = args.source_only is None
-        d = _wait_hand_diag() if will_stream else d0
+        d = _wait_hand_diag()
         problems = []
         if d is None:
             # Gate B (the post---close-loop verification below) is the AUTHORITY
@@ -952,7 +847,7 @@ def main():
             # for exactly this shape. Keeping the abort here would make the
             # runbook's ONLY invocation shape (every streaming row carries
             # --close-loop) the likeliest spurious abort of the sitting.
-            if will_stream and not args.close_loop:
+            if not args.close_loop:
                 problems.append(
                     f"no DIAGNOSTIC for the hand (axis {HAND}) in {DIAG_WAIT_S:.1f} s "
                     f"— its axis_state and errors are UNKNOWN, and this gate fails "
@@ -964,7 +859,7 @@ def main():
                     f"hands the verdict to the post-bring-up check) and read [hand7] "
                     f"on the console")
         else:
-            if will_stream and int(d.axis_state) != CLOSED_LOOP and not args.close_loop:
+            if int(d.axis_state) != CLOSED_LOOP and not args.close_loop:
                 problems.append(
                     f"axis_state={d.axis_state}, need CLOSED_LOOP={CLOSED_LOOP} — "
                     f"an IDLE hand ignores every streamed setpoint and its encoder "
@@ -983,59 +878,6 @@ def main():
             print("ABORT: preconditions not met:")
             for pb in problems:
                 print(f"  • {pb}")
-            return 2
-
-        # ── Source-latch switch (before any arm — the gate requires !mpc) ────
-        def set_source(streamed: bool) -> bool:
-            try:
-                rpc.call(int(RpcMethod.HAND_SOURCE_SET),
-                         rpc_args.encode_hand_source_set(streamed))
-            except RpcError as e:
-                print(f"HAND_SOURCE_SET refused: {e}")
-                gates = _diagnose_source_refusal()
-                if gates:
-                    print("  likely gate(s), from the driver's own caches: "
-                          + "; ".join(gates))
-                else:
-                    print("  no gate implicated by the driver's caches — the "
-                          "truth is firmware-side; read [hand7] on the console")
-                # Actionable exit (2026-09-04 audit fix). This switch runs
-                # BEFORE the --close-loop bring-up and returns hard, so a
-                # de-energised hand that has DRIFTED out of the firmware settle
-                # band can never reach the bring-up row 11b calls "the only
-                # route" — and the operator is left with no on-screen way out.
-                # (Not hypothetical: the 2026-09-03 baselines were −0.108 /
-                # +0.209 / −0.076 rev, and +0.209 sits outside the retract band.)
-                # The bring-up is deliberately NOT reordered ahead of this
-                # switch: that changes when a 48 V motor energises relative to
-                # the latch switch, which is an owner decision, not a bug fix.
-                print("  NEXT STEP: with the launch down an IDLE hand is "
-                      "BACKDRIVABLE and drifts — park it by hand inside the "
-                      "retract band, then re-run. --close-loop cannot run until "
-                      "this switch succeeds (it is sequenced after it).")
-                return False
-            deadline = time.time() + 1.0
-            want = bool(streamed)
-            while time.time() < deadline:
-                if _hand_source_streamed() == want:
-                    return True
-                time.sleep(0.05)
-            print("HAND_SOURCE_SET acked but the heartbeat bit never followed — "
-                  "treat as failed.")
-            return False
-
-        if args.source_only is not None:
-            ok = set_source(args.source_only == "streamed")
-            print(f"hand_source → {args.source_only.upper()}: {'OK' if ok else 'FAILED'}")
-            return 0 if ok else 2
-
-        if args.no_source_switch:
-            # T-H4(b): stream against WHATEVER the latch currently reads. Under
-            # LEGACY the firmware must discard Setpoint index 6 ([hand7]
-            # discard_legacy climbs) and move nothing.
-            print(f"hand_source: NOT switching (--no-source-switch) — latch reads "
-                  f"{'STREAMED' if _hand_source_streamed() else 'LEGACY'}")
-        elif not set_source(True):
             return 2
 
         # ── Optional hand bring-up (mode + gains BEFORE closing the loop) ────
@@ -1114,16 +956,6 @@ def main():
                       f"{start + args.tri_span:.2f} rev (> "
                       f"{HAND_MAX_POS - HAND_MARGIN:.2f}). Park lower."); return 2
             traj = Triangle(start, args.tri_span, args.tri_speed)
-        elif args.stage == "stroke":
-            # Park gate = the settle band (2026-09-03 audit fix): the stroke's
-            # first frame commands 0.0 rev absolute, NOT the live encoder, so
-            # the gate is what bounds the arm-edge offset. Any residual inside
-            # it is walked by the firmware recovery slew at <= 1 rev/s.
-            if abs(start) > HAND_SETTLE_BAND_REV:
-                print(f"ABORT: stroke stage needs the hand parked within the "
-                      f"settle band ±{HAND_SETTLE_BAND_REV:.2f} rev of 0 "
-                      f"(kind-0 basis); it is at {start:+.3f}."); return 2
-            traj = Stroke(args.event_vel)
         else:                               # step / gap ride a hold
             traj = Hold(start)
 
@@ -1273,9 +1105,6 @@ def main():
         t_start_mono = time.monotonic()
         next_t = t_start
         max_dev = 0.0
-        max_recon_mm = 0.0
-        last_echo_key = None                # dedupe: one recon sample per echo frame
-        echo_unsynced = 0                   # echoes skipped: bridge wall not TIME_SYNCED
         step_done = False
         pump_rejects_at_step = None
         gap_reentry_t = None                # gap: stage time the re-entry was first commanded
@@ -1513,19 +1342,17 @@ def main():
                           f"movement for a commanded "
                           f"{(args.gap_delta if args.stage == 'gap' else (mg_reentry_step or 0.0)):+.3f}"
                           f" rev step. "
-                          f"Under STREAMED the echo re-sources from "
-                          f"axes[6].target_pos_rev and is emitted only when the interp "
-                          f"TXed, so a re-entry that reached the firmware MUST move it: "
-                          f"this stage has measured NOTHING and its CSV logs a re-entry "
-                          f"that never happened. REMEDY: read [hand7] — src=STREAMED "
-                          f"lane=active with sent= climbing means the knot reached the "
-                          f"firmware and the driver dropped hand_override on the way to "
-                          f"frame() again (the 2026-09-04 defect); src=LEGACY with "
-                          f"discard_legacy climbing means the latch, not the driver "
-                          f"(--source-only streamed first)."
+                          f"The echo re-sources from axes[6].target_pos_rev and is "
+                          f"emitted only when the interp TXed, so a re-entry that "
+                          f"reached the firmware MUST move it: this stage has measured "
+                          f"NOTHING and its CSV logs a re-entry that never happened. "
+                          f"REMEDY: read [hand7] — lane=active with sent= climbing "
+                          f"means the knot reached the firmware and the driver dropped "
+                          f"hand_override on the way to frame() again (the 2026-09-04 "
+                          f"defect)."
                           + ("" if args.stage != "moving_gap" else
                              " For moving_gap there is no hand_override to drop, so"
-                             " src/discard_legacy is the whole differential."));
+                             " sent= is the whole differential."));
                     break
             if args.stage == "moving_gap":
                 # The lead-clamp read (G5) and the gap trace (G1-G3). The mask is
@@ -1540,24 +1367,11 @@ def main():
                     mg_samples.append((mg_g,
                                        None if echo is None else echo[1],
                                        enc_ex, mg_pred))
+            # recon_mm (the legacy stroke stage's TIME-ALIGNED reconstruction
+            # error) is always empty now that the stroke stage is gone — kept
+            # as a CSV column, never removed, so a sitting-two/-three CSV keeps
+            # its offsets (the "APPENDED, never inserted" convention below).
             recon = None
-            if args.stage == "stroke" and echo is not None and echo[0] != last_echo_key:
-                # Reconstruction error, TIME-ALIGNED (2026-09-02 review fix):
-                # evaluate the analytic AT the echo's t_bridge_us — the bridge
-                # wall clock this driver's own TimeOfDayServer disciplines —
-                # instead of at NOW. The old NOW-comparison smeared 30-100 mm
-                # of pure echo latency over the 3.25 mm bar at stroke speed.
-                # Residual noise ≈ 3 mm per ms of wall-sync error at the
-                # ~95 rev/s plateau — judge the trend + [hand7] dev_max
-                # together. Only TIME_SYNCED echoes are scored.
-                last_echo_key = echo[0]
-                if hb is not None and (int(hb.flags) & _T2J_FLAG_TIME_SYNCED):
-                    t_echo = echo[0] / 1e6 - t_start
-                    cmd_at_echo = traj.sample(t_echo)[0]
-                    recon = abs(echo[1] - cmd_at_echo) * MM_PER_REV
-                    max_recon_mm = max(max_recon_mm, recon)
-                else:
-                    echo_unsynced += 1
             w.writerow([f"{t:.3f}",
                         # `withheld`, not a number, on a moving_gap tick whose
                         # frame carried no hand channel — the CSV must never
@@ -1599,14 +1413,6 @@ def main():
         _drain_cd()
         print(f"stage '{args.stage}' done: max |cmd−(enc+vel·age)| = {max_dev:.4f} rev "
               f"({max_dev * MM_PER_REV:.2f} mm)  [belt {args.max_dev} rev]")
-        if args.stage == "stroke":
-            print(f"  worst TIME-ALIGNED echo-vs-analytic reconstruction: "
-                  f"{max_recon_mm:.2f} mm (bar: 3.25 mm + wall-sync noise only, "
-                  f"~3 mm/ms at the plateau — the echo-age term is corrected at "
-                  f"source since the 2026-09-03 audit fix (firmware stamps the "
-                  f"interp tick that wrote the bytes, not the emit); "
-                  f"{echo_unsynced} echoes skipped unsynced — judge the trend "
-                  f"+ [hand7] dev_max together)")
         if args.stage == "step":
             print(f"  step probe result: {pump_rejects_at_step}")
         if args.stage == "moving_gap":

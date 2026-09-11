@@ -29,7 +29,7 @@ import math
 import pytest
 
 import jugglebot.hardware_config as hw
-from jugglebot.motion.trajectory import hand_stroke, throw_envelope as te
+from jugglebot.motion.trajectory import throw_envelope as te
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -37,23 +37,23 @@ from jugglebot.motion.trajectory import hand_stroke, throw_envelope as te
 # ══════════════════════════════════════════════════════════════════════════
 
 def test_stroke_landmarks_are_velocity_independent():
-    """``x2``, ``x3`` and ``d_dec`` carry no ``v`` — the algebraic fact that lets
-    the envelope evaluate them from ONE reference model.
+    """``x2`` and ``x3`` carry no ``v`` — algebraically, ``x1 = accelSt/(1+IR)``
+    and ``v*t_vel = velHold``, so ``x2`` has no ``v``; ``x3 = totalStroke``
+    identically.  Hence ``d_dec = x3 - x2`` is velocity-independent, which is
+    exactly why a fractional tracking shortfall converts straight into
+    end-stop travel at every speed.
 
-    ``x1 = accelSt/(1+IR)`` and ``v*t_vel = velHold``, so ``x2`` has no ``v``;
-    ``x3 = totalStroke`` identically; hence ``d_dec = x3 - x2`` is the famous
-    velocity-independent 4.046 rev, which is exactly why a fractional tracking
-    shortfall converts straight into end-stop travel at every speed.
+    R1 (2026-09-11): both are read from the generated constants directly
+    (``HAND_THROW_POS_M``, ``HAND_STROKE_TOP_REV``) rather than from
+    ``hand_stroke.HandStrokeModel`` (deleted with the stroke engine); the
+    values are otherwise unchanged in kind, only the rev conversion now uses
+    the measured ``HAND_REV_PER_M`` in place of the retired fudge-factor gain.
     """
-    v_lo = hw.TEENSY_TRAJ_MIN_EVENT_VEL_MPS
-    v_hi = hw.TEENSY_TRAJ_MAX_EVENT_VEL_MPS
-    for v in (v_lo, 1.0, 2.742, 4.858, v_hi):
-        m = hand_stroke.HandStrokeModel(v)
-        assert m.x2_rev == pytest.approx(te.RELEASE_POS_REV, abs=1e-9), v
-        assert m.x3_rev == pytest.approx(te.STROKE_TOP_REV, abs=1e-9), v
-    assert te.DECEL_ALLOWANCE_REV == pytest.approx(4.0456, abs=5e-4)
-    assert te.RELEASE_POS_REV == pytest.approx(5.9138, abs=5e-4)
+    assert te.RELEASE_POS_REV == pytest.approx(
+        float(hw.HAND_THROW_POS_M) * float(hw.HAND_REV_PER_M), rel=1e-12)
     assert te.STROKE_TOP_REV == pytest.approx(hw.HAND_STROKE_TOP_REV, rel=1e-12)
+    assert te.DECEL_ALLOWANCE_REV == pytest.approx(3.929, abs=5e-4)
+    assert te.RELEASE_POS_REV == pytest.approx(5.7434, abs=5e-4)
 
 
 def test_the_decel_allowance_is_the_stopping_distance_identity():
@@ -65,20 +65,33 @@ def test_the_decel_allowance_is_the_stopping_distance_identity():
     numbers quoted in C-HAND-2 are two readings of one measurement rather than
     two independent claims. If it ever fails, the coast model and the authority
     model have stopped describing the same profile.
+
+    R1: tolerance loosened to 1e-5 (was 1e-12) — HAND_THROW_POS_M is rounded
+    to 6 dp in generate_config.py, and that rounding noise now compounds
+    through the corrected HAND_REV_PER_M into a ~1e-5 relative residual.
     """
     for v in (0.5, 2.742, 3.969, 4.858, 6.0):
-        v_rev = v * hand_stroke.LINEAR_GAIN_REV_PER_M
+        v_rev = v * float(hw.HAND_REV_PER_M)
         assert (v_rev ** 2 / (2.0 * te.commanded_decel_rps2(v))
-                == pytest.approx(te.DECEL_ALLOWANCE_REV, rel=1e-12)), v
+                == pytest.approx(te.DECEL_ALLOWANCE_REV, rel=1e-5)), v
 
 
 def test_commanded_ramps_match_the_shipped_stroke_model():
-    """The envelope reads ``a_cmd`` off ``hand_stroke``, never off a
-    re-derived ``123.55*v^2``. Pinned against the coefficient anyway, so that a
-    change to the stroke constants shows up here as the envelope shift it is."""
+    """The envelope reads ``a_cmd`` off its own closed-form
+    ``_throw_accel_mps2`` (the algebra ``hand_stroke.HandStrokeModel`` used to
+    wrap, kept host-side at R1), never a re-derived coefficient chosen by this
+    test. Pinned against an INDEPENDENTLY recomputed coefficient anyway, so a
+    change to the stroke constants or the measured gain shows up here as the
+    envelope shift it is. R1: 119.99, not the pre-correction 123.55 — the
+    ~3 % shift is exactly ``HAND_REV_PER_M``'s correction (30.706 vs 31.628
+    rev/m)."""
+    ir = float(hw.TEENSY_TRAJ_INERTIA_RATIO)
+    accel_st = te._THROW_ACCEL_STROKE_M
+    coeff = (ir + 1.0) / (2.0 * accel_st * ir) * float(hw.HAND_REV_PER_M)
+    assert coeff == pytest.approx(119.99, abs=0.05)
     for v in (2.742, 3.969, 4.858):
-        assert te.commanded_decel_rps2(v) == pytest.approx(123.5466 * v * v,
-                                                           rel=1e-5)
+        assert te.commanded_decel_rps2(v) == pytest.approx(coeff * v * v,
+                                                           rel=1e-9)
         assert te.commanded_accel_rps2(v) == pytest.approx(
             hw.TEENSY_TRAJ_INERTIA_RATIO * te.commanded_decel_rps2(v), rel=1e-9)
 
@@ -90,10 +103,10 @@ def test_commanded_ramps_match_the_shipped_stroke_model():
 def test_every_declared_input_comes_from_generated_config():
     """No bound may rest on a module literal.
 
-    The one number in this module that is NOT read from ``hardware_config`` is
-    ``MIN_EVENT_DELAY_S``, a local copy of ``catch_coordinator_node``'s floor
-    (importing the node would drag rclpy into a pure module) — pinned separately
-    below, the same pattern ``tests/motion/test_hand_stroke.py`` uses.
+    Every number here comes from ``hardware_config`` — R1 (2026-09-11) deletes
+    the one exception (``MIN_EVENT_DELAY_S``, a local copy of
+    ``catch_coordinator_node``'s floor) along with ``arm_window_s``, its only
+    consumer.
     """
     assert te.HARD_STOP_REV == hw.GEOM_HAND_MOTOR_HARD_STOP_REVS
     assert te.END_STOP_MARGIN_REV == hw.HAND_ENV_END_STOP_MARGIN_REV
@@ -101,7 +114,6 @@ def test_every_declared_input_comes_from_generated_config():
     assert te.CURRENT_LIMIT_A == hw.ODRIVE_HAND_CURR_LIMIT_A
     assert te.TORQUE_SOFT_LIMIT_NM == hw.HAND_ENV_HAND_TORQUE_SOFT_LIMIT_NM
     assert te.J_MEASURED_KGM2 == hw.HAND_ENV_MEASURED_REFLECTED_INERTIA_KGM2
-    assert te.ARM_WINDOW_MARGIN_S == hw.HAND_ENV_ARM_WINDOW_MARGIN_S
     assert te.REGEN_POWER_W == pytest.approx(
         hw.HAND_ENV_REGEN_CURRENT_LIMIT_A * hw.HAND_ENV_DC_BUS_NOMINAL_V)
     assert te.GRAVITY_TORQUE_NM == pytest.approx(
@@ -109,25 +121,6 @@ def test_every_declared_input_comes_from_generated_config():
         * hw.HAND_ENV_HAND_TORQUE_CONSTANT_NM_PER_A)
     assert te.PEAK_LIMIT_REV == pytest.approx(
         hw.GEOM_HAND_MOTOR_HARD_STOP_REVS - hw.HAND_ENV_END_STOP_MARGIN_REV)
-
-
-def test_min_event_delay_matches_the_catch_coordinator():
-    """The one local copy, pinned to its owner by source read.
-
-    ``catch_coordinator_node`` is a ROS node; importing it here would pull
-    rclpy into a pure test. Reading the literal out of the source is the same
-    trick ``tests/ros/test_catch_coordinator_node.py`` pins from the other side.
-    """
-    import os
-    import re
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    src = os.path.join(root, '..', 'ros_ws', 'src', 'jugglebot', 'jugglebot',
-                       'catch_coordinator_node.py')
-    with open(os.path.normpath(src), encoding='utf-8') as f:
-        text = f.read()
-    m = re.search(r'^_MIN_EVENT_DELAY_S\s*=\s*([0-9.]+)', text, re.M)
-    assert m, '_MIN_EVENT_DELAY_S not found in catch_coordinator_node.py'
-    assert float(m.group(1)) == pytest.approx(te.MIN_EVENT_DELAY_S)
 
 
 def test_the_host_coast_margin_is_never_looser_than_the_firmware_clamp():
@@ -283,7 +276,7 @@ def test_above_the_ladder_the_model_is_a_power_law_at_the_pessimistic_exponent()
     # The old "hold achieved decel constant" law was the AUTHORITY-SATURATED
     # shape. It fitted the pre-fix plant and is wrong for this one — it would
     # predict 3.3 rev of coast at the ceiling against the fitted family's 0.39.
-    saturated = ((5.8155 * hand_stroke.LINEAR_GAIN_REV_PER_M) ** 2
+    saturated = ((5.8155 * float(hw.HAND_REV_PER_M)) ** 2
                  / (2.0 * te.TOP_RUNG_ACHIEVED_DECEL_RPS2)
                  - te.DECEL_ALLOWANCE_REV)
     assert saturated > 8 * te.coast_rev(5.8155)
@@ -294,18 +287,17 @@ def test_the_end_stop_claim_survives_a_strict_upper_envelope():
     the family: a single ``C*v^2`` curve forced at or above EVERY measured
     point (C = 0.015362, set by the 3.714 m/s outlier rather than the top rung).
 
-    That curve binds at 5.938 m/s (FW 18, 2026-09-08: was 6.458 m/s before the
-    stop moved 10.8 -> 10.701 rev and shrank ``PEAK_LIMIT_REV`` with it) —
-    still above ``DECEL_AUTHORITY``, though the margin is now tighter. So the
-    conclusion does not depend on the anchoring choice, which is what makes the
-    extrapolation caveat tolerable.
+    That curve binds at 7.344 m/s (R1, 2026-09-11: STROKE_TOP_REV is now
+    generated with the measured ``HAND_REV_PER_M``, which widened the margin
+    over ``DECEL_AUTHORITY`` here). So the conclusion does not depend on the
+    anchoring choice, which is what makes the extrapolation caveat tolerable.
     """
     pts = [(3.142, 0.1342), (3.142, 0.1315), (3.714, 0.1803), (3.714, 0.2119),
            (4.436, 0.226), (4.436, 0.1796)]
     C = max(c / v ** 2.0 for v, c in pts)
     assert C == pytest.approx(0.015362, rel=1e-3)
     strict_bound = ((te.PEAK_LIMIT_REV - te.STROKE_TOP_REV) / C) ** 0.5
-    assert strict_bound == pytest.approx(5.938, abs=5e-3)
+    assert strict_bound == pytest.approx(7.344, abs=5e-3)
     assert strict_bound > te.MAX_RELEASE_SPEED_MPS
 
 
@@ -339,7 +331,7 @@ def test_a_non_positive_margin_refuses_at_import():
     degenerate case that refuses everything — it is one that admits more.
     That asymmetry is why they are validated rather than trusted."""
     import importlib
-    for key in ('HAND_ENV_END_STOP_MARGIN_REV', 'HAND_ENV_ARM_WINDOW_MARGIN_S'):
+    for key in ('HAND_ENV_END_STOP_MARGIN_REV',):
         original = getattr(hw, key)
         try:
             for bad in (0.0, -0.1, float('nan')):
@@ -357,35 +349,36 @@ def test_a_non_positive_margin_refuses_at_import():
 # ══════════════════════════════════════════════════════════════════════════
 
 def test_the_torque_bounds_bind_and_end_stop_does_not():
-    """**The headline, and it inverted on 2026-08-20.**
+    """**The headline, unchanged since 2026-08-20**: the TORQUE bounds bind
+    before END_STOP, so the machine's throw height is limited by what the
+    drive can brake with, not by a metal collision.
 
-    On the pre-fix coast ladder END_STOP bound at 4.357 m/s and torque had
-    1.46 m/s of slack. On the measured post-fix ladder END_STOP does not bind
-    until 6.867 m/s (FW 18, 2026-09-08: was 7.468 m/s before the stop moved
-    10.8 -> 10.701 rev and shrank ``PEAK_LIMIT_REV`` with it) and the TORQUE
-    bounds bind first — ``DECEL_FF_HEADROOM`` at **5.637 m/s**, just ahead of
-    ``DECEL_AUTHORITY``'s 5.816. The machine's throw height is limited by what
-    the drive can brake with, exactly as the owner's directive said it should
-    be — END_STOP's margin over REGEN shrank (6.867 vs 6.574, was 7.468 vs
-    6.574) but the order held.
+    R1 (2026-09-11): every edge shifted with the measured hand gain
+    (``HAND_REV_PER_M`` 30.706 vs the retired fudge-factor gain's 31.628
+    rev/m) and with ``STROKE_TOP_REV`` now generated from it — END_STOP now
+    binds at 8.494 m/s (was 6.867), well clear of every torque bound, because
+    the corrected gain widened ``DECEL_ALLOWANCE_REV`` (3.929 vs 4.046 rev).
+    The ORDER — the contract's whole claim — is unchanged.
 
     The order is pinned because it is the contract's whole claim. If END_STOP
     ever re-enters the front, the plant has regressed toward its pre-fix
     behaviour and the ladder must be re-measured before anything else is done.
     """
+    ir = float(hw.TEENSY_TRAJ_INERTIA_RATIO)
+    coeff = (ir + 1.0) / (2.0 * te._THROW_ACCEL_STROKE_M * ir) * float(hw.HAND_REV_PER_M)
     v_end = ((te.PEAK_LIMIT_REV - te.STROKE_TOP_REV) / te._TOP_COAST) ** (
         1.0 / te.COAST_EXPONENT) * te._TOP_V
-    v_decel = math.sqrt(te.DECEL_AUTHORITY_RPS2 / 123.5466)
+    v_decel = math.sqrt(te.DECEL_AUTHORITY_RPS2 / coeff)
     v_accel = math.sqrt(te.ACCEL_AUTHORITY_RPS2
-                        / (123.5466 * hw.TEENSY_TRAJ_INERTIA_RATIO))
+                        / (coeff * hw.TEENSY_TRAJ_INERTIA_RATIO))
     v_regen = te.REGEN_POWER_W / te.BRAKING_TORQUE_LIMIT_NM / (
-        2.0 * math.pi * hand_stroke.LINEAR_GAIN_REV_PER_M)
-    assert v_decel == pytest.approx(5.816, abs=5e-3)
-    assert v_accel == pytest.approx(5.945, abs=5e-3)
-    assert v_regen == pytest.approx(6.574, abs=5e-3)
-    assert v_end == pytest.approx(6.867, abs=5e-3)
-    v_ff = math.sqrt(te.DECEL_FF_HEADROOM_RPS2 / 123.5466)
-    assert v_ff == pytest.approx(5.637, abs=5e-3)
+        2.0 * math.pi * float(hw.HAND_REV_PER_M))
+    assert v_decel == pytest.approx(5.901, abs=5e-3)
+    assert v_accel == pytest.approx(5.999, abs=5e-3)
+    assert v_regen == pytest.approx(6.769, abs=5e-3)
+    assert v_end == pytest.approx(8.494, abs=5e-3)
+    v_ff = math.sqrt(te.DECEL_FF_HEADROOM_RPS2 / coeff)
+    assert v_ff == pytest.approx(5.720, abs=5e-3)
     assert v_ff < v_decel < v_accel < v_regen < v_end, (
         f'the binding order moved: FF {v_ff:.3f} / DECEL {v_decel:.3f} / '
         f'ACCEL {v_accel:.3f} / REGEN {v_regen:.3f} / END_STOP {v_end:.3f} m/s '
@@ -420,8 +413,11 @@ def test_regen_fences_the_burst_not_the_steady_state():
     # The steady-state check the duty cycle actually has to clear, at the
     # ceiling: peak burst x duty, against the rail's continuous rating.
     peak_w = (te.BRAKING_TORQUE_LIMIT_NM * te.MAX_RELEASE_SPEED_MPS
-              * hand_stroke.LINEAR_GAIN_REV_PER_M * 2.0 * math.pi)
-    duty = hand_stroke.throw_decel_s(te.MAX_RELEASE_SPEED_MPS) / 3.5
+              * float(hw.HAND_REV_PER_M) * 2.0 * math.pi)
+    ir = float(hw.TEENSY_TRAJ_INERTIA_RATIO)
+    t_dec_s = (2.0 * te._THROW_ACCEL_STROKE_M * ir
+              / ((ir + 1.0) * te.MAX_RELEASE_SPEED_MPS))
+    duty = t_dec_s / 3.5
     assert peak_w * duty < 0.1 * te.REGEN_RAIL_STEADY_W, (
         f'{peak_w:.0f} W x {duty:.3%} duty is no longer negligible against the '
         f'{te.REGEN_RAIL_STEADY_W:.0f} W steady-state rail')
@@ -443,19 +439,25 @@ def test_the_current_limit_binds_not_the_torque_soft_limit():
 def test_the_ascent_never_binds_before_the_decel_at_the_top_of_the_band():
     """Proven, not assumed — and the crossing is stated.
 
-    Ascent torque is ``IR * (J_ascent/J)`` = 0.919 of the decel torque at the
+    Ascent torque is ``IR * (J_ascent/J)`` of the decel torque at the
     same speed, plus a constant gravity term, so the two demands cross at
-    ~4.09 m/s: BELOW that the ascent asks for more (but both are far inside the
-    limit), ABOVE it the decel does. Since every bound that matters lives above
-    4.09 m/s, the decel side is always the one that binds at the top.
+    some speed: BELOW that the ascent asks for more (but both are far inside
+    the limit), ABOVE it the decel does. Since every bound that matters lives
+    above the crossing, the decel side is always the one that binds at the top.
+
+    R1 (2026-09-11): the ratio and crossing shifted with the measured
+    ``HAND_REV_PER_M`` (``J_ASCENT_KGM2``'s ball term scales as
+    ``1/gain**2``).
     """
     ratio = (hw.TEENSY_TRAJ_INERTIA_RATIO * te.J_ASCENT_KGM2 / te.J_MEASURED_KGM2)
-    assert ratio == pytest.approx(0.919, abs=2e-3)
+    assert ratio == pytest.approx(0.929, abs=2e-3)
+    ir = float(hw.TEENSY_TRAJ_INERTIA_RATIO)
+    coeff = (ir + 1.0) / (2.0 * te._THROW_ACCEL_STROKE_M * ir) * float(hw.HAND_REV_PER_M)
     crossing = math.sqrt(te.ASCENT_GRAVITY_TORQUE_NM
                          / ((1.0 - ratio) * te.J_MEASURED_KGM2 * 2.0 * math.pi
-                            * 123.5466))
-    assert crossing == pytest.approx(4.09, abs=0.05)
-    for v in (4.5, 5.0, 5.5, 5.8):
+                            * coeff))
+    assert crossing == pytest.approx(4.435, abs=0.05)
+    for v in (4.6, 5.0, 5.5, 5.8):
         decel_frac = te.commanded_decel_rps2(v) / te.DECEL_AUTHORITY_RPS2
         accel_frac = te.commanded_accel_rps2(v) / te.ACCEL_AUTHORITY_RPS2
         assert decel_frac > accel_frac, v
@@ -466,28 +468,10 @@ def test_the_ball_mass_comes_from_the_inertia_ratio_identity():
     ``throwD = -throwA/IR`` a constant-motor-torque design. So the ball mass is
     DERIVED, not a fifth declared number, and C-HAND-2's 0.0952 kg falls out."""
     assert te.BALL_MASS_KG == pytest.approx(0.0952, abs=5e-4)
-    assert te.J_ASCENT_KGM2 - te.J_MEASURED_KGM2 == pytest.approx(2.412e-6,
+    # R1: scales as 1/HAND_REV_PER_M**2, so the corrected (smaller) gain
+    # raises this from the pre-correction 2.412e-6.
+    assert te.J_ASCENT_KGM2 - te.J_MEASURED_KGM2 == pytest.approx(2.557e-6,
                                                                   rel=5e-3)
-
-
-def test_the_arm_window_bound_sizes_the_floor():
-    """The floor is where the catch-arm window reaches the declared margin.
-
-    Not a policy number: below ``ARM_WINDOW_CLOSES_AT_S`` the arm cannot be
-    placed at all — the throw stroke is still decelerating when the Teensy's
-    :533 budget already needed the command — so the ball flies uncatchable.
-    """
-    assert te.ARM_WINDOW_CLOSES_AT_S == pytest.approx(0.4542, abs=1e-3)
-    assert te.MIN_FLIGHT_TIME_S > te.ARM_WINDOW_CLOSES_AT_S
-    at_floor = te.arm_window_s(te.MIN_FLIGHT_TIME_S,
-                               te.vertical_release_speed_mps(
-                                   te.MIN_FLIGHT_TIME_S))
-    assert at_floor == pytest.approx(te.ARM_WINDOW_MARGIN_S, abs=1e-6)
-    # It narrows monotonically toward short flights — which is why the FLOOR,
-    # and not the ceiling, is what this bound sets.
-    widths = [te.arm_window_s(t, te.vertical_release_speed_mps(t))
-              for t in (0.50, 0.60, 0.70, 0.80, 0.88)]
-    assert widths == sorted(widths)
 
 
 def test_the_flight_time_inverse_takes_the_physical_root():
@@ -508,26 +492,6 @@ def test_the_flight_time_inverse_takes_the_physical_root():
     assert math.isnan(te.flight_time_for_vertical_speed_s(0.5 * v_min))
 
 
-def test_the_armed_catch_speed_is_the_production_path():
-    """The armed velocity the window bound uses must be the one the catch will
-    actually be armed with — the ball's VERTICAL arrival speed times the config
-    default knob — or the floor is sized against a different machine.
-
-    Vertical-only is not an approximation for Tier 8b: a horizontal launch
-    component changes neither the vertical launch component nor the fall, so the
-    armed velocity for a displaced throw of the same flight time is identical.
-    """
-    from jugglebot.motion.trajectory import ballistics_bc, toss_release
-    for t in (0.55, 0.80, 0.88):
-        rel = toss_release.compute_release_state(
-            [0.0, 0.0, hw.JB_OP_DEFAULT_ACTIVE_Z_MM], t)
-        expect = (abs(ballistics_bc.arrival_velocity(rel.launch_vel_mms, t)[2])
-                  / 1000.0 * hw.JB_OP_CATCH_VEL_SCALE_DEFAULT)
-        assert te.armed_catch_speed_mps(t) == pytest.approx(expect, rel=1e-9), t
-        assert te.vertical_release_speed_mps(t) == pytest.approx(
-            rel.event_vel_mps, rel=1e-9), t
-
-
 # ══════════════════════════════════════════════════════════════════════════
 #  5. the envelope as shipped
 # ══════════════════════════════════════════════════════════════════════════
@@ -535,19 +499,29 @@ def test_the_armed_catch_speed_is_the_production_path():
 def test_the_derived_band_and_what_it_replaced():
     """The shipped envelope, and the direction it moved.
 
-    Both edges now sit OUTSIDE the old hand-picked ``[0.55, 1.10]``: floor
-    0.4949 s (the arm window does not close until 0.4542), ceiling 1.1850 s
-    (torque). The ceiling passed through 0.8871 s on 2026-08-18, when the model
-    was still the pre-fix coast ladder; the measured post-fix ladder moved it
-    back out past where it started.
+    R1 (2026-09-11): the CEILING is torque-bound as before, now 1.165 s (was
+    1.1485) with the corrected gain. The FLOOR is a DIFFERENT MECHANISM now:
+    ARM_WINDOW (the reactive-catch timing bound that used to set it, closing
+    at 0.4542 s) is deleted with the reactive catch it modelled — R1 leaves no
+    replacement floor bound, so ``_flight_ok`` is the four SPEED bounds alone,
+    and for this machine's near-zero ``RELEASE_TO_CUP_MM`` (6.7 mm — release
+    and catch sit almost at the same hand height) those never rule out an
+    arbitrarily short "flight": the floor now sits AT the search bracket's own
+    ``_SEARCH_LO_S``. This is a KNOWN GAP, not a hardware-safety one — every
+    machine-damage bound (END_STOP/DECEL_AUTHORITY/DECEL_FF_HEADROOM/
+    ACCEL_AUTHORITY/REGEN/WIRE_BAND) still gates real speeds — but a dispatch
+    quality floor is gone. Cross-unit: toss_ilc.py, sim/toss_gate.py and
+    tools/probes/ilc_speed_band.py still read this Tier-8a band; whichever
+    unit owns them this rung should confirm whether it is being retired
+    alongside its legacy FSM callers or needs a new floor.
     """
     lo, hi = te.flight_time_band_s()
-    assert lo == pytest.approx(0.4949, abs=1e-3)
-    assert hi == pytest.approx(1.1485, abs=1e-3)
+    assert lo == pytest.approx(te._SEARCH_LO_S, abs=1e-9)
+    assert hi == pytest.approx(1.165, abs=1e-3)
     apex_lo, apex_hi = te.apex_height_band_m()
-    assert apex_lo == pytest.approx(0.300, abs=2e-3)
-    assert apex_hi == pytest.approx(1.617, abs=3e-3)
-    assert lo < 0.55 and hi > 1.10
+    assert apex_lo == pytest.approx(0.00306, abs=2e-4)
+    assert apex_hi == pytest.approx(1.665, abs=3e-3)
+    assert hi > 1.10
 
 
 def test_the_clamp_was_the_coast_mechanism():
@@ -570,12 +544,13 @@ def test_the_clamp_was_the_coast_mechanism():
     # On the pre-fix ladder, 1.10 s modelled past metal. On this one it does not.
     v = te.vertical_release_speed_mps(1.10)
     assert v == pytest.approx(5.399, abs=2e-3)
-    assert te.peak_rev(v) == pytest.approx(10.294, abs=5e-3)
+    assert te.peak_rev(v) == pytest.approx(10.007, abs=5e-3)
     assert te.peak_rev(v) < te.PEAK_LIMIT_REV
-    # FW 18 (2026-09-08): the metal moved 10.8 -> 10.701 rev, so the same
-    # peak_rev is now 3.1 mm closer to it (16.0 -> 12.9 mm).
-    assert hand_stroke.rev_to_mm(te.HARD_STOP_REV - te.peak_rev(v)) == (
-        pytest.approx(12.9, abs=0.5))
+    # R1 (2026-09-11): STROKE_TOP_REV is now generated with the measured
+    # HAND_REV_PER_M instead of the retired fudge-factor gain, which widened
+    # the modelled clearance to metal at this speed.
+    assert ((te.HARD_STOP_REV - te.peak_rev(v)) / float(hw.HAND_REV_PER_M)
+            * 1000.0) == pytest.approx(22.6, abs=0.5)
 
 
 def test_the_shipped_working_point_is_now_admitted():
@@ -590,9 +565,9 @@ def test_the_shipped_working_point_is_now_admitted():
     v = te.vertical_release_speed_mps(0.9032)
     assert v == pytest.approx(4.4360, abs=1e-3)
     assert te.evaluate(0.9032, v).ok
-    assert te.peak_rev(v) == pytest.approx(10.185, abs=5e-3)
-    assert hand_stroke.rev_to_mm(te.HARD_STOP_REV - te.peak_rev(v)) == (
-        pytest.approx(16.3, abs=0.3))
+    assert te.peak_rev(v) == pytest.approx(9.898, abs=5e-3)
+    assert ((te.HARD_STOP_REV - te.peak_rev(v)) / float(hw.HAND_REV_PER_M)
+            * 1000.0) == pytest.approx(26.1, abs=0.3)
 
 
 def test_the_default_toss_is_admitted():
@@ -610,9 +585,13 @@ def test_the_default_toss_is_admitted():
 
 
 def test_the_band_does_not_touch_its_own_search_bracket():
-    """A band that reached the search bracket would be a configuration error
-    reported as a physical answer. Both ends are deliberately unflyable."""
-    assert te._SEARCH_LO_S < te.MIN_FLIGHT_TIME_S
+    """The CEILING must not reach the search bracket (a configuration error
+    reported as a physical answer). The FLOOR, since R1, legitimately DOES
+    reach ``_SEARCH_LO_S`` for this machine — see
+    ``test_the_derived_band_and_what_it_replaced`` for why (ARM_WINDOW,
+    the mechanism that used to set the floor, is deleted with no
+    replacement)."""
+    assert te._SEARCH_LO_S <= te.MIN_FLIGHT_TIME_S
     assert te.MAX_FLIGHT_TIME_S < te._SEARCH_HI_S
 
 
@@ -623,12 +602,14 @@ def test_reported_band_edges_agree_with_evaluate():
     including on which SIDE of the crossing each edge lands, because an edge a
     float epsilon into the refused half breaks every consumer that samples the
     band at its own edge (the sim sweep does exactly that).
+    R1 (2026-09-11): the LOWER edge is no longer a real bound crossing (see
+    ``test_the_derived_band_and_what_it_replaced`` — ARM_WINDOW, which used to
+    set it, is deleted with no replacement, so ``lo`` now sits exactly at the
+    search floor); only the ceiling side is checked for a genuine crossing.
     """
     lo, hi = te.flight_time_band_s()
     assert te.evaluate(lo, te.vertical_release_speed_mps(lo)).ok
     assert te.evaluate(hi, te.vertical_release_speed_mps(hi)).ok
-    assert not te.evaluate(lo - 1e-4,
-                           te.vertical_release_speed_mps(lo - 1e-4)).ok
     assert not te.evaluate(hi + 1e-4,
                            te.vertical_release_speed_mps(hi + 1e-4)).ok
     assert te.evaluate(0.80, te.MAX_RELEASE_SPEED_MPS).ok
@@ -642,7 +623,7 @@ def test_the_speed_gate_is_independent_of_the_flight_time():
     throw, which is the failure this signature exists to prevent."""
     t = 0.80                      # comfortably inside the band on its own
     assert te.evaluate(t, te.vertical_release_speed_mps(t)).ok
-    faster = te.evaluate(t, 5.7)  # an 8b aim that releases far harder
+    faster = te.evaluate(t, 5.85)  # an 8b aim that releases far harder
     assert not faster.ok and faster.bound == 'DECEL_FF_HEADROOM'
 
 
@@ -651,24 +632,23 @@ def test_the_speed_gate_is_independent_of_the_flight_time():
 # ══════════════════════════════════════════════════════════════════════════
 
 @pytest.mark.parametrize('flight_s, speed, bound', [
-    (0.80, 7.6, 'END_STOP'),    # only reachable above the wire band; bounds are
+    (0.80, 8.6, 'END_STOP'),    # only reachable above the wire band; bounds are
                                 #   ordered machine-damage-first so it still wins
-    (0.80, 5.70, 'DECEL_FF_HEADROOM'),  # between the FF line (5.637) and the
-                                        #   hard authority line (5.816)
+    (0.80, 5.80, 'DECEL_FF_HEADROOM'),  # between the FF line (5.720) and the
+                                        #   hard authority line (5.901)
     (0.80, 6.20, 'DECEL_AUTHORITY'),    # past both; the harder limit reports
-    (0.40, None, 'ARM_WINDOW'),
     (float('nan'), 3.0, 'INPUT'),
     (-0.8, 3.0, 'INPUT'),
     (0.80, 0.0, 'INPUT'),
-    (0.80, 0.2, 'WIRE_BAND'),   # under the bridge floor. 7.5 m/s would read
+    (0.80, 0.2, 'WIRE_BAND'),   # under the bridge floor. 8.6 m/s would read
                                 #   END_STOP, because bounds are ordered
-                                #   machine-damage-first and 7.5 is 4 rev past
+                                #   machine-damage-first and 8.6 is past
                                 #   metal long before the wire objects
 ])
 def test_the_refusal_names_the_bound(flight_s, speed, bound):
     """Every refusal carries ``BOUND:numbers``. A bare "too high" sends the
-    operator to the wrong knob — throw LOWER for END_STOP, HIGHER for
-    ARM_WINDOW — so the bound name is the load-bearing half of the message."""
+    operator to the wrong knob, so the bound name is the load-bearing half of
+    the message."""
     v = te.vertical_release_speed_mps(flight_s) if speed is None else speed
     verdict = te.evaluate(flight_s, v)
     assert not verdict.ok
@@ -677,16 +657,12 @@ def test_the_refusal_names_the_bound(flight_s, speed, bound):
 
 
 def test_the_refusal_carries_the_computed_envelope_not_just_a_complaint():
-    """The two bounds an operator actually hits must quote BOTH the offending
+    """The bound an operator actually hits must quote BOTH the offending
     quantity and the envelope, so the next goal can be typed off one line."""
-    hi = te.evaluate(0.80, 7.6)
+    hi = te.evaluate(0.80, 8.6)
     assert 'peak' in hi.detail and 'rev' in hi.detail
     assert 'hard stop' in hi.detail and 'margin' in hi.detail
     assert 'envelope allows' in hi.detail and 'apex' in hi.detail
-
-    lo = te.evaluate(0.40, te.vertical_release_speed_mps(0.40))
-    assert 'window' in lo.detail and 'closes entirely' in lo.detail
-    assert 'envelope allows' in lo.detail and 'apex' in lo.detail
 
 
 def test_an_admitted_throw_returns_a_clean_verdict():

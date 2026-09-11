@@ -39,9 +39,8 @@ uint64_t interp_last_setpoint_us();
 // Monotonic (us) of the most recent 500 Hz interp tick. Torn-load-guarded, so it is
 // safe to call from a FreeRTOS task even though the ISR is the only writer.
 // Diagnostic use: `micros64() - interp_last_tick_us()` is the caller's PHASE within
-// the 2 ms interp cycle — hand_ops stamps every HAND_TRAJ_CMD with it (2026-08-09),
-// which is the falsifiable test of the phase-locked-dispatch-quantisation verdict in
-// logbook/2026-08-02-err-timeout-attribution-instrumentation.md § A3. Returns 0 until
+// the 2 ms interp cycle. It also age-corrects the HAND_CMD_ECHO wall stamp
+// (telemetry.cpp) so the stamp dates the SAMPLE, not the emit. Returns 0 until
 // the first tick (and after interp_reset()), so a stamp taken before the interp is
 // running is meaningless, not merely large.
 uint64_t interp_last_tick_us();
@@ -104,8 +103,8 @@ bool interp_stow_active();
 bool interp_stow_complete();  // true once all legs reached the off pose
 
 // ── Hand lane (axis 6) — unified-7dof FW 17 ──────────────────────────────────
-// The 7th interpolated channel. Active only while a latched setpoint carried
-// HAS_HAND *and* hand_source == STREAMED (hand_source.h); inert otherwise.
+// The 7th interpolated channel, and the ONLY hand master since FW 21. Active
+// while a latched setpoint carried HAS_HAND; inert otherwise.
 // Counters are CUMULATIVE SINCE BOOT (the interp census idiom above — the
 // consumer differences two reads; interp_reset() zeroes them with the rest).
 
@@ -130,19 +129,13 @@ uint32_t interp_hand_sent();
 uint32_t interp_hand_unseen_skips();
 uint32_t interp_hand_stale_holds();
 
-// Setpoint index-6 discards while hand_source == LEGACY — the § 2.4 "discarded
-// on a visible counter". A climbing value with a v6 host means the host is
-// emitting hand knots the firmware is refusing by mode: switch the source, or
-// stop the producer.
-uint32_t interp_hand_discard_legacy();
-
-// ── Hand deviation guard (MAX_DEVIATION_HAND_REV, observe-first) ─────────────
+// ── Hand deviation guard (MAX_DEVIATION_HAND_REV, ARMED at power-on) ────────
 // The residual is computed EVERY 500 Hz tick while the lane is active:
 //   dev = (raw interpolated hand command, pre-clamp) − (fb + fb_vel·age)
 // (velocity-compensated both sides — Phase 0 Decision 4). The tick's verdict
 // is a cumulative exceed-tick counter the 10 Hz fault task differences (race-
 // free single-writer census — no read-then-clear); the max |residual| and the
-// worst-tick snapshot are the observe-first sitting's read.
+// worst-tick snapshot are the bench `hand7 observe` read.
 uint32_t interp_hand_dev_over_ticks();   // ticks with |dev| > MAX_DEVIATION_HAND_REV
 float    interp_hand_dev_last();         // most recent tick's residual (rev)
 float    interp_hand_dev_max();          // max |residual| since boot/reset (signed value at the max)
@@ -156,10 +149,13 @@ float    interp_hand_dev_snap_fb();      // age-extrapolated fb at that tick
 float    interp_hand_dev_trip_dev();     // residual at the most recent exceed tick
 float    interp_hand_dev_trip_cmd();     // raw command at that tick
 float    interp_hand_dev_trip_fb();      // age-extrapolated fb at that tick
-// Observe→arm switch (explicit, per the Phase 0 observe-first decision): boots
-// FALSE (observe — report only); `hand7 arm` on the console arms the E-STOP
-// trip for the second sitting. Runtime, not a build flag, so arming needs no
-// reflash and every boot returns to the safe observe state.
+// Observe→arm switch. Boots TRUE (ARMED) since FW 21 (skill-stack R1, owner
+// 2026-09-11): with one hand master and no stroke-engine prelude an observing
+// guard is no guard. `hand7 observe` lowers it for a bench read of the residual
+// and `hand7 arm` puts it back early; otherwise the DISARM edge that ends the
+// armed session (interp_set_output_enabled true→false) returns it to ARMED, so
+// a bench read lasts one session and can never leave the guard off for the next.
+// Runtime, not a build flag, so a bench read needs no reflash.
 bool interp_hand_dev_guard_armed();
 void interp_set_hand_dev_guard_armed(bool armed);
 
@@ -174,7 +170,7 @@ void interp_set_hand_dev_guard_armed(bool armed);
 // the only way to zero these was a Teensy reboot, which also destroys the uptime
 // state a sitting is often there to interrogate, so every reading had to be
 // differenced across the stage by hand. It clears counters and observations
-// ONLY: the observe/arm switch, the hand_source latch and the lane's knot state
+// ONLY: the observe/arm switch and the lane's knot state
 // are untouched, so a reset can neither arm nor disarm the guard. The armed
 // MAX_DEVIATION census tolerates it because the fault machine trips on a
 // counter INCREASE, never on a change (fault_machine.cpp).

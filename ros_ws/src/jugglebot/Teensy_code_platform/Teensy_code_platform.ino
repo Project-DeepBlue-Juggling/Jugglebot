@@ -13,6 +13,13 @@
  *      – Maintains wall‑time offset (Jetson wall‑time − micros64())
  *      – Prints jitter stats once per second
  *
+ *  INVARIANT I-FW-15 (since FW 7, skill-stack R1).  The can-bridge is the SOLE
+ *  axis-6 writer: this board neither transmits to CAN node 6 nor subscribes to
+ *  its encoder.  This board's TX set is the inclinometer frame (0x7DE), the
+ *  RobotState reply (0x6E0), the firmware-update reply (0x6F1) and the traffic
+ *  report (0x7DF) — nothing else.  The stroke engine (Trajectory.h, the 0x6D0
+ *  TRAJ_CMD decode, the 0x0C9 hand-encoder cache) was deleted with it.
+ *
  *  NOTE on CAN IDs:
  *    ODrives occupy 0x000–0x0DF (7 × 32 IDs). Broadcast ID 0x7E0..0x7FF must
  *    also stay free.  All custom IDs here (0x6E0–0x7DF) are safe.
@@ -22,12 +29,10 @@
 #include <FlexCAN_T4.h>
 #include <SPI.h>
 #include <SCL3300.h>
-#include <vector>
-#include "Trajectory.h"
+#include "hardware_config.h"  // Auto-generated from config/hardware_config.yaml
 #include "protocol_config.h"  // Auto-generated from config/protocol_config.yaml
 
 #define DEBUG_TRAFFIC 0    // 0 = silent, 1 = Serial print report CAN traffic frames
-#define DEBUG_TRAJ 0       // 0 = silent, 1 = Serial print each hand traj frame as it gets sent out
 #define DEBUG_TIME_SYNC 0  // 0 = silent, 1 = Serial print periodic messages showing how tight the clocks are synced
 
 /*----------------------------------------------------------------------------*/
@@ -79,8 +84,9 @@
  *        VELOCITY streams are BIT-IDENTICAL to v1 on every kind; the accel and
  *        velocity-hold torques, all of kind 1, and `makeSmoothMove` are
  *        untouched.  Fixes the light end-stop contact measured at ~1.2 m throws
- *        on 2026-07-27.  Contract: ros_ws/docs/hand_decel_feedforward.md
- *        (C-HAND-2).  Plan: plans/archived/hand-command-continuity.md Phase 7.
+ *        on 2026-07-27.  Contract: C-HAND-2, retired with this code at FW 7;
+ *        its surviving measurements are ros_ws/docs/hand_throw_envelope.md
+ *        § Surviving measurements.  Plan: plans/archived/hand-command-continuity.md Phase 7.
  *        A v1 board is not unsafe, it simply still coasts — but every
  *        § CHECK HAND-7 row is meaningless on one, so read FW-1 first.
  *
@@ -117,9 +123,27 @@
  *        Why the path exists at all: this board's micro-USB port is physically
  *        damaged and the Teensy bootloader chip speaks ONLY USB, so after this
  *        one flash, CAN is the only remaining route in.
+ *    6 = 2026-09-09.  FIRST IMAGE BUILT ON THE JETSON (`pio run -e teensy40
+ *        -t upload`) and flashed over CAN.  No code change beyond the number:
+ *        with the USB console gone, the STATE_READ version (5 -> 6) is the
+ *        only proof the copy landed and the new image runs.
+ *    7 = 2026-09-11.  STROKE ENGINE DELETED — skill-stack R1, one hand master.
+ *        Gone: `Trajectory.h` (makeThrow/makeCatch/makeFull/makeSmoothMove/
+ *        throwDecelToTorque/accelToTorque), the 0x6D0 TRAJ_CMD decode and its
+ *        smooth-move prelude, the packed-frame scheduler that streamed
+ *        set_input_pos to CAN node 6, and the 0x0C9 hand-encoder cache.  After
+ *        this image the can-bridge is the SOLE axis-6 writer (I-FW-15) and this
+ *        board never transmits to node 6 at all.  UNCHANGED: the SCL3300
+ *        inclinometer (0x7DE), the TimeSync slave (0x7DD), the RobotState
+ *        exchange incl. the FW_VERSION reply bytes and the cold-start state,
+ *        the traffic monitor, and the 0x6F0/0x6F1 firmware-update endpoint —
+ *        whose BEGIN/COMMIT `engineIdle()` guard went with the streamer it
+ *        protected (there is no longer a throw to reboot into the middle of;
+ *        `ST_BUSY` is retired but its number stays reserved).  Plan:
+ *        plans/active/two-ball-skill-stack.md § 4 R1.
  */
 constexpr char     FW_NAME[]  = "jugglebot-platform";
-constexpr uint16_t FW_VERSION = 6;   // 1→2: 2026-07-29 throwDecelToTorque (post-release decel
+constexpr uint16_t FW_VERSION = 7;   // 1→2: 2026-07-29 throwDecelToTorque (post-release decel
                                      //      feedforward, C-HAND-2).
                                      // 2→3: 2026-08-18 hand END-STOP correction — BEHAVIOURAL.
                                      //      Geometry::HAND_MOTOR_HARD_STOP_REVS 11.1 → 10.8 rev
@@ -149,6 +173,11 @@ constexpr uint16_t FW_VERSION = 6;   // 1→2: 2026-07-29 throwDecelToTorque (po
                                      //      the receipt — with the USB console gone, the
                                      //      STATE_READ version (5 → 6) is the only proof the
                                      //      copy landed and the new image runs.
+                                     // 6→7: 2026-09-11 skill-stack R1 — stroke engine deleted:
+                                     //      0x6D0 decode, hand encoder cache, Trajectory.h.
+                                     //      Inclinometer / time-sync / RobotState / firmware
+                                     //      update unchanged. The can-bridge is now the sole
+                                     //      axis-6 writer (I-FW-15).
 
 /*----------------------------------------------------------------------------*/
 /*                                CAN BUS SET‑UP                              */
@@ -169,8 +198,6 @@ constexpr uint32_t REPORT_ID      = PlatformCanId::TRAFFIC_REPORT;
 constexpr uint32_t tiltID          = PlatformCanId::TILT_READING;
 constexpr uint32_t timeSyncID      = SharedCanId::TIME_SYNC;
 constexpr uint32_t stateUpdateID   = PlatformCanId::STATE_UPDATE;
-constexpr uint32_t CMD_TRAJ_ID     = PlatformCanId::TRAJ_CMD;
-constexpr uint32_t TRAJ_OUT_ID     = (NodeId::JUGGLEBOT_HAND << 5) | ODriveCmd::set_input_pos;
 constexpr uint32_t FW_UPD_CMD_ID   = PlatformCanId::FW_UPDATE_CMD;    // host → this board
 constexpr uint32_t FW_UPD_REPLY_ID = PlatformCanId::FW_UPDATE_REPLY;  // this board → host
 
@@ -213,30 +240,6 @@ struct platformTilt {
   float tiltX;
   float tiltY;
 };
-
-/*----------------------------------------------------------------------------*/
-/*                        HAND ENCODER ESTIMATES                              */
-/*----------------------------------------------------------------------------*/
-constexpr uint32_t HAND_AXIS_NODE = NodeId::JUGGLEBOT_HAND;
-constexpr uint32_t HAND_ENC_EST_ID = (HAND_AXIS_NODE << 5) | ODriveCmd::get_encoder_estimate;
-
-/* most-recent hand state (updated at 500 Hz)                           *
- * 32-bit float writes are atomic on Cortex-M7, but mark them           *
- * volatile so the compiler never caches them between ISR & main loop. */
-volatile float current_hand_position = 0.0f;  // rev
-volatile float current_hand_velocity = 0.0f;  // rev/s
-volatile uint64_t last_hand_update_us = 0;    // wall-clock, µs
-
-inline void getHandPosVel(float &pos, float &vel, uint64_t &t_us) {
-  uint64_t ts1, ts2;
-  do {
-    ts1 = last_hand_update_us;
-    pos = current_hand_position;
-    vel = current_hand_velocity;
-    ts2 = last_hand_update_us;
-  } while (ts1 != ts2);  // repeat if an update happened
-  t_us = ts1;
-}
 
 /*----------------------------------------------------------------------------*/
 /*                        ──  TIME–SYNC  LAYER ──                             */
@@ -343,67 +346,6 @@ inline void maybePrintStats() {
 }
 }  // namespace TimeSync
 
-/* Reconstruct full 64-bit wall_time_ms from low 32-bit field    */
-/* Assumes local wall-clock is synced to Jetson within ±24 days   */
-static uint64_t reconstructWallMs(uint32_t low32) {
-  uint64_t now_ms = TimeSync::get_wall_time_us() / 1000ULL;  // full 64-bit
-
-  uint64_t candidate = (now_ms & 0xFFFFFFFF00000000ULL) | low32;
-
-  /* if candidate is more than +24.9 d in the future, subtract one wrap */
-  if (candidate > now_ms + 0x80000000ULL) candidate -= 0x100000000ULL;
-  /* if candidate is more than -24.9 d in the past, add one wrap */
-  else if (candidate + 0x80000000ULL < now_ms) candidate += 0x100000000ULL;
-
-  return candidate;  // full 64-bit wall_time_ms
-}
-
-/* ----------- helper: true (wall-clock) time, 64-bit ----------- */
-inline uint64_t now_wall_us() {
-  return TimeSync::get_wall_time_us();
-}
-
-/*----------------------------------------------------------------------------*/
-/*                           Trajectory Scheduler                             */
-/*----------------------------------------------------------------------------*/
-
-Trajectory activeTraj;
-elapsedMicros trajClock;  // runs only when trajectory active
-bool trajActive = false;
-size_t nextIdx = 0;
-uint32_t nextSendUs = 0;
-float vel_scale = InputScale::hand_vel;      // Scaling factor as set on the ODrive `input_vel_scale`
-float tor_scale = InputScale::hand_tor;      // Scaling factor as set on the ODrive `input_torque_scale`
-std::vector<CAN_message_t> packedMsgs;      // Pre-packed CAN frames (to tighten broadcasting timing)
-std::vector<uint64_t> sendUs;               // Absolute μs after traj start for each CAN frame
-constexpr uint32_t SAFETY_GAP_US = TeensyOp::SAFETY_GAP_US;  // min pause after smooth-move before main trajectory begins
-
-/* pack one full trajectory into the global buffers -------------- */
-void packTrajectory(const Trajectory &tr, uint64_t abs_t0_us) {
-  for (size_t k = 0; k < tr.t.size(); ++k) {
-
-    CAN_message_t fm;
-    fm.id = TRAJ_OUT_ID;
-    fm.len = 8;
-
-    float pos_f = tr.x[k];
-    int16_t vel_i = int16_t(lrintf(tr.v[k] * vel_scale));
-    int16_t tor_i = int16_t(lrintf(tr.tor[k] * tor_scale));
-
-    memcpy(&fm.buf[0], &pos_f, 4);
-    fm.buf[4] = vel_i & 0xFF;
-    fm.buf[5] = vel_i >> 8;
-    fm.buf[6] = tor_i & 0xFF;
-    fm.buf[7] = tor_i >> 8;
-
-    packedMsgs.push_back(fm);
-
-    int64_t rel_us = lrintf(tr.t[k] * 1'000'000.f);
-    uint64_t abs_us = uint64_t(int64_t(abs_t0_us) + rel_us);
-    sendUs.push_back(abs_us);
-  }
-}
-
 /*----------------------------------------------------------------------------*/
 /*              F I R M W A R E   U P D A T E   O V E R   C A N               */
 /*----------------------------------------------------------------------------*/
@@ -505,7 +447,10 @@ constexpr uint8_t OP_BEGIN = 0x01, OP_DATA = 0x02, OP_VERIFY = 0x03, OP_COMMIT =
 /*  Status codes (byte 1 of the 0x6F1 reply).  THE CAN-BRIDGE RELAY AND THE HOST
  *  TOOL MIRROR THIS TABLE VERBATIM — never renumber a code, only append. */
 constexpr uint8_t ST_OK           = 0;
-constexpr uint8_t ST_BUSY         = 1;  // trajectory engine not idle (BEGIN, COMMIT)
+constexpr uint8_t ST_BUSY         = 1;  // RETIRED at FW 7 — never sent since the stroke
+                                        // engine was deleted (I-FW-15). The number stays
+                                        // reserved so the host status table keeps its
+                                        // meaning for pre-FW-7 replies.
 constexpr uint8_t ST_BAD_STATE    = 2;  // no session open, wrong phase, or malformed dlc
 constexpr uint8_t ST_BAD_SEQ      = 3;  // out-of-order DATA; seq field = the expected seq
 constexpr uint8_t ST_TOO_BIG      = 4;  // image_len > staging capacity, or DATA past image_len
@@ -541,13 +486,6 @@ inline bool sessionOpen() { return phase != P_IDLE; }
 inline uint32_t stagingBase() {
   const uint32_t img_end = FLASH_BASE + (uint32_t)&_flashimagelen;
   return (img_end + (SECTOR_SIZE - 1u)) & ~(SECTOR_SIZE - 1u);
-}
-
-/*  The trajectory streamer must be quiet before we touch flash: a sector flush
- *  stalls this loop for tens of milliseconds, and the streamer's whole job is to
- *  put frames on the wire at absolute wall-clock times. */
-inline bool engineIdle() {
-  return !trajActive && nextIdx >= packedMsgs.size();
 }
 
 void reply(uint8_t op, uint8_t status, uint16_t seq, uint32_t detail) {
@@ -675,11 +613,6 @@ void handleCommand(const CAN_message_t &msg) {
 
     case OP_BEGIN: {
       if (msg.len < 5) { reply(op, ST_BAD_STATE, 0, 0); return; }
-      if (!engineIdle()) {
-        Serial.println("[fwupd] BEGIN refused: trajectory engine busy");
-        reply(op, ST_BUSY, 0, 0);
-        return;
-      }
       const uint32_t len = uint32_t(msg.buf[1]) | (uint32_t(msg.buf[2]) << 8)
                          | (uint32_t(msg.buf[3]) << 16) | (uint32_t(msg.buf[4]) << 24);
 
@@ -781,10 +714,6 @@ void handleCommand(const CAN_message_t &msg) {
 
     case OP_COMMIT: {
       if (phase != P_VERIFIED) { reply(op, ST_BAD_STATE, last_seq, 0); return; }
-      if (!engineIdle()) {     // never reboot into the middle of a throw
-        reply(op, ST_BUSY, last_seq, 0);
-        return;
-      }
       /* Reply BEFORE the copy and let it drain: once the erase starts, this
        * board answers nothing until it comes back up on the new image. */
       reply(op, ST_OK, last_seq, 0);
@@ -801,8 +730,8 @@ void handleCommand(const CAN_message_t &msg) {
 }
 
 /*  Called from loop().  An abandoned session (host crashed, cable pulled) would
- *  otherwise keep the trajectory refusal in canSniff in force for ever — and
- *  this board has no console left to explain why it went deaf — so time it out.
+ *  otherwise hold flash-staging state for ever — and this board has no console
+ *  left to explain why — so time it out.
  *  60 s is long enough that no live transfer, and no operator pausing between
  *  VERIFY and COMMIT, can trip it. */
 void tick() {
@@ -810,7 +739,7 @@ void tick() {
   if (millis() - last_cmd_ms > SESSION_IDLE_MS) {
     phase    = P_IDLE;
     buf_fill = 0;
-    Serial.println("[fwupd] session idle — aborted, trajectories re-enabled");
+    Serial.println("[fwupd] session idle — aborted");
   }
 }
 
@@ -910,7 +839,7 @@ void sendTiltData(platformTilt til) {
  *
  *  The dlc stays 8 in both directions, so the can-bridge's (can_id, dlc) reply
  *  correlator (udp_protocol.h PlatformFrame) is untouched, no new CAN id exists,
- *  and NOT ONE EXTRA FRAME is added to CAN3 — which the 0x6D0 hand conduit shares.
+ *  and NOT ONE EXTRA FRAME is added to CAN3.
  */
 void createStateCANMessage(const RobotState &s, CAN_message_t &m) {
   uint8_t flags = (s.is_homed << 0) | (s.levelling_complete << 1);
@@ -1005,158 +934,10 @@ void canSniff(const CAN_message_t &msg) {
   /* ── firmware update over CAN  ID 0x6F0 ──────────────────────────
    * See § FIRMWARE UPDATE OVER CAN.  Returns early: the id has no other
    * meaning on this board, and a BEGIN/DATA burst has no business walking
-   * the trajectory unpacker below. */
+   * the timing analyser below. */
   if (msg.id == FW_UPD_CMD_ID) {
     FwUpdate::handleCommand(msg);
     return;
-  }
-
-  /* ── hand encoder estimates (axis 6) ───────────────────────────── */
-  if (msg.id == HAND_ENC_EST_ID && msg.len == 8) {
-    float pos, vel;
-    memcpy(&pos, &msg.buf[0], 4);  // Pos_Estimate   [rev]
-    memcpy(&vel, &msg.buf[4], 4);  // Vel_Estimate   [rev/s]
-
-    current_hand_position = pos;
-    current_hand_velocity = vel;
-    last_hand_update_us = TimeSync::get_wall_time_us();  // 64-bit
-
-    return;  // nothing else to do for this frame
-  }
-
-  /* ── trajectory command  ID 0x6D0  ───────────────────────────────
-  Byte 0 : kind          (0=Throw  1=Catch  2=Full)
-  Byte 1‑2 : velocity*100 (uint16, little‑endian, 0.01 m/s units)
-  Byte 3‑6 : wall‑time ms (uint32, little‑endian, absolute Unix)
-  Byte 7 : reserved (0)
-
-  Kind 3 (smooth-move to position):
-  Byte 0 : kind (3)
-  Byte 1-4 : target_pos (float32, little-endian, revs)
-  Byte 5-7 : reserved (0)
-  */
-  if (msg.id == CMD_TRAJ_ID && msg.len == 8) {
-
-    /* ---- firmware-update interlock -------------------------------- *
-     * A staging flush erases and programs a 4 KB sector, which stalls this
-     * loop — and therefore the trajectory streamer — for tens of ms.  The
-     * streamer's entire contract is to put frames on the wire at absolute
-     * wall-clock times, so a stall mid-throw is a hand that stops dead and
-     * then jumps.  Refuse to ARM while a session is open (an already-armed
-     * trajectory is impossible: BEGIN is gated on `engineIdle()`).  The
-     * refusal is self-clearing — FwUpdate::tick() times an abandoned session
-     * out after SESSION_IDLE_MS. */
-    if (FwUpdate::sessionOpen()) {
-      Serial.println("! traj command ignored: firmware-update session open");
-      return;
-    }
-
-    /* ---- unpack kind ---- */
-    uint8_t kind = msg.buf[0];
-
-    /* ---- kind 3: standalone smooth-move to position --------------- *
-     * Byte 1-4: target_pos (float32, little-endian, revs)
-     * Byte 5-7: reserved (0)
-     */
-    if (kind == 3) {
-      float target_rev;
-      memcpy(&target_rev, &msg.buf[1], 4);
-
-      Trajectory smooth = makeSmoothMove(target_rev);
-      if (smooth.t.empty()) {
-        Serial.println("Smooth-move: already at target (or delta ~0).");
-        return;
-      }
-
-      uint64_t now_us = TimeSync::get_wall_time_us();
-
-      packedMsgs.clear();
-      sendUs.clear();
-      packedMsgs.reserve(smooth.t.size());
-      sendUs.reserve(smooth.t.size());
-
-      packTrajectory(smooth, now_us);  // start immediately
-
-      nextIdx = 0;
-      trajActive = true;
-
-      float dur_s = smooth.t.back();
-      Serial.printf("Smooth-move armed: target=%.3f rev  pts=%u  dur=%.2f s\n",
-                    target_rev, (unsigned)smooth.t.size(), dur_s);
-      return;
-    }
-
-    /* ---- unpack kind 0-2 fields ---- */
-    uint16_t vel_u16 = msg.buf[1] | (msg.buf[2] << 8);
-    float vel = vel_u16 * 0.01f;  // back to m/s
-
-    uint32_t event_lo = msg.buf[3] |  // Lowest 32 bits of the timestamp
-                        (msg.buf[4] << 8) | (msg.buf[5] << 16) | (msg.buf[6] << 24);
-    uint64_t event_ms_full = reconstructWallMs(event_lo);
-    uint64_t event_wall_us = event_ms_full * 1000ULL;  // Convert the event wall time into microseconds
-
-    /* ----- debug: show received main-event time ---------------- */
-    // Serial.printf("[HAND TRAJ] received event wall-time_ms=0x%08lX  "
-    //               "(%llu ms (UTC)))\n",
-    //               event_lo, (unsigned long long)event_ms_full);
-
-    // Serial.printf("Current wall-time: %llu ms (UTC)\n",
-    //               TimeSync::get_wall_time_us()/1000ULL);
-
-    /* ---- kind 0-2: build trajectory ---- */
-    HandTrajGenerator gen(vel);
-    switch (kind) {
-      case 0: activeTraj = gen.makeThrow(); break;
-      case 1: activeTraj = gen.makeCatch(); break;
-      case 2: activeTraj = gen.makeFull(); break;
-      default: Serial.println("! unknown traj kind"); return;
-    }
-
-    /* -------------- SMOOTH-MOVE PRELUDE --------------------------- */
-    Trajectory smooth = makeSmoothMove(activeTraj.x.front());
-    uint64_t now_us = TimeSync::get_wall_time_us();
-    uint32_t smoothDur_us = smooth.t.empty() ? 0 : uint32_t(lrintf(smooth.t.back() * 1'000'000.f));
-
-    /* first frame of main trajectory (could be < event time) */
-    int64_t firstMainRel_us =
-      lrintf(activeTraj.t.front() * 1'000'000.f);
-    uint64_t firstMainAbs_us =
-      uint64_t(int64_t(event_wall_us) + firstMainRel_us);
-
-    /* ----- time-budget check ------------------------------------- */
-    if (now_us + smoothDur_us + SAFETY_GAP_US > firstMainAbs_us) {
-      Serial.println("❌  Not enough time for smooth-move; command ignored.");
-      return;  // abort
-    }
-
-    /* --------------- PACK BOTH TRAJECTORIES ----------------------- */
-    packedMsgs.clear();
-    sendUs.clear();
-    packedMsgs.reserve(smooth.t.size() + activeTraj.t.size());
-    sendUs.reserve(smooth.t.size() + activeTraj.t.size());
-
-    if (!smooth.t.empty())
-      packTrajectory(smooth, now_us);  // start immediately
-
-    packTrajectory(activeTraj, event_wall_us);  // already wall-aligned
-
-    /* -------------- ARM SCHEDULER ------------------------------- */
-    nextIdx = 0;
-    trajActive = true;
-
-    /* -------------- DEBUG --------------------------------------- */
-    float wait_main_s = float(firstMainAbs_us - now_us) / 1e6f;
-    Serial.printf("Smooth-move pts=%u dur=%.2f s | "
-                  "main pts=%u starts_in=%.2f s  (kind=%u vel=%.2f)\n",
-                  smooth.t.size(), smoothDur_us / 1e6f,
-                  activeTraj.t.size(), wait_main_s,
-                  kind, vel);
-
-    /* ---------- debugging ------------- */
-    float wait_s = float(event_wall_us - now_wall_us()) / 1e6f;
-    if (wait_s < 0) wait_s = 0.f;  // shouldn’t be, but guard
-    Serial.printf("Trajectory armed: kind=%u  vel=%.2f  pts=%u  starts_in=%.3f s\n",
-                  kind, vel, packedMsgs.size(), wait_s);
   }
 
   // debugPrintMessage(msg);
@@ -1206,28 +987,4 @@ void loop() {
   #if DEBUG_TIME_SYNC
     TimeSync::maybePrintStats();  // console jitter read‑out, if desired.
   #endif
-
-  /* ---- trajectory point streamer ---- */
-  if (trajActive && nextIdx < packedMsgs.size()) {
-    uint64_t now_us = TimeSync::get_wall_time_us();
-
-    /* send every frame whose absolute timestamp has passed */
-    while (nextIdx < packedMsgs.size() && now_us >= sendUs[nextIdx]) {
-      can1.write(packedMsgs[nextIdx]);
-    
-    /* optional debug print — pays ≤5 µs */
-    #if DEBUG_TRAJ
-          float pos_f;
-          memcpy(&pos_f, &packedMsgs[nextIdx].buf[0], 4);
-          int16_t v_i = packedMsgs[nextIdx].buf[4] | (packedMsgs[nextIdx].buf[5] << 8);
-          int16_t q_i = packedMsgs[nextIdx].buf[6] | (packedMsgs[nextIdx].buf[7] << 8);
-          Serial.printf("idx=%u | t=%.3f s | pos=%.3f rev | vel=%.3f rev/s | tor=%.3f N·m\n",
-                        nextIdx, sendUs[nextIdx] / 1e6f, pos_f,
-                        v_i / vel_scale, q_i / tor_scale);
-    #endif
-      ++nextIdx;
-      now_us = TimeSync::get_wall_time_us();  // refresh for tight bursts
-    }
-    if (nextIdx >= packedMsgs.size()) trajActive = false;  // done
-  }
 }

@@ -56,7 +56,8 @@ import numpy as np
 
 import jugglebot.hardware_config as hw
 from jugglebot.motion.trajectory import tilt_geometry
-from jugglebot.motion.trajectory.hand_stroke import LINEAR_GAIN_REV_PER_M
+
+HAND_REV_PER_M = float(hw.HAND_REV_PER_M)
 
 # ── Realisation constants ─────────────────────────────────────────────────────
 #: World z (mm) of the cup opening at zero slider with the platform centroid at
@@ -144,7 +145,7 @@ TILT_ACCEL_BUDGET_FRACTION = 0.5
 #: Cup world z (mm) at the TOP of the hand's operating band — the largest lever.
 _CUP_Z_TOP_MM = (CUP_Z_BASE_MM + SLIDER_REV_ZERO_MM
                  + float(hw.JB_OP_HAND_CATCH_PRIME_REV)
-                 / LINEAR_GAIN_REV_PER_M * 1000.0)
+                 / HAND_REV_PER_M * 1000.0)
 TILT_ACCEL_LEVER_MM = (_CUP_Z_TOP_MM
                        - float(tilt_geometry.CUP_TILT_CENTER_Z_MM)
                        + float(hw.GEOM_PLAT_RADIUS_MM))
@@ -784,11 +785,11 @@ def decompose(cup_plan, tilts, cfg=None) -> RealizedCycle:
     slider_vel_mm_s = vz_mm - dz_dot + drop_dot
     slider_vel_mm_s = np.where(saturated, 0.0, slider_vel_mm_s)
 
-    # hand_stroke.mm_to_rev, vectorised (it is float-only).  The zero offset is a
+    # the mm->rev conversion, vectorised (it is float-only).  The zero offset is a
     # position offset, so it applies to the position and NOT to the rate.
     slider_rev = ((slider_mm - float(cfg.slider_rev_zero_mm)) / 1000.0
-                  * LINEAR_GAIN_REV_PER_M)
-    slider_vel_rev_s = slider_vel_mm_s / 1000.0 * LINEAR_GAIN_REV_PER_M
+                  * HAND_REV_PER_M)
+    slider_vel_rev_s = slider_vel_mm_s / 1000.0 * HAND_REV_PER_M
 
     t = getattr(cup_plan, 't', None)
     t_arr = (np.asarray(t, dtype=float).reshape(n) if t is not None

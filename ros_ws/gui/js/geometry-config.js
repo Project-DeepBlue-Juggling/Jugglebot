@@ -59,8 +59,9 @@ export const HAND_MOTOR_HARD_STOP_REVS = 10.701;
 
 // Motor-rev -> physical-unit conversions for the non-leg axes.
 // Legs use 1/MM_TO_REV[i] (per leg, above); these are the hand/BB axes.
-// Spool gains are derived, NOT literals: mm/rev = 1000 / (rev/m gain).
-export const HAND_MM_PER_REV = 31.628401;
+// HAND_MM_PER_REV is the MEASURED jugglebot_geometry.hand_mm_per_rev
+// directly (R1, 2026-09-11); BB's is still derived, mm/rev = 1000 / (rev/m gain).
+export const HAND_MM_PER_REV = 32.567000;
 export const BB_HAND_MM_PER_REV = 32.982325;
 
 // BB pitch is affine in motor revs: deg = 90 + 360*rev (absolute barrel

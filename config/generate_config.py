@@ -601,9 +601,18 @@ def compute_derived(cfg: dict) -> dict:
         activate_revs.append(ext_mm * mm_to_rev[i])
     derived["ACTIVATE_POSITION_REVS"] = activate_revs
 
-    # Teensy linear gain: rev/m
+    # Hand rev/m — MEASURED (jugglebot_geometry.hand_mm_per_rev), replacing the
+    # retired teensy_trajectory.linear_gain_factor / hand_spool_radius_m fudge
+    # pair (R1, 2026-09-11; plans/archived/hand-geometry-correction.md).
     tt = cfg["teensy_trajectory"]
-    derived["TEENSY_LINEAR_GAIN"] = tt["linear_gain_factor"] / (math.pi * tt["hand_spool_radius_m"] * 2.0)
+    derived["HAND_REV_PER_M"] = 1000.0 / geom["hand_mm_per_rev"]
+
+    # The hand's settle band below the homed reference (rev) — formerly
+    # triplicated (canbridge_config.h, hand_stroke.py, validate_cycle); now
+    # the single source is jugglebot_homing.hand_settle_band_rev. R1, 2026-09-11.
+    homing = cfg["jugglebot_homing"]
+    derived["HAND_HOMED_REST_FLOOR_REV"] = (
+        homing["hand_abs_pos_rev"] - homing["hand_settle_band_rev"])
 
     # Hand catch/throw positions — derived from Trajectory.h algebra.
     # These are velocity-independent (v_throw cancels out).
@@ -621,19 +630,21 @@ def compute_derived(cfg: dict) -> dict:
     derived["HAND_THROW_POS_M"] = round(x2_m, 6)   # x2: hand position at ball release
     derived["HAND_CATCH_POS_M"] = round(x5_m, 6)   # x5: hand position at ball catch
 
-    # x3, in REV — the reference the hand-catch prime position must equal.
+    # x3, in REV — the throw-profile's stroke top.
     #
-    # Unit deviation from its x2/x5 siblings above is deliberate: the quantity it
-    # guards (jugglebot_operational.hand_catch_prime_rev) is a rev, and a drift
-    # guard that has to multiply by a gain to compare is exactly where a rev/mm
-    # slip hides. Emitted in the unit of the comparison, not the unit of the
-    # siblings.
+    # R1 (2026-09-11): this no longer has to equal
+    # jugglebot_operational.hand_catch_prime_rev (that invariant retired with
+    # hand_stroke.py and the reactive kind-1 catch it described — see the YAML
+    # comment on hand_catch_prime_rev). Emitted in REV (not the x2/x5 siblings'
+    # metres) because throw_envelope.py's clip-ceiling STROKE_TOP_REV replaced
+    # its old use as a drift-guard comparand, and a rev-space value is what
+    # remaining REV-space consumers of x3 want directly.
     #
     # x3 = accelStroke + velHold = totalStroke holds ALGEBRAICALLY, independent of
     # the commanded velocity (the decel segment contributes 0.5*INERTIA_RATIO*v*t_acc,
     # so x3 = 0.5*v*t_acc*(1 + INERTIA_RATIO) + velHold = accelSt + velHold). That is
     # why it can be written down here at all, with no velocity in scope.
-    derived["HAND_STROKE_TOP_REV"] = x3_m * derived["TEENSY_LINEAR_GAIN"]
+    derived["HAND_STROKE_TOP_REV"] = x3_m * derived["HAND_REV_PER_M"]
 
     # Hand catch offset: height of hand catch point above platform centroid (mm)
     hand_bottom = geom["hand_axis_bottom_offset_mm"]
@@ -715,13 +726,16 @@ def generate_hw_python(cfg: dict) -> str:
     lines.append(f"GRAVITY_MMPS2 = {derived['GRAVITY_MMPS2']}")
     lines.append(f"INIT_LEG_LENGTHS_WITH_OFFSET_MM = {derived['INIT_LEG_LENGTHS_WITH_OFFSET_MM']}")
     lines.append(f"JB_OP_ACTIVATE_POSITION_REVS = {derived['ACTIVATE_POSITION_REVS']}")
-    lines.append(f"TEENSY_LINEAR_GAIN = {derived['TEENSY_LINEAR_GAIN']}")
+    lines.append("# Measured hand rev/m — jugglebot_geometry.hand_mm_per_rev, inverted.")
+    lines.append(f"HAND_REV_PER_M = {derived['HAND_REV_PER_M']!r}")
+    lines.append("# jugglebot_homing.hand_abs_pos_rev - hand_settle_band_rev.")
+    lines.append(f"HAND_HOMED_REST_FLOOR_REV = {derived['HAND_HOMED_REST_FLOOR_REV']!r}")
     lines.append(f"HAND_THROW_POS_M = {derived['HAND_THROW_POS_M']}")
     lines.append(f"HAND_CATCH_POS_M = {derived['HAND_CATCH_POS_M']}")
     lines.append(f"HAND_CATCH_OFFSET_MM = {derived['HAND_CATCH_OFFSET_MM']}")
-    lines.append("# x3 (rev): throw-stroke end AND catch-trajectory first sample.")
-    lines.append("# JB_OP_HAND_CATCH_PRIME_REV above MUST equal this — see the YAML")
-    lines.append("# comment on jugglebot_operational.hand_catch_prime_rev.")
+    lines.append("# x3 (rev): throw-stroke end. No longer required to equal")
+    lines.append("# JB_OP_HAND_CATCH_PRIME_REV — see the YAML comment on")
+    lines.append("# jugglebot_operational.hand_catch_prime_rev (R1, 2026-09-11).")
     lines.append(f"HAND_STROKE_TOP_REV = {derived['HAND_STROKE_TOP_REV']!r}")
     lines.append(f"BB_LINEAR_GAIN = {derived['BB_LINEAR_GAIN']}")
     lines.append(f"BB_MAX_THROW_SAMPLES = {derived['BB_MAX_THROW_SAMPLES']}")
@@ -889,8 +903,9 @@ def generate_gui_js(hw_cfg: dict, proto_cfg: dict) -> str:
         "",
         "// Motor-rev -> physical-unit conversions for the non-leg axes.",
         "// Legs use 1/MM_TO_REV[i] (per leg, above); these are the hand/BB axes.",
-        "// Spool gains are derived, NOT literals: mm/rev = 1000 / (rev/m gain).",
-        f"export const HAND_MM_PER_REV = {1000.0 / derived['TEENSY_LINEAR_GAIN']:.6f};",
+        "// HAND_MM_PER_REV is the MEASURED jugglebot_geometry.hand_mm_per_rev",
+        "// directly (R1, 2026-09-11); BB's is still derived, mm/rev = 1000 / (rev/m gain).",
+        f"export const HAND_MM_PER_REV = {geom['hand_mm_per_rev']:.6f};",
         f"export const BB_HAND_MM_PER_REV = {1000.0 / derived['BB_LINEAR_GAIN']:.6f};",
         "",
         "// BB pitch is affine in motor revs: deg = 90 + 360*rev (absolute barrel",

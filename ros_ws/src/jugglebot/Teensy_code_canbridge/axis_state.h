@@ -42,7 +42,7 @@ struct AxisState {
   // COMMANDED mode, not a readback: the ODrive broadcasts no controller/input
   // mode, so the only honest source is "what this firmware last told it to be".
   // Every site that sends encode_set_controller_mode records here (leg_activate,
-  // leg_deactivate, leg_homing, hand_ops, the SET_CONTROLLER_MODE RPC), so
+  // leg_deactivate, leg_homing, the SET_CONTROLLER_MODE RPC), so
   // telemetry's ctrl_mode/input_mode finally track reality. Until FW 18 nothing
   // wrote them and they read 0 forever — which is why a hand left in
   // VELOCITY/VEL_RAMP by a home was invisible to every telemetry gate.

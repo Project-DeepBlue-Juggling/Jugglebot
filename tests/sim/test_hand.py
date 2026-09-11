@@ -90,10 +90,7 @@ class TestHandCommand:
         future codegen change to ``HAND_STROKE_TOP_REV`` moves the test with the
         plant instead of failing it.
         """
-        linear_gain_rev_per_m = (
-            hw.TEENSY_TRAJ_LINEAR_GAIN_FACTOR
-            / (2.0 * np.pi * hw.TEENSY_TRAJ_HAND_SPOOL_RADIUS_M)
-        )
+        linear_gain_rev_per_m = float(hw.HAND_REV_PER_M)
         prime_mm = (hw.TEENSY_TRAJ_STROKE_MARGIN_M * 1000.0
                     + hw.HAND_STROKE_TOP_REV / linear_gain_rev_per_m * 1000.0)
         assert prime_mm == pytest.approx(335.0, abs=1e-6)

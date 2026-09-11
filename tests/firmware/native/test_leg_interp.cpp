@@ -31,7 +31,6 @@
 #include "odrive_protocol.h"
 #include "canbridge_config.h"
 #include "udp_protocol.h"
-#include "hand_source.h"   // the REAL latch (linked hand_source.o), FW 17
 #include "fake_hal.h"
 
 #include "leg_interp.cpp"   // the unit under test (reach statics + static interp_isr)
@@ -43,7 +42,6 @@ static constexpr uint8_t CMD_SETPOS = ODriveCmd::set_input_pos;   // 0x0C
 static void reset_interp_test() {
   fake_reset();
   interp_reset();
-  hand_source_reset();   // boot default LEGACY_STROKE (FW 17)
   for (uint8_t i = 0; i < NUM_AXES; ++i) {
     axes[i].pos_rev = 0.0f;
     axes[i].vel_rps = 0.0f;
@@ -107,15 +105,14 @@ static void stage_hand(const float u0[6], const float* u1, const float v0[6],
   interp_on_setpoint(seq, reinterpret_cast<const uint8_t*>(&sp), sizeof(sp));
 }
 
-// Flip the REAL hand_source latch to STREAMED the only way production can:
-// through the settle gate, with axis 6 parked at the retract rest on fresh
-// telemetry. Tests then move the fake encoder wherever the case needs it.
-static void arm_hand_streamed() {
+// Park axis 6 at the retract rest on FRESH telemetry — the I-HAND-5 precondition
+// (the lane never transmits before the first axis-6 encoder frame). Since FW 21
+// there is no mastery latch to flip: a HAS_HAND frame is the whole arming story,
+// so this seeds the encoder and nothing else. Tests then move the fake encoder
+// wherever the case needs it.
+static void seed_hand_encoder() {
   hand_axis().heartbeat_seen = true;
   write_pos_vel(hand_axis(), 0.0f, 0.0f, fake_mono_us());
-  REQUIRE(hand_source_request(HandSource::STREAMED, /*mpc_active=*/false)
-          == JbUdp::RpcStatus::OK);
-  REQUIRE(hand_source_streamed());
 }
 
 TEST_CASE("lead clamp: bounds position, KEEPS vel_ff (capped), sets the clamp mask") {
@@ -754,9 +751,8 @@ TEST_CASE("a DEFERRED leg setpoint is SENT: counted, charged to LEGS, never retr
   CHECK(fake_sent_count() == (size_t)NUM_LEGS);
 
   // Charged to the LEGS bucket, so leg-burst pressure can never be mistaken for a
-  // deferred hand dispatch or a deferred safety frame in the census.
+  // deferred safety frame in the census.
   CHECK(fake_sent_count_cls(TxCls::LEGS) == (size_t)NUM_LEGS);
-  CHECK(fake_sent_count_cls(TxCls::HAND) == 0u);
   CHECK(fake_sent_count_cls(TxCls::SAFETY) == 0u);
 
   // And the next tick behaves identically — no backlog, no accumulated retry queue,
@@ -780,7 +776,7 @@ TEST_CASE("a DEFERRED leg setpoint is SENT: counted, charged to LEGS, never retr
 
 TEST_CASE("hand lane inert when HAS_HAND clear (v6 frame, index 6 ignored)") {
   reset_interp_test();
-  arm_hand_streamed();                            // even STREAMED: no HAS_HAND ⇒ no lane
+  seed_hand_encoder();                            // encoder fresh: still no HAS_HAND ⇒ no lane
   axes[HAND_AXIS].heartbeat_seen = true;
   interp_set_output_enabled(true);
   axes[0].heartbeat_seen = true;
@@ -800,10 +796,15 @@ TEST_CASE("hand lane inert when HAS_HAND clear (v6 frame, index 6 ignored)") {
   CHECK(interp_hand_sent() == 0);
 }
 
-TEST_CASE("hand lane inert while hand_source == LEGACY: index 6 discarded, COUNTED; legs latch") {
-  reset_interp_test();                            // boot default LEGACY_STROKE
+// FW 21 (skill-stack R1): there is no mastery latch left to consult. A HAS_HAND
+// frame latches the lane on its own — the old "discard index 6 while LEGACY"
+// branch and its s_hand_discard_legacy counter are gone, so the SAME frame that
+// used to be refused by mode is now simply accepted. This case is the fence
+// against a second gate creeping back in front of the lane.
+TEST_CASE("a HAS_HAND frame latches the lane with no latch to consult") {
+  reset_interp_test();
   axes[0].heartbeat_seen = true;
-  axes[HAND_AXIS].heartbeat_seen = true;
+  seed_hand_encoder();
   write_pos_vel(hand_axis(), 1.0f, 0.0f, fake_mono_us());
   interp_set_output_enabled(true);
   float u0[6] = {0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f};
@@ -812,15 +813,14 @@ TEST_CASE("hand lane inert while hand_source == LEGACY: index 6 discarded, COUNT
   HandKnots hk{1.0f, 1.1f, 0.0f, 0.5f, 0.0f, 0.0f};
   fake_clear_sent();
   stage_hand(u0, nullptr, zeros, &hk, 1);
-  CHECK(interp_hand_discard_legacy() == 1);       // the § 2.4 visible counter
   interp_isr();
-  CHECK_FALSE(interp_hand_lane_active());
+  CHECK(interp_hand_lane_active());                     // latched by HAS_HAND alone
   CHECK(interp_base_pos(0) == doctest::Approx(0.5f));   // the legs still latched
-  bool hand_streamed_frame = false;
+  bool hand_frame = false;
   for (size_t i = 0; i < fake_sent_count(); ++i)
-    if (ODrive::axis_of(fake_sent_at(i).id) == HAND_AXIS) hand_streamed_frame = true;
-  CHECK_FALSE(hand_streamed_frame);
-  CHECK(hand_axis().target_pos_rev == doctest::Approx(0.0f));  // untouched
+    if (ODrive::axis_of(fake_sent_at(i).id) == HAND_AXIS) hand_frame = true;
+  CHECK(hand_frame);                                    // and the 7th frame goes out
+  CHECK(interp_hand_sent() == 1);
 }
 
 TEST_CASE("7-lane Hermite parity: identical knots ⇒ hand output == leg output, bit for bit") {
@@ -828,7 +828,7 @@ TEST_CASE("7-lane Hermite parity: identical knots ⇒ hand output == leg output,
   // chosen to keep BOTH lanes clamp-free (leg vel cap 3.5, leg lead 0.10) so
   // the comparison is of the LADDER, not of the per-lane clamps.
   reset_interp_test();
-  arm_hand_streamed();
+  seed_hand_encoder();
   const uint64_t t_now = fake_mono_us();
   write_pos_vel(hand_axis(), 0.52f, 0.0f, t_now);
   for (uint8_t i = 0; i < 6; ++i) { axes[i].pos_rev = 0.52f; axes[i].heartbeat_seen = true; }
@@ -849,7 +849,7 @@ TEST_CASE("7-lane Hermite parity: identical knots ⇒ hand output == leg output,
 
 TEST_CASE("7-lane parity holds in Taylor extrapolation and velocity decay (Modes 2/3)") {
   reset_interp_test();
-  arm_hand_streamed();
+  seed_hand_encoder();
   write_pos_vel(hand_axis(), 0.5f, 0.0f, fake_mono_us());
   for (uint8_t i = 0; i < 6; ++i) axes[i].pos_rev = 0.5f;
   float u0[6] = {0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f};
@@ -876,7 +876,7 @@ TEST_CASE("Mode-1 endpoint velocity rules pinned: transmitted v1 exact; (u2-u1)/
 
   SUBCASE("HAS_V1: the TRANSMITTED value, exactly — not a difference of knots") {
     reset_interp_test();
-    arm_hand_streamed();
+    seed_hand_encoder();
     write_pos_vel(hand_axis(), 0.52f, 0.0f, fake_mono_us());
     for (uint8_t i = 0; i < 6; ++i) axes[i].pos_rev = 0.52f;
     float u0[6] = {0.50f, 0.50f, 0.50f, 0.50f, 0.50f, 0.50f};
@@ -894,7 +894,7 @@ TEST_CASE("Mode-1 endpoint velocity rules pinned: transmitted v1 exact; (u2-u1)/
 
   SUBCASE("HAS_V1 clear + u2 present: the flown (u2-u1)/SEG_T forward difference") {
     reset_interp_test();
-    arm_hand_streamed();
+    seed_hand_encoder();
     write_pos_vel(hand_axis(), 0.52f, 0.0f, fake_mono_us());
     for (uint8_t i = 0; i < 6; ++i) axes[i].pos_rev = 0.52f;
     JbUdp::SetpointPayload sp;
@@ -915,7 +915,7 @@ TEST_CASE("Mode-1 endpoint velocity rules pinned: transmitted v1 exact; (u2-u1)/
 
   SUBCASE("HAS_V1 clear, no u2: the (u1-u0)/SEG_T last resort") {
     reset_interp_test();
-    arm_hand_streamed();
+    seed_hand_encoder();
     write_pos_vel(hand_axis(), 0.52f, 0.0f, fake_mono_us());
     for (uint8_t i = 0; i < 6; ++i) axes[i].pos_rev = 0.52f;
     float u0[6] = {0.50f, 0.50f, 0.50f, 0.50f, 0.50f, 0.50f};
@@ -938,7 +938,7 @@ TEST_CASE("NORMATIVE falling edge: HAS_HAND falls while leg frames continue ⇒ 
   // forever, commanding the endpoint with vel_ff = v1 — hold-at-last-command.
   // Required: segment completes, extrapolates ≤ MAX_EXTRAP, then vel → 0.
   reset_interp_test();
-  arm_hand_streamed();
+  seed_hand_encoder();
   write_pos_vel(hand_axis(), 5.0f, 0.0f, fake_mono_us());
   for (uint8_t i = 0; i < 6; ++i) axes[i].pos_rev = 0.5f;
   float u0[6] = {0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f};
@@ -978,7 +978,7 @@ TEST_CASE("NORMATIVE falling edge: HAS_HAND falls while leg frames continue ⇒ 
 TEST_CASE("guard separation: the LEG constants never touch axis 6") {
   SUBCASE("lead clamp: 1.5 rev of hand deviation passes (band 2.0), the same leg deviation clamps at 0.10") {
     reset_interp_test();
-    arm_hand_streamed();
+    seed_hand_encoder();
     write_pos_vel(hand_axis(), 1.0f, 0.0f, fake_mono_us());
     axes[0].pos_rev = 1.0f; axes[0].heartbeat_seen = true;
     float u0[6] = {2.5f, 0.07f, 0.07f, 0.07f, 0.07f, 0.07f};   // leg 0: 1.5 rev ahead
@@ -995,7 +995,7 @@ TEST_CASE("guard separation: the LEG constants never touch axis 6") {
 
   SUBCASE("hand lead clamp binds at MAX_LEAD_HAND_REV, sets mask bit 6 + the lead-duty counter") {
     reset_interp_test();
-    arm_hand_streamed();
+    seed_hand_encoder();
     write_pos_vel(hand_axis(), 1.0f, 0.0f, fake_mono_us());
     float u0[6] = {0.07f, 0.07f, 0.07f, 0.07f, 0.07f, 0.07f};
     float zeros[6] = {0, 0, 0, 0, 0, 0};
@@ -1017,7 +1017,7 @@ TEST_CASE("guard separation: the LEG constants never touch axis 6") {
 
   SUBCASE("vel_ff cap is 300 (HAND_VELFF_LIMIT_RPS), not the legs' 3.5") {
     reset_interp_test();
-    arm_hand_streamed();
+    seed_hand_encoder();
     write_pos_vel(hand_axis(), 1.0f, 0.0f, fake_mono_us());
     float u0[6] = {0.07f, 0.07f, 0.07f, 0.07f, 0.07f, 0.07f};
     float zeros[6] = {0, 0, 0, 0, 0, 0};
@@ -1038,7 +1038,7 @@ TEST_CASE("guard separation: the LEG constants never touch axis 6") {
 
   SUBCASE("hand stroke clip is [0, HAND_MOTOR_MAX_POSITION] (10.501), never the leg stroke table") {
     reset_interp_test();
-    arm_hand_streamed();
+    seed_hand_encoder();
     write_pos_vel(hand_axis(), 10.5f, 0.0f, fake_mono_us());
     float u0[6] = {0.07f, 0.07f, 0.07f, 0.07f, 0.07f, 0.07f};
     float zeros[6] = {0, 0, 0, 0, 0, 0};
@@ -1053,7 +1053,7 @@ TEST_CASE("guard separation: the LEG constants never touch axis 6") {
 
 TEST_CASE("hand lane never transmits before the first axis-6 encoder frame (unseen skip, counted)") {
   reset_interp_test();
-  arm_hand_streamed();
+  seed_hand_encoder();
   axes[0].heartbeat_seen = true;
   axes[0].pos_rev = 0.5f;
   interp_set_output_enabled(true);
@@ -1074,7 +1074,7 @@ TEST_CASE("hand lane never transmits before the first axis-6 encoder frame (unse
 
 TEST_CASE("the 7th frame rides the burst: axis-6 set_input_pos, byte-exact, zero torque, TxCls::LEGS") {
   reset_interp_test();
-  arm_hand_streamed();
+  seed_hand_encoder();
   write_pos_vel(hand_axis(), 1.0f, 0.0f, fake_mono_us());
   axes[HAND_AXIS].heartbeat_seen = true;
   axes[0].heartbeat_seen = true;
@@ -1103,46 +1103,19 @@ TEST_CASE("the 7th frame rides the burst: axis-6 set_input_pos, byte-exact, zero
 }
 
 
-TEST_CASE("a latched hand lane goes INERT the tick the latch returns to LEGACY (no stale-knot mastery)") {
-  // A post-disarm STREAMED→LEGACY switch with old hand state still latched:
-  // the lane must stop computing AND stop transmitting immediately — a decayed
-  // hold emitted against the stroke engine's next dispatch would be exactly
-  // the dual-mastery window § 2.4 exists to close.
-  reset_interp_test();
-  arm_hand_streamed();
-  write_pos_vel(hand_axis(), 1.0f, 0.0f, fake_mono_us());
-  axes[HAND_AXIS].heartbeat_seen = true;
-  axes[0].heartbeat_seen = true;
-  axes[0].pos_rev = 0.5f;
-  interp_set_output_enabled(true);
-  float u0[6] = {0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f};
-  float zeros[6] = {0, 0, 0, 0, 0, 0};
-  HandKnots hk{1.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f};
-  stage_hand(u0, u0, zeros, &hk, 1);
-  fake_clear_sent();
-  interp_isr();
-  CHECK(interp_hand_sent() == 1);                 // lane live while STREAMED
-
-  hand_source_reset();                            // → LEGACY (the gated switch's effect)
-  hand_axis().target_pos_rev = -2.0f;             // sentinel
-  fake_clear_sent();
-  fake_advance(INTERP_PERIOD_US);
-  interp_isr();
-  CHECK(interp_hand_sent() == 1);                 // no further hand TX
-  bool hand_streamed_frame = false;
-  for (size_t i = 0; i < fake_sent_count(); ++i)
-    if (ODrive::axis_of(fake_sent_at(i).id) == HAND_AXIS) hand_streamed_frame = true;
-  CHECK_FALSE(hand_streamed_frame);
-  CHECK(hand_axis().target_pos_rev == doctest::Approx(-2.0f));   // untouched
-  CHECK(fake_sent_count_cmd(CMD_SETPOS) == 1);    // the leg burst continues
-}
+// (A test named "a latched hand lane goes INERT the tick the latch returns to
+// LEGACY" lived here until FW 21. It asserted the mastery latch's own
+// dual-master fence; with the latch and the Platform stroke engine deleted
+// there is no second master and no second gate, so the case has no subject.
+// The falling-edge decay, the arm-edge latch clear and the unseen-skip — the
+// rules that actually bound a stale hand lane — are asserted above and below.)
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  2026-09-02 adversarial-review fixes — hand-lane session hygiene + slew split
 // ═══════════════════════════════════════════════════════════════════════════
 //  interp_reset() has no runtime caller, so the hand-lane latch used to persist
-//  across armed SESSIONS: a later hand-less armed session whose source latch
-//  still read STREAMED found the ancient latch alive and replayed its decayed
+//  across armed SESSIONS: a later hand-less armed session found the ancient
+//  latch alive and replayed its decayed
 //  hold as a live 7th frame. The fix clears the lane on the s_output_enabled
 //  false→true edge (before the staging consume, so a live stream's pending
 //  HAS_HAND frame re-latches the same tick) — a fresh HAS_HAND latch per armed
@@ -1150,7 +1123,7 @@ TEST_CASE("a latched hand lane goes INERT the tick the latch returns to LEGACY (
 
 TEST_CASE("arm-edge clears a stale hand latch: a hand-less re-armed session is INERT (2026-09-02 fix)") {
   reset_interp_test();
-  arm_hand_streamed();
+  seed_hand_encoder();
   write_pos_vel(hand_axis(), 1.0f, 0.0f, fake_mono_us());
   axes[HAND_AXIS].heartbeat_seen = true;
   axes[0].heartbeat_seen = true; axes[0].pos_rev = 0.5f;
@@ -1168,7 +1141,7 @@ TEST_CASE("arm-edge clears a stale hand latch: a hand-less re-armed session is I
   fake_advance(INTERP_PERIOD_US);
   interp_isr();
 
-  // Session 2: re-arm HAND-LESS, source latch still STREAMED — the (c2) node
+  // Session 2: re-arm HAND-LESS — the (c2) node
   // fold runs the hand preamble on the latch alone, no hand knots needed, so
   // this is exactly the stale-replay window. The lane must stay inert.
   hand_axis().target_pos_rev = -3.0f;       // sentinel: must stay untouched
@@ -1192,7 +1165,7 @@ TEST_CASE("arm-edge clears a stale hand latch: a hand-less re-armed session is I
 
 TEST_CASE("stale latch + LEGACY→STREAMED round trip: still inert after re-arm until a FRESH HAS_HAND knot (2026-09-02 fix)") {
   reset_interp_test();
-  arm_hand_streamed();                      // STREAMED, hand settled at the 0.0 rest
+  seed_hand_encoder();                      // hand settled at the 0.0 rest
   axes[HAND_AXIS].heartbeat_seen = true;
   axes[0].heartbeat_seen = true; axes[0].pos_rev = 0.5f;
   interp_set_output_enabled(true);
@@ -1203,13 +1176,11 @@ TEST_CASE("stale latch + LEGACY→STREAMED round trip: still inert after re-arm 
   interp_isr();
   CHECK(interp_hand_sent() == 1);
 
-  // Disarm, then the post-disarm source round trip (STREAMED→LEGACY→STREAMED)
-  // through the REAL settle gate — the stale knot state rides across it.
+  // Disarm — the stale knot state rides across the disarm/re-arm boundary.
   interp_set_output_enabled(false);
   fake_advance(INTERP_PERIOD_US);
   interp_isr();
-  hand_source_reset();                      // → LEGACY
-  arm_hand_streamed();                      // back to STREAMED (settle gate)
+  seed_hand_encoder();                      // encoder still fresh
 
   // Re-arm: the stale session-1 latch must NOT go live again.
   interp_set_output_enabled(true);
@@ -1235,7 +1206,7 @@ TEST_CASE("per-axis-group recovery slew: legs resume full FF while the hand stil
   // (was ~0.1 s legs-only). Post-fix the leg set hands back on its OWN
   // convergence; the hand converges on its own flag, clock and speed ramp.
   reset_interp_test();
-  arm_hand_streamed();
+  seed_hand_encoder();
   write_pos_vel(hand_axis(), 0.0f, 0.0f, fake_mono_us());
   axes[HAND_AXIS].heartbeat_seen = true;
   for (uint8_t i = 0; i < NUM_LEGS; ++i) { axes[i].heartbeat_seen = true; axes[i].pos_rev = 0.5f; }
@@ -1305,7 +1276,7 @@ static void stage_hand_far_from_encoder(uint16_t seq) {
 
 TEST_CASE("an ABORTED (output-suppressed) stage leaves the hand counters at ZERO") {
   reset_interp_test();
-  arm_hand_streamed();
+  seed_hand_encoder();
   axes[HAND_AXIS].heartbeat_seen = true;
   axes[0].heartbeat_seen = true; axes[0].pos_rev = 0.5f;
   write_pos_vel(hand_axis(), 0.0f, 0.0f, fake_mono_us());
@@ -1333,7 +1304,7 @@ TEST_CASE("an ABORTED (output-suppressed) stage leaves the hand counters at ZERO
 
 TEST_CASE("a TRANSMITTING stage does count the lead clamp and the dev_over ticks") {
   reset_interp_test();
-  arm_hand_streamed();
+  seed_hand_encoder();
   axes[HAND_AXIS].heartbeat_seen = true;
   axes[0].heartbeat_seen = true; axes[0].pos_rev = 0.5f;
   write_pos_vel(hand_axis(), 0.0f, 0.0f, fake_mono_us());
@@ -1359,7 +1330,7 @@ TEST_CASE("coldstart (homing_active) suppresses the hand counter gate exactly li
   // zero, because a cold-start move (leg_homing's SETUP owning axis 6) holds
   // the streamed lane's command off the wire regardless of s_output_enabled.
   reset_interp_test();
-  arm_hand_streamed();
+  seed_hand_encoder();
   axes[HAND_AXIS].heartbeat_seen = true;
   axes[0].heartbeat_seen = true; axes[0].pos_rev = 0.5f;
   write_pos_vel(hand_axis(), 0.0f, 0.0f, fake_mono_us());
@@ -1394,7 +1365,7 @@ TEST_CASE("coldstart (homing_active) suppresses the hand counter gate exactly li
 
 TEST_CASE("hand7 reset zeroes the counters and residual, and NOT the arm state") {
   reset_interp_test();
-  arm_hand_streamed();
+  seed_hand_encoder();
   axes[HAND_AXIS].heartbeat_seen = true;
   axes[0].heartbeat_seen = true; axes[0].pos_rev = 0.5f;
   write_pos_vel(hand_axis(), 0.0f, 0.0f, fake_mono_us());
@@ -1419,11 +1390,10 @@ TEST_CASE("hand7 reset zeroes the counters and residual, and NOT the arm state")
   CHECK(interp_hand_dev_last() == doctest::Approx(0.0f));
   CHECK(interp_hand_dev_max() == doctest::Approx(0.0f));
   CHECK(interp_hand_dev_trip_dev() == doctest::Approx(0.0f));
-  // A diagnostic verb must never be a control action: the guard stays ARMED, the
-  // source latch stays STREAMED and the lane keeps its knot state, so a reset
-  // mid-sitting cannot silently disarm the E-STOP the sitting is relying on.
+  // A diagnostic verb must never be a control action: the guard stays ARMED and
+  // the lane keeps its knot state, so a reset mid-sitting cannot silently
+  // disarm the E-STOP the sitting is relying on.
   CHECK(interp_hand_dev_guard_armed());
-  CHECK(hand_source_streamed());
   CHECK(interp_hand_lane_active());
 
   // And it keeps counting afterwards, from zero.
@@ -1437,4 +1407,27 @@ TEST_CASE("hand7 reset zeroes the counters and residual, and NOT the arm state")
 TEST_CASE("hand7 reset does not swallow an unrelated console line") {
   CHECK_FALSE(interp_hand7_console("hand7 resetx"));
   CHECK_FALSE(interp_hand7_console("gpio"));
+}
+
+TEST_CASE("hand7 observe lasts ONE armed session: the disarm edge re-arms the deviation guard (FW 21)") {
+  // Owner decision 2026-09-11: the guard boots ARMED; `hand7 observe` is a bench
+  // read, and the guard must never be left off for the NEXT session by an
+  // operator who forgot `hand7 arm`. The re-arm is the true→false output-enable
+  // edge, not the arm edge, so the observed session itself stays observed.
+  interp_reset();
+  CHECK(interp_hand_dev_guard_armed() == true);            // power-on value
+  interp_set_hand_dev_guard_armed(false);                  // `hand7 observe` before the stage
+  interp_set_output_enabled(true);                         // arm edge: still observing
+  CHECK(interp_hand_dev_guard_armed() == false);
+  interp_set_output_enabled(true);                         // idempotent re-assert: no edge
+  CHECK(interp_hand_dev_guard_armed() == false);
+  interp_set_output_enabled(false);                        // disarm edge: back to ARMED
+  CHECK(interp_hand_dev_guard_armed() == true);
+  interp_set_output_enabled(false);                        // no edge, stays ARMED
+  CHECK(interp_hand_dev_guard_armed() == true);
+  interp_set_hand_dev_guard_armed(false);                  // `hand7 observe` while disarmed...
+  interp_set_output_enabled(true);
+  CHECK(interp_hand_dev_guard_armed() == false);           // ...covers the next session...
+  interp_set_output_enabled(false);
+  CHECK(interp_hand_dev_guard_armed() == true);            // ...and only that one.
 }

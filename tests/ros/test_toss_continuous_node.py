@@ -62,6 +62,7 @@ from jugglebot.toss_sequencer import (
     TossSequencer,
 )
 from jugglebot.toss_session import TossSessionSequencer
+from jugglebot.motion import unified_cycle as uc
 
 DWELL = 8.0
 DELAY = 5.0
@@ -112,12 +113,20 @@ class _Clock:
 
 class _ContGoalHandle:
     def __init__(self, x=0.0, y=0.0, z=170.0, throw_height=0.0, num_throws=3,
-                 dwell=DWELL, delay=DELAY, vel_scale=0.0, stop_on_miss=True):
+                 dwell=DWELL, delay=DELAY, vel_scale=0.0, stop_on_miss=True,
+                 unified_cycle=True):
+        # R1 (2026-09-11): the ONLY session that can throw any more is a
+        # unified one (`_OUTCOME_STROKE_ENGINE_RETIRED` refuses everything
+        # else at accept) — so the file's default goal is a unified one, same
+        # as every real operator session, and the file's own accept-gate test
+        # (`test_a_legacy_session_is_refused_at_accept`) is the one place that
+        # asks for `unified_cycle=False` explicitly.
         self.request = types.SimpleNamespace(
             catch_position=types.SimpleNamespace(x=x, y=y, z=z),
             throw_height_m=throw_height, num_throws=num_throws,
             dwell_time_s=dwell, throw_delay_s=delay,
-            catch_vel_scale=vel_scale, stop_on_miss=stop_on_miss)
+            catch_vel_scale=vel_scale, stop_on_miss=stop_on_miss,
+            unified_cycle=bool(unified_cycle))
         self.is_cancel_requested = False
         self.feedbacks = []
         self.terminal = None
@@ -160,33 +169,42 @@ def _pin_the_pipeline_flag(monkeypatch):
     red without a line of production code changing, which is the tell: a test
     whose subject is chosen by a YAML key is a test a config edit can retarget.
 
-    So the default is pinned HERE, explicitly, and the pipelined half overrides
-    it in ``_pipelined_node`` (its ``monkeypatch.setattr`` runs later and wins).
-    No assertion in this file changed; what changed is that the ones written for
-    the serial ladder now SAY so.
+    So the default is pinned HERE, explicitly. No assertion in this file
+    changed; what changed is that the ones written for the serial ladder now
+    SAY so.
 
-    ⚠ The honest consequence, and it is a real coverage gap rather than a
-    bookkeeping one: the session-accounting semantics below have NO pipelined
-    twin. They never did — under the old default they could not have — but the
-    machine now ships pipelined, so the gap is live rather than latent. It is
-    recorded in ``logbook/2026-08-28-pipeline-first-contact-deadlock.md``
-    § Follow-ups.
+    ⚠ 2026-09-11 (skill-stack R1, owner decision 4): the pipelined override
+    this docstring used to describe (``_pipelined_node``, and the
+    ``test_the_watchdog_never_fires_on_a_healthy_PIPELINED_session`` test that
+    closed the coverage gap below) is DELETED — see the "B4: the two-slot
+    pipeline" section header further down. `pipelined` can no longer be True
+    in a reachable session (the accept gate refuses every `unified=False`
+    goal before a cycle exists), so the historical coverage-gap framing below
+    is moot rather than open: there is no live pipelined path left to have a
+    twin for. Left verbatim as the record of the 2026-08-28 finding.
 
     **The instance that mattered most, named** (2026-08-28 audit): both of F3's
     non-firing tests — ``test_the_watchdog_never_fires_on_a_healthy_chained_session``
     and ``test_the_watchdog_never_fires_across_a_reload_interlude`` — FAIL when
     this fixture is flipped to True (verified by flipping it), so the watchdog
-    that ships ON was pinned against FALSE FIRING only on the serial ladder,
-    which is the machine the operator no longer runs. That specific hole is now
-    closed by ``test_the_watchdog_never_fires_on_a_healthy_PIPELINED_session``;
-    the rest of the accounting suite (stop_on_miss, cancel, the retry ladder,
+    that shipped ON was pinned against FALSE FIRING only on the serial ladder.
+    The rest of the accounting suite (stop_on_miss, cancel, the retry ladder,
     the reload interlude, the S6/S7 teardown) is still serial-only."""
     monkeypatch.setattr(rcn.hw, 'JB_OP_TOSS_PIPELINE_ENABLED', False,
                         raising=False)
 
 
 def _ready_node(clock, commanded_pos=(0.0, 0.0, 170.0)):
-    """Every toss precondition satisfied, caches fresh at the fake clock."""
+    """Every toss precondition satisfied, caches fresh at the fake clock.
+
+    R1 (2026-09-11): the hand seed is seated AT the unified planner's cup
+    floor, not the homed zero. Every real session is unified now (the accept
+    gate refuses anything else), and a homed-zero seed reads ~10 mm BELOW that
+    floor — `_unified_floor_lift` would then find a real deficit and dispatch
+    a genuine `trajectory/plan_cycle` SETTLE through the mocked service
+    client, which this harness never scripted a fast reply for. The same
+    seating choice test_unified_cycle_integration.py's `_seq_state` documents:
+    "what a machine parked ready actually looks like"."""
     node = ReloadCoordinatorNode()
     with node._lock:
         node._control_mode = TOSS_CONTROL_MODE
@@ -194,7 +212,7 @@ def _ready_node(clock, commanded_pos=(0.0, 0.0, 170.0)):
         node._gravity_correction_loaded = True
         node._commanded_pos_mm = tuple(float(v) for v in commanded_pos)
         node._balls = []
-        node._hand_pos_meas = 0.0
+        node._hand_pos_meas = uc.hand_rev_for_cup_z(uc.SETTLE_CUP_Z_MM)
         node._hand_vel_meas = 0.0
         node._ball_possession = True
     _stamp(node, clock.t)
@@ -317,13 +335,16 @@ def test_bad_goal_numerics_rejected_before_anything_runs(kwargs, field,
     (dict(dwell=2.0), 'REJECTED_DWELL'),
     (dict(dwell=DELAY + float(hw.JB_OP_TOSS_SESSION_DWELL_MARGIN_S) - 0.01),
      'REJECTED_DWELL'),
-    # A sub-floor throw_delay is refused HERE, not one cycle later as
-    # ABORTED_CYCLE_REJECTED_CANT_MAKE_LEAD with a whole cycle's per-goal state
-    # already installed. The dwell is legal for the delay, so only the delay
-    # gate can catch it. The floor is the DERIVED :642 dispatch budget since
-    # 2026-08-22 (census A1) — 0.337 s at the band floor this session is judged
-    # at — so the row asks for 0.20 s; 2.0 s is now legal.
-    (dict(delay=0.20, dwell=4.0), 'REJECTED_THROW_DELAY'),
+    # 2026-09-11 (audit finding, BLOCKING; skill-stack R1): the
+    # `(dict(delay=0.20, dwell=4.0), 'REJECTED_THROW_DELAY')` row is DELETED.
+    # It asked for a delay below "the DERIVED :642 dispatch budget" —
+    # `min_throw_delay_for_release_s`'s `hand_stroke.min_throw_event_delay_s`
+    # term, the reactive kind-0 stroke engine's own timing model — which R1
+    # deletes outright (owner decision 4). The floor left standing
+    # (`TOSS_DISPATCH_DEBOUNCE_S` = 0.10 s, a goal-storm debounce, not a
+    # physical lead) admits 0.20 s, so this row no longer describes a refusal;
+    # there is no replacement number to assert because the physical device the
+    # old floor measured no longer exists.
 ])
 def test_session_checking_rejects_via_execute(kwargs, expected, monkeypatch):
     clock = _Clock()
@@ -341,6 +362,55 @@ def test_session_checking_rejects_via_execute(kwargs, expected, monkeypatch):
         ch.isdigit() for ch in result.outcome), result.outcome
     assert result.success is False
     assert gh.terminal == 'abort'
+
+
+def test_a_legacy_session_is_refused_at_accept(monkeypatch):
+    """R1 (owner decision 1, audit finding BLOCKING): a `TossContinuous` goal
+    whose resolved `unified` is False is refused at ACCEPT, before a cycle is
+    built, armed or commanded — the Platform stroke engine and its hand RPC
+    are gone, so there is nothing left for the legacy branch to dispatch.
+
+    Before this fix the goal was ACCEPTED, ran the UNIFIED FSM body anyway
+    (`unified` was read from the goal but the dispatch seam no longer branched
+    on it), set `throw_dispatched = True` and reported
+    ``THROW_DISPATCH_OK`` — a lie: no plan was installed (only
+    `_tick_unified_launch`, gated on `if unified`, installs one), no CAN frame
+    was sent, and the hand never moved."""
+    clock = _Clock()
+    monkeypatch.setattr(rcn, 'time', clock)
+    node = _ready_node(clock)
+    monkeypatch.setattr(
+        node, '_build_toss_cycle',
+        lambda *a, **k: pytest.fail('a cycle was built on a legacy goal'))
+    gh = _ContGoalHandle(num_throws=1, unified_cycle=False)
+    result = node._execute_toss_continuous(gh)
+    assert base_outcome(result.outcome) == 'REJECTED_STROKE_ENGINE_RETIRED'
+    assert result.success is False
+    assert gh.terminal == 'abort'
+    with node._lock:
+        assert node._active_seq is None
+        assert node._goal_claimed is False
+        assert node._toss_unified_live is False   # never latched True either
+
+
+def test_dispatch_toss_never_says_ok_for_a_legacy_session(monkeypatch):
+    """The seam's own belt, called directly: `_dispatch_toss(..., unified=False)`
+    must never report `THROW_DISPATCH_OK`, even if some future caller reaches
+    it despite the accept-gate refusal above. See `_dispatch_toss`'s
+    docstring."""
+    clock = _Clock()
+    monkeypatch.setattr(rcn, 'time', clock)
+    node = _ready_node(clock)
+    seq = TossSequencer(catch_pose_stow_mm=(0.0, 0.0, 170.0),
+                        flight_time_s=0.8, throw_delay_s=5.0, unified=False)
+    seq.start(clock.perf_counter())
+    state = node._toss_committed
+    outcome, message = node._dispatch_toss(seq, state, False)
+    assert outcome != 'ok'
+    assert outcome == rcn.THROW_DISPATCH_REJECTED
+    assert base_outcome(message) == 'REJECTED_STROKE_ENGINE_RETIRED'
+    with node._lock:
+        assert state.throw_dispatched is False
 
 
 def test_the_session_checking_phase_is_observable_on_the_wire(monkeypatch):
@@ -437,12 +507,6 @@ def test_the_predicted_chain_residual_stays_a_few_mm(monkeypatch, tier_8b):
         site = node._predicted_chain_site_mm((bx, 0.0, 170.0), FLIGHT)
         assert site is not None
         assert math.hypot(bx - site[0], site[1]) < 3.2
-
-
-
-
-
-
 
 
 def test_the_predictor_declines_when_the_pose_is_unknown(monkeypatch, tier_8b):
@@ -2621,170 +2685,55 @@ def test_a_precondition_fault_stops_the_session_by_name(monkeypatch, fault_code)
 
 # ── B4: the two-slot pipeline, at node level ─────────────────────────────────
 #
-# Everything below runs behind `toss_pipeline_enabled`, which SHIPS FALSE — so
-# every test above this line describes the machine as it ships and every test
-# below it describes the machine behind the flag. The pipelined tests drive the
-# REAL FSMs through the REAL `_execute_toss_continuous`; only the service round
-# trips (arm_catch, gains, go_home, the hand dispatch) and the PLANT are
-# simulated, because those are the things a bench sitting supplies.
-
-_SEAT_EDGE_S = 0.1839        # B0/P2's measured median seat edge
-
-
-class _PipelineClock(_Clock):
-    """``_Clock`` plus a PLANT: every simulated tick re-drives the hand
-    telemetry and the cup sensor from where the committed cycle's ball actually
-    is.
-
-    Without it a pipelined session is unrunnable in a test for reasons that have
-    nothing to do with the pipeline: the FSM waits on release evidence
-    (`throw_stroke_seen`) that only hand telemetry can supply, and the COMMIT
-    gate waits on a cup edge that only an empty→held transition can supply. The
-    plant is the cheapest thing that makes both true at the right instants."""
-
-    def __init__(self, t0=1000.0, seat_edge_s=_SEAT_EDGE_S):
-        super().__init__(t0)
-        self.seat_edge_s = float(seat_edge_s)
-
-    def sleep(self, dt):
-        self.t += float(dt)
-        if self._node is None:
-            return
-        _stamp(self._node, self.t)
-        self._plant(self.t)
-
-    def _plant(self, t):
-        node = self._node
-        # `trajectory/commanded_pose` — the SIX-component sample, with the
-        # INTENT-frame orientation. It is not optional scenery: the census-B1
-        # positioning skip refuses to skip without it (a tilted pre-tilt pose is
-        # unverifiable from position alone), and a cycle that must COMMAND its
-        # move cannot stage. Without this the pipeline is correctly INERT and
-        # every test below silently measures the serial path.
-        with node._lock:
-            node._commanded_pose = tuple(node._commanded_pos_mm) + (0.0, 0.0, 0.0)
-            node._commanded_pose_mono = t
-        seq = node._active_seq
-        held = True
-        pos, vel = 0.0, 0.0
-        if seq is not None and seq.t_release > 0.0:
-            rel = float(seq.t_release)
-            land = rel + float(seq.flight_time_s)
-            if rel <= t < land + self.seat_edge_s:
-                held = False              # the ball is out of the cup
-            if rel <= t < rel + 0.15:
-                # the ascending release stroke — channel 1 of the release
-                # evidence the FSM will not leave THROWING without
-                pos, vel = 3.0, 60.0
-        with node._lock:
-            node._hand_pos_meas = pos
-            node._hand_vel_meas = vel
-        node._ball_sensor.note_sample(t, held=held, valid=True, raw=held)
-
-
-def _pipelined_node(clock, monkeypatch, *, arm_ok=True):
-    """A node with every precondition satisfied, the flag ON, and every service
-    round trip stubbed. Returns ``(node, calls)`` where ``calls`` is the ordered
-    log the structural/ordering assertions read."""
-    monkeypatch.setattr(rcn.hw, 'JB_OP_TOSS_PIPELINE_ENABLED', True,
-                        raising=False)
-    node = _ready_node(clock)
-    calls = []
-    monkeypatch.setattr(node, '_set_soft_catch_gains',
-                        lambda: calls.append('gains') or True)
-    monkeypatch.setattr(node, '_arm_catch',
-                        lambda a: calls.append(('arm', bool(a))) or arm_ok)
-    monkeypatch.setattr(node, '_go_home',
-                        lambda *a, **k: calls.append('go_home') or True)
-    monkeypatch.setattr(node, '_safe_abort',
-                        lambda *a, **k: calls.append('safe_abort'))
-    monkeypatch.setattr(node, '_recenter', lambda *a, **k: calls.append('recenter'))
-    monkeypatch.setattr(node, '_publish_catch_armed',
-                        lambda a: calls.append(('armed', bool(a))))
-    monkeypatch.setattr(node, '_publish_prime_hold',
-                        lambda h: calls.append(('prime_hold', bool(h))))
-    monkeypatch.setattr(node, '_publish_pretilt_hold',
-                        lambda h: calls.append(('pretilt_hold', bool(h))))
-    monkeypatch.setattr(node, '_publish_reach_center',
-                        lambda c: calls.append(('centre', tuple(float(v)
-                                                                for v in c))))
-    monkeypatch.setattr(node._prime_dispatched_pub, 'publish',
-                        lambda msg: calls.append(('prime_dispatched',
-                                                  bool(msg.data))))
-    monkeypatch.setattr(node._vel_scale_pub, 'publish',
-                        lambda msg: calls.append(('vel_scale', float(msg.data))))
-    monkeypatch.setattr(node, '_announce_toss',
-                        lambda seq, state=None: (
-                            calls.append(('announce', round(seq.t_release, 4))),
-                            seq.note_announcement())[0])
-    def _dispatch(seq, state=None):
-        calls.append(('dispatch', round(seq.t_release, 4)))
-        # The REAL method sets this before the ack, and it is not bookkeeping:
-        # it is the gate on BOTH release-evidence channels (a CONFIRMED track or
-        # a stroke signature before our own dispatch can only be a phantom). A
-        # stub that skips it leaves the FSM waiting for evidence it has
-        # forbidden itself to see, and every cycle dies ABORTED_NO_RELEASE.
-        state = node._toss_committed if state is None else state
-        with node._lock:
-            state.throw_dispatched = True
-        return 'ok', ''
-
-    monkeypatch.setattr(node, '_dispatch_toss_throw', _dispatch)
-    monkeypatch.setattr(node, '_position_platform_for_toss',
-                        lambda seq, state=None: (
-                            calls.append('position'),
-                            seq.note_position_noop(clock.perf_counter()))[0])
-    clock.attach(node)
-    # Seed the plant BEFORE the first tick: cycle 1's CHECKING runs before any
-    # sleep, and an unseeded cup reads UNKNOWN (which is the shipped
-    # fail-closed refusal, not a harness convenience worth working around —
-    # the real graph has been publishing /hand_telemetry for seconds by then).
-    clock._plant(clock.t - 0.02)
-    clock._plant(clock.t)
-    return node, calls
-
-
-def _sample_both_slots(node, monkeypatch):
-    """Sample the two slots on every tick where BOTH are live, through the real
-    `_tick_toss_pipeline`.
-
-    Sampling at the PROMOTION would sample nothing, and that is S1′ working
-    rather than a harness problem: the committed slot is freed on the same tick
-    the staged slot commits (its terminal is resolved FIRST, by construction),
-    so at the promotion instant there is exactly one cycle again. The interval
-    where two exist is the previous cycle's FLIGHT, which is the whole point."""
-    seen = []
-    real_tick = node._tick_toss_pipeline
-
-    def spy(now, session, **kw):
-        with node._lock:
-            c, s = node._active_seq, node._toss_staged_seq
-        if c is not None and s is not None:
-            seen.append({
-                'now': now,
-                'landing_read': node._expected_landing_perf(),
-                'next_read': node._expected_next_cycle_perf(),
-                'prev_read': node._expected_prev_landing_perf(),
-                'committed_landing': float(c.t_release) + float(c.flight_time_s),
-                'staged_release': float(s.t_release),
-                'staged_landing': float(s.t_release) + float(s.flight_time_s),
-                'staged_at': float(s.staged_at),
-            })
-        return real_tick(now, session, **kw)
-
-    monkeypatch.setattr(node, '_tick_toss_pipeline', spy)
-    return seen
-
-
-def _run_pipelined(monkeypatch, *, num_throws=3, dwell=0.55, height=1.30,
-                   delay=DELAY, seat_edge_s=_SEAT_EDGE_S):
-    clock = _PipelineClock(seat_edge_s=seat_edge_s)
-    monkeypatch.setattr(rcn, 'time', clock)
-    node, calls = _pipelined_node(clock, monkeypatch)
-    gh = _ContGoalHandle(num_throws=num_throws, dwell=dwell, delay=delay,
-                         throw_height=height, vel_scale=0.9)
-    result = node._execute_toss_continuous(gh)
-    return node, calls, result, gh
+# Everything below runs behind `toss_pipeline_enabled`, which SHIPS FALSE.
+#
+# 2026-09-11 (audit finding, BLOCKING; skill-stack R1, owner decision 4): this
+# section used to run the pipelined FSM end to end through the REAL
+# `_execute_toss_continuous`, on goals that never set `unified_cycle` — i.e.
+# on the LEGACY (`unified=False`) branch, since `pipelined = TOSS_PIPELINE_ENABLED
+# and not unified`. R1 retires the Platform stroke engine and its hand RPC
+# outright, and the accept gate now refuses every such goal at ACCEPT with
+# `REJECTED_STROKE_ENGINE_RETIRED` before a cycle exists (see
+# `reload_coordinator_node._execute_toss_continuous`) — so `pipelined` can
+# never be True in a reachable session any more (the surviving unified path
+# forces it off structurally, and legacy is refused before it could be read).
+# The tests that drove the pipelined FSM through real dispatch — staging,
+# COMMITTING promotion, the staged-slot record/clamp/unwind, the displaced
+# chain's site nomination, the pipelined-builder/beat/wire-content pins, the
+# PIPELINED watchdog and the busy-positioning chained-catch pair — are DELETED
+# along with the harness that drove them (`_pipelined_node`, `_run_pipelined`,
+# `_sample_both_slots`, `_arm_aim`, `_displaced_pipelined_node`,
+# `_busy_displaced_session`, `_displaced_node_with_busy_positioning`,
+# `_PipelineClock`/`_AimedPipelineClock`/`_DisplacedPipelineClock`,
+# `_SEAT_EDGE_S`): every one of them is unreachable behind the accept gate,
+# and R4 deletes the legacy FSM stack outright under tag `fsm-final`. Deleted
+# test names: test_a_pipelined_session_stages_every_cycle_after_the_first,
+# test_the_staged_preamble_runs_inside_the_previous_flight,
+# test_the_sensor_is_told_the_committed_slots_landing,
+# test_the_clamp_reads_the_staged_actual_not_the_prediction,
+# test_the_unwind_discards_the_staged_slot_before_any_go_home,
+# test_a_discarded_slot_closes_its_own_record,
+# test_the_stay_terminal_holds_catch_armed_high_for_a_staged_successor,
+# test_a_cycle_that_must_move_does_not_stage,
+# test_an_aimed_colocated_chain_stages_now_that_the_reach_holds_the_pretilt,
+# test_a_displaced_chain_never_throws_from_a_site_it_did_not_nominate,
+# test_the_serial_rebuild_of_a_declined_cycle_commands_the_move,
+# test_a_staged_cycle_nominates_the_predicted_chain_site_not_the_live_read,
+# test_on_a_colocated_chain_the_prediction_is_the_live_read_bit_for_bit,
+# test_the_pipelined_builder_passes_the_beat_and_the_stage_flag,
+# test_the_record_carries_the_slip_and_the_commit_instant,
+# test_the_two_additive_phases_actually_reach_the_wire,
+# test_a_pipelined_cycle_censuses_its_own_commit_tick,
+# test_the_watchdog_never_fires_on_a_healthy_PIPELINED_session,
+# test_a_chained_cycle_absorbs_the_previous_catchs_settle_hold,
+# test_without_the_patience_the_same_script_aborts_the_session (20 functions,
+# 22 test IDs with parametrization).
+#
+# What SURVIVES below tests facts that hold regardless of whether the pipeline
+# ever runs (the shipped config default, a structural source-order pin, the
+# no-progress watchdog on the CHAINED serial path, the displaced stale-site
+# cache defect, the chained busy-positioning re-poll) — none of them drive a
+# throw dispatch, so none of them were touched by the accept gate.
 
 
 def test_the_shipped_default_is_the_two_slot_pipeline():
@@ -2862,143 +2811,6 @@ def test_the_committed_slot_is_ticked_before_the_staged_slot():
     assert body.index('THE COMMITTED SLOT') < body.index('THE STAGED SLOT')
 
 
-def test_a_pipelined_session_stages_every_cycle_after_the_first(monkeypatch):
-    """THE headline, end to end through the real FSMs: cycle 1 runs serially
-    (nothing to pipeline behind, and it is the cycle that ARMS the session) and
-    every later cycle's preamble runs inside the previous cycle's FLIGHT.
-
-    The evidence is the record's own `staged_at_s`: it is null for cycle 1 and,
-    for every later cycle, sits BEFORE the previous cycle's scheduled landing —
-    i.e. off the critical path, which is the whole claim."""
-    node, calls, result, gh = _run_pipelined(monkeypatch, num_throws=3)
-    assert result.outcome == 'COMPLETED', result.outcome
-    assert result.catches_confirmed == 3
-    # three announcements, three dispatches, in that interleaved order
-    seq_calls = [c for c in calls if c[0] in ('announce', 'dispatch')]
-    assert [c[0] for c in seq_calls] == ['announce', 'dispatch'] * 3
-    # …and each pair names the SAME release instant: the announcement cannot be
-    # a tick stale, because both went out in one tick.
-    for i in range(0, 6, 2):
-        assert seq_calls[i][1] == seq_calls[i + 1][1]
-
-
-def test_the_staged_preamble_runs_inside_the_previous_flight(monkeypatch):
-    """§ 2.2's claim, measured rather than asserted: the staged cycle reaches
-    PHASE_STAGED before the previous cycle's ball has landed.
-
-    That is the definition of "off the critical path" — everything the serial
-    ladder charged to the dwell is spent while a ball is in the air."""
-    clock = _PipelineClock()
-    monkeypatch.setattr(rcn, 'time', clock)
-    node, calls = _pipelined_node(clock, monkeypatch)
-    both = _sample_both_slots(node, monkeypatch)
-    node._execute_toss_continuous(
-        _ContGoalHandle(num_throws=3, dwell=0.55, delay=DELAY,
-                        throw_height=1.30, vel_scale=0.9))
-    assert both, 'no tick had both slots live — nothing pipelined'
-    staged_ready = [s for s in both if s['staged_at'] > 0.0]
-    assert staged_ready, 'no staged cycle ever reached PHASE_STAGED'
-    for s in staged_ready:
-        # THE claim: the staged preamble finished before the ball the previous
-        # cycle threw had landed. Everything the serial ladder charged to the
-        # dwell was spent while a ball was in the air.
-        assert s['staged_at'] < s['committed_landing'], s
-
-
-def test_the_sensor_is_told_the_committed_slots_landing(monkeypatch):
-    """T-U8 — § 2.5(b), the slot-naming rule, with BOTH slots live and holding
-    DIFFERENT landings.
-
-    Getting this wrong evaluates cycle k's arrival verdict against cycle k+1's
-    landing. The three reads and their slots:
-      `_expected_landing_perf`      -> the COMMITTED slot;
-      `_expected_next_cycle_perf`   -> the STAGED slot (its ACTUALS, § 2.5a);
-      `_expected_prev_landing_perf` -> the previously-committed slot."""
-    clock = _PipelineClock()
-    monkeypatch.setattr(rcn, 'time', clock)
-    node, calls = _pipelined_node(clock, monkeypatch)
-    both = _sample_both_slots(node, monkeypatch)
-    node._execute_toss_continuous(
-        _ContGoalHandle(num_throws=3, dwell=0.55, delay=DELAY,
-                        throw_height=1.30, vel_scale=0.9))
-    assert both, 'no tick had both slots live'
-    for s in both:
-        assert s['committed_landing'] != s['staged_landing'], s
-        assert s['landing_read'] == pytest.approx(
-            s['committed_landing']), 'the COMMITTED slot'
-        assert s['next_read'][0] == pytest.approx(
-            s['staged_release']), 'the STAGED slot, its ACTUAL'
-        assert s['next_read'][1] == pytest.approx(
-            s['staged_landing']), 'the STAGED slot, its ACTUAL'
-        assert (s['prev_read'] is None
-                or s['prev_read'] < s['committed_landing']), s
-
-
-def test_the_clamp_reads_the_staged_actual_not_the_prediction(monkeypatch):
-    """§ 2.5(a): under the pipeline the clamp stops being a PREDICTION.
-
-    Today's `_set_toss_next_cycle_perf` latches `landing + dwell` a cycle early;
-    C-POSSESS-1.C's own text names that as the weakness of the rule it
-    superseded. With a staged slot live the clamp reads that slot's real
-    `t_release` — slip included — so a release that ran late no longer pulls the
-    two window ends apart."""
-    clock = _PipelineClock()
-    monkeypatch.setattr(rcn, 'time', clock)
-    node, calls = _pipelined_node(clock, monkeypatch)
-    node._toss_session_live = True
-    committed = TossSequencer(catch_pose_stow_mm=(0.0, 0.0, 170.0),
-                              flight_time_s=0.8, release_at_perf=100.0)
-    committed.start(90.0)
-    staged = TossSequencer(catch_pose_stow_mm=(0.0, 0.0, 170.0),
-                           flight_time_s=0.8, release_at_perf=101.4)
-    staged.start(100.0)
-    with node._lock:
-        node._active_seq = committed
-        node._toss_committed.next_release_perf = 999.0   # the stale PREDICTION
-        node._toss_committed.next_landing_perf = 999.8
-        node._toss_staged_seq = staged
-    assert node._expected_next_cycle_perf() == (101.4, pytest.approx(102.2))
-    # …a SLIP moves the release, and the clamp follows it for free.
-    staged._t_release = 101.46
-    assert node._expected_next_cycle_perf()[0] == pytest.approx(101.46)
-    # …and with no staged slot the latched prediction is the honest fallback.
-    with node._lock:
-        node._toss_staged_seq = None
-    assert node._expected_next_cycle_perf() == (999.0, 999.8)
-
-
-def test_the_unwind_discards_the_staged_slot_before_any_go_home(monkeypatch):
-    """T-U7 / S7 — the § 2.4.3 unwind, ordered.
-
-    The staged slot is discarded, then the session arming comes down, and only
-    THEN is a profile installed. A `go_home` traversing under a slot the machine
-    still believes in is the arm-mid-move seam with the two events in the other
-    order."""
-    clock = _PipelineClock()
-    monkeypatch.setattr(rcn, 'time', clock)
-    node, calls = _pipelined_node(clock, monkeypatch)
-    node._toss_session_live = True
-    node._toss_session_armed = True
-    node._toss_session_center_mm = (0.0, 0.0, 170.0)
-    staged = TossSequencer(catch_pose_stow_mm=(0.0, 0.0, 170.0),
-                           flight_time_s=0.8, release_at_perf=101.4)
-    staged.start(100.0)
-    with node._lock:
-        node._toss_staged_seq = staged
-        node._toss_staged = rcn.TossCycleState(staged=True)
-    order = []
-    monkeypatch.setattr(node, '_discard_toss_staged',
-                        lambda reason: order.append(('discard', reason)))
-    monkeypatch.setattr(node, '_disarm_session', lambda: order.append('disarm'))
-    node._toss_safe_abort(node._toss_committed)
-    assert order[0][0] == 'discard'
-    assert order[1] == 'disarm'
-    assert 'safe_abort' in calls
-    assert order.index(('discard', 'DRAINED')) == 0
-    # …and the discard really does precede the ladder, not merely the disarm.
-    assert calls.index('safe_abort') >= 0
-
-
 def test_every_go_home_path_drains_the_staged_slot(monkeypatch):
     """S7's structural half, extended to B4: the drain is the ONE place the
     staged slot is dropped on a teardown, and every `go_home` path is already
@@ -3009,473 +2821,7 @@ def test_every_go_home_path_drains_the_staged_slot(monkeypatch):
     assert body.index('_discard_toss_staged(') < body.index('_disarm_session()')
 
 
-def test_a_discarded_slot_closes_its_own_record(monkeypatch):
-    """§ 4 B4: "the staged slot is discarded, its record is closed with
-    `staged_discarded_reason`". A discard that left no row would make a dropped
-    cycle an ABSENCE in the census, which is exactly the shape of a defect
-    nobody counts."""
-    clock = _PipelineClock()
-    monkeypatch.setattr(rcn, 'time', clock)
-    node, calls = _pipelined_node(clock, monkeypatch)
-    published = []
-    monkeypatch.setattr(node, '_publish_toss_record',
-                        lambda result, ctx=None, cycle_state=None, seq=None:
-                        published.append((result.outcome, cycle_state)))
-    staged = TossSequencer(catch_pose_stow_mm=(0.0, 0.0, 170.0),
-                           flight_time_s=0.8, release_at_perf=101.4)
-    staged.start(100.0)
-    state = rcn.TossCycleState(staged=True)
-    with node._lock:
-        node._toss_staged_seq = staged
-        node._toss_staged = state
-    dropped = node._discard_toss_staged('DRAINED')
-    assert dropped is state
-    assert state.discarded_reason == 'DRAINED'
-    assert published == [('DISCARDED_DRAINED', state)]
-    with node._lock:
-        assert node._toss_staged is None and node._toss_staged_seq is None
-    # …and it is idempotent: a second drain has nothing to drop and says so.
-    assert node._discard_toss_staged('DRAINED') is None
-
-
-def test_the_stay_terminal_holds_catch_armed_high_for_a_staged_successor(
-        monkeypatch):
-    """The armed→announce gap, re-argued for the pipeline.
-
-    `catch_coordinator._on_throw_announcement` DROPS an announcement that
-    arrives while `catch/armed` is False, and dropping it loses the C-HAND-1
-    stroke-busy latch. Under the pipeline the previous cycle's STAY and the next
-    cycle's announcement land in the SAME tick, so a per-cycle armed False/True
-    toggle would put two edges and an announcement into one wait-set with no
-    cross-topic ordering guarantee. STAY installs no `go_home`, so a standing
-    latch has no move to land inside — it comes down at `_disarm_session`."""
-    clock = _PipelineClock()
-    monkeypatch.setattr(rcn, 'time', clock)
-    node, calls = _pipelined_node(clock, monkeypatch)
-    node._toss_session_live = True
-    node._toss_session_armed = True
-    # (a) a staged successor is waiting -> armed stays HIGH
-    with node._lock:
-        node._toss_staged = rcn.TossCycleState(staged=True)
-    node._toss_stay(node._toss_committed)
-    assert ('armed', False) not in calls
-    # (b) no successor (the last cycle) -> armed comes down, as it always did
-    with node._lock:
-        node._toss_staged = None
-    node._toss_stay(node._toss_committed)
-    assert ('armed', False) in calls
-
-
-def test_a_cycle_that_must_move_does_not_stage(monkeypatch):
-    """T-U5 — asserted on the DECISION STREAM, not on a flag.
-
-    A cycle whose POSITIONING must COMMAND a move cannot stage: the move would
-    traverse the platform during the previous cycle's flight, under a ball the
-    catch is armed for. It falls back to the serial path, which is correct and
-    is not a regression — it simply does not get faster."""
-    clock = _PipelineClock()
-    monkeypatch.setattr(rcn, 'time', clock)
-    node, calls = _pipelined_node(clock, monkeypatch)
-    node._toss_session_live = True
-    session = TossSessionSequencer(num_throws=3, dwell_time_s=0.55,
-                                   throw_delay_s=DELAY, flight_time_s=0.8,
-                                   pipelined=True)
-    session.start(clock.t)
-    node._toss_session_ref = session
-    session.step(clock.t)                          # cycle 1 -> the staging slot
-    committed = TossSequencer(catch_pose_stow_mm=(0.0, 0.0, 170.0),
-                              flight_time_s=0.8, release_at_perf=clock.t + 1.0)
-    committed.start(clock.t)
-    with node._lock:
-        node._active_seq = committed
-    session.note_cycle_committed()
-    session.step(clock.t)                          # cycle 2 -> stage attempt
-    # The platform is nowhere near the nominated B, so POSITIONING must move.
-    node._start_pipelined_cycle(
-        _ContGoalHandle(), session, (120.0, -90.0, 170.0), 0.8, 0.9,
-        raw_goal={})
-    with node._lock:
-        assert node._toss_staged is None, 'a mover must not occupy the slot'
-    assert session.cycle_live is False
-    assert session._stage_declined is True
-
-
-class _AimedPipelineClock(_PipelineClock):
-    """``_PipelineClock`` plus the ORIENTATION half of the plant.
-
-    The base plant republishes ``trajectory/commanded_pose`` at a LEVEL
-    orientation forever, which is only true of a zero-aim session. On an AIMED
-    chain the pose the platform ends a cycle holding is the one Tier 8b's
-    deferred A→B reach commanded, so this plant reads that reach back off the
-    wire and decodes it EXACTLY as ``trajectory_node._catch_target_from_msg``
-    does (quat → matrix → rotvec, the intent frame). Without it the harness
-    would answer the question this test asks — "what is the platform holding
-    when the next cycle decides whether to stage?" — with a constant."""
-
-    def _plant(self, t):
-        super()._plant(t)
-        published = self._node._dyn_target_pub.published
-        if not published:
-            return
-        q = published[-1].target_quat
-        rotvec = rot_matrix_to_rotvec(quat_to_rot_matrix(
-            float(q.w), float(q.x), float(q.y), float(q.z)))
-        with self._node._lock:
-            self._node._commanded_pose = (
-                tuple(self._node._commanded_pose[:3])
-                + tuple(float(v) for v in rotvec))
-
-
-def _arm_aim(node, monkeypatch, rx, ry):
-    """Arm an aim of ``(rx, ry)`` rad AND restore the real announcement.
-
-    Both halves are needed and neither is scenery: the aim is what makes the
-    commanded release tilted, and the real ``_announce_toss`` is what stashes the
-    landing the deferred reach is built from (`_pipelined_node`'s stub records
-    the call and stashes nothing, so the reach would publish nothing at all and
-    the plant above would have nothing to read)."""
-    real_aim = node._toss_aim_for_goal
-    real_announce = rcn.ReloadCoordinatorNode._announce_toss
-
-    def aimed(catch_pose, flight):
-        block = real_aim(catch_pose, flight)
-        off = aim_target_offset_mm(float(rx), float(ry), float(flight),
-                                   float(catch_pose[2]))
-        block['aim_rad'] = (float(rx), float(ry))
-        block['offset_mm'] = (float(off[0]), float(off[1]))
-        return block
-
-    monkeypatch.setattr(node, '_toss_aim_for_goal', aimed)
-    monkeypatch.setattr(node, '_announce_toss',
-                        lambda seq, state=None: real_announce(node, seq, state))
-
-
-def test_an_aimed_colocated_chain_stages_now_that_the_reach_holds_the_pretilt(
-        monkeypatch):
-    """**P-4** — `tests/hardware/session_cadence_ladder.md` carried finding 2, at
-    the level the finding was written about: an AIMED chain on the SHIPPED tier
-    (8b) STAGES.
-
-    It could not, and the reason was mechanical rather than a threshold: the
-    deferred A→B reach published the catch policy's receive tilt (level for a
-    self-toss), so every cycle ended with the aim taken back OUT of the platform
-    orientation, the next cycle's census-B1 skip honestly declined, and § 2.4.1's
-    rule — *a cycle stages only if its positioning decision is SKIP* — kept the
-    pipeline inert on the tier that ships. The fix is in
-    ``_publish_toss_reach``/``_toss_reach_quat``; this is its consequence, driven
-    end to end through the real FSMs.
-
-    The inertness test above (`test_a_cycle_that_must_move_does_not_stage`) is
-    unchanged and still right: a cycle that genuinely must traverse still refuses
-    to stage. What changed is that an armed aim is no longer such a cycle."""
-    clock = _AimedPipelineClock()
-    monkeypatch.setattr(rcn, 'time', clock)
-    node, calls = _pipelined_node(clock, monkeypatch)
-    _arm_aim(node, monkeypatch, math.radians(0.8), math.radians(-0.5))
-    both = _sample_both_slots(node, monkeypatch)
-    reaches = []                      # (commanded release, published target)
-    real_reach = node._publish_toss_reach
-
-    def spy_reach(state=None):
-        real_reach(state)
-        st = node._toss_committed if state is None else state
-        reaches.append((st.release_cmd, node._dyn_target_pub.published[-1]))
-
-    monkeypatch.setattr(node, '_publish_toss_reach', spy_reach)
-    result = node._execute_toss_continuous(
-        _ContGoalHandle(num_throws=3, dwell=0.55, delay=DELAY,
-                        throw_height=1.30, vel_scale=0.9))
-    assert result.outcome == 'COMPLETED', result.outcome
-    # The premise: every cycle's aim really was armed and really tilted the
-    # release, and the reach really held that pre-tilt rather than the level
-    # receive the policy computes for a self-toss.
-    assert len(reaches) == 3
-    for rel, out in reaches:
-        assert node._release_is_tilted(rel) is True
-        pre = rcn.ReloadCoordinatorNode._tilt_quaternion(rel.tilt_rx,
-                                                         rel.tilt_ry)
-        assert (out.target_quat.w, out.target_quat.x, out.target_quat.y,
-                out.target_quat.z) == (pre.w, pre.x, pre.y, pre.z)
-        assert out.target_quat.w != 1.0
-    # THE claim: cycles staged, and each staged preamble ran inside the previous
-    # cycle's flight. Before the fix `both` was empty — the chain never staged.
-    assert both, 'no tick had both slots live — the aimed chain is still inert'
-    staged_ready = [s for s in both if s['staged_at'] > 0.0]
-    assert staged_ready, 'no staged cycle ever reached PHASE_STAGED'
-    for s in staged_ready:
-        assert s['staged_at'] < s['committed_landing'], s
-
-
 # ── the DISPLACED-chain stale-site defect (bag 2026-08-28_14-48-38) ─────────
-
-
-class _DisplacedPipelineClock(_PipelineClock):
-    """``_PipelineClock`` plus the two things that actually MOVE the platform on
-    a displaced chain, which the base plant models as a constant:
-
-    * the POSITIONING ``go_to_pose`` — the platform ends at the pre-tilt pose at
-      the throw site A;
-    * **the deferred A->B reach**, published at ``t_release`` and arriving by the
-      landing, which is what puts the platform at B *during the previous cycle's
-      flight* — i.e. inside the window between a staged cycle's nomination and
-      its commit. That is the whole mechanism of the bag, and a harness whose
-      ``trajectory/commanded_position`` never moves cannot see it.
-
-    Commands are queued with the instant they arrive and applied on the tick
-    that reaches it, so the ORDER a real session sees is preserved."""
-
-    def __init__(self, *a, **kw):
-        super().__init__(*a, **kw)
-        self._queue = []                       # (arrival_t, xyz, rotvec)
-        self._pose = ((0.0, 0.0, 170.0), (0.0, 0.0, 0.0))
-        self._reaches_seen = 0
-        self.commands = []                     # (kind, arrival_t, xyz)
-
-    def command(self, arrival_t, pos, rotvec, kind):
-        self._queue.append((float(arrival_t), tuple(float(v) for v in pos),
-                            tuple(float(v) for v in rotvec)))
-        self.commands.append((kind, round(float(arrival_t), 3),
-                              tuple(round(float(v), 3) for v in pos)))
-
-    def _plant(self, t):
-        super()._plant(t)                      # re-drives hand + cup
-        node = self._node
-        published = node._dyn_target_pub.published
-        if len(published) > self._reaches_seen:
-            self._reaches_seen = len(published)
-            out = published[-1]
-            q = out.target_quat
-            rot = rot_matrix_to_rotvec(quat_to_rot_matrix(
-                float(q.w), float(q.x), float(q.y), float(q.z)))
-            seq = node._active_seq
-            # the reach carries `arrival = the announced landing` by
-            # construction, so that is when the platform is at B
-            land = (float(seq.t_release) + float(seq.flight_time_s)
-                    if seq is not None else t)
-            self.command(land, (float(out.target_pos.x),
-                                float(out.target_pos.y), 170.0), rot, 'reach')
-        while self._queue and self._queue[0][0] <= t:
-            _, pos, rot = self._queue.pop(0)
-            self._pose = (pos, rot)
-        with node._lock:
-            node._commanded_pos_mm = self._pose[0]
-            node._commanded_pose = self._pose[0] + self._pose[1]
-
-
-def _displaced_pipelined_node(clock, monkeypatch):
-    """`_pipelined_node` with the three things a DISPLACED chain needs and a
-    co-located one does not: a go_to_pose that accepts (POSITIONING really
-    commands a move here), the REAL `_announce_toss` (it stashes the landing the
-    deferred reach is built from — the stub records the call and stashes
-    nothing, so the reach would publish nothing at all), and the plant hook that
-    walks the platform to each commanded pose."""
-    node, calls = _pipelined_node(clock, monkeypatch)
-    real_announce = rcn.ReloadCoordinatorNode._announce_toss
-    monkeypatch.setattr(node, '_announce_toss',
-                        lambda seq, state=None: real_announce(node, seq, state))
-    monkeypatch.setattr(
-        node, '_wait_future',
-        lambda fut, timeout_s=2.0: types.SimpleNamespace(
-            accepted=True, planned_duration_s=0.30, code='OK', message=''))
-    real_position = node._position_platform_for_toss
-
-    def positioning(seq, state=None):
-        st = node._toss_committed if state is None else state
-        real_position(seq, state)
-        if st.positioning_move and st.platform_target_mm is not None:
-            rel = node._toss_commanded_release(st)
-            rot = ((float(rel.tilt_rx), float(rel.tilt_ry), 0.0)
-                   if node._release_is_tilted(rel) else (0.0, 0.0, 0.0))
-            clock.command(clock.t, st.platform_target_mm, rot, 'position')
-    monkeypatch.setattr(node, '_position_platform_for_toss', positioning)
-    return node, calls
-
-
-@pytest.mark.parametrize('stale_nomination', [False, True])
-def test_a_displaced_chain_never_throws_from_a_site_it_did_not_nominate(
-        monkeypatch, stale_nomination):
-    """**THE bag-2026-08-28_14-48-38 regression**, end to end through the real
-    FSMs, the real session and a plant that actually moves.
-
-    The defect: on a DISPLACED chain (catch pose B != the throw site A) the
-    first staged cycle read its throw site LIVE at stage time — during the
-    previous cycle's flight, with the platform still at A — and cached a
-    census-B1 "already positioned" that was honestly true at that instant. The
-    previous cycle's deferred A->B reach then moved the platform ~71 mm and
-    mirrored the tilt; nothing re-read; the staged cycle released from B with a
-    release state solved for A. Measured landing: x=+3.98 mm against a +70 mm
-    target — the ball came back to HOME — and because only the first chained
-    cycle after each un-staged one carries the defect, the sitting alternated
-    caught/missed deterministically.
-
-    **The invariant asserted here is the one the operator can see**: every
-    dispatch's nominated throw site is the site the platform is actually at. It
-    holds under BOTH of the fix's layers, which is why they are parametrised
-    rather than tested apart:
-
-    * ``stale_nomination=False`` — the shipped path. The staged cycle nominates
-      the PREDICTED chain site (~B), so its positioning pose is at B while the
-      platform is still at A, ``positioning_move`` is honestly True, and the
-      skip-only rule declines to stage it at all. It runs serially, one cycle
-      later, from a live read;
-    * ``stale_nomination=True`` — the pre-fix nomination, restored, so the
-      staged cycle really does cache the stale site. The COMMIT gate's
-      re-validation then refuses it ``REJECTED_SITE_MOVED`` with nothing
-      announced and nothing armed, and the session rebuilds it serially. This
-      is the belt: the class stays closed even if the nomination regresses.
-    """
-    clock = _DisplacedPipelineClock()
-    monkeypatch.setattr(rcn, 'time', clock)
-    node, calls = _displaced_pipelined_node(clock, monkeypatch)
-    B = (70.0, 0.0, 170.0)
-    if stale_nomination:
-        monkeypatch.setattr(
-            node, '_predicted_chain_site_mm',
-            lambda catch_pose, flight: (
-                (lambda p: None if p is None else (float(p[0]), float(p[1])))(
-                    node._live_commanded_position(clock.t))))
-    dispatches = []
-    real_dispatch = node._dispatch_toss_throw
-
-    def spy_dispatch(seq, state=None):
-        dispatches.append((tuple(float(v) for v in seq.throw_site_xy_mm),
-                           node._live_commanded_position(clock.t)))
-        return real_dispatch(seq, state)
-    monkeypatch.setattr(node, '_dispatch_toss_throw', spy_dispatch)
-    abandoned = []
-    real_abandon = TossSessionSequencer.note_stage_abandoned
-    monkeypatch.setattr(
-        TossSessionSequencer, 'note_stage_abandoned',
-        lambda self, reason: (abandoned.append(str(reason)),
-                              real_abandon(self, reason))[1])
-
-    result = node._execute_toss_continuous(
-        _ContGoalHandle(num_throws=3, dwell=0.55, delay=DELAY,
-                        throw_height=1.30, vel_scale=0.9,
-                        x=B[0], y=B[1], z=B[2]))
-    assert result.outcome == 'COMPLETED', result.outcome
-    # The premise: the plant really did traverse, and the reach really is what
-    # moved it (a harness that never moved would pass this test vacuously).
-    kinds = [c[0] for c in clock.commands]
-    assert 'reach' in kinds, clock.commands
-    xs = [c[2][0] for c in clock.commands]
-    assert max(xs) - min(xs) > 60.0, clock.commands
-    # ── THE assertion ──
-    assert len(dispatches) == 3
-    for site, live in dispatches:
-        assert live is not None
-        err = math.hypot(site[0] - float(live[0]), site[1] - float(live[1]))
-        assert err <= rcn._TOSS_ALREADY_THERE_TOL_MM, (site, live, err)
-    # …and the first chained cycle really did decline, by the layer under test.
-    if stale_nomination:
-        assert 'REJECTED_SITE_MOVED' in abandoned, abandoned
-    else:
-        assert abandoned and abandoned[0] == 'POSITIONING_MOVE', abandoned
-        assert 'REJECTED_SITE_MOVED' not in abandoned, (
-            'the honest nomination should never have to be caught by the belt')
-
-
-def test_the_serial_rebuild_of_a_declined_cycle_commands_the_move(monkeypatch):
-    """The other half of the fallback: a cycle that declines to stage is not
-    merely dropped — it is REBUILT serially and its POSITIONING really does
-    COMMAND the move that makes its nomination true.
-
-    That is what turns the honest refusal into a correct throw rather than a
-    lost cycle, and it is why the displaced chain still completes 3/3."""
-    clock = _DisplacedPipelineClock()
-    monkeypatch.setattr(rcn, 'time', clock)
-    node, calls = _displaced_pipelined_node(clock, monkeypatch)
-    moves = []
-    real_position = node._position_platform_for_toss
-
-    def spy(seq, state=None):
-        st = node._toss_committed if state is None else state
-        moves.append((bool(st.positioning_move),
-                      tuple(float(v) for v in (st.platform_target_mm or ())),
-                      tuple(float(v) for v in seq.throw_site_xy_mm)))
-        return real_position(seq, state)
-    monkeypatch.setattr(node, '_position_platform_for_toss', spy)
-
-    result = node._execute_toss_continuous(
-        _ContGoalHandle(num_throws=3, dwell=0.55, delay=DELAY,
-                        throw_height=1.30, vel_scale=0.9,
-                        x=70.0, y=0.0, z=170.0))
-    assert result.outcome == 'COMPLETED', result.outcome
-    assert len(moves) == 3, moves
-    # cycle 2 is the declined one: rebuilt serially, and it MOVES — from the A
-    # it threw cycle 1 from to the B it caught at.
-    assert moves[1][0] is True, moves
-    assert moves[1][1][0] == pytest.approx(70.0, abs=2.0), moves
-    # …and by cycle 3 the chain is co-located and takes the census-B1 skip
-    # again, which is the pipeline re-engaging one cycle after the displacement.
-    assert moves[2][0] is False, moves
-
-
-def test_a_staged_cycle_nominates_the_predicted_chain_site_not_the_live_read(
-        monkeypatch):
-    """The nomination itself, isolated from the ladder.
-
-    A SERIAL cycle nominates the site from the live commanded pose, and that is
-    self-consistent because its POSITIONING then COMMANDS the platform there. A
-    STAGED cycle's POSITIONING is a skip by construction, so the live read is a
-    claim about an instant a whole flight before the throw — it nominates the
-    prediction of where it WILL be instead, through `_predicted_chain_site_mm`.
-    (That derivation also fed an accept-time REJECTED_CHAIN_UNREACHABLE check
-    until 2026-08-29; this is now its only consumer, and the load-bearing one.)"""
-    clock = _PipelineClock()
-    monkeypatch.setattr(rcn, 'time', clock)
-    node, calls = _pipelined_node(clock, monkeypatch)
-    B = (70.0, 0.0, 170.0)
-    flight = node._resolve_toss_flight_s(1.30)
-    live = node._live_commanded_position(clock.t)
-    predicted = node._predicted_chain_site_mm(B, flight)
-    assert predicted is not None
-    # The premise: on a displaced goal the two answers are ~70 mm apart, which
-    # is the whole defect and is four times the census-B1 tolerance.
-    assert abs(predicted[0] - float(live[0])) > 60.0
-    staged_seq, _ = node._build_toss_cycle(
-        B, flight, 5.0, 0.9, delay_is_cadence=True,
-        release_at_perf=clock.t + 3.0, staged=True)
-    assert staged_seq.throw_site_xy_mm == pytest.approx(predicted)
-    # …and it therefore refuses to stage, by the SKIP-ONLY rule and not by a
-    # second displaced-specific test: its positioning pose is at B and the
-    # platform is at A.
-    assert staged_seq.positioning_move_expected is True
-    assert staged_seq.staged is False
-    serial_seq, _ = node._build_toss_cycle(B, flight, 5.0, 0.9,
-                                           delay_is_cadence=True)
-    assert serial_seq.throw_site_xy_mm == pytest.approx(
-        (float(live[0]), float(live[1])))
-
-
-@pytest.mark.parametrize('pose', [(0.0, 0.0, 170.0), (30.0, -20.0, 170.0)])
-def test_on_a_colocated_chain_the_prediction_is_the_live_read_bit_for_bit(
-        monkeypatch, pose):
-    """**The no-regression half, and it is an IDENTITY rather than a bound.**
-
-    The shipped steady state of a chained session is CO-LOCATED: the platform
-    parks at B and throws from B. There the parked-centroid prediction is the
-    live read's own fixed point — a self-toss lands with a vertical velocity, so
-    the receive tilt is identity, the cup swing is zero, and the catch policy
-    parks the centroid exactly on B. So the 2026-08-28 nomination change cannot
-    move a single co-located decision, because it does not move a single
-    co-located NUMBER.
-
-    Asserted as `==` on purpose. A tolerance here would hide the day this stops
-    being an identity — at which point the co-located chain has acquired a
-    residual and somebody needs to know why."""
-    clock = _PipelineClock()
-    monkeypatch.setattr(rcn, 'time', clock)
-    node, calls = _pipelined_node(clock, monkeypatch)
-    with node._lock:
-        node._commanded_pos_mm = tuple(float(v) for v in pose)
-        node._commanded_pose = tuple(float(v) for v in pose) + (0.0, 0.0, 0.0)
-        node._commanded_pos_mono = clock.t
-        node._commanded_pose_mono = clock.t
-    flight = node._resolve_toss_flight_s(1.30)
-    live = node._live_commanded_position(clock.t)
-    predicted = node._predicted_chain_site_mm(pose, flight)
-    assert predicted == (float(live[0]), float(live[1]))
 
 
 def test_the_honest_cache_check_re_reads_the_live_pose_and_re_derives_nothing():
@@ -3525,146 +2871,6 @@ def test_the_honest_cache_check_re_reads_the_live_pose_and_re_derives_nothing():
     assert 'state.staged_site_ok' not in staged_obs, (
         'the re-validation may never be read off the cycle STATE — a value '
         'cached there IS the stage-time latch this contract forbids')
-
-
-def test_the_pipelined_builder_passes_the_beat_and_the_stage_flag(monkeypatch):
-    """The B2 seam finally carrying a value, pinned as a kwarg set — the
-    pipelined twin of `test_every_cycle_goes_through_the_shared_builder`.
-
-    That test pins the SERIAL kwargs and is deliberately unchanged: the flip is
-    confined to the pipelined path, which is what "zero existing assertion
-    changes on the flag-false path" means. Cycle 1 is serial and gets the
-    derived release (0.0); every later cycle is TOLD its beat."""
-    clock = _PipelineClock()
-    monkeypatch.setattr(rcn, 'time', clock)
-    node, calls = _pipelined_node(clock, monkeypatch)
-    seen = []
-    real_build = node._build_toss_cycle
-
-    def spy(catch_pose, flight, throw_delay, vel_scale, **kw):
-        seen.append(kw)
-        return real_build(catch_pose, flight, throw_delay, vel_scale, **kw)
-
-    monkeypatch.setattr(node, '_build_toss_cycle', spy)
-    node._execute_toss_continuous(
-        _ContGoalHandle(num_throws=3, dwell=0.55, delay=DELAY,
-                        throw_height=1.30, vel_scale=0.9))
-    assert len(seen) == 3
-    assert set(seen[0]) == {'delay_is_cadence', 'release_at_perf', 'staged'}
-    assert seen[0]['delay_is_cadence'] is True
-    assert seen[0]['staged'] is False and seen[0]['release_at_perf'] == 0.0
-    for kw in seen[1:]:
-        assert kw['staged'] is True
-        assert kw['release_at_perf'] > 0.0
-
-
-def test_the_record_carries_the_slip_and_the_commit_instant(monkeypatch):
-    """The runbook's PIPE-1 row, sourced. `commit_slip_s` is the number the
-    operator scores the § 1.4 prediction from, and a slip RISING across a
-    session is a loop-cost regression — neither is readable if the record does
-    not carry it.
-
-    A zero slip is RECORDED, not nulled: a 0.000 is a measurement (the commit
-    fired on its scheduled tick) and a null is "this cycle had no commit gate".
-    A distribution that silently drops its zeros is not the one the prediction
-    was made about.
-
-    `commit_slips` rides next to it (2026-08-28): the slip says HOW LATE, the
-    count says HOW MANY ITERATIONS, and one late tick on a healthy loop is a
-    different finding from a loop chronically over period even when the two
-    produce the same lateness. That distinction is the stated input to the
-    deferred `NODE_LOOP_PERIOD_S` decision, so it has to reach the corpus."""
-    clock = _PipelineClock()
-    monkeypatch.setattr(rcn, 'time', clock)
-    node, calls = _pipelined_node(clock, monkeypatch)
-    rows = []
-    monkeypatch.setattr(node, '_publish_toss_record',
-                        lambda result, ctx=None, cycle_state=None, seq=None:
-                        rows.append(node._toss_record_fields(
-                            result, ctx, cycle_state, seq)))
-    node._execute_toss_continuous(
-        _ContGoalHandle(num_throws=3, dwell=0.55, delay=DELAY,
-                        throw_height=1.30, vel_scale=0.9))
-    assert len(rows) == 3
-    assert rows[0]['staged_at_s'] is None, 'cycle 1 ran serially'
-    assert rows[0]['commit_slip_s'] is None
-    assert rows[0]['commit_slips'] is None
-    for row in rows[1:]:
-        assert row['staged_at_s'] is not None
-        assert row['commit_at_s'] is not None
-        assert row['commit_slip_s'] is not None and row['commit_slip_s'] >= 0.0
-        assert row['commit_slips'] is not None and row['commit_slips'] >= 0
-        assert row['staged_discarded_reason'] is None
-
-
-def test_the_two_additive_phases_actually_reach_the_wire(monkeypatch):
-    """The `.action`'s two new phase strings are a WIRE CONTRACT, and a contract
-    nobody can observe is documentation.
-
-    `STAGED` is published as an EDGE (one tick, when the staged cycle finishes
-    its preamble) so it cannot shadow the flight phases the runbook watches;
-    `COMMITTING` takes the slot for the arm point and for every SLIP tick, which
-    is how a commit running away becomes visible live rather than only in the
-    record's `commit_slip_s`."""
-    from jugglebot.toss_session import (SESSION_PHASE_COMMITTING,
-                                        SESSION_PHASE_STAGED)
-    clock = _PipelineClock()
-    monkeypatch.setattr(rcn, 'time', clock)
-    node, calls = _pipelined_node(clock, monkeypatch)
-    gh = _ContGoalHandle(num_throws=3, dwell=0.55, delay=DELAY,
-                         throw_height=1.30, vel_scale=0.9)
-    node._execute_toss_continuous(gh)
-    phases = [p for _idx, p, _c in gh.feedbacks]
-    assert SESSION_PHASE_STAGED in phases
-    assert SESSION_PHASE_COMMITTING in phases
-    # At least the two edges (one per staged cycle), plus the handful of ticks
-    # where the committed slot has terminalised and the staged one is the only
-    # cycle there is to report — the third of the three documented cases. What
-    # must NOT happen is STAGED becoming a LEVEL that swamps the flight, so it
-    # is asserted as a small minority of the stream rather than as an exact
-    # count (an exact count would pin the length of the verdict wait, which is
-    # a plant property, not a feedback policy).
-    assert phases.count(SESSION_PHASE_STAGED) >= 2
-    assert phases.count(SESSION_PHASE_STAGED) < 0.15 * len(phases), (
-        phases.count(SESSION_PHASE_STAGED), len(phases))
-    # …and the flight phases the runbook scores are still reported.
-    assert 'BALL_IN_FLIGHT' in phases
-    assert phases.count('BALL_IN_FLIGHT') > phases.count(SESSION_PHASE_STAGED)
-
-
-def test_a_pipelined_cycle_censuses_its_own_commit_tick(monkeypatch):
-    """The loop census must SEE the pipelined pre-dispatch ticks — above all the
-    COMMIT tick, which is the single iteration `commit_budget_s` charges its one
-    loop period for.
-
-    It is the easiest one to lose: the commit and the UPSTREAM CYCLE'S TERMINAL
-    land on the same tick by construction (§ 2.4.4), so a census-end gated on
-    "the committed slot did not terminalise" skips exactly the tick that
-    matters, and the pipeline's whole pre-dispatch census reads as the empty
-    set. A null is a legal value here ("not measured"), so nothing would go red
-    — which is why this is asserted rather than assumed."""
-    clock = _PipelineClock()
-    monkeypatch.setattr(rcn, 'time', clock)
-    node, calls = _pipelined_node(clock, monkeypatch)
-    rows = []
-    monkeypatch.setattr(node, '_publish_toss_record',
-                        lambda result, ctx=None, cycle_state=None, seq=None:
-                        rows.append(node._toss_record_fields(
-                            result, ctx, cycle_state, seq)))
-    node._execute_toss_continuous(
-        _ContGoalHandle(num_throws=3, dwell=0.55, delay=DELAY,
-                        throw_height=1.30, vel_scale=0.9))
-    assert len(rows) == 3
-    for i, row in enumerate(rows):
-        assert row['loop_n_pre'] is not None, i
-        assert row['loop_n_pre'] > 0, i
-        assert row['loop_period_max_pre_s'] is not None, i
-        assert row['loop_n_post'] is not None and row['loop_n_post'] > 0, i
-    # The STAGED cycles reach their commit through PHASE_COMMITTING, which is in
-    # PRE_DISPATCH_PHASES — so their pre-dispatch count covers the ladder AND
-    # the arm point, not just the ladder.
-    for row in rows[1:]:
-        assert row['loop_n_pre'] >= 4, row['loop_n_pre']
 
 
 # ── F3: the SESSION no-progress watchdog (2026-08-28) ────────────────────────
@@ -3836,35 +3042,6 @@ def test_the_watchdog_never_fires_across_a_reload_interlude(monkeypatch):
     assert result.reloads_used == 1
 
 
-def test_the_watchdog_never_fires_on_a_healthy_PIPELINED_session(monkeypatch):
-    """**The pipelined twin, and it is the one that covers the shipped machine.**
-
-    The two non-firing tests above drive the SERIAL ladder — `_stub_cycles`
-    scripts `_run_toss_cycle`, the blocking wrapper the pipelined loop never
-    calls — and they are pinned there by this file's autouse fixture. Under the
-    pipelined flag they do not merely lose their subject, they FAIL: the harness
-    stubs a method that is no longer on the path. So without this test the F3
-    watchdog's non-firing guarantee was pinned against false firing on a machine
-    the operator no longer runs.
-
-    The pipelined loop is where a false firing would actually cost something, and
-    its progress signature is a different one: the committed and staged slots are
-    occupied for almost the whole session (clause 2), and the quiescent gap
-    clause 4 covers is a fraction of a serial one because the next cycle's
-    preamble already ran inside the previous flight. This runs a full three-cycle
-    pipelined session through the real FSMs and the real `_tick_toss_pipeline`,
-    and asserts the terminal is COMPLETED with no ABORTED_STALLED anywhere."""
-    node, calls, result, gh = _run_pipelined(monkeypatch, num_throws=3)
-    assert 'STALLED' not in str(result.outcome), result.outcome
-    assert result.outcome == 'COMPLETED', result.outcome
-    assert result.catches_confirmed == 3
-    # …and it really was the PIPELINED path: cycles 2 and 3 staged, which is the
-    # precondition that makes this a twin rather than a second serial test.
-    assert [c[0] for c in calls if c[0] == 'dispatch'].count('dispatch') == 3
-    assert gh.terminal == 'succeed', gh.terminal
-    assert not [f for f in gh.feedbacks if 'STALLED' in str(f[1])], gh.feedbacks
-
-
 def test_the_progress_predicate_is_a_pure_function_of_the_four_things():
     """F3's POLICY, unit-tested away from the loop — because the failure it
     guards is "the session answers the same thing forever", and a policy only
@@ -3929,136 +3106,3 @@ def test_the_stall_bound_is_derived_and_can_never_reach_a_legitimate_wait():
 # ── the chained-cycle POSITIONING BUSY (bag 2026-08-28_23-53-25) ──────────────
 
 
-def _displaced_node_with_busy_positioning(clock, monkeypatch, hold_s):
-    """`_displaced_pipelined_node`, but POSITIONING runs the REAL
-    ``_position_platform_for_toss`` and ``go_to_pose`` refuses BUSY for
-    ``hold_s`` at the head of every cycle after the first.
-
-    **Why the real method has to be re-installed.** ``_pipelined_node`` seams
-    ``_position_platform_for_toss`` to a ``note_position_noop`` lambda, and
-    ``_displaced_pipelined_node`` captures THAT lambda as its ``real_position``
-    — so the displaced harness never reaches the service at all and its
-    ``_wait_future`` accept stub is dead code. Nothing else in that file depends
-    on the service running, but this test does: the whole subject is what the
-    node does when the service ANSWERS, and a re-poll only exists if the ACTION
-    is dispatched a second time.
-
-    ``hold_s`` is the RESIDUAL settle hold at the positioning dispatch, not the
-    whole ``JB_TRAJ_CATCH_SETTLE_HOLD_S``: the bag shows POSITIONING dispatching
-    0.09-0.23 s after the landing the hold is anchored to. It is keyed on the
-    committed sequencer's IDENTITY rather than on wall time, so the hold rides
-    each cycle's own head wherever the session's cadence puts it, and cycle 1 —
-    which has no previous catch to be held by — is deliberately exempt. The
-    STAGED slot is skip-only by construction and never reaches the service, so
-    ``_active_seq`` is the only slot that can be refused."""
-    node, calls = _displaced_pipelined_node(clock, monkeypatch)
-    real_position = rcn.ReloadCoordinatorNode._position_platform_for_toss
-
-    def positioning(seq, state=None):
-        st = node._toss_committed if state is None else state
-        real_position(node, seq, state)
-        # Walk the plant to the commanded pose, exactly as
-        # `_displaced_pipelined_node` does — but only once the move was
-        # ACCEPTED, so a refused poll never teleports the platform.
-        if (st.positioning_move and st.platform_target_mm is not None
-                and seq.prepared):
-            rel = node._toss_commanded_release(st)
-            rot = ((float(rel.tilt_rx), float(rel.tilt_ry), 0.0)
-                   if node._release_is_tilted(rel) else (0.0, 0.0, 0.0))
-            clock.command(clock.t, st.platform_target_mm, rot, 'position')
-
-    monkeypatch.setattr(node, '_position_platform_for_toss', positioning)
-
-    busy = types.SimpleNamespace(
-        accepted=False, code='BUSY', planned_duration_s=0.0,
-        message='a move is in flight — Phase 2 accepts moves only from hold')
-    ok = types.SimpleNamespace(accepted=True, planned_duration_s=0.30,
-                               code='OK', message='')
-    window = {'seq': None, 'n': 0, 'until': 0.0}
-    served = []
-
-    def serve(fut, timeout_s=2.0):
-        cur = node._active_seq
-        if cur is not window['seq']:
-            window['seq'] = cur
-            window['n'] += 1
-            window['until'] = ((clock.t + float(hold_s))
-                               if window['n'] >= 2 else 0.0)
-        resp = busy if clock.t < window['until'] else ok
-        served.append(str(resp.code))
-        return resp
-
-    monkeypatch.setattr(node, '_wait_future', serve)
-    return node, served
-
-
-def _busy_displaced_session(node, num_throws=2):
-    """A DISPLACED two-cycle session: the catch pose B is 70 mm off the throw
-    site, so POSITIONING really COMMANDS a move and really can be refused. A
-    co-located chain takes the census-B1 skip and never calls the service, which
-    is exactly why the 08-28 sitting only died on displaced runs."""
-    return node._execute_toss_continuous(
-        _ContGoalHandle(num_throws=num_throws, dwell=0.55, delay=DELAY,
-                        throw_height=1.30, vel_scale=0.9,
-                        x=70.0, y=0.0, z=170.0))
-
-
-def test_a_chained_cycle_absorbs_the_previous_catchs_settle_hold(monkeypatch):
-    """**THE bag-2026-08-28_23-53-25 regression**, end to end through the real
-    FSMs, the real session and a plant that actually moves.
-
-    The defect: on a DISPLACED chain cycle N+1's POSITIONING dispatches INSIDE
-    cycle N's ``JB_TRAJ_CATCH_SETTLE_HOLD_S`` settle hold, where
-    trajectory_node's ``_active_move_in_flight()`` is True and ``go_to_pose``
-    answers BUSY — correctly; that guard is not the bug. The toss FSM had no
-    retry, so ``_step_positioning`` terminalised the cycle
-    REJECTED_POSITION(BUSY), ``toss_session`` escalated it to ABORTED_CYCLE_*
-    and the whole session died. Three deterministic aborts in that bag.
-
-    The fix absorbs the refusal for a bounded, derived patience. The WEDGE half
-    — a BUSY that outlives it, which must still reject — is
-    ``test_toss_sequencer.py``'s."""
-    clock = _DisplacedPipelineClock()
-    monkeypatch.setattr(rcn, 'time', clock)
-    node, served = _displaced_node_with_busy_positioning(clock, monkeypatch,
-                                                         hold_s=0.30)
-    result = _busy_displaced_session(node)
-    assert result.outcome == 'COMPLETED', result.outcome
-    outcomes = list(result.per_cycle_outcomes)
-    assert len(outcomes) == 2, outcomes
-    assert not any('REJECTED_POSITION' in o for o in outcomes), outcomes
-    # NON-VACUITY, twice over: a BUSY really was answered (else the harness
-    # proved nothing), and it really was re-polled rather than answered once.
-    assert 'BUSY' in served, served
-    assert served.count('BUSY') >= 2, served
-
-
-def test_without_the_patience_the_same_script_aborts_the_session(monkeypatch):
-    """The control, and the pre-fix behaviour restored exactly: with the patience
-    at 0.0 the first BUSY is terminal again and the session dies on it, carrying
-    the byte-identical outcome string the 08-28 bag shows.
-
-    Patched on ``jugglebot.toss_sequencer`` because that is the constant's real
-    consumer — ``_step_checking`` stamps ``now + TOSS_POSITION_BUSY_PATIENCE_S``
-    at every POSITIONING dispatch — rather than on a copy of it."""
-    import jugglebot.toss_sequencer as toss_seq
-    monkeypatch.setattr(toss_seq, 'TOSS_POSITION_BUSY_PATIENCE_S', 0.0)
-    clock = _DisplacedPipelineClock()
-    monkeypatch.setattr(rcn, 'time', clock)
-    node, served = _displaced_node_with_busy_positioning(clock, monkeypatch,
-                                                         hold_s=0.30)
-    result = _busy_displaced_session(node)
-    # Base + subcode, not the byte-identical literal: the go_to_pose MESSAGE
-    # now rides the outcome (`REJECTED_POSITION(BUSY: <why>)`), and the SUBCODE
-    # — which the FSM's re-poll and the node's zombie-superseder guard key on —
-    # still leads the parenthetical. The composed session terminal splits the
-    # same way.
-    assert base_outcome(
-        result.outcome) == 'ABORTED_CYCLE_REJECTED_POSITION', result.outcome
-    assert outcome_subcode(result.outcome) == 'BUSY', result.outcome
-    assert 'a move is in flight' in result.outcome, result.outcome
-    assert any(o.startswith('REJECTED_POSITION(BUSY')
-               for o in result.per_cycle_outcomes), list(
-                   result.per_cycle_outcomes)
-    # One refusal, no re-poll: the wait is what the patience buys.
-    assert served.count('BUSY') == 1, served

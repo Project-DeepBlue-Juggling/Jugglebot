@@ -92,7 +92,7 @@ static constexpr uint8_t FW_DATA_MAX_N = 5;
 // The FW-update gate, in front of the shared CAN3 gate. An armed setpoint output
 // means the legs are under 500 Hz command; a Platform Teensy erasing flash or
 // rebooting mid-update is not a bus partner to have then, so refuse outright
-// (ERR_REJECTED — the same condition and status HAND_SOURCE_SET uses).
+// (ERR_REJECTED — the same condition and status every armed-output refusal uses).
 static uint16_t send_fw_update(const ODrive::CanFrame& f, bool mpc_active_now) {
   if (mpc_active_now) return JbUdp::RpcStatus::ERR_REJECTED;
   return send_gated(f);
@@ -128,7 +128,7 @@ uint16_t platform_fw_data(const JbUdp::RpcArgs::ArgPlatformFwData& a, bool mpc_a
   // would read past the 5-byte arg payload into the next struct bytes. Refuse
   // both here so a malformed chunk never reaches CAN3 (the throw_args_valid /
   // state_write isfinite pattern; ERR_BAD_ARGS, checked ahead of the mpc gate
-  // exactly as hand_source_request validates its value before !mpc_active).
+  // before the mpc gate).
   if (a.n < 1 || a.n > FW_DATA_MAX_N) return JbUdp::RpcStatus::ERR_BAD_ARGS;
   ODrive::CanFrame f = fw_cmd_frame(FW_OP_DATA);
   f.len = (uint8_t)(3 + a.n);           // short dlc — the receiver takes the length from the frame

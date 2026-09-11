@@ -241,11 +241,11 @@ static void decode_into_cache(const CAN_message_t& msg) {
       // CAN3 SRX_DIS means we never receive our own leg-setpoint TX, so only
       // genuine Platform→hand commands reach here; the axis==HAND_AXIS guard is
       // belt-and-suspenders (and skips any stray leg-addressed set_input_pos).
-      // FW 17: while hand_source == STREAMED the bridge itself masters the
-      // hand, its TX is invisible here (SRX_DIS), and the echo is RE-SOURCED
-      // from axes[6].target_* in telemetry.cpp::hand_cmd_echo_uplink_step.
-      // This sniff stays live regardless — a Platform→hand frame arriving
-      // while STREAMED means a second master and MUST reach the host.
+      // The bridge itself masters the hand, so its TX is invisible here
+      // (SRX_DIS) and the echo is RE-SOURCED from axes[6].target_* in
+      // telemetry.cpp::hand_cmd_echo_uplink_step. This sniff stays live
+      // regardless — a Platform→hand frame arriving at all means a second
+      // master and MUST reach the host.
       // wire-bound absolute timestamp — wall by contract: t_bridge_us is
       // serialised into the HAND_CMD_ECHO uplink for host-side wall-clock correlation.
       if (axis == HAND_AXIS) hand_cmd_echo_record(d, now_wall_us());
@@ -603,7 +603,7 @@ void can_buses_init() {
   // bus had EIGHT TX mailboxes, and the 500 Hz interp ISR fills six of them in
   // one back-to-back burst (leg_interp.cpp:533-541). A hand dispatch landing in
   // the post-burst window found ≤2 mailboxes free, so FlexCAN_T4::write()
-  // returned -1 (deferral into the software ring) and hand_ops reported
+  // returned -1 (deferral into the software ring) and the hand conduit reported
   // ERR_TIMEOUT. Measured on the bench 2026-08-09: 0/40 failures with the leg
   // stream idle, 15/40 with it running (Fisher p = 8.5e-09), and the per-stage
   // split pre1 0 / pre2 7 / traj 8 reads out the pending count directly.
@@ -648,8 +648,9 @@ void can_buses_init() {
   //    setMaxMB also clears every mailbox and RXIMR mask, so it is init-only —
   //    calling it at runtime would destroy in-flight leg setpoints.
   //  * EFFECT: converts a deferral into a hardware-queued (late) transmission.
-  //    The ERR_TIMEOUTs go away; the WIRE LATENCY DOES NOT — 0x0C7, 0x0CB and
-  //    0x6D0 all rank below every leg id (0x00C-0x0AC), so they still go out
+  //    The ERR_TIMEOUTs go away; the WIRE LATENCY DOES NOT — 0x0C7 and 0x0CB
+  //    (and, until FW 21, the 0x6D0 hand-traj relay) all rank below every leg
+  //    id (0x00C-0x0AC), so they still go out
   //    after the burst drains. It also parks the vendored events() mb == -1
   //    refill defect (no break; writes one frame into every free mailbox while
   //    popping others — logbook 2026-08-02 addendum § A6): at the observed
@@ -657,8 +658,8 @@ void can_buses_init() {
   //    unreachable. It becomes reachable again if a future TX producer doubles
   //    the burst — and the parking is ONE-DIRECTIONAL in blast radius: when the
   //    ring IS re-entered, that break-less loop now duplicates the peeked frame
-  //    into up to 16 mailboxes instead of 8, so a deferred 0x6D0 duplicates twice
-  //    as hard as it did on FW 9. Anything that re-opens the deferral path must
+  //    into up to 16 mailboxes instead of 8, so a deferred low-priority frame
+  //    duplicates twice as hard as it did on FW 9. Anything that re-opens the deferral path must
   //    FIX THE VENDORED LOOP, not just re-size the mailboxes.
   //    ✅ DISCHARGED, FW 14 (2026-08-14): the vendored loop now has its `break`
   //    (lib/FlexCAN_T4/PROVENANCE.md § P4), so a deferred frame goes into exactly ONE

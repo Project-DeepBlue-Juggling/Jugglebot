@@ -23,7 +23,7 @@ from teensy_link import MsgType, HeartbeatJ2T
 from teensy_link.protocol import Setpoint
 
 from tests.ros._bridge_harness import (
-    _build_paired_node, _messages, _teardown, _wait_until,
+    _build_paired_node, _teardown, _wait_until,
 )
 
 
@@ -738,13 +738,10 @@ def test_arm_refused_while_deactivate_in_progress():
         _teardown(teensy, client, node)
 
 
-# ── FW 17 (c2) hand-lane arming choreography + the ack-freshness rule ─────────
-# The arm fold reads hand mastery from HeartbeatT2J flags bit 6, OR-ed with the
-# node's own last HAND_SOURCE_SET ack when the cached heartbeat is not
-# decisively newer than that ack (2026-09-02 review fix). These mirror the leg
-# arm battery above (e.g. test_arm_rejected_on_u0_encoder_mismatch).
-
-_HB_FLAG_HAND_STREAMED = 0x40   # HeartbeatT2J flags bit 6 (HAND_SOURCE_STREAMED)
+# ── R1 (c2) hand-lane arming choreography (no mastery latch) ──────────────────
+# One hand master: the hand lane is ACTIVE whenever a frame carries HAS_HAND —
+# there is no hand_source latch to read. These mirror the leg arm battery
+# above (e.g. test_arm_rejected_on_u0_encoder_mismatch).
 
 
 def _hand_cmd(motor_rev, hand_rev):
@@ -757,24 +754,14 @@ def _hand_cmd(motor_rev, hand_rev):
     return d
 
 
-def _bring_link_up_streamed(teensy, node, leg_pos=0.1):
-    """Heartbeat with bit 6 SET (hand_source=STREAMED) + 7-axis telemetry."""
-    teensy.send_heartbeat_t2j(flags=_HB_FLAG_HAND_STREAMED)
-    teensy.send_telemetry(pos_rev=tuple([leg_pos] * 7), vel_rps=tuple([0.0] * 7))
-    assert _wait_until(
-        lambda: node._latest_telemetry is not None
-        and node._latest_heartbeat is not None
-        and int(node._latest_heartbeat.flags) & _HB_FLAG_HAND_STREAMED, timeout=2.0)
-
-
-def test_arm_rejected_on_hand_u0_encoder_mismatch_when_streamed():
-    """(a) bit 6 set + hand u0 3 rev off the hand encoder ⇒ arm refused, naming
-    the 0.625 rev hand gate (quarter of MAX_DEVIATION_HAND_REV) — never the leg
-    0.25. Arming anyway would hand the firmware lane a knot that trips the hand
-    deviation guard / lead clamp at the arm edge."""
+def test_arm_rejected_on_hand_u0_encoder_mismatch():
+    """(a) hand u0 3 rev off the hand encoder ⇒ arm refused, naming the
+    0.625 rev hand gate (quarter of MAX_DEVIATION_HAND_REV) — never the leg
+    0.25. Arming anyway would hand the streamed lane a knot that trips the
+    hand deviation guard / lead clamp at the arm edge."""
     teensy, client, node = _node()
     try:
-        _bring_link_up_streamed(teensy, node, leg_pos=0.1)
+        _bring_link_and_telem_up(teensy, node, leg_pos=0.1)
         node._injected_setpoint_source = _FakeSource([_hand_cmd([0.1] * 6, 3.1)])
         resp = _arm(node)
         assert resp.success is False
@@ -785,11 +772,12 @@ def test_arm_rejected_on_hand_u0_encoder_mismatch_when_streamed():
         _teardown(teensy, client, node)
 
 
-def test_arm_streamed_runs_hand_closed_loop_preamble_before_mpc_active():
-    """(b) bit 6 set ⇒ the arm fold sends SET_AXIS_STATE(6, CLOSED_LOOP) then
-    SET_CONTROLLER_MODE(6, POSITION/PASSTHROUGH) BEFORE mpc_active rises — the
-    per-dispatch preamble hand_ops used to own, folded into the single arm gate
-    (a hand left IDLE would silently swallow the streamed lane)."""
+def test_arm_with_hand_knots_runs_hand_closed_loop_preamble_before_mpc_active():
+    """(b) a hand-bearing frame ⇒ the arm fold sends SET_AXIS_STATE(6,
+    CLOSED_LOOP) then SET_CONTROLLER_MODE(6, POSITION/PASSTHROUGH) BEFORE
+    mpc_active rises — the single arm gate is the ONLY place this preamble
+    runs (a hand left IDLE would silently swallow the streamed lane; the
+    idle-axis trap, logbook/2026-09-04-fw17-hand-sitting-unflashed-idle-axis.md)."""
     from teensy_link import RpcMethod, RpcStatus
     from teensy_link import rpc_args
     import jugglebot.protocol_config as proto
@@ -809,7 +797,7 @@ def test_arm_streamed_runs_hand_closed_loop_preamble_before_mpc_active():
 
         teensy.on_rpc(int(RpcMethod.SET_AXIS_STATE), _ax_handler)
         teensy.on_rpc(int(RpcMethod.SET_CONTROLLER_MODE), _cm_handler)
-        _bring_link_up_streamed(teensy, node, leg_pos=0.1)
+        _bring_link_and_telem_up(teensy, node, leg_pos=0.1)
         # Hand u0 at the hand encoder — inside the 0.625 rev gate.
         node._injected_setpoint_source = _FakeSource([_hand_cmd([0.1] * 6, 0.1)])
         resp = _arm(node)
@@ -827,65 +815,22 @@ def test_arm_streamed_runs_hand_closed_loop_preamble_before_mpc_active():
         _teardown(teensy, client, node)
 
 
-def test_arm_with_hand_knots_under_legacy_succeeds_with_warning():
-    """(c) bit 6 clear + hand knots in the stream ⇒ the arm succeeds (the
-    firmware discards Setpoint index 6 by mode, counted) and the node logs the
-    LEGACY warning — visible intent the firmware will refuse, never a silent
-    drop. No hand preamble RPC touches the wire."""
-    from unittest.mock import MagicMock
+def test_arm_without_hand_knots_skips_the_hand_preamble():
+    """A leg-only frame (no HAS_HAND) never touches the hand ODrive — the
+    preamble is conditioned on the frame, not run unconditionally on every
+    arm."""
     from teensy_link import RpcMethod, RpcStatus
     teensy, client, node = _node()
-    rec = MagicMock()
-    node._logger = rec          # the mock Node's get_logger() returns _logger
     try:
         ax_calls = []
         teensy.on_rpc(int(RpcMethod.SET_AXIS_STATE),
                       lambda rid, args: (ax_calls.append(args), (int(RpcStatus.OK), b""))[1])
-        _bring_link_and_telem_up(teensy, node, leg_pos=0.1)   # heartbeat flags=0
-        node._injected_setpoint_source = _FakeSource([_hand_cmd([0.1] * 6, 0.1)])
+        _bring_link_and_telem_up(teensy, node, leg_pos=0.1)
+        node._injected_setpoint_source = _FakeSource([_cmd([0.1] * 6)])
         resp = _arm(node)
         assert resp.success is True, resp.message
         assert node._mpc_active is True
-        warns = [m for m in _messages(rec.warning) if 'LEGACY' in m]
-        assert warns, 'expected the hand_source=LEGACY discard warning'
-        assert 'set_hand_source' in warns[0]
-        assert ax_calls == []            # no hand preamble under LEGACY
-    finally:
-        _teardown(teensy, client, node)
-
-
-def test_arm_uses_acked_hand_source_when_heartbeat_predates_the_switch():
-    """The ack-freshness rule (2026-09-02 fix): a HAND_SOURCE_SET acked AFTER
-    the cached heartbeat must override a stale bit-6-clear — switch-then-arm
-    within the ~100 ms heartbeat period takes the STREAMED path (proved here by
-    the 0.625 rev hand gate refusing, which only the streamed fold checks).
-    Once heartbeats decisively newer than the ack (≥ 2 generations) still read
-    LEGACY — a firmware reboot's truth — the heartbeat wins again."""
-    from teensy_link import RpcMethod, RpcStatus
-    teensy, client, node = _node()
-    try:
-        teensy.on_rpc(int(RpcMethod.HAND_SOURCE_SET),
-                      lambda rid, args: (int(RpcStatus.OK), b""))
-        _bring_link_and_telem_up(teensy, node, leg_pos=0.1)   # heartbeat: bit 6 CLEAR
-        ok, _m, _b = node.teensy_hand_source_set(True)        # acked switch …
-        assert ok
-        ack_gen = node._hand_source_ack_hb_gen
-        # … and NO fresh heartbeat after it: the stale-heartbeat window.
-        node._injected_setpoint_source = _FakeSource([_hand_cmd([0.1] * 6, 3.1)])
-        resp = _arm(node)
-        assert resp.success is False
-        assert '0.625' in resp.message      # the STREAMED gate ran, off the ack
-        assert node._mpc_active is False
-
-        # Two heartbeats past the ack, still bit-6-clear (the reboot case):
-        # the heartbeat is now decisively newer and wins — LEGACY path arms.
-        teensy.send_heartbeat_t2j()
-        teensy.send_heartbeat_t2j()
-        assert _wait_until(lambda: node._heartbeat_gen >= ack_gen + 2, timeout=2.0)
-        node._injected_setpoint_source = _FakeSource([_hand_cmd([0.1] * 6, 3.1)])
-        resp2 = _arm(node)
-        assert resp2.success is True, resp2.message
-        assert node._mpc_active is True
+        assert ax_calls == []            # no hand preamble without a hand knot
     finally:
         _teardown(teensy, client, node)
 

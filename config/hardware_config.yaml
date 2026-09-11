@@ -479,6 +479,20 @@ jugglebot_geometry:
   # and each must stay independently movable.
   hand_clip_margin_rev: 0.2
 
+  # The hand's mm/rev spool gain — MEASURED, replacing the retired
+  # teensy_trajectory.linear_gain_factor / hand_spool_radius_m fudge pair
+  # (R1, 2026-09-11; plans/archived/hand-geometry-correction.md § Archival
+  # note). Two owner readings of the SAME metal, slider driven onto each hard
+  # stop and the encoder read:
+  #   2026-09-06 (bench):        top 10.701 rev / bottom -0.107 rev
+  #   2026-09-11 (manual slide): top 10.691 rev / bottom -0.118 rev
+  # 352.0 mm stop-to-stop both times; the 0.011 rev shift at both ends is
+  # homing-zero variation (~0.36 mm), and the two scales agree to 0.01 %.
+  # This value is the mean: 352.0 / 10.809 (mean span) = 32.567 mm/rev
+  # (30.7047 rev/m). Derived HAND_REV_PER_M = 1000 / this. One number per
+  # physical fact — no fudge knob beside it.
+  hand_mm_per_rev: 32.567
+
 # ============================================================
 # 3. Jugglebot Homing
 #    Homing parameters for leg and hand motors.
@@ -492,6 +506,19 @@ jugglebot_homing:
   hand_current_limit_a: 8.0              # Hand motor current limit during homing {A}
   hand_current_headroom_a: 3.0           # Hand current headroom for spike detection {A}
   hand_abs_pos_rev: -0.1                 # Absolute position set after hand homing {rev}
+  # The hand's settle band below hand_abs_pos_rev {rev} — formerly triplicated
+  # (canbridge_config.h, hand_stroke.py, validate_cycle; INVARIANTS Gaps 9).
+  # This key is now the single source. Derived HAND_HOMED_REST_FLOOR_REV =
+  # hand_abs_pos_rev - hand_settle_band_rev = -0.20 rev. R1, 2026-09-11.
+  hand_settle_band_rev: 0.10
+  hand_park_band_rev: 0.5                # The PARK band {rev}: |pos - rest| <= this is "the hand is
+                                        # where the plan's seed says it is" (REJECTED_HAND_NOT_PARKED,
+                                        # reload_coordinator_node hand_parked). 5x the settle band
+                                        # above because the streamed catch leaves the hand at
+                                        # ~0.32 rev (unified_cycle.py, 2026-09-05 measurement) and
+                                        # a throw planned from that seed is fine; formerly
+                                        # hand_stroke.HAND_PARK_BAND_REV, single-sourced here at R1
+                                        # (2026-09-11).
   ema_weight: 0.7                        # EMA weight for Iq spike detection
   motor_timeout_s: 30.0                  # Max time per motor for homing current detection {s}
   stop_settle_ms: 5                      # Delay after stopping motor before setting absolute position {ms}
@@ -642,25 +669,33 @@ jugglebot_operational:
   # computed by generate_config.py from the active pose IK at [0, 0, default_active_z_mm, 0, 0, 0].
   # This ensures the gentle-move target matches the control loop's active pose exactly.
   default_active_z_mm: 170.0             # Default platform Z during active catching {mm}
-  hand_catch_prime_rev: 9.9594           # Hand position for catch priming (top of stroke) {rev}.
-                                         # EXPLICIT OVERRIDE of a DERIVED quantity. It MUST equal
-                                         # the generated HAND_STROKE_TOP_REV — i.e. x3, the throw
-                                         # stroke's end AND the catch trajectory's first sample:
-                                         #   (hand_stroke_m - 2*stroke_margin_m) * linear_gain_factor
-                                         #     / (2*pi*hand_spool_radius_m)   [teensy_trajectory]
-                                         # WHY it must: a kind-1 catch trajectory begins at x3, and
+  hand_catch_prime_rev: 9.9594           # Hand position for catch priming (top of stroke) {rev} —
+                                         # the top of the unified path's operating slider band
+                                         # (feasibility.HAND_STROKE_MAX_REV, cup_cycle, cup_realize,
+                                         # unified_cycle). Shipped 9.858 until 2026-07-26 — 0.101 rev
+                                         # = 3.2 mm below the throw-profile's x3, a hand-maintained
+                                         # duplicate that had already drifted.
+                                         #
+                                         # R1 (2026-09-11): the invariant this comment used to state
+                                         # — MUST equal generated HAND_STROKE_TOP_REV / x3, because
                                          # Trajectory.h's makeSmoothMove prepends a prelude from
-                                         # wherever the hand actually is to that first sample. Park
-                                         # the hand anywhere else and every "catch from rest at the
-                                         # top" starts with a real move, so the no-op case is never
-                                         # a no-op. Shipped 9.858 until 2026-07-26 — 0.101 rev =
-                                         # 3.2 mm below x3, a hand-maintained duplicate that had
-                                         # already drifted. Kept overridable (not derived-only) so a
-                                         # bench sitting can park the hand elsewhere without a code
-                                         # change; the drift guard is
-                                         # tests/motion/test_hand_stroke.py::
-                                         # test_catch_prime_equals_the_stroke_top, which goes RED on
-                                         # any override — deliberately, so it surfaces rather than rots.
+                                         # wherever the hand is to a kind-1 catch trajectory's first
+                                         # sample — is RETIRED along with hand_stroke.py, Trajectory.h
+                                         # and the reactive kind-1 catch it described
+                                         # (tests/motion/test_hand_stroke.py::
+                                         # test_catch_prime_equals_the_stroke_top, deleted with it).
+                                         # No replacement invariant exists: this is now a plain,
+                                         # independently-set operating-band bound.
+  hand_activate_position_rev: 0.0        # Where ACTIVATE parks the hand {rev} — the clip floor
+                                         # [0, HAND_MOTOR_MAX_POSITION] of the streamed lane, 3 mm
+                                         # above the homing stop at homing.hand_abs_pos_rev (-0.1
+                                         # rev). Owner decision, 2026-09-11 (skill-stack R1):
+                                         # leg_activate widens to axis 6 (CLOSED_LOOP +
+                                         # TRAP_TRAJ move here, then POSITION/PASSTHROUGH for the
+                                         # streamed lane); leg_deactivate idles axis 6 with the legs.
+                                         # The bench --close-loop operator energise step retires.
+                                         # Emitted beside JBOp::ACTIVATE_POSITION_REVS (same C++
+                                         # namespace) for the can-bridge firmware unit (F1b).
   hand_retract_rev: 0.0                  # Hand retract target for reload SAFE_ABORT {rev}. MUST stay
                                          # within the bridge's smooth_move_hand range [0, hand max pos]:
                                          # the homing reference (-0.1 rev) is BELOW it, and using that as
@@ -1182,13 +1217,16 @@ jugglebot_spacemouse:
 
 # ============================================================
 # 8. Teensy Trajectory
-#    Source: ros_ws/src/jugglebot/Teensy_code_platform/Trajectory.h
-#    Trajectory generation constants for the platform Teensy's hand axis.
+#    R1 (2026-09-11): Trajectory.h and the stroke-engine profile this section
+#    used to feed are DELETED (plans/active/two-ball-skill-stack.md § 4 R1).
+#    What remains holds the hand's PHYSICAL limits — event-velocity bounds,
+#    inertias, decel authority — that C-HAND-2/C-HAND-3 and the unified path
+#    still gate on. The spool-gain pair (hand_spool_radius_m,
+#    linear_gain_factor) is DELETED, not re-valued: see
+#    jugglebot_geometry.hand_mm_per_rev, the one measured replacement.
 #    These differ from Ball Butler trajectory constants (different hardware).
 # ============================================================
 teensy_trajectory:
-  hand_spool_radius_m: 0.00521          # Hand spool radius {m}
-  linear_gain_factor: 1.035             # Multiplier on linear gain ("just 'cuz" factor)
   inertia_hand_only_kg: 0.281           # Hand-only inertia {kg}
   inertia_ratio: 0.747                  # Inertia ratio for throw dynamics
   throw_decel_reflected_inertia_kgm2: 9.5e-6
@@ -1302,63 +1340,12 @@ teensy_trajectory:
   # zero). Treat this as a TUNED PROFILE PARAMETER whose units happen to be metres.
   hand_stroke_m: 0.355                  # Throw-profile basis {m} — NOT the physical stroke.
   stroke_margin_m: 0.02                 # Safety margin at ends of stroke {m}
-  end_profile_hold_s: 0.10              # Hold time at end of motion profile {s}
-  sample_rate_hz: 500                   # Trajectory sample rate {Hz}
-  max_smooth_move_hand_accel_rps2: 100.0  # Max hand acceleration for smooth moves {rev/s^2}
-  quintic_s2_max: 5.7735027             # Max |s''| for quintic polynomial s = 10t^3 - 15t^4 + 6t^5
-                                        # (= 10/sqrt(3), at tau = (1 - 1/sqrt(3))/2). s is the
-                                        # REST-TO-REST shape; the two constants below are the
-                                        # landmarks of its velocity-continuous partner h.
-  quintic_h_max: 0.19753086             # Max h(tau) = tau*(1-tau)^3*(3*tau+1), = 16/81 at tau = 1/3.
-                                        # h is the shape a NON-ZERO start velocity contributes to
-                                        # makeSmoothMove's quintic: pos = start + delta*s + (v0*T)*h.
-                                        # h(0) = h(1) = 0 and h >= 0, so v0 never moves the profile's
-                                        # endpoints — it only bulges it by (v0*T)*16/81 in the
-                                        # direction of travel. That bulge IS the overshoot a
-                                        # velocity-continuous prelude must be checked against the
-                                        # stroke end for.
-  quintic_h2_max: 3.9402340             # Max |h''(tau)|, at tau = (8 - sqrt(19))/15 = 0.2427401.
-                                        # Pairs with quintic_s2_max in the duration bound:
-                                        #   a_max*T^2 - |v0|*h2_max*T - |delta|*s2_max >= 0
-                                        # whose positive root is the shortest duration that still
-                                        # honours max_smooth_move_hand_accel_rps2 when v0 != 0. At
-                                        # v0 = 0 it reduces EXACTLY to the historical
-                                        # sqrt(|delta|*s2_max/a_max).
-  smooth_move_v0_deadband_rps: 6.0      # |current_hand_velocity| at or below this is treated as AT REST
-                                        # by makeSmoothMove {rev/s}. Not a tuning knob — it separates
-                                        # gravity-hold dither from real motion on the ODrive
-                                        # Vel_Estimate the firmware reads (Teensy_code_platform.ino:546-550).
-                                        # Measured on that same signal: parked-hand |vel| p99 = 5.39
-                                        # rev/s at the TOP park / 1.82 at the bottom (2026-07-24 reload
-                                        # session), and the slowest GENUINE traverse observed was
-                                        # +9.2 rev/s (the lied-ack prime ladder). Below 5.39 the
-                                        # prelude chases noise on a stationary hand; above ~9 it ignores
-                                        # real motion and re-introduces the velocity step it exists to
-                                        # remove. 6.0 is a POLICY CHOICE inside that window, not a
-                                        # derived value, and two things about it are worth knowing
-                                        # before anyone leans on it:
-                                        #   * 5.39 is a p99, NOT a maximum, and the max of that
-                                        #     population was never published — so ~1 % of parked-top
-                                        #     samples sit above it and a single tail sample can seed a
-                                        #     prelude on a hand nobody moved. The three 2026-07-25 toss
-                                        #     traces cannot settle it: they park at the BOTTOM (p99
-                                        #     0.12-1.23, max 2.16 rev/s). An independent re-read of the
-                                        #     same traces filtered for STATIONARITY (position spread
-                                        #     < 0.02 rev over +-0.3 s) rather than for a position band
-                                        #     gives |vel| p99 = 0.134-0.144, max 0.96 rev/s, which
-                                        #     suggests the 5.39 figure is a position-band artefact that
-                                        #     swallowed transit samples. If so the dead-band is ~6x
-                                        #     above the true noise floor — conservative, but resting on
-                                        #     an anchor that wants re-measuring at the top park.
-                                        #   * what the branch costs when it DOES fire is set by v0, not
-                                        #     by the dead-band: the excursion is 0.00778*v0^2 rev, so
-                                        #     0.280 rev = 8.9 mm at the 6.0 edge but 0.641 rev = 20.3 mm
-                                        #     at 9.07 rev/s (the most the stroke top can absorb). The
-                                        #     0.280 figure is the branch's INFIMUM, not a bound on it;
-                                        #     do not read it as one, and do not compare a COMMANDED
-                                        #     excursion against bench row H3.5's measured-position PASS
-                                        #     band (see § CHECK HAND-4 rows H4.2/H4.4 for which row
-                                        #     scores which).
+  # R1 (2026-09-11): end_profile_hold_s, sample_rate_hz, quintic_s2_max,
+  # quintic_h_max, quintic_h2_max, max_smooth_move_hand_accel_rps2 and
+  # smooth_move_v0_deadband_rps are DELETED — they sized Trajectory.h's
+  # makeSmoothMove quintic prelude, which dies with the stroke engine.
+  # smooth_move_excursion_margin_rev survives (toss_trim.py, a live consumer;
+  # test_throw_envelope.py pins the host >= firmware relation against it).
   smooth_move_excursion_margin_rev: 0.2   # Headroom kept below geometry hand_motor_hard_stop_revs
                                         # when a velocity-continuous smooth move is allowed to
                                         # overshoot {rev}. 10.8 - 0.2 = 10.6 rev ceiling.
@@ -1591,29 +1578,6 @@ hand_throw_envelope:
                                         # (J*2*pi)) and a larger J means LESS authority —
                                         # the conservative direction.  Until 2026-08-18 this
                                         # number lived only in prose and in a test literal.
-  arm_window_margin_s: 0.05             # Minimum slack the Phase-1 catch-arm window must
-                                        # still have at a candidate flight time {s}.
-                                        # The window is
-                                        #   T - max(0.3, required_arm_lead(v_armed))
-                                        #     - throw_decel(v_throw) - ARM_SUPPRESS_MARGIN
-                                        # and it CLOSES at T = 0.4542 s; below that the
-                                        # catch arm cannot be placed after the throw stroke
-                                        # and before the Teensy's :533 budget, so the ball
-                                        # flies uncatchable.  0.050 s is deliberately the
-                                        # SAME number the bench gates every withheld arm on
-                                        # (runbook row H1.5, `slack > 0.050 s`) — one
-                                        # number, two enforcement surfaces.  That is its
-                                        # ONLY job, and the consequence must be stated: the
-                                        # floor is DEFINED as the flight where the window
-                                        # equals this margin, so a goal admitted AT the
-                                        # floor sits exactly on H1.5's gate — a bench
-                                        # boundary, not a comfortable operating point.
-                                        # An earlier draft also claimed it "covers the
-                                        # ~23 ms announcement-to-release transit that
-                                        # required_arm_lead_s excludes".  IT CANNOT DO
-                                        # BOTH: subtract that transit and the real slack at
-                                        # the floor is ~27 ms, which fails H1.5.  The
-                                        # transit remains EXCLUDED.
   dc_bus_nominal_v: 45.0                # DC bus voltage {V} — OWNER-STATED 2026-08-20.
                                         # It read an INFERRED 48.0 until then (guessed from
                                         # the drive's overvoltage trip 50.0 V); 45 V is the

@@ -250,13 +250,16 @@ void homing_step() {
       // be accepted on the wire, acked by nothing, and simply not move the axis.
       // For the legs that hazard is masked by leg_activate re-sending
       // POSITION/TRAP_TRAJ before it enters CLOSED_LOOP; for the HAND nothing
-      // did, so a homed hand sat in a mode where the whole unified-7dof lane was
-      // silently inert. Worse, it was UNOBSERVABLE: controller_mode/input_mode
+      // did, so a homed hand sat in a mode where the whole streamed lane was
+      // silently inert. (Since skill-stack R1 leg_activate covers axis 6 too and
+      // ends it in POSITION/PASSTHROUGH — but HOMING still owns the restore: it
+      // leaves the hand IDLE on the stop, and ACTIVATE is what energises it.) Worse, it was UNOBSERVABLE: controller_mode/input_mode
       // were never written by anything and read 0 forever, so no telemetry gate
       // could see it (the fault the FW 18 bundle names).
       //
       // POSITION/PASSTHROUGH is the streaming mode (what the host's cold-start
-      // _run_configure pushes and what hand_ops uses); the limits come from
+      // _run_configure pushes and what the streamed hand lane commands in); the
+      // limits come from
       // axis_shipped_*_limit(), i.e. the live SET_VEL_CURR_LIMITS override if
       // one was pushed this session, else the generated per-axis config default
       // — never a literal, and never the legs' numbers on axis 6.

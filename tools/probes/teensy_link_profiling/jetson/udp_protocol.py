@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from enum import IntEnum
 
 # ── Constants ──────────────────────────────────────────────────────────
-PROTOCOL_VERSION = 6  # Bumped on any incompatible wire change (4→5: 2026-07-31 Profile gains the 3rd CAN slot can3_* — cone traffic; 5→6: 2026-09-01 Setpoint widens 6→7 — index 6 = hand — and gains the v1[7] exact-knot-velocity array, unified-7dof-planner Phase 2. TOTAL LINK DARKNESS against any FW ≤ 16 board until the lockstep Phase 3 flash — loud and fail-closed by design)
+PROTOCOL_VERSION = 7  # Bumped on any incompatible wire change (4→5: 2026-07-31 Profile gains the 3rd CAN slot can3_* — cone traffic; 5→6: 2026-09-01 Setpoint widens 6→7 — index 6 = hand — and gains the v1[7] exact-knot-velocity array, unified-7dof-planner Phase 2; 6→7: 2026-09-11 skill-stack R1 — HAND_TRAJ_CMD/HAND_SOURCE_SET/ERR_HAND_SOURCE removed, HeartbeatT2J bit 6 retired, BridgeTxDiag hand_ops counters removed. Removing message types and shrinking a struct are incompatible wire changes: darkness against any FW ≤ 20 board is the INTENDED failure. TOTAL LINK DARKNESS against any FW ≤ 16 board until the lockstep Phase 3 flash — loud and fail-closed by design)
 MAGIC = 19010  # "JB" little-endian preamble (bytes 0x42 0x4A)
 HEADER_SIZE = 8  # Bytes before payload
 CRC_SIZE = 2  # Trailing CRC-16 bytes
@@ -79,8 +79,6 @@ class RpcMethod(IntEnum):
     TILT_READ = 81  # Relay: read Platform-Teensy inclinometer tilt
     STATE_READ = 82  # Relay: read Platform-Teensy RobotState (is_homed/level/pose)
     STATE_WRITE = 83  # Relay: write Platform-Teensy RobotState (read-modify-write via cache)
-    HAND_TRAJ_CMD = 84  # Hand traj + smooth-move (byte-0 discriminator → 0x6D0)
-    HAND_SOURCE_SET = 85  # Switch the hand-mastery latch (0=LEGACY_STROKE, 1=STREAMED; gated, bridge-local)
     PLATFORM_FW_BEGIN = 86  # Platform FW-over-CAN: declare image length (relay → 0x6F0 op 0x01)
     PLATFORM_FW_DATA = 87  # Platform FW-over-CAN: one image chunk, 1..5 bytes (relay → 0x6F0 op 0x02)
     PLATFORM_FW_VERIFY = 88  # Platform FW-over-CAN: CRC-32 over the staged image (relay → 0x6F0 op 0x03)
@@ -95,7 +93,6 @@ class RpcStatus(IntEnum):
     ERR_TIMEOUT = 4  # Downstream CAN op timed out
     ERR_REJECTED = 5  # Refused by a safety gate
     ERR_NOT_IMPL = 6  # Method not implemented in this firmware revision
-    ERR_HAND_SOURCE = 7  # Refused by the hand-mastery latch: HAND_TRAJ_CMD while hand_source == STREAMED (unified-7dof FW 17)
 
 class LinkState(IntEnum):
     INIT = 0  # Ethernet up, no Jetson heartbeat yet
@@ -146,7 +143,6 @@ class HeartbeatT2JFlags(IntEnum):
     ALL_AXIS_HEARTBEATS_OK = 4  # bit2: every present axis heartbeat is fresh
     MPC_ACTIVE = 8  # bit3: firmware-side mpc_active (lets a setpoint source verify its arm took)
     CONE_HEALTH_MASK = 48  # bits 4-5: cone (CAN2) BusHealth (UNKNOWN=0/OK=1/WARN=2/BUS_OFF=3) << HEARTBEAT_CONE_HEALTH_SHIFT; reads 0 = UNKNOWN from a pre-cone-uplink flash
-    HAND_SOURCE_STREAMED = 64  # bit 6: hand_source latch — set = STREAMED (bridge masters the hand, 7th Setpoint lane live), clear = LEGACY_STROKE (boot default; also what a pre-FW-17 flash reads as)
     TORQUE_CLAMP_MASK = 16128  # bits 8-13: bit (8+i) set = leg i's |torque_ff| was clamped to TORQUE_FF_FIRMWARE_CLAMP_WIRE_NM at UDP ingest on the last ACCEPTED setpoint frame (mirrors lead_clamp_mask; leg_interp.cpp interp_on_setpoint)
 
 # ── Decode errors ──────────────────────────────────────────────────────
@@ -562,11 +558,11 @@ class CanErrors:
         it = iter(vals)
         return cls(next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it))
 
-# BridgeTxDiag: CAN TX-path pressure per bus, plus per-stage attribution of the HAND_TRAJ_CMD conduit's exits, 1 Hz. Built for the 2026-08-01 ERR_TIMEOUT recount, which could establish THAT the hand arm-ack fails about half the time (139 of 266 arm dispatches pooled across 16 sessions) but not WHICH of hand_ops' three CAN sends refused, nor whether a refusal meant a lost frame. tx_deferred is named for what it measures, and the name is load-bearing: FlexCAN_T4::write(const CAN_message_t&) returns 1 or -1 and NEVER 0, and -1 means no TX mailbox was free so the frame was pushed into the 64-slot software txBuffer that the TX-complete ISR drains. A refused send is therefore a DEFERRAL of ~0.1-1 ms, not a drop — which is what makes catch_coordinator's 'the ack lies, frames were observed transmitted after a failed ack' premise and hand_ops' ERR_TIMEOUT compatible rather than contradictory. The two paths that genuinely LOSE a frame are (a) txBuffer overflow, where a 65th pending entry silently overwrites the oldest, and (b) the vendored events() TX drain, which writes one peeked frame into every free mailbox while popping one queue entry per mailbox; tx_q_hwm approaching 64 is the observable for (a). ALL THREE buses carry both fields — a deliberate contrast with CanErrors' CAN3-only choice, whose per-bus cost was 15 fields against these 2. hand_* attribute every invocation to its exit, so the success count is derivable: OK = hand_calls - hand_rej_homing - hand_bus_down - hand_pre1_fail - hand_pre2_fail - hand_traj_fail. All counters are CUMULATIVE SINCE BOOT (the consumer differences them) except tx_q_hwm_*, which are high-water marks. Unconditional 1 Hz from task_telem rather than on-change, for the same reason as CanErrors: an operator differencing an A/B needs a continuous baseline, and 'silence means healthy' is exactly the ambiguity that cost the 2026-07-29 investigation a session. Additive — no existing frame changes, so NO PROTOCOL_VERSION bump (the LegCmd / HandSensor precedent): an old Jetson ignores the unknown msg_type and a new Jetson renders never-seen as unknown.
-BRIDGE_TX_DIAG_FMT = '<IIIHHHIIIIII'
-BRIDGE_TX_DIAG_SIZE = 42
+# BridgeTxDiag: CAN TX-path pressure per bus, 1 Hz. The per-stage hand_* attribution counters it also carried were removed at PROTOCOL_VERSION 7 (2026-09-11, skill-stack R1) with the HAND_TRAJ_CMD conduit they measured: there is no longer a request/ack hand dispatch to attribute — the hand is the 7th lane of the 2 ms interp tick and its health is the lane's own telemetry. The struct shrinking is itself the wire change the version bump announces. tx_deferred is named for what it measures, and the name is load-bearing: FlexCAN_T4::write(const CAN_message_t&) returns 1 or -1 and NEVER 0, and -1 means no TX mailbox was free so the frame was pushed into the 64-slot software txBuffer that the TX-complete ISR drains. A refused send is therefore a DEFERRAL of ~0.1-1 ms, not a drop. The two paths that genuinely LOSE a frame are (a) txBuffer overflow, where a 65th pending entry silently overwrites the oldest, and (b) the vendored events() TX drain, which writes one peeked frame into every free mailbox while popping one queue entry per mailbox; tx_q_hwm approaching 64 is the observable for (a). ALL THREE buses carry both fields — a deliberate contrast with CanErrors' CAN3-only choice, whose per-bus cost was 15 fields against these 2. All counters are CUMULATIVE SINCE BOOT (the consumer differences them) except tx_q_hwm_*, which are high-water marks. Unconditional 1 Hz from task_telem rather than on-change, for the same reason as CanErrors: an operator differencing an A/B needs a continuous baseline, and 'silence means healthy' is exactly the ambiguity that cost the 2026-07-29 investigation a session. Additive — no existing frame changes, so NO PROTOCOL_VERSION bump (the LegCmd / HandSensor precedent): an old Jetson ignores the unknown msg_type and a new Jetson renders never-seen as unknown.
+BRIDGE_TX_DIAG_FMT = '<IIIHHH'
+BRIDGE_TX_DIAG_SIZE = 18
 _BRIDGE_TX_DIAG_STRUCT = struct.Struct(BRIDGE_TX_DIAG_FMT)
-assert _BRIDGE_TX_DIAG_STRUCT.size == 42
+assert _BRIDGE_TX_DIAG_STRUCT.size == 18
 
 @dataclass
 class BridgeTxDiag:
@@ -576,21 +572,15 @@ class BridgeTxDiag:
     tx_q_hwm_jb: int = 0
     tx_q_hwm_bb: int = 0
     tx_q_hwm_cone: int = 0
-    hand_calls: int = 0
-    hand_rej_homing: int = 0
-    hand_bus_down: int = 0
-    hand_pre1_fail: int = 0
-    hand_pre2_fail: int = 0
-    hand_traj_fail: int = 0
 
     def pack(self) -> bytes:
-        return _BRIDGE_TX_DIAG_STRUCT.pack(self.tx_deferred_jb, self.tx_deferred_bb, self.tx_deferred_cone, self.tx_q_hwm_jb, self.tx_q_hwm_bb, self.tx_q_hwm_cone, self.hand_calls, self.hand_rej_homing, self.hand_bus_down, self.hand_pre1_fail, self.hand_pre2_fail, self.hand_traj_fail)
+        return _BRIDGE_TX_DIAG_STRUCT.pack(self.tx_deferred_jb, self.tx_deferred_bb, self.tx_deferred_cone, self.tx_q_hwm_jb, self.tx_q_hwm_bb, self.tx_q_hwm_cone)
 
     @classmethod
     def unpack(cls, data: bytes) -> 'BridgeTxDiag':
-        vals = _BRIDGE_TX_DIAG_STRUCT.unpack(data[:42])
+        vals = _BRIDGE_TX_DIAG_STRUCT.unpack(data[:18])
         it = iter(vals)
-        return cls(next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it))
+        return cls(next(it), next(it), next(it), next(it), next(it), next(it))
 
 # BridgeIdentity: Can-bridge firmware identity, 1 Hz. FW_VERSION existed only in the USB serial boot banner, so a Jetson session could not tell WHICH firmware answered it — the same silent-skew defect the Platform Teensy's identity block closed on 2026-07-27 (ros_ws/docs/platform_fw_version.md). fw_version is the ACTIONABLE field: the host compares it against teensy_link.rpc_args.EXPECTED_BRIDGE_FW_VERSION and logs BRIDGE_FW_CHECK on a skew — reported, never enforced. NOTE on protocol_version: it is self-description, NOT skew detection. A PROTOCOL_VERSION mismatch makes decode_frame reject EVERY frame in both directions (the 24608bb total-darkness failure), including this one, so this field can never report the mismatch it appears to be about; it documents what the running build was compiled against once the link decodes at all. Additive — no existing frame changes, so NO PROTOCOL_VERSION bump (the LegCmd / HandSensor precedent): an old Jetson ignores the unknown msg_type and a new Jetson renders never-seen as unknown.
 BRIDGE_IDENTITY_FMT = '<HB'
@@ -1057,44 +1047,6 @@ class ArgRobotState:
         vals = _ARG_ROBOT_STATE_STRUCT.unpack(data[:10])
         it = iter(vals)
         return cls(next(it), next(it), next(it), next(it))
-
-# ArgHandTraj (HAND_TRAJ_CMD)
-ARG_HAND_TRAJ_FMT = '<BBBBBBBB'
-ARG_HAND_TRAJ_SIZE = 8
-_ARG_HAND_TRAJ_STRUCT = struct.Struct(ARG_HAND_TRAJ_FMT)
-assert _ARG_HAND_TRAJ_STRUCT.size == 8
-
-@dataclass
-class ArgHandTraj:
-    payload: tuple = field(default_factory=lambda: (0,) * 8)
-
-    def pack(self) -> bytes:
-        return _ARG_HAND_TRAJ_STRUCT.pack(*self.payload)
-
-    @classmethod
-    def unpack(cls, data: bytes) -> 'ArgHandTraj':
-        vals = _ARG_HAND_TRAJ_STRUCT.unpack(data[:8])
-        it = iter(vals)
-        return cls(tuple(next(it) for _ in range(8)))
-
-# ArgHandSource (HAND_SOURCE_SET)
-ARG_HAND_SOURCE_FMT = '<B'
-ARG_HAND_SOURCE_SIZE = 1
-_ARG_HAND_SOURCE_STRUCT = struct.Struct(ARG_HAND_SOURCE_FMT)
-assert _ARG_HAND_SOURCE_STRUCT.size == 1
-
-@dataclass
-class ArgHandSource:
-    source: int = 0
-
-    def pack(self) -> bytes:
-        return _ARG_HAND_SOURCE_STRUCT.pack(self.source)
-
-    @classmethod
-    def unpack(cls, data: bytes) -> 'ArgHandSource':
-        vals = _ARG_HAND_SOURCE_STRUCT.unpack(data[:1])
-        it = iter(vals)
-        return cls(next(it))
 
 # ArgPlatformFwBegin (PLATFORM_FW_BEGIN)
 ARG_PLATFORM_FW_BEGIN_FMT = '<I'

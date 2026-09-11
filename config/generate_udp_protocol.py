@@ -104,7 +104,7 @@ class Message:
 # ───────────────────────────────────────────────────────────────────────────
 
 CONSTANTS = [
-    ("PROTOCOL_VERSION", 6,      "u8",  "Bumped on any incompatible wire change (4→5: 2026-07-31 Profile gains the 3rd CAN slot can3_* — cone traffic; 5→6: 2026-09-01 Setpoint widens 6→7 — index 6 = hand — and gains the v1[7] exact-knot-velocity array, unified-7dof-planner Phase 2. TOTAL LINK DARKNESS against any FW ≤ 16 board until the lockstep Phase 3 flash — loud and fail-closed by design)"),
+    ("PROTOCOL_VERSION", 7,      "u8",  "Bumped on any incompatible wire change (4→5: 2026-07-31 Profile gains the 3rd CAN slot can3_* — cone traffic; 5→6: 2026-09-01 Setpoint widens 6→7 — index 6 = hand — and gains the v1[7] exact-knot-velocity array, unified-7dof-planner Phase 2; 6→7: 2026-09-11 skill-stack R1 — HAND_TRAJ_CMD/HAND_SOURCE_SET/ERR_HAND_SOURCE removed, HeartbeatT2J bit 6 retired, BridgeTxDiag hand_ops counters removed. Removing message types and shrinking a struct are incompatible wire changes: darkness against any FW ≤ 20 board is the INTENDED failure. TOTAL LINK DARKNESS against any FW ≤ 16 board until the lockstep Phase 3 flash — loud and fail-closed by design)"),
     ("MAGIC",            0x4A42, "u16", '"JB" little-endian preamble (bytes 0x42 0x4A)'),
     ("HEADER_SIZE",      8,      "u16", "Bytes before payload"),
     ("CRC_SIZE",         2,      "u16", "Trailing CRC-16 bytes"),
@@ -224,15 +224,13 @@ ENUMS = {
         ("TILT_READ",          0x0051, "Relay: read Platform-Teensy inclinometer tilt"),
         ("STATE_READ",         0x0052, "Relay: read Platform-Teensy RobotState (is_homed/level/pose)"),
         ("STATE_WRITE",        0x0053, "Relay: write Platform-Teensy RobotState (read-modify-write via cache)"),
-        ("HAND_TRAJ_CMD",      0x0054, "Hand traj + smooth-move (byte-0 discriminator → 0x6D0)"),
-        # ADDITIVE (2026-09-02, unified-7dof FW 17 — no PROTOCOL_VERSION bump,
-        # the LegCmd/HandSensor precedent: an FW ≤ 16 board answers the unknown
-        # method with ERR_UNKNOWN_METHOD, loudly). Switches the firmware
-        # hand-mastery latch (hand_source.cpp): 0 = LEGACY_STROKE (boot default,
-        # Platform-Teensy stroke engine masters the hand), 1 = STREAMED (the
-        # bridge's 500 Hz interp masters it as the 7th Setpoint lane). Accepted
-        # only while !mpc_active and the hand is settled at a rest position.
-        ("HAND_SOURCE_SET",    0x0055, "Switch the hand-mastery latch (0=LEGACY_STROKE, 1=STREAMED; gated, bridge-local)"),
+        # HOLES: 0x0054 (HAND_TRAJ_CMD) and 0x0055 (HAND_SOURCE_SET) were removed
+        # at PROTOCOL_VERSION 7 (2026-09-11, skill-stack R1). The Platform-Teensy
+        # stroke engine and the hand-mastery latch are gone — the bridge's 500 Hz
+        # interp is the ONE hand master and the lane follows the HAS_HAND
+        # Setpoint bit alone. NEVER renumber a surviving id into these holes: a
+        # stale host's 0x54/0x55 must answer ERR_UNKNOWN_METHOD, not something
+        # else's behaviour.
         # ADDITIVE (2026-09-09, Platform firmware-over-CAN — no PROTOCOL_VERSION
         # bump, the FW 17 HAND_SOURCE_SET precedent above: a board that predates
         # these ids answers ERR_UNKNOWN_METHOD, loudly). The Platform Teensy's USB
@@ -268,7 +266,9 @@ ENUMS = {
         ("ERR_TIMEOUT",   0x0004, "Downstream CAN op timed out"),
         ("ERR_REJECTED",  0x0005, "Refused by a safety gate"),
         ("ERR_NOT_IMPL",  0x0006, "Method not implemented in this firmware revision"),
-        ("ERR_HAND_SOURCE", 0x0007, "Refused by the hand-mastery latch: HAND_TRAJ_CMD while hand_source == STREAMED (unified-7dof FW 17)"),
+        # HOLE: 0x0007 (ERR_HAND_SOURCE) removed at PROTOCOL_VERSION 7
+        # (2026-09-11, skill-stack R1) with the hand-mastery latch it described.
+        # Never reuse the value — a stale host decodes it by name.
     ],
     "LinkState": [
         ("INIT",     0, "Ethernet up, no Jetson heartbeat yet"),
@@ -362,18 +362,15 @@ ENUMS = {
         ("CONE_HEALTH_MASK",         0x30, "bits 4-5: cone (CAN2) BusHealth (UNKNOWN=0/OK=1/WARN=2/"
                                            "BUS_OFF=3) << HEARTBEAT_CONE_HEALTH_SHIFT; reads 0 = "
                                            "UNKNOWN from a pre-cone-uplink flash"),
-        # bit 6: the FW 17 hand-mastery latch. Set = STREAMED (the bridge's
-        # 500 Hz interp masters the hand — the 7th Setpoint lane is live and
-        # HAND_TRAJ_CMD refuses with ERR_HAND_SOURCE); clear = LEGACY_STROKE
-        # (the boot default, and what every pre-17 flash reads as — so the
-        # zero state is backward-self-describing, the CONE_HEALTH pattern).
-        ("HAND_SOURCE_STREAMED",     0x40, "bit 6: hand_source latch — set = STREAMED (bridge masters "
-                                           "the hand, 7th Setpoint lane live), clear = LEGACY_STROKE "
-                                           "(boot default; also what a pre-FW-17 flash reads as)"),
+        # HOLE, bit 6 (0x40): HAND_SOURCE_STREAMED, the FW 17 hand-mastery latch,
+        # retired at PROTOCOL_VERSION 7 (2026-09-11, skill-stack R1). There is no
+        # latch to report: the bridge is the one hand master and the lane follows
+        # the HAS_HAND Setpoint bit. Left reserved rather than reused — a stale
+        # host reads a set bit as "STREAMED", which would now be a lie by
+        # accident.
         # Per-leg torque_ff ingest-clamp mask, packed into free bits of the same u32
-        # (bit 6 became HAND_SOURCE_STREAMED at FW 17; bit 7 stays reserved; the
-        # mask starts at bit 8 = HEARTBEAT_TORQUE_CLAMP_SHIFT so it stays
-        # byte-aligned/readable).
+        # (bits 6-7 stay reserved; the mask starts at bit 8 =
+        # HEARTBEAT_TORQUE_CLAMP_SHIFT so it stays byte-aligned/readable).
         ("TORQUE_CLAMP_MASK",      0x3F00, "bits 8-13: bit (8+i) set = leg i's |torque_ff| was clamped to "
                                            "TORQUE_FF_FIRMWARE_CLAMP_WIRE_NM at UDP ingest on the last ACCEPTED "
                                            "setpoint frame (mirrors lead_clamp_mask; leg_interp.cpp interp_on_setpoint)"),
@@ -468,7 +465,7 @@ MESSAGES = [
             Field("bus1_health", "u8",  1, "wire slot 1 = CAN3 (Jugglebot core: legs+hand) BusHealth enum"),
             Field("bus2_health", "u8",  1, "wire slot 2 = CAN1 (Ball Butler) BusHealth enum (cone/CAN2 not yet on uplink)"),
             Field("fault_state", "u8",  1, "FaultState enum"),
-            Field("flags",       "u32", 1, "HeartbeatT2JFlags bitset: bits 0-3 TIME_SYNCED|STOW_PENDING_ON_RECONNECT|ALL_AXIS_HEARTBEATS_OK|MPC_ACTIVE; bits 4-5 CONE_HEALTH_MASK (cone/CAN2 BusHealth, see HEARTBEAT_CONE_HEALTH_SHIFT); bit 6 HAND_SOURCE_STREAMED (FW 17 hand-mastery latch — set = STREAMED, clear = LEGACY_STROKE/pre-17); bits 8-13 TORQUE_CLAMP_MASK (per-leg torque_ff ingest clamp, see HEARTBEAT_TORQUE_CLAMP_SHIFT)"),
+            Field("flags",       "u32", 1, "HeartbeatT2JFlags bitset: bits 0-3 TIME_SYNCED|STOW_PENDING_ON_RECONNECT|ALL_AXIS_HEARTBEATS_OK|MPC_ACTIVE; bits 4-5 CONE_HEALTH_MASK (cone/CAN2 BusHealth, see HEARTBEAT_CONE_HEALTH_SHIFT); bits 6-7 reserved (bit 6 was the FW 17 hand-mastery latch, retired at PROTOCOL_VERSION 7); bits 8-13 TORQUE_CLAMP_MASK (per-leg torque_ff ingest clamp, see HEARTBEAT_TORQUE_CLAMP_SHIFT)"),
             Field("uptime_ms",   "u32", 1, "ms since boot"),
             # Ball Butler heartbeat snapshot (CAN1 0x7D1 decoded by the
             # can-bridge into bb_state and forwarded here at heartbeat rate).
@@ -712,30 +709,28 @@ MESSAGES = [
     Message(
         "BridgeTxDiag", "BRIDGE_TX_DIAG", "T2J", "STREAM",
         summary=(
-            "CAN TX-path pressure per bus, plus per-stage attribution of the "
-            "HAND_TRAJ_CMD conduit's exits, 1 Hz. Built for the 2026-08-01 "
-            "ERR_TIMEOUT recount, which could establish THAT the hand arm-ack "
-            "fails about half the time (139 of 266 arm dispatches pooled across "
-            "16 sessions) but not WHICH of hand_ops' three CAN sends refused, "
-            "nor whether a refusal meant a lost frame. "
+            "CAN TX-path pressure per bus, 1 Hz. The per-stage hand_* "
+            "attribution counters it also carried were removed at "
+            "PROTOCOL_VERSION 7 (2026-09-11, skill-stack R1) with the "
+            "HAND_TRAJ_CMD conduit they measured: there is no longer a "
+            "request/ack hand dispatch to attribute — the hand is the 7th lane "
+            "of the 2 ms interp tick and its health is the lane's own "
+            "telemetry. The struct shrinking is itself the wire change the "
+            "version bump announces. "
             "tx_deferred is named for what it measures, and the name is "
             "load-bearing: FlexCAN_T4::write(const CAN_message_t&) returns 1 or "
             "-1 and NEVER 0, and -1 means no TX mailbox was free so the frame was "
             "pushed into the 64-slot software txBuffer that the TX-complete ISR "
             "drains. A refused send is therefore a DEFERRAL of ~0.1-1 ms, not a "
-            "drop — which is what makes catch_coordinator's 'the ack lies, frames "
-            "were observed transmitted after a failed ack' premise and hand_ops' "
-            "ERR_TIMEOUT compatible rather than contradictory. The two paths that "
+            "drop. The two paths that "
             "genuinely LOSE a frame are (a) txBuffer overflow, where a 65th "
             "pending entry silently overwrites the oldest, and (b) the vendored "
             "events() TX drain, which writes one peeked frame into every free "
             "mailbox while popping one queue entry per mailbox; tx_q_hwm "
             "approaching 64 is the observable for (a). ALL THREE buses carry both "
             "fields — a deliberate contrast with CanErrors' CAN3-only choice, "
-            "whose per-bus cost was 15 fields against these 2. hand_* attribute "
-            "every invocation to its exit, so the success count is derivable: "
-            "OK = hand_calls - hand_rej_homing - hand_bus_down - hand_pre1_fail - "
-            "hand_pre2_fail - hand_traj_fail. All counters are CUMULATIVE SINCE "
+            "whose per-bus cost was 15 fields against these 2. "
+            "All counters are CUMULATIVE SINCE "
             "BOOT (the consumer differences them) except tx_q_hwm_*, which are "
             "high-water marks. Unconditional 1 Hz from task_telem rather than "
             "on-change, for the same reason as CanErrors: an operator "
@@ -755,13 +750,6 @@ MESSAGES = [
                                                 "overwrite-loss occurred or is imminent)"),
             Field("tx_q_hwm_bb",      "u16", 1, "Ball Butler bus: same high-water mark"),
             Field("tx_q_hwm_cone",    "u16", 1, "Cone bus: same high-water mark"),
-            Field("hand_calls",       "u32", 1, "hand_traj_cmd invocations, counted at ENTRY before any gate "
-                                                "(the denominator the other hand_* fields subtract from)"),
-            Field("hand_rej_homing",  "u32", 1, "Exits with ERR_REJECTED: the homing interlock refused"),
-            Field("hand_bus_down",    "u32", 1, "Exits with ERR_BUS_DOWN: jugglebot_commands_allowed() refused"),
-            Field("hand_pre1_fail",   "u32", 1, "Exits with ERR_TIMEOUT at send #1 (set_state CLOSED_LOOP)"),
-            Field("hand_pre2_fail",   "u32", 1, "Exits with ERR_TIMEOUT at send #2 (set_controller_mode)"),
-            Field("hand_traj_fail",   "u32", 1, "Exits with ERR_TIMEOUT at send #3 (the 0x6D0 traj frame)"),
         ],
     ),
     Message(
@@ -1542,27 +1530,10 @@ RPC_ARGS = [
         Field("pose_offset_tiltX", "f32", 1, "Levelling pose offset, tilt about X (rad)"),
         Field("pose_offset_tiltY", "f32", 1, "Levelling pose offset, tilt about Y (rad)"),
     ]),
-    # HAND_TRAJ_CMD carries the EXACT 8-byte 0x6D0 PLATFORM_TRAJ_CMD payload, built
-    # HOST-side byte-identical to can_node._send_hand_traj_cmd / _smooth_move_hand
-    # (byte 0 = discriminator: 0/1/2 = catch-traj type, 3 = smooth-move). The
-    # can-bridge attaches the FIRMWARE-OWNED 0x6D0 arbitration id (never a Jetson-
-    # supplied raw frame — least-privilege, same principle as STATE_WRITE re-encoding
-    # 0x6E0) and forwards the payload after the CLOSED_LOOP + POSITION/PASSTHROUGH
-    # preamble. The absolute wall_time_ms deadline is baked into the payload by the
-    # Jetson; the firmware forwards OPAQUE bytes and CANNOT re-stamp — an absolute
-    # deadline is immune to Jetson→bridge→CAN3 transit jitter (the Platform Teensy
-    # fires when its synced clock reaches the deadline).
-    RpcArg("ArgHandTraj", "HAND_TRAJ_CMD", [
-        Field("payload", "u8", 8, "Exact 8-byte 0x6D0 PLATFORM_TRAJ_CMD payload (host-built; byte-0 discriminator)"),
-    ]),
-    # HAND_SOURCE_SET (unified-7dof FW 17, additive): switch the firmware
-    # hand-mastery latch. Bridge-LOCAL (no CAN frame), gated firmware-side in
-    # hand_source_request: value valid, !mpc_active, hand settled at a rest
-    # position on fresh axis-6 telemetry. 0 = LEGACY_STROKE (boot default),
-    # 1 = STREAMED. The latch state rides HeartbeatT2J flags bit 6.
-    RpcArg("ArgHandSource", "HAND_SOURCE_SET", [
-        Field("source", "u8", 1, "0 = LEGACY_STROKE (Platform-Teensy stroke engine), 1 = STREAMED (bridge 500 Hz hand lane)"),
-    ]),
+    # (ArgHandTraj / ArgHandSource lived here until PROTOCOL_VERSION 7
+    # (2026-09-11, skill-stack R1). Both went with their methods: the hand is no
+    # longer commanded by an RPC at all — it is lane 6 of the Setpoint frame the
+    # 2 ms interp tick owns.)
     # Platform firmware-over-CAN (2026-09-09). Same typed-relay shape as
     # STATE_WRITE: the host supplies only the SEMANTIC arguments, and the bridge
     # encodes the dlc-8 0x6F0 FW_UPDATE_CMD frame itself (byte 0 = opcode

@@ -1,17 +1,22 @@
 """Node-level tests for the hand command surface in teensy_bridge_node.
 
-The byte-exact 0x6D0 wire parity is covered in tests/firmware/test_hand_traj_xref.py;
-the firmware conduit in tests/firmware/native/test_hand_ops.cpp. Here we test the
-BRIDGE glue for the hand conduit (see logbook 2026-07-01-canbridge-phase5-hand-conduit):
+The HAND_TRAJ_CMD / HAND_SOURCE_SET conduit (set_hand_traj_cmd, smooth_move_hand,
+set_hand_source and the FW 17 hand-mastery latch) was removed at PROTOCOL_VERSION 7
+(2026-09-11, skill-stack R1): the hand is now the 7th lane of the streamed Setpoint,
+with no RPC service and no latch in the loop. Here we test what survives:
 
-  * the four hand services (set_hand_state / set_hand_gains / set_hand_traj_cmd /
-    smooth_move_hand) — Jetson-side validation (reject before a byte hits CAN3) +
-    the RPC args they emit;
+  * the two remaining hand services (set_hand_state / set_hand_gains) —
+    Jetson-side validation (reject before a byte hits CAN3) + the RPC args they
+    emit;
   * HAND_CMD_ECHO → hand_telemetry pos_cmd/vel_ff_cmd/tor_ff_cmd (the sniffed hand
     Set_Input_Pos echo, byte-identical decode to can_node._handle_hand_input_pos);
   * cold-start hand handling: _apply_hand_gains refuse-flash-defaults, _run_configure
     configuring the hand, _run_home applying hand gains before HOME(6), and
     _run_deactivate idling the hand.
+
+The armed-streamed-hand preamble (CLOSED_LOOP + POSITION/PASSTHROUGH before
+mpc_active, per-tick against the HAS_HAND flag) is covered in
+tests/ros/test_teensy_bridge_node_setpoint.py, not here.
 
 ROS 2 is mocked by tests/ros/conftest.py.
 """
@@ -94,79 +99,6 @@ def test_set_hand_gains_sends_pos_and_vel_and_remembers():
         assert bv['args'] == rpc_args.encode_set_vel_gains(_HAND, 0.01, 0.09)
         # Remembered for the cold-start hand config/home path.
         assert node._hand_gains == {'pos_gain': 40.0, 'vel_gain': 0.01, 'vel_int_gain': 0.09}
-    finally:
-        _teardown(teensy, client, node)
-
-
-# ── set_hand_traj_cmd ─────────────────────────────────────────────────────────
-
-def test_set_hand_traj_valid_emits_hand_traj_cmd():
-    teensy, client, node = _build_paired_node()
-    try:
-        box = _capture(teensy, RpcMethod.HAND_TRAJ_CMD)
-        before_ms = int(time.time() * 1000)
-        req = types.SimpleNamespace(event_delay=0.5, event_vel=3.75, traj_type=1)
-        res = types.SimpleNamespace(success=None, message='')
-        out = node._svc_set_hand_traj(req, res)
-        after_ms = int(time.time() * 1000)
-        assert out.success is True, out.message
-        args = box['args']
-        assert len(args) == 8
-        assert args[0] == 1                                   # traj_type discriminator
-        assert (args[1] | (args[2] << 8)) == int(round(3.75 * 100))  # vel_u16
-        # bytes 3-6 = the LOW 32 bits of the absolute Jetson wall-clock deadline
-        # (now_ms + event_delay*1000), masked like can_node. Compare against the
-        # low-32 window [before, after] (no 2^32-ms wrap in a ~ms call window).
-        wall = struct.unpack('<I', args[3:7])[0]
-        lo = (before_ms + 500) & 0xFFFFFFFF
-        hi = (after_ms + 500) & 0xFFFFFFFF
-        assert lo <= wall <= hi, (lo, wall, hi)
-        assert args[7] == 0
-    finally:
-        _teardown(teensy, client, node)
-
-
-def test_set_hand_traj_validation_rejects_no_rpc():
-    teensy, client, node = _build_paired_node()
-    try:
-        box = _capture(teensy, RpcMethod.HAND_TRAJ_CMD)
-        for req in (
-            types.SimpleNamespace(event_delay=0.0, event_vel=3.0, traj_type=1),    # delay <= 0
-            types.SimpleNamespace(event_delay=0.5, event_vel=0.0, traj_type=1),    # vel < min
-            types.SimpleNamespace(event_delay=0.5, event_vel=99.0, traj_type=1),   # vel > max
-            types.SimpleNamespace(event_delay=0.5, event_vel=3.0, traj_type=3),    # bad type (3 is smooth-move only)
-        ):
-            res = types.SimpleNamespace(success=None, message='')
-            out = node._svc_set_hand_traj(req, res)
-            assert out.success is False, req
-        assert box['calls'] == []          # every invalid request rejected before CAN3
-    finally:
-        _teardown(teensy, client, node)
-
-
-# ── smooth_move_hand ──────────────────────────────────────────────────────────
-
-def test_smooth_move_valid_byte_exact():
-    teensy, client, node = _build_paired_node()
-    try:
-        box = _capture(teensy, RpcMethod.HAND_TRAJ_CMD)
-        res = types.SimpleNamespace(success=None, message='')
-        out = node._svc_smooth_move_hand(types.SimpleNamespace(data=9.858), res)
-        assert out.success is True, out.message
-        assert box['args'] == rpc_args.encode_smooth_move_hand(9.858)
-    finally:
-        _teardown(teensy, client, node)
-
-
-def test_smooth_move_out_of_range_rejected_no_rpc():
-    teensy, client, node = _build_paired_node()
-    try:
-        box = _capture(teensy, RpcMethod.HAND_TRAJ_CMD)
-        for bad in (-0.1, 1e9):
-            res = types.SimpleNamespace(success=None, message='')
-            out = node._svc_smooth_move_hand(types.SimpleNamespace(data=bad), res)
-            assert out.success is False
-        assert box['calls'] == []
     finally:
         _teardown(teensy, client, node)
 
@@ -338,87 +270,5 @@ def test_run_deactivate_idles_the_hand():
         assert not t.is_alive(), "deactivate did not complete"
         # The hand was idled: SET_AXIS_STATE(6, IDLE) — can_node JUGGLEBOT_AXES parity.
         assert rpc_args.encode_set_axis_state(_HAND, IDLE) in hand_box['calls']
-    finally:
-        _teardown(teensy, client, node)
-
-
-# ── set_hand_source (FW 17 hand-mastery latch) ────────────────────────────────
-
-def test_set_hand_source_streamed_forwards_the_rpc():
-    teensy, client, node = _build_paired_node()
-    try:
-        box = _capture(teensy, RpcMethod.HAND_SOURCE_SET)
-        res = types.SimpleNamespace(success=None, message='')
-        out = node._svc_set_hand_source(types.SimpleNamespace(data=True), res)
-        assert out.success is True, out.message
-        assert 'STREAMED' in out.message
-        assert box['args'] == rpc_args.encode_hand_source_set(True) == b'\x01'
-    finally:
-        _teardown(teensy, client, node)
-
-
-def test_set_hand_source_legacy_forwards_zero_byte():
-    teensy, client, node = _build_paired_node()
-    try:
-        box = _capture(teensy, RpcMethod.HAND_SOURCE_SET)
-        res = types.SimpleNamespace(success=None, message='')
-        out = node._svc_set_hand_source(types.SimpleNamespace(data=False), res)
-        assert out.success is True, out.message
-        assert 'LEGACY_STROKE' in out.message
-        assert box['args'] == rpc_args.encode_hand_source_set(False) == b'\x00'
-    finally:
-        _teardown(teensy, client, node)
-
-
-def test_set_hand_source_firmware_refusal_is_named():
-    """The gates live FIRMWARE-side (mpc_active / settled-at-rest); the node
-    must surface a refusal with the gate conditions named, not a bare status."""
-    teensy, client, node = _build_paired_node()
-    try:
-        _capture(teensy, RpcMethod.HAND_SOURCE_SET,
-                 status=int(RpcStatus.ERR_REJECTED))
-        res = types.SimpleNamespace(success=None, message='')
-        out = node._svc_set_hand_source(types.SimpleNamespace(data=True), res)
-        assert out.success is False
-        assert 'REFUSED' in out.message
-        assert 'rest position' in out.message
-    finally:
-        _teardown(teensy, client, node)
-
-
-# ── set_hand_source × an IDLE hand (2026-09-09, second UH-7a sitting) ─────────
-
-def test_set_hand_source_streamed_while_armed_refuses_an_idle_hand():
-    """2026-09-09 (second UH-7a sitting): a bridge reflash resets the latch to
-    LEGACY; the output was armed BEFORE the latch was switched, so the arm fold
-    never energised axis 6 and the session ran three minutes of streamed
-    setpoints into an IDLE ODrive — no fault, no motion. The firmware's gate
-    only refuses a SWITCH while armed; the idempotent re-assert a session makes
-    at start answered OK. The node owns the axis state, so it fails closed."""
-    teensy, client, node = _build_paired_node()
-    try:
-        _capture(teensy, RpcMethod.HAND_SOURCE_SET)
-        node._mpc_active = True
-        teensy.send_to_jetson(int(MsgType.DIAGNOSTIC),
-                              Diagnostic(axis_id=_HAND, axis_state=IDLE,
-                                         active_errors=0).pack())
-        assert _poll(lambda: _HAND in node._latest_diag
-                     and int(node._latest_diag[_HAND].axis_state) == IDLE)
-        res = types.SimpleNamespace(success=None, message='')
-        out = node._svc_set_hand_source(types.SimpleNamespace(data=True), res)
-        assert out.success is False
-        assert 'not in CLOSED_LOOP' in out.message and 're-arm' in out.message
-        # …and an energised hand passes the same assert.
-        teensy.send_to_jetson(int(MsgType.DIAGNOSTIC),
-                              Diagnostic(axis_id=_HAND, axis_state=CLOSED_LOOP,
-                                         active_errors=0).pack())
-        assert _poll(lambda: int(node._latest_diag[_HAND].axis_state) == CLOSED_LOOP)
-        res = types.SimpleNamespace(success=None, message='')
-        out = node._svc_set_hand_source(types.SimpleNamespace(data=True), res)
-        assert out.success is True, out.message
-        # A LEGACY assert while armed is the legacy path's own business.
-        res = types.SimpleNamespace(success=None, message='')
-        out = node._svc_set_hand_source(types.SimpleNamespace(data=False), res)
-        assert out.success is True, out.message
     finally:
         _teardown(teensy, client, node)

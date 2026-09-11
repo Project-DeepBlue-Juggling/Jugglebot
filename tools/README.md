@@ -21,7 +21,7 @@ whose `--preview` previews a motion sequence before it is run. They do **not**
 bind the offline analysis probes under `tools/probes/`, which run headless on the
 Jetson where a matplotlib window is unusable; there `--preview` conventionally
 prints the raw per-sample window instead (see
-`tools/probes/hand_stroke_timeline.py`).
+`tools/probes/toss_record_miner.py`).
 
 **All test harnesses that accept `--preview` must follow these rules:**
 

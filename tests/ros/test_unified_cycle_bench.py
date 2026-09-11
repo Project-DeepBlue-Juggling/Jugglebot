@@ -597,7 +597,7 @@ def test_the_carry_belt_refuses_a_plan_that_LIFTS_the_ball():
     note = ucb.carry_excursion_refusal(settle + 1.0,
                                        [12.0, -5.0, ucb.SETTLE_CUP_Z_MM])
     assert note
-    assert 'lift the hand 31.6 mm' in note
+    assert ('lift the hand %.1f mm' % (1.0 / ucb.REV_PER_MM)) in note   # 1 rev, 32.6 mm at the measured gain
     assert 'REFUSING' in note
     assert '689.6' in note                       # the settle height it compared to
 
@@ -639,13 +639,16 @@ def test_the_carry_belt_reads_the_REQUESTED_settle_height_not_the_constant():
 def test_the_2026_09_06_slam_would_have_been_refused_by_the_belt():
     """The measured failure, as the driver would have seen it in the response.
 
-    ``hand_peak_rev`` 9.6482 against a 0.3162 rev settle: 295 mm of lift on a
+    ``hand_peak_rev`` 9.6482 against a 0.3162 rev settle (0.3071 since R1's
+    measured gain): 295 mm of lift (304 mm at the measured gain) on a
     flat carry, accepted by every planner gate (0.31 rev of stroke headroom
     left). This is the case the belt exists for, so it is asserted with the
     number the bench actually produced rather than a synthetic one.
     """
     note = ucb.carry_excursion_refusal(9.6482, [0.0, 0.0, ucb.SETTLE_CUP_Z_MM])
-    assert note and 'lift the hand 295' in note
+    settle = ucb.hand_rev_for_cup_z(ucb.SETTLE_CUP_Z_MM)
+    # 295 mm on the sitting (pre-R1 gain); the mm follow the gain, the revs do not.
+    assert note and ('lift the hand %.1f mm' % ((9.6482 - settle) / ucb.REV_PER_MM)) in note
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -659,7 +662,8 @@ def _good(**kw):
                 leg_jerk=ucb.SESSION_LEG_JERK_MMPS3, cycle_active=False,
                 robot_state_age_s=0.01,
                 hand_axis_state=ucb.AXIS_STATE_CLOSED_LOOP,
-                hand_pos_rev=0.3162, link_age_s=0.1, hand_source='STREAMED')
+                hand_pos_rev=ucb.hand_rev_for_cup_z(ucb.SETTLE_CUP_Z_MM),
+                link_age_s=0.1)
     base.update(kw)
     return ucb.Snapshot(**base)
 
@@ -670,7 +674,7 @@ def _by_id(checks):
 
 def test_a_healthy_machine_passes_every_precondition():
     checks = ucb.check_preconditions(_good())
-    assert [c['id'] for c in checks] == ['P1', 'P2', 'P3', 'P4', 'P5']
+    assert [c['id'] for c in checks] == ['P1', 'P2', 'P3', 'P4']
     assert all(c['ok'] for c in checks), _by_id(checks)
 
 
@@ -704,12 +708,9 @@ def test_P1_names_the_state_it_actually_found():
     (dict(robot_state_age_s=5.0), 'P2'),
     (dict(hand_axis_state=1), 'P3'),          # IDLE
     (dict(hand_axis_state=None), 'P3'),
-    (dict(hand_source='LEGACY_STROKE'), 'P4'),
-    (dict(hand_source=None), 'P4'),
-    (dict(link_age_s=99.0), 'P4'),
-    (dict(leg_jerk=30000.0), 'P5'),           # the SHIPPED default
-    (dict(leg_vel=1000.0), 'P5'),
-    (dict(leg_acc=None), 'P5'),
+    (dict(leg_jerk=30000.0), 'P4'),           # the SHIPPED default
+    (dict(leg_vel=1000.0), 'P4'),
+    (dict(leg_acc=None), 'P4'),
 ])
 def test_each_precondition_fails_on_its_own_symptom(kw, failing):
     """One symptom, one named refusal — nothing else moves.
@@ -739,22 +740,8 @@ def test_an_IDLE_hand_is_refused_and_the_fix_says_why_it_looks_healthy():
     assert 'IDLE' in c['fix'] and 'perfect hold' in c['fix']
 
 
-def test_a_LEGACY_latch_refusal_carries_the_launch_down_recovery():
-    """P4's fix is the whole recipe, because the latch cannot be moved from here.
-
-    The firmware refuses a ``hand_source`` switch while the setpoint output is
-    armed, so the only route is launch DOWN + ``hand_stream_bench.py
-    --source-only streamed``. A refusal that just says "latch is LEGACY" leaves
-    the operator to rediscover that.
-    """
-    c = _by_id(ucb.check_preconditions(_good(hand_source='LEGACY_STROKE')))['P4']
-    assert c['ok'] is False
-    assert 'hand_stream_bench.py --source-only streamed' in c['fix']
-    assert 'DISCARDS' in c['fix']
-
-
 def test_the_limits_refusal_hands_over_the_exact_service_call():
-    c = _by_id(ucb.check_preconditions(_good(leg_jerk=30000.0)))['P5']
+    c = _by_id(ucb.check_preconditions(_good(leg_jerk=30000.0)))['P4']
     assert c['ok'] is False
     assert 'ros2 service call /trajectory/set_limits' in c['fix']
     assert '150000.0' in c['fix'] and '250.0' in c['fix']

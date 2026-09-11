@@ -32,8 +32,6 @@ from .protocol import (
     ResultTimeOfDay,
     ArgBbThrow,
     ArgRobotState,
-    ArgHandTraj,
-    ArgHandSource,
     ResultAxisVersions,
     ResultBbAxisVersions,
     ArgPlatformFwBegin,
@@ -48,16 +46,14 @@ __all__ = [
     # dataclasses (re-exported)
     "ArgAxisState", "ArgControllerMode", "ArgVelCurr", "ArgPosGain",
     "ArgVelGains", "ArgAbsPosition", "ArgAxisOnly", "ArgSdoRead", "ArgSdoWrite",
-    "ResultTimeOfDay", "ArgBbThrow", "ArgRobotState", "ArgHandTraj",
-    "ArgHandSource",
+    "ResultTimeOfDay", "ArgBbThrow", "ArgRobotState",
     # encoders
     "encode_set_axis_state", "encode_set_controller_mode",
     "encode_set_vel_curr_limits", "encode_set_pos_gain", "encode_set_vel_gains",
     "encode_set_absolute_position", "encode_clear_errors", "encode_reboot",
     "encode_encoder_search", "encode_home", "encode_activate", "encode_deactivate",
     "encode_sdo_read", "encode_sdo_write", "encode_state_write",
-    "encode_hand_traj_cmd", "encode_smooth_move_hand", "decode_hand_cmd_echo",
-    "encode_hand_source_set", "HAND_SOURCE_LEGACY_STROKE", "HAND_SOURCE_STREAMED",
+    "decode_hand_cmd_echo",
     "encode_bb_throw", "encode_bb_reload", "encode_bb_reset",
     "encode_bb_calibrate_loc",
     "decode_time_of_day_result", "ResultAxisVersions",
@@ -176,62 +172,6 @@ def encode_sdo_write(axis: int, endpoint: int, value: float) -> bytes:
 def decode_time_of_day_result(blob: bytes) -> int:
     """Decode a TIME_OF_DAY_QUERY result blob → Jetson wall-clock µs."""
     return int(ResultTimeOfDay.unpack(blob).jetson_wall_us)
-
-
-# ── Hand trajectory / smooth-move ─────────────────────────────────────────────
-# set_hand_traj_cmd + smooth_move_hand both ride the ONE HAND_TRAJ_CMD RPC,
-# discriminated by byte 0 of an 8-byte payload that is BYTE-IDENTICAL to can_node's
-# 0x6D0 PLATFORM_TRAJ_CMD frame (can_node.py:1626-1661). The payload IS the
-# ArgHandTraj struct (u8 payload[8]); the firmware attaches the firmware-owned 0x6D0
-# id and forwards it after the CLOSED_LOOP + POSITION/PASSTHROUGH preamble. These
-# encoders are PURE (no time.time()) so the byte layout is deterministically testable
-# (tests/firmware/test_hand_traj_xref.py); the CALLER computes the ABSOLUTE
-# wall_time_ms (now_ms + event_delay*1000, exactly as can_node did) and passes it in —
-# the absolute deadline is what makes the hand timing immune to bridge transit jitter,
-# and the firmware never re-stamps it.
-
-def encode_hand_traj_cmd(traj_type: int, event_vel: float, wall_time_ms: int) -> bytes:
-    """HAND_TRAJ_CMD (catch trajectory). Builds can_node._send_hand_traj_cmd's exact
-    0x6D0 payload: byte 0 = traj_type (0/1/2), bytes 1-2 = round(event_vel*100) as a
-    u16 (LE), bytes 3-6 = (wall_time_ms & 0xFFFFFFFF) as a u32 (LE), byte 7 = 0.
-    ``wall_time_ms`` is the ABSOLUTE Jetson wall-clock deadline (ms) — the caller adds
-    event_delay to time.time() (the firmware does NOT re-stamp)."""
-    vel_u16 = int(round(event_vel * 100))
-    payload = bytes([int(traj_type) & 0xFF, vel_u16 & 0xFF, (vel_u16 >> 8) & 0xFF])
-    payload += struct.pack('<I', int(wall_time_ms) & 0xFFFFFFFF) + bytes([0])
-    return ArgHandTraj(payload=tuple(payload)).pack()
-
-
-def encode_smooth_move_hand(target_rev: float) -> bytes:
-    """HAND_TRAJ_CMD (smooth-move). Builds can_node._smooth_move_hand's exact 0x6D0
-    payload: byte 0 = 3 (discriminator), bytes 1-4 = target_rev as f32 (LE),
-    bytes 5-7 = 0."""
-    payload = bytes([3]) + struct.pack('<f', float(target_rev)) + bytes(3)
-    return ArgHandTraj(payload=tuple(payload)).pack()
-
-
-# ── Hand-mastery latch (HAND_SOURCE_SET, unified-7dof FW 17) ─────────────────
-# The firmware's hand_source latch decides which master may command the hand
-# ODrive: LEGACY_STROKE (boot default — the Platform-Teensy stroke engine, i.e.
-# the HAND_TRAJ_CMD conduit above) or STREAMED (the bridge's 500 Hz interp — the
-# 7th Setpoint lane). The switch is gated FIRMWARE-side (hand_source.cpp):
-# accepted only while !mpc_active and the hand is settled at a rest position on
-# fresh axis-6 telemetry — a refusal comes back ERR_REJECTED. While STREAMED,
-# HAND_TRAJ_CMD returns ERR_HAND_SOURCE. The latch state rides HeartbeatT2J
-# flags bit 6 (HeartbeatT2JFlags.HAND_SOURCE_STREAMED) → /link_status.
-
-HAND_SOURCE_LEGACY_STROKE = 0
-HAND_SOURCE_STREAMED = 1
-
-
-def encode_hand_source_set(streamed: bool) -> bytes:
-    """HAND_SOURCE_SET: request the firmware hand-mastery latch.
-
-    ``streamed=True`` → STREAMED (bridge masters the hand);
-    ``streamed=False`` → LEGACY_STROKE. Idempotent on the firmware side —
-    re-asserting the current mode acks OK without touching the gates."""
-    return ArgHandSource(source=HAND_SOURCE_STREAMED if streamed
-                         else HAND_SOURCE_LEGACY_STROKE).pack()
 
 
 def decode_hand_cmd_echo(data: bytes, vel_scale: float, tor_scale: float):
@@ -393,7 +333,13 @@ PLATFORM_FW_VERSION_UNVERSIONED = 0
 #: -t upload`) and flashed over CAN; no code change beyond the number, which is
 #: the receipt: the STATE_READ version going 5 -> 6 is the only visible proof the
 #: copy landed now that the boot banner cannot be read.
-PLATFORM_FW_VERSION_EXPECTED = 6
+#: 7 (2026-09-11) = skill-stack R1: the stroke engine (Trajectory.h), the 0x6D0
+#: decode and the 0x0C9 hand-encoder cache are deleted. The Platform never
+#: transmits to node 6 (the hand ODrive) again — the bridge's 500 Hz interp is
+#: the one hand master. Inclinometer, time-sync slave and 0x6E0 cold-start
+#: state are unchanged; a board on 6 still answers STATE_READ/TILT_READ
+#: identically, so this skew is advisory only, not a dark link.
+PLATFORM_FW_VERSION_EXPECTED = 7
 
 
 def decode_platform_fw_version(data: bytes) -> int:
@@ -711,7 +657,17 @@ def platform_fw_window_end(window_start_frame: int, total_frames: int) -> int:
 #: unflashed. Deliberately NOT a widening of ResultAxisVersions: that blob is a
 #: fixed NUM_AXES*8 array, so growing it would be an incompatible change needing
 #: a lockstep flash to add two display rows.
-EXPECTED_BRIDGE_FW_VERSION = 20
+#: 21 (2026-09-11) = skill-stack R1: the hand mastery latch (hand_source.cpp)
+#: and hand_ops.cpp are deleted, so the hand lane is ACTIVE whenever a HAS_HAND
+#: Setpoint frame is latched — no HAND_SOURCE_SET step. The hand deviation
+#: guard now boots ARMED (was observe-first). HAND_TRAJ_CMD (0x54),
+#: HAND_SOURCE_SET (0x55) and ERR_HAND_SOURCE (0x07) are deleted wire ids and
+#: HeartbeatT2J flags bit 6 (HAND_SOURCE_STREAMED) is retired — an INCOMPATIBLE
+#: wire change, so PROTOCOL_VERSION bumps 6 -> 7 alongside this and a board on
+#: 20 is in TOTAL LINK DARKNESS against this host tree until the lockstep
+#: flash, loud and fail-closed by design (decode_frame hard-rejects on
+#: version).
+EXPECTED_BRIDGE_FW_VERSION = 21
 
 
 # ── Ball Butler ─────────────────────────────────────────────────────────────
@@ -762,8 +718,10 @@ METHOD = {
     RpcMethod.SDO_WRITE: ArgSdoWrite,
     RpcMethod.BB_THROW: ArgBbThrow,
     RpcMethod.STATE_WRITE: ArgRobotState,
-    RpcMethod.HAND_TRAJ_CMD: ArgHandTraj,   # host builds the 8-byte 0x6D0 payload
-    RpcMethod.HAND_SOURCE_SET: ArgHandSource,   # the FW 17 hand-mastery latch
+    # HAND_TRAJ_CMD / HAND_SOURCE_SET removed at PROTOCOL_VERSION 7 (2026-09-11,
+    # skill-stack R1) with the hand-mastery latch and stroke-engine conduit they
+    # served — the bridge is the one hand master and the lane follows the
+    # HAS_HAND Setpoint bit alone.
     RpcMethod.PLATFORM_FW_BEGIN: ArgPlatformFwBegin,
     RpcMethod.PLATFORM_FW_DATA: ArgPlatformFwData,
     RpcMethod.PLATFORM_FW_VERIFY: ArgPlatformFwVerify,

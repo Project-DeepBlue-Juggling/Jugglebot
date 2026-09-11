@@ -228,12 +228,13 @@ bool unified_cycle false             # Run every cycle through the UNIFIED 7-DoF
                                      # this field AND the build-time
                                      # jugglebot_operational.unified_cycle_enabled — so an
                                      # omitted or unreadable field can never put the hand
-                                     # on the 40 Hz stream. Root cause: under unified the
-                                     # can-bridge hand_source latch is flipped to STREAMED
-                                     # for the whole session, which REFUSES every legacy
-                                     # HAND_TRAJ_CMD; a goal that took that branch by
-                                     # accident would find the reactive catch arm silently
-                                     # rejected mid-flight with a ball in the air.
+                                     # on the 40 Hz stream. Post-R1 there is no
+                                     # `hand_source` latch and no legacy HAND_TRAJ_CMD —
+                                     # the hand lane is always the master while a HAS_HAND
+                                     # frame is latched — so this is no longer a mode
+                                     # switch between two hand masters, only between the
+                                     # unified 7-DoF planner and the legacy firmware
+                                     # stroke engine's platform/leg choreography.
                                      #
                                      # Under unified the session is a DIFFERENT machine and
                                      # the .action's other fields keep their meaning with

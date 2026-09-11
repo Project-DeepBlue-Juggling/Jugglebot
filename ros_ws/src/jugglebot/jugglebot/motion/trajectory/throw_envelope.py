@@ -15,7 +15,7 @@ DECLARED location was 11.1 rev, **0.3 rev past metal**, until it was corrected t
 Against the corrected stop, the modelled post-release coast at the shipped
 1.10 s ceiling peaks at **12.17 rev — 1.37 rev (43 mm) PAST the stop**.
 
-**The five bounds, and which configured value each is made of.**  Every one is
+**The six bounds, and which configured value each is made of.**  Every one is
 evaluated on every call; the FIRST to fail names itself in the verdict, so a
 refusal routes the operator at a subsystem rather than at a number.
 
@@ -50,13 +50,6 @@ bound                what it is
                      300 W STEADY-STATE capacity is a separate, documented check
                      that a ~2 % duty cycle clears by ~60x — deliberately not the
                      instantaneous fence.
-``ARM_WINDOW``       the Phase-1 catch-arm window must still be open with margin
-                     at this flight — otherwise the ball is thrown uncatchable.
-                     This is what actually sizes the FLOOR of the band.  Inputs:
-                     ``arm_window_margin_s`` plus the whole of
-                     :mod:`hand_stroke`'s timing model.  It is sized against
-                     ``catch_vel_scale_default``; a lowered catch knob can still
-                     close the window at an admitted flight (contract § Scope).
 ``WIRE_BAND``        ``teensy_bridge_node`` raises outside
                      ``[min_event_vel_mps, max_event_vel_mps]`` before any CAN
                      frame exists.  Belt-and-braces here: ``toss_sequencer``
@@ -75,6 +68,20 @@ should be loud at node start, not at the first throw.
 ``python config/generate_config.py`` +
 ``colcon build --packages-select jugglebot`` + relaunch.
 
+**R1 (2026-09-11).**  The ``ARM_WINDOW`` bound and its reactive-catch timing
+model (:mod:`hand_stroke`, ``throw_decel_s``, ``required_arm_lead_s``,
+``ARM_SUPPRESS_MARGIN_S``) are deleted: they gated a kind-1 stroke dispatched
+AFTER the kind-0 throw stroke finished — a device this rung deletes.  What
+survives is C-HAND-2's plant contract, unconditional on which planner produced
+the release: the declared reflected inertia behind any streamed decel must
+stay <= the measured one, or the feedforward out-brakes the profile and the
+loop cannot correct it — enforced here as current headroom
+(``DECEL_FF_HEADROOM``), decel/accel authority against the measured inertia,
+the regen budget, the bridge's wire-level acceptance band, and the measured
+coast ladder against the mechanical stop.  ``evaluate()`` keeps its name and
+its six remaining bounds; the ``arm_window`` parameter is deleted with them
+(cross-unit: callers passing ``arm_window=`` need the kwarg dropped).
+
 **The coast model is MEASURED ON THE FLASHED PLANT** (2026-08-20), superseding
 the 2026-07-27 pre-fix ladder this module shipped with on 2026-08-18.  That
 ladder was captured with the legacy decel feedforward and the hand ODrive's
@@ -91,27 +98,32 @@ from __future__ import annotations
 import math
 
 import jugglebot.hardware_config as hw
-from jugglebot.motion.trajectory import ballistics_bc, hand_stroke
+from jugglebot.motion.trajectory import ballistics_bc
 
-# ── stroke geometry: taken from the ONE host-side copy of Trajectory.h ────────
+# ── stroke geometry ────────────────────────────────────────────────────────
 #
-# ``x2`` (ball release) and ``x3`` (stroke top) are both velocity-INDEPENDENT —
-# ``x2 = accelSt/(1+IR) + velHold`` and ``x3 = totalStroke`` — so one reference
-# model evaluates them exactly.  ``test_stroke_landmarks_are_velocity_independent``
-# pins that across the whole wire band rather than trusting this comment.
-_REF_MODEL = hand_stroke.HandStrokeModel(
-    0.5 * (hw.TEENSY_TRAJ_MIN_EVENT_VEL_MPS + hw.TEENSY_TRAJ_MAX_EVENT_VEL_MPS))
+# ``x2`` (ball release) and ``x3`` (stroke top) are both velocity-INDEPENDENT
+# and already generated (``HAND_THROW_POS_M``, ``HAND_STROKE_TOP_REV`` — the
+# same values every other consumer of the release/stroke-top points reads).
+# R1 deletes ``hand_stroke.HandStrokeModel`` (the class that wrapped this
+# algebra) and the old fudge-factor gain it used; the VALUES are unchanged in
+# kind, only the rev conversion now goes through the measured
+# ``hw.HAND_REV_PER_M`` (config/generate_config.py's ``compute_derived``
+# computes both from the same ``teensy_trajectory`` keys this module used to
+# read via ``HandStrokeModel``).
+#
+# NOT the firmware clip ceiling (10.501 rev): that bounds what a command can
+# reach, not where the commanded stroke aims, and the measured coast ladder
+# below is calibrated as overshoot PAST x3 specifically — anchoring peak_rev
+# to a different baseline would silently invalidate that calibration.
 
 #: ``x2`` — the hand position at ball release (rev from the encoder zero).
-RELEASE_POS_REV = _REF_MODEL.x2_rev
+RELEASE_POS_REV = float(hw.HAND_THROW_POS_M) * float(hw.HAND_REV_PER_M)
 
-#: ``x3`` — the commanded stroke top.  The profile NEVER leaves this; everything
-#: above it is uncommanded coast.
-STROKE_TOP_REV = hand_stroke.STROKE_TOP_REV
+#: ``x3`` — the commanded stroke top the coast ladder below is measured past.
+STROKE_TOP_REV = float(hw.HAND_STROKE_TOP_REV)
 
-#: ``x3 - x2`` — the travel ``calcThrow`` allocates to the decel ramp.  Famously
-#: **velocity-independent at 4.046 rev**, which is why the profile budgets the
-#: IDEAL stopping distance with zero allowance for tracking error (C-HAND-2).
+#: ``x3 - x2`` — the travel ``calcThrow`` allocates to the decel ramp.
 DECEL_ALLOWANCE_REV = STROKE_TOP_REV - RELEASE_POS_REV
 
 #: The mechanical stop, and the line the coast peak must stay under.
@@ -145,14 +157,15 @@ REGEN_POWER_W = (float(hw.HAND_ENV_REGEN_CURRENT_LIMIT_A)
 
 #: Steady-state rail capacity (W).  Documented, not enforced — see above.
 REGEN_RAIL_STEADY_W = float(hw.HAND_ENV_REGEN_RAIL_CAPACITY_W)
-ARM_WINDOW_MARGIN_S = float(hw.HAND_ENV_ARM_WINDOW_MARGIN_S)
+#: R1 (2026-09-11): the reactive-catch ARM_WINDOW bound is deleted with the
+#: stroke engine, and its config key ``hand_throw_envelope.arm_window_margin_s``
+#: was deleted with it — no timing twin survives here.
 
 # Fail closed on a hand-edited YAML too.  Both margins LOOSEN the envelope as
 # they shrink, so a zero or negative value is not a degenerate case that refuses
 # everything — it is one that admits more, silently.  That asymmetry is why they
 # are validated at import rather than trusted.
-for _name, _val in (('end_stop_margin_rev', END_STOP_MARGIN_REV),
-                    ('arm_window_margin_s', ARM_WINDOW_MARGIN_S)):
+for _name, _val in (('end_stop_margin_rev', END_STOP_MARGIN_REV),):
     if not (math.isfinite(_val) and _val > 0.0):
         raise ValueError(
             'hand_throw_envelope.{} must be a positive finite value; got {!r}. '
@@ -169,7 +182,7 @@ BALL_MASS_KG = (hw.TEENSY_TRAJ_INERTIA_HAND_ONLY_KG
 #: whole ascent — the withdrawn accel-phase identification in C-HAND-2 is
 #: exactly the mistake of forgetting that.
 J_ASCENT_KGM2 = (J_MEASURED_KGM2
-                 + BALL_MASS_KG / (hand_stroke.LINEAR_GAIN_REV_PER_M
+                 + BALL_MASS_KG / (float(hw.HAND_REV_PER_M)
                                    * 2.0 * math.pi) ** 2)
 
 #: Largest commanded deceleration whose FEEDFORWARD alone stays inside
@@ -271,7 +284,7 @@ _TOP_V, _TOP_COAST = COAST_LADDER[-1]
 #: measurement's own definition ``a = v_rev^2 / (2 * stopping distance)``.
 #: Reported, and used for the aliasing budget; no longer the extrapolation law.
 TOP_RUNG_ACHIEVED_DECEL_RPS2 = (
-    (_TOP_V * hand_stroke.LINEAR_GAIN_REV_PER_M) ** 2
+    (_TOP_V * float(hw.HAND_REV_PER_M)) ** 2
     / (2.0 * (DECEL_ALLOWANCE_REV + _TOP_COAST)))
 
 #: Exponent of the extrapolation above the top rung: ``coast_top*(v/v_top)^p``.
@@ -333,20 +346,36 @@ def peak_rev(release_speed_mps: float) -> float:
     return STROKE_TOP_REV + coast_rev(release_speed_mps)
 
 
+#: Stroke inputs for the closed-form throw accel/decel below — the same
+#: algebra ``Trajectory.h``'s ``calcThrow`` uses, kept host-side now that
+#: ``hand_stroke.HandStrokeModel`` (the class that wrapped it) is deleted at
+#: R1 with the reactive stroke-engine model.  Velocity-independent.
+_THROW_TOTAL_STROKE_M = (float(hw.TEENSY_TRAJ_HAND_STROKE_M)
+                         - 2.0 * float(hw.TEENSY_TRAJ_STROKE_MARGIN_M))
+_THROW_ACCEL_STROKE_M = (_THROW_TOTAL_STROKE_M
+                         * (1.0 - float(hw.TEENSY_TRAJ_THROW_VEL_HOLD_PCT)))
+
+
+def _throw_accel_mps2(release_speed_mps: float) -> float:
+    """Ascent acceleration ``calcThrow`` commands (m/s^2): with
+    ``t_acc = 2/(ir+1) * accel_stroke / v``, ``throwA = v / t_acc``."""
+    v = float(release_speed_mps)
+    ir = float(hw.TEENSY_TRAJ_INERTIA_RATIO)
+    return v * v * (ir + 1.0) / (2.0 * _THROW_ACCEL_STROKE_M)
+
+
 def commanded_decel_rps2(release_speed_mps: float) -> float:
     """The deceleration ``calcThrow`` commands after release (rev/s^2).
 
-    Read off the shipped stroke model rather than re-derived, so the
-    ``123.55*v^2`` coefficient cannot drift out of this file.
+    ``throwD = -throwA/ir``, so ``|throwD| = throwA/ir``.
     """
-    m = hand_stroke.HandStrokeModel(release_speed_mps)
-    return abs(m.throwD) * hand_stroke.LINEAR_GAIN_REV_PER_M
+    ir = float(hw.TEENSY_TRAJ_INERTIA_RATIO)
+    return (_throw_accel_mps2(release_speed_mps) / ir) * float(hw.HAND_REV_PER_M)
 
 
 def commanded_accel_rps2(release_speed_mps: float) -> float:
     """The ascent acceleration ``calcThrow`` commands (rev/s^2)."""
-    m = hand_stroke.HandStrokeModel(release_speed_mps)
-    return abs(m.throwA) * hand_stroke.LINEAR_GAIN_REV_PER_M
+    return _throw_accel_mps2(release_speed_mps) * float(hw.HAND_REV_PER_M)
 
 
 # ── ballistics: the Tier-8a co-located vertical projection ───────────────────
@@ -388,53 +417,12 @@ def apex_height_m(flight_time_s: float) -> float:
     return GRAVITY_MMS2 * float(flight_time_s) ** 2 / 8.0 / 1000.0
 
 
-def armed_catch_speed_mps(flight_time_s: float) -> float:
-    """Velocity the catch stroke will be armed with (m/s).
-
-    The ball's VERTICAL arrival speed ``|dz/T - g*T/2|`` scaled by the catch
-    knob's config default.  Vertical-only, and therefore identical for a
-    displaced Tier-8b throw of the same flight time: a horizontal launch
-    component changes neither the vertical launch component nor the fall.
-    """
-    t = float(flight_time_s)
-    v_arr = abs(RELEASE_TO_CUP_MM / t - GRAVITY_MMS2 * t / 2.0) / 1000.0
-    return v_arr * float(hw.JB_OP_CATCH_VEL_SCALE_DEFAULT)
-
-
-#: The ``max(_MIN_EVENT_DELAY_S, required_arm_lead)`` floor that
-#: ``catch_coordinator_node`` applies.  Local copy for the same reason
-#: ``tests/motion/test_hand_stroke.py`` keeps one — importing the node drags
-#: rclpy into a pure module.  Pinned equal by
-#: ``test_min_event_delay_matches_the_catch_coordinator``.
-MIN_EVENT_DELAY_S = 0.3
-
-
-def arm_window_s(flight_time_s: float, release_speed_mps: float) -> float:
-    """Width of the Phase-1 catch-arm window at this (flight, release speed).
-
-    ``latest - earliest`` where ``earliest = t_dec(v_throw) +
-    ARM_SUPPRESS_MARGIN_S`` (the throw stroke must be clear) and ``latest =
-    T - max(MIN_EVENT_DELAY_S, required_arm_lead(v_armed))`` (the Platform
-    Teensy's **makeSmoothMove time-budget check** must still fit — quoted by
-    NAME, not by line: it is ``Teensy_code_platform.ino:642`` today, and the
-    ``:533`` several older docs cite is now a CAN state-update handler).  Both
-    edges are :mod:`hand_stroke`'s, so this function adds no timing model of
-    its own.
-
-    Negative means the arm cannot be placed at all: the throw stroke is still
-    decelerating when the catch already needed to be armed, so the ball flies
-    uncatchable.  It narrows monotonically toward SHORT flights, which is why
-    this — not the coast — is what sizes the floor of the band.
-    """
-    t = float(flight_time_s)
-    earliest = (hand_stroke.throw_decel_s(release_speed_mps)
-                + hand_stroke.ARM_SUPPRESS_MARGIN_S)
-    latest = t - max(MIN_EVENT_DELAY_S,
-                     hand_stroke.required_arm_lead_s(armed_catch_speed_mps(t)))
-    return latest - earliest
-
-
 # ── the verdict ──────────────────────────────────────────────────────────────
+#
+# R1: ARM_WINDOW, armed_catch_speed_mps and arm_window_s are DELETED here —
+# they modelled a reactive kind-1 catch stroke dispatched after a kind-0 throw
+# stroke, a device deleted at R1 (owner decision 3). The probe that read them
+# (tools/probes/ilc_speed_band.py) was deleted the same day.
 
 
 class ThrowEnvelopeVerdict(object):
@@ -466,8 +454,7 @@ class ThrowEnvelopeVerdict(object):
 _OK = ThrowEnvelopeVerdict(True)
 
 
-def evaluate(flight_time_s: float, release_speed_mps: float,
-             arm_window: bool = True) -> ThrowEnvelopeVerdict:
+def evaluate(flight_time_s: float, release_speed_mps: float) -> ThrowEnvelopeVerdict:
     """Admit or refuse a throw.  THE enforcement point of contract C-HAND-3.
 
     ``flight_time_s`` is the nominated release-to-catch-plane time;
@@ -476,22 +463,19 @@ def evaluate(flight_time_s: float, release_speed_mps: float,
     flight time — a Tier-8b displaced throw aims, so the two are different
     numbers and only the commanded one bounds the hardware.
 
-    Bounds are checked machine-damage-first (``END_STOP`` before
-    ``ARM_WINDOW``), so when several fail the operator hears about the one that
-    breaks metal.
+    Bounds are checked machine-damage-first, so when several fail the operator
+    hears about the one that breaks metal.
 
-    ``arm_window`` — pass ``False`` when NOTHING WILL BE ARMED.  Bound 7
-    (``ARM_WINDOW``) is the only one of the seven that models the *reactive*
-    catch: it asks whether a kind-1 stroke can still be dispatched after the
-    kind-0 throw stroke has finished decelerating, and both edges come from
-    :mod:`hand_stroke`'s model of the firmware stroke engine.  Under the unified
-    7-DoF planner there is no stroke engine on that axis — the throw and the catch
-    are knots on ONE trajectory, and ``feasibility.validate_cycle`` is the
-    authority on whether that trajectory is executable — so the bound is not
-    merely conservative there, it is a statement about a device that is not
-    running, and it refuses the whole short half of the flight band for it.
-    The other six bounds still apply and are still checked: they describe the
-    hand's METAL and its motor, which the unified path drives just as hard.
+    R1 (2026-09-11): the ``ARM_WINDOW`` bound and the ``arm_window`` parameter
+    that selected it are DELETED.  ``ARM_WINDOW`` modelled whether a reactive
+    kind-1 catch stroke could still be dispatched after a kind-0 throw stroke
+    finished decelerating — a device (and the reactive-catch dispatch path
+    that used it) deleted at R1.  ``feasibility.validate_cycle`` is now the
+    sole authority on whether a planned catch is executable.  The six
+    remaining bounds still apply and are still checked: they describe the
+    hand's METAL and its motor, which any planner drives just as hard.
+    Cross-unit: any caller still passing ``arm_window=`` needs the kwarg
+    dropped (``grep -rn "arm_window="`` over ``ros_ws/src/jugglebot/jugglebot``).
     """
     t = float(flight_time_s)
     v = float(release_speed_mps)
@@ -557,7 +541,7 @@ def evaluate(flight_time_s: float, release_speed_mps: float,
     # the drive COULD push back if it braked flat out, which is conservative
     # inside the DECEL_AUTHORITY-admitted set (where tau_cmd <= tau_max by
     # construction) and consistent with how DECEL_AUTHORITY itself is derived.
-    omega = v * hand_stroke.LINEAR_GAIN_REV_PER_M * 2.0 * math.pi
+    omega = v * float(hw.HAND_REV_PER_M) * 2.0 * math.pi
     brake_power_w = BRAKING_TORQUE_LIMIT_NM * omega
     if brake_power_w > REGEN_POWER_W:
         return ThrowEnvelopeVerdict(
@@ -575,17 +559,6 @@ def evaluate(flight_time_s: float, release_speed_mps: float,
             'release speed {:.3f} m/s is outside the bridge band '
             '[{:g}, {:g}] m/s'.format(v, hw.TEENSY_TRAJ_MIN_EVENT_VEL_MPS,
                                       hw.TEENSY_TRAJ_MAX_EVENT_VEL_MPS))
-
-    # 7. ARM_WINDOW — the catch must still be armable after the stroke clears.
-    window = arm_window_s(t, v)
-    if arm_window and window < ARM_WINDOW_MARGIN_S:
-        return ThrowEnvelopeVerdict(
-            False, 'ARM_WINDOW',
-            'catch-arm window {:.3f} s at T={:.3f} s is under the {:.3f} s '
-            'margin (window closes entirely at T={:.4f} s); envelope allows '
-            'T >= {:.3f} s (apex >= {:.3f} m)'.format(
-                window, t, ARM_WINDOW_MARGIN_S, arm_window_closes_at_s(),
-                min_flight_time_s(), apex_height_m(min_flight_time_s())))
 
     return _OK
 
@@ -609,18 +582,24 @@ def _speed_ok(v):
             and commanded_decel_rps2(v) <= DECEL_AUTHORITY_RPS2
             and commanded_accel_rps2(v) <= ACCEL_AUTHORITY_RPS2
             and (BRAKING_TORQUE_LIMIT_NM * v
-                 * hand_stroke.LINEAR_GAIN_REV_PER_M * 2.0 * math.pi)
+                 * float(hw.HAND_REV_PER_M) * 2.0 * math.pi)
             <= REGEN_POWER_W
             and hw.TEENSY_TRAJ_MIN_EVENT_VEL_MPS <= v
             <= hw.TEENSY_TRAJ_MAX_EVENT_VEL_MPS)
 
 
 def _flight_ok(t):
-    """Every bound, on the Tier-8a co-located projection of a flight time."""
+    """Every bound, on the Tier-8a co-located projection of a flight time.
+
+    R1: no longer ANDs an ``arm_window_s`` term (deleted with ARM_WINDOW) — the
+    speed bounds alone still close a well-defined band, because a very short
+    flight demands a very high release speed and hits the wire/authority
+    ceilings on their own.
+    """
     if not (math.isfinite(t) and t > 0.0):
         return False
     v = vertical_release_speed_mps(t)
-    return _speed_ok(v) and arm_window_s(t, v) >= ARM_WINDOW_MARGIN_S
+    return _speed_ok(v)
 
 
 def _bisect(pred, lo, hi, iters=200):
@@ -693,13 +672,6 @@ MAX_RELEASE_SPEED_MPS = (
     else _bisect(_speed_ok, hw.TEENSY_TRAJ_MIN_EVENT_VEL_MPS,
                  hw.TEENSY_TRAJ_MAX_EVENT_VEL_MPS))
 
-#: Flight time at which the catch-arm window reaches exactly zero (s).  Quoted in
-#: the ``ARM_WINDOW`` refusal so the operator can see how far the goal sits from
-#: *impossible*, not merely from *policy*.
-ARM_WINDOW_CLOSES_AT_S = _bisect(
-    lambda t: arm_window_s(t, vertical_release_speed_mps(t)) <= 0.0,
-    _SEARCH_LO_S, _SEARCH_HI_S)
-
 #: The derived replacement for the old ``FLIGHT_TIME_MIN_S`` /
 #: ``FLIGHT_TIME_MAX_S`` literals.
 #:
@@ -713,11 +685,6 @@ MIN_FLIGHT_TIME_S, MAX_FLIGHT_TIME_S = _find_flight_band()
 def max_release_speed_mps() -> float:
     """Highest release speed every SPEED bound admits (m/s)."""
     return MAX_RELEASE_SPEED_MPS
-
-
-def arm_window_closes_at_s() -> float:
-    """Flight time at which the catch-arm window reaches exactly zero (s)."""
-    return ARM_WINDOW_CLOSES_AT_S
 
 
 def min_flight_time_s() -> float:

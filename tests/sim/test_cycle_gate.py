@@ -37,9 +37,6 @@ pytest.importorskip('mujoco')
 from jugglebot import hardware_config as hw                        # noqa: E402
 from jugglebot.motion.trajectory import cup_cycle as cc            # noqa: E402
 from jugglebot.motion.trajectory import cup_realize as cr          # noqa: E402
-from jugglebot.motion.trajectory.hand_stroke import (              # noqa: E402
-    LINEAR_GAIN_REV_PER_M,
-)
 from sim.cycle_gate import (                                       # noqa: E402
     CAPTURE_TOL_MM, CATCH_CUP_Z_M, CUP_Z_HI_M, CUP_Z_LO_M,
     CycleGate, CycleGateConfig, SEAT_CONE_DEG, THROW_CUP_Z_M,
@@ -239,7 +236,7 @@ def test_no_slam_fails_on_a_plan_that_does_slam(demo_cycle):
     assert realized.slider_saturated[:k + 1].any(), 'the clamp never engaged'
     demanded_mm = (default_box.pos[:k + 1, 2] * 1000.0 - cr.CUP_Z_BASE_MM
                    - cr.SLIDER_REV_ZERO_MM)
-    assert demanded_mm.max() / 1000.0 * LINEAR_GAIN_REV_PER_M > prime, (
+    assert demanded_mm.max() / 1000.0 * hw.HAND_REV_PER_M > prime, (
         'the default cup-z box is supposed to demand more stroke than the prime '
         'ceiling; if it no longer does, this non-vacuity case is stale')
 

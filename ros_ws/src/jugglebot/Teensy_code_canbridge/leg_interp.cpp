@@ -50,7 +50,6 @@
 #include "leg_homing.h"       // homing_active     (in-progress-move interlock)
 #include "leg_activate.h"     // activate_active   (in-progress-move interlock)
 #include "leg_deactivate.h"   // deactivate_active (in-progress-move interlock)
-#include "hand_source.h"      // hand_source_streamed (the § 2.4 mastery latch)
 #include "fault_machine.h"    // fault_hand_dev_prev_reset (hand7 reset re-baseline)
 
 namespace CanBridge {
@@ -99,7 +98,7 @@ static uint64_t s_prev_recv_us = 0;
 // knot — that aging dt is what drives the normative falling-edge DECAY (see the
 // hand block in interp_isr). Written only by latch_from_staging / interp_reset
 // (ISR / quiescent), read only by the ISR.
-static bool     s_hand_active = false;      // a HAS_HAND frame latched while STREAMED
+static bool     s_hand_active = false;      // a HAS_HAND frame is latched (the lane's only gate)
 static bool     s_hand_has_next = false;
 static bool     s_hand_has_next2 = false;
 static bool     s_hand_has_v1 = false;
@@ -193,7 +192,6 @@ static volatile uint8_t s_torque_clamp_mask = 0;
 static volatile uint32_t s_hand_sent             = 0;   // hand set_input_pos frames transmitted
 static volatile uint32_t s_hand_unseen_skips     = 0;   // lane active but axis 6 never seen → skip, never guess
 static volatile uint32_t s_hand_stale_holds      = 0;   // ticks whose clamp-anchor age hit the staleness cap
-static volatile uint32_t s_hand_discard_legacy   = 0;   // Setpoint index 6 discarded while hand_source == LEGACY
 static volatile uint32_t s_hand_lead_clamp_ticks = 0;   // THE lead-duty counter (nonzero in a throw ⇒ abort sitting)
 static volatile uint32_t s_hand_dev_over_ticks   = 0;   // ticks with |residual| > MAX_DEVIATION_HAND_REV
 static volatile float    s_hand_dev_last         = 0.0f;
@@ -210,7 +208,7 @@ static volatile float    s_hand_dev_snap_fb      = 0.0f;   // age-extrapolated f
 static volatile float    s_hand_dev_trip_dev     = 0.0f;
 static volatile float    s_hand_dev_trip_cmd     = 0.0f;
 static volatile float    s_hand_dev_trip_fb      = 0.0f;
-static volatile bool     s_hand_dev_guard_armed  = false;  // OBSERVE-FIRST boot default; `hand7 arm` flips it
+static volatile bool     s_hand_dev_guard_armed  = true;   // ARMED is the power-on value (FW 21); `hand7 observe` lowers it
 
 // ── Re-enable recovery slew (2026-07-11 clear-errors jolt forensics) ──────────
 // State for the output-enable-edge slew (see the file header + canbridge_config.h
@@ -276,18 +274,7 @@ void interp_on_setpoint(uint16_t seq, const uint8_t* payload, uint16_t len) {
   memcpy(&sp, payload, sizeof(sp));
 
   const bool has_v1_flag   = (sp.flags & 0x8u) != 0;   // HAS_V1 (v6 wire, bit 3)
-  bool       has_hand_flag = (sp.flags & 0x4u) != 0;   // HAS_HAND (v6 wire, bit 2)
-
-  // ── hand_source interlock (§ 2.4): discard index 6 while LEGACY ─────────────
-  // While the Platform Teensy stroke engine masters the hand, a v6 frame's hand
-  // channel is DISCARDED — the frame itself (the legs) is still accepted, so a
-  // producer that wrongly ships hand knots can never starve the leg stream into
-  // SETPOINT_STALE. Counted on a visible counter ([hand7] console): a climbing value
-  // means the host is emitting hand knots the firmware refuses by mode.
-  if (has_hand_flag && !hand_source_streamed()) {
-    has_hand_flag = false;
-    ++s_hand_discard_legacy;
-  }
+  const bool has_hand_flag = (sp.flags & 0x4u) != 0;   // HAS_HAND (v6 wire, bit 2)
 
   // ── isfinite trust-boundary drop ────────────────────────────────────────────
   // A NaN/Inf field survives BOTH the lead clamp and the stroke clamp (a NaN fails
@@ -671,18 +658,16 @@ static void interp_isr() {
   // constants (MAX_LEAD_HAND_REV 2.0 / HAND_VELFF_LIMIT_RPS 300 / clip
   // [0, HAND_MOTOR_MAX_POSITION]) and its own knot clock, and the leg constants
   // (MAX_LEAD_REV 0.10, LEAD_CLAMP_VELFF_LIMIT_RPS 3.5, STROKE_*_REV) must
-  // NEVER touch axis 6 — separate loops make that structural. Active only while
-  // a HAS_HAND frame has latched under hand_source == STREAMED.
+  // NEVER touch axis 6 — separate loops make that structural. Active whenever
+  // a HAS_HAND frame has latched: since FW 21 there is no mastery latch to
+  // consult, because there is only one master.
   bool  hand_tx = false;              // computed + clamped this tick → publish/TX
   float h_pos = 0.0f, h_vel = 0.0f;
-  // Gated on the LIVE latch as well as the latched lane state: a post-disarm
-  // LEGACY switch must make a still-latched lane inert THAT tick — otherwise
-  // the old knot state would keep emitting its decayed hold against the stroke
-  // engine's frames at the next legacy dispatch (exactly the dual-mastery
-  // window the latch exists to close). The switch gate (!mpc_active + settled)
-  // means this can only flip while output is suppressed, so there is no
-  // mid-stream transient to bound.
-  if (s_hand_active && hand_source_streamed()) {
+  // The ONLY gate is the latched lane state (I-HAND-4: set by a HAS_HAND
+  // frame, cleared on the arm edge). There is no second master to interlock
+  // against — the Platform stroke engine and its 0x6D0 conduit are gone — so a
+  // mastery check here would be a mode that cannot differ from the lane.
+  if (s_hand_active) {
     const uint8_t h = HAND_AXIS;
     // The hand's own trajectory phase — dt from the last HAND-BEARING knot, not
     // from the last leg frame. This is what implements the NORMATIVE falling-
@@ -787,9 +772,9 @@ static void interp_isr() {
       // ── MAX_DEVIATION_HAND_REV residual — the 500 Hz tick's verdict ────────
       // Velocity-compensated BOTH sides: the RAW interpolated command (pre-
       // clamp) against the age-extrapolated encoder. The fault task differences
-      // the exceed-tick counter at 10 Hz and (only when `hand7 arm`ed — the
-      // guard ships OBSERVE-FIRST) latches the E-STOP off it; the max-residual
-      // snapshot is the observe sitting's read.
+      // the exceed-tick counter at 10 Hz and (unless a bench `hand7 observe`
+      // has lowered the switch — it boots ARMED) latches the E-STOP off it; the
+      // max-residual snapshot is the observe read.
       const float dev = h_pos - fb_ex;
       s_hand_dev_last = dev;
       const float adev = (dev < 0.0f) ? -dev : dev;
@@ -812,7 +797,7 @@ static void interp_isr() {
       // leaves them at zero and an absolute read is meaningful again.
       // The residual itself (dev_last / dev_max / the snapshot trio) is NOT
       // gated: it is an observation of the interpolator's own output and is
-      // exactly what the observe-first sitting wants during a suppressed lane.
+      // exactly what a `hand7 observe` bench read wants during a suppressed lane.
       // The CLAMPS are not gated either — only the counting is.
       const bool hand_counts = out_en && !coldstart;
       if (hand_counts && adev > MAX_DEVIATION_HAND_REV) {
@@ -1024,8 +1009,8 @@ static void interp_isr() {
     // clip_position() bounds the value to [0, HAND_MOTOR_MAX_POSITION] as the
     // final backstop behind the clip already applied above. torque hard 0 (see
     // the target-cache comment). TxCls::LEGS — this IS the seventh interpolated
-    // axis of the streaming burst; TxCls::HAND means "a hand_ops dispatch" and
-    // borrowing it would contaminate the ERR_TIMEOUT arc's counter.
+    // axis of the streaming burst, and TxCls::LEGS is now its ONLY class
+    // (TxCls::HAND went with the hand_ops conduit at FW 21).
     //
     // ISR COST: identical to the flown bench probe's frame (one PRIMASK-guarded
     // u64 read + single-word float reads + one can_jugglebot_tx) plus the lane
@@ -1067,16 +1052,18 @@ void interp_reset() {
   s_hand_sent = 0;
   s_hand_unseen_skips = 0;
   s_hand_stale_holds = 0;
-  s_hand_discard_legacy = 0;
   s_hand_lead_clamp_ticks = 0;
   s_hand_dev_over_ticks = 0;
   s_hand_dev_last = s_hand_dev_max = 0.0f;
   s_hand_dev_snap_cmd = s_hand_dev_snap_fb = 0.0f;
   s_hand_dev_trip_dev = s_hand_dev_trip_cmd = s_hand_dev_trip_fb = 0.0f;
-  // The observe/arm switch returns to its power-on value (OBSERVE) like every
-  // other static here: a re-armed interp can never inherit an armed hand
-  // deviation trip from a previous session without an explicit `hand7 arm`.
-  s_hand_dev_guard_armed = false;
+  // The observe/arm switch returns to its power-on value like every other
+  // static here — and since FW 21 (skill-stack R1, owner 2026-09-11) that value
+  // is ARMED: with one master and no stroke-engine prelude an observing guard
+  // is no guard, `hand7 observe` is a bench-diagnosis verb, and an arm edge
+  // returns the switch to ARMED so a bench session can never leave the guard
+  // off for the next one.
+  s_hand_dev_guard_armed = true;
   s_base_ts_us = 0;
   s_have_latched = false;
   s_have_prev_accel = false;
@@ -1128,22 +1115,30 @@ void leg_interp_init() {
   // (PRIMASK-guarded FlexCAN_T4::write mailbox register write, NOT a mutex),
   // homing_active()/activate_active()/deactivate_active()/leg_present() (single-word
   // reads via non-inline cross-TU calls under -O2/no-LTO — the call is the barrier),
-  // hand_source_streamed() (FW 17 — the same single-volatile-byte cross-TU read
-  // class, hand_source.cpp), and the ODrive encoders (pure). Keep it that way.
+  // and the ODrive encoders (pure). Keep it that way.
   s_timer.begin(interp_isr, INTERP_PERIOD_US);
   s_timer.priority(16);
 }
 
 uint64_t interp_last_setpoint_us() { return atomic_read_u64(&s_last_setpoint_us); }
 // Torn-load guard is mandatory here: s_last_tick_us is written by interp_isr, and
-// this accessor runs in TASK context (hand_ops, on task_net). Without the mask the
+// this accessor runs in TASK context (telemetry, on task_net). Without the mask the
 // two 32-bit loads can straddle the ISR's store and produce a nonsense u64 — which
 // in the phase stamp would look like a wild phase value, i.e. exactly the kind of
 // artefact that would falsely refute the phase-quantisation model.
 uint64_t interp_last_tick_us() { return atomic_read_u64(&s_last_tick_us); }
 float interp_base_pos(uint8_t i) { return (i < NUM_AXES) ? s_base_pos[i] : 0.0f; }
 bool  interp_have_latched() { return s_have_latched; }
-void interp_set_output_enabled(bool en) { s_output_enabled = en; }
+// The hand deviation guard's DISARM edge (FW 21): `hand7 observe` lowers the
+// guard for ONE armed session — the session it is typed before or during — and
+// the true→false output-enable edge that ends that session returns the switch to
+// its power-on value, ARMED. So a bench read can never leave the guard off for
+// the next session, and no operator step is needed to restore it. TASK context
+// (fault_machine), single volatile byte, same class as the console writes.
+void interp_set_output_enabled(bool en) {
+  if (!en && s_output_enabled) s_hand_dev_guard_armed = true;   // disarm edge re-arms
+  s_output_enabled = en;
+}
 bool interp_output_enabled() { return s_output_enabled; }
 uint32_t interp_deadline_misses() { return s_deadline_misses; }
 uint32_t interp_max_jitter_us() { return s_max_jitter_us; }
@@ -1187,7 +1182,6 @@ uint32_t interp_hand_lead_clamp_ticks() { return s_hand_lead_clamp_ticks; }
 uint32_t interp_hand_sent()             { return s_hand_sent; }
 uint32_t interp_hand_unseen_skips()     { return s_hand_unseen_skips; }
 uint32_t interp_hand_stale_holds()      { return s_hand_stale_holds; }
-uint32_t interp_hand_discard_legacy()   { return s_hand_discard_legacy; }
 uint32_t interp_hand_dev_over_ticks()   { return s_hand_dev_over_ticks; }
 float    interp_hand_dev_last()         { return s_hand_dev_last; }
 float    interp_hand_dev_max()          { return s_hand_dev_max; }
@@ -1195,7 +1189,7 @@ float    interp_hand_dev_snap_cmd()     { return s_hand_dev_snap_cmd; }
 float    interp_hand_dev_snap_fb()      { return s_hand_dev_snap_fb; }
 // Trip-dedicated snapshot (most recent EXCEED tick) — the fault machine's
 // latch read; the boot-cumulative dev_max trio above stays the console's
-// observe-first read (2026-09-02 fix).
+// `hand7 observe` read (2026-09-02 fix).
 float    interp_hand_dev_trip_dev()     { return s_hand_dev_trip_dev; }
 float    interp_hand_dev_trip_cmd()     { return s_hand_dev_trip_cmd; }
 float    interp_hand_dev_trip_fb()      { return s_hand_dev_trip_fb; }
@@ -1207,16 +1201,14 @@ void     interp_set_hand_dev_guard_armed(bool armed) { s_hand_dev_guard_armed = 
 // carries two formats. Counters are BOOT-CUMULATIVE ([cantx] idiom): difference
 // two reads across a block, never read an absolute as a block's value. This is
 // the REQUIRED lead-duty read (lead=; non-zero during a throw ⇒ hard-abort the
-// sitting) and the observe-first deviation read (dev_max=/dev_over=).
+// sitting) and the console's dev_max=/dev_over= deviation read (available in either guard state).
 static void hand7_print_status() {
-  Serial.printf("[hand7] src=%s guard=%s lane=%s sent=%lu discard_legacy=%lu unseen=%lu"
+  Serial.printf("[hand7] guard=%s lane=%s sent=%lu unseen=%lu"
                 " stale=%lu lead=%lu dev_over=%lu dev_last=%.4f dev_max=%.4f"
                 " dev_cmd=%.4f dev_fb=%.4f\n",
-                hand_source_streamed() ? "STREAMED" : "LEGACY",
                 s_hand_dev_guard_armed ? "ARMED" : "observe",
                 s_hand_active ? "active" : "idle",
                 (unsigned long)s_hand_sent,
-                (unsigned long)s_hand_discard_legacy,
                 (unsigned long)s_hand_unseen_skips,
                 (unsigned long)s_hand_stale_holds,
                 (unsigned long)s_hand_lead_clamp_ticks,
@@ -1230,7 +1222,7 @@ static void hand7_print_status() {
 // Zero every counter and residual the [hand7] line prints, so a stage can be
 // read as an absolute instead of a difference — without the Teensy reboot that
 // was the only alternative before FW 18. DELIBERATELY NOT reset: the observe/arm
-// switch (a reset must never arm or disarm the guard), the hand_source latch,
+// switch (a reset must never arm or disarm the guard),
 // s_hand_active and the lane's knot state (resetting those would be a control
 // action dressed up as a diagnostic one). Plain volatile writes from task
 // context, like the console's existing arm/observe writes: each is a single
@@ -1239,7 +1231,6 @@ static void hand7_print_status() {
 // precision a counter-zeroing verb has anyway.
 void interp_hand_counters_reset() {
   s_hand_sent             = 0;
-  s_hand_discard_legacy   = 0;
   s_hand_unseen_skips     = 0;
   s_hand_stale_holds      = 0;
   s_hand_lead_clamp_ticks = 0;
@@ -1263,7 +1254,7 @@ bool interp_hand7_console(const char* line) {
   if (line == nullptr || strncmp(line, "hand7", 5) != 0) return false;
   const char* arg = line + 5;
   while (*arg == ' ') ++arg;
-  if      (strcmp(arg, "arm")     == 0) s_hand_dev_guard_armed = true;   // the second sitting's explicit step
+  if      (strcmp(arg, "arm")     == 0) s_hand_dev_guard_armed = true;   // back to the power-on value step
   else if (strcmp(arg, "observe") == 0) s_hand_dev_guard_armed = false;
   else if (strcmp(arg, "reset")   == 0) interp_hand_counters_reset();    // counters only — never the arm state
   else if (*arg != '\0')                return false;   // not this command after all

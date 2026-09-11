@@ -21,7 +21,20 @@ C-HAND-2 violation (a feedforward sized ABOVE the true reflected inertia)
 produces a commanded dip below `x3` that this contract's own
 `dip_below_x3 <= 0.10 rev` bench row cannot distinguish from the
 queue-clobber defect C-HAND-1 exists to detect. That is why C-HAND-2's
-declared inertia is required to be an under-estimate.
+declared inertia is required to be an under-estimate. (C-HAND-2 itself retired
+at skill-stack R1, 2026-09-11, with the firmware that enforced it — its
+surviving measurements are `ros_ws/docs/hand_throw_envelope.md` § *Surviving
+measurements*.)
+
+**INVARIANTS C-HAND-1 PORT@R1 (2026-09-11).** Obligation F's firmware
+enforcement point — `Trajectory.h`'s `makeSmoothMove` velocity-continuous
+prelude, described in detail below — died with the stroke engine it belonged
+to. The invariant it enforced now holds **structurally**: the 40 Hz emitter
+samples one continuous plan and dispatches knots off it, so there is no
+re-prelude-from-`v=0` seam left to violate — the splice between successive
+plans is the enforcement point. Everything below this note describes the
+RETIRED firmware mechanism; it is kept as the record of what F required and
+why, not as a live enforcement path.
 
 ## The invariant
 
@@ -33,7 +46,7 @@ Two obligations follow, and they sit on opposite sides of the CAN bus:
 | # | Obligation | Owner | Status |
 |---|---|---|---|
 | **H** | A **scheduled** kind-0/1/2 stroke is not dispatched while another stroke is physically executing. | Host (`catch_coordinator_node`) | **Landed** 2026-07-26 |
-| **F** | The smooth-move prelude is continuous with the live hand **velocity**, not seeded at `v = 0`. | Firmware (`Trajectory.h`) | **LIVE.** Landed in source 2026-07-27, **flashed and confirmed on hardware** at the 2026-07-27 sitting (`FW-1`/`H4.0d` read `PLATFORM_FW_CHECK: OK — v1` on all six launches) and exercised on real throws: the velocity-continuous branch fired on 4 of 17 tosses (`v0` −6.90…−8.44 rev/s, max commanded 10.2259 rev, 0.374 rev under the clamp). This row read *"NOT LIVE until the Platform Teensy is flashed"* until 2026-08-21 — written before the sitting and never re-statused. Whether it is live on the board in front of you stays READABLE: `link_status/platform_fw_version` must equal `teensy_link/rpc_args.py::PLATFORM_FW_VERSION_EXPECTED`, not `0 (PRE-VERSIONING)` — `ros_ws/docs/platform_fw_version.md` (contract C-PLATFW-1). Read the version against *that* pair, never against a number restated here |
+| **F** | The smooth-move prelude is continuous with the live hand **velocity**, not seeded at `v = 0`. | ~~Firmware (`Trajectory.h`)~~ → structural (40 Hz emitter + plan splice) | **RETIRED at skill-stack R1 (2026-09-11)** — `Trajectory.h` is deleted with the stroke engine; see the PORT@R1 note above. History below: **LIVE** from 2026-07-27 (`FW-1`/`H4.0d` read `PLATFORM_FW_CHECK: OK — v1` on all six launches) through R1, exercised on real throws (velocity-continuous branch fired on 4 of 17 tosses on 2026-07-27, `v0` −6.90…−8.44 rev/s, max commanded 10.2259 rev, 0.374 rev under the clamp) |
 
 Obligation H is a mitigation, not a closure. It removes the one dispatch path
 that was reliably violating the invariant. Obligation F is what closes

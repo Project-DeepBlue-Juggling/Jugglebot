@@ -101,11 +101,13 @@ from jugglebot.motion.trajectory import ballistics_bc
 from jugglebot.motion.trajectory import cup_cycle as cc
 from jugglebot.motion.trajectory import cup_realize as cr
 from jugglebot.motion.trajectory import feasibility as fz
-from jugglebot.motion.trajectory import hand_stroke as hs
 from jugglebot.motion.trajectory import tilt_geometry as tg
 from jugglebot.motion.trajectory.cycle_plan import CyclePlan
-from jugglebot.motion.trajectory.hand_stroke import LINEAR_GAIN_REV_PER_M
 from jugglebot.outcome_detail import bound_msg
+
+#: Hand rev/m — measured (``jugglebot_geometry.hand_mm_per_rev``), not the
+#: retired firmware-fudge-factor gain.
+HAND_REV_PER_M = float(hw.HAND_REV_PER_M)
 
 # ── Window kinds ─────────────────────────────────────────────────────────────
 LAUNCH = 'launch'
@@ -154,7 +156,7 @@ OUTCOME_CODE = 'REJECTED_CYCLE_INFEASIBLE'
 #: spelling of either endpoint is a number that drifts.
 _CUP_Z_BOTTOM_M = (cr.CUP_Z_BASE_MM + cr.SLIDER_REV_ZERO_MM) / 1000.0
 _CUP_Z_TOP_M = (_CUP_Z_BOTTOM_M
-                + float(hw.JB_OP_HAND_CATCH_PRIME_REV) / LINEAR_GAIN_REV_PER_M)
+                + float(hw.JB_OP_HAND_CATCH_PRIME_REV) / HAND_REV_PER_M)
 
 #: Inset (m) applied to both ends of that band to get the cup QP's position box.
 #: The box is on the cup opening, but the slider is what has to reach it, and a
@@ -174,8 +176,10 @@ _CUP_Z_INSET_M = 0.010
 #: WHY IT IS A CLAMP AND NOT "THE PARKED HEIGHT".  The obvious rest is the hand's
 #: own park, ``HAND_RETRACT_REV`` = 0.0 rev, i.e. cup z = ``CUP_Z_BASE_MM +
 #: SLIDER_REV_ZERO_MM`` = 679.6 mm.  That is what ``toss_sequencer``'s
-#: ``HAND_NOT_PARKED`` gate measures against (``|pos| <= HAND_PARK_BAND_REV``,
-#: 0.5 rev) and what the firmware's ``hand_source`` settle band is centred on.
+#: ``HAND_NOT_PARKED`` gate measures against (``|pos| <= hw.HOMING_HAND_PARK_BAND_REV``,
+#: 0.5 rev) and what the pre-R1 ``hand_source`` settle band was centred on
+#: (retired at R1 along with the latch; kept as the historical constraint this
+#: constant was tuned against).
 #: But it is 10 mm BELOW this module's own cup box — the box is inset by
 #: :data:`_CUP_Z_INSET_M` at both ends — so a window asked to settle there is
 #: refused ``SETTLE_SITE`` before it plans (MEASURED 2026-09-04, the shipped
@@ -183,16 +187,17 @@ _CUP_Z_INSET_M = 0.010
 #: the cup box [0.6896, 0.9846] m"*).
 #:
 #: So the settle is the parked height CLAMPED UP into the box: 689.6 mm =
-#: **0.3162 rev**, which is inside ``HAND_PARK_BAND_REV`` with 37 % of the band to
+#: **0.3162 rev**, which is inside ``HOMING_HAND_PARK_BAND_REV`` with 37 % of the band to
 #: spare, and is a state the NEXT cycle's LAUNCH can also be planned FROM (probed
 #: at 689.60 / 690.0 / 692.0 / 695.0 mm — all ACCEPT), so a session's cycle N+1
 #: starts where cycle N stopped.  Written as ``max`` rather than as the box floor
 #: so it collapses to the true park the moment the box reaches it.
 #:
-#: NOT inside the firmware's ±0.10 rev ``hand_source`` settle band (that would
-#: need 682.8 mm, further out of the box still).  Nothing depends on it being:
-#: the latch switch is refused while the setpoint output is armed regardless
-#: (``hand_source.cpp:60``), so it is never attempted from inside a session.
+#: NOT inside the pre-R1 firmware's ±0.10 rev ``hand_source`` settle band (that
+#: would need 682.8 mm, further out of the box still).  Nothing depended on it
+#: being: the latch switch was refused while the setpoint output was armed
+#: regardless, so it was never attempted from inside a session.  ``hand_source``
+#: and its latch are deleted at R1; this note is historical.
 SETTLE_CUP_Z_MM = max(
     (cr.CUP_Z_BASE_MM + cr.SLIDER_REV_ZERO_MM),
     (_CUP_Z_BOTTOM_M + _CUP_Z_INSET_M) * 1000.0)
@@ -236,7 +241,7 @@ _SEAM_MARGIN = 10.0
 #: never been near either value, but it was licensed to be.
 #:
 #: The rev bar is the same residual through the slider gain
-#: (``LINEAR_GAIN_REV_PER_M``, 31.62 rev/m), because a cup-z disagreement is what
+#: (``HAND_REV_PER_M``, 30.705 rev/m), because a cup-z disagreement is what
 #: reaches the hand channel.  The ROTATION channels are compared against the mm
 #: bar too: they come from the PINNED tilt series and not from the solve, so
 #: their gap is exactly zero, and 1e-3 rad still catches the failure this check
@@ -245,7 +250,7 @@ _SEAM_MARGIN = 10.0
 #: ``tests/motion/test_unified_cycle.py::test_the_start_tilt_pin_is_what_closes_the_seam``
 #: measures.
 _SEAM_POS_TOL_MM = _SEAM_MARGIN * _SEAM_FEAS_TOL_M * 1000.0
-_SEAM_POS_TOL_REV = _SEAM_MARGIN * _SEAM_FEAS_TOL_M * LINEAR_GAIN_REV_PER_M
+_SEAM_POS_TOL_REV = _SEAM_MARGIN * _SEAM_FEAS_TOL_M * HAND_REV_PER_M
 
 #: Knots BEFORE the seam that :func:`extend`'s gate must still visit, so its
 #: verdict over the new window is identical to a whole-plan run's.
@@ -420,7 +425,7 @@ def cup_state_from_platform(pose, hand_rev, cfg=None) -> np.ndarray:
     if p.shape != (6,):
         raise ValueError("pose must be a 6-vector, got shape %s" % (np.shape(pose),))
     a = tg.cup_axis(float(p[3]), float(p[4]))
-    slider_mm = (float(hand_rev) / LINEAR_GAIN_REV_PER_M * 1000.0
+    slider_mm = (float(hand_rev) / HAND_REV_PER_M * 1000.0
                  + float(cfg.slider_rev_zero_mm))
     dz = float(p[2]) - float(cfg.active_z_mm)
     c_z = float(tg.CUP_TILT_CENTER_Z_MM)
@@ -450,7 +455,7 @@ def hand_rev_for_cup_z(cup_z_mm: float, cfg=None) -> float:
     cfg = cr.RealizeConfig() if cfg is None else cfg
     slider_mm = float(cup_z_mm) - float(cfg.cup_z_base_mm)
     return ((slider_mm - float(cfg.slider_rev_zero_mm)) / 1000.0
-            * LINEAR_GAIN_REV_PER_M)
+            * HAND_REV_PER_M)
 
 
 def cup_z_for_hand_rev(hand_rev: float, cfg=None) -> float:
@@ -460,7 +465,7 @@ def cup_z_for_hand_rev(hand_rev: float, cfg=None) -> float:
     that has one of the two never has to restate the map to get the other.
     """
     cfg = cr.RealizeConfig() if cfg is None else cfg
-    slider_mm = (float(hand_rev) / LINEAR_GAIN_REV_PER_M * 1000.0
+    slider_mm = (float(hand_rev) / HAND_REV_PER_M * 1000.0
                  + float(cfg.slider_rev_zero_mm))
     return float(cfg.cup_z_base_mm) + slider_mm
 
@@ -528,7 +533,7 @@ def cup_velocity_from_platform(pose, pose_vel, hand_rev, hand_vel_rps,
     a = tg.cup_axis(float(p[3]), float(p[4]))
     _, a_dot = _cup_axis_rate(float(p[3]), float(p[4]),
                               float(pv[3]), float(pv[4]))
-    slider_dot = float(hand_vel_rps) / LINEAR_GAIN_REV_PER_M * 1000.0
+    slider_dot = float(hand_vel_rps) / HAND_REV_PER_M * 1000.0
     return _cup_velocity(pv, slider_dot, float(pv[2]), a, a_dot, cup_z)
 
 
@@ -649,7 +654,7 @@ class CycleState:
             _, a_dot = _cup_axis_rate(float(p[3]), float(p[4]),
                                       float(pv[3]), float(pv[4]))
             vel_mm = _cup_velocity(
-                pv, float(self.hand_vel_rps) / LINEAR_GAIN_REV_PER_M * 1000.0,
+                pv, float(self.hand_vel_rps) / HAND_REV_PER_M * 1000.0,
                 float(pv[2]), a, a_dot, float(pos_mm[2]))
         if self.cup_accel_mm_s2 is not None:
             acc_mm = _vec3(self.cup_accel_mm_s2, 'cup_accel_mm_s2')
@@ -677,9 +682,9 @@ class ReleaseMark:
     target_mm: np.ndarray
     tilt: np.ndarray                  #: ``(rx, ry)`` throw tilt, rad
     #: Instant after which the hand motion belonging to THIS release has finished
-    #: — the plan's own answer to ``hand_stroke.stroke_clear_time``.  ``None``
-    #: when the plan carries no knots after the release (the deceleration is in
-    #: the next window); see :func:`plan_stroke_clear_s`.
+    #: — a fact read off the plan itself (no reactive-arm model involved, since
+    #: R1 deletes it).  ``None`` when the plan carries no knots after the release
+    #: (the deceleration is in the next window); see :func:`plan_stroke_clear_s`.
     stroke_clear_s: Optional[float] = None
 
 
@@ -691,9 +696,9 @@ class CatchMark:
     knot: int                         #: ``catch_k`` — the knot at/just before it
     site_mm: np.ndarray
     vel_mm_s: np.ndarray              #: the BALL's arrival velocity
-    #: Lead before touch-down at which the plan's hand catch motion begins — the
-    #: plan's own answer to ``hand_stroke.required_arm_lead_s``.  See
-    #: :func:`plan_arm_lead_s`.
+    #: Lead before touch-down at which the plan's hand catch motion begins — a
+    #: fact read off the plan itself (no reactive-arm model involved, since R1
+    #: deletes it).  See :func:`plan_arm_lead_s`.
     arm_lead_s: Optional[float] = None
     #: Slider travel (rev) left below the catch, minus what the achieved catch
     #: speed needs to stop in.  ``validate_cycle`` refuses at < 0; this is the
@@ -1056,25 +1061,33 @@ def _zero_crossing_s(plan: CyclePlan, k0: int, k1: int) -> float:
     return float(plan.t[k0]) + max(0.0, min(1.0, frac)) * plan.dt
 
 
+#: Margin added past the hand's planned zero-velocity instant when answering
+#: "when is the stroke clear?" — the announcement's measured earliness against
+#: the physical release. Formerly ``hand_stroke.ARM_SUPPRESS_MARGIN_S``; that
+#: module (and the reactive-arm model it sized this for) is deleted at R1, so
+#: the value is now standalone here. Unchanged: 0.040 s.
+_ARM_SUPPRESS_MARGIN_S = 0.040
+
+
 def plan_stroke_clear_s(plan: CyclePlan, t_release_s: float, *,
                         eps_rps: float = _HAND_REST_EPS_RPS,
-                        margin_s: float = hs.ARM_SUPPRESS_MARGIN_S
+                        margin_s: float = _ARM_SUPPRESS_MARGIN_S
                         ) -> Optional[float]:
-    """The plan's own twin of ``hand_stroke.stroke_clear_time``.
+    """When the plan's own hand motion is clear of this release.
 
-    ``hand_stroke``'s version answers "when can a scheduled command no longer land
-    inside a live throw stroke?" by MODELLING the legacy firmware stroke engine's
-    deceleration from the announced release velocity.  Under unified mode there is
-    no stroke engine: the hand's motion is in the plan, sampled from the same
-    clock as the platform, so the answer is a fact about the plan rather than a
-    model of a device.
+    Pre-R1 this answered "when can a scheduled command no longer land inside a
+    live throw stroke?" by MODELLING the legacy firmware stroke engine's
+    deceleration from the announced release velocity, via ``hand_stroke``
+    (deleted at R1 with the reactive-arm/stroke-engine path it modelled).
+    Under unified mode there never was a stroke engine: the hand's motion is in
+    the plan, sampled from the same clock as the platform, so the answer is a
+    fact about the plan rather than a model of a device — this function is
+    unchanged by that deletion.
 
     **Definition.** The first instant at or after ``t_release_s`` at which the
     planned hand velocity reaches zero — its first stationary point, found on the
     knot grid and linearly interpolated inside the span that brackets it — plus
-    ``margin_s``.  That is the same margin ``hand_stroke`` applies and for the
-    same reason (the announcement's measured earliness against the physical
-    release), which is why it is imported rather than restated.
+    ``margin_s`` (:data:`_ARM_SUPPRESS_MARGIN_S`).
 
     Returns ``None`` when the plan carries no such instant — the common case for a
     window that ENDS at its release, where the deceleration belongs to the next
@@ -1096,15 +1109,16 @@ def plan_stroke_clear_s(plan: CyclePlan, t_release_s: float, *,
 
 def plan_arm_lead_s(plan: CyclePlan, t_catch_s: float, *,
                     eps_rps: float = _HAND_REST_EPS_RPS) -> Optional[float]:
-    """The plan's own twin of ``hand_stroke.required_arm_lead_s``.
+    """How long before touch-down the plan's hand motion into the catch begins.
 
-    ``hand_stroke``'s version answers "how much lead does a REACTIVE catch arm
-    need before its event, or the Teensy refuses the dispatch?".  Under unified
-    mode nothing is armed — the catch stroke is already in the plan — so the
-    question becomes the one a consumer actually still needs answered: **how long
-    before touch-down does the plan's hand motion into the catch begin?**  That is
-    the window during which the hand is committed, and it is what a suppression
-    or possession consumer has to respect.
+    Pre-R1 this answered "how much lead does a REACTIVE catch arm need before
+    its event, or the Teensy refuses the dispatch?" via ``hand_stroke`` (deleted
+    at R1 with the reactive-arm path it modelled). Under unified mode nothing is
+    armed — the catch stroke is already in the plan — so the question is the one
+    a consumer actually still needs answered: **how long before touch-down does
+    the plan's hand motion into the catch begin?**  That is the window during
+    which the hand is committed, and it is what a suppression or possession
+    consumer has to respect. Unchanged by the R1 deletion.
 
     **Definition.** ``t_catch_s`` minus the start of the contiguous run of moving
     hand that contains the touch-down — i.e. the last instant strictly before the

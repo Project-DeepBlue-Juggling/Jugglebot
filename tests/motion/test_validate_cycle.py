@@ -61,7 +61,8 @@ code                 recipe (dt = 0.025 s, pose held at NEUTRAL throughout)
                      acceleration identically zero, so the runway is the only
                      thing that can answer).  The achieved catch speed of
                      100 rev/s needs ``100²/(2·3500) = 1.429`` rev to stop, plus
-                     the 0.632 rev margin = 2.061 rev, against 1.000 rev of stroke
+                     the 0.614 rev margin (R1, 2026-09-11: HAND_REV_PER_M) =
+                     2.043 rev, against 1.000 rev of stroke
                      below the catch.  ⚠ Do NOT open ``hand_acc_limit_rps2`` to
                      isolate this gate: that limit IS the runway's deceleration
                      authority, so opening it makes the requirement vanish.
@@ -86,7 +87,6 @@ from jugglebot.motion.trajectory import TrajectoryLimits
 from jugglebot.motion.trajectory import cup_cycle as cc
 from jugglebot.motion.trajectory import cup_realize as cr
 from jugglebot.motion.trajectory import feasibility as feas
-from jugglebot.motion.trajectory import hand_stroke
 from jugglebot.motion.trajectory import tilt_geometry as tg
 from jugglebot.motion.trajectory.cycle_plan import CyclePlan
 from jugglebot.outcome_detail import base_outcome, outcome_subcode
@@ -313,14 +313,14 @@ def test_hand_stroke_sees_an_excursion_hidden_BETWEEN_knots(geom):
 def test_the_parked_floor_is_the_firmware_settle_bands_lower_edge(geom):
     """The floor is spelled from the two constants the FIRMWARE uses.
 
-    ``hand_source.cpp::hand_settled_at_rest`` calls the hand settled at retract
+    the pre-R1 ``hand_source.cpp::hand_settled_at_rest`` (deleted at R1; the band is now ``jugglebot_homing.hand_settle_band_rev``) called the hand settled at retract
     over ``[Homing::HAND_ABS_POS_REV - HAND_SETTLE_BAND_REV, HAND_RETRACT_REV +
     HAND_SETTLE_BAND_REV]``.  The gate's floor is that window's LOWER edge, so
     the two layers cannot drift into disagreeing about what "parked" means.
     """
     assert feas.HAND_HOMED_REST_FLOOR_REV == pytest.approx(-0.20)
     assert feas.HAND_HOMED_REST_FLOOR_REV == pytest.approx(
-        float(hw.HOMING_HAND_ABS_POS_REV) - hand_stroke.HAND_SETTLE_BAND_REV)
+        float(hw.HOMING_HAND_ABS_POS_REV) - float(hw.HOMING_HAND_SETTLE_BAND_REV))
 
 
 def test_a_window_planned_off_a_PARKED_hand_is_accepted(geom):
@@ -488,7 +488,7 @@ def test_hand_acceleration_is_the_plans_true_demand_not_a_knot_difference(geom):
     realized = cr.decompose(cup, tilts, rcfg)
     cyc = CyclePlan.from_realized(realized)
 
-    gain = cr.LINEAR_GAIN_REV_PER_M
+    gain = cr.HAND_REV_PER_M
     truth_rps2 = float(np.abs(cup.acc[:, 2]).max()) * gain
     report = feas.validate_cycle(cyc, _limits(), geom)
     assert report.peak_hand_acc_rps2 == pytest.approx(truth_rps2, rel=1e-9)
@@ -588,8 +588,9 @@ def _descent(p0, *, catch_k=1):
 def test_catch_runway_refuses_with_the_achieved_catch_velocity(geom):
     """Recipe: ``catch_k = 1``, hand ``[3.5, 1.0]`` rev at a constant -100 rev/s.
 
-    100 rev/s needs ``100²/(2·3500) = 1.429`` rev to stop, plus the 0.632 rev
-    margin = 2.061 rev, against 1.000 rev of stroke below the catch.  Reported as
+    100 rev/s needs ``100²/(2·3500) = 1.429`` rev to stop, plus the 0.614 rev
+    margin (R1: HAND_REV_PER_M) = 2.043 rev, against 1.000 rev of stroke below
+    the catch.  Reported as
     ``HAND_STROKE`` because the fact IS a stroke fact: the travel below the catch
     is insufficient.  The SHIPPED ``hand_acc_limit_rps2`` is used deliberately —
     it is the deceleration authority the requirement is sized against.
@@ -598,7 +599,7 @@ def test_catch_runway_refuses_with_the_achieved_catch_velocity(geom):
     assert report.code == feas.HAND_STROKE
     detail = report.reasons[0]
     assert 'catch runway' in detail
-    assert '1.000 rev' in detail and '2.061 rev' in detail
+    assert '1.000 rev' in detail and '2.043 rev' in detail
     assert 'achieved catch speed 100.0 rev/s' in detail
 
 
@@ -638,7 +639,7 @@ def test_the_runway_margin_matches_the_planners_own(geom):
     assert feas.CATCH_RUNWAY_MARGIN_M == pytest.approx(
         cc.CupCycleConfig().catch_runway_margin_m)
     assert feas.CATCH_RUNWAY_MARGIN_REV == pytest.approx(
-        feas.CATCH_RUNWAY_MARGIN_M * cr.LINEAR_GAIN_REV_PER_M)
+        feas.CATCH_RUNWAY_MARGIN_M * cr.HAND_REV_PER_M)
 
 
 # ═══════════════════════════════════════════════════════════════════════════

@@ -43,9 +43,10 @@ bool activate_active() { return g_sib_activate; }
 
 using namespace CanBridge;
 
+// The mask spans all NUM_AXES: bit HAND_AXIS (0x40) marks the hand present.
 static void present_only(uint8_t mask) {
   for (uint8_t i = 0; i < NUM_AXES; ++i) {
-    axes[i].heartbeat_seen = (i < NUM_LEGS) && (mask & (uint8_t)(1u << i));
+    axes[i].heartbeat_seen = (mask & (uint8_t)(1u << i)) != 0;
     axes[i].active_errors = 0;
     axes[i].pos_rev = 0.0f;
     axes[i].vel_rps = 0.0f;
@@ -199,4 +200,95 @@ TEST_CASE("a mid-descent CAN3 loss aborts deactivate and leaves the leg in IDLE"
   REQUIRE(cs_sent_count() == 1);
   const auto idle = ODrive::encode_set_state(0, ODriveState::IDLE);
   CHECK(cs_sent_at(0).id == idle.id);
+}
+
+
+// ── skill-stack R1: DEACTIVATE de-energises the HAND, it does not lower it ─────
+//  ACTIVATE energises axis 6 (owner decision 2026-09-11), so DEACTIVATE owns the
+//  other half. The choreography is deliberately ASYMMETRIC with the legs: a leg
+//  carries the platform and must descend under profile; the hand's carriage hangs
+//  on a spool and gravity takes it to the bottom stop the instant the axis IDLEs.
+//  So the hand IDLEs in the first tick, before the legs move, and then leaves the
+//  target mask — it is never in SETUP/COMMAND/MONITOR and a later leg abort finds
+//  it already safe.
+
+static constexpr uint8_t HAND_BIT = (uint8_t)(1u << HAND_AXIS);
+
+TEST_CASE("deactivate IDLEs the hand in the first tick, before any leg frame") {
+  full_reset((uint8_t)(0x01 | HAND_BIT));     // leg 0 + hand
+  axes[0].pos_rev = JBOp::ACTIVATE_POSITION_REVS[0];
+  REQUIRE(deactivate_request(JbUdp::RpcArgs::AXIS_ALL) == JbUdp::RpcStatus::OK);
+
+  cs_clear_sent();
+  deactivate_step();                          // consume: hand IDLE, then SETUP leg 0
+
+  REQUIRE(cs_sent_count() >= 1);
+  const auto idle = ODrive::encode_set_state(HAND_AXIS, ODriveState::IDLE);
+  CHECK(cs_sent_at(0).id == idle.id);         // FIRST frame of the whole op
+  CHECK(memcmp(cs_sent_at(0).buf, idle.buf, 8) == 0);
+  CHECK(deactivate_result(HAND_AXIS) == DEACTIVATE_OK);
+  CHECK(deactivate_active());                 // the legs are still descending
+}
+
+TEST_CASE("the hand never enters the descent ladder (no TRAP_TRAJ, no STOW target)") {
+  full_reset((uint8_t)(0x01 | HAND_BIT));
+  axes[0].pos_rev = JBOp::ACTIVATE_POSITION_REVS[0];
+  REQUIRE(deactivate_request(JbUdp::RpcArgs::AXIS_ALL) == JbUdp::RpcStatus::OK);
+
+  cs_clear_sent();
+  deactivate_step();      // hand IDLE + SETUP leg 0
+  deactivate_step();      // cursor off the end → COMMAND
+  cs_advance(20000);
+  deactivate_step();      // COMMAND fires the leg target
+
+  // Exactly one hand frame in the whole op: the IDLE. No CLOSED_LOOP, no mode
+  // change, no STOW setpoint on axis 6.
+  const auto hand_cl   = ODrive::encode_set_state(HAND_AXIS, ODriveState::CLOSED_LOOP);
+  const auto hand_stow = ODrive::encode_leg_setpoint(HAND_AXIS, STOW_OFF_POSE_REV, 0.0f, 0.0f);
+  const auto hand_trap = ODrive::encode_set_controller_mode(
+      HAND_AXIS, ODriveControlMode::POSITION, ODriveInputMode::TRAP_TRAJ);
+  for (size_t i = 0; i < cs_sent_count(); ++i) {
+    CHECK_FALSE((cs_sent_at(i).id == hand_cl.id &&
+                 memcmp(cs_sent_at(i).buf, hand_cl.buf, 8) == 0));
+    CHECK_FALSE((cs_sent_at(i).id == hand_stow.id &&
+                 memcmp(cs_sent_at(i).buf, hand_stow.buf, 8) == 0));
+    CHECK_FALSE((cs_sent_at(i).id == hand_trap.id &&
+                 memcmp(cs_sent_at(i).buf, hand_trap.buf, 8) == 0));
+  }
+  // 1 hand IDLE + 5 leg preamble + 1 leg target
+  CHECK(cs_sent_count() == 7);
+}
+
+TEST_CASE("a hand-only deactivate completes in one tick") {
+  full_reset(HAND_BIT);
+  REQUIRE(deactivate_request(HAND_AXIS) == JbUdp::RpcStatus::OK);
+  cs_clear_sent();
+  deactivate_step();
+
+  CHECK_FALSE(deactivate_active());           // nothing left in the ladder
+  CHECK(deactivate_result(HAND_AXIS) == DEACTIVATE_OK);
+  REQUIRE(cs_sent_count() == 1);
+  const auto idle = ODrive::encode_set_state(HAND_AXIS, ODriveState::IDLE);
+  CHECK(cs_sent_at(0).id == idle.id);
+}
+
+TEST_CASE("deactivate AXIS_ALL on a hand-less bench still lowers the legs") {
+  full_reset(0x3F);                            // six legs, no hand
+  REQUIRE(deactivate_request(JbUdp::RpcArgs::AXIS_ALL) == JbUdp::RpcStatus::OK);
+  deactivate_step();
+  CHECK(deactivate_result(HAND_AXIS) == DEACTIVATE_NONE);   // never targeted
+  CHECK(deactivate_result(0) == DEACTIVATE_RUNNING);
+  CHECK(deactivate_active());
+}
+
+TEST_CASE("a leg abort after the hand has IDLE'd leaves the hand safe (already OK)") {
+  full_reset((uint8_t)(0x01 | HAND_BIT));
+  REQUIRE(deactivate_request(JbUdp::RpcArgs::AXIS_ALL) == JbUdp::RpcStatus::OK);
+  deactivate_step();                           // hand IDLE + SETUP leg 0
+  cs_set_guard_estop(true);
+  deactivate_step();                           // abort path
+
+  CHECK_FALSE(deactivate_active());
+  CHECK(deactivate_result(0) == DEACTIVATE_FAILED);
+  CHECK(deactivate_result(HAND_AXIS) == DEACTIVATE_OK);   // de-energised before the abort
 }

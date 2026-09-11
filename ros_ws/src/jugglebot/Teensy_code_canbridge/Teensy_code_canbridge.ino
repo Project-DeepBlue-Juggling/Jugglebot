@@ -49,8 +49,6 @@ using namespace arduino;
 #include "leg_deactivate.h"      // leg deactivate (controlled lower + IDLE)
 #include "version_check.h"       // Get_Version sweep + version cache
 #include "gpio_poll.h"           // hand ball-present sensor poll (hand ODrive G02)
-#include "hand_ops.h"            // hand traj conduit — the [handphase] diag ring
-#include "hand_source.h"         // hand-mastery latch — HeartbeatT2J flag bit 6 (FW 17)
 #include "profiling.h"           // Profiling/instrumentation
 
 using namespace CanBridge;
@@ -120,10 +118,9 @@ static void send_heartbeat_t2j() {
   // bits 4-5: cone (CAN2) BusHealth — closes the cone-health-uplink TODO above.
   p.flags      |= ((uint32_t)cs.cone_health << JbUdp::HEARTBEAT_CONE_HEALTH_SHIFT)
                   & HF::CONE_HEALTH_MASK;
-  // bit 6: hand_source latch (FW 17) — set = STREAMED (bridge masters the hand),
-  // clear = LEGACY_STROKE (the boot default, and what every pre-17 flash reads
-  // as, so the flag is backward-self-describing). /link_status renders it.
-  if (hand_source_streamed()) p.flags |= HF::HAND_SOURCE_STREAMED;
+  // bits 6-7: reserved. Bit 6 carried the FW 17 hand-mastery latch until
+  // FW 21 (skill-stack R1): there is one hand master, so there is nothing to
+  // report.
   p.uptime_ms   = (uint32_t)(micros64() / 1000ULL);
 
   // Ball Butler heartbeat snapshot (replaces legacy can_node bb/
@@ -379,47 +376,20 @@ static void task_diag(void*) {
       // why appending to BridgeTxDiag is the wrong move).
       {
         const TxDeferCensus dc = can_buses_defer_census();
-        Serial.printf("[cantx]     defer_by_class poller=%lu legs=%lu hand=%lu rpc=%lu"
+        Serial.printf("[cantx]     defer_by_class poller=%lu legs=%lu rpc=%lu"
                       " safety=%lu timesync=%lu coldstart=%lu\n",
                       (unsigned long)dc.by_class[TxCls::POLLER],
                       (unsigned long)dc.by_class[TxCls::LEGS],
-                      (unsigned long)dc.by_class[TxCls::HAND],
                       (unsigned long)dc.by_class[TxCls::RPC],
                       (unsigned long)dc.by_class[TxCls::SAFETY],
                       (unsigned long)dc.by_class[TxCls::TIMESYNC],
                       (unsigned long)dc.by_class[TxCls::OTHER]);
       }
-      // Hand-lane census (FW 17) — source latch, TX/discard counters, the
+      // Hand-lane census — TX counters, the
       // REQUIRED lead-duty read and the observe-first deviation residual, on
       // the same 1 Hz tick as [cantx] so the two are adjacent in a scrollback.
       interp_hand7_diag_step();
       can_buses_print_esr1();   // raw ESR1 words of fresh error snapshots (diagnostic)
-
-      // Hand-dispatch interp-phase stamp (2026-08-09) — the falsifiable test for the
-      // phase-locked-dispatch-quantisation verdict (logbook 2026-08-02 addendum § A3,
-      // contract in hand_ops.h). Each sample is the dispatch's µs offset within the
-      // 2 ms interp cycle plus the stage it exited at. PRE-REGISTERED READ: two tight
-      // clusters ⇒ model confirmed; a uniform spread over 0-2000 ⇒ model REFUTED and
-      // the mailbox-occupancy story re-opens. Printed ON-CHANGE like print_esr1_ring,
-      // so a healthy idle bench stays quiet and `+N` reports every dispatch since the
-      // last line even when N exceeds the 8-deep ring (an overrun is visible, not
-      // silent). Console only — nothing here is on the wire.
-      {
-        static uint32_t handphase_n = 0;
-        const HandPhaseRing r = hand_phase_ring();
-        if (r.n != handphase_n) {
-          const uint32_t fresh = r.n - handphase_n;
-          const uint32_t show = (fresh > HAND_PHASE_RING_LEN) ? HAND_PHASE_RING_LEN : fresh;
-          Serial.printf("[handphase] +%lu:", (unsigned long)fresh);
-          for (uint32_t i = 0; i < show; ++i) {
-            const HandPhaseSample& s = r.v[(r.n - show + i) % HAND_PHASE_RING_LEN];
-            Serial.printf(" %u/%s", (unsigned)s.phase_us,
-                          hand_phase_outcome_name(s.outcome));
-          }
-          Serial.println();
-          handphase_n = r.n;
-        }
-      }
 
       // Per-axis "are all ODrives responding?" line (USB Serial bench/debug, alongside
       // the [canhealth] lines — NOT on the UDP uplink yet). Columns: legs 0..5 then

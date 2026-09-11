@@ -3,44 +3,37 @@
 Subscribes to:
   - balls (BallStateArray) — tracked balls from ball_tracker_node
   - catch/armed (Bool) — the reload action's catch-armed latch state. The hand
-    prime/arm is GATED on this: the hand is actuated ONLY during a reload (latch
-    raised), never on a stray tracked ball. The reactive-fire TIMING itself
-    (set_hand_traj_cmd) stays here; only its enablement is gated. The hand primes
-    on the ARM edge (+ an off-ball-path retry timer) — NEVER from the balls path,
-    where a smooth-move would race the armed catch stroke on the Teensy's single
-    packed queue (3/6 strokes lost that way, 2026-07-23).
+    prime is GATED on this: the hand is primed ONLY during a reload (latch
+    raised), never on a stray tracked ball. The hand primes on the ARM edge
+    (+ an off-ball-path retry timer) — NEVER from the balls path, where a
+    smooth-move could race a live catch stroke (3/6 strokes lost that way,
+    2026-07-23, back when this node itself dispatched the catch stroke — see
+    R1 below).
   - throw_announcements (ThrowAnnouncement) — while armed, OUR announcement (strict
     target_id match) drives a PRE-TILT: one predicted catch target per announcement
     from the announced landing state, ~3.9 s early, so the platform settles into
     the receive tilt during the countdown. Under JB_OP_RELOAD_PLATFORM_OPEN_LOOP
-    (the default) the platform then HOLDS that pose for the whole flight — only the
-    hand-arm stays reactive; with the flag off, the reactive path refines the
-    platform mid-flight as before.
-    An announcement whose THROWER is also us (a self-toss) additionally latches
-    the STROKE-BUSY window: throw_time + t_dec(|initial_velocity|) + margin, the
-    instant after which the hand is guaranteed clear of its own throw stroke. No
-    scheduled kind-1 catch arm is dispatched before it (see C-HAND-1 /
-    _throw_stroke_gate_ok). A BB reload announcement carries thrower_name
-    'ball_butler' and latches nothing — there is no throw stroke to protect, so
-    the window stays INERT and the reload path's timing is bit-identical.
+    (the default) the platform then HOLDS that pose for the whole flight; with
+    the flag off, the reactive path refines the platform mid-flight as before.
+    A BB reload announcement carries thrower_name 'ball_butler'.
   - catch/vel_scale (Float64) — the operator's per-attempt catch-speed knob
     (reload goal field, or published manually); scales the armed event velocity;
     reset to the config default (JB_OP_CATCH_VEL_SCALE_DEFAULT, 0.9) on disarm.
   - catch/prime_hold (Bool) — the toss coordinator's prime-suppression gate
     (True at PREPARE entry, before catch/armed rises; False at terminal). While
     True, EVERY auto-prime dispatch path here (armed-edge prime, retry-tick
-    re-prime) is suppressed; the catch arm and all other behaviour are
+    re-prime) is suppressed; all other behaviour is
     untouched. Absent topic = False = the reload path unchanged; stale True
     fails safe (no auto-prime — the reload action primes proactively itself).
   - catch/pretilt_hold (Bool) — the Tier-8b toss coordinator's platform
     pre-tilt-suppression gate (True at PREPARE entry, alongside prime_hold;
     False at terminal). While True, OUR announcement STILL latches the
-    open-loop freeze + hand-arm window but publishes NO platform pre-tilt (and
+    open-loop freeze but publishes NO platform pre-tilt (and
     caches none) — the toss coordinator owns the platform reach, publishing the
-    ONE deferred A->B target at release. The catch arm and all other behaviour
-    are untouched. Absent topic = False = the reload path unchanged; stale True
+    ONE deferred A->B target at release. Every other behaviour
+    is untouched. Absent topic = False = the reload path unchanged; stale True
     fails DEGRADED-BUT-SAFE (a reload announcement loses its platform pre-tilt —
-    the platform simply holds, the hand-arm stays tracker-driven; zero hazard).
+    the platform simply holds; zero hazard).
 
 Publishes:
   - catch/dynamic_target (DynamicTargetCommand) — consumed by trajectory_node, which
@@ -58,8 +51,13 @@ Subscribes:
 
 Services called (on can_node):
   - smooth_move_hand (SetFloat) — prime hand to top of stroke
-  - set_hand_traj_cmd (SetHandTrajCmd) — arm catch trajectory on Teensy
   - set_hand_gains (SetHandGains) — adjust hand PID gains for catch
+
+R1 (owner decision 3): this node never arms a hand stroke. The reactive
+catch-arm path (SetHandTrajCmd / kind-1 dispatch) is retired — there is no
+hand master here until R4's CATCH skill; R3's reset is operator ball
+placement. Everything about correlation, platform reach, arm_catch (the
+catch/armed latch) and tracking is unchanged.
 
 Clock domain conversion: ROS2 landing_time → perf_counter arrival_time.
 """
@@ -79,22 +77,14 @@ from jugglebot_interfaces.msg import (
     TargetFeedback,
     ThrowAnnouncement,
 )
-from jugglebot_interfaces.srv import SetFloat, SetHandGains, SetHandTrajCmd
+from jugglebot_interfaces.srv import SetFloat, SetHandGains
 from geometry_msgs.msg import Point, Quaternion, Vector3
 
 import jugglebot.hardware_config as hw
 from jugglebot import clock_offset
 from jugglebot.motion import blas_threads
-from jugglebot.motion.trajectory import hand_stroke
 from jugglebot.tracking.ball import Ball, BallStatus, TrackingConfidence
 from jugglebot.catch_coordinator import CatchCoordinator
-
-# Hand catch trajectory type (Teensy convention)
-_TRAJ_TYPE_CATCH = 1
-
-# Minimum event_delay (seconds) — below this the Teensy may not have time
-# to smooth-move to the starting position before the catch window.
-_MIN_EVENT_DELAY_S = 0.3
 
 # catch/vel_scale bounds. The scale multiplies the event velocity the hand catch is
 # armed with (effective hand-vs-ball speed ratio = firmware CATCH_VEL_RATIO 0.6 ×
@@ -150,16 +140,6 @@ _PRIME_INFLIGHT_S = 1.2
 _PRETILT_EARLY_S = 1.5
 _PRETILT_MIN_LEAD_S = 1.0
 
-# Arrival-window arm guard: once OUR throw is announced, only arm the hand for a ball
-# whose predicted landing is within this window of the announced landing. A corrupt
-# split-track whose landing prediction is far off (the current ball's own hijacked
-# track) is rejected — it must not arm the one-shot stroke off garbage timing and block
-# the real ball's arm. Probed against the 2026-07-24_09-07-53 bag: destination-track
-# |time_at_land − announced landing| is 0.000 s at the arm moment (early life, n=6105)
-# and drifts to at most 0.644 s late-life — so 0.75 s always admits the real arm and
-# only fires on timing garbage beyond anything yet observed (a latent-class guard).
-_ARM_LANDING_WINDOW_S = 0.75
-
 # ── Unified-mode per-ball replan rate limit ──────────────────────────────────
 # Under `catch/unified_mode` the reactive per-ball path is LIVE (the cycle plan's
 # catch-side tail re-aims on it — see `_on_balls`), and each accepted target costs
@@ -182,61 +162,12 @@ _ARM_LANDING_WINDOW_S = 0.75
 # solve is allowed to do.
 _UNIFIED_TARGET_MOVE_MM = 5.0
 
-# Per-ball hand-arm re-dispatch cap. HISTORY: this cap was sized against the
-# 2026-07-23 ERR_TIMEOUT epidemic, when the HAND_TRAJ_CMD ack failed ~40-60% per call
-# and lied (frames observed transmitted after a failed ack). That epidemic was
-# TX-mailbox exhaustion on the can-bridge, CLOSED 2026-08-09 by FW 10
-# (can_jugglebot setMaxMB 16->24 = 16 TX mailboxes; validated 120/120 clean plus a
-# reload sitting — logbook 2026-08-02-err-timeout-attribution-instrumentation). The ack
-# no longer fails for that reason, and no longer lies for it either.
-# The cap and the telemetry-verified re-dispatch ladders are RETAINED DELIBERATELY as
-# defense-in-depth, not by inertia: a host-synthesised RpcTimeout on UDP loss can still
-# fail an ack with the Teensy uninvolved, and the kind-1 stroke's catch instant remains
-# an ABSOLUTE wall_time invariant across retries (so a lying-ack arm is still physically
-# armed — a property of the stroke encoding, not of the transport). After this many
-# dispatches for one ball we KEEP the latch (assume armed) rather than churning the
-# Teensy's last-writer-wins queue with near-identical repacks forever.
-_MAX_ARM_DISPATCHES = 2
-
-# ── C-HAND-1 (host-side half) ────────────────────────────────────────────────
-# NORMATIVE: ros_ws/docs/hand_command_continuity.md. Read it before relaxing any
-# of this — in particular before gating the kind-3 path, which is the abort
-# path's only un-arm mechanism and is exempt DELIBERATELY.
-#
-# NO HAND COMMAND MAY CREATE A DISCONTINUITY — IN POSITION OR VELOCITY — BETWEEN
-# THE LIVE HAND STATE AND THE NEWLY COMMANDED TRAJECTORY. Host-side obligation: a
-# SCHEDULED kind-0/1/2 stroke is not dispatched while another stroke is physically
-# executing. Enforced at exactly one point, _throw_stroke_gate_ok, consulted from
-# _arm_hand_catch — the node's only kind-0/1/2 dispatch.
-#
-# The failure it closes, measured 2026-07-25 across seven self-tosses: the Teensy
-# rebuilds its ENTIRE single packed queue on any kind-0/1/2 command
-# (Teensy_code_platform.ino:648 packedMsgs.clear()) and seeds the replacement prelude from
-# current_hand_position with v = 0, a = 0 (Trajectory.h:527-620 —
-# current_hand_velocity is declared extern at :86 and never read). The catch arm
-# was landing 8-18 ms after release, INSIDE the throw's 65 ms deceleration ramp,
-# so the queue was cleared while the hand was travelling through ~120 rev/s and
-# replaced by a rest-to-rest quintic computed from that instant's position. The
-# hand overshot to 10.17-10.33 rev (0.475 rev from the 10.8 rev hard stop; this
-# read "0.775 rev from the 11.1 rev overextension guard" until 2026-08-21, an
-# anchor retired 2026-08-18 when the operator measured metal contact), was yanked back 0.34-1.75 rev BELOW the stroke end — 10.7 to 55.3 mm,
-# up to 20.5 % of the stroke — and recovered over ~300 ms. It also discarded the
-# THROW's own decel ramp, replacing it with the position loop's reaction to a
-# frozen setpoint.
-#
-# The achieved flights on those tosses were 0.887 s and 1.091 s against a
-# commanded 0.800 s. Do NOT read that as a quantity this gate is expected to fix:
-# by design the ball separates at the decel ONSET (x2, the end of the velocity
-# hold), and all seven measured truncations sit PAST the commanded x2 crossing
-# (6.1965-7.7825 rev against x2 = 5.9138 rev), so the ball had most likely
-# already left the cup before the queue was cleared. The release model itself is
-# unmeasured — that is plans/archived/single-ball-toss.md Phase 5 T0's measurand.
-# The dip is this gate's deliverable; the flight error may well survive it.
-#
-# The firmware-side obligation (a prelude continuous with the live VELOCITY)
-# closes the same class for every other command that can land mid-motion — a
-# prime, a retract ladder rung, a SAFE_ABORT. That half is plan Phase 4 and needs
-# a Platform Teensy flash; this half needs only a colcon build + relaunch.
+# ── C-HAND-1, host-side half — RETIRED at R1 (owner decision 3) ─────────────
+# This node no longer dispatches any kind-0/1/2 hand stroke, so it has no
+# host-side obligation under C-HAND-1 to enforce. The firmware-side obligation
+# (a prelude continuous with the live velocity) is unaffected; see
+# ros_ws/docs/hand_command_continuity.md for what survives R1 and what does
+# not — that document has not been re-audited by this unit.
 
 
 class CatchCoordinatorNode(Node):
@@ -325,7 +256,7 @@ class CatchCoordinatorNode(Node):
         # toss holds the ball at the stroke bottom through the throw, and a
         # kind-3 prime ascent would carry the ball-laden hand up mid-toss and
         # clear an armed throw stroke on the Teensy's last-writer-wins queue.
-        # The catch ARM (kind-1) is NOT gated. Absent topic → False → the
+        # Absent topic → False → the
         # reload path bit-identical to today. Stale True fails SAFE (no
         # auto-prime; the reload action primes proactively itself), so the
         # flag is never reset locally — the publisher owns it.
@@ -336,18 +267,17 @@ class CatchCoordinatorNode(Node):
         # toss coordinator: True at PREPARE entry — with prime_hold, BEFORE
         # catch/armed rises — and False at terminal). While True, OUR
         # announcement still LATCHES _announcement_seen + _announced_landing_time
-        # (so the open-loop freeze and the hand-arm window keep working) but
-        # publishes NO platform pre-tilt and caches _pretilt_cmd = None: the
+        # but publishes NO platform pre-tilt and caches _pretilt_cmd = None: the
         # stock pre-tilt's arrival clamps to ~now + 1 s while the toss announces
         # >= 1 s before release, so an un-suppressed pre-tilt would COMPLETE the
         # A->B translate (and the un-tilt to the receive tilt) BEFORE the ball is
         # released — aim destroyed, a moving platform under a seated ball
         # mid-windup. The toss coordinator owns the platform reach (the ONE
-        # deferred A->B target at release). The catch ARM (kind-1) and every
-        # other behaviour are untouched. Absent topic → False → the reload path
+        # deferred A->B target at release). Every other behaviour is untouched.
+        # Absent topic → False → the reload path
         # bit-identical to today. Stale True fails DEGRADED-BUT-SAFE (a reload
-        # announcement loses its platform pre-tilt; the platform simply holds,
-        # the hand-arm stays tracker-driven — zero hazard), so the flag is never
+        # announcement loses its platform pre-tilt; the platform simply holds),
+        # so the flag is never
         # reset locally — the publisher owns it.
         self._pretilt_hold = False
         self._pretilt_hold_sub = self.create_subscription(
@@ -356,34 +286,22 @@ class CatchCoordinatorNode(Node):
         # ── UNIFIED 7-DoF cycle mode (plan Phase 4) ─────────────────────────
         # The toss coordinator raises this for a whole unified session, BEFORE the
         # first cycle exists, and lowers it in its terminal `finally`. While True
-        # the CYCLE PLAN owns the hand: the catch stroke is already a set of knots
-        # on the same 40 Hz stream the legs ride, and the can-bridge's `hand_source`
-        # latch is STREAMED, which makes the firmware REFUSE a legacy
-        # HAND_TRAJ_CMD outright (ERR_HAND_SOURCE).
-        #
-        # So this node must not arm one — not because the arm would be dangerous,
-        # but because it would be a silent no-op that looks like an arm: the ack
-        # path would log "Arming hand catch", the one-shot latch would close, and
-        # the ball would arrive at a cup that never moved. Absent topic → False →
-        # every legacy path bit-identical to today.
-        #
-        # Stale True fails SAFE, which is the OPPOSITE of pretilt_hold's
-        # degradation and worth stating: a stale True means this node declines to
-        # arm, i.e. the machine does LESS. A stale FALSE would be the hazard: the
-        # flag goes False while the firmware latch stays STREAMED (the session
-        # never hands it back — see the publisher's terminal `finally`), so it is
-        # the firmware's `ERR_HAND_SOURCE` refusal, not this flag, that makes a
-        # legacy arm safe until the operator returns the latch.
+        # the CYCLE PLAN owns the platform-side catch: the catch is already a
+        # set of knots on the same 40 Hz stream the legs ride. This node's own
+        # hand-catch-arm dispatch is retired outright at R1 (owner decision 3;
+        # see the module docstring) — there is no `hand_source` latch to race
+        # any more, on the streamed lane or off it — so `_unified_mode` now
+        # gates only the PLATFORM reactive-target path in `_on_balls`.
+        # Absent topic → False → every legacy path bit-identical to today.
         #
         # TRANSIENT_LOCAL depth 1, MATCHING the publisher. The declaration goes out
         # exactly twice per session, both times at a session boundary, so a node
         # that starts between them — a crash-restart, a bench `ros2 run`, a late
-        # composition — would never see a volatile True and would arm legacy hand
-        # strokes into a STREAMED latch for the rest of that session. Latched, a
-        # late subscriber is handed the standing declaration on connect. The
-        # durability must be declared on BOTH ends: a VOLATILE subscription
-        # receives nothing from a TRANSIENT_LOCAL publisher's history, which would
-        # leave exactly the gap this fixes.
+        # composition — would miss a volatile True for the rest of that session.
+        # Latched, a late subscriber is handed the standing declaration on
+        # connect. The durability must be declared on BOTH ends: a VOLATILE
+        # subscription receives nothing from a TRANSIENT_LOCAL publisher's
+        # history, which would leave exactly the gap this fixes.
         self._unified_mode = False
         self._unified_mode_sub = self.create_subscription(
             Bool, 'catch/unified_mode', self._on_unified_mode,
@@ -402,9 +320,8 @@ class CatchCoordinatorNode(Node):
         # announced during an armed reload, the platform holds the announcement-derived
         # pre-tilt pose and ignores live per-ball reactive refinements (BB throws are
         # repeatable; a bad ball prediction must never move the platform mid-reload).
-        # The hand-arm below stays reactive — only the platform reach is frozen.
         self._announcement_seen = False
-        self._announced_landing_time: float | None = None   # ROS seconds, for the arm-window guard
+        self._announced_landing_time: float | None = None   # ROS seconds, the last announced landing
         self._pretilt_cmd = None                             # cached CatchCommand for the refresh
 
         # Unified-mode replan rate limit (_UNIFIED_TARGET_MOVE_MM): the
@@ -414,36 +331,15 @@ class CatchCoordinatorNode(Node):
         # is the one the cycle has never seen and must never be filtered.
         self._unified_last_target = None
 
-        # C-HAND-1 stroke-busy window. Latched from OUR OWN announcement only
-        # (thrower_name == robot_name): the ROS instant after which the hand is
-        # guaranteed clear of its own throw stroke, = announced throw_time +
-        # t_dec(v_throw) + margin. None ⇒ inert (a BB reload has no throw stroke
-        # to protect, so its timing is untouched). A stale value self-expires —
-        # once it is in the past the gate is a no-op — but the disarm edge clears
-        # it anyway so the next ball-op starts from a clean slate.
-        self._throw_stroke_clear_ros: float | None = None
-        self._throw_stroke_v_throw: float | None = None      # m/s, for the logs
-        # Once-per-ball log keys for the gate (the balls tick runs at mocap rate;
-        # an un-keyed log would emit ~20 lines per suppression).
-        self._stroke_gate_logged_for_ball: int | None = None
-        self._stroke_gate_forced_for_ball: int | None = None
-
         # Stale-track exclusion (defense-in-depth): ids IN_FLIGHT at the catch-armed
         # rising edge — excluded from the catch candidate set so a leftover track from a
         # PRIOR attempt never drives this reload. (Cannot catch the current ball's own
-        # corrupt track — that spawns after the snapshot; the arm-window guard covers it.)
+        # corrupt track — that spawns after the snapshot.)
         self._latest_in_flight_ids: set = set()
         self._preexisting_flight_ids: set = set()
 
-        # Per-ball hand-arm re-dispatch counter (bounds the re-arm churn on the lying
-        # ERR_TIMEOUT epidemic — see _MAX_ARM_DISPATCHES).
-        self._arm_dispatch_ball_id: int | None = None
-        self._arm_dispatch_count: int = 0
-
         # ── Hand control state ────────────────────────────────────
         self._hand_primed = False
-        self._hand_traj_armed_for_ball: int | None = None  # ball_id of last armed traj
-        self._min_delay_logged_for_ball: int | None = None  # once-per-ball floor log
         self._catch_gains_active = False
 
         # Catch-mode hand gains (softer than defaults for compliant catch).
@@ -458,13 +354,11 @@ class CatchCoordinatorNode(Node):
         # ── Hand service clients ──────────────────────────────────
         self._smooth_move_client = self.create_client(
             SetFloat, 'smooth_move_hand')
-        self._hand_traj_client = self.create_client(
-            SetHandTrajCmd, 'set_hand_traj_cmd')
         self._hand_gains_client = self.create_client(
             SetHandGains, 'set_hand_gains')
 
         # BLAS thread-pool self-check. This node is on the catch path
-        # (trajectory_node build_catch + the hand-arm), which shares the box with
+        # (trajectory_node build_catch), which shares the box with
         # the 40 Hz emitter; an uncapped OpenBLAS pool is what took a
         # 2026-09-06 plan_cycle from ~200 ms to 1350-2314 ms and gapped the
         # emitter past the can-bridge's 250 ms SETPOINT_STALE watchdog. The cap is set
@@ -520,9 +414,8 @@ class CatchCoordinatorNode(Node):
         flow (publish ``catch/armed`` true, throw by hand).
 
         On DISARM (reload ended / aborted) reset the one-shot flags so the NEXT reload
-        re-primes + re-arms the hand from a clean state; a stale ``_hand_primed`` /
-        ``_hand_traj_armed_for_ball`` would otherwise suppress the next reload's prime
-        and arm."""
+        re-primes from a clean state; a stale ``_hand_primed`` would otherwise
+        suppress the next reload's prime."""
         armed = bool(msg.data)
         if armed == self._catch_armed:
             return
@@ -532,15 +425,6 @@ class CatchCoordinatorNode(Node):
             # PRIOR attempt is excluded from this reload's catch candidates (defense-in-
             # depth for the stale-track hazard; see update(exclude_ids=...)).
             self._preexisting_flight_ids = set(self._latest_in_flight_ids)
-            # A stroke window can only be latched by an announcement received
-            # while ARMED, so nothing legitimate is latched at this edge; clear
-            # it so a previous ball-op's window can never suppress this one's
-            # catch arm (it would also self-expire, but the reload path must not
-            # depend on that).
-            self._throw_stroke_clear_ros = None
-            self._throw_stroke_v_throw = None
-            self._stroke_gate_logged_for_ball = None
-            self._stroke_gate_forced_for_ball = None
             # Skip the edge prime while a prime ascent may already be running
             # (the reload coordinator primes at CHECKING, ~0.1 s before this
             # edge — the third sitting showed the pair restarting a just-started
@@ -555,22 +439,15 @@ class CatchCoordinatorNode(Node):
                 self._prime_hand()
         else:
             self._hand_primed = False
-            self._hand_traj_armed_for_ball = None
             # One reload's catch-speed tuning value must never leak into the next.
             self._catch_vel_scale = float(hw.JB_OP_CATCH_VEL_SCALE_DEFAULT)
-            # Clear the open-loop / exclusion / arm-count state so the NEXT reload starts
+            # Clear the open-loop / exclusion state so the NEXT reload starts
             # from a clean slate (a stale announcement latch would freeze the platform
             # open-loop before the next throw is even announced).
             self._announcement_seen = False
             self._announced_landing_time = None
             self._pretilt_cmd = None
             self._preexisting_flight_ids = set()
-            self._arm_dispatch_ball_id = None
-            self._arm_dispatch_count = 0
-            self._throw_stroke_clear_ros = None
-            self._throw_stroke_v_throw = None
-            self._stroke_gate_logged_for_ball = None
-            self._stroke_gate_forced_for_ball = None
             # Per-ball feedback-correlation state too (audit): a post-disarm straggler
             # from a still-alive track must not correlate against the finished reload.
             self._last_submitted_ball_id = None
@@ -597,8 +474,8 @@ class CatchCoordinatorNode(Node):
         armed-edge prime nor the retry-tick re-prime: a toss holds the ball at
         the stroke bottom through the throw, so an auto-prime ascent would carry
         the ball-laden hand up mid-toss AND clear an armed throw stroke on the
-        Teensy's last-writer-wins queue. The catch ARM (kind-1) and every other
-        behaviour are untouched — hand-stroke catch timing stays tracker-driven.
+        Teensy's last-writer-wins queue. Every other
+        behaviour is untouched.
         Stale True fails SAFE (no auto-prime; the reload action primes
         proactively itself), so the flag is never reset locally."""
         hold = bool(msg.data)
@@ -612,13 +489,13 @@ class CatchCoordinatorNode(Node):
         """catch/pretilt_hold: the Tier-8b toss coordinator's platform
         pre-tilt-suppression gate, published True at PREPARE entry (with
         prime_hold, BEFORE catch/armed rises) and False at terminal. While True,
-        _on_throw_announcement still LATCHES the announcement (open-loop freeze +
-        hand-arm window keep working) but publishes NO platform pre-tilt and
+        _on_throw_announcement still LATCHES the announcement (open-loop freeze
+        keeps working) but publishes NO platform pre-tilt and
         caches _pretilt_cmd = None — the toss coordinator owns the platform reach
-        (the ONE deferred A->B target at release). The catch ARM (kind-1) and
-        every other behaviour are untouched. Stale True fails DEGRADED-BUT-SAFE:
+        (the ONE deferred A->B target at release). Every
+        other behaviour is untouched. Stale True fails DEGRADED-BUT-SAFE:
         a reload announcement loses its platform pre-tilt (the platform simply
-        holds; the hand-arm stays tracker-driven) — zero hazard, so the flag is
+        holds) — zero hazard, so the flag is
         never reset locally (the publisher owns it)."""
         hold = bool(msg.data)
         if hold != self._pretilt_hold:
@@ -629,26 +506,24 @@ class CatchCoordinatorNode(Node):
         self._pretilt_hold = hold
 
     def _on_unified_mode(self, msg: Bool):
-        """``catch/unified_mode``: the unified session's hand-ownership declaration.
+        """``catch/unified_mode``: the unified session's platform-ownership declaration.
 
         Mirrors :meth:`_on_pretilt_hold` exactly — one Bool, one latch, the
-        publisher owns it and this node never resets it locally. What it gates is
-        stated at the flag's definition in ``__init__``; the enforcement is at
-        :meth:`_arm_hand_catch` (and, belt and braces, at the ``_on_balls`` call
-        site that reaches it).
+        publisher owns it and this node never resets it locally. What it gates
+        (the PLATFORM reactive-target path in ``_on_balls``, since R1 retired
+        this node's own hand-arm dispatch — see the module docstring) is stated
+        at the flag's definition in ``__init__``.
 
         ANNOUNCEMENTS ARE STILL CONSUMED while it stands, deliberately: the
-        announcement drives the tracker's correlation, the possession/suppression
-        consumers and the open-loop landing latch, none of which command the hand.
-        Only the ARM is withheld.
+        announcement drives the tracker's correlation and the possession/
+        suppression consumers.
         """
         active = bool(msg.data)
         if active != self._unified_mode:
             self.get_logger().info(
-                "catch/unified_mode raised — the cycle plan owns the hand; "
-                "reactive catch arming and the stroke-busy gate are suppressed "
-                "for this session" if active
-                else "catch/unified_mode lowered — reactive catch arming "
+                "catch/unified_mode raised — the cycle plan owns the platform "
+                "reach for this session" if active
+                else "catch/unified_mode lowered — the reactive platform path "
                      "re-enabled")
         self._unified_mode = active
 
@@ -673,9 +548,8 @@ class CatchCoordinatorNode(Node):
         (default) the platform then HOLDS this pose; with the flag off, the reactive
         path supersedes it mid-flight. Deliberately does NOT touch the per-ball
         correlation state
-        (_last_submitted_ball_id etc.) — the synthetic target has no tracker ball,
-        must never feed the feasibility blacklist, and must not suppress the real
-        ball's hand-arm."""
+        (_last_submitted_ball_id etc.) — the synthetic target has no tracker ball
+        and must never feed the feasibility blacklist."""
         if not self._catch_armed:
             return
         # STRICT target match (audit): the reload path always names the target
@@ -692,12 +566,9 @@ class CatchCoordinatorNode(Node):
         landing_time = float(lt.sec) + float(lt.nanosec) * 1e-9
         if landing_time <= 0.0:
             return
-        # C-HAND-1: latch the stroke-busy window BEFORE either pre-tilt branch —
-        # both of them latch the hand-arm window, so both must protect the stroke.
-        self._latch_throw_stroke_window(msg)
         if self._pretilt_hold:
-            # Tier-8b toss: LATCH the announcement for the hand-arm window +
-            # open-loop freeze, but publish NO platform target and cache NONE —
+            # Tier-8b toss: LATCH the announcement (open-loop freeze) but
+            # publish NO platform target and cache NONE —
             # the toss coordinator owns the platform reach (it publishes the ONE
             # deferred A->B target at release). Caching _pretilt_cmd would let
             # _republish_pretilt re-assert a pre-release B-reach; the stock
@@ -705,12 +576,12 @@ class CatchCoordinatorNode(Node):
             # before release, so an un-suppressed pre-tilt COMPLETES the A->B
             # translate (and the un-tilt to the receive tilt) BEFORE the ball is
             # released — aim destroyed, moving platform under a seated ball
-            # mid-windup. hand-arm timing stays tracker-driven (unaffected).
+            # mid-windup.
             self._announcement_seen = True
             self._announced_landing_time = landing_time
             self._pretilt_cmd = None
             self.get_logger().info(
-                "catch/pretilt_hold raised — announcement latched for hand-arm; "
+                "catch/pretilt_hold raised — announcement latched; "
                 "platform pre-tilt suppressed (toss owns the deferred reach)")
             return
         cmd = self._coordinator.predicted_catch_command(
@@ -720,7 +591,7 @@ class CatchCoordinatorNode(Node):
         # Latch the open-loop platform state: from here (this armed reload's throw is
         # announced) the platform holds this pre-tilt pose and IGNORES the per-ball
         # reactive refinements in _on_balls when JB_OP_RELOAD_PLATFORM_OPEN_LOOP is set.
-        # The announced landing gates the hand-arm window; the cached cmd feeds the
+        # The cached cmd feeds the
         # open-loop pre-tilt refresh.
         self._announcement_seen = True
         self._announced_landing_time = landing_time
@@ -732,68 +603,6 @@ class CatchCoordinatorNode(Node):
             f"pre-tilt target published from announcement (landing in "
             f"{landing_time - self.get_clock().now().nanoseconds * 1e-9:.2f} s, "
             f"arrival {landing_perf - arrival_perf:.2f} s early)")
-
-    def _latch_throw_stroke_window(self, msg) -> None:
-        """C-HAND-1: latch when OUR OWN throw stroke will be clear of the hand.
-
-        Only a SELF-toss latches: ``thrower_name`` must be this robot. A BB
-        reload announcement (``thrower_name='ball_butler'``) leaves the window
-        None and the whole gate INERT — there is no Jugglebot throw stroke during
-        a reload, the hand is parked at the top at rest, and delaying the reload's
-        catch arm would eat lead it needs. ``target_id`` alone is NOT sufficient:
-        a BB throw aimed at us also carries ``target_id == robot_name``.
-
-        The window's two inputs both come off the wire the toss already publishes,
-        so nothing new is on the bus:
-
-        * ``throw_time`` — the absolute ROS instant of the kind-0 event, which IS
-          ball release: ``makeThrow``'s ``shiftTime(-t2)`` puts the trajectory's
-          t = 0 at the end of the velocity hold (``Trajectory.h:73``), and
-          ``reload_coordinator_node._dispatch_toss_throw`` schedules the event at
-          the same ``t_release`` the announcement stamps.
-        * ``initial_velocity`` — the ball's launch vector (mm/s). Its magnitude IS
-          the commanded ``event_vel``: ``toss_release.compute_release_state``
-          returns ``event_vel_mps = |launch_vel|/1000`` and the sequencer sends
-          exactly that. So ``t_dec`` is derived from the announcement rather than
-          from a fixed delay, which would mis-size at BOTH ends of the shipped
-          0.55-1.10 s flight band — 94.5 ms of ramp at the short end against
-          47.4 ms at the long one, a 2x spread, with ~1.9x the momentum at the top
-          of the band where the overshoot margin is smallest.
-        """
-        thrower = str(getattr(msg, 'thrower_name', '') or '')
-        if thrower != self._coordinator.robot_name:
-            return                       # not our throw → no stroke → inert
-        if self._unified_mode:
-            # Under unified there IS no firmware stroke to be busy with: the throw
-            # and the catch are knots on one plan, and the plan's own twins
-            # (`unified_cycle.plan_stroke_clear_s` / `plan_arm_lead_s`) are facts
-            # about that trajectory rather than a MODEL of a device. Latching a
-            # window here would size a suppression from `hand_stroke`'s
-            # deceleration model of a stroke engine that is not running — and it
-            # would suppress nothing anyway, because the arm it gates is already
-            # withheld. Leaving the window None is the same INERT state a BallButler
-            # announcement produces, which is the established spelling of "no
-            # Jugglebot throw stroke exists here".
-            return
-        tt = msg.throw_time
-        throw_time = float(tt.sec) + float(tt.nanosec) * 1e-9
-        iv = msg.initial_velocity
-        v_throw = float(np.linalg.norm([iv.x, iv.y, iv.z])) / 1000.0
-        if throw_time <= 0.0 or not (v_throw > 0.0):
-            # A malformed announcement must not synthesize a window from garbage;
-            # leaving it None is exactly today's behaviour.
-            self.get_logger().warning(
-                f"self-throw announcement carries throw_time={throw_time:.3f} "
-                f"v_throw={v_throw:.3f} m/s — stroke-busy window NOT latched")
-            return
-        self._throw_stroke_v_throw = v_throw
-        self._throw_stroke_clear_ros = hand_stroke.stroke_clear_time(
-            throw_time, v_throw)
-        self.get_logger().info(
-            f"hand stroke-busy window latched: release +"
-            f"{hand_stroke.throw_decel_s(v_throw) * 1e3:.1f} ms decel + "
-            f"{hand_stroke.ARM_SUPPRESS_MARGIN_S * 1e3:.0f} ms margin "
-            f"(v_throw {v_throw:.2f} m/s) — catch arm withheld until then")
 
     def _pretilt_arrival_perf(self, cmd) -> float:
         """The pre-tilt target's perf-clock arrival. Arrive EARLY, not just-in-time: an
@@ -839,14 +648,6 @@ class CatchCoordinatorNode(Node):
         # ball rides the stroke bottom awaiting the throw (see _on_prime_hold).
         if self._prime_hold:
             return
-        # An ARMED catch stroke on the Teensy blocks the retry outright (audit,
-        # 2026-07-23): the quiet window is anchored to the last EMITTED command,
-        # which stops ~0.3 s before landing — a slow disarm round-trip after the
-        # catch could otherwise unblock the retry while the stroke (or its settle)
-        # is still live, and a kind-3 would clobber it. The flag clears on the
-        # disarm edge and on arm failure, so pre-flight retries stay allowed.
-        if self._hand_traj_armed_for_ball is not None:
-            return
         if (time.perf_counter() - self._last_cmd_mono) < _PRIME_RETRY_QUIET_S:
             return
         # A prime ascent may still be running (dispatched by either owner):
@@ -876,12 +677,9 @@ class CatchCoordinatorNode(Node):
             return
 
         # A catch sequence is live: stamp the quiet window that suppresses the
-        # prime-retry timer. STAMPED UNCONDITIONALLY (even open-loop) — it guards the
-        # live kind-1 catch stroke against the 0.5 s prime-retry kind-3 on the Teensy's
-        # last-writer-wins queue. NO PRIME is ever dispatched from this path — a kind-3
-        # smooth-move here clears the Platform Teensy's armed catch stroke (3/6 strokes
-        # lost to that race, 2026-07-23). Priming belongs to the catch/armed rising
-        # edge + the off-path retry timer.
+        # prime-retry timer. STAMPED UNCONDITIONALLY (even open-loop). NO PRIME
+        # is ever dispatched from this path — priming belongs to the
+        # catch/armed rising edge + the off-path retry timer.
         self._last_cmd_mono = time.perf_counter()
 
         # Open-loop platform: once OUR throw is announced (armed reload/toss), hold
@@ -889,8 +687,7 @@ class CatchCoordinatorNode(Node):
         # ball prediction must never move the platform mid-reload (2026-07-24: a
         # corrupt track's sweep got ONE 78 mm target accepted at land−0.67 s,
         # dragging the platform 83.7 mm in the last 0.8 s and costing the catch).
-        # Only the PLATFORM reach is frozen; the hand-arm below stays reactive (its
-        # timing is tracker-driven). TWO triggers force this branch:
+        # The PLATFORM reach is frozen. TWO triggers force this branch:
         #   - JB_OP_RELOAD_PLATFORM_OPEN_LOOP — the reload open-loop config default;
         #   - _pretilt_hold — a held Tier-8b toss. This forces the open-loop branch
         #     INDEPENDENT of the reload flag (self-contained, NOT co-dependent on
@@ -933,9 +730,7 @@ class CatchCoordinatorNode(Node):
         elif self._unified_mode and not self._unified_target_moved(cmd):
             # Rate-limited: the landing estimate has not moved far enough to be
             # worth a ~230 ms seven-channel re-solve (see
-            # _UNIFIED_TARGET_MOVE_MM). The hand-arm bookkeeping below is
-            # unreachable under unified anyway (`not self._unified_mode` gates
-            # it), so there is nothing else this tick owes the cycle.
+            # _UNIFIED_TARGET_MOVE_MM). Nothing else this tick owes the cycle.
             pass
         else:
             # Convert landing_time from ROS2 clock → perf_counter clock
@@ -949,45 +744,11 @@ class CatchCoordinatorNode(Node):
             self._last_arrival_time = arrival_time_perf
             self._last_landing_position = cmd.target_pos.copy()
 
-        # Arm hand catch trajectory (once per ball) — ONLY during a reload (catch armed),
-        # so a stray tracked ball never arms the reactive catch stroke on the Teensy. The
-        # reactive-fire TIMING (event_delay / event_vel) is computed here as before and
-        # STAYS live under open-loop (only the platform reach is frozen). An arrival-
-        # window guard rejects a corrupt track whose landing prediction is far off the
-        # announced landing (it must not arm the one-shot stroke off garbage timing and
-        # block the real ball's arm). The event velocity carries the operator's
-        # catch/vel_scale knob (re-clamped to Teensy bounds). The one-shot latch is set
-        # ONLY when the arm was actually dispatched — a service-not-ready early return
-        # must be retried next tick, not silently latched as armed (audit of the
-        # 2026-07-23 re-test).
-        # `not self._unified_mode` is the CALL-SITE half of the unified gate (the
-        # other is inside _arm_hand_catch). Both, deliberately: the one inside the
-        # dispatch is the enforcement point a future third caller cannot bypass,
-        # and this one keeps the per-ball bookkeeping below — the dispatch counter,
-        # the one-shot latch, the _MIN_EVENT_DELAY_S log — from running for an arm
-        # that is never going to be attempted.
-        if (self._catch_armed and cmd.arm_hand and not self._unified_mode
-                and self._hand_traj_armed_for_ball != cmd.ball_id
-                and self._arm_landing_window_ok(cmd)):
-            # New ball → reset the per-ball re-dispatch counter (bounds the re-arm
-            # churn on the lying ERR_TIMEOUT epidemic; see _MAX_ARM_DISPATCHES).
-            if self._arm_dispatch_ball_id != cmd.ball_id:
-                self._arm_dispatch_ball_id = cmd.ball_id
-                self._arm_dispatch_count = 0
-            event_delay = cmd.landing_time - current_time
-            if event_delay >= _MIN_EVENT_DELAY_S:
-                event_vel = max(0.3, min(7.0,
-                                         cmd.event_vel_mps * self._catch_vel_scale))
-                if self._arm_hand_catch(event_delay, event_vel):
-                    self._hand_traj_armed_for_ball = cmd.ball_id
-                    self._arm_dispatch_count += 1
-            elif self._min_delay_logged_for_ball != cmd.ball_id:
-                # Previously a SILENT drop: the delay only shrinks in flight, so a
-                # ball first seen < 0.3 s out never arms — say so, once per ball.
-                self._min_delay_logged_for_ball = cmd.ball_id
-                self.get_logger().warning(
-                    f"Ball {cmd.ball_id}: event_delay {event_delay:.2f} s below the "
-                    f"{_MIN_EVENT_DELAY_S} s floor — hand catch NOT armed")
+        # R1 (owner decision 3): no hand-catch arm dispatch here — this node
+        # never arms a hand stroke; the plan owns the hand until R4's CATCH
+        # skill lands. `cmd.arm_hand` / `cmd.event_vel_mps` are read by nothing
+        # in this node any more (cross-unit ask: CatchCoordinator, out of this
+        # unit's ownership).
 
     def _unified_target_moved(self, cmd) -> bool:
         """Has the predicted catch pose moved enough to be worth a cycle replan?
@@ -1009,15 +770,6 @@ class CatchCoordinatorNode(Node):
             return True
         return bool(np.linalg.norm(cmd.target_pos - last[1])
                     > _UNIFIED_TARGET_MOVE_MM)
-
-    def _arm_landing_window_ok(self, cmd) -> bool:
-        """Gate the hand-arm on the ball's predicted landing being near the announced
-        landing. Before any announcement (manual/bench throw) the guard is inert. A
-        corrupt split-track whose landing prediction is far off is rejected so it cannot
-        arm the one-shot stroke off garbage timing and block the real ball's arm."""
-        if self._announced_landing_time is None:
-            return True
-        return abs(cmd.landing_time - self._announced_landing_time) <= _ARM_LANDING_WINDOW_S
 
     def _publish_dynamic_target(self, cmd, arrival_time_perf: float):
         """Pack a CatchCommand into the DynamicTargetCommand wire message (verbatim
@@ -1135,276 +887,6 @@ class CatchCoordinatorNode(Node):
                     f"Hand priming failed: {result.message}")
         except Exception as e:
             self.get_logger().warning(f"Hand priming service error: {e}")
-
-    def _throw_stroke_gate_ok(self, event_delay: float,
-                              event_vel_mps: float) -> bool:
-        """C-HAND-1's single enforcement point: may a scheduled kind-1 catch arm
-        be dispatched NOW, or is our own throw stroke still physically executing?
-
-        Returns True to dispatch, False to WITHHOLD — the caller then leaves the
-        one-shot latch open and the per-ball dispatch counter untouched, so the
-        next balls tick retries. Withholding is a DEFERRAL, never a drop.
-
-        TICK-DEPENDENT, and that is the deferral's one liability: this gate is
-        reached only from ``_on_balls``, and nothing re-enters it on a timer. So
-        the deferral needs at least one more balls tick between the window
-        opening and the last arm-able instant. Two ways that tick can fail to
-        arrive, both unproven-but-real: the ball's track drops out for the whole
-        remaining span, or its landing prediction is revised early enough that
-        the coordinator stops yielding a command (or ``event_delay`` falls under
-        ``_MIN_EVENT_DELAY_S``) — both of those bypass this gate entirely, so the
-        "window closed → dispatch loudly" branch below cannot fire either and the
-        arm is silently never dispatched. Pre-fix the (early, ugly) arm had
-        already gone out. Argued-against rather than fixed: the node's own probed
-        note records the announced-vs-tracked landing agreeing to 0.000 s at the
-        arm moment in early life (n = 6105), which is exactly the suppression
-        window. Instrumented at the bench instead of guessed — runbook row H1.7
-        counts withheld lines with no matching dispatch, and a non-zero count is
-        the signal to make the deferral self-driving with a one-shot timer.
-
-        Three outcomes, in order:
-
-        1. **Inert.** No self-toss window latched (a BB reload, a bench throw, or
-           a malformed announcement) → dispatch, unchanged behaviour.
-        2. **Clear.** ``now >= clear_at`` → the stroke has finished and the hand
-           is standing at ``x3`` = the catch trajectory's own first sample
-           (``x3 = accelSt + velHold = totalStroke`` holds algebraically, so the
-           two coincide for EVERY commanded velocity). The repack is then a
-           50-76 ms micro-move from rest, not a mid-flight queue replacement.
-
-           "From rest" is EXACT for the commanded profile and ASSUMED-within-
-           tolerance for the measured one. ``makeSmoothMove`` seeds its quintic at
-           v = 0, which is true of the setpoint the instant the stroke ends; the
-           plant reaches it some settle time later, and the margin leaves 16.6 ms
-           for that at the worst measured dispatch shift. No post-fix settle has
-           been measured — the only measured post-truncation behaviour is the
-           broken shape — and the hardest case is the TOP of the flight band,
-           where the commanded decel is 113.9 m/s^2 over 47 ms (against
-           60.4 m/s^2 over 65 ms at the nominal 0.80 s flight). This premise is
-           what the bench measures, not something the bench assumes: a hand still
-           moving at ``clear_at`` seeds the quintic from a position it is
-           travelling through, which is precisely what runbook row H1.1's
-           ``dip_below_x3 <= 0.100 rev`` reads.
-        3. **Busy.** Withhold — but only while waiting still leaves the Teensy
-           enough time to build the catch. ``Teensy_code_platform.ino:642`` refuses the
-           WHOLE command when ``now + smoothDur + SAFETY_GAP > firstMainAbs`` and
-           prints the refusal to serial only (``:534``), so an arm deferred past
-           that point does not merely arrive late — the catch silently never
-           fires, with no ROS-visible signal and the ball on the floor. A dip is
-           ugly and recoverable; a silently-lost catch is neither. So when the
-           window would close we log LOUDLY and dispatch immediately, accepting
-           today's degraded behaviour rather than trading it for a worse one.
-
-           **What the forced branch does NOT promise.** The fit check that sent
-           us here budgets the AT-REST prelude; on this branch the hand is by
-           definition mid-stroke, so the prelude the firmware actually builds
-           from the live encoder is 0.37-0.76 s and ``:642`` may refuse this very
-           dispatch. So the honest claim is "attempting the catch beats
-           abandoning it", not "this catch will fire". Two things make attempting
-           it still correct. First, it is EXACTLY the pre-fix arithmetic — the
-           same instant, the same ``event_delay``, the same live prelude — so the
-           branch cannot be worse than the behaviour it degrades to. Second,
-           ``:642``'s ``return`` sits BEFORE ``packedMsgs.clear()`` (``:642`` vs
-           ``:648``), so a refusal leaves the live throw stroke intact: the
-           downside is a lost catch, never a clobbered stroke. Dropping the arm
-           here instead was rejected on that asymmetry — a drop guarantees no
-           catch, whereas a dispatch is refused only if the Teensy's own clock
-           agrees it will not fit.
-
-        The deadline takes the max of the Teensy's own budget
-        (``t_acc_catch + prelude + SAFETY_GAP``) and this node's
-        ``_MIN_EVENT_DELAY_S`` floor, because the caller drops the arm outright
-        below that floor — deferring past it would lose the catch just as surely.
-        See ``hand_stroke.required_arm_lead_s`` for the two terms that budget
-        deliberately excludes (the mid-stroke prelude above, and the downstream
-        bridge→Teensy transit) and why the 0.3 floor absorbs them at every
-        nominal operating point.
-
-        Measured fit at the shipped flight band (derived from the header
-        constants, not copied): at 0.80 s (v_throw 3.93, armed 3.52) the window
-        spans release + 105 ms to release + 500 ms, **395 ms** wide; at the
-        ``FLIGHT_TIME_MIN_S`` floor — **0.4949 s since 2026-08-18, when the band
-        became DERIVED** (contract C-HAND-3, ``ros_ws/docs/hand_throw_envelope.md``)
-        — v_throw 2.440, armed 2.172, release + 145 ms to release + 195 ms,
-        **50 ms** wide. It stays positive at the shortest admitted flight and
-        closes only if the tracker's landing-speed estimate collapses below
-        ~1.77 m/s there (armed 1.591 m/s), which is why the closure branch is
-        evaluated against the RUNTIME ``event_vel``, not a nominal.
-
-        ⚠ **That budget is 55 ms tighter than it was**, because the floor is now
-        the flight at which this very window reaches
-        ``hand_throw_envelope.arm_window_margin_s`` = 0.050 s. It used to read
-        115 ms at the hand-picked 0.55 s floor. So a goal admitted AT the floor
-        sits exactly on runbook row **H1.5**'s ``slack > 0.050 s`` gate — a bench
-        boundary, not a comfortable operating point.
-
-        The tracker is not the only way to close it: ``event_vel`` carries the
-        operator's ``catch/vel_scale`` knob (floor ``_VEL_SCALE_MIN`` = 0.3),
-        and **a scale of 0.659 or below now closes the window at the band floor**
-        on its own with a healthy tracker — against a shipped default of 0.9,
-        that is 1.36× of headroom where it used to be 1.78× (the old figure was
-        0.45). The knob is deliberately NOT an input to the C-HAND-3 envelope,
-        which sizes the floor against ``JB_OP_CATCH_VEL_SCALE_DEFAULT``, so the
-        FSM will admit a goal the knob then makes uncatchable. Read
-        ``catch/vel_scale`` before routing a CLOSED warning to a tracker fault —
-        it is logged in the warning below.
-        """
-        clear_at = self._throw_stroke_clear_ros
-        if clear_at is None:
-            return True
-        now = self.get_clock().now().nanoseconds / 1e9
-        if now >= clear_at:
-            return True
-        lead_needed = max(_MIN_EVENT_DELAY_S,
-                          hand_stroke.required_arm_lead_s(event_vel_mps))
-        deadline = now + float(event_delay) - lead_needed
-        ball_id = self._arm_dispatch_ball_id
-        if clear_at <= deadline:
-            if self._stroke_gate_logged_for_ball != ball_id:
-                self._stroke_gate_logged_for_ball = ball_id
-                self.get_logger().info(
-                    f"Ball {ball_id}: hand catch arm withheld for "
-                    f"{(clear_at - now) * 1e3:.0f} ms — own throw stroke still "
-                    f"decelerating ({deadline - clear_at:.3f} s of slack left "
-                    f"after the wait)")
-            return False
-        if self._stroke_gate_forced_for_ball != ball_id:
-            self._stroke_gate_forced_for_ball = ball_id
-            self.get_logger().warning(
-                f"Ball {ball_id}: hand stroke-busy window CLOSED — waiting "
-                f"{(clear_at - now) * 1e3:.0f} ms would push the arm "
-                f"{(clear_at - deadline) * 1e3:.0f} ms past the Teensy's "
-                f"build deadline (v_throw {self._throw_stroke_v_throw:.2f} m/s, "
-                f"event_delay {event_delay:.3f} s, event_vel "
-                f"{event_vel_mps:.2f} m/s, vel_scale "
-                f"{self._catch_vel_scale:.2f}, lead needed "
-                f"{lead_needed:.3f} s). Arming NOW into a live stroke — this is "
-                f"the pre-fix behaviour: EITHER the mid-stroke repack this gate "
-                f"exists to prevent, OR the Teensy refuses the command outright "
-                f"(serial only, stroke left intact, catch never fires). Check "
-                f"catch/vel_scale and the Teensy console")
-        return True
-
-    def _arm_hand_catch(self, event_delay: float, event_vel_mps: float) -> bool:
-        """Arm the hand catch trajectory on the Teensy. Returns True iff the arm was
-        actually DISPATCHED — the caller's one-shot latch keys off this, so a
-        service-not-ready early return is retried on the next balls tick instead of
-        being silently latched as armed.
-
-        THE node's only kind-0/1/2 dispatch, and therefore C-HAND-1's single
-        enforcement point: every path that arms a stroke — the first per-ball arm
-        and every ack-failure retry — passes through :meth:`_throw_stroke_gate_ok`
-        here. Putting the gate at the dispatch rather than at the call site is
-        deliberate: a second caller added later cannot bypass it.
-
-        The kind-3 smooth-move path (:meth:`_prime_hand`) is NOT gated and must
-        stay that way. A kind-3 replacing whatever is queued is the ONLY un-arm
-        mechanism the Teensy offers, and a pre-release SAFE_ABORT's retract
-        depends on it clobbering an armed kind-0 throw stroke
-        (``toss_sequencer``'s ORDERING PRINCIPLE). The toss's own
-        prime-during-stroke hazard is owned by ``catch/prime_hold``, which is
-        raised for the entire PREPARE→terminal span — a separate, already-enforced
-        gate, not this one.
-
-        **Unified mode refuses BEFORE the stroke-busy gate, and the order matters.**
-        Under ``catch/unified_mode`` the hand belongs to the cycle plan and the
-        can-bridge's ``hand_source`` latch is STREAMED, so this dispatch would be
-        refused by the firmware (``ERR_HAND_SOURCE``) after this method had already
-        logged an arm. Refusing here returns False, which leaves the caller's
-        one-shot latch OPEN and its dispatch counter untouched — the same "a
-        deferral is never a drop" contract the stroke gate has, and the right one:
-        if the session ends and the flag drops mid-flight, the next balls tick arms
-        normally. Placing it FIRST also keeps ``_throw_stroke_gate_ok`` — whose
-        whole model is the legacy firmware stroke's deceleration, a stroke that does
-        not exist under unified — from being consulted about a device that is not
-        running, and keeps its arm-lead arithmetic (``required_arm_lead_s``) out of
-        a path where the plan already owns the lead."""
-        if self._unified_mode:
-            self.get_logger().info(
-                'hand catch arm withheld: catch/unified_mode is raised — the '
-                'cycle plan already contains this catch and the can-bridge is '
-                'mastering the hand from the setpoint stream',
-                throttle_duration_sec=5.0)
-            return False
-        if not self._throw_stroke_gate_ok(event_delay, event_vel_mps):
-            return False
-        if not self._hand_traj_client.service_is_ready():
-            self.get_logger().warning(
-                "set_hand_traj_cmd service not ready — hand catch not armed")
-            return False
-
-        req = SetHandTrajCmd.Request()
-        req.event_delay = float(event_delay)
-        req.event_vel = float(event_vel_mps)
-        req.traj_type = _TRAJ_TYPE_CATCH
-
-        future = self._hand_traj_client.call_async(req)
-        future.add_done_callback(self._on_hand_traj_done)
-
-        self.get_logger().info(
-            f"Arming hand catch: delay={event_delay:.2f}s, "
-            f"vel={event_vel_mps:.2f} m/s (scale {self._catch_vel_scale:.2f})")
-        return True
-
-    def _on_hand_traj_done(self, future):
-        """Callback when hand trajectory arm completes.
-
-        The HAND_TRAJ_CMD ack WAS unreliable (~40-60% ERR_TIMEOUT per call) AND lied —
-        frames were observed transmitted after a failed ack — throughout the 2026-07-23
-        epidemic. That epidemic is CLOSED (2026-08-09, FW 10; root cause and validation
-        at _MAX_ARM_DISPATCHES above). The retry path is RETAINED DELIBERATELY: a
-        host-synthesised RpcTimeout on UDP loss can still fail an ack with the Teensy
-        uninvolved. A failed ack re-opens the one-shot latch so the next balls tick
-        re-arms, but ONLY up to _MAX_ARM_DISPATCHES per ball: the kind-1 stroke's catch
-        instant is an ABSOLUTE wall_time invariant across retries, so a lying-ack arm
-        still physically armed and further repacks just churn the Teensy's
-        last-writer-wins queue. After the cap we KEEP the latch (assume armed). A failure
-        here is logged at DEBUG, not WARN — under the historical epidemic a working
-        reload was reading as 30/51 failure spam.
-
-        **"Further repacks just churn" is true only with the hand AT REST, and that
-        is now an ENFORCED PRECONDITION rather than an assumption.** It always held
-        for a reload — the hand is parked at the top, so a repack re-preludes from
-        a position it is already standing at. During a TOSS it was false: the
-        repack landed inside the throw's deceleration ramp, and each one re-cleared
-        the queue and re-preluded from a new live position at ~120 rev/s, which is
-        the 2026-07-25 dip. What makes the sentence true again is
-        :meth:`_throw_stroke_gate_ok`, consulted by :meth:`_arm_hand_catch`: the
-        retry this callback re-opens cannot dispatch until the stroke has finished,
-        and it is DEFERRED to the first balls tick after that, not dropped. Do not
-        re-read this paragraph as "repacks are harmless" — they are harmless
-        *because* the gate holds them off the moving hand.
-
-        The dispatch cap is unaffected: a withheld retry never reaches the service,
-        so ``_arm_dispatch_count`` is not incremented and the deferral cannot burn
-        one of the two allowed dispatches.
-
-        LIMITATION, recorded rather than papered over: an ARMED stroke produces no
-        observable until its event time, so an arm cannot be telemetry-verified the
-        way the hand ladders were (4e33b53) — which is precisely why this retry
-        path exists at all. A Teensy-side "armed stroke" field in ``hand_telemetry``
-        or ``link_status`` would make it verifiable; that is a protocol change and
-        is out of scope here. What CAN be verified from a capture is the harm this
-        guard prevents: a repack that clobbers a LIVE stroke leaves a from-rest
-        quintic seed at the live position, which the Phase-0 probe counts
-        (``n_seeds``)."""
-        try:
-            result = future.result()
-            if result.success:
-                self.get_logger().info("Hand catch trajectory armed on Teensy")
-            else:
-                # Re-open the latch for a retry only within the per-ball cap.
-                if self._arm_dispatch_count < _MAX_ARM_DISPATCHES:
-                    self._hand_traj_armed_for_ball = None
-                self.get_logger().debug(
-                    f"Hand catch arm ack failed "
-                    f"({self._arm_dispatch_count}/{_MAX_ARM_DISPATCHES}): "
-                    f"{result.message} — ack unreliable, proceeding")
-        except Exception as e:
-            # A genuine service error (not the ack epidemic) — retry within the cap.
-            if self._arm_dispatch_count < _MAX_ARM_DISPATCHES:
-                self._hand_traj_armed_for_ball = None
-            self.get_logger().warning(f"Hand catch arm service error: {e}")
 
     def _set_catch_gains(self):
         """Set softer hand gains for catch compliance."""

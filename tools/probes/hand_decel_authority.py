@@ -24,9 +24,10 @@ hand's end-stop margin above 0.78 m*, and the 2026-07-28 amendment) and plan
 WHAT IT UNDERPINS
 -----------------
 Every empirical number in contract **C-HAND-2**
-(``ros_ws/docs/hand_decel_feedforward.md``) and in its two test files:
-``tests/sim/test_hand_throw_decel_ff.py`` and
-``tests/firmware/test_hand_throw_decel_xref.py`` — specifically the DECEL-SIDE
+(retired 2026-09-11 with the firmware that enforced it; its surviving
+measurements are ``ros_ws/docs/hand_throw_envelope.md`` § *Surviving
+measurements*) and in ``tests/sim/test_hand_throw_decel_ff.py`` — specifically
+the DECEL-SIDE
 reflected-inertia lower bound that bounds the declared feedforward value, and
 the current-headroom argument that rejected steepening the commanded ramp.
 
@@ -208,6 +209,18 @@ HAND_TORQUE_SOFT_MIN_NM_PRE_2026_08_18 = -0.055133331567049026
 HAND_TORQUE_SOFT_MIN_NM = -0.7
 HAND_TORQUE_SOFT_MAX_NM = 0.7
 
+#: The Platform hand's spool radius, frozen here as a named historical fact.
+#: Lived at ``teensy_trajectory.hand_spool_radius_m`` (paired with
+#: ``linear_gain_factor``) until skill-stack R1 (2026-09-11) deleted both keys
+#: — the live gain is now the MEASURED ``jugglebot_geometry.hand_mm_per_rev``
+#: (``Geometry::HAND_MM_PER_REV`` in the shipped header), which needs no spool
+#: radius at all.  This constant survives ONLY to reconstruct the LEGACY
+#: ``accelToTorque()`` feedforward (``a_lin * INERTIA_HAND_ONLY_KG *
+#: HAND_SPOOL_RADIUS_M``) for scoring bags recorded before Platform FW 2 — a
+#: firmware generation the shipped header no longer describes at all now that
+#: ``Trajectory.h`` is deleted.
+HAND_SPOOL_RADIUS_M_PLATFORM_PRE_R1 = 0.00521
+
 #: How close ``pos_cmd`` has to sit to ``x3`` to count as "still latched at the
 #: stroke top".  One wire LSB of the position stream; the same band that finds
 #: the commanded stroke end, so the coast opens and closes on one criterion.
@@ -241,8 +254,12 @@ class Model:
     def __init__(self):
         tt = _parse_namespace('TeensyTraj')
         self.tt = tt
-        self.gain = tt['LINEAR_GAIN_FACTOR'] / (math.pi
-                                                * tt['HAND_SPOOL_RADIUS_M'] * 2)
+        # Gain (rev per m of cable travel) is the MEASURED
+        # ``Geometry::HAND_MM_PER_REV``, not the retired
+        # ``LINEAR_GAIN_FACTOR / (2*pi*HAND_SPOOL_RADIUS_M)`` fudge (deleted at
+        # skill-stack R1, 2026-09-11) — see ``HAND_SPOOL_RADIUS_M_PLATFORM_PRE_R1``.
+        geom = _parse_namespace('Geometry')
+        self.gain = 1000.0 / geom['HAND_MM_PER_REV']
         self.total = tt['HAND_STROKE_M'] - 2.0 * tt['STROKE_MARGIN_M']
         self.vel_hold = tt['THROW_VEL_HOLD_PCT'] * self.total
         self.accel_st = self.total - self.vel_hold
@@ -261,7 +278,7 @@ class Model:
                     a_dec_rev=abs(a_dec) * self.gain,
                     v_rev=v * self.gain,
                     tor_legacy=abs(a_dec) * self.tt['INERTIA_HAND_ONLY_KG']
-                    * self.tt['HAND_SPOOL_RADIUS_M'],
+                    * HAND_SPOOL_RADIUS_M_PLATFORM_PRE_R1,
                     tor_corrected=abs(a_dec)
                     * self.tt['THROW_DECEL_REFLECTED_INERTIA_KGM2']
                     * 2.0 * math.pi * self.gain)
@@ -454,7 +471,7 @@ def report(model: Model, rows, stale, curr_limit_a: float = 50.0):
     print(f'declared feedforward inertia = '
           f'{tt["THROW_DECEL_REFLECTED_INERTIA_KGM2"]:.3e} kg m^2   '
           f'legacy implied = '
-          f'{tt["INERTIA_HAND_ONLY_KG"]*tt["HAND_SPOOL_RADIUS_M"]/(2*math.pi*model.gain):.4e}')
+          f'{tt["INERTIA_HAND_ONLY_KG"]*HAND_SPOOL_RADIUS_M_PLATFORM_PRE_R1/(2*math.pi*model.gain):.4e}')
     print('telemetry staleness (repeat-run length; >1 means the field is '
           'aliased):')
     for k, s in stale.items():
@@ -508,7 +525,7 @@ def report(model: Model, rows, stale, curr_limit_a: float = 50.0):
     print('  bound, so the LARGEST across tiers is the binding one — that is the')
     print('  number C-HAND-2 anchors its safety clause on.  It does NOT use any')
     print('  |iq| measurement, so the telemetry aliasing above cannot corrupt it.')
-    print('  ros_ws/docs/hand_decel_feedforward.md § The declared inertia.')
+    print('  ros_ws/docs/hand_throw_envelope.md § Surviving measurements.')
     print('  IT IS A BOUND ONLY WHILE THE HAND FINISHES ABOVE x3.  The sign of')
     print('  tau_loop is the sign of (pos_meas - pos_cmd): a coast that tops out')
     print('  BELOW the latched stroke top never caught the command, so the loop')

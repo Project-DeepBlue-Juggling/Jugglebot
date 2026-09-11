@@ -175,7 +175,7 @@ EXPECTED_FIELDS = (
     'land_err_release_mm', 'land_err_flight_mm',
     # plant
     'stroke_peak_rev', 'dip_below_x3_rev', 'pullback_rps', 'trunc', 'seeds',
-    'iq_brake_min_a', 'dispatch_shift_ms', 'hand_traj_acks', 'can_errors',
+    'iq_brake_min_a', 'dispatch_shift_ms', 'can_errors',
     'bridge_tx_diag', 'plant_block_source',
     # loop timing (instrument only)
     'loop_n_pre', 'loop_period_max_pre_s', 'loop_period_mean_pre_s',

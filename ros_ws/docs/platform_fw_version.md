@@ -133,6 +133,18 @@ cosmetic one.
   rots, and a runbook row expecting a superseded version sends the operator to
   re-flash a correctly-flashed board.
 
+- **`7` (2026-09-11) is called out here by exception**, because it changes what
+  this contract is *about*. Skill-stack R1 deleted the stroke engine from this
+  board — `Trajectory.h`, the 0x6D0 `TRAJ_CMD` decode and its smooth-move
+  prelude, the packed-frame scheduler that streamed `set_input_pos` to CAN node
+  6, and the 0x0C9 hand-encoder cache — so the can-bridge is now the **sole**
+  axis-6 writer (I-FW-15). A stale FW ≤ 6 board is therefore no longer merely
+  *behind*: it is a **second writer on the hand axis**, which is why the skew
+  verdict is worth more after this release than before it. Unchanged on the
+  board: the SCL3300 inclinometer, the TimeSync slave, the 0x6E0 RobotState
+  exchange (including the FW_VERSION reply bytes and the cold-start state) and
+  the 0x6F0/0x6F1 firmware-update endpoint.
+
 The host's expected value, `rpc_args.PLATFORM_FW_VERSION_EXPECTED`, is a **second,
 independently-authored constant**, not a shared generated one. The skew being
 detected is *board vs tree*: a single codegen'd value would move in the source
@@ -265,6 +277,21 @@ answer to "what does the sequencer do when the version is UNKNOWN".
 ## Build gate
 
 `Teensy_code_platform/platformio.ini` compiles the whole sketch (`pio run`) against the
-real Teensy 4.0 toolchain, FlexCAN_T4, SCL3300 and the generated headers. It is a
-**compile gate, not a flash path** — it deliberately has no `upload_command`; see
-its header for why. Before flashing, the sketch must compile there.
+real Teensy 4.0 toolchain, FlexCAN_T4, SCL3300 and the generated headers. Before
+flashing, the sketch must compile there.
+
+## Flash route
+
+Since 2026-09-09 it is also the flash path, and the **only** one — this board's
+micro-USB port is physically damaged and the Teensy bootloader chip speaks only
+USB, so every image after FW 5 arrives over CAN:
+
+```
+cd ros_ws/src/jugglebot/Teensy_code_platform && pio run -e teensy40 -t upload
+```
+
+Run it with **the ROS launch DOWN** (the can-bridge is a single-owner UDP link
+and the update tool needs it). The USB console is gone, so the boot banner is
+not visible: **the receipt is the STATE_READ version the tool prints before and
+after** — 6 → 7 for this release. A bare `pio run` builds only; a matching hex
+md5 is not a flash. See `platformio.ini`'s header for the full procedure.

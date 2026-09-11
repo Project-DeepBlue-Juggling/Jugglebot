@@ -480,23 +480,11 @@
 - **clients:** `catch_coordinator_node`, `reload_coordinator_node`
 - **type:** `jugglebot_interfaces.srv.SetHandGains`
 
-### `set_hand_source`
-
-- **servers:** `teensy_bridge_node`
-- **clients:** `reload_coordinator_node`
-- **type:** `std_srvs.srv.SetBool`
-
 ### `set_hand_state`
 
 - **servers:** `teensy_bridge_node`
 - **clients:** _none_
 - **type:** `jugglebot_interfaces.srv.SetString`
-
-### `set_hand_traj_cmd`
-
-- **servers:** `teensy_bridge_node`
-- **clients:** `catch_coordinator_node`, `reload_coordinator_node`
-- **type:** `jugglebot_interfaces.srv.SetHandTrajCmd`
 
 ### `set_setpoint_output`
 
@@ -506,7 +494,7 @@
 
 ### `smooth_move_hand`
 
-- **servers:** `teensy_bridge_node`
+- **servers:** _none_
 - **clients:** `catch_coordinator_node`, `reload_coordinator_node`
 - **type:** `jugglebot_interfaces.srv.SetFloat`
 
@@ -639,6 +627,7 @@ broken wire cannot hide among them.
 - `ring_diag` — topic with no subscribers
 - `set_hand_state` — service with no clients
 - `set_motor_vel_curr_limits` — topic with no publishers
+- `smooth_move_hand` — service with no servers
 - `toss/calibration_status` — topic with no subscribers
 - `toss/record` — topic with no subscribers
 - `toss/reload_calibration` — service with no clients

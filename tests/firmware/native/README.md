@@ -7,7 +7,7 @@ Python transcription was checked (the standing risk flagged in
 `logbook/2026-06-27-can-node-teensy-parity-audit.md` §5).
 
 It compiles the safety-critical firmware TUs directly — `fault_machine.cpp`,
-`leg_interp.cpp`, `platform_relay.cpp`, `version_check.cpp`, `hand_ops.cpp`,
+`leg_interp.cpp`, `platform_relay.cpp`, `version_check.cpp`,
 `rpc.cpp` dispatch, `udp_link.cpp`, and the three cold-start move modules
 (`leg_homing/activate/deactivate.cpp`) — plus the generated C++ UDP framing codec
 and the ODrive / Ball-Butler CAN codecs, and drives them via the HAL seam below
@@ -52,9 +52,8 @@ python tests/firmware/native/build.py --force    # ignore the cache, rebuild
     fault machine's terminal-IDLE handling (deferred-stow invariant 5) as a
     *compiled* assertion.
   * `test_leg_interp.cpp` `#include`s `leg_interp.cpp` only.
-  * `test_platform_relay.cpp` / `test_version_check.cpp` / `test_hand_ops.cpp`
-    `#include` their one module (`platform_relay.cpp` / `version_check.cpp` /
-    `hand_ops.cpp`).
+  * `test_platform_relay.cpp` / `test_version_check.cpp`
+    `#include` their one module (`platform_relay.cpp` / `version_check.cpp`).
   * `test_gpio_poll.cpp` `#include`s **both** `gpio_poll.cpp` and
     `version_check.cpp` (same no-shared-symbols argument as `test_fault_machine`):
     the ball-sensor poller's `Get_Version` gate reads the version cache, and
