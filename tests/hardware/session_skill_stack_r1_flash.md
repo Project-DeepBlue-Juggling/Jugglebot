@@ -8,9 +8,10 @@
 > `_unified_prelevel` now pre-levels the platform first) and carried two items to
 > R2 (chained multi-throw cold-solve; a live guard cold-trip affordance). Full
 > account: `logbook/2026-09-11-skill-stack-r1-sitting-prelevel.md`. Row 18 below
-> is not runnable through the bench driver — the ARMED guard trip is proven in
-> `tests/firmware/native/test_fault_machine.cpp` instead. Do not re-run this sheet
-> as-is; a future R1-class reflash should start from the R2 runbook when it exists.
+> now also has a live driver affordance (`--trip-guard`, R2) alongside the
+> per-commit proof in `tests/firmware/native/test_fault_machine.cpp`. Do not
+> re-run this sheet as-is; a future R1-class reflash should start from the R2
+> runbook when it exists.
 
 Skill-stack R1 (`plans/active/two-ball-skill-stack.md` § 4 R1, entry
 `logbook/2026-09-11-skill-stack-r1-one-hand-master.md`). Everything here is run
@@ -79,7 +80,7 @@ before and after each row; every refusal in a row is reported, not stopped at.
 | 16 | Host step refusal | `--stage step --step-rev 6.0 --close-loop` | `pump refused=True`, nothing on the wire, hold unbroken, firmware counters unmoved. |
 | 17 | Gap re-entry | `--stage gap --gap-pre 3 --gap-s 1.0 --gap-delta 1.0 --close-loop` | Lane decays to rest in the gap, one bounded ~32 mm re-entry, `sent` climbs, the driver's echo-moved proof passes. No trip at 1.0 rev against the 2.5 rev band. |
 | 17b | Moving gap (the decay rule) | `--stage moving_gap --duration 10 --close-loop` | Driver criteria G1–G5 pass (coast `+0.0525 rev` at the defaults, same rule as FW 17); deltas `lead=0 dev_over=0`. |
-| 18 | ARMED guard — proven in firmware, NOT live here | (no driver command) | The ARMED `MAX_DEVIATION_HAND` cold-trip is **proven per-commit** by the native firmware test `tests/firmware/native/test_fault_machine.cpp` ("hand deviation: observe-first reports only; `hand7 arm`ed it LATCHES"), at a genuine >2.5 rev exceed. It is **not reachable through the bench driver**: `--gap-delta` is clamped at 1.5 rev, and the driver's own deviation belt (`--max-dev`) caps at 2.0 rev, below the 2.5 rev firmware band, so the belt aborts before the guard by design. A live-driver trip affordance is an R2 item. Skip this row; the guard is covered. |
+| 18 | ARMED guard — live cold-trip (R2) | `--stage gap --trip-guard --gap-delta 3.0 --gap-pre 3 --gap-s 1.0 --close-loop` | `--trip-guard` lifts the `--gap-delta` and `--max-dev` caps together (2.6-3.5 rev; belt defaults to `\|gap-delta\|+1.0`, ABOVE the 2.5 rev firmware band). Driver prints the expected outcome before the re-entry, then the ARMED `MAX_DEVIATION_HAND_REV` guard E-STOPs axis 6 (`fault_state` != NONE — watch `link`/`fault` in `[hand7]`) and the driver reports PASS; no trip before the belt fires is reported FAIL naming the band. Also still proven per-commit by `tests/firmware/native/test_fault_machine.cpp` ("hand deviation: observe-first reports only; `hand7 arm`ed it LATCHES"). Recover with `--clear-errors` before the next row. |
 | 19 | Sole writer | Read the Platform banner / `/link_status` Platform version | Platform reads **7** (the only code that could write node 6 is deleted). No dedicated second-master counter exists yet; that is an open R2 item. |
 | 20 | Close-out sweep | `/link_status` + console | `can3_errors` 0, `leak_* ≡ 0`, `interp_deadline_misses` 0, jitter in envelope, `latency_monitor` OK, `tx_deferred` 0, `bridge_fw_version 21 (proto 7)`. |
 | 21 | Close-out state | `/deactivate` | Hand IDLE on the stop. Nothing to restore. |

@@ -115,8 +115,25 @@ Recovery utility (no streaming, no arm):
             firmware recovery slew (bounded walk-back, ≤ 1 rev/s). The R1 hand
             deviation guard boots ARMED, so the first cold gap re-entry that
             passes the 5 rev pump gate but exceeds the 2.5 rev
-            MAX_DEVIATION_HAND_REV band (e.g. --gap-delta 3.0) is expected to
-            trip it — the runbook's cold-trip row; recover with --clear-errors.
+            MAX_DEVIATION_HAND_REV band is expected to trip it — the runbook's
+            cold-trip row, reachable live via ``--stage gap --trip-guard
+            --gap-delta 3.0`` (R2; see --trip-guard below); recover with
+            --clear-errors.
+
+  --trip-guard     (gap stage only) opt-in that lifts the --gap-delta and
+            --max-dev caps TOGETHER so the ARMED MAX_DEVIATION_HAND_REV E-STOP
+            can be tripped LIVE instead of only per-commit
+            (tests/firmware/native/test_fault_machine.cpp). Requires
+            2.6 <= |--gap-delta| <= 3.5 (a re-entry inside the 2.5 rev band
+            cannot trip the guard; the upper bound keeps the catch-up
+            bounded) and sets the belt (--max-dev) to |--gap-delta| + 1.0 by
+            default — ABOVE the firmware band, so it only catches a guard
+            that failed to fire; an explicit --max-dev below
+            |--gap-delta| + 0.5 is refused. Prints the expected outcome
+            before commanding the re-entry, and reports PASS on a firmware
+            fault / FAIL naming the band if the belt catches it instead.
+            Without this flag the driver's behaviour is byte-identical to
+            before it existed.
 
 Instruments: the driver also subscribes CacheDiag (0x91) and logs a 1 Hz
 windowed ``enc_frames`` deficit CSV beside the stage CSV (the headroom
@@ -129,6 +146,7 @@ hand is ALREADY in CLOSED_LOOP — with the launch down nothing else energises i
     python tests/hardware/hand_stream_bench.py --stage triangle --duration 60 --close-loop
     python tests/hardware/hand_stream_bench.py --stage step --close-loop
     python tests/hardware/hand_stream_bench.py --stage gap --close-loop
+    python tests/hardware/hand_stream_bench.py --stage gap --trip-guard --gap-delta 3.0 --close-loop
     python tests/hardware/hand_stream_bench.py --stage moving_gap --duration 10 --close-loop
     python tests/hardware/hand_stream_bench.py --clear-errors
 """
@@ -231,6 +249,34 @@ HAND_WINDDOWN_S = SEG_T + MAX_EXTRAP_DT_S + EXTRAP_DECAY_DT_S
 # + EXTRAP_DECAY_DT_S/2 (the linear velocity ramp's area)
 # = 0.105 s worth of travel. THE prediction row 17b tests.
 HAND_COAST_S = SEG_T + MAX_EXTRAP_DT_S + 0.5 * EXTRAP_DECAY_DT_S
+
+# ── The hand guard band --trip-guard reasons about ───────────────────────────
+# MIRRORED CONSTANTS (canbridge_config.h), same idiom as MAX_EXTRAP_DT_S above
+# and pinned against the firmware header by the same test file, so a silent
+# firmware edit breaks a test rather than mis-sizing --trip-guard's bounds.
+MAX_DEVIATION_HAND_REV = 2.5      # canbridge_config.h — E-STOP, ARMED since R1
+MAX_LEAD_HAND_REV = 2.0           # canbridge_config.h — silent lead clamp
+
+
+def evaluate_trip_guard(tripped, fault_name=None):
+    """Pure verdict for --trip-guard. PURE — no I/O.
+
+    The belt is deliberately set ABOVE the firmware band (see --trip-guard's
+    --max-dev derivation), so a firmware fault IS the expected, PASSing
+    outcome, and reaching the belt without one means the ARMED
+    MAX_DEVIATION_HAND_REV guard failed to fire — a FAIL that names the band
+    rather than a bare abort.
+    """
+    if tripped:
+        return {'verdict': 'PASS',
+                'detail': (f'firmware fault {fault_name} — the ARMED '
+                           f'MAX_DEVIATION_HAND_REV ({MAX_DEVIATION_HAND_REV} rev) '
+                           f'guard fired as expected; recover with --clear-errors')}
+    return {'verdict': 'FAIL',
+            'detail': (f'no firmware fault before the driver belt caught it — '
+                       f'the {MAX_DEVIATION_HAND_REV} rev MAX_DEVIATION_HAND_REV '
+                       f'guard did not fire')}
+
 
 # Per-stage deviation-belt defaults (rev), used when --max-dev is not given.
 # Derivation (2026-09-02 review fix — the belt is velocity-compensated,
@@ -666,17 +712,14 @@ def main():
     ap.add_argument("--gap-pre", type=float, default=3.0, help="gap stage: hand-bearing lead-in (s)")
     ap.add_argument("--gap-s", type=float, default=1.0, help="gap stage: hand-less window (s)")
     ap.add_argument("--gap-delta", type=float, default=1.0,
-                    help="gap stage: re-entry displacement (rev, |value| <= 1.5, "
-                         "clamped to keep the bench re-entry catch-up bounded). "
-                         "A LIVE driver cold-trip of the ARMED MAX_DEVIATION_HAND "
-                         "guard (2.5 rev) is NOT reachable through this stage: the "
-                         "delta is capped at 1.5, and the driver's own deviation "
-                         "belt (--max-dev) caps at 2.0 rev < 2.5, so the belt "
-                         "aborts before the firmware guard by design. The ARMED "
-                         "cold-trip is proven per-commit by the native firmware "
-                         "test (tests/firmware/native/test_fault_machine.cpp, "
+                    help="gap stage: re-entry displacement (rev, |value| <= 1.5 by "
+                         "default, clamped to keep the bench re-entry catch-up "
+                         "bounded). With --trip-guard the bound instead becomes "
+                         "2.6 <= |value| <= 3.5 — see --trip-guard. The ARMED "
+                         "cold-trip is also proven per-commit by the native "
+                         "firmware test (tests/firmware/native/test_fault_machine.cpp, "
                          "'hand deviation: observe-first reports only; hand7 armed "
-                         "it LATCHES'); a live-driver trip affordance is an R2 item")
+                         "it LATCHES')")
     ap.add_argument("--gap-knots", type=int, default=9,
                     help="moving_gap stage: consecutive 40 Hz frames whose "
                          "HAS_HAND bit is CLEARED (default 9). The firmware-side "
@@ -705,7 +748,19 @@ def main():
                          "velocity-compensated like the firmware residual; ≤ 2.0 "
                          "(the firmware hand lead clamp) so the belt fires first. "
                          "Default is per-stage (hold/triangle/step/moving_gap 0.5, "
-                         "gap |gap-delta|+0.5) — see _MAX_DEV_DEFAULT's derivation")
+                         "gap |gap-delta|+0.5) — see _MAX_DEV_DEFAULT's derivation. "
+                         "With --trip-guard the cap and default both change: "
+                         "default |gap-delta|+1.0 (ABOVE the firmware band, on "
+                         "purpose), and an explicit value below |gap-delta|+0.5 "
+                         "is refused")
+    ap.add_argument("--trip-guard", action="store_true",
+                    help="gap stage only: opt-in that lifts the --gap-delta and "
+                         "--max-dev caps TOGETHER to trip the ARMED "
+                         "MAX_DEVIATION_HAND_REV E-STOP LIVE (2.6 <= |--gap-delta| "
+                         "<= 3.5; belt defaults to |--gap-delta|+1.0). Prints the "
+                         "expected outcome before the re-entry and reports PASS "
+                         "on a firmware fault / FAIL naming the band otherwise. "
+                         "No effect on any other stage or without this flag")
     ap.add_argument("--close-loop", action="store_true",
                     help="bring the hand ODrive up first: POSITION/PASSTHROUGH + the "
                          "operational hand gains + CLOSED_LOOP (auto-holds at the "
@@ -719,7 +774,16 @@ def main():
                          "after a latched guard E-STOP (no stream, no arm)")
     ap.add_argument("--csv", default=None, help="per-tick CSV (default: auto under temp/logs/)")
     args = ap.parse_args()
-    if abs(args.gap_delta) > 1.5:
+    if args.trip_guard:
+        if args.stage != "gap":
+            ap.error("--trip-guard only applies to --stage gap")
+        if not (2.6 <= abs(args.gap_delta) <= 3.5):
+            ap.error(
+                f"--trip-guard requires 2.6 <= |--gap-delta| <= 3.5 rev: below "
+                f"2.6 a re-entry inside the {MAX_DEVIATION_HAND_REV} rev "
+                f"MAX_DEVIATION_HAND_REV band cannot trip the guard; above 3.5 "
+                f"keep the catch-up bounded")
+    elif abs(args.gap_delta) > 1.5:
         ap.error("--gap-delta beyond ±1.5 rev — keep the re-entry catch-up bounded")
     mg_plan = None
     if args.stage == "moving_gap":
@@ -763,10 +827,22 @@ def main():
                   f"decay will be observed only partially (G2 will SKIP). "
                   f"--gap-knots 9 is the row-17b default.")
     if args.max_dev is None:
-        args.max_dev = (max(0.5, abs(args.gap_delta) + 0.5) if args.stage == "gap"
-                        else _MAX_DEV_DEFAULT[args.stage])
-    if args.max_dev <= 0 or args.max_dev > 2.0:
-        ap.error("--max-dev out of (0, 2.0] (2.0 = firmware MAX_LEAD_HAND_REV)")
+        if args.trip_guard:
+            args.max_dev = abs(args.gap_delta) + 1.0
+        elif args.stage == "gap":
+            args.max_dev = max(0.5, abs(args.gap_delta) + 0.5)
+        else:
+            args.max_dev = _MAX_DEV_DEFAULT[args.stage]
+    if args.trip_guard:
+        if args.max_dev < abs(args.gap_delta) + 0.5:
+            ap.error(
+                f"--trip-guard: --max-dev {args.max_dev:.3f} below "
+                f"|--gap-delta| + 0.5 = {abs(args.gap_delta) + 0.5:.3f} rev — "
+                f"the belt would abort before the firmware guard, which is "
+                f"the thing under test")
+    elif args.max_dev <= 0 or args.max_dev > MAX_LEAD_HAND_REV:
+        ap.error(f"--max-dev out of (0, {MAX_LEAD_HAND_REV}] "
+                 f"({MAX_LEAD_HAND_REV} = firmware MAX_LEAD_HAND_REV)")
 
     client = TeensyLinkClient(teensy_addr=(TEENSY_IP, p.PORT_STREAM), bind_host="0.0.0.0")
     client.start()
@@ -1153,6 +1229,13 @@ def main():
                     # (see GAP_ECHO_MOVE_REV's derivation).
                     if (gap_reentry_t is None
                             and abs(args.gap_delta) > 4.0 * GAP_ECHO_MOVE_REV):
+                        if args.trip_guard:
+                            print(f"trip-guard: expecting a firmware E-STOP "
+                                  f"latch on axis 6 (hand) — watch "
+                                  f"link/fault_state; fault_state != NONE from "
+                                  f"the ARMED MAX_DEVIATION_HAND_REV "
+                                  f"({MAX_DEVIATION_HAND_REV} rev) guard is the "
+                                  f"expected trip. Recover with --clear-errors.")
                         with _lock:
                             e0 = _cache["echo"]
                         gap_reentry_t = t
@@ -1279,14 +1362,25 @@ def main():
                 dev = abs(belt_ref - enc_ex)
                 max_dev = max(max_dev, dev)
                 if dev > args.max_dev:
-                    print(f"ABORT: driver deviation belt |{belt_ref:.3f} - "
-                          f"({enc:.3f} + {encv:.1f}·{enc_age * 1e3:.0f}ms)| "
-                          f"= {dev:.3f} rev > {args.max_dev}"
-                          f"{' (ref = the modelled gap target)' if mg_pred is not None else ''}")
+                    if args.trip_guard:
+                        v = evaluate_trip_guard(False)
+                        print(f"{v['verdict']}: {v['detail']} — the driver belt "
+                              f"|{belt_ref:.3f} - ({enc:.3f} + "
+                              f"{encv:.1f}·{enc_age * 1e3:.0f}ms)| = {dev:.3f} "
+                              f"rev > {args.max_dev} caught it instead")
+                    else:
+                        print(f"ABORT: driver deviation belt |{belt_ref:.3f} - "
+                              f"({enc:.3f} + {encv:.1f}·{enc_age * 1e3:.0f}ms)| "
+                              f"= {dev:.3f} rev > {args.max_dev}"
+                              f"{' (ref = the modelled gap target)' if mg_pred is not None else ''}")
                     break
             fs = _fault()
             if fs not in (None, int(FaultState.NONE)):
-                print(f"ABORT: firmware fault {_fault_name(fs)} — disarming.")
+                if args.trip_guard:
+                    v = evaluate_trip_guard(True, _fault_name(fs))
+                    print(f"{v['verdict']}: {v['detail']} — disarming.")
+                else:
+                    print(f"ABORT: firmware fault {_fault_name(fs)} — disarming.")
                 # Trip trio (2026-09-03 audit fix): with the launch DOWN the
                 # HeartbeatT2J latch snapshot is the ONLY surface that carries
                 # an armed MAX_DEVIATION trip's own exceed-tick residuals —

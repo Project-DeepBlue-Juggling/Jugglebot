@@ -377,3 +377,138 @@ def test_every_criterion_is_always_reported():
 
 def test_the_stage_has_a_deviation_belt_default():
     assert B._MAX_DEV_DEFAULT['moving_gap'] == 0.5
+
+
+# ---------------------------------------------------------------------------
+# --trip-guard: the mirrored guard-band constants
+# ---------------------------------------------------------------------------
+
+def test_hand_guard_band_constants_match_the_firmware():
+    """MAX_DEVIATION_HAND_REV / MAX_LEAD_HAND_REV mirror canbridge_config.h.
+
+    --trip-guard's whole bound arithmetic (2.6-3.5 gap-delta window, the
+    |gap-delta|+1.0 belt) is derived from these two numbers, so a silent
+    firmware edit to either must break a test rather than mis-size a live
+    E-STOP trip attempt.
+    """
+    src = _fw_constants()
+    assert B.MAX_DEVIATION_HAND_REV == _fw_float(src, 'MAX_DEVIATION_HAND_REV')
+    assert B.MAX_LEAD_HAND_REV == _fw_float(src, 'MAX_LEAD_HAND_REV')
+    assert B.MAX_DEVIATION_HAND_REV == 2.5
+    assert B.MAX_LEAD_HAND_REV == 2.0
+
+
+# ---------------------------------------------------------------------------
+# evaluate_trip_guard — the pure verdict mapping
+# ---------------------------------------------------------------------------
+
+def test_a_firmware_fault_is_reported_as_pass():
+    v = B.evaluate_trip_guard(True, 'MAX_DEVIATION')
+    assert v['verdict'] == 'PASS'
+    assert 'MAX_DEVIATION' in v['detail']
+    assert str(B.MAX_DEVIATION_HAND_REV) in v['detail']
+    assert '--clear-errors' in v['detail']
+
+
+def test_no_fault_before_the_belt_is_reported_as_fail_naming_the_band():
+    v = B.evaluate_trip_guard(False)
+    assert v['verdict'] == 'FAIL'
+    assert str(B.MAX_DEVIATION_HAND_REV) in v['detail']
+    assert 'MAX_DEVIATION_HAND_REV' in v['detail']
+
+
+# ---------------------------------------------------------------------------
+# main()'s argparse layer: the --trip-guard accept/refuse matrix
+# ---------------------------------------------------------------------------
+
+class _ValidationPassed(Exception):
+    """Sentinel: main()'s post-parse validation finished with no ap.error()."""
+
+
+def _run(argv, monkeypatch):
+    """Drive main()'s REAL argparser + post-parse validation, hardware-free.
+
+    A refusal (``ap.error()``) raises ``SystemExit(2)`` immediately, before
+    main() ever reaches the network. Acceptance is everything past
+    validation, whose first act is ``TeensyLinkClient(...)`` — patched here
+    to raise a sentinel the instant it is reached, so "validation passed" is
+    distinguishable from "a refusal fired" without opening a socket or
+    waiting on a link that will never answer off-hardware.
+    """
+    import contextlib
+    import io
+
+    def _boom(*a, **kw):
+        raise _ValidationPassed()
+
+    monkeypatch.setattr(B, 'TeensyLinkClient', _boom)
+    out = io.StringIO()
+    old_argv = sys.argv
+    sys.argv = ['hand_stream_bench.py'] + argv
+    try:
+        with contextlib.redirect_stderr(out), contextlib.redirect_stdout(out):
+            try:
+                B.main()
+            except SystemExit as e:
+                return 'refused', out.getvalue(), e.code
+            except _ValidationPassed:
+                return 'accepted', out.getvalue(), None
+    finally:
+        sys.argv = old_argv
+    return 'unexpected-return', out.getvalue(), None  # pragma: no cover
+
+
+@pytest.mark.parametrize('argv,expect_substr', [
+    # refuse: gap-delta inside the firmware band (cannot trip the guard)
+    (['--stage', 'gap', '--trip-guard', '--gap-delta', '2.5'], '2.6'),
+    (['--stage', 'gap', '--trip-guard', '--gap-delta', '2.0'], '2.6'),
+    # refuse: gap-delta beyond the bounded-catch-up ceiling
+    (['--stage', 'gap', '--trip-guard', '--gap-delta', '3.6'], '3.5'),
+    (['--stage', 'gap', '--trip-guard', '--gap-delta', '10.0'], '3.5'),
+    # refuse: wrong stage
+    (['--stage', 'hold', '--trip-guard'], 'only applies to --stage gap'),
+    (['--stage', 'moving_gap', '--trip-guard'], 'only applies to --stage gap'),
+    # refuse: an explicit --max-dev under the belt-above-band floor
+    (['--stage', 'gap', '--trip-guard', '--gap-delta', '3.0', '--max-dev', '3.0'],
+     'below'),
+])
+def test_trip_guard_refuses(argv, expect_substr, monkeypatch):
+    result, out, code = _run(argv, monkeypatch)
+    assert result == 'refused', f'expected a refusal, got {result}: {out}'
+    assert code == 2
+    assert expect_substr in out
+
+
+@pytest.mark.parametrize('gap_delta', [2.6, 3.0, 3.5, -2.6, -3.5])
+def test_trip_guard_accepts_the_band_edges(gap_delta, monkeypatch):
+    result, out, code = _run(['--stage', 'gap', '--trip-guard',
+                              '--gap-delta', str(gap_delta)], monkeypatch)
+    assert result == 'accepted', f'expected acceptance, got {result}: {out}'
+
+
+def test_trip_guard_off_is_byte_identical_to_no_flag_at_all(monkeypatch):
+    """Without --trip-guard, a --gap-delta of 3.0 hits the OLD (unconditional)
+    1.5 rev cap exactly as before the flag existed — trip-guard's caps are
+    opt-in, not a silent relaxation of the default path."""
+    result, out, code = _run(['--stage', 'gap', '--gap-delta', '3.0'], monkeypatch)
+    assert result == 'refused'
+    assert code == 2
+    assert '1.5' in out
+
+
+def test_trip_guard_max_dev_default_is_gap_delta_plus_one():
+    """The belt default under --trip-guard (|gap-delta|+1.0) sits strictly
+    above the firmware band it is meant to stay clear of, at every accepted
+    gap-delta — the numeric core of the --max-dev derivation."""
+    for gap_delta in (2.6, 3.0, 3.5):
+        default = abs(gap_delta) + 1.0
+        assert default > B.MAX_DEVIATION_HAND_REV
+        # and still satisfies its own floor (>= |gap-delta| + 0.5)
+        assert default >= abs(gap_delta) + 0.5
+
+
+def test_trip_guard_explicit_max_dev_at_the_floor_is_accepted(monkeypatch):
+    # exactly |gap-delta| + 0.5 is the floor, not a refused value
+    result, out, code = _run(['--stage', 'gap', '--trip-guard',
+                              '--gap-delta', '3.0', '--max-dev', '3.5'], monkeypatch)
+    assert result == 'accepted', f'expected acceptance at the floor, got {result}: {out}'
