@@ -104,6 +104,9 @@ setup(
             # BB→Jugglebot reload action (Phase 7): orchestrates only — trajectory_node
             # plans the catch, catch_coordinator arms the hand, ball_butler throws.
             'reload_coordinator_node = jugglebot.reload_coordinator_node:main',
+            # Skill-stack orchestrator shell (R2): schedule dispatch over
+            # trajectory/install_segment. See jugglebot/skill_node.py.
+            'skill_node = jugglebot.skill_node:main',
             # ── Standalone processes (not ROS2 nodes) ─────────
             'motor_guard = jugglebot.motion.motor_guard:main',
         ],

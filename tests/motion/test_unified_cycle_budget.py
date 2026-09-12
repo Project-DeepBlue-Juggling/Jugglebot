@@ -12,40 +12,50 @@ baseline — but it is deliberately NOT ``nightly``.
 
 WHAT IS AND IS NOT INSIDE THE 50 ms
 -----------------------------------
-Measured on this Jetson (2026-09-04, venv interpreter, otherwise-idle box) for the
-1.4 s reference cycle at 57 knots, median of 15 timed calls after two warm-ups:
+Measured on this Jetson (venv interpreter, otherwise-idle box) for the 1.4 s
+reference cycle at 57 knots.  The reading CHANGED at skill-stack R2, which
+vectorised ``feasibility.validate_cycle``; both are kept because the shape of the
+call is what this file exists to pin.
 
-===============================  ========
-``cup_cycle.plan_window`` (QP)    10.7 ms
-``cup_realize.tilt_schedule``      3.7 ms
-``cup_realize.decompose``          3.3 ms
-``CyclePlan.from_realized``       0.05 ms
-``feasibility.validate_cycle``   156.7 ms
-===============================  ========
+===============================  ===============  ==============
+stage                            2026-09-04       2026-09-12
+===============================  ===============  ==============
+``cup_cycle.plan_window`` (QP)    10.7 ms          10.4 ms
+``cup_realize.tilt_schedule``      3.7 ms           4.1 ms
+``cup_realize.decompose``          3.3 ms           3.7 ms
+``CyclePlan.from_realized``       0.05 ms          0.05 ms
+``feasibility.validate_cycle``   156.7 ms           6.4 ms
+===============================  ===============  ==============
 
-**The planner is comfortably inside the budget; the GATE is ~88 % of the call.**
-``validate_cycle`` meshes the pose track at four samples per knot (225 samples on
-this plan) and every sample costs a full IK chain — attributed on the same box as
-``accel_to_leg_accels`` 0.201 ms/sample, ``compute_condition_number`` 0.074,
-``compute_jacobian`` 0.047, everything else under 0.04.  That is a property of the
-canonical feasibility gate, shared with every other plan this stack builds, and
-squarely outside Wave A's scope to re-engineer: ``samples_per_knot`` is an
-ACCURACY knob on the leg-jerk finite difference, not a speed knob, and lowering it
-would weaken the gate in order to make a test pass.
+**The gate WAS ~88 % of the call and is now ~26 % of it.**  It meshes the pose
+track at four samples per knot (225 samples on this plan) and every sample costs
+a full IK chain; until R2 that chain ran as a per-sample Python loop, attributed
+on this box as ``accel_to_leg_accels`` 0.201 ms/sample,
+``compute_condition_number`` 0.074, ``compute_jacobian`` 0.047, everything else
+under 0.04.  R2 replaced the loop with the batched numpy chain the shaped gate
+already used — the SAME samples and the same formulas, pinned against a verbatim
+copy of the old implementation in
+``tests/motion/test_validate_cycle_vectorised.py`` — and the gate fell to 6.4 ms
+(2026-09-12, ``N_GATE`` = 10 calls after two warm-ups, this test).
+``samples_per_knot`` is still an ACCURACY knob on the leg-jerk finite difference,
+not a speed knob; nothing here was bought by lowering it.
 
 So the budget is asserted in two halves rather than waived, and the OWNER SPLIT
 (2026-09-04) is exactly that shape: **core ≤ 50 ms, total plan+validate
 ≤ 250 ms.**
 
 * the part ``unified_cycle`` owns (the whole call MINUS the gate) is held to the
-  owner's 50 ms, and passes with room — measured **21.9 ms** (2026-09-04,
-  standalone on this Jetson, 30 total + 10 gate solves after warm-up), i.e.
-  180.1 ms of total less the 158.3 ms ``validate_cycle`` share;
+  owner's 50 ms, and passes with room — measured **18.4 ms** (2026-09-12,
+  24.8 ms of total less the 6.4 ms ``validate_cycle`` share; it read 21.9 ms on
+  2026-09-04, i.e. 180.1 less 158.3, so the core itself barely moved — R2 took
+  the GATE out, not the planner);
 * the whole call is held to :data:`TOTAL_BUDGET_MS` = 250 ms, the owner's
-  plan+validate ceiling.  It is deliberately not 50 ms — landing a red gate
-  would assert "someone broke this", which is false: nobody broke it, it has
-  never been under 50 ms, and closing the gap is a change to
-  ``feasibility.validate_cycle`` that needs its own owner decision.
+  plan+validate ceiling.  It is deliberately NOT tightened to the 24.5 ms the call
+  now measures: the ceiling's job is to fail a regression, and a ceiling set at
+  1.02x of a fresh measurement fails the frequency governor instead.  The gap it
+  leaves is now large — re-tightening it is an owner decision, and the
+  attribution assert below is what keeps the reading behind it honest in the
+  meantime.
 
 Plan: ``plans/archived/unified-7dof-planner.md`` § 4 Phase 4.
 """
@@ -71,12 +81,14 @@ OWNER_BUDGET_MS = 50.0
 
 #: The OWNER's ceiling for the WHOLE ``plan_cycle`` call — plan + validate,
 #: ``validate_cycle`` included (owner, 2026-09-04, alongside the 50 ms core).
-#: Measured minimum on the reference cycle is 177-180 ms (2026-09-04, 8 batches
+#: Measured minimum on the reference cycle was 177-180 ms (2026-09-04, 8 batches
 #: of 40 solves after warm-up, idle box, spread 177.3–177.9; a 30-solve rerun the
-#: same day read 179.4), of which
-#: ``validate_cycle`` is 157-159 ms; 250 ms is ~1.4× that — wide enough that a
-#: warm/cold box does not flake it, tight enough that a 1.5× regression in the
-#: gate, or a 4× one in the planner, fails the commit that lands it.
+#: same day read 179.4), of which ``validate_cycle`` was 157-159 ms.  After R2
+#: vectorised the gate it reads **24.5 ms** (2026-09-12, this test, 30 solves
+#: after warm-up), of which the gate is 6.4 ms.  The number is KEPT at 250 ms
+#: rather than re-cut to the new floor: it is the OWNER's plan+validate ceiling
+#: (2026-09-04), not a running best-of, and re-cutting a ceiling to whatever the
+#: last measurement happened to be turns a regression gate into a flake.
 TOTAL_BUDGET_MS = 250.0
 
 #: Solves per measurement (the rule asks for at least 30).
@@ -84,7 +96,11 @@ N_SOLVES = 30
 
 #: Gate measurements per run.  Fewer than :data:`N_SOLVES` because the gate is not
 #: the assertion target — it is subtracted off to get the planner's share and
-#: checked for attribution — and each one costs ~160 ms.
+#: checked for attribution — and each one cost ~160 ms when this was written.
+#: Since R2 vectorised the gate it costs ~6.4 ms (2026-09-12), so the count could
+#: be raised; it is not, because the two minima the core is built from have to
+#: come from the SAME sample count (see the test's docstring) and changing it here
+#: would silently shift the core's bias.
 N_GATE = 10
 
 #: WHY THE ASSERTION IS ON THE MINIMUM, AND NOT ON p99.
@@ -190,11 +206,12 @@ def test_per_cycle_planning_budget(rig):
     re-implementation of the chain here, which would drift from the real one the
     first time ``plan_cycle`` gained a step.
 
-    MEASURED (2026-09-04, idle Jetson, 1.4 s reference cycle): total min
-    177-180 ms, of which ``validate_cycle`` is 157-159 ms — leaving **~19-22 ms**
-    for the planner against the 50 ms budget (a 30-solve + 10-gate standalone run
-    the same day read 180.1 − 158.3 = 21.9 ms).  See :data:`PERCENTILES` for why
-    the assertion is on the minimum and what the tail does on this box.
+    MEASURED (2026-09-12, idle Jetson, 1.4 s reference cycle, after R2 vectorised
+    the gate): total min 24.5 ms (first 10: 24.8), of which ``validate_cycle`` is
+    6.4 ms — leaving **18.4 ms** for the planner against the 50 ms budget.  The
+    same measurement on 2026-09-04 read 180.1 − 158.3 = 21.9 ms: the CORE barely
+    moved, the gate fell 25x.  See :data:`PERCENTILES` for why the assertion is on
+    the minimum and what the tail does on this box.
 
     **The two minima the core is built from come from the SAME sample count.**
     A minimum falls as the sample count rises, so subtracting a 10-sample gate
@@ -224,8 +241,26 @@ def test_per_cycle_planning_budget(rig):
         "which half regressed in the fix" % (tmin, TOTAL_BUDGET_MS, note))
     # Attribution, pinned so the docstring's split cannot go stale unnoticed: a
     # future reader who sees only the 250 ms ceiling would otherwise have no way
-    # to know which half owns it, and would optimise the wrong one.
-    assert gmin > 0.5 * tmin, (
-        "validate_cycle is %.1f ms of a %.1f ms plan_cycle — this file's "
-        "attribution is stale, re-measure it before trusting the ceiling [%s]"
-        % (gmin, tmin, note))
+    # to know which half owns it, and would optimise the wrong one.  The band is
+    # two-sided on purpose.
+    #
+    # The UPPER bound (the gate is a MINORITY of the call) is the old assertion
+    # inverted: it read `gmin > 0.5 * tmin` when the gate was 88 % of the call,
+    # and R2 moved it to 26 % (6.4 of 24.5 ms, 2026-09-12).  A gate that climbs
+    # back past half the call has regressed toward the per-sample loop.
+    #
+    # The LOWER bound is the one that matters for safety, and it is new: this is
+    # the RUNTIME assert on six legs and the hand, and a gate that stops costing
+    # anything is a gate that has stopped measuring something.  A short-circuit —
+    # an early return, a mesh quietly cut, a pass dropped — shows up here as a
+    # share collapsing toward zero long before it shows up as a wrong verdict.
+    # 15 % is 1.7x below the measured 26 %, the same margin the upper bound
+    # carries, so neither side is a hair-trigger on a frequency-governor event.
+    gate_share = gmin / tmin
+    assert 0.15 < gate_share < 0.50, (
+        "validate_cycle is %.1f ms of a %.1f ms plan_cycle (%.0f %%) — outside "
+        "the 15-50 %% band this file's attribution is written against.  Above it, "
+        "the gate has regressed toward its pre-R2 per-sample loop; below it, ask "
+        "FIRST whether the gate is still measuring every pass, and only then "
+        "re-measure the attribution [%s]"
+        % (gmin, tmin, 100.0 * gate_share, note))

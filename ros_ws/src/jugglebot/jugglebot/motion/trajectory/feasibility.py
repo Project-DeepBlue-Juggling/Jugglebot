@@ -1077,10 +1077,10 @@ def validate_cycle(cycle_plan, limits, geom, *,
        sails through every numeric comparison below, so it is caught explicitly —
        ``CyclePlan``'s constructor rejects non-finite arrays too, and this is the
        defence-in-depth layer for a duck-typed plan or a post-construction
-       mutation); leg extensions outside the hard stroke → ``WORKSPACE``; Jacobian
-       condition past the workspace bound → ``UNREACHABLE``; slider outside
-       ``[HAND_STROKE_MIN_REV, HAND_STROKE_MAX_REV]`` → ``HAND_STROKE``, naming the
-       hard stop separately when that is crossed too. The FLOOR of that band is
+       mutation); slider outside ``[HAND_STROKE_MIN_REV, HAND_STROKE_MAX_REV]`` →
+       ``HAND_STROKE``, naming the hard stop separately when that is crossed too;
+       leg extensions outside the hard stroke → ``WORKSPACE``; Jacobian condition
+       past the workspace bound → ``UNREACHABLE``. The FLOOR of the stroke band is
        the plan's own first knot when the hand is parked below the homed zero
        (:func:`_cycle_stroke_floor`); the ceiling is never relaxed.
     2. **The catch runway, re-checked with the ACHIEVED catch velocity** →
@@ -1102,6 +1102,34 @@ def validate_cycle(cycle_plan, limits, geom, *,
     :data:`_CYCLE_SAMPLES_PER_KNOT`); the hand channel's extrema are closed-form
     per span and independent of it. ``runway_margin_rev`` is the reserve below the
     computed stopping distance.
+
+    **VECTORISED (skill-stack R2, 2026-09-12) — what that did and did not change.**
+    Pass 1 used to be a Python loop running one full IK chain per sample; it is now
+    the batched chain ``_batched_jacobian`` / ``_batched_jacobian_dot`` over the
+    whole grid at once, the same one the shaped gate (:func:`_validate_shaped_batched`)
+    has driven since Phase 1a, and pass 4's per-knot step reads the leg extensions
+    pass 1 already computed instead of re-running the position IK per knot. Passes
+    2 and 3 are untouched: the hand's span extrema are closed-form and already
+    cost nothing. Measured on this Jetson (2026-09-12, venv, idle box, min of 30
+    after 2 warm-ups): a 40-knot segment **103.19 ms → 4.73 ms** (21.8x), the
+    1.4 s / 57-knot reference cycle **160.21 ms → 6.28 ms** (25.5x), an 81-knot
+    LAUNCH+STEADY chain **220.44 ms → 8.03 ms**. That is what makes the gate
+    affordable as a per-skill RUNTIME assert (plan § 2.6 pins < 10 ms per 40-knot
+    segment) instead of a planning-time luxury.
+
+    The measured QUANTITIES are identical, not merely close: same samples, same
+    formulas, same first-failure-wins ordering, same reason strings, same prefix
+    peaks on an early return. Three operations are spelled differently and are
+    therefore equal to ~1 ulp rather than bit-for-bit — the leg-vector rotation
+    (``einsum`` vs ``rot @ nodes.T``), ``J @ twist`` (``einsum`` vs matmul) and the
+    batched Rodrigues — exactly the three the shaped gate already ships.
+    ``tests/motion/test_validate_cycle_vectorised.py`` holds the pre-vectorisation
+    implementation verbatim and runs the two against each other over every code
+    the ladder can emit, including limits set within 1e-6 relative of a measured
+    peak where a last-bit difference would show as a flipped verdict.
+
+    The plan must therefore expose the batched sampling surface
+    (``CyclePlan.states_at`` / ``hands_at``) as well as the scalar one.
     """
     m = max(1, int(samples_per_knot))
     wlimits = _workspace_limits(geom)
@@ -1127,62 +1155,105 @@ def validate_cycle(cycle_plan, limits, geom, *,
     # parked before the window started.
     stroke_min = _cycle_stroke_floor(cycle_plan)
 
-    peak_vel = 0.0
-    peak_acc = 0.0
-    peak_ext = 0.0
-    peak_hand_rev = 0.0
-    acc_samples = []
+    # ── Pass 1: geometry + hand stroke + analytic leg vel/acc, batched ──
+    # A non-finite knot is a case this function EXISTS to catch and name (the
+    # check is six lines below); numpy's own `invalid value encountered` warning
+    # about the same fact is noise on the way to that refusal, and the scalar
+    # loop's float arithmetic never raised it. Suppressed here and NOWHERE else —
+    # every later array in this function is built from samples already proven
+    # finite, so a warning from one of them is real news.
+    with np.errstate(invalid='ignore'):
+        poses, twists, accels = cycle_plan.states_at(ts)
+        hand_revs, hand_vels = cycle_plan.hands_at(ts)
 
-    # ── Pass 1: geometry + hand stroke + analytic leg vel/acc, per sample ──
-    for t in ts:
-        t = float(t)
-        pose, twist, accel = cycle_plan.state_at(t)
-        hand_rev, hand_vel = cycle_plan.hand_at(t)
-        if not np.all(np.isfinite(pose)) or not np.all(np.isfinite(twist)) \
-                or not np.all(np.isfinite(accel)):
+    # Non-finite first, and on its own: a NaN pose makes every geometric quantity
+    # below NaN, and NaN fails every comparison, so it must be answered before the
+    # batched chain is built rather than filtered out of it. The scalar loop
+    # returned here with NO peaks populated (they are meaningless on a non-finite
+    # sample) — reproduced exactly.
+    finite = (np.all(np.isfinite(poses), axis=1)
+              & np.all(np.isfinite(twists), axis=1)
+              & np.all(np.isfinite(accels), axis=1))
+    hand_finite = np.isfinite(hand_revs) & np.isfinite(hand_vels)
+    bad_finite = ~(finite & hand_finite)
+    if bad_finite.any():
+        first = int(np.argmax(bad_finite))
+        t_fail = float(ts[first])
+        if not finite[first]:
             return FeasibilityReport(
                 ok=False, code=UNREACHABLE,
                 reasons=["pose state contains non-finite values (NaN/Inf) "
-                         "at t=%.3fs" % t])
-        if not (np.isfinite(hand_rev) and np.isfinite(hand_vel)):
-            return FeasibilityReport(
-                ok=False, code=UNREACHABLE,
-                reasons=["hand channel contains non-finite values (NaN/Inf) "
-                         "at t=%.3fs" % t])
+                         "at t=%.3fs" % t_fail])
+        return FeasibilityReport(
+            ok=False, code=UNREACHABLE,
+            reasons=["hand channel contains non-finite values (NaN/Inf) "
+                     "at t=%.3fs" % t_fail])
 
-        peak_hand_rev = max(peak_hand_rev, abs(float(hand_rev)))
-        bad_stroke = _hand_stroke_reason(float(hand_rev), t, stroke_min)
-        if bad_stroke is not None:
-            return FeasibilityReport(
-                ok=False, code=HAND_STROKE, reasons=[bad_stroke],
-                peak_leg_ext_mm=peak_ext, peak_hand_rev=peak_hand_rev)
+    J, leg_vecs, _R = _batched_jacobian(poses, geom)
+    # `pose_to_leg_lengths` in batched form; `ext` is reused by pass 4's per-knot
+    # step, which is why the step pass no longer re-runs the position IK.
+    ext = np.linalg.norm(leg_vecs, axis=2) - geom.init_leg_lengths_mm   # (n,6)
+    # The same normalised condition `compute_condition_number(..., J=J)` computes,
+    # off the SAME J the leg vel/acc use — not a second Jacobian construction.
+    J_cond = J.copy()
+    J_cond[:, :, 3:] /= geom.plat_radius_mm
+    conds = np.linalg.cond(J_cond)                                      # (n,)
 
-        pos, rot = _pose_to_pos_rot(pose)
-        ext = pose_to_leg_lengths(pos, rot, geom)
-        peak_ext = max(peak_ext, float(np.max(np.abs(ext))))
-        valid, states = check_leg_extensions(ext, geom)
-        if not valid:
-            bad = [j for j, s in enumerate(states) if s != 0]
+    stroke_bad = ~((hand_revs >= stroke_min) & (hand_revs <= HAND_STROKE_MAX_REV))
+    ws_bad = np.any((ext < wlimits.leg_hard_min_mm)
+                    | (ext > wlimits.leg_hard_max_mm), axis=1)
+    cond_bad = conds > wlimits.cond_hard
+
+    # Running maxima, so an early return can report the same PREFIX peaks the
+    # scalar loop had accumulated when it stopped. The two prefixes differ by one
+    # sample and the difference is load-bearing: the loop updated `peak_hand_rev`
+    # BEFORE its stroke check (so a HAND_STROKE includes the offending sample) and
+    # `peak_ext` AFTER it (so the same refusal reports the leg peak over the
+    # samples STRICTLY BEFORE it).
+    hand_rev_prefix = np.maximum.accumulate(np.abs(hand_revs))
+    ext_prefix = np.maximum.accumulate(np.max(np.abs(ext), axis=1))
+
+    geom_bad = stroke_bad | ws_bad | cond_bad
+    if geom_bad.any():
+        first = int(np.argmax(geom_bad))
+        t_fail = float(ts[first])
+        peak_hand_rev = float(hand_rev_prefix[first])
+        if stroke_bad[first]:
+            return FeasibilityReport(
+                ok=False, code=HAND_STROKE,
+                reasons=[_hand_stroke_reason(float(hand_revs[first]), t_fail,
+                                             stroke_min)],
+                peak_leg_ext_mm=(float(ext_prefix[first - 1]) if first > 0
+                                 else 0.0),
+                peak_hand_rev=peak_hand_rev)
+        peak_ext = float(ext_prefix[first])
+        if ws_bad[first]:
+            bad = [j for j in range(6)
+                   if ext[first, j] < wlimits.leg_hard_min_mm
+                   or ext[first, j] > wlimits.leg_hard_max_mm]
             return FeasibilityReport(
                 ok=False, code=WORKSPACE,
                 reasons=["leg %d out of stroke (%.1f mm) at t=%.3fs"
-                         % (j, ext[j], t) for j in bad],
+                         % (j, ext[first, j], t_fail) for j in bad],
                 peak_leg_ext_mm=peak_ext, peak_hand_rev=peak_hand_rev)
+        return FeasibilityReport(
+            ok=False, code=UNREACHABLE,
+            reasons=["Jacobian condition %.1f > %.1f (near singularity) "
+                     "at t=%.3fs" % (conds[first], wlimits.cond_hard, t_fail)],
+            peak_leg_ext_mm=peak_ext, peak_hand_rev=peak_hand_rev)
 
-        J = compute_jacobian(pos, rot, geom)
-        cond = compute_condition_number(pos, rot, geom, J=J)
-        if cond > wlimits.cond_hard:
-            return FeasibilityReport(
-                ok=False, code=UNREACHABLE,
-                reasons=["Jacobian condition %.1f > %.1f (near singularity) "
-                         "at t=%.3fs" % (cond, wlimits.cond_hard, t)],
-                peak_leg_ext_mm=peak_ext, peak_hand_rev=peak_hand_rev)
+    peak_ext = float(ext_prefix[-1])
+    peak_hand_rev = float(hand_rev_prefix[-1])
 
-        leg_vel = twist_to_leg_velocities(twist, pos, rot, geom, J=J)
-        peak_vel = max(peak_vel, float(np.max(np.abs(leg_vel))))
-        leg_acc = accel_to_leg_accels(accel, twist, pos, rot, geom, J=J)
-        peak_acc = max(peak_acc, float(np.max(np.abs(leg_acc))))
-        acc_samples.append(leg_acc)
+    # `twist_to_leg_velocities` / `accel_to_leg_accels` in batched form — the SAME
+    # expressions (`J·twist`, `J·accel + J̇·twist`) on the same analytic J, with
+    # J̇ from the same central FD at the same 1e-7 half-step.
+    leg_vel = np.einsum('nij,nj->ni', J, twists)                        # (n,6)
+    J_dot = _batched_jacobian_dot(poses, twists, geom)
+    leg_acc = (np.einsum('nij,nj->ni', J, accels)
+               + np.einsum('nij,nj->ni', J_dot, twists))                # (n,6)
+    peak_vel = float(np.max(np.abs(leg_vel)))
+    peak_acc = float(np.max(np.abs(leg_acc)))
 
     # Leg jerk from the finite difference of the analytic leg acceleration on the
     # sub-knot mesh, inflated by the same _VALIDATE_JERK_MARGIN the segment gate
@@ -1192,20 +1263,24 @@ def validate_cycle(cycle_plan, limits, geom, *,
     # WP4's sim harness, not this constant.
     peak_jerk = 0.0
     sub_dt = dt / m
-    if len(acc_samples) >= 2:
-        jerk = np.diff(np.asarray(acc_samples), axis=0) / sub_dt
+    if leg_acc.shape[0] >= 2:
+        jerk = np.diff(leg_acc, axis=0) / sub_dt
         peak_jerk = float(np.max(np.abs(jerk))) * _VALIDATE_JERK_MARGIN
 
     # ── Pass 2: hand span extrema (closed form) + the per-span position extrema ──
+    # Scalar on purpose: one span's extrema are three multiplies and a root, and
+    # there are only (n_knots - 1) of them. The sampled values come from the pass-1
+    # arrays rather than from fresh `hand_at` calls — same sample times, same
+    # numbers, one fewer traversal of the plan.
     peak_hand_vel = 0.0
     peak_hand_acc = 0.0
     for k in range(n_knots - 1):
-        t0 = ts[k * m]
-        t1 = ts[(k + 1) * m]
-        p0, v0 = cycle_plan.hand_at(float(t0))
-        p1, v1 = cycle_plan.hand_at(float(t1))
+        i0 = k * m
+        i1 = (k + 1) * m
+        t0 = ts[i0]
         s_stationary, span_vel, span_acc = _hand_span_extrema(
-            float(p0), float(v0), float(p1), float(v1), dt)
+            float(hand_revs[i0]), float(hand_vels[i0]),
+            float(hand_revs[i1]), float(hand_vels[i1]), dt)
         peak_hand_vel = max(peak_hand_vel, span_vel)
         peak_hand_acc = max(peak_hand_acc, span_acc)
         # Interior POSITION extrema are read back through the plan's own hand_at,
@@ -1227,10 +1302,12 @@ def validate_cycle(cycle_plan, limits, geom, *,
 
     # ── Pass 3: the catch runway, with the ACHIEVED catch velocity ──
     if 0 <= catch_k <= n_knots - 1:
-        t_catch = float(ts[min(catch_k * m, len(ts) - 1)])
-        rev_c, vel_c = cycle_plan.hand_at(t_catch)
-        available = float(rev_c) - HAND_STROKE_MIN_REV
-        needed = (float(vel_c) ** 2) / (2.0 * hand_limit_a) + float(runway_margin_rev)
+        i_catch = min(catch_k * m, len(ts) - 1)
+        t_catch = float(ts[i_catch])
+        rev_c = float(hand_revs[i_catch])
+        vel_c = float(hand_vels[i_catch])
+        available = rev_c - HAND_STROKE_MIN_REV
+        needed = (vel_c ** 2) / (2.0 * hand_limit_a) + float(runway_margin_rev)
         if available < needed:
             return FeasibilityReport(
                 ok=False, code=HAND_STROKE,
@@ -1241,28 +1318,18 @@ def validate_cycle(cycle_plan, limits, geom, *,
                           'at %.0f rev/s^2 plus %.3f rev margin, and the slider '
                           'sits %.3f rev above its homed bottom at t=%.3fs — plan '
                           'the catch higher or slow it'
-                          % (abs(float(vel_c)),
-                             (float(vel_c) ** 2) / (2.0 * hand_limit_a),
+                          % (abs(vel_c), (vel_c ** 2) / (2.0 * hand_limit_a),
                              hand_limit_a, float(runway_margin_rev),
                              available, t_catch)))],
                 peak_leg_ext_mm=peak_ext, peak_hand_rev=peak_hand_rev)
 
     # ── Pass 4: per-knot step bounds, on the wire's own knot sequence ──
-    peak_step = 0.0
-    peak_hand_step = 0.0
-    prev_rev = None
-    prev_hand = None
-    for k in range(n_knots):
-        tk = float(ts[k * m])
-        pose_k, _, _ = cycle_plan.state_at(tk)
-        motor_rev = _pose_to_rev(pose_k, geom, mm_to_rev)
-        hand_k, _ = cycle_plan.hand_at(tk)
-        if prev_rev is not None:
-            peak_step = max(peak_step,
-                            float(np.max(np.abs(motor_rev - prev_rev))))
-            peak_hand_step = max(peak_hand_step, abs(float(hand_k) - prev_hand))
-        prev_rev = motor_rev
-        prev_hand = float(hand_k)
+    # The knots ARE samples 0, m, 2m, … of pass 1's grid, so the motor revs come
+    # from the extensions already measured there rather than from a second
+    # position-IK pass over the knots.
+    knot_rev = ext[::m] * mm_to_rev                                     # (n_knots,6)
+    peak_step = float(np.max(np.abs(np.diff(knot_rev, axis=0))))
+    peak_hand_step = float(np.max(np.abs(np.diff(hand_revs[::m]))))
 
     # ── Decide the code (priority order; first failure wins) ──
     step_bound = STEP_BOUND_MARGIN * float(limits.max_step_rev)

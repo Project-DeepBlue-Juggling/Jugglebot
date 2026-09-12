@@ -1,0 +1,36 @@
+swept_at: '2026-09-12'
+gate_hash: 8217b4a13ca7
+limits:
+  leg_vel_mmps: 300.0
+  leg_acc_mmps2: 5000.0
+  leg_jerk_mmps3: 200000.0
+  hand_acc_rps2: 3500.0
+boxes:
+- site_pair:
+  - P1
+  - P2
+  apex_band_m:
+  - 0.85
+  - 0.95
+  landing_xy_m:
+  - - -0.02
+    - 0.02
+  - - -0.02
+    - 0.02
+  flight_s:
+  - 0.8327382469699294
+  - 0.8568805868963759
+- site_pair:
+  - P2
+  - P1
+  apex_band_m:
+  - 0.85
+  - 0.95
+  landing_xy_m:
+  - - -0.02
+    - 0.02
+  - - -0.02
+    - 0.02
+  flight_s:
+  - 0.8327382469699294
+  - 0.8568805868963759

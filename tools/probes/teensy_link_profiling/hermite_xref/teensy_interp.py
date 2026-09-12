@@ -21,7 +21,7 @@ follow-on (see handoff).
 THE 7TH (HAND) LANE — added 2026-09-04, unified-7dof-planner Phase 4
 --------------------------------------------------------------------
 FW 17 grew a 7th interpolation lane for the hand (axis 6). It is mirrored here
-so `sim/unified_gate.py` can drive the production chain
+so `sim/skills_gate.py` (via `sim/stream_chain.py`) can drive the production chain
 (planner → emitter → SetpointPump → wire → **this** → plant) without a second,
 divergent transcription of the ladder living under `sim/`.
 
@@ -121,7 +121,7 @@ class TeensyLegInterp:
         # RAW ladder output, before the lead + stroke clamps.  Recorded, never
         # fed back: the clamps are an encoder-dependent SAFETY layer, so a
         # "did the interpolator reconstruct the plan?" score has to read the
-        # ladder, not the guard.  ``sim/unified_gate.py`` scores these.
+        # ladder, not the guard.  ``sim/skills_gate.py`` scores these.
         self.raw_pos = [0.0] * NUM_LEGS
         self.raw_vel = [0.0] * NUM_LEGS
         self.lead_clamp_ticks = 0
@@ -163,7 +163,7 @@ class TeensyLegInterp:
         #: and nothing in this file reads it.  It exists so a harness can say
         #: WHEN the lane left Mode 1 instead of inferring it from the age it
         #: already used to decide what to look for — see
-        #: ``sim/unified_gate.hand_decay_probe``.
+        #: ``sim/stream_chain.hand_decay_probe`` (``sim/skills_gate.py``'s caller).
         self.hand_mode = 0
 
     # ── Latch a new MPC setpoint (port of the relevant parts of _on_mpc_command) ──

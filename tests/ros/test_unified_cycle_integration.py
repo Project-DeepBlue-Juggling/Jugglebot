@@ -340,8 +340,10 @@ def test_the_accept_line_attributes_its_own_solve():
     the source, and both have to be ON THE LINE ITSELF rather than in a topic a
     session may or may not have bagged:
 
-    * the stage split, which says WHERE the time went (measured: ``val`` is
-      ~89 % of a healthy solve, ``qp`` ~6 %); and
+    * the stage split, which says WHERE the time went (measured 2026-09-06:
+      ``val`` ~89 % of a healthy solve, ``qp`` ~6 %; re-measured 2026-09-12
+      after the gate was vectorised at R2: a 16 ms LAUNCH splits ``qp`` 5.4 /
+      ``tilt`` 3.4 / ``val`` ~4 / ``dec`` 1.3 / ``cont`` 0.8 ms); and
     * ``load1``, because **the bag carries no host-CPU channel at all** — after
       the fact there is no way to ask whether the box was busy, which is the one
       condition that reproduces a multi-second solve.
@@ -352,13 +354,19 @@ def test_the_accept_line_attributes_its_own_solve():
     for key in ('qp=', 'tilt=', 'dec=', 'val=', 'cont='):
         assert key in resp.message, resp.message
     assert 'load1=' in resp.message, resp.message
-    # The split is in ms and sums to the reported plan wall time, so a reader can
-    # check the line against itself.
+    # The split is in ms and accounts for the planner's share of the reported
+    # plan wall time, so a reader can check the line against itself. The
+    # callback's OWN work — the seed sample, the guard ladder, the continuity
+    # check and the install — sits outside the split; it measured ~1 ms on
+    # 2026-09-12, invisible against a 180 ms solve (the 5 % relative bound this
+    # carried until then) and ~6 % of the 16 ms solve the vectorised gate left,
+    # so the residual is bounded absolutely instead: never negative (the split
+    # cannot claim time the callback did not spend) and under 5 ms.
     import re as _re
     parts = {k: float(v) for k, v in
              _re.findall(r'(qp|tilt|dec|val|cont)=([0-9.]+)', resp.message)}
-    assert sum(parts.values()) == pytest.approx(resp.plan_wall_ms, rel=0.05), (
-        parts, resp.plan_wall_ms)
+    residual_ms = resp.plan_wall_ms - sum(parts.values())
+    assert -0.15 <= residual_ms <= 5.0, (parts, resp.plan_wall_ms, residual_ms)
 
 
 def _settle_req(period_s=1.4, dx_mm=60.0, dy_mm=0.0):

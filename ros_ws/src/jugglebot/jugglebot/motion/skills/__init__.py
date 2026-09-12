@@ -5,3 +5,5 @@ Deliberately EMPTY until R2, when ``sites``, ``schedule``, ``segments`` and
 from R0 so that ``INVARIANTS.md`` — the checklist that must be consulted before
 any rung deletes code — sits at the destination it protects.
 """
+
+from __future__ import annotations

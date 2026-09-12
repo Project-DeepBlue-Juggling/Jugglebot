@@ -606,6 +606,40 @@ class PlanCycle:
                      'hand_peak_vel_rps': 0.0}).Response
 
 
+class InstallSegment:
+    """Skill-segment install service mock (skill-stack R2, Unit D2).
+
+    Mirrors ``srv/InstallSegment.srv`` field for field, INCLUDING the KIND_*
+    constants — the node compares ``request.kind`` against
+    ``InstallSegment.Request.KIND_THROW`` and friends, so a mock that carried
+    only the fields would let a typo'd constant name pass silently in the
+    mocked-ROS suite and fail only on the real generated type.
+    """
+
+    class Request:
+        KIND_THROW = 0
+        KIND_CATCH = 1
+        KIND_REST = 2
+
+        def __init__(self):
+            self.kind = 0
+            self.ball_id = 0
+            self.t_event_s = 0.0
+            self.site_mm = [0.0, 0.0, 0.0]
+            self.target_mm = [0.0, 0.0, 0.0]
+            self.flight_s = 0.0
+            self.landing_vel_mm_s = [0.0, 0.0, 0.0]
+            self.rest_site_mm = [0.0, 0.0, 0.0]
+            self.t_release_s = 0.0
+            self.release_site_mm = [0.0, 0.0, 0.0]
+
+    Response = _make_service(
+        resp_fields={'accepted': False, 'code': '', 'message': '',
+                     'plan_wall_ms': 0.0, 'splice_k': -1, 't0_mono': 0.0,
+                     't_event_mono': 0.0, 'duration_s': 0.0,
+                     'seeded_post_release': False, 't_release_mono': 0.0}).Response
+
+
 class TimedTarget:
     """Timed target service mock (Phase 5): relative lead_time_s per Request
     (seconds from service receipt — the node anchors the absolute arrival at
@@ -1084,6 +1118,7 @@ _create_mock_module('jugglebot_interfaces.srv', {
     'SetTrajectoryLimits': SetTrajectoryLimits,
     'TimedTarget': TimedTarget,
     'PlanCycle': PlanCycle,
+    'InstallSegment': InstallSegment,
 })
 _create_mock_module('jugglebot_interfaces.action', {
     'HomeMotors': HomeMotors,

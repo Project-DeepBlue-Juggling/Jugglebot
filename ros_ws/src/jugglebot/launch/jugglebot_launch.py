@@ -421,6 +421,19 @@ def generate_launch_description():
         additional_env=dict(_planner_blas_env),
     )
 
+    # Skill-stack orchestrator shell (R2): schedule dispatch over
+    # trajectory/install_segment (jugglebot/skill_node.py). It calls the
+    # planner over the wire (trajectory_node does the solve), but it builds and
+    # ticks the schedule itself — small, frequent numpy work on this node's own
+    # thread, same class as catch_coordinator_node's build_catch calls — so it
+    # gets the same cap. See _planner_blas_env above and the 2026-09-06 UH-3
+    # entry.
+    skill_node = Node(
+        package='jugglebot',
+        executable='skill_node',
+        additional_env=dict(_planner_blas_env),
+    )
+
     # teensy_bridge_node imports the top-level ``teensy_link`` package, which
     # lives at the REPO ROOT — OUTSIDE the ROS install tree — so prepend the
     # repo root to PYTHONPATH (mirrors teensy_bridge_launch.py, which carries
@@ -704,6 +717,7 @@ def generate_launch_description():
         ball_butler_node,
         reload_coordinator_node,
         trajectory_node,
+        skill_node,
         teensy_bridge_node,
         # Recording (conditional)
         rosbag_record,

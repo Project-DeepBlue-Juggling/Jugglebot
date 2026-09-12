@@ -224,3 +224,69 @@ class CyclePlan(TrajectoryPlan):
                                float(self.hand_vel_rps[k + 1]),
                                self.dt, s)
         return float(pos), float(vel)
+
+    # ── batched sampling (the feasibility gate's surface) ──
+    #
+    # WHY THESE EXIST.  ``feasibility.validate_cycle`` meshes the pose track at
+    # four sub-samples per knot and runs a full IK chain on every sample.  Driven
+    # through the scalar :meth:`state_at` / :meth:`hand_at` above, that was ~2.5 ms
+    # per knot (probe 2026-09-11) — ~157 ms on the 1.4 s / 57-knot reference cycle,
+    # i.e. ~88 % of a ``plan_cycle`` call.  The skill stack gates one ≤ 40-knot
+    # segment per skill as a RUNTIME assert, so the gate has to be a few ms, and
+    # the only way to get there is to hand numpy the whole grid at once.
+    #
+    # THEY ARE THE SAME ARITHMETIC, NOT AN APPROXIMATION.  Both call the module's
+    # one :func:`_hermite` with the identical operand order, elementwise over a
+    # column of ``s`` values instead of one float, so a batched sample is
+    # bit-for-bit what the scalar accessor returns at that ``t``
+    # (``tests/motion/test_cycle_plan.py`` pins it exactly, not approximately).
+    # The two clamped regimes are reproduced verbatim: ``t >= total_duration``
+    # takes the terminal hold, ``t <= 0`` the first knot's boundary conditions.
+
+    def _locate_batch(self, ts: np.ndarray):
+        """Vectorised :meth:`_locate` — ``(k (m,), s (m,))`` for an array of ``t``.
+
+        Same three clamps as the scalar: ``t <= 0`` reads the first span at
+        ``s = 0``, ``k`` never exceeds the last span, and ``s`` is held in
+        ``[0, 1]``.  ``astype`` truncates toward zero, which on the non-negative
+        ``t`` this sees is exactly the scalar's ``int(t / dt)``.
+        """
+        t = np.where(ts <= 0.0, 0.0, ts)
+        k = (t / self.dt).astype(np.intp)
+        np.minimum(k, self.n_knots - 2, out=k)
+        s = (t - k * self.dt) / self.dt
+        np.clip(s, 0.0, 1.0, out=s)
+        return k, s
+
+    def states_at(self, ts):
+        """``(pose (m,6), twist (m,6), accel (m,6))`` at the times ``ts``.
+
+        The batched twin of :meth:`state_at`, returning the same three quantities
+        stacked over the sample axis.  Rows at or past ``total_duration`` carry the
+        terminal hold (``final_pose``, zero twist, zero accel).
+        """
+        t = np.asarray(ts, dtype=float).reshape(-1)
+        k, s = self._locate_batch(t)
+        pos, vel, acc = _hermite(self.pose[k], self.pose_vel[k],
+                                 self.pose[k + 1], self.pose_vel[k + 1],
+                                 self.dt, s[:, None])
+        hold = t >= self.total_duration
+        if hold.any():
+            h = hold[:, None]
+            pos = np.where(h, self.final_pose[None, :], pos)
+            vel = np.where(h, 0.0, vel)
+            acc = np.where(h, 0.0, acc)
+        return pos, vel, acc
+
+    def hands_at(self, ts):
+        """``(rev (m,), rev_s (m,))`` at the times ``ts`` — batched :meth:`hand_at`."""
+        t = np.asarray(ts, dtype=float).reshape(-1)
+        k, s = self._locate_batch(t)
+        pos, vel, _ = _hermite(self.hand_rev[k], self.hand_vel_rps[k],
+                               self.hand_rev[k + 1], self.hand_vel_rps[k + 1],
+                               self.dt, s)
+        hold = t >= self.total_duration
+        if hold.any():
+            pos = np.where(hold, self.hand_rev[-1], pos)
+            vel = np.where(hold, 0.0, vel)
+        return pos, vel

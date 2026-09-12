@@ -59,6 +59,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/SetTrajectoryLimits.srv"
   "srv/TimedTarget.srv"
   "srv/PlanCycle.srv"
+  "srv/InstallSegment.srv"
 
   "msg/CanTrafficReportMessage.msg"
 

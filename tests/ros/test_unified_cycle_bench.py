@@ -210,13 +210,15 @@ def test_the_stage_split_note_explains_cont_on_a_JOINED_install():
 
 
 def test_the_session_limits_match_the_gates_that_planned_them():
-    """250 / 3000 / 150000 — the same triple ``sim/cycle_gate.py`` plans at.
+    """300 / 5000 / 200000 — the same triple ``sim/skills_gate.py`` plans at.
 
     Read out of the gate source rather than restated, because P5 REFUSES a
     sitting whose limits differ from these: a copy that drifted from the gate's
-    would refuse the very limits the sim evidence was produced at.
+    would refuse the very limits the sim evidence was produced at. Re-pointed
+    2026-09-12 (skill-stack R2 Unit E) from ``sim/unified_gate.py`` (deleted
+    the same rung, superseded FSM/unified-cycle stack) to the current gate.
     """
-    src = open(os.path.join(_REPO, 'sim', 'unified_gate.py')).read()
+    src = open(os.path.join(_REPO, 'sim', 'skills_gate.py')).read()
     got = {}
     for key, name in (('vel', '_SESSION_LEG_VEL_MMPS'),
                       ('acc', '_SESSION_LEG_ACC_MMPS2'),
@@ -744,7 +746,7 @@ def test_the_limits_refusal_hands_over_the_exact_service_call():
     c = _by_id(ucb.check_preconditions(_good(leg_jerk=30000.0)))['P4']
     assert c['ok'] is False
     assert 'ros2 service call /trajectory/set_limits' in c['fix']
-    assert '150000.0' in c['fix'] and '250.0' in c['fix']
+    assert '200000.0' in c['fix'] and '300.0' in c['fix']
     assert ucb.SET_LIMITS_CMD in c['fix']
 
 

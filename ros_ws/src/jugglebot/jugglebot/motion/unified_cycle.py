@@ -116,6 +116,7 @@ LANDING = 'landing'
 SETTLE = 'settle'
 JOINED = 'joined'        #: the output of :func:`extend`
 REPLANNED = 'replanned'  #: the output of :func:`replan_tail`
+SPLICED = 'spliced'      #: the output of :func:`splice_at`
 
 KINDS = (LAUNCH, STEADY, LANDING, SETTLE)
 
@@ -874,6 +875,69 @@ class CycleMeta:
         return self.catches[0].runway_margin_rev if self.catches else None
 
 
+def detach_knots(cup_cfg=None) -> int:
+    """Knots after a release that carry that ball's detach-cone equalities.
+
+    ``cup_cycle``'s ``n_detach`` is THE number — the QP pins the cup's
+    acceleration DIRECTION at knots ``k_rel+1 .. k_rel+n_detach`` so the ball
+    already out of the cup gets no lateral shove — and every consumer of it in
+    this module and above reads it through here rather than keeping a copy.
+    """
+    return int(cc.CupCycleConfig.n_detach if cup_cfg is None
+               else getattr(cup_cfg, 'n_detach', cc.CupCycleConfig.n_detach))
+
+
+def release_state_at_knot(plan: CyclePlan, meta: CycleMeta, k: int,
+                          cfg=None) -> CycleState:
+    """The POST-RELEASE boundary condition at the release sitting on knot ``k``.
+
+    :func:`state_at_knot` is the seed for an ordinary interior knot, and it is
+    deliberately ``post_release=False`` / ``detach_axis=None`` — no ball leaves
+    the cup in the middle of a carry.  At a RELEASE knot that is the wrong
+    state: a ball leaves there, and a window seeded without the cone would
+    re-solve the very knots whose acceleration direction the ball's flight
+    depends on (1.126 m/s² of off-axis specific force against an original
+    4.4e-16 — see :func:`_refuse_splice_into_a_detach_cone`).
+
+    So this is the interior spelling of :func:`release_state_from_meta`, and
+    the same floats: the mark on knot ``k`` supplies the site, the take-off
+    velocity, ``g`` and the detach axis (the direction the ball actually left
+    along), the plan's knot ``k`` supplies pose and hand, and the levelling
+    frame is the one the PLAN was built in (row E8's in-flight rule).  At the
+    TERMINAL knot it equals :func:`release_state_from_meta` field for field,
+    which is how the two stay one path rather than two spellings.
+
+    ``ValueError`` when knot ``k`` carries no release: a caller asking for a
+    post-release seed where no ball left is a caller that has mislaid a mark.
+    """
+    k = int(k)
+    dt = float(meta.dt)
+    mark = None
+    for m in meta.releases:
+        if int(round(float(m.t_s) / dt)) == k:
+            mark = m
+            break
+    if mark is None:
+        raise ValueError(
+            'knot %d carries no release (this plan releases at knots %s) — '
+            'only a knot a ball actually leaves the cup on has a post-release '
+            'state to hand on'
+            % (k, [int(round(float(m.t_s) / dt)) for m in meta.releases]))
+    return CycleState(
+        pose=plan.pose[k].copy(),
+        pose_vel=plan.pose_vel[k].copy(),
+        pose_accel=np.zeros(6),
+        hand_rev=float(plan.hand_rev[k]),
+        hand_vel_rps=float(plan.hand_vel_rps[k]),
+        detach_axis=tg.cup_axis(float(mark.tilt[0]), float(mark.tilt[1])),
+        post_release=True,
+        cup_pos_mm=np.asarray(mark.site_mm, dtype=float).copy(),
+        cup_vel_mm_s=np.asarray(mark.vel_mm_s, dtype=float).copy(),
+        cup_accel_mm_s2=_G_MM_S2.copy(),
+        levelling_correction=meta.levelling_correction,
+    )
+
+
 def release_state_from_meta(meta: CycleMeta, plan: CyclePlan,
                             cfg=None) -> CycleState:
     """The :class:`CycleState` the NEXT window chains from, exactly.
@@ -895,6 +959,11 @@ def release_state_from_meta(meta: CycleMeta, plan: CyclePlan,
     node holds by the time it is called.  That is C-LEVEL-1's in-flight rule, and
     it is also what keeps the seam exact — both halves apply the same matrix to
     the same ``detach_axis``-derived tilt, so :func:`_seam_check` sees 0.0.
+
+    This is the TERMINAL case of :func:`release_state_at_knot` — it checks that
+    the window really does end at a release and then asks for the state at the
+    last knot.  One path: an interior splice landing on a release knot gets the
+    same floats through the same code.
     """
     if not meta.releases:
         raise ValueError(
@@ -905,19 +974,7 @@ def release_state_from_meta(meta: CycleMeta, plan: CyclePlan,
         raise ValueError(
             "the chained release must be the window's terminal one (release at "
             "%.4f s, window ends at %.4f s)" % (mark.t_s, meta.duration_s))
-    return CycleState(
-        pose=plan.pose[-1].copy(),
-        pose_vel=plan.pose_vel[-1].copy(),
-        pose_accel=np.zeros(6),
-        hand_rev=float(plan.hand_rev[-1]),
-        hand_vel_rps=float(plan.hand_vel_rps[-1]),
-        detach_axis=tg.cup_axis(float(mark.tilt[0]), float(mark.tilt[1])),
-        post_release=True,
-        cup_pos_mm=np.asarray(mark.site_mm, dtype=float).copy(),
-        cup_vel_mm_s=np.asarray(mark.vel_mm_s, dtype=float).copy(),
-        cup_accel_mm_s2=_G_MM_S2.copy(),
-        levelling_correction=meta.levelling_correction,
-    )
+    return release_state_at_knot(plan, meta, int(plan.n_knots) - 1, cfg)
 
 
 def is_release_terminal(meta: CycleMeta) -> bool:
@@ -2120,6 +2177,212 @@ def splice_knot(meta: CycleMeta, t_now_s: float, lead_s: float) -> int:
                              int(meta.n_knots))
 
 
+def state_at_knot(plan: CyclePlan, meta: CycleMeta, k: int) -> CycleState:
+    """The boundary condition a NEW window is planned from at interior knot ``k``.
+
+    This is the state :func:`replan_tail` has always spliced its tail from, named
+    so that :func:`splice_at` uses the SAME one rather than a second spelling of
+    it (there is one splice seed in this module, and this is it).
+
+    Every channel comes from the plan's or the cup track's OWN floats, never from
+    a round trip through the platform: ``pose``/``hand`` off the knot,
+    ``cup_pos_mm``/``cup_vel_mm_s``/``cup_accel_mm_s2`` off ``meta.cup_plan`` (the
+    cup acceleration is not recoverable from a pose, and it is what the QP's
+    start-of-window rows treat as exact — see :class:`CycleState`).
+
+    ``post_release=False`` / ``detach_axis=None``: no ball leaves the cup mid-
+    carry, so the window starting here carries no detach cone.  That is exactly
+    why the callers must refuse a ``k`` inside an existing release's cone — the
+    rows would be re-solved away under a ball already in the air.  Both callers
+    do (:func:`replan_tail`'s two bounds, :func:`splice_at`'s copy of them).
+
+    ``levelling_correction`` is the frame the PLAN was built in (row E8's
+    in-flight rule): a re-level between the install and this call must not
+    re-frame a plan the emitter is already streaming.
+    """
+    cup0 = meta.cup_plan
+    if cup0 is None:
+        raise CycleInfeasible(REPLAN_WINDOW, [
+            "no source cup track on the meta — only a plan produced by "
+            "plan_cycle/replan_tail carries one, and the tail is solved from "
+            "the cup state it holds"])
+    k = int(k)
+    return CycleState(
+        pose=plan.pose[k].copy(), pose_vel=plan.pose_vel[k].copy(),
+        pose_accel=np.zeros(6), hand_rev=float(plan.hand_rev[k]),
+        hand_vel_rps=float(plan.hand_vel_rps[k]),
+        detach_axis=None, post_release=False,
+        cup_pos_mm=cup0.pos[k] * 1000.0,
+        cup_vel_mm_s=cup0.vel[k] * 1000.0,
+        cup_accel_mm_s2=cup0.acc[k] * 1000.0,
+        levelling_correction=meta.levelling_correction)
+
+
+def _refuse_splice_into_a_detach_cone(meta: CycleMeta, k_s: int, dt: float,
+                                      n: int, cup_cfg=None) -> None:
+    """Refuse ``k_s`` when it cuts into the equalities of a ball already in flight.
+
+    The window a splice seed opens is solved with ``post_release=False`` (see
+    :func:`state_at_knot`), so knots ``k_rel+1 .. k_rel+n_detach`` of any release
+    the head already carries would be re-solved WITHOUT their detach-cone rows —
+    a lateral shove delivered to a ball that has left the cup, MEASURED at
+    1.126 m/s² of off-axis specific force against an original 4.4e-16
+    (2026-09-04, ``/tmp/probe_f4b.py``; the full argument is in
+    :func:`replan_tail`'s two copies of this bound, which this function now is).
+    ``validate_cycle`` cannot see it: what is left is a perfectly smooth track.
+
+    Two bounds, both from ``replan_tail``:
+
+    * ``k_s <= n_detach`` — the cone of the release THIS plan itself follows,
+      which sits at knots ``1..n_detach``.  Unconditional, as it has always been.
+    * ``k_s <= k_rel + n_detach`` for a release the head carries at ``k_rel``.
+
+    The second is taken over releases with ``k_rel < k_s`` only, and the
+    difference from ``replan_tail`` is load-bearing: there the tail RE-CREATES a
+    terminal release, so the bound excludes the terminal knot; here the segment
+    is a different skill and excludes nothing — except the ``k_rel == k_s`` case,
+    which is :func:`extend`'s own chain (the segment was seeded by
+    :func:`release_state_from_meta`, so it carries the cone itself and
+    :func:`_seam_check` is the authority).  Refusing that case would refuse every
+    ordinary LAUNCH+LANDING join, which ``splice_at`` at ``k_s = n-1`` is.
+    """
+    n_detach = detach_knots(cup_cfg)
+    if k_s <= n_detach:
+        raise CycleInfeasible(REPLAN_WINDOW, [
+            bound_msg('splice knot', k_s, '<=', n_detach, knob='lead_s',
+                      digits=0, limit_label='detach knots',
+                      tail=('knots 1..%d carry the detach-cone equalities of the '
+                            'release this window follows and the new window is '
+                            'solved without them; raise lead_s so the splice '
+                            'lands after them' % n_detach))])
+    head_release_knots = [k for k in
+                          (int(round(float(r.t_s) / dt)) for r in meta.releases)
+                          if k < k_s]
+    if head_release_knots:
+        k_rel = max(head_release_knots)
+        if k_s <= k_rel + n_detach:
+            raise CycleInfeasible(REPLAN_WINDOW, [
+                bound_msg('splice knot', k_s, '<=', k_rel + n_detach,
+                          knob='lead_s', digits=0,
+                          limit_label='release knot %d + detach knots' % k_rel,
+                          tail=('the plan throws at knot %d and knots %d..%d '
+                                'carry that ball\'s detach-cone equalities; the '
+                                'new window is solved with neither, so the '
+                                'splice has to land after them'
+                                % (k_rel, k_rel + 1, k_rel + n_detach)))])
+
+
+def _head_view(plan: CyclePlan, meta: CycleMeta,
+               k_s: int) -> Tuple[CyclePlan, CycleMeta]:
+    """``plan``/``meta`` truncated to knots ``[0, k_s]`` — the part a splice keeps.
+
+    The arrays are numpy SLICES (views), so the head costs no copy and stays bit
+    for bit what the emitter has already been handed.
+
+    Two fields are deliberately NOT carried across, and both are about cost
+    rather than trajectory:
+
+    * ``plan_wall_s``/``stage_wall_s`` are zeroed.  :func:`extend` SUMS them, so
+      inheriting the source plan's would make every splice report the whole
+      chain's cumulative solve time as its own — and the number
+      ``splice_at``'s callers use it for is the INSTALL deadline (how long this
+      solve took, against the lead), where a cumulative figure is simply wrong.
+    * ``cup_plan.warm_start`` is dropped, matching :func:`_concat_cup`.
+
+    ``report``/``report_range_knots`` ARE carried: the head's verdict is the
+    source plan's, which is what :func:`_gate_joined` inherits so that a splice
+    re-gates only the seam and the new window.  Its ``peak_*`` fields describe
+    the SOURCE plan — including the tail this splice discards — so a spliced
+    meta's peaks can be ABOVE what the spliced plan actually reaches.  That is
+    the conservative direction (never below), and buying the exact number back
+    would cost a full re-gate of the head, which is the one thing the bounded
+    gate range exists to avoid.
+    """
+    n_head = k_s + 1
+    dt = float(plan.dt)
+    ck = int(plan.catch_k)
+    head = CyclePlan(pose=plan.pose[:n_head], pose_vel=plan.pose_vel[:n_head],
+                     hand_rev=plan.hand_rev[:n_head],
+                     hand_vel_rps=plan.hand_vel_rps[:n_head], dt=dt,
+                     catch_k=(ck if 0 <= ck <= k_s else -1))
+    t_head = k_s * dt
+    # Half a knot of tolerance on the release instant for the same float reason
+    # `replan_tail` documents at its nominated-catch bound: a mark's `t_s` is
+    # re-based by float addition in `extend` and `k_s * dt` is a different
+    # arithmetic, so an exact `<=` would drop a terminal release by 1e-16 s.
+    releases = tuple(m for m in meta.releases
+                     if float(m.t_s) <= t_head + 0.5 * dt)
+    catches = tuple(m for m in meta.catches if int(m.knot) <= k_s)
+    cup = meta.cup_plan
+    cup_head = None if cup is None else cc.CupCyclePlan(
+        pos=cup.pos[:n_head], vel=cup.vel[:n_head], acc=cup.acc[:n_head],
+        jerk=cup.jerk[:k_s], t=cup.t[:n_head], dt=cup.dt,
+        catch_k=(int(cup.catch_k) if 0 <= int(cup.catch_k) <= k_s else -1),
+        takeoff_vel=cup.takeoff_vel, warm_start=None)
+    head_meta = CycleMeta(
+        kind=meta.kind, n_knots=n_head, dt=dt, duration_s=t_head,
+        releases=releases, catches=catches, report=meta.report,
+        plan_wall_s=0.0, tilts=np.asarray(meta.tilts)[:n_head],
+        receive_tilt=meta.receive_tilt, throw_tilt=meta.throw_tilt,
+        stroke_clear_s=meta.stroke_clear_s,
+        takeoff_vel_mps=meta.takeoff_vel_mps, warm_start=meta.warm_start,
+        cup_plan=cup_head, goals=meta.goals,
+        levelling_correction=meta.levelling_correction,
+        seam_vel_mismatch=meta.seam_vel_mismatch,
+        report_range_knots=meta.report_range_knots, stage_wall_s=None)
+    return head, head_meta
+
+
+def splice_at(plan: CyclePlan, meta: CycleMeta, k_s: int,
+              seg_plan: CyclePlan, seg_meta: CycleMeta,
+              limits, geom) -> Tuple[CyclePlan, CycleMeta]:
+    """Join ``seg_plan`` onto ``plan`` at INTERIOR knot ``k_s``.
+
+    This is :func:`extend` generalised from "the plan's last knot" to "any knot
+    the wire has not read yet", and it is implemented AS ``extend``: the head is
+    the source plan truncated to ``[0, k_s]`` (:func:`_head_view`), and the join,
+    the duplicate-knot drop, the bounded re-gate and the mark re-basing are the
+    existing ones.  There is deliberately no second concatenation and no second
+    gate range in this module — ``k_s == n_knots - 1`` reduces to exactly today's
+    ``extend``, bit for bit, which is what makes that claim testable.
+
+    ``seg_plan``'s knot 0 must BE the source plan's knot ``k_s`` — plan it from
+    ``state_at_knot(plan, meta, k_s)`` and it is; :func:`_seam_check` refuses
+    anything else with :data:`CHAIN_DISCONTINUITY`, because a seam that is merely
+    close is a position step on six legs inside one 25 ms knot.
+
+    Refusals, all :data:`REPLAN_WINDOW` except the seam's:
+
+    * ``k_s < 1`` — there would be no head to keep.
+    * ``k_s > n - 1`` — that knot is not on this plan.
+    * a ``k_s`` inside a detach cone (:func:`_refuse_splice_into_a_detach_cone`).
+
+    The returned meta's kind is :data:`SPLICED`.  Everything else about it is
+    ``extend``'s: the marks of the discarded tail are gone, ``seg_meta``'s are
+    re-based by ``k_s·dt``, and ``levelling_correction`` is the head's (the two
+    halves must agree — ``_joined_correction`` refuses otherwise, which is row
+    E8's in-flight rule).
+    """
+    n = int(plan.n_knots)
+    dt = float(plan.dt)
+    k_s = int(k_s)
+    if k_s < 1:
+        raise CycleInfeasible(REPLAN_WINDOW, [
+            bound_msg('splice knot', k_s, '<', 1, knob='lead_s',
+                      digits=0, tail='there would be no head to keep')])
+    if k_s > n - 1:
+        raise CycleInfeasible(REPLAN_WINDOW, [
+            bound_msg('splice knot', k_s, '>', n - 1, knob='lead_s', digits=0,
+                      limit_label='last knot',
+                      tail=('the plan runs [0, %d]; there is no knot %d to '
+                            'splice onto' % (n - 1, k_s)))])
+    _refuse_splice_into_a_detach_cone(meta, k_s, dt, n)
+    head, head_meta = _head_view(plan, meta, k_s)
+    joined, joined_meta = extend(head, head_meta, seg_plan, seg_meta,
+                                 limits, geom)
+    return joined, dataclasses.replace(joined_meta, kind=SPLICED)
+
+
 def replan_tail(plan: CyclePlan, meta: CycleMeta, t_now_s: float,
                 new_catch_site_mm, new_catch_vel_mm_s, limits, geom, *,
                 lead_s: float,
@@ -2306,8 +2569,7 @@ def replan_tail(plan: CyclePlan, meta: CycleMeta, t_now_s: float,
     # measured).  That is an ACCIDENT of the start pin — nothing states it, the
     # QP only holds it to ``feas_tol``, and one knot of replan envelope is not
     # worth resting the ball's flight path on it.
-    n_detach = int(cc.CupCycleConfig.n_detach if cup_cfg is None
-                   else getattr(cup_cfg, 'n_detach', cc.CupCycleConfig.n_detach))
+    n_detach = detach_knots(cup_cfg)
     if k_s <= n_detach:
         raise CycleInfeasible(REPLAN_WINDOW, [
             bound_msg('splice knot', k_s, '<=', n_detach, knob='lead_s',
@@ -2515,14 +2777,7 @@ def replan_tail(plan: CyclePlan, meta: CycleMeta, t_now_s: float,
 
     # The cup state at the splice knot, exact — the plan's own numbers, not a
     # round trip through the platform (whose acceleration is not recoverable).
-    tail_state = CycleState(
-        pose=plan.pose[k_s].copy(), pose_vel=plan.pose_vel[k_s].copy(),
-        pose_accel=np.zeros(6), hand_rev=float(plan.hand_rev[k_s]),
-        hand_vel_rps=float(plan.hand_vel_rps[k_s]),
-        detach_axis=None, post_release=False,
-        cup_pos_mm=cup0.pos[k_s] * 1000.0,
-        cup_vel_mm_s=cup0.vel[k_s] * 1000.0,
-        cup_accel_mm_s2=cup0.acc[k_s] * 1000.0)
+    tail_state = state_at_knot(plan, meta, k_s)
 
     # STEADY (catch → release) for a release-terminal plan, LANDING (catch →
     # rest) for a rest-terminal one — the two kinds whose shape is "a catch, then

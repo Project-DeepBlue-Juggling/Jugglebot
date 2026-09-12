@@ -3,19 +3,27 @@ title: Two-ball skill stack — schedule-driven throw/catch skills, one hand mas
 created: 2026-09-09
 status: active
 owner: Harrison
-last_updated: 2026-09-09
+last_updated: 2026-09-12
 related_logbook:
   - 2026-09-09-two-ball-skill-stack-kickoff.md
+  - 2026-09-11-skill-stack-r1-one-hand-master.md
+  - 2026-09-11-skill-stack-r1-sitting-prelevel.md
+  - 2026-09-12-skill-stack-r2-skills-schedule-stream.md
 related_config:
   - config/hardware_config.yaml → jugglebot_operational.unified_cycle_enabled (retires at R4)
   - config/hardware_config.yaml → jugglebot_operational.toss_ilc_enabled (retires at R3)
   - config/hardware_config.yaml → trajectory_op.leg_jerk_limit_mmps3 (the ramp lever, sized at R2)
-  - config/generated/admissible_box.yaml (NEW at R2, machine-written)
+  - config/generated/admissible_box.yaml (machine-written by tools/admissible_sweep.py since R2)
 related_code:
   - ros_ws/src/jugglebot/jugglebot/motion/trajectory/cup_cycle.py::plan_window
   - ros_ws/src/jugglebot/jugglebot/motion/trajectory/cup_realize.py
   - ros_ws/src/jugglebot/jugglebot/motion/trajectory/cycle_plan.py::CyclePlan
-  - ros_ws/src/jugglebot/jugglebot/motion/trajectory/feasibility.py::validate_cycle
+  - ros_ws/src/jugglebot/jugglebot/motion/trajectory/feasibility.py::validate_cycle (vectorised at R2)
+  - ros_ws/src/jugglebot/jugglebot/motion/skills/{sites,schedule,segments,executor,admissible}.py (R2)
+  - ros_ws/src/jugglebot/jugglebot/motion/unified_cycle.py::state_at_knot / splice_at (R2)
+  - ros_ws/src/jugglebot/jugglebot/skill_node.py (R2)
+  - ros_ws/src/jugglebot_interfaces/srv/InstallSegment.srv (R2)
+  - sim/skills_gate.py (R2)
   - ros_ws/src/jugglebot/jugglebot/motion/trajectory/emitter.py::KnotEmitter
   - teensy_link/setpoint_pump.py::SetpointPump
   - ros_ws/src/jugglebot/Teensy_code_canbridge/leg_interp.cpp
@@ -124,6 +132,13 @@ hardware. Facts that size the work:
   session jerk limit as a rest-to-rest quintic and well under the 200 000
   ceiling; the continuous cup trajectory lowers the peak. R2 sizes it with the
   real QP and gate and the owner ramps limits accordingly (decision 4).
+  **Measured at R2 (2026-09-12, `tools/probes/skills_sizing_sweep.py`): the
+  HAND binds before the legs.** At 1.0 m the steady columns window needs
+  3756–3833 rev/s² against the 3500 session cap at every separation, banking
+  setting, z-float setting and chain depth; 1.3/1.5 m need a 900/940 mm
+  release and then cannot stop inside the 1004 mm stroke top. Feasible cells
+  begin at 0.8–0.9 m, all with leg jerk at the 200 000 ceiling; the owner's
+  R2 operating point is the 0.9 m row of the R2 section.
 - The plant's known errors — a +11 % launch-speed excess (≈ +470 mm/s) and a
   +8.5 mrad +y aim bias — are exactly what an identity-prior learner corrects
   in the first few throws.
@@ -216,6 +231,15 @@ Reset:      Ball Butler reload = a CATCH skill whose terminal comes from an exte
   Built by the existing chain `plan_window → tilt_schedule → decompose →
   CyclePlan.from_realized`; **always rest-terminal** (a THROW is release then
   settle; a CATCH is catch then runway to rest — the existing LANDING kind).
+  **Amended at R2 (owner, 2026-09-12):** a CATCH skill MAY carry the next
+  same-site throw (`Skill.then_throw`); its segment is then the existing STEADY
+  kind (catch at t_land, release at t_release) plus a SETTLE tail — still
+  rest-terminal. Measured: the pinned split form (LANDING, then a THROW spliced
+  one knot after touch-down) refuses at every cell of a 480-cell grid because
+  the runway decelerates the hand toward rest and the throw must undo it with
+  `dwell − lead` left (260k mm/s³ at the operating point); the whole-window
+  form passes at 178k of 200k. This is § 1.1's last row made concrete: the
+  platform moves continuously through catch and throw.
 - `Experience(x, u, y, t_abs_s, ball_id, caught)` with x ∈ R⁴ = (site xy,
   seat offset xy of the ball just caught), u ∈ R³ = commanded (landing xy,
   flight), y ∈ R³ = observed (landing xy, flight). SI units.
@@ -296,7 +320,7 @@ The **Status** column is the one source of truth for where each rung stands;
 |---|---|---|---|---|---|
 | R0 | Board and substrate | invariant checklist; census-backed dead-layer deletion | dead clusters (§ 6) | `./run_tests.sh --full` green; grep counts zero | ✅ **DONE** — checklist landed 2026-09-10, deletion done 2026-09-09 (`429c660`, `3bfec0b`) |
 | R1 | One hand master | can-bridge FW 21 (lane follows `HAS_HAND`, guard boots ARMED, ACTIVATE parks the hand at 0 rev), Platform FW 7 (no stroke engine), PROTOCOL_VERSION 7, `hand_mm_per_rev` measured key, lockstep runbook `tests/hardware/session_skill_stack_r1_flash.md` (completed) | `Trajectory.h`, `hand_source`, `hand_ops`, `HAND_TRAJ_CMD`/`HAND_SOURCE_SET`, `SetHandTrajCmd.srv`, `hand_stroke.py` twin, the legacy kind-0 toss device (its FSM branch refused at accept until R4) | bench ladder re-passes on the FW 21 / Platform 7 pair; a streamed self-toss caught with no latch step | ✅ **DONE 2026-09-11** (`1e2c0c9`, `c52dc27`) — flashed, sat, one streamed self-toss caught with no latch step; a levelling-frame tilt snap found + fixed (`_unified_prelevel`); multi-throw chaining + live guard cold-trip → R2 (`logbook/2026-09-11-skill-stack-r1-sitting-prelevel.md`, `…-one-hand-master.md`) |
-| R2 | Skills, schedule, stream (sim) | `motion/skills/`, `install_segment`, vectorised gate, admissible sweep, apex ≥ 1.0 m, `sim/skills_gate.py` | `PlanCycle` modes, ring machinery | 20 columns cycles in sim, no drops; plan < 50 ms on the loaded Jetson | ⬜ **NOT STARTED** (next; R1-carried items folded in — see the R2 section) |
+| R2 | Skills, schedule, stream (sim) | `motion/skills/{sites,schedule,segments,executor,admissible}.py`, `unified_cycle.state_at_knot`/`splice_at`, `InstallSegment.srv` + `trajectory/install_segment`, `skill_node.py`, vectorised `validate_cycle`, `tools/admissible_sweep.py`, `sim/skills_gate.py`, `hand_stream_bench --trip-guard` | `sim/cycle_gate.py`, `sim/unified_gate.py` (+ their tests); the per-sample `validate_cycle` loop. **`PlanCycle` and the ring policy stay for the FSM until R4** (owner, 2026-09-12 — see the R2 section) | 20 columns cycles in sim at the owner's operating point (0.9 m / 100 mm — re-sized at R2), no drops, five seeds; plan < 50 ms on the loaded Jetson | ✅ **DONE 2026-09-12** — sim gate MET (20/20 × 5 seeds, 0 drops, plan p50 28 / max 83 ms, 63 s); the loaded-Jetson < 50 ms measurement is the ONE outstanding hardware gate, first row of the R3 runsheet (`logbook/2026-09-12-skill-stack-r2-skills-schedule-stream.md`) |
 | R3 | Learner + single site | `learner.py`, `memory.py`, outcome capture | ILC/trim/cal/record stack, `toss_ilc_enabled` | in-band within 5 throws from cold, sim and hardware; 10 consecutive catches | ⬜ **NOT STARTED** |
 | R4 | Two sites, one ball, BB reset | alternating schedule, reload as a CATCH skill, `Juggle.action`, GUI surface | FSM stack (tag `fsm-final`), `catch_coordinator`, `catch_reach`, old sim gates | 10 consecutive alternating catches; BB reload → catch → throw chain | ⬜ **NOT STARTED** |
 | R5 | Two-ball columns | Start/Stop phases, limits ramp as sized at R2 | — | five consecutive cycles, then 30 catches; learning curve logged | ⬜ **NOT STARTED** |
@@ -390,14 +414,77 @@ the rung's tests passing or a handoff file in the scratchpad.
 - **Gate.** 20 consecutive columns cycles in sim at apex 1.0 m, separation
   100 mm, zero drops on five seeds; per-skill plan < 50 ms measured on the
   Jetson with the launch up and a bag recording; the sweep completes in < 5 min.
-- **Carried from the R1 sitting (2026-09-11).** (a) Warm-start the chained launch
-  solve — a cold chained solve ballooned to ~2.2 s against the 1.8 s launch lead
-  and aborted `ABORTED_NO_RELEASE` on `num_throws>1`; the schedule/segment install
-  must not pay the cold cost inside the beat. (b) A live bench-driver cold-trip
-  affordance for the ARMED hand guard: `hand_stream_bench` clamps `--gap-delta` at
-  1.5 and its belt caps at 2.0 rev below the 2.5 firmware band, so the trip can only
-  be commanded through a new opt-in that raises both together; until then the
-  ARMED trip is proven per-commit in `test_fault_machine.cpp`, not live.
+- **Carried from the R1 sitting (2026-09-11) — both RESOLVED at R2 (2026-09-12).**
+  (a) Warm-start the chained launch solve: **measured, and not a cold-solve
+  problem** — in a fresh process the cold penalty on the chained LAUNCH+STEADY is
+  ~8 ms (385.6 vs 377.9 ms) and the QP warm start saves ~3 ms of a ~14 ms QP;
+  93 % of the 380 ms was three `validate_cycle` passes on an 83-knot chain, and
+  the sitting's 2.2 s was that under load. Resolved structurally: the vectorised
+  gate (4.7 ms per 40-knot segment) and per-segment shapes; the QP `SolverState`
+  is carried on the `Segment` (no cache). (b) `hand_stream_bench --trip-guard`:
+  one opt-in that lifts `--gap-delta` to 2.6–3.5 rev and the belt to |gap|+1.0
+  together, so the firmware trips first; runbook row 18 names it.
+- **Owner decisions (2026-09-12), asked before code was written.**
+  1. *Sizing.* No cell of this section's grid (apex ≥ 1.0 m, jerk ≤ 100k, hand
+     3500) plans — the hand binds (§ 1.2). Adopted for the sim gate and the R4/R5
+     session: **apex 0.9 m (t_f 0.857 s), separation 100 mm, hand acc 3500
+     (unchanged), legs 300 / 5000 / 200 000; dwell 0.30 s, beat 0.578 s, transit
+     0.278 s** (leg peaks 293 / 4315 / 179k; hand 3458 of 3500). The 1.0 m row
+     needs the hand at its 3900 C-HAND-2 ceiling with 2 % margin and was declined.
+     The "plannable flight ≥ 0.90 s" target of this section is superseded by
+     0.857 s at the adopted apex; the release-height lever was probed (z-float
+     does not move the peak hand acceleration; a higher release trades launch
+     acceleration for post-release stopping room) and left at 860 mm.
+  2. *`PlanCycle` scope.* R2 lands `InstallSegment` + `install_segment` as the
+     skill stack's ONE path; `PlanCycle` and the coordinator's ring keep flying
+     for the FSM until R4 hollows it (this section's original "deletes PlanCycle
+     modes, ring machinery" contradicted § 4 R4 and § 6). The ring PRIMITIVES
+     (`extend`, `_concat_plans`, `_gate_joined`, `_seam_check`) are reused by
+     `splice_at` and are not dead; R4's list is refreshed below.
+  3. *Parity.* The vectorised gate's verdict and reasons are identical to the
+     scalar one and every peak within 1e-9 relative, on a battery that includes
+     near-threshold plans (`tests/motion/test_validate_cycle_vectorised.py`).
+  4. *Splice continuity.* The existing `_install_continuity_ok` at the live plan
+     time plus `replan_tail`'s seam/detach rules, and ONE new refusal
+     `SPLICE_TOO_LATE` (the splice knot must stay ahead of the knots the wire has
+     read, checked against a clock read AFTER the solve). Lead = 4 knots.
+  5. *Warm start* and *cold trip* as in the carried items above.
+  6. *Segment shape* (asked after the sim gate failed at the adopted point): the
+     § 2.2 amendment above — a same-site catch-and-throw is ONE segment
+     (STEADY + settle tail). `sim/skills_gate.py` was built first on the split
+     form and measured 0–2 of 20 catches; the offline twin
+     (`tools/probes/skills_segment_sweep.py`) reproduced it without the plant.
+  7. *Release seam.* A splice landing inside a release's detach cone snaps to
+     the release knot and is seeded post-release (`release_state_at_knot`: the
+     ring's own handoff), so the cone lives in the new window; a CATCH
+     dispatched at `t_release − lead` lands there by construction. Without it
+     `install_segment` could splice AT a release with `post_release=False` and
+     re-solve the cone away (the off-axis shove `replan_tail` refuses).
+  8. *Operating point re-confirmed* on the whole-window form through the real
+     install chain (six throws, perfect tracker): 0.9 m / 100 mm / 0.30 s /
+     hand 3500 / 300-5000-200k — peaks 266 / 4034 / 146k / 3399, plan ≤ 34 ms
+     per install (`temp/probes/skills_segment_run2.md`); 150k also passes.
+  9. *The sim gate's noise.* With the carried ball physically released, the
+     model's default 2 % per-component release scatter (the Ball Butler's, a
+     documented placeholder) drifts a landing ~155 mm and the 100 mm hop —
+     which uses the whole 5000 mm/s² budget — has no reach margin: refused
+     before motion, 0 drops. R2 certifies the software chain with an EXACT
+     release and the 0.5 mm tracking noise; the separation-vs-scatter table
+     (100 mm: 0 % only; 80 mm: 3/5 seeds at 0.5 %; 60 mm: 5/5 at 0.5 %, fails
+     at 1 %) is the R4/R5 sizing input and the R3 sitting measures the
+     machine's own 0.9 m scatter to pick from it.
+- **Outcome (2026-09-12).** All builds landed; `sim/cycle_gate.py`,
+  `sim/unified_gate.py` and their tests deleted; the sim gate MET at the
+  operating point (20/20 catches × 5 seeds, 0 drops, plan wall min 10.4 /
+  p50 28.3 / max 83.3 ms over 405 installs, 63.1 s); vectorised `validate_cycle` 4.7 ms per
+  40-knot segment (21.8×) at 1e-9 parity over a 148-call battery; both
+  R1-carried items closed; the splice leads measured (general 6 knots,
+  handoff 8, budgets 75 / 125 ms proved by a modelled solve). **Outstanding:
+  the per-skill plan < 50 ms measurement on the loaded Jetson (launch up, bag
+  recording) — first row of `tests/hardware/session_skills_r3.md`; both
+  packages need a `colcon build` for the new srv.** Entry:
+  `logbook/2026-09-12-skill-stack-r2-skills-schedule-stream.md`.
+  **R3 cleared to start.**
 
 ### R3 — Learner, then single-site hardware
 
@@ -431,10 +518,13 @@ the rung's tests passing or a handoff file in the scratchpad.
   pattern + start/stop; the session limits chosen at R2 applied.
 - **Delete** (tag `fsm-final` first): `toss_sequencer.py`, `toss_session.py`,
   `reload_sequencer.py`, `catch_coordinator.py` + node, `catch_reach.py`, the
-  ring machinery in `unified_cycle.py` (`extend`, `replan_tail`, `_concat_*`,
-  `_gate_joined`, supersede), `PlanCycle.srv`, the `unified_cycle_enabled`
-  and `toss_*` flags, and the FSM tests. `reload_coordinator_node.py` becomes
-  `skill_node.py`'s shell.
+  ring POLICY in `unified_cycle.py` (`replan_tail`, `latest_supersede_time_s`,
+  `is_release_terminal`'s deadline use, `plan_cycle`'s MODE plumbing — NOT
+  `extend` / `_concat_plans` / `_gate_joined` / `_seam_check`, which
+  `splice_at` reuses since R2), `PlanCycle.srv` and `_svc_plan_cycle`, the
+  `unified_cycle_enabled` and `toss_*` flags, and the FSM tests.
+  `reload_coordinator_node.py`'s remaining duties fold into `skill_node.py`
+  (landed at R2 as the schedule shell).
 - **Gate.** 10 consecutive catches alternating P1/P2 on hardware; a BB reload
   → catch → throw → catch chain from the GUI with one button.
 

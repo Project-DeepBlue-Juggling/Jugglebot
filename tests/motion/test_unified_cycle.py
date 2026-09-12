@@ -2845,36 +2845,52 @@ def test_the_stage_split_sums_to_plan_wall_s(steady):
         meta.stage_wall_s, meta.plan_wall_s)
 
 
-def test_the_gate_and_not_the_qp_dominates_a_healthy_solve(steady):
-    """``validate_cycle`` is where the time goes — NOT the QP.
+def test_the_qp_and_the_gate_stay_within_an_order_of_magnitude(steady):
+    """Neither the QP nor ``validate_cycle`` dominates a healthy solve any more.
 
-    This is the first thing the split reported, and it overturned the assumption
-    it was written under. Measured 2026-09-06 (venv, idle box, ms):
+    (Was ``test_the_gate_and_not_the_qp_dominates_a_healthy_solve`` until R2 —
+    the reading REVERSED, and the reversal is the point of keeping the history.)
+
+    Before R2 vectorised ``feasibility.validate_cycle`` the gate was ~89 % of the
+    solve and the QP ~6 %, a factor of ~15 apart (measured 2026-09-06, venv, idle
+    box, ms):
 
         0.6 s LAUNCH   qp=3.3   tilt=1.2  dec=1.1  val=63.0   cont=0.5  = 69.1
         1.0 s LANDING  qp=6.7   tilt=3.9  dec=2.6  val=117.7  cont=0.6  = 131.5
         1.4 s STEADY   qp=11.2  tilt=4.2  dec=3.7  val=163.9  cont=0.7  = 183.6
 
-    **The gate is ~89 % of the solve and the QP ~6 %**, a factor of ~15 apart.
-    So "the planner is slow" has always meant "the gate is slow". Pinning the
-    shape here means a future change that moves the bulk into the QP has to come
-    and re-argue the reading rather than silently invalidating it.
+    The gate is now 20-25x cheaper and the shape is FLAT (measured 2026-09-12,
+    same box, min of 7 solves, ms):
 
-    That reading is a DISCRIMINATOR, which is the point. Under BLAS thread-pool
-    starvation the shape INVERTS (measured the same day at three busy cores of
-    six): the gate inflates ~3x (186 -> 609-637 ms) but the cold QP inflates
-    ~200x (10 -> 2256 ms). So on a live log line `qp` >= `val` means starvation,
-    while `val` >> `qp` — what this test pins — is just a big window.
+        0.6 s LAUNCH   qp=2.72  tilt=1.18 dec=1.12 val=3.67  cont=0.48 =  9.17
+        1.0 s LANDING  qp=4.43  tilt=3.69 dec=2.68 val=5.16  cont=0.54 = 16.50
+        1.4 s STEADY   qp=10.37 tilt=4.14 dec=3.66 val=6.69  cont=0.71 = 25.56
 
-    Not a performance budget — that is ``test_unified_cycle_budget.py``. The
-    threshold is a RATIO (3x), an order of magnitude below the measured 15x, so
-    it survives a loaded parallel worker.
+    On the LONGEST window the QP is now the largest stage; on the shorter ones the
+    gate still is; the ratio between them runs 0.74x-1.55x.  "The planner is slow"
+    no longer means "the gate is slow", and a reader who still believes it would
+    optimise the wrong half.
+
+    THE STARVATION DISCRIMINATOR SURVIVES, at a new threshold.  Under BLAS
+    thread-pool starvation (measured 2026-09-06 at three busy cores of six) the
+    gate inflates ~3x while the COLD QP inflates ~200x, so the ``qp``/``val``
+    ratio a live log line shows moves by ~70x.  ``qp > 10x val`` is therefore
+    still starvation and a ratio near 1 is still a healthy solve — the boundary
+    moved, the signal did not.
+
+    WHY THE ASSERTION IS A RATIO PAIR AND NOT "``val`` IS THE MAX": it used to be
+    the max by 15x, which survived a loaded parallel worker; it is now within 1.6x
+    of the QP, and an argmax at that margin is a load flake waiting to happen.
+    An order of magnitude either way is an order below the starvation signature
+    and an order above the healthy spread.
+
+    Not a performance budget - that is ``test_unified_cycle_budget.py``.
     """
     _, meta = steady
     stages = meta.stage_wall_s
-    assert stages['val'] == max(stages.values()), stages
-    assert stages['val'] > 3.0 * stages['qp'], stages
-    assert stages['val'] > 0.5 * meta.plan_wall_s, stages
+    assert stages['qp'] < 10.0 * stages['val'], stages
+    assert stages['val'] < 10.0 * stages['qp'], stages
+    assert stages['qp'] + stages['val'] > 0.25 * meta.plan_wall_s, stages
 
 
 def test_the_split_formats_for_the_operator(steady):

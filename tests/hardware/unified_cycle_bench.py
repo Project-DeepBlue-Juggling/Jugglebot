@@ -125,13 +125,16 @@ MODE_NEW, MODE_EXTEND, MODE_REPLAN = 0, 1, 2
 KIND_LAUNCH, KIND_STEADY, KIND_LANDING, KIND_SETTLE = 0, 1, 2, 3
 
 #: The catch-capable session limits (leg vel mm/s, acc mm/s^2, jerk mm/s^3).
-#: ``sim/cycle_gate.py`` and ``sim/unified_gate.py`` plan at these; plan § 4
-#: owner decision 1 makes "unified mode rides session limits raised at the
-#: sitting" the operating rule. The shipped launch defaults are
-#: 1000 / 5000 / 30000, so this is a jerk RAISE and a velocity REDUCTION.
-SESSION_LEG_VEL_MMPS = 250.0
-SESSION_LEG_ACC_MMPS2 = 3000.0
-SESSION_LEG_JERK_MMPS3 = 150000.0
+#: ``sim/skills_gate.py`` (skill-stack R2, 2026-09-12) plans at these — the
+#: owner's R2 operating point, ``tools/probes/skills_sizing_sweep.py`` /
+#: ``temp/probes/skills_sizing_frontier2.md``. Re-pointed 2026-09-12
+#: (skill-stack R2 Unit E) from ``sim/cycle_gate.py`` / ``sim/unified_gate.py``
+#: (both deleted the same rung, superseded FSM/unified-cycle stack) — the
+#: shipped launch defaults are 1000 / 5000 / 30000, so this is a jerk RAISE
+#: and a velocity REDUCTION.
+SESSION_LEG_VEL_MMPS = 300.0
+SESSION_LEG_ACC_MMPS2 = 5000.0
+SESSION_LEG_JERK_MMPS3 = 200000.0
 
 SET_LIMITS_CMD = (
     'ros2 service call /trajectory/set_limits '

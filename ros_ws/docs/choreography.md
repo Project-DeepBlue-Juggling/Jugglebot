@@ -34,7 +34,7 @@
 ### `balls`
 
 - **publishers:** `ball_tracker_node`
-- **subscribers:** `catch_coordinator_node`, `reload_coordinator_node`
+- **subscribers:** `catch_coordinator_node`, `reload_coordinator_node`, `skill_node`
 - **type:** `jugglebot_interfaces.msg.BallStateArray`
 
 ### `bb/axis_estimates`
@@ -206,7 +206,7 @@
 ### `hand_telemetry`
 
 - **publishers:** `teensy_bridge_node`
-- **subscribers:** `reload_coordinator_node`
+- **subscribers:** `reload_coordinator_node`, `skill_node`
 - **type:** `jugglebot_interfaces.msg.HandTelemetryMessage`
 
 ### `leg_cmd_executed`
@@ -492,6 +492,18 @@
 - **clients:** `orchestrator_node`
 - **type:** `std_srvs.srv.SetBool`
 
+### `skills/start_columns`
+
+- **servers:** `skill_node`
+- **clients:** _none_
+- **type:** `std_srvs.srv.Trigger`
+
+### `skills/stop`
+
+- **servers:** `skill_node`
+- **clients:** _none_
+- **type:** `std_srvs.srv.Trigger`
+
 ### `smooth_move_hand`
 
 - **servers:** _none_
@@ -527,6 +539,12 @@
 - **servers:** `trajectory_node`
 - **clients:** `reload_coordinator_node`
 - **type:** `std_srvs.srv.Trigger`
+
+### `trajectory/install_segment`
+
+- **servers:** `trajectory_node`
+- **clients:** `skill_node`
+- **type:** `jugglebot_interfaces.srv.InstallSegment`
 
 ### `trajectory/plan_cycle`
 
@@ -627,6 +645,8 @@ broken wire cannot hide among them.
 - `ring_diag` — topic with no subscribers
 - `set_hand_state` — service with no clients
 - `set_motor_vel_curr_limits` — topic with no publishers
+- `skills/start_columns` — service with no clients
+- `skills/stop` — service with no clients
 - `smooth_move_hand` — service with no servers
 - `toss/calibration_status` — topic with no subscribers
 - `toss/record` — topic with no subscribers

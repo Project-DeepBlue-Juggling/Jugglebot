@@ -1,0 +1,30 @@
+# Install ONE rest-terminal skill segment on the trajectory emitter, spliced into
+# the streaming plan at the first knot >= now + lead (or at a fresh origin when
+# nothing is streaming / the previous segment has ended).  plans/active/
+# two-ball-skill-stack.md § 2.1/§ 2.4; the ONE install path of the skill stack.
+# WHY the planning runs here and not in skill_node: only trajectory_node holds
+# the LIVE commanded state (same argument as PlanCycle.srv's header).
+uint8 KIND_THROW=0
+uint8 KIND_CATCH=1
+uint8 KIND_REST=2
+uint8 kind
+uint32 ball_id
+float64 t_event_s              # THE EVENT INSTANT on the shared wall clock (seconds, ROS clock domain): release / landing / at-rest-by
+float64[3] site_mm             # the skill's site: cup opening at the event (THROW: release site; CATCH: predicted landing; REST: rest site). mm, xy platform frame, z global
+float64[3] target_mm           # THROW: where the ball is to land. CATCH-with-throw: where the CARRIED release is to land (same field, reused — one throw, one pair of fields, whichever kind carries it)
+float64 flight_s               # THROW: time of flight. CATCH-with-throw: the carried release's time of flight (reused, as target_mm above)
+float64[3] landing_vel_mm_s    # CATCH: the ball's predicted arrival velocity
+float64[3] rest_site_mm        # where the segment comes to rest (every segment is rest-terminal)
+float64 t_release_s            # CATCH only: wall-clock instant of the same-site throw this catch carries out of the ball; 0.0 = no throw (a plain CATCH)
+float64[3] release_site_mm     # CATCH-with-throw only: the skill's OWN site (cup at release) — site_mm above is the predicted LANDING, not this
+---
+bool accepted
+string code                    # OK, or the refusal code: the layer's own (SPLICE_TOO_LATE, WINDOW_TOO_SHORT, STALE_STATE, WRONG_MODE, GUARD_LATCHED, SUPERSEDED_BY_HOLD, IN_MOTION) or the bare CycleInfeasible subcode (LIMIT_JERK, TILT_PIN, HAND_STROKE, ...); `message` carries the full REJECTED_CYCLE_INFEASIBLE(...) text
+string message
+float64 plan_wall_ms           # the per-skill plan cost the < 50 ms Jetson gate reads
+int32 splice_k
+float64 t0_mono
+float64 t_event_mono
+float64 duration_s
+bool seeded_post_release       # True when the splice snapped into a release's detach cone and was seeded POST-RELEASE (executor._snap_to_release)
+float64 t_release_mono         # the carried release's wall-clock instant (0.0 when the segment carries no release)

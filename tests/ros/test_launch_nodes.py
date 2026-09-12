@@ -183,7 +183,7 @@ def test_consumer_wired_node_is_launched(launch_src, launch_description_body,
 # large-matrix work where the pool earns its keep and neither is on the setpoint
 # stream's thread, so this list is exactly the three planner callers.
 PLANNER_NODES = ['trajectory_node', 'reload_coordinator_node',
-                 'catch_coordinator_node']
+                 'catch_coordinator_node', 'skill_node']
 
 #: Both spellings, because numpy 1.24.4 on this Jetson links OpenBLAS
 #: (``libopenblas64_p-r0-cecebdce.3.21.so``, pthreads/armv8) but an OpenMP-

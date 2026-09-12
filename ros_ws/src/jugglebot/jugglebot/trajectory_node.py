@@ -94,6 +94,7 @@ from jugglebot_interfaces.msg import (
 )
 from jugglebot_interfaces.srv import (
     GoToPose,
+    InstallSegment,
     PlanCycle,
     SetTrajectoryLimits,
     TimedTarget,
@@ -128,6 +129,8 @@ from jugglebot.motion.trajectory import feasibility as feas
 from jugglebot.motion.trajectory import planner
 from jugglebot.motion import unified_cycle as uc
 from jugglebot.motion.trajectory.cycle_plan import CyclePlan
+from jugglebot.motion.skills import executor as sk_exec
+from jugglebot.motion.skills import segments as sk_seg
 
 # The control mode in which explicit move services (go_to_pose) are accepted. In
 # any other streaming mode (STANDBY holds; SPACEMOUSE has its own command
@@ -726,6 +729,19 @@ class TrajectoryNode(Node):
         # budget's (core <= 50 ms, total <= 250 ms) observable.
         self._cycle_plan_wall_ms = 0.0
 
+        # ── trajectory/install_segment (skill-stack R2, Unit D2) ─────────
+        # SegmentConfig and the splice lead are node attributes built ONCE from
+        # the skills defaults, mirroring `_limits`/`_geom` — a fresh copy per
+        # call would be a second source for the same constant.
+        self._segment_cfg = sk_seg.SegmentConfig()
+        self._segment_lead_s = sk_exec.LEAD_S
+        # The previous accepted Segment's QP working set — CARRIED, not cached
+        # (owner decision, brief_D2_ros_shell.md § B): one attribute, overwritten
+        # on every accepted install_segment, cleared on any non-cycle install
+        # (see `_install`) because a warm start seeded from a plan no longer on
+        # the wire describes a solve that never happened.
+        self._segment_warm_start = None
+
         self._pub = None
         self._emit_stop = threading.Event()
         self._emit_thread = None
@@ -812,6 +828,12 @@ class TrajectoryNode(Node):
         # stalls, but the executor does, exactly as go_to_pose already does.
         self.create_service(PlanCycle, 'trajectory/plan_cycle',
                             self._svc_plan_cycle)
+        # ONE skill segment, installed at a fresh origin or spliced into the
+        # streaming plan (skill-stack R2, Unit D2 — InstallSegment.srv). PlanCycle
+        # stays for the FSM until R4 (owner decision, 2026-09-12); this is the
+        # skill stack's own install path and does not touch it.
+        self.create_service(InstallSegment, 'trajectory/install_segment',
+                            self._svc_install_segment)
         # Catch-armed latch (reload-action-catch-latch plan, Phase 1). SetBool:
         # data=True arms, data=False disarms. The RELOAD action drives it for the
         # catch flight window instead of a persistent control mode.
@@ -2480,6 +2502,10 @@ class TrajectoryNode(Node):
                 self._cycle = None
                 self._cycle_supersede_deadline = None
                 self._cycle_deadline_alarmed = False
+                # A segment warm start seeded from a plan that just got
+                # superseded (a hold, a graceful stop, a legacy move) describes
+                # a solve that will never happen — see the attribute's comment.
+                self._segment_warm_start = None
             # The caller's own record, written HERE so it cannot be raced (see
             # the docstring). Ordered after the clear above, so a CyclePlan
             # install sets the record and a non-cycle one leaves it cleared.
@@ -4735,6 +4761,229 @@ class TrajectoryNode(Node):
         except (OSError, AttributeError):  # pragma: no cover - non-Linux
             pass
         self.get_logger().info(response.message + self._wire_state_suffix())
+        return response
+
+    # ═══════════════════════════════════════════════════════════
+    # trajectory/install_segment (skill-stack R2, Unit D2)
+    # ═══════════════════════════════════════════════════════════
+
+    #: ``InstallSegment.Request.KIND_*`` -> ``jugglebot.motion.skills.segments``
+    #: kind string, in wire-constant order (0, 1, 2). Built once at import time
+    #: from the srv's own constant NAMES rather than restated as bare ints, so a
+    #: renumbering of one side is a KeyError here instead of a silent mismatch.
+    _SEGMENT_KINDS = (sk_seg.THROW, sk_seg.CATCH, sk_seg.REST)
+
+    def _reject_segment(self, response, code: str, message: str, t_wall: float):
+        """Fill ``response`` with a refusal. The ACTIVE PLAN IS UNTOUCHED.
+
+        The exact twin of ``_reject_cycle`` for the segment service — see that
+        method's docstring for why a refusal never leaves partial state.
+        """
+        response.accepted = False
+        response.code = str(code)
+        response.message = str(message)
+        response.plan_wall_ms = (time.perf_counter() - t_wall) * 1e3
+        self._cycle_plan_wall_ms = response.plan_wall_ms
+        self._last_rejection = str(message)
+        self.get_logger().error('install_segment refused: %s' % (message,))
+        return response
+
+    def _segment_terminal_from_request(self, kind: str, request, t_event_perf: float,
+                                       t_release_perf: float = 0.0):
+        """``InstallSegment.Request`` + the converted event instant(s) -> a
+        ``sk_seg.*Terminal``, carrying the event time(s) as ABSOLUTE instants on
+        the perf clock (``sk_exec.install_segment`` converts them to the segment
+        clock exactly once — see that function's ``_event_abs_s`` docstring).
+
+        ``t_release_perf`` is the SAME ROS->perf crossing applied to
+        ``request.t_release_s``; ``0.0`` means the CATCH carries no throw
+        (``request.t_release_s <= 0.0``, the wire's own sentinel)."""
+        if kind == sk_seg.THROW:
+            return sk_seg.ThrowTerminal(
+                site_mm=np.asarray(request.site_mm, dtype=float),
+                target_mm=np.asarray(request.target_mm, dtype=float),
+                flight_s=float(request.flight_s),
+                t_release_s=float(t_event_perf))
+        if kind == sk_seg.CATCH:
+            then_throw = None
+            if t_release_perf > 0.0:
+                then_throw = sk_seg.ThrowAfterCatch(
+                    t_release_s=float(t_release_perf),
+                    site_mm=np.asarray(request.release_site_mm, dtype=float),
+                    target_mm=np.asarray(request.target_mm, dtype=float),
+                    flight_s=float(request.flight_s))
+            return sk_seg.CatchTerminal(
+                landing_mm=np.asarray(request.site_mm, dtype=float),
+                landing_vel_mm_s=np.asarray(request.landing_vel_mm_s, dtype=float),
+                t_land_s=float(t_event_perf),
+                rest_site_mm=np.asarray(request.rest_site_mm, dtype=float),
+                then_throw=then_throw)
+        return sk_seg.RestTerminal(
+            rest_site_mm=np.asarray(request.rest_site_mm, dtype=float),
+            t_rest_s=float(t_event_perf))
+
+    def _svc_install_segment(self, request, response):
+        """``trajectory/install_segment``: install ONE rest-terminal skill
+        segment — the ONE install path of the skill stack (plan § 2.1/§ 2.4).
+
+        Guards are ``_svc_plan_cycle``'s, in the same order and for the same
+        reasons (guard latch -> mode -> seeded -> telemetry fresh). The actual
+        planning and splice-vs-fresh-origin decision live in
+        ``jugglebot.motion.skills.executor.install_segment`` — pure Python, no
+        ROS — which this handler feeds the one thing only a live node has: the
+        commanded state (``record`` off ``self._cycle``, or a freshly seeded
+        rest via ``_cycle_start_state`` when nothing is streaming or the
+        previous segment has ended).
+
+        ``PlanCycle`` is UNTOUCHED (owner decision, 2026-09-12): it stays for the
+        FSM until R4; this is the skill stack's own path.
+        """
+        with self._plan_lock:
+            epoch0 = self._install_epoch
+        t_wall = time.perf_counter()
+        t_now_s = t_wall
+        response.accepted = False
+        response.code = ''
+        response.message = ''
+        response.plan_wall_ms = 0.0
+        response.splice_k = -1
+        response.t0_mono = 0.0
+        response.t_event_mono = 0.0
+        response.duration_s = 0.0
+        response.seeded_post_release = False
+        response.t_release_mono = 0.0
+
+        if self._guard_frozen:
+            return self._reject_segment(response, _GUARD_LATCHED,
+                                        self._guard_frozen_msg(), t_wall)
+        if self._current_mode != _MOVE_MODE:
+            return self._reject_segment(
+                response, feas.WRONG_MODE,
+                "install_segment requires %s mode (current mode '%s')"
+                % (_MOVE_MODE, self._current_mode), t_wall)
+        if not self._seeded:
+            return self._reject_segment(
+                response, feas.STALE_STATE,
+                'not streaming/seeded — cannot install a segment', t_wall)
+        if not self._robot_state_fresh():
+            return self._reject_segment(
+                response, feas.STALE_STATE,
+                'robot_state telemetry stale — cannot install a segment', t_wall)
+        try:
+            kind = self._SEGMENT_KINDS[int(request.kind)]
+        except (IndexError, ValueError, TypeError):
+            return self._reject_segment(
+                response, feas.UNREACHABLE,
+                'unknown segment kind %r (expected 0..%d)'
+                % (request.kind, len(self._SEGMENT_KINDS) - 1), t_wall)
+
+        # THE ONE ROS-clock -> perf crossing for this request, through the
+        # node's existing offset (never a second estimator — see
+        # `_ros_time_to_perf`). `t_event_s` is a bare float64 seconds field
+        # (not a `builtin_interfaces/Time`), so the crossing is the same sum
+        # `_ros_time_to_perf` does without that message's two-field unpack.
+        t_event_perf = float(request.t_event_s) + self._ros_to_perf_offset
+        # A CATCH-with-throw's release time gets the identical crossing; a
+        # plain CATCH's `t_release_s` is 0.0 (the wire's own sentinel for "no
+        # throw"), and 0.0 + offset would falsely read as a real instant, so
+        # the crossing is applied only when the request actually carries one.
+        t_release_perf = (float(request.t_release_s) + self._ros_to_perf_offset
+                          if float(request.t_release_s) > 0.0 else 0.0)
+        terminal = self._segment_terminal_from_request(
+            kind, request, t_event_perf, t_release_perf)
+
+        with self._plan_lock:
+            cycle = self._cycle
+            active = self._active_plan
+        record = None
+        if cycle is not None and cycle[0] is active:
+            plan, meta, t0 = cycle
+            record = sk_exec.PlanRecord(plan=plan, meta=meta, t0_s=t0)
+
+        # Fresh vs splice is the SAME predicate `install_segment` uses
+        # internally (see its docstring) — computed here too because only the
+        # fresh branch needs the node to build a seed at all, and building one
+        # (`_cycle_start_state`) verifies rest and costs the E8 tilt lookup.
+        seed_rest = None
+        fresh = record is None or (t_now_s + self._segment_lead_s) >= record.end_s
+        if fresh:
+            seed_rest, code, err = self._cycle_start_state(uc.SETTLE)
+            if seed_rest is None:
+                return self._reject_segment(
+                    response, code, '%s — cannot seed a segment' % (err,), t_wall)
+
+        # The install-time lookahead check `install_segment` makes on a splice
+        # reads the clock AFTER the solve (it is handed the clock itself, not a
+        # value taken here): the whole question is whether the solve outran the
+        # wire, and a read taken before the solve cannot see the solve's own
+        # duration (see `install_segment`'s `t_install_s` docstring).
+        new_record, result, seg = sk_exec.install_segment(
+            record, seed_rest, kind, terminal, t_now_s,
+            lead_s=self._segment_lead_s, cfg=self._segment_cfg,
+            limits=self._limits, geom=self._geom,
+            warm_start=self._segment_warm_start,
+            t_install_s=time.perf_counter)
+
+        if not result.accepted:
+            return self._reject_segment(response, result.code, result.message,
+                                        t_wall)
+        if self._hold_superseded(epoch0):
+            return self._reject_segment(
+                response, _SUPERSEDED_BY_HOLD,
+                'a trajectory/hold landed while this install_segment was '
+                'solving — the segment it plans was cancelled; the hold keeps '
+                'the wire', t_wall)
+        tau_now = 0.0 if fresh else (time.perf_counter() - new_record.t0_s)
+        if not self._install_continuity_ok(new_record.plan, tau_now):
+            return self._reject_segment(
+                response, feas.STALE_STATE,
+                'commanded state moved during planning (%s) — retry'
+                % (self._continuity_detail,), t_wall)
+        if not self._install(new_record.plan, t0=new_record.t0_s,
+                             require_epoch=epoch0,
+                             cycle=(new_record.plan, new_record.meta,
+                                    new_record.t0_s),
+                             reset_replans=True):
+            return self._reject_segment(
+                response, _SUPERSEDED_BY_HOLD,
+                'a trajectory/hold landed while this install_segment was '
+                'solving — the segment it plans was cancelled; the hold keeps '
+                'the wire', t_wall)
+        self._segment_warm_start = seg.warm_start
+        # The carried release's wall-clock instant, off the SAME segment the
+        # accepted install just planned (`seg.release_t_s` — None for every
+        # shape but a CATCH-with-throw): the identical `splice_k*dt + segment
+        # time` sum `result.event_t_s` uses above, applied to the second event
+        # a catch-with-throw segment carries.
+        t_release_mono = 0.0
+        if seg.release_t_s is not None:
+            dt = float(new_record.plan.dt)
+            t_release_mono = (float(new_record.t0_s)
+                              + float(result.splice_k) * dt
+                              + float(seg.release_t_s))
+        return self._accept_segment(response, kind, int(request.ball_id),
+                                    new_record, result, t_wall,
+                                    t_release_mono=t_release_mono)
+
+    def _accept_segment(self, response, kind, ball_id, record, result, t_wall,
+                        t_release_mono: float = 0.0):
+        """Fill ``response`` from an INSTALLED segment. Mirrors ``_accept_cycle``."""
+        response.accepted = True
+        response.code = feas.OK
+        response.message = str(result.message)
+        response.splice_k = int(result.splice_k)
+        response.t0_mono = float(record.t0_s)
+        response.t_event_mono = float(record.t0_s) + float(result.event_t_s)
+        response.duration_s = float(record.plan.total_duration)
+        response.seeded_post_release = bool(result.seeded_post_release)
+        response.t_release_mono = float(t_release_mono)
+        response.plan_wall_ms = (time.perf_counter() - t_wall) * 1e3
+        self._cycle_plan_wall_ms = response.plan_wall_ms
+        self.get_logger().info(
+            'install_segment %s ball %d: splice_k=%d, plan %.1f ms, event tau '
+            '%.3f s'
+            % (kind, ball_id, response.splice_k, response.plan_wall_ms,
+               float(result.event_t_s)))
         return response
 
     # ═══════════════════════════════════════════════════════════

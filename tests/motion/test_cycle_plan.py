@@ -278,3 +278,60 @@ def test_construction_rejects_non_finite_values():
     pose[2, 1] = np.nan
     with pytest.raises(ValueError, match=r"non-finite"):
         CyclePlan(pose, np.zeros((n, 6)), np.zeros(n), np.zeros(n), DT)
+
+
+# ---------------------------------------------------------------------------
+# The batched sampler (feasibility's surface)
+# ---------------------------------------------------------------------------
+
+def test_states_at_and_hands_at_are_bit_identical_to_the_scalar_accessors():
+    """``states_at`` / ``hands_at`` reproduce ``state_at`` / ``hand_at`` EXACTLY.
+
+    Not "to a tolerance": both call this module's one :func:`_hermite` with the
+    same operand order, elementwise over a column of ``s`` instead of one float,
+    so the result is the same double.  ``feasibility.validate_cycle`` is a
+    RUNTIME safety assert and it drives the batched pair; if these two surfaces
+    could disagree at all, the gate would be measuring a curve the emitter will
+    not play — so the assertion is equality, and a tolerance creeping in here
+    would be the first symptom of exactly that drift.
+
+    The grid deliberately includes both clamped regimes (``t < 0`` and
+    ``t >= total_duration``), the knots themselves, and the one-ULP-below-the-end
+    sample ``feasibility._cycle_sample_times`` actually asks for.
+    """
+    plan = _make_plan()
+    ts = np.concatenate([
+        np.array([-0.4, -1e-9, 0.0]),
+        np.linspace(0.0, plan.total_duration, 401),
+        plan.t,
+        np.array([np.nextafter(plan.total_duration, 0.0),
+                  plan.total_duration, plan.total_duration + 0.3]),
+    ])
+    bp, btw, bac = plan.states_at(ts)
+    brev, bvel = plan.hands_at(ts)
+    assert bp.shape == (ts.size, 6) and btw.shape == bp.shape
+    assert brev.shape == (ts.size,) and bvel.shape == brev.shape
+    for i, t in enumerate(ts):
+        p, tw, ac = plan.state_at(float(t))
+        assert np.array_equal(bp[i], p), (t, bp[i], p)
+        assert np.array_equal(btw[i], tw), (t, btw[i], tw)
+        assert np.array_equal(bac[i], ac), (t, bac[i], ac)
+        rev, vel = plan.hand_at(float(t))
+        assert brev[i] == rev, (t, brev[i], rev)
+        assert bvel[i] == vel, (t, bvel[i], vel)
+
+
+def test_states_at_accepts_a_scalar_and_an_empty_grid():
+    """Degenerate shapes behave: a bare float is one row, an empty grid is zero.
+
+    ``validate_cycle`` builds its grid arithmetically, so a plan shape it has not
+    seen must not turn into an IndexError at the gate.
+    """
+    plan = _make_plan()
+    p, tw, ac = plan.states_at(0.05)
+    assert p.shape == (1, 6) and tw.shape == (1, 6) and ac.shape == (1, 6)
+    assert np.array_equal(p[0], plan.state_at(0.05)[0])
+    p0, _, _ = plan.states_at(np.array([]))
+    assert p0.shape == (0, 6)
+    rev, vel = plan.hands_at(np.array([]))
+    assert rev.shape == (0,) and vel.shape == (0,)
