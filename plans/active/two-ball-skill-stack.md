@@ -11,6 +11,7 @@ related_logbook:
   - 2026-09-12-skill-stack-r2-skills-schedule-stream.md
   - 2026-09-13-skill-stack-r2-plan-gate-runsheet.md
   - 2026-09-13-skill-stack-r2-gate-sittings.md
+  - 2026-09-13-skill-stack-r3-learner-single-site.md
 related_config:
   - config/hardware_config.yaml → jugglebot_operational.unified_cycle_enabled (retires at R4)
   - config/hardware_config.yaml → jugglebot_operational.toss_ilc_enabled (retires at R3)
@@ -22,6 +23,7 @@ related_code:
   - ros_ws/src/jugglebot/jugglebot/motion/trajectory/cycle_plan.py::CyclePlan
   - ros_ws/src/jugglebot/jugglebot/motion/trajectory/feasibility.py::validate_cycle (vectorised at R2)
   - ros_ws/src/jugglebot/jugglebot/motion/skills/{sites,schedule,segments,executor,admissible}.py (R2)
+  - ros_ws/src/jugglebot/jugglebot/motion/skills/{learner,memory}.py (R3)
   - ros_ws/src/jugglebot/jugglebot/motion/unified_cycle.py::state_at_knot / splice_at (R2)
   - ros_ws/src/jugglebot/jugglebot/skill_node.py (R2)
   - ros_ws/src/jugglebot_interfaces/srv/InstallSegment.srv (R2)
@@ -290,6 +292,19 @@ Given target y_d, state x and memory D = {(xᵢ, uᵢ, yᵢ)}:
 k, k_min, h_x, h_y, γ, η are R3 probe outputs recorded with provenance; the
 values above are the starting points. ~150 lines plus tests, no new dependency.
 
+**Measured at R3** (owner decision 2, 2026-09-13; probe `probe_learner.py` +
+`probe2_out/`, scratchpad): k = 16, k_min = 2, h_x = 0.01 m, h_y = (0.05 m,
+0.05 m, 0.2 s), γ = 1e-2, η = 0.2 — SI units only, γ does not carry to this
+plan's mm-frame constants elsewhere. These supersede the k = 12 / k_min = 3 /
+γ = 0.001 / η = 0.3 starting points above. Centring (paper eq. S18): δx is
+about the query state x; δu is about the weighted mean ū from step 2, not
+about y_d. Probe finding: at h_y = 0.02 the start point never learns — 0.02 is
+below the cold-start landing error, so its neighbourhood weight underflows to
+zero and the identity prior holds regardless of k_min; this is why the adopted
+h_y is larger. A non-finite u (NaN/inf, from an underflowed weight sum) raises
+and the skill is refused rather than commanding an unclipped trajectory (a
+defect found and fixed this rung, pinned by `test_learner.py`).
+
 ### 2.6 Safety by construction
 
 - **Inside the QP** (exists): jerk boxes, workspace box, catch runway.
@@ -306,11 +321,17 @@ values above are the starting points. ~150 lines plus tests, no new dependency.
 ### 2.7 Perception and outcome
 
 `/balls` carries the landing prediction (`landing_position`,
-`landing_velocity`, `time_at_land`) per tracked ball. The CATCH terminal is the
-latest prediction; the THROW outcome y is the tracker's estimate of the
-catch-plane crossing, captured by a probe on existing bags at R3 before the
-capture code is written. The possession sensor supplies `caught`. Sitting
-preconditions: the cone rigid body disabled, the Ball Butler reflectors masked.
+`landing_velocity`, `time_at_land`) per tracked ball, predicted at the 830 mm
+catch plane (`sites.CATCH_CUP_Z_MM`; moved from 809.08 mm at R3 — the FSM's
+catch plane moves with it, decision 5). The CATCH terminal is the latest
+prediction. **Landed at R3:** the THROW outcome y is the tracker's last
+estimate of the catch-plane crossing, taken outside a 0.012 s guard
+(`OUTCOME_GUARD_S`, `executor.py`) around the scheduled landing instant so a
+stale near-crossing sample is never captured; flight is the crossing instant
+minus the throw's scheduled release; `caught` is the possession sensor's
+evidence 0.15 s after the scheduled landing (`CAUGHT_WINDOW_S`, `executor.py`).
+Sitting preconditions: the cone rigid body disabled, the Ball Butler
+reflectors masked.
 
 ## 3. Implementation Phase Summary
 
@@ -323,7 +344,7 @@ The **Status** column is the one source of truth for where each rung stands;
 | R0 | Board and substrate | invariant checklist; census-backed dead-layer deletion | dead clusters (§ 6) | `./run_tests.sh --full` green; grep counts zero | ✅ **DONE** — checklist landed 2026-09-10, deletion done 2026-09-09 (`429c660`, `3bfec0b`) |
 | R1 | One hand master | can-bridge FW 21 (lane follows `HAS_HAND`, guard boots ARMED, ACTIVATE parks the hand at 0 rev), Platform FW 7 (no stroke engine), PROTOCOL_VERSION 7, `hand_mm_per_rev` measured key, lockstep runbook `tests/hardware/session_skill_stack_r1_flash.md` (completed) | `Trajectory.h`, `hand_source`, `hand_ops`, `HAND_TRAJ_CMD`/`HAND_SOURCE_SET`, `SetHandTrajCmd.srv`, `hand_stroke.py` twin, the legacy kind-0 toss device (its FSM branch refused at accept until R4) | bench ladder re-passes on the FW 21 / Platform 7 pair; a streamed self-toss caught with no latch step | ✅ **DONE 2026-09-11** (`1e2c0c9`, `c52dc27`) — flashed, sat, one streamed self-toss caught with no latch step; a levelling-frame tilt snap found + fixed (`_unified_prelevel`); multi-throw chaining + live guard cold-trip → R2 (`logbook/2026-09-11-skill-stack-r1-sitting-prelevel.md`, `…-one-hand-master.md`) |
 | R2 | Skills, schedule, stream (sim) | `motion/skills/{sites,schedule,segments,executor,admissible}.py`, `unified_cycle.state_at_knot`/`splice_at`, `InstallSegment.srv` + `trajectory/install_segment`, `skill_node.py`, vectorised `validate_cycle`, `tools/admissible_sweep.py`, `sim/skills_gate.py`, `hand_stream_bench --trip-guard` | `sim/cycle_gate.py`, `sim/unified_gate.py` (+ their tests); the per-sample `validate_cycle` loop. **`PlanCycle` and the ring policy stay for the FSM until R4** (owner, 2026-09-12 — see the R2 section) | 20 columns cycles in sim at the owner's operating point (0.9 m / 100 mm — re-sized at R2), no drops, five seeds; plan < 50 ms on the loaded Jetson | ✅ **DONE** — sim gate MET 2026-09-12 (20/20 × 5 seeds, 0 drops); **hardware gate MET 2026-09-13** on the third no-motion sitting (rows 15/16 PASS all five gates, worst solve 47.9 / 49.0 ms, handoff margin 73–74 ms; non-gating row 17 failed G1/G3 under two extra busy cores) — `4d49e04`, `40371fe` (`logbook/2026-09-12-skill-stack-r2-skills-schedule-stream.md`, `…/2026-09-13-skill-stack-r2-gate-sittings.md`) |
-| R3 | Learner + single site | `learner.py`, `memory.py`, outcome capture | ILC/trim/cal/record stack, `toss_ilc_enabled` | in-band within 5 throws from cold, sim and hardware; 10 consecutive catches | ⬜ **NOT STARTED** |
+| R3 | Learner + single site | `learner.py`, `memory.py`, outcome capture | ILC/trim/cal/record stack, `toss_ilc_enabled` | in-band within 5 throws from cold, sim and hardware; 10 consecutive catches | 🟡 **SIM MET, HARDWARE OUTSTANDING (2026-09-13)** — landed: the learner + memory, the single-site chained schedule, outcome capture, the precondition ladder (pre-level, floor lift) and a working `skill_node` shell. **Sim criterion MET 2026-09-13**: policies A and B, seeds 0–4, in-band by throw 3 (A) / 5 (B), monotone, 0 drops, repeat runs bit-identical. Outstanding: the operator's sitting, `tests/hardware/session_skills_r3.md`. `logbook/2026-09-13-skill-stack-r3-learner-single-site.md`. commits `b403964` (learner + memory), `c737ec9` (planner blend floor), `baab782` (skill path + learning-stack deletion) |
 | R4 | Two sites, one ball, BB reset | alternating schedule, reload as a CATCH skill, `Juggle.action`, GUI surface | FSM stack (tag `fsm-final`), `catch_coordinator`, `catch_reach`, old sim gates | 10 consecutive alternating catches; BB reload → catch → throw chain | ⬜ **NOT STARTED** |
 | R5 | Two-ball columns | Start/Stop phases, limits ramp as sized at R2 | — | five consecutive cycles, then 30 catches; learning curve logged | ⬜ **NOT STARTED** |
 | R6 | Close-out | docs, memory, archival | whatever R5 left dead | plan archived `completed` | ⬜ **NOT STARTED** |
@@ -491,7 +512,10 @@ the rung's tests passing or a handoff file in the scratchpad.
   clock (`4d49e04`) and driver defects (`40371fe`):
   `logbook/2026-09-13-skill-stack-r2-gate-sittings.md`. Entry:
   `logbook/2026-09-12-skill-stack-r2-skills-schedule-stream.md`.
-  **R3 cleared to start.**
+  **R3 cleared to start.** **Caveat (2026-09-13):** the 20/20 sim-gate figure
+  above relied in part on a drifting tracker anchor that suppressed
+  catch-and-throw re-sends; the corrected anchor (landed at R3) surfaces a
+  columns `LIMIT_JERK` refusal — filed and carried to R4, not re-opened at R3.
 
 ### R3 — Learner, then single-site hardware
 
@@ -515,7 +539,10 @@ the rung's tests passing or a handoff file in the scratchpad.
   planner floor) refuses `HAND_STROKE`; and a loaded levelling correction brings
   back R1's knot-0 tilt snap. `skills/start_columns` from a freshly activated
   robot will therefore refuse its first throw. The R2 gate works around both
-  (a REST pre-position, no `level`).
+  (a REST pre-position, no `level`). **RESOLVED at R3 (2026-09-13):** the
+  schedule opens with a REST at the site (the floor lift, `FLOOR_LIFT_S =
+  1.5 s`) and `skill_node` pre-levels before the first lift; both land in the
+  executor/schedule units.
 - **Carried from the R2 gate sittings (2026-09-13): margin, leg jerk and reach
   — before R3's first powered sitting.** (1) Re-run gate row 17 after the owner's background-load work: with
   two extra busy cores G1 reached 93.9 ms and G3 40.9 ms, and rows 15/16 cleared
@@ -529,11 +556,87 @@ the rung's tests passing or a handoff file in the scratchpad.
   and the machine has flown 150 000; any R3 plan above that is a logged ramp under
   `leg-gain-tuning-methodology.md`. (3) At 100 mm every re-aim of a ±3 mm landing
   change was refused (143 of 143, all before motion) — decision 9's reach-margin
-  finding, which R3's measured scatter resolves.
+  finding, which R3's measured scatter resolves. **Status at R3 close
+  (2026-09-13):** (2) RESOLVED — a one-ball single-site cycle commands 0 leg
+  jerk in both the split and whole-window form (R2's 188k figure was a
+  two-ball splice-seed artefact, not a single-site number). (3) RESOLVED for
+  R3 by the single-site admissible box: (P1, P1) collapsed to (0, 0) and,
+  after the pin-blend floor landed, regenerated at 150k as xy
+  [−40, 40] × [−30, 30] mm, flight 0.750–0.857 s. (1) RE-CARRIED as a
+  runsheet prerequisite for R3's sitting — the row 17 re-run needs the
+  owner's background-load work, which did not happen this rung.
+- **Owner decisions (2026-09-13).**
+  1. *Cycle.* Chained single site: apex 0.9 m, dwell 0.30 s, site P1
+     (−50, 0), legs 300 / 5000 / 150 000, hand 3500.
+  2. *Learner.* k = 16, k_min = 2, h_x = 0.01 m, h_y = (0.05, 0.05, 0.2),
+     γ = 1e-2, η = 0.2 (§ 2.5); a new (P1, P1) admissible box swept at 150k.
+  3. *Ladder.* Pure in the executor via an observation callable; `skill_node`
+     pre-levels (`go_to_pose` identity); the schedule opens with a REST at
+     the site (the floor lift).
+  4. *Memory.* `temp/learn/<plant_id>/memory.csv`, `plant_id` a `skill_node`
+     param defaulting to `'jugglebot'`.
+  5. *Outcome.* `ball_tracker_node` landing_z → 830 (`sites.CATCH_CUP_Z_MM`);
+     y = the native `/balls` prediction; flight = crossing − the scheduled
+     release. (The FSM's catch plane moves too — accepted.)
+  6. *Chained lag* accepted: a catch-with-throw's `then_throw` command is
+     computed once at CATCH dispatch; re-sends reuse it.
+  7. *Band.* Sim 20 mm / 20 ms (exact release + 0.5 mm tracking noise);
+     hardware 30 mm / 20 ms; monotone = median + 1.3·MAD.
+  8. *Deletion* after the chained sim passes: live `toss_record` symbols move
+     to `ball_possession.py`; delete the miner, `mocap_parity_bias`,
+     `seat_edge_decomposition`, `toss_cal_analyse`; `TOTAL_MAX_RAD` becomes an
+     FSM constant.
+  9. *Single-site CATCH* with no landing at dispatch waits for the first
+     landing; `NO_LANDING` fires only at the deadline `t_land − 0.278 − lead`.
+     **Superseded for catch-with-throw by decision 12.**
+  10. *Release lag* (156–371 ms commanded→physical in old bags, unexplained):
+      the sitting measures it; the flight definition is unchanged. Risk: if
+      real, the flight band fails on hardware and the box's 0.750 s floor
+      blocks it.
+  11. *Aim-box collapse.* Investigate the planner first (Opus unit R3-i).
+      Pre-registered fallback if not traced in one unit: launch THROWs fly
+      identity; the learner commands only catch-carried throws (box
+      ±40/±30 mm chained).
+  12. *Catch-with-throw installs at release* (scheduled dispatch, the splice
+      snap), aimed at the predicted landing (`y_d`, from the ball's own
+      previous release, ballistic arrival), refined by tracker re-sends;
+      standalone catches keep wait-for-landing; a cold start is single-throw
+      attempts. **Supersedes decision 9 for catch-with-throw.**
+
+  Assumption: seat offset x = 0 at R3. The columns opening REST is
+  re-carried to R4.
+- **Outcome (2026-09-13).** `learner.py`, `memory.py`, the single-site
+  chained schedule (`compile_self_toss` + the opening REST), outcome capture,
+  the precondition ladder (pre-level, floor lift, `NO_ADMISSIBLE_COMMAND`) and
+  a working `skill_node` landed. **Sim criterion MET:**
+  `python sim/skills_gate.py --learn --policy A --seeds 0-4` ×2
+  (`skills_gate_learn_A_run{1,2}.json`, 204.7 / 205.9 s) and `--policy B
+  --seeds 0-4` (`skills_gate_learn_B_run1.json`, 191.4 s), all 2026-09-13:
+  every seed PASS in-band by throw 3 (policy A) / 5 (policy B), monotone
+  true, 0 drops, and the two policy-A runs bit-identical. Defects found and
+  fixed this rung: the R2 `skill_node`'s single-threaded spin + blocking
+  install wait (every live install would have timed out); CATCH aimed at the
+  stale 809.08 mm tracker plane instead of 830; the learner's underflowed
+  weight sum producing a NaN command (now a raised, refused skill);
+  `compile_self_toss` dispatching a catch before its own release; the 1.0 s
+  floor lift refusing `LIMIT_JERK` from the centred park (raised to 1.5 s);
+  the admissible sweep never gating the launch throw that carries the
+  command; and the columns sim gate's drifting tracker anchor that had
+  partly propped up R2's 20/20 result (carried to R4 below). Hardware gate
+  outstanding: the operator's sitting, `tests/hardware/session_skills_r3.md`.
+  **R4 is NOT cleared.**
 - **Delete.** `motion/toss_ilc.py`, `toss_trim.py`, `motion/toss_cal.py`,
-  `toss_record.py`, `tests/hardware/ilc_fit*.py`, `toss_fit_lib.py`,
-  `toss_cal_*.py`, `config/toss_ilc.yaml`, `config/toss_calibration.yaml`, the
-  `toss_ilc_enabled` flag, and the probes that mined them.
+  `tests/hardware/ilc_fit*.py`, `toss_fit_lib.py`, `toss_cal_*.py`, the
+  `toss_ilc_enabled` flag, and the named probes that mined them (the miner,
+  `mocap_parity_bias`, `seat_edge_decomposition`, `toss_cal_analyse`) — done,
+  R3. `config/toss_ilc.yaml` and `config/toss_calibration.yaml` never existed
+  (decision 8; grep found no such files). `toss_record.py`'s live symbols
+  moved to `ball_possession.py` rather than being deleted — still in use
+  outside the ILC stack; `TOTAL_MAX_RAD` becomes an FSM constant.
+  Grep-to-zero counts (2026-09-13, `git grep` for the learning-stack names): 2535
+  before → 698 after, 91 outside `*.md`, each a dated retirement note, provenance
+  prose, or an unrelated `toss_*` name in a live FSM module
+  (`logbook/2026-09-13-skill-stack-r3-learner-single-site.md` § Fix).
 - **Gate.** Hardware: in-band within 5 throws from a cold memory, then 10
   consecutive catches at one site; the learning curve (landing error vs throw
   index) in the logbook with the bag id.
@@ -546,6 +649,18 @@ the rung's tests passing or a handoff file in the scratchpad.
   landing; `Juggle.action` (pattern, apex, separation, num_cycles) replacing
   `Toss`, `TossContinuous` and the reload FSM; the GUI goal surface reduced to
   pattern + start/stop; the session limits chosen at R2 applied.
+- **Carried from R3 (2026-09-13).** (a) Columns jerk creep exposed once the
+  sim tracker anchor was fixed: with the correct anchor (no re-sends propping
+  up R2's numbers), the columns gate at seed 0 fails `LIMIT_JERK` at install
+  15, 204 534 > 200 000 mm/s³ — R2's 20/20 sim gate was partly propped up by
+  the drifting-anchor bug (unit m, `probe_columns_resend_trace/`,
+  2026-09-13). (b) Banking saturation when the hand's deceleration exceeds g
+  (≈12° bank), the likely source of the same-site 188 000 mm/s³ figure
+  carried from R2 (unit i, traced 2026-09-13). (c) The columns opening REST
+  (R3 assumed seat offset x = 0 and left the columns REST for R4). (d)
+  `admissible.gate_hash` covers `feasibility.py` and `segments.py` only — a
+  `cup_realize.py` edit leaves a stale box undetected (filed as a follow-up
+  during R3).
 - **Delete** (tag `fsm-final` first): `toss_sequencer.py`, `toss_session.py`,
   `reload_sequencer.py`, `catch_coordinator.py` + node, `catch_reach.py`, the
   ring POLICY in `unified_cycle.py` (`replan_tail`, `latest_supersede_time_s`,
