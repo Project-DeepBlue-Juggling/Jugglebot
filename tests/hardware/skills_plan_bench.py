@@ -80,6 +80,17 @@ import dataclasses
 import csv
 import json
 import os
+
+# The BLAS thread pool is capped to ONE thread before anything imports numpy,
+# exactly as jugglebot_launch.py caps the planner nodes (`_planner_blas_env`).
+# The pool's default six busy-spinning workers stall a small-numpy-call solve:
+# MEASURED 2026-09-13, this driver's --rehearse on an idle Jetson, warm start
+# carried: uncapped worst install 94.9 ms (solver windows to 68.1 ms on 3-9
+# iterations); capped worst 31.8 ms (windows to 6.4 ms). The mechanism is
+# jugglebot.motion.blas_threads' (the UH-3 E-STOP class). setdefault, so an
+# explicit environment still wins.
+os.environ.setdefault('OPENBLAS_NUM_THREADS', '1')
+os.environ.setdefault('OMP_NUM_THREADS', '1')
 import subprocess
 import sys
 import time
@@ -459,7 +470,7 @@ def make_tracker(schedule, *, jitter_mm: float = 0.0, seed: int = 0,
 def _row(*, attempt: int, t_rel_s: float, kind: str, ball_id: int, res,
         is_resend: bool, is_preposition: bool, dispatch_late_ms,
         client_rtt_ms, disarmed_marker, load1, mpc_active,
-        max_emit_gap_ms) -> dict:
+        max_emit_gap_ms, expected_class=None) -> dict:
     return {
         'attempt': attempt, 't_rel_s': round(float(t_rel_s), 4), 'kind': kind,
         'ball_id': int(ball_id), 'accepted': bool(res.accepted),
@@ -468,12 +479,30 @@ def _row(*, attempt: int, t_rel_s: float, kind: str, ball_id: int, res,
         'is_resend': bool(is_resend), 'is_preposition': bool(is_preposition),
         'splice_k': int(res.splice_k),
         'seeded_post_release': bool(res.seeded_post_release),
-        'budget_class': budget_class(int(res.splice_k),
-                                     bool(res.seeded_post_release)),
+        # A refused install carries no splice knot; it is classed by the budget
+        # it WOULD have spent (expected_class), so a refused handoff is not read
+        # against the unpinned budget (2026-09-13 sitting: it was).
+        'budget_class': (budget_class(int(res.splice_k),
+                                      bool(res.seeded_post_release))
+                         if int(res.splice_k) >= 0 or expected_class is None
+                         else expected_class),
         'disarmed_marker': disarmed_marker, 'load1': load1,
         'mpc_active': mpc_active, 'max_emit_gap_ms': max_emit_gap_ms,
         'message': str(res.message)[:200],
     }
+
+
+def expected_class(skill, is_resend: bool) -> str:
+    """The splice budget an install of ``skill`` spends, known before it is
+    answered: a re-send splices at the general lead; a skill the schedule gave
+    the handoff lead is pinned to the release before it; the launch THROW starts
+    a fresh origin; anything else splices at the general lead."""
+    from jugglebot.motion.skills.schedule import HANDOFF_LEAD_S
+    if is_resend:
+        return 'unpinned'
+    if float(skill.lead_s) >= HANDOFF_LEAD_S - 1e-9:
+        return 'handoff'
+    return 'fresh' if skill.kind == sg.THROW else 'unpinned'
 
 
 def drive_executor(exe, call_meta: list, *, run_t0: float, attempt: int,
@@ -511,7 +540,7 @@ def drive_executor(exe, call_meta: list, *, run_t0: float, attempt: int,
                 kind=kind_display(skill, is_resend=is_resend),
                 ball_id=skill.ball_id, res=res, is_resend=is_resend,
                 is_preposition=False, dispatch_late_ms=dispatch_late_ms,
-                **meta))
+                expected_class=expected_class(skill, is_resend), **meta))
         prev_results = len(exe.results)
         prev_meta = len(call_meta)
         if abort_check is not None:
@@ -579,10 +608,15 @@ def evaluate(rows: list, *, status_gaps: list = None, mpc_active_samples: list =
 
     # ── G2: splice budget ────────────────────────────────────────────────
     late = [r for r in rows if r['code'] == 'SPLICE_TOO_LATE']
-    handoff_rtt = [float(r['client_rtt_ms']) for r in sv
-                  if r['budget_class'] == 'handoff' and r['client_rtt_ms'] is not None]
-    unpinned_rtt = [float(r['client_rtt_ms']) for r in sv
-                   if r['budget_class'] == 'unpinned' and r['client_rtt_ms'] is not None]
+    # The round trip is read against a budget only where one was SPENT: an
+    # accepted install, or a SPLICE_TOO_LATE (the budget ran out). A planning
+    # refusal installed nothing, so its round trip spent no splice budget.
+    spent = [r for r in sv if (r['accepted'] or r['code'] == 'SPLICE_TOO_LATE')
+             and r['client_rtt_ms'] is not None]
+    handoff_rtt = [float(r['client_rtt_ms']) for r in spent
+                  if r['budget_class'] == 'handoff']
+    unpinned_rtt = [float(r['client_rtt_ms']) for r in spent
+                   if r['budget_class'] == 'unpinned']
     hmax = max(handoff_rtt) if handoff_rtt else 0.0
     umax = max(unpinned_rtt) if unpinned_rtt else 0.0
     g2_ok = (not late and hmax < G2_HANDOFF_BUDGET_MS and umax < G2_UNPINNED_BUDGET_MS)
@@ -673,23 +707,28 @@ def git_head() -> str:
 
 def rehearse_attempt(attempt: int, *, n_throws: int, jitter_mm: float,
                      limits, geom, run_t0: float, now_fn=time.perf_counter,
-                     sleep_fn=time.sleep) -> tuple:
+                     sleep_fn=time.sleep, state=None) -> tuple:
     """One rehearsed attempt, per ``probe_gate_rehearsal.py`` (verified
     2026-09-13). Returns ``(rows, meta)``."""
     park = uc.CycleState.at_rest(
         np.array([0.0, 0.0, float(hw.JB_OP_DEFAULT_ACTIVE_Z_MM), 0.0, 0.0, 0.0]),
         float(hw.JB_OP_HAND_ACTIVATE_POSITION_REV), RealizeConfig())
 
-    state = {'rec': None}
+    state = {'rec': None} if state is None else state
     call_meta = []
 
     def installer(kind, terminal, t_now_s, ball_id=0):
         rec = state['rec']
         seed_rest = park if rec is None else None
         t_a = now_fn()
+        # The QP warm start is carried exactly as trajectory_node carries it
+        # (_segment_warm_start: passed to every install, replaced on accept).
+        # Omitting it made every rehearsed solve cold (2026-09-13: QP tails of
+        # 21-45 ms, and a 139 ms refusal, the node does not pay).
         new_rec, res, _seg = ex.install_segment(
             rec, seed_rest, kind, terminal, t_now_s,
-            limits=limits, geom=geom, t_install_s=now_fn)
+            limits=limits, geom=geom, t_install_s=now_fn,
+            warm_start=state.get('ws'))
         rtt_ms = (now_fn() - t_a) * 1e3
         # The node's plan_wall_ms is its callback's own wall time, refusals
         # included (trajectory_node._reject_segment times from entry);
@@ -698,6 +737,7 @@ def rehearse_attempt(attempt: int, *, n_throws: int, jitter_mm: float,
         res = dataclasses.replace(res, plan_wall_s=rtt_ms / 1e3)
         if res.accepted:
             state['rec'] = new_rec
+            state['ws'] = _seg.warm_start
         call_meta.append({'client_rtt_ms': round(rtt_ms, 3),
                           'disarmed_marker': None, 'load1': os.getloadavg()[0],
                           'mpc_active': None, 'max_emit_gap_ms': None})
@@ -706,12 +746,19 @@ def rehearse_attempt(attempt: int, *, n_throws: int, jitter_mm: float,
     sites = si.columns_sites(SEPARATION_MM)
     rows = []
 
-    # 1) REST pre-position, fresh origin, at P1's rest site.
+    # 1) Wait for the previous attempt's last segment to finish (an attempt that
+    #    ended early leaves its plan still moving), then the REST pre-position,
+    #    from the live record exactly as trajectory_node plans it (a fresh origin
+    #    at its terminal rest once it has ended; the park on the first attempt).
+    if state['rec'] is not None:
+        while now_fn() < state['rec'].end_s + 0.05:
+            sleep_fn(0.005)
     t_a = now_fn()
     _new_rec, pre_res, _seg = ex.install_segment(
-        None, park, sg.REST,
+        state['rec'], park if state['rec'] is None else None, sg.REST,
         sg.RestTerminal(rest_site_mm=sites[0].rest_site_mm(), t_rest_s=t_a + 1.0),
-        t_a, limits=limits, geom=geom, t_install_s=now_fn)
+        t_a, limits=limits, geom=geom, t_install_s=now_fn,
+        warm_start=state.get('ws'))
     rtt_ms = (now_fn() - t_a) * 1e3
     pre_res = dataclasses.replace(pre_res, plan_wall_s=rtt_ms / 1e3)
     rows.append(_row(attempt=attempt, t_rel_s=t_a - run_t0, kind='REST-pre',
@@ -724,6 +771,7 @@ def rehearse_attempt(attempt: int, *, n_throws: int, jitter_mm: float,
         return rows, {'ended_early': True, 'end_code': 'PRE_REST_' + pre_res.code,
                       'n_skills': 0, 'n_dispatched': 0}
     state['rec'] = _new_rec
+    state['ws'] = _seg.warm_start
     end_s = state['rec'].end_s
     while now_fn() < end_s + 0.05:
         sleep_fn(0.005)
@@ -744,6 +792,9 @@ def rehearse_attempt(attempt: int, *, n_throws: int, jitter_mm: float,
 
 
 def run_rehearse(args) -> int:
+    from jugglebot.motion import blas_threads as _blas
+    n_threads, source = _blas.read_blas_threads()
+    print(_blas.format_blas_line(n_threads, source))
     limits = TrajectoryLimits.from_config(hw).with_session_limits(
         leg_vel_mmps=SESSION_LEG_VEL_MMPS, leg_acc_mmps2=SESSION_LEG_ACC_MMPS2,
         leg_jerk_mmps3=SESSION_LEG_JERK_MMPS3, hand_acc_rps2=SESSION_HAND_ACC_RPS2)
@@ -752,12 +803,22 @@ def run_rehearse(args) -> int:
     if args.arm == 'A' and args.jitter_mm != DEFAULT_JITTER_MM:
         print('note: arm A forces jitter to 0.0 mm (the flag is ignored)')
 
-    run_t0 = time.perf_counter()
+    # The rehearsal runs on a WALL-CLOCK-SIZED clock: perf_counter shifted to the
+    # epoch, so it stays monotonic. The live driver and skill_node schedule on the
+    # ROS clock (~1.79e9 s), and a schedule that was exact near t = 0 was not
+    # exact there (2026-09-13); a rehearsal near t = 0 could not see it.
+    epoch = time.time() - time.perf_counter()
+
+    def now_fn():
+        return time.perf_counter() + epoch
+
+    run_t0 = now_fn()
+    shared = {'rec': None}
     all_rows, attempts_meta = [], []
     for a in range(args.attempts):
         rows, meta = rehearse_attempt(
             a, n_throws=args.n_throws, jitter_mm=jitter, limits=limits,
-            geom=geom, run_t0=run_t0)
+            geom=geom, run_t0=run_t0, now_fn=now_fn, state=shared)
         all_rows.extend(rows)
         attempts_meta.append(meta)
         print('attempt %d: %d rows, ended_early=%s end_code=%s (%d/%d skills)'
@@ -958,6 +1019,26 @@ def live_attempt(attempt: int, runner: '_Runner', *, n_throws: int,
             return abort['reason']
         return ''
 
+    status_gaps, mpc_samples = [], []
+
+    def sample():
+        st = runner.status
+        if st is not None:
+            status_gaps.append(float(st.max_emit_gap_ms))
+        mpc_samples.append(runner.link_kv.get('mpc_active'))
+
+    # An attempt that ended early leaves its last segment still moving; the next
+    # pre-position must not splice onto it (2026-09-13: every attempt after an
+    # early end refused its pre-position LIMIT_JERK or SPLICE_TOO_LATE for exactly
+    # that). trajectory/status says how long the active plan has left.
+    wait_deadline = clock_now() + 5.0
+    while clock_now() < wait_deadline:
+        st = runner.status
+        if st is not None and float(st.plan_time_remaining_s) <= 0.0:
+            break
+        runner.spin(0.02)
+        sample()
+
     sites = si.columns_sites(SEPARATION_MM)
     rows = []
     t_a = clock_now()
@@ -971,16 +1052,17 @@ def live_attempt(attempt: int, runner: '_Runner', *, n_throws: int,
     if abort_check():
         runner.hold()
         return rows, {'ended_early': True, 'end_code': 'ABORT_' + abort['reason'],
-                      'n_skills': 0, 'n_dispatched': 0}, [], []
+                      'n_skills': 0, 'n_dispatched': 0}, status_gaps, mpc_samples
     if not pre_res.accepted:
         return rows, {'ended_early': True, 'end_code': 'PRE_REST_' + pre_res.code,
-                      'n_skills': 0, 'n_dispatched': 0}, [], []
+                      'n_skills': 0, 'n_dispatched': 0}, status_gaps, mpc_samples
     # The pre-position's own rest instant (t_a + 1.0, set above) is its end —
     # trajectory_node holds the live plan, so there is no local PlanRecord.end_s
     # to read back here (unlike --rehearse's in-process record).
     end_s = t_a + 1.0
     while clock_now() < end_s + 0.05:
         runner.spin(0.02)
+        sample()
 
     t0 = clock_now() + _START_LEAD_S
     schedule = build_schedule(n_throws=n_throws, t0_abs_s=t0)
@@ -988,13 +1070,8 @@ def live_attempt(attempt: int, runner: '_Runner', *, n_throws: int,
                            now_fn=clock_now)
     exe = ex.SkillExecutor(schedule, installer, tracker=tracker)
 
-    status_gaps, mpc_samples = [], []
-
     def abort_check_and_sample():
-        st = runner.status
-        if st is not None:
-            status_gaps.append(float(st.max_emit_gap_ms))
-        mpc_samples.append(runner.link_kv.get('mpc_active'))
+        sample()
         return abort_check()
 
     sched_rows, ended, end_code, abort_reason = drive_executor(

@@ -1,7 +1,11 @@
 # R2 hardware gate — per-skill plan time on the loaded Jetson
 
-> ⬜ **NOT YET FLOWN.** One short sitting, before R3. The robot is powered and
-> activated but **never moves**: the wire stays disarmed the whole time.
+> ⚠ **FLOWN TWICE 2026-09-13 — gate NOT met; re-fly after the fixes.** Both
+> sittings hit a schedule bug that only appears on the ROS clock and a driver
+> defect that coupled attempts; both fixed the same day. Account:
+> `logbook/2026-09-13-skill-stack-r2-gate-sittings.md`. One short sitting, before
+> R3. The robot is powered and activated but **never moves**: the wire stays
+> disarmed the whole time.
 
 Skill-stack R2's one outstanding gate (`plans/active/two-ball-skill-stack.md` § 4
 R2: *"per-skill plan < 50 ms measured on the Jetson with the launch up and a bag
@@ -52,7 +56,7 @@ must be sourced on top. Use `python3`, not the project venv.
 | 1 | `cd ~/Desktop/Jugglebot-skills && git status -sb` | Clean, at or after the commit that landed this sheet. |
 | 2 | `cd ros_ws && colcon build --packages-select jugglebot_interfaces jugglebot && source install/setup.bash && cd ..` (the new srv needs both packages) | Builds. |
 | 3 | `python3 tests/hardware/skills_plan_bench.py --dry-run` | Prints one attempt's 22 skills (1 THROW, 19 CATCH+throw, 1 CATCH, 1 REST; every attempt also runs one REST pre-position before them), the two splice budgets **125 ms** (handoff) and **75 ms** (unpinned), and the five gates. |
-| 4 | `python3 tests/hardware/skills_plan_bench.py --rehearse --arm B --attempts 1` | The real planner in real time with no ROS; G3 and G5 read SKIP (no emitter, no wire). **G1, G2, G4 PASS: every scheduled install accepted, zero `SPLICE_TOO_LATE`.** Reference, this command on the idle Jetson 2026-09-13: G1 worst **48.31 ms** over 57 solves, carried by the CATCH+throw handoffs (p50 29.9 / p95 43.9 ms); re-sends p50 10.5 / max 27.0 ms, all 34 refused (expected); G2 handoff max 48.3 of 125 ms, unpinned max 27.0 of 75 ms. Note your max — it is the idle baseline the loaded rows are read against, and it already sits 2 ms under G1's bar (§ 4). |
+| 4 | `python3 tests/hardware/skills_plan_bench.py --rehearse --arm B` | The real planner in real time with no ROS, on a wall-clock-sized clock, three attempts back to back; G3 and G5 read SKIP (no emitter, no wire). **First line `blas threads: 1`; G1, G2, G4 PASS: every scheduled install of every attempt accepted, zero `SPLICE_TOO_LATE`.** Reference, this command on the idle Jetson 2026-09-13: 22/22 skills in each attempt; G1 worst **31.16 ms** over 176 solves; G2 handoff max 31.2 of 125 ms, unpinned max 11.4 of 75 ms; all 107 re-sends refused (expected at ±3 mm). Note your max — it is the idle baseline the loaded rows are read against. |
 
 ## 2. Bring-up (launch UP, robot powered, wire DISARMED)
 

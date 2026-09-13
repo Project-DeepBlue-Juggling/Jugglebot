@@ -428,11 +428,18 @@ def test_verdict_rc_is_zero_iff_no_FAIL():
 # The attempt loop — ONE deterministic smoke on a VIRTUAL clock
 # ═════════════════════════════════════════════════════════════════════════════
 
-def test_the_attempt_loop_dispatches_the_whole_schedule_pre_position_first():
+@pytest.mark.parametrize('start, n_throws', [(0.0, 2), (1789263419.5, 6)])
+def test_the_attempt_loop_dispatches_the_whole_schedule_pre_position_first(
+        start, n_throws):
     """A fake clock advanced by the tick period, a pure ``install_segment``
     installer (``t_install_s=None`` so ``SPLICE_TOO_LATE`` cannot fire from a
-    virtual clock racing ahead of a real one), 2 throws, 1 attempt: every
-    scheduled skill accepted, and the pre-position ran before any of them."""
+    virtual clock racing ahead of a real one), 1 attempt: every scheduled skill
+    accepted, and the pre-position ran before any of them.
+
+    Run at t = 0 AND at a ROS wall-clock start (the R2 gate sitting's own,
+    2026-09-13). Near t = 0 the schedule was always exact; at ~1.79e9 s it held
+    two unfolded catch/throw pairs, whose THROW refused LIMIT_JERK one knot after
+    a rest-terminal catch. Six throws, so there are pairs to fold."""
     from jugglebot.motion.geometry import StewartGeometry
     from jugglebot.motion.trajectory.cup_realize import RealizeConfig
     from jugglebot.motion.trajectory.limits import TrajectoryLimits
@@ -448,7 +455,7 @@ def test_the_attempt_loop_dispatches_the_whole_schedule_pre_position_first():
         np.array([0.0, 0.0, float(spb.hw.JB_OP_DEFAULT_ACTIVE_Z_MM), 0.0, 0.0, 0.0]),
         float(spb.hw.JB_OP_HAND_ACTIVATE_POSITION_REV), RealizeConfig())
 
-    clock = {'t': 0.0}
+    clock = {'t': float(start)}
 
     def now_fn():
         return clock['t']
@@ -484,12 +491,14 @@ def test_the_attempt_loop_dispatches_the_whole_schedule_pre_position_first():
         sleep_fn(0.005)
 
     t0 = now_fn() + spb._START_LEAD_S
-    schedule = spb.build_schedule(n_throws=2, t0_abs_s=t0)
+    schedule = spb.build_schedule(n_throws=n_throws, t0_abs_s=t0)
+    assert len(schedule.skills) == n_throws + 2
     tracker = spb.make_tracker(schedule, jitter_mm=0.0, seed=0, now_fn=now_fn)
     exe = ex.SkillExecutor(schedule, installer, tracker=tracker)
 
     rows, ended, end_code, abort_reason = spb.drive_executor(
-        exe, call_meta, run_t0=0.0, attempt=0, now_fn=now_fn, sleep_fn=sleep_fn)
+        exe, call_meta, run_t0=float(start), attempt=0, now_fn=now_fn,
+        sleep_fn=sleep_fn)
 
     assert not ended, end_code
     assert abort_reason == ''
@@ -513,3 +522,59 @@ def test_an_aborted_install_is_not_a_solve():
     """The live installer refuses 'ABORTED' without calling the node once an abort
     has tripped; that row carries no solve and must not enter G1's statistics."""
     assert not spb.is_solve({'code': 'ABORTED', 'server_plan_ms': 0.0})
+
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Budget classes for refused installs, and what G2 reads
+# ═════════════════════════════════════════════════════════════════════════════
+
+def test_expected_class_names_the_budget_an_install_would_spend():
+    """Known before the answer: a re-send and any general-lead splice are
+    'unpinned', a handoff-lead skill is 'handoff', the launch THROW is 'fresh'."""
+    import types
+    from jugglebot.motion.skills.schedule import HANDOFF_LEAD_S, LEAD_S
+    handoff = types.SimpleNamespace(kind=sg.CATCH, lead_s=HANDOFF_LEAD_S)
+    launch = types.SimpleNamespace(kind=sg.THROW, lead_s=LEAD_S)
+    rest = types.SimpleNamespace(kind=sg.REST, lead_s=LEAD_S)
+    assert spb.expected_class(handoff, is_resend=False) == 'handoff'
+    assert spb.expected_class(handoff, is_resend=True) == 'unpinned'
+    assert spb.expected_class(launch, is_resend=False) == 'fresh'
+    assert spb.expected_class(rest, is_resend=False) == 'unpinned'
+
+
+def test_a_refused_row_keeps_its_expected_class_and_an_accepted_row_its_real_one():
+    """2026-09-13: a refused handoff (no splice knot) was classed 'unpinned' and
+    read against the 75 ms budget. An accepted install is classed by where it
+    actually spliced, whatever was expected."""
+    kw = dict(attempt=0, t_rel_s=0.0, kind='CATCH+throw', ball_id=1,
+              is_resend=False, is_preposition=False, dispatch_late_ms=1.0,
+              client_rtt_ms=50.0, disarmed_marker=None, load1=1.0,
+              mpc_active='0', max_emit_gap_ms=25.0)
+    refused = ex.InstallResult(False, 'SPLICE_TOO_LATE', 'late', 0.05)
+    assert spb._row(res=refused, expected_class='handoff', **kw)['budget_class'] == 'handoff'
+    accepted = ex.InstallResult(True, 'OK', 'ok', 0.05, splice_k=21,
+                                seeded_post_release=True)
+    assert spb._row(res=accepted, expected_class='unpinned', **kw)['budget_class'] == 'handoff'
+
+
+def test_G2_ignores_the_round_trip_of_an_install_that_spent_no_budget():
+    """A planning refusal installed nothing, so its round trip spent no splice
+    budget; only accepted installs and SPLICE_TOO_LATE rows are read."""
+    rows = [_healthy_row(),
+            _healthy_row(accepted=False, code='LIMIT_JERK', splice_k=-1,
+                         budget_class='unpinned', client_rtt_ms=500.0)]
+    assert _by_id(spb.evaluate(rows))['G2']['verdict'] == 'PASS'
+
+
+def test_the_driver_caps_the_blas_pool_before_anything_imports_numpy():
+    """The rehearsal solves in THIS process, so it must run with the planner
+    nodes' one-thread BLAS pool. MEASURED 2026-09-13 (idle Jetson, warm start
+    carried): uncapped worst install 94.9 ms, capped 31.8 ms. The cap is inert
+    unless it precedes the first numpy import, so the order is what is pinned."""
+    src = open(os.path.join(_HW_DIR, 'skills_plan_bench.py')).read()
+    cap = src.index("os.environ.setdefault('OPENBLAS_NUM_THREADS', '1')")
+    assert src.index("os.environ.setdefault('OMP_NUM_THREADS', '1')") > cap
+    first_numpy = min(i for i in (src.find('\nimport numpy'), src.find('\nfrom jugglebot'),
+                                  src.find('\nimport jugglebot')) if i >= 0)
+    assert cap < first_numpy
