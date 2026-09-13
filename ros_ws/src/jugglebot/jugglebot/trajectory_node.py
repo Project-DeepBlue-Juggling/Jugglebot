@@ -4970,7 +4970,10 @@ class TrajectoryNode(Node):
         """Fill ``response`` from an INSTALLED segment. Mirrors ``_accept_cycle``."""
         response.accepted = True
         response.code = feas.OK
-        response.message = str(result.message)
+        # A5 (ARMING_CONTRACT): an accepted install on a disarmed wire is loud,
+        # exactly as every other motion accept on this node is. Missing here until
+        # 2026-09-13 — the one accept path added at R2 did not carry the suffix.
+        response.message = str(result.message) + self._wire_state_suffix()
         response.splice_k = int(result.splice_k)
         response.t0_mono = float(record.t0_s)
         response.t_event_mono = float(record.t0_s) + float(result.event_t_s)

@@ -27,6 +27,7 @@ from jugglebot.motion.trajectory import feasibility as feas
 from jugglebot.motion.trajectory.cycle_plan import CyclePlan
 
 from tests.ros.test_unified_cycle_integration import _cycle_node, _frozen_perf, _refresh
+from tests.ros.test_trajectory_node import _link_status
 
 
 def _throw_req(t_event_s, site_z=860.0, flight_s=0.6, ball_id=0):
@@ -354,3 +355,34 @@ def test_status_publishes_cycle_plan_wall_ms_from_the_install():
     node._publish_status()
     msg = node.status_pub.published[-1]
     assert msg.cycle_plan_wall_ms == pytest.approx(resp.plan_wall_ms)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# A5 — an accept on a disarmed wire is loud
+# ═════════════════════════════════════════════════════════════════════════════
+
+def test_an_accept_on_a_disarmed_wire_carries_the_disarmed_marker():
+    """ARMING_CONTRACT A5: every accepted motion command on this node appends the
+    wire state when ``mpc_active=0`` (``_wire_state_suffix``), so a harness prints
+    that the setpoints are not reaching the legs. ``install_segment`` did not until
+    2026-09-13 — found writing the R2 hardware-gate runsheet
+    (``tests/hardware/session_skills_r2_plan_gate.md``), which runs the whole gate
+    on a DISARMED wire and reads this marker as its per-install proof that
+    nothing moved."""
+    node = _perf_node()
+    node._on_link_status(_link_status(mpc_active='0'))
+    with _frozen_perf() as at:
+        resp = node._svc_install_segment(_throw_req(at + 0.6),
+                                         InstallSegment.Response())
+    assert resp.accepted is True, resp.message
+    assert 'wire DISARMED' in resp.message
+
+
+def test_an_accept_on_an_armed_wire_carries_no_disarmed_marker():
+    node = _perf_node()
+    node._on_link_status(_link_status(mpc_active='1'))
+    with _frozen_perf() as at:
+        resp = node._svc_install_segment(_throw_req(at + 0.6),
+                                         InstallSegment.Response())
+    assert resp.accepted is True, resp.message
+    assert 'DISARMED' not in resp.message
