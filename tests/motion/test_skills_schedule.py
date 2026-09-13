@@ -342,3 +342,47 @@ def test_the_rest_dispatches_after_the_last_catch_despite_the_shorter_lead(cols)
     last_catch = [s for s in schedule.skills if s.kind == sc.CATCH][-1]
     assert rest.dispatch_s() > last_catch.dispatch_s()
     assert rest.dispatch_s() > last_catch.t_abs_s      # after the touch-down
+
+
+# ─── the schedule is independent of the wall clock's magnitude ───────────────
+
+#: t0 values the schedule must compile identically at: the test clock, the sim
+#: clock, a perf_counter-sized clock, and two ROS wall-clock instants — the second
+#: is the R2 gate sitting's own (2026-09-13), where a double resolves only
+#: ~2.4e-7 s and the 1e-9 s comparisons inside compile_columns used to fail.
+_T0S = (0.0, 10.0, 12345.678, 1789263343.563, 1789263419.5)
+
+
+@pytest.mark.parametrize('t0', _T0S)
+def test_the_schedule_is_the_same_at_any_wall_clock_magnitude(t0, cols):
+    """Same kinds, same folds, same leads, same windows, and every instant equal
+    to the t0 = 0 schedule shifted by t0 (to the double's resolution at t0).
+
+    REGRESSION (2026-09-13, the R2 hardware-gate sitting): at t0 = 1789263419.5 a
+    20-throw schedule held 24 skills with two catch/throw pairs unfolded and
+    every other handoff on LEAD_S; at t0 = 10 it held the correct 22."""
+    ref = sc.compile_columns(_pattern(cols, n_throws=20), t0_abs_s=0.0)
+    got = sc.compile_columns(_pattern(cols, n_throws=20), t0_abs_s=t0)
+    assert len(got.skills) == len(ref.skills) == 22
+    tol = max(1e-9, 4.0 * abs(t0) * 2.220446049250313e-16)
+    for r, g in zip(ref.skills, got.skills):
+        assert (g.kind, g.ball_id, g.site.name) == (r.kind, r.ball_id, r.site.name)
+        assert g.lead_s == r.lead_s
+        assert g.window_s == r.window_s
+        assert abs(g.t_abs_s - (r.t_abs_s + t0)) <= tol
+        assert (g.then_throw is None) == (r.then_throw is None)
+        if r.then_throw is not None:
+            assert abs(g.then_throw.t_release_abs_s
+                       - (r.then_throw.t_release_abs_s + t0)) <= tol
+    assert got.t0_abs_s == t0
+
+
+def test_every_catch_after_a_release_carries_the_handoff_lead_on_a_ros_clock(cols):
+    """The shape that broke on the robot, stated directly: at a ROS wall-clock t0
+    every CATCH follows a release and so carries HANDOFF_LEAD_S, and exactly one
+    THROW (the launch from rest) survives the fold."""
+    got = sc.compile_columns(_pattern(cols, n_throws=20), t0_abs_s=1789263419.5)
+    catches = [s for s in got.skills if s.kind == sc.CATCH]
+    assert all(s.lead_s == sc.HANDOFF_LEAD_S for s in catches)
+    assert sum(1 for s in got.skills if s.kind == sc.THROW) == 1
+    assert sum(1 for s in catches if s.then_throw is not None) == 19

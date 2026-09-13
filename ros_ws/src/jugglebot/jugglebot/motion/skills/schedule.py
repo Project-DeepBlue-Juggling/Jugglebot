@@ -385,10 +385,24 @@ def compile_columns(pattern: Pattern, t0_abs_s: float) -> Schedule:
     site0, site1 = pattern.sites
     sites2 = (site0, site1)
 
+    # THE SCHEDULE IS BUILT ON ITS OWN CLOCK (t = 0 at the first throw) AND
+    # SHIFTED TO t0_abs_s ONCE, AT THE END. Pairing a catch with its throw
+    # (`_fold_catch_throw_pairs`), assigning the handoff lead (`_assign_leads`)
+    # and the dispatch-order check below all compare instants to 1e-9 s. On a
+    # ROS wall clock (~1.79e9 s) a double resolves only ~2.4e-7 s, so those
+    # comparisons failed at random: MEASURED 2026-09-13 on the robot and offline,
+    # a 20-throw schedule compiled at t0 = 1789263419.5 held 24 skills (two pairs
+    # unfolded, each a THROW spliced one knot after a rest-terminal catch ->
+    # LIMIT_JERK) and every other handoff on LEAD_S instead of HANDOFF_LEAD_S
+    # (every SPLICE_TOO_LATE of the R2 gate sitting), against the correct 22 at
+    # t0 = 10. Every test, the sim gate and the rehearsal ran near t = 0, which
+    # is why none of them saw it (logbook 2026-09-13-skill-stack-r2-gate-sittings).
+    t0_rel = 0.0
+
     skills = []
     _check_window('initial CATCH', tau)
     skills.append(Skill(kind=CATCH, ball_id=1, site=site1,
-                        t_abs_s=float(t0_abs_s) + tau, window_s=tau))
+                        t_abs_s=t0_rel + tau, window_s=tau))
 
     _check_window('THROW 0 (the launch from rest)', pattern.launch_s)
     if n >= 2:
@@ -402,7 +416,7 @@ def compile_columns(pattern: Pattern, t0_abs_s: float) -> Schedule:
     for i in range(n):
         ball_i = i % 2
         site_i = sites2[ball_i]
-        t_throw = float(t0_abs_s) + i * beta
+        t_throw = t0_rel + i * beta
         window = pattern.launch_s if i == 0 else pattern.dwell_s
         skills.append(Skill(kind=THROW, ball_id=ball_i, site=site_i,
                             t_abs_s=t_throw, window_s=window,
@@ -448,6 +462,23 @@ def compile_columns(pattern: Pattern, t0_abs_s: float) -> Schedule:
                    k, skills[k].kind, skills[k].t_abs_s, skills[k].window_s,
                    skills[k].lead_s, disp[k - 1], disp[k]))
 
+    t0 = float(t0_abs_s)
+    skills = [_shifted(s, t0) for s in skills]
     return Schedule(skills=tuple(skills), flight_s=t_f, beat_s=beta,
                     transit_s=tau, dwell_s=float(pattern.dwell_s),
-                    t0_abs_s=float(t0_abs_s))
+                    t0_abs_s=t0)
+
+
+def _shifted(sk: Skill, t0: float) -> Skill:
+    """``sk`` with every absolute instant it carries moved by ``t0``.
+
+    The one place a schedule's own clock meets the wall clock (see the note at
+    the top of :func:`compile_columns`): every comparison between instants has
+    already been made on the schedule's clock, where a double is exact to
+    ~1e-15 s.
+    """
+    tt = sk.then_throw
+    return dataclasses.replace(
+        sk, t_abs_s=float(sk.t_abs_s) + t0,
+        then_throw=(None if tt is None else dataclasses.replace(
+            tt, t_release_abs_s=float(tt.t_release_abs_s) + t0)))
