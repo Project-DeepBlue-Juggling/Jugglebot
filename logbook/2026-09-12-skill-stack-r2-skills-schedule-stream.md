@@ -39,7 +39,8 @@ drops, plan wall min 10.4 / p50 28.3 / max 83.3 ms over 405 accepted installs
 3500, exact release + 0.5 mm tracking noise). Every number below carries its
 command and date; the one hardware gate ("per-skill plan < 50 ms on the loaded
 Jetson, launch up, bag recording") is **outstanding** — no powered sitting this
-rung — and is the first row of the R3 runsheet. The sim-side and idle-Jetson
+rung — and has its own no-motion sitting before R3,
+`tests/hardware/session_skills_r2_plan_gate.md`. The sim-side and idle-Jetson
 twin is recorded below.
 
 What landed, in one line each:
@@ -229,7 +230,7 @@ harmlessly (the committed catch stands).
 ## Handoff (R3)
 
 - **Outstanding hardware gate**: per-skill `cycle_plan_wall_ms` < 50 ms with the
-  launch up and a bag recording — first row of `tests/hardware/session_skills_r3.md`,
+  launch up and a bag recording — its own sitting before R3, `tests/hardware/session_skills_r2_plan_gate.md` (written 2026-09-13),
   dress-rehearsed on the loaded Jetson. Both launches need
   `colcon build --packages-select jugglebot_interfaces jugglebot` (new srv).
 - The R3 sitting runs at 300 / 5000 / 200000 (jerk to the ceiling is a logged

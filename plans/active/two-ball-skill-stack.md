@@ -320,7 +320,7 @@ The **Status** column is the one source of truth for where each rung stands;
 |---|---|---|---|---|---|
 | R0 | Board and substrate | invariant checklist; census-backed dead-layer deletion | dead clusters (§ 6) | `./run_tests.sh --full` green; grep counts zero | ✅ **DONE** — checklist landed 2026-09-10, deletion done 2026-09-09 (`429c660`, `3bfec0b`) |
 | R1 | One hand master | can-bridge FW 21 (lane follows `HAS_HAND`, guard boots ARMED, ACTIVATE parks the hand at 0 rev), Platform FW 7 (no stroke engine), PROTOCOL_VERSION 7, `hand_mm_per_rev` measured key, lockstep runbook `tests/hardware/session_skill_stack_r1_flash.md` (completed) | `Trajectory.h`, `hand_source`, `hand_ops`, `HAND_TRAJ_CMD`/`HAND_SOURCE_SET`, `SetHandTrajCmd.srv`, `hand_stroke.py` twin, the legacy kind-0 toss device (its FSM branch refused at accept until R4) | bench ladder re-passes on the FW 21 / Platform 7 pair; a streamed self-toss caught with no latch step | ✅ **DONE 2026-09-11** (`1e2c0c9`, `c52dc27`) — flashed, sat, one streamed self-toss caught with no latch step; a levelling-frame tilt snap found + fixed (`_unified_prelevel`); multi-throw chaining + live guard cold-trip → R2 (`logbook/2026-09-11-skill-stack-r1-sitting-prelevel.md`, `…-one-hand-master.md`) |
-| R2 | Skills, schedule, stream (sim) | `motion/skills/{sites,schedule,segments,executor,admissible}.py`, `unified_cycle.state_at_knot`/`splice_at`, `InstallSegment.srv` + `trajectory/install_segment`, `skill_node.py`, vectorised `validate_cycle`, `tools/admissible_sweep.py`, `sim/skills_gate.py`, `hand_stream_bench --trip-guard` | `sim/cycle_gate.py`, `sim/unified_gate.py` (+ their tests); the per-sample `validate_cycle` loop. **`PlanCycle` and the ring policy stay for the FSM until R4** (owner, 2026-09-12 — see the R2 section) | 20 columns cycles in sim at the owner's operating point (0.9 m / 100 mm — re-sized at R2), no drops, five seeds; plan < 50 ms on the loaded Jetson | ✅ **DONE 2026-09-12** — sim gate MET (20/20 × 5 seeds, 0 drops, plan p50 28 / max 83 ms, 63 s); the loaded-Jetson < 50 ms measurement is the ONE outstanding hardware gate, first row of the R3 runsheet (`logbook/2026-09-12-skill-stack-r2-skills-schedule-stream.md`) |
+| R2 | Skills, schedule, stream (sim) | `motion/skills/{sites,schedule,segments,executor,admissible}.py`, `unified_cycle.state_at_knot`/`splice_at`, `InstallSegment.srv` + `trajectory/install_segment`, `skill_node.py`, vectorised `validate_cycle`, `tools/admissible_sweep.py`, `sim/skills_gate.py`, `hand_stream_bench --trip-guard` | `sim/cycle_gate.py`, `sim/unified_gate.py` (+ their tests); the per-sample `validate_cycle` loop. **`PlanCycle` and the ring policy stay for the FSM until R4** (owner, 2026-09-12 — see the R2 section) | 20 columns cycles in sim at the owner's operating point (0.9 m / 100 mm — re-sized at R2), no drops, five seeds; plan < 50 ms on the loaded Jetson | ✅ **DONE 2026-09-12** — sim gate MET (20/20 × 5 seeds, 0 drops, plan p50 28 / max 83 ms, 63 s); the loaded-Jetson < 50 ms measurement is the ONE outstanding hardware gate, its own no-motion sitting before R3 (`tests/hardware/session_skills_r2_plan_gate.md`, not yet flown; `logbook/2026-09-12-skill-stack-r2-skills-schedule-stream.md`) |
 | R3 | Learner + single site | `learner.py`, `memory.py`, outcome capture | ILC/trim/cal/record stack, `toss_ilc_enabled` | in-band within 5 throws from cold, sim and hardware; 10 consecutive catches | ⬜ **NOT STARTED** |
 | R4 | Two sites, one ball, BB reset | alternating schedule, reload as a CATCH skill, `Juggle.action`, GUI surface | FSM stack (tag `fsm-final`), `catch_coordinator`, `catch_reach`, old sim gates | 10 consecutive alternating catches; BB reload → catch → throw chain | ⬜ **NOT STARTED** |
 | R5 | Two-ball columns | Start/Stop phases, limits ramp as sized at R2 | — | five consecutive cycles, then 30 catches; learning curve logged | ⬜ **NOT STARTED** |
@@ -481,7 +481,7 @@ the rung's tests passing or a handoff file in the scratchpad.
   R1-carried items closed; the splice leads measured (general 6 knots,
   handoff 8, budgets 75 / 125 ms proved by a modelled solve). **Outstanding:
   the per-skill plan < 50 ms measurement on the loaded Jetson (launch up, bag
-  recording) — first row of `tests/hardware/session_skills_r3.md`; both
+  recording) — its own sitting before R3, `tests/hardware/session_skills_r2_plan_gate.md`; both
   packages need a `colcon build` for the new srv.** Entry:
   `logbook/2026-09-12-skill-stack-r2-skills-schedule-stream.md`.
   **R3 cleared to start.**
@@ -500,6 +500,15 @@ the rung's tests passing or a handoff file in the scratchpad.
   first rung a learner ever runs on this machine. The runsheet
   `tests/hardware/session_skills_r3.md` is dress-rehearsed on the loaded
   Jetson with every refusal reported at once.
+- **Carried from the R2 gate rehearsal (2026-09-13) — port before the first
+  powered skill.** The skill path has neither of the FSM's two session-start
+  preconditions: no floor lift (`reload_coordinator_node._unified_floor_lift`)
+  and no pre-level (`_unified_prelevel`). Measured offline: a THROW straight
+  from the ACTIVATE park (hand 0 rev, cup 679.6 mm, 10 mm under the 689.6 mm
+  planner floor) refuses `HAND_STROKE`; and a loaded levelling correction brings
+  back R1's knot-0 tilt snap. `skills/start_columns` from a freshly activated
+  robot will therefore refuse its first throw. The R2 gate works around both
+  (a REST pre-position, no `level`).
 - **Delete.** `motion/toss_ilc.py`, `toss_trim.py`, `motion/toss_cal.py`,
   `toss_record.py`, `tests/hardware/ilc_fit*.py`, `toss_fit_lib.py`,
   `toss_cal_*.py`, `config/toss_ilc.yaml`, `config/toss_calibration.yaml`, the
