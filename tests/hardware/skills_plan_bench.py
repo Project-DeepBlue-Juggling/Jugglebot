@@ -91,10 +91,13 @@ import os
 # explicit environment still wins.
 os.environ.setdefault('OPENBLAS_NUM_THREADS', '1')
 os.environ.setdefault('OMP_NUM_THREADS', '1')
+import math
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime
+from types import SimpleNamespace
 
 _HERE = os.path.dirname(os.path.abspath(__file__))              # tests/hardware
 _REPO = os.path.dirname(os.path.dirname(_HERE))                 # repo root
@@ -111,10 +114,13 @@ from jugglebot.motion.geometry import StewartGeometry             # noqa: E402
 from jugglebot.motion.trajectory import ballistics_bc as bal       # noqa: E402
 from jugglebot.motion.trajectory.cup_realize import RealizeConfig  # noqa: E402
 from jugglebot.motion.trajectory.limits import TrajectoryLimits    # noqa: E402
+from jugglebot.motion.skills import admissible as adm              # noqa: E402
 from jugglebot.motion.skills import executor as ex                # noqa: E402
+from jugglebot.motion.skills import learner as lr                  # noqa: E402
 from jugglebot.motion.skills import schedule as sc                # noqa: E402
 from jugglebot.motion.skills import segments as sg                # noqa: E402
 from jugglebot.motion.skills import sites as si                   # noqa: E402
+from jugglebot.motion.skills.memory import Memory                  # noqa: E402
 
 TOOL_NAME = 'tests/hardware/skills_plan_bench.py'
 
@@ -135,7 +141,58 @@ SESSION_LEG_ACC_MMPS2 = 5000.0
 SESSION_LEG_JERK_MMPS3 = 200000.0
 SESSION_HAND_ACC_RPS2 = 3500.0
 
+#: The owner's R3 single-site self-toss operating point (brief_common.md § 0
+#: "Owner decisions", 2026-09-13): site P1 = the SAME (-50, 0) mm point
+#: ``columns_sites(100.0)`` names, apex/dwell/hand-acc unchanged from R2 — only
+#: the leg jerk ceiling moves, to 150 000 mm/s^3 (the box swept in
+#: ``config/generated/admissible_box.yaml`` for site pair ('P1', 'P1') is
+#: swept at this jerk; a mismatch is caught loudly by ``admissible.
+#: check_limits`` rather than silently clipping against the wrong envelope).
+SELF_TOSS_SITE_X_MM = -50.0
+SELF_TOSS_SITE_Y_MM = 0.0
+SELF_TOSS_LEG_JERK_MMPS3 = 150000.0
+#: Cold-start policy A (brief_common.md § "Owner decisions"): single-throw
+#: attempts until the memory holds ``learner.LearnerConfig.k_min`` (2) rows.
+#: One throw per rehearsal attempt is what lets ``--attempts 3`` (the default)
+#: cross that floor and exercise the learner's post-prior command by the third
+#: attempt, entirely offline.
+SELF_TOSS_DEFAULT_N_THROWS = 1
+
+#: The plan's own R3 sim-validation plant-error model (plan § R3 "Sim
+#: validation"): +11% launch speed, +8.5 mrad aim. Injected here
+#: ANALYTICALLY (:func:`biased_landing`, no MuJoCo) so ``--rehearse`` can
+#: exercise the learner's command changes across attempts without a physics
+#: engine — deterministic, no RNG, so the bias is exactly repeatable and
+#: orthogonal to ``--jitter-mm``'s tracker noise (still layered on top for
+#: arm B, exactly as it is for columns).
+SELF_TOSS_SPEED_ERR_FRAC = 0.11
+SELF_TOSS_AIM_ERR_MRAD = 8.5
+
+#: R3-g FINDING (2026-09-13, this bench, ``--rehearse --pattern self-toss``
+#: through ``install_segment`` unmodified), RESOLVED: ``schedule.
+#: compile_self_toss``'s own opening REST — ``FLOOR_LIFT_S``, from the
+#: ACTIVATE park (0, 0) to site P1's rest position (-50, 0) mm — refused
+#: ``LIMIT_JERK`` at the R3 session limit at its original 1.0 s value (peak
+#: 177 241 mm/s³ against 150 000; 205 051 mm/s³ at 1.2 s, a non-monotonic
+#: solver artifact; CLEAN at 1.5 s and above). The SAME move at columns' R2
+#: ceiling (200 000 mm/s³) is what the R2 gate's manual REST-pre already
+#: accepts — so this was a NEW, R3-specific margin gap the lower jerk
+#: ceiling opened up, not a defect in this driver. **Fix landed**:
+#: ``schedule.FLOOR_LIFT_S`` is now 1.5 s (Finding A in the runsheet, now
+#: RESOLVED) — the real ``skills/start_self_toss`` first call is no longer
+#: expected to refuse on this segment. This bench still pre-positions self-
+#: toss too (its OWN manual REST-pre, at this same 1.5 s window, mirroring
+#: columns) rather than relying on ``compile_self_toss``'s own opening REST
+#: — see ``rehearse_attempt``'s § 1b comment for why that still matters:
+#: it masks the real cold-start move and the real ``_prelevel`` step from
+#: this rehearsal.
+SELF_TOSS_PRELIFT_S = 1.5
+
 DEFAULT_ATTEMPTS = 3
+#: ``None`` here (never a fixed literal) because the right default is
+#: PATTERN-dependent — see the post-parse fixup in :func:`main` colocating
+#: both defaults (:data:`DEFAULT_N_THROWS` for columns,
+#: :data:`SELF_TOSS_DEFAULT_N_THROWS` for self-toss) at one read site.
 DEFAULT_N_THROWS = 20
 DEFAULT_JITTER_MM = 3.0
 DEFAULT_MAX_AGE_S = 2.0
@@ -184,6 +241,24 @@ def build_schedule(*, n_throws: int, apex_m: float = APEX_M,
     pattern = sc.Pattern(sites=sites, apex_m=apex_m, dwell_s=dwell_s,
                         n_throws=n_throws)
     return sc.compile_columns(pattern, t0_abs_s)
+
+
+def default_self_toss_site() -> si.Site:
+    """The R3 owner-decision site P1 — the module-level default, factored so
+    every caller (``--dry-run``, ``--rehearse``, tests) names one site."""
+    return si.Site('P1', np.array([SELF_TOSS_SITE_X_MM, SELF_TOSS_SITE_Y_MM,
+                                   si.CATCH_CUP_Z_MM]))
+
+
+def build_self_toss_schedule(*, n_throws: int, site: si.Site = None,
+                             apex_m: float = APEX_M, dwell_s: float = DWELL_S,
+                             t0_abs_s: float = 0.0):
+    """R3's single-site self-toss schedule (``schedule.compile_self_toss``) —
+    the self-toss counterpart of :func:`build_schedule`."""
+    site = default_self_toss_site() if site is None else site
+    pattern = sc.SelfTossPattern(site=site, apex_m=apex_m, dwell_s=dwell_s,
+                                 n_throws=n_throws)
+    return sc.compile_self_toss(pattern, t0_abs_s)
 
 
 def kind_display(skill, *, is_preposition: bool = False,
@@ -261,10 +336,19 @@ def solves(rows) -> list:
     return [r for r in rows if is_solve(r)]
 
 
-def print_dry_run(n_throws: int) -> None:
-    sched = build_schedule(n_throws=n_throws)
-    print('columns schedule: apex=%.2f m sep=%.0f mm dwell=%.2f s n_throws=%d'
-          % (APEX_M, SEPARATION_MM, DWELL_S, n_throws))
+def print_dry_run(n_throws: int, *, pattern: str = 'columns',
+                  site: si.Site = None) -> None:
+    if pattern == 'self-toss':
+        site = default_self_toss_site() if site is None else site
+        sched = build_self_toss_schedule(n_throws=n_throws, site=site)
+        print('self-toss schedule: site=%s (%.1f, %.1f) mm apex=%.2f m '
+              'dwell=%.2f s n_throws=%d' % (site.name, site.cup_mm[0],
+                                            site.cup_mm[1], APEX_M, DWELL_S,
+                                            n_throws))
+    else:
+        sched = build_schedule(n_throws=n_throws)
+        print('columns schedule: apex=%.2f m sep=%.0f mm dwell=%.2f s n_throws=%d'
+              % (APEX_M, SEPARATION_MM, DWELL_S, n_throws))
     print('flight=%.4f s beat=%.4f s transit=%.4f s (%d skills)'
           % (sched.flight_s, sched.beat_s, sched.transit_s, len(sched.skills)))
     print('\n%-4s %-12s %-4s %-6s %10s %10s %-10s'
@@ -461,6 +545,99 @@ def make_tracker(schedule, *, jitter_mm: float = 0.0, seed: int = 0,
                                   t_land_abs_s=t_land)
         return None
     return tracker
+
+
+def biased_landing(site_mm, target_mm, flight_s: float, *,
+                   speed_frac: float = SELF_TOSS_SPEED_ERR_FRAC,
+                   aim_mrad: float = SELF_TOSS_AIM_ERR_MRAD):
+    """``(pos_mm, vel_mm_s, t_land_s)`` — the landing a throw commanded as
+    ``site_mm -> target_mm`` over ``flight_s`` actually produces under the
+    plan's R3 plant-error model (:data:`SELF_TOSS_SPEED_ERR_FRAC` /
+    :data:`SELF_TOSS_AIM_ERR_MRAD`): launch speed ``speed_frac`` HIGH, aim
+    tilted ``aim_mrad`` off the commanded direction (rotated toward +x — a
+    fixed, deterministic azimuth, since the plan states only the error's
+    MAGNITUDE, not a direction, and a fixed one keeps the rehearsal exactly
+    repeatable). Crosses the same z the commanded flight targeted
+    (``target_mm[2]``), via ``ballistics_bc.arrival_state_at_z`` — exact
+    no-drag ballistics, the same boundary condition the QP itself is planned
+    to satisfy, so the bias is physically grounded rather than an arbitrary
+    offset. MEASURED (2026-09-13, this function, apex 0.9 m self-toss, site
+    P1): landing offset −12.7 mm in x, flight +10.8% — the R3 gate's 30 mm
+    reach band and 20 ms flight band (brief_common.md § 0) both have margin
+    against it, so the bias alone should not itself refuse a throw; the
+    LEARNER changing the command over attempts is what this exists to show.
+    """
+    site_mm = np.asarray(site_mm, dtype=float).reshape(3)
+    target_mm = np.asarray(target_mm, dtype=float).reshape(3)
+    v_nom = bal.launch_velocity(site_mm, target_mm, float(flight_s))
+    speed = float(np.linalg.norm(v_nom))
+    theta = float(aim_mrad) * 1e-3
+    c, s = math.cos(theta), math.sin(theta)
+    vx, vy, vz = v_nom
+    v_dir = np.array([vx * c + vz * s, vy, -vx * s + vz * c])
+    v_actual = v_dir / np.linalg.norm(v_dir) * speed * (1.0 + float(speed_frac))
+    pos, vel, t_s = bal.arrival_state_at_z(site_mm, v_actual, float(target_mm[2]),
+                                           descending=True)
+    return pos, vel, float(t_s)
+
+
+def _release_physics_of(kind, terminal):
+    """``(site_mm, target_mm, flight_s, t_release_abs_s)`` for the ball
+    ``terminal`` releases, or ``None`` when it releases nothing (a plain CATCH,
+    a REST). Mirrors ``SkillNode._release_physics`` field for field — that
+    method is ROS-node code and may not be imported here (the pure-core /
+    no-ROS-at-module-scope split this file's own docstring states)."""
+    if kind == sg.THROW:
+        return (np.asarray(terminal.site_mm, dtype=float),
+               np.asarray(terminal.target_mm, dtype=float),
+               float(terminal.flight_s), float(terminal.t_release_s))
+    if kind == sg.CATCH and terminal.then_throw is not None:
+        tt = terminal.then_throw
+        return (np.asarray(tt.site_mm, dtype=float),
+               np.asarray(tt.target_mm, dtype=float),
+               float(tt.flight_s), float(tt.t_release_s))
+    return None
+
+
+def make_self_toss_tracker(*, jitter_mm: float = 0.0, seed: int = 0,
+                           now_fn=time.perf_counter):
+    """The R3 self-toss rehearsal tracker, and the ``note_release`` callback
+    that feeds it.
+
+    Returns ``(tracker, note_release)``. ``note_release(ball_id, kind,
+    terminal)`` must be called by the installer after every ACCEPTED install
+    that releases a ball (the same read ``SkillNode._maybe_announce`` makes,
+    minus its ROS side effects) — the tracker reports :func:`biased_landing`
+    for whatever the LAST noted release commanded, plus arm B's jitter on top
+    (the same composition :func:`make_tracker` uses for columns, so
+    ``--arm``/``--jitter-mm`` mean the same thing for both patterns). Before
+    any release is noted for a ball, the tracker returns ``None`` — same
+    "no landing yet" contract as :func:`make_tracker`.
+    """
+    releases = {}
+    rng = np.random.default_rng(seed)
+    jit = {'t': -1e9, 'd': np.zeros(3)}
+
+    def note_release(ball_id, kind, terminal):
+        physics = _release_physics_of(kind, terminal)
+        if physics is not None:
+            releases[int(ball_id)] = physics
+
+    def tracker(ball_id):
+        physics = releases.get(int(ball_id))
+        if physics is None:
+            return None
+        site_mm, target_mm, flight_s, t_release = physics
+        pos, vel, t_s = biased_landing(site_mm, target_mm, flight_s)
+        t = now_fn()
+        if jitter_mm > 0.0 and t - jit['t'] > 0.1:
+            jit['t'] = t
+            jit['d'] = np.array([rng.uniform(-jitter_mm, jitter_mm),
+                                 rng.uniform(-jitter_mm, jitter_mm), 0.0])
+        return ex.Landing(pos_mm=pos + jit['d'], vel_mm_s=vel,
+                          t_land_abs_s=t_release + t_s)
+
+    return tracker, note_release
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -707,15 +884,36 @@ def git_head() -> str:
 
 def rehearse_attempt(attempt: int, *, n_throws: int, jitter_mm: float,
                      limits, geom, run_t0: float, now_fn=time.perf_counter,
-                     sleep_fn=time.sleep, state=None) -> tuple:
+                     sleep_fn=time.sleep, state=None, pattern: str = 'columns',
+                     site: si.Site = None, learner=None, boxes=None,
+                     on_experience=None) -> tuple:
     """One rehearsed attempt, per ``probe_gate_rehearsal.py`` (verified
-    2026-09-13). Returns ``(rows, meta)``."""
+    2026-09-13). Returns ``(rows, meta)``.
+
+    ``pattern='self-toss'`` (R3-g) runs ``schedule.compile_self_toss`` through
+    the SAME install chain — warm start, epoch clock, learner/box hooks — with
+    ``learner``/``boxes``/``on_experience`` wired into the
+    :class:`~jugglebot.motion.skills.executor.SkillExecutor` exactly as
+    ``SkillNode._svc_start_self_toss`` wires them, and
+    :func:`make_self_toss_tracker`'s ``note_release`` recording every accepted
+    release so the tracker can report :func:`biased_landing` for it. It does
+    NOT skip the manual REST pre-position (§ 1b below) — this bench pre-
+    positions self-toss too, at :data:`SELF_TOSS_PRELIFT_S`, so the
+    rehearsal never exercises the real ``skills/start_self_toss`` path's OWN
+    opening REST (``schedule.FLOOR_LIFT_S``) from the raw ACTIVATE park, nor
+    the pre-level (``_prelevel``) that call runs first. See § 1b for why.
+    """
     park = uc.CycleState.at_rest(
         np.array([0.0, 0.0, float(hw.JB_OP_DEFAULT_ACTIVE_Z_MM), 0.0, 0.0, 0.0]),
         float(hw.JB_OP_HAND_ACTIVATE_POSITION_REV), RealizeConfig())
 
     state = {'rec': None} if state is None else state
     call_meta = []
+    #: Set below, only for ``pattern='self-toss'``, once ``note_release`` is
+    #: built — a mutable cell so ``installer`` (defined once, used by both
+    #: patterns) has one call site for the hook rather than a second copy of
+    #: the install body.
+    on_release = {'fn': None}
 
     def installer(kind, terminal, t_now_s, ball_id=0):
         rec = state['rec']
@@ -738,25 +936,57 @@ def rehearse_attempt(attempt: int, *, n_throws: int, jitter_mm: float,
         if res.accepted:
             state['rec'] = new_rec
             state['ws'] = _seg.warm_start
+            if on_release['fn'] is not None:
+                on_release['fn'](ball_id, kind, terminal)
         call_meta.append({'client_rtt_ms': round(rtt_ms, 3),
                           'disarmed_marker': None, 'load1': os.getloadavg()[0],
                           'mpc_active': None, 'max_emit_gap_ms': None})
         return res
 
-    sites = si.columns_sites(SEPARATION_MM)
     rows = []
 
-    # 1) Wait for the previous attempt's last segment to finish (an attempt that
-    #    ended early leaves its plan still moving), then the REST pre-position,
-    #    from the live record exactly as trajectory_node plans it (a fresh origin
-    #    at its terminal rest once it has ended; the park on the first attempt).
+    # 1) Wait for the previous attempt's last segment to finish (an attempt
+    #    that ended early leaves its plan still moving) — common to both
+    #    patterns: the NEXT schedule's own opening skill must not splice onto
+    #    a plan that has not reached its rest terminal yet.
     if state['rec'] is not None:
         while now_fn() < state['rec'].end_s + 0.05:
             sleep_fn(0.005)
+
+    # 1b) The manual REST pre-position, from the live record exactly as
+    #     trajectory_node plans it (a fresh origin at its terminal rest once
+    #     it has ended; the park on the first attempt).
+    #
+    #     COLUMNS: the columns path has no floor lift/pre-level ported, so
+    #     this bench supplies the same work-around the R2 gate sitting used
+    #     — a 1.0 s lift.
+    #
+    #     SELF-TOSS: ``compile_self_toss`` also carries its own opening REST
+    #     (``schedule.FLOOR_LIFT_S``, landed at 1.5 s — Finding A, RESOLVED:
+    #     the original 1.0 s refused ``LIMIT_JERK`` at the R3 session limit,
+    #     see the runsheet). Despite that, this bench ALSO manually
+    #     pre-positions self-toss here, at :data:`SELF_TOSS_PRELIFT_S`
+    #     (1.5 s) — so PLAINLY: this pre-position MASKS the real opening
+    #     REST from a raw ACTIVATE park, and masks ``_prelevel`` entirely
+    #     (`skills/start_self_toss` pre-levels the platform before compiling
+    #     its schedule; this bench never calls it). After the manual
+    #     pre-position lands, ``compile_self_toss``'s own opening REST is a
+    #     trivial no-op-sized move (the platform is already there) and
+    #     installs for free — so this rehearsal exercises the STEADY-STATE
+    #     schedule, not the session's first-ever cold-start move. That gap
+    #     is why the runsheet's dress rehearsal (§ 3) still runs the REAL
+    #     ``skills/start_self_toss`` from a fresh ACTIVATE, not this bench.
+    if pattern == 'self-toss':
+        target_site = default_self_toss_site() if site is None else site
+        rest_target_mm = target_site.rest_site_mm()
+        prelift_s = SELF_TOSS_PRELIFT_S
+    else:
+        rest_target_mm = si.columns_sites(SEPARATION_MM)[0].rest_site_mm()
+        prelift_s = 1.0
     t_a = now_fn()
     _new_rec, pre_res, _seg = ex.install_segment(
         state['rec'], park if state['rec'] is None else None, sg.REST,
-        sg.RestTerminal(rest_site_mm=sites[0].rest_site_mm(), t_rest_s=t_a + 1.0),
+        sg.RestTerminal(rest_site_mm=rest_target_mm, t_rest_s=t_a + prelift_s),
         t_a, limits=limits, geom=geom, t_install_s=now_fn,
         warm_start=state.get('ws'))
     rtt_ms = (now_fn() - t_a) * 1e3
@@ -768,20 +998,31 @@ def rehearse_attempt(attempt: int, *, n_throws: int, jitter_mm: float,
                      load1=os.getloadavg()[0], mpc_active=None,
                      max_emit_gap_ms=None))
     if not pre_res.accepted:
-        return rows, {'ended_early': True, 'end_code': 'PRE_REST_' + pre_res.code,
-                      'n_skills': 0, 'n_dispatched': 0}
+        return rows, {'ended_early': True,
+                     'end_code': 'PRE_REST_' + pre_res.code,
+                     'n_skills': 0, 'n_dispatched': 0}
     state['rec'] = _new_rec
     state['ws'] = _seg.warm_start
     end_s = state['rec'].end_s
     while now_fn() < end_s + 0.05:
         sleep_fn(0.005)
 
-    # 2) the columns schedule, from t0 = now + START_LEAD_S.
+    # 2) the schedule, from t0 = now + START_LEAD_S.
     t0 = now_fn() + _START_LEAD_S
-    schedule = build_schedule(n_throws=n_throws, t0_abs_s=t0)
-    tracker = make_tracker(schedule, jitter_mm=jitter_mm, seed=attempt,
-                           now_fn=now_fn)
-    exe = ex.SkillExecutor(schedule, installer, tracker=tracker)
+    if pattern == 'self-toss':
+        site = default_self_toss_site() if site is None else site
+        schedule = build_self_toss_schedule(n_throws=n_throws, site=site,
+                                            t0_abs_s=t0)
+        tracker, note_release = make_self_toss_tracker(
+            jitter_mm=jitter_mm, seed=attempt, now_fn=now_fn)
+        on_release['fn'] = note_release
+    else:
+        schedule = build_schedule(n_throws=n_throws, t0_abs_s=t0)
+        tracker = make_tracker(schedule, jitter_mm=jitter_mm, seed=attempt,
+                               now_fn=now_fn)
+    exe = ex.SkillExecutor(schedule, installer, tracker=tracker,
+                           learner=learner, boxes=boxes,
+                           on_experience=on_experience)
     sched_rows, ended, end_code, _abort = drive_executor(
         exe, call_meta, run_t0=run_t0, attempt=attempt, now_fn=now_fn,
         sleep_fn=sleep_fn)
@@ -791,17 +1032,66 @@ def rehearse_attempt(attempt: int, *, n_throws: int, jitter_mm: float,
                  'n_dispatched': len(exe.dispatched)}
 
 
+def _build_self_toss_context(args, limits):
+    """``(site, learner, boxes, on_experience, memory)`` for ``--pattern
+    self-toss`` — the R3 owner site, the admissible box loaded from
+    ``config/generated/admissible_box.yaml`` (unclipped, with a printed note,
+    when the file is missing or was swept under different limits — a bench
+    rehearsal should still run, just without the box's safety net offline),
+    and a FRESH, throwaway ``Memory`` under a temp directory (never the real
+    session's ``temp/learn/<plant_id>/``, so re-running this bench can never
+    perturb or be perturbed by a real hardware session's memory)."""
+    site_x = SELF_TOSS_SITE_X_MM if args.site_x_mm is None else args.site_x_mm
+    site_y = SELF_TOSS_SITE_Y_MM if args.site_y_mm is None else args.site_y_mm
+    site = si.Site('P1', np.array([site_x, site_y, si.CATCH_CUP_Z_MM]))
+
+    box_path = os.path.join(_REPO, 'config', 'generated', 'admissible_box.yaml')
+    boxes = {}
+    if os.path.exists(box_path):
+        try:
+            loaded = adm.load(box_path)
+            adm.check_limits(loaded, limits)
+            boxes = {b.site_pair: b for b in loaded}
+        except adm.AdmissibleError as exc:
+            print('note: admissible box at %s not usable (%s) -- throws run '
+                  'UNCLIPPED' % (box_path, exc))
+    else:
+        print('note: %s does not exist -- throws run UNCLIPPED' % (box_path,))
+
+    tmp_dir = tempfile.mkdtemp(prefix='skills_bench_selftoss_')
+    mem_path = os.path.join(tmp_dir, 'memory.csv')
+    memory = Memory(mem_path)
+    print('self-toss memory (fresh, this run only): %s' % (mem_path,))
+    learner_cfg = lr.LearnerConfig()
+    learner = SimpleNamespace(command=lambda x, y_d: memory.command(x, y_d, learner_cfg))
+
+    def on_experience(exp):
+        memory.append(exp)
+        print('memory row %d: x=%s u=%s y=%s caught=%s'
+              % (len(memory), exp.x.tolist(), exp.u.tolist(), exp.y.tolist(),
+                 exp.caught))
+
+    return site, learner, boxes, on_experience, memory
+
+
 def run_rehearse(args) -> int:
     from jugglebot.motion import blas_threads as _blas
     n_threads, source = _blas.read_blas_threads()
     print(_blas.format_blas_line(n_threads, source))
+    self_toss = args.pattern == 'self-toss'
+    leg_jerk = SELF_TOSS_LEG_JERK_MMPS3 if self_toss else SESSION_LEG_JERK_MMPS3
     limits = TrajectoryLimits.from_config(hw).with_session_limits(
         leg_vel_mmps=SESSION_LEG_VEL_MMPS, leg_acc_mmps2=SESSION_LEG_ACC_MMPS2,
-        leg_jerk_mmps3=SESSION_LEG_JERK_MMPS3, hand_acc_rps2=SESSION_HAND_ACC_RPS2)
+        leg_jerk_mmps3=leg_jerk, hand_acc_rps2=SESSION_HAND_ACC_RPS2)
     geom = StewartGeometry()
     jitter = 0.0 if args.arm == 'A' else float(args.jitter_mm)
     if args.arm == 'A' and args.jitter_mm != DEFAULT_JITTER_MM:
         print('note: arm A forces jitter to 0.0 mm (the flag is ignored)')
+
+    site = learner = boxes = on_experience = memory = None
+    if self_toss:
+        site, learner, boxes, on_experience, memory = _build_self_toss_context(
+            args, limits)
 
     # The rehearsal runs on a WALL-CLOCK-SIZED clock: perf_counter shifted to the
     # epoch, so it stays monotonic. The live driver and skill_node schedule on the
@@ -818,16 +1108,19 @@ def run_rehearse(args) -> int:
     for a in range(args.attempts):
         rows, meta = rehearse_attempt(
             a, n_throws=args.n_throws, jitter_mm=jitter, limits=limits,
-            geom=geom, run_t0=run_t0, now_fn=now_fn, state=shared)
+            geom=geom, run_t0=run_t0, now_fn=now_fn, state=shared,
+            pattern=args.pattern, site=site, learner=learner, boxes=boxes,
+            on_experience=on_experience)
         all_rows.extend(rows)
         attempts_meta.append(meta)
-        print('attempt %d: %d rows, ended_early=%s end_code=%s (%d/%d skills)'
+        mem_note = '' if memory is None else ' memory rows=%d' % (len(memory),)
+        print('attempt %d: %d rows, ended_early=%s end_code=%s (%d/%d skills)%s'
               % (a, len(rows), meta['ended_early'], meta['end_code'],
-                 meta['n_dispatched'], meta['n_skills']))
+                 meta['n_dispatched'], meta['n_skills'], mem_note))
 
     checks = evaluate(all_rows, attempts_meta=attempts_meta, mode='rehearse')
-    print_checks('VERDICT (--rehearse, arm %s, jitter %.1f mm)'
-                % (args.arm, jitter), checks)
+    print_checks('VERDICT (--rehearse, pattern %s, arm %s, jitter %.1f mm)'
+                % (args.pattern, args.arm, jitter), checks)
     _write_outputs(args, all_rows, checks, label='rehearse',
                    preconditions=[], mode='rehearse')
     return verdict_rc(checks)
@@ -1182,6 +1475,30 @@ def _write_outputs(args, rows, checks, *, label, preconditions, mode) -> None:
 # CLI
 # ─────────────────────────────────────────────────────────────────────────────
 
+def run_skills_check(node) -> tuple:
+    """Call ``skill_node``'s ``skills/check`` (item 8, ``SkillNode._svc_
+    check``) and return ``(ok, message)`` — a SEPARATE service from this
+    driver's own P1-P7 (which gate ``trajectory/install_segment``'s own
+    preconditions on ``trajectory_node``): ``skills/check`` reports the R3
+    precondition LADDER (mocap / hand / level / ball-evidence) plus the
+    admissible-box / limits status on ``skill_node`` itself, so a dress
+    rehearsal must see BOTH refusal surfaces in one pass (Workflow Rules:
+    "make gates report every refusal at once"). ``rclpy`` is imported lazily —
+    this function is only ever called from the live ``--check`` path.
+    """
+    import rclpy
+    from std_srvs.srv import Trigger
+    cli = node.create_client(Trigger, 'skills/check')
+    if not cli.wait_for_service(timeout_sec=3.0):
+        return False, 'skills/check unavailable -- is skill_node running?'
+    future = cli.call_async(Trigger.Request())
+    rclpy.spin_until_future_complete(node, future, timeout_sec=5.0)
+    resp = future.result()
+    if resp is None:
+        return False, 'skills/check did not answer in 5 s'
+    return bool(resp.success), str(resp.message)
+
+
 def build_parser():
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -1191,15 +1508,31 @@ def build_parser():
     ap.add_argument('--rehearse', action='store_true',
                     help='OFFLINE rehearsal through the real planner; zero ROS')
     ap.add_argument('--check', action='store_true',
-                    help='live preconditions only, exit 0/2')
+                    help='live preconditions only (this driver\'s P1-P7 plus '
+                         'skill_node\'s skills/check, R3-g), exit 0/2')
+    ap.add_argument('--pattern', choices=('columns', 'self-toss'),
+                    default='columns',
+                    help="'columns' (R2, default) or 'self-toss' (R3: one "
+                         'site, the learner + memory in the loop)')
+    ap.add_argument('--site-x-mm', type=float, default=None,
+                    help='self-toss site x, platform frame mm (default %.1f, '
+                         'the owner P1)' % (SELF_TOSS_SITE_X_MM,))
+    ap.add_argument('--site-y-mm', type=float, default=None,
+                    help='self-toss site y, platform frame mm (default %.1f)'
+                        % (SELF_TOSS_SITE_Y_MM,))
     ap.add_argument('--arm', choices=('A', 'B'), default=None,
                     help='A = exact-landing tracker (no re-sends); B = jittered '
-                         'tracker (forces re-sends). Required for --rehearse '
+                         'tracker (forces re-sends). For self-toss, "exact" '
+                         'means the plant-error bias only (biased_landing) — '
+                         'arm B adds jitter ON TOP. Required for --rehearse '
                          'and a live run.')
     ap.add_argument('--attempts', type=int, default=DEFAULT_ATTEMPTS,
                     help='number of attempts (default %d)' % (DEFAULT_ATTEMPTS,))
-    ap.add_argument('--n-throws', type=int, default=DEFAULT_N_THROWS,
-                    help='throws per attempt (default %d)' % (DEFAULT_N_THROWS,))
+    ap.add_argument('--n-throws', type=int, default=None,
+                    help='throws per attempt (default %d for columns, %d for '
+                         'self-toss -- cold-start policy A, one throw per '
+                         'attempt until the memory crosses k_min)'
+                        % (DEFAULT_N_THROWS, SELF_TOSS_DEFAULT_N_THROWS))
     ap.add_argument('--jitter-mm', type=float, default=DEFAULT_JITTER_MM,
                     help='arm B catch jitter (mm, default %.1f); arm A forces '
                          '0.0' % (DEFAULT_JITTER_MM,))
@@ -1219,9 +1552,12 @@ def build_parser():
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
+    if args.n_throws is None:
+        args.n_throws = (SELF_TOSS_DEFAULT_N_THROWS if args.pattern == 'self-toss'
+                         else DEFAULT_N_THROWS)
 
     if args.dry_run:
-        print_dry_run(args.n_throws)
+        print_dry_run(args.n_throws, pattern=args.pattern)
         return 0
 
     if args.check:
@@ -1241,6 +1577,14 @@ def main(argv=None) -> int:
             pre = check_preconditions(runner.snapshot(),
                                       install_available=install_available,
                                       max_age_s=args.max_age_s)
+            skills_ok, skills_msg = run_skills_check(node)
+            pre.append({
+                'id': 'S1', 'name': 'skills/check (R3 ladder + admissible box)',
+                'ok': skills_ok, 'detail': skills_msg,
+                'fix': ('fix the named row skills/check reports (mocap / hand '
+                        '/ level / ball-evidence / box), or start skill_node '
+                        'if the service is unavailable'),
+            })
             print_checks('PRECONDITIONS (--check)', pre)
             return 0 if all(c['ok'] for c in pre) else 2
         finally:

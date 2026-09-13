@@ -84,9 +84,11 @@ DWELL = 8.0          # comfortably above the 5.6 s floor at the 5.0 s delay
 DELAY = 5.0
 
 
-#: The shipped machine's layer-3 state: ``JB_OP_TOSS_ILC_ENABLED`` is false, so
-#: no speed trim is possible and every derived floor is judged at the untrimmed
-#: ``vertical_event_vel_mps(T)``. Stated here once, explicitly, because the
+#: The shipped machine's state: the critical-point ILC that could make a speed
+#: trim possible was deleted at R3 (plans/active/two-ball-skill-stack.md § R3
+#: "Delete"), so `ilc_speed_trim_possible` is unconditionally False and every
+#: derived floor is judged at the untrimmed ``vertical_event_vel_mps(T)``.
+#: Stated here once, explicitly, because the
 #: dataclass default is the OTHER way (fail-closed True — a session nobody told
 #: assumes the slowest release layer 3 could command). Tests that mean to
 #: exercise the trim charge say so; everything else describes the machine as it

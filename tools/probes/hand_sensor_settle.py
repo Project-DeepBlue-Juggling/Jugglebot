@@ -75,10 +75,13 @@ for _p in (_HERE, _REPO, os.path.join(_REPO, 'ros_ws', 'src', 'jugglebot')):
         sys.path.insert(0, _p)
 
 import jugglebot.hardware_config as hw                          # noqa: E402
-import toss_record_miner as miner                                # noqa: E402
-from jugglebot.toss_record import edges, poll_dt_steps_ms        # noqa: E402
+from jugglebot.ball_possession import edges, poll_dt_steps_ms    # noqa: E402
 
-DEFAULT_ROOT = miner.DEFAULT_ROOT
+#: Was ``miner.DEFAULT_ROOT`` — ``toss_record_miner.py`` (the reader
+#: ``analyse_bag`` still calls) was deleted 2026-09-13 (R3-f1, the
+#: learning-stack deletion). ``self_check()`` does not read a bag, so it stays
+#: usable; ``--bag`` no longer does.
+DEFAULT_ROOT = os.path.expanduser('~/Desktop/rosbags')
 OUT_DIR = os.path.join(_REPO, 'temp', 'probes')
 
 #: The candidate settle windows, in seconds. Swept, not chosen: the plan asks W
@@ -101,8 +104,10 @@ SHIPPED_W_S = 0.75
 FALLBACK_W_S = SHIPPED_W_S
 
 #: Ground truth for "messy" on this corpus: a held segment shorter than this is
-#: a quick-drop. The miner's own constant, imported rather than restated.
-QUICK_DROP_S = miner.QUICK_DROP_S
+#: a quick-drop. Was ``miner.QUICK_DROP_S``, imported rather than restated;
+#: inlined 2026-09-13 (R3-f1) when ``toss_record_miner.py`` was deleted — the
+#: miner no longer exists to import from, so this is now the one copy.
+QUICK_DROP_S = 1.5
 
 #: The score threshold. A catch scoring >= this is called MESSY.
 MESSY_THRESHOLD = 1
@@ -714,7 +719,7 @@ def _samples(events, *, dt=0.071, span=(0.0, 120.0), invalid=()):
     raw flicker with no debounced response is expressible, which is the whole
     population the score is built on.
     """
-    from jugglebot.toss_record import SensorSample
+    from jugglebot.ball_possession import SensorSample
     out = []
     t = span[0]
     raw = deb = False
@@ -925,6 +930,9 @@ def self_check() -> int:
 
 def analyse_bag(path, robot='jugglebot', w=None):
     """-> ``(result, note)``. Raises ``IOError`` on an unreadable bag."""
+    import toss_record_miner as miner   # deleted 2026-09-13, R3-f1 — this
+                                         # (--bag only) is unreachable until
+                                         # this probe is rebuilt without it.
     data = miner.read_bag(path, sensor_only=True)
     try:
         rows = miner.mine_bag(data, robot=robot)

@@ -854,8 +854,9 @@ _GO_HOME_DRAINED_BY_WRAPPER = {'_recenter': '_toss_recenter',
 
 
 def test_go_home_has_no_call_site_that_is_not_drained_first():
-    """**THE structural gate for S7** (the test_dwell_tilt_reads_have_exactly_one
-    _call_site idiom): every function that dispatches ``trajectory/go_home``
+    """**THE structural gate for S7** (the same "grep the source for exactly
+    one call site" idiom the deleted Layer 1.5 dwell-tilt test used): every
+    function that dispatches ``trajectory/go_home``
     drains the pipeline and lowers the session-scoped arming FIRST, in the same
     function — or is one of the two reload-shared ladders whose toss-side
     wrapper does it for them.
@@ -1602,13 +1603,14 @@ def test_a_precondition_failure_stops_by_name_and_draws_no_further_budget(
     left BallButler, and then collapses all of them into
     ``STOPPED_RELOAD_BUDGET``.
 
-    That collapse is the part with teeth. ``tests/hardware/toss_cal_grid.py``
-    reads ``STOPPED_RELOAD_BUDGET`` as *"the node exhausted its reloads — skip
-    this node"*, so a BallButler with a stale mocap feed or a hard fault would
-    have burned three balls per cell and then let the capture tool complete a
-    THIN GRID SILENTLY, with no operator-visible fault anywhere. A calibration
-    that quietly measured less than it says it did is the one failure a capture
-    tool must never have.
+    That collapse is the part with teeth. A caller distinguishing "the node
+    exhausted its reloads" from "BallButler faulted" (the grid capture tool
+    that motivated this distinction, ``tests/hardware/toss_cal_grid.py``, was
+    deleted at R3 with the rest of the learning stack) would otherwise see a
+    BallButler with a stale mocap feed or a hard fault burn three balls per
+    cell and complete a THIN GRID SILENTLY, with no operator-visible fault
+    anywhere. A calibration that quietly measured less than it says it did is
+    the one failure a capture tool must never have.
 
     So each of these stops the session by its OWN name, on the first attempt,
     before any further budget is drawn and before the recentre is re-dispatched.
@@ -2068,10 +2070,9 @@ def test_a_caught_interlude_leaves_the_platform_for_the_resumed_cycle(
     assert len(homes) == 1, (
         'a caught interlude must dispatch go_home ONCE (rung 2 recentre) — the '
         'CAUGHT terminal stays at the catch pose')
-    # The session really did resume: a second cycle was built after the interlude,
-    # and it wears the reload_settle flag that excludes it from the fit.
+    # The session really did resume: a second cycle was built after the
+    # interlude.
     assert len(built) == 2
-    assert node._toss_record_ctx['reload_settle'] is True
 
 
 def test_a_refused_interlude_terminalises_the_session_with_its_code(monkeypatch):
@@ -2187,184 +2188,6 @@ def test_no_release_retry_is_gated_on_the_live_cup_read(held, valid, retried,
     else:
         assert len(built) == 1
         assert result.outcome == 'ABORTED_CYCLE_ABORTED_NO_RELEASE'
-
-
-def test_a_retried_cycle_names_what_it_retried(monkeypatch):
-    """Guard G11: the retried cycle carries a back-reference to the uid it
-    retried, so a fit can exclude the pair rather than silently double-count the
-    same intended toss."""
-    clock = _Clock()
-    monkeypatch.setattr(rcn, 'time', clock)
-    node = _reload_ready_node(clock)
-    _stub_cycles(node, monkeypatch, clock,
-                 [_no_release(), TossResult(True, 'CAUGHT', 2.0, 0.8)])
-    orig = node._run_toss_cycle
-
-    def run_then_hold(seq, **kw):
-        out = orig(seq, **kw)
-        _feed_sensor(node, clock.t, held=True, valid=True)
-        return out
-
-    monkeypatch.setattr(node, '_run_toss_cycle', run_then_hold)
-    node._execute_toss_continuous(_ContGoalHandle(num_throws=1,
-                                                  stop_on_miss=False))
-    ctx = node._toss_record_ctx
-    assert ctx['retry_of'] is not None
-    assert ctx['retry_of'].endswith('-1')      # cycle 1's uid
-    assert ctx['uid'].endswith('-2')
-
-
-def test_the_cycle_after_a_reload_is_flagged_for_exclusion(monkeypatch):
-    """Guard G10: a just-recentred platform holding a just-delivered ball is not
-    the steady state the map is fitted from."""
-    clock = _Clock()
-    monkeypatch.setattr(rcn, 'time', clock)
-    node = _reload_ready_node(clock)
-    _stub_cycles(node, monkeypatch, clock,
-                 [_no_ball(), TossResult(True, 'CAUGHT', 3.0, 0.8)])
-    monkeypatch.setattr(node, '_run_reload_interlude',
-                        lambda *a, **k: (True, None, 1))
-    gh = _ContGoalHandle(num_throws=1, stop_on_miss=False)
-    gh.request.on_empty_cup = 'RELOAD'
-    node._execute_toss_continuous(gh)
-    assert node._toss_record_ctx['reload_settle'] is True
-
-
-# ── Layer 1.5 — the dwell inclinometer covariate ─────────────────────────────
-
-def test_dwell_tilt_reads_have_exactly_one_call_site_and_it_is_the_dwell():
-    """THE structural gate (§ 3.10 rule 1: reads never overlap PREPARE→THROW).
-
-    It is structural rather than a runtime check: _run_toss_cycle BLOCKS the
-    session loop for a cycle's whole life, so no iteration — and therefore no
-    read — can happen between PREPARE and THROW. This test pins that there is
-    exactly ONE call site and that it sits in the outer loop's quiescent branch,
-    because a second call site added inside the cycle path would be invisible to
-    every behavioural test."""
-    src = (Path(rcn.__file__).with_suffix('.py')).read_text()
-    assert src.count('self._maybe_read_dwell_tilt(') == 1
-    call_at = src.index('self._maybe_read_dwell_tilt(')
-    guard = src[max(0, call_at - 500):call_at]
-    assert 'SESSION_PHASE_DWELL' in guard
-    assert 'not session.cycle_live' in guard
-    # and the READ itself is never reachable from the toss FSM's own tick
-    body_start = src.index('def _step_toss_sequence(')
-    body_end = src.index('def _position_platform_for_toss(')
-    assert '_maybe_read_dwell_tilt' not in src[body_start:body_end]
-
-
-def test_dwell_reads_accumulate_during_a_quiescent_dwell(monkeypatch):
-    clock = _Clock()
-    monkeypatch.setattr(rcn, 'time', clock)
-    node = _reload_ready_node(clock)
-    monkeypatch.setattr(node, '_read_platform_tilt', lambda: (0.001, -0.002))
-    session = _session(num_throws=3)
-    session._next_cycle_at = clock.t + 10.0
-    for _ in range(200):
-        node._maybe_read_dwell_tilt(clock.t, session)
-        clock.sleep(0.05)
-    n = int(hw.JB_OP_TOSS_SESSION_DWELL_TILT_READS)
-    with node._lock:
-        assert len(node._dwell_tilt_reads) == n
-        assert node._dwell_tilt_degraded is False
-
-
-def test_a_tight_dwell_degrades_the_read_count_never_the_throw(monkeypatch):
-    """§ 3.10 rule 2, and it BITES at the shipped defaults: the QUIESCENT dwell is
-    dwell_time_s - throw_delay_s minus the CAUGHT-verdict latency (~0.7 s at
-    dwell 6.0 / delay 5.0), because the rest of the nominal dwell is the next
-    cycle's own throw countdown. The reads must shrink; the cadence must not."""
-    clock = _Clock()
-    monkeypatch.setattr(rcn, 'time', clock)
-    node = _reload_ready_node(clock)
-    monkeypatch.setattr(node, '_read_platform_tilt', lambda: (0.001, -0.002))
-    session = _session()
-    session._next_cycle_at = clock.t + 0.3       # less than the reserve
-    node._maybe_read_dwell_tilt(clock.t, session)
-    with node._lock:
-        assert node._dwell_tilt_reads == []
-        assert node._dwell_tilt_degraded is True
-
-
-def test_a_failed_read_is_a_lost_data_point_not_a_retry_storm(monkeypatch):
-    """The service BLOCKS the Platform-Teensy loop that streams hand moves, so a
-    dead inclinometer must not turn the dwell into a hammering loop against it."""
-    clock = _Clock()
-    monkeypatch.setattr(rcn, 'time', clock)
-    node = _reload_ready_node(clock)
-    calls = []
-    monkeypatch.setattr(node, '_read_platform_tilt',
-                        lambda: calls.append(clock.t))
-    session = _session()
-    session._next_cycle_at = clock.t + 10.0
-    for _ in range(60):
-        node._maybe_read_dwell_tilt(clock.t, session)
-        clock.sleep(0.05)
-    gaps = [b - a for a, b in zip(calls, calls[1:])]
-    assert calls, 'the read was never attempted'
-    assert all(g >= float(hw.JB_OP_TOSS_SESSION_DWELL_TILT_GAP_S) - 1e-9
-               for g in gaps), gaps
-    with node._lock:
-        assert node._dwell_tilt_degraded is True
-
-
-def test_a_nan_reading_never_reaches_the_record(monkeypatch):
-    """NaN is the service's documented failure shape (the bridge returns
-    [nan, nan] when the relay read fails). A NaN covariate in the corpus is
-    indistinguishable from a real reading of zero in any fit that forgot to
-    check."""
-    clock = _Clock()
-    monkeypatch.setattr(rcn, 'time', clock)
-    node = _reload_ready_node(clock)
-    monkeypatch.setattr(
-        node._tilt_cli, 'call_async',
-        lambda req: types.SimpleNamespace(done=lambda: True))
-    monkeypatch.setattr(
-        node, '_wait_future',
-        lambda fut, timeout_s=2.0: types.SimpleNamespace(
-            tilt_xy=[float('nan'), float('nan')]))
-    assert node._read_platform_tilt() is None
-
-
-def test_the_dwell_tilt_block_reaches_the_record(monkeypatch):
-    """Mean, sd, n, span and the LAST-READ-TO-RELEASE gap — the last of which is
-    what lets a corpus AUDIT rule 1 rather than trust a docstring: it is positive
-    iff the last read finished before the release."""
-    reads = [(100.0, 0.001, -0.002), (100.15, 0.003, -0.004),
-             (100.30, 0.002, -0.003)]
-    fields = ReloadCoordinatorNode._dwell_tilt_fields(reads, 101.0)
-    assert fields['dwell_tilt_n'] == 3
-    assert fields['dwell_tilt_rad'] == pytest.approx([0.002, -0.003])
-    assert fields['dwell_tilt_sd_rad'][0] == pytest.approx(
-        math.sqrt(((0.001 - 0.002) ** 2 + (0.003 - 0.002) ** 2
-                   + (0.002 - 0.002) ** 2) / 3.0))
-    assert fields['dwell_tilt_span_s'] == pytest.approx(0.30)
-    assert fields['dwell_tilt_last_read_to_release_s'] == pytest.approx(0.70)
-    assert fields['dwell_tilt_last_read_to_release_s'] > 0.0
-
-
-def test_no_dwell_reads_is_a_legal_block():
-    fields = ReloadCoordinatorNode._dwell_tilt_fields([], 101.0)
-    assert fields == {'dwell_tilt_n': 0}
-
-
-def test_dwell_reads_belong_to_exactly_one_cycle(monkeypatch):
-    """Snapshotted and CLEARED when the record is opened, so a read can never be
-    attributed to two cycles' releases."""
-    clock = _Clock()
-    monkeypatch.setattr(rcn, 'time', clock)
-    node = _reload_ready_node(clock)
-    with node._lock:
-        node._dwell_tilt_reads = [(1.0, 0.001, 0.002)]
-        node._dwell_tilt_degraded = True
-    node._open_toss_record(action='toss_continuous', goal_id='abc', flight=0.8,
-                           cycle_index=2, catch_pose=(0.0, 0.0, 170.0),
-                           throw_delay=DELAY, vel_scale=0.8, raw_goal={})
-    assert node._toss_record_ctx['dwell_tilt'] == [(1.0, 0.001, 0.002)]
-    assert node._toss_record_ctx['dwell_tilt_degraded'] is True
-    with node._lock:
-        assert node._dwell_tilt_reads == []
-        assert node._dwell_tilt_degraded is False
 
 
 def test_a_cancel_during_the_interlude_safes_and_does_not_wait_out_the_settle(
@@ -2671,10 +2494,10 @@ def test_a_precondition_fault_stops_the_session_by_name(monkeypatch, fault_code)
     delivered ball the cup did not catch) and by nothing else. A precondition
     fault — wrong mode, stale mocap, a BB error — is not a ball: retrying it
     spends the budget on a failure no reload can fix, and collapsing its
-    terminal into ``STOPPED_RELOAD_BUDGET`` makes ``toss_cal_grid`` read a
-    faulted BallButler as "node exhausted, skip" and complete a thin grid
-    instead of aborting. So the session stops on the FIRST such attempt, with
-    the fault's own name on the terminal."""
+    terminal into ``STOPPED_RELOAD_BUDGET`` reads as "node exhausted, skip"
+    to any caller distinguishing the two, hiding a faulted BallButler behind a
+    thin grid instead of aborting. So the session stops on the FIRST such
+    attempt, with the fault's own name on the terminal."""
     clock = _Clock()
     monkeypatch.setattr(rcn, 'time', clock)
     node = _reload_ready_node(clock)

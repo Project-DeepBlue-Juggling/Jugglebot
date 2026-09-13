@@ -527,7 +527,7 @@ def test_a_drop_on_the_FIRST_post_arrival_poll_scores_messy(settle):
 def test_the_flip_census_is_the_labellers_own_edge_list(settle):
     """One definition of "a transition", shared with the robot.
 
-    ``jugglebot.toss_record.edges`` is what ``label_from_sensor`` and the live
+    ``jugglebot.ball_possession.edges`` is what ``label_from_sensor`` and the live
     ``HandBallSensorSource`` use, so counting off its output is what stops this
     probe and the robot drifting onto different notions of a flip — and it is
     what makes the invalid-sample rule (UNKNOWN is not EMPTY) automatic here

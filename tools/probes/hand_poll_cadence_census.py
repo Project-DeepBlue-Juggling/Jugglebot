@@ -81,11 +81,14 @@ for _p in (_HERE, _REPO, os.path.join(_REPO, 'ros_ws', 'src', 'jugglebot')):
         sys.path.insert(0, _p)
 
 import jugglebot.hardware_config as hw                              # noqa: E402
-import toss_record_miner as miner                                   # noqa: E402
-from jugglebot.toss_record import (SensorSample,                    # noqa: E402
-                                   poll_dt_ms_median, poll_dt_steps_ms)
+from jugglebot.ball_possession import (SensorSample,                # noqa: E402
+                                       poll_dt_ms_median, poll_dt_steps_ms)
 
-DEFAULT_ROOT = miner.DEFAULT_ROOT
+#: Was ``miner.DEFAULT_ROOT`` — ``toss_record_miner.py`` (the reader
+#: ``census_bag``/``main`` still call) was deleted 2026-09-13 (R3-f1, the
+#: learning-stack deletion). ``self_check()``'s pure-cadence cases do not read
+#: a bag, so they stay usable; the bag-driven paths below no longer do.
+DEFAULT_ROOT = os.path.expanduser('~/Desktop/rosbags')
 OUT_DIR = os.path.join(_REPO, 'temp', 'probes')
 
 #: The can-bridge fix that removed the RX-ring delay line
@@ -159,6 +162,9 @@ def _bridge_fw(link) -> str:
 
 def census_bag(path: str) -> dict:
     """-> one bag's row. Raises ``IOError`` when the bag cannot be read."""
+    import toss_record_miner as miner   # deleted 2026-09-13, R3-f1 — bag-driven
+                                         # paths are unreachable until this
+                                         # probe is rebuilt without the miner.
     data = miner.read_bag(path, sensor_only=True)
     row = {'bag': miner.bag_label(path)}
     row.update(cadence(data.hand))
@@ -234,7 +240,7 @@ def self_check() -> int:
     """Bag-free acceptance for THIS file's reduction.
 
     It deliberately does not re-test ``poll_dt_steps_ms`` — that contract lives
-    in ``tests/motion/test_toss_record.py`` § 2b, and duplicating it here would
+    in ``tests/ros/test_ball_possession.py`` § 2b, and duplicating it here would
     create the second definition this probe exists to avoid. What is checked is
     everything this file adds: the percentile rule (including its identity with
     ``poll_dt_ms_median`` at p50), the republish dedupe surviving the reduction,
@@ -316,9 +322,18 @@ def self_check() -> int:
 
     # 8. --bag takes a name OR a path, and the row is labelled the same either
     #    way (the miner's own rule, so the label cannot drift from its reports).
-    ck('bag_label-path', miner.bag_label(
-        '/home/jetson/Desktop/rosbags/2026-08-10_16-30-44/')
-        == '2026-08-10_16-30-44')
+    #    SKIPPED: `toss_record_miner` was deleted 2026-09-13 (R3-f1); this
+    #    case needs a rebuild without the miner dependency before it can run
+    #    again — import it here, not at module/self_check scope, so its
+    #    absence only breaks this one case instead of every case above it.
+    try:
+        import toss_record_miner as miner
+    except ModuleNotFoundError:
+        print('SKIP  bag_label-path — toss_record_miner deleted (R3-f1)')
+    else:
+        ck('bag_label-path', miner.bag_label(
+            '/home/jetson/Desktop/rosbags/2026-08-10_16-30-44/')
+            == '2026-08-10_16-30-44')
 
     for f in fails:
         print('FAIL  {}'.format(f))
@@ -348,6 +363,10 @@ def main(argv=None) -> int:
     if args.self_check:
         return self_check()
 
+    import toss_record_miner as miner   # deleted 2026-09-13, R3-f1 — every
+                                         # path below (--bag/--all) is
+                                         # unreachable until this probe is
+                                         # rebuilt without the miner.
     paths = [b if os.sep in b else os.path.join(args.root, b)
              for b in args.bag]
     if args.all:

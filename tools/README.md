@@ -20,8 +20,7 @@ scripts in this directory and in `tests/hardware/` that command the robot and
 whose `--preview` previews a motion sequence before it is run. They do **not**
 bind the offline analysis probes under `tools/probes/`, which run headless on the
 Jetson where a matplotlib window is unusable; there `--preview` conventionally
-prints the raw per-sample window instead (see
-`tools/probes/toss_record_miner.py`).
+prints the raw per-sample window instead.
 
 **All test harnesses that accept `--preview` must follow these rules:**
 
@@ -200,29 +199,6 @@ no preview at all, matching `cogging_map_analyse.py`.
 gate bounds, and the analyser's curvature-flag constants). The SCL3300's noise
 floor is unmeasured in this repo; C0 exists to pin it before any test asserts a
 threshold.
-
-### Toss aim calibration — toss_cal_fit.py + toss_cal_analyse.py
-
-Layer **1** of the same stack: `config/toss_calibration.yaml`, contract
-C-TOSS-CAL-1 (`plans/archived/toss-selftuning.md`). Where the tilt map is
-INCLINOMETER-measured and answers *"where is gravity at this pose?"*, the aim map
-is BALL-measured and answers *"where does the ball actually go?"* — the residual
-that is left after levelling, and that an inclinometer is structurally blind to
-(hand-axis misalignment, cup/release asymmetry, platform residual motion).
-
-| Script | Role |
-|--------|------|
-| `tests/hardware/toss_fit_lib.py` | The pure fit core, importable and hardware-free: partition rule + census, the per-toss reduction, admission guards, the thin-node rule, the two write-refusing gates, the document build. Imported by both tools and by `tests/motion/test_toss_cal_fit.py`. |
-| `tests/hardware/toss_cal_fit.py` | **Desk-side**, not operator-at-the-robot: reads a JSONL corpus, writes `config/toss_calibration.yaml`. `--dry-run` / `--no-apply` write nothing; `--reload` (opt-in, needs ROS 2 sourced) calls `toss/reload_calibration` and **reads the version back**. Runs in the venv. |
-| `tools/toss_cal_analyse.py` | Offline. Heat map + quiver (drawn in **landing** space), per-node n/sd, anchor series, residual-vs-uptime scatter, `--diff` map-invariance, `--group` A/B scoring on the continuous observables. `--json`; reports go to `temp/reports/toss_cal/`. |
-
-The corpus comes from `tools/probes/toss_record_miner.py`, which mines a rosbag
-into `toss_record/1` rows. Plan: `plans/archived/toss-selftuning.md`. Build log:
-`logbook/2026-08-10-toss-selftuning-build.md`.
-
-⚠ `N_MIN` (8), the 10 % trim, the 1.0 mm node-snap tolerance and the 200 ms
-timing-cadence ceiling are **PROVISIONAL** until the first real capture, in the
-same convention `tilt_cal_grid.py` uses.
 
 ### catch_sim_test.py
 

@@ -469,6 +469,162 @@ def compile_columns(pattern: Pattern, t0_abs_s: float) -> Schedule:
                     t0_abs_s=t0)
 
 
+@dataclasses.dataclass(frozen=True)
+class SelfTossPattern:
+    """Single-site self-toss pattern parameters (R3 — plan § 0 / R3 build note).
+
+    One ball, one site: THROW from rest, then CATCH-with-``then_throw`` chained
+    ``n_throws - 1`` times, then a standalone CATCH, then REST. Mirrors
+    :class:`Pattern`'s fields exactly (``sites`` collapsed to one ``site``).
+    """
+
+    site: Site
+    apex_m: float
+    dwell_s: float
+    n_throws: int
+    #: THROW 0's window, from rest — see :class:`Pattern`.
+    launch_s: float = 0.4
+    #: The SETTLE tail every THROW/CATCH segment carries.
+    rest_tail_s: float = sg.REST_TAIL_S
+
+
+#: Duration (s) of the OPENING REST that lifts the hand from the ACTIVATE park
+#: (cup 679.6 mm, 10 mm under the 689.6 mm planner floor — a THROW from there
+#: refuses ``HAND_STROKE``, R3 probe 2026-09-13) to the site's floor, so THROW 0
+#: below is a fresh origin from an actual rest rather than from the park.
+#:
+#: THE ONE DEFINITION (like :data:`~jugglebot.motion.skills.sites.
+#: RELEASE_CUP_Z_MM`): restated from the FSM's ``_UNIFIED_FLOOR_LIFT_S``
+#: (``reload_coordinator_node.py:777``, MEASURED offline, probe 2026-09-07 —
+#: a 1.0 s SETTLE from -0.1087 rev lands exactly on the floor rev with a peak
+#: hand rate of 0.654 rev/s and 2.55 rev/s² of acceleration, three orders below
+#: the 3500 cap the un-lifted launch broke) rather than imported from it,
+#: because ``motion/`` may not import a ROS node. Columns' opening REST is
+#: carried to R4 rather than given this treatment here (R3 build note).
+#:
+#: **Widened 1.0 -> 1.5 s (R3-h1, 2026-09-13).** The FSM's 1.0 s measurement
+#: above was against the FSM's own (looser) jerk ceiling; through this
+#: schedule's real ACTIVATE-park -> P1 (-50, 0) mm move at the R3 session
+#: limit (150 000 mm/s³) it refuses ``LIMIT_JERK`` at 177 241 mm/s³ (205 051
+#: at 1.2 s, a non-monotonic solver artifact) -- CLEAN at 1.5 s and above
+#: (``tests/hardware/skills_plan_bench.py --rehearse --pattern self-toss``,
+#: 2026-09-13).
+FLOOR_LIFT_S = 1.5
+
+
+def compile_self_toss(pattern: SelfTossPattern, t0_abs_s: float) -> Schedule:
+    """The R3 single-site self-toss schedule (plan § 0 / R3 build note).
+
+    One ball at ``pattern.site``: an OPENING REST (:data:`FLOOR_LIFT_S`) lifts
+    the hand onto the site from the ACTIVATE park, then THROW 0 is a fresh
+    origin from that rest (``launch_s`` window), then every later throw is
+    CARRIED by the catch one dwell before it
+    (:func:`_fold_catch_throw_pairs` — the same measured reason
+    :class:`ThenThrow` gives for columns: solved apart, the catch's runway
+    decelerates the hand toward rest and the throw has to undo that with
+    ``dwell - lead`` left). The last throw's catch is standalone (nothing
+    scheduled after it at this rung), and the schedule ends with a REST at the
+    site, two ``rest_tail_s`` after that catch — the same reason
+    :func:`compile_columns` gives: one tail would dispatch the REST before the
+    touch-down and splice the catch away.
+
+    Throw ``i`` releases at ``FLOOR_LIFT_S + i * (t_f + dwell_s)`` — one ball,
+    one site, so the throw-to-throw period is the WHOLE cycle
+    (``t_f + dwell_s``), not ``beat_s``'s half-cycle (that halving is a
+    property of two sites alternating, plan § 2.4, and does not apply here).
+    Every CATCH's window is the full flight ``t_f`` (its splice base is its
+    own previous release, exactly as ``tau`` is for columns, so it gets
+    :data:`HANDOFF_LEAD_S` via :func:`_assign_leads` the same way).
+    ``Schedule.beat_s`` is filled with this period (matching
+    ``toss_session.TossSessionSequencer.beat_s = flight_time_s + dwell_time_s``,
+    the FSM's own name for a single ball's throw-to-throw period) and
+    ``Schedule.transit_s`` with ``t_f`` (the CATCH window, honestly — there is
+    no "other hand" here for ``transit_s``'s columns meaning to describe).
+
+    **Why THROW 0 lands at ``FLOOR_LIFT_S + launch_s``, not ``FLOOR_LIFT_S``.**
+    The opening REST is a fresh install (no record yet) that plans a SETTLE
+    ending EXACTLY at its own event instant (``FLOOR_LIFT_S`` — a REST segment
+    carries no extra tail, so ``record.end_s`` is exactly the terminal's event
+    time regardless of dispatch jitter). THROW 0 must dispatch no earlier than
+    that: with ``t_abs_s = FLOOR_LIFT_S + launch_s``, ``window_s = launch_s``
+    and the general :data:`LEAD_S`, ``THROW 0.dispatch_s() = FLOOR_LIFT_S -
+    LEAD_S``, so ``install_segment``'s fresh test (``t_now + lead >=
+    record.end_s``) reads ``(FLOOR_LIFT_S - LEAD_S) + LEAD_S >= FLOOR_LIFT_S``
+    — true by construction, not by margin. Putting THROW 0 at ``FLOOR_LIFT_S``
+    itself would dispatch it while the lift is still mid-settle and force a
+    SPLICE onto a plan that has not reached the floor yet.
+    """
+    t_f = flight_s(pattern.apex_m)
+    n = int(pattern.n_throws)
+    if n < 1:
+        raise ValueError('n_throws must be >= 1, got %r' % (pattern.n_throws,))
+    period = t_f + float(pattern.dwell_s)
+    site = pattern.site
+
+    # THE SCHEDULE IS BUILT ON ITS OWN CLOCK AND SHIFTED TO t0_abs_s ONCE, AT
+    # THE END — see the identical note in compile_columns for why (ROS-epoch
+    # doubles only resolve ~2.4e-7 s, and every fold/lead/monotonicity check
+    # below compares instants to 1e-9 s).
+    t0_rel = 0.0
+
+    _check_window('THROW 0 (the launch from rest)', pattern.launch_s)
+    if n >= 2:
+        _check_window('dwell (touch-down to the throw the catch carries)',
+                      pattern.dwell_s)
+    _check_window('CATCH (the full flight back to the same site)', t_f)
+
+    skills = [Skill(kind=REST, ball_id=0, site=site,
+                    t_abs_s=t0_rel + FLOOR_LIFT_S, window_s=FLOOR_LIFT_S)]
+
+    for i in range(n):
+        # + launch_s: THROW 0's release cannot land AT the floor instant
+        # itself (the opening REST's plan is still mid-settle there) — see
+        # the docstring's "Why THROW 0 lands at FLOOR_LIFT_S + launch_s".
+        t_throw = t0_rel + FLOOR_LIFT_S + pattern.launch_s + float(i) * period
+        window = pattern.launch_s if i == 0 else pattern.dwell_s
+        skills.append(Skill(kind=THROW, ball_id=0, site=site,
+                            t_abs_s=t_throw, window_s=window,
+                            y_d=(np.zeros(2), t_f), target=site))
+        # Unlike columns (whose LAST throw's landing is deliberately left
+        # unscheduled for R5's cone delivery), a self-toss has nowhere else
+        # for the ball to go: EVERY throw gets a catch, and the fold below
+        # turns all but the very last one into a carried then_throw.
+        skills.append(Skill(kind=CATCH, ball_id=0, site=site,
+                            t_abs_s=t_throw + t_f, window_s=t_f))
+
+    skills.sort(key=lambda s: s.t_abs_s)
+    skills = _fold_catch_throw_pairs(skills, float(pattern.dwell_s))
+
+    catches = [s for s in skills if s.kind == CATCH]
+    last_catch = max(catches, key=lambda s: s.t_abs_s)
+    # TWO tails — same reason as compile_columns: one would dispatch the REST
+    # before the touch-down and splice the still-in-flight catch away.
+    rest_t = last_catch.t_abs_s + 2.0 * pattern.rest_tail_s
+    skills.append(Skill(kind=REST, ball_id=last_catch.ball_id,
+                        site=last_catch.site, t_abs_s=rest_t,
+                        window_s=pattern.rest_tail_s))
+
+    skills = _assign_leads(skills)
+
+    disp = [s.dispatch_s() for s in skills]
+    for k in range(1, len(disp)):
+        if disp[k] < disp[k - 1] - 1e-9:
+            raise ValueError(
+                'skill %d (%s at %.4f s, window %.4f s, lead %.3f s) must '
+                'install before skill %d (%s at %.4f s, window %.4f s, lead '
+                '%.3f s) installs, but dispatches later (%.4f s vs %.4f s) — '
+                'the two windows overlap'
+                % (k - 1, skills[k - 1].kind, skills[k - 1].t_abs_s,
+                   skills[k - 1].window_s, skills[k - 1].lead_s,
+                   k, skills[k].kind, skills[k].t_abs_s, skills[k].window_s,
+                   skills[k].lead_s, disp[k - 1], disp[k]))
+
+    t0 = float(t0_abs_s)
+    skills = [_shifted(s, t0) for s in skills]
+    return Schedule(skills=tuple(skills), flight_s=t_f, beat_s=period,
+                    transit_s=t_f, dwell_s=float(pattern.dwell_s), t0_abs_s=t0)
+
+
 def _shifted(sk: Skill, t0: float) -> Skill:
     """``sk`` with every absolute instant it carries moved by ``t0``.
 

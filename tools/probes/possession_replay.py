@@ -26,10 +26,10 @@ WHY IT IS COMMITTED (and not a /tmp one-off)
 --------------------------------------------
 It is the generator behind ``tests/ros/toss_verdict_replay_fixtures.py`` — the
 committed evidence that survives on a machine without the bag — in the pattern
-``tools/probes/toss_record_miner.py --emit-fixture`` established for
-``tests/ros/toss_record_fixtures.py`` and
-``tools/probes/possession_verdict_bag_check.py --emit-fixtures`` for
-``tests/ros/possession_fixtures.py``.
+``tools/probes/possession_verdict_bag_check.py --emit-fixtures`` established for
+``tests/ros/possession_fixtures.py``. (``tools/probes/toss_record_miner.py
+--emit-fixture`` was the same pattern for ``tests/ros/toss_record_fixtures.py``;
+both were deleted 2026-09-13, R3-f1, the learning-stack deletion.)
 
 Consuming test: ``tests/ros/test_possession_replay.py``.
 Contract: ``ros_ws/docs/ball_possession_contract.md`` (C-POSSESS-1 § 3.2).
@@ -64,7 +64,7 @@ sys.path.insert(0, os.path.join(_REPO, 'ros_ws', 'src', 'jugglebot'))
 sys.path.insert(0, _REPO)
 
 import jugglebot.hardware_config as hw                          # noqa: E402
-from jugglebot import toss_record                               # noqa: E402
+import jugglebot.ball_possession as ball_possession              # noqa: E402
 from jugglebot.ball_possession import (                         # noqa: E402
     ARRIVAL_CONFIRMED,
     HandBallSensorSource,
@@ -84,7 +84,13 @@ FIXTURE_POST_S = 4.0
 
 def _load_miner():
     """Import ``toss_record_miner`` as a library (it is a script, not a package
-    module) — the same trick its own callers use."""
+    module) — the same trick its own callers use.
+
+    ⚠ ``toss_record_miner.py`` was deleted 2026-09-13 (R3-f1, the
+    learning-stack deletion) — this raises ``FileNotFoundError`` now. Only
+    ``main()``'s ``--bag``/``--emit-fixture`` path calls it; the tested surface
+    (``cycles_from_rows``, ``replay_cycle``, ``expand_stream``, ...) does not.
+    """
     spec = importlib.util.spec_from_file_location(
         'toss_record_miner', os.path.join(_HERE, 'toss_record_miner.py'))
     mod = importlib.util.module_from_spec(spec)
@@ -340,7 +346,7 @@ FIXTURE_POST_S = {post}
 
 #: One entry per cycle that reached a release, in bag order.
 #:  fsm_outcome   what the SHIPPED (tracker-primary) code minted, verbatim
-#:  sensor_label  the offline cup label from toss_record.label_from_sensor
+#:  sensor_label  the offline cup label from ball_possession.label_from_sensor
 CYCLES = '''
 
 
@@ -378,7 +384,7 @@ def main(argv=None):
     bag_name = os.path.basename(bag.rstrip('/'))
     data = miner.read_bag(bag, sensor_only=True)
     mined = miner.mine_bag(data, robot='jugglebot', plane_mm=None)
-    rows = toss_record.join(data.declarations, mined)
+    rows = ball_possession.join(data.declarations, mined)
     cycles = cycles_from_rows(rows)
 
     rows = []

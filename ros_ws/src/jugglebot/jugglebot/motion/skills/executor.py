@@ -30,8 +30,11 @@ from typing import Callable, List, Optional, Tuple, Union
 import numpy as np
 
 import jugglebot.hardware_config as hw
+from jugglebot import ball_possession as bp
 from jugglebot.motion import unified_cycle as uc
+from jugglebot.motion.skills import admissible as adm
 from jugglebot.motion.skills import segments as sg
+from jugglebot.motion.skills.memory import Experience
 from jugglebot.motion.skills.schedule import (HANDOFF_LEAD_KNOTS,
                                                HANDOFF_LEAD_S, LEAD_KNOTS,
                                                LEAD_S, MIN_WINDOW_KNOTS,
@@ -41,6 +44,7 @@ from jugglebot.motion.skills.segments import (CATCH, REST, THROW, CatchTerminal,
                                               RestTerminal, Segment,
                                               SegmentConfig, ThrowAfterCatch,
                                               ThrowTerminal)
+from jugglebot.motion.trajectory import ballistics_bc
 from jugglebot.motion.trajectory.cycle_plan import CyclePlan
 
 # ── Refusal codes this layer owns ────────────────────────────────────────────
@@ -53,6 +57,15 @@ NO_LANDING = 'NO_LANDING'
 #: A ``ValueError`` escaped a terminal build — the same code ``_svc_plan_cycle``
 #: converts an unclassified failure to, so a guard matching it keeps matching.
 UNREACHABLE = 'UNREACHABLE'
+#: No safe command exists for this throw (R3, plan § 2.5/2.6): either the
+#: admissible box swept for this (site, target) pair is EMPTY — no grid point
+#: passed the offline sweep with margin — or the learner's local kernel fit
+#: diverged to a non-finite command (the neighbourhood weights underflowed to
+#: 0, a query far outside every ``h_y``-scaled neighbour). Both are the same
+#: physical fact from the skill's point of view: nothing here can hand the
+#: platform a command it can stand behind, so the throw is refused before any
+#: solve is attempted rather than handed a NaN or an out-of-envelope target.
+NO_ADMISSIBLE_COMMAND = 'NO_ADMISSIBLE_COMMAND'
 
 #: The wire-read budget — :data:`LEAD_KNOTS`, :data:`LEAD_S`,
 #: :data:`WIRE_READ_KNOTS`, :data:`HANDOFF_LEAD_KNOTS`, :data:`HANDOFF_LEAD_S`,
@@ -68,6 +81,156 @@ UNREACHABLE = 'UNREACHABLE'
 #: knot of window is the floor, hence the ``+ dt``.
 CATCH_FREEZE_S = LEAD_S + float(hw.JB_TRAJ_KNOT_DT_S)
 
+#: How long an UNDISPATCHED CATCH is willing to wait for its own ball to show
+#: up on the tracker before the attempt ends ``NO_LANDING`` (owner decision
+#: 2026-09-13, "wait for landing" -- a single-site self-toss's catch has no
+#: second ball to buy it tracker settling time the way columns does, so
+#: refusing at the first look, as R2 did, ended every self-toss attempt after
+#: exactly one throw).  **Superseded for a catch-with-throw at R3-l (owner
+#: decision 2026-09-13, "at release, then refine")**: such a catch now
+#: dispatches at its own SCHEDULED instant, aimed at the predicted landing
+#: (:meth:`SkillExecutor._predicted_landing`), and never reaches this wait --
+#: waiting dispatched it AFTER its own ball's release, which splices into the
+#: launch THROW's settle tail and refuses ``LIMIT_JERK`` (262 743 mm/s³
+#: against 150 000, measured on every attempt).  This deadline still guards a
+#: STANDALONE catch, and a catch-with-throw whose own previous release
+#: predates this schedule (columns' very first catch).  Measured against the
+#: skill's own EVENT instant, not against ``t_now`` or the skill's
+#: ``window_s``: the deadline is ``skill.t_abs_s - CATCH_DEADLINE_WINDOW_S -
+#: skill.lead_s``, the R2 operating point's transit window (0.278 s), flown
+#: clean in the sim gate and the R2 hardware plan gate -- the shortest a
+#: catch's own flight is ever budgeted, so waiting this long never eats into a
+#: window a real transit would have left for the solve.
+CATCH_DEADLINE_WINDOW_S = 0.278
+
+# ── Outcome capture (R3, plan § 2.5 step 6 / § 2.7) ─────────────────────────
+#
+#: How close a tracker sample may be to ITS OWN predicted landing instant
+#: before the estimate is trusted as a throw's outcome. 0.012 s -- roughly
+#: 50 mm above the 830 mm catch plane at the ~4.2 m/s vertical arrival speed:
+#: (date, command, result) 2026-09-13,
+#: ``tools/probes/throw_outcome_bag_probe.py`` candidate (e) -- the last
+#: tracker update above 880 mm projected to 830 mm -- median 15.7 mm / 3.6 ms
+#: against a 4.7 mm-RMS mocap ground truth, bag 2026-09-07_09-32-56, n = 9, run
+#: twice identical. A sample taken inside this guard of the landing it is
+#: itself predicting is discarded (the prior valid sample, if any, stands);
+#: the whole point is that a Kalman estimate is least trustworthy right at its
+#: own crossing.
+OUTCOME_GUARD_S = 0.012
+
+#: Seconds after a throw's SCHEDULED landing before its outcome finalises --
+#: provisional: the possession sensor read SEATED 11-45 ms around the crossing
+#: in the 2026-09-06/11 bags. Named rather than reused from
+#: :data:`CATCH_FREEZE_S` because the two answer different questions (when a
+#: re-aim stops being useful vs. when the possession verdict has had time to
+#: settle) and a probe may move them independently.
+CAUGHT_WINDOW_S = 0.15
+
+#: The observer's possession-evidence value this layer treats as "caught".
+#: ``ball_possession.py`` is pure Python (stdlib only -- no ROS2, no config
+#: imports, verified 2026-09-13), so this is the module's own constant,
+#: imported rather than restated: a second copy of this value is exactly the
+#: "timing twin" class plan § 0 forbids.
+CAUGHT_EVIDENCE = bp.EVIDENCE_SEATED
+
+# ── The R3 precondition ladder (PORT@R3, INVARIANTS.md § 8) ─────────────────
+#
+# Each code below re-enforces one row the FSM's ``_step_checking``
+# (``toss_sequencer.py``) and ``_step_throwing`` used to own, on the SAME
+# physical fact, in the SAME dependency order -- see :func:`precondition_refusals`
+# and :meth:`SkillExecutor._dispatch`.
+REJECTED_MOCAP_STALE = 'REJECTED_MOCAP_STALE'
+REJECTED_NOT_LEVELLED = 'REJECTED_NOT_LEVELLED'
+REJECTED_HAND_STALE = 'REJECTED_HAND_STALE'
+REJECTED_HAND_NOT_PARKED = 'REJECTED_HAND_NOT_PARKED'
+REJECTED_BALL_UNKNOWN = 'REJECTED_BALL_UNKNOWN'
+REJECTED_NO_BALL = 'REJECTED_NO_BALL'
+#: Leaving the streaming mode that owns the platform mid-attempt -- the rest
+#: tail already streaming is the safe end (``reload_sequencer.py:340-366``'s
+#: ``obs.control_mode != RELOAD_CONTROL_MODE`` -> ``self._abort('MODE_CHANGED')``).
+ABORTED_MODE_CHANGED = 'ABORTED_MODE_CHANGED'
+#: No evidence the ball left by ``t_release + RELEASE_GRACE_S`` -- the throw
+#: produces no learner row (``toss_sequencer.py::_step_throwing``'s
+#: ``now >= self._release_deadline`` -> ``self._abort('NO_RELEASE')``).
+ABORTED_NO_RELEASE = 'ABORTED_NO_RELEASE'
+
+#: Seconds a throw's release evidence may lag ``t_release`` before the attempt
+#: aborts ``ABORTED_NO_RELEASE``. Restated, not imported, from
+#: ``toss_sequencer.TOSS_RELEASE_GRACE_S`` (0.5 s) -- that module dies at R4.
+RELEASE_GRACE_S = 0.5
+
+
+@dataclasses.dataclass(frozen=True)
+class Observations:
+    """Everything the R3 precondition ladder asks of the machine at one tick.
+
+    Supplied by an observer callable the ROS shell wires up (a later unit),
+    so the same ladder runs unchanged in the sim gate and on the robot --
+    plan § 0's "the same orchestrator code drives the MuJoCo plant and the
+    robot". Each field is one row of ``INVARIANTS.md`` § 8:
+
+    * ``mocap_fresh`` -- ``REJECTED_MOCAP_STALE``.
+    * ``hand_fresh`` -- ``REJECTED_HAND_STALE``.
+    * ``hand_at_seed`` -- the hand is where the plan's seed says it is (a
+      fresh-origin THROW is planned from the rest band) -- launch-only
+      ``REJECTED_HAND_NOT_PARKED``.
+    * ``levelled`` -- ``trajectory_node``'s ``gravity_correction_loaded`` on a
+      fresh status (C-LEVEL-1.O) -- ``REJECTED_NOT_LEVELLED``.
+    * ``ball_evidence`` -- one of :data:`bp.EVIDENCE_SEATED` /
+      :data:`bp.EVIDENCE_EMPTY` / :data:`bp.EVIDENCE_UNKNOWN` -- launch-only
+      ``REJECTED_BALL_UNKNOWN`` / ``REJECTED_NO_BALL``.
+    * ``in_trajectory_mode`` -- checked every tick while an attempt runs, not
+      only at dispatch -- ``ABORTED_MODE_CHANGED``.
+    """
+
+    mocap_fresh: bool
+    hand_fresh: bool
+    hand_at_seed: bool
+    levelled: bool
+    ball_evidence: str
+    in_trajectory_mode: bool
+
+
+def precondition_refusals(obs: Observations, *, launch: bool) -> List[str]:
+    """Every PORT@R3 row this dispatch must refuse on -- ALL of them, not just
+    the first, so a rehearsal driver reports every refusal in one pass rather
+    than one at a time across repeated dry runs (Workflow Rules: "make gates
+    report every refusal at once").
+
+    Order is the FSM's dependency order (``toss_sequencer.py::_step_checking``):
+    mocap before levelled (an un-levelled reading off a stale graph is not a
+    geometry fact yet), levelled before the hand chain, hand freshness before
+    the hand-parked band. ``launch`` is True only for a fresh-origin THROW --
+    the schedule's own opening self-toss, planned from rest, where a stale
+    hand-parked band or an unread ball sensor would seed the segment from a
+    state nobody has confirmed. A CATCH (with or without a carried
+    ``then_throw``) is never a fresh origin -- its seed is the live plan's own
+    knot -- so it gets only the first three, universal rows. A REST is exempt
+    and never calls this.
+    """
+    codes = []
+    if not obs.mocap_fresh:
+        codes.append(REJECTED_MOCAP_STALE)
+    if not obs.levelled:
+        codes.append(REJECTED_NOT_LEVELLED)
+    if not obs.hand_fresh:
+        codes.append(REJECTED_HAND_STALE)
+    if launch:
+        if not obs.hand_at_seed:
+            codes.append(REJECTED_HAND_NOT_PARKED)
+        if obs.ball_evidence == bp.EVIDENCE_UNKNOWN:
+            codes.append(REJECTED_BALL_UNKNOWN)
+        elif obs.ball_evidence != bp.EVIDENCE_SEATED:
+            codes.append(REJECTED_NO_BALL)
+    return codes
+
+
+class _NoAdmissibleCommand(Exception):
+    """Raised by :meth:`SkillExecutor._command_u` when no safe command exists
+    for a throw -- an empty admissible box, or the learner's fit diverging to
+    a non-finite command. Caught by :meth:`SkillExecutor._dispatch` and turned
+    into a :data:`NO_ADMISSIBLE_COMMAND` refusal; never escapes this module."""
+
 
 @dataclasses.dataclass
 class Landing:
@@ -76,6 +239,44 @@ class Landing:
     pos_mm: np.ndarray
     vel_mm_s: np.ndarray
     t_land_abs_s: float
+
+
+@dataclasses.dataclass
+class _PendingOutcome:
+    """One released ball's outcome, still waiting to finalise (plan § 2.5/2.7).
+
+    Registered at the RELEASING skill's first (and only) successful dispatch
+    -- a THROW, or a CATCH carrying a ``then_throw`` -- and finalised
+    :data:`CAUGHT_WINDOW_S` after its SCHEDULED landing, whether or not the
+    attempt is still running by then (a refused later skill still leaves an
+    observable flight in progress).
+
+    ``release_confirmed`` is the R3 ladder's own bookkeeping (plan § carried
+    R3 note / ``ABORTED_NO_RELEASE``): confirmed only by evidence AT OR AFTER
+    :attr:`t_release_s` -- a possession EMPTY reading that follows a SEATED
+    reading (:attr:`seated_seen`) seen at or after release, or a tracker
+    landing whose ``t_land_abs_s`` is itself after release -- checked every
+    tick from registration until :data:`RELEASE_GRACE_S` past release has
+    elapsed with no evidence found -- see :meth:`SkillExecutor.
+    _advance_release_evidence`. This is deliberately blind to evidence from
+    BEFORE the release instant: a carried throw (a CATCH with a
+    ``then_throw``) is registered at the catch's dispatch, up to a beat
+    ahead of its own release, while the cup is still carrying the PREVIOUS
+    ball -- an EMPTY reading or tracker landing from that earlier flight must
+    never confirm THIS row's release. Unconfirmed past the deadline drops
+    this row: no evidence the ball left means no learner row, whether or not
+    anything else ends the attempt first.
+    """
+
+    ball_id: int
+    x: np.ndarray
+    u: np.ndarray
+    t_release_s: float
+    t_land_scheduled_s: float
+    target_xy_mm: np.ndarray
+    best_landing: Optional[Landing] = None
+    release_confirmed: bool = False
+    seated_seen: bool = False
 
 
 @dataclasses.dataclass
@@ -118,6 +319,25 @@ class InstallResult:
     #: rather than mid-carry — the ring's own handoff, with the ball that just
     #: left the cup keeping its detach cone.
     seeded_post_release: bool = False
+
+
+def _previous_release(schedule: Schedule, idx: int, ball_id: int):
+    """``(release_site, t_release_abs_s, y_d, target)`` of the last release of
+    ``ball_id`` strictly before ``schedule.skills[idx]`` -- a THROW or a
+    CATCH's ``then_throw`` -- or ``None`` when no such release is IN THIS
+    SCHEDULE (columns' very first catch, of a ball thrown before ``t0`` --
+    plan owner decision 2026-09-13, "at release, then refine": that catch
+    falls back to waiting for the tracker, unchanged)."""
+    for j in range(idx - 1, -1, -1):
+        sk = schedule.skills[j]
+        if sk.ball_id != ball_id:
+            continue
+        if sk.kind == THROW:
+            return sk.site, float(sk.t_abs_s), sk.y_d, sk.target
+        if sk.kind == CATCH and sk.then_throw is not None:
+            tt = sk.then_throw
+            return sk.site, float(tt.t_release_abs_s), tt.y_d, tt.target
+    return None
 
 
 def _event_abs_s(kind: str, terminal) -> float:
@@ -414,6 +634,36 @@ class SkillExecutor:
     follows a release can be dispatched earlier without moving its splice knot
     and one whose splice tracks its dispatch cannot — an executor-wide lead
     would have to be the smaller of the two for every skill.
+
+    **R3: the learner, the admissible box, and outcome capture — all optional.**
+    ``learner`` (an object exposing ``command(x, y_d) -> (3,)``, e.g. a
+    ``memory.Memory`` bound to its ``LearnerConfig`` via a lambda at the call
+    site) and ``boxes`` (``{(site.name, target.name): AdmissibleBox}``) are
+    consulted ONCE per released ball, at the releasing skill's first dispatch
+    (:meth:`_command_u`); a CATCH re-send reuses that command rather than
+    recomputing it, because the command must not change late in a transit
+    (plan § 0). No ``learner`` ⇒ the command is the identity prior (``u =
+    y_d`` exactly, R2's behaviour). ``observer`` (``(ball_id, t_abs_s) ->
+    str``, the possession evidence at that instant) and ``on_experience``
+    (called with one ``memory.Experience`` per released ball, in schedule
+    order) drive outcome capture (:meth:`_advance_outcomes`), which keeps
+    running after ``attempt_ended`` — see :attr:`done`.
+
+    **R3: the precondition ladder — also optional, gated by ``observations``.**
+    ``observations`` (``(t_abs_s) -> Observations``, a snapshot of the whole
+    machine at one tick — mocap, hand, level and ball state, plus whether the
+    streaming mode that owns the platform is still active) turns on every
+    PORT@R3 row of ``INVARIANTS.md`` § 8 in one switch: :func:`precondition_
+    refusals` before each THROW/CATCH dispatch (:meth:`_dispatch`), the
+    ``ABORTED_MODE_CHANGED`` check every tick (:meth:`tick`), and the
+    ``ABORTED_NO_RELEASE`` check on every pending release
+    (:meth:`_advance_release_evidence`). No ``observations`` ⇒ none of the
+    three run and the executor behaves exactly as R2 left it — the sim gate
+    and every pre-R3 caller need not change. ``observer`` is untouched by
+    this: it keeps its one job, possession evidence for outcome capture, and
+    :meth:`_advance_release_evidence` reads it for the SAME reason
+    (``EVIDENCE_EMPTY`` is release evidence, ``EVIDENCE_SEATED`` is caught
+    evidence — one sensor, two questions, no second callable).
     """
 
     def __init__(self, schedule: Schedule,
@@ -422,7 +672,11 @@ class SkillExecutor:
                  catch_freeze_s: float = CATCH_FREEZE_S,
                  resend_min_interval_s: float = 0.025,
                  resend_pos_tol_mm: float = 1.0,
-                 resend_t_tol_s: float = 0.002):
+                 resend_t_tol_s: float = 0.002,
+                 learner=None, boxes=None,
+                 observer: Optional[Callable[[int, float], str]] = None,
+                 on_experience: Optional[Callable[[Experience], None]] = None,
+                 observations: Optional[Callable[[float], Observations]] = None):
         self.schedule = schedule
         self.installer = installer
         self.tracker = tracker
@@ -430,6 +684,11 @@ class SkillExecutor:
         self.resend_min_interval_s = float(resend_min_interval_s)
         self.resend_pos_tol_mm = float(resend_pos_tol_mm)
         self.resend_t_tol_s = float(resend_t_tol_s)
+        self.learner = learner
+        self.boxes = boxes
+        self.observer = observer
+        self.on_experience = on_experience
+        self.observations = observations
 
         self.dispatched = set()          #: indices of ``schedule.skills``
         self.results = []                #: (index, Skill, InstallResult)
@@ -437,50 +696,137 @@ class SkillExecutor:
         self.end_code = ''
         #: The CATCH currently committed, as ``(index, Landing, t_install_s)``.
         self._live_catch = None
+        #: Per-skill-index command cache: ``idx -> (x, u_dy, u_flight)``. Keyed
+        #: on the RELEASING skill's own index (a THROW, or a CATCH carrying a
+        #: ``then_throw``) so a catch re-send's second, third, ... call reuses
+        #: the first dispatch's command rather than recomputing it.
+        self._u_cache = {}
+        #: Released balls awaiting outcome finalisation (:class:`_PendingOutcome`).
+        self._pending_outcomes: List[_PendingOutcome] = []
+
+    @property
+    def done(self) -> bool:
+        """The attempt is OVER — refused, or every skill dispatched — AND no
+        outcome is still waiting to finalise.
+
+        Callers should tick until THIS, not until ``attempt_ended`` alone:
+        ``attempt_ended`` only ever flips on a REFUSAL (a fully successful run
+        dispatches every skill and never sets it, plan § 2.4's rest-terminal
+        contract — nothing needs to "end" a schedule that simply ran out), and
+        a released ball can still be in flight (its outcome not yet due) when
+        either kind of finish happens, so its row is still worth a cold memory
+        (plan § 2.7, "outcomes keep finalising after the attempt ends")."""
+        finished = (self.attempt_ended
+                   or len(self.dispatched) >= len(self.schedule.skills))
+        return finished and not self._pending_outcomes
+
+    # ── the R3 command: learner + admissible box, computed once per throw ──
+
+    def _command_u(self, idx: int, site, target, y_d
+                   ) -> Tuple[np.ndarray, float]:
+        """The commanded ``u = (landing_xy_m, flight_s)`` for the ball this
+        skill releases — computed ONCE (at ``idx``'s first dispatch) and
+        cached, so a CATCH re-send's later calls return the SAME command
+        (plan § 0: "the command never changes late in a transit").
+
+        ``x = (site xy in m, 0, 0)`` — the seat-offset half of the state is
+        unmeasured at R3 (plan § 0). No ``learner`` ⇒ ``u = y_d`` exactly (R2
+        behaviour). Raises :class:`_NoAdmissibleCommand` when the learner's
+        fit is non-finite or the swept box for ``(site.name, target.name)`` is
+        empty — the caller converts that to a :data:`NO_ADMISSIBLE_COMMAND`
+        refusal before any solve is attempted.
+        """
+        if idx in self._u_cache:
+            _x, u_dy, u_flight = self._u_cache[idx]
+            return u_dy, u_flight
+        dy, flight = y_d
+        dy = np.asarray(dy, dtype=float).reshape(2)
+        flight = float(flight)
+        x = np.array([float(site.cup_mm[0]) / 1000.0,
+                     float(site.cup_mm[1]) / 1000.0, 0.0, 0.0])
+        # The box is looked up BEFORE the learner runs (finding 5, R3 audit,
+        # 2026-09-13): a missing box means there is no admissible-region clip
+        # to apply afterward, so a learner command would reach the platform
+        # UNCLIPPED -- refuse up front rather than let an unbounded command
+        # through the crack.
+        box = (None if self.boxes is None
+              else self.boxes.get((site.name, target.name)))
+        if self.learner is not None and self.boxes is not None and box is None:
+            raise _NoAdmissibleCommand(
+                'no admissible box swept for site pair %r — a learner '
+                'command may not reach the platform unclipped'
+                % ((site.name, target.name),))
+        if self.learner is None:
+            u_dy, u_flight = dy, flight
+        else:
+            y_d_si = np.array([dy[0], dy[1], flight])
+            try:
+                u = np.asarray(self.learner.command(x, y_d_si), dtype=float
+                               ).reshape(3)
+            except ValueError as exc:
+                raise _NoAdmissibleCommand(
+                    'the learner could not produce a finite command for site '
+                    '%r (target %r): %s' % (site.name, target.name, exc)
+                ) from exc
+            u_dy, u_flight = u[:2].copy(), float(u[2])
+        if box is not None:
+            try:
+                u_dy, u_flight = adm.clip((u_dy, u_flight), box)
+            except adm.AdmissibleError as exc:
+                raise _NoAdmissibleCommand(str(exc)) from exc
+        u_dy = np.asarray(u_dy, dtype=float).reshape(2)
+        u_flight = float(u_flight)
+        self._u_cache[idx] = (x, u_dy, u_flight)
+        return u_dy, u_flight
 
     # ── terminals ──
 
     @staticmethod
-    def _commanded_target_mm(target_site, y_d) -> np.ndarray:
+    def _commanded_target_mm(target_site, u) -> np.ndarray:
         """Where the ball is COMMANDED to land: the target site's catch point
-        offset by ``y_d``.
+        offset by ``u``'s landing-xy component.
 
         R2's learner is off, so ``u = y_d`` — the commanded landing IS the
-        desired one.  When R3 turns the learner on, THIS is the line that moves,
-        and it is one line because a throw carried by a catch reads it too.
+        desired one.  At R3 this is the line that moves: ``u`` is
+        :meth:`_command_u`'s output rather than the skill's raw ``y_d``, and it
+        is one line because a throw carried by a catch reads it too.
         """
-        dy, _flight = y_d
+        dy, _flight = u
         dy = np.asarray(dy, dtype=float).reshape(2)
         target = np.asarray(target_site.catch_site_mm(), dtype=float)
         return target + np.array([dy[0] * 1000.0, dy[1] * 1000.0, 0.0])
 
-    def _throw_terminal(self, skill: Skill) -> ThrowTerminal:
-        """A THROW's terminal: release at the site, landing where the learner
-        says (see :meth:`_commanded_target_mm`)."""
-        _dy, flight = skill.y_d
+    def _throw_terminal(self, idx: int, skill: Skill) -> ThrowTerminal:
+        """A THROW's terminal: release at the site, landing (and flight) where
+        :meth:`_command_u` says."""
+        u_dy, u_flight = self._command_u(idx, skill.site, skill.target,
+                                         skill.y_d)
         return ThrowTerminal(
             site_mm=skill.site.throw_site_mm(),
-            target_mm=self._commanded_target_mm(skill.target, skill.y_d),
-            flight_s=float(flight), t_release_s=float(skill.t_abs_s))
+            target_mm=self._commanded_target_mm(skill.target, (u_dy, u_flight)),
+            flight_s=u_flight, t_release_s=float(skill.t_abs_s))
 
-    def _catch_terminal(self, skill: Skill, landing: Landing) -> CatchTerminal:
+    def _catch_terminal(self, idx: int, skill: Skill,
+                        landing: Landing) -> CatchTerminal:
         """A CATCH's terminal, plus the throw it carries when the schedule
         folded one onto it (``schedule.ThenThrow``).
 
         The carried release is the SCHEDULE's, not the tracker's: a re-send
         re-solves the whole remaining window against a refined landing with the
         release instant, site and target unchanged, because the pattern's beat
-        is what the other hand is already flying against.
+        is what the other hand is already flying against. The carried throw's
+        command is :meth:`_command_u`'s, cached under THIS catch's ``idx`` — a
+        re-send calls this again and gets the SAME command back.
         """
         then_throw = None
         tt = skill.then_throw
         if tt is not None:
-            _dy, flight = tt.y_d
+            u_dy, u_flight = self._command_u(idx, skill.site, tt.target, tt.y_d)
             then_throw = ThrowAfterCatch(
                 t_release_s=float(tt.t_release_abs_s),
                 site_mm=skill.site.throw_site_mm(),
-                target_mm=self._commanded_target_mm(tt.target, tt.y_d),
-                flight_s=float(flight))
+                target_mm=self._commanded_target_mm(tt.target, (u_dy, u_flight)),
+                flight_s=u_flight)
         return CatchTerminal(landing_mm=landing.pos_mm,
                              landing_vel_mm_s=landing.vel_mm_s,
                              t_land_s=float(landing.t_land_abs_s),
@@ -491,40 +837,189 @@ class SkillExecutor:
         return RestTerminal(rest_site_mm=skill.site.rest_site_mm(),
                             t_rest_s=float(skill.t_abs_s))
 
+    def _predicted_landing(self, idx: int, skill: Skill) -> Optional[Landing]:
+        """The PREDICTED landing for a catch-with-throw that must dispatch at
+        its SCHEDULED instant, before the tracker has one (plan owner decision
+        2026-09-13, "at release, then refine"): the landing the ball's
+        previous throw was commanded to ACHIEVE, built from the schedule
+        alone -- ``y_d`` (the DESIRED offsets), not whatever ``_command_u``
+        actually sent, because the learner's whole job is to make its command
+        land AT ``y_d``.
+
+        Position and time follow directly from ``y_d``; the arrival velocity
+        is the no-drag ballistic arrival from the previous throw's release
+        site to that landing over the ``y_d`` flight (``ballistics_bc``, one
+        gravity -- plan § 2.6, the same closed form the reach/reload path
+        already uses).
+
+        ``None`` when this ball's previous release is not part of this
+        schedule at all (columns' very first catch, of a ball thrown before
+        ``t0``) -- the caller falls back to waiting for the tracker, exactly
+        as every catch did before this unit.
+        """
+        prev = _previous_release(self.schedule, idx, skill.ball_id)
+        if prev is None:
+            return None
+        site, t_release_s, y_d, target = prev
+        pos_mm = self._commanded_target_mm(target, y_d)
+        flight_s = float(y_d[1])
+        launch_vel = ballistics_bc.launch_velocity(
+            site.throw_site_mm(), pos_mm, flight_s)
+        vel_mm_s = ballistics_bc.arrival_velocity(launch_vel, flight_s)
+        return Landing(pos_mm=pos_mm, vel_mm_s=vel_mm_s,
+                       t_land_abs_s=t_release_s + flight_s)
+
+    def _valid_tracked_landing(self, idx: int, skill: Skill,
+                               landing: Optional[Landing]
+                               ) -> Optional[Landing]:
+        """``landing`` if it is trustworthy for CATCH ``idx``, else ``None``.
+
+        A tracker landing is only valid for this catch if it lands AFTER this
+        ball's own previous release (:func:`_previous_release`): a tracker
+        whose estimator is not reset until the ball's next physical release
+        (the sim tracker; the robot's per-ball correlation resets the same
+        way) keeps returning the FROZEN landing of the flight that just
+        ended, so an un-gated re-use aims the next catch at a landing already
+        in the past. With no previous release in this schedule (columns' very
+        first catch) there is nothing to gate against: accept as before."""
+        if landing is None:
+            return None
+        prev = _previous_release(self.schedule, idx, skill.ball_id)
+        if prev is None:
+            return landing
+        t_release_s = prev[1]
+        if float(landing.t_land_abs_s) <= t_release_s:
+            return None
+        return landing
+
     # ── the tick ──
 
     def tick(self, t_abs_s: float) -> List[str]:
-        """Dispatch everything due by ``t_abs_s``; return the log lines."""
-        lines = []
-        if self.attempt_ended:
-            return lines
+        """Dispatch everything due by ``t_abs_s``; return the log lines.
+
+        Dispatch and re-aim stop once the attempt has ended; outcome
+        finalisation does not (plan § 2.7) — a ball already released can still
+        be in flight when a LATER skill's refusal ends the attempt, and its
+        landing row is still worth a cold memory. Callers should tick until
+        :attr:`done`, not until ``attempt_ended``.
+
+        **R3, when ``observations`` is wired**: ``obs.in_trajectory_mode`` is
+        read EVERY tick the attempt is still running, not only at a dispatch —
+        leaving the owning mode mid-skill (``ABORTED_MODE_CHANGED``) ends the
+        attempt through whatever rest tail is already streaming, exactly like
+        ``reload_sequencer.py``'s universal abort. With no ``observations``
+        this block is skipped entirely: R2 behaviour, unchanged.
+        """
         t_abs_s = float(t_abs_s)
-        for idx, skill in enumerate(self.schedule.skills):
-            if idx in self.dispatched:
-                continue
-            if skill.dispatch_s() > t_abs_s:
-                continue
-            lines.extend(self._dispatch(idx, skill, t_abs_s))
-            if self.attempt_ended:
-                return lines
-        lines.extend(self._resend_live_catch(t_abs_s))
+        lines = []
+        if not self.attempt_ended:
+            obs = None if self.observations is None else self.observations(t_abs_s)
+            if obs is not None and not obs.in_trajectory_mode:
+                self.attempt_ended = True
+                self.end_code = ABORTED_MODE_CHANGED
+                lines.append(
+                    '%.3f END %s: left the streaming mode that owns the '
+                    'platform mid-attempt — the rest tail already streaming '
+                    'is the safe end' % (t_abs_s, ABORTED_MODE_CHANGED))
+            else:
+                for idx, skill in enumerate(self.schedule.skills):
+                    if idx in self.dispatched:
+                        continue
+                    if skill.dispatch_s() > t_abs_s:
+                        continue
+                    dispatch_lines, deferred = self._dispatch(
+                        idx, skill, t_abs_s, obs)
+                    lines.extend(dispatch_lines)
+                    if self.attempt_ended:
+                        break
+                    if deferred:
+                        # A CATCH still waiting on its own landing (below) --
+                        # keep schedule order: nothing later may dispatch
+                        # ahead of it this tick.  Retried next tick.
+                        break
+                if not self.attempt_ended:
+                    lines.extend(self._resend_live_catch(t_abs_s))
+                if not self.attempt_ended and self.observations is not None:
+                    lines.extend(self._advance_release_evidence(t_abs_s))
+        lines.extend(self._advance_outcomes(t_abs_s))
         return lines
 
-    def _dispatch(self, idx: int, skill: Skill, t_abs_s: float) -> List[str]:
-        if skill.kind == CATCH:
-            landing = None if self.tracker is None else self.tracker(skill.ball_id)
-            if landing is None:
+    def _dispatch(self, idx: int, skill: Skill, t_abs_s: float,
+                  obs: Optional[Observations] = None
+                  ) -> Tuple[List[str], bool]:
+        """Try to dispatch skill ``idx``.  Returns ``(lines, deferred)`` --
+        ``deferred`` is True only for a CATCH still waiting on its own
+        landing (below); every other path dispatches, refuses, or ends the
+        attempt outright and reports ``deferred=False``."""
+        if obs is not None and skill.kind != REST:
+            codes = precondition_refusals(obs, launch=(skill.kind == THROW))
+            if codes:
                 self.dispatched.add(idx)
                 self.attempt_ended = True
-                self.end_code = NO_LANDING
-                return ['%.3f END %s: the tracker has no landing for ball %d — '
-                        'a catch cannot be aimed at an unobserved ball'
-                        % (t_abs_s, NO_LANDING, skill.ball_id)]
-            terminal = self._catch_terminal(skill, landing)
-        elif skill.kind == THROW:
-            terminal = self._throw_terminal(skill)
-        else:
-            terminal = self._rest_terminal(skill)
+                self.end_code = codes[0]
+                return (['%.3f END %s at skill %d (%s): the precondition '
+                        'ladder refused %s'
+                        % (t_abs_s, codes[0], idx, skill.kind,
+                           ', '.join(codes))], False)
+        try:
+            if skill.kind == CATCH:
+                landing = (None if self.tracker is None
+                          else self.tracker(skill.ball_id))
+                landing = self._valid_tracked_landing(idx, skill, landing)
+                if landing is None and skill.then_throw is not None:
+                    # "At release, then refine" (owner decision 2026-09-13):
+                    # a catch carrying a throw must NOT wait for the tracker
+                    # -- waiting dispatches it after its own ball's release,
+                    # splicing into the launch THROW's settle tail (measured
+                    # 262 743 mm/s³ of leg jerk against a 150 000 limit, EVERY
+                    # attempt), where the release-snap dispatch this predicted
+                    # landing restores accepts at 78 326. The tracker still
+                    # refines the aim once it has a real landing --
+                    # `_resend_live_catch`, unchanged.
+                    landing = self._predicted_landing(idx, skill)
+                if landing is None:
+                    deadline = (float(skill.t_abs_s) - CATCH_DEADLINE_WINDOW_S
+                               - float(skill.lead_s))
+                    if t_abs_s < deadline:
+                        # Wait for landing (owner decision 2026-09-13): only a
+                        # STANDALONE catch reaches this now -- a catch-with-
+                        # throw always has a predicted landing above, except
+                        # columns' very first catch (its own previous release
+                        # predates this schedule).  NOT marked dispatched, so
+                        # `tick` calls this again next tick; the window this
+                        # catch eventually plans is measured from whichever
+                        # tick actually installs it, exactly as
+                        # `install_segment` already measures every splice
+                        # window against `t_now`, not a schedule's nominal
+                        # one. A deferral long enough to land past the own
+                        # throw's detach cone is not a special case: by then
+                        # `_snap_to_release` finds `k_s > k_rel + n_detach` and
+                        # this becomes an ORDINARY splice, seeded by
+                        # `state_at_knot` rather than `release_state_at_knot`
+                        # -- correct, because the head has already carried the
+                        # ball past its cone on its own solved trajectory by
+                        # the time this install reaches it.
+                        return ([], True)
+                    self.dispatched.add(idx)
+                    self.attempt_ended = True
+                    self.end_code = NO_LANDING
+                    return (['%.3f END %s: the tracker has no landing for '
+                            'ball %d by the deadline (%.3f s) — a catch '
+                            'cannot be aimed at an unobserved ball'
+                            % (t_abs_s, NO_LANDING, skill.ball_id, deadline)],
+                           False)
+                terminal = self._catch_terminal(idx, skill, landing)
+            elif skill.kind == THROW:
+                terminal = self._throw_terminal(idx, skill)
+            else:
+                terminal = self._rest_terminal(skill)
+        except _NoAdmissibleCommand as exc:
+            self.dispatched.add(idx)
+            self.attempt_ended = True
+            self.end_code = NO_ADMISSIBLE_COMMAND
+            return (['%.3f END %s at skill %d (%s): %s'
+                    % (t_abs_s, NO_ADMISSIBLE_COMMAND, idx, skill.kind, exc)],
+                   False)
 
         res = self.installer(skill.kind, terminal, t_abs_s,
                              ball_id=skill.ball_id)
@@ -533,13 +1028,168 @@ class SkillExecutor:
         if not res.accepted:
             self.attempt_ended = True
             self.end_code = res.code
-            return ['%.3f END %s at skill %d (%s): %s'
-                    % (t_abs_s, res.code, idx, skill.kind, res.message)]
+            return (['%.3f END %s at skill %d (%s): %s'
+                    % (t_abs_s, res.code, idx, skill.kind, res.message)],
+                   False)
         if skill.kind == CATCH:
             self._live_catch = (idx, terminal, t_abs_s)
         else:
             self._live_catch = None
-        return ['%.3f %s skill %d: %s' % (t_abs_s, skill.kind, idx, res.message)]
+        self._register_outcome(idx, skill)
+        return (['%.3f %s skill %d: %s'
+                % (t_abs_s, skill.kind, idx, res.message)], False)
+
+    # ── outcome capture (plan § 2.5 step 6 / § 2.7) ──
+
+    def _register_outcome(self, idx: int, skill: Skill) -> None:
+        """Start tracking the outcome of the ball ``idx``'s dispatch just
+        released, if it released one and anyone is listening.
+
+        Runs immediately after :meth:`_command_u` has cached ``idx``'s
+        command, so the pending row's ``x``/``u`` are exactly what commanded
+        the throw — never recomputed, never the tracker's or the schedule's
+        own numbers.
+        """
+        if self.on_experience is None:
+            return
+        if skill.kind == THROW:
+            target, t_release = skill.target, float(skill.t_abs_s)
+        elif skill.kind == CATCH and skill.then_throw is not None:
+            target = skill.then_throw.target
+            t_release = float(skill.then_throw.t_release_abs_s)
+        else:
+            return
+        x, u_dy, u_flight = self._u_cache[idx]
+        u = np.array([u_dy[0], u_dy[1], u_flight])
+        target_xy_mm = np.asarray(target.catch_site_mm(), dtype=float)[:2]
+        self._pending_outcomes.append(_PendingOutcome(
+            ball_id=skill.ball_id, x=x, u=u, t_release_s=t_release,
+            t_land_scheduled_s=t_release + u_flight,
+            target_xy_mm=target_xy_mm))
+
+    def _advance_release_evidence(self, t_abs_s: float) -> List[str]:
+        """Confirm every accepted release actually left the hand (PORT@R3,
+        INVARIANTS.md § 8 ``ABORTED_NO_RELEASE``) -- called each tick from
+        :meth:`tick`, only when ``observations`` is wired.
+
+        Evidence must belong to THIS ball's release, not a previous flight
+        still in progress when a carried throw's row was registered (a CATCH
+        with a ``then_throw`` registers up to a beat before its own
+        release, while the cup still carries the ball from the PRECEDING
+        throw):
+
+        * possession evidence (:attr:`observer`) -- a SEATED reading latches
+          :attr:`_PendingOutcome.seated_seen`; an EMPTY reading before
+          :attr:`_PendingOutcome.t_release_s` clears it (that EMPTY belongs
+          to the previous ball's flight, not this release); an EMPTY reading
+          AT OR AFTER ``t_release_s`` confirms the release only if
+          ``seated_seen`` is set -- i.e. EMPTY must follow a SEATED sample
+          taken at or after the release;
+        * tracker evidence (:attr:`tracker`) -- a landing confirms the
+          release only when sampled at or after ``t_release_s`` AND the
+          landing's own ``t_land_abs_s`` is after ``t_release_s`` (a stale
+          landing from the previous flight, still returned by a tracker
+          whose correlation has not yet re-latched, must not confirm this
+          release).
+
+        Confirmation is sticky (:attr:`_PendingOutcome.release_confirmed`),
+        so one good sample stands even if a later tick goes blind again (the
+        same "one good sample stands" shape as :meth:`_advance_outcomes`'s
+        ``best_landing``). No evidence by ``t_release + RELEASE_GRACE_S``
+        aborts the attempt and drops the row -- the throw produces no
+        learner row, whether or not this is the first thing to end the
+        attempt this tick.
+        """
+        if not self._pending_outcomes:
+            return []
+        lines = []
+        remaining = []
+        for pend in self._pending_outcomes:
+            if not pend.release_confirmed:
+                if self.observer is not None:
+                    ev = self.observer(pend.ball_id, t_abs_s)
+                    if ev == bp.EVIDENCE_SEATED:
+                        pend.seated_seen = True
+                    elif ev == bp.EVIDENCE_EMPTY:
+                        if t_abs_s < pend.t_release_s:
+                            pend.seated_seen = False
+                        elif pend.seated_seen:
+                            pend.release_confirmed = True
+                if (not pend.release_confirmed and self.tracker is not None
+                        and t_abs_s >= pend.t_release_s):
+                    landing = self.tracker(pend.ball_id)
+                    if (landing is not None
+                            and float(landing.t_land_abs_s)
+                            > pend.t_release_s):
+                        pend.release_confirmed = True
+            if (not pend.release_confirmed
+                    and t_abs_s >= pend.t_release_s + RELEASE_GRACE_S):
+                if not self.attempt_ended:
+                    self.attempt_ended = True
+                    self.end_code = ABORTED_NO_RELEASE
+                    lines.append(
+                        '%.3f END %s: no release evidence for ball %d by '
+                        't_release + %.1f s -- no learner row'
+                        % (t_abs_s, ABORTED_NO_RELEASE, pend.ball_id,
+                           RELEASE_GRACE_S))
+                continue                     # dropped either way
+            remaining.append(pend)
+        self._pending_outcomes = remaining
+        return lines
+
+    def _advance_outcomes(self, t_abs_s: float) -> List[str]:
+        """Sample the tracker for every pending outcome and finalise the ones
+        whose ``CAUGHT_WINDOW_S`` has elapsed.
+
+        Only accepts a landing sampled at or after ``t_release_s`` whose own
+        ``t_land_abs_s`` is after ``t_release_s`` -- otherwise a carried
+        throw's row, registered before its own release while the tracker
+        still latches the PREVIOUS flight, can capture that earlier flight's
+        landing as this ball's outcome (see :meth:`_advance_release_evidence`
+        for the same class of hazard)."""
+        if not self._pending_outcomes:
+            return []
+        lines = []
+        remaining = []
+        for pend in self._pending_outcomes:
+            if self.tracker is not None and t_abs_s >= pend.t_release_s:
+                landing = self.tracker(pend.ball_id)
+                if (landing is not None
+                        and float(landing.t_land_abs_s) > pend.t_release_s
+                        and abs(t_abs_s - float(landing.t_land_abs_s))
+                        > OUTCOME_GUARD_S):
+                    pend.best_landing = landing
+            finalise_at = pend.t_land_scheduled_s + CAUGHT_WINDOW_S
+            if t_abs_s < finalise_at:
+                remaining.append(pend)
+                continue
+            lines.extend(self._finalise_outcome(pend, finalise_at))
+        self._pending_outcomes = remaining
+        return lines
+
+    def _finalise_outcome(self, pend: _PendingOutcome,
+                          finalise_at: float) -> List[str]:
+        """Build and hand off ``pend``'s :class:`~jugglebot.motion.skills.
+        memory.Experience`, or drop it — a blind flight teaches the memory
+        nothing (plan § 2.5 step 6)."""
+        if pend.best_landing is None:
+            return ['%.3f OUTCOME ball %d: no landing estimate was ever '
+                    'observed — no row' % (finalise_at, pend.ball_id)]
+        flight_obs_s = float(pend.best_landing.t_land_abs_s) - pend.t_release_s
+        if flight_obs_s <= 0.0:
+            return ['%.3f OUTCOME ball %d: observed flight %.3f s <= 0 -- '
+                    'landing predates this release, no row'
+                    % (finalise_at, pend.ball_id, flight_obs_s)]
+        landing_xy_m = ((np.asarray(pend.best_landing.pos_mm, dtype=float)[:2]
+                        - pend.target_xy_mm) / 1000.0)
+        y = np.array([landing_xy_m[0], landing_xy_m[1], flight_obs_s])
+        caught = (self.observer is not None
+                 and self.observer(pend.ball_id, finalise_at) == CAUGHT_EVIDENCE)
+        exp = Experience(x=pend.x, u=pend.u, y=y, t_abs_s=pend.t_release_s,
+                         ball_id=pend.ball_id, caught=bool(caught))
+        self.on_experience(exp)
+        return ['%.3f OUTCOME ball %d: y=(%.4f, %.4f, %.4f) caught=%s'
+                % (finalise_at, pend.ball_id, y[0], y[1], y[2], caught)]
 
     def _resend_live_catch(self, t_abs_s: float) -> List[str]:
         """Re-aim the committed CATCH when the tracker has moved its landing.
@@ -571,6 +1221,7 @@ class SkillExecutor:
             self._live_catch = None
             return []
         landing = self.tracker(skill.ball_id)
+        landing = self._valid_tracked_landing(idx, skill, landing)
         if landing is None:
             return []
         moved_mm = float(np.max(np.abs(
@@ -578,7 +1229,7 @@ class SkillExecutor:
         moved_s = abs(float(landing.t_land_abs_s) - float(terminal.t_land_s))
         if moved_mm <= self.resend_pos_tol_mm and moved_s <= self.resend_t_tol_s:
             return []
-        new_terminal = self._catch_terminal(skill, landing)
+        new_terminal = self._catch_terminal(idx, skill, landing)
         res = self.installer(skill.kind, new_terminal, t_abs_s,
                              ball_id=skill.ball_id)
         self.results.append((idx, skill, res))

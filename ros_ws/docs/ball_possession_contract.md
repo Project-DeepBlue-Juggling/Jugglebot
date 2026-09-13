@@ -421,13 +421,16 @@ and both inversions are label-semantics faults with a safety tail:
 > ends of one boundary are one call. Do not restore the subtraction.
 
 Enforcement points: `ball_possession.HandBallSensorSource._window` /
-`._retention_horizon` for the live verdict, and `toss_record.label_from_sensor`
-for the offline corpus label. They are two implementations of one definition of
-"caught", so they clamp the same way **from the same constants** —
-`ball_possession.RELEASE_GUARD_S` is the single home, and
-`toss_record.DEPARTURE_LEAD_S` is an alias of it rather than a second copy. The
-ARRIVAL boundary joined that discipline on 2026-08-23 as
-`ball_possession.arrival_boundary_t`, for the reason C.1 below spells out.
+`._retention_horizon` for the live verdict, and `ball_possession.label_from_sensor`
+for the offline corpus label (both in the one module since the 2026-09-13
+toss_record merge, R3-f1 — the learning-stack deletion). They are two
+implementations of one definition of "caught", so they clamp the same way
+**from the same constants** — `ball_possession.RELEASE_GUARD_S` is the single
+home, and `SensorWindows.departure_lead_s` defaults to it directly (the
+`toss_record.DEPARTURE_LEAD_S` alias that used to carry this identity across
+two modules was dropped at the same merge). The ARRIVAL boundary joined that
+discipline on 2026-08-23 as `ball_possession.arrival_boundary_t`, for the
+reason C.1 below spells out.
 
 **Why the guard is an instant and not a tolerance.** Both clamps are written as
 "close where the next search opens", so the two windows *abut* — they can neither
@@ -485,7 +488,8 @@ with neighbours `P` and `N` therefore searches
 and C-POSSESS-1.C's abutment survives **exactly**, because the closing of `L`'s
 window and the opening of `N`'s are literally the same call on the same pair.
 That is why the source is now told `prev_landing_t` alongside `next_landing_t`,
-and why `arrival_boundary_t` has one home that `toss_record` imports rather than
+and why `arrival_boundary_t` has one home that `label_from_sensor` calls
+directly (both in `ball_possession` since the 2026-09-13 merge) rather than
 re-derives — two computations of a boundary is how an abutment stops abutting,
 the same way two copies of `RELEASE_GUARD_S` would have been.
 
@@ -682,7 +686,7 @@ faster.
 
 > **C-POSSESS-1.D.** The live cup query answers from the **raw** bit; **edges**
 > (and therefore the ARRIVAL and RETENTION verdicts) are taken from the
-> **debounced** bit. This is `toss_record`'s D12 rule — *raw for TIMES, debounced
+> **debounced** bit. This is `label_from_sensor`'s D12 rule — *raw for TIMES, debounced
 > for the VERDICT* — extended to the precondition. Where a wrong live answer would
 > **command** something rather than refuse something, the caller must use the
 > settled query instead: `evidence_settled(now)` requires both bits to agree and

@@ -886,12 +886,13 @@ PRE_DISPATCH_PHASES = frozenset(
 
 #: The census field names, in record order.
 #:
-#: ``toss_record.FIELDS`` declares the same ten names and is pinned equal to this
-#: tuple by ``tests/motion/test_toss_record.py``. A drift-guard test rather than
-#: an import, deliberately: ``toss_record`` takes exactly ONE jugglebot import
-#: (``ball_possession``, pure and leaf) so that a corpus reader never drags in the
-#: FSM, and importing this module there would cost that property for a list of
-#: strings. Same trade the ``_TICK_S`` / ``NODE_TICK_S`` mirror already makes.
+#: ``ball_possession.FIELDS`` (the toss-record schema, merged in from
+#: toss_record.py 2026-09-13, R3-f1) declares the same ten names, pinned by its
+#: own ``test_fields_are_pinned`` in ``tests/ros/test_ball_possession.py``. A
+#: drift-guard test rather than an import, deliberately: ``ball_possession``
+#: never imports this FSM module, so a corpus reader that imports
+#: ``ball_possession`` never drags in the FSM. Same trade the ``_TICK_S`` /
+#: ``NODE_TICK_S`` mirror already makes.
 CENSUS_FIELD_NAMES = (
     'loop_n_pre',
     'loop_period_max_pre_s',

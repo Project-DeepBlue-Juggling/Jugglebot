@@ -35,7 +35,7 @@ FIXTURE_POST_S = 4.0
 
 #: One entry per cycle that reached a release, in bag order.
 #:  fsm_outcome   what the SHIPPED (tracker-primary) code minted, verbatim
-#:  sensor_label  the offline cup label from toss_record.label_from_sensor
+#:  sensor_label  the offline cup label from ball_possession.label_from_sensor
 CYCLES = [{'catch_event_dt_s': None,
   'cycle_index': 1,
   'dwell_time_s': None,

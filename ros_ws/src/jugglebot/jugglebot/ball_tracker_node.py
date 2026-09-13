@@ -22,6 +22,7 @@ from geometry_msgs.msg import Point, Vector3
 from builtin_interfaces.msg import Time
 
 import jugglebot.hardware_config as hw
+from jugglebot.motion.skills import sites
 from jugglebot.tracking.matcher import BallTracker
 from jugglebot.tracking.ball import Ball
 
@@ -30,12 +31,17 @@ class BallTrackerNode(Node):
     def __init__(self):
         super().__init__('ball_tracker_node')
 
-        # Tracking config from hardware_config
-        # Catch plane: platform active height + active Z offset + hand catch offset.
-        # This is where the hand actually meets the ball when the platform is active.
-        self._landing_z = (hw.GEOM_INITIAL_HEIGHT_MM
-                           + hw.JB_OP_DEFAULT_ACTIVE_Z_MM
-                           + hw.HAND_CATCH_OFFSET_MM)
+        # The catch plane the tracker predicts landings AT — the skill stack's
+        # ONE definition (`motion.skills.sites.CATCH_CUP_Z_MM`, plan §
+        # "Owner decisions" 2026-09-13), imported rather than restated so this
+        # node and every skill terminal aimed at a CATCH agree on the same
+        # number by construction. Was the hand-computed
+        # `GEOM_INITIAL_HEIGHT_MM + JB_OP_DEFAULT_ACTIVE_Z_MM +
+        # HAND_CATCH_OFFSET_MM` (809.08 mm) until this change — the FSM's own
+        # catch plane moves with it (accepted by the owner; R4 re-points the
+        # coordinator's copies at this same definition, plan § "Key
+        # architectural boundaries").
+        self._landing_z = float(sites.CATCH_CUP_Z_MM)
 
         self._tracker = BallTracker(
             dt=hw.TRACKING_MOCAP_DT_S,

@@ -20,6 +20,7 @@ import ast
 import os
 import re
 import sys
+import types
 
 import numpy as np
 import pytest
@@ -32,10 +33,12 @@ if _HW_DIR not in sys.path:
 
 import skills_plan_bench as spb  # noqa: E402
 
+from jugglebot.motion.geometry import StewartGeometry  # noqa: E402
 from jugglebot.motion.skills import executor as ex  # noqa: E402
 from jugglebot.motion.skills import schedule as sc  # noqa: E402
 from jugglebot.motion.skills import segments as sg  # noqa: E402
 from jugglebot.motion.skills import sites as si  # noqa: E402
+from jugglebot.motion.trajectory.limits import TrajectoryLimits  # noqa: E402
 
 
 _SRV = os.path.join(_REPO, 'ros_ws', 'src', 'jugglebot_interfaces', 'srv',
@@ -578,3 +581,235 @@ def test_the_driver_caps_the_blas_pool_before_anything_imports_numpy():
     first_numpy = min(i for i in (src.find('\nimport numpy'), src.find('\nfrom jugglebot'),
                                   src.find('\nimport jugglebot')) if i >= 0)
     assert cap < first_numpy
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# R3-g — the self-toss pattern selector (schedule / tracker / learner / memory)
+# ═════════════════════════════════════════════════════════════════════════════
+
+def test_default_self_toss_site_is_the_owner_P1():
+    site = spb.default_self_toss_site()
+    assert site.name == 'P1'
+    assert site.cup_mm == pytest.approx(
+        [spb.SELF_TOSS_SITE_X_MM, spb.SELF_TOSS_SITE_Y_MM, si.CATCH_CUP_Z_MM])
+
+
+@pytest.mark.parametrize('n_throws', [1, 2, 3, 4])
+def test_build_self_toss_schedule_has_n_throws_plus_3_skills(n_throws):
+    """The opening REST (floor lift) + the folded catch-with-throws + the
+    final standalone catch + the closing REST — one ball throughout (schedule.
+    compile_self_toss's own count), verified against the real compiler rather
+    than restated as a literal."""
+    sched = spb.build_self_toss_schedule(n_throws=n_throws)
+    assert len(sched.skills) == n_throws + 3
+    assert sched.skills[0].kind == sg.REST
+    assert sched.skills[-1].kind == sg.REST
+    assert all(sk.site.name == 'P1' for sk in sched.skills)
+    assert all(sk.ball_id == 0 for sk in sched.skills)
+
+
+def test_build_self_toss_schedule_honours_an_explicit_site():
+    other = si.Site('P9', np.array([12.0, -34.0, si.CATCH_CUP_Z_MM]))
+    sched = spb.build_self_toss_schedule(n_throws=1, site=other)
+    assert all(sk.site is other for sk in sched.skills)
+
+
+def test_self_toss_leg_jerk_matches_the_swept_admissible_box():
+    """The box `config/generated/admissible_box.yaml` was swept UNDER a
+    specific leg-jerk ceiling (`admissible.check_limits`'s job at runtime); if
+    this constant silently drifted from that sweep, every self-toss rehearsal
+    would clip against the WRONG envelope with no loud complaint until a live
+    `check_limits` call — this pins the two together offline."""
+    box_path = os.path.join(_REPO, 'config', 'generated', 'admissible_box.yaml')
+    if not os.path.exists(box_path):
+        pytest.skip('admissible_box.yaml not generated in this checkout')
+    from jugglebot.motion.skills import admissible as adm
+    boxes = adm.load(box_path)
+    p1p1 = next(b for b in boxes if b.site_pair == ('P1', 'P1'))
+    assert p1p1.limits['leg_jerk_mmps3'] == pytest.approx(
+        spb.SELF_TOSS_LEG_JERK_MMPS3)
+
+
+# ── biased_landing — the analytic R3 plant-error model ─────────────────────
+
+def test_biased_landing_is_deterministic():
+    site_mm = np.array([-50.0, 0.0, 860.0])
+    target_mm = np.array([-50.0, 0.0, 830.0])
+    a = spb.biased_landing(site_mm, target_mm, 0.8568805868963759)
+    b = spb.biased_landing(site_mm, target_mm, 0.8568805868963759)
+    assert a[0] == pytest.approx(b[0])
+    assert a[1] == pytest.approx(b[1])
+    assert a[2] == pytest.approx(b[2])
+
+
+def test_biased_landing_shifts_xy_and_lengthens_flight_for_a_vertical_self_toss():
+    """A self-toss's commanded flight is a pure vertical launch (site == the
+    target xy); the plan's +11% speed / +8.5 mrad aim bias must show up as a
+    NONZERO horizontal miss and a LONGER observed flight — otherwise the
+    tracker would feed the learner an unbiased (useless) row. MEASURED
+    2026-09-13 (this function, apex 0.9 m, site P1): x offset -12.7 mm,
+    flight +10.8% — both asserted with generous tolerance bands rather than
+    pinned exactly, since the bias direction/scale is what matters here, not
+    the last digit."""
+    site_mm = np.array([-50.0, 0.0, 860.0])
+    target_mm = np.array([-50.0, 0.0, 830.0])
+    flight_s = 0.8568805868963759
+    pos, vel, t_land = spb.biased_landing(site_mm, target_mm, flight_s)
+    assert pos[2] == pytest.approx(target_mm[2])          # crosses the same z
+    assert 5.0 < abs(pos[0] - target_mm[0]) < 60.0         # tens-of-mm miss
+    assert pos[1] == pytest.approx(target_mm[1], abs=1e-6)  # no y for a +x tilt
+    assert 0.05 < (t_land - flight_s) / flight_s < 0.20     # ~11% longer
+
+
+def test_release_physics_of_a_throw_and_a_carried_catch_throw():
+    throw_t = sg.ThrowTerminal(site_mm=[1.0, 2.0, 860.0], target_mm=[3.0, 4.0, 830.0],
+                               flight_s=0.8, t_release_s=5.0)
+    physics = spb._release_physics_of(sg.THROW, throw_t)
+    assert physics[0] == pytest.approx([1.0, 2.0, 860.0])
+    assert physics[1] == pytest.approx([3.0, 4.0, 830.0])
+    assert physics[2] == pytest.approx(0.8)
+    assert physics[3] == pytest.approx(5.0)
+
+    then_throw = sg.ThrowAfterCatch(t_release_s=6.5, site_mm=[1.0, 2.0, 860.0],
+                                    target_mm=[3.0, 4.0, 830.0], flight_s=0.8)
+    catch_t = sg.CatchTerminal(landing_mm=[1.0, 2.0, 830.0],
+                               landing_vel_mm_s=[0.0, 0.0, -4200.0],
+                               t_land_s=6.0, rest_site_mm=[1.0, 2.0, 689.6],
+                               then_throw=then_throw)
+    physics2 = spb._release_physics_of(sg.CATCH, catch_t)
+    assert physics2[3] == pytest.approx(6.5)
+
+    plain_catch = sg.CatchTerminal(landing_mm=[1.0, 2.0, 830.0],
+                                   landing_vel_mm_s=[0.0, 0.0, -4200.0],
+                                   t_land_s=6.0, rest_site_mm=[1.0, 2.0, 689.6])
+    assert spb._release_physics_of(sg.CATCH, plain_catch) is None
+    rest_t = sg.RestTerminal(rest_site_mm=[1.0, 2.0, 689.6], t_rest_s=7.0)
+    assert spb._release_physics_of(sg.REST, rest_t) is None
+
+
+def test_make_self_toss_tracker_reports_nothing_before_a_noted_release():
+    tracker, note_release = spb.make_self_toss_tracker(now_fn=lambda: 0.0)
+    assert tracker(0) is None
+    throw_t = sg.ThrowTerminal(site_mm=[-50.0, 0.0, 860.0], target_mm=[-50.0, 0.0, 830.0],
+                               flight_s=0.8568805868963759, t_release_s=2.0)
+    note_release(0, sg.THROW, throw_t)
+    landing = tracker(0)
+    assert landing is not None
+    assert landing.pos_mm[2] == pytest.approx(830.0)
+    assert landing.t_land_abs_s > 2.0 + 0.8568805868963759 * 0.9  # a later, biased landing
+    assert tracker(999) is None                                  # unknown ball
+
+
+def test_make_self_toss_tracker_layers_jitter_deterministically_by_seed():
+    throw_t = sg.ThrowTerminal(site_mm=[-50.0, 0.0, 860.0], target_mm=[-50.0, 0.0, 830.0],
+                               flight_s=0.8568805868963759, t_release_s=2.0)
+    t1, note1 = spb.make_self_toss_tracker(jitter_mm=3.0, seed=7, now_fn=lambda: 0.0)
+    note1(0, sg.THROW, throw_t)
+    t2, note2 = spb.make_self_toss_tracker(jitter_mm=3.0, seed=7, now_fn=lambda: 0.0)
+    note2(0, sg.THROW, throw_t)
+    assert t1(0).pos_mm == pytest.approx(t2(0).pos_mm)      # same seed
+    t3, note3 = spb.make_self_toss_tracker(jitter_mm=3.0, seed=8, now_fn=lambda: 0.0)
+    note3(0, sg.THROW, throw_t)
+    assert not np.allclose(t3(0).pos_mm, t1(0).pos_mm)      # different seed
+
+
+# ── print_dry_run / CLI defaulting ──────────────────────────────────────────
+
+def test_print_dry_run_self_toss_names_the_site_and_pattern(capsys):
+    spb.print_dry_run(2, pattern='self-toss')
+    out = capsys.readouterr().out
+    assert 'self-toss schedule' in out
+    assert 'P1' in out
+
+
+def test_main_defaults_n_throws_to_1_for_self_toss_dry_run(capsys):
+    rc = spb.main(['--dry-run', '--pattern', 'self-toss'])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert 'n_throws=%d' % (spb.SELF_TOSS_DEFAULT_N_THROWS,) in out
+
+
+def test_main_leaves_columns_n_throws_default_unchanged(capsys):
+    rc = spb.main(['--dry-run'])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert 'n_throws=%d' % (spb.DEFAULT_N_THROWS,) in out
+
+
+# ── the self-toss rehearsal loop, on a virtual clock — the R3-g proof ───────
+
+def test_self_toss_rehearsal_pre_positions_then_runs_the_schedule_clean():
+    """One attempt, virtual clock, no learner: the pre-position (R3-g finding
+    — schedule.compile_self_toss's own FLOOR_LIFT_S refuses LIMIT_JERK at the
+    150 000 mm/s^3 R3 session limit, see SELF_TOSS_PRELIFT_S's docstring) plus
+    the whole schedule install cleanly, exactly like the manual rehearsal run
+    2026-09-13 (`--rehearse --pattern self-toss --arm A`, all gates PASS)."""
+    limits = TrajectoryLimits.from_config(spb.hw).with_session_limits(
+        leg_vel_mmps=spb.SESSION_LEG_VEL_MMPS, leg_acc_mmps2=spb.SESSION_LEG_ACC_MMPS2,
+        leg_jerk_mmps3=spb.SELF_TOSS_LEG_JERK_MMPS3, hand_acc_rps2=spb.SESSION_HAND_ACC_RPS2)
+    geom = StewartGeometry()
+    site = spb.default_self_toss_site()
+
+    clock = {'t': 0.0}
+
+    def now_fn():
+        return clock['t']
+
+    def sleep_fn(period_s):
+        clock['t'] += period_s
+
+    rows, meta = spb.rehearse_attempt(
+        0, n_throws=1, jitter_mm=0.0, limits=limits, geom=geom, run_t0=0.0,
+        now_fn=now_fn, sleep_fn=sleep_fn, state={'rec': None},
+        pattern='self-toss', site=site)
+
+    assert not meta['ended_early'], meta['end_code']
+    assert meta['n_dispatched'] == meta['n_skills']
+    kinds = [r['kind'] for r in rows]
+    assert kinds[0] == 'REST-pre'
+    assert all(r['accepted'] for r in rows)
+
+
+def test_self_toss_rehearsal_grows_memory_and_the_learner_changes_the_command(
+        tmp_path):
+    """Three cold-start attempts (n_throws=1 each, policy A), ONE memory
+    shared across them: by the third attempt the memory holds >= LearnerConfig
+    .k_min (2) rows, so the commanded (landing offset, flight) must differ
+    from the identity prior (0, 0, flight) — the whole point of wiring the
+    learner + memory into this rehearsal (R3-g brief). Matches the manual
+    rehearsal 2026-09-13 (`--rehearse --pattern self-toss --arm A --attempts
+    3`): rows 1-2 command the prior exactly, row 3 does not."""
+    limits = TrajectoryLimits.from_config(spb.hw).with_session_limits(
+        leg_vel_mmps=spb.SESSION_LEG_VEL_MMPS, leg_acc_mmps2=spb.SESSION_LEG_ACC_MMPS2,
+        leg_jerk_mmps3=spb.SELF_TOSS_LEG_JERK_MMPS3, hand_acc_rps2=spb.SESSION_HAND_ACC_RPS2)
+    geom = StewartGeometry()
+    site = spb.default_self_toss_site()
+
+    from jugglebot.motion.skills.memory import Memory
+    from jugglebot.motion.skills import learner as lr
+    memory = Memory(str(tmp_path / 'memory.csv'))
+    cfg = lr.LearnerConfig()
+    learner = types.SimpleNamespace(command=lambda x, y_d: memory.command(x, y_d, cfg))
+
+    clock = {'t': 0.0}
+
+    def now_fn():
+        return clock['t']
+
+    def sleep_fn(period_s):
+        clock['t'] += period_s
+
+    shared = {'rec': None}
+    commands = []
+    for a in range(3):
+        rows, meta = spb.rehearse_attempt(
+            a, n_throws=1, jitter_mm=0.0, limits=limits, geom=geom, run_t0=0.0,
+            now_fn=now_fn, sleep_fn=sleep_fn, state=shared, pattern='self-toss',
+            site=site, learner=learner, boxes=None, on_experience=memory.append)
+        assert not meta['ended_early'], (a, meta['end_code'])
+        commands.append(memory.arrays()[1][-1].copy())    # this attempt's u
+
+    assert len(memory) == 3
+    identity_u = commands[0]
+    assert commands[1] == pytest.approx(identity_u)        # still cold (1 row)
+    assert not np.allclose(commands[2], identity_u)        # warm (>= k_min rows)

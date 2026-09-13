@@ -164,7 +164,6 @@ from jugglebot.toss_sequencer import (
     TossSequencer,
     pre_dispatch_budget_s,
 )
-from jugglebot.motion import toss_cal
 from jugglebot.motion.ik_solver import (
     quat_to_rot_matrix,
     rot_matrix_to_rotvec,
@@ -2589,28 +2588,6 @@ def test_publish_toss_reach_policy_reject_publishes_nothing(monkeypatch):
 # tests/ros/test_toss_continuous_node.py, where the two-slot harness lives.
 
 
-def _armed_aim(node, monkeypatch, rx, ry):
-    """Arm a layer-1-shaped aim of exactly ``(rx, ry)`` rad on this node.
-
-    Wraps the REAL ``_toss_aim_for_goal`` rather than substituting a hand-built
-    dict, so every other key of the block stays the production default and
-    ``_build_toss_cycle`` runs its real aim arm — the virtual-target
-    ``compute_release_state_tilted`` call that turns an aim into a commanded
-    pre-tilt. ``offset_mm`` is computed by the same ``aim_target_offset_mm``
-    production uses, so the resulting tilt IS the armed aim."""
-    real = node._toss_aim_for_goal
-
-    def aimed(catch_pose, flight):
-        block = real(catch_pose, flight)
-        off = aim_target_offset_mm(float(rx), float(ry), float(flight),
-                                   float(catch_pose[2]))
-        block['aim_rad'] = (float(rx), float(ry))
-        block['offset_mm'] = (float(off[0]), float(off[1]))
-        return block
-
-    monkeypatch.setattr(node, '_toss_aim_for_goal', aimed)
-
-
 def _announce_and_reach(node, seq):
     """The cycle's REAL announcement (which stashes ``announced_reach``) followed
     by its REAL deferred reach. Returns the published DynamicTargetCommand."""
@@ -2690,101 +2667,50 @@ def test_a_zero_aim_chain_publishes_the_policy_quat_unchanged():
     assert _wire_quat(out) == (1.0, 0.0, 0.0, 0.0)
 
 
-def test_an_aimed_colocated_reach_holds_the_pretilt_and_closes_the_chain(
-        monkeypatch):
-    """**THE P-4 closure**, end to end: an aimed co-located cycle publishes its
-    deferred reach at the throw's PRE-TILT, so the platform never un-tilts and
-    the NEXT cycle's census-B1 skip fires.
+def test_a_toss_commanded_release_and_its_announcement_are_the_zero_correction_values():
+    """R3 pins the property the learning-stack deletion must preserve: a toss's
+    COMMANDED release (what the platform and the hand are driven to) and its
+    ANNOUNCED release (what ``/throw_announcement`` tells the tracker to expect)
+    are IDENTICAL, at the exact zero-correction values the shipped machine has
+    always flown — flag false, no artefact, aim ``(0, 0)``, speed trim ``0.0``.
 
-    The counterfactual is in the test: parked at the policy's own answer — which
-    is EXACTLY level, because the announcement is built from the uncorrected
-    release, so the receive tilt has no aim in it — the same next cycle declines
-    the skip and commands the 0.520 s move. That decline is carried finding 2."""
+    Three layers, from the lookup out to the built cycle, so a future rung that
+    re-arms a correction source has one failing test at each seam rather than a
+    single opaque assertion:
+
+    * :meth:`_toss_aim_for_goal` — the learning stack's aim map / session trim
+      / critical-point ILC (layers 1-3) were deleted at R3
+      (``plans/active/two-ball-skill-stack.md`` § R3 "Delete"); this is the
+      shipped zero-correction state those layers always degraded to when
+      dormant, now the ONLY state;
+    * :meth:`_unified_vel_trim` — the critical-point ILC's speed-trim channel,
+      same deletion, same identity;
+    * :meth:`_build_toss_cycle` — a DISPLACED-free (co-located) goal, so the
+      only thing that could move ``release_cmd`` off ``release_state`` is the
+      aim; with the aim at identity the two are the same object, byte for
+      byte, and the announced ``event_vel`` the commanded one."""
+    node = ReloadCoordinatorNode()
+    aim = node._toss_aim_for_goal((0.0, 0.0, 170.0), 0.8)
+    assert aim['aim_rad'] == (0.0, 0.0)
+    assert aim['offset_mm'] == (0.0, 0.0)
+    assert aim['ilc_vel_trim'] == 0.0
+    assert node._unified_vel_trim(state=None) == 0.0
+
     now = time.perf_counter()
     node = _toss_ready_node(now, commanded_pos=(0.0, 0.0, 170.0))
-    aim = (math.radians(0.8), math.radians(-0.5))          # |aim| = 0.943°
-    _armed_aim(node, monkeypatch, *aim)
     seq, state = node._build_toss_cycle((0.0, 0.0, 170.0), 0.8, 5.0, 0.0)
-    rel = state.release_cmd
-    assert node._release_is_tilted(rel) is True
-    assert (rel.tilt_rx, rel.tilt_ry) == pytest.approx(aim, abs=1e-6)
-
-    out = _announce_and_reach(node, seq)
-    cmd = _policy_answer(node, state)
-    # The policy's answer was LEVEL — the re-tilt this fix removes was real.
-    assert tuple(float(v) for v in cmd.target_quat) == (1.0, 0.0, 0.0, 0.0)
-    pre = ReloadCoordinatorNode._tilt_quaternion(rel.tilt_rx, rel.tilt_ry)
-    assert _wire_quat(out) == (pre.w, pre.x, pre.y, pre.z)
-    # The POSITION is untouched — which is what keeps _predicted_chain_site_mm
-    # a prediction of what is commanded.
-    assert (out.target_pos.x, out.target_pos.y, out.target_pos.z) == (
-        pytest.approx(float(cmd.target_pos[0])),
-        pytest.approx(float(cmd.target_pos[1])),
-        pytest.approx(float(cmd.target_pos[2])))
-
-    # ── the closure: park where the reach commanded, and the next cycle skips ──
-    _park(node, time.perf_counter(), (out.target_pos.x, out.target_pos.y,
-                                      out.target_pos.z), _wire_quat(out))
-    seq2, state2 = node._build_toss_cycle((0.0, 0.0, 170.0), 0.8, 5.0, 0.0)
-    px, py, pz = ReloadCoordinatorNode._toss_positioning_xyz(
-        (0.0, 0.0, 170.0), state2.release_cmd)
-    assert node._toss_already_positioned(px, py, pz, state2.release_cmd) is True
-    assert state2.positioning_move is False
-    assert seq2.positioning_move_expected is False
-    # The position half never broke: the residual is the cup swing alone.
-    live = node._live_commanded_pose(time.perf_counter())
-    assert math.hypot(live[0] - px, live[1] - py) < 1.2      # mm, vs 17.5 tol
-
-    # ── the counterfactual: the pre-fix reach, i.e. the finding itself ──
-    _park(node, time.perf_counter(), (out.target_pos.x, out.target_pos.y,
-                                      out.target_pos.z), cmd.target_quat)
-    seq3, state3 = node._build_toss_cycle((0.0, 0.0, 170.0), 0.8, 5.0, 0.0)
-    assert node._toss_already_positioned(px, py, pz, state3.release_cmd) is False
-    assert state3.positioning_move is True
-    assert seq3.positioning_move_expected is True
-
-
-@pytest.mark.parametrize('aim_deg,axis', [(0.0, 'rx'), (1.0, 'rx'),
-                                          (-1.0, 'rx'), (1.0, 'ry'),
-                                          (-1.0, 'ry')])
-def test_a_displaced_reach_keeps_the_policys_receive_tilt(monkeypatch, aim_deg,
-                                                          axis):
-    """A DISPLACED cycle (A ≠ B) is left alone, with or without a saturated aim,
-    **on either aim axis**.
-
-    There the announced landing carries the throw's own lateral velocity, so the
-    receive tilt is the MIRROR of the throw tilt and the delta is ~2θ — far
-    outside the ±1° bound. The branch IS entered (the release is tilted) and
-    declines on the bound, which is what makes this test non-vacuous.
-
-    The AXIS is parametrised because it is not a free variation: this harness
-    displaces along x, and ``aim_target_offset_mm`` maps rx onto -y and ry onto
-    +x, so an ``rx`` aim is ORTHOGONAL to the throw tilt (it adds in quadrature)
-    while an ``ry`` aim is CO-AXIAL with it and one sign of it SUBTRACTS. Only
-    the co-axial-opposing case can push the delta back toward the bound, so an
-    rx-only parametrisation was testing the easy direction three times. At this
-    harness's 60 mm all five still decline (the co-axial-opposing worst case is
-    79.3 mrad, still 4.5× the bound); the crossover that case DOES set is pinned
-    in ``test_the_displaced_regime_is_separated_by_more_than_the_bound``."""
-    now = time.perf_counter()
-    node = _toss_ready_node(now, commanded_pos=(-60.0, 0.0, 170.0))
-    if aim_deg:
-        rad = math.radians(aim_deg)
-        _armed_aim(node, monkeypatch, *((rad, 0.0) if axis == 'rx'
-                                        else (0.0, rad)))
-    seq, state = node._build_toss_cycle((0.0, 0.0, 170.0), 0.8, 5.0, 0.0)
-    assert node._release_is_tilted(state.release_cmd) is True
+    # IDENTICAL, not merely equal: no correction layer forked a second object.
+    assert state.release_cmd is state.release_state
+    assert node._release_is_tilted(state.release_cmd) is False
     out = _announce_and_reach(node, seq)
     cmd = _policy_answer(node, state)
     assert _wire_quat(out) == tuple(float(v) for v in cmd.target_quat)
-    assert cmd.target_quat[0] != 1.0                     # a real receive tilt
-    _, _, _, _, held = ReloadCoordinatorNode._toss_reach_quat(
-        cmd.target_quat, state.release_cmd)
-    assert held is False
+    assert seq.event_vel_mps == pytest.approx(
+        float(state.release_cmd.event_vel_mps))
 
 
 def test_the_displaced_regime_is_separated_by_more_than_the_bound():
-    """The bound is ``toss_cal.TOTAL_MAX_RAD`` — the ±1° aim authority — and it
+    """The bound is ``rcn.TOTAL_MAX_RAD`` — the ±1° aim authority — and it
     is the RIGHT number because the delta it bounds IS the seat re-aim the
     substitution costs. Re-derived from the live modules, not transcribed:
 
@@ -2815,27 +2741,27 @@ def test_the_displaced_regime_is_separated_by_more_than_the_bound():
         return float(np.linalg.norm(np.asarray(recv, dtype=float) - target))
 
     level = compute_release_state_tilted(B, flight, throw_site_xy_mm=(0.0, 0.0))
-    for aim_rad in (math.radians(0.155), math.radians(0.5), toss_cal.TOTAL_MAX_RAD):
+    for aim_rad in (math.radians(0.155), math.radians(0.5), rcn.TOTAL_MAX_RAD):
         off = aim_target_offset_mm(aim_rad, 0.0, flight, B[2])
         aimed = compute_release_state_tilted(
             (B[0] + off[0], B[1] + off[1], B[2]), flight,
             throw_site_xy_mm=(0.0, 0.0))
         d = delta(level, aimed)
         assert d == pytest.approx(aim_rad, abs=1e-9)       # EXACTLY the aim
-        assert d <= toss_cal.TOTAL_MAX_RAD                 # so the rule fires
+        assert d <= rcn.TOTAL_MAX_RAD                 # so the rule fires
 
     for disp_mm, ratio in ((20.0, 1.8), (50.0, 4.6), (150.0, 13.7)):
         rel = compute_release_state_tilted(B, flight,
                                            throw_site_xy_mm=(-disp_mm, 0.0))
         d = delta(rel, rel)
-        assert d > toss_cal.TOTAL_MAX_RAD
-        assert d / toss_cal.TOTAL_MAX_RAD > ratio
+        assert d > rcn.TOTAL_MAX_RAD
+        assert d / rcn.TOTAL_MAX_RAD > ratio
     # …and the crossover, stated so a future flight-time change is visible: the
     # bound is on the ANGLE, so the displacement it corresponds to scales as g·T².
     below = compute_release_state_tilted(B, flight, throw_site_xy_mm=(-10.0, 0.0))
     above = compute_release_state_tilted(B, flight, throw_site_xy_mm=(-11.5, 0.0))
-    assert delta(below, below) <= toss_cal.TOTAL_MAX_RAD
-    assert delta(above, above) > toss_cal.TOTAL_MAX_RAD
+    assert delta(below, below) <= rcn.TOTAL_MAX_RAD
+    assert delta(above, above) > rcn.TOTAL_MAX_RAD
 
     # ── the crossover an ARMED AIM can move it to, which is the one that
     # bounds the real system. An aim does NOT simply add: aim_target_offset_mm
@@ -2844,7 +2770,7 @@ def test_the_displaced_regime_is_separated_by_more_than_the_bound():
     # co-axial-opposing saturated aim is the worst case, and it pushes the
     # crossover out from ~10.8 mm to ~21.6 mm. Asserted as a fires/declines
     # PAIR either side of it, the same shape as the zero-aim pair above.
-    A = toss_cal.TOTAL_MAX_RAD
+    A = rcn.TOTAL_MAX_RAD
 
     def coaxial_opposing_delta(disp_mm):
         """delta for a displaced throw carrying a saturated aim that opposes
@@ -2885,7 +2811,7 @@ def test_the_displaced_regime_is_separated_by_more_than_the_bound():
     # reach's POSITION never broke the 17.5 mm half of the B1 test. At a full ±1°
     # aim the next cycle's swing-compensated pre-tilt pose sits 1.013 mm from the
     # centroid the catch parks at — the cup swing alone, 17x inside the bound.
-    off = aim_target_offset_mm(toss_cal.TOTAL_MAX_RAD, 0.0, flight, B[2])
+    off = aim_target_offset_mm(rcn.TOTAL_MAX_RAD, 0.0, flight, B[2])
     saturated = compute_release_state_tilted(
         (B[0] + off[0], B[1] + off[1], B[2]), flight, throw_site_xy_mm=(0.0, 0.0))
     fields = build_announcement_fields(level, throw_time_s=0.0)
@@ -3200,7 +3126,6 @@ _MOVED_ONTO_THE_CYCLE_OBJECT = {
     '_toss_announced_reach': 'announced_reach',
     '_toss_next_release_perf': 'next_release_perf',
     '_toss_next_landing_perf': 'next_landing_perf',
-    '_toss_record_announce': 'record_announce',
 }
 
 #: The node attributes that DELIBERATELY did not move, each with the reason it
@@ -3522,7 +3447,7 @@ def test_the_no_op_skip_declines_whenever_it_cannot_prove_the_pose(commanded, wh
         node._commanded_pose = (tuple(commanded) + (0.0, 0.0, 0.0)
                                 if commanded is not None else None)
         node._commanded_pose_mono = now if commanded is not None else 0.0
-    release = node._toss_commanded_release() if node._toss_record_ctx else None
+    release = None
     assert node._toss_already_positioned(0.0, 0.0, 170.0, release) is False, why
 
 
@@ -3690,197 +3615,6 @@ def test_the_unconditional_pretilt_hold_is_still_released_by_every_teardown():
         assert published[-1] is False, teardown
 
 
-def test_the_belt_write_and_trim_update_leave_the_cycle_thread():
-    """CENSUS B6. Both ran synchronously inside ``_run_toss_cycle`` before it
-    returned — squarely in the landing -> next-cycle handoff — and both can BLOCK
-    (an ``open(..., 'a')`` on the SD card, a numpy estimator update). A full disk
-    was a cadence fault; now it is a lost measurement.
-
-    The ROS publish deliberately STAYS on the cycle thread: it is a non-blocking
-    hand-off to the middleware and it is the canonical sink."""
-    now = 100.0
-    node = _toss_ready_node(now)
-    ran_on = []
-    node._belt_toss_record = lambda payload: ran_on.append(
-        threading.current_thread().name)
-    node._open_toss_record(action='toss', goal_id='g', cycle_index=1,
-                           catch_pose=(0.0, 0.0, 170.0), throw_delay=5.0,
-                           vel_scale=0.9, raw_goal={}, flight=0.8)
-    node._log_toss_outcome(TossResult(True, 'CAUGHT'))
-    assert node._toss_records_drain()
-    assert ran_on == ['toss_records']
-
-
-def test_the_trim_context_is_snapshotted_at_submit_not_at_execute():
-    """The one real hazard in moving the trim update off-thread, closed by
-    construction rather than by timing.
-
-    ``_toss_trim_observe`` reads the cycle's pose, flight and aim.
-    ``_build_toss_cycle`` overwrites all three for the NEXT cycle. A worker that
-    read them at execute time would therefore attribute cycle N's toss to cycle
-    N+1's pose and aim — a silently wrong corpus, which is the failure class the
-    whole record layer exists to avoid."""
-    now = 100.0
-    node = _toss_ready_node(now)
-    node._open_toss_record(action='toss', goal_id='g', cycle_index=1,
-                           catch_pose=(11.0, 22.0, 170.0), throw_delay=5.0,
-                           vel_scale=0.9, raw_goal={}, flight=0.8)
-    snap = node._toss_trim_snapshot()
-    assert snap['pose'] == (11.0, 22.0, 170.0)
-    # The next cycle moves on; the snapshot does not.
-    node._open_toss_record(action='toss', goal_id='g', cycle_index=2,
-                           catch_pose=(99.0, 88.0, 170.0), throw_delay=5.0,
-                           vel_scale=0.9, raw_goal={}, flight=0.8)
-    assert snap['pose'] == (11.0, 22.0, 170.0)
-    assert node._toss_trim_snapshot()['pose'] == (99.0, 88.0, 170.0)
-
-
-def test_the_worker_is_drained_before_the_trim_proposal_is_written():
-    """The drain is the CONTRACT: "asynchronous" must not come to mean
-    "sometimes missing". The proposal is built from the trim's accumulated
-    state, and the last cycle or two of a session are still queued when the goal
-    terminates — a proposal that omitted them would be a silently short session,
-    which is worse than a slow one."""
-    import ast
-    src = ast.parse(open(rcn.__file__).read())
-    fn = next(n for n in ast.walk(src)
-              if isinstance(n, ast.FunctionDef) and n.name == '_toss_trim_end')
-    calls = [n.func.attr for n in ast.walk(fn)
-             if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)]
-    assert '_toss_records_drain' in calls
-    assert calls.index('_toss_records_drain') < calls.index('_toss_ilc_session_end')
-
-
-def test_a_worker_that_cannot_start_falls_back_to_running_inline():
-    """Degrading to the OLD behaviour is the right failure here; dropping the
-    measurement is not. A node whose thread creation failed still produces a
-    corpus and still converges a trim — just on the cycle thread, as before."""
-    now = 100.0
-    node = _toss_ready_node(now)
-    node._toss_records_worker_start = lambda: (_ for _ in ()).throw(
-        RuntimeError('cannot spawn'))
-    warned, ran = [], []
-    node.get_logger().warning = warned.append
-    node._belt_toss_record = lambda payload: ran.append(
-        threading.current_thread().name)
-    node._open_toss_record(action='toss', goal_id='g', cycle_index=1,
-                           catch_pose=(0.0, 0.0, 170.0), throw_delay=5.0,
-                           vel_scale=0.9, raw_goal={}, flight=0.8)
-    node._log_toss_outcome(TossResult(True, 'CAUGHT'))
-    assert ran == [threading.current_thread().name]        # inline, not deferred
-    assert any('INLINE' in w for w in warned)
-
-
-def test_a_failed_thread_start_does_not_latch_a_dead_worker_handle():
-    """CENSUS B6, audit fix 2026-08-22. ``_toss_records_worker_start`` assigns the
-    handle INSIDE the lock and calls ``start()`` outside it; without a rollback a
-    single ``RuntimeError`` from ``Thread.start()`` (thread exhaustion on a loaded
-    Jetson) latched the handle forever.
-
-    The caller's inline fallback then wrote THAT record correctly — so the failure
-    looked transient — while every later ``_toss_records_submit`` returned early
-    at the ``is not None`` check and ``put_nowait``'d into a queue no thread was
-    servicing. Silent, permanent loss of the sitting's toss corpus, plus a full
-    5 s drain timeout at every goal end, announced as one warning.
-    """
-    now = 100.0
-    node = _toss_ready_node(now)
-    real_thread = threading.Thread
-    attempts = []
-
-    class _FailFirst(real_thread):
-        def start(self):
-            attempts.append(self.name)
-            if len(attempts) == 1:
-                raise RuntimeError('cannot spawn')
-            return real_thread.start(self)
-
-    ran = []
-    node._belt_toss_record = lambda payload: ran.append(
-        threading.current_thread().name)
-    node.get_logger().warning = lambda *_a, **_k: None
-
-    with mock.patch.object(threading, 'Thread', _FailFirst):
-        node._open_toss_record(action='toss', goal_id='g', cycle_index=1,
-                               catch_pose=(0.0, 0.0, 170.0), throw_delay=5.0,
-                               vel_scale=0.9, raw_goal={}, flight=0.8)
-        node._log_toss_outcome(TossResult(True, 'CAUGHT'))
-        # Cycle 1: start() raised, so the record ran INLINE and the handle was
-        # rolled back rather than latched.
-        assert ran == [threading.current_thread().name]
-        assert node._toss_records_thread is None
-
-        # Cycle 2: the retry is possible BECAUSE of the rollback, and it lands
-        # on the worker.
-        node._open_toss_record(action='toss', goal_id='g', cycle_index=2,
-                               catch_pose=(0.0, 0.0, 170.0), throw_delay=5.0,
-                               vel_scale=0.9, raw_goal={}, flight=0.8)
-        node._log_toss_outcome(TossResult(True, 'CAUGHT'))
-
-    assert node._toss_records_drain()
-    assert len(attempts) == 2
-    assert ran[1] == 'toss_records'
-
-
-def test_the_drain_waits_for_the_WORK_not_merely_for_the_queue_to_empty():
-    """``Queue.empty()`` goes True the instant the worker ``get``s the last item —
-    BEFORE the belt write and the trim update have run. Polling it returned while
-    the final cycle was still being processed, which is the exact opposite of what
-    the drain promises, and it is why ``_toss_trim_end`` could write a proposal
-    with the last cycle missing (audit fix, 2026-08-22).
-
-    Driven by making the worker's own work slow enough that ``empty()`` and
-    ``unfinished_tasks == 0`` are separated by a real interval — no sleep in the
-    test thread, and no dependence on which thread wins a race."""
-    now = 100.0
-    node = _toss_ready_node(now)
-    started, finished = threading.Event(), []
-
-    def _slow(payload):
-        started.set()
-        time.sleep(0.25)
-        finished.append(payload)
-
-    node._belt_toss_record = _slow
-    node._open_toss_record(action='toss', goal_id='g', cycle_index=1,
-                           catch_pose=(0.0, 0.0, 170.0), throw_delay=5.0,
-                           vel_scale=0.9, raw_goal={}, flight=0.8)
-    node._log_toss_outcome(TossResult(True, 'CAUGHT'))
-
-    # The worker has the item in hand: the queue reads EMPTY and the work is not
-    # done. This is precisely the window the old drain returned in.
-    assert started.wait(timeout=5.0)
-    assert node._toss_records_q.empty()
-    assert finished == []
-
-    assert node._toss_records_drain(timeout_s=5.0)
-    assert len(finished) == 1                    # the drain outlasted the work
-
-
-def test_the_drain_reports_failure_rather_than_hanging_on_a_wedged_worker():
-    """Bounded, and False on timeout: a wedged worker must never hold a session's
-    terminal open. The WARN names how many records are outstanding, which is the
-    number an operator needs to know how short the corpus is."""
-    now = 100.0
-    node = _toss_ready_node(now)
-    release = threading.Event()
-    node._belt_toss_record = lambda payload: release.wait(timeout=10.0)
-    warned = []
-    node.get_logger().warning = warned.append
-    node._open_toss_record(action='toss', goal_id='g', cycle_index=1,
-                           catch_pose=(0.0, 0.0, 170.0), throw_delay=5.0,
-                           vel_scale=0.9, raw_goal={}, flight=0.8)
-    node._log_toss_outcome(TossResult(True, 'CAUGHT'))
-    try:
-        t0 = time.perf_counter()
-        assert node._toss_records_drain(timeout_s=0.2) is False
-        assert time.perf_counter() - t0 < 5.0     # returned, did not hang
-        assert any('did not drain' in w for w in warned)
-    finally:
-        release.set()
-        node._toss_records_drain(timeout_s=5.0)
-
-
 # ── The tick-loop census is actually wired (INSTRUMENT ONLY) ─────────────────
 
 def test_the_cycle_loop_feeds_the_census_and_drops_only_the_terminal(monkeypatch):
@@ -3935,14 +3669,14 @@ def test_the_loop_census_on_the_record_is_the_one_the_cycle_actually_fed(
         monkeypatch):
     """The census is on the SLOT since B4, and there must be exactly ONE per
     cycle — the one `_run_toss_cycle` (or `_tick_toss_pipeline`) feeds and the
-    one `_toss_record_fields` reads.
+    one `_log_toss_outcome` reads for the outcome log line.
 
     Two would be the worst kind of instrument bug: the loop would feed one, the
-    record would declare the other, and every timing field would read null while
-    the loop was measured perfectly. Nothing would go red — a null is "not
-    measured", which is a legal value — so a session's whole timing census would
-    vanish silently. That is precisely what the census exists to prevent one
-    level up."""
+    outcome line would read the other, and every overrun would go unreported
+    while the loop was measured perfectly. Nothing would go red — a None census
+    is "not measured", which is a legal value — so a whole session's overrun
+    warnings could vanish silently. That is precisely what pinning `state.census
+    is built` one level up prevents."""
     node = _toss_ready_node(100.0)
     _install_toss_goal(node)
     seq = _fresh_seq(node)

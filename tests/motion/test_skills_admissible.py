@@ -263,3 +263,70 @@ def test_tiny_sweep_yaml_round_trips_and_validates(tmp_path, tiny_sweep):
     assert loaded == boxes
     live = _live_limits()
     ab.check_limits(loaded, live)
+
+
+# ---------------------------------------------------------------------------
+# End-to-end: a tiny REAL single-site (P1, P1) sweep -- R3
+# ---------------------------------------------------------------------------
+
+def test_single_site_sweep_uses_the_carried_throw_segment(sweep_mod, monkeypatch):
+    """R3's single-site (P1, P1) box must be judged by the STEADY
+    catch-with-``then_throw`` segment R3's schedule actually dispatches
+    (``segments.ThenThrow``'s docstring / plan § 2.2's R2 amendment: a split
+    LANDING-then-THROW refuses at every cell of a 480-cell grid), not the
+    two-site cell's standalone LANDING catch. Spy on ``segments.plan_segment``
+    and assert at least one CATCH call in the sweep carried ``then_throw`` --
+    this fails if the single-site cell regresses to the standalone form.
+    """
+    calls = []
+    orig = sweep_mod.sg.plan_segment
+
+    def _spy(kind, seed, terminal, cfg, limits, geom, **kw):
+        if kind == sweep_mod.sg.CATCH:
+            calls.append(terminal.then_throw)
+        return orig(kind, seed, terminal, cfg, limits, geom, **kw)
+
+    monkeypatch.setattr(sweep_mod.sg, 'plan_segment', _spy)
+    site = st.columns_sites(100.0)[0]
+    boxes, rows = sweep_mod.sweep(flights_s=(0.80, 0.8570), offsets_mm=(-10.0, 0.0),
+                                  site_pairs=[(site, site)])
+    assert calls, 'expected at least one CATCH plan_segment call from the sweep'
+    assert any(tt is not None for tt in calls), (
+        'the single-site sweep never planned a CATCH with then_throw -- it '
+        'regressed to the standalone LANDING form the two-site cell uses, '
+        'which plan § 2.2 measured as infeasible for a same-site chain')
+    assert len(boxes) == 1
+    box = boxes[0]
+    assert box.site_pair == ('P1', 'P1')
+    assert not box.empty, 'the (P1, P1) chain must admit at least the ' \
+                          'identity-prior (0, 0) command at its centre flight'
+    assert len(rows) >= 6
+
+
+def test_single_site_sweep_also_gates_the_launch_throw_from_rest(
+        sweep_mod, monkeypatch):
+    """R3-h2 (2026-09-13): R3's cold-start policy runs single-throw attempts
+    (THROW from rest -> CATCH -> REST), so the LAUNCH THROW carries the
+    learner's command too -- not only the chained STEADY catch
+    ``_chained_catch_cell`` checks. A rehearsal found a warm command inside
+    the (unfixed) box refusing ``LIMIT_JERK`` on that launch throw. Spy on
+    ``_throw_cell`` and assert it is called with a NONZERO offset at least
+    once: if the launch gate regresses to only the shared zero-offset
+    per-flight seeding call, this fails.
+    """
+    calls = []
+    orig = sweep_mod._throw_cell
+
+    def _spy(*args, **kwargs):
+        calls.append(tuple(kwargs.get('offset_mm', (0.0, 0.0))))
+        return orig(*args, **kwargs)
+
+    monkeypatch.setattr(sweep_mod, '_throw_cell', _spy)
+    site = st.columns_sites(100.0)[0]
+    sweep_mod.sweep(flights_s=(0.8570,), offsets_mm=(-10.0, 0.0),
+                    site_pairs=[(site, site)])
+    nonzero = [c for c in calls if c != (0.0, 0.0)]
+    assert nonzero, (
+        'the launch THROW from rest was never planned with a nonzero '
+        'offset -- the (P1, P1) box is not gating the segment a cold-start '
+        'attempt actually carries the learner command on (R3-h2)')

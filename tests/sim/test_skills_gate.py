@@ -18,6 +18,7 @@ via ``python sim/skills_gate.py``.
 
 from __future__ import annotations
 
+import numpy as np
 import pytest
 
 pytest.importorskip('mujoco')
@@ -28,11 +29,14 @@ from jugglebot.motion.skills import sites                         # noqa: E402
 from jugglebot.motion.skills.segments import (                    # noqa: E402
     THROW, SegmentConfig, ThrowTerminal, plan_segment,
 )
+from jugglebot.motion.trajectory import ballistics_bc as bal      # noqa: E402
 
+import sim.skills_gate as sg                                      # noqa: E402
 from sim import stream_chain                                      # noqa: E402
+from sim.juggle_noise import BallisticEstimator                   # noqa: E402
 from sim.skills_gate import (                                     # noqa: E402
     MIRROR_TOL_HAND_REV, MIRROR_TOL_LEG_REV, SkillsGate,
-    SkillsGateConfig, _WANT_FLAGS,
+    SkillsGateConfig, SelfTossGateConfig, _WANT_FLAGS,
 )
 import teensy_interp as ti                                        # noqa: E402
 
@@ -201,3 +205,121 @@ def test_the_hand_lane_skips_an_axis_that_has_never_reported_an_encoder():
     assert mirror.tick_hand(0.0, None) is None
     assert mirror.hand_unseen_skips == 1
     assert mirror.hand_raw_pos == pytest.approx(5.0)
+
+
+def test_tracker_landing_time_is_anchored_to_the_last_sample_not_now():
+    """R3-j (2026-09-13): ``_make_tracker``'s ``t_land_abs_s`` must be
+    ``last_obs_t + t_rem``, never ``plant.data.time + t_rem``.
+
+    ``ballistics_bc.arrival_state_at_z``'s ``t_rem`` is time-to-touchdown
+    from the fit's OWN reference instant -- ``BallisticEstimator.estimate()``
+    evaluates at ``Δt = 0`` at its LATEST sample time, not "now". Anchoring to
+    ``plant.data.time`` instead means a frozen fit (sampling stopped, e.g. the
+    ball just caught) drifts its reported landing later by exactly the ticks
+    elapsed since the last sample -- measured on a self-toss LAUNCH throw
+    whose catch closed ~25 ms before the fit's own predicted crossing: the
+    drift accumulated over the ~94 ms to ``executor.CAUGHT_WINDOW_S``
+    finalisation reported a flight 96 ms too long (0.9548 s against a true
+    ~0.859 s, ``python sim/skills_gate.py --learn --policy B --seeds 0``).
+    This test freezes the estimator (no new samples) and asserts the
+    predicted landing instant does not move when "now" advances alone.
+    """
+    g = np.asarray(bal.G_VEC_MMS2, dtype=float)
+    est = BallisticEstimator(g)
+    t_ref = 5.0
+    z0, vz0 = 1200.0, -3000.0          # mm, mm/s -- descending toward CATCH_CUP_Z_MM
+    for dt in (-0.010, -0.005, 0.0):   # three clean samples ending AT t_ref
+        t = t_ref + dt
+        z = z0 + vz0 * dt + 0.5 * float(g[2]) * dt ** 2
+        est.add(t, np.array([0.0, 0.0, z]))
+    ball_state = {0: dict(estimator=est, last_obs_t=t_ref, airborne=True)}
+
+    class _Data:
+        time = t_ref
+
+    class _FakePlant:
+        data = _Data()
+
+    plant = _FakePlant()
+    tracker = sg._make_tracker(plant, ball_state)
+
+    landing_now = tracker(0)
+    assert landing_now is not None
+
+    # "Now" advances 0.5 s with NO new sample added (sampling has stopped,
+    # e.g. the ball was just caught) -- the frozen fit's predicted landing
+    # instant must not move with it.
+    plant.data.time = t_ref + 0.5
+    landing_later = tracker(0)
+    assert landing_later.t_land_abs_s == pytest.approx(
+        landing_now.t_land_abs_s, abs=1e-9)
+
+
+def test_tracker_returns_none_while_the_ball_is_not_airborne():
+    """R3-n (2026-09-13, ``/tmp/probe_handoff_capture_v3.py`` /
+    ``/tmp/probe_handoff_flip_v3.py``): once a ball is caught, sampling stops
+    but the estimator still holds >= 3 samples from the flight that just
+    ended, so an un-gated tracker keeps handing out that FROZEN landing —
+    aimed at a flight already over. ``_make_tracker`` must return ``None``
+    while ``bstate['airborne']`` is False, matching the robot tracker (whose
+    per-ball correlation the executor gates at ``_valid_tracked_landing``)."""
+    g = np.asarray(bal.G_VEC_MMS2, dtype=float)
+    est = BallisticEstimator(g)
+    t_ref = 5.0
+    z0, vz0 = 1200.0, -3000.0
+    for dt in (-0.010, -0.005, 0.0):
+        t = t_ref + dt
+        z = z0 + vz0 * dt + 0.5 * float(g[2]) * dt ** 2
+        est.add(t, np.array([0.0, 0.0, z]))
+    ball_state = {0: dict(estimator=est, last_obs_t=t_ref, airborne=True)}
+
+    class _Data:
+        time = t_ref
+
+    class _FakePlant:
+        data = _Data()
+
+    plant = _FakePlant()
+    tracker = sg._make_tracker(plant, ball_state)
+
+    assert tracker(0) is not None       # airborne, 3 samples -- has a landing
+
+    ball_state[0]['airborne'] = False   # caught -- sampling stops
+    assert tracker(0) is None
+
+
+# ── R3: the self-toss learner run (plan § 4 R3 "Sim validation") ───────────
+#
+# A SMALL smoke run only -- one seed, a handful of throws -- exercising the
+# real learner + Memory + AdmissibleBox + observer/observations chain
+# end-to-end without paying for the gate's own 25-throw x 5-seed sweep (that
+# one runs manually via ``python sim/skills_gate.py --learn``, same split as
+# the columns gate above).  MEASURED (2026-09-13, this test, seed 0, 5
+# throws): every attempt in this schedule produces exactly ONE throw before
+# ending ``NO_LANDING`` (the single-ball self-toss's catch-with-throw
+# dispatches ``HANDOFF_LEAD_S`` = 0.2 s BEFORE its own ball's release, so the
+# tracker never has 3 samples yet -- a real gap in ``compile_self_toss`` for
+# a schedule with no second ball to buy the slack columns has; not this
+# unit's file to fix, see the logbook entry) -- so ``max_attempts`` is sized
+# for one throw per attempt, not for a multi-throw chain landing in one.
+
+def test_a_small_self_toss_learner_run_enters_the_band():
+    """From a cold memory, a handful of self-toss throws land the error
+    inside the R3 band (20 mm xy / 20 ms flight) well within the 5-throw
+    entry criterion -- the same learner, memory, admissible-box and
+    observer/observations wiring the full 25-throw x 5-seed gate uses,
+    exercised cheaply."""
+    cfg = SelfTossGateConfig(target_throws=5, band_entry_throws=5,
+                             max_attempts=15)
+    gate = SkillsGate(cfg)
+    res = gate.run_self_toss_seed(0, policy='A')
+    assert res['n_throws_collected'] == 5
+    assert res['drops'] == 0
+    assert res['throws_to_band_xy'] is not None
+    assert res['throws_to_band_xy'] <= cfg.band_entry_throws
+    assert res['throws_to_band_flight'] is not None
+    assert res['throws_to_band_flight'] <= cfg.band_entry_throws
+    last = res['throws'][-1]
+    assert last['err_xy_mm'] <= cfg.xy_band_mm
+    assert last['err_flight_ms'] <= cfg.flight_band_s * 1000.0
+    assert all(t['caught'] for t in res['throws'])

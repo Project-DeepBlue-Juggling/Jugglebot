@@ -278,7 +278,7 @@
 ### `rigid_body_poses`
 
 - **publishers:** `mocap_node`
-- **subscribers:** `ball_butler_node`, `reload_coordinator_node`
+- **subscribers:** `ball_butler_node`, `reload_coordinator_node`, `skill_node`
 - **type:** `jugglebot_interfaces.msg.RigidBodyPoses`
 
 ### `ring_diag`
@@ -307,7 +307,7 @@
 
 ### `throw_announcements`
 
-- **publishers:** `ball_butler_node`, `reload_coordinator_node`
+- **publishers:** `ball_butler_node`, `reload_coordinator_node`, `skill_node`
 - **subscribers:** `ball_tracker_node`, `catch_coordinator_node`, `catch_correlation_node`, `reload_coordinator_node`
 - **type:** `jugglebot_interfaces.msg.ThrowAnnouncement`
 - **contract:**
@@ -315,18 +315,6 @@
     reload_coordinator_node publishes the toss self-announcement (thrower_name
     = target_id = this robot) so the correlation -> catch path closes
     unchanged (ros_ws/docs/ball_possession_contract.md).
-
-### `toss/calibration_status`
-
-- **publishers:** `reload_coordinator_node`
-- **subscribers:** _none_
-- **type:** `std_msgs.msg.String`
-
-### `toss/record`
-
-- **publishers:** `reload_coordinator_node`
-- **subscribers:** _none_
-- **type:** `std_msgs.msg.String`
 
 ### `trajectory/commanded_pose`
 
@@ -337,7 +325,7 @@
 ### `trajectory/commanded_position`
 
 - **publishers:** `trajectory_node`
-- **subscribers:** `reload_coordinator_node`
+- **subscribers:** `reload_coordinator_node`, `skill_node`
 - **type:** `geometry_msgs.msg.Point`
 
 ### `trajectory/diagnostics`
@@ -349,7 +337,7 @@
 ### `trajectory/status`
 
 - **publishers:** `trajectory_node`
-- **subscribers:** `reload_coordinator_node`
+- **subscribers:** `reload_coordinator_node`, `skill_node`
 - **type:** `jugglebot_interfaces.msg.TrajectoryStatus`
 
 ### `trajectory/target_feedback`
@@ -492,7 +480,19 @@
 - **clients:** `orchestrator_node`
 - **type:** `std_srvs.srv.SetBool`
 
+### `skills/check`
+
+- **servers:** `skill_node`
+- **clients:** _none_
+- **type:** `std_srvs.srv.Trigger`
+
 ### `skills/start_columns`
+
+- **servers:** `skill_node`
+- **clients:** _none_
+- **type:** `std_srvs.srv.Trigger`
+
+### `skills/start_self_toss`
 
 - **servers:** `skill_node`
 - **clients:** _none_
@@ -510,12 +510,6 @@
 - **clients:** `catch_coordinator_node`, `reload_coordinator_node`
 - **type:** `jugglebot_interfaces.srv.SetFloat`
 
-### `toss/reload_calibration`
-
-- **servers:** `reload_coordinator_node`
-- **clients:** _none_
-- **type:** `std_srvs.srv.Trigger`
-
 ### `trajectory/arm_catch`
 
 - **servers:** `trajectory_node`
@@ -531,7 +525,7 @@
 ### `trajectory/go_to_pose`
 
 - **servers:** `trajectory_node`
-- **clients:** `reload_coordinator_node`
+- **clients:** `reload_coordinator_node`, `skill_node`
 - **type:** `jugglebot_interfaces.srv.GoToPose`
 
 ### `trajectory/hold`
@@ -645,12 +639,11 @@ broken wire cannot hide among them.
 - `ring_diag` — topic with no subscribers
 - `set_hand_state` — service with no clients
 - `set_motor_vel_curr_limits` — topic with no publishers
+- `skills/check` — service with no clients
 - `skills/start_columns` — service with no clients
+- `skills/start_self_toss` — service with no clients
 - `skills/stop` — service with no clients
 - `smooth_move_hand` — service with no servers
-- `toss/calibration_status` — topic with no subscribers
-- `toss/record` — topic with no subscribers
-- `toss/reload_calibration` — service with no clients
 - `trajectory/diagnostics` — topic with no subscribers
 - `trajectory/reload_tilt_map` — service with no clients
 - `trajectory/set_limits` — service with no clients

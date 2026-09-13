@@ -79,6 +79,31 @@ LEG_ACC_MMPS2 = 5000.0
 LEG_JERK_MMPS3 = 200_000.0
 HAND_ACC_RPS2 = 3500.0
 
+# ── R3's single-site grid (owner decision, plan § "R3", 2026-09-13) ─────────
+# THROW(P1) from rest -> CATCH(P1) carrying the next same-site throw
+# (dwell 0.30 s) -> ... -> CATCH -> REST, one ball, apex 0.9 m, site
+# P1 = columns_sites(100)[0]. The box must be swept WIDER than the columns
+# grid: flight commands spanning at least 0.75-0.95 s (apex 0.9 m -> 0.8570 s
+# at the centre) and landing offsets out to +-40 mm -- the edges are set by
+# what the real gate passes with margin, not by this grid's resolution.
+SINGLE_SITE_FLIGHTS_S = (0.75, 0.80, 0.8570, 0.90, 0.95)
+SINGLE_SITE_OFFSETS_MM = (-40.0, -30.0, -20.0, -10.0, 0.0, 10.0, 20.0, 30.0, 40.0)
+#: R3's session leg-jerk limit (plan § "R3": 150 000 mm/s^3 -- "the most the
+#: machine has flown"). Leg vel/acc and hand acc are unchanged from R2.
+SINGLE_SITE_LEG_JERK_MMPS3 = 150_000.0
+#: The window the ONE seeding throw (from rest -> the release the chain's
+#: first ``_chained_catch_cell`` catches) plans over -- ``schedule.Pattern``'s
+#: own ``launch_s`` default (0.4 s, "the sweep's measured minimum feasible
+#: launch period" -- plan § 0), NOT the 0.30 s dwell: a same-site chain's
+#: STEADY windows carry the dwell between a catch and the throw it carries,
+#: but the FIRST throw of an attempt is always from rest and gets the longer
+#: launch window (``schedule.compile_columns``'s ``i == 0`` case). Measured
+#: 2026-09-13: seeding at ``dwell_s`` instead refused the 0.90/0.95 s flights
+#: at the THROW cell itself (``HAND_LIMIT_ACC``) before any offset was even
+#: tried -- an artefact of the scaffold throw's own window, not a fact about
+#: the STEADY chain this box actually certifies.
+SINGLE_SITE_LAUNCH_S = 0.4
+
 _DEFAULT_OUT = os.path.join(_ROOT, 'config', 'generated', 'admissible_box.yaml')
 
 
@@ -106,10 +131,20 @@ def _within_margin(report, limits: TrajectoryLimits) -> bool:
 
 
 def _throw_cell(from_site, to_site, flight_s: float, dwell_s: float,
-                limits: TrajectoryLimits, geom, cfg):
+                limits: TrajectoryLimits, geom, cfg,
+                offset_mm: Tuple[float, float] = (0.0, 0.0)):
     """Plan + gate the ONE throw a (site pair, flight) cell shares across
     every landing offset. Returns ``(ok, code, release_seed, takeoff_vel_mm_s)``
     -- the last two are ``None`` on a refusal.
+
+    ``offset_mm`` shifts the ballistic TARGET only (``site_mm``, the physical
+    launch site, is unchanged) -- the same convention ``_catch_cell`` /
+    ``_chained_catch_cell`` use for their ``landing_mm``. Defaults to (0, 0):
+    the shared per-flight seeding call this cell was written for never aims
+    off-site. R3-h2 (2026-09-13) reuses it WITH an offset to gate the LAUNCH
+    THROW from rest that R3's cold-start attempt (THROW from rest -> CATCH ->
+    REST) actually carries the learner's command on -- the chained STEADY
+    catch this module also certifies does not cover that segment.
 
     Two solves of the SAME LAUNCH, deliberately: ``sg.plan_segment`` (the
     production entry point, extended with the SETTLE tail per I-PLAN-7 --
@@ -122,8 +157,10 @@ def _throw_cell(from_site, to_site, flight_s: float, dwell_s: float,
     Planning is bit-for-bit deterministic, so the two solves agree.
     """
     seed = _rest_state(from_site.rest_site_mm())
+    target_mm = to_site.throw_site_mm() + np.array(
+        [float(offset_mm[0]), float(offset_mm[1]), 0.0])
     terminal = sg.ThrowTerminal(site_mm=to_site.throw_site_mm(),
-                                target_mm=to_site.throw_site_mm(),
+                                target_mm=target_mm,
                                 flight_s=flight_s, t_release_s=dwell_s)
     try:
         segment = sg.plan_segment(sg.THROW, seed, terminal, cfg, limits, geom)
@@ -160,6 +197,70 @@ def _catch_cell(to_site, release_seed, takeoff_vel_mm_s, flight_s: float,
     if not _within_margin(segment.meta.report, limits):
         return False, 'MARGIN'
     return True, 'OK'
+
+
+def _apex_from_flight_s(flight_s: float) -> float:
+    """Inverse of ``schedule.flight_s``: the apex (m) a flight time (s) is
+    consistent with -- ``t_f = 2*sqrt(2*apex/g)`` run backward. Lets a box
+    swept over an explicit flight grid (:data:`SINGLE_SITE_FLIGHTS_S` -- no
+    apex was chosen) still carry a physically meaningful ``apex_band_m``: the
+    SAME g<->t relationship the columns box uses, not a new one."""
+    return bal.GRAVITY_MMS2 / 1000.0 * (float(flight_s) / 2.0) ** 2 / 2.0
+
+
+def _chained_catch_cell(site, release_seed, takeoff_vel_mm_s, flight_s: float,
+                        dwell_s: float, offset_mm: Tuple[float, float],
+                        limits: TrajectoryLimits, geom, cfg):
+    """Plan + gate the CATCH-with-``then_throw`` (STEADY window) R3's chained
+    single-site cycle actually flies, for one landing/launch offset (mm,
+    relative to ``site``, applied to BOTH the incoming catch and the throw it
+    carries -- the steady-state command).  Returns ``(ok, code,
+    next_release_seed, next_takeoff_vel_mm_s)`` -- the last two ``None`` on a
+    refusal.
+
+    This is the cell the existing two-site ``_catch_cell`` does NOT measure: a
+    standalone LANDING (no ``then_throw``) is a different, and for this case
+    infeasible, segment shape (plan § 2.2's R2 amendment / ``schedule.
+    ThenThrow``'s docstring: the split LANDING-then-THROW form refuses at every
+    cell of a 480-cell grid; the whole-window STEADY form is what
+    ``segments.plan_segment`` actually builds for a same-site
+    ``CatchTerminal.then_throw`` and what R3's schedule dispatches).
+
+    Two solves of the SAME window, deliberately, for the same reason
+    :func:`_throw_cell` gives: ``sg.plan_segment`` (the production entry
+    point) for the admitted / margin verdict, and a raw
+    ``unified_cycle.plan_steady`` call for the release-terminal seed the NEXT
+    catch in the chain needs (``plan_segment``'s returned ``Segment`` has
+    already been extended past release by the SETTLE tail, so its ``meta`` can
+    no longer satisfy ``release_state_from_meta``'s "release is the window's
+    terminal knot" check). Planning is bit-for-bit deterministic, so the two
+    solves agree.
+    """
+    landing_mm = site.catch_site_mm() + np.array(
+        [float(offset_mm[0]), float(offset_mm[1]), 0.0])
+    v_arrival = bal.arrival_velocity(takeoff_vel_mm_s, flight_s)
+    t_land = float(flight_s)
+    t_release = t_land + float(dwell_s)
+    then_throw = sg.ThrowAfterCatch(t_release_s=t_release,
+                                    site_mm=site.throw_site_mm(),
+                                    target_mm=landing_mm, flight_s=float(flight_s))
+    terminal = sg.CatchTerminal(landing_mm=landing_mm, landing_vel_mm_s=v_arrival,
+                                t_land_s=t_land, rest_site_mm=site.rest_site_mm(),
+                                then_throw=then_throw)
+    try:
+        segment = sg.plan_segment(sg.CATCH, release_seed, terminal, cfg, limits, geom)
+    except uc.CycleInfeasible as exc:
+        return False, exc.code, None, None
+    if not _within_margin(segment.meta.report, limits):
+        return False, 'MARGIN', None, None
+    next_takeoff = segment.takeoff_vel_mm_s
+    goals_a = uc.CycleGoals(period_s=t_release, throw_site_mm=then_throw.site_mm,
+                            throw_target_mm=then_throw.target_mm,
+                            flight_s=then_throw.flight_s, catch_site_mm=landing_mm,
+                            catch_vel_mm_s=v_arrival, catch_t_s=t_land)
+    plan_a, meta_a = uc.plan_steady(goals_a, release_seed, limits, geom)
+    next_release_seed = uc.release_state_from_meta(meta_a, plan_a)
+    return True, 'OK', next_release_seed, next_takeoff
 
 
 def _max_rectangle(xs: Sequence[float], ys: Sequence[float], pass_fn
@@ -235,10 +336,13 @@ def _flight_band_and_rect(flights: Sequence[float], offsets_mm: Sequence[float],
 
 
 def sweep(*, apexes_m: Sequence[float] = APEXES_M,
+          flights_s: Optional[Sequence[float]] = None,
           offsets_mm: Sequence[float] = OFFSETS_MM, dwell_s: float = DWELL_S,
           separation_mm: float = SEPARATION_MM, leg_vel: float = LEG_VEL_MMPS,
           leg_acc: float = LEG_ACC_MMPS2, leg_jerk: float = LEG_JERK_MMPS3,
           hand_acc: float = HAND_ACC_RPS2, center_apex_m: Optional[float] = None,
+          center_flight_s: Optional[float] = None,
+          launch_s: float = SINGLE_SITE_LAUNCH_S,
           site_pairs: Optional[List[Tuple['st.Site', 'st.Site']]] = None,
           log=print) -> Tuple[List['ab.AdmissibleBox'], List[Dict]]:
     """Run the grid; returns ``(boxes, rows)`` -- ``rows`` for the table.
@@ -248,6 +352,26 @@ def sweep(*, apexes_m: Sequence[float] = APEXES_M,
     this to keep its grid to one pair. ``center_apex_m`` is the owner's
     operating apex the flight band is grown outward from (see
     :func:`_flight_band_and_rect`); defaults to the median of ``apexes_m``.
+
+    ``flights_s``, given directly in seconds, bypasses the apex map
+    (``sc.flight_s``) entirely -- for R3's single-site grid, whose flight span
+    (owner decision: at least 0.75-0.95 s) was not chosen by picking apexes.
+    ``apex_band_m`` is still recorded on the resulting box via the INVERSE of
+    ``sc.flight_s`` (:func:`_apex_from_flight_s`) -- the same physical
+    relationship run backward, not a new one. ``center_flight_s`` is then the
+    flight the admitted band grows outward from; defaults to the median of
+    ``flights_s``.
+
+    A ``site_pairs`` entry with ``from_site.name == to_site.name`` is a
+    SINGLE-site pair (R3): its one seeding THROW (from rest) plans over
+    ``launch_s``, not ``dwell_s`` -- the same rest-to-release window
+    ``schedule.compile_columns``'s own first throw uses -- and is then judged
+    by the CHAINED cell (:func:`_chained_catch_cell`, the STEADY
+    catch-with-``then_throw`` R3's schedule actually dispatches, then one more
+    :func:`_catch_cell` on the throw it carries) rather than the two-site
+    cell's standalone LANDING catch. The cross-site TRANSIT shortcut
+    (``NO_TRANSIT``) does not apply -- a self-toss at one site returns after
+    the FULL flight time, not a shortened cross-site transit.
     """
     geom = StewartGeometry()
     limits = _limits(leg_vel, leg_acc, leg_jerk, hand_acc)
@@ -255,11 +379,18 @@ def sweep(*, apexes_m: Sequence[float] = APEXES_M,
     if site_pairs is None:
         site0, site1 = st.columns_sites(separation_mm)
         site_pairs = [(site0, site1), (site1, site0)]
-    flights = [sc.flight_s(a) for a in apexes_m]
-    apex_band = (min(float(a) for a in apexes_m), max(float(a) for a in apexes_m))
-    center_apex = (float(center_apex_m) if center_apex_m is not None
-                  else sorted(float(a) for a in apexes_m)[len(apexes_m) // 2])
-    center_flight = sc.flight_s(center_apex)
+    if flights_s is not None:
+        flights = [float(t) for t in flights_s]
+        apex_band = (_apex_from_flight_s(min(flights)),
+                    _apex_from_flight_s(max(flights)))
+        center_flight = (float(center_flight_s) if center_flight_s is not None
+                         else sorted(flights)[len(flights) // 2])
+    else:
+        flights = [sc.flight_s(a) for a in apexes_m]
+        apex_band = (min(float(a) for a in apexes_m), max(float(a) for a in apexes_m))
+        center_apex = (float(center_apex_m) if center_apex_m is not None
+                      else sorted(float(a) for a in apexes_m)[len(apexes_m) // 2])
+        center_flight = sc.flight_s(center_apex)
     ghash = ab.gate_hash()
     swept_at = _dt.date.today().isoformat()
     limits_dict = dict(leg_vel_mmps=float(leg_vel), leg_acc_mmps2=float(leg_acc),
@@ -268,20 +399,25 @@ def sweep(*, apexes_m: Sequence[float] = APEXES_M,
     boxes: List[ab.AdmissibleBox] = []
     rows: List[Dict] = []
     for from_site, to_site in site_pairs:
+        same_site = (from_site.name == to_site.name)
         pass_grid = {}   # (flight, dx, dy) -> bool
         for T in flights:
-            tau = sc.transit_s(T, dwell_s)
             t0 = time.perf_counter()
             ok, code, release_seed, takeoff = _throw_cell(
-                from_site, to_site, T, dwell_s, limits, geom, cfg)
+                from_site, to_site, T, (launch_s if same_site else dwell_s),
+                limits, geom, cfg)
             row = dict(site_pair=(from_site.name, to_site.name),
                       flight_s=round(T, 4), offset_mm=None, ok=ok,
                       code=('THROW:%s' % code) if not ok else 'THROW:OK',
                       wall_s=round(time.perf_counter() - t0, 3))
             rows.append(row)
             log(row)
-            if ok and not tau > 2.0 * float(hw.JB_TRAJ_KNOT_DT_S):
-                ok, code = False, 'NO_TRANSIT'
+            if same_site:
+                tau = T
+            else:
+                tau = sc.transit_s(T, dwell_s)
+                if ok and not tau > 2.0 * float(hw.JB_TRAJ_KNOT_DT_S):
+                    ok, code = False, 'NO_TRANSIT'
             if not ok:
                 for dx in offsets_mm:
                     for dy in offsets_mm:
@@ -290,8 +426,29 @@ def sweep(*, apexes_m: Sequence[float] = APEXES_M,
             for dx in offsets_mm:
                 for dy in offsets_mm:
                     t1 = time.perf_counter()
-                    cok, ccode = _catch_cell(to_site, release_seed, takeoff, T,
-                                             tau, (dx, dy), limits, geom, cfg)
+                    if same_site:
+                        # The box is the intersection of two gates: the
+                        # chained STEADY catch (below, R3-c) and the launch
+                        # THROW from rest that a cold-start attempt (THROW
+                        # from rest -> CATCH -> REST) actually carries the
+                        # command on (R3-h2, 2026-09-13) -- neither covers the
+                        # other's segment shape.
+                        lok, lcode, _seed, _takeoff = _throw_cell(
+                            from_site, to_site, T, launch_s, limits, geom, cfg,
+                            offset_mm=(dx, dy))
+                        cok, ccode, next_seed, next_takeoff = _chained_catch_cell(
+                            to_site, release_seed, takeoff, T, dwell_s, (dx, dy),
+                            limits, geom, cfg)
+                        if cok:
+                            fok, fcode = _catch_cell(to_site, next_seed, next_takeoff,
+                                                     T, T, (dx, dy), limits, geom, cfg)
+                            if not fok:
+                                cok, ccode = False, 'CHAIN_CATCH:%s' % fcode
+                        if not lok:
+                            cok, ccode = False, 'LAUNCH:%s' % lcode
+                    else:
+                        cok, ccode = _catch_cell(to_site, release_seed, takeoff, T,
+                                                 tau, (dx, dy), limits, geom, cfg)
                     pass_grid[(T, dx, dy)] = cok
                     rows.append(dict(site_pair=(from_site.name, to_site.name),
                                      flight_s=round(T, 4), offset_mm=(dx, dy),
@@ -339,13 +496,66 @@ def to_markdown(boxes: List['ab.AdmissibleBox']) -> str:
     return '\n'.join(out)
 
 
+def _xy(s: str) -> Tuple[float, float]:
+    x, y = s.split(',')
+    return (float(x), float(y))
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--out', default=_DEFAULT_OUT)
     ap.add_argument('--quiet', action='store_true')
+    ap.add_argument('--site-pairs', choices=('columns', 'single', 'both'),
+                    default='columns',
+                    help='which boxes to sweep: the two columns orderings '
+                         '(default, unchanged), the R3 single-site self-toss '
+                         'pair, or both -- one YAML needs ONE limits set '
+                         '(ab.dump enforces it), so "both" sweeps every box '
+                         'under the SAME --leg-*/--hand-acc')
+    ap.add_argument('--apex', type=float, nargs='+', default=list(APEXES_M),
+                    help='columns apex grid (m), mapped through sc.flight_s')
+    ap.add_argument('--offsets-mm', type=float, nargs='+', default=list(OFFSETS_MM),
+                    help='columns landing-offset grid per axis (mm)')
+    ap.add_argument('--flights-s', type=float, nargs='+',
+                    default=list(SINGLE_SITE_FLIGHTS_S),
+                    help='single-site flight-time grid (s), direct -- bypasses '
+                         'the apex map (owner decision: at least 0.75-0.95 s)')
+    ap.add_argument('--single-offsets-mm', type=float, nargs='+',
+                    default=list(SINGLE_SITE_OFFSETS_MM),
+                    help='single-site landing-offset grid per axis (mm)')
+    ap.add_argument('--single-site-xy', type=_xy, default=None,
+                    help='"x,y" mm of the single site; default P1 = '
+                         'sites.columns_sites(--separation-mm)[0]')
+    ap.add_argument('--dwell-s', type=float, default=DWELL_S)
+    ap.add_argument('--separation-mm', type=float, default=SEPARATION_MM)
+    ap.add_argument('--leg-vel', type=float, default=LEG_VEL_MMPS)
+    ap.add_argument('--leg-acc', type=float, default=LEG_ACC_MMPS2)
+    ap.add_argument('--leg-jerk', type=float, default=LEG_JERK_MMPS3)
+    ap.add_argument('--hand-acc', type=float, default=HAND_ACC_RPS2)
     args = ap.parse_args(argv)
+    log = (lambda r: None) if args.quiet else print
+
     t_start = time.perf_counter()
-    boxes, _rows = sweep(log=(lambda r: None) if args.quiet else print)
+    boxes: List['ab.AdmissibleBox'] = []
+    if args.site_pairs in ('columns', 'both'):
+        cboxes, _rows = sweep(
+            apexes_m=args.apex, offsets_mm=args.offsets_mm, dwell_s=args.dwell_s,
+            separation_mm=args.separation_mm, leg_vel=args.leg_vel,
+            leg_acc=args.leg_acc, leg_jerk=args.leg_jerk, hand_acc=args.hand_acc,
+            log=log)
+        boxes.extend(cboxes)
+    if args.site_pairs in ('single', 'both'):
+        if args.single_site_xy is not None:
+            sx, sy = args.single_site_xy
+            site = st.Site('P1', np.array([sx, sy, st.CATCH_CUP_Z_MM]))
+        else:
+            site = st.columns_sites(args.separation_mm)[0]
+        sboxes, _rows = sweep(
+            flights_s=args.flights_s, offsets_mm=args.single_offsets_mm,
+            dwell_s=args.dwell_s, leg_vel=args.leg_vel, leg_acc=args.leg_acc,
+            leg_jerk=args.leg_jerk, hand_acc=args.hand_acc,
+            site_pairs=[(site, site)], log=log)
+        boxes.extend(sboxes)
     wall_s = time.perf_counter() - t_start
     md = to_markdown(boxes)
     print(md)

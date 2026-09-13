@@ -78,10 +78,13 @@ for _p in (_HERE, _REPO, os.path.join(_REPO, 'ros_ws', 'src', 'jugglebot')):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-import toss_record_miner as miner                                # noqa: E402
-from jugglebot.toss_record import edges                          # noqa: E402
+from jugglebot.ball_possession import edges                      # noqa: E402
 
-DEFAULT_ROOT = miner.DEFAULT_ROOT
+#: Was ``miner.DEFAULT_ROOT`` — ``toss_record_miner.py`` (the reader this
+#: probe's bag-driven ``analyse_bag``/``read_drive`` still call) was deleted
+#: 2026-09-13 (R3-f1, the learning-stack deletion). The self-check below does
+#: not read a bag, so it stays usable; ``--bag`` no longer does.
+DEFAULT_ROOT = os.path.expanduser('~/Desktop/rosbags')
 OUT_DIR = os.path.join(_REPO, 'temp', 'probes')
 
 # ── Windows (every one MEASURED or derived, never guessed) ────────────────────
@@ -574,6 +577,9 @@ def read_drive(path, log_minus_stamp_s):
     this file would be measured at an instant the sensor edges are not at, and
     nothing would say so.
     """
+    import toss_record_miner as miner   # deleted 2026-09-13, R3-f1 — read_drive
+                                         # (--bag only) is unreachable until this
+                                         # probe is rebuilt without the miner.
     from mcap.reader import make_reader
     from mcap_ros2.decoder import DecoderFactory
     files = sorted(glob.glob(os.path.join(path, '*.mcap')))
@@ -1175,6 +1181,9 @@ def self_check() -> int:
 
 def analyse_bag(path, robot='jugglebot'):
     """-> ``(result, note)``. Raises ``IOError`` on an unreadable bag."""
+    import toss_record_miner as miner   # deleted 2026-09-13, R3-f1 — this
+                                         # (--bag only) is unreachable until
+                                         # this probe is rebuilt without it.
     data = miner.read_bag(path, sensor_only=True)
     rows = miner.mine_bag(data, robot=robot)
     rises_raw, _falls_raw = edges(data.hand, debounced=False)

@@ -386,3 +386,150 @@ def test_every_catch_after_a_release_carries_the_handoff_lead_on_a_ros_clock(col
     assert all(s.lead_s == sc.HANDOFF_LEAD_S for s in catches)
     assert sum(1 for s in got.skills if s.kind == sc.THROW) == 1
     assert sum(1 for s in catches if s.then_throw is not None) == 19
+
+
+# ---------------------------------------------------------------------------
+# compile_self_toss (R3 — plan § 0 / R3 build note)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def site():
+    return st.columns_sites(100.0)[0]
+
+
+def _self_pattern(site, n_throws=3, **kw):
+    base = dict(site=site, apex_m=APEX_M, dwell_s=DWELL_S, n_throws=n_throws)
+    base.update(kw)
+    return sc.SelfTossPattern(**base)
+
+
+def test_compile_self_toss_orders_events_correctly_for_three_throws(site):
+    """THROW from rest, two carried catch-with-throws, a standalone CATCH,
+    then REST — the opening REST is skill 0."""
+    schedule = sc.compile_self_toss(_self_pattern(site, n_throws=3), t0_abs_s=10.0)
+    assert [(s.kind, s.ball_id, s.then_throw is not None)
+            for s in schedule.skills] == [
+        (sc.REST, 0, False),
+        (sc.THROW, 0, False),
+        (sc.CATCH, 0, True),
+        (sc.CATCH, 0, True),
+        (sc.CATCH, 0, False),
+        (sc.REST, 0, False),
+    ]
+    assert all(s.site is site for s in schedule.skills)
+
+
+def test_compile_self_toss_skill_count_is_n_throws_plus_three(site):
+    """Unlike columns (whose last throw's landing is deliberately unscheduled),
+    a self-toss has nowhere else for the ball to go: every throw is caught, so
+    the skill count is ``n_throws + 3`` (opening REST, launch THROW,
+    ``n_throws - 1`` folded catch-with-throws, the standalone last CATCH, the
+    closing REST) rather than columns' ``n_throws + 2``."""
+    for n in (1, 2, 5):
+        schedule = sc.compile_self_toss(_self_pattern(site, n_throws=n),
+                                        t0_abs_s=0.0)
+        throws = [s for s in schedule.skills if s.kind == sc.THROW]
+        catches = [s for s in schedule.skills if s.kind == sc.CATCH]
+        carried = [c for c in catches if c.then_throw is not None]
+        rests = [s for s in schedule.skills if s.kind == sc.REST]
+        assert len(schedule.skills) == n + 3
+        assert len(throws) == 1
+        assert len(catches) == n
+        assert len(carried) == n - 1
+        assert len(rests) == 2
+
+
+def test_compile_self_toss_opening_rest_makes_throw_0_a_fresh_origin(site):
+    """The whole reason for the opening REST's placement: by the time THROW 0
+    dispatches, ``install_segment``'s fresh test must already read true."""
+    schedule = sc.compile_self_toss(_self_pattern(site, n_throws=2), t0_abs_s=10.0)
+    rest0 = schedule.skills[0]
+    throw0 = [s for s in schedule.skills if s.kind == sc.THROW][0]
+    assert rest0.kind == sc.REST
+    assert rest0.window_s == pytest.approx(sc.FLOOR_LIFT_S)
+    assert rest0.t_abs_s == pytest.approx(10.0 + sc.FLOOR_LIFT_S)
+    assert throw0.t_abs_s == pytest.approx(rest0.t_abs_s + throw0.window_s)
+    # install_segment's fresh test, evaluated at THROW 0's own dispatch instant
+    # and lead: (t_now + lead) >= record.end_s, where record.end_s IS the
+    # opening REST's own event instant (a REST plan carries no extra tail).
+    assert throw0.dispatch_s() + throw0.lead_s >= rest0.t_abs_s - 1e-9
+
+
+def test_compile_self_toss_throw_period_is_the_whole_flight_plus_dwell(site):
+    """One ball, one site: the throw-to-throw period is the WHOLE cycle
+    (``t_f + dwell_s``), not columns' half-cycle ``beat_s`` (that halving is a
+    property of two sites alternating — plan § 2.4 — and does not apply to a
+    single hand cycling one ball)."""
+    schedule = sc.compile_self_toss(_self_pattern(site, n_throws=4), t0_abs_s=0.0)
+    throw_events = [s.t_abs_s for s in schedule.skills if s.kind == sc.THROW]
+    carried_releases = [s.then_throw.t_release_abs_s for s in schedule.skills
+                        if s.then_throw is not None]
+    all_releases = sorted(throw_events + carried_releases)
+    assert len(all_releases) == 4
+    diffs = np.diff(all_releases)
+    assert np.allclose(diffs, schedule.beat_s)
+    assert schedule.beat_s == pytest.approx(schedule.flight_s + DWELL_S)
+    # transit_s is filled HONESTLY for one ball: there is no "other hand" for
+    # its columns meaning to describe, so it is the CATCH window (the full
+    # flight), not a half-cycle.
+    assert schedule.transit_s == pytest.approx(schedule.flight_s)
+
+
+def test_compile_self_toss_catch_window_is_the_full_flight(site):
+    schedule = sc.compile_self_toss(_self_pattern(site, n_throws=3), t0_abs_s=0.0)
+    for c in [s for s in schedule.skills if s.kind == sc.CATCH]:
+        assert c.window_s == pytest.approx(schedule.flight_s)
+
+
+def test_compile_self_toss_every_catch_carries_the_handoff_lead(site):
+    schedule = sc.compile_self_toss(_self_pattern(site, n_throws=4), t0_abs_s=10.0)
+    catches = [s for s in schedule.skills if s.kind == sc.CATCH]
+    rests = [s for s in schedule.skills if s.kind == sc.REST]
+    throw0 = [s for s in schedule.skills if s.kind == sc.THROW][0]
+    assert catches and all(c.lead_s == sc.HANDOFF_LEAD_S for c in catches)
+    assert throw0.lead_s == sc.LEAD_S
+    assert all(r.lead_s == sc.LEAD_S for r in rests)
+
+
+def test_compile_self_toss_the_launch_throw_uses_launch_s_and_carried_the_dwell(site):
+    schedule = sc.compile_self_toss(_self_pattern(site, n_throws=3, launch_s=0.4),
+                                    t0_abs_s=0.0)
+    throws = [s for s in schedule.skills if s.kind == sc.THROW]
+    assert len(throws) == 1
+    assert throws[0].window_s == pytest.approx(0.4)
+    for sk in schedule.skills:
+        if sk.then_throw is not None:
+            assert (sk.then_throw.t_release_abs_s - sk.t_abs_s
+                    ) == pytest.approx(DWELL_S)
+
+
+def test_compile_self_toss_rejects_a_non_positive_n_throws(site):
+    with pytest.raises(ValueError, match='n_throws'):
+        sc.compile_self_toss(_self_pattern(site, n_throws=0), t0_abs_s=0.0)
+
+
+def test_compile_self_toss_dispatch_is_monotone_non_decreasing(site):
+    schedule = sc.compile_self_toss(_self_pattern(site, n_throws=5), t0_abs_s=3.0)
+    dispatches = [s.dispatch_s() for s in schedule.skills]
+    assert dispatches == sorted(dispatches)
+
+
+@pytest.mark.parametrize('t0', _T0S)
+def test_compile_self_toss_is_the_same_at_any_wall_clock_magnitude(t0, site):
+    """The same ROS-epoch hazard ``compile_columns`` hit (2026-09-13): every
+    fold/lead/monotonicity check inside ``compile_self_toss`` compares instants
+    to 1e-9 s, so this must hold at a ROS wall-clock magnitude too."""
+    ref = sc.compile_self_toss(_self_pattern(site, n_throws=6), t0_abs_s=0.0)
+    got = sc.compile_self_toss(_self_pattern(site, n_throws=6), t0_abs_s=t0)
+    assert len(got.skills) == len(ref.skills) == 9
+    tol = max(1e-9, 4.0 * abs(t0) * 2.220446049250313e-16)
+    for r, g in zip(ref.skills, got.skills):
+        assert (g.kind, g.ball_id, g.site.name) == (r.kind, r.ball_id, r.site.name)
+        assert g.lead_s == r.lead_s
+        assert g.window_s == r.window_s
+        assert abs(g.t_abs_s - (r.t_abs_s + t0)) <= tol
+        assert (g.then_throw is None) == (r.then_throw is None)
+        if r.then_throw is not None:
+            assert abs(g.then_throw.t_release_abs_s
+                       - (r.then_throw.t_release_abs_s + t0)) <= tol
+    assert got.t0_abs_s == t0

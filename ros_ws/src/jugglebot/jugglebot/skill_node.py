@@ -11,29 +11,80 @@ is schedule bookkeeping and dispatch — a thin wrapper over a pure-Python
 policy, exactly as the other ROS nodes in this package are.
 
 ``skills/start_columns`` compiles the columns pattern (plan § 1.2) from ROS
-parameters and starts an attempt; ``skills/stop`` ends the current attempt —
-every segment is rest-terminal (``segments``' invariant), so ending an attempt
-needs no motion command of its own: whatever is streaming already ends at rest.
+parameters and starts an attempt; ``skills/start_self_toss`` (R3) is the
+single-site self-toss — it pre-levels the platform (``_prelevel``, the same
+gravity-level rest ``reload_coordinator_node._unified_prelevel`` brings the
+session-start floor lift to) before compiling its schedule, and wires the R3
+precondition ladder (``executor.Observations`` / ``precondition_refusals``)
+through ``_observations``/``_ball_evidence``; ``skills/stop`` ends the
+current attempt — every segment is rest-terminal (``segments``' invariant),
+so ending an attempt needs no motion command of its own: whatever is
+streaming already ends at rest, and a released ball's outcome keeps
+finalising after the attempt ends. ``skills/check`` reports every current
+ladder refusal plus the box/limits status in one call, for a dress-rehearsal
+runsheet.
 """
 
 from __future__ import annotations
 
+import csv
+import math
+import os
+import threading
 import time
+from types import SimpleNamespace
 
 import numpy as np
 
 import rclpy
+from rclpy.callback_groups import (MutuallyExclusiveCallbackGroup,
+                                   ReentrantCallbackGroup)
+from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 
+from geometry_msgs.msg import Point, Pose, Quaternion, Vector3
 from std_srvs.srv import Trigger
-from jugglebot_interfaces.msg import BallStateArray, HandTelemetryMessage
-from jugglebot_interfaces.srv import InstallSegment
+from jugglebot_interfaces.msg import (BallStateArray, HandTelemetryMessage,
+                                      RigidBodyPoses, ThrowAnnouncement,
+                                      TrajectoryStatus)
+from jugglebot_interfaces.srv import GoToPose, InstallSegment
 
+import jugglebot.hardware_config as hw
 from jugglebot import ball_possession
-from jugglebot.motion.skills.executor import InstallResult, Landing, SkillExecutor
-from jugglebot.motion.skills.schedule import Pattern, compile_columns
+from jugglebot.motion.skills import admissible as adm
+from jugglebot.motion.skills import learner as lr
+from jugglebot.motion.skills.executor import (InstallResult, Landing,
+                                              Observations, SkillExecutor,
+                                              precondition_refusals)
+from jugglebot.motion.skills.memory import Memory, memory_path
+from jugglebot.motion.skills.schedule import (Pattern, SelfTossPattern,
+                                              compile_columns, compile_self_toss)
 from jugglebot.motion.skills.segments import CATCH, REST, THROW
-from jugglebot.motion.skills.sites import columns_sites
+from jugglebot.motion.skills.sites import CATCH_CUP_Z_MM, Site, columns_sites
+from jugglebot.motion.tilt_map import find_repo_root
+from jugglebot.motion.trajectory import ballistics_bc
+from jugglebot.ball_possession import latch_announced_ball
+
+# BallStatus enum (BallState.msg): 0 = TO_BE_THROWN, 1 = IN_FLIGHT, 2 = CAUGHT.
+# Restated (not imported from reload_coordinator_node — that module is ROS/FSM
+# code and this one must stay independent of it) — see brief_common.md's
+# "restate, don't import from the FSM node" instruction (R3-e2 item 6, same
+# discipline applied here for item 3's correlation).
+_BALL_STATUS_IN_FLIGHT = 1
+# TrackingConfidence enum (BallState.msg): 1 = CONFIRMED (mocap-matched —
+# physical airborne evidence; IN_FLIGHT status alone is time-based and proves
+# nothing).
+_BALL_TRACKING_CONFIRMED = 1
+
+# The repo root, found the same way reload_coordinator_node._REPO_ROOT is
+# (tilt_map.find_repo_root's MARKER walk, never a fixed __file__ depth — see
+# that function's docstring for why a fixed walk breaks under colcon install).
+# None for a genuinely detached deployment, where the admissible box / memory
+# paths below cannot be resolved and skills/start_self_toss refuses.
+_REPO_ROOT = find_repo_root(__file__)
+_ADMISSIBLE_BOX_PATH = (os.path.join(_REPO_ROOT, 'config', 'generated',
+                                     'admissible_box.yaml')
+                       if _REPO_ROOT else None)
 
 # ``sk_seg`` kind string -> ``InstallSegment.Request`` wire constant. Built from
 # the module's own KIND_* names below (not restated as bare ints), same
@@ -55,6 +106,29 @@ _SERVICE_WAIT_S = 2.0
 #: become the reason a dispatch lands late.
 _TICK_HZ = 40.0
 
+#: `_svc_stop`'s bound on waiting for `_tick_lock` (finding 12, R3 audit,
+#: 2026-09-13): a tick mid-`_dispatch` can itself be blocked inside
+#: `_wait_future` on the install client, up to `_SERVICE_WAIT_S`, and
+#: `_prelevel`'s own `go_to_pose` round trip carries the same bound again if
+#: a tick is what triggered it -- `2 * _SERVICE_WAIT_S` covers both, plus one
+#: tick period so an ordinary (non-blocked) in-progress tick has time to
+#: finish on its own cadence.
+_STOP_LOCK_WAIT_S = 2.0 * _SERVICE_WAIT_S + 1.0 / _TICK_HZ
+
+#: The R3 precondition ladder's freshness windows (item 6, plan carried R3
+#: note / `executor.Observations`). Restated, not imported, from
+#: `reload_coordinator_node` — that module is FSM/ROS code slated for deletion
+#: at R4 (module docstring), and these are the SAME physical facts (a topic's
+#: publish rate / the sensor's own noise), not a second definition of them.
+#: Restates `reload_coordinator_node._MOCAP_STALE_S`.
+_MOCAP_STALE_S = 0.5
+#: Restates `reload_coordinator_node._TRAJ_STATUS_STALE_S` (the topic
+#: itself is 5 Hz; also the freshness window for `trajectory/commanded_position`,
+#: same as `_live_commanded_position` there).
+_TRAJ_STATUS_STALE_S = 1.0
+#: Restates `reload_coordinator_node._HAND_STATE_STALE_S`.
+_HAND_STATE_STALE_S = 0.5
+
 #: `skills/start_columns` parameter defaults — the owner's R2 operating point
 #: (brief_common.md § 0, 2026-09-12): apex 0.9 m, separation 100 mm, dwell
 #: 0.30 s.
@@ -68,37 +142,150 @@ _DEFAULT_N_THROWS = 4
 #: not a physical constant of the pattern.
 _START_LEAD_S = 1.0
 
+#: `skills/start_self_toss` parameter defaults (R3 owner decisions,
+#: brief_common.md § "Owner decisions"): one site, P1 = (-50, 0) mm — the SAME
+#: point `columns_sites(100.0)`'s P1 names, so a box swept for site pair
+#: ('P1', 'P1') at that xy (`config/generated/admissible_box.yaml`) matches
+#: without a second geometry definition.
+_DEFAULT_SITE_X_MM = -50.0
+_DEFAULT_SITE_Y_MM = 0.0
+_DEFAULT_SITE_NAME = 'P1'
+#: A fresh id starts a cold memory (plan § 2.2) — `memory_path`'s own contract.
+_DEFAULT_PLANT_ID = 'jugglebot'
+
 
 class SkillNode(Node):
     """Schedule-driven skill dispatch shell (plan § 2.4)."""
 
-    def __init__(self):
+    def __init__(self, robot_name: str = _DEFAULT_PLANT_ID):
         super().__init__('skill_node')
 
+        self._robot_name = robot_name
         self._balls = {}  # ball_id (int) -> Landing, the tracker `SkillExecutor` reads
-        # The hand's live possession evidence (ball_possession.EVIDENCE_*),
-        # unused at R2 beyond logging — see the module docstring and
-        # brief_D2_ros_shell.md § C.
+        # The latest `/balls` message's raw ball records (id/status/destination/
+        # tracking), for ball-identity correlation (`_advance_correlation`) —
+        # `_balls` above is the LANDING projection `latch_announced_ball` cannot
+        # use (it needs `status`/`destination`/`tracking`, not just a landing).
+        self._raw_balls = []
+        # SCHEDULE ball_id -> correlation state (`announced_id`/`untagged`/
+        # `preexisting`) — see `_maybe_announce` / `_advance_correlation` /
+        # `_tracker`. `/balls` ids are the TRACKER's own; the schedule/executor
+        # speak in schedule ball ids, and this is the one translation.
+        self._correlation = {}
+        # SCHEDULE ball_id -> the absolute wall-clock instant of the last
+        # release announced for it — `_maybe_announce`'s de-duplication key
+        # for a CATCH re-send (see that method's docstring).
+        self._announced_release_s = {}
+        # The hand's live possession evidence (ball_possession.EVIDENCE_*) —
+        # the R3 ladder's `ball_evidence` field (item 6) AND outcome capture's
+        # `observer` read (`_ball_evidence`), one value, one writer
+        # (`_on_hand_telemetry`).
         self._possession_evidence = ball_possession.EVIDENCE_UNKNOWN
         self._executor = None  # a live SkillExecutor, or None between attempts
+        # The latest `trajectory/status`, for `skills/start_self_toss`'s
+        # limits check (`_svc_start_self_toss`) and the R3 ladder's
+        # `levelled`/`in_trajectory_mode` fields (`_observations`, item 6).
+        self._traj_status = TrajectoryStatus()
+        # Perf-clock arrival stamps for the R3 ladder's freshness checks (item
+        # 6) — one stamp per cached message, same monotonic domain
+        # (`time.perf_counter()`) `reload_coordinator_node` uses for the
+        # identical purpose (that module's `_*_mono` caches).
+        self._traj_status_mono = 0.0
+        self._mocap_mono = 0.0
+        self._hand_telemetry_mono = 0.0
+        self._hand_pos_meas = 0.0
+        self._hand_pos_cmd = 0.0
+        # `trajectory/commanded_position` — the pre-level move's own xy/z
+        # (item 7; `_prelevel`), restated from
+        # `reload_coordinator_node._on_commanded_position` /
+        # `_live_commanded_position`'s cache-plus-freshness shape.
+        self._commanded_pos_mm = None
+        self._commanded_pos_mono = 0.0
 
         self.declare_parameter('apex_m', _DEFAULT_APEX_M)
         self.declare_parameter('separation_mm', _DEFAULT_SEPARATION_MM)
         self.declare_parameter('dwell_s', _DEFAULT_DWELL_S)
         self.declare_parameter('n_throws', _DEFAULT_N_THROWS)
+        self.declare_parameter('site_x_mm', _DEFAULT_SITE_X_MM)
+        self.declare_parameter('site_y_mm', _DEFAULT_SITE_Y_MM)
+        self.declare_parameter('plant_id', _DEFAULT_PLANT_ID)
+
+        # ── the install client + tick timer share ONE reentrant group ──────
+        # Fixed 2026-09-13 (found by reading, never exercised live): `main`
+        # used to run a plain single-threaded `rclpy.spin`, and `_installer`
+        # blocks the tick callback in `_wait_future`'s poll loop waiting for
+        # the SAME node's client response — a response only the executor can
+        # ever deliver. Under a single-threaded spin nothing is left to
+        # process that response while the tick callback is busy-waiting for
+        # it: every install times out, forever. Mirrors
+        # `reload_coordinator_node`'s `_hold_cbg` / `trajectory_node`'s
+        # `_hold_cbg` narrow-reentrant pattern — here the WHOLE install path
+        # (client + timer) moves together, because the tick callback and the
+        # client response are the two halves of the one blocking call that
+        # needed unblocking, not two independent throughput concerns.
+        self._cbgroup = ReentrantCallbackGroup()
+        # Guards against the tick RE-ENTERING itself: a `ReentrantCallbackGroup`
+        # lets the executor run the SAME timer callback again on another
+        # thread while the first invocation is still blocked inside
+        # `_wait_future` — that would start a second dispatch on top of one
+        # already in flight. `acquire(blocking=False)` in `_on_tick` makes a
+        # still-busy tick a no-op tick rather than a second install.
+        self._tick_lock = threading.Lock()
 
         self._install_cli = self.create_client(
-            InstallSegment, 'trajectory/install_segment')
+            InstallSegment, 'trajectory/install_segment',
+            callback_group=self._cbgroup)
+        # Shares the SAME reentrant group as the install client (item 7,
+        # `_prelevel`): `_svc_start_self_toss` runs on the node's default
+        # (non-reentrant) service group and blocks in `_wait_future` waiting
+        # for THIS client's response, exactly the shape `__init__`'s comment
+        # above documents for the install client — a different group is what
+        # lets the MultiThreadedExecutor process that response concurrently.
+        self._go_to_pose_cli = self.create_client(
+            GoToPose, 'trajectory/go_to_pose', callback_group=self._cbgroup)
 
-        self.create_subscription(BallStateArray, 'balls', self._on_balls, 10)
+        self._announce_pub = self.create_publisher(
+            ThrowAnnouncement, 'throw_announcements', 10)
+
+        # ── every subscription gets its OWN callback group (finding 4, R3
+        # audit, 2026-09-13) ────────────────────────────────────────────────
+        # All subscriptions used to share the node's default MutuallyExclusive
+        # group. `_svc_start_self_toss` blocks in `_prelevel` (a `go_to_pose`
+        # round trip whose wait can run past a second) on the SERVICE's own
+        # default group, and rclpy Foxy's executor yields ready timers before
+        # subscriptions -- so while `_prelevel` blocks, no subscription
+        # callback runs, and the first `_on_tick` after it can read a
+        # `trajectory/status` sample older than `_TRAJ_STATUS_STALE_S`,
+        # aborting `ABORTED_MODE_CHANGED` before the opening REST even
+        # dispatches. A dedicated non-default group per subscription (plus the
+        # `MultiThreadedExecutor(num_threads=3)` in `main` below) lets them run
+        # concurrently with a blocked service call instead of queuing behind
+        # it.
+        self._sub_cbgroup = MutuallyExclusiveCallbackGroup()
+        self.create_subscription(BallStateArray, 'balls', self._on_balls, 10,
+                                 callback_group=self._sub_cbgroup)
         self.create_subscription(
-            HandTelemetryMessage, 'hand_telemetry', self._on_hand_telemetry, 10)
+            HandTelemetryMessage, 'hand_telemetry', self._on_hand_telemetry, 10,
+            callback_group=self._sub_cbgroup)
+        self.create_subscription(
+            TrajectoryStatus, 'trajectory/status', self._on_traj_status, 10,
+            callback_group=self._sub_cbgroup)
+        self.create_subscription(
+            RigidBodyPoses, 'rigid_body_poses', self._on_mocap, 10,
+            callback_group=self._sub_cbgroup)
+        self.create_subscription(
+            Point, 'trajectory/commanded_position',
+            self._on_commanded_position, 10, callback_group=self._sub_cbgroup)
 
         self.create_service(Trigger, 'skills/start_columns',
                             self._svc_start_columns)
+        self.create_service(Trigger, 'skills/start_self_toss',
+                            self._svc_start_self_toss)
         self.create_service(Trigger, 'skills/stop', self._svc_stop)
+        self.create_service(Trigger, 'skills/check', self._svc_check)
 
-        self.create_timer(1.0 / _TICK_HZ, self._on_tick)
+        self.create_timer(1.0 / _TICK_HZ, self._on_tick,
+                          callback_group=self._cbgroup)
 
         self.get_logger().info('skill_node ready')
 
@@ -108,6 +295,7 @@ class SkillNode(Node):
         """Cache ``/balls`` landings, keyed by ball id, for the executor's
         tracker callable. Mirrors `catch_coordinator_node._msg_to_ball`'s
         field reads."""
+        self._raw_balls = list(msg.balls)
         for b in msg.balls:
             t_land = float(b.time_at_land.sec) + float(b.time_at_land.nanosec) * 1e-9
             self._balls[int(b.id)] = Landing(
@@ -116,18 +304,99 @@ class SkillNode(Node):
                 vel_mm_s=np.array([b.landing_velocity.x, b.landing_velocity.y,
                                    b.landing_velocity.z], dtype=float),
                 t_land_abs_s=t_land)
+        self._advance_correlation()
+
+    def _advance_correlation(self) -> None:
+        """Refine every live schedule-ball-id -> tracker-id correlation
+        against the latest ``/balls`` snapshot (item 3, plan § 2.7).
+
+        ``jugglebot.ball_possession.latch_announced_ball`` owns the RULE
+        (shared with `reload_coordinator_node`'s FSM latch, plan discipline:
+        one rule, not a lookalike copy); this method owns the per-schedule-
+        ball-id state the rule threads through."""
+        for corr in self._correlation.values():
+            announced_id, untagged = latch_announced_ball(
+                self._raw_balls, robot_name=self._robot_name,
+                announced_id=corr['announced_id'],
+                preexisting_ids=corr['preexisting'],
+                untagged_latch=corr['untagged'],
+                in_flight_status=_BALL_STATUS_IN_FLIGHT)
+            if announced_id is not None:
+                corr['announced_id'] = announced_id
+                corr['untagged'] = untagged
 
     def _tracker(self, ball_id: int):
-        return self._balls.get(int(ball_id))
+        """The executor's tracker callable — keyed by SCHEDULE ball id.
+
+        `/balls` ids are the tracker's OWN (item 3): a schedule ball id must
+        first be correlated to one via `_maybe_announce` / `_advance_correlation`
+        before a landing can be returned, and only once the tracker's own
+        confidence for that id is CONFIRMED (a raw IN_FLIGHT status alone is
+        time-based and proves nothing — see `_BALL_TRACKING_CONFIRMED`)."""
+        corr = self._correlation.get(int(ball_id))
+        if corr is None or corr['announced_id'] is None:
+            return None
+        tracker_id = int(corr['announced_id'])
+        ball = next((b for b in self._raw_balls if int(b.id) == tracker_id), None)
+        if ball is None or int(ball.tracking) != _BALL_TRACKING_CONFIRMED:
+            return None
+        return self._balls.get(tracker_id)
+
+    def _on_traj_status(self, msg) -> None:
+        """Cache the latest `trajectory/status` for `_svc_start_self_toss`'s
+        limits check and the R3 ladder's `levelled`/`in_trajectory_mode`
+        fields (`_observations`, item 6). Perf-stamped like every other
+        freshness-gated cache in this node."""
+        self._traj_status = msg
+        self._traj_status_mono = time.perf_counter()
+
+    def _on_mocap(self, msg) -> None:
+        """`rigid_body_poses` freshness only — the R3 ladder's `mocap_fresh`
+        (item 6) asks whether the mocap graph is publishing AT ALL, not
+        anything about a specific body's pose (the skill stack has no
+        per-body cross-check at R3, unlike `reload_coordinator_node`'s toss
+        positioning check)."""
+        self._mocap_mono = time.perf_counter()
+
+    def _on_commanded_position(self, msg) -> None:
+        """`trajectory/commanded_position`: the platform's live commanded
+        (x, y, z) in STOW mm — restated from
+        `reload_coordinator_node._on_commanded_position` (same NaN-drop
+        discipline: a poisoned pose must never seed a pre-level move).
+        `_prelevel` (item 7) is the only reader."""
+        p = (float(msg.x), float(msg.y), float(msg.z))
+        if not all(math.isfinite(v) for v in p):
+            self.get_logger().error(
+                'trajectory/commanded_position %r is non-finite — DISCARDED'
+                % (p,))
+            return
+        self._commanded_pos_mm = p
+        self._commanded_pos_mono = time.perf_counter()
+
+    def _live_commanded_position(self, now: float):
+        """The live commanded platform (x, y, z) mm, or ``None`` when absent
+        or stale — fail-closed, same shape as
+        `reload_coordinator_node._live_commanded_position`."""
+        pos = self._commanded_pos_mm
+        mono = self._commanded_pos_mono
+        if pos is None or mono <= 0.0 or (now - mono) >= _TRAJ_STATUS_STALE_S:
+            return None
+        return pos
 
     def _on_hand_telemetry(self, msg):
-        """Track the hand's live possession evidence — the same tri-state
-        `reload_coordinator_node._on_hand_telemetry` feeds into
-        `ball_possession.HandBallSensorSource`. Unused at R2 beyond logging: no
-        skill decision reads it yet (the learner and the retention verdict
-        arrive later in the plan), so this stores the LIVE bit directly rather
-        than standing up the source's full arrival/retention state machine for
-        a value nothing consumes."""
+        """Track the hand's live position and possession evidence — the same
+        tri-state `reload_coordinator_node._on_hand_telemetry` feeds into
+        `ball_possession.HandBallSensorSource`. `pos_meas`/`pos_cmd` and the
+        perf stamp feed the R3 ladder's `hand_fresh`/`hand_at_seed`
+        (`_observations`, item 6); `_possession_evidence` is unused at R2
+        beyond logging but IS the R3 ladder's `ball_evidence` and outcome
+        capture's `observer` read (`_ball_evidence`) — one value, two
+        readers, stored directly here rather than standing up the source's
+        full arrival/retention state machine for a value nothing else
+        consumes."""
+        self._hand_pos_meas = float(getattr(msg, 'pos_meas', 0.0))
+        self._hand_pos_cmd = float(getattr(msg, 'pos_cmd', 0.0))
+        self._hand_telemetry_mono = time.perf_counter()
         valid = bool(getattr(msg, 'ball_held_valid', False))
         raw = getattr(msg, 'ball_held_raw', None)
         if not valid or raw is None:
@@ -136,6 +405,49 @@ class SkillNode(Node):
             self._possession_evidence = (
                 ball_possession.EVIDENCE_SEATED if bool(raw)
                 else ball_possession.EVIDENCE_EMPTY)
+
+    def _observations(self, t_abs_s: float) -> Observations:
+        """The R3 precondition ladder's snapshot of the whole machine at one
+        instant (item 6; fields per `executor.Observations`'s docstring).
+
+        Staleness is judged on THIS node's own `time.perf_counter()` — the
+        SAME monotonic domain every cache above is stamped in — never on
+        ``t_abs_s`` (the schedule's own wall clock, read off
+        `self.get_clock()` in `_on_tick`/`_svc_check`, which may carry a
+        CAN-offset the perf-clock caches know nothing about).
+
+        Fed to BOTH the executor's ``observations=`` and, via
+        `_ball_evidence`, its ``observer=`` — one builder, no second copy of
+        the evidence read.
+        """
+        now = time.perf_counter()
+        mocap_fresh = (self._mocap_mono > 0.0
+                       and (now - self._mocap_mono) < _MOCAP_STALE_S)
+        status_fresh = (self._traj_status_mono > 0.0
+                        and (now - self._traj_status_mono)
+                        < _TRAJ_STATUS_STALE_S)
+        levelled = bool(status_fresh
+                        and self._traj_status.gravity_correction_loaded)
+        in_trajectory_mode = bool(status_fresh
+                                  and self._traj_status.mode == 'TRAJECTORY')
+        hand_fresh = (self._hand_telemetry_mono > 0.0
+                     and (now - self._hand_telemetry_mono)
+                     < _HAND_STATE_STALE_S)
+        hand_at_seed = hand_fresh and (
+            abs(self._hand_pos_meas - self._hand_pos_cmd)
+            <= float(hw.HOMING_HAND_PARK_BAND_REV))
+        return Observations(
+            mocap_fresh=mocap_fresh, hand_fresh=hand_fresh,
+            hand_at_seed=hand_at_seed, levelled=levelled,
+            ball_evidence=self._possession_evidence,
+            in_trajectory_mode=in_trajectory_mode)
+
+    def _ball_evidence(self, ball_id: int, t_abs_s: float) -> str:
+        """The executor's ``observer`` callable (item 6): the SAME live
+        possession evidence `_observations` builds — one hand sensor,
+        ``ball_id`` unused (there is exactly one cup, and `Observations` has
+        no per-ball field either)."""
+        return self._observations(t_abs_s).ball_evidence
 
     # ── the installer callable SkillExecutor dispatches through ────────────
 
@@ -173,13 +485,103 @@ class SkillNode(Node):
                 False, 'SERVICE_TIMEOUT',
                 'trajectory/install_segment did not answer in %.1f s'
                 % (_SERVICE_WAIT_S,), 0.0)
-        return InstallResult(bool(resp.accepted), str(resp.code),
-                             str(resp.message),
-                             float(resp.plan_wall_ms) / 1e3,
-                             splice_k=int(resp.splice_k),
-                             t0_s=float(resp.t0_mono),
-                             event_t_s=float(resp.t_event_mono),
-                             seeded_post_release=bool(resp.seeded_post_release))
+        result = InstallResult(bool(resp.accepted), str(resp.code),
+                               str(resp.message),
+                               float(resp.plan_wall_ms) / 1e3,
+                               splice_k=int(resp.splice_k),
+                               t0_s=float(resp.t0_mono),
+                               event_t_s=float(resp.t_event_mono),
+                               seeded_post_release=bool(resp.seeded_post_release))
+        self._maybe_announce(kind, terminal, result,
+                             float(resp.t_release_mono), ball_id=ball_id)
+        return result
+
+    @staticmethod
+    def _release_physics(kind, terminal):
+        """``(release_abs_s, site_mm, target_mm, flight_s)`` for the ball
+        ``terminal`` releases, or ``None`` when it releases nothing (a plain
+        CATCH, a REST). ``release_abs_s`` is the ABSOLUTE wall-clock instant
+        the terminal itself carries (the same field `_installer` puts on the
+        wire), used by `_maybe_announce` to de-duplicate a CATCH re-send."""
+        if kind == THROW:
+            return (float(terminal.t_release_s),
+                   np.asarray(terminal.site_mm, dtype=float),
+                   np.asarray(terminal.target_mm, dtype=float),
+                   float(terminal.flight_s))
+        if kind == CATCH and terminal.then_throw is not None:
+            tt = terminal.then_throw
+            return (float(tt.t_release_s), np.asarray(tt.site_mm, dtype=float),
+                   np.asarray(tt.target_mm, dtype=float), float(tt.flight_s))
+        return None
+
+    def _maybe_announce(self, kind, terminal, result: InstallResult,
+                        t_release_mono: float, *, ball_id) -> None:
+        """Publish a ``ThrowAnnouncement`` for every ACCEPTED install that
+        releases a ball — a THROW, or a CATCH carrying ``then_throw`` (item 3).
+
+        Same six physics fields, same units/frame, same ``thrower_name ==
+        target_id == robot_name`` discipline as `reload_coordinator_node.
+        _announce_unified`, so every downstream consumer (tracker correlation,
+        possession, suppression) is unaffected by which node announced it. The
+        release VELOCITY is not on the wire (`InstallSegment.srv` carries the
+        commanded site/target/flight, not a realized velocity — there is no
+        trim to un-trim here, unlike the FSM path), so it is recomputed from
+        exactly those three fields via `ballistics_bc.launch_velocity` — the
+        same boundary condition the segment itself was planned to satisfy.
+
+        Resets this schedule ball id's correlation to a FRESH, unlatched state
+        (mirrors `reload_coordinator_node`'s `_announced_ball_id` reset at
+        each new throw): the physical ball a self-toss re-throws gets a NEW
+        tracker id each flight (the previous one's track ends at its catch),
+        so a stale `announced_id` from the ball's PREVIOUS flight must not
+        leak into this one's correlation.
+
+        **Exactly once per throw** (never on a CATCH re-send of the same
+        carried release): a re-send calls this too, with a terminal whose
+        carried `then_throw` is bit-identical to the one already announced
+        (the executor's own `_u_cache` caches it by skill index — see
+        `SkillExecutor._catch_terminal`'s docstring), so de-duplicating on the
+        release's own absolute wall-clock instant is exact, not a heuristic.
+        """
+        physics = self._release_physics(kind, terminal)
+        if physics is None or not result.accepted or t_release_mono <= 0.0:
+            return
+        release_abs_s, site_mm, target_mm, flight_s_ = physics
+        if self._announced_release_s.get(int(ball_id)) == release_abs_s:
+            return
+        self._announced_release_s[int(ball_id)] = release_abs_s
+        vel = ballistics_bc.launch_velocity(site_mm, target_mm, flight_s_)
+        lv = ballistics_bc.arrival_velocity(vel, flight_s_)
+        now_perf = time.perf_counter()
+        now_ros = self.get_clock().now()
+        delta_s = float(t_release_mono) - now_perf
+        ann = ThrowAnnouncement()
+        ann.header.stamp = now_ros.to_msg()
+        ann.header.frame_id = 'world'
+        ann.thrower_name = self._robot_name
+        ann.target_id = self._robot_name
+        ann.initial_position = Point(x=float(site_mm[0]), y=float(site_mm[1]),
+                                     z=float(site_mm[2]))
+        ann.initial_velocity = Vector3(x=float(vel[0]), y=float(vel[1]),
+                                       z=float(vel[2]))
+        ann.landing_position = Point(x=float(target_mm[0]), y=float(target_mm[1]),
+                                     z=float(target_mm[2]))
+        ann.landing_velocity = Vector3(x=float(lv[0]), y=float(lv[1]),
+                                       z=float(lv[2]))
+        ann.predicted_tof_sec = flight_s_
+        ann.throw_time = (now_ros + rclpy.time.Duration(seconds=delta_s)).to_msg()
+        ann.landing_time = (now_ros + rclpy.time.Duration(
+            seconds=delta_s + flight_s_)).to_msg()
+        # Ids already IN_FLIGHT at THIS release are phantoms, never our new
+        # ball — the same hardening pass `latch_announced_ball` documents.
+        preexisting = {int(b.id) for b in self._raw_balls
+                      if int(b.status) == _BALL_STATUS_IN_FLIGHT}
+        self._correlation[int(ball_id)] = {
+            'announced_id': None, 'untagged': False, 'preexisting': preexisting}
+        self._announce_pub.publish(ann)
+        self.get_logger().info(
+            'skill announced ball %d: release in %.3f s, |v| %.3f m/s'
+            % (int(ball_id), delta_s, float(np.linalg.norm(vel)) / 1000.0))
 
     def _wait_future(self, future, timeout_s: float = _SERVICE_WAIT_S):
         """Poll a service future to completion. Mirrors
@@ -199,22 +601,51 @@ class SkillNode(Node):
     # ── the tick ────────────────────────────────────────────────────────
 
     def _on_tick(self):
-        if self._executor is None:
+        """Dispatch everything due, then retire a finished executor.
+
+        Guarded against RE-ENTRY: the install client and this timer share one
+        `ReentrantCallbackGroup` (see `__init__`) so the client's response can
+        be processed WHILE a tick is blocked in `_installer._wait_future` —
+        the fix for the single-threaded deadlock this replaces. But that same
+        reentrancy would let the executor run a SECOND tick on another thread
+        while the first is still mid-install; `acquire(blocking=False)` makes
+        an already-busy tick a no-op instead of a second dispatch.
+
+        Retires on `executor.done`, not `attempt_ended` — a released ball's
+        outcome can still be finalising after the attempt ends (plan § 2.7),
+        and `done` is exactly `attempt_ended` when nothing is listening for
+        outcomes (`on_experience is None`), so this is a strict generalisation
+        of the R2 behaviour, not a change to it.
+        """
+        if not self._tick_lock.acquire(blocking=False):
             return
-        now = self.get_clock().now().nanoseconds / 1e9
-        for line in self._executor.tick(now):
-            self.get_logger().info(line)
-        if self._executor.attempt_ended:
-            self._executor = None
+        try:
+            if self._executor is None:
+                return
+            now = self.get_clock().now().nanoseconds / 1e9
+            for line in self._executor.tick(now):
+                self.get_logger().info(line)
+            if self._executor.done:
+                self._executor = None
+        finally:
+            self._tick_lock.release()
 
     # ── attempt lifecycle ──────────────────────────────────────────────
 
+    def _refuse_if_running(self, response):
+        """``response`` refused with the shared "already running" message, or
+        ``None`` when no attempt is running (the caller may proceed)."""
+        if self._executor is None:
+            return None
+        response.success = False
+        response.message = ('an attempt is already running — call '
+                            'skills/stop first')
+        return response
+
     def _svc_start_columns(self, request, response):
-        if self._executor is not None:
-            response.success = False
-            response.message = ('an attempt is already running — call '
-                                'skills/stop first')
-            return response
+        refused = self._refuse_if_running(response)
+        if refused is not None:
+            return refused
         apex_m = float(self.get_parameter('apex_m').value)
         separation_mm = float(self.get_parameter('separation_mm').value)
         dwell_s = float(self.get_parameter('dwell_s').value)
@@ -238,17 +669,298 @@ class SkillNode(Node):
         self.get_logger().info(response.message)
         return response
 
+    def _live_limits(self):
+        """The session limits `admissible.check_limits` judges the loaded box
+        against: LEG limits off the latest `trajectory/status`
+        (`leg_*_limit_*`), falling back to the YAML module default on a field
+        that reads 0.0 — the message's own documented "field absent" sentinel
+        (`TrajectoryStatus.msg`) — and the HAND accel cap, which the status
+        message does not carry at all (no live topic publishes a session hand
+        cap), so it is the static session default (`hw.
+        JB_TRAJ_HAND_ACC_LIMIT_RPS2`) rather than a value read off the wire."""
+        status = self._traj_status
+        leg_vel = float(status.leg_vel_limit_mmps) or float(hw.JB_TRAJ_LEG_VEL_LIMIT_MMPS)
+        leg_acc = float(status.leg_acc_limit_mmps2) or float(hw.JB_TRAJ_LEG_ACC_LIMIT_MMPS2)
+        leg_jerk = float(status.leg_jerk_limit_mmps3) or float(hw.JB_TRAJ_LEG_JERK_LIMIT_MMPS3)
+        return SimpleNamespace(leg_vel_mmps=leg_vel, leg_acc_mmps2=leg_acc,
+                               leg_jerk_mmps3=leg_jerk,
+                               hand_acc_limit_rps2=float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2))
+
+    def _prelevel(self) -> str:
+        """Bring the platform to gravity-level rest before compiling the R3
+        self-toss schedule (item 7; plan R3 carried note, ``''`` on success
+        else why not). Mirrors
+        `reload_coordinator_node._unified_prelevel`: the
+        session-start schedule is planned from the seed the machine is
+        ALREADY holding, and an un-prelevelled seed refuses ``LIMIT_JERK`` at
+        174 772 mm/s^3 against the 150 000 session limit (prelevelled: 19 773
+        — probe 2026-09-13). A pure attitude move: the live commanded xy/z is
+        held exactly, only the attitude comes to gravity-level (the E3
+        ingest, `trajectory_node`'s `GoToPose` handler, turns an IDENTITY
+        intent into the gravity-level counter-tilt — C-LEVEL-1)."""
+        if not self._go_to_pose_cli.wait_for_service(timeout_sec=_SERVICE_WAIT_S):
+            return 'trajectory/go_to_pose unavailable'
+        live = self._live_commanded_position(time.perf_counter())
+        if live is None:
+            return ('trajectory/commanded_position is stale — the pre-level '
+                    'move has no xy/z to hold and one that guessed a pose '
+                    'would move the platform')
+        req = GoToPose.Request()
+        req.pose = Pose(position=Point(x=float(live[0]), y=float(live[1]),
+                                       z=float(live[2])),
+                        orientation=Quaternion())
+        req.duration_s = 0.0
+        resp = self._wait_future(self._go_to_pose_cli.call_async(req))
+        if resp is None:
+            return ('trajectory/go_to_pose did not answer in %.1f s'
+                    % (_SERVICE_WAIT_S,))
+        if not bool(resp.accepted):
+            return ('the pre-level move was refused: %s (%s)'
+                    % (resp.code, resp.message))
+        self.get_logger().info(
+            'platform pre-levelled to gravity-level over %.2f s before the '
+            'self-toss schedule (identity intent, E3-corrected)'
+            % (float(resp.planned_duration_s),))
+        # go_to_pose returns at plan INSTALL; wait out the planned move so the
+        # schedule compiles from a STOPPED, gravity-level machine.
+        end_at = time.perf_counter() + float(resp.planned_duration_s)
+        while rclpy.ok() and time.perf_counter() < end_at:
+            time.sleep(min(1.0 / _TICK_HZ, max(0.0, end_at - time.perf_counter())))
+        return ''
+
+    def _svc_start_self_toss(self, request, response):
+        """``skills/start_self_toss``: the R3 single-site self-toss (plan §
+        0 / R3 build note) — THROW(P1) -> CATCH(P1) -> ... -> REST, the
+        learner on, memory at ``temp/learn/<plant_id>/memory.csv``.
+
+        Order: refuse fast on anything that does not need the platform to
+        move (running / repo root / pattern / box+limits) BEFORE
+        `_prelevel` (item 7) actually moves it, then compile the schedule —
+        pre-levelling is the last check before compilation, per the R3
+        carried note ("a healthy launch rests the cup at the gravity-level
+        counter-tilt").
+        """
+        refused = self._refuse_if_running(response)
+        if refused is not None:
+            return refused
+        if _ADMISSIBLE_BOX_PATH is None:
+            response.success = False
+            response.message = ('cannot find the repo root from %r — the '
+                                'admissible box / memory paths cannot be '
+                                'resolved' % (__file__,))
+            self.get_logger().error(response.message)
+            return response
+
+        site_x_mm = float(self.get_parameter('site_x_mm').value)
+        site_y_mm = float(self.get_parameter('site_y_mm').value)
+        apex_m = float(self.get_parameter('apex_m').value)
+        dwell_s = float(self.get_parameter('dwell_s').value)
+        n_throws = int(self.get_parameter('n_throws').value)
+        plant_id = str(self.get_parameter('plant_id').value)
+
+        # Finding 5, R3 audit (2026-09-13): `skills/start_self_toss` always
+        # names the site 'P1', but the ADMISSIBLE BOX it was swept against
+        # (`_ADMISSIBLE_BOX_PATH`, keyed on `(site.name, target.name)`) carries
+        # no site xy at all — a box swept at the default (-50, 0) mm site is
+        # silently applied to whatever xy the caller passes. Refuse before
+        # anything else (no platform motion, no box/pattern object built yet)
+        # rather than let an off-box site reach `_command_u`'s clip with the
+        # wrong box.
+        if (abs(site_x_mm - _DEFAULT_SITE_X_MM) > 1e-9
+                or abs(site_y_mm - _DEFAULT_SITE_Y_MM) > 1e-9):
+            response.success = False
+            response.message = (
+                'self-toss refused: site (%.3f, %.3f) mm != the swept '
+                'default (%.3f, %.3f) mm — the admissible box carries no '
+                'site xy, so a box swept at the default site cannot be '
+                'applied here' % (site_x_mm, site_y_mm, _DEFAULT_SITE_X_MM,
+                                  _DEFAULT_SITE_Y_MM))
+            self.get_logger().error(response.message)
+            return response
+
+        site = Site(_DEFAULT_SITE_NAME,
+                   np.array([site_x_mm, site_y_mm, CATCH_CUP_Z_MM]))
+        try:
+            pattern = SelfTossPattern(site=site, apex_m=apex_m, dwell_s=dwell_s,
+                                      n_throws=n_throws)
+        except ValueError as exc:
+            response.success = False
+            response.message = 'self-toss pattern refused: %s' % (exc,)
+            self.get_logger().error(response.message)
+            return response
+
+        try:
+            boxes = adm.load(_ADMISSIBLE_BOX_PATH)
+            adm.check_limits(boxes, self._live_limits())
+        except adm.AdmissibleError as exc:
+            response.success = False
+            response.message = 'admissible box refused: %s' % (exc,)
+            self.get_logger().error(response.message)
+            return response
+        boxes_by_pair = {box.site_pair: box for box in boxes}
+
+        # Finding 11, R3 audit (2026-09-13): built here, before `_prelevel`
+        # actually moves the platform, and guarded — `memory_path` raises
+        # `ValueError` on a bad `plant_id`, and `Memory(...)` can raise
+        # `OSError` (unreadable file) or `csv.Error` (malformed rows); left
+        # uncaught in a service callback either kills the node AFTER the
+        # platform has already moved.
+        try:
+            memory = Memory(memory_path(_REPO_ROOT, plant_id))
+        except (ValueError, OSError, csv.Error) as exc:
+            response.success = False
+            response.message = 'memory refused: %s' % (exc,)
+            self.get_logger().error(response.message)
+            return response
+
+        prelevel_err = self._prelevel()
+        if prelevel_err:
+            response.success = False
+            response.message = 'self-toss refused: %s' % (prelevel_err,)
+            self.get_logger().error(response.message)
+            return response
+
+        now = self.get_clock().now().nanoseconds / 1e9
+        try:
+            # Compile once to read the opening REST's own dispatch lead (the
+            # floor lift + Skill.lead_s arithmetic — schedule.FLOOR_LIFT_S /
+            # _assign_leads), rather than restating it as a fixed margin: a
+            # PROBE compile at t0=now puts the first dispatch `lead_s` (0.15 s
+            # at the current grid) before `now`, so shifting t0 by exactly
+            # that deficit plus one tick period of operational margin (the
+            # call/dispatch latency `_START_LEAD_S` names for columns) lands
+            # the real schedule's first dispatch at or after "now".
+            probe = compile_self_toss(pattern, now)
+            deficit = now - probe.skills[0].dispatch_s()
+            t0 = now + max(deficit, 0.0) + (1.0 / _TICK_HZ)
+            schedule = compile_self_toss(pattern, t0)
+        except ValueError as exc:
+            response.success = False
+            response.message = 'self-toss schedule refused: %s' % (exc,)
+            self.get_logger().error(response.message)
+            return response
+
+        learner_cfg = lr.LearnerConfig()
+        learner = SimpleNamespace(
+            command=lambda x, y_d: memory.command(x, y_d, learner_cfg))
+
+        self._executor = SkillExecutor(
+            schedule, self._installer, tracker=self._tracker,
+            learner=learner, boxes=boxes_by_pair,
+            observer=self._ball_evidence, observations=self._observations,
+            on_experience=self._bind_on_experience(memory))
+        response.success = True
+        response.message = (
+            'self-toss schedule compiled: %d skills, %d throws, plant_id=%r, '
+            'memory rows=%d, t0=%.3f'
+            % (len(schedule.skills), n_throws, plant_id, len(memory), t0))
+        self.get_logger().info(response.message)
+        return response
+
+    def _bind_on_experience(self, memory: Memory):
+        """``on_experience`` callable bound to ``memory`` (plan § 2.5 step 6):
+        appends the row (file I/O, orchestrator thread only — never the 40 Hz
+        emitter, plan § 0) and logs it, one line per throw."""
+        def _on_experience(exp):
+            memory.append(exp)
+            self.get_logger().info(
+                'memory row appended: x=%s u=%s y=%s caught=%s'
+                % (exp.x.tolist(), exp.u.tolist(), exp.y.tolist(), exp.caught))
+        return _on_experience
+
     def _svc_stop(self, request, response):
         """End the current attempt. No motion command: every segment is
-        rest-terminal, so whatever is streaming already ends at rest."""
-        if self._executor is not None:
-            self._executor.attempt_ended = True
-            self._executor.end_code = 'STOPPED'
-            self._executor = None
-            response.message = 'attempt stopped — the rest tail is already streaming'
-        else:
-            response.message = 'no attempt was running'
+        rest-terminal, so whatever is streaming already ends at rest.
+
+        Does NOT discard the executor: a released ball's outcome can still
+        be finalising after the attempt ends (plan § 2.7, "outcomes keep
+        finalising after the attempt ends") — clearing `_executor` here
+        (the earlier behaviour) silently dropped that flight's memory row.
+        `_on_tick` already retires on `executor.done`, not `attempt_ended`
+        alone, so setting the two flags and leaving the executor live is
+        enough: a stopped attempt's observable flight still produces its
+        memory row, and `_refuse_if_running`'s existing `_executor is not
+        None` check refuses a new start for as long as that finalisation is
+        still pending.
+
+        Takes `_tick_lock` first (finding 12, R3 audit, 2026-09-13, bounded
+        by `_STOP_LOCK_WAIT_S`): without it, this can race a tick mid-
+        `_dispatch` on the timer thread — `_svc_stop` sets `attempt_ended` /
+        `end_code` from the service thread while `_on_tick` may be about to
+        overwrite them with a dispatch's own refusal code, or STOPPED may
+        itself overwrite a genuine abort the same tick produced a moment
+        earlier. A failure to acquire within the bound is logged and the stop
+        proceeds anyway — a stop that never lands is worse than one that
+        loses this one race."""
+        got_lock = self._tick_lock.acquire(timeout=_STOP_LOCK_WAIT_S)
+        if not got_lock:
+            self.get_logger().warning(
+                'skills/stop: could not acquire the tick lock within %.1f s '
+                '— proceeding without it' % _STOP_LOCK_WAIT_S)
+        try:
+            if self._executor is not None:
+                if not self._executor.attempt_ended:
+                    self._executor.attempt_ended = True
+                    self._executor.end_code = 'STOPPED'
+                    response.message = (
+                        'attempt stopped — the rest tail is already streaming')
+                else:
+                    response.message = (
+                        'attempt already ended (end_code=%r) — stop is a '
+                        'no-op' % self._executor.end_code)
+            else:
+                response.message = 'no attempt was running'
+        finally:
+            if got_lock:
+                self._tick_lock.release()
         response.success = True
+        self.get_logger().info(response.message)
+        return response
+
+    def _svc_check(self, request, response):
+        """``skills/check`` (item 8): every current R3 precondition-ladder
+        refusal at once, plus the admissible-box/limits status — the
+        dress-rehearsal runsheet calls this before any powered attempt
+        (Rigor: "make gates report every refusal at once", plan Workflow
+        Rules). Never moves the platform and never touches ``_executor``.
+        """
+        now = self.get_clock().now().nanoseconds / 1e9
+        obs = self._observations(now)
+        codes = precondition_refusals(obs, launch=True)
+        ok = True
+        lines = []
+        if codes:
+            ok = False
+            lines.append('ladder REFUSED: %s' % (', '.join(codes),))
+        else:
+            lines.append('ladder OK')
+        if _ADMISSIBLE_BOX_PATH is None:
+            ok = False
+            lines.append('box REFUSED: cannot find the repo root from %r'
+                         % (__file__,))
+        else:
+            try:
+                boxes = adm.load(_ADMISSIBLE_BOX_PATH)
+                adm.check_limits(boxes, self._live_limits())
+                lines.append('box OK: %d site pair(s), limits match'
+                             % (len(boxes),))
+            except adm.AdmissibleError as exc:
+                ok = False
+                lines.append('box REFUSED: %s' % (exc,))
+        site_x_mm = float(self.get_parameter('site_x_mm').value)
+        site_y_mm = float(self.get_parameter('site_y_mm').value)
+        if (abs(site_x_mm - _DEFAULT_SITE_X_MM) > 1e-9
+                or abs(site_y_mm - _DEFAULT_SITE_Y_MM) > 1e-9):
+            ok = False
+            lines.append(
+                'site REFUSED: (%.3f, %.3f) mm != the swept default '
+                '(%.3f, %.3f) mm — the admissible box carries no site xy'
+                % (site_x_mm, site_y_mm, _DEFAULT_SITE_X_MM,
+                   _DEFAULT_SITE_Y_MM))
+        else:
+            lines.append('site OK')
+        response.success = ok
+        response.message = '; '.join(lines)
         self.get_logger().info(response.message)
         return response
 
@@ -256,8 +968,29 @@ class SkillNode(Node):
 def main(args=None):
     rclpy.init(args=args)
     node = SkillNode()
+    # ── MultiThreadedExecutor, not plain spin ─────────────────────────────
+    # `_installer` blocks the tick timer in `_wait_future`'s poll loop,
+    # waiting for THIS node's own install-client response — a response only
+    # the executor can deliver. Under `rclpy.spin` (single-threaded) the same
+    # thread that is busy-waiting is the only thread that could ever process
+    # it: every install times out, forever (found 2026-09-13 by reading, never
+    # exercised live). Two threads is what unblocks it: the client and the
+    # tick timer share a `ReentrantCallbackGroup` (`SkillNode.__init__`), and
+    # a MultiThreadedExecutor with more than one thread lets the response be
+    # processed on a thread OTHER than the one blocked in the tick. The tick
+    # itself is guarded against re-entering its own dispatch (`_on_tick`'s
+    # `_tick_lock`), so extra threads cannot start a second install.
+    # A third thread (finding 4, R3 audit, 2026-09-13) is for the
+    # subscriptions' own `MutuallyExclusiveCallbackGroup` (`SkillNode.
+    # __init__`'s `_sub_cbgroup`): with only two threads, both could be
+    # occupied by the reentrant install-client/tick pair while a blocked
+    # service call (`_prelevel`) starves every subscription callback.
+    executor = MultiThreadedExecutor(num_threads=3)
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        executor.spin()
+    except KeyboardInterrupt:
+        pass
     finally:
         node.destroy_node()
         rclpy.shutdown()

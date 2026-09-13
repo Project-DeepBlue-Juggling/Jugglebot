@@ -2562,44 +2562,6 @@ def _launch_request_with_trim(monkeypatch, trim):
     return sent[0]
 
 
-def test_the_unified_launch_carries_the_SESSION_SPEED_TRIM(monkeypatch):
-    """The unified launch scales its take-off by the trim the legacy path carries.
-
-    Owner, 2026-09-06. Every unified throw of that sitting left 11-15 % too fast
-    (achieved release +5…+17 % of plan) while the record declared
-    ``speed_bias_applied 1.0`` and ``ilc_vel_trim 0.0`` — every learned
-    correction inactive, because the trim was applied to ``event_vel_mps``, which
-    the unified path does not command.
-
-    It is a MODEL correction: the machine throws faster than it is told to, so
-    the COMMANDED release is scaled by ``1 + trim`` to get the physical one that
-    was asked for. ``flight_s`` and the throw SITE are untouched — the ball is
-    still meant to fly the requested flight and land where it left — and the
-    scale reaches the QP through the only field that carries the release
-    velocity: ``throw_target_mm``, from which
-    ``cup_cycle.takeoff_velocity`` derives it.
-    """
-    from jugglebot.motion.trajectory import ballistics_bc as bb
-    nominal = _launch_request_with_trim(monkeypatch, 0.0)
-    trimmed = _launch_request_with_trim(monkeypatch, _SITTING_VEL_TRIM)
-
-    # Untouched: the flight and the site the ball leaves from.
-    assert trimmed.flight_s == nominal.flight_s
-    assert list(trimmed.throw_site_mm) == list(nominal.throw_site_mm)
-    assert list(trimmed.catch_site_mm) == list(nominal.catch_site_mm)
-    assert list(trimmed.catch_vel_mm_s) == list(nominal.catch_vel_mm_s)
-
-    v_nom = bb.launch_velocity(nominal.throw_site_mm, nominal.throw_target_mm,
-                               nominal.flight_s)
-    v_cmd = bb.launch_velocity(trimmed.throw_site_mm, trimmed.throw_target_mm,
-                               trimmed.flight_s)
-    assert v_cmd[2] / v_nom[2] == pytest.approx(1.0 + _SITTING_VEL_TRIM)
-    assert v_cmd[2] / v_nom[2] == pytest.approx(0.8924)
-    # A pure MAGNITUDE knob: scaling v scales both its components, so the take-off
-    # direction — and the throw tilt the planner derives from it — is unchanged.
-    assert np.linalg.norm(np.cross(v_cmd, v_nom)) == pytest.approx(0.0, abs=1e-9)
-
-
 def test_trim_zero_leaves_the_unified_request_BIT_IDENTICAL(monkeypatch):
     """An un-tuned session is the machine it was, to the last float.
 
@@ -2609,80 +2571,6 @@ def test_trim_zero_leaves_the_unified_request_BIT_IDENTICAL(monkeypatch):
     """
     nominal = _launch_request_with_trim(monkeypatch, 0.0)
     assert list(nominal.throw_target_mm) == list(nominal.throw_site_mm)
-
-
-def test_the_announcement_is_INVARIANT_under_the_speed_trim(monkeypatch):
-    """The announcement describes the BALL, so it un-trims the commanded release.
-
-    The plan's `release_vel_mm_s` is the COMMANDED velocity, which under a trim
-    is deliberately `1 + trim` times the nominal. The trim's premise is that the
-    machine then achieves the nominal — and the announcement feeds the tracker's
-    correlation, the possession plausibility reference and the landing schedule,
-    all of which are about the ball. Announcing the commanded value would put the
-    predicted landing ~190 mm low at a 0.6 s flight.
-    """
-    def _announced(trim):
-        node = _ready_node(_Clock())
-        seq, state = _seq_state(node, unified=True)
-        state.aim = {'ilc_vel_trim': float(trim)}
-        commanded = 3900.0 * (1.0 + float(trim))
-        resp = types.SimpleNamespace(
-            t_release_mono=time.perf_counter() + 1.0,
-            release_vel_mm_s=[0.0, 0.0, commanded], plan_wall_ms=175.0)
-        node._announce_unified(seq, state, resp)
-        return node._publishers['throw_announcements'].published[-1]
-
-    plain, trimmed = _announced(0.0), _announced(_SITTING_VEL_TRIM)
-    assert trimmed.initial_velocity.z == pytest.approx(
-        plain.initial_velocity.z, rel=1e-12)
-    assert trimmed.landing_position.z == pytest.approx(
-        plain.landing_position.z, rel=1e-12)
-
-
-def test_a_REFUSED_trim_is_not_flown_by_the_unified_launch(monkeypatch):
-    """Layer 3 is a refinement, never a gate — on this path too.
-
-    `_ilc_vel_trim_refusal` zeroes the aim block's `ilc_vel_trim` when the
-    trimmed speed would break the throw envelope, and the record then declares
-    0.0 because that is what was commanded. Reading the block (rather than
-    re-deriving the trim) is what keeps the unified launch on the same side of
-    that gate as the record.
-    """
-    req = _launch_request_with_trim(monkeypatch, 0.0)
-    assert list(req.throw_target_mm) == list(req.throw_site_mm)
-    node = _ready_node(_Clock())
-    assert node._unified_vel_trim(types.SimpleNamespace(aim=None)) == 0.0
-    assert node._unified_vel_trim(None) == 0.0
-    assert node._unified_vel_trim(
-        types.SimpleNamespace(aim={'ilc_vel_trim': -0.05})) == -0.05
-
-
-def test_the_record_names_the_UNIFIED_catch_knobs(monkeypatch):
-    """A corpus that pools two catch tunings is a corpus of two machines.
-
-    Under unified no `HAND_TRAJ_CMD` is dispatched at all, so the Teensy
-    catcher's `catch_vel_ratio` / `catch_vel_hold_pct` and the operator's
-    `catch_vel_scale` command NOTHING — the 2026-09-06 rows declared a 0.6 ratio
-    and a 0.9 scale no stroke ever used. The knob that DID shape every catch is
-    the planner's `catch_slider_vel_ratio`, and it appeared nowhere.
-    """
-    from jugglebot.motion.trajectory import cup_cycle as cc
-    node = _ready_node(_Clock())
-    legacy = node._toss_record_catch_knobs(0.9, unified=False)
-    unified = node._toss_record_catch_knobs(0.9, unified=True)
-    assert legacy['catch_vel_scale'] == 0.9
-    assert legacy['catch_vel_ratio'] == pytest.approx(
-        float(hw.TEENSY_TRAJ_CATCH_VEL_RATIO))
-    assert legacy['catch_slider_vel_ratio'] is None
-    for dead in ('catch_vel_scale', 'catch_vel_ratio', 'catch_vel_hold_pct'):
-        assert unified[dead] is None, dead
-    assert unified['catch_slider_vel_ratio'] == pytest.approx(
-        float(cc.CupCycleConfig().catch_slider_vel_ratio))
-    assert unified['catch_slider_vel_ratio'] == pytest.approx(0.7)
-    # The knobs that DO still bind under unified are unchanged.
-    for shared in ('catch_reach_freeze_s', 'catch_reach_envelope_mm',
-                   'hand_pos_gain'):
-        assert unified[shared] == legacy[shared], shared
 
 
 class _StubHoldClient:
