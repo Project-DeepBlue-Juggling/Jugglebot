@@ -531,7 +531,7 @@
 ### `trajectory/hold`
 
 - **servers:** `trajectory_node`
-- **clients:** `reload_coordinator_node`
+- **clients:** `reload_coordinator_node`, `skill_node`
 - **type:** `std_srvs.srv.Trigger`
 
 ### `trajectory/install_segment`

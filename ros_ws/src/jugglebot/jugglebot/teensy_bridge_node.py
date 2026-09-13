@@ -4565,7 +4565,11 @@ class TeensyBridgeNode(Node):
         if (hb is not None
                 and int(hb.fault_state) == int(FaultState.MAX_DEVIATION)
                 and int(hb.max_dev_leg) != 0xFF):
-            parts.append(f'leg {int(hb.max_dev_leg)} first to cross, '
+            # `max_dev_leg` is an AXIS id: 0..5 the legs, 6 the hand (the
+            # firmware's hand-lane guard sets `md_leg = HAND_AXIS`). Naming
+            # axis 6 "leg 6" cost the 2026-09-13 latch diagnosis its first
+            # hour; the `live_dev` array that follows is legs-only.
+            parts.append(f'{_axis_label(int(hb.max_dev_leg))} first to cross, '
                          f'dev={hb.max_dev_value:+.3f} rev at trip')
         if not parts:
             return ''

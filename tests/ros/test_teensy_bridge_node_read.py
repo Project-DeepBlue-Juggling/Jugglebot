@@ -982,6 +982,31 @@ def test_max_deviation_attribution_is_joined_not_replaced(bridge):
     assert ' | ' in edge[0], f'the two clauses must be joined: {edge[0]}'
 
 
+def test_max_deviation_on_the_hand_axis_is_named_hand_not_leg_6(bridge):
+    """`max_dev_leg` is an axis id; the firmware's hand-lane guard reports
+    HAND_AXIS (6). The 2026-09-13 R3 sitting latched twice on the hand and
+    both lines read "leg 6 first to cross" beside a six-entry legs-only
+    `live_dev` of zeros — the operator could not tell which axis moved."""
+    from unittest.mock import MagicMock
+    teensy, node = bridge
+    node._logger = MagicMock()
+    hb = HeartbeatT2J(t_teensy_us=1, link_state=int(LinkState.UP),
+                      bus1_health=int(BusHealth.OK), bus2_health=int(BusHealth.OK),
+                      fault_state=int(FaultState.MAX_DEVIATION),
+                      flags=0, uptime_ms=1,
+                      max_dev_leg=6, max_dev_value=+2.506)
+    teensy.send_to_jetson(int(MsgType.HEARTBEAT_T2J), hb.pack())
+    assert _wait_until(lambda: node._latest_heartbeat is not None
+                       and int(node._latest_heartbeat.fault_state)
+                       == int(FaultState.MAX_DEVIATION))
+    node._publish_link_status()
+
+    edge = [m for m in _messages(node._logger.error) if 'FAULT LATCHED' in m]
+    assert 'hand first to cross' in edge[0], edge[0]
+    assert 'leg 6' not in edge[0], edge[0]
+    assert 'dev=+2.506 rev at trip' in edge[0], edge[0]
+
+
 # ── C2/C3 honesty: a frozen diag cache stops being narrated ────
 #
 # _latest_diag is a last-value cache with NO eviction, so after a link loss it

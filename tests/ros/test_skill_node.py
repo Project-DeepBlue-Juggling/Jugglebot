@@ -496,10 +496,19 @@ def test_the_tracker_returns_none_before_any_release_is_announced():
 
 
 def test_a_throw_install_announces_the_release_and_starts_correlation():
+    """Wire-faithful response: `trajectory_node` answers a plain THROW with
+    `t_release_mono == 0.0` (that field is a CATCH-with-throw's SECOND event;
+    `segments._plan_throw` never sets `release_t_s`) and the release on
+    `t_event_mono`. Until 2026-09-13 this test overrode `t_release_mono` to a
+    value the node never produces, and the node read only that field — so
+    every standalone self-toss on the first R3 sitting announced nothing,
+    never correlated its ball, and ended NO_LANDING against a CONFIRMED
+    track (bag 2026-09-13_22-57-18, five of five)."""
     from jugglebot.motion.skills.segments import ThrowTerminal
     from jugglebot.motion.trajectory import ballistics_bc
 
-    node, _client = _node_with_client(response=_response(t_release_mono=50.0))
+    node, _client = _node_with_client(
+        response=_response(t_event_mono=50.0, t_release_mono=0.0))
     terminal = ThrowTerminal(site_mm=[0.0, 0.0, 860.0],
                              target_mm=[0.0, 0.0, 830.0], flight_s=0.6,
                              t_release_s=100.0)
@@ -522,7 +531,7 @@ def test_a_throw_install_announces_the_release_and_starts_correlation():
 def test_correlation_latches_the_new_ball_and_excludes_a_preexisting_one():
     from jugglebot.motion.skills.segments import ThrowTerminal
 
-    node, _client = _node_with_client(response=_response(t_release_mono=50.0))
+    node, _client = _node_with_client(response=_response(t_event_mono=50.0, t_release_mono=0.0))
     # A phantom track already IN_FLIGHT before the throw.
     node._on_balls(BallStateArray(
         balls=[_ball(99, status=1, destination='jugglebot', tracking=1)]))
@@ -547,7 +556,7 @@ def test_correlation_latches_the_new_ball_and_excludes_a_preexisting_one():
 def test_the_tracker_withholds_a_landing_until_tracking_is_confirmed():
     from jugglebot.motion.skills.segments import ThrowTerminal
 
-    node, _client = _node_with_client(response=_response(t_release_mono=50.0))
+    node, _client = _node_with_client(response=_response(t_event_mono=50.0, t_release_mono=0.0))
     terminal = ThrowTerminal(site_mm=[0.0, 0.0, 860.0],
                              target_mm=[0.0, 0.0, 830.0], flight_s=0.6,
                              t_release_s=100.0)
@@ -898,6 +907,105 @@ def test_stop_waits_for_an_in_progress_tick():
     assert node._executor.attempt_ended is True
     assert node._executor.end_code == 'STOPPED'
     assert result['resp'].success is True
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Unit A — an ended attempt must not leave a throwing plan streaming (L1)
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _hold_client(success=True, message='holding at current pose'):
+    resp = Trigger.Response()
+    resp.success = success
+    resp.message = message
+    return _RecordingClient(response=resp)
+
+
+def test_an_aborted_attempt_with_a_future_release_pending_holds_once():
+    """`ABORTED_NO_RELEASE` (executor-internal, no install call) leaves the
+    last ACCEPTED install's release pending — `_on_tick` must install one
+    `trajectory/hold` and clear the pending event."""
+    node, _client = _node_with_client()
+    hold_client = _hold_client()
+    node._hold_cli = hold_client
+    # On the WIRE's clock (perf_counter), not the ROS tick clock.
+    node._pending_event_mono = time.perf_counter() + 5.0
+    node._executor = MagicMock()
+    node._executor.done = False
+    node._executor.attempt_ended = False
+    node._executor.end_code = ''
+
+    def _fake_tick(now):
+        node._executor.attempt_ended = True
+        node._executor.end_code = 'ABORTED_NO_RELEASE'
+        return []
+    node._executor.tick.side_effect = _fake_tick
+
+    node._on_tick()
+
+    assert len(hold_client.calls) == 1
+    assert node._pending_event_mono <= 0.0
+    # A second tick (the executor keeps ticking for outcome finalisation)
+    # must not install a second hold.
+    node._executor.tick.side_effect = lambda now: []
+    node._on_tick()
+    assert len(hold_client.calls) == 1
+
+
+def test_a_naturally_completed_attempt_does_not_hold():
+    """`attempt_ended` only ever flips on a refusal (executor.py's `done`
+    docstring) — a fully successful run never sets it, so a stray pending
+    event must not trigger a hold just because `done` went True."""
+    node, _client = _node_with_client()
+    hold_client = _hold_client()
+    node._hold_cli = hold_client
+    node._pending_event_mono = time.perf_counter() + 5.0
+    node._executor = MagicMock()
+    node._executor.done = True
+    node._executor.attempt_ended = False
+    node._executor.end_code = ''
+    node._executor.tick.return_value = []
+
+    node._on_tick()
+
+    assert hold_client.calls == []
+    assert node._executor is None
+
+
+def test_stop_with_a_pending_event_holds():
+    node, _client = _node_with_client()
+    hold_client = _hold_client()
+    node._hold_cli = hold_client
+    node._pending_event_mono = time.perf_counter() + 5.0
+    node._executor = MagicMock()
+    node._executor.attempt_ended = False
+    node._executor.end_code = ''
+
+    resp = node._svc_stop(Trigger.Request(), Trigger.Response())
+
+    assert resp.success is True
+    assert len(hold_client.calls) == 1
+    assert node._pending_event_mono <= 0.0
+    assert node._executor.end_code == 'STOPPED'
+
+
+def test_a_throw_install_updates_the_pending_event_and_a_rest_clears_it():
+    """`_installer` (Unit A) tracks the SAME release instant `_maybe_announce`
+    already computes — a THROW's `t_event_mono`; a subsequent accepted REST
+    (no release) clears it."""
+    from jugglebot.motion.skills.segments import RestTerminal, ThrowTerminal
+
+    node, _client = _node_with_client(
+        response=_response(t_event_mono=50.0, t_release_mono=0.0))
+    throw_terminal = ThrowTerminal(site_mm=[0.0, 0.0, 860.0],
+                                   target_mm=[0.0, 0.0, 830.0], flight_s=0.6,
+                                   t_release_s=100.0)
+    node._installer('THROW', throw_terminal, 100.0, ball_id=0)
+    assert node._pending_event_mono == pytest.approx(50.0)
+
+    node._install_cli._response = _response(t_event_mono=0.0, t_release_mono=0.0)
+    rest_terminal = RestTerminal(rest_site_mm=[0.0, 0.0, 750.0], t_rest_s=101.0)
+    node._installer('REST', rest_terminal, 101.0, ball_id=0)
+    assert node._pending_event_mono == 0.0
 
 
 def test_a_tick_already_in_progress_does_not_start_a_second_dispatch():

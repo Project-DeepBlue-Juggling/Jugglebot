@@ -3614,6 +3614,37 @@ class ReloadCoordinatorNode(Node):
         return CancelResponse.ACCEPT
 
     def _execute_reload(self, goal_handle):
+        # Unit D (R3 first sitting, 2026-09-13): the Ball-Butler reload's
+        # reactive catch primed the hand through `smooth_move_hand`, which R1
+        # deleted with the Platform Teensy stroke engine (`1e2c0c9`,
+        # 2026-09-11; plan § 1 item 7: "the Ball Butler reload's reactive
+        # catch is deleted with the stroke engine and operator placement is
+        # R3's reset"). Left unguarded, the operator's reload spent ~30 s in
+        # a dead-service 4+4 retry ladder (`_smooth_move_hand`) before ending
+        # `ABORTED_PRIME_FAILED` with a misleading "the hand may remain at
+        # the top of its stroke". Refuse honestly, before any service call,
+        # through the SAME outcome channel (`_log_reload_outcome` ->
+        # `Reload.Result`) every other reload refusal uses (the
+        # `REJECTED_<code>(<message>)` shape is `reload_sequencer._reject`'s
+        # own convention), so `orchestrator_node._on_reload_result` surfaces
+        # the real code to the GUI instead of the generic accept-time
+        # "already in progress?" rejection. Nothing else in this method
+        # (or `_goal_callback`'s busy claim) is touched.
+        result = Reload.Result()
+        result.success = False
+        result.outcome = (
+            'REJECTED_RELOAD_RETIRED_R1(Ball-Butler reload retired at R1 '
+            '(its hand prime rode the deleted stroke engine, '
+            'smooth_move_hand); R3\'s reset is operator placement; the '
+            'reload returns as a CATCH skill at R4 (skills/reload))')
+        result.catch_error_mm = float('nan')
+        self._log_reload_outcome(result)
+        goal_handle.abort()
+        with self._lock:
+            self._active_seq = None
+            self._goal_claimed = False
+        return result
+
         throw_delay = float(getattr(goal_handle.request, 'throw_delay_s', 0.0) or 0.0)
         vel_scale = float(getattr(goal_handle.request, 'catch_vel_scale', 0.0) or 0.0)
         seq = ReloadSequencer(

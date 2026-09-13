@@ -51,10 +51,13 @@ from jugglebot_interfaces.srv import GoToPose, InstallSegment
 
 import jugglebot.hardware_config as hw
 from jugglebot import ball_possession
+from jugglebot.motion import blas_threads
 from jugglebot.motion.skills import admissible as adm
 from jugglebot.motion.skills import learner as lr
 from jugglebot.motion.skills.executor import (InstallResult, Landing,
-                                              Observations, SkillExecutor,
+                                              Observations,
+                                              REJECTED_HAND_NOT_PARKED,
+                                              SkillExecutor,
                                               precondition_refusals)
 from jugglebot.motion.skills.memory import Memory, memory_path
 from jugglebot.motion.skills.schedule import (Pattern, SelfTossPattern,
@@ -182,6 +185,19 @@ class SkillNode(Node):
         # (`_on_hand_telemetry`).
         self._possession_evidence = ball_possession.EVIDENCE_UNKNOWN
         self._executor = None  # a live SkillExecutor, or None between attempts
+        # The last ACCEPTED install's future event (a THROW's release, or a
+        # CATCH-with-throw's carried release) on the schedule's own wall
+        # clock -- 0.0 when the streaming plan carries none (a plain CATCH,
+        # a REST). Updated on every ACCEPTED install (`_installer`), read
+        # and cleared by `_maybe_hold_pending_event` (Unit A, R3 first
+        # sitting, 2026-09-13, L1): an ended attempt does not stop a
+        # streaming release just because it ended -- every segment is
+        # rest-terminal, not event-free.
+        self._pending_event_mono = 0.0
+        # Guards `_pending_event_mono`'s check-and-clear only (never the hold
+        # round trip): `_svc_stop` calls `_maybe_hold_pending_event` OUTSIDE
+        # `_tick_lock` while `_on_tick` may be inside it on another thread.
+        self._pending_lock = threading.Lock()
         # The latest `trajectory/status`, for `skills/start_self_toss`'s
         # limits check (`_svc_start_self_toss`) and the R3 ladder's
         # `levelled`/`in_trajectory_mode` fields (`_observations`, item 6).
@@ -243,6 +259,13 @@ class SkillNode(Node):
         # lets the MultiThreadedExecutor process that response concurrently.
         self._go_to_pose_cli = self.create_client(
             GoToPose, 'trajectory/go_to_pose', callback_group=self._cbgroup)
+        # Shares the SAME reentrant group too (Unit A, R3 first sitting,
+        # 2026-09-13): `_maybe_hold_pending_event` blocks in `_wait_future`
+        # for THIS client's response, called from `_on_tick` (already on the
+        # group) and from `_svc_stop` (the default group) -- the response
+        # still needs the MultiThreadedExecutor to process it concurrently.
+        self._hold_cli = self.create_client(
+            Trigger, 'trajectory/hold', callback_group=self._cbgroup)
 
         self._announce_pub = self.create_publisher(
             ThrowAnnouncement, 'throw_announcements', 10)
@@ -287,6 +310,11 @@ class SkillNode(Node):
         self.create_timer(1.0 / _TICK_HZ, self._on_tick,
                           callback_group=self._cbgroup)
 
+        # One INFO line at start-up (`blas threads: N (source)`, WARN if the
+        # pool is uncapped) — the runsheet's row 13 greps for it, and the
+        # launch file's `_planner_blas_env` cap is otherwise invisible here.
+        self._blas_threads, self._blas_source = blas_threads.check_blas_threads(
+            self.get_logger(), 'skill_node')
         self.get_logger().info('skill_node ready')
 
     # ── tracking ──────────────────────────────────────────────────────────
@@ -436,10 +464,21 @@ class SkillNode(Node):
         hand_at_seed = hand_fresh and (
             abs(self._hand_pos_meas - self._hand_pos_cmd)
             <= float(hw.HOMING_HAND_PARK_BAND_REV))
+        # Unit B (R3 first sitting, 2026-09-13, L2): the ABSOLUTE-position
+        # half of `REJECTED_HAND_NOT_PARKED` on a fresh-origin install --
+        # `hand_at_seed` alone is a tracking-error check and says nothing
+        # about whether the encoder itself is near the R1 ACTIVATE park the
+        # bridge's own recovery slew (1 rev/s) will hold a fresh segment to.
+        # `hw.JB_OP_HAND_RETRACT_REV` (0.0) is the SAME park constant
+        # `reload_coordinator_node` retracts the hand to -- no second
+        # definition of "parked".
+        hand_at_park = hand_fresh and (
+            abs(self._hand_pos_meas - float(hw.JB_OP_HAND_RETRACT_REV))
+            <= float(hw.HOMING_HAND_PARK_BAND_REV))
         return Observations(
             mocap_fresh=mocap_fresh, hand_fresh=hand_fresh,
-            hand_at_seed=hand_at_seed, levelled=levelled,
-            ball_evidence=self._possession_evidence,
+            hand_at_seed=hand_at_seed, hand_at_park=hand_at_park,
+            levelled=levelled, ball_evidence=self._possession_evidence,
             in_trajectory_mode=in_trajectory_mode)
 
     def _ball_evidence(self, ball_id: int, t_abs_s: float) -> str:
@@ -492,8 +531,25 @@ class SkillNode(Node):
                                t0_s=float(resp.t0_mono),
                                event_t_s=float(resp.t_event_mono),
                                seeded_post_release=bool(resp.seeded_post_release))
-        self._maybe_announce(kind, terminal, result,
-                             float(resp.t_release_mono), ball_id=ball_id)
+        # The release instant ON THE WIRE: a THROW's release IS its event
+        # (`t_event_mono`); only a CATCH-with-throw carries a second event,
+        # which rides `t_release_mono` (0.0 for every other shape — a plain
+        # THROW included, so reading it here announced NOTHING for a
+        # standalone throw: five single self-tosses on 2026-09-13 ended
+        # NO_LANDING with a CONFIRMED track and a valid landing in /balls).
+        release_mono = (float(resp.t_event_mono) if kind == THROW
+                        else float(resp.t_release_mono))
+        # Unit A (R3 first sitting, 2026-09-13, L1): the SAME instant, kept
+        # as the streaming plan's own future event -- a THROW's release, or
+        # a CATCH-with-throw's carried one. 0.0 (a plain CATCH, a REST)
+        # clears it: that install carries no future event, so whatever an
+        # EARLIER accepted install left pending is now stale (this one
+        # superseded it on the wire). Only an ACCEPTED install updates this
+        # -- a refusal changes nothing about what is actually streaming.
+        if result.accepted:
+            self._pending_event_mono = release_mono if release_mono > 0.0 else 0.0
+        self._maybe_announce(kind, terminal, result, release_mono,
+                             ball_id=ball_id)
         return result
 
     @staticmethod
@@ -598,6 +654,49 @@ class SkillNode(Node):
             self.get_logger().error('install_segment call raised: %s' % (exc,))
             return None
 
+    def _maybe_hold_pending_event(self, end_code: str) -> None:
+        """``trajectory/hold`` once when the streaming plan still carries a
+        future event (Unit A, R3 first sitting, 2026-09-13, L1): at
+        1789304571.365 the executor ended ``ABORTED_NO_RELEASE``, but the
+        last accepted install (a CATCH-with-throw) kept streaming -- the
+        hand ran two more full strokes after END, the second at the
+        session's own acceleration ceiling, and the guard latched.
+        ``_svc_stop``'s docstring says "whatever is streaming already ends
+        at rest" -- true of every segment's TERMINAL, but a streaming
+        segment can still carry a RELEASE ahead of it, and ending the
+        attempt does nothing to that.
+
+        Called from `_on_tick` (every tick while ``attempt_ended`` is True)
+        and from `_svc_stop` (an operator stop is a stop of the MACHINE,
+        not only of dispatch) -- idempotent either way, because
+        ``_pending_event_mono`` is cleared the moment a hold is attempted,
+        so a later call with nothing left pending is a no-op.
+        """
+        # `_pending_event_mono` is on the WIRE's clock — `time.perf_counter()`
+        # (`trajectory_node`'s `t0_mono`/`t_event_mono`, the same domain
+        # `_maybe_announce` differences against) — NOT the ROS clock the
+        # executor ticks on; comparing it to the tick's `now` (ROS epoch,
+        # ~1.79e9) would read every pending event as already past.
+        with self._pending_lock:
+            if (self._pending_event_mono <= 0.0
+                    or self._pending_event_mono <= time.perf_counter()):
+                return
+            self._pending_event_mono = 0.0
+        if not self._hold_cli.wait_for_service(timeout_sec=_SERVICE_WAIT_S):
+            self.get_logger().error(
+                'END %s: trajectory/hold unavailable -- a pending event '
+                'could not be cancelled' % (end_code,))
+            return
+        resp = self._wait_future(self._hold_cli.call_async(Trigger.Request()))
+        if resp is None or not bool(resp.success):
+            self.get_logger().error(
+                'END %s: trajectory/hold failed (%s)'
+                % (end_code, '' if resp is None else resp.message))
+            return
+        self.get_logger().info(
+            'END %s: hold installed — 1 pending event(s) cancelled'
+            % (end_code,))
+
     # ── the tick ────────────────────────────────────────────────────────
 
     def _on_tick(self):
@@ -625,6 +724,8 @@ class SkillNode(Node):
             now = self.get_clock().now().nanoseconds / 1e9
             for line in self._executor.tick(now):
                 self.get_logger().info(line)
+            if self._executor.attempt_ended:
+                self._maybe_hold_pending_event(self._executor.end_code)
             if self._executor.done:
                 self._executor = None
         finally:
@@ -869,8 +970,13 @@ class SkillNode(Node):
         return _on_experience
 
     def _svc_stop(self, request, response):
-        """End the current attempt. No motion command: every segment is
-        rest-terminal, so whatever is streaming already ends at rest.
+        """End the current attempt. Every segment is rest-terminal, so
+        whatever is streaming already ends at rest — but rest-terminal is
+        not event-free: a streaming segment can still carry a RELEASE ahead
+        of it (a THROW, or a CATCH-with-throw), and ending the attempt does
+        nothing to that on its own. `_maybe_hold_pending_event` (Unit A)
+        installs one `trajectory/hold` when that is the case; otherwise this
+        issues no motion command of its own.
 
         Does NOT discard the executor: a released ball's outcome can still
         be finalising after the attempt ends (plan § 2.7, "outcomes keep
@@ -897,11 +1003,13 @@ class SkillNode(Node):
             self.get_logger().warning(
                 'skills/stop: could not acquire the tick lock within %.1f s '
                 '— proceeding without it' % _STOP_LOCK_WAIT_S)
+        ended_now = False
         try:
             if self._executor is not None:
                 if not self._executor.attempt_ended:
                     self._executor.attempt_ended = True
                     self._executor.end_code = 'STOPPED'
+                    ended_now = True
                     response.message = (
                         'attempt stopped — the rest tail is already streaming')
                 else:
@@ -913,6 +1021,12 @@ class SkillNode(Node):
         finally:
             if got_lock:
                 self._tick_lock.release()
+        if ended_now:
+            # An operator stop is a stop of the MACHINE, not only of
+            # dispatch (Unit A) — the same hold `_on_tick` installs on an
+            # abort, called here outside the tick lock so a blocked
+            # `trajectory/hold` round trip cannot stall ticking.
+            self._maybe_hold_pending_event('STOPPED')
         response.success = True
         self.get_logger().info(response.message)
         return response
@@ -926,12 +1040,29 @@ class SkillNode(Node):
         """
         now = self.get_clock().now().nanoseconds / 1e9
         obs = self._observations(now)
-        codes = precondition_refusals(obs, launch=True)
+        # `fresh_origin=True`: every self-toss attempt's very first skill IS
+        # a fresh origin (`_dispatch`'s own rule), so the rehearsal must
+        # check the SAME row `launch=True` already does here, unchanged.
+        codes = precondition_refusals(obs, launch=True, fresh_origin=True)
         ok = True
         lines = []
         if codes:
             ok = False
             lines.append('ladder REFUSED: %s' % (', '.join(codes),))
+            if REJECTED_HAND_NOT_PARKED in codes:
+                # Unit B (R3 first sitting, 2026-09-13, L2): the recovery
+                # verb — DEACTIVATE/ACTIVATE re-parks the hand through the
+                # bridge's own slew; a fresh segment cannot, because the
+                # guard measures the plan against the encoder while the
+                # bridge slews at 1 rev/s.
+                lines.append(
+                    'hand at %.2f rev, park is %.2f ± %.2f — DEACTIVATE '
+                    'then ACTIVATE re-parks the hand through the bridge\'s '
+                    'own slew; a fresh segment cannot (the guard measures '
+                    'the plan against the encoder while the bridge slews '
+                    'at 1 rev/s)'
+                    % (self._hand_pos_meas, float(hw.JB_OP_HAND_RETRACT_REV),
+                       float(hw.HOMING_HAND_PARK_BAND_REV)))
         else:
             lines.append('ladder OK')
         if _ADMISSIBLE_BOX_PATH is None:

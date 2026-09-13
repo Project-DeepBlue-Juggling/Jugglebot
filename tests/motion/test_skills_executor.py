@@ -1663,8 +1663,8 @@ def _obs(**over) -> ex.Observations:
     """An all-clear :class:`~jugglebot.motion.skills.executor.Observations`
     with the named fields overridden — one flipped field, one refused code."""
     fields = dict(mocap_fresh=True, hand_fresh=True, hand_at_seed=True,
-                  levelled=True, ball_evidence=bp.EVIDENCE_SEATED,
-                  in_trajectory_mode=True)
+                  hand_at_park=True, levelled=True,
+                  ball_evidence=bp.EVIDENCE_SEATED, in_trajectory_mode=True)
     fields.update(over)
     return ex.Observations(**fields)
 
@@ -1758,23 +1758,93 @@ def test_a_catch_only_checks_the_non_launch_rows(sites):
     assert len(inst.calls) == 1 and inst.calls[0][0] == sg.CATCH
 
 
-def test_a_rest_is_exempt_from_the_ladder(sites):
-    """A REST is the way out of the attempt — it is checked against nothing,
-    even a fully-failing observation."""
-    p1, _p2 = sites
-    skills = (Skill(kind=sg.REST, ball_id=0, site=p1, t_abs_s=ROS_T0,
-                    window_s=sg.REST_TAIL_S),)
-    sch = Schedule(skills=skills, flight_s=FLIGHT_S, beat_s=FLIGHT_S,
-                  transit_s=FLIGHT_S, dwell_s=0.3,
-                  t0_abs_s=ROS_T0 - sg.REST_TAIL_S)
+def test_a_non_fresh_rest_is_exempt_from_the_ladder(sites):
+    """The schedule's CLOSING REST (idx > 0, spliced onto the live plan) is
+    checked against nothing, even a fully-failing observation — only the
+    OPENING (fresh-origin, idx 0) REST is ever checked (Unit B, R3 first
+    sitting, 2026-09-13)."""
+    sch = _schedule(sites)          # THROW, CATCH, REST — REST is idx 2
     inst = _FakeInstaller()
-    obs = _obs(mocap_fresh=False, hand_fresh=False, hand_at_seed=False,
-               levelled=False, ball_evidence=bp.EVIDENCE_UNKNOWN)
+    land = ex.Landing(pos_mm=sites[1].catch_site_mm(), vel_mm_s=LAND_VEL,
+                      t_land_abs_s=sch.skills[1].t_abs_s)
+    state = {'good': True}
+    x = ex.SkillExecutor(
+        sch, inst, tracker=_tracker(land),
+        observations=lambda t: (_obs() if state['good'] else _obs(
+            mocap_fresh=False, hand_fresh=False, hand_at_seed=False,
+            hand_at_park=False, levelled=False,
+            ball_evidence=bp.EVIDENCE_UNKNOWN)))
+    x.tick(sch.skills[0].dispatch_s())            # THROW, all-clear obs
+    x.tick(sch.skills[1].dispatch_s())             # CATCH, all-clear obs
+    assert not x.attempt_ended and len(inst.calls) == 2
+
+    state['good'] = False                          # everything now failing
+    x.tick(sch.skills[2].dispatch_s())              # REST, idx 2 — not fresh
+
+    assert not x.attempt_ended
+    assert len(inst.calls) == 3 and inst.calls[2][0] == sg.REST
+
+
+# ── Unit B — a fresh-origin install refuses when the hand is not parked
+# (L2, R3 first sitting, 2026-09-13) ────────────────────────────────────────
+
+def _fresh_rest_schedule(site):
+    """A single-skill schedule whose only skill (idx 0) is a REST — always a
+    fresh origin by `_dispatch`'s rule."""
+    skills = (Skill(kind=sg.REST, ball_id=0, site=site, t_abs_s=ROS_T0,
+                    window_s=sg.REST_TAIL_S),)
+    return Schedule(skills=skills, flight_s=FLIGHT_S, beat_s=FLIGHT_S,
+                    transit_s=FLIGHT_S, dwell_s=0.3,
+                    t0_abs_s=ROS_T0 - sg.REST_TAIL_S)
+
+
+def test_a_fresh_origin_rest_refuses_hand_not_parked_at_the_l2_numbers(sites):
+    """The L2 sitting's own numbers (bag 2026-09-13_22-57-18): hand measured
+    8.665 rev, commanded 9.426 rev — both `hand_at_seed` and `hand_at_park`
+    false — a fresh-origin REST must refuse before ever reaching the
+    installer, not stream the hand into the bridge's recovery slew."""
+    p1, _p2 = sites
+    sch = _fresh_rest_schedule(p1)
+    inst = _FakeInstaller()
+    obs = _obs(hand_at_seed=False, hand_at_park=False)
+    x = ex.SkillExecutor(sch, inst, observations=lambda t: obs)
+    lines = x.tick(sch.skills[0].dispatch_s())
+
+    assert x.attempt_ended and x.end_code == ex.REJECTED_HAND_NOT_PARKED
+    assert inst.calls == []
+    assert ex.REJECTED_HAND_NOT_PARKED in lines[0]
+
+
+def test_a_fresh_origin_rest_at_park_passes(sites):
+    """A fresh-origin REST with the hand genuinely at park (0.1 rev, inside
+    the 0.5 rev band) dispatches normally."""
+    p1, _p2 = sites
+    sch = _fresh_rest_schedule(p1)
+    inst = _FakeInstaller()
+    obs = _obs(hand_at_seed=True, hand_at_park=True)
     x = ex.SkillExecutor(sch, inst, observations=lambda t: obs)
     x.tick(sch.skills[0].dispatch_s())
 
     assert not x.attempt_ended
     assert len(inst.calls) == 1 and inst.calls[0][0] == sg.REST
+
+
+def test_a_spliced_catch_is_unaffected_by_hand_at_park(sites):
+    """A CATCH is never a fresh origin — `hand_at_park=False` alone must not
+    refuse it (only a fresh-origin THROW/REST checks this row)."""
+    _p1, p2 = sites
+    t_land = ROS_T0 + FLIGHT_S
+    sch = _single_catch_schedule(p2, ball_id=0, t_land=t_land)
+    inst = _FakeInstaller()
+    land = ex.Landing(pos_mm=p2.catch_site_mm(), vel_mm_s=LAND_VEL,
+                      t_land_abs_s=t_land)
+    obs = _obs(hand_at_park=False)
+    x = ex.SkillExecutor(sch, inst, tracker=_tracker(land),
+                         observations=lambda t: obs)
+    x.tick(sch.skills[0].dispatch_s())
+
+    assert not x.attempt_ended
+    assert len(inst.calls) == 1 and inst.calls[0][0] == sg.CATCH
 
 
 def test_mode_change_mid_attempt_aborts_and_stops_further_dispatch(sites):

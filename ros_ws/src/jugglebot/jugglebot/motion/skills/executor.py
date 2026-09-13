@@ -172,8 +172,18 @@ class Observations:
     * ``mocap_fresh`` -- ``REJECTED_MOCAP_STALE``.
     * ``hand_fresh`` -- ``REJECTED_HAND_STALE``.
     * ``hand_at_seed`` -- the hand is where the plan's seed says it is (a
-      fresh-origin THROW is planned from the rest band) -- launch-only
-      ``REJECTED_HAND_NOT_PARKED``.
+      fresh-origin THROW is planned from the rest band) -- a TRACKING-error
+      predicate (measured vs. commanded), part of ``REJECTED_HAND_NOT_PARKED``
+      on any fresh-origin install.
+    * ``hand_at_park`` -- the hand's MEASURED position is within
+      ``HOMING_HAND_PARK_BAND_REV`` of the R1 ACTIVATE park (0.0 rev) -- an
+      ABSOLUTE-position predicate, the other half of
+      ``REJECTED_HAND_NOT_PARKED`` on any fresh-origin install (Unit B, R3
+      first sitting, 2026-09-13, L2): a fresh-origin REST or THROW is planned
+      from the COMMANDED state (``hand_at_seed`` alone can be true while the
+      hand is nowhere near the wire's own recovery-slew authority, e.g. after
+      an abort left the commanded hand pose far from where the bridge will
+      actually let it move).
     * ``levelled`` -- ``trajectory_node``'s ``gravity_correction_loaded`` on a
       fresh status (C-LEVEL-1.O) -- ``REJECTED_NOT_LEVELLED``.
     * ``ball_evidence`` -- one of :data:`bp.EVIDENCE_SEATED` /
@@ -186,12 +196,15 @@ class Observations:
     mocap_fresh: bool
     hand_fresh: bool
     hand_at_seed: bool
+    hand_at_park: bool
     levelled: bool
     ball_evidence: str
     in_trajectory_mode: bool
 
 
-def precondition_refusals(obs: Observations, *, launch: bool) -> List[str]:
+def precondition_refusals(obs: Observations, *, launch: bool,
+                          fresh_origin: bool = False,
+                          skip_mocap: bool = False) -> List[str]:
     """Every PORT@R3 row this dispatch must refuse on -- ALL of them, not just
     the first, so a rehearsal driver reports every refusal in one pass rather
     than one at a time across repeated dry runs (Workflow Rules: "make gates
@@ -203,21 +216,40 @@ def precondition_refusals(obs: Observations, *, launch: bool) -> List[str]:
     the hand-parked band. ``launch`` is True only for a fresh-origin THROW --
     the schedule's own opening self-toss, planned from rest, where a stale
     hand-parked band or an unread ball sensor would seed the segment from a
-    state nobody has confirmed. A CATCH (with or without a carried
-    ``then_throw``) is never a fresh origin -- its seed is the live plan's own
-    knot -- so it gets only the first three, universal rows. A REST is exempt
-    and never calls this.
+    state nobody has confirmed.
+
+    ``fresh_origin`` (Unit B, R3 first sitting, 2026-09-13, L2) is True for
+    ANY skill installed at a fresh origin, THROW or REST alike -- the
+    schedule's own skill 0, by construction the only skill an attempt can be
+    SURE has no live plan streaming under it yet (``schedule.compile_self_toss``
+    / ``compile_columns``: "the opening REST is a fresh install"). It gates the
+    SAME row ``launch`` does, ``REJECTED_HAND_NOT_PARKED``, now on both
+    ``hand_at_seed`` (tracking error) and ``hand_at_park`` (absolute
+    position): the REST that overspun the hand at L2 was planned from a
+    commanded pose 0.76 rev off the encoder, itself 8.67 rev from the park the
+    bridge's own recovery slew was about to hold it to at 1 rev/s -- a plan
+    with no such check streamed the hand at up to ~9 rev/s into that slew and
+    the guard latched.
+
+    A CATCH (with or without a carried ``then_throw``) is never a fresh
+    origin -- its seed is the live plan's own knot -- so it gets only the
+    universal rows. A REST is exempt UNLESS ``fresh_origin`` -- the schedule's
+    CLOSING REST splices onto the live plan same as a CATCH and stays exempt;
+    only the OPENING one is ever fresh. ``skip_mocap`` drops
+    ``REJECTED_MOCAP_STALE`` for a REST specifically: a REST does not aim, so
+    a stale mocap graph is not a fact it needs.
     """
     codes = []
-    if not obs.mocap_fresh:
+    if not skip_mocap and not obs.mocap_fresh:
         codes.append(REJECTED_MOCAP_STALE)
     if not obs.levelled:
         codes.append(REJECTED_NOT_LEVELLED)
     if not obs.hand_fresh:
         codes.append(REJECTED_HAND_STALE)
-    if launch:
-        if not obs.hand_at_seed:
+    if launch or fresh_origin:
+        if not obs.hand_at_seed or not obs.hand_at_park:
             codes.append(REJECTED_HAND_NOT_PARKED)
+    if launch:
         if obs.ball_evidence == bp.EVIDENCE_UNKNOWN:
             codes.append(REJECTED_BALL_UNKNOWN)
         elif obs.ball_evidence != bp.EVIDENCE_SEATED:
@@ -951,8 +983,21 @@ class SkillExecutor:
         ``deferred`` is True only for a CATCH still waiting on its own
         landing (below); every other path dispatches, refuses, or ends the
         attempt outright and reports ``deferred=False``."""
-        if obs is not None and skill.kind != REST:
-            codes = precondition_refusals(obs, launch=(skill.kind == THROW))
+        # `idx == 0` is the only skill any attempt can be SURE is a fresh
+        # origin (Unit B): both `compile_self_toss` and `compile_columns`
+        # build their opening REST as "a fresh install (no record yet)", and
+        # every later skill splices onto the schedule's own already-streaming
+        # plan. A non-fresh (closing) REST stays fully exempt -- only the
+        # opening one is ever checked. A CATCH is excluded regardless of
+        # index -- its seed is ALWAYS the live plan's own knot (never a fresh
+        # origin, module docstring / `precondition_refusals`), and a
+        # single-skill test schedule built to isolate a CATCH's own ladder
+        # rows legitimately puts one at idx 0.
+        fresh_origin = idx == 0 and skill.kind != CATCH
+        if obs is not None and (skill.kind != REST or fresh_origin):
+            codes = precondition_refusals(
+                obs, launch=(skill.kind == THROW), fresh_origin=fresh_origin,
+                skip_mocap=(skill.kind == REST))
             if codes:
                 self.dispatched.add(idx)
                 self.attempt_ended = True

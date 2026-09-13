@@ -220,7 +220,7 @@ def test_a_plain_catch_still_splices_without_carrying_a_release():
     assert resp2.t_release_mono == 0.0
 
 
-def test_splice_too_late_when_the_solve_runs_past_the_wire(monkeypatch):
+def test_splice_too_late_when_the_solve_runs_past_the_wire():
     """A slow solve must be caught AGAINST A FRESH CLOCK READ, not against
     the instant the handler was entered — see ``executor.install_segment``'s
     ``t_install_s`` docstring."""
@@ -248,7 +248,16 @@ def test_splice_too_late_when_the_solve_runs_past_the_wire(monkeypatch):
             calls['n'] += 1
             return real_at if calls['n'] <= 2 else real_at + 10.0
 
-        monkeypatch.setattr(time, 'perf_counter', _fake_perf_counter)
+        # Set the attribute DIRECTLY, never via `monkeypatch` inside
+        # `_frozen_perf`: monkeypatch snapshots the CURRENT value (the frozen
+        # lambda) as the original and restores it at teardown — AFTER the
+        # context manager has already put the real clock back — so the frozen
+        # clock leaked for the rest of the xdist worker's life and every later
+        # wall-time read in that process returned a constant
+        # (`test_unified_cycle_splice.py::test_splice_at_the_terminal_knot…`
+        # failed `0.0 < 0.0` on the 2026-09-14 full gate). `_frozen_perf`'s own
+        # exit restores the real clock.
+        time.perf_counter = _fake_perf_counter
         # `at + 0.7`, not `+0.5` — see the head-pinning comment on the splice
         # test above; a too-tight window would refuse WINDOW_TOO_SHORT before
         # the late clock read is ever taken, which is not what this test means

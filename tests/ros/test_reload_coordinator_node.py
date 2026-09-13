@@ -1037,6 +1037,12 @@ def test_prepare_publishes_vel_scale_before_armed(monkeypatch):
     assert node._publishers['catch/armed'].published[-1].data is True
 
 
+@pytest.mark.skip(reason=(
+    'Unit D (R3 first sitting, 2026-09-13): `_execute_reload` now refuses '
+    'EVERY reload goal at the top, before this vel_scale-clamp code is ever '
+    'reached (the reload is retired at R1; returns as a CATCH skill at R4) '
+    '-- unreachable until then. See '
+    'test_a_reload_goal_is_refused_before_any_service_call.'))
 def test_goal_vel_scale_zero_defaults_to_config(monkeypatch):
     """Field default 0 (unset) means the config default (0.8, locked in from the
     2026-07-23 third sitting) — plumbed per-goal, never sticky."""
@@ -1142,6 +1148,12 @@ def test_untagged_latch_displaced_by_destination_match():
     assert node._announced_ball_id == 13
 
 
+@pytest.mark.skip(reason=(
+    'Unit D (R3 first sitting, 2026-09-13): `_execute_reload` now refuses '
+    'EVERY reload goal at the top, before this vel_scale-clamp code is ever '
+    'reached (the reload is retired at R1; returns as a CATCH skill at R4) '
+    '-- unreachable until then. See '
+    'test_a_reload_goal_is_refused_before_any_service_call.'))
 def test_negative_vel_scale_warns_and_defaults(monkeypatch):
     """AUDIT: a sign typo (-0.8 intending slow) must not silently become full
     speed; it warns and uses the default."""
@@ -1285,6 +1297,12 @@ class _TerminalGoalHandle:
     def publish_feedback(self, fb): pass
 
 
+@pytest.mark.skip(reason=(
+    'Unit D (R3 first sitting, 2026-09-13): `_execute_reload` now refuses '
+    'EVERY reload goal at the top, before `_step_sequence` is ever reached '
+    '(the reload is retired at R1; returns as a CATCH skill at R4) -- '
+    'unreachable until then. `_log_reload_outcome` itself stays pinned by '
+    'test_reload_outcome_log_reports_catch_error.'))
 def test_reload_outcome_logged_on_terminal(monkeypatch):
     """The node logs ONE authoritative outcome line on a terminal decision — a working
     reload previously logged NO outcome (0 lines) and read as pure ladder spam."""
@@ -1298,6 +1316,43 @@ def test_reload_outcome_logged_on_terminal(monkeypatch):
     outcome = [(lvl, m) for lvl, m in rec.records if 'Reload MISSED' in m]
     assert len(outcome) == 1                                     # exactly one outcome line
     assert outcome[0][0] == 'warning'                           # not-CAUGHT → WARN
+
+
+# ── Unit D — the Ball-Butler reload refuses at goal accept (R3 first sitting,
+# 2026-09-13) ────────────────────────────────────────────────────────────────
+
+def test_a_reload_goal_is_refused_before_any_service_call(monkeypatch):
+    """The reload's reactive catch rode `smooth_move_hand`, deleted with the
+    Platform Teensy stroke engine at R1 — a live reload used to burn ~30 s in
+    that dead service's 4+4 retry ladder before ending `ABORTED_PRIME_FAILED`.
+    `_execute_reload` must refuse honestly with `REJECTED_RELOAD_RETIRED_R1`,
+    through the SAME `_log_reload_outcome` channel every other reload refusal
+    uses (so `orchestrator_node._on_reload_result` shows the real code, not
+    the generic accept-time "already in progress?" line), and must never call
+    `_smooth_move_hand`."""
+    node = _node_fresh(100.0)
+    rec = _RecLogger()
+    node._logger = rec
+
+    def _smooth_move_hand_must_not_be_called(pos):
+        raise AssertionError(
+            'a retired reload must never call smooth_move_hand')
+    monkeypatch.setattr(node, '_smooth_move_hand',
+                        _smooth_move_hand_must_not_be_called)
+
+    result = node._execute_reload(_TerminalGoalHandle())
+
+    assert result.success is False
+    assert result.outcome.startswith('REJECTED_RELOAD_RETIRED_R1')
+    outcome_lines = [(lvl, m) for lvl, m in rec.records
+                     if 'REJECTED_RELOAD_RETIRED_R1' in m]
+    assert len(outcome_lines) == 1
+    assert outcome_lines[0][0] == 'warning'          # not-CAUGHT → WARN
+    # The busy claim taken at accept is released — a later goal is not stuck
+    # REJECTED_BUSY forever.
+    with node._lock:
+        assert node._goal_claimed is False
+        assert node._active_seq is None
 
 
 def test_reload_outcome_log_reports_catch_error():

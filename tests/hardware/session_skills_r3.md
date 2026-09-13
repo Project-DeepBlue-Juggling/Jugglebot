@@ -210,13 +210,34 @@ this list, treat it as a NEW finding, not a known outcome.
 
 A refused skill ends the attempt through the rest tail already streaming —
 **never re-dispatch a hand move by hand.** `skills/stop` is safe to call at
-any time (it does not command motion; it only stops further dispatch and lets
-the last committed segment run out) — **the committed segment may still
-release the ball** if `stop` lands after a catch-with-throw has already
-installed; there is no motion-cancelling abort, only a refusal to dispatch
-anything further. If `skills/check` shows more than the expected ladder rows
-refused, work each one via § 6's table before calling
-`skills/start_self_toss` again.
+any time: it stops further dispatch, and since 2026-09-14 (sitting 1, latch
+L1) an ended attempt — `stop` or any abort — installs ONE `trajectory/hold`
+when the committed segment still carries a future release, so a
+catch-with-throw that was already installed no longer throws after the
+attempt has ended (the hold is a profiled decel-to-rest of the platform; the
+hold plan carries no hand track, so the hand lane sees a HAS_HAND falling
+edge and the bridge firmware DECAYS it to rest where it is — the same rule
+the guard freeze relies on; the ball, if in the air, is not caught). If `skills/check` shows more than
+the expected ladder rows refused, work each one via § 6's table before
+calling `skills/start_self_toss` again.
+
+**Sitting-1 recoveries (2026-09-13):**
+- `REJECTED_HAND_NOT_PARKED` now also fires when the hand is not at park
+  (|measured − 0.00| > 0.50 rev), on the opening REST as well as a THROW.
+  Recover with **DEACTIVATE then ACTIVATE** (ACTIVATE re-parks the hand at
+  0 rev through the bridge's own 1 rev/s re-activation slew). Never try to
+  park it with a segment: the guard measures the raw plan against the
+  encoder while the bridge slews, and a >2.5 rev gap latches MAX_DEVIATION
+  (latch L2).
+- A `MAX_DEVIATION` line now names the axis: `hand first to cross` is the
+  hand (axis 6). The six-entry `live_dev` that follows is legs only.
+- After ANY guard latch, before re-arming: the guard descent collapses the
+  legs onto measured but NOT the hand — the hand command stays frozen
+  (58 s at 9.43 rev against a 0.76 rev droop on 2026-09-13). DEACTIVATE /
+  ACTIVATE before the next attempt.
+- The Ball-Butler reload is REFUSED at accept (`REJECTED_RELOAD_RETIRED_R1`)
+  — R3's reset is operator placement (plan § 1 item 7); the reload returns
+  as a CATCH skill at R4. Do not use the GUI reload button this rung.
 
 ## 8. Close-out
 
@@ -275,10 +296,10 @@ monotone over the next 20 — plan § R3 "Sim validation").
 
 | Item | Result |
 |---|---|
-| Date, commit, bag | |
-| `plant_id` used | |
-| Cold-start throws to in-band (gate: ≤ 5) | |
-| Chained attempt: consecutive catches (gate: 10) | |
-| Any code from § 6 that fired outside the pre-registered list | |
-| `load1` range | |
-| Learning curve (landing error vs throw index) | *(also goes in the logbook entry, plan § R3 Gate)* |
+| Date, commit, bag | **Sitting 1: 2026-09-13 evening, `0778ca5` + the R3 software commits, bag `2026-09-13_22-57-18`, log `temp/logs/launch_r2gate_20260913_2257.log`** |
+| `plant_id` used | `r3-20260913` (2 rows, both from the chained attempt) |
+| Cold-start throws to in-band (gate: ≤ 5) | **NOT MEASURED** — all five single throws were caught but ended `NO_LANDING`: a plain THROW never announced, so the node never correlated its ball (fixed 2026-09-14, `logbook/2026-09-14-skill-stack-r3-first-powered-sitting.md`) |
+| Chained attempt: consecutive catches (gate: 10) | **2–3 of 5** (operator), then `ABORTED_NO_RELEASE` → hand `MAX_DEVIATION` latch (L1) |
+| Any code from § 6 that fired outside the pre-registered list | `MAX_DEVIATION` ×2 on the HAND axis (L1: the ended attempt's plan kept throwing at the 3500 rev/s² ceiling, 47.8 A saturation; L2: opening REST from an un-parked hand into the bridge's 1 rev/s slew); `ABORTED_PRIME_FAILED` on a reload (retired at R1) |
+| `load1` range | `temp/logs/loadavg_r3_20260913.txt` (not analysed — no throw reached the learner) |
+| Learning curve (landing error vs throw index) | none — **the plant is ~25 % fast**: apex 1.38 m for 0.9 m commanded, flight 0.975/1.053 s for 0.857 s; the box's flight range 0.750–0.857 s cannot reach it. Owner decision on the hand acceleration ceiling before sitting 2. |

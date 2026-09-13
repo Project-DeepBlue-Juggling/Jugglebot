@@ -414,16 +414,17 @@ def _make_observer(plant):
 def _make_observations(observer):
     """``observations(t_abs_s) -> ex.Observations`` for a single-ball,
     single-site sim run: mocap/hand/level/mode are always fresh in MuJoCo (no
-    staleness or mode change is modelled at R3), ``hand_at_seed`` is true by
-    construction (the ACTIVATE park IS the schedule's own seed — see
-    ``schedule.compile_self_toss``'s docstring), and ``ball_evidence`` is the
-    live observer's answer for ball 0."""
+    staleness or mode change is modelled at R3), ``hand_at_seed`` AND
+    ``hand_at_park`` are true by construction (the ACTIVATE park IS the
+    schedule's own seed — see ``schedule.compile_self_toss``'s docstring, and
+    Unit B's fresh-origin `REJECTED_HAND_NOT_PARKED` row), and
+    ``ball_evidence`` is the live observer's answer for ball 0."""
 
     def observations(t_abs_s):
         return ex.Observations(
             mocap_fresh=True, hand_fresh=True, hand_at_seed=True,
-            levelled=True, ball_evidence=observer(0, t_abs_s),
-            in_trajectory_mode=True)
+            hand_at_park=True, levelled=True,
+            ball_evidence=observer(0, t_abs_s), in_trajectory_mode=True)
     return observations
 
 

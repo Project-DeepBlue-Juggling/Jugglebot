@@ -344,7 +344,7 @@ The **Status** column is the one source of truth for where each rung stands;
 | R0 | Board and substrate | invariant checklist; census-backed dead-layer deletion | dead clusters (§ 6) | `./run_tests.sh --full` green; grep counts zero | ✅ **DONE** — checklist landed 2026-09-10, deletion done 2026-09-09 (`429c660`, `3bfec0b`) |
 | R1 | One hand master | can-bridge FW 21 (lane follows `HAS_HAND`, guard boots ARMED, ACTIVATE parks the hand at 0 rev), Platform FW 7 (no stroke engine), PROTOCOL_VERSION 7, `hand_mm_per_rev` measured key, lockstep runbook `tests/hardware/session_skill_stack_r1_flash.md` (completed) | `Trajectory.h`, `hand_source`, `hand_ops`, `HAND_TRAJ_CMD`/`HAND_SOURCE_SET`, `SetHandTrajCmd.srv`, `hand_stroke.py` twin, the legacy kind-0 toss device (its FSM branch refused at accept until R4) | bench ladder re-passes on the FW 21 / Platform 7 pair; a streamed self-toss caught with no latch step | ✅ **DONE 2026-09-11** (`1e2c0c9`, `c52dc27`) — flashed, sat, one streamed self-toss caught with no latch step; a levelling-frame tilt snap found + fixed (`_unified_prelevel`); multi-throw chaining + live guard cold-trip → R2 (`logbook/2026-09-11-skill-stack-r1-sitting-prelevel.md`, `…-one-hand-master.md`) |
 | R2 | Skills, schedule, stream (sim) | `motion/skills/{sites,schedule,segments,executor,admissible}.py`, `unified_cycle.state_at_knot`/`splice_at`, `InstallSegment.srv` + `trajectory/install_segment`, `skill_node.py`, vectorised `validate_cycle`, `tools/admissible_sweep.py`, `sim/skills_gate.py`, `hand_stream_bench --trip-guard` | `sim/cycle_gate.py`, `sim/unified_gate.py` (+ their tests); the per-sample `validate_cycle` loop. **`PlanCycle` and the ring policy stay for the FSM until R4** (owner, 2026-09-12 — see the R2 section) | 20 columns cycles in sim at the owner's operating point (0.9 m / 100 mm — re-sized at R2), no drops, five seeds; plan < 50 ms on the loaded Jetson | ✅ **DONE** — sim gate MET 2026-09-12 (20/20 × 5 seeds, 0 drops); **hardware gate MET 2026-09-13** on the third no-motion sitting (rows 15/16 PASS all five gates, worst solve 47.9 / 49.0 ms, handoff margin 73–74 ms; non-gating row 17 failed G1/G3 under two extra busy cores) — `4d49e04`, `40371fe` (`logbook/2026-09-12-skill-stack-r2-skills-schedule-stream.md`, `…/2026-09-13-skill-stack-r2-gate-sittings.md`) |
-| R3 | Learner + single site | `learner.py`, `memory.py`, outcome capture | ILC/trim/cal/record stack, `toss_ilc_enabled` | in-band within 5 throws from cold, sim and hardware; 10 consecutive catches | 🟡 **SIM MET, HARDWARE OUTSTANDING (2026-09-13)** — landed: the learner + memory, the single-site chained schedule, outcome capture, the precondition ladder (pre-level, floor lift) and a working `skill_node` shell. **Sim criterion MET 2026-09-13**: policies A and B, seeds 0–4, in-band by throw 3 (A) / 5 (B), monotone, 0 drops, repeat runs bit-identical. Outstanding: the operator's sitting, `tests/hardware/session_skills_r3.md`. `logbook/2026-09-13-skill-stack-r3-learner-single-site.md`. commits `b403964` (learner + memory), `c737ec9` (planner blend floor), `baab782` (skill path + learning-stack deletion) |
+| R3 | Learner + single site | `learner.py`, `memory.py`, outcome capture | ILC/trim/cal/record stack, `toss_ilc_enabled` | in-band within 5 throws from cold, sim and hardware; 10 consecutive catches | 🟡 **SIM MET, HARDWARE OUTSTANDING (2026-09-13)** — landed: the learner + memory, the single-site chained schedule, outcome capture, the precondition ladder (pre-level, floor lift) and a working `skill_node` shell. **Sim criterion MET 2026-09-13**: policies A and B, seeds 0–4, in-band by throw 3 (A) / 5 (B), monotone, 0 drops, repeat runs bit-identical. **Sitting 1 (2026-09-13 evening) did not reach the gate**: 5/5 single throws caught but untracked (a plain THROW never announced — fixed), 2–3/5 chained, two hand-axis `MAX_DEVIATION` latches (an ended attempt's plan kept throwing; an opening REST from an un-parked hand), the BB reload retired at R1 — five Jetson-side fixes landed 2026-09-14; ⚠ **the plant throws ~25 % fast (apex 1.38 m for 0.9 m) and the learner's box cannot reach it — owner decision on the hand acceleration ceiling before sitting 2** (`logbook/2026-09-14-skill-stack-r3-first-powered-sitting.md`). Outstanding: sitting 2, `tests/hardware/session_skills_r3.md`. `logbook/2026-09-13-skill-stack-r3-learner-single-site.md`. commits `b403964` (learner + memory), `c737ec9` (planner blend floor), `baab782` (skill path + learning-stack deletion) |
 | R4 | Two sites, one ball, BB reset | alternating schedule, reload as a CATCH skill, `Juggle.action`, GUI surface | FSM stack (tag `fsm-final`), `catch_coordinator`, `catch_reach`, old sim gates | 10 consecutive alternating catches; BB reload → catch → throw chain | ⬜ **NOT STARTED** |
 | R5 | Two-ball columns | Start/Stop phases, limits ramp as sized at R2 | — | five consecutive cycles, then 30 catches; learning curve logged | ⬜ **NOT STARTED** |
 | R6 | Close-out | docs, memory, archival | whatever R5 left dead | plan archived `completed` | ⬜ **NOT STARTED** |
@@ -565,6 +565,34 @@ the rung's tests passing or a handoff file in the scratchpad.
   [−40, 40] × [−30, 30] mm, flight 0.750–0.857 s. (1) RE-CARRIED as a
   runsheet prerequisite for R3's sitting — the row 17 re-run needs the
   owner's background-load work, which did not happen this rung.
+- **Sitting 1 (2026-09-13 evening, bag `2026-09-13_22-57-18`) — gate NOT
+  reached; `logbook/2026-09-14-skill-stack-r3-first-powered-sitting.md`.**
+  Fixed 2026-09-14 (Jetson side, no flash): a plain THROW announces from its
+  own event instant (five single throws were caught but ended `NO_LANDING`
+  with a CONFIRMED track in `/balls`); an ended attempt with a release still
+  streaming installs one `trajectory/hold` (latch L1: two hand strokes after
+  `ABORTED_NO_RELEASE`, the second at the 3500 rev/s² ceiling, 47.8 A);
+  `REJECTED_HAND_NOT_PARKED` is now off-park OR tracking error, on the
+  opening REST too (latch L2: a REST from a hand at 9.4 rev into the
+  bridge's 1 rev/s re-activation slew); the guard line names the axis
+  (`hand`, not `leg 6`); the BB reload refuses `REJECTED_RELOAD_RETIRED_R1`
+  (its hand prime rode the R1-deleted stroke engine — § 1 item 7 stands;
+  R4 re-cuts it as a CATCH skill). **Carried to sitting 2 / R4:** (e) the
+  plant throws ~25 % fast — announced 4.17 m/s, measured apex 1.38 m
+  (5.2 m/s), hand peak 161 rev/s vs 128 planned, flight 0.975/1.053 s vs
+  0.857 — consistent with current saturation then position-loop catch-up;
+  the (P1, P1) box's flight range 0.750–0.857 s cannot centre it: OWNER
+  DECISION on the hand acceleration ceiling (the 2865 rev/s² stroke tracked
+  at 19.9 A) and a box re-sweep; (f) FIRMWARE: the hand deviation residual
+  is the raw plan against the encoder while the bridge slews the emitted
+  command at ≤ 1 rev/s after a hand-lane activation (`leg_interp.cpp:777`
+  vs `:963`) — the guard trips on a gap the bridge created; (g) the guard
+  descent collapses the legs onto measured but leaves the hand command
+  frozen; (h) the SEATED possession edge missed 3 of 8 real catches and
+  both memory rows read `caught=False`; (i) the executor's fresh-origin
+  gate is `idx == 0 and kind != CATCH` (a mid-schedule fresh REST would not
+  be gated — none exists in today's schedules); (j) `catch_coordinator_node.py`
+  keeps the same dead `smooth_move_hand` client (deleted with the FSM at R4).
 - **Owner decisions (2026-09-13).**
   1. *Cycle.* Chained single site: apex 0.9 m, dwell 0.30 s, site P1
      (−50, 0), legs 300 / 5000 / 150 000, hand 3500.
