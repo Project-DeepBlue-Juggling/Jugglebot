@@ -1,18 +1,30 @@
 """
-This ROS2 node reads the state of a 3Dconnexion SpaceMouse and publishes the pose of the platform to the 'platform_pose' topic.
-The node subscribes to the 'control_state' topic to see if the spacemouse is the chosen control method.
-If the spacemouse is enabled, the node reads the state of the spacemouse and publishes the pose of the platform.
-Otherwise, the node does nothing.
+This ROS2 node reads the state of a 3Dconnexion SpaceMouse and publishes the pose of the platform to the
+'platform_pose_topic' topic while SPACEMOUSE is the active control mode (per 'control_mode_topic').
+Outside that mode it does nothing — no timer, no open device, nothing read.
 
-Connection handling mirrors the validated mocap-handler contract: the node
-stays alive whether or not the SpaceMouse is present, retries quietly with a
-state-transition + throttled-recurring WARNING, and auto-connects when the
-device is plugged in. On a mid-session unplug *while SpaceMouse is the active
-control mode*, it commands the platform smoothly back to the ACTIVE pose
-(0,0,170,0,0,0) — the MPC profiles that move — so the platform never freezes
-at whatever pose the stick last commanded. (SpaceMouse mode is only used for
-qualitative testing, so a known safe home on loss-of-device is the most
-robust behaviour.)
+Idle-CPU lifecycle (2026-09-14): outside SPACEMOUSE mode this node holds no timer and the device is
+closed; its only live entity is the control_mode_topic subscription. Entering SPACEMOUSE mode creates the
+100 Hz tick timer (the device then opens on the first tick, via the usual rate-limited _ensure_open());
+leaving it destroys the timer and closes the device. This replaced an always-on 100 Hz
+`while rclpy.ok(): spin_once` loop that cost 7-8% of a core with no device connected at all (2026-09-13
+pidstat: live launch; 5.9% standalone on an idle Jetson) — the cost was the timer + spin_once loop itself, not HID scanning
+(pyspacemouse.open() with no device measured 0.36 ms).
+
+The sole consumer is trajectory_node._on_platform_pose (the follower), which only accepts this topic in a
+follower (pose-accepting) mode whose 'publisher' field matches the active mode — so this node publishing
+(or not) outside SPACEMOUSE mode was already inert downstream; the mode gate here just stops the wasted
+work at the source instead of discarding it one hop later. If this node goes silent entirely (e.g.
+crashed) while SPACEMOUSE is active, trajectory_node's own `follower_input_loss_s` (0.4 s) staleness check
+is the backstop — it stops the follower rather than run on a stale target.
+
+Connection handling mirrors the validated mocap-handler contract: the node stays alive whether or not the
+SpaceMouse is present, retries quietly with a state-transition + throttled-recurring WARNING, and
+auto-connects when the device is plugged in. On a mid-session unplug *while SpaceMouse is the active
+control mode*, it commands the platform smoothly back to the ACTIVE pose (0,0,170,0,0,0) — the follower
+profiles that move, not a step command — so the platform never freezes at whatever pose the stick last
+commanded. (SpaceMouse mode is only used for qualitative testing, so a known safe home on loss-of-device
+is the most robust behaviour.)
 """
 
 import rclpy
@@ -37,28 +49,34 @@ class SpaceMouseHandler(Node):
     # rclpy-throttled "SpaceMouse not connected" WARNING cadence: logs
     # immediately on the first failure, then <= once per this period while the
     # device is absent. A reliable, ongoing declaration without per-tick spam.
+    # Only ever fires while SPACEMOUSE is the active mode — the tick that
+    # calls _ensure_open() exists nowhere else.
     _OUTAGE_WARN_THROTTLE_S = 30.0
 
     def __init__(self):
         super().__init__('spacemouse_handler')
 
-        # Subscribe to control_mode_topic to see if spacemouse is enabled
+        # Subscribe to control_mode_topic to see if spacemouse is enabled.
+        # This subscription is the node's only live entity outside SPACEMOUSE
+        # mode — no timer, no open device, until the first mode message.
         self.subscription = self.create_subscription(String, 'control_mode_topic', self.control_mode_callback, 10)
         self.spacemouse_enabled = False
 
-        # Create a publisher for the platform pose and a timer to publish it
+        # Create the platform-pose publisher, but NOT the timer: the timer
+        # is mode-scoped (created/destroyed by control_mode_callback) so an
+        # idle session (SpaceMouse never selected) costs nothing.
         self.publisher_ = self.create_publisher(PlatformPoseCommand, 'platform_pose_topic', 10)
-        self.timer = self.create_timer(0.01, self.publish_pose)
+        self.timer = None
 
         # Connection state. The node never self-terminates on a missing
         # device — it retries quietly and connects automatically when the
-        # SpaceMouse appears.
+        # SpaceMouse appears. The device is deliberately NOT opened here:
+        # the control mode is unknown at construction time (the first
+        # control_mode_topic message arrives within ~100 ms of the
+        # orchestrator's 10 Hz stream), and opening it before SPACEMOUSE is
+        # even selected is exactly the always-on cost this lifecycle removes.
         self._is_open = False
         self._last_open_attempt = 0.0  # time.monotonic(); gates reconnect rate
-
-        # One non-blocking attempt at startup (logs the throttled WARNING
-        # immediately if the device is absent).
-        self._ensure_open()
 
     # ──────────────────────────────────────────────────────────────────────
     #  Connection management
@@ -94,10 +112,11 @@ class SpaceMouseHandler(Node):
     def _handle_disconnect(self):
         """Transition connected → disconnected: close + one WARNING.
 
-        The platform-homing is handled by the caller (it only applies when
-        SpaceMouse is the active control mode). This logs one WARNING per
-        disconnect *event* (distinct from the throttled "still absent" line
-        in _ensure_open), mirroring the mocap _on_qtm_disconnect contract.
+        Only ever called from the 100 Hz tick, which only exists while
+        SPACEMOUSE is the active mode, so the platform-homing the caller does
+        right after this always applies. This logs one WARNING per disconnect
+        *event* (distinct from the throttled "still absent" line in
+        _ensure_open), mirroring the mocap _on_qtm_disconnect contract.
         """
         if not self._is_open:
             return
@@ -120,29 +139,25 @@ class SpaceMouseHandler(Node):
     def publish_pose(self):
         """Read the SpaceMouse and publish the platform pose at 100 Hz.
 
+        Exists only while SPACEMOUSE is the active mode (the timer is
+        created/destroyed by control_mode_callback), so every tick here is
+        "in mode" — the old not-in-mode drain-the-HID-buffer branch is gone;
+        closing the device on mode-exit already discards whatever the
+        hidraw buffer was holding (the buffer is per open()).
+
         Disconnected behaviour:
           - always retry (rate-limited) and keep the node alive;
-          - if SpaceMouse is the active control mode, hold the platform at
-            ACTIVE (the MPC profiles the move home and holds it). Publishing
-            ACTIVE every tick is idempotent, survives an MPC restart, and is
-            continuous with reconnect (stick-at-rest == ACTIVE).
+          - while not open, hold the platform at ACTIVE (the follower profiles
+            the move home and holds it). Publishing ACTIVE every tick is
+            idempotent, survives a follower restart, and is continuous with
+            reconnect (stick-at-rest == ACTIVE).
         """
         if not self._is_open:
             self._ensure_open()
             if not self._is_open:
-                if self.spacemouse_enabled:
-                    self._publish_pose_from_axes(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+                self._publish_pose_from_axes(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 return
             # Just reconnected — fall through and read the device.
-
-        if not self.spacemouse_enabled:
-            # Not the active control method — drain the HID buffer, publish
-            # nothing. A read failure here means the device went away.
-            try:
-                pyspacemouse.read()
-            except Exception:
-                self._handle_disconnect()
-            return
 
         try:
             state = pyspacemouse.read()
@@ -214,14 +229,33 @@ class SpaceMouseHandler(Node):
         self.publisher_.publish(message)
 
     def control_mode_callback(self, msg):
-        # If the incoming state calls for the spacemouse, enable it
+        """Enter/exit SPACEMOUSE mode — idempotent against repeated identical
+        messages from the orchestrator's 10 Hz control_mode_topic stream.
+
+        Entering creates the 100 Hz tick timer and resets the reconnect
+        limiter so the first open attempt (on the very next tick) is
+        immediate rather than waiting out a stale _RECONNECT_INTERVAL_S from
+        a previous session. Leaving destroys the timer and closes the device
+        if open — the node then holds no timer and touches no HID device
+        again until SPACEMOUSE is selected.
+        """
         if msg.data == 'SPACEMOUSE' and not self.spacemouse_enabled:
             self.get_logger().info('Spacemouse enabled')
             self.spacemouse_enabled = True
+            self._last_open_attempt = 0.0
+            self.timer = self.create_timer(0.01, self.publish_pose)
 
         elif msg.data != 'SPACEMOUSE' and self.spacemouse_enabled:
             self.get_logger().info('Spacemouse disabled')
             self.spacemouse_enabled = False
+            self.destroy_timer(self.timer)
+            self.timer = None
+            if self._is_open:
+                self._is_open = False
+                try:
+                    pyspacemouse.close()
+                except Exception:
+                    pass
 
     #########################################################################################################
     #                                          Utility Functions                                            #
@@ -243,8 +277,7 @@ def main(args=None):
     node = SpaceMouseHandler()
 
     try:
-        while rclpy.ok():
-            rclpy.spin_once(node, timeout_sec=0.01)
+        rclpy.spin(node)
     except KeyboardInterrupt:
         pass
     finally:

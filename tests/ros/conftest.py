@@ -1217,9 +1217,9 @@ def _rclpy_ok(*_args, **_kwargs):
 def _rclpy_noop(*_args, **_kwargs):
     """``init`` / ``shutdown`` / ``spin_once`` — no-ops, NOT Mocks (see above).
 
-    Same failure class as ``ok``: ``spacemouse_handler.main`` spins
-    ``rclpy.spin_once`` inside a ``while rclpy.ok():`` loop, so a Mock here is
-    the same unbounded process-lifetime call record one driver away.
+    Same failure class as ``ok``: any ``while rclpy.ok(): spin_once`` driver
+    would spin ``rclpy.spin_once`` the same way, so a Mock here is the same
+    unbounded process-lifetime call record one driver away.
     """
     return None
 

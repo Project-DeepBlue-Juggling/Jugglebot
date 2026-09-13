@@ -97,9 +97,8 @@ def test_the_rclpy_spin_loop_entry_points_are_not_mocks(name):
 
     ``ok`` is the one that actually bit (a 5 s no-op-sleep wait spins it
     millions of times), but the other three are one driver away from the same
-    thing — ``spacemouse_handler.main`` calls ``spin_once`` inside a
-    ``while rclpy.ok():`` loop — so the guard covers the entry points rather
-    than the single incident.
+    thing — any ``while rclpy.ok(): spin_once`` driver would do the same —
+    so the guard covers the entry points rather than the single incident.
     """
     fn = getattr(rclpy, name)
     assert not isinstance(fn, mock.NonCallableMock), (
