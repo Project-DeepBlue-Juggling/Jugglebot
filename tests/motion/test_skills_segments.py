@@ -247,6 +247,32 @@ def test_a_refusal_propagates_the_inner_code_unchanged(catch_seed, cfg, limits,
         sg.plan_segment(sg.THROW, seed, terminal, cfg, limits, geom)
 
 
+def test_launch_leg_jerk_scales_with_the_aim_offset(geom, cfg):
+    """A single-site launch from rest aimed 10 mm off its site must cost clearly
+    less leg jerk than one aimed 20 mm off, and both must fit the 0.9 margin.
+
+    Pins ``cup_realize._TILT_BLEND_MIN_KNOTS``: without the floor a small pin gap
+    got a 2-knot tilt blend and every nonzero aim cost ~125k mm/s³ whatever its
+    size (MEASURED 2026-09-13 at 300/5000/150000: 10 mm 123 165, 20 mm 124 686),
+    which collapsed the R3 single-site admissible box to a zero aim."""
+    limits = TrajectoryLimits.from_config(hw).with_session_limits(
+        leg_vel_mmps=LEG_VEL, leg_acc_mmps2=LEG_ACC, leg_jerk_mmps3=150000.0,
+        hand_acc_rps2=HAND_ACC)
+    site = np.array([-50.0, 0.0, 860.0])
+    seed = _rest_state(np.array([-50.0, 0.0, uc.SETTLE_CUP_Z_MM]))
+
+    def peak_jerk(dx_mm):
+        terminal = sg.ThrowTerminal(site_mm=site,
+                                    target_mm=site + np.array([dx_mm, 0.0, 0.0]),
+                                    flight_s=T_F, t_release_s=0.4)
+        seg = sg.plan_segment(sg.THROW, seed, terminal, cfg, limits, geom)
+        return float(seg.meta.report.peak_leg_jerk_mmps3)
+
+    j10, j20 = peak_jerk(10.0), peak_jerk(20.0)
+    assert j10 < 0.6 * j20
+    assert j20 < 0.9 * 150000.0
+
+
 def test_terminal_validation_rejects_bad_shapes_and_non_positive_times():
     with pytest.raises(ValueError, match='site_mm'):
         sg.ThrowTerminal(site_mm=np.zeros(2), target_mm=THROW_SITE_MM,

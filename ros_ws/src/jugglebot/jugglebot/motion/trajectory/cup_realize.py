@@ -168,6 +168,20 @@ _BLEND_CURVATURE_MAX = 10.0 / np.sqrt(3.0)
 #: the authority on what the machine will accept, not this loop.
 _TILT_WIDEN_ATTEMPTS = 8
 
+#: Narrowest pin-blend width (knots) :func:`_accel_bounded_schedule` may use.  The
+#: curvature estimate sizes ``L`` from the pin gap alone, so a SMALL gap (a launch
+#: from rest aimed a few mm off its site: 1-3 mrad against the smoothed banking)
+#: gets a 2-knot blend — a corner on the 25 ms grid that the acceleration check
+#: passes but the leg JERK does not: at knot 1, and as a one-sided tilt-slope
+#: break at the release seam that ``decompose`` turns into a centroid velocity
+#: step.  MEASURED 2026-09-13 (skill-stack R3 aim-jerk investigation; logbook
+#: 2026-09-13-skill-stack-r3-learner-single-site), a single-site launch at
+#: 300/5000/150000: 10 / 20 / 40 mm of aim cost 123k / 125k / 140k mm/s³ (flat in
+#: the aim) without a floor; with 8 knots (0.2 s) they cost 14.6k / 29.2k /
+#: 58.5k, zero aim, STEADY catch-with-throw and columns peaks unchanged; 6 knots
+#: is still linear, 4 leaves the knot-1 corner (40 mm: 140k).
+_TILT_BLEND_MIN_KNOTS = 8.0
+
 #: Default vertical band (mm) the platform may absorb when the slider saturates,
 #: used only when ``z_float_enabled``.  From the generated config
 #: (``trajectory_op.unified_z_band_mm``, 30.0 as landed 2026-08-30) rather than a
@@ -458,7 +472,8 @@ def _accel_bounded_schedule(raw: np.ndarray, anchors, dt: float,
         # OWN curvature and ignores the cross term ``2·W'·sm'``, which is real
         # wherever the smoothed series is still moving under the window.
         L = float(min(max(boost * np.ceil(
-            np.sqrt(pin_gap * _BLEND_CURVATURE_MAX / budget)), 1.0), blend_max))
+            np.sqrt(pin_gap * _BLEND_CURVATURE_MAX / budget)),
+            _TILT_BLEND_MIN_KNOTS), blend_max))
         weight = np.zeros(n)
         out = sm.astype(float, copy=True)
         for j, v in anchors:
