@@ -1,8 +1,8 @@
 ---
-title: "R2 hardware-gate sittings (x2) — a schedule that is only exact near t = 0, a driver that coupled its attempts, and where the Jetson's CPU actually goes"
+title: "R2 hardware-gate sittings (x3) — gate MET on the third; a schedule that was only exact near t = 0, a driver that coupled its attempts, and where the Jetson's CPU actually goes"
 type: investigation
 date: 2026-09-13
-status: in-progress
+status: resolved
 phase: "two-ball-skill-stack — R2 (hardware gate)"
 related_plan: two-ball-skill-stack.md
 ---
@@ -11,10 +11,12 @@ related_plan: two-ball-skill-stack.md
 
 ## Outcome
 
-`tests/hardware/session_skills_r2_plan_gate.md` was flown twice on 2026-09-13
-(robot activated, wire disarmed, nothing moved; G5 passed every row). **The gate
-is not met yet**, and both sittings failed for the same two defects, neither of
-which is plan time:
+`tests/hardware/session_skills_r2_plan_gate.md` was flown three times on
+2026-09-13 (robot activated, wire disarmed, nothing moved; G5 passed every row).
+**The gate is MET, on the third sitting** (12:36–12:39, after the fixes below):
+rows 15 and 16 passed all five gates; the non-gating margin row 17 failed G1 and
+G3 (§ Sitting 3). The first two sittings failed on defects, none of them plan
+time:
 
 - **A production bug in `motion/skills/schedule.py`, now fixed.** The schedule
   compared absolute instants to 1e-9 s. On the ROS wall clock (~1.79e9 s) a
@@ -36,8 +38,8 @@ which is plan time:
 Plan time itself: at the re-run's load (load1 1.4–2.5) G1 passed on arms A and
 B (worst 42.1 / 43.7 ms) and failed only on the stressed row C (54.4 ms), with
 G2 margins of 67–79 ms. Sitting 1 ran at load1 7.4–8.8 and its solves were
-1.6–2.4× slower; that extra load is unattributed. A re-fly after these fixes is
-the gate.
+1.6–2.4× slower; that extra load is unattributed. The third sitting, after these
+fixes, met the gate.
 
 ## Discussion
 
@@ -55,6 +57,51 @@ the gate.
 
 Same code, same launch file, same limits. The idle rehearsal the same morning
 (load1 0.9–1.2) read CATCH+throw p50 28.7 / max 30.0 ms.
+
+### Sitting 3 — the gate met (12:36–12:39, `40371fe`)
+
+| Row | load1 | Worst solve (G1) | Handoff round trip max / margin (G2) | Emitter gap max (G3) | Verdict |
+|---|---|---|---|---|---|
+| 15, A | 1.70–2.87 | 47.93 ms over 69 | 50.8 / 74.2 ms, 0 late | 28.5 ms | **PASS** all five |
+| 16, B | 2.69–3.25 | 48.99 ms over 145 | 51.6 / 73.4 ms, 0 late | 28.4 ms | **PASS** all five |
+| 17, C (not gating) | 3.70–6.04 | 93.88 ms over 136 | 103.7 / 21.3 ms, 0 late | 40.9 ms | G1, G3 FAIL; G2, G4, G5 PASS |
+
+CATCH+throw p50 / max: 41.6 / 47.9 (A), 41.5 / 49.0 (B), 62.0 / 93.9 ms (C). Every
+attempt of every row ran its full schedule (G4 0/3 ended early).
+
+- **The console's `REJECTED_CYCLE_INFEASIBLE` errors were all re-aims.** 143 of
+  them (115 `LIMIT_ACC`, 28 `LIMIT_JERK`) against 143 refused re-sends in the
+  CSVs (76 in B, 67 in C); none of the 207 scheduled installs was refused. A
+  ±3 mm landing change late in a 0.278 s transit needs more than 5000 mm/s² of
+  leg acceleration at a 100 mm hop, so the gate refuses it before anything is
+  installed — the sim's no-reach-margin finding (plan § 4 R2, decision 9).
+- **The 75 ms general splice budget was not exercised by an accepted install.**
+  G2's unpinned maximum read 0.00 in every row: every re-send was refused and
+  every pre-position started a fresh origin. The handoff budget, which carries
+  every scheduled catch, was.
+- **G1 at an ordinary load is marginal**: rows 15 and 16 cleared the 50 ms bar
+  by 2.1 and 1.0 ms.
+- **Row 17** is the measure of margin: two extra busy cores took the worst
+  solve to 93.9 ms with 21.3 ms of handoff budget left and zero late splices,
+  and the emitter to one 40.9 ms gap against a 40 ms bar and the firmware's
+  250 ms staleness E-STOP.
+
+**What the legs are commanded** (owner remark at the sitting: "we'll be
+commanding the legs to move pretty fast"). Through the real install chain at
+the operating point (`python tools/probes/skills_segment_sweep.py --apex 0.9
+--sep 1 40 100 --dwell 0.30 --jerk 200000 --vel-acc 300/5000 --hand-acc 3500
+--n-throws 6`, 2026-09-13):
+
+| Separation | Peak leg velocity | Peak leg acceleration | Peak leg jerk |
+|---|---|---|---|
+| 1 mm (effectively one site) | 40 mm/s | 1668 mm/s² | 188 000 mm/s³ |
+| 40 mm | 101 mm/s | 1705 mm/s² | 122 000 mm/s³ |
+| 100 mm | 266 mm/s | 4034 mm/s² | 146 000 mm/s³ |
+
+Removing the lateral hop takes velocity and acceleration down but not jerk,
+which is highest at one site: with no lateral travel left it is the platform's
+tilt from the catch into the throw inside a 0.30 s dwell. The machine has flown
+150 000 mm/s³ (R1 sitting), never 200 000.
 
 ### The schedule bug — why the rehearsal, the sim gate and the tests all missed it
 
@@ -166,8 +213,20 @@ question; the facts above are what it would be decided on.
   `..._B_stress2_20260913_{113800,120000}.csv` with their `_meta.json`; launch logs
   `temp/logs/launch_r2gate_20260913_{1130,1134,1157}.log`; bags
   `~/Desktop/rosbags/2026-09-13_{11-30-06,11-34-47,11-57-45}`; load capture
-  `~/Desktop/Jugglebot/temp/logs/loadavg_r2gate_20260913.txt`; pidstat
-  `~/Desktop/Jugglebot/temp/logs/pidstat_r2gate_20260913.txt`.
+  `~/Desktop/Jugglebot/temp/logs/loadavg_r2gate_20260913.txt`. The pidstat
+  analysis above is sitting 2's; its file
+  `~/Desktop/Jugglebot/temp/logs/pidstat_r2gate_20260913.txt` was overwritten by
+  sitting 3's capture at the same path (it now spans 12:35:24–12:39:33).
+- Sitting 3, the gate (2026-09-13, `40371fe`, launch `auto_arm:=false`, bag
+  `~/Desktop/rosbags/2026-09-13_12-35-28`, launch log
+  `temp/logs/launch_r2gate_20260913_1235.log`):
+  `python3 tests/hardware/skills_plan_bench.py --arm A` → exit 0, G1–G5 PASS
+  (`temp/logs/skills_plan_bench_A_loaded_20260913_123638.csv`);
+  `python3 tests/hardware/skills_plan_bench.py --arm B` → exit 0, G1–G5 PASS
+  (`..._B_loaded_20260913_123747.csv`);
+  `python3 tests/hardware/skills_plan_bench.py --arm B --label stress2` with two
+  busy cores → G1 and G3 FAIL, G2/G4/G5 PASS, not gating
+  (`..._B_stress2_20260913_123854.csv`). Numbers in § Sitting 3.
 - `python3 tests/hardware/skills_plan_bench.py --rehearse --arm B` (2026-09-13,
   idle Jetson, after every fix): `blas threads: 1`; attempts 0, 1, 2 each 22/22
   skills, none ended early; G1 PASS worst 31.16 ms over 176 solves; G2 PASS, 0
@@ -182,5 +241,11 @@ question; the facts above are what it would be decided on.
 
 ## Handoff
 
-Re-fly rows 15–17 with `pidstat` running. Note load1 before starting a row; a
-sitting-1-sized load will fail G1 whatever the code does.
+R2 is closed. Carried to R3, before its first powered sitting (plan § 4 R3):
+
+1. Port the FSM's floor lift and pre-level to the skill path (a THROW from the
+   ACTIVATE park refuses `HAND_STROKE` today).
+2. Check R3's own cycle leg jerk offline; anything above the 150 000 mm/s³ flown
+   is a logged ramp.
+3. Re-run row 17 after the owner's background-load work; note load1 before each
+   row, since a sitting-1-sized load fails G1 whatever the code does.

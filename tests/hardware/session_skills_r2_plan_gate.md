@@ -1,13 +1,14 @@
 # R2 hardware gate — per-skill plan time on the loaded Jetson
 
-> ⚠ **FLOWN TWICE 2026-09-13 — gate NOT met; re-fly after the fixes.** Both
-> sittings hit a schedule bug that only appears on the ROS clock and a driver
-> defect that coupled attempts; both fixed the same day. Account:
-> `logbook/2026-09-13-skill-stack-r2-gate-sittings.md`. One short sitting, before
-> R3. The robot is powered and activated but **never moves**: the wire stays
+> ✅ **GATE MET 2026-09-13, on the third sitting.** Rows 15 and 16 PASS; the
+> margin row 17 failed G1 and G3, which it is allowed to. The first two sittings
+> found a schedule bug on the ROS clock and driver defects, all fixed the same
+> day. Account: `logbook/2026-09-13-skill-stack-r2-gate-sittings.md`. Kept live
+> for re-running row 17 after the background-load work, before R3's first powered
+> sitting. The robot is powered and activated but **never moves**: the wire stays
 > disarmed the whole time.
 
-Skill-stack R2's one outstanding gate (`plans/active/two-ball-skill-stack.md` § 4
+Skill-stack R2's hardware gate, closed by the third sitting above (`plans/active/two-ball-skill-stack.md` § 4
 R2: *"per-skill plan < 50 ms measured on the Jetson with the launch up and a bag
 recording"*). Entry: `logbook/2026-09-12-skill-stack-r2-skills-schedule-stream.md`.
 Everything here is run by the operator. Driver:
@@ -143,14 +144,14 @@ table and the verdict. The gates:
 | 19 | Stop the launch and the load capture. | |
 | 20 | Send the paths — not pasted contents: the three `temp/logs/skills_plan_bench_*.csv` with their `_meta.json`, `temp/logs/loadavg_r2gate_*.txt`, `temp/logs/launch_r2gate_*.log`, and the bag folder name. | |
 
-## 7. Results (fill in)
+## 7. Results (third sitting, 2026-09-13)
 
 | Item | Result |
 |---|---|
-| Date, commit, bag | |
-| Rehearsal (row 4) max ms | |
-| `blas threads` (row 7) | |
-| Row 15 (A) — G1 max / G2 handoff max / unpinned max / G3 max / verdict | |
-| Row 16 (B) — same, plus re-sends accepted / refused | |
-| Row 17 (C, not gating) — same | |
-| `load1` range during rows 15–17 | |
+| Date, commit, bag | 2026-09-13 third sitting, `40371fe`, `~/Desktop/rosbags/2026-09-13_12-35-28` |
+| Rehearsal (row 4) max ms | 31.16 (12:21, after the fixes) |
+| `blas threads` (row 7) | blas threads: 1 (threadpoolctl:openblas) |
+| Row 15 (A) — G1 max / G2 handoff max / unpinned max / G3 max / verdict | 47.93 / 50.8 / 0.0 / 28.5 ms / **PASS** |
+| Row 16 (B) — same, plus re-sends accepted / refused | 48.99 / 51.6 / 0.0 / 28.4 ms / **PASS**; re-sends 0 / 76 |
+| Row 17 (C, not gating) — same | 93.88 / 103.7 / 0.0 / 40.9 ms / G1, G3 FAIL; re-sends 0 / 67 |
+| `load1` range during rows 15–17 | 1.70–2.87 / 2.69–3.25 / 3.70–6.04 |

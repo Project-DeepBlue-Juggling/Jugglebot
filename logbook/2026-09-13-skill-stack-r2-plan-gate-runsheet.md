@@ -2,12 +2,15 @@
 title: "R2 hardware-gate runsheet — a no-motion timing gate on the loaded Jetson; install_segment's missing A5 marker; two skill-path preconditions R3 must port"
 type: feature
 date: 2026-09-13
-status: in-progress
+status: resolved
 phase: "two-ball-skill-stack — R2 (hardware gate)"
 related_plan: two-ball-skill-stack.md
 ---
 
 # R2 hardware-gate runsheet
+
+> Flown three times on 2026-09-13; the gate was **met on the third sitting**.
+> Account: `2026-09-13-skill-stack-r2-gate-sittings.md`.
 
 **What.** `tests/hardware/session_skills_r2_plan_gate.md` and its driver
 `tests/hardware/skills_plan_bench.py` (pure core in
