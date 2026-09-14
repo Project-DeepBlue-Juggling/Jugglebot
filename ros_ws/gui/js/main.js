@@ -1029,7 +1029,19 @@ function applyFontSize(size) {
 
 // ---- Topic discovery ----
 
-/** Topics we subscribe to for data processing (not just monitoring) */
+/**
+ * Topics we subscribe to for data processing (not just monitoring).
+ *
+ * CONTRACT: this set must equal the topic-name literals passed to every
+ * ros.subscribe(...) call across ros_ws/gui/js/*.js. runTopicDiscovery() below
+ * gives every OTHER discovered topic a raw ros.subscribeSpy() (cbor-raw,
+ * ros-bridge.js) purely to count arrivals; rosbridge fixes a topic's
+ * subscription as raw-vs-decoded at first creation and shares it across every
+ * subscriber, so a spy landing on a topic this GUI also subscribes decoded
+ * would break whichever subscription lost that race. Keeping this set exactly
+ * in sync with the real subscribe() calls is what keeps the two paths from
+ * ever sharing a topic. tests/ros/test_rosbridge_websocket_lean.py pins it.
+ */
 const GUI_SUBSCRIBED_TOPICS = new Set([
     'robot_state', 'bb/heartbeat', 'orchestrator_state',
     'profile', 'link_status', 'udp_diag', 'clock_diag', 'hand_telemetry',

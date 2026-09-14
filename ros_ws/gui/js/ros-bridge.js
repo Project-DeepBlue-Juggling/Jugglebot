@@ -354,6 +354,20 @@ export function subscribeSpy(topicName, messageType, callback, throttleRate = 20
         name: topicName,
         messageType: messageType,
         throttle_rate: throttleRate,
+        // Spy callbacks only count arrivals (recordTopicMessage in main.js) —
+        // they never read a field — so raw CBOR (rclpy raw=True) skips
+        // rosbridge's per-message deserialisation, including for the two
+        // 100 Hz topics a spy can land on. Measured -15 to -17% CPU; the
+        // monitor's displayed rate is unaffected, since that's the THROTTLED
+        // delivery rate above, not decode cost.
+        //
+        // rosbridge shares ONE ROS subscription per topic and fixes it
+        // raw-vs-decoded at first creation, so a spy must never target a
+        // topic the GUI also subscribes decoded, or whichever subscription
+        // was created first wins for both. main.js's GUI_SUBSCRIBED_TOPICS
+        // guarantees that by skipping every topic this spy would otherwise
+        // hit — see the contract note there.
+        compression: 'cbor-raw',
     });
     topic.subscribe(callback);
     return topic;

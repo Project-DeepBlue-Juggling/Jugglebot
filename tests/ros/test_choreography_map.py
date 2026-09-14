@@ -438,6 +438,26 @@ def test_real_package_includes_spacemouse_handler():
         'restricted to *_node.py')
 
 
+def test_scan_skips_listed_non_node_files(tmp_path):
+    _write_node(tmp_path, """
+        class N:
+            def call(self, node_handle, service_class, service):
+                node_handle.create_client(service_class, service)
+    """, name='rosbridge_websocket_lean.py')
+    assert scan_nodes(str(tmp_path)) == []
+
+
+def test_real_package_excludes_the_rosbridge_wrapper():
+    """The GUI's rosbridge wrapper is outside the map's Python-node scope.
+
+    ``rosbridge_websocket_lean.py`` creates a service client per websocket
+    request, named by the browser, so it has no static endpoint to map, and the
+    header already declares GUI/rosbridge consumers out of scope. Scanning it
+    printed an ``UNRESOLVED(service)`` client (2026-09-14).
+    """
+    assert not [e for e in _scan() if e.node == 'rosbridge_websocket_lean']
+
+
 def test_scan_skips_test_and_cache_directories(tmp_path):
     pkg_tests = tmp_path / 'tests'
     pkg_tests.mkdir()

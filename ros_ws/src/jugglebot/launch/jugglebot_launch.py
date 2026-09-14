@@ -496,9 +496,21 @@ def generate_launch_description():
     # output='log' captures rosbridge's client connect/disconnect lines in the
     # per-process launch log — they were absent before, which is why the
     # transport drop could not be confirmed from logs.
+    #
+    # executable is jugglebot's OWN rosbridge_websocket_lean, not the stock
+    # rosbridge_server one, since 2026-09-14: the stock executable leaks a
+    # service client on every call (rclpy never frees it — the GUI's topic
+    # discovery calls /rosapi/topics every 3 s, so idle rosbridge CPU measured
+    # 2.95% -> 59.45% after 1,200 such calls, an hour's worth) and drives its
+    # executor from a 1 ms tornado timer (measured 34.7% -> 24.3% under load
+    # moving to a dedicated spin thread). rosbridge_websocket_lean.py wraps the
+    # stock 1.3.1 node with both fixes; see its module docstring and
+    # logbook/2026-09-14-rosbridge-cpu-leak-and-spin.md for the full numbers.
+    # All parameters below (including the ping settings and their rationale
+    # above) are unchanged — the lean node reads them identically.
     rosbridge_websocket_node = Node(
-        package='rosbridge_server',
-        executable='rosbridge_websocket',
+        package='jugglebot',
+        executable='rosbridge_websocket_lean',
         name='rosbridge_websocket',
         output='log',
         parameters=[{

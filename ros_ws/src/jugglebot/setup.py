@@ -100,6 +100,11 @@ setup(
             'skill_node = jugglebot.skill_node:main',
             # ── Standalone processes (not ROS2 nodes) ─────────
             'motor_guard = jugglebot.motion.motor_guard:main',
+            # Lean replacement for rosbridge_server's stock rosbridge_websocket
+            # executable: fixes a service-client leak and a 1 ms timer spin
+            # (2026-09-14, logbook/2026-09-14-rosbridge-cpu-leak-and-spin.md).
+            # jugglebot_launch.py launches this instead of rosbridge_server's own.
+            'rosbridge_websocket_lean = jugglebot.rosbridge_websocket_lean:main',
         ],
     },
 )

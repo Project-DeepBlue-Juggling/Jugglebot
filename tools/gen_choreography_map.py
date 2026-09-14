@@ -547,6 +547,13 @@ def _call_spec(call: ast.Call) -> Optional[Tuple[str, int, int]]:
 #: Directories under the package that never contribute live wiring.
 _SKIP_DIRS = frozenset(('__pycache__', 'tests', 'archived'))
 
+#: Modules under the package that are not part of the Python-node graph.
+#: ``rosbridge_websocket_lean.py`` wraps the GUI's rosbridge: its service
+#: clients are created per websocket request, with names the browser chooses,
+#: so they have no static name and sit outside this map's declared scope
+#: (GUI/rosbridge consumers are NOT included).
+_SKIP_FILES = frozenset(('rosbridge_websocket_lean.py',))
+
 
 def scan_nodes(node_dir: str = _NODE_DIR) -> List[Endpoint]:
     """Scan every module under *node_dir*, sorted for determinism.
@@ -561,7 +568,7 @@ def scan_nodes(node_dir: str = _NODE_DIR) -> List[Endpoint]:
     for dirpath, dirnames, filenames in os.walk(node_dir):
         dirnames[:] = sorted(d for d in dirnames if d not in _SKIP_DIRS)
         for fname in sorted(filenames):
-            if not fname.endswith('.py'):
+            if not fname.endswith('.py') or fname in _SKIP_FILES:
                 continue
             path = os.path.join(dirpath, fname)
             rel = os.path.relpath(path, node_dir)
