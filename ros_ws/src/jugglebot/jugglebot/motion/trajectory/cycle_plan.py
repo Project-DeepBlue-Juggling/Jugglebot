@@ -225,6 +225,30 @@ class CyclePlan(TrajectoryPlan):
                                self.dt, s)
         return float(pos), float(vel)
 
+    def hand_accel_at(self, t: float) -> float:
+        """Hand ACCELERATION (rev/s²) at ``t`` — the 2nd derivative :meth:`hand_at`
+        does not return (the C2FF spec's ``hand_acc_rps2`` emitter key,
+        2026-09-14).
+
+        Same clock and clamping regime as :meth:`hand_at`: the terminal hold
+        past ``total_duration`` has ZERO acceleration (mirrors :meth:`state_at`'s
+        pose accel there — a hold has no curvature left to report); before the
+        start it is the first knot's cubic acceleration, exactly as
+        :meth:`hand_at` returns that knot's position/rate there. Not part of the
+        original :meth:`hand_at` contract (which the emitter's byte-identity
+        pin covers) — a new, additive accessor, so nothing already reading
+        :meth:`hand_at` changes shape.
+        """
+        t = float(t)
+        if t >= self.total_duration:
+            return 0.0
+        k, s = self._locate(t)
+        _, _, acc = _hermite(float(self.hand_rev[k]), float(self.hand_vel_rps[k]),
+                             float(self.hand_rev[k + 1]),
+                             float(self.hand_vel_rps[k + 1]),
+                             self.dt, s)
+        return float(acc)
+
     # ── batched sampling (the feasibility gate's surface) ──
     #
     # WHY THESE EXIST.  ``feasibility.validate_cycle`` meshes the pose track at

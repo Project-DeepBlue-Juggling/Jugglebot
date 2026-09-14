@@ -41,16 +41,42 @@ lookahead discipline as the legs (τ, τ+dt, τ+2·dt):
 
   * ``hand_rev`` / ``hand_vel_rps``  = ``hand_at(τ)``       — the u0/v0 hand knot
   * ``hand_next_rev`` / ``hand_next_vel_rps`` = ``hand_at(τ+dt)`` — u1 + exact v1
-  * ``hand_next2_rev``               = ``hand_at(τ+2·dt)``  — the u2 knot
+  * ``hand_next2_rev`` / ``hand_next2_vel_rps`` = ``hand_at(τ+2·dt)`` — the u2
+    knot + exact v2 (C2FF spec, 2026-09-14; fills the wire's ``HAS_V2`` array
+    exactly as ``hand_next_vel_rps`` fills ``HAS_V1``)
+  * ``hand_acc_rps2`` = ``hand_accel_at(τ)``                — the plan's hand
+    ACCELERATION at u0 (observability / cross-check only — the wire's
+    ``accel[6]``; torque is computed in firmware from the emitted curve, not
+    from this field). Requires ``CyclePlan.hand_accel_at`` (added alongside
+    ``hand_at``); a duck-typed plan with ``hand_at`` but no ``hand_accel_at``
+    gets ``0.0`` rather than a crash.
   * ``vel_next_mm_s`` = J(pose@τ+dt) · twist@τ+dt           — the legs' exact
     u1-knot extension rates for ``v1[0:6]``, reusing the Jacobian ``_ik(pose1)``
     already computes (one extra matrix-vector product; no extra IK).
+  * ``vel_next2_mm_s`` = J(pose@τ+2dt) · twist@τ+2dt        — the legs' exact
+    u2-knot extension rates for ``v2[0:6]``, the same way, off ``_ik(pose2)``.
 
-Legacy plans (no ``hand_at``) emit NONE of the six new keys — the frame is
+Legacy plans (no ``hand_at``) emit NONE of the eight new keys — the frame is
 byte-identical to the pre-Phase-2 emitter (pinned against the captured v5
 fixtures), and ``make_mpc_command``'s absent-when-None rule scrubs any stale
 hand key from a reused ``out=`` dict when the active plan stops carrying a
 hand track mid-stream.
+
+``knot_epoch_us`` (C2FF spec, 2026-09-14) is the one exception: it rides on
+EVERY frame, hand track or not, because it stamps the wall-clock instant of
+this frame's own knot time — not a hand fact. The caller passes it in (this
+module owns no clock); ``None`` (the default) omits it exactly like every
+other optional key.
+
+**The lead, and what ``tau`` means here (C2FF spec).** Before 2026-09-14 the
+emitter sampled at the wall-clock instant it happened to run
+(``tau = now - t0``) and the firmware played each frame at UDP ARRIVAL — an
+off-knot sample stamped with no play-time authority of its own. Now
+``trajectory_node``'s emitter loop targets an absolute knot ``T = t_k + L``
+(``L = trajectory_op.emit_lead_knots × knot_dt_s``) and calls
+``frame(plan, T - t0, seq, knot_epoch_us=...)``: this module still only ever
+samples ``plan.state_at`` at exactly the ``tau`` it is given — the lead and
+the epoch stamp are the caller's concern, not this one's.
 
 Pure Python + numpy (imports ``jugglebot.motion.ipc.make_mpc_command`` for the
 exact field set — a pure dict builder, no ZMQ/UDP transport). No repo-root imports.
@@ -100,22 +126,31 @@ class KnotEmitter:
         J = compute_jacobian(pos, rot, self._geom)
         return ext, pos, rot, J
 
-    def frame(self, plan, tau: float, seq: int, *, out: dict | None = None
-              ) -> dict:
+    def frame(self, plan, tau: float, seq: int, *, out: dict | None = None,
+              knot_epoch_us: int | None = None) -> dict:
         """Build one ``make_mpc_command`` dict for plan time ``tau`` (seconds).
 
-        ``tau`` is the time since the active plan was installed. ``seq`` is the
-        monotonic frame counter. Returns the dict (values are ndarrays; the ipc
-        ``_pack`` default handler converts them to lists on the wire).
+        ``tau`` is the time since the active plan was installed, i.e. this
+        frame's u0 knot is plan time ``tau`` — the CALLER (``trajectory_node``)
+        is responsible for choosing ``tau = T - t0`` for whatever knot time
+        ``T`` it wants on the wire (the C2FF spec's ``T = t_k + L`` lead, or a
+        bare ``now - t0`` for a caller with no lead). ``seq`` is the monotonic
+        frame counter. ``knot_epoch_us`` is the CLOCK_REALTIME microsecond
+        stamp of ``T`` (the filtered perf->wall offset applied by the caller,
+        not computed here — this module has no clock of its own); passed
+        through verbatim onto every frame, hand track or not, since the
+        scheduled-clock design applies to all 7 lanes. Returns the dict
+        (values are ndarrays; the ipc ``_pack`` default handler converts them
+        to lists on the wire).
         """
         dt = self._dt
         pose0, twist0, accel0 = plan.state_at(tau)
         pose1, twist1, _ = plan.state_at(tau + dt)
-        pose2, _, _ = plan.state_at(tau + 2.0 * dt)
+        pose2, twist2, _ = plan.state_at(tau + 2.0 * dt)
 
         ext0, pos0, rot0, J0 = self._ik(pose0)
         ext1, pos1, rot1, J1 = self._ik(pose1)
-        ext2, _, _, _ = self._ik(pose2)
+        ext2, pos2, rot2, J2 = self._ik(pose2)
 
         leg_vel = twist_to_leg_velocities(twist0, pos0, rot0, self._geom, J=J0)
         leg_acc = accel_to_leg_accels(accel0, twist0, pos0, rot0, self._geom,
@@ -130,26 +165,44 @@ class KnotEmitter:
             pos0, rot0, twist0, accel0, J=J0, leg_acc_mm_s2=leg_acc)
 
         # ── 7th channel: only for a plan that carries a hand track (the
-        # CyclePlan contract). Legacy plans emit NO new keys — the None
+        # CyclePlan contract). Legacy plans emit NO hand keys — the None
         # defaults below make make_mpc_command scrub them from a reused out=
         # dict, so a stale hand key can never leak into a legacy frame.
+        #
+        # Exact leg v1 / v2 (the u1- and u2-knot extension rates, one matvec
+        # each on the J already computed by _ik(pose1) / _ik(pose2)) go on
+        # EVERY frame, hand track or not (C2FF, 2026-09-14, owner decision 2:
+        # all 7 lanes on the stamped clock). The pump sets HAS_SCHED only on a
+        # full knot set, so a hold / move / descent that omitted them would
+        # drop the LEGS back to arrival-phase playback at every hand-off from
+        # a skill chain — a phase step, and a mode flip the firmware counts.
+        vel_next = twist_to_leg_velocities(twist1, pos1, rot1, self._geom,
+                                           J=J1)
+        vel_next2 = twist_to_leg_velocities(twist2, pos2, rot2, self._geom,
+                                            J=J2)
         hand_kwargs = {}
         hand_at = getattr(plan, 'hand_at', None)
         if hand_at is not None:
             h0_rev, h0_vel = hand_at(tau)
             h1_rev, h1_vel = hand_at(tau + dt)
-            h2_rev, _ = hand_at(tau + 2.0 * dt)
-            # Exact leg v1: the u1-knot extension rates, one matvec on the J
-            # already computed by _ik(pose1) (previously discarded).
-            vel_next = twist_to_leg_velocities(twist1, pos1, rot1, self._geom,
-                                               J=J1)
+            h2_rev, h2_vel = hand_at(tau + 2.0 * dt)
+            # Hand acceleration AT u0 (plan time tau, i.e. the frame's own knot
+            # time T) — the analytic second derivative of the same Hermite
+            # hand_at samples, via CyclePlan.hand_accel_at. Legacy plans have no
+            # hand_at (and so never reach this branch); every plan that DOES
+            # carry hand_at is a CyclePlan and carries hand_accel_at too, added
+            # for exactly this (see cycle_plan.py).
+            hand_accel_at = getattr(plan, 'hand_accel_at', None)
+            h0_acc = (float(hand_accel_at(tau)) if hand_accel_at is not None
+                      else 0.0)
             hand_kwargs = dict(
-                vel_next_mm_s=vel_next,
                 hand_rev=float(h0_rev),
                 hand_vel_rps=float(h0_vel),
                 hand_next_rev=float(h1_rev),
                 hand_next2_rev=float(h2_rev),
                 hand_next_vel_rps=float(h1_vel),
+                hand_next2_vel_rps=float(h2_vel),
+                hand_acc_rps2=h0_acc,
             )
 
         return make_mpc_command(
@@ -162,6 +215,9 @@ class KnotEmitter:
             seq=int(seq),
             cmd_next_mm=ext1,
             cmd_next2_mm=ext2,
+            knot_epoch_us=knot_epoch_us,
+            vel_next_mm_s=vel_next,
+            vel_next2_mm_s=vel_next2,
             out=out,
             **hand_kwargs,
         )

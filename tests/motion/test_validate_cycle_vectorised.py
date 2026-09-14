@@ -389,9 +389,21 @@ NEUTRAL = np.array([0.0, 0.0, float(hw.JB_OP_DEFAULT_ACTIVE_Z_MM), 0.0, 0.0, 0.0
 DT = 0.025
 
 #: Every ``peak_*`` on a :class:`FeasibilityReport` — all of them are compared,
-#: so a new field cannot be added without this battery seeing it.
+#: so a new field cannot be added without this battery seeing it, EXCEPT the
+#: ones this docstring names below.
+#:
+#: ``peak_hand_c2_rps2`` (C2FF spec, 2026-09-14) is excluded: the hand
+#: knot-acceleration continuity gate did not exist at 67445f3, so
+#: ``_validate_cycle_scalar`` — kept VERBATIM as that commit's gate, on
+#: purpose (see the module docstring) — never computes it and always reports
+#: the dataclass default 0.0. Comparing it here would not be a vectorisation
+#: parity check; it would be asserting the frozen reference implements a
+#: feature that postdates it, which is a standing, not an accidental,
+#: divergence. The C2 gate's OWN correctness is
+#: ``tests/motion/test_validate_cycle.py``'s job — the same split every other
+#: reference-vs-live test in this repo uses.
 _PEAKS = tuple(f.name for f in dataclasses.fields(fz.FeasibilityReport)
-               if f.name.startswith('peak_'))
+               if f.name.startswith('peak_') and f.name != 'peak_hand_c2_rps2')
 
 
 @pytest.fixture(scope='module')

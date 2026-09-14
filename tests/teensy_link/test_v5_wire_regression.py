@@ -73,14 +73,16 @@ def _v5_payload_blocks(payload: bytes):
 
 def _v6_payload_blocks(payload: bytes):
     """(leg-lane 24-byte slices, hand-lane 4-byte slices, v1 block, tail)."""
-    assert len(payload) == p.SETPOINT_SIZE == 208
+    assert len(payload) == p.SETPOINT_SIZE == 240
     legs, hands = [], []
     for k in range(_V6_ARRAYS):
         base = k * 4 * _V6_LANES
         legs.append(payload[base:base + 24])
         hands.append(payload[base + 24:base + 28])
     v1_block = payload[6 * 28:7 * 28]
-    return legs, hands, v1_block, payload[_V6_ARRAYS * 28:]
+    # v8 (2026-09-14) appends v2[7] + hand_ff_gain AFTER flags/t_origin_us: the
+    # v6/v7 tail is the 12 bytes that follow the arrays; the extension is separate.
+    return legs, hands, v1_block, payload[_V6_ARRAYS * 28:_V6_ARRAYS * 28 + 12]
 
 
 def test_fixture_provenance_is_v5():
@@ -117,6 +119,8 @@ def test_leg_lanes_byte_identical_to_v5_capture(case_name):
             assert hb == b'\x00\x00\x00\x00', (
                 f"{case_name}[{i}] array {k} hand lane not zero")
         assert v6_v1 == b'\x00' * 28
+        # v8 extension (v2[7] + hand_ff_gain): all zero from a pump that sets neither.
+        assert v6[_V6_ARRAYS * 28 + 12:] == b'\x00' * 32
 
 
 def test_recorded_v5_wire_frames_verify_under_the_frozen_reader():
@@ -150,7 +154,7 @@ def test_live_v6_decoder_rejects_every_recorded_v5_frame():
     # reject must be the structural version ValueError (not CrcError — version
     # is checked before the CRC), for EVERY frame.
     fx = _fixture()
-    assert p.PROTOCOL_VERSION == 7      # the premise of the darkness (6→7 at skill-stack R1, 2026-09-11)
+    assert p.PROTOCOL_VERSION == 8      # the premise of the darkness (7→8 at hand C2 / FW 22, 2026-09-14)
     for case in fx['cases']:
         for fr in case['frames']:
             frame = bytes.fromhex(fr['wire_frame_hex'])
@@ -172,5 +176,5 @@ def test_v6_frame_is_undecodable_as_v5_by_construction():
     assert reason is None
     frame = p.encode_frame(int(p.MsgType.SETPOINT), 1, sp.pack())
     _, version, _, _, length = struct.unpack_from(_V5_HEADER_FMT, frame, 0)
-    assert version == 7 != 5
-    assert length == 208 != _V5_SETPOINT_SIZE
+    assert version == 8 != 5
+    assert length == 240 != _V5_SETPOINT_SIZE

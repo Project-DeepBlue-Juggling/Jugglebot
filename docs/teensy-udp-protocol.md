@@ -40,7 +40,7 @@ Static IPs: Teensy `192.168.42.2`, Jetson `192.168.42.1` (`/30` point-to-point).
 
 | Name | Value | Notes |
 |------|------:|-------|
-| `PROTOCOL_VERSION` | 7 | Bumped on any incompatible wire change (4→5: 2026-07-31 Profile gains the 3rd CAN slot can3_* — cone traffic; 5→6: 2026-09-01 Setpoint widens 6→7 — index 6 = hand — and gains the v1[7] exact-knot-velocity array, unified-7dof-planner Phase 2; 6→7: 2026-09-11 skill-stack R1 — HAND_TRAJ_CMD/HAND_SOURCE_SET/ERR_HAND_SOURCE removed, HeartbeatT2J bit 6 retired, BridgeTxDiag hand_ops counters removed. Removing message types and shrinking a struct are incompatible wire changes: darkness against any FW ≤ 20 board is the INTENDED failure. TOTAL LINK DARKNESS against any FW ≤ 16 board until the lockstep Phase 3 flash — loud and fail-closed by design) |
+| `PROTOCOL_VERSION` | 8 | Bumped on any incompatible wire change (4→5: 2026-07-31 Profile gains the 3rd CAN slot can3_* — cone traffic; 5→6: 2026-09-01 Setpoint widens 6→7 — index 6 = hand — and gains the v1[7] exact-knot-velocity array, unified-7dof-planner Phase 2; 6→7: 2026-09-11 skill-stack R1 — HAND_TRAJ_CMD/HAND_SOURCE_SET/ERR_HAND_SOURCE removed, HeartbeatT2J bit 6 retired, BridgeTxDiag hand_ops counters removed; 7→8: 2026-09-14 hand C2 (can-bridge FW 22) — Setpoint GROWS 208→240 B: v2[7] (exact u2-knot velocity, flags bit4 HAS_V2) + hand_ff_gain (K, clamped [0,1.5] at ingest), flags bit5 HAS_SCHED plays the frame on its t_origin_us stamp instead of on UDP arrival; HeartbeatT2J GROWS by the scheduled-playback promotion-continuity diagnostics and flags bits 14 HAND_TORQUE_CLAMP / 15 SCHED_HOLD_LATCHED. Growing a struct is as incompatible as shrinking one: darkness against any FW ≤ 21 board is the INTENDED failure. Removing message types and shrinking a struct are incompatible wire changes: darkness against any FW ≤ 20 board is the INTENDED failure. TOTAL LINK DARKNESS against any FW ≤ 16 board until the lockstep Phase 3 flash — loud and fail-closed by design) |
 | `MAGIC` | 0x4A42 | "JB" little-endian preamble (bytes 0x42 0x4A) |
 | `HEADER_SIZE` | 8 | Bytes before payload |
 | `CRC_SIZE` | 2 | Trailing CRC-16 bytes |
@@ -122,6 +122,7 @@ Static IPs: Teensy `192.168.42.2`, Jetson `192.168.42.1` (`/30` point-to-point).
 | `PLATFORM_FW_VERIFY` | 0x0058 | Platform FW-over-CAN: CRC-32 over the staged image (relay → 0x6F0 op 0x03) |
 | `PLATFORM_FW_COMMIT` | 0x0059 | Platform FW-over-CAN: apply the staged image + reboot (relay → 0x6F0 op 0x04) |
 | `GET_BB_AXIS_VERSIONS` | 0x005A | Pull cached raw Get_Version bytes + received bitmask for the Ball Butler ODrives (CAN1 axes 7-8) |
+| `GET_HAND_TORQUE_SCALE` | 0x005B | Hand ODrive can.input_torque_scale readback: return the cached SDO reply and trigger a fresh read |
 
 ### RpcStatus
 
@@ -209,14 +210,16 @@ Static IPs: Teensy `192.168.42.2`, Jetson `192.168.42.1` (`/30` point-to-point).
 | `MPC_ACTIVE` | 8 | bit3: firmware-side mpc_active (lets a setpoint source verify its arm took) |
 | `CONE_HEALTH_MASK` | 48 | bits 4-5: cone (CAN2) BusHealth (UNKNOWN=0/OK=1/WARN=2/BUS_OFF=3) << HEARTBEAT_CONE_HEALTH_SHIFT; reads 0 = UNKNOWN from a pre-cone-uplink flash |
 | `TORQUE_CLAMP_MASK` | 16128 | bits 8-13: bit (8+i) set = leg i's \|torque_ff\| was clamped to TORQUE_FF_FIRMWARE_CLAMP_WIRE_NM at UDP ingest on the last ACCEPTED setpoint frame (mirrors lead_clamp_mask; leg_interp.cpp interp_on_setpoint) |
+| `HAND_TORQUE_CLAMP` | 16384 | bit14: the hand torque-FF saturation (HAND_TORQUE_FF_CLAMP_NM) engaged on the last 500 Hz tick (FW 22 torque path; reads 0 until that path lands) |
+| `SCHED_HOLD_LATCHED` | 32768 | bit15: a scheduled lane group is in a LATCHED hold — its cover exhausted, it ran the C2 stop, and a discontinuous resume was refused while armed. Clears on an accepted continuous promotion or the next disarm/arm cycle (FW 22) |
 
 ## Messages
 
 ### Setpoint (`MsgType.SETPOINT`, J2T, STREAM port)
 
-40 Hz setpoint knot waypoints, 7 channels (v6, 2026-09-01: legs 0..5 + hand at index 6, unified-7dof-planner Phase 2). Legs carry motor-rev-space quantities (Jugglebot convention: positive = leg extension) exactly as motor_guard's interpolator consumed them; the hand lane is ODrive-convention absolute rev, NO sign flip — the firmware's encode_leg_setpoint already applies the per-axis wire scales (legs: negate + 1000/10000; hand: 100/100), so the host puts RAW rev values in this frame for every axis. The Jetson bridge does the mm→rev / pose conversions; the Teensy interpolator works purely in rev-space. `u1`/`u2`/hand/`v1` presence is signalled by the flags bits (NOT NaN sentinels). With HAS_V1 the 500 Hz Hermite endpoint velocity is transmitted exactly (float-exact for knot-aligned piecewise cubics — Phase 0 decision 2); with it clear the firmware falls back to the (u2-u1)/SEGMENT_T_S forward difference, the flown path. With HAS_HAND clear the firmware ignores index 6 and emits no hand frame.
+40 Hz setpoint knot waypoints, 7 channels (v6, 2026-09-01: legs 0..5 + hand at index 6, unified-7dof-planner Phase 2). Legs carry motor-rev-space quantities (Jugglebot convention: positive = leg extension) exactly as motor_guard's interpolator consumed them; the hand lane is ODrive-convention absolute rev, NO sign flip — the firmware's encode_leg_setpoint already applies the per-axis wire scales (legs: negate + 1000/10000; hand: 100/1000 since FW 22, 100/100 before), so the host puts RAW rev values in this frame for every axis. The Jetson bridge does the mm→rev / pose conversions; the Teensy interpolator works purely in rev-space. `u1`/`u2`/hand/`v1` presence is signalled by the flags bits (NOT NaN sentinels). With HAS_V1 the 500 Hz Hermite endpoint velocity is transmitted exactly (float-exact for knot-aligned piecewise cubics — Phase 0 decision 2); with it clear the firmware falls back to the (u2-u1)/SEGMENT_T_S forward difference, the flown path. With HAS_HAND clear the firmware ignores index 6 and emits no hand frame.
 
-Payload **208 bytes**. Python struct fmt: `<fffffffffffffffffffffffffffffffffffffffffffffffffIQ`.
+Payload **240 bytes**. Python struct fmt: `<fffffffffffffffffffffffffffffffffffffffffffffffffIQffffffff`.
 
 | Field | Type | Count | Notes |
 |-------|------|------:|-------|
@@ -224,11 +227,13 @@ Payload **208 bytes**. Python struct fmt: `<ffffffffffffffffffffffffffffffffffff
 | `u1` | f32 | 7 | Next waypoint (rev); valid iff flags bit0 |
 | `u2` | f32 | 7 | Next-next waypoint (rev); valid iff flags bit1 — C1 continuity |
 | `v0` | f32 | 7 | Velocity at the u0 knot (rev/s) |
-| `accel` | f32 | 7 | Acceleration for Taylor extrapolation (rev/s^2) |
-| `torque_ff` | f32 | 7 | Gravity+inertia feedforward (Nm); [6] always 0 in Phase 2 |
+| `accel` | f32 | 7 | Acceleration for Taylor extrapolation (rev/s^2); [6] (hand) carries the plan's own hand acceleration at u0 for observability only -- FW 22 computes hand torque from the emitted curve, not from this field |
+| `torque_ff` | f32 | 7 | Gravity+inertia feedforward (Nm); [6] is the optional slow hand torque-FF bias (clamped, rate-limited, FW 22) -- the host sends 0 |
 | `v1` | f32 | 7 | Exact velocity at the u1 knot (rev/s); valid iff flags bit3 |
-| `flags` | u32 | 1 | bit0: HAS_U1, bit1: HAS_U2, bit2: HAS_HAND (index 6 live), bit3: HAS_V1 (v1 transmitted-exact) |
-| `t_origin_us` | u64 | 1 | Jetson-side wall-clock timestamp (us) |
+| `flags` | u32 | 1 | bit0: HAS_U1, bit1: HAS_U2, bit2: HAS_HAND (index 6 live), bit3: HAS_V1 (v1 transmitted-exact), bit4: HAS_V2 (v2 transmitted-exact; requires HAS_U2+HAS_V1), bit5: HAS_SCHED (play on t_origin_us; requires HAS_U1\|HAS_U2\|HAS_V1\|HAS_V2 and a synced bridge clock, else counted and played as legacy — FW 22) |
+| `t_origin_us` | u64 | 1 | Jetson CLOCK_REALTIME (us). With HAS_SCHED: the wall time at which knot u0 is PLAYED (same epoch as the bridge's now_wall_us); the frame covers [t, t+2T) with Hermite(u0,v0,u1,v1) then Hermite(u1,v1,u2,v2). Without HAS_SCHED: informational, FW 21 arrival semantics |
+| `v2` | f32 | 7 | Exact velocity at the u2 knot (rev/s); valid iff flags bit4 (v8, FW 22 scheduled cover) |
+| `hand_ff_gain` | f32 | 1 | Hand acceleration-FF gain K (dimensionless); firmware requires finite and clamps to [0, 1.5]; 0 = arm A (v8) |
 
 ### HeartbeatJ2T (`MsgType.HEARTBEAT_J2T`, J2T, STREAM port)
 
@@ -281,7 +286,7 @@ Payload **40 bytes**. Python struct fmt: `<BBBBBBBBIIffffff`.
 
 Teensy → Jetson liveness + link/bus health, ~10 Hz.
 
-Payload **73 bytes**. Python struct fmt: `<QBBBBIIBBBfffffffffBBfff`.
+Payload **121 bytes**. Python struct fmt: `<QBBBBIIBBBfffffffffBBfffffffffIIIIII`.
 
 | Field | Type | Count | Notes |
 |-------|------|------:|-------|
@@ -290,7 +295,7 @@ Payload **73 bytes**. Python struct fmt: `<QBBBBIIBBBfffffffffBBfff`.
 | `bus1_health` | u8 | 1 | wire slot 1 = CAN3 (Jugglebot core: legs+hand) BusHealth enum |
 | `bus2_health` | u8 | 1 | wire slot 2 = CAN1 (Ball Butler) BusHealth enum (cone/CAN2 not yet on uplink) |
 | `fault_state` | u8 | 1 | FaultState enum |
-| `flags` | u32 | 1 | HeartbeatT2JFlags bitset: bits 0-3 TIME_SYNCED\|STOW_PENDING_ON_RECONNECT\|ALL_AXIS_HEARTBEATS_OK\|MPC_ACTIVE; bits 4-5 CONE_HEALTH_MASK (cone/CAN2 BusHealth, see HEARTBEAT_CONE_HEALTH_SHIFT); bits 6-7 reserved (bit 6 was the FW 17 hand-mastery latch, retired at PROTOCOL_VERSION 7); bits 8-13 TORQUE_CLAMP_MASK (per-leg torque_ff ingest clamp, see HEARTBEAT_TORQUE_CLAMP_SHIFT) |
+| `flags` | u32 | 1 | HeartbeatT2JFlags bitset: bits 0-3 TIME_SYNCED\|STOW_PENDING_ON_RECONNECT\|ALL_AXIS_HEARTBEATS_OK\|MPC_ACTIVE; bits 4-5 CONE_HEALTH_MASK (cone/CAN2 BusHealth, see HEARTBEAT_CONE_HEALTH_SHIFT); bits 6-7 reserved (bit 6 was the FW 17 hand-mastery latch, retired at PROTOCOL_VERSION 7); bits 8-13 TORQUE_CLAMP_MASK (per-leg torque_ff ingest clamp, see HEARTBEAT_TORQUE_CLAMP_SHIFT); bit 14 HAND_TORQUE_CLAMP; bit 15 SCHED_HOLD_LATCHED (v8) |
 | `uptime_ms` | u32 | 1 | ms since boot |
 | `bb_state` | u8 | 1 | BallButlerState enum (0..6, 127=ERROR) |
 | `bb_state_data` | u8 | 1 | BB error code when bb_state == ERROR, else 0 |
@@ -304,6 +309,18 @@ Payload **73 bytes**. Python struct fmt: `<QBBBBIIBBBfffffffffBBfff`.
 | `max_dev_value` | f32 | 1 | Deviation u0-encoder (rev) of max_dev_leg frozen at the latch crossing |
 | `max_dev_u0` | f32 | 1 | Commanded base u0 (rev) of max_dev_leg frozen at the latch crossing |
 | `max_dev_enc` | f32 | 1 | Encoder position (rev) of max_dev_leg frozen at the latch crossing |
+| `hand_promo_dp_max` | f32 | 1 | Hand: max \|dp\| (rev) at a scheduled promotion this armed session |
+| `hand_promo_dv_max` | f32 | 1 | Hand: max \|dv\| (rev/s) at a scheduled promotion this armed session |
+| `hand_promo_da_max` | f32 | 1 | Hand: max \|da\| (rev/s^2) at a scheduled promotion this armed session |
+| `leg_promo_dp_max` | f32 | 1 | Legs (max over legs): max \|dp\| (rev) at a scheduled promotion this armed session |
+| `leg_promo_dv_max` | f32 | 1 | Legs: max \|dv\| (rev/s) at a scheduled promotion this armed session |
+| `leg_promo_da_max` | f32 | 1 | Legs: max \|da\| (rev/s^2) at a scheduled promotion this armed session |
+| `hand_promo_over` | u32 | 1 | Hand promotions over the continuity tolerance (cumulative since boot) |
+| `leg_promo_over` | u32 | 1 | Leg promotions over the continuity tolerance (cumulative since boot) |
+| `sched_stops` | u32 | 1 | Cover exhaustions that ran the C2 stop, both lane groups (cumulative) |
+| `sched_expired` | u32 | 1 | Stamped frames dropped because their 2T cover had already expired (cumulative) |
+| `sched_refused` | u32 | 1 | Discontinuous promotions refused out of a stop/hold while armed (cumulative) — the latched-hold count |
+| `sched_demoted` | u32 | 1 | HAS_SCHED frames played as legacy (incomplete flags or unsynced clock) (cumulative) |
 
 ### Profile (`MsgType.PROFILE`, T2J, STREAM port)
 
@@ -397,7 +414,7 @@ Payload **21 bytes**. Python struct fmt: `<QIBBBBBBBBB`.
 
 ### HandCmdEcho (`MsgType.HAND_CMD_ECHO`, T2J, STREAM port)
 
-Hand command-echo telemetry. The can-bridge sniffs the Platform Teensy's Set_Input_Pos command to the HAND ODrive (axis 6) on CAN3 — arb_id(6, set_input_pos, cmd 0x0C) — and forwards the raw 8-byte payload verbatim so the host echoes the hand's COMMANDED pos/vel_ff/tor_ff (can_node._handle_hand_input_pos parity; the hand_telemetry pos_cmd/vel_ff_cmd/tor_ff_cmd fields were hardcoded 0 on the bridge until now). The host decodes `data` as `<f h h>` (float32 pos_rev + int16 vel_ff + int16 tor_ff) and divides vel/tor by INPUT_SCALE_HAND_VEL / INPUT_SCALE_HAND_TOR (100.0). Emitted at the telemetry-task rate only when a FRESH command was sniffed (event-driven; silent while the hand is idle). CAN3 SRX_DIS means the bridge never sniffs its own TX, so only genuine Platform→hand commands are echoed. `t_bridge_us` stamps CAN3 RX for latency/diagnostics.
+Hand command-echo telemetry. The can-bridge sniffs the Platform Teensy's Set_Input_Pos command to the HAND ODrive (axis 6) on CAN3 — arb_id(6, set_input_pos, cmd 0x0C) — and forwards the raw 8-byte payload verbatim so the host echoes the hand's COMMANDED pos/vel_ff/tor_ff (can_node._handle_hand_input_pos parity; the hand_telemetry pos_cmd/vel_ff_cmd/tor_ff_cmd fields were hardcoded 0 on the bridge until now). The host decodes `data` as `<f h h>` (float32 pos_rev + int16 vel_ff + int16 tor_ff) and divides vel/tor by INPUT_SCALE_HAND_VEL / INPUT_SCALE_HAND_TOR (100.0 / 1000.0 since FW 22). Emitted at the telemetry-task rate only when a FRESH command was sniffed (event-driven; silent while the hand is idle). CAN3 SRX_DIS means the bridge never sniffs its own TX, so only genuine Platform→hand commands are echoed. `t_bridge_us` stamps CAN3 RX for latency/diagnostics.
 
 Payload **16 bytes**. Python struct fmt: `<QBBBBBBBB`.
 
@@ -697,6 +714,18 @@ wraps the generated Python. `AXIS_ALL = 0xFF` broadcasts to all legs.
 |-------|------|-------|
 | `received_mask` | u8 | bit i set ⇒ axis BB_FIRST_NODE+i Get_Version reply cached |
 | `raw` | u8 | raw 8-byte Get_Version payload per BB axis (NUM_BB_AXES*8, axis-major from BB_FIRST_NODE) |
+
+### ResultHandTorqueScale (`GET_HAND_TORQUE_SCALE (result)`)
+
+**16 bytes**. Python struct fmt: `<BBBBIII`.
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `state` | u8 | 0 never / 1 in flight / 2 cached / 3 fw mismatch / 4 bus down |
+| `pad` | u8 | zero |
+| `value` | u32 | cached axis0.config.can.input_torque_scale (uint32) |
+| `reply_seq` | u32 | count of cached replies since boot |
+| `age_ms` | u32 | age of the cached reply in ms (0xFFFFFFFF = none) |
 
 ### ArgBbThrow (`BB_THROW`)
 

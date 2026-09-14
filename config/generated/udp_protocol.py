@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from enum import IntEnum
 
 # ── Constants ──────────────────────────────────────────────────────────
-PROTOCOL_VERSION = 7  # Bumped on any incompatible wire change (4→5: 2026-07-31 Profile gains the 3rd CAN slot can3_* — cone traffic; 5→6: 2026-09-01 Setpoint widens 6→7 — index 6 = hand — and gains the v1[7] exact-knot-velocity array, unified-7dof-planner Phase 2; 6→7: 2026-09-11 skill-stack R1 — HAND_TRAJ_CMD/HAND_SOURCE_SET/ERR_HAND_SOURCE removed, HeartbeatT2J bit 6 retired, BridgeTxDiag hand_ops counters removed. Removing message types and shrinking a struct are incompatible wire changes: darkness against any FW ≤ 20 board is the INTENDED failure. TOTAL LINK DARKNESS against any FW ≤ 16 board until the lockstep Phase 3 flash — loud and fail-closed by design)
+PROTOCOL_VERSION = 8  # Bumped on any incompatible wire change (4→5: 2026-07-31 Profile gains the 3rd CAN slot can3_* — cone traffic; 5→6: 2026-09-01 Setpoint widens 6→7 — index 6 = hand — and gains the v1[7] exact-knot-velocity array, unified-7dof-planner Phase 2; 6→7: 2026-09-11 skill-stack R1 — HAND_TRAJ_CMD/HAND_SOURCE_SET/ERR_HAND_SOURCE removed, HeartbeatT2J bit 6 retired, BridgeTxDiag hand_ops counters removed; 7→8: 2026-09-14 hand C2 (can-bridge FW 22) — Setpoint GROWS 208→240 B: v2[7] (exact u2-knot velocity, flags bit4 HAS_V2) + hand_ff_gain (K, clamped [0,1.5] at ingest), flags bit5 HAS_SCHED plays the frame on its t_origin_us stamp instead of on UDP arrival; HeartbeatT2J GROWS by the scheduled-playback promotion-continuity diagnostics and flags bits 14 HAND_TORQUE_CLAMP / 15 SCHED_HOLD_LATCHED. Growing a struct is as incompatible as shrinking one: darkness against any FW ≤ 21 board is the INTENDED failure. Removing message types and shrinking a struct are incompatible wire changes: darkness against any FW ≤ 20 board is the INTENDED failure. TOTAL LINK DARKNESS against any FW ≤ 16 board until the lockstep Phase 3 flash — loud and fail-closed by design)
 MAGIC = 19010  # "JB" little-endian preamble (bytes 0x42 0x4A)
 HEADER_SIZE = 8  # Bytes before payload
 CRC_SIZE = 2  # Trailing CRC-16 bytes
@@ -84,6 +84,7 @@ class RpcMethod(IntEnum):
     PLATFORM_FW_VERIFY = 88  # Platform FW-over-CAN: CRC-32 over the staged image (relay → 0x6F0 op 0x03)
     PLATFORM_FW_COMMIT = 89  # Platform FW-over-CAN: apply the staged image + reboot (relay → 0x6F0 op 0x04)
     GET_BB_AXIS_VERSIONS = 90  # Pull cached raw Get_Version bytes + received bitmask for the Ball Butler ODrives (CAN1 axes 7-8)
+    GET_HAND_TORQUE_SCALE = 91  # Hand ODrive can.input_torque_scale readback: return the cached SDO reply and trigger a fresh read
 
 class RpcStatus(IntEnum):
     OK = 0  # Success
@@ -144,6 +145,8 @@ class HeartbeatT2JFlags(IntEnum):
     MPC_ACTIVE = 8  # bit3: firmware-side mpc_active (lets a setpoint source verify its arm took)
     CONE_HEALTH_MASK = 48  # bits 4-5: cone (CAN2) BusHealth (UNKNOWN=0/OK=1/WARN=2/BUS_OFF=3) << HEARTBEAT_CONE_HEALTH_SHIFT; reads 0 = UNKNOWN from a pre-cone-uplink flash
     TORQUE_CLAMP_MASK = 16128  # bits 8-13: bit (8+i) set = leg i's |torque_ff| was clamped to TORQUE_FF_FIRMWARE_CLAMP_WIRE_NM at UDP ingest on the last ACCEPTED setpoint frame (mirrors lead_clamp_mask; leg_interp.cpp interp_on_setpoint)
+    HAND_TORQUE_CLAMP = 16384  # bit14: the hand torque-FF saturation (HAND_TORQUE_FF_CLAMP_NM) engaged on the last 500 Hz tick (FW 22 torque path; reads 0 until that path lands)
+    SCHED_HOLD_LATCHED = 32768  # bit15: a scheduled lane group is in a LATCHED hold — its cover exhausted, it ran the C2 stop, and a discontinuous resume was refused while armed. Clears on an accepted continuous promotion or the next disarm/arm cycle (FW 22)
 
 # ── Decode errors ──────────────────────────────────────────────────────
 class CrcError(ValueError):
@@ -201,11 +204,11 @@ def decode_frame(frame: bytes):
     return msg_type, seq, payload
 
 # ── Payload structs ────────────────────────────────────────────────────
-# Setpoint: 40 Hz setpoint knot waypoints, 7 channels (v6, 2026-09-01: legs 0..5 + hand at index 6, unified-7dof-planner Phase 2). Legs carry motor-rev-space quantities (Jugglebot convention: positive = leg extension) exactly as motor_guard's interpolator consumed them; the hand lane is ODrive-convention absolute rev, NO sign flip — the firmware's encode_leg_setpoint already applies the per-axis wire scales (legs: negate + 1000/10000; hand: 100/100), so the host puts RAW rev values in this frame for every axis. The Jetson bridge does the mm→rev / pose conversions; the Teensy interpolator works purely in rev-space. `u1`/`u2`/hand/`v1` presence is signalled by the flags bits (NOT NaN sentinels). With HAS_V1 the 500 Hz Hermite endpoint velocity is transmitted exactly (float-exact for knot-aligned piecewise cubics — Phase 0 decision 2); with it clear the firmware falls back to the (u2-u1)/SEGMENT_T_S forward difference, the flown path. With HAS_HAND clear the firmware ignores index 6 and emits no hand frame.
-SETPOINT_FMT = '<fffffffffffffffffffffffffffffffffffffffffffffffffIQ'
-SETPOINT_SIZE = 208
+# Setpoint: 40 Hz setpoint knot waypoints, 7 channels (v6, 2026-09-01: legs 0..5 + hand at index 6, unified-7dof-planner Phase 2). Legs carry motor-rev-space quantities (Jugglebot convention: positive = leg extension) exactly as motor_guard's interpolator consumed them; the hand lane is ODrive-convention absolute rev, NO sign flip — the firmware's encode_leg_setpoint already applies the per-axis wire scales (legs: negate + 1000/10000; hand: 100/1000 since FW 22, 100/100 before), so the host puts RAW rev values in this frame for every axis. The Jetson bridge does the mm→rev / pose conversions; the Teensy interpolator works purely in rev-space. `u1`/`u2`/hand/`v1` presence is signalled by the flags bits (NOT NaN sentinels). With HAS_V1 the 500 Hz Hermite endpoint velocity is transmitted exactly (float-exact for knot-aligned piecewise cubics — Phase 0 decision 2); with it clear the firmware falls back to the (u2-u1)/SEGMENT_T_S forward difference, the flown path. With HAS_HAND clear the firmware ignores index 6 and emits no hand frame.
+SETPOINT_FMT = '<fffffffffffffffffffffffffffffffffffffffffffffffffIQffffffff'
+SETPOINT_SIZE = 240
 _SETPOINT_STRUCT = struct.Struct(SETPOINT_FMT)
-assert _SETPOINT_STRUCT.size == 208
+assert _SETPOINT_STRUCT.size == 240
 
 @dataclass
 class Setpoint:
@@ -218,15 +221,17 @@ class Setpoint:
     v1: tuple = field(default_factory=lambda: (0.0,) * 7)
     flags: int = 0
     t_origin_us: int = 0
+    v2: tuple = field(default_factory=lambda: (0.0,) * 7)
+    hand_ff_gain: float = 0.0
 
     def pack(self) -> bytes:
-        return _SETPOINT_STRUCT.pack(*self.u0, *self.u1, *self.u2, *self.v0, *self.accel, *self.torque_ff, *self.v1, self.flags, self.t_origin_us)
+        return _SETPOINT_STRUCT.pack(*self.u0, *self.u1, *self.u2, *self.v0, *self.accel, *self.torque_ff, *self.v1, self.flags, self.t_origin_us, *self.v2, self.hand_ff_gain)
 
     @classmethod
     def unpack(cls, data: bytes) -> 'Setpoint':
-        vals = _SETPOINT_STRUCT.unpack(data[:208])
+        vals = _SETPOINT_STRUCT.unpack(data[:240])
         it = iter(vals)
-        return cls(tuple(next(it) for _ in range(7)), tuple(next(it) for _ in range(7)), tuple(next(it) for _ in range(7)), tuple(next(it) for _ in range(7)), tuple(next(it) for _ in range(7)), tuple(next(it) for _ in range(7)), tuple(next(it) for _ in range(7)), next(it), next(it))
+        return cls(tuple(next(it) for _ in range(7)), tuple(next(it) for _ in range(7)), tuple(next(it) for _ in range(7)), tuple(next(it) for _ in range(7)), tuple(next(it) for _ in range(7)), tuple(next(it) for _ in range(7)), tuple(next(it) for _ in range(7)), next(it), next(it), tuple(next(it) for _ in range(7)), next(it))
 
 # HeartbeatJ2T: Jetson → Teensy liveness, ~10 Hz.
 HEARTBEAT_J2T_FMT = '<QI'
@@ -303,10 +308,10 @@ class Diagnostic:
         return cls(next(it), next(it), next(it), next(it), next(it), next(it), tuple(next(it) for _ in range(2)), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it))
 
 # HeartbeatT2J: Teensy → Jetson liveness + link/bus health, ~10 Hz.
-HEARTBEAT_T2J_FMT = '<QBBBBIIBBBfffffffffBBfff'
-HEARTBEAT_T2J_SIZE = 73
+HEARTBEAT_T2J_FMT = '<QBBBBIIBBBfffffffffBBfffffffffIIIIII'
+HEARTBEAT_T2J_SIZE = 121
 _HEARTBEAT_T2J_STRUCT = struct.Struct(HEARTBEAT_T2J_FMT)
-assert _HEARTBEAT_T2J_STRUCT.size == 73
+assert _HEARTBEAT_T2J_STRUCT.size == 121
 
 @dataclass
 class HeartbeatT2J:
@@ -329,15 +334,27 @@ class HeartbeatT2J:
     max_dev_value: float = 0.0
     max_dev_u0: float = 0.0
     max_dev_enc: float = 0.0
+    hand_promo_dp_max: float = 0.0
+    hand_promo_dv_max: float = 0.0
+    hand_promo_da_max: float = 0.0
+    leg_promo_dp_max: float = 0.0
+    leg_promo_dv_max: float = 0.0
+    leg_promo_da_max: float = 0.0
+    hand_promo_over: int = 0
+    leg_promo_over: int = 0
+    sched_stops: int = 0
+    sched_expired: int = 0
+    sched_refused: int = 0
+    sched_demoted: int = 0
 
     def pack(self) -> bytes:
-        return _HEARTBEAT_T2J_STRUCT.pack(self.t_teensy_us, self.link_state, self.bus1_health, self.bus2_health, self.fault_state, self.flags, self.uptime_ms, self.bb_state, self.bb_state_data, self.bb_flags, self.bb_yaw_deg, self.bb_pitch_deg, self.bb_hand_mm, *self.live_deviation, self.lead_clamp_mask, self.max_dev_leg, self.max_dev_value, self.max_dev_u0, self.max_dev_enc)
+        return _HEARTBEAT_T2J_STRUCT.pack(self.t_teensy_us, self.link_state, self.bus1_health, self.bus2_health, self.fault_state, self.flags, self.uptime_ms, self.bb_state, self.bb_state_data, self.bb_flags, self.bb_yaw_deg, self.bb_pitch_deg, self.bb_hand_mm, *self.live_deviation, self.lead_clamp_mask, self.max_dev_leg, self.max_dev_value, self.max_dev_u0, self.max_dev_enc, self.hand_promo_dp_max, self.hand_promo_dv_max, self.hand_promo_da_max, self.leg_promo_dp_max, self.leg_promo_dv_max, self.leg_promo_da_max, self.hand_promo_over, self.leg_promo_over, self.sched_stops, self.sched_expired, self.sched_refused, self.sched_demoted)
 
     @classmethod
     def unpack(cls, data: bytes) -> 'HeartbeatT2J':
-        vals = _HEARTBEAT_T2J_STRUCT.unpack(data[:73])
+        vals = _HEARTBEAT_T2J_STRUCT.unpack(data[:121])
         it = iter(vals)
-        return cls(next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), tuple(next(it) for _ in range(6)), next(it), next(it), next(it), next(it), next(it))
+        return cls(next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), tuple(next(it) for _ in range(6)), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it))
 
 # Profile: 1 Hz firmware instrumentation. Per-task CPU%, CAN bus utilisation, UDP round-trip/jitter, the 500 Hz interp deadline-miss counter, and free heap. Consumed by tools/probes/teensy_link_profiling/jetson.
 PROFILE_FMT = '<QHHHHHHHHHIIIIHHIIIIIIIH'
@@ -483,7 +500,7 @@ class PlatformFrame:
         it = iter(vals)
         return cls(next(it), next(it), next(it), tuple(next(it) for _ in range(8)))
 
-# HandCmdEcho: Hand command-echo telemetry. The can-bridge sniffs the Platform Teensy's Set_Input_Pos command to the HAND ODrive (axis 6) on CAN3 — arb_id(6, set_input_pos, cmd 0x0C) — and forwards the raw 8-byte payload verbatim so the host echoes the hand's COMMANDED pos/vel_ff/tor_ff (can_node._handle_hand_input_pos parity; the hand_telemetry pos_cmd/vel_ff_cmd/tor_ff_cmd fields were hardcoded 0 on the bridge until now). The host decodes `data` as `<f h h>` (float32 pos_rev + int16 vel_ff + int16 tor_ff) and divides vel/tor by INPUT_SCALE_HAND_VEL / INPUT_SCALE_HAND_TOR (100.0). Emitted at the telemetry-task rate only when a FRESH command was sniffed (event-driven; silent while the hand is idle). CAN3 SRX_DIS means the bridge never sniffs its own TX, so only genuine Platform→hand commands are echoed. `t_bridge_us` stamps CAN3 RX for latency/diagnostics.
+# HandCmdEcho: Hand command-echo telemetry. The can-bridge sniffs the Platform Teensy's Set_Input_Pos command to the HAND ODrive (axis 6) on CAN3 — arb_id(6, set_input_pos, cmd 0x0C) — and forwards the raw 8-byte payload verbatim so the host echoes the hand's COMMANDED pos/vel_ff/tor_ff (can_node._handle_hand_input_pos parity; the hand_telemetry pos_cmd/vel_ff_cmd/tor_ff_cmd fields were hardcoded 0 on the bridge until now). The host decodes `data` as `<f h h>` (float32 pos_rev + int16 vel_ff + int16 tor_ff) and divides vel/tor by INPUT_SCALE_HAND_VEL / INPUT_SCALE_HAND_TOR (100.0 / 1000.0 since FW 22). Emitted at the telemetry-task rate only when a FRESH command was sniffed (event-driven; silent while the hand is idle). CAN3 SRX_DIS means the bridge never sniffs its own TX, so only genuine Platform→hand commands are echoed. `t_bridge_us` stamps CAN3 RX for latency/diagnostics.
 HAND_CMD_ECHO_FMT = '<QBBBBBBBB'
 HAND_CMD_ECHO_SIZE = 16
 _HAND_CMD_ECHO_STRUCT = struct.Struct(HAND_CMD_ECHO_FMT)
@@ -1003,6 +1020,29 @@ class ResultBbAxisVersions:
         vals = _RESULT_BB_AXIS_VERSIONS_STRUCT.unpack(data[:17])
         it = iter(vals)
         return cls(next(it), tuple(next(it) for _ in range(16)))
+
+# ResultHandTorqueScale (GET_HAND_TORQUE_SCALE (result))
+RESULT_HAND_TORQUE_SCALE_FMT = '<BBBBIII'
+RESULT_HAND_TORQUE_SCALE_SIZE = 16
+_RESULT_HAND_TORQUE_SCALE_STRUCT = struct.Struct(RESULT_HAND_TORQUE_SCALE_FMT)
+assert _RESULT_HAND_TORQUE_SCALE_STRUCT.size == 16
+
+@dataclass
+class ResultHandTorqueScale:
+    state: int = 0
+    pad: tuple = field(default_factory=lambda: (0,) * 3)
+    value: int = 0
+    reply_seq: int = 0
+    age_ms: int = 0
+
+    def pack(self) -> bytes:
+        return _RESULT_HAND_TORQUE_SCALE_STRUCT.pack(self.state, *self.pad, self.value, self.reply_seq, self.age_ms)
+
+    @classmethod
+    def unpack(cls, data: bytes) -> 'ResultHandTorqueScale':
+        vals = _RESULT_HAND_TORQUE_SCALE_STRUCT.unpack(data[:16])
+        it = iter(vals)
+        return cls(next(it), tuple(next(it) for _ in range(3)), next(it), next(it), next(it))
 
 # ArgBbThrow (BB_THROW)
 ARG_BB_THROW_FMT = '<ffff'

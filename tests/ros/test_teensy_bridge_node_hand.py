@@ -113,10 +113,15 @@ def test_hand_cmd_echo_fills_hand_telemetry():
         teensy.send_to_jetson(int(MsgType.HAND_CMD_ECHO),
                               HandCmdEcho(t_bridge_us=42, data=tuple(data)).pack())
         assert _poll(lambda: node._last_hand_cmd['pos'] != 0.0)
-        # Decoded byte-identically to can_node: vel/tor ÷ INPUT_SCALE_HAND_*(100).
+        # Decoded byte-identically to can_node: vel/tor ÷ INPUT_SCALE_HAND_*.
+        # Derived from the generated constants (not a hardcoded literal) so
+        # this test doesn't go stale under a wire-scale bump — e.g. the C2FF
+        # hand_tor 100 -> 1000 change (U2a/U2b, hand torque-FF unit scale).
+        expected_vel = 250 / proto.INPUT_SCALE_HAND_VEL
+        expected_tor = -30 / proto.INPUT_SCALE_HAND_TOR
         assert abs(node._last_hand_cmd['pos'] - 5.5) < 1e-6
-        assert abs(node._last_hand_cmd['vel'] - 2.5) < 1e-6
-        assert abs(node._last_hand_cmd['tor'] + 0.3) < 1e-6
+        assert abs(node._last_hand_cmd['vel'] - expected_vel) < 1e-6
+        assert abs(node._last_hand_cmd['tor'] - expected_tor) < 1e-6
 
         # _publish_hand_telemetry now echoes the command fields (was hardcoded 0).
         with node._lock:
@@ -127,8 +132,8 @@ def test_hand_cmd_echo_fills_hand_telemetry():
         node._publish_hand_telemetry()
         msg = node.hand_telemetry_pub.published[-1]
         assert abs(msg.pos_cmd - 5.5) < 1e-6
-        assert abs(msg.vel_ff_cmd - 2.5) < 1e-6
-        assert abs(msg.tor_ff_cmd + 0.3) < 1e-6
+        assert abs(msg.vel_ff_cmd - expected_vel) < 1e-6
+        assert abs(msg.tor_ff_cmd - expected_tor) < 1e-6
     finally:
         _teardown(teensy, client, node)
 

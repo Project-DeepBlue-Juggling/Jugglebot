@@ -20,7 +20,7 @@ import pytest
 
 from teensy_link.setpoint_pump import (
     SetpointPump, FLAG_HAS_U1, FLAG_HAS_U2, FLAG_HAS_HAND, FLAG_HAS_V1,
-    DEFAULT_MAX_STEP_HAND_REV,
+    FLAG_HAS_V2, FLAG_HAS_SCHED, DEFAULT_MAX_STEP_HAND_REV, HAND_FF_GAIN_MAX,
 )
 from teensy_link.protocol import Setpoint
 
@@ -647,3 +647,231 @@ def test_hand_gate_derivation_pin():
     from teensy_link.setpoint_pump import DEFAULT_MAX_STEP_REV
     assert DEFAULT_MAX_STEP_REV == pytest.approx(
         hw.JB_OP_MAX_POSITION_STEP_REV)
+
+
+# ── v8: v2 / HAS_V2 / HAS_SCHED / accel[6] / hand_ff_gain (C2FF spec, U3a) ──
+# All of these are additive on top of the v6 frame tested above. A frame that
+# never sends any of the new keys must build IDENTICALLY to before this unit
+# (test_legacy_v8_tail_is_zeroed_and_flags_unchanged below is the byte-level
+# pin of that). v2/HAS_SCHED are "optional with a clean downgrade" — see the
+# module docstring comment at the top of SetpointPump._build's v2 block for
+# the full rationale — NOT part of the hand all-or-nothing reject gate.
+
+_HAND_FULL_V2 = dict(_HAND, hand_next2_vel_rps=8.31, hand_acc_rps2=-410.5)
+
+
+def _full_cmd(hand=True, vel_next=(1.0,) * 6, vel_next2=(2.0,) * 6,
+              knot_epoch_us=1_700_000_000_000, hand_next2_vel_rps=8.31,
+              hand_acc_rps2=-410.5, **kw):
+    """A full v8 knot set: v1 + v2 + a scheduled stamp, hand included by default."""
+    d = _hand_cmd(hand=hand, vel_next=list(vel_next), **kw)
+    if vel_next2 is not None:
+        d['vel_next2_mm_s'] = list(vel_next2)
+    if knot_epoch_us is not None:
+        d['knot_epoch_us'] = knot_epoch_us
+    if hand:
+        if hand_next2_vel_rps is not None:
+            d['hand_next2_vel_rps'] = hand_next2_vel_rps
+        if hand_acc_rps2 is not None:
+            d['hand_acc_rps2'] = hand_acc_rps2
+    return d
+
+
+def test_full_v8_frame_sets_v2_sched_accel_and_stamp():
+    pump = _pump()
+    pump.set_hand_ff_gain(0.7)
+    pump.set_hand_torque_scale_verified(True)
+    sp, reason = pump.build(_full_cmd(), t_origin_us=999)
+    assert reason is None and sp is not None
+    assert sp.flags == (FLAG_HAS_U1 | FLAG_HAS_U2 | FLAG_HAS_HAND
+                         | FLAG_HAS_V1 | FLAG_HAS_V2 | FLAG_HAS_SCHED)
+    assert sp.v2[:6] == tuple(2.0 * _MM[i] for i in range(6))
+    assert sp.v2[6] == 8.31
+    assert sp.accel[:6] == (0.0,) * 6            # legs never get accel
+    assert sp.accel[6] == -410.5                 # observability only
+    assert sp.t_origin_us == 1_700_000_000_000   # the scheduled stamp, not 999
+    assert sp.hand_ff_gain == 0.7                # verified + hand-bearing
+
+
+def test_legs_only_v2_needs_no_hand():
+    """v2 for the legs alone (no hand this frame) doesn't need hand_next2_vel_rps
+    at all -- HAS_V2 is set on the legs' own v1/u2 coherence."""
+    pump = _pump()
+    sp, reason = pump.build(
+        _full_cmd(hand=False, knot_epoch_us=None), t_origin_us=5)
+    assert reason is None and sp is not None
+    assert sp.flags == (FLAG_HAS_U1 | FLAG_HAS_U2 | FLAG_HAS_V1 | FLAG_HAS_V2)
+    assert sp.v2[:6] == tuple(2.0 * _MM[i] for i in range(6))
+    assert sp.v2[6] == 0.0
+    assert sp.t_origin_us == 5                    # no stamp -> legacy
+
+
+@pytest.mark.parametrize("drop_key", ['vel_next2_mm_s', 'hand_next2_vel_rps'])
+def test_hand_present_missing_v2_half_downgrades_whole_frame(drop_key):
+    """Hand present + only ONE side of v2 given: HAS_V2 must NOT be set for
+    the legs either -- a real leg v2 next to a silently-zero hand v2 lane
+    under one frame-wide flag would tell the firmware's hand Hermite that
+    0 rev/s IS the u2 velocity. This is a clean DOWNGRADE (frame still
+    built and sent), never a reject."""
+    pump = _pump()
+    cmd = _full_cmd()
+    del cmd[drop_key]
+    sp, reason = pump.build(cmd, t_origin_us=1)
+    assert reason is None and sp is not None
+    assert not (sp.flags & FLAG_HAS_V2)
+    assert not (sp.flags & FLAG_HAS_SCHED)   # full knot set now incomplete too
+    assert sp.v2 == (0.0,) * 7
+    assert sp.t_origin_us == 1                # legacy stamp kept
+
+
+def test_v2_without_v1_stays_clear():
+    """vel_next2_mm_s present but vel_next_mm_s absent (no HAS_V1 at all):
+    v2 describes the exact velocity AT u1's successor, which is undefined
+    without v1 -- HAS_V2 stays clear (downgrade, not a reject)."""
+    pump = _pump()
+    cmd = _cmd(motor_rev=[0.1] * 6, cmd_next=[1.0] * 6, cmd_next2=[1.1] * 6)
+    cmd['vel_next2_mm_s'] = [2.0] * 6
+    sp, reason = pump.build(cmd, t_origin_us=1)
+    assert reason is None and sp is not None
+    assert not (sp.flags & FLAG_HAS_V2)
+    assert sp.v2 == (0.0,) * 7
+
+
+def test_has_sched_needs_v1_too_not_just_v2_and_the_stamp():
+    """knot_epoch_us present, u1/u2 present, but NO v1/v2 anywhere (a legacy
+    Mode-1 frame with a stamp riding along): the frame is still legal (v1
+    stays clear -> the firmware forward-difference fallback, exactly the
+    flown pre-C2FF path), but HAS_SCHED must NOT fire -- the full
+    U1|U2|V1|V2 set the scheduled lanes need is not aboard."""
+    pump = _pump()
+    cmd = _cmd(motor_rev=[0.1] * 6, cmd_next=[1.0] * 6, cmd_next2=[1.1] * 6)
+    cmd['knot_epoch_us'] = 42
+    sp, reason = pump.build(cmd, t_origin_us=3)
+    assert reason is None and sp is not None
+    assert sp.flags == (FLAG_HAS_U1 | FLAG_HAS_U2)
+    assert not (sp.flags & FLAG_HAS_SCHED)
+    assert sp.t_origin_us == 3
+
+
+def test_has_sched_needs_the_stamp_even_with_a_full_knot_set():
+    pump = _pump()
+    sp, reason = pump.build(_full_cmd(knot_epoch_us=None), t_origin_us=4)
+    assert reason is None and sp is not None
+    assert sp.flags & FLAG_HAS_V2            # full v2 set is otherwise there
+    assert not (sp.flags & FLAG_HAS_SCHED)
+    assert sp.t_origin_us == 4
+
+
+def test_accel6_absent_without_hand_acc_rps2():
+    pump = _pump()
+    sp, reason = pump.build(_full_cmd(hand_acc_rps2=None), t_origin_us=1)
+    assert reason is None and sp is not None
+    assert sp.accel[6] == 0.0
+    # v2/HAS_SCHED are unaffected -- hand_acc_rps2 is purely observability.
+    assert sp.flags & FLAG_HAS_V2
+    assert sp.flags & FLAG_HAS_SCHED
+
+
+def test_accel6_inert_when_hand_absent():
+    """hand_acc_rps2 present with no hand this frame -- inert (mirrors the
+    u1/u2 silent-clear-on-absence convention: nothing to apply it to)."""
+    pump = _pump()
+    cmd = _full_cmd(hand=False, knot_epoch_us=None)
+    cmd['hand_acc_rps2'] = 1234.5
+    sp, reason = pump.build(cmd, t_origin_us=1)
+    assert reason is None and sp is not None
+    assert sp.accel[6] == 0.0
+
+
+# ── NaN in any new field is a REJECT (the v0/v1 precedent) ──────────────
+
+@pytest.mark.parametrize("key,bad", [
+    ('vel_next2_mm_s', [float('nan')] * 6),
+    ('hand_next2_vel_rps', float('nan')),
+    ('hand_acc_rps2', float('inf')),
+    ('knot_epoch_us', float('nan')),
+])
+def test_nan_or_inf_in_new_v8_fields_rejects(key, bad):
+    pump = _pump()
+    cmd = _full_cmd()
+    cmd[key] = bad
+    sp, reason = pump.build(cmd, t_origin_us=1)
+    assert sp is None and reason is not None
+    assert pump.frames_rejected == 1
+
+
+def test_wrong_length_vel_next2_rejects():
+    pump = _pump()
+    cmd = _full_cmd()
+    cmd['vel_next2_mm_s'] = [1.0] * 5
+    sp, reason = pump.build(cmd, t_origin_us=1)
+    assert sp is None and reason is not None
+
+
+# ── legacy byte-identity: nothing new sent -> byte-identical apart from the
+# zeroed new tail (v2 + hand_ff_gain) ────────────────────────────────────
+
+def test_legacy_v8_tail_is_zeroed_and_flags_unchanged():
+    """A v6-only command (no v2/knot_epoch_us/hand_next2_vel_rps/hand_acc_rps2,
+    no hand_ff_gain set) produces a frame whose ENTIRE pre-v8 wire content
+    (u0..v0, accel[:6], torque_ff, v1, flags) is exactly what
+    test_hand_keys_map_to_index6_with_v1 pins, with only the new v8 tail
+    (v2, hand_ff_gain) added -- all zero."""
+    pump = _pump()
+    vel_next = [2.0, -3.0, 4.0, -5.0, 6.0, -7.0]
+    sp, reason = pump.build(_hand_cmd(vel_next=vel_next), t_origin_us=7)
+    assert reason is None and sp is not None
+    assert sp.flags == (FLAG_HAS_U1 | FLAG_HAS_U2 | FLAG_HAS_HAND | FLAG_HAS_V1)
+    assert not (sp.flags & (FLAG_HAS_V2 | FLAG_HAS_SCHED))
+    assert sp.v2 == (0.0,) * 7
+    assert sp.hand_ff_gain == 0.0
+    assert sp.t_origin_us == 7
+
+
+# ── hand_ff_gain: forced to 0 unless verified; only on hand-bearing frames ──
+
+def test_hand_ff_gain_zero_by_default_even_when_verified():
+    pump = _pump()
+    pump.set_hand_torque_scale_verified(True)
+    sp, reason = pump.build(_full_cmd(), t_origin_us=1)
+    assert reason is None
+    assert sp.hand_ff_gain == 0.0   # never set -> stays at the ctor default 0.0
+
+
+def test_hand_ff_gain_forced_zero_when_unverified():
+    pump = _pump()
+    pump.set_hand_ff_gain(1.2)
+    sp, reason = pump.build(_full_cmd(), t_origin_us=1)
+    assert reason is None
+    assert sp.hand_ff_gain == 0.0
+
+
+def test_hand_ff_gain_nonzero_only_on_hand_bearing_frames():
+    pump = _pump()
+    pump.set_hand_ff_gain(0.9)
+    pump.set_hand_torque_scale_verified(True)
+    legs_only = _cmd(motor_rev=[0.1] * 6, vel=[0.0] * 6)
+    sp, reason = pump.build(legs_only, t_origin_us=1)
+    assert reason is None and sp is not None
+    assert sp.hand_ff_gain == 0.0
+    sp2, reason2 = pump.build(_full_cmd(), t_origin_us=2)
+    assert reason2 is None
+    assert sp2.hand_ff_gain == 0.9
+
+
+def test_set_hand_ff_gain_rejects_out_of_range():
+    pump = _pump()
+    with pytest.raises(ValueError):
+        pump.set_hand_ff_gain(HAND_FF_GAIN_MAX + 0.01)
+    with pytest.raises(ValueError):
+        pump.set_hand_ff_gain(-0.01)
+    with pytest.raises(ValueError):
+        pump.set_hand_ff_gain(float('nan'))
+    # Ceiling is inclusive; a rejected set leaves the prior value intact.
+    pump.set_hand_ff_gain(HAND_FF_GAIN_MAX)
+    assert pump.hand_ff_gain == HAND_FF_GAIN_MAX
+
+
+def test_hand_ff_gain_ctor_arg_validated_too():
+    with pytest.raises(ValueError):
+        SetpointPump(mm_to_rev=_MM, hand_ff_gain=HAND_FF_GAIN_MAX + 1.0)

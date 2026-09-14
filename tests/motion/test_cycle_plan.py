@@ -162,6 +162,29 @@ def test_hand_at_is_exact_on_a_known_cubic():
         assert got_v == pytest.approx(want_v, abs=1e-8)
 
 
+def test_hand_accel_at_is_exact_on_a_known_cubic():
+    """hand_accel_at (C2FF spec, 2026-09-14) reproduces the source cubic's exact
+    2nd derivative EVERYWHERE, including at knot joins — the same "exact on a
+    known cubic" property test_hand_at_is_exact_on_a_known_cubic pins for
+    position/velocity, extended to the accessor validate_cycle's new C2 gate
+    reads. A Hermite span reconstructs any cubic exactly from its two endpoint
+    (value, derivative) pairs, so a per-span acceleration mismatch here would
+    mean the accessor's formula is wrong, not that the source isn't a cubic."""
+    plan = _make_plan()
+    # d²/dt² of 5 + 3t - 2t² + 0.5t³ is -4 + 3t.
+    for t in np.linspace(0.0, plan.total_duration, 401)[:-1]:
+        want_a = -4.0 + 3.0 * float(t)
+        got_a = plan.hand_accel_at(float(t))
+        assert isinstance(got_a, float)
+        assert got_a == pytest.approx(want_a, abs=1e-6)
+
+
+def test_hand_accel_at_clamps_to_zero_past_the_terminal_hold():
+    plan = _make_plan()
+    for t in (plan.total_duration, plan.total_duration + 2.0):
+        assert plan.hand_accel_at(t) == 0.0
+
+
 def test_hand_at_returns_plain_floats():
     plan = _make_plan()
     rev, rev_s = plan.hand_at(0.07)

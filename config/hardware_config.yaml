@@ -1077,6 +1077,15 @@ trajectory_op:
                                    # hand_decel_feedforward.md), so the ceiling stays inside what the
                                    # hand ODrive can actually produce rather than above it.
   knot_dt_s: 0.025                 # Fixed 40 Hz knot spacing {s} (matches firmware SEGMENT_T_S; not runtime-configurable)
+  emit_lead_knots: 0               # Emitter lookahead {knots} (C2FF, 2026-09-14): at tick k the emitter targets knot
+                                   # time T = t_k + emit_lead_knots*knot_dt_s, stamped; FW 22 plays it on that stamp,
+                                   # not at UDP arrival. 0 BY DESIGN: a frame arriving after its stamp is promoted at
+                                   # its true phase, and the previous frame's second span (u1->u2, exact v2) covers the
+                                   # gap with the same plan, so lateness up to one knot costs no continuity (observed
+                                   # emit gaps: p99 30 ms, max 40 ms). A lead > 0 would widen the window in which
+                                   # already-sent frames of the OLD plan keep playing after a seed-at-now install
+                                   # (holds, descents, followers) and would eat the margin of the splice read guard
+                                   # skills/schedule.py WIRE_READ_KNOTS, which assumes u2 = floor(tau/dt) + 2.
   min_move_duration_s: 0.20        # Minimum profiled move duration {s}
   min_timed_lead_s: 0.25           # Minimum lead time for a timed target {s}
   max_timed_lead_s: 60.0           # Maximum lead time for a timed target {s} (a longer lead is a clock-domain confusion — loudly rejected before the reach is built)
@@ -1177,6 +1186,38 @@ trajectory_op:
                                    # excursion the legs cannot reach, so raising this widens the
                                    # search, it does not widen the safety envelope. Inert while
                                    # unified_z_float_enabled is false.
+
+  # ── Stream C2 stop (can-bridge FW 22 scheduled playback, cover exhaustion) ──
+  # When a stamped stream's 2-knot cover runs out with no newer frame, the
+  # firmware runs a jerk-bounded cubic-in-velocity stop from the live (p, v, a)
+  # to rest and HOLDS. Its duration is the smallest D (bisection) with peak |a| <=
+  # max(accel, |a_entry|) and peak |jerk| <= jerk — a C2 stop cannot start below
+  # its own entry acceleration. Hand: the session hand acceleration limit and
+  # ~2.5x the plan's knot jerk (3500 rev/s^2 over ~1 knot). Legs: 250 rev/s^2
+  # (~17.6 m/s^2 at 0.0142 rev/mm) is the FW 21 Mode-3 decay's own deceleration
+  # from 14 rev/s over 60 ms, now C2; 25000 rev/s^3 bounds its onset.
+  stream_stop_hand_accel_rps2: 3500.0   # {rev/s^2}
+  stream_stop_hand_jerk_rps3: 350000.0  # {rev/s^3}
+  stream_stop_leg_accel_rps2: 250.0     # {rev/s^2}
+  stream_stop_leg_jerk_rps3: 25000.0    # {rev/s^3}
+
+  # ── Hand acceleration torque feedforward (can-bridge FW 22, unit U2b) ──
+  # The firmware computes tau = fade * sat(Ks * J * 2pi * a_cmd + bias) per 500 Hz
+  # tick from the curve it actually emits (J = hand_envelope.measured_reflected_
+  # inertia_kgm2). Ks slews toward the per-frame hand_ff_gain (legacy frames
+  # target 0, so FW 21 behaviour is tau == 0 exactly). sat is 0.85 x the drive's
+  # 50 A x Kt 0.0055133 = 0.2757 N m, leaving the position/velocity loop 15 %
+  # authority (the decel_ff_current_headroom_frac rule). fade ramps to 0 while
+  # the lead clamp, stroke clip, recovery slew or NaN backstop owns the command
+  # (feedforward of a curve the hand is not following), never a step: 50 /s is a
+  # 10-tick (20 ms) ramp, 0.1 x |raw| per tick (<= 0.023 N m = 4.2 A at the clamp). Gain slew 5 /s bounds the K-change torque
+  # step to J*2pi*3500*0.01 = 2.3e-3 N m per tick. bias = torque_ff[6], clamped
+  # and rate-limited (the Jetson sends 0 today).
+  stream_hand_torque_ff_clamp_nm: 0.234        # {N m}
+  stream_hand_ff_gain_slew_per_s: 5.0          # {1/s}
+  stream_hand_torque_bias_clamp_nm: 0.05       # {N m}
+  stream_hand_torque_bias_rate_nm_per_s: 0.5   # {N m/s}
+  stream_hand_torque_fade_per_s: 50.0          # {1/s}
 
 # ============================================================
 # 7. Jugglebot SpaceMouse

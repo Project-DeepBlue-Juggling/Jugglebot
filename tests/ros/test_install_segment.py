@@ -167,6 +167,11 @@ def test_a_catch_with_throw_requested_at_the_handoff_lead_snaps_to_the_release()
     re-anchored (same test-fiction as the plain-splice test above) so that
     ``tau + lead_s`` lands EXACTLY on ``k_rel * dt`` — the earliest legal
     splice knot is then the release knot itself, snapped rather than refused.
+
+    ``k_rel`` is read off the head plan's own release, not assumed to be
+    ``round(1.0 / dt)``: since C2FF (2026-09-14) a fresh install snaps its t0
+    UP onto the emitter's knot grid, so the release (an absolute instant) sits
+    up to one knot earlier on the plan's clock.
     """
     node = _perf_node()
     dt = float(hw.JB_TRAJ_KNOT_DT_S)
@@ -178,20 +183,20 @@ def test_a_catch_with_throw_requested_at_the_handoff_lead_snaps_to_the_release()
         assert resp1.accepted is True, resp1.message
         plan1, meta1, t0_1 = node._cycle
 
-        tau = release_rel - lead_s
+        k_rel = int(round(float(meta1.releases[0].t_s) / dt))
+        tau = k_rel * dt - lead_s
         origin = at - tau
         node._cycle = (plan1, meta1, origin)
         node._plan_t0 = origin
         _refresh(node)
 
-        t_origin = origin + release_rel  # == at, by construction
+        t_origin = origin + k_rel * dt  # == at, by construction
         t_land = t_origin + 0.4
         t_release = t_origin + 0.9
         resp2 = node._svc_install_segment(
             _catch_throw_req(t_land, t_release), InstallSegment.Response())
     assert resp2.accepted is True, resp2.message
     assert resp2.code == feas.OK
-    k_rel = int(round(release_rel / dt))
     assert resp2.splice_k == k_rel
     assert resp2.seeded_post_release is True
     assert resp2.t_event_mono == pytest.approx(t_land)

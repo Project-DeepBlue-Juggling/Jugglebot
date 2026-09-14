@@ -67,6 +67,7 @@ from jugglebot.motion.skills import sites as si
 from jugglebot.motion.skills.schedule import Schedule, Skill
 from jugglebot.motion.trajectory import ballistics_bc
 from jugglebot.motion.trajectory import cup_realize as cr
+from jugglebot.motion.trajectory import feasibility as feas
 from jugglebot.motion.trajectory.limits import TrajectoryLimits
 
 FLIGHT_S = 0.857
@@ -681,6 +682,64 @@ def test_a_four_throw_self_toss_schedule_installs_end_to_end_at_a_ros_epoch(
     assert snapped == [False, False] + [True] * 4 + [False]
     record = state['record']
     assert np.allclose(record.plan.pose_vel[-1], 0.0, atol=1e-6)
+
+
+def test_the_chain_this_schedule_installs_is_hand_C2_through_validate_cycle(
+        limits_r3, geom):
+    """C2FF spec (2026-09-14), scratchpad probe_hand_c2.md: install_segment
+    seeds the cup acceleration exactly at every splice, so the REAL chain a
+    self-toss schedule installs — the same one the test above builds — should
+    never trip the new ``HAND_LIMIT_C2`` gate.  The probe measured this by
+    hand (raw Hermite math, <= 8.544e-09 rev/s^2 over the 0.9 m / 4-throw
+    chain's 206 interior knots); this test exercises the SAME chain through
+    the REAL ``install_segment`` path and the REAL ``validate_cycle`` gate
+    function, end to end, as a standing regression check rather than a one-off
+    measurement.
+    """
+    site = si.columns_sites(SEPARATION_MM)[0]
+    t0 = 1789263419.5
+    sched = sc.compile_self_toss(
+        sc.SelfTossPattern(site=site, apex_m=0.9, dwell_s=0.30, n_throws=4),
+        t0_abs_s=t0)
+    arrival = np.array([0.0, 0.0, -0.5 * 9806.0 * sched.flight_s])
+    landings = [ex.Landing(pos_mm=sk.site.catch_site_mm(), vel_mm_s=arrival.copy(),
+                           t_land_abs_s=float(sk.t_abs_s))
+               for sk in sched.skills if sk.kind == sg.CATCH]
+    clock = {'t': t0 - sc.FLOOR_LIFT_S - 1.0}
+
+    def tracker(ball_id):
+        for land in landings:
+            if land.t_land_abs_s > clock['t'] - 0.05:
+                return land
+        return None
+
+    state = {'record': None}
+
+    def installer(kind, terminal, t_now_s, ball_id=0):
+        rec = state['record']
+        seed = _rest_state(site.rest_site_mm()) if rec is None else None
+        new_rec, res, _seg = ex.install_segment(
+            rec, seed, kind, terminal, t_now_s, limits=limits_r3, geom=geom)
+        assert res.accepted, '%s: %s' % (res.code, res.message)
+        state['record'] = new_rec
+        return res
+
+    execu = ex.SkillExecutor(sched, installer, tracker=tracker)
+    t_end = max(sk.t_abs_s for sk in sched.skills) + 0.5
+    t = clock['t']
+    while t < t_end and not execu.attempt_ended:
+        clock['t'] = t
+        execu.tick(t)
+        t += DT / 10.0
+    assert not execu.attempt_ended, execu.end_code
+
+    report = feas.validate_cycle(state['record'].plan, limits_r3, geom)
+    assert report.code != feas.HAND_LIMIT_C2, report.reasons
+    # The probe's measured noise floor is ~8.5e-9 rev/s^2; 1e-6 is a loose
+    # regression bound (still ~4 orders of magnitude below the gate's own
+    # tolerance) so this test does not become a second copy of the probe's
+    # float-noise measurement.
+    assert report.peak_hand_c2_rps2 < 1e-6, report.peak_hand_c2_rps2
 
 
 def test_a_four_throw_self_toss_schedule_installs_end_to_end_with_a_tracker_gated_on_release(

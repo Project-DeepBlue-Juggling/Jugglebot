@@ -35,6 +35,12 @@
 //  its parity anchor is the native harness's identical-knots test — hand lane
 //  output == leg lane output for identical inputs, which transfers the leg
 //  xref's trust to the shared math.
+//
+//  SCHEDULED PLAYBACK (FW 22, hand C2 spec 2026-09-14): a HAS_SCHED frame is
+//  played on its t_origin_us stamp, not on UDP arrival. See the block above
+//  interp_on_setpoint for the queue, the cover, the C2 stop and the resume rule.
+//  Legacy frames (no HAS_SCHED) run the unchanged FW 21 ladder bit-for-bit. Twin:
+//  teensy_interp.py sched_* (mirrors this file's scheduled path line-for-line).
 // =============================================================================
 #include "leg_interp.h"
 
@@ -233,6 +239,361 @@ static float s_recover_speed         = 0.0f;
 static bool  s_hand_recover_slewing  = false;
 static float s_hand_recover_speed    = 0.0f;
 
+// ═══ FW 22 — SCHEDULED (STAMPED) PLAYBACK ════════════════════════════════════
+// WHY. Two measured C2 breaks were in the STREAM, not the plan: every frame's
+// clock started at UDP ARRIVAL (1 ms of arrival jitter ≈ 122 rev/s² of hand
+// acceleration step), and a late frame fell into Mode 2 with a0 = 0. Here a
+// stamped frame is played at t_start = its t_origin_us mapped onto micros64():
+//   t_start_local = micros64() + (t_origin_us − now_wall_us())   (read adjacently)
+// COVER. An active frame covers [t_start, t_start+T) with Hermite(u0,v0,u1,v1)
+// and [t_start+T, t_start+2T) with Hermite(u1,v1,u2,v2). Consecutive knot-aligned
+// frames therefore hand over on the SAME cubic: the promotion is exact, and one
+// lost or late frame costs nothing (the previous frame still covers).
+// QUEUE. The net task inserts by t_start under PRIMASK (the ISR cannot run
+// inside that window); the ISR promotes the NEWEST due frame (t_start <= now),
+// evaluates it at its true phase (a late frame is not restarted at s = 0),
+// drops frames whose 2T cover is already gone (counted), and never promotes a
+// frame older than the one playing (no double play).
+// GRACE. Past t_start+2T the span-2 cubic simply continues (s > 1) for
+// SCHED_GRACE_S (canbridge_config.h: at emit lead 0 a dropped knot is routine,
+// and a stop started at 2T would refuse the next, barely-late frame).
+// C2 STOP. If the grace also runs out with no newer frame, the lane runs a cubic-in-
+// velocity stop from the exact extended span-2 state (p, v, a) to rest:
+//   v(τ) = v0(1−3τ²+2τ³) + a0·D(τ−2τ²+τ³),  τ = t/D
+//   a(τ) = (v0/D)(6τ²−6τ) + a0(1−4τ+3τ²)      (a(0) = a0, a(1) = 0: C2 both ends)
+//   j(τ) = [(12τ−6)v0/D + (6τ−4)a0]/D          (bounded, steps only at the ends)
+// a(τ) is a quadratic, so its peak over [0,1] is exact in closed form (τ=0 and
+// the vertex). Peak |a| and peak |j| are both non-increasing in D (the peak is
+// convex in v0/D with its minimum at v0/D = 0), so the SMALLEST D meeting
+// |a| <= max(A_stop, |a0|) and |j| <= J_stop is found by bisection, once per
+// stop, all axes of a group together (one D ⇒ the group stops in unison). The
+// max(·, |a0|) is forced: a C2 stop starts AT its entry acceleration. Then HOLD.
+// RESUME RULE (latched hold). Out of STOP/HOLD a promotion is accepted only if it
+// is continuous with the held curve within the RESUME tolerances (looser than
+// the diagnostic ones, canbridge_config.h): the benign cases — a rest-terminal
+// plan that was stationary through the gap, or a same-plan frame landing a tick
+// or two into the stop. While the
+// output is ENABLED a discontinuous promotion is REFUSED: the group stays held and
+// LATCHED (counted, HeartbeatT2J bit 15), because accepting it would be exactly
+// the position step the stop exists to prevent, and no firmware-side blend can
+// rejoin a moving plan without inventing a trajectory. It fails LOUD, not silent:
+// a refused frame still becomes the group's base command (s_base_pos), so the
+// leg MAX_DEVIATION guard (u0 vs encoder) and the hand deviation guard (which
+// reads the refused command while latched) trip as the plan walks away, and
+// SETPOINT_STALE still nets a dead stream. The latch clears when the output is
+// DISABLED (nothing reaches the wire, so a discontinuous frame is accepted) and
+// the next arm edge re-enters through the recovery slew — the same door every
+// stream start uses. Resuming a moving plan in firmware was rejected: it needs a
+// C2 rejoin planner in the ISR, and a wrong rejoin is a jerk into the hardware.
+struct SchedFrame {
+  int64_t t_start_us;
+  float   p0[NUM_AXES], v0[NUM_AXES], p1[NUM_AXES], v1[NUM_AXES], p2[NUM_AXES], v2[NUM_AXES];
+  float   torque[NUM_AXES], accel[NUM_AXES];
+  float   hand_ff_gain;
+  bool    has_hand;
+};
+static SchedFrame s_sq[SCHED_QUEUE_LEN];   // ordered by t_start (index 0 = oldest stamp)
+static volatile uint8_t s_sq_n = 0;        // net task writes under PRIMASK; the ISR pops
+
+enum : uint8_t { SCHED_PLAY = 0, SCHED_STOP = 1, SCHED_HOLD = 2 };
+struct SchedGroup {
+  bool     active;            // a stamped frame (or its stop/hold) owns this group
+  uint8_t  phase;             // SCHED_PLAY / SCHED_STOP / SCHED_HOLD
+  bool     latched;           // a discontinuous resume was refused while armed
+  bool     restart;           // legs: the next promotion is a stream start (set at the arm edge from a stop/hold)
+  int64_t  t0_us;             // PLAY: u0 play time; STOP: stop entry time
+  int64_t  frame_t_start_us;  // t_start of the last loaded frame (stale-order guard)
+  float    stop_D;            // C2 stop duration (s)
+  float    p0[NUM_AXES], v0[NUM_AXES], p1[NUM_AXES], v1[NUM_AXES], p2[NUM_AXES], v2[NUM_AXES];
+  float    ep[NUM_AXES], ev[NUM_AXES], ea[NUM_AXES];   // STOP entry state; HOLD position in ep
+  float    hand_ff_gain;
+  float    dp_max, dv_max, da_max;                     // promotion continuity, this armed session
+  uint32_t promo_over;                                 // over-tolerance promotions (cumulative)
+};
+static SchedGroup s_sg[2];
+static constexpr uint8_t SG_LEGS = 0, SG_HAND = 1;
+static constexpr int64_t SCHED_SEG_US   = (int64_t)(SEGMENT_T_S * 1e6f + 0.5f);
+static constexpr int64_t SCHED_COVER_US = 2 * SCHED_SEG_US;                              // a frame's own cover
+static constexpr int64_t SCHED_GRACE_US = (int64_t)(SCHED_GRACE_S * 1e6f + 0.5f);
+static constexpr int64_t SCHED_EXHAUST_US = SCHED_COVER_US + SCHED_GRACE_US;            // cover + grace
+static constexpr float   SCHED_S_MAX = 1.0f + SCHED_GRACE_S / SEGMENT_T_S;              // span-2 s at exhaustion
+
+// Counters (census idiom: cumulative, single writer, consumer differences).
+static volatile uint32_t s_sched_frames       = 0;   // net task: accepted as scheduled
+static volatile uint32_t s_sched_demoted      = 0;   // net task: HAS_SCHED played as legacy
+static volatile uint32_t s_sched_future_drops = 0;   // net task: stamp > SCHED_MAX_FUTURE_US ahead
+static volatile uint32_t s_sched_q_overflow   = 0;   // net task: queue full, oldest stamp dropped
+static volatile uint32_t s_sched_expired      = 0;   // ISR: 2T cover gone at promotion
+static volatile uint32_t s_sched_superseded   = 0;   // ISR: a newer due frame won the same tick
+static volatile uint32_t s_sched_stale        = 0;   // ISR: older than the playing frame
+static volatile uint32_t s_sched_stops        = 0;   // ISR: cover exhaustions
+static volatile uint32_t s_sched_stop_capped  = 0;   // ISR: the stop hit SCHED_STOP_MAX_S
+static volatile uint32_t s_sched_refused      = 0;   // ISR: discontinuous resume refused while armed
+static volatile uint32_t s_sched_resumes      = 0;   // ISR: continuous resume out of a stop/hold
+static volatile uint32_t s_sched_slew_rearms  = 0;   // ISR: leg stream restart re-armed the recovery slew
+// a_cmd (U2b's input): ISR-written once per tick.
+static volatile float    s_hand_a_cmd         = 0.0f;
+static float             s_leg_a_cmd[NUM_LEGS];
+
+// ── FW 22 hand acceleration torque feedforward (unit U2b) ────────────────────
+//   tau = fade * sat(Ks * J_HAND * 2pi * a_cmd + bias)       (N m, per 500 Hz tick)
+// computed from the curve the lane ACTUALLY emits (a_cmd above), so a late,
+// dropped or stopped stream feeds forward what the hand is being told to do,
+// not what the plan wanted. Every term is rate-bounded (no torque step):
+//   Ks   slews toward the promoted frame's hand_ff_gain at HAND_FF_GAIN_SLEW_PER_S;
+//        legacy/idle target 0, so a pure FW 21 session transmits tau == 0.0 exactly;
+//   bias = torque_ff[6] of the scheduled frame, clamped ±HAND_TORQUE_BIAS_CLAMP_NM
+//        and rate-limited (the Jetson sends 0 today);
+//   sat  = ±HAND_TORQUE_FF_CLAMP_NM on the SUM (0.85 × the drive's 0.2757 N m),
+//        latched for heartbeat bit 14;
+//   fade ramps 1→0 (and back) at HAND_TORQUE_FADE_PER_S while the lead clamp,
+//        the stroke clip, the recovery slew or the NaN backstop owns the command
+//        — feedforward of a curve the hand is not following fights the loop.
+// Off the wire (output disabled, cold-start move, lane idle, axis absent) the
+// state resets to 0, so every re-enable ramps up from zero behind the slew.
+static float             s_hand_ff_ks   = 0.0f;
+static float             s_hand_ff_fade = 0.0f;
+static float             s_hand_ff_bias = 0.0f;
+static volatile float    s_hand_tau_cmd = 0.0f;            // tau on the wire this tick
+static volatile float    s_hand_tau_max_abs = 0.0f;        // |tau| session max (hand7 reset)
+static volatile uint8_t  s_hand_tau_clamp_pending = 0;     // sat since the last heartbeat take
+static volatile uint32_t s_hand_tau_clamp_ticks = 0;       // on-wire ticks that saturated
+static volatile uint32_t s_hand_tau_fade_ticks  = 0;       // on-wire ticks with a fade request
+// Drain (the ODrive watchdog is OFF and it keeps its last input_torque): the
+// tick the hand frame stops reaching the wire, re-send the LAST transmitted
+// frame with torque 0 for HAND_TORQUE_DRAIN_TICKS ticks. pos and vel_ff are
+// bit-identical to that last frame, so the only command change is tau → 0.
+static bool              s_hand_tx_prev = false;
+static float             s_hand_tx_pos = 0.0f, s_hand_tx_vel = 0.0f, s_hand_tx_tau = 0.0f;
+static uint8_t           s_hand_drain_left = 0;
+static volatile uint32_t s_hand_drain_frames = 0;
+
+static inline float fabs32(float x) { return (x < 0.0f) ? -x : x; }
+
+// One Hermite span in DIFFERENCE form — the same cubic as the legacy basis
+// (h00 + h01 = 1), written so acceleration does not cancel two ~10 rev terms
+// in float32. s in [0,1].
+static void span_eval(float P0, float V0, float P1, float V1, float s,
+                      float& p, float& v, float& a) {
+  const float T = SEG_T, invT = 1.0f / SEG_T;
+  const float d = P1 - P0;
+  const float s2 = s * s, s3 = s2 * s;
+  p = P0 + (s3 - 2.0f * s2 + s) * (T * V0) + (-2.0f * s3 + 3.0f * s2) * d + (s3 - s2) * (T * V1);
+  v = (-6.0f * s2 + 6.0f * s) * (d * invT) + (3.0f * s2 - 4.0f * s + 1.0f) * V0 + (3.0f * s2 - 2.0f * s) * V1;
+  a = ((6.0f - 12.0f * s) * (d * invT) + (6.0f * s - 4.0f) * V0 + (6.0f * s - 2.0f) * V1) * invT;
+}
+
+// A frame's 2T cover evaluated at `now` (t clamped to [0, 2T]).
+static void play_eval(int64_t t0, float P0, float V0, float P1, float V1, float P2, float V2,
+                      int64_t now, float& p, float& v, float& a) {
+  float t = (float)((double)(now - t0) * 1e-6);
+  if (t < 0.0f) t = 0.0f;
+  if (t < SEG_T) { span_eval(P0, V0, P1, V1, t / SEG_T, p, v, a); return; }
+  float s = (t - SEG_T) / SEG_T;
+  if (s > SCHED_S_MAX) s = SCHED_S_MAX;      // s in (1, S_MAX]: the grace continuation of the same cubic
+  span_eval(P1, V1, P2, V2, s, p, v, a);
+}
+
+// Exact peak |a| and |jerk| of the C2 stop over τ in [0,1] for duration D.
+static void stop_peaks(float v0, float a0, float D, float& apk, float& jpk) {
+  const float x  = v0 / D;
+  const float c0 = a0, c1 = -6.0f * x - 4.0f * a0, c2 = 6.0f * x + 3.0f * a0;   // a(τ) = c2τ² + c1τ + c0
+  apk = fabs32(c0);                                  // τ = 0 (τ = 1 is 0 by construction)
+  if (c2 != 0.0f) {
+    const float ts = -c1 / (2.0f * c2);
+    if (ts > 0.0f && ts < 1.0f) {
+      const float av = fabs32(c0 - c1 * c1 / (4.0f * c2));
+      if (av > apk) apk = av;
+    }
+  }
+  const float j0 = fabs32(c1), j1 = fabs32(2.0f * c2 + c1);   // jerk is linear in τ
+  jpk = ((j0 > j1) ? j0 : j1) / D;
+}
+
+static bool stop_feasible(const SchedGroup& g, uint8_t first, uint8_t last, float D, float A, float J) {
+  for (uint8_t i = first; i < last; ++i) {
+    float apk, jpk;
+    stop_peaks(g.ev[i], g.ea[i], D, apk, jpk);
+    const float ae   = fabs32(g.ea[i]);
+    const float alim = ((A > ae) ? A : ae) * (1.0f + SCHED_STOP_REL_EPS);
+    if (!(apk <= alim) || !(jpk <= J)) return false;
+  }
+  return true;
+}
+
+// Smallest D meeting both bounds (bisection; peaks are monotone in D). Runs once
+// per stop — ≤ ~30 feasibility evaluations × the group's axes, no FreeRTOS.
+static float stop_duration(const SchedGroup& g, uint8_t first, uint8_t last, float A, float J, bool& capped) {
+  capped = false;
+  bool moving = false;
+  for (uint8_t i = first; i < last; ++i) if (g.ev[i] != 0.0f || g.ea[i] != 0.0f) moving = true;
+  if (!moving) return 0.0f;
+  float hi = SCHED_STOP_BRACKET_S;
+  while (!stop_feasible(g, first, last, hi, A, J)) {
+    hi *= 2.0f;
+    if (hi >= SCHED_STOP_MAX_S) {
+      capped = !stop_feasible(g, first, last, SCHED_STOP_MAX_S, A, J);
+      return SCHED_STOP_MAX_S;
+    }
+  }
+  float lo = 0.0f;
+  for (uint8_t it = 0; it < SCHED_STOP_BISECT_ITERS; ++it) {
+    const float mid = 0.5f * (lo + hi);
+    if (stop_feasible(g, first, last, mid, A, J)) hi = mid; else lo = mid;
+  }
+  return hi;
+}
+
+static void stop_eval(float P, float V, float A, float D, float t, float& p, float& v, float& a) {
+  if (D <= 0.0f || t >= D) {
+    p = P + D * (V * 0.5f + A * D / 12.0f); v = 0.0f; a = 0.0f;
+    return;
+  }
+  if (t < 0.0f) t = 0.0f;
+  const float u = t / D, u2 = u * u, u3 = u2 * u, u4 = u3 * u;
+  v = V * (1.0f - 3.0f * u2 + 2.0f * u3) + A * D * (u - 2.0f * u2 + u3);
+  a = V * (6.0f * u2 - 6.0f * u) / D + A * (1.0f - 4.0f * u + 3.0f * u2);
+  p = P + D * (V * (u - u3 + 0.5f * u4) + A * D * (0.5f * u2 - (2.0f / 3.0f) * u3 + 0.25f * u4));
+}
+
+static void sched_eval_axis(const SchedGroup& g, uint8_t i, int64_t now, float& p, float& v, float& a) {
+  if (g.phase == SCHED_PLAY) {
+    play_eval(g.t0_us, g.p0[i], g.v0[i], g.p1[i], g.v1[i], g.p2[i], g.v2[i], now, p, v, a);
+  } else if (g.phase == SCHED_STOP) {
+    stop_eval(g.ep[i], g.ev[i], g.ea[i], g.stop_D, (float)((double)(now - g.t0_us) * 1e-6), p, v, a);
+  } else {
+    p = g.ep[i]; v = 0.0f; a = 0.0f;
+  }
+}
+
+// PLAY → STOP at cover exhaustion (entry state = the span-2 endpoint, exactly, at
+// t_start + 2T — not at the tick that noticed), STOP → HOLD at D.
+static void sched_advance(SchedGroup& g, uint8_t first, uint8_t last, int64_t now, float A, float J) {
+  if (g.phase == SCHED_PLAY && (now - g.t0_us) >= SCHED_EXHAUST_US) {
+    for (uint8_t i = first; i < last; ++i)
+      span_eval(g.p1[i], g.v1[i], g.p2[i], g.v2[i], SCHED_S_MAX, g.ep[i], g.ev[i], g.ea[i]);
+    bool capped = false;
+    g.stop_D = stop_duration(g, first, last, A, J, capped);
+    if (capped) ++s_sched_stop_capped;
+    g.t0_us += SCHED_EXHAUST_US;
+    g.phase = SCHED_STOP;
+    ++s_sched_stops;
+  }
+  if (g.phase == SCHED_STOP && (float)((double)(now - g.t0_us) * 1e-6) >= g.stop_D) {
+    for (uint8_t i = first; i < last; ++i) {
+      float p, v, a;
+      stop_eval(g.ep[i], g.ev[i], g.ea[i], g.stop_D, g.stop_D, p, v, a);
+      g.ep[i] = p; g.ev[i] = 0.0f; g.ea[i] = 0.0f;
+    }
+    g.phase = SCHED_HOLD;
+  }
+}
+
+static void sched_apply(SchedGroup& g, const SchedFrame& f, uint8_t first, uint8_t last,
+                        int64_t now, bool out_en, bool counts,
+                        float tol_p, float tol_v, float tol_a,
+                        float rtol_p, float rtol_v, float rtol_a) {
+  if (g.active && f.t_start_us < g.frame_t_start_us) { ++s_sched_stale; return; }   // no double play
+  if (g.active && !g.restart) {
+    // The handover instant. Promotion runs BEFORE sched_advance, so a playing
+    // group whose cover ended inside this tick has not entered its stop yet: the
+    // two curves hand over at the cover end, not at `now` (a frame stamped at
+    // the cover end is on time, and must be measured — and accepted — as such).
+    const int64_t t_cmp = (g.phase == SCHED_PLAY && (now - g.t0_us) > SCHED_EXHAUST_US)
+                              ? (g.t0_us + SCHED_EXHAUST_US) : now;
+    float dp = 0.0f, dv = 0.0f, da = 0.0f;
+    for (uint8_t i = first; i < last; ++i) {
+      float po, vo, ao, pn, vn, an;
+      sched_eval_axis(g, i, t_cmp, po, vo, ao);
+      play_eval(f.t_start_us, f.p0[i], f.v0[i], f.p1[i], f.v1[i], f.p2[i], f.v2[i], t_cmp, pn, vn, an);
+      const float ep_ = fabs32(pn - po), ev_ = fabs32(vn - vo), ea_ = fabs32(an - ao);
+      if (ep_ > dp) dp = ep_;
+      if (ev_ > dv) dv = ev_;
+      if (ea_ > da) da = ea_;
+    }
+    const bool over      = (dp > tol_p) || (dv > tol_v) || (da > tol_a);          // diagnostic (counted)
+    const bool resume_ok = (dp <= rtol_p) && (dv <= rtol_v) && (da <= rtol_a);   // accept out of stop/hold
+    if (g.phase != SCHED_PLAY && !resume_ok && out_en) {
+      // The latched hold (see the block comment): keep holding, stay loud.
+      g.latched = true;
+      ++s_sched_refused;
+      for (uint8_t i = first; i < last; ++i) s_base_pos[i] = f.p0[i];
+      return;
+    }
+    if (counts) {
+      if (dp > g.dp_max) g.dp_max = dp;
+      if (dv > g.dv_max) g.dv_max = dv;
+      if (da > g.da_max) g.da_max = da;
+      if (over) ++g.promo_over;
+    }
+    if (g.phase != SCHED_PLAY) ++s_sched_resumes;
+  } else if (g.active && g.restart && first == 0 && counts) {
+    // Leg stream restart after a disarm/arm out of a stop/hold: behave like the
+    // arm edge — slew from the live encoder, never step onto the new stream.
+    for (uint8_t i = 0; i < NUM_LEGS; ++i) s_recover_pos[i] = axes[i].pos_rev;
+    s_recover_speed = 0.0f;
+    s_recover_slewing = true;
+    ++s_sched_slew_rearms;
+  }
+  for (uint8_t i = first; i < last; ++i) {
+    g.p0[i] = f.p0[i]; g.v0[i] = f.v0[i];
+    g.p1[i] = f.p1[i]; g.v1[i] = f.v1[i];
+    g.p2[i] = f.p2[i]; g.v2[i] = f.v2[i];
+    s_base_pos[i]    = f.p0[i];       // the incoming command — interp_base_pos() / the guard
+    s_base_vel[i]    = f.v0[i];
+    s_base_accel[i]  = f.accel[i];    // accel[6] = plan hand accel at u0 (observability only)
+    s_base_torque[i] = f.torque[i];   // legs: the ZOH torque_ff, as FW 21; hand: hard-zeroed at TX
+  }
+  g.t0_us = g.frame_t_start_us = f.t_start_us;
+  g.phase = SCHED_PLAY;
+  g.active = true;
+  g.latched = false;
+  g.restart = false;
+  g.hand_ff_gain = f.hand_ff_gain;
+  if (first == 0) s_have_latched = true;
+  else            s_hand_active  = true;
+}
+
+// Once per ISR tick, before any lane is evaluated: promote the newest due frame
+// FIRST, then advance both groups. The order matters: advancing first would
+// start the C2 stop whenever a cover end falls between two ticks, and the frame
+// stamped at exactly that cover end — on time — would then be compared against
+// the stop and refused (a latched hold on a healthy stream). Promoting first, the
+// comparison uses the cover-end handover instant (sched_apply), and exhaustion is
+// only declared when no due frame took over.
+static void sched_advance_groups(int64_t now) {
+  if (s_sg[SG_LEGS].active)
+    sched_advance(s_sg[SG_LEGS], 0, NUM_LEGS, now, SCHED_STOP_ACCEL_LEG_RPS2, SCHED_STOP_JERK_LEG_RPS3);
+  if (s_sg[SG_HAND].active)
+    sched_advance(s_sg[SG_HAND], HAND_AXIS, NUM_AXES, now, SCHED_STOP_ACCEL_HAND_RPS2, SCHED_STOP_JERK_HAND_RPS3);
+}
+
+static void sched_tick_begin(int64_t now, bool out_en, bool counts) {
+  const uint8_t n = s_sq_n;
+  if (n == 0 || s_sq[0].t_start_us > now) { sched_advance_groups(now); return; }
+  int8_t  cand = -1;
+  uint8_t k = 0;
+  while (k < n && s_sq[k].t_start_us <= now) {
+    if ((now - s_sq[k].t_start_us) >= SCHED_COVER_US) ++s_sched_expired;
+    else { if (cand >= 0) ++s_sched_superseded; cand = (int8_t)k; }
+    ++k;
+  }
+  static SchedFrame f;   // ISR-only scratch (keeps ~250 B off the ISR stack)
+  if (cand >= 0) f = s_sq[cand];
+  for (uint8_t j = k; j < n; ++j) s_sq[j - k] = s_sq[j];
+  s_sq_n = (uint8_t)(n - k);
+  if (cand >= 0) {
+    sched_apply(s_sg[SG_LEGS], f, 0, NUM_LEGS, now, out_en, counts,
+                SCHED_PROMO_TOL_POS_LEG_REV, SCHED_PROMO_TOL_VEL_LEG_RPS, SCHED_PROMO_TOL_ACC_LEG_RPS2,
+                SCHED_RESUME_TOL_POS_LEG_REV, SCHED_RESUME_TOL_VEL_LEG_RPS, SCHED_RESUME_TOL_ACC_LEG_RPS2);
+    if (f.has_hand)
+      sched_apply(s_sg[SG_HAND], f, HAND_AXIS, NUM_AXES, now, out_en, counts,
+                  SCHED_PROMO_TOL_POS_HAND_REV, SCHED_PROMO_TOL_VEL_HAND_RPS, SCHED_PROMO_TOL_ACC_HAND_RPS2,
+                  SCHED_RESUME_TOL_POS_HAND_REV, SCHED_RESUME_TOL_VEL_HAND_RPS, SCHED_RESUME_TOL_ACC_HAND_RPS2);
+  }
+  sched_advance_groups(now);
+}
+
 static IntervalTimer s_timer;
 
 // Deadline-miss threshold: a tick later than period + 25% is "missed".
@@ -275,6 +636,8 @@ void interp_on_setpoint(uint16_t seq, const uint8_t* payload, uint16_t len) {
 
   const bool has_v1_flag   = (sp.flags & 0x8u) != 0;   // HAS_V1 (v6 wire, bit 3)
   const bool has_hand_flag = (sp.flags & 0x4u) != 0;   // HAS_HAND (v6 wire, bit 2)
+  const bool has_v2_flag    = (sp.flags & SP_FLAG_HAS_V2) != 0;      // HAS_V2 (v8, bit 4)
+  const bool has_sched_flag = (sp.flags & SP_FLAG_HAS_SCHED) != 0;   // HAS_SCHED (v8, bit 5)
 
   // ── isfinite trust-boundary drop ────────────────────────────────────────────
   // A NaN/Inf field survives BOTH the lead clamp and the stroke clamp (a NaN fails
@@ -292,6 +655,7 @@ void interp_on_setpoint(uint16_t seq, const uint8_t* payload, uint16_t len) {
           std::isfinite(sp.v0[i]) && std::isfinite(sp.accel[i]) && std::isfinite(sp.torque_ff[i])))
       return;
     if (has_v1_flag && !std::isfinite(sp.v1[i])) return;
+    if (has_v2_flag && !std::isfinite(sp.v2[i])) return;
   }
   if (has_hand_flag) {
     const uint8_t h = HAND_AXIS;
@@ -299,7 +663,13 @@ void interp_on_setpoint(uint16_t seq, const uint8_t* payload, uint16_t len) {
           std::isfinite(sp.v0[h]) && std::isfinite(sp.accel[h]) && std::isfinite(sp.torque_ff[h])))
       return;
     if (has_v1_flag && !std::isfinite(sp.v1[h])) return;
+    if (has_v2_flag && !std::isfinite(sp.v2[h])) return;
   }
+  // K is a gain, but a non-finite one is still garbage: drop like any NaN field.
+  if (!std::isfinite(sp.hand_ff_gain)) return;
+  float hand_k = sp.hand_ff_gain;
+  if (hand_k < 0.0f) hand_k = 0.0f;
+  else if (hand_k > HAND_FF_GAIN_MAX) hand_k = HAND_FF_GAIN_MAX;
 
   // ── torque_ff ingest clamp (2026-07-14 gravity-FF firmware backstop) ────────
   // Bound |torque_ff[i]| to TORQUE_CLAMP (wire-Nm) BEFORE staging. CLAMP, DON'T
@@ -334,6 +704,49 @@ void interp_on_setpoint(uint16_t seq, const uint8_t* payload, uint16_t len) {
   // fully-ordered step (also serves as the compiler/memory barrier the seqlock
   // would otherwise provide). ~65 words copied (7 lanes + v1 since v6) → a few
   // µs of IRQ-off, same order as before the widening.
+  // ── FW 22: scheduled or legacy? ─────────────────────────────────────────────
+  bool sched = false;
+  if (has_sched_flag) {
+    if (((sp.flags & SCHED_REQUIRED_FLAGS) == SCHED_REQUIRED_FLAGS) && time_synced()) sched = true;
+    else ++s_sched_demoted;   // counted, then played with FW 21 arrival semantics
+  }
+  if (sched) {
+    const int64_t mono = (int64_t)micros64();      // adjacent reads: the offset, not two clocks
+    const int64_t wall = (int64_t)now_wall_us();
+    const int64_t t_start = mono + ((int64_t)sp.t_origin_us - wall);
+    if (t_start - (int64_t)recv > SCHED_MAX_FUTURE_US) { ++s_sched_future_drops; return; }
+    SchedFrame f;
+    f.t_start_us = t_start;
+    for (uint8_t i = 0; i < NUM_AXES; ++i) {
+      f.p0[i] = sp.u0[i]; f.p1[i] = sp.u1[i]; f.p2[i] = sp.u2[i];
+      f.v0[i] = sp.v0[i]; f.v1[i] = sp.v1[i]; f.v2[i] = sp.v2[i];
+      f.torque[i] = sp.torque_ff[i]; f.accel[i] = sp.accel[i];
+    }
+    f.hand_ff_gain = hand_k;
+    f.has_hand = has_hand_flag;
+    const uint32_t pmq = __get_PRIMASK(); __disable_irq();
+    uint8_t n = s_sq_n;
+    bool placed = false;
+    for (uint8_t k = 0; k < n; ++k)
+      if (s_sq[k].t_start_us == t_start) { s_sq[k] = f; placed = true; break; }   // same knot, newer seq: replace
+    if (!placed) {
+      bool drop_incoming = false;
+      if (n == SCHED_QUEUE_LEN) {
+        ++s_sched_q_overflow;
+        if (t_start < s_sq[0].t_start_us) drop_incoming = true;
+        else { for (uint8_t k = 1; k < n; ++k) s_sq[k - 1] = s_sq[k]; --n; }
+      }
+      if (!drop_incoming) {
+        uint8_t pos = n;
+        while (pos > 0 && s_sq[pos - 1].t_start_us > t_start) { s_sq[pos] = s_sq[pos - 1]; --pos; }
+        s_sq[pos] = f;
+        ++n;
+      }
+    }
+    s_sq_n = n;
+    __set_PRIMASK(pmq);
+    ++s_sched_frames;
+  } else {
   const uint32_t pm = __get_PRIMASK(); __disable_irq();
   for (uint8_t i = 0; i < NUM_AXES; ++i) {
     s_stage.u0[i]     = sp.u0[i];
@@ -351,6 +764,7 @@ void interp_on_setpoint(uint16_t seq, const uint8_t* payload, uint16_t len) {
   s_stage.recv_us = recv;
   s_pending = true;
   __set_PRIMASK(pm);
+  }
 
   // Only an ACCEPTED frame advances the seq high-water mark + the staleness clock
   // (and, likewise, publishes the torque-clamp mask — a dropped frame leaves it).
@@ -362,6 +776,8 @@ void interp_on_setpoint(uint16_t seq, const uint8_t* payload, uint16_t len) {
 
 // ── Latch (consume staging) — port of teensy_interp.latch_setpoint ────────────
 static void latch_from_staging() {
+  // FW 22: a legacy frame takes the lanes back from a scheduled stream.
+  s_sg[SG_LEGS].active = false; s_sg[SG_LEGS].latched = false; s_sg[SG_LEGS].restart = false;
   // Jerk EMA from consecutive accelerations (legs).
   if (s_have_prev_accel) {
     const float dt_mpc = (float)((double)(s_stage.recv_us - s_prev_recv_us) * 1e-6);
@@ -401,6 +817,7 @@ static void latch_from_staging() {
   // of a fresh leg frame silently re-zeroing the hand's trajectory phase.
   if (s_stage.has_hand) {
     const uint8_t h = HAND_AXIS;
+    s_sg[SG_HAND].active = false; s_sg[SG_HAND].latched = false; s_sg[SG_HAND].restart = false;
     if (s_hand_have_prev_accel) {
       const float dt_h = (float)((double)(s_stage.recv_us - s_hand_prev_recv_us) * 1e-6);
       if (dt_h > 1e-6f) {
@@ -469,6 +886,13 @@ static void interp_isr() {
     s_hand_has_next = s_hand_has_next2 = s_hand_has_v1 = false;
     s_hand_have_prev_accel = false;   // jerk history dies with the session
                                       // (a fresh latch then zeroes s_jerk[6])
+    // FW 22: the scheduled hand group dies with the session for the same reason;
+    // a leg group caught in a stop/hold restarts on its next frame behind the
+    // slew; the promotion-continuity maxima are per armed session.
+    s_sg[SG_HAND].active = false; s_sg[SG_HAND].latched = false; s_sg[SG_HAND].restart = false;
+    if (s_sg[SG_LEGS].active && s_sg[SG_LEGS].phase != SCHED_PLAY) s_sg[SG_LEGS].restart = true;
+    s_sg[SG_LEGS].latched = false;
+    for (uint8_t gi = 0; gi < 2; ++gi) s_sg[gi].dp_max = s_sg[gi].dv_max = s_sg[gi].da_max = 0.0f;
   }
 
   if (s_pending) { latch_from_staging(); s_pending = false; }
@@ -541,6 +965,11 @@ static void interp_isr() {
     return;
   }
 
+  // ── FW 22 scheduled playback: advance both groups, then promote the newest due
+  //    frame (counts gate = the TX gate, like the hand counters).
+  const int64_t now_i64 = (int64_t)now_mono;
+  sched_tick_begin(now_i64, out_en, out_en && !coldstart);
+
   if (!s_have_latched) return;
 
   // Trajectory-phase dt — THE most control-critical interval. micros64():
@@ -549,8 +978,13 @@ static void interp_isr() {
   // this consistent with the micros64() the jitter accounting already uses above.
   const float dt = (float)((double)(micros64() - s_base_ts_us) * 1e-6);
   float cmd_pos[NUM_LEGS], cmd_vel[NUM_LEGS], cmd_tor[NUM_LEGS];
+  float cmd_acc[NUM_LEGS] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};   // analytic accel (scheduled mode)
 
-  if (s_has_next) {
+  if (s_sg[SG_LEGS].active) {
+    // FW 22 scheduled playback — the frame's stamped clock, not arrival.
+    for (uint8_t i = 0; i < NUM_LEGS; ++i)
+      sched_eval_axis(s_sg[SG_LEGS], i, now_i64, cmd_pos[i], cmd_vel[i], cmd_acc[i]);
+  } else if (s_has_next) {
     // Mode 1: cubic Hermite between u0 and u1.
     float s = dt / SEG_T;
     if (s > 1.0f) s = 1.0f;
@@ -662,7 +1096,8 @@ static void interp_isr() {
   // a HAS_HAND frame has latched: since FW 21 there is no mastery latch to
   // consult, because there is only one master.
   bool  hand_tx = false;              // computed + clamped this tick → publish/TX
-  float h_pos = 0.0f, h_vel = 0.0f;
+  bool  h_clipped = false, h_nonfinite = false;   // FW 22 torque-fade inputs
+  float h_pos = 0.0f, h_vel = 0.0f, h_acc = 0.0f;   // h_acc = a_cmd (analytic)
   // The ONLY gate is the latched lane state (I-HAND-4: set by a HAS_HAND
   // frame, cleared on the arm edge). There is no second master to interlock
   // against — the Platform stroke engine and its 0x6D0 conduit are gone — so a
@@ -702,6 +1137,8 @@ static void interp_isr() {
               + (3.0f * s2 - 4.0f * s + 1.0f) * v0
               + ((-6.0f * s2 + 6.0f * s) * invT) * p1
               + (3.0f * s2 - 2.0f * s) * v1;
+        h_acc = ((6.0f - 12.0f * s) * (p1 - p0) * invT + (6.0f * s - 4.0f) * v0
+                 + (6.0f * s - 2.0f) * v1) * invT;   // d²/dt² of the Hermite above
         over = -1.0f;
       } else {
         endp = p1; endv = v1; over = hdt - SEG_T;   // segment complete — continue from its endpoint
@@ -716,6 +1153,7 @@ static void interp_isr() {
         const float o2 = over * over;
         h_pos = endp + endv * over + 0.5f * a0 * o2 + (1.0f / 6.0f) * jk * (o2 * over);
         h_vel = endv + a0 * over + 0.5f * jk * o2;
+        h_acc = a0 + jk * over;
       } else {
         // Mode 3 — velocity decay to zero (the leg formula, endpoint-based).
         const float dt_b2 = MAXEXT * MAXEXT;
@@ -730,8 +1168,14 @@ static void interp_isr() {
             : vel_b * dt_over * (1.0f - dt_over / (2.0f * DECAY));
         h_pos = pos_b + extra;
         h_vel = vel_b * decay;
+        h_acc = (dt_over < DECAY) ? -vel_b / DECAY : 0.0f;
       }
     }
+
+    // FW 22: a scheduled hand group supersedes the legacy ladder above (which ran
+    // on stale legacy state and is discarded — kept unconditional so the legacy
+    // path stays textually FW 21).
+    if (s_sg[SG_HAND].active) sched_eval_axis(s_sg[SG_HAND], h, now_i64, h_pos, h_vel, h_acc);
 
     // ── Feedback anchor: freshness-aware, never a guess ──────────────────────
     // Individual atomic loads, NOT snapshot_pos_vel: the seqlock's retry loop
@@ -767,6 +1211,8 @@ static void interp_isr() {
       if (!std::isfinite(h_pos)) {
         h_pos = std::isfinite(fb) ? fb : 0.0f;   // hold; 0.0 = retract as last resort
         h_vel = 0.0f;
+        h_acc = 0.0f;
+        h_nonfinite = true;
       }
 
       // ── MAX_DEVIATION_HAND_REV residual — the 500 Hz tick's verdict ────────
@@ -775,7 +1221,11 @@ static void interp_isr() {
       // the exceed-tick counter at 10 Hz and (unless a bench `hand7 observe`
       // has lowered the switch — it boots ARMED) latches the E-STOP off it; the
       // max-residual snapshot is the observe read.
-      const float dev = h_pos - fb_ex;
+      const float dev_cmd = h_pos - fb_ex;   // the transmitted command's residual (lead-clamp input)
+      // FW 22 latched scheduled hold: the guard reads the REFUSED incoming command
+      // (s_base_pos[6]) — the leg guard's u0-vs-encoder semantics — so a plan that
+      // walks away from a held hand trips MAX_DEVIATION instead of going quiet.
+      const float dev = (s_sg[SG_HAND].active && s_sg[SG_HAND].latched) ? (s_base_pos[h] - fb_ex) : dev_cmd;
       s_hand_dev_last = dev;
       const float adev = (dev < 0.0f) ? -dev : dev;
       const float amax = (s_hand_dev_max < 0.0f) ? -s_hand_dev_max : s_hand_dev_max;
@@ -812,7 +1262,7 @@ static void interp_isr() {
       }
 
       // ── Hand lead clamp (MAX_LEAD_HAND_REV, against fb_ex) + lead-duty ─────
-      float d = dev;
+      float d = dev_cmd;
       if (d > MAX_LEAD_HAND_REV)       { d = MAX_LEAD_HAND_REV;  clamp_mask |= 0x40u; if (hand_counts) ++s_hand_lead_clamp_ticks; }
       else if (d < -MAX_LEAD_HAND_REV) { d = -MAX_LEAD_HAND_REV; clamp_mask |= 0x40u; if (hand_counts) ++s_hand_lead_clamp_ticks; }
       h_pos = fb_ex + d;
@@ -826,7 +1276,7 @@ static void interp_isr() {
       const float pre = h_pos;
       if (h_pos < 0.0f)                       h_pos = 0.0f;
       else if (h_pos > HAND_MOTOR_MAX_POSITION) h_pos = HAND_MOTOR_MAX_POSITION;
-      if (h_pos != pre) h_vel = 0.0f;
+      if (h_pos != pre) { h_vel = 0.0f; h_clipped = true; }
       hand_tx = true;
     }
   }
@@ -919,6 +1369,7 @@ static void interp_isr() {
       cmd_pos[i] = p;                     // transmit the slewed command in place of the streamed one
       cmd_vel[i] = v;                     // vel_ff = the slew velocity (0 at the edge, ≤ RECOVER_SLEW_VEL_RPS)
       cmd_tor[i] = 0.0f;                  // no torque feedforward during the recovery ramp
+      cmd_acc[i] = 0.0f;
     }
     if (all_done) s_recover_slewing = false;   // LEG set converged → legs resume normal
                                                // streaming (full vel/torque FF) even while
@@ -938,6 +1389,7 @@ static void interp_isr() {
     if (s_hand_recover_slewing && hand_tx) {
       const uint8_t h = HAND_AXIS;
       const float dt_tick = INTERP_PERIOD_US * 1e-6f;
+      const float hspeed_before = s_hand_recover_speed;
       s_hand_recover_speed += RECOVER_SLEW_ACCEL_RPS2 * dt_tick;
       if (s_hand_recover_speed > RECOVER_SLEW_VEL_RPS) s_hand_recover_speed = RECOVER_SLEW_VEL_RPS;
       const float hstep = s_hand_recover_speed * dt_tick;
@@ -962,28 +1414,73 @@ static void interp_isr() {
       s_recover_pos[h] = p;
       h_pos = p;
       h_vel = v;
+      // a_cmd of the slew profile: the ramp accel while speeding up, else 0 (the
+      // slew is trapezoidal, NOT C2 — a listed residual).
+      h_acc = (v == 0.0f || hspeed_before >= RECOVER_SLEW_VEL_RPS) ? 0.0f
+            : ((v > 0.0f) ? RECOVER_SLEW_ACCEL_RPS2 : -RECOVER_SLEW_ACCEL_RPS2);
       if (hand_done) s_hand_recover_slewing = false;   // hand converged on its own clock
     }
   }
+
+  // ── FW 22 hand torque feedforward (U2b) — after the slew, before publish ────
+  // hand_wire is EXACTLY the hand TX predicate below (s_output_enabled == out_en
+  // within a tick), so the state only integrates on ticks whose tau is sent.
+  const bool hand_wire = hand_tx && out_en && !coldstart && leg_present(HAND_AXIS);
+  float h_tau = 0.0f;
+  if (hand_wire) {
+    const float dt = INTERP_PERIOD_US * 1e-6f;
+    const float kstep = HAND_FF_GAIN_SLEW_PER_S * dt;
+    float dk = interp_hand_ff_gain_target() - s_hand_ff_ks;   // 0 target on legacy / idle
+    if (dk > kstep) dk = kstep; else if (dk < -kstep) dk = -kstep;
+    s_hand_ff_ks += dk;
+    float bt = s_sg[SG_HAND].active ? s_base_torque[HAND_AXIS] : 0.0f;   // legacy bias target 0
+    if (!std::isfinite(bt)) bt = 0.0f;
+    if (bt > HAND_TORQUE_BIAS_CLAMP_NM) bt = HAND_TORQUE_BIAS_CLAMP_NM;
+    else if (bt < -HAND_TORQUE_BIAS_CLAMP_NM) bt = -HAND_TORQUE_BIAS_CLAMP_NM;
+    const float bstep = HAND_TORQUE_BIAS_RATE_NM_PER_S * dt;
+    float db = bt - s_hand_ff_bias;
+    if (db > bstep) db = bstep; else if (db < -bstep) db = -bstep;
+    s_hand_ff_bias += db;
+    const bool fade_req = ((clamp_mask & 0x40u) != 0u) || h_clipped || h_nonfinite || s_hand_recover_slewing;
+    const float fstep = HAND_TORQUE_FADE_PER_S * dt;
+    if (fade_req) { s_hand_ff_fade -= fstep; if (s_hand_ff_fade < 0.0f) s_hand_ff_fade = 0.0f; ++s_hand_tau_fade_ticks; }
+    else          { s_hand_ff_fade += fstep; if (s_hand_ff_fade > 1.0f) s_hand_ff_fade = 1.0f; }
+    float raw = s_hand_ff_ks * HAND_TORQUE_FF_J_2PI * h_acc + s_hand_ff_bias;
+    if (!std::isfinite(raw)) raw = 0.0f;
+    bool sat = false;
+    if (raw > HAND_TORQUE_FF_CLAMP_NM)       { raw = HAND_TORQUE_FF_CLAMP_NM;  sat = true; }
+    else if (raw < -HAND_TORQUE_FF_CLAMP_NM) { raw = -HAND_TORQUE_FF_CLAMP_NM; sat = true; }
+    h_tau = s_hand_ff_fade * raw;
+    if (sat && s_hand_ff_fade > 0.0f) { s_hand_tau_clamp_pending = 1; ++s_hand_tau_clamp_ticks; }
+    const float at = (h_tau < 0.0f) ? -h_tau : h_tau;
+    if (at > s_hand_tau_max_abs) s_hand_tau_max_abs = at;
+  } else {
+    s_hand_ff_ks = 0.0f; s_hand_ff_fade = 0.0f; s_hand_ff_bias = 0.0f;
+  }
+  s_hand_tau_cmd = h_tau;
 
   // Publish targets into the cache (for telemetry) and transmit to CAN3.
   for (uint8_t i = 0; i < NUM_LEGS; ++i) {
     axes[i].target_pos_rev   = cmd_pos[i];
     axes[i].target_vel_rps   = cmd_vel[i];
     axes[i].target_torque_Nm = cmd_tor[i];
+    s_leg_a_cmd[i] = cmd_acc[i];
   }
+  s_hand_a_cmd = hand_tx ? h_acc : 0.0f;   // FW 22: U2b's a_cmd (0 while the lane is idle/unseen)
   if (hand_tx) {
     // The hand target cache is also HAND_CMD_ECHO's source while STREAMED
     // (telemetry.cpp re-sources the echo from here — the bridge's own TX is
-    // invisible to the CAN sniff under SRX_DIS). torque_ff is HARD ZERO on the
-    // hand lane in FW 17: the v6 host always sends torque_ff[6] = 0, no hand
-    // torque-FF clamp constant exists yet (Phase 0 signed none), and the leg
-    // wire-Nm clamp is a leg number that must not touch axis 6 — so the lane
-    // transmits no torque at all until a hand torque-FF chapter defines one.
+    // invisible to the CAN sniff under SRX_DIS). torque_ff is the FW 22 hand
+    // acceleration feedforward h_tau (0 off the wire; ≡ 0 on a legacy session),
+    // so HAND_CMD_ECHO carries the transmitted torque bytes too.
     hand_axis().target_pos_rev   = h_pos;
     hand_axis().target_vel_rps   = h_vel;
-    hand_axis().target_torque_Nm = 0.0f;
+    hand_axis().target_torque_Nm = h_tau;
   }
+  // The hand frame (stream OR drain) leaves through ONE encode site below —
+  // the single-producer contract (tests/firmware/test_hand_single_master.py).
+  bool  hand_emit = false;
+  float hand_emit_pos = 0.0f, hand_emit_vel = 0.0f, hand_emit_tau = 0.0f;
   // Cold-start interlock: suppress the whole streamed leg TX while a
   // firmware homing/activate/deactivate move is driving the same ODrives (see the
   // interlock note above). The target cache was written for all legs regardless.
@@ -1007,8 +1504,8 @@ static void interp_isr() {
     // encode_leg_setpoint(HAND_AXIS, …) is the verified axis-6 path: wire
     // scales 100/100, NO sign flip (leg_sign is identity for axis 6), and
     // clip_position() bounds the value to [0, HAND_MOTOR_MAX_POSITION] as the
-    // final backstop behind the clip already applied above. torque hard 0 (see
-    // the target-cache comment). TxCls::LEGS — this IS the seventh interpolated
+    // final backstop behind the clip already applied above. torque = h_tau at
+    // HAND_TOR_SCALE (1000 counts/N m since FW 22). TxCls::LEGS — this IS the seventh interpolated
     // axis of the streaming burst, and TxCls::LEGS is now its ONLY class
     // (TxCls::HAND went with the hand_ops conduit at FW 21).
     //
@@ -1018,10 +1515,43 @@ static void interp_isr() {
     // No FreeRTOS call anywhere, so leg_interp_init()'s above-syscall-ceiling
     // contract still holds.
     if (hand_tx && leg_present(HAND_AXIS)) {
-      can_jugglebot_tx(ODrive::encode_leg_setpoint(HAND_AXIS, h_pos, h_vel, 0.0f), TxCls::LEGS);
+      hand_emit = true; hand_emit_pos = h_pos; hand_emit_vel = h_vel; hand_emit_tau = h_tau;
       ++s_hand_sent;
+      s_hand_tx_pos = h_pos; s_hand_tx_vel = h_vel; s_hand_tx_tau = h_tau;
     }
   }
+  // ── FW 22 hand torque DRAIN ──────────────────────────────────────────────────
+  // The hand ODrive runs with its CAN watchdog OFF and HOLDS its last
+  // input_torque, so the instant the hand frame stops reaching the wire (output
+  // disabled by the fault machine: E-STOP latch, guard DISABLED on disarm or
+  // link loss, fb-stale; or the lane going idle) a nonzero feedforward would be
+  // left applied indefinitely. Re-send the last frame with torque 0 for
+  // HAND_TORQUE_DRAIN_TICKS ticks (repeats are idempotent; a DEFERRED frame is
+  // still sent in order). pos/vel_ff are the last frame's, bit-identical, so this
+  // removes feedforward and commands nothing new. Only when that last tau != 0,
+  // so a legacy (tau ≡ 0) session keeps FW 21's TX pattern exactly. Never during
+  // a cold-start move (those own the ODrives in their own input mode; they are
+  // refused while mpc_active, so this is belt and braces); a dead bus refuses the
+  // frame inside can_jugglebot_tx's presence gate.
+  if (hand_wire) {
+    s_hand_drain_left = 0;
+  } else {
+    if (s_hand_tx_prev && s_hand_tx_tau != 0.0f) s_hand_drain_left = HAND_TORQUE_DRAIN_TICKS;
+    if (s_hand_drain_left != 0u) {
+      if (coldstart) {
+        s_hand_drain_left = 0;
+      } else {
+        if (leg_present(HAND_AXIS)) {
+          hand_emit = true; hand_emit_pos = s_hand_tx_pos; hand_emit_vel = s_hand_tx_vel; hand_emit_tau = 0.0f;
+          ++s_hand_drain_frames;
+        }
+        --s_hand_drain_left;
+      }
+    }
+  }
+  s_hand_tx_prev = hand_wire;
+  if (hand_emit)   // TxCls::LEGS — the 7th interpolated axis of the burst (stream) or its tau=0 drain
+    can_jugglebot_tx(ODrive::encode_leg_setpoint(HAND_AXIS, hand_emit_pos, hand_emit_vel, hand_emit_tau), TxCls::LEGS);
 }
 
 // Reset every interpolator file-static to its power-on value. Two callers:
@@ -1090,6 +1620,19 @@ void interp_reset() {
   s_last_tick_us = 0;
   s_lead_clamp_mask = 0;
   s_torque_clamp_mask = 0;
+  // FW 22 scheduled playback
+  s_sq_n = 0;
+  for (uint8_t gi = 0; gi < 2; ++gi) s_sg[gi] = SchedGroup{};
+  s_sched_frames = 0; s_sched_demoted = 0; s_sched_future_drops = 0; s_sched_q_overflow = 0;
+  s_sched_expired = 0; s_sched_superseded = 0; s_sched_stale = 0; s_sched_stops = 0;
+  s_sched_stop_capped = 0; s_sched_refused = 0; s_sched_resumes = 0; s_sched_slew_rearms = 0;
+  s_hand_a_cmd = 0.0f;
+  s_hand_ff_ks = s_hand_ff_fade = s_hand_ff_bias = 0.0f;
+  s_hand_tau_cmd = 0.0f; s_hand_tau_max_abs = 0.0f;
+  s_hand_tau_clamp_pending = 0; s_hand_tau_clamp_ticks = 0; s_hand_tau_fade_ticks = 0;
+  s_hand_tx_prev = false; s_hand_tx_pos = s_hand_tx_vel = s_hand_tx_tau = 0.0f;
+  s_hand_drain_left = 0; s_hand_drain_frames = 0;
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) s_leg_a_cmd[i] = 0.0f;
 }
 
 void leg_interp_init() {
@@ -1202,10 +1745,19 @@ void     interp_set_hand_dev_guard_armed(bool armed) { s_hand_dev_guard_armed = 
 // two reads across a block, never read an absolute as a block's value. This is
 // the REQUIRED lead-duty read (lead=; non-zero during a throw ⇒ hard-abort the
 // sitting) and the console's dev_max=/dev_over= deviation read (available in either guard state).
+static const char* sched_phase_name(const SchedGroup& g) {
+  if (!g.active) return "off";
+  if (g.latched) return "HOLD-LATCHED";
+  return (g.phase == SCHED_PLAY) ? "play" : ((g.phase == SCHED_STOP) ? "stop" : "hold");
+}
+
 static void hand7_print_status() {
   Serial.printf("[hand7] guard=%s lane=%s sent=%lu unseen=%lu"
                 " stale=%lu lead=%lu dev_over=%lu dev_last=%.4f dev_max=%.4f"
-                " dev_cmd=%.4f dev_fb=%.4f\n",
+                " dev_cmd=%.4f dev_fb=%.4f"
+                " sched=%s promo_dp=%.5f promo_dv=%.4f promo_da=%.3f promo_over=%lu"
+                " stops=%lu refused=%lu expired=%lu demoted=%lu"
+                " tau=%.4f tau_max=%.4f ks=%.3f fade=%.2f tclamp=%lu tfade=%lu drain=%lu\n",
                 s_hand_dev_guard_armed ? "ARMED" : "observe",
                 s_hand_active ? "active" : "idle",
                 (unsigned long)s_hand_sent,
@@ -1216,7 +1768,15 @@ static void hand7_print_status() {
                 (double)s_hand_dev_last,
                 (double)s_hand_dev_max,
                 (double)s_hand_dev_snap_cmd,
-                (double)s_hand_dev_snap_fb);
+                (double)s_hand_dev_snap_fb,
+                sched_phase_name(s_sg[SG_HAND]),
+                (double)s_sg[SG_HAND].dp_max, (double)s_sg[SG_HAND].dv_max, (double)s_sg[SG_HAND].da_max,
+                (unsigned long)s_sg[SG_HAND].promo_over,
+                (unsigned long)s_sched_stops, (unsigned long)s_sched_refused,
+                (unsigned long)s_sched_expired, (unsigned long)s_sched_demoted,
+                (double)s_hand_tau_cmd, (double)s_hand_tau_max_abs, (double)s_hand_ff_ks,
+                (double)s_hand_ff_fade, (unsigned long)s_hand_tau_clamp_ticks,
+                (unsigned long)s_hand_tau_fade_ticks, (unsigned long)s_hand_drain_frames);
 }
 
 // Zero every counter and residual the [hand7] line prints, so a stage can be
@@ -1242,6 +1802,11 @@ void interp_hand_counters_reset() {
   s_hand_dev_trip_dev     = 0.0f;
   s_hand_dev_trip_cmd     = 0.0f;
   s_hand_dev_trip_fb      = 0.0f;
+  // FW 22: the scheduled-playback fields the [hand7] line prints.
+  s_sg[SG_HAND].dp_max = 0.0f; s_sg[SG_HAND].dv_max = 0.0f; s_sg[SG_HAND].da_max = 0.0f;
+  s_sg[SG_HAND].promo_over = 0;
+  s_sched_stops = 0; s_sched_refused = 0; s_sched_expired = 0; s_sched_demoted = 0;
+  s_hand_tau_max_abs = 0.0f; s_hand_tau_clamp_ticks = 0; s_hand_tau_fade_ticks = 0; s_hand_drain_frames = 0;
   // Re-baseline the fault task's own copy of this counter ATOMICALLY with the
   // zeroing above, so a reset can never open a one-poll masking window where
   // genuine post-reset exceed ticks read as "not yet past the old baseline"
@@ -1263,5 +1828,43 @@ bool interp_hand7_console(const char* line) {
 }
 
 void interp_hand7_diag_step() { hand7_print_status(); }
+
+// ── FW 22 scheduled-playback accessors (single-word loads; task context) ─────
+uint8_t  interp_sched_phase(uint8_t g) {
+  if (g > 1 || !s_sg[g].active) return 0;
+  return (uint8_t)(s_sg[g].phase + 1u);
+}
+bool     interp_sched_hold_latched() { return s_sg[SG_LEGS].latched || s_sg[SG_HAND].latched; }
+void     interp_sched_promo_max(uint8_t g, float* dp, float* dv, float* da) {
+  const uint8_t k = (g > 1) ? 1 : g;
+  if (dp) *dp = s_sg[k].dp_max;
+  if (dv) *dv = s_sg[k].dv_max;
+  if (da) *da = s_sg[k].da_max;
+}
+uint32_t interp_sched_promo_over(uint8_t g) { return s_sg[(g > 1) ? 1 : g].promo_over; }
+uint32_t interp_sched_frames()   { return s_sched_frames; }
+uint32_t interp_sched_demoted()  { return s_sched_demoted; }
+uint32_t interp_sched_expired()  { return s_sched_expired; }
+uint32_t interp_sched_stops()    { return s_sched_stops; }
+uint32_t interp_sched_refused()  { return s_sched_refused; }
+float    interp_hand_a_cmd()     { return s_hand_a_cmd; }
+float    interp_leg_a_cmd(uint8_t i) { return (i < NUM_LEGS) ? s_leg_a_cmd[i] : 0.0f; }
+float    interp_hand_ff_gain_target() { return s_sg[SG_HAND].active ? s_sg[SG_HAND].hand_ff_gain : 0.0f; }
+
+// ── FW 22 hand torque feedforward accessors (U2b) ────────────────────────────
+float    interp_hand_tau_cmd()        { return s_hand_tau_cmd; }
+float    interp_hand_ff_ks()          { return s_hand_ff_ks; }
+float    interp_hand_ff_fade()        { return s_hand_ff_fade; }
+uint32_t interp_hand_tau_clamp_ticks(){ return s_hand_tau_clamp_ticks; }
+uint32_t interp_hand_drain_frames()   { return s_hand_drain_frames; }
+// Read-and-clear under PRIMASK: the ISR can set the flag between a plain read
+// and the clear, and that saturation would never reach a heartbeat.
+bool     interp_hand_torque_clamp_take() {
+  const uint32_t pm = __get_PRIMASK(); __disable_irq();
+  const bool v = (s_hand_tau_clamp_pending != 0u);
+  s_hand_tau_clamp_pending = 0;
+  __set_PRIMASK(pm);
+  return v;
+}
 
 }  // namespace CanBridge

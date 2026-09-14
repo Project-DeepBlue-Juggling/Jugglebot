@@ -250,6 +250,7 @@ def test_method_arg_association_covers_all_commandable_methods():
         RpcMethod.NOP, RpcMethod.TIME_OF_DAY_QUERY,
         RpcMethod.BB_RELOAD, RpcMethod.BB_RESET, RpcMethod.BB_CALIBRATE_LOC,
         RpcMethod.GET_AXIS_VERSIONS, RpcMethod.GET_BB_AXIS_VERSIONS,
+        RpcMethod.GET_HAND_TORQUE_SCALE,
         RpcMethod.TILT_READ, RpcMethod.STATE_READ,
         RpcMethod.PLATFORM_FW_COMMIT,
     }
@@ -263,3 +264,15 @@ def test_method_arg_association_covers_all_commandable_methods():
     assert not (have & payloadless)
     # DEACTIVATE is axis-only, like ACTIVATE/HOME.
     assert ra.METHOD[RpcMethod.DEACTIVATE] is ra.METHOD[RpcMethod.ACTIVATE]
+
+
+def test_hand_torque_scale_result_roundtrip_and_layout():
+    from teensy_link import RpcMethod
+    """GET_HAND_TORQUE_SCALE result: u8 state + u8 pad[3] + u32 value + u32
+    reply_seq + u32 age_ms = 16 B little-endian, exact-size on both ends."""
+    blob = ra.encode_hand_torque_scale_result(ra.HTS_STATE_CACHED, 1000, 7, 42)
+    assert len(blob) == 16
+    assert blob == struct.pack('<B3xIII', 2, 1000, 7, 42)
+    r = ra.decode_hand_torque_scale_result(blob)
+    assert (r.state, r.value, r.reply_seq, r.age_ms) == (2, 1000, 7, 42)
+    assert int(RpcMethod.GET_HAND_TORQUE_SCALE) == 0x005B

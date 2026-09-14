@@ -248,7 +248,11 @@ def test_protocol_version_frozen(gen, proto):
     Bumping it is an INCOMPATIBLE-wire change that requires reflashing the whole
     fleet — this makes the bump deliberate and keeps all three artifacts in lockstep."""
     spec_ver = _spec_const(gen, "PROTOCOL_VERSION")
-    assert spec_ver == 7, (   # 1→2: Diagnostic homing_result ([18A]); 2→3: HeartbeatT2J
+    assert spec_ver == 8, (   # 7→8: Setpoint + v2[7] + hand_ff_gain, HAS_V2/HAS_SCHED flag
+                              # bits, HeartbeatT2J scheduled-playback promotion
+                              # diagnostics + flags bits 14/15 (2026-09-14, hand C2 /
+                              # can-bridge FW 22 — payload 208→240 B; darkness against
+                              # any FW ≤ 21 board is the intended failure).   # 1→2: Diagnostic homing_result ([18A]); 2→3: HeartbeatT2J
                               # leg guard-deviation diagnostics (2026-07-10 forensics);
                               # 3→4: Diagnostic bus_current + heartbeat_seen flag
                               # (2026-07-24 BB robot_state restoration — payload 36→40 B);
@@ -467,7 +471,11 @@ def test_wire_layout_frozen(gen):
     # Current pin re-taken 2026-09-11 (skill-stack R1): HAND_TRAJ_CMD /
     #   HAND_SOURCE_SET / ERR_HAND_SOURCE removed, HeartbeatT2J bit 6 retired,
     #   BridgeTxDiag 42→18 B. SUBTRACTIVE, hence PROTOCOL_VERSION 6→7.
-    _EXPECTED = "c84b3388c3f43041cf019eb666ad4c7ef7a041ab89dc33189fd5283e82e53b05"
+    # Re-pinned 2026-09-14 (U2b, same v8 bump, ADDITIVE): ResultHandTorqueScale
+    # (u8 state + u8 pad[3] + u32 value + u32 reply_seq + u32 age_ms = 16 B)
+    # behind RpcMethod GET_HAND_TORQUE_SCALE 0x005B — the hand ODrive
+    # can.input_torque_scale readback that gates the hand torque-FF gain.
+    _EXPECTED = "4cdef5ed736c0411d2b53271564e35cc07c21faeb7e6d1fd9399bcd68cb5e93e"
     assert digest == _EXPECTED, (
         "The UDP wire LAYOUT changed (a message/arg field layout, a framed MsgType "
         "value, or a framing constant). If INCOMPATIBLE, bump PROTOCOL_VERSION. Either "

@@ -102,6 +102,18 @@ class _PendingRpc:
         self.response_status: int = 0
 
 
+class HandTorqueScaleUnavailable(RuntimeError):
+    """The hand ODrive's can.input_torque_scale could not be read back: the
+    bridge refused (hand fw is not the (board, fw) the endpoint id belongs to, or
+    the bus is down) or no reply newer than the trigger arrived in time. A caller
+    gating the hand torque feedforward treats this exactly like a mismatch."""
+
+    def __init__(self, reason: str, state: Optional[int] = None):
+        super().__init__(reason)
+        self.reason = reason
+        self.state = state
+
+
 class RpcClient:
     """Synchronous RPC client. Thread-safe; multiple callers can ``call()``
     concurrently — each gets a unique ``req_id`` and waits on its own event.
@@ -124,6 +136,47 @@ class RpcClient:
         self._unsubscribe = link.subscribe(
             int(p.MsgType.RPC_RESPONSE), self._on_response
         )
+
+    def read_hand_input_torque_scale(self, *, timeout_s: float = 1.0,
+                                     poll_s: float = 0.02,
+                                     rpc_timeout: Optional[float] = None) -> int:
+        """Read the hand ODrive's ``axis0.config.can.input_torque_scale`` back.
+
+        Returns the uint32 value from a TxSdo reply cached AFTER this call's
+        first GET_HAND_TORQUE_SCALE (``reply_seq`` strictly greater than the
+        first response's), so a value cached before the call can never pass
+        for a fresh read. The first call triggers the RxSdo unless one is already
+        in flight (that earlier read's answer is accepted: it reads the same
+        register, at most the firmware's 500 ms in-flight window earlier).
+
+        Raises :class:`HandTorqueScaleUnavailable` on a bridge refusal (state 3
+        fw mismatch / unverified, state 4 bus down) or when no fresh reply lands
+        within ``timeout_s``; :class:`RpcError` passes through (an FW <= 21 board
+        answers ERR_UNKNOWN_METHOD). Blocks up to ``timeout_s`` — never call it
+        from a control loop.
+        """
+        from . import rpc_args as _ra
+        method = int(p.RpcMethod.GET_HAND_TORQUE_SCALE)
+
+        def _poll():
+            r = _ra.decode_hand_torque_scale_result(self.call(method, b"", timeout=rpc_timeout))
+            if r.state == _ra.HTS_STATE_FW_MISMATCH:
+                raise HandTorqueScaleUnavailable(
+                    "hand ODrive firmware is not the (board, fw) the endpoint id belongs to", r.state)
+            if r.state == _ra.HTS_STATE_BUS_DOWN:
+                raise HandTorqueScaleUnavailable("CAN3 refused the read (bus down / no partner)", r.state)
+            return r
+
+        seq0 = _poll().reply_seq
+        deadline = time.monotonic() + float(timeout_s)
+        while True:
+            r = _poll()
+            if r.reply_seq > seq0:
+                return int(r.value)
+            if time.monotonic() >= deadline:
+                raise HandTorqueScaleUnavailable(
+                    f"no torque-scale reply within {timeout_s:.2f} s", r.state)
+            time.sleep(float(poll_s))
 
     def close(self) -> None:
         """Detach from the underlying link. Pending calls will time out."""

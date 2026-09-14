@@ -74,6 +74,33 @@ Presence semantics (each documented rule is pinned by a test in
   * ``torque_ff[6] = 0`` **always** in Phase 2 (no hand feedforward), and
     ``accel[6] = 0`` (Mode-1 ignores accel on every lane).
 
+The v8 frame (2026-09-14, C2FF spec — scheduled lanes + hand torque-FF, U3a)
+------------------------------------------------------------------------------
+Four more fields, all ADDITIVE on top of v6 and all optional with a clean
+downgrade (never a new all-or-nothing reject gate — see the detailed
+rationale comment in :meth:`SetpointPump._build`, right before the v2/
+HAS_SCHED block):
+
+  * ``v2 f32[7]`` (flag bit 4, ``HAS_V2``) — the exact velocity AT the u2
+    knot, from ``vel_next2_mm_s`` (legs) / ``hand_next2_vel_rps`` (hand).
+    Mirrors ``v1``/``HAS_V1``, one knot further out.
+  * ``t_origin_us`` becomes the Jetson's ``knot_epoch_us`` CLOCK_REALTIME
+    stamp of knot u0 (flag bit 5, ``HAS_SCHED``) whenever the WHOLE knot set
+    the firmware's scheduled lanes need (``HAS_U1|HAS_U2|HAS_V1|HAS_V2``) is
+    aboard AND the stamp itself is present+finite. Otherwise it stays the
+    legacy per-frame arrival-time stamp the caller passes into
+    :meth:`build` — the FW 21 arrival-timing semantics every bench source
+    (``synthetic_setpoint``, ``replay_setpoint``) still relies on.
+  * ``accel[6]`` carries ``hand_acc_rps2`` — the plan's hand acceleration at
+    u0, hand-gated, OBSERVABILITY/CROSS-CHECK ONLY (the firmware computes
+    the actual torque feedforward from the emitted curve's own analytic
+    acceleration, never from this field). ``accel[0:6]`` stay 0, as before.
+  * ``hand_ff_gain`` — K, the hand torque-FF gain, from the ``SetpointPump``
+    attribute of the same name (see :meth:`SetpointPump.set_hand_ff_gain`),
+    forced to 0.0 unless :meth:`SetpointPump.set_hand_torque_scale_verified`
+    has been called with ``True`` (the fail-safe default), and only ever
+    nonzero on a hand-bearing frame.
+
 **Bumplessness — the load-bearing invariant.** The Teensy-side knots are derived to
 reproduce ``MotorGuard._on_mpc_command``'s EXACT knot latch
 (``motor_guard.py:541–603``), so the Teensy Hermite — cross-checked bit-for-bit
@@ -196,6 +223,8 @@ FLAG_HAS_U1 = 0x1
 FLAG_HAS_U2 = 0x2
 FLAG_HAS_HAND = 0x4   # v6: Setpoint index 6 (hand lane) is live
 FLAG_HAS_V1 = 0x8     # v6: v1[] carries the exact u1-knot velocity
+FLAG_HAS_V2 = 0x10    # v8: v2[] carries the exact u2-knot velocity (FW 22)
+FLAG_HAS_SCHED = 0x20  # v8: play on t_origin_us, not on arrival (FW 22). Set by _build() — see the v8 module docstring section.
 
 # Default per-step clamp (rev). The bridge passes the authoritative
 # hardware_config.JB_OP_MAX_POSITION_STEP_REV; this default mirrors it so the
@@ -232,6 +261,11 @@ DEFAULT_TORQUE_WIRE_SCALE = 0.9672514310008596
 # Per-leg |torque_ff| clamp in TRUE Nm (hardware_config.DYNAMICS_TORQUE_FF_MAX_NM).
 DEFAULT_TORQUE_FF_MAX_NM = 0.15
 
+# Hand torque-FF gain ceiling (dimensionless K). Mirrors the firmware's
+# HAND_FF_GAIN_MAX (canbridge_config.h, U2a/C2FF) — the same bound enforced
+# twice (Jetson param validation + firmware ingest clamp), never re-derived.
+HAND_FF_GAIN_MAX = 1.5
+
 
 class SetpointPump:
     """Stateful Teensy-side knot packer + per-step gate for the 40/500 Hz setpoint downlink.
@@ -261,6 +295,22 @@ class SetpointPump:
             ramps 0 → 1 after construction / :meth:`reset`. 0 disables the ramp
             (full FF on the first frame — only for tests). The bridge derives this
             from ``DYNAMICS_TORQUE_FF_RAMP_S / JB_TRAJ_KNOT_DT_S``.
+        hand_ff_gain: initial K (dimensionless, ``wire.hand_ff_gain``) — the
+            hand torque-FF gain the FIRMWARE applies (``τ = fade · sat(Ks ·
+            J_HAND · 2π · a_cmd)``, unit U2b). Live-updatable via
+            :meth:`set_hand_ff_gain` (the bridge's ROS param callback calls
+            it). Only ever reaches the wire as nonzero when BOTH
+            ``hand_torque_scale_verified`` is True AND the frame is
+            hand-bearing — see :meth:`_build`.
+        hand_torque_scale_verified: initial verified flag — whether the hand
+            ODrive's ``can.input_torque_scale`` readback has been confirmed to
+            match the wire scale this pump assumes. **Default False is the
+            fail-safe state**: K is forced to 0.0 regardless of
+            ``hand_ff_gain`` until the bridge calls
+            :meth:`set_hand_torque_scale_verified` (True) — a firmware
+            torque_ff computed against an unverified scale is a wrong-current
+            command, not a degraded one. Live-updatable via
+            :meth:`set_hand_torque_scale_verified`.
     """
 
     def __init__(self, mm_to_rev: Sequence[float],
@@ -270,7 +320,9 @@ class SetpointPump:
                  torque_ff_enabled: bool = False,
                  torque_ff_max_nm: float = DEFAULT_TORQUE_FF_MAX_NM,
                  torque_wire_scale: float = DEFAULT_TORQUE_WIRE_SCALE,
-                 torque_ff_ramp_frames: int = 0):
+                 torque_ff_ramp_frames: int = 0,
+                 hand_ff_gain: float = 0.0,
+                 hand_torque_scale_verified: bool = False):
         self.n = int(num_legs)
         self.mm_to_rev = tuple(float(x) for x in mm_to_rev)
         if len(self.mm_to_rev) < self.n:
@@ -306,6 +358,12 @@ class SetpointPump:
         if not math.isfinite(self.torque_wire_scale) or self.torque_wire_scale <= 0.0:
             raise ValueError(
                 f"torque_wire_scale must be finite and > 0, got {torque_wire_scale}")
+
+        # ── Hand torque-FF gain (C2FF, U3a) — see set_hand_ff_gain /
+        # set_hand_torque_scale_verified for the live-update + fail-safe contract. ──
+        self.hand_ff_gain = 0.0
+        self.hand_torque_scale_verified = bool(hand_torque_scale_verified)
+        self.set_hand_ff_gain(hand_ff_gain)  # validates + stores
 
         self._prev_pos: Optional[list] = None
         self._prev_hand: Optional[float] = None   # prior ACCEPTED hand u0 (None = no baseline)
@@ -362,6 +420,41 @@ class SetpointPump:
         if self.torque_ff_ramp_frames <= 0:
             return 1.0
         return min(1.0, self._ff_frames / float(self.torque_ff_ramp_frames))
+
+    def set_hand_ff_gain(self, k: float) -> None:
+        """Set K, the hand torque-FF gain forwarded on ``wire.hand_ff_gain``.
+
+        Validated here (finite, ``0 <= K <= HAND_FF_GAIN_MAX``) so a bad value
+        can never reach the wire regardless of caller — the bridge node's ROS
+        param callback also validates before calling this (belt-and-suspenders,
+        same pattern as the leg torque-FF ceiling above), so a ``ValueError``
+        here should never actually fire in production; it exists for any other
+        caller (tests, a future non-ROS driver).
+
+        Only EFFECTIVE (reaches the wire nonzero) once
+        :meth:`set_hand_torque_scale_verified` (True) has been called — see
+        :meth:`_build`. Live-updatable at any time; takes effect on the next
+        built frame.
+        """
+        k = float(k)
+        if not math.isfinite(k) or not (0.0 <= k <= HAND_FF_GAIN_MAX):
+            raise ValueError(
+                f"hand_ff_gain must be finite and in [0, {HAND_FF_GAIN_MAX}], "
+                f"got {k}")
+        self.hand_ff_gain = k
+
+    def set_hand_torque_scale_verified(self, ok: bool) -> None:
+        """Set whether the hand ODrive's ``input_torque_scale`` readback has
+        been confirmed to match this pump's assumed wire scale.
+
+        Fail-safe: starts False (the constructor default), and while False
+        :meth:`_build` forces the wire ``hand_ff_gain`` to 0.0 no matter what
+        :attr:`hand_ff_gain` holds. The bridge calls this from its readback
+        hook (wired by the orchestrator, U2b) — loudly logging the transition
+        is the CALLER's job (``teensy_bridge_node._set_hand_torque_scale_verified``),
+        not this module's (this is pure packing logic, no ROS logger).
+        """
+        self.hand_torque_scale_verified = bool(ok)
 
     def _finite_vec(self, seq, name: str):
         """Validate a 6-vector is present, the EXACT length, and finite.
@@ -634,6 +727,114 @@ class SetpointPump:
                     return None, reason
             has_v1 = True
 
+        # ── v2 (exact u2-knot velocity) + HAS_SCHED gating — C2FF spec, U3a ──
+        # Unlike v1 (all-or-nothing per active channel, reject on a partial
+        # set), v2/the schedule stamp are OPTIONAL WITH A CLEAN DOWNGRADE:
+        # a producer that sends the full v6 set (u0..u2, v0, v1) but omits
+        # v2/knot_epoch_us gets EXACTLY the pre-C2FF frame (HAS_V2/HAS_SCHED
+        # simply stay clear) rather than a REJECT. That is deliberate, not a
+        # relaxation of the hand-safety posture: omitting v2/the stamp is not
+        # an incoherent producer state — it is exactly what every bench
+        # source (synthetic_setpoint, replay_setpoint) and any pre-C2FF
+        # trajectory_node build legitimately do, forever. Making that a
+        # reject would turn "doesn't yet know about a brand-new optional
+        # wire field" into a fault. A present-but-malformed value is still a
+        # REJECT (the v0/v1 precedent: a garbage number is unsafe, never
+        # silently dropped) — validated up front, before any structural
+        # decision.
+        knot_epoch_us_raw = cmd.get('knot_epoch_us')
+        knot_epoch_us_val = None
+        if knot_epoch_us_raw is not None:
+            knot_epoch_us_val, reason = self._finite_scalar(
+                knot_epoch_us_raw, 'knot_epoch_us')
+            if reason is not None:
+                self.frames_rejected += 1
+                self.last_reject_reason = reason
+                return None, reason
+
+        vel_next2 = cmd.get('vel_next2_mm_s')
+        v2_legs_valid = None
+        if vel_next2 is not None:
+            v2_legs_valid, reason = self._finite_vec(vel_next2, 'vel_next2_mm_s')
+            if reason is not None:
+                self.frames_rejected += 1
+                self.last_reject_reason = reason
+                return None, reason
+
+        hand_v2_raw = cmd.get('hand_next2_vel_rps')
+        hand_v2_valid = None
+        if hand_v2_raw is not None:
+            hand_v2_valid, reason = self._finite_scalar(
+                hand_v2_raw, 'hand_next2_vel_rps')
+            if reason is not None:
+                self.frames_rejected += 1
+                self.last_reject_reason = reason
+                return None, reason
+
+        hand_acc_raw = cmd.get('hand_acc_rps2')
+        hand_acc_valid = None
+        if hand_acc_raw is not None:
+            hand_acc_valid, reason = self._finite_scalar(
+                hand_acc_raw, 'hand_acc_rps2')
+            if reason is not None:
+                self.frames_rejected += 1
+                self.last_reject_reason = reason
+                return None, reason
+
+        # HAS_V2 requires HAS_U2 and HAS_V1 (v2 is the exact velocity AT the
+        # u2 knot — meaningless without both the knot itself and proof the
+        # frame is on the exact-velocity path at all). Legs alone are enough
+        # to set it UNLESS the hand is present on this frame: HAS_V2 is one
+        # flag covering the whole 7-lane frame (same convention as HAS_V1),
+        # so if the hand is live, a real leg v2 next to a silently-zero hand
+        # v2 lane under one "exact velocity" flag would tell the firmware's
+        # hand Hermite that 0 rev/s IS the u2 velocity — wrong, not
+        # degraded. So: hand present + hand_next2_vel_rps present -> HAS_V2
+        # for the whole frame; hand present + hand_next2_vel_rps ABSENT ->
+        # downgrade, HAS_V2 stays clear for legs too (the producer just
+        # isn't running the C2FF path this tick, not a bug).
+        v2_legs = [0.0] * self.n
+        v2_hand = 0.0
+        has_v2 = False
+        if v2_legs_valid is not None and has_v1 and (flags & FLAG_HAS_U2):
+            if hand_vals is None:
+                v2_legs = [v2_legs_valid[i] * mr[i] for i in range(self.n)]
+                has_v2 = True
+            elif hand_v2_valid is not None:
+                v2_legs = [v2_legs_valid[i] * mr[i] for i in range(self.n)]
+                v2_hand = hand_v2_valid
+                has_v2 = True
+        if has_v2:
+            flags |= FLAG_HAS_V2
+
+        # accel[6]: hand_acc_rps2, observability/cross-check only (the
+        # firmware computes torque from the EMITTED curve's own analytic
+        # acceleration, never from this field — C2FF spec). Hand-gated: no
+        # hand this frame, nothing to cross-check against.
+        accel6 = hand_acc_valid if (hand_vals is not None
+                                     and hand_acc_valid is not None) else 0.0
+
+        # HAS_SCHED: play on t_origin_us (the Jetson epoch stamp of knot u0),
+        # not on UDP arrival — only when the WHOLE knot set the firmware
+        # needs to run the scheduled lanes is aboard (U1|U2|V1|V2) AND the
+        # stamp itself is present+finite. Otherwise keep the legacy
+        # t_origin_us (arrival semantics; the caller's wall-clock stamp) and
+        # leave HAS_SCHED clear — this is the same clean-downgrade posture
+        # as v2 above, for the same reason (bench sources and any producer
+        # not yet emitting a scheduled clock keep working unchanged).
+        # NOTE: checked against the `has_v1`/`has_v2` BOOLEANS, not against
+        # `flags` — FLAG_HAS_V1 is only OR'd into `flags` further down (right
+        # before assembly), so a bitmask check against `flags` here would
+        # always miss it. FLAG_HAS_U1/FLAG_HAS_U2 ARE already live in `flags`
+        # by this point (set inline in the u1/u2 section above), so those two
+        # read fine either way; using the booleans throughout keeps this
+        # block independent of that ordering.
+        t_origin_us_out = int(t_origin_us)
+        if (knot_epoch_us_val is not None and has_v1 and has_v2
+                and (flags & FLAG_HAS_U1) and (flags & FLAG_HAS_U2)):
+            flags |= FLAG_HAS_SCHED
+            t_origin_us_out = int(round(knot_epoch_us_val))
+
         # ── Per-step gates vs the prior ACCEPTED frame (NOT vs rejected frames) ──
         # Per-CHANNEL: the leg gate and the hand gate reject independently,
         # each against its own prior and its own bound.
@@ -702,16 +903,27 @@ class SetpointPump:
         if has_v1:
             flags |= FLAG_HAS_V1
 
+        # hand_ff_gain: forced to 0.0 unless the torque-scale readback is
+        # verified (fail-safe — see set_hand_torque_scale_verified), AND only
+        # ever nonzero on a hand-bearing frame (a legs-only frame has no
+        # torque to apply K to; sending a stale nonzero K on it is just
+        # confusing telemetry for zero benefit).
+        hand_ff_gain_out = (self.hand_ff_gain
+                             if (self.hand_torque_scale_verified and hand_vals is not None)
+                             else 0.0)
+
         sp = Setpoint(
             u0=tuple(u0) + (u0h,),
             u1=tuple(u1) + (u1h,),
             u2=tuple(u2) + (u2h,),
             v0=tuple(v0) + (v0h,),
-            accel=(0.0,) * (self.n + 1),        # Mode-1 Hermite ignores accel
+            accel=(0.0,) * self.n + (accel6,),  # legs: Mode-1 Hermite ignores accel; hand: observability only
             torque_ff=torque_ff + (0.0,),       # zeros unless torque_ff_enabled; [6] always 0
             v1=tuple(v1_legs) + (v1_hand,),     # zeros unless HAS_V1
+            v2=tuple(v2_legs) + (v2_hand,),     # zeros unless HAS_V2
             flags=flags,
-            t_origin_us=int(t_origin_us),
+            t_origin_us=t_origin_us_out,        # knot_epoch_us under HAS_SCHED, else legacy arrival stamp
+            hand_ff_gain=hand_ff_gain_out,
         )
         self._prev_pos = list(u0)
         # A hand-absent accepted frame CLEARS the hand baseline (a gap ends the

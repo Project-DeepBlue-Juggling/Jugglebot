@@ -9,7 +9,7 @@
 namespace JbUdp {
 
 // ── Constants ──────────────────────────────────────────────────────────
-constexpr uint8_t PROTOCOL_VERSION = 7u;  // Bumped on any incompatible wire change (4→5: 2026-07-31 Profile gains the 3rd CAN slot can3_* — cone traffic; 5→6: 2026-09-01 Setpoint widens 6→7 — index 6 = hand — and gains the v1[7] exact-knot-velocity array, unified-7dof-planner Phase 2; 6→7: 2026-09-11 skill-stack R1 — HAND_TRAJ_CMD/HAND_SOURCE_SET/ERR_HAND_SOURCE removed, HeartbeatT2J bit 6 retired, BridgeTxDiag hand_ops counters removed. Removing message types and shrinking a struct are incompatible wire changes: darkness against any FW ≤ 20 board is the INTENDED failure. TOTAL LINK DARKNESS against any FW ≤ 16 board until the lockstep Phase 3 flash — loud and fail-closed by design)
+constexpr uint8_t PROTOCOL_VERSION = 8u;  // Bumped on any incompatible wire change (4→5: 2026-07-31 Profile gains the 3rd CAN slot can3_* — cone traffic; 5→6: 2026-09-01 Setpoint widens 6→7 — index 6 = hand — and gains the v1[7] exact-knot-velocity array, unified-7dof-planner Phase 2; 6→7: 2026-09-11 skill-stack R1 — HAND_TRAJ_CMD/HAND_SOURCE_SET/ERR_HAND_SOURCE removed, HeartbeatT2J bit 6 retired, BridgeTxDiag hand_ops counters removed; 7→8: 2026-09-14 hand C2 (can-bridge FW 22) — Setpoint GROWS 208→240 B: v2[7] (exact u2-knot velocity, flags bit4 HAS_V2) + hand_ff_gain (K, clamped [0,1.5] at ingest), flags bit5 HAS_SCHED plays the frame on its t_origin_us stamp instead of on UDP arrival; HeartbeatT2J GROWS by the scheduled-playback promotion-continuity diagnostics and flags bits 14 HAND_TORQUE_CLAMP / 15 SCHED_HOLD_LATCHED. Growing a struct is as incompatible as shrinking one: darkness against any FW ≤ 21 board is the INTENDED failure. Removing message types and shrinking a struct are incompatible wire changes: darkness against any FW ≤ 20 board is the INTENDED failure. TOTAL LINK DARKNESS against any FW ≤ 16 board until the lockstep Phase 3 flash — loud and fail-closed by design)
 constexpr uint16_t MAGIC = 0x4A42u;  // "JB" little-endian preamble (bytes 0x42 0x4A)
 constexpr uint16_t HEADER_SIZE = 8u;  // Bytes before payload
 constexpr uint16_t CRC_SIZE = 2u;  // Trailing CRC-16 bytes
@@ -84,6 +84,7 @@ namespace RpcMethod {
   constexpr uint16_t PLATFORM_FW_VERIFY = 0x0058u;  // Platform FW-over-CAN: CRC-32 over the staged image (relay → 0x6F0 op 0x03)
   constexpr uint16_t PLATFORM_FW_COMMIT = 0x0059u;  // Platform FW-over-CAN: apply the staged image + reboot (relay → 0x6F0 op 0x04)
   constexpr uint16_t GET_BB_AXIS_VERSIONS = 0x005Au;  // Pull cached raw Get_Version bytes + received bitmask for the Ball Butler ODrives (CAN1 axes 7-8)
+  constexpr uint16_t GET_HAND_TORQUE_SCALE = 0x005Bu;  // Hand ODrive can.input_torque_scale readback: return the cached SDO reply and trigger a fresh read
 }
 namespace RpcStatus {
   constexpr uint16_t OK = 0x0000u;  // Success
@@ -144,6 +145,8 @@ namespace HeartbeatT2JFlags {
   constexpr uint32_t MPC_ACTIVE = 8u;  // bit3: firmware-side mpc_active (lets a setpoint source verify its arm took)
   constexpr uint32_t CONE_HEALTH_MASK = 48u;  // bits 4-5: cone (CAN2) BusHealth (UNKNOWN=0/OK=1/WARN=2/BUS_OFF=3) << HEARTBEAT_CONE_HEALTH_SHIFT; reads 0 = UNKNOWN from a pre-cone-uplink flash
   constexpr uint32_t TORQUE_CLAMP_MASK = 16128u;  // bits 8-13: bit (8+i) set = leg i's |torque_ff| was clamped to TORQUE_FF_FIRMWARE_CLAMP_WIRE_NM at UDP ingest on the last ACCEPTED setpoint frame (mirrors lead_clamp_mask; leg_interp.cpp interp_on_setpoint)
+  constexpr uint32_t HAND_TORQUE_CLAMP = 16384u;  // bit14: the hand torque-FF saturation (HAND_TORQUE_FF_CLAMP_NM) engaged on the last 500 Hz tick (FW 22 torque path; reads 0 until that path lands)
+  constexpr uint32_t SCHED_HOLD_LATCHED = 32768u;  // bit15: a scheduled lane group is in a LATCHED hold — its cover exhausted, it ran the C2 stop, and a discontinuous resume was refused while armed. Clears on an accepted continuous promotion or the next disarm/arm cycle (FW 22)
 }
 
 // ── Frame header (8 bytes) + trailing CRC-16 ───────────────────────────
@@ -161,19 +164,21 @@ static_assert(sizeof(Header) == 8, "Header must be 8 bytes");
 
 // ── Payload structs (packed; little-endian native on M7 & x86) ─────────
 #pragma pack(push, 1)
-// Setpoint: 40 Hz setpoint knot waypoints, 7 channels (v6, 2026-09-01: legs 0..5 + hand at index 6, unified-7dof-planner Phase 2). Legs carry motor-rev-space quantities (Jugglebot convention: positive = leg extension) exactly as motor_guard's interpolator consumed them; the hand lane is ODrive-convention absolute rev, NO sign flip — the firmware's encode_leg_setpoint already applies the per-axis wire scales (legs: negate + 1000/10000; hand: 100/100), so the host puts RAW rev values in this frame for every axis. The Jetson bridge does the mm→rev / pose conversions; the Teensy interpolator works purely in rev-space. `u1`/`u2`/hand/`v1` presence is signalled by the flags bits (NOT NaN sentinels). With HAS_V1 the 500 Hz Hermite endpoint velocity is transmitted exactly (float-exact for knot-aligned piecewise cubics — Phase 0 decision 2); with it clear the firmware falls back to the (u2-u1)/SEGMENT_T_S forward difference, the flown path. With HAS_HAND clear the firmware ignores index 6 and emits no hand frame.
+// Setpoint: 40 Hz setpoint knot waypoints, 7 channels (v6, 2026-09-01: legs 0..5 + hand at index 6, unified-7dof-planner Phase 2). Legs carry motor-rev-space quantities (Jugglebot convention: positive = leg extension) exactly as motor_guard's interpolator consumed them; the hand lane is ODrive-convention absolute rev, NO sign flip — the firmware's encode_leg_setpoint already applies the per-axis wire scales (legs: negate + 1000/10000; hand: 100/1000 since FW 22, 100/100 before), so the host puts RAW rev values in this frame for every axis. The Jetson bridge does the mm→rev / pose conversions; the Teensy interpolator works purely in rev-space. `u1`/`u2`/hand/`v1` presence is signalled by the flags bits (NOT NaN sentinels). With HAS_V1 the 500 Hz Hermite endpoint velocity is transmitted exactly (float-exact for knot-aligned piecewise cubics — Phase 0 decision 2); with it clear the firmware falls back to the (u2-u1)/SEGMENT_T_S forward difference, the flown path. With HAS_HAND clear the firmware ignores index 6 and emits no hand frame.
 struct SetpointPayload {
   float u0[7];  // Current positions (rev); [0..5] legs, [6] hand
   float u1[7];  // Next waypoint (rev); valid iff flags bit0
   float u2[7];  // Next-next waypoint (rev); valid iff flags bit1 — C1 continuity
   float v0[7];  // Velocity at the u0 knot (rev/s)
-  float accel[7];  // Acceleration for Taylor extrapolation (rev/s^2)
-  float torque_ff[7];  // Gravity+inertia feedforward (Nm); [6] always 0 in Phase 2
+  float accel[7];  // Acceleration for Taylor extrapolation (rev/s^2); [6] (hand) carries the plan's own hand acceleration at u0 for observability only -- FW 22 computes hand torque from the emitted curve, not from this field
+  float torque_ff[7];  // Gravity+inertia feedforward (Nm); [6] is the optional slow hand torque-FF bias (clamped, rate-limited, FW 22) -- the host sends 0
   float v1[7];  // Exact velocity at the u1 knot (rev/s); valid iff flags bit3
-  uint32_t flags;  // bit0: HAS_U1, bit1: HAS_U2, bit2: HAS_HAND (index 6 live), bit3: HAS_V1 (v1 transmitted-exact)
-  uint64_t t_origin_us;  // Jetson-side wall-clock timestamp (us)
+  uint32_t flags;  // bit0: HAS_U1, bit1: HAS_U2, bit2: HAS_HAND (index 6 live), bit3: HAS_V1 (v1 transmitted-exact), bit4: HAS_V2 (v2 transmitted-exact; requires HAS_U2+HAS_V1), bit5: HAS_SCHED (play on t_origin_us; requires HAS_U1|HAS_U2|HAS_V1|HAS_V2 and a synced bridge clock, else counted and played as legacy — FW 22)
+  uint64_t t_origin_us;  // Jetson CLOCK_REALTIME (us). With HAS_SCHED: the wall time at which knot u0 is PLAYED (same epoch as the bridge's now_wall_us); the frame covers [t, t+2T) with Hermite(u0,v0,u1,v1) then Hermite(u1,v1,u2,v2). Without HAS_SCHED: informational, FW 21 arrival semantics
+  float v2[7];  // Exact velocity at the u2 knot (rev/s); valid iff flags bit4 (v8, FW 22 scheduled cover)
+  float hand_ff_gain;  // Hand acceleration-FF gain K (dimensionless); firmware requires finite and clamps to [0, 1.5]; 0 = arm A (v8)
 };
-static_assert(sizeof(SetpointPayload) == 208, "SetpointPayload size drift");
+static_assert(sizeof(SetpointPayload) == 240, "SetpointPayload size drift");
 
 // HeartbeatJ2T: Jetson → Teensy liveness, ~10 Hz.
 struct HeartbeatJ2TPayload {
@@ -217,7 +222,7 @@ struct HeartbeatT2JPayload {
   uint8_t bus1_health;  // wire slot 1 = CAN3 (Jugglebot core: legs+hand) BusHealth enum
   uint8_t bus2_health;  // wire slot 2 = CAN1 (Ball Butler) BusHealth enum (cone/CAN2 not yet on uplink)
   uint8_t fault_state;  // FaultState enum
-  uint32_t flags;  // HeartbeatT2JFlags bitset: bits 0-3 TIME_SYNCED|STOW_PENDING_ON_RECONNECT|ALL_AXIS_HEARTBEATS_OK|MPC_ACTIVE; bits 4-5 CONE_HEALTH_MASK (cone/CAN2 BusHealth, see HEARTBEAT_CONE_HEALTH_SHIFT); bits 6-7 reserved (bit 6 was the FW 17 hand-mastery latch, retired at PROTOCOL_VERSION 7); bits 8-13 TORQUE_CLAMP_MASK (per-leg torque_ff ingest clamp, see HEARTBEAT_TORQUE_CLAMP_SHIFT)
+  uint32_t flags;  // HeartbeatT2JFlags bitset: bits 0-3 TIME_SYNCED|STOW_PENDING_ON_RECONNECT|ALL_AXIS_HEARTBEATS_OK|MPC_ACTIVE; bits 4-5 CONE_HEALTH_MASK (cone/CAN2 BusHealth, see HEARTBEAT_CONE_HEALTH_SHIFT); bits 6-7 reserved (bit 6 was the FW 17 hand-mastery latch, retired at PROTOCOL_VERSION 7); bits 8-13 TORQUE_CLAMP_MASK (per-leg torque_ff ingest clamp, see HEARTBEAT_TORQUE_CLAMP_SHIFT); bit 14 HAND_TORQUE_CLAMP; bit 15 SCHED_HOLD_LATCHED (v8)
   uint32_t uptime_ms;  // ms since boot
   uint8_t bb_state;  // BallButlerState enum (0..6, 127=ERROR)
   uint8_t bb_state_data;  // BB error code when bb_state == ERROR, else 0
@@ -231,8 +236,20 @@ struct HeartbeatT2JPayload {
   float max_dev_value;  // Deviation u0-encoder (rev) of max_dev_leg frozen at the latch crossing
   float max_dev_u0;  // Commanded base u0 (rev) of max_dev_leg frozen at the latch crossing
   float max_dev_enc;  // Encoder position (rev) of max_dev_leg frozen at the latch crossing
+  float hand_promo_dp_max;  // Hand: max |dp| (rev) at a scheduled promotion this armed session
+  float hand_promo_dv_max;  // Hand: max |dv| (rev/s) at a scheduled promotion this armed session
+  float hand_promo_da_max;  // Hand: max |da| (rev/s^2) at a scheduled promotion this armed session
+  float leg_promo_dp_max;  // Legs (max over legs): max |dp| (rev) at a scheduled promotion this armed session
+  float leg_promo_dv_max;  // Legs: max |dv| (rev/s) at a scheduled promotion this armed session
+  float leg_promo_da_max;  // Legs: max |da| (rev/s^2) at a scheduled promotion this armed session
+  uint32_t hand_promo_over;  // Hand promotions over the continuity tolerance (cumulative since boot)
+  uint32_t leg_promo_over;  // Leg promotions over the continuity tolerance (cumulative since boot)
+  uint32_t sched_stops;  // Cover exhaustions that ran the C2 stop, both lane groups (cumulative)
+  uint32_t sched_expired;  // Stamped frames dropped because their 2T cover had already expired (cumulative)
+  uint32_t sched_refused;  // Discontinuous promotions refused out of a stop/hold while armed (cumulative) — the latched-hold count
+  uint32_t sched_demoted;  // HAS_SCHED frames played as legacy (incomplete flags or unsynced clock) (cumulative)
 };
-static_assert(sizeof(HeartbeatT2JPayload) == 73, "HeartbeatT2JPayload size drift");
+static_assert(sizeof(HeartbeatT2JPayload) == 121, "HeartbeatT2JPayload size drift");
 
 // Profile: 1 Hz firmware instrumentation. Per-task CPU%, CAN bus utilisation, UDP round-trip/jitter, the 500 Hz interp deadline-miss counter, and free heap. Consumed by tools/probes/teensy_link_profiling/jetson.
 struct ProfilePayload {
@@ -300,7 +317,7 @@ struct PlatformFramePayload {
 };
 static_assert(sizeof(PlatformFramePayload) == 21, "PlatformFramePayload size drift");
 
-// HandCmdEcho: Hand command-echo telemetry. The can-bridge sniffs the Platform Teensy's Set_Input_Pos command to the HAND ODrive (axis 6) on CAN3 — arb_id(6, set_input_pos, cmd 0x0C) — and forwards the raw 8-byte payload verbatim so the host echoes the hand's COMMANDED pos/vel_ff/tor_ff (can_node._handle_hand_input_pos parity; the hand_telemetry pos_cmd/vel_ff_cmd/tor_ff_cmd fields were hardcoded 0 on the bridge until now). The host decodes `data` as `<f h h>` (float32 pos_rev + int16 vel_ff + int16 tor_ff) and divides vel/tor by INPUT_SCALE_HAND_VEL / INPUT_SCALE_HAND_TOR (100.0). Emitted at the telemetry-task rate only when a FRESH command was sniffed (event-driven; silent while the hand is idle). CAN3 SRX_DIS means the bridge never sniffs its own TX, so only genuine Platform→hand commands are echoed. `t_bridge_us` stamps CAN3 RX for latency/diagnostics.
+// HandCmdEcho: Hand command-echo telemetry. The can-bridge sniffs the Platform Teensy's Set_Input_Pos command to the HAND ODrive (axis 6) on CAN3 — arb_id(6, set_input_pos, cmd 0x0C) — and forwards the raw 8-byte payload verbatim so the host echoes the hand's COMMANDED pos/vel_ff/tor_ff (can_node._handle_hand_input_pos parity; the hand_telemetry pos_cmd/vel_ff_cmd/tor_ff_cmd fields were hardcoded 0 on the bridge until now). The host decodes `data` as `<f h h>` (float32 pos_rev + int16 vel_ff + int16 tor_ff) and divides vel/tor by INPUT_SCALE_HAND_VEL / INPUT_SCALE_HAND_TOR (100.0 / 1000.0 since FW 22). Emitted at the telemetry-task rate only when a FRESH command was sniffed (event-driven; silent while the hand is idle). CAN3 SRX_DIS means the bridge never sniffs its own TX, so only genuine Platform→hand commands are echoed. `t_bridge_us` stamps CAN3 RX for latency/diagnostics.
 struct HandCmdEchoPayload {
   uint64_t t_bridge_us;  // Bridge wall-clock at CAN3 RX of the hand Set_Input_Pos (us)
   uint8_t data[8];  // Raw ODrive Set_Input_Pos payload: <f h h> = pos_rev, vel_ff, tor_ff
@@ -451,11 +468,11 @@ static_assert(sizeof(RpcResponsePayload) == 8, "RpcResponsePayload size drift");
 #pragma pack(pop)
 
 // ── Per-message constants ──────────────────────────────────────────────
-constexpr uint16_t SETPOINT_SIZE = 208u;
+constexpr uint16_t SETPOINT_SIZE = 240u;
 constexpr uint16_t HEARTBEAT_J2T_SIZE = 12u;
 constexpr uint16_t TELEMETRY_SIZE = 64u;
 constexpr uint16_t DIAGNOSTIC_SIZE = 40u;
-constexpr uint16_t HEARTBEAT_T2J_SIZE = 73u;
+constexpr uint16_t HEARTBEAT_T2J_SIZE = 121u;
 constexpr uint16_t PROFILE_SIZE = 76u;
 constexpr uint16_t CONE_FRAME_SIZE = 21u;
 constexpr uint16_t CMD_RESULT_FRAME_SIZE = 21u;
@@ -553,6 +570,15 @@ struct ResultBbAxisVersions {
   uint8_t raw[16];  // raw 8-byte Get_Version payload per BB axis (NUM_BB_AXES*8, axis-major from BB_FIRST_NODE)
 };
 static_assert(sizeof(ResultBbAxisVersions) == 17, "ResultBbAxisVersions size drift");
+// ResultHandTorqueScale (GET_HAND_TORQUE_SCALE (result))
+struct ResultHandTorqueScale {
+  uint8_t state;  // 0 never / 1 in flight / 2 cached / 3 fw mismatch / 4 bus down
+  uint8_t pad[3];  // zero
+  uint32_t value;  // cached axis0.config.can.input_torque_scale (uint32)
+  uint32_t reply_seq;  // count of cached replies since boot
+  uint32_t age_ms;  // age of the cached reply in ms (0xFFFFFFFF = none)
+};
+static_assert(sizeof(ResultHandTorqueScale) == 16, "ResultHandTorqueScale size drift");
 // ArgBbThrow (BB_THROW)
 struct ArgBbThrow {
   float yaw_rad;  // Yaw angle in radians [-pi, pi)
@@ -599,6 +625,7 @@ constexpr uint16_t ARG_SDO_WRITE_SIZE = 7u;
 constexpr uint16_t RESULT_TIME_OF_DAY_SIZE = 8u;
 constexpr uint16_t RESULT_AXIS_VERSIONS_SIZE = 57u;
 constexpr uint16_t RESULT_BB_AXIS_VERSIONS_SIZE = 17u;
+constexpr uint16_t RESULT_HAND_TORQUE_SCALE_SIZE = 16u;
 constexpr uint16_t ARG_BB_THROW_SIZE = 16u;
 constexpr uint16_t ARG_ROBOT_STATE_SIZE = 10u;
 constexpr uint16_t ARG_PLATFORM_FW_BEGIN_SIZE = 4u;

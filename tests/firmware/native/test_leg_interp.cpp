@@ -23,9 +23,12 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <functional>
+#include <vector>
 
 #include "axis_state.h"
 #include "odrive_protocol.h"
@@ -1430,4 +1433,426 @@ TEST_CASE("hand7 observe lasts ONE armed session: the disarm edge re-arms the de
   CHECK(interp_hand_dev_guard_armed() == false);           // ...covers the next session...
   interp_set_output_enabled(false);
   CHECK(interp_hand_dev_guard_armed() == true);            // ...and only that one.
+}
+
+// ═══ FW 22 scheduled (stamped) playback ══════════════════════════════════════
+// The compiled mirror of tests/firmware/test_sched_c2_twin.py's key scenarios.
+// Float32 on the host, so these assert against the analytic Hermite with a
+// float tolerance, not bit-exactness (the twin carries the float64 claims).
+
+// A C2 knot plan: accel linear between knots (the twin's c2_plan).
+struct C2Plan { double p[64], v[64], a[64]; };
+static C2Plan make_c2_plan(double amp_a, int period, double p0) {
+  C2Plan P{};
+  const double T = SEGMENT_T_S;
+  for (int k = 0; k < 64; ++k) P.a[k] = amp_a * std::sin(2.0 * M_PI * k / period);
+  P.v[0] = -amp_a * period * T / (2.0 * M_PI);
+  P.p[0] = p0;
+  for (int k = 0; k < 63; ++k) {
+    P.v[k + 1] = P.v[k] + T * (P.a[k] + P.a[k + 1]) / 2.0;
+    P.p[k + 1] = P.p[k] + T * P.v[k] + T * T * (P.a[k] / 3.0 + P.a[k + 1] / 6.0);
+  }
+  return P;
+}
+static void plan_ref(const C2Plan& P, uint64_t t0, uint64_t now, double& p, double& v, double& a) {
+  const double tau = (double)(int64_t)(now - t0) / (SEGMENT_T_S * 1e6);
+  const int k = (int)std::floor(tau);
+  const double s = tau - k, T = SEGMENT_T_S, d = P.p[k + 1] - P.p[k];
+  const double s2 = s * s, s3 = s2 * s;
+  p = P.p[k] + (s3 - 2 * s2 + s) * T * P.v[k] + (-2 * s3 + 3 * s2) * d + (s3 - s2) * T * P.v[k + 1];
+  v = (-6 * s2 + 6 * s) * d / T + (3 * s2 - 4 * s + 1) * P.v[k] + (3 * s2 - 2 * s) * P.v[k + 1];
+  a = ((6 - 12 * s) * d / T + (6 * s - 4) * P.v[k] + (6 * s - 2) * P.v[k + 1]) / T;
+}
+
+// Stage a stamped frame: hand knots k..k+2 of P, legs flat at 0.5 (clamp-free).
+static void stage_sched_frame(uint16_t seq, const C2Plan& P, int k, uint64_t t0,
+                              uint32_t flags = 0x3Fu /* U1|U2|HAND|V1|V2|SCHED */) {
+  JbUdp::SetpointPayload sp;
+  memset(&sp, 0, sizeof(sp));
+  for (int i = 0; i < 6; ++i) { sp.u0[i] = sp.u1[i] = sp.u2[i] = 0.5f; }
+  sp.u0[6] = (float)P.p[k];     sp.u1[6] = (float)P.p[k + 1]; sp.u2[6] = (float)P.p[k + 2];
+  sp.v0[6] = (float)P.v[k];     sp.v1[6] = (float)P.v[k + 1]; sp.v2[6] = (float)P.v[k + 2];
+  sp.accel[6] = (float)P.a[k];
+  sp.flags = flags;
+  sp.t_origin_us = t0 + (uint64_t)k * 25'000u;
+  interp_on_setpoint(seq, reinterpret_cast<const uint8_t*>(&sp), sizeof(sp));
+}
+
+// Drive ticks [from, to): ingest frames whose arrival <= now, ISR, then park the
+// hand encoder on the command (keeps the lead clamp out of the comparison).
+struct SchedRun {
+  std::vector<std::pair<uint64_t, int>> ev;   // (arrival wall us, k)
+  size_t ei = 0;
+  uint16_t seq = 1;
+};
+static void sched_ticks(SchedRun& r, const C2Plan& P, uint64_t t0, uint64_t to,
+                        const std::function<void(uint64_t)>& per_tick) {
+  while (fake_wall_us() < to) {
+    while (r.ei < r.ev.size() && r.ev[r.ei].first <= fake_wall_us()) stage_sched_frame(r.seq++, P, r.ev[r.ei++].second, t0);
+    interp_isr();
+    if (interp_hand_lane_active()) write_pos_vel(hand_axis(), axes[HAND_AXIS].target_pos_rev, 0.0f, fake_mono_us());
+    per_tick(fake_wall_us());
+    fake_advance(INTERP_PERIOD_US);
+  }
+}
+
+TEST_CASE("FW 22 scheduled: stamped frames with late arrivals + a dropped frame replay the plan (hand pos, vel, a_cmd)") {
+  reset_interp_test();
+  seed_hand_encoder();
+  const C2Plan P = make_c2_plan(1500.0, 12, 5.0);
+  const uint64_t t0 = 1'100'000;   // wall stamp of knot 0 (fake wall == mono)
+  write_pos_vel(hand_axis(), (float)P.p[0], 0.0f, fake_mono_us());   // encoder on the plan (lead clamp out of the way)
+  SchedRun r;
+  uint64_t prev = 0;
+  for (int k = 0; k < 40; ++k) {
+    if (k == 17) continue;                                        // one dropped frame
+    const uint64_t late = (uint64_t)(1 + (k * 7919) % 15) * 1000u;   // 1..15 ms AFTER the stamp (emit lead 0)
+    uint64_t arr = t0 + (uint64_t)k * 25'000u + late;
+    if (arr < prev) arr = prev;
+    r.ev.push_back({arr, k});
+    prev = arr;
+  }
+  uint32_t checked = 0;
+  float max_da_step = 0.0f, prev_a = 0.0f;
+  bool have_prev = false;
+  sched_ticks(r, P, t0, t0 + 38u * 25'000u, [&](uint64_t now) {
+    if (!interp_hand_lane_active()) return;
+    CHECK(interp_sched_phase(1) == 1);                            // never exhausted
+    double pr, vr, ar;
+    plan_ref(P, t0, now, pr, vr, ar);
+    // Frame 17 is dropped: frame 16's span-2 cubic continues (the grace) from 18T
+    // until frame 18 lands (≤ 15 ms + one tick) — bounded there, exact elsewhere.
+    const uint64_t g0 = t0 + 18u * 25'000u;
+    if (now >= g0 && now < g0 + 18'000u) {
+      CHECK(std::fabs(axes[HAND_AXIS].target_pos_rev - pr) < SCHED_RESUME_TOL_POS_HAND_REV);
+      CHECK(std::fabs(axes[HAND_AXIS].target_vel_rps - vr) < SCHED_RESUME_TOL_VEL_HAND_RPS);
+      CHECK(std::fabs(interp_hand_a_cmd() - ar) < SCHED_RESUME_TOL_ACC_HAND_RPS2);
+    } else {
+      CHECK(std::fabs(axes[HAND_AXIS].target_pos_rev - pr) < 2e-3);
+      CHECK(std::fabs(axes[HAND_AXIS].target_vel_rps - vr) < 2e-2);
+      CHECK(std::fabs(interp_hand_a_cmd() - ar) < 1.0);
+    }
+    const float a = interp_hand_a_cmd();
+    if (have_prev && std::fabs(a - prev_a) > max_da_step) max_da_step = std::fabs(a - prev_a);
+    prev_a = a; have_prev = true;
+    ++checked;
+  });
+  CHECK(checked > 400);
+  CHECK(interp_sched_phase(1) == 1);
+  CHECK(interp_sched_stops() == 0);
+  CHECK(interp_sched_expired() == 0);
+  // plan jerk ≈ 1500·2π/12/0.025 ≈ 31 400 rev/s³ ⇒ ≤ ~63 rev/s² per 2 ms tick
+  CHECK(max_da_step < 70.0f);
+}
+
+TEST_CASE("FW 22 scheduled: hand == leg parity on identical stamped knots (the parity anchor, scheduled path)") {
+  reset_interp_test();
+  seed_hand_encoder();
+  write_pos_vel(hand_axis(), 0.52f, 0.0f, fake_mono_us());
+  for (uint8_t i = 0; i < 6; ++i) { axes[i].pos_rev = 0.52f; axes[i].heartbeat_seen = true; }
+  JbUdp::SetpointPayload sp;
+  memset(&sp, 0, sizeof(sp));
+  for (int i = 0; i < 7; ++i) {
+    sp.u0[i] = 0.50f; sp.u1[i] = 0.55f; sp.u2[i] = 0.60f;
+    sp.v0[i] = 2.0f;  sp.v1[i] = 2.0f;  sp.v2[i] = 2.0f;
+  }
+  sp.flags = 0x3Fu;
+  sp.t_origin_us = fake_wall_us() + 3'000u;       // played 3 ms after arrival
+  interp_on_setpoint(1, reinterpret_cast<const uint8_t*>(&sp), sizeof(sp));
+  int play_ticks = 0;
+  for (int k = 0; k < 30; ++k) {                  // spans both Hermite spans, then the stop
+    interp_isr();
+    // Parity is a PLAY-phase claim: once the cover ends each group stops under its
+    // OWN limits (hand 3500 rev/s² vs legs 250), so the stop curves differ by design.
+    if (interp_hand_lane_active() && interp_sched_phase(1) == 1) {
+      ++play_ticks;
+      CHECK(interp_sched_phase(0) == 1);
+      CHECK(axes[HAND_AXIS].target_pos_rev == axes[0].target_pos_rev);
+      CHECK(axes[HAND_AXIS].target_vel_rps == axes[0].target_vel_rps);
+      CHECK(interp_hand_a_cmd() == interp_leg_a_cmd(0));
+    }
+    fake_advance(INTERP_PERIOD_US);
+  }
+  CHECK(play_ticks >= 24);
+  CHECK(interp_hand_lane_active());
+}
+
+TEST_CASE("FW 22 scheduled: cover exhaustion runs a C2 stop, holds, and refuses a discontinuous resume while armed") {
+  reset_interp_test();
+  seed_hand_encoder();
+  const C2Plan P = make_c2_plan(1500.0, 12, 5.0);
+  const uint64_t t0 = 1'100'000;
+  write_pos_vel(hand_axis(), (float)P.p[0], 0.0f, fake_mono_us());
+  SchedRun r;
+  const int K = 14;                                             // last frame; entry at knot 16
+  for (int k = 0; k <= K; ++k) r.ev.push_back({t0 + (uint64_t)k * 25'000u - 20'000u, k});
+  const uint64_t t_exh = t0 + (uint64_t)K * 25'000u + (uint64_t)SCHED_EXHAUST_US;   // cover + grace
+  float prev_a = 0.0f, prev_v = 0.0f, max_da = 0.0f, peak_a_stop = 0.0f;
+  bool have_prev = false;
+  sched_ticks(r, P, t0, t_exh + 500'000u, [&](uint64_t now) {
+    if (!interp_hand_lane_active()) return;
+    const float a = interp_hand_a_cmd(), v = axes[HAND_AXIS].target_vel_rps;
+    if (have_prev) {
+      if (std::fabs(a - prev_a) > max_da) max_da = std::fabs(a - prev_a);
+      CHECK(std::fabs(v - prev_v) <= 0.002f * std::max(std::fabs(a), std::fabs(prev_a)) + 0.5f);   // no velocity step
+    }
+    if (now >= t_exh && std::fabs(a) > peak_a_stop) peak_a_stop = std::fabs(a);
+    prev_a = a; prev_v = v; have_prev = true;
+  });
+  CHECK(interp_sched_stops() == 2);                               // legs + hand groups
+  CHECK(interp_sched_phase(1) == 3);
+  CHECK(max_da <= SCHED_STOP_JERK_HAND_RPS3 * 0.002f * 1.01f + 1.0f);
+  {  // entry accel = the grace-extended span (K+1 → K+2) at s = SCHED_S_MAX
+    const double s = SCHED_S_MAX, T = SEGMENT_T_S, d = P.p[K + 2] - P.p[K + 1];
+    const double a_entry = ((6 - 12 * s) * d / T + (6 * s - 4) * P.v[K + 1] + (6 * s - 2) * P.v[K + 2]) / T;
+    CHECK(peak_a_stop <= std::max((double)SCHED_STOP_ACCEL_HAND_RPS2, std::fabs(a_entry)) * 1.001 + 1.0);
+  }
+  CHECK(axes[HAND_AXIS].target_vel_rps == 0.0f);
+  CHECK(interp_hand_a_cmd() == 0.0f);
+  const float hold = axes[HAND_AXIS].target_pos_rev;
+
+  // Arm WITHOUT an edge (the edge would clear the lane): the refusal needs out_en.
+  s_output_enabled = true;
+  s_output_enabled_prev = true;
+  const int k_res = 40;                                         // the plan resumes elsewhere
+  const uint64_t tnow = fake_wall_us();
+  const uint64_t t0_res = tnow + 5'000u - (uint64_t)k_res * 25'000u;
+  stage_sched_frame(900, P, k_res, t0_res);
+  for (int j = 0; j < 20; ++j) {
+    interp_isr();
+    CHECK(axes[HAND_AXIS].target_pos_rev == doctest::Approx(hold).epsilon(1e-6));
+    write_pos_vel(hand_axis(), hold, 0.0f, fake_mono_us());
+    fake_advance(INTERP_PERIOD_US);
+  }
+  CHECK(interp_sched_refused() >= 1);
+  CHECK(interp_sched_hold_latched());
+  CHECK(interp_base_pos(HAND_AXIS) == (float)P.p[k_res]);       // the guard reads the refused command
+
+  // Disarmed: nothing reaches the wire, so the next frame is accepted and unlatches.
+  s_output_enabled = false;
+  s_output_enabled_prev = false;
+  stage_sched_frame(901, P, k_res + 2, t0_res);
+  for (int j = 0; j < 15; ++j) { interp_isr(); fake_advance(INTERP_PERIOD_US); }
+  CHECK_FALSE(interp_sched_hold_latched());
+  CHECK(interp_sched_phase(1) == 1);
+}
+
+TEST_CASE("FW 22 scheduled: HAS_SCHED without the full knot set, or on an unsynced clock, is demoted to legacy (counted)") {
+  reset_interp_test();
+  seed_hand_encoder();
+  const C2Plan P = make_c2_plan(1500.0, 12, 5.0);
+  stage_sched_frame(1, P, 0, fake_wall_us(), 0x2Fu);            // no HAS_V2
+  interp_isr();
+  CHECK(interp_sched_demoted() == 1);
+  CHECK(interp_sched_phase(1) == 0);
+  CHECK(interp_hand_lane_active());                              // latched through the legacy path
+  CHECK(interp_hand_ff_gain_target() == 0.0f);                   // legacy targets K = 0
+  fake_set_time_synced(false);
+  stage_sched_frame(2, P, 1, fake_wall_us());
+  interp_isr();
+  CHECK(interp_sched_demoted() == 2);
+  CHECK(interp_sched_phase(1) == 0);
+  CHECK(interp_sched_frames() == 0);
+}
+
+TEST_CASE("FW 22 scheduled: a stamp beyond SCHED_MAX_FUTURE_US is refused and does not feed the staleness clock") {
+  reset_interp_test();
+  const C2Plan P = make_c2_plan(1500.0, 12, 5.0);
+  const uint64_t before = interp_last_setpoint_us();
+  stage_sched_frame(1, P, 0, fake_wall_us() + (uint64_t)SCHED_MAX_FUTURE_US + 10'000u);
+  CHECK(interp_sched_frames() == 0);
+  CHECK(interp_last_setpoint_us() == before);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  FW 22 hand acceleration torque feedforward (U2b)
+//    tau = fade * sat(Ks * J * 2pi * a_cmd + bias), HAND_TOR_SCALE 1000, drain on TX stop
+// ═══════════════════════════════════════════════════════════════════════════
+static void stage_sched_frame_ff(uint16_t seq, const C2Plan& P, int k, uint64_t t0, float K, float bias) {
+  JbUdp::SetpointPayload sp;
+  memset(&sp, 0, sizeof(sp));
+  for (int i = 0; i < 6; ++i) { sp.u0[i] = sp.u1[i] = sp.u2[i] = 0.5f; }
+  sp.u0[6] = (float)P.p[k];     sp.u1[6] = (float)P.p[k + 1]; sp.u2[6] = (float)P.p[k + 2];
+  sp.v0[6] = (float)P.v[k];     sp.v1[6] = (float)P.v[k + 1]; sp.v2[6] = (float)P.v[k + 2];
+  sp.accel[6] = (float)P.a[k];
+  sp.torque_ff[6] = bias;
+  sp.hand_ff_gain = K;
+  sp.flags = 0x3Fu;
+  sp.t_origin_us = t0 + (uint64_t)k * 25'000u;
+  interp_on_setpoint(seq, reinterpret_cast<const uint8_t*>(&sp), sizeof(sp));
+}
+
+struct FfTick { uint64_t now; float tau, a; bool hand_frame; int16_t tq; uint8_t buf[8]; };
+// Frames arrive 24 ms before their stamp (emit lead 1); output ENABLED; the hand
+// encoder parks on the command each tick unless `pre` overrides it.
+static std::vector<FfTick> ff_run(const C2Plan& P, uint64_t t0, int nframes, float K, float bias, uint64_t to,
+                                  const std::function<void(uint64_t)>& pre = nullptr,
+                                  const std::function<void(uint64_t)>& post = nullptr) {
+  std::vector<FfTick> out;
+  int k = 0; uint16_t seq = 1;
+  while (fake_wall_us() < to) {
+    while (k < nframes && t0 + (uint64_t)k * 25'000u <= fake_wall_us() + 24'000u) stage_sched_frame_ff(seq++, P, k++, t0, K, bias);
+    fake_clear_sent();
+    interp_isr();
+    FfTick t{}; t.now = fake_wall_us(); t.tau = interp_hand_tau_cmd(); t.a = interp_hand_a_cmd();
+    for (size_t i = 0; i < fake_sent_count(); ++i)
+      if (ODrive::axis_of(fake_sent_at(i).id) == HAND_AXIS) {
+        t.hand_frame = true; memcpy(t.buf, fake_sent_at(i).buf, 8); memcpy(&t.tq, &t.buf[6], 2);
+      }
+    out.push_back(t);
+    if (interp_hand_lane_active()) write_pos_vel(hand_axis(), axes[HAND_AXIS].target_pos_rev, 0.0f, fake_mono_us());
+    if (pre) pre(fake_wall_us());
+    if (post) post(fake_wall_us());
+    fake_advance(INTERP_PERIOD_US);
+  }
+  return out;
+}
+static void ff_setup(const C2Plan& P) {
+  reset_interp_test();
+  seed_hand_encoder();
+  write_pos_vel(hand_axis(), (float)P.p[0], 0.0f, fake_mono_us());
+  interp_set_output_enabled(true);
+}
+static float max_tau_step(const std::vector<FfTick>& v, size_t from = 1, size_t to = SIZE_MAX) {
+  float m = 0.0f;
+  for (size_t i = (from < 1 ? 1 : from); i < v.size() && i < to; ++i) m = std::max(m, std::fabs(v[i].tau - v[i - 1].tau));
+  return m;
+}
+
+TEST_CASE("FW 22 hand torque FF: PLAY transmits tau = K*J*2pi*a_cmd at HAND_TOR_SCALE 1000, rate-bounded from 0") {
+  const C2Plan P = make_c2_plan(1500.0, 12, 5.0);
+  ff_setup(P);
+  const uint64_t t0 = 1'100'000;
+  const float K = 0.5f;
+  const auto v = ff_run(P, t0, 44, K, 0.0f, t0 + 42u * 25'000u);
+  CHECK(HAND_TOR_SCALE == 1000.0f);
+  size_t checked = 0;
+  for (const auto& t : v) {
+    if (t.now < t0 + 300'000u) continue;              // Ks slew (100 ms) + fade (20 ms) long done
+    REQUIRE(t.hand_frame);
+    CHECK(std::fabs(t.tau - K * HAND_TORQUE_FF_J_2PI * t.a) < 1e-6f);
+    CHECK(t.tq == (int16_t)lroundf(t.tau * HAND_TOR_SCALE));
+    CHECK(axes[HAND_AXIS].target_torque_Nm == axes[HAND_AXIS].target_torque_Nm);   // finite
+    ++checked;
+  }
+  CHECK(checked > 300);
+  CHECK(interp_hand_ff_ks() == K);
+  CHECK(interp_hand_ff_fade() == 1.0f);
+  // Per-tick bound: K*J2pi*(plan jerk*dt ≈ 63 rev/s^2) + J2pi*1500*kstep ≈ 2.1e-3 + 1.0e-3 N m.
+  CHECK(max_tau_step(v) < 4e-3f);
+  CHECK(interp_hand_tau_clamp_ticks() == 0u);
+  CHECK_FALSE(interp_hand_torque_clamp_take());
+}
+
+TEST_CASE("FW 22 hand torque FF: a LEGACY stream transmits tau == 0 exactly (bias + gain ignored) and never drains") {
+  reset_interp_test();
+  seed_hand_encoder();
+  write_pos_vel(hand_axis(), 3.0f, 0.0f, fake_mono_us());
+  interp_set_output_enabled(true);
+  size_t hand_frames = 0;
+  for (int n = 0; n < 60; ++n) {
+    JbUdp::SetpointPayload sp;
+    memset(&sp, 0, sizeof(sp));
+    for (int i = 0; i < 6; ++i) sp.u0[i] = sp.u1[i] = 0.5f;
+    sp.u0[6] = 3.0f + 0.2f * n; sp.u1[6] = 3.2f + 0.2f * n; sp.v0[6] = 8.0f; sp.v1[6] = 8.0f;
+    sp.accel[6] = 800.0f; sp.torque_ff[6] = 0.04f; sp.hand_ff_gain = 1.0f;
+    sp.flags = 0x1u | 0x4u | 0x8u;                    // U1 | HAS_HAND | V1 — no HAS_SCHED
+    interp_on_setpoint((uint16_t)(n + 1), reinterpret_cast<const uint8_t*>(&sp), sizeof(sp));
+    for (int k = 0; k < 12; ++k) {
+      fake_clear_sent();
+      interp_isr();
+      CHECK(interp_hand_tau_cmd() == 0.0f);
+      CHECK(axes[HAND_AXIS].target_torque_Nm == 0.0f);
+      for (size_t i = 0; i < fake_sent_count(); ++i)
+        if (ODrive::axis_of(fake_sent_at(i).id) == HAND_AXIS) {
+          ++hand_frames;
+          CHECK(fake_sent_at(i).buf[6] == 0); CHECK(fake_sent_at(i).buf[7] == 0);
+        }
+      write_pos_vel(hand_axis(), axes[HAND_AXIS].target_pos_rev, 0.0f, fake_mono_us());
+      fake_advance(INTERP_PERIOD_US);
+    }
+  }
+  CHECK(hand_frames > 500);
+  interp_set_output_enabled(false);
+  for (int k = 0; k < 10; ++k) { fake_clear_sent(); interp_isr(); CHECK(fake_sent_count() == 0); fake_advance(INTERP_PERIOD_US); }
+  CHECK(interp_hand_drain_frames() == 0u);
+}
+
+TEST_CASE("FW 22 hand torque FF: the sum saturates at ±HAND_TORQUE_FF_CLAMP_NM and latches heartbeat bit 14 (read-and-clear)") {
+  REQUIRE(HAND_MOTOR_MAX_POSITION > 8.6f);
+  const C2Plan P = make_c2_plan(3000.0, 8, 5.4);
+  ff_setup(P);
+  const uint64_t t0 = 1'100'000;
+  const auto v = ff_run(P, t0, 40, 1.5f, 0.0f, t0 + 38u * 25'000u);
+  float peak = 0.0f;
+  for (const auto& t : v) peak = std::max(peak, std::fabs(t.tau));
+  CHECK(peak <= HAND_TORQUE_FF_CLAMP_NM + 1e-6f);
+  CHECK(peak >= HAND_TORQUE_FF_CLAMP_NM - 1e-6f);
+  CHECK(interp_hand_tau_clamp_ticks() > 0u);
+  CHECK(interp_hand_torque_clamp_take());
+  CHECK_FALSE(interp_hand_torque_clamp_take());
+  CHECK((int16_t)lroundf(HAND_TORQUE_FF_CLAMP_NM * HAND_TOR_SCALE) == 234);
+}
+
+TEST_CASE("FW 22 hand torque FF: DRAIN — output disable re-sends the last frame with torque 0 (3 ticks), pos/vel bit-identical") {
+  const C2Plan P = make_c2_plan(1500.0, 12, 5.0);
+  ff_setup(P);
+  const uint64_t t0 = 1'100'000;
+  uint64_t off_at = 0;
+  const auto v = ff_run(P, t0, 44, 1.0f, 0.0f, t0 + 30u * 25'000u, nullptr, [&](uint64_t now) {
+    if (off_at == 0 && now > t0 + 400'000u && std::fabs(interp_hand_tau_cmd()) > 0.02f) {
+      off_at = now; interp_set_output_enabled(false);
+    }
+  });
+  REQUIRE(off_at != 0);
+  size_t i_off = 0;
+  while (v[i_off].now != off_at) ++i_off;
+  REQUIRE(v[i_off].hand_frame);
+  CHECK(v[i_off].tq != 0);
+  for (int d = 1; d <= 3; ++d) {
+    REQUIRE(v[i_off + d].hand_frame);
+    CHECK(v[i_off + d].tq == 0);
+    CHECK(memcmp(v[i_off + d].buf, v[i_off].buf, 6) == 0);   // pos f32 + vel i16 unchanged
+    CHECK(v[i_off + d].tau == 0.0f);
+  }
+  for (size_t i = i_off + 4; i < v.size(); ++i) CHECK_FALSE(v[i].hand_frame);
+  CHECK(interp_hand_drain_frames() == 3u);
+  CHECK(interp_hand_ff_ks() == 0.0f);
+  CHECK(interp_hand_ff_fade() == 0.0f);
+}
+
+TEST_CASE("FW 22 hand torque FF: lead-clamp engage FADES tau to 0 (no step) and clear ramps it back") {
+  const C2Plan P = make_c2_plan(1500.0, 12, 5.0);
+  ff_setup(P);
+  const uint64_t t0 = 1'100'000;
+  const uint64_t e0 = t0 + 400'000u, e1 = t0 + 500'000u;
+  const auto v = ff_run(P, t0, 44, 1.0f, 0.0f, t0 + 42u * 25'000u, [&](uint64_t now) {
+    if (now >= e0 && now < e1) {
+      double pr, vr, ar; plan_ref(P, t0, now + INTERP_PERIOD_US, pr, vr, ar);
+      write_pos_vel(hand_axis(), (float)(pr - 3.0), 0.0f, fake_mono_us());   // 3 rev behind: lead clamp
+    }
+  });
+  // fade 50 /s ⇒ 0.1·|raw| (≤ 0.1·J2pi·1500 ≈ 9.9e-3 N m) + K·J2pi·62 (≈ 4.1e-3) per tick
+  CHECK(max_tau_step(v) < HAND_TORQUE_FF_J_2PI * (62.1f + 0.1f * 1500.0f) + 1e-4f);
+  bool zero_seen = false;
+  for (const auto& t : v) {
+    if (t.now >= e0 + 30'000u && t.now < e1) { CHECK(t.tau == 0.0f); zero_seen = true; }
+    if (t.now >= e1 + 40'000u && t.now < t0 + 40u * 25'000u) CHECK(std::fabs(t.tau - HAND_TORQUE_FF_J_2PI * t.a) < 1e-6f);
+  }
+  CHECK(zero_seen);
+}
+
+TEST_CASE("FW 22 hand torque FF: cover exhaustion → C2 stop → hold keeps tau continuous and ends at 0") {
+  const C2Plan P = make_c2_plan(1500.0, 12, 5.0);
+  ff_setup(P);
+  const uint64_t t0 = 1'100'000;
+  const float K = 1.0f;
+  const uint32_t stops0 = interp_sched_stops();       // cumulative, global across BOTH groups
+  const auto v = ff_run(P, t0, 20, K, 0.0f, t0 + 20u * 25'000u + 900'000u);
+  CHECK(interp_sched_stops() - stops0 == 2u);         // hand group + the flat leg group both exhaust
+  CHECK(interp_sched_phase(1) == 3);                  // HOLD
+  const float bound = K * HAND_TORQUE_FF_J_2PI * (SCHED_STOP_JERK_HAND_RPS3 * (INTERP_PERIOD_US * 1e-6f)) + 5e-3f;
+  CHECK(max_tau_step(v) < bound);
+  CHECK(v.back().tau == 0.0f);
+  CHECK(v.back().hand_frame);
 }

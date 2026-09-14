@@ -89,5 +89,11 @@ inline bool method_gates_on_bus_transmittable(uint16_t method) {
 // Register the server dispatcher with udp_link (call during setup).
 void rpc_server_init();
 
+// FW 22 hand torque-scale readback cache (GET_HAND_TORQUE_SCALE). record: the
+// CAN3 TxSdo decode seam, for a reply whose endpoint id is the qualified
+// can.input_torque_scale. reset: native test isolation.
+void hand_torque_scale_record(uint32_t value, uint64_t mono_us);
+void hand_torque_scale_reset();
+
 }  // namespace Rpc
 }  // namespace CanBridge

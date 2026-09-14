@@ -2153,7 +2153,8 @@ def test_TI1_seven_channel_frames_reach_the_wire_and_the_flags_fall(monkeypatch)
     from teensy_link.protocol import Setpoint
     from jugglebot.motion.ipc import MpcCommandPub
     from jugglebot.teensy_bridge_node import _MpcCommandSetpointSource
-    from teensy_link.setpoint_pump import FLAG_HAS_HAND, FLAG_HAS_V1
+    from teensy_link.setpoint_pump import (
+        FLAG_HAS_HAND, FLAG_HAS_SCHED, FLAG_HAS_V1)
     from tests.ros._bridge_harness import _build_paired_node, _teardown
 
     pub = MpcCommandPub(addr='tcp://127.0.0.1:0')
@@ -2199,8 +2200,12 @@ def test_TI1_seven_channel_frames_reach_the_wire_and_the_flags_fall(monkeypatch)
         for m in legacy[n_before:]:
             sp = Setpoint.unpack(m.payload)
             assert not (sp.flags & FLAG_HAS_HAND), 'HAS_HAND stuck after the cycle'
-            assert not (sp.flags & FLAG_HAS_V1), 'HAS_V1 stuck after the cycle'
             assert sp.u0[6] == pytest.approx(0.0)
+            # C2FF decision 2 (2026-09-14): the LEGS stay on the stamped clock
+            # across the falling edge — the hold still carries exact v1/v2 and
+            # the knot stamp, so a hand-off never flips them to arrival phase.
+            assert sp.flags & FLAG_HAS_V1, 'legs lost exact v1 at the hand-off'
+            assert sp.flags & FLAG_HAS_SCHED, 'legs fell back to arrival phase'
     finally:
         try:
             src.close()

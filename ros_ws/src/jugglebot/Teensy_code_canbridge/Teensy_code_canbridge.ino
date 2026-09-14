@@ -151,6 +151,24 @@ static void send_heartbeat_t2j() {
   p.max_dev_u0      = fault_max_dev_u0();
   p.max_dev_enc     = fault_max_dev_enc();
 
+  // FW 22 scheduled-playback promotion continuity (PROTOCOL_VERSION 8). Locals,
+  // not &p.field: the payload struct is packed.
+  float pdp = 0.0f, pdv = 0.0f, pda = 0.0f;
+  interp_sched_promo_max(1, &pdp, &pdv, &pda);
+  p.hand_promo_dp_max = pdp; p.hand_promo_dv_max = pdv; p.hand_promo_da_max = pda;
+  interp_sched_promo_max(0, &pdp, &pdv, &pda);
+  p.leg_promo_dp_max = pdp; p.leg_promo_dv_max = pdv; p.leg_promo_da_max = pda;
+  p.hand_promo_over = interp_sched_promo_over(1);
+  p.leg_promo_over  = interp_sched_promo_over(0);
+  p.sched_stops     = interp_sched_stops();
+  p.sched_expired   = interp_sched_expired();
+  p.sched_refused   = interp_sched_refused();
+  p.sched_demoted   = interp_sched_demoted();
+  if (interp_sched_hold_latched()) p.flags |= HF::SCHED_HOLD_LATCHED;   // bit 15
+  // bit 14: the hand torque feedforward saturated at ±HAND_TORQUE_FF_CLAMP_NM on
+  // at least one on-wire tick since the previous heartbeat (read-and-clear).
+  if (interp_hand_torque_clamp_take()) p.flags |= HF::HAND_TORQUE_CLAMP;
+
   udp_send_stream(JbUdp::MsgType::HEARTBEAT_T2J, (const uint8_t*)&p, sizeof(p));
 }
 

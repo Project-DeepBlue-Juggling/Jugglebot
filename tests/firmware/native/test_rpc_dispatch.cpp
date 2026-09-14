@@ -65,6 +65,9 @@ static uint16_t g_activate_ret = JbUdp::RpcStatus::OK;
 static uint16_t g_deactivate_ret = JbUdp::RpcStatus::OK;
 static bool     g_mpc_active = false;         // drives fault_mpc_active()
 static uint16_t g_version_len = 8;            // version_fill_blob returned length
+// FW 22 GET_HAND_TORQUE_SCALE's firmware gate reads the hand's cached Get_Version.
+static bool    g_hand_ver_have = false;
+static uint8_t g_hand_ver_raw[8] = {0};
 static int      g_tilt_calls = 0, g_state_read_calls = 0, g_state_write_calls = 0;
 
 static void drv_reset() {
@@ -77,6 +80,7 @@ static void drv_reset() {
   g_mpc_active = false;
   g_version_len = 8;
   g_tilt_calls = g_state_read_calls = g_state_write_calls = 0;
+  g_hand_ver_have = false; memset(g_hand_ver_raw, 0, 8);
 }
 
 // ── can_buses.h ──
@@ -120,6 +124,11 @@ uint16_t version_fill_blob(uint8_t* out, uint16_t cap) {
 // The Ball Butler twin (FW 20). Shares g_version_len so a case can drive both
 // GET_AXIS_VERSIONS and GET_BB_AXIS_VERSIONS down the zero-length branch that
 // makes dispatch answer ERR_BAD_ARGS.
+bool version_raw_copy(uint8_t axis, uint8_t* out8) {
+  if (axis != HAND_AXIS || !g_hand_ver_have) return false;
+  memcpy(out8, g_hand_ver_raw, 8);
+  return true;
+}
 uint16_t bb_version_fill_blob(uint8_t* out, uint16_t cap) {
   const uint16_t n = g_version_len < cap ? g_version_len : cap;
   for (uint16_t i = 0; i < n; ++i) out[i] = 0;
@@ -147,7 +156,7 @@ static uint16_t call_noarg(uint16_t method) {
   return Rpc::dispatch(method, nullptr, 0, result, res_len);
 }
 
-static void reset_all() { fake_reset(); drv_reset(); }
+static void reset_all() { fake_reset(); drv_reset(); Rpc::hand_torque_scale_reset(); }
 
 using namespace JbUdp;
 using JbUdp::RpcArgs::ArgAxisState;
@@ -485,5 +494,75 @@ TEST_CASE("deleted hand methods 0x54 / 0x55 answer ERR_UNKNOWN_METHOD and touch 
           == RpcStatus::ERR_UNKNOWN_METHOD);
     CHECK(res_len == 0);
   }
+  CHECK(fake_sent_count() == 0);
+}
+
+
+// ═══ FW 22: GET_HAND_TORQUE_SCALE — hand ODrive can.input_torque_scale readback ═══
+static void set_hand_version(uint8_t maj, uint8_t min, uint8_t rev) {
+  // Get_Version payload: [0]=protocol [1..3]=hw [4]=fw_major [5]=fw_minor [6]=fw_rev [7]=unreleased
+  memset(g_hand_ver_raw, 0, 8);
+  g_hand_ver_raw[4] = maj; g_hand_ver_raw[5] = min; g_hand_ver_raw[6] = rev;
+  g_hand_ver_have = true;
+}
+static JbUdp::RpcArgs::ResultHandTorqueScale hts_call(uint16_t* status = nullptr) {
+  uint8_t result[64]; uint16_t res_len = 0;
+  const uint16_t st = Rpc::dispatch(RpcMethod::GET_HAND_TORQUE_SCALE, nullptr, 0, result, res_len);
+  if (status) *status = st;
+  JbUdp::RpcArgs::ResultHandTorqueScale r{};
+  REQUIRE(res_len == sizeof(r));
+  memcpy(&r, result, sizeof(r));
+  return r;
+}
+
+TEST_CASE("GET_HAND_TORQUE_SCALE: no RxSdo until the hand's Get_Version proves the (board, fw) the endpoint id belongs to") {
+  reset_all();
+  uint16_t st = 0xFFFF;
+  CHECK(hts_call(&st).state == 3);            // never received a version
+  CHECK(st == RpcStatus::OK);
+  set_hand_version(0, 6, 10);
+  CHECK(hts_call().state == 3);               // wrong fw: 283 may name another register
+  CHECK(fake_sent_count() == 0);
+  CHECK(hts_call().age_ms == 0xFFFFFFFFu);
+}
+
+TEST_CASE("GET_HAND_TORQUE_SCALE: fires ONE RxSdo read of endpoint 283 on axis 6, then serves the cached reply") {
+  reset_all();
+  set_hand_version(0, 6, 11);
+  auto r = hts_call();
+  CHECK(r.state == 1);
+  CHECK(r.reply_seq == 0u);
+  REQUIRE(fake_sent_count() == 1);
+  const auto expect = ODrive::encode_sdo_read(HAND_AXIS, EndpointId::odrive_pro_0_6_11::can_input_torque_scale);
+  CHECK(EndpointId::odrive_pro_0_6_11::can_input_torque_scale == 283);
+  CHECK(fake_sent_at(0).id == expect.id);
+  CHECK(memcmp(fake_sent_at(0).buf, expect.buf, 8) == 0);
+  CHECK(hts_call().state == 1);               // in flight: no second RxSdo
+  CHECK(fake_sent_count() == 1);
+  fake_advance(3000);
+  Rpc::hand_torque_scale_record(1000u, micros64());
+  fake_advance(2000);
+  r = hts_call();                             // cached → serves it AND triggers the next read
+  CHECK(r.value == 1000u);
+  CHECK(r.reply_seq == 1u);
+  CHECK(r.age_ms == 2u);
+  CHECK(r.state == 1);
+  CHECK(fake_sent_count() == 2);
+}
+
+TEST_CASE("GET_HAND_TORQUE_SCALE: an unanswered read re-triggers after 500 ms; a refused bus reports state 4") {
+  reset_all();
+  set_hand_version(0, 6, 11);
+  CHECK(hts_call().state == 1);
+  fake_advance(499000);
+  CHECK(hts_call().state == 1);
+  CHECK(fake_sent_count() == 1);
+  fake_advance(2000);
+  CHECK(hts_call().state == 1);
+  CHECK(fake_sent_count() == 2);
+  reset_all();
+  set_hand_version(0, 6, 11);
+  fake_set_commands_allowed(false);
+  CHECK(hts_call().state == 4);
   CHECK(fake_sent_count() == 0);
 }

@@ -104,7 +104,7 @@ class Message:
 # ───────────────────────────────────────────────────────────────────────────
 
 CONSTANTS = [
-    ("PROTOCOL_VERSION", 7,      "u8",  "Bumped on any incompatible wire change (4→5: 2026-07-31 Profile gains the 3rd CAN slot can3_* — cone traffic; 5→6: 2026-09-01 Setpoint widens 6→7 — index 6 = hand — and gains the v1[7] exact-knot-velocity array, unified-7dof-planner Phase 2; 6→7: 2026-09-11 skill-stack R1 — HAND_TRAJ_CMD/HAND_SOURCE_SET/ERR_HAND_SOURCE removed, HeartbeatT2J bit 6 retired, BridgeTxDiag hand_ops counters removed. Removing message types and shrinking a struct are incompatible wire changes: darkness against any FW ≤ 20 board is the INTENDED failure. TOTAL LINK DARKNESS against any FW ≤ 16 board until the lockstep Phase 3 flash — loud and fail-closed by design)"),
+    ("PROTOCOL_VERSION", 8,      "u8",  "Bumped on any incompatible wire change (4→5: 2026-07-31 Profile gains the 3rd CAN slot can3_* — cone traffic; 5→6: 2026-09-01 Setpoint widens 6→7 — index 6 = hand — and gains the v1[7] exact-knot-velocity array, unified-7dof-planner Phase 2; 6→7: 2026-09-11 skill-stack R1 — HAND_TRAJ_CMD/HAND_SOURCE_SET/ERR_HAND_SOURCE removed, HeartbeatT2J bit 6 retired, BridgeTxDiag hand_ops counters removed; 7→8: 2026-09-14 hand C2 (can-bridge FW 22) — Setpoint GROWS 208→240 B: v2[7] (exact u2-knot velocity, flags bit4 HAS_V2) + hand_ff_gain (K, clamped [0,1.5] at ingest), flags bit5 HAS_SCHED plays the frame on its t_origin_us stamp instead of on UDP arrival; HeartbeatT2J GROWS by the scheduled-playback promotion-continuity diagnostics and flags bits 14 HAND_TORQUE_CLAMP / 15 SCHED_HOLD_LATCHED. Growing a struct is as incompatible as shrinking one: darkness against any FW ≤ 21 board is the INTENDED failure. Removing message types and shrinking a struct are incompatible wire changes: darkness against any FW ≤ 20 board is the INTENDED failure. TOTAL LINK DARKNESS against any FW ≤ 16 board until the lockstep Phase 3 flash — loud and fail-closed by design)"),
     ("MAGIC",            0x4A42, "u16", '"JB" little-endian preamble (bytes 0x42 0x4A)'),
     ("HEADER_SIZE",      8,      "u16", "Bytes before payload"),
     ("CRC_SIZE",         2,      "u16", "Trailing CRC-16 bytes"),
@@ -257,6 +257,15 @@ ENUMS = {
         # needing a PROTOCOL_VERSION bump and a lockstep flash, to add a
         # display row.  A new method costs neither.
         ("GET_BB_AXIS_VERSIONS", 0x005A, "Pull cached raw Get_Version bytes + received bitmask for the Ball Butler ODrives (CAN1 axes 7-8)"),
+        # ADDITIVE (2026-09-14, FW 22 — rides the v8 bump but needs none of its
+        # own: a board without it answers ERR_UNKNOWN_METHOD, and the host then
+        # treats the scale as UNVERIFIED and forces the hand torque-FF gain to 0).
+        # Returns the bridge-LOCAL cache of the hand ODrive's
+        # axis0.config.can.input_torque_scale (endpoint id from the (board, fw)-
+        # qualified protocol_config endpoints table) and, unless a read is already
+        # in flight, fires ONE RxSdo OPCODE_READ for it on CAN3. The net task never
+        # waits on CAN: the host polls until a reply newer than its trigger lands.
+        ("GET_HAND_TORQUE_SCALE", 0x005B, "Hand ODrive can.input_torque_scale readback: return the cached SDO reply and trigger a fresh read"),
     ],
     "RpcStatus": [
         ("OK",            0x0000, "Success"),
@@ -374,6 +383,12 @@ ENUMS = {
         ("TORQUE_CLAMP_MASK",      0x3F00, "bits 8-13: bit (8+i) set = leg i's |torque_ff| was clamped to "
                                            "TORQUE_FF_FIRMWARE_CLAMP_WIRE_NM at UDP ingest on the last ACCEPTED "
                                            "setpoint frame (mirrors lead_clamp_mask; leg_interp.cpp interp_on_setpoint)"),
+        # bits 14-15 (v8, can-bridge FW 22). Additive single bits riding the v8 bump.
+        ("HAND_TORQUE_CLAMP",      0x4000, "bit14: the hand torque-FF saturation (HAND_TORQUE_FF_CLAMP_NM) engaged on the "
+                                           "last 500 Hz tick (FW 22 torque path; reads 0 until that path lands)"),
+        ("SCHED_HOLD_LATCHED",     0x8000, "bit15: a scheduled lane group is in a LATCHED hold — its cover exhausted, it ran "
+                                           "the C2 stop, and a discontinuous resume was refused while armed. Clears on an "
+                                           "accepted continuous promotion or the next disarm/arm cycle (FW 22)"),
     ],
 }
 
@@ -391,7 +406,7 @@ MESSAGES = [
             "extension) exactly as motor_guard's interpolator consumed them; the "
             "hand lane is ODrive-convention absolute rev, NO sign flip — the "
             "firmware's encode_leg_setpoint already applies the per-axis wire "
-            "scales (legs: negate + 1000/10000; hand: 100/100), so the host puts "
+            "scales (legs: negate + 1000/10000; hand: 100/1000 since FW 22, 100/100 before), so the host puts "
             "RAW rev values in this frame for every axis. The Jetson bridge does "
             "the mm→rev / pose conversions; the Teensy interpolator works purely "
             "in rev-space. `u1`/`u2`/hand/`v1` presence is signalled by the flags "
@@ -406,11 +421,13 @@ MESSAGES = [
             Field("u1",        "f32", 7, "Next waypoint (rev); valid iff flags bit0"),
             Field("u2",        "f32", 7, "Next-next waypoint (rev); valid iff flags bit1 — C1 continuity"),
             Field("v0",        "f32", 7, "Velocity at the u0 knot (rev/s)"),
-            Field("accel",     "f32", 7, "Acceleration for Taylor extrapolation (rev/s^2)"),
-            Field("torque_ff", "f32", 7, "Gravity+inertia feedforward (Nm); [6] always 0 in Phase 2"),
+            Field("accel",     "f32", 7, "Acceleration for Taylor extrapolation (rev/s^2); [6] (hand) carries the plan's own hand acceleration at u0 for observability only -- FW 22 computes hand torque from the emitted curve, not from this field"),
+            Field("torque_ff", "f32", 7, "Gravity+inertia feedforward (Nm); [6] is the optional slow hand torque-FF bias (clamped, rate-limited, FW 22) -- the host sends 0"),
             Field("v1",        "f32", 7, "Exact velocity at the u1 knot (rev/s); valid iff flags bit3"),
-            Field("flags",     "u32", 1, "bit0: HAS_U1, bit1: HAS_U2, bit2: HAS_HAND (index 6 live), bit3: HAS_V1 (v1 transmitted-exact)"),
-            Field("t_origin_us", "u64", 1, "Jetson-side wall-clock timestamp (us)"),
+            Field("flags",     "u32", 1, "bit0: HAS_U1, bit1: HAS_U2, bit2: HAS_HAND (index 6 live), bit3: HAS_V1 (v1 transmitted-exact), bit4: HAS_V2 (v2 transmitted-exact; requires HAS_U2+HAS_V1), bit5: HAS_SCHED (play on t_origin_us; requires HAS_U1|HAS_U2|HAS_V1|HAS_V2 and a synced bridge clock, else counted and played as legacy — FW 22)"),
+            Field("t_origin_us", "u64", 1, "Jetson CLOCK_REALTIME (us). With HAS_SCHED: the wall time at which knot u0 is PLAYED (same epoch as the bridge's now_wall_us); the frame covers [t, t+2T) with Hermite(u0,v0,u1,v1) then Hermite(u1,v1,u2,v2). Without HAS_SCHED: informational, FW 21 arrival semantics"),
+            Field("v2",        "f32", 7, "Exact velocity at the u2 knot (rev/s); valid iff flags bit4 (v8, FW 22 scheduled cover)"),
+            Field("hand_ff_gain", "f32", 1, "Hand acceleration-FF gain K (dimensionless); firmware requires finite and clamps to [0, 1.5]; 0 = arm A (v8)"),
         ],
     ),
     Message(
@@ -465,7 +482,7 @@ MESSAGES = [
             Field("bus1_health", "u8",  1, "wire slot 1 = CAN3 (Jugglebot core: legs+hand) BusHealth enum"),
             Field("bus2_health", "u8",  1, "wire slot 2 = CAN1 (Ball Butler) BusHealth enum (cone/CAN2 not yet on uplink)"),
             Field("fault_state", "u8",  1, "FaultState enum"),
-            Field("flags",       "u32", 1, "HeartbeatT2JFlags bitset: bits 0-3 TIME_SYNCED|STOW_PENDING_ON_RECONNECT|ALL_AXIS_HEARTBEATS_OK|MPC_ACTIVE; bits 4-5 CONE_HEALTH_MASK (cone/CAN2 BusHealth, see HEARTBEAT_CONE_HEALTH_SHIFT); bits 6-7 reserved (bit 6 was the FW 17 hand-mastery latch, retired at PROTOCOL_VERSION 7); bits 8-13 TORQUE_CLAMP_MASK (per-leg torque_ff ingest clamp, see HEARTBEAT_TORQUE_CLAMP_SHIFT)"),
+            Field("flags",       "u32", 1, "HeartbeatT2JFlags bitset: bits 0-3 TIME_SYNCED|STOW_PENDING_ON_RECONNECT|ALL_AXIS_HEARTBEATS_OK|MPC_ACTIVE; bits 4-5 CONE_HEALTH_MASK (cone/CAN2 BusHealth, see HEARTBEAT_CONE_HEALTH_SHIFT); bits 6-7 reserved (bit 6 was the FW 17 hand-mastery latch, retired at PROTOCOL_VERSION 7); bits 8-13 TORQUE_CLAMP_MASK (per-leg torque_ff ingest clamp, see HEARTBEAT_TORQUE_CLAMP_SHIFT); bit 14 HAND_TORQUE_CLAMP; bit 15 SCHED_HOLD_LATCHED (v8)"),
             Field("uptime_ms",   "u32", 1, "ms since boot"),
             # Ball Butler heartbeat snapshot (CAN1 0x7D1 decoded by the
             # can-bridge into bb_state and forwarded here at heartbeat rate).
@@ -490,6 +507,24 @@ MESSAGES = [
             Field("max_dev_value",   "f32", 1, "Deviation u0-encoder (rev) of max_dev_leg frozen at the latch crossing"),
             Field("max_dev_u0",      "f32", 1, "Commanded base u0 (rev) of max_dev_leg frozen at the latch crossing"),
             Field("max_dev_enc",     "f32", 1, "Encoder position (rev) of max_dev_leg frozen at the latch crossing"),
+            # ── Scheduled-playback promotion continuity (v8, can-bridge FW 22) ──
+            # The on-robot C2 proof: at every promotion of a stamped frame the
+            # firmware measures |dp|/|dv|/|da| between the outgoing curve and the
+            # incoming frame at that instant. Maxima are per armed SESSION (zeroed on
+            # the arm edge and by `hand7 reset`); the counters are cumulative since
+            # boot (difference two reads, the census idiom).
+            Field("hand_promo_dp_max", "f32", 1, "Hand: max |dp| (rev) at a scheduled promotion this armed session"),
+            Field("hand_promo_dv_max", "f32", 1, "Hand: max |dv| (rev/s) at a scheduled promotion this armed session"),
+            Field("hand_promo_da_max", "f32", 1, "Hand: max |da| (rev/s^2) at a scheduled promotion this armed session"),
+            Field("leg_promo_dp_max",  "f32", 1, "Legs (max over legs): max |dp| (rev) at a scheduled promotion this armed session"),
+            Field("leg_promo_dv_max",  "f32", 1, "Legs: max |dv| (rev/s) at a scheduled promotion this armed session"),
+            Field("leg_promo_da_max",  "f32", 1, "Legs: max |da| (rev/s^2) at a scheduled promotion this armed session"),
+            Field("hand_promo_over",   "u32", 1, "Hand promotions over the continuity tolerance (cumulative since boot)"),
+            Field("leg_promo_over",    "u32", 1, "Leg promotions over the continuity tolerance (cumulative since boot)"),
+            Field("sched_stops",       "u32", 1, "Cover exhaustions that ran the C2 stop, both lane groups (cumulative)"),
+            Field("sched_expired",     "u32", 1, "Stamped frames dropped because their 2T cover had already expired (cumulative)"),
+            Field("sched_refused",     "u32", 1, "Discontinuous promotions refused out of a stop/hold while armed (cumulative) — the latched-hold count"),
+            Field("sched_demoted",     "u32", 1, "HAS_SCHED frames played as legacy (incomplete flags or unsynced clock) (cumulative)"),
         ],
     ),
     Message(
@@ -629,7 +664,7 @@ MESSAGES = [
             "input_pos parity; the hand_telemetry pos_cmd/vel_ff_cmd/tor_ff_cmd "
             "fields were hardcoded 0 on the bridge until now). The host decodes "
             "`data` as `<f h h>` (float32 pos_rev + int16 vel_ff + int16 tor_ff) and "
-            "divides vel/tor by INPUT_SCALE_HAND_VEL / INPUT_SCALE_HAND_TOR (100.0). "
+            "divides vel/tor by INPUT_SCALE_HAND_VEL / INPUT_SCALE_HAND_TOR (100.0 / 1000.0 since FW 22). "
             "Emitted at the telemetry-task rate only when a FRESH command was sniffed "
             "(event-driven; silent while the hand is idle). CAN3 SRX_DIS means the "
             "bridge never sniffs its own TX, so only genuine Platform→hand commands "
@@ -1505,6 +1540,21 @@ RPC_ARGS = [
     RpcArg("ResultBbAxisVersions", "GET_BB_AXIS_VERSIONS (result)", [
         Field("received_mask", "u8", 1, "bit i set ⇒ axis BB_FIRST_NODE+i Get_Version reply cached"),
         Field("raw", "u8", 16, "raw 8-byte Get_Version payload per BB axis (NUM_BB_AXES*8, axis-major from BB_FIRST_NODE)"),
+    ]),
+    # GET_HAND_TORQUE_SCALE result (FW 22, additive). state: 0 never read, 1 read
+    # in flight (no reply yet since the last trigger), 2 a reply is cached,
+    # 3 refused — the hand ODrive's Get_Version is not the (board, fw) the
+    # endpoint id belongs to (a wrong-but-existing id ANSWERS plausibly, the
+    # 2026-07-29 endpoint-id contract), 4 refused — bus down / no partner.
+    # value is the raw uint32 of the endpoint (the ODrive type), reply_seq counts
+    # cached replies (the host's "newer than my trigger" test), age_ms is the
+    # cached reply's age at the response (0xFFFFFFFF when none).
+    RpcArg("ResultHandTorqueScale", "GET_HAND_TORQUE_SCALE (result)", [
+        Field("state", "u8", 1, "0 never / 1 in flight / 2 cached / 3 fw mismatch / 4 bus down"),
+        Field("pad", "u8", 3, "zero"),
+        Field("value", "u32", 1, "cached axis0.config.can.input_torque_scale (uint32)"),
+        Field("reply_seq", "u32", 1, "count of cached replies since boot"),
+        Field("age_ms", "u32", 1, "age of the cached reply in ms (0xFFFFFFFF = none)"),
     ]),
     # Ball Butler — typed firmware-side encoders own the wire format (the can-bridge
     # refuses a malformed throw before it hits CAN1).

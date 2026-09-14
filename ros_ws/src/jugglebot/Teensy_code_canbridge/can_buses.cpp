@@ -12,6 +12,7 @@
 #include "odrive_protocol.h"
 #include "version_check.h"   // cache Get_Version replies (version_record)
 #include "gpio_poll.h"       // hand ball-sensor TxSdo replies (gpio_poll_record)
+#include "rpc.h"             // hand torque-scale TxSdo replies (Rpc::hand_torque_scale_record)
 
 namespace CanBridge {
 
@@ -263,6 +264,11 @@ static void decode_into_cache(const CAN_message_t& msg) {
           // t_bridge_us is contractually "at the last good TxSdo reply", and the
           // drain is up to a task tick later.
           gpio_poll_record(r.value, now_wall_us(), micros64());
+        // FW 22: the hand torque-scale readback (rpc.cpp GET_HAND_TORQUE_SCALE).
+        // Same endpoint-match discipline: only a reply for the (board, fw)-
+        // qualified can.input_torque_scale id is cached; its type is uint32.
+        else if (r.endpoint_id == EndpointId::odrive_pro_0_6_11::can_input_torque_scale)
+          Rpc::hand_torque_scale_record(r.value, micros64());
       }
       break;
     default:

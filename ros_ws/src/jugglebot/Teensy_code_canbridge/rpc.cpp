@@ -101,6 +101,79 @@ bool parse_response(const uint8_t* payload, uint16_t len,
 // Both send_axis_frame() (per-axis) and the AXIS_ALL loops route through here, so the
 // method→gate-basis mapping has exactly one enforcement point. The policy predicate is
 // header-inline in rpc.h (method_gates_on_bus_transmittable) and pinned by the harness.
+// ── FW 22 hand torque-scale readback (GET_HAND_TORQUE_SCALE) ─────────────────
+// The hand torque feedforward is encoded at HAND_TOR_SCALE (1000 counts/N m); a
+// hand ODrive still on input_torque_scale 100 would apply 10x the torque. The
+// Jetson forces the gain to 0 unless this readback matches, so the read must be
+// provable: (1) the endpoint id is (board, fw)-qualified and the RxSdo leaves
+// ONLY when the hand's cached Get_Version is that fw (JBBallDetect::EXPECTED_FW,
+// the same Pro 0.6.11 gate the ball-sensor poller uses — a wrong-but-existing id
+// answers plausibly); (2) only a TxSdo whose endpoint id matches is cached
+// (can_buses.cpp); (3) the host accepts only a reply_seq newer than its own
+// trigger. The net task never waits on CAN.
+static constexpr uint64_t HTS_INFLIGHT_TIMEOUT_US = 500000u;   // re-trigger an unanswered read
+static uint32_t s_hts_value = 0;
+static uint32_t s_hts_seq = 0;
+static uint64_t s_hts_mono_us = 0;
+static bool     s_hts_inflight = false;
+static uint64_t s_hts_sent_us = 0;
+
+// CAN RX decode context (outranks the net task): PRIMASK around the multi-word store.
+void hand_torque_scale_record(uint32_t value, uint64_t mono_us) {
+  const uint32_t pm = __get_PRIMASK(); __disable_irq();
+  s_hts_value = value;
+  s_hts_mono_us = mono_us;
+  ++s_hts_seq;
+  s_hts_inflight = false;
+  __set_PRIMASK(pm);
+}
+
+void hand_torque_scale_reset() {
+  const uint32_t pm = __get_PRIMASK(); __disable_irq();
+  s_hts_value = 0; s_hts_seq = 0; s_hts_mono_us = 0; s_hts_inflight = false; s_hts_sent_us = 0;
+  __set_PRIMASK(pm);
+}
+
+static uint16_t hand_torque_scale_rpc(uint8_t* result, uint16_t& res_len) {
+  JbUdp::RpcArgs::ResultHandTorqueScale r{};
+  const uint64_t now = micros64();
+  uint32_t pm = __get_PRIMASK(); __disable_irq();
+  if (s_hts_inflight && (now - s_hts_sent_us) > HTS_INFLIGHT_TIMEOUT_US) s_hts_inflight = false;
+  const bool inflight = s_hts_inflight;
+  r.value = s_hts_value; r.reply_seq = s_hts_seq;
+  const uint64_t mono = s_hts_mono_us;
+  __set_PRIMASK(pm);
+  if (r.reply_seq == 0u) r.age_ms = 0xFFFFFFFFu;
+  else { const uint64_t a = (now > mono) ? (now - mono) / 1000u : 0u; r.age_ms = (a > 0xFFFFFFFEull) ? 0xFFFFFFFEu : (uint32_t)a; }
+
+  uint8_t raw[8];
+  bool fw_ok = false;
+  if (version_raw_copy(HAND_AXIS, raw)) {
+    const ODrive::Version v = ODrive::decode_get_version(raw);
+    fw_ok = (v.fw_major == JBBallDetect::EXPECTED_FW[0]) && (v.fw_minor == JBBallDetect::EXPECTED_FW[1])
+         && (v.fw_rev == JBBallDetect::EXPECTED_FW[2]);
+  }
+  if (!fw_ok) {
+    r.state = 3;   // never RxSdo an unverified (board, fw): the id may name another register
+  } else if (inflight) {
+    r.state = 1;
+  } else if (!jugglebot_commands_allowed()) {
+    r.state = 4;
+  } else if (tx_reached_the_wire(can_jugglebot_tx(
+                 ODrive::encode_sdo_read(HAND_AXIS, EndpointId::odrive_pro_0_6_11::can_input_torque_scale),
+                 TxCls::RPC))) {
+    pm = __get_PRIMASK(); __disable_irq();
+    s_hts_inflight = true; s_hts_sent_us = now;
+    __set_PRIMASK(pm);
+    r.state = 1;
+  } else {
+    r.state = 4;
+  }
+  memcpy(result, &r, sizeof(r));
+  res_len = sizeof(r);
+  return JbUdp::RpcStatus::OK;
+}
+
 static bool gate_allows(uint16_t method) {
   return method_gates_on_bus_transmittable(method) ? jugglebot_bus_transmittable()
                                                    : jugglebot_commands_allowed();
@@ -367,6 +440,12 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
     // never-seen, which is the honest report). Same contract as above: a
     // bridge-LOCAL cache read, no CAN1 round-trip on the pull, zero version
     // semantics here.
+    // FW 22 (additive): hand ODrive can.input_torque_scale readback — see
+    // hand_torque_scale_rpc above. Always OK with a state byte; the verdict is
+    // the host's (value == HAND_TOR_SCALE on a reply newer than its trigger).
+    case RpcMethod::GET_HAND_TORQUE_SCALE:
+      return hand_torque_scale_rpc(result, res_len);
+
     case RpcMethod::GET_BB_AXIS_VERSIONS:
       res_len = bb_version_fill_blob(result, RESULT_BUF_CAP);
       return res_len ? RpcStatus::OK : RpcStatus::ERR_BAD_ARGS;

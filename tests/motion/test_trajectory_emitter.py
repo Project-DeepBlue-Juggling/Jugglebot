@@ -161,7 +161,14 @@ def _fixture_plan(case_name: str):
 
 def test_legacy_frames_byte_identical_to_v5_capture():
     """A plan with no hand track must emit BYTE-IDENTICAL msgpack to the
-    pre-Phase-2 emitter — same keys, same key order, same float bits.
+    pre-Phase-2 emitter on the v5 key set — same keys, same key order, same
+    float bits.
+
+    Since C2FF (2026-09-14, owner decision 2 — all 7 lanes on the stamped
+    clock) EVERY frame also carries the exact leg v1/v2 (``vel_next_mm_s`` /
+    ``vel_next2_mm_s``) so the pump can schedule legacy plans too; those two
+    keys are asserted separately (:func:`test_legacy_plan_emits_exact_leg_v1_v2`)
+    and stripped here, so this pin still guards every v5 byte.
 
     The fixture (tests/motion/data/v5_emitter_frame_fixtures.json) was captured
     at commit 2aaaae1 (2026-09-01) by tools/probes/capture_v5_wire_fixtures.py
@@ -176,6 +183,9 @@ def test_legacy_frames_byte_identical_to_v5_capture():
         emit = KnotEmitter(_geom())
         for fr in case['frames']:
             frame = emit.frame(plan, float(fr['tau']), int(fr['seq']))
+            assert 'vel_next_mm_s' in frame and 'vel_next2_mm_s' in frame
+            frame = {k: v for k, v in frame.items()
+                     if k not in ('vel_next_mm_s', 'vel_next2_mm_s')}
             topic, blob = ipc._pack(ipc.TOPIC_MPC_CMD, frame)
             assert (topic.decode() if isinstance(topic, bytes)
                     else topic) == fr['topic']
@@ -184,11 +194,22 @@ def test_legacy_frames_byte_identical_to_v5_capture():
                 "the v5 capture")
 
 
-def test_legacy_plan_emits_none_of_the_v6_keys():
+def test_legacy_plan_emits_none_of_the_hand_keys():
     frame = KnotEmitter(_geom()).frame(HoldPlan(NEUTRAL), 0.0, 0)
-    for key in ('vel_next_mm_s', 'hand_rev', 'hand_vel_rps', 'hand_next_rev',
-                'hand_next2_rev', 'hand_next_vel_rps'):
+    for key in ('hand_rev', 'hand_vel_rps', 'hand_next_rev', 'hand_next2_rev',
+                'hand_next_vel_rps', 'hand_next2_vel_rps', 'hand_acc_rps2'):
         assert key not in frame
+
+
+def test_legacy_plan_emits_exact_leg_v1_v2():
+    """C2FF decision 2: a hand-less plan still carries the exact leg v1/v2
+    (the pump's full knot set for HAS_SCHED), so the legs never fall back to
+    arrival-phase playback when a skill chain hands over to a hold."""
+    frame = KnotEmitter(_geom()).frame(HoldPlan(NEUTRAL), 0.0, 0)
+    for key in ('vel_next_mm_s', 'vel_next2_mm_s'):
+        v = np.asarray(frame[key], dtype=float)
+        assert v.shape == (6,) and np.all(np.isfinite(v))
+        np.testing.assert_allclose(v, 0.0, atol=1e-9)   # a hold is at rest
 
 
 # ── CyclePlan hand emission (a REAL CyclePlan, the test_cycle_plan recipe) ──
@@ -240,6 +261,8 @@ def test_cycle_plan_emits_hand_keys_with_leg_lookahead_discipline():
     assert frame['hand_next_rev'] == pytest.approx(h1[0])
     assert frame['hand_next_vel_rps'] == pytest.approx(h1[1])
     assert frame['hand_next2_rev'] == pytest.approx(h2[0])
+    assert frame['hand_next2_vel_rps'] == pytest.approx(h2[1])
+    assert frame['hand_acc_rps2'] == pytest.approx(plan.hand_accel_at(tau))
     # vel_next: independent recomputation from the plan state at τ+dt.
     pose1, twist1, _ = plan.state_at(tau + _CYCLE_DT)
     pos1 = np.asarray(pose1[:3], dtype=float)
@@ -247,6 +270,27 @@ def test_cycle_plan_emits_hand_keys_with_leg_lookahead_discipline():
     expect = twist_to_leg_velocities(twist1, pos1, rot1, geom,
                                      J=compute_jacobian(pos1, rot1, geom))
     assert np.allclose(np.asarray(frame['vel_next_mm_s']), expect, atol=1e-9)
+    # vel_next2: the same recomputation at τ+2dt (C2FF spec, 2026-09-14).
+    pose2, twist2, _ = plan.state_at(tau + 2 * _CYCLE_DT)
+    pos2 = np.asarray(pose2[:3], dtype=float)
+    rot2 = rotvec_to_rot_matrix(np.asarray(pose2[3:6], dtype=float))
+    expect2 = twist_to_leg_velocities(twist2, pos2, rot2, geom,
+                                      J=compute_jacobian(pos2, rot2, geom))
+    assert np.allclose(np.asarray(frame['vel_next2_mm_s']), expect2, atol=1e-9)
+
+
+def test_knot_epoch_us_passthrough_and_omitted_when_none():
+    """knot_epoch_us rides on every frame (hand or not) when the caller passes
+    one, and is omitted (not just None) when the caller does not — the same
+    optional-field rule as ``cmd_next2_mm``, not the hand-gated group."""
+    geom = _geom()
+    emit = KnotEmitter(geom)
+    hold_frame = emit.frame(HoldPlan(NEUTRAL), 0.0, 0)
+    assert 'knot_epoch_us' not in hold_frame
+    stamped = emit.frame(HoldPlan(NEUTRAL), 0.0, 0, knot_epoch_us=123456789)
+    assert stamped['knot_epoch_us'] == 123456789
+    cyc_stamped = emit.frame(_cycle_plan(), 0.1, 0, knot_epoch_us=42)
+    assert cyc_stamped['knot_epoch_us'] == 42
 
 
 def test_every_cycle_plan_frame_pump_accepted_with_hand_flags():
@@ -280,10 +324,25 @@ def test_out_reuse_scrubs_stale_hand_keys():
     frame = emit.frame(plan, 0.1, 0, out=d)
     assert frame is d and 'hand_rev' in d and 'vel_next_mm_s' in d
     frame = emit.frame(hold, 0.0, 1, out=d)
-    for key in ('vel_next_mm_s', 'hand_rev', 'hand_vel_rps', 'hand_next_rev',
-                'hand_next2_rev', 'hand_next_vel_rps'):
+    for key in ('hand_rev', 'hand_vel_rps', 'hand_next_rev', 'hand_next2_rev',
+                'hand_next_vel_rps', 'hand_next2_vel_rps', 'hand_acc_rps2'):
         assert key not in frame
+    # The leg v1/v2 ride every frame (C2FF decision 2) — rewritten for the hold,
+    # never a stale cycle value.
+    np.testing.assert_allclose(np.asarray(frame['vel_next_mm_s']), 0.0, atol=1e-9)
+    np.testing.assert_allclose(np.asarray(frame['vel_next2_mm_s']), 0.0, atol=1e-9)
+    # Compared against a build under the SAME out= (always-write) schema, not
+    # a truly out=None fresh dict: knot_epoch_us (C2FF spec, 2026-09-14) is
+    # the legacy-optional group's first field ever left None by a real
+    # emitter.frame() call in this test suite, and the legacy group's
+    # documented out= rule is "always write, None explicitly clears" — so
+    # under out= reuse the key is PRESENT with a null value, which a bare
+    # out=None fresh build never carries. That divergence is a pre-existing,
+    # deliberate property of every legacy-optional field (see the
+    # make_mpc_command docstring); this test's OWN invariant is scrubbing —
+    # so hold the schema fixed on both sides and let scrubbing be the only
+    # variable.
     _, blob_reused = ipc._pack(ipc.TOPIC_MPC_CMD, frame)
     _, blob_fresh = ipc._pack(ipc.TOPIC_MPC_CMD,
-                              KnotEmitter(_geom()).frame(hold, 0.0, 1))
+                              KnotEmitter(_geom()).frame(hold, 0.0, 1, out={}))
     assert blob_reused == blob_fresh

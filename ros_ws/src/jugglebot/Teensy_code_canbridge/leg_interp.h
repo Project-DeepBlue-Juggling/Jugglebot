@@ -178,4 +178,35 @@ void interp_hand_counters_reset();
 bool interp_hand7_console(const char* line);
 void interp_hand7_diag_step();
 
+// ── FW 22 scheduled (stamped) playback ────────────────────────────────────────
+// Group index: 0 = legs (axes 0-5), 1 = hand (axis 6). Phase: 0 off, 1 play,
+// 2 C2 stop, 3 hold. See leg_interp.cpp's scheduled-playback block.
+uint8_t  interp_sched_phase(uint8_t group);
+bool     interp_sched_hold_latched();            // either group refusing a discontinuous resume
+void     interp_sched_promo_max(uint8_t group, float* dp, float* dv, float* da);   // session max
+uint32_t interp_sched_promo_over(uint8_t group);
+uint32_t interp_sched_frames();      // accepted as scheduled (cumulative)
+uint32_t interp_sched_demoted();     // HAS_SCHED played as legacy
+uint32_t interp_sched_expired();     // cover already over at promotion
+uint32_t interp_sched_stops();       // cover exhaustions (C2 stop)
+uint32_t interp_sched_refused();     // discontinuous resumes refused while armed
+// a_cmd — the ANALYTIC acceleration (rev/s^2) of the hand curve the lane emitted
+// on the last tick: span Hermite, C2 stop, recovery slew profile, 0 at hold /
+// NaN backstop / lane idle. Written once per tick by the ISR (single float).
+// The U2b torque path consumes it: tau = fade * sat(Ks * J * 2pi * a_cmd) + bias.
+float    interp_hand_a_cmd();
+float    interp_leg_a_cmd(uint8_t i);   // same, legs (scheduled mode only; 0 on legacy)
+// K the hand lane targets: the promoted scheduled frame's hand_ff_gain, 0 when
+// the hand plays a legacy frame or is idle (spec: legacy frames target 0).
+float    interp_hand_ff_gain_target();
+// FW 22 hand torque feedforward (U2b): tau on the wire this tick (N m, 0 off the
+// wire), the slewed gain, the fade factor, cumulative saturated / drain counts,
+// and the heartbeat bit-14 latch (read-and-clear, task context).
+float    interp_hand_tau_cmd();
+float    interp_hand_ff_ks();
+float    interp_hand_ff_fade();
+uint32_t interp_hand_tau_clamp_ticks();
+uint32_t interp_hand_drain_frames();
+bool     interp_hand_torque_clamp_take();
+
 }  // namespace CanBridge

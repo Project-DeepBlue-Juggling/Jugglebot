@@ -331,6 +331,27 @@ _ESCALATE_HOLD_TICKS = 12
 # the retry resumes next tick from the decayed seed if it doesn't converge here.
 _STOP_RETRY_ITERS = 6
 
+# ── Absolute knot grid (C2FF spec, 2026-09-14) ───────────────────────────────
+# The emitter's deadline sequence (`_emitter_loop`) and every plan-install t0
+# must agree on the SAME phase — t_k = G + k·dt — or a frame's stamped knot
+# time and a fresh plan's origin land at different sub-knot offsets, which is
+# exactly the off-knot sampling the C2FF probe measured as 299-679 rev/s² hand
+# accel steps (see the `_CYCLE_KINDS` comment block below). G is fixed at 0:
+# grid nodes are exact integer multiples of `dt` in `perf_counter()` time, a
+# pure function of `dt` and the current instant with no cross-thread state to
+# share — the emitter loop snaps its OWN first deadline onto this grid (see
+# `_emitter_loop`) instead of starting at an arbitrary phase.
+def _ceil_to_grid(t: float, dt: float) -> float:
+    """Smallest exact multiple of ``dt`` that is ``>= t`` (the knot grid `t_k`).
+
+    ``- 1e-9`` guards the exact-multiple case against float noise pushing a
+    value that IS already a grid node up to the NEXT one (``ceil`` of
+    ``1.0000000000001`` must still read as ``1``, not ``2``).
+    """
+    k = math.ceil(t / dt - 1e-9)
+    return k * dt
+
+
 # C-LEVEL-2 — how far a loaded map's capture height may sit from the standard
 # active plane (hw.JB_OP_DEFAULT_ACTIVE_Z_MM) before the load WARNs. Deliberately
 # a few mm and not zero: the acquisition tool's `--z` is a float the operator
@@ -1093,13 +1114,20 @@ class TrajectoryNode(Node):
         # The emitter period IS the knot spacing: the can-hub firmware pins its
         # segment time to 25 ms, so this MUST match hw.JB_TRAJ_KNOT_DT_S (the dt
         # the KnotEmitter samples the plan at). Derive it — never hardcode 40 Hz.
+        #
+        # ABSOLUTE GRID (C2FF spec, 2026-09-14): next_deadline is always an exact
+        # multiple of `period` (see `_ceil_to_grid`). The loop's OWN first
+        # deadline snaps onto that grid rather than starting at perf_counter()'s
+        # arbitrary phase, so it agrees — with no cross-thread coordination
+        # needed — with every plan install's grid-snapped t0
+        # (`_snap_t0_to_grid`).
         period = hw.JB_TRAJ_KNOT_DT_S
-        next_deadline = time.perf_counter()
+        next_deadline = _ceil_to_grid(time.perf_counter(), period)
         try:
             while not self._emit_stop.is_set():
-                now = time.perf_counter()
+                t_k = next_deadline
                 try:
-                    self._emit_once(now)
+                    self._emit_once(t_k, wake=time.perf_counter())
                 except Exception as e:  # noqa: BLE001 — one frame must not kill the loop
                     self.get_logger().error(
                         f"emitter tick error (contained): {e}",
@@ -1109,16 +1137,33 @@ class TrajectoryNode(Node):
                 if sleep_dt > 0:
                     self._emit_stop.wait(sleep_dt)
                 else:
-                    # Overrun: reset the schedule so we don't spin catching up.
-                    next_deadline = time.perf_counter()
+                    # Overrun: SKIP forward to the next un-missed grid index —
+                    # NEVER reset to an arbitrary `now` phase. `_ceil_to_grid`
+                    # on the SAME fixed grid (G=0) both catches up and stays
+                    # phase-locked; re-phasing (the pre-2026-09-14 behaviour)
+                    # is exactly the off-knot sampling the C2FF probe measured
+                    # as 299-679 rev/s^2 hand accel steps at every 25 ms frame
+                    # boundary.
+                    next_deadline = _ceil_to_grid(time.perf_counter(), period)
         finally:
             try:
                 self._pub.close()
             except Exception:  # noqa: BLE001
                 pass
 
-    def _emit_once(self, now: float) -> None:
-        """Emit one knot frame for wall time ``now`` (perf_counter). Public for tests.
+    def _emit_once(self, now: float, *, wake=None) -> None:
+        """Emit one knot frame for THIS TICK'S GRID KNOT ``now`` (perf_counter,
+        an exact multiple of ``hw.JB_TRAJ_KNOT_DT_S`` — see ``_ceil_to_grid``).
+        Public for tests.
+
+        ``now`` here is ``t_k``, the absolute grid instant ``_emitter_loop``
+        scheduled this tick for — NOT necessarily the wall-clock instant this
+        method actually runs at (a late tick still names its own ``t_k``, never
+        the real late time; see the C2FF spec's "never re-phase"). The frame
+        this method builds targets the LEAD knot ``T = t_k + L``
+        (``L = trajectory_op.emit_lead_knots x knot_dt_s``), stamped with
+        ``T``'s own CLOCK_REALTIME microseconds — the wire's play-time
+        authority, not the transport-arrival timing FW 21 used.
 
         Publish-first ordering (C3): sample + publish this tick's knot from the plan
         installed on a PRIOR tick, THEN run the pending-stop retry and follower
@@ -1131,11 +1176,15 @@ class TrajectoryNode(Node):
         ``t0 = seed_mono``; the reorder changes only WHEN the install lands (after
         this tick's publish), not the seeding rule.
         """
-        # Jitter diagnostic (gap-diag).
+        # Jitter diagnostic (gap-diag): measured on the loop's REAL wake instant
+        # (`wake`), never on the grid knot — a grid-knot gap is 25 ms by
+        # construction and would blind max_emit_gap_ms (skills_plan_bench G3).
+        # Direct test callers pass no `wake`, so their `now` stands in.
+        t_wake = now if wake is None else float(wake)
         if self._last_emit_mono is not None:
             self._max_emit_gap_s = max(self._max_emit_gap_s,
-                                       now - self._last_emit_mono)
-        self._last_emit_mono = now
+                                       t_wake - self._last_emit_mono)
+        self._last_emit_mono = t_wake
 
         with self._plan_lock:
             plan = self._active_plan
@@ -1146,8 +1195,16 @@ class TrajectoryNode(Node):
             return
 
         # ── Sample + publish FIRST (before any planning) ──
-        tau = now - t0
-        frame = self._emitter.frame(plan, tau, self._seq)
+        # T = t_k + L: the frame names a knot L ticks AHEAD of this one, so the
+        # firmware always has the next span queued before it needs it (the
+        # C2FF spec's phase-locked, knot-aligned frame). tau is plan time, same
+        # as always — T - t0, not t_k - t0.
+        lead = float(hw.JB_TRAJ_EMIT_LEAD_KNOTS) * self._limits.knot_dt_s
+        knot_time = now + lead
+        tau = knot_time - t0
+        knot_epoch_us = self._perf_to_epoch_us(knot_time)
+        frame = self._emitter.frame(plan, tau, self._seq,
+                                    knot_epoch_us=knot_epoch_us)
         motor_rev = np.asarray(frame['motor_rev'], dtype=float)
 
         # Defence-in-depth per-knot step bound (the gate should already prevent
@@ -2382,6 +2439,25 @@ class TrajectoryNode(Node):
     # Services (Trigger)
     # ═══════════════════════════════════════════════════════════
 
+    def _snap_t0_to_grid(self, t: float) -> float:
+        """Round a plan-time origin UP onto the emitter's absolute knot grid
+        (C2FF spec, 2026-09-14) — the first UN-EMITTED knot at/after ``t``.
+
+        Uses :func:`_ceil_to_grid` at ``self._limits.knot_dt_s`` (== the
+        emitter's own ``dt``; both come from the same
+        ``hw.JB_TRAJ_KNOT_DT_S``), i.e. the SAME fixed G=0 grid
+        ``_emitter_loop`` ticks on — no cross-thread state to share, it is a
+        pure function of ``dt`` and the instant.
+
+        Only the CyclePlan-carrying (hand-track) install paths call this — see
+        ``_svc_install_segment``'s fresh-origin branch. Every other install
+        (holds, go_to_pose, the follower, guard descents, the FSM
+        ``PlanCycle`` path) keeps its un-snapped ``t0`` unchanged: the C2 gate
+        this exists for is a HAND fact, and snapping every install would ripple
+        into timing paths this spec never touched.
+        """
+        return _ceil_to_grid(float(t), float(self._limits.knot_dt_s))
+
     def _current_state(self, *, at_mono=None):
         """Sample the active plan at ``now`` → ``(pose, twist, accel)`` seed.
 
@@ -2396,6 +2472,16 @@ class TrajectoryNode(Node):
         cap, so a millisecond of scheduling skew is worth as much as 150 mm/s² of
         boundary-condition error, five times the 27.9 mm/s² a live carry was
         measured carrying.
+
+        ``plan.state_at(now - t0)`` is UNCHANGED by the C2FF spec's emitter
+        lead ``L`` (2026-09-14): ``L`` only decides which knot the EMITTER
+        publishes ahead of a given tick, never the plan's own physical time
+        origin. Under the scheduled-clock firmware design the wire plays each
+        knot AT its stamped ``t_origin_us`` rather than at UDP arrival, so the
+        command the machine is actually running at real wall-clock ``now`` is
+        — more faithfully than under the old arrival-timed transport — exactly
+        ``plan.state_at(now - t0)``. Nothing here needed to change; this note
+        is the "why not" a future reader would otherwise have to re-derive.
         """
         with self._plan_lock:
             plan = self._active_plan
@@ -2955,9 +3041,38 @@ class TrajectoryNode(Node):
         return clock_offset.measure_offset(self._ros_clock_s)
 
     def _refresh_clock_offset(self) -> None:
-        """Periodically re-measure the offset to track drift (median of last 20)."""
+        """Periodically re-measure the offset to track drift (median of last 20).
+
+        Logs the STEP SIZE (µs) this refresh applies to ``_ros_to_perf_offset``
+        — the C2FF spec's ``knot_epoch_us`` stamp (:meth:`_perf_to_epoch_us`)
+        reads this one attribute per emitted frame, so it is bit-for-bit
+        constant between refreshes by construction (one Python attribute, one
+        read) and steps ONLY here, at most once per
+        :data:`clock_offset.REFRESH_PERIOD_S`. The step is normally a handful
+        of µs (clock drift over 30 s); logging it turns "is the stamp
+        step-free" from an assumption into a number an operator can check.
+        """
+        prev = self._ros_to_perf_offset
         self._ros_to_perf_offset = clock_offset.refresh_offset(
             self._clock_offset_history, self._ros_clock_s)
+        step_us = (self._ros_to_perf_offset - prev) * 1e6
+        self.get_logger().info(
+            f"clock offset refreshed: {step_us:+.1f} us step "
+            f"({prev:.6f} -> {self._ros_to_perf_offset:.6f} s) — every "
+            "knot_epoch_us stamp in the next "
+            f"{clock_offset.REFRESH_PERIOD_S:.0f} s carries this new offset "
+            "unchanged")
+
+    def _perf_to_epoch_us(self, t_perf: float) -> int:
+        """``t_perf`` (a ``perf_counter()`` instant) as CLOCK_REALTIME µs.
+
+        The C2FF spec's ``knot_epoch_us`` stamp: ``offset = perf - ros`` (the
+        filtered estimator's convention, ``jugglebot.clock_offset``), so
+        ``ros_epoch_s = t_perf - offset``. The SAME wall clock
+        ``t_origin_us`` on the wire is anchored to (the ROS node clock, i.e.
+        ``CLOCK_REALTIME`` absent ``use_sim_time`` — this node never sets it).
+        """
+        return round((float(t_perf) - self._ros_to_perf_offset) * 1e6)
 
     def _ros_time_to_perf(self, ros_time) -> float:
         """THE ROS-clock → perf_counter conversion point (plan Architecture).
@@ -3775,17 +3890,32 @@ class TrajectoryNode(Node):
     # Unified 7-DoF cycle (plan Phase 4)
     # ═══════════════════════════════════════════════════════════
     #
-    # ⚠ NOTHING HERE SNAPS TO THE EMITTER TICK, DELIBERATELY.
-    # A CyclePlan's channels are piecewise-cubic Hermites between knots, so a
-    # KNOT-ALIGNED sample reproduces the planned curve exactly and an off-knot one
-    # reproduces it only to the Hermite's own interpolation. The emitter samples on
-    # ITS OWN absolute-deadline clock (`_emitter_loop`), which has no phase relation
-    # to a plan origin set inside a service callback, so plan installs land at an
-    # arbitrary sub-knot offset and every frame is an off-knot sample. That is
-    # accepted, not fixed: the interpolant IS the trajectory the firmware then
-    # re-interpolates at 500 Hz, `validate_cycle` measures the Hermite (not the
-    # knots), and the 25 ms grid is common to both ends. A phase-locking mechanism
-    # would buy exactness at the cost of a second timing authority on the wire.
+    # ⚠ REVERSED 2026-09-14 (C2FF spec, owner-approved) — this used to say
+    # "nothing here snaps to the emitter tick, deliberately" and the reasoning
+    # was sound for LEG position alone: a CyclePlan's channels are
+    # piecewise-cubic Hermites, so an off-knot sample only costs Hermite
+    # interpolation error, not a discontinuity, and phase-locking would have
+    # bought exactness at the cost of a second timing authority on the wire.
+    #
+    # It stopped being sound the moment the hand got a TORQUE feedforward
+    # computed from the emitted curve's own acceleration
+    # (``tau = K.J.2pi.a_cmd(t)``, firmware unit U2b): the owner's hard
+    # requirement is HAND ACCELERATION C2 across every knot the wire ever
+    # plays, and an off-knot sample breaks exactly that, not merely
+    # position. The C2FF probe (scratchpad probe_hand_c2.md) measured why: the
+    # PLAN itself is C2 to <= 8.5e-9 rev/s^2 at every knot and splice seam
+    # (``install_segment`` seeds the cup acceleration exactly), but the STREAM
+    # broke it — an arbitrary sub-knot phase sampled from two independent
+    # per-frame Hermites gave 299-679 rev/s^2 acceleration steps at every 25
+    # ms frame boundary, a torque discontinuity a J.alpha feedforward would
+    # otherwise convert straight into a hand jerk. A phase-locked,
+    # knot-aligned frame (``_emitter_loop``'s absolute grid, ``t0`` snapped
+    # onto it — ``_snap_t0_to_grid``) reproduces the plan's own Hermite EXACTLY
+    # at every knot, i.e. measured 0 instead of hundreds of rev/s^2. The
+    # firmware still owns the leg-path safety authority and the 500 Hz
+    # re-interpolation (unchanged); what changed is that the wire's OWN clock
+    # (``t_origin_us``, scheduled play) now agrees with the plan's clock
+    # instead of playing whatever phase UDP arrival happened to land on.
 
     #: Wire ``kind`` code → the window kind ``unified_cycle`` names. Mirrors the
     #: KIND_* constants in PlanCycle.srv; a mismatch is caught by the srv's own
@@ -4310,6 +4440,19 @@ class TrajectoryNode(Node):
         exceptional. The cost of one is a lost re-aim; the cost of relaxing the gate
         would be a bad plan on seven channels.
         """
+        # C2FF (2026-09-14): this FSM path installs at an UN-snapped t0, so a
+        # hand track it carries is sampled OFF the knot grid -- the 299-679
+        # rev/s^2 frame-boundary acceleration steps the phase lock removed, and
+        # with hand torque feedforward armed a torque step each frame. It is
+        # superseded (deleted at R4, tag fsm-final); say so loudly, once.
+        if not getattr(self, '_plan_cycle_c2_warned', False):
+            self._plan_cycle_c2_warned = True
+            self.get_logger().warn(
+                'trajectory/plan_cycle is the superseded FSM install path: its '
+                'hand track is NOT knot-aligned (not C2). Keep the bridge '
+                'hand_torque_ff_gain at 0 while using it; the skill stack '
+                '(install_segment) is the C2 path.')
+
         t_wall = time.perf_counter()
         # The install epoch AS THIS REQUEST BEGINS. `trajectory/hold` runs on a
         # reentrant group and can land at any point during the solve below; if it
@@ -4911,6 +5054,22 @@ class TrajectoryNode(Node):
             if seed_rest is None:
                 return self._reject_segment(
                     response, code, '%s — cannot seed a segment' % (err,), t_wall)
+            # t0 snapping (C2FF spec, 2026-09-14): a FRESH origin installs
+            # `install_segment`'s `t0 = t_now_s` verbatim (see its docstring),
+            # so snapping the FIRST un-emitted grid knot in HERE is the one
+            # place that origin is ever set for this (hand-carrying) install
+            # path. Safe to move `t_now_s` forward by up to one knot: the
+            # `fresh` branch only fires when the machine is holding a
+            # terminal REST (`seed_rest` above), so the seed
+            # (pose, zero vel, zero accel) is still exactly valid at the
+            # later, grid-aligned instant — nothing about it depends on WHEN
+            # within that rest window it is sampled. The SPLICE branch below
+            # is untouched: its `t_now_s` stays real wall time, because the
+            # chain's t0 is already on the grid (the fresh origin that seeded
+            # it was) — see the `fresh` predicate above, which recomputes the
+            # identical way `install_segment` does, so a monotonic forward
+            # snap here cannot flip that predicate's answer inside it.
+            t_now_s = self._snap_t0_to_grid(t_now_s)
 
         # The install-time lookahead check `install_segment` makes on a splice
         # reads the clock AFTER the solve (it is handed the clock itself, not a

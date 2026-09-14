@@ -201,6 +201,7 @@ namespace TrajOp {
   constexpr float HAND_ACC_LIMIT_RPS2 = 3500.0f;
   constexpr float HAND_ACC_CEILING_RPS2 = 3900.0f;
   constexpr float KNOT_DT_S = 0.025f;
+  constexpr uint32_t EMIT_LEAD_KNOTS = 0u;
   constexpr float MIN_MOVE_DURATION_S = 0.2f;
   constexpr float MIN_TIMED_LEAD_S = 0.25f;
   constexpr float MAX_TIMED_LEAD_S = 60.0f;
@@ -213,6 +214,15 @@ namespace TrajOp {
   constexpr bool RETIME_MODEL = false;
   constexpr bool UNIFIED_Z_FLOAT_ENABLED = false;
   constexpr float UNIFIED_Z_BAND_MM = 30.0f;
+  constexpr float STREAM_STOP_HAND_ACCEL_RPS2 = 3500.0f;
+  constexpr float STREAM_STOP_HAND_JERK_RPS3 = 350000.0f;
+  constexpr float STREAM_STOP_LEG_ACCEL_RPS2 = 250.0f;
+  constexpr float STREAM_STOP_LEG_JERK_RPS3 = 25000.0f;
+  constexpr float STREAM_HAND_TORQUE_FF_CLAMP_NM = 0.234f;
+  constexpr float STREAM_HAND_FF_GAIN_SLEW_PER_S = 5.0f;
+  constexpr float STREAM_HAND_TORQUE_BIAS_CLAMP_NM = 0.05f;
+  constexpr float STREAM_HAND_TORQUE_BIAS_RATE_NM_PER_S = 0.5f;
+  constexpr float STREAM_HAND_TORQUE_FADE_PER_S = 50.0f;
 }
 
 // ==========================================================================

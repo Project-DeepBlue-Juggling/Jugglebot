@@ -587,11 +587,21 @@ the rung's tests passing or a handoff file in the scratchpad.
   feedforward (~68 % of J·α) with every frame; the streamed hand lane sends
   zero (`leg_interp.cpp:1021`), so the velocity loop builds the torque from
   tracking error and overshoots after the ramp — the old engine at 177 rev/s
-  and 2.8k rev/s² (2026-08-21) landed within 4 %. NEXT: the apex ladder
-  `tests/hardware/session_skills_r3_apex_ladder.md` (0.5–0.9 m, hand limits
-  unchanged) sets R3's gate apex and baselines a hand torque-feedforward flash
-  (owner decision); boxes are now apex-scoped (a box swept for one apex was
-  silently reused at any other); (f) FIRMWARE: the hand deviation residual
+  and 2.8k rev/s² (2026-08-21) landed within 4 %. **Landed 2026-09-15, carried
+  to sitting 2 (uncommitted, NOT flashed):** the hand C2 + torque-feedforward
+  plumbing — phase-locked, knot-aligned scheduled frames (can-bridge FW 22,
+  PROTOCOL_VERSION 8, `HAS_SCHED`/`t_origin_us`) and an in-firmware
+  acceleration torque feedforward on the hand axis (`τ = K·J·2π·a_cmd`, gain
+  from ROS param `hand_torque_ff_gain`, fail-safe-gated on a wire
+  torque-scale readback). NEXT: the apex ladder
+  `tests/hardware/session_skills_r3_apex_ladder.md` is now the FF **A/B**
+  sitting itself (K=0 vs K=0.7, 0.5–0.9 m, hand limits unchanged) — it both
+  flashes FW 22 and sets R3's gate apex; the offline model
+  (`temp/probes/hand_cascade_ff/`) predicts the pre-registered "K=0.7 → ≤1.00"
+  criterion is NOT met (1.02–1.05× at K=0.7–1.0), so a further owner decision
+  on K follows the sitting rather than a single flash/no-flash call; boxes
+  are now apex-scoped (a box swept for one apex was silently reused at any
+  other); (f) FIRMWARE: the hand deviation residual
   is the raw plan against the encoder while the bridge slews the emitted
   command at ≤ 1 rev/s after a hand-lane activation (`leg_interp.cpp:777`
   vs `:963`) — the guard trips on a gap the bridge created; (g) the guard

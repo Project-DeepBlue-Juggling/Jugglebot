@@ -324,17 +324,27 @@ def test_the_parked_floor_is_the_firmware_settle_bands_lower_edge(geom):
 
 
 def test_a_window_planned_off_a_PARKED_hand_is_accepted(geom):
-    """The 2026-09-06 refusal, as the bench actually produced it.
+    """The 2026-09-06 refusal, as the bench actually produced it (positions and
+    the rise SHAPE; see the C2 note below for the one adjusted number).
 
     Knot 0 at -0.031 rev — inside the firmware retract band, below the homed
     zero — with the track rising out of the park.  The firmware clips the
     sub-zero command to 0.0, so this executes as a ~1 mm hold at the floor.
 
-    The rise is deliberately gentle (peak ~320 rev/s^2 against the shipped 3500
+    The rise is deliberately gentle (peak ~263 rev/s^2 against the shipped 3500
     cap): the point of the fixture is the STROKE floor, so every other hand gate
-    has to stay silent or the test could pass for the wrong reason.
+    has to stay silent or the test could pass for the wrong reason. The interior
+    knot velocity is 6.43 rev/s, not the bench's raw 6.0 (C2FF spec,
+    2026-09-14): this 3-knot ``_held`` shape was always a synthetic MINIMAL
+    driver reproducing the scenario, not a raw telemetry dump, and 6.0 leaves a
+    137.6 rev/s^2 knot-acceleration discontinuity this fixture never needed —
+    an artifact of hand-picking two independent knot velocities, not a fact
+    about the bench event. 6.43 is the exact value that makes the two spans'
+    accelerations agree at the interior knot (a real ``install_segment`` plan
+    is C2 by construction — see ``HAND_LIMIT_C2``), restoring "every other
+    hand gate stays silent" including the new one.
     """
-    plan = _held([-0.031, 0.05, 0.25], [0.0, 6.0, 8.0])
+    plan = _held([-0.031, 0.05, 0.25], [0.0, 6.43, 8.0])
     assert plan.hand_rev[0] < feas.HAND_STROKE_MIN_REV
     report = feas.validate_cycle(plan, _limits(), geom)
     assert report.ok is True, report.reasons
@@ -647,7 +657,7 @@ def test_the_runway_margin_matches_the_planners_own(geom):
 # ═══════════════════════════════════════════════════════════════════════════
 
 @pytest.mark.parametrize('code', [feas.HAND_STROKE, feas.HAND_LIMIT_VEL,
-                                  feas.HAND_LIMIT_ACC])
+                                  feas.HAND_LIMIT_ACC, feas.HAND_LIMIT_C2])
 def test_every_new_code_round_trips_through_base_outcome(code):
     """A new code must survive ``base_outcome`` bare AND composed into an outcome.
 
@@ -666,6 +676,17 @@ def test_every_new_code_round_trips_through_base_outcome(code):
     (feas.HAND_STROKE, ([5.0, 10.2, 5.0], [0.0, 0.0, 0.0]), {}),
     (feas.HAND_LIMIT_VEL, ([1.0, 1.0 + 260.0 * DT], [260.0, 260.0]), {}),
     (feas.HAND_LIMIT_ACC, ([1.0, 2.0, 3.0], [0.0, 100.0, 0.0]), {}),
+    # C2FF spec (2026-09-14): the SAME (rev, rev_s) triple
+    # test_a_window_planned_off_a_PARKED_hand_is_accepted uses, but with its
+    # ORIGINAL (pre-fix) middle velocity 6.0 rather than the C2-continuous
+    # 6.43 — two independently-chosen knot velocities meeting at an interior
+    # knot, which is exactly what the gate exists to catch (137.6 rev/s^2 of
+    # discontinuity against a 3.5 rev/s^2 tolerance). HAND_STROKE stays
+    # silent here because knot 0 (-0.031 rev) is above
+    # HAND_HOMED_REST_FLOOR_REV, so `_cycle_stroke_floor` lowers the floor to
+    # it (the "parked hand" rule) — the same reason the OTHER test's silence
+    # holds.
+    (feas.HAND_LIMIT_C2, ([-0.031, 0.05, 0.25], [0.0, 6.0, 8.0]), {}),
 ])
 def test_a_real_refusal_round_trips_too(geom, code, plan_args, limit_kw):
     """Not just the constant — the code a real refusal CARRIES round-trips."""

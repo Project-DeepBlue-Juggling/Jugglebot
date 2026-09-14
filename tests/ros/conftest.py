@@ -15,8 +15,10 @@ Injection is two-tier:
   ``MockHeader`` stub below — the real ``JointState`` constructs a
   ``std_msgs.msg.Header``, which DOES resolve to the mock — but it does mean the
   bridge test family cannot import on a box with no ROS 2 install.)
-* **Fallback only** — ``diagnostic_msgs`` and ``ament_index_python``
-  (registered at the bottom of this file, guarded by ``try: import``). Both
+* **Fallback only** — ``diagnostic_msgs``, ``ament_index_python`` and (added
+  for ``teensy_bridge_node``'s ``hand_torque_ff_gain`` param-set validation
+  hook, C2FF/U3a) ``rcl_interfaces``
+  (registered at the bottom of this file, guarded by ``try: import``). All
   exist for real on the Jetson and are used for real there; the stubs exist
   so this module's opening claim holds on a box without ROS2. Until
   2026-08-02 that claim was false: neither was mocked, and five modules
@@ -869,8 +871,9 @@ class MockPublisher:
 
 
 class _MockParameter:
-    def __init__(self, value):
+    def __init__(self, value, name=None):
         self.value = value
+        self.name = name
 
     def get_parameter_value(self):
         return self
@@ -906,6 +909,7 @@ class MockNode:
         self._action_servers = {}
         self._action_clients = {}
         self._params = {}
+        self._param_set_callbacks = []
 
     def get_logger(self):
         return self._logger
@@ -918,7 +922,32 @@ class MockNode:
         return _MockParameter(default_value)
 
     def get_parameter(self, name):
-        return _MockParameter(self._params.get(name))
+        return _MockParameter(self._params.get(name), name=name)
+
+    def add_on_set_parameters_callback(self, callback):
+        """Minimal stand-in for rclpy's validation-hook registry (teensy_bridge_node's
+        hand_torque_ff_gain gate, C2FF/U3a). Real rclpy supports many registered
+        callbacks combined; this mock only needs one at a time, in registration order —
+        no production or test code here registers more than one."""
+        self._param_set_callbacks.append(callback)
+
+    def set_parameters(self, parameter_list):
+        """Minimal stand-in for rclpy's Node.set_parameters: runs every registered
+        add_on_set_parameters_callback hook (first failure wins, matching rclpy's
+        AND-of-all-callbacks contract), applies to self._params on success. Tests
+        pass a list of _MockParameter(value, name=...)."""
+        from rcl_interfaces.msg import SetParametersResult
+        results = []
+        for param in parameter_list:
+            result = SetParametersResult(successful=True)
+            for cb in self._param_set_callbacks:
+                result = cb([param])
+                if not result.successful:
+                    break
+            if result.successful:
+                self._params[param.name] = param.value
+            results.append(result)
+        return results
 
     def create_service(self, *a, **kw):
         # Record the service (name, type) so tests can assert the production service
@@ -1324,6 +1353,25 @@ except ImportError:
         'get_package_share_directory': _get_package_share_directory,
         'get_package_share_path': _get_package_share_directory,
         'PackageNotFoundError': PackageNotFoundError,
+    })
+
+try:  # pragma: no cover - exercised on the Jetson, where the real package wins
+    import rcl_interfaces.msg  # noqa: F401
+except ImportError:
+    class SetParametersResult:
+        """Stand-in for rcl_interfaces/SetParametersResult (fields: successful,
+        reason) — teensy_bridge_node's hand_torque_ff_gain param-set
+        validation hook (add_on_set_parameters_callback) returns one of
+        these. Same pattern as the diagnostic_msgs/ament_index_python
+        fallbacks above: real package wins on the Jetson."""
+
+        def __init__(self, successful=True, reason=''):
+            self.successful = successful
+            self.reason = reason
+
+    _create_mock_module('rcl_interfaces')
+    _create_mock_module('rcl_interfaces.msg', {
+        'SetParametersResult': SetParametersResult,
     })
 
 

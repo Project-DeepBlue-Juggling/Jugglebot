@@ -34,6 +34,7 @@ from .protocol import (
     ArgRobotState,
     ResultAxisVersions,
     ResultBbAxisVersions,
+    ResultHandTorqueScale,
     ArgPlatformFwBegin,
     ArgPlatformFwData,
     ArgPlatformFwVerify,
@@ -260,6 +261,35 @@ def decode_bb_axis_versions_result(blob: bytes) -> dict:
             off = i * _VERSION_BYTES_PER_AXIS
             out[BB_FIRST_NODE + i] = raw[off:off + _VERSION_BYTES_PER_AXIS]
     return out
+
+
+# ── Hand ODrive torque-scale readback (FW 22, additive) ──────────────────────
+# GET_HAND_TORQUE_SCALE takes NO args and returns ResultHandTorqueScale: the
+# bridge-local cache of the hand ODrive's axis0.config.can.input_torque_scale
+# (uint32, Pro 0.6.11 endpoint 283) and, unless a read is in flight, triggers
+# one fresh RxSdo read. The verdict (value == INPUT_SCALE_HAND_TOR) is the
+# caller's; see RpcClient.read_hand_input_torque_scale.
+
+#: ResultHandTorqueScale.state values (rpc.cpp hand_torque_scale_rpc).
+HTS_STATE_NEVER = 0
+HTS_STATE_IN_FLIGHT = 1
+HTS_STATE_CACHED = 2
+HTS_STATE_FW_MISMATCH = 3
+HTS_STATE_BUS_DOWN = 4
+HTS_AGE_NONE = 0xFFFFFFFF
+
+
+def encode_hand_torque_scale_result(state: int, value: int, reply_seq: int,
+                                    age_ms: int = HTS_AGE_NONE) -> bytes:
+    """Pack a GET_HAND_TORQUE_SCALE result blob — the firmware-side mirror, for
+    the FakeTeensy responder and the round-trip test."""
+    return ResultHandTorqueScale(state=int(state), pad=(0, 0, 0), value=int(value),
+                                 reply_seq=int(reply_seq), age_ms=int(age_ms)).pack()
+
+
+def decode_hand_torque_scale_result(blob: bytes) -> ResultHandTorqueScale:
+    """Decode a GET_HAND_TORQUE_SCALE result blob (exact-size unpack)."""
+    return ResultHandTorqueScale.unpack(blob)
 
 
 # ── Platform-Teensy relay ─────────────────────────────────────────────────────
@@ -667,7 +697,7 @@ def platform_fw_window_end(window_start_frame: int, total_frames: int) -> int:
 #: 20 is in TOTAL LINK DARKNESS against this host tree until the lockstep
 #: flash, loud and fail-closed by design (decode_frame hard-rejects on
 #: version).
-EXPECTED_BRIDGE_FW_VERSION = 21
+EXPECTED_BRIDGE_FW_VERSION = 22
 
 
 # ── Ball Butler ─────────────────────────────────────────────────────────────

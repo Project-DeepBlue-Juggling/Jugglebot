@@ -367,3 +367,65 @@ def test_non_idempotent_methods_not_retried(monkeypatch):
             pass
     finally:
         nowhere.stop()
+
+
+def _hts_responder(teensy, replies):
+    """Serve GET_HAND_TORQUE_SCALE from a list of (state, value, reply_seq)."""
+    calls = []
+
+    def handler(req_id, args):
+        i = min(len(calls), len(replies) - 1)
+        calls.append(args)
+        st, val, seq = replies[i]
+        return int(RpcStatus.OK), rpc_args.encode_hand_torque_scale_result(st, val, seq, 5)
+    teensy.on_rpc(int(RpcMethod.GET_HAND_TORQUE_SCALE), handler)
+    return calls
+
+
+def test_read_hand_input_torque_scale_needs_a_reply_newer_than_the_trigger(fake_teensy_and_client):
+    teensy, client = fake_teensy_and_client
+    # cached 100 (seq 3) before the call; the trigger is in flight; then a fresh
+    # reply (seq 4) carries 1000. The stale 100 must never be returned.
+    calls = _hts_responder(teensy, [(2, 100, 3), (1, 100, 3), (1, 100, 3), (2, 1000, 4)])
+    rpc = RpcClient(client, default_timeout=0.3)
+    try:
+        assert rpc.read_hand_input_torque_scale(timeout_s=1.0, poll_s=0.001) == 1000
+        assert all(a == b"" for a in calls) and len(calls) == 4
+    finally:
+        rpc.close()
+
+
+def test_read_hand_input_torque_scale_times_out_without_a_fresh_reply(fake_teensy_and_client):
+    from teensy_link.rpc import HandTorqueScaleUnavailable
+    teensy, client = fake_teensy_and_client
+    _hts_responder(teensy, [(2, 1000, 9)])          # only ever the pre-call cache
+    rpc = RpcClient(client, default_timeout=0.3)
+    try:
+        with pytest.raises(HandTorqueScaleUnavailable):
+            rpc.read_hand_input_torque_scale(timeout_s=0.05, poll_s=0.005)
+    finally:
+        rpc.close()
+
+
+@pytest.mark.parametrize("state", [3, 4])
+def test_read_hand_input_torque_scale_refusals_raise(fake_teensy_and_client, state):
+    from teensy_link.rpc import HandTorqueScaleUnavailable
+    teensy, client = fake_teensy_and_client
+    _hts_responder(teensy, [(state, 0, 0)])
+    rpc = RpcClient(client, default_timeout=0.3)
+    try:
+        with pytest.raises(HandTorqueScaleUnavailable) as exc:
+            rpc.read_hand_input_torque_scale(timeout_s=0.2, poll_s=0.005)
+        assert exc.value.state == state
+    finally:
+        rpc.close()
+
+
+def test_read_hand_input_torque_scale_old_firmware_is_an_rpc_error(fake_teensy_and_client):
+    teensy, client = fake_teensy_and_client          # no handler: ERR_UNKNOWN_METHOD
+    rpc = RpcClient(client, default_timeout=0.2, default_retries=0)
+    try:
+        with pytest.raises((RpcError, RpcTimeout)):
+            rpc.read_hand_input_torque_scale(timeout_s=0.1)
+    finally:
+        rpc.close()

@@ -113,11 +113,12 @@ def test_setpoint_roundtrip():
 # and fail-closed BY DESIGN (decode_frame hard-rejects on version, both ends).
 
 
-def test_setpoint_v6_size_is_208():
+def test_setpoint_v8_size_is_240():
     # 49 f32 (7 arrays × 7 lanes) + u32 flags + u64 t_origin_us = 208 B.
     # Pinned as a literal: a silent size drift is a memcpy-incompatible board.
-    assert p.SETPOINT_SIZE == 208
-    assert len(p.Setpoint().pack()) == 208
+    # v8 (2026-09-14): + v2 f32[7] + hand_ff_gain f32 = 240 B.
+    assert p.SETPOINT_SIZE == 240
+    assert len(p.Setpoint().pack()) == 240
 
 
 def test_setpoint_arrays_are_seven_wide_legs_then_hand():
@@ -148,7 +149,7 @@ def test_v6_decode_rejects_a_version5_frame():
     # checked before the CRC), and total: EVERY frame from a v5 peer dies here.
     frame = bytearray(p.encode_frame(int(p.MsgType.SETPOINT), 3,
                                      p.Setpoint().pack()))
-    assert frame[2] == p.PROTOCOL_VERSION == 7
+    assert frame[2] == p.PROTOCOL_VERSION == 8
     frame[2] = 5
     body = bytes(frame[:-2])
     frame[-2:] = struct.pack('<H', p.crc16_ccitt(body))   # valid CRC, old version
@@ -327,7 +328,7 @@ def test_clock_diag_is_additive_protocol_version_unchanged():
     """
     # The frames that existed before FW 11 keep their exact sizes.
     assert p.PROFILE_SIZE == 76
-    assert p.HEARTBEAT_T2J_SIZE == 73
+    assert p.HEARTBEAT_T2J_SIZE == 121   # 73 until v8 (2026-09-14) appended the FW 22 promotion diagnostics
     assert p.LEG_CMD_SIZE == 56
     assert p.BRIDGE_TX_DIAG_SIZE == 18   # 42 → 18 at R1: the hand_ops per-stage counters left the struct
     assert p.BRIDGE_IDENTITY_SIZE == 3
@@ -505,7 +506,7 @@ def test_cache_diag_is_additive_protocol_version_unchanged():
     # most likely to be disturbed by an edit in the same region of the spec.
     assert p.CLOCK_DIAG_SIZE == 49
     assert p.PROFILE_SIZE == 76
-    assert p.HEARTBEAT_T2J_SIZE == 73
+    assert p.HEARTBEAT_T2J_SIZE == 121   # 73 until v8 (2026-09-14) appended the FW 22 promotion diagnostics
     assert p.LEG_CMD_SIZE == 56
     assert p.BRIDGE_TX_DIAG_SIZE == 18   # 42 → 18 at R1: the hand_ops per-stage counters left the struct
     assert p.BRIDGE_IDENTITY_SIZE == 3
@@ -698,7 +699,7 @@ def test_ring_diag_is_additive_protocol_version_unchanged():
     assert p.CACHE_DIAG_SIZE == 129
     assert p.CLOCK_DIAG_SIZE == 49
     assert p.PROFILE_SIZE == 76
-    assert p.HEARTBEAT_T2J_SIZE == 73
+    assert p.HEARTBEAT_T2J_SIZE == 121   # 73 until v8 (2026-09-14) appended the FW 22 promotion diagnostics
     assert p.LEG_CMD_SIZE == 56
     assert p.BRIDGE_TX_DIAG_SIZE == 18   # 42 → 18 at R1: the hand_ops per-stage counters left the struct
     assert p.BRIDGE_IDENTITY_SIZE == 3

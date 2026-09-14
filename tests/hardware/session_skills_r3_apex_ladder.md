@@ -1,4 +1,4 @@
-# R3 apex ladder — how fast does the streamed hand throw, apex by apex?
+# R3 apex ladder — hand C2 + torque feedforward A/B (FW 22 / protocol 8)
 
 A measurement sitting, not a gate. R3's first powered sitting (2026-09-13,
 `logbook/2026-09-14-skill-stack-r3-first-powered-sitting.md`) threw about
@@ -8,18 +8,40 @@ hand encoder peak 161 rev/s against 128 commanded, hand current saturated at
 (`logbook/2026-09-14-skill-stack-r3-apex-ladder-prep.md`) found why the
 Platform-Teensy engine never showed this: it sent the hand ODrive an
 acceleration **torque feedforward** with every frame, and the streamed hand
-lane sends zero (`Teensy_code_canbridge/leg_interp.cpp:1021`). Without it the
-velocity loop builds the acceleration torque out of tracking error and pays
-it back as overspeed after the ramp.
+lane sent zero (`Teensy_code_canbridge/leg_interp.cpp:1021`, pre-FW-22).
+Without it the velocity loop built the acceleration torque out of tracking
+error and paid it back as overspeed after the ramp.
 
-This ladder flies single self-tosses at five apexes with the hand limits
-unchanged, so the overspeed can be read against commanded acceleration. It
-answers two questions:
+Since that prep, the hand C2 + torque-FF plumbing has landed (uncommitted,
+not yet flashed): can-bridge FW 22 / PROTOCOL_VERSION 8 replaces off-knot
+arrival-time playback with phase-locked, knot-aligned frames stamped with
+their own play time (`t_origin_us`, flags bit5 `HAS_SCHED`), and the firmware
+now computes an acceleration torque feedforward **in firmware**, from the
+curve it is actually playing: `τ = fade · sat(Ks · J_HAND · 2π · a_cmd) +
+bias`. The gain `K` rides the wire per frame (`hand_ff_gain`, ROS param
+`hand_torque_ff_gain` on `teensy_bridge_node`, default 0, forced to 0 unless
+the hand ODrive's `input_torque_scale` readback has verified). This sitting
+flashes FW 22 and flies the apex ladder as an **A/B**: arm A at `K=0` (FW 22's
+scheduling alone, still zero torque FF — the direct comparison against the
+2026-09-13 baseline) against arm B at `K=0.7` (the offline model's mid-gain
+case; see the predictions table below).
 
-1. **Operating point.** The highest apex at which the plant is close enough
-   to commanded for the learner to reach — the apex R3's gate sitting flies.
-2. **Baseline.** The before-curve for a later hand torque-feedforward flash
-   (firmware), which would be flown on the same ladder.
+This ladder answers three questions:
+
+1. **Does FW 22's scheduling alone (arm A, K=0) change the overspeed?** The
+   offline model says no — knot-aligned sampling barely moves the ratio
+   versus the old off-knot stream (1.145 vs 1.143 at 0.9 m, K=0). A large
+   change here would mean the off-knot-sampling story was wrong and the
+   analysis needs reopening before arm B means anything.
+2. **Does torque feedforward at K=0.7 close the gap?** The pre-registered
+   criterion from the prep sitting was "K=0.7 → ratio ≤ 1.00". The offline
+   model (`temp/probes/hand_cascade_ff/hand_cascade_ff_20260914T122549Z.md`)
+   says this is **NOT SUPPORTED**: predicted K=0.7 ratios are 1.05× (0.9 m)
+   and 1.04× (0.5 m), not ≤1.00 — the ball's own +23 % reflected inertia and
+   the 50 A drive ceiling account for the gap, not a modelling error. The
+   sitting's job is to confirm or refute this on hardware, not assume it.
+3. **Operating point.** The highest apex at which the plant (whichever arm
+   wins) is close enough to commanded for the learner to reach.
 
 **If your physical intuition disagrees with this framing, that is
 load-bearing signal — say so before step 1.**
@@ -27,18 +49,42 @@ load-bearing signal — say so before step 1.**
 ### Pre-registered predictions (decided before the sitting)
 
 Commanded peak hand acceleration for a single throw, from the planner
-(`tools/probes/skills_single_site_sweep.py --study grid`, 2026-09-14):
+(`tools/probes/skills_single_site_sweep.py --study grid`, 2026-09-14) —
+unaffected by K, planner output only:
 
 | Apex (m) | 0.5 | 0.6 | 0.7 | 0.8 | 0.9 |
 |---|---|---|---|---|---|
 | Commanded peak hand acc (rev/s²) | 1706 | 1871 | 2309 | 2715 | 3097 |
 | Commanded release speed (rev/s) | ≈ 96 | ≈ 105 | ≈ 114 | ≈ 121 | ≈ 128 |
 
-- **Verdict B (missing torque feedforward), the analysis's call:** measured
-  hand peak / commanded rises with apex — about 1.03–1.06 at 0.5 m, a knee as
-  peak current nears the 50 A limit around 0.8 m, 1.13–1.27 at 0.9 m.
-- **Verdict A (same physics as the old engine, just more demand):** the ratio
-  stays flat at 1.00 ± 0.05 on every rung.
+**Offline torque-FF model** (`temp/probes/hand_cascade_ff/hand_cascade_ff_20260914T122549Z.md`,
+knot-aligned rows — the FW 22 case; ladder apexes 0.6/0.7/0.8 were not
+modelled, only the 0.5/0.9 m endpoints). These are **model predictions, not
+measurements** — read the sitting's own numbers against them, not the other
+way round:
+
+| Apex (m) | K | Peak meas/cmd (model) | Peak iq (A, model) |
+|---|---|---|---|
+| 0.9 | 0 | 1.145 | 50.0 |
+| 0.9 | 0.7 | 1.054 | 49.5 |
+| 0.9 | 1.0 | 1.021 | 49.4 |
+| 0.5 | 0 | 1.109 | 28.8 |
+| 0.5 | 0.7 | 1.041 | 28.3 |
+| 0.5 | 1.0 | 1.016 | 28.2 |
+
+- **The pre-registered "K=0.7 → ratio ≤ 1.00" criterion is NOT SUPPORTED** by
+  this model at either endpoint (1.054 at 0.9 m, 1.041 at 0.5 m) — expect arm
+  B to still read fast, not corrected.
+- **Peak iq at K≥0.7 sits within 1 A of the 50 A drive limit at 0.9 m** —
+  this is why the A/B stop criteria below include a live current cutoff at
+  48 A, five rungs before the ladder reaches 0.9 m in either arm.
+- **Verdict B (missing torque feedforward is most of the story), the prep
+  analysis's call:** measured hand peak / commanded falls substantially from
+  arm A to arm B and continues falling as K rises toward 1.0.
+- **Verdict A (K makes little difference):** the ratio at K=0.7 reads within
+  0.02 of the K=0 arm on every rung — the missing-FF story is wrong or the
+  firmware path isn't delivering the modelled torque; stop and re-open the
+  analysis rather than flying K=1.0 the same sitting.
 - The ball follows the hand encoder at 32.567 mm/rev (0.95–1.05 on
   2026-09-13), so either channel reads the verdict; the table uses both.
 
@@ -58,71 +104,140 @@ Every terminal: `source /opt/ros/foxy/setup.bash && source
 
 | # | Step | Expect |
 |---|---|---|
-| 1 | `cd ~/Desktop/Jugglebot-skills && git status -sb` | Clean, at or after the commit that landed this sheet. |
-| 2 | (venv) `./run_tests.sh --full` | Green. Record the pass count in § 5. |
-| 3 | (ROS) `cd ros_ws && colcon build --packages-select jugglebot_interfaces jugglebot && source install/setup.bash && cd ..` | Builds. Needed: skill_node's apex-scoped box lookup, the sitting-1 fixes. |
-| 4 | (venv, repo root) `PYTHONPATH=ros_ws/src/jugglebot python -c "from jugglebot.motion.skills import admissible as a; [print(b.site_pair, b.apex_band_m, b.flight_s) for b in a.load('config/generated/admissible_box.yaml')]"` | Two columns boxes plus five `('P1', 'P1')` boxes, apex bands 0.45–0.55, 0.55–0.65, 0.65–0.75, 0.75–0.85, 0.85–0.95 m, each with the flight range in § 4's table. |
-| 4a | (venv, quiet machine — nothing else running) `for A in 0.5 0.6 0.7 0.8 0.9; do python3 tests/hardware/skills_plan_bench.py --rehearse --pattern self-toss --arm A --attempts 3 --n-throws 1 --apex-m $A; done 2>&1 \| tee temp/logs/apex_ladder_rehearse_$(date +%Y%m%d).log` | Every rung: `blas threads: 1`, **G1, G2 and G4 PASS** (three attempts, `ended_early=False (4/4 skills)`). Known, pre-existing refusal: the closing REST is refused `LIMIT_JERK` when it is dispatched early in its 40 Hz tick (a deterministic sweep refuses 24 % of tick phases at 0.9 m, 52 % at 0.6 m; the bench's own timing hits it rarely). It ends the attempt AFTER the throw and catch were accepted, so it does not fail the rung. A THROW or CATCH refusal, or any other early end, fails the rung. |
-| 5 | QTM: disable the `Catching Cone` rigid body; mask the Ball Butler reflectors | Hard precondition, unchanged from `session_skills_r3.md` row 10. |
+| 1 | `cd ~/Desktop/Jugglebot-skills && git status -sb` | Clean, at or after the commit that landed this sheet (the hand C2 + torque-FF unit). |
+| 2 | (ROS) `cd ros_ws && colcon build --packages-select jugglebot_interfaces jugglebot && source install/setup.bash && cd ..` | Builds. |
+| 3 | (venv) `./run_tests.sh --full` | Green. Record the pass count in § 6. This is the gate the plan's Rigor rule requires before any powered sitting, and it is the ONLY place the new firmware-twin (`test_sched_c2_twin.py`, `test_hand_torque_ff_twin.py`) and native (`test_leg_interp.cpp`) suites run together with everything else. |
+| 4 | **Re-apply the hand ODrive's CAN torque scale.** Over USB/odrivetool on the hand Pro (node 6): `odrv0.axis0.config.can.input_torque_scale = 1000`, then `odrv0.save_configuration()`. Or re-apply `config/ODrive config Files/odrive_pro_hand_config.json`. Leave `input_vel_scale` at 100. | Read back before continuing: `odrv0.axis0.config.can.input_torque_scale` reports `1000`. Without this, arm B's readback gate refuses and K stays 0 all sitting (safe, but the FF question goes unanswered). |
+| 5 | **With the launch DOWN**, flash can-bridge FW 22 in lockstep with the v8 host build already in step 2: `cd ros_ws/src/jugglebot/Teensy_code_canbridge && pio run -e teensy41 -t upload`. | **The boot banner is the receipt** — `jugglebot-canbridge v22` on the console (open `pio device monitor -e teensy41 \| tee temp/logs/console_ff_ladder_$(date +%Y%m%d_%H%M).log` in its own terminal right after). A bare `pio run` (no `-t upload`) BUILDS ONLY and is NOT a flash — a matching hex md5 is not a flash receipt either; only the boot banner is. |
+| 6 | **Protocol 8 note.** If the host (v8, from step 2) and board (FW 22, from step 5) do not land in lockstep, the symptom is **link darkness**, not a cable fault: `link=NO_HEARTBEAT` on `/link_status` with `decode_errors == rx_frames` — `decode_frame` rejects every frame both ways on a version mismatch. If you see this, check the boot banner version against `teensy_link/rpc_args.py::EXPECTED_BRIDGE_FW_VERSION` before touching any cable. | No action unless it happens. |
+| 7 | (venv, repo root) `PYTHONPATH=ros_ws/src/jugglebot python -c "from jugglebot.motion.skills import admissible as a; [print(b.site_pair, b.apex_band_m, b.flight_s) for b in a.load('config/generated/admissible_box.yaml')]"` | Two columns boxes plus five `('P1', 'P1')` boxes, apex bands 0.45–0.55, 0.55–0.65, 0.65–0.75, 0.75–0.85, 0.85–0.95 m, each with the flight range in § 4's table. |
+| 8 | (venv, quiet machine — nothing else running) `for A in 0.5 0.6 0.7 0.8 0.9; do python3 tests/hardware/skills_plan_bench.py --rehearse --pattern self-toss --arm A --attempts 3 --n-throws 1 --apex-m $A; done 2>&1 \| tee temp/logs/apex_ladder_rehearse_$(date +%Y%m%d).log` | Every rung: `blas threads: 1`, **G1, G2 and G4 PASS** (three attempts, `ended_early=False (4/4 skills)`). This is an offline solve rehearsal only — it exercises no wire, so it reads the same whether FW 22 is flashed or not; run it after step 2's build so it's checked against the Jetson-side code this sitting actually carries. Known, pre-existing refusal: the closing REST is refused `LIMIT_JERK` when it is dispatched early in its 40 Hz tick (a deterministic sweep refuses 24 % of tick phases at 0.9 m, 52 % at 0.6 m; the bench's own timing hits it rarely). It ends the attempt AFTER the throw and catch were accepted, so it does not fail the rung. A THROW or CATCH refusal, or any other early end, fails the rung. |
+| 9 | QTM: disable the `Catching Cone` rigid body; mask the Ball Butler reflectors | Hard precondition, unchanged from `session_skills_r3.md` row 10. |
 
 ## 2. Bring-up
 
 Rows 11–16 and 18 of `session_skills_r3.md`, with the log names below. Hand
 limits stay at the launch defaults (200 rev/s, 3500 rev/s²) for the whole
-ladder — changing them would change what is being measured.
+ladder in both arms — changing them would change what is being measured.
 
 | # | Step | Expect |
 |---|---|---|
-| 6 | Load capture: `( while true; do echo "$(date +%H:%M:%S) $(cat /proc/loadavg)"; sleep 1; done ) \| tee temp/logs/loadavg_apex_ladder_$(date +%Y%m%d).txt` | One line a second. |
-| 7 | `ros2 launch jugglebot jugglebot_launch.py record:=true auto_arm:=true 2>&1 \| tee temp/logs/launch_apex_ladder_$(date +%Y%m%d_%H%M).log` | Note the bag folder it prints. |
-| 8 | `grep 'blas threads' temp/logs/launch_apex_ladder_*.log` | `blas threads: 1` for `trajectory_node` AND `skill_node`. |
-| 9 | GUI (http://localhost:8081): start QTM streaming; **Home**, then **Activate**. | Hand parked at 0 rev. |
-| 10 | `ros2 service call /trajectory/set_limits jugglebot_interfaces/srv/SetTrajectoryLimits "{leg_vel_limit_mmps: 300.0, leg_acc_limit_mmps2: 5000.0, leg_jerk_limit_mmps3: 150000.0}"` | `applied_*` echoes 300 / 5000 / 150000. |
-| 11 | `ros2 param set /skill_node site_x_mm -50.0`, `... site_y_mm 0.0`, `... dwell_s 0.30`, `... n_throws 1` | Set once for the whole ladder. |
+| 10 | Load capture: `( while true; do echo "$(date +%H:%M:%S) $(cat /proc/loadavg)"; sleep 1; done ) \| tee temp/logs/loadavg_apex_ladder_$(date +%Y%m%d).txt` | One line a second. |
+| 11 | `ros2 launch jugglebot jugglebot_launch.py record:=true auto_arm:=true 2>&1 \| tee temp/logs/launch_apex_ladder_$(date +%Y%m%d_%H%M).log` | Note the bag folder it prints. |
+| 12 | `grep 'blas threads' temp/logs/launch_apex_ladder_*.log` | `blas threads: 1` for `trajectory_node` AND `skill_node`. |
+| 13 | GUI (http://localhost:8081): start QTM streaming; **Home**, then **Activate**. | Hand parked at 0 rev. |
+| 14 | `ros2 service call /trajectory/set_limits jugglebot_interfaces/srv/SetTrajectoryLimits "{leg_vel_limit_mmps: 300.0, leg_acc_limit_mmps2: 5000.0, leg_jerk_limit_mmps3: 150000.0}"` | `applied_*` echoes 300 / 5000 / 150000. |
+| 15 | `ros2 param set /skill_node site_x_mm -50.0`, `... site_y_mm 0.0`, `... dwell_s 0.30`, `... n_throws 1` | Set once for the whole ladder. `dwell_s` is raised again at step 17 for the no-motion check only, and restored to this value at step 23. |
+| 16 | `ros2 param set /teensy_bridge_node hand_torque_ff_gain 0.0` | Explicit arm A value — do this even though 0.0 is the launch default, so § 6's log has a positive record of when arm A started. |
 
-## 3. The ladder (ascending apex, three single throws per rung)
+## 3. No-motion / low-motion stream check (before any throw fires)
 
-Fly the rungs in order **0.5, 0.6, 0.7, 0.8, 0.9 m** — lowest demand first,
-so a knee is met from below. Each rung gets its own fresh `plant_id`, so each
-rung's first two throws use the identity command. The learner may adjust
-throw 3; the analysis compares each throw with the command it was actually
-sent, so that does not spoil the measurement.
-
-For each apex `A` (write it as `050`, `060`, … in the id):
+This checks that the scheduled hand lane is healthy — clock-synced, playing,
+C2-continuous at the firmware's own promotion boundaries, and (for arm B
+later) torque-verified — while the only hand motion on the wire is the
+opening REST's static park, before the ladder's first THROW is allowed to
+fire. It rides the FIRST real attempt of the ladder (rung 0.5 m): the dwell
+is temporarily lengthened so there is time to read the diagnostics during the
+REST, and the attempt is stopped from here if anything below is wrong —
+**the THROW has not happened yet at this point**, so stopping is free.
 
 | # | Step | Expect |
 |---|---|---|
-| 12 | `ros2 param set /skill_node apex_m A` and `ros2 param set /skill_node plant_id ladder-A-$(date +%Y%m%d)` | Fresh id per rung. |
-| 13 | `ros2 service call skills/check std_srvs/srv/Trigger` | `ladder OK` and `box OK` naming a `('P1', 'P1')` band that contains `A`. A `box REFUSED ... at apex` line means step 4 was not satisfied — stop. |
-| 14 | Seat a ball; `ros2 service call skills/start_self_toss std_srvs/srv/Trigger` | Accepted. One `skill announced ball 0` line, then an `OUTCOME` line with a landing (not `NO_LANDING` — that was fixed at sitting 1). |
-| 15 | Note in § 5: caught Y/N, and the `memory row appended ... y=[x, y, flight]` values. | Flight longer than `sc.flight_s(A)` means the throw was fast. |
-| 16 | Repeat 14–15 until three throws are recorded for this rung. | |
+| 17 | `ros2 param set /skill_node apex_m 0.5`, `... dwell_s 2.0` (temporary — long enough to read diagnostics twice during the REST), `... plant_id ffcheck-$(date +%Y%m%d)` (a throwaway id, not a ladder rung) | Set for this check only. |
+| 18 | `ros2 service call skills/check std_srvs/srv/Trigger` | `ladder OK` and `box OK` naming a `('P1', 'P1')` band containing 0.5 m. |
+| 19 | Seat a ball; `ros2 service call skills/start_self_toss std_srvs/srv/Trigger` | Accepted — the opening REST installs and starts streaming immediately. |
+| 20 | **Within the REST's dwell, before the THROW fires**, read `ros2 topic echo /link_status --once` | `time_synced: 1` (the bridge's wall anchor is set — without it every scheduled frame demotes to legacy and none of this check means anything); `hand_torque_scale_verified: 1` (arm A doesn't need it, but confirm it here so arm B doesn't silently run at K=0 later); `hand_torque_ff_gain_requested: 0.0000` and `hand_torque_ff_gain_effective: 0.0000` (arm A). |
+| 21 | In the same window, read the console `[hand7]` line (from the `pio device monitor` opened at step 5) | `sched=play` (not `off` — confirms the REST is riding the scheduled lane, not a legacy fallback); `promo_dp=`, `promo_dv=`, `promo_da=` all ≈ 0 (a static REST has no knot-to-knot motion to promote through, so these should read at or near the printed precision's zero); `promo_over=0`; `stops=0 refused=0 expired=0 demoted=0` — any of these counting up during a clean, on-time REST stream means a frame is arriving late, out of order, or unstamped, and needs diagnosis before flying the ladder for real. |
+| 22 | `ros2 topic echo /link_status --once \| grep interp_max_jitter_us` | Record the value. No pass bound exists yet (U2a residual: "measure at the first sitting") — note it here as the reference for later sittings; only a growing trend tick-over-tick, not a single reading, would indicate a real ISR-timing problem. |
+
+**Stop here (before the THROW) if:**
+- `time_synced: 0` — the stream cannot be scheduled at all; nothing below is meaningful.
+- `[hand7]` reads `sched=off` during the REST — the frame isn't reaching the scheduled path; check `HAS_SCHED`/`HAS_V2` upstream before continuing.
+- any of `promo_over`, `stops`, `refused`, `expired`, `demoted` is nonzero and still counting on a second read.
+- `hand_torque_scale_verified: 0` — safe to continue arm A (K=0 either way), but log it: arm B cannot be flown until this reads 1.
+
+If the check is clean, let the attempt continue (it will throw at 0.5 m) —
+this throw stands as arm A's first ladder rung; there is no need to abort and
+redispatch. Restore the real ladder dwell before the next attempt:
+
+| # | Step | Expect |
+|---|---|---|
+| 23 | `ros2 param set /skill_node dwell_s 0.30` | Back to the ladder's real value for every rung from here on. |
+
+## 4. The ladder — arm A (K = 0), then arm B (K = 0.7), same sitting
+
+Fly each arm's rungs in order **0.5, 0.6, 0.7, 0.8, 0.9 m** — lowest demand
+first, so a knee is met from below. Each rung gets its own fresh `plant_id`,
+so each rung's first two throws use the identity command. The learner may
+adjust throw 3; the analysis compares each throw with the command it was
+actually sent, so that does not spoil the measurement. **Rung order and
+predictions are pre-registered above — do not reorder rungs or skip ahead
+based on how a rung looks mid-flight.**
+
+Arm A's 0.5 m rung is already flown (§ 3, row 19) — count it as rung 1 of arm
+A rather than redispatching it.
+
+For each apex `A` (write it as `050`, `060`, … in the id), each arm:
+
+| # | Step | Expect |
+|---|---|---|
+| 24 | `ros2 param set /skill_node apex_m A` and `... plant_id <arm>-A-$(date +%Y%m%d)` (e.g. `armA-090-20260915`) | Fresh id per rung per arm. |
+| 25 | `ros2 service call skills/check std_srvs/srv/Trigger` | `ladder OK` and `box OK` naming a `('P1', 'P1')` band that contains `A`. A `box REFUSED ... at apex` line means step 7 was not satisfied — stop. |
+| 26 | Seat a ball; `ros2 service call skills/start_self_toss std_srvs/srv/Trigger` | Accepted. One `skill announced ball 0` line, then an `OUTCOME` line with a landing (not `NO_LANDING`). |
+| 27 | Note in § 6: caught Y/N, and the `memory row appended ... y=[x, y, flight]` values. | Flight longer than `sc.flight_s(A)` means the throw was fast. |
+| 28 | Repeat 24–27 until three throws are recorded for this rung. | |
 
 **Expected, not a stop:** an attempt that ends `LIMIT_JERK` on the closing
-REST after the catch (the pre-existing refusal in step 4a — up to about half
-the attempts at some apexes). The throw and catch are already recorded, and
-the catch's own rest tail brings the machine to rest. Note it in § 5 and
+REST after the catch (the pre-existing refusal noted at step 8 — up to about
+half the attempts at some apexes). The throw and catch are already recorded,
+and the catch's own rest tail brings the machine to rest. Note it in § 6 and
 carry on.
+
+**Switching from arm A to arm B**, after arm A's five rungs are complete:
+
+| # | Step | Expect |
+|---|---|---|
+| 29 | `ros2 topic echo /link_status --once` | `hand_torque_scale_verified: 1` — confirm again before raising K; if it has dropped to 0 since § 3 (e.g. a hand ODrive reboot), re-read back the torque scale (step 4) before continuing, or arm B silently runs at K=0. |
+| 30 | `ros2 param set /teensy_bridge_node hand_torque_ff_gain 0.7` | `ros2 param get` echoes `0.7`. Record the wall-clock time — the close-out probe needs it to separate arm A from arm B in the one bag. |
+| 31 | `ros2 topic echo /link_status --once` | `hand_torque_ff_gain_requested: 0.7000` and, since verified, `hand_torque_ff_gain_effective: 0.7000` — if `effective` stays `0.0000` here, the readback isn't verified; stop and fix it (step 4 / row 29) rather than flying arm B unverified. |
+| 32 | Repeat rows 24–28 for apexes 0.5, 0.6, 0.7, 0.8, 0.9 m, `plant_id` prefix `armB-` | Same procedure, arm B. |
+
+### A/B stop criteria (either arm, every rung)
 
 **Stop the ladder — do not climb further — if any of these happens:**
 - a `MAX_DEVIATION` latch on any axis (recover with CLEAR_ERRORS, then
   DEACTIVATE and ACTIVATE before anything else — the latch line now names the
   axis);
+- **peak `iq_meas` on `/hand_telemetry` reaches or exceeds 48 A** (2 A under
+  the 50 A drive limit — the offline model already predicts ≈49–50 A at
+  K ≥ 0.7 near 0.9 m, so this is expected to bind before the ladder's top
+  rung, not a surprise);
+- **the `[hand7]` `tclamp=` counter is climbing on repeated reads** (heartbeat
+  bit 14, `HAND_TORQUE_CLAMP` — the torque command is saturating against
+  `HAND_TORQUE_FF_CLAMP_NM` repeatedly, not as a single transient at a knot
+  seam);
+- **`[hand7]` reads `sched=HOLD-LATCHED`** (heartbeat bit 15,
+  `SCHED_HOLD_LATCHED` — the scheduled lane refused a resume and is holding;
+  recover per the latch note above, and treat the refused frame as a NEW
+  finding, not routine);
 - a ball leaves the capture volume or clears the cup by a margin you judge
   unsafe;
 - `skills/check` shows any refusal other than a transient `REJECTED_NOT_LEVELLED`
   before the first pre-level.
 
-A stopped ladder is still a result: the rungs flown are the curve.
+A stopped ladder is still a result: the rungs flown (in whichever arm) are
+the curve.
 
-## 4. Close-out
+## 5. Close-out
 
 | # | Step | Expect |
 |---|---|---|
-| 17 | `ros2 topic pub -t 3 -r 2 /orchestrator_command std_msgs/msg/String "data: 'deactivate'"` | Robot stows. |
-| 18 | Stop the launch and the load capture. | |
-| 19 | (venv) `python tools/probes/hand_overspeed_bag_probe.py --bag ~/Desktop/rosbags/<bag id>` | One row per stroke; the CSV lands under `temp/probes/`. |
-| 20 | Send the bag id and the paths: `temp/logs/launch_apex_ladder_*.log`, `temp/logs/loadavg_apex_ladder_*.txt`, the probe CSV, `temp/learn/ladder-*/memory.csv`. | Paths, not pasted logs. |
+| 33 | `ros2 param set /teensy_bridge_node hand_torque_ff_gain 0.0` | Back to the fail-safe default before deactivating. |
+| 34 | `ros2 topic pub -t 3 -r 2 /orchestrator_command std_msgs/msg/String "data: 'deactivate'"` | Robot stows. |
+| 35 | Stop the launch and the load capture. | |
+| 36 | (venv) `python tools/probes/hand_overspeed_bag_probe.py --bag ~/Desktop/rosbags/<bag id> --until <row 30's wall-clock time>` | Arm A's rows. One row per stroke; the CSV lands under `temp/probes/`. |
+| 37 | (venv) `python tools/probes/hand_overspeed_bag_probe.py --bag ~/Desktop/rosbags/<bag id> --since <row 30's wall-clock time>` | Arm B's rows, same bag, split at the gain-change timestamp recorded in row 30. |
+| 38 | Send the bag id and the paths: `temp/logs/launch_apex_ladder_*.log`, `temp/logs/loadavg_apex_ladder_*.txt`, `temp/logs/console_ff_ladder_*.log`, both probe CSVs, `temp/learn/armA-*/memory.csv`, `temp/learn/armB-*/memory.csv`. | Paths, not pasted logs. |
 
 ### Swept admissible boxes for this ladder
 
@@ -150,26 +265,50 @@ contains zero collapses. That is filed as a planner artefact; it does not
 affect this ladder, which aims every throw at the nominal landing and flies
 single throws rather than the chained catch the sweep certifies.
 
-### Decision rule (pre-registered)
+### Decision rule for K (pre-registered)
 
-- **Operating apex for R3's gate sitting** = the highest rung whose measured
-  ball/commanded speed ratio is at most 0.9 × that rung's reach AND whose
-  peak hand current stayed under 45 A (5 A under the 50 A limit).
-- **If every rung reads 1.00 ± 0.05** (verdict A): the torque-feedforward
-  story is wrong — stop and re-open the analysis before any flash.
-- **If even 0.5 m fails the rule**: fly the torque-feedforward flash before
-  R3's gate sitting, not a lower apex.
+- **Operating apex for R3's gate sitting** = the highest rung, in the better
+  of the two arms, whose measured ball/commanded speed ratio is at most
+  0.9 × that rung's reach (table below) AND whose peak hand current stayed
+  under 48 A.
+- **If arm B's ratio at K=0.7 does not improve on arm A's by at least half
+  the model's predicted gap** (model: 1.145→1.054 at 0.9 m, 1.109→1.041 at
+  0.5 m — i.e. arm B should close at least ~45 % of arm A's overshoot): the
+  torque-feedforward mechanism is not delivering what the model predicts —
+  stop and re-open the analysis before flying K=1.0 or any higher gain.
+- **If arm B still exceeds the reach bound on every rung** (the model's own
+  prediction, since K=0.7 was never expected to reach ≤1.00): that is the
+  EXPECTED outcome per the pre-registered model, not a new finding by
+  itself. Report the measured ratios and defer the K=1.0 / flash-worthiness
+  decision to the owner rather than concluding anything further this
+  sitting — K=1.0 was not flown here (arm A and arm B only).
 - The owner makes the final call; this rule is what the numbers are read
   against.
 
-## 5. Results
+### A note on the disable edge (recorded, not diagnosed here)
+
+`vel_ff` persists on the hand ODrive after hand TX stops (pre-existing since
+FW 17; the FW 22 drain deliberately zeros only `input_torque`, leaving
+`pos`/`vel_ff` bit-identical to the last frame — `leg_interp.cpp`'s drain
+block, around :1523). If a drain or a `vel_ff`-driven creep past the held setpoint is
+observed on any disable edge this sitting (DEACTIVATE, an E-STOP, a
+`skills/stop`), **record it in § 6** — whether the drain should also zero
+`vel_ff` is an owner decision still open, not something to fix or work around
+live.
+
+## 6. Results
 
 | Item | Result |
 |---|---|
 | Date, commit, bag, `--full` count | |
-| Rungs flown (stopped early? why) | |
-| Per-rung measured hand peak / commanded (3 throws) | |
-| Per-rung ball / commanded and ball apex (m) | |
-| Per-rung peak hand current (A) | |
-| Caught per rung | |
-| Verdict (A / B / other) and the chosen operating apex | |
+| FW 22 boot banner confirmed (step 5) | |
+| § 3 no-motion check (row 20–22): time_synced / hand_torque_scale_verified / sched= / promo_dp,dv,da / promo_over,stops,refused,expired,demoted / interp_max_jitter_us | |
+| Rungs flown, arm A (stopped early? why) | |
+| Rungs flown, arm B (stopped early? why) | |
+| Per-rung, per-arm measured hand peak / commanded (3 throws) | |
+| Per-rung, per-arm ball / commanded and ball apex (m) | |
+| Per-rung, per-arm peak hand current (A) | |
+| `tclamp=` / `sched=HOLD-LATCHED` observed on any rung? | |
+| Caught per rung, per arm | |
+| Drain / vel_ff note (see above) | |
+| Verdict (A / B / other) and the chosen operating apex and K | |

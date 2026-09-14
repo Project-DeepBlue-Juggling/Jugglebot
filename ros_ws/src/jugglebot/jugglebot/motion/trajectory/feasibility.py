@@ -83,11 +83,38 @@ WRONG_MODE = 'WRONG_MODE'
 HAND_STROKE = 'HAND_STROKE'
 HAND_LIMIT_VEL = 'HAND_LIMIT_VEL'
 HAND_LIMIT_ACC = 'HAND_LIMIT_ACC'
+# Hand knot-acceleration continuity (C2FF spec, 2026-09-14): |a_right - a_left|
+# at an INTERIOR hand knot, where a firmware unit U2b torque feedforward
+# (tau = K.J.2pi.a_cmd(t)) turns any acceleration discontinuity straight into a
+# torque step. See HAND_C2_TOL_RPS2 below for the tolerance and its measured
+# margin.
+HAND_LIMIT_C2 = 'HAND_LIMIT_C2'
 
 # The per-knot |Δu0| bound is enforced with a 20 % safety margin below the pump's
 # hard step gate, so the gate rejects a step-heavy move BEFORE it reaches the pump
 # (which would otherwise reject it mid-stream, one tick after motion started).
 STEP_BOUND_MARGIN = 0.80
+
+# Hand knot-acceleration continuity tolerance, as a fraction of the SESSION
+# hand acceleration limit (C2FF spec, 2026-09-14, owner-approved: "something
+# like 1e-3 x HAND_ACC_LIMIT"). The C2FF probe (scratchpad probe_hand_c2.md)
+# measured |a_right - a_left| <= 8.5e-9 rev/s^2 at every knot and splice seam a
+# hand-carrying skill segment produces — the plan itself IS C2 (install_segment
+# seeds the cup acceleration exactly); the discontinuity the firmware unit U2b
+# torque feedforward (tau = K.J.2pi.a_cmd(t)) would otherwise see comes from
+# OFF-KNOT STREAM SAMPLING, not the plan, and that is fixed on the emitter side
+# (the grid-aligned, phase-locked frame — see the "Unified 7-DoF cycle" comment
+# block in trajectory_node.py, immediately above its install_segment
+# services). Deriving the tolerance from the LIMIT rather than
+# pinning it to the measured noise floor keeps it tracking a set_limits change
+# while staying enormous relative to that floor: at the 3500 rev/s^2 default
+# this is 3.5 rev/s^2, ~4e8x the measured noise and still five orders of
+# magnitude below the 299-679 rev/s^2 steps the pre-fix off-knot sampling
+# produced — tight enough to catch a genuine regression, nowhere near float or
+# solver noise. NEVER loosen this to make a specific plan pass; a plan that
+# needs a looser tolerance has a real C2 defect (see the seam survey in
+# U3b_handoff.md for which install paths were checked).
+HAND_C2_TOL_MARGIN = 1e-3
 
 # A jerk finite difference needs at least this many samples per segment.
 # NB (jerk endpoint bias): the forward-difference jerk is centred *between* samples,
@@ -187,6 +214,10 @@ class FeasibilityReport:
     peak_hand_vel_rps: float = 0.0
     peak_hand_acc_rps2: float = 0.0
     peak_hand_step_rev: float = 0.0
+    # |a_right - a_left| at the worst interior hand knot (C2FF spec,
+    # 2026-09-14) — zero on every gate but validate_cycle, and zero there too
+    # for a plan with < 3 knots (no interior knot to measure).
+    peak_hand_c2_rps2: float = 0.0
 
 
 class TrajectoryInfeasible(Exception):
@@ -1329,7 +1360,36 @@ def validate_cycle(cycle_plan, limits, geom, *,
     # position-IK pass over the knots.
     knot_rev = ext[::m] * mm_to_rev                                     # (n_knots,6)
     peak_step = float(np.max(np.abs(np.diff(knot_rev, axis=0))))
-    peak_hand_step = float(np.max(np.abs(np.diff(hand_revs[::m]))))
+    hrk = hand_revs[::m]                                                 # (n_knots,)
+    hvk = hand_vels[::m]                                                 # (n_knots,)
+    peak_hand_step = float(np.max(np.abs(np.diff(hrk))))
+
+    # ── Pass 5: hand knot-acceleration CONTINUITY (C2FF spec, 2026-09-14) ──
+    # At each interior knot k (1 .. n_knots-2), two independent Hermite spans
+    # meet: span (k-1,k) from the LEFT, span (k,k+1) from the RIGHT. Position
+    # and velocity agree there by construction (both spans share the knot's
+    # own (rev, rev_s)) — that is what makes the curve C1. ACCELERATION is the
+    # span's own 2nd derivative and is NOT constrained to agree; it is exactly
+    # the closed-form ``_hermite`` formula's `acc` at s=1 for the left span and
+    # s=0 for the right, evaluated here in closed form (not via hand_at) so it
+    # is one vectorised pass over the knot arrays rather than 2*(n_knots-2)
+    # scalar calls.
+    peak_hand_c2 = 0.0
+    if n_knots >= 3:
+        p0, v0 = hrk[:-1], hvk[:-1]     # span i's LEFT endpoint,  i = 0..n_knots-2
+        p1, v1 = hrk[1:], hvk[1:]       # span i's RIGHT endpoint, i = 0..n_knots-2
+        h = dt
+        # Hermite acc at s=1 (span i's right end == knot i+1): e10=2, e11=4.
+        a_left_all = (6.0 * p0 - 6.0 * p1) / (h * h) + (2.0 * v0 + 4.0 * v1) / h
+        # Hermite acc at s=0 (span i's left end == knot i):     e10=-4, e11=-2.
+        a_right_all = (-6.0 * p0 + 6.0 * p1) / (h * h) + (-4.0 * v0 - 2.0 * v1) / h
+        # Interior knot k=1..n_knots-2: a_left(k) is a_left_all[k-1] (span
+        # k-1's right end); a_right(k) is a_right_all[k] (span k's left end).
+        a_left_interior = a_left_all[:n_knots - 2]
+        a_right_interior = a_right_all[1:n_knots - 1]
+        if a_left_interior.size:
+            peak_hand_c2 = float(
+                np.max(np.abs(a_left_interior - a_right_interior)))
 
     # ── Decide the code (priority order; first failure wins) ──
     step_bound = STEP_BOUND_MARGIN * float(limits.max_step_rev)
@@ -1341,6 +1401,7 @@ def validate_cycle(cycle_plan, limits, geom, *,
     # BEFORE motion rather than mid-stream). Only the firmware half
     # (``MAX_DEVIATION_HAND_REV`` / ``MAX_LEAD_HAND_REV``) remains Phase 3.
     hand_step_bound = (STEP_BOUND_MARGIN * hand_limit_v * dt)
+    hand_c2_tol = HAND_C2_TOL_MARGIN * hand_limit_a
     code = OK
     reasons: list = []
     if peak_vel > limits.leg_vel_mmps:
@@ -1380,6 +1441,17 @@ def validate_cycle(cycle_plan, limits, geom, *,
                   'the legs use; the firmware MAX_DEVIATION_HAND_REV half '
                   'lands in plan Phase 3'
                   % (int(STEP_BOUND_MARGIN * 100), hand_limit_v, dt)))]
+    elif peak_hand_c2 > hand_c2_tol:
+        code = HAND_LIMIT_C2
+        reasons = [bound_msg(
+            'peak hand knot-acceleration discontinuity', peak_hand_c2, '>',
+            hand_c2_tol, unit='rev/s^2', digits=6,
+            tail=('%.0e x hand_acc_limit_rps2 %.1f — a real discontinuity '
+                  'here means a torque step at the firmware unit U2b '
+                  'feedforward (tau = K.J.2pi.a_cmd(t)); see the C2FF spec '
+                  '(scratchpad probe_hand_c2.md) before touching this '
+                  'tolerance'
+                  % (HAND_C2_TOL_MARGIN, hand_limit_a)))]
 
     return FeasibilityReport(
         ok=(code == OK), code=code, reasons=reasons,
@@ -1387,7 +1459,7 @@ def validate_cycle(cycle_plan, limits, geom, *,
         peak_leg_jerk_mmps3=peak_jerk, peak_leg_ext_mm=peak_ext,
         peak_step_rev=peak_step, peak_hand_rev=peak_hand_rev,
         peak_hand_vel_rps=peak_hand_vel, peak_hand_acc_rps2=peak_hand_acc,
-        peak_hand_step_rev=peak_hand_step)
+        peak_hand_step_rev=peak_hand_step, peak_hand_c2_rps2=peak_hand_c2)
 
 
 def _hand_stroke_reason(rev: float, t: float,

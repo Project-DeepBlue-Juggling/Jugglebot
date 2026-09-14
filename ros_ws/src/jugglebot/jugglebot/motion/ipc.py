@@ -189,11 +189,15 @@ def make_mpc_command(ext_mm: list | tuple,
                      cmd_next2_mm: list | tuple | None = None,
                      *,
                      vel_next_mm_s: list | tuple | None = None,
+                     vel_next2_mm_s: list | tuple | None = None,
                      hand_rev: float | None = None,
                      hand_vel_rps: float | None = None,
                      hand_next_rev: float | None = None,
                      hand_next2_rev: float | None = None,
                      hand_next_vel_rps: float | None = None,
+                     hand_next2_vel_rps: float | None = None,
+                     hand_acc_rps2: float | None = None,
+                     knot_epoch_us: int | None = None,
                      out: dict | None = None) -> dict:
     """Create an MPC command message.
 
@@ -229,14 +233,28 @@ def make_mpc_command(ext_mm: list | tuple,
     vel_next_mm_s : 6 leg extension RATES (mm/s) at the u[1] knot, or None.
         Fills the v6 Setpoint's exact ``v1[0:6]`` (behind ``HAS_V1``); absent
         keeps the firmware forward-difference fallback (the flown path).
-    hand_rev, hand_vel_rps, hand_next_rev, hand_next2_rev, hand_next_vel_rps :
+    vel_next2_mm_s : 6 leg extension RATES (mm/s) at the u[2] knot, or None
+        (C2FF spec, 2026-09-14). Fills the v8 Setpoint's ``v2[0:6]`` (behind
+        ``HAS_V2``, which requires ``HAS_U2`` and ``HAS_V1``).
+    hand_rev, hand_vel_rps, hand_next_rev, hand_next2_rev, hand_next_vel_rps,
+    hand_next2_vel_rps, hand_acc_rps2 :
         the 7th (hand) channel — ODrive-convention absolute rev / rev/s at
-        the u0, u0, u1, u2 and u1 knots respectively.  The pump maps them to
-        Setpoint index 6 behind ``HAS_HAND`` (and ``v1[6]`` behind
-        ``HAS_V1``).  All-or-nothing at the pump: see
+        the u0, u0, u1, u2, u1 and u2 knots respectively, plus the plan's
+        hand ACCELERATION (rev/s²) at u0 (``hand_acc_rps2``, C2FF spec,
+        observability/cross-check only — torque is computed in firmware from
+        the emitted curve, not from this field).  The pump maps the rev/vel
+        keys to Setpoint index 6 behind ``HAS_HAND`` (``v1[6]`` behind
+        ``HAS_V1``, ``v2[6]`` behind ``HAS_V2``) and ``hand_acc_rps2`` to
+        ``accel[6]``.  All-or-nothing at the pump: see
         ``teensy_link/setpoint_pump.py``.
+    knot_epoch_us : CLOCK_REALTIME microsecond stamp of this frame's own knot
+        time (C2FF spec), or None. Present on EVERY frame with a value — hand
+        track or not — since it names when the frame plays, not a hand fact.
+        The pump maps it to the v8 Setpoint's ``t_origin_us`` behind
+        ``HAS_SCHED``.
 
-    NOTE — the six v6 keys (vel_next_mm_s + the five hand keys) have
+    NOTE — the nine v6/v8 keys (vel_next_mm_s, vel_next2_mm_s, the five
+    v6-era hand keys, hand_next2_vel_rps and hand_acc_rps2) have
     ABSENT-when-None semantics even under ``out=`` reuse: a key a previous
     tick wrote is DELETED when this tick passes None.  This deliberately
     differs from the legacy fields' write-None-under-out behaviour, and it
@@ -244,7 +262,11 @@ def make_mpc_command(ext_mm: list | tuple,
     (hand-carrying) tick would otherwise survive into a later legacy frame
     and silently arm ``HAS_HAND`` with a stale hand target — the exact
     stale-key leak the emitter's byte-identity regression (T-U8/T-R1) pins
-    against.
+    against. ``knot_epoch_us`` is NOT in this group — it follows the LEGACY
+    optional-field rule below (write when not-None-or-out-given, else absent
+    on a fresh dict) because it is a per-frame timing fact independent of
+    whether the frame carries a hand track, not a hand-track-gated value that
+    must vanish the instant a plan stops carrying one.
     """
     # Values are passed through as-is (ndarrays, lists, etc.).
     # The _pack() serialiser handles ndarray → list conversion via its
@@ -287,15 +309,25 @@ def make_mpc_command(ext_mm: list | tuple,
         msg['cmd_next2_mm'] = cmd_next2_mm
     elif 'cmd_next2_mm' in msg:
         del msg['cmd_next2_mm']
-    # v6 keys (2026-09-01, unified-7dof-planner Phase 2): absent-when-None
+    # knot_epoch_us (C2FF spec, 2026-09-14): the LEGACY optional-field rule —
+    # every frame carries it (hand track or not), so it behaves like
+    # cmd_next2_mm above, not like the hand-gated group below.
+    if knot_epoch_us is not None or out is not None:
+        msg['knot_epoch_us'] = knot_epoch_us
+    elif 'knot_epoch_us' in msg:
+        del msg['knot_epoch_us']
+    # v6/v8 keys (2026-09-01 Phase 2 + 2026-09-14 C2FF spec): absent-when-None
     # EVEN under out= reuse — see the docstring NOTE for why a previously
     # written key must be deleted rather than overwritten with None.
     for key, val in (('vel_next_mm_s', vel_next_mm_s),
+                     ('vel_next2_mm_s', vel_next2_mm_s),
                      ('hand_rev', hand_rev),
                      ('hand_vel_rps', hand_vel_rps),
                      ('hand_next_rev', hand_next_rev),
                      ('hand_next2_rev', hand_next2_rev),
-                     ('hand_next_vel_rps', hand_next_vel_rps)):
+                     ('hand_next_vel_rps', hand_next_vel_rps),
+                     ('hand_next2_vel_rps', hand_next2_vel_rps),
+                     ('hand_acc_rps2', hand_acc_rps2)):
         if val is not None:
             msg[key] = val
         elif key in msg:

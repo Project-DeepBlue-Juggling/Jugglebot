@@ -118,7 +118,7 @@ from jugglebot.motion.skills.segments import (                     # noqa: E402
 
 from teensy_link.protocol import Setpoint                          # noqa: E402
 from teensy_link.setpoint_pump import (                            # noqa: E402
-    FLAG_HAS_HAND, FLAG_HAS_U1, FLAG_HAS_U2, FLAG_HAS_V1,
+    FLAG_HAS_HAND, FLAG_HAS_U1, FLAG_HAS_U2, FLAG_HAS_V1, FLAG_HAS_V2,
 )
 
 from sim.plant.mujoco_plant import MuJoCoPlant                     # noqa: E402
@@ -160,7 +160,11 @@ OBS_PERIOD_S = 0.005
 #: whole wind-down ladder plus room to remove the final unscheduled ball.
 QUIET_TAIL_S = 0.5
 
-_WANT_FLAGS = FLAG_HAS_U1 | FLAG_HAS_U2 | FLAG_HAS_HAND | FLAG_HAS_V1
+#: HAS_V2 since C2FF (2026-09-14): the emitter sends the exact u2-knot velocities
+#: on every frame. HAS_SCHED stays clear here -- the sim loop emits no knot
+#: stamp, and the firmware mirror plays arrival-phase (legacy) frames.
+_WANT_FLAGS = (FLAG_HAS_U1 | FLAG_HAS_U2 | FLAG_HAS_HAND | FLAG_HAS_V1
+               | FLAG_HAS_V2)
 
 
 # ---------------------------------------------------------------------------
