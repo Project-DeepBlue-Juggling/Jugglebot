@@ -95,6 +95,21 @@ def flight_s(apex_m: float) -> float:
     return 2.0 * math.sqrt(2.0 * float(apex_m) / _G_SI)
 
 
+def apex_m(flight_s_: float) -> float:
+    """The exact inverse of :func:`flight_s`: the apex (m) a flight time (s)
+    is consistent with — ``t_f = 2·sqrt(2·apex_m / g)`` run backward, i.e.
+    ``apex_m = g · (t_f / 2)² / 2``, the SAME ``g`` (:data:`_G_SI`) so a
+    round trip through both functions is exact to float precision.  Lets a
+    caller that only has a flight time (a schedule's ``Skill.y_d``, or a
+    box swept over an explicit flight grid) recover the apex a command
+    is judged against — :func:`~jugglebot.motion.skills.admissible.select`
+    keys an :class:`~jugglebot.motion.skills.admissible.AdmissibleBox`
+    lookup on exactly this."""
+    if not float(flight_s_) > 0.0:
+        raise ValueError('flight_s must be > 0, got %r' % (flight_s_,))
+    return _G_SI * (float(flight_s_) / 2.0) ** 2 / 2.0
+
+
 def beat_s(flight_s_: float, dwell_s: float) -> float:
     """Time between successive throws from the SAME hand: ``(t_f + d) / 2``."""
     return (float(flight_s_) + float(dwell_s)) / 2.0

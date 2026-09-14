@@ -46,7 +46,7 @@ import dataclasses
 import hashlib
 import math
 import os
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import yaml
@@ -54,6 +54,7 @@ import yaml
 __all__ = [
     'AdmissibleBox', 'AdmissibleError', 'LimitsMismatch',
     'MARGIN_FRAC', 'clip', 'dump', 'load', 'check_limits', 'gate_hash',
+    'select',
 ]
 
 #: Every grid point in the box must clear the session limit by this fraction
@@ -199,6 +200,54 @@ def clip(u, box: AdmissibleBox):
     return np.array([cx, cy]), cf
 
 
+def select(boxes: List[AdmissibleBox], site_pair: Tuple[str, str],
+          apex_m: float) -> Optional[AdmissibleBox]:
+    """The box in ``boxes`` whose ``site_pair`` matches ``site_pair`` and
+    whose ``apex_band_m`` contains ``apex_m`` (inclusive, 1e-9 m tolerance).
+
+    ``None`` when no box covers it -- the caller's cue to refuse rather than
+    fall back to some OTHER apex's box (the defect this closes: a self-toss
+    at 0.5 m apex silently reusing a box swept for 0.9 m and having its
+    flight clipped up to it). Site pair first, then apex band -- the same
+    two-key lookup :meth:`AdmissibleBox` is keyed by."""
+    tol = 1e-9
+    pair = tuple(site_pair)
+    for box in boxes:
+        if box.site_pair != pair:
+            continue
+        lo, hi = box.apex_band_m
+        if lo - tol <= float(apex_m) <= hi + tol:
+            return box
+    return None
+
+
+def _apex_bands_overlap(a: Tuple[float, float], b: Tuple[float, float]) -> bool:
+    """True when ``a`` and ``b`` share more than a boundary point (1e-9 m
+    tolerance) -- two bands that only TOUCH (e.g. 0.45-0.55 and 0.55-0.65)
+    are adjacent, not ambiguous, and must not refuse."""
+    tol = 1e-9
+    lo1, hi1 = a
+    lo2, hi2 = b
+    return lo1 < hi2 - tol and lo2 < hi1 - tol
+
+
+def _refuse_overlapping_apex_bands(boxes: List[AdmissibleBox], error_cls) -> None:
+    """Refuse (raising ``error_cls``) when two boxes share a ``site_pair``
+    and their ``apex_band_m`` ranges overlap -- ambiguous at :func:`select`
+    time, so it is a contract violation in whatever built the file, not a
+    tie for the caller to break."""
+    by_pair: Dict[Tuple[str, str], List[Tuple[float, float]]] = {}
+    for box in boxes:
+        for band in by_pair.get(box.site_pair, ()):
+            if _apex_bands_overlap(band, box.apex_band_m):
+                raise error_cls(
+                    'two boxes for site pair %r have overlapping apex_band_m '
+                    '%r and %r -- select() could not resolve which one a '
+                    'command in the overlap belongs to'
+                    % (box.site_pair, band, box.apex_band_m))
+        by_pair.setdefault(box.site_pair, []).append(box.apex_band_m)
+
+
 def _limits_dict(limits) -> Dict[str, float]:
     """Build the comparison dict from a live ``TrajectoryLimits``."""
     return {
@@ -261,6 +310,7 @@ def dump(path: str, boxes: List[AdmissibleBox]) -> None:
                 'all boxes written to one file must share swept_at/gate_hash/'
                 'limits (one sweep run) -- got a mix; site pair %r differs'
                 % (box.site_pair,))
+    _refuse_overlapping_apex_bands(boxes, ValueError)
     doc = {
         'swept_at': swept_at,
         'gate_hash': ghash,
@@ -337,4 +387,5 @@ def load(path: str) -> List[AdmissibleBox]:
             gate_hash=ghash,
             swept_at=swept_at,
         ))
+    _refuse_overlapping_apex_bands(out, AdmissibleError)
     return out

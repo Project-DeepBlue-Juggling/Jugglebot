@@ -729,6 +729,18 @@ def test_main_defaults_n_throws_to_1_for_self_toss_dry_run(capsys):
     assert 'n_throws=%d' % (spb.SELF_TOSS_DEFAULT_N_THROWS,) in out
 
 
+def test_dry_run_self_toss_honours_the_apex_option(capsys):
+    """The 2026-09-14 apex ladder rehearses every rung (0.5-0.9 m) with
+    ``--apex-m``; before it the self-toss dry run and rehearsal were pinned to
+    ``APEX_M`` (0.9 m), so a 0.5 m rung could not be rehearsed offline at
+    all."""
+    rc = spb.main(['--dry-run', '--pattern', 'self-toss', '--apex-m', '0.5'])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert 'apex=0.50 m' in out
+    assert 'flight=0.6387 s' in out
+
+
 def test_main_leaves_columns_n_throws_default_unchanged(capsys):
     rc = spb.main(['--dry-run'])
     assert rc == 0

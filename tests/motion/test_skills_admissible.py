@@ -11,6 +11,7 @@ Plan: ``plans/active/two-ball-skill-stack.md`` § 2.6.
 
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import math
 import os
@@ -187,6 +188,74 @@ def test_clip_on_an_empty_box_refuses_naming_the_site_pair():
 
 
 # ---------------------------------------------------------------------------
+# select
+# ---------------------------------------------------------------------------
+
+def test_select_hits_a_box_covering_the_apex():
+    box = _box(site_pair=('P1', 'P1'), apex_band_m=(0.85, 0.95))
+    assert ab.select([box], ('P1', 'P1'), 0.90) is box
+
+
+def test_select_hits_at_the_inclusive_boundary():
+    box = _box(site_pair=('P1', 'P1'), apex_band_m=(0.85, 0.95))
+    assert ab.select([box], ('P1', 'P1'), 0.85) is box
+    assert ab.select([box], ('P1', 'P1'), 0.95) is box
+
+
+def test_select_misses_an_apex_outside_the_band():
+    box = _box(site_pair=('P1', 'P1'), apex_band_m=(0.85, 0.95))
+    assert ab.select([box], ('P1', 'P1'), 0.50) is None
+
+
+def test_select_misses_the_right_apex_at_the_wrong_site_pair():
+    box = _box(site_pair=('P1', 'P1'), apex_band_m=(0.85, 0.95))
+    assert ab.select([box], ('P1', 'P2'), 0.90) is None
+
+
+def test_select_picks_the_right_box_among_several_apex_bands():
+    lo = _box(site_pair=('P1', 'P1'), apex_band_m=(0.45, 0.55))
+    hi = _box(site_pair=('P1', 'P1'), apex_band_m=(0.85, 0.95))
+    assert ab.select([lo, hi], ('P1', 'P1'), 0.50) is lo
+    assert ab.select([lo, hi], ('P1', 'P1'), 0.90) is hi
+    assert ab.select([lo, hi], ('P1', 'P1'), 0.70) is None
+
+
+def test_dump_refuses_two_boxes_for_one_pair_with_overlapping_apex_bands(tmp_path):
+    boxes = [_box(site_pair=('P1', 'P1'), apex_band_m=(0.45, 0.60)),
+            _box(site_pair=('P1', 'P1'), apex_band_m=(0.55, 0.70))]
+    with pytest.raises(ValueError, match='overlapping apex_band_m'):
+        ab.dump(str(tmp_path / 'x.yaml'), boxes)
+
+
+def test_dump_allows_touching_apex_bands_for_one_pair(tmp_path):
+    boxes = [_box(site_pair=('P1', 'P1'), apex_band_m=(0.45, 0.55)),
+            _box(site_pair=('P1', 'P1'), apex_band_m=(0.55, 0.65))]
+    ab.dump(str(tmp_path / 'x.yaml'), boxes)  # must not raise
+
+
+def test_dump_allows_overlapping_apex_bands_for_different_pairs(tmp_path):
+    boxes = [_box(site_pair=('P1', 'P1'), apex_band_m=(0.45, 0.60)),
+            _box(site_pair=('P1', 'P2'), apex_band_m=(0.45, 0.60))]
+    ab.dump(str(tmp_path / 'x.yaml'), boxes)  # must not raise
+
+
+def test_load_refuses_overlapping_apex_bands_for_one_pair(tmp_path):
+    path = str(tmp_path / 'x.yaml')
+    boxes = [_box(site_pair=('P1', 'P1'), apex_band_m=(0.45, 0.60))]
+    ab.dump(path, boxes)
+    import yaml
+    with open(path) as handle:
+        doc = yaml.safe_load(handle)
+    extra = dict(doc['boxes'][0])
+    extra['apex_band_m'] = [0.55, 0.70]
+    doc['boxes'].append(extra)
+    with open(path, 'w') as handle:
+        yaml.safe_dump(doc, handle)
+    with pytest.raises(ab.AdmissibleError, match='overlapping apex_band_m'):
+        ab.load(path)
+
+
+# ---------------------------------------------------------------------------
 # check_limits
 # ---------------------------------------------------------------------------
 
@@ -301,6 +370,105 @@ def test_single_site_sweep_uses_the_carried_throw_segment(sweep_mod, monkeypatch
     assert not box.empty, 'the (P1, P1) chain must admit at least the ' \
                           'identity-prior (0, 0) command at its centre flight'
     assert len(rows) >= 6
+
+
+# ---------------------------------------------------------------------------
+# tools/admissible_sweep.py's --single-apex CLI -- band construction and the
+# argument-parsing overlap refusal (no real sweep: milliseconds)
+# ---------------------------------------------------------------------------
+
+_RING_XS = [-40.0, -30.0, -20.0, -10.0, 0.0, 10.0, 20.0, 30.0, 40.0]
+#: The 2026-09-14 --single-apex sweep's failure shape at flights near 0.64 s:
+#: every small offset around the origin fails the chained catch's margin,
+#: while (0, 0) itself and the large offsets pass.
+_RING_FAIL = {(x, y) for x in (-20.0, -10.0, 0.0, 10.0, 20.0)
+              for y in (-20.0, -10.0, 0.0, 10.0, 20.0) if (x, y) != (0.0, 0.0)}
+
+
+def _contains_origin(rect):
+    return rect[0] <= 0.0 <= rect[1] and rect[2] <= 0.0 <= rect[3]
+
+
+def test_max_rectangle_must_contain_restricts_to_rectangles_through_the_point(
+        sweep_mod):
+    """Without the constraint the largest all-passing rectangle routes around
+    a ring of failures and excludes the origin; with it, the returned
+    rectangle contains the origin and every cell in it passes."""
+    def pass_fn(x, y):
+        return (x, y) not in _RING_FAIL
+    free = sweep_mod._max_rectangle(_RING_XS, _RING_XS, pass_fn)
+    assert not _contains_origin(free)
+    rect = sweep_mod._max_rectangle(_RING_XS, _RING_XS, pass_fn,
+                                    must_contain=(0.0, 0.0))
+    assert _contains_origin(rect)
+    assert all(pass_fn(x, y) for x in _RING_XS if rect[0] <= x <= rect[1]
+               for y in _RING_XS if rect[2] <= y <= rect[3])
+
+
+def test_flight_band_and_rect_always_admits_the_identity_offset(sweep_mod):
+    """The box's landing rectangle must contain (0, 0): that is the command a
+    cold learner issues, and ``admissible.clip`` would otherwise move it off
+    the cup. The first --single-apex sweep (2026-09-14) wrote boxes whose
+    rectangles excluded the origin at every apex from 0.5 to 0.9 m."""
+    flights = [0.60, 0.64, 0.70]
+    pass_grid = {}
+    for T in flights:
+        for x in _RING_XS:
+            for y in _RING_XS:
+                ring = T == 0.64 and (x, y) in _RING_FAIL
+                pass_grid[(T, x, y)] = not ring
+    band, rect = sweep_mod._flight_band_and_rect(flights, _RING_XS, pass_grid,
+                                                 center_flight=0.64)
+    assert band == (0.60, 0.70)
+    assert rect is not None and _contains_origin(rect)
+
+
+def test_refuse_overlapping_single_apex_bands_flags_an_overlap(sweep_mod):
+    ap = argparse.ArgumentParser()
+    with pytest.raises(SystemExit):
+        sweep_mod._refuse_overlapping_single_apex_bands([0.50, 0.53], 0.05, ap)
+
+
+def test_refuse_overlapping_single_apex_bands_allows_touching_bands(sweep_mod):
+    ap = argparse.ArgumentParser()
+    sweep_mod._refuse_overlapping_single_apex_bands([0.5, 0.6], 0.05, ap)  # no raise
+
+
+def test_single_apex_boxes_records_the_requested_band_not_the_grid_derived_one(
+        sweep_mod, monkeypatch):
+    """`_single_apex_boxes` must override `sweep`'s own (grid-derived)
+    ``apex_band_m`` with exactly ``(apex - h, apex + h)`` -- neighbouring
+    apexes' grid-derived bands overlap, which is the whole reason this CLI
+    exists. `sweep` itself is stubbed so this stays a unit test of the band
+    construction, not a second copy of the real-solver sweep test above."""
+    calls = []
+
+    def _fake_sweep(*, flights_s, offsets_mm, dwell_s, separation_mm, leg_vel,
+                    leg_acc, leg_jerk, hand_acc, center_flight_s, site_pairs,
+                    log):
+        calls.append(list(flights_s))
+        site = site_pairs[0][0]
+        box = sweep_mod.ab.AdmissibleBox(
+            site_pair=(site.name, site.name), apex_band_m=(0.0, 99.0),
+            landing_xy_m=((-0.01, 0.01), (-0.01, 0.01)),
+            flight_s=(min(flights_s), max(flights_s)),
+            limits=dict(leg_vel_mmps=leg_vel, leg_acc_mmps2=leg_acc,
+                       leg_jerk_mmps3=leg_jerk, hand_acc_rps2=hand_acc),
+            gate_hash=sweep_mod.ab.gate_hash(), swept_at='2026-09-14')
+        return [box], []
+
+    monkeypatch.setattr(sweep_mod, 'sweep', _fake_sweep)
+    site = sweep_mod.st.columns_sites(100.0)[0]
+    boxes, _rows = sweep_mod._single_apex_boxes(
+        [0.5, 0.6], flight_frac=[-0.1, 0.0, 0.1], halfwidth_m=0.05,
+        offsets_mm=[0.0], dwell_s=0.30, separation_mm=100.0, leg_vel=300.0,
+        leg_acc=5000.0, leg_jerk=150000.0, hand_acc=3500.0, site=site,
+        log=lambda r: None)
+    assert len(boxes) == 2
+    assert boxes[0].apex_band_m == pytest.approx((0.45, 0.55))
+    assert boxes[1].apex_band_m == pytest.approx((0.55, 0.65))
+    centre0 = sweep_mod.sc.flight_s(0.5)
+    assert calls[0] == pytest.approx([centre0 * 0.9, centre0, centre0 * 1.1])
 
 
 def test_single_site_sweep_also_gates_the_launch_throw_from_rest(

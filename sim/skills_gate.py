@@ -462,14 +462,14 @@ class SelfTossGateConfig:
     report_path: str = None
 
 
-def _load_admissible_boxes(path: str = None) -> dict:
-    """``{(site.name, target.name): AdmissibleBox}`` from
-    ``config/generated/admissible_box.yaml`` (or ``path``) — the dict shape
-    ``SkillExecutor.boxes`` wants."""
+def _load_admissible_boxes(path: str = None) -> list:
+    """``List[AdmissibleBox]`` from ``config/generated/admissible_box.yaml``
+    (or ``path``) — the sequence shape ``SkillExecutor.boxes`` wants
+    (``admissible.select`` resolves ``(site pair, apex band)`` from it)."""
     if path is None:
         path = os.path.join(_repo_root, 'config', 'generated',
                             'admissible_box.yaml')
-    return {box.site_pair: box for box in adm.load(path)}
+    return adm.load(path)
 
 
 #: The ACTIVATE park is documented (and requested) as "hand 0 rev", which
@@ -859,7 +859,7 @@ class SkillsGate:
     # instance with ``run`` / ``run_trial``.
 
     def run_self_toss_attempt(self, *, site, n_throws: int, memory: mem.Memory,
-                              learner_cfg: lr.LearnerConfig, boxes: dict,
+                              learner_cfg: lr.LearnerConfig, boxes: list,
                               noise: JuggleNoise, throws_out: list
                               ) -> Tuple[str, dict, '_InstallCtx']:
         """One self-toss attempt, cold from the ACTIVATE park (owner decision

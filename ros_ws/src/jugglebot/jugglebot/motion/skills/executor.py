@@ -39,7 +39,7 @@ from jugglebot.motion.skills.schedule import (HANDOFF_LEAD_KNOTS,
                                                HANDOFF_LEAD_S, LEAD_KNOTS,
                                                LEAD_S, MIN_WINDOW_KNOTS,
                                                MIN_WINDOW_S, WIRE_READ_KNOTS,
-                                               Schedule, Skill)
+                                               Schedule, Skill, apex_m)
 from jugglebot.motion.skills.segments import (CATCH, REST, THROW, CatchTerminal,
                                               RestTerminal, Segment,
                                               SegmentConfig, ThrowAfterCatch,
@@ -670,13 +670,17 @@ class SkillExecutor:
     **R3: the learner, the admissible box, and outcome capture — all optional.**
     ``learner`` (an object exposing ``command(x, y_d) -> (3,)``, e.g. a
     ``memory.Memory`` bound to its ``LearnerConfig`` via a lambda at the call
-    site) and ``boxes`` (``{(site.name, target.name): AdmissibleBox}``) are
-    consulted ONCE per released ball, at the releasing skill's first dispatch
-    (:meth:`_command_u`); a CATCH re-send reuses that command rather than
-    recomputing it, because the command must not change late in a transit
-    (plan § 0). No ``learner`` ⇒ the command is the identity prior (``u =
-    y_d`` exactly, R2's behaviour). ``observer`` (``(ball_id, t_abs_s) ->
-    str``, the possession evidence at that instant) and ``on_experience``
+    site) and ``boxes`` (a SEQUENCE of :class:`~jugglebot.motion.skills.
+    admissible.AdmissibleBox` — ``admissible.load``'s own return shape,
+    selected by ``(site pair, apex band)`` via ``admissible.select`` rather
+    than a ``{site_pair: box}`` dict, so a box swept for one apex can never
+    be silently reused at another) are consulted ONCE per released ball, at
+    the releasing skill's first dispatch (:meth:`_command_u`); a CATCH
+    re-send reuses that command rather than recomputing it, because the
+    command must not change late in a transit (plan § 0). No ``learner`` ⇒
+    the command is the identity prior (``u = y_d`` exactly, R2's behaviour).
+    ``observer`` (``(ball_id, t_abs_s) -> str``, the possession evidence at
+    that instant) and ``on_experience``
     (called with one ``memory.Experience`` per released ball, in schedule
     order) drive outcome capture (:meth:`_advance_outcomes`), which keeps
     running after ``attempt_ended`` — see :attr:`done`.
@@ -764,9 +768,9 @@ class SkillExecutor:
         ``x = (site xy in m, 0, 0)`` — the seat-offset half of the state is
         unmeasured at R3 (plan § 0). No ``learner`` ⇒ ``u = y_d`` exactly (R2
         behaviour). Raises :class:`_NoAdmissibleCommand` when the learner's
-        fit is non-finite or the swept box for ``(site.name, target.name)`` is
-        empty — the caller converts that to a :data:`NO_ADMISSIBLE_COMMAND`
-        refusal before any solve is attempted.
+        fit is non-finite, or no swept box covers ``(site.name, target.name)``
+        at the NOMINAL flight's apex — the caller converts that to a
+        :data:`NO_ADMISSIBLE_COMMAND` refusal before any solve is attempted.
         """
         if idx in self._u_cache:
             _x, u_dy, u_flight = self._u_cache[idx]
@@ -780,14 +784,28 @@ class SkillExecutor:
         # 2026-09-13): a missing box means there is no admissible-region clip
         # to apply afterward, so a learner command would reach the platform
         # UNCLIPPED -- refuse up front rather than let an unbounded command
-        # through the crack.
-        box = (None if self.boxes is None
-              else self.boxes.get((site.name, target.name)))
-        if self.learner is not None and self.boxes is not None and box is None:
-            raise _NoAdmissibleCommand(
-                'no admissible box swept for site pair %r — a learner '
-                'command may not reach the platform unclipped'
-                % ((site.name, target.name),))
+        # through the crack. Selected by the NOMINAL y_d flight's apex, never
+        # the learner's own command -- the learner has not run yet here, and
+        # must never be able to hop the lookup between boxes by proposing a
+        # different flight (the latent defect this closes: a 0.5 m apex
+        # self-toss silently reusing the 0.9 m box and being clipped UP to
+        # it).
+        if self.boxes is None:
+            box = None
+        else:
+            apex = apex_m(flight)
+            box = adm.select(self.boxes, (site.name, target.name), apex)
+            if self.learner is not None and box is None:
+                bands = sorted(b.apex_band_m for b in self.boxes
+                              if b.site_pair == (site.name, target.name))
+                bands_str = (', '.join('%.3f-%.3f m' % (lo, hi)
+                                       for lo, hi in bands)
+                            if bands else 'none swept for this pair')
+                raise _NoAdmissibleCommand(
+                    'no admissible box covers site pair %r at apex %.3f m '
+                    '(bands swept for this pair: %s) — a learner command '
+                    'may not reach the platform unclipped'
+                    % ((site.name, target.name), apex, bands_str))
         if self.learner is None:
             u_dy, u_flight = dy, flight
         else:

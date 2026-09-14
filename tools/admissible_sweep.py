@@ -35,6 +35,8 @@ Usage (venv)::
 
     python tools/admissible_sweep.py
     python tools/admissible_sweep.py --out /tmp/admissible_box.yaml
+    python tools/admissible_sweep.py --site-pairs single \
+        --single-apex 0.5 0.6 0.7 0.8 0.9
 
 Deterministic (``tests/motion/test_unified_cycle.py::
 test_planning_is_deterministic``); run twice and diff the YAML before quoting
@@ -44,6 +46,7 @@ time.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import datetime as _dt
 import os
 import sys
@@ -103,6 +106,14 @@ SINGLE_SITE_LEG_JERK_MMPS3 = 150_000.0
 #: tried -- an artefact of the scaffold throw's own window, not a fact about
 #: the STEADY chain this box actually certifies.
 SINGLE_SITE_LAUNCH_S = 0.4
+
+# ── R3's --single-apex ladder grid (owner decision, 2026-09-14) ─────────────
+# One single-site box PER apex, instead of one box spanning a flight band: an
+# apex ladder (0.5/0.6/0.7/0.8/0.9 m) needs each rung certified separately --
+# a self-toss at 0.5 m must never silently reuse the 0.9 m box (the defect
+# this CLI closes; see motion/skills/admissible.py's module docstring).
+SINGLE_APEX_FLIGHT_FRAC = (-0.20, -0.15, -0.10, -0.05, 0.0, 0.05, 0.10)
+SINGLE_APEX_HALFWIDTH_M = 0.05
 
 _DEFAULT_OUT = os.path.join(_ROOT, 'config', 'generated', 'admissible_box.yaml')
 
@@ -199,15 +210,6 @@ def _catch_cell(to_site, release_seed, takeoff_vel_mm_s, flight_s: float,
     return True, 'OK'
 
 
-def _apex_from_flight_s(flight_s: float) -> float:
-    """Inverse of ``schedule.flight_s``: the apex (m) a flight time (s) is
-    consistent with -- ``t_f = 2*sqrt(2*apex/g)`` run backward. Lets a box
-    swept over an explicit flight grid (:data:`SINGLE_SITE_FLIGHTS_S` -- no
-    apex was chosen) still carry a physically meaningful ``apex_band_m``: the
-    SAME g<->t relationship the columns box uses, not a new one."""
-    return bal.GRAVITY_MMS2 / 1000.0 * (float(flight_s) / 2.0) ** 2 / 2.0
-
-
 def _chained_catch_cell(site, release_seed, takeoff_vel_mm_s, flight_s: float,
                         dwell_s: float, offset_mm: Tuple[float, float],
                         limits: TrajectoryLimits, geom, cfg):
@@ -263,10 +265,22 @@ def _chained_catch_cell(site, release_seed, takeoff_vel_mm_s, flight_s: float,
     return True, 'OK', next_release_seed, next_takeoff
 
 
-def _max_rectangle(xs: Sequence[float], ys: Sequence[float], pass_fn
+def _max_rectangle(xs: Sequence[float], ys: Sequence[float], pass_fn,
+                   must_contain: Optional[Tuple[float, float]] = None
                    ) -> Optional[Tuple[float, float, float, float]]:
     """Largest-area axis-aligned rectangle over the grid ``xs`` x ``ys`` (both
     sorted) all of whose cells satisfy ``pass_fn(x, y)``.
+
+    ``must_contain`` restricts the search to rectangles that include that
+    point. :func:`_flight_band_and_rect` passes the identity offset (0, 0):
+    a box that excludes the identity command CLIPS a cold learner's first
+    throw off the cup. Found 2026-09-14 on the first ``--single-apex`` sweep:
+    at flights near 0.64 s a ring of small offsets (+/-10-20 mm) fails the
+    chained catch's margin while (0, 0) and the large offsets pass, and the
+    unconstrained largest rectangle routed around the origin (0.5 m box y
+    pinned at -30 mm, 0.6-0.8 m boxes x in [-40, -30] mm). R3's own box
+    contained the origin only because its three-flight grid missed those
+    flights.
 
     Brute force over the O(n^2) index sub-ranges per axis -- trivially cheap
     at the grid sizes this sweep ever runs (<= 5x5): no solve happens here,
@@ -282,6 +296,10 @@ def _max_rectangle(xs: Sequence[float], ys: Sequence[float], pass_fn
         for xhi_i in range(xlo_i, n):
             for ylo_i in range(m):
                 for yhi_i in range(ylo_i, m):
+                    if must_contain is not None and not (
+                            xs[xlo_i] <= must_contain[0] <= xs[xhi_i]
+                            and ys[ylo_i] <= must_contain[1] <= ys[yhi_i]):
+                        continue
                     ok = all(pass_fn(xs[i], ys[j])
                              for i in range(xlo_i, xhi_i + 1)
                              for j in range(ylo_i, yhi_i + 1))
@@ -331,7 +349,8 @@ def _flight_band_and_rect(flights: Sequence[float], offsets_mm: Sequence[float],
     def _pass(x, y, _band=band):
         return all(pass_grid.get((T, x, y), False) for T in _band)
 
-    rect = _max_rectangle(list(offsets_mm), list(offsets_mm), _pass)
+    rect = _max_rectangle(list(offsets_mm), list(offsets_mm), _pass,
+                          must_contain=(0.0, 0.0))
     return (flights_sorted[lo], flights_sorted[hi]), rect
 
 
@@ -356,9 +375,9 @@ def sweep(*, apexes_m: Sequence[float] = APEXES_M,
     ``flights_s``, given directly in seconds, bypasses the apex map
     (``sc.flight_s``) entirely -- for R3's single-site grid, whose flight span
     (owner decision: at least 0.75-0.95 s) was not chosen by picking apexes.
-    ``apex_band_m`` is still recorded on the resulting box via the INVERSE of
-    ``sc.flight_s`` (:func:`_apex_from_flight_s`) -- the same physical
-    relationship run backward, not a new one. ``center_flight_s`` is then the
+    ``apex_band_m`` is still recorded on the resulting box via ``sc.apex_m``
+    (the exact inverse of ``sc.flight_s``) -- the same physical relationship
+    run backward, not a new one. ``center_flight_s`` is then the
     flight the admitted band grows outward from; defaults to the median of
     ``flights_s``.
 
@@ -381,8 +400,7 @@ def sweep(*, apexes_m: Sequence[float] = APEXES_M,
         site_pairs = [(site0, site1), (site1, site0)]
     if flights_s is not None:
         flights = [float(t) for t in flights_s]
-        apex_band = (_apex_from_flight_s(min(flights)),
-                    _apex_from_flight_s(max(flights)))
+        apex_band = (sc.apex_m(min(flights)), sc.apex_m(max(flights)))
         center_flight = (float(center_flight_s) if center_flight_s is not None
                          else sorted(flights)[len(flights) // 2])
     else:
@@ -477,6 +495,68 @@ def sweep(*, apexes_m: Sequence[float] = APEXES_M,
     return boxes, rows
 
 
+def _apex_bands_overlap(a: Tuple[float, float], b: Tuple[float, float]) -> bool:
+    """True when ``a`` and ``b`` share more than a boundary point (1e-9 m
+    tolerance) -- mirrors ``admissible._apex_bands_overlap``: two bands that
+    only TOUCH are adjacent, not ambiguous."""
+    tol = 1e-9
+    lo1, hi1 = a
+    lo2, hi2 = b
+    return lo1 < hi2 - tol and lo2 < hi1 - tol
+
+
+def _refuse_overlapping_single_apex_bands(
+        apexes_m: Sequence[float], halfwidth_m: float,
+        ap: argparse.ArgumentParser) -> None:
+    """Refuse (``ap.error``, exit 2) when two ``--single-apex`` values' bands
+    ``(apex - h, apex + h)`` overlap -- ambiguous at ``admissible.select``
+    time, so it is refused at ARGUMENT PARSING rather than left to surface as
+    a confusing ``dump``/``load`` refusal after the (slow) sweep has run."""
+    h = float(halfwidth_m)
+    apexes = sorted(float(a) for a in apexes_m)
+    for a, b in zip(apexes, apexes[1:]):
+        if _apex_bands_overlap((a - h, a + h), (b - h, b + h)):
+            ap.error(
+                '--single-apex bands overlap: %.3f +/- %.3f m and %.3f +/- '
+                '%.3f m -- widen the apex spacing or shrink '
+                '--single-apex-halfwidth' % (a, h, b, h))
+
+
+def _single_apex_boxes(apexes_m: Sequence[float], *, flight_frac: Sequence[float],
+                       halfwidth_m: float, offsets_mm: Sequence[float],
+                       dwell_s: float, separation_mm: float, leg_vel: float,
+                       leg_acc: float, leg_jerk: float, hand_acc: float,
+                       site: 'st.Site', log=print
+                       ) -> Tuple[List['ab.AdmissibleBox'], List[Dict]]:
+    """One single-site ``(site, site)`` box PER apex in ``apexes_m`` (R3 apex-
+    ladder sweep, 2026-09-14): each apex gets its OWN flight grid
+    (``sc.flight_s(apex) * (1 + f)`` for ``f`` in ``flight_frac``, centred on
+    ``sc.flight_s(apex)``) and its OWN ``apex_band_m = (apex - h, apex + h)``
+    -- NOT the grid-derived band :func:`sweep` would otherwise compute
+    (neighbouring apexes' grid-derived bands overlap; the whole reason this
+    CLI records the requested apex directly rather than inferring a band from
+    the grid). Reuses :func:`sweep`'s single-site cell (the STEADY
+    catch-with-``then_throw`` chain plus the launch-from-rest throw, R3-c /
+    R3-h2) once per apex and overrides the returned box's ``apex_band_m`` via
+    ``dataclasses.replace`` -- the box's ``landing_xy_m`` / ``flight_s`` /
+    provenance are exactly what that sweep measured, untouched."""
+    boxes: List['ab.AdmissibleBox'] = []
+    rows: List[Dict] = []
+    for a in apexes_m:
+        centre = sc.flight_s(float(a))
+        flights = [centre * (1.0 + float(f)) for f in flight_frac]
+        a_boxes, a_rows = sweep(
+            flights_s=flights, offsets_mm=offsets_mm, dwell_s=dwell_s,
+            separation_mm=separation_mm, leg_vel=leg_vel, leg_acc=leg_acc,
+            leg_jerk=leg_jerk, hand_acc=hand_acc, center_flight_s=centre,
+            site_pairs=[(site, site)], log=log)
+        h = float(halfwidth_m)
+        boxes.append(dataclasses.replace(
+            a_boxes[0], apex_band_m=(float(a) - h, float(a) + h)))
+        rows.extend(a_rows)
+    return boxes, rows
+
+
 def to_markdown(boxes: List['ab.AdmissibleBox']) -> str:
     out = ['| site pair | apex band m | landing xy box (mm) | flight band (s) |'
           ' limits (vel/acc/jerk mm, hand acc rev) |',
@@ -516,10 +596,29 @@ def main(argv=None) -> int:
                     help='columns apex grid (m), mapped through sc.flight_s')
     ap.add_argument('--offsets-mm', type=float, nargs='+', default=list(OFFSETS_MM),
                     help='columns landing-offset grid per axis (mm)')
-    ap.add_argument('--flights-s', type=float, nargs='+',
-                    default=list(SINGLE_SITE_FLIGHTS_S),
-                    help='single-site flight-time grid (s), direct -- bypasses '
-                         'the apex map (owner decision: at least 0.75-0.95 s)')
+    flight_group = ap.add_mutually_exclusive_group()
+    flight_group.add_argument(
+        '--flights-s', type=float, nargs='+', default=None,
+        help='single-site flight-time grid (s), direct -- bypasses the apex '
+             'map (owner decision: at least 0.75-0.95 s); default %r. '
+             'Mutually exclusive with --single-apex' % (list(SINGLE_SITE_FLIGHTS_S),))
+    flight_group.add_argument(
+        '--single-apex', type=float, nargs='+', default=None,
+        help='sweep one single-site box PER apex (m) instead of one box '
+             'spanning a flight band -- an apex LADDER (e.g. 0.5 0.6 0.7 0.8 '
+             '0.9), each rung its own box: flight grid = sc.flight_s(apex) * '
+             '(1 + f) for f in --single-flight-frac, apex_band_m = (apex - h, '
+             'apex + h) for h = --single-apex-halfwidth. Refused at parse '
+             'time if two requested apexes\' bands overlap. Mutually '
+             'exclusive with --flights-s')
+    ap.add_argument('--single-flight-frac', type=float, nargs='+',
+                    default=list(SINGLE_APEX_FLIGHT_FRAC),
+                    help='--single-apex only: fractional flight-time offsets '
+                         'from sc.flight_s(apex) for each apex\'s grid')
+    ap.add_argument('--single-apex-halfwidth', type=float,
+                    default=SINGLE_APEX_HALFWIDTH_M,
+                    help='--single-apex only: +/- half-width (m) of each '
+                         'resulting box\'s apex_band_m')
     ap.add_argument('--single-offsets-mm', type=float, nargs='+',
                     default=list(SINGLE_SITE_OFFSETS_MM),
                     help='single-site landing-offset grid per axis (mm)')
@@ -533,6 +632,9 @@ def main(argv=None) -> int:
     ap.add_argument('--leg-jerk', type=float, default=LEG_JERK_MMPS3)
     ap.add_argument('--hand-acc', type=float, default=HAND_ACC_RPS2)
     args = ap.parse_args(argv)
+    if args.single_apex is not None:
+        _refuse_overlapping_single_apex_bands(
+            args.single_apex, args.single_apex_halfwidth, ap)
     log = (lambda r: None) if args.quiet else print
 
     t_start = time.perf_counter()
@@ -550,11 +652,22 @@ def main(argv=None) -> int:
             site = st.Site('P1', np.array([sx, sy, st.CATCH_CUP_Z_MM]))
         else:
             site = st.columns_sites(args.separation_mm)[0]
-        sboxes, _rows = sweep(
-            flights_s=args.flights_s, offsets_mm=args.single_offsets_mm,
-            dwell_s=args.dwell_s, leg_vel=args.leg_vel, leg_acc=args.leg_acc,
-            leg_jerk=args.leg_jerk, hand_acc=args.hand_acc,
-            site_pairs=[(site, site)], log=log)
+        if args.single_apex is not None:
+            sboxes, _rows = _single_apex_boxes(
+                args.single_apex, flight_frac=args.single_flight_frac,
+                halfwidth_m=args.single_apex_halfwidth,
+                offsets_mm=args.single_offsets_mm, dwell_s=args.dwell_s,
+                separation_mm=args.separation_mm, leg_vel=args.leg_vel,
+                leg_acc=args.leg_acc, leg_jerk=args.leg_jerk,
+                hand_acc=args.hand_acc, site=site, log=log)
+        else:
+            flights_s = (args.flights_s if args.flights_s is not None
+                        else list(SINGLE_SITE_FLIGHTS_S))
+            sboxes, _rows = sweep(
+                flights_s=flights_s, offsets_mm=args.single_offsets_mm,
+                dwell_s=args.dwell_s, leg_vel=args.leg_vel, leg_acc=args.leg_acc,
+                leg_jerk=args.leg_jerk, hand_acc=args.hand_acc,
+                site_pairs=[(site, site)], log=log)
         boxes.extend(sboxes)
     wall_s = time.perf_counter() - t_start
     md = to_markdown(boxes)

@@ -39,6 +39,18 @@ def test_flight_s_rejects_a_non_positive_apex():
         sc.flight_s(0.0)
 
 
+@pytest.mark.parametrize('a', [0.3, 0.5, 0.6, 0.7, 0.8, 0.9, 1.2, 1.5])
+def test_apex_m_is_the_exact_inverse_of_flight_s(a):
+    assert sc.apex_m(sc.flight_s(a)) == pytest.approx(a, abs=1e-12)
+
+
+def test_apex_m_rejects_a_non_positive_flight():
+    with pytest.raises(ValueError, match='flight_s'):
+        sc.apex_m(0.0)
+    with pytest.raises(ValueError, match='flight_s'):
+        sc.apex_m(-0.5)
+
+
 def test_beat_and_transit_reproduce_the_owners_section_2_4_numbers():
     """beta = 0.5785, tau = 0.2785 (plan § 0) -- computed from ``flight_s``,
     not hardcoded beyond what the owner's own rounding of ``t_f`` (0.857 s,

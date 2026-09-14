@@ -302,6 +302,33 @@ def test_start_self_toss_is_refused_with_no_status_received_yet():
     assert 'admissible box refused' in resp.message
 
 
+def test_start_self_toss_refuses_an_uncovered_apex_before_any_motion(tmp_path):
+    """THE LATENT DEFECT this closes (found 2026-09-14): the only swept box
+    covers apex 0.85-0.95 m; requesting 0.5 m (uncovered) must refuse BEFORE
+    `_prelevel` ever calls `trajectory/go_to_pose` -- no platform motion for
+    an apex nothing was swept for."""
+    box_path = tmp_path / 'admissible_box.yaml'
+    box = adm.AdmissibleBox(
+        site_pair=('P1', 'P1'), apex_band_m=(0.85, 0.95),
+        landing_xy_m=((-0.05, 0.05), (-0.05, 0.05)), flight_s=(0.7, 0.9),
+        limits={'leg_vel_mmps': 300.0, 'leg_acc_mmps2': 5000.0,
+               'leg_jerk_mmps3': 150000.0, 'hand_acc_rps2': 3500.0},
+        gate_hash=adm.gate_hash(), swept_at='2026-09-13')
+    adm.dump(str(box_path), [box])
+    node, _client = _node_with_client()
+    node._on_traj_status(_status())
+    prelevel_client = _prelevel_ready(node)
+    node._params['apex_m'] = 0.5
+    with patch.object(sn, '_ADMISSIBLE_BOX_PATH', str(box_path)):
+        resp = node._svc_start_self_toss(Trigger.Request(), Trigger.Response())
+    assert resp.success is False
+    assert 'no admissible box covers' in resp.message
+    assert '0.500' in resp.message
+    assert '0.850' in resp.message and '0.950' in resp.message
+    assert node._executor is None
+    assert prelevel_client.calls == []
+
+
 def test_start_self_toss_compiles_a_schedule_at_the_owner_operating_point():
     node, _client = _node_with_client()
     node._on_traj_status(_status())
@@ -314,7 +341,7 @@ def test_start_self_toss_compiles_a_schedule_at_the_owner_operating_point():
     assert schedule.skills[0].kind == 'REST'   # the opening floor lift
     np.testing.assert_allclose(schedule.skills[0].site.cup_mm[:2], [-50.0, 0.0])
     assert any(s.kind == 'THROW' for s in schedule.skills)
-    assert ('P1', 'P1') in node._executor.boxes
+    assert any(b.site_pair == ('P1', 'P1') for b in node._executor.boxes)
     assert node._executor.learner is not None
     assert callable(node._executor.learner.command)
     assert callable(node._executor.on_experience)
@@ -703,6 +730,29 @@ def test_check_reports_ok_when_everything_is_fresh_and_the_box_is_valid():
     assert resp.success is True
     assert 'ladder OK' in resp.message
     assert 'box OK' in resp.message
+
+
+def test_check_reports_box_refused_when_the_apex_param_is_uncovered(tmp_path):
+    """`skills/check` must judge the SAME (site pair, apex band) predicate a
+    live throw is judged by -- not merely "a box file exists"."""
+    box_path = tmp_path / 'admissible_box.yaml'
+    box = adm.AdmissibleBox(
+        site_pair=('P1', 'P1'), apex_band_m=(0.85, 0.95),
+        landing_xy_m=((-0.05, 0.05), (-0.05, 0.05)), flight_s=(0.7, 0.9),
+        limits={'leg_vel_mmps': 300.0, 'leg_acc_mmps2': 5000.0,
+               'leg_jerk_mmps3': 150000.0, 'hand_acc_rps2': 3500.0},
+        gate_hash=adm.gate_hash(), swept_at='2026-09-13')
+    adm.dump(str(box_path), [box])
+    node, _client = _node_with_client()
+    node._on_traj_status(_status())
+    _freshen(node)
+    node._params['apex_m'] = 0.5
+    with patch.object(sn, '_ADMISSIBLE_BOX_PATH', str(box_path)):
+        resp = node._svc_check(Trigger.Request(), Trigger.Response())
+    assert resp.success is False
+    assert 'ladder OK' in resp.message
+    assert 'box REFUSED' in resp.message
+    assert '0.500' in resp.message
 
 
 def test_check_reports_box_refused_when_the_file_is_missing(tmp_path):

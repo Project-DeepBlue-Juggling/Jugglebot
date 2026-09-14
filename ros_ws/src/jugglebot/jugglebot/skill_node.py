@@ -33,6 +33,7 @@ import os
 import threading
 import time
 from types import SimpleNamespace
+from typing import Dict, List, Tuple
 
 import numpy as np
 
@@ -898,7 +899,23 @@ class SkillNode(Node):
             response.message = 'admissible box refused: %s' % (exc,)
             self.get_logger().error(response.message)
             return response
-        boxes_by_pair = {box.site_pair: box for box in boxes}
+        # No box covers the requested apex -> refuse BEFORE any motion
+        # (before `_prelevel`), rather than let `_command_u` discover this
+        # only once the learner is already asking for a command (the latent
+        # defect this closes: a box swept for one apex silently reused at
+        # another).
+        pair = (site.name, site.name)
+        if adm.select(boxes, pair, apex_m) is None:
+            bands = sorted(b.apex_band_m for b in boxes if b.site_pair == pair)
+            bands_str = (', '.join('%.3f-%.3f m' % (lo, hi) for lo, hi in bands)
+                        if bands else 'none swept for this pair')
+            response.success = False
+            response.message = (
+                'self-toss refused: no admissible box covers site pair %r '
+                'at apex %.3f m (bands swept for this pair: %s)'
+                % (pair, apex_m, bands_str))
+            self.get_logger().error(response.message)
+            return response
 
         # Finding 11, R3 audit (2026-09-13): built here, before `_prelevel`
         # actually moves the platform, and guarded — `memory_path` raises
@@ -947,7 +964,7 @@ class SkillNode(Node):
 
         self._executor = SkillExecutor(
             schedule, self._installer, tracker=self._tracker,
-            learner=learner, boxes=boxes_by_pair,
+            learner=learner, boxes=boxes,
             observer=self._ball_evidence, observations=self._observations,
             on_experience=self._bind_on_experience(memory))
         response.success = True
@@ -1073,11 +1090,27 @@ class SkillNode(Node):
             try:
                 boxes = adm.load(_ADMISSIBLE_BOX_PATH)
                 adm.check_limits(boxes, self._live_limits())
-                lines.append('box OK: %d site pair(s), limits match'
-                             % (len(boxes),))
             except adm.AdmissibleError as exc:
                 ok = False
                 lines.append('box REFUSED: %s' % (exc,))
+            else:
+                # Per (site pair, apex band) -- the same predicate `select`
+                # judges a live throw by, not just "a box exists somewhere".
+                by_pair: Dict[Tuple[str, str], List[Tuple[float, float]]] = {}
+                for b in boxes:
+                    by_pair.setdefault(b.site_pair, []).append(b.apex_band_m)
+                parts = ['%s %s' % (p, ', '.join(
+                            '%.2f-%.2f' % (lo, hi) for lo, hi in sorted(bands)))
+                        for p, bands in sorted(by_pair.items())]
+                check_apex_m = float(self.get_parameter('apex_m').value)
+                pair = (_DEFAULT_SITE_NAME, _DEFAULT_SITE_NAME)
+                if adm.select(boxes, pair, check_apex_m) is None:
+                    ok = False
+                    lines.append(
+                        'box REFUSED: no box covers %r at apex %.3f m (%s)'
+                        % (pair, check_apex_m, '; '.join(parts)))
+                else:
+                    lines.append('box OK: %s' % ('; '.join(parts),))
         site_x_mm = float(self.get_parameter('site_x_mm').value)
         site_y_mm = float(self.get_parameter('site_y_mm').value)
         if (abs(site_x_mm - _DEFAULT_SITE_X_MM) > 1e-9

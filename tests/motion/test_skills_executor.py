@@ -1081,12 +1081,12 @@ class _FakeLearner:
 
 
 def _box(xy=((-0.05, 0.05), (-0.05, 0.05)), flight=(0.5, 1.2), empty=False,
-         site_pair=('P1', 'P1')):
+         site_pair=('P1', 'P1'), apex_band_m=(0.8, 1.0)):
     if empty:
         xy = ((float('nan'), float('nan')), (float('nan'), float('nan')))
         flight = (float('nan'), float('nan'))
     return adm.AdmissibleBox(
-        site_pair=site_pair, apex_band_m=(0.8, 1.0), landing_xy_m=xy,
+        site_pair=site_pair, apex_band_m=apex_band_m, landing_xy_m=xy,
         flight_s=flight,
         limits={'leg_vel_mmps': 1.0, 'leg_acc_mmps2': 1.0,
                'leg_jerk_mmps3': 1.0, 'hand_acc_rps2': 1.0},
@@ -1415,7 +1415,7 @@ def test_an_out_of_box_command_is_clipped(sites):
     sch = _schedule(sites)
     inst = _FakeInstaller()
     learner = _FakeLearner(u=[100.0, 100.0, 5.0])
-    boxes = {(sites[0].name, sites[0].name): _box()}
+    boxes = [_box(site_pair=(sites[0].name, sites[0].name))]
     x = ex.SkillExecutor(sch, inst, learner=learner, boxes=boxes)
     x.tick(sch.skills[0].dispatch_s())
     _kind, terminal, _t, _b = inst.calls[0]
@@ -1427,7 +1427,7 @@ def test_an_out_of_box_command_is_clipped(sites):
 def test_an_empty_box_ends_the_attempt_before_any_install(sites):
     sch = _schedule(sites)
     inst = _FakeInstaller()
-    boxes = {(sites[0].name, sites[0].name): _box(empty=True)}
+    boxes = [_box(empty=True, site_pair=(sites[0].name, sites[0].name))]
     x = ex.SkillExecutor(sch, inst, boxes=boxes)
     lines = x.tick(sch.skills[0].dispatch_s())
     assert x.attempt_ended and x.end_code == ex.NO_ADMISSIBLE_COMMAND
@@ -1436,21 +1436,62 @@ def test_an_empty_box_ends_the_attempt_before_any_install(sites):
 
 
 def test_a_learner_with_no_box_for_its_site_pair_is_refused(sites):
-    """Finding 5, R3 audit (2026-09-13): a ``boxes`` dict that carries no
-    entry for ``(site.name, target.name)`` -- distinct from an EMPTY box for
-    a key that IS present -- must also refuse before any solve, or a
+    """Finding 5, R3 audit (2026-09-13): a ``boxes`` sequence that carries no
+    box for ``(site.name, target.name)`` -- distinct from an EMPTY box for a
+    pair that IS present -- must also refuse before any solve, or a
     learner's unclipped command reaches the platform with no admissible-
     region clip applied at all. The learner itself must never be called
     either: the box check runs before it."""
     sch = _schedule(sites)
     inst = _FakeInstaller()
     learner = _FakeLearner(u=[100.0, 100.0, 5.0])
-    x = ex.SkillExecutor(sch, inst, learner=learner, boxes={})
+    x = ex.SkillExecutor(sch, inst, learner=learner, boxes=[])
     lines = x.tick(sch.skills[0].dispatch_s())
     assert x.attempt_ended and x.end_code == ex.NO_ADMISSIBLE_COMMAND
     assert inst.calls == []
     assert learner.calls == []
     assert 'no admissible box' in lines[0]
+
+
+def test_a_learner_with_a_box_swept_for_a_different_apex_is_refused(sites):
+    """THE LATENT DEFECT this closes (found 2026-09-14): a box exists for the
+    right site pair, but its ``apex_band_m`` was swept for a DIFFERENT apex
+    (0.85-0.95 m) than this schedule's own nominal flight implies (a 0.5 m
+    apex self-toss, flight = ``sc.flight_s(0.5)`` ~= 0.639 s). Before the fix,
+    ``_command_u`` looked the box up by site pair ALONE and would have
+    silently clipped this throw's flight UP into the 0.85-0.95 m band. After
+    the fix it must refuse NO_ADMISSIBLE_COMMAND before any solve, naming the
+    apex and the swept bands."""
+    p1, _p2 = sites
+    flight = sc.flight_s(0.5)
+    sch = _single_throw_schedule(p1, 0, T0_ABS + LAUNCH_S, flight=flight)
+    inst = _FakeInstaller()
+    learner = _FakeLearner(u=[0.0, 0.0, flight])
+    boxes = [_box(site_pair=(p1.name, p1.name), apex_band_m=(0.85, 0.95))]
+    x = ex.SkillExecutor(sch, inst, learner=learner, boxes=boxes)
+    lines = x.tick(sch.skills[0].dispatch_s())
+    assert x.attempt_ended and x.end_code == ex.NO_ADMISSIBLE_COMMAND
+    assert inst.calls == []
+    assert learner.calls == []
+    assert '0.85' in lines[0] and '0.95' in lines[0]
+    assert '0.500' in lines[0]  # the apex, 3 dp
+
+
+def test_a_learner_with_a_box_covering_the_nominal_apex_is_used(sites):
+    """The companion case: a schedule whose nominal apex IS covered by a
+    swept band uses that box (and clips into it) rather than refusing."""
+    p1, _p2 = sites
+    flight = sc.flight_s(0.5)
+    sch = _single_throw_schedule(p1, 0, T0_ABS + LAUNCH_S, flight=flight)
+    inst = _FakeInstaller()
+    learner = _FakeLearner(u=[100.0, 100.0, 5.0])
+    boxes = [_box(site_pair=(p1.name, p1.name), apex_band_m=(0.4, 0.6))]
+    x = ex.SkillExecutor(sch, inst, learner=learner, boxes=boxes)
+    x.tick(sch.skills[0].dispatch_s())
+    _kind, terminal, _t, _b = inst.calls[0]
+    want_target = p1.catch_site_mm() + np.array([50.0, 50.0, 0.0])
+    assert np.allclose(terminal.target_mm, want_target)
+    assert terminal.flight_s == pytest.approx(1.2)
 
 
 def test_a_learner_value_error_ends_the_attempt_like_an_empty_box(sites):

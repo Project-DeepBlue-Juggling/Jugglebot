@@ -337,13 +337,14 @@ def solves(rows) -> list:
 
 
 def print_dry_run(n_throws: int, *, pattern: str = 'columns',
-                  site: si.Site = None) -> None:
+                  site: si.Site = None, apex_m: float = APEX_M) -> None:
     if pattern == 'self-toss':
         site = default_self_toss_site() if site is None else site
-        sched = build_self_toss_schedule(n_throws=n_throws, site=site)
+        sched = build_self_toss_schedule(n_throws=n_throws, site=site,
+                                         apex_m=apex_m)
         print('self-toss schedule: site=%s (%.1f, %.1f) mm apex=%.2f m '
               'dwell=%.2f s n_throws=%d' % (site.name, site.cup_mm[0],
-                                            site.cup_mm[1], APEX_M, DWELL_S,
+                                            site.cup_mm[1], apex_m, DWELL_S,
                                             n_throws))
     else:
         sched = build_schedule(n_throws=n_throws)
@@ -886,7 +887,7 @@ def rehearse_attempt(attempt: int, *, n_throws: int, jitter_mm: float,
                      limits, geom, run_t0: float, now_fn=time.perf_counter,
                      sleep_fn=time.sleep, state=None, pattern: str = 'columns',
                      site: si.Site = None, learner=None, boxes=None,
-                     on_experience=None) -> tuple:
+                     on_experience=None, apex_m: float = APEX_M) -> tuple:
     """One rehearsed attempt, per ``probe_gate_rehearsal.py`` (verified
     2026-09-13). Returns ``(rows, meta)``.
 
@@ -1012,6 +1013,7 @@ def rehearse_attempt(attempt: int, *, n_throws: int, jitter_mm: float,
     if pattern == 'self-toss':
         site = default_self_toss_site() if site is None else site
         schedule = build_self_toss_schedule(n_throws=n_throws, site=site,
+                                            apex_m=apex_m,
                                             t0_abs_s=t0)
         tracker, note_release = make_self_toss_tracker(
             jitter_mm=jitter_mm, seed=attempt, now_fn=now_fn)
@@ -1046,17 +1048,19 @@ def _build_self_toss_context(args, limits):
     site = si.Site('P1', np.array([site_x, site_y, si.CATCH_CUP_Z_MM]))
 
     box_path = os.path.join(_REPO, 'config', 'generated', 'admissible_box.yaml')
-    boxes = {}
+    boxes = []
     if os.path.exists(box_path):
         try:
             loaded = adm.load(box_path)
             adm.check_limits(loaded, limits)
-            boxes = {b.site_pair: b for b in loaded}
+            boxes = loaded
         except adm.AdmissibleError as exc:
-            print('note: admissible box at %s not usable (%s) -- throws run '
-                  'UNCLIPPED' % (box_path, exc))
+            print('note: admissible box at %s not usable (%s) -- learner '
+                  'throws are REFUSED (NO_ADMISSIBLE_COMMAND: no box to '
+                  'clip into)' % (box_path, exc))
     else:
-        print('note: %s does not exist -- throws run UNCLIPPED' % (box_path,))
+        print('note: %s does not exist -- learner throws are REFUSED '
+              '(NO_ADMISSIBLE_COMMAND: no box to clip into)' % (box_path,))
 
     tmp_dir = tempfile.mkdtemp(prefix='skills_bench_selftoss_')
     mem_path = os.path.join(tmp_dir, 'memory.csv')
@@ -1110,7 +1114,7 @@ def run_rehearse(args) -> int:
             a, n_throws=args.n_throws, jitter_mm=jitter, limits=limits,
             geom=geom, run_t0=run_t0, now_fn=now_fn, state=shared,
             pattern=args.pattern, site=site, learner=learner, boxes=boxes,
-            on_experience=on_experience)
+            on_experience=on_experience, apex_m=args.apex_m)
         all_rows.extend(rows)
         attempts_meta.append(meta)
         mem_note = '' if memory is None else ' memory rows=%d' % (len(memory),)
@@ -1514,6 +1518,14 @@ def build_parser():
                     default='columns',
                     help="'columns' (R2, default) or 'self-toss' (R3: one "
                          'site, the learner + memory in the loop)')
+    ap.add_argument('--apex-m', type=float, default=APEX_M,
+                    help='self-toss apex (m); default %.2f. The 2026-09-14 '
+                         'apex ladder rehearses each rung (0.5-0.9 m) with '
+                         'it -- the admissible box is selected by apex, so a '
+                         'rung with no swept box is refused '
+                         '(NO_ADMISSIBLE_COMMAND) by this bench\'s own '
+                         'executor, the same check skill_node runs before '
+                         'any motion' % APEX_M)
     ap.add_argument('--site-x-mm', type=float, default=None,
                     help='self-toss site x, platform frame mm (default %.1f, '
                          'the owner P1)' % (SELF_TOSS_SITE_X_MM,))
@@ -1557,7 +1569,7 @@ def main(argv=None) -> int:
                          else DEFAULT_N_THROWS)
 
     if args.dry_run:
-        print_dry_run(args.n_throws, pattern=args.pattern)
+        print_dry_run(args.n_throws, pattern=args.pattern, apex_m=args.apex_m)
         return 0
 
     if args.check:

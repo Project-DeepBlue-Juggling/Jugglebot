@@ -163,7 +163,7 @@ is satisfied, and confirm the ladder reads clean:
 
 | # | Step | Expect |
 |---|---|---|
-| 21 | `ros2 service call skills/check std_srvs/srv/Trigger` | `ladder OK; box OK: 3 site pair(s), limits match` — if this is not clean, STOP and work the refusal list before any `start_self_toss` call. Finding A is RESOLVED (`FLOOR_LIFT_S` widened to 1.5 s, § 1); the first call is no longer expected to refuse on that segment — a refusal here is a NEW finding, not Finding A recurring. |
+| 21 | `ros2 service call skills/check std_srvs/srv/Trigger` | `ladder OK` and `box OK: ('P1', 'P1') …` listing a band that contains `apex_m` (since 2026-09-14 the check names each pair's apex bands; `box REFUSED ... at apex` means no box covers the apex) — if this is not clean, STOP and work the refusal list before any `start_self_toss` call. Finding A is RESOLVED (`FLOOR_LIFT_S` widened to 1.5 s, § 1); the first call is no longer expected to refuse on that segment — a refusal here is a NEW finding, not Finding A recurring. |
 | 22 | `ros2 param set /skill_node n_throws 1` | Cold-start policy A's own first attempt. |
 
 ## 4. Cold-start attempts (n_throws := 1, repeat until in-band within 5 throws)
