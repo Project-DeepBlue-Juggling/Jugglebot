@@ -592,8 +592,13 @@ the rung's tests passing or a handoff file in the scratchpad.
   plumbing — phase-locked, knot-aligned scheduled frames (can-bridge FW 22,
   PROTOCOL_VERSION 8, `HAS_SCHED`/`t_origin_us`) and an in-firmware
   acceleration torque feedforward on the hand axis (`τ = K·J·2π·a_cmd`, gain
-  from ROS param `hand_torque_ff_gain`, fail-safe-gated on a wire
-  torque-scale readback). NEXT: the apex ladder
+  from ROS param `hand_torque_ff_gain`). **Readback gate removed 2026-09-15**
+  (`logbook/2026-09-15-hand-torque-ff-gate-removed.md`): ACTIVATE arms the
+  hand through a path that never ran the fail-safe readback, so the wire
+  gain was silently forced to 0 for a whole sitting; the owner confirmed the
+  hand ODrive's `input_torque_scale=1000` and the gate was removed — K now
+  goes straight to the wire, and the readback RPC is kept as a manual
+  diagnostic. NEXT: the apex ladder
   `tests/hardware/session_skills_r3_apex_ladder.md` is now the FF **A/B**
   sitting itself (K=0 vs K=0.7, 0.5–0.9 m, hand limits unchanged) — it both
   flashes FW 22 and sets R3's gate apex; the offline model

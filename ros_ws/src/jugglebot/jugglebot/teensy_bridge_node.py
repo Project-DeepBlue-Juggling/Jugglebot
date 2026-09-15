@@ -1203,26 +1203,14 @@ class TeensyBridgeNode(Node):
         # (see _on_set_parameters); an out-of-range/non-finite `ros2 param set`
         # REFUSES the set (rather than silently clamping) so a bad value
         # surfaces immediately instead of applying a different number than
-        # requested. Forced to 0.0 ON THE WIRE regardless of this value until
-        # the hand ODrive's torque-scale readback is verified — see
-        # _set_hand_torque_scale_verified. The readback call itself is wired
-        # by the orchestrator (U2b); this node only holds the gate.
+        # requested. Goes straight to the wire (2026-09-15: the readback gate
+        # was removed — see logbook/2026-09-15-hand-torque-ff-gate-removed.md;
+        # the operator must confirm the hand ODrive's `input_torque_scale`
+        # matches the wire scale before arming K > 0).
         self.declare_parameter('hand_torque_ff_gain', 0.0)
 
         self._heartbeat_timeout_s = float(
             self.get_parameter('heartbeat_timeout_s').value)
-
-        # Fail-safe until the torque-scale readback verifies it (see
-        # _set_hand_torque_scale_verified). WARN-once latch below prevents log
-        # spam while K>0 is requested but unverified.
-        self._hand_torque_scale_verified = False
-        self._hand_torque_scale_verified_detail = 'never checked'
-        # Readback generation: bumped by EVERY hand state change; a readback
-        # thread may only publish its result while its generation is current.
-        # Check + publish share this lock so a state change cannot land between.
-        self._hand_tscale_gen = 0
-        self._hand_tscale_lock = threading.Lock()
-        self._hand_ff_unverified_warned = False
 
         # hand_torque_ff_gain's declared/launch-override value bypasses the
         # add_on_set_parameters_callback below (that only fires on a LATER
@@ -1973,11 +1961,8 @@ class TeensyBridgeNode(Node):
             torque_wire_scale=float(hw.ODRIVE_LEG_TORQUE_WIRE_SCALE),
             torque_ff_ramp_frames=_ff_ramp_frames,
             # Hand torque-FF (C2FF, U3a) — see the hand_torque_ff_gain param
-            # block above. hand_torque_scale_verified starts False (fail-safe);
-            # the pump forces the wire gain to 0.0 until
-            # _set_hand_torque_scale_verified(True) is called.
-            hand_ff_gain=_initial_hand_ff_gain,
-            hand_torque_scale_verified=False)
+            # block above.
+            hand_ff_gain=_initial_hand_ff_gain)
         if hw.DYNAMICS_TORQUE_FF_ENABLED:
             self.get_logger().warn(
                 'LEG TORQUE FEEDFORWARD IS ENABLED '
@@ -1985,10 +1970,6 @@ class TeensyBridgeNode(Node):
                 f'{hw.ODRIVE_LEG_TORQUE_WIRE_SCALE:.6f}, ramp {_ff_ramp_frames} frames '
                 f'≈ {hw.DYNAMICS_TORQUE_FF_RAMP_S} s). '
                 'Set dynamics.torque_ff_enabled=false + regenerate + colcon build to disable.')
-        # WARN-once check at boot too — a launch file could set
-        # hand_torque_ff_gain > 0 from the start, and _hand_torque_scale_verified
-        # is always False here (nothing has been armed yet).
-        self._maybe_warn_hand_ff_unverified(_initial_hand_ff_gain)
         # ── leg_setpoint_echo stash (GUI observability) ────────
         # Written by _process_setpoint on the SETPOINT THREAD (the production
         # leg hot path) — the write is the absolute minimum under self._lock:
@@ -5105,17 +5086,14 @@ class TeensyBridgeNode(Node):
                          value=str(self._sp_pump.frames_without_ff)),
                 # Hand torque FF (C2FF, U3a). requested = the raw pump attribute
                 # (what the ROS param asked for); effective = what actually
-                # reaches the wire on a hand-bearing frame right now (0.0
-                # whenever verified is False, by the pump's own fail-safe
-                # gate — see SetpointPump._build). A mismatch between the two
-                # here means exactly one thing: the torque-scale readback
-                # hasn't verified yet.
+                # reaches the wire on a hand-bearing frame right now (see
+                # SetpointPump._build — 0.0 on a legs-only frame, otherwise
+                # this same value; the torque-scale readback gate was removed
+                # 2026-09-15, see logbook/2026-09-15-hand-torque-ff-gate-removed.md).
                 KeyValue(key='hand_torque_ff_gain_requested',
                          value=f'{self._sp_pump.hand_ff_gain:.4f}'),
                 KeyValue(key='hand_torque_ff_gain_effective',
-                         value=f'{(self._sp_pump.hand_ff_gain if self._hand_torque_scale_verified else 0.0):.4f}'),
-                KeyValue(key='hand_torque_scale_verified',
-                         value=str(int(self._hand_torque_scale_verified))),
+                         value=f'{self._sp_pump.hand_ff_gain:.4f}'),
                 KeyValue(key='heartbeat_age_ms',
                          value=('n/a' if age_us is None else f'{age_us / 1000.0:.0f}')),
                 KeyValue(key='rx_frames', value=str(stats.rx_frames)),
@@ -6570,134 +6548,13 @@ class TeensyBridgeNode(Node):
                 res.success = False
                 res.message = f"Unknown hand state '{state}'"
                 return res
-            # ── HAND TORQUE-FF READBACK (C2FF, 2026-09-15) ──
-            # Every hand state change first DROPS the verified flag (fail-safe:
-            # the pump then sends hand_ff_gain 0). A successful CLOSED_LOOP —
-            # the moment the hand becomes torque-drivable — re-verifies the
-            # drive's `can.input_torque_scale` against the wire scale off the
-            # service thread (the RPC waits on an SDO round trip; a service
-            # callback must not block the executor for it).
-            with self._hand_tscale_lock:
-                self._hand_tscale_gen += 1
-                gen = self._hand_tscale_gen
-                self._set_hand_torque_scale_verified(
-                    False, f'hand state change to {state}')
             ok, m, _ = self.teensy_set_axis_state(_HAND_AXIS, proto.ODRIVE_STATES[state])
             res.success = ok
             res.message = f"Hand state set to {state}" if ok else m
-            if ok and state == 'CLOSED_LOOP':
-                self._start_hand_torque_scale_readback(gen)
         except Exception as e:  # noqa: BLE001
             res.success = False
             res.message = str(e)
         return res
-
-    #: Readback attempts after CLOSED_LOOP. The firmware refuses the read until
-    #: its hand Get_Version cache answers (cold-start sweep), so a first try
-    #: can legitimately be "unavailable"; five tries 1 s apart cover that.
-    _HAND_TSCALE_ATTEMPTS = 5
-    _HAND_TSCALE_RETRY_S = 1.0
-
-    def _start_hand_torque_scale_readback(self, gen: int) -> None:
-        """Verify the hand ODrive's CAN torque scale on a daemon thread.
-
-        ``gen`` is the readback generation of the hand state change that
-        started it. Every later state change bumps the generation, so a slow
-        readback can never re-verify a hand that has since been dropped to
-        IDLE (or re-commanded) behind it — the check and the publish happen
-        under ``_hand_tscale_lock``, the same lock the bump takes.
-        """
-        expected = int(proto.INPUT_SCALE_HAND_TOR)
-
-        def _publish(ok: bool, detail: str) -> None:
-            with self._hand_tscale_lock:
-                if gen == self._hand_tscale_gen:
-                    self._set_hand_torque_scale_verified(ok, detail)
-
-        def _run():
-            detail = 'no attempt made'
-            for attempt in range(self._HAND_TSCALE_ATTEMPTS):
-                try:
-                    got = int(self._rpc.read_hand_input_torque_scale())
-                except Exception as e:  # noqa: BLE001 — any failure is "unverified"
-                    detail = f'readback failed ({type(e).__name__}: {e})'
-                else:
-                    _publish(got == expected,
-                             f'hand ODrive input_torque_scale={got}, wire '
-                             f'scale={expected}')
-                    return
-                if attempt + 1 < self._HAND_TSCALE_ATTEMPTS:
-                    time.sleep(self._HAND_TSCALE_RETRY_S)
-            _publish(False, detail)
-
-        threading.Thread(target=_run, daemon=True,
-                         name='hand_torque_scale_readback').start()
-
-    def _set_hand_torque_scale_verified(self, ok: bool, detail: str) -> None:
-        """Set whether the hand ODrive's torque-scale readback is verified.
-
-        This is the SINGLE setter for the flag — call it, never assign
-        ``self._hand_torque_scale_verified`` directly. Logs LOUDLY on every
-        transition (this is a safety-relevant state change: it is what lets
-        the pump's hand torque-FF gain leave zero) and pushes the new state
-        straight into the ``SetpointPump`` (the pump forces its wire
-        ``hand_ff_gain`` to 0.0 whenever this is False — see
-        ``SetpointPump.set_hand_torque_scale_verified``).
-
-        Args:
-            ok: True if the readback confirmed the hand ODrive's
-                ``input_torque_scale`` matches this pump's assumed wire
-                scale; False on a mismatch, a read failure, or to explicitly
-                re-arm the fail-safe (e.g. after a hand ODrive reboot/reflash).
-            detail: short human-readable reason (the read value, an error
-                string, "never checked", etc.) — always logged alongside `ok`
-                so the log line is self-contained.
-        """
-        self._hand_torque_scale_verified = bool(ok)
-        self._hand_torque_scale_verified_detail = str(detail)
-        self._sp_pump.set_hand_torque_scale_verified(bool(ok))
-        # Always logged (not just on change) — this call is rare (readback
-        # happens at hand activation, not per-frame) and safety-relevant, so
-        # there is no spam risk and every call is worth a durable log line.
-        level = self.get_logger().info if ok else self.get_logger().warn
-        level(f"hand_torque_scale_verified -> {bool(ok)} ({detail})")
-        if not ok:
-            # Falling back to unverified always clears the WARN-once latch so
-            # a NEW K>0-while-unverified warning fires on the next build (the
-            # condition that produces it may now be true again).
-            self._hand_ff_unverified_warned = False
-        self._maybe_warn_hand_ff_unverified()
-
-    def _maybe_warn_hand_ff_unverified(self, k: float | None = None) -> None:
-        """WARN once (until the condition clears) when K>0 is requested while
-        the hand torque-scale readback is unverified — i.e. an operator/launch
-        file asked for a live hand torque feedforward that the pump is
-        currently forcing to zero on the wire. Not a fault (the fail-safe is
-        doing exactly its job), but a silent zero-instead-of-K is exactly the
-        kind of surprise that deserves a loud, one-time log line rather than
-        either silence or a 40 Hz spam.
-
-        Args:
-            k: the gain to check. Defaults to the CURRENT committed param
-                value — correct when called from
-                ``_set_hand_torque_scale_verified`` (the param is already
-                committed by then). ``_on_set_parameters`` must pass the
-                pending value explicitly: the param-set callback runs BEFORE
-                the new value is committed, so ``get_parameter`` would still
-                read the OLD one.
-        """
-        if k is None:
-            k = float(self.get_parameter('hand_torque_ff_gain').value)
-        unverified_nonzero = (k > 0.0) and not self._hand_torque_scale_verified
-        if unverified_nonzero and not self._hand_ff_unverified_warned:
-            self.get_logger().warn(
-                f"hand_torque_ff_gain={k} requested but the hand torque-scale "
-                "readback is UNVERIFIED — the pump is forcing the wire "
-                "hand_ff_gain to 0.0 until _set_hand_torque_scale_verified(True) "
-                f"is called ({self._hand_torque_scale_verified_detail}).")
-            self._hand_ff_unverified_warned = True
-        elif not unverified_nonzero:
-            self._hand_ff_unverified_warned = False
 
     def _on_set_parameters(self, params):
         """ROS2 param-set validation hook.
@@ -6710,11 +6567,11 @@ class TeensyBridgeNode(Node):
         live" contract as ``enable_setpoint_output``'s poll-on-use pattern
         elsewhere in this node, just via the callback instead of a bare
         ``get_parameter`` read, since this one needs to REFUSE an invalid
-        value rather than silently apply it) and re-evaluates the WARN-once
-        latch. An out-of-range/non-finite request is REFUSED
-        (``successful=False``) — the prior value is kept — rather than
-        silently clamped, so a bad operator/launch-file value surfaces
-        immediately instead of applying a different number than requested.
+        value rather than silently apply it). An out-of-range/non-finite
+        request is REFUSED (``successful=False``) — the prior value is kept —
+        rather than silently clamped, so a bad operator/launch-file value
+        surfaces immediately instead of applying a different number than
+        requested.
         """
         for param in params:
             if param.name != 'hand_torque_ff_gain':
@@ -6733,7 +6590,6 @@ class TeensyBridgeNode(Node):
                     successful=False,
                     reason=f'hand_torque_ff_gain must be finite and in [0, {HAND_FF_GAIN_MAX}]')
             self._sp_pump.set_hand_ff_gain(k)  # re-validated inside (belt-and-suspenders)
-            self._maybe_warn_hand_ff_unverified(k)  # pending value — not yet committed
         return SetParametersResult(successful=True)
 
     def _svc_set_hand_gains(self, req, res):

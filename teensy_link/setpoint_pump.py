@@ -97,9 +97,7 @@ HAS_SCHED block):
     acceleration, never from this field). ``accel[0:6]`` stay 0, as before.
   * ``hand_ff_gain`` — K, the hand torque-FF gain, from the ``SetpointPump``
     attribute of the same name (see :meth:`SetpointPump.set_hand_ff_gain`),
-    forced to 0.0 unless :meth:`SetpointPump.set_hand_torque_scale_verified`
-    has been called with ``True`` (the fail-safe default), and only ever
-    nonzero on a hand-bearing frame.
+    and only ever nonzero on a hand-bearing frame.
 
 **Bumplessness — the load-bearing invariant.** The Teensy-side knots are derived to
 reproduce ``MotorGuard._on_mpc_command``'s EXACT knot latch
@@ -299,18 +297,8 @@ class SetpointPump:
             hand torque-FF gain the FIRMWARE applies (``τ = fade · sat(Ks ·
             J_HAND · 2π · a_cmd)``, unit U2b). Live-updatable via
             :meth:`set_hand_ff_gain` (the bridge's ROS param callback calls
-            it). Only ever reaches the wire as nonzero when BOTH
-            ``hand_torque_scale_verified`` is True AND the frame is
-            hand-bearing — see :meth:`_build`.
-        hand_torque_scale_verified: initial verified flag — whether the hand
-            ODrive's ``can.input_torque_scale`` readback has been confirmed to
-            match the wire scale this pump assumes. **Default False is the
-            fail-safe state**: K is forced to 0.0 regardless of
-            ``hand_ff_gain`` until the bridge calls
-            :meth:`set_hand_torque_scale_verified` (True) — a firmware
-            torque_ff computed against an unverified scale is a wrong-current
-            command, not a degraded one. Live-updatable via
-            :meth:`set_hand_torque_scale_verified`.
+            it). Only ever reaches the wire as nonzero on a hand-bearing
+            frame — see :meth:`_build`.
     """
 
     def __init__(self, mm_to_rev: Sequence[float],
@@ -321,8 +309,7 @@ class SetpointPump:
                  torque_ff_max_nm: float = DEFAULT_TORQUE_FF_MAX_NM,
                  torque_wire_scale: float = DEFAULT_TORQUE_WIRE_SCALE,
                  torque_ff_ramp_frames: int = 0,
-                 hand_ff_gain: float = 0.0,
-                 hand_torque_scale_verified: bool = False):
+                 hand_ff_gain: float = 0.0):
         self.n = int(num_legs)
         self.mm_to_rev = tuple(float(x) for x in mm_to_rev)
         if len(self.mm_to_rev) < self.n:
@@ -359,10 +346,9 @@ class SetpointPump:
             raise ValueError(
                 f"torque_wire_scale must be finite and > 0, got {torque_wire_scale}")
 
-        # ── Hand torque-FF gain (C2FF, U3a) — see set_hand_ff_gain /
-        # set_hand_torque_scale_verified for the live-update + fail-safe contract. ──
+        # ── Hand torque-FF gain (C2FF, U3a) — see set_hand_ff_gain for the
+        # live-update contract. ──
         self.hand_ff_gain = 0.0
-        self.hand_torque_scale_verified = bool(hand_torque_scale_verified)
         self.set_hand_ff_gain(hand_ff_gain)  # validates + stores
 
         self._prev_pos: Optional[list] = None
@@ -431,10 +417,8 @@ class SetpointPump:
         here should never actually fire in production; it exists for any other
         caller (tests, a future non-ROS driver).
 
-        Only EFFECTIVE (reaches the wire nonzero) once
-        :meth:`set_hand_torque_scale_verified` (True) has been called — see
-        :meth:`_build`. Live-updatable at any time; takes effect on the next
-        built frame.
+        Live-updatable at any time; takes effect on the next built frame
+        (nonzero only on a hand-bearing frame — see :meth:`_build`).
         """
         k = float(k)
         if not math.isfinite(k) or not (0.0 <= k <= HAND_FF_GAIN_MAX):
@@ -442,19 +426,6 @@ class SetpointPump:
                 f"hand_ff_gain must be finite and in [0, {HAND_FF_GAIN_MAX}], "
                 f"got {k}")
         self.hand_ff_gain = k
-
-    def set_hand_torque_scale_verified(self, ok: bool) -> None:
-        """Set whether the hand ODrive's ``input_torque_scale`` readback has
-        been confirmed to match this pump's assumed wire scale.
-
-        Fail-safe: starts False (the constructor default), and while False
-        :meth:`_build` forces the wire ``hand_ff_gain`` to 0.0 no matter what
-        :attr:`hand_ff_gain` holds. The bridge calls this from its readback
-        hook (wired by the orchestrator, U2b) — loudly logging the transition
-        is the CALLER's job (``teensy_bridge_node._set_hand_torque_scale_verified``),
-        not this module's (this is pure packing logic, no ROS logger).
-        """
-        self.hand_torque_scale_verified = bool(ok)
 
     def _finite_vec(self, seq, name: str):
         """Validate a 6-vector is present, the EXACT length, and finite.
@@ -903,14 +874,10 @@ class SetpointPump:
         if has_v1:
             flags |= FLAG_HAS_V1
 
-        # hand_ff_gain: forced to 0.0 unless the torque-scale readback is
-        # verified (fail-safe — see set_hand_torque_scale_verified), AND only
-        # ever nonzero on a hand-bearing frame (a legs-only frame has no
-        # torque to apply K to; sending a stale nonzero K on it is just
-        # confusing telemetry for zero benefit).
-        hand_ff_gain_out = (self.hand_ff_gain
-                             if (self.hand_torque_scale_verified and hand_vals is not None)
-                             else 0.0)
+        # hand_ff_gain: only ever nonzero on a hand-bearing frame (a legs-only
+        # frame has no torque to apply K to; sending a stale nonzero K on it
+        # is just confusing telemetry for zero benefit).
+        hand_ff_gain_out = self.hand_ff_gain if hand_vals is not None else 0.0
 
         sp = Setpoint(
             u0=tuple(u0) + (u0h,),

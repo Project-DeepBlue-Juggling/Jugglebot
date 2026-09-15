@@ -680,7 +680,6 @@ def _full_cmd(hand=True, vel_next=(1.0,) * 6, vel_next2=(2.0,) * 6,
 def test_full_v8_frame_sets_v2_sched_accel_and_stamp():
     pump = _pump()
     pump.set_hand_ff_gain(0.7)
-    pump.set_hand_torque_scale_verified(True)
     sp, reason = pump.build(_full_cmd(), t_origin_us=999)
     assert reason is None and sp is not None
     assert sp.flags == (FLAG_HAS_U1 | FLAG_HAS_U2 | FLAG_HAS_HAND
@@ -690,7 +689,7 @@ def test_full_v8_frame_sets_v2_sched_accel_and_stamp():
     assert sp.accel[:6] == (0.0,) * 6            # legs never get accel
     assert sp.accel[6] == -410.5                 # observability only
     assert sp.t_origin_us == 1_700_000_000_000   # the scheduled stamp, not 999
-    assert sp.hand_ff_gain == 0.7                # verified + hand-bearing
+    assert sp.hand_ff_gain == 0.7                # hand-bearing frame
 
 
 def test_legs_only_v2_needs_no_hand():
@@ -828,28 +827,27 @@ def test_legacy_v8_tail_is_zeroed_and_flags_unchanged():
     assert sp.t_origin_us == 7
 
 
-# ── hand_ff_gain: forced to 0 unless verified; only on hand-bearing frames ──
+# ── hand_ff_gain: only on hand-bearing frames (readback gate REMOVED 2026-09-15,
+#    see logbook/2026-09-15-hand-torque-ff-gate-removed.md) ──
 
-def test_hand_ff_gain_zero_by_default_even_when_verified():
+def test_hand_ff_gain_zero_by_default():
     pump = _pump()
-    pump.set_hand_torque_scale_verified(True)
     sp, reason = pump.build(_full_cmd(), t_origin_us=1)
     assert reason is None
     assert sp.hand_ff_gain == 0.0   # never set -> stays at the ctor default 0.0
 
 
-def test_hand_ff_gain_forced_zero_when_unverified():
+def test_hand_ff_gain_reaches_the_wire_on_a_hand_bearing_frame():
     pump = _pump()
     pump.set_hand_ff_gain(1.2)
     sp, reason = pump.build(_full_cmd(), t_origin_us=1)
     assert reason is None
-    assert sp.hand_ff_gain == 0.0
+    assert sp.hand_ff_gain == 1.2
 
 
 def test_hand_ff_gain_nonzero_only_on_hand_bearing_frames():
     pump = _pump()
     pump.set_hand_ff_gain(0.9)
-    pump.set_hand_torque_scale_verified(True)
     legs_only = _cmd(motor_rev=[0.1] * 6, vel=[0.0] * 6)
     sp, reason = pump.build(legs_only, t_origin_us=1)
     assert reason is None and sp is not None

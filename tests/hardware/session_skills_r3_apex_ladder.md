@@ -19,9 +19,11 @@ their own play time (`t_origin_us`, flags bit5 `HAS_SCHED`), and the firmware
 now computes an acceleration torque feedforward **in firmware**, from the
 curve it is actually playing: `τ = fade · sat(Ks · J_HAND · 2π · a_cmd) +
 bias`. The gain `K` rides the wire per frame (`hand_ff_gain`, ROS param
-`hand_torque_ff_gain` on `teensy_bridge_node`, default 0, forced to 0 unless
-the hand ODrive's `input_torque_scale` readback has verified). This sitting
-flashes FW 22 and flies the apex ladder as an **A/B**: arm A at `K=0` (FW 22's
+`hand_torque_ff_gain` on `teensy_bridge_node`, default 0 — goes straight to
+the wire; the readback gate that used to force it to 0 was removed
+2026-09-15, see `logbook/2026-09-15-hand-torque-ff-gate-removed.md`, so
+confirm the hand ODrive's `input_torque_scale` by hand before raising K).
+This sitting flashes FW 22 and flies the apex ladder as an **A/B**: arm A at `K=0` (FW 22's
 scheduling alone, still zero torque FF — the direct comparison against the
 2026-09-13 baseline) against arm B at `K=0.7` (the offline model's mid-gain
 case; see the predictions table below).
@@ -107,7 +109,7 @@ Every terminal: `source /opt/ros/foxy/setup.bash && source
 | 1 | `cd ~/Desktop/Jugglebot-skills && git status -sb` | Clean, at or after the commit that landed this sheet (the hand C2 + torque-FF unit). |
 | 2 | (ROS) `cd ros_ws && colcon build --packages-select jugglebot_interfaces jugglebot && source install/setup.bash && cd ..` | Builds. |
 | 3 | (venv) `./run_tests.sh --full` | Green. Record the pass count in § 6. This is the gate the plan's Rigor rule requires before any powered sitting, and it is the ONLY place the new firmware-twin (`test_sched_c2_twin.py`, `test_hand_torque_ff_twin.py`) and native (`test_leg_interp.cpp`) suites run together with everything else. |
-| 4 | **Re-apply the hand ODrive's CAN torque scale.** Over USB/odrivetool on the hand Pro (node 6): `odrv0.axis0.config.can.input_torque_scale = 1000`, then `odrv0.save_configuration()`. Or re-apply `config/ODrive config Files/odrive_pro_hand_config.json`. Leave `input_vel_scale` at 100. | Read back before continuing: `odrv0.axis0.config.can.input_torque_scale` reports `1000`. Without this, arm B's readback gate refuses and K stays 0 all sitting (safe, but the FF question goes unanswered). |
+| 4 | **Re-apply the hand ODrive's CAN torque scale.** Over USB/odrivetool on the hand Pro (node 6): `odrv0.axis0.config.can.input_torque_scale = 1000`, then `odrv0.save_configuration()`. Or re-apply `config/ODrive config Files/odrive_pro_hand_config.json`. Leave `input_vel_scale` at 100. | Read back before continuing: `odrv0.axis0.config.can.input_torque_scale` reports `1000`. The host no longer gates K on this readback (removed 2026-09-15) — it goes straight to the wire, so getting this wrong before arm B means a wrong-current command, not a degraded one; confirm it here. |
 | 5 | **With the launch DOWN**, flash can-bridge FW 22 in lockstep with the v8 host build already in step 2: `cd ros_ws/src/jugglebot/Teensy_code_canbridge && pio run -e teensy41 -t upload`. | **The boot banner is the receipt** — `jugglebot-canbridge v22` on the console (open `pio device monitor -e teensy41 \| tee temp/logs/console_ff_ladder_$(date +%Y%m%d_%H%M).log` in its own terminal right after). A bare `pio run` (no `-t upload`) BUILDS ONLY and is NOT a flash — a matching hex md5 is not a flash receipt either; only the boot banner is. |
 | 6 | **Protocol 8 note.** If the host (v8, from step 2) and board (FW 22, from step 5) do not land in lockstep, the symptom is **link darkness**, not a cable fault: `link=NO_HEARTBEAT` on `/link_status` with `decode_errors == rx_frames` — `decode_frame` rejects every frame both ways on a version mismatch. If you see this, check the boot banner version against `teensy_link/rpc_args.py::EXPECTED_BRIDGE_FW_VERSION` before touching any cable. | No action unless it happens. |
 | 7 | (venv, repo root) `PYTHONPATH=ros_ws/src/jugglebot python -c "from jugglebot.motion.skills import admissible as a; [print(b.site_pair, b.apex_band_m, b.flight_s) for b in a.load('config/generated/admissible_box.yaml')]"` | Two columns boxes plus five `('P1', 'P1')` boxes, apex bands 0.45–0.55, 0.55–0.65, 0.65–0.75, 0.75–0.85, 0.85–0.95 m, each with the flight range in § 4's table. |
@@ -133,10 +135,10 @@ ladder in both arms — changing them would change what is being measured.
 ## 3. No-motion / low-motion stream check (before any throw fires)
 
 This checks that the scheduled hand lane is healthy — clock-synced, playing,
-C2-continuous at the firmware's own promotion boundaries, and (for arm B
-later) torque-verified — while the only hand motion on the wire is the
-opening REST's static park, before the ladder's first THROW is allowed to
-fire. It rides the FIRST real attempt of the ladder (rung 0.5 m): the dwell
+and C2-continuous at the firmware's own promotion boundaries — while the only
+hand motion on the wire is the opening REST's static park, before the
+ladder's first THROW is allowed to fire. It rides the FIRST real attempt of
+the ladder (rung 0.5 m): the dwell
 is temporarily lengthened so there is time to read the diagnostics during the
 REST, and the attempt is stopped from here if anything below is wrong —
 **the THROW has not happened yet at this point**, so stopping is free.
@@ -146,7 +148,7 @@ REST, and the attempt is stopped from here if anything below is wrong —
 | 17 | `ros2 param set /skill_node apex_m 0.5`, `... dwell_s 2.0` (temporary — long enough to read diagnostics twice during the REST), `... plant_id ffcheck-$(date +%Y%m%d)` (a throwaway id, not a ladder rung) | Set for this check only. |
 | 18 | `ros2 service call skills/check std_srvs/srv/Trigger` | `ladder OK` and `box OK` naming a `('P1', 'P1')` band containing 0.5 m. |
 | 19 | Seat a ball; `ros2 service call skills/start_self_toss std_srvs/srv/Trigger` | Accepted — the opening REST installs and starts streaming immediately. |
-| 20 | **Within the REST's dwell, before the THROW fires**, read `ros2 topic echo /link_status --once` | `time_synced: 1` (the bridge's wall anchor is set — without it every scheduled frame demotes to legacy and none of this check means anything); `hand_torque_scale_verified: 1` (arm A doesn't need it, but confirm it here so arm B doesn't silently run at K=0 later); `hand_torque_ff_gain_requested: 0.0000` and `hand_torque_ff_gain_effective: 0.0000` (arm A). |
+| 20 | **Within the REST's dwell, before the THROW fires**, read `ros2 topic echo /link_status --once` | `time_synced: 1` (the bridge's wall anchor is set — without it every scheduled frame demotes to legacy and none of this check means anything); `hand_torque_ff_gain_requested: 0.0000` and `hand_torque_ff_gain_effective: 0.0000` (arm A). |
 | 21 | In the same window, read the console `[hand7]` line (from the `pio device monitor` opened at step 5) | `sched=play` (not `off` — confirms the REST is riding the scheduled lane, not a legacy fallback); `promo_dp=`, `promo_dv=`, `promo_da=` all ≈ 0 (a static REST has no knot-to-knot motion to promote through, so these should read at or near the printed precision's zero); `promo_over=0`; `stops=0 refused=0 expired=0 demoted=0` — any of these counting up during a clean, on-time REST stream means a frame is arriving late, out of order, or unstamped, and needs diagnosis before flying the ladder for real. |
 | 22 | `ros2 topic echo /link_status --once \| grep interp_max_jitter_us` | Record the value. No pass bound exists yet (U2a residual: "measure at the first sitting") — note it here as the reference for later sittings; only a growing trend tick-over-tick, not a single reading, would indicate a real ISR-timing problem. |
 
@@ -154,7 +156,6 @@ REST, and the attempt is stopped from here if anything below is wrong —
 - `time_synced: 0` — the stream cannot be scheduled at all; nothing below is meaningful.
 - `[hand7]` reads `sched=off` during the REST — the frame isn't reaching the scheduled path; check `HAS_SCHED`/`HAS_V2` upstream before continuing.
 - any of `promo_over`, `stops`, `refused`, `expired`, `demoted` is nonzero and still counting on a second read.
-- `hand_torque_scale_verified: 0` — safe to continue arm A (K=0 either way), but log it: arm B cannot be flown until this reads 1.
 
 If the check is clean, let the attempt continue (it will throw at 0.5 m) —
 this throw stands as arm A's first ladder rung; there is no need to abort and
@@ -197,9 +198,9 @@ carry on.
 
 | # | Step | Expect |
 |---|---|---|
-| 29 | `ros2 topic echo /link_status --once` | `hand_torque_scale_verified: 1` — confirm again before raising K; if it has dropped to 0 since § 3 (e.g. a hand ODrive reboot), re-read back the torque scale (step 4) before continuing, or arm B silently runs at K=0. |
+| 29 | Confirm `input_torque_scale=1000` in the ODrive GUI (persists across power cycles) | `1000`. The host no longer gates K on a readback (removed 2026-09-15) — a wrong scale here reaches the wire as a wrong-current command, not a degraded one, so confirm it before raising K rather than after. |
 | 30 | `ros2 param set /teensy_bridge_node hand_torque_ff_gain 0.7` | `ros2 param get` echoes `0.7`. Record the wall-clock time — the close-out probe needs it to separate arm A from arm B in the one bag. |
-| 31 | `ros2 topic echo /link_status --once` | `hand_torque_ff_gain_requested: 0.7000` and, since verified, `hand_torque_ff_gain_effective: 0.7000` — if `effective` stays `0.0000` here, the readback isn't verified; stop and fix it (step 4 / row 29) rather than flying arm B unverified. |
+| 31 | `ros2 topic echo /link_status --once` | `hand_torque_ff_gain_requested: 0.7000` and `hand_torque_ff_gain_effective: 0.7000` — the wire gain follows the param directly; if `effective` stays `0.0000` here, something else is wrong (e.g. no hand-bearing frame is being built) — stop and diagnose rather than flying arm B. |
 | 32 | Repeat rows 24–28 for apexes 0.5, 0.6, 0.7, 0.8, 0.9 m, `plant_id` prefix `armB-` | Same procedure, arm B. |
 
 ### A/B stop criteria (either arm, every rung)
@@ -302,7 +303,7 @@ live.
 |---|---|
 | Date, commit, bag, `--full` count | |
 | FW 22 boot banner confirmed (step 5) | |
-| § 3 no-motion check (row 20–22): time_synced / hand_torque_scale_verified / sched= / promo_dp,dv,da / promo_over,stops,refused,expired,demoted / interp_max_jitter_us | |
+| § 3 no-motion check (row 20–22): time_synced / sched= / promo_dp,dv,da / promo_over,stops,refused,expired,demoted / interp_max_jitter_us | |
 | Rungs flown, arm A (stopped early? why) | |
 | Rungs flown, arm B (stopped early? why) | |
 | Per-rung, per-arm measured hand peak / commanded (3 throws) | |

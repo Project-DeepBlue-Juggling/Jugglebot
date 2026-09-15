@@ -93,7 +93,9 @@ survey agents and the probe opened:
    defaults to 0 (arm A of the A/B).
 4. **Hand wire torque scale 100 → 1000** (yaml, ODrive JSON, firmware),
    gated by a host readback of the drive's actual `input_torque_scale`: `K`
-   is forced to 0 until the readback matches.
+   is forced to 0 until the readback matches. **Superseded 2026-09-15:
+   readback gate removed, see
+   [logbook/2026-09-15-hand-torque-ff-gate-removed.md](2026-09-15-hand-torque-ff-gate-removed.md).**
 
 Leg torque FF is explicitly out of scope; the wire is 7-wide so it can land
 later without another bump. No dedicated plan file was opened for this unit
