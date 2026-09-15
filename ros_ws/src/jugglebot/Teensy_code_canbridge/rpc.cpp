@@ -348,7 +348,7 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
       }
       // Per-axis: send via the shared gate; arm the latch only if the reboot went out
       // AND it targets a LEG. The CAN-loss detector watches leg heartbeats only
-      // (any_leg_heartbeat_stale), so a hand-only reboot (axis 6) can never false-trip
+      // (any_present_leg_silent), so a hand-only reboot (axis 6) can never false-trip
       // it — arming for it would blind LEG-loss detection for the full window with zero
       // benefit (saw_stale never sets → no fresh-after-stale release). AXIS_ALL arms in
       // its own branch (it reboots the legs too).

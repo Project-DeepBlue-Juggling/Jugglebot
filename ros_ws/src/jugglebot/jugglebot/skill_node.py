@@ -54,12 +54,14 @@ import jugglebot.hardware_config as hw
 from jugglebot import ball_possession
 from jugglebot.motion import blas_threads
 from jugglebot.motion.skills import admissible as adm
+from jugglebot.motion.skills import executor as ex
 from jugglebot.motion.skills import learner as lr
 from jugglebot.motion.skills.executor import (InstallResult, Landing,
                                               Observations,
                                               REJECTED_HAND_NOT_PARKED,
                                               SkillExecutor,
                                               precondition_refusals)
+from jugglebot.motion.skills.hand_launch import HandLaunchMonitor
 from jugglebot.motion.skills.memory import Memory, memory_path
 from jugglebot.motion.skills.schedule import (Pattern, SelfTossPattern,
                                               compile_columns, compile_self_toss)
@@ -212,6 +214,13 @@ class SkillNode(Node):
         self._hand_telemetry_mono = 0.0
         self._hand_pos_meas = 0.0
         self._hand_pos_cmd = 0.0
+        # The hand's launch-speed ratio source for `catch_aim_source` =
+        # `schedule_hand` (`hand_launch.HandLaunchMonitor`): fed every
+        # `/hand_telemetry` sample, read once per catch by the executor. Held
+        # for the node's life (not per attempt) — a stroke's samples arrive
+        # before the catch that asks about them, and the monitor's own
+        # history bound is what keeps it small.
+        self._hand_launch = HandLaunchMonitor()
         # `trajectory/commanded_position` — the pre-level move's own xy/z
         # (item 7; `_prelevel`), restated from
         # `reload_coordinator_node._on_commanded_position` /
@@ -226,6 +235,16 @@ class SkillNode(Node):
         self.declare_parameter('site_x_mm', _DEFAULT_SITE_X_MM)
         self.declare_parameter('site_y_mm', _DEFAULT_SITE_Y_MM)
         self.declare_parameter('plant_id', _DEFAULT_PLANT_ID)
+        # Where a CATCH's aim comes from (owner decision 2026-09-15). The
+        # LIVE default is `schedule` — open-loop from the throw state the
+        # schedule COMMANDED — because at the 2026-09-15 sitting all 13
+        # self-tosses ended NO_LANDING: mocap never produced a marker for the
+        # flying ball, so a tracker-dependent aim never happened at all. See
+        # `executor.AIM_SOURCES` for the three values; the executor's own
+        # constructor default stays `tracker` so the sim gate and the R2/R3
+        # tests keep exercising that path, which is why this is passed
+        # EXPLICITLY at every construction below rather than left to default.
+        self.declare_parameter('catch_aim_source', ex.AIM_SCHEDULE)
 
         # ── the install client + tick timer share ONE reentrant group ──────
         # Fixed 2026-09-13 (found by reading, never exercised live): `main`
@@ -371,6 +390,33 @@ class SkillNode(Node):
             return None
         return self._balls.get(tracker_id)
 
+    def _catch_aim_source(self) -> str:
+        """The validated ``catch_aim_source`` parameter. An unknown value
+        falls back to the LIVE default (:data:`executor.AIM_SCHEDULE`) with an
+        error logged, rather than refusing the attempt: a typo in a launch
+        override must not leave the operator with no catch at all, and the
+        open-loop aim is the safe one to fall back to."""
+        value = str(self.get_parameter('catch_aim_source').value)
+        if value not in ex.AIM_SOURCES:
+            self.get_logger().error(
+                'catch_aim_source=%r is not one of %s — using %r'
+                % (value, list(ex.AIM_SOURCES), ex.AIM_SCHEDULE))
+            return ex.AIM_SCHEDULE
+        return value
+
+    def _launch_ratio(self, ball_id: int, t_release_abs_s: float):
+        """The executor's ``launch_ratio`` callable: the MEASURED hand
+        launch-speed ratio of the stroke ending at ``t_release_abs_s``, or
+        ``None`` when the hand telemetry cannot vouch for one (the executor
+        then keeps the theoretical aim). ``ball_id`` is unused — this hand
+        throws one ball at a time, and the release INSTANT is what selects
+        the stroke."""
+        r = self._hand_launch.ratio(t_release_abs_s)
+        self.get_logger().info(
+            'hand launch ratio for the release at %.3f (ball %d): %s'
+            % (t_release_abs_s, ball_id, self._hand_launch.last_reason))
+        return r
+
     def _on_traj_status(self, msg) -> None:
         """Cache the latest `trajectory/status` for `_svc_start_self_toss`'s
         limits check and the R3 ladder's `levelled`/`in_trajectory_mode`
@@ -426,6 +472,16 @@ class SkillNode(Node):
         self._hand_pos_meas = float(getattr(msg, 'pos_meas', 0.0))
         self._hand_pos_cmd = float(getattr(msg, 'pos_cmd', 0.0))
         self._hand_telemetry_mono = time.perf_counter()
+        # The launch-ratio monitor's sample, stamped on the ROS WALL clock
+        # (the clock the schedule's release instants live on — a perf stamp
+        # would not be comparable with one). Arrival time, not a bridge
+        # stamp: the ratio compares PEAKS of the two channels inside one
+        # window, so the few ms of transport lag shifts both channels of the
+        # same message identically and cannot bias the ratio.
+        self._hand_launch.add_sample(
+            self.get_clock().now().nanoseconds / 1e9,
+            float(getattr(msg, 'vel_ff_cmd', 0.0)),
+            float(getattr(msg, 'vel_meas', 0.0)))
         valid = bool(getattr(msg, 'ball_held_valid', False))
         raw = getattr(msg, 'ball_held_raw', None)
         if not valid or raw is None:
@@ -763,8 +819,10 @@ class SkillNode(Node):
             response.message = 'columns schedule refused: %s' % (exc,)
             self.get_logger().error(response.message)
             return response
-        self._executor = SkillExecutor(schedule, self._installer,
-                                       tracker=self._tracker)
+        self._executor = SkillExecutor(
+            schedule, self._installer, tracker=self._tracker,
+            catch_aim_source=self._catch_aim_source(),
+            launch_ratio=self._launch_ratio)
         response.success = True
         response.message = ('columns schedule compiled: %d skills, %d throws, '
                             't0=%.3f' % (len(schedule.skills), n_throws, t0))
@@ -964,6 +1022,8 @@ class SkillNode(Node):
 
         self._executor = SkillExecutor(
             schedule, self._installer, tracker=self._tracker,
+            catch_aim_source=self._catch_aim_source(),
+            launch_ratio=self._launch_ratio,
             learner=learner, boxes=boxes,
             observer=self._ball_evidence, observations=self._observations,
             on_experience=self._bind_on_experience(memory))

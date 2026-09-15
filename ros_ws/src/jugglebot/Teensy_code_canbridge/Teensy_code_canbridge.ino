@@ -66,12 +66,17 @@ static void on_jetson_heartbeat(uint16_t /*seq*/, const uint8_t* payload, uint16
   fault_set_mpc_active((p.flags & 0x1u) != 0);   // bit0 = MPC commanding (guard ENABLED)
 }
 
-// True iff every axis has been seen and none is heartbeat-stale.
+// True iff every axis has been seen and none is heartbeat-stale. DIAGNOSTIC, and
+// deliberately still HEARTBEAT-based at the 2.0 s CAN_AXIS_SILENCE_TIMEOUT_US —
+// the flag is named ALL_AXIS_HEARTBEATS_OK and means exactly that. The fatal
+// predicate moved to axis liveness at FW 23; this flag did not, so the two are no
+// longer the same question and a consumer must not read this one as "the bus is
+// up". hb_stale_mask() above is the sharper, per-axis form of the same reading.
 static bool all_axis_heartbeats_ok() {
   const uint64_t now = micros64();   // interval clock: heartbeat freshness
   for (uint8_t i = 0; i < NUM_AXES; ++i) {
     if (!axes[i].heartbeat_seen) return false;
-    if (now - atomic_read_u64(&axes[i].last_heartbeat_us) > CAN_HEARTBEAT_TIMEOUT_US) return false;
+    if (now - atomic_read_u64(&axes[i].last_heartbeat_us) > CAN_AXIS_SILENCE_TIMEOUT_US) return false;
   }
   return true;
 }
@@ -168,6 +173,19 @@ static void send_heartbeat_t2j() {
   // bit 14: the hand torque feedforward saturated at ±HAND_TORQUE_FF_CLAMP_NM on
   // at least one on-wire tick since the previous heartbeat (read-and-clear).
   if (interp_hand_torque_clamp_take()) p.flags |= HF::HAND_TORQUE_CLAMP;
+  // bits 16-22: per-axis heartbeat-stale mask (FW 23, report-only).
+  p.flags      |= (fault_hb_stale_mask() << JbUdp::HEARTBEAT_HB_STALE_SHIFT)
+                  & HF::HB_STALE_MASK;
+
+  // FW 23 CAN_BUS_DOWN trip latch. The fault self-clears as soon as one frame
+  // from the silent leg arrives (on 2026-09-15 inside one 10 Hz fault tick), so
+  // these are the ONLY record that the trip happened and which leg caused it.
+  p.can_fault_leg    = fault_can_fault_leg();
+  {
+    const uint32_t age_ms = fault_can_fault_age_ms();
+    p.can_fault_age_ms = (age_ms > 0xFFFFu) ? 0xFFFFu : (uint16_t)age_ms;   // saturate, never wrap
+  }
+  p.can_fault_count  = fault_can_fault_count();
 
   udp_send_stream(JbUdp::MsgType::HEARTBEAT_T2J, (const uint8_t*)&p, sizeof(p));
 }

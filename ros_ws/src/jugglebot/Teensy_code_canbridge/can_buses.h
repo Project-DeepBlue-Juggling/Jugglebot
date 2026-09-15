@@ -305,7 +305,7 @@ inline uint8_t classify_bus_health(uint64_t last_rx_us, uint64_t now_us,
   if (last_rx_us == 0) return JbUdp::BusHealth::UNKNOWN;
   if (flt_live >= 2) return JbUdp::BusHealth::BUS_OFF;
   if (flt_live == 1) return JbUdp::BusHealth::WARN;
-  if (now_us - last_rx_us > CAN_HEARTBEAT_TIMEOUT_US) return JbUdp::BusHealth::WARN;
+  if (now_us - last_rx_us > CAN_AXIS_SILENCE_TIMEOUT_US) return JbUdp::BusHealth::WARN;
   return JbUdp::BusHealth::OK;
 }
 
@@ -355,7 +355,7 @@ inline uint8_t classify_command_gate(uint64_t last_rx_us, uint64_t now_us,
   if (last_rx_us == 0) return JbUdp::BusHealth::UNKNOWN;
   if (flt_live >= 2) return JbUdp::BusHealth::BUS_OFF;          // instant, never debounced
   if (flt_live == 1 && flt_sustained) return JbUdp::BusHealth::WARN;
-  if (now_us - last_rx_us > CAN_HEARTBEAT_TIMEOUT_US) return JbUdp::BusHealth::WARN;
+  if (now_us - last_rx_us > CAN_AXIS_SILENCE_TIMEOUT_US) return JbUdp::BusHealth::WARN;
   return JbUdp::BusHealth::OK;
 }
 
@@ -521,6 +521,12 @@ struct CanRxHealth {
   // task_can_rx only, cumulative, read whole by the consumer, which differences
   // two samples (the BridgeTxDiag census idiom).
   uint32_t enc_frames[NUM_AXES];
+  // Per-axis ODrive HEARTBEAT frames decoded, cumulative since boot (FW 23).
+  // The counterpart of enc_frames for the stream the pre-FW-23 fatal watchdog
+  // actually read. On 2026-09-15 CAN_BUS_DOWN tripped twice with every encoder
+  // stream healthy; without this counter a repeat event still cannot say whether
+  // the 10 Hz heartbeats stopped being sent or stopped being received.
+  uint32_t hb_frames[NUM_AXES];
 };
 CanRxHealth can_buses_rx_health();
 

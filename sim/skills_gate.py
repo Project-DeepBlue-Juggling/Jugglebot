@@ -182,6 +182,12 @@ class SkillsGateConfig:
     leg_acc_mmps2: float = _SESSION_LEG_ACC_MMPS2
     leg_jerk_mmps3: float = _SESSION_LEG_JERK_MMPS3
     hand_acc_rps2: float = _SESSION_HAND_ACC_RPS2
+    #: Which aim source the executor runs with (``executor.AIM_SOURCES``).
+    #: ``tracker`` here, not the LIVE default (``schedule``): this gate's
+    #: whole tracker-refine surface (``_make_tracker``, the RESEND
+    #: assertions) only exists on that path, and an open-loop run is
+    #: requested explicitly with ``--catch-aim-source schedule``.
+    catch_aim_source: str = ex.AIM_TRACKER
     noise: NoiseConfig = dataclasses.field(
         default_factory=lambda: NoiseConfig(bb_throw_noise_frac=0.0,
                                             tracking_noise_mm=0.5))
@@ -448,6 +454,12 @@ class SelfTossGateConfig:
     leg_acc_mmps2: float = 5000.0
     leg_jerk_mmps3: float = 150000.0
     hand_acc_rps2: float = 3500.0
+    #: Which aim source the executor runs with (``executor.AIM_SOURCES``).
+    #: ``tracker`` here, not the LIVE default (``schedule``): this gate's
+    #: whole tracker-refine surface (``_make_tracker``, the RESEND
+    #: assertions) only exists on that path, and an open-loop run is
+    #: requested explicitly with ``--catch-aim-source schedule``.
+    catch_aim_source: str = ex.AIM_TRACKER
     noise: NoiseConfig = dataclasses.field(
         default_factory=lambda: NoiseConfig(bb_throw_noise_frac=0.0,
                                             tracking_noise_mm=0.5))
@@ -639,7 +651,9 @@ class SkillsGate:
         tracker = _make_tracker(plant, ball_state)
         ictx = _InstallCtx(rest0)
         installer = _make_installer(ictx, self.seg_cfg, self.limits, geom)
-        executor = ex.SkillExecutor(sched, installer, tracker=tracker)
+        executor = ex.SkillExecutor(
+            sched, installer, tracker=tracker,
+            catch_aim_source=self.cfg.catch_aim_source)
 
         # 4. Stream (the one loop -- ``_stream_chain``).
         t_end = t_land_final + QUIET_TAIL_S
@@ -908,7 +922,9 @@ class SkillsGate:
         observations = _make_observations(observer)
         learner = _MemoryLearner(memory, learner_cfg)
         executor = ex.SkillExecutor(
-            sched, installer, tracker=tracker, learner=learner, boxes=boxes,
+            sched, installer, tracker=tracker,
+            catch_aim_source=self.cfg.catch_aim_source,
+            learner=learner, boxes=boxes,
             observer=observer, on_experience=lambda exp: (
                 memory.append(exp), throws_out.append(exp)),
             observations=observations)
@@ -1184,6 +1200,12 @@ def main(argv=None) -> int:
                    help='per-component release-velocity scatter as a fraction of '
                         'the release speed (default 0.0: an exact release; the '
                         'module docstring carries the separation-vs-scatter table)')
+    p.add_argument('--catch-aim-source', choices=ex.AIM_SOURCES,
+                   default=ex.AIM_TRACKER,
+                   help='where a CATCH is aimed from: tracker (this gate\'s '
+                        'default, the refine path it asserts), schedule (the '
+                        'LIVE default -- open loop from the commanded throw '
+                        'state), or schedule_hand')
     p.add_argument('--learn', action='store_true',
                    help='run the R3 sim-validation learner run (plan § 4 R3) '
                         'instead of the columns gate')
@@ -1194,7 +1216,8 @@ def main(argv=None) -> int:
     args = p.parse_args(argv)
 
     if args.learn:
-        lcfg = SelfTossGateConfig(report_path=args.report)
+        lcfg = SelfTossGateConfig(report_path=args.report,
+                                  catch_aim_source=args.catch_aim_source)
         if args.seeds is not None:
             seeds = tuple(args.seeds)
         else:
@@ -1203,7 +1226,8 @@ def main(argv=None) -> int:
         _print_learn_table(rep)
         return 0 if rep['passed'] else 1
 
-    cfg = SkillsGateConfig(report_path=args.report)
+    cfg = SkillsGateConfig(report_path=args.report,
+                           catch_aim_source=args.catch_aim_source)
     if args.seeds is not None:
         cfg.seeds = tuple(args.seeds)
     if args.n_throws is not None:

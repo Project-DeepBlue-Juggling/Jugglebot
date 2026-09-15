@@ -984,7 +984,8 @@ v3 live-deviation telemetry. Topology facts:
 - **1-of-6 presence gating:** `leg_present(i) == axes[i].heartbeat_seen` (latched-once,
   `logbook/2026-06-24-...`, U1). Legs 1–5 absent ⇒ the interp setpoint TX, the stow
   descent, and the `MAX_DEVIATION` loop **skip them**; the deferred-stow reconnect
-  predicate scopes to present legs (`all_present_legs_fresh`). So the bridge runs
+  predicate scopes to present legs (`all_present_legs_alive` — renamed at FW 23, when it
+  moved from heartbeat freshness to any-frame axis liveness). So the bridge runs
   correctly on a subset-populated CAN3 (this was the Phase-11 U1 fix). The bus-partner
   presence gate (`BUS_PARTNER_STALENESS_US = 5 s`, `canbridge_config.h:212`) is per-bus —
   the bench ODrive's heartbeats keep CAN3 "present" so RPCs/sends are not refused.

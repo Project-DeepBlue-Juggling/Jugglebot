@@ -149,7 +149,7 @@ def test_v6_decode_rejects_a_version5_frame():
     # checked before the CRC), and total: EVERY frame from a v5 peer dies here.
     frame = bytearray(p.encode_frame(int(p.MsgType.SETPOINT), 3,
                                      p.Setpoint().pack()))
-    assert frame[2] == p.PROTOCOL_VERSION == 8
+    assert frame[2] == p.PROTOCOL_VERSION == 9
     frame[2] = 5
     body = bytes(frame[:-2])
     frame[-2:] = struct.pack('<H', p.crc16_ccitt(body))   # valid CRC, old version
@@ -283,6 +283,102 @@ def test_torque_clamp_mask_zero_on_legacy_flags():
                 >> p.HEARTBEAT_TORQUE_CLAMP_SHIFT) == 0
 
 
+# ── HeartbeatT2J CAN_BUS_DOWN trip latch + HB_STALE_MASK (FW 23, 2026-09-15) ──
+#
+# See logbook/2026-09-15-fw23-axis-silence-watchdog.md. The fatal predicate
+# moved off the heartbeat onto "any frame of any kind", so these three fields
+# are the only wire evidence of WHICH leg tripped it and HOW STALE it was —
+# latched at the trip and, deliberately, NOT cleared by the self-clear. The
+# mask is the separate, sharper (0.5 s), report-only per-axis heartbeat
+# staleness signal that never gates output.
+
+
+def test_heartbeat_t2j_can_fault_latch_roundtrip():
+    # Distinct, non-adjacent values so a field-order slip (age_ms landing where
+    # count is expected, etc.) would fail rather than round-trip by luck.
+    hb = p.HeartbeatT2J(t_teensy_us=1, uptime_ms=1,
+                         can_fault_leg=4, can_fault_age_ms=2_345,
+                         can_fault_count=7)
+    blob = hb.pack()
+    assert len(blob) == p.HEARTBEAT_T2J_SIZE
+    decoded = p.HeartbeatT2J.unpack(blob)
+    assert decoded.can_fault_leg == 4
+    assert decoded.can_fault_age_ms == 2_345
+    assert decoded.can_fault_count == 7
+
+
+def test_heartbeat_t2j_can_fault_leg_0xff_means_no_trip_since_boot():
+    # The firmware's boot/CLEAR_ERRORS default (fault_machine.cpp
+    # s_can_fault_leg = 0xFF) — "no trip", not "leg 255". age_ms/count are left
+    # at their post-init values (0) in this shape.
+    decoded = p.HeartbeatT2J.unpack(
+        p.HeartbeatT2J(t_teensy_us=1, uptime_ms=1, can_fault_leg=0xFF).pack())
+    assert decoded.can_fault_leg == 0xFF
+    assert decoded.can_fault_age_ms == 0
+    assert decoded.can_fault_count == 0
+
+
+def test_heartbeat_t2j_can_fault_count_saturates_at_u16_rail():
+    # fault_machine.cpp: "if (s_can_fault_count != 0xFFFFu) ++s_can_fault_count"
+    # — saturates, never wraps to 0 (which would read as "no trips").
+    decoded = p.HeartbeatT2J.unpack(
+        p.HeartbeatT2J(t_teensy_us=1, uptime_ms=1,
+                       can_fault_count=0xFFFF).pack())
+    assert decoded.can_fault_count == 0xFFFF
+
+
+def test_hb_stale_mask_flag_constants():
+    # Shift + mask are generated single-source (config/generate_udp_protocol.py).
+    assert p.HEARTBEAT_HB_STALE_SHIFT == 16
+    assert int(p.HeartbeatT2JFlags.HB_STALE_MASK) == 0x7F0000
+    # Exactly NUM_AXES bits (legs 0-5 + hand), starting at the shift.
+    assert int(p.HeartbeatT2JFlags.HB_STALE_MASK) == (
+        ((1 << p.NUM_AXES) - 1) << p.HEARTBEAT_HB_STALE_SHIFT)
+    # Must not collide with TORQUE_CLAMP_MASK (bits 8-13) or the single-bit
+    # flags (bits 0-3).
+    single_bits = (int(p.HeartbeatT2JFlags.TIME_SYNCED)
+                   | int(p.HeartbeatT2JFlags.STOW_PENDING_ON_RECONNECT)
+                   | int(p.HeartbeatT2JFlags.ALL_AXIS_HEARTBEATS_OK)
+                   | int(p.HeartbeatT2JFlags.MPC_ACTIVE))
+    assert single_bits & int(p.HeartbeatT2JFlags.HB_STALE_MASK) == 0
+    assert (int(p.HeartbeatT2JFlags.TORQUE_CLAMP_MASK)
+            & int(p.HeartbeatT2JFlags.HB_STALE_MASK)) == 0
+
+
+def test_heartbeat_t2j_hb_stale_mask_roundtrip():
+    # Firmware packs: flags |= (mask << SHIFT) & HB_STALE_MASK. Host extracts:
+    # (flags & HB_STALE_MASK) >> SHIFT. Round-trip with other flag bits AND the
+    # torque_clamp mask set, so the three regions can't alias each other.
+    stale_axes = 0b1000101  # axes 0, 2 and 6 (hand) stale
+    leg_clamp = 0b000010    # leg 1 torque-ff clamped
+    flags = (int(p.HeartbeatT2JFlags.TIME_SYNCED)
+             | int(p.HeartbeatT2JFlags.MPC_ACTIVE)
+             | ((leg_clamp << p.HEARTBEAT_TORQUE_CLAMP_SHIFT)
+                & int(p.HeartbeatT2JFlags.TORQUE_CLAMP_MASK))
+             | ((stale_axes << p.HEARTBEAT_HB_STALE_SHIFT)
+                & int(p.HeartbeatT2JFlags.HB_STALE_MASK)))
+    hb = p.HeartbeatT2J(t_teensy_us=1, flags=flags, uptime_ms=1)
+    decoded = p.HeartbeatT2J.unpack(hb.pack())
+    extracted_stale = ((int(decoded.flags) & int(p.HeartbeatT2JFlags.HB_STALE_MASK))
+                        >> p.HEARTBEAT_HB_STALE_SHIFT)
+    extracted_clamp = ((int(decoded.flags) & int(p.HeartbeatT2JFlags.TORQUE_CLAMP_MASK))
+                        >> p.HEARTBEAT_TORQUE_CLAMP_SHIFT)
+    assert extracted_stale == stale_axes
+    assert extracted_clamp == leg_clamp
+    assert decoded.flags & int(p.HeartbeatT2JFlags.TIME_SYNCED)
+    assert decoded.flags & int(p.HeartbeatT2JFlags.MPC_ACTIVE)
+
+
+def test_hb_stale_mask_zero_on_legacy_flags():
+    # A pre-FW-23 firmware never sets bits 16-22, so extraction over any
+    # legacy/torque-clamp-era flags word must read 0.
+    for legacy in (0x0, 0x1, 0x3F00):  # includes a full legacy torque-clamp mask
+        hb = p.HeartbeatT2J(t_teensy_us=1, flags=legacy, uptime_ms=1)
+        decoded = p.HeartbeatT2J.unpack(hb.pack())
+        assert ((int(decoded.flags) & int(p.HeartbeatT2JFlags.HB_STALE_MASK))
+                >> p.HEARTBEAT_HB_STALE_SHIFT) == 0
+
+
 # ── CLOCK_DIAG (0x8F) — bridge-temporal-trustworthiness P1 ───────────────────
 #
 # The additive per-anchor clock-discipline + interp-occupancy uplink introduced
@@ -328,7 +424,9 @@ def test_clock_diag_is_additive_protocol_version_unchanged():
     """
     # The frames that existed before FW 11 keep their exact sizes.
     assert p.PROFILE_SIZE == 76
-    assert p.HEARTBEAT_T2J_SIZE == 121   # 73 until v8 (2026-09-14) appended the FW 22 promotion diagnostics
+    assert p.HEARTBEAT_T2J_SIZE == 126   # 73 until v8 (2026-09-14) appended the FW 22 promotion
+                                     # diagnostics; 126 at v9 (2026-09-15, FW 23) which appended
+                                     # the CAN_BUS_DOWN trip latch can_fault_leg/age_ms/count
     assert p.LEG_CMD_SIZE == 56
     assert p.BRIDGE_TX_DIAG_SIZE == 18   # 42 → 18 at R1: the hand_ops per-stage counters left the struct
     assert p.BRIDGE_IDENTITY_SIZE == 3
@@ -506,7 +604,9 @@ def test_cache_diag_is_additive_protocol_version_unchanged():
     # most likely to be disturbed by an edit in the same region of the spec.
     assert p.CLOCK_DIAG_SIZE == 49
     assert p.PROFILE_SIZE == 76
-    assert p.HEARTBEAT_T2J_SIZE == 121   # 73 until v8 (2026-09-14) appended the FW 22 promotion diagnostics
+    assert p.HEARTBEAT_T2J_SIZE == 126   # 73 until v8 (2026-09-14) appended the FW 22 promotion
+                                     # diagnostics; 126 at v9 (2026-09-15, FW 23) which appended
+                                     # the CAN_BUS_DOWN trip latch can_fault_leg/age_ms/count
     assert p.LEG_CMD_SIZE == 56
     assert p.BRIDGE_TX_DIAG_SIZE == 18   # 42 → 18 at R1: the hand_ops per-stage counters left the struct
     assert p.BRIDGE_IDENTITY_SIZE == 3
@@ -537,7 +637,7 @@ def test_cache_diag_roundtrip():
         seen_mask=0x7F,
     )
     blob = cd.pack()
-    assert len(blob) == p.CACHE_DIAG_SIZE == 129
+    assert len(blob) == p.CACHE_DIAG_SIZE == 157   # 129 until v9 added hb_frames[7] (FW 23)
     d = p.CacheDiag.unpack(blob)
     assert d.t_local_us == 226_800_000_000
     assert tuple(d.age_min_us) == (101, 202, 303, 404, 505, 606, 707)
@@ -603,6 +703,34 @@ def test_cache_diag_enc_frames_are_cumulative_and_wrap_correct():
     # consumer reads two adjacent samples.
     assert (d.enc_frames[3] + 3) % 2**32 == 2
     assert (2 - d.enc_frames[3]) % 2**32 == 3
+
+
+def test_cache_diag_hb_frames_roundtrip_and_distinct_from_enc_frames():
+    """hb_frames[7] (FW 23) sits directly after enc_frames[7] on the wire.
+
+    Adjacent same-width u32 arrays are exactly the shape that hides an
+    off-by-one slice (enc_frames[1:8] read as hb_frames[0:7]), so every slot
+    across BOTH arrays is given a unique value — a slice bug would show up as
+    a value landing in the wrong array rather than round-tripping by luck.
+    """
+    cd = p.CacheDiag(
+        enc_frames=(1_001, 1_002, 1_003, 1_004, 1_005, 1_006, 1_007),
+        hb_frames=(2_001, 2_002, 2_003, 2_004, 2_005, 2_006, 2_007),
+    )
+    blob = cd.pack()
+    assert len(blob) == p.CACHE_DIAG_SIZE == 157
+    d = p.CacheDiag.unpack(blob)
+    assert tuple(d.enc_frames) == (1_001, 1_002, 1_003, 1_004, 1_005, 1_006, 1_007)
+    assert tuple(d.hb_frames) == (2_001, 2_002, 2_003, 2_004, 2_005, 2_006, 2_007)
+    assert len(d.hb_frames) == 7
+
+
+def test_cache_diag_hb_frames_default_is_zero_from_legacy_frame():
+    # A pre-FW-23 bridge never sends this field — a decoded default-constructed
+    # CacheDiag (the shape an old firmware's absence of the field leaves behind
+    # for any consumer that reads it anyway) must read 0, not garbage.
+    d = p.CacheDiag.unpack(p.CacheDiag().pack())
+    assert tuple(d.hb_frames) == (0,) * 7
 
 
 def test_cache_diag_ages_saturate_at_the_u32_rail_rather_than_wrapping():
@@ -696,10 +824,12 @@ def test_ring_diag_is_additive_protocol_version_unchanged():
     (Version literal deliberately not re-pinned here — one constant, one pin;
     see the CLOCK_DIAG equivalent above for the 5→6 history.)
     """
-    assert p.CACHE_DIAG_SIZE == 129
+    assert p.CACHE_DIAG_SIZE == 157   # 129 until v9 added hb_frames[7] (FW 23)
     assert p.CLOCK_DIAG_SIZE == 49
     assert p.PROFILE_SIZE == 76
-    assert p.HEARTBEAT_T2J_SIZE == 121   # 73 until v8 (2026-09-14) appended the FW 22 promotion diagnostics
+    assert p.HEARTBEAT_T2J_SIZE == 126   # 73 until v8 (2026-09-14) appended the FW 22 promotion
+                                     # diagnostics; 126 at v9 (2026-09-15, FW 23) which appended
+                                     # the CAN_BUS_DOWN trip latch can_fault_leg/age_ms/count
     assert p.LEG_CMD_SIZE == 56
     assert p.BRIDGE_TX_DIAG_SIZE == 18   # 42 → 18 at R1: the hand_ops per-stage counters left the struct
     assert p.BRIDGE_IDENTITY_SIZE == 3

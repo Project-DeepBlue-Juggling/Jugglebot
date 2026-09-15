@@ -697,7 +697,15 @@ def platform_fw_window_end(window_start_frame: int, total_frames: int) -> int:
 #: 20 is in TOTAL LINK DARKNESS against this host tree until the lockstep
 #: flash, loud and fail-closed by design (decode_frame hard-rejects on
 #: version).
-EXPECTED_BRIDGE_FW_VERSION = 22
+#: FW 23 (2026-09-15): the axis-silence watchdog. The fatal CAN_BUS_DOWN
+#: predicate reads AxisState::last_rx_us (ANY frame from the node) instead of
+#: the 10 Hz heartbeat alone; heartbeat dropouts become diagnostic-only
+#: (HeartbeatT2J flags bits 16-22) and the tripping leg/age/count are latched
+#: and uplinked. HeartbeatT2J and CacheDiag both GROW, so PROTOCOL_VERSION
+#: bumps 8 -> 9 alongside this and a board on 22 is in TOTAL LINK DARKNESS
+#: against this host tree until the lockstep flash, loud and fail-closed by
+#: design (decode_frame hard-rejects on version).
+EXPECTED_BRIDGE_FW_VERSION = 23
 
 
 # ── Ball Butler ─────────────────────────────────────────────────────────────

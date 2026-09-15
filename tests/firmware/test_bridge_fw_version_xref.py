@@ -145,6 +145,21 @@ def test_the_bump_history_records_what_this_version_carries():
     assert 'hand_source' in history, history
     assert 'MAX_DEVIATION_HAND_REV' in history, history
     assert 'MAX_LEAD_HAND_REV' in history, history
+    # FW 23 — the axis-silence watchdog.  The substance an operator needs is
+    # (a) that a SAFETY PREDICATE changed, not an instrument: the fault that
+    # stows the machine now reads any-frame liveness instead of the 10 Hz
+    # heartbeat, which is what made the 2026-09-15 double CAN_BUS_DOWN fire on a
+    # bus with zero errors; (b) that heartbeat dropouts are now REPORTED and no
+    # longer stow; and (c) that the flash is wire-INCOMPATIBLE (PROTOCOL_VERSION
+    # 8→9), so a non-lockstep flash is a dark link rather than a missing
+    # behaviour.  Without (c) an operator flashing only one end reads the
+    # darkness as a cable fault, which is exactly the trap the 16→17 clause
+    # above exists to keep documented.
+    assert '22→23' in history or '22->23' in history, history
+    assert 'CAN_AXIS_SILENCE_TIMEOUT_US' in history, history
+    assert 'can_fault_leg' in history, history
+    assert 'PROTOCOL_VERSION 8→9' in history or 'PROTOCOL_VERSION 8->9' in history, history
+    assert 'DARKNESS' in history, history
 
 
 def test_the_version_this_release_pins_is_actually_uplinked():

@@ -53,6 +53,21 @@ struct AxisState {
   volatile bool     heartbeat_stale  = false;
   volatile bool     heartbeat_seen   = false;  // ever received a heartbeat
   volatile uint64_t last_heartbeat_us = 0;     // monotonic micros64 at last heartbeat
+  // ── AXIS LIVENESS (FW 23) ────────────────────────────────────────────────
+  // monotonic micros64 at the last frame of ANY kind decoded from this node:
+  // heartbeat, get_error, encoder estimate, iq, temps, bus voltage, version.
+  // THIS is what the fatal CAN_BUS_DOWN watchdog reads (fault_machine.cpp
+  // any_present_leg_silent), NOT last_heartbeat_us. Rationale: the ODrive emits
+  // ~272 frames/s/axis of which only 10 are heartbeats, and it DROPS (never
+  // queues) a cyclic frame that finds no free TX mailbox — so under the 62 %
+  // streaming bus load the sparsest stream is the first to show a 2 s gap while
+  // every other stream from the same node keeps arriving. On 2026-09-15 that
+  // stowed the robot twice on a bus with 0 errors and a 95 ms worst encoder age.
+  // Written by decode_into_cache BEFORE the per-command switch, so no future
+  // frame type can be added to the decode and silently miss the liveness stamp.
+  // Read via atomic_read_u64 / written via atomic_write_u64 (two 32-bit stores
+  // on Cortex-M7; the priority-5 RX task preempts the priority-3 fault task).
+  volatile uint64_t last_rx_us        = 0;
 
   // ── Targets — updated by interp task ───────────────────────────────────────
   volatile float    target_pos_rev   = 0.0f;

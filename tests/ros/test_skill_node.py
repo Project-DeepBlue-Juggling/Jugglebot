@@ -18,6 +18,8 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
+from tests.ros.conftest import MockTime, _MockParameter
+
 import rclpy
 from rclpy.callback_groups import (MutuallyExclusiveCallbackGroup,
                                    ReentrantCallbackGroup)
@@ -1072,3 +1074,65 @@ def test_a_tick_already_in_progress_does_not_start_a_second_dispatch():
     finally:
         node._tick_lock.release()
     node._executor.tick.assert_not_called()
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# catch_aim_source — the open-loop catch aim (owner decision 2026-09-15)
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+def test_the_live_catch_aim_default_is_the_schedules_own_throw_state():
+    """THE LIVE DEFAULT.  At the 2026-09-15 sitting all 13 self-tosses ended
+    `NO_LANDING` — mocap never produced a marker for the flying ball — so the
+    catch is aimed open loop from the throw state the schedule COMMANDED.
+    The executor's own constructor default stays `tracker` (the sim gate's
+    refine path), which is exactly why this node passes the value
+    EXPLICITLY: this test is what pins the two apart."""
+    node, _client = _node_with_client()
+    assert node.get_parameter('catch_aim_source').value == 'schedule'
+    node._svc_start_columns(Trigger.Request(), Trigger.Response())
+    assert node._executor.catch_aim_source == 'schedule'
+    assert node._executor.launch_ratio is not None
+
+
+@pytest.mark.parametrize('value', ['tracker', 'schedule_hand'])
+def test_the_aim_source_parameter_reaches_the_executor(value):
+    node, _client = _node_with_client()
+    node.set_parameters([_MockParameter(value, name='catch_aim_source')])
+    node._svc_start_columns(Trigger.Request(), Trigger.Response())
+    assert node._executor.catch_aim_source == value
+
+
+def test_an_unknown_aim_source_falls_back_to_the_open_loop_default():
+    """A typo in a launch override must not leave the operator with no catch
+    at all — and must not select the tracker, which is the mode that failed
+    on 2026-09-15."""
+    node, _client = _node_with_client()
+    node.set_parameters([_MockParameter('mocap', name='catch_aim_source')])
+    node._svc_start_columns(Trigger.Request(), Trigger.Response())
+    assert node._executor.catch_aim_source == 'schedule'
+
+
+def test_hand_telemetry_feeds_the_launch_ratio_the_executor_asks_for():
+    """`/hand_telemetry` is the ONLY source of the measured correction (never
+    QTM): the node's `launch_ratio` callable must answer from the samples that
+    topic delivered, and answer `None` before any stroke has been seen."""
+    node, _client = _node_with_client()
+    t_release = 1000.0
+    assert node._launch_ratio(0, t_release) is None      # nothing recorded yet
+
+    # One throw stroke delivered through the REAL callback, sample by sample.
+    # Each sample is stamped with the node's wall clock at arrival (the clock
+    # the schedule's release instants live on), so the mock clock is stepped
+    # rather than left at 0 — an unstamped sample is dropped by design, since
+    # it cannot be compared with a release instant.
+    n, dt = 20, 0.01
+    for i in range(n):
+        t = t_release - (n - 1 - i) * dt
+        node._clock = MagicMock()
+        node._clock.now.return_value = MockTime(int(round(t * 1e9)))
+        cmd = 120.0 * (i + 1) / n
+        node._on_hand_telemetry(HandTelemetryMessage(
+            vel_ff_cmd=cmd, vel_meas=cmd * 1.086, ball_held_valid=False))
+    assert len(node._hand_launch) == n
+    assert node._launch_ratio(0, t_release) == pytest.approx(1.086, abs=1e-6)

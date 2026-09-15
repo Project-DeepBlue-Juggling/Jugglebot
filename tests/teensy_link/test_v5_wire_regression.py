@@ -154,7 +154,8 @@ def test_live_v6_decoder_rejects_every_recorded_v5_frame():
     # reject must be the structural version ValueError (not CrcError — version
     # is checked before the CRC), for EVERY frame.
     fx = _fixture()
-    assert p.PROTOCOL_VERSION == 8      # the premise of the darkness (7→8 at hand C2 / FW 22, 2026-09-14)
+    assert p.PROTOCOL_VERSION == 9      # the premise of the darkness (8→9 at the FW 23 axis-silence
+                                    # watchdog, 2026-09-15; 7→8 at hand C2 / FW 22, 2026-09-14)
     for case in fx['cases']:
         for fr in case['frames']:
             frame = bytes.fromhex(fr['wire_frame_hex'])
@@ -176,5 +177,5 @@ def test_v6_frame_is_undecodable_as_v5_by_construction():
     assert reason is None
     frame = p.encode_frame(int(p.MsgType.SETPOINT), 1, sp.pack())
     _, version, _, _, length = struct.unpack_from(_V5_HEADER_FMT, frame, 0)
-    assert version == 8 != 5
+    assert version == 9 != 5
     assert length == 240 != _V5_SETPOINT_SIZE

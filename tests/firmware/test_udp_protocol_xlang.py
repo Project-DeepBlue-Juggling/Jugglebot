@@ -248,7 +248,15 @@ def test_protocol_version_frozen(gen, proto):
     Bumping it is an INCOMPATIBLE-wire change that requires reflashing the whole
     fleet — this makes the bump deliberate and keeps all three artifacts in lockstep."""
     spec_ver = _spec_const(gen, "PROTOCOL_VERSION")
-    assert spec_ver == 8, (   # 7→8: Setpoint + v2[7] + hand_ff_gain, HAS_V2/HAS_SCHED flag
+    assert spec_ver == 9, (   # 8→9: axis-silence watchdog (can-bridge FW 23, 2026-09-15) —
+                              # HeartbeatT2J GROWS by the CAN_BUS_DOWN trip latch
+                              # (can_fault_leg/age_ms/count) + flags bits 16-22
+                              # HB_STALE_MASK; CacheDiag GROWS by hb_frames[7]. The
+                              # fatal predicate moved off the 10 Hz heartbeat onto
+                              # any-frame axis liveness, so the heartbeat becomes a
+                              # DIAGNOSTIC and needed a wire home. Both structs grow ⇒
+                              # incompatible; darkness vs any FW ≤ 22 board is intended.
+                              # 7→8: Setpoint + v2[7] + hand_ff_gain, HAS_V2/HAS_SCHED flag
                               # bits, HeartbeatT2J scheduled-playback promotion
                               # diagnostics + flags bits 14/15 (2026-09-14, hand C2 /
                               # can-bridge FW 22 — payload 208→240 B; darkness against
@@ -475,7 +483,16 @@ def test_wire_layout_frozen(gen):
     # (u8 state + u8 pad[3] + u32 value + u32 reply_seq + u32 age_ms = 16 B)
     # behind RpcMethod GET_HAND_TORQUE_SCALE 0x005B — the hand ODrive
     # can.input_torque_scale readback that gates the hand torque-FF gain.
-    _EXPECTED = "4cdef5ed736c0411d2b53271564e35cc07c21faeb7e6d1fd9399bcd68cb5e93e"
+    # Previous pin: 4cdef5ed736c0411d2b53271564e35cc07c21faeb7e6d1fd9399bcd68cb5e93e
+    #   (v8: Setpoint 208→240 B + ResultHandTorqueScale — 2026-09-14/15, FW 22).
+    # Re-pinned 2026-09-15 (FW 23 axis-silence watchdog), INCOMPATIBLE hence
+    #   PROTOCOL_VERSION 8→9: HeartbeatT2J 121→126 B (+can_fault_leg u8 /
+    #   can_fault_age_ms u16 / can_fault_count u16 — the CAN_BUS_DOWN trip latch,
+    #   inserted after the max_dev_* block so the two fault latches read together)
+    #   and CacheDiag 129→157 B (+hb_frames[7], the per-axis heartbeat census
+    #   beside enc_frames). Both structs GROW, which is as incompatible as
+    #   shrinking one.
+    _EXPECTED = "1201acee8ab2cc6181a561036a2b994dd0c192822be14c5b62e5ba12f8e54e99"
     assert digest == _EXPECTED, (
         "The UDP wire LAYOUT changed (a message/arg field layout, a framed MsgType "
         "value, or a framing constant). If INCOMPATIBLE, bump PROTOCOL_VERSION. Either "

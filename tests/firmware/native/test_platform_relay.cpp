@@ -166,7 +166,7 @@ TEST_CASE("classify_bus_health pins the health_of truth table (bus-off wiring 20
   // (jugglebot_commands_allowed + the homing/activate/deactivate gates), so a
   // drift here silently changes when the robot refuses to move.
   using CanBridge::classify_bus_health;
-  constexpr uint64_t T = CanBridge::CAN_HEARTBEAT_TIMEOUT_US;
+  constexpr uint64_t T = CanBridge::CAN_AXIS_SILENCE_TIMEOUT_US;
   CHECK(T == 2000000u);   // 2.0 s staleness contract (can_node _HEARTBEAT_TIMEOUT_S parity)
 
   // Never seen a frame ⇒ UNKNOWN, whatever the registers say (bring-up allows
@@ -208,7 +208,7 @@ TEST_CASE("classify_command_gate keys on SUSTAINED confinement, health stays ins
   // table the gate applies to it.
   using CanBridge::classify_bus_health;
   using CanBridge::classify_command_gate;
-  constexpr uint64_t T = CanBridge::CAN_HEARTBEAT_TIMEOUT_US;
+  constexpr uint64_t T = CanBridge::CAN_AXIS_SILENCE_TIMEOUT_US;
   CHECK(CanBridge::CAN_PASSIVE_SUSTAIN_US == 1000000u);   // 1.0 s dwell contract
   CHECK(CanBridge::CAN_PASSIVE_SUSTAIN_US < T);           // never slower than staleness
 

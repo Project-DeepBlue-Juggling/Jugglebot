@@ -25,8 +25,14 @@ from pathlib import Path
 import pytest
 
 from jugglebot.rosbridge_websocket_lean import (
+    CALL_SERVICE_TIMEOUT_S,
     ClientReaper,
+    ProtocolReaper,
+    _call_with_timeout,
+    _guard_protocol_finish,
+    _subscription_count,
     build_call_service,
+    patch_rosbridge_websocket,
     spin_forever,
 )
 
@@ -166,17 +172,60 @@ class _FakeNodeHandle:
         return self._client
 
 
+class _FakeFuture:
+    """Stand-in for rclpy.task.Future — enough surface for
+    _call_with_timeout: add_done_callback (firing immediately if already
+    done, matching rclpy), exception() and result()."""
+
+    def __init__(self):
+        self._done_callbacks = []
+        self._done = False
+        self._result = None
+        self._exception = None
+
+    def add_done_callback(self, cb):
+        self._done_callbacks.append(cb)
+        if self._done:
+            cb(self)
+
+    def _complete(self, result=None, exception=None):
+        self._done = True
+        self._result = result
+        self._exception = exception
+        for cb in self._done_callbacks:
+            cb(self)
+
+    def exception(self):
+        return self._exception
+
+    def result(self):
+        return self._result
+
+
 class _FakeClient:
-    def __init__(self, result=None, error=None):
+    """Stand-in for rclpy.client.Client — call_async/remove_pending_request/
+    srv_name, the surface _call_with_timeout uses (not the old .call())."""
+
+    def __init__(self, result=None, error=None, srv_name='my_service',
+                 never_completes=False):
         self._result = result
         self._error = error
+        self._never_completes = never_completes
+        self.srv_name = srv_name
         self.call_count = 0
+        self.removed_pending = []
+        self._last_future = None
 
-    def call(self, inst):
+    def call_async(self, request):
         self.call_count += 1
-        if self._error is not None:
-            raise self._error
-        return self._result
+        future = _FakeFuture()
+        self._last_future = future
+        if not self._never_completes:
+            future._complete(result=self._result, exception=self._error)
+        return future
+
+    def remove_pending_request(self, future):
+        self.removed_pending.append(future)
 
 
 def test_success_returns_extracted_values_and_schedules_destroy_once():
@@ -231,6 +280,353 @@ def test_unknown_service_raises_invalid_service_and_schedules_nothing():
 
     assert node_handle.create_client_calls == []
     assert scheduled == []
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# _call_with_timeout
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def test_call_with_timeout_returns_result_when_future_completes():
+    client = _FakeClient(result='ok')
+
+    result = _call_with_timeout(client, 'req', timeout_sec=1.0)
+
+    assert result == 'ok'
+    assert client.call_count == 1
+
+
+def test_call_with_timeout_raises_and_removes_pending_request_when_never_completes():
+    client = _FakeClient(never_completes=True)
+
+    with pytest.raises(TimeoutError, match='timed out after'):
+        _call_with_timeout(client, 'req', timeout_sec=0.05)
+
+    assert client.removed_pending == [client._last_future]
+
+
+def test_call_with_timeout_propagates_the_futures_exception():
+    boom = RuntimeError('boom')
+    client = _FakeClient(error=boom)
+
+    with pytest.raises(RuntimeError, match='boom'):
+        _call_with_timeout(client, 'req', timeout_sec=1.0)
+
+    assert client.removed_pending == []  # completed, not timed out
+
+
+def test_call_service_timeout_exceeds_the_guis_largest_client_timeout():
+    """The GUI's largest per-step client-side service timeout is
+    T_SVC_CLEAR = 45000 ms (ros_ws/gui/js/state-minimap.js) — the server
+    bound must sit above every GUI client timeout, or the server could give
+    up mid-call while the GUI is still legitimately waiting."""
+    t_svc_clear_ms = 45000
+    assert CALL_SERVICE_TIMEOUT_S * 1000 > t_svc_clear_ms
+
+
+def test_build_call_service_with_never_completing_client_times_out_and_still_schedules_destroy():
+    svc = _fake_svc()
+    client = _FakeClient(never_completes=True)
+    node_handle = _FakeNodeHandle(client=client)
+    scheduled = []
+    call_service = build_call_service(svc, scheduled.append, timeout_sec=0.05)
+
+    # This is exactly the exception path stock CallService._failure turns
+    # into a service_response with result: False (see module docstring).
+    with pytest.raises(TimeoutError, match='timed out after'):
+        call_service(node_handle, 'my_service', args=None)
+
+    assert scheduled == [client]
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# _guard_protocol_finish / patch_rosbridge_websocket
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class _FakeSubscribeCapability:
+    """Stand-in for rosbridge_library.capabilities.subscribe.Subscribe —
+    just the _subscriptions container and an idempotent finish()."""
+
+    def __init__(self, subscriptions):
+        self._subscriptions = dict(subscriptions)
+
+    def finish(self):
+        self._subscriptions.clear()
+
+
+class _OtherCapability:
+    def finish(self):
+        pass
+
+
+class _FakeProtocol:
+    """Stand-in for rosbridge_library.protocol.Protocol — enough surface
+    for _guard_protocol_finish / _subscription_count / patch_rosbridge_websocket."""
+
+    def __init__(self, capabilities):
+        self.capabilities = capabilities
+        self.finish_calls = 0
+
+    def finish(self):
+        self.finish_calls += 1
+        for capability in self.capabilities:
+            capability.finish()
+
+
+class _FakeCloseLog:
+    def __init__(self):
+        self.infos = []
+
+    def info(self, msg):
+        self.infos.append(msg)
+
+
+class _FakeReaper:
+    """Stand-in for ProtocolReaper: records scheduled callables and only
+    runs them when drain() is called explicitly — mirroring how the real
+    reaper only runs them once the executor thread's guard condition
+    fires, never inline on the scheduling thread."""
+
+    def __init__(self):
+        self.pending = []
+
+    def schedule(self, fn):
+        self.pending.append(fn)
+
+    def drain(self):
+        pending, self.pending = self.pending, []
+        for fn in pending:
+            fn()
+
+
+def test_protocol_reaper_schedule_appends_and_triggers_the_guard():
+    node = _FakeNode()
+    reaper = ProtocolReaper(node)
+    calls = []
+
+    reaper.schedule(lambda: calls.append('a'))
+
+    assert len(reaper._pending) == 1
+    assert node.guard.trigger_count == 1
+    assert calls == []  # nothing run until _drain runs
+
+
+def test_protocol_reaper_drain_runs_each_pending_callable_exactly_once():
+    node = _FakeNode()
+    reaper = ProtocolReaper(node)
+    calls = []
+    reaper.schedule(lambda: calls.append('a'))
+    reaper.schedule(lambda: calls.append('b'))
+
+    reaper._drain()
+
+    assert calls == ['a', 'b']
+    assert len(reaper._pending) == 0
+
+    # A second drain with nothing pending runs nothing more.
+    reaper._drain()
+    assert calls == ['a', 'b']
+
+
+def test_guard_protocol_finish_schedules_the_real_finish_exactly_once():
+    """_guard_protocol_finish must never run the real finish() inline — see
+    the coordinator's audit finding 2026-09-15: Subscribe.finish() /
+    Advertise.finish() mutate node entity lists the executor thread
+    iterates, so the real finish() may only run once scheduled onto it."""
+    protocol = _FakeProtocol([])
+    reaper = _FakeReaper()
+    finish_once = _guard_protocol_finish(protocol, reaper.schedule)
+
+    assert finish_once() is True
+    assert protocol.finish_calls == 0  # scheduled, not run inline
+    assert len(reaper.pending) == 1
+
+    assert finish_once() is False  # second call: nothing more scheduled
+    assert len(reaper.pending) == 1
+
+    reaper.drain()
+    assert protocol.finish_calls == 1
+
+    reaper.drain()  # nothing pending — draining again changes nothing
+    assert protocol.finish_calls == 1
+
+
+def test_guard_protocol_finish_is_safe_under_concurrent_calls():
+    protocol = _FakeProtocol([])
+    reaper = _FakeReaper()
+    finish_once = _guard_protocol_finish(protocol, reaper.schedule)
+    results = []
+    results_lock = threading.Lock()
+
+    def call():
+        ran = finish_once()
+        with results_lock:
+            results.append(ran)
+
+    threads = [threading.Thread(target=call) for _ in range(20)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(reaper.pending) == 1  # exactly one call won the schedule
+    assert results.count(True) == 1
+    assert results.count(False) == 19
+
+    reaper.drain()
+    assert protocol.finish_calls == 1  # the real finish ran exactly once
+
+
+def test_subscription_count_reads_the_subscribe_capabilitys_container():
+    sub_cap = _FakeSubscribeCapability({'t1': object(), 't2': object()})
+    protocol = _FakeProtocol([_OtherCapability(), sub_cap])
+
+    assert _subscription_count(protocol, _FakeSubscribeCapability) == 2
+
+
+def test_subscription_count_returns_zero_with_no_matching_capability():
+    protocol = _FakeProtocol([_OtherCapability()])
+
+    assert _subscription_count(protocol, _FakeSubscribeCapability) == 0
+
+
+class _FakeRosbridgeWebSocket:
+    """Stand-in for rosbridge_server.RosbridgeWebSocket (a tornado
+    WebSocketHandler) — enough surface for patch_rosbridge_websocket:
+    open()/on_close() that patch wraps, and a `protocol` attribute open()
+    assigns (as stock open() does)."""
+
+    def __init__(self, protocol_to_assign):
+        self._protocol_to_assign = protocol_to_assign
+        self.stock_open_calls = 0
+        self.stock_on_close_calls = 0
+        self.client_id = 'fake-client-1'
+
+    def open(self):
+        self.stock_open_calls += 1
+        self.protocol = self._protocol_to_assign
+
+    def on_close(self):
+        self.stock_on_close_calls += 1
+
+
+def test_patch_schedules_teardown_via_the_reaper_without_calling_finish_inline():
+    """(a) on_close must SCHEDULE exactly one finish via the reaper and must
+    NOT call protocol.finish inline — the fake protocol's finish is not
+    invoked until the reaper drains (coordinator audit finding 2026-09-15:
+    Subscribe.finish()/Advertise.finish() mutate node entity lists the
+    executor thread iterates, the same hazard ClientReaper exists for)."""
+    sub_cap = _FakeSubscribeCapability({'t1': object(), 't2': object()})
+    protocol = _FakeProtocol([sub_cap, _OtherCapability()])
+    log = _FakeCloseLog()
+    reaper = _FakeReaper()
+
+    # A fresh subclass per test: patch_rosbridge_websocket mutates the class
+    # it's given, and each test must patch an UNPATCHED class — patching the
+    # shared _FakeRosbridgeWebSocket base repeatedly would stack wrappers
+    # from earlier tests (each closing over that earlier test's `log`).
+    class Handler(_FakeRosbridgeWebSocket):
+        pass
+
+    patch_rosbridge_websocket(Handler, _FakeSubscribeCapability, log, reaper)
+    handler = Handler(protocol)
+    handler.open()
+    assert handler.stock_open_calls == 1
+
+    handler.on_close()
+
+    assert handler.stock_on_close_calls == 1
+    assert protocol.finish_calls == 0  # NOT run inline off the I/O thread
+    assert sub_cap._subscriptions != {}  # not torn down yet
+    assert len(reaper.pending) == 1  # exactly one finish scheduled
+    assert len(log.infos) == 1
+    assert '2 subscription' in log.infos[0]
+
+    reaper.drain()  # stand-in for the executor thread draining the reaper
+
+    assert protocol.finish_calls == 1
+    assert sub_cap._subscriptions == {}
+
+
+def test_patch_on_close_then_incoming_queues_trailing_finish_is_a_no_op():
+    """Reproduces the real path this patch relies on: stock
+    IncomingQueue.run()'s trailing self.protocol.finish() call (once its
+    thread's blocked call eventually returns) goes through the SAME
+    guarded, reaper-backed protocol.finish attribute on_close used — so it
+    schedules nothing new, and draining still runs the real teardown
+    exactly once."""
+    sub_cap = _FakeSubscribeCapability({'t1': object()})
+    protocol = _FakeProtocol([sub_cap])
+    log = _FakeCloseLog()
+    reaper = _FakeReaper()
+
+    class Handler(_FakeRosbridgeWebSocket):
+        pass
+
+    patch_rosbridge_websocket(Handler, _FakeSubscribeCapability, log, reaper)
+    handler = Handler(protocol)
+    handler.open()
+
+    handler.on_close()
+    ran_again = protocol.finish()  # stand-in for IncomingQueue.run()'s call
+
+    assert ran_again is False
+    assert len(reaper.pending) == 1  # still just the one scheduled call
+    assert len(log.infos) == 1  # only the close that won the schedule logs
+
+    reaper.drain()
+    assert protocol.finish_calls == 1  # real teardown ran exactly once
+
+
+def test_patch_on_close_called_twice_schedules_once_and_drains_once():
+    """(b) draining runs the real finish once even when scheduled twice."""
+    sub_cap = _FakeSubscribeCapability({'t1': object()})
+    protocol = _FakeProtocol([sub_cap])
+    log = _FakeCloseLog()
+    reaper = _FakeReaper()
+
+    class Handler(_FakeRosbridgeWebSocket):
+        pass
+
+    patch_rosbridge_websocket(Handler, _FakeSubscribeCapability, log, reaper)
+    handler = Handler(protocol)
+    handler.open()
+
+    handler.on_close()
+    handler.on_close()
+
+    assert handler.stock_on_close_calls == 2  # stock bookkeeping still runs
+    assert len(reaper.pending) == 1  # only one schedule won
+    assert len(log.infos) == 1
+
+    reaper.drain()
+    reaper.drain()  # a second drain (nothing pending) changes nothing
+
+    assert protocol.finish_calls == 1  # real teardown ran exactly once
+
+
+def test_patch_open_leaves_protocol_none_handling_to_on_close():
+    """If stock open() failed to set self.protocol (the real stock open()
+    catches exceptions during protocol construction and just logs), the
+    patched open()/on_close() must not raise."""
+    log = _FakeCloseLog()
+    reaper = _FakeReaper()
+
+    class _HandlerWithNoProtocol(_FakeRosbridgeWebSocket):
+        def open(self):
+            self.stock_open_calls += 1
+            # deliberately does not set self.protocol
+
+    patch_rosbridge_websocket(
+        _HandlerWithNoProtocol, _FakeSubscribeCapability, log, reaper)
+    handler = _HandlerWithNoProtocol(protocol_to_assign=None)
+
+    handler.open()
+    handler.on_close()  # must not raise
+
+    assert log.infos == []
+    assert reaper.pending == []
 
 
 # ═══════════════════════════════════════════════════════════════════════

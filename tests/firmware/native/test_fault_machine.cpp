@@ -67,6 +67,7 @@ static void clear_legs() {
     axes[i].heartbeat_seen = false;
     axes[i].heartbeat_stale = false;
     axes[i].last_heartbeat_us = 0;
+    axes[i].last_rx_us = 0;
     axes[i].pos_rev = 0.0f;
     axes[i].vel_rps = 0.0f;
     axes[i].pos_timestamp_us = 0;
@@ -74,6 +75,33 @@ static void clear_legs() {
     axes[i].target_vel_rps = 0.0f;
     axes[i].target_torque_Nm = 0.0f;
   }
+}
+
+// Stamp a heartbeat frame's ARRIVAL for axis `a` — BOTH timestamps, exactly as
+// can_buses.cpp decode_into_cache does: the liveness stamp (last_rx_us, FW 23)
+// is written above the per-command switch, so a heartbeat is also a liveness
+// frame. Every existing scenario here goes through this helper, which is why the
+// FW 23 predicate swap leaves the committed golden byte-identical: the two
+// predicates AGREE whenever the only traffic on the bus is heartbeats. The tests
+// that make them DISAGREE (a live encoder stream against a dead heartbeat, and
+// the reverse) stamp the two fields independently and are the new coverage.
+static void stamp_hb(uint8_t a) {
+  axes[a].last_heartbeat_us = fake_mono_us();
+  axes[a].last_rx_us        = fake_mono_us();
+}
+// Stamp ONLY the liveness clock — a non-heartbeat frame (encoder estimate, iq,
+// temps, vbus, get_error). This is what the 2026-09-15 fault looked like from the
+// bridge's side: ~272 frames/s/axis arriving with the 10 Hz heartbeat missing.
+static void stamp_rx_only(uint8_t a) { axes[a].last_rx_us = fake_mono_us(); }
+// Seed a PRESENT bus: heartbeat_seen latched (leg_present ⇒ the axis is on the
+// bus) plus both clocks stamped. Presence is a SEPARATE latch from freshness and
+// both predicates gate on it, so a test that stamps clocks without it is testing
+// an absent axis, which is skipped by construction.
+static void seed_present_legs() {
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) { axes[i].heartbeat_seen = true; stamp_hb(i); }
+}
+static void seed_present_axes() {   // legs 0-5 + the hand (axis 6)
+  for (uint8_t i = 0; i < NUM_AXES; ++i) { axes[i].heartbeat_seen = true; stamp_hb(i); }
 }
 
 static void reset_all() {
@@ -121,7 +149,7 @@ static std::vector<ErrOut> run_error_scenario(const ErrScenario& sc) {
   std::vector<ErrOut> out;
   for (const auto& st : sc.steps) {
     // Dead-bus preset. MUST be per-step: fault_step()'s watchdog clears
-    // s_fatal_can_error each tick (all_present_legs_fresh is vacuously true with
+    // s_fatal_can_error each tick (all_present_legs_alive is vacuously true with
     // zero present legs), and evaluate_errors runs FIRST inside fault_step so it
     // sees this preset when deciding whether clear_errors_can() may fire.
     s_fatal_can_error = st.fatal_can_error;
@@ -197,7 +225,7 @@ static std::vector<ErrScenario> error_scenarios() {
 // The reboot-suppression latch adds two input columns: reboot_start (arm the latch,
 // = the REBOOT_ODRIVES RPC) and deadline_pass (the reboot-suppression deadline has
 // elapsed). The abstract (stale, fresh, deadline_pass) triple stands in for the
-// firmware's clock-driven any_leg_heartbeat_stale / all_present_legs_fresh /
+// firmware's clock-driven any_present_leg_silent / all_present_legs_alive /
 // now>=deadline, so the Jetson host mirror (fault_logic.py DeferredStowLatch) can
 // replay these goldens clock-free.
 struct StowStep {
@@ -215,10 +243,10 @@ struct StowStep {
 struct StowScenario { std::string name; std::vector<StowStep> steps; bool cold_start = false; };
 struct StowOut { bool fatal; bool pending; bool stowing; };
 
-// In-window staleness advance: > CAN_HEARTBEAT_TIMEOUT_US (legs go stale) but
+// In-window staleness advance: > CAN_AXIS_SILENCE_TIMEOUT_US (legs go stale) but
 // < REBOOT_WATCHDOG_SUPPRESS_US (still inside the reboot-suppression window), so a
 // "stale" step alone never crosses the reboot deadline — deadline_pass does that.
-static constexpr uint64_t STALE_ADVANCE_US = CAN_HEARTBEAT_TIMEOUT_US + 500'000;  // 2.5 s
+static constexpr uint64_t STALE_ADVANCE_US = CAN_AXIS_SILENCE_TIMEOUT_US + 500'000;  // 2.5 s
 
 static std::vector<StowOut> run_stow_scenario(const StowScenario& sc) {
   reset_all();
@@ -226,7 +254,7 @@ static std::vector<StowOut> run_stow_scenario(const StowScenario& sc) {
   if (!sc.cold_start) {
     for (uint8_t i = 0; i < NUM_LEGS; ++i) {     // full robot: all 6 present
       axes[i].heartbeat_seen = true;
-      axes[i].last_heartbeat_us = fake_mono_us();
+      stamp_hb(i);
     }
   }
   std::vector<StowOut> out;
@@ -238,13 +266,13 @@ static std::vector<StowOut> run_stow_scenario(const StowScenario& sc) {
     if (sc.cold_start && st.seen) {
       for (uint8_t i = 0; i < NUM_LEGS; ++i) {
         axes[i].heartbeat_seen = true;
-        axes[i].last_heartbeat_us = fake_mono_us();
+        stamp_hb(i);
       }
     }
     if (st.reboot_start) fault_notify_reboot_started();               // arm the latch
     if (st.stale) fake_advance(STALE_ADVANCE_US);                     // legs go stale (in-window)
     if (st.deadline_pass) fake_advance(REBOOT_WATCHDOG_SUPPRESS_US);  // cross the reboot deadline
-    if (st.fresh) for (uint8_t i = 0; i < NUM_LEGS; ++i) axes[i].last_heartbeat_us = fake_mono_us();
+    if (st.fresh) for (uint8_t i = 0; i < NUM_LEGS; ++i) stamp_hb(i);
     if (st.complete) interp_isr();   // legs already at STOW (pos_rev=0) → one tick sets stow_complete
     fault_step();
     out.push_back({s_fatal_can_error, s_stow_pending, s_stowing});
@@ -337,11 +365,11 @@ TEST_CASE("never command a dead bus + terminal IDLE on stow complete") {
   fake_set_clock(10'000'000, 10'000'000);
   for (uint8_t i = 0; i < NUM_LEGS; ++i) {
     axes[i].heartbeat_seen = true;
-    axes[i].last_heartbeat_us = fake_mono_us();
+    stamp_hb(i);
   }
   // Loss: detection arms the latch and gates output OFF — and the fault machine
   // emits NOTHING to the dead bus (no clears: legs are error-free).
-  fake_advance(3 * (uint64_t)CAN_HEARTBEAT_TIMEOUT_US);
+  fake_advance(3 * (uint64_t)CAN_AXIS_SILENCE_TIMEOUT_US);
   fake_clear_sent();
   fault_step();
   CHECK(s_fatal_can_error);
@@ -351,7 +379,7 @@ TEST_CASE("never command a dead bus + terminal IDLE on stow complete") {
   CHECK(fault_state() == JbUdp::FaultState::CAN_BUS_DOWN);
 
   // Confirmed reconnect: the profiled stow begins, output gate re-enabled.
-  for (uint8_t i = 0; i < NUM_LEGS; ++i) axes[i].last_heartbeat_us = fake_mono_us();
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) stamp_hb(i);
   fault_step();
   CHECK(s_fatal_can_error == false);
   CHECK(s_stowing);
@@ -376,17 +404,172 @@ TEST_CASE("present-axis freshness: single-leg rig reconnect is NOT dead-locked")
   reset_all();
   fake_set_clock(10'000'000, 10'000'000);
   axes[0].heartbeat_seen = true;
-  axes[0].last_heartbeat_us = fake_mono_us();
+  stamp_hb(0);
   // Loss: leg 0 goes stale → detection fires even with five absent legs.
-  fake_advance(3 * (uint64_t)CAN_HEARTBEAT_TIMEOUT_US);
+  fake_advance(3 * (uint64_t)CAN_AXIS_SILENCE_TIMEOUT_US);
   fault_step();
   CHECK(s_fatal_can_error);
   CHECK(s_stow_pending);
   // Reconnect: leg 0 fresh again → stow EXECUTES (the dead-lock fix).
-  axes[0].last_heartbeat_us = fake_mono_us();
+  stamp_hb(0);
   fault_step();
   CHECK(s_fatal_can_error == false);
   CHECK(s_stowing);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  FW 23 — the AXIS-SILENCE watchdog (the predicate swap)
+// ═══════════════════════════════════════════════════════════════════════════════
+//  WHY THESE EXIST. Until FW 23 the fatal CAN_BUS_DOWN predicate read
+//  last_heartbeat_us, i.e. the ONE stream an ODrive sends at 10 Hz out of the
+//  ~272 frames/s it broadcasts. On 2026-09-15 that stowed the robot twice while
+//  the bus was demonstrably healthy: 0 wire errors, ring leak 0, ~1950 frames/s
+//  RX, worst per-axis ENCODER age 95 ms. An ODrive DROPS (never queues) a cyclic
+//  frame that finds no free TX mailbox, so under 62 % bus load the sparsest
+//  stream is the one that produces a 2 s run of consecutive losses. The predicate
+//  now reads last_rx_us (ANY frame from that node), and these cases pin the two
+//  directions in which the old and new predicates DISAGREE — which is precisely
+//  the behaviour no committed golden could have caught, since every golden
+//  scenario's only bus traffic is heartbeats (stamp_hb stamps both clocks).
+TEST_CASE("FW 23: a leg with a DEAD heartbeat but a live frame stream does NOT trip") {
+  reset_all();
+  fake_set_clock(10'000'000, 10'000'000);
+  seed_present_legs();
+  fault_step();
+  REQUIRE(fault_can_bus_down() == false);
+
+  // Replay the 2026-09-15 shape on leg 3: its 10 Hz heartbeat stops dead while
+  // its 100 Hz encoder stream keeps arriving. Walk 6 s in 100 ms steps, stamping
+  // liveness only — three times the 2.0 s window, so the OLD predicate would
+  // have tripped ~20 times over.
+  for (int k = 0; k < 60; ++k) {
+    fake_advance(100'000);
+    for (uint8_t i = 0; i < NUM_LEGS; ++i) {
+      if (i == 3) stamp_rx_only(i);   // frames flowing, heartbeat silent
+      else        stamp_hb(i);
+    }
+    fault_step();
+    REQUIRE(fault_can_bus_down() == false);
+    REQUIRE(fault_stow_pending() == false);
+  }
+  // No trip, no stow, nothing latched — but the dropout IS reported.
+  REQUIRE(fault_can_fault_leg() == 0xFF);
+  REQUIRE(fault_can_fault_count() == 0);
+  REQUIRE((fault_hb_stale_mask() & (1u << 3)) != 0);   // reported as a diagnostic
+  REQUIRE((fault_hb_stale_mask() & ~(1u << 3)) == 0);  // and ONLY on leg 3
+}
+
+TEST_CASE("FW 23: a leg silent on EVERY stream DOES trip, and the latch names it") {
+  reset_all();
+  fake_set_clock(10'000'000, 10'000'000);
+  seed_present_legs();
+  fault_step();
+  REQUIRE(fault_can_bus_down() == false);
+  REQUIRE(fault_can_fault_leg() == 0xFF);   // 0xFF ⇒ no trip since boot
+
+  // Leg 4 goes completely dark; the other five keep streaming. One silent leg is
+  // an ACTUATOR LOSS on a closed kinematic chain, so a single leg still trips.
+  fake_advance(CAN_AXIS_SILENCE_TIMEOUT_US + 300'000);   // 2.3 s
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) if (i != 4) stamp_hb(i);
+  fault_step();
+  REQUIRE(fault_can_bus_down() == true);
+  REQUIRE(fault_stow_pending() == true);
+  REQUIRE(fault_can_fault_leg() == 4);
+  // The age is the SILENCE age, frozen at the trip: > the 2000 ms threshold by
+  // construction, and near it for a marginal dropout rather than a bus loss.
+  REQUIRE(fault_can_fault_age_ms() >= 2300);
+  REQUIRE(fault_can_fault_age_ms() < 2400);
+  REQUIRE(fault_can_fault_count() == 1);
+}
+
+TEST_CASE("FW 23: the trip latch SURVIVES the self-clear, and counts every trip") {
+  reset_all();
+  fake_set_clock(10'000'000, 10'000'000);
+  seed_present_legs();
+  fault_step();
+
+  // Trip on leg 2.
+  fake_advance(CAN_AXIS_SILENCE_TIMEOUT_US + 100'000);
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) if (i != 2) stamp_hb(i);
+  fault_step();
+  REQUIRE(fault_can_bus_down() == true);
+  REQUIRE(fault_can_fault_leg() == 2);
+  REQUIRE(fault_can_fault_count() == 1);
+
+  // Leg 2 comes back → the fault SELF-CLEARS (the 2026-09-15 events cleared
+  // inside one 10 Hz tick). The latch must NOT clear with it: it is the only
+  // record the operator or a bag reader ever gets.
+  seed_present_legs();
+  fault_step();
+  REQUIRE(fault_can_bus_down() == false);
+  REQUIRE(fault_can_fault_leg() == 2);
+  REQUIRE(fault_can_fault_count() == 1);
+
+  // A second, different trip re-points the latch and advances the census.
+  fake_advance(CAN_AXIS_SILENCE_TIMEOUT_US + 100'000);
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) if (i != 5) stamp_hb(i);
+  fault_step();
+  REQUIRE(fault_can_fault_leg() == 5);
+  REQUIRE(fault_can_fault_count() == 2);
+
+  // An operator CLEAR_ERRORS releases the identity (acknowledged) but KEEPS the
+  // count: a session census an operator clear could zero would make the second
+  // trip of a sitting read as the first.
+  fault_notify_clear_errors();
+  REQUIRE(fault_can_fault_leg() == 0xFF);
+  REQUIRE(fault_can_fault_age_ms() == 0);
+  REQUIRE(fault_can_fault_count() == 2);
+}
+
+TEST_CASE("FW 23: whole-bus darkness is the ALL-legs instance of the same predicate") {
+  reset_all();
+  fake_set_clock(10'000'000, 10'000'000);
+  seed_present_legs();
+  fault_step();
+  REQUIRE(fault_can_bus_down() == false);
+
+  // Nothing stamped at all — the cable-unplug case the fault is named for.
+  fake_advance(CAN_AXIS_SILENCE_TIMEOUT_US + 500'000);
+  fault_step();
+  REQUIRE(fault_can_bus_down() == true);
+  REQUIRE(fault_stow_pending() == true);
+  REQUIRE(fault_can_fault_leg() == 0);      // every leg silent ⇒ the FIRST in index order
+  REQUIRE(fault_can_fault_count() == 1);
+}
+
+TEST_CASE("FW 23: HB_STALE_MASK is per-axis, includes the hand, and is 4x sharper than the trip") {
+  reset_all();
+  fake_set_clock(10'000'000, 10'000'000);
+  REQUIRE(fault_hb_stale_mask() == 0);      // nothing seen yet ⇒ no axis is "stale"
+
+  seed_present_axes();
+  REQUIRE(fault_hb_stale_mask() == 0);
+
+  // Just INSIDE the 0.5 s diagnostic window: leg 1 and the hand stop heartbeating
+  // (their frame streams keep flowing, so nothing may trip).
+  fake_advance(400'000);
+  for (uint8_t i = 0; i < NUM_AXES; ++i) {
+    if (i == 1 || i == HAND_AXIS) stamp_rx_only(i);
+    else                          stamp_hb(i);
+  }
+  fault_step();
+  REQUIRE(fault_hb_stale_mask() == 0);      // 400 ms < CAN_HEARTBEAT_STALE_US
+  REQUIRE(fault_can_bus_down() == false);
+
+  // Past it, but still far short of the 2.0 s silence timeout.
+  fake_advance(200'000);                    // those two axes now 600 ms stale
+  for (uint8_t i = 0; i < NUM_AXES; ++i) {
+    if (i == 1 || i == HAND_AXIS) stamp_rx_only(i);
+    else                          stamp_hb(i);
+  }
+  fault_step();
+  REQUIRE(fault_hb_stale_mask() == ((1u << 1) | (1u << HAND_AXIS)));
+  REQUIRE(fault_can_bus_down() == false);   // diagnostic ONLY — never a fault
+  REQUIRE(fault_stow_pending() == false);
+  REQUIRE(fault_can_fault_leg() == 0xFF);
+
+  // The mask fits the 7 bits the wire reserves for it (flags bits 16-22).
+  REQUIRE((fault_hb_stale_mask() & ~0x7Fu) == 0);
 }
 
 TEST_CASE("motor-feedback staleness suppresses output recoverably (not latched)") {
@@ -394,7 +577,7 @@ TEST_CASE("motor-feedback staleness suppresses output recoverably (not latched)"
   fake_set_clock(10'000'000, 10'000'000);
   fault_set_mpc_active(true);
   axes[0].heartbeat_seen = true;
-  axes[0].last_heartbeat_us = fake_mono_us();
+  stamp_hb(0);
   axes[0].pos_rev = 0.0f;
   axes[0].pos_timestamp_us = fake_mono_us();
   fake_set_udp_last_rx_us(fake_mono_us());
@@ -409,7 +592,7 @@ TEST_CASE("motor-feedback staleness suppresses output recoverably (not latched)"
   // Feedback freezes: advance 0.2 s (> MOTOR_FB_STALENESS 0.15 s) without a new
   // encoder timestamp; keep the link + command fresh so nothing else trips.
   fake_advance(200'000);
-  axes[0].last_heartbeat_us = fake_mono_us();   // bus still up
+  stamp_hb(0);   // bus still up
   fake_set_udp_last_rx_us(fake_mono_us());      // link still up
   fault_step();
   CHECK(fault_state() == JbUdp::FaultState::MOTOR_FB_STALE);
@@ -431,7 +614,7 @@ TEST_CASE("guard E-STOP / fb-stale are present-scoped and pre-arm-safe") {
     fake_set_clock(10'000'000, 10'000'000);
     fault_set_mpc_active(true);
     axes[0].heartbeat_seen = true;
-    axes[0].last_heartbeat_us = fake_mono_us();
+    stamp_hb(0);
     axes[0].pos_rev = 0.0f;
     axes[0].pos_timestamp_us = fake_mono_us();
     fake_set_udp_last_rx_us(fake_mono_us());
@@ -466,10 +649,10 @@ TEST_CASE("guard E-STOP / fb-stale are present-scoped and pre-arm-safe") {
     fake_set_clock(10'000'000, 10'000'000);
     fault_set_mpc_active(false);      // not armed
     axes[0].heartbeat_seen = true;
-    axes[0].last_heartbeat_us = fake_mono_us();
+    stamp_hb(0);
     axes[0].pos_timestamp_us = 0;     // ancient feedback timestamp
     fake_advance(1'000'000);
-    axes[0].last_heartbeat_us = fake_mono_us();
+    stamp_hb(0);
     fake_set_udp_last_rx_us(fake_mono_us());
     fault_step();
     CHECK(fault_state() != JbUdp::FaultState::MOTOR_FB_STALE);
@@ -487,7 +670,7 @@ TEST_CASE("guard E-STOP LATCHES until an explicit operator clear") {
     fake_set_clock(10'000'000, 10'000'000);
     fault_set_mpc_active(true);
     axes[0].heartbeat_seen = true;
-    axes[0].last_heartbeat_us = fake_mono_us();
+    stamp_hb(0);
     axes[0].pos_rev = 0.0f;
     axes[0].pos_timestamp_us = fake_mono_us();
     fake_set_udp_last_rx_us(fake_mono_us());
@@ -515,7 +698,7 @@ TEST_CASE("guard E-STOP LATCHES until an explicit operator clear") {
     REQUIRE(fault_state() == JbUdp::FaultState::NONE);      // fresh stream, no trip
 
     fake_advance(SETPOINT_STALENESS_US + 1);                // ONLY the setpoint ages
-    axes[0].last_heartbeat_us = fake_mono_us();
+    stamp_hb(0);
     axes[0].pos_timestamp_us  = fake_mono_us();
     fake_set_udp_last_rx_us(fake_mono_us());
     fault_step();
@@ -529,7 +712,7 @@ TEST_CASE("guard E-STOP LATCHES until an explicit operator clear") {
     JbUdp::SetpointPayload sp; memset(&sp, 0, sizeof(sp));
     interp_on_setpoint(0, reinterpret_cast<const uint8_t*>(&sp), sizeof(sp));
     interp_isr();
-    axes[0].last_heartbeat_us = fake_mono_us();
+    stamp_hb(0);
     axes[0].pos_timestamp_us  = fake_mono_us();
     fake_set_udp_last_rx_us(fake_mono_us());
     fault_step();
@@ -623,9 +806,9 @@ TEST_CASE("reboot latch: a SPONTANEOUS CAN loss is UNAFFECTED (deferred-stow inv
   // arm the deferred stow exactly as before — the latch only touches reboot-armed silence.
   reset_all();
   fake_set_clock(10'000'000, 10'000'000);
-  for (uint8_t i = 0; i < NUM_LEGS; ++i) { axes[i].heartbeat_seen = true; axes[i].last_heartbeat_us = fake_mono_us(); }
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) { axes[i].heartbeat_seen = true; stamp_hb(i); }
   // NO fault_notify_reboot_started().
-  fake_advance(3 * (uint64_t)CAN_HEARTBEAT_TIMEOUT_US);
+  fake_advance(3 * (uint64_t)CAN_AXIS_SILENCE_TIMEOUT_US);
   fault_step();
   CHECK(fault_can_bus_down());                              // detection fired
   CHECK(fault_stow_pending());                             // deferred stow armed (inversion intact)
@@ -636,13 +819,13 @@ TEST_CASE("reboot latch: suppresses in-window, releases on fresh-after-stale AND
   // (a) fresh-after-stale release — the ODrives came back.
   reset_all();
   fake_set_clock(10'000'000, 10'000'000);
-  for (uint8_t i = 0; i < NUM_LEGS; ++i) { axes[i].heartbeat_seen = true; axes[i].last_heartbeat_us = fake_mono_us(); }
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) { axes[i].heartbeat_seen = true; stamp_hb(i); }
   fault_notify_reboot_started();                            // arm (legs fresh at arm time)
-  fake_advance(CAN_HEARTBEAT_TIMEOUT_US + 500'000);         // 2.5 s: legs stale, < 6 s deadline
+  fake_advance(CAN_AXIS_SILENCE_TIMEOUT_US + 500'000);         // 2.5 s: legs stale, < 6 s deadline
   fault_step();
   CHECK(fault_can_bus_down() == false);                    // SUPPRESSED — no false loss
   CHECK(fault_stow_pending() == false);                    // ...and no stow armed
-  for (uint8_t i = 0; i < NUM_LEGS; ++i) axes[i].last_heartbeat_us = fake_mono_us();  // legs return
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) stamp_hb(i);  // legs return
   fault_step();
   CHECK(fault_can_bus_down() == false);                    // released cleanly, no stow
   CHECK(fault_stow_pending() == false);
@@ -650,9 +833,9 @@ TEST_CASE("reboot latch: suppresses in-window, releases on fresh-after-stale AND
   // (b) deadline release — a reboot that never returns is still caught at the deadline.
   reset_all();
   fake_set_clock(10'000'000, 10'000'000);
-  for (uint8_t i = 0; i < NUM_LEGS; ++i) { axes[i].heartbeat_seen = true; axes[i].last_heartbeat_us = fake_mono_us(); }
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) { axes[i].heartbeat_seen = true; stamp_hb(i); }
   fault_notify_reboot_started();
-  fake_advance(CAN_HEARTBEAT_TIMEOUT_US + 500'000);         // 2.5 s: in-window → suppressed
+  fake_advance(CAN_AXIS_SILENCE_TIMEOUT_US + 500'000);         // 2.5 s: in-window → suppressed
   fault_step();
   CHECK(fault_can_bus_down() == false);
   fake_advance(REBOOT_WATCHDOG_SUPPRESS_US);                // past the 6 s deadline, legs still silent
@@ -668,10 +851,10 @@ TEST_CASE("reboot latch: a latch armed while legs are STILL fresh cannot release
   // then confirm the latch is still suppressing when the silence finally arrives.
   reset_all();
   fake_set_clock(10'000'000, 10'000'000);
-  for (uint8_t i = 0; i < NUM_LEGS; ++i) { axes[i].heartbeat_seen = true; axes[i].last_heartbeat_us = fake_mono_us(); }
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) { axes[i].heartbeat_seen = true; stamp_hb(i); }
   fault_notify_reboot_started();                            // arm (legs fresh)
   fault_step();                                             // legs still fresh → must NOT release
-  fake_advance(CAN_HEARTBEAT_TIMEOUT_US + 500'000);         // now the reboot silence arrives (in-window)
+  fake_advance(CAN_AXIS_SILENCE_TIMEOUT_US + 500'000);         // now the reboot silence arrives (in-window)
   fault_step();
   CHECK(fault_can_bus_down() == false);                    // still suppressed (early release avoided)
 }
@@ -698,7 +881,7 @@ TEST_CASE("wall step does not perturb staleness/guard/stow (wall/mono clock sepa
     fault_set_mpc_active(true);
     for (uint8_t i = 0; i < NUM_LEGS; ++i) {
       axes[i].heartbeat_seen    = true;
-      axes[i].last_heartbeat_us = fake_mono_us();
+      stamp_hb(i);
       axes[i].pos_rev           = 0.0f;
       axes[i].pos_timestamp_us  = fake_mono_us();
     }
@@ -737,7 +920,7 @@ TEST_CASE("wall step does not perturb staleness/guard/stow (wall/mono clock sepa
     CHECK(fault_stow_pending()    == base_pending);
   }
   SUBCASE("positive control: a MONO advance past the timeout DOES trip CAN_BUS_DOWN") {
-    fake_advance(3 * (uint64_t)CAN_HEARTBEAT_TIMEOUT_US);   // both clocks move → real staleness on mono
+    fake_advance(3 * (uint64_t)CAN_AXIS_SILENCE_TIMEOUT_US);   // both clocks move → real staleness on mono
     fault_step();
     CHECK(fault_can_bus_down());
     CHECK(fault_state() == JbUdp::FaultState::CAN_BUS_DOWN);
@@ -807,8 +990,8 @@ TEST_CASE("hand-axis fault eval: a hand fault ESTOPs (NUM_AXES scope)") {
     fake_set_clock(10'000'000, 10'000'000);
     // Only the hand has ever been seen; it then goes stale. Legs never seen.
     axes[HAND_AXIS].heartbeat_seen    = true;
-    axes[HAND_AXIS].last_heartbeat_us = fake_mono_us();
-    fake_advance(3 * (uint64_t)CAN_HEARTBEAT_TIMEOUT_US);   // hand heartbeat goes stale
+    stamp_hb(HAND_AXIS);
+    fake_advance(3 * (uint64_t)CAN_AXIS_SILENCE_TIMEOUT_US);   // hand heartbeat goes stale
     fault_step();
     CHECK(fault_can_bus_down() == false);   // watchdog/stow are legs-only (NUM_LEGS)
     CHECK(fault_stow_pending() == false);   // ...so a stale hand arms nothing
@@ -937,11 +1120,11 @@ TEST_CASE("hand deviation: observe-first reports only; `hand7 arm`ed it LATCHES 
   fake_set_udp_last_rx_us(fake_mono_us());
   // leg 0 present + fresh so the leg-side guards are quiet and present-scoped.
   axes[0].heartbeat_seen = true;
-  axes[0].last_heartbeat_us = fake_mono_us();
+  stamp_hb(0);
   axes[0].pos_timestamp_us = fake_mono_us();
   // Axis 6 fresh on the encoder — the I-HAND-5 precondition for the lane.
   axes[HAND_AXIS].heartbeat_seen = true;
-  axes[HAND_AXIS].last_heartbeat_us = fake_mono_us();
+  stamp_hb(HAND_AXIS);
   write_pos_vel(hand_axis(), 0.0f, 0.0f, fake_mono_us());
 
   // Latch a v6 frame: legs at their encoders (dev 0), hand commanded 3.0 rev
@@ -1024,10 +1207,10 @@ TEST_CASE("`hand7 reset` with a banked baseline and the latch already cleared do
   fault_set_mpc_active(true);
   fake_set_udp_last_rx_us(fake_mono_us());
   axes[0].heartbeat_seen = true;
-  axes[0].last_heartbeat_us = fake_mono_us();
+  stamp_hb(0);
   axes[0].pos_timestamp_us = fake_mono_us();
   axes[HAND_AXIS].heartbeat_seen = true;
-  axes[HAND_AXIS].last_heartbeat_us = fake_mono_us();
+  stamp_hb(HAND_AXIS);
   write_pos_vel(hand_axis(), 0.0f, 0.0f, fake_mono_us());
   interp_set_hand_dev_guard_armed(true);
 
@@ -1074,10 +1257,10 @@ TEST_CASE("`hand7 reset` re-baselines BOTH sides of the `>` comparison — close
   fault_set_mpc_active(true);
   fake_set_udp_last_rx_us(fake_mono_us());
   axes[0].heartbeat_seen = true;
-  axes[0].last_heartbeat_us = fake_mono_us();
+  stamp_hb(0);
   axes[0].pos_timestamp_us = fake_mono_us();
   axes[HAND_AXIS].heartbeat_seen = true;
-  axes[HAND_AXIS].last_heartbeat_us = fake_mono_us();
+  stamp_hb(HAND_AXIS);
   write_pos_vel(hand_axis(), 0.0f, 0.0f, fake_mono_us());
   interp_set_hand_dev_guard_armed(true);
   fault_step();                                       // enable output (quiet)
@@ -1133,10 +1316,10 @@ TEST_CASE("hand MAX_DEVIATION latch reports the TRIP's excursion, never the boot
   fault_set_mpc_active(true);
   fake_set_udp_last_rx_us(fake_mono_us());
   axes[0].heartbeat_seen = true;
-  axes[0].last_heartbeat_us = fake_mono_us();
+  stamp_hb(0);
   axes[0].pos_timestamp_us = fake_mono_us();
   axes[HAND_AXIS].heartbeat_seen = true;
-  axes[HAND_AXIS].last_heartbeat_us = fake_mono_us();
+  stamp_hb(HAND_AXIS);
   write_pos_vel(hand_axis(), 0.0f, 0.0f, fake_mono_us());
 
   // OBSERVE block: a 4.0 rev excursion becomes the boot-cumulative max.

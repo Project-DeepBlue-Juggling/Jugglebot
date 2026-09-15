@@ -26,7 +26,7 @@ detectors run concurrently.
 |---|---|---|
 | Setpoint staleness | 250 ms (`SETPOINT_STALENESS_US`) | **Latches** guard E-STOP (`SETPOINT_STALE`) |
 | Motor (encoder) feedback staleness | 150 ms (`MOTOR_FB_STALENESS_US`) | Suppresses output only — deliberately **not** latched, "recoverable" |
-| CAN3 leg heartbeat (bus-down detector) | 2.0 s (`CAN_HEARTBEAT_TIMEOUT_US`) | `CAN_BUS_DOWN`, arms the deferred-stow latch |
+| CAN3 leg liveness (bus-down detector; ANY frame kind counts — a heartbeat dropout alone is report-only via `HB_STALE_MASK`, FW 23) | 2.0 s (`CAN_AXIS_SILENCE_TIMEOUT_US`) | `CAN_BUS_DOWN`, arms the deferred-stow latch |
 | Jetson↔Teensy UDP link | 500 ms (10 Hz heartbeat × 5 missed, `JETSON_LINK_TIMEOUT_US`) | `LINK_LOST`, output disabled (not latched) |
 | Bus-partner presence (anti-bus-off) | 5.0 s (`BUS_PARTNER_STALENESS_US`) | Withholds *all* TX on that bus pre-emptively — never transmit into a bus with no recently-seen partner |
 | Reboot-in-progress suppression | 6.0 s (`REBOOT_WATCHDOG_SUPPRESS_US`) | Prevents a deliberate `REBOOT_ODRIVES` RPC's silence window from being misread as a real CAN loss |

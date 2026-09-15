@@ -104,7 +104,7 @@ class Message:
 # ───────────────────────────────────────────────────────────────────────────
 
 CONSTANTS = [
-    ("PROTOCOL_VERSION", 8,      "u8",  "Bumped on any incompatible wire change (4→5: 2026-07-31 Profile gains the 3rd CAN slot can3_* — cone traffic; 5→6: 2026-09-01 Setpoint widens 6→7 — index 6 = hand — and gains the v1[7] exact-knot-velocity array, unified-7dof-planner Phase 2; 6→7: 2026-09-11 skill-stack R1 — HAND_TRAJ_CMD/HAND_SOURCE_SET/ERR_HAND_SOURCE removed, HeartbeatT2J bit 6 retired, BridgeTxDiag hand_ops counters removed; 7→8: 2026-09-14 hand C2 (can-bridge FW 22) — Setpoint GROWS 208→240 B: v2[7] (exact u2-knot velocity, flags bit4 HAS_V2) + hand_ff_gain (K, clamped [0,1.5] at ingest), flags bit5 HAS_SCHED plays the frame on its t_origin_us stamp instead of on UDP arrival; HeartbeatT2J GROWS by the scheduled-playback promotion-continuity diagnostics and flags bits 14 HAND_TORQUE_CLAMP / 15 SCHED_HOLD_LATCHED. Growing a struct is as incompatible as shrinking one: darkness against any FW ≤ 21 board is the INTENDED failure. Removing message types and shrinking a struct are incompatible wire changes: darkness against any FW ≤ 20 board is the INTENDED failure. TOTAL LINK DARKNESS against any FW ≤ 16 board until the lockstep Phase 3 flash — loud and fail-closed by design)"),
+    ("PROTOCOL_VERSION", 9,      "u8",  "Bumped on any incompatible wire change (4→5: 2026-07-31 Profile gains the 3rd CAN slot can3_* — cone traffic; 5→6: 2026-09-01 Setpoint widens 6→7 — index 6 = hand — and gains the v1[7] exact-knot-velocity array, unified-7dof-planner Phase 2; 6→7: 2026-09-11 skill-stack R1 — HAND_TRAJ_CMD/HAND_SOURCE_SET/ERR_HAND_SOURCE removed, HeartbeatT2J bit 6 retired, BridgeTxDiag hand_ops counters removed; 7→8: 2026-09-14 hand C2 (can-bridge FW 22) — Setpoint GROWS 208→240 B: v2[7] (exact u2-knot velocity, flags bit4 HAS_V2) + hand_ff_gain (K, clamped [0,1.5] at ingest), flags bit5 HAS_SCHED plays the frame on its t_origin_us stamp instead of on UDP arrival; HeartbeatT2J GROWS by the scheduled-playback promotion-continuity diagnostics and flags bits 14 HAND_TORQUE_CLAMP / 15 SCHED_HOLD_LATCHED. Growing a struct is as incompatible as shrinking one: darkness against any FW ≤ 21 board is the INTENDED failure. Removing message types and shrinking a struct are incompatible wire changes: darkness against any FW ≤ 20 board is the INTENDED failure. TOTAL LINK DARKNESS against any FW ≤ 16 board until the lockstep Phase 3 flash — loud and fail-closed by design) 8→9: 2026-09-15 axis-silence watchdog (can-bridge FW 23) — HeartbeatT2J GROWS by can_fault_leg/can_fault_age_ms/can_fault_count (the CAN_BUS_DOWN trip latch: WHICH leg went silent, how stale it was, how many trips this boot) and gains flags bits 16-22 HB_STALE_MASK (per-axis ODrive heartbeat staleness at CAN_HEARTBEAT_STALE_US = 0.5 s, report-only); CacheDiag GROWS by hb_frames[7], the per-axis heartbeat-frame census beside enc_frames. Both structs grow, so this is an incompatible wire change: darkness against any FW ≤ 22 board is the INTENDED failure."),
     ("MAGIC",            0x4A42, "u16", '"JB" little-endian preamble (bytes 0x42 0x4A)'),
     ("HEADER_SIZE",      8,      "u16", "Bytes before payload"),
     ("CRC_SIZE",         2,      "u16", "Trailing CRC-16 bytes"),
@@ -136,6 +136,15 @@ CONSTANTS = [
     # firmware (which never sets these bits) self-describes as UNKNOWN.
     ("HEARTBEAT_CONE_HEALTH_SHIFT", 4, "u8",
      "Bit offset of CONE_HEALTH_MASK inside HeartbeatT2J.flags (bits 4-5)"),
+    # HeartbeatT2J.flags bit offset of the per-AXIS heartbeat-stale mask
+    # (HeartbeatT2JFlags::HB_STALE_MASK, bits 16-22 — 7 axes, legs 0-5 + hand 6).
+    # Same packing precedent as the two shifts above. NOTE the mask is 7 bits wide
+    # against the other masks' 6: the hand axis is included because a hand ODrive
+    # heartbeat dropout is exactly as invisible as a leg's was, and reporting it
+    # costs one bit. The mask is REPORT-ONLY — nothing in the firmware faults on
+    # it (that is the whole point of the FW 23 split).
+    ("HEARTBEAT_HB_STALE_SHIFT", 16, "u8",
+     "Bit offset of HB_STALE_MASK inside HeartbeatT2J.flags (bits 16-22)"),
 ]
 
 # ───────────────────────────────────────────────────────────────────────────
@@ -299,7 +308,11 @@ ENUMS = {
         ("MOTOR_OVERSPEED", 3, "A leg exceeded the overspeed limit"),
         ("MAX_DEVIATION",   4, "Commanded pos diverged too far from encoder"),
         ("ODRIVE_FATAL",    5, "Active ODrive error / disarm-while-closed-loop"),
-        ("CAN_BUS_DOWN",    6, "CAN3 (leg bus) down — hold, deferred stow armed"),
+        ("CAN_BUS_DOWN",    6, "one or more present legs silent on the Jugglebot bus (no frame of any kind "
+                               "for CAN_AXIS_SILENCE_TIMEOUT_US); self-clears when all present legs are alive "
+                               "again, then the firmware stows. Name kept for wire stability; until FW 23 the "
+                               "predicate was heartbeat-only, which is why the 2026-09-15 trips fired on a "
+                               "demonstrably healthy bus"),
         ("MOTOR_FB_STALE",  7, "Leg encoder feedback stale → suppress output (recoverable)"),
     ],
     # Mirrors motor_guard GuardMode.
@@ -389,6 +402,19 @@ ENUMS = {
         ("SCHED_HOLD_LATCHED",     0x8000, "bit15: a scheduled lane group is in a LATCHED hold — its cover exhausted, it ran "
                                            "the C2 stop, and a discontinuous resume was refused while armed. Clears on an "
                                            "accepted continuous promotion or the next disarm/arm cycle (FW 22)"),
+        # bits 16-22 (v9, can-bridge FW 23). The per-axis ODrive heartbeat-stale
+        # mask, promoted from "computed and thrown away" to a live wire field.
+        ("HB_STALE_MASK",       0x7F0000, "bits 16-22: bit (16+i) set = axis i's ODrive heartbeat is older than "
+                                          "CAN_HEARTBEAT_STALE_US (0.5 s = 5 lost 10 Hz heartbeats); i in 0-5 legs, "
+                                          "6 = hand; see HEARTBEAT_HB_STALE_SHIFT. REPORT-ONLY — no firmware fault "
+                                          "reads it. Added at FW 23 because the pre-FW-23 fatal CAN_BUS_DOWN "
+                                          "predicate read the heartbeat and NOTHING on the wire carried per-axis "
+                                          "heartbeat age, so the 2026-09-15 double trip could not be attributed to "
+                                          "a leg. Threshold is deliberately 4x SHARPER than the 2.0 s "
+                                          "CAN_AXIS_SILENCE_TIMEOUT_US the fatal predicate now uses: a dropout "
+                                          "worth reporting is much smaller than one worth stowing for. An axis "
+                                          "that has never heartbeated reads 0 here (not stale) — read the "
+                                          "DIAGNOSTIC frame's heartbeat_seen bit for presence"),
     ],
 }
 
@@ -482,7 +508,7 @@ MESSAGES = [
             Field("bus1_health", "u8",  1, "wire slot 1 = CAN3 (Jugglebot core: legs+hand) BusHealth enum"),
             Field("bus2_health", "u8",  1, "wire slot 2 = CAN1 (Ball Butler) BusHealth enum (cone/CAN2 not yet on uplink)"),
             Field("fault_state", "u8",  1, "FaultState enum"),
-            Field("flags",       "u32", 1, "HeartbeatT2JFlags bitset: bits 0-3 TIME_SYNCED|STOW_PENDING_ON_RECONNECT|ALL_AXIS_HEARTBEATS_OK|MPC_ACTIVE; bits 4-5 CONE_HEALTH_MASK (cone/CAN2 BusHealth, see HEARTBEAT_CONE_HEALTH_SHIFT); bits 6-7 reserved (bit 6 was the FW 17 hand-mastery latch, retired at PROTOCOL_VERSION 7); bits 8-13 TORQUE_CLAMP_MASK (per-leg torque_ff ingest clamp, see HEARTBEAT_TORQUE_CLAMP_SHIFT); bit 14 HAND_TORQUE_CLAMP; bit 15 SCHED_HOLD_LATCHED (v8)"),
+            Field("flags",       "u32", 1, "HeartbeatT2JFlags bitset: bits 0-3 TIME_SYNCED|STOW_PENDING_ON_RECONNECT|ALL_AXIS_HEARTBEATS_OK|MPC_ACTIVE; bits 4-5 CONE_HEALTH_MASK (cone/CAN2 BusHealth, see HEARTBEAT_CONE_HEALTH_SHIFT); bits 6-7 reserved (bit 6 was the FW 17 hand-mastery latch, retired at PROTOCOL_VERSION 7); bits 8-13 TORQUE_CLAMP_MASK (per-leg torque_ff ingest clamp, see HEARTBEAT_TORQUE_CLAMP_SHIFT); bit 14 HAND_TORQUE_CLAMP; bit 15 SCHED_HOLD_LATCHED (v8); bits 16-22 HB_STALE_MASK (per-axis ODrive heartbeat stale at CAN_HEARTBEAT_STALE_US, report-only, see HEARTBEAT_HB_STALE_SHIFT — v9/FW 23); bits 23-31 reserved"),
             Field("uptime_ms",   "u32", 1, "ms since boot"),
             # Ball Butler heartbeat snapshot (CAN1 0x7D1 decoded by the
             # can-bridge into bb_state and forwarded here at heartbeat rate).
@@ -507,6 +533,24 @@ MESSAGES = [
             Field("max_dev_value",   "f32", 1, "Deviation u0-encoder (rev) of max_dev_leg frozen at the latch crossing"),
             Field("max_dev_u0",      "f32", 1, "Commanded base u0 (rev) of max_dev_leg frozen at the latch crossing"),
             Field("max_dev_enc",     "f32", 1, "Encoder position (rev) of max_dev_leg frozen at the latch crossing"),
+            # ── CAN_BUS_DOWN trip latch (v9, can-bridge FW 23) ──────────────
+            # The max_dev_* block above exists because a MAX_DEVIATION latch that
+            # named no leg could not be diagnosed. CAN_BUS_DOWN had exactly that
+            # defect until FW 23 and it is worse there, because the fault
+            # SELF-CLEARS as soon as one frame arrives — on 2026-09-15 inside a
+            # single 10 Hz fault tick — so the operator saw nothing and the bag
+            # held no per-leg liveness at all. Written ONCE at the trip and
+            # deliberately NOT cleared by the self-clear.
+            Field("can_fault_leg",    "u8",  1, "Leg found silent at the last CAN_BUS_DOWN trip (0xFF = none since boot, "
+                                                "or released by an operator CLEAR_ERRORS). The FIRST silent leg in index "
+                                                "order — with a whole-bus loss every leg is silent and this reads 0"),
+            Field("can_fault_age_ms", "u16", 1, "Silence age (ms) of can_fault_leg frozen at the trip — how long that leg "
+                                                "had sent NO frame of any kind. Saturating; > CAN_AXIS_SILENCE_TIMEOUT_US "
+                                                "by construction, and a value barely over 2000 vs far over it separates a "
+                                                "marginal dropout from a real bus loss"),
+            Field("can_fault_count",  "u16", 1, "CAN_BUS_DOWN trips since boot (saturating). NOT released by CLEAR_ERRORS: "
+                                                "a self-clearing fault whose census an operator clear could zero would make "
+                                                "every trip of a sitting look like the first"),
             # ── Scheduled-playback promotion continuity (v8, can-bridge FW 22) ──
             # The on-robot C2 proof: at every promotion of a stamped frame the
             # firmware measures |dp|/|dv|/|da| between the outgoing curve and the
@@ -1055,6 +1099,21 @@ MESSAGES = [
                   "window), not a missing one — so the seen_mask 'n/a' discipline deliberately does "
                   "NOT extend to this field. u32 wraps at ~4.3e9 frames, i.e. ~182 days at the "
                   "~272 frames/s/axis broadcast rate, and unsigned differencing is wrap-correct"),
+            Field("hb_frames",      "u32", 7,
+                  "Per-axis ODrive HEARTBEAT frames decoded, CUMULATIVE SINCE BOOT (difference two "
+                  "samples, the same census idiom as enc_frames above; same indexing, 0-5 legs, 6 hand). "
+                  "THE SPLIT THIS EXISTS TO MAKE (2026-09-15). CAN_BUS_DOWN tripped twice on a bus with "
+                  "0 wire errors, ring leak 0, ~1950 frames/s RX and a worst per-axis ENCODER age of "
+                  "95 ms - i.e. enc_frames proved the 100 Hz stream healthy on every axis while the "
+                  "10 Hz heartbeat, the ONLY stream the fatal predicate then read, had apparently gone "
+                  "> 2 s silent on one of them. There was no counter for it, so the forensics could not "
+                  "even establish which leg, let alone whether the heartbeats were never sent (ODrive TX "
+                  "mailbox starvation under 62 % bus load - it DROPS rather than queues) or never "
+                  "received. Read against a suspected window: hb_frames pausing while enc_frames for the "
+                  "same axis advances is the signature of per-stream loss inside one node, which is a "
+                  "different fault with a different owner than a bus or bridge problem. Incremented in "
+                  "can_buses.cpp decode_into_cache's heartbeat case; nominal is 10/s/axis. Note the "
+                  "fatal watchdog no longer reads this stream at all (FW 23) - it is pure diagnostics"),
             Field("seq",            "u32", 1,
                   "Emitted-frame counter since boot (1 on the first). This frame is one-shot per "
                   "window on a lossy transport with no retransmission, so without a sequence a "

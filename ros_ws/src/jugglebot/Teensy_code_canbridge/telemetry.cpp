@@ -70,7 +70,7 @@ static void send_diag(uint8_t axis) {
   AxisState& a = axes[axis];
   const uint64_t now = micros64();   // interval clock: staleness + last_sent_us age
   const bool stale = a.heartbeat_seen &&
-                     (now - atomic_read_u64(&a.last_heartbeat_us) > CAN_HEARTBEAT_TIMEOUT_US);  // atomic 64-bit
+                     (now - atomic_read_u64(&a.last_heartbeat_us) > CAN_AXIS_SILENCE_TIMEOUT_US);  // atomic 64-bit
 
   JbUdp::DiagnosticPayload d{};
   d.axis_id       = axis;
@@ -110,7 +110,7 @@ static void send_bb_diag(uint8_t idx) {
   const AxisState& a = bb_axes[idx];
   const uint64_t now = micros64();   // interval clock: staleness + last_sent_us age
   const bool stale = a.heartbeat_seen &&
-                     (now - atomic_read_u64(&a.last_heartbeat_us) > CAN_HEARTBEAT_TIMEOUT_US);  // atomic 64-bit
+                     (now - atomic_read_u64(&a.last_heartbeat_us) > CAN_AXIS_SILENCE_TIMEOUT_US);  // atomic 64-bit
   JbUdp::DiagnosticPayload d{};
   d.axis_id       = (uint8_t)(BB_FIRST_NODE + idx);   // 7 = bb_pitch, 8 = bb_hand
   d.axis_state    = a.axis_state;
@@ -417,6 +417,9 @@ static_assert(sizeof(JbUdp::CacheDiagPayload::age_max_us) /
 static_assert(sizeof(JbUdp::CacheDiagPayload::enc_frames) /
                   sizeof(JbUdp::CacheDiagPayload::enc_frames[0]) == NUM_AXES,
               "CacheDiag enc_frames array width != NUM_AXES");
+static_assert(sizeof(JbUdp::CacheDiagPayload::hb_frames) /
+                  sizeof(JbUdp::CacheDiagPayload::hb_frames[0]) == NUM_AXES,
+              "CacheDiag hb_frames array width != NUM_AXES");
 
 // Window accumulators. ALL of these are touched by task_telem and nothing else.
 static uint64_t s_cache_diag_sent_us = 0;   // micros64() at the last emit (0 ⇒ none yet)
@@ -499,6 +502,11 @@ void cache_diag_uplink_step() {
     // occupancy fields — those are differenced on-chip because their window is
     // the ANCHOR interval, which the host cannot reconstruct).
     p.enc_frames[i] = h.enc_frames[i];
+    // The heartbeat census beside the encoder one (FW 23). Same cumulative
+    // discipline. This is the stream the pre-FW-23 fatal watchdog read and the
+    // only one that had no counter on 2026-09-15, which is why that double
+    // CAN_BUS_DOWN could not be attributed to a leg.
+    p.hb_frames[i]  = h.hb_frames[i];
   }
   p.seq                = s_cache_diag_seq;
   p.window_us          = (win64 > (uint64_t)CACHE_AGE_SAT_US)

@@ -321,3 +321,9 @@ reserves `tuned` for work verified on hardware) rather than `resolved`.
   the 2026-09-13 scratch estimate (-15 to -17%); worth a re-check once the
   box is under its normal live load, since the Discussion's box-load note is
   a plausible but unconfirmed explanation.
+
+**Superseded/extended 2026-09-15**: a hung `client.call(inst)` (unbounded,
+stock 1.3.1) and a leaked-subscriptions-on-close defect in this same module
+are fixed in
+[2026-09-15-rosbridge-hung-call-and-close-teardown](2026-09-15-rosbridge-hung-call-and-close-teardown.md);
+the leak/spin fixes and measurements above are unaffected.

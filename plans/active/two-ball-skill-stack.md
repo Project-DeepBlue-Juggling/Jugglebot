@@ -333,6 +333,23 @@ evidence 0.15 s after the scheduled landing (`CAUGHT_WINDOW_S`, `executor.py`).
 Sitting preconditions: the cone rigid body disabled, the Ball Butler
 reflectors masked.
 
+**Catch aim source (owner decision 2026-09-15): the catch does NOT depend on
+the tracker.** At the 2026-09-15 sitting all 13 self-tosses ended
+`NO_LANDING` — mocap never produced a marker for the flying ball, so the
+catch was never aimed. A catch is now aimed at the landing its ball's
+previous release was *commanded* to achieve (`executor._predicted_landing`,
+the same construction § 2.5's learner treats as its command), dispatched at
+its own scheduled instant; `skill_node`'s `catch_aim_source` parameter
+selects `schedule` (the live default), `schedule_hand` (that landing re-flown
+with the MEASURED hand launch-speed ratio `r = v_meas/v_cmd` from
+`/hand_telemetry`, `motion/skills/hand_launch.py` — at 0.9 m the sitting's
+r ≈ 1.086 is ~74 ms of late arrival) or `tracker` (the pre-2026-09-15 path,
+kept because the sim gate's refine surface is built on it). QTM is not used
+for catch prediction for the time being. Outcome capture is unchanged and
+still tracker-sourced: no observation, no memory row — so with mocap blind
+the learner simply stays at its identity prior. Entry:
+[2026-09-15-open-loop-catch-from-throw-state](../../logbook/2026-09-15-open-loop-catch-from-throw-state.md).
+
 ## 3. Implementation Phase Summary
 
 The **Status** column is the one source of truth for where each rung stands;

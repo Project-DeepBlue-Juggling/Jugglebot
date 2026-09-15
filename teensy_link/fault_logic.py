@@ -158,8 +158,8 @@ class DeferredStowLatch:
     so a deliberate ODrive-reboot silence is not read as a real loss. The clock is
     abstracted the same way the rest of this latch abstracts it — ``step`` takes the
     ``deadline_pass`` boolean (the firmware's ``now >= s_reboot_deadline_us``); the
-    ``stale``/``fresh`` inputs stand in for ``any_leg_heartbeat_stale`` /
-    ``all_present_legs_fresh``. Armed ONLY via ``notify_reboot_started`` /
+    ``stale``/``fresh`` inputs stand in for ``any_present_leg_silent`` /
+    ``all_present_legs_alive``. Armed ONLY via ``notify_reboot_started`` /
     ``reboot_start``, so a spontaneous loss is unaffected (the inversion is intact).
     """
 

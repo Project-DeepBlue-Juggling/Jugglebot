@@ -51,6 +51,7 @@ from udp_protocol import (  # noqa: E402, F401
     HEARTBEAT_HZ,
     LINK_LOST_MISSES,
     HEARTBEAT_TORQUE_CLAMP_SHIFT,  # HeartbeatT2J.flags bit offset of TORQUE_CLAMP_MASK (bits 8-13)
+    HEARTBEAT_HB_STALE_SHIFT,  # HeartbeatT2J.flags bit offset of HB_STALE_MASK (bits 16-22, FW 23)
     # Enums
     MsgType,
     RpcMethod,

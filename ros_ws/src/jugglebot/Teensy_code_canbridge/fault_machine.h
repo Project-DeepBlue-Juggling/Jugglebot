@@ -95,4 +95,22 @@ float    fault_max_dev_value();
 float    fault_max_dev_u0();
 float    fault_max_dev_enc();
 
+// CAN_BUS_DOWN trip latch (FW 23), surfaced on HeartbeatT2J → /link_status.
+// fault_can_fault_leg() == 0xFF ⇒ no trip since boot (or since the last operator
+// CLEAR_ERRORS); otherwise it is the FIRST present leg found silent at the trip,
+// with fault_can_fault_age_ms() its silence age there. fault_can_fault_count() is
+// trips since boot and is NOT released by CLEAR_ERRORS. These exist because the
+// fault self-clears as soon as any frame from that leg arrives — on 2026-09-15
+// within one 10 Hz fault tick — so without a latch the event leaves no trace in
+// either the GUI or the bag, which was the real hazard that sitting exposed.
+// Per-axis ODrive heartbeat-stale mask (FW 23), bit i = axis i (0-5 legs, 6 hand),
+// at the SHARPER CAN_HEARTBEAT_STALE_US (0.5 s). REPORT-ONLY — uplinked on
+// HeartbeatT2J flags bits 16-22 and read by no fault path. Heartbeat dropouts are
+// a diagnostic at FW 23; the fatal predicate reads axis LIVENESS instead.
+uint32_t fault_hb_stale_mask();
+
+uint8_t  fault_can_fault_leg();
+uint32_t fault_can_fault_age_ms();
+uint16_t fault_can_fault_count();
+
 }  // namespace CanBridge

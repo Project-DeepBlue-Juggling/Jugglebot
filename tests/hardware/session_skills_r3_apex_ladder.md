@@ -1,4 +1,18 @@
-# R3 apex ladder — hand C2 + torque feedforward A/B (FW 22 / protocol 8)
+# R3 apex ladder — hand C2 + torque feedforward A/B (FW 23 / protocol 9)
+
+**Flash target updated 2026-09-15, same day as the plumbing below.** The
+can-bridge FW 22 / PROTOCOL_VERSION 8 work this sheet was written against
+(hand C2 scheduling + torque feedforward) has since been folded into
+**can-bridge FW 23 / PROTOCOL_VERSION 9**, which additionally replaces the
+fatal `CAN_BUS_DOWN` predicate with an axis-silence watchdog (see
+`logbook/2026-09-15-fw23-axis-silence-watchdog.md`). There is no standalone
+FW 22 build left in the tree — `pio run` against the current source produces
+FW 23 — so **flash FW 23 for this sitting, not FW 22**; every "FW 22" /
+"protocol 8" reference below describes the hand-lane feature this ladder
+measures and stays accurate, but the board and host you actually run are
+FW 23 / protocol 9. **A board left on FW 22 is DARK against this host**
+(PROTOCOL_VERSION 8 ≠ 9 — `decode_frame` rejects every frame both ways; see
+row 6).
 
 A measurement sitting, not a gate. R3's first powered sitting (2026-09-13,
 `logbook/2026-09-14-skill-stack-r3-first-powered-sitting.md`) threw about
@@ -110,10 +124,10 @@ Every terminal: `source /opt/ros/foxy/setup.bash && source
 | 2 | (ROS) `cd ros_ws && colcon build --packages-select jugglebot_interfaces jugglebot && source install/setup.bash && cd ..` | Builds. |
 | 3 | (venv) `./run_tests.sh --full` | Green. Record the pass count in § 6. This is the gate the plan's Rigor rule requires before any powered sitting, and it is the ONLY place the new firmware-twin (`test_sched_c2_twin.py`, `test_hand_torque_ff_twin.py`) and native (`test_leg_interp.cpp`) suites run together with everything else. |
 | 4 | **Re-apply the hand ODrive's CAN torque scale.** Over USB/odrivetool on the hand Pro (node 6): `odrv0.axis0.config.can.input_torque_scale = 1000`, then `odrv0.save_configuration()`. Or re-apply `config/ODrive config Files/odrive_pro_hand_config.json`. Leave `input_vel_scale` at 100. | Read back before continuing: `odrv0.axis0.config.can.input_torque_scale` reports `1000`. The host no longer gates K on this readback (removed 2026-09-15) — it goes straight to the wire, so getting this wrong before arm B means a wrong-current command, not a degraded one; confirm it here. |
-| 5 | **With the launch DOWN**, flash can-bridge FW 22 in lockstep with the v8 host build already in step 2: `cd ros_ws/src/jugglebot/Teensy_code_canbridge && pio run -e teensy41 -t upload`. | **The boot banner is the receipt** — `jugglebot-canbridge v22` on the console (open `pio device monitor -e teensy41 \| tee temp/logs/console_ff_ladder_$(date +%Y%m%d_%H%M).log` in its own terminal right after). A bare `pio run` (no `-t upload`) BUILDS ONLY and is NOT a flash — a matching hex md5 is not a flash receipt either; only the boot banner is. |
-| 6 | **Protocol 8 note.** If the host (v8, from step 2) and board (FW 22, from step 5) do not land in lockstep, the symptom is **link darkness**, not a cable fault: `link=NO_HEARTBEAT` on `/link_status` with `decode_errors == rx_frames` — `decode_frame` rejects every frame both ways on a version mismatch. If you see this, check the boot banner version against `teensy_link/rpc_args.py::EXPECTED_BRIDGE_FW_VERSION` before touching any cable. | No action unless it happens. |
+| 5 | **With the launch DOWN**, flash can-bridge FW 23 (folds in the FW 22 hand C2 + torque-FF plumbing this sheet was written against, plus the FW 23 axis-silence watchdog — there is no separate FW 22 build in the tree) in lockstep with the v9 host build already in step 2: `cd ros_ws/src/jugglebot/Teensy_code_canbridge && pio run -e teensy41 -t upload`. | **The boot banner is the receipt** — `jugglebot-canbridge v23` on the console (open `pio device monitor -e teensy41 \| tee temp/logs/console_ff_ladder_$(date +%Y%m%d_%H%M).log` in its own terminal right after). A bare `pio run` (no `-t upload`) BUILDS ONLY and is NOT a flash — a matching hex md5 is not a flash receipt either; only the boot banner is. A board still reporting `v22` (or older) is UNFLASHED for this sitting — re-run the upload. |
+| 6 | **Protocol 9 note.** If the host (v9, from step 2) and board (FW 23, from step 5) do not land in lockstep — e.g. the board is still on FW 22/protocol 8 — the symptom is **link darkness**, not a cable fault: `link=NO_HEARTBEAT` on `/link_status` with `decode_errors == rx_frames` — `decode_frame` rejects every frame both ways on a version mismatch. If you see this, check the boot banner version against `teensy_link/rpc_args.py::EXPECTED_BRIDGE_FW_VERSION` (23) before touching any cable. | No action unless it happens. |
 | 7 | (venv, repo root) `PYTHONPATH=ros_ws/src/jugglebot python -c "from jugglebot.motion.skills import admissible as a; [print(b.site_pair, b.apex_band_m, b.flight_s) for b in a.load('config/generated/admissible_box.yaml')]"` | Two columns boxes plus five `('P1', 'P1')` boxes, apex bands 0.45–0.55, 0.55–0.65, 0.65–0.75, 0.75–0.85, 0.85–0.95 m, each with the flight range in § 4's table. |
-| 8 | (venv, quiet machine — nothing else running) `for A in 0.5 0.6 0.7 0.8 0.9; do python3 tests/hardware/skills_plan_bench.py --rehearse --pattern self-toss --arm A --attempts 3 --n-throws 1 --apex-m $A; done 2>&1 \| tee temp/logs/apex_ladder_rehearse_$(date +%Y%m%d).log` | Every rung: `blas threads: 1`, **G1, G2 and G4 PASS** (three attempts, `ended_early=False (4/4 skills)`). This is an offline solve rehearsal only — it exercises no wire, so it reads the same whether FW 22 is flashed or not; run it after step 2's build so it's checked against the Jetson-side code this sitting actually carries. Known, pre-existing refusal: the closing REST is refused `LIMIT_JERK` when it is dispatched early in its 40 Hz tick (a deterministic sweep refuses 24 % of tick phases at 0.9 m, 52 % at 0.6 m; the bench's own timing hits it rarely). It ends the attempt AFTER the throw and catch were accepted, so it does not fail the rung. A THROW or CATCH refusal, or any other early end, fails the rung. |
+| 8 | (venv, quiet machine — nothing else running) `for A in 0.5 0.6 0.7 0.8 0.9; do python3 tests/hardware/skills_plan_bench.py --rehearse --pattern self-toss --arm A --attempts 3 --n-throws 1 --apex-m $A; done 2>&1 \| tee temp/logs/apex_ladder_rehearse_$(date +%Y%m%d).log` | Every rung: `blas threads: 1`, **G1, G2 and G4 PASS** (three attempts, `ended_early=False (4/4 skills)`). This is an offline solve rehearsal only — it exercises no wire, so it reads the same whether FW 23 is flashed or not; run it after step 2's build so it's checked against the Jetson-side code this sitting actually carries. Known, pre-existing refusal: the closing REST is refused `LIMIT_JERK` when it is dispatched early in its 40 Hz tick (a deterministic sweep refuses 24 % of tick phases at 0.9 m, 52 % at 0.6 m; the bench's own timing hits it rarely). It ends the attempt AFTER the throw and catch were accepted, so it does not fail the rung. A THROW or CATCH refusal, or any other early end, fails the rung. |
 | 9 | QTM: disable the `Catching Cone` rigid body; mask the Ball Butler reflectors | Hard precondition, unchanged from `session_skills_r3.md` row 10. |
 
 ## 2. Bring-up
@@ -148,7 +162,7 @@ REST, and the attempt is stopped from here if anything below is wrong —
 | 17 | `ros2 param set /skill_node apex_m 0.5`, `... dwell_s 2.0` (temporary — long enough to read diagnostics twice during the REST), `... plant_id ffcheck-$(date +%Y%m%d)` (a throwaway id, not a ladder rung) | Set for this check only. |
 | 18 | `ros2 service call skills/check std_srvs/srv/Trigger` | `ladder OK` and `box OK` naming a `('P1', 'P1')` band containing 0.5 m. |
 | 19 | Seat a ball; `ros2 service call skills/start_self_toss std_srvs/srv/Trigger` | Accepted — the opening REST installs and starts streaming immediately. |
-| 20 | **Within the REST's dwell, before the THROW fires**, read `ros2 topic echo /link_status --once` | `time_synced: 1` (the bridge's wall anchor is set — without it every scheduled frame demotes to legacy and none of this check means anything); `hand_torque_ff_gain_requested: 0.0000` and `hand_torque_ff_gain_effective: 0.0000` (arm A). |
+| 20 | **Within the REST's dwell, before the THROW fires**, read `ros2 topic echo /link_status --once` | `time_synced: 1` (the bridge's wall anchor is set — without it every scheduled frame demotes to legacy and none of this check means anything); `hand_torque_ff_gain_requested: 0.0000` and `hand_torque_ff_gain_effective: 0.0000` (arm A). **FW 23 axis-silence watchdog fields** (fresh boot, healthy bus): `can_fault_leg: 255` (no CAN_BUS_DOWN trip since boot), `can_fault_count: 0`, `hb_stale_mask: 0` (no axis heartbeat older than 500 ms). A nonzero `can_fault_count` here means a trip already happened earlier in this session (check `can_fault_age_ms` and the log for the ERROR line); a nonzero `hb_stale_mask` is diagnostic-only (see `hb_stale_axes`) and does not by itself stop the check. |
 | 21 | In the same window, read the console `[hand7]` line (from the `pio device monitor` opened at step 5) | `sched=play` (not `off` — confirms the REST is riding the scheduled lane, not a legacy fallback); `promo_dp=`, `promo_dv=`, `promo_da=` all ≈ 0 (a static REST has no knot-to-knot motion to promote through, so these should read at or near the printed precision's zero); `promo_over=0`; `stops=0 refused=0 expired=0 demoted=0` — any of these counting up during a clean, on-time REST stream means a frame is arriving late, out of order, or unstamped, and needs diagnosis before flying the ladder for real. |
 | 22 | `ros2 topic echo /link_status --once \| grep interp_max_jitter_us` | Record the value. No pass bound exists yet (U2a residual: "measure at the first sitting") — note it here as the reference for later sittings; only a growing trend tick-over-tick, not a single reading, would indicate a real ISR-timing problem. |
 
@@ -184,9 +198,38 @@ For each apex `A` (write it as `050`, `060`, … in the id), each arm:
 |---|---|---|
 | 24 | `ros2 param set /skill_node apex_m A` and `... plant_id <arm>-A-$(date +%Y%m%d)` (e.g. `armA-090-20260915`) | Fresh id per rung per arm. |
 | 25 | `ros2 service call skills/check std_srvs/srv/Trigger` | `ladder OK` and `box OK` naming a `('P1', 'P1')` band that contains `A`. A `box REFUSED ... at apex` line means step 7 was not satisfied — stop. |
-| 26 | Seat a ball; `ros2 service call skills/start_self_toss std_srvs/srv/Trigger` | Accepted. One `skill announced ball 0` line, then an `OUTCOME` line with a landing (not `NO_LANDING`). |
+| 26 | Seat a ball; `ros2 service call skills/start_self_toss std_srvs/srv/Trigger` | Accepted. One `skill announced ball 0` line, then a `CATCH-AIM skill 2: source=schedule landing=(…) mm t_land=…` line — the catch is aimed **open loop** now (see below), so `END NO_LANDING` must not appear at all. An `OUTCOME` line appears only when mocap happened to see the ball; its ABSENCE is expected at this sitting and is no longer a failure. |
 | 27 | Note in § 6: caught Y/N, and the `memory row appended ... y=[x, y, flight]` values. | Flight longer than `sc.flight_s(A)` means the throw was fast. |
 | 28 | Repeat 24–27 until three throws are recorded for this rung. | |
+
+**The catch is open loop from the throw state (owner decision 2026-09-15).**
+At the 2026-09-15 sitting every one of 13 self-tosses ended
+`END NO_LANDING: the tracker has no landing for ball 0 by the deadline` —
+mocap never produced a marker for the flying ball, so the catch was never
+aimed and the hand just returned to rest. The catch is now aimed at the
+landing the schedule's own THROW was **commanded** to achieve, dispatched at
+its scheduled instant, with no tracker call at all. What you should see per
+catch is exactly one line:
+
+```
+CATCH-AIM skill 2: source=schedule landing=(-50.0, 0.0, 830.0) mm t_land=…
+```
+
+The `catch_aim_source` parameter selects where the aim comes from — set it
+BEFORE `start_self_toss` (it is read when the schedule is compiled):
+
+| Value | What it does | When to use it |
+|---|---|---|
+| `schedule` (default) | The commanded landing, dispatched at the scheduled instant. No tracker, no re-aim. | Every rung of this ladder. |
+| `schedule_hand` | The same, corrected ONCE by the MEASURED hand launch-speed ratio `r = v_meas/v_cmd` from `/hand_telemetry` (never QTM). Logs `source=schedule_hand (r=1.086)` and, when the correction arrives after the dispatch, a second `CATCH-AIM … r=… Δt=+0.074 s` line. | The optional A/B once a rung's throw lands cleanly: the plant threw ~8–9 % fast at this sitting, which is ~74 ms of late arrival at 0.9 m. |
+| `tracker` | Pre-2026-09-15 behaviour (mocap aims and refines). | Only to reproduce the old failure. |
+
+`ros2 param set /skill_node catch_aim_source schedule_hand`. A value that is
+not one of the three logs an error and falls back to `schedule`. Two lines
+that are **not** failures: `CATCH-AIM-LATE …the theoretical aim stands` (the
+hand ratio did not arrive in time to splice — the catch still flies on the
+commanded landing) and `CATCH-AIM-HAND-REFUSED …` (the re-aim's solve was
+refused; the committed catch stands).
 
 **Expected, not a stop:** an attempt that ends `LIMIT_JERK` on the closing
 REST after the catch (the pre-existing refusal noted at step 8 — up to about
@@ -224,7 +267,15 @@ carry on.
 - a ball leaves the capture volume or clears the cup by a margin you judge
   unsafe;
 - `skills/check` shows any refusal other than a transient `REJECTED_NOT_LEVELLED`
-  before the first pre-level.
+  before the first pre-level;
+- **a `CAN_BUS_DOWN` flash with the new ERROR line** (`Teensy guard FAULT:
+  CAN_BUS_DOWN — leg <L> silent on the Jugglebot bus for <age> ms (trip #<n>
+  since boot)…`): this is the FW 23 axis-silence watchdog, it self-clears and
+  the firmware stows on its own — record leg/age/count from `/link_status`
+  (`can_fault_leg`/`can_fault_age_ms`/`can_fault_count`), re-ACTIVATE after the
+  stow, and continue the ladder. **A second `CAN_BUS_DOWN` flash in the same
+  sitting → stop and read the bag** rather than continuing — one is the
+  load-gated dropout the watchdog was built to tolerate, two is a pattern.
 
 A stopped ladder is still a result: the rungs flown (in whichever arm) are
 the curve.
@@ -302,7 +353,7 @@ live.
 | Item | Result |
 |---|---|
 | Date, commit, bag, `--full` count | |
-| FW 22 boot banner confirmed (step 5) | |
+| FW 23 boot banner confirmed (step 5) | |
 | § 3 no-motion check (row 20–22): time_synced / sched= / promo_dp,dv,da / promo_over,stops,refused,expired,demoted / interp_max_jitter_us | |
 | Rungs flown, arm A (stopped early? why) | |
 | Rungs flown, arm B (stopped early? why) | |

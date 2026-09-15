@@ -2200,3 +2200,265 @@ def test_a_stale_previous_flight_landing_never_confirms_a_release(sites):
         t += 0.02
 
     assert x.end_code == ex.ABORTED_NO_RELEASE
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Where a CATCH is aimed from — `catch_aim_source` (owner decision 2026-09-15)
+#
+# At the 2026-09-15 sitting all 13 self-tosses ended `NO_LANDING`: mocap never
+# produced a marker for the flying ball, so a catch that DEPENDS on the
+# tracker is a catch that never happens.  The live default is now open loop
+# from the schedule's commanded throw state, optionally corrected by the
+# MEASURED hand launch speed (`schedule_hand`).  The tracker path stays, and
+# stays tested, because the sim gate's refine surface is built on it.
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+def _predicted(sites, sch):
+    """The landing the schedule's THROW was COMMANDED to achieve — a vertical
+    self-toss from the throw site, so ``_predicted_landing``'s answer is this
+    file's own arithmetic rather than the method's."""
+    throw = sch.skills[0]
+    return (throw.site.catch_site_mm(), float(throw.t_abs_s) + FLIGHT_S)
+
+
+def _angry_tracker(ball_id):
+    raise AssertionError('the tracker was called under an open-loop aim')
+
+
+def test_an_unknown_aim_source_is_refused_at_construction(sites):
+    """A typo must not silently select a mode: the executor owns the
+    vocabulary (`AIM_SOURCES`) and `skill_node` validates against it."""
+    with pytest.raises(ValueError):
+        ex.SkillExecutor(_schedule(sites), _FakeInstaller(),
+                         catch_aim_source='mocap')
+
+
+def test_schedule_aim_dispatches_a_standalone_catch_at_its_own_instant(sites):
+    """THE 2026-09-15 FIX.  A STANDALONE catch (no carried throw) whose ball
+    was released earlier in THIS schedule now dispatches at its scheduled
+    instant, aimed at the landing that release was commanded to achieve — the
+    tracker is never asked, so mocap producing nothing cannot end the
+    attempt.  The same schedule under `tracker` ends `NO_LANDING`
+    (:func:`test_a_catch_with_no_tracked_landing_waits_then_ends_at_the_deadline`).
+    """
+    sch = _schedule(sites, catch_window_s=0.6)
+    inst = _FakeInstaller()
+    x = ex.SkillExecutor(sch, inst, tracker=_angry_tracker,
+                         catch_aim_source=ex.AIM_SCHEDULE)
+    x.tick(sch.skills[0].dispatch_s())
+    catch = sch.skills[1]
+
+    lines = x.tick(catch.dispatch_s())
+    assert [c[0] for c in inst.calls] == [sg.THROW, sg.CATCH]
+    assert inst.calls[1][2] == pytest.approx(catch.dispatch_s())
+    pos, t_land = _predicted(sites, sch)
+    terminal = inst.calls[1][1]
+    assert np.allclose(terminal.landing_mm, pos)
+    assert terminal.t_land_s == pytest.approx(t_land)
+    assert any('source=schedule' in ln and 't_land=' in ln for ln in lines)
+    # The rest of the schedule still runs, and nothing ends the attempt.
+    x.tick(sch.skills[2].dispatch_s())
+    assert [c[0] for c in inst.calls] == [sg.THROW, sg.CATCH, sg.REST]
+    assert not x.attempt_ended and x.end_code == ''
+
+
+def test_schedule_aim_never_re_aims_from_the_tracker(sites):
+    """No tracker call at all under `schedule` — not at dispatch, not as a
+    refine.  A landing that MOVED (which under `tracker` triggers a re-send,
+    :func:`test_a_moved_landing_is_re_sent_and_a_refused_re_send_does_not_end_the_attempt`)
+    changes nothing here: the schedule's commanded landing IS the aim."""
+    sch = _schedule(sites)
+    inst = _FakeInstaller()
+    moved = ex.Landing(pos_mm=sites[1].catch_site_mm() + np.array([50., 0., 0.]),
+                       vel_mm_s=LAND_VEL,
+                       t_land_abs_s=sch.skills[1].t_abs_s + 0.05)
+    x = ex.SkillExecutor(sch, inst, tracker=_tracker(moved),
+                         catch_aim_source=ex.AIM_SCHEDULE)
+    catch = sch.skills[1]
+    t = sch.skills[0].dispatch_s()
+    while t < float(catch.t_abs_s):
+        x.tick(t)
+        t += 0.02
+    catches = [c for c in inst.calls if c[0] == sg.CATCH]
+    assert len(catches) == 1                     # committed once, never re-aimed
+    assert np.allclose(catches[0][1].landing_mm, _predicted(sites, sch)[0])
+
+
+def test_a_catch_the_schedule_cannot_aim_still_waits_for_the_tracker(sites):
+    """The one catch an open-loop aim has nothing to aim with: columns' very
+    first catch, of a ball released before ``t0``.  Not a carve-out — the
+    absence of any alternative — so it keeps the wait-then-``NO_LANDING``
+    behaviour every catch had before this unit."""
+    p1, p2 = sites
+    t_land = T0_ABS + 0.6
+    sch = Schedule(
+        skills=(Skill(kind=sg.CATCH, ball_id=7, site=p2, t_abs_s=t_land,
+                      window_s=0.6),),
+        flight_s=FLIGHT_S, beat_s=0.578, transit_s=0.6, dwell_s=0.30,
+        t0_abs_s=T0_ABS)
+    inst = _FakeInstaller()
+    x = ex.SkillExecutor(sch, inst, tracker=lambda b: None,
+                         catch_aim_source=ex.AIM_SCHEDULE)
+    catch = sch.skills[0]
+    deadline = (float(catch.t_abs_s) - ex.CATCH_DEADLINE_WINDOW_S
+               - float(catch.lead_s))
+    x.tick(catch.dispatch_s())
+    assert inst.calls == [] and not x.attempt_ended
+    x.tick(deadline)
+    assert x.attempt_ended and x.end_code == ex.NO_LANDING
+
+
+def _corrected_t_land(sch, r):
+    """The arrival the measured ratio implies, restated from the same closed
+    form: the release is 30 mm ABOVE the catch plane (cup height at throw vs
+    at catch), so the flight is not level and T' is only APPROXIMATELY r x
+    T."""
+    throw = sch.skills[0]
+    release_mm = throw.site.throw_site_mm()
+    pos_mm = throw.site.catch_site_mm()
+    v0 = ballistics_bc.launch_velocity(release_mm, pos_mm, FLIGHT_S) * r
+    _p, _v, t_flight = ballistics_bc.arrival_state_at_z(
+        release_mm, v0, float(pos_mm[2]))
+    return float(throw.t_abs_s) + float(t_flight)
+
+
+def test_schedule_hand_aims_the_dispatch_itself_from_the_measured_speed(sites):
+    """`schedule_hand`, the common case: a catch dispatches AFTER its own
+    ball's release, so the stroke is already measured and the correction goes
+    into the dispatch — one install, not an install plus a ~25 ms re-solve.
+    At the R3 point (0.857 s flight) the sitting's measured r = 1.086 moves
+    touch-down ~74 ms later, which is the whole "the catch is not timed"
+    symptom."""
+    sch = _schedule(sites)
+    inst = _FakeInstaller()
+    r = 1.086
+    x = ex.SkillExecutor(sch, inst, tracker=_angry_tracker,
+                         catch_aim_source=ex.AIM_SCHEDULE_HAND,
+                         launch_ratio=lambda ball_id, t_rel: r)
+    catch = sch.skills[1]
+    x.tick(sch.skills[0].dispatch_s())
+    lines = x.tick(catch.dispatch_s())
+    assert [c[0] for c in inst.calls] == [sg.THROW, sg.CATCH]
+    _pos, t_land = _predicted(sites, sch)
+    assert (inst.calls[1][1].t_land_s
+            == pytest.approx(_corrected_t_land(sch, r), abs=1e-9))
+    assert _corrected_t_land(sch, r) - t_land == pytest.approx(0.074,
+                                                               abs=0.005)
+    assert any('source=schedule_hand (r=1.086)' in ln for ln in lines)
+    # And nothing re-aims it afterwards.
+    x.tick(catch.dispatch_s() + 5 * DT)
+    assert len([c for c in inst.calls if c[0] == sg.CATCH]) == 1
+
+
+def test_schedule_hand_re_aims_once_when_the_ratio_arrives_after_dispatch(
+        sites):
+    """When the stroke is not measurable yet at the dispatch instant, the
+    catch commits on the theoretical aim and exactly ONE re-aim follows, as
+    soon as the ratio exists."""
+    sch = _schedule(sites)
+    inst = _FakeInstaller()
+    r = 1.086
+    ratio_box = {'r': None}
+    x = ex.SkillExecutor(sch, inst, tracker=_angry_tracker,
+                         catch_aim_source=ex.AIM_SCHEDULE_HAND,
+                         launch_ratio=lambda ball_id, t_rel: ratio_box['r'])
+    catch = sch.skills[1]
+    x.tick(sch.skills[0].dispatch_s())
+    x.tick(catch.dispatch_s())
+    assert [c[0] for c in inst.calls] == [sg.THROW, sg.CATCH]
+    _pos, t_land = _predicted(sites, sch)
+    assert inst.calls[1][1].t_land_s == pytest.approx(t_land)
+
+    ratio_box['r'] = r
+    lines = x.tick(catch.dispatch_s() + DT)
+    assert [c[0] for c in inst.calls] == [sg.THROW, sg.CATCH, sg.CATCH]
+    assert (inst.calls[2][1].t_land_s
+            == pytest.approx(_corrected_t_land(sch, r), abs=1e-9))
+    assert any('r=1.086' in ln and 'source=schedule_hand' in ln
+              for ln in lines)
+
+    # ONCE: r is a property of a stroke that has already happened, so every
+    # later tick would re-install the same landing and pay a solve for it.
+    x.tick(catch.dispatch_s() + 5 * DT)
+    assert len([c for c in inst.calls if c[0] == sg.CATCH]) == 2
+
+
+def test_schedule_hand_keeps_the_theoretical_aim_when_no_ratio_arrives(sites):
+    """Hand telemetry silent, or a window the monitor will not vouch for: the
+    committed theoretical aim stands, the attempt continues, and the log says
+    so once rather than every tick."""
+    sch = _schedule(sites)
+    inst = _FakeInstaller()
+    x = ex.SkillExecutor(sch, inst, tracker=_angry_tracker,
+                         catch_aim_source=ex.AIM_SCHEDULE_HAND,
+                         launch_ratio=lambda ball_id, t_rel: None)
+    catch = sch.skills[1]
+    x.tick(sch.skills[0].dispatch_s())
+    x.tick(catch.dispatch_s())
+    late = []
+    t = catch.dispatch_s() + DT
+    while t < float(catch.t_abs_s):
+        late.extend(ln for ln in x.tick(t) if 'CATCH-AIM-LATE' in ln)
+        t += 0.02
+    assert len([c for c in inst.calls if c[0] == sg.CATCH]) == 1
+    assert len(late) == 1
+    assert not x.attempt_ended
+
+
+def test_schedule_hand_never_re_aims_once_it_could_not_splice_in_time(sites):
+    """A correction that only becomes measurable late is not spliceable: the
+    two fences are ``catch_freeze_s`` of touch-down (the hand is already
+    decelerating into the ball) and the window floor — a re-send splices at
+    ``now + lead_s``, so once that leaves less than ``MIN_WINDOW_S`` before
+    the landing a solve could only refuse ``WINDOW_TOO_SHORT``.  The window
+    floor is the binding one here (``lead_s`` 0.15 + ``MIN_WINDOW_S`` 0.1 =
+    0.25 s of touch-down, against the 0.175 s freeze).  Either way the
+    theoretical aim stands and the executor says it kept it."""
+    sch = _schedule(sites)
+    inst = _FakeInstaller()
+    ratio_box = {'r': None}
+    x = ex.SkillExecutor(sch, inst, tracker=_angry_tracker,
+                         catch_aim_source=ex.AIM_SCHEDULE_HAND,
+                         launch_ratio=lambda ball_id, t_rel: ratio_box['r'])
+    catch = sch.skills[1]
+    x.tick(sch.skills[0].dispatch_s())
+    x.tick(catch.dispatch_s())
+    ratio_box['r'] = 1.086
+    t_late = float(catch.t_abs_s) - float(catch.lead_s) - sc.MIN_WINDOW_S / 2.0
+    # Strictly BEFORE the freeze begins: the window floor is what refuses.
+    assert t_late < float(catch.t_abs_s) - ex.CATCH_FREEZE_S
+    lines = x.tick(t_late)
+    assert len([c for c in inst.calls if c[0] == sg.CATCH]) == 1
+    assert any('CATCH-AIM-LATE' in ln for ln in lines)
+
+
+def test_schedule_hand_keeps_the_theoretical_aim_when_the_scaled_throw_misses(
+        sites, monkeypatch):
+    """A scaled launch with no arrival at the catch plane at all (the ball
+    apexes below it — ``arrival_state_at_z`` raises ``ValueError``) leaves the
+    committed theoretical aim standing.  Driven by making the closed form
+    raise, because a LEVEL self-toss always crosses its own release plane
+    whatever r is: the failure is reachable on a rising throw, and the
+    executor must not turn it into an ended attempt on any of them."""
+    sch = _schedule(sites)
+    inst = _FakeInstaller()
+    x = ex.SkillExecutor(sch, inst, tracker=_angry_tracker,
+                         catch_aim_source=ex.AIM_SCHEDULE_HAND,
+                         launch_ratio=lambda ball_id, t_rel: 0.80)
+
+    def _no_arrival(*a, **k):
+        raise ValueError('apex below the catch height')
+
+    catch = sch.skills[1]
+    x.tick(sch.skills[0].dispatch_s())
+    monkeypatch.setattr(ex.ballistics_bc, 'arrival_state_at_z', _no_arrival)
+    lines = x.tick(catch.dispatch_s())
+    assert len([c for c in inst.calls if c[0] == sg.CATCH]) == 1
+    _pos, t_land = _predicted(sites, sch)
+    assert inst.calls[1][1].t_land_s == pytest.approx(t_land)
+    assert any('no arrival at the catch plane' in ln for ln in lines)
+    assert not x.attempt_ended
+    # ... and the one attempt at a correction is spent, not retried forever.
+    x.tick(catch.dispatch_s() + 5 * DT)
+    assert len([c for c in inst.calls if c[0] == sg.CATCH]) == 1

@@ -481,20 +481,211 @@ def test_guard_fault_edge_names_reason_and_leg(bridge):
 
 
 def test_guard_fault_leg_hint_absent_for_bus_fault(bridge):
-    """A bus-level fault with no leg-specific diagnostic names no leg (honest)."""
+    """CAN_BUS_DOWN with no trip attributed yet (can_fault_leg=0xFF) names no
+    leg (honest) — FW 23 (2026-09-15): see the CAN_BUS_DOWN-specific edge test
+    below for the normal (attributed) case."""
     from unittest.mock import MagicMock
     teensy, node = bridge
     node._logger = MagicMock()
     hb = HeartbeatT2J(t_teensy_us=1, link_state=int(LinkState.UP),
                       bus1_health=int(BusHealth.OK), bus2_health=int(BusHealth.OK),
                       fault_state=int(FaultState.CAN_BUS_DOWN),
-                      flags=0, uptime_ms=1)
+                      flags=0, uptime_ms=1, can_fault_leg=0xFF)
     teensy.send_to_jetson(int(MsgType.HEARTBEAT_T2J), hb.pack())
     assert _wait_until(lambda: node._latest_heartbeat is not None)
     node._publish_link_status()
-    edge = [m for m in _messages(node._logger.error) if 'FAULT LATCHED' in m]
+    edge = [m for m in _messages(node._logger.error) if 'CAN_BUS_DOWN' in m]
     assert len(edge) == 1
-    assert 'leg' not in edge[0].split('—')[0]  # no leg hint in the reason clause
+    assert 'leg unknown' in edge[0]
+
+
+# ── FW 23 CAN_BUS_DOWN axis-silence watchdog (2026-09-15) ──
+
+
+def test_can_bus_down_edge_names_leg_age_and_count_no_clear_errors(bridge):
+    """CAN_BUS_DOWN is the axis-silence watchdog, not a latched-until-
+    CLEAR_ERRORS fault: it self-clears once every present leg is alive again
+    and the firmware stows on the clear. The edge ERROR must be factual — name
+    the leg/age/count from the trip latch — and must NOT tell the operator to
+    run /clear_errors (logbook/2026-09-15-fw23-axis-silence-watchdog.md, "Host
+    follow-on")."""
+    from unittest.mock import MagicMock
+    teensy, node = bridge
+    node._logger = MagicMock()
+    hb = HeartbeatT2J(t_teensy_us=1, link_state=int(LinkState.UP),
+                      bus1_health=int(BusHealth.OK), bus2_health=int(BusHealth.OK),
+                      fault_state=int(FaultState.CAN_BUS_DOWN),
+                      flags=0, uptime_ms=1,
+                      can_fault_leg=4, can_fault_age_ms=2_345, can_fault_count=1)
+    teensy.send_to_jetson(int(MsgType.HEARTBEAT_T2J), hb.pack())
+    assert _wait_until(lambda: node._latest_heartbeat is not None
+                       and int(node._latest_heartbeat.fault_state)
+                       == int(FaultState.CAN_BUS_DOWN))
+    node._publish_link_status()
+    edge = [m for m in _messages(node._logger.error) if 'CAN_BUS_DOWN' in m]
+    assert len(edge) == 1, f"expected one edge ERROR, got {_messages(node._logger.error)}"
+    assert 'leg 4' in edge[0]
+    assert '2345 ms' in edge[0]
+    assert 'trip #1' in edge[0]
+    assert 'self-clears' in edge[0]
+    assert 'no CLEAR_ERRORS needed' in edge[0]
+    assert 're-ACTIVATE after the stow' in edge[0]
+    assert 'ros2 service call /clear_errors' not in edge[0]
+    assert 'FAULT LATCHED' not in edge[0]   # other-fault wording must not leak in
+
+
+def test_can_bus_down_clear_info_mentions_stow_no_clear_errors_language(bridge):
+    """The 'fault cleared' INFO line, for CAN_BUS_DOWN specifically, must say
+    the firmware stowed and that no CLEAR_ERRORS was needed — distinct from the
+    generic clear line other fault states get."""
+    from unittest.mock import MagicMock
+    teensy, node = bridge
+    faulted = HeartbeatT2J(t_teensy_us=1, link_state=int(LinkState.UP),
+                           bus1_health=int(BusHealth.OK), bus2_health=int(BusHealth.OK),
+                           fault_state=int(FaultState.CAN_BUS_DOWN),
+                           flags=0, uptime_ms=1,
+                           can_fault_leg=4, can_fault_age_ms=2_100, can_fault_count=1)
+    teensy.send_to_jetson(int(MsgType.HEARTBEAT_T2J), faulted.pack())
+    assert _wait_until(lambda: node._latest_heartbeat is not None
+                       and int(node._latest_heartbeat.fault_state)
+                       == int(FaultState.CAN_BUS_DOWN))
+    node._publish_link_status()
+
+    node._logger = MagicMock()
+    cleared = HeartbeatT2J(t_teensy_us=2, link_state=int(LinkState.UP),
+                           bus1_health=int(BusHealth.OK), bus2_health=int(BusHealth.OK),
+                           fault_state=int(FaultState.NONE), flags=0, uptime_ms=2,
+                           # can_fault_leg/age/count are NOT cleared by the
+                           # self-clear (latched fields) — still 4/2100/1 here.
+                           can_fault_leg=4, can_fault_age_ms=2_100, can_fault_count=1)
+    teensy.send_to_jetson(int(MsgType.HEARTBEAT_T2J), cleared.pack())
+    assert _wait_until(lambda: node._latest_heartbeat is not None
+                       and int(node._latest_heartbeat.fault_state) == int(FaultState.NONE))
+    node._publish_link_status()
+    info = _messages(node._logger.info)
+    cleared_lines = [m for m in info if 'fault cleared' in m]
+    assert len(cleared_lines) == 1, f"expected one INFO, got {info}"
+    assert 'stow' in cleared_lines[0]
+    assert 'no CLEAR_ERRORS was needed' in cleared_lines[0]
+
+
+def test_link_status_surfaces_can_fault_latch_fields(bridge):
+    """/link_status carries the FW 23 CAN_BUS_DOWN trip latch verbatim,
+    including the 255-means-none-since-boot case."""
+    teensy, node = bridge
+    hb = HeartbeatT2J(t_teensy_us=1, link_state=int(LinkState.UP),
+                      bus1_health=int(BusHealth.OK), bus2_health=int(BusHealth.OK),
+                      fault_state=int(FaultState.NONE), flags=0, uptime_ms=1,
+                      can_fault_leg=5, can_fault_age_ms=2_468, can_fault_count=3)
+    teensy.send_to_jetson(int(MsgType.HEARTBEAT_T2J), hb.pack())
+    assert _wait_until(lambda: node._latest_heartbeat is not None)
+    node._publish_link_status()
+    kv = {v.key: v.value for v in node.link_status_pub.published[-1].values}
+    assert kv['can_fault_leg'] == '5'
+    assert kv['can_fault_age_ms'] == '2468'
+    assert kv['can_fault_count'] == '3'
+
+
+def test_link_status_can_fault_leg_255_means_none_since_boot(bridge):
+    teensy, node = bridge
+    hb = HeartbeatT2J(t_teensy_us=1, link_state=int(LinkState.UP),
+                      bus1_health=int(BusHealth.OK), bus2_health=int(BusHealth.OK),
+                      fault_state=int(FaultState.NONE), flags=0, uptime_ms=1,
+                      can_fault_leg=0xFF, can_fault_age_ms=0, can_fault_count=0)
+    teensy.send_to_jetson(int(MsgType.HEARTBEAT_T2J), hb.pack())
+    assert _wait_until(lambda: node._latest_heartbeat is not None)
+    node._publish_link_status()
+    kv = {v.key: v.value for v in node.link_status_pub.published[-1].values}
+    assert kv['can_fault_leg'] == '255'
+    assert kv['can_fault_count'] == '0'
+
+
+def test_link_status_surfaces_hb_stale_mask_and_axes(bridge):
+    """HB_STALE_MASK (HeartbeatT2J.flags bits 16-22) surfaces as both the raw
+    mask int and a readable axis list; legs 0/2 and the hand (axis 6) stale."""
+    teensy, node = bridge
+    stale_axes = 0b1000101   # axes 0, 2, 6
+    flags = (stale_axes << p.HEARTBEAT_HB_STALE_SHIFT) & int(
+        p.HeartbeatT2JFlags.HB_STALE_MASK)
+    hb = HeartbeatT2J(t_teensy_us=1, link_state=int(LinkState.UP),
+                      bus1_health=int(BusHealth.OK), bus2_health=int(BusHealth.OK),
+                      fault_state=int(FaultState.NONE), flags=flags, uptime_ms=1)
+    teensy.send_to_jetson(int(MsgType.HEARTBEAT_T2J), hb.pack())
+    assert _wait_until(lambda: node._latest_heartbeat is not None)
+    node._publish_link_status()
+    kv = {v.key: v.value for v in node.link_status_pub.published[-1].values}
+    assert kv['hb_stale_mask'] == str(stale_axes)
+    assert kv['hb_stale_axes'] == '0,2,6'
+
+
+def test_link_status_hb_stale_axes_dash_when_none_stale(bridge):
+    teensy, node = bridge
+    hb = HeartbeatT2J(t_teensy_us=1, link_state=int(LinkState.UP),
+                      bus1_health=int(BusHealth.OK), bus2_health=int(BusHealth.OK),
+                      fault_state=int(FaultState.NONE), flags=0, uptime_ms=1)
+    teensy.send_to_jetson(int(MsgType.HEARTBEAT_T2J), hb.pack())
+    assert _wait_until(lambda: node._latest_heartbeat is not None)
+    node._publish_link_status()
+    kv = {v.key: v.value for v in node.link_status_pub.published[-1].values}
+    assert kv['hb_stale_mask'] == '0'
+    assert kv['hb_stale_axes'] == '-'
+
+
+def test_link_status_warns_on_hb_stale_mask_throttled(bridge):
+    """A throttled WARN (<= 1 per 5 s) fires while HB_STALE_MASK is nonzero,
+    names the stale axes, and is explicit that this is diagnostic-only."""
+    from unittest.mock import MagicMock
+    from jugglebot.teensy_bridge_node import _HB_STALE_WARN_REPEAT_S
+    teensy, node = bridge
+    stale_axes = 0b0000010   # leg 1 only
+    flags = (stale_axes << p.HEARTBEAT_HB_STALE_SHIFT) & int(
+        p.HeartbeatT2JFlags.HB_STALE_MASK)
+    hb = HeartbeatT2J(t_teensy_us=1, link_state=int(LinkState.UP),
+                      bus1_health=int(BusHealth.OK), bus2_health=int(BusHealth.OK),
+                      fault_state=int(FaultState.NONE), flags=flags, uptime_ms=1)
+    teensy.send_to_jetson(int(MsgType.HEARTBEAT_T2J), hb.pack())
+    assert _wait_until(lambda: node._latest_heartbeat is not None)
+
+    node._logger = MagicMock()
+    node._publish_link_status()
+    warns = [m for m in _messages(node._logger.warning) if 'heartbeats stale' in m]
+    assert len(warns) == 1
+    assert 'leg 1' in warns[0]
+    assert 'diagnostic only' in warns[0]
+    assert 'not a fault' in warns[0]
+
+    # A second publish inside the throttle window must NOT re-warn.
+    node._logger = MagicMock()
+    node._publish_link_status()
+    assert not any('heartbeats stale' in m for m in _messages(node._logger.warning))
+
+    # Backdate the throttle anchor past the window → warns again.
+    node._logger = MagicMock()
+    node._last_hb_stale_warn_t = time.monotonic() - (_HB_STALE_WARN_REPEAT_S + 1.0)
+    node._publish_link_status()
+    assert any('heartbeats stale' in m for m in _messages(node._logger.warning))
+
+
+def test_link_status_diag_hb_stale_legs_from_diagnostic_flag_bit0(bridge):
+    """Per-axis DIAGNOSTIC.flags bit 0 (heartbeat stale) for legs 0-5, the leg
+    equivalent of the BB 7/8 gate in _bb_motor_states_for_robot_state."""
+    teensy, node = bridge
+    # Leg 2 stale (bit0 set), leg 4 fresh-and-clean (bit0 clear).
+    d2 = Diagnostic(axis_id=2, flags=0x1)
+    d4 = Diagnostic(axis_id=4, flags=0x2)   # HB_SEEN only, not stale
+    teensy.send_to_jetson(int(MsgType.DIAGNOSTIC), d2.pack())
+    teensy.send_to_jetson(int(MsgType.DIAGNOSTIC), d4.pack())
+    assert _wait_until(lambda: 2 in node._latest_diag and 4 in node._latest_diag)
+    node._publish_link_status()
+    kv = {v.key: v.value for v in node.link_status_pub.published[-1].values}
+    assert kv['diag_hb_stale_legs'] == '2'
+
+
+def test_link_status_diag_hb_stale_legs_dash_when_none(bridge):
+    teensy, node = bridge
+    node._publish_link_status()
+    kv = {v.key: v.value for v in node.link_status_pub.published[-1].values}
+    assert kv['diag_hb_stale_legs'] == '-'
 
 
 def test_guard_fault_repeats_every_5s_rate_exact(bridge):

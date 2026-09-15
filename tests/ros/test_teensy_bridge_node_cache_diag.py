@@ -79,6 +79,11 @@ _HEALTHY = dict(
     # axis so a transposed slot is visible.
     enc_frames=(61_000_001, 61_000_002, 61_000_003, 61_000_004,
                 61_000_005, 61_000_006, 61_000_007),
+    # Per-axis ODrive heartbeat frames (FW 23, 2026-09-15) — same cumulative
+    # contract as enc_frames, sits right after it on the wire. Distinct values
+    # so an off-by-one slice against enc_frames would surface.
+    hb_frames=(9_100_001, 9_100_002, 9_100_003, 9_100_004,
+               9_100_005, 9_100_006, 9_100_007),
     seq=3_600,
     window_us=1_000_013,
     rx_cap_hits_jb=0,
@@ -148,6 +153,10 @@ def test_cache_diag_frame_publishes_every_wire_field():
                                       61_000_004, 61_000_005, 61_000_006,
                                       61_000_007)):
             assert vals[f'enc_frames_{i}'] == str(expected)
+        for i, expected in enumerate((9_100_001, 9_100_002, 9_100_003,
+                                      9_100_004, 9_100_005, 9_100_006,
+                                      9_100_007)):
+            assert vals[f'hb_frames_{i}'] == str(expected)
         assert vals['rx_depth_hwm_jb'] == '9'
         assert vals['rx_depth_hwm_bb'] == '3'
         assert vals['rx_depth_hwm_cone'] == '1'
@@ -443,6 +452,20 @@ def test_an_fw11_bridge_is_silent_not_broken():
         assert node._cache_diag_queue == []
         node._publish_cache_diag()
         assert node.cache_diag_pub.published == []
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_hb_frames_default_to_zero_from_a_pre_fw23_bridge():
+    """A pre-FW-23 bridge never populates hb_frames — the decoded default (0
+    per axis) must publish as a plain '0', not raise or read as unseen."""
+    teensy, client, node = _node()
+    try:
+        _send(teensy, node, hb_frames=(0,) * 7)
+        node._publish_cache_diag()
+        vals = _kv(node.cache_diag_pub.published[0])
+        for i in range(7):
+            assert vals[f'hb_frames_{i}'] == '0'
     finally:
         _teardown(teensy, client, node)
 

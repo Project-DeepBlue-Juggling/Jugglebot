@@ -815,6 +815,23 @@ _T2J_CONE_HEALTH_SHIFT = 4
 _T2J_TORQUE_CLAMP_MASK = int(p.HeartbeatT2JFlags.TORQUE_CLAMP_MASK)
 _T2J_TORQUE_CLAMP_SHIFT = int(p.HEARTBEAT_TORQUE_CLAMP_SHIFT)
 
+# Bits 16-22 carry the report-only per-axis ODrive heartbeat-staleness mask
+# (bit 16+i = axis i's CAN heartbeat older than CAN_HEARTBEAT_STALE_US = 0.5 s;
+# i in 0-5 legs, 6 = hand) — generated single source:
+# p.HeartbeatT2JFlags.HB_STALE_MASK / p.HEARTBEAT_HB_STALE_SHIFT. Added at
+# FW 23 (2026-09-15, logbook/2026-09-15-fw23-axis-silence-watchdog.md) after
+# the fatal CAN_BUS_DOWN predicate moved off the heartbeat: nothing on the
+# wire carried per-axis heartbeat age before this, so a load-gated dropout
+# like the one that caused the double trip was invisible while the robot kept
+# flying. DIAGNOSTIC ONLY — never gates leg output, and reads 0 from a
+# firmware older than FW 23 (bits unused there), so surfacing it is
+# backward-compatible with an unflashed bridge.
+_T2J_HB_STALE_MASK = int(p.HeartbeatT2JFlags.HB_STALE_MASK)
+_T2J_HB_STALE_SHIFT = int(p.HEARTBEAT_HB_STALE_SHIFT)
+# Throttle for the "heartbeats stale" advisory WARN (2d below) — diagnostic
+# noise must not compete with the guard-latch ERROR cadence.
+_HB_STALE_WARN_REPEAT_S = 5.0
+
 # HandSensor.flags bits (T→J, hand ball-present sensor) — generated single
 # source: p.HandSensorFlags. An older bridge never sends the frame
 # (never-seen ⇒ UNKNOWN).
@@ -855,7 +872,8 @@ _BB_HAND_AXIS = proto.NODE_ID_BB_HAND     # 8
 # Deliberately not version-stamped: a stamped comment rots on every bump (this
 # one still said "PROTOCOL_VERSION 4" after the 4→5 bump). The spec is the
 # source of truth; these bits have been stable since they were introduced.
-_DIAG_FLAG_HB_STALE = 0x1   # ODrive CAN heartbeat older than CAN_HEARTBEAT_TIMEOUT
+_DIAG_FLAG_HB_STALE = 0x1   # ODrive CAN heartbeat older than CAN_AXIS_SILENCE_TIMEOUT_US (2.0 s);
+                            # HeartbeatT2J HB_STALE_MASK is the sharper 0.5 s diagnostic (FW 23)
 _DIAG_FLAG_HB_SEEN = 0x2    # ODrive has heartbeated at least once this firmware boot
 # BB-axis liveness windows for the robot_state append. BB diag is a fixed 1 Hz
 # per axis (send_bb_diag), so 3 s = three missed frames; BB estimates ride the
@@ -1325,6 +1343,10 @@ class TeensyBridgeNode(Node):
         # _GUARD_LATCH_REPEAT_S). None while no fault is latched; anchored to the
         # fault edge so the first repeat lands _GUARD_LATCH_REPEAT_S after it.
         self._last_guard_latch_log_t: float | None = None
+        # Monotonic timestamp of the last "heartbeats stale" diagnostic WARN
+        # (HB_STALE_MASK, FW 23) — throttled independently of the guard-latch
+        # reminder above since this is report-only, never a fault.
+        self._last_hb_stale_warn_t: float | None = None
         self._latest_profile: Profile | None = None
         # Per-axis latest Diagnostic (one axis per frame on the wire), plus its
         # host-arrival time (monotonic). The arrival times gate the BB axes'
@@ -2715,6 +2737,15 @@ class TeensyBridgeNode(Node):
             for i in range(len(cd.enc_frames)):
                 values.append(KeyValue(
                     key=f'enc_frames_{i}', value=str(int(cd.enc_frames[i]))))
+            # Per-axis ODrive heartbeat frames decoded AND cached, same
+            # cumulative-since-boot/raw/differenced-by-consumer contract as
+            # enc_frames above (FW 23, 2026-09-15). Sits right beside it because
+            # they answer the same question for two different streams: is THIS
+            # axis's traffic of THIS kind still arriving. 0 from a pre-FW-23
+            # firmware (field unset there).
+            for i in range(len(cd.hb_frames)):
+                values.append(KeyValue(
+                    key=f'hb_frames_{i}', value=str(int(cd.hb_frames[i]))))
             values.extend([
                 KeyValue(key='rx_depth_hwm_jb',
                          value=str(int(cd.rx_depth_hwm_jb))),
@@ -4837,6 +4868,8 @@ class TeensyBridgeNode(Node):
             with self._lock:
                 hb = self._latest_heartbeat
                 hb_gen = self._heartbeat_gen
+                diag = dict(self._latest_diag)
+                diag_mono = dict(self._latest_diag_mono)
             age_us = self._link_age_us()
             # The alarmed latency monitor's one evaluation point (it needs the
             # 10 Hz heartbeat this method already holds). Runs BEFORE the level
@@ -4847,6 +4880,32 @@ class TeensyBridgeNode(Node):
             # and, like the latency monitor, is ADVISORY: it reads the diag
             # cache and writes only to the logger, never to msg.level.
             self._log_odrive_errors()
+
+            # FW 23 HB_STALE_MASK (2d/2c above) — throttled diagnostic WARN when
+            # any axis's ODrive heartbeat is stale. NEVER a fault: the axis's
+            # other CAN traffic (encoder, iq, ...) keeps the axis-silence
+            # watchdog (CAN_BUS_DOWN) from tripping, and this mask exists
+            # precisely to make that class of dropout visible while it stays
+            # non-fatal. See logbook/2026-09-15-fw23-axis-silence-watchdog.md.
+            if hb is not None:
+                hb_stale_mask = ((int(hb.flags) & _T2J_HB_STALE_MASK)
+                                  >> _T2J_HB_STALE_SHIFT)
+                if hb_stale_mask:
+                    now_mono = time.monotonic()
+                    if (self._last_hb_stale_warn_t is None
+                            or (now_mono - self._last_hb_stale_warn_t)
+                                >= _HB_STALE_WARN_REPEAT_S):
+                        self._last_hb_stale_warn_t = now_mono
+                        stale_axes = ','.join(
+                            _axis_label(i) for i in range(_NUM_AXES)
+                            if hb_stale_mask & (1 << i))
+                        self.get_logger().warning(
+                            f'hand/leg heartbeats stale >500 ms on axes '
+                            f'[{stale_axes}] (diagnostic only — not a fault; '
+                            f'the bus liveness watchdog reads every frame '
+                            f'type)')
+                else:
+                    self._last_hb_stale_warn_t = None
 
             msg = DiagnosticStatus()
             msg.name = 'teensy/link'
@@ -4892,20 +4951,50 @@ class TeensyBridgeNode(Node):
                                        + ','.join(f'{d:+.2f}'
                                                   for d in hb.live_deviation)
                                        + '] rev')
-                        self.get_logger().error(
-                            f'Teensy guard FAULT LATCHED: fault_state={teensy_fault}'
-                            f'{leg_hint}{dev_ctx} — leg output is now SUPPRESSED '
-                            f'and every leg command (incl. DEACTIVATE, which '
-                            f'returns ERR_BUS_DOWN) will be refused. Recover with: '
-                            f'ros2 service call /clear_errors std_srvs/srv/Trigger')
+                        if fs == int(FaultState.CAN_BUS_DOWN):
+                            # FW 23 (2026-09-15): CAN_BUS_DOWN is the axis-silence
+                            # watchdog, not a latched-until-CLEAR_ERRORS fault — it
+                            # self-clears once every present leg is alive again, and
+                            # the firmware stows on the clear. Telling the operator to
+                            # run /clear_errors here is actively wrong (there is
+                            # nothing to clear) and was the exact gap the 2026-09-15
+                            # R3 double-trip forensics flagged
+                            # (logbook/2026-09-15-fw23-axis-silence-watchdog.md, "Host
+                            # follow-on"). Use the trip latch HeartbeatT2J carries
+                            # for this fault alone (can_fault_leg/_age_ms/_count) —
+                            # NOT cleared by the self-clear, so it still names the
+                            # culprit after the stow.
+                            leg_no = int(hb.can_fault_leg)
+                            leg_str = 'unknown' if leg_no == 0xFF else str(leg_no)
+                            self.get_logger().error(
+                                f'Teensy guard FAULT: CAN_BUS_DOWN — leg {leg_str} '
+                                f'silent on the Jugglebot bus for '
+                                f'{int(hb.can_fault_age_ms)} ms (trip #'
+                                f'{int(hb.can_fault_count)} since boot): leg output '
+                                f'suppressed; the firmware stows and self-clears '
+                                f'when every leg is alive again — no CLEAR_ERRORS '
+                                f'needed; re-ACTIVATE after the stow')
+                        else:
+                            self.get_logger().error(
+                                f'Teensy guard FAULT LATCHED: fault_state={teensy_fault}'
+                                f'{leg_hint}{dev_ctx} — leg output is now SUPPRESSED '
+                                f'and every leg command (incl. DEACTIVATE, which '
+                                f'returns ERR_BUS_DOWN) will be refused. Recover with: '
+                                f'ros2 service call /clear_errors std_srvs/srv/Trigger')
                         # Anchor the persistent-reminder cadence to this edge so the
                         # first repeat lands _GUARD_LATCH_REPEAT_S later, not on the
                         # very next 10 Hz tick.
                         self._last_guard_latch_log_t = time.monotonic()
                     elif self._last_fault_state is not None:
-                        self.get_logger().info(
-                            'Teensy guard fault cleared (fault_state=NONE) — leg '
-                            'output re-enabled.')
+                        if self._last_fault_state == int(FaultState.CAN_BUS_DOWN):
+                            self.get_logger().info(
+                                'Teensy guard fault cleared (fault_state=NONE) — '
+                                'CAN_BUS_DOWN self-cleared and the firmware stowed; '
+                                'leg output re-enabled (no CLEAR_ERRORS was needed).')
+                        else:
+                            self.get_logger().info(
+                                'Teensy guard fault cleared (fault_state=NONE) — leg '
+                                'output re-enabled.')
                         self._last_guard_latch_log_t = None
                     self._last_fault_state = fs
 
@@ -5170,7 +5259,50 @@ class TeensyBridgeNode(Node):
                                         == int(FaultState.MAX_DEVIATION)
                                         and int(hb.max_dev_leg) != 0xFF)
                                     else '')),
+                    # CAN_BUS_DOWN trip latch (FW 23, 2026-09-15): WHICH leg went
+                    # silent, how stale it was at the trip and how many trips this
+                    # boot. Latched on the trip edge and, unlike fault_state, NOT
+                    # cleared by the self-clear — so it still names the culprit
+                    # after the stow. 255/0/0 from a pre-FW-23 firmware or a boot
+                    # with no trip yet.
+                    KeyValue(key='can_fault_leg',
+                             value=str(int(hb.can_fault_leg))),
+                    KeyValue(key='can_fault_age_ms',
+                             value=str(int(hb.can_fault_age_ms))),
+                    KeyValue(key='can_fault_count',
+                             value=str(int(hb.can_fault_count))),
+                    # HB_STALE_MASK (FW 23) — report-only per-axis heartbeat
+                    # staleness, deliberately sharper (0.5 s) than the 2.0 s
+                    # axis-silence watchdog and never fatal on its own. 0 from a
+                    # pre-FW-23 firmware.
+                    KeyValue(key='hb_stale_mask',
+                             value=str((int(hb.flags) & _T2J_HB_STALE_MASK)
+                                       >> _T2J_HB_STALE_SHIFT)),
+                    KeyValue(key='hb_stale_axes',
+                             value=(','.join(
+                                 str(i) for i in range(_NUM_AXES)
+                                 if ((int(hb.flags) & _T2J_HB_STALE_MASK)
+                                     >> _T2J_HB_STALE_SHIFT) & (1 << i))
+                                 or '-')),
                 ]
+            # Per-axis DIAGNOSTIC.flags bit0 (heartbeat stale) for legs 0-5 —
+            # the leg-axis equivalent of the BB 7/8 gate in
+            # _bb_motor_states_for_robot_state (flags & _DIAG_FLAG_HB_STALE).
+            # Freshness-gated the same way _log_odrive_errors is: a frozen diag
+            # cache from a dead link must read silent, not perpetually stale.
+            now_mono = time.monotonic()
+            stale_legs = [
+                axis for axis in range(_NUM_LEGS)
+                if axis in diag
+                and (now_mono - diag_mono.get(axis, 0.0)) <= _DIAG_NARRATE_FRESH_S
+                and (int(diag[axis].flags) & _DIAG_FLAG_HB_STALE)
+            ]
+            # 2.0 s threshold (per-axis DiagnosticPayload bit 0, 1 Hz) — the
+            # coarse sibling of hb_stale_axes above (HeartbeatT2J HB_STALE_MASK,
+            # 0.5 s, 10 Hz). Neither is a fault since FW 23.
+            values.append(KeyValue(
+                key='diag_hb_stale_legs',
+                value=(','.join(str(a) for a in stale_legs) or '-')))
             msg.values = values
             self.link_status_pub.publish(msg)
         except Exception as e:  # noqa: BLE001

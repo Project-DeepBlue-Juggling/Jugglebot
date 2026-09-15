@@ -26,8 +26,8 @@
 //      or hand disarm-while-CLOSED_LOOP ESTOPs the whole platform, and a CLEAR clears
 //      the hand's caches. (OBSERVABLE BEHAVIOUR CHANGE: a hand fault now E-STOPs the
 //      legs; call it out at the next powered re-validation sitting.)
-//    * CAN3 WATCHDOG + DEFERRED STOW stay legs-only (NUM_LEGS): any_leg_heartbeat_stale,
-//      all_present_legs_fresh, s_first_leg_hb_seen, the stow-complete IDLE fan-out. The
+//    * CAN3 WATCHDOG + DEFERRED STOW stay legs-only (NUM_LEGS): any_present_leg_silent,
+//      all_present_legs_alive, s_first_leg_hb_seen, the stow-complete IDLE fan-out. The
 //      stow is a LEG-only physical retraction to the off pose; the hand is NEVER stowed,
 //      so a stale hand heartbeat must NOT arm the leg watchdog/stow. NOTE this is
 //      DELIBERATELY TIGHTER than can_node, whose any_heartbeat_stale scans JUGGLEBOT_AXES
@@ -93,6 +93,20 @@ static float   s_max_dev_latch_dev = 0.0f;
 static float   s_max_dev_latch_u0  = 0.0f;
 static float   s_max_dev_latch_enc = 0.0f;
 
+// ── CAN_BUS_DOWN trip latch (FW 23) ──────────────────────────────────────────
+// The 2026-09-15 forensics could not name the leg that tripped CAN_BUS_DOWN:
+// nothing on the wire carried per-leg liveness and this file latched nothing for
+// this fault (unlike max_dev_leg for MAX_DEVIATION). The fault then self-cleared
+// inside one 10 Hz fault tick, so the operator saw nothing at all and the bag
+// could not be read. These three fields close that: they are written ONCE at the
+// trip and are NOT cleared by the self-clear, so the host can read them long
+// after the ≤100 ms window. fault_notify_clear_errors() releases the leg/age
+// (the operator has acknowledged) but KEEPS the count — a session's trip census
+// must survive an operator clear or a recurring fault reads as a first fault.
+static uint8_t  s_can_fault_leg   = 0xFF;   // 0xFF ⇒ no CAN_BUS_DOWN trip since boot
+static uint32_t s_can_fault_age_ms = 0;     // that leg's silence age at the trip
+static uint16_t s_can_fault_count = 0;      // trips since boot (saturating)
+
 // ── Hand-deviation tick-verdict tracker (FW 17) ──────────────────────────────
 // The 500 Hz interp computes the hand residual and counts exceed ticks
 // (interp_hand_dev_over_ticks — cumulative, single-writer, never cleared by a
@@ -125,12 +139,51 @@ static bool legs_clean() {
 // _actuators_intact_and_holding: all legs CLOSED_LOOP and error/disarm-free.
 static bool actuators_intact_and_holding() { return legs_all_closed_loop() && legs_clean(); }
 
-static bool any_leg_heartbeat_stale() {
+// ── THE FATAL LIVENESS PREDICATE (FW 23) ─────────────────────────────────────
+// A PRESENT leg (leg_present == heartbeat_seen) that has sent NO frame OF ANY
+// KIND for CAN_AXIS_SILENCE_TIMEOUT_US is SILENT. Any one silent leg trips
+// s_fatal_can_error → output suppressed + deferred stow armed.
+//
+// WHY LIVENESS AND NOT HEARTBEATS. Until FW 23 this read last_heartbeat_us, so
+// the proxy for "the bus is down" was 20 consecutive lost frames of the ONE
+// stream an ODrive sends at 10 Hz, out of the ~272 frames/s it broadcasts. An
+// ODrive DROPS (never queues) a cyclic frame that finds no free TX mailbox, so
+// under the 62 % streaming bus load the sparsest stream is 20× more exposed per
+// unit time to a run of consecutive losses than any other — and bus-side
+// arbitration priority cannot rescue a frame that never entered a mailbox. On
+// 2026-09-15 that stowed the robot twice while the SAME legs' 100 Hz encoder
+// streams kept arriving (0 CAN errors, ring leak 0, worst encoder age 95 ms).
+// last_rx_us is the union of every stream the node emits, so the same 2.0 s
+// window is now ~544 lost frames instead of 20.
+//
+// WHY ONE SILENT LEG STILL STOWS. Five legs streaming against a dead sixth is
+// the hazard this fault exists for: the platform is a closed kinematic chain and
+// a leg that stops answering is an actuator loss, not a reporting gap. The
+// whole-bus-dark case is simply the all-legs instance of the same predicate, so
+// there is ONE predicate and ONE enforcement point, not a special case each.
+static bool any_present_leg_silent() {
   const uint64_t now = micros64();   // interval clock — never the steppable wall
   for (uint8_t i = 0; i < NUM_LEGS; ++i)
-    if (axes[i].heartbeat_seen && (now - atomic_read_u64(&axes[i].last_heartbeat_us) > CAN_HEARTBEAT_TIMEOUT_US))
+    if (leg_present(i) && (now - atomic_read_u64(&axes[i].last_rx_us) > CAN_AXIS_SILENCE_TIMEOUT_US))
       return true;
   return false;
+}
+// The FIRST silent present leg and its silence age, for the trip latch. Returns
+// 0xFF / 0 when no leg is silent. Separate from the boolean above so the hot
+// 10 Hz path stays a plain scan and the latch pays for the age arithmetic only
+// at the trip instant.
+static uint8_t first_silent_leg(uint32_t* age_ms_out) {
+  const uint64_t now = micros64();
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) {
+    if (!leg_present(i)) continue;
+    const uint64_t age = now - atomic_read_u64(&axes[i].last_rx_us);
+    if (age > CAN_AXIS_SILENCE_TIMEOUT_US) {
+      if (age_ms_out) *age_ms_out = (uint32_t)(age / 1000ULL);
+      return i;
+    }
+  }
+  if (age_ms_out) *age_ms_out = 0;
+  return 0xFF;
 }
 // Scoped to PRESENT legs (leg_present == heartbeat_seen). A present leg
 // that has gone stale fails the predicate; absent legs (never seen) are skipped.
@@ -141,10 +194,10 @@ static bool any_leg_heartbeat_stale() {
 // still requires all six fresh). Vacuously true only with zero present legs,
 // which cannot co-occur with the fatal_can_error precondition of the sole caller
 // (that needs s_first_leg_hb_seen — at least one leg already seen).
-static bool all_present_legs_fresh() {
+static bool all_present_legs_alive() {
   const uint64_t now = micros64();   // interval clock — never the steppable wall
   for (uint8_t i = 0; i < NUM_LEGS; ++i)
-    if (leg_present(i) && (now - atomic_read_u64(&axes[i].last_heartbeat_us) > CAN_HEARTBEAT_TIMEOUT_US))
+    if (leg_present(i) && (now - atomic_read_u64(&axes[i].last_rx_us) > CAN_AXIS_SILENCE_TIMEOUT_US))
       return false;
   return true;
 }
@@ -196,6 +249,11 @@ void fault_notify_clear_errors() {
                             // stale disarm cache re-faults until the next Get_Error frame)
   s_estop_latched = false;
   s_estop_state = JbUdp::FaultState::NONE;
+  // Release the CAN_BUS_DOWN trip identity (the operator has acknowledged it) but
+  // KEEP s_can_fault_count — a per-session trip census that an operator clear can
+  // zero would make the second trip of a sitting indistinguishable from the first.
+  s_can_fault_leg    = 0xFF;
+  s_can_fault_age_ms = 0;
 }
 
 // External REBOOT_ODRIVES RPC arms the bounded watchdog-suppression latch:
@@ -274,7 +332,7 @@ static void watchdog_and_stow() {
   const uint64_t now = micros64();   // interval clock — never the steppable wall
   for (uint8_t i = 0; i < NUM_AXES; ++i)
     axes[i].heartbeat_stale = axes[i].heartbeat_seen &&
-                              (now - atomic_read_u64(&axes[i].last_heartbeat_us) > CAN_HEARTBEAT_TIMEOUT_US);
+                              (now - atomic_read_u64(&axes[i].last_heartbeat_us) > CAN_AXIS_SILENCE_TIMEOUT_US);
 
   // Ball Butler heartbeat staleness (CAN1, BB_HEARTBEAT_TIMEOUT_US = 0.5 s).
   // Information-only — no fault response is triggered by BB silence (the CAN3
@@ -298,8 +356,8 @@ static void watchdog_and_stow() {
   // freshness — only a fresh reading AFTER the legs have actually gone stale proves
   // the reboot completed. Runs BEFORE detection so the AND below sees the released state.
   if (s_reboot_in_progress) {
-    if (any_leg_heartbeat_stale()) s_reboot_saw_stale = true;
-    if ((s_reboot_saw_stale && all_present_legs_fresh()) ||
+    if (any_present_leg_silent()) s_reboot_saw_stale = true;
+    if ((s_reboot_saw_stale && all_present_legs_alive()) ||
         now >= atomic_read_u64(&s_reboot_deadline_us)) {
       s_reboot_in_progress = false;
     }
@@ -308,11 +366,19 @@ static void watchdog_and_stow() {
   // Detection: CAN3 leg heartbeats went stale → fatal_can_error + arm the stow.
   // ANDs !s_reboot_in_progress so a deliberate reboot's silence does not false-trip
   // a spontaneous loss never arms that latch, so it detects as before.
-  if (s_first_leg_hb_seen && any_leg_heartbeat_stale() && !s_fatal_can_error
+  if (s_first_leg_hb_seen && any_present_leg_silent() && !s_fatal_can_error
       && !s_reboot_in_progress) {
     s_fatal_can_error = true;
     s_stow_pending = true;            // canonical arm point — independent of any host path
     if (s_stowing) { interp_end_stow(); s_stowing = false; }  // bus re-dropped mid-descent → re-arm
+    // Latch WHICH leg and HOW stale, at the trip instant (FW 23). Re-scanned
+    // rather than threaded out of the predicate so the predicate stays a pure
+    // boolean; the scan runs only on the trip edge (!s_fatal_can_error above).
+    uint32_t age_ms = 0;
+    const uint8_t silent = first_silent_leg(&age_ms);
+    s_can_fault_leg    = silent;
+    s_can_fault_age_ms = age_ms;
+    if (s_can_fault_count != 0xFFFFu) ++s_can_fault_count;   // saturate, never wrap to "no trips"
   }
 
   // Confirmed reconnect: leg heartbeats fresh again → clear fatal, run the stow.
@@ -322,7 +388,7 @@ static void watchdog_and_stow() {
   // is already done by here. The !homing_active() guard makes that invariant
   // explicit — never let the position-streamed stow and a homing move co-drive a
   // leg; the stow stays pending and runs the next cycle once homing finishes.
-  if (s_fatal_can_error && all_present_legs_fresh()) {
+  if (s_fatal_can_error && all_present_legs_alive()) {
     s_fatal_can_error = false;
     if (s_stow_pending && !s_stowing && !homing_active() && !activate_active() && !deactivate_active()) {
       interp_begin_stow();            // profiled velocity-limited descent to the off pose
@@ -542,6 +608,9 @@ void fault_machine_init() {
   s_estop_state = JbUdp::FaultState::NONE;
   s_max_dev_latch_leg = 0xFF;
   s_max_dev_latch_dev = s_max_dev_latch_u0 = s_max_dev_latch_enc = 0.0f;
+  s_can_fault_leg = 0xFF;
+  s_can_fault_age_ms = 0;
+  s_can_fault_count = 0;
   s_hand_dev_over_prev = 0;
   s_reboot_in_progress = s_reboot_saw_stale = false;
   atomic_write_u64(&s_reboot_deadline_us, 0);
@@ -567,5 +636,30 @@ uint8_t fault_max_dev_leg()   { return s_max_dev_latch_leg; }
 float   fault_max_dev_value() { return s_max_dev_latch_dev; }
 float   fault_max_dev_u0()    { return s_max_dev_latch_u0; }
 float   fault_max_dev_enc()   { return s_max_dev_latch_enc; }
+// Per-axis ODrive heartbeat-stale mask (FW 23), bit i = axis i (0-5 legs, 6 hand).
+// REPORT-ONLY: uplinked as HeartbeatT2J flags bits 16-22 and read by nothing in
+// this firmware. It lives HERE, beside the heartbeat_stale bookkeeping and the
+// silence predicate it must not be confused with, so the native harness compiles
+// and asserts it — the heartbeat uplink in the .ino is not natively compilable,
+// and an untested producer is how the pre-FW-23 per-axis staleness ended up
+// computed-and-discarded in the first place.
+//
+// Threshold is CAN_HEARTBEAT_STALE_US (0.5 s = 5 lost heartbeats), NOT the 2.0 s
+// CAN_AXIS_SILENCE_TIMEOUT_US the fatal predicate uses: the dropout worth
+// REPORTING is far smaller than the silence worth STOWING for, and the load-gated
+// per-leg frame loss this measures lives well below 2 s. An axis that has never
+// heartbeated reads 0 (not stale) — presence is the DIAGNOSTIC heartbeat_seen bit.
+uint32_t fault_hb_stale_mask() {
+  const uint64_t now = micros64();   // interval clock — never the steppable wall
+  uint32_t m = 0;
+  for (uint8_t i = 0; i < NUM_AXES; ++i)
+    if (axes[i].heartbeat_seen &&
+        (now - atomic_read_u64(&axes[i].last_heartbeat_us) > CAN_HEARTBEAT_STALE_US))
+      m |= (1u << i);
+  return m;
+}
+uint8_t  fault_can_fault_leg()    { return s_can_fault_leg; }
+uint32_t fault_can_fault_age_ms() { return s_can_fault_age_ms; }
+uint16_t fault_can_fault_count()  { return s_can_fault_count; }
 
 }  // namespace CanBridge

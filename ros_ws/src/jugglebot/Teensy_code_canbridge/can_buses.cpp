@@ -65,6 +65,12 @@ static volatile uint32_t s_decode_short = 0, s_decode_bad_axis = 0;
 // aggregate cannot see one axis of seven stop broadcasting, and that is exactly
 // the shape the 2026-08-12 S1 bag forensics found. See CanRxHealth::enc_frames.
 static volatile uint32_t s_enc_frames[NUM_AXES] = {0};
+// Per-axis ODrive HEARTBEAT frames decoded (FW 23). Same single-writer class as
+// s_enc_frames above. enc_frames proved the ENCODER stream healthy through the
+// 2026-09-15 CAN_BUS_DOWN trips; the heartbeat stream — the one the pre-FW-23
+// safety predicate read — was uncounted, so the forensics could not say whether
+// the heartbeats were never sent or never received. See CanRxHealth::hb_frames.
+static volatile uint32_t s_hb_frames[NUM_AXES] = {0};
 
 // ── RX-ring TRUE-occupancy probe (FW 13; contract in can_buses.h) ───────────
 // Written ONLY by service_bus (task_can_rx, priority 5); read by task_telem
@@ -179,6 +185,19 @@ static void decode_into_cache(const CAN_message_t& msg) {
   AxisState& a = axes[axis];
   const uint8_t* d = msg.buf;
 
+  // ── AXIS LIVENESS STAMP (FW 23) ─────────────────────────────────────────
+  // Deliberately BEFORE the switch, and deliberately after only the axis/len
+  // validity guards: every well-formed frame this node emits — heartbeat,
+  // get_error, encoder, iq, temps, vbus, version — is proof the node is alive
+  // on the bus, and the fatal CAN_BUS_DOWN watchdog reads exactly this stamp
+  // (fault_machine.cpp any_present_leg_silent). Placing it above the switch is
+  // the enforcement point: a frame type added to the decode later cannot be
+  // forgotten here, which is how the pre-FW-23 predicate came to depend on the
+  // single SPARSEST stream (the 10 Hz heartbeat) of the ~272 frames/s an ODrive
+  // broadcasts. Stray/garbled frames are excluded by the two guards above, so a
+  // bus full of junk cannot forge liveness for a silent node.
+  atomic_write_u64(&a.last_rx_us, micros64());
+
   switch (cmd) {
     case ODriveCmd::heartbeat_message: {
       auto h = ODrive::decode_heartbeat(d);
@@ -190,6 +209,7 @@ static void decode_into_cache(const CAN_message_t& msg) {
                                           // reader (fault watchdog) mid-load would tear the timestamp
       a.heartbeat_seen   = true;
       a.heartbeat_stale  = false;
+      s_hb_frames[axis]++;   // FW 23 census (see s_hb_frames)
       break;
     }
     case ODriveCmd::get_error: {
@@ -1249,6 +1269,7 @@ CanRxHealth can_buses_rx_health() {
   // and an axis sampled one frame early simply moves that frame into the next
   // window — it cannot manufacture a stall, which is the only conclusion drawn.
   for (uint8_t i = 0; i < NUM_AXES; ++i) s.enc_frames[i] = s_enc_frames[i];
+  for (uint8_t i = 0; i < NUM_AXES; ++i) s.hb_frames[i]  = s_hb_frames[i];
   return s;
 }
 

@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from enum import IntEnum
 
 # ── Constants ──────────────────────────────────────────────────────────
-PROTOCOL_VERSION = 8  # Bumped on any incompatible wire change (4→5: 2026-07-31 Profile gains the 3rd CAN slot can3_* — cone traffic; 5→6: 2026-09-01 Setpoint widens 6→7 — index 6 = hand — and gains the v1[7] exact-knot-velocity array, unified-7dof-planner Phase 2; 6→7: 2026-09-11 skill-stack R1 — HAND_TRAJ_CMD/HAND_SOURCE_SET/ERR_HAND_SOURCE removed, HeartbeatT2J bit 6 retired, BridgeTxDiag hand_ops counters removed; 7→8: 2026-09-14 hand C2 (can-bridge FW 22) — Setpoint GROWS 208→240 B: v2[7] (exact u2-knot velocity, flags bit4 HAS_V2) + hand_ff_gain (K, clamped [0,1.5] at ingest), flags bit5 HAS_SCHED plays the frame on its t_origin_us stamp instead of on UDP arrival; HeartbeatT2J GROWS by the scheduled-playback promotion-continuity diagnostics and flags bits 14 HAND_TORQUE_CLAMP / 15 SCHED_HOLD_LATCHED. Growing a struct is as incompatible as shrinking one: darkness against any FW ≤ 21 board is the INTENDED failure. Removing message types and shrinking a struct are incompatible wire changes: darkness against any FW ≤ 20 board is the INTENDED failure. TOTAL LINK DARKNESS against any FW ≤ 16 board until the lockstep Phase 3 flash — loud and fail-closed by design)
+PROTOCOL_VERSION = 9  # Bumped on any incompatible wire change (4→5: 2026-07-31 Profile gains the 3rd CAN slot can3_* — cone traffic; 5→6: 2026-09-01 Setpoint widens 6→7 — index 6 = hand — and gains the v1[7] exact-knot-velocity array, unified-7dof-planner Phase 2; 6→7: 2026-09-11 skill-stack R1 — HAND_TRAJ_CMD/HAND_SOURCE_SET/ERR_HAND_SOURCE removed, HeartbeatT2J bit 6 retired, BridgeTxDiag hand_ops counters removed; 7→8: 2026-09-14 hand C2 (can-bridge FW 22) — Setpoint GROWS 208→240 B: v2[7] (exact u2-knot velocity, flags bit4 HAS_V2) + hand_ff_gain (K, clamped [0,1.5] at ingest), flags bit5 HAS_SCHED plays the frame on its t_origin_us stamp instead of on UDP arrival; HeartbeatT2J GROWS by the scheduled-playback promotion-continuity diagnostics and flags bits 14 HAND_TORQUE_CLAMP / 15 SCHED_HOLD_LATCHED. Growing a struct is as incompatible as shrinking one: darkness against any FW ≤ 21 board is the INTENDED failure. Removing message types and shrinking a struct are incompatible wire changes: darkness against any FW ≤ 20 board is the INTENDED failure. TOTAL LINK DARKNESS against any FW ≤ 16 board until the lockstep Phase 3 flash — loud and fail-closed by design) 8→9: 2026-09-15 axis-silence watchdog (can-bridge FW 23) — HeartbeatT2J GROWS by can_fault_leg/can_fault_age_ms/can_fault_count (the CAN_BUS_DOWN trip latch: WHICH leg went silent, how stale it was, how many trips this boot) and gains flags bits 16-22 HB_STALE_MASK (per-axis ODrive heartbeat staleness at CAN_HEARTBEAT_STALE_US = 0.5 s, report-only); CacheDiag GROWS by hb_frames[7], the per-axis heartbeat-frame census beside enc_frames. Both structs grow, so this is an incompatible wire change: darkness against any FW ≤ 22 board is the INTENDED failure.
 MAGIC = 19010  # "JB" little-endian preamble (bytes 0x42 0x4A)
 HEADER_SIZE = 8  # Bytes before payload
 CRC_SIZE = 2  # Trailing CRC-16 bytes
@@ -29,6 +29,7 @@ HEARTBEAT_HZ = 10  # Both-direction liveness rate
 LINK_LOST_MISSES = 5  # Missed heartbeats before declaring link lost
 HEARTBEAT_TORQUE_CLAMP_SHIFT = 8  # Bit offset of TORQUE_CLAMP_MASK inside HeartbeatT2J.flags (bits 8-13)
 HEARTBEAT_CONE_HEALTH_SHIFT = 4  # Bit offset of CONE_HEALTH_MASK inside HeartbeatT2J.flags (bits 4-5)
+HEARTBEAT_HB_STALE_SHIFT = 16  # Bit offset of HB_STALE_MASK inside HeartbeatT2J.flags (bits 16-22)
 
 # ── Enums ──────────────────────────────────────────────────────────────
 class MsgType(IntEnum):
@@ -114,7 +115,7 @@ class FaultState(IntEnum):
     MOTOR_OVERSPEED = 3  # A leg exceeded the overspeed limit
     MAX_DEVIATION = 4  # Commanded pos diverged too far from encoder
     ODRIVE_FATAL = 5  # Active ODrive error / disarm-while-closed-loop
-    CAN_BUS_DOWN = 6  # CAN3 (leg bus) down — hold, deferred stow armed
+    CAN_BUS_DOWN = 6  # one or more present legs silent on the Jugglebot bus (no frame of any kind for CAN_AXIS_SILENCE_TIMEOUT_US); self-clears when all present legs are alive again, then the firmware stows. Name kept for wire stability; until FW 23 the predicate was heartbeat-only, which is why the 2026-09-15 trips fired on a demonstrably healthy bus
     MOTOR_FB_STALE = 7  # Leg encoder feedback stale → suppress output (recoverable)
 
 class GuardMode(IntEnum):
@@ -147,6 +148,7 @@ class HeartbeatT2JFlags(IntEnum):
     TORQUE_CLAMP_MASK = 16128  # bits 8-13: bit (8+i) set = leg i's |torque_ff| was clamped to TORQUE_FF_FIRMWARE_CLAMP_WIRE_NM at UDP ingest on the last ACCEPTED setpoint frame (mirrors lead_clamp_mask; leg_interp.cpp interp_on_setpoint)
     HAND_TORQUE_CLAMP = 16384  # bit14: the hand torque-FF saturation (HAND_TORQUE_FF_CLAMP_NM) engaged on the last 500 Hz tick (FW 22 torque path; reads 0 until that path lands)
     SCHED_HOLD_LATCHED = 32768  # bit15: a scheduled lane group is in a LATCHED hold — its cover exhausted, it ran the C2 stop, and a discontinuous resume was refused while armed. Clears on an accepted continuous promotion or the next disarm/arm cycle (FW 22)
+    HB_STALE_MASK = 8323072  # bits 16-22: bit (16+i) set = axis i's ODrive heartbeat is older than CAN_HEARTBEAT_STALE_US (0.5 s = 5 lost 10 Hz heartbeats); i in 0-5 legs, 6 = hand; see HEARTBEAT_HB_STALE_SHIFT. REPORT-ONLY — no firmware fault reads it. Added at FW 23 because the pre-FW-23 fatal CAN_BUS_DOWN predicate read the heartbeat and NOTHING on the wire carried per-axis heartbeat age, so the 2026-09-15 double trip could not be attributed to a leg. Threshold is deliberately 4x SHARPER than the 2.0 s CAN_AXIS_SILENCE_TIMEOUT_US the fatal predicate now uses: a dropout worth reporting is much smaller than one worth stowing for. An axis that has never heartbeated reads 0 here (not stale) — read the DIAGNOSTIC frame's heartbeat_seen bit for presence
 
 # ── Decode errors ──────────────────────────────────────────────────────
 class CrcError(ValueError):
@@ -308,10 +310,10 @@ class Diagnostic:
         return cls(next(it), next(it), next(it), next(it), next(it), next(it), tuple(next(it) for _ in range(2)), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it))
 
 # HeartbeatT2J: Teensy → Jetson liveness + link/bus health, ~10 Hz.
-HEARTBEAT_T2J_FMT = '<QBBBBIIBBBfffffffffBBfffffffffIIIIII'
-HEARTBEAT_T2J_SIZE = 121
+HEARTBEAT_T2J_FMT = '<QBBBBIIBBBfffffffffBBfffBHHffffffIIIIII'
+HEARTBEAT_T2J_SIZE = 126
 _HEARTBEAT_T2J_STRUCT = struct.Struct(HEARTBEAT_T2J_FMT)
-assert _HEARTBEAT_T2J_STRUCT.size == 121
+assert _HEARTBEAT_T2J_STRUCT.size == 126
 
 @dataclass
 class HeartbeatT2J:
@@ -334,6 +336,9 @@ class HeartbeatT2J:
     max_dev_value: float = 0.0
     max_dev_u0: float = 0.0
     max_dev_enc: float = 0.0
+    can_fault_leg: int = 0
+    can_fault_age_ms: int = 0
+    can_fault_count: int = 0
     hand_promo_dp_max: float = 0.0
     hand_promo_dv_max: float = 0.0
     hand_promo_da_max: float = 0.0
@@ -348,13 +353,13 @@ class HeartbeatT2J:
     sched_demoted: int = 0
 
     def pack(self) -> bytes:
-        return _HEARTBEAT_T2J_STRUCT.pack(self.t_teensy_us, self.link_state, self.bus1_health, self.bus2_health, self.fault_state, self.flags, self.uptime_ms, self.bb_state, self.bb_state_data, self.bb_flags, self.bb_yaw_deg, self.bb_pitch_deg, self.bb_hand_mm, *self.live_deviation, self.lead_clamp_mask, self.max_dev_leg, self.max_dev_value, self.max_dev_u0, self.max_dev_enc, self.hand_promo_dp_max, self.hand_promo_dv_max, self.hand_promo_da_max, self.leg_promo_dp_max, self.leg_promo_dv_max, self.leg_promo_da_max, self.hand_promo_over, self.leg_promo_over, self.sched_stops, self.sched_expired, self.sched_refused, self.sched_demoted)
+        return _HEARTBEAT_T2J_STRUCT.pack(self.t_teensy_us, self.link_state, self.bus1_health, self.bus2_health, self.fault_state, self.flags, self.uptime_ms, self.bb_state, self.bb_state_data, self.bb_flags, self.bb_yaw_deg, self.bb_pitch_deg, self.bb_hand_mm, *self.live_deviation, self.lead_clamp_mask, self.max_dev_leg, self.max_dev_value, self.max_dev_u0, self.max_dev_enc, self.can_fault_leg, self.can_fault_age_ms, self.can_fault_count, self.hand_promo_dp_max, self.hand_promo_dv_max, self.hand_promo_da_max, self.leg_promo_dp_max, self.leg_promo_dv_max, self.leg_promo_da_max, self.hand_promo_over, self.leg_promo_over, self.sched_stops, self.sched_expired, self.sched_refused, self.sched_demoted)
 
     @classmethod
     def unpack(cls, data: bytes) -> 'HeartbeatT2J':
-        vals = _HEARTBEAT_T2J_STRUCT.unpack(data[:121])
+        vals = _HEARTBEAT_T2J_STRUCT.unpack(data[:126])
         it = iter(vals)
-        return cls(next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), tuple(next(it) for _ in range(6)), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it))
+        return cls(next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), tuple(next(it) for _ in range(6)), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it))
 
 # Profile: 1 Hz firmware instrumentation. Per-task CPU%, CAN bus utilisation, UDP round-trip/jitter, the 500 Hz interp deadline-miss counter, and free heap. Consumed by tools/probes/teensy_link_profiling/jetson.
 PROFILE_FMT = '<QHHHHHHHHHIIIIHHIIIIIIIH'
@@ -649,10 +654,10 @@ class ClockDiag:
         return cls(next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it))
 
 # CacheDiag: ENCODER-CACHE FRESHNESS CENSUS, 1 Hz. The confirmation instrument for the surviving question of logbook/2026-07-18-teensy-uptime-tracking-degradation.md. The S1 experiment (2026-08-12) localized the uptime command-latency drift to the Teensy: at 63 h of bridge uptime the end-to-end leg lag is 290-340 ms with the leg_interp lead clamp pinning the executed command at fb+MAX_LEAD_REV for 44-74 % of ticks (5.8 % on a fresh boot), while udp_rtt_us is flat at 1-3 ms, interp_deadline_misses is 0, the heap is flat and CAN throughput is flat. Setpoints therefore ARRIVE on time and the ladder EXECUTES on time — so either the leg genuinely trails, or the `fb` the lead clamp measures against (axes[i].pos_rev, written by can_buses.cpp decode_into_cache on each ODrive get_encoder_estimate frame) is STALE and the clamp is pinning the command to a position the leg left hundreds of milliseconds ago. TODAY'S TELEMETRY CANNOT TELL THOSE APART: /robot_state and /leg_cmd_executed both read that same cache, so a stale cache moves both together and looks exactly like a real lag. This frame measures the cache's freshness DIRECTLY, which is the one observable that separates them. WHAT NOMINAL LOOKS LIKE: the ODrive broadcasts get_encoder_estimate per axis continuously, so age_min_us should sit near 0 and age_max_us near one broadcast period (a few ms) FOREVER, at any uptime. age_min_us is the headline: it is a FLOOR, and a floor cannot be produced by jitter, scheduling or sampling luck - only by the cache actually not being written. A floor that grows with uptime confirms the stale-cache mechanism; a floor that stays at the broadcast period while the lag grows REFUTES it and sends the hunt to the ODrive's own position loop. SAMPLED FROM TASK CONTEXT, NOT THE ISR (telemetry.cpp cache_diag_uplink_step, on task_telem at TELEM_RATE_HZ): the age is read through axis_state.h's existing snapshot_pos_vel seqlock, the same reader send_telemetry already uses for this triple at the same rate, so the census adds ZERO work to the 500 Hz interp ISR and opens no new IRQ-off window. Every accumulator behind this frame is written and read by that one task, so there is no cross-context counter to get wrong. WHY A PER-AXIS FRAME COUNTER SITS BESIDE THE AGES (enc_frames, added 2026-08-12). The S1 bag forensics found the per-axis cache VALUE stalling for 30-500 ms in a fat tail — 9-18 % of refresh intervals > 30 ms on an aged bridge against 4.3 % fresh — while every AGGREGATE CAN RX counter stayed flat and the uplink cadence stayed perfect. That is not a contradiction: an aggregate cannot see ONE axis of seven go quiet, because the other six keep the total moving. So the aggregates could observe the stall's consequence and never its cause, and one question stayed open — did the ODrive pause broadcasting that axis, or did the frame arrive and the cache not update? enc_frames answers it directly, and the two answers have different owners. The RX-ring fields are the other half: depth_hwm and cap_hits have been computed on every 1 kHz service tick since the 2026-06-04 drain-to-empty fix (can_buses.cpp service_bus, CAN_RX_DRAIN_BUDGET) and were NEVER uplinked — CanErrors 0x8C deliberately carries only wire-error and fault-confinement fields. They are the direct witness of the one mechanism that could starve the cache from inside the bridge, and cap_hits is the documented overflow PRECURSOR that must stay 0. Additive — no existing frame changes, so NO PROTOCOL_VERSION bump (the LegCmd / HandSensor / BridgeTxDiag / ClockDiag precedent): an old Jetson ignores the unknown msg_type and a new Jetson renders never-seen as unknown. An FW <= 11 board never sends this frame, so its consumer surface must read EMPTY, never error. INSTRUMENTATION ONLY: nothing in the firmware reads any field or accumulator introduced for this frame, so a wrong value here cannot move a leg.
-CACHE_DIAG_FMT = '<QIIIIIIIIIIIIIIIIIIIIIIIIIIIIHHHHB'
-CACHE_DIAG_SIZE = 129
+CACHE_DIAG_FMT = '<QIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIHHHHB'
+CACHE_DIAG_SIZE = 157
 _CACHE_DIAG_STRUCT = struct.Struct(CACHE_DIAG_FMT)
-assert _CACHE_DIAG_STRUCT.size == 129
+assert _CACHE_DIAG_STRUCT.size == 157
 
 @dataclass
 class CacheDiag:
@@ -660,6 +665,7 @@ class CacheDiag:
     age_min_us: tuple = field(default_factory=lambda: (0,) * 7)
     age_max_us: tuple = field(default_factory=lambda: (0,) * 7)
     enc_frames: tuple = field(default_factory=lambda: (0,) * 7)
+    hb_frames: tuple = field(default_factory=lambda: (0,) * 7)
     seq: int = 0
     window_us: int = 0
     rx_cap_hits_jb: int = 0
@@ -674,13 +680,13 @@ class CacheDiag:
     seen_mask: int = 0
 
     def pack(self) -> bytes:
-        return _CACHE_DIAG_STRUCT.pack(self.t_local_us, *self.age_min_us, *self.age_max_us, *self.enc_frames, self.seq, self.window_us, self.rx_cap_hits_jb, self.rx_cap_hits_bb, self.rx_cap_hits_cone, self.decode_short, self.decode_bad_axis, self.rx_depth_hwm_jb, self.rx_depth_hwm_bb, self.rx_depth_hwm_cone, self.samples, self.seen_mask)
+        return _CACHE_DIAG_STRUCT.pack(self.t_local_us, *self.age_min_us, *self.age_max_us, *self.enc_frames, *self.hb_frames, self.seq, self.window_us, self.rx_cap_hits_jb, self.rx_cap_hits_bb, self.rx_cap_hits_cone, self.decode_short, self.decode_bad_axis, self.rx_depth_hwm_jb, self.rx_depth_hwm_bb, self.rx_depth_hwm_cone, self.samples, self.seen_mask)
 
     @classmethod
     def unpack(cls, data: bytes) -> 'CacheDiag':
-        vals = _CACHE_DIAG_STRUCT.unpack(data[:129])
+        vals = _CACHE_DIAG_STRUCT.unpack(data[:157])
         it = iter(vals)
-        return cls(next(it), tuple(next(it) for _ in range(7)), tuple(next(it) for _ in range(7)), tuple(next(it) for _ in range(7)), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it))
+        return cls(next(it), tuple(next(it) for _ in range(7)), tuple(next(it) for _ in range(7)), tuple(next(it) for _ in range(7)), tuple(next(it) for _ in range(7)), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it))
 
 # RingDiag: CAN RX-RING TRUE-OCCUPANCY CENSUS, 1 Hz. The CONVICTION INSTRUMENT for the FlexCAN_T4 `_available` leak — the surviving candidate mechanism of the bridge-temporal arc after S2 (2026-08-13) killed the cache-AGE hypothesis. THE DEFECT (assembly-verified 2026-08-14, recorded in Teensy_code_canbridge/lib/FlexCAN_T4/PROVENANCE.md): FlexCAN_T4::events() pops the RX ring BEFORE its NVIC_DISABLE_IRQ guard, and Circular_Buffer's `_available` is read-modify-written non-atomically by BOTH the CAN ISR (increment, on push) and that unguarded task-side pop (decrement). The race is ONE-DIRECTIONAL — the ISR preempts the task, never the reverse — so ISR increments get swallowed and `_available` monotonically UNDER-counts. The bridge's drain loop (can_buses.cpp service_bus: do { events(); } while (++n < 32 && rx_remaining)) exits when `_available` reads 0 while the TRUE occupancy is still D > 0; from then on every frame it delivers is D frames old. D ratchets with uptime and caps at one ring depth, 256 slots ~= 114-135 ms at jugglebot-bus rates — which is the right order of magnitude for the 290-340 ms end-to-end lag S1 measured at 63 h, and for the ~100-150 ms per-axis telemetry freezes S2 measured directly. WHY THIS FRAME HAS TO EXIST AT ALL: `getRXQueueCount()` returns `_available`, so the depth_hwm and cap_hits counters the bridge already keeps are computed from the very number the race corrupts. They are blind to this failure BY CONSTRUCTION and would read perfectly healthy through a fully-leaked ring. THE SINGLE NUMBER THAT CONVICTS is `true_depth_jb - avail_reported_jb`, sampled at the same instant, immediately AFTER the drain loop has run to completion: at that moment `_available` is 0 by definition (that is why the loop exited), so the residual true depth IS the leak. Nominal is 0 forever, at any uptime. Anything else, growing with uptime, is the mechanism. leak_hwm_* is the same quantity maximised over EVERY 1 kHz service tick since boot, so the verdict does not depend on the 1 Hz sample landing luckily. THE TWO CROSS-CHECKS, both on the jugglebot bus, both causal rather than correlational: (1) lag_now_us measures the delivery lag DIRECTLY from the FlexCAN hardware capture timestamp, which is stamped at frame reception and is therefore immune to whatever happens in the ring afterwards — immune to the RING, note, but NOT to that capture clock's own rate error against micros64(), measured 2026-08-15 at a load-dependent 230 ppm idle to 580-670 ppm streaming, which is why the row to trend is lag_now_corrected_us and not this one, and why even that row is a growth channel rather than an absolute lag (see lag_now_us below); (2) sdo_rtt_min_us measures a real round trip over the same bus (the hand ball-sensor poll), whose floor must grow by exactly the ring delay. A ring leak of D predicts all three moving together by the same amount; a bus-level or ODrive-level fault does not. INSTRUMENTATION ONLY, AND THE LEAK IS DELIBERATELY NOT FIXED IN THIS FIRMWARE. Nothing in the bridge reads any field or accumulator introduced for this frame, so a wrong value here cannot move a leg; and the fix waits on the occupancy number so it can be judged against a measurement instead of a theory. Additive — no existing frame changes, so NO PROTOCOL_VERSION bump (the LegCmd / HandSensor / BridgeTxDiag / ClockDiag / CacheDiag precedent): an old Jetson ignores the unknown msg_type and a new Jetson renders never-seen as unknown. An FW <= 12 board never sends this frame, so its consumer surface must read EMPTY, never error.
 RING_DIAG_FMT = '<QIIIIIIIiiIIIIIIIIHHHHHHHHHHHHHB'
