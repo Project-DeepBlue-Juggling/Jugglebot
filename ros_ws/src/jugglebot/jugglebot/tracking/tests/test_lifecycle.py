@@ -234,7 +234,9 @@ class TestMultipleBalls:
         """Two announced balls tracked independently."""
         tracker = BallTracker(dt=DT, landing_z=LANDING_Z)
 
-        # Start above landing_z + min_height_above_landing (734.3 + 50 = 784.3)
+        # Start well above landing_z (the matcher's height floor was retired
+        # 2026-09-15; the announced gate is a 200 mm sphere around the
+        # expected ballistic position)
         pos1 = np.array([-200.0, 0.0, 900.0])
         vel1 = np.array([500.0, 0.0, 2000.0])
         pos2 = np.array([200.0, 0.0, 900.0])

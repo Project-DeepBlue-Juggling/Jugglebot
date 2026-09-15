@@ -22,7 +22,14 @@ def _ballistic_pos(pos0, vel0, t):
 
 
 class TestParabolicDetection:
-    """Detect parabolic motion from raw marker streams."""
+    """Detect parabolic motion from raw marker streams.
+
+    The human-throw path is OFF in production since 2026-09-15 (it spawned 158
+    phantom tracks off one static floor marker at the R3 sitting, and nothing
+    consumes them yet), so these tests opt in explicitly with
+    `detect_human_throws=True` — they exist to keep the path working for when
+    it is turned back on.
+    """
 
     def test_detects_single_parabolic_marker(self):
         """One marker following ballistic trajectory among static markers."""
@@ -30,6 +37,7 @@ class TestParabolicDetection:
             dt=DT, landing_z=LANDING_Z,
             parabolic_min_frames=3,
             parabolic_accel_threshold_mmps2=3000.0,
+            detect_human_throws=True,
         )
 
         pos0 = np.array([0.0, 0.0, 900.0])
@@ -57,6 +65,7 @@ class TestParabolicDetection:
         tracker = BallTracker(
             dt=DT, landing_z=LANDING_Z,
             parabolic_min_frames=3,
+            detect_human_throws=True,
         )
 
         static_markers = [
@@ -76,6 +85,7 @@ class TestParabolicDetection:
             dt=DT, landing_z=LANDING_Z,
             parabolic_min_frames=3,
             parabolic_accel_threshold_mmps2=3000.0,
+            detect_human_throws=True,
         )
 
         pos0 = np.array([0.0, 0.0, 900.0])

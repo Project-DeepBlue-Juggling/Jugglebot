@@ -350,6 +350,31 @@ still tracker-sourced: no observation, no memory row — so with mocap blind
 the learner simply stays at its identity prior. Entry:
 [2026-09-15-open-loop-catch-from-throw-state](../../logbook/2026-09-15-open-loop-catch-from-throw-state.md).
 
+**Tracker un-blinded (2026-09-15, same day, after the decision above).** The
+reason mocap "never produced a marker" was not mocap: `ball_tracker_node`
+forwarded only markers whose QTM `label` was EMPTY, and QTM's AIM model had
+labelled the flying ball `Ball Butler - 1` on all 13 throws (711→1491 mm on
+armA-050, 715→2002 mm on armA-090 — the only label in the frame that moves).
+The node now forwards **every** marker with its label; the matcher excludes
+only the robot's own rigid bodies (`Platform`, `Base` —
+`ball_tracking.excluded_label_prefixes`), by rigid-body MEMBERSHIP and never by
+label shape, since the ball itself wore a Ball-Butler label. An ANNOUNCED ball
+is CONFIRMED by the eligible marker nearest its **analytic** ballistic expected
+position within `ball_tracking.announced_gate_mm` = 200 mm — a sphere, not a
+±200 mm box, because three of the four platform markers sit 204.6–220.7 mm from
+the cup and fall inside the box. The old 880 mm height floor is retired (the
+ball sits in the cup at 717–742 mm at the throw instant) and the human-throw
+parabolic path is off by default (`detect_human_throws`). Replaying the
+sitting's own bag through the real matcher
+(`tools/probes/tracker_bag_replay.py`) goes **0/13 → 13/13** CONFIRMED within
+9 ms of release, with the deadline landing estimate +0.042…+0.128 s past the
+announcement — i.e. the tracker corrects the plant's ~25 %-fast throw — and
+2026-09-13's chained bag is unchanged at 1/3. **`catch_aim_source` is untouched
+and still defaults to `schedule`**: the open-loop catch is now a choice rather
+than a necessity, and whether to move it back to `tracker` for the ladder is an
+open owner decision. Entry:
+[2026-09-15-tracker-all-markers-gated-to-expected-ball](../../logbook/2026-09-15-tracker-all-markers-gated-to-expected-ball.md).
+
 ## 3. Implementation Phase Summary
 
 The **Status** column is the one source of truth for where each rung stands;

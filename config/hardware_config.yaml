@@ -1701,11 +1701,29 @@ ball_tracking:
   is_projectile_residual_threshold: 10.0  # Residual std threshold for projectile motion classification {mm}
   is_projectile_a_threshold_mmps2: 400.0  # Acceleration threshold for projectile detection {mm/s^2}
   buffer_duration_s: 0.1                # Time window for projectile motion classification {s}
-  match_threshold_base_mm: 100.0        # Base distance threshold for marker-to-ball matching {mm}
+  match_threshold_base_mm: 100.0        # Base distance threshold for duplicate-detection suppression {mm}
   pending_timeout_s: 5.0                # Time before a pending ball expires after throw announcement {s}
   min_matches_to_confirm: 3             # Minimum consecutive marker matches to confirm a ball track
-  min_height_above_landing_mm: 50.0     # Ball must be this far above landing_z to be considered for matching {mm}
   max_frames_without_measurement: 200   # ~1.0s at 200Hz — maximum blind period before dropping track
+  # An ANNOUNCED ball is CONFIRMED by the eligible mocap marker nearest its
+  # analytically expected ballistic position, within this radius. A SPHERE, not
+  # a ±box: on the 2026-09-15 bag the platform's own markers sit 204.6/206.3/
+  # 219.5/220.7 mm from the catch cup, so a ±200 mm box admits three of them
+  # while a 200 mm sphere admits none. Replaced the old adaptive
+  # match_threshold + `landing_z + min_height_above_landing_mm` floor, which
+  # confirmed 0 of 13 announced balls on 2026-09-15 (the ball marker sits in
+  # the cup at 717-742 mm, under the 880 mm floor, at the throw instant).
+  announced_gate_mm: 200.0              # Gate radius around the expected ball position {mm}
+  # Mocap label prefixes that mean "bolted to the machine, never a ball",
+  # comma-separated. Exclusion is by rigid-body MEMBERSHIP of the robot, NOT by
+  # "looks like a ball label": QTM's AIM model labelled the flying ball
+  # `Ball Butler - 1` on all 13 throws of 2026-09-15, so excluding BB-style
+  # labels would blind the tracker exactly as the unlabelled-only filter did.
+  excluded_label_prefixes: "Platform,Base"
+  # Parabolic (human-throw) detection. OFF: on 2026-09-15 it spawned 158
+  # phantom `human_throw` tracks off one static floor marker at
+  # (550,-353,95) mm, and nothing on the skill stack consumes them yet.
+  detect_human_throws: false
 
 # ============================================================
 # 12. Ball Butler Geometry & Kinematics

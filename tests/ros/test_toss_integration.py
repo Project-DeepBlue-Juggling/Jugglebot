@@ -50,7 +50,7 @@ import pytest
 from std_msgs.msg import Bool
 
 import jugglebot.hardware_config as hw
-from jugglebot.tracking.matcher import BallTracker
+from jugglebot.tracking.matcher import BallTracker, parse_label_prefixes
 from jugglebot.tracking.ball import BallStatus, TrackingConfidence
 from jugglebot.catch_coordinator import CatchCoordinator
 from jugglebot.catch_coordinator_node import CatchCoordinatorNode
@@ -79,6 +79,14 @@ GRAVITY_MMPS2 = 9810.0
 DT = hw.TRACKING_MOCAP_DT_S
 LANDING_Z = (hw.GEOM_INITIAL_HEIGHT_MM + hw.JB_OP_DEFAULT_ACTIVE_Z_MM
              + hw.HAND_CATCH_OFFSET_MM)
+
+# These integration tests stop feeding synthetic markers this far above the catch
+# plane, so the coordinator always sees flight remaining. It used to be
+# `TRACKING_MIN_HEIGHT_ABOVE_LANDING_MM + 5`, borrowing the matcher's own height
+# floor; that floor was retired on 2026-09-15 (it discarded the real ball marker
+# sitting in the cup), so the stop condition is now stated here on its own terms.
+_STOP_FEEDING_ABOVE_PLANE_MM = 55.0
+
 
 
 def _ballistic_pos(pos0, vel0, t):
@@ -124,7 +132,10 @@ def _make_tracker():
         max_frames_without_measurement=hw.TRACKING_MAX_FRAMES_WITHOUT_MEASUREMENT,
         process_noise=hw.TRACKING_PROCESS_NOISE,
         measurement_noise=hw.TRACKING_MEASUREMENT_NOISE,
-        min_height_above_landing_mm=hw.TRACKING_MIN_HEIGHT_ABOVE_LANDING_MM,
+        announced_gate_mm=hw.TRACKING_ANNOUNCED_GATE_MM,
+        excluded_label_prefixes=parse_label_prefixes(
+            hw.TRACKING_EXCLUDED_LABEL_PREFIXES),
+        detect_human_throws=hw.TRACKING_DETECT_HUMAN_THROWS,
     )
 
 
@@ -193,7 +204,7 @@ def _confirm_toss_ball(tracker, ann):
                      ann.initial_position.z])
     vel0 = np.array([ann.initial_velocity.x, ann.initial_velocity.y,
                      ann.initial_velocity.z])
-    floor = LANDING_Z + hw.TRACKING_MIN_HEIGHT_ABOVE_LANDING_MM + 5.0
+    floor = LANDING_Z + _STOP_FEEDING_ABOVE_PLANE_MM
     t_rel = DT
     ball = None
     t = throw_time_s

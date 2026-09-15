@@ -1,7 +1,8 @@
 """ROS2 wrapper for the tracking/ subpackage.
 
 Subscribes to:
-  - mocap_data (MocapDataMulti) — unlabelled markers at ~200 Hz
+  - mocap_data (MocapDataMulti) — ALL mocap markers at ~200 Hz
+    (labelled and unlabelled; the matcher excludes the robot's own bodies)
   - throw_announcements (ThrowAnnouncement) — Ball Butler throw events
 
 Publishes:
@@ -23,7 +24,7 @@ from builtin_interfaces.msg import Time
 
 import jugglebot.hardware_config as hw
 from jugglebot.motion.skills import sites
-from jugglebot.tracking.matcher import BallTracker
+from jugglebot.tracking.matcher import BallTracker, parse_label_prefixes
 from jugglebot.tracking.ball import Ball
 
 
@@ -52,7 +53,10 @@ class BallTrackerNode(Node):
             max_frames_without_measurement=hw.TRACKING_MAX_FRAMES_WITHOUT_MEASUREMENT,
             process_noise=hw.TRACKING_PROCESS_NOISE,
             measurement_noise=hw.TRACKING_MEASUREMENT_NOISE,
-            min_height_above_landing_mm=hw.TRACKING_MIN_HEIGHT_ABOVE_LANDING_MM,
+            announced_gate_mm=hw.TRACKING_ANNOUNCED_GATE_MM,
+            excluded_label_prefixes=parse_label_prefixes(
+                hw.TRACKING_EXCLUDED_LABEL_PREFIXES),
+            detect_human_throws=hw.TRACKING_DETECT_HUMAN_THROWS,
         )
 
         # Subscribers
@@ -66,7 +70,10 @@ class BallTrackerNode(Node):
 
         self.get_logger().info(
             f"BallTrackerNode ready: landing_z={self._landing_z:.1f}mm, "
-            f"dt={hw.TRACKING_MOCAP_DT_S*1000:.1f}ms")
+            f"dt={hw.TRACKING_MOCAP_DT_S*1000:.1f}ms, "
+            f"announced_gate={hw.TRACKING_ANNOUNCED_GATE_MM:.0f}mm, "
+            f"excluded_labels={parse_label_prefixes(hw.TRACKING_EXCLUDED_LABEL_PREFIXES)}, "
+            f"detect_human_throws={bool(hw.TRACKING_DETECT_HUMAN_THROWS)}")
 
     def _on_announcement(self, msg: ThrowAnnouncement):
         """Handle throw announcement from Ball Butler."""
@@ -122,21 +129,35 @@ class BallTrackerNode(Node):
             f"throw in {delay:.2f}s")
 
     def _on_mocap(self, msg: MocapDataMulti):
-        """Process mocap frame: extract unlabelled markers, run tracker, publish."""
+        """Process mocap frame: forward EVERY marker to the tracker, publish.
+
+        Every marker in the frame goes through — labelled and unlabelled alike
+        — with its label alongside, and the matcher drops the ones belonging to
+        the robot's own rigid bodies (`BallTracker.eligible_markers`).
+
+        This node used to forward only markers with an EMPTY label. That
+        silently blinded the tracker whenever the mocap system labelled the
+        ball, which it does routinely: on 2026-09-15 QTM's AIM model claimed
+        the flying ball as `Ball Butler - 1` on all 13 self-tosses (rising
+        717 -> 1491 mm on armA-050, 716 -> 2002 mm on armA-090), so ZERO balls
+        were ever CONFIRMED and every catch ended `NO_LANDING`. Which label
+        QTM picks is a property of its model file, not of the ball, so the
+        tracker must not depend on it.
+        """
         current_time = self.get_clock().now().nanoseconds * 1e-9
 
-        # Extract unlabelled marker positions
         markers = []
+        labels = []
         for data in msg.markers:
-            if not data.label:  # Unlabelled markers only
-                markers.append(np.array([
-                    data.position.x,
-                    data.position.y,
-                    data.position.z,
-                ]))
+            markers.append(np.array([
+                data.position.x,
+                data.position.y,
+                data.position.z,
+            ]))
+            labels.append(data.label or "")
 
         # Run tracker
-        balls = self._tracker.process_frame(markers, current_time)
+        balls = self._tracker.process_frame(markers, current_time, labels)
 
         # Publish all active balls
         if balls:

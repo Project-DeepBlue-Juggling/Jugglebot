@@ -310,8 +310,10 @@ namespace Tracking {
   constexpr float MATCH_THRESHOLD_BASE_MM = 100.0f;
   constexpr float PENDING_TIMEOUT_S = 5.0f;
   constexpr uint32_t MIN_MATCHES_TO_CONFIRM = 3u;
-  constexpr float MIN_HEIGHT_ABOVE_LANDING_MM = 50.0f;
   constexpr uint32_t MAX_FRAMES_WITHOUT_MEASUREMENT = 200u;
+  constexpr float ANNOUNCED_GATE_MM = 200.0f;
+  constexpr const char* EXCLUDED_LABEL_PREFIXES = "Platform,Base";
+  constexpr bool DETECT_HUMAN_THROWS = false;
 }
 
 // ==========================================================================

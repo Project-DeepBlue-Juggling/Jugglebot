@@ -2,7 +2,7 @@
 
 BallTracker is the main class that owns all Ball objects and drives:
   - Throw announcement handling (Ball Butler path)
-  - Parabolic motion detection (human throw path)
+  - Parabolic motion detection (human throw path; OFF by default)
   - Frame-to-frame marker association for tracked balls
   - Ball lifecycle transitions (status + cleanup)
 
@@ -20,10 +20,32 @@ from .ballistics import GRAVITY_MMPS2, predict_landing_state
 from .kalman import KalmanFilter
 
 
+def parse_label_prefixes(raw) -> Tuple[str, ...]:
+    """Split the generated comma-separated label-prefix list into a tuple.
+
+    The config carries the excluded prefixes as ONE comma-separated string
+    rather than a YAML list because `config/generate_config.py` also emits the
+    `ball_tracking` section into the firmware header, and its C++ emitter has
+    no representation for a list of strings (it would produce unquoted
+    identifiers). Empty entries are dropped, so `""` means "exclude nothing".
+
+    Lives here, in the pure-Python layer, so the ROS node stays a thin wrapper
+    and so tests and `tools/probes/tracker_bag_replay.py` can reach it without
+    importing rclpy.
+    """
+    if raw is None:
+        return ()
+    if isinstance(raw, (list, tuple)):
+        parts = [str(p) for p in raw]
+    else:
+        parts = str(raw).split(',')
+    return tuple(p.strip() for p in parts if p.strip())
+
+
 # --- Parabolic detection helpers ---
 
 class _MarkerTrack:
-    """Internal: buffered unlabelled marker for parabolic detection."""
+    """Internal: buffered unmatched marker for parabolic detection."""
     __slots__ = ("positions", "timestamps")
 
     def __init__(self):
@@ -59,8 +81,8 @@ class BallTracker:
         # Ball Butler path:
         tracker.handle_announcement(position, velocity, throw_time, ...)
 
-        # Each mocap frame:
-        balls = tracker.process_frame(marker_positions, current_time)
+        # Each mocap frame — ALL markers, with their mocap labels:
+        balls = tracker.process_frame(marker_positions, current_time, labels)
     """
 
     def __init__(
@@ -77,7 +99,9 @@ class BallTracker:
         max_frames_without_measurement: int = 200,
         process_noise: float = 5.0,
         measurement_noise: float = 1.0,
-        min_height_above_landing_mm: float = 50.0,
+        announced_gate_mm: float = 200.0,
+        excluded_label_prefixes: Optional[Tuple[str, ...]] = None,
+        detect_human_throws: bool = False,
     ):
         self.dt = dt
         self.landing_z = landing_z
@@ -91,7 +115,40 @@ class BallTracker:
         self.max_frames_without_measurement = max_frames_without_measurement
         self.process_noise = process_noise
         self.measurement_noise = measurement_noise
-        self.min_height_above_landing_mm = min_height_above_landing_mm
+
+        # --- Announced-ball gate (2026-09-15) ---
+        # An ANNOUNCED ball is promoted to CONFIRMED by the mocap marker
+        # nearest its *analytically expected* ballistic position, within
+        # `announced_gate_mm`.  This replaced the old "unlabelled markers
+        # only, above landing_z + min_height_above_landing_mm, within an
+        # adaptive KF-distance threshold" gate, which confirmed nothing at
+        # all on 2026-09-15 because QTM labels the ball (see
+        # `logbook/2026-09-15-tracker-all-markers-gated-to-expected-ball.md`).
+        #
+        # A SPHERE, not a box: on the 2026-09-15 bag the platform's own
+        # markers sit 204.6 / 206.3 / 219.5 / 220.7 mm from the catch cup, so
+        # a ±200 mm axis-aligned box admits three of them while a 200 mm
+        # sphere admits none.  Identity exclusion is still the primary
+        # defence; the sphere is the second one.
+        self.announced_gate_mm = announced_gate_mm
+
+        # Marker labels whose prefix means "this marker is bolted to the
+        # machine, it can never be a ball".  Everything else — including
+        # unlabelled markers AND markers QTM has labelled as part of some
+        # other rigid body — stays eligible, because the ball itself carries
+        # a rigid-body label (`Ball Butler - 1`) whenever QTM's AIM model
+        # claims it.  Exclusion is therefore by rigid-body MEMBERSHIP of the
+        # robot, never by "does this look like a ball label".
+        self.excluded_label_prefixes: Tuple[str, ...] = tuple(
+            excluded_label_prefixes if excluded_label_prefixes is not None
+            else ()
+        )
+
+        # Human-throw (parabolic) detection.  OFF by default: on a static
+        # floor marker it spawned 158 phantom `human_throw` tracks in one
+        # 2026-09-15 session, and nothing on the skill stack consumes them
+        # yet.  Turn it on when human throws are actually being caught.
+        self.detect_human_throws = bool(detect_human_throws)
 
         # Active balls keyed by id
         self._balls: Dict[int, Ball] = {}
@@ -185,21 +242,59 @@ class BallTracker:
         )
         return ball_id
 
+    def eligible_markers(
+        self,
+        marker_positions: List[np.ndarray],
+        marker_labels: Optional[List[str]] = None,
+    ) -> List[np.ndarray]:
+        """Filter a mocap frame down to the markers that could be a ball.
+
+        THE canonical enforcement point for marker eligibility: every stage of
+        :meth:`process_frame` sees this list and nothing else.
+
+        A marker is ineligible only if its label starts with one of
+        ``excluded_label_prefixes`` — i.e. it is a marker of one of the
+        robot's own rigid bodies.  Unlabelled markers are always eligible, and
+        so is every label that is not excluded: the ball is routinely labelled
+        by the mocap system (QTM's AIM model claimed the flying ball as
+        ``Ball Butler - 1`` on all 13 throws of 2026-09-15), so a label is
+        never itself evidence that a marker is not a ball.
+        """
+        if not self.excluded_label_prefixes or marker_labels is None:
+            return list(marker_positions)
+        out = []
+        for idx, pos in enumerate(marker_positions):
+            label = marker_labels[idx] if idx < len(marker_labels) else ""
+            if label and label.startswith(self.excluded_label_prefixes):
+                continue
+            out.append(pos)
+        return out
+
     def process_frame(
         self,
         marker_positions: List[np.ndarray],
         current_time: float,
+        marker_labels: Optional[List[str]] = None,
     ) -> List[Ball]:
         """Process one mocap frame. Call at mocap rate (~200 Hz).
 
         Args:
-            marker_positions: List of [x,y,z] arrays (mm) for unlabelled markers.
+            marker_positions: List of [x,y,z] arrays (mm) — ALL markers in the
+                frame, labelled and unlabelled alike.
             current_time: Current time in seconds.
+            marker_labels: Optional parallel list of mocap labels (``""`` for
+                an unlabelled marker).  When given, markers belonging to the
+                robot's own rigid bodies are dropped
+                (:meth:`eligible_markers`).  When omitted, every marker is
+                treated as eligible — the pre-2026-09-15 behaviour, retained
+                so synthetic-marker tests and `tools/tracking_analyzer.py`
+                need not invent labels.
 
         Returns:
             List of all active (non-terminal or recently-terminal) balls.
         """
         used_markers = set()
+        markers = self.eligible_markers(marker_positions, marker_labels)
 
         # 1. Time-based transitions (TO_BE_THROWN → IN_FLIGHT)
         self._check_throw_times(current_time)
@@ -211,13 +306,14 @@ class BallTracker:
                 kf.predict()
 
         # 3. Associate markers to existing CONFIRMED in-flight balls
-        used_markers = self._associate_confirmed_balls(marker_positions, current_time)
+        used_markers = self._associate_confirmed_balls(markers, current_time)
 
         # 4. Try to match remaining markers to ANNOUNCED balls
-        used_markers = self._match_announced_balls(marker_positions, current_time, used_markers)
+        used_markers = self._match_announced_balls(markers, current_time, used_markers)
 
         # 5. Detect parabolic motion in remaining markers (human throw path)
-        self._detect_parabolic(marker_positions, current_time, used_markers)
+        if self.detect_human_throws:
+            self._detect_parabolic(markers, current_time, used_markers)
 
         # 6. Lifecycle transitions (CAUGHT, DROPPED, UNKNOWN)
         self._check_lifecycle(current_time)
@@ -300,13 +396,58 @@ class BallTracker:
     # Internal: Announced ball matching
     # ------------------------------------------------------------------
 
+    def _expected_announced_position(
+        self,
+        ball_id: int,
+        current_time: float,
+        fallback: Optional[np.ndarray] = None,
+    ) -> Optional[np.ndarray]:
+        """Analytical ballistic position of an announced ball at ``current_time``.
+
+        Drift-free by construction (closed form in ``current_time - throw_time``),
+        unlike the Kalman filter, which steps by a fixed ``self.dt`` per frame.
+        Returns ``fallback`` when there is no announcement state or the throw
+        has not happened yet.
+        """
+        ann = self._announcement_states.get(ball_id)
+        if ann is None:
+            return fallback
+        init_pos, init_vel, throw_time = ann
+        dt = current_time - throw_time
+        if dt < 0.0:
+            return fallback
+        return np.array([
+            init_pos[0] + init_vel[0] * dt,
+            init_pos[1] + init_vel[1] * dt,
+            init_pos[2] + init_vel[2] * dt - 0.5 * GRAVITY_MMPS2 * dt * dt,
+        ])
+
     def _match_announced_balls(
         self,
         markers: List[np.ndarray],
         current_time: float,
         used: set,
     ) -> set:
-        """Try to match markers to IN_FLIGHT/ANNOUNCED balls."""
+        """Promote an ANNOUNCED ball to CONFIRMED from the marker nearest its
+        expected ballistic position.
+
+        The gate is a single sphere of radius ``announced_gate_mm`` centred on
+        the announcement's *analytical* ballistic prediction for
+        ``current_time`` — not on the Kalman filter's position.  The KF
+        advances by a fixed ``self.dt`` per call, so on any frame stream whose
+        real period differs from ``dt`` its clock drifts away from wall clock
+        (the 2026-09-15 bag delivers ~186 Hz against ``dt`` = 5 ms, i.e. ~7 %
+        slow, which is hundreds of mm of z error half a second into a
+        1.5 m throw).  The analytical prediction has no such drift.
+
+        There is deliberately no height floor here.  The pre-2026-09-15 gate
+        skipped any marker below ``landing_z + min_height_above_landing_mm``
+        (880 mm), and the ball marker sits in the cup at 717–742 mm right
+        through the announced throw instant — so the floor discarded the one
+        true candidate at exactly the frame the gate first ran.  Identity
+        exclusion (:meth:`eligible_markers`) is what keeps machine markers
+        out; a height floor cannot tell a ball from a platform marker anyway.
+        """
         for ball_id, ball in self._balls.items():
             if ball.status != BallStatus.IN_FLIGHT:
                 continue
@@ -317,14 +458,9 @@ class BallTracker:
             if kf is None:
                 continue
 
-            # Predicted position from KF (which was initialized from announcement)
-            predicted_pos = kf.position
-
-            # Adaptive threshold: base + time scaling
-            time_since_throw = max(0.0, current_time - ball.throw_time)
-            speed = np.linalg.norm(ball.velocity)
-            threshold = self.match_threshold_base_mm + speed * 0.05 + time_since_throw * 50.0
-            threshold = min(threshold, 400.0)
+            predicted_pos = self._expected_announced_position(
+                ball_id, current_time, fallback=kf.position)
+            threshold = self.announced_gate_mm
 
             best_idx = None
             best_dist = float("inf")
@@ -332,11 +468,8 @@ class BallTracker:
             for idx, mpos in enumerate(markers):
                 if idx in used:
                     continue
-                # Must be above landing plane
-                if mpos[2] < self.landing_z + self.min_height_above_landing_mm:
-                    continue
                 dist = np.linalg.norm(mpos - predicted_pos)
-                if dist < threshold and dist < best_dist:
+                if dist <= threshold and dist < best_dist:
                     best_dist = dist
                     best_idx = idx
 
@@ -498,19 +631,11 @@ class BallTracker:
 
             # For ANNOUNCED balls, compute analytical ballistic position
             # from the stored announcement initial state
-            ann = self._announcement_states.get(ball_id)
-            if ann is not None:
-                init_pos, init_vel, throw_time = ann
-                if current_time >= throw_time:
-                    dt = current_time - throw_time
-                    predicted = np.array([
-                        init_pos[0] + init_vel[0] * dt,
-                        init_pos[1] + init_vel[1] * dt,
-                        init_pos[2] + init_vel[2] * dt - 0.5 * GRAVITY_MMPS2 * dt * dt,
-                    ])
-                    dist = np.linalg.norm(position - predicted)
-                    if dist < threshold:
-                        return True
+            predicted = self._expected_announced_position(ball_id, current_time)
+            if predicted is not None:
+                dist = np.linalg.norm(position - predicted)
+                if dist < threshold:
+                    return True
 
         return False
 

@@ -33,7 +33,7 @@ import numpy as np
 # Add the ROS2 package to the path so we can import tracking/ without ROS2
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'ros_ws' / 'src' / 'jugglebot'))
 
-from jugglebot.tracking.matcher import BallTracker
+from jugglebot.tracking.matcher import BallTracker, parse_label_prefixes
 from jugglebot.tracking.ball import Ball, BallStatus, TrackingConfidence
 from jugglebot.tracking.ballistics import GRAVITY_MMPS2
 
@@ -190,6 +190,9 @@ def replay(
     parabolic_min_frames: int = 3,
     landing_z: float = 734.3,
     dt: float = 0.005,
+    announced_gate_mm: float = 200.0,
+    excluded_label_prefixes=('Platform', 'Base'),
+    detect_human_throws: bool = False,
     verbose: bool = False,
 ) -> AnalysisResult:
     """Replay recorded data through the tracker and collect statistics."""
@@ -201,6 +204,9 @@ def replay(
         gate_radius_mm=gate_radius_mm,
         parabolic_accel_threshold_mmps2=parabolic_accel_threshold,
         parabolic_min_frames=parabolic_min_frames,
+        announced_gate_mm=announced_gate_mm,
+        excluded_label_prefixes=parse_label_prefixes(excluded_label_prefixes),
+        detect_human_throws=detect_human_throws,
     )
 
     result = AnalysisResult(parabolic_accel_threshold=parabolic_accel_threshold)
@@ -229,17 +235,24 @@ def replay(
             result.announced_balls += 1
             announce_idx += 1
 
-        # Extract unlabelled markers
-        unlabelled = []
+        # EVERY marker, with its mocap label — the matcher decides eligibility.
+        # This tool used to keep only markers with an EMPTY label, exactly as
+        # the node did before 2026-09-15; on any session where QTM labels the
+        # ball (it called it `Ball Butler - 1` at that sitting) an
+        # unlabelled-only analyzer reports "no markers seen" and sends the
+        # reader hunting a mocap fault that does not exist.
+        positions = []
+        labels = []
         for x, y, z, residual, label in markers:
-            if not label:
-                unlabelled.append(np.array([x, y, z]))
+            positions.append(np.array([x, y, z]))
+            labels.append(label or '')
 
         result.total_frames += 1
-        result.total_markers_seen += len(unlabelled)
+        result.total_markers_seen += len(
+            tracker.eligible_markers(positions, labels))
 
         # Run tracker
-        balls = tracker.process_frame(unlabelled, t_s)
+        balls = tracker.process_frame(positions, t_s, labels)
 
         # Track new balls and state changes
         for ball in balls:
