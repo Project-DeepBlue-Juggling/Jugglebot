@@ -512,8 +512,13 @@ jugglebot_homing:
   # hand_abs_pos_rev - hand_settle_band_rev = -0.20 rev. R1, 2026-09-11.
   hand_settle_band_rev: 0.10
   hand_park_band_rev: 0.5                # The PARK band {rev}: |pos - rest| <= this is "the hand is
-                                        # where the plan's seed says it is" (REJECTED_HAND_NOT_PARKED,
-                                        # reload_coordinator_node hand_parked). 5x the settle band
+                                        # where the plan's seed says it is". READER: the FSM only
+                                        # (reload_coordinator_node/toss_sequencer hand_parked). The
+                                        # skill stack's REJECTED_HAND_NOT_PARKED was RETIRED
+                                        # 2026-09-16 — a fresh-origin window now reconciles its hand
+                                        # seed against the MEASURED hand and the opening REST carries
+                                        # the hand home, so nothing in motion/skills reads this key.
+                                        # 5x the settle band
                                         # above because the streamed catch leaves the hand at
                                         # ~0.32 rev (unified_cycle.py, 2026-09-05 measurement) and
                                         # a throw planned from that seed is fine; formerly

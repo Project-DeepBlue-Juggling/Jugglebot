@@ -400,3 +400,124 @@ def test_an_accept_on_an_armed_wire_carries_no_disarmed_marker():
                                          InstallSegment.Response())
     assert resp.accepted is True, resp.message
     assert 'DISARMED' not in resp.message
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# The fresh-origin HAND SEED is reconciled against the encoder (2026-09-16)
+#
+# This is where `REJECTED_HAND_NOT_PARKED` went. The refusal used to sit in
+# `motion/skills/executor.py`'s ladder and asked "is the hand at park?"; it is
+# retired (owner decision, 2026-09-16) and the invariant it stood proxy for
+# — knot 0 of a fresh-origin window IS the hand — is enforced here, by
+# CORRECTING the seed rather than by refusing the skill.
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _reconcile_node(*, commanded_hand_rev, measured_hand_rev):
+    """A rest-terminal node whose COMMANDED hand seed and MEASURED hand
+    DISAGREE — the 2026-09-16 shape.
+
+    The commanded side is set through `_last_hand_rev` (source 2 of
+    `_commanded_hand_state`: "the last rev the emitter actually put on the
+    wire"), which is exactly what a finished plan's terminal hold leaves
+    behind. The measured side is a real `robot_state` message, so the node's
+    own freshness gate is satisfied the way the live graph satisfies it.
+    """
+    from tests.ros.test_unified_cycle_integration import _robot_state
+    node = _perf_node()
+    node._on_robot_state(_robot_state(hand_rev=float(measured_hand_rev)))
+    node._last_hand_rev = float(commanded_hand_rev)
+    return node
+
+
+def test_a_fresh_rest_seed_is_reconciled_to_the_measured_hand():
+    """THE 2026-09-16 NUMBERS (bag `2026-09-16_14-16-38`): an attempt ended
+    `SPLICE_TOO_LATE` and installed a hold at +0.5639 rev; the hand was then
+    re-parked and read +0.0001 rev. Nine later schedules were refused at
+    skill 0.
+
+    With the refusal retired, the next fresh-origin REST must PLAN — and it
+    must plan from the ENCODER, not from the stale hold, because a window
+    seeded 0.56 rev above the hand is the L2 failure class in miniature.
+    """
+    node = _reconcile_node(commanded_hand_rev=0.5639, measured_hand_rev=0.0001)
+    state, code, err = node._cycle_start_state(uc.SETTLE)
+    assert state is not None, (code, err)
+    assert state.hand_rev == pytest.approx(0.0001, abs=1e-9)
+    assert state.hand_rev != pytest.approx(0.5639)
+
+
+def test_a_disagreement_inside_the_firmware_tolerance_keeps_the_commanded_seed():
+    """Below `_SEED_HAND_RECONCILE_TOL_REV` the two readings describe the same
+    machine by the FIRMWARE's own definition (`SCHED_RESUME_TOL_POS_HAND_REV`
+    = 0.05 rev is what `sched_apply` allows between a promoted frame's u0[6]
+    and the hand it already holds), so the COMMANDED value is kept — folding
+    ordinary tracking error into knot 0 is the defect `_commanded_hand_state`
+    exists to avoid."""
+    node = _reconcile_node(commanded_hand_rev=0.3400, measured_hand_rev=0.3071)
+    state, code, err = node._cycle_start_state(uc.SETTLE)
+    assert state is not None, (code, err)
+    assert state.hand_rev == pytest.approx(0.3400, abs=1e-9)
+
+
+def test_the_reconciliation_is_reported_on_the_console():
+    """A silent seed correction is a seed correction nobody can audit against
+    a bag. ONE warning, naming BOTH values (Workflow Rules: a bench reading
+    needs its preconditions recorded next to it)."""
+    node = _reconcile_node(commanded_hand_rev=0.5639, measured_hand_rev=0.0001)
+    lines = []
+    node.get_logger().warning = lambda m: lines.append(str(m))
+    node._cycle_start_state(uc.SETTLE)
+    assert len(lines) == 1, lines
+    assert 'HAND SEED RECONCILED' in lines[0]
+    assert '0.5639' in lines[0] and '0.0001' in lines[0]
+
+
+def test_a_moving_machine_is_never_reconciled():
+    """Reconciliation is gated on `at_rest`. With the hand MOVING, source (1)
+    of `_commanded_hand_state` is exact at every instant and the measurement
+    is the channel that LAGS (by the whole launch), so reconciling there would
+    fold the tracking error into knot 0 — the defect that method exists to
+    avoid.
+
+    With a moving hand and no live cup track a SETTLE is refused `_IN_MOTION`
+    before any seed is built, and the refusal names the hand rate: proof the
+    reconciliation never got the chance to quietly rewrite the seed. The WARN
+    is asserted absent for the same reason."""
+    node = _reconcile_node(commanded_hand_rev=0.5639, measured_hand_rev=0.0001)
+    node._latest_hand_vel_rps = 5.0        # source (2)/(3)'s rate
+    lines = []
+    node.get_logger().warning = lambda m: lines.append(str(m))
+    state, code, err = node._cycle_start_state(uc.SETTLE)
+    assert state is None
+    assert code == tn._IN_MOTION
+    assert 'hand 5.0000 rev/s' in err
+    assert not [m for m in lines if 'HAND SEED RECONCILED' in m]
+
+
+def test_the_opening_rest_carries_a_far_hand_home_inside_the_floor_lift():
+    """THE REPLACEMENT FOR THE REFUSAL, end to end: the schedule's opening
+    REST (`schedule.FLOOR_LIFT_S`, 1.5 s) installs from a hand 8 rev off the
+    park — the 2026-09-13 L2 magnitude — and settles it at the SETTLE clamp.
+
+    8.0 rev used to be the clearest `REJECTED_HAND_NOT_PARKED`; it is now a
+    1.5 s carry. The terminal is `SETTLE_CUP_Z_MM`'s rev (0.3071), NOT 0.0:
+    the QP's cup box is inset 10 mm above the homed zero, so a window asked
+    to settle at the literal park is refused `SETTLE_SITE` — see
+    `unified_cycle.SETTLE_CUP_Z_MM`'s own note. 0.3071 rev is inside the
+    0.5 rev park band with 39 % to spare.
+    """
+    from jugglebot.motion.skills import schedule as sch
+    node = _reconcile_node(commanded_hand_rev=8.7610, measured_hand_rev=8.0)
+    with _frozen_perf() as at:
+        resp = node._svc_install_segment(
+            _rest_req(at + sch.FLOOR_LIFT_S, rest_z=uc.SETTLE_CUP_Z_MM),
+            InstallSegment.Response())
+    assert resp.accepted is True, resp.message
+    plan = node._active_plan
+    assert float(plan.hand_rev[0]) == pytest.approx(8.0, abs=1e-6)
+    settle_rev = float(plan.hand_rev[-1])
+    assert settle_rev == pytest.approx(0.3071, abs=2e-3)
+    assert abs(settle_rev) <= float(hw.HOMING_HAND_PARK_BAND_REV)
+    # And it is a GENTLE carry, not a lunge: the whole 7.7 rev inside 1.5 s
+    # peaks three orders under the 200 rev/s session ceiling.
+    assert float(np.max(np.abs(plan.hand_vel_rps))) < 12.0

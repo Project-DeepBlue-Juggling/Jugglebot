@@ -57,16 +57,15 @@ from jugglebot.motion.skills import admissible as adm
 from jugglebot.motion.skills import executor as ex
 from jugglebot.motion.skills import learner as lr
 from jugglebot.motion.skills.executor import (InstallResult, Landing,
-                                              Observations,
-                                              REJECTED_HAND_NOT_PARKED,
-                                              SkillExecutor,
+                                              Observations, SkillExecutor,
                                               precondition_refusals)
 from jugglebot.motion.skills.hand_launch import HandLaunchMonitor
 from jugglebot.motion.skills.memory import Memory, memory_path
 from jugglebot.motion.skills.schedule import (Pattern, SelfTossPattern,
                                               compile_columns, compile_self_toss)
 from jugglebot.motion.skills.segments import CATCH, REST, THROW
-from jugglebot.motion.skills.sites import CATCH_CUP_Z_MM, Site, columns_sites
+from jugglebot.motion.skills.sites import (CATCH_CUP_Z_MM, REST_CUP_Z_MM,
+                                           Site, columns_sites)
 from jugglebot.motion.tilt_map import find_repo_root
 from jugglebot.motion.trajectory import ballistics_bc
 from jugglebot.ball_possession import latch_announced_ball
@@ -462,8 +461,8 @@ class SkillNode(Node):
         """Track the hand's live position and possession evidence — the same
         tri-state `reload_coordinator_node._on_hand_telemetry` feeds into
         `ball_possession.HandBallSensorSource`. `pos_meas`/`pos_cmd` and the
-        perf stamp feed the R3 ladder's `hand_fresh`/`hand_at_seed`
-        (`_observations`, item 6); `_possession_evidence` is unused at R2
+        perf stamp feed the R3 ladder's `hand_fresh` (`_observations`,
+        item 6); `_possession_evidence` is unused at R2
         beyond logging but IS the R3 ladder's `ball_evidence` and outcome
         capture's `observer` read (`_ball_evidence`) — one value, two
         readers, stored directly here rather than standing up the source's
@@ -518,23 +517,20 @@ class SkillNode(Node):
         hand_fresh = (self._hand_telemetry_mono > 0.0
                      and (now - self._hand_telemetry_mono)
                      < _HAND_STATE_STALE_S)
-        hand_at_seed = hand_fresh and (
-            abs(self._hand_pos_meas - self._hand_pos_cmd)
-            <= float(hw.HOMING_HAND_PARK_BAND_REV))
-        # Unit B (R3 first sitting, 2026-09-13, L2): the ABSOLUTE-position
-        # half of `REJECTED_HAND_NOT_PARKED` on a fresh-origin install --
-        # `hand_at_seed` alone is a tracking-error check and says nothing
-        # about whether the encoder itself is near the R1 ACTIVATE park the
-        # bridge's own recovery slew (1 rev/s) will hold a fresh segment to.
-        # `hw.JB_OP_HAND_RETRACT_REV` (0.0) is the SAME park constant
-        # `reload_coordinator_node` retracts the hand to -- no second
-        # definition of "parked".
-        hand_at_park = hand_fresh and (
-            abs(self._hand_pos_meas - float(hw.JB_OP_HAND_RETRACT_REV))
-            <= float(hw.HOMING_HAND_PARK_BAND_REV))
+        # NO hand-POSITION predicate here (RETIRED 2026-09-16, owner
+        # decision). `REJECTED_HAND_NOT_PARKED` used to be built from
+        # `pos_meas` against `pos_cmd` AND against the ACTIVATE park, and on
+        # 2026-09-16 it refused nine schedules at skill 0 on a hand that was
+        # genuinely parked: the bridge's `pos_cmd` echo had gone stale at
+        # +0.5639 rev across an ACTIVATE re-park while `pos_meas` read
+        # +0.0001. The honest enforcement point for "the plan's hand seed is
+        # not where the hand is" is the SEED, and it now RECONCILES rather
+        # than refuses (`trajectory_node._cycle_start_state`) — the opening
+        # REST carries the hand home. `hand_fresh` stays: that seed is
+        # reconciled against the encoder, so a stale encoder is still a
+        # refusal, one level down.
         return Observations(
             mocap_fresh=mocap_fresh, hand_fresh=hand_fresh,
-            hand_at_seed=hand_at_seed, hand_at_park=hand_at_park,
             levelled=levelled, ball_evidence=self._possession_evidence,
             in_trajectory_mode=in_trajectory_mode)
 
@@ -1117,31 +1113,32 @@ class SkillNode(Node):
         """
         now = self.get_clock().now().nanoseconds / 1e9
         obs = self._observations(now)
-        # `fresh_origin=True`: every self-toss attempt's very first skill IS
-        # a fresh origin (`_dispatch`'s own rule), so the rehearsal must
-        # check the SAME row `launch=True` already does here, unchanged.
-        codes = precondition_refusals(obs, launch=True, fresh_origin=True)
+        # `launch=True`: a self-toss attempt's opening THROW carries every
+        # row this ladder has, so rehearsing with it reports the widest set.
+        # The retired `fresh_origin=` argument is gone with the hand-position
+        # row it gated (2026-09-16) — a fresh origin now RECONCILES its hand
+        # seed in `trajectory_node._cycle_start_state` instead of refusing.
+        codes = precondition_refusals(obs, launch=True)
         ok = True
         lines = []
         if codes:
             ok = False
             lines.append('ladder REFUSED: %s' % (', '.join(codes),))
-            if REJECTED_HAND_NOT_PARKED in codes:
-                # Unit B (R3 first sitting, 2026-09-13, L2): the recovery
-                # verb — DEACTIVATE/ACTIVATE re-parks the hand through the
-                # bridge's own slew; a fresh segment cannot, because the
-                # guard measures the plan against the encoder while the
-                # bridge slews at 1 rev/s.
-                lines.append(
-                    'hand at %.2f rev, park is %.2f ± %.2f — DEACTIVATE '
-                    'then ACTIVATE re-parks the hand through the bridge\'s '
-                    'own slew; a fresh segment cannot (the guard measures '
-                    'the plan against the encoder while the bridge slews '
-                    'at 1 rev/s)'
-                    % (self._hand_pos_meas, float(hw.JB_OP_HAND_RETRACT_REV),
-                       float(hw.HOMING_HAND_PARK_BAND_REV)))
         else:
             lines.append('ladder OK')
+        # The hand's POSITION is REPORTED, never gated (2026-09-16): a hand
+        # off the park is a thing the opening REST carries home, and the
+        # rehearsal's job is to let the operator SEE it beforehand. `pos_cmd`
+        # is the bridge's own echo and is the channel that went stale in the
+        # 2026-09-16 sitting — named next to `pos_meas` so a disagreement is
+        # visible rather than inferred.
+        lines.append(
+            'hand pos_meas %.4f rev (park %.2f, band ±%.2f), bridge echo '
+            'pos_cmd %.4f rev — REPORTED, not gated: the opening REST plans '
+            'from the MEASURED hand and settles the cup at %.1f mm'
+            % (self._hand_pos_meas, float(hw.JB_OP_HAND_RETRACT_REV),
+               float(hw.HOMING_HAND_PARK_BAND_REV), self._hand_pos_cmd,
+               REST_CUP_Z_MM))
         if _ADMISSIBLE_BOX_PATH is None:
             ok = False
             lines.append('box REFUSED: cannot find the repo root from %r'

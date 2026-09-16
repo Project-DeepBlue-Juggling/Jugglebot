@@ -269,7 +269,7 @@ def _make_tracker(plant, ball_state: dict):
     (0.9548 s against a true ~0.859 s) -- the observed/commanded ratio for
     every LAUNCH throw in that run (1.11-1.23, non-constant) while every
     CHAINED throw, whose catch never actually closed before the schedule
-    refused, read the correct ~1.11 (the plant bias alone).
+    refused, read the correct ~1.11 (the plant bias alone). (That 94 ms was the OLD window: ``CAUGHT_WINDOW_S`` became 0.35 s anchored on the OBSERVED landing on 2026-09-16, so the interval this drift accumulates over is now LONGER and the anchoring fix matters more, not less.)
     """
 
     def tracker(ball_id):
@@ -424,16 +424,15 @@ def _make_observer(plant):
 def _make_observations(observer):
     """``observations(t_abs_s) -> ex.Observations`` for a single-ball,
     single-site sim run: mocap/hand/level/mode are always fresh in MuJoCo (no
-    staleness or mode change is modelled at R3), ``hand_at_seed`` AND
-    ``hand_at_park`` are true by construction (the ACTIVATE park IS the
-    schedule's own seed — see ``schedule.compile_self_toss``'s docstring, and
-    Unit B's fresh-origin `REJECTED_HAND_NOT_PARKED` row), and
-    ``ball_evidence`` is the live observer's answer for ball 0."""
+    staleness or mode change is modelled at R3), the hand-POSITION rows are
+    gone (`REJECTED_HAND_NOT_PARKED` retired 2026-09-16 — the opening REST
+    carries the hand home from wherever it is, and the seed reconciliation
+    that replaced the refusal lives in the ROS node, which this gate does not
+    run), and ``ball_evidence`` is the live observer's answer for ball 0."""
 
     def observations(t_abs_s):
         return ex.Observations(
-            mocap_fresh=True, hand_fresh=True, hand_at_seed=True,
-            hand_at_park=True, levelled=True,
+            mocap_fresh=True, hand_fresh=True, levelled=True,
             ball_evidence=observer(0, t_abs_s), in_trajectory_mode=True)
     return observations
 

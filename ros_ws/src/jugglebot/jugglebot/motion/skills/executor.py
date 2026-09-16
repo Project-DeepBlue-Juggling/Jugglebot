@@ -144,13 +144,66 @@ AIM_SOURCES = (AIM_SCHEDULE, AIM_SCHEDULE_HAND, AIM_TRACKER)
 #: own crossing.
 OUTCOME_GUARD_S = 0.012
 
-#: Seconds after a throw's SCHEDULED landing before its outcome finalises --
-#: provisional: the possession sensor read SEATED 11-45 ms around the crossing
-#: in the 2026-09-06/11 bags. Named rather than reused from
-#: :data:`CATCH_FREEZE_S` because the two answer different questions (when a
-#: re-aim stops being useful vs. when the possession verdict has had time to
-#: settle) and a probe may move them independently.
-CAUGHT_WINDOW_S = 0.15
+#: Seconds after the LANDING before a throw's outcome finalises.  Named rather
+#: than reused from :data:`CATCH_FREEZE_S` because the two answer different
+#: questions (when a re-aim stops being useful vs. when the possession verdict
+#: has had time to settle) and a probe may move them independently.
+#:
+#: **0.35 s, measured** (2026-09-16,
+#: ``tools/probes/caught_window_bag_probe.py`` over bags
+#: ``2026-09-16_14-16-38`` and ``2026-09-15_18-51-37``): the delay from the
+#: tracker's own observed crossing of the 830 mm catch plane (``/balls``,
+#: descending, linearly interpolated) to the first debounced SEATED sample on
+#: ``/hand_telemetry`` was, per caught throw, +112.0, +41.3, -47.5, +191.2,
+#: +122.3, -28.6, +122.3 ms on 09-16 (n = 7) and -40.2 .. -49.3 ms on 09-15
+#: (n = 22, median -44.5 ms).
+#:
+#: **Why 0.35 and not 0.25** (owner ruling 2026-09-16): an independent pass over
+#: the same bags paired one 09-16 arrival with a SEATED edge +281.9 ms after its
+#: landing, where ``ball_held`` then held ~150 ms and went False again.  That
+#: read as a bobble, and 0.25 s was first chosen to exclude it.  It is not a
+#: bobble: the operator's note for that attempt (armA-050) is "worked" -- every
+#: ball caught -- and the throw AFTER it was itself caught, so the ball never
+#: hit the floor.  The False ~150 ms later is the NEXT throw's release.  **A
+#: catch that settles late is a catch**, so the window covers it: 0.35 s clears
+#: that +281.9 ms by ~70 ms and the largest delay this probe itself reproduces
+#: (+191.2 ms) by 159 ms.  The provisional 0.15 s this replaces was too short
+#: for five of the seven 09-16 throws.
+#:
+#: WARNING: the committed probe does NOT reproduce that +281.9 ms pairing -- see
+#: its own "Known limitation".  The window covers it anyway, because widening is
+#: monotone (it can only ADD a catch, never invent a landing) and the ruling
+#: above does not depend on the exact number.
+CAUGHT_WINDOW_S = 0.35
+
+#: How far BEFORE the landing a SEATED reading still counts as this throw's
+#: catch.  The sign of the seated delay is not fixed: on 2026-09-15 the sensor
+#: seated 39-48 ms BEFORE the tracker's interpolated crossing on every one of
+#: 22 throws (the crossing is an ESTIMATE of a 830 mm plane the cup rim reaches
+#: first, so an early seat is physically ordinary, not a clock error).  A
+#: verdict window that opened at the landing would have scored every one of
+#: those as a miss.  0.10 s is twice the largest early seat observed and still
+#: ~0.6 s inside the empty-cup interval that precedes every arrival (the ball
+#: this row tracks left the cup a full flight earlier), so it cannot read the
+#: PREVIOUS ball's possession.
+CAUGHT_LEAD_S = 0.10
+
+#: The bound on how late an OBSERVED landing may push the finalise instant.
+#: The window is anchored on the observed landing so a plant that throws fast
+#: or slow does not move the verdict off the ball (measured 2026-09-16: the
+#: observed crossing ran -13 .. +196 ms against the scheduled one), but a
+#: tracker estimate is not trusted without limit -- a diverged filter reporting
+#: a landing seconds away would otherwise hold the row open forever and with it
+#: the learner's feedback.  Past this the scheduled landing plus the cap is the
+#: anchor, and the row finalises on whatever evidence it has.  0.35 s is ~1.8x
+#: the largest late crossing measured.  It does NOT move with
+#: :data:`CAUGHT_WINDOW_S` (owner question, 2026-09-16): this bounds how late
+#: the OBSERVED LANDING may move the anchor -- a tracker-trust question, set by
+#: the +196 ms worst late crossing -- while the window is how long the SEAT may
+#: take after it, a sensor question.  Worst-case finalise latency is their sum,
+#: 0.70 s, still inside the ~0.95 s beat, which is the only deadline the memory
+#: has.
+CAUGHT_LAND_DEFER_CAP_S = 0.35
 
 #: The observer's possession-evidence value this layer treats as "caught".
 #: ``ball_possession.py`` is pure Python (stdlib only -- no ROS2, no config
@@ -168,7 +221,18 @@ CAUGHT_EVIDENCE = bp.EVIDENCE_SEATED
 REJECTED_MOCAP_STALE = 'REJECTED_MOCAP_STALE'
 REJECTED_NOT_LEVELLED = 'REJECTED_NOT_LEVELLED'
 REJECTED_HAND_STALE = 'REJECTED_HAND_STALE'
-REJECTED_HAND_NOT_PARKED = 'REJECTED_HAND_NOT_PARKED'
+#: ``REJECTED_HAND_NOT_PARKED`` WAS here and is RETIRED (owner decision,
+#: 2026-09-16).  It refused a fresh-origin skill whose hand was off the park
+#: band, and the R3 second sitting showed the refusal is the wrong shape for
+#: the fact: nine of the ten refusals it produced were FALSE (the bridge's
+#: ``pos_cmd`` echo went stale at 0.5639 rev across an ACTIVATE re-park while
+#: the encoder read 0.0001), and the one TRUE refusal (hand at 0.5605 rev) was
+#: a hand the opening REST could simply have brought home.  The class it stood
+#: proxy for -- "the plan's hand seed is not where the hand actually is" -- is
+#: now enforced at the SEED, in ``trajectory_node._cycle_start_state``, which
+#: reconciles a fresh-origin rest seed against the MEASURED hand instead of
+#: refusing; the opening REST then carries the hand to the settle clamp.  See
+#: ``logbook/2026-09-16-hand-park-refusal-retired-rest-homes-the-hand.md``.
 REJECTED_BALL_UNKNOWN = 'REJECTED_BALL_UNKNOWN'
 REJECTED_NO_BALL = 'REJECTED_NO_BALL'
 #: Leaving the streaming mode that owns the platform mid-attempt -- the rest
@@ -197,19 +261,6 @@ class Observations:
 
     * ``mocap_fresh`` -- ``REJECTED_MOCAP_STALE``.
     * ``hand_fresh`` -- ``REJECTED_HAND_STALE``.
-    * ``hand_at_seed`` -- the hand is where the plan's seed says it is (a
-      fresh-origin THROW is planned from the rest band) -- a TRACKING-error
-      predicate (measured vs. commanded), part of ``REJECTED_HAND_NOT_PARKED``
-      on any fresh-origin install.
-    * ``hand_at_park`` -- the hand's MEASURED position is within
-      ``HOMING_HAND_PARK_BAND_REV`` of the R1 ACTIVATE park (0.0 rev) -- an
-      ABSOLUTE-position predicate, the other half of
-      ``REJECTED_HAND_NOT_PARKED`` on any fresh-origin install (Unit B, R3
-      first sitting, 2026-09-13, L2): a fresh-origin REST or THROW is planned
-      from the COMMANDED state (``hand_at_seed`` alone can be true while the
-      hand is nowhere near the wire's own recovery-slew authority, e.g. after
-      an abort left the commanded hand pose far from where the bridge will
-      actually let it move).
     * ``levelled`` -- ``trajectory_node``'s ``gravity_correction_loaded`` on a
       fresh status (C-LEVEL-1.O) -- ``REJECTED_NOT_LEVELLED``.
     * ``ball_evidence`` -- one of :data:`bp.EVIDENCE_SEATED` /
@@ -221,15 +272,12 @@ class Observations:
 
     mocap_fresh: bool
     hand_fresh: bool
-    hand_at_seed: bool
-    hand_at_park: bool
     levelled: bool
     ball_evidence: str
     in_trajectory_mode: bool
 
 
 def precondition_refusals(obs: Observations, *, launch: bool,
-                          fresh_origin: bool = False,
                           skip_mocap: bool = False) -> List[str]:
     """Every PORT@R3 row this dispatch must refuse on -- ALL of them, not just
     the first, so a rehearsal driver reports every refusal in one pass rather
@@ -244,26 +292,27 @@ def precondition_refusals(obs: Observations, *, launch: bool,
     hand-parked band or an unread ball sensor would seed the segment from a
     state nobody has confirmed.
 
-    ``fresh_origin`` (Unit B, R3 first sitting, 2026-09-13, L2) is True for
-    ANY skill installed at a fresh origin, THROW or REST alike -- the
-    schedule's own skill 0, by construction the only skill an attempt can be
-    SURE has no live plan streaming under it yet (``schedule.compile_self_toss``
-    / ``compile_columns``: "the opening REST is a fresh install"). It gates the
-    SAME row ``launch`` does, ``REJECTED_HAND_NOT_PARKED``, now on both
-    ``hand_at_seed`` (tracking error) and ``hand_at_park`` (absolute
-    position): the REST that overspun the hand at L2 was planned from a
-    commanded pose 0.76 rev off the encoder, itself 8.67 rev from the park the
-    bridge's own recovery slew was about to hold it to at 1 rev/s -- a plan
-    with no such check streamed the hand at up to ~9 rev/s into that slew and
-    the guard latched.
+    **There is NO hand-POSITION row here (RETIRED 2026-09-16).** One used to
+    fire on any fresh-origin install whose hand had left the park band; it is
+    gone, along with the ``fresh_origin`` argument that gated it, because a
+    refusal is the wrong answer to the fact.  A hand that is not at park is now
+    simply CARRIED there: the seed a fresh-origin window is planned from is
+    reconciled against the MEASURED hand in
+    ``trajectory_node._cycle_start_state``, and the schedule's opening REST
+    (``schedule.FLOOR_LIFT_S``, 1.5 s) moves the hand from wherever it truly is
+    to the settle clamp.  MEASURED (2026-09-16, probe, session limits
+    300/5000/200000 mm + hand 3500 rev/s^2): that REST plans CLEAN from every
+    hand seed in the stroke -- 0.0001 rev (0.31 rev/s peak) through 9.9 rev
+    (9.76 rev/s), three orders under the 200 rev/s session ceiling -- so there
+    is no seed the lift cannot absorb and nothing left for a refusal to
+    protect.  The hand FRESHNESS row stays: a seed reconciled against a stale
+    encoder would be the same defect one level down.
 
-    A CATCH (with or without a carried ``then_throw``) is never a fresh
-    origin -- its seed is the live plan's own knot -- so it gets only the
-    universal rows. A REST is exempt UNLESS ``fresh_origin`` -- the schedule's
-    CLOSING REST splices onto the live plan same as a CATCH and stays exempt;
-    only the OPENING one is ever fresh. ``skip_mocap`` drops
-    ``REJECTED_MOCAP_STALE`` for a REST specifically: a REST does not aim, so
-    a stale mocap graph is not a fact it needs.
+    A REST still runs this ladder ONLY at a fresh origin (see
+    :meth:`SkillExecutor._dispatch`): the schedule's CLOSING REST splices onto
+    the live plan the same way a CATCH does and needs none of these facts.
+    ``skip_mocap`` drops ``REJECTED_MOCAP_STALE`` for a REST specifically: a
+    REST does not aim, so a stale mocap graph is not a fact it needs.
     """
     codes = []
     if not skip_mocap and not obs.mocap_fresh:
@@ -272,9 +321,6 @@ def precondition_refusals(obs: Observations, *, launch: bool,
         codes.append(REJECTED_NOT_LEVELLED)
     if not obs.hand_fresh:
         codes.append(REJECTED_HAND_STALE)
-    if launch or fresh_origin:
-        if not obs.hand_at_seed or not obs.hand_at_park:
-            codes.append(REJECTED_HAND_NOT_PARKED)
     if launch:
         if obs.ball_evidence == bp.EVIDENCE_UNKNOWN:
             codes.append(REJECTED_BALL_UNKNOWN)
@@ -305,9 +351,24 @@ class _PendingOutcome:
 
     Registered at the RELEASING skill's first (and only) successful dispatch
     -- a THROW, or a CATCH carrying a ``then_throw`` -- and finalised
-    :data:`CAUGHT_WINDOW_S` after its SCHEDULED landing, whether or not the
-    attempt is still running by then (a refused later skill still leaves an
-    observable flight in progress).
+    :data:`CAUGHT_WINDOW_S` after the landing, whether or not the attempt is
+    still running by then (a refused later skill still leaves an observable
+    flight in progress).
+
+    **The verdict is taken over a window around the OBSERVED landing, not as a
+    point sample after the scheduled one** (2026-09-16, the R3 apex-ladder
+    sitting).  The plant throws ~8 % fast, so the observed crossing ran -13 ..
+    +196 ms against the scheduled one, and the possession sensor then debounces:
+    sampling the observer ONCE at ``t_land_scheduled + 0.15 s`` read the cup
+    BEFORE the ball had settled and scored 4 of 5 real catches as misses.  So
+    :attr:`caught_seen` LATCHES on any SEATED reading taken inside
+    ``[min(t_land_scheduled, t_land_obs) - CAUGHT_LEAD_S, finalise_at]``, where
+    ``finalise_at`` follows the observed landing (bounded by
+    :data:`CAUGHT_LAND_DEFER_CAP_S`, so a diverged tracker estimate cannot hold
+    the row open forever) -- see :meth:`SkillExecutor._outcome_window`.  The
+    latch is one-way for the same reason ``best_landing`` is: one good sample
+    stands even if a later tick goes blind, and the ball leaving again for its
+    NEXT throw must not retract a catch that happened.
 
     ``release_confirmed`` is the R3 ladder's own bookkeeping (plan § carried
     R3 note / ``ABORTED_NO_RELEASE``): confirmed only by evidence AT OR AFTER
@@ -335,6 +396,12 @@ class _PendingOutcome:
     best_landing: Optional[Landing] = None
     release_confirmed: bool = False
     seated_seen: bool = False
+    #: Latched True by :meth:`SkillExecutor._advance_outcomes` on the first
+    #: SEATED reading inside this row's verdict window -- the ``caught`` field
+    #: of the :class:`~jugglebot.motion.skills.memory.Experience`.  Distinct
+    #: from :attr:`seated_seen`, which is the RELEASE ladder's bookkeeping and
+    #: is cleared by an EMPTY reading before the release.
+    caught_seen: bool = False
 
 
 @dataclasses.dataclass
@@ -1194,7 +1261,7 @@ class SkillExecutor:
         fresh_origin = idx == 0 and skill.kind != CATCH
         if obs is not None and (skill.kind != REST or fresh_origin):
             codes = precondition_refusals(
-                obs, launch=(skill.kind == THROW), fresh_origin=fresh_origin,
+                obs, launch=(skill.kind == THROW),
                 skip_mocap=(skill.kind == REST))
             if codes:
                 self.dispatched.add(idx)
@@ -1380,16 +1447,84 @@ class SkillExecutor:
         self._pending_outcomes = remaining
         return lines
 
+    @staticmethod
+    def _outcome_window(pend: _PendingOutcome) -> Tuple[float, float]:
+        """``(t_open, finalise_at)`` — the instants bounding ``pend``'s verdict.
+
+        ``finalise_at`` is :data:`CAUGHT_WINDOW_S` after the LATER of the
+        scheduled landing and the observed one, with the observed one clamped
+        to :data:`CAUGHT_LAND_DEFER_CAP_S` past the schedule so a diverged
+        tracker estimate can defer the row by a bounded amount and no more.
+        Taking the LATER of the two (rather than the observed one alone) keeps
+        a tracker that under-predicts from finalising the row before the ball
+        has physically arrived.
+
+        ``t_open`` is :data:`CAUGHT_LEAD_S` before the EARLIER of the two, for
+        the opposite reason: the crossing is an estimate of a plane the cup rim
+        reaches first, and on 2026-09-15 the sensor seated 39-48 ms ahead of it
+        on every throw.
+
+        Both are pure functions of the row, so the window a tick is measured
+        against WIDENS as the tracker sharpens its landing and never moves
+        arbitrarily: every call re-derives it from ``best_landing``, which is
+        itself one-way (a landing already accepted is never replaced by a
+        worse one).
+        """
+        t_sched = float(pend.t_land_scheduled_s)
+        # The lead can never reach back past the RELEASE: before it, a SEATED
+        # cup is this ball still sitting in the hand, not this ball caught.
+        # Slack at the operating point (the flight is >= ~0.6 s against a
+        # 0.10 s lead), but a shorter flight must not turn the lead into a
+        # verdict taken on the throw -- the same class of hazard
+        # `_advance_release_evidence` guards for the release evidence.
+        floor = float(pend.t_release_s)
+        if pend.best_landing is None:
+            return (max(floor, t_sched - CAUGHT_LEAD_S),
+                    t_sched + CAUGHT_WINDOW_S)
+        t_obs = float(pend.best_landing.t_land_abs_s)
+        anchor = max(t_sched, min(t_obs, t_sched + CAUGHT_LAND_DEFER_CAP_S))
+        return (max(floor, SkillExecutor._landing_instant(pend) - CAUGHT_LEAD_S),
+                anchor + CAUGHT_WINDOW_S)
+
+    @staticmethod
+    def _landing_instant(pend: _PendingOutcome) -> float:
+        """The single instant :meth:`_outcome_window` treats as ``pend``'s
+        expected landing -- the earlier of the scheduled and observed
+        crossings, or the schedule alone before a landing has been observed.
+
+        Used both to anchor ``t_open`` above and, in :meth:`_advance_outcomes`,
+        to decide which of several open rows a single SEATED sample belongs to.
+        """
+        t_sched = float(pend.t_land_scheduled_s)
+        if pend.best_landing is None:
+            return t_sched
+        return min(t_sched, float(pend.best_landing.t_land_abs_s))
+
     def _advance_outcomes(self, t_abs_s: float) -> List[str]:
-        """Sample the tracker for every pending outcome and finalise the ones
-        whose ``CAUGHT_WINDOW_S`` has elapsed.
+        """Sample the tracker AND the possession observer for every pending
+        outcome, and finalise the ones whose verdict window has closed.
 
         Only accepts a landing sampled at or after ``t_release_s`` whose own
         ``t_land_abs_s`` is after ``t_release_s`` -- otherwise a carried
         throw's row, registered before its own release while the tracker
         still latches the PREVIOUS flight, can capture that earlier flight's
         landing as this ball's outcome (see :meth:`_advance_release_evidence`
-        for the same class of hazard)."""
+        for the same class of hazard).
+
+        The possession observer is read EVERY tick inside a row's verdict
+        window (:meth:`_outcome_window`) and
+        :attr:`_PendingOutcome.caught_seen` latches on the first SEATED
+        reading, so the verdict no longer depends on the cup being seated at
+        one particular instant -- the 2026-09-16 defect this replaces.
+
+        The observer is ONE physical cup sensor blind to ``ball_id`` -- with
+        two balls in flight (columns) a row's window can be up to
+        ``CAUGHT_LEAD_S + CAUGHT_LAND_DEFER_CAP_S + CAUGHT_WINDOW_S`` wide, so
+        two rows' windows can be open on the same tick. A SEATED sample is
+        therefore attributed to at most ONE row per tick: the one whose
+        :meth:`_landing_instant` is nearest this tick, i.e. whichever ball
+        physically landed most recently -- never latched onto every open row.
+        """
         if not self._pending_outcomes:
             return []
         lines = []
@@ -1402,7 +1537,26 @@ class SkillExecutor:
                         and abs(t_abs_s - float(landing.t_land_abs_s))
                         > OUTCOME_GUARD_S):
                     pend.best_landing = landing
-            finalise_at = pend.t_land_scheduled_s + CAUGHT_WINDOW_S
+
+        # Read the cup BEFORE the finalise test, so the closing tick -- which
+        # is inside the window by construction -- still counts. One read
+        # serves at most one row: the nearest-landing open row.
+        if self.observer is not None:
+            open_rows = [
+                pend for pend in self._pending_outcomes
+                if not pend.caught_seen
+                and self._outcome_window(pend)[0] <= t_abs_s
+                <= self._outcome_window(pend)[1]
+            ]
+            if open_rows:
+                nearest = min(
+                    open_rows,
+                    key=lambda p: abs(t_abs_s - self._landing_instant(p)))
+                if self.observer(nearest.ball_id, t_abs_s) == CAUGHT_EVIDENCE:
+                    nearest.caught_seen = True
+
+        for pend in self._pending_outcomes:
+            t_open, finalise_at = self._outcome_window(pend)
             if t_abs_s < finalise_at:
                 remaining.append(pend)
                 continue
@@ -1426,8 +1580,10 @@ class SkillExecutor:
         landing_xy_m = ((np.asarray(pend.best_landing.pos_mm, dtype=float)[:2]
                         - pend.target_xy_mm) / 1000.0)
         y = np.array([landing_xy_m[0], landing_xy_m[1], flight_obs_s])
-        caught = (self.observer is not None
-                 and self.observer(pend.ball_id, finalise_at) == CAUGHT_EVIDENCE)
+        # The LATCH, not a fresh sample: by ``finalise_at`` a chained catch has
+        # often already re-thrown the ball, so the cup at this instant says
+        # nothing about whether it was caught (see :meth:`_outcome_window`).
+        caught = bool(pend.caught_seen)
         exp = Experience(x=pend.x, u=pend.u, y=y, t_abs_s=pend.t_release_s,
                          ball_id=pend.ball_id, caught=bool(caught))
         self.on_experience(exp)

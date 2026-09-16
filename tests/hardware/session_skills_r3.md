@@ -193,7 +193,6 @@ this list, treat it as a NEW finding, not a known outcome.
 | `REJECTED_MOCAP_STALE` | The mocap graph has gone silent (no fresh `rigid_body_poses` in 0.5 s) — a QTM/network problem, not a robot one. |
 | `REJECTED_NOT_LEVELLED` | `trajectory/status.gravity_correction_loaded` is false on a fresh status — the platform's commanded frame isn't gravity-corrected (no `level`, or `_prelevel` hasn't run/succeeded yet). |
 | `REJECTED_HAND_STALE` | No fresh `hand_telemetry` in 0.5 s — the hand's own position feed is silent. |
-| `REJECTED_HAND_NOT_PARKED` | (launch only) The hand's MEASURED position isn't within the homing park band of its COMMANDED position — the seed a fresh THROW would launch from isn't where the machine actually is. |
 | `REJECTED_BALL_UNKNOWN` | (launch only) The possession sensor has no confident reading — nobody knows if there is a ball in the cup. |
 | `REJECTED_NO_BALL` | (launch only) The possession sensor confidently reads EMPTY — there is no ball to throw. |
 | `ABORTED_MODE_CHANGED` | Something left `trajectory_node` out of TRAJECTORY mode mid-attempt — the rest tail already streaming is the safe stop. |
@@ -222,13 +221,21 @@ the expected ladder rows refused, work each one via § 6's table before
 calling `skills/start_self_toss` again.
 
 **Sitting-1 recoveries (2026-09-13):**
-- `REJECTED_HAND_NOT_PARKED` now also fires when the hand is not at park
-  (|measured − 0.00| > 0.50 rev), on the opening REST as well as a THROW.
-  Recover with **DEACTIVATE then ACTIVATE** (ACTIVATE re-parks the hand at
-  0 rev through the bridge's own 1 rev/s re-activation slew). Never try to
-  park it with a segment: the guard measures the raw plan against the
-  encoder while the bridge slews, and a >2.5 rev gap latches MAX_DEVIATION
-  (latch L2).
+- ~~`REJECTED_HAND_NOT_PARKED` … recover with DEACTIVATE then ACTIVATE~~ —
+  **RETIRED 2026-09-16 (owner decision). There is no such refusal any more,
+  and DEACTIVATE/ACTIVATE is no longer a recovery for a hand off the park.**
+  The sitting-2 log (`temp/logs/launch_r2gate_20260916_1416.log`) shows why:
+  after an attempt ended `SPLICE_TOO_LATE` and installed a hold at +0.5639
+  rev, that recovery was run repeatedly and every later schedule was STILL
+  refused at skill 0 — because the bridge's `pos_cmd` echo had gone stale at
+  the held value while the hand sat measured at +0.0001, so the refusal was
+  reading a phantom. **The opening REST now brings the hand home instead**:
+  a fresh-origin window reconciles its hand seed against the ENCODER and the
+  1.5 s floor lift carries the hand from wherever it truly is to the settle
+  clamp (0.3071 rev). Expect ONE `trajectory_node` line when it does:
+  `HAND SEED RECONCILED for SETTLE: commanded X rev vs MEASURED Y rev` — it
+  is informational, and it is the receipt that the seed was corrected. Still
+  never park the hand with a hand-written segment.
 - A `MAX_DEVIATION` line now names the axis: `hand first to cross` is the
   hand (axis 6). The six-entry `live_dev` that follows is legs only.
 - After ANY guard latch, before re-arming: the guard descent collapses the

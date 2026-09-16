@@ -222,7 +222,7 @@ def test_tracker_landing_time_is_anchored_to_the_last_sample_not_now():
     finalisation reported a flight 96 ms too long (0.9548 s against a true
     ~0.859 s, ``python sim/skills_gate.py --learn --policy B --seeds 0``).
     This test freezes the estimator (no new samples) and asserts the
-    predicted landing instant does not move when "now" advances alone.
+    predicted landing instant does not move when "now" advances alone. (That 94 ms was the OLD window: ``CAUGHT_WINDOW_S`` became 0.25 s anchored on the OBSERVED landing on 2026-09-16, so the interval this drift accumulates over is now LONGER and the anchoring fix matters more, not less.)
     """
     g = np.asarray(bal.G_VEC_MMS2, dtype=float)
     est = BallisticEstimator(g)

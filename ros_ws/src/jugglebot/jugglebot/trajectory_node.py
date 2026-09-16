@@ -237,6 +237,35 @@ _NO_LIVE_CATCH = 'NO_LIVE_CATCH'
 #   wasted that could have been saved — the solve was already committed — and the
 #   hold keeps the wire.
 _SUPERSEDED_BY_HOLD = 'SUPERSEDED_BY_HOLD'
+#   SEGMENT_OWNED — the active CyclePlan was installed by
+#   `trajectory/install_segment`, i.e. the SKILL STACK owns this interval, and a
+#   `catch/dynamic_target` re-aim of it is refused before any solve.
+#
+#   MEASURED defect (2026-09-16, `temp/logs/launch_r2gate_20260916_1416.log`):
+#   the skill stack publishes a throw announcement, `ball_tracker_node` picks the
+#   ball up, `catch_coordinator_node` starts publishing `catch/dynamic_target` at
+#   its 100 Hz tracker rate — and every one of those updates was routed into
+#   `_replan_cycle_from_target` against a SKILL-STACK plan, where `replan_tail`
+#   refused it `REPLAN_WINDOW` (the segment chain's carried release sits ahead of
+#   every splice the re-aim can take). 160 refusals across two 4-throw attempts,
+#   89 and 71, each one an ERROR line. The refusals themselves were cheap
+#   (`replan_tail` checks its two bounds before the QP — the observed 5-25 ms
+#   spacing is the publisher's, not a solve's), but they were an unreadable log
+#   and 160 needless service callbacks on the single-threaded executor that
+#   `install_segment` shares.
+#
+#   Refusing HERE rather than in the planner is the point: the skill stack AIMS
+#   ITS OWN CATCHES (`skills.executor` AIM_SCHEDULE — from the landing the throw
+#   was COMMANDED to achieve, deliberately not from the tracker), so a
+#   tracker-driven re-aim of a segment plan is not a tight fit that failed, it is
+#   a request from a layer that no longer has authority over this interval. The
+#   legacy path keeps its re-aim exactly as before: the code fires only when the
+#   owner is `_OWNER_SEGMENT`.
+_SEGMENT_OWNED = 'SEGMENT_OWNED'
+
+#: ``_cycle_owner`` values — which install path owns the ACTIVE ``CyclePlan``.
+_OWNER_CYCLE = 'cycle'        # trajectory/plan_cycle (superseded FSM path)
+_OWNER_SEGMENT = 'segment'    # trajectory/install_segment (the skill stack)
 
 #: Sentinel for `_install`'s `cycle=` kwarg. `None` is a MEANINGFUL value there
 #: (a non-cycle install clears the record), so "not supplied" needs its own token.
@@ -388,6 +417,29 @@ _PLANNER_WARMUP_PERIOD_S = 1.4
 # A refusal would still do the warming — the gate runs last — but it would print a
 # WARN at every launch, which is how a real warning gets trained out of an operator.
 _PLANNER_WARMUP_DX_MM = 5.0
+
+
+#: Tolerance (rev) between a fresh-origin window's COMMANDED hand seed and the
+#: MEASURED hand, above which the seed is RECONCILED to the measured value
+#: (:meth:`TrajectoryNode._cycle_start_state`, 2026-09-16).
+#:
+#: THE NUMBER IS THE FIRMWARE'S OWN "same hand state" BAR.
+#: ``canbridge_config.h``'s ``SCHED_RESUME_TOL_POS_HAND_REV`` = 0.05 rev is what
+#: the can-bridge's ``sched_apply`` allows between a promoted frame's ``u0[6]``
+#: and the hand it is already holding; a disagreement BELOW it is, by the
+#: firmware's own definition, the same state and cannot produce a promotion
+#: refusal or a command step the guard can see. At or above it the two channels
+#: describe different machines, and the encoder is the one that is not a belief.
+#: 0.05 rev is 1.63 mm of slider through ``hand_mm_per_rev`` (32.567).
+#:
+#: NOT ``_ARM_U0_HAND_TOL_REV`` (0.625 rev, teensy_bridge_node): that is an
+#: ARMING gate — how far the first streamed knot may sit from the hand before
+#: the bridge refuses to arm at all — so using it here would leave a 0.6 rev
+#: disagreement unreconciled and hand the arming gate a seed it then refuses.
+#: NOT ``HOMING_HAND_PARK_BAND_REV`` (0.5 rev) either: that band was the
+#: retired ``REJECTED_HAND_NOT_PARKED`` refusal's bar and describes where the
+#: hand is ALLOWED to be, not when two readings of it disagree.
+_SEED_HAND_RECONCILE_TOL_REV = 0.05
 
 
 class TrajectoryNode(Node):
@@ -725,6 +777,13 @@ class TrajectoryNode(Node):
         # (single-threaded executor, no callback groups — see `main`). No lock is
         # needed and none is taken; adding a callback group later would change that.
         self._cycle = None
+        # Which install path owns the ACTIVE CyclePlan: `_OWNER_CYCLE` for
+        # `trajectory/plan_cycle` (the superseded FSM path, whose catches the
+        # legacy coordinator is entitled to re-aim) or `_OWNER_SEGMENT` for
+        # `trajectory/install_segment` (the skill stack, which aims its own
+        # catches and must not be re-aimed from under itself — see
+        # `_on_dynamic_target`). None whenever there is no active cycle.
+        self._cycle_owner = None
         # Absolute (perf) instant by which a RELEASE-TERMINAL cycle plan must have
         # been superseded, or None when the active plan is rest-terminal (or there
         # is none). Past it the emitter's u1/v1 come from the terminal HOLD, so the
@@ -2493,7 +2552,7 @@ class TrajectoryNode(Node):
 
     def _install(self, plan, *, t0=None, require_follower_mode=False,
                  require_epoch=None, bump_epoch=False, cycle=_UNSET,
-                 reset_replans=False) -> bool:
+                 cycle_owner=_UNSET, reset_replans=False) -> bool:
         """Install ``plan`` as the active plan. Returns True iff it was installed.
 
         ``t0`` overrides the plan-time origin (default: ``perf_counter()`` at
@@ -2586,6 +2645,7 @@ class TrajectoryNode(Node):
             # writes after" discipline `_last_peak_*` above uses.
             if not isinstance(plan, CyclePlan):
                 self._cycle = None
+                self._cycle_owner = None
                 self._cycle_supersede_deadline = None
                 self._cycle_deadline_alarmed = False
                 # A segment warm start seeded from a plan that just got
@@ -2597,6 +2657,11 @@ class TrajectoryNode(Node):
             # install sets the record and a non-cycle one leaves it cleared.
             if cycle is not _UNSET:
                 self._cycle = cycle
+            # Written under the SAME lock and in the same order as the record it
+            # describes, so `_on_dynamic_target` can never read an owner that
+            # belongs to a different plan than the one it snapshots.
+            if cycle_owner is not _UNSET:
+                self._cycle_owner = cycle_owner
             if reset_replans:
                 self._cycle_replans = 0
             if bump_epoch:
@@ -3423,6 +3488,13 @@ class TrajectoryNode(Node):
         # (see `_plan_cycle_extend` for what an uncaught TypeError costs here).
         with self._plan_lock:
             cycle = self._cycle
+            # Read UNDER THE SAME LOCK as the record it describes: an install
+            # landing between two separate reads could otherwise pair a
+            # segment plan with a stale `_OWNER_CYCLE` and let one update
+            # through (harmless — it would just be refused by the planner as
+            # before — but a same-lock read costs nothing and the pair is then
+            # always consistent).
+            owner = self._cycle_owner
         unified = cycle is not None
         # ── The unified cycle owns this interval (plan Phase 4) ──
         # A landing update while a CyclePlan is installed is EXACTLY the replan
@@ -3438,6 +3510,26 @@ class TrajectoryNode(Node):
             return
         source = 'cycle' if unified else 'catch'
         arrival_perf = float(msg.arrival_time)
+        # ── The SKILL STACK owns this interval: refuse before any solve ──
+        # See `_SEGMENT_OWNED`. Placed ahead of the reach-freeze and
+        # reach-envelope ladder below because none of those questions apply: the
+        # update is not being judged, it is being declined. The feedback still
+        # goes out on `trajectory/target_feedback` so the coordinator's
+        # accept/reject correlation keeps working, and the log line is a
+        # THROTTLED warn — one per 5 s — because at 100 Hz a per-update line is
+        # the whole log.
+        if unified and owner == _OWNER_SEGMENT:
+            self._publish_target_feedback(
+                False, _SEGMENT_OWNED,
+                'the active plan was installed by trajectory/install_segment — '
+                'the skill stack aims its own catches and is not re-aimed from '
+                'catch/dynamic_target', arrival_perf, source)
+            self.get_logger().warn(
+                'catch/dynamic_target ignored: the skill stack owns the active '
+                'plan (install_segment). Nothing is wrong — the executor aims '
+                'its catches from the commanded landing.',
+                throttle_duration_sec=5.0)
+            return
         if self._guard_frozen:                       # FIX 1 — refuse while latched
             self._publish_target_feedback(
                 False, _GUARD_LATCHED, self._guard_frozen_msg(),
@@ -4255,6 +4347,82 @@ class TrajectoryNode(Node):
         hand_bound = 1e-3 * self._limits.hand_vel_limit_rps
         at_rest = bool(lin <= rest_bound and ang <= ang_bound
                        and abs(hand_vel) <= hand_bound)
+        # ── THE HAND SEED IS RECONCILED AGAINST THE ENCODER ────────────
+        # GATED ON `at_rest`, NOT ON THE BRANCH BELOW, and that placement is
+        # load-bearing: `_KIND_SHAPE[SETTLE]` carries `post_release=True`, so
+        # the skill stack's own REST (the opening floor lift — the ONE window
+        # the 2026-09-16 refusals were blocking) takes the SECOND branch, not
+        # the `not post_release` one. Sitting the check in the rest branch
+        # would have reconciled LAUNCH and nothing else.
+        # Knot 0 of a fresh-origin window has to BE the machine, and on
+        # the hand channel the commanded reference above can be a stale
+        # BELIEF rather than a state: sources (2) and (3) of
+        # `_commanded_hand_state` are honest, but source (1) — a plan's
+        # own `hand_at(tau)` — keeps reporting a FINISHED plan's terminal
+        # hold for as long as that plan stays installed, and anything
+        # that moves the hand WITHOUT going through this node's emitter
+        # (the ACTIVATE park, the bridge's recovery slew) leaves that
+        # hold behind as fiction.
+        #
+        # MEASURED (2026-09-16, bag `2026-09-16_14-16-38`, launch log
+        # `temp/logs/launch_r2gate_20260916_1416.log`): an attempt ended
+        # `SPLICE_TOO_LATE` and installed a hold at +0.5639 rev; ACTIVATE
+        # then re-parked the hand and `/hand_telemetry` read
+        # `pos_meas = +0.0001` against `pos_cmd = +0.5639` for the rest
+        # of the sitting. Nine consecutive schedules were refused at
+        # skill 0 by the ladder row that has since been retired — and had
+        # they NOT been, every one of them would have been planned from a
+        # hand seed 0.56 rev above the hand.
+        #
+        # So the disagreement is resolved HERE, in the one direction that
+        # is defensible: the encoder is a measurement and the hold is a
+        # belief, so at rest the encoder wins. This runs ONLY on the rest
+        # branch — with the machine moving, source (1) is exact at every
+        # instant and the measurement is the one that lags (whole-launch
+        # lag; see `_commanded_hand_state`'s own note), so reconciling
+        # there would fold the tracking error into knot 0, which is the
+        # defect that method exists to avoid.
+        #
+        # THE REST THEN CARRIES THE HAND HOME. It is not a correction the
+        # planner has to absorb: a REST is a SETTLE aimed at
+        # `SETTLE_CUP_Z_MM`, so whatever rev the reconciled seed carries,
+        # the window plans the hand from there to the settle clamp
+        # (0.3071 rev). MEASURED (2026-09-16, probe, R3 session limits
+        # 300/5000/200000 mm + hand 3500 rev/s^2, the schedule's own
+        # 1.5 s `FLOOR_LIFT_S` opening REST to P1): CLEAN from every seed
+        # in the stroke — 0.0001 rev at 0.31 rev/s peak, 0.5639 at 0.26,
+        # 2.0 at 1.72, 8.0 at 7.82, 9.9 at 9.76 — all three orders under
+        # the 200 rev/s session ceiling, so no seed needs the window
+        # stretched and none is refused.
+        #
+        # THE OUTER BOUND IS `_install_continuity_ok`, DELIBERATELY LEFT
+        # ALONE: it compares the installed plan's knot 0 against
+        # `_commanded_hand_state` at a 1.0 rev bound (a quarter of the
+        # margin-discounted pump gate, half the firmware's
+        # MAX_LEAD_HAND_REV). A reconciliation inside that bound installs;
+        # one beyond it is refused STALE_STATE — correctly, because
+        # stepping the wire's hand command by more than a rev in one knot
+        # is within a factor of 2.5 of the MAX_DEVIATION_HAND_REV E-STOP
+        # band, and a commanded/measured disagreement that large on a
+        # stationary hand is a machine fault, not a stale echo. The two
+        # real cases both sit inside it (0.564 rev here; 0.761 rev at the
+        # 2026-09-13 L2).
+        meas = self._latest_hand_rev
+        if at_rest and meas is not None and self._robot_state_fresh():
+            delta = abs(float(hand_rev) - float(meas))
+            if delta > _SEED_HAND_RECONCILE_TOL_REV:
+                self.get_logger().warning(
+                    'HAND SEED RECONCILED for %s: commanded %.4f rev vs '
+                    'MEASURED %.4f rev (|Δ| %.4f > %.4f) — seeding knot 0 '
+                    'from the ENCODER. The machine is at rest, so the '
+                    'commanded value is a belief (a finished plan\'s '
+                    'terminal hold, or a park that never went through '
+                    'this emitter) and the encoder is a measurement; the '
+                    'window carries the hand from there to its settle '
+                    'site.'
+                    % (kind, float(hand_rev), float(meas), delta,
+                       _SEED_HAND_RECONCILE_TOL_REV))
+                hand_rev = float(meas)
         # WHICH BRANCH SEEDED THE WINDOW, on the console, every time. The two
         # branches hand the QP different boundary conditions (exact zeros vs the
         # running cycle's own sampled cup acceleration), the choice is invisible
@@ -4389,7 +4557,29 @@ class TrajectoryNode(Node):
         response.plan_wall_ms = (time.perf_counter() - t_wall) * 1e3
         self._cycle_plan_wall_ms = response.plan_wall_ms
         self._last_rejection = str(message)
-        self.get_logger().error('plan_cycle refused: %s' % (message,))
+        # REPLAN_WINDOW is the one refusal a REACTIVE caller can hit repeatedly
+        # through no fault of its own: `catch/dynamic_target` arrives at the
+        # tracker's 100 Hz and a plan whose carried release sits ahead of every
+        # splice the re-aim can take refuses every one of them. The plan is
+        # fine and the last good one keeps streaming, so that is a WARN, and
+        # THROTTLED (one per 5 s) because at 100 Hz a per-update line buries
+        # every other line in the log — 160 of them in the two 2026-09-16
+        # attempts. Every other code stays an ERROR: those are a caller asking
+        # for something the machine cannot do, and each one is worth a line.
+        # Matched on the CODE, not loosely on the message text: a
+        # `CycleInfeasible` reaches here as code `REJECTED_CYCLE_INFEASIBLE`
+        # with the planner's own code inside `exc.outcome()`, so that one
+        # wrapper is unwrapped by prefix — and nothing else that merely
+        # MENTIONS the string in prose gets demoted with it.
+        demote = (str(code) == uc.REPLAN_WINDOW
+                 or (str(code) == uc.OUTCOME_CODE
+                     and str(message).startswith(
+                         '%s(%s:' % (uc.OUTCOME_CODE, uc.REPLAN_WINDOW))))
+        if demote:
+            self.get_logger().warn('plan_cycle refused: %s' % (message,),
+                                   throttle_duration_sec=5.0)
+        else:
+            self.get_logger().error('plan_cycle refused: %s' % (message,))
         return response
 
     def _cycle_replan_budget_left(self) -> int:
@@ -4637,6 +4827,7 @@ class TrajectoryNode(Node):
         install_mono = time.perf_counter()
         if not self._install(plan, t0=install_mono, require_epoch=epoch0,
                              cycle=(plan, meta, install_mono),
+                             cycle_owner=_OWNER_CYCLE,
                              reset_replans=True):
             return self._reject_cycle(
                 response, _SUPERSEDED_BY_HOLD,
@@ -4706,6 +4897,7 @@ class TrajectoryNode(Node):
         # A new terminal release ⇒ a new throw window ⇒ a fresh replan budget,
         # PER WINDOW and therefore per BEAT on a chain — see the docstring.
         if not self._install(joined, t0=t0, require_epoch=epoch0,
+                             cycle_owner=_OWNER_CYCLE,
                              cycle=(joined, meta, t0), reset_replans=True):
             return self._reject_cycle(
                 response, _SUPERSEDED_BY_HOLD,
@@ -4769,6 +4961,7 @@ class TrajectoryNode(Node):
                 '(tau=%.3f s, %s) — holding the last good plan'
                 % (t_now_s, self._continuity_detail), t_wall)
         if not self._install(spliced, t0=t0, require_epoch=epoch0,
+                             cycle_owner=_OWNER_CYCLE,
                              cycle=(spliced, meta2, t0)):
             return self._reject_cycle(
                 response, _SUPERSEDED_BY_HOLD,
@@ -5102,6 +5295,7 @@ class TrajectoryNode(Node):
                              require_epoch=epoch0,
                              cycle=(new_record.plan, new_record.meta,
                                     new_record.t0_s),
+                             cycle_owner=_OWNER_SEGMENT,
                              reset_replans=True):
             return self._reject_segment(
                 response, _SUPERSEDED_BY_HOLD,

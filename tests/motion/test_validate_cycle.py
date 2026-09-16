@@ -382,17 +382,84 @@ def test_the_parked_floor_can_never_be_lowered_past_the_retract_band(geom):
     assert 'DIVES' not in report.reasons[0]
 
 
-def test_a_plan_starting_AT_OR_ABOVE_zero_keeps_the_strict_floor(geom):
-    """No parked start ⇒ no tolerance: every legacy plan is judged as before.
+def test_a_plan_starting_at_zero_still_refuses_a_REAL_dive(geom):
+    """A start at the homed zero buys the dive TOLERANCE, not a free floor.
 
-    The middle knot dips 0.001 rev under the homed zero from a start of exactly
-    0.0, and is refused with the ORIGINAL wording.  This is the regression
-    fence for every fixture in this file that predates the parked floor.
+    The middle knot dips 0.001 rev under the homed zero — ten times
+    ``_HAND_DIVE_TOL_REV`` — from a start of exactly 0.0, and is refused with
+    the ORIGINAL wording.  This is the regression fence for every fixture in
+    this file that predates the parked floor, and for the 2026-09-16 change
+    that extended the tolerance to a seed AT the zero: the tolerance admits the
+    interpolant's own curvature, never a dive a machine could execute.
     """
     report = feas.validate_cycle(
         _held([0.0, -0.001, 1.0], [0.0, 0.0, 0.0]), _limits(), geom)
     assert report.code == feas.HAND_STROKE
+    # A zero seed is now a PARKED start, so the refusal takes the parked
+    # wording rather than the strict-floor one — the dive is still refused,
+    # and it is still named as a dive.
+    assert 'below the parked start' in report.reasons[0]
+    assert 'DIVES' in report.reasons[0]
+
+
+def test_a_plan_starting_ABOVE_zero_keeps_the_strict_floor(geom):
+    """Strictly above the homed zero ⇒ no tolerance, and the ORIGINAL wording.
+
+    This is the fence the 2026-09-16 change must not move: every plan seeded
+    anywhere in the working stroke is judged exactly as before.
+    """
+    report = feas.validate_cycle(
+        _held([0.5, -0.001, 0.5], [0.0, 0.0, 0.0]), _limits(), geom)
+    assert report.code == feas.HAND_STROKE
     assert 'BELOW the homed zero' in report.reasons[0]
+
+
+@pytest.mark.parametrize('seed', [0.0, -0.002])
+def test_a_seed_at_or_below_the_homed_zero_gets_the_dive_tolerance(seed, geom):
+    """The floor is the seed less the tolerance for a seed AT the zero, too.
+
+    MEASURED defect (2026-09-16, the R3 apex-ladder sitting): ``REST`` homes the
+    hand at 0.0 rev and the encoder reads +/-0.0002 rev of it at park, so the
+    seed the next segment plans from is the exact zero.  The old
+    ``hand0 >= HAND_STROKE_MIN_REV`` pinned that plan's floor at exactly 0.0,
+    and the cubic's own interior curvature — the SAME 2.5e-06 rev the tolerance
+    was measured to admit — put knot 0's span an infinitesimal distance under
+    it: refused ``HAND_STROKE``, "hand position -0.000 rev outside
+    [0.000, 9.959]".  A seed of 0.0001 passed and one of -0.002 passed; only the
+    value the machine actually parks at did not.
+    """
+    plan = _held([seed, seed, seed], [0.0, 0.0, 0.0])
+    floor = feas._cycle_stroke_floor(plan)
+    assert floor <= seed + 1e-12
+    report = feas.validate_cycle(plan, _limits(), geom)
+    assert report.code == feas.OK, report.reasons
+    # The branch actually taken is pinned, not just its consequence: the
+    # tolerance floor, never the strict one.
+    assert floor == pytest.approx(max(feas.HAND_HOMED_REST_FLOOR_REV,
+                                      seed - feas._HAND_DIVE_TOL_REV))
+
+
+def test_a_tiny_positive_seed_keeps_the_strict_floor_and_still_passes(geom):
+    """``0.0001`` is ABOVE the zero, so it takes the strict-floor branch
+    (floor exactly 0.0) — and passes, because the cubic's interior dip
+    (~2.5e-6 rev) stays inside a 1e-4 rev seed.  Pinned so the two branches
+    stay distinguishable in the tests."""
+    plan = _held([0.0001, 0.0001, 0.0001], [0.0, 0.0, 0.0])
+    assert feas._cycle_stroke_floor(plan) == pytest.approx(feas.HAND_STROKE_MIN_REV)
+    report = feas.validate_cycle(plan, _limits(), geom)
+    assert report.code == feas.OK, report.reasons
+
+
+def test_the_dive_tolerance_from_a_seed_at_zero_is_exactly_one_tolerance(geom):
+    """``-(tol + eps)`` from a zero seed is still refused — the floor moved by
+    the tolerance and not one rev more."""
+    plan = _held([0.0, 0.0, 0.0], [0.0, 0.0, 0.0])
+    assert feas._cycle_stroke_floor(plan) == pytest.approx(
+        -feas._HAND_DIVE_TOL_REV)
+    eps = 1e-5
+    deep = _held([0.0, -(feas._HAND_DIVE_TOL_REV + eps), 0.0],
+                 [0.0, 0.0, 0.0])
+    assert feas.validate_cycle(deep, _limits(), geom).code == feas.HAND_STROKE
 
 
 def test_the_catch_runway_still_measures_to_the_TRUE_bottom_of_travel(geom):

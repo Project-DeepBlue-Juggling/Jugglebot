@@ -635,10 +635,15 @@ def test_hand_telemetry_updates_possession_evidence():
 
 
 def _freshen(node, *, mocap=True, levelled=True, in_traj=True, hand_fresh=True,
-            hand_at_seed=True, seated=True):
+            pos_meas=0.0, pos_cmd=0.0, seated=True):
     """Land every message `_observations` (item 6) reads, fresh, so a single
     test can flip exactly one axis stale/off-band and check only that field
-    moved."""
+    moved.
+
+    `pos_meas`/`pos_cmd` no longer feed any PREDICATE (the hand-position
+    ladder row was retired 2026-09-16) — they are kept as parameters because
+    `skills/check` still REPORTS both, and the sitting that retired the row
+    was one where they disagreed."""
     if mocap:
         node._on_mocap(RigidBodyPoses())
     node._on_traj_status(_status(
@@ -646,7 +651,7 @@ def _freshen(node, *, mocap=True, levelled=True, in_traj=True, hand_fresh=True,
         mode='TRAJECTORY' if in_traj else 'STANDBY'))
     if hand_fresh:
         node._on_hand_telemetry(HandTelemetryMessage(
-            pos_meas=0.0, pos_cmd=(0.0 if hand_at_seed else 999.0),
+            pos_meas=pos_meas, pos_cmd=pos_cmd,
             ball_held_raw=seated, ball_held_valid=True))
 
 
@@ -659,7 +664,6 @@ def test_observations_are_all_false_before_anything_has_arrived():
     obs = node._observations(0.0)
     assert obs.mocap_fresh is False
     assert obs.hand_fresh is False
-    assert obs.hand_at_seed is False
     assert obs.levelled is False
     assert obs.in_trajectory_mode is False
     assert obs.ball_evidence == ball_possession.EVIDENCE_UNKNOWN
@@ -671,7 +675,6 @@ def test_observations_report_true_once_everything_is_fresh_and_levelled():
     obs = node._observations(0.0)
     assert obs.mocap_fresh is True
     assert obs.hand_fresh is True
-    assert obs.hand_at_seed is True
     assert obs.levelled is True
     assert obs.in_trajectory_mode is True
     assert obs.ball_evidence == ball_possession.EVIDENCE_SEATED
@@ -690,13 +693,23 @@ def test_observations_go_stale_after_the_freshness_window(monkeypatch):
     assert obs.levelled is False
     assert obs.in_trajectory_mode is False
     assert obs.hand_fresh is False
-    assert obs.hand_at_seed is False    # gated on hand_fresh
 
 
-def test_observations_hand_not_at_seed_when_measured_and_commanded_disagree():
+def test_observations_carry_no_hand_position_predicate_at_all():
+    """RETIRED 2026-09-16 (owner decision). `Observations` used to carry
+    `hand_at_seed` (|pos_meas − pos_cmd|) and `hand_at_park`, and on
+    2026-09-16 they refused nine schedules at skill 0 on a hand measured at
+    +0.0001 rev whose bridge echo had gone stale at +0.5639.
+
+    The strongest available assertion is a NEGATIVE one on the built object:
+    a wildly disagreeing pair produces no predicate to be false, so the
+    refusal cannot come back by accident."""
     node, _client = _node_with_client()
-    _freshen(node, hand_at_seed=False)
-    assert node._observations(0.0).hand_at_seed is False
+    _freshen(node, pos_meas=0.0001, pos_cmd=0.5639)
+    obs = node._observations(0.0)
+    assert not hasattr(obs, 'hand_at_seed')
+    assert not hasattr(obs, 'hand_at_park')
+    assert obs.hand_fresh is True        # the row that IS kept
 
 
 def test_ball_evidence_observer_delegates_to_observations():
@@ -718,10 +731,25 @@ def test_check_reports_every_ladder_refusal_and_the_box_status_at_once():
     assert resp.success is False
     assert 'ladder REFUSED' in resp.message
     for code in ('REJECTED_MOCAP_STALE', 'REJECTED_NOT_LEVELLED',
-                'REJECTED_HAND_STALE', 'REJECTED_HAND_NOT_PARKED',
-                'REJECTED_BALL_UNKNOWN'):
+                'REJECTED_HAND_STALE', 'REJECTED_BALL_UNKNOWN'):
         assert code in resp.message
+    assert 'REJECTED_HAND_NOT_PARKED' not in resp.message   # retired 2026-09-16
     assert 'box' in resp.message
+
+
+def test_check_reports_the_hand_position_without_gating_on_it():
+    """`skills/check` REPORTS pos_meas and the bridge's pos_cmd echo side by
+    side (2026-09-16): the hand's position is no longer a refusal, but the
+    operator still needs to see where the hand is before a sitting — and the
+    echo is the channel that went stale and produced nine false refusals, so
+    a disagreement has to be visible rather than inferred."""
+    node, _client = _node_with_client()
+    node._on_traj_status(_status())
+    _freshen(node, pos_meas=0.0001, pos_cmd=0.5639)
+    resp = node._svc_check(Trigger.Request(), Trigger.Response())
+    assert 'ladder OK' in resp.message
+    assert '0.0001' in resp.message and '0.5639' in resp.message
+    assert 'not gated' in resp.message
 
 
 def test_check_reports_ok_when_everything_is_fresh_and_the_box_is_valid():

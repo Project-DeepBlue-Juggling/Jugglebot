@@ -1506,13 +1506,28 @@ def _hand_stroke_reason(rev: float, t: float,
 def _cycle_stroke_floor(cycle_plan) -> float:
     """The stroke floor for ``cycle_plan``: its own first knot, or the band's.
 
-    Returns :data:`HAND_STROKE_MIN_REV` for every plan that starts at or above
-    the homed zero — i.e. the overwhelming majority, and every legacy fixture.
-    Only a plan whose FIRST knot is parked in the firmware's settled-at-retract
-    window gets a lowered floor, and it is lowered exactly to that knot: the
-    plan may rise out of the park, hold, or come back to it, but it may not dive
+    Returns :data:`HAND_STROKE_MIN_REV` for every plan that starts STRICTLY
+    above the homed zero — i.e. the overwhelming majority, and every legacy
+    fixture.  A plan whose FIRST knot is parked AT the homed zero or inside the
+    firmware's settled-at-retract window below it gets a lowered floor, and it
+    is lowered exactly to that knot less :data:`_HAND_DIVE_TOL_REV`: the plan
+    may rise out of the park, hold, or come back to it, but it may not dive
     below it, and it can never be lowered past
     :data:`HAND_HOMED_REST_FLOOR_REV`.
+
+    **A seed AT the zero gets the dive tolerance too** (2026-09-16, the R3
+    apex-ladder sitting).  The zero is not a forbidden pose but the nominal
+    rest one: ``REST`` homes the hand there, and at park the encoder reads
+    ±0.0002 rev of it.  Before this, ``hand0 >= HAND_STROKE_MIN_REV`` pinned
+    the floor at exactly 0.0 for a seed of exactly 0.0, so the cubic's own
+    interior curvature — the SAME 2.5e-06 rev the tolerance was measured to
+    admit — put knot 0's own span an infinitesimal distance under the floor and
+    the gate refused ``HAND_STROKE`` with "hand position -0.000 rev outside
+    [0.000, 9.959]".  A seed of 0.0001 passed and one of -0.002 passed; only
+    the exact zero, the one value the machine actually parks at, did not.  The
+    comparison is now strict, so the parked case and the sub-zero case are the
+    same case, and nothing about a plan that starts anywhere in the working
+    stroke changes.
 
     Read through ``hand_at(0.0)`` rather than off ``hand_rev[0]`` so the floor
     comes from the same curve the gate samples and the emitter will play — the
@@ -1524,6 +1539,6 @@ def _cycle_stroke_floor(cycle_plan) -> float:
         return HAND_STROKE_MIN_REV
     if not np.isfinite(hand0):
         return HAND_STROKE_MIN_REV
-    if hand0 >= HAND_STROKE_MIN_REV:
+    if hand0 > HAND_STROKE_MIN_REV:
         return HAND_STROKE_MIN_REV
     return max(HAND_HOMED_REST_FLOOR_REV, hand0 - _HAND_DIVE_TOL_REV)

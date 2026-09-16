@@ -141,7 +141,7 @@ ladder in both arms — changing them would change what is being measured.
 | 10 | Load capture: `( while true; do echo "$(date +%H:%M:%S) $(cat /proc/loadavg)"; sleep 1; done ) \| tee temp/logs/loadavg_apex_ladder_$(date +%Y%m%d).txt` | One line a second. |
 | 11 | `ros2 launch jugglebot jugglebot_launch.py record:=true auto_arm:=true 2>&1 \| tee temp/logs/launch_apex_ladder_$(date +%Y%m%d_%H%M).log` | Note the bag folder it prints. |
 | 12 | `grep 'blas threads' temp/logs/launch_apex_ladder_*.log` | `blas threads: 1` for `trajectory_node` AND `skill_node`. |
-| 13 | GUI (http://localhost:8081): start QTM streaming; **Home**, then **Activate**. | Hand parked at 0 rev. |
+| 13 | GUI (http://localhost:8081): start QTM streaming; **Home**, then **Activate**. | Hand parked at 0 rev. `/hand_telemetry` `pos_cmd` also reads 0.0 from here (the host writes the echo on a completed ACTIVATE since 2026-09-16 — the firmware's own echo uplink is event-driven off the streamed lane and the park does not touch it). A non-zero `pos_cmd` against a zero `pos_meas` is now a real disagreement worth reading, not the known artifact it was on 2026-09-16. |
 | 14 | `ros2 service call /trajectory/set_limits jugglebot_interfaces/srv/SetTrajectoryLimits "{leg_vel_limit_mmps: 300.0, leg_acc_limit_mmps2: 5000.0, leg_jerk_limit_mmps3: 150000.0}"` | `applied_*` echoes 300 / 5000 / 150000. |
 | 15 | `ros2 param set /skill_node site_x_mm -50.0`, `... site_y_mm 0.0`, `... dwell_s 0.30`, `... n_throws 1` | Set once for the whole ladder. `dwell_s` is raised again at step 17 for the no-motion check only, and restored to this value at step 23. |
 | 16 | `ros2 param set /teensy_bridge_node hand_torque_ff_gain 0.0` | Explicit arm A value — do this even though 0.0 is the launch default, so § 6's log has a positive record of when arm A started. |
@@ -150,8 +150,17 @@ ladder in both arms — changing them would change what is being measured.
 
 This checks that the scheduled hand lane is healthy — clock-synced, playing,
 and C2-continuous at the firmware's own promotion boundaries — while the only
-hand motion on the wire is the opening REST's static park, before the
-ladder's first THROW is allowed to fire. It rides the FIRST real attempt of
+hand motion on the wire is the opening REST's own lift, before the
+ladder's first THROW is allowed to fire. (That lift is USUALLY static — the
+hand is at the ACTIVATE park and the REST settles 0.31 rev above it — but it
+is not guaranteed to be: since 2026-09-16 a fresh-origin window seeds its
+hand from the MEASURED encoder rather than from the commanded value, so if
+the hand starts anywhere else the REST carries it home over the 1.5 s floor
+lift. `trajectory_node` prints ONE `HAND SEED RECONCILED for SETTLE:
+commanded X rev vs MEASURED Y rev` line when that happens; it is
+informational, not a fault, and it REPLACES the retired
+`REJECTED_HAND_NOT_PARKED` refusal — a hand off the park no longer stops the
+attempt, and DEACTIVATE/ACTIVATE is no longer the recovery for one.) It rides the FIRST real attempt of
 the ladder (rung 0.5 m): the dwell
 is temporarily lengthened so there is time to read the diagnostics during the
 REST, and the attempt is stopped from here if anything below is wrong —
@@ -199,7 +208,7 @@ For each apex `A` (write it as `050`, `060`, … in the id), each arm:
 |---|---|---|
 | 24 | `ros2 param set /skill_node apex_m A` and `... plant_id <arm>-A-$(date +%Y%m%d)` (e.g. `armA-090-20260915`) | Fresh id per rung per arm. |
 | 25 | `ros2 service call skills/check std_srvs/srv/Trigger` | `ladder OK` and `box OK` naming a `('P1', 'P1')` band that contains `A`. A `box REFUSED ... at apex` line means step 7 was not satisfied — stop. |
-| 26 | Seat a ball; `ros2 service call skills/start_self_toss std_srvs/srv/Trigger` | Accepted. One `skill announced ball 0` line, then a `CATCH-AIM skill 2: source=schedule landing=(…) mm t_land=…` line — the catch is aimed **open loop** now (see below), so `END NO_LANDING` must not appear at all. An `OUTCOME` line appears only when mocap happened to see the ball; its ABSENCE is expected at this sitting and is no longer a failure. |
+| 26 | Seat a ball; `ros2 service call skills/start_self_toss std_srvs/srv/Trigger` | Accepted. One `skill announced ball 0` line, then a `CATCH-AIM skill 2: source=schedule landing=(…) mm t_land=…` line — the catch is aimed **open loop** now (see below), so `END NO_LANDING` must not appear at all. An `OUTCOME` line appears only when mocap happened to see the ball; its ABSENCE is expected at this sitting and is no longer a failure. **The `OUTCOME` line now lands LATER than it used to** (2026-09-16): it finalises `CAUGHT_WINDOW_S` = 0.35 s after the *observed* landing rather than 0.15 s after the *scheduled* one, and up to `CAUGHT_LAND_DEFER_CAP_S` = 0.35 s later still if the tracker's landing runs late — so expect it up to ~0.7 s after the scheduled touch-down, and do not read a missing row until a beat has passed. `caught=True` now means **the possession sensor read SEATED at some tick between 0.10 s before the landing and the finalise instant**, not "the cup was seated at one sampled instant" — a ball that seats and is re-thrown before the row closes still reads True, and a seat more than 0.35 s after the landing reads False (the window was widened from 0.25 s by owner ruling: a catch that SETTLES LATE is still a catch — the +282 ms arrival on armA-050 was re-thrown, not dropped). |
 | 27 | Note in § 6: caught Y/N, and the `memory row appended ... y=[x, y, flight]` values. | Flight longer than `sc.flight_s(A)` means the throw was fast. |
 | 28 | Repeat 24–27 until three throws are recorded for this rung. | |
 

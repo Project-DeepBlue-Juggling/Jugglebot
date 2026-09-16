@@ -329,7 +329,12 @@ estimate of the catch-plane crossing, taken outside a 0.012 s guard
 (`OUTCOME_GUARD_S`, `executor.py`) around the scheduled landing instant so a
 stale near-crossing sample is never captured; flight is the crossing instant
 minus the throw's scheduled release; `caught` is the possession sensor's
-evidence 0.15 s after the scheduled landing (`CAUGHT_WINDOW_S`, `executor.py`).
+evidence read SEATED at ANY tick inside a window around the **OBSERVED**
+landing — `[min(t_sched, t_obs) - CAUGHT_LEAD_S, finalise_at]`, where
+`finalise_at` is `CAUGHT_WINDOW_S` = 0.35 s past the later of the two, bounded
+by `CAUGHT_LAND_DEFER_CAP_S` = 0.35 s (`executor._outcome_window`, amended
+2026-09-16; it was one sample 0.15 s after the SCHEDULED landing, which read an
+empty cup on 4 of 5 real catches — see § R3's dated paragraph).
 Sitting preconditions: the cone rigid body disabled, the Ball Butler
 reflectors masked.
 
@@ -374,6 +379,62 @@ and still defaults to `schedule`**: the open-loop catch is now a choice rather
 than a necessity, and whether to move it back to `tracker` for the ladder is an
 open owner decision. Entry:
 [2026-09-15-tracker-all-markers-gated-to-expected-ball](../../logbook/2026-09-15-tracker-all-markers-gated-to-expected-ball.md).
+
+**The hand-park REFUSAL is retired; the SEED is the enforcement point (owner
+decision, 2026-09-16).** The ladder row `REJECTED_HAND_NOT_PARKED` — added at
+R3 Unit B as the proxy for latch L2's failure class ("the plan's hand seed is
+not where the hand actually is") — is **gone**, along with the `hand_at_seed` /
+`hand_at_park` observations and the `fresh_origin` argument that gated it. At
+the 2026-09-16 sitting it refused **nine** consecutive schedules at skill 0
+(the opening REST) on a hand MEASURED at 0.0000 rev: an ended attempt had
+installed a hold at +0.5639 rev, and the bridge's `pos_cmd` echo — which is
+event-driven off the streamed lane and is never touched by the firmware-internal
+ACTIVATE park — stayed frozen at the held value, so the tracking-error half saw
+a phantom 0.56 rev error. The runsheet's own DEACTIVATE/ACTIVATE recovery for
+that code could not clear it, and the sitting ended.
+
+The invariant survives one level down, as a CORRECTION rather than a refusal:
+`trajectory_node._cycle_start_state` now reconciles a fresh-origin window's
+COMMANDED hand seed against the MEASURED hand whenever the machine is at rest
+and the two disagree by more than `_SEED_HAND_RECONCILE_TOL_REV` = 0.05 rev
+(the firmware's own `SCHED_RESUME_TOL_POS_HAND_REV`), seeding knot 0 from the
+encoder and logging one WARN naming both values. **The opening REST then
+carries the hand home** — it is a SETTLE aimed at `SETTLE_CUP_Z_MM`, so it
+already plans the hand from its seed to the settle clamp (0.3071 rev, inside
+the 0.5 rev park band). MEASURED (2026-09-16 probe, R3 limits): the 1.5 s
+`FLOOR_LIFT_S` REST plans CLEAN from every seed in the hand's 9.959 rev stroke,
+peaking at 9.76 rev/s — so no seed needs the window stretched and none is
+refused. `REJECTED_HAND_STALE` is KEPT and is now load-bearing (the seed is
+reconciled against the encoder). `_install_continuity_ok`'s 1.0 rev hand bound
+is the deliberate outer limit on the reconciliation. Entry:
+[2026-09-16-hand-park-refusal-retired-rest-homes-the-hand](../../logbook/2026-09-16-hand-park-refusal-retired-rest-homes-the-hand.md).
+
+**The outcome verdict is a WINDOW around the OBSERVED landing, and the legacy
+catch re-aim is refused on a skill-stack plan (2026-09-16).** The R3 sitting
+caught 5/5 singles and the learner was told it had caught 1: `caught` was one
+possession sample at `t_land_scheduled + 0.15 s`, and the plant's ~8 % fast
+throw put the arrival +0.06..+0.20 s later than that, debounce on top. The
+verdict now LATCHES on any SEATED reading inside
+`[min(t_sched, t_obs) − CAUGHT_LEAD_S, finalise_at]`, where `finalise_at`
+follows the OBSERVED landing bounded by `CAUGHT_LAND_DEFER_CAP_S` = 0.35 s.
+MEASURED (`tools/probes/caught_window_bag_probe.py`): the landing→SEATED delay
+is **not one-signed** — +43..+192 ms on 09-16 (plus one +282 ms bobble) and
+−39..−48 ms on all 22 throws of 09-15 — so `CAUGHT_LEAD_S` = 0.10 and
+`CAUGHT_WINDOW_S` = **0.35** (owner ruling: a catch that SETTLES LATE is a
+catch — the +282 ms armA-050 arrival was re-thrown, not dropped, and that
+attempt is logged "worked"; at 0.25 s it scored False). Replay of the sitting's
+five rows: **all five read `caught=True`**, matching what the operator recorded. Separately: the sitting's 160 `REPLAN_WINDOW` ERRORs were NOT the
+executor probing the planner (every `install_segment` was accepted first call) —
+they are the FSM-era `catch/dynamic_target` chain, woken by the stack's own
+throw announcement, re-aiming a skill-stack plan 24 knots before a committed
+release. `trajectory_node` now records which install path owns the active
+`CyclePlan` and refuses a `dynamic_target` against a segment-owned one
+`SEGMENT_OWNED` before any solve, with `REPLAN_WINDOW` demoted to a throttled
+WARN. `_cycle_stroke_floor`'s exact-zero knife-edge (flagged unfixed above) is
+closed. ⚠ `SPLICE_TOO_LATE` on armA-060 skill 4 is analysed and OPEN: zero
+refused replans ran in the 0.49 s before that 0.147 s solve (median 64 ms), so
+the spam was not its cause. Entry:
+[2026-09-16-outcome-window-and-computed-catch-deferral](../../logbook/2026-09-16-outcome-window-and-computed-catch-deferral.md).
 
 ## 3. Implementation Phase Summary
 
@@ -614,9 +675,12 @@ the rung's tests passing or a handoff file in the scratchpad.
   with a CONFIRMED track in `/balls`); an ended attempt with a release still
   streaming installs one `trajectory/hold` (latch L1: two hand strokes after
   `ABORTED_NO_RELEASE`, the second at the 3500 rev/s² ceiling, 47.8 A);
-  `REJECTED_HAND_NOT_PARKED` is now off-park OR tracking error, on the
-  opening REST too (latch L2: a REST from a hand at 9.4 rev into the
-  bridge's 1 rev/s re-activation slew); the guard line names the axis
+  `REJECTED_HAND_NOT_PARKED` was extended to off-park OR tracking error, on
+  the opening REST too (latch L2: a REST from a hand at 9.4 rev into the
+  bridge's 1 rev/s re-activation slew) — **that extension, and the whole
+  refusal, are RETIRED 2026-09-16; see § 2.7's dated paragraph. The seed is
+  the enforcement point now and DEACTIVATE/ACTIVATE is no longer a recovery
+  for an off-park hand**; the guard line names the axis
   (`hand`, not `leg 6`); the BB reload refuses `REJECTED_RELOAD_RETIRED_R1`
   (its hand prime rode the R1-deleted stroke engine — § 1 item 7 stands;
   R4 re-cuts it as a CATCH skill). **Carried to sitting 2 / R4:** (e) the

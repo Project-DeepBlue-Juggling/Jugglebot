@@ -1983,6 +1983,93 @@ def test_a_gated_landing_update_costs_no_solve_under_unified(monkeypatch,
     assert fb.source == 'cycle'
 
 
+def test_a_landing_update_against_a_SKILL_STACK_plan_costs_no_solve(monkeypatch):
+    """`catch/dynamic_target` is declined when the skill stack owns the plan.
+
+    MEASURED defect (2026-09-16, `temp/logs/launch_r2gate_20260916_1416.log`):
+    the skill stack announces its throw, `ball_tracker_node` picks the ball up,
+    and `catch_coordinator_node` then publishes a landing update per tracker
+    sample — 89 and 71 of them across two 4-throw attempts, EVERY one routed
+    into `replan_tail` against a segment plan and refused REPLAN_WINDOW at
+    ERROR. The skill stack aims its own catches (`skills.executor`
+    AIM_SCHEDULE, from the landing the throw was COMMANDED to achieve), so the
+    update is not a tight fit that failed — it is from a layer with no
+    authority over this interval, and it is declined before any solve.
+    """
+    node = _cycle_installed_sentinel(_cycle_node())
+    node._cycle_owner = tn._OWNER_SEGMENT
+    monkeypatch.setattr(
+        node, '_replan_cycle_from_target',
+        lambda *a, **k: pytest.fail('a segment-owned plan reached replan_tail'))
+    node._catch_armed = False
+    node._on_dynamic_target(_dyn_msg(x=22.0))
+    fb = node._publishers['trajectory/target_feedback'].published[-1]
+    assert fb.accepted is False
+    assert fb.code == tn._SEGMENT_OWNED
+    assert fb.source == 'cycle'
+
+
+def test_a_landing_update_against_a_plan_cycle_plan_still_replans(monkeypatch):
+    """The fence for the guard above: the LEGACY path is untouched."""
+    node = _cycle_installed_sentinel(_cycle_node())
+    node._cycle_owner = tn._OWNER_CYCLE
+    seen = []
+    monkeypatch.setattr(node, '_replan_cycle_from_target',
+                        lambda *a, **k: seen.append(True))
+    node._catch_armed = False
+    node._on_dynamic_target(_dyn_msg(x=22.0))
+    assert seen == [True]
+
+
+def test_a_non_cycle_install_clears_the_cycle_owner_with_the_record():
+    """The owner cannot outlive the plan it describes — a hold, a graceful stop
+    or a legacy move supersedes the cycle and the owner dies with it."""
+    node = _cycle_installed_sentinel(_cycle_node())
+    node._cycle_owner = tn._OWNER_SEGMENT
+    _refresh(node)
+    node._install(_hold_head(node))
+    assert node._cycle is None
+    assert node._cycle_owner is None
+
+
+def test_a_REPLAN_WINDOW_refusal_logs_a_throttled_warn_not_an_error():
+    """A reactive caller can hit REPLAN_WINDOW at its publish rate through no
+    fault of its own, and the plan it asked about is FINE — the last good one
+    keeps streaming. 160 ERROR lines in the 2026-09-16 sitting buried every
+    other line, so this one code warns, throttled. Every other code stays an
+    ERROR: those are a caller asking for something the machine cannot do."""
+    node = _cycle_node()
+    warns, errors = [], []
+    node.get_logger().warn = lambda m, **kw: warns.append((m, kw))
+    node.get_logger().error = lambda m, **kw: errors.append(m)
+
+    class _Resp:
+        accepted = True
+        code = ''
+        message = ''
+        plan_wall_ms = 0.0
+
+    # The bare code, and the wrapped form the sitting actually logged.
+    node._reject_cycle(_Resp(), uc.REPLAN_WINDOW, 'splice knot 34 <= 60',
+                       time.perf_counter())
+    node._reject_cycle(_Resp(), uc.OUTCOME_CODE,
+                       '%s(%s: splice knot 34 <= release knot 58 + detach '
+                       'knots 60)' % (uc.OUTCOME_CODE, uc.REPLAN_WINDOW),
+                       time.perf_counter())
+    assert len(warns) == 2 and not errors
+    assert all(w[1].get('throttle_duration_sec') == 5.0 for w in warns)
+
+    # A refusal that merely MENTIONS the string in prose is NOT demoted.
+    node._reject_cycle(_Resp(), tn._NO_LIVE_CATCH,
+                       'not a REPLAN_WINDOW problem at all',
+                       time.perf_counter())
+    assert len(errors) == 1 and len(warns) == 2
+
+    node._reject_cycle(_Resp(), 'LIMIT_JERK', 'peak leg jerk too high',
+                       time.perf_counter())
+    assert len(errors) == 2 and len(warns) == 2
+
+
 def test_a_replan_does_not_warn_that_banking_is_off(monkeypatch):
     """The banking warning is about a DECISION, and a replan makes none.
 

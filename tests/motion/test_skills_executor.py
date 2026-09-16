@@ -1727,7 +1727,197 @@ def test_caught_reads_the_observers_evidence_at_finalisation(sites):
         t += 0.02
 
     assert experiences[0].caught is False
-    assert seen and seen[0] == (0, pytest.approx(t_land + ex.CAUGHT_WINDOW_S))
+    # The observer is now READ ACROSS THE WINDOW, not once at finalisation
+    # (2026-09-16): the first read is the first tick at or after
+    # ``t_land - CAUGHT_LEAD_S`` and the last is at or before ``finalise_at``.
+    assert seen
+    t_open = t_land - ex.CAUGHT_LEAD_S
+    assert seen[0][1] >= t_open
+    assert seen[0][1] < t_open + 0.02 + 1e-9
+    assert seen[-1][1] <= t_land + ex.CAUGHT_WINDOW_S + 1e-9
+    assert all(b == 0 for b, _t in seen)
+
+
+# ── the verdict window (2026-09-16, the R3 apex-ladder sitting) ────────────
+#
+# The defect these pin: ``caught`` was one observer sample taken at
+# ``t_land_scheduled + 0.15 s``. The plant throws ~8 % fast, so the ball landed
+# +0.04..+0.20 s LATE, and the seated verdict debounces on top of that — four of
+# five real catches read ``caught=False``.
+
+
+def _windowed_outcome(sites, *, t_land_obs_offset, seated_window,
+                      tick_s=0.01, tail_s=1.0):
+    """Run one throw and return ``(experiences, finalise_line)``.
+
+    ``t_land_obs_offset`` moves the TRACKER's landing off the scheduled one;
+    ``seated_window`` is the ``(lo, hi)`` interval, RELATIVE to the scheduled
+    landing, in which the possession observer reads SEATED.
+    """
+    p1, _p2 = sites
+    t_sched = ROS_T0 + FLIGHT_S
+    sch = _single_throw_schedule(p1, ball_id=0, t_release=ROS_T0)
+    inst = _FakeInstaller()
+    land = ex.Landing(pos_mm=p1.catch_site_mm(), vel_mm_s=LAND_VEL,
+                      t_land_abs_s=t_sched + t_land_obs_offset)
+    lo, hi = seated_window
+
+    def observer(_ball_id, t):
+        return (ex.CAUGHT_EVIDENCE if t_sched + lo <= t <= t_sched + hi
+                else 'EMPTY')
+
+    experiences = []
+    lines = []
+    x = ex.SkillExecutor(sch, inst, tracker=lambda b: land, observer=observer,
+                         on_experience=experiences.append)
+    t = sch.skills[0].dispatch_s() - 0.01
+    t_end = t_sched + t_land_obs_offset + ex.CAUGHT_WINDOW_S + tail_s
+    while t < t_end:
+        lines.extend(x.tick(t))
+        t += tick_s
+    return experiences, [ln for ln in lines if 'OUTCOME' in ln]
+
+
+def test_a_seated_tick_after_a_late_observed_landing_counts_as_caught(sites):
+    """THE 2026-09-16 DEFECT. The ball lands 0.19 s late and seats 0.12 s after
+    that; the old point sample at ``scheduled + 0.15 s`` read an empty cup."""
+    experiences, _ = _windowed_outcome(
+        sites, t_land_obs_offset=0.19, seated_window=(0.31, 0.60))
+    assert len(experiences) == 1
+    assert experiences[0].caught is True
+
+
+def test_a_LATE_SETTLING_catch_counts(sites):
+    """Owner ruling 2026-09-16: the +281.9 ms 09-16 arrival is a CATCH.
+
+    The operator's note for that attempt is "worked", every ball caught, and
+    the throw after it was itself caught -- so the ``ball_held`` False ~150 ms
+    after the seat is the next throw's RELEASE, not a drop. The window covers a
+    seat that far behind the landing, and the ball leaving again afterwards
+    does not retract it (the latch is one-way).
+    """
+    experiences, _ = _windowed_outcome(
+        sites, t_land_obs_offset=0.0, seated_window=(0.282, 0.282 + 0.150))
+    assert len(experiences) == 1
+    assert experiences[0].caught is True
+
+
+def test_a_seated_tick_before_the_observed_landing_counts_as_caught(sites):
+    """The 2026-09-15 regime: the sensor seated 39-48 ms BEFORE the tracker's
+    interpolated crossing on all 22 throws. A window opening AT the landing
+    would have scored every one of them a miss."""
+    experiences, _ = _windowed_outcome(
+        sites, t_land_obs_offset=0.0, seated_window=(-0.048, -0.020))
+    assert len(experiences) == 1
+    assert experiences[0].caught is True
+
+
+def test_a_seat_that_predates_the_lead_does_not_count(sites):
+    """The lead is bounded: a cup seated well before the ball could arrive is
+    the PREVIOUS ball, not this one."""
+    experiences, _ = _windowed_outcome(
+        sites, t_land_obs_offset=0.0,
+        seated_window=(-ex.CAUGHT_LEAD_S - 0.05, -ex.CAUGHT_LEAD_S - 0.01))
+    assert len(experiences) == 1
+    assert experiences[0].caught is False
+
+
+def test_a_seat_after_the_window_closes_does_not_count(sites):
+    """The window is finite: a seat past its close is not this row's catch.
+
+    Owner ruling 2026-09-16 widened the window to 0.35 s so a LATE-SETTLING
+    catch counts (the +281.9 ms 09-16 arrival is a real catch, not a bobble --
+    see ``CAUGHT_WINDOW_S``), so this is no longer a measured case but the
+    boundary itself: something seating a third of a second after the ball was
+    due has not been caught by THIS throw's row."""
+    experiences, _ = _windowed_outcome(
+        sites, t_land_obs_offset=0.0,
+        seated_window=(ex.CAUGHT_WINDOW_S + 0.01, ex.CAUGHT_WINDOW_S + 0.20))
+    assert len(experiences) == 1
+    assert experiences[0].caught is False
+
+
+def test_the_verdict_latches_and_a_re_thrown_ball_cannot_retract_it(sites):
+    """SEATED for one tick only, then EMPTY for the rest of the window — which
+    is what a chained catch-and-throw looks like, the ball leaving again before
+    the row finalises."""
+    experiences, _ = _windowed_outcome(
+        sites, t_land_obs_offset=0.05, seated_window=(0.06, 0.07))
+    assert len(experiences) == 1
+    assert experiences[0].caught is True
+
+
+def test_a_wild_observed_landing_cannot_defer_the_row_past_the_cap(sites):
+    """A diverged tracker estimate defers by a BOUNDED amount: the row
+    finalises at ``scheduled + CAUGHT_LAND_DEFER_CAP_S + CAUGHT_WINDOW_S``."""
+    p1, _p2 = sites
+    t_sched = ROS_T0 + FLIGHT_S
+    sch = _single_throw_schedule(p1, ball_id=0, t_release=ROS_T0)
+    land = ex.Landing(pos_mm=p1.catch_site_mm(), vel_mm_s=LAND_VEL,
+                      t_land_abs_s=t_sched + 5.0)
+    experiences = []
+    x = ex.SkillExecutor(sch, _FakeInstaller(), tracker=lambda b: land,
+                         observer=lambda b, t: 'EMPTY',
+                         on_experience=experiences.append)
+    t = sch.skills[0].dispatch_s() - 0.01
+    t_cap = t_sched + ex.CAUGHT_LAND_DEFER_CAP_S + ex.CAUGHT_WINDOW_S
+    while t < t_cap - 0.02:
+        x.tick(t)
+        t += 0.01
+    assert experiences == []                  # still open just before the cap
+    while t < t_cap + 0.05:
+        x.tick(t)
+        t += 0.01
+    assert len(experiences) == 1
+
+
+def test_an_unobserved_landing_still_leaves_no_row(sites):
+    """The "no landing -> no row" rule is untouched: the window falls back to
+    the SCHEDULED landing and the row is dropped, not deferred."""
+    p1, _p2 = sites
+    t_sched = ROS_T0 + FLIGHT_S
+    sch = _single_throw_schedule(p1, ball_id=0, t_release=ROS_T0)
+    experiences = []
+    lines = []
+    x = ex.SkillExecutor(sch, _FakeInstaller(), tracker=lambda b: None,
+                         observer=lambda b, t: ex.CAUGHT_EVIDENCE,
+                         on_experience=experiences.append)
+    t = sch.skills[0].dispatch_s() - 0.01
+    while t < t_sched + ex.CAUGHT_WINDOW_S + 0.10:
+        lines.extend(x.tick(t))
+        t += 0.01
+    assert experiences == []
+    assert any('no landing estimate was ever observed' in ln for ln in lines)
+
+
+def test_the_window_bounds_are_a_pure_function_of_the_row():
+    """:meth:`_outcome_window` -- the arithmetic, stated once."""
+    import numpy as _np
+    mk = lambda t_obs: ex._PendingOutcome(
+        ball_id=0, x=_np.zeros(3), u=_np.zeros(3), t_release_s=0.0,
+        t_land_scheduled_s=10.0, target_xy_mm=_np.zeros(2),
+        best_landing=(None if t_obs is None else ex.Landing(
+            pos_mm=_np.zeros(3), vel_mm_s=_np.zeros(3), t_land_abs_s=t_obs)))
+    # No landing: both bounds hang off the schedule.
+    assert ex.SkillExecutor._outcome_window(mk(None)) == (
+        pytest.approx(10.0 - ex.CAUGHT_LEAD_S),
+        pytest.approx(10.0 + ex.CAUGHT_WINDOW_S))
+    # A LATE landing moves the close; the open stays on the earlier schedule.
+    assert ex.SkillExecutor._outcome_window(mk(10.2)) == (
+        pytest.approx(10.0 - ex.CAUGHT_LEAD_S),
+        pytest.approx(10.2 + ex.CAUGHT_WINDOW_S))
+    # An EARLY landing moves the open; the close stays on the later schedule.
+    assert ex.SkillExecutor._outcome_window(mk(9.9)) == (
+        pytest.approx(9.9 - ex.CAUGHT_LEAD_S),
+        pytest.approx(10.0 + ex.CAUGHT_WINDOW_S))
+    # The lead never reaches back past the RELEASE.
+    late = ex._PendingOutcome(
+        ball_id=0, x=np.zeros(3), u=np.zeros(3), t_release_s=9.95,
+        t_land_scheduled_s=10.0, target_xy_mm=np.zeros(2))
+    assert ex.SkillExecutor._outcome_window(late)[0] == pytest.approx(9.95)
+    # A WILD landing is clamped to the cap.
+    assert ex.SkillExecutor._outcome_window(mk(99.0))[1] == pytest.approx(
+        10.0 + ex.CAUGHT_LAND_DEFER_CAP_S + ex.CAUGHT_WINDOW_S)
 
 
 def test_no_observer_defaults_caught_to_false(sites):
@@ -1749,6 +1939,141 @@ def test_no_observer_defaults_caught_to_false(sites):
     assert experiences[0].caught is False
 
 
+# ── one sensor, one row per tick (2026-09-16, the audit on the R2/R3 columns
+# operating point) ───────────────────────────────────────────────────────
+#
+# The defect: ``_advance_outcomes`` read the observer once per PENDING ROW,
+# so with two balls in flight (columns, beat ~0.58 s) two rows' verdict
+# windows (up to 0.80 s wide) can both be open on the same tick, and one
+# ball's SEATED cup latched BOTH rows even though the observer is one
+# physical sensor blind to ``ball_id``. The fix attributes a SEATED sample to
+# the single open row whose expected landing (``_landing_instant``) is
+# nearest the sampled tick.
+
+def _mk_pending(ball_id, t_release, t_land_scheduled):
+    return ex._PendingOutcome(
+        ball_id=ball_id, x=np.zeros(3), u=np.zeros(3), t_release_s=t_release,
+        t_land_scheduled_s=t_land_scheduled, target_xy_mm=np.zeros(2))
+
+
+def test_a_seated_sample_nearer_ball_bs_landing_latches_only_b(sites):
+    p1, _p2 = sites
+    t_a = ROS_T0 + FLIGHT_S
+    t_b = t_a + 0.15                    # close enough that the windows overlap
+    pend_a = _mk_pending(0, ROS_T0, t_a)
+    pend_b = _mk_pending(1, ROS_T0 + 0.1, t_b)
+    sch = _single_throw_schedule(p1, ball_id=0, t_release=ROS_T0)
+    seen = []
+
+    def observer(ball_id, t):
+        seen.append((ball_id, t))
+        return ex.CAUGHT_EVIDENCE
+
+    x = ex.SkillExecutor(sch, _FakeInstaller(), observer=observer)
+    x._pending_outcomes = [pend_a, pend_b]
+
+    t_tick = t_b                        # exactly ball B's expected landing
+    wa = ex.SkillExecutor._outcome_window(pend_a)
+    wb = ex.SkillExecutor._outcome_window(pend_b)
+    assert wa[0] <= t_tick <= wa[1] and wb[0] <= t_tick <= wb[1]   # both open
+
+    x._advance_outcomes(t_tick)
+    assert pend_b.caught_seen is True
+    assert pend_a.caught_seen is False
+    assert len(seen) == 1                       # one read attributed once
+
+
+def test_a_seated_sample_nearer_ball_as_landing_latches_only_a(sites):
+    p1, _p2 = sites
+    t_a = ROS_T0 + FLIGHT_S
+    t_b = t_a + 0.15
+    pend_a = _mk_pending(0, ROS_T0, t_a)
+    pend_b = _mk_pending(1, ROS_T0 + 0.1, t_b)
+    sch = _single_throw_schedule(p1, ball_id=0, t_release=ROS_T0)
+
+    x = ex.SkillExecutor(sch, _FakeInstaller(),
+                         observer=lambda b, t: ex.CAUGHT_EVIDENCE)
+    x._pending_outcomes = [pend_a, pend_b]
+
+    t_tick = t_a + 0.06                 # nearer A's landing than B's
+    wa = ex.SkillExecutor._outcome_window(pend_a)
+    wb = ex.SkillExecutor._outcome_window(pend_b)
+    assert wa[0] <= t_tick <= wa[1] and wb[0] <= t_tick <= wb[1]   # both open
+
+    x._advance_outcomes(t_tick)
+    assert pend_a.caught_seen is True
+    assert pend_b.caught_seen is False
+
+
+def test_a_single_pending_row_still_latches_as_before(sites):
+    p1, _p2 = sites
+    t_a = ROS_T0 + FLIGHT_S
+    pend_a = _mk_pending(0, ROS_T0, t_a)
+    sch = _single_throw_schedule(p1, ball_id=0, t_release=ROS_T0)
+    x = ex.SkillExecutor(sch, _FakeInstaller(),
+                         observer=lambda b, t: ex.CAUGHT_EVIDENCE)
+    x._pending_outcomes = [pend_a]
+    x._advance_outcomes(t_a)
+    assert pend_a.caught_seen is True
+
+
+def test_a_columns_schedule_attributes_every_catch_to_its_own_ball(limits, geom):
+    """The end-to-end shape: a real ``compile_columns`` schedule (two balls,
+    overlapping verdict windows at the R2 operating point) run through the
+    real chain with a shared, ``ball_id``-blind observer that reads SEATED
+    continuously. Every released ball must still finalise ``caught=True`` on
+    its own row -- one ball's cup never steals another's verdict."""
+    sites_ = si.columns_sites(SEPARATION_MM)
+    sched = sc.compile_columns(
+        sc.Pattern(sites=sites_, apex_m=0.9, dwell_s=0.30, n_throws=6), T0_ABS)
+    arrival = np.array([0.0, 0.0, -0.5 * 9806.0 * sched.flight_s])
+    landings = {}
+    for sk in sched.skills:
+        if sk.kind == sg.CATCH:
+            landings.setdefault(sk.ball_id, []).append(ex.Landing(
+                pos_mm=sk.site.catch_site_mm(), vel_mm_s=arrival.copy(),
+                t_land_abs_s=float(sk.t_abs_s)))
+    clock = {'t': T0_ABS - 1.0}
+
+    def tracker(ball_id):
+        for land in landings.get(ball_id, ()):
+            if land.t_land_abs_s > clock['t'] - 0.05:
+                return land
+        return None
+
+    state = {'record': None}
+
+    def installer(kind, terminal, t_now_s, ball_id=0):
+        rec = state['record']
+        seed = (_rest_state(sites_[0].rest_site_mm()) if rec is None else None)
+        new_rec, res, _seg = ex.install_segment(
+            rec, seed, kind, terminal, t_now_s, limits=limits, geom=geom)
+        assert res.accepted, '%s: %s' % (res.code, res.message)
+        state['record'] = new_rec
+        return res
+
+    experiences = []
+    execu = ex.SkillExecutor(sched, installer, tracker=tracker,
+                             observer=lambda b, t: ex.CAUGHT_EVIDENCE,
+                             on_experience=experiences.append)
+    t_end = max(sk.t_abs_s for sk in sched.skills) + 1.5
+    t = clock['t']
+    while t < t_end and not execu.attempt_ended:
+        clock['t'] = t
+        execu.tick(t)
+        t += DT / 10.0
+
+    assert not execu.attempt_ended, execu.end_code
+    # 6 registered rows (the launch THROW plus the 5 chained catch-with-
+    # then_throw releases; the final standalone CATCH carries no then_throw
+    # and registers nothing). The last row's own release has no matching
+    # CATCH left in the schedule to seed a tracker landing for, so it drops
+    # with "no landing estimate" -- a real, expected drop, not this fix's
+    # concern -- leaving 5 rows that finalise, each on its own ball.
+    assert len(experiences) == 5
+    assert all(e.caught for e in experiences)
+
+
 # ---------------------------------------------------------------------------
 # R3 — the PORT@R3 precondition ladder (INVARIANTS.md § 8)
 # ---------------------------------------------------------------------------
@@ -1762,8 +2087,7 @@ def test_no_observer_defaults_caught_to_false(sites):
 def _obs(**over) -> ex.Observations:
     """An all-clear :class:`~jugglebot.motion.skills.executor.Observations`
     with the named fields overridden — one flipped field, one refused code."""
-    fields = dict(mocap_fresh=True, hand_fresh=True, hand_at_seed=True,
-                  hand_at_park=True, levelled=True,
+    fields = dict(mocap_fresh=True, hand_fresh=True, levelled=True,
                   ball_evidence=bp.EVIDENCE_SEATED, in_trajectory_mode=True)
     fields.update(over)
     return ex.Observations(**fields)
@@ -1783,7 +2107,6 @@ def _single_catch_schedule(site, ball_id, t_land):
     ('mocap_fresh', False, 'REJECTED_MOCAP_STALE'),
     ('levelled', False, 'REJECTED_NOT_LEVELLED'),
     ('hand_fresh', False, 'REJECTED_HAND_STALE'),
-    ('hand_at_seed', False, 'REJECTED_HAND_NOT_PARKED'),
     ('ball_evidence', bp.EVIDENCE_UNKNOWN, 'REJECTED_BALL_UNKNOWN'),
     ('ball_evidence', bp.EVIDENCE_EMPTY, 'REJECTED_NO_BALL'),
 ])
@@ -1805,21 +2128,20 @@ def test_a_launch_throw_refuses_each_ladder_row_alone(sites, field, value, code)
 
 def test_a_fully_failing_observation_reports_every_row_at_once(sites):
     """The runsheet rehearsal reports every refusal together (Workflow Rules:
-    "make gates report every refusal at once"): the log line names all five
+    "make gates report every refusal at once"): the log line names all four
     applicable codes even though only the first (dependency order) ends the
     attempt."""
     p1, _p2 = sites
     sch = _single_throw_schedule(p1, ball_id=0, t_release=ROS_T0)
     inst = _FakeInstaller()
-    obs = _obs(mocap_fresh=False, hand_fresh=False, hand_at_seed=False,
+    obs = _obs(mocap_fresh=False, hand_fresh=False,
                levelled=False, ball_evidence=bp.EVIDENCE_UNKNOWN)
     x = ex.SkillExecutor(sch, inst, observations=lambda t: obs)
     lines = x.tick(sch.skills[0].dispatch_s())
 
     assert x.end_code == ex.REJECTED_MOCAP_STALE
     for code in (ex.REJECTED_MOCAP_STALE, ex.REJECTED_NOT_LEVELLED,
-                ex.REJECTED_HAND_STALE, ex.REJECTED_HAND_NOT_PARKED,
-                ex.REJECTED_BALL_UNKNOWN):
+                ex.REJECTED_HAND_STALE, ex.REJECTED_BALL_UNKNOWN):
         assert code in lines[0]
     assert ex.REJECTED_NO_BALL not in lines[0]     # UNKNOWN, not EMPTY
     assert inst.calls == []
@@ -1828,12 +2150,11 @@ def test_a_fully_failing_observation_reports_every_row_at_once(sites):
 def test_precondition_refusals_direct_order_and_launch_gate():
     """The pure function itself: dependency order, and the launch-only rows
     absent from a non-launch (CATCH) call even when they would fail."""
-    all_bad = _obs(mocap_fresh=False, hand_fresh=False, hand_at_seed=False,
+    all_bad = _obs(mocap_fresh=False, hand_fresh=False,
                    levelled=False, ball_evidence=bp.EVIDENCE_EMPTY)
     assert ex.precondition_refusals(all_bad, launch=True) == [
         ex.REJECTED_MOCAP_STALE, ex.REJECTED_NOT_LEVELLED,
-        ex.REJECTED_HAND_STALE, ex.REJECTED_HAND_NOT_PARKED,
-        ex.REJECTED_NO_BALL]
+        ex.REJECTED_HAND_STALE, ex.REJECTED_NO_BALL]
     assert ex.precondition_refusals(all_bad, launch=False) == [
         ex.REJECTED_MOCAP_STALE, ex.REJECTED_NOT_LEVELLED,
         ex.REJECTED_HAND_STALE]
@@ -1841,15 +2162,15 @@ def test_precondition_refusals_direct_order_and_launch_gate():
 
 
 def test_a_catch_only_checks_the_non_launch_rows(sites):
-    """A CATCH is never a fresh origin (plan carried R3 note): HAND_NOT_PARKED
-    and the ball-evidence rows do not apply, even set to fail."""
+    """A CATCH is never a launch: the ball-evidence rows do not apply, even
+    set to fail."""
     _p1, p2 = sites
     t_land = ROS_T0 + FLIGHT_S
     sch = _single_catch_schedule(p2, ball_id=0, t_land=t_land)
     inst = _FakeInstaller()
     land = ex.Landing(pos_mm=p2.catch_site_mm(), vel_mm_s=LAND_VEL,
                       t_land_abs_s=t_land)
-    obs = _obs(hand_at_seed=False, ball_evidence=bp.EVIDENCE_UNKNOWN)
+    obs = _obs(ball_evidence=bp.EVIDENCE_UNKNOWN)
     x = ex.SkillExecutor(sch, inst, tracker=_tracker(land),
                          observations=lambda t: obs)
     x.tick(sch.skills[0].dispatch_s())
@@ -1871,8 +2192,7 @@ def test_a_non_fresh_rest_is_exempt_from_the_ladder(sites):
     x = ex.SkillExecutor(
         sch, inst, tracker=_tracker(land),
         observations=lambda t: (_obs() if state['good'] else _obs(
-            mocap_fresh=False, hand_fresh=False, hand_at_seed=False,
-            hand_at_park=False, levelled=False,
+            mocap_fresh=False, hand_fresh=False, levelled=False,
             ball_evidence=bp.EVIDENCE_UNKNOWN)))
     x.tick(sch.skills[0].dispatch_s())            # THROW, all-clear obs
     x.tick(sch.skills[1].dispatch_s())             # CATCH, all-clear obs
@@ -1885,8 +2205,8 @@ def test_a_non_fresh_rest_is_exempt_from_the_ladder(sites):
     assert len(inst.calls) == 3 and inst.calls[2][0] == sg.REST
 
 
-# ── Unit B — a fresh-origin install refuses when the hand is not parked
-# (L2, R3 first sitting, 2026-09-13) ────────────────────────────────────────
+# ── The hand-park row is RETIRED (2026-09-16) — a fresh origin is no longer
+# refused for where the hand IS ────────────────────────────────────────────
 
 def _fresh_rest_schedule(site):
     """A single-skill schedule whose only skill (idx 0) is a REST — always a
@@ -1898,53 +2218,60 @@ def _fresh_rest_schedule(site):
                     t0_abs_s=ROS_T0 - sg.REST_TAIL_S)
 
 
-def test_a_fresh_origin_rest_refuses_hand_not_parked_at_the_l2_numbers(sites):
-    """The L2 sitting's own numbers (bag 2026-09-13_22-57-18): hand measured
-    8.665 rev, commanded 9.426 rev — both `hand_at_seed` and `hand_at_park`
-    false — a fresh-origin REST must refuse before ever reaching the
-    installer, not stream the hand into the bridge's recovery slew."""
+def test_the_ladder_has_no_hand_position_row_at_all():
+    """`REJECTED_HAND_NOT_PARKED` and the two observations that fed it are
+    GONE from the module (owner decision, 2026-09-16) — asserted on the
+    module surface, because a row that merely stops firing would come back
+    the next time someone adds a `fresh_origin=` argument.
+
+    The class it stood proxy for is enforced at the SEED instead
+    (`trajectory_node._cycle_start_state`, tested in
+    `tests/ros/test_install_segment.py`)."""
+    assert not hasattr(ex, 'REJECTED_HAND_NOT_PARKED')
+    fields = set(ex.Observations.__dataclass_fields__)
+    assert 'hand_at_seed' not in fields and 'hand_at_park' not in fields
+    # ...and the retired argument that gated it.
+    import inspect
+    params = inspect.signature(ex.precondition_refusals).parameters
+    assert 'fresh_origin' not in params
+
+
+def test_a_fresh_origin_rest_off_the_park_is_accepted(sites):
+    """THE REGRESSION THIS RETIREMENT EXISTS FOR (2026-09-16, bag
+    `2026-09-16_14-16-38`): after an attempt ended `SPLICE_TOO_LATE` and
+    installed a hold at +0.5639 rev, nine consecutive schedules were refused
+    `REJECTED_HAND_NOT_PARKED` at skill 0 (the opening REST) — on a hand
+    measured at +0.0001 rev, i.e. genuinely parked, because the bridge's
+    `pos_cmd` echo had gone stale at the held value.
+
+    The ladder now knows nothing about where the hand is, so the fresh-origin
+    REST dispatches and the REST itself carries the hand to its settle site.
+    There is no observation to flip here — which IS the assertion."""
     p1, _p2 = sites
     sch = _fresh_rest_schedule(p1)
     inst = _FakeInstaller()
-    obs = _obs(hand_at_seed=False, hand_at_park=False)
-    x = ex.SkillExecutor(sch, inst, observations=lambda t: obs)
-    lines = x.tick(sch.skills[0].dispatch_s())
-
-    assert x.attempt_ended and x.end_code == ex.REJECTED_HAND_NOT_PARKED
-    assert inst.calls == []
-    assert ex.REJECTED_HAND_NOT_PARKED in lines[0]
-
-
-def test_a_fresh_origin_rest_at_park_passes(sites):
-    """A fresh-origin REST with the hand genuinely at park (0.1 rev, inside
-    the 0.5 rev band) dispatches normally."""
-    p1, _p2 = sites
-    sch = _fresh_rest_schedule(p1)
-    inst = _FakeInstaller()
-    obs = _obs(hand_at_seed=True, hand_at_park=True)
-    x = ex.SkillExecutor(sch, inst, observations=lambda t: obs)
+    x = ex.SkillExecutor(sch, inst, observations=lambda t: _obs())
     x.tick(sch.skills[0].dispatch_s())
 
-    assert not x.attempt_ended
+    assert not x.attempt_ended and not x.end_code
     assert len(inst.calls) == 1 and inst.calls[0][0] == sg.REST
 
 
-def test_a_spliced_catch_is_unaffected_by_hand_at_park(sites):
-    """A CATCH is never a fresh origin — `hand_at_park=False` alone must not
-    refuse it (only a fresh-origin THROW/REST checks this row)."""
-    _p1, p2 = sites
-    t_land = ROS_T0 + FLIGHT_S
-    sch = _single_catch_schedule(p2, ball_id=0, t_land=t_land)
+def test_a_fresh_origin_rest_still_refuses_a_stale_hand(sites):
+    """`REJECTED_HAND_STALE` is KEPT and is now load-bearing: the seed the
+    retirement relies on is reconciled against the ENCODER, so a stale
+    encoder reading must still stop the attempt (the same fact one level
+    down)."""
+    p1, _p2 = sites
+    sch = _fresh_rest_schedule(p1)
     inst = _FakeInstaller()
-    land = ex.Landing(pos_mm=p2.catch_site_mm(), vel_mm_s=LAND_VEL,
-                      t_land_abs_s=t_land)
-    obs = _obs(hand_at_park=False)
-    x = ex.SkillExecutor(sch, inst, tracker=_tracker(land),
-                         observations=lambda t: obs)
-    x.tick(sch.skills[0].dispatch_s())
+    obs = _obs(hand_fresh=False)
+    x = ex.SkillExecutor(sch, inst, observations=lambda t: obs)
+    lines = x.tick(sch.skills[0].dispatch_s())
 
-    assert not x.attempt_ended
-    assert len(inst.calls) == 1 and inst.calls[0][0] == sg.CATCH
+    assert x.attempt_ended and x.end_code == ex.REJECTED_HAND_STALE
+    assert inst.calls == []
+    assert ex.REJECTED_HAND_STALE in lines[0]
 
 
 def test_mode_change_mid_attempt_aborts_and_stops_further_dispatch(sites):

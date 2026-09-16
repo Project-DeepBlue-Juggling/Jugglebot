@@ -2223,6 +2223,12 @@ class TeensyBridgeNode(Node):
                 proto.INPUT_SCALE_HAND_VEL, proto.INPUT_SCALE_HAND_TOR)
         except Exception:  # noqa: BLE001
             return
+        # The SNIFF/interp uplink is one of TWO writers of this cache: the
+        # ACTIVATE park writes it too (`_run_activate`, 2026-09-16), because
+        # the firmware's echo is event-driven off the streamed lane and the
+        # park never touches that lane — see the comment there for the bag
+        # numbers. Last writer wins, which is correct: whichever of the two
+        # commanded the hand most recently IS the command.
         with self._lock:
             self._last_hand_cmd = {'pos': pos, 'vel': vel, 'tor': tor}
 
@@ -6320,6 +6326,50 @@ class TeensyBridgeNode(Node):
                 msg += f" (succeeded: {mon.succeeded})"
             self.get_logger().error(msg)
             return False, msg
+        # ── The hand-command ECHO follows the park (2026-09-16) ────────────
+        # `pos_cmd` on /hand_telemetry is the last HAND_CMD_ECHO the bridge
+        # firmware emitted, and that uplink is EVENT-DRIVEN off the streamed
+        # lane: `telemetry.cpp::hand_cmd_echo_uplink_step` emits only when
+        # `interp_hand_sent()` has changed, i.e. only when the 500 Hz interp
+        # actually transmitted ("silent while the hand lane is idle"). The
+        # ACTIVATE park is NOT that lane — `leg_activate.cpp`'s COMMAND phase
+        # TRAP_TRAJs axis 6 to `HAND_ACTIVATE_POSITION_REV` straight onto the
+        # Jugglebot bus, and CAN SRX_DIS means the bridge never sniffs its own
+        # frame — so the echo keeps reporting whatever the last STREAMED
+        # command was, for the rest of the session.
+        #
+        # MEASURED (2026-09-16, bag `2026-09-16_14-16-38`): an ended attempt
+        # left a hold streaming at +0.5639 rev; across several
+        # DEACTIVATE/ACTIVATE cycles /hand_telemetry read `pos_cmd = +0.5639`
+        # against `pos_meas = +0.0001` — a 0.56 rev phantom tracking error on
+        # a hand the firmware had just parked. That stale echo is what the
+        # retired `REJECTED_HAND_NOT_PARKED` row was reading, and it refused
+        # nine schedules at skill 0 on a healthy machine.
+        #
+        # ACTIVATE fires AXIS_ALL, so the firmware parks EVERY present axis
+        # including the hand regardless of which ones `activate_axes` observes
+        # — the host therefore knows the hand's commanded position exactly,
+        # and says so here rather than letting the diagnostic lie until the
+        # next streamed frame. `JB_OP_HAND_ACTIVATE_POSITION_REV` is the SAME
+        # generated constant `hardware_config.h` gives the firmware, so the
+        # two cannot drift. Vel/torque feedforward go to zero with it: the
+        # park is a position-only TRAP_TRAJ target (`encode_leg_setpoint(i,
+        # activate_target_rev(i), 0.0f, 0.0f)`).
+        #
+        # DIAGNOSTIC ONLY. Nothing gates on `pos_cmd` any more (the ladder row
+        # that did is retired, and the seed reconciliation that replaced it
+        # reads the ENCODER via /robot_state, never this echo). The firmware
+        # emitting its own echo after the park would be strictly better and is
+        # the durable fix; this is the host-side half that needs no flash.
+        # Only when the firmware actually fired AXIS_ALL: a single-axis
+        # activate (the bench rig, axes=[0]) parks that leg alone and never
+        # touches the hand, so writing the park here would fabricate an echo
+        # for a move that did not happen (audit, 2026-09-16).
+        if fire_axis == rpc_args.AXIS_ALL:
+            with self._lock:
+                self._last_hand_cmd = {
+                    'pos': float(hw.JB_OP_HAND_ACTIVATE_POSITION_REV),
+                    'vel': 0.0, 'tor': 0.0}
         msg = f"activate complete on axes {mon.succeeded}"
         self.get_logger().info(msg)
         return True, msg
