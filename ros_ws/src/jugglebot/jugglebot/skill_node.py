@@ -186,6 +186,8 @@ class SkillNode(Node):
         # `observer` read (`_ball_evidence`), one value, one writer
         # (`_on_hand_telemetry`).
         self._possession_evidence = ball_possession.EVIDENCE_UNKNOWN
+        # Debounced twin for the ladder's SEATED precondition (see _on_hand_telemetry).
+        self._possession_evidence_stable = ball_possession.EVIDENCE_UNKNOWN
         self._executor = None  # a live SkillExecutor, or None between attempts
         # The last ACCEPTED install's future event (a THROW's release, or a
         # CATCH-with-throw's carried release) on the schedule's own wall
@@ -489,6 +491,20 @@ class SkillNode(Node):
             self._possession_evidence = (
                 ball_possession.EVIDENCE_SEATED if bool(raw)
                 else ball_possession.EVIDENCE_EMPTY)
+        # The DEBOUNCED bit feeds the precondition ladder (2026-09-16): the raw
+        # bit is right for release/catch EDGES (the debounce lags a departing
+        # ball by ~240 ms, ball_possession.py) but it chatters while the hand
+        # moves — two of the sitting's three REJECTED_NO_BALL refusals were a
+        # single raw-sample carry-flicker during the post-hold park motion with
+        # the debounced bit True throughout. A fresh THROW asks "is a ball
+        # seated", a state question the debounced bit answers.
+        held = getattr(msg, 'ball_held', None)
+        if not valid or held is None:
+            self._possession_evidence_stable = ball_possession.EVIDENCE_UNKNOWN
+        else:
+            self._possession_evidence_stable = (
+                ball_possession.EVIDENCE_SEATED if bool(held)
+                else ball_possession.EVIDENCE_EMPTY)
 
     def _observations(self, t_abs_s: float) -> Observations:
         """The R3 precondition ladder's snapshot of the whole machine at one
@@ -531,15 +547,17 @@ class SkillNode(Node):
         # refusal, one level down.
         return Observations(
             mocap_fresh=mocap_fresh, hand_fresh=hand_fresh,
-            levelled=levelled, ball_evidence=self._possession_evidence,
+            levelled=levelled, ball_evidence=self._possession_evidence_stable,
             in_trajectory_mode=in_trajectory_mode)
 
     def _ball_evidence(self, ball_id: int, t_abs_s: float) -> str:
-        """The executor's ``observer`` callable (item 6): the SAME live
-        possession evidence `_observations` builds — one hand sensor,
-        ``ball_id`` unused (there is exactly one cup, and `Observations` has
-        no per-ball field either)."""
-        return self._observations(t_abs_s).ball_evidence
+        """The executor's ``observer`` callable (item 6): the live possession
+        evidence from the RAW sensor bit — one hand sensor, ``ball_id`` unused
+        (there is exactly one cup). Raw, not debounced, on purpose: this read
+        detects release and catch EDGES, and the debounce lags a departing
+        ball by ~240 ms (ball_possession.py). The ladder's SEATED precondition
+        reads the debounced twin instead (`_observations`, 2026-09-16)."""
+        return self._possession_evidence
 
     # ── the installer callable SkillExecutor dispatches through ────────────
 
@@ -1036,7 +1054,18 @@ class SkillNode(Node):
         appends the row (file I/O, orchestrator thread only — never the 40 Hz
         emitter, plan § 0) and logs it, one line per throw."""
         def _on_experience(exp):
-            memory.append(exp)
+            # `Memory.append` REFUSES a row outside `FLIGHT_RATIO_BAND`
+            # (2026-09-16) — the executor drops such a row first, so this is
+            # the belt-and-braces path, and it must never raise into the tick
+            # loop: an exception here would surface as an executor fault and
+            # end an attempt over a bookkeeping refusal.
+            try:
+                memory.append(exp)
+            except ValueError as exc:
+                self.get_logger().error(
+                    'memory row REFUSED (not appended): %s — u=%s y=%s'
+                    % (exc, exp.u.tolist(), exp.y.tolist()))
+                return
             self.get_logger().info(
                 'memory row appended: x=%s u=%s y=%s caught=%s'
                 % (exp.x.tolist(), exp.u.tolist(), exp.y.tolist(), exp.caught))

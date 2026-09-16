@@ -21,9 +21,67 @@ import numpy as np
 
 from jugglebot.motion.skills import learner as lr
 
-__all__ = ['Experience', 'Memory', 'memory_path']
+__all__ = ['Experience', 'Memory', 'FLIGHT_RATIO_BAND', 'flight_in_band',
+           'memory_path']
 
 _LOG = logging.getLogger(__name__)
+
+#: The PHYSICAL band an observed flight ``y[2]`` may occupy, as a multiple of
+#: the commanded flight ``u[2]``, for the row to be a row about THIS throw.
+#:
+#: A flight is ``t = 2v/g`` from release to the catch plane and the apex is
+#: ``h = g t^2 / 8``, so a ratio in flight IS the ratio in release speed and
+#: its square in apex: this plant's measured 25 %-fast throw (apex 1.38 m on a
+#: 0.9 m command, 2026-09-16) is exactly ``r = sqrt(1.38/0.9) = 1.238``.
+#:
+#: **Measured** (2026-09-16, both sittings' ten ``temp/learn/*-20260916``
+#: memories replayed against their bags' ``/balls``,
+#: ``tools/probes/outcome_landing_replay.py``): the estimates taken while the
+#: ball was ACTUALLY IN FLIGHT sit at ``r = 0.97 .. 1.53`` (n = 22) and the
+#: CONTAMINATED rows the old rule wrote at ``r = 2.21 .. 2.99`` (n = 21). The
+#: two clusters are separated by a factor of 1.45 and nothing lies between:
+#:
+#: * 1.6 clears the largest in-flight ratio measured (1.53) and admits a plant
+#:   throwing 60 % fast (apex 2.56x commanded) -- well past the 1.238 this one
+#:   does -- while rejecting every contaminated row by at least 38 %. It is
+#:   deliberately a PHYSICAL gate, not a scatter gate: a genuinely wild throw
+#:   is exactly what the learner needs to see.
+#: * 0.5 is an apex a QUARTER of the commanded one: a ball that leaves the cup
+#:   at half the commanded speed is a failed release, not a throw to learn
+#:   from. Nothing in flight measured below 0.97.
+#:
+#: **What this band CANNOT do**, and why ``executor._consider_landing``'s
+#: freeze is the primary fix rather than the band: a ball sitting in the cup
+#: after its catch has its "landing" predicted at ~now, so that contaminant's
+#: ratio is ``beat / commanded`` -- 1.348 at the R3 operating point (armB-090
+#: row 3, 1.1554 s against 0.8569 s), inside any band wide enough to admit
+#: this plant, and arbitrarily close to 1 for a shorter beat. Only "the ball
+#: has already landed, stop looking" separates that class.
+#:
+#: This is the ONE definition of the band (``executor`` imports it, and it is
+#: applied on ``Memory`` load and append as well) -- a second copy would be
+#: exactly the "timing twin" class plan § 0 forbids.
+FLIGHT_RATIO_BAND = (0.5, 1.6)
+
+
+def flight_in_band(u_flight: float, y_flight: float) -> bool:
+    """True when ``y_flight`` is inside :data:`FLIGHT_RATIO_BAND` x ``u_flight``.
+
+    A non-finite or non-positive commanded flight has no band (nothing to
+    scale), and is treated as ADMITTING the observation: the band exists to
+    reject a landing that belongs to another flight, and with no commanded
+    flight to compare against there is no such evidence either way. Callers
+    validate ``u`` on their own path (``Experience`` requires it finite).
+    """
+    u = float(u_flight)
+    y = float(y_flight)
+    if not (math.isfinite(u) and u > 0.0):
+        return True
+    if not math.isfinite(y):
+        return False
+    lo, hi = FLIGHT_RATIO_BAND
+    return lo * u <= y <= hi * u
+
 
 #: Column order of the CSV -- x (4), u (3), y (3), t_abs_s, ball_id, caught.
 _HEADER = ['x0', 'x1', 'x2', 'x3', 'u0', 'u1', 'u2', 'y0', 'y1', 'y2',
@@ -98,6 +156,13 @@ class Memory:
     warning naming the line number -- never fatal, so one corrupted row does
     not lose an entire session's memory. Rows are kept in file / call order.
 
+    **A row outside :data:`FLIGHT_RATIO_BAND` is not a row about its own
+    throw** and is refused on BOTH paths -- dropped at load (so an already
+    written contaminated memory, such as the ten ``temp/learn/*-20260916``
+    files, cannot poison the next sitting even if it is read again) and raised
+    on ``append`` (so the executor's own band check, ``executor.
+    _finalise_outcome``, is belt and braces rather than the only guard).
+
     ``append`` and construction do file I/O; the plan's determinism rule
     means both must run on the orchestrator thread, once per throw -- never
     on the 40 Hz emitter thread.
@@ -135,6 +200,12 @@ class Memory:
             t_abs_s = vals[10]
             ball_id = int(row[11])
             caught = row[12].strip().lower() in ('true', '1')
+            if not flight_in_band(u[2], y[2]):
+                raise ValueError(
+                    'observed flight %.4f s outside [%.4f, %.4f] of the '
+                    'commanded %.4f s -- this row is another flight'
+                    % (y[2], FLIGHT_RATIO_BAND[0] * u[2],
+                       FLIGHT_RATIO_BAND[1] * u[2], u[2]))
             return Experience(x=x, u=u, y=y, t_abs_s=t_abs_s, ball_id=ball_id,
                                caught=caught)
         except (ValueError, TypeError) as exc:
@@ -152,6 +223,13 @@ class Memory:
         updates the in-memory arrays -- in call order."""
         if not isinstance(exp, Experience):
             raise ValueError('append expects an Experience, got %r' % (exp,))
+        if not flight_in_band(exp.u[2], exp.y[2]):
+            raise ValueError(
+                'refusing a row whose observed flight %.4f s is outside '
+                '[%.4f, %.4f] of the commanded %.4f s: the landing belongs '
+                'to another flight'
+                % (exp.y[2], FLIGHT_RATIO_BAND[0] * exp.u[2],
+                   FLIGHT_RATIO_BAND[1] * exp.u[2], exp.u[2]))
         out_dir = os.path.dirname(self._path)
         if out_dir:
             os.makedirs(out_dir, exist_ok=True)

@@ -1847,28 +1847,42 @@ def test_the_verdict_latches_and_a_re_thrown_ball_cannot_retract_it(sites):
     assert experiences[0].caught is True
 
 
-def test_a_wild_observed_landing_cannot_defer_the_row_past_the_cap(sites):
-    """A diverged tracker estimate defers by a BOUNDED amount: the row
-    finalises at ``scheduled + CAUGHT_LAND_DEFER_CAP_S + CAUGHT_WINDOW_S``."""
+def test_a_wild_observed_landing_cannot_defer_the_row_AT_ALL(sites):
+    """A diverged tracker estimate no longer defers the row by the cap — it is
+    refused at admission by ``memory.FLIGHT_RATIO_BAND`` (2026-09-16), so the
+    row never has an observed landing to hang its window on and closes on the
+    SCHEDULE, naming the reason.
+
+    Before, this test asserted the opposite half of the same worry: that such
+    an estimate deferred the close by a BOUNDED amount and then WROTE a row.
+    Writing it was the contamination. The cap still exists for an in-band late
+    landing and its arithmetic is pinned by
+    ``test_the_window_bounds_are_a_pure_function_of_the_row``.
+    """
     p1, _p2 = sites
     t_sched = ROS_T0 + FLIGHT_S
     sch = _single_throw_schedule(p1, ball_id=0, t_release=ROS_T0)
     land = ex.Landing(pos_mm=p1.catch_site_mm(), vel_mm_s=LAND_VEL,
                       t_land_abs_s=t_sched + 5.0)
     experiences = []
+    lines = []
     x = ex.SkillExecutor(sch, _FakeInstaller(), tracker=lambda b: land,
                          observer=lambda b, t: 'EMPTY',
                          on_experience=experiences.append)
     t = sch.skills[0].dispatch_s() - 0.01
-    t_cap = t_sched + ex.CAUGHT_LAND_DEFER_CAP_S + ex.CAUGHT_WINDOW_S
-    while t < t_cap - 0.02:
-        x.tick(t)
+    t_close = t_sched + ex.CAUGHT_WINDOW_S
+    while t < t_close - 0.02:
+        lines.extend(x.tick(t))
         t += 0.01
-    assert experiences == []                  # still open just before the cap
-    while t < t_cap + 0.05:
-        x.tick(t)
+    assert not any('OUTCOME' in ln for ln in lines)
+    while t < t_close + ex.CAUGHT_LAND_DEFER_CAP_S:
+        lines.extend(x.tick(t))
         t += 0.01
-    assert len(experiences) == 1
+    assert experiences == []
+    out = [ln for ln in lines if 'OUTCOME' in ln]
+    assert len(out) == 1
+    assert 'no row: observed flight' in out[0] and 'refused' in out[0]
+    assert float(out[0].split()[0]) == pytest.approx(t_close, abs=0.011)
 
 
 def test_an_unobserved_landing_still_leaves_no_row(sites):
@@ -2789,3 +2803,274 @@ def test_schedule_hand_keeps_the_theoretical_aim_when_the_scaled_throw_misses(
     # ... and the one attempt at a correction is spent, not retried forever.
     x.tick(catch.dispatch_s() + 5 * DT)
     assert len([c for c in inst.calls if c[0] == sg.CATCH]) == 1
+
+
+# ── the landing observation freezes at the crossing (2026-09-16, the 16:22
+# apex-ladder sitting) ─────────────────────────────────────────────────────
+#
+# THE DEFECT: `_advance_outcomes` wrote `best_landing` on EVERY tick whose
+# estimate merely cleared `OUTCOME_GUARD_S` and post-dated the release, so the
+# LAST estimate before the row finalised won. A chained self-toss catches and
+# RE-THROWS the same physical ball on ONE continuous tracker track, so from
+# the catch onwards that id's estimate is the NEXT flight's landing — and the
+# 0.70 s worst-case verdict window landed the row's close AFTER the next
+# release. armB-090 attempt 1 recorded 2.2317 / 2.2310 / 1.1554 s flights for
+# a 0.8569 s command (physically impossible: a 0.9 m toss is 0.857 s), the
+# learner read them as "far too slow" and shrank the command to 0.686 s, and
+# attempt 3 ended ABORTED_NO_RELEASE with the ball still in the cup.
+
+
+def _land(site, t_land, dx_mm=0.0):
+    return ex.Landing(pos_mm=site.catch_site_mm() + np.array([dx_mm, 0.0, 0.0]),
+                      vel_mm_s=LAND_VEL, t_land_abs_s=t_land)
+
+
+def test_the_landing_observation_freezes_at_the_crossing(sites):
+    """The ONE rule: once the ball has landed, the row is closed to new
+    estimates. Here the tracker reports this flight's landing while the ball
+    is in the air and the NEXT flight's landing afterwards (what a re-thrown
+    ball looks like on a continuous track); the row keeps the first."""
+    p1, _p2 = sites
+    t_sched = ROS_T0 + FLIGHT_S
+    sch = _single_throw_schedule(p1, ball_id=0, t_release=ROS_T0)
+    this_flight = _land(p1, t_sched + 0.05, dx_mm=6.0)
+    next_flight = _land(p1, t_sched + 1.15 + FLIGHT_S, dx_mm=444.0)
+    clock = {'t': ROS_T0}
+
+    def tracker(_ball_id):
+        return (this_flight if clock['t'] < t_sched + 0.05 else next_flight)
+
+    experiences = []
+    x = ex.SkillExecutor(sch, _FakeInstaller(), tracker=tracker,
+                         observer=lambda b, t: ex.CAUGHT_EVIDENCE,
+                         on_experience=experiences.append)
+    t = sch.skills[0].dispatch_s() - 0.01
+    while t < t_sched + 3.0:
+        clock['t'] = t
+        x.tick(t)
+        t += 0.025
+    assert len(experiences) == 1
+    assert experiences[0].y[2] == pytest.approx(FLIGHT_S + 0.05)
+    assert experiences[0].y[0] == pytest.approx(0.006)      # 6 mm, not 444 mm
+    assert experiences[0].caught is True
+
+
+def test_a_chained_re_throw_cannot_contaminate_its_own_previous_row(sites):
+    """The sitting's actual shape: THROW, then a CATCH carrying a re-throw
+    0.30 s later, on one tracker track. The launch throw's row must read its
+    OWN flight, and must still read ``caught=True`` — the catch happened."""
+    sch = _schedule_with_then_throw(sites)
+    p1, _p2 = sites
+    t_throw = sch.skills[0].t_abs_s
+    t_land = t_throw + FLIGHT_S
+    t_rethrow = sch.skills[1].then_throw.t_release_abs_s
+    first = _land(p1, t_land + 0.04, dx_mm=8.0)   # aimed at P1 (the throw's target)
+    second = _land(p1, t_rethrow + FLIGHT_S, dx_mm=321.0)
+    clock = {'t': t_throw}
+
+    def tracker(_ball_id):
+        return first if clock['t'] <= t_land + 0.04 else second
+
+    def observer(_ball_id, t):
+        # SEATED from the arrival until the re-release — a chained catch.
+        return (ex.CAUGHT_EVIDENCE if t_land - 0.02 <= t < t_rethrow
+                else 'EMPTY')
+
+    experiences = []
+    x = ex.SkillExecutor(sch, _FakeInstaller(), tracker=tracker,
+                         observer=observer, on_experience=experiences.append)
+    t = sch.skills[0].dispatch_s() - 0.01
+    while t < t_rethrow + 2.0:
+        clock['t'] = t
+        x.tick(t)
+        t += 0.025
+
+    launch_rows = [e for e in experiences
+                   if e.t_abs_s == pytest.approx(t_throw)]
+    assert len(launch_rows) == 1
+    assert launch_rows[0].y[2] == pytest.approx(FLIGHT_S + 0.04)
+    assert launch_rows[0].y[0] == pytest.approx(0.008)
+    assert launch_rows[0].caught is True
+
+
+def test_an_out_of_band_estimate_is_refused_at_admission(sites):
+    """The band is applied at ADMISSION as well as at finalise, so a garbage
+    estimate can never become the row's landing — and therefore can never
+    move the freeze instant either (an accepted "lands 30 ms from now" would
+    close the row 30 ms after the release: three genuine 2026-09-16 rows
+    became 0.02-0.05 s flights that way in the first replay)."""
+    p1, _p2 = sites
+    t_sched = ROS_T0 + FLIGHT_S
+    pend = ex._PendingOutcome(
+        ball_id=0, x=np.zeros(4), u=np.array([0.0, 0.0, FLIGHT_S]),
+        t_release_s=ROS_T0, t_land_scheduled_s=t_sched,
+        target_xy_mm=p1.catch_site_mm()[:2])
+    good = _land(p1, t_sched, dx_mm=5.0)
+    wild = _land(p1, t_sched + 1.2, dx_mm=900.0)
+    assert ex.SkillExecutor._consider_landing(pend, good, t_sched - 0.20)
+    assert not ex.SkillExecutor._consider_landing(pend, wild, t_sched - 0.15)
+    assert pend.best_landing is good
+    assert pend.n_rejected == 1
+    assert pend.rejected_flight_s == pytest.approx(FLIGHT_S + 1.2)
+    # ... and the ordinary refinement (the LAST admissible estimate wins) IS
+    # accepted.
+    better = _land(p1, t_sched, dx_mm=5.5)
+    assert ex.SkillExecutor._consider_landing(pend, better, t_sched - 0.05)
+    assert pend.best_landing is better
+    # Past the crossing the row is FROZEN: nothing is accepted any more.
+    assert not ex.SkillExecutor._consider_landing(pend, good, t_sched + 0.01)
+    assert not ex.SkillExecutor._consider_landing(pend, wild, t_sched + 0.30)
+    assert pend.best_landing is better
+
+
+def test_an_observed_flight_outside_the_band_leaves_no_row(sites):
+    """Belt and braces (``memory.FLIGHT_RATIO_BAND``): a flight that is not a
+    near-unit multiple of the commanded one is not an observation of this
+    throw, so the row is DROPPED with the reason named. 2.23 s against a
+    0.857 s command is armB-090 row 1, 2026-09-16."""
+    p1, _p2 = sites
+    t_sched = ROS_T0 + FLIGHT_S
+    sch = _single_throw_schedule(p1, ball_id=0, t_release=ROS_T0)
+    wild = _land(p1, ROS_T0 + 2.2317)
+    experiences = []
+    lines = []
+    x = ex.SkillExecutor(sch, _FakeInstaller(), tracker=lambda b: wild,
+                         observer=lambda b, t: ex.CAUGHT_EVIDENCE,
+                         on_experience=experiences.append)
+    t = sch.skills[0].dispatch_s() - 0.01
+    while t < t_sched + 2.0:
+        lines.extend(x.tick(t))
+        t += 0.025
+    assert experiences == []
+    out = [ln for ln in lines if 'OUTCOME' in ln]
+    assert len(out) == 1
+    assert 'no row: observed flight 2.232 s outside [0.428, 1.371] of ' \
+           'commanded 0.857 s' in out[0]
+
+
+def test_a_plant_throwing_25_percent_fast_is_still_IN_band(sites):
+    """The band's other side: the measured 2026-09-16 plant (apex 1.38 m on a
+    0.9 m command, i.e. flight 1.238x commanded) must produce a row — that
+    bias is exactly what the learner exists to absorb."""
+    p1, _p2 = sites
+    t_sched = ROS_T0 + FLIGHT_S
+    sch = _single_throw_schedule(p1, ball_id=0, t_release=ROS_T0)
+    fast = _land(p1, ROS_T0 + 1.238 * FLIGHT_S)
+    experiences = []
+    x = ex.SkillExecutor(sch, _FakeInstaller(), tracker=lambda b: fast,
+                         on_experience=experiences.append)
+    t = sch.skills[0].dispatch_s() - 0.01
+    while t < t_sched + 2.0:
+        x.tick(t)
+        t += 0.025
+    assert len(experiences) == 1
+    assert experiences[0].y[2] == pytest.approx(1.238 * FLIGHT_S)
+
+
+def test_the_window_closes_before_this_balls_next_release():
+    """``_outcome_window`` never reaches past the next release
+    (:data:`ex.OUTCOME_NEXT_RELEASE_EPS_S`) — the structural half of the fix:
+    a row cannot still be open when its ball leaves the cup again."""
+    mk = lambda t_next, t_obs=None: ex._PendingOutcome(
+        ball_id=0, x=np.zeros(4), u=np.array([0.0, 0.0, 10.0]),
+        t_release_s=0.0, t_land_scheduled_s=10.0, target_xy_mm=np.zeros(2),
+        t_next_release_s=t_next,
+        best_landing=(None if t_obs is None else _land_at(t_obs)))
+    eps = ex.OUTCOME_NEXT_RELEASE_EPS_S
+    # No next release: unchanged, the window is the landing plus the window.
+    assert ex.SkillExecutor._outcome_window(mk(None))[1] == pytest.approx(
+        10.0 + ex.CAUGHT_WINDOW_S)
+    # A next release INSIDE the nominal window pulls the close back to it.
+    assert ex.SkillExecutor._outcome_window(mk(10.2))[1] == pytest.approx(
+        10.2 - eps)
+    # ... and that holds against an observed landing that would have deferred
+    # the close even further (the 2026-09-16 exposure).
+    assert ex.SkillExecutor._outcome_window(mk(10.2, t_obs=10.19))[1] == \
+        pytest.approx(10.2 - eps)
+    # A next release beyond it changes nothing.
+    assert ex.SkillExecutor._outcome_window(mk(11.0))[1] == pytest.approx(
+        10.0 + ex.CAUGHT_WINDOW_S)
+    # A re-release that crowds the landing pulls the whole window back onto
+    # it — `_landing_instant` shares the bound, so the open moves with the
+    # close and the window is never inverted.
+    crowded = ex.SkillExecutor._outcome_window(mk(9.5))
+    assert crowded[1] == pytest.approx(9.5 - eps)
+    assert crowded[0] == pytest.approx(9.5 - eps - ex.CAUGHT_LEAD_S)
+    assert crowded[0] < crowded[1]
+
+
+def _land_at(t_land):
+    return ex.Landing(pos_mm=np.zeros(3), vel_mm_s=np.zeros(3),
+                      t_land_abs_s=t_land)
+
+
+def test_the_next_release_lookup_finds_a_carried_throw(sites):
+    """``_next_release`` mirrors ``_previous_release``: a CATCH's
+    ``then_throw`` IS this ball's next release, and the last row has none."""
+    sch = _schedule_with_then_throw(sites)
+    tt = sch.skills[1].then_throw
+    assert ex._next_release(sch, 0, 0) == pytest.approx(tt.t_release_abs_s)
+    assert ex._next_release(sch, 1, 0) is None
+    assert ex._next_release(sch, 0, 1) is None          # a different ball
+
+
+def test_a_crowded_schedule_freezes_at_the_next_release_not_the_schedule():
+    """BLOCKING case (audit, 2026-09-16): a schedule whose re-release falls
+    BEFORE the scheduled landing (a beat shorter than the commanded flight, or
+    a plant arriving late) must not leave a gap in which the NEXT flight's
+    estimate is still admissible.
+
+    ``_bound_by_next_release`` closes the verdict at the re-release; if the
+    FREEZE still sat at the later scheduled landing, every tick in between
+    would keep accepting the next flight's landing. Both stop at the same
+    instant. Swept across the whole interval, tick by tick, and then checked
+    at the row level: no row carries it.
+    """
+    t_sched, t_next, t_wild = 10.0, 9.5, 15.0
+    eps = ex.OUTCOME_NEXT_RELEASE_EPS_S
+    pend = ex._PendingOutcome(
+        ball_id=0, x=np.zeros(4), u=np.array([0.0, 0.0, 10.0]),
+        t_release_s=0.0, t_land_scheduled_s=t_sched,
+        target_xy_mm=np.zeros(2), t_next_release_s=t_next)
+    wild = _land_at(t_wild)
+    t = 0.0
+    while t <= t_sched + 1.0:
+        assert not ex.SkillExecutor._consider_landing(pend, wild, t), t
+        t += 0.025
+    assert pend.best_landing is None
+    assert ex.SkillExecutor._landing_instant(pend) == pytest.approx(t_next - eps)
+    # ... and the freeze is the earliest of the three: a GENUINE estimate is
+    # still admitted while the ball is in the air before the re-release.
+    good = _land_at(t_next - eps - 0.01)
+    assert ex.SkillExecutor._consider_landing(pend, good, t_next - eps - 0.20)
+    assert not ex.SkillExecutor._consider_landing(pend, good, t_next - eps)
+
+
+def test_a_crowded_schedule_row_never_carries_the_next_flight(sites):
+    """The row-level half of the sweep above: an executor running a chained
+    schedule whose re-release crowds the landing writes no row built on the
+    next flight's estimate."""
+    p1, _p2 = sites
+    sch = _schedule_with_then_throw(sites)
+    t_throw = sch.skills[0].t_abs_s
+    t_rethrow = sch.skills[1].then_throw.t_release_abs_s
+    # A synthetic tracker that only ever offers the NEXT flight's landing.
+    wild = _land(p1, t_rethrow + FLIGHT_S, dx_mm=321.0)
+    experiences = []
+    lines = []
+    # `AIM_SCHEDULE` (the LIVE default): the tracker feeds outcome capture
+    # only, so this stays a test about the row and not about catch re-aiming
+    # (a wild landing offered to the refine path moves the catch terminal past
+    # its own carried release, which `CatchTerminal` rightly refuses).
+    x = ex.SkillExecutor(sch, _FakeInstaller(), tracker=lambda b: wild,
+                         observer=lambda b, t: ex.CAUGHT_EVIDENCE,
+                         catch_aim_source=ex.AIM_SCHEDULE,
+                         on_experience=experiences.append)
+    t = sch.skills[0].dispatch_s() - 0.01
+    while t < t_rethrow + 2.0:
+        lines.extend(x.tick(t))
+        t += 0.025
+    launch_rows = [e for e in experiences
+                   if e.t_abs_s == pytest.approx(t_throw)]
+    assert launch_rows == []
+    assert any('OUTCOME' in ln and 'no row' in ln for ln in lines)

@@ -368,3 +368,88 @@ def test_memory_command_delegates_to_learner(tmp_path):
     u_direct = lr.command(x, y_d, *m.arrays(), cfg)
     u_via_memory = m.command(x, y_d, cfg)
     np.testing.assert_array_equal(u_direct, u_via_memory)
+
+
+# ── the physical flight band (2026-09-16) ──────────────────────────────────
+#
+# A row whose observed flight is not a near-unit multiple of the COMMANDED
+# one is not a row about its own throw — it is the next flight's landing,
+# captured because the executor kept refreshing the observation after the
+# ball had been caught and re-thrown. The executor freezes the observation at
+# the crossing; this band is the belt-and-braces guard one level down, on
+# BOTH of `Memory`'s paths, so a contaminated file already on disk (the ten
+# `temp/learn/*-20260916` memories) cannot be read back into a learner.
+
+
+def _band_exp(u_flight, y_flight):
+    return mem.Experience(x=np.zeros(4), u=np.array([0.0, 0.0, u_flight]),
+                           y=np.array([0.0, 0.0, y_flight]), t_abs_s=1.0,
+                           ball_id=0, caught=True)
+
+
+@pytest.mark.parametrize('u_flight,y_flight,want', [
+    (0.8569, 0.8569, True),          # exact
+    (0.8569, 1.0597, True),          # the measured 25 %-fast plant (armA-090)
+    (0.6128, 0.8927, True),          # the largest genuine ratio seen, 1.456
+    (0.8569, 2.2317, False),         # armB-090 row 1 — the next flight
+    # armB-090 row 3, 1.348x: INSIDE the band, and deliberately so. Its
+    # 1.1554 s is the BEAT, not a flight: a ball sitting in the cup has its
+    # "landing" predicted at ~now, so this contaminant's ratio is
+    # beat/commanded and can sit arbitrarily close to 1. No ratio band can
+    # separate that class — the executor's freeze at the crossing does, by
+    # refusing any estimate sampled after the ball has landed.
+    (0.8569, 1.1554, True),
+    (0.8569, 0.40, False),           # under the band: a failed release
+    (0.8569, 1.6 * 0.8569, True),    # the closed edges
+    (0.8569, 0.5 * 0.8569, True),
+])
+def test_flight_in_band(u_flight, y_flight, want):
+    assert mem.flight_in_band(u_flight, y_flight) is want
+
+
+def test_flight_in_band_without_a_commanded_flight_admits():
+    """No commanded flight, no band: the guard's whole evidence is the RATIO,
+    and with nothing to scale there is no evidence either way."""
+    assert mem.flight_in_band(0.0, 5.0) is True
+    assert mem.flight_in_band(float('nan'), 5.0) is True
+    assert mem.flight_in_band(0.8569, float('nan')) is False
+
+
+def test_append_refuses_a_row_outside_the_band(tmp_path):
+    path = str(tmp_path / 'memory.csv')
+    m = mem.Memory(path)
+    with pytest.raises(ValueError, match='another flight'):
+        m.append(_band_exp(0.8569, 2.2317))
+    assert len(m) == 0
+    m.append(_band_exp(0.8569, 1.0597))
+    assert len(m) == 1
+
+
+def test_a_contaminated_row_is_dropped_on_load(tmp_path, caplog):
+    """The quarantine that survives a restart: armB-090's real first three
+    rows (2026-09-16) plus one genuine 1.237x row."""
+    path = tmp_path / 'memory.csv'
+    rows = [
+        ','.join(mem._HEADER),
+        '-0.05,0,0,0,0,0,0.85688058689637592,-0.0031,0.0783,2.2316610813140869,'
+        '1789540417.3557081,0,True',
+        '-0.05,0,0,0,0,0,0.85688058689637592,-0.0098,0.0967,2.2309691905975342,'
+        '1789540418.5125885,0,True',
+        '-0.05,0,0,0,0,0,0.85688058689637592,-0.0170,0.0897,1.155447244644165,'
+        '1789540419.6694691,0,True',
+        '-0.05,0,0,0,0,0,0.85688058689637592,-0.0170,0.0897,1.0597198009490967,'
+        '1789540419.6694691,0,True',
+    ]
+    path.write_text('\n'.join(rows) + '\n')
+    with caplog.at_level(logging.WARNING):
+        m = mem.Memory(str(path))
+    # The two next-flight rows (2.60x commanded) are dropped. The 1.1554 s row
+    # is the BEAT-shaped contaminant at 1.348x — inside the physical band by
+    # construction (see `test_flight_in_band`), so it survives the load: the
+    # executor's freeze is what stops it being written in the first place.
+    assert len(m) == 2
+    _X, _U, Y = m.arrays()
+    assert Y[0][2] == pytest.approx(1.155447244644165)
+    assert Y[1][2] == pytest.approx(1.0597198009490967)
+    dropped = [r for r in caplog.records if 'another flight' in r.getMessage()]
+    assert len(dropped) == 2

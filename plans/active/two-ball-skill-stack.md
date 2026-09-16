@@ -338,6 +338,31 @@ empty cup on 4 of 5 real catches — see § R3's dated paragraph).
 Sitting preconditions: the cone rigid body disabled, the Ball Butler
 reflectors masked.
 
+**The landing observation FREEZES at the crossing (2026-09-16, same day).**
+The window above is also the window the row's LANDING was refreshed in, and at
+the chained operating point it reached past the ball's NEXT release: the 16:22
+sitting wrote observed flights of 2.2317 / 2.2310 / 1.1554 s for an 0.8569 s
+command (`armB-090` attempt 1), the learner obeyed them down to a 0.686 s
+command and the operator saw "very low throws". A landing estimate is now
+admitted by one gate (`executor._consider_landing`) only while the ball is
+still in the air — it must post-date the release, be sampled strictly BEFORE
+the crossing it predicts (`OUTCOME_GUARD_S`, no longer an `abs()` test), lie
+inside `memory.FLIGHT_RATIO_BAND` = (0.5, 1.6) × the COMMANDED flight, and
+arrive before `min(t_sched, t_obs)`; the last survivor stands and nothing after
+the landing can replace it. `finalise_at` is additionally bounded to
+`t_next_release − OUTCOME_NEXT_RELEASE_EPS_S` (0.010 s, `_next_release`). The
+band is one definition in `memory.py` and is enforced on `Memory` load and
+append as well; a row with no admissible landing is still no row. `caught=False`
+rows continue to feed the memory (plan § 2.5 step 6 / paper § 2A — the command
+learner models where the ball LANDED, not whether it was kept). Replay of both
+2026-09-16 sittings (`tools/probes/outcome_landing_replay.py`): of 43 written
+rows the new rule refuses 21 and admits 22 at y/u = 0.974–1.528, against
+0.979–2.985 as written. ⚠ open: the tracker's in-flight estimate ran ~one beat
+late on every chained throw but the last, so a chained sitting now yields one
+row per attempt until that is diagnosed. Entry:
+[2026-09-16-outcome-landing-frozen-at-the-crossing](../../logbook/2026-09-16-outcome-landing-frozen-at-the-crossing.md).
+
+
 **Catch aim source (owner decision 2026-09-15): the catch does NOT depend on
 the tracker.** At the 2026-09-15 sitting all 13 self-tosses ended
 `NO_LANDING` — mocap never produced a marker for the flying ball, so the

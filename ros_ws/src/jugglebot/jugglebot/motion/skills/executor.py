@@ -34,7 +34,8 @@ from jugglebot import ball_possession as bp
 from jugglebot.motion import unified_cycle as uc
 from jugglebot.motion.skills import admissible as adm
 from jugglebot.motion.skills import segments as sg
-from jugglebot.motion.skills.memory import Experience
+from jugglebot.motion.skills.memory import (FLIGHT_RATIO_BAND, Experience,
+                                            flight_in_band)
 from jugglebot.motion.skills.schedule import (HANDOFF_LEAD_KNOTS,
                                                HANDOFF_LEAD_S, LEAD_KNOTS,
                                                LEAD_S, MIN_WINDOW_KNOTS,
@@ -205,6 +206,24 @@ CAUGHT_LEAD_S = 0.10
 #: has.
 CAUGHT_LAND_DEFER_CAP_S = 0.35
 
+#: How far BEFORE this ball's NEXT scheduled release a row's verdict window
+#: must have closed.
+#:
+#: A chained self-toss catches and RE-THROWS the same physical ball, and the
+#: tracker keeps one continuous track across both flights (2026-09-15: all
+#: markers, gated to the announced ball), so from the next release onwards the
+#: tracker's estimate for this ball id is the NEXT flight's landing. A window
+#: that reaches past that instant samples the wrong flight -- the 2026-09-16
+#: contamination, where three ``armB-090`` rows recorded 2.23/2.23/1.16 s
+#: flights for a 0.857 s command. The freeze in :meth:`SkillExecutor.
+#: _consider_landing` is the primary fix; bounding the window is the
+#: structural one: the row simply cannot still be open when the ball leaves
+#: again. 0.010 s is a quarter of one 40 Hz tick -- just enough that the
+#: closing tick is strictly before the release, since the only thing the
+#: window still needs past the landing is the SEATED latch, and after the
+#: re-release the cup is empty by construction.
+OUTCOME_NEXT_RELEASE_EPS_S = 0.010
+
 #: The observer's possession-evidence value this layer treats as "caught".
 #: ``ball_possession.py`` is pure Python (stdlib only -- no ROS2, no config
 #: imports, verified 2026-09-13), so this is the module's own constant,
@@ -370,6 +389,14 @@ class _PendingOutcome:
     stands even if a later tick goes blind, and the ball leaving again for its
     NEXT throw must not retract a catch that happened.
 
+    **``best_landing`` is FROZEN at the crossing** (2026-09-16): it is the
+    tracker estimate taken closest to, but before, this flight's landing, and
+    nothing sampled after the ball has landed can replace it -- see
+    :meth:`SkillExecutor._consider_landing`. The window itself closes before
+    this ball's NEXT scheduled release (:attr:`t_next_release_s`), and a
+    finalised row whose observed flight is not within
+    ``memory.FLIGHT_RATIO_BAND`` of the commanded one is DROPPED.
+
     ``release_confirmed`` is the R3 ladder's own bookkeeping (plan § carried
     R3 note / ``ABORTED_NO_RELEASE``): confirmed only by evidence AT OR AFTER
     :attr:`t_release_s` -- a possession EMPTY reading that follows a SEATED
@@ -394,6 +421,26 @@ class _PendingOutcome:
     t_land_scheduled_s: float
     target_xy_mm: np.ndarray
     best_landing: Optional[Landing] = None
+    #: ``t_land_abs_s - t_sample`` of :attr:`best_landing` -- how far ahead of
+    #: its OWN predicted crossing the accepted estimate was taken. Recorded
+    #: for diagnosis (a row whose landing was seen from far away is a weaker
+    #: row); it does NOT gate acceptance -- see
+    #: :meth:`SkillExecutor._consider_landing` on why preferring the smallest
+    #: lead was tried and rejected.
+    best_lead_s: Optional[float] = None
+    #: The implied flight of the last estimate REFUSED for being outside
+    #: ``memory.FLIGHT_RATIO_BAND``, and how many were refused -- carried only
+    #: so a dropped row can name its reason (``no row: observed flight ...``).
+    rejected_flight_s: Optional[float] = None
+    #: Why that estimate was refused, as the phrase the dropped row prints.
+    rejected_reason: str = ''
+    n_rejected: int = 0
+    #: This ball's NEXT scheduled release instant, or ``None`` when the
+    #: schedule never throws it again. Filled at registration from the
+    #: schedule (:func:`_next_release`) so :meth:`SkillExecutor.
+    #: _outcome_window` stays a pure function of the row, and bounds
+    #: ``finalise_at`` by :data:`OUTCOME_NEXT_RELEASE_EPS_S`.
+    t_next_release_s: Optional[float] = None
     release_confirmed: bool = False
     seated_seen: bool = False
     #: Latched True by :meth:`SkillExecutor._advance_outcomes` on the first
@@ -462,6 +509,28 @@ def _previous_release(schedule: Schedule, idx: int, ball_id: int):
         if sk.kind == CATCH and sk.then_throw is not None:
             tt = sk.then_throw
             return sk.site, float(tt.t_release_abs_s), tt.y_d, tt.target
+    return None
+
+
+def _next_release(schedule: Schedule, idx: int,
+                  ball_id: int) -> Optional[float]:
+    """The absolute instant ``ball_id`` is next released AFTER
+    ``schedule.skills[idx]``, or ``None`` when this schedule never throws it
+    again (the last throw of an attempt, or a ball only caught from here on).
+
+    The mirror of :func:`_previous_release`, and the bound
+    :meth:`SkillExecutor._outcome_window` closes a verdict window with: from
+    that instant the ball is in its NEXT flight, so every observation of it
+    belongs to the next row, not this one.
+    """
+    for j in range(idx + 1, len(schedule.skills)):
+        sk = schedule.skills[j]
+        if sk.ball_id != ball_id:
+            continue
+        if sk.kind == THROW:
+            return float(sk.t_abs_s)
+        if sk.kind == CATCH and sk.then_throw is not None:
+            return float(sk.then_throw.t_release_abs_s)
     return None
 
 
@@ -1375,7 +1444,8 @@ class SkillExecutor:
         self._pending_outcomes.append(_PendingOutcome(
             ball_id=skill.ball_id, x=x, u=u, t_release_s=t_release,
             t_land_scheduled_s=t_release + u_flight,
-            target_xy_mm=target_xy_mm))
+            target_xy_mm=target_xy_mm,
+            t_next_release_s=_next_release(self.schedule, idx, skill.ball_id)))
 
     def _advance_release_evidence(self, t_abs_s: float) -> List[str]:
         """Confirm every accepted release actually left the hand (PORT@R3,
@@ -1479,37 +1549,187 @@ class SkillExecutor:
         # `_advance_release_evidence` guards for the release evidence.
         floor = float(pend.t_release_s)
         if pend.best_landing is None:
-            return (max(floor, t_sched - CAUGHT_LEAD_S),
-                    t_sched + CAUGHT_WINDOW_S)
+            t_open = max(floor,
+                         SkillExecutor._landing_instant(pend) - CAUGHT_LEAD_S)
+            return (t_open, SkillExecutor._bound_by_next_release(
+                pend, t_sched + CAUGHT_WINDOW_S, t_open))
         t_obs = float(pend.best_landing.t_land_abs_s)
         anchor = max(t_sched, min(t_obs, t_sched + CAUGHT_LAND_DEFER_CAP_S))
-        return (max(floor, SkillExecutor._landing_instant(pend) - CAUGHT_LEAD_S),
-                anchor + CAUGHT_WINDOW_S)
+        t_open = max(floor, SkillExecutor._landing_instant(pend) - CAUGHT_LEAD_S)
+        return (t_open, SkillExecutor._bound_by_next_release(
+            pend, anchor + CAUGHT_WINDOW_S, t_open))
+
+    @staticmethod
+    def _next_release_bound(pend: _PendingOutcome) -> Optional[float]:
+        """The instant this row must be finished with the ball by —
+        ``t_next_release_s - OUTCOME_NEXT_RELEASE_EPS_S``, or ``None`` when
+        the schedule never throws it again. The ONE definition of that margin,
+        shared by :meth:`_landing_instant` (the freeze),
+        :meth:`_consider_landing` (test 4) and
+        :meth:`_bound_by_next_release` (the verdict close)."""
+        if pend.t_next_release_s is None:
+            return None
+        return float(pend.t_next_release_s) - OUTCOME_NEXT_RELEASE_EPS_S
+
+    @staticmethod
+    def _bound_by_next_release(pend: _PendingOutcome, finalise_at: float,
+                               t_open: float) -> float:
+        """``finalise_at``, pulled back so the window closes BEFORE this
+        ball's next scheduled release (:data:`OUTCOME_NEXT_RELEASE_EPS_S`).
+
+        The window's only business past the landing is the SEATED latch, and
+        the ball is physically back in the cup for that whole interval -- so
+        closing at the re-release costs nothing a catch needs, while a window
+        that reached past it would be sampling a ball in its NEXT flight (the
+        2026-09-16 contamination, see :data:`OUTCOME_NEXT_RELEASE_EPS_S`).
+
+        Never pulled back before ``t_open``: a schedule whose re-release
+        crowds the landing would otherwise invert the window and finalise a
+        row before the ball had arrived. The bound is skipped entirely when
+        the schedule never throws this ball again.
+        """
+        bound = SkillExecutor._next_release_bound(pend)
+        if bound is None:
+            return finalise_at
+        return max(t_open, min(finalise_at, bound))
 
     @staticmethod
     def _landing_instant(pend: _PendingOutcome) -> float:
-        """The single instant :meth:`_outcome_window` treats as ``pend``'s
-        expected landing -- the earlier of the scheduled and observed
-        crossings, or the schedule alone before a landing has been observed.
+        """The single instant this row treats as ``pend``'s expected landing
+        -- the EARLIEST of the scheduled crossing, the best observed crossing,
+        and this ball's next release less
+        :data:`OUTCOME_NEXT_RELEASE_EPS_S`.
 
-        Used both to anchor ``t_open`` above and, in :meth:`_advance_outcomes`,
-        to decide which of several open rows a single SEATED sample belongs to.
+        Three uses, deliberately ONE instant: it anchors ``t_open``
+        (:meth:`_outcome_window`), it is the FREEZE instant
+        (:meth:`_consider_landing`), and it decides which of several open rows
+        a single SEATED sample belongs to (:meth:`_advance_outcomes`).
+
+        The next-release term matters on a CROWDED schedule -- one whose
+        re-release falls BEFORE the scheduled landing (a late-arriving plant,
+        or a beat shorter than the commanded flight). Without it the freeze
+        and the window bound would disagree: :meth:`_bound_by_next_release`
+        would close the verdict at the re-release while the freeze still sat
+        at the later scheduled landing, leaving a gap in which the NEXT
+        flight's estimate was still admissible. Both now stop at the same
+        instant, on the same margin.
         """
-        t_sched = float(pend.t_land_scheduled_s)
-        if pend.best_landing is None:
-            return t_sched
-        return min(t_sched, float(pend.best_landing.t_land_abs_s))
+        cands = [float(pend.t_land_scheduled_s)]
+        if pend.best_landing is not None:
+            cands.append(float(pend.best_landing.t_land_abs_s))
+        bound = SkillExecutor._next_release_bound(pend)
+        if bound is not None:
+            cands.append(bound)
+        return min(cands)
+
+    @staticmethod
+    def _consider_landing(pend: _PendingOutcome, landing: Optional[Landing],
+                          t_abs_s: float) -> bool:
+        """Offer ``landing``, sampled at ``t_abs_s``, as ``pend``'s outcome;
+        return whether it was accepted.
+
+        **The observation FREEZES at the crossing** (2026-09-16). Four tests,
+        every one about "is this estimate about THIS flight?":
+
+        1. ``t_land_abs_s > t_release_s`` — a landing from the PREVIOUS flight,
+           still cached by a tracker whose correlation has not re-latched, is
+           not this release's outcome (:meth:`_advance_release_evidence` guards
+           the same class for the release evidence).
+        2. The sample is taken at least :data:`OUTCOME_GUARD_S` BEFORE the
+           crossing it is itself predicting. This was ``abs(...) >
+           OUTCOME_GUARD_S``, which also admitted samples taken well AFTER
+           their own predicted crossing — i.e. of a ball that has already
+           landed, which is where a re-thrown ball's estimate lives.
+        3. The ball has not landed yet: ``t_abs_s`` is before
+           :meth:`_landing_instant` (the earliest of the scheduled crossing,
+           the best-so-far observed one, and this ball's next release less
+           :data:`OUTCOME_NEXT_RELEASE_EPS_S`). Past that instant the row is
+           FROZEN — no later tick can move it. This is the structural fix for
+           the contamination: a chained self-toss catches and re-throws the
+           SAME ball on ONE continuous tracker track, so from the catch
+           onwards every estimate for that id is about the NEXT flight, and
+           the old rule (last estimate before finalise wins) wrote those —
+           2.23 s and 1.16 s flights for a 0.857 s command, ``armB-090``
+           attempt 1, 2026-09-16.
+        4. The estimate's own crossing is BEFORE this ball's next scheduled
+           release (less :data:`OUTCOME_NEXT_RELEASE_EPS_S`). A landing at or
+           after the instant the ball leaves the cup again belongs to the next
+           flight no matter which tick it was sampled on — the freeze (test 3)
+           only rules out samples taken after the landing, and on a CROWDED
+           schedule (re-release before the scheduled landing) an in-flight
+           sample can still point past it. Both tests stop at the same
+           instant, on the same margin (:meth:`_landing_instant`,
+           :meth:`_bound_by_next_release`).
+        5. The implied flight ``t_land_abs_s - t_release_s`` is inside
+           ``memory.FLIGHT_RATIO_BAND`` x the COMMANDED flight. An estimate
+           outside it is not about this throw — 2026-09-16's rows recorded
+           2.23 s for a 0.857 s command. Testing this at ADMISSION, and not
+           only at finalise, is what keeps a garbage estimate from moving test
+           3's freeze instant: an accepted "lands 30 ms from now" would
+           otherwise close the row 30 ms after the release, which is exactly
+           how three genuine rows became 0.02-0.05 s flights in the first
+           replay of this fix.
+
+        Among the estimates that survive 1–5 the LAST one wins — the most
+        mature view of a flight still in progress. A "prefer the smallest
+        lead" rule was tried first and REJECTED on the bag replay
+        (``tools/probes/outcome_landing_replay.py``, 2026-09-16): the tracker's
+        first estimates just after release predict a crossing almost
+        immediately (the ball is barely above the plane and slow), so the
+        smallest lead in a flight is usually that opening garbage — it turned
+        three genuine rows into 0.02–0.05 s flights. What a late wild estimate
+        needs is a PHYSICAL test, not a vantage-point one, and that is
+        ``memory.FLIGHT_RATIO_BAND`` at finalise.
+
+        The row is one-way in the sense that matters: once it has a landing
+        it never loses one, and after the crossing it never gains a different
+        one — so the verdict window :meth:`_outcome_window` derives from it
+        stops moving at the landing instead of following the ball into its
+        next flight.
+        """
+        if landing is None:
+            return False
+        t_land = float(landing.t_land_abs_s)
+        if t_land <= pend.t_release_s:
+            return False                       # test 1: the previous flight
+        if t_land - t_abs_s < OUTCOME_GUARD_S:
+            return False                       # test 2: at/after its crossing
+        if t_abs_s >= SkillExecutor._landing_instant(pend):
+            return False                       # test 3: FROZEN at the crossing
+        flight = t_land - pend.t_release_s
+        u_flight = float(pend.u[2])
+        bound = SkillExecutor._next_release_bound(pend)
+        if bound is not None and t_land >= bound:
+            # test 4: a landing at or after this ball's NEXT release is the
+            # next flight's, whatever the tick it was sampled on.
+            pend.rejected_flight_s = flight
+            pend.rejected_reason = ('at or after this ball\'s next release '
+                                     '(%.3f s after this one)'
+                                     % (bound - pend.t_release_s,))
+            pend.n_rejected += 1
+            return False
+        if not flight_in_band(u_flight, flight):
+            pend.rejected_flight_s = flight    # test 5: not a physical flight
+            pend.rejected_reason = ('outside [%.3f, %.3f] of commanded %.3f s'
+                                     % (FLIGHT_RATIO_BAND[0] * u_flight,
+                                        FLIGHT_RATIO_BAND[1] * u_flight,
+                                        u_flight))
+            pend.n_rejected += 1
+            return False
+        pend.best_landing = landing
+        pend.best_lead_s = t_land - t_abs_s
+        return True
 
     def _advance_outcomes(self, t_abs_s: float) -> List[str]:
         """Sample the tracker AND the possession observer for every pending
         outcome, and finalise the ones whose verdict window has closed.
 
-        Only accepts a landing sampled at or after ``t_release_s`` whose own
-        ``t_land_abs_s`` is after ``t_release_s`` -- otherwise a carried
-        throw's row, registered before its own release while the tracker
-        still latches the PREVIOUS flight, can capture that earlier flight's
-        landing as this ball's outcome (see :meth:`_advance_release_evidence`
-        for the same class of hazard).
+        The tracker is only sampled at or after ``t_release_s``, and which
+        estimates count as THIS flight's outcome is
+        :meth:`_consider_landing`'s contract -- in particular the observation
+        FREEZES at the crossing, so a ball re-thrown on the same continuous
+        track cannot overwrite the row it has already earned (the 2026-09-16
+        contamination).
 
         The possession observer is read EVERY tick inside a row's verdict
         window (:meth:`_outcome_window`) and
@@ -1531,12 +1751,8 @@ class SkillExecutor:
         remaining = []
         for pend in self._pending_outcomes:
             if self.tracker is not None and t_abs_s >= pend.t_release_s:
-                landing = self.tracker(pend.ball_id)
-                if (landing is not None
-                        and float(landing.t_land_abs_s) > pend.t_release_s
-                        and abs(t_abs_s - float(landing.t_land_abs_s))
-                        > OUTCOME_GUARD_S):
-                    pend.best_landing = landing
+                self._consider_landing(pend, self.tracker(pend.ball_id),
+                                       t_abs_s)
 
         # Read the cup BEFORE the finalise test, so the closing tick -- which
         # is inside the window by construction -- still counts. One read
@@ -1569,7 +1785,13 @@ class SkillExecutor:
         """Build and hand off ``pend``'s :class:`~jugglebot.motion.skills.
         memory.Experience`, or drop it — a blind flight teaches the memory
         nothing (plan § 2.5 step 6)."""
+        u_flight = float(pend.u[2])
         if pend.best_landing is None:
+            if pend.rejected_flight_s is not None:
+                return ['%.3f OUTCOME ball %d: no row: observed flight '
+                        '%.3f s %s (%d estimate(s) refused)'
+                        % (finalise_at, pend.ball_id, pend.rejected_flight_s,
+                           pend.rejected_reason, pend.n_rejected)]
             return ['%.3f OUTCOME ball %d: no landing estimate was ever '
                     'observed — no row' % (finalise_at, pend.ball_id)]
         flight_obs_s = float(pend.best_landing.t_land_abs_s) - pend.t_release_s
@@ -1577,6 +1799,18 @@ class SkillExecutor:
             return ['%.3f OUTCOME ball %d: observed flight %.3f s <= 0 -- '
                     'landing predates this release, no row'
                     % (finalise_at, pend.ball_id, flight_obs_s)]
+        # The PHYSICAL band (``memory.FLIGHT_RATIO_BAND``): an observed flight
+        # that is not a multiple near 1 of the commanded one is not an
+        # observation of this throw at all -- it is the next flight's landing,
+        # or a diverged filter. Belt and braces with the freeze in
+        # `_consider_landing`, and the last line of defence before the row
+        # reaches the learner's memory (which refuses it again on append).
+        if not flight_in_band(u_flight, flight_obs_s):
+            return ['%.3f OUTCOME ball %d: no row: observed flight %.3f s '
+                    'outside [%.3f, %.3f] of commanded %.3f s'
+                    % (finalise_at, pend.ball_id, flight_obs_s,
+                       FLIGHT_RATIO_BAND[0] * u_flight,
+                       FLIGHT_RATIO_BAND[1] * u_flight, u_flight)]
         landing_xy_m = ((np.asarray(pend.best_landing.pos_mm, dtype=float)[:2]
                         - pend.target_xy_mm) / 1000.0)
         y = np.array([landing_xy_m[0], landing_xy_m[1], flight_obs_s])

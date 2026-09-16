@@ -234,6 +234,18 @@ def test_stop_keeps_ticking_until_a_pending_flight_finalises_then_appends_its_ro
                  x=-50.0, y=0.0, z=830.0, vz=-2500.0,
                  sec=int(t_land), nanosec=int((t_land % 1.0) * 1e9))]))
 
+        # The outcome observation FREEZES at the crossing (2026-09-16), so the
+        # tracker has to be sampled while the ball is still in the air — which
+        # the live 40 Hz tick loop does dozens of times per flight. This
+        # harness's only remaining tick is AFTER the landing, and an extra
+        # in-flight tick here would dispatch this ball's CATCH (re-announcing
+        # it, which clears the tracker correlation, and registering a second
+        # pending row) — neither of which this test is about. So feed the one
+        # in-flight sample the tick loop would have taken.
+        node._executor._consider_landing(pend, node._tracker(pend.ball_id),
+                                         pend.t_release_s + 0.01)
+        assert pend.best_landing is not None
+
         resp = node._svc_stop(Trigger.Request(), Trigger.Response())
         assert resp.success is True
         assert node._executor is not None          # still finalising
@@ -652,7 +664,7 @@ def _freshen(node, *, mocap=True, levelled=True, in_traj=True, hand_fresh=True,
     if hand_fresh:
         node._on_hand_telemetry(HandTelemetryMessage(
             pos_meas=pos_meas, pos_cmd=pos_cmd,
-            ball_held_raw=seated, ball_held_valid=True))
+            ball_held=seated, ball_held_raw=seated, ball_held_valid=True))
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -667,6 +679,27 @@ def test_observations_are_all_false_before_anything_has_arrived():
     assert obs.levelled is False
     assert obs.in_trajectory_mode is False
     assert obs.ball_evidence == ball_possession.EVIDENCE_UNKNOWN
+
+
+def test_the_ladder_reads_the_debounced_bit_and_the_observer_the_raw_one():
+    """2026-09-16: two of the sitting's three REJECTED_NO_BALL refusals were a
+    single raw-sample carry-flicker during the post-hold park motion while the
+    debounced bit stayed True. The ladder's SEATED precondition is a STATE
+    question (debounced); release/catch edges stay on the raw bit (the debounce
+    lags a departing ball by ~240 ms)."""
+    node, _client = _node_with_client()
+    _freshen(node)
+    node._on_hand_telemetry(HandTelemetryMessage(
+        ball_held=True, ball_held_raw=False, ball_held_valid=True))
+    obs = node._observations(0.0)
+    assert obs.ball_evidence == ball_possession.EVIDENCE_SEATED
+    assert node._ball_evidence(0, 0.0) == ball_possession.EVIDENCE_EMPTY
+    node._on_hand_telemetry(HandTelemetryMessage(
+        ball_held=False, ball_held_raw=True, ball_held_valid=True))
+    assert node._observations(0.0).ball_evidence == ball_possession.EVIDENCE_EMPTY
+    node._on_hand_telemetry(HandTelemetryMessage(
+        ball_held=True, ball_held_raw=True, ball_held_valid=False))
+    assert node._observations(0.0).ball_evidence == ball_possession.EVIDENCE_UNKNOWN
 
 
 def test_observations_report_true_once_everything_is_fresh_and_levelled():
@@ -1164,3 +1197,31 @@ def test_hand_telemetry_feeds_the_launch_ratio_the_executor_asks_for():
             vel_ff_cmd=cmd, vel_meas=cmd * 1.086, ball_held_valid=False))
     assert len(node._hand_launch) == n
     assert node._launch_ratio(0, t_release) == pytest.approx(1.086, abs=1e-6)
+
+
+def test_a_refused_memory_row_is_logged_and_never_raises():
+    """`Memory.append` refuses a row outside `FLIGHT_RATIO_BAND` (2026-09-16).
+    The executor drops such a row first, so this is the belt-and-braces path —
+    and it runs inside the tick loop, where an exception would surface as an
+    executor fault and end an attempt over bookkeeping."""
+    import numpy as np
+    from jugglebot.motion.skills.memory import Experience
+
+    node, _client = _node_with_client()
+    errors = []
+    node.get_logger().error = errors.append
+
+    class _RefusingMemory:
+        def append(self, _exp):
+            raise ValueError('refusing a row whose observed flight 2.2317 s '
+                             'is outside [0.428, 1.371] of the commanded '
+                             '0.8569 s')
+
+    on_experience = node._bind_on_experience(_RefusingMemory())
+    exp = Experience(x=np.zeros(4), u=np.array([0.0, 0.0, 0.8569]),
+                     y=np.array([0.0, 0.0, 2.2317]), t_abs_s=1.0, ball_id=0,
+                     caught=True)
+    on_experience(exp)                       # must not raise
+    assert len(errors) == 1
+    assert 'memory row REFUSED (not appended)' in errors[0]
+    assert '2.2317' in errors[0]

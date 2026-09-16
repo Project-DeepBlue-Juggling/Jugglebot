@@ -20,6 +20,15 @@ files_changed:
   - plans/active/two-ball-skill-stack.md
 ---
 
+## Superseded in part (2026-09-16, same day)
+
+Defect 1's widened verdict window stands, but the window it widened was also
+the row's LANDING-observation window, and at the chained operating point it
+reached past the ball's next release — the learner was then taught the next
+flight (2.23 s flights for an 0.857 s command). The landing observation now
+freezes at the crossing and the window is bounded by the next release:
+[2026-09-16-outcome-landing-frozen-at-the-crossing](2026-09-16-outcome-landing-frozen-at-the-crossing.md).
+
 ## What / Why
 
 Three defects from the 2026-09-16 R3 sitting (log

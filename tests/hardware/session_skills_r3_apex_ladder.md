@@ -168,6 +168,7 @@ REST, and the attempt is stopped from here if anything below is wrong —
 
 | # | Step | Expect |
 |---|---|---|
+| 16b | **Quarantine the 2026-09-16 memories BEFORE the first rung** (once per box): read `temp/learn/README_QUARANTINE_20260916.md` (in the `~/Desktop/Jugglebot-skills` worktree — `temp/` is per-checkout) and run the `mv` it names, from that directory. | The ten `temp/learn/arm[AB]-0*0-20260916` directories move under `temp/learn/_quarantine_20260916/`. 21 of their 43 rows are the pre-fix contamination (observed flights 2.2–3.0x commanded); `Memory._load` now drops out-of-band rows, but the survivors were learned against contaminated neighbours. Re-using one of those `plant_id`s would otherwise reload them. A rung whose `plant_id` directory is absent starts COLD (identity prior), which is what we want after the fix. |
 | 17 | `ros2 param set /skill_node apex_m 0.5`, `... dwell_s 2.0` (temporary — long enough to read diagnostics twice during the REST), `... plant_id ffcheck-$(date +%Y%m%d)` (a throwaway id, not a ladder rung) | Set for this check only. |
 | 18 | `ros2 service call skills/check std_srvs/srv/Trigger` | `ladder OK` and `box OK` naming a `('P1', 'P1')` band containing 0.5 m. |
 | 19 | Seat a ball; `ros2 service call skills/start_self_toss std_srvs/srv/Trigger` | Accepted — the opening REST installs and starts streaming immediately. |
