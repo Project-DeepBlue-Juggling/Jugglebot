@@ -130,8 +130,11 @@ KIND_LAUNCH, KIND_STEADY, KIND_LANDING, KIND_SETTLE = 0, 1, 2, 3
 #: ``temp/probes/skills_sizing_frontier2.md``. Re-pointed 2026-09-12
 #: (skill-stack R2 Unit E) from ``sim/cycle_gate.py`` / ``sim/unified_gate.py``
 #: (both deleted the same rung, superseded FSM/unified-cycle stack) — the
-#: shipped launch defaults are 1000 / 5000 / 30000, so this is a jerk RAISE
-#: and a velocity REDUCTION.
+#: shipped launch defaults were 1000 / 5000 / 30000 through 2026-09-15;
+#: since 2026-09-16 (owner decision, R3 apex ladder) the shipped launch
+#: defaults are 300 / 5000 / 150000 — velocity now MATCHES this bench's
+#: session point and jerk is still a RAISE (150000 -> 200000) rather than
+#: the larger jerk raise + velocity reduction this comment used to describe.
 SESSION_LEG_VEL_MMPS = 300.0
 SESSION_LEG_ACC_MMPS2 = 5000.0
 SESSION_LEG_JERK_MMPS3 = 200000.0

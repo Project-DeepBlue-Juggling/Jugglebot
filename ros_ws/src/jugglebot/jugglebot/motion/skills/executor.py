@@ -875,6 +875,7 @@ class SkillExecutor:
                  resend_pos_tol_mm: float = 1.0,
                  resend_t_tol_s: float = 0.002,
                  learner=None, boxes=None,
+                 lateral_authority_m: Optional[float] = None,
                  observer: Optional[Callable[[int, float], str]] = None,
                  on_experience: Optional[Callable[[Experience], None]] = None,
                  observations: Optional[Callable[[float], Observations]] = None):
@@ -895,6 +896,16 @@ class SkillExecutor:
         self.resend_t_tol_s = float(resend_t_tol_s)
         self.learner = learner
         self.boxes = boxes
+        #: How far (m, per axis) the learner may move the commanded landing
+        #: AWAY from the schedule's desired offset ``y_d``. ``None`` = the
+        #: swept box alone bounds it. ``0.0`` (the live default, owner
+        #: 2026-09-16) pins the lateral command to ``y_d`` and lets the learner
+        #: correct FLIGHT only: a 4 mm lateral aim command made the banking
+        #: step saturate to its 12 deg clamp during the pre-catch dive (leg
+        #: jerk 137-161 k against 150 k, the 0.9 m 'wobble') -- sub-cm lateral
+        #: authority is the planner's open defect, not the learner's to spend.
+        self.lateral_authority_m = (None if lateral_authority_m is None
+                                    else float(lateral_authority_m))
         self.observer = observer
         self.on_experience = on_experience
         self.observations = observations
@@ -995,6 +1006,10 @@ class SkillExecutor:
                     '%r (target %r): %s' % (site.name, target.name, exc)
                 ) from exc
             u_dy, u_flight = u[:2].copy(), float(u[2])
+            if self.lateral_authority_m is not None:
+                a = abs(self.lateral_authority_m)
+                u_dy = np.asarray(dy, dtype=float) + np.clip(
+                    u_dy - np.asarray(dy, dtype=float), -a, a)
         if box is not None:
             try:
                 u_dy, u_flight = adm.clip((u_dy, u_flight), box)

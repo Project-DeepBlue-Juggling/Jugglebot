@@ -213,7 +213,7 @@ than an artefact of the sim tracker's reset timing: `_valid_tracked_landing`
 only if its `t_land` is after that ball's previous release instant. On
 hardware this staleness class is not exposed today, because
 `skill_node._maybe_announce` replaces `_correlation[ball]` on every carried
-release, so a stale correlation naturally can't answer — but the guard is
+release, so a stale correlation naturally can't answer — *(superseded 2026-09-16: that side effect was the contamination path and is gone; correlation is per release now, see `2026-09-16-tracker-correlation-follows-the-flight-in-progress.md`)* — but the guard is
 adopted anyway so the executor enforces the invariant once, centrally,
 instead of relying on that node-level side effect.
 

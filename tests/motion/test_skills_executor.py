@@ -1195,6 +1195,33 @@ def test_the_learner_command_replaces_the_throw_target_and_flight(sites):
     assert terminal.flight_s == pytest.approx(0.9)
 
 
+def test_lateral_authority_pins_the_learner_to_the_desired_offset(sites):
+    """Owner 2026-09-16: a 4 mm learner-commanded lateral offset saturated the
+    banking step and put leg jerk over the limit (the 0.9 m 'wobble').  With
+    ``lateral_authority_m=0.0`` the learner may move FLIGHT only; the lateral
+    command is the schedule's own ``y_d``.  A nonzero authority clamps the
+    learner's lateral delta to that band."""
+    p1, _p2 = sites
+    sch = _schedule(sites)
+    inst = _FakeInstaller()
+    learner = _FakeLearner(u=[0.03, -0.02, 0.9])
+    x = ex.SkillExecutor(sch, inst, learner=learner, lateral_authority_m=0.0)
+    x.tick(sch.skills[0].dispatch_s())
+    _kind, terminal, _t, _b = inst.calls[0]
+    y_d = np.asarray(sch.skills[0].y_d[0], dtype=float).reshape(2)
+    want_target = p1.catch_site_mm() + np.array([y_d[0] * 1000.0, y_d[1] * 1000.0, 0.0])
+    assert np.allclose(terminal.target_mm, want_target)
+    assert terminal.flight_s == pytest.approx(0.9)
+    inst2 = _FakeInstaller()
+    x2 = ex.SkillExecutor(_schedule(sites), inst2, learner=_FakeLearner(u=[0.03, -0.02, 0.9]),
+                          lateral_authority_m=0.005)
+    x2.tick(sch.skills[0].dispatch_s())
+    _kind, terminal2, _t, _b = inst2.calls[0]
+    want2 = p1.catch_site_mm() + np.array([(y_d[0] + 0.005) * 1000.0,
+                                           (y_d[1] - 0.005) * 1000.0, 0.0])
+    assert np.allclose(terminal2.target_mm, want2)
+
+
 def test_a_catch_with_throw_computes_u_once_and_a_resend_reuses_it(sites):
     """The command must not change late in a transit (plan § 0): a re-send
     re-aims the CATCH half, but the carried throw's command is whatever the

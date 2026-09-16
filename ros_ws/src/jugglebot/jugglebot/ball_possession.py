@@ -1274,9 +1274,11 @@ def describe(verdict: PossessionVerdict, tol_mm: float) -> Tuple[str, str]:
 #    corpus join (moved verbatim from toss_record.py, 2026-09-13 R3-f1 — the
 #    learning-stack deletion; plans/active/two-ball-skill-stack.md § 4 R3) ──
 #
-# latch_announced_ball, SensorSample, edges, poll_dt_steps_ms/poll_dt_ms_median
-# and label_from_sensor are LIVE: the FSM (reload_coordinator_node) and
-# skill_node both call latch_announced_ball every cycle, and label_from_sensor
+# latch_announced_ball, FlightLatch/advance_flight_latches/flight_in_progress,
+# SensorSample, edges, poll_dt_steps_ms/poll_dt_ms_median
+# and label_from_sensor are LIVE: the FSM (reload_coordinator_node) calls
+# latch_announced_ball every cycle and skill_node drives it through the
+# flight-latch layer (one latch per announced release), and label_from_sensor
 # is the one definition of "caught" for the offline corpus (module docstring
 # below, formerly toss_record.py's). The schema (Field/FIELDS) and join() are
 # kept only so tools/probes/possession_replay.py's corpus join stays callable;
@@ -1920,6 +1922,142 @@ def latch_announced_ball(balls: Iterable[Any], *, robot_name: str,
     if untagged_latch and dest_match is not None:
         return dest_match, False
     return announced_id, untagged_latch
+
+
+# ── The flight in progress (2026-09-16) ───────────────────────────────────────
+#
+# `latch_announced_ball` above answers "which tracker id is OUR announced
+# ball?" for ONE announcement. A chained self-toss asks a harder question: the
+# schedule re-throws the SAME schedule ball every beat, the tracker mints a NEW
+# id per announcement, and the next throw is announced at its DISPATCH — about
+# 1.25 s before its release, i.e. while the PREVIOUS flight of that same
+# schedule ball is still in the air (measured, bag `2026-09-16_16-22-22`:
+# announcement at 1789540418.439 for a release at 1789540419.661, with id 48
+# airborne and id 49 announced-but-unreleased).
+#
+# Keying one latch per SCHEDULE ball id therefore loses the flight in
+# progress twice over: the new announcement resets the latch, and its
+# `preexisting` set — "ids already IN_FLIGHT are phantoms" — excludes the very
+# ball that is flying. The latch then resolves to the NEXT flight's id the
+# instant that id goes IN_FLIGHT, which is BEFORE the current flight's outcome
+# row has closed. That is how the 2026-09-16 sitting's rows came to hold
+# `t_land ≈ release + flight + beat`
+# (`logbook/2026-09-16-tracker-correlation-follows-the-flight-in-progress.md`).
+#
+# The rule that closes the class: **correlate per RELEASE, not per ball, and
+# never read a release that has not happened yet.** One `FlightLatch` per
+# announced release; a latch whose release instant is still in the future is
+# left unlatched (the tracker keeps that ball TO_BE_THROWN until exactly the
+# same instant — `tracking/matcher.py::_check_throw_times`), and the flight in
+# progress is the latch with the LATEST release that has passed.
+
+#: How far before its announced release a latch may already resolve. The
+#: tracker flips TO_BE_THROWN -> IN_FLIGHT on its own clock read of the same
+#: announced `throw_time` (measured skew on 2026-09-16: 3 ms), so a latch must
+#: not refuse the id purely because the two clock reads straddle the instant.
+#: Small against the shortest beat this stack schedules (~1.15 s), so it can
+#: never admit the next flight early.
+RELEASE_LATCH_EPS_S = 0.050
+
+#: How many announced releases to keep per schedule ball. Only the latest
+#: released latch is ever read, plus the still-flying ones it must not steal an
+#: id from; two flights can overlap at most (a catch and its carried throw), so
+#: four is slack. Bounded because `_correlation` lives for the node's life.
+MAX_FLIGHT_LATCHES = 4
+
+
+class FlightLatch(NamedTuple):
+    """One announced release, and the tracker id it has been correlated to.
+
+    ``t_release_s`` is the announcement's own ``throw_time`` (ROS epoch
+    seconds) — the SAME instant the tracker uses to put the ball IN_FLIGHT, so
+    "has this release happened?" is one comparison and not an estimate.
+    ``announced_id`` is None until the latch resolves; ``untagged`` marks a
+    PROVISIONAL latch onto an untagged track (see `latch_announced_ball`);
+    ``preexisting`` are the ids already IN_FLIGHT when this release was
+    announced.
+    """
+    t_release_s: float
+    announced_id: Optional[int] = None
+    untagged: bool = False
+    preexisting: Tuple[int, ...] = ()
+
+
+def advance_flight_latches(balls: Iterable[Any], *, robot_name: str,
+                           latches: Sequence[FlightLatch], now_s: float,
+                           in_flight_status: int,
+                           max_latches: int = MAX_FLIGHT_LATCHES,
+                           ) -> Tuple[FlightLatch, ...]:
+    """Refine every RELEASED latch against one ``/balls`` snapshot. Pure.
+
+    Latches are resolved in release order, and each one excludes the ids its
+    siblings have already claimed: two flights of one schedule ball overlap in
+    ``/balls`` (the caught ball's track outlives the next release), and
+    `latch_announced_ball` would otherwise hand the newer release the older
+    flight's id — it prefers the first destination-tagged candidate it sees.
+
+    A latch whose ``t_release_s`` is still in the future (beyond
+    :data:`RELEASE_LATCH_EPS_S`) is returned untouched: whatever is IN_FLIGHT
+    now belongs to some other release.
+
+    -> the latches, newest ``max_latches`` kept, in release order.
+    """
+    balls = list(balls)
+    ordered = sorted(latches, key=lambda l: float(l.t_release_s))
+    claimed = {int(l.announced_id) for l in ordered
+               if l.announced_id is not None}
+    out: List[FlightLatch] = []
+    for latch in ordered:
+        if (latch.announced_id is None
+                and float(latch.t_release_s) > float(now_s) + RELEASE_LATCH_EPS_S):
+            out.append(latch)
+            continue
+        mine = None if latch.announced_id is None else int(latch.announced_id)
+        exclude = set(int(i) for i in latch.preexisting) | (claimed - {mine})
+        announced_id, untagged = latch_announced_ball(
+            balls, robot_name=robot_name, announced_id=mine,
+            preexisting_ids=exclude, untagged_latch=bool(latch.untagged),
+            in_flight_status=in_flight_status)
+        if announced_id is not None:
+            if mine is not None and int(announced_id) != mine:
+                claimed.discard(mine)
+            claimed.add(int(announced_id))
+            latch = latch._replace(announced_id=int(announced_id),
+                                   untagged=bool(untagged))
+        out.append(latch)
+    return tuple(out[-int(max_latches):]) if max_latches > 0 else tuple(out)
+
+
+def flight_in_progress(balls: Iterable[Any], *,
+                       latches: Sequence[FlightLatch], now_s: float,
+                       in_flight_status: int, confirmed_tracking: int,
+                       ) -> Optional[int]:
+    """The tracker id whose flight is actually in progress, or None. Pure.
+
+    THE canonical read of a correlation: the latch with the latest release that
+    has passed, and only if its id is both IN_FLIGHT and CONFIRMED. Never a
+    latch whose release is still in the future (that ball has not been thrown),
+    and never an EARLIER latch as a fallback — a release only happens once the
+    previous flight of that schedule ball is over, so an earlier latch's
+    landing is a finished flight's, which is the class of contamination this
+    function exists to refuse. "No landing yet" is the honest answer.
+    """
+    released = [l for l in latches
+                if float(l.t_release_s) <= float(now_s) + RELEASE_LATCH_EPS_S]
+    if not released:
+        return None
+    latch = max(released, key=lambda l: float(l.t_release_s))
+    if latch.announced_id is None:
+        return None
+    tracker_id = int(latch.announced_id)
+    ball = next((b for b in balls if int(b.id) == tracker_id), None)
+    if ball is None:
+        return None
+    if int(ball.status) != int(in_flight_status):
+        return None
+    if int(ball.tracking) != int(confirmed_tracking):
+        return None
+    return tracker_id
 
 
 # ── Sensor edges and the label ────────────────────────────────────────────────

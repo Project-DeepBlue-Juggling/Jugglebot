@@ -499,15 +499,20 @@ def test_default_constructed_request_defers_to_shipped_lean_gain():
 
 
 def test_shipped_trajectory_defaults_are_the_s4_working_point():
-    """Tripwire: the S4 working point persisted 2026-07-17 SHIPS — session limits
-    (1000, 5000, 30000) and lean_gain 0.6 (bags 2026-07-16_21-58-59 / _22-06-30;
-    see logbook 2026-07-17 S4-closure entry). Deliberately changing the working
+    """Tripwire: session limits (300, 5000, 150000) and lean_gain 0.6.
+    SUPERSEDES the S4 working point (1000, 5000, 30000) persisted 2026-07-17
+    — the skill-stack working point (owner decision, 2026-09-16, "300/5000/150000
+    are safe enough") replaced it after the R3 apex ladder flew it clean
+    (tests/hardware/session_skills_r3_apex_ladder.md,
+    logbook/2026-09-16-apex-ladder-k07-ab-result.md); lean_gain 0.6 is
+    unchanged from the S4 closure (bags 2026-07-16_21-58-59 / _22-06-30; see
+    logbook 2026-07-17 S4-closure entry). Deliberately changing the working
     point means updating this test — that is the logged act. Also pins the
     GoToPose.srv FIELD default at -1.0 (defer-to-config): without it the YAML
     gain is unreachable by default-constructed requests (the 2026-07-17 lesson)."""
-    assert hw.JB_TRAJ_LEG_VEL_LIMIT_MMPS == pytest.approx(1000.0)
+    assert hw.JB_TRAJ_LEG_VEL_LIMIT_MMPS == pytest.approx(300.0)
     assert hw.JB_TRAJ_LEG_ACC_LIMIT_MMPS2 == pytest.approx(5000.0)
-    assert hw.JB_TRAJ_LEG_JERK_LIMIT_MMPS3 == pytest.approx(30000.0)
+    assert hw.JB_TRAJ_LEG_JERK_LIMIT_MMPS3 == pytest.approx(150000.0)
     assert hw.JB_TRAJ_LEAN_GAIN == pytest.approx(0.6)
     import re
     from pathlib import Path

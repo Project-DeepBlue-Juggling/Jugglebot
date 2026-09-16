@@ -2221,13 +2221,17 @@ def test_edges_skip_invalid_samples_rather_than_reading_them_as_a_level():
 # ── 3. The latch ──────────────────────────────────────────────────────────────
 
 class _Ball(object):
-    def __init__(self, ball_id, status, destination=''):
+    def __init__(self, ball_id, status, destination='', tracking=1):
         self.id = ball_id
         self.status = status
         self.destination = destination
+        self.tracking = tracking
 
 
 IN_FLIGHT = 1
+CAUGHT = 2
+CONFIRMED = 1
+ANNOUNCED = 0
 
 
 def test_the_latch_prefers_a_destination_tagged_candidate():
@@ -2287,7 +2291,93 @@ def test_the_node_calls_the_extracted_latch():
     """
     import importlib
     skill_node = importlib.import_module('jugglebot.skill_node')
-    assert skill_node.latch_announced_ball is bp.latch_announced_ball
+    # The skill node reaches the rule through the per-release flight-latch
+    # layer (2026-09-16) rather than calling `latch_announced_ball` directly;
+    # the layer itself lives here and IS that call, so re-inlining either half
+    # still shows up as this assertion going red.
+    assert skill_node.advance_flight_latches is bp.advance_flight_latches
+    assert skill_node.flight_in_progress is bp.flight_in_progress
+    assert skill_node.FlightLatch is bp.FlightLatch
+
+
+# ── 3b. The flight in progress (per-release latches, 2026-09-16) ─────────────
+#
+# Instants below are MEASURED, from bag `2026-09-16_16-22-22` (armB-090 attempt
+# 1): announcements at 416.861 / 417.262 / 418.439 for releases at 417.361 /
+# 418.511 / 419.661 (add 1789540000 to each), tracker ids 48 / 49 / 50, each
+# minted at its announcement and flipped to IN_FLIGHT at its own release
+# (measured skew 3 ms).
+
+def test_an_unreleased_latch_is_never_the_flight_in_progress():
+    """The regression, at the layer that owns it: id 49 is already reported
+    IN_FLIGHT+CONFIRMED (the tracker had it announced-and-seeded), but its
+    release is still 0.6 s away, so the flight in progress is 48's."""
+    latches = (bp.FlightLatch(417.361, announced_id=48),
+               bp.FlightLatch(418.511, announced_id=49))
+    balls = [_Ball(48, IN_FLIGHT, 'jugglebot'), _Ball(49, IN_FLIGHT, 'jugglebot')]
+    assert bp.flight_in_progress(
+        balls, latches=latches, now_s=417.9, in_flight_status=IN_FLIGHT,
+        confirmed_tracking=CONFIRMED) == 48
+    assert bp.flight_in_progress(
+        balls, latches=latches, now_s=418.6, in_flight_status=IN_FLIGHT,
+        confirmed_tracking=CONFIRMED) == 49
+
+
+def test_an_ended_flight_yields_nothing_rather_than_an_earlier_latch():
+    """No fallback, deliberately: a release only happens once the previous
+    flight of that schedule ball is over, so an earlier latch's landing
+    describes a finished flight — the very contamination this closes."""
+    latches = (bp.FlightLatch(417.361, announced_id=48),
+               bp.FlightLatch(418.511, announced_id=49))
+    balls = [_Ball(48, IN_FLIGHT, 'jugglebot'), _Ball(49, CAUGHT, 'jugglebot')]
+    assert bp.flight_in_progress(
+        balls, latches=latches, now_s=418.9, in_flight_status=IN_FLIGHT,
+        confirmed_tracking=CONFIRMED) is None
+
+
+def test_an_unconfirmed_track_yields_nothing():
+    latches = (bp.FlightLatch(417.361, announced_id=48),)
+    balls = [_Ball(48, IN_FLIGHT, 'jugglebot', tracking=ANNOUNCED)]
+    assert bp.flight_in_progress(
+        balls, latches=latches, now_s=417.9, in_flight_status=IN_FLIGHT,
+        confirmed_tracking=CONFIRMED) is None
+
+
+def test_advance_does_not_latch_a_release_that_has_not_happened():
+    latches = (bp.FlightLatch(418.511),)
+    got = bp.advance_flight_latches(
+        [_Ball(48, IN_FLIGHT, 'jugglebot')], robot_name='jugglebot',
+        latches=latches, now_s=417.9, in_flight_status=IN_FLIGHT)
+    assert got[0].announced_id is None
+    # ... and does at its release (the tracker's own flip instant).
+    got = bp.advance_flight_latches(
+        [_Ball(49, IN_FLIGHT, 'jugglebot')], robot_name='jugglebot',
+        latches=latches, now_s=418.514, in_flight_status=IN_FLIGHT)
+    assert got[0].announced_id == 49
+
+
+def test_a_sibling_latch_does_not_lose_its_id_to_the_next_release():
+    """Measured overlap at 419.680: ids 49 (caught, marker still visible, so
+    still IN_FLIGHT) and 50 (just released) are BOTH destination-tagged and
+    IN_FLIGHT. `latch_announced_ball` prefers the first tagged candidate it
+    sees, which is 49 — so without the sibling exclusion the third release
+    would latch the second flight's id."""
+    latches = (bp.FlightLatch(418.511, announced_id=49),
+               bp.FlightLatch(419.661, preexisting=(48,)))
+    got = bp.advance_flight_latches(
+        [_Ball(49, IN_FLIGHT, 'jugglebot'), _Ball(50, IN_FLIGHT, 'jugglebot')],
+        robot_name='jugglebot', latches=latches, now_s=419.680,
+        in_flight_status=IN_FLIGHT)
+    assert [l.announced_id for l in got] == [49, 50]
+
+
+def test_the_latch_queue_is_bounded_and_ordered_by_release():
+    got = bp.advance_flight_latches(
+        [], robot_name='jugglebot',
+        latches=tuple(bp.FlightLatch(t) for t in (5.0, 1.0, 4.0, 2.0, 3.0)),
+        now_s=0.0, in_flight_status=IN_FLIGHT)
+    assert [l.t_release_s for l in got] == [2.0, 3.0, 4.0, 5.0]
+    assert len(got) == bp.MAX_FLIGHT_LATCHES
 
 
 # ── 4. The join ───────────────────────────────────────────────────────────────

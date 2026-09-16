@@ -453,6 +453,14 @@ def generate_launch_description():
         parameters=[{
             'teensy_ip': teensy_ip,
             'enable_setpoint_output': enable_setpoint_output,
+            # Hand torque-FF operating gain, ADOPTED 2026-09-16 after the R3
+            # apex-ladder A/B (tests/hardware/session_skills_r3_apex_ladder.md):
+            # K=0.7 closed the hand meas/cmd gap from 1.05-1.22x (K=0) to
+            # 1.00-1.05x across every rung with peak current staying well
+            # under the 48 A live cutoff (max 39.9 A). The node's own
+            # declared default stays 0.0 (see teensy_bridge_node.py) as the
+            # bare-launch fail-safe; this override is what a real launch runs.
+            'hand_torque_ff_gain': 0.7,
         }],
         additional_env={'PYTHONPATH': _bridge_pythonpath},
     )

@@ -672,6 +672,11 @@ REACH_PEAK_JERK_FACTOR = 60.0
 # T³ and the cheap remedy is nearly always a longer flight. It is
 # over-conservative below T ≈ 0.75 s (real frontier 175 mm at T = 0.60) and
 # optimistic above it; the operator raises T, the live limits, or both.
+# The FSM toss stack's OWN working point (1000/5000/30000), deliberately
+# decoupled from the YAML launch defaults since 2026-09-16, when those became
+# the skill stack's 300/5000/150000: this stack is superseded (deleted at R4)
+# and its reach-bound characterisation is pinned to these values. The LIVE
+# path still follows trajectory/status -> set_limits.
 REACH_VEL_LIMIT_MMPS = 1000.0
 REACH_ACC_LIMIT_MMPS2 = 5000.0
 REACH_JERK_LIMIT_MMPS3 = 30000.0

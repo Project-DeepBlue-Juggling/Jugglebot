@@ -313,7 +313,30 @@ def test_start_self_toss_is_refused_with_no_status_received_yet():
     node, _client = _node_with_client()
     resp = node._svc_start_self_toss(Trigger.Request(), Trigger.Response())
     assert resp.success is False
-    assert 'admissible box refused' in resp.message
+    # Since 2026-09-16 the YAML launch defaults ARE the swept session limits
+    # (300/5000/150000, owner decision), so the box no longer refuses here;
+    # the start is still refused, by the next rung of the ladder (no live
+    # commanded position yet). Either refusal is the contract: no motion on
+    # a machine state nobody has confirmed.
+    assert ('admissible box refused' in resp.message
+            or 'stale' in resp.message)
+
+
+def test_a_new_schedule_drops_the_previous_attempts_flight_latches():
+    """A new schedule reuses ball id 0: a latch left by an earlier attempt must
+    not answer the new schedule's first catch (audit, 2026-09-16)."""
+    node, _client = _node_with_client()
+    with node._correlation_lock:
+        node._correlation[0] = ('stale-latch',)
+    node._svc_start_columns(Trigger.Request(), Trigger.Response())
+    assert 0 not in node._correlation
+
+
+def test_the_learner_lateral_authority_parameter_defaults_to_zero():
+    """Owner 2026-09-16: the learner corrects flight only until the planner's
+    small-lateral-offset banking defect is fixed."""
+    node, _client = _node_with_client()
+    assert node.get_parameter('learner_lateral_authority_mm').value == 0.0
 
 
 def test_start_self_toss_refuses_an_uncovered_apex_before_any_motion(tmp_path):
@@ -565,8 +588,11 @@ def test_a_throw_install_announces_the_release_and_starts_correlation():
     assert ann.initial_velocity.z == pytest.approx(expected_vel[2])
     assert ann.landing_position.z == pytest.approx(830.0)
     assert 0 in node._correlation
-    assert node._correlation[0]['announced_id'] is None
-    assert node._correlation[0]['preexisting'] == set()
+    # ONE latch per announced release (2026-09-16), unlatched until a
+    # `/balls` snapshot carries a candidate.
+    assert len(node._correlation[0]) == 1
+    assert node._correlation[0][0].announced_id is None
+    assert node._correlation[0][0].preexisting == ()
 
 
 def test_correlation_latches_the_new_ball_and_excludes_a_preexisting_one():
@@ -580,7 +606,7 @@ def test_correlation_latches_the_new_ball_and_excludes_a_preexisting_one():
                              target_mm=[0.0, 0.0, 830.0], flight_s=0.6,
                              t_release_s=100.0)
     node._installer('THROW', terminal, 100.0, ball_id=0)
-    assert node._correlation[0]['preexisting'] == {99}
+    assert node._correlation[0][0].preexisting == (99,)
 
     # The phantom is still there; the NEW ball (id 7) also appears.
     node._on_balls(BallStateArray(balls=[
@@ -588,7 +614,7 @@ def test_correlation_latches_the_new_ball_and_excludes_a_preexisting_one():
         _ball(7, status=1, destination='jugglebot', tracking=1,
              x=1.0, y=2.0, z=3.0),
     ]))
-    assert node._correlation[0]['announced_id'] == 7
+    assert node._correlation[0][0].announced_id == 7
     landing = node._tracker(0)
     assert landing is not None
     np.testing.assert_array_equal(landing.pos_mm, [1.0, 2.0, 3.0])
@@ -604,7 +630,7 @@ def test_the_tracker_withholds_a_landing_until_tracking_is_confirmed():
     node._installer('THROW', terminal, 100.0, ball_id=0)
     node._on_balls(BallStateArray(
         balls=[_ball(7, status=1, destination='jugglebot', tracking=0)]))
-    assert node._correlation[0]['announced_id'] == 7
+    assert node._correlation[0][0].announced_id == 7
     assert node._tracker(0) is None    # IN_FLIGHT alone proves nothing
     node._on_balls(BallStateArray(
         balls=[_ball(7, status=1, destination='jugglebot', tracking=1)]))
@@ -625,12 +651,125 @@ def test_a_catch_resend_does_not_re_announce_or_reset_correlation():
     assert len(node._announce_pub.published) == 1
     node._on_balls(BallStateArray(
         balls=[_ball(7, status=1, destination='jugglebot', tracking=1)]))
-    assert node._correlation[0]['announced_id'] == 7
+    assert node._correlation[0][0].announced_id == 7
 
     # A re-send carrying the IDENTICAL release (same then_throw content).
     node._installer('CATCH', terminal, 99.5, ball_id=0)
     assert len(node._announce_pub.published) == 1          # not re-announced
-    assert node._correlation[0]['announced_id'] == 7        # not reset
+    assert len(node._correlation[0]) == 1                   # no second latch
+    assert node._correlation[0][0].announced_id == 7        # not re-latched
+
+
+def _correlate(node, releases, *, now_s):
+    """Seed `_correlation[0]` with one unlatched latch per release instant and
+    pin the node's clock at ``now_s`` — the two inputs `flight_in_progress`
+    reads. Built directly rather than through two `_installer` calls because
+    the mocked ROS clock is frozen at 0 and both announcements would then land
+    at (almost) the same instant; the announce path's own latch-queueing is
+    covered by the tests above."""
+    node._correlation[0] = tuple(
+        ball_possession.FlightLatch(t_release_s=float(t)) for t in releases)
+    node._now_s = lambda: float(now_s)
+
+
+def test_the_correlation_follows_the_flight_in_progress_not_the_next_release():
+    """THE 2026-09-16 regression (bag `2026-09-16_16-22-22`, armB-090 attempt
+    1). A chained CATCH+THROW announces its carried release at DISPATCH, ~1.25 s
+    ahead, while the PREVIOUS flight of the same schedule ball is still in the
+    air; the tracker mints a new id per announcement (48 airborne, 49
+    announced) and flips 49 to IN_FLIGHT at ITS OWN release. The correlation
+    must stay on 48 for the whole of 48's flight — the node used to reset the
+    latch at each announcement and re-latch onto 49 the instant it went
+    IN_FLIGHT, which handed the flight-48 outcome row flight 49's landing
+    (observed 2.2317 s for an 0.8569 s command)."""
+    node, _client = _node_with_client()
+    # Releases as measured: 417.361 (flying) and 418.511 (still 1.1 s away).
+    _correlate(node, (417.361, 418.511), now_s=417.9)
+    node._on_balls(BallStateArray(balls=[
+        _ball(48, status=1, destination='jugglebot', tracking=1,
+             sec=418, nanosec=218_000_000),
+        # Adversarial: the tracker ALSO reports 49 as IN_FLIGHT+CONFIRMED with
+        # the next flight's pre-computed landing. Its release has not happened,
+        # so it cannot be the flight in progress whatever /balls says.
+        _ball(49, status=1, destination='jugglebot', tracking=1,
+             sec=419, nanosec=368_000_000),
+    ]))
+    assert node._correlation[0][0].announced_id == 48
+    assert node._correlation[0][1].announced_id is None     # not yet released
+    landing = node._tracker(0)
+    assert landing is not None
+    assert landing.t_land_abs_s == pytest.approx(418.218)    # flight 48's
+
+
+def test_the_correlation_moves_to_the_next_flight_once_its_release_passes():
+    """...and then it DOES move: once 48 is CAUGHT and 49's release has
+    passed, 49 is the flight in progress and its landing is the one returned.
+    Same two latches, one clock read later (measured instants: 48 CAUGHT at
+    418.714, 49 released at 418.511)."""
+    node, _client = _node_with_client()
+    _correlate(node, (417.361, 418.511), now_s=417.9)
+    node._on_balls(BallStateArray(balls=[
+        _ball(48, status=1, destination='jugglebot', tracking=1,
+             sec=418, nanosec=218_000_000)]))
+    assert node._correlation[0][0].announced_id == 48
+
+    node._now_s = lambda: 418.9
+    node._on_balls(BallStateArray(balls=[
+        _ball(48, status=2, destination='jugglebot', tracking=1,   # CAUGHT
+             sec=418, nanosec=510_000_000),
+        _ball(49, status=1, destination='jugglebot', tracking=1,
+             sec=419, nanosec=368_000_000),
+    ]))
+    # 49 is latched to the SECOND release, not the first: 48 is excluded both
+    # as a sibling's claim and because it is no longer IN_FLIGHT.
+    assert node._correlation[0][0].announced_id == 48
+    assert node._correlation[0][1].announced_id == 49
+    landing = node._tracker(0)
+    assert landing is not None
+    assert landing.t_land_abs_s == pytest.approx(419.368)    # flight 49's
+
+
+def test_the_tracker_withholds_a_landing_when_the_flight_in_progress_ended():
+    """A CAUGHT flight yields NO landing rather than the previous flight's or
+    the next one's: `flight_in_progress` never falls back to an earlier latch
+    (that flight is over) and never reads an unreleased one."""
+    node, _client = _node_with_client()
+    _correlate(node, (417.361, 418.511), now_s=418.9)
+    node._on_balls(BallStateArray(balls=[
+        _ball(48, status=2, destination='jugglebot', tracking=1,
+             sec=418, nanosec=510_000_000),
+    ]))
+    assert node._tracker(0) is None
+
+
+def test_a_second_announcement_does_not_reset_the_flight_in_progress():
+    """The announce path itself (not a hand-built latch): a second ACCEPTED
+    install for the SAME schedule ball appends a latch and leaves the first
+    one's id alone. `preexisting` then keeps the new release off the airborne
+    id, which is what made the reset so damaging — it excluded exactly the
+    ball that was flying."""
+    from jugglebot.motion.skills.segments import ThrowTerminal
+
+    node, _client = _node_with_client(
+        response=_response(t_event_mono=50.0, t_release_mono=0.0))
+    first = ThrowTerminal(site_mm=[0.0, 0.0, 860.0], target_mm=[0.0, 0.0, 830.0],
+                          flight_s=0.6, t_release_s=100.0)
+    node._installer('THROW', first, 100.0, ball_id=0)
+    node._on_balls(BallStateArray(balls=[
+        _ball(48, status=1, destination='jugglebot', tracking=1,
+             sec=100, nanosec=600_000_000)]))
+    assert node._correlation[0][0].announced_id == 48
+
+    node._install_cli._response = _response(t_event_mono=51.15,
+                                            t_release_mono=0.0)
+    second = ThrowTerminal(site_mm=[0.0, 0.0, 860.0], target_mm=[0.0, 0.0, 830.0],
+                           flight_s=0.6, t_release_s=101.15)
+    node._installer('THROW', second, 101.15, ball_id=0)
+    assert len(node._announce_pub.published) == 2
+    assert len(node._correlation[0]) == 2
+    assert node._correlation[0][0].announced_id == 48        # NOT reset
+    assert node._correlation[0][1].announced_id is None
+    assert node._correlation[0][1].preexisting == (48,)      # the airborne id
 
 
 def test_hand_telemetry_updates_possession_evidence():

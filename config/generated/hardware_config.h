@@ -190,9 +190,9 @@ namespace JBOp {
 // ==========================================================================
 
 namespace TrajOp {
-  constexpr float LEG_VEL_LIMIT_MMPS = 1000.0f;
+  constexpr float LEG_VEL_LIMIT_MMPS = 300.0f;
   constexpr float LEG_ACC_LIMIT_MMPS2 = 5000.0f;
-  constexpr float LEG_JERK_LIMIT_MMPS3 = 30000.0f;
+  constexpr float LEG_JERK_LIMIT_MMPS3 = 150000.0f;
   constexpr float LEG_VEL_CEILING_MMPS = 5000.0f;
   constexpr float LEG_ACC_CEILING_MMPS2 = 5000.0f;
   constexpr float LEG_JERK_CEILING_MMPS3 = 200000.0f;

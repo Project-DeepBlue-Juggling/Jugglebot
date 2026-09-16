@@ -214,9 +214,13 @@ def test_the_six_dof_gates_are_blind_to_a_cycle_plan(geom, session_limits):
     n = 9
     t = np.arange(n) * DT
     pose = np.tile(NEUTRAL, (n, 1))
-    pose[:, 0] = 60.0 * np.sin(2 * np.pi * t / (n * DT))
+    # 25 mm keeps the pose_vel the six-dof gate DOES read (peak 259 mm/s)
+    # under the 300 mm/s launch velocity limit (2026-09-16); the real leg
+    # acceleration of this sweep (~19 500 mm/s^2) is still far past 5000,
+    # which is what the gates are blind to on a segmentless plan.
+    pose[:, 0] = 25.0 * np.sin(2 * np.pi * t / (n * DT))
     pose_vel = np.zeros((n, 6))
-    pose_vel[:, 0] = (60.0 * (2 * np.pi / (n * DT))
+    pose_vel[:, 0] = (25.0 * (2 * np.pi / (n * DT))
                       * np.cos(2 * np.pi * t / (n * DT)))
     hand = np.full(n, 5.0)
     hand[4] = 12.0                       # past the 10.8 rev end stop

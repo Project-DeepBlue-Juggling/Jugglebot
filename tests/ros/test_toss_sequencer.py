@@ -1689,10 +1689,14 @@ def test_local_constants_match_generated_config():
     # that hazard for a running system (the gate follows trajectory/status →
     # set_limits, test_reach_bound_prefers_live_session_limits); this pin
     # closes it for the fallback path.
-    assert REACH_VEL_LIMIT_MMPS == pytest.approx(hw.JB_TRAJ_LEG_VEL_LIMIT_MMPS)
+    # 2026-09-16: the YAML launch defaults moved to the skill stack's
+    # 300/5000/150000; this superseded stack keeps its own 1000/5000/30000
+    # fallback (pinned here so a drift is deliberate, not accidental). The
+    # live path follows trajectory/status, so the fallback never gates a
+    # running system.
+    assert REACH_VEL_LIMIT_MMPS == pytest.approx(1000.0)
     assert REACH_ACC_LIMIT_MMPS2 == pytest.approx(hw.JB_TRAJ_LEG_ACC_LIMIT_MMPS2)
-    assert REACH_JERK_LIMIT_MMPS3 == pytest.approx(
-        hw.JB_TRAJ_LEG_JERK_LIMIT_MMPS3)
+    assert REACH_JERK_LIMIT_MMPS3 == pytest.approx(30000.0)
 
 
 def test_stay_at_pose_default_matches_config():

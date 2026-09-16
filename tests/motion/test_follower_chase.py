@@ -52,7 +52,13 @@ def geom():
 
 @pytest.fixture
 def limits():
-    return TrajectoryLimits.from_config(hw)
+    # The follower characterisation's working point (the pre-skill-stack
+    # 1000/5000/30000 session limits) pinned explicitly: since 2026-09-16 the
+    # YAML launch defaults are the skill stack's 300/5000/150000, and these
+    # tests characterise the follower's stop/chase behaviour, not the defaults.
+    return TrajectoryLimits.from_config(hw, leg_vel_mmps=1000.0,
+                                        leg_acc_mmps2=5000.0,
+                                        leg_jerk_mmps3=30000.0)
 
 
 def _ext(pose, geom):

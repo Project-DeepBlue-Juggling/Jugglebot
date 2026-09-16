@@ -1217,7 +1217,12 @@ class TeensyBridgeNode(Node):
         self.declare_parameter('activate_axes', list(range(p.NUM_LEGS)))
         self.declare_parameter('deactivate_axes', list(range(p.NUM_LEGS)))
         # Hand torque-FF gain K (dimensionless, wire.hand_ff_gain — C2FF spec,
-        # U3a). Default 0.0 = arm A (no hand torque feedforward). Live-updatable
+        # U3a). Declared default stays 0.0 = arm A (no hand torque
+        # feedforward) as the bare-launch fail-safe — a `ros2 run` with no
+        # launch file, or a launch file that doesn't override it, gets no
+        # torque FF. The real launch (jugglebot_launch.py) has set 0.7 since
+        # 2026-09-16, the R3 apex-ladder-adopted operating value (see
+        # logbook/2026-09-16-apex-ladder-k07-ab-result.md). Live-updatable
         # (see _on_set_parameters); an out-of-range/non-finite `ros2 param set`
         # REFUSES the set (rather than silently clamping) so a bad value
         # surfaces immediately instead of applying a different number than

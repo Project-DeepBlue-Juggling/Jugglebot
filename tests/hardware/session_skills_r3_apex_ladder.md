@@ -1,3 +1,28 @@
+**CLOSED 2026-09-16 — K=0.7 ADOPTED.** The ladder was flown in full, both
+arms, all five rungs (2026-09-16 16:22, bag
+`~/Desktop/rosbags/2026-09-16_16-22-22`, log
+`temp/logs/launch_r2gate_20260916_1622.log`, K switch at
+`t=1789540208.552`). The pre-registered **"K=0.7 → ratio ≤ 1.00" criterion
+was NOT met literally** — mean hand meas/cmd at K=0.7 sits at 1.00–1.03
+(peak up to 1.05) across every rung, not ≤1.00 — but the owner's decision is
+to **adopt K=0.7 as the launch default anyway**: it closes the gap from
+1.05–1.22× (K=0, mean 1.05–1.13×) to 1.00–1.05× (K=0.7) at every rung with
+peak current well under the 48 A live cutoff (max 39.9 A), and Verdict B
+(missing torque FF was most of the story) is strongly supported — more
+strongly than the offline model itself predicted. The residual ~1–5 % hand
+overspeed and the larger ~7–10 % raw-mocap ball-apex residual are launch
+dynamics for the learner to correct, not a hand-tuning problem; see
+`logbook/2026-09-16-apex-ladder-k07-ab-result.md` for the full Discussion
+(why not K=1.0 now, the current-vs-height mechanism, the catch-early
+pattern). The `platform wobble` / low-throw / `LIMIT_JERK` /
+`ABORTED_NO_RELEASE` events observed on this sitting are diagnosed and fixed
+separately in `logbook/2026-09-16-outcome-landing-frozen-at-the-crossing.md`
+(commit `cd8cd82`) — not re-narrated here. This runsheet stays flyable for a
+future re-ladder (e.g. at a new K, or after a further plant fix); do not
+delete its steps.
+
+---
+
 # R3 apex ladder — hand C2 + torque feedforward A/B (FW 23 / protocol 9)
 
 **Flash target updated 2026-09-15, same day as the plumbing below.** The
@@ -363,15 +388,15 @@ live.
 
 | Item | Result |
 |---|---|
-| Date, commit, bag, `--full` count | |
-| FW 23 boot banner confirmed (step 5) | |
-| § 3 no-motion check (row 20–22): time_synced / sched= / promo_dp,dv,da / promo_over,stops,refused,expired,demoted / interp_max_jitter_us | |
-| Rungs flown, arm A (stopped early? why) | |
-| Rungs flown, arm B (stopped early? why) | |
-| Per-rung, per-arm measured hand peak / commanded (3 throws) | |
-| Per-rung, per-arm ball / commanded and ball apex (m) | |
-| Per-rung, per-arm peak hand current (A) | |
-| `tclamp=` / `sched=HOLD-LATCHED` observed on any rung? | |
-| Caught per rung, per arm | |
-| Drain / vel_ff note (see above) | |
-| Verdict (A / B / other) and the chosen operating apex and K | |
+| Date, commit, bag, `--full` count | 2026-09-16 16:22; bag `~/Desktop/rosbags/2026-09-16_16-22-22`; log `temp/logs/launch_r2gate_20260916_1622.log`; `--full` count carried from the pre-sitting build/test gate (see the sitting's own launch log for the exact count — not re-quoted here to avoid a stale number drifting from the source). |
+| FW 23 boot banner confirmed (step 5) | Confirmed — the sitting ran FW 23 / protocol 9 throughout (link stayed synced for the whole bag, no `NO_HEARTBEAT`/decode-error darkness observed). |
+| § 3 no-motion check (row 20–22): time_synced / sched= / promo_dp,dv,da / promo_over,stops,refused,expired,demoted / interp_max_jitter_us | Clean — the ladder proceeded through all ten rung/arm cells with `time_synced: 1` and no `sched=off`/`HOLD-LATCHED` reported for the whole sitting; no stop/refused/expired/demoted counters climbing were flagged. |
+| Rungs flown, arm A (stopped early? why) | All five rungs (0.5, 0.6, 0.7, 0.8, 0.9 m) flown, 4 attempts each (chained self-tosses per attempt). Not stopped early — completed the full arm. |
+| Rungs flown, arm B (stopped early? why) | All five rungs (0.5, 0.6, 0.7, 0.8, 0.9 m) flown, 4 attempts each. Not stopped early — completed the full arm. |
+| Per-rung, per-arm measured hand peak / commanded (3 throws) | From `hand_overspeed_bag_probe` (peak meas/cmd per stroke; max / mean over EVERY stroke flown in the rung's time window, learner-shortened attempts included — `temp/logs/ladder2_probe_arm{A,B}_20260916.log`, windows = the rung's `schedule compiled` instants in the launch log): armA-050 1.096/1.077 (n=4); armA-060 1.051/1.050 (n=4); armA-070 1.220/1.127 (n=4); armA-080 1.147/1.094 (n=8); armA-090 1.113/1.087 (n=10); armB-050 1.048/1.026 (n=4); armB-060 1.014/1.013 (n=4); armB-070 1.020/1.015 (n=4); armB-080 1.013/1.011 (n=4); armB-090 1.013/1.004 (n=8). Arm B collapses to 1.00–1.05× at every rung (vs arm A's 1.05–1.22×), closer to the offline model's K=1.0 prediction than its own K=0.7 prediction — the pre-registered "K=0.7 → ratio ≤ 1.00" criterion is still not met (every rung's mean sits at 1.00–1.03, peak up to 1.048), but Verdict B (missing FF is most of the story) is strongly supported and Verdict A (K makes little difference) is refuted. Source: `temp/logs/ladder2_probe_armA_20260916.log` / `..._armB_...log`, CSV `temp/probes/hand_overspeed_2026-09-16_16-22-22.csv`. |
+| Per-rung, per-arm ball / commanded and ball apex (m) | Raw-mocap re-measurement (ground truth, independent of the tracker's chained-id `/balls` stream — see the metrics report's Follow-up section), apex ratio (meas/cmd) and mean measured apex: armA-050 1.227 (0.540 m), armA-060 1.285 (0.592 m), armA-070 1.268 (0.889 m), armA-080 1.250 (0.834 m), armA-090 1.244 (0.861 m); armB-050 1.097 (0.550 m), armB-060 1.070 (0.643 m), armB-070 1.089 (0.763 m), armB-080 1.070 (0.856 m), armB-090 1.067 (0.869 m). Arm A apex ratio 1.23–1.29×; arm B 1.07–1.10× — a real, substantial improvement of similar size to the hand meas/cmd gap closing. tof ratio improves less (arm A ~1.17–1.26×, arm B ~1.11–1.15×) — the torque FF closes most, not all, of the apex gap and a smaller fraction of the flight-time gap. |
+| Per-rung, per-arm peak hand current (A) | Peak `\|iq\|` (max) per rung: armA-050 11.7, armA-060 17.2, armA-070 24.2, armA-080 31.6, armA-090 30.1; armB-050 19.8, armB-060 20.2, armB-070 20.0, armB-080 23.8, armB-090 39.9. Current roughly doubled at low apex (armA-050 mean 10.0 A → armB-050 mean 19.2 A, since the FF adds commanded current directly) but never approached the 48 A live cutoff / 50 A drive ceiling — max observed 39.9 A (armB-090). |
+| `tclamp=` / `sched=HOLD-LATCHED` observed on any rung? | Not observed / not flagged during the sitting. |
+| Caught per rung, per arm | Operator notes (verbatim) per rung: armA-050 "worked, hand started moving for catches slightly early"; armA-060 "very clean catches, almost perfect"; armA-070 "messy, first two throws a little spatially off, catches early, all caught"; armA-080 "first catch decent, second had the hand retract immediately with SPLICE_TOO_LATE, further attempts didn't improve"; armA-090 "decent, a little spatially off, third attempt very short throws"; armB-050 "clean, catches a little early"; armB-060 "very clean, catches slightly early"; armB-070 "clean, catches a little early"; armB-080 "fairly clean, one ball contact with the top of the hand stroke, recovered"; armB-090 "fairly clean; second and third attempts platform wobble, throw missed, throw very low" (the wobble/low-throw events are diagnosed and fixed in `logbook/2026-09-16-outcome-landing-frozen-at-the-crossing.md`, commit `cd8cd82`, not re-narrated here). Quantitative catch timing: the hand's scheduled aim ran EARLY relative to the ball's measured landing at essentially every throw in both arms (mean `early_s` per rung -0.04 s to -0.20 s, raw-mocap re-measurement), matching the operator's "catches slightly early" note; the pattern does not scale cleanly with apex and is present in both arms (the torque FF does not remove it) — it tracks the flight-time residual (Table 2), not the hand-overspeed residual (Table 1) that the torque FF fixes. |
+| Drain / vel_ff note (see above) | No drain / `vel_ff`-driven creep past the held setpoint was flagged on any disable edge this sitting. |
+| Verdict (A / B / other) and the chosen operating apex and K | **Verdict B** (missing torque feedforward was most of the story) — strongly supported, more strongly than the offline model predicted; Verdict A (K makes little difference) is refuted. The pre-registered "K=0.7 → ratio ≤ 1.00" criterion is NOT met literally (measured 1.00–1.05× at K=0.7, not ≤1.00), but **the owner's decision is to adopt K=0.7 as the operating value and close the ladder as a measurement** — the residual ~1–10 % is launch dynamics for the memory-based learner to correct, not a hand-tuning problem. `hand_torque_ff_gain` = 0.7 is now the `jugglebot_launch.py` default (`ros_ws/src/jugglebot/launch/jugglebot_launch.py`); K=1.0 was deliberately not flown this sitting (see `logbook/2026-09-16-apex-ladder-k07-ab-result.md` for why not now). Full detail, Discussion and verification triples in that entry. |

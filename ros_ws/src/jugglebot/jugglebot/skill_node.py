@@ -68,7 +68,8 @@ from jugglebot.motion.skills.sites import (CATCH_CUP_Z_MM, REST_CUP_Z_MM,
                                            Site, columns_sites)
 from jugglebot.motion.tilt_map import find_repo_root
 from jugglebot.motion.trajectory import ballistics_bc
-from jugglebot.ball_possession import latch_announced_ball
+from jugglebot.ball_possession import (
+    FlightLatch, advance_flight_latches, flight_in_progress)
 
 # BallStatus enum (BallState.msg): 0 = TO_BE_THROWN, 1 = IN_FLIGHT, 2 = CAUGHT.
 # Restated (not imported from reload_coordinator_node — that module is ROS/FSM
@@ -172,10 +173,12 @@ class SkillNode(Node):
         # `_balls` above is the LANDING projection `latch_announced_ball` cannot
         # use (it needs `status`/`destination`/`tracking`, not just a landing).
         self._raw_balls = []
-        # SCHEDULE ball_id -> correlation state (`announced_id`/`untagged`/
-        # `preexisting`) — see `_maybe_announce` / `_advance_correlation` /
-        # `_tracker`. `/balls` ids are the TRACKER's own; the schedule/executor
-        # speak in schedule ball ids, and this is the one translation.
+        # SCHEDULE ball_id -> a tuple of `ball_possession.FlightLatch`, ONE
+        # PER ANNOUNCED RELEASE (never one per ball — see `_maybe_announce`).
+        # `/balls` ids are the TRACKER's own; the schedule/executor speak in
+        # schedule ball ids, and this is the one translation. Advanced by
+        # `_advance_correlation`, read by `_tracker` through
+        # `ball_possession.flight_in_progress`.
         self._correlation = {}
         # SCHEDULE ball_id -> the absolute wall-clock instant of the last
         # release announced for it — `_maybe_announce`'s de-duplication key
@@ -202,6 +205,13 @@ class SkillNode(Node):
         # round trip): `_svc_stop` calls `_maybe_hold_pending_event` OUTSIDE
         # `_tick_lock` while `_on_tick` may be inside it on another thread.
         self._pending_lock = threading.Lock()
+        # Guards `_correlation`'s read-modify-write. `_on_balls` (the
+        # subscription group) and `_maybe_announce` (the tick, via
+        # `_installer`) both rebind the latch queue and run on DIFFERENT
+        # callback groups, so a concurrent announce could otherwise lose its
+        # own latch — and a lost latch means the next flight is never
+        # correlated at all. `_tracker` only reads the tuple and needs no lock.
+        self._correlation_lock = threading.Lock()
         # The latest `trajectory/status`, for `skills/start_self_toss`'s
         # limits check (`_svc_start_self_toss`) and the R3 ladder's
         # `levelled`/`in_trajectory_mode` fields (`_observations`, item 6).
@@ -246,6 +256,10 @@ class SkillNode(Node):
         # tests keep exercising that path, which is why this is passed
         # EXPLICITLY at every construction below rather than left to default.
         self.declare_parameter('catch_aim_source', ex.AIM_SCHEDULE)
+        # Owner 2026-09-16: the learner corrects FLIGHT only until the
+        # planner's small-lateral-offset banking defect is fixed (see
+        # SkillExecutor.lateral_authority_m). mm per axis; 0 = pinned to y_d.
+        self.declare_parameter('learner_lateral_authority_mm', 0.0)
 
         # ── the install client + tick timer share ONE reentrant group ──────
         # Fixed 2026-09-13 (found by reading, never exercised live): `main`
@@ -355,41 +369,50 @@ class SkillNode(Node):
                 t_land_abs_s=t_land)
         self._advance_correlation()
 
+    def _now_s(self) -> float:
+        """Now, in ROS epoch seconds — the clock the announcements' own
+        ``throw_time`` is on, and therefore the only clock a "has this release
+        happened?" comparison may use (`_advance_correlation`, `_tracker`)."""
+        return float(self.get_clock().now().nanoseconds) * 1e-9
+
     def _advance_correlation(self) -> None:
         """Refine every live schedule-ball-id -> tracker-id correlation
         against the latest ``/balls`` snapshot (item 3, plan § 2.7).
 
-        ``jugglebot.ball_possession.latch_announced_ball`` owns the RULE
-        (shared with `reload_coordinator_node`'s FSM latch, plan discipline:
-        one rule, not a lookalike copy); this method owns the per-schedule-
-        ball-id state the rule threads through."""
-        for corr in self._correlation.values():
-            announced_id, untagged = latch_announced_ball(
-                self._raw_balls, robot_name=self._robot_name,
-                announced_id=corr['announced_id'],
-                preexisting_ids=corr['preexisting'],
-                untagged_latch=corr['untagged'],
-                in_flight_status=_BALL_STATUS_IN_FLIGHT)
-            if announced_id is not None:
-                corr['announced_id'] = announced_id
-                corr['untagged'] = untagged
+        ``jugglebot.ball_possession`` owns the RULE — `latch_announced_ball`
+        per announced release (shared with `reload_coordinator_node`'s FSM
+        latch, plan discipline: one rule, not a lookalike copy) and
+        `advance_flight_latches` over the per-release queue; this method owns
+        the per-schedule-ball-id state the rule threads through."""
+        now_s = self._now_s()
+        with self._correlation_lock:
+            for ball_id, latches in list(self._correlation.items()):
+                self._correlation[ball_id] = advance_flight_latches(
+                    self._raw_balls, robot_name=self._robot_name,
+                    latches=latches, now_s=now_s,
+                    in_flight_status=_BALL_STATUS_IN_FLIGHT)
 
     def _tracker(self, ball_id: int):
         """The executor's tracker callable — keyed by SCHEDULE ball id.
 
         `/balls` ids are the tracker's OWN (item 3): a schedule ball id must
         first be correlated to one via `_maybe_announce` / `_advance_correlation`
-        before a landing can be returned, and only once the tracker's own
-        confidence for that id is CONFIRMED (a raw IN_FLIGHT status alone is
-        time-based and proves nothing — see `_BALL_TRACKING_CONFIRMED`)."""
-        corr = self._correlation.get(int(ball_id))
-        if corr is None or corr['announced_id'] is None:
+        before a landing can be returned, and then only for the flight
+        ACTUALLY IN PROGRESS — the latest announced release that has happened,
+        whose id is both IN_FLIGHT and CONFIRMED (a raw IN_FLIGHT status alone
+        is time-based and proves nothing — see `_BALL_TRACKING_CONFIRMED`;
+        `ball_possession.flight_in_progress` holds the whole rule and the
+        reason an earlier latch is never a fallback)."""
+        latches = self._correlation.get(int(ball_id))
+        if not latches:
             return None
-        tracker_id = int(corr['announced_id'])
-        ball = next((b for b in self._raw_balls if int(b.id) == tracker_id), None)
-        if ball is None or int(ball.tracking) != _BALL_TRACKING_CONFIRMED:
+        tracker_id = flight_in_progress(
+            self._raw_balls, latches=latches, now_s=self._now_s(),
+            in_flight_status=_BALL_STATUS_IN_FLIGHT,
+            confirmed_tracking=_BALL_TRACKING_CONFIRMED)
+        if tracker_id is None:
             return None
-        return self._balls.get(tracker_id)
+        return self._balls.get(int(tracker_id))
 
     def _catch_aim_source(self) -> str:
         """The validated ``catch_aim_source`` parameter. An unknown value
@@ -656,12 +679,21 @@ class SkillNode(Node):
         exactly those three fields via `ballistics_bc.launch_velocity` — the
         same boundary condition the segment itself was planned to satisfy.
 
-        Resets this schedule ball id's correlation to a FRESH, unlatched state
-        (mirrors `reload_coordinator_node`'s `_announced_ball_id` reset at
-        each new throw): the physical ball a self-toss re-throws gets a NEW
-        tracker id each flight (the previous one's track ends at its catch),
-        so a stale `announced_id` from the ball's PREVIOUS flight must not
-        leak into this one's correlation.
+        QUEUES a FRESH, unlatched `FlightLatch` for this release — it does
+        NOT reset the schedule ball's correlation. The physical ball a
+        self-toss re-throws gets a NEW tracker id each flight, so this
+        release needs its own latch; but the next throw is announced at its
+        DISPATCH, ~1.25 s before its release, while the PREVIOUS flight of the
+        same schedule ball is still in the air — so a reset would throw away
+        the correlation of the flight in progress and (via `preexisting`,
+        which excludes exactly the airborne id) re-latch onto the NEXT
+        flight's id the moment it goes IN_FLIGHT. That is how the 2026-09-16
+        sitting's outcome rows came to hold the NEXT flight's landing
+        (`logbook/2026-09-16-tracker-correlation-follows-the-flight-in-progress.md`).
+        The latch carries the release on the ROS clock — the announcement's
+        own `throw_time`, the same instant the tracker flips the ball to
+        IN_FLIGHT — because `flight_in_progress` may only read a release that
+        has already happened.
 
         **Exactly once per throw** (never on a CATCH re-send of the same
         carried release): a re-send calls this too, with a terminal whose
@@ -701,10 +733,20 @@ class SkillNode(Node):
             seconds=delta_s + flight_s_)).to_msg()
         # Ids already IN_FLIGHT at THIS release are phantoms, never our new
         # ball — the same hardening pass `latch_announced_ball` documents.
-        preexisting = {int(b.id) for b in self._raw_balls
-                      if int(b.status) == _BALL_STATUS_IN_FLIGHT}
-        self._correlation[int(ball_id)] = {
-            'announced_id': None, 'untagged': False, 'preexisting': preexisting}
+        # (A previous flight of THIS schedule ball is one of them, and keeps
+        # its own latch below: this set is what stops the new release from
+        # stealing it, now that the latch is no longer reset.)
+        preexisting = tuple(sorted(int(b.id) for b in self._raw_balls
+                                   if int(b.status) == _BALL_STATUS_IN_FLIGHT))
+        t_release_ros_s = (float(now_ros.nanoseconds) * 1e-9) + delta_s
+        with self._correlation_lock:
+            self._correlation[int(ball_id)] = advance_flight_latches(
+                self._raw_balls, robot_name=self._robot_name,
+                latches=tuple(self._correlation.get(int(ball_id), ()))
+                        + (FlightLatch(t_release_s=t_release_ros_s,
+                                       preexisting=preexisting),),
+                now_s=float(now_ros.nanoseconds) * 1e-9,
+                in_flight_status=_BALL_STATUS_IN_FLIGHT)
         self._announce_pub.publish(ann)
         self.get_logger().info(
             'skill announced ball %d: release in %.3f s, |v| %.3f m/s'
@@ -833,6 +875,13 @@ class SkillNode(Node):
             response.message = 'columns schedule refused: %s' % (exc,)
             self.get_logger().error(response.message)
             return response
+        # A new schedule reuses small ball ids: drop any flight latch an
+        # earlier (possibly early-ended) attempt left for them, so a catch
+        # with no in-schedule release can never read a previous attempt's
+        # flight (audit, 2026-09-16).
+        with self._correlation_lock:
+            for _bid in {sk.ball_id for sk in schedule.skills}:
+                self._correlation.pop(_bid, None)
         self._executor = SkillExecutor(
             schedule, self._installer, tracker=self._tracker,
             catch_aim_source=self._catch_aim_source(),
@@ -1034,11 +1083,20 @@ class SkillNode(Node):
         learner = SimpleNamespace(
             command=lambda x, y_d: memory.command(x, y_d, learner_cfg))
 
+        # A new schedule reuses small ball ids: drop any flight latch an
+        # earlier (possibly early-ended) attempt left for them, so a catch
+        # with no in-schedule release can never read a previous attempt's
+        # flight (audit, 2026-09-16).
+        with self._correlation_lock:
+            for _bid in {sk.ball_id for sk in schedule.skills}:
+                self._correlation.pop(_bid, None)
         self._executor = SkillExecutor(
             schedule, self._installer, tracker=self._tracker,
             catch_aim_source=self._catch_aim_source(),
             launch_ratio=self._launch_ratio,
             learner=learner, boxes=boxes,
+            lateral_authority_m=float(self.get_parameter(
+                'learner_lateral_authority_mm').value) / 1000.0,
             observer=self._ball_evidence, observations=self._observations,
             on_experience=self._bind_on_experience(memory))
         response.success = True
