@@ -35,6 +35,27 @@ within 0.25 s of release WITH a landing estimate. The catch executor's deadline
 is `landing_time - 0.278 s - lead_s`, i.e. ~0.47-0.49 s before landing at the R3
 operating point, so a confirmation later than that is a `NO_LANDING` in the air.
 
+Landing-estimate accuracy (`--validate-landing`, added 2026-09-17)
+--------------------------------------------------------------------
+Independently of the CONFIRM/landing-existence check above, this mode scores
+HOW ACCURATE the tracker's landing_time is, against an offline gravity-fixed
+parabola fit of the raw `/mocap_data` ball marker (same method as
+`late_catch_probe.py` / `flight_truth_probe.py`: track the marker nearest the
+announced ballistic path frame-to-frame, then a two-pass fit over samples
+z > 980 mm with a 12 mm residual gate — a code path independent of
+`tracking/flight_fit.py`, so this is a real check, not a circular one). For
+each announced ball it reports two errors (tracker estimate minus truth
+crossing at `landing_z`):
+  - `last_err_ms`  the LAST in-flight landing estimate (closest the tracker
+    ever gets before the ball leaves IN_FLIGHT)
+  - `dl_err_ms`    the estimate at the catch executor's own dispatch instant
+    (see `dl_*` above)
+Pass criterion (this brief, 2026-09-17): |bias| <= 10 ms and sd <= 15 ms at
+the last in-flight sample; |bias| <= 20 ms at dispatch. Writes
+`temp/probes/tracker_fit_validation_<tag>.md` per bag when given `--out-md`,
+or aggregates several bags into one report — see `--validate-landing --help`
+usage below.
+
 Usage
 -----
     source ~/Desktop/PDJ_venv/venv/bin/activate
@@ -44,12 +65,19 @@ Usage
     # tighten/loosen the criterion, or point at one throw
     python tools/probes/tracker_bag_replay.py <bag> --confirm-deadline-s 0.25
 
+    # landing-estimate accuracy across one or more bags -> one aggregated .md
+    python tools/probes/tracker_bag_replay.py --validate-landing \\
+        ~/Desktop/rosbags/2026-09-17_18-45-10 ~/Desktop/rosbags/2026-09-17_18-50-45 \\
+        --out-md temp/probes/tracker_fit_validation_20260917.md
+
 Writes `temp/probes/tracker_bag_replay_<bagname>.csv` plus a `.md` table.
 """
 from __future__ import annotations
 
 import argparse
+import bisect
 import csv
+import math
 import os
 import sys
 from pathlib import Path
@@ -62,6 +90,7 @@ sys.path.insert(0, str(_REPO / 'ros_ws' / 'src' / 'jugglebot'))
 import jugglebot.hardware_config as hw                     # noqa: E402
 from jugglebot.motion.skills import sites                  # noqa: E402
 from jugglebot.tracking.ball import BallStatus, TrackingConfidence  # noqa: E402
+from jugglebot.tracking.ballistics import GRAVITY_MMPS2     # noqa: E402
 from jugglebot.tracking.matcher import (                    # noqa: E402
     BallTracker, parse_label_prefixes)
 
@@ -85,6 +114,9 @@ def make_tracker() -> BallTracker:
         excluded_label_prefixes=parse_label_prefixes(
             hw.TRACKING_EXCLUDED_LABEL_PREFIXES),
         detect_human_throws=hw.TRACKING_DETECT_HUMAN_THROWS,
+        flight_fit_min_samples=hw.TRACKING_FLIGHT_FIT_MIN_SAMPLES,
+        flight_fit_residual_mm=hw.TRACKING_FLIGHT_FIT_RESIDUAL_MM,
+        flight_fit_freeze_above_plane_mm=hw.TRACKING_FLIGHT_FIT_FREEZE_ABOVE_PLANE_MM,
     )
 
 
@@ -115,12 +147,15 @@ def _stamp(t) -> float:
 class _Record:
     """Per-announced-ball outcome accumulator."""
 
-    def __init__(self, ball_id, throw_time, ann_landing_time, ann_landing_pos, source):
+    def __init__(self, ball_id, throw_time, ann_landing_time, ann_landing_pos, source,
+                 init_pos=None, init_vel=None):
         self.ball_id = ball_id
         self.throw_time = throw_time
         self.ann_landing_time = ann_landing_time
         self.ann_landing_pos = ann_landing_pos
         self.source = source
+        self.init_pos = init_pos          # announced initial position (truth-fit gate)
+        self.init_vel = init_vel          # announced initial velocity (truth-fit gate)
         self.t_confirmed = None
         self.t_landing_est = None
         self.landing_time_est = None
@@ -131,6 +166,11 @@ class _Record:
         self.dl_landing_time = None
         self.dl_landing_pos = None
         self.dl_tracking = None
+        # LAST landing estimate seen while the ball was still IN_FLIGHT —
+        # the closest-to-truth number the tracker ever publishes, used by
+        # `--validate-landing` (2026-09-17).
+        self.last_landing_time = None
+        self.last_landing_pos = None
 
 
 # `executor.CATCH_DEADLINE_WINDOW_S` (the R2/R3 transit window) plus the
@@ -139,13 +179,22 @@ CATCH_DEADLINE_WINDOW_S = 0.278
 CATCH_LEAD_S = 0.200
 
 
-def replay(mcap_path: Path, confirm_deadline_s: float):
+def replay(mcap_path: Path, confirm_deadline_s: float, buffer_raw: bool = False):
+    """Replay one bag through the real tracker.
+
+    `buffer_raw`: also buffer every `/mocap_data` frame's (label, x, y, z)
+    tuples, returned as a fourth value `mocap_frames` — used by
+    `--validate-landing` for an INDEPENDENT ground-truth fit. Off by default
+    (it roughly doubles memory use on a long bag) since the CONFIRM/landing
+    existence report doesn't need it.
+    """
     tracker = make_tracker()
     records = {}          # tracker ball id -> _Record
     order = []
     n_frames = 0
     n_markers = 0
     n_eligible = 0
+    mocap_frames = [] if buffer_raw else None
 
     for topic, t_bag, msg in _iter_bag(
             mcap_path, ('/mocap_data', '/throw_announcements')):
@@ -179,7 +228,8 @@ def replay(mcap_path: Path, confirm_deadline_s: float):
                 landing_time=landing_time if landing_time > 0 else None,
             )
             rec = _Record(bid, throw_time, landing_time, land_pos,
-                          msg.thrower_name or 'ball_butler')
+                          msg.thrower_name or 'ball_butler',
+                          init_pos=init_pos, init_vel=init_vel)
             records[bid] = rec
             order.append(bid)
             continue
@@ -193,6 +243,9 @@ def replay(mcap_path: Path, confirm_deadline_s: float):
             labels.append(mk.label or '')
         n_markers += len(positions)
         n_eligible += len(tracker.eligible_markers(positions, labels))
+        if buffer_raw:
+            mocap_frames.append((t_bag, [
+                (labels[i], p[0], p[1], p[2]) for i, p in enumerate(positions)]))
 
         balls = tracker.process_frame(positions, t_bag, labels)
 
@@ -216,6 +269,11 @@ def replay(mcap_path: Path, confirm_deadline_s: float):
                 if ball.landing_time and ball.landing_time > 0:
                     rec.dl_landing_time = float(ball.landing_time)
                     rec.dl_landing_pos = np.array(ball.landing_position, dtype=float)
+            if ball.status == BallStatus.IN_FLIGHT and ball.landing_time and ball.landing_time > 0:
+                # Overwritten every frame — the final value is the LAST
+                # in-flight sample's landing estimate (`--validate-landing`).
+                rec.last_landing_time = float(ball.landing_time)
+                rec.last_landing_pos = np.array(ball.landing_position, dtype=float)
             rec.frames_tracked = max(rec.frames_tracked, int(ball.frames_tracked))
             rec.final_status = ball.status
 
@@ -250,23 +308,210 @@ def replay(mcap_path: Path, confirm_deadline_s: float):
         ))
     stats = dict(frames=n_frames, markers=n_markers, eligible=n_eligible,
                  announced=len(order))
-    return rows, stats
+    return rows, stats, records, order, mocap_frames
+
+
+def _truth_crossing_for_ball(mocap_frames, mocap_times, throw_time, pos0, vel0,
+                              landing_z):
+    """Independent ground-truth landing crossing for one throw.
+
+    Same method as `late_catch_probe.py` / `flight_truth_probe.py`: track the
+    marker nearest the announced ballistic path frame-to-frame (continuity
+    gated once a track is established), then a two-pass gravity-fixed
+    parabola fit over samples z > 980 mm with a 12 mm residual gate. This is
+    a code path INDEPENDENT of `tracking/flight_fit.py` — it does not import
+    it or reuse any of its logic — so a bag that validates here validates the
+    fit for real, not circularly.
+
+    Returns (t_cross_abs, rms_mm, n) or (None, None, None).
+    """
+    x0, y0, z0v = float(pos0[0]), float(pos0[1]), float(pos0[2])
+    vz0 = float(vel0[2])
+    i0 = bisect.bisect_left(mocap_times, throw_time - 0.05)
+    i1 = bisect.bisect_left(mocap_times, throw_time + 1.6)
+    pts = []
+    last = None
+    for k in range(i0, i1):
+        t, frame = mocap_frames[k]
+        best = None
+        for lab, x, y, z in frame:
+            if lab.startswith('Platform') or lab.startswith('Base'):
+                continue
+            if last is None:
+                dtau = t - throw_time
+                zp = (z0v + vz0 * dtau - 0.5 * GRAVITY_MMPS2 * dtau * dtau
+                      if dtau > 0 else z0v)
+                ok = (abs(x - x0) < 150.0 and abs(y - y0) < 150.0
+                      and abs(z - zp) < 250.0 and t < throw_time + 0.45)
+            else:
+                dt = t - last[0]
+                ok = (math.hypot(x - last[1], y - last[2]) < 60 + 1500 * dt
+                      and abs(z - last[3]) < 60 + 4500 * dt)
+            if ok and (best is None or z > best[3]):
+                best = (t, x, y, z)
+        if best is None:
+            continue
+        last = best
+        pts.append(best)
+
+    if len(pts) < 20:
+        return None, None, None
+
+    T = np.array([p[0] for p in pts])
+    Z = np.array([p[3] for p in pts])
+    sel = Z > 980.0
+    z0f = v0f = res = None
+    for _ in range(4):
+        if sel.sum() < 10:
+            return None, None, None
+        tau = T[sel] - throw_time
+        zz = Z[sel] + 0.5 * GRAVITY_MMPS2 * tau * tau
+        A = np.vstack([np.ones_like(tau), tau]).T
+        (z0f, v0f), *_ = np.linalg.lstsq(A, zz, rcond=None)
+        res = Z - (z0f + v0f * (T - throw_time)
+                   - 0.5 * GRAVITY_MMPS2 * (T - throw_time) ** 2)
+        sel = (Z > 980.0) & (np.abs(res) < 12.0)
+    if sel.sum() < 10:
+        return None, None, None
+
+    disc = v0f * v0f + 2 * GRAVITY_MMPS2 * (z0f - landing_z)
+    if disc < 0:
+        return None, None, None
+    t_cross_rel = (v0f + math.sqrt(disc)) / GRAVITY_MMPS2
+    rms = float(np.sqrt(np.mean(res[sel] ** 2)))
+    return throw_time + t_cross_rel, rms, int(sel.sum())
+
+
+def validate_landing(mcap_path: Path, landing_z: float):
+    """Score landing-estimate ACCURACY for one bag against the offline truth fit.
+
+    Returns a list of per-ball dicts (last_err_ms, dl_err_ms, truth_n,
+    truth_rms_mm, ...) — see module docstring `--validate-landing`.
+    """
+    _, _, records, order, mocap_frames = replay(
+        mcap_path, confirm_deadline_s=0.25, buffer_raw=True)
+    mocap_times = [f[0] for f in mocap_frames]
+
+    out = []
+    for bid in order:
+        r = records[bid]
+        if r.init_pos is None or r.init_vel is None:
+            continue
+        t_truth, rms, n_truth = _truth_crossing_for_ball(
+            mocap_frames, mocap_times, r.throw_time, r.init_pos, r.init_vel,
+            landing_z)
+        last_err_ms = (None if (t_truth is None or r.last_landing_time is None)
+                       else (r.last_landing_time - t_truth) * 1000.0)
+        dl_err_ms = (None if (t_truth is None or r.dl_landing_time is None)
+                     else (r.dl_landing_time - t_truth) * 1000.0)
+        out.append(dict(
+            bag=mcap_path.stem,
+            ball_id=bid,
+            source=r.source,
+            truth_ok=(t_truth is not None),
+            truth_n=n_truth,
+            truth_rms_mm=rms,
+            last_err_ms=last_err_ms,
+            dl_err_ms=dl_err_ms,
+            final_status=(r.final_status.name if r.final_status is not None else ''),
+        ))
+    return out
+
+
+def _validate_landing_main(args):
+    """`--validate-landing`: aggregate one or more bags into one report."""
+    landing_z = float(sites.CATCH_CUP_Z_MM)
+    out_md = Path(args.out_md) if args.out_md else (
+        _REPO / 'temp' / 'probes' / 'tracker_fit_validation.md')
+    out_md.parent.mkdir(parents=True, exist_ok=True)
+
+    all_rows = []
+    per_bag_lines = []
+    bag_names = []
+    for bag_arg in args.bags:
+        mcap_path = _find_mcap(Path(os.path.expanduser(bag_arg)))
+        bag_names.append(mcap_path.stem)
+        rows = validate_landing(mcap_path, landing_z)
+        all_rows.extend(rows)
+        n = sum(1 for r in rows if r['truth_ok'])
+        per_bag_lines.append(f"- `{mcap_path.stem}`: {len(rows)} announced, "
+                              f"{n} with a truth fit")
+        print(f"{mcap_path.stem}: {len(rows)} announced, {n} with a truth fit")
+
+    def _stats(key):
+        vals = np.array([r[key] for r in all_rows
+                          if r[key] is not None], dtype=float)
+        if vals.size == 0:
+            return None, None, 0
+        return float(np.mean(vals)), float(np.std(vals)), int(vals.size)
+
+    last_bias, last_sd, last_n = _stats('last_err_ms')
+    dl_bias, dl_sd, dl_n = _stats('dl_err_ms')
+
+    last_pass = (last_bias is not None and abs(last_bias) <= 10.0 and last_sd <= 15.0)
+    dl_pass = (dl_bias is not None and abs(dl_bias) <= 20.0)
+
+    cols = ['bag', 'ball_id', 'source', 'truth_ok', 'truth_n', 'truth_rms_mm',
+            'last_err_ms', 'dl_err_ms', 'final_status']
+    lines = ['| ' + ' | '.join(cols) + ' |',
+             '|' + '|'.join(['---'] * len(cols)) + '|']
+    for r in all_rows:
+        def fmt(v):
+            if v is None:
+                return ''
+            if isinstance(v, float):
+                return f'{v:.2f}'
+            return str(v)
+        lines.append('| ' + ' | '.join(fmt(r[c]) for c in cols) + ' |')
+
+    summary = (
+        f"# Tracker landing-estimate validation ({', '.join(bag_names)})\n\n"
+        f"landing_z={landing_z:.1f} mm  criterion: |bias|<=10ms AND sd<=15ms at last "
+        f"in-flight sample; |bias|<=20ms at dispatch\n\n"
+        + '\n'.join(per_bag_lines) + '\n\n'
+        f"Last in-flight sample: bias={('n/a' if last_bias is None else f'{last_bias:+.2f} ms')}  "
+        f"sd={('n/a' if last_sd is None else f'{last_sd:.2f} ms')}  n={last_n}  "
+        f"-> {'PASS' if last_pass else 'FAIL'}\n\n"
+        f"Dispatch instant: bias={('n/a' if dl_bias is None else f'{dl_bias:+.2f} ms')}  "
+        f"sd={('n/a' if dl_sd is None else f'{dl_sd:.2f} ms')}  n={dl_n}  "
+        f"-> {'PASS' if dl_pass else 'FAIL'}\n\n"
+    )
+    md = summary + '\n'.join(lines) + '\n'
+    out_md.write_text(md)
+    print(summary)
+    print(f"wrote {out_md}")
+    return 0 if (last_pass and dl_pass) else 1
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('bag', help='rosbag directory or .mcap file')
+    ap.add_argument('bag', nargs='?', help='rosbag directory or .mcap file')
+    ap.add_argument('bags', nargs='*', default=[],
+                    help='(with --validate-landing) additional bags to aggregate')
     ap.add_argument('--confirm-deadline-s', type=float, default=0.25,
                     help='a ball must CONFIRM within this many seconds of release '
                          '(default 0.25 — the R3 catch deadline is ~0.47 s before '
                          'landing, so anything later is a NO_LANDING in the air)')
     ap.add_argument('--out-dir', default=None,
                     help='default temp/probes/ under the repo root')
+    ap.add_argument('--validate-landing', action='store_true',
+                    help='score landing-estimate accuracy against an offline '
+                         'ground-truth parabola fit instead of the CONFIRM check')
+    ap.add_argument('--out-md', default=None,
+                    help='(--validate-landing) output path for the aggregated report')
     args = ap.parse_args(argv)
 
+    if args.validate_landing:
+        args.bags = ([args.bag] if args.bag else []) + list(args.bags)
+        if not args.bags:
+            ap.error('--validate-landing needs at least one bag')
+        return _validate_landing_main(args)
+
+    if not args.bag:
+        ap.error('bag is required')
     mcap_path = _find_mcap(Path(os.path.expanduser(args.bag)))
-    rows, stats = replay(mcap_path, args.confirm_deadline_s)
+    rows, stats, _records, _order, _mocap = replay(mcap_path, args.confirm_deadline_s)
 
     out_dir = Path(args.out_dir) if args.out_dir else (_REPO / 'temp' / 'probes')
     out_dir.mkdir(parents=True, exist_ok=True)

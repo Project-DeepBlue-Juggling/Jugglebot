@@ -21,6 +21,7 @@ import pytest
 from teensy_link.setpoint_pump import (
     SetpointPump, FLAG_HAS_U1, FLAG_HAS_U2, FLAG_HAS_HAND, FLAG_HAS_V1,
     FLAG_HAS_V2, FLAG_HAS_SCHED, DEFAULT_MAX_STEP_HAND_REV, HAND_FF_GAIN_MAX,
+    DEFAULT_KNOT_DT_S, DEFAULT_GATE_REARM_STALE_S,
 )
 from teensy_link.protocol import Setpoint
 
@@ -873,3 +874,219 @@ def test_set_hand_ff_gain_rejects_out_of_range():
 def test_hand_ff_gain_ctor_arg_validated_too():
     with pytest.raises(ValueError):
         SetpointPump(mm_to_rev=_MM, hand_ff_gain=HAND_FF_GAIN_MAX + 1.0)
+
+
+# ── The per-step gate is a VELOCITY bound (2026-09-17) ────────────────
+# Regression battery for the SETPOINT_STALE E-STOP of 2026-09-17 (bag
+# `2026-09-17_18-50-45`, latch at t=108.140): a 64 ms Jetson scheduling hole at
+# the top of a hand throw made a velocity-CONSISTENT frame trip the old fixed
+# 5.0 rev displacement budget, and because the budget never moved while the
+# baseline was frozen, every later frame was further away — 2 → 6 → 10 → 11
+# rejects, nothing sent, and the firmware's 250 ms staleness watchdog E-STOPPED
+# the machine with a ball in flight.
+#
+# Contract pinned here: the gate bounds VELOCITY, not displacement — reject iff
+# |Δu| > v_max_axis · Δt_since_the_last_ACCEPTED_frame (Δt floored at one knot
+# period) — and a rejected frame never makes the next frame more likely to be
+# rejected.
+#
+# All of these drive an INJECTED clock: the gate is time-dependent now, and a
+# sleep-based test of it would be a wall-clock test in the parallel phase.
+
+_THROW_RATE_RPS = 88.0    # measured hand-lane peak at the 2026-09-17 latch
+                          # (`vel_ff_cmd` 88.31 on /hand_telemetry at t=107.8379)
+
+
+class _FakeClock:
+    """Monotonic clock the test advances explicitly."""
+
+    def __init__(self, t0=1000.0):
+        self.t = float(t0)
+
+    def __call__(self):
+        return self.t
+
+    def advance(self, dt):
+        self.t += float(dt)
+
+
+def _hand_pump(clock, **kw):
+    return SetpointPump(mm_to_rev=_MM, clock=clock, **kw)
+
+
+def _hand_at(rev):
+    """A hand-carrying frame whose u0[6] is `rev` (legs held still)."""
+    cmd = _hand_cmd(hand_v1=None)
+    cmd['hand_rev'] = float(rev)
+    return cmd
+
+
+def test_gate_rate_derives_from_the_step_limits_and_the_knot_period():
+    """ONE derivation chain: the enforced rate is the shipped displacement
+    limit ÷ the knot period — 200 rev/s for the hand (the Phase 0 Decision 4
+    session cap), 12 rev/s for a leg. Never a fresh number: feasibility.py
+    validates plans at 0.80 × 200 = 160 rev/s, so any lower wire rate would
+    make the WIRE gate tighter than the PLAN gate and reject a validated
+    max-rate throw."""
+    pump = _pump()
+    assert pump.knot_dt_s == DEFAULT_KNOT_DT_S
+    assert pump.max_rate_hand_rev_s == pytest.approx(
+        DEFAULT_MAX_STEP_HAND_REV / DEFAULT_KNOT_DT_S)
+    assert pump.max_rate_hand_rev_s == pytest.approx(200.0)
+    assert pump.max_rate_rev_s == pytest.approx(0.3 / DEFAULT_KNOT_DT_S)
+    assert pump.max_rate_rev_s == pytest.approx(12.0)
+
+
+def test_hand_frame_after_a_producer_hole_is_accepted():
+    """THE 2026-09-17 LATCH. An 88 rev/s hand lane, a 60 ms producer hole, and
+    the frame that lands after it: its displacement exceeds the old fixed
+    5.0 rev budget, but it is exactly what 88 rev/s does in the elapsed 85 ms,
+    so the velocity gate accepts it."""
+    clock = _FakeClock()
+    pump = _hand_pump(clock)
+    rev = 3.4004                       # the real lane's position at t=107.8176
+    assert pump.build(_hand_at(rev), t_origin_us=1)[1] is None
+    # Two nominal ticks, then the 60 ms hole (measured: a 64.2 ms gap in the
+    # 100 Hz /hand_telemetry timer, the largest non-startup hole in the bag).
+    for gap in (0.025, 0.025, 0.085):
+        clock.advance(gap)
+        rev += _THROW_RATE_RPS * gap
+        step_before = rev - (rev - _THROW_RATE_RPS * gap)
+        sp, reason = pump.build(_hand_at(rev), t_origin_us=2)
+        assert reason is None and sp is not None, reason
+        if gap > 0.05:
+            # The frame the old displacement gate refused ("hand step 5.3825
+            # rev > 5.0"): 88 rev/s × 85 ms = 7.48 rev of legitimate lane.
+            assert step_before > DEFAULT_MAX_STEP_HAND_REV
+    assert pump.frames_rejected == 0
+
+
+def test_hand_gate_rejection_is_not_absorbing():
+    """A rejected frame must not make the next one more likely to be rejected.
+    One forced reject (a genuine discontinuity at the nominal cadence), then the
+    lane resumes velocity-consistently: the very next frame is ACCEPTED, because
+    the budget grows with elapsed time while the baseline holds."""
+    clock = _FakeClock()
+    pump = _hand_pump(clock)
+    assert pump.build(_hand_at(3.0), t_origin_us=1)[1] is None
+    clock.advance(0.025)
+    sp, reason = pump.build(_hand_at(3.0 + 9.0), t_origin_us=2)   # 9 rev in 25 ms
+    assert sp is None and 'hand step' in reason
+    # Consistent lane from the last ACCEPTED position, one tick later.
+    clock.advance(0.025)
+    sp, reason = pump.build(_hand_at(3.0 + _THROW_RATE_RPS * 0.05),
+                            t_origin_us=3)
+    assert reason is None and sp is not None, reason
+    assert pump.frames_rejected == 1 and pump.frames_built == 2
+
+
+def test_hand_gate_still_refuses_a_knot_discontinuity():
+    """The gate must still refuse a genuine step. At the nominal 25 ms cadence
+    the budget is bit-identical to the shipped displacement gate (200 rev/s ×
+    25 ms = 5.0 rev), so the exact frame the 2026-09-17 bag logged (5.3825 rev)
+    is still refused when it is PUNCTUAL — only lateness widens the budget."""
+    clock = _FakeClock()
+    pump = _hand_pump(clock)
+    assert pump.build(_hand_at(3.4004), t_origin_us=1)[1] is None
+    clock.advance(0.025)
+    sp, reason = pump.build(_hand_at(3.4004 + 5.3825), t_origin_us=2)
+    assert sp is None and 'hand step' in reason
+    # A several-rev knot step inside one tick (fresh pump, so the budget is
+    # one knot period again — after the reject above the SAME pump's budget has
+    # legitimately grown to 10 rev, which is the non-absorbing property).
+    clock2 = _FakeClock()
+    pump2 = _hand_pump(clock2)
+    assert pump2.build(_hand_at(3.4004), t_origin_us=1)[1] is None
+    clock2.advance(0.025)
+    sp, reason = pump2.build(_hand_at(3.4004 + 8.0), t_origin_us=2)
+    assert sp is None and 'hand step' in reason
+
+
+def test_reject_reason_carries_the_rate_the_elapsed_time_and_the_budget():
+    """The operator reading a reject needs to know WHY it was over: the rate,
+    the elapsed time it was multiplied by, and the resulting budget — not just
+    the step (the 2026-09-17 log line said only 'step 5.3825 > 5.0', which
+    reads like a discontinuity when it was a late frame)."""
+    clock = _FakeClock()
+    pump = _hand_pump(clock)
+    pump.build(_hand_at(3.0), t_origin_us=1)
+    clock.advance(0.025)
+    _, reason = pump.build(_hand_at(12.0), t_origin_us=2)
+    assert 'rev budget' in reason and '200.0 rev/s' in reason
+    assert '25.0 ms since the last accepted frame' in reason
+    assert '5.0000 rev budget' in reason
+
+
+def test_leg_gate_shares_the_rate_form():
+    """The legs share the defect exactly (same fixed budget, same frozen
+    baseline), so they get the same treatment: a late-but-consistent leg frame
+    is accepted, a discontinuity at the nominal cadence is still refused."""
+    clock = _FakeClock()
+    pump = _hand_pump(clock)
+    assert pump.build(_cmd(motor_rev=[0.0] * 6), t_origin_us=1)[1] is None
+    clock.advance(0.085)                       # the same 60 ms hole, legs at 8 rev/s
+    step = 8.0 * 0.085                         # 0.68 rev — over the old 0.3 budget
+    assert step > 0.3
+    sp, reason = pump.build(_cmd(motor_rev=[step] * 6), t_origin_us=2)
+    assert reason is None and sp is not None, reason
+    clock.advance(0.025)
+    sp, reason = pump.build(_cmd(motor_rev=[step + 0.5] * 6), t_origin_us=3)
+    assert sp is None and 'leg 0 step' in reason and '12.0 rev/s' in reason
+
+
+def test_gate_rearms_after_the_firmware_staleness_window():
+    """Past the firmware's own 250 ms setpoint-staleness window the baseline
+    describes a machine the bridge stopped driving from, so it is CLEARED
+    rather than widened without bound — the next frame is a first frame, with
+    the firmware MAX_DEVIATION guard as the complementary layer."""
+    clock = _FakeClock()
+    pump = _hand_pump(clock)
+    assert pump.build(_hand_at(3.0), t_origin_us=1)[1] is None
+    clock.advance(0.30)                        # > DEFAULT_GATE_REARM_STALE_S
+    sp, reason = pump.build(_hand_at(9.5), t_origin_us=2)
+    assert reason is None and sp is not None, reason
+    assert pump.gate_rearms == 1
+    # And the gate is armed again immediately afterwards.
+    clock.advance(0.025)
+    sp, reason = pump.build(_hand_at(9.5 + 8.0), t_origin_us=3)
+    assert sp is None and 'hand step' in reason
+
+
+def test_reset_clears_the_gate_time_base():
+    """reset() forgets the time base with the baselines: a link loss must not
+    leave a stale accept stamp that would hand the first frame back a
+    multi-second budget."""
+    clock = _FakeClock()
+    pump = _hand_pump(clock)
+    pump.build(_hand_at(3.0), t_origin_us=1)
+    pump.reset()
+    assert pump._last_accept_t is None
+    clock.advance(0.025)
+    assert pump.build(_hand_at(3.0), t_origin_us=2)[1] is None
+    clock.advance(0.025)
+    sp, reason = pump.build(_hand_at(11.0), t_origin_us=3)
+    assert sp is None and 'hand step' in reason
+
+
+def test_rejected_frames_do_not_advance_the_gate_time_base():
+    """Only an ACCEPTED frame moves the time base — that is the mechanism that
+    makes the budget grow through a reject burst."""
+    clock = _FakeClock()
+    pump = _hand_pump(clock)
+    pump.build(_hand_at(3.0), t_origin_us=1)
+    t_accept = pump._last_accept_t
+    clock.advance(0.025)
+    pump.build(_hand_at(20.0), t_origin_us=2)          # rejected
+    assert pump._last_accept_t == t_accept
+    clock.advance(0.025)
+    pump.build(_hand_at(30.0), t_origin_us=3)          # rejected
+    assert pump._last_accept_t == t_accept
+
+
+def test_bad_knot_dt_and_rearm_window_are_refused():
+    with pytest.raises(ValueError):
+        SetpointPump(mm_to_rev=_MM, knot_dt_s=0.0)
+    with pytest.raises(ValueError):
+        SetpointPump(mm_to_rev=_MM, knot_dt_s=float('nan'))
+    with pytest.raises(ValueError):
+        SetpointPump(mm_to_rev=_MM, gate_rearm_stale_s=0.01)   # <= knot_dt_s

@@ -1,4 +1,5 @@
-"""Pack 40 Hz MPC commands into Teensy-side knot Setpoint frames, with a per-step gate.
+"""Pack 40 Hz MPC commands into Teensy-side knot Setpoint frames, with a per-step
+VELOCITY gate (see the contract block in ``SetpointPump.__init__``).
 
 Pure logic — no ROS, no ZMQ, no UDP. The bridge node owns the transport (ZMQ
 ingress from the MPC on :5557, UDP egress to the Teensy, the dedicated ingest
@@ -209,7 +210,8 @@ old ``enable_setpoint_output`` boot-arm is inert) — this module only decides
 from __future__ import annotations
 
 import math
-from typing import Optional, Sequence, Tuple
+import time
+from typing import Callable, Optional, Sequence, Tuple
 
 from . import protocol as p
 from .protocol import Setpoint
@@ -241,6 +243,27 @@ DEFAULT_MAX_STEP_REV = 0.3
 # tests/teensy_link/test_setpoint_pump.py (the DEFAULT_TORQUE_WIRE_SCALE
 # mirrored-constant pattern).
 DEFAULT_MAX_STEP_HAND_REV = 5.0
+
+# Nominal producer knot period (s) — hardware_config.JB_TRAJ_KNOT_DT_S. The
+# bridge passes the generated value; this default mirrors it so the module is
+# usable standalone. TWO roles, both in the per-step gate below:
+#   * it converts the per-step displacement limits above into the RATE limits
+#     the gate actually enforces (max_step / knot_dt), which is the same
+#     derivation chain the limits themselves came from — never a second
+#     invented number;
+#   * it is the FLOOR on the elapsed time the budget is computed over, so a
+#     producer burst (two frames back-to-back after a hole, each carrying one
+#     knot period of lane) is never judged against a near-zero budget.
+DEFAULT_KNOT_DT_S = 0.025
+
+# Elapsed time since the last ACCEPTED frame beyond which the gate's baseline is
+# RE-ARMED (cleared) instead of widened. Mirrors the firmware's
+# SETPOINT_STALENESS_US = 250 ms (canbridge_config.h): past that the bridge has
+# already declared the stream stale and stopped driving from these knots, so the
+# pump's prior-frame baseline no longer describes the machine and gating against
+# it is gating against fiction. Same posture (and same complementary layer — the
+# firmware MAX_DEVIATION guard) as the hand-absent-gap rule in _build().
+DEFAULT_GATE_REARM_STALE_S = 0.25
 
 # The all-or-nothing hand key set (u0/v0/u1/u2 for the hand lane).
 # 'hand_next_vel_rps' (the hand v1) is a hand_* key too for PRESENCE-triggering
@@ -276,10 +299,22 @@ class SetpointPump:
             ``jugglebot.motion`` import) so the module stays pure.
         num_legs: number of leg axes (the wire ``Setpoint`` carries 7 lanes —
             ``num_legs`` leg lanes plus the hand at index 6).
-        max_step_rev: per-leg per-frame ``u0`` step clamp (rev).
-        max_step_hand_rev: per-frame hand ``u0[6]`` step clamp (rev). Derived
-            from the hand session velocity cap — see the
-            ``DEFAULT_MAX_STEP_HAND_REV`` derivation comment above.
+        max_step_rev: per-leg ``u0`` step limit (rev) AT THE NOMINAL KNOT
+            CADENCE. Enforced as the rate ``max_step_rev / knot_dt_s`` against
+            the time since the last accepted frame — see the velocity-bound
+            contract block in ``__init__``.
+        max_step_hand_rev: hand ``u0[6]`` step limit (rev) at the nominal knot
+            cadence, enforced as a rate the same way. Derived from the hand
+            session velocity cap — see the ``DEFAULT_MAX_STEP_HAND_REV``
+            derivation comment above.
+        knot_dt_s: nominal producer knot period (s). Converts the two step
+            limits into the rates the gate enforces, and floors the elapsed
+            time the budget is computed over.
+        gate_rearm_stale_s: elapsed time since the last accepted frame beyond
+            which the gate's baseline is cleared instead of widened (the
+            firmware's own setpoint-staleness window).
+        clock: monotonic clock for the gate's elapsed time (default
+            ``time.monotonic``); injectable for deterministic tests.
         torque_ff_enabled: master switch for the leg torque feedforward
             (``hardware_config.DYNAMICS_TORQUE_FF_ENABLED``). **Default False** — the
             pump then emits ``torque_ff = (0.0,)*n`` and never even reads
@@ -309,7 +344,10 @@ class SetpointPump:
                  torque_ff_max_nm: float = DEFAULT_TORQUE_FF_MAX_NM,
                  torque_wire_scale: float = DEFAULT_TORQUE_WIRE_SCALE,
                  torque_ff_ramp_frames: int = 0,
-                 hand_ff_gain: float = 0.0):
+                 hand_ff_gain: float = 0.0,
+                 knot_dt_s: float = DEFAULT_KNOT_DT_S,
+                 gate_rearm_stale_s: float = DEFAULT_GATE_REARM_STALE_S,
+                 clock: Optional[Callable[[], float]] = None):
         self.n = int(num_legs)
         self.mm_to_rev = tuple(float(x) for x in mm_to_rev)
         if len(self.mm_to_rev) < self.n:
@@ -317,6 +355,66 @@ class SetpointPump:
                 f"mm_to_rev needs >= {self.n} entries, got {len(self.mm_to_rev)}")
         self.max_step_rev = float(max_step_rev)
         self.max_step_hand_rev = float(max_step_hand_rev)
+
+        # ── The per-step gate is a VELOCITY bound (2026-09-17) ───────────────
+        # CONTRACT: the per-step gate bounds VELOCITY, not displacement —
+        # reject iff |Δu| > v_max_axis · Δt_since_the_last_ACCEPTED_frame (with
+        # Δt floored at one knot period); and a rejected frame must never make
+        # the NEXT frame more likely to be rejected.
+        #
+        # Why (2026-09-17 SETPOINT_STALE E-STOP, bag 2026-09-17_18-50-45):
+        # the gate used to compare |Δu| against a fixed displacement budget
+        # regardless of how late the frame was. That budget IS a rate limit —
+        # max_step_hand_rev = hand_vel_limit_rps × knot_dt — but only at the
+        # nominal 25 ms cadence. At the top of a throw the hand lane runs
+        # ~88 rev/s, so the 5.0 rev budget tolerated only ~57 ms of producer
+        # lateness; a measured 64 ms Jetson scheduling hole (a 64.2 ms hole in
+        # the 100 Hz /hand_telemetry timer at the same instant) then made a
+        # PERFECTLY VELOCITY-CONSISTENT frame a "hand step 5.3825 rev > 5.0"
+        # reject. And because the gate compares against the prior ACCEPTED
+        # frame, the baseline froze while the lane ran on: rejects went
+        # 2 → 6 → 10 → 11 over four ticks with nothing sent, the wire went
+        # silent, and the firmware's SETPOINT_STALENESS_US (250 ms) E-STOPPED
+        # the machine mid-throw with a ball in flight. One scheduling hiccup
+        # became a latch because a single rejection was an ABSORBING state.
+        #
+        # The rate form fixes both halves at once. The budget grows at
+        # v_max_axis while the lane advances at most at the planner's own
+        # limit, so every later frame of a legitimate lane is *more* likely to
+        # pass than the one before it — non-absorbing BY CONSTRUCTION, with no
+        # separate re-arm rule (the bounded re-arm below only covers a stream
+        # the firmware has already given up on).
+        #
+        # The rate is the axis's own displacement limit ÷ knot_dt — 200 rev/s
+        # for the hand at the shipped config, 12 rev/s for a leg. Deliberately
+        # NOT a fresh number pulled from the measured ~90 rev/s throw peak
+        # (hand_probe2/3.py, 2026-09-17): feasibility.py validates plans at
+        # STEP_BOUND_MARGIN 0.80 × hand_vel_limit_rps = 160 rev/s, so any rate
+        # below that would make the WIRE gate tighter than the PLAN gate and
+        # reject a validated max-rate throw — the same E-STOP this fix exists
+        # to remove, arriving on the sanctioned path instead of a hiccup.
+        # 200 rev/s keeps exactly the 20 % headroom over the validator that the
+        # legs have (validate 0.24 vs pump 0.3) and stays the ONE derivation
+        # chain (Phase 0 Decision 4's session cap, owner-signed 2026-08-30).
+        # At the nominal cadence the budget is therefore bit-identical to the
+        # shipped displacement gate: this change only ever LOOSENS a late
+        # frame, never a punctual one.
+        self.knot_dt_s = float(knot_dt_s)
+        if not math.isfinite(self.knot_dt_s) or self.knot_dt_s <= 0.0:
+            raise ValueError(
+                f"knot_dt_s must be finite and > 0, got {knot_dt_s}")
+        self.gate_rearm_stale_s = float(gate_rearm_stale_s)
+        if (not math.isfinite(self.gate_rearm_stale_s)
+                or self.gate_rearm_stale_s <= self.knot_dt_s):
+            raise ValueError(
+                f"gate_rearm_stale_s must be finite and > knot_dt_s "
+                f"({self.knot_dt_s}), got {gate_rearm_stale_s}")
+        self.max_rate_rev_s = self.max_step_rev / self.knot_dt_s
+        self.max_rate_hand_rev_s = self.max_step_hand_rev / self.knot_dt_s
+        # Injectable so tests drive producer lateness deterministically instead
+        # of sleeping (the gate is now time-dependent; a sleep-based test of it
+        # would be a wall-clock test in the parallel phase).
+        self._clock: Callable[[], float] = time.monotonic if clock is None else clock
 
         # ── Leg torque-FF configuration (see the module docstring) ──
         self.torque_ff_enabled = bool(torque_ff_enabled)
@@ -353,6 +451,10 @@ class SetpointPump:
 
         self._prev_pos: Optional[list] = None
         self._prev_hand: Optional[float] = None   # prior ACCEPTED hand u0 (None = no baseline)
+        # Monotonic stamp of the last ACCEPTED frame — the per-step gate's time
+        # base (None = no baseline yet, gate budget = one knot period).
+        self._last_accept_t: Optional[float] = None
+        self.gate_rearms = 0         # baselines cleared by the stale re-arm below
         self._ff_frames = 0          # accepted frames since reset — drives the FF ramp
         self.frames_built = 0
         self.frames_skipped = 0      # no-command ticks (not a fault)
@@ -371,6 +473,7 @@ class SetpointPump:
         """
         self._prev_pos = None
         self._prev_hand = None
+        self._last_accept_t = None
         self._ff_frames = 0
 
     def restart_torque_ramp(self) -> None:
@@ -806,25 +909,61 @@ class SetpointPump:
             flags |= FLAG_HAS_SCHED
             t_origin_us_out = int(round(knot_epoch_us_val))
 
-        # ── Per-step gates vs the prior ACCEPTED frame (NOT vs rejected frames) ──
+        # ── Per-step gates vs the prior ACCEPTED frame: a VELOCITY bound ──────
         # Per-CHANNEL: the leg gate and the hand gate reject independently,
-        # each against its own prior and its own bound.
+        # each against its own prior, its own rate and the SHARED elapsed time
+        # since the last accepted frame. See the constructor's contract block
+        # for why this is a rate and not a displacement (2026-09-17 E-STOP).
+        #
+        # BOTH channels get the rate form: the legs share the defect exactly
+        # (same fixed budget, same frozen baseline, same cascade) — a 64 ms hole
+        # with the legs running 8 rev/s would reject a consistent 0.51 rev step
+        # against a 0.3 rev budget and go silent the same way. One gate, one
+        # contract, one enforcement point.
+        now_mono = self._clock()
+        if self._last_accept_t is None:
+            dt_elapsed = self.knot_dt_s
+        else:
+            dt_elapsed = now_mono - self._last_accept_t
+        if not math.isfinite(dt_elapsed) or dt_elapsed > self.gate_rearm_stale_s:
+            # The stream has been silent longer than the firmware's own
+            # staleness window: the baseline describes a machine state the
+            # bridge stopped driving from. RE-ARM (clear it) rather than widen
+            # the budget without bound — the next frame is judged as a first
+            # frame, with the firmware MAX_DEVIATION guard as the complementary
+            # layer (exactly the hand-absent-gap rule below).
+            if self._prev_pos is not None or self._prev_hand is not None:
+                self.gate_rearms += 1
+            self._prev_pos = None
+            self._prev_hand = None
+            dt_elapsed = self.knot_dt_s
+        # Floor at one knot period: a producer catching up after a hole can
+        # offer two frames microseconds apart, each legitimately carrying a
+        # whole knot period of lane. Floored, the budget is never TIGHTER than
+        # the shipped displacement gate — this change only widens a late frame.
+        dt_budget = max(dt_elapsed, self.knot_dt_s)
         if self._prev_pos is not None:
+            leg_budget = self.max_rate_rev_s * dt_budget
             for i in range(self.n):
                 step = abs(u0[i] - self._prev_pos[i])
-                if step > self.max_step_rev:
+                if step > leg_budget:
                     self.frames_rejected += 1
                     self.last_reject_reason = (
-                        f'leg {i} step {step:.4f} rev > {self.max_step_rev} '
-                        f'limit (cmd={u0[i]:.4f}, prev={self._prev_pos[i]:.4f})')
+                        f'leg {i} step {step:.4f} rev > {leg_budget:.4f} rev '
+                        f'budget ({self.max_rate_rev_s:.1f} rev/s x '
+                        f'{dt_budget * 1e3:.1f} ms since the last accepted '
+                        f'frame; cmd={u0[i]:.4f}, prev={self._prev_pos[i]:.4f})')
                     return None, self.last_reject_reason
         if hand_vals is not None and self._prev_hand is not None:
             hand_step = abs(hand_vals[0] - self._prev_hand)
-            if hand_step > self.max_step_hand_rev:
+            hand_budget = self.max_rate_hand_rev_s * dt_budget
+            if hand_step > hand_budget:
                 self.frames_rejected += 1
                 self.last_reject_reason = (
-                    f'hand step {hand_step:.4f} rev > {self.max_step_hand_rev} '
-                    f'limit (cmd={hand_vals[0]:.4f}, prev={self._prev_hand:.4f})')
+                    f'hand step {hand_step:.4f} rev > {hand_budget:.4f} rev '
+                    f'budget ({self.max_rate_hand_rev_s:.1f} rev/s x '
+                    f'{dt_budget * 1e3:.1f} ms since the last accepted frame; '
+                    f'cmd={hand_vals[0]:.4f}, prev={self._prev_hand:.4f})')
                 return None, self.last_reject_reason
 
         # ── torque_ff: clamp (TRUE Nm) → ramp → wire scale (ODrive-Nm) ──────────
@@ -897,5 +1036,10 @@ class SetpointPump:
         # stream; the next hand-carrying frame is a first frame again, with the
         # firmware deviation guard as the complementary layer).
         self._prev_hand = u0h if hand_vals is not None else None
+        # The gate's time base advances ONLY on an accepted frame — that is what
+        # makes a rejection non-absorbing: the budget keeps growing at the axis
+        # rate while the baseline holds, so the next velocity-consistent frame
+        # passes instead of being measured against a budget that never moved.
+        self._last_accept_t = now_mono
         self.frames_built += 1
         return sp, None

@@ -314,6 +314,9 @@ namespace Tracking {
   constexpr float ANNOUNCED_GATE_MM = 200.0f;
   constexpr const char* EXCLUDED_LABEL_PREFIXES = "Platform,Base";
   constexpr bool DETECT_HUMAN_THROWS = false;
+  constexpr uint32_t FLIGHT_FIT_MIN_SAMPLES = 12u;
+  constexpr float FLIGHT_FIT_RESIDUAL_MM = 12.0f;
+  constexpr float FLIGHT_FIT_FREEZE_ABOVE_PLANE_MM = 250.0f;
 }
 
 // ==========================================================================

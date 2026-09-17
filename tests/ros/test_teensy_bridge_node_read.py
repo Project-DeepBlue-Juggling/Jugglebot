@@ -16,6 +16,7 @@ the bridge MUST send ``mpc_active=0`` on every startup path.
 
 from __future__ import annotations
 
+import re
 import time
 
 import pytest
@@ -631,39 +632,148 @@ def test_link_status_hb_stale_axes_dash_when_none_stale(bridge):
     assert kv['hb_stale_axes'] == '-'
 
 
-def test_link_status_warns_on_hb_stale_mask_throttled(bridge):
-    """A throttled WARN (<= 1 per 5 s) fires while HB_STALE_MASK is nonzero,
-    names the stale axes, and is explicit that this is diagnostic-only."""
-    from unittest.mock import MagicMock
-    from jugglebot.teensy_bridge_node import _HB_STALE_WARN_REPEAT_S
-    teensy, node = bridge
-    stale_axes = 0b0000010   # leg 1 only
+def _send_hb_stale(teensy, node, stale_axes):
+    """Deliver a HeartbeatT2J whose HB_STALE_MASK is `stale_axes`, and wait for
+    the node's cache to carry it (0 = the clearing edge)."""
     flags = (stale_axes << p.HEARTBEAT_HB_STALE_SHIFT) & int(
         p.HeartbeatT2JFlags.HB_STALE_MASK)
     hb = HeartbeatT2J(t_teensy_us=1, link_state=int(LinkState.UP),
                       bus1_health=int(BusHealth.OK), bus2_health=int(BusHealth.OK),
                       fault_state=int(FaultState.NONE), flags=flags, uptime_ms=1)
     teensy.send_to_jetson(int(MsgType.HEARTBEAT_T2J), hb.pack())
-    assert _wait_until(lambda: node._latest_heartbeat is not None)
+    assert _wait_until(lambda: (node._latest_heartbeat is not None
+                                and int(node._latest_heartbeat.flags) == flags))
 
+
+# ── hb-stale WARNs: ONE line per dropout EPISODE (2026-09-17) ─────────
+# The 2026-09-17 census proved these are real per-axis leg-bus frame loss
+# (heartbeat AND encoder, one axis at a time, ~0.9-1.9 s, every 15-35 s), so the
+# 500 ms threshold stays and the SHAPE changed: the old code re-warned on every
+# episode with no magnitude in the text, which is how an operator learns to
+# ignore a real signal. See the _HB_STALE_ONSET_WARN_S block in the node.
+
+def test_hb_stale_short_episode_is_silent_until_it_clears(bridge):
+    """A typical (0.9-1.9 s) episode must not warn while it is running — its
+    length and its co-dropped encoder count only exist once it ends."""
+    from unittest.mock import MagicMock
+    teensy, node = bridge
+    _send_hb_stale(teensy, node, 0b0000010)      # leg 1
     node._logger = MagicMock()
     node._publish_link_status()
-    warns = [m for m in _messages(node._logger.warning) if 'heartbeats stale' in m]
-    assert len(warns) == 1
-    assert 'leg 1' in warns[0]
-    assert 'diagnostic only' in warns[0]
-    assert 'not a fault' in warns[0]
+    node._publish_link_status()
+    assert not any('heartbeat' in m and 'stale' in m
+                   for m in _messages(node._logger.warning))
+    assert node._hb_stale_since[1] is not None
+    assert node._hb_stale_episodes[1] == 0       # not yet a completed episode
 
-    # A second publish inside the throttle window must NOT re-warn.
+
+def test_hb_stale_episode_warns_once_on_the_clearing_edge(bridge):
+    """ONE WARN per episode, on the clearing edge, naming the axis, the measured
+    episode length, the co-dropped encoder count and the axis's episode tally."""
+    from unittest.mock import MagicMock
+    teensy, node = bridge
+    # A census at onset, then 25 more encoder frames across a ~1.0 s episode
+    # (nominal 100 Hz ⇒ ~100 expected, so ~75 co-dropped — the 2026-09-17 shape).
+    node._latest_enc_frames = [1000] * p.NUM_AXES
+    _send_hb_stale(teensy, node, 0b0001000)      # leg 3
+    node._publish_link_status()
+    assert node._hb_stale_since[3] is not None
+    node._hb_stale_since[3] = time.monotonic() - 1.0
+    node._latest_enc_frames = [1025] * p.NUM_AXES
+    node._logger = MagicMock()
+    _send_hb_stale(teensy, node, 0)              # clearing edge
+    node._publish_link_status()
+    warns = [m for m in _messages(node._logger.warning)
+             if 'dropout episode ENDED' in m]
+    assert len(warns) == 1, _messages(node._logger.warning)
+    w = warns[0]
+    assert 'leg 3' in w
+    # The magnitude is IN THE TEXT (a few ms of real scheduling slop on top of
+    # the 1.0 s the test backdated).
+    ms = int(re.search(r'(\d+) ms stale', w).group(1))
+    assert 1000 <= ms <= 1100, w
+    assert '25 encoder frames' in w and 'nominal' in w and 'co-dropped' in w
+    assert 'episode 1 for this axis' in w
+    assert 'not a fault' in w
+    assert node._hb_stale_episodes[3] == 1
+    assert 1000 <= node._hb_stale_ms_max[3] <= 1100
+    # And the next publish with the mask clear does NOT re-warn.
     node._logger = MagicMock()
     node._publish_link_status()
-    assert not any('heartbeats stale' in m for m in _messages(node._logger.warning))
+    assert not any('dropout episode' in m for m in _messages(node._logger.warning))
 
-    # Backdate the throttle anchor past the window → warns again.
-    node._logger = MagicMock()
-    node._last_hb_stale_warn_t = time.monotonic() - (_HB_STALE_WARN_REPEAT_S + 1.0)
+
+def test_hb_stale_episode_warn_says_so_when_no_census_is_available(bridge):
+    """A pre-FW-23 bridge (or a session with no /cache_diag yet) still gets the
+    episode line — it says the encoder census is unavailable rather than
+    inventing a co-dropped count."""
+    from unittest.mock import MagicMock
+    teensy, node = bridge
+    node._latest_enc_frames = None
+    _send_hb_stale(teensy, node, 0b1000000)      # the hand
     node._publish_link_status()
-    assert any('heartbeats stale' in m for m in _messages(node._logger.warning))
+    node._logger = MagicMock()
+    _send_hb_stale(teensy, node, 0)
+    node._publish_link_status()
+    warns = [m for m in _messages(node._logger.warning)
+             if 'dropout episode ENDED' in m]
+    assert len(warns) == 1 and 'hand' in warns[0]
+    assert 'encoder census unavailable' in warns[0]
+
+
+def test_hb_stale_long_episode_warns_at_onset_throttled(bridge):
+    """An episode past the 2.0 s axis-silence window is qualitatively different
+    from the measured population, so it warns WHILE it runs — once per axis per
+    throttle window, not once per 10 Hz publish."""
+    from unittest.mock import MagicMock
+    from jugglebot.teensy_bridge_node import (
+        _HB_STALE_WARN_REPEAT_S, _HB_STALE_ONSET_WARN_S)
+    teensy, node = bridge
+    _send_hb_stale(teensy, node, 0b0000001)      # leg 0
+    node._publish_link_status()
+    node._hb_stale_since[0] = time.monotonic() - (_HB_STALE_ONSET_WARN_S + 0.5)
+    node._logger = MagicMock()
+    node._publish_link_status()
+    warns = [m for m in _messages(node._logger.warning) if 'STILL stale' in m]
+    assert len(warns) == 1 and 'leg 0' in warns[0]
+    held_ms = int(re.search(r'after (\d+) ms', warns[0]).group(1))
+    assert 2500 <= held_ms <= 2600, warns[0]
+    # Inside the throttle window: silent.
+    node._logger = MagicMock()
+    node._publish_link_status()
+    assert not any('STILL stale' in m for m in _messages(node._logger.warning))
+    # Backdate the per-axis anchor past the window → warns again.
+    node._hb_stale_onset_warn_t[0] = (time.monotonic()
+                                      - (_HB_STALE_WARN_REPEAT_S + 1.0))
+    node._logger = MagicMock()
+    node._publish_link_status()
+    assert any('STILL stale' in m for m in _messages(node._logger.warning))
+
+
+def test_hb_stale_episodes_are_tracked_per_axis(bridge):
+    """Episodes rotate across axes (the 2026-09-17 cadence), so the tally and
+    the onset state are per-axis, never shared."""
+    teensy, node = bridge
+    for mask in (0b0000010, 0, 0b0000010, 0, 0b0100000, 0):
+        _send_hb_stale(teensy, node, mask)
+        node._publish_link_status()
+    assert node._hb_stale_episodes[1] == 2
+    assert node._hb_stale_episodes[5] == 1
+    assert node._hb_stale_episodes[0] == 0
+
+
+def test_link_status_surfaces_hb_stale_episode_counters(bridge):
+    """/link_status carries the cumulative per-axis episode census (axis order
+    0..6) so a session can be compared before/after a frame-drop fix without
+    grepping the log."""
+    teensy, node = bridge
+    _send_hb_stale(teensy, node, 0b0000100)      # leg 2
+    node._publish_link_status()
+    _send_hb_stale(teensy, node, 0)
+    node._publish_link_status()
+    kv = {v.key: v.value for v in node.link_status_pub.published[-1].values}
+    assert kv['hb_stale_episodes'] == '0,0,1,0,0,0,0'
+    assert int(kv['hb_stale_episode_ms_max'].split(',')[2]) >= 0
 
 
 def test_link_status_diag_hb_stale_legs_from_diagnostic_flag_bit0(bridge):

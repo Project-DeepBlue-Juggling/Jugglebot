@@ -831,6 +831,30 @@ _T2J_HB_STALE_SHIFT = int(p.HEARTBEAT_HB_STALE_SHIFT)
 # Throttle for the "heartbeats stale" advisory WARN (2d below) — diagnostic
 # noise must not compete with the guard-latch ERROR cadence.
 _HB_STALE_WARN_REPEAT_S = 5.0
+# ── WARN shape: one line per dropout EPISODE (2026-09-17) ────────────────────
+# The 2026-09-17 census (bags `…18-45-10` / `…18-50-45`, FW 23 hb_frames /
+# enc_frames) settled what these WARNs are: REAL per-axis frame loss on the leg
+# bus, 15 episodes across 536 s, each ~0.9-1.9 s on ONE axis while the other six
+# sit at exactly 10/100 Hz, and the ENCODER stream collapses with the heartbeat
+# (e.g. axis 3: hb 6 -> 0 -> 6 Hz with enc 89 -> 25 -> 50 Hz). rx_cap_hits_jb,
+# decode_errors, crc_errors and seq_gaps are all 0 — it is not the RX ring, not
+# UDP, not the host's derivation. The 500 ms threshold is therefore CORRECT and
+# stays (heartbeats are 10 Hz, so it is 5 consecutive losses, nowhere near
+# period jitter) and the class is owned by plans/active/leg-bus-frame-drops.md.
+# What was wrong was the WARN's SHAPE: the throttle anchor reset every time the
+# mask cleared, so every episode re-warned with no magnitude in the text and the
+# operator learned to ignore it.
+#
+# Now: ONE line per episode, on the CLEARING edge, naming the axis, the measured
+# episode length and the encoder frames that dropped with it — a completed
+# episode is the only point at which those numbers exist. A long episode would
+# otherwise be silent while it mattered, so an episode still running after
+# _HB_STALE_ONSET_WARN_S also warns at onset (throttled per axis by
+# _HB_STALE_WARN_REPEAT_S). 2.0 s is not arbitrary: it is
+# CAN_AXIS_SILENCE_TIMEOUT_US, the point at which a dropout that took EVERY
+# frame type with it would have E-STOPPED, so an episode reaching it is
+# qualitatively different from the 0.9-1.9 s population.
+_HB_STALE_ONSET_WARN_S = 2.0
 
 # HandSensor.flags bits (T→J, hand ball-present sensor) — generated single
 # source: p.HandSensorFlags. An older bridge never sends the frame
@@ -1025,6 +1049,47 @@ _RECOVER_MAX_RESEED_ATTEMPTS = 3
 # clears straight through. Without this, an operator facing a stuck leg is left guessing.
 _MANUAL_RECOVERY_HINT = ("manual recovery: disarm with set_setpoint_output=false, then "
                          "/clear_errors clears directly")
+
+# ── Hand park on guard-latch recovery (2026-09-17) ───────────────────────────
+# CONTRACT: recovery from a guard latch PARKS THE HAND through the same profiled
+# firmware path ACTIVATE uses, before the next schedule can stream it.
+#
+# Why (2026-09-17 sitting, bag `2026-09-17_18-45-10`, latches at t=143.744 and
+# 161.544): a latch leaves the hand wherever the stroke was — that sitting left
+# it at 8.7382 rev, near full extension, with cmd and encoder agreeing to 1e-4
+# (so the seed reconciliation had nothing to reconcile and correctly did
+# nothing). `/clear_errors` cleared the latch and left it there. The next
+# schedule's opening REST then planned the hand home over its own 1.625 s — a
+# mean lane rate of ~5.4 rev/s — while the hand under the bridge's 2.0 rev lead
+# authority physically follows at only ~0.83 rev/s. The command ran 3.07 rev
+# BELOW the encoder and MAX_DEVIATION_HAND_REV (2.5) E-STOPPED the machine
+# 0.69 s in. It happened twice, identically. What finally cleared it was the
+# operator's DEACTIVATE → ACTIVATE: ACTIVATE fires AXIS_ALL, whose COMMAND phase
+# TRAP_TRAJs axis 6 to HAND_ACTIVATE_POSITION_REV at GENTLE_MOVE_VEL_LIMIT_RPS
+# (2.5 rev/s) and hands the axis back in PASSTHROUGH. The two schedules after it
+# ran clean. This encodes that by hand-free.
+#
+# Fired as a SINGLE-AXIS ACTIVATE(HAND_AXIS): `leg_activate.cpp::resolve_targets`
+# maps a single axis to that axis alone, so the legs are never commanded — they
+# stay exactly where the converged descent left them. Safe against the live
+# stream for two reasons, both firmware-side: the guard descent installs a
+# HoldPlan that carries NO hand track (trajectory_node), so no streamed frame is
+# commanding the hand across a recovery, and the interp's exceed-tick counting
+# is gated on `out_en` (FW 18), which a firmware op suppresses. Afterwards the
+# next plan's hand seed falls through to the MEASURED encoder — the parked
+# position — because a hand-less frame clears `_last_hand_rev`.
+#
+# No-op band for "already parked". Wider than the firmware's own arrival
+# tolerance (JB_OP_TARGET_REACHED_POS_TOL_REV = 0.01 rev) so encoder noise at
+# the park cannot fire a pointless 10 s-budget op, and far below anything the
+# next opening REST would have to walk out (0.1 rev ~= 3.3 mm of carriage travel
+# at hand_mm_per_rev 32.567).
+_HAND_PARK_BAND_REV = 0.10
+
+_HAND_NOT_PARKED_HINT = (
+    "the next schedule's opening REST would walk the hand home at a rate the "
+    "lead authority cannot follow and re-trip MAX_DEVIATION — DEACTIVATE then "
+    "ACTIVATE (the AXIS_ALL park) before commanding motion")
 
 # Decoded Platform-Teensy RobotState (relay read). Fields mirror
 # Teensy_code_platform.ino RobotState (is_homed / levelling_complete / pose offset, rad).
@@ -1348,10 +1413,22 @@ class TeensyBridgeNode(Node):
         # _GUARD_LATCH_REPEAT_S). None while no fault is latched; anchored to the
         # fault edge so the first repeat lands _GUARD_LATCH_REPEAT_S after it.
         self._last_guard_latch_log_t: float | None = None
-        # Monotonic timestamp of the last "heartbeats stale" diagnostic WARN
-        # (HB_STALE_MASK, FW 23) — throttled independently of the guard-latch
-        # reminder above since this is report-only, never a fault.
-        self._last_hb_stale_warn_t: float | None = None
+        # Per-axis dropout-EPISODE state for the reshaped WARN above.
+        # `_hb_stale_since[i]`: monotonic onset of axis i's current episode
+        # (None = not stale). `_hb_stale_enc_at_onset[i]`: that axis's
+        # cumulative enc_frames census at onset (None = no /cache_diag yet), so
+        # the clearing line can report how many ENCODER frames went with the
+        # heartbeats. `_hb_stale_episodes[i]`: cumulative completed episodes,
+        # surfaced on /link_status. `_hb_stale_onset_warn_t[i]`: per-axis
+        # throttle anchor for the >= _HB_STALE_ONSET_WARN_S onset WARN.
+        self._hb_stale_since: list = [None] * _NUM_AXES
+        self._hb_stale_enc_at_onset: list = [None] * _NUM_AXES
+        self._hb_stale_episodes: list = [0] * _NUM_AXES
+        self._hb_stale_ms_max: list = [0] * _NUM_AXES
+        self._hb_stale_onset_warn_t: list = [None] * _NUM_AXES
+        # Latest per-axis enc_frames census (FW 23 CacheDiag), kept so an
+        # episode's co-dropped encoder count can be differenced across it.
+        self._latest_enc_frames: list | None = None
         self._latest_profile: Profile | None = None
         # Per-axis latest Diagnostic (one axis per frame on the wire), plus its
         # host-arrival time (monotonic). The arrival times gate the BB axes'
@@ -1983,6 +2060,11 @@ class TeensyBridgeNode(Node):
             # like max_step_rev, never left riding the module default.
             max_step_hand_rev=(float(hw.JB_TRAJ_HAND_VEL_LIMIT_RPS)
                                * float(hw.JB_TRAJ_KNOT_DT_S)),
+            # The gate is a VELOCITY bound (2026-09-17): it divides the two
+            # step limits above by THIS knot period to get the rates it
+            # enforces, so the period comes from the same generated config the
+            # limits do rather than riding the module default.
+            knot_dt_s=float(hw.JB_TRAJ_KNOT_DT_S),
             torque_ff_enabled=bool(hw.DYNAMICS_TORQUE_FF_ENABLED),
             torque_ff_max_nm=float(hw.DYNAMICS_TORQUE_FF_MAX_NM),
             torque_wire_scale=float(hw.ODRIVE_LEG_TORQUE_WIRE_SCALE),
@@ -2449,6 +2531,16 @@ class TeensyBridgeNode(Node):
         with self._lock:
             q = self._cache_diag_queue
             q.append(cd)
+            # Latest per-axis encoder census, kept live for the hb-stale
+            # EPISODE lines (2026-09-17): the 2026-09-17 dropouts take the
+            # encoder stream with the heartbeat, and that count is the single
+            # most diagnostic number the WARN can carry. Cumulative-since-boot
+            # and differenced across the episode, exactly as /cache_diag
+            # renders it. Cheap: a list copy at 1 Hz on the RX thread.
+            try:
+                self._latest_enc_frames = [int(v) for v in cd.enc_frames]
+            except Exception:  # noqa: BLE001 — a census miss must never poison RX
+                pass
             # ~1 h at the 1 Hz emit cadence. Bounds a stalled drain (the drain is
             # also 1 Hz, so in health this queue holds 0 or 1 entries) without
             # truncating anything a real session would produce. Drop-oldest,
@@ -4225,6 +4317,7 @@ class TeensyBridgeNode(Node):
                                  max_step_hand_rev=(
                                      float(hw.JB_TRAJ_HAND_VEL_LIMIT_RPS)
                                      * float(hw.JB_TRAJ_KNOT_DT_S)),
+                                 knot_dt_s=float(hw.JB_TRAJ_KNOT_DT_S),
                                  torque_ff_enabled=bool(hw.DYNAMICS_TORQUE_FF_ENABLED))
             sp, reason = probe.build(frame, 0)
             if sp is None:
@@ -4415,12 +4508,21 @@ class TeensyBridgeNode(Node):
                     # (review 2026-07-14 — /recover keeps mpc_active=1, so
                     # neither reset() trigger fires on this path).
                     self._sp_pump.restart_torque_ramp()
-                res.success = cok
+                if not cok:
+                    res.success = False
+                    res.message = ('reseed unavailable AND direct CLEAR_ERRORS '
+                                   f'failed: {cmsg} — {_MANUAL_RECOVERY_HINT}')
+                    return res
+                # Same hand-park obligation as the converge-first path below —
+                # more so here: with trajectory_node down nothing is streaming
+                # the hand at all, so the park is unopposed.
+                pok, pmsg = self._park_hand_after_guard_latch()
+                res.success = pok
                 res.message = (
                     ('reseed unavailable (trajectory_node down) — cleared DIRECTLY '
-                     f'(escape hatch): {cmsg}') if cok else
-                    ('reseed unavailable AND direct CLEAR_ERRORS failed: '
-                     f'{cmsg} — {_MANUAL_RECOVERY_HINT}'))
+                     f'(escape hatch): {cmsg}, {pmsg}') if pok else
+                    ('reseed unavailable — cleared DIRECTLY (escape hatch) but '
+                     f'HAND NOT PARKED — {pmsg}; {_HAND_NOT_PARKED_HINT}'))
                 return res
             try:
                 future = self._reseed_client.call_async(Trigger.Request())
@@ -4480,10 +4582,22 @@ class TeensyBridgeNode(Node):
         # begins at the clear, so the residual step at hand-back is bounded by
         # ramp_scale(t_slew) x FF ~= (0.3 s / 2 s) x 0.04 Nm ~= 0.1 A — noise.
         self._sp_pump.restart_torque_ramp()
+        # The hand half of the recovery (2026-09-17): the latch left the hand
+        # wherever the stroke was, and nothing downstream can walk it home
+        # inside the lead authority. Park it here, on the profiled firmware
+        # path, before any schedule can stream it. See _HAND_PARK_BAND_REV.
+        pok, pmsg = self._park_hand_after_guard_latch()
+        if not pok:
+            # The guard IS cleared, but reporting success would send the
+            # operator straight into the E-STOP this park exists to prevent.
+            res.success = False
+            res.message = (f'CLEAR_ERRORS fired but HAND NOT PARKED — {pmsg}; '
+                           f'{_HAND_NOT_PARKED_HINT}')
+            return res
         res.success = True
         res.message = ('recovered: reseeded hold at measured, streamed u0 within '
                        f'{_RECOVER_U0_TOL_REV} rev of every encoder, CLEAR_ERRORS '
-                       'fired')
+                       f'fired, {pmsg}')
         return res
 
     def _acquire_setpoint_source(self) -> tuple:
@@ -4901,22 +5015,7 @@ class TeensyBridgeNode(Node):
             if hb is not None:
                 hb_stale_mask = ((int(hb.flags) & _T2J_HB_STALE_MASK)
                                   >> _T2J_HB_STALE_SHIFT)
-                if hb_stale_mask:
-                    now_mono = time.monotonic()
-                    if (self._last_hb_stale_warn_t is None
-                            or (now_mono - self._last_hb_stale_warn_t)
-                                >= _HB_STALE_WARN_REPEAT_S):
-                        self._last_hb_stale_warn_t = now_mono
-                        stale_axes = ','.join(
-                            _axis_label(i) for i in range(_NUM_AXES)
-                            if hb_stale_mask & (1 << i))
-                        self.get_logger().warning(
-                            f'hand/leg heartbeats stale >500 ms on axes '
-                            f'[{stale_axes}] (diagnostic only — not a fault; '
-                            f'the bus liveness watchdog reads every frame '
-                            f'type)')
-                else:
-                    self._last_hb_stale_warn_t = None
+                self._track_hb_stale_episodes(hb_stale_mask)
 
             msg = DiagnosticStatus()
             msg.name = 'teensy/link'
@@ -5295,6 +5394,24 @@ class TeensyBridgeNode(Node):
                                  if ((int(hb.flags) & _T2J_HB_STALE_MASK)
                                      >> _T2J_HB_STALE_SHIFT) & (1 << i))
                                  or '-')),
+                    # Cumulative COMPLETED dropout episodes per axis, and the
+                    # longest one, both in axis order 0..6 (2026-09-17). The
+                    # episode WARN is one line at a clearing edge, so a session
+                    # needs a running census to answer "how often, and how bad"
+                    # without grepping the whole log — and the 2026-09-17
+                    # cadence (~15-35 s, rotating axes) is exactly what a
+                    # before/after comparison on the frame-drop plan needs.
+                    # TWO joined keys, not 14 per-axis ones: this 10 Hz callback
+                    # already publishes ~60 KeyValues and is the prime suspect
+                    # for the 64 ms publish stall that caused the SETPOINT_STALE
+                    # latch in the same sitting — it must not grow for
+                    # cosmetics.
+                    KeyValue(key='hb_stale_episodes',
+                             value=','.join(str(int(v))
+                                            for v in self._hb_stale_episodes)),
+                    KeyValue(key='hb_stale_episode_ms_max',
+                             value=','.join(str(int(v))
+                                            for v in self._hb_stale_ms_max)),
                 ]
             # Per-axis DIAGNOSTIC.flags bit0 (heartbeat stale) for legs 0-5 —
             # the leg-axis equivalent of the BB 7/8 gate in
@@ -6236,6 +6353,145 @@ class TeensyBridgeNode(Node):
         msg = f"configure complete on axes {axes}"
         self.get_logger().info(msg)
         return True, msg
+
+    def _track_hb_stale_episodes(self, hb_stale_mask: int) -> None:
+        """Per-axis HB_STALE_MASK episode tracker — ONE WARN per dropout episode.
+
+        Called from the 10 Hz /link_status publish with the decoded mask. Rising
+        edge: record the onset and the axis's cumulative enc_frames census.
+        Clearing edge: WARN once, naming the axis, the measured episode length
+        and the encoder frames that dropped with it, and bump the per-axis
+        counter /link_status surfaces. Still-stale and past
+        _HB_STALE_ONSET_WARN_S: one throttled onset WARN per axis, so an episode
+        long enough to matter is not silent while it runs.
+
+        NEVER a fault (mask is report-only, FW 23) and never the threshold's
+        judge — see the _HB_STALE_ONSET_WARN_S block for why 500 ms stays.
+        """
+        now_mono = time.monotonic()
+        with self._lock:
+            enc_now = (list(self._latest_enc_frames)
+                       if self._latest_enc_frames is not None else None)
+        for i in range(_NUM_AXES):
+            stale = bool(hb_stale_mask & (1 << i))
+            since = self._hb_stale_since[i]
+            if stale and since is None:
+                self._hb_stale_since[i] = now_mono
+                self._hb_stale_enc_at_onset[i] = (
+                    enc_now[i] if (enc_now is not None and i < len(enc_now))
+                    else None)
+                self._hb_stale_onset_warn_t[i] = None
+            elif stale:
+                held_s = now_mono - since
+                last = self._hb_stale_onset_warn_t[i]
+                if (held_s >= _HB_STALE_ONSET_WARN_S
+                        and (last is None
+                             or (now_mono - last) >= _HB_STALE_WARN_REPEAT_S)):
+                    self._hb_stale_onset_warn_t[i] = now_mono
+                    self.get_logger().warning(
+                        f'{_axis_label(i)} heartbeats STILL stale after '
+                        f'{held_s * 1e3:.0f} ms (>500 ms threshold; episode '
+                        f'ongoing, longer than the {_HB_STALE_ONSET_WARN_S:.0f} s '
+                        f'axis-silence timeout window) — diagnostic only, not a '
+                        f'fault; the bus liveness watchdog reads every frame type')
+            elif since is not None:
+                # Clearing edge: the episode is over, so its length exists.
+                episode_ms = (now_mono - since) * 1e3
+                self._hb_stale_since[i] = None
+                self._hb_stale_onset_warn_t[i] = None
+                self._hb_stale_episodes[i] += 1
+                if episode_ms > self._hb_stale_ms_max[i]:
+                    self._hb_stale_ms_max[i] = int(episode_ms)
+                enc_at_onset = self._hb_stale_enc_at_onset[i]
+                self._hb_stale_enc_at_onset[i] = None
+                if (enc_at_onset is not None and enc_now is not None
+                        and i < len(enc_now)):
+                    # enc_frames is cumulative-since-boot at a nominal 100 Hz,
+                    # so the SHORTFALL against the episode's duration is the
+                    # co-dropped encoder count — the number that says this is
+                    # frame loss and not a heartbeat-only artefact.
+                    got = max(0, enc_now[i] - enc_at_onset)
+                    expect = int(round(100.0 * episode_ms * 1e-3))
+                    enc_txt = (f'{got} encoder frames in the window vs ~{expect} '
+                               f'nominal ({max(0, expect - got)} co-dropped)')
+                else:
+                    enc_txt = 'encoder census unavailable'
+                self.get_logger().warning(
+                    f'{_axis_label(i)} heartbeat dropout episode ENDED: '
+                    f'{episode_ms:.0f} ms stale (>500 ms threshold = 5 lost '
+                    f'heartbeats at 10 Hz), {enc_txt}; episode '
+                    f'{self._hb_stale_episodes[i]} for this axis since boot — '
+                    f'diagnostic only, not a fault (real leg-bus frame loss, '
+                    f'plans/active/leg-bus-frame-drops.md)')
+
+    def _park_hand_after_guard_latch(self, *, poll_dt=0.05):
+        """Park the hand at ``HAND_ACTIVATE_POSITION_REV`` through the firmware's
+        profiled single-axis ACTIVATE. Returns ``(ok, message)``.
+
+        The recovery half of the guard-latch contract — see the
+        ``_HAND_PARK_BAND_REV`` block for the 2026-09-17 double-latch it encodes.
+        A no-op (ok, "already parked") when the hand is already inside the band.
+
+        FAIL-SAFE on an unknown hand position: no telemetry, no per-axis
+        diagnostic, or a non-finite ``pos_rev[6]`` (which is what a faulted
+        encoder reports) means we cannot tell whether a park is needed, so this
+        REFUSES rather than firing a 10 s TRAP_TRAJ at an axis whose position is
+        a guess — and `/recover` reports it, so the operator learns that the
+        DEACTIVATE/ACTIVATE dance is still required for the hand.
+
+        Synchronous: blocks the calling (executor) thread for the up to ~4 s the
+        park takes (8.7 rev at the op's 2.5 rev/s ceiling). That is the same
+        posture ``_run_activate`` already has; the RX and heartbeat threads keep
+        the link, the telemetry cache and ``mpc_active`` alive throughout, so the
+        stream does not go stale underneath it.
+        """
+        target = float(hw.JB_OP_HAND_ACTIVATE_POSITION_REV)
+        with self._lock:
+            telem = self._latest_telemetry
+            have_diag = _HAND_AXIS in self._latest_diag
+        if telem is None or not have_diag:
+            return False, ('hand park SKIPPED — no hand telemetry/diagnostic yet, '
+                           'so the hand position is unknown')
+        pos = float(telem.pos_rev[_HAND_AXIS])
+        if not math.isfinite(pos):
+            return False, ('hand park SKIPPED — hand pos_rev is non-finite '
+                           '(encoder not ready / faulted)')
+        if abs(pos - target) <= _HAND_PARK_BAND_REV:
+            self.get_logger().info(
+                f'hand park not needed — hand at {pos:+.4f} rev, inside '
+                f'{_HAND_PARK_BAND_REV} rev of the park ({target:+.4f} rev)')
+            return True, f'hand already parked ({pos:+.4f} rev)'
+        self.get_logger().info(
+            f'hand park: ACTIVATE(axis {_HAND_AXIS}) TRAP_TRAJ from {pos:+.4f} rev '
+            f'to the park at {target:+.4f} rev at '
+            f'{float(hw.JB_OP_GENTLE_MOVE_VEL_LIMIT_RPS)} rev/s — a guard latch '
+            f'left the hand mid-stroke, and the next schedule\'s opening REST '
+            f'cannot walk it home inside the lead authority')
+        ok, msg, _ = self.teensy_activate(_HAND_AXIS)
+        if not ok:
+            return False, f'hand park ACTIVATE rejected: {msg}'
+        mon = ActivateMonitor([_HAND_AXIS], {_HAND_AXIS: target})
+        hard_deadline = time.monotonic() + mon.timeout_s + 5.0
+        while True:
+            now = time.monotonic()
+            res = mon.step(now, self._activate_axis_status([_HAND_AXIS]))
+            if res.done:
+                break
+            if now > hard_deadline:
+                self.get_logger().error('hand park: hard deadline exceeded')
+                break
+            time.sleep(poll_dt)
+        if mon.failed:
+            why = '; '.join(f'axis {a}: {r}' for a, r in mon.failed.items())
+            self.get_logger().error(f'hand park FAILED — {why}')
+            return False, f'hand park FAILED ({why})'
+        with self._lock:
+            telem = self._latest_telemetry
+        landed = (float(telem.pos_rev[_HAND_AXIS]) if telem is not None
+                  else float('nan'))
+        self.get_logger().info(
+            f'hand park complete — {pos:+.4f} rev -> {landed:+.4f} rev')
+        return True, f'hand parked ({pos:+.4f} -> {landed:+.4f} rev)'
 
     def _activate_axis_status(self, axes):
         """Build per-axis ``ActivateAxisStatus`` for the activate observer from the

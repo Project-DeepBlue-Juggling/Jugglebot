@@ -140,6 +140,32 @@ not a repeat of this one.
 - **Tracker catch plane moved.** The tracker now predicts the landing at the
   830 mm catch plane (was 809.08 mm) — the same change moves the FSM's catch
   plane too; it is not scoped to this sitting alone.
+- **Read before the next sitting (2026-09-17,
+  `logbook/2026-09-17-late-catches-are-a-late-tracker.md`).** The two
+  2026-09-17 sittings (37 throws) settled the two risks above: the
+  commanded→physical release lag is **5–55 ms** (median 30 ms, measured by a
+  ballistic fit of the raw marker), and the tracker confirmed **37/37**
+  flights. What they found instead: the tracker's landing estimate ran
+  +0.05..+0.13 s LATE (Kalman lag, frozen at its most lagged sample), so the
+  learner converged to a command whose true flight was 30–90 ms SHORT of the
+  catch aim and the hand was late on every catch (ball caught at the top of
+  the stroke while the cup accelerated away at > g → the HELD/EMPTY/HELD
+  gap, late seats, ten `caught=False` for two real drops). Landed for the
+  next sitting: the tracker's landing now comes from a gravity-fixed batch
+  fit of the free-flight samples (`tracking/flight_fit.py`; validation in
+  `temp/probes/tracker_fit_validation_20260917.md`), `CAUGHT_WINDOW_S` 0.70,
+  the hand step gate is a rate bound (a 64 ms Jetson hiccup no longer
+  E-STOPs a throw), `/recover` parks the hand (a `MAX_DEVIATION` after
+  `clear_errors` was the un-parked hand on the 1 rev/s recovery slew), and
+  the heartbeat-stale WARN is one line per episode. **Preconditions added:**
+  (a) `temp/learn/jugglebot` was QUARANTINED (`temp/learn/_quarantine_20260917/`)
+  — the sitting starts from a COLD memory, expect in-band by throw 3–5;
+  (b) `colcon build` (bridge node + tracker changes); (c) watch, per catch,
+  that the sensor reads HELD at contact and stays HELD through the descent —
+  a HELD→EMPTY→HELD gap means the cup is still outrunning the ball and the
+  timing has not closed; (d) if the guard latches, `/recover` now parks the
+  hand itself — if it answers `HAND NOT PARKED`, DEACTIVATE then ACTIVATE
+  before the next schedule.
 
 ## 2. Bring-up (launch UP, robot powered, ball present)
 

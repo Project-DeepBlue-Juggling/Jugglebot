@@ -175,7 +175,23 @@ OUTCOME_GUARD_S = 0.012
 #: its own "Known limitation".  The window covers it anyway, because widening is
 #: monotone (it can only ADD a catch, never invent a landing) and the ruling
 #: above does not depend on the exact number.
-CAUGHT_WINDOW_S = 0.35
+#:
+#: **0.70 s (2026-09-17, both sittings, 37 throws,
+#: ``scratchpad/late_catch_probe.py`` -> logbook
+#: ``2026-09-17-late-catches-are-a-late-tracker.md``)**: when the ball arrived
+#: while the cup was still accelerating downward faster than gravity (the hand
+#: late against the ball by 30-90 ms), the debounced SEAT came only once the
+#: hand had stopped -- +0.26 .. +0.61 s after the physical landing on half of
+#: the caught throws -- and every one of those past the old 0.35 s read
+#: ``caught=False`` although the operator saw the ball caught (two genuine
+#: drops in the sitting against ten reported).  A catch that settles late is a
+#: catch (the 09-16 ruling); 0.70 s clears the +0.61 s worst case.  It costs
+#: nothing on a chained catch -- :meth:`SkillExecutor._bound_by_next_release`
+#: closes the window at the next release regardless -- and on a final catch
+#: there is no beat to meet.  The late seats themselves are the symptom the
+#: tracker fix in that entry removes; the window is the reporting floor under
+#: it, not the fix.
+CAUGHT_WINDOW_S = 0.70
 
 #: How far BEFORE the landing a SEATED reading still counts as this throw's
 #: catch.  The sign of the seated delay is not fixed: on 2026-09-15 the sensor
@@ -202,8 +218,12 @@ CAUGHT_LEAD_S = 0.10
 #: the OBSERVED LANDING may move the anchor -- a tracker-trust question, set by
 #: the +196 ms worst late crossing -- while the window is how long the SEAT may
 #: take after it, a sensor question.  Worst-case finalise latency is their sum,
-#: 0.70 s, still inside the ~0.95 s beat, which is the only deadline the memory
-#: has.
+#: 1.05 s since 2026-09-17 -- longer than the ~0.95 s beat, which is fine: on
+#: a chained catch :meth:`SkillExecutor._bound_by_next_release` closes the
+#: window at the next release whatever the sum says, and the next throw's
+#: command is computed at its dispatch (~1.1 s before its release), before
+#: this row could reach the memory under ANY window.  Only a final catch ever
+#: waits the full sum, and nothing is waiting on it.
 CAUGHT_LAND_DEFER_CAP_S = 0.35
 
 #: How far BEFORE this ball's NEXT scheduled release a row's verdict window

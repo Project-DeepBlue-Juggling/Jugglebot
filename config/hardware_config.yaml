@@ -1738,6 +1738,22 @@ ball_tracking:
   # phantom `human_throw` tracks off one static floor marker at
   # (550,-353,95) mm, and nothing on the skill stack consumes them yet.
   detect_human_throws: false
+  # Gravity-fixed batch landing fit (2026-09-17) — see
+  # `tracking/flight_fit.py`. The tracker's KF-extrapolated `landing_time`
+  # runs 0.06-0.20 s LATE and grows later through the descent (measured
+  # 2026-09-17, two sittings, 37 throws); a batch least-squares fit over the
+  # free-flight samples estimates the crossing to a few ms instead.
+  # Minimum surviving samples for a valid fit, spanning >= 50 ms.
+  flight_fit_min_samples: 12
+  # Two-pass outlier gate: drop samples whose 3D residual exceeds this {mm}.
+  flight_fit_residual_mm: 12.0
+  # Drop samples at/below landing_z + this margin {mm} on BOTH legs of the
+  # flight: descending, the cup catches the ball ~170 mm above the landing
+  # plane and in-cup deceleration samples drag a landing estimate late;
+  # ascending, the announced throw_time leads the physical release by
+  # 5-55 ms and the still-pushed (> g) samples bias the fit EARLY. See
+  # tracking/flight_fit.py add().
+  flight_fit_freeze_above_plane_mm: 250.0
 
 # ============================================================
 # 12. Ball Butler Geometry & Kinematics

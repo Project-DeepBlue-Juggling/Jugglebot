@@ -57,6 +57,9 @@ class BallTrackerNode(Node):
             excluded_label_prefixes=parse_label_prefixes(
                 hw.TRACKING_EXCLUDED_LABEL_PREFIXES),
             detect_human_throws=hw.TRACKING_DETECT_HUMAN_THROWS,
+            flight_fit_min_samples=hw.TRACKING_FLIGHT_FIT_MIN_SAMPLES,
+            flight_fit_residual_mm=hw.TRACKING_FLIGHT_FIT_RESIDUAL_MM,
+            flight_fit_freeze_above_plane_mm=hw.TRACKING_FLIGHT_FIT_FREEZE_ABOVE_PLANE_MM,
         )
 
         # Subscribers
@@ -73,7 +76,10 @@ class BallTrackerNode(Node):
             f"dt={hw.TRACKING_MOCAP_DT_S*1000:.1f}ms, "
             f"announced_gate={hw.TRACKING_ANNOUNCED_GATE_MM:.0f}mm, "
             f"excluded_labels={parse_label_prefixes(hw.TRACKING_EXCLUDED_LABEL_PREFIXES)}, "
-            f"detect_human_throws={bool(hw.TRACKING_DETECT_HUMAN_THROWS)}")
+            f"detect_human_throws={bool(hw.TRACKING_DETECT_HUMAN_THROWS)}, "
+            f"flight_fit(min_samples={hw.TRACKING_FLIGHT_FIT_MIN_SAMPLES}, "
+            f"residual={hw.TRACKING_FLIGHT_FIT_RESIDUAL_MM:.0f}mm, "
+            f"freeze_above_plane={hw.TRACKING_FLIGHT_FIT_FREEZE_ABOVE_PLANE_MM:.0f}mm)")
 
     def _on_announcement(self, msg: ThrowAnnouncement):
         """Handle throw announcement from Ball Butler."""

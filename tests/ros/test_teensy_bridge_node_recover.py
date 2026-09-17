@@ -17,11 +17,11 @@ import threading
 import time
 import types
 
-from teensy_link import RpcMethod, RpcStatus, rpc_args
+from teensy_link import Diagnostic, MsgType, RpcMethod, RpcStatus, rpc_args
 
 from std_srvs.srv import Trigger
 
-from tests.ros._bridge_harness import _build_paired_node, _teardown
+from tests.ros._bridge_harness import _build_paired_node, _teardown, _wait_until
 from tests.ros.test_teensy_bridge_node_rpc import _capture
 from tests.ros.test_teensy_bridge_node_setpoint import _bring_link_and_telem_up
 
@@ -59,11 +59,32 @@ class _FakeReseedClient:
         return _DoneFuture(self._resp)
 
 
+def _hand_diag_up(teensy, node, pos_rev=0.0):
+    """Give the node the hand's (axis 6) Diagnostic + encoder so the recovery
+    HAND PARK can make a decision.
+
+    Every /recover now ends with the hand-park step (2026-09-17): a guard latch
+    leaves the hand mid-stroke and the next schedule's opening REST cannot walk
+    it home inside the lead authority — that is the double MAX_DEVIATION latch
+    of 2026-09-17. Without a hand diagnostic the park REFUSES fail-safe (an
+    unknown hand position must not be TRAP_TRAJ'd at), so the harness supplies
+    one. ``pos_rev`` inside _HAND_PARK_BAND_REV of the park makes it a no-op,
+    which is the state these leg-recovery tests are about.
+    """
+    teensy.send_telemetry(pos_rev=tuple([0.1] * 6 + [pos_rev]),
+                          vel_rps=tuple([0.0] * 7))
+    diag = Diagnostic(axis_id=6, axis_state=8, active_errors=0, disarm_reason=0)
+    teensy.send_to_jetson(int(MsgType.DIAGNOSTIC), diag.pack())
+    assert _wait_until(lambda: (node._latest_telemetry is not None
+                                and 6 in node._latest_diag), timeout=2.0)
+
+
 def test_recover_happy_path_reseeds_verifies_then_clears():
     teensy, client, node = _node()
     try:
         box = _capture(teensy, RpcMethod.CLEAR_ERRORS)
-        _bring_link_and_telem_up(teensy, node, leg_pos=0.1)   # encoder = 0.1 rev/leg
+        _bring_link_and_telem_up(teensy, node, leg_pos=0.1)
+        _hand_diag_up(teensy, node)   # encoder = 0.1 rev/leg
         # The profiled descent already converged → the streamed u0 sits on the encoder.
         node._sp_pump._prev_pos = [0.1] * 6
         node._reseed_client = _FakeReseedClient(success=True)
@@ -85,6 +106,7 @@ def test_recover_waits_for_descent_to_converge_then_clears():
     try:
         box = _capture(teensy, RpcMethod.CLEAR_ERRORS)
         _bring_link_and_telem_up(teensy, node, leg_pos=0.1)
+        _hand_diag_up(teensy, node)
         node._recover_verify_timeout_s = 2.0
         node._sp_pump._prev_pos = [1.0] * 6                   # 0.9 rev out at t=0
         node._reseed_client = _FakeReseedClient(success=True)
@@ -112,6 +134,7 @@ def test_recover_times_out_when_descent_never_converges():
     try:
         box = _capture(teensy, RpcMethod.CLEAR_ERRORS)
         _bring_link_and_telem_up(teensy, node, leg_pos=0.1)
+        _hand_diag_up(teensy, node)
         node._recover_verify_timeout_s = 0.3                  # keep the test fast
         node._sp_pump._prev_pos = [1.0] * 6                   # 0.9 rev from encoder, forever
         node._reseed_client = _FakeReseedClient(success=True)
@@ -133,6 +156,7 @@ def test_recover_reports_clear_errors_failure():
         # CLEAR_ERRORS responds non-OK → teensy_clear_errors returns ok=False.
         _capture(teensy, RpcMethod.CLEAR_ERRORS, status=int(RpcStatus.ERR_BUS_DOWN))
         _bring_link_and_telem_up(teensy, node, leg_pos=0.1)
+        _hand_diag_up(teensy, node)
         node._sp_pump._prev_pos = [0.1] * 6
         node._reseed_client = _FakeReseedClient(success=True)
 
@@ -152,6 +176,7 @@ def test_recover_clears_directly_when_reseed_unavailable():
     try:
         box = _capture(teensy, RpcMethod.CLEAR_ERRORS)
         _bring_link_and_telem_up(teensy, node, leg_pos=0.1)
+        _hand_diag_up(teensy, node)
         node._reseed_client = _FakeReseedClient(ready=False)
 
         res = node._svc_recover(Trigger.Request(), Trigger.Response())
@@ -171,6 +196,7 @@ def test_recover_refusal_states_manual_recovery():
     try:
         box = _capture(teensy, RpcMethod.CLEAR_ERRORS)
         _bring_link_and_telem_up(teensy, node, leg_pos=0.1)
+        _hand_diag_up(teensy, node)
         node._sp_pump._prev_pos = [0.1] * 6
         node._reseed_client = _FakeReseedClient(
             success=False, message='not streaming or telemetry stale')
@@ -191,6 +217,7 @@ def test_recover_refuses_when_reseed_refused():
     try:
         box = _capture(teensy, RpcMethod.CLEAR_ERRORS)
         _bring_link_and_telem_up(teensy, node, leg_pos=0.1)
+        _hand_diag_up(teensy, node)
         node._sp_pump._prev_pos = [0.1] * 6
         node._reseed_client = _FakeReseedClient(
             success=False, message='not streaming or telemetry stale')
@@ -222,7 +249,8 @@ def test_recover_refuses_residual_that_old_025_tol_would_have_passed():
     teensy, client, node = _node()
     try:
         box = _capture(teensy, RpcMethod.CLEAR_ERRORS)
-        _bring_link_and_telem_up(teensy, node, leg_pos=0.1)   # encoder = 0.1 rev/leg
+        _bring_link_and_telem_up(teensy, node, leg_pos=0.1)
+        _hand_diag_up(teensy, node)   # encoder = 0.1 rev/leg
         node._recover_verify_timeout_s = 0.1                  # keep the retries fast
         node._reseed_client = _FakeReseedClient(success=True)
 
@@ -269,7 +297,8 @@ def test_recover_re_descends_when_u0_plateaus_off_the_drifted_encoder():
     teensy, client, node = _node()
     try:
         box = _capture(teensy, RpcMethod.CLEAR_ERRORS)
-        _bring_link_and_telem_up(teensy, node, leg_pos=0.1)   # LIVE encoder = 0.1 rev/leg
+        _bring_link_and_telem_up(teensy, node, leg_pos=0.1)
+        _hand_diag_up(teensy, node)   # LIVE encoder = 0.1 rev/leg
         node._recover_verify_timeout_s = 0.1                  # attempt-1 fails fast
         node._sp_pump._prev_pos = [0.2] * 6                   # u0 0.1 rev off the live encoder
         node._reseed_client = _DriftReseedClient(node, live=[0.1] * 6)
@@ -292,6 +321,7 @@ def test_armed_bare_clear_errors_routes_through_converge_first():
     try:
         box = _capture(teensy, RpcMethod.CLEAR_ERRORS)
         _bring_link_and_telem_up(teensy, node, leg_pos=0.1)
+        _hand_diag_up(teensy, node)
         node._mpc_active = True                               # ARMED
         node._sp_pump._prev_pos = [0.1] * 6                   # u0 already on the encoder
         node._reseed_client = _FakeReseedClient(success=True)
@@ -317,6 +347,7 @@ def test_armed_bare_clear_errors_on_diverged_command_disarms_then_clears():
     try:
         box = _capture(teensy, RpcMethod.CLEAR_ERRORS)
         _bring_link_and_telem_up(teensy, node, leg_pos=0.1)
+        _hand_diag_up(teensy, node)
         node._mpc_active = True                               # ARMED
         node._recover_verify_timeout_s = 0.1
         node._sp_pump._prev_pos = [1.0] * 6                   # 0.9 rev diverged, forever
@@ -359,6 +390,7 @@ def test_armed_bare_clear_errors_clears_directly_when_trajectory_node_down():
     try:
         box = _capture(teensy, RpcMethod.CLEAR_ERRORS)
         _bring_link_and_telem_up(teensy, node, leg_pos=0.1)
+        _hand_diag_up(teensy, node)
         node._mpc_active = True                               # ARMED
         node._reseed_client = _FakeReseedClient(ready=False)  # trajectory_node down
 
@@ -406,6 +438,7 @@ def test_odrive_command_clear_errors_shares_the_fallback_path():
     try:
         box = _capture(teensy, RpcMethod.CLEAR_ERRORS)
         _bring_link_and_telem_up(teensy, node, leg_pos=0.1)
+        _hand_diag_up(teensy, node)
         node._mpc_active = True                               # ARMED
         node._recover_verify_timeout_s = 0.1
         node._sp_pump._prev_pos = [1.0] * 6                   # diverged forever
@@ -418,5 +451,119 @@ def test_odrive_command_clear_errors_shares_the_fallback_path():
         assert node._mpc_active is False                      # disarmed first
         assert 'disarmed and cleared directly' in res.message
         assert 'args' in box                                  # clear DID land
+    finally:
+        _teardown(teensy, client, node)
+
+
+# ── The hand park on guard-latch recovery (2026-09-17) ───────────────────────
+# CONTRACT: recovery from a guard latch parks the hand through the same profiled
+# firmware path ACTIVATE uses, before streaming can command it again.
+#
+# The sitting this encodes (bag `2026-09-17_18-45-10`): a latch left the hand at
+# 8.7382 rev with cmd and encoder agreeing to 1e-4 — so the seed reconciliation
+# correctly did nothing — `/clear_errors` cleared the latch and left it there,
+# and the next schedule's opening REST planned the hand home at ~5.4 rev/s
+# against a hand that follows at ~0.83 rev/s. The command ran 3.07 rev BELOW the
+# encoder and MAX_DEVIATION_HAND_REV E-STOPPED the machine 0.69 s in. Twice.
+# What cleared it was the operator's DEACTIVATE → ACTIVATE park.
+
+def test_recover_parks_the_hand_the_latch_left_mid_stroke():
+    """The hand is at the top of the throw stroke after the latch → /recover
+    fires the single-axis ACTIVATE park (legs untouched) and only reports
+    success once the hand has arrived."""
+    teensy, client, node = _node()
+    try:
+        _capture(teensy, RpcMethod.CLEAR_ERRORS)
+        act = _capture(teensy, RpcMethod.ACTIVATE)
+        _bring_link_and_telem_up(teensy, node, leg_pos=0.1)
+        _hand_diag_up(teensy, node, pos_rev=8.7382)       # the measured 2026-09-17 position
+        node._sp_pump._prev_pos = [0.1] * 6
+        node._reseed_client = _FakeReseedClient(success=True)
+
+        def _park_arrives():
+            time.sleep(0.3)                                # the TRAP_TRAJ walk
+            teensy.send_telemetry(pos_rev=tuple([0.1] * 6 + [0.0]),
+                                  vel_rps=tuple([0.0] * 7))
+
+        th = threading.Thread(target=_park_arrives)
+        th.start()
+        res = node._svc_recover(Trigger.Request(), Trigger.Response())
+        th.join()
+        assert res.success is True, res.message
+        # A SINGLE-AXIS activate: leg_activate.cpp maps that to the hand alone,
+        # so the legs are never commanded off the converged descent.
+        assert act['args'] == rpc_args.encode_activate(6), act
+        assert 'hand parked' in res.message
+        assert '8.7382' in res.message
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_recover_hand_park_is_a_noop_when_the_hand_is_already_parked():
+    """An in-band hand needs no park: no ACTIVATE is fired at all (a pointless
+    10 s-budget firmware op on every recovery would be its own hazard)."""
+    teensy, client, node = _node()
+    try:
+        _capture(teensy, RpcMethod.CLEAR_ERRORS)
+        act = _capture(teensy, RpcMethod.ACTIVATE)
+        _bring_link_and_telem_up(teensy, node, leg_pos=0.1)
+        _hand_diag_up(teensy, node, pos_rev=0.0)
+        node._sp_pump._prev_pos = [0.1] * 6
+        node._reseed_client = _FakeReseedClient(success=True)
+
+        res = node._svc_recover(Trigger.Request(), Trigger.Response())
+        assert res.success is True, res.message
+        assert 'already parked' in res.message
+        assert 'args' not in act, 'fired an ACTIVATE at an already-parked hand'
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_recover_refuses_when_the_hand_position_is_unknown():
+    """FAIL-SAFE: no hand diagnostic ⇒ the hand position is a guess ⇒ do NOT
+    TRAP_TRAJ at it. The guard is cleared, but /recover reports the recovery as
+    incomplete and names the manual park — reporting success here would send the
+    operator into the E-STOP the park exists to prevent."""
+    teensy, client, node = _node()
+    try:
+        box = _capture(teensy, RpcMethod.CLEAR_ERRORS)
+        act = _capture(teensy, RpcMethod.ACTIVATE)
+        _bring_link_and_telem_up(teensy, node, leg_pos=0.1)   # no hand diagnostic
+        node._sp_pump._prev_pos = [0.1] * 6
+        node._reseed_client = _FakeReseedClient(success=True)
+
+        res = node._svc_recover(Trigger.Request(), Trigger.Response())
+        assert res.success is False
+        assert 'HAND NOT PARKED' in res.message
+        assert 'DEACTIVATE then ACTIVATE' in res.message
+        assert 'args' in box                                  # the clear DID fire
+        assert 'args' not in act                              # but no blind park
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_recover_escape_hatch_also_parks_the_hand():
+    """trajectory_node down (the escape hatch): the clear goes direct, and the
+    park obligation is the same — more so, since nothing is streaming the hand."""
+    teensy, client, node = _node()
+    try:
+        box = _capture(teensy, RpcMethod.CLEAR_ERRORS)
+        act = _capture(teensy, RpcMethod.ACTIVATE)
+        _bring_link_and_telem_up(teensy, node, leg_pos=0.1)
+        _hand_diag_up(teensy, node, pos_rev=7.5281)       # where clear_errors #2 left it
+        node._reseed_client = _FakeReseedClient(ready=False)
+
+        def _park_arrives():
+            time.sleep(0.3)
+            teensy.send_telemetry(pos_rev=tuple([0.1] * 6 + [0.0]),
+                                  vel_rps=tuple([0.0] * 7))
+
+        th = threading.Thread(target=_park_arrives)
+        th.start()
+        res = node._svc_recover(Trigger.Request(), Trigger.Response())
+        th.join()
+        assert res.success is True, res.message
+        assert 'args' in box and act['args'] == rpc_args.encode_activate(6)
+        assert 'hand parked' in res.message
     finally:
         _teardown(teensy, client, node)

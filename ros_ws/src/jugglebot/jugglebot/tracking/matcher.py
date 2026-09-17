@@ -17,6 +17,7 @@ import numpy as np
 
 from .ball import Ball, BallStatus, TrackingConfidence, TERMINAL_STATUSES
 from .ballistics import GRAVITY_MMPS2, predict_landing_state
+from .flight_fit import FlightFit
 from .kalman import KalmanFilter
 
 
@@ -102,6 +103,9 @@ class BallTracker:
         announced_gate_mm: float = 200.0,
         excluded_label_prefixes: Optional[Tuple[str, ...]] = None,
         detect_human_throws: bool = False,
+        flight_fit_min_samples: int = 12,
+        flight_fit_residual_mm: float = 12.0,
+        flight_fit_freeze_above_plane_mm: float = 250.0,
     ):
         self.dt = dt
         self.landing_z = landing_z
@@ -149,6 +153,20 @@ class BallTracker:
         # 2026-09-15 session, and nothing on the skill stack consumes them
         # yet.  Turn it on when human throws are actually being caught.
         self.detect_human_throws = bool(detect_human_throws)
+
+        # --- Landing: gravity-fixed batch fit (2026-09-17) ---
+        # One `FlightFit` per CONFIRMED ball, fed the RAW matched marker in
+        # `_associate_confirmed_balls`. `_update_landing_prediction` uses its
+        # landing estimate whenever the fit is valid; the KF-extrapolation
+        # path below is the fallback for balls the fit hasn't converged on
+        # yet (too few free-flight samples). See `flight_fit.py` for why: a
+        # recursive filter's `landing_time` runs 0.06-0.20 s late and grows
+        # later through the descent, which is why it is not this decision's
+        # only estimator any more — see `tracking/flight_fit.py` module doc.
+        self.flight_fit_min_samples = int(flight_fit_min_samples)
+        self.flight_fit_residual_mm = float(flight_fit_residual_mm)
+        self.flight_fit_freeze_above_plane_mm = float(flight_fit_freeze_above_plane_mm)
+        self._flight_fits: Dict[int, FlightFit] = {}
 
         # Active balls keyed by id
         self._balls: Dict[int, Ball] = {}
@@ -235,6 +253,11 @@ class BallTracker:
         )
         self._filters[ball_id] = kf
         self._balls[ball_id] = ball
+        # `ball_id` is fresh (monotonic `_next_id`), so no stale FlightFit can
+        # exist for it — pop defensively anyway: a chained self-toss re-uses
+        # the physical ball but always gets a NEW ball_id here, so this is
+        # the reset hook for "re-announced" even though today it is a no-op.
+        self._flight_fits.pop(ball_id, None)
         self._announcement_states[ball_id] = (
             np.array(initial_position, dtype=np.float64),
             np.array(initial_velocity, dtype=np.float64),
@@ -379,6 +402,10 @@ class BallTracker:
                 ball.frames_tracked += 1
                 ball.frames_without_measurement = 0
                 ball.last_seen = current_time
+                # Feed the RAW matched marker (not the KF state) to this
+                # ball's gravity-fixed flight fit.
+                self._get_or_create_flight_fit(ball_id, ball).add(
+                    current_time, markers[best_idx])
             else:
                 ball.frames_without_measurement += 1
 
@@ -729,13 +756,57 @@ class BallTracker:
             del self._balls[ball_id]
             self._filters.pop(ball_id, None)
             self._announcement_states.pop(ball_id, None)
+            self._flight_fits.pop(ball_id, None)
 
     # ------------------------------------------------------------------
     # Internal: Landing prediction
     # ------------------------------------------------------------------
 
+    def _get_or_create_flight_fit(self, ball_id: int, ball: Ball) -> FlightFit:
+        """Get this ball's gravity-fixed flight fit, creating it on first use.
+
+        One `FlightFit` per ball id; a chained self-toss always gets a NEW
+        ball id (`handle_announcement` — `_next_id` is monotonic and never
+        reused), so a fresh id here always means a fresh fit.
+        """
+        fit = self._flight_fits.get(ball_id)
+        if fit is None:
+            fit = FlightFit(
+                throw_time=ball.throw_time,
+                landing_z=self.landing_z,
+                min_samples=self.flight_fit_min_samples,
+                residual_mm=self.flight_fit_residual_mm,
+                freeze_above_plane_mm=self.flight_fit_freeze_above_plane_mm,
+            )
+            self._flight_fits[ball_id] = fit
+        return fit
+
     def _update_landing_prediction(self, ball: Ball, from_filter: bool = False):
-        """Recompute landing prediction from ball's current state."""
+        """Recompute landing prediction from ball's current state.
+
+        Prefers the gravity-fixed batch fit (`FlightFit.landing`, see
+        `flight_fit.py`) whenever it has converged (enough surviving
+        free-flight samples spanning enough time) — the Kalman filter's
+        `landing_time` runs 0.06-0.20 s late and grows later through the
+        descent, because a recursive filter is the wrong tool for a quantity
+        gravity fixes exactly. Falls back to the KF/announcement ballistic
+        extrapolation (the pre-2026-09-17 path) when the fit hasn't
+        converged yet, e.g. early in a flight or for an ANNOUNCED-only ball
+        with no mocap confirmation.
+
+        The published `position`/`velocity` are untouched here — only the
+        LANDING estimate changes.
+        """
+        fit = self._flight_fits.get(ball.id)
+        if fit is not None:
+            fit_landing = fit.landing(self.landing_z)
+            if fit_landing is not None:
+                landing_pos, landing_vel, t_abs = fit_landing
+                ball.landing_position = landing_pos
+                ball.landing_velocity = landing_vel
+                ball.landing_time = t_abs
+                return
+
         pos = ball.position
         vel = ball.velocity
 
