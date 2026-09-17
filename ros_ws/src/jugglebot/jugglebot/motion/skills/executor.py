@@ -469,6 +469,14 @@ class _PendingOutcome:
     #: from :attr:`seated_seen`, which is the RELEASE ladder's bookkeeping and
     #: is cleared by an EMPTY reading before the release.
     caught_seen: bool = False
+    #: The tick on which :attr:`caught_seen` latched -- the first SEATED
+    #: reading inside the window.  Reported (never learned) as the CONTACT
+    #: PHASE ``seat - scheduled landing`` on the OUTCOME line: on 2026-09-17
+    #: (apex 0.6 m) it separated the operator's verdicts exactly -- +0.10 s
+    #: on all four smooth catches (ball met at the bottom of the dive),
+    #: +0.02 s (met at the top, then the cup dived away) and +0.34 s (the
+    #: bounce re-seating) on the ones that bounced twice.
+    t_seat_s: Optional[float] = None
 
 
 @dataclasses.dataclass
@@ -1805,6 +1813,7 @@ class SkillExecutor:
                     key=lambda p: abs(t_abs_s - self._landing_instant(p)))
                 if self.observer(nearest.ball_id, t_abs_s) == CAUGHT_EVIDENCE:
                     nearest.caught_seen = True
+                    nearest.t_seat_s = float(t_abs_s)
 
         for pend in self._pending_outcomes:
             t_open, finalise_at = self._outcome_window(pend)
@@ -1856,8 +1865,11 @@ class SkillExecutor:
         exp = Experience(x=pend.x, u=pend.u, y=y, t_abs_s=pend.t_release_s,
                          ball_id=pend.ball_id, caught=bool(caught))
         self.on_experience(exp)
-        return ['%.3f OUTCOME ball %d: y=(%.4f, %.4f, %.4f) caught=%s'
-                % (finalise_at, pend.ball_id, y[0], y[1], y[2], caught)]
+        phase = ('' if pend.t_seat_s is None
+                 else ' seat=%+.3f s vs scheduled landing'
+                 % (pend.t_seat_s - float(pend.t_land_scheduled_s)))
+        return ['%.3f OUTCOME ball %d: y=(%.4f, %.4f, %.4f) caught=%s%s'
+                % (finalise_at, pend.ball_id, y[0], y[1], y[2], caught, phase)]
 
     def _resend_hand_corrected_catch(self, t_abs_s: float) -> List[str]:
         """:data:`AIM_SCHEDULE_HAND`: re-aim the committed CATCH ONCE, from
