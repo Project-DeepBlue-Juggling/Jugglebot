@@ -924,6 +924,7 @@ the rung's tests passing or a handoff file in the scratchpad.
      the max by 16 ms) is now the one number both leads derive from. Cost:
      every dispatch splices 75 ms further ahead and `CATCH_FREEZE_S` grows with
      it, so the re-aim window shrinks by the same 75 ms.
+- **Next unit (owner, 2026-09-18): `plans/active/cup-contact-contract.md`** — the banking/cup-contact contract that unpins the learner's lateral channel and the tracker aim (prerequisite: the mocap base alignment, owner). R4 follows it; `leg-bus-frame-drops` after R4 unless a sitting says otherwise.
 - **Owner decisions (2026-09-13).**
   1. *Cycle.* Chained single site: apex 0.9 m, dwell 0.30 s, site P1
      (−50, 0), legs 300 / 5000 / 150 000, hand 3500.
