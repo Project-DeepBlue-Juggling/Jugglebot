@@ -1485,3 +1485,30 @@ def test_link_status_surfaces_firmware_arm_took_bit(bridge):
     assert kv['mpc_active'] == '0'          # host disarmed — the split is visible
 
 
+
+
+def test_link_status_surfaces_the_latched_scheduled_hold(bridge):
+    """`sched_refused` / `sched_stops` on /link_status (2026-09-18).
+
+    THE READING THIS ENABLES: the first MAX_DEVIATION latch of the 2026-09-18
+    sitting had the hand not moving AT ALL (`vel_ff_cmd` 0.00, the `pos_cmd`
+    echo flat at 9.627 rev) while the guard tripped at -3.28 rev. That is the
+    FW 22 latched scheduled hold: the hand group's cover expired into a C2 stop
+    (`sched_stops`), the next plan's opening REST was refused as a
+    discontinuous resume (`sched_refused`, leg_interp.cpp:514-520), the group
+    kept HOLDING, and the guard deliberately measured the REFUSED incoming
+    command against the encoder (leg_interp.cpp:1226-1228). Both counters were
+    on the wire and neither was surfaced, so the bag could not tell that state
+    apart from a hand that was being commanded and failing to follow.
+    """
+    teensy, node = bridge
+    hb = HeartbeatT2J(t_teensy_us=1, link_state=int(LinkState.UP),
+                      bus1_health=int(BusHealth.OK), bus2_health=int(BusHealth.OK),
+                      fault_state=int(FaultState.MAX_DEVIATION),
+                      flags=0, uptime_ms=1, sched_stops=4, sched_refused=2)
+    teensy.send_to_jetson(int(MsgType.HEARTBEAT_T2J), hb.pack())
+    assert _wait_until(lambda: node._latest_heartbeat is not None)
+    node._publish_link_status()
+    kv = {v.key: v.value for v in node.link_status_pub.published[-1].values}
+    assert kv['sched_stops'] == '4'
+    assert kv['sched_refused'] == '2'

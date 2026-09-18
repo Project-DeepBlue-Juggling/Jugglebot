@@ -972,14 +972,20 @@ class SkillExecutor:
         self.resend_max_per_catch = int(resend_max_per_catch)
         self.learner = learner
         self.boxes = boxes
-        #: How far (m, per axis) the learner may move the commanded landing
-        #: AWAY from the schedule's desired offset ``y_d``. ``None`` = the
-        #: swept box alone bounds it. ``0.0`` (the live default, owner
+        #: How far (m, per axis) the learner's THROW command, and a tracker
+        #: CATCH aim (:meth:`_clamp_lateral_to_schedule`), may move the
+        #: commanded/aimed landing AWAY from the schedule's desired offset
+        #: ``y_d``. ``None`` = the swept box alone bounds the learner, and the
+        #: tracker aim is unclamped. ``0.0`` (the live default, owner
         #: 2026-09-16) pins the lateral command to ``y_d`` and lets the learner
         #: correct FLIGHT only: a 4 mm lateral aim command made the banking
         #: step saturate to its 12 deg clamp during the pre-catch dive (leg
         #: jerk 137-161 k against 150 k, the 0.9 m 'wobble') -- sub-cm lateral
         #: authority is the planner's open defect, not the learner's to spend.
+        #: The tracker aim hit the SAME limit from the catch side 2026-09-18
+        #: (see :meth:`_clamp_lateral_to_schedule`) -- one knob, two paths onto
+        #: the platform, because the authority being spent is the same
+        #: banking budget either way.
         self.lateral_authority_m = (None if lateral_authority_m is None
                                     else float(lateral_authority_m))
         self.observer = observer
@@ -1004,8 +1010,15 @@ class SkillExecutor:
         self._hand_corrected = set()
         #: ``idx -> re-aims already installed`` (:attr:`resend_max_per_catch`).
         self._resend_counts = {}
-        #: ``(idx, reason)`` pairs already reported by :meth:`_resend_live_catch`.
+        #: ``(idx, reason)`` pairs already reported by :meth:`_resend_live_catch`
+        #: OR the lateral clamp (:meth:`_clamp_lateral_to_schedule`, reason
+        #: ``'AIM-LATERAL-CLAMPED'``) -- one shared once-per-(catch, reason) set.
         self._resend_notes = set()
+        #: Lines queued by :meth:`_clamp_lateral_to_schedule` (via
+        #: :meth:`_catch_terminal`), drained by whichever caller fired it
+        #: (dispatch, :meth:`_resend_live_catch`,
+        #: :meth:`_resend_hand_corrected_catch`) into its own return.
+        self._pending_notes: List[str] = []
 
     @property
     def done(self) -> bool:
@@ -1131,6 +1144,64 @@ class SkillExecutor:
             target_mm=self._commanded_target_mm(skill.target, (u_dy, u_apex)),
             flight_s=sch.flight_s(u_apex), t_release_s=float(skill.t_abs_s))
 
+    def _clamp_lateral_to_schedule(self, idx: int, skill: Skill,
+                                   landing: Landing) -> Landing:
+        """Clamp ``landing``'s lateral (x, y) to within
+        :attr:`lateral_authority_m` of the schedule's commanded landing for
+        this catch (:meth:`_predicted_landing`'s ``pos_mm[:2]`` — the prior a
+        catch is dispatched on, reused rather than re-derived). ``z``,
+        ``vel_mm_s`` and ``t_land_abs_s`` pass through untouched: a tracker
+        fit may move the catch in TIME and in arrival VELOCITY, never
+        laterally beyond the authority.
+
+        Why: the plant's lateral landing bias is real and constant-velocity
+        (``y`` +0.05..+0.12 m, growing with apex), so a converged fit
+        routinely asks for an 80-95 mm lateral re-aim. Two such re-aims were
+        ACCEPTED and the ball was dropped both times ("RESEND skill 2: the
+        fit moved the landing 84.4 mm / 95.1 mm in +y", 2026-09-18 sitting,
+        ``temp/logs/launch_r2gate_20260918_1325.log``); the 52 further
+        solves that instead REFUSED the move (``REJECTED_CYCLE_INFEASIBLE``,
+        LIMIT_VEL/ACC/JERK) are the banking-saturation class of
+        ``logbook/2026-09-16-banking-saturates-on-small-lateral-offsets.md``
+        — an 80 mm lateral catch move inside the pre-catch dive saturates the
+        banking step. Meanwhile every SCHEDULE-aimed catch at the same site
+        caught balls that landed 50-75 mm off: the cup tolerates the miss,
+        the platform does not tolerate the move. The clamp lifts with
+        :attr:`lateral_authority_m` — the same knob :meth:`_command_u` already
+        clamps the learner's lateral command to — once the planner carries a
+        chained-banking budget that can afford the move.
+
+        ``None`` (:attr:`lateral_authority_m` unset) or no schedule prior for
+        this catch (:meth:`_predicted_landing` returns ``None`` — a ball
+        thrown before ``t0``, the one catch the schedule cannot aim at all)
+        both leave ``landing`` exactly as given: there is nothing to clamp
+        toward in the second case, exactly as before this change.
+        """
+        if self.lateral_authority_m is None:
+            return landing
+        predicted = self._predicted_landing(idx, skill)
+        if predicted is None:
+            return landing
+        a_mm = abs(self.lateral_authority_m) * 1000.0
+        sched_xy = np.asarray(predicted.pos_mm, dtype=float)[:2]
+        landing_xy = np.asarray(landing.pos_mm, dtype=float)[:2]
+        offset = landing_xy - sched_xy
+        clamped_xy = sched_xy + np.clip(offset, -a_mm, a_mm)
+        bite_mm = np.abs(landing_xy - clamped_xy)
+        key = (idx, 'AIM-LATERAL-CLAMPED')
+        if float(np.max(bite_mm)) > 1.0 and key not in self._resend_notes:
+            self._resend_notes.add(key)
+            axis = int(np.argmax(np.abs(offset)))
+            self._pending_notes.append(
+                'AIM-LATERAL-CLAMPED skill %d: tracker landing %+.1f mm in '
+                '%s, catch keeps the schedule\'s site (authority %.0f mm)'
+                % (idx, offset[axis], 'xy'[axis], a_mm))
+        pos_mm = np.array([clamped_xy[0], clamped_xy[1],
+                          float(np.asarray(landing.pos_mm, dtype=float)[2])])
+        return Landing(pos_mm=pos_mm, vel_mm_s=landing.vel_mm_s,
+                      t_land_abs_s=landing.t_land_abs_s,
+                      from_fit=landing.from_fit)
+
     def _catch_terminal(self, idx: int, skill: Skill,
                         landing: Landing) -> CatchTerminal:
         """A CATCH's terminal, plus the throw it carries when the schedule
@@ -1142,7 +1213,13 @@ class SkillExecutor:
         is what the other hand is already flying against. The carried throw's
         command is :meth:`_command_u`'s, cached under THIS catch's ``idx`` — a
         re-send calls this again and gets the SAME command back.
+
+        ``landing`` itself is clamped laterally first
+        (:meth:`_clamp_lateral_to_schedule`) — the ONE place a landing becomes
+        a catch terminal, so dispatch, the hand-corrected re-send and the
+        live tracker re-send all pass through the same lateral authority.
         """
+        landing = self._clamp_lateral_to_schedule(idx, skill, landing)
         then_throw = None
         tt = skill.then_throw
         if tt is not None:
@@ -1512,6 +1589,8 @@ class SkillExecutor:
                     % (t_abs_s, NO_ADMISSIBLE_COMMAND, idx, skill.kind, exc)],
                    False)
 
+        clamp_lines = self._pending_notes
+        self._pending_notes = []
         res = self.installer(skill.kind, terminal, t_abs_s,
                              ball_id=skill.ball_id)
         self.dispatched.add(idx)
@@ -1519,10 +1598,10 @@ class SkillExecutor:
         if not res.accepted:
             self.attempt_ended = True
             self.end_code = res.code
-            return (['%.3f END %s at skill %d (%s): %s'
+            return (clamp_lines + ['%.3f END %s at skill %d (%s): %s'
                     % (t_abs_s, res.code, idx, skill.kind, res.message)],
                    False)
-        lines = ['%.3f %s skill %d: %s'
+        lines = clamp_lines + ['%.3f %s skill %d: %s'
                 % (t_abs_s, skill.kind, idx, res.message)]
         if skill.kind == CATCH:
             self._live_catch = (idx, terminal, t_abs_s)
@@ -2011,6 +2090,8 @@ class SkillExecutor:
                     'correction (r=%.3f, Δt=%+.3f s) would splice too late — '
                     'the theoretical aim stands' % (t_abs_s, idx, r, dt_s)]
         new_terminal = self._catch_terminal(idx, skill, landing)
+        clamp_lines = self._pending_notes
+        self._pending_notes = []
         res = self.installer(CATCH, new_terminal, t_abs_s,
                              ball_id=skill.ball_id)
         self.results.append((idx, skill, res))
@@ -2018,15 +2099,16 @@ class SkillExecutor:
             # The committed catch stands — a refused re-aim is strictly
             # better than no catch, so the attempt continues.
             self._live_catch = (idx, terminal, t_abs_s)
-            return ['%.3f CATCH-AIM-HAND-REFUSED %s skill %d: r=%.3f, '
+            return clamp_lines + [
+                    '%.3f CATCH-AIM-HAND-REFUSED %s skill %d: r=%.3f, '
                     'Δt=%+.3f s — %s'
                     % (t_abs_s, res.code, idx, r, dt_s, res.message)]
         self._live_catch = (idx, new_terminal, t_abs_s)
-        return ['%.3f CATCH-AIM skill %d: source=%s r=%.3f Δt=%+.3f s '
+        return clamp_lines + ['%.3f CATCH-AIM skill %d: source=%s r=%.3f Δt=%+.3f s '
                 'landing=(%.1f, %.1f, %.1f) mm t_land=%.3f'
                 % (t_abs_s, idx, AIM_SCHEDULE_HAND, r, dt_s,
-                   landing.pos_mm[0], landing.pos_mm[1], landing.pos_mm[2],
-                   landing.t_land_abs_s)]
+                   new_terminal.landing_mm[0], new_terminal.landing_mm[1],
+                   new_terminal.landing_mm[2], new_terminal.t_land_s)]
 
     def _resend_too_late(self, t_abs_s: float, skill: Skill,
                          t_land_abs_s: float) -> bool:
@@ -2078,20 +2160,30 @@ class SkillExecutor:
         landing = self._tracked_landing(idx, skill)
         if landing is None:
             return []
+        # The "moved" test is against the CLAMPED landing, not the tracker's
+        # raw one: a fit that only asks for a lateral move the catch may not
+        # take (:meth:`_clamp_lateral_to_schedule`) has not moved the catch
+        # at all, and must not spend a re-send fence-checking a move that
+        # never reaches the platform (2026-09-18).
+        clamped = self._clamp_lateral_to_schedule(idx, skill, landing)
+        clamp_lines = self._pending_notes
+        self._pending_notes = []
         moved_mm = float(np.max(np.abs(
-            np.asarray(landing.pos_mm, dtype=float) - terminal.landing_mm)))
-        moved_s = float(landing.t_land_abs_s) - float(terminal.t_land_s)
+            np.asarray(clamped.pos_mm, dtype=float) - terminal.landing_mm)))
+        moved_s = float(clamped.t_land_abs_s) - float(terminal.t_land_s)
         if not landing.from_fit:
-            return self._resend_declined(t_abs_s, idx, 'NO-CONVERGED-FIT',
-                                         moved_mm, moved_s)
+            return clamp_lines + self._resend_declined(
+                t_abs_s, idx, 'NO-CONVERGED-FIT', moved_mm, moved_s)
         if (moved_mm <= self.resend_pos_tol_mm
                 and abs(moved_s) <= self.resend_t_tol_s):
-            return self._resend_declined(t_abs_s, idx, 'WITHIN-TOLERANCE',
-                                         moved_mm, moved_s)
+            return clamp_lines + self._resend_declined(
+                t_abs_s, idx, 'WITHIN-TOLERANCE', moved_mm, moved_s)
         if self._resend_counts.get(idx, 0) >= self.resend_max_per_catch:
-            return self._resend_declined(t_abs_s, idx, 'CAP-SPENT',
-                                         moved_mm, moved_s)
+            return clamp_lines + self._resend_declined(
+                t_abs_s, idx, 'CAP-SPENT', moved_mm, moved_s)
         new_terminal = self._catch_terminal(idx, skill, landing)
+        clamp_lines += self._pending_notes
+        self._pending_notes = []
         res = self.installer(skill.kind, new_terminal, t_abs_s,
                              ball_id=skill.ball_id)
         self.results.append((idx, skill, res))
@@ -2100,11 +2192,13 @@ class SkillExecutor:
             # The committed catch stands — a refused RE-aim is strictly better
             # than no catch, so the attempt continues.
             self._live_catch = (idx, terminal, t_abs_s)
-            return ['%.3f RESEND-REFUSED %s at skill %d: the fit moved the '
+            return clamp_lines + [
+                    '%.3f RESEND-REFUSED %s at skill %d: the fit moved the '
                     'landing %.1f mm / %+.3f s — %s'
                     % (t_abs_s, res.code, idx, moved_mm, moved_s, res.message)]
         self._live_catch = (idx, new_terminal, t_abs_s)
-        return ['%.3f RESEND skill %d: the fit moved the landing %.1f mm / '
+        return clamp_lines + [
+                '%.3f RESEND skill %d: the fit moved the landing %.1f mm / '
                 '%+.3f s (re-aim %d of %d) — %s'
                 % (t_abs_s, idx, moved_mm, moved_s, self._resend_counts[idx],
                    self.resend_max_per_catch, res.message)]

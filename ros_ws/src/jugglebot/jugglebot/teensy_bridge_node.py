@@ -1050,9 +1050,14 @@ _RECOVER_MAX_RESEED_ATTEMPTS = 3
 _MANUAL_RECOVERY_HINT = ("manual recovery: disarm with set_setpoint_output=false, then "
                          "/clear_errors clears directly")
 
-# ── Hand park on guard-latch recovery (2026-09-17) ───────────────────────────
-# CONTRACT: recovery from a guard latch PARKS THE HAND through the same profiled
-# firmware path ACTIVATE uses, before the next schedule can stream it.
+# ── Hand park: the only way the hand leaves the stroke (2026-09-17/18) ───────
+# CONTRACT: NO STREAMED LANE EVER HOMES THE HAND FROM OUTSIDE THE PARK BAND.
+# A hand found outside `_HAND_PARK_BAND_REV` is brought home through the same
+# profiled firmware path ACTIVATE uses — never by a plan's opening REST. Two
+# callers, one op (`_park_hand`, the single enforcement point): guard-latch
+# recovery parks before it reports success (`_svc_recover`, both paths), and a
+# schedule parks before it pre-levels or streams (`/park_hand`, called from
+# `skill_node`'s precondition ladder).
 #
 # Why (2026-09-17 sitting, bag `2026-09-17_18-45-10`, latches at t=143.744 and
 # 161.544): a latch leaves the hand wherever the stroke was — that sitting left
@@ -1085,6 +1090,24 @@ _MANUAL_RECOVERY_HINT = ("manual recovery: disarm with set_setpoint_output=false
 # next opening REST would have to walk out (0.1 rev ~= 3.3 mm of carriage travel
 # at hand_mm_per_rev 32.567).
 _HAND_PARK_BAND_REV = 0.10
+
+# The park never fires ACTIVATE while a guard fault is still LATCHED — and
+# CLEAR_ERRORS is acked by the LINK, not by the 10 Hz fault task that owns the
+# latch. 2026-09-18 sitting (`temp/logs/launch_r2gate_20260918_1325.log`, lines
+# 977-982 and 1010-1015): `armed /clear_errors` -> `_svc_recover` -> `CLEAR_ERRORS
+# fired` -> the park's ACTIVATE(6) came back `ERR_BUS_DOWN` ("... and
+# fault_state=MAX_DEVIATION is currently latched") -> `HAND NOT PARKED`, and the
+# VERY NEXT line was `Teensy guard fault cleared (fault_state=NONE)`. The park
+# lost a race it did not know it was in, by less than one fault tick, and the
+# refusal then escalated through the armed `/clear_errors` disarm+direct-clear
+# fallback — which is why the operator had to ACTIVATE/TRAJECTORY by hand twice.
+# So: poll the SAME cached `HeartbeatT2J.fault_state` that
+# "Teensy guard fault cleared" is derived from until it reads NONE, then park.
+# 1.0 s = 10 heartbeats at the T->J 10 Hz rate against a latch the fault task
+# clears on its own next tick (~100 ms), i.e. an order of magnitude of margin
+# over the mechanism, and still far inside the operator's patience for a verb
+# whose park itself takes ~4 s.
+_GUARD_CLEAR_WAIT_S = 1.0
 
 _HAND_NOT_PARKED_HINT = (
     "the next schedule's opening REST would walk the hand home at a rate the "
@@ -2180,6 +2203,13 @@ class TeensyBridgeNode(Node):
         # reply dispatches on another executor thread and the disarm/telemetry callbacks
         # keep running, so the operator can always disarm out.
         self.create_service(Trigger, 'clear_errors', self._svc_clear_errors,
+                            callback_group=self._recover_cbgroup)
+        # /park_hand — the schedule-side caller of the hand-park contract
+        # (2026-09-18). Same ReentrantCallbackGroup as /recover, for the same
+        # reason: the park blocks its executor thread for the up to ~4 s the
+        # firmware TRAP_TRAJ takes, and the telemetry timers it observes the op
+        # through must keep running underneath it.
+        self.create_service(Trigger, 'park_hand', self._svc_park_hand,
                             callback_group=self._recover_cbgroup)
         # Instance-level so tests can shorten the descent-convergence wait (a
         # never-converging descent otherwise blocks the test for the full timeout).
@@ -4516,7 +4546,10 @@ class TeensyBridgeNode(Node):
                 # Same hand-park obligation as the converge-first path below —
                 # more so here: with trajectory_node down nothing is streaming
                 # the hand at all, so the park is unopposed.
-                pok, pmsg = self._park_hand_after_guard_latch()
+                # lane_cleared: the latch's out_en false->true edge at the
+                # clear killed the hand lane (leg_interp.cpp:885), so the op
+                # is unopposed — see _park_hand's `lane_cleared` contract.
+                pok, pmsg = self._park_hand(lane_cleared=True)
                 res.success = pok
                 res.message = (
                     ('reseed unavailable (trajectory_node down) — cleared DIRECTLY '
@@ -4586,7 +4619,8 @@ class TeensyBridgeNode(Node):
         # wherever the stroke was, and nothing downstream can walk it home
         # inside the lead authority. Park it here, on the profiled firmware
         # path, before any schedule can stream it. See _HAND_PARK_BAND_REV.
-        pok, pmsg = self._park_hand_after_guard_latch()
+        # lane_cleared: same out_en edge as the escape hatch above.
+        pok, pmsg = self._park_hand(lane_cleared=True)
         if not pok:
             # The guard IS cleared, but reporting success would send the
             # operator straight into the E-STOP this park exists to prevent.
@@ -5348,6 +5382,24 @@ class TeensyBridgeNode(Node):
                     KeyValue(key='torque_clamp_mask',
                              value=str((int(hb.flags) & _T2J_TORQUE_CLAMP_MASK)
                                        >> _T2J_TORQUE_CLAMP_SHIFT)),
+                    # FW 22 scheduled-playback counters (surfaced 2026-09-18).
+                    # `sched_refused` is the LATCHED SCHEDULED HOLD: a group in
+                    # a stop/hold refused a discontinuous promotion
+                    # (leg_interp.cpp:514-520), keeps holding, and the hand
+                    # guard then deliberately measures the REFUSED incoming
+                    # command against the encoder (leg_interp.cpp:1226-1228)
+                    # instead of going quiet. That is exactly the first
+                    # MAX_DEVIATION latch of the 2026-09-18 sitting — the hand
+                    # did not move at all (held), `vel_ff_cmd` 0.00, the
+                    # `pos_cmd` echo flat, and the guard tripped on a plan lane
+                    # nobody was following. The counter names that state
+                    # unambiguously and was on the wire all along, unread;
+                    # `sched_stops` is how a group gets into the hold it then
+                    # refuses out of (its cover expired), so the pair reads as
+                    # one story in a bag.
+                    KeyValue(key='sched_stops', value=str(int(hb.sched_stops))),
+                    KeyValue(key='sched_refused',
+                             value=str(int(hb.sched_refused))),
                     KeyValue(key='live_deviation',
                              value=','.join(f'{d:.4f}' for d in hb.live_deviation)),
                     KeyValue(key='max_dev_leg',
@@ -6424,13 +6476,73 @@ class TeensyBridgeNode(Node):
                     f'diagnostic only, not a fault (real leg-bus frame loss, '
                     f'plans/active/leg-bus-frame-drops.md)')
 
-    def _park_hand_after_guard_latch(self, *, poll_dt=0.05):
+    def _wait_for_guard_clear(self, *, timeout_s=_GUARD_CLEAR_WAIT_S,
+                              poll_dt=0.05):
+        """Block until the cached ``HeartbeatT2J.fault_state`` reads NONE.
+        Returns ``(ok, why)`` — ``(True, '')`` immediately when no fault is
+        latched, else polls to ``timeout_s`` and on expiry returns the latch
+        that is still up.
+
+        See the ``_GUARD_CLEAR_WAIT_S`` block: CLEAR_ERRORS is acked by the
+        link, the latch is released by the firmware's 10 Hz fault task, and on
+        2026-09-18 the park fired into that gap and was rejected ERR_BUS_DOWN.
+        Reads the ONE cache the ``Teensy guard fault cleared`` log line is
+        derived from — no second notion of "the guard is clear".
+        """
+        deadline = time.monotonic() + float(timeout_s)
+        while True:
+            with self._lock:
+                hb = self._latest_heartbeat
+            if hb is None:
+                return False, ('no Teensy heartbeat — cannot confirm the guard '
+                               'is clear')
+            fs = int(hb.fault_state)
+            if fs == int(FaultState.NONE):
+                return True, ''
+            if time.monotonic() >= deadline:
+                return False, (
+                    f'the guard is STILL latched '
+                    f'(fault_state={_enum_name(FaultState, fs)}) '
+                    f'{timeout_s:.1f} s after the clear')
+            time.sleep(poll_dt)
+
+    def _park_hand(self, *, lane_cleared=False, poll_dt=0.05):
         """Park the hand at ``HAND_ACTIVATE_POSITION_REV`` through the firmware's
         profiled single-axis ACTIVATE. Returns ``(ok, message)``.
 
-        The recovery half of the guard-latch contract — see the
-        ``_HAND_PARK_BAND_REV`` block for the 2026-09-17 double-latch it encodes.
+        THE single enforcement point of the hand-park contract — see the
+        ``_HAND_PARK_BAND_REV`` block for the 2026-09-17 double-latch and the
+        2026-09-18 repeat it encodes. Called by guard-latch recovery
+        (``_svc_recover``, both paths) and, before a schedule streams a hand
+        lane, by ``/park_hand`` (``_svc_park_hand``; ``skill_node``'s
+        precondition ladder). Named ``_park_hand_after_guard_latch`` until
+        2026-09-18, when the schedule became the second caller.
+
         A no-op (ok, "already parked") when the hand is already inside the band.
+
+        WAITS for the guard to clear first (``_wait_for_guard_clear``): a
+        latched guard rejects the op's ACTIVATE as ERR_BUS_DOWN, and firing it
+        inside the 10 Hz fault task's own tick is how the 2026-09-18 park lost
+        the race. No wait is spent when nothing is latched (the schedule path).
+
+        ``lane_cleared`` is the caller's ASSERTION that the streamed hand lane
+        is not holding a command — and it is load-bearing, because the op moves
+        the AXIS while the STREAM keeps commanding. Firmware (FW 22): a
+        hand-less hold lets the lane extrapolate-then-decay to a HELD position
+        at its last knot and keep commanding it (``leg_interp.cpp:1105-1130``,
+        the I-HAND-4 falling-edge rule); the deviation guard measures that raw
+        command against the encoder (``leg_interp.cpp:1226-1228``) and the
+        ``MAX_LEAD_HAND_REV`` clamp would drag the parked hand back up toward it
+        at the recovery slew. So parking an axis out from under a live lane
+        opens the very gap MAX_DEVIATION_HAND_REV fires on — the mirror image
+        of the 2026-09-18 latches, with the encoder moving instead of the plan.
+        ONLY a ``s_output_enabled`` false→true edge clears the lane
+        (``leg_interp.cpp:885``), which is exactly what a guard latch + clear
+        gives the recovery path — hence ``lane_cleared=True`` there. With
+        ``lane_cleared=False`` (the ``/park_hand`` path) an ARMED wire is
+        REFUSED rather than raced: the operator's DEACTIVATE → ACTIVATE gives
+        the edge and parks in one move. An already-parked hand is still a free
+        no-op either way, which is every healthy schedule start.
 
         FAIL-SAFE on an unknown hand position: no telemetry, no per-axis
         diagnostic, or a non-finite ``pos_rev[6]`` (which is what a faulted
@@ -6446,6 +6558,9 @@ class TeensyBridgeNode(Node):
         stream does not go stale underneath it.
         """
         target = float(hw.JB_OP_HAND_ACTIVATE_POSITION_REV)
+        gok, gwhy = self._wait_for_guard_clear(poll_dt=poll_dt)
+        if not gok:
+            return False, f'hand park SKIPPED — {gwhy}'
         with self._lock:
             telem = self._latest_telemetry
             have_diag = _HAND_AXIS in self._latest_diag
@@ -6461,6 +6576,14 @@ class TeensyBridgeNode(Node):
                 f'hand park not needed — hand at {pos:+.4f} rev, inside '
                 f'{_HAND_PARK_BAND_REV} rev of the park ({target:+.4f} rev)')
             return True, f'hand already parked ({pos:+.4f} rev)'
+        if not lane_cleared and self._mpc_active:
+            return False, (
+                f'hand park REFUSED — the hand is at {pos:+.4f} rev (outside '
+                f'{_HAND_PARK_BAND_REV} rev of the park) but the wire is ARMED, '
+                f'so the streamed hand lane is still commanding its last knot: '
+                f'parking the axis under it would open a MAX_DEVIATION gap the '
+                f'other way round and the lead clamp would drag the hand back '
+                f'up. Only a disarm/arm edge clears the lane')
         self.get_logger().info(
             f'hand park: ACTIVATE(axis {_HAND_AXIS}) TRAP_TRAJ from {pos:+.4f} rev '
             f'to the park at {target:+.4f} rev at '
@@ -6492,6 +6615,21 @@ class TeensyBridgeNode(Node):
         self.get_logger().info(
             f'hand park complete — {pos:+.4f} rev -> {landed:+.4f} rev')
         return True, f'hand parked ({pos:+.4f} -> {landed:+.4f} rev)'
+
+    def _svc_park_hand(self, req, res):
+        """``/park_hand``: bring the hand home through the profiled ACTIVATE op
+        if it is outside ``_HAND_PARK_BAND_REV``, else report it already parked.
+
+        The schedule's half of the hand-park contract. A caller about to stream
+        a hand lane (``skill_node``'s precondition ladder) calls this FIRST, so
+        no opening REST ever has more than the band to cover — the band, not the
+        9.63 rev the 2026-09-18 sitting handed one. The band decision lives HERE,
+        with the park, so the caller carries no second copy of it.
+        """
+        ok, msg = self._park_hand()
+        res.success = ok
+        res.message = msg if ok else f'{msg}; {_HAND_NOT_PARKED_HINT}'
+        return res
 
     def _activate_axis_status(self, axes):
         """Build per-axis ``ActivateAxisStatus`` for the activate observer from the

@@ -17,7 +17,10 @@ import threading
 import time
 import types
 
-from teensy_link import Diagnostic, MsgType, RpcMethod, RpcStatus, rpc_args
+from teensy_link import (Diagnostic, FaultState, MsgType, RpcMethod,
+                         RpcStatus, rpc_args)
+
+from jugglebot.teensy_bridge_node import _GUARD_CLEAR_WAIT_S
 
 from std_srvs.srv import Trigger
 
@@ -565,5 +568,234 @@ def test_recover_escape_hatch_also_parks_the_hand():
         assert res.success is True, res.message
         assert 'args' in box and act['args'] == rpc_args.encode_activate(6)
         assert 'hand parked' in res.message
+    finally:
+        _teardown(teensy, client, node)
+
+
+# ── The park waits for the guard to clear (2026-09-18) ───────────────────────
+# `temp/logs/launch_r2gate_20260918_1325.log` lines 977-982: the operator's GUI
+# clear_errors → `CLEAR_ERRORS fired` → the park's `ACTIVATE(axis 6)` came back
+# `ERR_BUS_DOWN` ("... and fault_state=MAX_DEVIATION is currently latched") →
+# `HAND NOT PARKED` — and the VERY NEXT log line was `Teensy guard fault
+# cleared (fault_state=NONE)`. CLEAR_ERRORS is acked by the LINK; the latch is
+# released by the firmware's 10 Hz fault task, one tick later. The park lost a
+# race it did not know it was in, and the refusal then escalated through the
+# armed /clear_errors disarm+direct-clear fallback, which is why the operator
+# had to ACTIVATE/TRAJECTORY by hand.
+
+def test_the_park_waits_out_the_10hz_fault_task_then_parks():
+    """A latch that clears two polls AFTER the clear still parks: the park
+    polls the cached fault_state rather than assuming the ack released it."""
+    teensy, client, node = _node()
+    try:
+        act = _capture(teensy, RpcMethod.ACTIVATE)
+        _bring_link_and_telem_up(teensy, node, leg_pos=0.1)
+        _hand_diag_up(teensy, node, pos_rev=9.6227)   # the 2026-09-18 position
+        # The guard is STILL latched at the instant the park is asked for.
+        teensy.send_heartbeat_t2j(fault_state=int(FaultState.MAX_DEVIATION))
+        assert _wait_until(
+            lambda: node._latest_heartbeat is not None
+            and int(node._latest_heartbeat.fault_state)
+            == int(FaultState.MAX_DEVIATION), timeout=2.0)
+
+        def _fault_task_clears_then_park_arrives():
+            time.sleep(0.12)                      # ~two 0.05 s polls
+            teensy.send_heartbeat_t2j(fault_state=int(FaultState.NONE))
+            time.sleep(0.3)                       # then the TRAP_TRAJ walk
+            teensy.send_telemetry(pos_rev=tuple([0.1] * 6 + [0.0]),
+                                  vel_rps=tuple([0.0] * 7))
+
+        th = threading.Thread(target=_fault_task_clears_then_park_arrives)
+        th.start()
+        ok, msg = node._park_hand()
+        th.join()
+        assert ok is True, msg
+        assert 'hand parked' in msg
+        assert act['args'] == rpc_args.encode_activate(6), act
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_the_park_refuses_a_latch_that_never_clears_and_names_it():
+    """A latch still up after the bounded wait ⇒ REFUSE, naming the latch —
+    never fire an ACTIVATE the firmware will reject as ERR_BUS_DOWN and then
+    report as an unexplained park failure."""
+    teensy, client, node = _node()
+    try:
+        act = _capture(teensy, RpcMethod.ACTIVATE)
+        _bring_link_and_telem_up(teensy, node, leg_pos=0.1)
+        _hand_diag_up(teensy, node, pos_rev=9.6227)
+        teensy.send_heartbeat_t2j(fault_state=int(FaultState.MAX_DEVIATION))
+        assert _wait_until(
+            lambda: node._latest_heartbeat is not None
+            and int(node._latest_heartbeat.fault_state) != 0, timeout=2.0)
+
+        t_start = time.monotonic()
+        ok, msg = node._park_hand()
+        waited = time.monotonic() - t_start
+        assert ok is False
+        assert 'STILL latched' in msg and 'MAX_DEVIATION' in msg
+        assert 'args' not in act, 'fired ACTIVATE into a latched guard'
+        # Bounded: it must not block the executor thread indefinitely.
+        assert waited < 3.0 * _GUARD_CLEAR_WAIT_S, waited
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_the_park_spends_no_wait_when_nothing_is_latched():
+    """The schedule path (`/park_hand`, no latch at all) pays nothing for the
+    wait: fault_state already reads NONE, so the park fires immediately."""
+    teensy, client, node = _node()
+    try:
+        _bring_link_and_telem_up(teensy, node, leg_pos=0.1)
+        _hand_diag_up(teensy, node, pos_rev=0.0)      # in band ⇒ no-op park
+        t_start = time.monotonic()
+        ok, msg = node._park_hand()
+        assert ok is True and 'already parked' in msg
+        assert time.monotonic() - t_start < 0.5
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_the_park_refuses_when_there_is_no_heartbeat_to_read_the_guard_from():
+    """FAIL-SAFE, same shape as the unknown-hand-position refusal: with no
+    heartbeat the guard's state is unknown, so the park does not fire."""
+    teensy, client, node = _node()
+    try:
+        act = _capture(teensy, RpcMethod.ACTIVATE)
+        ok, msg = node._park_hand()
+        assert ok is False
+        assert 'no Teensy heartbeat' in msg
+        assert 'args' not in act
+    finally:
+        _teardown(teensy, client, node)
+
+
+# ── /park_hand: the schedule's caller of the same op (2026-09-18) ────────────
+
+def test_park_hand_service_parks_a_hand_left_at_the_top_of_the_stroke():
+    """`/park_hand` is what `skill_node` calls before it pre-levels or streams:
+    the hand the previous attempt left at 9.63 rev comes home on the profiled
+    ACTIVATE path, so the opening REST only ever has the park band to cover."""
+    teensy, client, node = _node()
+    try:
+        act = _capture(teensy, RpcMethod.ACTIVATE)
+        _bring_link_and_telem_up(teensy, node, leg_pos=0.1)
+        _hand_diag_up(teensy, node, pos_rev=9.6227)
+
+        def _park_arrives():
+            time.sleep(0.3)
+            teensy.send_telemetry(pos_rev=tuple([0.1] * 6 + [0.0]),
+                                  vel_rps=tuple([0.0] * 7))
+
+        th = threading.Thread(target=_park_arrives)
+        th.start()
+        res = node._svc_park_hand(Trigger.Request(), Trigger.Response())
+        th.join()
+        assert res.success is True, res.message
+        assert act['args'] == rpc_args.encode_activate(6), act
+        assert '9.6227' in res.message
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_park_hand_service_is_a_noop_on_an_already_parked_hand():
+    """Called before EVERY schedule, so the in-band answer must be free and
+    must not fire a firmware op."""
+    teensy, client, node = _node()
+    try:
+        act = _capture(teensy, RpcMethod.ACTIVATE)
+        _bring_link_and_telem_up(teensy, node, leg_pos=0.1)
+        _hand_diag_up(teensy, node, pos_rev=0.0)
+        res = node._svc_park_hand(Trigger.Request(), Trigger.Response())
+        assert res.success is True
+        assert 'already parked' in res.message
+        assert 'args' not in act
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_park_hand_service_refusal_carries_the_manual_park_hint():
+    """A refusal must tell the operator the escape (DEACTIVATE → ACTIVATE), the
+    same hint /recover's refusal carries — the caller turns it into the
+    schedule's own named refusal."""
+    teensy, client, node = _node()
+    try:
+        _bring_link_and_telem_up(teensy, node, leg_pos=0.1)   # no hand diagnostic
+        res = node._svc_park_hand(Trigger.Request(), Trigger.Response())
+        assert res.success is False
+        assert 'hand position is unknown' in res.message
+        assert 'DEACTIVATE then ACTIVATE' in res.message
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_park_hand_service_refuses_to_park_under_a_live_hand_lane():
+    """THE MIRROR HAZARD (firmware, 2026-09-18): the op moves the AXIS while
+    the STREAM keeps commanding. A hand-less hold leaves the firmware lane
+    HOLDING its last knot (leg_interp.cpp:1105-1130), the guard measures that
+    raw command against the encoder (leg_interp.cpp:1226-1228), and the lead
+    clamp would drag the parked hand back up to it. Only a disarm/arm edge
+    clears the lane (leg_interp.cpp:885) — so with the wire ARMED, `/park_hand`
+    REFUSES instead of racing, and the operator's DEACTIVATE → ACTIVATE (which
+    gives the edge AND parks) is the move."""
+    teensy, client, node = _node()
+    try:
+        act = _capture(teensy, RpcMethod.ACTIVATE)
+        _bring_link_and_telem_up(teensy, node, leg_pos=0.1)
+        _hand_diag_up(teensy, node, pos_rev=9.6227)
+        node._mpc_active = True
+
+        res = node._svc_park_hand(Trigger.Request(), Trigger.Response())
+        assert res.success is False
+        assert 'the wire is ARMED' in res.message
+        assert 'DEACTIVATE then ACTIVATE' in res.message
+        assert 'args' not in act, 'parked the axis under a live hand lane'
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_park_hand_service_noop_is_free_even_on_an_armed_wire():
+    """The healthy schedule start: the hand IS parked, so the armed refusal
+    above must not fire — it would refuse every attempt."""
+    teensy, client, node = _node()
+    try:
+        act = _capture(teensy, RpcMethod.ACTIVATE)
+        _bring_link_and_telem_up(teensy, node, leg_pos=0.1)
+        _hand_diag_up(teensy, node, pos_rev=0.0)
+        node._mpc_active = True
+
+        res = node._svc_park_hand(Trigger.Request(), Trigger.Response())
+        assert res.success is True and 'already parked' in res.message
+        assert 'args' not in act
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_recover_still_parks_an_armed_wire_because_the_clear_cleared_the_lane():
+    """The recovery path passes `lane_cleared=True` and MUST still park while
+    armed (`/recover` keeps mpc_active=1): the latch's own out_en false→true
+    edge at the clear killed the lane, so there is nothing to race."""
+    teensy, client, node = _node()
+    try:
+        _capture(teensy, RpcMethod.CLEAR_ERRORS)
+        act = _capture(teensy, RpcMethod.ACTIVATE)
+        _bring_link_and_telem_up(teensy, node, leg_pos=0.1)
+        _hand_diag_up(teensy, node, pos_rev=8.7382)
+        node._sp_pump._prev_pos = [0.1] * 6
+        node._reseed_client = _FakeReseedClient(success=True)
+        node._mpc_active = True
+
+        def _park_arrives():
+            time.sleep(0.3)
+            teensy.send_telemetry(pos_rev=tuple([0.1] * 6 + [0.0]),
+                                  vel_rps=tuple([0.0] * 7))
+
+        th = threading.Thread(target=_park_arrives)
+        th.start()
+        res = node._svc_recover(Trigger.Request(), Trigger.Response())
+        th.join()
+        assert res.success is True, res.message
+        assert act['args'] == rpc_args.encode_activate(6), act
     finally:
         _teardown(teensy, client, node)

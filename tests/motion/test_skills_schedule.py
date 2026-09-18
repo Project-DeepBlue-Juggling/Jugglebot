@@ -85,16 +85,41 @@ def test_skill_rejects_a_negative_lead():
 
 def test_the_leads_are_knot_multiples_of_the_one_grid():
     """Both leads are counts of the 40 Hz knot grid, never a second copy of
-    it: 6 knots general, 8 for a pinned handoff, and the 3 the wire has read
+    it: 9 knots general, 11 for a pinned handoff, and the 3 the wire has read
     are what turns either into a solve budget."""
     dt = float(hw.JB_TRAJ_KNOT_DT_S)
     assert sc.LEAD_S == pytest.approx(sc.LEAD_KNOTS * dt)
     assert sc.HANDOFF_LEAD_S == pytest.approx(sc.HANDOFF_LEAD_KNOTS * dt)
     assert sc.MIN_WINDOW_S == pytest.approx(sc.MIN_WINDOW_KNOTS * dt)
-    # The budgets the R2 sweep measured: 75 ms general, 125 ms pinned.
-    assert (sc.LEAD_KNOTS - sc.WIRE_READ_KNOTS) * dt == pytest.approx(0.075)
-    assert ((sc.HANDOFF_LEAD_KNOTS - sc.WIRE_READ_KNOTS) * dt
-            == pytest.approx(0.125))
+    # Both leads are DERIVED from the one solve budget (2026-09-18), so a
+    # change to it can never move one lead without the other.
+    assert sc.LEAD_KNOTS == sc.WIRE_READ_KNOTS + sc.SOLVE_BUDGET_KNOTS
+    assert (sc.HANDOFF_LEAD_KNOTS
+            == sc.LEAD_KNOTS + sc.HANDOFF_LEAD_EXTRA_KNOTS)
+    assert sc.HANDOFF_LEAD_KNOTS > sc.LEAD_KNOTS
+
+
+def test_the_splice_budget_covers_the_measured_loaded_solve():
+    """THE contract test for the wire-read budget: **every** dispatch — pinned
+    or not — leaves at least 0.150 s of solve budget.
+
+    Sized on the robot, not on a bench: the 2026-09-18 sitting
+    (``temp/logs/launch_r2gate_20260918_1325.log``) measured CATCH
+    ``install_segment`` plan times of p50 76.4 / p90 111.0 / p95 113.4 /
+    max 134.2 ms under sitting load (n=51), against a budget of 0.083-0.100 s
+    — and 16 of 23 catch attempts refused ``SPLICE_TOO_LATE``.  0.150 s is
+    p95 + one knot of margin, and clears the measured MAX by 16 ms.  The
+    budget is what ``executor.install_segment`` measures
+    (``(k_s - WIRE_READ_KNOTS) * dt - (t_now - t0)``), and its FLOOR over
+    dispatch phase is ``(lead_knots - WIRE_READ_KNOTS) * dt``.
+    """
+    dt = float(hw.JB_TRAJ_KNOT_DT_S)
+    for name, lead_knots in (('general', sc.LEAD_KNOTS),
+                             ('pinned handoff', sc.HANDOFF_LEAD_KNOTS)):
+        budget_s = (lead_knots - sc.WIRE_READ_KNOTS) * dt
+        assert budget_s >= 0.150 - 1e-12, (
+            '%s lead leaves only %.3f s of solve budget; the loaded robot '
+            'solves a CATCH in up to 0.134 s' % (name, budget_s))
 
 
 def test_skill_rejects_an_unknown_kind():

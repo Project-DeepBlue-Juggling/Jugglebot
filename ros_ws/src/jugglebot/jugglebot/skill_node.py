@@ -106,6 +106,16 @@ _WIRE_KIND = {THROW: InstallSegment.Request.KIND_THROW,
 #: nominal-latency budget.
 _SERVICE_WAIT_S = 2.0
 
+#: How long `_park_hand` waits for `/park_hand` (2026-09-18). NOT
+#: `_SERVICE_WAIT_S`: this service deliberately BLOCKS on a firmware
+#: TRAP_TRAJ — the bridge's own bound is its guard-clear wait
+#: (`teensy_bridge_node._GUARD_CLEAR_WAIT_S`, 1.0 s) plus the activate
+#: observer's budget (`teensy_link.activate.DEFAULT_TIMEOUT_S`, 20 s) plus the
+#: 5 s hard-deadline slack the park keeps over it, i.e. ~26 s. 30 s covers that
+#: worst case with transport; the NOMINAL park is ~4 s (9.6 rev at the op's
+#: 2.5 rev/s ceiling) and the no-op answer is immediate.
+_PARK_HAND_WAIT_S = 30.0
+
 #: SkillExecutor.tick cadence. The plan's dispatch-lead arithmetic
 #: (`schedule._MIN_WINDOW_S`, `executor.LEAD_KNOTS`) is quantised to the 40 Hz
 #: knot grid, so ticking at the same rate is the only choice that cannot itself
@@ -302,6 +312,12 @@ class SkillNode(Node):
         # still needs the MultiThreadedExecutor to process it concurrently.
         self._hold_cli = self.create_client(
             Trigger, 'trajectory/hold', callback_group=self._cbgroup)
+        # The hand park the schedule's own precondition fires (2026-09-18,
+        # `_park_hand`). Same reentrant group, same reason as the three above:
+        # the service callback blocks in `_wait_future` for up to
+        # `_PARK_HAND_WAIT_S` while the bridge runs a firmware TRAP_TRAJ.
+        self._park_hand_cli = self.create_client(
+            Trigger, 'park_hand', callback_group=self._cbgroup)
 
         self._announce_pub = self.create_publisher(
             ThrowAnnouncement, 'throw_announcements', 10)
@@ -569,7 +585,12 @@ class SkillNode(Node):
         # +0.0001. The honest enforcement point for "the plan's hand seed is
         # not where the hand is" is the SEED, and it now RECONCILES rather
         # than refuses (`trajectory_node._cycle_start_state`) — the opening
-        # REST carries the hand home. `hand_fresh` stays: that seed is
+        # REST carries the hand home. AMENDED 2026-09-18: it carries the hand
+        # home only from inside the PARK BAND, because `_park_hand` now runs
+        # before the pre-level and brings it there first (a REST handed 9.63
+        # rev E-STOPPED the machine three times). The ladder still has no hand
+        # POSITION row — the park is an ACTION, not a refusal, and it is the
+        # bridge that owns the band. `hand_fresh` stays: that seed is
         # reconciled against the encoder, so a stale encoder is still a
         # refusal, one level down.
         return Observations(
@@ -868,6 +889,15 @@ class SkillNode(Node):
         separation_mm = float(self.get_parameter('separation_mm').value)
         dwell_s = float(self.get_parameter('dwell_s').value)
         n_throws = int(self.get_parameter('n_throws').value)
+        # Park the hand BEFORE t0 is read (2026-09-18, `_park_hand`): the park
+        # is a ~4 s blocking firmware op, and a t0 sampled ahead of it would
+        # have burned its whole `_START_LEAD_S` waiting for the hand to arrive.
+        park_err = self._park_hand()
+        if park_err:
+            response.success = False
+            response.message = 'columns refused: %s' % (park_err,)
+            self.get_logger().error(response.message)
+            return response
         t0 = self.get_clock().now().nanoseconds / 1e9 + _START_LEAD_S
         try:
             sites = columns_sites(separation_mm)
@@ -912,6 +942,53 @@ class SkillNode(Node):
         return SimpleNamespace(leg_vel_mmps=leg_vel, leg_acc_mmps2=leg_acc,
                                leg_jerk_mmps3=leg_jerk,
                                hand_acc_limit_rps2=float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2))
+
+    def _park_hand(self) -> str:
+        """Park the hand before this schedule streams a hand lane (``''`` on
+        success else why not). The FIRST thing either start service does that
+        touches the machine — before `_prelevel`, before t0 is read.
+
+        CONTRACT (`teensy_bridge_node`, "no streamed lane ever homes the hand
+        from outside the park band"): a schedule's opening REST seeds from the
+        encoder and carries the hand home, but it may never have more than the
+        band to cover. On 2026-09-18 it was handed 9.63 rev — the previous
+        attempt ended `ABORTED_NO_RELEASE` with the hand at the top of its
+        stroke — and planned it home over 1.625 s (~5.4 rev/s) against a hand
+        that physically follows at ~0.8-1.0 rev/s under the bridge's lead
+        authority (and at `RECOVER_SLEW_VEL_RPS` = 1.0 rev/s after a clear).
+        The command ran 3.28 rev BELOW the encoder and MAX_DEVIATION E-STOPPED
+        the machine 0.61 s in, three times in one sitting.
+
+        Unconditional: the BAND is the bridge's fact, not a second copy here
+        (`/park_hand` answers "already parked" as an immediate no-op), and the
+        bridge is also the only thing that can read a hand position this node
+        would have to guess at. The refusal is named and pre-motion — nothing
+        has moved when it fires.
+
+        On an ARMED wire an off-band hand is REFUSED rather than parked (see
+        `teensy_bridge_node._park_hand`'s `lane_cleared` contract: the firmware
+        hand lane is still commanding its last knot, and parking the axis under
+        it opens the same guard gap in the other direction). The operator's
+        DEACTIVATE → ACTIVATE gives the disarm/arm edge and parks in one move.
+        So this refusal is the schedule's LAST line, not its only one — the
+        band is normally already held, because the previous attempt's own REST
+        ended there.
+        """
+        if not self._park_hand_cli.wait_for_service(timeout_sec=_SERVICE_WAIT_S):
+            return ('park_hand unavailable — the hand park is the only thing '
+                    'that may bring the hand home from outside the park band, '
+                    'and the opening REST must not be asked to')
+        resp = self._wait_future(
+            self._park_hand_cli.call_async(Trigger.Request()),
+            timeout_s=_PARK_HAND_WAIT_S)
+        if resp is None:
+            return ('park_hand did not answer in %.0f s'
+                    % (_PARK_HAND_WAIT_S,))
+        if not bool(resp.success):
+            return 'the hand park was refused: %s' % (resp.message,)
+        self.get_logger().info('hand park before the schedule: %s'
+                               % (resp.message,))
+        return ''
 
     def _prelevel(self) -> str:
         """Bring the platform to gravity-level rest before compiling the R3
@@ -961,8 +1038,9 @@ class SkillNode(Node):
         learner on, memory at ``temp/learn/<plant_id>/memory.csv``.
 
         Order: refuse fast on anything that does not need the platform to
-        move (running / repo root / pattern / box+limits) BEFORE
-        `_prelevel` (item 7) actually moves it, then compile the schedule —
+        move (running / repo root / pattern / box+limits) BEFORE `_park_hand`
+        (2026-09-18) and `_prelevel` (item 7) actually move anything, then
+        compile the schedule —
         pre-levelling is the last check before compilation, per the R3
         carried note ("a healthy launch rests the cup at the gravity-level
         counter-tilt").
@@ -1053,6 +1131,18 @@ class SkillNode(Node):
         except (ValueError, OSError, csv.Error) as exc:
             response.success = False
             response.message = 'memory refused: %s' % (exc,)
+            self.get_logger().error(response.message)
+            return response
+
+        # The hand comes home on the profiled ACTIVATE path BEFORE the
+        # pre-level and before the opening REST is compiled (2026-09-18) — the
+        # REST still SEEDS from the encoder, it just never has more than the
+        # park band to cover. Placed here, after every no-motion refusal and
+        # before the first thing that moves, for the same reason `_prelevel` is.
+        park_err = self._park_hand()
+        if park_err:
+            response.success = False
+            response.message = 'self-toss refused: %s' % (park_err,)
             self.get_logger().error(response.message)
             return response
 

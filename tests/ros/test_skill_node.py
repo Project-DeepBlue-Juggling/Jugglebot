@@ -120,10 +120,34 @@ def _response(**overrides):
     return resp
 
 
+def _park_hand_response(success=True, message='hand already parked (+0.0001 rev)'):
+    resp = MagicMock()
+    resp.success = success
+    resp.message = message
+    return resp
+
+
+def _park_hand_ready(node, **resp_overrides):
+    """Wire `node` so `_park_hand` (2026-09-18) succeeds instantly with the
+    bridge's own "already parked" no-op answer.
+
+    EVERY start service calls `/park_hand` before it moves anything (the
+    hand-park contract: no streamed lane ever homes the hand from outside the
+    park band), so without this a real, unserved rclpy client would refuse
+    every start after a `_SERVICE_WAIT_S` wait. Called from
+    `_node_with_client`, so a test opts INTO a failing park rather than out of
+    a working one.
+    """
+    node._park_hand_cli = _RecordingClient(
+        response=_park_hand_response(**resp_overrides), ready=True)
+    return node._park_hand_cli
+
+
 def _node_with_client(response=None, ready=True):
     node = sn.SkillNode()
     client = _RecordingClient(response=response, ready=ready)
     node._install_cli = client
+    _park_hand_ready(node)
     return node, client
 
 
@@ -1375,3 +1399,114 @@ def test_a_refused_memory_row_is_logged_and_never_raises():
     assert len(errors) == 1
     assert 'memory row REFUSED (not appended)' in errors[0]
     assert '2.2317' in errors[0]
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# The hand park before the schedule (2026-09-18)
+# ═════════════════════════════════════════════════════════════════════════════
+# THE DEFECT (bag `2026-09-18_13-25-15`, three MAX_DEVIATION latches): an
+# attempt ended `ABORTED_NO_RELEASE` with the hand at 9.63 rev — the top of the
+# stroke — and the NEXT schedule's opening REST, seeded correctly from that
+# encoder, planned it home over 1.625 s (~5.4 rev/s). The hand physically
+# follows at ~0.8-1.0 rev/s under the bridge's lead authority, so the command
+# ran 3.28 rev below the encoder and the guard E-STOPPED the machine 0.61 s in.
+# The 2026-09-16 "the opening REST homes the hand" decision stands, but only
+# from inside the park band: `_park_hand` puts the hand there first, through
+# the bridge's profiled ACTIVATE op.
+
+def test_start_self_toss_parks_the_hand_before_it_pre_levels():
+    """Order is the whole point: the park runs BEFORE the pre-level (and so
+    before t0 and the opening REST are compiled from anything)."""
+    order = []
+
+    class _Ordered(_RecordingClient):
+        def __init__(self, label, **kw):
+            super().__init__(**kw)
+            self._label = label
+
+        def call_async(self, request):
+            order.append(self._label)
+            return super().call_async(request)
+
+    node, _client = _node_with_client()
+    node._on_traj_status(_status())
+    _prelevel_ready(node)
+    node._go_to_pose_cli = _Ordered(
+        'prelevel', response=_go_to_pose_response(), ready=True)
+    park = _Ordered('park', response=_park_hand_response(
+        message='hand parked (+9.6227 -> +0.0001 rev)'), ready=True)
+    node._park_hand_cli = park
+    node._params['plant_id'] = 'test_park_before_prelevel'
+
+    resp = node._svc_start_self_toss(Trigger.Request(), Trigger.Response())
+    assert resp.success is True, resp.message
+    assert order == ['park', 'prelevel'], order
+    assert len(park.calls) == 1
+
+
+def test_start_self_toss_is_refused_when_the_hand_park_fails():
+    """A park refusal refuses the SCHEDULE, with the bridge's reason named —
+    and nothing has moved: the pre-level is never asked for."""
+    node, _client = _node_with_client()
+    node._on_traj_status(_status())
+    prelevel = _prelevel_ready(node)
+    node._park_hand_cli = _RecordingClient(
+        response=_park_hand_response(
+            success=False,
+            message=('hand park SKIPPED — the guard is STILL latched '
+                     '(fault_state=MAX_DEVIATION) 1.0 s after the clear; '
+                     'DEACTIVATE then ACTIVATE')),
+        ready=True)
+
+    resp = node._svc_start_self_toss(Trigger.Request(), Trigger.Response())
+    assert resp.success is False
+    assert 'the hand park was refused' in resp.message
+    assert 'MAX_DEVIATION' in resp.message
+    assert node._executor is None
+    assert prelevel.calls == [], 'moved the platform after a failed hand park'
+
+
+def test_start_self_toss_is_refused_when_park_hand_is_unavailable():
+    """No `/park_hand` (no bridge) ⇒ refuse. The opening REST must never be the
+    thing that brings the hand home from outside the band, so there is no
+    fallback here to take."""
+    node, _client = _node_with_client()
+    node._on_traj_status(_status())
+    prelevel = _prelevel_ready(node)
+    node._park_hand_cli = _RecordingClient(response=None, ready=False)
+
+    resp = node._svc_start_self_toss(Trigger.Request(), Trigger.Response())
+    assert resp.success is False
+    assert 'park_hand unavailable' in resp.message
+    assert prelevel.calls == []
+
+
+def test_start_columns_parks_the_hand_before_it_reads_t0():
+    """Columns has no pre-level, but it does stream a hand lane — and its t0 is
+    `now + _START_LEAD_S`, so a ~4 s blocking park sampled AFTER t0 would have
+    spent the whole start lead waiting for the hand."""
+    node, _client = _node_with_client()
+    park = _park_hand_ready(
+        node, message='hand parked (+9.6227 -> +0.0001 rev)')
+
+    resp = node._svc_start_columns(Trigger.Request(), Trigger.Response())
+    assert resp.success is True, resp.message
+    assert len(park.calls) == 1
+    # t0 was read after the park returned, so the schedule still has its full
+    # start lead: the compiled t0 is ahead of the clock the park finished on.
+    assert float(resp.message.split('t0=')[1]) >= (
+        node.get_clock().now().nanoseconds / 1e9)
+
+
+def test_start_columns_is_refused_when_the_hand_park_fails():
+    node, _client = _node_with_client()
+    node._park_hand_cli = _RecordingClient(
+        response=_park_hand_response(
+            success=False, message='hand park SKIPPED — no hand telemetry'),
+        ready=True)
+
+    resp = node._svc_start_columns(Trigger.Request(), Trigger.Response())
+    assert resp.success is False
+    assert 'columns refused' in resp.message
+    assert 'no hand telemetry' in resp.message
+    assert node._executor is None

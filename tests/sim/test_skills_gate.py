@@ -297,7 +297,8 @@ def test_tracker_returns_none_while_the_ball_is_not_airborne():
 # the columns gate above).  MEASURED (2026-09-13, this test, seed 0, 5
 # throws): every attempt in this schedule produces exactly ONE throw before
 # ending ``NO_LANDING`` (the single-ball self-toss's catch-with-throw
-# dispatches ``HANDOFF_LEAD_S`` = 0.2 s BEFORE its own ball's release, so the
+# dispatches ``HANDOFF_LEAD_S`` (0.275 s since 2026-09-18) BEFORE its own
+# ball's release, so the
 # tracker never has 3 samples yet -- a real gap in ``compile_self_toss`` for
 # a schedule with no second ball to buy the slack columns has; not this
 # unit's file to fix, see the logbook entry) -- so ``max_attempts`` is sized

@@ -210,7 +210,7 @@ def test_a_catch_during_the_throw_splices_at_the_first_knot_past_the_lead(
     want_k = uc.splice_knot(old.meta, tau, ex.LEAD_S)
 
     assert res.accepted, res.message
-    assert res.splice_k == want_k == 22
+    assert res.splice_k == want_k == 25
     assert res.t0_s == old.t0_s          # the origin never moves on a splice
     assert new.t0_s == old.t0_s
     k = res.splice_k
@@ -435,16 +435,17 @@ def test_an_early_dispatch_still_splices_at_the_release(
         T0_ABS + LAUNCH_S + FLIGHT_S - (T0_ABS + k_rel * dt), abs=1e-9)
 
 
-def test_the_handoff_budget_is_five_knots_and_the_knot_past_it_refuses(
+def test_the_handoff_budget_is_eight_knots_and_the_knot_past_it_refuses(
         throw_record, limits, geom, sites):
     """The lead IS the solve budget, and this is where it runs out.
 
-    A handoff dispatches ``HANDOFF_LEAD_KNOTS`` (8) ahead of a splice knot the
+    A handoff dispatches ``HANDOFF_LEAD_KNOTS`` (11) ahead of a splice knot the
     head pins, and the wire has read ``WIRE_READ_KNOTS`` (3) past the install
-    instant, so the solve may take ``(8 - 3)·dt`` = 125 ms.  The measured solve
+    instant, so the solve may take ``(11 - 3)·dt`` = 200 ms.  The measured solve
     is 26–34 ms on the idle Jetson (``temp/probes/skills_segment_run2.md``,
-    2026-09-12) — 100 ms is four times that and still installs; 130 ms is past
-    the budget and is refused rather than written under the emitter.  The
+    2026-09-12) and 40–134 ms under sitting load (2026-09-18, n = 51, p95
+    113 ms) — 150 ms still installs; 210 ms is past the budget and is refused
+    rather than written under the emitter.  The
     lateness is INJECTED (``t_install_s``), so this measures the rule and never
     the box's load.
     """
@@ -454,7 +455,7 @@ def test_the_handoff_budget_is_five_knots_and_the_knot_past_it_refuses(
     t_land = t_release + FLIGHT_S
     t_now = t_release - ex.HANDOFF_LEAD_S
     budget_s = (ex.HANDOFF_LEAD_KNOTS - ex.WIRE_READ_KNOTS) * DT
-    assert budget_s == pytest.approx(0.125)
+    assert budget_s == pytest.approx(0.200)
 
     def _install(solve_s):
         return ex.install_segment(
@@ -462,16 +463,16 @@ def test_the_handoff_budget_is_five_knots_and_the_knot_past_it_refuses(
             _catch_throw_terminal(p2, t_land, t_land + 0.30), t_now,
             limits=limits, geom=geom, t_install_s=t_now + solve_s)
 
-    _rec, ok, seg = _install(0.100)
+    _rec, ok, seg = _install(0.150)
     assert ok.accepted, ok.message
     assert ok.seeded_post_release is True and seg is not None
 
-    unchanged, late, seg_late = _install(0.130)
+    unchanged, late, seg_late = _install(0.210)
     assert not late.accepted
     assert late.code == ex.SPLICE_TOO_LATE
     assert late.splice_k == -1 and seg_late is None
     assert unchanged is record
-    assert 'budget 0.125 s' in late.message
+    assert 'budget 0.200 s' in late.message
 
 
 # ---------------------------------------------------------------------------
@@ -490,8 +491,8 @@ def test_a_six_throw_columns_schedule_installs_end_to_end(limits, geom):
     the 2026-09-12 lead re-measurement — the leads move WHEN a segment is
     dispatched, never what it plans).  The solve time matters as much as the
     peaks: a handoff splice clears the wire by
-    ``HANDOFF_LEAD_KNOTS - WIRE_READ_KNOTS`` = five knots (125 ms), and
-    ``test_the_handoff_budget_is_five_knots_and_the_knot_past_it_refuses``
+    ``HANDOFF_LEAD_KNOTS - WIRE_READ_KNOTS`` = eight knots (200 ms), and
+    ``test_the_handoff_budget_is_eight_knots_and_the_knot_past_it_refuses``
     asserts both sides of that number against an INJECTED solve time rather
     than this box's.
     """
@@ -1130,18 +1131,18 @@ def test_nothing_is_re_sent_inside_the_catch_freeze(sites):
     land0 = _fit_landing(pos_mm=sites[1].catch_site_mm(), vel_mm_s=LAND_VEL,
                        t_land_abs_s=sch.skills[1].t_abs_s)
     box = {'landing': land0}
-    # A 0.2 s freeze, so the frozen window opens BEFORE the REST's own dispatch
-    # instant (``t_land - LEAD_S`` = 0.150 s) and this test is about the freeze
-    # alone; the probe below sits between the two.
+    # A freeze two knots wider than the lead, so the frozen window opens BEFORE
+    # the REST's own dispatch instant (``t_land - LEAD_S``) and this test is
+    # about the freeze alone; the probe below sits between the two.
     x = ex.SkillExecutor(sch, inst, tracker=lambda b: box['landing'],
-                         catch_freeze_s=0.2)
+                         catch_freeze_s=ex.LEAD_S + 2 * DT)
     x.tick(sch.skills[0].dispatch_s())
     x.tick(sch.skills[1].dispatch_s())
     n = len(inst.calls)
     box['landing'] = _fit_landing(pos_mm=land0.pos_mm + np.array([30.0, 0, 0]),
                                 vel_mm_s=LAND_VEL,
                                 t_land_abs_s=sch.skills[1].t_abs_s)
-    x.tick(sch.skills[1].t_abs_s - 0.18)
+    x.tick(sch.skills[1].t_abs_s - ex.LEAD_S - DT)
     assert len(inst.calls) == n
 
 
@@ -1199,6 +1200,114 @@ def test_one_catch_may_spend_no_more_than_the_re_send_cap(sites):
     assert np.allclose(inst.calls[-1][1].landing_mm,
                        land0.pos_mm + np.array([40.0, 0, 0]))
     assert not x.attempt_ended
+
+
+# ---------------------------------------------------------------------------
+# The lateral clamp on the tracker-aimed catch (2026-09-18, C-CATCH-2)
+# ---------------------------------------------------------------------------
+#
+# Sitting 2026-09-18 (``temp/logs/launch_r2gate_20260918_1325.log``): two
+# accepted re-aims moved the committed catch 84.4 mm / 95.1 mm laterally
+# (the plant's constant lateral landing bias) and the ball was dropped both
+# times, while every SCHEDULE-aimed catch caught balls that landed 50-75 mm
+# off. ``_catch_terminal`` now clamps a landing's lateral (x, y) to within
+# ``lateral_authority_m`` of the schedule's commanded landing
+# (``_predicted_landing``) before it becomes a ``CatchTerminal`` -- the same
+# knob ``_command_u`` already clamps the learner's lateral command to.
+
+def test_tracker_lateral_landing_is_clamped_to_the_schedule_site(sites):
+    """Authority 0: a tracker landing 85 mm off in y from the schedule's
+    commanded site keeps the schedule's lateral site exactly; the tracker's
+    own touch-down time and arrival velocity still land on the terminal."""
+    p1, _p2 = sites
+    sch = _schedule(sites)
+    inst = _FakeInstaller()
+    sched_xy = p1.catch_site_mm()
+    t_land = sch.skills[1].t_abs_s
+    tracked = _fit_landing(pos_mm=sched_xy + np.array([0.0, 85.0, 0.0]),
+                          vel_mm_s=LAND_VEL * 1.1, t_land_abs_s=t_land + 0.03)
+    x = ex.SkillExecutor(sch, inst, tracker=lambda b: tracked,
+                         lateral_authority_m=0.0)
+    x.tick(sch.skills[0].dispatch_s())
+    lines = x.tick(sch.skills[1].dispatch_s())
+    terminal = inst.calls[-1][1]
+    assert np.allclose(terminal.landing_mm[:2], sched_xy[:2])
+    assert terminal.landing_mm[2] == pytest.approx(tracked.pos_mm[2])
+    assert np.allclose(terminal.landing_vel_mm_s, tracked.vel_mm_s)
+    assert terminal.t_land_s == pytest.approx(tracked.t_land_abs_s)
+    assert any('AIM-LATERAL-CLAMPED' in l for l in lines)
+
+
+def test_lateral_authority_widens_the_clamp(sites):
+    """A nonzero authority lets the lateral aim move that far, and no
+    further: 85 mm off with a 20 mm authority clips to 20 mm."""
+    p1, _p2 = sites
+    sch = _schedule(sites)
+    inst = _FakeInstaller()
+    sched_xy = p1.catch_site_mm()
+    t_land = sch.skills[1].t_abs_s
+    tracked = _fit_landing(pos_mm=sched_xy + np.array([0.0, 85.0, 0.0]),
+                          vel_mm_s=LAND_VEL, t_land_abs_s=t_land)
+    x = ex.SkillExecutor(sch, inst, tracker=lambda b: tracked,
+                         lateral_authority_m=0.020)
+    x.tick(sch.skills[0].dispatch_s())
+    x.tick(sch.skills[1].dispatch_s())
+    terminal = inst.calls[-1][1]
+    assert np.allclose(terminal.landing_mm[:2], sched_xy[:2] + np.array([0.0, 20.0]))
+
+
+def test_resend_declines_within_tolerance_against_the_clamped_landing(sites):
+    """The re-send 'moved' test is against the CLAMPED landing: a later fit
+    that only asks for a further LATERAL move the catch may not take has not
+    moved the committed catch at all, so it is declined WITHIN-TOLERANCE
+    without spending an install call."""
+    p1, _p2 = sites
+    sch = _schedule(sites)
+    inst = _FakeInstaller()
+    sched_xy = p1.catch_site_mm()
+    t_land = sch.skills[1].t_abs_s
+    box = {'landing': _fit_landing(pos_mm=sched_xy + np.array([0.0, 60.0, 0.0]),
+                                  vel_mm_s=LAND_VEL, t_land_abs_s=t_land)}
+    x = ex.SkillExecutor(sch, inst, tracker=lambda b: box['landing'],
+                         lateral_authority_m=0.0)
+    x.tick(sch.skills[0].dispatch_s())
+    t_catch = sch.skills[1].dispatch_s()
+    x.tick(t_catch)
+    n = len(inst.calls)
+
+    # A different, still purely-lateral, fit: clamps to the SAME schedule
+    # site as the committed terminal, so the clamped move is zero.
+    box['landing'] = _fit_landing(pos_mm=sched_xy + np.array([0.0, 85.0, 0.0]),
+                                 vel_mm_s=LAND_VEL, t_land_abs_s=t_land)
+    lines = x.tick(t_catch + 0.05)
+    assert len(inst.calls) == n
+    assert len(lines) == 1 and 'RESEND-SKIPPED WITHIN-TOLERANCE' in lines[0]
+
+
+def test_resend_still_fires_on_a_timing_only_move(sites):
+    """The same purely-lateral clamp must not swallow a genuine TIMING move:
+    30 ms is well past ``resend_t_tol_s`` (10 ms) and still re-sends, even
+    though the lateral component clamps to the same schedule site."""
+    p1, _p2 = sites
+    sch = _schedule(sites)
+    inst = _FakeInstaller()
+    sched_xy = p1.catch_site_mm()
+    t_land = sch.skills[1].t_abs_s
+    box = {'landing': _fit_landing(pos_mm=sched_xy + np.array([0.0, 60.0, 0.0]),
+                                  vel_mm_s=LAND_VEL, t_land_abs_s=t_land)}
+    x = ex.SkillExecutor(sch, inst, tracker=lambda b: box['landing'],
+                         lateral_authority_m=0.0)
+    x.tick(sch.skills[0].dispatch_s())
+    t_catch = sch.skills[1].dispatch_s()
+    x.tick(t_catch)
+    n = len(inst.calls)
+
+    box['landing'] = _fit_landing(pos_mm=sched_xy + np.array([0.0, 85.0, 0.0]),
+                                 vel_mm_s=LAND_VEL, t_land_abs_s=t_land + 0.030)
+    lines = x.tick(t_catch + 0.05)
+    assert len(inst.calls) == n + 1
+    assert any('RESEND' in l and 'RESEND-SKIPPED' not in l for l in lines)
+    assert np.allclose(inst.calls[-1][1].landing_mm[:2], sched_xy[:2])
 
 
 # ---------------------------------------------------------------------------

@@ -94,16 +94,22 @@ def test_the_kind_enum_matches_the_srv():
 
 
 def test_the_splice_budgets_equal_the_schedule_constant_arithmetic():
-    """125.0 ms / 75.0 ms, derived from ``schedule``'s own knot budget — never
-    a restated literal."""
+    """200.0 ms / 150.0 ms, derived from ``schedule``'s own knot budget — never
+    a restated literal.
+
+    Was 125 / 75 ms until 2026-09-18, when the budget was re-sized on the
+    LOADED robot (``schedule.SOLVE_BUDGET_KNOTS``: CATCH solves to 134.2 ms
+    max, and 16 of 23 catch attempts had refused ``SPLICE_TOO_LATE``).  The
+    literals stay pinned here so the bench's printed gate can never drift from
+    the schedule silently, and so re-sizing the budget is a deliberate edit."""
     dt = float(spb.hw.JB_TRAJ_KNOT_DT_S)
     assert dt == pytest.approx(0.025)
     assert spb.G2_HANDOFF_BUDGET_MS == pytest.approx(
         (sc.HANDOFF_LEAD_KNOTS - sc.WIRE_READ_KNOTS) * dt * 1e3)
-    assert spb.G2_HANDOFF_BUDGET_MS == pytest.approx(125.0)
+    assert spb.G2_HANDOFF_BUDGET_MS == pytest.approx(200.0)
     assert spb.G2_UNPINNED_BUDGET_MS == pytest.approx(
         (sc.LEAD_KNOTS - sc.WIRE_READ_KNOTS) * dt * 1e3)
-    assert spb.G2_UNPINNED_BUDGET_MS == pytest.approx(75.0)
+    assert spb.G2_UNPINNED_BUDGET_MS == pytest.approx(150.0)
 
 
 # ═════════════════════════════════════════════════════════════════════════════

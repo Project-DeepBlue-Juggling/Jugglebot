@@ -38,7 +38,7 @@ MIN_WINDOW_S = MIN_WINDOW_KNOTS * float(hw.JB_TRAJ_KNOT_DT_S)
 
 # ── The wire-read budget (plan § 2.4) ────────────────────────────────────────
 #
-# These three numbers are ONE budget — how much of a knot grid the solve may
+# These numbers are ONE budget — how much of a knot grid the solve may
 # spend before the can-bridge has read past the splice — so they live together,
 # and they live HERE rather than in ``executor`` because a skill states its own
 # dispatch rule (:attr:`Skill.lead_s`) and ``schedule`` may not import
@@ -53,19 +53,39 @@ MIN_WINDOW_S = MIN_WINDOW_KNOTS * float(hw.JB_TRAJ_KNOT_DT_S)
 #: rewrite trajectory the Teensy is already interpolating.
 WIRE_READ_KNOTS = 3
 
+#: Knots of solve budget every dispatch must leave — the ONE number the
+#: measured solve sizes, and the reason both leads below are what they are.
+#:
+#: 6 knots = 0.150 s.  Measured on the ROBOT, under sitting load (bag
+#: recording, GUI, the tracker fit), 2026-09-18 sitting
+#: (``temp/logs/launch_r2gate_20260918_1325.log``; CATCH ``install_segment``
+#: plan times, n=51): **min 40.1, p50 76.4, p90 111.0, p95 113.4, max
+#: 134.2 ms**.  So 0.150 s = p95 + one knot of margin, and it also clears the
+#: measured MAX by 16 ms.  The earlier 26–34 ms figure this budget was sized
+#: on (``tools/probes/skills_segment_sweep.py``, 2026-09-12,
+#: ``temp/probes/skills_segment_run2.md``) was measured OFFLINE on an idle
+#: Jetson and understates the loaded solve by 3-4×: at 3 knots (75 ms) of
+#: budget, **16 of 23 catch attempts in that sitting refused
+#: ``SPLICE_TOO_LATE``** ("the solve took 0.093–0.125 s … budget 0.083–0.100 s
+#: from dispatch").
+#:
+#: The cost of every knot here is paid twice: each dispatch splices 25 ms
+#: further ahead, and ``executor.CATCH_FREEZE_S`` (= :data:`LEAD_S` + dt) grows
+#: with it, so the window in which a catch may still be RE-AIMED from the
+#: tracker shrinks by the same amount.  Do not widen it to buy comfort — widen
+#: it only against a measurement, and prefer making the solve faster.
+SOLVE_BUDGET_KNOTS = 6
+
 #: Knots of lead between "now" and the earliest knot a splice may land on.
 #:
-#: 6 knots = 0.150 s at the fixed 40 Hz grid: :data:`WIRE_READ_KNOTS` (3) + 2
-#: knots (50 ms) for the MEASURED solve + 1 knot of margin.  Plan § 2.4 said
-#: "≈ 0.10 s: plan ≤ 20 ms plus a two-knot margin"; the measured plan is
-#: 26–34 ms end to end over a six-throw columns schedule on the idle Jetson
-#: (``python tools/probes/skills_segment_sweep.py --apex 0.9 --sep 40 60 80 100
-#: --dwell 0.30 --jerk 200000 150000 --vel-acc 300/5000 --hand-acc 3500
-#: --n-throws 6``, 2026-09-12, ``temp/probes/skills_segment_run2.md``: worst
-#: ``plan ms max`` 34.4), so a 4-knot lead left ``LEAD_KNOTS - WIRE_READ_KNOTS``
-#: = 1 knot = 25 ms of solve budget and the robot path refused
-#: ``SPLICE_TOO_LATE`` on the first handoff.  Budget here: 3 knots = 75 ms.
-LEAD_KNOTS = 6
+#: 9 knots = 0.225 s at the fixed 40 Hz grid: :data:`WIRE_READ_KNOTS` (3, spent
+#: before the solve begins) + :data:`SOLVE_BUDGET_KNOTS` (6).  Derived, so the
+#: budget is stated in exactly one place — ``executor``'s ``SPLICE_TOO_LATE``
+#: measures ``(k_s - WIRE_READ_KNOTS) * dt`` against the same arithmetic.
+#: History: 4 knots (2026-09-12) left 1 knot of budget and refused on the first
+#: handoff; 6 knots left 3 (75 ms) and refused 16 of 23 catches on the loaded
+#: robot (2026-09-18) — see :data:`SOLVE_BUDGET_KNOTS` for both measurements.
+LEAD_KNOTS = WIRE_READ_KNOTS + SOLVE_BUDGET_KNOTS
 
 #: Seconds of lead, derived — never a second copy of the knot grid.
 LEAD_S = LEAD_KNOTS * float(hw.JB_TRAJ_KNOT_DT_S)
@@ -73,15 +93,22 @@ LEAD_S = LEAD_KNOTS * float(hw.JB_TRAJ_KNOT_DT_S)
 #: The DISPATCH lead of a skill whose segment FOLLOWS a release (every CATCH in
 #: the columns pattern, with or without ``then_throw``).
 #:
-#: 8 knots = 0.200 s, i.e. 5 knots = 125 ms of solve budget against the same
-#: measured 26–34 ms.  It can exceed :data:`LEAD_KNOTS` because such a segment
-#: splices AT the release knot whatever its dispatch instant
+#: :data:`LEAD_KNOTS` + 2 = 11 knots = 0.275 s, i.e. 8 knots = 200 ms of solve
+#: budget.  Derived from :data:`LEAD_KNOTS` (it was a literal 8 against a
+#: 6-knot LEAD_KNOTS until 2026-09-18) so that the two leads move TOGETHER: the
+#: two extra knots are the only fact this constant adds, and holding the gap
+#: fixed keeps every dispatch instant in a compiled schedule shifted by the
+#: same amount, which is what leaves ``compile_columns``'s dispatch-monotonicity
+#: check exactly as much margin as it had.  It can exceed :data:`LEAD_KNOTS`
+#: because such a segment splices AT the release knot whatever its dispatch
+#: instant
 #: (``executor._snap_to_release``): the splice knot is PINNED by the head's own
 #: release, so buying solve time by dispatching earlier neither moves the seam
 #: nor re-solves the ball that has already left the cup.  A skill that does NOT
 #: follow a release has no such pin — its splice knot tracks its dispatch — so
-#: it keeps :data:`LEAD_S` and its 3-knot budget.
-HANDOFF_LEAD_KNOTS = 8
+#: it keeps :data:`LEAD_S` and its :data:`SOLVE_BUDGET_KNOTS` budget.
+HANDOFF_LEAD_EXTRA_KNOTS = 2
+HANDOFF_LEAD_KNOTS = LEAD_KNOTS + HANDOFF_LEAD_EXTRA_KNOTS
 
 #: Seconds, derived.
 HANDOFF_LEAD_S = HANDOFF_LEAD_KNOTS * float(hw.JB_TRAJ_KNOT_DT_S)
@@ -333,9 +360,11 @@ def _assign_leads(skills):
     A segment whose splice base falls at or before the last release the head
     already carries splices AT that release knot whatever its dispatch instant
     (``executor._snap_to_release``), so its seam cannot move and the extra lead
-    is pure solve budget: it gets :data:`HANDOFF_LEAD_S` (5 knots of budget).
-    Every other segment's splice knot tracks its own dispatch — dispatch it
-    earlier and it simply splices earlier — so it gets :data:`LEAD_S` (3 knots).
+    is pure solve budget: it gets :data:`HANDOFF_LEAD_S`
+    (:data:`SOLVE_BUDGET_KNOTS` + :data:`HANDOFF_LEAD_EXTRA_KNOTS` = 8 knots of
+    budget).  Every other segment's splice knot tracks its own dispatch —
+    dispatch it earlier and it simply splices earlier — so it gets
+    :data:`LEAD_S` and the bare :data:`SOLVE_BUDGET_KNOTS` (6 knots).
 
     In the columns pattern this makes every CATCH a handoff (its base IS the
     previous release — see :func:`compile_columns`) and leaves the launch THROW

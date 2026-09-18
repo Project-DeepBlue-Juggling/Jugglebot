@@ -78,7 +78,7 @@ Every terminal: `source /opt/ros/foxy/setup.bash && source
 | 1 | `cd ~/Desktop/Jugglebot-skills && git status -sb` | Clean, at or after the commit that landed this sheet. |
 | 2 | (venv) `./run_tests.sh --full` | Green — plan § 0 Rigor: "a dress rehearsal on the loaded Jetson... before any powered sitting" needs the gate itself green first. Record pass count + wall time in § 7. |
 | 3 | (ROS) `cd ros_ws && colcon build --packages-select jugglebot_interfaces jugglebot && source install/setup.bash && cd ..` | Builds — new node code + the tracker plane since R2. |
-| 4 | (venv) `python3 tests/hardware/skills_plan_bench.py --dry-run --pattern self-toss --n-throws 1` | Prints the cold-start (1-throw) schedule: 4 skills (opening REST, THROW, CATCH, closing REST), site P1, apex 0.90 m, dwell 0.30 s, the two splice budgets (125 / 75 ms), and the five gate criteria. |
+| 4 | (venv) `python3 tests/hardware/skills_plan_bench.py --dry-run --pattern self-toss --n-throws 1` | Prints the cold-start (1-throw) schedule: 4 skills (opening REST, THROW, CATCH, closing REST), site P1, apex 0.90 m, dwell 0.30 s, the two splice budgets (**200 / 150 ms** since 2026-09-18 — re-sized on the LOADED robot, where the CATCH solve reaches 134 ms and 16 of 23 attempts had refused `SPLICE_TOO_LATE` at the old 125/75), and the five gate criteria. |
 | 5 | (venv) `python3 tests/hardware/skills_plan_bench.py --dry-run --pattern self-toss --n-throws 10` | Prints the chained (10-throw) schedule: 13 skills (1 opening REST + 1 THROW + 9 CATCH+throw + 1 standalone CATCH + 1 closing REST — `n_throws + 3`, verified against the real compiler in `tests/ros/test_skills_plan_bench.py::test_build_self_toss_schedule_has_n_throws_plus_3_skills`). |
 | 6 | (venv) `python3 tests/hardware/skills_plan_bench.py --rehearse --pattern self-toss --arm A --attempts 3` (run twice) | **Both runs identical and clean**: `blas threads: 1`, three attempts each `ended_early=False (4/4 skills)`, memory rows 1→2→3, and **verdict G1/G2/G4 PASS, G3/G5 SKIP** (offline — no emitter/wire). Reference, 2026-09-13 (idle Jetson): G1 worst 33.1–33.6 ms over 15 solves (bar 50 ms); G2 handoff max 33.1–33.6 of 125 ms, unpinned max 25.8–26.3 of 75 ms; memory row 3's command is NOT the identity prior (the learner is active by attempt 3 — see Finding B below, now RESOLVED, for why that mattered before the fix landed). |
 | 7 | (venv) `python3 tests/hardware/skills_plan_bench.py --rehearse --pattern self-toss --arm B --attempts 3` | Historical reference only, pre-fix (see Finding B, now RESOLVED). 2026-09-13: attempts 0–1 clean (re-sends refuse as expected, exactly like columns' arm B); attempt 2 **ended early** (`LIMIT_JERK` on the primary THROW dispatch, not a re-send) once the learner went warm — root-caused and fixed (§ 1 Finding B); re-running this rehearsal is not required to satisfy this row. |
@@ -284,10 +284,34 @@ calling `skills/start_self_toss` again.
   never park the hand with a hand-written segment.
 - A `MAX_DEVIATION` line now names the axis: `hand first to cross` is the
   hand (axis 6). The six-entry `live_dev` that follows is legs only.
-- After ANY guard latch, before re-arming: the guard descent collapses the
-  legs onto measured but NOT the hand — the hand command stays frozen
-  (58 s at 9.43 rev against a 0.76 rev droop on 2026-09-13). DEACTIVATE /
-  ACTIVATE before the next attempt.
+- After ANY guard latch, before re-arming: **nothing to do by hand since
+  2026-09-18.** `/clear_errors` (and `/recover`) now WAIT for the firmware's
+  10 Hz fault task to actually release the latch and then PARK THE HAND on
+  the profiled `ACTIVATE(axis 6)` path themselves. Expect two lines:
+  `Teensy guard fault cleared (fault_state=NONE)` and `hand park complete —
+  +9.6227 rev -> +0.0001 rev`. Until 2026-09-18 the park fired INSIDE that
+  fault tick, was rejected `ERR_BUS_DOWN` ("fault_state=MAX_DEVIATION is
+  currently latched"), reported `HAND NOT PARKED`, and escalated through the
+  armed-clear disarm fallback — which is why that sitting needed
+  ACTIVATE/TRAJECTORY by hand. If the clear still reports `HAND NOT PARKED`,
+  the message names the reason (guard still latched / no hand telemetry) and
+  DEACTIVATE → ACTIVATE remains the manual escape.
+- **Every schedule parks the hand before it moves anything** (2026-09-18):
+  `skills/start_self_toss` and `skills/start_columns` call `/park_hand`
+  BEFORE the pre-level, so the opening REST never has more than the park
+  band (0.10 rev) to carry. Expect `hand park before the schedule: hand
+  already parked (+0.0001 rev)` on a healthy start. If the previous attempt
+  left the hand up the stroke, what you get on an ARMED wire is a REFUSAL,
+  not a park: `the hand park was refused: … the wire is ARMED, so the
+  streamed hand lane is still commanding its last knot`. That is deliberate —
+  parking the axis out from under a live lane opens a MAX_DEVIATION gap the
+  other way round (the firmware lane HOLDS its last knot and the lead clamp
+  would drag the hand back up to it; only a disarm/arm edge clears the lane).
+  **Do the DEACTIVATE → ACTIVATE, which gives the edge and parks in one
+  move**, then start again. Nothing has moved when the refusal fires. This is what the three MAX_DEVIATION latches of 2026-09-18
+  were: an opening REST handed 9.63 rev planned it home at ~5.4 rev/s
+  against a hand that follows at ~1 rev/s. `/park_hand` is also callable on
+  its own: `ros2 service call /park_hand std_srvs/srv/Trigger`.
 - The Ball-Butler reload is REFUSED at accept (`REJECTED_RELOAD_RETIRED_R1`)
   — R3's reset is operator placement (plan § 1 item 7); the reload returns
   as a CATCH skill at R4. Do not use the GUI reload button this rung.

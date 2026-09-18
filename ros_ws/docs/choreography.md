@@ -450,6 +450,12 @@
 - **clients:** `orchestrator_node`
 - **type:** `jugglebot_interfaces.srv.ODriveCommandService`
 
+### `park_hand`
+
+- **servers:** `teensy_bridge_node`
+- **clients:** `skill_node`
+- **type:** `std_srvs.srv.Trigger`
+
 ### `reboot_odrives`
 
 - **servers:** `teensy_bridge_node`

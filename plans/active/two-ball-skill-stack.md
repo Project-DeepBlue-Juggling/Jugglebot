@@ -703,7 +703,10 @@ the rung's tests passing or a handoff file in the scratchpad.
   p50 28.3 / max 83.3 ms over 405 installs, 63.1 s); vectorised `validate_cycle` 4.7 ms per
   40-knot segment (21.8×) at 1e-9 parity over a 148-call battery; both
   R1-carried items closed; the splice leads measured (general 6 knots,
-  handoff 8, budgets 75 / 125 ms proved by a modelled solve). **Hardware gate MET 2026-09-13** on the third no-motion sitting of
+  handoff 8, budgets 75 / 125 ms proved by a modelled solve — **re-sized
+  2026-09-18 to 9 / 11 knots, budgets 150 / 200 ms**, after the LOADED robot
+  solved a CATCH in up to 134 ms and refused 16 of 23 attempts
+  `SPLICE_TOO_LATE`; the modelled solve understated the loaded one 3-4×). **Hardware gate MET 2026-09-13** on the third no-motion sitting of
   `tests/hardware/session_skills_r2_plan_gate.md` (`40371fe`, bag `2026-09-13_12-35-28`,
   robot activated on a disarmed wire): rows 15 and 16 PASS on all five gates — worst
   solve 47.9 / 49.0 ms at load average 1.7–3.3, handoff margin 73–74 ms, zero late
@@ -865,7 +868,49 @@ the rung's tests passing or a handoff file in the scratchpad.
   sign-off); the origin of the 55–64 ms Jetson stall (the 10 Hz bridge diag
   callback is the suspect); `trajectory_node`'s emitter backstop has the same
   displacement-vs-rate shape; a hand-lane rate feasibility check at
-  `install_segment`; `SPLICE_TOO_LATE` on the 5-throw chain's second catch.
+  `install_segment`; `SPLICE_TOO_LATE` on the 5-throw chain's second catch —
+  **RESOLVED 2026-09-18**: the budget, not the solve, was wrong (below).
+- **The 2026-09-18 sitting (`temp/logs/launch_r2gate_20260918_1325.log`, bag
+  `2026-09-18_13-25-15`) — three fixes, all landed the same day.**
+  1. *The hand park fired into the fault tick.* `/clear_errors` → `CLEAR_ERRORS
+     fired` → the park's `ACTIVATE(6)` rejected `ERR_BUS_DOWN`
+     ("fault_state=MAX_DEVIATION is currently latched") → `HAND NOT PARKED`,
+     and the NEXT log line was `Teensy guard fault cleared`. CLEAR_ERRORS is
+     acked by the LINK; the latch is released by the firmware's 10 Hz fault
+     task. The park now WAITS for the cached `fault_state` to read NONE
+     (bounded 1.0 s) and refuses naming the latch if it does not —
+     `teensy_bridge_node._wait_for_guard_clear`, inside the one park op, so
+     both recovery paths and the new `/park_hand` get it.
+  2. *An opening REST homed the hand from the top of the stroke* (the three
+     MAX_DEVIATION latches). CONTRACT: **no streamed lane ever homes the hand
+     from outside the park band** — a schedule that finds the hand off the band
+     parks it through the profiled `ACTIVATE(6)` first (`/park_hand`, called by
+     `skill_node`'s precondition before the pre-level; the 2026-09-16 "the
+     opening REST homes the hand" decision now scoped to the band, seed
+     reconciliation kept). On an ARMED wire an off-band hand is REFUSED, not
+     parked: the firmware hand lane still commands its last knot, and parking
+     the axis under it opens the same guard gap with the encoder moving
+     instead of the plan (only an out_en edge clears the lane,
+     `leg_interp.cpp:885`) — DEACTIVATE → ACTIVATE gives the edge and parks in
+     one move. **Carried:** a way to re-seed the streamed hand lane onto the
+     park (a hand-bearing hold, or an interp verb that pins the lane to the
+     encoder) would let the schedule park itself on an armed wire. Latch 1's firmware mechanism, established from the
+     code: the hand-less hold let the scheduled hand group's cover expire into
+     a C2 stop, the REST was then refused as a discontinuous resume
+     (`leg_interp.cpp:514-520`, `sched_refused`), the group kept HOLDING — the
+     hand did not move at all — and the guard deliberately measured the
+     REFUSED incoming command against the encoder (`leg_interp.cpp:1226-1228`,
+     FW 22), so it tripped on a lane nobody was following. `sched_refused` /
+     `sched_stops` now surface on `/link_status` (they were on the wire and
+     unread). Latches 2-3 are the plain `RECOVER_SLEW_VEL_RPS` = 1 rev/s case.
+     No firmware change.
+  3. *The catch splice budget was smaller than the measured solve.* CATCH
+     `install_segment` plan times under sitting load, n=51: min 40.1 / p50 76.4
+     / p90 111.0 / p95 113.4 / max 134.2 ms against a budget of 0.083-0.100 s.
+     `schedule.SOLVE_BUDGET_KNOTS` = 6 (0.150 s = p95 + one knot, and clears
+     the max by 16 ms) is now the one number both leads derive from. Cost:
+     every dispatch splices 75 ms further ahead and `CATCH_FREEZE_S` grows with
+     it, so the re-aim window shrinks by the same 75 ms.
 - **Owner decisions (2026-09-13).**
   1. *Cycle.* Chained single site: apex 0.9 m, dwell 0.30 s, site P1
      (−50, 0), legs 300 / 5000 / 150 000, hand 3500.
