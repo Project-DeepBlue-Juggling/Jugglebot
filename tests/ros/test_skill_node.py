@@ -27,6 +27,7 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node as _MockNodeClass
 
 from std_srvs.srv import Trigger
+from diagnostic_msgs.msg import DiagnosticStatus, KeyValue
 from jugglebot_interfaces.msg import (BallStateArray, HandTelemetryMessage,
                                       RigidBodyPoses, TrajectoryStatus)
 from jugglebot_interfaces.srv import InstallSegment
@@ -34,6 +35,7 @@ from jugglebot_interfaces.srv import InstallSegment
 from jugglebot import ball_possession
 from jugglebot import skill_node as sn
 from jugglebot.motion.skills import admissible as adm
+from jugglebot.motion.skills import executor as ex
 from jugglebot.motion.skills.executor import CAUGHT_WINDOW_S
 from jugglebot.motion.skills import schedule as sc
 from jugglebot.motion.skills.memory import Memory, memory_path
@@ -120,34 +122,26 @@ def _response(**overrides):
     return resp
 
 
-def _park_hand_response(success=True, message='hand already parked (+0.0001 rev)'):
-    resp = MagicMock()
-    resp.success = success
-    resp.message = message
-    return resp
+def _hand_at(node, rev=sn.REST_HAND_REV, ball_held=True):
+    """Give `node` a FRESH `/hand_telemetry` sample with the hand at ``rev``.
 
-
-def _park_hand_ready(node, **resp_overrides):
-    """Wire `node` so `_park_hand` (2026-09-18) succeeds instantly with the
-    bridge's own "already parked" no-op answer.
-
-    EVERY start service calls `/park_hand` before it moves anything (the
-    hand-park contract: no streamed lane ever homes the hand from outside the
-    park band), so without this a real, unserved rclpy client would refuse
-    every start after a `_SERVICE_WAIT_S` wait. Called from
-    `_node_with_client`, so a test opts INTO a failing park rather than out of
-    a working one.
+    EVERY start service now reads the measured hand to SIZE its opening REST
+    (`_opening_rest_period`, 2026-09-18) and refuses when that read is stale or
+    absent, so without this a start would refuse on freshness alone. Called
+    from `_node_with_client` with the hand AT HOME, so a test opts INTO a
+    displaced or unread hand rather than out of a healthy one.
     """
-    node._park_hand_cli = _RecordingClient(
-        response=_park_hand_response(**resp_overrides), ready=True)
-    return node._park_hand_cli
+    node._on_hand_telemetry(HandTelemetryMessage(
+        pos_meas=float(rev), pos_cmd=float(rev),
+        ball_held=ball_held, ball_held_raw=ball_held, ball_held_valid=True))
 
 
-def _node_with_client(response=None, ready=True):
+def _node_with_client(response=None, ready=True, hand=True):
     node = sn.SkillNode()
     client = _RecordingClient(response=response, ready=ready)
     node._install_cli = client
-    _park_hand_ready(node)
+    if hand:
+        _hand_at(node)
     return node, client
 
 
@@ -180,7 +174,7 @@ def _prelevel_ready(node, *, x=-50.0, y=0.0, z=830.0, **resp_overrides):
 # ═════════════════════════════════════════════════════════════════════════════
 
 def test_node_starts_idle():
-    node, _client = _node_with_client()
+    node, _client = _node_with_client(hand=False)
     assert node._executor is None
     assert node._possession_evidence == ball_possession.EVIDENCE_UNKNOWN
 
@@ -841,7 +835,7 @@ def _freshen(node, *, mocap=True, levelled=True, in_traj=True, hand_fresh=True,
 # ═════════════════════════════════════════════════════════════════════════════
 
 def test_observations_are_all_false_before_anything_has_arrived():
-    node, _client = _node_with_client()
+    node, _client = _node_with_client(hand=False)
     obs = node._observations(0.0)
     assert obs.mocap_fresh is False
     assert obs.hand_fresh is False
@@ -928,7 +922,7 @@ def test_ball_evidence_observer_delegates_to_observations():
 # ═════════════════════════════════════════════════════════════════════════════
 
 def test_check_reports_every_ladder_refusal_and_the_box_status_at_once():
-    node, _client = _node_with_client()
+    node, _client = _node_with_client(hand=False)
     resp = node._svc_check(Trigger.Request(), Trigger.Response())
     assert resp.success is False
     assert 'ladder REFUSED' in resp.message
@@ -952,6 +946,9 @@ def test_check_reports_the_hand_position_without_gating_on_it():
     assert 'ladder OK' in resp.message
     assert '0.0001' in resp.message and '0.5639' in resp.message
     assert 'not gated' in resp.message
+    # ... and, since 2026-09-18, the ONE number a displaced hand changes about
+    # the schedule: how long its opening REST would take to home it.
+    assert '%.2f s to home it' % (sn.floor_lift_s(0.0001),) in resp.message
 
 
 def test_check_reports_ok_when_everything_is_fresh_and_the_box_is_valid():
@@ -1402,111 +1399,197 @@ def test_a_refused_memory_row_is_logged_and_never_raises():
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# The hand park before the schedule (2026-09-18)
+# The opening REST homes the hand (2026-09-18 evening)
 # ═════════════════════════════════════════════════════════════════════════════
-# THE DEFECT (bag `2026-09-18_13-25-15`, three MAX_DEVIATION latches): an
-# attempt ended `ABORTED_NO_RELEASE` with the hand at 9.63 rev — the top of the
-# stroke — and the NEXT schedule's opening REST, seeded correctly from that
-# encoder, planned it home over 1.625 s (~5.4 rev/s). The hand physically
-# follows at ~0.8-1.0 rev/s under the bridge's lead authority, so the command
-# ran 3.28 rev below the encoder and the guard E-STOPPED the machine 0.61 s in.
-# The 2026-09-16 "the opening REST homes the hand" decision stands, but only
-# from inside the park band: `_park_hand` puts the hand there first, through
-# the bridge's profiled ACTIVATE op.
+# THE DEFECT, twice over. (1) bag `2026-09-18_13-25-15`, three MAX_DEVIATION
+# latches: an attempt ended `ABORTED_NO_RELEASE` with the hand at 9.63 rev — the
+# top of the stroke — and the next schedule's opening REST, seeded correctly
+# from that encoder, planned it home over its fixed 1.5 s window (~5.4 rev/s)
+# against a firmware hand group that was HOLDING; the refused command ran
+# 3.28 rev from the encoder and the guard E-STOPPED 0.61 s in. (2) that day's
+# first fix — a blocking `/park_hand` plus a park-band precondition — refused
+# every attempt after the first, because the band was measured against the
+# ACTIVATE park (0.0 rev) while a schedule's REST correctly leaves the hand at
+# `sites.REST_HAND_REV` (0.3071 rev). ONE home, and the REST's PERIOD is sized
+# to the displacement (`schedule.floor_lift_s`).
 
-def test_start_self_toss_parks_the_hand_before_it_pre_levels():
-    """Order is the whole point: the park runs BEFORE the pre-level (and so
-    before t0 and the opening REST are compiled from anything)."""
-    order = []
-
-    class _Ordered(_RecordingClient):
-        def __init__(self, label, **kw):
-            super().__init__(**kw)
-            self._label = label
-
-        def call_async(self, request):
-            order.append(self._label)
-            return super().call_async(request)
-
+def test_the_opening_rest_is_sized_to_home_a_displaced_hand():
+    """The 2026-09-18 hand itself: 9.6227 rev accepts, and the schedule's own
+    first window is the sized period, not the 1.5 s floor."""
     node, _client = _node_with_client()
     node._on_traj_status(_status())
     _prelevel_ready(node)
-    node._go_to_pose_cli = _Ordered(
-        'prelevel', response=_go_to_pose_response(), ready=True)
-    park = _Ordered('park', response=_park_hand_response(
-        message='hand parked (+9.6227 -> +0.0001 rev)'), ready=True)
-    node._park_hand_cli = park
-    node._params['plant_id'] = 'test_park_before_prelevel'
+    _hand_at(node, rev=9.6227)
+    node._params['plant_id'] = 'test_opening_rest_sized'
 
     resp = node._svc_start_self_toss(Trigger.Request(), Trigger.Response())
     assert resp.success is True, resp.message
-    assert order == ['park', 'prelevel'], order
-    assert len(park.calls) == 1
+    rest0 = node._executor.schedule.skills[0]
+    assert rest0.kind == sn.REST
+    want = sn.floor_lift_s(9.6227)
+    assert want == pytest.approx(6.9867, abs=1e-3)
+    assert rest0.window_s == pytest.approx(want)
+    # ... and the whole schedule follows it: THROW 0 releases `launch_s` after
+    # the sized REST, not after the floor.
+    assert (node._executor.schedule.skills[1].t_abs_s
+            - rest0.t_abs_s) == pytest.approx(0.4)
 
 
-def test_start_self_toss_is_refused_when_the_hand_park_fails():
-    """A park refusal refuses the SCHEDULE, with the bridge's reason named —
-    and nothing has moved: the pre-level is never asked for."""
+def test_a_hand_already_at_home_gets_the_default_opening_rest():
+    """Where the previous schedule's REST left it (0.3071 rev) ⇒ nothing
+    changes: the floor period, and no refusal anywhere."""
+    node, _client = _node_with_client()
+    node._on_traj_status(_status())
+    _prelevel_ready(node)
+    _hand_at(node, rev=sn.REST_HAND_REV)
+    node._params['plant_id'] = 'test_opening_rest_default'
+
+    resp = node._svc_start_self_toss(Trigger.Request(), Trigger.Response())
+    assert resp.success is True, resp.message
+    assert node._executor.schedule.skills[0].window_s == pytest.approx(
+        sc.FLOOR_LIFT_S)
+
+
+def test_the_activate_park_is_not_a_special_case():
+    """A hand at the bridge's ACTIVATE park (0.0 rev) is simply 0.307 rev from
+    home: accepted, sized, and NOT refused — the regression the one-day-old
+    park-band precondition produced in reverse."""
+    node, _client = _node_with_client()
+    node._on_traj_status(_status())
+    _prelevel_ready(node)
+    _hand_at(node, rev=0.0)
+    node._params['plant_id'] = 'test_opening_rest_from_park'
+
+    resp = node._svc_start_self_toss(Trigger.Request(), Trigger.Response())
+    assert resp.success is True, resp.message
+    assert node._executor.schedule.skills[0].window_s == pytest.approx(
+        sc.FLOOR_LIFT_S)
+
+
+def test_the_homing_rest_is_refused_when_the_hand_position_is_unread():
+    """The ONE refusal left, and it is pre-motion: a window sized from a stale
+    encoder is the same defect as a seed reconciled against one."""
     node, _client = _node_with_client()
     node._on_traj_status(_status())
     prelevel = _prelevel_ready(node)
-    node._park_hand_cli = _RecordingClient(
-        response=_park_hand_response(
-            success=False,
-            message=('hand park SKIPPED — the guard is STILL latched '
-                     '(fault_state=MAX_DEVIATION) 1.0 s after the clear; '
-                     'DEACTIVATE then ACTIVATE')),
-        ready=True)
+    node._hand_telemetry_mono -= sn._HAND_STATE_STALE_S + 0.1
 
     resp = node._svc_start_self_toss(Trigger.Request(), Trigger.Response())
     assert resp.success is False
-    assert 'the hand park was refused' in resp.message
-    assert 'MAX_DEVIATION' in resp.message
+    assert 'hand_telemetry is stale or absent' in resp.message
     assert node._executor is None
-    assert prelevel.calls == [], 'moved the platform after a failed hand park'
+    assert prelevel.calls == [], 'moved the platform on an unread hand'
 
 
-def test_start_self_toss_is_refused_when_park_hand_is_unavailable():
-    """No `/park_hand` (no bridge) ⇒ refuse. The opening REST must never be the
-    thing that brings the hand home from outside the band, so there is no
-    fallback here to take."""
+def test_the_sized_rest_is_logged_with_its_own_peaks():
+    """One INFO line the operator can read the sizing off."""
     node, _client = _node_with_client()
     node._on_traj_status(_status())
-    prelevel = _prelevel_ready(node)
-    node._park_hand_cli = _RecordingClient(response=None, ready=False)
+    _prelevel_ready(node)
+    _hand_at(node, rev=9.6227)
+    node._params['plant_id'] = 'test_opening_rest_log'
+    lines = []
+    node.get_logger().info = lambda m: lines.append(m)
 
-    resp = node._svc_start_self_toss(Trigger.Request(), Trigger.Response())
-    assert resp.success is False
-    assert 'park_hand unavailable' in resp.message
-    assert prelevel.calls == []
+    node._svc_start_self_toss(Trigger.Request(), Trigger.Response())
+    homing = [ln for ln in lines if 'opening REST homes the hand' in ln]
+    assert len(homing) == 1, lines
+    assert '+9.6227' in homing[0] and '+0.3071' in homing[0]
+    assert '6.99 s' in homing[0]
 
 
-def test_start_columns_parks_the_hand_before_it_reads_t0():
-    """Columns has no pre-level, but it does stream a hand lane — and its t0 is
-    `now + _START_LEAD_S`, so a ~4 s blocking park sampled AFTER t0 would have
-    spent the whole start lead waiting for the hand."""
+def test_columns_refuses_a_displaced_hand_because_it_has_no_opening_rest():
+    """Columns' first skill is a CATCH that splices onto the live plan — there
+    is no window in that schedule to home a hand with (R4), so the honest
+    answer is a pre-motion refusal naming the self-toss path that does."""
     node, _client = _node_with_client()
-    park = _park_hand_ready(
-        node, message='hand parked (+9.6227 -> +0.0001 rev)')
-
-    resp = node._svc_start_columns(Trigger.Request(), Trigger.Response())
-    assert resp.success is True, resp.message
-    assert len(park.calls) == 1
-    # t0 was read after the park returned, so the schedule still has its full
-    # start lead: the compiled t0 is ahead of the clock the park finished on.
-    assert float(resp.message.split('t0=')[1]) >= (
-        node.get_clock().now().nanoseconds / 1e9)
-
-
-def test_start_columns_is_refused_when_the_hand_park_fails():
-    node, _client = _node_with_client()
-    node._park_hand_cli = _RecordingClient(
-        response=_park_hand_response(
-            success=False, message='hand park SKIPPED — no hand telemetry'),
-        ready=True)
+    _hand_at(node, rev=9.6227)
 
     resp = node._svc_start_columns(Trigger.Request(), Trigger.Response())
     assert resp.success is False
     assert 'columns refused' in resp.message
-    assert 'no hand telemetry' in resp.message
+    assert 'no opening REST' in resp.message
     assert node._executor is None
+
+
+def test_columns_starts_with_the_hand_at_home():
+    node, _client = _node_with_client()
+
+    resp = node._svc_start_columns(Trigger.Request(), Trigger.Response())
+    assert resp.success is True, resp.message
+    assert node._executor is not None
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Fail closed on a REFUSED hand lane (2026-09-18 evening)
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _link_status(sched_refused):
+    return DiagnosticStatus(values=[
+        KeyValue(key='fault_state', value='NONE'),
+        KeyValue(key='sched_refused', value=str(int(sched_refused)))])
+
+
+def _running_self_toss(node):
+    """A started self-toss attempt with the WHOLE ladder fresh, so the only
+    thing that can end it is the one fact under test. Returns the executor
+    object itself: `_on_tick` retires a finished one off the node."""
+    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
+    _prelevel_ready(node)
+    resp = node._svc_start_self_toss(Trigger.Request(), Trigger.Response())
+    assert resp.success is True, resp.message
+    return node._executor
+
+
+def test_a_sched_refused_bump_ends_the_attempt_and_installs_the_hold():
+    """The firmware refused the streamed lane and is HOLDING the hand: the rest
+    tail is not a safe end (every knot the plan walks on widens the deviation
+    the guard measures), so the attempt ENDS and a HAND-LESS hold goes in."""
+    node, _client = _node_with_client(response=_response())
+    node._on_link_status(_link_status(4))
+    node._params['plant_id'] = 'test_lane_refused'
+    execu = _running_self_toss(node)
+    hold = _hold_client()
+    node._hold_cli = hold
+
+    node._on_link_status(_link_status(5))
+    node._on_tick()
+
+    assert execu.attempt_ended is True
+    assert execu.end_code == ex.HAND_LANE_REFUSED
+    assert len(hold.calls) == 1
+    # Once per attempt, not once per tick.
+    node._on_tick()
+    assert len(hold.calls) == 1
+
+
+def test_a_counter_already_high_at_the_start_is_history():
+    """A refusal a PREVIOUS attempt provoked must not end this one — the
+    baseline is latched when the schedule is compiled."""
+    node, _client = _node_with_client(response=_response())
+    node._on_link_status(_link_status(7))
+    node._params['plant_id'] = 'test_lane_refused_baseline'
+    execu = _running_self_toss(node)
+    hold = _hold_client()
+    node._hold_cli = hold
+
+    node._on_link_status(_link_status(7))
+    node._on_tick()
+
+    assert execu.attempt_ended is False
+    assert hold.calls == []
+
+
+def test_a_bridge_that_never_publishes_the_counter_changes_nothing():
+    """No `sched_refused` key (an older bridge) ⇒ unobserved ⇒ no refusal: the
+    sizing is what keeps the lane inside the envelope, and this is the
+    defence behind it."""
+    node, _client = _node_with_client(response=_response())
+    node._on_link_status(DiagnosticStatus(values=[
+        KeyValue(key='fault_state', value='NONE')]))
+    node._params['plant_id'] = 'test_lane_refused_absent'
+    execu = _running_self_toss(node)
+
+    node._on_tick()
+    assert execu.attempt_ended is False
+    assert node._observations(0.0).hand_lane_refused is False

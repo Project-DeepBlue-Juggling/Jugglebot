@@ -574,3 +574,76 @@ def test_compile_self_toss_is_the_same_at_any_wall_clock_magnitude(t0, site):
             assert abs(g.then_throw.t_release_abs_s
                        - (r.then_throw.t_release_abs_s + t0)) <= tol
     assert got.t0_abs_s == t0
+
+
+# ---------------------------------------------------------------------------
+# The opening REST's period HOMES THE HAND (2026-09-18)
+# ---------------------------------------------------------------------------
+
+def test_floor_lift_s_is_the_floor_when_the_hand_is_already_home():
+    """The common case: the previous schedule's REST left the hand at
+    ``sites.REST_HAND_REV``, so nothing changes."""
+    assert sc.floor_lift_s(st.REST_HAND_REV) == pytest.approx(sc.FLOOR_LIFT_S)
+    # ... and so does anything inside the band the columns path refuses on.
+    assert sc.floor_lift_s(st.REST_HAND_REV + sc.HOME_BAND_REV) == (
+        pytest.approx(sc.FLOOR_LIFT_S))
+
+
+def test_floor_lift_s_velocity_branch_binds_on_the_2026_09_18_hand():
+    """9.6227 rev — the hand the sitting's three MAX_DEVIATION latches started
+    from. Δ = 9.3156 rev at 2.5 rev/s through the quintic shape factor is
+    6.99 s, and the acceleration branch asks only 3.34 s, so velocity binds."""
+    period = sc.floor_lift_s(9.6227)
+    assert period == pytest.approx(1.875 * 9.3156 / 2.5, rel=1e-3)
+    peak_v, peak_a = sc.home_hand_bounds(9.6227, period)
+    assert peak_v == pytest.approx(sc.HOME_HAND_VEL_LIMIT_RPS, rel=1e-6)
+    assert peak_a < sc.HOME_HAND_ACC_LIMIT_RPS2
+
+
+def test_floor_lift_s_acceleration_branch_binds_just_past_the_floor():
+    """Between Δ = 1.875 rev (where the acceleration branch passes the 1.5 s
+    floor) and Δ = 2.133 rev (where velocity takes over) the ACCELERATION bound
+    is what sizes the window — the branch a velocity-only rule would miss."""
+    period = sc.floor_lift_s(st.REST_HAND_REV + 2.0)
+    assert period > sc.FLOOR_LIFT_S
+    peak_v, peak_a = sc.home_hand_bounds(st.REST_HAND_REV + 2.0, period)
+    assert peak_a == pytest.approx(sc.HOME_HAND_ACC_LIMIT_RPS2, rel=1e-6)
+    assert peak_v < sc.HOME_HAND_VEL_LIMIT_RPS
+
+
+def test_floor_lift_s_is_symmetric_about_home():
+    """A hand BELOW home (the ACTIVATE park at 0.0 rev is one) is the same
+    distance to travel as one above it."""
+    for delta in (0.5, 2.0, 5.0):
+        assert sc.floor_lift_s(st.REST_HAND_REV - delta) == pytest.approx(
+            sc.floor_lift_s(st.REST_HAND_REV + delta))
+
+
+def test_the_sized_opening_rest_carries_the_whole_schedule_with_it(site):
+    """Every later dispatch follows from the opening REST's period, because the
+    REST is skill 0 and every instant after it is relative — so sizing it is
+    the only change a displaced hand makes to the schedule."""
+    lift = sc.floor_lift_s(9.6227)
+    sized = sc.compile_self_toss(
+        _self_pattern(site, n_throws=2, floor_lift_s=lift), t0_abs_s=10.0)
+    default = sc.compile_self_toss(_self_pattern(site, n_throws=2),
+                                   t0_abs_s=10.0)
+    rest0 = sized.skills[0]
+    assert rest0.window_s == pytest.approx(lift)
+    assert rest0.t_abs_s == pytest.approx(10.0 + lift)
+    shift = lift - sc.FLOOR_LIFT_S
+    for a, b in zip(default.skills, sized.skills):
+        assert a.kind == b.kind
+        assert b.t_abs_s == pytest.approx(a.t_abs_s + shift)
+    # ... including THROW 0's fresh-origin test, which must still hold.
+    throw0 = [s for s in sized.skills if s.kind == sc.THROW][0]
+    assert throw0.dispatch_s() + throw0.lead_s >= rest0.t_abs_s - 1e-9
+
+
+def test_a_pattern_cannot_ask_for_less_than_the_measured_floor_lift(site):
+    """The opening REST both lifts the cup onto the site and homes the hand:
+    ``FLOOR_LIFT_S`` is the measured minimum for the lift ALONE (1.0 s and
+    1.2 s refuse LIMIT_JERK — see its docstring), so a shorter one is refused
+    rather than quietly accepted."""
+    with pytest.raises(ValueError, match='floor_lift_s'):
+        _self_pattern(site, floor_lift_s=sc.FLOOR_LIFT_S - 0.1)

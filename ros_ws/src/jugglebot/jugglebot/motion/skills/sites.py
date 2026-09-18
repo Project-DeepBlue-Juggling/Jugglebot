@@ -33,6 +33,23 @@ CATCH_CUP_Z_MM = 830.0
 #: at) — imported rather than restated so the two can never drift apart.
 REST_CUP_Z_MM = uc.SETTLE_CUP_Z_MM
 
+#: THE SCHEDULE'S ONE HAND HOME (rev): the slider position whose LEVEL
+#: realisation puts the cup opening at :data:`REST_CUP_Z_MM` — 0.3071 rev
+#: through ``unified_cycle.hand_rev_for_cup_z``, the module's own export of
+#: that map (never a fourth spelling of it; see that function's docstring).
+#:
+#: This is where every REST in a schedule leaves the hand, so it is also where
+#: the NEXT schedule's opening REST must start from — the one reference the
+#: opening REST is sized against (``schedule.floor_lift_s``). It is NOT the
+#: bridge's ACTIVATE park (``JB_OP_HAND_ACTIVATE_POSITION_REV`` = 0.0 rev,
+#: what ``/recover`` parks to): the two are 0.307 rev apart, and on 2026-09-18
+#: measuring a schedule's start against the PARK refused every attempt after
+#: the first (``hand park REFUSED — the hand is at +0.3063 rev``, which is
+#: exactly where the previous attempt's REST correctly left it). A hand at the
+#: park is simply 0.307 rev from home and gets homed like any other
+#: displacement — no special case anywhere.
+REST_HAND_REV = uc.hand_rev_for_cup_z(REST_CUP_Z_MM)
+
 
 def _vec3_mm(value, name: str) -> np.ndarray:
     arr = np.asarray(value, dtype=float).reshape(-1)

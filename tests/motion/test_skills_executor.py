@@ -2542,6 +2542,42 @@ def test_mode_change_mid_attempt_aborts_and_stops_further_dispatch(sites):
     assert len(inst.calls) == 1
 
 
+def test_a_refused_hand_lane_ends_the_attempt_and_stops_dispatch(sites):
+    """``HAND_LANE_REFUSED`` (2026-09-18): the firmware refused the streamed
+    lane's promotion and is HOLDING the hand, so the rest tail is NOT a safe
+    end — every knot the plan walks on widens the deviation the guard measures.
+    Read every tick, like the mode check, and never at dispatch alone: the
+    refusal happens while a window streams, not when it installs."""
+    sch = _schedule(sites)          # THROW, CATCH, REST
+    inst = _FakeInstaller()
+    land = _fit_landing(pos_mm=sites[1].catch_site_mm(), vel_mm_s=LAND_VEL,
+                      t_land_abs_s=sch.skills[1].t_abs_s)
+    state = {'refused': False}
+    x = ex.SkillExecutor(sch, inst, tracker=_tracker(land),
+                         observations=lambda t: _obs(
+                             hand_lane_refused=state['refused']))
+    x.tick(sch.skills[0].dispatch_s())
+    assert len(inst.calls) == 1 and not x.attempt_ended
+
+    state['refused'] = True
+    lines = x.tick(sch.skills[0].dispatch_s() + 0.05)
+    assert x.attempt_ended and x.end_code == ex.HAND_LANE_REFUSED
+    assert ex.HAND_LANE_REFUSED in lines[0]
+    assert 'sched_refused' in lines[0]
+
+    # Nothing further dispatches, including the already-due CATCH.
+    x.tick(sch.skills[2].dispatch_s() + 1.0)
+    assert len(inst.calls) == 1
+
+
+def test_a_caller_that_cannot_observe_the_counter_is_unchanged(sites):
+    """``hand_lane_refused`` defaults False, so the sim gate and every
+    pre-2026-09-18 observer keep their exact behaviour."""
+    assert ex.Observations(mocap_fresh=True, hand_fresh=True, levelled=True,
+                           ball_evidence=bp.EVIDENCE_SEATED,
+                           in_trajectory_mode=True).hand_lane_refused is False
+
+
 def test_no_release_evidence_aborts_and_produces_no_row(sites):
     """``ABORTED_NO_RELEASE`` at a ROS-epoch clock: neither the observer nor
     the tracker ever reports evidence the ball left, so the grace deadline

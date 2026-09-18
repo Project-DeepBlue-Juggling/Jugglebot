@@ -296,22 +296,37 @@ calling `skills/start_self_toss` again.
   ACTIVATE/TRAJECTORY by hand. If the clear still reports `HAND NOT PARKED`,
   the message names the reason (guard still latched / no hand telemetry) and
   DEACTIVATE → ACTIVATE remains the manual escape.
-- **Every schedule parks the hand before it moves anything** (2026-09-18):
-  `skills/start_self_toss` and `skills/start_columns` call `/park_hand`
-  BEFORE the pre-level, so the opening REST never has more than the park
-  band (0.10 rev) to carry. Expect `hand park before the schedule: hand
-  already parked (+0.0001 rev)` on a healthy start. If the previous attempt
-  left the hand up the stroke, what you get on an ARMED wire is a REFUSAL,
-  not a park: `the hand park was refused: … the wire is ARMED, so the
-  streamed hand lane is still commanding its last knot`. That is deliberate —
-  parking the axis out from under a live lane opens a MAX_DEVIATION gap the
-  other way round (the firmware lane HOLDS its last knot and the lead clamp
-  would drag the hand back up to it; only a disarm/arm edge clears the lane).
-  **Do the DEACTIVATE → ACTIVATE, which gives the edge and parks in one
-  move**, then start again. Nothing has moved when the refusal fires. This is what the three MAX_DEVIATION latches of 2026-09-18
-  were: an opening REST handed 9.63 rev planned it home at ~5.4 rev/s
-  against a hand that follows at ~1 rev/s. `/park_hand` is also callable on
-  its own: `ros2 service call /park_hand std_srvs/srv/Trigger`.
+- **The opening REST HOMES the hand, and its period is sized to the trip**
+  (2026-09-18 evening). `skills/start_self_toss` reads the measured hand and
+  grows skill 0's window so the lane stays inside the firmware's own
+  resume-and-follow envelope (2.5 rev/s, 5 rev/s²). Expect ONE line before the
+  pre-level:
+  `opening REST homes the hand: +9.6227 → +0.3071 rev over 6.99 s (peak <=
+  2.50 rev/s, 1.15 rev/s²)` — and, on a healthy start where the previous
+  attempt's REST already left the hand at +0.3071 rev, the same line reading
+  `over 1.50 s`. **A displaced hand is never a refusal any more**: the ONE
+  refusal left on this path is `self-toss refused: hand_telemetry is stale or
+  absent`, and nothing has moved when it fires. The first throw simply happens
+  later — up to ~7 s after the start call for a hand at the top of the stroke,
+  which is the trip the machine has to make at the profiled park's own rate.
+  (The three MAX_DEVIATION latches of 2026-09-18 were the fixed 1.5 s window
+  planning 9.63 rev home at ~5.4 rev/s against a firmware lane that was
+  HOLDING, not following. That morning's fix — a blocking `/park_hand` before
+  every schedule — is DELETED: its band was measured against the ACTIVATE park
+  at 0.0 rev, so it refused every attempt after the first.)
+- **`/park_hand` is still there, for the OPERATOR**:
+  `ros2 service call /park_hand std_srvs/srv/Trigger` brings the hand to the
+  ACTIVATE park through the profiled op. On an ARMED wire an off-band hand is
+  REFUSED rather than parked (parking the axis out from under a live lane
+  opens a MAX_DEVIATION gap the other way round — only a disarm/arm edge
+  clears the lane), and **DEACTIVATE → ACTIVATE gives the edge and parks in
+  one move**. You do NOT need either before a self-toss.
+- **If the firmware refuses the lane anyway, the attempt ends itself**
+  (`END HAND_LANE_REFUSED`, 2026-09-18 evening): the bridge's `sched_refused`
+  counter on `/link_status` moving mid-attempt ends it and installs a hold —
+  a HAND-LESS plan, so the refused command stops walking toward the guard
+  band. Seeing this line means the lane was outside the resume envelope
+  despite the sizing: capture the bag, it is a finding.
 - The Ball-Butler reload is REFUSED at accept (`REJECTED_RELOAD_RETIRED_R1`)
   — R3's reset is operator placement (plan § 1 item 7); the reload returns
   as a CATCH skill at R4. Do not use the GUI reload button this rung.

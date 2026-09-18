@@ -882,19 +882,32 @@ the rung's tests passing or a handoff file in the scratchpad.
      `teensy_bridge_node._wait_for_guard_clear`, inside the one park op, so
      both recovery paths and the new `/park_hand` get it.
   2. *An opening REST homed the hand from the top of the stroke* (the three
-     MAX_DEVIATION latches). CONTRACT: **no streamed lane ever homes the hand
-     from outside the park band** — a schedule that finds the hand off the band
-     parks it through the profiled `ACTIVATE(6)` first (`/park_hand`, called by
-     `skill_node`'s precondition before the pre-level; the 2026-09-16 "the
-     opening REST homes the hand" decision now scoped to the band, seed
-     reconciliation kept). On an ARMED wire an off-band hand is REFUSED, not
-     parked: the firmware hand lane still commands its last knot, and parking
-     the axis under it opens the same guard gap with the encoder moving
-     instead of the plan (only an out_en edge clears the lane,
-     `leg_interp.cpp:885`) — DEACTIVATE → ACTIVATE gives the edge and parks in
-     one move. **Carried:** a way to re-seed the streamed hand lane onto the
-     park (a hand-bearing hold, or an interp verb that pins the lane to the
-     encoder) would let the schedule park itself on an armed wire. Latch 1's firmware mechanism, established from the
+     MAX_DEVIATION latches). **CONTRACT, as it stands after the same evening's
+     second pass (C-HAND-4):** *a streamed lane may home the hand ONLY inside
+     the firmware's resume and follow envelope* — continuous from the knot the
+     hand group is holding, peak ≤ `JB_OP_GENTLE_MOVE_VEL_LIMIT_RPS`
+     (2.5 rev/s) and ≤ `RECOVER_SLEW_ACCEL_RPS2` (5 rev/s²); outside a
+     disarm/arm edge nothing else may move the hand. There is ONE home
+     (`sites.REST_HAND_REV` = 0.3071 rev, where every REST leaves the hand) and
+     the opening REST's PERIOD is SIZED to the measured displacement
+     (`schedule.floor_lift_s`: 9.63 rev ⇒ 7.0 s, realised peaks 2.01 rev/s and
+     1.14 rev/s²), so a displaced hand is HOMED, never refused — the owner's
+     instruction, verbatim: *"if the hand isn't where it needs to be at the
+     start, it should smooth-move down to the start position before beginning
+     the cycle"*. **The day's FIRST answer is DELETED after one day:** a
+     blocking `/park_hand` before the pre-level plus a park-band precondition
+     in `skill_node` measured the start against the ACTIVATE park (0.0 rev)
+     while a schedule's REST correctly leaves the hand at 0.3071 rev, so it
+     refused every attempt after the first (`hand park REFUSED — the hand is at
+     +0.3063 rev … but the wire is ARMED`). `/park_hand` SURVIVES as the
+     operator/recovery op (its armed-wire refusal is still right FOR THAT OP:
+     it moves the axis out from under a live lane). **The carried "re-seed the
+     streamed hand lane onto the park" item is RESOLVED, not deferred** — the
+     lane resumes from its HELD knot, which is what the sizing is for, so
+     nothing needs to pin it to the encoder. Fail-closed half: the firmware's
+     `sched_refused` counter now ENDS the attempt (`HAND_LANE_REFUSED`) and
+     installs the hand-less hold, so a lane refused anyway stops walking
+     before the deviation can grow. Latch 1's firmware mechanism, established from the
      code: the hand-less hold let the scheduled hand group's cover expire into
      a C2 stop, the REST was then refused as a discontinuous resume
      (`leg_interp.cpp:514-520`, `sched_refused`), the group kept HOLDING — the
@@ -1003,7 +1016,13 @@ the rung's tests passing or a handoff file in the scratchpad.
   2026-09-13). (b) Banking saturation when the hand's deceleration exceeds g
   (≈12° bank), the likely source of the same-site 188 000 mm/s³ figure
   carried from R2 (unit i, traced 2026-09-13). (c) The columns opening REST
-  (R3 assumed seat offset x = 0 and left the columns REST for R4). (d)
+  (R3 assumed seat offset x = 0 and left the columns REST for R4) — and with
+  the 2026-09-18 homing sizing this is now also the ONE path that cannot home
+  a displaced hand: `compile_columns`'s first skill is a CATCH that splices
+  onto the live plan, so `skill_node._hand_home_error` REFUSES a columns start
+  whose hand is more than `schedule.HOME_BAND_REV` (0.10 rev) from
+  `sites.REST_HAND_REV`, naming the self-toss path that does home it. Giving
+  columns its own opening REST closes the refusal. (d)
   `admissible.gate_hash` covers `feasibility.py` and `segments.py` only — a
   `cup_realize.py` edit leaves a stale box undetected (filed as a follow-up
   during R3).

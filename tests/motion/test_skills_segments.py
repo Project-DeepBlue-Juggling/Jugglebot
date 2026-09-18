@@ -23,6 +23,7 @@ from jugglebot.motion.geometry import StewartGeometry
 from jugglebot.motion.trajectory import ballistics_bc
 from jugglebot.motion.trajectory import cup_realize as cr
 from jugglebot.motion.trajectory.limits import TrajectoryLimits
+from jugglebot.motion.skills import schedule as sc
 from jugglebot.motion.skills import segments as sg
 
 #: The owner's R2 operating point (plan § 0, 2026-09-12): leg 300/5000/200000
@@ -286,3 +287,53 @@ def test_terminal_validation_rejects_bad_shapes_and_non_positive_times():
                          rest_site_mm=REST_MM)
     with pytest.raises(ValueError, match='t_rest_s'):
         sg.RestTerminal(rest_site_mm=REST_MM, t_rest_s=-1.0)
+
+
+# ---------------------------------------------------------------------------
+# The opening REST homes the hand inside the firmware's own envelope
+# (2026-09-18; `schedule.floor_lift_s`, `sites.REST_HAND_REV`)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize('seed_rev', [0.0, 2.3071, 9.6227])
+def test_the_opening_rest_homes_the_hand_inside_the_firmware_envelope(
+        seed_rev, limits, geom, cfg):
+    """SAMPLE THE PLANNED HAND LANE and assert its peaks — the test the
+    sizing's shape factors (`schedule._SHAPE_KV` / `_SHAPE_KA`) are pinned by.
+
+    A homing REST sized by ``schedule.floor_lift_s`` must keep the hand lane
+    inside BOTH firmware numbers for the resume-and-follow regime:
+    ``JB_OP_GENTLE_MOVE_VEL_LIMIT_RPS`` (2.5 rev/s, the profiled park's own
+    rate) and ``RECOVER_SLEW_ACCEL_RPS2`` (5 rev/s², the slew onset ramp). The
+    three seeds cover the three branches of the ``max``: 0.0 rev (the ACTIVATE
+    park, Δ = 0.307 ⇒ the 1.5 s floor), 2.3071 rev (Δ = 2.0 ⇒ the ACCELERATION
+    bound binds, 1.549 s) and 9.6227 rev (the 2026-09-18 sitting's own hand,
+    Δ = 9.316 ⇒ the VELOCITY bound binds, 6.987 s).
+
+    Derivatives by finite difference on the 40 Hz knot grid, which is what the
+    can-bridge itself interpolates — so this measures the lane the firmware
+    will see, not a continuous-time ideal.
+    """
+    period = sc.floor_lift_s(seed_rev)
+    seed = uc.CycleState.at_rest(
+        np.array([0.0, 0.0, cr.RealizeConfig().active_z_mm, 0.0, 0.0, 0.0]),
+        seed_rev, cr.RealizeConfig())
+    terminal = sg.RestTerminal(
+        rest_site_mm=np.array([-50.0, 0.0, uc.SETTLE_CUP_Z_MM]),
+        t_rest_s=period)
+    seg = sg.plan_segment(sg.REST, seed, terminal, cfg, limits, geom)
+
+    hand = np.asarray(seg.plan.hand_rev, dtype=float)
+    dt = float(seg.plan.dt)
+    vel = np.gradient(hand, dt)
+    acc = np.gradient(vel, dt)
+    assert np.max(np.abs(vel)) <= sc.HOME_HAND_VEL_LIMIT_RPS
+    assert np.max(np.abs(acc)) <= sc.HOME_HAND_ACC_LIMIT_RPS2
+    # ... and it actually ARRIVES home, at rest.
+    assert hand[-1] == pytest.approx(sc.REST_HAND_REV, abs=1e-3)
+    # At rest at the terminal knot — the PLAN's own velocity channel, not the
+    # one-sided edge difference `np.gradient` leaves at the last sample.
+    assert float(seg.plan.hand_vel_rps[-1]) == pytest.approx(0.0, abs=1e-3)
+    # The bounds the node LOGS are honest upper bounds on what was planned.
+    bound_v, bound_a = sc.home_hand_bounds(seed_rev, period)
+    assert np.max(np.abs(vel)) <= bound_v + 1e-9
+    assert np.max(np.abs(acc)) <= bound_a + 1e-9

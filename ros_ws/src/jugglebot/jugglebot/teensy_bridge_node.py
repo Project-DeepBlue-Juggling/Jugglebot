@@ -1050,14 +1050,27 @@ _RECOVER_MAX_RESEED_ATTEMPTS = 3
 _MANUAL_RECOVERY_HINT = ("manual recovery: disarm with set_setpoint_output=false, then "
                          "/clear_errors clears directly")
 
-# ── Hand park: the only way the hand leaves the stroke (2026-09-17/18) ───────
-# CONTRACT: NO STREAMED LANE EVER HOMES THE HAND FROM OUTSIDE THE PARK BAND.
-# A hand found outside `_HAND_PARK_BAND_REV` is brought home through the same
-# profiled firmware path ACTIVATE uses — never by a plan's opening REST. Two
-# callers, one op (`_park_hand`, the single enforcement point): guard-latch
-# recovery parks before it reports success (`_svc_recover`, both paths), and a
-# schedule parks before it pre-levels or streams (`/park_hand`, called from
-# `skill_node`'s precondition ladder).
+# ── Hand park: the RECOVERY way the hand leaves the stroke (2026-09-17/18) ──
+# CONTRACT (amended 2026-09-18 evening): A STREAMED LANE MAY HOME THE HAND ONLY
+# INSIDE THE FIRMWARE'S RESUME AND FOLLOW ENVELOPE — continuous from the knot
+# the hand group is holding, peak <= JB_OP_GENTLE_MOVE_VEL_LIMIT_RPS (2.5 rev/s)
+# and <= RECOVER_SLEW_ACCEL_RPS2 (5 rev/s²). OUTSIDE a disarm/arm edge, nothing
+# else may move the hand. A schedule's opening REST is sized to that envelope by
+# `schedule.floor_lift_s` (the node reads the measured hand and grows the REST's
+# period: 9.63 rev takes 7.0 s), so homing is a WINDOW, not an op — and there is
+# no band a schedule has to be inside before it may start.
+#
+# What this op is FOR, then: RECOVERY. One enforcement point (`_park_hand`) and
+# two callers that both have the disarm/arm edge or a cleared lane — guard-latch
+# recovery parks before it reports success (`_svc_recover`, both paths), and the
+# operator's `/park_hand` (which still REFUSES an off-band hand on an ARMED
+# wire, for the reason in `lane_cleared`'s block: it moves the axis out from
+# under a lane that is still commanding its last knot). The 2026-09-18 first
+# answer — a blocking `/park_hand` before every schedule plus a park-band
+# precondition in `skill_node` — is DELETED: the band was measured against the
+# ACTIVATE park (0.0 rev) while a schedule's REST leaves the hand at
+# `sites.REST_HAND_REV` (0.3071 rev), so it refused every attempt after the
+# first by construction ("the hand is at +0.3063 rev ... but the wire is ARMED").
 #
 # Why (2026-09-17 sitting, bag `2026-09-17_18-45-10`, latches at t=143.744 and
 # 161.544): a latch leaves the hand wherever the stroke was — that sitting left
@@ -2204,7 +2217,7 @@ class TeensyBridgeNode(Node):
         # keep running, so the operator can always disarm out.
         self.create_service(Trigger, 'clear_errors', self._svc_clear_errors,
                             callback_group=self._recover_cbgroup)
-        # /park_hand — the schedule-side caller of the hand-park contract
+        # /park_hand — the OPERATOR/recovery caller of the hand-park contract
         # (2026-09-18). Same ReentrantCallbackGroup as /recover, for the same
         # reason: the park blocks its executor thread for the up to ~4 s the
         # firmware TRAP_TRAJ takes, and the telemetry timers it observes the op
@@ -6513,17 +6526,18 @@ class TeensyBridgeNode(Node):
         THE single enforcement point of the hand-park contract — see the
         ``_HAND_PARK_BAND_REV`` block for the 2026-09-17 double-latch and the
         2026-09-18 repeat it encodes. Called by guard-latch recovery
-        (``_svc_recover``, both paths) and, before a schedule streams a hand
-        lane, by ``/park_hand`` (``_svc_park_hand``; ``skill_node``'s
-        precondition ladder). Named ``_park_hand_after_guard_latch`` until
-        2026-09-18, when the schedule became the second caller.
+        (``_svc_recover``, both paths) and by the operator's ``/park_hand``
+        (``_svc_park_hand``). Named ``_park_hand_after_guard_latch`` until
+        2026-09-18, when the operator service became the second caller; a
+        schedule was briefly the third that day and no longer calls it at all
+        (its opening REST homes the hand — ``schedule.floor_lift_s``).
 
         A no-op (ok, "already parked") when the hand is already inside the band.
 
         WAITS for the guard to clear first (``_wait_for_guard_clear``): a
         latched guard rejects the op's ACTIVATE as ERR_BUS_DOWN, and firing it
         inside the 10 Hz fault task's own tick is how the 2026-09-18 park lost
-        the race. No wait is spent when nothing is latched (the schedule path).
+        the race. No wait is spent when nothing is latched (the operator path).
 
         ``lane_cleared`` is the caller's ASSERTION that the streamed hand lane
         is not holding a command — and it is load-bearing, because the op moves
@@ -6620,11 +6634,14 @@ class TeensyBridgeNode(Node):
         """``/park_hand``: bring the hand home through the profiled ACTIVATE op
         if it is outside ``_HAND_PARK_BAND_REV``, else report it already parked.
 
-        The schedule's half of the hand-park contract. A caller about to stream
-        a hand lane (``skill_node``'s precondition ladder) calls this FIRST, so
-        no opening REST ever has more than the band to cover — the band, not the
-        9.63 rev the 2026-09-18 sitting handed one. The band decision lives HERE,
-        with the park, so the caller carries no second copy of it.
+        The OPERATOR/RECOVERY half of the hand-park contract (see the
+        `_HAND_PARK_BAND_REV` block). No schedule calls this any more: a
+        schedule's opening REST homes the hand itself, over a period sized to
+        the firmware's resume-and-follow envelope
+        (``schedule.floor_lift_s``). This is what a human runs when the hand
+        needs to be AT the ACTIVATE park — before a bench op, or after a latch
+        the recovery path did not clear — and on an ARMED wire it still
+        refuses rather than park (the lane is commanding its last knot).
         """
         ok, msg = self._park_hand()
         res.success = ok

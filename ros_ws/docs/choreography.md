@@ -230,7 +230,7 @@
 ### `link_status`
 
 - **publishers:** `teensy_bridge_node`
-- **subscribers:** `orchestrator_node`, `trajectory_node`
+- **subscribers:** `orchestrator_node`, `skill_node`, `trajectory_node`
 - **type:** `diagnostic_msgs.msg.DiagnosticStatus`
 
 ### `mocap/status`
@@ -453,7 +453,7 @@
 ### `park_hand`
 
 - **servers:** `teensy_bridge_node`
-- **clients:** `skill_node`
+- **clients:** _none_
 - **type:** `std_srvs.srv.Trigger`
 
 ### `reboot_odrives`
@@ -638,6 +638,7 @@ broken wire cannot hide among them.
 - `leg_torques_diagnostic` — topic with no subscribers
 - `orchestrator_command` — topic with no publishers
 - `orchestrator_state` — topic with no subscribers
+- `park_hand` — service with no clients
 - `profile` — topic with no subscribers
 - `qtm_clock_offset_sec` — topic with no subscribers
 - `reboot_odrives` — service with no clients

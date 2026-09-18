@@ -285,6 +285,26 @@ REJECTED_NO_BALL = 'REJECTED_NO_BALL'
 #: tail already streaming is the safe end (``reload_sequencer.py:340-366``'s
 #: ``obs.control_mode != RELOAD_CONTROL_MODE`` -> ``self._abort('MODE_CHANGED')``).
 ABORTED_MODE_CHANGED = 'ABORTED_MODE_CHANGED'
+#: The FIRMWARE refused a streamed hand lane (its ``sched_refused`` counter
+#: incremented while the attempt was running) -- fail-closed, 2026-09-18.
+#:
+#: After a hand-less hold (every attempt END installs one) the can-bridge's hand
+#: group sits in ``SCHED_HOLD`` at its last knot and promotes a resumed lane only
+#: if the frame at the handover instant is within ``SCHED_RESUME_TOL_POS_HAND_REV``
+#: = 0.05 rev of the held state (``leg_interp.cpp:497-520``); otherwise it LATCHES
+#: the hold, counts ``sched_refused``, and the guard measures the REFUSED command
+#: against the encoder (``leg_interp.cpp:1226-1228``) so the deviation grows with
+#: every knot the plan walks on -- MAX_DEVIATION E-STOPPED the machine 0.61 s in on
+#: 2026-09-18.  The lane is sized to stay INSIDE that envelope
+#: (``schedule.floor_lift_s``); this code is what happens when it is outside it
+#: anyway.  The attempt ENDS and the node installs a hold, which is a HAND-LESS
+#: plan: no further hand frame, so the refused command stops walking and the
+#: deviation stops growing.  At the homing move's own ceiling (2.5 rev/s) the
+#: 2.5 rev guard band is ~1 s away, and the counter reaches this code within one
+#: 10 Hz ``/link_status`` publish -- so the hold lands with most of the band
+#: unspent.
+HAND_LANE_REFUSED = 'HAND_LANE_REFUSED'
+
 #: No evidence the ball left by ``t_release + RELEASE_GRACE_S`` -- the throw
 #: produces no learner row (``toss_sequencer.py::_step_throwing``'s
 #: ``now >= self._release_deadline`` -> ``self._abort('NO_RELEASE')``).
@@ -314,6 +334,11 @@ class Observations:
       ``REJECTED_BALL_UNKNOWN`` / ``REJECTED_NO_BALL``.
     * ``in_trajectory_mode`` -- checked every tick while an attempt runs, not
       only at dispatch -- ``ABORTED_MODE_CHANGED``.
+    * ``hand_lane_refused`` -- likewise every tick, never at dispatch alone:
+      the firmware's ``sched_refused`` counter has moved since this attempt
+      started (``teensy_bridge_node`` publishes it on ``/link_status``) --
+      :data:`HAND_LANE_REFUSED`.  Defaults False, so a caller that cannot
+      observe the counter keeps the pre-2026-09-18 behaviour exactly.
     """
 
     mocap_fresh: bool
@@ -321,6 +346,7 @@ class Observations:
     levelled: bool
     ball_evidence: str
     in_trajectory_mode: bool
+    hand_lane_refused: bool = False
 
 
 def precondition_refusals(obs: Observations, *, launch: bool,
@@ -1475,6 +1501,20 @@ class SkillExecutor:
                     '%.3f END %s: left the streaming mode that owns the '
                     'platform mid-attempt — the rest tail already streaming '
                     'is the safe end' % (t_abs_s, ABORTED_MODE_CHANGED))
+            elif obs is not None and obs.hand_lane_refused:
+                # FAIL CLOSED, and BEFORE the deviation can grow: the rest
+                # tail is NOT the safe end here, because the firmware is not
+                # following the lane at all — it is holding, and every knot
+                # the plan walks on widens the gap the guard measures. The
+                # caller's END path installs the hand-less hold that stops
+                # the walk (see HAND_LANE_REFUSED).
+                self.attempt_ended = True
+                self.end_code = HAND_LANE_REFUSED
+                lines.append(
+                    '%.3f END %s: the firmware refused the streamed hand lane '
+                    '(sched_refused moved) and is HOLDING the hand — hold the '
+                    'plan before the refused command walks into '
+                    'MAX_DEVIATION' % (t_abs_s, HAND_LANE_REFUSED))
             else:
                 for idx, skill in enumerate(self.schedule.skills):
                     if idx in self.dispatched:

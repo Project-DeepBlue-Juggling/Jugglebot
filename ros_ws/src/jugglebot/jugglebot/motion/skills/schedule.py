@@ -19,7 +19,7 @@ import numpy as np
 import jugglebot.hardware_config as hw
 from jugglebot.motion.skills import segments as sg
 from jugglebot.motion.skills.segments import CATCH, KINDS, REST, THROW
-from jugglebot.motion.skills.sites import Site
+from jugglebot.motion.skills.sites import REST_HAND_REV, Site
 from jugglebot.motion.trajectory import ballistics_bc
 
 #: SI gravity magnitude (m/s²) — the same number ``cup_cycle.GRAVITY`` /
@@ -530,25 +530,6 @@ def compile_columns(pattern: Pattern, t0_abs_s: float) -> Schedule:
                     t0_abs_s=t0)
 
 
-@dataclasses.dataclass(frozen=True)
-class SelfTossPattern:
-    """Single-site self-toss pattern parameters (R3 — plan § 0 / R3 build note).
-
-    One ball, one site: THROW from rest, then CATCH-with-``then_throw`` chained
-    ``n_throws - 1`` times, then a standalone CATCH, then REST. Mirrors
-    :class:`Pattern`'s fields exactly (``sites`` collapsed to one ``site``).
-    """
-
-    site: Site
-    apex_m: float
-    dwell_s: float
-    n_throws: int
-    #: THROW 0's window, from rest — see :class:`Pattern`.
-    launch_s: float = 0.4
-    #: The SETTLE tail every THROW/CATCH segment carries.
-    rest_tail_s: float = sg.REST_TAIL_S
-
-
 #: Duration (s) of the OPENING REST that lifts the hand from the ACTIVATE park
 #: (cup 679.6 mm, 10 mm under the 689.6 mm planner floor — a THROW from there
 #: refuses ``HAND_STROKE``, R3 probe 2026-09-13) to the site's floor, so THROW 0
@@ -570,14 +551,153 @@ class SelfTossPattern:
 #: at 1.2 s, a non-monotonic solver artifact) -- CLEAN at 1.5 s and above
 #: (``tests/hardware/skills_plan_bench.py --rehearse --pattern self-toss``,
 #: 2026-09-13).
+#: **It is now the FLOOR of a SIZED period, not the period (2026-09-18).**
+#: :func:`floor_lift_s` grows it when the hand starts away from
+#: :data:`~jugglebot.motion.skills.sites.REST_HAND_REV`, so this is exactly
+#: what a schedule whose hand is already home gets — the common case, since
+#: that is where the previous schedule's own REST left it.
 FLOOR_LIFT_S = 1.5
+
+#: Peak hand VELOCITY (rev/s) the opening REST's homing move is sized to.
+#: ``JB_OP_GENTLE_MOVE_VEL_LIMIT_RPS`` — the rate the firmware's own profiled
+#: park (ACTIVATE's TRAP_TRAJ on axis 6) brings the hand home at, so a homing
+#: REST is never faster than the op the machine already trusts for this exact
+#: move.  It is NOT the streaming lane's own ceiling (``JB_TRAJ_HAND_VEL_
+#: LIMIT_RPS``, 200 rev/s): a healthy armed lane does follow at full C2 speed
+#: (90 rev/s in a throw), but a homing move starts from a lane the firmware may
+#: be HOLDING, and the slow regimes it can meet there are the ones below.
+HOME_HAND_VEL_LIMIT_RPS = float(hw.JB_OP_GENTLE_MOVE_VEL_LIMIT_RPS)
+
+#: Peak hand ACCELERATION (rev/s²) the same move is sized to — the firmware's
+#: own recovery-slew onset ramp ``RECOVER_SLEW_ACCEL_RPS2``
+#: (``canbridge_config.h:387``, 5.0 rev/s²; restated, not imported, because
+#: ``motion/`` cannot read firmware headers).
+#:
+#: WHY AN ACCELERATION BOUND AT ALL, given the lane follows at 90 rev/s.  After
+#: a hand-less hold — which EVERY attempt's end installs — the firmware hand
+#: group sits in ``SCHED_HOLD`` at its last knot and promotes a resumed lane
+#: only if the frame at the handover instant is within
+#: ``SCHED_RESUME_TOL_POS_HAND_REV`` = 0.05 rev of the held state
+#: (``leg_interp.cpp:497-520``, ``canbridge_config.h:426``); otherwise it
+#: LATCHES the hold and the guard then measures the REFUSED command against the
+#: encoder (``leg_interp.cpp:1226-1228``) until MAX_DEVIATION E-STOPS the
+#: machine — the 2026-09-18 latch 1.  The first frame reaches the wire ~60-100
+#: ms after the plan's origin (solve + one tick), so the lane must not have
+#: moved 0.05 rev by then: ½·a·(0.1 s)² ≤ 0.05 rev ⇒ a ≤ 10 rev/s², and the
+#: firmware's own 5 rev/s² ramp is the conservative half of that.
+HOME_HAND_ACC_LIMIT_RPS2 = 5.0
+
+#: Hand displacement (rev) inside which the homing move is no move at all:
+#: :func:`floor_lift_s` already collapses to :data:`FLOOR_LIFT_S` well
+#: outside it, so this constant exists for the ONE caller that has no opening
+#: REST to grow (``compile_columns``, R4) and must refuse instead.  0.10 rev is
+#: the bridge's own already-parked no-op band (``teensy_bridge_node.
+#: _HAND_PARK_BAND_REV``) — 3.3 mm of carriage at ``hand_mm_per_rev`` 32.567.
+HOME_BAND_REV = 0.10
+
+#: The SETTLE window's hand-lane SHAPE factors: peak |v| ≈ ``_SHAPE_KV·Δ/T``
+#: and peak |a| ≈ ``_SHAPE_KA·Δ/T²`` for a rest-to-rest move of Δ rev over T s.
+#:
+#: MEASURED off the real QP, not assumed (probe 2026-09-18, venv interpreter,
+#: ``plan_segment(REST, ...)`` at the R3 session limits 300/5000/150000 mm +
+#: hand 3500 rev/s², hand seeds 0.0 / 0.56 / 2.0 / 5.0 / 9.62 / 9.9 rev homing
+#: to ``sites.REST_HAND_REV``): the realised factors are k_v = 1.50-1.53 and
+#: k_a = 5.68-5.95, flat across Δ and T.  ``_SHAPE_KV`` = 15/8 = 1.875 is the
+#: quintic rest-to-rest bound and so sizes CONSERVATIVELY (23 % slower than the
+#: QP needs); ``_SHAPE_KA`` = 6.0 is the measured maximum rounded up, because
+#: the quintic 10/√3 = 5.774 sits BELOW what the QP actually produces and would
+#: have sized the acceleration-bound branch 3 % hot.
+#:
+#: Pinned by ``tests/motion/test_skills_segments.py::
+#: test_the_opening_rest_homes_the_hand_inside_the_firmware_envelope``, which
+#: samples the planned hand lane and asserts the peaks against the two limits
+#: above — so a solver change that made the shape sharper fails a test rather
+#: than an E-STOP.
+_SHAPE_KV = 15.0 / 8.0
+_SHAPE_KA = 6.0
+
+
+def floor_lift_s(hand_rev_now: float,
+                 default_s: float = FLOOR_LIFT_S) -> float:
+    """The opening REST's period (s) that homes the hand from ``hand_rev_now``
+    to :data:`~jugglebot.motion.skills.sites.REST_HAND_REV` inside the
+    firmware's resume-and-follow envelope.
+
+    ``max`` of three floors: the default lift (:data:`FLOOR_LIFT_S`,
+    which is what a hand already at home gets), the velocity bound
+    (:data:`HOME_HAND_VEL_LIMIT_RPS`) and the acceleration bound
+    (:data:`HOME_HAND_ACC_LIMIT_RPS2`), through the measured shape factors
+    above.  Worked example, the 2026-09-18 sitting's own hand: Δ = 9.6227 −
+    0.3071 = 9.3156 rev ⇒ 1.875·9.3156/2.5 = 6.99 s (velocity-bound; the
+    acceleration branch asks only 3.34 s) ⇒ a 7.0 s opening REST, whose
+    realised peaks are 2.01 rev/s and 1.14 rev/s² (probe, same day).
+
+    PURE: no clock, no ROS, no state — the node passes the measured hand
+    position in and gets the period out (``SelfTossPattern.floor_lift_s``).
+    """
+    delta = abs(float(hand_rev_now) - float(REST_HAND_REV))
+    return max(float(default_s),
+               _SHAPE_KV * delta / HOME_HAND_VEL_LIMIT_RPS,
+               math.sqrt(_SHAPE_KA * delta / HOME_HAND_ACC_LIMIT_RPS2))
+
+
+def home_hand_bounds(hand_rev_now: float, t_rest_s: float):
+    """``(peak |v| rev/s, peak |a| rev/s²)`` the homing move of
+    :func:`floor_lift_s` is BOUNDED by over ``t_rest_s`` — the shape factors
+    read forwards, for the node's one INFO line.  Bounds, not predictions: the
+    QP's realised peaks come in ~20 % under the velocity one (see
+    :data:`_SHAPE_KV`)."""
+    delta = abs(float(hand_rev_now) - float(REST_HAND_REV))
+    t = float(t_rest_s)
+    if not t > 0.0:
+        raise ValueError('t_rest_s must be > 0, got %r' % (t_rest_s,))
+    return (_SHAPE_KV * delta / t, _SHAPE_KA * delta / (t * t))
+
+
+@dataclasses.dataclass(frozen=True)
+class SelfTossPattern:
+    """Single-site self-toss pattern parameters (R3 — plan § 0 / R3 build note).
+
+    One ball, one site: THROW from rest, then CATCH-with-``then_throw`` chained
+    ``n_throws - 1`` times, then a standalone CATCH, then REST. Mirrors
+    :class:`Pattern`'s fields exactly (``sites`` collapsed to one ``site``).
+    """
+
+    site: Site
+    apex_m: float
+    dwell_s: float
+    n_throws: int
+    #: THROW 0's window, from rest — see :class:`Pattern`.
+    launch_s: float = 0.4
+    #: The SETTLE tail every THROW/CATCH segment carries.
+    rest_tail_s: float = sg.REST_TAIL_S
+    #: The OPENING REST's period (s) — the window that HOMES the hand from
+    #: wherever it actually is to :data:`~jugglebot.motion.skills.sites.
+    #: REST_HAND_REV`.  The node sizes it from the measured hand through
+    #: :func:`floor_lift_s`; the default is the already-home case
+    #: (:data:`FLOOR_LIFT_S`), which is also what every offline test and the
+    #: sim gate get.
+    floor_lift_s: float = FLOOR_LIFT_S
+
+    def __post_init__(self):
+        if not float(self.floor_lift_s) >= FLOOR_LIFT_S:
+            raise ValueError(
+                'floor_lift_s %r is below the %.3f s floor — the opening REST '
+                'both lifts the cup onto the site and homes the hand, and '
+                'FLOOR_LIFT_S is the measured minimum for the lift alone'
+                % (self.floor_lift_s, FLOOR_LIFT_S))
 
 
 def compile_self_toss(pattern: SelfTossPattern, t0_abs_s: float) -> Schedule:
     """The R3 single-site self-toss schedule (plan § 0 / R3 build note).
 
-    One ball at ``pattern.site``: an OPENING REST (:data:`FLOOR_LIFT_S`) lifts
-    the hand onto the site from the ACTIVATE park, then THROW 0 is a fresh
+    One ball at ``pattern.site``: an OPENING REST
+    (``pattern.floor_lift_s``) lifts the cup onto the site AND HOMES THE HAND
+    from wherever it actually is to
+    :data:`~jugglebot.motion.skills.sites.REST_HAND_REV` — one window, one
+    home, sized by :func:`floor_lift_s` so the hand lane stays inside the
+    firmware's resume-and-follow envelope (:data:`HOME_HAND_VEL_LIMIT_RPS` /
+    :data:`HOME_HAND_ACC_LIMIT_RPS2`).  Then THROW 0 is a fresh
     origin from that rest (``launch_s`` window), then every later throw is
     CARRIED by the catch one dwell before it
     (:func:`_fold_catch_throw_pairs` — the same measured reason
@@ -589,7 +709,7 @@ def compile_self_toss(pattern: SelfTossPattern, t0_abs_s: float) -> Schedule:
     :func:`compile_columns` gives: one tail would dispatch the REST before the
     touch-down and splice the catch away.
 
-    Throw ``i`` releases at ``FLOOR_LIFT_S + i * (t_f + dwell_s)`` — one ball,
+    Throw ``i`` releases at ``floor_lift_s + i * (t_f + dwell_s)`` — one ball,
     one site, so the throw-to-throw period is the WHOLE cycle
     (``t_f + dwell_s``), not ``beat_s``'s half-cycle (that halving is a
     property of two sites alternating, plan § 2.4, and does not apply here).
@@ -602,16 +722,16 @@ def compile_self_toss(pattern: SelfTossPattern, t0_abs_s: float) -> Schedule:
     ``Schedule.transit_s`` with ``t_f`` (the CATCH window, honestly — there is
     no "other hand" here for ``transit_s``'s columns meaning to describe).
 
-    **Why THROW 0 lands at ``FLOOR_LIFT_S + launch_s``, not ``FLOOR_LIFT_S``.**
+    **Why THROW 0 lands at ``floor_lift_s + launch_s``, not ``floor_lift_s``.**
     The opening REST is a fresh install (no record yet) that plans a SETTLE
-    ending EXACTLY at its own event instant (``FLOOR_LIFT_S`` — a REST segment
+    ending EXACTLY at its own event instant (``floor_lift_s`` — a REST segment
     carries no extra tail, so ``record.end_s`` is exactly the terminal's event
     time regardless of dispatch jitter). THROW 0 must dispatch no earlier than
-    that: with ``t_abs_s = FLOOR_LIFT_S + launch_s``, ``window_s = launch_s``
-    and the general :data:`LEAD_S`, ``THROW 0.dispatch_s() = FLOOR_LIFT_S -
+    that: with ``t_abs_s = floor_lift_s + launch_s``, ``window_s = launch_s``
+    and the general :data:`LEAD_S`, ``THROW 0.dispatch_s() = floor_lift_s -
     LEAD_S``, so ``install_segment``'s fresh test (``t_now + lead >=
-    record.end_s``) reads ``(FLOOR_LIFT_S - LEAD_S) + LEAD_S >= FLOOR_LIFT_S``
-    — true by construction, not by margin. Putting THROW 0 at ``FLOOR_LIFT_S``
+    record.end_s``) reads ``(floor_lift_s - LEAD_S) + LEAD_S >= floor_lift_s``
+    — true by construction, not by margin. Putting THROW 0 at ``floor_lift_s``
     itself would dispatch it while the lift is still mid-settle and force a
     SPLICE onto a plan that has not reached the floor yet.
     """
@@ -634,14 +754,16 @@ def compile_self_toss(pattern: SelfTossPattern, t0_abs_s: float) -> Schedule:
                       pattern.dwell_s)
     _check_window('CATCH (the full flight back to the same site)', t_f)
 
+    lift_s = float(pattern.floor_lift_s)
+    _check_window('the opening REST (the floor lift + the hand homing)', lift_s)
     skills = [Skill(kind=REST, ball_id=0, site=site,
-                    t_abs_s=t0_rel + FLOOR_LIFT_S, window_s=FLOOR_LIFT_S)]
+                    t_abs_s=t0_rel + lift_s, window_s=lift_s)]
 
     for i in range(n):
         # + launch_s: THROW 0's release cannot land AT the floor instant
         # itself (the opening REST's plan is still mid-settle there) — see
-        # the docstring's "Why THROW 0 lands at FLOOR_LIFT_S + launch_s".
-        t_throw = t0_rel + FLOOR_LIFT_S + pattern.launch_s + float(i) * period
+        # the docstring's "Why THROW 0 lands at floor_lift_s + launch_s".
+        t_throw = t0_rel + lift_s + pattern.launch_s + float(i) * period
         window = pattern.launch_s if i == 0 else pattern.dwell_s
         skills.append(Skill(kind=THROW, ball_id=0, site=site,
                             t_abs_s=t_throw, window_s=window,

@@ -28,6 +28,7 @@ runsheet.
 from __future__ import annotations
 
 import csv
+import dataclasses
 import math
 import os
 import threading
@@ -43,6 +44,7 @@ from rclpy.callback_groups import (MutuallyExclusiveCallbackGroup,
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 
+from diagnostic_msgs.msg import DiagnosticStatus
 from geometry_msgs.msg import Point, Pose, Quaternion, Vector3
 from std_srvs.srv import Trigger
 from jugglebot_interfaces.msg import (BallStateArray, HandTelemetryMessage,
@@ -61,11 +63,14 @@ from jugglebot.motion.skills.executor import (InstallResult, Landing,
                                               precondition_refusals)
 from jugglebot.motion.skills.hand_launch import HandLaunchMonitor
 from jugglebot.motion.skills.memory import Memory, memory_path
-from jugglebot.motion.skills.schedule import (Pattern, SelfTossPattern,
-                                              compile_columns, compile_self_toss)
+from jugglebot.motion.skills.schedule import (HOME_BAND_REV, Pattern,
+                                              SelfTossPattern,
+                                              compile_columns,
+                                              compile_self_toss,
+                                              floor_lift_s, home_hand_bounds)
 from jugglebot.motion.skills.segments import CATCH, REST, THROW
 from jugglebot.motion.skills.sites import (CATCH_CUP_Z_MM, REST_CUP_Z_MM,
-                                           Site, columns_sites)
+                                           REST_HAND_REV, Site, columns_sites)
 from jugglebot.motion.tilt_map import find_repo_root
 from jugglebot.motion.trajectory import ballistics_bc
 from jugglebot.ball_possession import (
@@ -105,16 +110,6 @@ _WIRE_KIND = {THROW: InstallSegment.Request.KIND_THROW,
 #: (InstallSegment.srv), so this is a "the service died" backstop, not a
 #: nominal-latency budget.
 _SERVICE_WAIT_S = 2.0
-
-#: How long `_park_hand` waits for `/park_hand` (2026-09-18). NOT
-#: `_SERVICE_WAIT_S`: this service deliberately BLOCKS on a firmware
-#: TRAP_TRAJ — the bridge's own bound is its guard-clear wait
-#: (`teensy_bridge_node._GUARD_CLEAR_WAIT_S`, 1.0 s) plus the activate
-#: observer's budget (`teensy_link.activate.DEFAULT_TIMEOUT_S`, 20 s) plus the
-#: 5 s hard-deadline slack the park keeps over it, i.e. ~26 s. 30 s covers that
-#: worst case with transport; the NOMINAL park is ~4 s (9.6 rev at the op's
-#: 2.5 rev/s ceiling) and the no-op answer is immediate.
-_PARK_HAND_WAIT_S = 30.0
 
 #: SkillExecutor.tick cadence. The plan's dispatch-lead arithmetic
 #: (`schedule._MIN_WINDOW_S`, `executor.LEAD_KNOTS`) is quantised to the 40 Hz
@@ -248,6 +243,24 @@ class SkillNode(Node):
         # `_live_commanded_position`'s cache-plus-freshness shape.
         self._commanded_pos_mm = None
         self._commanded_pos_mono = 0.0
+        # `/link_status`'s `sched_refused` — the FIRMWARE's count of streamed
+        # lanes it refused and is now HOLDING (`_on_link_status`), and the
+        # value latched when the running attempt started. `hand_lane_refused`
+        # is `live > baseline`: a counter that was already non-zero at the
+        # start (a previous attempt's refusal) is history, not this attempt's.
+        # -1 = never observed, which reads as "no refusal" and so keeps the
+        # pre-2026-09-18 behaviour on a bridge that does not publish the key.
+        self._sched_refused = -1
+        self._sched_refused_mono = 0.0
+        self._sched_refused_at_start = -1
+        # Set by `_on_tick` when an END needs the machine HELD rather than
+        # left to its rest tail (`executor.HAND_LANE_REFUSED`), cleared by
+        # `_maybe_hold_pending_event` when it fires the hold — so the hold is
+        # fired exactly once per attempt, not once per tick.
+        self._force_hold = False
+        # Which END code has already ARMED that hold, so the arming itself is
+        # once per attempt too ('' = none; reset with the attempt).
+        self._hold_forced_code = ''
 
         self.declare_parameter('apex_m', _DEFAULT_APEX_M)
         self.declare_parameter('separation_mm', _DEFAULT_SEPARATION_MM)
@@ -312,12 +325,6 @@ class SkillNode(Node):
         # still needs the MultiThreadedExecutor to process it concurrently.
         self._hold_cli = self.create_client(
             Trigger, 'trajectory/hold', callback_group=self._cbgroup)
-        # The hand park the schedule's own precondition fires (2026-09-18,
-        # `_park_hand`). Same reentrant group, same reason as the three above:
-        # the service callback blocks in `_wait_future` for up to
-        # `_PARK_HAND_WAIT_S` while the bridge runs a firmware TRAP_TRAJ.
-        self._park_hand_cli = self.create_client(
-            Trigger, 'park_hand', callback_group=self._cbgroup)
 
         self._announce_pub = self.create_publisher(
             ThrowAnnouncement, 'throw_announcements', 10)
@@ -351,6 +358,17 @@ class SkillNode(Node):
         self.create_subscription(
             Point, 'trajectory/commanded_position',
             self._on_commanded_position, 10, callback_group=self._sub_cbgroup)
+        # The bridge's own 10 Hz link diagnostic, for ONE key: `sched_refused`,
+        # the firmware's count of streamed lanes it REFUSED and is now holding
+        # (`executor.HAND_LANE_REFUSED`). Read HERE rather than routed through
+        # `trajectory/status`: the counter is a BRIDGE fact that only this
+        # node acts on, the decider is one hop from the publisher instead of
+        # two (10 Hz, not the status timer's 5), and it needs no new field on
+        # a typed interface — so a branch that flies tonight needs no
+        # `jugglebot_interfaces` rebuild to be safe.
+        self.create_subscription(
+            DiagnosticStatus, 'link_status', self._on_link_status, 10,
+            callback_group=self._sub_cbgroup)
 
         self.create_service(Trigger, 'skills/start_columns',
                             self._svc_start_columns)
@@ -502,6 +520,49 @@ class SkillNode(Node):
             return None
         return pos
 
+    def _on_link_status(self, msg) -> None:
+        """`/link_status` -> `sched_refused` only (2026-09-18).
+
+        The bridge publishes the can-bridge heartbeat's ``sched_refused`` as a
+        ``KeyValue`` at 10 Hz; it counts the times the firmware REFUSED a
+        streamed lane's promotion and LATCHED the hold instead — after which
+        the guard measures the refused command against the encoder and the
+        deviation grows with every knot the plan walks on
+        (``executor.HAND_LANE_REFUSED``, and ``leg_interp.cpp:497-520`` /
+        ``:1226-1228`` for the firmware's side of it).
+
+        Absent or unparseable key -> the cache is left UNOBSERVED (-1), which
+        reads as "no refusal": the alternative (treating an unreadable
+        diagnostic as a refusal) would end every attempt on a bridge that
+        simply has an older wire format, and the value is defence in depth
+        behind the lane SIZING (`_opening_rest_period`), not the only thing
+        keeping the hand inside the envelope.
+        """
+        for kv in getattr(msg, 'values', ()):
+            if getattr(kv, 'key', '') != 'sched_refused':
+                continue
+            try:
+                self._sched_refused = int(float(kv.value))
+            except (TypeError, ValueError):
+                return
+            self._sched_refused_mono = time.perf_counter()
+            return
+
+    def _hand_lane_refused(self, now: float) -> bool:
+        """Has the firmware refused a streamed hand lane since this attempt
+        started? ``_sched_refused`` past the latched baseline, on a FRESH
+        sample. Staleness is not itself a refusal — a stale `/link_status`
+        means the bridge stopped publishing, which the ladder's own
+        `in_trajectory_mode`/`levelled` rows already end the attempt on one
+        level up (both ride `trajectory/status`, whose own publisher needs the
+        same graph)."""
+        if self._sched_refused_at_start < 0 or self._sched_refused < 0:
+            return False
+        if (self._sched_refused_mono <= 0.0
+                or (now - self._sched_refused_mono) >= _TRAJ_STATUS_STALE_S):
+            return False
+        return self._sched_refused > self._sched_refused_at_start
+
     def _on_hand_telemetry(self, msg):
         """Track the hand's live position and possession evidence — the same
         tri-state `reload_coordinator_node._on_hand_telemetry` feeds into
@@ -585,18 +646,24 @@ class SkillNode(Node):
         # +0.0001. The honest enforcement point for "the plan's hand seed is
         # not where the hand is" is the SEED, and it now RECONCILES rather
         # than refuses (`trajectory_node._cycle_start_state`) — the opening
-        # REST carries the hand home. AMENDED 2026-09-18: it carries the hand
-        # home only from inside the PARK BAND, because `_park_hand` now runs
-        # before the pre-level and brings it there first (a REST handed 9.63
-        # rev E-STOPPED the machine three times). The ladder still has no hand
-        # POSITION row — the park is an ACTION, not a refusal, and it is the
-        # bridge that owns the band. `hand_fresh` stays: that seed is
-        # reconciled against the encoder, so a stale encoder is still a
-        # refusal, one level down.
+        # REST carries the hand home — from ANY position, over a period SIZED
+        # to the firmware's resume-and-follow envelope
+        # (`_opening_rest_period` / `schedule.floor_lift_s`), which is the
+        # part that was missing when a REST handed 9.63 rev E-STOPPED the
+        # machine three times on 2026-09-18. (That day's first answer, a
+        # blocking `/park_hand` before the pre-level plus a PARK-BAND
+        # precondition, lasted one day: the band was measured against the
+        # ACTIVATE park at 0.0 rev while a schedule's REST leaves the hand at
+        # `sites.REST_HAND_REV` = 0.3071 rev, so it refused every attempt
+        # after the first by construction.) The ladder still has no hand
+        # POSITION row: homing is an ACTION, not a refusal. `hand_fresh`
+        # stays, and now carries the sizing too — a window sized from a stale
+        # encoder is the same defect as a seed reconciled against one.
         return Observations(
             mocap_fresh=mocap_fresh, hand_fresh=hand_fresh,
             levelled=levelled, ball_evidence=self._possession_evidence_stable,
-            in_trajectory_mode=in_trajectory_mode)
+            in_trajectory_mode=in_trajectory_mode,
+            hand_lane_refused=self._hand_lane_refused(now))
 
     def _ball_evidence(self, ball_id: int, t_abs_s: float) -> str:
         """The executor's ``observer`` callable (item 6): the live possession
@@ -809,6 +876,16 @@ class SkillNode(Node):
         not only of dispatch) -- idempotent either way, because
         ``_pending_event_mono`` is cleared the moment a hold is attempted,
         so a later call with nothing left pending is a no-op.
+
+        TWO reasons to hold, one op. The second is ``_force_hold``, set by
+        `_on_tick` on an ``executor.HAND_LANE_REFUSED`` END (2026-09-18):
+        there the streaming plan's rest tail is NOT a safe end, because the
+        firmware is HOLDING the hand rather than following it and every knot
+        the plan walks on widens the deviation the guard measures. The hold is
+        the fix precisely because ``trajectory/hold`` installs a HAND-LESS
+        plan: no further hand frame reaches the wire, so the refused command
+        stops walking. ``_force_hold`` is consumed on read, so this stays
+        once-per-attempt however many ticks call it.
         """
         # `_pending_event_mono` is on the WIRE's clock — `time.perf_counter()`
         # (`trajectory_node`'s `t0_mono`/`t_event_mono`, the same domain
@@ -816,14 +893,19 @@ class SkillNode(Node):
         # executor ticks on; comparing it to the tick's `now` (ROS epoch,
         # ~1.79e9) would read every pending event as already past.
         with self._pending_lock:
-            if (self._pending_event_mono <= 0.0
-                    or self._pending_event_mono <= time.perf_counter()):
+            forced, self._force_hold = self._force_hold, False
+            pending = (self._pending_event_mono > 0.0
+                       and self._pending_event_mono > time.perf_counter())
+            if pending:
+                self._pending_event_mono = 0.0
+            if not (forced or pending):
                 return
-            self._pending_event_mono = 0.0
+        why = ('the firmware is holding a REFUSED hand lane' if forced
+               else '1 pending event(s) cancelled')
         if not self._hold_cli.wait_for_service(timeout_sec=_SERVICE_WAIT_S):
             self.get_logger().error(
-                'END %s: trajectory/hold unavailable -- a pending event '
-                'could not be cancelled' % (end_code,))
+                'END %s: trajectory/hold unavailable -- %s'
+                % (end_code, why))
             return
         resp = self._wait_future(self._hold_cli.call_async(Trigger.Request()))
         if resp is None or not bool(resp.success):
@@ -832,8 +914,7 @@ class SkillNode(Node):
                 % (end_code, '' if resp is None else resp.message))
             return
         self.get_logger().info(
-            'END %s: hold installed — 1 pending event(s) cancelled'
-            % (end_code,))
+            'END %s: hold installed — %s' % (end_code, why))
 
     # ── the tick ────────────────────────────────────────────────────────
 
@@ -863,6 +944,13 @@ class SkillNode(Node):
             for line in self._executor.tick(now):
                 self.get_logger().info(line)
             if self._executor.attempt_ended:
+                if (self._executor.end_code == ex.HAND_LANE_REFUSED
+                        and not self._hold_forced_code):
+                    # Armed once per attempt (the flag below), consumed by
+                    # `_maybe_hold_pending_event` on the same call.
+                    self._hold_forced_code = ex.HAND_LANE_REFUSED
+                    with self._pending_lock:
+                        self._force_hold = True
                 self._maybe_hold_pending_event(self._executor.end_code)
             if self._executor.done:
                 self._executor = None
@@ -889,13 +977,12 @@ class SkillNode(Node):
         separation_mm = float(self.get_parameter('separation_mm').value)
         dwell_s = float(self.get_parameter('dwell_s').value)
         n_throws = int(self.get_parameter('n_throws').value)
-        # Park the hand BEFORE t0 is read (2026-09-18, `_park_hand`): the park
-        # is a ~4 s blocking firmware op, and a t0 sampled ahead of it would
-        # have burned its whole `_START_LEAD_S` waiting for the hand to arrive.
-        park_err = self._park_hand()
-        if park_err:
+        # Columns has no opening REST to home a displaced hand (R4) — refuse
+        # BEFORE t0 is read and before anything moves (`_hand_home_error`).
+        home_err = self._hand_home_error()
+        if home_err:
             response.success = False
-            response.message = 'columns refused: %s' % (park_err,)
+            response.message = 'columns refused: %s' % (home_err,)
             self.get_logger().error(response.message)
             return response
         t0 = self.get_clock().now().nanoseconds / 1e9 + _START_LEAD_S
@@ -916,6 +1003,12 @@ class SkillNode(Node):
         with self._correlation_lock:
             for _bid in {sk.ball_id for sk in schedule.skills}:
                 self._correlation.pop(_bid, None)
+        # Latch the firmware's refused-lane counter as this attempt's BASELINE
+        # (`_hand_lane_refused`): a refusal an earlier attempt provoked is
+        # history, and only a bump from here on ends this one.
+        self._sched_refused_at_start = self._sched_refused
+        self._force_hold = False
+        self._hold_forced_code = ''
         self._executor = SkillExecutor(
             schedule, self._installer, tracker=self._tracker,
             catch_aim_source=self._catch_aim_source(),
@@ -943,51 +1036,96 @@ class SkillNode(Node):
                                leg_jerk_mmps3=leg_jerk,
                                hand_acc_limit_rps2=float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2))
 
-    def _park_hand(self) -> str:
-        """Park the hand before this schedule streams a hand lane (``''`` on
-        success else why not). The FIRST thing either start service does that
-        touches the machine — before `_prelevel`, before t0 is read.
+    def _live_hand_rev(self):
+        """The MEASURED hand position (rev) if `/hand_telemetry` is fresh, else
+        ``None`` — fail-closed, the same cache-plus-freshness shape
+        `_live_commanded_position` uses for the platform."""
+        if (self._hand_telemetry_mono <= 0.0
+                or (time.perf_counter() - self._hand_telemetry_mono)
+                >= _HAND_STATE_STALE_S):
+            return None
+        return float(self._hand_pos_meas)
 
-        CONTRACT (`teensy_bridge_node`, "no streamed lane ever homes the hand
-        from outside the park band"): a schedule's opening REST seeds from the
-        encoder and carries the hand home, but it may never have more than the
-        band to cover. On 2026-09-18 it was handed 9.63 rev — the previous
-        attempt ended `ABORTED_NO_RELEASE` with the hand at the top of its
-        stroke — and planned it home over 1.625 s (~5.4 rev/s) against a hand
-        that physically follows at ~0.8-1.0 rev/s under the bridge's lead
-        authority (and at `RECOVER_SLEW_VEL_RPS` = 1.0 rev/s after a clear).
-        The command ran 3.28 rev BELOW the encoder and MAX_DEVIATION E-STOPPED
-        the machine 0.61 s in, three times in one sitting.
+    def _opening_rest_period(self):
+        """``(period_s, why_not)`` for the opening REST that HOMES THE HAND —
+        the schedule's first window, sized to the hand's measured displacement
+        from `sites.REST_HAND_REV`.
 
-        Unconditional: the BAND is the bridge's fact, not a second copy here
-        (`/park_hand` answers "already parked" as an immediate no-op), and the
-        bridge is also the only thing that can read a hand position this node
-        would have to guess at. The refusal is named and pre-motion — nothing
-        has moved when it fires.
+        THE ONE HOME (owner instruction, 2026-09-18: *"if the hand isn't where
+        it needs to be at the start, it should smooth-move down to the start
+        position before beginning the cycle"*). Every REST in a schedule leaves
+        the hand at ``REST_HAND_REV`` (0.3071 rev, the cup at
+        ``uc.SETTLE_CUP_Z_MM``), so that is the one position a schedule starts
+        from and the one reference this sizes against. The bridge's ACTIVATE
+        park (0.0 rev) stays what `/recover` parks to; a hand sitting there is
+        simply 0.307 rev from home and gets a homing REST like any other
+        displacement, with no special case. The predecessor of this method
+        (`_park_hand`, one day old) measured the start against the PARK and so
+        REFUSED every attempt after the first — the hand was exactly where the
+        previous schedule's REST had correctly left it.
 
-        On an ARMED wire an off-band hand is REFUSED rather than parked (see
-        `teensy_bridge_node._park_hand`'s `lane_cleared` contract: the firmware
-        hand lane is still commanding its last knot, and parking the axis under
-        it opens the same guard gap in the other direction). The operator's
-        DEACTIVATE → ACTIVATE gives the disarm/arm edge and parks in one move.
-        So this refusal is the schedule's LAST line, not its only one — the
-        band is normally already held, because the previous attempt's own REST
-        ended there.
+        WHY A SIZED WINDOW AND NOT A FASTER MOVE. On a healthy ARMED lane the
+        hand follows the stream at full C2 speed (90 rev/s through a throw), so
+        the ceiling here is not about following — it is about RESUMING. After a
+        hand-less hold (every attempt END installs one) the firmware hand group
+        holds its last knot and promotes a resumed lane only if the frame at
+        the handover instant is within ``SCHED_RESUME_TOL_POS_HAND_REV`` =
+        0.05 rev of the held state; the first frame reaches the wire ~60-100 ms
+        after the plan's origin, so a lane that has moved further than that by
+        then is REFUSED and the guard then measures the refused command against
+        the encoder until MAX_DEVIATION E-STOPS the machine (2026-09-18, three
+        times in one sitting). `schedule.floor_lift_s` bounds the move by the
+        firmware's own two numbers for exactly this regime —
+        ``JB_OP_GENTLE_MOVE_VEL_LIMIT_RPS`` (2.5 rev/s, the profiled park's
+        rate) and ``RECOVER_SLEW_ACCEL_RPS2`` (5 rev/s², the slew ramp) — which
+        leaves the deviation two orders inside ``MAX_DEVIATION_HAND_REV``
+        (2.5 rev) and the lead clamp (2.0 rev) the whole way.
+
+        Refuses on ONE fact only, and pre-motion: an unknown or stale hand
+        position. A window sized from a stale encoder is the same defect as the
+        seed reconciled against one, and there is nothing else here to guess
+        with.
         """
-        if not self._park_hand_cli.wait_for_service(timeout_sec=_SERVICE_WAIT_S):
-            return ('park_hand unavailable — the hand park is the only thing '
-                    'that may bring the hand home from outside the park band, '
-                    'and the opening REST must not be asked to')
-        resp = self._wait_future(
-            self._park_hand_cli.call_async(Trigger.Request()),
-            timeout_s=_PARK_HAND_WAIT_S)
-        if resp is None:
-            return ('park_hand did not answer in %.0f s'
-                    % (_PARK_HAND_WAIT_S,))
-        if not bool(resp.success):
-            return 'the hand park was refused: %s' % (resp.message,)
-        self.get_logger().info('hand park before the schedule: %s'
-                               % (resp.message,))
+        rev = self._live_hand_rev()
+        if rev is None:
+            return (0.0, 'hand_telemetry is stale or absent (no sample in '
+                         '%.1f s) — the opening REST cannot be sized to home '
+                         'a hand position nobody has read'
+                         % (_HAND_STATE_STALE_S,))
+        period = floor_lift_s(rev)
+        peak_v, peak_a = home_hand_bounds(rev, period)
+        self.get_logger().info(
+            'opening REST homes the hand: %+.4f → %+.4f rev over %.2f s '
+            '(peak <= %.2f rev/s, %.2f rev/s²)'
+            % (rev, REST_HAND_REV, period, peak_v, peak_a))
+        return (period, '')
+
+    def _hand_home_error(self) -> str:
+        """``''`` when the hand is within :data:`~jugglebot.motion.skills.
+        schedule.HOME_BAND_REV` of `REST_HAND_REV`, else why not — the
+        COLUMNS-only check.
+
+        `compile_columns` has no opening REST yet (carried to R4): its first
+        skill is a CATCH that splices onto the live plan, so there is no window
+        in the schedule that could home a displaced hand and nothing for
+        `_opening_rest_period` to size. Refusing pre-motion is therefore the
+        honest answer for this path — the alternative is streaming a catch
+        whose seed is 9 rev from the hand, which is the 2026-09-18 E-STOP.
+        Self-toss does not use this: it HOMES instead.
+        """
+        rev = self._live_hand_rev()
+        if rev is None:
+            return ('hand_telemetry is stale or absent (no sample in %.1f s) '
+                    '— the hand position cannot be checked'
+                    % (_HAND_STATE_STALE_S,))
+        if abs(rev - REST_HAND_REV) > HOME_BAND_REV:
+            return ('the hand is at %+.4f rev, %.3f rev from the schedule home '
+                    '(%+.4f rev, outside the %.2f rev band) and the columns '
+                    'schedule has no opening REST to home it (R4) — run '
+                    'skills/start_self_toss, whose opening REST homes the hand, '
+                    'or DEACTIVATE → ACTIVATE and re-level'
+                    % (rev, abs(rev - REST_HAND_REV), REST_HAND_REV,
+                       HOME_BAND_REV))
         return ''
 
     def _prelevel(self) -> str:
@@ -1038,8 +1176,8 @@ class SkillNode(Node):
         learner on, memory at ``temp/learn/<plant_id>/memory.csv``.
 
         Order: refuse fast on anything that does not need the platform to
-        move (running / repo root / pattern / box+limits) BEFORE `_park_hand`
-        (2026-09-18) and `_prelevel` (item 7) actually move anything, then
+        move (running / repo root / pattern / box+limits) BEFORE
+        `_prelevel` (item 7) moves anything, then
         compile the schedule —
         pre-levelling is the last check before compilation, per the R3
         carried note ("a healthy launch rests the cup at the gravity-level
@@ -1134,17 +1272,21 @@ class SkillNode(Node):
             self.get_logger().error(response.message)
             return response
 
-        # The hand comes home on the profiled ACTIVATE path BEFORE the
-        # pre-level and before the opening REST is compiled (2026-09-18) — the
-        # REST still SEEDS from the encoder, it just never has more than the
-        # park band to cover. Placed here, after every no-motion refusal and
-        # before the first thing that moves, for the same reason `_prelevel` is.
-        park_err = self._park_hand()
-        if park_err:
+        # The opening REST HOMES THE HAND, over a period sized to the hand's
+        # measured displacement (`_opening_rest_period`). Read here, after
+        # every no-motion refusal and before the first thing that moves, for
+        # the same reason `_prelevel` is: its one refusal (a hand position
+        # nobody has read) must fire with nothing having moved. Nothing
+        # commands the hand between here and the compile — `_prelevel` is a
+        # platform-attitude move with no hand track — so the measurement is
+        # still the hand's position when the schedule streams.
+        lift_s, lift_err = self._opening_rest_period()
+        if lift_err:
             response.success = False
-            response.message = 'self-toss refused: %s' % (park_err,)
+            response.message = 'self-toss refused: %s' % (lift_err,)
             self.get_logger().error(response.message)
             return response
+        pattern = dataclasses.replace(pattern, floor_lift_s=lift_s)
 
         prelevel_err = self._prelevel()
         if prelevel_err:
@@ -1184,6 +1326,12 @@ class SkillNode(Node):
         with self._correlation_lock:
             for _bid in {sk.ball_id for sk in schedule.skills}:
                 self._correlation.pop(_bid, None)
+        # Latch the firmware's refused-lane counter as this attempt's BASELINE
+        # (`_hand_lane_refused`): a refusal an earlier attempt provoked is
+        # history, and only a bump from here on ends this one.
+        self._sched_refused_at_start = self._sched_refused
+        self._force_hold = False
+        self._hold_forced_code = ''
         self._executor = SkillExecutor(
             schedule, self._installer, tracker=self._tracker,
             catch_aim_source=self._catch_aim_source(),
@@ -1308,18 +1456,22 @@ class SkillNode(Node):
         else:
             lines.append('ladder OK')
         # The hand's POSITION is REPORTED, never gated (2026-09-16): a hand
-        # off the park is a thing the opening REST carries home, and the
-        # rehearsal's job is to let the operator SEE it beforehand. `pos_cmd`
+        # away from home is a thing the opening REST carries there, and the
+        # rehearsal's job is to let the operator SEE it — and now also SEE the
+        # period that homing will take, which is the one number a displaced
+        # hand changes about the schedule (2026-09-18). Reported against
+        # `sites.REST_HAND_REV`, the home a schedule actually starts from, not
+        # against the bridge's ACTIVATE park: measuring the start against the
+        # park is exactly what refused every attempt after the first. `pos_cmd`
         # is the bridge's own echo and is the channel that went stale in the
         # 2026-09-16 sitting — named next to `pos_meas` so a disagreement is
         # visible rather than inferred.
         lines.append(
-            'hand pos_meas %.4f rev (park %.2f, band ±%.2f), bridge echo '
-            'pos_cmd %.4f rev — REPORTED, not gated: the opening REST plans '
-            'from the MEASURED hand and settles the cup at %.1f mm'
-            % (self._hand_pos_meas, float(hw.JB_OP_HAND_RETRACT_REV),
-               float(hw.HOMING_HAND_PARK_BAND_REV), self._hand_pos_cmd,
-               REST_CUP_Z_MM))
+            'hand pos_meas %+.4f rev (home %+.4f rev, cup %.1f mm), bridge '
+            'echo pos_cmd %+.4f rev — REPORTED, not gated: the opening REST '
+            'plans from the MEASURED hand and would take %.2f s to home it'
+            % (self._hand_pos_meas, REST_HAND_REV, REST_CUP_Z_MM,
+               self._hand_pos_cmd, floor_lift_s(self._hand_pos_meas)))
         if _ADMISSIBLE_BOX_PATH is None:
             ok = False
             lines.append('box REFUSED: cannot find the repo root from %r'
