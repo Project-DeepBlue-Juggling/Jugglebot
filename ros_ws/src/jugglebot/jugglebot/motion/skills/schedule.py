@@ -100,14 +100,28 @@ def apex_m(flight_s_: float) -> float:
     is consistent with — ``t_f = 2·sqrt(2·apex_m / g)`` run backward, i.e.
     ``apex_m = g · (t_f / 2)² / 2``, the SAME ``g`` (:data:`_G_SI`) so a
     round trip through both functions is exact to float precision.  Lets a
-    caller that only has a flight time (a schedule's ``Skill.y_d``, or a
-    box swept over an explicit flight grid) recover the apex a command
-    is judged against — :func:`~jugglebot.motion.skills.admissible.select`
-    keys an :class:`~jugglebot.motion.skills.admissible.AdmissibleBox`
-    lookup on exactly this."""
+    caller that only has a flight time — an admissible box swept over an
+    explicit flight grid before 2026-09-18
+    (:func:`~jugglebot.motion.skills.admissible.load`) — recover the apex the
+    command is expressed in."""
     if not float(flight_s_) > 0.0:
         raise ValueError('flight_s must be > 0, got %r' % (flight_s_,))
     return _G_SI * (float(flight_s_) / 2.0) ** 2 / 2.0
+
+
+def apex_from_vz(vz_m_s: float) -> float:
+    """The apex (m) above the catch plane implied by a ball's VERTICAL SPEED
+    as it crosses that plane: ``h = v_z² / (2 g)``, exact for a parabola and
+    the SAME ``g`` (:data:`_G_SI`) as :func:`flight_s`.
+
+    This is how the learner reads its outcome (2026-09-18): the tracker's
+    converged gravity-fixed fit reports the crossing velocity, and an apex
+    taken from it is invariant to WHEN the ball was released — the bias a
+    flight-time outcome could never shed (the physical release lags the
+    commanded knot by 0.02-0.14 s throw to throw).
+    """
+    v = abs(float(vz_m_s))
+    return v * v / (2.0 * _G_SI)
 
 
 def beat_s(flight_s_: float, dwell_s: float) -> float:
@@ -135,7 +149,8 @@ class ThenThrow:
 
     ``t_release_abs_s`` is on the shared wall clock, like :attr:`Skill.t_abs_s`.
     ``y_d`` is the identity-prior command (landing xy offset in m against
-    ``target``, and the flight time) — the learner is off at R2.
+    ``target``, and the APEX in m above the catch plane — the learner's
+    outcome parameterisation, 2026-09-18).
     """
 
     t_release_abs_s: float
@@ -151,7 +166,7 @@ class ThenThrow:
             raise ValueError('y_d[0] must be a finite 2-vector, got %r'
                               % (self.y_d[0],))
         if not float(self.y_d[1]) > 0.0:
-            raise ValueError('y_d[1] (flight_s) must be > 0, got %r'
+            raise ValueError('y_d[1] (apex_m) must be > 0, got %r'
                               % (self.y_d[1],))
         if not isinstance(self.target, Site):
             raise ValueError('target must be a Site, got %r' % (self.target,))
@@ -182,8 +197,10 @@ class Skill:
     t_abs_s: float
     window_s: float
     #: THROW only: the identity-prior command — landing xy (m) relative to
-    #: ``target``, and the flight time (s). The learner is off at R2, so a
-    #: columns THROW always carries ``(zeros(2), flight_s)``.
+    #: ``target``, and the APEX (m) above the catch plane. The pattern's own
+    #: apex, so a columns THROW always carries ``(zeros(2), apex_m)``; the
+    #: schedule's flight time is DERIVED from it (:func:`flight_s`) and is
+    #: not a learnable quantity (2026-09-18).
     y_d: Optional[Tuple[np.ndarray, float]] = None
     #: THROW only: the site the ball is to land at.
     target: Optional[Site] = None
@@ -435,7 +452,7 @@ def compile_columns(pattern: Pattern, t0_abs_s: float) -> Schedule:
         window = pattern.launch_s if i == 0 else pattern.dwell_s
         skills.append(Skill(kind=THROW, ball_id=ball_i, site=site_i,
                             t_abs_s=t_throw, window_s=window,
-                            y_d=(np.zeros(2), t_f), target=site_i))
+                            y_d=(np.zeros(2), pattern.apex_m), target=site_i))
         if i <= n - 2:
             _check_window('CATCH %d' % i, tau)
             skills.append(Skill(kind=CATCH, ball_id=ball_i, site=site_i,
@@ -599,7 +616,7 @@ def compile_self_toss(pattern: SelfTossPattern, t0_abs_s: float) -> Schedule:
         window = pattern.launch_s if i == 0 else pattern.dwell_s
         skills.append(Skill(kind=THROW, ball_id=0, site=site,
                             t_abs_s=t_throw, window_s=window,
-                            y_d=(np.zeros(2), t_f), target=site))
+                            y_d=(np.zeros(2), pattern.apex_m), target=site))
         # Unlike columns (whose LAST throw's landing is deliberately left
         # unscheduled for R5's cone delivery), a self-toss has nowhere else
         # for the ball to go: EVERY throw gets a catch, and the fold below

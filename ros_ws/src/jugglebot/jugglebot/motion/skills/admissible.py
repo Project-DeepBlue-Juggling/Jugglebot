@@ -1,7 +1,7 @@
 """The offline admissible box for a THROW command (plan § 2.2 / § 2.6).
 
 R2 moves the two remaining per-cycle-time-critical gates on a THROW's command
-``u = (landing_xy_m, flight_s)`` -- I-CATCH-3's closed-form quintic reach
+``u = (landing_xy_m, apex_m)`` -- I-CATCH-3's closed-form quintic reach
 frontier (the platform's transit between two sites) and ``REJECTED_DISPLACEMENT``
 (the pre-throw A->B displacement cap) -- off the beat path entirely. Instead,
 :mod:`tools.admissible_sweep` runs the REAL QP + gate
@@ -30,7 +30,7 @@ the THROW's actual commanded release speed and flight time. That is a BOUNDED
 check on takeoff speed only: it says nothing about how a landing-xy OFFSET
 inside the box would change the release speed of a Tier-8b *displaced* throw
 (a vertical self-toss's release speed is a function of flight time alone, so
-at R2 -- columns only, ``Skill.y_d`` always ``(zeros(2), flight_s)`` -- the
+at R2 -- columns only, ``Skill.y_d`` always ``(zeros(2), apex_m)`` -- the
 offset never reaches the THROW's own release speed; it only ever perturbs the
 CATCH's landing target). Wiring the full six-bound envelope against a
 DISPLACED throw's release speed (a function of both the offset and the flight
@@ -50,6 +50,8 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import yaml
+
+from jugglebot.motion.skills import schedule as sch
 
 __all__ = [
     'AdmissibleBox', 'AdmissibleError', 'LimitsMismatch',
@@ -91,7 +93,7 @@ class AdmissibleBox:
 
     An EMPTY box (no grid point in the sweep passed with margin) is
     represented by ``float('nan')`` on every bound of ``landing_xy_m`` and
-    ``flight_s`` -- the same fail-closed sentinel
+    ``apex_m`` -- the same fail-closed sentinel
     ``throw_envelope._find_flight_band`` uses for "no admitted set", so a
     caller who forgets to check emptiness gets a loud ``nan`` comparison
     rather than a silently-passing bound.
@@ -101,7 +103,12 @@ class AdmissibleBox:
     apex_band_m: Tuple[float, float]
     #: ``((xmin, xmax), (ymin, ymax))``, metres, relative to the target site.
     landing_xy_m: Tuple[Tuple[float, float], Tuple[float, float]]
-    flight_s: Tuple[float, float]
+    #: ``(lo, hi)`` bounds on the commanded APEX (m above the catch plane) --
+    #: the third component of the command this box clips (2026-09-18; it was
+    #: a flight time in seconds until the learner's outcome became an apex).
+    #: Distinct from :attr:`apex_band_m`, which says which commands this box
+    #: is the right one to LOOK UP, not what it clips them to.
+    apex_m: Tuple[float, float]
     #: The session limits this box was swept under -- see ``_LIMIT_KEYS``.
     limits: Dict[str, float]
     #: sha256(feasibility.py text + segments.py text)[:12] -- see :func:`gate_hash`.
@@ -127,18 +134,18 @@ class AdmissibleBox:
                 raise ValueError('landing_xy_m.%s must be a finite (lo <= hi) '
                                   'pair or the (nan, nan) empty sentinel, got '
                                   '%r' % (name, (a, b)))
-        flo, fhi = float(self.flight_s[0]), float(self.flight_s[1])
-        if not _is_empty_range(flo, fhi):
-            if not (math.isfinite(flo) and math.isfinite(fhi) and flo <= fhi):
-                raise ValueError('flight_s must be a finite (lo <= hi) pair or '
+        alo, ahi = float(self.apex_m[0]), float(self.apex_m[1])
+        if not _is_empty_range(alo, ahi):
+            if not (math.isfinite(alo) and math.isfinite(ahi) and alo <= ahi):
+                raise ValueError('apex_m must be a finite (lo <= hi) pair or '
                                   'the (nan, nan) empty sentinel, got %r'
-                                  % (self.flight_s,))
-        # x/y and flight emptiness must agree -- a half-empty box is a bug in
+                                  % (self.apex_m,))
+        # x/y and apex emptiness must agree -- a half-empty box is a bug in
         # whatever built it, not a physical state.
-        if _is_empty_range(xlo, xhi) != _is_empty_range(flo, fhi):
-            raise ValueError('landing_xy_m and flight_s must be empty (nan) '
+        if _is_empty_range(xlo, xhi) != _is_empty_range(alo, ahi):
+            raise ValueError('landing_xy_m and apex_m must be empty (nan) '
                               'together or not at all, got landing_xy_m=%r '
-                              'flight_s=%r' % (self.landing_xy_m, self.flight_s))
+                              'apex_m=%r' % (self.landing_xy_m, self.apex_m))
         missing = [k for k in _LIMIT_KEYS if k not in self.limits]
         if missing:
             raise ValueError('limits is missing %r (required: %r)'
@@ -154,7 +161,7 @@ class AdmissibleBox:
     @property
     def empty(self) -> bool:
         """True when no grid point in the sweep passed with margin."""
-        return _is_empty_range(*self.flight_s)
+        return _is_empty_range(*self.apex_m)
 
 
 def gate_hash(root: str = None) -> str:
@@ -178,14 +185,15 @@ def gate_hash(root: str = None) -> str:
 
 
 def clip(u, box: AdmissibleBox):
-    """Clip a THROW command ``u = (landing_xy_m, flight_s)`` into ``box``.
+    """Clip a THROW command ``u = (landing_xy_m, apex_m)`` into ``box``.
 
     ``landing_xy_m`` is a 2-vector (metres, relative to the target site);
-    ``flight_s`` a scalar. Returns ``(clipped_xy, clipped_flight_s)``. An
-    EMPTY box (see :attr:`AdmissibleBox.empty`) refuses outright -- there is
-    nothing to clip into -- naming the site pair that has no admissible throw.
+    ``apex_m`` a scalar (metres above the catch plane). Returns
+    ``(clipped_xy, clipped_apex_m)``. An EMPTY box (see
+    :attr:`AdmissibleBox.empty`) refuses outright -- there is nothing to clip
+    into -- naming the site pair that has no admissible throw.
     """
-    landing_xy_m, flight_s_ = u
+    landing_xy_m, apex_ = u
     if box.empty:
         raise AdmissibleError(
             'admissible box for site pair %r (apex band %.3f-%.3f m) is EMPTY '
@@ -193,11 +201,11 @@ def clip(u, box: AdmissibleBox):
             'admissible for this pair' % (box.site_pair, box.apex_band_m[0],
                                           box.apex_band_m[1]))
     (xlo, xhi), (ylo, yhi) = box.landing_xy_m
-    flo, fhi = box.flight_s
+    alo, ahi = box.apex_m
     cx = min(max(float(landing_xy_m[0]), xlo), xhi)
     cy = min(max(float(landing_xy_m[1]), ylo), yhi)
-    cf = min(max(float(flight_s_), flo), fhi)
-    return np.array([cx, cy]), cf
+    ca = min(max(float(apex_), alo), ahi)
+    return np.array([cx, cy]), ca
 
 
 def select(boxes: List[AdmissibleBox], site_pair: Tuple[str, str],
@@ -208,7 +216,7 @@ def select(boxes: List[AdmissibleBox], site_pair: Tuple[str, str],
     ``None`` when no box covers it -- the caller's cue to refuse rather than
     fall back to some OTHER apex's box (the defect this closes: a self-toss
     at 0.5 m apex silently reusing a box swept for 0.9 m and having its
-    flight clipped up to it). Site pair first, then apex band -- the same
+    apex clipped up to it). Site pair first, then apex band -- the same
     two-key lookup :meth:`AdmissibleBox` is keyed by."""
     tol = 1e-9
     pair = tuple(site_pair)
@@ -323,7 +331,7 @@ def dump(path: str, boxes: List[AdmissibleBox]) -> None:
                     [float(box.landing_xy_m[0][0]), float(box.landing_xy_m[0][1])],
                     [float(box.landing_xy_m[1][0]), float(box.landing_xy_m[1][1])],
                 ],
-                'flight_s': [float(box.flight_s[0]), float(box.flight_s[1])],
+                'apex_m': [float(box.apex_m[0]), float(box.apex_m[1])],
             }
             for box in boxes
         ],
@@ -336,12 +344,19 @@ def dump(path: str, boxes: List[AdmissibleBox]) -> None:
 
 
 _REQUIRED_TOP = ('swept_at', 'gate_hash', 'limits', 'boxes')
-_REQUIRED_BOX = ('site_pair', 'apex_band_m', 'landing_xy_m', 'flight_s')
+_REQUIRED_BOX = ('site_pair', 'apex_band_m', 'landing_xy_m')
 
 
 def load(path: str) -> List[AdmissibleBox]:
     """Read + validate an admissible-box YAML file. Strict: a missing field is
-    a refusal naming it, never a best-effort partial parse."""
+    a refusal naming it, never a best-effort partial parse.
+
+    A box written before 2026-09-18 bounds a ``flight_s`` instead of an
+    ``apex_m``; it is read through ``schedule.apex_m``, the exact inverse of
+    the ``schedule.flight_s`` the sweep used, so the SAME set of throws stays
+    admissible. The conversion is a bijection (``h = g·t²/8``), which is what
+    makes re-sweeping the box optional rather than a prerequisite.
+    """
     try:
         with open(path, 'r') as handle:
             doc = yaml.safe_load(handle)
@@ -377,12 +392,23 @@ def load(path: str) -> List[AdmissibleBox]:
             raise AdmissibleError("%s: boxes[%d] is missing %r"
                                   % (path, i, missing))
         xy = raw['landing_xy_m']
+        if 'apex_m' in raw:
+            apex = (float(raw['apex_m'][0]), float(raw['apex_m'][1]))
+        elif 'flight_s' in raw:
+            flo, fhi = float(raw['flight_s'][0]), float(raw['flight_s'][1])
+            apex = ((flo, fhi) if math.isnan(flo) or math.isnan(fhi)
+                    else (sch.apex_m(flo), sch.apex_m(fhi)))
+        else:
+            raise AdmissibleError(
+                "%s: boxes[%d] is missing ['apex_m'] (nor does it carry the "
+                "pre-2026-09-18 'flight_s' this loader converts from)"
+                % (path, i))
         out.append(AdmissibleBox(
             site_pair=tuple(raw['site_pair']),
             apex_band_m=(float(raw['apex_band_m'][0]), float(raw['apex_band_m'][1])),
             landing_xy_m=((float(xy[0][0]), float(xy[0][1])),
                           (float(xy[1][0]), float(xy[1][1]))),
-            flight_s=(float(raw['flight_s'][0]), float(raw['flight_s'][1])),
+            apex_m=apex,
             limits=limits_out,
             gate_hash=ghash,
             swept_at=swept_at,

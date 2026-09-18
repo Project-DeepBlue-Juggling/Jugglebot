@@ -542,7 +542,8 @@ def make_tracker(schedule, *, jitter_mm: float = 0.0, seed: int = 0,
                                  rng.uniform(-jitter_mm, jitter_mm), 0.0])
         for pos, t_land in nominal.get(int(ball_id), ()):
             if t_land > t - 0.05:
-                return ex.Landing(pos_mm=pos + jit['d'], vel_mm_s=arrival.copy(),
+                # An analytic tracker IS a converged fit (same as sim/skills_gate.py).
+                return ex.Landing(from_fit=True, pos_mm=pos + jit['d'], vel_mm_s=arrival.copy(),
                                   t_land_abs_s=t_land)
         return None
     return tracker
@@ -635,7 +636,7 @@ def make_self_toss_tracker(*, jitter_mm: float = 0.0, seed: int = 0,
             jit['t'] = t
             jit['d'] = np.array([rng.uniform(-jitter_mm, jitter_mm),
                                  rng.uniform(-jitter_mm, jitter_mm), 0.0])
-        return ex.Landing(pos_mm=pos + jit['d'], vel_mm_s=vel,
+        return ex.Landing(from_fit=True, pos_mm=pos + jit['d'], vel_mm_s=vel,
                           t_land_abs_s=t_release + t_s)
 
     return tracker, note_release

@@ -47,7 +47,7 @@ _GATE_HASH = ab.gate_hash()
 def _box(**overrides):
     kwargs = dict(
         site_pair=('P1', 'P2'), apex_band_m=(0.85, 0.95),
-        landing_xy_m=((-0.02, 0.02), (-0.01, 0.01)), flight_s=(0.83, 0.88),
+        landing_xy_m=((-0.02, 0.02), (-0.01, 0.01)), apex_m=(0.87, 0.93),
         limits=dict(_LIMITS_DICT), gate_hash=_GATE_HASH, swept_at='2026-09-12')
     kwargs.update(overrides)
     return ab.AdmissibleBox(**kwargs)
@@ -57,7 +57,7 @@ def _empty_box(**overrides):
     kwargs = dict(
         site_pair=('P1', 'P2'), apex_band_m=(0.85, 0.95),
         landing_xy_m=((float('nan'), float('nan')), (float('nan'), float('nan'))),
-        flight_s=(float('nan'), float('nan')), limits=dict(_LIMITS_DICT),
+        apex_m=(float('nan'), float('nan')), limits=dict(_LIMITS_DICT),
         gate_hash=_GATE_HASH, swept_at='2026-09-12')
     kwargs.update(overrides)
     return ab.AdmissibleBox(**kwargs)
@@ -78,10 +78,10 @@ def test_box_rejects_an_inverted_range():
 
 
 def test_box_rejects_a_half_empty_sentinel():
-    """landing_xy_m and flight_s must be empty (nan) TOGETHER, never one alone
+    """landing_xy_m and apex_m must be empty (nan) TOGETHER, never one alone
     -- a half-empty box is a bug in whatever built it, not a physical state."""
     with pytest.raises(ValueError, match='empty'):
-        _box(flight_s=(float('nan'), float('nan')))
+        _box(apex_m=(float('nan'), float('nan')))
 
 
 def test_box_rejects_missing_limit_keys():
@@ -167,24 +167,65 @@ def test_load_refuses_a_non_mapping_document(tmp_path):
 
 def test_clip_inside_the_box_is_unchanged():
     box = _box()
-    u = (np.array([0.005, -0.002]), 0.857)
-    xy, flight = ab.clip(u, box)
+    u = (np.array([0.005, -0.002]), 0.90)
+    xy, apex = ab.clip(u, box)
     np.testing.assert_allclose(xy, [0.005, -0.002])
-    assert flight == pytest.approx(0.857)
+    assert apex == pytest.approx(0.90)
 
 
 def test_clip_outside_the_box_saturates_to_the_nearest_edge():
     box = _box()
     u = (np.array([1.0, -1.0]), 5.0)
-    xy, flight = ab.clip(u, box)
+    xy, apex = ab.clip(u, box)
     np.testing.assert_allclose(xy, [0.02, -0.01])
-    assert flight == pytest.approx(0.88)
+    assert apex == pytest.approx(0.93)
 
 
 def test_clip_on_an_empty_box_refuses_naming_the_site_pair():
     box = _empty_box(site_pair=('P2', 'P1'))
     with pytest.raises(ab.AdmissibleError, match='P2'):
-        ab.clip((np.array([0.0, 0.0]), 0.857), box)
+        ab.clip((np.array([0.0, 0.0]), 0.90), box)
+
+
+def test_load_converts_a_pre_apex_flight_band_through_the_exact_inverse():
+    """2026-09-18: a box swept before the learner's command became an apex
+    bounds ``flight_s``. The loader converts it through ``schedule.apex_m``,
+    the exact inverse of the ``schedule.flight_s`` the sweep itself used, so
+    the SAME set of throws stays admissible -- that bijection is what makes
+    re-sweeping optional rather than a prerequisite."""
+    import tempfile, yaml as _yaml
+    flights = (0.83, 0.88)
+    doc = {
+        'swept_at': '2026-09-12', 'gate_hash': _GATE_HASH,
+        'limits': dict(_LIMITS_DICT),
+        'boxes': [{'site_pair': ['P1', 'P2'], 'apex_band_m': [0.85, 0.95],
+                   'landing_xy_m': [[-0.02, 0.02], [-0.01, 0.01]],
+                   'flight_s': list(flights)}],
+    }
+    with tempfile.NamedTemporaryFile('w', suffix='.yaml', delete=False) as fh:
+        _yaml.safe_dump(doc, fh)
+        path = fh.name
+    box, = ab.load(path)
+    assert box.apex_m == pytest.approx((sc.apex_m(flights[0]),
+                                        sc.apex_m(flights[1])))
+    # The inverse, exactly: back through flight_s reproduces the swept band.
+    assert (sc.flight_s(box.apex_m[0]),
+            sc.flight_s(box.apex_m[1])) == pytest.approx(flights)
+
+
+def test_load_refuses_a_box_with_neither_apex_nor_flight_bounds():
+    import tempfile, yaml as _yaml
+    doc = {
+        'swept_at': '2026-09-12', 'gate_hash': _GATE_HASH,
+        'limits': dict(_LIMITS_DICT),
+        'boxes': [{'site_pair': ['P1', 'P2'], 'apex_band_m': [0.85, 0.95],
+                   'landing_xy_m': [[-0.02, 0.02], [-0.01, 0.01]]}],
+    }
+    with tempfile.NamedTemporaryFile('w', suffix='.yaml', delete=False) as fh:
+        _yaml.safe_dump(doc, fh)
+        path = fh.name
+    with pytest.raises(ab.AdmissibleError, match='apex_m'):
+        ab.load(path)
 
 
 # ---------------------------------------------------------------------------
@@ -317,9 +358,10 @@ def test_tiny_sweep_produces_one_box_inside_the_swept_grid(tiny_sweep):
     (xlo, xhi), (ylo, yhi) = box.landing_xy_m
     assert -0.010 - 1e-9 <= xlo <= xhi <= 0.010 + 1e-9
     assert -0.010 - 1e-9 <= ylo <= yhi <= 0.010 + 1e-9
-    flo, fhi = box.flight_s
-    swept_flights = [sc.flight_s(a) for a in (0.85, 0.90)]
-    assert min(swept_flights) - 1e-9 <= flo <= fhi <= max(swept_flights) + 1e-9
+    alo, ahi = box.apex_m
+    # The grid is swept in flight time; the box bounds the APEX (2026-09-18),
+    # so the bounds must land inside the swept grid's own apexes.
+    assert 0.85 - 1e-9 <= alo <= ahi <= 0.90 + 1e-9
     # Every row actually reached a verdict -- the grid ran, not merely built.
     assert len(rows) >= 6
 
@@ -451,7 +493,8 @@ def test_single_apex_boxes_records_the_requested_band_not_the_grid_derived_one(
         box = sweep_mod.ab.AdmissibleBox(
             site_pair=(site.name, site.name), apex_band_m=(0.0, 99.0),
             landing_xy_m=((-0.01, 0.01), (-0.01, 0.01)),
-            flight_s=(min(flights_s), max(flights_s)),
+            apex_m=(sweep_mod.sc.apex_m(min(flights_s)),
+                    sweep_mod.sc.apex_m(max(flights_s))),
             limits=dict(leg_vel_mmps=leg_vel, leg_acc_mmps2=leg_acc,
                        leg_jerk_mmps3=leg_jerk, hand_acc_rps2=hand_acc),
             gate_hash=sweep_mod.ab.gate_hash(), swept_at='2026-09-14')

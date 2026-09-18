@@ -208,10 +208,10 @@ def test_then_throw_rejects_a_malformed_command(cols):
     p1, _p2 = cols
     with pytest.raises(ValueError, match='y_d'):
         sc.ThenThrow(t_release_abs_s=1.0, y_d=(np.zeros(3), 0.857), target=p1)
-    with pytest.raises(ValueError, match='flight_s'):
+    with pytest.raises(ValueError, match='apex_m'):
         sc.ThenThrow(t_release_abs_s=1.0, y_d=(np.zeros(2), 0.0), target=p1)
     with pytest.raises(ValueError, match='target'):
-        sc.ThenThrow(t_release_abs_s=1.0, y_d=(np.zeros(2), 0.857), target='P1')
+        sc.ThenThrow(t_release_abs_s=1.0, y_d=(np.zeros(2), 0.9), target='P1')
 
 
 def test_compile_columns_rest_follows_the_chronologically_last_catch(cols):
@@ -259,7 +259,8 @@ def test_compile_columns_catch_window_is_the_transit(cols):
 
 def test_compile_columns_throw_y_d_is_the_identity_prior(cols):
     """The learner is off at R2: every columns throw — free-standing or carried
-    by a catch — holds the zero-offset command against its OWN site's target."""
+    by a catch — holds the zero-offset, pattern-APEX command against its OWN
+    site's target."""
     schedule = sc.compile_columns(_pattern(cols, n_throws=3), t0_abs_s=0.0)
     seen = 0
     for s in schedule.skills:
@@ -271,9 +272,12 @@ def test_compile_columns_throw_y_d_is_the_identity_prior(cols):
             continue
         seen += 1
         assert target is s.site
-        landing_xy, flight = y_d
+        landing_xy, apex = y_d
         np.testing.assert_array_equal(landing_xy, np.zeros(2))
-        assert flight == pytest.approx(schedule.flight_s)
+        # The command is the pattern's APEX (2026-09-18); the schedule's
+        # flight time is derived from it, never commanded alongside it.
+        assert apex == pytest.approx(_pattern(cols, n_throws=3).apex_m)
+        assert sc.flight_s(apex) == pytest.approx(schedule.flight_s)
     assert seen == 3
 
 

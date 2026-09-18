@@ -372,7 +372,7 @@ def test_memory_command_delegates_to_learner(tmp_path):
 
 # ── the physical flight band (2026-09-16) ──────────────────────────────────
 #
-# A row whose observed flight is not a near-unit multiple of the COMMANDED
+# A row whose observed APEX is not a near-unit multiple of the COMMANDED
 # one is not a row about its own throw — it is the next flight's landing,
 # captured because the executor kept refreshing the observation after the
 # ball had been caught and re-thrown. The executor freezes the observation at
@@ -381,38 +381,48 @@ def test_memory_command_delegates_to_learner(tmp_path):
 # `temp/learn/*-20260916` memories) cannot be read back into a learner.
 
 
-def _band_exp(u_flight, y_flight):
-    return mem.Experience(x=np.zeros(4), u=np.array([0.0, 0.0, u_flight]),
-                           y=np.array([0.0, 0.0, y_flight]), t_abs_s=1.0,
+def _band_exp(u_apex, y_apex):
+    return mem.Experience(x=np.zeros(4), u=np.array([0.0, 0.0, u_apex]),
+                           y=np.array([0.0, 0.0, y_apex]), t_abs_s=1.0,
                            ball_id=0, caught=True)
 
 
-@pytest.mark.parametrize('u_flight,y_flight,want', [
-    (0.8569, 0.8569, True),          # exact
-    (0.8569, 1.0597, True),          # the measured 25 %-fast plant (armA-090)
-    (0.6128, 0.8927, True),          # the largest genuine ratio seen, 1.456
-    (0.8569, 2.2317, False),         # armB-090 row 1 — the next flight
-    # armB-090 row 3, 1.348x: INSIDE the band, and deliberately so. Its
-    # 1.1554 s is the BEAT, not a flight: a ball sitting in the cup has its
-    # "landing" predicted at ~now, so this contaminant's ratio is
-    # beat/commanded and can sit arbitrarily close to 1. No ratio band can
-    # separate that class — the executor's freeze at the crossing does, by
-    # refusing any estimate sampled after the ball has landed.
-    (0.8569, 1.1554, True),
-    (0.8569, 0.40, False),           # under the band: a failed release
-    (0.8569, 1.6 * 0.8569, True),    # the closed edges
-    (0.8569, 0.5 * 0.8569, True),
+@pytest.mark.parametrize('u_apex,y_apex,want', [
+    (0.9, 0.9, True),                # exact
+    (0.9, 1.38, True),               # the measured 25 %-fast plant (armA-090)
+    # The largest genuine ratio seen: 1.456 in FLIGHT, i.e. 2.12 in apex.
+    (0.9, 0.9 * 1.456 ** 2, True),
+    # armB-090 row 1 — the next flight. 2.605x in flight is 6.79x in apex.
+    (0.9, 0.9 * 2.605 ** 2, False),
+    # armB-090 row 3, 1.348x in flight = 1.82x in apex: INSIDE the band, and
+    # deliberately so. Its 1.1554 s was the BEAT, not a flight: a ball sitting
+    # in the cup has its "landing" predicted at ~now, so this contaminant's
+    # ratio is beat/commanded and can sit arbitrarily close to 1. No ratio
+    # band can separate that class — the executor's freeze at the crossing
+    # does, by refusing any estimate sampled after the ball has landed.
+    (0.9, 0.9 * 1.348 ** 2, True),
+    (0.9, 0.9 * 0.2, False),         # under the band: a failed release
+    (0.9, 2.56 * 0.9, True),         # the closed edges
+    (0.9, 0.25 * 0.9, True),
 ])
-def test_flight_in_band(u_flight, y_flight, want):
-    assert mem.flight_in_band(u_flight, y_flight) is want
+def test_apex_in_band(u_apex, y_apex, want):
+    assert mem.apex_in_band(u_apex, y_apex) is want
 
 
-def test_flight_in_band_without_a_commanded_flight_admits():
-    """No commanded flight, no band: the guard's whole evidence is the RATIO,
+def test_the_apex_band_is_the_square_of_the_retired_flight_band():
+    """A flight ratio IS the release-speed ratio and an apex goes as its
+    SQUARE, so the band that admitted flights in (0.5, 1.6) x commanded
+    (2026-09-16) admits apexes in (0.25, 2.56) x commanded — the same physical
+    throws, re-expressed. Written down because the numbers look unrelated."""
+    assert mem.APEX_RATIO_BAND == pytest.approx((0.5 ** 2, 1.6 ** 2))
+
+
+def test_apex_in_band_without_a_commanded_apex_admits():
+    """No commanded apex, no band: the guard's whole evidence is the RATIO,
     and with nothing to scale there is no evidence either way."""
-    assert mem.flight_in_band(0.0, 5.0) is True
-    assert mem.flight_in_band(float('nan'), 5.0) is True
-    assert mem.flight_in_band(0.8569, float('nan')) is False
+    assert mem.apex_in_band(0.0, 5.0) is True
+    assert mem.apex_in_band(float('nan'), 5.0) is True
+    assert mem.apex_in_band(0.9, float('nan')) is False
 
 
 def test_append_refuses_a_row_outside_the_band(tmp_path):
@@ -427,29 +437,44 @@ def test_append_refuses_a_row_outside_the_band(tmp_path):
 
 def test_a_contaminated_row_is_dropped_on_load(tmp_path, caplog):
     """The quarantine that survives a restart: armB-090's real first three
-    rows (2026-09-16) plus one genuine 1.237x row."""
+    rows (2026-09-16), their flights re-expressed as the apexes those
+    crossings imply, plus one genuine 1.53x row."""
     path = tmp_path / 'memory.csv'
     rows = [
         ','.join(mem._HEADER),
-        '-0.05,0,0,0,0,0,0.85688058689637592,-0.0031,0.0783,2.2316610813140869,'
+        '-0.05,0,0,0,0,0,0.9,-0.0031,0.0783,6.1078,'
         '1789540417.3557081,0,True',
-        '-0.05,0,0,0,0,0,0.85688058689637592,-0.0098,0.0967,2.2309691905975342,'
+        '-0.05,0,0,0,0,0,0.9,-0.0098,0.0967,6.1040,'
         '1789540418.5125885,0,True',
-        '-0.05,0,0,0,0,0,0.85688058689637592,-0.0170,0.0897,1.155447244644165,'
+        '-0.05,0,0,0,0,0,0.9,-0.0170,0.0897,1.6369,'
         '1789540419.6694691,0,True',
-        '-0.05,0,0,0,0,0,0.85688058689637592,-0.0170,0.0897,1.0597198009490967,'
+        '-0.05,0,0,0,0,0,0.9,-0.0170,0.0897,1.3772,'
         '1789540419.6694691,0,True',
     ]
     path.write_text('\n'.join(rows) + '\n')
     with caplog.at_level(logging.WARNING):
         m = mem.Memory(str(path))
-    # The two next-flight rows (2.60x commanded) are dropped. The 1.1554 s row
-    # is the BEAT-shaped contaminant at 1.348x — inside the physical band by
-    # construction (see `test_flight_in_band`), so it survives the load: the
+    # The two next-flight rows (6.8x commanded) are dropped. The 1.637 m row
+    # is the BEAT-shaped contaminant at 1.82x — inside the physical band by
+    # construction (see `test_apex_in_band`), so it survives the load: the
     # executor's freeze is what stops it being written in the first place.
     assert len(m) == 2
     _X, _U, Y = m.arrays()
-    assert Y[0][2] == pytest.approx(1.155447244644165)
-    assert Y[1][2] == pytest.approx(1.0597198009490967)
+    assert Y[0][2] == pytest.approx(1.6369)
+    assert Y[1][2] == pytest.approx(1.3772)
     dropped = [r for r in caplog.records if 'another flight' in r.getMessage()]
     assert len(dropped) == 2
+
+
+def test_a_pre_apex_flight_time_memory_is_REFUSED_not_reinterpreted(tmp_path):
+    """2026-09-18: the third column changed MEANING (seconds of flight ->
+    metres of apex) and its numbers still parse, so the header is the only
+    thing that can tell the two schemas apart. A pre-2026-09-18 file must
+    refuse loudly and name the quarantine convention — silently reading 0.857
+    as an apex would teach the learner a plant that does not exist."""
+    path = tmp_path / 'memory.csv'
+    path.write_text(','.join(mem._LEGACY_FLIGHT_HEADER) + '\n'
+                    + '-0.05,0,0,0,0,0,0.85688,-0.003,0.078,0.8721,'
+                      '1789540417.3557081,0,True\n')
+    with pytest.raises(ValueError, match='quarantine'):
+        mem.Memory(str(path))

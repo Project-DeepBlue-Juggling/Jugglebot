@@ -186,7 +186,16 @@ hardware. Facts that size the work:
    tag `fsm-final`, the way the MPC chain went (`mpc-final`).
 4. **Hardware limits are open to ramping.** Every ramp is a logged measurement;
    `leg-gain-tuning-methodology.md` stays the procedure.
-5. **The ILC is replaced outright** by the memory-based learner.
+5. **The ILC is replaced outright** by the memory-based learner. **Its
+   command and outcome are the same physical quantity** (amended 2026-09-18):
+   `u = (landing offset x, y [m], apex above the catch plane [m])` and
+   `y` the same three, all read off the tracker's converged gravity-fixed fit.
+   The learner does not learn a time — a flight time is measured from the
+   commanded release knot, which the physical release lags by 0.02–0.14 s
+   throw to throw, through a crossing estimate itself extrapolated to ±40 ms,
+   and those two biases drove the plant ~20 % low in apex while the metric
+   read on target. The schedule's flight time is DERIVED from the commanded
+   apex (`schedule.flight_s`) and is not learnable.
 6. **Resets are cheap**: the Ball Butler reload is the reset, and the learning
    loop assumes it.
 7. **R1 decisions (2026-09-11)**: the hand deviation guard boots ARMED (an
@@ -253,8 +262,8 @@ Reset:      Ball Butler reload = a CATCH skill whose terminal comes from an exte
 - `Site(name, cup_mm)` — cup-opening position, xy platform frame, z global
   (the `CycleGoals` convention).
 - `Skill(kind ∈ {THROW, CATCH, REST}, ball_id, site, t_abs_s)`; THROW carries
-  `y_d = (landing_xy_m relative to the target site, flight_s)`; CATCH carries
-  the tracked ball id.
+  `y_d = (landing_xy_m relative to the target site, apex_m)` (an apex since
+  2026-09-18, § 0 item 5); CATCH carries the tracked ball id.
 - `Segment` — a `CyclePlan` (7 channels, one clock) plus its splice knot, its
   event mark (release or catch instant, takeoff velocity) and its rest site.
   Built by the existing chain `plan_window → tilt_schedule → decompose →
@@ -271,7 +280,10 @@ Reset:      Ball Butler reload = a CATCH skill whose terminal comes from an exte
   platform moves continuously through catch and throw.
 - `Experience(x, u, y, t_abs_s, ball_id, caught)` with x ∈ R⁴ = (site xy,
   seat offset xy of the ball just caught), u ∈ R³ = commanded (landing xy,
-  flight), y ∈ R³ = observed (landing xy, flight). SI units.
+  apex above the catch plane), y ∈ R³ = the same three observed — the apex
+  from the fit's crossing speed, `h = v_z²/2g` (2026-09-18, § 0 item 5). SI
+  units. The CSV names those columns `u2_apex_m`/`y2_apex_m` and a
+  pre-2026-09-18 flight-time file is REFUSED on load, not reinterpreted.
 - `Memory` — append-only rows under `temp/learn/<plant_id>/memory.csv`; a
   malformed row is dropped with a warning, never fatal; kNN query in (x, y_d).
 - `AdmissibleBox` — per (site pair, apex band) bounds on u, stamped with the
@@ -319,7 +331,8 @@ values above are the starting points. ~150 lines plus tests, no new dependency.
 
 **Measured at R3** (owner decision 2, 2026-09-13; probe `probe_learner.py` +
 `probe2_out/`, scratchpad): k = 16, k_min = 2, h_x = 0.01 m, h_y = (0.05 m,
-0.05 m, 0.2 s), γ = 1e-2, η = 0.2 — SI units only, γ does not carry to this
+0.05 m, 0.10 m — an APEX bandwidth since 2026-09-18; it was 0.2 s, which was
+1.5× the whole explored command range), γ = 1e-2, η = 0.2 — SI units only, γ does not carry to this
 plan's mm-frame constants elsewhere. These supersede the k = 12 / k_min = 3 /
 γ = 0.001 / η = 0.3 starting points above. Centring (paper eq. S18): δx is
 about the query state x; δu is about the weighted mean ū from step 2, not
@@ -370,9 +383,13 @@ sitting wrote observed flights of 2.2317 / 2.2310 / 1.1554 s for an 0.8569 s
 command (`armB-090` attempt 1), the learner obeyed them down to a 0.686 s
 command and the operator saw "very low throws". A landing estimate is now
 admitted by one gate (`executor._consider_landing`) only while the ball is
-still in the air — it must post-date the release, be sampled strictly BEFORE
+still in the air — it must come from a CONVERGED ballistic fit
+(`Landing.from_fit`, 2026-09-18: 16 of the 22 rows written on 2026-09-17 had
+none), post-date the release, be sampled strictly BEFORE
 the crossing it predicts (`OUTCOME_GUARD_S`, no longer an `abs()` test), lie
-inside `memory.FLIGHT_RATIO_BAND` = (0.5, 1.6) × the COMMANDED flight, and
+inside `memory.APEX_RATIO_BAND` = (0.25, 2.56) × the COMMANDED APEX — the old
+flight band (0.5, 1.6) squared, since apex goes as the square of release
+speed (2026-09-18) — and
 arrive before `min(t_sched, t_obs)`; the last survivor stands and nothing after
 the landing can replace it. `finalise_at` is additionally bounded to
 `t_next_release − OUTCOME_NEXT_RELEASE_EPS_S` (0.010 s, `_next_release`). The
@@ -388,14 +405,14 @@ row per attempt until that is diagnosed. Entry:
 [2026-09-16-outcome-landing-frozen-at-the-crossing](../../logbook/2026-09-16-outcome-landing-frozen-at-the-crossing.md).
 
 
-**Catch aim source (owner decision 2026-09-15): the catch does NOT depend on
-the tracker.** At the 2026-09-15 sitting all 13 self-tosses ended
+**Catch aim source (owner decision 2026-09-15; SUPERSEDED in its default by
+2026-09-18 below): the catch does NOT depend on the tracker.** At the 2026-09-15 sitting all 13 self-tosses ended
 `NO_LANDING` — mocap never produced a marker for the flying ball, so the
 catch was never aimed. A catch is now aimed at the landing its ball's
 previous release was *commanded* to achieve (`executor._predicted_landing`,
 the same construction § 2.5's learner treats as its command), dispatched at
 its own scheduled instant; `skill_node`'s `catch_aim_source` parameter
-selects `schedule` (the live default), `schedule_hand` (that landing re-flown
+selects `schedule` (the live default until 2026-09-18), `schedule_hand` (that landing re-flown
 with the MEASURED hand launch-speed ratio `r = v_meas/v_cmd` from
 `/hand_telemetry`, `motion/skills/hand_launch.py` — at 0.9 m the sitting's
 r ≈ 1.086 is ~74 ms of late arrival) or `tracker` (the pre-2026-09-15 path,
@@ -427,8 +444,39 @@ announcement — i.e. the tracker corrects the plant's ~25 %-fast throw — and
 2026-09-13's chained bag is unchanged at 1/3. **`catch_aim_source` is untouched
 and still defaults to `schedule`**: the open-loop catch is now a choice rather
 than a necessity, and whether to move it back to `tracker` for the ladder is an
-open owner decision. Entry:
+open owner decision — **ANSWERED 2026-09-18, next paragraph.** Entry:
 [2026-09-15-tracker-all-markers-gated-to-expected-ball](../../logbook/2026-09-15-tracker-all-markers-gated-to-expected-ball.md).
+
+**The catch is aimed from the tracker's converged fit, with the schedule as
+its prior (owner decision 2026-09-18).** The release instant slips
+0.019–0.137 s from its knot, throw to throw (2026-09-17, `flight_truth3`);
+that is not a plant gain the learner can absorb, it is a disturbance, and the
+only way to know it is to watch the ball. Since `ce6d603` the tracker confirms
+every flight (22/22 on 2026-09-17) with a converged gravity-fixed fit,
+typically by the apex, so `catch_aim_source` now defaults to `tracker` and the
+aim is ONE ordered rule (`executor._catch_aim`), for catch-with-throw and
+standalone catches alike: **the converged fit if there is one, else the
+schedule's commanded landing (`_predicted_landing`), else an unfitted Kalman
+crossing** — which ranks below the prior because its crossing runs 0.06–0.20 s
+late and grows later through the descent, and is only ever reached by a ball
+this schedule never threw (columns' very first catch). No step of that order
+waits: the 2026-09-15 lesson holds, a catch that waits for perception is a
+catch that does not happen, and `NO_LANDING` now survives only for the catch
+with neither a prior nor any landing by the deadline. Later fits then refine
+the committed catch (`_resend_live_catch`), unchanged in its two timing fences
+and newly gated on three worth-it facts: only a `from_fit` landing, only a
+move beyond 10 mm / 0.010 s (the catch's own timing cliff is ~20 ms wide — the
+ball seated +0.015 s after the scheduled landing on the two catches that
+bounced and +0.104 s on the four that seated smoothly, 2026-09-17 — and the
+retired 1 mm / 2 ms pair was inside the tracker's noise), and at most
+`resend_max_per_catch` = 2 re-aims, because one re-solve costs 25–130 ms of
+orchestrator time on the loaded Jetson (six `SPLICE_TOO_LATE` at the
+2026-09-17 23:49 sitting) and a jittering estimate must not spend the splice
+budget of the catch it is refining. Each fence that turns a real candidate
+away logs one line with the delta it turned away. The learner's outcome row is
+unaffected — it reads the fit directly (§ 2.5). This is the paper's
+arrangement (p6: replan the catch from vision until 0.1 s before contact; its
+one open-loop catch class is the one that never converged, p8).
 
 **The hand-park REFUSAL is retired; the SEED is the enforcement point (owner
 decision, 2026-09-16).** The ladder row `REJECTED_HAND_NOT_PARKED` — added at
@@ -497,7 +545,7 @@ The **Status** column is the one source of truth for where each rung stands;
 | R0 | Board and substrate | invariant checklist; census-backed dead-layer deletion | dead clusters (§ 6) | `./run_tests.sh --full` green; grep counts zero | ✅ **DONE** — checklist landed 2026-09-10, deletion done 2026-09-09 (`429c660`, `3bfec0b`) |
 | R1 | One hand master | can-bridge FW 21 (lane follows `HAS_HAND`, guard boots ARMED, ACTIVATE parks the hand at 0 rev), Platform FW 7 (no stroke engine), PROTOCOL_VERSION 7, `hand_mm_per_rev` measured key, lockstep runbook `tests/hardware/session_skill_stack_r1_flash.md` (completed) | `Trajectory.h`, `hand_source`, `hand_ops`, `HAND_TRAJ_CMD`/`HAND_SOURCE_SET`, `SetHandTrajCmd.srv`, `hand_stroke.py` twin, the legacy kind-0 toss device (its FSM branch refused at accept until R4) | bench ladder re-passes on the FW 21 / Platform 7 pair; a streamed self-toss caught with no latch step | ✅ **DONE 2026-09-11** (`1e2c0c9`, `c52dc27`) — flashed, sat, one streamed self-toss caught with no latch step; a levelling-frame tilt snap found + fixed (`_unified_prelevel`); multi-throw chaining + live guard cold-trip → R2 (`logbook/2026-09-11-skill-stack-r1-sitting-prelevel.md`, `…-one-hand-master.md`) |
 | R2 | Skills, schedule, stream (sim) | `motion/skills/{sites,schedule,segments,executor,admissible}.py`, `unified_cycle.state_at_knot`/`splice_at`, `InstallSegment.srv` + `trajectory/install_segment`, `skill_node.py`, vectorised `validate_cycle`, `tools/admissible_sweep.py`, `sim/skills_gate.py`, `hand_stream_bench --trip-guard` | `sim/cycle_gate.py`, `sim/unified_gate.py` (+ their tests); the per-sample `validate_cycle` loop. **`PlanCycle` and the ring policy stay for the FSM until R4** (owner, 2026-09-12 — see the R2 section) | 20 columns cycles in sim at the owner's operating point (0.9 m / 100 mm — re-sized at R2), no drops, five seeds; plan < 50 ms on the loaded Jetson | ✅ **DONE** — sim gate MET 2026-09-12 (20/20 × 5 seeds, 0 drops); **hardware gate MET 2026-09-13** on the third no-motion sitting (rows 15/16 PASS all five gates, worst solve 47.9 / 49.0 ms, handoff margin 73–74 ms; non-gating row 17 failed G1/G3 under two extra busy cores) — `4d49e04`, `40371fe` (`logbook/2026-09-12-skill-stack-r2-skills-schedule-stream.md`, `…/2026-09-13-skill-stack-r2-gate-sittings.md`) |
-| R3 | Learner + single site | `learner.py`, `memory.py`, outcome capture | ILC/trim/cal/record stack, `toss_ilc_enabled` | in-band within 5 throws from cold, sim and hardware; 10 consecutive catches | 🟡 **SIM MET, HARDWARE OUTSTANDING (2026-09-13)** — landed: the learner + memory, the single-site chained schedule, outcome capture, the precondition ladder (pre-level, floor lift) and a working `skill_node` shell. **Sim criterion MET 2026-09-13**: policies A and B, seeds 0–4, in-band by throw 3 (A) / 5 (B), monotone, 0 drops, repeat runs bit-identical. ⚠ **Sim criterion RE-OPENED 2026-09-14 in xy only**: the dense apex-scoped re-sweep's (P1, P1) 0.9 m box admits x 0…+40 mm, y 0 (the old ±40 × ±30 mm box claimed offsets the chained catch fails at 90 % margin at 0.77/0.81 s flights, item (k)); on it policies A and B, seeds 0–4, land flight in band by throw 3 / 5 with 0 drops but never enter the xy band (the sim's +8.5 mrad aim error is +y) — restoring xy authority needs item (k) resolved. **Sitting 1 (2026-09-13 evening) did not reach the gate**: 5/5 single throws caught but untracked (a plain THROW never announced — fixed), 2–3/5 chained, two hand-axis `MAX_DEVIATION` latches (an ended attempt's plan kept throwing; an opening REST from an un-parked hand), the BB reload retired at R1 — five Jetson-side fixes landed 2026-09-14; ⚠ **the plant throws ~25 % fast (apex 1.38 m for 0.9 m) and the learner's box cannot reach it — owner decision on the hand acceleration ceiling before sitting 2** (`logbook/2026-09-14-skill-stack-r3-first-powered-sitting.md`). Outstanding: sitting 2, `tests/hardware/session_skills_r3.md`. `logbook/2026-09-13-skill-stack-r3-learner-single-site.md`. commits `b403964` (learner + memory), `c737ec9` (planner blend floor), `baab782` (skill path + learning-stack deletion). **apex ladder CLOSED 2026-09-16 (K=0.7 adopted; hand 1.05–1.22× (mean up to 1.13×) → 1.00–1.03×; ball apex 1.25× → 1.08×), entry `logbook/2026-09-16-apex-ladder-k07-ab-result.md`; `tests/hardware/session_skills_r3_apex_ladder.md` §6** ⚠ **Sittings 2026-09-17 (37 throws, 35 caught, gate NOT claimed): every catch mistimed because the tracker's Kalman landing ran +0.05..+0.13 s late and the learner converged onto it (true flight 30–90 ms short of the aim, hand late, HELD/EMPTY/HELD gaps, 10 `caught=False` for 2 drops) — FIXED: ballistic batch-fit landing (`tracking/flight_fit.py`, last-in-flight bias −5 ms), `CAUGHT_WINDOW_S` 0.70; guard chain (SETPOINT_STALE off a 64 ms Jetson hiccup at a displacement gate; MAX_DEVIATION ×2 from the un-parked hand on the recovery slew) — FIXED: rate-bound step gate, `/recover` parks the hand; `temp/learn/jugglebot` quarantined, NEXT sitting cold. `logbook/2026-09-17-late-catches-are-a-late-tracker.md`** |
+| R3 | Learner + single site | `learner.py`, `memory.py`, outcome capture | ILC/trim/cal/record stack, `toss_ilc_enabled` | in-band within 5 throws from cold, sim and hardware; 10 consecutive catches | 🟡 **SIM MET, HARDWARE OUTSTANDING (2026-09-13)** — landed: the learner + memory, the single-site chained schedule, outcome capture, the precondition ladder (pre-level, floor lift) and a working `skill_node` shell. **Sim criterion MET 2026-09-13**: policies A and B, seeds 0–4, in-band by throw 3 (A) / 5 (B), monotone, 0 drops, repeat runs bit-identical. ⚠ **Sim criterion RE-OPENED 2026-09-14 in xy only**: the dense apex-scoped re-sweep's (P1, P1) 0.9 m box admits x 0…+40 mm, y 0 (the old ±40 × ±30 mm box claimed offsets the chained catch fails at 90 % margin at 0.77/0.81 s flights, item (k)); on it policies A and B, seeds 0–4, land flight in band by throw 3 / 5 with 0 drops but never enter the xy band (the sim's +8.5 mrad aim error is +y) — restoring xy authority needs item (k) resolved. **Sitting 1 (2026-09-13 evening) did not reach the gate**: 5/5 single throws caught but untracked (a plain THROW never announced — fixed), 2–3/5 chained, two hand-axis `MAX_DEVIATION` latches (an ended attempt's plan kept throwing; an opening REST from an un-parked hand), the BB reload retired at R1 — five Jetson-side fixes landed 2026-09-14; ⚠ **the plant throws ~25 % fast (apex 1.38 m for 0.9 m) and the learner's box cannot reach it — owner decision on the hand acceleration ceiling before sitting 2** (`logbook/2026-09-14-skill-stack-r3-first-powered-sitting.md`). Outstanding: sitting 2, `tests/hardware/session_skills_r3.md`. `logbook/2026-09-13-skill-stack-r3-learner-single-site.md`. commits `b403964` (learner + memory), `c737ec9` (planner blend floor), `baab782` (skill path + learning-stack deletion). **apex ladder CLOSED 2026-09-16 (K=0.7 adopted; hand 1.05–1.22× (mean up to 1.13×) → 1.00–1.03×; ball apex 1.25× → 1.08×), entry `logbook/2026-09-16-apex-ladder-k07-ab-result.md`; `tests/hardware/session_skills_r3_apex_ladder.md` §6** ⚠ **Sittings 2026-09-17 (37 throws, 35 caught, gate NOT claimed): every catch mistimed because the tracker's Kalman landing ran +0.05..+0.13 s late and the learner converged onto it (true flight 30–90 ms short of the aim, hand late, HELD/EMPTY/HELD gaps, 10 `caught=False` for 2 drops) — FIXED: ballistic batch-fit landing (`tracking/flight_fit.py`, last-in-flight bias −5 ms), `CAUGHT_WINDOW_S` 0.70; guard chain (SETPOINT_STALE off a 64 ms Jetson hiccup at a displacement gate; MAX_DEVIATION ×2 from the un-parked hand on the recovery slew) — FIXED: rate-bound step gate, `/recover` parks the hand; `temp/learn/jugglebot` quarantined, NEXT sitting cold. `logbook/2026-09-17-late-catches-are-a-late-tracker.md`** **2026-09-18, for the next sitting: the learner's command and outcome are now the same physical quantity at a fixed horizon — a landing xy plus an APEX, all three off the converged fit (§ 0 item 5, § 2.5) — and the catch is aimed from that fit with the schedule as its prior (§ 2.7). Both changes remove the SAME bias in two places: the release-instant slip the 09-17 sitting measured at 0.019–0.137 s. The line to watch in the OUTCOME log is `seat=` — the contact phase, +0.104 s on every smooth catch and +0.015 s on the bouncers.** |
 | R4 | Two sites, one ball, BB reset | alternating schedule, reload as a CATCH skill, `Juggle.action`, GUI surface | FSM stack (tag `fsm-final`), `catch_coordinator`, `catch_reach`, old sim gates | 10 consecutive alternating catches; BB reload → catch → throw chain | ⬜ **NOT STARTED** |
 | R5 | Two-ball columns | Start/Stop phases, limits ramp as sized at R2 | — | five consecutive cycles, then 30 catches; learning curve logged | ⬜ **NOT STARTED** |
 | R6 | Close-out | docs, memory, archival | whatever R5 left dead | plan archived `completed` | ⬜ **NOT STARTED** |
@@ -808,8 +856,10 @@ the rung's tests passing or a handoff file in the scratchpad.
   episode (the dropouts are real single-axis frame loss, owned by
   `plans/active/leg-bus-frame-drops.md`). **Carried:** the tracker aim at the
   CATCH dispatch instant (0.12 s after the throw) still runs on the KF
-  fallback — `catch_aim_source=tracker` is not yet a closed timing loop, the
-  schedule aim + unbiased learner is; the KF's `predict()` integrates its
+  fallback — **RESOLVED 2026-09-18** by the ordered aim (fit > schedule >
+  filter): the KF can no longer aim a catch that has a schedule prior, and
+  the converged fit refines the committed catch instead (§ 2.7's 2026-09-18
+  paragraph); the KF's `predict()` integrates its
   nominal 5 ms against 5.2 ms measured frames (published position/velocity
   only); `MAX_LEAD_HAND_REV` 2.0 vs `MAX_DEVIATION_HAND_REV` 2.5 (owner
   sign-off); the origin of the 55–64 ms Jetson stall (the 10 Hz bridge diag

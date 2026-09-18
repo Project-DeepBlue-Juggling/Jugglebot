@@ -46,6 +46,26 @@ preconditions (cone disabled, reflectors masked) are enforced by QTM
 configuration, not by this node — nothing here will catch a session where
 that step was skipped.
 
+**What changed on 2026-09-18, and the one number to watch.** The catch now
+follows the tracker's converged ballistic fit, with the schedule's commanded
+landing as its prior: at dispatch the catch is aimed at the fit if one has
+converged and at the prior if not (it never WAITS for either — that is what
+ended 13/13 self-tosses `NO_LANDING` on 2026-09-15), and later fits re-aim the
+committed catch until the freeze. The reason is one measurement: the physical
+release lags its knot by 0.019–0.137 s throw to throw (2026-09-17), which is a
+disturbance, not a plant gain — the learner cannot absorb it, only an
+observation can see it. The learner's own command and outcome changed for the
+same reason (§ 0's sixth line's sense: both are now a landing xy plus an APEX
+read off that fit, so neither the release instant nor filter lag biases them).
+
+**The number to watch is the OUTCOME line's `seat=` phase** — the contact
+instant relative to the SCHEDULED landing. On 2026-09-17 it read **+0.104 s on
+all four catches that seated smoothly and +0.015 s / +0.338 s on the ones that
+bounced**: the cup's dive has ~20 ms of nominal margin, so a seat phase
+drifting toward zero means the ball is meeting the cup near the top of the
+stroke where the cup accelerates away faster than gravity. Read it per catch,
+not per attempt, and call a stop if it walks toward 0.
+
 ## 1. Before the robot is powered (no ROS, any time)
 
 Every terminal: `source /opt/ros/foxy/setup.bash && source
@@ -224,7 +244,7 @@ this list, treat it as a NEW finding, not a known outcome.
 | `ABORTED_MODE_CHANGED` | Something left `trajectory_node` out of TRAJECTORY mode mid-attempt — the rest tail already streaming is the safe stop. |
 | `ABORTED_NO_RELEASE` | No possession-EMPTY or tracker evidence the ball left the hand within 0.5 s of the commanded release — the throw's physics were never confirmed; no learner row for it. |
 | `NO_ADMISSIBLE_COMMAND` | Either the swept box for (P1, P1) is empty, or the learner's local fit diverged to a non-finite command — nothing here can hand the platform a command it can stand behind (see Finding B, now RESOLVED, for the ADJACENT case: a command INSIDE the box that still overran the launch window's jerk before the aim-jerk floor landed). |
-| `NO_LANDING` | Only a STANDALONE catch (not carrying a throw) can end here: it waits for its own ball's tracked landing and refuses at the deadline `t_land − 0.278 s − lead` if none arrives — and a tracked landing only counts if it is later than that ball's own previous release. A catch that carries the next throw never waits on this: it installs AT RELEASE, aimed at the ball's PREDICTED landing (from its previous release), then refines via tracker re-sends (owner decision, 2026-09-13). |
+| `NO_LANDING` | Since the aim became ordered (2026-09-18: converged fit → schedule prior → unfitted tracker landing) only a catch with NO previous release in this schedule AND no tracker landing at all can end here — live, that is columns' very first catch, so a single-site self-toss should never see it. It refuses at the deadline `t_land − 0.278 s − lead`; a tracked landing only counts if it is later than that ball's own previous release. Every other catch dispatches at its scheduled instant on the fit or the prior and is refined by later fits. |
 | `SPLICE_TOO_LATE` | The solve finished after the wire had already read past the intended splice knot — a slow solve would otherwise rewrite trajectory already being interpolated. |
 | `WINDOW_TOO_SHORT` | Fewer knots from the splice to the event than the gate needs to measure a jerk at all. |
 | `UNREACHABLE` | A malformed terminal (a `ValueError` building it) — a parameter/programming error, not a physical-limit refusal. |

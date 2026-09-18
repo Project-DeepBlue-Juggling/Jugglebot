@@ -208,6 +208,8 @@ class BallTrackerNode(Node):
             z=float(ball.landing_velocity[2]),
         )
 
+        msg.landing_from_fit = bool(ball.landing_from_fit)
+
         # Convert absolute landing_time to ROS2 Time
         if ball.landing_time > 0:
             msg.time_at_land = Time()

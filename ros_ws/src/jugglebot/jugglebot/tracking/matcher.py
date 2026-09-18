@@ -794,6 +794,10 @@ class BallTracker:
         converged yet, e.g. early in a flight or for an ANNOUNCED-only ball
         with no mocap confirmation.
 
+        `Ball.landing_from_fit` records which of the two paths answered — it
+        is published, and the skill stack's learner refuses a row whose
+        landing did not come from the fit (2026-09-18).
+
         The published `position`/`velocity` are untouched here — only the
         LANDING estimate changes.
         """
@@ -805,6 +809,7 @@ class BallTracker:
                 ball.landing_position = landing_pos
                 ball.landing_velocity = landing_vel
                 ball.landing_time = t_abs
+                ball.landing_from_fit = True
                 return
 
         pos = ball.position
@@ -816,3 +821,4 @@ class BallTracker:
             ball.landing_position = landing_pos
             ball.landing_velocity = landing_vel
             ball.landing_time = ball.timestamp + ttl
+            ball.landing_from_fit = False

@@ -54,6 +54,13 @@ class Ball:
     landing_position: np.ndarray = field(default_factory=lambda: np.zeros(3))  # [x,y,z] mm
     landing_velocity: np.ndarray = field(default_factory=lambda: np.zeros(3))  # [vx,vy,vz] mm/s
     landing_time: float = 0.0               # Absolute time (seconds)
+    # True when the landing above came from the CONVERGED gravity-fixed batch
+    # fit (`flight_fit.py`), False when it is the Kalman/announcement
+    # extrapolation fallback. The skill stack's learner only accepts a fitted
+    # landing as an outcome (2026-09-18): the filter's crossing runs
+    # 0.06-0.20 s late and grows later through the descent, and an apex read
+    # off it inherits that.
+    landing_from_fit: bool = False
 
     # Internal tracking state (not published)
     frames_tracked: int = 0                  # Number of mocap frames matched

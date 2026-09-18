@@ -35,6 +35,7 @@ from jugglebot import ball_possession
 from jugglebot import skill_node as sn
 from jugglebot.motion.skills import admissible as adm
 from jugglebot.motion.skills.executor import CAUGHT_WINDOW_S
+from jugglebot.motion.skills import schedule as sc
 from jugglebot.motion.skills.memory import Memory, memory_path
 
 from tests.ros.conftest import MockFuture
@@ -53,7 +54,7 @@ class _Time:
 
 def _ball(id, status=0, destination='', tracking=0,
          x=0.0, y=0.0, z=0.0, vx=0.0, vy=0.0, vz=0.0,
-         sec=0, nanosec=0):
+         sec=0, nanosec=0, landing_from_fit=True):
     """A duck-typed ``/balls`` element — every field `_on_balls` /
     `latch_announced_ball` reads (id/status/destination/tracking/landing
     fields), never the real ``BallState`` message type (see the module
@@ -66,6 +67,9 @@ def _ball(id, status=0, destination='', tracking=0,
     ball.landing_position = _Vec(x, y, z)
     ball.landing_velocity = _Vec(vx, vy, vz)
     ball.time_at_land = _Time(sec, nanosec)
+    # Set explicitly, not left to the MagicMock's truthiness: since 2026-09-18
+    # this flag decides whether a landing may become a learner row.
+    ball.landing_from_fit = landing_from_fit
     return ball
 
 
@@ -290,7 +294,7 @@ def test_start_self_toss_is_refused_on_a_limits_mismatch(tmp_path):
     box_path = tmp_path / 'admissible_box.yaml'
     box = adm.AdmissibleBox(
         site_pair=('P1', 'P1'), apex_band_m=(0.85, 0.95),
-        landing_xy_m=((-0.05, 0.05), (-0.05, 0.05)), flight_s=(0.7, 0.9),
+        landing_xy_m=((-0.05, 0.05), (-0.05, 0.05)), apex_m=(0.6, 1.2),
         limits={'leg_vel_mmps': 1.0, 'leg_acc_mmps2': 1.0,
                'leg_jerk_mmps3': 1.0, 'hand_acc_rps2': 1.0},
         gate_hash=adm.gate_hash(), swept_at='2026-09-13')
@@ -347,7 +351,7 @@ def test_start_self_toss_refuses_an_uncovered_apex_before_any_motion(tmp_path):
     box_path = tmp_path / 'admissible_box.yaml'
     box = adm.AdmissibleBox(
         site_pair=('P1', 'P1'), apex_band_m=(0.85, 0.95),
-        landing_xy_m=((-0.05, 0.05), (-0.05, 0.05)), flight_s=(0.7, 0.9),
+        landing_xy_m=((-0.05, 0.05), (-0.05, 0.05)), apex_m=(0.6, 1.2),
         limits={'leg_vel_mmps': 300.0, 'leg_acc_mmps2': 5000.0,
                'leg_jerk_mmps3': 150000.0, 'hand_acc_rps2': 3500.0},
         gate_hash=adm.gate_hash(), swept_at='2026-09-13')
@@ -512,7 +516,9 @@ def test_the_tick_dispatches_the_first_throw_through_the_mocked_client():
     assert req.kind == InstallSegment.Request.KIND_THROW
     assert req.ball_id == first_throw.ball_id
     assert req.t_event_s == pytest.approx(first_throw.t_abs_s)
-    assert req.flight_s == pytest.approx(first_throw.y_d[1])
+    # ``y_d[1]`` is the commanded APEX (2026-09-18); the request carries the
+    # flight time derived from it.
+    assert req.flight_s == pytest.approx(sc.flight_s(first_throw.y_d[1]))
 
 
 def test_a_refusal_ends_the_attempt():
@@ -940,7 +946,7 @@ def test_check_reports_box_refused_when_the_apex_param_is_uncovered(tmp_path):
     box_path = tmp_path / 'admissible_box.yaml'
     box = adm.AdmissibleBox(
         site_pair=('P1', 'P1'), apex_band_m=(0.85, 0.95),
-        landing_xy_m=((-0.05, 0.05), (-0.05, 0.05)), flight_s=(0.7, 0.9),
+        landing_xy_m=((-0.05, 0.05), (-0.05, 0.05)), apex_m=(0.6, 1.2),
         limits={'leg_vel_mmps': 300.0, 'leg_acc_mmps2': 5000.0,
                'leg_jerk_mmps3': 150000.0, 'hand_acc_rps2': 3500.0},
         gate_hash=adm.gate_hash(), swept_at='2026-09-13')
@@ -1277,25 +1283,28 @@ def test_a_tick_already_in_progress_does_not_start_a_second_dispatch():
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# catch_aim_source — the open-loop catch aim (owner decision 2026-09-15)
+# catch_aim_source — the tracker-aimed catch (owner decision 2026-09-18)
 # ═════════════════════════════════════════════════════════════════════════════
 
 
-def test_the_live_catch_aim_default_is_the_schedules_own_throw_state():
-    """THE LIVE DEFAULT.  At the 2026-09-15 sitting all 13 self-tosses ended
-    `NO_LANDING` — mocap never produced a marker for the flying ball — so the
-    catch is aimed open loop from the throw state the schedule COMMANDED.
-    The executor's own constructor default stays `tracker` (the sim gate's
-    refine path), which is exactly why this node passes the value
-    EXPLICITLY: this test is what pins the two apart."""
+def test_the_live_catch_aim_default_is_the_trackers_converged_fit():
+    """THE LIVE DEFAULT (owner 2026-09-18).  The catch follows the tracker's
+    converged ballistic fit, with the schedule's commanded landing as the
+    prior at dispatch: the release lags its knot by 0.019-0.137 s throw to
+    throw, which nothing can learn away, and the tracker has confirmed every
+    flight since `ce6d603` (22/22, 2026-09-17).  The 2026-09-15 `NO_LANDING`
+    sitting is not repeated because no step of that order WAITS — that is
+    `executor._catch_aim`'s job, pinned in
+    `tests/motion/test_skills_executor.py`; what this test pins is that the
+    node ships the tracker aim rather than the open-loop A/B arm."""
     node, _client = _node_with_client()
-    assert node.get_parameter('catch_aim_source').value == 'schedule'
+    assert node.get_parameter('catch_aim_source').value == 'tracker'
     node._svc_start_columns(Trigger.Request(), Trigger.Response())
-    assert node._executor.catch_aim_source == 'schedule'
+    assert node._executor.catch_aim_source == 'tracker'
     assert node._executor.launch_ratio is not None
 
 
-@pytest.mark.parametrize('value', ['tracker', 'schedule_hand'])
+@pytest.mark.parametrize('value', ['schedule', 'schedule_hand'])
 def test_the_aim_source_parameter_reaches_the_executor(value):
     node, _client = _node_with_client()
     node.set_parameters([_MockParameter(value, name='catch_aim_source')])
@@ -1303,14 +1312,15 @@ def test_the_aim_source_parameter_reaches_the_executor(value):
     assert node._executor.catch_aim_source == value
 
 
-def test_an_unknown_aim_source_falls_back_to_the_open_loop_default():
+def test_an_unknown_aim_source_falls_back_to_the_live_default():
     """A typo in a launch override must not leave the operator with no catch
-    at all — and must not select the tracker, which is the mode that failed
-    on 2026-09-15."""
+    at all, and must not silently fly the OTHER arm of an A/B: the fallback
+    is the live default, which is the only value a session can fly without
+    having chosen it."""
     node, _client = _node_with_client()
     node.set_parameters([_MockParameter('mocap', name='catch_aim_source')])
     node._svc_start_columns(Trigger.Request(), Trigger.Response())
-    assert node._executor.catch_aim_source == 'schedule'
+    assert node._executor.catch_aim_source == 'tracker'
 
 
 def test_hand_telemetry_feeds_the_launch_ratio_the_executor_asks_for():
@@ -1339,7 +1349,8 @@ def test_hand_telemetry_feeds_the_launch_ratio_the_executor_asks_for():
 
 
 def test_a_refused_memory_row_is_logged_and_never_raises():
-    """`Memory.append` refuses a row outside `FLIGHT_RATIO_BAND` (2026-09-16).
+    """`Memory.append` refuses a row outside `APEX_RATIO_BAND` (2026-09-16,
+    in apex since 2026-09-18).
     The executor drops such a row first, so this is the belt-and-braces path —
     and it runs inside the tick loop, where an exception would surface as an
     executor fault and end an attempt over bookkeeping."""
@@ -1352,9 +1363,9 @@ def test_a_refused_memory_row_is_logged_and_never_raises():
 
     class _RefusingMemory:
         def append(self, _exp):
-            raise ValueError('refusing a row whose observed flight 2.2317 s '
-                             'is outside [0.428, 1.371] of the commanded '
-                             '0.8569 s')
+            raise ValueError('refusing a row whose observed apex 6.1079 m '
+                             'is outside [0.2250, 2.3040] of the commanded '
+                             '0.9000 m')
 
     on_experience = node._bind_on_experience(_RefusingMemory())
     exp = Experience(x=np.zeros(4), u=np.array([0.0, 0.0, 0.8569]),

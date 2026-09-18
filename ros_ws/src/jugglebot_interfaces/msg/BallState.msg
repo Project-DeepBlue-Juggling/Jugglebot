@@ -18,3 +18,5 @@ geometry_msgs/Vector3 velocity         # Current estimated velocity (mm/s)
 geometry_msgs/Point landing_position   # Predicted (x, y, z) at landing (mm)
 geometry_msgs/Vector3 landing_velocity # Predicted velocity at landing (mm/s)
 builtin_interfaces/Time time_at_land   # Predicted ROS2 Time when ball will land
+bool landing_from_fit                  # True: landing came from the converged gravity-fixed
+                                       # batch fit; False: Kalman/announcement extrapolation

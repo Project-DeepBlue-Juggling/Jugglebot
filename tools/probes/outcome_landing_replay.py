@@ -16,8 +16,17 @@ This probe reconstructs, from the bag's ``/balls`` stream and the memory CSVs
 the sitting actually wrote, what the row WOULD have been under the new rule
 (``executor._consider_landing``: the LAST admissible estimate wins, where
 admissible means sampled strictly before the crossing it predicts, before the
-ball has landed, before this ball's next release, and inside
-``memory.FLIGHT_RATIO_BAND``) — and prints old vs new side by side per throw.
+ball has landed, before this ball's next release, and inside the physical
+band) — and prints old vs new side by side per throw.
+
+Everything here is in FLIGHT TIME, the quantity that sitting's memory rows
+recorded. The learner's outcome became an APEX on 2026-09-18
+(``memory.APEX_RATIO_BAND``); this probe still answers the 2026-09-16
+question, so it derives the flight-equivalent band as that band's square
+root (flight ratio = release-speed ratio = sqrt of the apex ratio) rather
+than restating a second band of its own. It cannot replay the apex test or
+the converged-fit test: those bags' ``/balls`` carried neither the landing
+velocity nor ``landing_from_fit``.
 
 WHAT IT ASSUMES (read before trusting a number)
 -----------------------------------------------
@@ -63,6 +72,7 @@ from __future__ import annotations
 import argparse
 import csv
 import glob
+import math
 import os
 import sys
 
@@ -224,6 +234,14 @@ def read_rows(learn_dir, date):
     return out
 
 
+def _flight_in_band(u_flight, y_flight):
+    """``memory.APEX_RATIO_BAND`` expressed in flight time: a flight ratio is
+    the release-speed ratio and an apex ratio is its SQUARE, so the flight
+    band is the apex band's square root. Derived, never a second copy."""
+    lo, hi = (math.sqrt(b) for b in mem.APEX_RATIO_BAND)
+    return lo * u_flight <= y_flight <= hi * u_flight
+
+
 def old_pick(stream, t_release, t_sched, finalise_at):
     """The PRE-FIX rule: the last estimate before ``finalise_at`` that
     post-dates the release and is outside ``OUTCOME_GUARD_S`` of its own
@@ -241,11 +259,18 @@ def old_pick(stream, t_release, t_sched, finalise_at):
 
 
 def new_pick(stream, t_release, t_sched, finalise_at, t_next_release=None):
-    """The NEW rule, through the executor's own ``_consider_landing``."""
+    """The freeze / previous-flight / next-release tests, through the
+    executor's own ``_consider_landing``.
+
+    A commanded apex of 0 means "no band" by ``memory.apex_in_band``'s own
+    contract, and ``from_fit=True`` clears the converged-fit gate: both are
+    unanswerable from these bags (no landing velocity, no ``from_fit``), so
+    they are neutralised explicitly rather than fabricated. The caller
+    applies the flight-equivalent band itself."""
     import numpy as np
 
     pend = ex._PendingOutcome(
-        ball_id=0, x=np.zeros(4), u=np.array([0.0, 0.0, t_sched - t_release]),
+        ball_id=0, x=np.zeros(4), u=np.zeros(3),
         t_release_s=t_release, t_land_scheduled_s=t_sched,
         target_xy_mm=np.zeros(2), t_next_release_s=t_next_release)
     for t_s, t_land, pos in stream:
@@ -253,7 +278,8 @@ def new_pick(stream, t_release, t_sched, finalise_at, t_next_release=None):
             continue
         ex.SkillExecutor._consider_landing(
             pend, ex.Landing(pos_mm=np.asarray(pos, dtype=float),
-                             vel_mm_s=np.zeros(3), t_land_abs_s=t_land), t_s)
+                             vel_mm_s=np.zeros(3), t_land_abs_s=t_land,
+                             from_fit=True), t_s)
     if pend.best_landing is None:
         return None
     return (float(pend.best_landing.t_land_abs_s),
@@ -298,7 +324,7 @@ def replay(balls, rows, served=()):
                            t_next_release=nxt)
             y_new = None if new is None else new[0] - t_rel
             admitted = (y_new is not None
-                        and mem.flight_in_band(u_flight, y_new))
+                        and _flight_in_band(u_flight, y_new))
             out.append(dict(
                 plant_id=plant_id, attempt=attempt, throw=throw,
                 commanded=u_flight, y_old=y_old, y_new=y_new,

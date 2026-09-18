@@ -46,9 +46,17 @@ class LearnerConfig:
     k_min: int = 2
     #: State kernel bandwidth (m) -- site xy + seat-offset xy all share one scale.
     h_x: float = 0.01
-    #: Target kernel bandwidth (m, m, s) -- must stay >= the cold-start error
+    #: Target kernel bandwidth (m, m, m) -- must stay >= the cold-start error
     #: (probe finding 1) or the weights underflow before any correction lands.
-    h_y: Tuple[float, float, float] = (0.05, 0.05, 0.2)
+    #:
+    #: The third entry became an APEX bandwidth on 2026-09-18, when the
+    #: learner's third channel stopped being a flight time. 0.10 m is ~3x the
+    #: measured apex scatter at a fixed command (+-0.02-0.04 m, 2026-09-17),
+    #: so a neighbour is a throw aimed at a comparable height rather than any
+    #: throw at all: the retired 0.2 s was 1.5x the ENTIRE explored command
+    #: range (0.569-0.6996 s), which made every row a neighbour and the
+    #: "local" fit a global one over noise.
+    h_y: Tuple[float, float, float] = (0.05, 0.05, 0.10)
     #: Ridge-toward-prior weight (paper eq. S19); unit-dependent, see module docstring.
     gamma: float = 1e-2
     #: Ridge-toward-mean weight on the command solve (paper eq. 21).

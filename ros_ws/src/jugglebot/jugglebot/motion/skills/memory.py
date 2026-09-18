@@ -21,71 +21,84 @@ import numpy as np
 
 from jugglebot.motion.skills import learner as lr
 
-__all__ = ['Experience', 'Memory', 'FLIGHT_RATIO_BAND', 'flight_in_band',
+__all__ = ['Experience', 'Memory', 'APEX_RATIO_BAND', 'apex_in_band',
            'memory_path']
 
 _LOG = logging.getLogger(__name__)
 
-#: The PHYSICAL band an observed flight ``y[2]`` may occupy, as a multiple of
-#: the commanded flight ``u[2]``, for the row to be a row about THIS throw.
+#: The PHYSICAL band an observed apex ``y[2]`` may occupy, as a multiple of
+#: the commanded apex ``u[2]``, for the row to be a row about THIS throw.
 #:
-#: A flight is ``t = 2v/g`` from release to the catch plane and the apex is
-#: ``h = g t^2 / 8``, so a ratio in flight IS the ratio in release speed and
-#: its square in apex: this plant's measured 25 %-fast throw (apex 1.38 m on a
-#: 0.9 m command, 2026-09-16) is exactly ``r = sqrt(1.38/0.9) = 1.238``.
+#: **The square of the old flight band** (0.5, 1.6), retired 2026-09-18 with
+#: the flight outcome itself: a flight is ``t = 2v/g``, so a ratio in flight
+#: IS the ratio in release speed, and an apex is ``h = v^2 / 2g`` -- the ratio
+#: in apex is that speed ratio SQUARED. ``0.5^2 = 0.25`` and ``1.6^2 = 2.56``
+#: therefore admit and refuse exactly the same physical throws the flight band
+#: did; nothing about the plant was re-judged here.
 #:
 #: **Measured** (2026-09-16, both sittings' ten ``temp/learn/*-20260916``
 #: memories replayed against their bags' ``/balls``,
-#: ``tools/probes/outcome_landing_replay.py``): the estimates taken while the
-#: ball was ACTUALLY IN FLIGHT sit at ``r = 0.97 .. 1.53`` (n = 22) and the
-#: CONTAMINATED rows the old rule wrote at ``r = 2.21 .. 2.99`` (n = 21). The
-#: two clusters are separated by a factor of 1.45 and nothing lies between:
+#: ``tools/probes/outcome_landing_replay.py``, in flight-ratio terms): the
+#: estimates taken while the ball was ACTUALLY IN FLIGHT sit at ``r = 0.97 ..
+#: 1.53`` (n = 22, i.e. 0.94 .. 2.34 in apex) and the CONTAMINATED rows the
+#: old rule wrote at ``r = 2.21 .. 2.99`` (4.88 .. 8.94 in apex). The two
+#: clusters are separated by a factor of 2.1 in apex and nothing lies between:
 #:
-#: * 1.6 clears the largest in-flight ratio measured (1.53) and admits a plant
-#:   throwing 60 % fast (apex 2.56x commanded) -- well past the 1.238 this one
-#:   does -- while rejecting every contaminated row by at least 38 %. It is
-#:   deliberately a PHYSICAL gate, not a scatter gate: a genuinely wild throw
-#:   is exactly what the learner needs to see.
-#: * 0.5 is an apex a QUARTER of the commanded one: a ball that leaves the cup
-#:   at half the commanded speed is a failed release, not a throw to learn
-#:   from. Nothing in flight measured below 0.97.
+#: * 2.56 clears the largest in-flight ratio measured and admits a plant
+#:   throwing an apex 2.56x the commanded one -- well past the 1.53 this one
+#:   does (apex 1.38 m on a 0.9 m command, 2026-09-16) -- while rejecting
+#:   every contaminated row by at least a factor of 1.9. It is deliberately a
+#:   PHYSICAL gate, not a scatter gate: a genuinely wild throw is exactly what
+#:   the learner needs to see.
+#: * 0.25 is an apex a QUARTER of the commanded one: a ball that leaves the
+#:   cup at half the commanded speed is a failed release, not a throw to learn
+#:   from. Nothing in flight measured below 0.94.
 #:
 #: **What this band CANNOT do**, and why ``executor._consider_landing``'s
 #: freeze is the primary fix rather than the band: a ball sitting in the cup
-#: after its catch has its "landing" predicted at ~now, so that contaminant's
-#: ratio is ``beat / commanded`` -- 1.348 at the R3 operating point (armB-090
-#: row 3, 1.1554 s against 0.8569 s), inside any band wide enough to admit
-#: this plant, and arbitrarily close to 1 for a shorter beat. Only "the ball
-#: has already landed, stop looking" separates that class.
+#: after its catch has its "landing" predicted at ~now, and the apex implied
+#: by the arrival speed of such an estimate is not bounded away from the
+#: commanded one either. Only "the ball has already landed, stop looking"
+#: separates that class.
 #:
 #: This is the ONE definition of the band (``executor`` imports it, and it is
 #: applied on ``Memory`` load and append as well) -- a second copy would be
 #: exactly the "timing twin" class plan § 0 forbids.
-FLIGHT_RATIO_BAND = (0.5, 1.6)
+APEX_RATIO_BAND = (0.25, 2.56)
 
 
-def flight_in_band(u_flight: float, y_flight: float) -> bool:
-    """True when ``y_flight`` is inside :data:`FLIGHT_RATIO_BAND` x ``u_flight``.
+def apex_in_band(u_apex: float, y_apex: float) -> bool:
+    """True when ``y_apex`` is inside :data:`APEX_RATIO_BAND` x ``u_apex``.
 
-    A non-finite or non-positive commanded flight has no band (nothing to
+    A non-finite or non-positive commanded apex has no band (nothing to
     scale), and is treated as ADMITTING the observation: the band exists to
     reject a landing that belongs to another flight, and with no commanded
-    flight to compare against there is no such evidence either way. Callers
+    apex to compare against there is no such evidence either way. Callers
     validate ``u`` on their own path (``Experience`` requires it finite).
     """
-    u = float(u_flight)
-    y = float(y_flight)
+    u = float(u_apex)
+    y = float(y_apex)
     if not (math.isfinite(u) and u > 0.0):
         return True
     if not math.isfinite(y):
         return False
-    lo, hi = FLIGHT_RATIO_BAND
+    lo, hi = APEX_RATIO_BAND
     return lo * u <= y <= hi * u
 
 
 #: Column order of the CSV -- x (4), u (3), y (3), t_abs_s, ball_id, caught.
-_HEADER = ['x0', 'x1', 'x2', 'x3', 'u0', 'u1', 'u2', 'y0', 'y1', 'y2',
-           't_abs_s', 'ball_id', 'caught']
+#:
+#: The apex columns are NAMED (``u2_apex_m`` / ``y2_apex_m``) because the
+#: third component changed MEANING on 2026-09-18 -- it was a flight time in
+#: seconds (``u2`` / ``y2``) -- and a file whose numbers mean something else
+#: parses perfectly. :meth:`Memory._load` refuses any other header, so the
+#: name in the file is the schema check.
+_HEADER = ['x0', 'x1', 'x2', 'x3', 'u0', 'u1', 'u2_apex_m',
+           'y0', 'y1', 'y2_apex_m', 't_abs_s', 'ball_id', 'caught']
+
+#: The pre-2026-09-18 header, whose ``u2``/``y2`` were flight times (s).
+_LEGACY_FLIGHT_HEADER = ['x0', 'x1', 'x2', 'x3', 'u0', 'u1', 'u2',
+                         'y0', 'y1', 'y2', 't_abs_s', 'ball_id', 'caught']
 _N_NUMERIC = 11  # x(4) + u(3) + y(3) + t_abs_s(1); ball_id/caught parsed separately
 
 #: ``repr``-exact float formatting -- a round-tripped ROS-epoch ``t_abs_s``
@@ -108,9 +121,20 @@ class Experience:
     """One throw's record (plan § 2.2). SI units.
 
     ``x`` (4,) = (site xy, seat-offset xy of the ball just caught); ``u`` (3,)
-    = commanded (landing xy, flight); ``y`` (3,) = observed (landing xy,
-    flight); ``t_abs_s`` the CAN wall-clock time; ``ball_id`` the tracked
-    ball; ``caught`` whether the resulting catch succeeded.
+    = commanded (landing xy [m], APEX above the catch plane [m]); ``y`` (3,)
+    = the SAME three quantities observed, all read off the tracker's
+    converged gravity-fixed fit; ``t_abs_s`` the CAN wall-clock time;
+    ``ball_id`` the tracked ball; ``caught`` whether the resulting catch
+    succeeded.
+
+    **Command and outcome are the same physical quantity** (2026-09-18, after
+    Lee et al. § 4C): the third component was a flight TIME until then, and a
+    time is measured from the commanded release knot, which the physical
+    release lags by 0.02-0.14 s throw to throw, through a crossing estimate
+    itself extrapolated to +-40 ms. Both biases drove the learner ~20 % low
+    in apex while its own metric read on target. An apex is invariant to the
+    release instant and to filter lag, and repeats to +-0.02-0.04 m at a
+    fixed command (2026-09-17).
     """
 
     x: np.ndarray
@@ -156,7 +180,7 @@ class Memory:
     warning naming the line number -- never fatal, so one corrupted row does
     not lose an entire session's memory. Rows are kept in file / call order.
 
-    **A row outside :data:`FLIGHT_RATIO_BAND` is not a row about its own
+    **A row outside :data:`APEX_RATIO_BAND` is not a row about its own
     throw** and is refused on BOTH paths -- dropped at load (so an already
     written contaminated memory, such as the ten ``temp/learn/*-20260916``
     files, cannot poison the next sitting even if it is read again) and raised
@@ -183,10 +207,27 @@ class Memory:
             header = next(reader, None)
             if header is None:
                 return
+            self._check_header(header)
             for lineno, row in enumerate(reader, start=2):
                 exp = self._parse_row(row, lineno)
                 if exp is not None:
                     self._append_arrays(exp)
+
+    def _check_header(self, header) -> None:
+        """Refuse a file written to a different schema -- the numbers of a
+        pre-2026-09-18 memory parse cleanly and mean a flight TIME, so the
+        header is the only thing that can tell the two apart."""
+        cols = [str(c).strip() for c in header]
+        if cols == _HEADER:
+            return
+        if cols == _LEGACY_FLIGHT_HEADER:
+            raise ValueError(
+                '%s was written with the pre-2026-09-18 flight-time schema '
+                '(u2/y2 are seconds, not the apex metres this learner now '
+                'commands): move it aside as temp/learn/_quarantine_<date>/ '
+                'rather than loading it' % (self._path,))
+        raise ValueError('%s has header %r, expected %r'
+                          % (self._path, cols, _HEADER))
 
     def _parse_row(self, row, lineno: int):
         try:
@@ -200,12 +241,12 @@ class Memory:
             t_abs_s = vals[10]
             ball_id = int(row[11])
             caught = row[12].strip().lower() in ('true', '1')
-            if not flight_in_band(u[2], y[2]):
+            if not apex_in_band(u[2], y[2]):
                 raise ValueError(
-                    'observed flight %.4f s outside [%.4f, %.4f] of the '
-                    'commanded %.4f s -- this row is another flight'
-                    % (y[2], FLIGHT_RATIO_BAND[0] * u[2],
-                       FLIGHT_RATIO_BAND[1] * u[2], u[2]))
+                    'observed apex %.4f m outside [%.4f, %.4f] of the '
+                    'commanded %.4f m -- this row is another flight'
+                    % (y[2], APEX_RATIO_BAND[0] * u[2],
+                       APEX_RATIO_BAND[1] * u[2], u[2]))
             return Experience(x=x, u=u, y=y, t_abs_s=t_abs_s, ball_id=ball_id,
                                caught=caught)
         except (ValueError, TypeError) as exc:
@@ -223,13 +264,13 @@ class Memory:
         updates the in-memory arrays -- in call order."""
         if not isinstance(exp, Experience):
             raise ValueError('append expects an Experience, got %r' % (exp,))
-        if not flight_in_band(exp.u[2], exp.y[2]):
+        if not apex_in_band(exp.u[2], exp.y[2]):
             raise ValueError(
-                'refusing a row whose observed flight %.4f s is outside '
-                '[%.4f, %.4f] of the commanded %.4f s: the landing belongs '
+                'refusing a row whose observed apex %.4f m is outside '
+                '[%.4f, %.4f] of the commanded %.4f m: the landing belongs '
                 'to another flight'
-                % (exp.y[2], FLIGHT_RATIO_BAND[0] * exp.u[2],
-                   FLIGHT_RATIO_BAND[1] * exp.u[2], exp.u[2]))
+                % (exp.y[2], APEX_RATIO_BAND[0] * exp.u[2],
+                   APEX_RATIO_BAND[1] * exp.u[2], exp.u[2]))
         out_dir = os.path.dirname(self._path)
         if out_dir:
             os.makedirs(out_dir, exist_ok=True)

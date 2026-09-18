@@ -24,9 +24,16 @@ What it reports, per announced ball
   zero by construction — at `t_conf` the filter is still essentially the
   announcement's own seed state — so it is a sanity check, not a measurement.
 - `dl_*`     the landing estimate as it stands at the CATCH executor's own
-  deadline, `announced_landing - CATCH_DEADLINE_WINDOW_S - lead_s`. THIS is the
-  number the executor consumes and the only one that says whether the tracker
-  has overtaken the announcement's (on 2026-09-15, ~25 % fast) prior.
+  deadline, `announced_landing - CATCH_DEADLINE_WINDOW_S - lead_s`, and the
+  only column that says whether the tracker has overtaken the announcement's
+  (on 2026-09-15, ~25 % fast) prior. **Read it as an UPPER bound on what the
+  tracker knows when a catch is aimed (2026-09-18):** the aim is now ordered
+  (`executor._catch_aim`, converged fit → schedule prior → unfitted landing),
+  so a catch WITH a schedule prior is aimed at its own SCHEDULED dispatch
+  instant — earlier than this deadline — and then re-aimed from later fits
+  until the freeze; only a catch with no prior in the schedule still waits
+  this long. A `dl_*` that has not converged therefore means the DISPATCH
+  runs on the prior, not that the catch never sees the fit.
 - `pos_err`  |tracker landing_position - announced landing_position| (mm, xy)
 - `status`   the ball's final `BallStatus`
 

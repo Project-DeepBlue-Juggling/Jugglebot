@@ -41,7 +41,7 @@ by the gate before motion (0 drops in every case); 80 mm passes 3/5 seeds at
 0.5 %; 60 mm passes 5/5 at 0.5 % and fails at 1 %.  That table is the R4/R5
 separation-vs-scatter sizing input; ``--throw-noise-frac`` re-runs it.
 **Learner**: OFF at R2 -- every THROW carries the identity
-prior (``schedule.compile_columns``'s ``y_d=(zeros(2), flight_s)``), so
+prior (``schedule.compile_columns``'s ``y_d=(zeros(2), apex_m)``), so
 ``executor._throw_terminal`` always aims at the commanded landing.  **Sites**:
 perfect (``sites.columns_sites`` -- no site-calibration error modelled).
 
@@ -288,9 +288,13 @@ def _make_tracker(plant, ball_state: dict):
         t_ref = bstate.get('last_obs_t')
         if t_ref is None:
             t_ref = plant.data.time
+        # ``from_fit``: this estimator IS a batch parabola over the flight's
+        # samples (the sim's stand-in for ``tracking/flight_fit.py``), which
+        # is the class of estimate the learner accepts as an outcome.
         return ex.Landing(pos_mm=np.asarray(pos, dtype=float),
                           vel_mm_s=np.asarray(vel, dtype=float),
-                          t_land_abs_s=float(t_ref) + float(t_rem))
+                          t_land_abs_s=float(t_ref) + float(t_rem),
+                          from_fit=True)
     return tracker
 
 
@@ -350,9 +354,15 @@ _SELF_TOSS_SEPARATION_MM = 100.0
 
 #: The band a throw's landing error must enter within
 #: :data:`SelfTossGateConfig.band_entry_throws` (plan § 4 R3): 20 mm lateral,
-#: 20 ms of flight-time error.
+#: 42 mm of APEX error.
+#:
+#: 42 mm is the plan's original 20 ms of flight-time error, carried over
+#: unchanged when the learner's outcome became an apex (2026-09-18): at the
+#: 0.9 m operating point ``dh/dt_f = g·t_f/4 = 2.10 m/s``, so 0.020 s of
+#: flight is 0.042 m of apex. Same physical tolerance, expressed in the
+#: quantity the learner now commands.
 XY_BAND_MM = 20.0
-FLIGHT_BAND_S = 0.020
+APEX_BAND_MM = 42.0
 
 #: The monotone-decay rule's spread multiplier (owner decision 2026-09-13,
 #: learner probe: false-fail 0.3-0.8% on converged noise) -- median(err,
@@ -465,7 +475,7 @@ class SelfTossGateConfig:
     learner_cfg: lr.LearnerConfig = dataclasses.field(
         default_factory=lr.LearnerConfig)
     xy_band_mm: float = XY_BAND_MM
-    flight_band_s: float = FLIGHT_BAND_S
+    apex_band_mm: float = APEX_BAND_MM
     band_entry_throws: int = 5
     #: The monotone rule's far window edge (throws 16-25) — band entry (5) +
     #: 20 more throws, plan § 4 R3.
@@ -988,33 +998,32 @@ class SkillsGate:
             installs_total += ictx.installs_total
             installs_accepted += ictx.installs_accepted
 
-        t_f_nominal = sk.flight_s(cfg.apex_m)
         rows = []
         for i, exp in enumerate(throws):
             err_xy_mm = float(1000.0 * np.linalg.norm(exp.y[:2]))
-            err_flight_ms = float(1000.0 * abs(float(exp.y[2]) - t_f_nominal))
+            err_apex_mm = float(1000.0 * abs(float(exp.y[2]) - cfg.apex_m))
             rows.append(dict(
                 throw=i + 1, u=exp.u.tolist(), y=exp.y.tolist(),
-                err_xy_mm=err_xy_mm, err_flight_ms=err_flight_ms,
+                err_xy_mm=err_xy_mm, err_apex_mm=err_apex_mm,
                 caught=bool(exp.caught), t_abs_s=float(exp.t_abs_s)))
 
         throws_to_band_xy = next(
             (r['throw'] for r in rows if r['err_xy_mm'] <= cfg.xy_band_mm),
             None)
-        throws_to_band_flight = next(
+        throws_to_band_apex = next(
             (r['throw'] for r in rows
-             if r['err_flight_ms'] <= cfg.flight_band_s * 1000.0), None)
+             if r['err_apex_mm'] <= cfg.apex_band_mm), None)
         entered_band = bool(
             throws_to_band_xy is not None
             and throws_to_band_xy <= cfg.band_entry_throws
-            and throws_to_band_flight is not None
-            and throws_to_band_flight <= cfg.band_entry_throws)
+            and throws_to_band_apex is not None
+            and throws_to_band_apex <= cfg.band_entry_throws)
 
         monotone_xy = _monotone_verdict(
             [r['err_xy_mm'] for r in rows], cfg.band_entry_throws,
             cfg.target_throws)
-        monotone_flight = _monotone_verdict(
-            [r['err_flight_ms'] for r in rows], cfg.band_entry_throws,
+        monotone_apex = _monotone_verdict(
+            [r['err_apex_mm'] for r in rows], cfg.band_entry_throws,
             cfg.target_throws)
 
         return dict(
@@ -1024,11 +1033,11 @@ class SkillsGate:
             makes=makes_total, installs_total=installs_total,
             installs_accepted=installs_accepted,
             throws_to_band_xy=throws_to_band_xy,
-            throws_to_band_flight=throws_to_band_flight,
+            throws_to_band_apex=throws_to_band_apex,
             entered_band=entered_band,
-            monotone_xy=monotone_xy, monotone_flight=monotone_flight,
+            monotone_xy=monotone_xy, monotone_apex=monotone_apex,
             passed=bool(entered_band and bool(monotone_xy)
-                       and bool(monotone_flight)),
+                       and bool(monotone_apex)),
             wall_s=time.time() - t_wall0)
 
     # ── run + summarise ───────────────────────────────────────────────────
@@ -1125,7 +1134,7 @@ def run_learn(cfg: SelfTossGateConfig = None, seeds=(0, 1, 2, 3, 4),
         'apex_m': cfg.apex_m,
         'dwell_s': cfg.dwell_s,
         'xy_band_mm': cfg.xy_band_mm,
-        'flight_band_s': cfg.flight_band_s,
+        'apex_band_mm': cfg.apex_band_mm,
         'band_entry_throws': cfg.band_entry_throws,
         'target_throws': cfg.target_throws,
         'wall_s': wall_s,
@@ -1146,19 +1155,19 @@ def run_learn(cfg: SelfTossGateConfig = None, seeds=(0, 1, 2, 3, 4),
 
 def _print_learn_table(rep: dict) -> None:
     print('[skills_gate_learn] policy %s  apex %.2f m  dwell %.2f s  band '
-          '%.0f mm / %.0f ms  entry<=%d throws  window<=%d throws'
+          '%.0f mm xy / %.0f mm apex  entry<=%d throws  window<=%d throws'
           % (rep['policy'], rep['apex_m'], rep['dwell_s'], rep['xy_band_mm'],
-             rep['flight_band_s'] * 1000.0, rep['band_entry_throws'],
+             rep['apex_band_mm'], rep['band_entry_throws'],
              rep['target_throws']))
     print('[skills_gate_learn] %-6s %-8s %-10s %-10s %-9s %-9s %-9s %-6s %-6s'
-          % ('seed', 'verdict', 'band_xy', 'band_flt', 'mono_xy', 'mono_flt',
+          % ('seed', 'verdict', 'band_xy', 'band_apex', 'mono_xy', 'mono_apex',
              'attempts', 'drops', 'makes'))
     for r in rep['seed_results']:
         verdict = 'PASS' if r['passed'] else 'FAIL'
         print('[skills_gate_learn] %-6d %-8s %-10s %-10s %-9s %-9s %-9d %-6d %-6d'
               % (r['seed'], verdict, r['throws_to_band_xy'],
-                 r['throws_to_band_flight'], r['monotone_xy'],
-                 r['monotone_flight'], r['attempts'], r['drops'], r['makes']))
+                 r['throws_to_band_apex'], r['monotone_xy'],
+                 r['monotone_apex'], r['attempts'], r['drops'], r['makes']))
     print('[skills_gate_learn] %s  (wall %.1f s over %d seed(s))'
           % ('PASS' if rep['passed'] else 'FAIL', rep['wall_s'],
              len(rep['seeds'])))
@@ -1201,10 +1210,12 @@ def main(argv=None) -> int:
                         'module docstring carries the separation-vs-scatter table)')
     p.add_argument('--catch-aim-source', choices=ex.AIM_SOURCES,
                    default=ex.AIM_TRACKER,
-                   help='where a CATCH is aimed from: tracker (this gate\'s '
-                        'default, the refine path it asserts), schedule (the '
-                        'LIVE default -- open loop from the commanded throw '
-                        'state), or schedule_hand')
+                   help='where a CATCH is aimed from: tracker (the LIVE '
+                        'default since 2026-09-18 and this gate\'s -- the '
+                        'converged fit, with the schedule as its prior, plus '
+                        'the refine path this gate asserts), schedule (open '
+                        'loop from the commanded throw state), or '
+                        'schedule_hand')
     p.add_argument('--learn', action='store_true',
                    help='run the R3 sim-validation learner run (plan § 4 R3) '
                         'instead of the columns gate')

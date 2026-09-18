@@ -71,6 +71,9 @@ from jugglebot.motion.trajectory import feasibility as feas
 from jugglebot.motion.trajectory.limits import TrajectoryLimits
 
 FLIGHT_S = 0.857
+#: The apex that flight belongs to — and, since 2026-09-18, the third
+#: component of the learner's command every ``y_d`` in this module carries.
+APEX_M = sc.apex_m(FLIGHT_S)
 LAUNCH_S = 0.4
 SEPARATION_MM = 100.0
 #: An arbitrary non-zero wall-clock origin: nothing in the executor may assume
@@ -79,6 +82,14 @@ T0_ABS = 100.0
 DT = float(hw.JB_TRAJ_KNOT_DT_S)
 #: The ball's arrival speed for a ``FLIGHT_S`` vertical flight.
 LAND_VEL = np.array([0.0, 0.0, -FLIGHT_S / 2.0 * 9806.0])
+
+
+def _fit_landing(*args, **kwargs):
+    """``ex.Landing`` with ``from_fit=True``: every landing in this module is
+    a CONVERGED ballistic-fit estimate unless a test says otherwise, since
+    2026-09-18 only a fitted landing may become a learner row."""
+    kwargs.setdefault('from_fit', True)
+    return ex.Landing(*args, **kwargs)
 
 
 @pytest.fixture(scope='module')
@@ -491,7 +502,7 @@ def test_a_six_throw_columns_schedule_installs_end_to_end(limits, geom):
     landings = {}
     for sk in sched.skills:
         if sk.kind == sg.CATCH:
-            landings.setdefault(sk.ball_id, []).append(ex.Landing(
+            landings.setdefault(sk.ball_id, []).append(_fit_landing(
                 pos_mm=sk.site.catch_site_mm(), vel_mm_s=arrival.copy(),
                 t_land_abs_s=float(sk.t_abs_s)))
     clock = {'t': T0_ABS - 1.0}
@@ -640,7 +651,7 @@ def test_a_four_throw_self_toss_schedule_installs_end_to_end_at_a_ros_epoch(
         t0_abs_s=t0)
     assert len(sched.skills) == 4 + 3
     arrival = np.array([0.0, 0.0, -0.5 * 9806.0 * sched.flight_s])
-    landings = [ex.Landing(pos_mm=sk.site.catch_site_mm(), vel_mm_s=arrival.copy(),
+    landings = [_fit_landing(pos_mm=sk.site.catch_site_mm(), vel_mm_s=arrival.copy(),
                            t_land_abs_s=float(sk.t_abs_s))
                for sk in sched.skills if sk.kind == sg.CATCH]
     clock = {'t': t0 - sc.FLOOR_LIFT_S - 1.0}
@@ -702,7 +713,7 @@ def test_the_chain_this_schedule_installs_is_hand_C2_through_validate_cycle(
         sc.SelfTossPattern(site=site, apex_m=0.9, dwell_s=0.30, n_throws=4),
         t0_abs_s=t0)
     arrival = np.array([0.0, 0.0, -0.5 * 9806.0 * sched.flight_s])
-    landings = [ex.Landing(pos_mm=sk.site.catch_site_mm(), vel_mm_s=arrival.copy(),
+    landings = [_fit_landing(pos_mm=sk.site.catch_site_mm(), vel_mm_s=arrival.copy(),
                            t_land_abs_s=float(sk.t_abs_s))
                for sk in sched.skills if sk.kind == sg.CATCH]
     clock = {'t': t0 - sc.FLOOR_LIFT_S - 1.0}
@@ -781,7 +792,7 @@ def test_a_four_throw_self_toss_schedule_installs_end_to_end_with_a_tracker_gate
     assert len(releases) == len(catches) == 4    # one release per catch, paired
 
     arrival = np.array([0.0, 0.0, -0.5 * 9806.0 * sched.flight_s])
-    landings = [ex.Landing(pos_mm=cat.site.catch_site_mm(),
+    landings = [_fit_landing(pos_mm=cat.site.catch_site_mm(),
                            vel_mm_s=arrival.copy(),
                            t_land_abs_s=float(cat.t_abs_s)) for cat in catches]
     landing_by_release = dict(zip(releases, landings))
@@ -858,7 +869,8 @@ class _FakeInstaller:
         return ex.InstallResult(True, 'OK', 'ok', 0.0, splice_k=0)
 
 
-def _schedule(sites, catch_window_s: float = 0.278) -> Schedule:
+def _schedule(sites, catch_window_s: float = 0.278,
+              catch_ball_id: int = 0) -> Schedule:
     """A THROW then its CATCH then a REST — the smallest schedule with one of
     each, built by hand so the dispatch instants are this file's numbers.
 
@@ -867,14 +879,21 @@ def _schedule(sites, catch_window_s: float = 0.278) -> Schedule:
     dispatch instant coincides with its NO_LANDING deadline — exactly the
     "refuse at once" case).  A caller testing genuine deferral passes a
     larger window so the dispatch instant precedes the deadline and there is
-    room for a tick to find nothing, then a later one to find a landing."""
+    room for a tick to find nothing, then a later one to find a landing.
+
+    ``catch_ball_id`` != the THROW's is how a caller gets a catch with NO
+    schedule prior — a ball this schedule never threw.  Since the aim became
+    ordered (2026-09-18, ``ex._catch_aim``: fit > schedule > filter) that is
+    the ONLY catch that can still wait on the tracker or end
+    ``NO_LANDING``; every catch whose ball was released in this schedule is
+    aimed at the landing that release was commanded to achieve."""
     p1, p2 = sites
     t_throw = T0_ABS + LAUNCH_S
     t_land = t_throw + FLIGHT_S
     skills = (
         Skill(kind=sg.THROW, ball_id=0, site=p1, t_abs_s=t_throw,
-              window_s=LAUNCH_S, y_d=(np.zeros(2), FLIGHT_S), target=p1),
-        Skill(kind=sg.CATCH, ball_id=0, site=p2, t_abs_s=t_land,
+              window_s=LAUNCH_S, y_d=(np.zeros(2), APEX_M), target=p1),
+        Skill(kind=sg.CATCH, ball_id=catch_ball_id, site=p2, t_abs_s=t_land,
               window_s=catch_window_s),
         Skill(kind=sg.REST, ball_id=0, site=p2,
               t_abs_s=t_land + sg.REST_TAIL_S, window_s=sg.REST_TAIL_S),
@@ -893,7 +912,7 @@ def test_the_executor_dispatches_each_skill_once_at_its_dispatch_instant(sites):
     already carries it."""
     sch = _schedule(sites)
     inst = _FakeInstaller()
-    land = ex.Landing(pos_mm=sites[1].catch_site_mm(), vel_mm_s=LAND_VEL,
+    land = _fit_landing(pos_mm=sites[1].catch_site_mm(), vel_mm_s=LAND_VEL,
                       t_land_abs_s=sch.skills[1].t_abs_s)
     x = ex.SkillExecutor(sch, inst, tracker=_tracker(land))
 
@@ -926,16 +945,21 @@ def test_the_throw_terminal_carries_the_identity_prior_command(sites):
     assert terminal.t_release_s == pytest.approx(sch.skills[0].t_abs_s)
 
 
-def test_a_catch_with_no_tracked_landing_waits_then_ends_at_the_deadline(sites):
+def test_a_catch_with_neither_a_prior_nor_a_landing_ends_at_the_deadline(sites):
     """Perception loss still ends the attempt — it never waits forever — but
-    it no longer refuses at the FIRST look (owner decision 2026-09-13, "wait
-    for landing"): an undispatched CATCH is retried every tick until either a
-    landing appears or ``t_now`` passes ``skill.t_abs_s -
-    CATCH_DEADLINE_WINDOW_S - skill.lead_s``.  Once that deadline passes, the
-    plan that is streaming is rest-terminal, so stopping dispatch leaves the
-    machine coasting to a stop; carrying on would aim the next skill from a
-    pose the machine was never commanded into."""
-    sch = _schedule(sites, catch_window_s=0.6)   # room to show deferral, below
+    only for the catch the SCHEDULE cannot aim either (here a ball this
+    schedule never threw; live, columns' very first catch).  An undispatched
+    CATCH is retried every tick until either a landing appears or ``t_now``
+    passes ``skill.t_abs_s - CATCH_DEADLINE_WINDOW_S - skill.lead_s``.  Once
+    that deadline passes, the plan that is streaming is rest-terminal, so
+    stopping dispatch leaves the machine coasting to a stop; carrying on
+    would aim the next skill from a pose the machine was never commanded
+    into.
+
+    A catch WITH a schedule prior never reaches this — see
+    :func:`test_a_catch_the_tracker_cannot_see_is_aimed_from_the_schedule_prior`.
+    """
+    sch = _schedule(sites, catch_window_s=0.6, catch_ball_id=7)
     inst = _FakeInstaller()
     x = ex.SkillExecutor(sch, inst, tracker=lambda ball_id: None)
     x.tick(sch.skills[0].dispatch_s())
@@ -955,7 +979,7 @@ def test_a_catch_with_no_tracked_landing_waits_then_ends_at_the_deadline(sites):
     lines = x.tick(deadline)
     assert x.attempt_ended and x.end_code == ex.NO_LANDING
     assert len(inst.calls) == 1          # the CATCH never reached the installer
-    assert 'ball 0' in lines[0]
+    assert 'ball 7' in lines[0]
     # Nothing further dispatches, including the REST.
     assert x.tick(sch.skills[2].dispatch_s() + 1.0) == []
     assert len(inst.calls) == 1
@@ -966,8 +990,9 @@ def test_a_deferred_catch_dispatches_on_the_first_tick_a_landing_appears(
     """The tracker gaining a landing between ticks is what ends the wait —
     the catch installs on the FIRST tick that happens, at ITS OWN instant,
     not the schedule's nominal one (``install_segment`` measures every
-    splice window against ``t_now`` regardless)."""
-    sch = _schedule(sites, catch_window_s=0.6)
+    splice window against ``t_now`` regardless).  A catch with no schedule
+    prior is the only one that ever defers (2026-09-18) — hence ball 7."""
+    sch = _schedule(sites, catch_window_s=0.6, catch_ball_id=7)
     inst = _FakeInstaller()
     landing_box = {'landing': None}
     x = ex.SkillExecutor(sch, inst,
@@ -983,7 +1008,7 @@ def test_a_deferred_catch_dispatches_on_the_first_tick_a_landing_appears(
     x.tick(t1)
     assert len(inst.calls) == 1          # still nothing
 
-    landing_box['landing'] = ex.Landing(
+    landing_box['landing'] = _fit_landing(
         pos_mm=sites[1].catch_site_mm(), vel_mm_s=LAND_VEL,
         t_land_abs_s=catch.t_abs_s)
     t2 = t1 + DT
@@ -1001,7 +1026,8 @@ def test_skill_order_is_preserved_while_a_catch_is_deferred(sites):
     p1, p2 = sites
     t_throw = T0_ABS + LAUNCH_S
     t_land = t_throw + FLIGHT_S
-    catch = Skill(kind=sg.CATCH, ball_id=0, site=p2, t_abs_s=t_land,
+    # Ball 7: a catch with no schedule prior, the only kind that defers.
+    catch = Skill(kind=sg.CATCH, ball_id=7, site=p2, t_abs_s=t_land,
                  window_s=0.6)
     deadline = t_land - ex.CATCH_DEADLINE_WINDOW_S - catch.lead_s
     t_mid = (catch.dispatch_s() + deadline) / 2.0
@@ -1012,7 +1038,7 @@ def test_skill_order_is_preserved_while_a_catch_is_deferred(sites):
 
     sch = Schedule(
         skills=(Skill(kind=sg.THROW, ball_id=0, site=p1, t_abs_s=t_throw,
-                     window_s=LAUNCH_S, y_d=(np.zeros(2), FLIGHT_S),
+                     window_s=LAUNCH_S, y_d=(np.zeros(2), APEX_M),
                      target=p1), catch, rest),
         flight_s=FLIGHT_S, beat_s=0.578, transit_s=0.6, dwell_s=0.30,
         t0_abs_s=T0_ABS)
@@ -1036,19 +1062,27 @@ def test_an_install_refusal_ends_the_attempt(sites):
     assert len(inst.calls) == 1
 
 
-def test_an_unmoved_landing_is_not_re_sent(sites):
-    """A re-solve costs more than a knot, so the catch is only re-aimed when the
-    landing has actually MOVED beyond the tracker's own noise."""
+def test_a_landing_inside_the_tolerance_is_not_re_sent_and_says_so_once(sites):
+    """A re-solve costs 25-130 ms of orchestrator time, so the catch is only
+    re-aimed when the landing has moved further than the catch's own timing
+    cliff cares about (``resend_pos_tol_mm`` / ``resend_t_tol_s``).  The
+    refusal is reported ONCE per catch and reason — the tracker answers every
+    tick, and the same sentence at the re-send cadence would bury the
+    dispatch lines."""
     sch = _schedule(sites)
     inst = _FakeInstaller()
-    land = ex.Landing(pos_mm=sites[1].catch_site_mm(), vel_mm_s=LAND_VEL,
+    land = _fit_landing(pos_mm=sites[1].catch_site_mm(), vel_mm_s=LAND_VEL,
                       t_land_abs_s=sch.skills[1].t_abs_s)
     x = ex.SkillExecutor(sch, inst, tracker=_tracker(land))
     x.tick(sch.skills[0].dispatch_s())
     t_catch = sch.skills[1].dispatch_s()
     x.tick(t_catch)
     n = len(inst.calls)
-    assert x.tick(t_catch + 0.05) == []
+    lines = x.tick(t_catch + 0.05)
+    assert len(inst.calls) == n
+    assert len(lines) == 1 and 'RESEND-SKIPPED WITHIN-TOLERANCE' in lines[0]
+    # Inside the tolerance on BOTH axes, and reported only the first time.
+    assert x.tick(t_catch + 0.10) == []
     assert len(inst.calls) == n
 
 
@@ -1058,9 +1092,9 @@ def test_a_moved_landing_is_re_sent_and_a_refused_re_send_does_not_end_the_attem
     that RE-aim leaves the committed catch standing, which is strictly better
     than no catch, so the attempt continues."""
     sch = _schedule(sites)
-    land0 = ex.Landing(pos_mm=sites[1].catch_site_mm(), vel_mm_s=LAND_VEL,
+    land0 = _fit_landing(pos_mm=sites[1].catch_site_mm(), vel_mm_s=LAND_VEL,
                        t_land_abs_s=sch.skills[1].t_abs_s)
-    moved = ex.Landing(pos_mm=sites[1].catch_site_mm() + np.array([12.0, 0, 0]),
+    moved = _fit_landing(pos_mm=sites[1].catch_site_mm() + np.array([12.0, 0, 0]),
                        vel_mm_s=LAND_VEL, t_land_abs_s=sch.skills[1].t_abs_s)
     box = {'landing': land0}
     inst = _FakeInstaller()
@@ -1078,7 +1112,7 @@ def test_a_moved_landing_is_re_sent_and_a_refused_re_send_does_not_end_the_attem
 
     # A refused re-send: logged, attempt continues, and the REST still installs.
     inst.verdicts.append(ex.InstallResult(False, 'LIMIT_JERK', 'nope', 0.0))
-    box['landing'] = ex.Landing(pos_mm=moved.pos_mm + np.array([9.0, 0, 0]),
+    box['landing'] = _fit_landing(pos_mm=moved.pos_mm + np.array([30.0, 0, 0]),
                                 vel_mm_s=LAND_VEL,
                                 t_land_abs_s=sch.skills[1].t_abs_s)
     lines = x.tick(t_catch + 0.10)
@@ -1093,7 +1127,7 @@ def test_nothing_is_re_sent_inside_the_catch_freeze(sites):
     into the ball; a re-solve there is a change nothing can execute."""
     sch = _schedule(sites)
     inst = _FakeInstaller()
-    land0 = ex.Landing(pos_mm=sites[1].catch_site_mm(), vel_mm_s=LAND_VEL,
+    land0 = _fit_landing(pos_mm=sites[1].catch_site_mm(), vel_mm_s=LAND_VEL,
                        t_land_abs_s=sch.skills[1].t_abs_s)
     box = {'landing': land0}
     # A 0.2 s freeze, so the frozen window opens BEFORE the REST's own dispatch
@@ -1104,11 +1138,67 @@ def test_nothing_is_re_sent_inside_the_catch_freeze(sites):
     x.tick(sch.skills[0].dispatch_s())
     x.tick(sch.skills[1].dispatch_s())
     n = len(inst.calls)
-    box['landing'] = ex.Landing(pos_mm=land0.pos_mm + np.array([30.0, 0, 0]),
+    box['landing'] = _fit_landing(pos_mm=land0.pos_mm + np.array([30.0, 0, 0]),
                                 vel_mm_s=LAND_VEL,
                                 t_land_abs_s=sch.skills[1].t_abs_s)
     x.tick(sch.skills[1].t_abs_s - 0.18)
     assert len(inst.calls) == n
+
+
+def test_an_unfitted_landing_never_re_aims_a_committed_catch(sites):
+    """The re-aim is the whole reason the tracker aim exists, and the ONLY
+    estimate worth paying a solve for is the converged fit: an unfitted
+    Kalman crossing runs 0.06-0.20 s late and grows later through the
+    descent (2026-09-17), so re-aiming from one would pull the committed
+    catch AWAY from the schedule's prior, not towards the ball."""
+    sch = _schedule(sites)
+    inst = _FakeInstaller()
+    land0 = _fit_landing(pos_mm=sites[1].catch_site_mm(), vel_mm_s=LAND_VEL,
+                         t_land_abs_s=sch.skills[1].t_abs_s)
+    box = {'landing': land0}
+    x = ex.SkillExecutor(sch, inst, tracker=lambda b: box['landing'])
+    x.tick(sch.skills[0].dispatch_s())
+    t_catch = sch.skills[1].dispatch_s()
+    x.tick(t_catch)
+    n = len(inst.calls)
+
+    # Far outside both tolerances, but unfitted (`from_fit` defaults False).
+    box['landing'] = ex.Landing(pos_mm=land0.pos_mm + np.array([60.0, 0, 0]),
+                                vel_mm_s=LAND_VEL,
+                                t_land_abs_s=sch.skills[1].t_abs_s + 0.05)
+    lines = x.tick(t_catch + 0.05)
+    assert len(inst.calls) == n
+    assert len(lines) == 1 and 'RESEND-SKIPPED NO-CONVERGED-FIT' in lines[0]
+    assert '60.0 mm' in lines[0] and '+0.050 s' in lines[0]
+
+
+def test_one_catch_may_spend_no_more_than_the_re_send_cap(sites):
+    """A fit that jitters across the tolerance must not spend the catch's
+    whole splice budget: each re-solve costs 25-130 ms on the loaded Jetson
+    (six ``SPLICE_TOO_LATE`` at the 2026-09-17 23:49 sitting), so after
+    ``resend_max_per_catch`` re-aims the committed catch stands."""
+    sch = _schedule(sites)
+    inst = _FakeInstaller()
+    land0 = _fit_landing(pos_mm=sites[1].catch_site_mm(), vel_mm_s=LAND_VEL,
+                         t_land_abs_s=sch.skills[1].t_abs_s)
+    box = {'landing': land0}
+    x = ex.SkillExecutor(sch, inst, tracker=lambda b: box['landing'])
+    assert x.resend_max_per_catch == 2
+    x.tick(sch.skills[0].dispatch_s())
+    t_catch = sch.skills[1].dispatch_s()
+    x.tick(t_catch)
+    n = len(inst.calls)
+
+    for i, dx in enumerate((20.0, 40.0, 60.0)):
+        box['landing'] = _fit_landing(
+            pos_mm=land0.pos_mm + np.array([dx, 0, 0]), vel_mm_s=LAND_VEL,
+            t_land_abs_s=sch.skills[1].t_abs_s)
+        lines = x.tick(t_catch + 0.05 * (i + 1))
+    assert len(inst.calls) == n + 2           # two re-aims, not three
+    assert len(lines) == 1 and 'RESEND-SKIPPED CAP-SPENT' in lines[0]
+    assert np.allclose(inst.calls[-1][1].landing_mm,
+                       land0.pos_mm + np.array([40.0, 0, 0]))
+    assert not x.attempt_ended
 
 
 # ---------------------------------------------------------------------------
@@ -1139,14 +1229,14 @@ class _FakeLearner:
         return np.array(y_d if self._u is None else self._u, dtype=float)
 
 
-def _box(xy=((-0.05, 0.05), (-0.05, 0.05)), flight=(0.5, 1.2), empty=False,
+def _box(xy=((-0.05, 0.05), (-0.05, 0.05)), apex=(0.3, 1.5), empty=False,
          site_pair=('P1', 'P1'), apex_band_m=(0.8, 1.0)):
     if empty:
         xy = ((float('nan'), float('nan')), (float('nan'), float('nan')))
-        flight = (float('nan'), float('nan'))
+        apex = (float('nan'), float('nan'))
     return adm.AdmissibleBox(
         site_pair=site_pair, apex_band_m=apex_band_m, landing_xy_m=xy,
-        flight_s=flight,
+        apex_m=apex,
         limits={'leg_vel_mmps': 1.0, 'leg_acc_mmps2': 1.0,
                'leg_jerk_mmps3': 1.0, 'hand_acc_rps2': 1.0},
         gate_hash='0123456789ab', swept_at='2026-09-13')
@@ -1160,10 +1250,10 @@ def _schedule_with_then_throw(sites):
     t_throw = T0_ABS + LAUNCH_S
     t_land = t_throw + FLIGHT_S
     tt = sc.ThenThrow(t_release_abs_s=t_land + 0.30,
-                      y_d=(np.zeros(2), FLIGHT_S), target=p1)
+                      y_d=(np.zeros(2), APEX_M), target=p1)
     skills = (
         Skill(kind=sg.THROW, ball_id=0, site=p1, t_abs_s=t_throw,
-              window_s=LAUNCH_S, y_d=(np.zeros(2), FLIGHT_S), target=p1),
+              window_s=LAUNCH_S, y_d=(np.zeros(2), APEX_M), target=p1),
         Skill(kind=sg.CATCH, ball_id=0, site=p2, t_abs_s=t_land,
               window_s=0.278, then_throw=tt),
     )
@@ -1171,12 +1261,13 @@ def _schedule_with_then_throw(sites):
                     transit_s=0.278, dwell_s=0.30, t0_abs_s=T0_ABS)
 
 
-def _single_throw_schedule(site, ball_id, t_release, flight=FLIGHT_S):
+def _single_throw_schedule(site, ball_id, t_release, apex=APEX_M):
     """One standalone THROW — enough to exercise outcome capture without a
     matching CATCH skill (the pending outcome finalises on the wall clock
     alone, independent of whether anything else is scheduled)."""
+    flight = sc.flight_s(apex)
     skills = (Skill(kind=sg.THROW, ball_id=ball_id, site=site, t_abs_s=t_release,
-                    window_s=LAUNCH_S, y_d=(np.zeros(2), flight), target=site),)
+                    window_s=LAUNCH_S, y_d=(np.zeros(2), apex), target=site),)
     return Schedule(skills=skills, flight_s=flight, beat_s=flight,
                     transit_s=flight, dwell_s=0.30, t0_abs_s=t_release - LAUNCH_S)
 
@@ -1192,13 +1283,14 @@ def test_the_learner_command_replaces_the_throw_target_and_flight(sites):
     _kind, terminal, _t, _b = inst.calls[0]
     want_target = p1.catch_site_mm() + np.array([10.0, -20.0, 0.0])
     assert np.allclose(terminal.target_mm, want_target)
-    assert terminal.flight_s == pytest.approx(0.9)
+    # The learner commands an APEX; the planner's flight is derived from it.
+    assert terminal.flight_s == pytest.approx(sc.flight_s(0.9))
 
 
 def test_lateral_authority_pins_the_learner_to_the_desired_offset(sites):
     """Owner 2026-09-16: a 4 mm learner-commanded lateral offset saturated the
     banking step and put leg jerk over the limit (the 0.9 m 'wobble').  With
-    ``lateral_authority_m=0.0`` the learner may move FLIGHT only; the lateral
+    ``lateral_authority_m=0.0`` the learner may move APEX only; the lateral
     command is the schedule's own ``y_d``.  A nonzero authority clamps the
     learner's lateral delta to that band."""
     p1, _p2 = sites
@@ -1211,7 +1303,7 @@ def test_lateral_authority_pins_the_learner_to_the_desired_offset(sites):
     y_d = np.asarray(sch.skills[0].y_d[0], dtype=float).reshape(2)
     want_target = p1.catch_site_mm() + np.array([y_d[0] * 1000.0, y_d[1] * 1000.0, 0.0])
     assert np.allclose(terminal.target_mm, want_target)
-    assert terminal.flight_s == pytest.approx(0.9)
+    assert terminal.flight_s == pytest.approx(sc.flight_s(0.9))
     inst2 = _FakeInstaller()
     x2 = ex.SkillExecutor(_schedule(sites), inst2, learner=_FakeLearner(u=[0.03, -0.02, 0.9]),
                           lateral_authority_m=0.005)
@@ -1229,7 +1321,7 @@ def test_a_catch_with_throw_computes_u_once_and_a_resend_reuses_it(sites):
     sch = _schedule_with_then_throw(sites)
     inst = _FakeInstaller()
     learner = _FakeLearner(u=[0.01, -0.02, FLIGHT_S])
-    land0 = ex.Landing(pos_mm=sites[1].catch_site_mm(), vel_mm_s=LAND_VEL,
+    land0 = _fit_landing(pos_mm=sites[1].catch_site_mm(), vel_mm_s=LAND_VEL,
                        t_land_abs_s=sch.skills[1].t_abs_s)
     box = {'landing': land0}
     x = ex.SkillExecutor(sch, inst, tracker=lambda b: box['landing'],
@@ -1242,7 +1334,7 @@ def test_a_catch_with_throw_computes_u_once_and_a_resend_reuses_it(sites):
     assert first_then_throw is not None
     first_target = first_then_throw.target_mm.copy()
 
-    box['landing'] = ex.Landing(pos_mm=land0.pos_mm + np.array([12.0, 0, 0]),
+    box['landing'] = _fit_landing(pos_mm=land0.pos_mm + np.array([12.0, 0, 0]),
                                 vel_mm_s=LAND_VEL,
                                 t_land_abs_s=sch.skills[1].t_abs_s)
     x.tick(t_catch + 0.05)
@@ -1299,7 +1391,7 @@ def test_a_predicted_catch_is_resent_once_the_tracker_has_a_real_landing(
     assert [c[0] for c in inst.calls] == [sg.THROW, sg.CATCH]
     predicted_pos = inst.calls[1][1].landing_mm.copy()
 
-    landing_box['landing'] = ex.Landing(
+    landing_box['landing'] = _fit_landing(
         pos_mm=predicted_pos + np.array([12.0, 0.0, 0.0]), vel_mm_s=LAND_VEL,
         t_land_abs_s=catch.t_abs_s)
     x.tick(catch.dispatch_s() + 0.05)
@@ -1308,13 +1400,13 @@ def test_a_predicted_catch_is_resent_once_the_tracker_has_a_real_landing(
     assert not x.attempt_ended
 
 
-def test_a_standalone_catch_still_waits_for_the_tracker(sites):
-    """Decision 3: a catch with NO carried throw is untouched by "at release,
-    then refine" -- it keeps waiting for its own ball's tracked landing,
-    exactly as :func:`test_a_catch_with_no_tracked_landing_waits_then_ends_at_the_deadline`
-    already pins; this test only makes explicit that the branch taken is the
-    ``then_throw is None`` one, not a predicted landing that happens to be
-    unavailable."""
+def test_a_catch_the_tracker_cannot_see_is_aimed_from_the_schedule_prior(sites):
+    """2026-09-18: the aim no longer branches on ``then_throw``.  A STANDALONE
+    catch whose ball WAS released in this schedule is aimed from the prior at
+    its own SCHEDULED instant when the tracker has nothing — it does not wait,
+    and it does not reach the deadline.  The 2026-09-15 lesson stands under
+    the tracker aim too: a catch that waits for perception is a catch that
+    does not happen."""
     sch = _schedule(sites, catch_window_s=0.6)
     catch = sch.skills[1]
     assert catch.then_throw is None
@@ -1323,8 +1415,13 @@ def test_a_standalone_catch_still_waits_for_the_tracker(sites):
     x.tick(sch.skills[0].dispatch_s())
 
     lines = x.tick(catch.dispatch_s())
-    assert lines == [] and not x.attempt_ended
-    assert len(inst.calls) == 1              # deferred -- no predicted landing
+    assert [c[0] for c in inst.calls] == [sg.THROW, sg.CATCH]
+    assert inst.calls[1][2] == pytest.approx(catch.dispatch_s())
+    pos, t_land = _predicted(sites, sch)
+    assert np.allclose(inst.calls[1][1].landing_mm, pos)
+    assert inst.calls[1][1].t_land_s == pytest.approx(t_land)
+    assert any('source=schedule' in ln for ln in lines)
+    assert not x.attempt_ended
 
 
 def test_a_stale_tracked_landing_at_dispatch_falls_back_to_the_predicted_landing(
@@ -1341,7 +1438,7 @@ def test_a_stale_tracked_landing_at_dispatch_falls_back_to_the_predicted_landing
     sch = _schedule_with_then_throw(sites)
     throw = sch.skills[0]
     catch = sch.skills[1]
-    stale = ex.Landing(pos_mm=catch.site.catch_site_mm() + np.array([99.0, 0, 0]),
+    stale = _fit_landing(pos_mm=catch.site.catch_site_mm() + np.array([99.0, 0, 0]),
                        vel_mm_s=LAND_VEL, t_land_abs_s=throw.t_abs_s)
     inst = _FakeInstaller()
     x = ex.SkillExecutor(sch, inst, tracker=lambda ball_id: stale)
@@ -1371,7 +1468,7 @@ def test_a_stale_tracked_landing_is_never_resent(sites):
 
     # A landing that has clearly "moved" but lands at-or-before the previous
     # release -- the frozen estimate of the flight that just ended.
-    landing_box['landing'] = ex.Landing(
+    landing_box['landing'] = _fit_landing(
         pos_mm=predicted_pos + np.array([50.0, 0.0, 0.0]), vel_mm_s=LAND_VEL,
         t_land_abs_s=throw.t_abs_s)
     lines = x.tick(catch.dispatch_s() + 0.05)
@@ -1387,7 +1484,7 @@ def test_a_fresh_tracked_landing_is_still_used(sites):
     sch = _schedule_with_then_throw(sites)
     throw = sch.skills[0]
     catch = sch.skills[1]
-    fresh = ex.Landing(pos_mm=catch.site.catch_site_mm() + np.array([12.0, 0, 0]),
+    fresh = _fit_landing(pos_mm=catch.site.catch_site_mm() + np.array([12.0, 0, 0]),
                        vel_mm_s=LAND_VEL, t_land_abs_s=catch.t_abs_s)
     assert fresh.t_land_abs_s > throw.t_abs_s
     inst = _FakeInstaller()
@@ -1479,7 +1576,7 @@ def test_an_end_to_end_self_toss_schedule_fails_today_without_the_scheduled_disp
         if rel_t is not None:
             launch_vel = ballistics_bc.launch_velocity(rel_site, tgt, flight)
             vel_mm_s = ballistics_bc.arrival_velocity(launch_vel, flight)
-            known.append((rel_t, ex.Landing(
+            known.append((rel_t, _fit_landing(
                 pos_mm=tgt, vel_mm_s=vel_mm_s, t_land_abs_s=rel_t + flight)))
         return res
 
@@ -1507,7 +1604,8 @@ def test_an_out_of_box_command_is_clipped(sites):
     _kind, terminal, _t, _b = inst.calls[0]
     want_target = sites[0].catch_site_mm() + np.array([50.0, 50.0, 0.0])
     assert np.allclose(terminal.target_mm, want_target)
-    assert terminal.flight_s == pytest.approx(1.2)
+    # Clipped to the box's apex ceiling, then converted to the planner's flight.
+    assert terminal.flight_s == pytest.approx(sc.flight_s(1.5))
 
 
 def test_an_empty_box_ends_the_attempt_before_any_install(sites):
@@ -1549,10 +1647,9 @@ def test_a_learner_with_a_box_swept_for_a_different_apex_is_refused(sites):
     the fix it must refuse NO_ADMISSIBLE_COMMAND before any solve, naming the
     apex and the swept bands."""
     p1, _p2 = sites
-    flight = sc.flight_s(0.5)
-    sch = _single_throw_schedule(p1, 0, T0_ABS + LAUNCH_S, flight=flight)
+    sch = _single_throw_schedule(p1, 0, T0_ABS + LAUNCH_S, apex=0.5)
     inst = _FakeInstaller()
-    learner = _FakeLearner(u=[0.0, 0.0, flight])
+    learner = _FakeLearner(u=[0.0, 0.0, 0.5])
     boxes = [_box(site_pair=(p1.name, p1.name), apex_band_m=(0.85, 0.95))]
     x = ex.SkillExecutor(sch, inst, learner=learner, boxes=boxes)
     lines = x.tick(sch.skills[0].dispatch_s())
@@ -1567,8 +1664,7 @@ def test_a_learner_with_a_box_covering_the_nominal_apex_is_used(sites):
     """The companion case: a schedule whose nominal apex IS covered by a
     swept band uses that box (and clips into it) rather than refusing."""
     p1, _p2 = sites
-    flight = sc.flight_s(0.5)
-    sch = _single_throw_schedule(p1, 0, T0_ABS + LAUNCH_S, flight=flight)
+    sch = _single_throw_schedule(p1, 0, T0_ABS + LAUNCH_S, apex=0.5)
     inst = _FakeInstaller()
     learner = _FakeLearner(u=[100.0, 100.0, 5.0])
     boxes = [_box(site_pair=(p1.name, p1.name), apex_band_m=(0.4, 0.6))]
@@ -1577,7 +1673,7 @@ def test_a_learner_with_a_box_covering_the_nominal_apex_is_used(sites):
     _kind, terminal, _t, _b = inst.calls[0]
     want_target = p1.catch_site_mm() + np.array([50.0, 50.0, 0.0])
     assert np.allclose(terminal.target_mm, want_target)
-    assert terminal.flight_s == pytest.approx(1.2)
+    assert terminal.flight_s == pytest.approx(sc.flight_s(1.5))
 
 
 def test_a_learner_value_error_ends_the_attempt_like_an_empty_box(sites):
@@ -1600,17 +1696,17 @@ def test_outcome_y_is_exact_and_rows_land_in_schedule_order(sites):
     t2 = ROS_T0 + 2.0
     skills = (
         Skill(kind=sg.THROW, ball_id=0, site=p1, t_abs_s=t1, window_s=LAUNCH_S,
-              y_d=(np.zeros(2), FLIGHT_S), target=p1),
+              y_d=(np.zeros(2), APEX_M), target=p1),
         Skill(kind=sg.THROW, ball_id=1, site=p2, t_abs_s=t2, window_s=LAUNCH_S,
-              y_d=(np.zeros(2), FLIGHT_S), target=p2),
+              y_d=(np.zeros(2), APEX_M), target=p2),
     )
     sch = Schedule(skills=skills, flight_s=FLIGHT_S, beat_s=FLIGHT_S,
                   transit_s=FLIGHT_S, dwell_s=0.3, t0_abs_s=t1 - LAUNCH_S)
     inst = _FakeInstaller()
     landings = {
-        0: ex.Landing(pos_mm=p1.catch_site_mm() + np.array([5.0, -3.0, 0.0]),
+        0: _fit_landing(pos_mm=p1.catch_site_mm() + np.array([5.0, -3.0, 0.0]),
                       vel_mm_s=LAND_VEL, t_land_abs_s=t1 + FLIGHT_S + 0.01),
-        1: ex.Landing(pos_mm=p2.catch_site_mm() + np.array([-2.0, 1.0, 0.0]),
+        1: _fit_landing(pos_mm=p2.catch_site_mm() + np.array([-2.0, 1.0, 0.0]),
                       vel_mm_s=LAND_VEL, t_land_abs_s=t2 + FLIGHT_S - 0.02),
     }
     experiences = []
@@ -1631,13 +1727,14 @@ def test_outcome_y_is_exact_and_rows_land_in_schedule_order(sites):
     assert [e.ball_id for e in experiences] == [0, 1]
     exp0 = experiences[0]
     want_xy0 = (landings[0].pos_mm[:2] - p1.catch_site_mm()[:2]) / 1000.0
-    want_flight0 = landings[0].t_land_abs_s - t1
+    # The outcome's third component is the APEX the arrival speed implies.
+    want_apex0 = ex._observed_apex_m(landings[0])
     assert np.allclose(exp0.y[:2], want_xy0)
-    assert exp0.y[2] == pytest.approx(want_flight0)
+    assert exp0.y[2] == pytest.approx(want_apex0)
     assert exp0.caught is True
     assert np.allclose(exp0.x, [p1.cup_mm[0] / 1000.0, p1.cup_mm[1] / 1000.0,
                                 0.0, 0.0])
-    assert np.allclose(exp0.u, [0.0, 0.0, FLIGHT_S])       # no learner: identity
+    assert np.allclose(exp0.u, [0.0, 0.0, APEX_M])         # no learner: identity
 
 
 def test_estimates_inside_the_outcome_guard_are_ignored(sites):
@@ -1654,9 +1751,9 @@ def test_estimates_inside_the_outcome_guard_are_ignored(sites):
     t_land = ROS_T0 + FLIGHT_S
     sch = _single_throw_schedule(p1, ball_id=0, t_release=ROS_T0)
     inst = _FakeInstaller()
-    good = ex.Landing(pos_mm=p1.catch_site_mm() + np.array([7.0, 0.0, 0.0]),
+    good = _fit_landing(pos_mm=p1.catch_site_mm() + np.array([7.0, 0.0, 0.0]),
                       vel_mm_s=LAND_VEL, t_land_abs_s=t_land)
-    bad = ex.Landing(pos_mm=p1.catch_site_mm() + np.array([777.0, 0.0, 0.0]),
+    bad = _fit_landing(pos_mm=p1.catch_site_mm() + np.array([777.0, 0.0, 0.0]),
                      vel_mm_s=LAND_VEL, t_land_abs_s=t_land)
     clock = {'t': ROS_T0}
 
@@ -1706,7 +1803,7 @@ def test_an_outcome_still_finalises_after_a_later_skill_refuses(sites):
     t_land = ROS_T0 + FLIGHT_S
     skills = (
         Skill(kind=sg.THROW, ball_id=0, site=p1, t_abs_s=ROS_T0,
-              window_s=LAUNCH_S, y_d=(np.zeros(2), FLIGHT_S), target=p1),
+              window_s=LAUNCH_S, y_d=(np.zeros(2), APEX_M), target=p1),
         Skill(kind=sg.CATCH, ball_id=0, site=p2, t_abs_s=t_land, window_s=0.278),
     )
     sch = Schedule(skills=skills, flight_s=FLIGHT_S, beat_s=0.578,
@@ -1714,7 +1811,7 @@ def test_an_outcome_still_finalises_after_a_later_skill_refuses(sites):
     inst = _FakeInstaller([
         ex.InstallResult(True, 'OK', 'ok', 0.0, splice_k=0),
         ex.InstallResult(False, ex.SPLICE_TOO_LATE, 'too late', 0.0)])
-    land = ex.Landing(pos_mm=p1.catch_site_mm() + np.array([4.0, 0, 0]),
+    land = _fit_landing(pos_mm=p1.catch_site_mm() + np.array([4.0, 0, 0]),
                       vel_mm_s=LAND_VEL, t_land_abs_s=t_land)
     experiences = []
     x = ex.SkillExecutor(sch, inst, tracker=lambda b: land,
@@ -1736,7 +1833,7 @@ def test_caught_reads_the_observers_evidence_at_finalisation(sites):
     t_land = ROS_T0 + FLIGHT_S
     sch = _single_throw_schedule(p1, ball_id=0, t_release=ROS_T0)
     inst = _FakeInstaller()
-    land = ex.Landing(pos_mm=p1.catch_site_mm(), vel_mm_s=LAND_VEL,
+    land = _fit_landing(pos_mm=p1.catch_site_mm(), vel_mm_s=LAND_VEL,
                       t_land_abs_s=t_land)
     seen = []
 
@@ -1785,7 +1882,7 @@ def _windowed_outcome(sites, *, t_land_obs_offset, seated_window,
     t_sched = ROS_T0 + FLIGHT_S
     sch = _single_throw_schedule(p1, ball_id=0, t_release=ROS_T0)
     inst = _FakeInstaller()
-    land = ex.Landing(pos_mm=p1.catch_site_mm(), vel_mm_s=LAND_VEL,
+    land = _fit_landing(pos_mm=p1.catch_site_mm(), vel_mm_s=LAND_VEL,
                       t_land_abs_s=t_sched + t_land_obs_offset)
     lo, hi = seated_window
 
@@ -1876,7 +1973,7 @@ def test_the_verdict_latches_and_a_re_thrown_ball_cannot_retract_it(sites):
 
 def test_a_wild_observed_landing_cannot_defer_the_row_AT_ALL(sites):
     """A diverged tracker estimate no longer defers the row by the cap — it is
-    refused at admission by ``memory.FLIGHT_RATIO_BAND`` (2026-09-16), so the
+    refused at admission by ``memory.APEX_RATIO_BAND`` (2026-09-16), so the
     row never has an observed landing to hang its window on and closes on the
     SCHEDULE, naming the reason.
 
@@ -1889,8 +1986,7 @@ def test_a_wild_observed_landing_cannot_defer_the_row_AT_ALL(sites):
     p1, _p2 = sites
     t_sched = ROS_T0 + FLIGHT_S
     sch = _single_throw_schedule(p1, ball_id=0, t_release=ROS_T0)
-    land = ex.Landing(pos_mm=p1.catch_site_mm(), vel_mm_s=LAND_VEL,
-                      t_land_abs_s=t_sched + 5.0)
+    land = _land(p1, t_sched + 5.0)
     experiences = []
     lines = []
     x = ex.SkillExecutor(sch, _FakeInstaller(), tracker=lambda b: land,
@@ -1908,7 +2004,7 @@ def test_a_wild_observed_landing_cannot_defer_the_row_AT_ALL(sites):
     assert experiences == []
     out = [ln for ln in lines if 'OUTCOME' in ln]
     assert len(out) == 1
-    assert 'no row: observed flight' in out[0] and 'refused' in out[0]
+    assert 'no row: observed apex' in out[0] and 'refused' in out[0]
     assert float(out[0].split()[0]) == pytest.approx(t_close, abs=0.011)
 
 
@@ -1937,7 +2033,7 @@ def test_the_window_bounds_are_a_pure_function_of_the_row():
     mk = lambda t_obs: ex._PendingOutcome(
         ball_id=0, x=_np.zeros(3), u=_np.zeros(3), t_release_s=0.0,
         t_land_scheduled_s=10.0, target_xy_mm=_np.zeros(2),
-        best_landing=(None if t_obs is None else ex.Landing(
+        best_landing=(None if t_obs is None else _fit_landing(
             pos_mm=_np.zeros(3), vel_mm_s=_np.zeros(3), t_land_abs_s=t_obs)))
     # No landing: both bounds hang off the schedule.
     assert ex.SkillExecutor._outcome_window(mk(None)) == (
@@ -1966,7 +2062,7 @@ def test_no_observer_defaults_caught_to_false(sites):
     t_land = ROS_T0 + FLIGHT_S
     sch = _single_throw_schedule(p1, ball_id=0, t_release=ROS_T0)
     inst = _FakeInstaller()
-    land = ex.Landing(pos_mm=p1.catch_site_mm(), vel_mm_s=LAND_VEL,
+    land = _fit_landing(pos_mm=p1.catch_site_mm(), vel_mm_s=LAND_VEL,
                       t_land_abs_s=t_land)
     experiences = []
     x = ex.SkillExecutor(sch, inst, tracker=lambda b: land,
@@ -2071,7 +2167,7 @@ def test_a_columns_schedule_attributes_every_catch_to_its_own_ball(limits, geom)
     landings = {}
     for sk in sched.skills:
         if sk.kind == sg.CATCH:
-            landings.setdefault(sk.ball_id, []).append(ex.Landing(
+            landings.setdefault(sk.ball_id, []).append(_fit_landing(
                 pos_mm=sk.site.catch_site_mm(), vel_mm_s=arrival.copy(),
                 t_land_abs_s=float(sk.t_abs_s)))
     clock = {'t': T0_ABS - 1.0}
@@ -2209,7 +2305,7 @@ def test_a_catch_only_checks_the_non_launch_rows(sites):
     t_land = ROS_T0 + FLIGHT_S
     sch = _single_catch_schedule(p2, ball_id=0, t_land=t_land)
     inst = _FakeInstaller()
-    land = ex.Landing(pos_mm=p2.catch_site_mm(), vel_mm_s=LAND_VEL,
+    land = _fit_landing(pos_mm=p2.catch_site_mm(), vel_mm_s=LAND_VEL,
                       t_land_abs_s=t_land)
     obs = _obs(ball_evidence=bp.EVIDENCE_UNKNOWN)
     x = ex.SkillExecutor(sch, inst, tracker=_tracker(land),
@@ -2227,7 +2323,7 @@ def test_a_non_fresh_rest_is_exempt_from_the_ladder(sites):
     sitting, 2026-09-13)."""
     sch = _schedule(sites)          # THROW, CATCH, REST — REST is idx 2
     inst = _FakeInstaller()
-    land = ex.Landing(pos_mm=sites[1].catch_site_mm(), vel_mm_s=LAND_VEL,
+    land = _fit_landing(pos_mm=sites[1].catch_site_mm(), vel_mm_s=LAND_VEL,
                       t_land_abs_s=sch.skills[1].t_abs_s)
     state = {'good': True}
     x = ex.SkillExecutor(
@@ -2318,7 +2414,7 @@ def test_a_fresh_origin_rest_still_refuses_a_stale_hand(sites):
 def test_mode_change_mid_attempt_aborts_and_stops_further_dispatch(sites):
     sch = _schedule(sites)          # THROW, CATCH, REST
     inst = _FakeInstaller()
-    land = ex.Landing(pos_mm=sites[1].catch_site_mm(), vel_mm_s=LAND_VEL,
+    land = _fit_landing(pos_mm=sites[1].catch_site_mm(), vel_mm_s=LAND_VEL,
                       t_land_abs_s=sch.skills[1].t_abs_s)
     state = {'mode': True}
     x = ex.SkillExecutor(sch, inst, tracker=_tracker(land),
@@ -2397,7 +2493,7 @@ def test_a_release_with_evidence_produces_no_abort_tracker_path(sites):
     t_land = ROS_T0 + FLIGHT_S
     sch = _single_throw_schedule(p1, ball_id=0, t_release=ROS_T0)
     inst = _FakeInstaller()
-    land = ex.Landing(pos_mm=p1.catch_site_mm(), vel_mm_s=LAND_VEL,
+    land = _fit_landing(pos_mm=p1.catch_site_mm(), vel_mm_s=LAND_VEL,
                       t_land_abs_s=t_land)
     experiences = []
     x = ex.SkillExecutor(
@@ -2512,7 +2608,7 @@ def test_a_tracked_flight_then_a_blind_flight_writes_no_stale_row(sites):
     throw = sch.skills[0]
     catch = sch.skills[1]
     t_land_0 = throw.t_abs_s + FLIGHT_S
-    land0 = ex.Landing(pos_mm=catch.site.catch_site_mm(), vel_mm_s=LAND_VEL,
+    land0 = _fit_landing(pos_mm=catch.site.catch_site_mm(), vel_mm_s=LAND_VEL,
                        t_land_abs_s=t_land_0)
     clock = {'t': None}
 
@@ -2549,7 +2645,7 @@ def test_a_stale_previous_flight_landing_never_confirms_a_release(sites):
     catch = sch.skills[1]
     t_land_0 = throw.t_abs_s + FLIGHT_S
     t_release_1 = float(catch.then_throw.t_release_abs_s)
-    stale = ex.Landing(pos_mm=catch.site.catch_site_mm(), vel_mm_s=LAND_VEL,
+    stale = _fit_landing(pos_mm=catch.site.catch_site_mm(), vel_mm_s=LAND_VEL,
                        t_land_abs_s=t_land_0)
 
     def observer(ball_id, t):
@@ -2571,14 +2667,18 @@ def test_a_stale_previous_flight_landing_never_confirms_a_release(sites):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# Where a CATCH is aimed from — `catch_aim_source` (owner decision 2026-09-15)
+# Where a CATCH is aimed from — `catch_aim_source` (owner decision 2026-09-18)
 #
 # At the 2026-09-15 sitting all 13 self-tosses ended `NO_LANDING`: mocap never
 # produced a marker for the flying ball, so a catch that DEPENDS on the
-# tracker is a catch that never happens.  The live default is now open loop
-# from the schedule's commanded throw state, optionally corrected by the
-# MEASURED hand launch speed (`schedule_hand`).  The tracker path stays, and
-# stays tested, because the sim gate's refine surface is built on it.
+# tracker is a catch that never happens.  The fix was the ORDER, not the
+# source: since 2026-09-18 the live default (`tracker`) aims at the tracker's
+# converged fit when there is one and at the schedule's commanded landing
+# when there is not, never waiting for either — the tracker has confirmed
+# every flight since `ce6d603` (22/22 on 2026-09-17) and the release slips
+# 0.019-0.137 s from its knot, which only an observation can see.  `schedule`
+# and `schedule_hand` (the hand-measured launch-speed correction) stay
+# selectable and stay tested as the open-loop A/B arm.
 # ═════════════════════════════════════════════════════════════════════════════
 
 
@@ -2602,14 +2702,85 @@ def test_an_unknown_aim_source_is_refused_at_construction(sites):
                          catch_aim_source='mocap')
 
 
+def test_a_converged_fit_outranks_the_schedule_prior_at_dispatch(sites):
+    """Step 1 of the ordered rule (owner 2026-09-18).  The fit has seen the
+    ball's ACTUAL release; the prior has not, and the release lags its knot
+    by 0.019-0.137 s throw to throw (2026-09-17) — an error no learner can
+    remove because it does not repeat.  So a fitted landing aims the
+    dispatch even though the prior is available."""
+    sch = _schedule(sites)
+    inst = _FakeInstaller()
+    catch = sch.skills[1]
+    fitted = _fit_landing(
+        pos_mm=sites[1].catch_site_mm() + np.array([40.0, 0.0, 0.0]),
+        vel_mm_s=LAND_VEL, t_land_abs_s=float(catch.t_abs_s) + 0.06)
+    x = ex.SkillExecutor(sch, inst, tracker=_tracker(fitted))
+    x.tick(sch.skills[0].dispatch_s())
+    lines = x.tick(catch.dispatch_s())
+
+    terminal = inst.calls[1][1]
+    assert np.allclose(terminal.landing_mm, fitted.pos_mm)
+    assert terminal.t_land_s == pytest.approx(fitted.t_land_abs_s)
+    assert any('source=tracker' in ln for ln in lines)
+
+
+def test_an_unfitted_landing_ranks_BELOW_the_schedule_prior(sites):
+    """Step 2 beats step 3.  The Kalman fallback's crossing runs 0.06-0.20 s
+    late and grows later through the descent (2026-09-17), so as an aim it is
+    worse than the landing the throw was COMMANDED to achieve — the prior is
+    at least unbiased in time.  The unfitted landing is not discarded, only
+    outranked (see the next test)."""
+    sch = _schedule(sites)
+    inst = _FakeInstaller()
+    catch = sch.skills[1]
+    unfitted = ex.Landing(
+        pos_mm=sites[1].catch_site_mm() + np.array([40.0, 0.0, 0.0]),
+        vel_mm_s=LAND_VEL, t_land_abs_s=float(catch.t_abs_s) + 0.06)
+    x = ex.SkillExecutor(sch, inst, tracker=_tracker(unfitted))
+    x.tick(sch.skills[0].dispatch_s())
+    lines = x.tick(catch.dispatch_s())
+
+    pos, t_land = _predicted(sites, sch)
+    terminal = inst.calls[1][1]
+    assert np.allclose(terminal.landing_mm, pos)
+    assert terminal.t_land_s == pytest.approx(t_land)
+    assert any('source=schedule' in ln for ln in lines)
+
+
+def test_an_unfitted_landing_aims_the_one_catch_nothing_else_can(sites):
+    """Step 3: a ball released before ``t0`` (columns' very first catch) has
+    no prior at all, so a late Kalman crossing beats ``NO_LANDING`` — the aim
+    says which source it came from, because the operator reading the log
+    needs to know this catch was aimed at an unfitted estimate."""
+    p1, p2 = sites
+    t_land = T0_ABS + 0.6
+    sch = Schedule(
+        skills=(Skill(kind=sg.CATCH, ball_id=7, site=p2, t_abs_s=t_land,
+                      window_s=0.6),),
+        flight_s=FLIGHT_S, beat_s=0.578, transit_s=0.6, dwell_s=0.30,
+        t0_abs_s=T0_ABS)
+    unfitted = ex.Landing(pos_mm=p2.catch_site_mm(), vel_mm_s=LAND_VEL,
+                          t_land_abs_s=t_land)
+    inst = _FakeInstaller()
+    x = ex.SkillExecutor(sch, inst, tracker=_tracker(unfitted))
+    catch = sch.skills[0]
+    lines = x.tick(catch.dispatch_s())
+
+    assert [c[0] for c in inst.calls] == [sg.CATCH]
+    assert np.allclose(inst.calls[0][1].landing_mm, unfitted.pos_mm)
+    assert any('source=tracker (no converged fit)' in ln for ln in lines)
+    assert not x.attempt_ended
+
+
 def test_schedule_aim_dispatches_a_standalone_catch_at_its_own_instant(sites):
-    """THE 2026-09-15 FIX.  A STANDALONE catch (no carried throw) whose ball
-    was released earlier in THIS schedule now dispatches at its scheduled
-    instant, aimed at the landing that release was commanded to achieve — the
-    tracker is never asked, so mocap producing nothing cannot end the
-    attempt.  The same schedule under `tracker` ends `NO_LANDING`
-    (:func:`test_a_catch_with_no_tracked_landing_waits_then_ends_at_the_deadline`).
-    """
+    """THE 2026-09-15 FIX, still the open-loop A/B arm.  A STANDALONE catch
+    (no carried throw) whose ball was released earlier in THIS schedule
+    dispatches at its scheduled instant, aimed at the landing that release
+    was commanded to achieve — and under `schedule` the tracker is never
+    asked at all (`_angry_tracker` below is what pins that).  The tracker aim
+    reaches the same terminal when the fit has not converged yet
+    (:func:`test_a_catch_the_tracker_cannot_see_is_aimed_from_the_schedule_prior`);
+    what `schedule` gives up is the refine."""
     sch = _schedule(sites, catch_window_s=0.6)
     inst = _FakeInstaller()
     x = ex.SkillExecutor(sch, inst, tracker=_angry_tracker,
@@ -2638,7 +2809,7 @@ def test_schedule_aim_never_re_aims_from_the_tracker(sites):
     changes nothing here: the schedule's commanded landing IS the aim."""
     sch = _schedule(sites)
     inst = _FakeInstaller()
-    moved = ex.Landing(pos_mm=sites[1].catch_site_mm() + np.array([50., 0., 0.]),
+    moved = _fit_landing(pos_mm=sites[1].catch_site_mm() + np.array([50., 0., 0.]),
                        vel_mm_s=LAND_VEL,
                        t_land_abs_s=sch.skills[1].t_abs_s + 0.05)
     x = ex.SkillExecutor(sch, inst, tracker=_tracker(moved),
@@ -2847,9 +3018,18 @@ def test_schedule_hand_keeps_the_theoretical_aim_when_the_scaled_throw_misses(
 # attempt 3 ended ABORTED_NO_RELEASE with the ball still in the cup.
 
 
-def _land(site, t_land, dx_mm=0.0):
-    return ex.Landing(pos_mm=site.catch_site_mm() + np.array([dx_mm, 0.0, 0.0]),
-                      vel_mm_s=LAND_VEL, t_land_abs_s=t_land)
+def _land(site, t_land, dx_mm=0.0, t_release=None):
+    """A landing estimate whose ARRIVAL SPEED matches the flight it claims.
+
+    Since 2026-09-18 the outcome is the apex the arrival speed implies, so a
+    fixed ``LAND_VEL`` would make every estimate — this flight's, the next
+    flight's, a wild one — report the same apex, and the band would have
+    nothing to bite on. A no-drag symmetric flight of ``T`` arrives at
+    ``g·T/2``, which is the relation the executor's own band assumes."""
+    t_rel = ROS_T0 if t_release is None else t_release
+    vz = -(float(t_land) - float(t_rel)) / 2.0 * 9806.0
+    return _fit_landing(pos_mm=site.catch_site_mm() + np.array([dx_mm, 0.0, 0.0]),
+                      vel_mm_s=np.array([0.0, 0.0, vz]), t_land_abs_s=t_land)
 
 
 def test_the_landing_observation_freezes_at_the_crossing(sites):
@@ -2877,7 +3057,8 @@ def test_the_landing_observation_freezes_at_the_crossing(sites):
         x.tick(t)
         t += 0.025
     assert len(experiences) == 1
-    assert experiences[0].y[2] == pytest.approx(FLIGHT_S + 0.05)
+    assert experiences[0].y[2] == pytest.approx(
+        sc.apex_m(FLIGHT_S + 0.05))                        # this flight's apex
     assert experiences[0].y[0] == pytest.approx(0.006)      # 6 mm, not 444 mm
     assert experiences[0].caught is True
 
@@ -2891,8 +3072,10 @@ def test_a_chained_re_throw_cannot_contaminate_its_own_previous_row(sites):
     t_throw = sch.skills[0].t_abs_s
     t_land = t_throw + FLIGHT_S
     t_rethrow = sch.skills[1].then_throw.t_release_abs_s
-    first = _land(p1, t_land + 0.04, dx_mm=8.0)   # aimed at P1 (the throw's target)
-    second = _land(p1, t_rethrow + FLIGHT_S, dx_mm=321.0)
+    # aimed at P1 (the throw's target); each estimate's arrival speed is its
+    # OWN flight's, so the two report different apexes as the plant would.
+    first = _land(p1, t_land + 0.04, dx_mm=8.0, t_release=t_throw)
+    second = _land(p1, t_rethrow + FLIGHT_S, dx_mm=321.0, t_release=t_rethrow)
     clock = {'t': t_throw}
 
     def tracker(_ball_id):
@@ -2915,7 +3098,7 @@ def test_a_chained_re_throw_cannot_contaminate_its_own_previous_row(sites):
     launch_rows = [e for e in experiences
                    if e.t_abs_s == pytest.approx(t_throw)]
     assert len(launch_rows) == 1
-    assert launch_rows[0].y[2] == pytest.approx(FLIGHT_S + 0.04)
+    assert launch_rows[0].y[2] == pytest.approx(sc.apex_m(FLIGHT_S + 0.04))
     assert launch_rows[0].y[0] == pytest.approx(0.008)
     assert launch_rows[0].caught is True
 
@@ -2929,7 +3112,7 @@ def test_an_out_of_band_estimate_is_refused_at_admission(sites):
     p1, _p2 = sites
     t_sched = ROS_T0 + FLIGHT_S
     pend = ex._PendingOutcome(
-        ball_id=0, x=np.zeros(4), u=np.array([0.0, 0.0, FLIGHT_S]),
+        ball_id=0, x=np.zeros(4), u=np.array([0.0, 0.0, APEX_M]),
         t_release_s=ROS_T0, t_land_scheduled_s=t_sched,
         target_xy_mm=p1.catch_site_mm()[:2])
     good = _land(p1, t_sched, dx_mm=5.0)
@@ -2938,7 +3121,7 @@ def test_an_out_of_band_estimate_is_refused_at_admission(sites):
     assert not ex.SkillExecutor._consider_landing(pend, wild, t_sched - 0.15)
     assert pend.best_landing is good
     assert pend.n_rejected == 1
-    assert pend.rejected_flight_s == pytest.approx(FLIGHT_S + 1.2)
+    assert pend.rejected_apex_m == pytest.approx(sc.apex_m(FLIGHT_S + 1.2))
     # ... and the ordinary refinement (the LAST admissible estimate wins) IS
     # accepted.
     better = _land(p1, t_sched, dx_mm=5.5)
@@ -2950,11 +3133,77 @@ def test_an_out_of_band_estimate_is_refused_at_admission(sites):
     assert pend.best_landing is better
 
 
+def test_a_landing_with_no_converged_fit_never_becomes_a_row(sites):
+    """2026-09-18: only a CONVERGED ballistic fit may become a learner row.
+    16 of the 22 rows written on 2026-09-17 had none, and the Kalman
+    fallback's crossing runs 0.06-0.20 s late with its apex biased the same
+    way — a row built on it teaches the learner a plant that does not exist.
+
+    The estimate here is otherwise perfect (this flight, in band, sampled
+    before the crossing), so ``from_fit`` is the only thing refusing it."""
+    p1, _p2 = sites
+    t_sched = ROS_T0 + FLIGHT_S
+    sch = _single_throw_schedule(p1, ball_id=0, t_release=ROS_T0)
+    unfitted = dataclasses.replace(_land(p1, t_sched, dx_mm=5.0),
+                                   from_fit=False)
+    experiences = []
+    lines = []
+    x = ex.SkillExecutor(sch, _FakeInstaller(), tracker=lambda b: unfitted,
+                         observer=lambda b, t: ex.CAUGHT_EVIDENCE,
+                         on_experience=experiences.append)
+    t = sch.skills[0].dispatch_s() - 0.01
+    while t < t_sched + 2.0:
+        lines.extend(x.tick(t))
+        t += 0.025
+    assert experiences == []
+    out = [ln for ln in lines if 'OUTCOME' in ln]
+    assert len(out) == 1
+    assert 'no converged ballistic fit' in out[0]
+    # The same estimate WITH a fit is a row — nothing else was refusing it.
+    ok_rows = []
+    y = ex.SkillExecutor(_single_throw_schedule(p1, ball_id=0, t_release=ROS_T0),
+                         _FakeInstaller(),
+                         tracker=lambda b: _land(p1, t_sched, dx_mm=5.0),
+                         observer=lambda b, t: ex.CAUGHT_EVIDENCE,
+                         on_experience=ok_rows.append)
+    t = sch.skills[0].dispatch_s() - 0.01
+    while t < t_sched + 2.0:
+        y.tick(t)
+        t += 0.025
+    assert len(ok_rows) == 1
+
+
+def test_a_landing_without_a_converged_fit_never_becomes_a_row(sites):
+    """Since 2026-09-18 the row's three numbers are read off the tracker's
+    converged ballistic fit; a Kalman-fallback landing (``from_fit=False``)
+    is refused at admission with the one sentence the log carries, and it
+    does not move the freeze instant either. 2026-09-17 23:49 memory line 13
+    recorded EXACTLY the commanded flight because the fallback echoed the
+    announcement; this is the row that must not exist."""
+    p1, _p2 = sites
+    t_sched = ROS_T0 + FLIGHT_S
+    pend = ex._PendingOutcome(
+        ball_id=0, x=np.zeros(4), u=np.array([0.0, 0.0, APEX_M]),
+        t_release_s=ROS_T0, t_land_scheduled_s=t_sched,
+        target_xy_mm=p1.catch_site_mm()[:2])
+    kf_only = dataclasses.replace(_land(p1, t_sched, dx_mm=5.0), from_fit=False)
+    assert not ex.SkillExecutor._consider_landing(pend, kf_only, t_sched - 0.20)
+    assert pend.best_landing is None
+    assert pend.n_rejected == 1
+    assert 'no converged ballistic fit' in pend.rejected_reason
+    # The freeze instant is still the scheduled one: nothing moved it.
+    assert ex.SkillExecutor._landing_instant(pend) == pytest.approx(t_sched)
+    fitted = _land(p1, t_sched, dx_mm=5.0)
+    assert ex.SkillExecutor._consider_landing(pend, fitted, t_sched - 0.10)
+    assert pend.best_landing is fitted
+
+
 def test_an_observed_flight_outside_the_band_leaves_no_row(sites):
-    """Belt and braces (``memory.FLIGHT_RATIO_BAND``): a flight that is not a
+    """Belt and braces (``memory.APEX_RATIO_BAND``): an apex that is not a
     near-unit multiple of the commanded one is not an observation of this
-    throw, so the row is DROPPED with the reason named. 2.23 s against a
-    0.857 s command is armB-090 row 1, 2026-09-16."""
+    throw, so the row is DROPPED with the reason named. A 2.23 s flight
+    against a 0.857 s command — armB-090 row 1, 2026-09-16 — arrives 2.6x too
+    fast, i.e. at 6.8x the commanded apex."""
     p1, _p2 = sites
     t_sched = ROS_T0 + FLIGHT_S
     sch = _single_throw_schedule(p1, ball_id=0, t_release=ROS_T0)
@@ -2971,14 +3220,14 @@ def test_an_observed_flight_outside_the_band_leaves_no_row(sites):
     assert experiences == []
     out = [ln for ln in lines if 'OUTCOME' in ln]
     assert len(out) == 1
-    assert 'no row: observed flight 2.232 s outside [0.428, 1.371] of ' \
-           'commanded 0.857 s' in out[0]
+    assert 'no row: observed apex 6.105 m outside [0.225, 2.305] of ' \
+           'commanded 0.900 m' in out[0]
 
 
 def test_a_plant_throwing_25_percent_fast_is_still_IN_band(sites):
     """The band's other side: the measured 2026-09-16 plant (apex 1.38 m on a
-    0.9 m command, i.e. flight 1.238x commanded) must produce a row — that
-    bias is exactly what the learner exists to absorb."""
+    0.9 m command, i.e. flight 1.238x commanded and apex 1.53x) must produce
+    a row — that bias is exactly what the learner exists to absorb."""
     p1, _p2 = sites
     t_sched = ROS_T0 + FLIGHT_S
     sch = _single_throw_schedule(p1, ball_id=0, t_release=ROS_T0)
@@ -2991,7 +3240,7 @@ def test_a_plant_throwing_25_percent_fast_is_still_IN_band(sites):
         x.tick(t)
         t += 0.025
     assert len(experiences) == 1
-    assert experiences[0].y[2] == pytest.approx(1.238 * FLIGHT_S)
+    assert experiences[0].y[2] == pytest.approx(1.238 ** 2 * APEX_M)
 
 
 def test_the_window_closes_before_this_balls_next_release():
@@ -3026,9 +3275,13 @@ def test_the_window_closes_before_this_balls_next_release():
     assert crowded[0] < crowded[1]
 
 
-def _land_at(t_land):
-    return ex.Landing(pos_mm=np.zeros(3), vel_mm_s=np.zeros(3),
-                      t_land_abs_s=t_land)
+def _land_at(t_land, t_release=0.0):
+    """A timing-only landing: its arrival speed follows the flight it claims
+    (see :func:`_land`), so the apex band never refuses a genuine estimate
+    these time-sweep tests mean to admit."""
+    vz = -(float(t_land) - float(t_release)) / 2.0 * 9806.0
+    return _fit_landing(pos_mm=np.zeros(3),
+                      vel_mm_s=np.array([0.0, 0.0, vz]), t_land_abs_s=t_land)
 
 
 def test_the_next_release_lookup_finds_a_carried_throw(sites):
@@ -3056,7 +3309,7 @@ def test_a_crowded_schedule_freezes_at_the_next_release_not_the_schedule():
     t_sched, t_next, t_wild = 10.0, 9.5, 15.0
     eps = ex.OUTCOME_NEXT_RELEASE_EPS_S
     pend = ex._PendingOutcome(
-        ball_id=0, x=np.zeros(4), u=np.array([0.0, 0.0, 10.0]),
+        ball_id=0, x=np.zeros(4), u=np.array([0.0, 0.0, sc.apex_m(10.0)]),
         t_release_s=0.0, t_land_scheduled_s=t_sched,
         target_xy_mm=np.zeros(2), t_next_release_s=t_next)
     wild = _land_at(t_wild)

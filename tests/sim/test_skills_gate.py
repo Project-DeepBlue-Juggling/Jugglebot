@@ -309,18 +309,19 @@ def _small_self_toss_run():
     return cfg, SkillsGate(cfg).run_self_toss_seed(0, policy='A')
 
 
-def test_a_small_self_toss_learner_run_enters_the_flight_band():
-    """From a cold memory, a handful of self-toss throws land the FLIGHT error
-    inside the R3 band (20 ms) well within the 5-throw entry criterion, with
+def test_a_small_self_toss_learner_run_enters_the_apex_band():
+    """From a cold memory, a handful of self-toss throws land the APEX error
+    inside the R3 band (42 mm — the plan's 20 ms of flight, converted at the
+    operating point, 2026-09-18) well within the 5-throw entry criterion, with
     no drops -- the same learner, memory, admissible-box and
     observer/observations wiring the full 25-throw x 5-seed gate uses,
     exercised cheaply."""
     cfg, res = _small_self_toss_run()
     assert res['n_throws_collected'] == 5
     assert res['drops'] == 0
-    assert res['throws_to_band_flight'] is not None
-    assert res['throws_to_band_flight'] <= cfg.band_entry_throws
-    assert res['throws'][-1]['err_flight_ms'] <= cfg.flight_band_s * 1000.0
+    assert res['throws_to_band_apex'] is not None
+    assert res['throws_to_band_apex'] <= cfg.band_entry_throws
+    assert res['throws'][-1]['err_apex_mm'] <= cfg.apex_band_mm
     assert all(t['caught'] for t in res['throws'])
 
 

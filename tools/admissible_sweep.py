@@ -483,14 +483,18 @@ def sweep(*, apexes_m: Sequence[float] = APEXES_M,
                 % center_flight})
         if rect is None:
             landing_xy = ((float('nan'), float('nan')), (float('nan'), float('nan')))
-            flight_bounds = (float('nan'), float('nan'))
+            apex_bounds = (float('nan'), float('nan'))
         else:
             xlo, xhi, ylo, yhi = rect
             landing_xy = ((xlo / 1000.0, xhi / 1000.0), (ylo / 1000.0, yhi / 1000.0))
-            flight_bounds = flight_band
+            # The GRID is swept in flight time (the planner's own input); the
+            # BOX bounds the command, which is an apex since 2026-09-18. The
+            # conversion is `schedule.flight_s`'s exact inverse, so the band
+            # admits the same set of throws either way.
+            apex_bounds = (sc.apex_m(flight_band[0]), sc.apex_m(flight_band[1]))
         boxes.append(ab.AdmissibleBox(
             site_pair=(from_site.name, to_site.name), apex_band_m=apex_band,
-            landing_xy_m=landing_xy, flight_s=flight_bounds, limits=limits_dict,
+            landing_xy_m=landing_xy, apex_m=apex_bounds, limits=limits_dict,
             gate_hash=ghash, swept_at=swept_at))
     return boxes, rows
 
@@ -558,19 +562,19 @@ def _single_apex_boxes(apexes_m: Sequence[float], *, flight_frac: Sequence[float
 
 
 def to_markdown(boxes: List['ab.AdmissibleBox']) -> str:
-    out = ['| site pair | apex band m | landing xy box (mm) | flight band (s) |'
+    out = ['| site pair | apex band m | landing xy box (mm) | apex box (m) |'
           ' limits (vel/acc/jerk mm, hand acc rev) |',
           '|---|---|---|---|---|']
     for box in boxes:
         if box.empty:
-            xy_str, fl_str = 'EMPTY', 'EMPTY'
+            xy_str, ap_str = 'EMPTY', 'EMPTY'
         else:
             (xlo, xhi), (ylo, yhi) = box.landing_xy_m
             xy_str = '[%.0f, %.0f] x [%.0f, %.0f]' % (
                 xlo * 1000.0, xhi * 1000.0, ylo * 1000.0, yhi * 1000.0)
-            fl_str = '%.4f-%.4f' % box.flight_s
+            ap_str = '%.4f-%.4f' % box.apex_m
         out.append('| %s | %.2f-%.2f | %s | %s | %.0f/%.0f/%.0fk, %.0f |' % (
-            box.site_pair, box.apex_band_m[0], box.apex_band_m[1], xy_str, fl_str,
+            box.site_pair, box.apex_band_m[0], box.apex_band_m[1], xy_str, ap_str,
             box.limits['leg_vel_mmps'], box.limits['leg_acc_mmps2'],
             box.limits['leg_jerk_mmps3'] / 1000.0, box.limits['hand_acc_rps2']))
     return '\n'.join(out)

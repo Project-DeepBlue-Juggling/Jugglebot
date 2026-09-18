@@ -246,16 +246,17 @@ class SkillNode(Node):
         self.declare_parameter('site_x_mm', _DEFAULT_SITE_X_MM)
         self.declare_parameter('site_y_mm', _DEFAULT_SITE_Y_MM)
         self.declare_parameter('plant_id', _DEFAULT_PLANT_ID)
-        # Where a CATCH's aim comes from (owner decision 2026-09-15). The
-        # LIVE default is `schedule` — open-loop from the throw state the
-        # schedule COMMANDED — because at the 2026-09-15 sitting all 13
-        # self-tosses ended NO_LANDING: mocap never produced a marker for the
-        # flying ball, so a tracker-dependent aim never happened at all. See
-        # `executor.AIM_SOURCES` for the three values; the executor's own
-        # constructor default stays `tracker` so the sim gate and the R2/R3
-        # tests keep exercising that path, which is why this is passed
-        # EXPLICITLY at every construction below rather than left to default.
-        self.declare_parameter('catch_aim_source', ex.AIM_SCHEDULE)
+        # Where a CATCH's aim comes from (owner decision 2026-09-18). The
+        # LIVE default is `tracker`: the catch is aimed at the tracker's
+        # CONVERGED ballistic fit, with the schedule's commanded landing as
+        # the prior at dispatch, and no step of that order waits (the
+        # 2026-09-15 NO_LANDING sitting was an aim that DEPENDED on a mocap
+        # marker; since `ce6d603` the tracker confirms every flight, 22/22 on
+        # 2026-09-17, and the release slips 0.019-0.137 s from its knot,
+        # which only an observation can see). `schedule` and `schedule_hand`
+        # stay selectable as the open-loop A/B arm — see
+        # `executor.AIM_SOURCES` and `executor._catch_aim`.
+        self.declare_parameter('catch_aim_source', ex.AIM_TRACKER)
         # Owner 2026-09-16: the learner corrects FLIGHT only until the
         # planner's small-lateral-offset banking defect is fixed (see
         # SkillExecutor.lateral_authority_m). mm per axis; 0 = pinned to y_d.
@@ -366,7 +367,8 @@ class SkillNode(Node):
                                  b.landing_position.z], dtype=float),
                 vel_mm_s=np.array([b.landing_velocity.x, b.landing_velocity.y,
                                    b.landing_velocity.z], dtype=float),
-                t_land_abs_s=t_land)
+                t_land_abs_s=t_land,
+                from_fit=bool(b.landing_from_fit))
         self._advance_correlation()
 
     def _now_s(self) -> float:
@@ -416,16 +418,18 @@ class SkillNode(Node):
 
     def _catch_aim_source(self) -> str:
         """The validated ``catch_aim_source`` parameter. An unknown value
-        falls back to the LIVE default (:data:`executor.AIM_SCHEDULE`) with an
+        falls back to the LIVE default (:data:`executor.AIM_TRACKER`) with an
         error logged, rather than refusing the attempt: a typo in a launch
         override must not leave the operator with no catch at all, and the
-        open-loop aim is the safe one to fall back to."""
+        default is the only value a session can fly without having chosen
+        it — falling back to the OTHER arm of an A/B would fly a policy the
+        runsheet does not name."""
         value = str(self.get_parameter('catch_aim_source').value)
         if value not in ex.AIM_SOURCES:
             self.get_logger().error(
                 'catch_aim_source=%r is not one of %s — using %r'
-                % (value, list(ex.AIM_SOURCES), ex.AIM_SCHEDULE))
-            return ex.AIM_SCHEDULE
+                % (value, list(ex.AIM_SOURCES), ex.AIM_TRACKER))
+            return ex.AIM_TRACKER
         return value
 
     def _launch_ratio(self, ball_id: int, t_release_abs_s: float):
@@ -1112,7 +1116,7 @@ class SkillNode(Node):
         appends the row (file I/O, orchestrator thread only — never the 40 Hz
         emitter, plan § 0) and logs it, one line per throw."""
         def _on_experience(exp):
-            # `Memory.append` REFUSES a row outside `FLIGHT_RATIO_BAND`
+            # `Memory.append` REFUSES a row outside `APEX_RATIO_BAND`
             # (2026-09-16) — the executor drops such a row first, so this is
             # the belt-and-braces path, and it must never raise into the tick
             # loop: an exception here would surface as an executor fault and
