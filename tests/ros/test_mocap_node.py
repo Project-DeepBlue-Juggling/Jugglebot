@@ -38,11 +38,16 @@ from jugglebot import mocap_status as ms
 
 # ── Harness ──────────────────────────────────────────────────────────────────
 
-def _fake_iface(*, receiving=True, aligned=True, synced=True, markers=None):
+def _fake_iface(*, receiving=True, aligned=True, synced=True, markers=None,
+                 frame_ros_ns=None):
     """A MocapInterface stand-in.
 
     The real one spins an asyncio thread that connects to QTM on construction,
     so it is replaced wholesale rather than patched method-by-method.
+
+    `frame_ros_ns` backs `latest_frame_ros_ns()` — None (the default) is the
+    real interface's own "not synced yet" return, so every caller that
+    doesn't care gets the same zero-stamp behaviour as before this existed.
     """
     iface = MagicMock()
     iface.is_receiving.return_value = receiving
@@ -51,6 +56,7 @@ def _fake_iface(*, receiving=True, aligned=True, synced=True, markers=None):
     if markers is None:
         markers = np.zeros((5, 4))
     iface.get_ball_butler_markers_base_frame.return_value = markers
+    iface.latest_frame_ros_ns.return_value = frame_ros_ns
     return iface
 
 
@@ -198,6 +204,60 @@ def test_status_survives_an_interface_exception(node):
     node.mocap.is_receiving.side_effect = RuntimeError('boom')
     node._publish_mocap_status()          # must not raise
     assert node.pub_mocap_status.published == []
+
+
+# ════════════════════════════════════════════════════════════════
+# Frame stamp — MocapDataMulti.stamp carries the QTM frame time (2026-09-20)
+# ════════════════════════════════════════════════════════════════
+
+def test_published_frame_carries_the_qtm_derived_stamp():
+    """`_publish_mocap_data` fills `msg.stamp` from `mocap.latest_frame_ros_ns()`
+    — the QTM frame time, not `self.get_clock().now()` at publish time."""
+    frame_ns = 12_345_678_901_234  # arbitrary, deliberately not clock-shaped
+    node = _make_node(_fake_iface(frame_ros_ns=frame_ns))
+    node.mocap.get_all_markers_base_frame.return_value = np.empty((0, 4))
+    node.mocap.get_labelled_markers.return_value = []
+
+    node._publish_mocap_data()
+
+    assert node.pub_mocap.published, 'no frame published'
+    msg = node.pub_mocap.published[-1]
+    assert msg.stamp.sec == frame_ns // 1_000_000_000
+    assert msg.stamp.nanosec == frame_ns % 1_000_000_000
+
+
+def test_published_frame_stamp_is_zero_before_sync():
+    """Before the QTM<->ROS offset is established, `latest_frame_ros_ns()`
+    returns None and the published stamp must stay the zeroed default — not
+    some garbage or the callback clock."""
+    node = _make_node(_fake_iface(frame_ros_ns=None))
+    node.mocap.get_all_markers_base_frame.return_value = np.empty((0, 4))
+    node.mocap.get_labelled_markers.return_value = []
+
+    node._publish_mocap_data()
+
+    assert node.pub_mocap.published, 'no frame published'
+    msg = node.pub_mocap.published[-1]
+    assert msg.stamp.sec == 0
+    assert msg.stamp.nanosec == 0
+
+
+def test_bb_markers_frame_carries_the_same_stamp():
+    """The `bb/markers` publish site (the second `MocapDataMulti()` in
+    `_publish_mocap_data`) stamps from the same `latest_frame_ros_ns()` as
+    `mocap_data` — one frame, one time, two topics."""
+    frame_ns = 9_000_000_000
+    node = _make_node(_fake_iface(
+        frame_ros_ns=frame_ns, markers=_markers_with_visible([0])))
+    node.mocap.get_all_markers_base_frame.return_value = np.empty((0, 4))
+    node.mocap.get_labelled_markers.return_value = []
+
+    node._publish_mocap_data()
+
+    assert node.pub_bb_markers.published, 'no bb/markers frame published'
+    msg = node.pub_bb_markers.published[-1]
+    assert msg.stamp.sec == frame_ns // 1_000_000_000
+    assert msg.stamp.nanosec == frame_ns % 1_000_000_000
 
 
 # ════════════════════════════════════════════════════════════════

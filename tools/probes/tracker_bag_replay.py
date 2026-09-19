@@ -12,9 +12,11 @@ the node agreed with each other and both disagreed with the mocap system.
 
 This probe closes that gap by replaying the bag's own frames, labels included,
 through the SAME `BallTracker` the node builds from the SAME generated config,
-frame by frame in bag order, using each frame's own bag timestamp as
-`current_time`. Nothing here re-implements matching, gating or prediction: if
-this probe says a ball confirms, the node confirms it too.
+frame by frame in bag order, using each frame's own `MocapDataMulti.stamp`
+(the QTM frame time, 2026-09-20) as `current_time` — falling back to the
+bag's log time for bags recorded before that field existed. Nothing here
+re-implements matching, gating or prediction: if this probe says a ball
+confirms, the node confirms it too.
 
 What it reports, per announced ball
 -----------------------------------
@@ -151,6 +153,20 @@ def _stamp(t) -> float:
     return float(t.sec) + float(t.nanosec) * 1e-9
 
 
+def _frame_time(msg, t_bag: float) -> float:
+    """The time to feed the tracker for one `/mocap_data` frame.
+
+    Prefers `msg.stamp` (the QTM frame time, 2026-09-20 — see
+    `MocapDataMulti.msg` and `ball_tracker_node._on_mocap`), so the replay
+    fits against the same clock the live node now does. Falls back to the
+    bag's own log time for bags recorded before this field existed (stamp
+    is the zero default) — `t_bag` is exactly what the pre-2026-09-20 node
+    stamped frames with, so old-bag replays are unchanged.
+    """
+    s = _stamp(msg.stamp)
+    return s if s != 0.0 else t_bag
+
+
 class _Record:
     """Per-announced-ball outcome accumulator."""
 
@@ -243,6 +259,7 @@ def replay(mcap_path: Path, confirm_deadline_s: float, buffer_raw: bool = False)
 
         # /mocap_data — every marker, with its label, exactly as the node now does
         n_frames += 1
+        t_frame = _frame_time(msg, t_bag)
         positions = []
         labels = []
         for mk in msg.markers:
@@ -251,25 +268,25 @@ def replay(mcap_path: Path, confirm_deadline_s: float, buffer_raw: bool = False)
         n_markers += len(positions)
         n_eligible += len(tracker.eligible_markers(positions, labels))
         if buffer_raw:
-            mocap_frames.append((t_bag, [
+            mocap_frames.append((t_frame, [
                 (labels[i], p[0], p[1], p[2]) for i, p in enumerate(positions)]))
 
-        balls = tracker.process_frame(positions, t_bag, labels)
+        balls = tracker.process_frame(positions, t_frame, labels)
 
         for ball in balls:
             rec = records.get(ball.id)
             if rec is None:
                 continue
             if rec.t_confirmed is None and ball.tracking == TrackingConfidence.CONFIRMED:
-                rec.t_confirmed = t_bag - rec.throw_time
+                rec.t_confirmed = t_frame - rec.throw_time
             if (rec.t_confirmed is not None and rec.t_landing_est is None
                     and ball.landing_time and ball.landing_time > 0
                     and ball.frames_tracked >= 1):
-                rec.t_landing_est = t_bag - rec.throw_time
+                rec.t_landing_est = t_frame - rec.throw_time
                 rec.landing_time_est = float(ball.landing_time)
                 rec.landing_pos_est = np.array(ball.landing_position, dtype=float)
             if (rec.ann_landing_time
-                    and t_bag <= rec.ann_landing_time - CATCH_DEADLINE_WINDOW_S
+                    and t_frame <= rec.ann_landing_time - CATCH_DEADLINE_WINDOW_S
                                                       - CATCH_LEAD_S):
                 # Latest sample at or before the executor's deadline
                 rec.dl_tracking = ball.tracking

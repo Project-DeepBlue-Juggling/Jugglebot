@@ -68,6 +68,12 @@ class MocapInterface:
         self._qtm_last_timestamp_us: Optional[int] = None  # For detecting QTM restart
         self._qtm_sync_lock = threading.Lock()
 
+        # The QTM timestamp (µs) of the most recent packet's marker snapshot,
+        # written under data_lock alongside all_markers/labelled_markers
+        # (2026-09-20) so a reader of latest_frame_ros_ns() gets the frame
+        # time that belongs to the markers it also read, not a later one.
+        self._latest_qtm_timestamp_us: Optional[int] = None
+
         # Packet freshness tracking — lets the publisher detect when QTM stops
         # sending data, regardless of whether _on_qtm_disconnect fires.
         self._last_packet_time: Optional[float] = None
@@ -461,6 +467,9 @@ class MocapInterface:
             else:
                 self.all_markers = np.empty((0, 4))
             self.labelled_markers = labelled_markers  # list of (label, x, y, z, residual)
+            # Same snapshot, same lock: the frame's own QTM time travels with
+            # its markers (2026-09-20 — see class docstring reference above).
+            self._latest_qtm_timestamp_us = packet.timestamp
 
         # Update unlabelled residual statistics.
         with self.data_lock:
@@ -558,6 +567,21 @@ class MocapInterface:
         """
         ns = self.qtm_timestamp_to_ros_ns(qtm_timestamp_us)
         return ns / 1e9 if ns is not None else None
+
+    def latest_frame_ros_ns(self) -> Optional[int]:
+        """ROS time (ns) of the most recent marker snapshot's own QTM frame.
+
+        The QTM timestamp is read from the SAME snapshot as
+        get_all_markers_base_frame()/get_labelled_markers() (all three are
+        written together under data_lock in on_packet), then converted
+        through qtm_timestamp_to_ros_ns(). Returns None if either no packet
+        has arrived yet or the clock sync has not been established.
+        """
+        with self.data_lock:
+            qtm_us = self._latest_qtm_timestamp_us
+        if qtm_us is None:
+            return None
+        return self.qtm_timestamp_to_ros_ns(qtm_us)
 
     def get_qtm_sync_status(self) -> dict:
         """Return the current QTM clock sync status for diagnostics."""

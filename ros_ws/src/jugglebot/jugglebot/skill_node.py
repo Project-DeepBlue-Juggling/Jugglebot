@@ -284,6 +284,11 @@ class SkillNode(Node):
         # planner's small-lateral-offset banking defect is fixed (see
         # SkillExecutor.lateral_authority_m). mm per axis; 0 = pinned to y_d.
         self.declare_parameter('learner_lateral_authority_mm', 0.0)
+        # How many re-solves one committed CATCH may spend re-aiming from later
+        # fits (executor.resend_max_per_catch; 2 since 2026-09-18). 0 disables
+        # re-aiming outright -- the A/B knob for a sitting: on 2026-09-18 16:16
+        # 18 of 21 timing-only re-sends were refused LIMIT_JERK, each a solve.
+        self.declare_parameter('catch_resend_max', 2)
 
         # ── the install client + tick timer share ONE reentrant group ──────
         # Fixed 2026-09-13 (found by reading, never exercised live): `main`
@@ -449,6 +454,17 @@ class SkillNode(Node):
         if tracker_id is None:
             return None
         return self._balls.get(int(tracker_id))
+
+    def _catch_resend_max(self) -> int:
+        """`catch_resend_max`, clamped to 0..5 with a WARN outside it -- a
+        bound on a cost (solves per catch), never a policy, so an out-of-range
+        value is clamped rather than refused."""
+        raw = int(self.get_parameter('catch_resend_max').value)
+        cap = min(max(raw, 0), 5)
+        if cap != raw:
+            self.get_logger().warn('catch_resend_max %d outside 0..5 -- using %d'
+                                   % (raw, cap))
+        return cap
 
     def _catch_aim_source(self) -> str:
         """The validated ``catch_aim_source`` parameter. An unknown value
@@ -1012,6 +1028,7 @@ class SkillNode(Node):
         self._executor = SkillExecutor(
             schedule, self._installer, tracker=self._tracker,
             catch_aim_source=self._catch_aim_source(),
+            resend_max_per_catch=self._catch_resend_max(),
             launch_ratio=self._launch_ratio)
         response.success = True
         response.message = ('columns schedule compiled: %d skills, %d throws, '
@@ -1335,6 +1352,7 @@ class SkillNode(Node):
         self._executor = SkillExecutor(
             schedule, self._installer, tracker=self._tracker,
             catch_aim_source=self._catch_aim_source(),
+            resend_max_per_catch=self._catch_resend_max(),
             launch_ratio=self._launch_ratio,
             learner=learner, boxes=boxes,
             lateral_authority_m=float(self.get_parameter(

@@ -1846,46 +1846,38 @@ def test_outcome_y_is_exact_and_rows_land_in_schedule_order(sites):
     assert np.allclose(exp0.u, [0.0, 0.0, APEX_M])         # no learner: identity
 
 
-def test_estimates_inside_the_outcome_guard_are_ignored(sites):
-    """A tracker sample taken within ``OUTCOME_GUARD_S`` of its own predicted
-    landing is discarded, and the LAST accepted (pre-crossing) sample stands.
-
-    The tracker here goes silent once the ball is inside the guard band
-    (realistic: the track freezes/prunes around the crossing,
-    ``ball_possession.py``'s "TrackerArrivalSource" docstring), so if the
-    guard did not fire, the noisy in-band read would be the last thing written
-    and would stand at finalisation with nothing later to correct it.
-    """
+def test_a_fitted_estimate_at_or_after_its_crossing_is_admitted_and_the_last_wins(sites):
+    """The crossing guard is RETIRED (2026-09-20). It discarded any sample
+    within ``OUTCOME_GUARD_S`` of its own predicted landing because a KALMAN
+    estimate wobbles at its crossing; a converged ballistic fit is the same
+    parabola read before, at or after its crossing, so the guard only refused
+    the fits that converged late (34 of 60 flights, 2026-09-18 16:16). The
+    last fitted estimate before the next release wins."""
     p1, _p2 = sites
     t_land = ROS_T0 + FLIGHT_S
     sch = _single_throw_schedule(p1, ball_id=0, t_release=ROS_T0)
     inst = _FakeInstaller()
-    good = _fit_landing(pos_mm=p1.catch_site_mm() + np.array([7.0, 0.0, 0.0]),
-                      vel_mm_s=LAND_VEL, t_land_abs_s=t_land)
-    bad = _fit_landing(pos_mm=p1.catch_site_mm() + np.array([777.0, 0.0, 0.0]),
-                     vel_mm_s=LAND_VEL, t_land_abs_s=t_land)
+    early = _fit_landing(pos_mm=p1.catch_site_mm() + np.array([7.0, 0.0, 0.0]),
+                         vel_mm_s=LAND_VEL, t_land_abs_s=t_land)
+    refined = _fit_landing(pos_mm=p1.catch_site_mm() + np.array([4.0, 0.0, 0.0]),
+                           vel_mm_s=LAND_VEL, t_land_abs_s=t_land + 0.005)
     clock = {'t': ROS_T0}
 
     def tracker(ball_id):
-        dt = clock['t'] - t_land
-        if dt < -ex.OUTCOME_GUARD_S:
-            return good                 # well before the crossing: trustworthy
-        if dt <= ex.OUTCOME_GUARD_S:
-            return bad                  # inside the guard band: noisy
-        return None                     # past it: the track has gone silent
+        return early if clock['t'] < t_land - 0.05 else refined
 
     experiences = []
-    x = ex.SkillExecutor(sch, inst, tracker=tracker, on_experience=experiences.append)
+    x = ex.SkillExecutor(sch, inst, tracker=tracker,
+                         observer=lambda b, t: ex.CAUGHT_EVIDENCE,
+                         on_experience=experiences.append)
     t = sch.skills[0].dispatch_s() - 0.01
-    t_end = t_land + ex.CAUGHT_WINDOW_S + 0.05
-    while t < t_end:
+    while t < t_land + 2.0:
         clock['t'] = t
         x.tick(t)
-        t += 0.004                      # fine enough to land samples IN the guard
-
+        t += 0.025
     assert len(experiences) == 1
-    want_xy = (good.pos_mm[:2] - p1.catch_site_mm()[:2]) / 1000.0
-    assert np.allclose(experiences[0].y[:2], want_xy)
+    assert experiences[0].y[0] == pytest.approx(0.004)      # the refined fit stood
+
 
 
 def test_a_blind_flight_produces_no_row(sites):
@@ -3177,35 +3169,26 @@ def _land(site, t_land, dx_mm=0.0, t_release=None):
                       vel_mm_s=np.array([0.0, 0.0, vz]), t_land_abs_s=t_land)
 
 
-def test_the_landing_observation_freezes_at_the_crossing(sites):
-    """The ONE rule: once the ball has landed, the row is closed to new
-    estimates. Here the tracker reports this flight's landing while the ball
-    is in the air and the NEXT flight's landing afterwards (what a re-thrown
-    ball looks like on a continuous track); the row keeps the first."""
+def test_the_landing_observation_freezes_at_the_next_release(sites):
+    """A fitted estimate that only converges AFTER the scheduled crossing still
+    becomes the row (2026-09-20), while an estimate served once this ball's
+    NEXT release has passed is refused -- the freeze moved from the crossing
+    to the next release."""
     p1, _p2 = sites
     t_sched = ROS_T0 + FLIGHT_S
-    sch = _single_throw_schedule(p1, ball_id=0, t_release=ROS_T0)
-    this_flight = _land(p1, t_sched + 0.05, dx_mm=6.0)
-    next_flight = _land(p1, t_sched + 1.15 + FLIGHT_S, dx_mm=444.0)
-    clock = {'t': ROS_T0}
+    t_next = t_sched + 1.0                      # this ball's next release
+    pend = ex._PendingOutcome(
+        ball_id=0, x=np.zeros(4), u=np.array([0.0, 0.0, APEX_M]),
+        t_release_s=ROS_T0, t_land_scheduled_s=t_sched,
+        target_xy_mm=p1.catch_site_mm()[:2], t_next_release_s=t_next)
+    late_fit = _land(p1, t_sched + 0.03, dx_mm=6.0)
+    assert ex.SkillExecutor._consider_landing(pend, late_fit, t_sched + 0.20)
+    assert pend.best_landing is late_fit
+    later = _land(p1, t_sched + 0.03, dx_mm=5.0)
+    assert not ex.SkillExecutor._consider_landing(
+        pend, later, t_next - ex.OUTCOME_NEXT_RELEASE_EPS_S)
+    assert pend.best_landing is late_fit
 
-    def tracker(_ball_id):
-        return (this_flight if clock['t'] < t_sched + 0.05 else next_flight)
-
-    experiences = []
-    x = ex.SkillExecutor(sch, _FakeInstaller(), tracker=tracker,
-                         observer=lambda b, t: ex.CAUGHT_EVIDENCE,
-                         on_experience=experiences.append)
-    t = sch.skills[0].dispatch_s() - 0.01
-    while t < t_sched + 3.0:
-        clock['t'] = t
-        x.tick(t)
-        t += 0.025
-    assert len(experiences) == 1
-    assert experiences[0].y[2] == pytest.approx(
-        sc.apex_m(FLIGHT_S + 0.05))                        # this flight's apex
-    assert experiences[0].y[0] == pytest.approx(0.006)      # 6 mm, not 444 mm
-    assert experiences[0].caught is True
 
 
 def test_a_chained_re_throw_cannot_contaminate_its_own_previous_row(sites):
@@ -3272,10 +3255,12 @@ def test_an_out_of_band_estimate_is_refused_at_admission(sites):
     better = _land(p1, t_sched, dx_mm=5.5)
     assert ex.SkillExecutor._consider_landing(pend, better, t_sched - 0.05)
     assert pend.best_landing is better
-    # Past the crossing the row is FROZEN: nothing is accepted any more.
-    assert not ex.SkillExecutor._consider_landing(pend, good, t_sched + 0.01)
+    # Past the crossing a FITTED estimate is still this flight's parabola and
+    # is admitted (2026-09-20; the freeze sits at the next release, and this
+    # single-throw row has none); the wild one is still refused by the band.
+    assert ex.SkillExecutor._consider_landing(pend, good, t_sched + 0.01)
     assert not ex.SkillExecutor._consider_landing(pend, wild, t_sched + 0.30)
-    assert pend.best_landing is better
+    assert pend.best_landing is good
 
 
 def test_a_landing_with_no_converged_fit_never_becomes_a_row(sites):
@@ -3499,3 +3484,31 @@ def test_a_crowded_schedule_row_never_carries_the_next_flight(sites):
                    if e.t_abs_s == pytest.approx(t_throw)]
     assert launch_rows == []
     assert any('OUTCOME' in ln and 'no row' in ln for ln in lines)
+
+
+def test_a_refused_re_send_ends_re_aiming_for_that_catch(sites):
+    """The sixth re-send fence (2026-09-20): once a re-solve is refused on a
+    limit, the committed aim stands and later fitted estimates are not asked
+    again -- the dive only tightens toward touch-down, and on 2026-09-18 16:16
+    18 of 21 timing-only re-sends were refused LIMIT_JERK, each a solve."""
+    sch = _schedule(sites)
+    land0 = _fit_landing(pos_mm=sites[1].catch_site_mm(), vel_mm_s=LAND_VEL,
+                         t_land_abs_s=sch.skills[1].t_abs_s)
+    box = {'landing': land0}
+    inst = _FakeInstaller()
+    x = ex.SkillExecutor(sch, inst, tracker=lambda b: box['landing'])
+    x.tick(sch.skills[0].dispatch_s())
+    x.tick(sch.skills[1].dispatch_s())
+    n0 = len(inst.calls)
+    inst.verdicts.append(ex.InstallResult(False, 'LIMIT_JERK', 'nope', 0.0))
+    box['landing'] = _fit_landing(pos_mm=land0.pos_mm, vel_mm_s=LAND_VEL,
+                                  t_land_abs_s=sch.skills[1].t_abs_s + 0.040)
+    lines = x.tick(sch.skills[1].dispatch_s() + 0.05)
+    assert len(inst.calls) == n0 + 1
+    assert any('RESEND-REFUSED' in ln and 'no further re-aim' in ln for ln in lines)
+    # A later, further-moved fitted estimate is NOT asked again for this catch.
+    box['landing'] = _fit_landing(pos_mm=land0.pos_mm, vel_mm_s=LAND_VEL,
+                                  t_land_abs_s=sch.skills[1].t_abs_s + 0.080)
+    x.tick(sch.skills[1].dispatch_s() + 0.10)
+    assert len(inst.calls) == n0 + 1
+    assert not x.attempt_ended

@@ -313,9 +313,13 @@ class MocapNode(Node):
 
         unlabelled = self.mocap.get_all_markers_base_frame()
         labelled = self.mocap.get_labelled_markers()
+        frame_ros_ns = self.mocap.latest_frame_ros_ns()
         try:
             msg = MocapDataMulti()
             msg.aligned = is_aligned
+            if frame_ros_ns is not None:
+                msg.stamp.sec = int(frame_ros_ns // 1_000_000_000)
+                msg.stamp.nanosec = int(frame_ros_ns % 1_000_000_000)
 
             # Add labelled markers (with their QTM label)
             for label, x, y, z, residual in labelled:
@@ -373,6 +377,9 @@ class MocapNode(Node):
             bb_markers = self.mocap.get_ball_butler_markers_base_frame()
             if bb_markers is not None and bb_markers.shape[0] > 0:
                 msg = MocapDataMulti()
+                if frame_ros_ns is not None:
+                    msg.stamp.sec = int(frame_ros_ns // 1_000_000_000)
+                    msg.stamp.nanosec = int(frame_ros_ns % 1_000_000_000)
                 for i in range(bb_markers.shape[0]):
                     s = MocapDataSingle()
                     s.position.x = float(bb_markers[i, 0])

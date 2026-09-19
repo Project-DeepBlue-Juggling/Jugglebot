@@ -71,6 +71,13 @@ class BallTrackerNode(Node):
         # Publisher
         self._balls_pub = self.create_publisher(BallStateArray, 'balls', 10)
 
+        # Frame-stamp source tracking (2026-09-20, see _on_mocap): each of
+        # these two transitions logs exactly ONCE, ever — not once per
+        # occurrence — so a flapping clock sync doesn't spam the log.
+        self._mocap_stamp_announced = False  # logged "stamped at the source"
+        self._mocap_fallback_announced = False  # logged the fall-back warning
+        self._mocap_had_stamps = False  # currently/ever in the stamped regime
+
         self.get_logger().info(
             f"BallTrackerNode ready: landing_z={self._landing_z:.1f}mm, "
             f"dt={hw.TRACKING_MOCAP_DT_S*1000:.1f}ms, "
@@ -149,8 +156,31 @@ class BallTrackerNode(Node):
         were ever CONFIRMED and every catch ended `NO_LANDING`. Which label
         QTM picks is a property of its model file, not of the ball, so the
         tracker must not depend on it.
+
+        The frame is stamped at CALLBACK time only as a fallback. Measured
+        2026-09-20 on bag ~/Desktop/rosbags/2026-09-18_16-16-17: under
+        sitting load this callback runs late and unevenly, jittering the
+        ballistic fit's sample times enough (10 ms -> 30 mm at 3 m/s, past
+        the fit's 12 mm residual gate) that the fit never converges — 34/60
+        throws in that bag left the learner no row. `msg.stamp` carries the
+        QTM frame time through `MocapInterface`'s smoothed QTM<->ROS offset
+        instead, so the fit sees the time the frame was actually captured
+        at, not when this callback happened to run.
         """
-        current_time = self.get_clock().now().nanoseconds * 1e-9
+        stamp_ns = msg.stamp.sec * 1_000_000_000 + msg.stamp.nanosec
+        if stamp_ns != 0:
+            current_time = stamp_ns * 1e-9
+            if not self._mocap_stamp_announced:
+                self._mocap_stamp_announced = True
+                self.get_logger().info("mocap frames stamped at the source")
+            self._mocap_had_stamps = True
+        else:
+            current_time = self.get_clock().now().nanoseconds * 1e-9
+            if self._mocap_had_stamps and not self._mocap_fallback_announced:
+                self._mocap_fallback_announced = True
+                self.get_logger().warning(
+                    "mocap frame stamp fell back to callback time "
+                    "(QTM clock sync not established)")
 
         markers = []
         labels = []

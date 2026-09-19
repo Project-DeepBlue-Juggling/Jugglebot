@@ -150,6 +150,9 @@ AIM_SOURCES = (AIM_SCHEDULE, AIM_SCHEDULE_HAND, AIM_TRACKER)
 #: itself predicting is discarded (the prior valid sample, if any, stands);
 #: the whole point is that a Kalman estimate is least trustworthy right at its
 #: own crossing.
+#: RETIRED as an admission test on 2026-09-20 (a converged fit is the same
+#: parabola at its crossing); kept as the band ``tools/probes/
+#: outcome_landing_replay.py`` reproduces the 2026-09-16 rule with.
 OUTCOME_GUARD_S = 0.012
 
 #: Seconds after the LANDING before a throw's outcome finalises.  Named rather
@@ -464,9 +467,10 @@ class _PendingOutcome:
     stands even if a later tick goes blind, and the ball leaving again for its
     NEXT throw must not retract a catch that happened.
 
-    **``best_landing`` is FROZEN at the crossing** (2026-09-16): it is the
-    tracker estimate taken closest to, but before, this flight's landing, and
-    nothing sampled after the ball has landed can replace it -- see
+    **``best_landing`` is FROZEN at this ball's next release** (the crossing,
+    2026-09-16 to 2026-09-20): it is the LAST fitted estimate served for this
+    flight before the ball leaves the cup again, the fit's own parabola
+    whether read before or after the landing -- see
     :meth:`SkillExecutor._consider_landing`. The window itself closes before
     this ball's NEXT scheduled release (:attr:`t_next_release_s`), and a
     finalised row whose observed apex is not within
@@ -1840,10 +1844,11 @@ class SkillExecutor:
         and this ball's next release less
         :data:`OUTCOME_NEXT_RELEASE_EPS_S`.
 
-        Three uses, deliberately ONE instant: it anchors ``t_open``
-        (:meth:`_outcome_window`), it is the FREEZE instant
-        (:meth:`_consider_landing`), and it decides which of several open rows
-        a single SEATED sample belongs to (:meth:`_advance_outcomes`).
+        Two uses, deliberately ONE instant: it anchors ``t_open``
+        (:meth:`_outcome_window`) and it decides which of several open rows a
+        single SEATED sample belongs to (:meth:`_advance_outcomes`). (It was
+        also the admission freeze until 2026-09-20; the freeze now sits at the
+        next release -- :meth:`_consider_landing` test 3.)
 
         The next-release term matters on a CROWDED schedule -- one whose
         re-release falls BEFORE the scheduled landing (a late-arriving plant,
@@ -1881,30 +1886,33 @@ class SkillExecutor:
            still cached by a tracker whose correlation has not re-latched, is
            not this release's outcome (:meth:`_advance_release_evidence` guards
            the same class for the release evidence).
-        2. The sample is taken at least :data:`OUTCOME_GUARD_S` BEFORE the
-           crossing it is itself predicting. This was ``abs(...) >
-           OUTCOME_GUARD_S``, which also admitted samples taken well AFTER
-           their own predicted crossing — i.e. of a ball that has already
-           landed, which is where a re-thrown ball's estimate lives.
-        3. The ball has not landed yet: ``t_abs_s`` is before
-           :meth:`_landing_instant` (the earliest of the scheduled crossing,
-           the best-so-far observed one, and this ball's next release less
-           :data:`OUTCOME_NEXT_RELEASE_EPS_S`). Past that instant the row is
-           FROZEN — no later tick can move it. This is the structural fix for
-           the contamination: a chained self-toss catches and re-throws the
-           SAME ball on ONE continuous tracker track, so from the catch
-           onwards every estimate for that id is about the NEXT flight, and
-           the old rule (last estimate before finalise wins) wrote those —
+        2. RETIRED 2026-09-20 (kept in the numbering so the tests read the
+           same): "the sample is taken at least ``OUTCOME_GUARD_S`` before the
+           crossing it predicts" guarded a KALMAN estimate, least trustworthy
+           at its own crossing. A converged fit is the same parabola read
+           before or after its crossing, so the guard only cost rows: it
+           refused every fit that converged after the landing.
+        3. The sample is taken BEFORE this ball's next scheduled release (less
+           :data:`OUTCOME_NEXT_RELEASE_EPS_S`): past that instant the row is
+           FROZEN -- no later tick can move it. Until 2026-09-20 the freeze sat
+           at the CROSSING, the structural fix for the 2026-09-16
+           contamination (one continuous tracker track through catch and
+           re-throw, so every post-catch estimate was the NEXT flight's --
            2.23 s and 1.16 s flights for a 0.857 s command, ``armB-090``
-           attempt 1, 2026-09-16.
+           attempt 1). Two things retired that need: every announcement mints
+           its own tracker id and the host correlates per RELEASE
+           (2026-09-16), so an estimate served for this row is this flight's
+           fit whenever it is read; and the outcome is now the fit's APEX
+           (2026-09-18), the same parabola after the landing as before it, so
+           a fit that converges after the crossing still yields the row.
         4. The estimate's own crossing is BEFORE this ball's next scheduled
            release (less :data:`OUTCOME_NEXT_RELEASE_EPS_S`). A landing at or
            after the instant the ball leaves the cup again belongs to the next
-           flight no matter which tick it was sampled on — the freeze (test 3)
-           only rules out samples taken after the landing, and on a CROWDED
-           schedule (re-release before the scheduled landing) an in-flight
-           sample can still point past it. Both tests stop at the same
-           instant, on the same margin (:meth:`_landing_instant`,
+           flight no matter which tick it was sampled on — test 3 bounds WHEN
+           a sample may be taken, this one bounds WHAT it may claim, and on a
+           CROWDED schedule (re-release before the scheduled landing) an
+           in-flight sample can still point past the bound. Both stop at the
+           same instant, on the same margin (:meth:`_next_release_bound`,
            :meth:`_bound_by_next_release`).
         5. The apex the estimate's arrival speed implies
            (``schedule.apex_from_vz``) is inside ``memory.APEX_RATIO_BAND`` x
@@ -1943,13 +1951,11 @@ class SkillExecutor:
         t_land = float(landing.t_land_abs_s)
         if t_land <= pend.t_release_s:
             return False                       # test 1: the previous flight
-        if t_land - t_abs_s < OUTCOME_GUARD_S:
-            return False                       # test 2: at/after its crossing
-        if t_abs_s >= SkillExecutor._landing_instant(pend):
-            return False                       # test 3: FROZEN at the crossing
         apex = _observed_apex_m(landing)
         u_apex = float(pend.u[2])
         bound = SkillExecutor._next_release_bound(pend)
+        if bound is not None and t_abs_s >= bound:
+            return False                       # test 3: FROZEN at the next release
         if bound is not None and t_land >= bound:
             # test 4: a landing at or after this ball's NEXT release is the
             # next flight's, whatever the tick it was sampled on.
@@ -1968,7 +1974,7 @@ class SkillExecutor:
             pend.n_rejected += 1
             return False
         pend.best_landing = landing
-        pend.best_lead_s = t_land - t_abs_s
+        pend.best_lead_s = t_land - t_abs_s   # may be negative since 2026-09-20
         return True
 
     def _advance_outcomes(self, t_abs_s: float) -> List[str]:
@@ -2168,7 +2174,8 @@ class SkillExecutor:
         catch was dispatched on cannot know this throw's release slip
         (0.019-0.137 s, 2026-09-17) and the fit can.
 
-        Five fences, one physical fact each. Two are TIMING and unchanged
+        Six fences, one physical fact each (the sixth, 2026-09-20: a refused
+        re-solve ends re-aiming for that catch -- see the refused branch). Two are TIMING and unchanged
         since 2026-09-12: nothing is re-sent inside :attr:`catch_freeze_s` of
         touch-down (the hand is already decelerating into the ball and a
         re-solve there is a change nothing can execute), and nothing is
@@ -2230,12 +2237,19 @@ class SkillExecutor:
         self._resend_counts[idx] = self._resend_counts.get(idx, 0) + 1
         if not res.accepted:
             # The committed catch stands — a refused RE-aim is strictly better
-            # than no catch, so the attempt continues.
-            self._live_catch = (idx, terminal, t_abs_s)
+            # than no catch, so the attempt continues. And it is TERMINAL for
+            # this catch (2026-09-20): a re-solve refused on a limit only gets
+            # worse as the dive tightens toward touch-down — on 2026-09-18
+            # 16:16, 18 of 21 timing-only re-sends were refused LIMIT_JERK,
+            # most the SECOND refusal for the same catch, each a 40-130 ms
+            # solve on the orchestrator thread. The next fitted estimate is
+            # not asked again.
+            self._live_catch = None
             return clamp_lines + [
                     '%.3f RESEND-REFUSED %s at skill %d: the fit moved the '
-                    'landing %.1f mm / %+.3f s — %s'
-                    % (t_abs_s, res.code, idx, moved_mm, moved_s, res.message)]
+                    'landing %.1f mm / %+.3f s — %s; no further re-aim for '
+                    'this catch' % (t_abs_s, res.code, idx, moved_mm, moved_s,
+                                    res.message)]
         self._live_catch = (idx, new_terminal, t_abs_s)
         return clamp_lines + [
                 '%.3f RESEND skill %d: the fit moved the landing %.1f mm / '

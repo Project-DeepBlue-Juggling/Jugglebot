@@ -224,6 +224,7 @@ class MocapDataSingle:
 class MocapDataMulti:
     markers: list = field(default_factory=list)
     aligned: bool = False
+    stamp: object = field(default_factory=lambda: MsgTime())
 
 
 @dataclass
@@ -297,6 +298,25 @@ class TargetFeedback:
     reason: str = ''
     arrival_time: float = 0.0
     source: str = ''
+
+
+@dataclass
+class BallState:
+    """Stand-in for jugglebot_interfaces/msg/BallState — needed to import
+    `ball_tracker_node` under the mocked ROS2 layer (2026-09-20, added
+    alongside MocapDataMulti.stamp; no prior test imported this module)."""
+    header: object = field(default_factory=lambda: MagicMock())
+    id: int = 0
+    status: int = 0
+    tracking: int = 0
+    source: str = ''
+    destination: str = ''
+    position: object = field(default_factory=lambda: Point())
+    velocity: object = field(default_factory=lambda: Vector3())
+    landing_position: object = field(default_factory=lambda: Point())
+    landing_velocity: object = field(default_factory=lambda: Vector3())
+    time_at_land: object = field(default_factory=lambda: MsgTime())
+    landing_from_fit: bool = False
 
 
 @dataclass
@@ -1132,6 +1152,7 @@ _create_mock_module('jugglebot_interfaces.msg', {
     'PlatformPoseCommand': PlatformPoseCommand,
     'DynamicTargetCommand': DynamicTargetCommand,
     'TargetFeedback': TargetFeedback,
+    'BallState': BallState,
     'BallStateArray': BallStateArray,
 })
 _create_mock_module('jugglebot_interfaces.srv', {

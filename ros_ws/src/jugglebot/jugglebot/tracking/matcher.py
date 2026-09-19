@@ -108,6 +108,13 @@ class BallTracker:
         flight_fit_freeze_above_plane_mm: float = 250.0,
     ):
         self.dt = dt
+        #: Wall time of the previous processed frame -- the Kalman predict steps by
+        #: the MEASURED interval, not the nominal ``dt`` (2026-09-18): the bags run
+        #: at ~192 Hz (5.2 ms) against a 5.0 ms nominal, so a nominal step ran the
+        #: filter clock 4 % slow and its state drifted behind the ball through
+        #: every flight. Clamped to [0.4, 4] x nominal so a dropped frame or a
+        #: replay restart never becomes one giant leap.
+        self._last_frame_time: Optional[float] = None
         self.landing_z = landing_z
         self.match_threshold_base_mm = match_threshold_base_mm
         self.gate_radius_mm = gate_radius_mm
@@ -322,11 +329,12 @@ class BallTracker:
         # 1. Time-based transitions (TO_BE_THROWN → IN_FLIGHT)
         self._check_throw_times(current_time)
 
-        # 2. Predict all Kalman filters forward
+        # 2. Predict all Kalman filters forward, by the measured frame interval
+        dt = self._frame_dt(current_time)
         for ball_id, kf in self._filters.items():
             ball = self._balls[ball_id]
             if ball.status == BallStatus.IN_FLIGHT:
-                kf.predict()
+                kf.predict(dt)
 
         # 3. Associate markers to existing CONFIRMED in-flight balls
         used_markers = self._associate_confirmed_balls(markers, current_time)
@@ -344,7 +352,19 @@ class BallTracker:
         # 7. Cleanup terminal balls past retention
         self._cleanup_terminal(current_time)
 
+        self._last_frame_time = float(current_time)
         return list(self._balls.values())
+
+    def _frame_dt(self, current_time: float) -> float:
+        """The interval the Kalman filters step by on this frame: the measured
+        gap to the previous frame, clamped to ``[0.4, 4] x self.dt``; the
+        nominal ``dt`` on the first frame or a non-advancing clock."""
+        if self._last_frame_time is None:
+            return float(self.dt)
+        gap = float(current_time) - self._last_frame_time
+        if not gap > 0.0:
+            return float(self.dt)
+        return float(min(max(gap, 0.4 * self.dt), 4.0 * self.dt))
 
     @property
     def active_balls(self) -> List[Ball]:
