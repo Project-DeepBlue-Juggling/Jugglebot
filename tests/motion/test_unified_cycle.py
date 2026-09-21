@@ -899,6 +899,34 @@ def test_the_extend_gate_range_covers_every_validate_cycle_stencil(ring, limits,
     assert reaches['leg jerk'] == 1, reaches
 
 
+def _knot_leg_accels(plan, geom):
+    """``(left, right)`` — ``|leg acc|`` at every knot, from BOTH sides.
+
+    ``right[k]`` is the limit at knot ``k`` approached from above, ``left[k]`` the
+    limit at knot ``k+1`` approached from below.  The pose channel is a cubic
+    Hermite, so acceleration is LINEAR inside a span and the two limits at an
+    interior knot are generally different numbers; the gate's grid sees only one
+    of them (which one is float luck — see the caller's docstring).
+
+    Sampled a picosecond either side of the knot instant rather than at it: linear
+    inside the span means a 1e-12 s offset of a 0.025 s span costs 4e-11 relative
+    and nothing else, and it avoids reaching into ``cycle_plan``'s Hermite.  The
+    chain afterwards is ``validate_cycle``'s own — ``J·accel + J̇·twist`` on the
+    same batched Jacobian — so these are the gate's quantity, not a model of it.
+    """
+    n, dt = int(plan.n_knots), float(plan.dt)
+    ks = np.arange(n - 1)
+    out = []
+    for ts in ((ks + 1) * dt - 1e-12, ks * dt + 1e-12):
+        poses, twists, accels = plan.states_at(ts)
+        J, _lv, _R = fz._batched_jacobian(poses, geom)
+        J_dot = fz._batched_jacobian_dot(poses, twists, geom)
+        a = (np.einsum('nij,nj->ni', J, accels)
+             + np.einsum('nij,nj->ni', J_dot, twists))
+        out.append(np.max(np.abs(a), axis=1))
+    return out[0], out[1]
+
+
 def test_the_joined_report_carries_the_WHOLE_plans_peaks(long_ring, limits,
                                                          geom):
     """Bounding the gate must not shrink what ``meta.report`` describes.
@@ -919,12 +947,40 @@ def test_the_joined_report_carries_the_WHOLE_plans_peaks(long_ring, limits,
     shorter plan; the jerk amplifies it because it divides a difference by
     ``dt/4``.  2.4e-10 of 39 752 mm/s³ is 1e-5 mm/s³ against a 150 000 limit, so
     it cannot move a verdict.
+
+    **``peak_leg_acc_mmps2`` is carved out, and the reason is measured, not a
+    tolerance** (2026-09-20, ``scratchpad/probe_u7{b,d,e}.py``).  Leg acceleration
+    is DISCONTINUOUS at a knot — the pose channel is a cubic Hermite, so the
+    acceleration is linear inside a span and jumps across the join — and
+    ``validate_cycle``'s grid reads only ONE side of each knot.  Which side is
+    decided by the last bit of ``t / dt`` inside ``CyclePlan._locate_batch``:
+    ``4.05 / 0.025`` falls a ULP short of 162 and reads the LEFT limit of knot
+    162, while the same instant on the extend's range view (whose grid starts at
+    knot 135) divides exactly and reads the RIGHT limit.  The two readings at
+    that knot are **417.4568** and **404.4773 mm/s²** — which is precisely the
+    merged/whole disagreement, 3.109e-2 relative.  It is NOT a seam effect: the
+    head is bit-identical across every extend (max |Δpose| = 0.0 over the chain)
+    and joined knot 162 is knot 26 of the third STEADY window, 26 knots from the
+    nearest seam.  Neither reading is the truth: the plan's true two-sided
+    supremum is **468.2153 mm/s²** at joined knot 48, so the gate itself
+    under-measures peak leg acceleration by 10.8 % here (13.6 % on the 137-knot
+    chain).  That is a PRE-EXISTING property of the sampled gate — at HEAD the
+    same chain measures 739.4640 for grid, sup AND merged, so the lottery was
+    latent rather than absent — and closing it means sampling both sides at every
+    knot in ``feasibility.validate_cycle``, which moves every acc golden number in
+    the suite and is owner-scheduled, not done here.
+
+    So the assertion below is the mechanism rather than a widened bar: the
+    shortfall must be at most the two-sided spread AT THE KNOT the whole-plan grid
+    read from the other side.  A merged report that missed a peak for any other
+    reason — a window whose own gate never ran, a range that stopped short — is
+    short by more than one knot's spread and fails here.
     """
     plan, meta, _rows = long_ring
     full = fz.validate_cycle(plan, limits, geom)
     assert full.ok and meta.report.ok
     worst = 0.0
-    for name in ('peak_leg_vel_mmps', 'peak_leg_acc_mmps2',
+    for name in ('peak_leg_vel_mmps',
                  'peak_leg_jerk_mmps3', 'peak_leg_ext_mm', 'peak_step_rev',
                  'peak_hand_rev', 'peak_hand_vel_rps', 'peak_hand_acc_rps2',
                  'peak_hand_step_rev'):
@@ -932,6 +988,28 @@ def test_the_joined_report_carries_the_WHOLE_plans_peaks(long_ring, limits,
         assert whole > 0.0, name          # non-vacuity: every field is populated
         worst = max(worst, abs(merged - whole) / abs(whole))
     assert worst < 1e-9, worst
+
+    # The acc field, against the plan's own two-sided knot accelerations.
+    left, right = _knot_leg_accels(plan, geom)
+    sup2 = max(float(left.max()), float(right.max()))
+    merged_a = float(meta.report.peak_leg_acc_mmps2)
+    whole_a = float(full.peak_leg_acc_mmps2)
+    assert whole_a > 0.0 and merged_a > 0.0
+    # Neither reading can exceed the true supremum...
+    assert whole_a <= sup2 * (1.0 + 1e-9), (whole_a, sup2)
+    assert merged_a <= sup2 * (1.0 + 1e-9), (merged_a, sup2)
+    # ...and the merged one is short by at most the spread at the knot the
+    # whole-plan grid read.  `left[k]` is the left limit at knot k+1, `right[k]`
+    # the right limit at knot k, so both sides of knot k+1 are (left[k], right[k+1]).
+    # (The 1e-6 relative slack absorbs the helper's picosecond nudge, which is
+    # 4e-11 of a span; the bound it guards is 12.98 of 417.46.)
+    spreads = [abs(float(left[k]) - float(right[k + 1]))
+               for k in range(len(left) - 1)
+               if (abs(float(left[k]) - whole_a) <= 1e-6 * whole_a
+                   or abs(float(right[k + 1]) - whole_a) <= 1e-6 * whole_a)]
+    assert spreads, ('the whole-plan acc peak is not at a knot', whole_a)
+    assert merged_a >= whole_a - max(spreads) * (1.0 + 1e-6), (
+        merged_a, whole_a, max(spreads))
     # Non-vacuous the other way too: the head really does own some of the peaks,
     # so a tail-only report would have been visibly wrong. The LAUNCH's hand
     # stroke is the biggest in the plan.
@@ -2041,27 +2119,64 @@ def test_a_tightened_limit_applies_from_the_NEXT_window_not_retroactively(
     which would test nothing about inheritance.  MEASURED (2026-09-07): the
     LAUNCH + STEADY head peaks at **39 752 mm/s³** while a 2.0 s STEADY off it
     peaks at **17 823**, so a 19 876 limit refuses the head and admits the window.
+
+    **The tightened limit is DERIVED, not a fraction** (2026-09-20).  It has to
+    sit strictly between two numbers that both move with the planner: the 2.0 s
+    window's own achievable leg jerk (below it, nothing plans) and the head's
+    measured peak (at or above it, the head is not refused and the test is
+    vacuous).  The 0.5 fraction this test used to hardcode was a 2026-09-07
+    coincidence — it sat at 0.448 of the head's peak then, and the cup-contact
+    work moved the head's peak down 39 752 → **24 353** (−39 %) while the window's
+    floor fell only 17 823 → **14 229** (−20 %), putting the ratio at **0.584**
+    and the fraction below the floor.  MEASURED the same day
+    (``scratchpad/probe_u7f.py``) with C-CUP-2's contact floor DISABLED: head
+    24 909, floor 12 803, ratio **0.514** — still above 0.5, so the contact floor
+    is not what broke the fraction; the fraction was never derived.  So the
+    window's floor is probed first and the limit set just above it, which is
+    self-maintaining and asserts the property that actually matters — that a gap
+    exists at all.
     """
     (joined, meta), _ = ring[0]
     head_jerk = float(meta.report.peak_leg_jerk_mmps3)
     assert head_jerk > 0.0
-    tight = TrajectoryLimits.from_config(hw).with_session_limits(
-        leg_vel_mmps=SESSION_LEG_VEL, leg_acc_mmps2=SESSION_LEG_ACC,
-        leg_jerk_mmps3=head_jerk * 0.5)
+    slower = _goals(period_s=2.0, catch_frac=0.6 / 2.0)
+    state = uc.release_state_from_meta(meta, joined)
+
+    def _tight(jerk):
+        return TrajectoryLimits.from_config(hw).with_session_limits(
+            leg_vel_mmps=SESSION_LEG_VEL, leg_acc_mmps2=SESSION_LEG_ACC,
+            leg_jerk_mmps3=jerk)
+
+    # Probe the 2.0 s window's own FLOOR: plan it against a limit low enough to
+    # bind.  It either plans (and its report carries the achieved peak) or it is
+    # refused for LIMIT_JERK, in which case the refused report carries the same
+    # number — the planner shaped as far down as it could and still missed.
+    try:
+        probe = uc.plan_steady(slower, state, _tight(head_jerk * 0.5), geom)
+        floor_jerk = float(probe[1].report.peak_leg_jerk_mmps3)
+    except uc.CycleInfeasible as exc:
+        assert exc.code == fz.LIMIT_JERK, exc.outcome()
+        floor_jerk = float(exc.report.peak_leg_jerk_mmps3)
+    # ...and there has to BE a gap between that floor and the head's peak.  If
+    # this ever fails, a session whose limits are lowered mid-flight can no longer
+    # plan the next window at any limit the head violates — a real loss of
+    # operating envelope, not a fixture nit, and it must reach the owner rather
+    # than be papered over by widening a fraction.
+    tight_jerk = floor_jerk * 1.02
+    assert tight_jerk < head_jerk, (floor_jerk, head_jerk)
+    tight = _tight(tight_jerk)
     # The head really would be refused under the new limits...
     refused = fz.validate_cycle(joined, tight, geom)
     assert not refused.ok and refused.code == fz.LIMIT_JERK
     # ...but a window that FITS them still chains on, because the head is
     # inherited and the cliff is the thing worth avoiding.
-    slower = _goals(period_s=2.0, catch_frac=0.6 / 2.0)
-    window = uc.plan_steady(slower, uc.release_state_from_meta(meta, joined),
-                            tight, geom)
+    window = uc.plan_steady(slower, state, tight, geom)
     chained, meta2 = uc.extend(joined, meta, window[0], window[1], tight, geom)
     assert meta2.report.ok
     assert chained.n_knots > joined.n_knots
     # The NEW window was judged against the NEW limits — it had to pass its own
     # `plan_cycle` gate at them, and the joined gate re-measured its range there.
-    assert float(window[1].report.peak_leg_jerk_mmps3) <= head_jerk * 0.5
+    assert float(window[1].report.peak_leg_jerk_mmps3) <= tight_jerk
     # The label still says "whole plan": the head's peaks are unchanged and were
     # merged, so the report describes the whole thing — it simply describes it
     # against two different limit sets, which is what the docstring is about.
@@ -2622,6 +2737,119 @@ def test_announced_landing_is_the_ballistic_target(launch):
                                        meta.releases[0].flight_s))
 
 
+def _tiny_plan(n_knots, contact_knots=None, dt=None):
+    """A minimal :class:`CyclePlan` for exercising ``_shift_contact``/
+    ``_join_contact`` in isolation — the pose/hand arrays carry no meaning,
+    only ``n_knots`` and ``contact_knots`` matter to the functions under test.
+    """
+    dt = float(hw.JB_TRAJ_KNOT_DT_S) if dt is None else dt
+    pose = np.tile(np.array([0.0, 0.0, 750.0, 0.0, 0.0, 0.0]), (n_knots, 1))
+    pose_vel = np.zeros((n_knots, 6))
+    hand_rev = np.zeros(n_knots)
+    hand_vel_rps = np.zeros(n_knots)
+    return CyclePlan(pose=pose, pose_vel=pose_vel, hand_rev=hand_rev,
+                     hand_vel_rps=hand_vel_rps, dt=dt,
+                     contact_knots=contact_knots)
+
+
+def test_concat_plans_shifts_the_tails_ranges_and_concatenates():
+    """``_concat_plans`` (what every ``extend`` runs) shifts ``plan_b``'s
+    ranges by ``n_a - 1`` (``b``'s knot 0 lands on ``a``'s terminal knot, the
+    duplicate dropped) and CONCATENATES with the head's own ranges — never
+    keeps only one side. ``_join_contact``'s own docstring gives the reason: a
+    LAUNCH+STEADY needs BOTH windows on the joint clock, or the release dive
+    between them — measured -48366 mm/s^2 on the chained fixture, 7x the floor
+    — is silently ungated.
+
+    Two disjoint windows survive as two ranges; windows that TOUCH after the
+    shift (no knot gap between them) merge into one — the same discipline
+    ``_join_contact`` documents for a chained plan whose two events' windows
+    abut.
+    """
+    # Disjoint: a=(1,1) untouched; b=(1,1) shifted by n_a-1=3 -> (4,4). Gap at
+    # knot 2-3 (nothing there), so both survive as separate ranges.
+    plan_a = _tiny_plan(4, contact_knots=(1, 1))
+    plan_b = _tiny_plan(4, contact_knots=(1, 1))
+    joined = uc._concat_plans(plan_a, plan_b, catch_k=-1)
+    assert joined.n_knots == 7  # 4 + 4 - 1 (duplicate seam knot dropped)
+    assert joined.contact_knots == ((1, 1), (4, 4))
+
+    # Touching: a=(1,2); b=(0,0) shifted by n_a-1=3 -> (3,3), which starts
+    # exactly one knot after a's ends (k0=3 <= a's k1=2 + 1) -> merges.
+    touching_a = _tiny_plan(4, contact_knots=(1, 2))
+    touching_b = _tiny_plan(4, contact_knots=(0, 0))
+    joined_touch = uc._concat_plans(touching_a, touching_b, catch_k=-1)
+    assert joined_touch.contact_knots == ((1, 3),)
+
+
+def test_every_cycleplan_construction_path_carries_contact_knots(
+        launch, steady, limits, geom):
+    """C-CUP-2's ``contact_knots`` must survive every site that builds a
+    :class:`CyclePlan` (``handoff_u3.md``'s grep: the ctor, ``from_realized``,
+    ``_realize`` (via ``plan_launch``/``plan_steady``), ``_concat_plans`` (via
+    ``extend``), the tail slice (``_gate_view``), the head slice
+    (``_head_view``), and ``splice_at``/``replan_tail`` — implemented AS
+    ``_head_view`` + ``extend`` by the module's own docstring, so exercising
+    ``replan_tail`` exercises both).
+
+    This is the "a constructor that drops the field silently makes the gate
+    vacuous" class test: a future edit to any ONE of these sites that forgets
+    to carry ``contact_knots`` across is a silent safety regression (the
+    ``CUP_CONTACT_ACC`` gate goes vacuous for every plan built through it),
+    not a loud one, so the defence is enumerating every site in one test
+    rather than trusting each site's own local test to notice.
+    """
+    cases = []
+
+    # 1. The ctor itself.
+    ctor_plan = CyclePlan(pose=launch[0].pose, pose_vel=launch[0].pose_vel,
+                          hand_rev=launch[0].hand_rev,
+                          hand_vel_rps=launch[0].hand_vel_rps, dt=launch[0].dt,
+                          contact_knots=(1, 2))
+    cases.append(('ctor', ctor_plan.contact_knots))
+
+    # 2. from_realized — a duck-typed input carrying the field via getattr.
+    class _FakeRealized:
+        pose = launch[0].pose
+        pose_vel = launch[0].pose_vel
+        slider_rev = launch[0].hand_rev
+        slider_vel_rev_s = launch[0].hand_vel_rps
+        dt = launch[0].dt
+        catch_k = -1
+        contact_knots = (1, 2)
+
+    cases.append(('from_realized',
+                  CyclePlan.from_realized(_FakeRealized()).contact_knots))
+
+    # 3. `_realize`, via `plan_launch`/`plan_steady` — the fixtures ARE this path.
+    cases.append(('_realize (plan_launch)', launch[0].contact_knots))
+    cases.append(('_realize (plan_steady)', steady[0].contact_knots))
+
+    # 4. `_concat_plans`, via `extend` — both windows must survive the join.
+    joined, _ = uc.extend(launch[0], launch[1], steady[0], steady[1],
+                          limits, geom)
+    cases.append(('_concat_plans (extend)', joined.contact_knots))
+
+    # 5. the tail slice (`_gate_view`) — keeps the tail half of the window.
+    k = 30
+    cases.append(('_gate_view (tail slice)',
+                  uc._gate_view(steady[0], k).contact_knots))
+
+    # 6. the head slice (`_head_view`) — keeps the head half of the window.
+    head, _ = uc._head_view(steady[0], steady[1], k)
+    cases.append(('_head_view (head slice)', head.contact_knots))
+
+    # 7. `splice_at`, via `replan_tail`.
+    new_site = CATCH_MM + np.array([15.0, 8.0, 0.0])
+    spliced, _ = uc.replan_tail(steady[0], steady[1], 0.0, new_site,
+                                CATCH_V_MM_S, limits, geom, lead_s=0.10)
+    cases.append(('replan_tail/splice_at', spliced.contact_knots))
+
+    for label, contact_knots in cases:
+        assert contact_knots is not None, (
+            f'{label} silently dropped contact_knots')
+
+
 def test_the_hand_step_gate_chain_agrees_end_to_end():
     """Pump gate, ``validate_cycle`` bound and the shipped limit are ONE chain.
 
@@ -2704,6 +2932,42 @@ def test_build_realize_config_follows_the_live_leg_acc_limit():
     assert uc.build_realize_config(base, banking=False).banking_enabled is False
 
 
+def test_build_realize_config_follows_the_live_leg_jerk_limit():
+    """The tilt-JERK cap (C-CUP-3) is DERIVED from the session leg-jerk limit,
+    the same discipline as the accel cap in the test above, and for the
+    stronger reason ``build_realize_config``'s own docstring gives: the
+    session leg-jerk limit is the number ``validate_cycle`` refuses
+    ``LIMIT_JERK`` against, so a schedule shaped for the shipped jerk limit
+    while the session runs at another is shaped against a bound nothing
+    enforces.
+
+    Only DIRECTION and PROPORTIONALITY are pinned here, not the absolute
+    lever: the constant lever factor this test was written against is gone
+    (2026-09-20 — ``cup_realize`` now derives the static reference from
+    ``TILT_ACCEL_LEVER_MM`` and measures the realised composite per call), so
+    asserting the literal cap value or importing a lever constant would pin a
+    number unrelated to this test's actual claim (the map is linear in the
+    session leg-jerk limit, whatever the lever is).
+    """
+    # All three stay under the YAML hard ceiling (JB_TRAJ_LEG_JERK_CEILING_MMPS3
+    # = 200000) so ``with_session_limits`` passes the requested value through
+    # unclamped — the point being the LEVER's linearity, not the ceiling clamp.
+    base = TrajectoryLimits.from_config(hw)
+    caps = {}
+    for leg_jerk in (50000.0, 100000.0, 150000.0):
+        cfg = uc.build_realize_config(
+            base.with_session_limits(leg_jerk_mmps3=leg_jerk))
+        caps[leg_jerk] = float(cfg.tilt_jerk_limit_rad_s3)
+
+    # Direction: a higher session jerk limit raises the tilt-jerk cap.
+    assert caps[50000.0] < caps[100000.0] < caps[150000.0]
+
+    # Proportionality: the cap is LINEAR in the session limit (whatever the
+    # lever), so the ratio between two caps equals the ratio of their inputs.
+    assert caps[150000.0] / caps[100000.0] == pytest.approx(1.5, rel=1e-6)
+    assert caps[100000.0] / caps[50000.0] == pytest.approx(2.0, rel=1e-6)
+
+
 def test_build_cup_config_boxes_the_slider_reachable_band():
     """The cup position box must be the SLIDER's range, not the sim planner's.
 
@@ -2766,15 +3030,36 @@ def test_the_timing_twins_are_read_off_the_plan(steady, landing):
     before a touch-down at 0.770 s, and ``stroke_clear_s`` = 0.156 s after the
     window-start release — i.e. 0.116 s of hand deceleration plus the 0.040 s
     ``ARM_SUPPRESS_MARGIN_S``.
+
+    RE-MEASURED (2026-09-20, ``scratchpad/probe_u7f.py``) under C-CUP-2's contact
+    floor: ``arm_lead_s`` = **0.18470 s** before the same 0.770 s touch-down, and
+    the instant it names is a REVERSAL rather than a rest.  The contact floor
+    makes the cup HOVER (+0.4…+1.6 m/s²) where it used to hold still, so the hand
+    creeps UP at +2.9 rev/s and then turns over into the dive; the last knot at
+    which it is genuinely at rest is knot 15 (t = 0.375 s), 0.395 s before the
+    catch.  With the floor disabled the same fixture reports 0.25540 s and the
+    turn-over sits at −0.27 rev/s, so the reshaped approach is the actor.
+
+    **Why this reads the INSTANT and not the nearest knot.**  The definition
+    returns an interpolated time inside the span that brackets the sign change,
+    and the hand now crosses that span at ~360 rev/s²: the nearest knot (23, at
+    t = 0.575 s) carries **+2.05 rev/s** while the returned instant carries zero.
+    Asserting the knot asserted "the reversal happens to land on the grid", which
+    was true only while the hand left the catch from rest.  So the claim checked
+    here is the definition's own: the plan's hand velocity AT the returned instant
+    is zero, on the plan's own accessor.
     """
     plan, meta = steady
     assert 0.0 < meta.arm_lead_s <= meta.t_catch_s
     assert meta.stroke_clear_s is not None
     assert 0.0 < meta.stroke_clear_s < meta.t_catch_s
-    # The hand really is moving throughout the arm-lead window and stopped at
-    # its start — that is the definition, checked against the track.
-    k_start = int(round((meta.t_catch_s - meta.arm_lead_s) / meta.dt))
-    assert abs(float(plan.hand_vel_rps[k_start])) <= 1.0
+    # The hand really is moving throughout the arm-lead window and stationary at
+    # its start — that is the definition, checked against the track.  The bar is
+    # the bisection's own resolution (`_ZERO_CROSSING_BISECTIONS` halvings of a
+    # 0.025 s span at ~360 rev/s² leave ~1e-11 rev/s), not a tolerance on the
+    # plan: a linearly-interpolated crossing would read +1.197 rev/s here.
+    t_start = float(meta.t_catch_s) - float(meta.arm_lead_s)
+    assert abs(float(plan.hand_at(t_start)[1])) <= 1e-6
     k_mid = int(round((meta.t_catch_s - 0.5 * meta.arm_lead_s) / meta.dt))
     assert abs(float(plan.hand_vel_rps[k_mid])) > 1.0
 

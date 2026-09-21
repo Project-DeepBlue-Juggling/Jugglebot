@@ -228,7 +228,12 @@ def test_tracker_landing_time_is_anchored_to_the_last_sample_not_now():
     est = BallisticEstimator(g)
     t_ref = 5.0
     z0, vz0 = 1200.0, -3000.0          # mm, mm/s -- descending toward CATCH_CUP_Z_MM
-    for dt in (-0.010, -0.005, 0.0):   # three clean samples ending AT t_ref
+    # ``sg._FIT_MIN_SAMPLES`` clean samples ending AT t_ref, on the gate's own
+    # 5 ms observation period: the tracker reports nothing below that count
+    # (2026-09-21 — it was 3 until an n=3 fit re-aimed a catch 113 mm off the
+    # ball; the count is the robot fit's own ``min_samples``).
+    for k in range(sg._FIT_MIN_SAMPLES - 1, -1, -1):
+        dt = -0.005 * k
         t = t_ref + dt
         z = z0 + vz0 * dt + 0.5 * float(g[2]) * dt ** 2
         est.add(t, np.array([0.0, 0.0, z]))
@@ -258,7 +263,7 @@ def test_tracker_landing_time_is_anchored_to_the_last_sample_not_now():
 def test_tracker_returns_none_while_the_ball_is_not_airborne():
     """R3-n (2026-09-13, ``/tmp/probe_handoff_capture_v3.py`` /
     ``/tmp/probe_handoff_flip_v3.py``): once a ball is caught, sampling stops
-    but the estimator still holds >= 3 samples from the flight that just
+    but the estimator still holds a whole flight's samples from the one that just
     ended, so an un-gated tracker keeps handing out that FROZEN landing —
     aimed at a flight already over. ``_make_tracker`` must return ``None``
     while ``bstate['airborne']`` is False, matching the robot tracker (whose
@@ -267,7 +272,10 @@ def test_tracker_returns_none_while_the_ball_is_not_airborne():
     est = BallisticEstimator(g)
     t_ref = 5.0
     z0, vz0 = 1200.0, -3000.0
-    for dt in (-0.010, -0.005, 0.0):
+    # ``sg._FIT_MIN_SAMPLES`` samples on the gate's 5 ms observation period —
+    # the tracker's own admission rule since 2026-09-21 (see the constant).
+    for k in range(sg._FIT_MIN_SAMPLES - 1, -1, -1):
+        dt = -0.005 * k
         t = t_ref + dt
         z = z0 + vz0 * dt + 0.5 * float(g[2]) * dt ** 2
         est.add(t, np.array([0.0, 0.0, z]))
@@ -282,7 +290,7 @@ def test_tracker_returns_none_while_the_ball_is_not_airborne():
     plant = _FakePlant()
     tracker = sg._make_tracker(plant, ball_state)
 
-    assert tracker(0) is not None       # airborne, 3 samples -- has a landing
+    assert tracker(0) is not None       # airborne, enough samples -- a landing
 
     ball_state[0]['airborne'] = False   # caught -- sampling stops
     assert tracker(0) is None
@@ -326,16 +334,17 @@ def test_a_small_self_toss_learner_run_enters_the_apex_band():
     assert all(t['caught'] for t in res['throws'])
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    'known defect, plans/active/two-ball-skill-stack.md R3 item (k): the '
-    'dense apex-scoped box (2026-09-14) admits no y landing correction at '
-    '0.9 m because the chained catch fails its 90 % margin for small offsets '
-    'near 0.77/0.81 s flights; the sim aim error is +y, so xy cannot enter '
-    'the band until that planner margin ring is fixed and the box re-swept'))
 def test_a_small_self_toss_learner_run_enters_the_xy_band():
     """The xy half of the R3 band (20 mm) within the 5-throw entry criterion.
-    Strict xfail: it turns into a failure the day xy authority returns, so
-    the marker cannot outlive the fix."""
+
+    Was a strict xfail until 2026-09-21 ("the dense apex-scoped box admits no
+    y landing correction at 0.9 m, so xy cannot enter the band until that
+    planner margin ring is fixed and the box re-swept" — plan R3 item (k)).
+    Both halves have now landed: the cup-contact contract fixed the margin
+    ring the chained catch was failing, and the box re-swept against it admits
+    ±40 mm of lateral at 0.9 m, so the learner has the xy authority this test
+    was waiting for (measured here, seed 0: 37 mm at throw 1, 7 mm by
+    throw 3)."""
     cfg, res = _small_self_toss_run()
     assert res['throws_to_band_xy'] is not None
     assert res['throws_to_band_xy'] <= cfg.band_entry_throws

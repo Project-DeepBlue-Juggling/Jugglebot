@@ -367,6 +367,14 @@ class CycleGoals:
     #: tracker landing estimate produces).
     catch_t_s: Optional[float] = None
     banking_enabled: bool = True
+    #: Whether the cup is holding a ball at knot 0 — C-CUP-2's contact window
+    #: opens there when it is.  EXPLICIT, never inferred from ``post_release``:
+    #: the re-plan/splice paths solve mid-carry tails with ``post_release=False``
+    #: and such a tail can equally be mid-FLIGHT, so inferring would arm the gate
+    #: (and its refusal) for a ball that is not there.  A :data:`LAUNCH` sets it
+    #: by kind — a launch throws the ball it is holding, which is what a launch
+    #: IS — so only a :data:`SETTLE` that holds one needs to say so.
+    holds_ball: bool = False
     #: Cup site the window comes to rest at.  Defaults to the catch site for a
     #: LANDING (the cup stops where it caught, which is the seat the ball is
     #: already in); REQUIRED for a SETTLE, which has no catch to default from.
@@ -1044,7 +1052,7 @@ def latest_supersede_time_s(meta: CycleMeta) -> float:
 def build_realize_config(limits, *, banking: bool = True,
                          z_float: Optional[bool] = None,
                          z_band_mm: Optional[float] = None) -> cr.RealizeConfig:
-    """A :class:`cup_realize.RealizeConfig` whose tilt-accel cap follows ``limits``.
+    """A :class:`cup_realize.RealizeConfig` whose tilt caps follow ``limits``.
 
     ``cup_realize.TILT_ACCEL_LIMIT_DEFAULT_RAD_S2`` is derived from the SHIPPED
     leg acceleration limit (``JB_TRAJ_LEG_ACC_LIMIT_MMPS2``, 5000 mm/s²) at import
@@ -1058,11 +1066,28 @@ def build_realize_config(limits, *, banking: bool = True,
     is a safety failure — ``validate_cycle`` is still the gate — but both are
     silent, and the cap is a *derived* number with a live input, so it is
     re-derived here from the same expression and the same lever.
+
+    The tilt-JERK cap (C-CUP-3, the widen loop's second exit condition) is
+    derived the same way from ``limits.leg_jerk_mmps3``, for the same reason and
+    with a stronger one on top: the session leg-jerk limit is the number
+    ``validate_cycle`` refuses ``LIMIT_JERK`` against, so a schedule shaped for
+    the SHIPPED jerk limit while the session runs at another is shaped against a
+    bound nothing enforces.  One map, one lever, two limits.
+
+    The jerk cap built here is the STATIC-lever one — the cap for a cycle with no
+    vertical cup motion.  ``cup_realize.tilt_schedule`` re-derives it per call
+    from the cup plan in hand (``cup_realize._tilt_jerk_lever_mm``), because the
+    product-rule content the third difference picks up off a moving lever arm is
+    a property of the cycle, not of the geometry.  The session limit still
+    enters exactly here, and exactly once.
     """
     accel_cap = (cr.TILT_ACCEL_BUDGET_FRACTION * float(limits.leg_acc_mmps2)
                  / cr.TILT_ACCEL_LEVER_MM)
+    jerk_cap = (cr.TILT_ACCEL_BUDGET_FRACTION * float(limits.leg_jerk_mmps3)
+                / cr.TILT_ACCEL_LEVER_MM)
     kwargs = dict(banking_enabled=bool(banking),
-                  tilt_accel_limit_rad_s2=accel_cap)
+                  tilt_accel_limit_rad_s2=accel_cap,
+                  tilt_jerk_limit_rad_s3=jerk_cap)
     if z_float is not None:
         kwargs['z_float_enabled'] = bool(z_float)
     if z_band_mm is not None:
@@ -1108,14 +1133,57 @@ def _knot_at_or_after(t_s: float, dt: float, n: int) -> int:
     return int(min(max(0, int(math.ceil(t_s / dt - 1e-9))), n - 1))
 
 
+#: Bisections used to solve the hand-velocity zero inside one span.  40 halvings
+#: of a 0.025 s span resolve it to 2.3e-14 s — float noise against a millisecond
+#: consumer — and cost 40 scalar ``hand_at`` calls, run at most twice per plan.
+_ZERO_CROSSING_BISECTIONS = 40
+
+
 def _zero_crossing_s(plan: CyclePlan, k0: int, k1: int) -> float:
-    """Time of the hand-velocity zero between knots ``k0`` and ``k1`` (linear)."""
+    """Time of the hand-velocity zero between knots ``k0`` and ``k1``.
+
+    Solved on the plan's OWN curve, not interpolated between the two knot
+    velocities.  The hand channel is a cubic Hermite, so its velocity is a
+    QUADRATIC in the span parameter and the endpoints do not determine where
+    inside the span it crosses: a straight line through them is only as good as
+    the curvature is small.  That held while the hand left the catch from REST
+    (the quadratic is nearly linear near a stationary point) and stopped holding
+    when C-CUP-2's contact floor gave the cup a hover-then-dive: MEASURED
+    (2026-09-20, ``scratchpad/probe_u7f.py``) on the reference 1.4 s STEADY, the
+    linear estimate put the reversal at t = 0.580719 s where the plan's own hand
+    velocity is still **+1.197 rev/s**, i.e. ~2 ms early.
+
+    A quadratic whose endpoint values have opposite signs has exactly ONE root
+    between them (two roots inside a bracket would leave the endpoints with the
+    SAME sign), so bisection on the accessor converges to the root the callers
+    mean — the first one forward for :func:`plan_stroke_clear_s`, the last one
+    backward for :func:`plan_arm_lead_s`.  Both callers only reach this function
+    after finding a strict sign change; the same-sign branch is kept total and
+    falls back to the linear estimate the endpoints do support.
+
+    Both consumers are REPORTING fields (``stroke_clear_s`` / ``arm_lead_s`` on
+    the service response); nothing on the leg or hand command path reads them, so
+    this changes a published number by ~2 ms and no commanded motion at all.
+    """
     v0 = float(plan.hand_vel_rps[k0])
     v1 = float(plan.hand_vel_rps[k1])
+    t0, t1 = float(plan.t[k0]), float(plan.t[k1])
     if v0 == v1:
-        return float(plan.t[k1])
-    frac = v0 / (v0 - v1)
-    return float(plan.t[k0]) + max(0.0, min(1.0, frac)) * plan.dt
+        return t1
+    if v0 * v1 > 0.0:                      # no bracketed sign change to solve
+        frac = v0 / (v0 - v1)
+        return t0 + max(0.0, min(1.0, frac)) * plan.dt
+    lo, hi, sign0 = t0, t1, (1.0 if v0 > 0.0 else -1.0)
+    for _ in range(_ZERO_CROSSING_BISECTIONS):
+        mid = 0.5 * (lo + hi)
+        v_mid = float(plan.hand_at(mid)[1])
+        if v_mid == 0.0:
+            return mid
+        if (1.0 if v_mid > 0.0 else -1.0) == sign0:
+            lo = mid
+        else:
+            hi = mid
+    return 0.5 * (lo + hi)
 
 
 #: Margin added past the hand's planned zero-velocity instant when answering
@@ -1388,7 +1456,9 @@ def plan_cycle(kind: str, goals: CycleGoals, state: CycleState,
     try:
         cup = cc.plan_window(events, state0, cup_cfg,
                              period_s=float(goals.period_s),
-                             settle_site=settle_m, warm_start=warm_start)
+                             settle_site=settle_m, warm_start=warm_start,
+                             holds_ball_at_start=(kind == LAUNCH
+                                                  or bool(goals.holds_ball)))
     except cc.CupCycleInfeasible as exc:
         raise CycleInfeasible(exc.reason, [str(exc)])
     finally:
@@ -1692,7 +1762,11 @@ def _realize(kind, cup, goals, state, limits, geom, rcfg, *, t_wall,
     realized = cr.decompose(cup, tilts, rcfg)
     if stages is not None:
         stages['dec'] = time.perf_counter() - t_stage
-    plan = CyclePlan.from_realized(realized)
+    # C-CUP-2: the contact window is a fact the QP established about the ball;
+    # ``decompose`` only reshapes the trajectory and does not carry it, so it is
+    # passed across explicitly here.  Drop it and the gate goes vacuous.
+    plan = CyclePlan.from_realized(
+        realized, contact_knots=getattr(cup, 'contact_knots', None))
     meta = _meta_for(kind, plan, cup, goals, tilts, recv, throw_tilt,
                      limits, geom, t_wall=t_wall, stages=stages,
                      correction=correction)
@@ -1803,15 +1877,91 @@ def plan_settle(goals, state, limits, geom, **kw):
 # Splicing
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _shift_contact(window, shift: int, n_knots: int):
+    """C-CUP-2's window(s) moved by ``shift`` knots and clipped to ``[0, n-1]``.
+
+    ``window`` is ``None``, a bare ``(k0, k1)`` pair, or a tuple of one or more
+    inclusive ``(k0, k1)`` ranges. Both shapes reach this function: a
+    :class:`CyclePlan`'s own ``contact_knots`` is already normalised to the
+    tuple-of-ranges form, but a ``cup_cycle.CupCyclePlan`` (the re-solved TAIL
+    a splice reads ``contact_knots`` from directly, before it is ever wrapped
+    in a ``CyclePlan``) still carries the bare-pair shape — so a bare pair is
+    normalised to a one-tuple here too, the same duck-typing
+    ``cycle_plan._checked_contact_knots`` does. Every range is shifted and
+    clipped independently and a range that vanishes under the clip is dropped;
+    the surviving ranges stay sorted because the input was sorted and the
+    shift/clip is monotone. Returns ``None`` when nothing of it survives.
+
+    Every path that re-indexes a :class:`CyclePlan` (extend, head, tail,
+    splice) goes through here or through :func:`_join_contact`, because a
+    dropped or mis-shifted window silently disarms the gate — the failure
+    C-CUP-2 exists to prevent.
+    """
+    if not window:
+        return None
+    if not isinstance(window[0], (tuple, list)):
+        window = (window,)
+    out = []
+    for k0, k1 in window:
+        k0 = int(k0) + int(shift)
+        k1 = int(k1) + int(shift)
+        k0 = max(k0, 0)
+        k1 = min(k1, int(n_knots) - 1)
+        if k0 <= k1:
+            out.append((k0, k1))
+    return tuple(out) if out else None
+
+
+def _join_contact(win_a, win_b):
+    """The contact window(s) of two concatenated plans (either may be
+    ``None``), already on the JOINT clock.
+
+    CONCATENATES the head's ranges and the tail's ranges, merging only where
+    two ranges TOUCH or OVERLAP — never drops, never hulls across a gap. A
+    chained LAUNCH+STEADY has a window per event (launch: seed → release;
+    steady: touch-down → next release) with the whole ballistic flight between
+    them, and hulling across that gap gates the RELEASE DIVE that sits between
+    them — measured −48 366 mm/s² on the chained fixture, 7× the floor — and
+    refuses every chain, for a ball that is in the air. Keeping only the later
+    window (the pre-tuple behaviour) instead left the EARLIER window's gate
+    silently vacuous on exactly the plans this contract most needs to cover —
+    the defect the tuple-of-ranges field closes. This is the same re-gate
+    discipline as before (``extend`` re-gates only the new tail and the splice
+    seam because **the head was already gated when it was built and is
+    carried bit for bit**) — it now just carries every window forward instead
+    of only the last one.
+    """
+    if not win_a:
+        return win_b
+    if not win_b:
+        return win_a
+    merged = sorted(list(win_a) + list(win_b))
+    out = [merged[0]]
+    for k0, k1 in merged[1:]:
+        pk0, pk1 = out[-1]
+        if k0 <= pk1 + 1:
+            out[-1] = (pk0, max(pk1, k1))
+        else:
+            out.append((k0, k1))
+    return tuple(out)
+
+
 def _concat_plans(plan_a: CyclePlan, plan_b: CyclePlan, catch_k: int) -> CyclePlan:
     """``plan_a`` then ``plan_b`` with ``plan_b``'s duplicate first knot dropped."""
+    n_a = int(plan_a.n_knots)
+    n_joint = n_a + int(plan_b.n_knots) - 1
     return CyclePlan(
         pose=np.vstack([plan_a.pose, plan_b.pose[1:]]),
         pose_vel=np.vstack([plan_a.pose_vel, plan_b.pose_vel[1:]]),
         hand_rev=np.concatenate([plan_a.hand_rev, plan_b.hand_rev[1:]]),
         hand_vel_rps=np.concatenate([plan_a.hand_vel_rps,
                                      plan_b.hand_vel_rps[1:]]),
-        dt=plan_a.dt, catch_k=catch_k)
+        dt=plan_a.dt, catch_k=catch_k,
+        # b's knot j sits at n_a - 1 + j on the joint clock (its knot 0 is a's
+        # last knot, dropped as the duplicate).
+        contact_knots=_join_contact(
+            _shift_contact(plan_a.contact_knots, 0, n_joint),
+            _shift_contact(plan_b.contact_knots, n_a - 1, n_joint)))
 
 
 def _concat_cup(cup_a, cup_b, dt, catch_k):
@@ -1919,7 +2069,10 @@ def _gate_view(plan: CyclePlan, k_from: int) -> CyclePlan:
     return CyclePlan(pose=plan.pose[k_from:], pose_vel=plan.pose_vel[k_from:],
                      hand_rev=plan.hand_rev[k_from:],
                      hand_vel_rps=plan.hand_vel_rps[k_from:], dt=plan.dt,
-                     catch_k=(ck - k_from if ck >= k_from else -1))
+                     catch_k=(ck - k_from if ck >= k_from else -1),
+                     contact_knots=_shift_contact(
+                         plan.contact_knots, -k_from,
+                         int(plan.n_knots) - k_from))
 
 
 def _merged_peaks(head: 'fz.FeasibilityReport', tail: 'fz.FeasibilityReport'):
@@ -2304,7 +2457,9 @@ def _head_view(plan: CyclePlan, meta: CycleMeta,
     head = CyclePlan(pose=plan.pose[:n_head], pose_vel=plan.pose_vel[:n_head],
                      hand_rev=plan.hand_rev[:n_head],
                      hand_vel_rps=plan.hand_vel_rps[:n_head], dt=dt,
-                     catch_k=(ck if 0 <= ck <= k_s else -1))
+                     catch_k=(ck if 0 <= ck <= k_s else -1),
+                     contact_knots=_shift_contact(plan.contact_knots, 0,
+                                                  n_head))
     t_head = k_s * dt
     # Half a knot of tolerance on the release instant for the same float reason
     # `replan_tail` documents at its nominated-catch bound: a mark's `t_s` is
@@ -2867,7 +3022,15 @@ def replan_tail(plan: CyclePlan, meta: CycleMeta, t_now_s: float,
                                  realized.slider_rev[k_s:]]),
         hand_vel_rps=np.concatenate([plan.hand_vel_rps[:k_s],
                                      realized.slider_vel_rev_s[k_s:]]),
-        dt=realized.dt, catch_k=int(getattr(realized, 'catch_k', -1)))
+        dt=realized.dt, catch_k=int(getattr(realized, 'catch_k', -1)),
+        # The live plan's own window(s) survive on the knots the splice keeps
+        # ([0, k_s-1]); the re-solved tail's window arrives on the tail clock and
+        # shifts by k_s.  Concatenate, merging only where they touch/overlap
+        # (see _join_contact) when both are present.
+        contact_knots=_join_contact(
+            _shift_contact(getattr(plan, 'contact_knots', None), 0, k_s),
+            _shift_contact(getattr(cup_tail, 'contact_knots', None), k_s,
+                           int(realized.pose.shape[0]))))
     # ── Re-gate the NEW TAIL and the splice seam, not the whole plan ──────────
     # ``validate_cycle`` is ~89 % of a solve and LINEAR in the knot count, and on
     # a ring the plan grows a window per beat — so a whole-plan re-gate made every

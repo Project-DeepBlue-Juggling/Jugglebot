@@ -27,6 +27,7 @@ runsheet.
 
 from __future__ import annotations
 
+import collections
 import csv
 import dataclasses
 import math
@@ -140,6 +141,47 @@ _TRAJ_STATUS_STALE_S = 1.0
 #: Restates `reload_coordinator_node._HAND_STATE_STALE_S`.
 _HAND_STATE_STALE_S = 0.5
 
+#: The session-start mocap-Platform-vs-commanded-position frame check (plan
+#: `plans/active/cup-contact-contract.md` § 1, 2026-09-18): on 2026-09-18 the
+#: mocap `Platform` body sat +30 mm in y of the commanded platform position
+#: with `Base` aligned to 1 mm -- re-aligning QTM to the base moved the
+#: reported platform between +30 and -50 mm, i.e. a small base-alignment
+#: error amplified over the base-to-platform lever. A learner with lateral
+#: authority would spend its first throws "correcting" that as if it were a
+#: miss, so lateral authority stays pinned until this offset is below
+#: `_FRAME_CHECK_LIMIT_MM` at session start.
+#:
+#: FRAME/UNITS, established from the code before subtracting anything (not
+#: assumed): `mocap_interface.py` (`base_frame_bodies` does not include
+#: "Platform") publishes a non-base body's x/y UNCHANGED from the QTM stream
+#: and shifts only z, by the base-to-platform transform
+#: (`mocap_interface.py::MocapInterface.on_packet`, ~L396-417); `trajectory_node`
+#: publishes `trajectory/commanded_position` in the SAME STOW/platform_start
+#: frame. `reload_coordinator_node`'s own toss-arrival mocap cross-check
+#: (`_TOSS_MOCAP_BODY_PARAM`, `_on_mocap`) compares exactly these two
+#: UNCONVERTED for the same reason ("converting either side to global would
+#: double-add GEOM_INITIAL_HEIGHT_MM") -- so x/y from the two topics subtract
+#: directly here too, with no rotation/translation applied. z carries the
+#: base-to-platform offset and is deliberately not part of this check (it is
+#: a lateral-authority question, plan § 1).
+#: The window the Platform buffer is judged over, and the commanded
+#: position's own at-rest window -- one clock (`time.perf_counter()`), one
+#: window, for both.
+_FRAME_CHECK_WINDOW_S = 1.0
+#: Below this mean-offset norm, lateral authority may fly (plan § 1).
+_FRAME_CHECK_LIMIT_MM = 5.0
+#: The commanded position's bounding-box diagonal inside the window must
+#: stay under this, or the check cannot tell a real platform offset from the
+#: platform having moved mid-window -- refuses to evaluate, never a silent
+#: pass (plan § 1: "measure ... platform at rest").
+_FRAME_CHECK_REST_TOL_MM = 1.0
+#: Minimum Platform mocap samples inside the window before the mean offset
+#: is trusted -- one noisy sample is not a session-start measurement.
+#: `rigid_body_poses` streams at `hw.TRACKING_MOCAP_DT_S` = 5 ms (200 Hz), so
+#: a healthy 1.0 s window carries ~200 samples; 20 is a generous floor under
+#: drops.
+_FRAME_CHECK_MIN_SAMPLES = 20
+
 #: `skills/start_columns` parameter defaults — the owner's R2 operating point
 #: (brief_common.md § 0, 2026-09-12): apex 0.9 m, separation 100 mm, dwell
 #: 0.30 s.
@@ -163,6 +205,115 @@ _DEFAULT_SITE_Y_MM = 0.0
 _DEFAULT_SITE_NAME = 'P1'
 #: A fresh id starts a cold memory (plan § 2.2) — `memory_path`'s own contract.
 _DEFAULT_PLANT_ID = 'jugglebot'
+
+
+@dataclasses.dataclass(frozen=True)
+class FrameCheckResult:
+    """The session-start mocap-Platform-vs-commanded-position offset (plan
+    `cup-contact-contract.md` § 1) — the pure half of `SkillNode._frame_check`.
+
+    ``evaluable=False`` means the check itself could not run; ``detail``
+    names which input, and ``offset_mm``/``dx_mm``/``dy_mm`` are 0.0 and MUST
+    NOT be read as "no offset", only as "unknown" — the caller treats
+    cannot-evaluate as a refusal exactly like over-limit, never as a silent
+    pass (fail-closed, plan § 1). ``evaluable=True`` means the three offset
+    fields are real measurements and ``within_limit`` says whether
+    ``offset_mm`` is at or under `_FRAME_CHECK_LIMIT_MM`. ``detail`` is
+    always one complete, loggable sentence either way — the node logs it on
+    every check, refusal or not (plan § 1: "always log the offset")."""
+    evaluable: bool
+    within_limit: bool
+    offset_mm: float
+    dx_mm: float
+    dy_mm: float
+    detail: str
+
+
+def _frame_offset_check(platform_samples, commanded_samples, now, *,
+                        window_s: float = _FRAME_CHECK_WINDOW_S,
+                        limit_mm: float = _FRAME_CHECK_LIMIT_MM,
+                        rest_tol_mm: float = _FRAME_CHECK_REST_TOL_MM,
+                        min_samples: int = _FRAME_CHECK_MIN_SAMPLES
+                        ) -> FrameCheckResult:
+    """Pure: the mocap-Platform-vs-commanded xy offset over the last
+    ``window_s`` (plan `cup-contact-contract.md` § 1; see the frame/units
+    note on `_FRAME_CHECK_WINDOW_S` above this module's `SkillNode` class —
+    x/y subtract directly, no transform).
+
+    ``platform_samples`` / ``commanded_samples``: iterables of
+    ``(mono_s, x_mm, y_mm)``, any order, on the SAME monotonic clock as
+    ``now`` (`time.perf_counter()` in `SkillNode` — keeping them on one clock
+    is the caller's job, not this function's). No ROS, no node state:
+    `SkillNode._frame_check` is the only caller and owns the two buffers this
+    reads.
+
+    Refuses to evaluate (``evaluable=False``) rather than guess, on any of:
+    no Platform sample ever seen; the freshest Platform sample older than
+    ``window_s`` (the mocap graph, or that body specifically, went stale);
+    fewer than ``min_samples`` Platform samples inside the window; no
+    commanded-position sample ever seen or the freshest one older than
+    ``window_s``; or the commanded position's bounding-box diagonal inside
+    the window exceeding ``rest_tol_mm`` (the platform was still moving, so
+    an "offset" measured against it is not the session-start number the
+    contract means)."""
+    platform_samples = list(platform_samples)
+    commanded_samples = list(commanded_samples)
+
+    if not platform_samples:
+        return FrameCheckResult(
+            False, False, 0.0, 0.0, 0.0,
+            'no mocap Platform body sample has ever been seen (check '
+            '/rigid_body_poses carries a body named "Platform")')
+    newest_plat_age_s = now - max(t for t, _, _ in platform_samples)
+    if newest_plat_age_s > window_s:
+        return FrameCheckResult(
+            False, False, 0.0, 0.0, 0.0,
+            'the mocap Platform body sample is stale (%.2f s old, window '
+            '%.1f s)' % (newest_plat_age_s, window_s))
+    plat_in_win = [(t, x, y) for t, x, y in platform_samples
+                  if (now - t) <= window_s]
+    if len(plat_in_win) < min_samples:
+        return FrameCheckResult(
+            False, False, 0.0, 0.0, 0.0,
+            'only %d mocap Platform samples in the %.1f s window (need >= '
+            '%d)' % (len(plat_in_win), window_s, min_samples))
+
+    if not commanded_samples:
+        return FrameCheckResult(
+            False, False, 0.0, 0.0, 0.0,
+            'no trajectory/commanded_position sample has ever been seen')
+    newest_cmd_age_s = now - max(t for t, _, _ in commanded_samples)
+    if newest_cmd_age_s > window_s:
+        return FrameCheckResult(
+            False, False, 0.0, 0.0, 0.0,
+            'trajectory/commanded_position is stale (%.2f s old, window '
+            '%.1f s)' % (newest_cmd_age_s, window_s))
+    cmd_in_win = [(t, x, y) for t, x, y in commanded_samples
+                 if (now - t) <= window_s]
+
+    cmd_xs = [x for _, x, _ in cmd_in_win]
+    cmd_ys = [y for _, _, y in cmd_in_win]
+    cmd_spread_mm = math.hypot(max(cmd_xs) - min(cmd_xs),
+                               max(cmd_ys) - min(cmd_ys))
+    if cmd_spread_mm > rest_tol_mm:
+        return FrameCheckResult(
+            False, False, 0.0, 0.0, 0.0,
+            'the commanded position moved %.2f mm inside the %.1f s window '
+            '(limit %.1f mm) — not at rest' % (cmd_spread_mm, window_s,
+                                               rest_tol_mm))
+
+    plat_x = sum(x for _, x, _ in plat_in_win) / len(plat_in_win)
+    plat_y = sum(y for _, _, y in plat_in_win) / len(plat_in_win)
+    cmd_x = sum(cmd_xs) / len(cmd_xs)
+    cmd_y = sum(cmd_ys) / len(cmd_ys)
+    dx_mm = plat_x - cmd_x
+    dy_mm = plat_y - cmd_y
+    offset_mm = math.hypot(dx_mm, dy_mm)
+    detail = ('mocap Platform is %+.1f mm (x %+.1f, y %+.1f) from the '
+              'commanded position over %.1f s (limit %.1f mm)'
+              % (offset_mm, dx_mm, dy_mm, window_s, limit_mm))
+    return FrameCheckResult(True, offset_mm <= limit_mm, offset_mm, dx_mm,
+                            dy_mm, detail)
 
 
 class SkillNode(Node):
@@ -243,6 +394,17 @@ class SkillNode(Node):
         # `_live_commanded_position`'s cache-plus-freshness shape.
         self._commanded_pos_mm = None
         self._commanded_pos_mono = 0.0
+        # Session-start mocap-vs-commanded frame check (`_frame_check`, plan
+        # `cup-contact-contract.md` § 1): bounded, time-stamped
+        # ``(mono_s, x_mm, y_mm)`` buffers of the mocap `Platform` body and
+        # the commanded position, fed by `_on_mocap` / `_on_commanded_position`
+        # respectively. `maxlen` bounds worst-case memory — no allocation
+        # growth once full (`collections.deque`'s own contract) — sized well
+        # above each topic's nominal rate over `_FRAME_CHECK_WINDOW_S`:
+        # `rigid_body_poses` at `hw.TRACKING_MOCAP_DT_S` (200 Hz) and
+        # `commanded_position` on the 5 Hz status timer.
+        self._platform_mocap_xy = collections.deque(maxlen=400)
+        self._commanded_xy_hist = collections.deque(maxlen=40)
         # `/link_status`'s `sched_refused` — the FIRMWARE's count of streamed
         # lanes it refused and is now HOLDING (`_on_link_status`), and the
         # value latched when the running attempt started. `hand_lane_refused`
@@ -280,10 +442,17 @@ class SkillNode(Node):
         # stay selectable as the open-loop A/B arm — see
         # `executor.AIM_SOURCES` and `executor._catch_aim`.
         self.declare_parameter('catch_aim_source', ex.AIM_TRACKER)
-        # Owner 2026-09-16: the learner corrects FLIGHT only until the
-        # planner's small-lateral-offset banking defect is fixed (see
-        # SkillExecutor.lateral_authority_m). mm per axis; 0 = pinned to y_d.
-        self.declare_parameter('learner_lateral_authority_mm', 0.0)
+        # Owner 2026-09-16 pinned this at 0 (the learner corrects FLIGHT
+        # only) until the planner's small-lateral-offset banking defect was
+        # fixed; owner 2026-09-21 lifted the pin once the cup-contact
+        # contract landed banking that is amplitude-aware rather than a
+        # scale-free 12 degree clamp (plans/active/cup-contact-contract.md
+        # § 6): the box admits +/-40 mm at 0.9 m, and the session-start
+        # mocap-vs-commanded frame check (`_frame_check_error`) is what now
+        # guards a live authority against an unverified mocap frame. mm per
+        # axis, applied by SkillExecutor.lateral_authority_m; `:=0` re-pins
+        # it for a sitting or a bench check.
+        self.declare_parameter('learner_lateral_authority_mm', 40.0)
         # How many re-solves one committed CATCH may spend re-aiming from later
         # fits (executor.resend_max_per_catch; 2 since 2026-09-18). 0 disables
         # re-aiming outright -- the A/B knob for a sitting: on 2026-09-18 16:16
@@ -504,12 +673,20 @@ class SkillNode(Node):
         self._traj_status_mono = time.perf_counter()
 
     def _on_mocap(self, msg) -> None:
-        """`rigid_body_poses` freshness only — the R3 ladder's `mocap_fresh`
-        (item 6) asks whether the mocap graph is publishing AT ALL, not
-        anything about a specific body's pose (the skill stack has no
-        per-body cross-check at R3, unlike `reload_coordinator_node`'s toss
-        positioning check)."""
-        self._mocap_mono = time.perf_counter()
+        """`rigid_body_poses` freshness (the R3 ladder's `mocap_fresh`, item
+        6 — is the mocap graph publishing AT ALL) PLUS a bounded buffer of
+        the `Platform` body's xy (plan `cup-contact-contract.md` § 1, the
+        session-start frame check) — the one per-body read this node makes,
+        mirroring `reload_coordinator_node`'s toss positioning cross-check
+        (`_on_mocap` there): store AS PUBLISHED, x/y unconverted (see the
+        frame/units note on `_FRAME_CHECK_WINDOW_S`)."""
+        now = time.perf_counter()
+        self._mocap_mono = now
+        for body in msg.bodies:
+            if body.name == 'Platform':
+                p = body.pose.pose.position
+                self._platform_mocap_xy.append((now, float(p.x), float(p.y)))
+                break
 
     def _on_commanded_position(self, msg) -> None:
         """`trajectory/commanded_position`: the platform's live commanded
@@ -523,8 +700,13 @@ class SkillNode(Node):
                 'trajectory/commanded_position %r is non-finite — DISCARDED'
                 % (p,))
             return
+        now = time.perf_counter()
         self._commanded_pos_mm = p
-        self._commanded_pos_mono = time.perf_counter()
+        self._commanded_pos_mono = now
+        # Session-start frame check's own at-rest window (plan
+        # `cup-contact-contract.md` § 1) — xy only, same buffer shape as
+        # `_platform_mocap_xy`.
+        self._commanded_xy_hist.append((now, p[0], p[1]))
 
     def _live_commanded_position(self, now: float):
         """The live commanded platform (x, y, z) mm, or ``None`` when absent
@@ -1001,6 +1183,15 @@ class SkillNode(Node):
             response.message = 'columns refused: %s' % (home_err,)
             self.get_logger().error(response.message)
             return response
+        # Session-start mocap-vs-commanded frame check (plan
+        # `cup-contact-contract.md` § 1) — read-only, before t0 is read and
+        # before anything moves, beside `_hand_home_error` above.
+        frame_err = self._frame_check_error()
+        if frame_err:
+            response.success = False
+            response.message = 'columns refused: %s' % (frame_err,)
+            self.get_logger().error(response.message)
+            return response
         t0 = self.get_clock().now().nanoseconds / 1e9 + _START_LEAD_S
         try:
             sites = columns_sites(separation_mm)
@@ -1143,6 +1334,52 @@ class SkillNode(Node):
                     'or DEACTIVATE → ACTIVATE and re-level'
                     % (rev, abs(rev - REST_HAND_REV), REST_HAND_REV,
                        HOME_BAND_REV))
+        return ''
+
+    def _frame_check(self) -> FrameCheckResult:
+        """Snapshot the two buffers and run the pure check
+        (`_frame_offset_check`) — the node-side half of the session-start
+        mocap-vs-commanded frame check (plan `cup-contact-contract.md`
+        § 1). Read-only, no motion, safe to call from either start path
+        before anything moves."""
+        return _frame_offset_check(tuple(self._platform_mocap_xy),
+                                   tuple(self._commanded_xy_hist),
+                                   time.perf_counter())
+
+    def _frame_check_error(self) -> str:
+        """The session-start frame check (plan `cup-contact-contract.md`
+        § 1): ALWAYS logs the offset — or why it could not be measured, so
+        every sitting records it whether or not lateral authority is live —
+        and returns ``''`` unless `learner_lateral_authority_mm` is nonzero
+        AND the offset is over the limit or cannot be measured. Fail-closed:
+        a cannot-evaluate result refuses exactly like an over-limit one,
+        never a silent pass; a `REJECTED_FRAME_OFFSET:` message always
+        carries the number (or names the missing input).
+
+        `learner_lateral_authority_mm == 0` (an explicit re-pin, no longer
+        the default since 2026-09-21) still runs the check and still logs
+        it, but never refuses on it — lateral authority is pinned, so there
+        is nothing here to protect the attempt from."""
+        result = self._frame_check()
+        if result.evaluable:
+            self.get_logger().info('frame check: %s' % (result.detail,))
+        else:
+            self.get_logger().info(
+                'frame check: cannot evaluate — %s' % (result.detail,))
+        authority_mm = float(
+            self.get_parameter('learner_lateral_authority_mm').value)
+        if authority_mm <= 0.0:
+            return ''
+        if not result.evaluable:
+            return ('REJECTED_FRAME_OFFSET: cannot evaluate the mocap-vs-'
+                    'command offset (%s) with learner_lateral_authority_mm='
+                    '%.1f > 0 — re-align QTM to the base, or start with '
+                    'learner_lateral_authority_mm:=0'
+                    % (result.detail, authority_mm))
+        if not result.within_limit:
+            return ('REJECTED_FRAME_OFFSET: %s — re-align QTM to the base, '
+                    'or start with learner_lateral_authority_mm:=0'
+                    % (result.detail,))
         return ''
 
     def _prelevel(self) -> str:
@@ -1305,6 +1542,16 @@ class SkillNode(Node):
             return response
         pattern = dataclasses.replace(pattern, floor_lift_s=lift_s)
 
+        # Session-start mocap-vs-commanded frame check (plan
+        # `cup-contact-contract.md` § 1) — read-only, beside the opening-REST
+        # (park-analogue) check above and before `_prelevel` moves anything.
+        frame_err = self._frame_check_error()
+        if frame_err:
+            response.success = False
+            response.message = 'self-toss refused: %s' % (frame_err,)
+            self.get_logger().error(response.message)
+            return response
+
         prelevel_err = self._prelevel()
         if prelevel_err:
             response.success = False
@@ -1453,10 +1700,12 @@ class SkillNode(Node):
 
     def _svc_check(self, request, response):
         """``skills/check`` (item 8): every current R3 precondition-ladder
-        refusal at once, plus the admissible-box/limits status — the
-        dress-rehearsal runsheet calls this before any powered attempt
-        (Rigor: "make gates report every refusal at once", plan Workflow
-        Rules). Never moves the platform and never touches ``_executor``.
+        refusal at once, plus the admissible-box/limits status and the
+        session-start frame check (`_frame_check_error`, plan
+        `cup-contact-contract.md` § 1) — the dress-rehearsal runsheet calls
+        this before any powered attempt (Rigor: "make gates report every
+        refusal at once", plan Workflow Rules). Never moves the platform and
+        never touches ``_executor``.
         """
         now = self.get_clock().now().nanoseconds / 1e9
         obs = self._observations(now)
@@ -1490,6 +1739,34 @@ class SkillNode(Node):
             'plans from the MEASURED hand and would take %.2f s to home it'
             % (self._hand_pos_meas, REST_HAND_REV, REST_CUP_Z_MM,
                self._hand_pos_cmd, floor_lift_s(self._hand_pos_meas)))
+        # Session-start mocap-vs-commanded frame check (plan
+        # `cup-contact-contract.md` § 1), same string and the same
+        # fail-closed semantics as the start paths (`_svc_start_columns`'s
+        # `_hand_home_error`-adjacent check, `_svc_start_self_toss`'s
+        # `_opening_rest_period`-adjacent one): a refusal the operator would
+        # meet at `start_*` must be reported by the dry-run path too (UH-3,
+        # 2026-09-06 — "make gates report every refusal at once"), not
+        # discovered only on the powered robot. `learner_lateral_authority_mm
+        # == 0` (an explicit re-pin, no longer the default since 2026-09-21)
+        # never refuses on this — nothing here needs protecting when
+        # authority is pinned — so it is reported as an informational line
+        # carrying the measured offset instead.
+        frame_err = self._frame_check_error()
+        if frame_err:
+            ok = False
+            lines.append(frame_err)
+        else:
+            frame_result = self._frame_check()
+            authority_mm = float(
+                self.get_parameter('learner_lateral_authority_mm').value)
+            if authority_mm <= 0.0:
+                lines.append(
+                    'frame check: %s (informational — '
+                    'learner_lateral_authority_mm=0)'
+                    % (frame_result.detail if frame_result.evaluable
+                       else 'cannot evaluate — %s' % (frame_result.detail,)))
+            else:
+                lines.append('frame check OK: %s' % (frame_result.detail,))
         if _ADMISSIBLE_BOX_PATH is None:
             ok = False
             lines.append('box REFUSED: cannot find the repo root from %r'

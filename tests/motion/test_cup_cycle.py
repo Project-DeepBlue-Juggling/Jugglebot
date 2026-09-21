@@ -81,7 +81,8 @@ def reference():
 def _plan_reference_case(case, *, runway=False, warm_start=None):
     """Run the port on one captured case, legacy constraint set by default."""
     cfg = cc.CupCycleConfig(z_min_m=case['z_min_m'], z_max_m=case['z_max_m'],
-                            catch_runway_enabled=runway)
+                            catch_runway_enabled=runway,
+                            contact_floor_enabled=False)
     return cc.plan_cup_cycle(
         case['pos0'], case['vel0'], case['acc0'],
         case['throw_pos'], case['throw_target'], case['flight_s'],
@@ -405,7 +406,7 @@ def test_plan_window_matches_plan_cup_cycle_on_one_throw_one_catch(reference):
     for case in cases:
         cfg = cc.CupCycleConfig(z_min_m=case['z_min_m'],
                                 z_max_m=case['z_max_m'],
-                                catch_runway_enabled=False)
+                                catch_runway_enabled=False, contact_floor_enabled=False)
         events = [
             cc.CatchEvent(ball_id=7, t_s=case['catch_time_s'],
                           site=np.array(case['catch_pos'], dtype=float),
@@ -507,7 +508,7 @@ def test_catch_with_no_runway_is_refused_and_names_itself():
         case['pos0'], case['vel0'], case['acc0'], case['throw_pos'],
         case['throw_target'], case['flight_s'], case['catch_time_s'],
         case['catch_pos'], case['catch_vel'], case['period_s'],
-        cfg=cc.CupCycleConfig(catch_runway_enabled=False, **kwargs))
+        cfg=cc.CupCycleConfig(catch_runway_enabled=False, contact_floor_enabled=False, **kwargs))
     assert plan.pos.shape[0] == int(round(0.8 / 0.025)) + 1
 
 
@@ -526,10 +527,90 @@ def test_runway_adds_a_real_row_to_the_program():
     catch = cc.CatchEvent(0, case['catch_time_s'], case['catch_pos'],
                           case['catch_vel'])
     off = cc._assemble(state0, throw, catch, case['period_s'],
-                       cc.CupCycleConfig(catch_runway_enabled=False))
+                       cc.CupCycleConfig(catch_runway_enabled=False, contact_floor_enabled=False))
     on = cc._assemble(state0, throw, catch, case['period_s'],
-                      cc.CupCycleConfig(catch_runway_enabled=True))
+                      cc.CupCycleConfig(catch_runway_enabled=True,
+                                        contact_floor_enabled=False))
     assert on.C.shape[1] == off.C.shape[1] + 1
+
+
+# ---------------------------------------------------------------------------
+# C-CUP-2: the dive floor (plans/active/cup-contact-contract.md)
+# ---------------------------------------------------------------------------
+
+def test_contact_floor_binds_and_holds_at_the_slack():
+    """A catch+throw cycle that dives past kappa*g WITHOUT the row must sit
+    EXACTLY at ``floor + CONTACT_ACC_QP_SLACK_MPS2`` over the same contact
+    window WITH it — the slack constant asserted BY NAME (the QP lands on its
+    own bound, not a re-typed literal), because a re-typed number silently
+    stops pinning anything the day the slack constant changes.
+    """
+    case = _grid_case(0.8, 0.8, False)
+    k0, k1 = cc.contact_window(int(round(case['period_s'] / cc.CupCycleConfig().dt)),
+                               cc.CupCycleConfig().dt, has_throw=True,
+                               catch_t_s=case['catch_time_s'],
+                               holds_ball_at_start=False)
+    floor = -cc.CONTACT_ACC_FLOOR_G * abs(float(cc.GRAVITY[2]))
+
+    plan_off = cc.plan_cup_cycle(
+        case['pos0'], case['vel0'], case['acc0'], case['throw_pos'],
+        case['throw_target'], case['flight_s'], case['catch_time_s'],
+        case['catch_pos'], case['catch_vel'], case['period_s'],
+        cfg=cc.CupCycleConfig(contact_floor_enabled=False),
+        detach_axis=case['detach_axis'])
+    assert plan_off.acc[k0:k1 + 1, 2].min() < floor - 1e-9, (
+        'fixture no longer dives past the floor without the row — pick a '
+        'different case')
+
+    plan_on = cc.plan_cup_cycle(
+        case['pos0'], case['vel0'], case['acc0'], case['throw_pos'],
+        case['throw_target'], case['flight_s'], case['catch_time_s'],
+        case['catch_pos'], case['catch_vel'], case['period_s'],
+        cfg=cc.CupCycleConfig(contact_floor_enabled=True),
+        detach_axis=case['detach_axis'])
+    assert plan_on.contact_knots == (k0, k1)
+    worst_on = plan_on.acc[k0:k1 + 1, 2].min()
+    assert worst_on == pytest.approx(floor + cc.CONTACT_ACC_QP_SLACK_MPS2,
+                                     abs=1e-6), (
+        'the row should land the QP exactly at floor + its own slack '
+        'constant, got %.6f (floor=%.6f, slack=%.6f)'
+        % (worst_on, floor, cc.CONTACT_ACC_QP_SLACK_MPS2))
+
+
+def test_contact_floor_off_columns_identical_with_no_contact_window():
+    """A window with NO ball (no catch, not ``holds_ball_at_start``) is
+    ``C``-column-identical whether the flag is on or off — the docstring's
+    promise that an absent window moves not one column index.
+    """
+    case = _grid_case(0.8, 0.8, False)
+    state0 = cc.CupState(case['pos0'], case['vel0'], case['acc0'], None)
+    throw = cc.ThrowEvent(1, case['period_s'], case['throw_pos'],
+                          case['throw_target'], case['flight_s'])
+    off = cc._assemble(state0, throw, None, case['period_s'],
+                       cc.CupCycleConfig(contact_floor_enabled=False))
+    on = cc._assemble(state0, throw, None, case['period_s'],
+                      cc.CupCycleConfig(contact_floor_enabled=True))
+    assert on.contact_knots is None
+    assert off.contact_knots is None
+    assert on.C.shape == off.C.shape
+
+
+def test_knot_zero_refused_when_seed_already_dives_past_the_floor():
+    """A window that opens HOLDING a ball (``holds_ball_at_start=True``) but
+    is seeded from a state already diving faster than kappa*g — a
+    post-release seed's ``acc == GRAVITY``, free-fall at ~9.8 m/s^2, well past
+    the 6.86 m/s^2 floor — is refused ANALYTICALLY at knot 0, before the QP is
+    ever assembled (``cup_cycle.py:1114``): the cup cannot hold ball B while
+    still falling away from ball A.
+    """
+    case = _grid_case(0.8, 0.8, False)
+    state0 = cc.CupState(case['pos0'], case['vel0'], case['acc0'], None)
+    throw = cc.ThrowEvent(1, case['period_s'], case['throw_pos'],
+                          case['throw_target'], case['flight_s'])
+    with pytest.raises(cc.CupCycleInfeasible) as excinfo:
+        cc._assemble(state0, throw, None, case['period_s'], cc.CupCycleConfig(),
+                     holds_ball_at_start=True)
+    assert excinfo.value.reason == 'CUP_CONTACT_ACC'
 
 
 # ---------------------------------------------------------------------------
@@ -559,8 +640,8 @@ def test_acc_box_appends_its_own_column_block_after_every_existing_one():
     """
     case = _grid_case(0.8, 0.8, False)
     n = int(round(case['period_s'] / 0.025))
-    off = _assembled(case, cc.CupCycleConfig(catch_runway_enabled=False))
-    on = _assembled(case, cc.CupCycleConfig(catch_runway_enabled=False,
+    off = _assembled(case, cc.CupCycleConfig(catch_runway_enabled=False, contact_floor_enabled=False))
+    on = _assembled(case, cc.CupCycleConfig(catch_runway_enabled=False, contact_floor_enabled=False,
                                             max_acc_z=200.0))
     assert on.C.shape[1] == off.C.shape[1] + 2 * n
     assert np.array_equal(on.C[:, :off.C.shape[1]], off.C)
@@ -645,13 +726,13 @@ def test_cup_cycle_plan_mirrors_the_sim_dataclass_fields():
     Pinned as a literal list rather than compared against the sim class,
     because importing ``sim.juggle_planner`` pulls in CasADi, which does not
     exist in this environment — the very constraint that made this port
-    necessary. ``warm_start`` is this port's only addition and is deliberately
-    LAST with a default, so positional construction written against the sim
-    dataclass still works.
+    necessary. ``warm_start`` and ``contact_knots`` are this port's own
+    additions and are deliberately trailing with defaults, so positional
+    construction written against the sim dataclass still works.
     """
     names = [f.name for f in dataclasses.fields(cc.CupCyclePlan)]
     assert names == ['pos', 'vel', 'acc', 'jerk', 't', 'dt', 'catch_k',
-                     'takeoff_vel', 'warm_start']
+                     'takeoff_vel', 'warm_start', 'contact_knots']
     assert dataclasses.fields(cc.CupCyclePlan)[-1].default is None
     assert callable(cc.CupCyclePlan.sample)
 
@@ -1180,7 +1261,7 @@ def test_config_without_runway_fields_runs_the_legacy_constraint_set():
             case['catch_pos'], case['catch_vel'], case['period_s'])
     legacy = cc.plan_cup_cycle(*args, cfg=LegacyPlannerConfig())
     ours = cc.plan_cup_cycle(
-        *args, cfg=cc.CupCycleConfig(catch_runway_enabled=False))
+        *args, cfg=cc.CupCycleConfig(catch_runway_enabled=False, contact_floor_enabled=False))
     assert np.array_equal(legacy.pos, ours.pos)
 
 

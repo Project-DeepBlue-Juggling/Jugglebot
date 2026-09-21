@@ -3,7 +3,7 @@ title: Cup-contact contract — banking defined only under seating force, the cu
 created: 2026-09-18
 status: active
 owner: harrison
-last_updated: 2026-09-18
+last_updated: 2026-09-20
 related_plan: two-ball-skill-stack.md
 related_logbook:
   - 2026-09-16-banking-saturates-on-small-lateral-offsets.md   # the root cause: tilt_to_receive has no solution in the dive, clamps to 12°, azimuth is scale-free
@@ -11,7 +11,7 @@ related_logbook:
   - 2026-09-18-learn-the-apex-aim-from-the-tracker.md          # the paper's a_throw = g release constraint; the learner's lateral channel
   - 2026-09-18-tracker-aim-carried-the-lateral-bias-park-race-splice-budget.md   # 52 lateral re-sends refused LIMIT_VEL/ACC/JERK; the lateral clamp
 related_code:
-  - ros_ws/src/jugglebot/jugglebot/motion/trajectory/cup_realize.py::realize_tilt (the banking prescription, ~L611; the widen loop, ~L455-500)
+  - ros_ws/src/jugglebot/jugglebot/motion/trajectory/cup_realize.py::tilt_schedule (the banking prescription, `_banking_raw`; the widen loop, `_accel_bounded_schedule`)
   - ros_ws/src/jugglebot/jugglebot/motion/trajectory/tilt_geometry.py::tilt_to_receive (the 12° clamp and the normalised azimuth)
   - ros_ws/src/jugglebot/jugglebot/motion/trajectory/cup_cycle.py::plan_window (the QP; catch velocity match z_ratio 0.7, catch runway)
   - ros_ws/src/jugglebot/jugglebot/motion/trajectory/feasibility.py::validate_cycle (the K1-K6 gates; the one enforcement point for the new gate)
@@ -20,15 +20,16 @@ related_code:
 
 # Cup-contact contract
 
-> **Status 2026-09-18: DESIGN, owner-approved in principle ("agreed" on the ordering
-> contract → R4 → frame drops). Implementation not started. This document is the
-> brief for the implementing session; read it whole before touching code.**
+> **Status 2026-09-21: § 5 steps 1–4 DONE IN SOFTWARE (the unpinning landed); the sitting
+> is what remains.** § 6 is decided, τ moved 0.060 → 0.125 s on a measurement (§ 7),
+> `contact_knots` is a tuple of ranges (a chained plan has two windows). Design
+> owner-approved 2026-09-18.
 
 ## 0. Why — the one root cause behind four symptoms
 
 The cup's banking schedule prescribes, at every knot, the attitude that seats a ball
 under the *apparent* gravity in the cup, `f = g − a_cup`
-(`cup_realize.py` ~L611, `tilt_geometry.tilt_to_receive`). In the 125 ms before a
+(`cup_realize.tilt_schedule`, `tilt_geometry.tilt_to_receive`). In the 125 ms before a
 catch the cup dives at 1.2–2.8 g, so `f_z > 0`: apparent gravity points UP, no attitude
 can seat the ball, and the prescription has no solution. `tilt_to_receive` then clamps
 the angle to `max_tilt_deg` = 12° and takes the azimuth from the **normalised**
@@ -78,7 +79,11 @@ can remove the median; the scatter is per-throw.
 
 **C-CUP-1 — banking is defined only under seating force.** The banking prescription is
 evaluated only where the apparent gravity in the cup has a seating component,
-`f_z = (g − a_cup)_z ≥ ε·g` with `ε = 0.2`. Elsewhere the schedule **carries the last
+`s = g + a_cup,z ≥ ε·g` with `ε = 0.2` (world z up; `s` is the magnitude of
+`(g − a_cup)_z` pressing a ball INTO the cup — `g` at rest, 0 in free fall, negative in
+the > g dive of § 0, where that section's "`f_z > 0`" is the same fact in the signed
+vector convention. Wording made sign-explicit 2026-09-18 at implementation; the meaning
+is unchanged). Elsewhere the schedule **carries the last
 valid attitude** (a hold, later smoothed by the existing blend), never a saturated one.
 Consequence, which is the test: the tilt demand is amplitude-aware — it tends to zero as
 the lateral residual tends to zero at any fixed dive (with `f_z ≥ εg` the angle is
@@ -87,8 +92,9 @@ The 12° clamp stays as a hard cap that a defined prescription never reaches.
 
 **C-CUP-2 — the cup never falls away from a ball.** Whenever a ball is or may be in the
 cup, the cup's vertical acceleration satisfies `a_cup,z ≥ −κ·g`, `κ = 0.7`. "May be" is
-the contact window: from `τ = 0.060 s` before the planned touch-down (the measured
-arrival scatter, 2026-09-17/18) to the release knot for a catch-and-throw, or to rest for
+the contact window: from `τ = 0.125 s` before the planned touch-down (owner decision
+2026-09-20, § 6 — the design's 0.060 s was the measured arrival scatter of 2026-09-17/18;
+see § 7 for why it grew) to the knot BEFORE the release knot for a catch-and-throw, or to rest for
 a standalone catch and for the opening/closing REST while a ball is held. Upward
 acceleration (the cup decelerating a falling ball) is unbounded by this contract — it is
 the hand runway's business (`catch_runway_requirement`). At the release instant itself
@@ -103,16 +109,18 @@ offset instead of jumping between discrete branches.
 
 | Clause | Where | Shape |
 |---|---|---|
-| C-CUP-1 | `cup_realize.realize_tilt`, the `banking_enabled` branch (~L611) | one `if f_z >= eps*g: prescribe else: carry` per knot; `tilt_geometry.tilt_to_receive` unchanged in its geometry but never called with an unseatable field |
-| C-CUP-2 (feasible by construction) | `cup_cycle.plan_window` | acceleration-row inequality `Aa[k]·x + ca[k] ≥ −κg` for k in the contact window, alongside the existing box rows (the QP already carries `Aa`) |
+| C-CUP-1 | `cup_realize.tilt_schedule`, the `banking_enabled` branch (`_banking_raw`) | one `if f_z >= eps*g: prescribe else: carry` per knot; `tilt_geometry.tilt_to_receive` unchanged in its geometry but never called with an unseatable field |
+| C-CUP-2 (feasible by construction) | `cup_cycle.plan_window` | acceleration-row inequality `Aa[k]·x + ca[k] ≥ −κg` for k in the contact window, alongside the existing box rows (the QP already carries `Aa`); `contact_knots` is a tuple of `(k0, k1)` knot-index ranges (`cycle_plan._checked_contact_knots`), not a single pair — a chained catch-and-throw plan carries two windows |
 | C-CUP-2 (the gate) | `feasibility.validate_cycle` | new named refusal `CUP_CONTACT_ACC` next to `LIMIT_ACC`/`LIMIT_JERK`, computed from the plan's cup acceleration over the window; reported with every other refusal (the "report every refusal at once" rule) |
-| C-CUP-3 | `cup_realize` widen loop (~L455-500) | `_max_tilt_jerk(out, dt) <= jerk_cap` added to the exit test; `jerk_cap` derived from the session leg-jerk limit through the same map the accel cap uses |
+| C-CUP-3 | `cup_realize._accel_bounded_schedule`'s widen loop, `_tilt_leg_jerk_mmps3` | the exit test is the MEASURED per-knot composite leg jerk (`_tilt_leg_jerk_mmps3`, the discrete-Leibniz expansion of the tilt channel's contribution — arm term + platform-rotation term + the cup's own v_z/a_z/j_z cross terms), not a static lever: owner decision 2026-09-20 (§ 6) after the fitted 2.1× lever constant measured 1.15–2.4× loose on R3 fixtures and 6.3× too SMALL on the `test_unified_cycle` STEADY ring. The loop searches floor-first then bisects with real-valued (non-`ceil`) widths onto the cap so the schedule sits AT the budget, not under it by a whole search step. `_tilt_jerk_lever_mm`'s analytic estimate survives only to size how many widen attempts the bisection needs, and as the fallback for a duck-typed plan with no `pos`/`vel`/`jerk`. |
 
 Constants `ε`, `κ`, `τ` live in `config/hardware_config.yaml` (trajectory section) →
 generated; one definition each. `gate_hash` (sha256 of `feasibility.py` + `segments.py`)
 CHANGES: every admissible box is re-swept with `tools/admissible_sweep.py` at the launch
 limits (300/5000/150000) and written in apex units — the sweep now samples 0–10 mm
-lateral offsets explicitly (the 2026-09-16 hole).
+lateral offsets explicitly (the 2026-09-16 hole); at the densified grid the sweep takes
+~29 min (1745.0 s measured 2026-09-21 — see § 7's box table), up from "well under 5 min"
+at the old grid.
 
 ## 4. Tests that fail today (write first)
 
@@ -143,12 +151,64 @@ lateral offsets explicitly (the 2026-09-16 hole).
 
 ## 6. Owner decisions
 
-- `κ = 0.7` (a ball keeps 0.3 g of seating force through the window), `τ = 0.060 s`,
-  `ε = 0.2`, authority 40 mm — proposed, confirm or move.
-- Whether the contact window of a catch-and-throw ends at the release knot (proposed) or
-  at the hand's release-stroke start.
+**Decided 2026-09-20 (owner, at implementation):**
+
+- `κ = 0.7` (a ball keeps 0.3 g of seating force through the window), `ε = 0.2`, authority
+  40 mm — CONFIRMED as proposed.
+- The contact window of a catch-and-throw closes on the knot BEFORE the release knot —
+  CONFIRMED. (The release equality pins `a = −g` at the release knot itself, so the bound
+  cannot include it; measured, the run-up only reaches −0.32 g, so the alternative — ending
+  at the hand's release-stroke start — would pass too and would leave the stroke ungated.)
+- `τ`: **0.060 → 0.125 s, "lengthen τ only"** — chosen over a two-tier approach floor, a
+  lower velocity-match weight, and accepting the design as drawn. See § 7 for the
+  measurement that forced the question.
+- C-CUP-3's jerk cap: **derive the lever analytically** rather than keep a fitted factor
+  (§ 3's "the same map the accel cap uses" is wrong by ~2.1× for a third difference: the
+  cup's own vertical speed adds product-rule terms the static lever has no counterpart for).
+  **Shipped form (2026-09-20, at implementation): the analytic derivation alone is not a
+  bound** — measured 1.15–2.4× loose on R3 fixtures but 4.45× UNDER on the
+  `test_unified_cycle` STEADY ring (its composite is carried by `|j_z|·|θ|`, a term the
+  knot-scale closure under-reads ~70× there) — so the widen loop's exit test uses the
+  MEASURED per-knot composite (`_tilt_leg_jerk_mmps3`) directly; the analytic lever
+  survives only as the estimate that sizes the first widen attempt. See § 3.
+
+**Decided 2026-09-21 (owner, at the unpinning):**
+
+- `learner_lateral_authority_mm` launch default 0 → 40 — CONFIRMED as the plan wrote it.
+  The owner was shown the re-swept boxes' lateral ranges (§ 7 table) before deciding: the
+  0.6 m single-site box admits only ±30 mm in y (gate-limited, `LIMIT_JERK`/`MARGIN`), not
+  the full ±40 mm the other apex rungs clear — the admissible box clips any out-of-band
+  throw command regardless of the executor's lateral-authority clamp, so a uniform 40 mm
+  authority does not let a command past what the box (a separate, orthogonal check) would
+  refuse at 0.6 m.
+- `τ = 0.125 s` — CONFIRMED after the box re-sweep found 0 `CUP_CONTACT_ACC` refusals in
+  14 731 rows (§ 7 table): the value chosen on the 2026-09-20 measurement holds at the
+  launch limits with the densified grid, so no further change to τ was needed.
 
 ## 7. Cost and risk
+
+**Measured 2026-09-20 — the prediction below ("re-phase earlier and coast") was WRONG, and
+the cost of C-CUP-2 is the touch-down velocity match.** The cup QP is stroke-limited: coasting
+at the match speed through the window costs travel the hand does not have above the
+touch-down height, so with the floor on, the QP sits AT the floor through the whole window and
+buys its dive in the ONE knot before the window opens. At 0.9 m (pre-contract: peak dive
+−34.8 k mm/s², touch-down `v_z` −2.74 m/s against a 4.20 m/s ball):
+
+| τ (s) | pre-window knot `a_z` (mm/s²) | touch-down `v_z` (m/s) |
+|---|---:|---:|
+| 0.060 | −61 900 (−6.3 g) | −1.90 |
+| 0.100 | −43 400 | −1.67 |
+| **0.125** | **−29 600** | **−1.54** |
+| 0.150 | −21 700 | −1.47 |
+| 0.200 | −11 300 | −1.44 |
+
+`τ = 0.125 s` is the smallest knot multiple whose pre-window dive is no harsher than the dive
+flown before the contract. The ball now meets the cup ~1.2 m/s faster in relative speed
+(2.66 vs 1.46 m/s). The evidence that this is the acceptable side of the trade: the operator's
+"smoothest" catches of 2026-09-17/18 (`seat=` +0.10 s) met a cup moving only 0.3 m/s — what
+made a catch bad was the cup falling AWAY, not the closing speed. That is a sitting-level
+hypothesis, not a result: read `seat=` and the bounce rate at the first sitting and revisit τ
+(or the two-tier floor) if catches bounce.
 
 - Re-phasing the dive (the cup at its matching velocity `τ` earlier and coasting) shifts
   the contact phase the 2026-09-17 metric was calibrated on; expect `seat=` to move
@@ -156,3 +216,22 @@ lateral offsets explicitly (the 2026-09-16 hole).
 - Every box is re-swept; the 0.9 m box may shrink laterally if C-CUP-2 binds at the
   session leg limits — report the new boxes' lateral ranges before unpinning.
 - `gate_hash` changes invalidate the three box YAMLs on disk until the sweep runs.
+
+**Re-swept 2026-09-21** (`tools/admissible_sweep.py --site-pairs both --single-apex 0.5
+0.6 0.7 0.8 0.9`, 300/5000/150000, hand 3500; deterministic across two runs; 0
+`CUP_CONTACT_ACC` refusals in 14 731 rows — see the logbook entry for the run
+provenance):
+
+| box | old (2026-09-16, `gate_hash 37d68192b0e1`) xy mm | new xy mm | apex m |
+|---|---|---|---|
+| single 0.9 m | x[0,40] y[0,0] | ±40 × ±40 (grid edge) | 0.576–0.900 (unchanged) |
+| single 0.8 m | (0,0) | ±40 × ±40 | 0.512–0.882 |
+| single 0.7 m | (0,0) | ±40 × ±40 | 0.448–0.847 |
+| single 0.6 m | x[0,10] y[0,0] | ±40 × ±30 (y gate-limited: `LIMIT_JERK`/`MARGIN`) | 0.384–0.726 |
+| single 0.5 m | (0,0) | ±20 × ±10 | 0.320–0.605 |
+| columns P1→P2 | x[−20,10] y[−20,20] | ±20 × ±20 | 0.850–0.900 → **0.900 only** |
+| columns P2→P1 | x[−20,20] y[−10,20] | ±20 × ±20 | 0.850–0.900 → **0.900 only** |
+
+**Carried to R4**: the columns apex-band collapse to a single 0.900 m point (both edge
+apexes, 0.850/0.950 m, now fail `THROW:MARGIN` at zero offset) — a real narrowing, not a
+grid artefact.

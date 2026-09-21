@@ -78,17 +78,22 @@ Unmarked and parallel-safe: pure computation, no filesystem, no ports.
 
 from __future__ import annotations
 
+import re
+
 import numpy as np
 import pytest
 
 import jugglebot.hardware_config as hw
+from jugglebot.motion import unified_cycle as uc
 from jugglebot.motion.geometry import StewartGeometry
 from jugglebot.motion.trajectory import TrajectoryLimits
+from jugglebot.motion.trajectory import ballistics_bc
 from jugglebot.motion.trajectory import cup_cycle as cc
 from jugglebot.motion.trajectory import cup_realize as cr
 from jugglebot.motion.trajectory import feasibility as feas
 from jugglebot.motion.trajectory import tilt_geometry as tg
 from jugglebot.motion.trajectory.cycle_plan import CyclePlan
+from jugglebot.motion.skills import sites as st
 from jugglebot.outcome_detail import base_outcome, outcome_subcode
 
 NEUTRAL = np.array([0.0, 0.0, float(hw.JB_OP_DEFAULT_ACTIVE_Z_MM), 0.0, 0.0, 0.0])
@@ -860,3 +865,256 @@ def test_the_default_cup_z_box_saturates_the_slider_and_is_refused(geom,
     report = feas.validate_cycle(CyclePlan.from_realized(realized),
                                  session_limits, geom)
     assert report.code == feas.HAND_STROKE
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# CUP_CONTACT_ACC — reason format, priority, multi-range (U3b left these
+# unwritten; see scratchpad/handoff_u3b.md "Not done")
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _diving_plan(contact_knots, a_dive_rps2=-280.0, n=4):
+    """A level, stationary-platform plan whose hand channel dives at a
+    CONSTANT acceleration — same exact-quadratic construction as
+    ``test_cup_contact_contract.py``'s ``_synthetic_diving_plan`` (a cubic
+    Hermite matching a quadratic's value+derivative at both span ends
+    reproduces it exactly, so every sub-knot sample reads the same
+    acceleration, and the platform pose is bit-identically constant so leg
+    vel/acc/jerk are exactly zero). ``a_dive_rps2 = -280`` rev/s^2 puts
+    ``a_cup,z`` at roughly -9119 mm/s^2, well past the -6864 mm/s^2 floor
+    (``-kappa*g``, kappa=0.7), while staying smooth (no C2 knot-acceleration
+    discontinuity) so ``HAND_LIMIT_C2`` never masks the code under test.
+    """
+    t = np.arange(n, dtype=float) * DT
+    pose = np.tile(NEUTRAL, (n, 1))
+    pose_vel = np.zeros((n, 6))
+    hand_rev0, hand_vel0 = 2.0, 0.0
+    hand_rev = hand_rev0 + hand_vel0 * t + 0.5 * a_dive_rps2 * t ** 2
+    hand_vel = hand_vel0 + a_dive_rps2 * t
+    return CyclePlan(pose=pose, pose_vel=pose_vel, hand_rev=hand_rev,
+                     hand_vel_rps=hand_vel, dt=DT, contact_knots=contact_knots)
+
+
+def test_cup_contact_reason_names_the_worst_knot_and_the_violation_count(geom):
+    """``CUP_CONTACT_ACC``'s reason names the worst knot's index, its
+    acceleration in mm/s^2, and how many knots violate out of how many were
+    checked — the operator-facing string, not just the refusal code (the
+    UH-3 "report every refusal" discipline needs the string to actually carry
+    the diagnosis, not just a code an operator has to go look up).
+    """
+    report = feas.validate_cycle(_diving_plan((0, 3)), _limits(), geom)
+    assert report.code == feas.CUP_CONTACT_ACC
+    detail = report.reasons[0]
+    assert re.search(r'\bknot \d+\b', detail), detail
+    assert re.search(r'-?\d+ mm/s\^2', detail), detail
+    assert re.search(r'\d+/\d+ knots violate', detail), detail
+
+
+def test_cup_contact_reason_survives_a_higher_priority_LIMIT_JERK_refusal(geom):
+    """A plan that breaks BOTH ``LIMIT_JERK`` and the contact floor reports
+    ``LIMIT_JERK`` (earlier in the ladder — an un-executable plan is surfaced
+    before a droppable-ball one), but the cup-contact reason is still
+    APPENDED, never dropped: ``validate_cycle``'s own comment calls this
+    "one refusal reports every refusal at once" (the UH-3 rule).
+    """
+    # The same dive, plus a fast x sweep so the platform ALSO breaks leg jerk.
+    n = 4
+    t = np.arange(n, dtype=float) * DT
+    plan = _diving_plan((0, 3), n=n)
+    w = 2.0 * np.pi / (n * DT)
+    x_amp = 25.0
+    pose = plan.pose.copy()
+    pose_vel = plan.pose_vel.copy()
+    pose[:, 0] = x_amp * np.sin(w * t)
+    pose_vel[:, 0] = x_amp * w * np.cos(w * t)
+    plan = CyclePlan(pose=pose, pose_vel=pose_vel, hand_rev=plan.hand_rev,
+                     hand_vel_rps=plan.hand_vel_rps, dt=plan.dt,
+                     contact_knots=plan.contact_knots)
+
+    base = feas.validate_cycle(plan, _limits(), geom)
+    assert base.code == feas.CUP_CONTACT_ACC  # the x sweep alone isn't gated yet
+
+    tight_jerk = _limits(jerk=0.5 * base.peak_leg_jerk_mmps3)
+    report = feas.validate_cycle(plan, tight_jerk, geom)
+    assert report.code == feas.LIMIT_JERK
+    assert any('peak leg jerk' in r for r in report.reasons)
+    assert any('cup contact' in r for r in report.reasons)
+
+
+def test_cup_contact_reason_survives_a_coincident_HAND_LIMIT_C2_refusal(geom):
+    """``CUP_CONTACT_ACC`` is genuinely LAST in the ladder: a plan that breaks
+    the contact floor AND carries a hand knot-acceleration step reports
+    ``HAND_LIMIT_C2`` (the machine cannot execute a torque step) with the
+    cup-contact reason appended — neither refusal is swallowed.
+
+    Found by the phase audit, 2026-09-21: the contact branch first landed one
+    slot ABOVE ``HAND_LIMIT_C2``, so this pairing reported only
+    ``CUP_CONTACT_ACC`` and the torque-step refusal appeared nowhere. Every
+    other contact test here uses ``_diving_plan``'s exact-quadratic dive, which
+    is C2 by construction, so none of them could see it.
+
+    The driver: piecewise-CONSTANT dive acceleration −280 / −400 / −280 rev/s²
+    (each span an exact quadratic, so the Hermite reproduces it and the ONLY
+    discontinuity is the 120 rev/s² step at the two interior knots — against a
+    ``HAND_C2_TOL_MARGIN × hand_acc_limit`` = 3.5 rev/s² tolerance); every span
+    is past the −κg floor (−280 rev/s² ≈ −9119 mm/s² vs −6864), and well inside
+    the hand velocity/acceleration caps and the stroke.
+    """
+    acc = np.array([-280.0, -400.0, -280.0])
+    hand_rev, hand_vel = [2.0], [0.0]
+    for a in acc:
+        hand_rev.append(hand_rev[-1] + hand_vel[-1] * DT + 0.5 * a * DT ** 2)
+        hand_vel.append(hand_vel[-1] + a * DT)
+    n = len(hand_rev)
+    plan = CyclePlan(pose=np.tile(NEUTRAL, (n, 1)), pose_vel=np.zeros((n, 6)),
+                     hand_rev=np.array(hand_rev), hand_vel_rps=np.array(hand_vel),
+                     dt=DT, contact_knots=(0, n - 1))
+    report = feas.validate_cycle(plan, _limits(), geom)
+    assert report.code == feas.HAND_LIMIT_C2, report.reasons
+    assert any('knot-acceleration discontinuity' in r for r in report.reasons)
+    assert any('cup contact' in r for r in report.reasons), report.reasons
+    # Non-vacuity: the same plan with the window removed is a pure C2 refusal.
+    bare = CyclePlan(pose=plan.pose, pose_vel=plan.pose_vel,
+                     hand_rev=plan.hand_rev, hand_vel_rps=plan.hand_vel_rps,
+                     dt=DT)
+    bare_report = feas.validate_cycle(bare, _limits(), geom)
+    assert bare_report.code == feas.HAND_LIMIT_C2
+    assert not any('cup contact' in r for r in bare_report.reasons)
+
+
+def test_cup_contact_multi_range_violation_in_the_second_range_is_caught(geom):
+    """A chained plan's SECOND contact window is checked, not just the first.
+
+    Range ``(0, 1)`` is flat (hand held, zero acceleration — safely above the
+    floor); range ``(4, 7)`` dives past it. The worst knot/value reported must
+    come from the violating range, and the reason must still name BOTH ranges
+    (a chained LAUNCH+STEADY plan's two windows, per
+    ``unified_cycle._join_contact``).
+    """
+    n = 8
+    hand_rev = np.full(n, 2.0)
+    hand_vel = np.zeros(n)
+    dive_start_knot, a_dive_rps2 = 4, -280.0
+    for k in range(dive_start_knot, n):
+        tau = (k - dive_start_knot) * DT
+        hand_rev[k] = 2.0 + 0.5 * a_dive_rps2 * tau ** 2
+        hand_vel[k] = a_dive_rps2 * tau
+    plan = CyclePlan(pose=np.tile(NEUTRAL, (n, 1)), pose_vel=np.zeros((n, 6)),
+                     hand_rev=hand_rev, hand_vel_rps=hand_vel, dt=DT,
+                     contact_knots=((0, 1), (4, 7)))
+
+    report = feas.validate_cycle(plan, _limits(), geom)
+    # The fixture's hold -> dive hand-off at knot 4 is a genuine 280 rev/s^2
+    # knot-acceleration step, so the CODE is HAND_LIMIT_C2 now that
+    # CUP_CONTACT_ACC is genuinely last in the ladder (phase audit, 2026-09-21:
+    # this test read CUP_CONTACT_ACC only while the contact branch sat one slot
+    # above HAND_LIMIT_C2 and swallowed it). What this test is ABOUT — the
+    # second range is checked and named — lives in the appended contact reason.
+    assert report.code == feas.HAND_LIMIT_C2
+    detail = next(r for r in report.reasons if 'cup contact' in r)
+    worst_knot = int(re.search(r'knot (\d+)', detail).group(1))
+    assert worst_knot >= dive_start_knot, (
+        f'worst knot {worst_knot} should come from the diving range (4, 7), '
+        f'not the flat range (0, 1): {detail}')
+    assert 'contact_knots=[(0, 1), (4, 7)]' in detail
+
+
+def test_contact_knots_none_adds_nothing_to_reasons(geom):
+    """Toggling ``contact_knots`` on the SAME otherwise-identical plan is the
+    only thing that arms ``CUP_CONTACT_ACC`` — ``None`` makes the gate
+    vacuous by design (the field is a statement about the ball, never a
+    default to fall back on), so a plan with no contact window must pass
+    exactly as clean as if the dive were never there.
+    """
+    with_window = feas.validate_cycle(_diving_plan((0, 3)), _limits(), geom)
+    assert with_window.code == feas.CUP_CONTACT_ACC
+    assert with_window.ok is False
+
+    without_window = feas.validate_cycle(_diving_plan(None), _limits(), geom)
+    assert without_window.ok is True
+    assert without_window.code == feas.OK
+    assert without_window.reasons == []
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# A chained production plan (LAUNCH+STEADY) at the R3 operating point
+# ═══════════════════════════════════════════════════════════════════════════
+
+#: R3's single-site operating point — the SAME numbers as
+#: ``test_cup_contact_contract.py`` (``tools/admissible_sweep.py``'s
+#: SINGLE_SITE_LEG_JERK_MMPS3 / ``test_skills_segments.py``'s LEG_VEL/LEG_ACC/
+#: HAND_ACC). Duplicated rather than cross-imported — test files here are not
+#: a package, and ``test_cup_contact_contract.py``'s own fixtures build
+#: segments via ``skills.segments.plan_segment``, not the raw ``uc.plan_launch``
+#: / ``uc.plan_steady`` / ``uc.extend`` chain this test needs to exercise.
+_R3_LEG_VEL = 300.0
+_R3_LEG_ACC = 5000.0
+_R3_LEG_JERK = 150000.0
+_R3_HAND_ACC = 3500.0
+_R3_APEX_M = 0.9
+_R3_T_F = 2.0 * (2.0 * _R3_APEX_M / (ballistics_bc.GRAVITY_MMS2 / 1000.0)) ** 0.5
+_R3_LAUNCH_S = 0.4
+
+
+def _r3_rest_state(cup_mm):
+    """Same construction as ``test_cup_contact_contract.py``'s ``_rest_state``."""
+    rcfg = cr.RealizeConfig()
+    slider_mm = float(cup_mm[2]) - rcfg.cup_z_base_mm
+    rev = ((slider_mm - rcfg.slider_rev_zero_mm) / 1000.0) * cr.HAND_REV_PER_M
+    pose = np.array([cup_mm[0], cup_mm[1], rcfg.active_z_mm, 0.0, 0.0, 0.0])
+    return uc.CycleState.at_rest(pose, rev, rcfg)
+
+
+def test_a_chained_LAUNCH_STEADY_production_plan_passes_the_full_gate(geom):
+    """A real LAUNCH+STEADY chain (``uc.extend``) at the R3 operating point
+    (apex 0.9 m, leg 300/5000/150000, hand acc 3500 — the numbers
+    ``test_cup_contact_contract.py`` gates the schedule's own segments at)
+    passes a FULL ``validate_cycle`` with BOTH contact windows present: the
+    LAUNCH's (the ball departing) and the STEADY's catch window, joined by
+    ``unified_cycle._join_contact`` onto one clock.
+
+    This is the end-to-end complement to the synthetic reason/priority/
+    multi-range tests above: those pin the gate's LOGIC on hand-built plans;
+    this pins that the logic actually accepts the planner's own real output —
+    the plan the R3 schedule dispatches, not a fixture built to exercise one
+    branch. MEASURED (2026-09-20, venv): min a_cup,z is -2376.6 mm/s^2 over
+    the LAUNCH's (0, 15) and -6668.1 mm/s^2 over the STEADY's (45, 71) —
+    both above the -6864.2 mm/s^2 floor, the STEADY window sitting close to
+    it (the QP's own binding case, per ``handoff_u3.md``'s measured table).
+    """
+    limits = TrajectoryLimits.from_config(hw).with_session_limits(
+        leg_vel_mmps=_R3_LEG_VEL, leg_acc_mmps2=_R3_LEG_ACC,
+        leg_jerk_mmps3=_R3_LEG_JERK, hand_acc_rps2=_R3_HAND_ACC)
+    site = st.columns_sites(100.0)[0]
+
+    seed = _r3_rest_state(site.rest_site_mm())
+    launch_goals = uc.CycleGoals(period_s=_R3_LAUNCH_S,
+                                 throw_site_mm=site.throw_site_mm(),
+                                 throw_target_mm=site.throw_site_mm(),
+                                 flight_s=_R3_T_F)
+    launch_plan, launch_meta = uc.plan_launch(launch_goals, seed, limits, geom)
+
+    state = uc.release_state_from_meta(launch_meta, launch_plan)
+    v_arrival = np.array([0.0, 0.0, -ballistics_bc.GRAVITY_MMS2 * (_R3_T_F / 2.0)])
+    steady_goals = uc.CycleGoals(
+        period_s=1.4, throw_site_mm=site.throw_site_mm(),
+        throw_target_mm=site.throw_site_mm(), flight_s=_R3_T_F,
+        catch_site_mm=site.catch_site_mm(), catch_vel_mm_s=v_arrival,
+        catch_frac=(_R3_T_F / 1.4), settle_site_mm=site.rest_site_mm())
+    steady_plan, steady_meta = uc.plan_steady(steady_goals, state, limits, geom)
+
+    joined, joined_meta = uc.extend(launch_plan, launch_meta, steady_plan,
+                                    steady_meta, limits, geom)
+    assert joined.contact_knots is not None
+    assert len(joined.contact_knots) == 2, joined.contact_knots
+
+    report = feas.validate_cycle(joined, limits, geom)
+    assert report.ok is True, report.reasons
+    assert report.code == feas.OK
+
+    # min a_cup,z per range — the QP's own cup track (m/s^2 -> mm/s^2).
+    cup_z_mmps2 = joined_meta.cup_plan.acc[:, 2] * 1000.0
+    floor_mmps2 = (-float(hw.JB_TRAJ_CUP_CONTACT_ACC_FLOOR_G)
+                  * ballistics_bc.GRAVITY_MMS2)
+    for k0, k1 in joined.contact_knots:
+        worst = float(np.min(cup_z_mmps2[k0:k1 + 1]))
+        assert worst >= floor_mmps2, ((k0, k1), worst, floor_mmps2)

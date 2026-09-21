@@ -51,6 +51,8 @@ Pure Python + numpy.  No ROS2 / repo-root imports.
 
 from __future__ import annotations
 
+from typing import Optional, Tuple
+
 import numpy as np
 
 from jugglebot.motion.trajectory.plan import TrajectoryPlan
@@ -89,6 +91,59 @@ def _hermite(p0, v0, p1, v1, h: float, s: float):
     return pos, vel, acc
 
 
+def _checked_contact_knots(contact_knots, n_knots: int):
+    """Validate C-CUP-2's contact window(s) against this plan's knot count.
+
+    ``contact_knots`` is a single ``(k0, k1)`` pair (normalised here to a
+    one-tuple of ranges — every construction site and every test that predates
+    the tuple-of-ranges change keeps working unchanged), a tuple of such pairs
+    (a chained plan's several disjoint contact windows), or ``None``/``()``
+    (no ball, anywhere).  The tuple form exists because ``unified_cycle``'s
+    ``_join_contact`` used to keep only the LATER of two disjoint windows on a
+    chained plan (a LAUNCH+STEADY has a window per event with a whole
+    ballistic flight between them) — leaving the first window's gate silently
+    vacuous on exactly the plans this contract most needs to cover.
+
+    REFUSES rather than clamps.  An out-of-range window is a plumbing bug in a
+    path that re-indexed a plan (splice, head, tail, extend) and got the shift
+    wrong; clamping it would turn that bug into a silently narrower safety gate,
+    which is the one failure mode this field exists to prevent.  Ranges must
+    also be sorted and non-overlapping — the same discipline
+    ``unified_cycle._join_contact`` merges to before handing this constructor
+    the result, so a caller that hands overlapping/unsorted ranges has the
+    same kind of plumbing bug.
+    """
+    if not contact_knots:
+        return None
+    # A bare (k0, k1) pair — its first element is not itself a range.
+    first = contact_knots[0]
+    if not isinstance(first, (tuple, list)):
+        contact_knots = (contact_knots,)
+    ranges = []
+    for rng in contact_knots:
+        try:
+            k0, k1 = rng
+        except (TypeError, ValueError):
+            raise ValueError(
+                "contact_knots must be a (k0, k1) pair, a tuple of such "
+                "pairs, or None, got %r" % (contact_knots,))
+        k0, k1 = int(k0), int(k1)
+        if not 0 <= k0 <= k1 <= n_knots - 1:
+            raise ValueError(
+                "contact_knots range (%d, %d) is not an inclusive knot range "
+                "inside [0, %d] — a re-indexed plan (splice/head/tail/extend) "
+                "must shift and clip the window, not pass it through"
+                % (k0, k1, n_knots - 1))
+        ranges.append((k0, k1))
+    for (a0, a1), (b0, b1) in zip(ranges, ranges[1:]):
+        if not (a0 <= a1 < b0 <= b1):
+            raise ValueError(
+                "contact_knots ranges must be sorted and non-overlapping, "
+                "got %r — a chained plan's join must merge touching/"
+                "overlapping ranges before construction" % (ranges,))
+    return tuple(ranges)
+
+
 class CyclePlan(TrajectoryPlan):
     """A knot-sampled 7-channel plan: 6-DoF platform pose + hand, one clock.
 
@@ -103,13 +158,27 @@ class CyclePlan(TrajectoryPlan):
     catch_k : int, optional
         Knot index of the catch, carried through for the orchestrator; ``-1`` when
         the plan has no catch.
+    contact_knots : (int, int) or tuple of (int, int), optional
+        C-CUP-2's contact window(s): the INCLUSIVE knot range(s) over which a
+        ball is — or may be — in the cup.  A bare ``(k0, k1)`` pair is
+        normalised to a one-tuple ``((k0, k1),)``; a tuple of several sorted,
+        non-overlapping ranges covers a chained plan with more than one
+        contact window (a LAUNCH+STEADY has one per event, with a ballistic
+        flight between them).  ``None`` (the default) makes
+        ``feasibility.validate_cycle``'s ``CUP_CONTACT_ACC`` gate VACUOUS, so it
+        is a statement about the ball, never a default to fall back on: every
+        path that rebuilds a plan (``unified_cycle``'s ``extend`` / head / tail /
+        splice) must carry the field across, shifted and clipped to its own knot
+        indices.  A constructor that drops it silently disarms the one gate that
+        stands between a diving cup and a ball on the floor.
     """
 
     __slots__ = ('pose', 'pose_vel', 'hand_rev', 'hand_vel_rps', 'dt',
-                 'n_knots', 't', 'catch_k')
+                 'n_knots', 't', 'catch_k', 'contact_knots')
 
     def __init__(self, pose, pose_vel, hand_rev, hand_vel_rps, dt,
-                 catch_k: int = -1):
+                 catch_k: int = -1,
+                 contact_knots: Optional[Tuple] = None):
         p = np.asarray(pose, dtype=float)
         pv = np.asarray(pose_vel, dtype=float)
         hr = np.asarray(hand_rev, dtype=float).reshape(-1)
@@ -146,20 +215,34 @@ class CyclePlan(TrajectoryPlan):
         self.dt = dt
         self.n_knots = n
         self.catch_k = int(catch_k)
+        self.contact_knots = _checked_contact_knots(contact_knots, n)
         self.t = np.arange(n, dtype=float) * dt
         self.total_duration = (n - 1) * dt
 
     # ── construction ──
 
     @classmethod
-    def from_realized(cls, realized) -> 'CyclePlan':
-        """Build from anything with :class:`cup_realize.RealizedCycle`'s fields."""
+    def from_realized(cls, realized, *,
+                      contact_knots: Optional[Tuple] = None
+                      ) -> 'CyclePlan':
+        """Build from anything with :class:`cup_realize.RealizedCycle`'s fields.
+
+        ``contact_knots`` is passed EXPLICITLY by the caller because
+        ``cup_realize.decompose`` does not carry it: the contact window is a fact
+        about the ball that the cup QP established (``cup_cycle.contact_window``),
+        and the realiser only reshapes the trajectory.  A caller that has the
+        ``CupCyclePlan`` hands its ``contact_knots`` straight through; the
+        ``getattr`` fallback keeps duck-typed inputs that DO carry the field
+        (and every hand-built test input) working unchanged.
+        """
         return cls(pose=realized.pose,
                    pose_vel=realized.pose_vel,
                    hand_rev=realized.slider_rev,
                    hand_vel_rps=realized.slider_vel_rev_s,
                    dt=realized.dt,
-                   catch_k=getattr(realized, 'catch_k', -1))
+                   catch_k=getattr(realized, 'catch_k', -1),
+                   contact_knots=(getattr(realized, 'contact_knots', None)
+                                  if contact_knots is None else contact_knots))
 
     # ── TrajectoryPlan surface ──
 

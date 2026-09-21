@@ -54,6 +54,12 @@ from jugglebot.motion.ik_solver import (
     rotvec_to_rot_matrix,
     twist_to_leg_velocities,
 )
+from jugglebot.motion.trajectory.ballistics_bc import GRAVITY_MMS2
+from jugglebot.motion.trajectory.cup_realize import (
+    CUP_Z_BASE_MM,
+    SLIDER_REV_ZERO_MM,
+)
+from jugglebot.motion.trajectory.tilt_geometry import CUP_TILT_CENTER_Z_MM
 from jugglebot.motion.trajectory.shaping import _ShapedPlan, batched_shaped_states
 from jugglebot.motion.workspace import (
     WorkspaceLimits,
@@ -89,6 +95,12 @@ HAND_LIMIT_ACC = 'HAND_LIMIT_ACC'
 # torque step. See HAND_C2_TOL_RPS2 below for the tolerance and its measured
 # margin.
 HAND_LIMIT_C2 = 'HAND_LIMIT_C2'
+# The cup-contact floor (C-CUP-2, ``plans/active/cup-contact-contract.md``):
+# over a plan's contact window the cup may not accelerate DOWNWARD faster than
+# ``kappa*g``, or it falls away from the ball it is holding. A bare code, like
+# every other one here, so ``outcome_detail.base_outcome`` round-trips it and the
+# numbers live in ``reasons``.
+CUP_CONTACT_ACC = 'CUP_CONTACT_ACC'
 
 # The per-knot |Δu0| bound is enforced with a 20 % safety margin below the pump's
 # hard step gate, so the gate rejects a step-heavy move BEFORE it reaches the pump
@@ -214,6 +226,10 @@ class FeasibilityReport:
     peak_hand_vel_rps: float = 0.0
     peak_hand_acc_rps2: float = 0.0
     peak_hand_step_rev: float = 0.0
+    #: Worst (most negative) ``a_cup,z`` in mm/s² over the plan's contact window
+    #: — C-CUP-2's measured quantity. ``None`` when the plan carries no contact
+    #: window (the gate is vacuous) and on every gate but :func:`validate_cycle`.
+    min_cup_acc_z_mmps2: 'float | None' = None
     # |a_right - a_left| at the worst interior hand knot (C2FF spec,
     # 2026-09-14) — zero on every gate but validate_cycle, and zero there too
     # for a plan with < 3 knots (no interior knot to measure).
@@ -1009,6 +1025,24 @@ HAND_HARD_STOP_REV = float(hw.GEOM_HAND_MOTOR_HARD_STOP_REVS)
 #: because ``cup_cycle`` is a PLANNER and this is the gate it will be checked by —
 #: importing upward would invert the layering. ``test_validate_cycle.py`` pins the
 #: two against each other so the second spelling cannot drift.
+#: C-CUP-2's dive floor in g — the SAME generated constant ``cup_cycle`` builds
+#: its QP row from (``cup_cycle.CONTACT_ACC_FLOOR_G``), read here directly rather
+#: than imported so this module keeps its one-way dependency: ``cup_cycle``
+#: imports nothing from here and ``unified_cycle`` imports both.
+CUP_CONTACT_ACC_FLOOR_G = float(hw.JB_TRAJ_CUP_CONTACT_ACC_FLOOR_G)
+#: The floor in mm/s² (world z up). Negative: it is a LOWER bound on a downward
+#: acceleration, and upward acceleration is unbounded by this contract (the hand
+#: runway owns that side).
+CUP_CONTACT_ACC_FLOOR_MMPS2 = -CUP_CONTACT_ACC_FLOOR_G * GRAVITY_MMS2
+#: mm of cup travel per motor rev — the LEVEL slider map.
+_CUP_MM_PER_HAND_REV = 1000.0 / float(hw.HAND_REV_PER_M)
+#: The additive constant of the level cup map
+#: (``cup_z = pose_z + hand_mm + _CUP_Z_OFFSET_MM`` at the default active z).
+#: It cancels in the acceleration and is used only to size the TILT LEVER, where
+#: a few mm of error in a 150-750 mm arm is third-order.
+_CUP_Z_OFFSET_MM = (float(CUP_Z_BASE_MM) + float(SLIDER_REV_ZERO_MM)
+                    - float(hw.JB_OP_DEFAULT_ACTIVE_Z_MM))
+
 CATCH_RUNWAY_MARGIN_M = 0.020
 CATCH_RUNWAY_MARGIN_REV = CATCH_RUNWAY_MARGIN_M * float(hw.HAND_REV_PER_M)
 
@@ -1086,6 +1120,129 @@ def _cycle_sample_times(n_knots, dt, total_duration, m):
     return ts
 
 
+def _cup_contact_floor_check(cycle_plan):
+    """``(min_a_cup_z_mmps2, reason_or_None)`` over EVERY range in the plan's
+    contact window(s).
+
+    C-CUP-2's gate half: the QP bounded the CUP plan it solved; this re-measures
+    the bound on the REALISED 7-channel plan the machine will actually stream.
+
+    **The quantity.**  ``a_cup,z = d²/dt²[pose_z + slider_mm]`` — the LEVEL cup
+    map (``unified_cycle.cup_state_from_platform`` with ``a_z = 1``).  The exact
+    map subtracts a tilt drop ``arm·(1 − cos θ)``; inside a contact window
+    C-CUP-1 keeps the commanded tilt sub-degree, where that term is small against
+    a 6864 mm/s² floor (MEASURED 2026-09-18 — see the QP-slack note on
+    ``cup_cycle``'s contact row for the number).  Both channels are linear in the
+    knot values, so they are summed into ONE series and differentiated once.
+
+    **One-sided accelerations, and which one.**  Every channel is a cubic
+    Hermite, so acceleration is LINEAR inside a span and DISCONTINUOUS across a
+    knot (up to ``HAND_C2_TOL`` on the hand, unbounded in principle on the pose).
+    Linear inside a span means the span's minimum is at one of its two ends, so
+    evaluating both one-sided values at every knot bounds the WHOLE window — no
+    sub-sampling, no per-knot Python loop.  The gate takes the MINIMUM (most
+    negative) of the two sides at an interior knot: the conservative choice,
+    because the cup falls away from the ball if EITHER side of the knot dives,
+    and a mean or a right-hand-only reading would miss a one-sided dip entirely.
+
+    Spans strictly inside a range are what is measured — at that range's ``k0``
+    only the forward side and at its ``k1`` only the backward side, because what
+    the cup does outside its contact window is not this contract's business
+    (notably the release knot, where ``a = -g`` is the planned limiting case and
+    sits one knot past a throw-terminated range's ``k1``).
+
+    **Multiple ranges (2026-09-18, the tuple-of-ranges field).**  A chained
+    plan's ``contact_knots`` is a tuple of sorted, non-overlapping ranges — the
+    two windows either side of a ballistic flight, for instance.  Every range is
+    evaluated the SAME pass: their spans are OR-ed into one boolean mask over
+    the plan's knots (never a Python loop over knots — the number of ranges is
+    the only Python-level loop, and it is a handful, not the knot count, so
+    ``test_validate_cycle_budget.py``'s < 10 ms assert stays satisfied), and the
+    reported knot/value is simply the worst over the union.
+    """
+    ck = getattr(cycle_plan, 'contact_knots', None)
+    if not ck:
+        return None, None
+    n = int(cycle_plan.n_knots)
+    h = float(cycle_plan.dt)
+    n_spans = max(n - 1, 0)
+    span_mask = np.zeros(n_spans, dtype=bool)
+    for rng in ck:
+        k0, k1 = int(rng[0]), int(rng[1])
+        if k1 <= k0:
+            # A degenerate ONE-KNOT range: no span lies inside it, so there is
+            # nothing this bound may speak about for THIS range. Reading the
+            # spans that merely TOUCH the knot would reach OUTSIDE the range,
+            # which is precisely what the contract forbids — the knot one past
+            # a throw range's ``k1`` is the release, pinned at ``a = -g``, so a
+            # touching read refuses every throw. A one-knot range only ever
+            # arises from CLIPPING a real one (``unified_cycle``'s
+            # head/tail/splice re-index), and the range that was clipped away
+            # was gated on the plan it came from, so nothing is lost.
+            continue
+        i0, i1 = k0, k1 - 1                     # spans [i, i+1] inside [k0, k1]
+        if i1 < i0 or i1 > n_spans - 1:
+            continue
+        span_mask[i0:i1 + 1] = True
+    if not span_mask.any():
+        return None, None
+
+    mm = _CUP_MM_PER_HAND_REV
+    z = np.asarray(cycle_plan.pose[:, 2], dtype=float) + cycle_plan.hand_rev * mm
+    vz = (np.asarray(cycle_plan.pose_vel[:, 2], dtype=float)
+          + cycle_plan.hand_vel_rps * mm)
+    # ── the tilt drop, and why it is NOT neglected ───────────────────────────
+    # The exact map is ``cup_z = level_z - arm*(1 - cos θ)``: a tilted cup hangs
+    # LOWER on its lever than a level one, so banking adds vertical acceleration
+    # the cup QP never modelled (the QP plans a cup POINT; the tilt is chosen
+    # afterwards by ``cup_realize.tilt_schedule``).  MEASURED 2026-09-18 on the
+    # ``test_validate_cycle_budget`` 1.4 s STEADY window (peak tilt 2.56°): the
+    # realised cup dives **36 mm/s² harder** than the QP's own knot value at the
+    # first window knot.  Small, but the term grows as θ² and the cap is 12°, so
+    # dropping it would make the gate optimistic exactly where a hard bank meets
+    # a ball — the one case this contract exists for.  It is a smooth, heavily
+    # smoothed (``_accel_bounded_schedule``) and comparatively tiny correction,
+    # so a central second difference at the knot spacing carries it; the large
+    # level part stays analytic and one-sided.
+    tilt = np.hypot(np.asarray(cycle_plan.pose[:, 3], dtype=float),
+                    np.asarray(cycle_plan.pose[:, 4], dtype=float))
+    arm = z + _CUP_Z_OFFSET_MM - float(CUP_TILT_CENTER_Z_MM)
+    drop = arm * (1.0 - np.cos(tilt))
+    d2_drop = np.zeros_like(drop)
+    if n >= 3:
+        d2_drop[1:-1] = (drop[:-2] - 2.0 * drop[1:-1] + drop[2:]) / (h * h)
+        d2_drop[0] = d2_drop[1]
+        d2_drop[-1] = d2_drop[-2]
+    idx = np.nonzero(span_mask)[0]               # spans strictly inside ANY range
+    p0, v0 = z[idx], vz[idx]
+    p1, v1 = z[idx + 1], vz[idx + 1]
+    # The same closed-form Hermite acceleration pass 5 uses: s=0 (a span's left
+    # end) and s=1 (its right end).
+    a_right = ((-6.0 * p0 + 6.0 * p1) / (h * h) + (-4.0 * v0 - 2.0 * v1) / h
+               - d2_drop[idx])
+    a_left = ((6.0 * p0 - 6.0 * p1) / (h * h) + (2.0 * v0 + 4.0 * v1) / h
+              - d2_drop[idx + 1])
+    both = np.concatenate([a_right, a_left])
+    knots = np.concatenate([idx, idx + 1])
+    j = int(np.argmin(both))
+    worst = float(both[j])
+    if worst >= CUP_CONTACT_ACC_FLOOR_MMPS2:
+        return worst, None
+    bad = both < CUP_CONTACT_ACC_FLOOR_MMPS2
+    n_violating = int(np.unique(knots[bad]).size)
+    n_checked = int(np.unique(knots).size)
+    ranges_str = ', '.join('(%d, %d)' % (int(r[0]), int(r[1])) for r in ck)
+    return worst, (
+        "cup contact: a_cup,z %.0f mm/s^2 at knot %d < floor %.0f mm/s^2 "
+        "(%.2f g) — %d/%d knots violate over contact_knots=[%s] — the cup "
+        "falls away from a ball it is holding, which reads as HELD/EMPTY/HELD "
+        "at the sensor and shrinks the catch tolerance to the arrival jitter. "
+        "Raise the dive (C-CUP-2, plans/active/cup-contact-contract.md), not "
+        "this floor."
+        % (worst, int(knots[j]), CUP_CONTACT_ACC_FLOOR_MMPS2,
+           -CUP_CONTACT_ACC_FLOOR_G, n_violating, n_checked, ranges_str))
+
+
 def validate_cycle(cycle_plan, limits, geom, *,
                    samples_per_knot: int = _CYCLE_SAMPLES_PER_KNOT,
                    runway_margin_rev: float = CATCH_RUNWAY_MARGIN_REV
@@ -1113,7 +1270,12 @@ def validate_cycle(cycle_plan, limits, geom, *,
        leg extensions outside the hard stroke → ``WORKSPACE``; Jacobian condition
        past the workspace bound → ``UNREACHABLE``. The FLOOR of the stroke band is
        the plan's own first knot when the hand is parked below the homed zero
-       (:func:`_cycle_stroke_floor`); the ceiling is never relaxed.
+       (:func:`_cycle_stroke_floor`); the ceiling is never relaxed. On the
+       ``HAND_STROKE``/``WORKSPACE``/condition-number ``UNREACHABLE`` early
+       returns (every sample here is finite by construction) the cup-contact
+       reason is APPENDED when ``contact_knots`` is set and violated — the code
+       stays the geometry code, but the refusal still reports both facts at
+       once (not on the non-finite early return, which measures nothing).
     2. **The catch runway, re-checked with the ACHIEVED catch velocity** →
        ``HAND_STROKE``. ``cup_cycle`` bounds this inside the QP with the TARGET
        catch speed (``catch_slider_vel_ratio × |v_ball,z|``) against a cup-frame
@@ -1249,11 +1411,22 @@ def validate_cycle(cycle_plan, limits, geom, *,
         first = int(np.argmax(geom_bad))
         t_fail = float(ts[first])
         peak_hand_rev = float(hand_rev_prefix[first])
+        # "Report every refusal at once" (the UH-3 rule, 2026-09-06 — a gate
+        # that stopped at the first cost three hardware sittings). Every
+        # sample here is finite (the non-finite check above already returned),
+        # so the contact floor is measurable; its reason is APPENDED alongside
+        # whichever geometry code fires — the CODE stays the geometry code,
+        # only the reason list gains a line, exactly as the full-ladder pass
+        # does below for every other code.
+        _, _early_contact_reason = _cup_contact_floor_check(cycle_plan)
         if stroke_bad[first]:
+            reasons = [_hand_stroke_reason(float(hand_revs[first]), t_fail,
+                                           stroke_min)]
+            if _early_contact_reason is not None:
+                reasons.append(_early_contact_reason)
             return FeasibilityReport(
                 ok=False, code=HAND_STROKE,
-                reasons=[_hand_stroke_reason(float(hand_revs[first]), t_fail,
-                                             stroke_min)],
+                reasons=reasons,
                 peak_leg_ext_mm=(float(ext_prefix[first - 1]) if first > 0
                                  else 0.0),
                 peak_hand_rev=peak_hand_rev)
@@ -1262,15 +1435,21 @@ def validate_cycle(cycle_plan, limits, geom, *,
             bad = [j for j in range(6)
                    if ext[first, j] < wlimits.leg_hard_min_mm
                    or ext[first, j] > wlimits.leg_hard_max_mm]
+            reasons = ["leg %d out of stroke (%.1f mm) at t=%.3fs"
+                       % (j, ext[first, j], t_fail) for j in bad]
+            if _early_contact_reason is not None:
+                reasons.append(_early_contact_reason)
             return FeasibilityReport(
                 ok=False, code=WORKSPACE,
-                reasons=["leg %d out of stroke (%.1f mm) at t=%.3fs"
-                         % (j, ext[first, j], t_fail) for j in bad],
+                reasons=reasons,
                 peak_leg_ext_mm=peak_ext, peak_hand_rev=peak_hand_rev)
+        reasons = ["Jacobian condition %.1f > %.1f (near singularity) "
+                   "at t=%.3fs" % (conds[first], wlimits.cond_hard, t_fail)]
+        if _early_contact_reason is not None:
+            reasons.append(_early_contact_reason)
         return FeasibilityReport(
             ok=False, code=UNREACHABLE,
-            reasons=["Jacobian condition %.1f > %.1f (near singularity) "
-                     "at t=%.3fs" % (conds[first], wlimits.cond_hard, t_fail)],
+            reasons=reasons,
             peak_leg_ext_mm=peak_ext, peak_hand_rev=peak_hand_rev)
 
     peak_ext = float(ext_prefix[-1])
@@ -1402,6 +1581,10 @@ def validate_cycle(cycle_plan, limits, geom, *,
     # (``MAX_DEVIATION_HAND_REV`` / ``MAX_LEAD_HAND_REV``) remains Phase 3.
     hand_step_bound = (STEP_BOUND_MARGIN * hand_limit_v * dt)
     hand_c2_tol = HAND_C2_TOL_MARGIN * hand_limit_a
+    # C-CUP-2's measurement (the cup-contact floor over the plan's contact
+    # window) — computed BEFORE the ladder so its reason can be reported
+    # alongside whichever code wins, not instead of it.
+    min_cup_acc_z, cup_contact_reason = _cup_contact_floor_check(cycle_plan)
     code = OK
     reasons: list = []
     if peak_vel > limits.leg_vel_mmps:
@@ -1452,9 +1635,27 @@ def validate_cycle(cycle_plan, limits, geom, *,
                   '(scratchpad probe_hand_c2.md) before touching this '
                   'tolerance'
                   % (HAND_C2_TOL_MARGIN, hand_limit_a)))]
+    elif cup_contact_reason is not None:
+        # LAST in the code ladder, deliberately. Every code above it says the
+        # machine CANNOT execute the plan (an actuator limit, a wire step, a
+        # torque step); CUP_CONTACT_ACC says it CAN execute it and will drop the
+        # ball. Surfacing the un-executable one first is what keeps every
+        # existing code exactly where it was — a pose-track failure still reports
+        # the code it reported before this clause landed
+        # (tests/motion/test_validate_cycle_vectorised.py pins that against the
+        # pre-vectorisation twin). The REASON is never lost: it is appended below
+        # whichever code wins, so one refusal reports every refusal at once (the
+        # UH-3 rule, 2026-09-06 — a gate that stopped at the first cost three
+        # sittings).
+        code = CUP_CONTACT_ACC
+        reasons = [cup_contact_reason]
+
+    if cup_contact_reason is not None and code != CUP_CONTACT_ACC:
+        reasons = list(reasons) + [cup_contact_reason]
 
     return FeasibilityReport(
         ok=(code == OK), code=code, reasons=reasons,
+        min_cup_acc_z_mmps2=min_cup_acc_z,
         peak_leg_vel_mmps=peak_vel, peak_leg_acc_mmps2=peak_acc,
         peak_leg_jerk_mmps3=peak_jerk, peak_leg_ext_mm=peak_ext,
         peak_step_rev=peak_step, peak_hand_rev=peak_hand_rev,

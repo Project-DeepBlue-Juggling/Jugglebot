@@ -245,6 +245,34 @@ class _InstallCtx:
         self.installs_accepted = 0
 
 
+#: The sample count below which this gate's tracker reports NOTHING — the
+#: admission rule of the robot tracker it stands in for
+#: (``tracking/flight_fit.BallisticFit``: ``min_samples=12`` surviving samples
+#: spanning at least ``min_span_s=0.050``; at this gate's ``OBS_PERIOD_S``
+#: of 5 ms, 12 samples ARE 55 ms of span, so one number carries both).
+#:
+#: It was 3 until 2026-09-21, and 3 samples is 10 ms of baseline: over the
+#: 0.86 s flight of a 0.9 m self-toss that extrapolates the 0.5 mm
+#: observation noise into a landing tens to >100 mm from the truth, and the
+#: executor's live catch re-aim (``_resend_live_catch``) fires on it ~12 ms
+#: after release. Measured (seed 0, policy A, 2026-09-21): the n=3 fit of the
+#: chain's last throw put the landing at (27.5, -69.2) mm against a true
+#: (-54.6, 8.2) mm, the re-aim was ACCEPTED, the NEXT tick's correction back
+#: was REFUSED (``LIMIT_JERK``, peak leg jerk 481 688 mm/s³ — the banking-
+#: saturation class of ``logbook/2026-09-16-banking-saturates-on-small-
+#: lateral-offsets.md``) and the re-aim cap was then spent, so the cup dived
+#: to the bogus aim: 113.4 mm from the ball laterally at the crossing and
+#: only 1.3 mm off in z — a clean lateral miss, reported as ``caught=False``.
+#: The robot cannot fail this way twice over: its fit refuses to exist below
+#: 12 samples, and ``skill_node``'s ``learner_lateral_authority_mm`` (0
+#: before 2026-09-21, 40 by launch default since) pins a tracker aim's
+#: lateral to the schedule site when clamped
+#: (``SkillExecutor._clamp_lateral_to_schedule``) — an authority this gate
+#: deliberately leaves unset regardless, so the sim learner keeps its xy
+#: correction.
+_FIT_MIN_SAMPLES = 12
+
+
 def _make_tracker(plant, ball_state: dict):
     """The one ``tracker(ball_id) -> Optional[ex.Landing]`` closure, shared by
     the columns run and the R3 self-toss run: a noise-averaged ballistic fit
@@ -277,7 +305,7 @@ def _make_tracker(plant, ball_state: dict):
         if not bstate['airborne']:
             return None
         est = bstate['estimator']
-        if est.n < 3:
+        if est.n < _FIT_MIN_SAMPLES:
             return None
         p_est, v_est = est.estimate()
         try:

@@ -1310,6 +1310,55 @@ def test_resend_still_fires_on_a_timing_only_move(sites):
     assert np.allclose(inst.calls[-1][1].landing_mm[:2], sched_xy[:2])
 
 
+# U1 test 5 (``plans/active/cup-contact-contract.md`` § 4): ONE knob,
+# ``lateral_authority_m``, bounds BOTH the tracker-aimed catch's lateral
+# clamp (``_clamp_lateral_to_schedule``, exercised above by
+# ``test_lateral_authority_widens_the_clamp`` at 20 mm) and the learner's
+# lateral command clamp (``_command_u``, exercised below at R3 by
+# ``test_lateral_authority_pins_the_learner_to_the_desired_offset`` at 5 mm).
+# This test varies the ONE parameter (40 mm) and watches BOTH paths move by
+# the same amount, in one place, rather than trusting two separately-tuned
+# tests never to drift apart. ``_FakeLearner`` / ``sc`` are defined further
+# down this module (R3 section) but that is a textual detail only — both
+# names are bound in the module namespace by the time any test runs.
+def test_lateral_authority_moves_the_tracker_clamp_and_the_learner_clamp_together(
+        sites):
+    """``lateral_authority_m=0.040``: an 85 mm tracker-fit offset clamps to
+    40 mm (``_clamp_lateral_to_schedule``), and an 85 mm learner-commanded
+    offset (in the same y axis) also clamps to 40 mm (``_command_u``) —
+    demonstrating the two paths share the one knob rather than each having
+    its own independently-tuned authority."""
+    p1, _p2 = sites
+    a_m = 0.040
+
+    # -- path 1: the tracker-aimed CATCH's lateral clamp --
+    sch = _schedule(sites)
+    inst = _FakeInstaller()
+    sched_xy = p1.catch_site_mm()
+    t_land = sch.skills[1].t_abs_s
+    tracked = _fit_landing(pos_mm=sched_xy + np.array([0.0, 85.0, 0.0]),
+                          vel_mm_s=LAND_VEL, t_land_abs_s=t_land)
+    x = ex.SkillExecutor(sch, inst, tracker=lambda b: tracked,
+                         lateral_authority_m=a_m)
+    x.tick(sch.skills[0].dispatch_s())
+    x.tick(sch.skills[1].dispatch_s())
+    terminal = inst.calls[-1][1]
+    assert np.allclose(terminal.landing_mm[:2],
+                       sched_xy[:2] + np.array([0.0, a_m * 1000.0]))
+
+    # -- path 2: the learner's commanded lateral offset --
+    sch2 = _schedule(sites)
+    inst2 = _FakeInstaller()
+    y_d = np.asarray(sch2.skills[0].y_d[0], dtype=float).reshape(2)
+    learner = _FakeLearner(u=[float(y_d[0]), float(y_d[1]) + 0.085, 0.9])
+    x2 = ex.SkillExecutor(sch2, inst2, learner=learner, lateral_authority_m=a_m)
+    x2.tick(sch2.skills[0].dispatch_s())
+    _kind, terminal2, _t, _b = inst2.calls[0]
+    want2 = p1.catch_site_mm() + np.array([y_d[0] * 1000.0,
+                                           (y_d[1] + a_m) * 1000.0, 0.0])
+    assert np.allclose(terminal2.target_mm, want2)
+
+
 # ---------------------------------------------------------------------------
 # R3 — the learner's command, the admissible box, and outcome capture
 # ---------------------------------------------------------------------------

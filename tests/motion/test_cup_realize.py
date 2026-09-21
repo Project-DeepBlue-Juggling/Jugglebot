@@ -282,6 +282,320 @@ def test_the_default_tilt_accel_cap_is_derived_from_the_leg_budget():
     assert 3.0 < cr.TILT_ACCEL_LIMIT_DEFAULT_RAD_S2 < 8.0
 
 
+# ── C-CUP-1 / C-CUP-3 (plans/active/cup-contact-contract.md § 2) ─────────────
+
+def _plan_with_acc(acc: np.ndarray, dt: float = 0.025, catch_k=None) -> _CupPlan:
+    """A fixture plan whose ACCELERATION is exactly what the test dictates.
+
+    The banking prescription reads ``acc`` and nothing else, so the pos/vel rows
+    from ``_make_cup_plan`` are along only to satisfy the field contract.
+    """
+    n = int(acc.shape[0])
+    plan = _make_cup_plan(n_knots=n, dt=dt, accel_scale=0.0,
+                          catch_k=(n // 2 if catch_k is None else catch_k))
+    plan.acc = np.asarray(acc, dtype=float)
+    return plan
+
+
+def _dive_acc(n: int, lat_mps2: float, dive_g: float, lo: int, hi: int):
+    """``n`` knots of steady lateral ``lat_mps2`` with a ``dive_g``-g dive over
+    ``[lo, hi)`` — the shape of the ~125 ms before a catch."""
+    acc = np.zeros((n, 3))
+    acc[:, 0] = lat_mps2
+    acc[lo:hi, 2] = -dive_g * float(hw.GRAVITY_MPS2)
+    return acc
+
+
+def test_banking_carries_the_last_valid_attitude_where_nothing_seats_a_ball():
+    """C-CUP-1: the prescription is evaluated only under seating force.
+
+    A ball feels ``f = g − a_cup``; the part pressing it INTO the cup is
+    ``s = g + a_cup,z``.  In a 2 g dive ``s = −g``: apparent gravity points UP and
+    NO attitude seats the ball, so the prescription has no solution.  The old
+    code asked ``tilt_to_receive`` anyway and got its 12° clamp back at an azimuth
+    read off the normalised lateral residual — asserted here as the contrast, so
+    a future reader can see what the carry replaces and not just that it changed.
+    """
+    g = float(hw.GRAVITY_MPS2)
+    cfg = cr.RealizeConfig()
+    acc = _dive_acc(21, lat_mps2=0.4, dive_g=2.0, lo=8, hi=14)
+    seated = (g + acc[:, 2]) >= cfg.banking_seating_min_g * g
+    assert seated[:8].all() and not seated[8:14].any() and seated[14:].all()
+
+    raw = cr._banking_raw(acc, cfg)
+    for k in range(8, 14):
+        np.testing.assert_array_equal(raw[k], raw[7])
+    # The carried value is a DEFINED bank, nowhere near the ceiling...
+    assert np.degrees(np.hypot(*raw[7])) == pytest.approx(
+        np.degrees(np.arctan(0.4 / g)), abs=1e-9)
+    # ...and this is exactly the knot the unguarded call saturated.
+    unguarded = tg.tilt_to_receive(np.array([0.0, 0.0, -g]) - acc[10])
+    assert np.degrees(np.hypot(*unguarded)) == pytest.approx(tg.MAX_TILT_DEG)
+
+
+def test_banking_demand_tends_to_zero_with_the_lateral_residual():
+    """C-CUP-1's consequence, and the reason it is the fix: with ``s >= ε·g`` the
+    prescribed angle is ``atan(|f_lat| / s) <= atan(|f_lat| / (ε·g))``, so the
+    demand is amplitude-aware.  Unguarded it is scale-free — 12.000° for every
+    nonzero residual, which is the 2026-09-16 measurement."""
+    g = float(hw.GRAVITY_MPS2)
+    cfg = cr.RealizeConfig()
+    lats = (0.0, 0.05, 0.1, 0.2, 0.4)
+    peaks, unguarded = [], []
+    for lat in lats:
+        acc = _dive_acc(21, lat_mps2=lat, dive_g=2.0, lo=8, hi=14)
+        raw = cr._banking_raw(acc, cfg)
+        peaks.append(float(np.degrees(np.hypot(raw[:, 0], raw[:, 1]).max())))
+        unguarded.append(float(np.degrees(np.hypot(*tg.tilt_to_receive(
+            np.array([0.0, 0.0, -g]) - acc[10])))))
+    assert peaks[0] == 0.0
+    assert all(hi > lo for lo, hi in zip(peaks, peaks[1:])), peaks
+    assert peaks[-1] <= np.degrees(np.arctan(
+        lats[-1] / (cfg.banking_seating_min_g * g)))
+    # The defect, pinned: scale-free without the gate.
+    assert unguarded[1:] == [pytest.approx(tg.MAX_TILT_DEG)] * (len(lats) - 1)
+
+
+def test_a_leading_undefined_run_takes_the_seam_pin_then_the_first_valid_knot():
+    """The no-predecessor rule (``_banking_raw``'s docstring): knot 0 of a
+    post-release window is in free fall, ``s = 0``, with nothing before it.
+
+    ``start_tilt`` first, because it IS the last valid attitude — the one the
+    PRECEDING window ended at — so the seam's pin gap is exactly zero and the flat
+    prefix leaves no first difference to turn into a centroid step through the
+    744.3 mm lever.  Back-fill second, because it is continuous at the resume
+    knot.  Level only when nothing in the window is ever seated.
+    """
+    g = float(hw.GRAVITY_MPS2)
+    cfg = cr.RealizeConfig()
+    acc = _dive_acc(15, lat_mps2=0.4, dive_g=1.0, lo=0, hi=5)   # free fall, s = 0
+    start = np.array([0.03, -0.02])
+
+    seamed = cr._banking_raw(acc, cfg, start)
+    for k in range(5):
+        np.testing.assert_array_equal(seamed[k], start)
+
+    backfilled = cr._banking_raw(acc, cfg, None)
+    for k in range(5):
+        np.testing.assert_array_equal(backfilled[k], backfilled[5])
+    assert not np.array_equal(backfilled[0], np.zeros(2))       # not level
+
+    never = _dive_acc(9, lat_mps2=0.4, dive_g=2.0, lo=0, hi=9)
+    np.testing.assert_array_equal(cr._banking_raw(never, cfg, None),
+                                  np.zeros((9, 2)))
+
+    # End to end: the seam pin is exact and the window opens on it.
+    plan = _plan_with_acc(acc)
+    tilts = cr.tilt_schedule(plan, np.zeros(2), np.zeros(2), cfg,
+                             start_tilt=start)
+    np.testing.assert_array_equal(tilts[0], start)
+
+
+def test_the_widen_loop_exits_on_the_third_difference_too():
+    """C-CUP-3: a schedule whose tilt ACCELERATION is already inside budget but
+    whose tilt JERK is not must still widen.
+
+    Driven with an accel cap so loose it is satisfied on the first attempt (the
+    analytic smoother width collapses to ``half = 0``), so the only thing that can
+    make the loop widen is the third-difference half of the exit test.  Without
+    it the routine returns the un-widened series — that is the defect: the exit
+    quantity and the quantity ``validate_cycle`` refuses on (``LIMIT_JERK``, a
+    third difference) were different quantities.
+    """
+    plan = _make_cup_plan(n_knots=57, catch_k=30, accel_scale=40.0)
+    recv = np.array(tg.tilt_to_receive(np.array([0.10, -0.05, -2.5])))
+    throw = np.zeros(2)
+    loose = dict(tilt_accel_limit_rad_s2=1.0e4)
+
+    accel_only = cr.tilt_schedule(plan, recv, throw, cr.RealizeConfig(
+        tilt_jerk_limit_rad_s3=0.0, **loose))
+    j0 = cr._max_tilt_jerk(accel_only, plan.dt)
+    # Non-vacuity: the accel exit is met immediately and leaves real jerk behind.
+    assert cr._max_tilt_accel(accel_only, plan.dt) <= 1.0e4
+    assert j0 > 0.0
+
+    cap = j0 / 4.0
+    widened = cr.tilt_schedule(plan, recv, throw, cr.RealizeConfig(
+        tilt_jerk_limit_rad_s3=cap, **loose))
+    assert cr._max_tilt_jerk(widened, plan.dt) <= cap
+    # ...and it did not buy that by giving up the pins or the ceiling.
+    np.testing.assert_array_equal(widened[plan.catch_k], recv)
+    np.testing.assert_array_equal(widened[-1], throw)
+    assert np.degrees(np.linalg.norm(widened, axis=1)).max() <= tg.MAX_TILT_DEG + 1e-12
+
+
+def test_the_seating_floor_and_the_tilt_jerk_cap_are_config_derived():
+    """One definition each: ``ε`` is the generated constant and the tilt-jerk cap
+    comes off the leg-JERK budget through the SAME lever and reserve fraction as
+    the accel cap — never a literal in this module or in a test."""
+    assert cr.BANKING_SEATING_MIN_G == float(hw.JB_TRAJ_CUP_BANKING_SEATING_MIN_G)
+    assert cr.RealizeConfig().banking_seating_min_g == cr.BANKING_SEATING_MIN_G
+    assert cr.TILT_JERK_LIMIT_DEFAULT_RAD_S3 == pytest.approx(
+        cr.TILT_ACCEL_BUDGET_FRACTION * float(hw.JB_TRAJ_LEG_JERK_LIMIT_MMPS3)
+        / cr.TILT_ACCEL_LEVER_MM)
+    assert (cr.RealizeConfig().tilt_jerk_limit_rad_s3
+            == cr.TILT_JERK_LIMIT_DEFAULT_RAD_S3)
+    # The accel and jerk caps are the SAME map applied to two limits: one lever,
+    # one reserve fraction, no fitted factor between them (the per-cycle
+    # correction is _tilt_jerk_lever_mm's job, not this constant's).
+    assert (cr.TILT_JERK_LIMIT_DEFAULT_RAD_S3
+            / cr.TILT_ACCEL_LIMIT_DEFAULT_RAD_S2) == pytest.approx(
+        float(hw.JB_TRAJ_LEG_JERK_LIMIT_MMPS3)
+        / float(hw.JB_TRAJ_LEG_ACC_LIMIT_MMPS2))
+    # The reserve means what it says: at the shipped limits the tilt channel's
+    # jerk budget, through the static lever, is half the leg-jerk limit.
+    assert (cr.TILT_JERK_LIMIT_DEFAULT_RAD_S3
+            * cr.TILT_ACCEL_LEVER_MM) == pytest.approx(
+        cr.TILT_ACCEL_BUDGET_FRACTION * float(hw.JB_TRAJ_LEG_JERK_LIMIT_MMPS3))
+    # And no fitted lever factor survives anywhere in the module.
+    assert not [name for name in vars(cr) if 'JERK_LEVER_FACTOR' in name]
+
+
+def test_the_tilt_jerk_lever_reduces_to_the_static_one_without_vertical_motion():
+    """``Λ`` is the static lever exactly when the cup does not move vertically.
+
+    The derivation is the discrete Leibniz expansion of ``Δ³(arm·axis)``: the
+    three cross terms carry ``v_z``, ``a_z`` and ``j_z``, so they vanish together
+    when the cup holds its height and what is left is ``|arm| + R_plat`` — the
+    same static model the ACCEL cap uses (see ``_tilt_jerk_lever_mm``).
+    """
+    n, dt = 21, 0.025
+    plan = _make_cup_plan(n_knots=n, dt=dt)
+    # Cup pinned at the top of the hand band, no vertical motion at all.
+    cup_z_top_m = cr._CUP_Z_TOP_MM / 1000.0
+    plan.pos[:, 2] = cup_z_top_m
+    plan.vel[:, 2] = 0.0
+    plan.acc[:, 2] = 0.0
+    plan.jerk[:, 2] = 0.0
+    lever = cr._tilt_jerk_lever_mm(plan, dt)
+    assert lever == pytest.approx(cr.TILT_ACCEL_LEVER_MM)
+    # …and that is the cap the config constant is built for, so the per-call
+    # rescale in ``tilt_schedule`` is the identity on such a cycle.
+    assert (cr.TILT_JERK_LIMIT_DEFAULT_RAD_S3 * cr.TILT_ACCEL_LEVER_MM
+            / lever) == pytest.approx(cr.TILT_JERK_LIMIT_DEFAULT_RAD_S3)
+
+
+def test_the_tilt_jerk_lever_follows_the_cycle_not_a_fitted_constant():
+    """A faster cup has a longer effective lever — term by term, in order.
+
+    Each cross term is the cup's own ``d^m z/dt^m`` against the tilt series'
+    ``(3−m)``-th difference, so scaling the cup's vertical speed scales the
+    ``3·|v_z|·dt`` term and nothing else.  The check is written as the closed
+    form itself (not a golden number): the point of the derivation is that the
+    lever is computable from the plan, which a fitted 2.1× constant was not.
+    """
+    n, dt = 21, 0.025
+    r_plat = float(hw.GEOM_PLAT_RADIUS_MM)
+    arm_mm = 200.0
+    base = _make_cup_plan(n_knots=n, dt=dt)
+    base.pos[:, 2] = (tg.CUP_TILT_CENTER_Z_MM + arm_mm) / 1000.0
+    base.vel[:, 2] = 0.0
+    base.acc[:, 2] = 0.0
+    base.jerk[:, 2] = 0.0
+    assert cr._tilt_jerk_lever_mm(base, dt) == pytest.approx(arm_mm + r_plat)
+
+    levers = []
+    for vz_mps in (0.0, 1.0, 2.0, 4.0):
+        plan = _make_cup_plan(n_knots=n, dt=dt)
+        plan.pos[:, 2] = (tg.CUP_TILT_CENTER_Z_MM + arm_mm) / 1000.0
+        plan.vel[:, 2] = vz_mps
+        plan.acc[:, 2] = 0.0
+        plan.jerk[:, 2] = 0.0
+        lever = cr._tilt_jerk_lever_mm(plan, dt)
+        assert lever == pytest.approx(
+            arm_mm + r_plat + 3.0 * vz_mps * 1000.0 * dt)
+        levers.append(lever)
+    assert levers == sorted(levers)
+    # A 4 m/s cup (a catch dive) adds 3·4000·dt = 300 mm to a 419 mm static
+    # lever — a 72 % longer lever, i.e. a 42 % smaller tilt-jerk cap, from the
+    # cycle alone.  That is the size of the effect the fitted constant was
+    # standing in for, and it is why it could not be a constant.
+    assert levers[-1] - levers[0] == pytest.approx(3.0 * 4000.0 * dt)
+    assert levers[-1] / levers[0] == pytest.approx(1.716, abs=0.005)
+
+    # The acceleration and jerk terms enter at dt² and dt³, with the same 3, 3, 1
+    # Leibniz coefficients.
+    plan = _make_cup_plan(n_knots=n, dt=dt)
+    plan.pos[:, 2] = (tg.CUP_TILT_CENTER_Z_MM + arm_mm) / 1000.0
+    plan.vel[:, 2] = 0.0
+    plan.acc[:, 2] = 100.0                      # m/s² — a release stroke
+    plan.jerk[:, 2] = 0.0
+    assert cr._tilt_jerk_lever_mm(plan, dt) == pytest.approx(
+        arm_mm + r_plat + 3.0 * 100.0 * 1000.0 * dt * dt)
+    plan.acc[:, 2] = 0.0
+    plan.jerk[:, 2] = 4000.0                    # m/s³
+    assert cr._tilt_jerk_lever_mm(plan, dt) == pytest.approx(
+        arm_mm + r_plat + 4000.0 * 1000.0 * dt ** 3)
+
+
+def test_a_plan_without_vertical_columns_gets_the_shipped_static_lever():
+    """``tilt_schedule`` contractually needs only ``acc``/``dt``/``catch_k``.
+
+    A duck-typed plan that carries nothing else must still produce a cap — and
+    the honest one is the static lever, i.e. the cross terms treated as zero.
+    """
+    class _AccOnly:
+        acc = np.zeros((9, 3))
+        dt = 0.025
+        catch_k = 4
+
+    assert cr._tilt_jerk_lever_mm(_AccOnly(), 0.025) == pytest.approx(
+        cr.TILT_ACCEL_LEVER_MM)
+
+
+def test_the_widen_loop_saturates_at_the_cap_instead_of_jumping_branches():
+    """C-CUP-3 follow-up: achieved tilt jerk is non-decreasing in the pin gap.
+
+    The defect this closes (MEASURED 2026-09-20, R3 catch-with-throw): the blend
+    half-width was ``ceil``ed to an integer and grown by ×1.4 on failure, so a
+    LARGER commanded aim could land on a wider, smoother branch and come out with
+    LESS jerk than a smaller one — 8 → 16 mm of aim stepped the width 9 → 11
+    knots and dropped the achieved tilt jerk 59.2 → 36.6 rad/s³.  The property
+    asserted here is the fix's shape: rising while the narrowest admissible blend
+    is inside the cap, then FLAT at the cap, never falling.  The grid is swept in
+    the pin gap (the quantity the width estimate reads) via the throw pin.
+    """
+    n, dt = 41, 0.025
+    # accel_scale 0 -> the banking prescription is level, so the ONLY driver of
+    # the schedule (and of the pin gap the width estimate reads) is the throw pin
+    # swept below.  A plan with its own banking would saturate the budget before
+    # the sweep began and measure nothing.
+    plan = _make_cup_plan(n_knots=n, dt=dt, catch_k=12, accel_scale=0.0)
+    cfg = dataclasses.replace(cr.RealizeConfig(), tilt_accel_limit_rad_s2=40.0,
+                              tilt_jerk_limit_rad_s3=60.0)
+    # The quantity the loop bounds is the tilt channel's own contribution to LEG
+    # jerk, and the budget is the rad/s³ cap through the static lever.
+    budget = cfg.tilt_jerk_limit_rad_s3 * cr.TILT_ACCEL_LEVER_MM
+    terms = cr._tilt_jerk_terms(plan, dt, n)
+    achieved = []
+    for deg in (0.0, 0.5, 1.0, 2.0, 3.0, 4.0, 6.0, 8.0, 10.0):
+        throw = np.array([0.0, np.radians(deg)])
+        out = cr.tilt_schedule(plan, np.zeros(2), throw, cfg)
+        np.testing.assert_allclose(out[-1], throw, atol=0, rtol=0)
+        np.testing.assert_allclose(out[plan.catch_k], np.zeros(2), atol=0, rtol=0)
+        assert np.degrees(np.linalg.norm(out, axis=1)).max() <= tg.MAX_TILT_DEG + 1e-12
+        got = cr._tilt_leg_jerk_mmps3(out, dt, terms)
+        assert got <= budget * (1.0 + 1e-9)
+        achieved.append(got)
+    # Below the band the schedule is floor-limited and the achieved contribution
+    # RISES with the commanded pin — that is the continuity half of C-CUP-3.
+    rising = [a for a in achieved if a < 0.8 * budget]
+    assert rising == sorted(rising) and len(rising) >= 3, achieved
+    # Inside it, every point stays in the saturation band: no attempt comes back
+    # at a fraction of the budget because a wider branch fired.  MEASURED
+    # 2026-09-20 over this sweep: 81–92 % of the budget once saturated, against
+    # the 36 % dips the ``ceil``ed ladder produced on the R3 grid (a 59.2 → 36.6
+    # rad/s³ drop for a 2× larger aim).  The band is not tighter than that
+    # because the composite is NOT monotone in the blend width — a wider blend
+    # lowers ``Δ³θ`` but raises ``|θ|`` under the window, and the ``|j_z|·|θ|``
+    # term grows with it — so the bisection brackets the bound rather than
+    # landing exactly on it.
+    band = [a for a in achieved if a >= 0.8 * budget]
+    assert len(band) >= 4, achieved
+    assert min(band) >= 0.75 * budget, achieved
+    assert max(achieved) <= budget
+
+
 def test_zero_banking_is_bit_identical_whatever_the_accel_cap_says():
     """The accel bound is a banking-only shaper.
 

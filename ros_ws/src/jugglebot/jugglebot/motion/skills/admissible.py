@@ -51,8 +51,6 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import yaml
 
-from jugglebot.motion.skills import schedule as sch
-
 __all__ = [
     'AdmissibleBox', 'AdmissibleError', 'LimitsMismatch',
     'MARGIN_FRAC', 'clip', 'dump', 'load', 'check_limits', 'gate_hash',
@@ -344,18 +342,21 @@ def dump(path: str, boxes: List[AdmissibleBox]) -> None:
 
 
 _REQUIRED_TOP = ('swept_at', 'gate_hash', 'limits', 'boxes')
-_REQUIRED_BOX = ('site_pair', 'apex_band_m', 'landing_xy_m')
+_REQUIRED_BOX = ('site_pair', 'apex_band_m', 'landing_xy_m', 'apex_m')
 
 
 def load(path: str) -> List[AdmissibleBox]:
     """Read + validate an admissible-box YAML file. Strict: a missing field is
     a refusal naming it, never a best-effort partial parse.
 
-    A box written before 2026-09-18 bounds a ``flight_s`` instead of an
-    ``apex_m``; it is read through ``schedule.apex_m``, the exact inverse of
-    the ``schedule.flight_s`` the sweep used, so the SAME set of throws stays
-    admissible. The conversion is a bijection (``h = g·t²/8``), which is what
-    makes re-sweeping the box optional rather than a prerequisite.
+    Every box on disk bounds ``apex_m`` directly (2026-09-18). The pre-apex
+    ``flight_s`` compatibility branch (read through ``schedule.apex_m``, the
+    exact inverse of the ``schedule.flight_s`` the sweep once used) was
+    retired 2026-09-21 once the U4 re-sweep wrote every tracked box as
+    ``apex_m`` and a grep of the tree found no other YAML/fixture still
+    writing ``flight_s`` (only this module's own loader and one now-deleted
+    test exercised it) -- see ``logbook/2026-09-18-learn-the-apex-aim-from-
+    the-tracker.md`` ("retire it then, not before").
     """
     try:
         with open(path, 'r') as handle:
@@ -392,17 +393,7 @@ def load(path: str) -> List[AdmissibleBox]:
             raise AdmissibleError("%s: boxes[%d] is missing %r"
                                   % (path, i, missing))
         xy = raw['landing_xy_m']
-        if 'apex_m' in raw:
-            apex = (float(raw['apex_m'][0]), float(raw['apex_m'][1]))
-        elif 'flight_s' in raw:
-            flo, fhi = float(raw['flight_s'][0]), float(raw['flight_s'][1])
-            apex = ((flo, fhi) if math.isnan(flo) or math.isnan(fhi)
-                    else (sch.apex_m(flo), sch.apex_m(fhi)))
-        else:
-            raise AdmissibleError(
-                "%s: boxes[%d] is missing ['apex_m'] (nor does it carry the "
-                "pre-2026-09-18 'flight_s' this loader converts from)"
-                % (path, i))
+        apex = (float(raw['apex_m'][0]), float(raw['apex_m'][1]))
         out.append(AdmissibleBox(
             site_pair=tuple(raw['site_pair']),
             apex_band_m=(float(raw['apex_band_m'][0]), float(raw['apex_band_m'][1])),

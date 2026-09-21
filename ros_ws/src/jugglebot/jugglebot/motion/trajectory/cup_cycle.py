@@ -231,6 +231,13 @@ class CupCycleConfig:
     solver_print: bool = False              # accepted, unused (no NLP here)
 
     # ---- catch runway (owner resolution 1, 2026-08-29) --------------------
+    #: C-CUP-2's dive floor ON. Set False for exact legacy parity against the
+    #: CasADi reference, which has no such row — the same opt-out, for the same
+    #: reason, as ``catch_runway_enabled`` below, and a sim ``PlannerConfig``
+    #: (which has no such field) reads as disabled through ``_RUNWAY_DEFAULTS``.
+    contact_floor_enabled: bool = True
+
+    # ---- catch runway (owner resolution 1, 2026-08-29) --------------------
     #: Hard runway bound ON. Set False for exact legacy parity against the
     #: CasADi reference (that program has no runway constraint).
     catch_runway_enabled: bool = True
@@ -297,6 +304,7 @@ _RUNWAY_DEFAULTS = {
     'max_iter': 300,
     'tol': 1e-9,
     'feas_tol': 1e-7,
+    'contact_floor_enabled': False,
 }
 
 
@@ -427,6 +435,13 @@ class CupCyclePlan:
     catch_k: int
     takeoff_vel: np.ndarray
     warm_start: Optional[SolverState] = None
+    #: C-CUP-2's contact window: the INCLUSIVE knot range over which a ball is —
+    #: or may be — in the cup, or ``None`` when none can be.  Additive trailing
+    #: field (the sim dataclass does not have it, like ``warm_start``).  The QP
+    #: held ``acc[k, 2] >= -CONTACT_ACC_FLOOR_G * g`` over exactly this range;
+    #: ``feasibility.validate_cycle`` re-measures it on the REALISED 7-channel
+    #: plan, so the two must be carried together or the gate goes vacuous.
+    contact_knots: Optional[tuple] = None
 
     def sample(self, t_rel: float):
         """Cubic (jerk-constant) interpolation of the cup state at ``t_rel``.
@@ -694,6 +709,77 @@ def _seed_relaxed_z_box(state0: CupState, z_min: float, z_max: float):
 
 
 # ---------------------------------------------------------------------------
+# C-CUP-2 — the cup never falls away from a ball
+# ---------------------------------------------------------------------------
+#: The dive floor, in g: over the contact window the cup's vertical acceleration
+#: satisfies ``a_cup,z >= -CONTACT_ACC_FLOOR_G * g`` (world z up).  ONE definition
+#: (``plans/active/cup-contact-contract.md`` clause C-CUP-2); never re-typed as a
+#: literal anywhere, and ``feasibility.CUP_CONTACT_ACC`` reads the same constant.
+CONTACT_ACC_FLOOR_G = float(hw.JB_TRAJ_CUP_CONTACT_ACC_FLOOR_G)
+
+#: How long BEFORE the planned touch-down the contact window opens (s).  A ball
+#: that arrives early is already in the cup, so the cup must stop falling away
+#: from it before the planned instant: the measured early-arrival spread at the
+#: R3 operating point is what this lead covers.
+CONTACT_WINDOW_LEAD_S = float(hw.JB_TRAJ_CUP_CONTACT_WINDOW_LEAD_S)
+
+#: How far ABOVE the floor the QP row sits, so the planner's own output is not
+#: refused by its own gate (m/s²).
+#:
+#: MEASURED 2026-09-18 (``scratchpad/probe_u3b.py``, venv, R3 operating point,
+#: apex 0.6 m and 0.9 m, standalone CATCH and CATCH-with-throw): with the row at
+#: the bare floor the QP lands EXACTLY on it, and ``feasibility.validate_cycle``
+#: — which re-measures the realised 7-channel plan, not the cup plan — reads it
+#: back **1.2e-8 … 7.7e-8 mm/s² below**, i.e. the two agree to eight significant
+#: figures and the only disagreement is float noise. (That the level cup map and
+#: the Hermite reconstruction agree with the QP to 1e-7 mm/s² is itself the
+#: measurement: the neglected tilt-drop term is nowhere near this floor inside a
+#: contact window, because C-CUP-1 keeps the commanded tilt sub-degree there.)
+#: So the slack is set 4 orders of magnitude above the worst observed gap and 4
+#: below the floor itself — 1 mm/s², 0.015 % of 6864 mm/s² — which is a margin
+#: that cannot mask a physical violation and cannot be eaten by float noise.
+CONTACT_ACC_QP_SLACK_MPS2 = 0.02 * abs(float(GRAVITY[2]))
+
+
+def contact_window(n: int, dt: float, *, has_throw: bool, catch_t_s=None,
+                   holds_ball_at_start: bool = False):
+    """The INCLUSIVE knot range ``(k0, k1)`` a ball is — or may be — in the cup.
+
+    ``None`` when no ball can be in the cup anywhere in the window (the gate is
+    then vacuous, which is the ONLY way it may be vacuous: an absent window is a
+    statement about the ball, never a shortcut).
+
+    * **opens** at knot 0 when the window starts holding a ball
+      (``holds_ball_at_start`` — a LAUNCH, or a REST that is holding one), else
+      :data:`CONTACT_WINDOW_LEAD_S` before the planned touch-down, floored to the
+      knot at or before it, so an early arrival is covered;
+    * **closes** at the knot BEFORE the release (``n - 1``) for a window that ends
+      in a throw, else at the last knot ``n`` (a rest-terminal window still holds
+      the ball it caught).
+
+    **Why the release knot is excluded.**  The release equality pins
+    ``a_cup == g`` exactly — that is the paper's ``a_throw = g`` limiting case,
+    and a floor of ``-0.7 g`` at that knot is unsatisfiable, so including it would
+    refuse every throw.  Acceleration is piecewise LINEAR in ``t`` between knots
+    (the decision variable is per-knot jerk), so on the last span the cup crosses
+    the floor exactly once and the bound promises NOTHING there: a ball still in
+    the cup one ``dt`` after the planned release is past what this contract can
+    help with.
+    """
+    if holds_ball_at_start:
+        k0 = 0
+    elif catch_t_s is not None:
+        k0 = max(0, int(np.floor((float(catch_t_s) - CONTACT_WINDOW_LEAD_S)
+                                 / float(dt))))
+    else:
+        return None
+    k1 = (int(n) - 1) if has_throw else int(n)
+    if k0 > k1:
+        return None
+    return (int(k0), int(k1))
+
+
+# ---------------------------------------------------------------------------
 # QP assembly
 # ---------------------------------------------------------------------------
 
@@ -710,12 +796,14 @@ class _Program:
     n_steps: int
     catch_k: int
     takeoff_vel: np.ndarray
+    contact_knots: Optional[tuple] = None
 
 
 def _assemble(state0: CupState, throw: Optional[ThrowEvent],
               catch: Optional[CatchEvent],
               period_s: float, cfg,
-              settle_site: Optional[np.ndarray] = None) -> _Program:
+              settle_site: Optional[np.ndarray] = None,
+              holds_ball_at_start: bool = False) -> _Program:
     """Transcribe one window into a dense convex QP.
 
     Decision variables are the cup's per-axis jerk over ``n_steps`` knots,
@@ -1003,6 +1091,44 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
         cols.extend([-AR.T, AR.T])
         rhss.extend([AC - np.array(ahi), np.array(alo) - AC])
 
+    # ---- C-CUP-2: the dive floor over the contact window --------------------
+    # Its OWN block, after every pre-existing column (the discipline the runway
+    # row and the optional acc boxes follow), so with no contact window not one
+    # column index moves — the parity fixtures stay bit-identical and a warm
+    # start's active-set indices keep meaning the same constraint.  With a window
+    # the shape changes, and ``plan_window``'s warm-start key carries
+    # ``C.shape[1]``, so a stale set cannot be misapplied.
+    k_contact = (contact_window(n, dt, has_throw=throw is not None,
+                                catch_t_s=(None if catch is None
+                                           else float(catch.t_s)),
+                                holds_ball_at_start=bool(holds_ball_at_start))
+                 if _cfg(cfg, 'contact_floor_enabled') else None)
+    if k_contact is not None:
+        a_floor = -CONTACT_ACC_FLOOR_G * abs(float(GRAVITY[2]))
+        k0, k1 = k_contact
+        # Knot 0 is the caller's ``state0.acc`` — a constant, not a variable, so a
+        # row there is vacuous or unsatisfiable exactly as the workspace box is
+        # (``Aa[0]`` is identically zero, and it would divide by a zero column
+        # norm in the scaling below).  Check it analytically and refuse with the
+        # numbers, rather than as a dual-unbounded step 200 iterations deep.
+        if k0 == 0 and float(state0.acc[2]) < a_floor - 1e-9:
+            raise CupCycleInfeasible(
+                "cup contact: the window opens holding a ball but its seed "
+                "acceleration is a_z=%.2f m/s^2, below the %.2f m/s^2 floor "
+                "(%.2f g) — the cup is already falling away from it at knot 0. "
+                "A post-release seed is the usual cause: the cup cannot hold "
+                "ball B while it is still falling away from ball A."
+                % (float(state0.acc[2]), a_floor, -CONTACT_ACC_FLOOR_G),
+                reason='CUP_CONTACT_ACC')
+        ks = np.arange(max(k0, 1), k1 + 1)
+        if ks.size:
+            CR = np.stack([_axis_row(n, 2, Aa[k]) for k in ks], axis=1)
+            cols.append(CR)
+            # + the slack (see CONTACT_ACC_QP_SLACK_MPS2): the gate re-measures
+            # this bound on the REALISED plan, and a row at the bare floor lands
+            # the solver exactly on it.
+            rhss.append((a_floor + CONTACT_ACC_QP_SLACK_MPS2) - ca[ks, 2])
+
     C = np.hstack(cols)
     bc = np.concatenate(rhss)
     cscale = np.linalg.norm(C, axis=0)       # unit columns: violations compare
@@ -1010,7 +1136,8 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
     bc = bc / cscale
 
     return _Program(H=H, f=f, Aeq=Aeq, beq=beq, C=C, bc=bc, n_steps=n,
-                    catch_k=k_td, takeoff_vel=v_takeoff)
+                    catch_k=k_td, takeoff_vel=v_takeoff,
+                    contact_knots=k_contact)
 
 
 def catch_runway_requirement(catch_vel, cfg):
@@ -1188,7 +1315,8 @@ def plan_window(events: Sequence, state0: CupState,
                 cfg: Optional[CupCycleConfig] = None, *,
                 period_s: Optional[float] = None,
                 settle_site: Optional[np.ndarray] = None,
-                warm_start: Optional[SolverState] = None) -> CupCyclePlan:
+                warm_start: Optional[SolverState] = None,
+                holds_ball_at_start: bool = False) -> CupCyclePlan:
     """Plan the cup over one horizon window from an ordered event timeline.
 
     Parameters
@@ -1218,6 +1346,16 @@ def plan_window(events: Sequence, state0: CupState,
     settle_site
         Cup position (m) the window comes to REST at. Required when there is no
         throw, ignored when there is one.
+    holds_ball_at_start
+        Whether a ball is in the cup at knot 0 (C-CUP-2's contact window opens
+        there when it is).  **Explicit and opt-in, never inferred**:
+        ``state0.post_release`` cannot answer it, because the re-plan/splice
+        paths deliberately solve mid-carry tails with ``post_release=False``
+        ("no ball leaves the cup mid-carry") and such a tail can equally be
+        mid-FLIGHT.  Defaulting it to ``not post_release`` would put a contact
+        window — and a refusal — on every re-planned tail for a ball that is not
+        there.  A caller that knows says so; one that does not gets the catch to
+        open the window, which is the only ball this layer can see arriving.
     warm_start
         The previous cycle's :attr:`CupCyclePlan.warm_start`. Ignored unless the
         problem shape matches. NB the shape key fingerprints the INEQUALITY
@@ -1285,7 +1423,8 @@ def plan_window(events: Sequence, state0: CupState,
             % (catch.t_s, window_s))
 
     prog = _assemble(state0, throw, catch, window_s, cfg,
-                     settle_site=settle_site)
+                     settle_site=settle_site,
+                     holds_ball_at_start=bool(holds_ball_at_start))
     dt = float(_cfg(cfg, 'dt'))
     n = prog.n_steps
     key = (n, dt, prog.C.shape[1])
@@ -1309,7 +1448,8 @@ def plan_window(events: Sequence, state0: CupState,
         dt=dt,
         catch_k=prog.catch_k,
         takeoff_vel=prog.takeoff_vel,
-        warm_start=SolverState(active=active, key=key, iters=iters))
+        warm_start=SolverState(active=active, key=key, iters=iters),
+        contact_knots=prog.contact_knots)
 
 
 def plan_cup_cycle(pos0, vel0, acc0,

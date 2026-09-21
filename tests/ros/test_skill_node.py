@@ -28,8 +28,10 @@ from rclpy.node import Node as _MockNodeClass
 
 from std_srvs.srv import Trigger
 from diagnostic_msgs.msg import DiagnosticStatus, KeyValue
+from geometry_msgs.msg import Point
 from jugglebot_interfaces.msg import (BallStateArray, HandTelemetryMessage,
-                                      RigidBodyPoses, TrajectoryStatus)
+                                      RigidBodyPose, RigidBodyPoses,
+                                      TrajectoryStatus)
 from jugglebot_interfaces.srv import InstallSegment
 
 from jugglebot import ball_possession
@@ -73,6 +75,16 @@ def _ball(id, status=0, destination='', tracking=0,
     # this flag decides whether a landing may become a learner row.
     ball.landing_from_fit = landing_from_fit
     return ball
+
+
+def _pose_at(x, y):
+    """Just enough of a `RigidBodyPose.pose` (a `PoseStamped`) for
+    `_on_mocap`'s `body.pose.pose.position.x/y` access — duck-typed like
+    `_ball()` above, not the real message type."""
+    pose = MagicMock()
+    pose.pose.position.x = x
+    pose.pose.position.y = y
+    return pose
 
 
 def _status(**overrides):
@@ -136,12 +148,31 @@ def _hand_at(node, rev=sn.REST_HAND_REV, ball_held=True):
         ball_held=ball_held, ball_held_raw=ball_held, ball_held_valid=True))
 
 
-def _node_with_client(response=None, ready=True, hand=True):
+def _node_with_client(response=None, ready=True, hand=True, frame=True):
+    """``frame=True`` (the default since 2026-09-21, the unpinning of
+    `learner_lateral_authority_mm` 0 -> 40): give the node a ready,
+    in-tolerance session-start frame via `_frame_ready(node)` (Platform and
+    commanded position both at the origin, at rest, fresh) so a
+    default-parameter start path is not refused `REJECTED_FRAME_OFFSET` by a
+    test that isn't ABOUT the frame check (plan `cup-contact-contract.md`
+    § 1: with authority > 0 a start with no mocap sample is refused — that
+    fail-closed behaviour is now live at the launch default, not just under
+    an explicit `:=40`).
+
+    Pass ``frame=False`` for a test that IS about the frame check itself —
+    one that populates `_platform_mocap_xy` / `_commanded_xy_hist` its own
+    way (directly or via its own `_frame_ready(...)` call with a deliberate
+    offset), asserts on the raw buffer contents, or wants the
+    cannot-evaluate ("no Platform sample yet") branch. Injecting the ready
+    default AND a test's own frame data would blend two sets of samples into
+    one averaged offset — never what either party intended."""
     node = sn.SkillNode()
     client = _RecordingClient(response=response, ready=ready)
     node._install_cli = client
     if hand:
         _hand_at(node)
+    if frame:
+        _frame_ready(node)
     return node, client
 
 
@@ -167,6 +198,24 @@ def _prelevel_ready(node, *, x=-50.0, y=0.0, z=830.0, **resp_overrides):
     node._commanded_pos_mm = (x, y, z)
     node._commanded_pos_mono = time.perf_counter()
     return node._go_to_pose_cli
+
+
+def _frame_ready(node, *, plat_x=0.0, plat_y=0.0, cmd_x=0.0, cmd_y=0.0,
+                 n_plat=None, n_cmd=5):
+    """Populate the session-start frame check's two buffers directly (plan
+    `cup-contact-contract.md` § 1) — the Platform mocap body at
+    ``(plat_x, plat_y)`` mm and the commanded position at ``(cmd_x, cmd_y)``
+    mm, both fresh and, with repeated identical samples, at rest. Bypasses
+    `_on_mocap` / `_on_commanded_position` (like `_prelevel_ready` bypasses
+    `_on_commanded_position` for `_commanded_pos_mm`) — the node methods are
+    exercised directly by `test_on_mocap_...` style tests instead."""
+    if n_plat is None:
+        n_plat = sn._FRAME_CHECK_MIN_SAMPLES + 5
+    now = time.perf_counter()
+    for _ in range(n_plat):
+        node._platform_mocap_xy.append((now, plat_x, plat_y))
+    for _ in range(n_cmd):
+        node._commanded_xy_hist.append((now, cmd_x, cmd_y))
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -354,11 +403,15 @@ def test_a_new_schedule_drops_the_previous_attempts_flight_latches():
     assert 0 not in node._correlation
 
 
-def test_the_learner_lateral_authority_parameter_defaults_to_zero():
-    """Owner 2026-09-16: the learner corrects flight only until the planner's
-    small-lateral-offset banking defect is fixed."""
+def test_the_learner_lateral_authority_parameter_defaults_to_forty():
+    """Owner 2026-09-16 pinned this at 0.0 (the learner corrects flight only)
+    until the planner's small-lateral-offset banking defect was fixed; owner
+    2026-09-21 lifted the pin once the cup-contact contract landed
+    amplitude-aware banking (`plans/active/cup-contact-contract.md` § 6) —
+    the box admits +/-40 mm at 0.9 m, and the session-start frame check now
+    guards a live authority against an unverified mocap frame."""
     node, _client = _node_with_client()
-    assert node.get_parameter('learner_lateral_authority_mm').value == 0.0
+    assert node.get_parameter('learner_lateral_authority_mm').value == 40.0
 
 
 def test_start_self_toss_refuses_an_uncovered_apex_before_any_motion(tmp_path):
@@ -995,6 +1048,116 @@ def test_check_reports_box_refused_when_the_file_is_missing(tmp_path):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
+# skills/check — the session-start frame check (handoff_u5.md open question 1:
+# a refusal the operator would meet at `start_*` must be reported by the
+# dry-run path too, UH-3 2026-09-06)
+# ═════════════════════════════════════════════════════════════════════════════
+
+def test_check_reports_the_frame_offset_informationally_at_zero_authority():
+    """`learner_lateral_authority_mm` explicitly pinned to 0.0 (the launch
+    default was 0 through 2026-09-16..20; it is 40 since 2026-09-21, so this
+    test states its own pin rather than relying on the default): the offset
+    is still measured and reported, but as an INFORMATIONAL line, not a
+    refusal — same "always log/report the offset" discipline as the start
+    paths' logging, now visible in the `skills/check` response itself."""
+    node, _client = _node_with_client(frame=False)
+    node.set_parameters(
+        [_MockParameter(0.0, name='learner_lateral_authority_mm')])
+    _frame_ready(node, plat_x=2.1, plat_y=31.1, cmd_x=0.0, cmd_y=0.0)
+    resp = node._svc_check(Trigger.Request(), Trigger.Response())
+    assert 'REJECTED_FRAME_OFFSET' not in resp.message
+    assert 'frame check:' in resp.message
+    assert '+31.2' in resp.message
+    assert 'x +2.1' in resp.message and 'y +31.1' in resp.message
+    assert 'informational' in resp.message
+    assert 'learner_lateral_authority_mm=0' in resp.message
+
+
+def test_check_reports_the_frame_offset_informationally_when_unevaluable():
+    """No `Platform` mocap sample yet, and `learner_lateral_authority_mm`
+    explicitly pinned to 0.0 (no longer the launch default since
+    2026-09-21): still informational at zero authority, naming what is
+    missing rather than a bare 'cannot evaluate'."""
+    node, _client = _node_with_client(frame=False)
+    node.set_parameters(
+        [_MockParameter(0.0, name='learner_lateral_authority_mm')])
+    resp = node._svc_check(Trigger.Request(), Trigger.Response())
+    assert 'REJECTED_FRAME_OFFSET' not in resp.message
+    assert 'frame check: cannot evaluate' in resp.message
+    assert 'Platform' in resp.message
+    assert 'informational' in resp.message
+
+
+def test_check_lists_the_frame_offset_as_a_refusal_over_limit_with_authority():
+    """`learner_lateral_authority_mm > 0` and an offset over the 5 mm limit:
+    `skills/check` must list it as a REFUSAL, the identical
+    `REJECTED_FRAME_OFFSET: ...` string `_svc_start_columns` /
+    `_svc_start_self_toss` would refuse with — the dress-rehearsal gate is
+    fail-closed the same way the powered path is."""
+    node, _client = _node_with_client(frame=False)
+    node.set_parameters(
+        [_MockParameter(40.0, name='learner_lateral_authority_mm')])
+    _frame_ready(node, plat_x=2.1, plat_y=31.1, cmd_x=0.0, cmd_y=0.0)
+    resp = node._svc_check(Trigger.Request(), Trigger.Response())
+    assert resp.success is False
+    assert 'REJECTED_FRAME_OFFSET' in resp.message
+    assert '+31.2' in resp.message
+    assert 'x +2.1' in resp.message and 'y +31.1' in resp.message
+    assert node._frame_check_error() in resp.message   # the SAME string
+
+
+def test_check_lists_the_frame_offset_as_a_refusal_when_unevaluable_with_authority():
+    """Same fail-closed rule, the cannot-evaluate branch: with authority > 0
+    and no `Platform` sample yet, `skills/check` must refuse rather than stay
+    silent — a cannot-evaluate result is never a silent pass."""
+    node, _client = _node_with_client(frame=False)
+    node.set_parameters(
+        [_MockParameter(40.0, name='learner_lateral_authority_mm')])
+    resp = node._svc_check(Trigger.Request(), Trigger.Response())
+    assert resp.success is False
+    assert 'REJECTED_FRAME_OFFSET' in resp.message
+    assert 'Platform' in resp.message
+
+
+def test_check_reports_frame_check_ok_when_within_limit_with_authority():
+    """Authority > 0 and the offset is within the 5 mm limit: reported as a
+    clean line, same shape as the ladder/box/site 'OK' lines beside it."""
+    node, _client = _node_with_client(frame=False)
+    node.set_parameters(
+        [_MockParameter(40.0, name='learner_lateral_authority_mm')])
+    _frame_ready(node, plat_x=3.0, plat_y=0.0, cmd_x=0.0, cmd_y=0.0)
+    resp = node._svc_check(Trigger.Request(), Trigger.Response())
+    assert 'REJECTED_FRAME_OFFSET' not in resp.message
+    assert 'frame check OK' in resp.message
+
+
+def test_default_parameters_refuse_every_start_path_with_no_frame_data():
+    """`learner_lateral_authority_mm` defaults to 40.0 since 2026-09-21
+    (`plans/active/cup-contact-contract.md` § 6, the unpinning) — a session
+    that never saw a mocap `Platform` sample must now be refused
+    REJECTED_FRAME_OFFSET on EVERY default-parameter start path, not just
+    under an explicit `:=40`. This is the production fail-closed face of the
+    new default (plan § 1: cannot-evaluate refuses exactly like over-limit).
+    `skills/check` must list the identical refusal so the dress rehearsal
+    catches it ahead of a powered `start_*` call (UH-3, 2026-09-06)."""
+    node, _client = _node_with_client(frame=False)
+    node._on_traj_status(_status())
+    resp_toss = node._svc_start_self_toss(Trigger.Request(), Trigger.Response())
+    assert resp_toss.success is False
+    assert 'REJECTED_FRAME_OFFSET' in resp_toss.message
+
+    node2, _client2 = _node_with_client(frame=False)
+    resp_columns = node2._svc_start_columns(Trigger.Request(), Trigger.Response())
+    assert resp_columns.success is False
+    assert 'REJECTED_FRAME_OFFSET' in resp_columns.message
+
+    node3, _client3 = _node_with_client(frame=False)
+    resp_check = node3._svc_check(Trigger.Request(), Trigger.Response())
+    assert resp_check.success is False
+    assert 'REJECTED_FRAME_OFFSET' in resp_check.message
+
+
+# ═════════════════════════════════════════════════════════════════════════════
 # installer plumbing
 # ═════════════════════════════════════════════════════════════════════════════
 
@@ -1593,3 +1756,168 @@ def test_a_bridge_that_never_publishes_the_counter_changes_nothing():
     node._on_tick()
     assert execu.attempt_ended is False
     assert node._observations(0.0).hand_lane_refused is False
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# session-start mocap-vs-commanded frame check (plan cup-contact-contract.md § 1)
+# ═════════════════════════════════════════════════════════════════════════════
+
+def test_frame_offset_check_hand_computed_case():
+    """The plan's own worked example (`cup-contact-contract.md` § 1): a
+    mean Platform sample of (2.1, 31.1) mm against a commanded position at
+    the origin -> offset +31.2 mm, over the 5 mm limit. The mean is a real
+    average, not a constant sample: ten samples at (2.0, 31.0) and ten at
+    (2.2, 31.2)."""
+    now = 100.0
+    platform = ([(now - 0.5, 2.0, 31.0)] * 10
+               + [(now - 0.1, 2.2, 31.2)] * 10)
+    commanded = [(now - 0.2, 0.0, 0.0)] * 5
+    result = sn._frame_offset_check(platform, commanded, now)
+    assert result.evaluable is True
+    assert result.within_limit is False
+    assert result.dx_mm == pytest.approx(2.1)
+    assert result.dy_mm == pytest.approx(31.1)
+    assert result.offset_mm == pytest.approx(31.17, abs=0.01)
+    assert '+31.2 mm' in result.detail
+    assert 'x +2.1' in result.detail and 'y +31.1' in result.detail
+
+
+def test_frame_offset_check_within_limit():
+    now = 100.0
+    platform = [(now - 0.1, 3.0, 0.0)] * (sn._FRAME_CHECK_MIN_SAMPLES + 5)
+    commanded = [(now - 0.1, 0.0, 0.0)] * 5
+    result = sn._frame_offset_check(platform, commanded, now)
+    assert result.evaluable is True
+    assert result.within_limit is True
+    assert result.offset_mm == pytest.approx(3.0)
+
+
+def test_frame_offset_check_refuses_with_no_platform_body():
+    result = sn._frame_offset_check([], [(100.0, 0.0, 0.0)], 100.0)
+    assert result.evaluable is False
+    assert 'Platform' in result.detail
+
+
+def test_frame_offset_check_refuses_when_the_platform_sample_is_stale():
+    now = 100.0
+    platform = [(now - (sn._FRAME_CHECK_WINDOW_S + 4.0), 0.0, 0.0)] * (
+        sn._FRAME_CHECK_MIN_SAMPLES + 5)
+    commanded = [(now - 0.1, 0.0, 0.0)] * 5
+    result = sn._frame_offset_check(platform, commanded, now)
+    assert result.evaluable is False
+    assert 'stale' in result.detail
+
+
+def test_frame_offset_check_refuses_with_too_few_platform_samples():
+    now = 100.0
+    platform = [(now - 0.1, 0.0, 0.0)] * (sn._FRAME_CHECK_MIN_SAMPLES - 1)
+    commanded = [(now - 0.1, 0.0, 0.0)] * 5
+    result = sn._frame_offset_check(platform, commanded, now)
+    assert result.evaluable is False
+    assert 'samples' in result.detail
+
+
+def test_frame_offset_check_refuses_when_commanded_position_is_stale():
+    now = 100.0
+    platform = [(now - 0.1, 0.0, 0.0)] * (sn._FRAME_CHECK_MIN_SAMPLES + 5)
+    commanded = [(now - (sn._FRAME_CHECK_WINDOW_S + 4.0), 0.0, 0.0)]
+    result = sn._frame_offset_check(platform, commanded, now)
+    assert result.evaluable is False
+    assert 'commanded_position' in result.detail
+
+
+def test_frame_offset_check_refuses_when_commanded_position_is_not_at_rest():
+    now = 100.0
+    platform = [(now - 0.1, 0.0, 0.0)] * (sn._FRAME_CHECK_MIN_SAMPLES + 5)
+    commanded = [(now - 0.5, 0.0, 0.0), (now - 0.1, 2.0, 0.0)]  # 2 mm spread
+    result = sn._frame_offset_check(platform, commanded, now)
+    assert result.evaluable is False
+    assert 'not at rest' in result.detail
+
+
+def test_frame_check_within_limit_starts_columns_with_authority():
+    node, _client = _node_with_client(frame=False)
+    node.set_parameters(
+        [_MockParameter(40.0, name='learner_lateral_authority_mm')])
+    _frame_ready(node, plat_x=3.0, plat_y=0.0, cmd_x=0.0, cmd_y=0.0)
+    resp = node._svc_start_columns(Trigger.Request(), Trigger.Response())
+    assert resp.success is True
+
+
+def test_frame_check_over_limit_refuses_columns_with_the_number():
+    node, _client = _node_with_client(frame=False)
+    node.set_parameters(
+        [_MockParameter(40.0, name='learner_lateral_authority_mm')])
+    _frame_ready(node, plat_x=2.1, plat_y=31.1, cmd_x=0.0, cmd_y=0.0)
+    resp = node._svc_start_columns(Trigger.Request(), Trigger.Response())
+    assert resp.success is False
+    assert 'REJECTED_FRAME_OFFSET' in resp.message
+    assert '+31.2' in resp.message
+    assert 'x +2.1' in resp.message and 'y +31.1' in resp.message
+
+
+def test_frame_check_with_zero_authority_starts_and_logs_the_offset():
+    """31 mm, but `learner_lateral_authority_mm` explicitly pinned to 0.0
+    (no longer the launch default since 2026-09-21) — the schedule still
+    starts, and every sitting still gets the offset line (plan § 1: "always
+    log the offset")."""
+    node, _client = _node_with_client(frame=False)
+    node.set_parameters(
+        [_MockParameter(0.0, name='learner_lateral_authority_mm')])
+    _frame_ready(node, plat_x=2.1, plat_y=31.1, cmd_x=0.0, cmd_y=0.0)
+    lines = []
+    node.get_logger().info = lambda m: lines.append(m)
+    resp = node._svc_start_columns(Trigger.Request(), Trigger.Response())
+    assert resp.success is True
+    frame_lines = [ln for ln in lines if ln.startswith('frame check:')]
+    assert len(frame_lines) == 1, lines
+    assert '+31.2' in frame_lines[0]
+
+
+def test_frame_check_cannot_evaluate_refuses_naming_the_missing_input():
+    """No `Platform` body has ever been seen (`node._platform_mocap_xy`
+    stays empty) — fail-closed: cannot-evaluate refuses exactly like
+    over-limit, and names what is missing."""
+    node, _client = _node_with_client(frame=False)
+    node.set_parameters(
+        [_MockParameter(40.0, name='learner_lateral_authority_mm')])
+    resp = node._svc_start_columns(Trigger.Request(), Trigger.Response())
+    assert resp.success is False
+    assert 'REJECTED_FRAME_OFFSET' in resp.message
+    assert 'Platform' in resp.message
+
+
+def test_frame_check_refuses_when_the_commanded_position_is_moving():
+    node, _client = _node_with_client(frame=False)
+    node.set_parameters(
+        [_MockParameter(40.0, name='learner_lateral_authority_mm')])
+    now = time.perf_counter()
+    for _ in range(sn._FRAME_CHECK_MIN_SAMPLES + 5):
+        node._platform_mocap_xy.append((now, 0.0, 0.0))
+    node._commanded_xy_hist.append((now - 0.5, 0.0, 0.0))
+    node._commanded_xy_hist.append((now, 2.0, 0.0))  # 2 mm > 1 mm tolerance
+    resp = node._svc_start_columns(Trigger.Request(), Trigger.Response())
+    assert resp.success is False
+    assert 'REJECTED_FRAME_OFFSET' in resp.message
+    assert 'not at rest' in resp.message
+
+
+def test_on_mocap_buffers_the_platform_body_xy():
+    """`_on_mocap` (extended, plan § 1) appends the Platform body's xy to
+    the frame check's buffer and ignores every other body."""
+    node, _client = _node_with_client(hand=False, frame=False)
+    node._on_mocap(RigidBodyPoses(bodies=[
+        RigidBodyPose(name='Base', pose=_pose_at(10.0, 20.0)),
+        RigidBodyPose(name='Platform', pose=_pose_at(3.0, 4.0)),
+    ]))
+    assert len(node._platform_mocap_xy) == 1
+    _t, x, y = node._platform_mocap_xy[-1]
+    assert (x, y) == (3.0, 4.0)
+
+
+def test_on_commanded_position_buffers_xy_history():
+    node, _client = _node_with_client(hand=False, frame=False)
+    node._on_commanded_position(Point(x=5.0, y=6.0, z=830.0))
+    assert len(node._commanded_xy_hist) == 1
+    _t, x, y = node._commanded_xy_hist[-1]
+    assert (x, y) == (5.0, 6.0)

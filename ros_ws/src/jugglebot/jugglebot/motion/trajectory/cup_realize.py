@@ -153,11 +153,89 @@ TILT_ACCEL_LIMIT_DEFAULT_RAD_S2 = (
     TILT_ACCEL_BUDGET_FRACTION * float(hw.JB_TRAJ_LEG_ACC_LIMIT_MMPS2)
     / TILT_ACCEL_LEVER_MM)
 
+#: Default tilt JERK ceiling (rad/s³) on the banking schedule's tilt vector,
+#: derived from the leg-JERK budget through the SAME lever and the SAME reserve
+#: fraction as the acceleration cap above — one map, two limits.
+#:
+#: **Why the schedule needs a third-difference bound at all** (C-CUP-3,
+#: ``plans/active/cup-contact-contract.md`` § 2).  ``_accel_bounded_schedule``
+#: measured only the SECOND difference before it returned, but the refusal the
+#: machine issues is ``LIMIT_JERK`` — a THIRD difference.  Exiting on one and
+#: being judged on the other makes the widen loop's branch a coin flip decided by
+#: a quantity nobody is gating on: MEASURED 2026-09-18 at the R3 operating point,
+#: a 7 mm lateral offset produced 5.221 rad/s² against the 5.2222 cap and exited
+#: on attempt 2 with **137 823 mm/s³** of leg jerk, while 8 mm produced 5.223,
+#: widened once more, and came out at **49 762** — a 64 % step in the refusal
+#: quantity across 1 mm of aim, and 137 k is already 92 % of the 150 k session
+#: cap.  With the third difference in the exit test the loop stops when the
+#: quantity that refuses is inside budget, so the achieved leg jerk is continuous
+#: in the commanded offset instead of being a function of which branch fired.
+#: ``<= 0`` disables the bound (the pre-C-CUP-3 behaviour).
+#:
+#: **Why the jerk lever is not the accel lever, and why it is not a constant.**
+#: :data:`TILT_ACCEL_LEVER_MM` is a STATIC model — a tilt swings the cup opening
+#: about a fixed rotation centre and a leg attachment also sees the platform's own
+#: angular term, so the two add.  That is right for a second difference and wrong
+#: for a third, because ``decompose`` writes ``centroid = cup_xy − arm·axis_xy``
+#: with ``arm = cup_z − CUP_TILT_CENTER_Z_MM``: the lever is itself a function of
+#: time, and the third difference of a PRODUCT is not the product of the third
+#: difference.  The correction is the cup's own vertical motion, so it is a
+#: property of the CYCLE, not of the geometry — which is why this constant is
+#: only the static reference and the cap that reaches
+#: :func:`_accel_bounded_schedule` is re-derived per call by
+#: :func:`_tilt_jerk_lever_mm` from the cup plan in hand.  See that function for
+#: the derivation, the measured validation and the honest statement of how loose
+#: it is.
+#:
+#: The number here is therefore the cap for a cycle with NO vertical cup motion
+#: (``v_z = a_z = j_z = 0``), where the discrete-Leibniz cross terms vanish and
+#: the effective lever reduces exactly to the static one: the same map, the same
+#: reserve fraction, applied to the leg-JERK limit instead of the leg-ACCEL one.
+TILT_JERK_LIMIT_DEFAULT_RAD_S3 = (
+    TILT_ACCEL_BUDGET_FRACTION * float(hw.JB_TRAJ_LEG_JERK_LIMIT_MMPS3)
+    / TILT_ACCEL_LEVER_MM)
+
+#: Minimum seating force, in units of ``g``, for the banking prescription to be
+#: DEFINED at a knot (C-CUP-1).  ONE definition, from the generated config —
+#: never re-typed as a literal anywhere in this module or its tests.
+#:
+#: A ball resting in the cup feels the specific force ``f = g − a_cup``; the
+#: component that presses it INTO the cup is ``s = −f_z = g + a_cup,z`` (world z
+#: up): ``g`` at rest, 0 in free fall, NEGATIVE when the cup dives faster than
+#: gravity.  In the ~125 ms before a catch the cup dives at 1.2–2.8 g, so ``s <
+#: 0`` and **no attitude seats a ball** — the prescription has no solution, and
+#: :func:`tilt_geometry.tilt_to_receive` answers with its 12° clamp at an azimuth
+#: taken from the NORMALISED lateral residual, which is scale-free.  Measured
+#: 2026-09-16: ``raw_max = 12.000°`` for every lateral offset from 0.5 mm to
+#: 40 mm and ``0.000°`` at exactly zero (logbook
+#: ``2026-09-16-banking-saturates-on-small-lateral-offsets.md``).
+#:
+#: Gating on ``s >= ε·g`` makes the prescribed angle ``atan(|f_lat| / s) <=
+#: atan(|f_lat| / (ε·g))``, so a milli-g lateral residual is a sub-degree tilt and
+#: the demand is amplitude-aware.  The 12° clamp stays as a hard cap that a
+#: DEFINED prescription never reaches.
+BANKING_SEATING_MIN_G = float(hw.JB_TRAJ_CUP_BANKING_SEATING_MIN_G)
+
 #: Largest ``|S''(u)|`` of the quintic smoothstep ``S(u) = 6u⁵ − 15u⁴ + 10u³``
 #: used by the pin blend, attained at ``u = (1 ± 1/√3)/2``.  It is what turns a
 #: requested tilt acceleration into a blend half-width (see
 #: :func:`_accel_bounded_schedule`).
 _BLEND_CURVATURE_MAX = 10.0 / np.sqrt(3.0)
+
+#: Largest ``|S'''(u)|`` of the same quintic smoothstep, ``360u² − 360u + 60``,
+#: attained at the window edges ``u = 0`` and ``u = 1``.  The jerk twin of
+#: :data:`_BLEND_CURVATURE_MAX`: it turns a requested tilt JERK into a blend
+#: half-width the same way (``gap·|S'''|max / L³ <= jerk_cap·dt³``).
+_BLEND_JERK_MAX = 60.0
+
+#: ``Σ|Δ³T|·(h+1)²`` for the triangular kernel ``T = box ⊛ box``.  ``Δb`` is two
+#: impulses ``(δ₀ − δ_m)/m`` with ``m = h+1``, so ``Δ²T = (δ₀ − 2δ_m + δ_2m)/m²``
+#: (the ``4/m²`` the accel estimate uses) and ``Δ³T = Δ(Δ²T)`` doubles the term
+#: count without cancellation → ``8/m²``.  Note it falls off as ``m²``, NOT
+#: ``m³``: a step in the raw series keeps a third difference of order
+#: ``step/m²`` however hard it is smoothed, which is why the widen loop MEASURES
+#: rather than trusting this estimate.
+_SMOOTH_JERK_COEFF = 8.0
 
 #: Bounded widen attempts in :func:`_accel_bounded_schedule`.  The analytic widths
 #: are an ESTIMATE (they bound each mechanism separately and ignore the cross
@@ -167,6 +245,27 @@ _BLEND_CURVATURE_MAX = 10.0 / np.sqrt(3.0)
 #: cap the constraint set is empty and something must give.  ``validate_cycle`` is
 #: the authority on what the machine will accept, not this loop.
 _TILT_WIDEN_ATTEMPTS = 8
+
+#: Bisection steps :func:`_accel_bounded_schedule` spends landing the blend width
+#: ON the cap once it has bracketed it (C-CUP-3 follow-up, 2026-09-20).
+#:
+#: **Why a bisection and not the ladder alone.**  The widths are ``ceil``-free
+#: reals now, but the ladder still only visits ``floor``, ``analytic``,
+#: ``1.4·analytic``… — a discrete set — and the achieved jerk is a steep function
+#: of the width (``gap·|S‴|max/L³``), so which rung fires decides the answer.
+#: MEASURED 2026-09-20 at the R3 operating point: with ``ceil``ed widths the blend
+#: half-width stepped 8 → 9 → 11 → 12 knots across dx = 4 → 8 → 16 → 31 mm and the
+#: achieved tilt jerk sawtoothed 32.2 → 59.2 → 36.6 → 48.7 rad/s³ — a 38 % DROP in
+#: the refusal quantity for a 2× LARGER commanded aim, which is the
+#: discrete-branch defect C-CUP-3 exists to close.  Bisecting between the
+#: narrowest admissible width (the floor) and the first passing one makes the
+#: schedule sit AT the cap whenever the floor cannot, so the achieved jerk
+#: SATURATES instead of jumping: non-decreasing in the aim, then flat.
+#:
+#: 6 steps resolves the bracket to ~1.6 % of its width, i.e. ~1.2 % in the
+#: achieved jerk (it goes as ``L³``) — inside the 2 % the contract test allows
+#: for solver noise, and bounded, so the solve-time cost is a constant.
+_TILT_BISECT_STEPS = 6
 
 #: Narrowest pin-blend width (knots) :func:`_accel_bounded_schedule` may use.  The
 #: curvature estimate sizes ``L`` from the pin gap alone, so a SMALL gap (a launch
@@ -228,6 +327,16 @@ class RealizeConfig:
     #: the bound and restores the pre-WP4 (rate-limited-only) schedule.
     #: See :data:`TILT_ACCEL_LIMIT_DEFAULT_RAD_S2` for where the default comes from.
     tilt_accel_limit_rad_s2: float = TILT_ACCEL_LIMIT_DEFAULT_RAD_S2
+    #: Tilt JERK ceiling (rad/s³), also on the tilt vector's 2-norm and also
+    #: banking-only.  It is the second half of the widen loop's exit test — the
+    #: half that measures what ``LIMIT_JERK`` refuses on.  ``<= 0`` disables it
+    #: and restores the accel-only exit.  See
+    #: :data:`TILT_JERK_LIMIT_DEFAULT_RAD_S3`.
+    tilt_jerk_limit_rad_s3: float = TILT_JERK_LIMIT_DEFAULT_RAD_S3
+    #: Minimum seating force (in ``g``) for the banking prescription to be
+    #: DEFINED at a knot; below it the schedule carries the last valid attitude.
+    #: See :data:`BANKING_SEATING_MIN_G` — that constant is the one definition.
+    banking_seating_min_g: float = BANKING_SEATING_MIN_G
     #: Usable slider travel (mm).
     slider_stroke_mm: float = float(hw.GEOM_HAND_STROKE_MM)
     #: Cup world z (mm) at zero slider, platform at ``active_z_mm``.
@@ -340,6 +449,257 @@ def _max_tilt_accel(tilts: np.ndarray, dt: float) -> float:
     return float(np.hypot(d2[:, 0], d2[:, 1]).max()) / (dt * dt)
 
 
+def _max_tilt_jerk(tilts: np.ndarray, dt: float) -> float:
+    """Peak 2-norm of the tilt vector's THIRD difference, as rad/s³.
+
+    The twin of :func:`_max_tilt_accel`, and the quantity ``validate_cycle``
+    refuses on (``LIMIT_JERK``) once ``decompose`` has put the schedule through
+    the ``CUP_TILT_CENTER_Z_MM`` lever.  2-norm of the VECTOR, never per axis,
+    for the reason every other bound in this module is: the ceiling is a
+    from-vertical angle and per-axis bounds do not bound an angle.
+    """
+    if tilts.shape[0] < 4:
+        return 0.0
+    d3 = -tilts[:-3] + 3.0 * tilts[1:-2] - 3.0 * tilts[2:-1] + tilts[3:]
+    return float(np.hypot(d3[:, 0], d3[:, 1]).max()) / (dt * dt * dt)
+
+
+def _tilt_jerk_lever_mm(cup_plan, dt: float) -> float:
+    """Effective lever ``Λ`` (mm of leg jerk per rad/s³ of tilt jerk) for THIS plan.
+
+    **The quantity.**  ``decompose`` writes ``centroid_xy = cup_xy − arm·axis_xy``
+    with ``arm = cup_z − CUP_TILT_CENTER_Z_MM`` and ``axis_xy`` the cup up-axis'
+    horizontal part, and a leg attachment additionally rides the platform's own
+    rotation at radius ``GEOM_PLAT_RADIUS_MM``.  The gate refuses on the THIRD
+    difference of the leg extensions, so the quantity to bound is the third
+    difference of that product — and the third difference of a product is not the
+    product of the third difference.
+
+    **The derivation** (discrete Leibniz, on the same knot grid and the same
+    operator :func:`_max_tilt_jerk` and ``validate_cycle`` use)::
+
+        Δ³(arm·axis)_k = arm·Δ³axis + 3·Δarm·Δ²axis + 3·Δ²arm·Δaxis + Δ³arm·axis
+
+    Divide through by ``dt³`` and the three cross terms are exactly the cup's own
+    vertical speed, acceleration and jerk::
+
+        |leg jerk from tilt|  <=  (|arm| + R_plat)·|θ‴|          direct
+                               +  3·|v_z|·|θ″|                   lever rate
+                               +  3·|a_z|·|θ′|                   lever accel
+                               +  |j_z|·|θ|                      lever jerk
+
+    (``|axis_xy| <= sin θ <= θ`` and each of its differences is bounded by the
+    same difference of the tilt vector to first order in θ — 12° costs < 1 % on
+    that, and the whole model is the same first-order one
+    :data:`TILT_ACCEL_LEVER_MM` already uses for the second difference.)
+
+    **What this function is, and what it is NOT.**  It is the ESTIMATE that sizes
+    the widen loop's analytic widths — the knot-scale closure of the three cross
+    factors, ``Δ^(3−m)θ ≈ Δ³θ · (W·dt)^m`` at ``W = 1`` knot::
+
+        Λ = max_k [ (|arm_k| + R_plat) + 3|v_z,k|·dt + 3|a_z,k|·dt² + |j_z,k|·dt³ ]
+
+    It is **not** a bound, and no closed form in ``(v_z, a_z, j_z, dt)`` can be
+    one: which knot's term dominates is a property of the cycle.  MEASURED
+    2026-09-20 against the exact per-knot composite
+    (:func:`_tilt_leg_jerk_mmps3`) on the schedules actually produced:
+
+    * R3 catch-with-throw, dx = 0.5…31 mm, 16 window-fixtures — ``Λ`` is an upper
+      bound on all of them, loose by 1.15× at the tightest and 2.4× at the
+      loosest; the composite there is carried by the ``arm·Δ³θ`` and platform-
+      rotation terms, which the closure gets right.
+    * the ``test_unified_cycle`` ring's 2.0 s STEADY window — ``Λ`` is **6.3×
+      too SMALL**.  Its composite is carried by ``|j_z|·|θ|``: a 2.1 × 10⁶ mm/s³
+      release-stroke vertical jerk against a *standing* 0.63° attitude that has
+      nothing to do with the schedule's third difference, so the ``dt³`` closure
+      under-reads that term by ~70×.
+
+    Closing the same three factors with the caps already in force (``θ″ <=`` the
+    accel cap, ``θ′ <= 3.0 rad/s``, ``θ <= 12°``) is rigorous and useless in the
+    other direction: those products come to ~560 k mm/s³ against a 75 k reserve,
+    i.e. they drive the cap negative, because the rate cap is never approached
+    (these schedules run at 0.03–0.17 rad/s).
+
+    So the guarantee is the MEASUREMENT: :func:`_accel_bounded_schedule` computes
+    the composite on the series it just produced and widens until it is inside
+    the reserved budget.  This estimate only decides how many attempts that
+    costs.  Both replace a fitted 2.1× constant (2026-09-18) that was tuned on
+    five fixtures at one cycle speed and sat elsewhere on every other.
+
+    **Degenerate / duck-typed plans.**  ``tilt_schedule`` contractually needs only
+    ``acc``, ``dt`` and ``catch_k``; a plan without ``pos``/``vel``/``jerk`` gets
+    the shipped static lever :data:`TILT_ACCEL_LEVER_MM`, i.e. the cross terms are
+    treated as zero — the same answer a cycle with no vertical cup motion gets.
+    """
+    r_plat = float(hw.GEOM_PLAT_RADIUS_MM)
+    pos = getattr(cup_plan, 'pos', None)
+    if pos is None:
+        return TILT_ACCEL_LEVER_MM
+    pos = np.asarray(pos, dtype=float)
+    if pos.ndim != 2 or pos.shape[1] != 3 or pos.shape[0] < 1:
+        return TILT_ACCEL_LEVER_MM
+    n = int(pos.shape[0])
+    lever = np.abs(pos[:, 2] * 1000.0
+                   - float(tilt_geometry.CUP_TILT_CENTER_Z_MM)) + r_plat
+
+    def _z_column(name, power):
+        """|d^k(cup z)/dt^k| in mm, knot-aligned and edge-padded, times dt^k."""
+        arr = getattr(cup_plan, name, None)
+        if arr is None:
+            return 0.0
+        arr = np.asarray(arr, dtype=float)
+        if arr.ndim != 2 or arr.shape[1] != 3 or arr.shape[0] < 1:
+            return 0.0
+        col = np.abs(arr[:, 2]) * 1000.0 * (dt ** power)
+        if col.shape[0] >= n:
+            return col[:n]
+        # ``jerk`` is (n_steps, 3) by the CupCyclePlan contract — one row short.
+        return np.concatenate([col, np.repeat(col[-1:], n - col.shape[0])])
+
+    lever = (lever + 3.0 * _z_column('vel', 1) + 3.0 * _z_column('acc', 2)
+             + _z_column('jerk', 3))
+    return float(max(float(np.max(lever)), r_plat))
+
+
+def _tilt_jerk_terms(cup_plan, dt: float, n: int):
+    """The four knot-aligned coefficients of :func:`_tilt_leg_jerk_mmps3`.
+
+    ``(|arm|, 3|v_z|·dt, 3|a_z|·dt², |j_z|·dt³)`` in mm, each an ``(n,)`` array —
+    the cup plan's own vertical state at every knot, pre-multiplied by the ``dt``
+    powers that make the composite a pure sum of tilt DIFFERENCES.  Returns
+    ``None`` when the plan does not carry ``pos`` (the duck-typed minimum), which
+    switches the composite test off and leaves the rad/s³ cap alone.
+    """
+    pos = getattr(cup_plan, 'pos', None)
+    if pos is None:
+        return None
+    pos = np.asarray(pos, dtype=float)
+    if pos.ndim != 2 or pos.shape[1] != 3 or pos.shape[0] < n:
+        return None
+    arm = np.abs(pos[:n, 2] * 1000.0 - float(tilt_geometry.CUP_TILT_CENTER_Z_MM))
+
+    def _col(name, power, coeff):
+        arr = getattr(cup_plan, name, None)
+        if arr is None:
+            return np.zeros(n)
+        arr = np.asarray(arr, dtype=float)
+        if arr.ndim != 2 or arr.shape[1] != 3 or arr.shape[0] < 1:
+            return np.zeros(n)
+        col = coeff * np.abs(arr[:, 2]) * 1000.0 * (dt ** power)
+        if col.shape[0] >= n:
+            return col[:n]
+        # ``jerk`` is (n_steps, 3) by the CupCyclePlan contract — one row short.
+        return np.concatenate([col, np.repeat(col[-1:], n - col.shape[0])])
+
+    return (arm, _col('vel', 1, 3.0), _col('acc', 2, 3.0), _col('jerk', 3, 1.0))
+
+
+def _tilt_leg_jerk_mmps3(tilts: np.ndarray, dt: float, terms) -> float:
+    """The tilt channel's own contribution to peak leg jerk (mm/s³), measured.
+
+    This is the derivation in :func:`_tilt_jerk_lever_mm` evaluated on the
+    schedule in hand instead of closed with an assumed feature width — the
+    discrete Leibniz expansion of ``Δ³(arm·axis_xy)``, plus the platform's own
+    angular term at ``GEOM_PLAT_RADIUS_MM``, maximised over knots::
+
+        max_k [ |arm_k|·|Δ³θ_k| + 3|v_z,k|dt·|Δ²θ_(k+1)|
+                + 3|a_z,k|dt²·|Δθ_(k+2)| + |j_z,k|dt³·|θ_(k+3)| ] / dt³
+        + R_plat · max_k|Δ³θ_k| / dt³
+
+    with the index shifts the discrete product rule prescribes, so each cross
+    term is read where it actually coincides with the lever's own difference.
+
+    **Why the tilt vector stands in for the cup axis.**  ``|axis_xy| = sin θ <=
+    θ`` and the map ``(rx, ry) → axis_xy`` has unit Jacobian to first order, so
+    every difference of the axis series is bounded by the same difference of the
+    tilt series up to ``O(θ²)`` — under 1 % at the 12° ceiling, and it keeps this
+    to vectorised numpy on the series the routine already holds instead of ``n``
+    rotation-matrix builds per widen attempt.
+
+    At ``v_z = a_z = j_z = 0`` the three cross terms vanish and this reduces
+    exactly to ``(|arm| + R_plat)·|Δ³θ|/dt³`` — the static lever
+    :data:`TILT_ACCEL_LEVER_MM` applies to the second difference, which is why
+    the budget the caller compares against is that same lever times the rad/s³
+    cap.
+    """
+    n = int(tilts.shape[0])
+    if terms is None or n < 4:
+        return 0.0
+    arm, vz, az, jz = terms
+    d1 = np.abs(np.diff(tilts, n=1, axis=0))
+    d2 = np.abs(np.diff(tilts, n=2, axis=0))
+    d3 = np.abs(np.diff(tilts, n=3, axis=0))
+    m = n - 3
+    n1 = np.hypot(d1[:, 0], d1[:, 1])
+    n2 = np.hypot(d2[:, 0], d2[:, 1])
+    n3 = np.hypot(d3[:, 0], d3[:, 1])
+    val = np.hypot(tilts[:, 0], tilts[:, 1])
+    per_knot = (arm[:m] * n3[:m] + vz[:m] * n2[1:m + 1]
+                + az[:m] * n1[2:m + 2] + jz[:m] * val[3:m + 3])
+    return float(per_knot.max() + float(hw.GEOM_PLAT_RADIUS_MM) * n3.max()) \
+        / (dt * dt * dt)
+
+
+def _banking_raw(acc: np.ndarray, cfg, start=None) -> np.ndarray:
+    """The C-CUP-1 banking prescription: defined only under seating force.
+
+    Per knot, the seating force is ``s = g + a_cup,z`` — the component of the
+    apparent gravity ``f = g − a_cup`` that presses a ball INTO the cup (``g`` at
+    rest, 0 in free fall, negative in a faster-than-g dive).  Where ``s >= ε·g``
+    the attitude is :func:`tilt_geometry.tilt_to_receive(g − a_cup)`, unchanged
+    in its geometry.  Where it is not, the field has no seating component, NO
+    attitude seats a ball, and the prescription **has no solution** — so the
+    schedule carries the last valid attitude (a hold, smoothed afterwards by the
+    existing blend) instead of calling ``tilt_to_receive`` with an unseatable
+    field and receiving its 12° clamp at a scale-free azimuth.  See
+    :data:`BANKING_SEATING_MIN_G` for the measurement that made this necessary.
+
+    **The no-predecessor case** — an undefined knot with no valid knot before it,
+    which is knot 0 of every post-release window (the cup is in free fall there,
+    ``s = 0``).  In precedence order:
+
+    1. ``start``, the seam pin, when the caller supplied one.  It IS the last
+       valid attitude: the attitude the PRECEDING window ended at
+       (``unified_cycle._start_tilt_for``), so using it is this same carry rule
+       applied across the seam rather than a second convention.  It also makes
+       the seam free — ``raw[0]`` then equals the knot-0 anchor, so the pin blend
+       closes a gap of exactly zero there and the flat prefix leaves the first
+       difference at knot 0 at zero, i.e. no centroid step through the 744.3 mm
+       ``CUP_TILT_CENTER_Z_MM`` lever.  Back-filling instead would seat knot 0 on
+       a value disagreeing with the seam by up to the whole throw tilt (12° ≈
+       155 mm of centroid x) and hand the blend that gap AT the seam — the
+       2026-09-06 ``STALE_STATE`` / ``LIMIT_JERK`` failure ``_start_tilt_for``
+       exists to prevent.
+    2. Otherwise back-fill from the FIRST valid knot (a constant prefix).  That is
+       continuous at the resume knot by construction (Δ¹ = 0 there); level would
+       manufacture a step equal to the whole first prescription at exactly the
+       knot where the prescription is worst conditioned (``s ≈ ε·g``).
+    3. Otherwise level — no knot in the window is ever seated, so there is nothing
+       to carry, level is the neutral attitude, the pins still carry the boundary
+       conditions, and the ``a_cup = 0`` degenerate case is unchanged.
+    """
+    n = int(acc.shape[0])
+    g = float(cfg.gravity_mps2)
+    g_vec = np.array([0.0, 0.0, -g])
+    floor = float(cfg.banking_seating_min_g) * g
+    raw = np.zeros((n, 2), dtype=float)
+    seated = (g + acc[:, 2]) >= floor
+    carry = None if start is None else np.asarray(start, dtype=float)
+    first_valid = -1
+    for k in range(n):
+        if seated[k]:
+            raw[k] = tilt_geometry.tilt_to_receive(g_vec - acc[k],
+                                                   max_tilt_deg=cfg.max_tilt_deg)
+            if first_valid < 0:
+                first_valid = k
+            carry = raw[k]
+        elif carry is not None:
+            raw[k] = carry
+    if start is None and first_valid > 0:
+        raw[:first_valid] = raw[first_valid]
+    return raw
+
+
 def _rate_limit_sweeps(tilts: np.ndarray, anchor_set, step: float) -> np.ndarray:
     """Impose ``|tilt[k] − tilt[k±1]| <= step`` by alternating backward/forward sweeps.
 
@@ -372,8 +732,10 @@ def _rate_limit_sweeps(tilts: np.ndarray, anchor_set, step: float) -> np.ndarray
 
 def _accel_bounded_schedule(raw: np.ndarray, anchors, dt: float,
                             accel_cap: float, tilt_cap: float,
-                            rate_step: float) -> np.ndarray:
-    """Smooth ``raw`` until its tilt acceleration is under ``accel_cap``, pins exact.
+                            rate_step: float, jerk_cap: float = 0.0,
+                            jerk_terms=None,
+                            jerk_budget_mm: float = 0.0) -> np.ndarray:
+    """Smooth ``raw`` until its tilt acceleration AND jerk are in budget, pins exact.
 
     **Why a smoother and not an accel-limited slew.**  The obvious construction —
     keep the alternating-projection architecture of the rate sweeps and add a
@@ -413,7 +775,27 @@ def _accel_bounded_schedule(raw: np.ndarray, anchors, dt: float,
        ``4·tilt_cap/(half+1)² <= a·dt²`` for the smoother and
        ``|pin − sm|·S''max/L² <= a·dt²`` for the blend — then a bounded
        measure-and-widen loop closes the cross term the two estimates ignore.
-    4. **The rate sweeps run INSIDE the loop**, so the second difference that is
+       **Each mechanism carries a jerk twin** (C-CUP-3): ``8·amp/(half+1)² <=
+       j·dt³`` and ``|pin − sm|·S'''max/L³ <= j·dt³``, and the width used is the
+       larger of the two requests.  The smoother's jerk term is sized off the
+       amplitude of the series ACTUALLY passed in rather than off ``tilt_cap``,
+       because with C-CUP-1 in force the raw banking series is sub-degree while
+       ``tilt_cap`` is 12°, and a ``tilt_cap``-sized jerk estimate would ask for
+       ``half = 25`` on a 34-knot window — a kernel wider than the window, which
+       is "hold level" wearing a smoother's clothes.  The measure-and-widen loop
+       is the guarantee; the estimates only decide how many attempts it costs.
+    4. **The exit test measures BOTH differences.**  Exiting on the second while
+       the machine refuses on the third is how a 1 mm change of aim moved the
+       achieved leg jerk by 64 % (see :data:`TILT_JERK_LIMIT_DEFAULT_RAD_S3`).
+       **And the search is floor-first, then a bisection onto the cap**, so the
+       width is a continuous, saturating function of the pin gap rather than
+       whichever rung of a ×1.4 ladder happened to fire: widths are reals (no
+       ``ceil``), the narrowest admissible blend is probed first, and when it
+       misses the cap the routine bisects between it and the first passing width.
+       Below the cap the achieved jerk therefore RISES with the commanded aim and
+       above it it is FLAT at the cap — see :data:`_TILT_BISECT_STEPS` for the
+       measurement that made this necessary.
+    5. **The rate sweeps run INSIDE the loop**, so the second difference that is
        measured is the one the caller will actually receive. Running them
        afterwards would let the rate clip re-corner a schedule this routine had
        just certified — a guarantee measured on a series nobody returns is not a
@@ -434,8 +816,16 @@ def _accel_bounded_schedule(raw: np.ndarray, anchors, dt: float,
         return _rate_limit_sweeps(out, anchor_set, rate_step)
 
     budget = accel_cap * dt * dt                      # allowed |Δ²tilt| per knot²
+    # allowed |Δ³tilt| per knot³ (0.0 when the jerk bound is disabled)
+    budget_j = max(jerk_cap, 0.0) * dt * dt * dt
     # Mechanism 1: the smoother's own second difference, |Δ²| <= 4·max|x|/(h+1)².
     half = int(np.ceil(2.0 * np.sqrt(max(tilt_cap, 1e-12) / budget))) - 1
+    if budget_j > 0.0:
+        # ...and its third, |Δ³| <= 8·max|x|/(h+1)², sized off the series in hand
+        # (see the docstring: tilt_cap here would out-smooth the window).
+        amp = float(np.hypot(raw[:, 0], raw[:, 1]).max())
+        half = max(half, int(np.ceil(
+            np.sqrt(_SMOOTH_JERK_COEFF * max(amp, 1e-12) / budget_j))) - 1)
 
     idx = np.arange(n, dtype=float)
     # The blend weights must sum to <= 1 — that is what makes each knot a convex
@@ -455,11 +845,18 @@ def _accel_bounded_schedule(raw: np.ndarray, anchors, dt: float,
     blend_max = max(1.0, float(min(inner)) if inner else float(n))
     half_max = max(0, n // 2)
 
-    out = raw.astype(float, copy=True)
-    boost = 1.0
-    for _ in range(_TILT_WIDEN_ATTEMPTS):
-        h = int(min(max(half, 0), half_max))
-        sm = _triangular_smooth(raw, h)
+    smoothed = {}
+
+    def _attempt(h: int, scale: float):
+        """One shaped schedule at kernel half-width ``h`` and blend scale ``scale``.
+
+        Returns ``(out, ok, L)``.  ``scale`` multiplies the analytic blend width,
+        and ``scale = 0`` means "the floor" — the narrowest admissible blend.
+        """
+        sm = smoothed.get(h)
+        if sm is None:
+            sm = _triangular_smooth(raw, h)
+            smoothed[h] = sm
         # Mechanism 2: the blend window's curvature, ``gap·S''max/L² <= budget``.
         # The gap is measured against the SMOOTHED series, not the raw one, because
         # that is the distance the blend actually has to close — and it GROWS with
@@ -468,12 +865,17 @@ def _accel_bounded_schedule(raw: np.ndarray, anchors, dt: float,
         # and under-widens by up to 2× on exactly the cases that need it most.
         pin_gap = max((float(np.hypot(*(np.asarray(v, dtype=float) - sm[j])))
                        for j, v in anchors), default=0.0)
-        # ``boost`` is what the widen loop turns: the estimate bounds the window's
-        # OWN curvature and ignores the cross term ``2·W'·sm'``, which is real
-        # wherever the smoothed series is still moving under the window.
-        L = float(min(max(boost * np.ceil(
-            np.sqrt(pin_gap * _BLEND_CURVATURE_MAX / budget)),
-            _TILT_BLEND_MIN_KNOTS), blend_max))
+        # NO ``ceil`` on either request: ``L`` is a divisor inside the smoothstep,
+        # not an index, so it may be fractional — and rounding it up was the
+        # quantiser that made the achieved jerk jump between branches (see
+        # :data:`_TILT_BISECT_STEPS`).  ``scale`` is what the search below turns:
+        # the estimate bounds the window's OWN curvature and ignores the cross
+        # term ``2·W'·sm'``, which is real wherever the smoothed series is still
+        # moving under the window.
+        want = np.sqrt(pin_gap * _BLEND_CURVATURE_MAX / budget)
+        if budget_j > 0.0:
+            want = max(want, (pin_gap * _BLEND_JERK_MAX / budget_j) ** (1.0 / 3.0))
+        L = float(min(max(scale * want, _TILT_BLEND_MIN_KNOTS), blend_max))
         weight = np.zeros(n)
         out = sm.astype(float, copy=True)
         for j, v in anchors:
@@ -489,13 +891,81 @@ def _accel_bounded_schedule(raw: np.ndarray, anchors, dt: float,
         for j, v in anchors:
             out[j] = v
         out = _rate_limit_sweeps(out, anchor_set, rate_step)
-        if _max_tilt_accel(out, dt) <= accel_cap:
-            break
+        # The score is the worst of the three constraints as a RATIO of its
+        # bound, so <= 1 is "inside" and, when nothing is inside, the smallest
+        # score is the least-bad schedule — see the docstring's closing note.
+        # The third constraint is the tilt channel's own contribution to LEG
+        # jerk, measured on the series just produced (the guarantee; the rad/s³
+        # cap and the analytic widths are only the estimate — see
+        # :func:`_tilt_jerk_lever_mm`).
+        score = _max_tilt_accel(out, dt) / accel_cap
+        if budget_j > 0.0:
+            score = max(score, _max_tilt_jerk(out, dt) / jerk_cap)
+        if jerk_budget_mm > 0.0 and jerk_terms is not None:
+            score = max(score, _tilt_leg_jerk_mmps3(out, dt, jerk_terms)
+                        / jerk_budget_mm)
+        return out, bool(score <= 1.0), L, float(score)
+
+    # The FLOOR first.  The analytic widths bound each mechanism separately and
+    # ignore the cross term, so they are an over-estimate by a factor that varies
+    # with the pin gap — accepting them makes the achieved jerk a function of how
+    # conservative the estimate happened to be at this aim rather than of the cap.
+    # Probing the narrowest admissible blend first costs nothing when it is also
+    # the analytic width (every small-aim case: ``want`` is below the floor), and
+    # it is what turns the search into a SATURATION: below the cap the floor's own
+    # schedule is returned and the achieved jerk rises with the aim; above it, the
+    # bisection lands on the cap and it stops rising.
+    h = int(min(max(half, 0), half_max))
+    out, ok, L, score = _attempt(h, 0.0)
+    if ok:
+        return out
+    best_fail, best_score = out, score
+    lo_scale, lo_h = 0.0, h              # widest KNOWN-FAILING …
+    boost = 1.0
+    for _ in range(_TILT_WIDEN_ATTEMPTS - 1):
+        out, ok, L, score = _attempt(h, boost)
+        if score < best_score:
+            best_fail, best_score = out, score
+        if ok:
+            if lo_h != h:
+                # The kernel widened between the failing and the passing attempt,
+                # so a scale bisection would interpolate the wrong axis: ``half``
+                # is an integer kernel size and cannot take a fractional value.
+                # Take the passing schedule.  This is the one branch where the
+                # width — and so the achieved jerk — is still quantised; it is
+                # reached only when the SMOOTHER, not the blend, is the binding
+                # mechanism (the measured R3 grid never reaches it).
+                return out
+            # … and bisect down to it, so the schedule sits AT the cap.
+            hi_scale, best = boost, out
+            for _ in range(_TILT_BISECT_STEPS):
+                mid = 0.5 * (lo_scale + hi_scale)
+                mid_out, mid_ok, _L, _s = _attempt(h, mid)
+                if mid_ok:
+                    hi_scale, best = mid, mid_out
+                else:
+                    lo_scale = mid
+            return best
         if h >= half_max and L >= blend_max:
             break
+        lo_scale, lo_h = boost, h
         half = max(h + 1, int(np.ceil(h * 1.4)))
+        h = int(min(max(half, 0), half_max))
         boost *= 1.4
-    return out
+    # Nothing satisfied the constraints.  Make sure the WIDEST admissible
+    # schedule is among the ones tried — the ladder is a bounded geometric walk
+    # from the analytic estimate, so where the constraint set is empty the rung
+    # it happens to stop on is an artefact of where it started — and then return
+    # the attempt that violates least.  ``validate_cycle`` is still the authority
+    # on whether that is good enough; this only stops the routine from handing
+    # back a needlessly rough schedule when it already knows it is over budget.
+    if h < half_max or L < blend_max:
+        out, ok, L, score = _attempt(half_max, float(n))
+        if ok:
+            return out
+        if score < best_score:
+            best_fail, best_score = out, score
+    return best_fail
 
 
 def _as_tilt_pair(value, name: str) -> np.ndarray:
@@ -523,6 +993,16 @@ def tilt_schedule(cup_plan, receive_tilt, throw_tilt, cfg=None, *,
     guards for free.  (The plan's prose says "the cup axis tracks
     ``normalize(g − a_cup)``" — that vector is apparent *down*; the cup axis is
     apparent *up*, which is what ``tilt_to_receive`` produces.)
+
+    **...but only where that field can seat a ball (C-CUP-1).**  The prescription
+    is evaluated ONLY at knots whose seating force ``s = g + a_cup,z`` reaches
+    ``cfg.banking_seating_min_g · g``; elsewhere the schedule carries the last
+    valid attitude.  Without the gate the pre-catch dive (1.2–2.8 g) and the
+    post-release free fall hand ``tilt_to_receive`` a field with no seating
+    component at all, and it answers with its 12° clamp at an azimuth read off
+    the NORMALISED lateral residual — full-scale tilt for a 0.4 milli-g residual
+    and for a 60 milli-g one alike.  :func:`_banking_raw` carries the rule, the
+    measurement behind it, and the no-predecessor case.
 
     **Zero banking.**  No apparent-gravity content at all: hold ``receive_tilt``
     through the catch knot and ``throw_tilt`` after it.  When the two are equal the
@@ -609,11 +1089,7 @@ def tilt_schedule(cup_plan, receive_tilt, throw_tilt, cfg=None, *,
              else _as_tilt_pair(start_tilt, 'start_tilt'))
 
     if cfg.banking_enabled:
-        g_vec = np.array([0.0, 0.0, -float(cfg.gravity_mps2)])
-        raw = np.empty((n, 2), dtype=float)
-        for k in range(n):
-            raw[k] = tilt_geometry.tilt_to_receive(g_vec - acc[k],
-                                                   max_tilt_deg=cfg.max_tilt_deg)
+        raw = _banking_raw(acc, cfg, start)
     else:
         idx = np.arange(n)
         raw = np.where((idx <= catch_k)[:, None], recv[None, :], throw[None, :])
@@ -657,7 +1133,25 @@ def tilt_schedule(cup_plan, receive_tilt, throw_tilt, cfg=None, *,
         # max |Δ| == 0.0.  A caller wanting a smooth handover between two
         # DIFFERENT constant tilts is asking for a banking schedule.
         # The rate sweeps run inside this call, on every widen attempt.
-        return _accel_bounded_schedule(out, anchors, dt, accel_cap, cap, step)
+        #
+        # The JERK bound is re-derived for THIS cycle.  ``cfg.tilt_jerk_limit_rad_s3``
+        # carries the reserved leg-jerk budget divided by the STATIC lever, so
+        # multiplying it back by that lever recovers the budget in mm/s³ — and
+        # that budget is spent against the tilt channel's OWN measured
+        # contribution (:func:`_tilt_leg_jerk_mmps3`), because a fast cup moves
+        # the tilt lever under the tilt and the product-rule content that creates
+        # is leg jerk no static lever has a term for.  The rad/s³ cap stays as
+        # the second, geometry-only ceiling, and the per-cycle lever estimate
+        # only sizes the widen loop's first guess.  The ACCEL cap is a second
+        # difference and the static lever is right for it, so it is untouched.
+        jerk_cap = float(cfg.tilt_jerk_limit_rad_s3)
+        budget_mm = max(jerk_cap, 0.0) * TILT_ACCEL_LEVER_MM
+        jerk_terms = _tilt_jerk_terms(cup_plan, dt, n)
+        if jerk_cap > 0.0 and jerk_terms is not None:
+            jerk_cap = min(jerk_cap,
+                           budget_mm / _tilt_jerk_lever_mm(cup_plan, dt))
+        return _accel_bounded_schedule(out, anchors, dt, accel_cap, cap, step,
+                                       jerk_cap, jerk_terms, budget_mm)
 
     for j, v in anchors:
         out[j] = v

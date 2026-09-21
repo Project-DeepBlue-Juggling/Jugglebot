@@ -16,9 +16,12 @@ and what it does / does not fold in from ``throw_envelope.evaluate`` (C-HAND-3).
 0.9 m operating point, mapped through ``schedule.flight_s`` to three flight
 times (~0.83 / 0.857 / 0.88 s) -- the SAME map ``tools/probes/
 skills_sizing_sweep.py`` uses, so the band's centre cell is the one the owner
-already validated at this leg/hand session limit; five landing offsets per
-axis (-20/-10/0/10/20 mm), the identity prior's own command (0, 0) always
-among them. For each of the two site-pair orderings (``P1``'s post-catch rest
+already validated at this leg/hand session limit; landing offsets per axis
+out to +-20 mm, densified around the origin 2026-09-21 (+-0.5/1/2/4/6/8/10/20
+mm) after the cup-contact contract's U4 re-sweep found the 2026-09-16 grid
+had never sampled the 0-10 mm band where the old banking defect was worst --
+the identity prior's own command (0, 0) always among them. For each of the
+two site-pair orderings (``P1``'s post-catch rest
 seed feeding a throw+catch at ``P2``, and the reverse) this sweep re-plans the
 platform's lateral TRANSIT between the two sites as part of the THROW's own
 LAUNCH window -- this is I-CATCH-3's closed-form quintic reach frontier and
@@ -40,8 +43,14 @@ Usage (venv)::
 
 Deterministic (``tests/motion/test_unified_cycle.py::
 test_planning_is_deterministic``); run twice and diff the YAML before quoting
-a row. Must finish in well under 5 minutes -- the script reports its own wall
-time.
+a row. "Must finish in well under 5 minutes" is FALSE since the grid
+densified 2026-09-21 (see the offset comment above): 2 985 -> 17 169 grid
+cells (5.75x) measured 1745.0 s / 1710.7 s (29.08 / 28.51 min) across the two
+determinism-check runs on 2026-09-21 -- the script still reports its own wall
+time, read it, don't assume the old bound. The grid was NOT thinned to fit a
+runtime budget: the 0-10 mm offsets it added were the hole the 2026-09-16 box
+missed the old banking defect through (see above), and closing that hole was
+the point of the re-sweep.
 """
 from __future__ import annotations
 
@@ -73,14 +82,27 @@ from jugglebot.motion.skills import segments as sg                     # noqa: E
 from jugglebot.motion.skills import sites as st                        # noqa: E402
 
 # ── the owner's R2 operating point (plan § 0, 2026-09-12) ───────────────────
+# Leg/hand limits are read from the GENERATED launch constants
+# (config/hardware_config.yaml's `trajectory_op`, via config/generate_config.py)
+# rather than pinned as literals here (2026-09-21, U4 re-sweep): a literal
+# silently drifts from the launch point the next time it changes (exactly what
+# happened to LEG_JERK_MMPS3 -- this module's old literal, 200_000, was the
+# S4-era point; the launch default moved to 150_000 on 2026-09-16 and this
+# tool's default did not follow until now). See ``config/generated/
+# hardware_config.py``'s ``JB_TRAJ_LEG_*_LIMIT_*`` / ``JB_TRAJ_HAND_ACC_LIMIT_RPS2``.
 SEPARATION_MM = 100.0
 APEXES_M = (0.85, 0.90, 0.95)
-OFFSETS_MM = (-20.0, -10.0, 0.0, 10.0, 20.0)
+#: Landing offsets per axis (mm): the original +-20/10/0 grid, densified
+#: around the origin 2026-09-21 with +-0.5/1/2/4/6/8 mm -- the 2026-09-16 grid
+#: never sampled the 0-10 mm band, exactly where the old banking defect (fixed
+#: by the cup-contact contract, C-CUP-1) was worst.
+OFFSETS_MM = (-20.0, -10.0, -8.0, -6.0, -4.0, -2.0, -1.0, -0.5, 0.0,
+             0.5, 1.0, 2.0, 4.0, 6.0, 8.0, 10.0, 20.0)
 DWELL_S = 0.30
-LEG_VEL_MMPS = 300.0
-LEG_ACC_MMPS2 = 5000.0
-LEG_JERK_MMPS3 = 200_000.0
-HAND_ACC_RPS2 = 3500.0
+LEG_VEL_MMPS = float(hw.JB_TRAJ_LEG_VEL_LIMIT_MMPS)
+LEG_ACC_MMPS2 = float(hw.JB_TRAJ_LEG_ACC_LIMIT_MMPS2)
+LEG_JERK_MMPS3 = float(hw.JB_TRAJ_LEG_JERK_LIMIT_MMPS3)
+HAND_ACC_RPS2 = float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2)
 
 # ── R3's single-site grid (owner decision, plan § "R3", 2026-09-13) ─────────
 # THROW(P1) from rest -> CATCH(P1) carrying the next same-site throw
@@ -90,10 +112,17 @@ HAND_ACC_RPS2 = 3500.0
 # at the centre) and landing offsets out to +-40 mm -- the edges are set by
 # what the real gate passes with margin, not by this grid's resolution.
 SINGLE_SITE_FLIGHTS_S = (0.75, 0.80, 0.8570, 0.90, 0.95)
-SINGLE_SITE_OFFSETS_MM = (-40.0, -30.0, -20.0, -10.0, 0.0, 10.0, 20.0, 30.0, 40.0)
+#: Same 2026-09-21 origin-densification as ``OFFSETS_MM``, applied to the
+#: wider +-40 mm single-site span.
+SINGLE_SITE_OFFSETS_MM = (-40.0, -30.0, -20.0, -10.0, -8.0, -6.0, -4.0, -2.0,
+                          -1.0, -0.5, 0.0, 0.5, 1.0, 2.0, 4.0, 6.0, 8.0, 10.0,
+                          20.0, 30.0, 40.0)
 #: R3's session leg-jerk limit (plan § "R3": 150 000 mm/s^3 -- "the most the
-#: machine has flown"). Leg vel/acc and hand acc are unchanged from R2.
-SINGLE_SITE_LEG_JERK_MMPS3 = 150_000.0
+#: machine has flown"), now IDENTICAL to ``LEG_JERK_MMPS3`` above since that
+#: default itself reads the generated launch constant (2026-09-21) -- kept as
+#: its own named constant for the R3 single-site call sites' documentation
+#: value; leg vel/acc and hand acc are unchanged from R2.
+SINGLE_SITE_LEG_JERK_MMPS3 = float(hw.JB_TRAJ_LEG_JERK_LIMIT_MMPS3)
 #: The window the ONE seeding throw (from rest -> the release the chain's
 #: first ``_chained_catch_cell`` catches) plans over -- ``schedule.Pattern``'s
 #: own ``launch_s`` default (0.4 s, "the sweep's measured minimum feasible

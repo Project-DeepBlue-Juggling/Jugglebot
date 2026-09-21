@@ -150,6 +150,16 @@ class RestTerminal:
 
     rest_site_mm: np.ndarray
     t_rest_s: float
+    #: Whether the cup is holding a ball through this REST — C-CUP-2's contact
+    #: window (``plans/active/cup-contact-contract.md``).  **Defaults to True**,
+    #: because the clause is "a ball is OR MAY BE in the cup" and a REST is where
+    #: the machine sits with one: an attempt's opening REST holds the ball it is
+    #: about to throw and its closing REST holds the one it just caught.  The
+    #: caller says False only for a REST it KNOWS is empty — notably one seeded
+    #: from a release, where the cup is still decelerating out of its own throw
+    #: and cannot seat anything (that seed is refused
+    #: ``CUP_CONTACT_ACC`` at knot 0 rather than silently planned as a carry).
+    holds_ball: bool = True
 
     def __post_init__(self):
         object.__setattr__(self, 'rest_site_mm',
@@ -226,6 +236,10 @@ def _plan_throw(seed, terminal: ThrowTerminal, cfg: SegmentConfig,
     plan_a, meta_a = uc.plan_launch(goals_a, seed, limits, geom,
                                     warm_start=warm_start)
     seed_b = uc.release_state_from_meta(meta_a, plan_a)
+    # The tail opens at the release: the ball has LEFT, so no contact window
+    # (``CycleGoals.holds_ball`` defaults False).  The LAUNCH half carries one
+    # from knot 0 to the knot before its release, set by kind in
+    # ``unified_cycle.plan_cycle``.
     goals_b = uc.CycleGoals(period_s=cfg.rest_tail_s, settle_site_mm=rest_mm)
     plan_b, meta_b = uc.plan_settle(goals_b, seed_b, limits, geom)
     plan, meta = uc.extend(plan_a, meta_a, plan_b, meta_b, limits, geom)
@@ -281,7 +295,14 @@ def _plan_catch_throw(seed, terminal: CatchTerminal, cfg: SegmentConfig,
 def _plan_rest(seed, terminal: RestTerminal, cfg: SegmentConfig,
                 limits, geom, warm_start) -> Segment:
     goals = uc.CycleGoals(period_s=terminal.t_rest_s,
-                          settle_site_mm=terminal.rest_site_mm)
+                          settle_site_mm=terminal.rest_site_mm,
+                          # The terminal's declaration is an UPPER bound: a
+                          # seed that says a release just happened says the ball
+                          # LEFT, and the two cannot both be true at knot 0.
+                          # (Not kinematic inference — `post_release` is the
+                          # caller's own explicit statement about the ball.)
+                          holds_ball=(bool(terminal.holds_ball)
+                                      and not bool(seed.post_release)))
     plan, meta = uc.plan_settle(goals, seed, limits, geom,
                                 warm_start=warm_start)
     return Segment(kind=REST, plan=plan, meta=meta, splice_k=0,

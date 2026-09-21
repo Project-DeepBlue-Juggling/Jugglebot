@@ -1232,6 +1232,29 @@ trajectory_op:
   stream_hand_torque_bias_clamp_nm: 0.05       # {N m}
   stream_hand_torque_bias_rate_nm_per_s: 0.5   # {N m/s}
   stream_hand_torque_fade_per_s: 50.0          # {1/s}
+  # CUP-CONTACT CONTRACT (plans/active/cup-contact-contract.md § 2, 2026-09-18).
+  # One definition each; all three are in units of g or seconds, so they do not
+  # move with the session leg limits. "Seating force" below is the component of the
+  # apparent gravity that presses a ball INTO the cup, s = g + a_cup,z (world z up,
+  # a_cup,z negative when the cup accelerates downward): s = g at rest, 0 in free
+  # fall, negative when the cup dives faster than g and no attitude can seat a ball.
+  #   C-CUP-1: banking is prescribed only at knots with s >= eps*g; elsewhere the
+  #            schedule carries the last valid attitude.
+  #   C-CUP-2: over the contact window a_cup,z >= -kappa*g, i.e. s >= (1-kappa)*g.
+  #            kappa < 1 - eps, so banking is defined over the whole contact window.
+  #   The contact window opens tau before the planned touch-down. tau was 0.060
+  #   (the measured arrival scatter, 2026-09-17/18) in the design; owner decision
+  #   2026-09-20 "lengthen tau only": the QP is STROKE-limited, so it cannot coast at
+  #   the match speed through the window and instead buys its dive in the ONE knot
+  #   before the window opens. Measured at 0.9 m (pre-contract peak dive -34.8k mm/s^2,
+  #   touch-down v_z -2.74 m/s): tau 0.060 -> -61.9k / -1.90 m/s, 0.100 -> -43.4k /
+  #   -1.67, 0.125 -> -29.6k / -1.54, 0.150 -> -21.7k / -1.47, 0.200 -> -11.3k / -1.44.
+  #   0.125 is the smallest knot multiple whose pre-window dive is no harsher than the
+  #   dive flown before the contract. The cost is the touch-down velocity match
+  #   (-2.74 -> -1.54 m/s against a 4.2 m/s ball); see the plan § 7.
+  cup_banking_seating_min_g: 0.2               # eps {g} — C-CUP-1 seating-force floor
+  cup_contact_acc_floor_g: 0.7                 # kappa {g} — C-CUP-2 bound on downward cup acceleration
+  cup_contact_window_lead_s: 0.125             # tau {s} — contact window opens this long before touch-down (5 knots)
 
 # ============================================================
 # 7. Jugglebot SpaceMouse

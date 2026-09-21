@@ -1198,8 +1198,15 @@ class SkillExecutor:
         caught balls that landed 50-75 mm off: the cup tolerates the miss,
         the platform does not tolerate the move. The clamp lifts with
         :attr:`lateral_authority_m` — the same knob :meth:`_command_u` already
-        clamps the learner's lateral command to — once the planner carries a
-        chained-banking budget that can afford the move.
+        clamps the learner's lateral command to. Owner 2026-09-16 pinned the
+        node's launch default at 0.0 mm — zero authority clamps every
+        lateral landing exactly onto the schedule site, i.e. fully pinned —
+        until the planner carried banking that could afford the move; owner
+        2026-09-21 lifted the pin to 40.0 mm once the cup-contact contract's
+        amplitude-aware banking landed
+        (``plans/active/cup-contact-contract.md`` § 6). This method's clamp
+        logic and its ``0.0``/``None`` special cases are unchanged; only the
+        node's default input to it moved.
 
         ``None`` (:attr:`lateral_authority_m` unset) or no schedule prior for
         this catch (:meth:`_predicted_landing` returns ``None`` — a ball

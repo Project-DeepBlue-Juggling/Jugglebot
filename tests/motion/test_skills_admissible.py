@@ -21,7 +21,6 @@ import pytest
 
 import jugglebot.hardware_config as hw
 from jugglebot.motion.skills import admissible as ab
-from jugglebot.motion.skills import schedule as sc
 from jugglebot.motion.skills import sites as st
 from jugglebot.motion.trajectory.limits import TrajectoryLimits
 
@@ -187,33 +186,11 @@ def test_clip_on_an_empty_box_refuses_naming_the_site_pair():
         ab.clip((np.array([0.0, 0.0]), 0.90), box)
 
 
-def test_load_converts_a_pre_apex_flight_band_through_the_exact_inverse():
-    """2026-09-18: a box swept before the learner's command became an apex
-    bounds ``flight_s``. The loader converts it through ``schedule.apex_m``,
-    the exact inverse of the ``schedule.flight_s`` the sweep itself used, so
-    the SAME set of throws stays admissible -- that bijection is what makes
-    re-sweeping optional rather than a prerequisite."""
-    import tempfile, yaml as _yaml
-    flights = (0.83, 0.88)
-    doc = {
-        'swept_at': '2026-09-12', 'gate_hash': _GATE_HASH,
-        'limits': dict(_LIMITS_DICT),
-        'boxes': [{'site_pair': ['P1', 'P2'], 'apex_band_m': [0.85, 0.95],
-                   'landing_xy_m': [[-0.02, 0.02], [-0.01, 0.01]],
-                   'flight_s': list(flights)}],
-    }
-    with tempfile.NamedTemporaryFile('w', suffix='.yaml', delete=False) as fh:
-        _yaml.safe_dump(doc, fh)
-        path = fh.name
-    box, = ab.load(path)
-    assert box.apex_m == pytest.approx((sc.apex_m(flights[0]),
-                                        sc.apex_m(flights[1])))
-    # The inverse, exactly: back through flight_s reproduces the swept band.
-    assert (sc.flight_s(box.apex_m[0]),
-            sc.flight_s(box.apex_m[1])) == pytest.approx(flights)
-
-
-def test_load_refuses_a_box_with_neither_apex_nor_flight_bounds():
+def test_load_refuses_a_box_missing_apex_m():
+    """2026-09-21: the pre-2026-09-18 ``flight_s`` compatibility branch was
+    retired (no other YAML/fixture depended on it), so ``apex_m`` is now a
+    required field like ``site_pair`` / ``apex_band_m`` / ``landing_xy_m`` --
+    a box missing it refuses naming it, full stop."""
     import tempfile, yaml as _yaml
     doc = {
         'swept_at': '2026-09-12', 'gate_hash': _GATE_HASH,
@@ -366,13 +343,21 @@ def test_tiny_sweep_produces_one_box_inside_the_swept_grid(tiny_sweep):
     assert len(rows) >= 6
 
 
-def test_tiny_sweep_yaml_round_trips_and_validates(tmp_path, tiny_sweep):
+def test_tiny_sweep_yaml_round_trips_and_validates(tmp_path, tiny_sweep,
+                                                   sweep_mod):
     boxes, _rows = tiny_sweep
     path = str(tmp_path / 'admissible_box.yaml')
     ab.dump(path, boxes)
     loaded = ab.load(path)
     assert loaded == boxes
-    live = _live_limits()
+    # "Live" here is the limits the tiny sweep actually ran at. Since 2026-09-21
+    # the tool's defaults are the GENERATED launch constants (300/5000/150000),
+    # not the 200 000 literal `_live_limits` still carries for the hand-built
+    # `_box()` cases above, so the two are read from the same place.
+    live = _live_limits(leg_vel_mmps=sweep_mod.LEG_VEL_MMPS,
+                        leg_acc_mmps2=sweep_mod.LEG_ACC_MMPS2,
+                        leg_jerk_mmps3=sweep_mod.LEG_JERK_MMPS3,
+                        hand_acc_rps2=sweep_mod.HAND_ACC_RPS2)
     ab.check_limits(loaded, live)
 
 

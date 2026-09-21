@@ -223,6 +223,9 @@ namespace TrajOp {
   constexpr float STREAM_HAND_TORQUE_BIAS_CLAMP_NM = 0.05f;
   constexpr float STREAM_HAND_TORQUE_BIAS_RATE_NM_PER_S = 0.5f;
   constexpr float STREAM_HAND_TORQUE_FADE_PER_S = 50.0f;
+  constexpr float CUP_BANKING_SEATING_MIN_G = 0.2f;
+  constexpr float CUP_CONTACT_ACC_FLOOR_G = 0.7f;
+  constexpr float CUP_CONTACT_WINDOW_LEAD_S = 0.125f;
 }
 
 // ==========================================================================
