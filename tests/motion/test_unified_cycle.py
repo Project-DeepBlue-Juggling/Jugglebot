@@ -905,8 +905,10 @@ def _knot_leg_accels(plan, geom):
     ``right[k]`` is the limit at knot ``k`` approached from above, ``left[k]`` the
     limit at knot ``k+1`` approached from below.  The pose channel is a cubic
     Hermite, so acceleration is LINEAR inside a span and the two limits at an
-    interior knot are generally different numbers; the gate's grid sees only one
-    of them (which one is float luck — see the caller's docstring).
+    interior knot are generally different numbers.  Until 2026-09-21 the gate's
+    grid saw only one of them (which one was float luck — see the caller's
+    docstring); it now reads both in closed form, and this helper stays as the
+    INDEPENDENT reading of the same two limits, through the plan's own accessor.
 
     Sampled a picosecond either side of the knot instant rather than at it: linear
     inside the span means a 1e-12 s offset of a 0.025 s span costs 4e-11 relative
@@ -948,39 +950,36 @@ def test_the_joined_report_carries_the_WHOLE_plans_peaks(long_ring, limits,
     ``dt/4``.  2.4e-10 of 39 752 mm/s³ is 1e-5 mm/s³ against a 150 000 limit, so
     it cannot move a verdict.
 
-    **``peak_leg_acc_mmps2`` is carved out, and the reason is measured, not a
-    tolerance** (2026-09-20, ``scratchpad/probe_u7{b,d,e}.py``).  Leg acceleration
-    is DISCONTINUOUS at a knot — the pose channel is a cubic Hermite, so the
-    acceleration is linear inside a span and jumps across the join — and
-    ``validate_cycle``'s grid reads only ONE side of each knot.  Which side is
-    decided by the last bit of ``t / dt`` inside ``CyclePlan._locate_batch``:
-    ``4.05 / 0.025`` falls a ULP short of 162 and reads the LEFT limit of knot
-    162, while the same instant on the extend's range view (whose grid starts at
-    knot 135) divides exactly and reads the RIGHT limit.  The two readings at
-    that knot are **417.4568** and **404.4773 mm/s²** — which is precisely the
-    merged/whole disagreement, 3.109e-2 relative.  It is NOT a seam effect: the
-    head is bit-identical across every extend (max |Δpose| = 0.0 over the chain)
-    and joined knot 162 is knot 26 of the third STEADY window, 26 knots from the
-    nearest seam.  Neither reading is the truth: the plan's true two-sided
-    supremum is **468.2153 mm/s²** at joined knot 48, so the gate itself
-    under-measures peak leg acceleration by 10.8 % here (13.6 % on the 137-knot
-    chain).  That is a PRE-EXISTING property of the sampled gate — at HEAD the
-    same chain measures 739.4640 for grid, sup AND merged, so the lottery was
-    latent rather than absent — and closing it means sampling both sides at every
-    knot in ``feasibility.validate_cycle``, which moves every acc golden number in
-    the suite and is owner-scheduled, not done here.
+    **``peak_leg_acc_mmps2`` was carved out of this equality from 2026-09-20 to
+    2026-09-21, and is back in it.**  Leg acceleration is DISCONTINUOUS at a knot
+    (the pose channel is a cubic Hermite: acceleration is linear inside a span
+    and jumps across the join) and ``validate_cycle``'s grid read only ONE side of
+    each knot, chosen by the last bit of ``t / dt`` in
+    ``CyclePlan._locate_batch``: ``4.05 / 0.025`` falls a ULP short of 162 and
+    read the LEFT limit of knot 162, while the same instant on the extend's range
+    view (whose grid starts at knot 135) divides exactly and read the RIGHT one.
+    Those two readings were **417.4568** (whole) and **404.4773 mm/s²** (merged),
+    3.109e-2 apart, and neither was the truth — the plan's two-sided supremum is
+    **468.2153 mm/s²** at joined knot 48, a 10.8 % under-measure (13.6 % merged).
+    It was never a seam effect: the head is bit-identical across every extend and
+    joined knot 162 is 26 knots from the nearest seam.
 
-    So the assertion below is the mechanism rather than a widened bar: the
-    shortfall must be at most the two-sided spread AT THE KNOT the whole-plan grid
-    read from the other side.  A merged report that missed a peak for any other
-    reason — a window whose own gate never ran, a range that stopped short — is
-    short by more than one knot's spread and fails here.
+    The gate now reads BOTH one-sided limits at every knot in closed form
+    (``logbook/2026-09-21-two-sided-knot-sampling.md``), with no ``t`` and so no
+    ULP in the read.  **This test is that unit's acceptance test**: all NINE
+    peaks, acc included, agree between the merged report and a whole-plan run to
+    ``< 1e-9`` relative (probe 2026-09-21: acc 0.0 — bit-identical — and jerk
+    4.86e-11), and the acc peak IS the plan's two-sided supremum as read by the
+    independent picosecond helper above.  If this equality ever needs a carve-out
+    again, the gate has stopped being two-sided; fix the gate, not the bar.
     """
     plan, meta, _rows = long_ring
     full = fz.validate_cycle(plan, limits, geom)
     assert full.ok and meta.report.ok
     worst = 0.0
-    for name in ('peak_leg_vel_mmps',
+    # All nine — the acceptance criterion of the two-sided-knot-sampling unit
+    # (2026-09-21). `peak_leg_acc_mmps2` is deliberately IN this list.
+    for name in ('peak_leg_vel_mmps', 'peak_leg_acc_mmps2',
                  'peak_leg_jerk_mmps3', 'peak_leg_ext_mm', 'peak_step_rev',
                  'peak_hand_rev', 'peak_hand_vel_rps', 'peak_hand_acc_rps2',
                  'peak_hand_step_rev'):
@@ -989,27 +988,14 @@ def test_the_joined_report_carries_the_WHOLE_plans_peaks(long_ring, limits,
         worst = max(worst, abs(merged - whole) / abs(whole))
     assert worst < 1e-9, worst
 
-    # The acc field, against the plan's own two-sided knot accelerations.
+    # ...and the number they agree on is the TRUTH, not merely a shared reading:
+    # the plan's two-sided supremum over its knots, read independently (a
+    # picosecond either side of each knot, through the plan's own accessor —
+    # 4e-11 of a span, hence the 1e-6). The old one-sided grid read 10.8 % low.
     left, right = _knot_leg_accels(plan, geom)
     sup2 = max(float(left.max()), float(right.max()))
-    merged_a = float(meta.report.peak_leg_acc_mmps2)
-    whole_a = float(full.peak_leg_acc_mmps2)
-    assert whole_a > 0.0 and merged_a > 0.0
-    # Neither reading can exceed the true supremum...
-    assert whole_a <= sup2 * (1.0 + 1e-9), (whole_a, sup2)
-    assert merged_a <= sup2 * (1.0 + 1e-9), (merged_a, sup2)
-    # ...and the merged one is short by at most the spread at the knot the
-    # whole-plan grid read.  `left[k]` is the left limit at knot k+1, `right[k]`
-    # the right limit at knot k, so both sides of knot k+1 are (left[k], right[k+1]).
-    # (The 1e-6 relative slack absorbs the helper's picosecond nudge, which is
-    # 4e-11 of a span; the bound it guards is 12.98 of 417.46.)
-    spreads = [abs(float(left[k]) - float(right[k + 1]))
-               for k in range(len(left) - 1)
-               if (abs(float(left[k]) - whole_a) <= 1e-6 * whole_a
-                   or abs(float(right[k + 1]) - whole_a) <= 1e-6 * whole_a)]
-    assert spreads, ('the whole-plan acc peak is not at a knot', whole_a)
-    assert merged_a >= whole_a - max(spreads) * (1.0 + 1e-6), (
-        merged_a, whole_a, max(spreads))
+    assert float(full.peak_leg_acc_mmps2) == pytest.approx(sup2, rel=1e-6)
+    assert float(meta.report.peak_leg_acc_mmps2) == pytest.approx(sup2, rel=1e-6)
     # Non-vacuous the other way too: the head really does own some of the peaks,
     # so a tail-only report would have been visibly wrong. The LAUNCH's hand
     # stroke is the biggest in the plan.

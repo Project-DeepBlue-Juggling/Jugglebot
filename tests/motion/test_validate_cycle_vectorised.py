@@ -10,14 +10,14 @@ reference cycle, ~88 % of a ``plan_cycle`` call — and the plan pins < 10 ms pe
 40-knot segment (``plans/active/two-ball-skill-stack.md`` § 2.6).
 
 A faster gate that quietly ACCEPTS a plan the old one refused is the one failure
-this change must not ship.  So the old implementation is kept here verbatim as
-:func:`_validate_cycle_scalar` (copied from ``67445f3``, the commit before the
-vectorisation, lines 1058-1323 of ``feasibility.py``) and the two are run against
-each other over a battery that covers every code the gate can emit, on real
-planner output as well as hand-built pathological plans, and — the part that
-actually binds — at limits set within 1e-6 relative of a MEASURED peak, where the
-two implementations' last-bit differences would show up as a flipped verdict if
-they existed.
+this change must not ship.  So the old implementation is kept here VERBATIM,
+except for one block described below, as :func:`_validate_cycle_scalar` (copied
+from ``67445f3``, the commit before the vectorisation, lines 1058-1323 of
+``feasibility.py``) and the two are run against each other over a battery that
+covers every code the gate can emit, on real planner output as well as
+hand-built pathological plans, and — the part that actually binds — at limits
+set within 1e-6 relative of a MEASURED peak, where the two implementations'
+last-bit differences would show up as a flipped verdict if they existed.
 
 PARITY BOUND (owner, 2026-09-12): ``ok`` and ``code`` identical, ``reasons``
 identical strings, every ``peak_*`` field within 1e-9 relative.
@@ -48,6 +48,36 @@ near-threshold sweep pins, at 1e-6 relative, in both directions.
 
 I-PLAN-3's twin is asserted here too: nothing the 4-samples/knot gate accepts is
 refused at 16 samples/knot, on the same battery.
+
+THE 2026-09-21 EXCEPTION TO "VERBATIM" (owner decision, AskUserQuestion: "Extend
+the twin in lockstep")
+------------------------------------------------------------------------------
+Production's ``validate_cycle`` pass 1 now reads leg acceleration from BOTH
+sides of every knot (closed-form Hermite end accelerations through the knot-row
+J and J_dot) and takes the FD jerk over per-span sequences plus both straddling
+differences at each interior knot — a knot is C1, not C2, and a one-sided
+sample grid was under-reading the true peak by 10.8-24.3% on measured plans
+(``feasibility.py``, the block under ``peak_vel = ...`` in ``validate_cycle``
+pass 1; ``logbook/2026-09-21-two-sided-knot-sampling.md``). So
+``_validate_cycle_scalar`` gains a SCALAR two-sided read of the same law, kept
+this file's full-strength parity (ok/code/reasons identical, every peak within
+1e-9 relative, the 1e-6 near-threshold sweep) covering LIMIT_ACC and
+LIMIT_JERK — the two codes this change touches.
+
+ROOT-CAUSE REASON (not "the plan says so"): the two-sided block is the newest
+code in the gate and is exactly what this file exists to cross-examine;
+scoping parity away from acc/jerk would leave it with no independent check on
+this code path and would drop the near-threshold sweep on those two codes.
+
+The block is marked BEGIN/END in the function body below, is dated, and is the
+ONE part of ``_validate_cycle_scalar`` that is not 67445f3 verbatim — an
+independent per-knot/per-span Python loop using the scalar ``_hermite``
+(``cycle_plan.py``) called with explicit ``(k, s)`` on the plan's own knot
+arrays, and the scalar ``accel_to_leg_accels`` (``J @ a + J_dot @ twist``) the
+per-sample loop already calls — NOT a copy of production's array code.
+``test_two_sided_read_never_reads_lower_than_one_sided`` pins the headline
+claim (two-sided can only read higher) against the twin's own one-sided
+reading, reachable via ``_validate_cycle_scalar(..., two_sided=False)``.
 """
 
 from __future__ import annotations
@@ -68,7 +98,7 @@ from jugglebot.motion.ik_solver import (
 )
 from jugglebot.motion.trajectory import cup_realize as cr
 from jugglebot.motion.trajectory import feasibility as fz
-from jugglebot.motion.trajectory.cycle_plan import CyclePlan
+from jugglebot.motion.trajectory.cycle_plan import CyclePlan, _hermite
 from jugglebot.motion.trajectory.limits import TrajectoryLimits
 from jugglebot.motion.workspace import check_leg_extensions, compute_condition_number
 from jugglebot.outcome_detail import bound_msg
@@ -105,13 +135,18 @@ _cycle_stroke_floor = fz._cycle_stroke_floor
 # ═══════════════════════════════════════════════════════════════════════════
 #
 # Copied unchanged from ``feasibility.py`` lines 1058-1323 at commit 67445f3,
-# with only the function NAME altered.  Do not tidy it, do not re-flow it, do not
-# "fix" anything in it — the moment it stops being the shipped-then code, it stops
-# being a reference and this whole file measures nothing.
+# with only the function NAME altered — EXCEPT the two-sided knot block dated
+# 2026-09-21 (marked BEGIN/END below; see the module docstring's dated section
+# above for the owner decision and the root-cause reason). That block is this
+# file's own independent extension, not part of the 67445f3 copy. Do not tidy
+# the rest of it, do not re-flow it, do not "fix" anything else in it — the
+# moment it stops being the shipped-then code, it stops being a reference and
+# this whole file measures nothing.
 
 def _validate_cycle_scalar(cycle_plan, limits, geom, *,
                    samples_per_knot: int = _CYCLE_SAMPLES_PER_KNOT,
-                   runway_margin_rev: float = CATCH_RUNWAY_MARGIN_REV
+                   runway_margin_rev: float = CATCH_RUNWAY_MARGIN_REV,
+                   two_sided: bool = True
                    ) -> FeasibilityReport:
     """Feasibility gate for a 7-channel :class:`~cycle_plan.CyclePlan`.
 
@@ -155,7 +190,10 @@ def _validate_cycle_scalar(cycle_plan, limits, geom, *,
     ``samples_per_knot`` meshes the POSE track only (see
     :data:`_CYCLE_SAMPLES_PER_KNOT`); the hand channel's extrema are closed-form
     per span and independent of it. ``runway_margin_rev`` is the reserve below the
-    computed stopping distance.
+    computed stopping distance. ``two_sided`` (2026-09-21, default True) toggles
+    the two-sided knot read below; ``False`` reproduces the pre-2026-09-21
+    one-sided-only law verbatim, and exists only so a test can compare this twin
+    against its own earlier reading.
     """
     m = max(1, int(samples_per_knot))
     wlimits = _workspace_limits(geom)
@@ -244,11 +282,78 @@ def _validate_cycle_scalar(cycle_plan, limits, geom, *,
     # samples/segment, not on this plan family; it is applied because a FD jerk
     # peak always under-measures, and the whole-cycle jerk characterisation is
     # WP4's sim harness, not this constant.
-    peak_jerk = 0.0
     sub_dt = dt / m
-    if len(acc_samples) >= 2:
-        jerk = np.diff(np.asarray(acc_samples), axis=0) / sub_dt
-        peak_jerk = float(np.max(np.abs(jerk))) * _VALIDATE_JERK_MARGIN
+    peak_jerk = 0.0
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # BEGIN two-sided knot read (2026-09-21) — the ONE block in this function
+    # that is NOT verbatim 67445f3 (see the module docstring's dated section for
+    # the owner decision and the root-cause reason). Production now reads leg
+    # acceleration from BOTH sides of every knot in closed form and takes the FD
+    # jerk over per-span sequences plus both straddling differences at interior
+    # knots (``feasibility.py``, the block under ``peak_vel = ...`` in
+    # ``validate_cycle`` pass 1). This is an INDEPENDENT scalar spelling of that
+    # same law: a per-knot / per-span Python loop using the scalar ``_hermite``
+    # (``cycle_plan.py``) called with explicit ``(k, s)`` on the plan's own knot
+    # arrays, and the scalar ``accel_to_leg_accels`` (``J @ a + J_dot @ twist``)
+    # the per-sample loop above already calls for J and J_dot — NOT a copy of
+    # production's array code. No ``t`` anywhere in this block: pose and twist
+    # are continuous at a knot (only the pose ACCELERATION differs by side), so
+    # they are read straight off the plan's knot arrays.
+    if two_sided:
+        n_spans = n_knots - 1
+        acc_above = []
+        acc_below = []
+        for i in range(n_spans):
+            p0, v0 = cycle_plan.pose[i], cycle_plan.pose_vel[i]
+            p1, v1 = cycle_plan.pose[i + 1], cycle_plan.pose_vel[i + 1]
+            # span i at s=0 -> knot i from ABOVE; span i at s=1 -> knot i+1
+            # from BELOW (same convention feasibility.py's a_above/a_below use).
+            _, _, a_above_pose = _hermite(p0, v0, p1, v1, dt, 0.0)
+            _, _, a_below_pose = _hermite(p0, v0, p1, v1, dt, 1.0)
+            pos0, rot0 = _pose_to_pos_rot(p0)
+            pos1, rot1 = _pose_to_pos_rot(p1)
+            acc_above.append(accel_to_leg_accels(a_above_pose, v0, pos0, rot0, geom))
+            acc_below.append(accel_to_leg_accels(a_below_pose, v1, pos1, rot1, geom))
+            peak_acc = max(peak_acc, float(np.max(np.abs(acc_above[-1]))),
+                           float(np.max(np.abs(acc_below[-1]))))
+
+        # Per span i: [acc_above(i), the span's m-1 interior samples the loop
+        # above already has, acc_below(i)] -> m differences, each strictly
+        # inside the span. Plus, at every interior knot k, both differences
+        # that straddle it: acc_above(k) against the last interior row of span
+        # k-1, and the first interior row of span k against acc_below(k-1) —
+        # mirroring feasibility.py's ``span_acc[:-1, m-1]`` / ``span_acc[1:, 1]``
+        # indexing exactly, including its m==1 degenerate case (no interior
+        # rows: "last/first interior row" collapses to the neighbouring span's
+        # own acc_above / acc_below).
+        jerk_peaks = []
+        for i in range(n_spans):
+            seq = [acc_above[i]]
+            if m > 1:
+                seq.extend(acc_samples[i * m + 1: i * m + m])
+            seq.append(acc_below[i])
+            for a, b in zip(seq[:-1], seq[1:]):
+                jerk_peaks.append(float(np.max(np.abs(np.asarray(b) - np.asarray(a)))))
+        for k in range(1, n_spans):
+            last_row = acc_samples[(k - 1) * m + m - 1] if m > 1 else acc_above[k - 1]
+            first_row = acc_samples[k * m + 1] if m > 1 else acc_below[k]
+            into_knot = np.asarray(acc_above[k]) - np.asarray(last_row)
+            out_of_knot = np.asarray(first_row) - np.asarray(acc_below[k - 1])
+            jerk_peaks.append(float(np.max(np.abs(into_knot))))
+            jerk_peaks.append(float(np.max(np.abs(out_of_knot))))
+        if jerk_peaks:
+            peak_jerk = max(jerk_peaks) / sub_dt * _VALIDATE_JERK_MARGIN
+    # END two-sided knot read (2026-09-21)
+    # ═══════════════════════════════════════════════════════════════════════
+    else:
+        # ONE-SIDED read only — the pre-2026-09-21 law, verbatim. Reachable only
+        # with ``two_sided=False``, which exists so
+        # ``test_two_sided_read_never_reads_lower_than_one_sided`` can compare
+        # this twin against its own earlier reading.
+        if len(acc_samples) >= 2:
+            jerk = np.diff(np.asarray(acc_samples), axis=0) / sub_dt
+            peak_jerk = float(np.max(np.abs(jerk))) * _VALIDATE_JERK_MARGIN
 
     # ── Pass 2: hand span extrema (closed form) + the per-span position extrema ──
     peak_hand_vel = 0.0
@@ -811,3 +916,41 @@ def test_parity_on_the_catch_runway_refusal(geom):
     assert ref.code == fz.HAND_STROKE
     assert 'catch runway' in ref.reasons[0]
     _assert_parity(vec, ref, 'catch-runway')
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (d) The two-sided knot read (2026-09-21): pinned against the twin's OWN
+#     one-sided reading — "a two-sided max can never read lower"
+# ═══════════════════════════════════════════════════════════════════════════
+
+def test_two_sided_read_never_reads_lower_than_one_sided(accepted, limits, geom):
+    """Production's two-sided peaks can only read >= the twin's one-sided ones.
+
+    Compares ``validate_cycle`` (always two-sided) against
+    ``_validate_cycle_scalar(..., two_sided=False)`` — the twin's OWN one-sided
+    reading, i.e. the exact per-sample FD this file measured before 2026-09-21 —
+    on ``peak_leg_acc_mmps2`` and ``peak_leg_jerk_mmps3``, the two channels the
+    two-sided read touches. This is deliberately NOT ``_assert_parity``: the two
+    readings are expected to *differ*, in one direction only.
+
+    Non-vacuity: at least one battery plan must read strictly higher two-sided,
+    or this comparison would pass vacuously on a battery where the two never
+    differ (a knot is only C1 where a span boundary lands on a real bend).
+    """
+    strictly_greater = []
+    for label, plan in accepted:
+        vec = fz.validate_cycle(plan, limits, geom)
+        one_sided = _validate_cycle_scalar(plan, limits, geom, two_sided=False)
+        for f in ('peak_leg_acc_mmps2', 'peak_leg_jerk_mmps3'):
+            a = float(getattr(vec, f))
+            b = float(getattr(one_sided, f))
+            rel = (a - b) / max(abs(b), 1e-9)
+            assert rel > -1e-9, (
+                f"{label}: {f} two-sided {a!r} < one-sided {b!r} "
+                f"(rel {rel:.3e}) — a two-sided max read LOWER than one-sided")
+            if rel > 1e-9:
+                strictly_greater.append((label, f, a, b, rel))
+    assert strictly_greater, (
+        "no battery plan read strictly higher two-sided than one-sided on "
+        "peak_leg_acc_mmps2 or peak_leg_jerk_mmps3 — the non-vacuity check "
+        "this test exists for did not hold")

@@ -955,7 +955,10 @@ def _pose_to_rev(pose, geom, mm_to_rev) -> np.ndarray:
 #: sampled (they are indices ``0, m, 2m, …``), and the per-knot step bounds read
 #: exactly that subset; the intermediate samples exist because leg velocity is
 #: NOT captured by knot sampling alone. Pose acceleration is linear in ``s`` on a
-#: cubic span, so its extremum IS at a knot — but pose velocity is quadratic and
+#: cubic span, so its extremum IS at a knot — on ONE SIDE of it: the acceleration
+#: jumps across a knot, a grid row holds only one of the two limits, and pass 1
+#: therefore reads both in closed form (2026-09-21, the block under ``peak_vel``)
+#: — but pose velocity is quadratic and
 #: can peak strictly inside a span, and the leg chain (``J·twist``) inherits that.
 #: Sizing (2026-08-30): the excursion a velocity extremum can hide is bounded by
 #: ``a²/(2·j)``; on the xy channel the cup QP's ``max_jerk_xy = 300 m/s³`` box puts
@@ -1310,6 +1313,18 @@ def validate_cycle(cycle_plan, limits, geom, *,
     affordable as a per-skill RUNTIME assert (plan § 2.6 pins < 10 ms per 40-knot
     segment) instead of a planning-time luxury.
 
+    **TWO-SIDED AT THE KNOTS (2026-09-21).** Leg acceleration is discontinuous at
+    a knot (the pose channel is C1, not C2) and a sample grid reads each knot from
+    one side only — which side was decided by a ULP in ``t / dt``, so
+    ``peak_leg_acc_mmps2`` under-read the plan's true supremum by 10.8–24.3 % on
+    measured plans and disagreed between a plan and a range view of the same plan.
+    Pass 1 now evaluates both one-sided limits at every knot in closed form, and
+    the FD jerk takes both differences that straddle a knot; both peaks can only
+    read higher than before, never lower. The scalar twin named below carries the
+    same two-sided read, spelled as a per-knot loop — that block is the one part
+    of it that is not the pre-vectorisation code.
+    ``logbook/2026-09-21-two-sided-knot-sampling.md``.
+
     The measured QUANTITIES are identical, not merely close: same samples, same
     formulas, same first-failure-wins ordering, same reason strings, same prefix
     peaks on an early return. Three operations are spelled differently and are
@@ -1463,7 +1478,45 @@ def validate_cycle(cycle_plan, limits, geom, *,
     leg_acc = (np.einsum('nij,nj->ni', J, accels)
                + np.einsum('nij,nj->ni', J_dot, twists))                # (n,6)
     peak_vel = float(np.max(np.abs(leg_vel)))
-    peak_acc = float(np.max(np.abs(leg_acc)))
+
+    # ── BOTH one-sided limits at every knot (2026-09-21) ──
+    # The pose channel is a cubic Hermite: C1 at a knot, NOT C2. Pose acceleration
+    # is linear inside a span and JUMPS across a knot, so leg acceleration has two
+    # values there, and the grid row at a knot holds ONE of them — which one is
+    # decided by the last bit of ``t / dt`` in ``CyclePlan._locate_batch``
+    # (``4.05 / 0.025`` falls a ULP short of 162 and reads the LEFT limit; the
+    # same instant seen from a range view starting at knot 135 is ``27 * 0.025``,
+    # divides exactly and reads the RIGHT one). MEASURED before this block landed:
+    # the grid under-read the true two-sided supremum by 10.8 % (417.46 vs 468.22
+    # mm/s², the six-window ring), 13.6 % (its merged head/tail report) and 24.3 %
+    # (563.04 vs 744.02, a 0.9 m THROW aimed 40 mm off-axis) — and the ratio is
+    # not bounded by anything, because the size of a knot's jump is unrelated to
+    # the size of the peak. That is why this is a two-sided READ and not a margin.
+    #
+    # No ``t`` is involved, so no ULP is: pose and twist ARE continuous at a knot,
+    # which makes J and J̇ there side-independent, and those are already rows
+    # ``0, m, 2m, …`` of the grid. Only the pose acceleration differs by side, and
+    # its two limits are the closed-form Hermite end values pass 5 and
+    # ``_cup_contact_floor_check`` already use — exact, since ``_hermite`` is a
+    # plain componentwise cubic on all six pose columns. Cost: no Jacobian, three
+    # einsums over ``n_knots`` rows.
+    h = dt
+    Pk, Vk = poses[::m], twists[::m]                                    # (n_knots,6)
+    # span i at s=0 → knot i from ABOVE; span i at s=1 → knot i+1 from BELOW.
+    a_above = ((-6.0 * Pk[:-1] + 6.0 * Pk[1:]) / (h * h)
+               + (-4.0 * Vk[:-1] - 2.0 * Vk[1:]) / h)                   # (n_spans,6)
+    a_below = ((6.0 * Pk[:-1] - 6.0 * Pk[1:]) / (h * h)
+               + (2.0 * Vk[:-1] + 4.0 * Vk[1:]) / h)                    # (n_spans,6)
+    Jk = J[::m]
+    knot_bias = np.einsum('nij,nj->ni', J_dot[::m], Vk)                 # J̇·twist
+    acc_above = np.einsum('nij,nj->ni', Jk[:-1], a_above) + knot_bias[:-1]
+    acc_below = np.einsum('nij,nj->ni', Jk[1:], a_below) + knot_bias[1:]
+    # The grid keeps the span INTERIORS (leg acc is `J(pose)·a + J̇·twist`, not
+    # linear in s even though `a` is); its knot rows equal one of the two limits
+    # to ~1 ulp, so this max can only read higher than the old one, never lower.
+    peak_acc = float(max(np.max(np.abs(leg_acc)),
+                         np.max(np.abs(acc_above)),
+                         np.max(np.abs(acc_below))))
 
     # Leg jerk from the finite difference of the analytic leg acceleration on the
     # sub-knot mesh, inflated by the same _VALIDATE_JERK_MARGIN the segment gate
@@ -1471,11 +1524,37 @@ def validate_cycle(cycle_plan, limits, geom, *,
     # samples/segment, not on this plan family; it is applied because a FD jerk
     # peak always under-measures, and the whole-cycle jerk characterisation is
     # WP4's sim harness, not this constant.
+    #
+    # SAME QUANTITY AS BEFORE, read from both sides (2026-09-21). `np.diff` over
+    # the flat grid differenced ACROSS each knot using whichever limit the ULP had
+    # put in the knot row, so it saw one of the two straddling differences below
+    # and never the other (measured: 1.65 % under-read on the 40 mm-offset
+    # catch-and-throw, 47.6 % on a synthetic plan built to show it). Now: per
+    # span, the m differences of [limit from above at knot i, the span's interior
+    # rows, limit from below at knot i+1] — every one strictly INSIDE a span — and
+    # at each interior knot BOTH straddling differences, each still one `sub_dt`
+    # wide, so the knot's acceleration jump is counted exactly as it always was.
+    # Every difference the old expression took is one of these (to ~1 ulp), so
+    # this too can only read higher or equal.
     peak_jerk = 0.0
     sub_dt = dt / m
-    if leg_acc.shape[0] >= 2:
-        jerk = np.diff(leg_acc, axis=0) / sub_dt
-        peak_jerk = float(np.max(np.abs(jerk))) * _VALIDATE_JERK_MARGIN
+    n_spans = n_knots - 1
+    span_acc = np.empty((n_spans, m + 1, 6), dtype=float)
+    span_acc[:, 0] = acc_above
+    span_acc[:, m] = acc_below
+    if m > 1:
+        span_acc[:, 1:m] = leg_acc[:-1].reshape(n_spans, m, 6)[:, 1:]
+    peak_jerk = float(np.max(np.abs(np.diff(span_acc, axis=1))))
+    if n_spans >= 2:
+        # knot k = 1 .. n_knots-2: the last row before it (span k-1's row m-1) up
+        # to its limit from above, and its limit from below up to the first row
+        # after it (span k's row 1).
+        into_knot = acc_above[1:] - span_acc[:-1, m - 1]
+        out_of_knot = span_acc[1:, 1] - acc_below[:-1]
+        peak_jerk = max(peak_jerk,
+                        float(np.max(np.abs(into_knot))),
+                        float(np.max(np.abs(out_of_knot))))
+    peak_jerk = peak_jerk / sub_dt * _VALIDATE_JERK_MARGIN
 
     # ── Pass 2: hand span extrema (closed form) + the per-span position extrema ──
     # Scalar on purpose: one span's extrema are three multiplies and a root, and

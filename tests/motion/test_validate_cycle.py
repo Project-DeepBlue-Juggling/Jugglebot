@@ -1118,3 +1118,327 @@ def test_a_chained_LAUNCH_STEADY_production_plan_passes_the_full_gate(geom):
     for k0, k1 in joined.contact_knots:
         worst = float(np.min(cup_z_mmps2[k0:k1 + 1]))
         assert worst >= floor_mmps2, ((k0, k1), worst, floor_mmps2)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# two-sided knot sampling (2026-09-21)
+#
+# THE DEFECT.  ``validate_cycle`` meshes a plan at ``_CYCLE_SAMPLES_PER_KNOT``
+# sub-samples per span through ``plan.states_at(ts)``.  Pose acceleration is
+# LINEAR inside a span and DISCONTINUOUS at a knot (the pose channel is a
+# cubic Hermite), and the grid reads each knot exactly ONCE — which of the
+# knot's two one-sided limits it reads is decided by the last bit of
+# ``t / dt`` inside ``CyclePlan._locate_batch``, i.e. by float luck, not by
+# which side is larger.  ``peak_leg_acc_mmps2`` (and the FD ``peak_leg_jerk_
+# mmps3``, which differences across the same ULP-picked knot sample) can
+# therefore under-read the plan's TRUE two-sided supremum, and the reading of
+# one physical knot can differ between a whole-plan gate and a range-view
+# gate over the SAME knot (``unified_cycle._gate_view`` and its callers) —
+# see ``test_the_joined_report_carries_the_WHOLE_plans_peaks`` above in
+# ``test_unified_cycle.py`` for the production instance this was found from
+# (the long_ring chain's knot 162, 10.8% under-read).
+#
+# THE FIX (owner-approved 2026-09-21, landed in the SAME change as these
+# tests): at every knot the gate evaluates BOTH one-sided accelerations in
+# closed form and takes the max; the FD jerk likewise takes both differences
+# that straddle a knot rather than the one the grid's arbitrary side gave it.
+# These tests were written FIRST and were red against the one-sided grid
+# (2026-09-21, HEAD ce3fba5: 3 failed, 50 passed — the [left] acc case, the
+# grid-start case and the [left] jerk case); they are green against the
+# two-sided gate.  Derivation, the measured table and the cross-checks against
+# the picosecond-offset reference: logbook/2026-09-21-two-sided-knot-sampling.md.
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _knot_leg_accels(plan, geom):
+    """``(left, right)`` — ``|leg acc|`` at every knot, from BOTH sides.
+
+    This is a VERBATIM COPY of ``test_unified_cycle.py``'s helper of the same
+    name (as of 2026-09-21, ~l.902) — not imported, because test modules in
+    this directory do not import each other (each is a standalone fixture
+    surface).  ``right[k]`` is the limit at knot ``k`` approached from above,
+    ``left[k]`` the limit at knot ``k + 1`` approached from below.
+
+    Sampled a picosecond either side of the knot instant rather than at it:
+    linear inside the span means a 1e-12 s offset of a 0.025 s span costs
+    4e-11 relative and nothing else, and it avoids reaching into
+    ``cycle_plan``'s Hermite. The chain afterwards is ``validate_cycle``'s own
+    (``J·accel + J̇·twist`` on the same batched Jacobian), so these are the
+    gate's quantity, not a model of it — this is the independent TRUTH the
+    tests below check the gate's (defective) grid reading against.
+    """
+    n, dt = int(plan.n_knots), float(plan.dt)
+    ks = np.arange(n - 1)
+    out = []
+    for ts in ((ks + 1) * dt - 1e-12, ks * dt + 1e-12):
+        poses, twists, accels = plan.states_at(ts)
+        J, _lv, _R = feas._batched_jacobian(poses, geom)
+        J_dot = feas._batched_jacobian_dot(poses, twists, geom)
+        a = (np.einsum('nij,nj->ni', J, accels)
+             + np.einsum('nij,nj->ni', J_dot, twists))
+        out.append(np.max(np.abs(a), axis=1))
+    return out[0], out[1]
+
+
+def _grid_leg_acc(plan, geom):
+    """``(abs_leg_acc, is_knot_row)`` over EXACTLY the grid ``validate_cycle``
+    itself samples (``feas._cycle_sample_times`` at ``_CYCLE_SAMPLES_PER_KNOT``
+    sub-samples per span) — the gate's own (defective) reading, for comparison
+    against the independent truth above.
+    """
+    m = feas._CYCLE_SAMPLES_PER_KNOT
+    ts = feas._cycle_sample_times(int(plan.n_knots), float(plan.dt),
+                                  float(plan.total_duration), m)
+    poses, twists, accels = plan.states_at(ts)
+    J, _lv, _R = feas._batched_jacobian(poses, geom)
+    J_dot = feas._batched_jacobian_dot(poses, twists, geom)
+    leg_acc = (np.einsum('nij,nj->ni', J, accels)
+              + np.einsum('nij,nj->ni', J_dot, twists))
+    grid_abs = np.max(np.abs(leg_acc), axis=1)
+    is_knot = (np.arange(len(ts)) % m) == 0
+    return grid_abs, is_knot
+
+
+def _time_reversed_cycle(plan):
+    """The time-reversal of a ``CyclePlan``: knot order reversed, velocities
+    negated (position is invariant under time reversal, velocity flips sign).
+
+    Acceleration — a SECOND derivative — is invariant in both sign and
+    magnitude under time reversal, but WHICH side of an interior knot reads
+    the larger one-sided limit flips: what was the "approach from above"
+    (right) limit of the original at physical knot ``k`` becomes the
+    "approach from below" (left) limit of the mirror at knot ``n - 1 - k``.
+    This is how ``_two_sided_acc_plan`` builds a right-dominant mirror of a
+    left-dominant plan without re-deriving new numbers by hand: verified
+    empirically (2026-09-21) that the mirror of a 3-knot plan whose interior
+    knot's LEFT limit is the sup produces a plan whose (same) interior knot's
+    RIGHT limit is the sup, to <1e-9 relative.
+    """
+    return CyclePlan(pose=plan.pose[::-1].copy(),
+                     pose_vel=-plan.pose_vel[::-1],
+                     hand_rev=plan.hand_rev[::-1].copy(),
+                     hand_vel_rps=-plan.hand_vel_rps[::-1],
+                     dt=plan.dt)
+
+
+def _two_sided_acc_plan(side, scale=8.0, hand=5.0):
+    """A 3-knot, z-only ``CyclePlan`` whose leg-acc two-sided supremum sits on
+    knot 1 (the plan's SOLE interior knot), on ``side`` ('left' or 'right'),
+    with the other side of that same knot comfortably (>=10%) smaller.
+
+    Construction: knots 0 and 2 sit at the NEUTRAL pose, at rest (position and
+    velocity both 0 relative to NEUTRAL); knot 1 carries a small z offset
+    ``P1`` and velocity ``V1`` chosen so the pose-space one-sided
+    accelerations at knot 1 are ``a_left = -6·P1/h² + 4·V1/h`` and
+    ``a_right = -6·P1/h² - 4·V1/h`` (the brief's closed form specialised to
+    ``P0 = P2 = V0 = V2 = 0``), landing at two DESIGN TARGETS 6000/2000·scale
+    mm/s² — design targets only, because the actual LEG-space accelerations
+    (what the gate measures) go through the Jacobian and a ``J̇·twist``
+    correction the pose-space formula does not model; the test below verifies
+    the realised split empirically rather than trusting this algebra.
+
+    MEASURED (2026-09-21, venv, ``scale=8``, ``P1=-3.333333 mm``,
+    ``V1=100.0 mm/s``): leg-space knot-1 left limit 44471.655 mm/s², right
+    limit 14825.066 mm/s² (ratio 0.333, comfortably past the 0.9 bar); the
+    non-knot grid interior max is 24091.683 mm/s² (0.542 of the sup, past the
+    0.9 bar). ``side='right'`` is the ``_time_reversed_cycle`` mirror, which
+    measures the same split with left/right swapped.
+    """
+    h = float(DT)
+    l_target, r_target = 6000.0 * scale, 2000.0 * scale
+    p1 = -(l_target + r_target) * h * h / 12.0
+    v1 = (l_target - r_target) * h / 8.0
+    pose = np.tile(NEUTRAL, (3, 1))
+    pose[:, 2] += np.array([0.0, p1, 0.0])
+    pose_vel = np.zeros((3, 6))
+    pose_vel[:, 2] = [0.0, v1, 0.0]
+    plan = CyclePlan(pose=pose, pose_vel=pose_vel, hand_rev=np.full(3, hand),
+                     hand_vel_rps=np.zeros(3), dt=DT)
+    if side == 'right':
+        plan = _time_reversed_cycle(plan)
+    elif side != 'left':
+        raise ValueError(side)
+    return plan
+
+
+@pytest.mark.parametrize('side', ['left', 'right'])
+def test_a_leg_acc_peak_on_EITHER_side_of_a_knot_is_refused(geom, side):
+    """A plan whose true leg-acc supremum sits on ``side`` of an interior knot
+    must be refused once the limit is tightened just below it — REGARDLESS of
+    which side today's single-sided grid happens to read.
+
+    Because both sides are parametrised, this test is independent of which
+    side ``CyclePlan._locate_batch``'s float luck picks: MEASURED (2026-09-21,
+    venv) on today's tree, the grid at this plan's interior knot always reads
+    the RIGHT limit (14825.066 mm/s², matching neither side of the mirror
+    consistently) — so ``side='left'`` (whose sup is on the LEFT, 44471.655)
+    is REFUSED WRONGLY (today's whole-grid peak is 37081.720 mm/s², from knot
+    0's own one-sided edge reading, still under the 0.95×sup = 42248.072
+    mm/s² tightened limit, so ``report.ok`` stays ``True``) while
+    ``side='right'`` (whose sup is on the RIGHT, so the grid's fixed
+    preference happens to already read it) already passes correctly today.
+    At least one parametrised case failing is the point — see the module
+    block above.
+    """
+    plan = _two_sided_acc_plan(side)
+    left, right = _knot_leg_accels(plan, geom)
+    # Knot 1 is this plan's SOLE interior knot: left[0] is its limit from
+    # below (span 0 at s=1), right[1] its limit from above (span 1 at s=0).
+    l_val, r_val = float(left[0]), float(right[1])
+    sup = l_val if side == 'left' else r_val
+    other = r_val if side == 'left' else l_val
+
+    # ── non-vacuity: the structure this test claims actually holds ──
+    assert other < 0.9 * sup, (side, l_val, r_val)
+    grid_abs, is_knot = _grid_leg_acc(plan, geom)
+    interior_max = float(grid_abs[~is_knot].max())
+    assert interior_max < 0.9 * sup, (interior_max, sup)
+
+    limits = _limits(acc=0.95 * sup)   # vel/jerk/step stay generous (1e9):
+                                        # `ok` must be decided by acc alone
+    report = feas.validate_cycle(plan, limits, geom)
+    assert report.ok is False, report.reasons
+    assert report.code == feas.LIMIT_ACC
+    assert report.peak_leg_acc_mmps2 == pytest.approx(sup, rel=1e-6)
+
+
+def test_the_acc_peak_does_not_depend_on_where_the_plans_grid_starts(geom):
+    """The whole-plan peak must equal the max of an overlapping head/tail
+    split — the same invariant ``unified_cycle._merged_peaks`` relies on to
+    report a chained plan's peaks without re-gating it whole every extend.
+
+    Driver: 200 knots at ``dt=0.025`` (so knot 162 — the 4.05 s "known
+    ULP-short instant" ``test_the_joined_report_carries_the_WHOLE_plans_
+    peaks`` documents for THIS dt — exists), z-only, with knot POSITIONS from
+    ``np.random.default_rng(0)`` (std 5.0 mm) and knot VELOCITIES from an
+    INDEPENDENT draw of the same generator (std 150.0 mm/s) — deliberately not
+    the spline-consistent secant, so every interior knot carries a genuine
+    acceleration jump. Head = the plan's own first ``K`` knots (a plain array
+    slice — ``unified_cycle._gate_view`` only ever builds TAIL views); tail =
+    ``uc._gate_view(plan, k_from)``.
+
+    MEASURED (2026-09-21, venv), split ``k_from=48``, ``K=58`` (a 10-knot
+    overlap, ``[48, 57]``, well past the ``>= 2`` bar): the plan's TRUE
+    two-sided supremum (``_knot_leg_accels`` over every knot) is 184799.703
+    mm/s², at knot 139's LEFT limit. Today's WHOLE-plan grid reads 167571.309
+    mm/s² (a different knot's correctly-read edge, 9.3% under the true sup —
+    fails the ``sup`` assertion below). The merged head/tail reading is
+    184799.703 mm/s², matching the true sup to 7e-11 relative — because the
+    tail's OWN local index for physical knot 139 lands on a different float
+    than the whole plan's global index for the same knot, and this time reads
+    the correct (larger) side. So merged and whole DISAGREE by 10.3% today —
+    the defect this test is named for (fails the ``merged_acc`` assertion
+    below); jerk's merge already agrees to 9.4e-13 relative (passes today —
+    consistent with ``test_the_joined_report_carries_the_WHOLE_plans_peaks``'s
+    finding that the jerk merge is insensitive to this for a structural
+    reason, not a coincidence).
+    """
+    n = 200
+    rng = np.random.default_rng(0)
+    pose = np.tile(NEUTRAL, (n, 1))
+    pose[:, 2] += 5.0 * rng.standard_normal(n)
+    pose_vel = np.zeros((n, 6))
+    pose_vel[:, 2] = 150.0 * rng.standard_normal(n)
+    hand_rev = np.full(n, 5.0)
+    hand_vel = np.zeros(n)
+    plan = CyclePlan(pose=pose, pose_vel=pose_vel, hand_rev=hand_rev,
+                     hand_vel_rps=hand_vel, dt=DT)
+
+    limits = _limits()   # generous throughout — this test only compares peaks
+    whole = feas.validate_cycle(plan, limits, geom)
+
+    k_from, k_head_end = 48, 58
+    head = CyclePlan(pose=pose[:k_head_end], pose_vel=pose_vel[:k_head_end],
+                     hand_rev=hand_rev[:k_head_end],
+                     hand_vel_rps=hand_vel[:k_head_end], dt=DT)
+    tail = uc._gate_view(plan, k_from)
+    assert k_from <= k_head_end - 2                # >= 2-knot overlap, as briefed
+    rep_head = feas.validate_cycle(head, limits, geom)
+    rep_tail = feas.validate_cycle(tail, limits, geom)
+    merged_acc = max(rep_head.peak_leg_acc_mmps2, rep_tail.peak_leg_acc_mmps2)
+    merged_jerk = max(rep_head.peak_leg_jerk_mmps3, rep_tail.peak_leg_jerk_mmps3)
+
+    left, right = _knot_leg_accels(plan, geom)
+    sup = float(max(left.max(), right.max()))
+
+    assert merged_acc == pytest.approx(whole.peak_leg_acc_mmps2, rel=1e-9)
+    assert merged_jerk == pytest.approx(whole.peak_leg_jerk_mmps3, rel=1e-9)
+    assert whole.peak_leg_acc_mmps2 == pytest.approx(sup, rel=1e-6)
+
+
+def _two_sided_jerk_reference(plan, geom):
+    """The two-sided jerk, read explicitly per knot (not vectorised, and not
+    reusing any closed form the eventual fix will ship) — an INDEPENDENT
+    reading for the test below to check the gate's FD jerk against.
+
+    Per span: the ``m`` intra-span diffs of [right-limit(knot i), the m-1
+    interior grid rows, left-limit(knot i+1)]. At every INTERIOR knot,
+    additionally the two "straddle" diffs across the knot itself: the right
+    limit vs. the grid row one sub-step before it, and the grid row one
+    sub-step after it vs. the left limit. All differenced over ``sub_dt =
+    dt/m`` and inflated by the gate's own ``_VALIDATE_JERK_MARGIN``, matching
+    ``validate_cycle``'s own margin convention.
+    """
+    m = feas._CYCLE_SAMPLES_PER_KNOT
+    dt = float(plan.dt)
+    sub_dt = dt / m
+    n_span = int(plan.n_knots) - 1
+    left, right = _knot_leg_accels(plan, geom)
+    worst = 0.0
+    for i in range(n_span):
+        ts_interior = np.array([i * dt + j * sub_dt for j in range(1, m)])
+        poses, twists, accels = plan.states_at(ts_interior)
+        J, _lv, _R = feas._batched_jacobian(poses, geom)
+        J_dot = feas._batched_jacobian_dot(poses, twists, geom)
+        leg_acc = (np.einsum('nij,nj->ni', J, accels)
+                  + np.einsum('nij,nj->ni', J_dot, twists))
+        interior_abs = np.max(np.abs(leg_acc), axis=1)
+        seq = np.concatenate([[right[i]], interior_abs, [left[i]]])
+        worst = max(worst, float(np.max(np.abs(np.diff(seq))) / sub_dt))
+    for k in range(1, n_span):
+        p_b, v_b, a_b = plan.states_at(np.array([k * dt - sub_dt]))
+        p_a, v_a, a_a = plan.states_at(np.array([k * dt + sub_dt]))
+        j_b, _lv, _R = feas._batched_jacobian(p_b, geom)
+        jd_b = feas._batched_jacobian_dot(p_b, v_b, geom)
+        grid_before = float(np.max(np.abs(
+            np.einsum('nij,nj->ni', j_b, a_b)
+            + np.einsum('nij,nj->ni', jd_b, v_b))))
+        j_a, _lv, _R = feas._batched_jacobian(p_a, geom)
+        jd_a = feas._batched_jacobian_dot(p_a, v_a, geom)
+        grid_after = float(np.max(np.abs(
+            np.einsum('nij,nj->ni', j_a, a_a)
+            + np.einsum('nij,nj->ni', jd_a, v_a))))
+        d1 = abs(right[k] - grid_before) / sub_dt
+        d2 = abs(grid_after - left[k - 1]) / sub_dt
+        worst = max(worst, d1, d2)
+    return worst * feas._VALIDATE_JERK_MARGIN
+
+
+@pytest.mark.parametrize('side', ['left', 'right'])
+def test_a_leg_jerk_peak_is_read_from_both_sides_of_a_knot(geom, side):
+    """The FD jerk differences across whichever single knot sample the grid
+    happens to read, so it inherits the acc defect: the ``_two_sided_acc_plan``
+    fixtures above ALSO under-read jerk, independently confirmed here by
+    :func:`_two_sided_jerk_reference` (a plain per-knot loop, not the closed
+    form the eventual fix will use).
+
+    MEASURED (2026-09-21, venv): ``side='left'`` — today's grid jerk (with
+    margin) is 3427657.709 mm/s^3 against a two-sided reference of
+    6536370.030 mm/s^3, a 47.6% under-read (well past the 0.5% bar, so the
+    tightened limit below is the plain midpoint). ``side='right'`` — today's
+    grid jerk already matches the two-sided reference (6536370.031 vs
+    6536370.030, <0.01% apart), so the midpoint branch is skipped in favour of
+    a limit strictly under the reference (0.95x); this side is NOT expected to
+    be red today, the same asymmetry ``test_a_leg_acc_peak_on_EITHER_side_of_
+    a_knot_is_refused`` measures for acceleration on the same fixtures.
+    """
+    plan = _two_sided_acc_plan(side)
+    today = feas.validate_cycle(plan, _limits(), geom).peak_leg_jerk_mmps3
+    two_sided = _two_sided_jerk_reference(plan, geom)
+    if abs(today - two_sided) > 0.005 * two_sided:
+        limit = (today + two_sided) / 2.0
+    else:
+        limit = 0.95 * two_sided
+
+    report = feas.validate_cycle(plan, _limits(jerk=limit), geom)
+    assert report.code == feas.LIMIT_JERK, report.reasons
+    assert report.peak_leg_jerk_mmps3 == pytest.approx(two_sided, rel=1e-6)

@@ -480,7 +480,8 @@ zero offset) is a real narrowing, not a grid artefact — Carried, R4 (below).
 
 * **Two-sided knot sampling in `validate_cycle`** — `peak_leg_acc_mmps2` is under-measured
   at a knot by 10.8–13.6 % on the fixture that surfaced it (Diagnosis #5 Red 1); touches
-  `gate_hash()` and every acc golden number in the suite, so it is its own unit.
+  `gate_hash()` and every acc golden number in the suite, so it is its own unit. **CLOSED
+  2026-09-21** — see `logbook/2026-09-21-two-sided-knot-sampling.md`.
 * **The seam tilt-rate pin** (`start_tilt_rate`, pinning knots 0 and 1 as one anchor group)
   — `start_tilt` pins the seam's value, nothing pins its rate; masked today, on the R4
   re-aim critical path (Discussion).

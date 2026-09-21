@@ -235,3 +235,6 @@ provenance):
 **Carried to R4**: the columns apex-band collapse to a single 0.900 m point (both edge
 apexes, 0.850/0.950 m, now fail `THROW:MARGIN` at zero offset) — a real narrowing, not a
 grid artefact.
+
+**CLOSED 2026-09-21**: two-sided knot sampling in `validate_cycle` (Diagnosis #5 Red 1
+above) — see `logbook/2026-09-21-two-sided-knot-sampling.md`.
