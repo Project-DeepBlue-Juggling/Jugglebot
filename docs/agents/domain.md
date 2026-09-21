@@ -53,4 +53,4 @@ If your output contradicts an existing ADR, surface it explicitly rather than si
 ## Repo notes
 
 - `docs/adr/` already holds ADR-0001…0013 (Nygard format, `NNNN-slug.md`). New ADRs continue the numbering, are added to the `## Index` in `docs/adr/index.md`, and are registered in `mkdocs.yml → nav:` (`DOCUMENTATION_GUIDE.md` § 2.3).
-- `CONTEXT.md` doesn't exist yet. `/domain-modeling` creates it lazily. When it does, add it to `DOCUMENTATION_GUIDE.md` (§ 1 table and § 4 map) so the Guide stays the single map of doc layers, and reconcile it with § 6's rule against new `ALLCAPS.md` files (the skill fixes the filename `CONTEXT.md`).
+- `CONTEXT.md` exists since 2026-09-21 and is **normative** (`DOCUMENTATION_GUIDE.md` § 2.9, layer 9): it sits on CLAUDE.md's `/audit` trigger list, and § 6 of the Guide classes it as a normative spec rather than an exception to the no-new-`ALLCAPS.md` rule. It may run ahead of the code: a term whose identifiers have not been renamed yet (`session limits` → Sitting limits) is still the term to write.

@@ -12,7 +12,7 @@ update?", jump straight to [§ Decision Tree](#decision-tree).
 
 ## 1. Documentation layers at a glance
 
-Jugglebot has **eight distinct documentation layers**. Each has a specific
+Jugglebot has **nine distinct documentation layers**. Each has a specific
 purpose; duplication between them is a bug. Pick the right layer and keep
 authoritative content in exactly one place — cross-reference from the others.
 
@@ -26,6 +26,7 @@ authoritative content in exactly one place — cross-reference from the others.
 | 6 | **Plans** | [plans/active/](plans/active/), [plans/parked/](plans/parked/), [plans/archived/](plans/archived/) | Implementers and reviewers | Forward-looking implementation reports & bringup plans |
 | 7 | **Automation layer** | [.claude/commands/](.claude/commands/), [.claude/agents/](.claude/agents/) | Claude (and anyone editing the workflow) | Slash-command protocols and dedicated agent specs |
 | 8 | **Inline (source code)** | `*.py`, `*.h`, `*.yaml` | Engineers reading the code | Docstrings, module headers, non-obvious *why* comments |
+| 9 | **Domain glossary** | [CONTEXT.md](CONTEXT.md) | Everyone who names a domain concept (human + Claude) | The project's vocabulary: one canonical term per concept, a one-or-two-sentence definition, and the synonyms to avoid. Nothing else |
 
 > Claude's **auto-memory** at `~/.claude/.../memory/` is Claude-private and is
 > deliberately **not** a documentation layer. Do not copy project docs there.
@@ -91,7 +92,7 @@ escape, and the `<path>` must exist in the tree — on every commit, with
 `domain.md`) lives here but is *not* site content: `mkdocs.yml` excludes it
 via `exclude_docs`, and it is deliberately not registered in `nav:`. Skills
 find it through the `## Agent skills` block in `CLAUDE.md`. It is a
-carve-out inside this layer, not a ninth layer.
+carve-out inside this layer, not a separate layer.
 
 **When to add here:** a stable piece of knowledge about how a subsystem
 works that will be referenced more than once. If the content is specific to
@@ -396,6 +397,35 @@ economy-of-words principle. Rules:
 
 ---
 
+### 2.9 [CONTEXT.md](CONTEXT.md) — Domain glossary
+
+The project's shared language, **normative**: every other layer uses the
+glossary's term for a concept and none of the words listed under its `_Avoid_`
+lines. It is a glossary and nothing else — no history, no procedure, and no
+implementation detail beyond the bare identifier an entry needs to separate
+two things that share a name (`teensy_bridge_node`, `motor_guard`). A definition says what a thing *is*; how it works
+belongs in [docs/](docs/) or a contract, and why it changed belongs in the
+logbook.
+
+- **Format**: `**Term**:` + a one-or-two-sentence definition + an optional
+  `_Avoid_:` line, grouped under cluster subheadings. No frontmatter.
+- **Inclusion bar**: project coinages, and general juggling or robotics words
+  only where the project narrows them (a Leg is one of six, never the Hand).
+  General engineering vocabulary stays out.
+- **The glossary may run ahead of the code.** A term is adopted here first and
+  the identifiers follow in their own commit (a rename is a grep-counted
+  refactor, not a docs edit). Historical logbook entries and archived plans
+  are never rewritten to match.
+- **Changing it**: through `/grill-with-docs` (a plugin skill; it loads the
+  domain-modeling skill), which resolves a term with the owner before writing
+  it. Consumer-side rules for
+  agents are in [docs/agents/domain.md](docs/agents/domain.md).
+- There is deliberately **no test** that greps prose for avoided words yet
+  (false positives: `teensy_bridge_node`, historical entries); the revisit is
+  GitHub issue #16, dated for on or after 2026-10-19.
+
+---
+
 ## 3. Frontmatter cheat sheet
 
 One-glance reference for what goes in the `---` YAML block of each artifact.
@@ -426,6 +456,7 @@ Who points to whom:
 
 ```
 CLAUDE.md ──► DOCUMENTATION_GUIDE.md (this file)
+          ──► CONTEXT.md                               (the vocabulary every layer uses)
           ──► logbook/README.md
           ──► plans/active/, plans/parked/, plans/archived/
 
@@ -440,6 +471,8 @@ logbook/<entry>.md ──► plans/<plan>.md                (via related_plan)
 plans/<plan>.md ──► logbook/<entry>.md                (via related_logbook)
               ──► config/<file>.yaml                  (via related_config)
               ──► code symbols                        (via related_code)
+
+docs/agents/domain.md ──► CONTEXT.md, docs/adr/        (how agent skills consume them)
 
 .claude/commands/ ──► logbook/, plans/, sim/analysis/  (the protocols)
 .claude/agents/   ◄── .claude/commands/                (invoked by)
@@ -465,6 +498,10 @@ Use this to pick the right layer *before* writing.
 - **Is this the *why* behind a concrete code change?**
   → Logbook entry. Use `/investigate` (hardware) or `/log` (non-hardware).
   The commit for the code change gets a `Logbook-Entry:` trailer.
+
+- **Is this what a word *means* — a new domain term, or two words competing
+  for one concept?**
+  → [CONTEXT.md](CONTEXT.md), via `/grill-with-docs`. Definition only.
 
 - **Is this a forward-looking plan of work yet to be done?**
   → Plan in [plans/active/](plans/active/) if it is schedulable now, or
@@ -576,7 +613,10 @@ if you don't know them:
 
 - **The `controller/REFERENCE_LAYER_CONTRACT.md` pattern is reserved for
   normative specs.** Don't create new `ALLCAPS.md` files for general notes;
-  prefer [docs/](docs/) or [logbook/](logbook/).
+  prefer [docs/](docs/) or [logbook/](logbook/). Root [CONTEXT.md](CONTEXT.md)
+  is inside the rule, not an exception to it: the glossary is normative
+  (§ 2.9), and its filename is fixed by the domain-modeling skill that
+  maintains it.
 
 ---
 
