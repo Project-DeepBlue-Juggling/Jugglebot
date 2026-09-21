@@ -65,7 +65,8 @@ one grid step *above* the sweep's answer (≤ 0.5°, ≤ ~0.16 m/s faster at far
 larger horizontal velocity, and lands on the target to < 1e-6 mm through `predict_throw`. The visible
 hardware change: the typical throw's apex is now exactly the 500 mm cap instead of wandering
 470–500 mm with where the grid fell, so `tof` is a smooth function of the target. The aim-correction
-table was fitted on grid solutions; the shift is small and smooth, but it has not been flown.
+table was fitted on grid solutions; the shift is small and smooth (flown 2026-09-21 — see
+Verification).
 
 **The CPU saving is real and irrelevant.** 264.7 → 17.8 µs per call on the Jetson (typical target,
 3000-call loop, 2026-09-18), but the solver runs once per throw plus 2 Hz during calibration
@@ -87,4 +88,11 @@ grid step).
 Full tier (`./run_tests.sh --full`, run 2026-09-18 in the `bb-closed-form-pitch` worktree, ci-fast):
 **PASS — parallel 6314 passed / 9 skipped / 2 xfailed in 383.10 s, serial 6 passed in 19.16 s, total
 407 s, rc 0.** Scoped (`pytest tests/ros/test_throw_ballistics.py tests/sim/test_ball_butler_sim.py
-tests/ros/test_ball_butler_node.py -q`, 2026-09-18): 77 passed. Not flown on hardware.
+tests/ros/test_ball_butler_node.py -q`, 2026-09-18): 77 passed.
+
+Merged to `skill-stack` 2026-09-21; gate on the merged tree (`./run_tests.sh --full`, run 2026-09-21):
+**PASS — 6387 passed / 9 skipped / 1 xfailed parallel + 6 serial, 325 s.**
+
+**Flown 2026-09-21 (owner's sitting, after `colcon build`):** owner's report — every throw that
+should have been caught was caught; no refusal of an ordinary target and no landing bias reported, so
+the aim-correction table was left as is. No per-throw numbers were recorded against this entry.
