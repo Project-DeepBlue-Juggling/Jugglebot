@@ -307,3 +307,41 @@ class TestEndToEnd:
         # Arrival time should be positive and reasonable
         assert target.arrival_time > spawn.spawn_time
         assert target.arrival_time < spawn.spawn_time + 3.0
+
+
+# ===================================================================
+# Test: the pitch core is a verbatim twin of the ROS solver's
+# ===================================================================
+
+class TestPitchCoreTwin:
+    def test_bit_identical_to_ros_solver_core(self):
+        """sim cannot import the ROS package at runtime, so the closed-form
+        pitch core is copied.  Pin the copy: same result, or same refusal,
+        bit for bit, across apex-, speed- and pitch-max-bound regimes and the
+        near field."""
+        import random
+
+        from jugglebot.can import throw_ballistics as ros
+        from sim.ball_butler import sim as twin
+
+        rng = random.Random(20260918)
+        solved = refused = 0
+        for _ in range(3000):
+            args = (
+                rng.uniform(0.0, 4000.0), rng.uniform(-2000.0, 800.0),   # A, z
+                150.0, 41.0,                                             # l, d
+                math.radians(12.0), math.radians(rng.choice([60.0, 85.0])),
+                rng.choice([3300.0, 5000.0]), rng.choice([500.0, 2000.0]),
+                9806.0,
+            )
+            try:
+                expect = ros._steepest_feasible_pitch(*args)
+            except (ros._NearFieldTarget, ros._NoFeasiblePitch) as e:
+                twin_exc = getattr(twin, type(e).__name__)
+                with pytest.raises(twin_exc):
+                    twin._steepest_feasible_pitch(*args)
+                refused += 1
+                continue
+            assert twin._steepest_feasible_pitch(*args) == expect
+            solved += 1
+        assert solved > 1000 and refused > 300, (solved, refused)

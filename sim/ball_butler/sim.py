@@ -131,6 +131,219 @@ def _yaw_solve(x: float, y: float, s: float) -> float:
 
 
 # ---------------------------------------------------------------------------
+# Steepest-feasible-pitch core — a VERBATIM twin of the block of the same names
+# in ros_ws/src/jugglebot/jugglebot/can/throw_ballistics.py (sim has no ROS
+# package dependency, so it is copied, not imported).  Edit both together:
+# tests/sim/test_ball_butler_sim.py pins the two to bit-identical output.
+# ---------------------------------------------------------------------------
+
+# Near-field guard constants (see _steepest_feasible_pitch): the maxima over
+# [0, π/2] of  −cosφ·cos2φ  and  2·sinφ·cos²φ.
+_NEAR_K1 = 2.0 / (3.0 * math.sqrt(6.0))
+_NEAR_K2 = 4.0 / (3.0 * math.sqrt(3.0))
+
+
+class _NoFeasiblePitch(Exception):
+    """No pitch in range satisfies the speed + height limits."""
+
+
+class _NearFieldTarget(Exception):
+    """Target so close that the steepest throw is not the softest landing."""
+
+
+def _pitch_eval(A: float, z_mm: float, l: float, d: float, g: float,
+                pitch_rad: float) -> tuple[float, float, float, float] | None:
+    """The unique ballistic arc through the target at one pitch.
+
+    Returns ``(v, h_peak, h_vel, tof)`` in mm / s units, or None if no arc
+    exists at this pitch (release point beyond the target, or the target above
+    the launch line).  The release point moves with pitch: horizontal range
+    ``R = A − l·cosφ + d``, and target height above release ``Δz = z − l·sinφ``
+    (z is already in the pitch-axis frame — see ``solve_throw_local``).
+    """
+    cos_p = math.cos(pitch_rad)
+    sin_p = math.sin(pitch_rad)
+    if abs(cos_p) < 1e-6:
+        return None
+    R = A - l * cos_p + d
+    if R <= 0:
+        return None
+    z_throw = z_mm - l * sin_p
+    # Standard projectile: v² = g·R² / (R·sin(2φ) − Δz·(1+cos(2φ)))
+    sin_2p = 2.0 * sin_p * cos_p
+    cos_2p = cos_p * cos_p - sin_p * sin_p
+    denom = R * sin_2p - z_throw * (1.0 + cos_2p)
+    if denom <= 0:
+        return None
+    v = math.sqrt(g * R * R / denom)
+    v_vert = v * sin_p
+    h_peak = (v_vert * v_vert) / (2.0 * g) if v_vert > 0 else 0.0
+    h_vel = v * cos_p
+    return v, h_peak, h_vel, R / h_vel
+
+
+def _steepest_feasible_pitch(
+    A: float, z_mm: float, l: float, d: float,
+    pitch_min_rad: float, pitch_max_rad: float,
+    v_max: float, h_max: float, g: float,
+) -> tuple[float, float, float, float]:
+    """Pitch minimising horizontal landing velocity, found without a search.
+
+    Returns ``(pitch_rad, v_mmps, tof_s, h_peak_mm)``.  All lengths mm.
+
+    Why no search is needed.  Horizontal velocity is ``R / tof``, and for a
+    given release and target, time of flight grows monotonically with apex
+    height — so the softest horizontal landing is simply the HIGHEST throw the
+    limits allow, i.e. the steepest feasible pitch.  Both the apex
+    ``h_peak(φ)`` and (above the minimum-energy angle) the speed ``v(φ)`` rise
+    with pitch, so that pitch is the smallest of three upper bounds:
+
+    * ``pitch_max``;
+    * the apex cap — the peak is measured above the RELEASE point, so the cap
+      fixes the vertical launch speed at exactly ``√(2·g·h_max)`` and the pitch
+      follows in closed form; because the release point itself moves with pitch
+      (``l``), that closed form is a fixed-point equation, solved by Newton
+      from ``pitch_max`` (3–5 passes);
+    * the speed cap's upper root (only binds at the edge of the range envelope;
+      bisected between the minimum-energy angle and the bound above).
+
+    This replaced a 0.5° grid sweep (2026-09-18): the result lies within one
+    grid step ABOVE the old answer, never has a larger horizontal velocity, and
+    lands on the target exactly.  ``tests/ros/test_throw_ballistics.py`` pins
+    all three against the retired sweep, kept as a test oracle.
+
+    Near field (owner decision 2026-09-18: refuse outright — no real target is
+    that close).  Within a few hundred mm of the yaw axis the release point's
+    travel is comparable to the range itself; a flatter barrel then parks the
+    release point almost over the target and "steepest = softest" fails — the
+    true optimum can even sit at an INTERIOR pitch, so comparing the two ends
+    of the pitch range is not a sufficient guard (probed 2026-09-18).  The
+    guard is instead a sufficient condition for the claim: with ``s, c`` the
+    sine / cosine of pitch and ``v_h² = g·R² / (2·(R·tanφ − Δz))``,
+
+        d(v_h²)/dφ < 0   ⇔   R² + R·l·c·cos2φ + 2·l·z·s·c² − 2·l²·s²·c² > 0
+
+    and bounding each trig factor by its maximum over [0, π/2] gives
+
+        R_lo² − K1·l·R_lo − K2·l·max(−z, 0) − l²/2 > 0,    R_lo = A + d − l·cos(pitch_min)
+
+    (``R_lo`` is the shortest range any pitch sees).  It is conservative —
+    at the default geometry it refuses A below ~235 mm for a level target and
+    ~555 mm for a 1.5 m drop, against a true boundary near 290 mm — and it is
+    one evaluation, not a sweep.  Fails → ``_NearFieldTarget``.
+    """
+    r_lo = A + d - l * math.cos(pitch_min_rad)
+    if (r_lo <= 0.5 * _NEAR_K1 * l
+            or r_lo * r_lo - _NEAR_K1 * l * r_lo
+            - _NEAR_K2 * l * max(-z_mm, 0.0) - 0.5 * l * l <= 0):
+        raise _NearFieldTarget()
+
+    top = _pitch_eval(A, z_mm, l, d, g, pitch_max_rad)
+    if top is None:
+        # No arc even at the steepest pitch: every flatter pitch has a shorter
+        # range and a lower launch line, so none exists there either.
+        raise _NoFeasiblePitch()
+
+    pitch = pitch_max_rad
+    best = top
+
+    if top[1] > h_max:
+        # ---- Apex cap binds: vertical launch speed is pinned ----
+        vz = math.sqrt(2.0 * g * h_max)
+        # Unknown: the pitch whose cap-height arc (descending root) passes
+        # through the target, i.e. the zero of
+        #     r(φ) = φ − atan2(vz·tof(φ), R(φ)),   tof = (vz + √disc)/g,
+        #     disc(φ) = vz² − 2·g·(z − l·sinφ).
+        # r is convex on the descending-arrival set (−√disc is convex in φ) and
+        # r(pitch_max) > 0, so Newton from pitch_max descends monotonically
+        # onto the LARGEST root without overshooting it.  That matters within
+        # millimetres of the cap, where the moving release point gives r two
+        # roots (a window of feasible pitches) and plain fixed-point iteration
+        # stops contracting (√disc has unbounded slope) — probed 2026-09-18.
+        # Running out of domain (disc < 0) or of slope (r′ ≤ 0) before a zero
+        # means r has none: the target sits above the apex cap.
+        converged = False
+        for _ in range(60):
+            sin_p = math.sin(pitch)
+            cos_p = math.cos(pitch)
+            R = A - l * cos_p + d
+            disc = vz * vz - 2.0 * g * (z_mm - l * sin_p)
+            if disc <= 0:
+                break
+            root = math.sqrt(disc)
+            Y = vz * (vz + root) / g
+            resid = pitch - math.atan2(Y, R)
+            dY = vz * l * cos_p / root
+            slope = 1.0 - (R * dY - Y * l * sin_p) / (R * R + Y * Y)
+            if slope <= 0:
+                break
+            step = resid / slope
+            pitch -= step
+            if abs(step) < 1e-13:
+                converged = True
+                break
+        if not converged:
+            raise _NoFeasiblePitch()      # target sits above the apex cap
+        if pitch > pitch_max_rad:
+            # Among DESCENDING arrivals the apex rises with pitch, so the cap
+            # pitch can only exceed pitch_max if pitch_max itself reaches the
+            # target still rising (a high, close target: over the cap at
+            # pitch_max because the launch line nearly passes through it).
+            # Every flatter pitch then arrives rising too — nothing lands.
+            raise _NoFeasiblePitch()
+        best = _pitch_eval(A, z_mm, l, d, g, pitch)
+        # The arc is re-derived from the pitch so the landing is exact; back
+        # off to the feasible side of the cap if rounding left it a hair over.
+        for _ in range(8):
+            if best is None or best[1] <= h_max:
+                break
+            pitch -= 1e-10
+            best = _pitch_eval(A, z_mm, l, d, g, pitch)
+        if best is None or best[1] > h_max:
+            raise _NoFeasiblePitch()
+
+    if best[0] > v_max:
+        # ---- Speed cap binds: upper root of v(φ) = v_max ----
+        # v(φ) is U-shaped with its minimum at the minimum-energy angle
+        # (45° + half the line-of-sight elevation).  Settle that angle against
+        # the moving release point, then bisect [φ_me, pitch] keeping ``lo``
+        # on the feasible side.
+        phi_me = pitch
+        for _ in range(4):
+            R = A - l * math.cos(phi_me) + d
+            phi_me = 0.25 * math.pi + 0.5 * math.atan2(
+                z_mm - l * math.sin(phi_me), R)
+        lo = max(phi_me, pitch_min_rad)
+        lo_eval = _pitch_eval(A, z_mm, l, d, g, lo) if lo < pitch else None
+        if lo_eval is None or lo_eval[0] > v_max:
+            raise _NoFeasiblePitch()
+        hi = pitch
+        for _ in range(60):
+            mid = 0.5 * (lo + hi)
+            mid_eval = _pitch_eval(A, z_mm, l, d, g, mid)
+            if mid_eval is not None and mid_eval[0] <= v_max:
+                lo, lo_eval = mid, mid_eval
+            else:
+                hi = mid
+        pitch, best = lo, lo_eval
+
+    if pitch < pitch_min_rad:
+        raise _NoFeasiblePitch()
+
+    v, h_peak, _, tof = best
+    # The ball must ARRIVE DESCENDING.  A high, close target can lie on the
+    # rising limb of the only arc the limits allow — that is a fly-through, not
+    # a landing, and ``predict_throw`` (descending crossing) would disagree
+    # about where it comes down.  The steepest pitch has the longest flight, so
+    # if it arrives rising every flatter pitch does too.  (The retired sweep
+    # returned these; unreachable inside the default envelope, found 2026-09-18
+    # by the pitch-max-bound oracle regime.)
+    if v * math.sin(pitch) - g * tof >= 0:
+        raise _NoFeasiblePitch()
+    return pitch, v, tof, h_peak
+
+
+# ---------------------------------------------------------------------------
 # Ballistics solver (ported from ball_butler_node.py compute_command_for_target)
 # ---------------------------------------------------------------------------
 
@@ -142,7 +355,8 @@ def _solve_throw(
     in BB's local frame (mm).
 
     Minimises horizontal landing velocity subject to speed, height, and
-    pitch constraints.  Raises ``ValueError`` if no feasible solution.
+    pitch constraints — the steepest feasible pitch, found without a sweep.
+    Raises ``ValueError`` if no feasible solution or the target is near-field.
     """
     s = cfg.yaw_s_offset_mm
     d = cfg.pitch_d_offset_mm
@@ -167,78 +381,28 @@ def _solve_throw(
             f"s-offset circle (s={s:.1f} mm)")
     A = math.sqrt(A_sq)
 
-    # Special case: directly above/below
-    if A <= 1e-9:
-        if z_bb >= 0:
-            raise ValueError("Target directly above launch point")
-        v = math.sqrt(2 * g * (-z_bb))
-        if v > v_max:
-            raise ValueError(f"Target too far below (need {v/1000:.2f} m/s)")
-        t = math.sqrt(-2 * z_bb / g)
-        return yaw, -math.pi / 2, v, t
+    # Special case: directly above (directly BELOW is a near-field target,
+    # refused by _steepest_feasible_pitch)
+    if A <= 1e-9 and z_bb >= 0:
+        raise ValueError("Target directly above launch point")
 
-    # Sweep pitch to find minimum horizontal landing velocity
-    pitch_min_rad = math.radians(cfg.pitch_min_deg)
-    pitch_max_rad = math.radians(cfg.pitch_max_deg)
-    n_steps = int((pitch_max_rad - pitch_min_rad) / math.radians(0.5)) + 1
-
-    best_pitch = None
-    best_speed = None
-    best_h_vel = float('inf')
-
-    for i in range(n_steps):
-        pitch = pitch_min_rad + i * (pitch_max_rad - pitch_min_rad) / max(n_steps - 1, 1)
-        cos_p = math.cos(pitch)
-        sin_p = math.sin(pitch)
-
-        if abs(cos_p) < 1e-6:
-            continue
-
-        # Throw range (horizontal distance from release to target)
-        R = A - l * cos_p + d
-        if R <= 0:
-            continue
-
-        # Throw height (vertical distance from release to target)
-        z_throw = z_bb - l * sin_p
-
-        # Projectile equation: v² = g·R² / (R·sin2φ − z_throw·(1+cos2φ))
-        sin_2p = 2 * sin_p * cos_p
-        cos_2p = cos_p * cos_p - sin_p * sin_p
-        D = R * sin_2p - z_throw * (1 + cos_2p)
-        if D <= 0:
-            continue
-
-        v_sq = g * R * R / D
-        if v_sq <= 0:
-            continue
-        v = math.sqrt(v_sq)
-
-        if v > v_max:
-            continue
-
-        # Peak height above release point
-        v_vert = v * sin_p
-        h_peak = (v_vert * v_vert / (2 * g)) if v_vert > 0 else 0.0
-        if h_peak > h_max:
-            continue
-
-        h_vel = v * cos_p
-        if h_vel < best_h_vel:
-            best_h_vel = h_vel
-            best_pitch = pitch
-            best_speed = v
-
-    if best_pitch is None:
+    # Steepest feasible pitch = minimum horizontal landing velocity (no sweep)
+    try:
+        pitch, speed, t, _h_peak = _steepest_feasible_pitch(
+            A, z_bb, l, d,
+            math.radians(cfg.pitch_min_deg), math.radians(cfg.pitch_max_deg),
+            v_max, h_max, g)
+    except _NearFieldTarget:
+        raise ValueError(
+            f"Target too close to BB (A={A:.0f} mm, z={z_bb:.0f} mm): "
+            f"near-field targets are refused by design")
+    except _NoFeasiblePitch:
         raise ValueError(
             f"No valid trajectory for target (A={A:.0f} mm, z={z_bb:.0f} mm). "
             f"v_max={v_max/1000:.1f} m/s, h_max={h_max/1000:.1f} m, "
             f"pitch=[{cfg.pitch_min_deg:.0f}°, {cfg.pitch_max_deg:.0f}°]")
 
-    R_final = A - l * math.cos(best_pitch) + d
-    t = R_final / (best_speed * math.cos(best_pitch))
-
-    return yaw, best_pitch, best_speed, t
+    return yaw, pitch, speed, t
 
 
 # ---------------------------------------------------------------------------

@@ -242,10 +242,128 @@ def test_solve_throw_local_peak_height_below_limit():
     assert sol.peak_height_mm <= 500.0      # default BB_OP_MAX_THROW_HEIGHT_M
 
 
-def test_solve_throw_local_pitch_grid_finer_step_does_not_break_anything():
-    """A finer pitch step should still produce a valid solution (smaller
-    landing error in the roundtrip, but here just smoke-test no crash)."""
+# ─────────────────────────────────────────────────────────────────────
+# Closed-form pitch vs the retired 0.5° sweep (tests/_bb_pitch_grid_oracle.py)
+# ─────────────────────────────────────────────────────────────────────
+#
+# Recipe probed 2026-09-18 before these were written (210 000 samples over
+# seven regimes, zero disagreements, zero targets lost outside the near field):
+# the continuous optimum sits within ONE grid step above the sweep's argmin,
+# never has a larger horizontal velocity, and lands on the target exactly.
+# The regimes below are the three constraints that can bind, plus the one
+# place the apex-cap solve is delicate.
+
+_REGIMES = {
+    # name: (pitch_max_deg, max_speed_mps, max_height_mm, z range, min binding counts)
+    'default-apex-bound': (85.0, 5.0, 500.0, (-1500.0, 600.0), {'h': 500}),
+    'speed-bound':        (85.0, 3.3, 500.0, (-1500.0, 600.0), {'v': 300, 'h': 100}),
+    'pitch-max-bound':    (60.0, 5.0, 2000.0, (-1500.0, 600.0), {'pmax': 500, 'v': 50}),
+    # Targets within millimetres of the apex cap (cap 500 mm above a release
+    # point ~100-150 mm up): the moving release point opens a WINDOW of
+    # feasible pitches with two cap roots, and the solver must take the upper.
+    'apex-knife-edge':    (85.0, 5.0, 500.0, (540.0, 660.0), {'h': 300}),
+}
+
+
+@pytest.mark.parametrize('regime', sorted(_REGIMES))
+def test_closed_form_pitch_matches_retired_grid_sweep(regime):
+    import random
+
+    import jugglebot.hardware_config as hw
+    from tests._bb_pitch_grid_oracle import grid_pitch_solve
+
+    pitch_max_deg, v_max_mps, h_max_mm, z_range, min_binding = _REGIMES[regime]
+    s = hw.BB_GEOM_YAW_S_OFFSET_MM
+    l = hw.BB_GEOM_RELEASE_L_POSITION_MM
+    d = hw.BB_GEOM_PITCH_D_OFFSET_MM
+    g = hw.GRAVITY_MPS2 * 1000.0
+    p_min = math.radians(hw.BB_GEOM_PITCH_MIN_DEG)
+    p_max = math.radians(pitch_max_deg)
+    # The sweep's true step: int() truncation can stretch it past 0.5°.
+    n_steps = max(int((p_max - p_min) / math.radians(0.5)), 1) + 1
+    step = (p_max - p_min) / (n_steps - 1)
+
+    rng = random.Random(20260918)
+    binding = {'pmax': 0, 'h': 0, 'v': 0}
+    refused_near = rising_refused = 0
+    for _ in range(2000):
+        A = rng.uniform(250.0, 3600.0)
+        z = rng.uniform(*z_range)
+        yaw = rng.uniform(0.2, 1.2)
+        x = A * math.cos(yaw) - s * math.sin(yaw)
+        y = A * math.sin(yaw) + s * math.cos(yaw)
+
+        old = grid_pitch_solve(A, z, l, d, p_min, p_max,
+                               v_max_mps * 1000.0, h_max_mm, g)
+        try:
+            sol = solve_throw_local(x, y, z, pitch_max_deg=pitch_max_deg,
+                                    max_speed_mps=v_max_mps,
+                                    max_height_mm=h_max_mm)
+        except ValueError as e:
+            if 'too close' in str(e):
+                refused_near += 1
+                continue
+            # The only other refusals allowed: one the sweep agreed with, or a
+            # sweep "solution" that reaches the target still RISING (a
+            # fly-through, which the closed form now refuses).
+            if old is not None:
+                o_pitch, o_v, _, o_h_vel = old
+                o_tof = (A - l * math.cos(o_pitch) + d) / o_h_vel
+                assert o_v * math.sin(o_pitch) - g * o_tof >= 0, (
+                    f'lost a target the sweep solved: A={A} z={z}: {e}')
+                rising_refused += 1
+            continue
+
+        # Limits hold exactly — no tolerance.
+        assert p_min <= sol.pitch_rad <= p_max
+        assert sol.speed_mps <= v_max_mps
+        assert sol.peak_height_mm <= h_max_mm
+
+        # Lands on the target through the independent forward model.
+        pred = predict_throw(sol.yaw_rad, sol.pitch_rad, sol.speed_mps,
+                             (0.0, 0.0, 0.0), 0.0, catch_height_mm=z)
+        assert pred is not None
+        assert pred.landing_position[0] == pytest.approx(x, abs=1e-6)
+        assert pred.landing_position[1] == pytest.approx(y, abs=1e-6)
+        assert pred.tof_s == pytest.approx(sol.tof_s, abs=1e-9)
+
+        if old is None:
+            continue    # feasible window narrower than a grid step: a gain
+        old_pitch, _, _, old_h_vel = old
+        assert -1e-9 <= sol.pitch_rad - old_pitch < step + 1e-9, (A, z)
+        assert sol.speed_mps * 1000.0 * math.cos(sol.pitch_rad) <= old_h_vel + 1e-6
+
+        if sol.pitch_rad == p_max:
+            binding['pmax'] += 1
+        elif sol.peak_height_mm > h_max_mm - 1e-6:
+            binding['h'] += 1
+        else:
+            binding['v'] += 1
+
+    for key, floor in min_binding.items():
+        assert binding[key] >= floor, (regime, binding)
+    assert refused_near < 200, refused_near     # the guard is not eating the domain
+    if regime == 'default-apex-bound':
+        assert rising_refused == 0      # unreachable inside the real envelope
+
+
+def test_solve_throw_local_apex_sits_on_the_cap_for_typical_target():
+    """No grid quantisation left: the typical throw's apex IS the cap (the
+    sweep left it anywhere in ~470–500 mm depending on where the grid fell)."""
     x, y, z = _platform_target_in_bb_local()
-    sol = solve_throw_local(x, y, z, pitch_step_deg=0.1)
-    assert sol.speed_mps > 0
-    assert sol.tof_s > 0
+    sol = solve_throw_local(x, y, z)
+    assert sol.peak_height_mm <= 500.0
+    assert sol.peak_height_mm == pytest.approx(500.0, abs=1e-6)
+
+
+@pytest.mark.parametrize('x, y, z', [
+    (200.0, 150.0, -1000.0),    # A ≈ 227 mm, deep drop: sweep chose a 12° "drop"
+    (130.0, 140.0, 30.0),       # A ≈ 159 mm: optimum at an INTERIOR pitch (probed 2026-09-18)
+    (0.0, 105.65, -500.0),      # on the s-circle, directly below: A = 0
+])
+def test_solve_throw_local_refuses_near_field_targets(x, y, z):
+    """Near the yaw axis the release point's travel dominates the range and the
+    steepest throw is not the softest landing — refused by design (owner,
+    2026-09-18), never silently solved with the wrong rule."""
+    with pytest.raises(ValueError, match='too close'):
+        solve_throw_local(x, y, z, yaw_s_offset_mm=105.65)
