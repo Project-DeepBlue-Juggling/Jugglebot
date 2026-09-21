@@ -3,6 +3,10 @@ site_description: Technical documentation for Jugglebot — a Stewart platform r
 repo_url: https://github.com/Project-DeepBlue-Juggling/Jugglebot
 repo_name: Project-DeepBlue-Juggling/Jugglebot
 
+# Agent-skill config (/setup-matt-pocock-skills) is not site content.
+exclude_docs: |
+  /agents/
+
 theme:
   name: material
   palette:

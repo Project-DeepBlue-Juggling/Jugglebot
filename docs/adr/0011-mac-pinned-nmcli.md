@@ -3,7 +3,7 @@
 - **Status**: Accepted
 - **Date**: 2026-06-02 (captured); decision made 2026-05-28
 - **Deciders**: Harrison + Claude
-- **Related**: [ADR-0007](0007-point-to-point-static-link.md), [parent plan](../../plans/archived/teensy-can-offload.md)
+- **Related**: [ADR-0007](0007-point-to-point-static-link.md), [parent plan](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/archived/teensy-can-offload.md)
 
 ## Context
 

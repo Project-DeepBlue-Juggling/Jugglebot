@@ -2,10 +2,10 @@
 
 **Source files:**
 
-- [`fault_machine.cpp`](../../ros_ws/src/jugglebot/Teensy_code_canbridge/fault_machine.cpp) / [`.h`](../../ros_ws/src/jugglebot/Teensy_code_canbridge/fault_machine.h) — the fault state machine and CAN3 watchdog
-- [`leg_interp.cpp`](../../ros_ws/src/jugglebot/Teensy_code_canbridge/leg_interp.cpp) — lead/stroke clamps, NaN/Inf rejection
-- [`can_buses.cpp`](../../ros_ws/src/jugglebot/Teensy_code_canbridge/can_buses.cpp) — per-bus health classification
-- [`canbridge_config.h`](../../ros_ws/src/jugglebot/Teensy_code_canbridge/canbridge_config.h) — every threshold cited below
+- [`fault_machine.cpp`](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/ros_ws/src/jugglebot/Teensy_code_canbridge/fault_machine.cpp) / [`.h`](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/ros_ws/src/jugglebot/Teensy_code_canbridge/fault_machine.h) — the fault state machine and CAN3 watchdog
+- [`leg_interp.cpp`](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/ros_ws/src/jugglebot/Teensy_code_canbridge/leg_interp.cpp) — lead/stroke clamps, NaN/Inf rejection
+- [`can_buses.cpp`](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/ros_ws/src/jugglebot/Teensy_code_canbridge/can_buses.cpp) — per-bus health classification
+- [`canbridge_config.h`](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/ros_ws/src/jugglebot/Teensy_code_canbridge/canbridge_config.h) — every threshold cited below
 - [`docs/motion_planner/safety.md`](../motion_planner/safety.md) — the historical Jetson-side (`motor_guard.py`/`can_node.py`) version of this same logic, which the firmware below ports
 
 This firmware is a port of `can_node.py`'s fault-handling

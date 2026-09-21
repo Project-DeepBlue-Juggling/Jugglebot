@@ -197,3 +197,17 @@ codebase has actually been done — deviate from them only with clear reason.
 - All movements must use profiled trajectories — never command step position changes
 - CAN encoding must match the can-bridge firmware (`Teensy_code_canbridge/`) and the generated `protocol_config` constants: negate, scale by appropriate value, int16, clamp (`can_node.py` is deleted; the firmware is the encoding authority)
 - All runtime artifacts live under `temp/` (not `/tmp/`, not under `sim/`). `sim/main.py` writes telemetry CSVs and companion `.log`/`.png`/`_report.html` files to `temp/logs/`. Cross-session comparison HTML reports go to `temp/reports/`. Nothing under `sim/` should accumulate runtime output.
+
+## Agent skills
+
+### Issue tracker
+
+GitHub Issues on `Project-DeepBlue-Juggling/Jugglebot`, via the `gh` CLI (`~/bin/gh` — not on `PATH`). `plans/` and `logbook/` remain the planning and change-record layers. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default vocabulary: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: root `CONTEXT.md` + `docs/adr/`. See `docs/agents/domain.md`.

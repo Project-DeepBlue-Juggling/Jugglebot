@@ -74,6 +74,25 @@ Every new page must be registered in `mkdocs.yml → nav:`. Section names map
 to directories; filenames are lowercase, hyphenated (or underscore where
 matching existing style — `motion_planner/`, `sim_mpc/`, `analysis/`).
 
+**Links out of `docs/`.** A link from a docs page to a repo path outside
+`docs/` (source, firmware, plans, logbook) is the absolute URL
+`https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/<path>`
+(`tree/main/<dir>` for a directory), never a relative path. MkDocs cannot
+resolve a relative link that leaves `docs/`: `--strict` warns (a strict build on
+2026-09-20 gave 33 warnings, latent until the first CI run on `main`/`refactor`)
+and the link is a 404 on the published site. MkDocs cannot check the absolute
+form, so
+[tests/sim/test_docs_links.py](tests/sim/test_docs_links.py) does — no relative
+escape, and the `<path>` must exist in the tree — on every commit, with
+`mkdocs build --strict` in CI as the backstop.
+
+**Carve-out — `docs/agents/`.** Agent-skill configuration written by
+`/setup-matt-pocock-skills` (`issue-tracker.md`, `triage-labels.md`,
+`domain.md`) lives here but is *not* site content: `mkdocs.yml` excludes it
+via `exclude_docs`, and it is deliberately not registered in `nav:`. Skills
+find it through the `## Agent skills` block in `CLAUDE.md`. It is a
+carve-out inside this layer, not a ninth layer.
+
 **When to add here:** a stable piece of knowledge about how a subsystem
 works that will be referenced more than once. If the content is specific to
 one investigation or one change, it belongs in the **logbook**, not here.
@@ -116,7 +135,9 @@ Essentials you must know:
 - **Frontmatter** (YAML between `---` delimiters) is mandatory. Fields:
   `title`, `type`, `date`, `status`, and optional `phase`, `related_plan`,
   `related_issues`, `sessions`, `files_changed`, `commits`, `subsystem`,
-  `tags`.
+  `tags`. `related_issues` holds `known_issues.yaml` IDs (§ 4), never GitHub
+  issue numbers: GitHub Issues are external state, not a documentation layer
+  (see `docs/agents/issue-tracker.md`).
 - **`type` (controlled):** `investigation | bugfix | refactor | feature | optimization`.
   Each type has its own required body sections — see
   [logbook/README.md § Entry types](logbook/README.md#entry-types-and-their-sections).

@@ -2,8 +2,8 @@
 
 **Source files:**
 
-- [`leg_interp.cpp`](../../ros_ws/src/jugglebot/Teensy_code_canbridge/leg_interp.cpp) / [`.h`](../../ros_ws/src/jugglebot/Teensy_code_canbridge/leg_interp.h) — the 500 Hz leg interpolator
-- [`hand_ops.cpp`](../../ros_ws/src/jugglebot/Teensy_code_canbridge/hand_ops.cpp) — the hand trajectory relay
+- [`leg_interp.cpp`](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/ros_ws/src/jugglebot/Teensy_code_canbridge/leg_interp.cpp) / [`.h`](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/ros_ws/src/jugglebot/Teensy_code_canbridge/leg_interp.h) — the 500 Hz leg interpolator
+- [`hand_ops.cpp`](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/ros_ws/src/jugglebot/Teensy_code_canbridge/hand_ops.cpp) — the hand trajectory relay
 - [`docs/teensy-udp-protocol.md`](../teensy-udp-protocol.md) — wire format for every message referenced here
 - [ADR-0012: Hermite interpolator port](../adr/0012-hermite-interpolator-port.md) — why this scheme was ported verbatim rather than redesigned
 

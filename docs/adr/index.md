@@ -34,7 +34,7 @@ Write an ADR when a decision:
    plausibly arrive at a different answer.
 
 Don't write ADRs for routine choices, code style, or details fully captured by
-a plan in [`plans/active/`](../../plans/active/). ADRs are durable; plans expire.
+a plan in [`plans/active/`](https://github.com/Project-DeepBlue-Juggling/Jugglebot/tree/main/plans/active). ADRs are durable; plans expire.
 
 ## Numbering and naming
 
@@ -50,11 +50,11 @@ ADR** — historical reasoning matters, even when the decision changes.
 
 ADRs are **decisions**, not plans or implementations:
 
-- **[Plans](../../plans/active/)** describe *what we intend to build and how* —
+- **[Plans](https://github.com/Project-DeepBlue-Juggling/Jugglebot/tree/main/plans/active)** describe *what we intend to build and how* —
   step-by-step work. They expire when archived. The can-bridge Teensy migration
-  plan ([`teensy-can-offload.md`](../../plans/archived/teensy-can-offload.md)) is
+  plan ([`teensy-can-offload.md`](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/archived/teensy-can-offload.md)) is
   the canonical example.
-- **[Logbook](../../logbook/)** captures *what happened during an
+- **[Logbook](https://github.com/Project-DeepBlue-Juggling/Jugglebot/tree/main/logbook)** captures *what happened during an
   investigation or build* — bug post-mortems, surprising findings, rejected
   hypotheses. Entry-shaped, indexed by date and subject.
 - **ADRs** capture *the durable reasoning behind structural choices* — and only
@@ -93,7 +93,7 @@ They're grouped here by topic for skimming; the canonical order is numeric.
 The overnight autonomous implementation pass on the can-bridge firmware also
 made a number of tactical decisions (frame layout, CRC variant, where to host
 state machines, etc.). Those live in the **handoff document**
-[`HANDOFF-teensy-can-offload-firmware-wip.md`](../../plans/archived/HANDOFF-teensy-can-offload-firmware-wip.md)
+[`HANDOFF-teensy-can-offload-firmware-wip.md`](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/archived/HANDOFF-teensy-can-offload-firmware-wip.md)
 under "Decisions made autonomously" (D1–D12). If any of those decisions later
 prove load-bearing for future work, **promote them to an ADR** here — but until
 they prove durable, the handoff is the right home.

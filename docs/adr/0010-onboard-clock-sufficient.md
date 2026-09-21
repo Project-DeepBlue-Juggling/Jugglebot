@@ -3,7 +3,7 @@
 - **Status**: Accepted
 - **Date**: 2026-06-02 (captured); decision made 2026-05-28
 - **Deciders**: Harrison + Claude
-- **Related**: [ADR-0008](0008-time-sync-master-on-can-bridge.md), [parent plan](../../plans/archived/teensy-can-offload.md)
+- **Related**: [ADR-0008](0008-time-sync-master-on-can-bridge.md), [parent plan](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/archived/teensy-can-offload.md)
 
 ## Context
 
@@ -30,7 +30,7 @@ TCXO, OCXO, GPS, or RTC module is required.
 - Hardware timer (IntervalTimer) drives the 500 Hz interpolator ISR
   directly off the chip clock.
 - 64-bit monotonic time (`micros64()` in
-  [`time_base.cpp`](../../ros_ws/src/jugglebot/Teensy_code_canbridge/time_base.cpp))
+  [`time_base.cpp`](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/ros_ws/src/jugglebot/Teensy_code_canbridge/time_base.cpp))
   extends 32-bit `micros()` for the time-sync broadcast.
 - Wall-clock alignment from the Jetson over UDP (`TIME_OF_DAY_QUERY`)
   once at boot + every 30 s for drift correction.

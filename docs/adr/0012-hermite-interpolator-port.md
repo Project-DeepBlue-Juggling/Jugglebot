@@ -3,12 +3,12 @@
 - **Status**: Accepted
 - **Date**: 2026-06-02 (captured); decision made 2026-05-31
 - **Deciders**: Harrison + Claude
-- **Related**: [ADR-0001](0001-offload-can-and-interpolator-from-jetson.md), [parent plan](../../plans/archived/teensy-can-offload.md), [firmware handoff](../../plans/archived/HANDOFF-teensy-can-offload-firmware-wip.md) D5 / D9 / D10
+- **Related**: [ADR-0001](0001-offload-can-and-interpolator-from-jetson.md), [parent plan](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/archived/teensy-can-offload.md), [firmware handoff](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/archived/HANDOFF-teensy-can-offload-firmware-wip.md) D5 / D9 / D10
 
 ## Context
 
 The current 500 Hz interpolator lives in
-[`motor_guard.py`](../../ros_ws/src/jugglebot/jugglebot/motion/motor_guard.py)
+[`motor_guard.py`](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/ros_ws/src/jugglebot/jugglebot/motion/motor_guard.py)
 and implements a graceful-degradation ladder that handles a wide spread of
 MPC behaviour:
 
@@ -39,7 +39,7 @@ values at the constant level, and the *branching structure* at the
 control-flow level (`cmd_next`-presence first, then `dt` thresholds).
 
 Validation is via an offline cross-reference harness
-([`tools/probes/teensy_link_profiling/hermite_xref/`](../../tools/probes/teensy_link_profiling/hermite_xref/))
+([`tools/probes/teensy_link_profiling/hermite_xref/`](https://github.com/Project-DeepBlue-Juggling/Jugglebot/tree/main/tools/probes/teensy_link_profiling/hermite_xref))
 that feeds recorded MPC trajectories through both the Python
 `MotorGuard` and a Python mirror of the Teensy C++ implementation and
 asserts <1e-6 rev divergence on the position/velocity output. The xref
