@@ -22,7 +22,7 @@ from teensy_link import (Diagnostic, FaultState, MsgType, RpcMethod,
 
 from jugglebot.teensy_bridge_node import _GUARD_CLEAR_WAIT_S
 
-from std_srvs.srv import Trigger
+from std_srvs.srv import SetBool, Trigger
 
 from tests.ros._bridge_harness import _build_paired_node, _teardown, _wait_until
 from tests.ros.test_teensy_bridge_node_rpc import _capture
@@ -772,19 +772,41 @@ def test_park_hand_service_noop_is_free_even_on_an_armed_wire():
         _teardown(teensy, client, node)
 
 
-def test_recover_still_parks_an_armed_wire_because_the_clear_cleared_the_lane():
-    """The recovery path passes `lane_cleared=True` and MUST still park while
-    armed (`/recover` keeps mpc_active=1): the latch's own out_en false→true
-    edge at the clear killed the lane, so there is nothing to race."""
+# ── The recovery park DISARMS first (2026-09-23) ─────────────────────────────
+# `temp/logs/launch_r2gate_20260922_2321.log` 1790084102.60-102.61: `/recover`
+# fired the park's ACTIVATE(6) on the armed wire and the firmware answered
+# `ERR_REJECTED` — its MPC-stream interlock (`leg_activate.cpp:129`) refuses
+# any cold-start op while `s_mpc_active` is set, whatever the hand lane is
+# doing. Every recovery park in every log had been rejected the same way
+# (2026-09-18 ×2 as ERR_BUS_DOWN before the guard-clear wait, 2026-09-22 ×2 as
+# ERR_REJECTED after it); the hand was left at 5.57 rev, and the next schedule's
+# opening REST walked it home through the 1 rev/s recovery slew into a 7.3 rev
+# MAX_DEVIATION latch. So the recovery park disarms the wire, confirms the
+# disarm on the wire, parks, and leaves the wire disarmed for the orchestrator's
+# A2 arm phase — while it runs, `/link_status` reads `fault_state=RECOVERING`
+# so the orchestrator stays in FAULT and does not arm under the moving hand.
+
+def test_recover_disarms_an_armed_wire_to_park_and_leaves_it_disarmed():
+    """Armed wire at the clear: the park still fires (the firmware would have
+    rejected it armed), the wire is DISARMED before the ACTIVATE goes out and
+    is still disarmed afterwards, and the response says so."""
     teensy, client, node = _node()
     try:
         _capture(teensy, RpcMethod.CLEAR_ERRORS)
         act = _capture(teensy, RpcMethod.ACTIVATE)
         _bring_link_and_telem_up(teensy, node, leg_pos=0.1)
-        _hand_diag_up(teensy, node, pos_rev=8.7382)
+        _hand_diag_up(teensy, node, pos_rev=5.5694)   # the 2026-09-22 position
         node._sp_pump._prev_pos = [0.1] * 6
         node._reseed_client = _FakeReseedClient(success=True)
         node._mpc_active = True
+        armed_at_activate = []
+        real_activate = node.teensy_activate
+
+        def _activate_spy(axis):
+            armed_at_activate.append(bool(node._mpc_active))
+            return real_activate(axis)
+
+        node.teensy_activate = _activate_spy
 
         def _park_arrives():
             time.sleep(0.3)
@@ -797,5 +819,126 @@ def test_recover_still_parks_an_armed_wire_because_the_clear_cleared_the_lane():
         th.join()
         assert res.success is True, res.message
         assert act['args'] == rpc_args.encode_activate(6), act
+        assert armed_at_activate == [False], armed_at_activate
+        assert node._mpc_active is False
+        assert 'hand parked' in res.message
+        assert 'wire DISARMED' in res.message
+        assert node._recovery_park_in_progress is False
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_park_hand_refuses_on_an_armed_wire_before_firing_the_op():
+    """`_park_hand` itself never fires ACTIVATE under an armed stream, from
+    ANY caller: the firmware would reject it, and the refusal names the
+    interlock and the disarm."""
+    teensy, client, node = _node()
+    try:
+        act = _capture(teensy, RpcMethod.ACTIVATE)
+        _bring_link_and_telem_up(teensy, node, leg_pos=0.1)
+        _hand_diag_up(teensy, node, pos_rev=5.5694)
+        node._mpc_active = True
+        ok, msg = node._park_hand()
+        assert ok is False
+        assert 'ARMED' in msg and 'ERR_REJECTED' in msg
+        assert 'args' not in act
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_clear_errors_fallback_parks_the_hand_too():
+    """The armed `/clear_errors` disarm+direct-clear fallback — where the
+    2026-09-22 sitting actually landed — now parks the hand as well, on the
+    already-disarmed wire, instead of leaving it mid-stroke."""
+    teensy, client, node = _node()
+    try:
+        _capture(teensy, RpcMethod.CLEAR_ERRORS)
+        act = _capture(teensy, RpcMethod.ACTIVATE)
+        _bring_link_and_telem_up(teensy, node, leg_pos=0.1)
+        _hand_diag_up(teensy, node, pos_rev=5.5694)
+        node._mpc_active = True
+        node._reseed_client = _FakeReseedClient(success=False,
+                                                message='not streaming')
+
+        def _park_arrives():
+            time.sleep(0.3)
+            teensy.send_telemetry(pos_rev=tuple([0.1] * 6 + [0.0]),
+                                  vel_rps=tuple([0.0] * 7))
+
+        th = threading.Thread(target=_park_arrives)
+        th.start()
+        res = node._svc_clear_errors(Trigger.Request(), Trigger.Response())
+        th.join()
+        assert res.success is True, res.message
+        assert act['args'] == rpc_args.encode_activate(6), act
+        assert 'hand parked' in res.message
+        assert node._mpc_active is False
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_fault_state_reads_recovering_only_while_the_park_runs():
+    """`/link_status` carries RECOVERING while the recovery park runs on a
+    firmware that reads NONE — never over a real fault, never with no
+    heartbeat."""
+    teensy, client, node = _node()
+    try:
+        assert node._published_fault_state(None) == 'UNKNOWN'
+        _bring_link_and_telem_up(teensy, node, leg_pos=0.1)
+        hb = node._latest_heartbeat
+        assert node._published_fault_state(hb) == 'NONE'
+        node._recovery_park_in_progress = True
+        assert node._published_fault_state(hb) == 'RECOVERING'
+        teensy.send_heartbeat_t2j(fault_state=int(FaultState.MAX_DEVIATION))
+        assert _wait_until(
+            lambda: int(node._latest_heartbeat.fault_state)
+            == int(FaultState.MAX_DEVIATION), timeout=2.0)
+        assert node._published_fault_state(
+            node._latest_heartbeat) == 'MAX_DEVIATION'
+    finally:
+        node._recovery_park_in_progress = False
+        _teardown(teensy, client, node)
+
+
+def test_arm_is_refused_while_the_recovery_park_runs():
+    """ARMING_CONTRACT A1 (a4): the orchestrator's A2 retry landing mid-park
+    is refused fast and by name, rather than arming under a moving hand."""
+    teensy, client, node = _node()
+    try:
+        _bring_link_and_telem_up(teensy, node, leg_pos=0.1)
+        node._recovery_park_in_progress = True
+        req = SetBool.Request()
+        req.data = True
+        resp = node._svc_set_setpoint_output(req, SetBool.Response())
+        assert resp.success is False
+        assert 'hand park in progress' in resp.message
+        assert node._mpc_active is False
+    finally:
+        node._recovery_park_in_progress = False
+        _teardown(teensy, client, node)
+
+
+def test_recover_disarms_even_when_the_hand_is_already_parked():
+    """The most common real case — a LEG latch with an armed wire and an
+    in-band hand: the recovery still disarms before the (no-op) park and
+    leaves the wire disarmed for the orchestrator's A2 re-arm. Deliberate
+    (one recovery sequence, not two); a future change that makes the disarm
+    conditional on the park being needed must show up here as an intentional
+    diff, not a silent behaviour change."""
+    teensy, client, node = _node()
+    try:
+        _capture(teensy, RpcMethod.CLEAR_ERRORS)
+        act = _capture(teensy, RpcMethod.ACTIVATE)
+        _bring_link_and_telem_up(teensy, node, leg_pos=0.1)
+        _hand_diag_up(teensy, node, pos_rev=0.0)          # in band ⇒ no-op park
+        node._sp_pump._prev_pos = [0.1] * 6
+        node._reseed_client = _FakeReseedClient(success=True)
+        node._mpc_active = True
+        res = node._svc_recover(Trigger.Request(), Trigger.Response())
+        assert res.success is True, res.message
+        assert 'args' not in act                           # no ACTIVATE fired
+        assert 'already parked' in res.message
+        assert 'wire DISARMED' in res.message
+        assert node._mpc_active is False
     finally:
         _teardown(teensy, client, node)

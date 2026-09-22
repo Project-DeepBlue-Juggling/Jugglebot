@@ -34,8 +34,13 @@ work (2026-07-15) hit three distinct doors into that hole:
 - **A1 — stream-before-arm.** `mpc_active` goes 0→1 **only** through
   `teensy_bridge_node._arm_setpoint_output`'s preconditions: fresh Teensy
   heartbeat + link not latched, guard fault NOT latched, a fresh mpccmd frame on
-  :5557 within 0.5 s, that frame pump-acceptable, and its `u0` within
-  0.25 rev of every live encoder. **There is no other arming path.** The
+  :5557 within 0.5 s, that frame pump-acceptable, its `u0` within
+  0.25 rev of every live encoder, no deactivate descent in flight, and no
+  guard-recovery hand park in flight (`_recovery_park_in_progress`, 2026-09-23:
+  the park's ACTIVATE is rejected by the firmware under an armed stream, so the
+  recovery disarms to park and publishes `fault_state=RECOVERING` on
+  `/link_status` until the hand is home — the orchestrator stays in FAULT and
+  re-arms through A2 on the NONE edge). **There is no other arming path.** The
   zero-precondition boot-arm (`enable_setpoint_output:=true` →
   `_start_setpoint_output` at `__init__`) is removed; the parameter is retained
   but inert (loud ERROR if set).
@@ -86,7 +91,7 @@ work (2026-07-15) hit three distinct doors into that hole:
 
 | Invariant | Code | Test |
 |---|---|---|
-| A1 | `teensy_bridge_node.py` `_arm_setpoint_output` (sole 0→1 path); `__init__` boot-arm removed | `tests/ros/test_teensy_bridge_node_read.py` (boot-arm inert) |
+| A1 | `teensy_bridge_node.py` `_arm_setpoint_output` (sole 0→1 path); `__init__` boot-arm removed; `_park_hand_disarmed` + `_published_fault_state` (the recovery-park precondition) | `tests/ros/test_teensy_bridge_node_read.py` (boot-arm inert); `tests/ros/test_teensy_bridge_node_recover.py::test_arm_is_refused_while_the_recovery_park_runs`, `::test_fault_state_reads_recovering_only_while_the_park_runs` |
 | A2 | `state_machine.py` `ActiveHandler` arm phase; `FaultHandler.on_enter` disarm; `orchestrator_node.py` `arm_setpoints`/`disarm_setpoints` dispatch | `tests/ros/test_state_machine.py` arm-phase / retry / FAULT cases |
 | A3 | `teensy_bridge_node.py` `_run_deactivate` head | disarm-before-DEACTIVATE order test |
 | A4 | `state_machine.py` `ActiveHandler.on_exit` (no blank) + `IdleHandler` deferred blank | mode-survives-deactivate ordering test |

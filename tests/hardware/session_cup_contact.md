@@ -59,8 +59,8 @@ listed, GUI + QTM streaming, Home → Activate, site −50/0, `dwell_s 0.30`, a 
 | # | Step | Expect |
 |---|---|---|
 | 7 | `ros2 param get /skill_node learner_lateral_authority_mm` | `40.0` — proves the rebuilt install is the one running. `0.0` here = step 2 was skipped. |
-| 8 | `ros2 param set /skill_node apex_m 0.6` ; `ros2 service call skills/check std_srvs/srv/Trigger` | `ladder OK`, `box OK: ('P1', 'P1') …` with a band containing 0.6, and a **`frame check OK: mocap Platform is +N.N mm (x …, y …) … (limit 5.0 mm)`** line in the RESPONSE. **Record N, x, y.** |
-| 9 | If row 8 says `REJECTED_FRAME_OFFSET` | Over 5 mm: re-align QTM to the base marker and repeat row 8 — do NOT fly Block B on an offset (the learner would "correct" a frame error into the throws). Cannot-evaluate: it names the missing input (no `Platform` body / stale mocap / stale commanded position / platform not at rest) — fix that one. Block A may still fly (authority 0 only logs it). |
+| 8 | `ros2 param set /skill_node apex_m 0.6` ; `ros2 service call skills/check std_srvs/srv/Trigger` | `ladder OK`, `box OK: ('P1', 'P1') …` with a band containing 0.6, and a **`frame check OK: mocap Platform is +N.N mm (x …, y …) … body spread S mm (limit 25.0 mm)`** line in the RESPONSE, plus a `tracker landings are now corrected by (x …, y …) mm` line in the launch log. **Record N, x, y, S.** Since 2026-09-23 an offset under 25 mm is MEASURED AND SUBTRACTED from every tracker landing, not refused — the 8.5 mm lever arm of 09-22 is expected here. |
+| 9 | If row 8 says `REJECTED_FRAME_OFFSET` | Over 25 mm: the base alignment is wrong outright (not the lever arm) — re-align QTM to the base marker and repeat row 8. Cannot-evaluate names the missing input: no `Platform` body, stale mocap, stale commanded position, the platform not at rest, or the Platform body moving > 2 mm inside the 1 s window — fix that one. Block A may still fly (authority 0 only logs it, and still adopts an in-bound offset). |
 | 10 | Loaded-box solve check: with the GUI open, bag recording and QTM streaming, leave it 60 s, then `grep -c SPLICE_TOO_LATE temp/logs/launch_cupcontact_*.log` after the first attempt of § 3 | 0. (Measured 2026-09-20 on a loaded box: catch-and-throw solve p95 146 ms against the 150 ms splice budget — the margin is thin. Two or more `SPLICE_TOO_LATE` in a block is a finding; note the load average at that time from the row-11 capture.) |
 
 ## 3. Block A — pinned: is the new dive a good catch?
@@ -88,11 +88,11 @@ say so in the results.**
 
 ## 5. Block B — unpinned: does the learner take out the lateral miss?
 
-Only if Block A passed § 4 and row 8's frame offset was ≤ 5 mm.
+Only if Block A passed § 4, row 8's `skills/check` read `frame check OK` (offset under the 25 mm sanity bound, adopted) and § 9 has been run.
 
 | # | Step | Expect |
 |---|---|---|
-| 15 | `ros2 param set /skill_node learner_lateral_authority_mm 40.0` ; `ros2 service call skills/check std_srvs/srv/Trigger` | `frame check OK: …` (not `informational`). Same `plant_id` — Block A's rows already carry the observed lateral miss at zero lateral command, which is exactly what the learner needs. |
+| 15 | `ros2 param set /skill_node learner_lateral_authority_mm 40.0` ; `ros2 service call skills/check std_srvs/srv/Trigger` | `frame check OK: …` (not `informational`). Same `plant_id` — Block A's rows already carry the observed lateral miss at zero lateral command, which is exactly what the learner needs (rows written BEFORE 2026-09-23 are in the raw mocap frame and were quarantined — only a Block A flown on this software is consistent with Block B). **Run § 9 first.** |
 | 16 | **0.9 m first** (its box admits the full ±40 × ±40 mm): `n_throws 1` ×2, then `n_throws 10`. | Record per throw: landing error x/y from the memory-row line, `seat=`, caught. **Criterion (plan § 5): median lateral miss moves from ≈ +31 mm toward 0 within five throws**, `seat=` stays in +0.05 … +0.15 s. |
 | 17 | **0.6 m** (box admits ±40 mm in x but only **±30 mm in y** — the learner's throw command is clipped there; the catch-side clamp is still 40). | Same record. A learner command sitting on the ±30 mm y face is the box binding, not a fault. |
 | 18 | During both: `grep -E "AIM-LATERAL-CLAMPED\|RESEND \|RESEND-SKIPPED\|REJECTED_CYCLE_INFEASIBLE\|CUP_CONTACT_ACC\|LIMIT_JERK" temp/logs/launch_cupcontact_*.log \| tail -40` between attempts | `AIM-LATERAL-CLAMPED` = the tracker asked for more than 40 mm and was held (fine, count them). Re-send refusals on `LIMIT_JERK` should now be RARE (18 of 21 re-aims refused on 09-18; the dive is no longer at the jerk ceiling). **Any `CUP_CONTACT_ACC` refusal is a finding** — the planner should never produce a plan its own gate refuses; record the whole line (it names the knot and the value). |
@@ -138,3 +138,23 @@ Median lateral miss, first 5 → last 5 throws: 0.9 m ____ → ____ mm · 0.6 m 
 
 `SPLICE_TOO_LATE` __ · `AIM-LATERAL-CLAMPED` __ · re-sends accepted/refused __/__ ·
 `CUP_CONTACT_ACC` __ (expect 0) · guard latches __ · drops __
+
+## 9. Frame-offset z-sweep — which frame is tilted? (robot powered, no throwing, BEFORE Block B)
+
+Added 2026-09-23 (`logbook/2026-09-23-cup-contact-first-sitting.md` Diagnosis § 2). The
+(−1.56, −8.53) mm offset equals 574.3 mm × the levelling pose offset (0.015, 0.002) rad. If it
+is a lever arm (the QTM Base-body frame tilted from the machine's base plane), it scales with
+the platform's height above the base; if it is a translation (a body-origin or marker
+definition), it does not. Six commands, ten minutes, and it also exercises the new
+"offset adopted, landings corrected" path with the robot standing still.
+
+Run after § 2 (Home → Activate, QTM streaming, `set_limits` applied) with the launch log open
+in another terminal. Authority pinned so nothing refuses on the number:
+
+| # | Step | Expect / record |
+|---|---|---|
+| S1 | `ros2 param set /skill_node learner_lateral_authority_mm 0.0` | `Set parameter successful`. |
+| S2 | For each z in **100, 170, 240, 300** (mm, STOW-relative — 170 is the ACTIVE height): `ros2 service call /trajectory/go_to_pose jugglebot_interfaces/srv/GoToPose "{pose: {position: {x: -50.0, y: 0.0, z: Z}, orientation: {w: 1.0}}, duration_s: 3.0}"` then wait 3 s at rest, then `ros2 service call skills/check std_srvs/srv/Trigger` | `accepted: true` (a `WORKSPACE` refusal at 300: record it and use 270 instead). The RESPONSE's `frame check: mocap Platform is +N.N mm (x …, y …) … body spread S mm` line — **record z, x, y, S for each height.** The launch log also prints `tracker landings are now corrected by (…)` at each check. |
+| S3 | Return to the ACTIVE height: the same call with `z: 170.0`. | `accepted: true`. |
+| S4 | Read the table. | **Lever arm:** y changes by ≈ −0.014 mm per mm of z, i.e. ≈ −7.5 / −8.5 / −9.5 / −10.3 mm at 100 / 170 / 240 / 300 (x by ≈ +0.002 mm per mm). **Translation:** all four within ±0.3 mm of each other. Either way the software subtracts the value measured at the site height, so Block B may proceed; a lever arm additionally means the `Base` body's definition should be redone with the base plane's normal (QTM: define the body from the base markers with the calibration frame aligned to the base plate), after which the check should read < 2 mm. |
+| S5 | Fill in: z=100 (___, ___) · z=170 (___, ___) · z=240 (___, ___) · z=300 (___, ___) · verdict: LEVER ARM / TRANSLATION | |

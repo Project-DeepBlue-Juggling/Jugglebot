@@ -164,12 +164,41 @@ _HAND_STATE_STALE_S = 0.5
 #: directly here too, with no rotation/translation applied. z carries the
 #: base-to-platform offset and is deliberately not part of this check (it is
 #: a lateral-authority question, plan § 1).
+#:
+#: WHAT THE OFFSET IS (2026-09-22 sitting, analysed 2026-09-23,
+#: `logbook/2026-09-23-cup-contact-first-sitting.md`): with QTM re-aligned to
+#: the base the Platform body sat (-1.56, -8.53) mm from the command with a
+#: 0.03 mm standard deviation over 77 s, invariant under relocating the base.
+#: That is not alignment noise: 574.3 mm (the STOW height) x the levelling
+#: pose offset (0.015, 0.002) rad = (8.6, 1.1) mm -- a lever arm. The IK
+#: rotates the platform about its own centre (`ik_solver.py:161`), so the
+#: software cannot produce it; the QTM Base-body frame and the machine's
+#: base plane differ by a small fixed tilt, and a point ~600 mm up the base
+#: axis appears ~8 mm sideways. The commanded position lives in the base
+#: frame, the tracker's landings in the QTM frame, and the cup is physically
+#: at command + offset in the QTM frame. So the SAME measured offset is
+#: SUBTRACTED from every tracker landing (`_on_balls`, the one entry point
+#: both the learner outcome and the catch aim read) -- a landing then means
+#: "relative to where the cup really is", and the learner cannot "correct" a
+#: frame offset into the throws. The check's limit is therefore a SANITY
+#: bound on the alignment, not a precision target, and a STABILITY
+#: requirement on the Platform body (`_FRAME_CHECK_PLAT_SPREAD_MM`): a
+#: jittering or moving body is not a session-start number.
 #: The window the Platform buffer is judged over, and the commanded
 #: position's own at-rest window -- one clock (`time.perf_counter()`), one
 #: window, for both.
 _FRAME_CHECK_WINDOW_S = 1.0
-#: Below this mean-offset norm, lateral authority may fly (plan § 1).
-_FRAME_CHECK_LIMIT_MM = 5.0
+#: Above this mean-offset norm the base alignment is wrong outright (the
+#: 2026-09-18 +30..-50 mm cases), not a lever arm, and no subtraction is
+#: trusted -- lateral authority is refused (plan § 1). Was 5.0 mm through
+#: 2026-09-22, when it refused Block B on the 8.5 mm lever arm above.
+_FRAME_CHECK_LIMIT_MM = 25.0
+#: The Platform body's own bounding-box diagonal inside the window must stay
+#: under this: the 2026-09-22 measurement scattered 0.03 mm (sd) at rest, so
+#: anything past 2 mm is a moving platform, a flickering body definition or a
+#: mis-tracked marker -- refuses to evaluate rather than subtract a bad
+#: number from every landing.
+_FRAME_CHECK_PLAT_SPREAD_MM = 2.0
 #: The commanded position's bounding-box diagonal inside the window must
 #: stay under this, or the check cannot tell a real platform offset from the
 #: platform having moved mid-window -- refuses to evaluate, never a silent
@@ -220,20 +249,25 @@ class FrameCheckResult:
     fields are real measurements and ``within_limit`` says whether
     ``offset_mm`` is at or under `_FRAME_CHECK_LIMIT_MM`. ``detail`` is
     always one complete, loggable sentence either way — the node logs it on
-    every check, refusal or not (plan § 1: "always log the offset")."""
+    every check, refusal or not (plan § 1: "always log the offset").
+    ``plat_spread_mm`` is the Platform body's bounding-box diagonal inside
+    the window (0.0 when not evaluable) — the stability the subtraction in
+    `SkillNode._on_balls` rests on."""
     evaluable: bool
     within_limit: bool
     offset_mm: float
     dx_mm: float
     dy_mm: float
     detail: str
+    plat_spread_mm: float = 0.0
 
 
 def _frame_offset_check(platform_samples, commanded_samples, now, *,
                         window_s: float = _FRAME_CHECK_WINDOW_S,
                         limit_mm: float = _FRAME_CHECK_LIMIT_MM,
                         rest_tol_mm: float = _FRAME_CHECK_REST_TOL_MM,
-                        min_samples: int = _FRAME_CHECK_MIN_SAMPLES
+                        min_samples: int = _FRAME_CHECK_MIN_SAMPLES,
+                        plat_spread_tol_mm: float = _FRAME_CHECK_PLAT_SPREAD_MM
                         ) -> FrameCheckResult:
     """Pure: the mocap-Platform-vs-commanded xy offset over the last
     ``window_s`` (plan `cup-contact-contract.md` § 1; see the frame/units
@@ -255,7 +289,9 @@ def _frame_offset_check(platform_samples, commanded_samples, now, *,
     ``window_s``; or the commanded position's bounding-box diagonal inside
     the window exceeding ``rest_tol_mm`` (the platform was still moving, so
     an "offset" measured against it is not the session-start number the
-    contract means)."""
+    contract means); or the Platform body's own bounding-box diagonal
+    exceeding ``plat_spread_tol_mm`` (a body that moves or flickers inside
+    the window cannot be subtracted from every landing — 2026-09-23)."""
     platform_samples = list(platform_samples)
     commanded_samples = list(commanded_samples)
 
@@ -302,18 +338,31 @@ def _frame_offset_check(platform_samples, commanded_samples, now, *,
             '(limit %.1f mm) — not at rest' % (cmd_spread_mm, window_s,
                                                rest_tol_mm))
 
-    plat_x = sum(x for _, x, _ in plat_in_win) / len(plat_in_win)
-    plat_y = sum(y for _, _, y in plat_in_win) / len(plat_in_win)
+    plat_xs = [x for _, x, _ in plat_in_win]
+    plat_ys = [y for _, _, y in plat_in_win]
+    plat_spread_mm = math.hypot(max(plat_xs) - min(plat_xs),
+                                max(plat_ys) - min(plat_ys))
+    if plat_spread_mm > plat_spread_tol_mm:
+        return FrameCheckResult(
+            False, False, 0.0, 0.0, 0.0,
+            'the mocap Platform body moved %.2f mm inside the %.1f s window '
+            '(limit %.1f mm) — not a stable session-start offset (platform '
+            'still moving, or the body is mis-tracked)'
+            % (plat_spread_mm, window_s, plat_spread_tol_mm), plat_spread_mm)
+
+    plat_x = sum(plat_xs) / len(plat_xs)
+    plat_y = sum(plat_ys) / len(plat_ys)
     cmd_x = sum(cmd_xs) / len(cmd_xs)
     cmd_y = sum(cmd_ys) / len(cmd_ys)
     dx_mm = plat_x - cmd_x
     dy_mm = plat_y - cmd_y
     offset_mm = math.hypot(dx_mm, dy_mm)
     detail = ('mocap Platform is %+.1f mm (x %+.1f, y %+.1f) from the '
-              'commanded position over %.1f s (limit %.1f mm)'
-              % (offset_mm, dx_mm, dy_mm, window_s, limit_mm))
+              'commanded position over %.1f s, body spread %.2f mm '
+              '(limit %.1f mm)'
+              % (offset_mm, dx_mm, dy_mm, window_s, plat_spread_mm, limit_mm))
     return FrameCheckResult(True, offset_mm <= limit_mm, offset_mm, dx_mm,
-                            dy_mm, detail)
+                            dy_mm, detail, plat_spread_mm)
 
 
 class SkillNode(Node):
@@ -405,6 +454,15 @@ class SkillNode(Node):
         # `commanded_position` on the 5 Hz status timer.
         self._platform_mocap_xy = collections.deque(maxlen=400)
         self._commanded_xy_hist = collections.deque(maxlen=40)
+        # The measured mocap-to-schedule offset ``(dx_mm, dy_mm)`` the last
+        # evaluable frame check produced (`_frame_check_error`), or ``None``
+        # when none has been measured yet: `_on_balls` subtracts it from every
+        # tracker landing's xy, so a `Landing` the executor reads is already
+        # "relative to where the cup really is" (see the frame-offset note on
+        # `_FRAME_CHECK_WINDOW_S`). Never zeroed on a cannot-evaluate result
+        # -- the last good measurement is better than none -- only replaced
+        # by a fresh evaluable one.
+        self._mocap_to_schedule_mm = None
         # `/link_status`'s `sched_refused` — the FIRMWARE's count of streamed
         # lanes it refused and is now HOLDING (`_on_link_status`), and the
         # value latched when the running attempt started. `hand_lane_refused`
@@ -566,12 +624,22 @@ class SkillNode(Node):
     def _on_balls(self, msg):
         """Cache ``/balls`` landings, keyed by ball id, for the executor's
         tracker callable. Mirrors `catch_coordinator_node._msg_to_ball`'s
-        field reads."""
+        field reads.
+
+        THE one point where the tracker's (mocap) frame becomes the
+        schedule's: the session-start offset `_mocap_to_schedule_mm` is
+        subtracted from the landing xy here, so the executor's catch aim and
+        the learner's outcome row both see a landing relative to the cup's
+        real position (frame-offset note on `_FRAME_CHECK_WINDOW_S`). z and
+        velocity are untouched (the offset is lateral, plan § 1)."""
         self._raw_balls = list(msg.balls)
+        off = self._mocap_to_schedule_mm
+        dx, dy = (0.0, 0.0) if off is None else (float(off[0]), float(off[1]))
         for b in msg.balls:
             t_land = float(b.time_at_land.sec) + float(b.time_at_land.nanosec) * 1e-9
             self._balls[int(b.id)] = Landing(
-                pos_mm=np.array([b.landing_position.x, b.landing_position.y,
+                pos_mm=np.array([b.landing_position.x - dx,
+                                 b.landing_position.y - dy,
                                  b.landing_position.z], dtype=float),
                 vel_mm_s=np.array([b.landing_velocity.x, b.landing_velocity.y,
                                    b.landing_velocity.z], dtype=float),
@@ -1359,13 +1427,38 @@ class SkillNode(Node):
         `learner_lateral_authority_mm == 0` (an explicit re-pin, no longer
         the default since 2026-09-21) still runs the check and still logs
         it, but never refuses on it — lateral authority is pinned, so there
-        is nothing here to protect the attempt from."""
+        is nothing here to protect the attempt from.
+
+        An evaluable, within-limit result is also ADOPTED as the
+        mocap-to-schedule correction `_on_balls` subtracts from every tracker
+        landing from now on (`_mocap_to_schedule_mm`, 2026-09-23) — at any
+        authority, since the learner rows and the OUTCOME lines are written
+        at authority 0 too and must mean the same thing either way. An
+        over-limit or cannot-evaluate result leaves the previous correction
+        in place (a stale good number beats none) and says so."""
         result = self._frame_check()
         if result.evaluable:
             self.get_logger().info('frame check: %s' % (result.detail,))
         else:
             self.get_logger().info(
                 'frame check: cannot evaluate — %s' % (result.detail,))
+        if result.evaluable and result.within_limit:
+            self._mocap_to_schedule_mm = (float(result.dx_mm),
+                                          float(result.dy_mm))
+            self.get_logger().info(
+                'tracker landings are now corrected by (x %+.1f, y %+.1f) mm '
+                '(mocap -> schedule frame): the OUTCOME lines, learner rows '
+                'and catch aims measure from the cup\'s real position'
+                % (-result.dx_mm, -result.dy_mm))
+        else:
+            prev = self._mocap_to_schedule_mm
+            self.get_logger().warning(
+                'tracker landing correction NOT updated (%s) — %s'
+                % ('offset over limit' if result.evaluable
+                   else 'cannot evaluate',
+                   'no correction is applied' if prev is None else
+                   'keeping the earlier (x %+.1f, y %+.1f) mm'
+                   % (-prev[0], -prev[1])))
         authority_mm = float(
             self.get_parameter('learner_lateral_authority_mm').value)
         if authority_mm <= 0.0:
@@ -1373,12 +1466,14 @@ class SkillNode(Node):
         if not result.evaluable:
             return ('REJECTED_FRAME_OFFSET: cannot evaluate the mocap-vs-'
                     'command offset (%s) with learner_lateral_authority_mm='
-                    '%.1f > 0 — re-align QTM to the base, or start with '
+                    '%.1f > 0 — fix the named input (a moving platform, a '
+                    'stale or missing Platform body), or start with '
                     'learner_lateral_authority_mm:=0'
                     % (result.detail, authority_mm))
         if not result.within_limit:
-            return ('REJECTED_FRAME_OFFSET: %s — re-align QTM to the base, '
-                    'or start with learner_lateral_authority_mm:=0'
+            return ('REJECTED_FRAME_OFFSET: %s — an offset this large is a '
+                    'wrong base alignment, not the lever arm: re-align QTM to '
+                    'the base, or start with learner_lateral_authority_mm:=0'
                     % (result.detail,))
         return ''
 

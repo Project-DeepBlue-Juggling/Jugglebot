@@ -11,6 +11,7 @@ message feeds the executor's tracker callable.
 
 from __future__ import annotations
 
+import math
 import threading
 import time
 from unittest.mock import MagicMock, patch
@@ -1921,3 +1922,104 @@ def test_on_commanded_position_buffers_xy_history():
     assert len(node._commanded_xy_hist) == 1
     _t, x, y = node._commanded_xy_hist[-1]
     assert (x, y) == (5.0, 6.0)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# The frame offset is SUBTRACTED from tracker landings (2026-09-23)
+# ─────────────────────────────────────────────────────────────────────────────
+# 2026-09-22 sitting: with QTM re-aligned to the base the Platform body sat
+# (-1.56, -8.53) mm from the command, sd 0.03 mm over 77 s, invariant under
+# relocating the base — a lever arm (574.3 mm x the levelling pose offset
+# (0.015, 0.002) rad = (8.6, 1.1) mm), not alignment noise. The old 5 mm limit
+# refused Block B on it. A learner fed raw mocap landings would have "corrected"
+# it into an 8.5 mm real miss, so the measured offset is now subtracted at the
+# one point tracker landings enter the node (`_on_balls`), the limit is a
+# 25 mm sanity bound, and a moving Platform body refuses to evaluate.
+# ═════════════════════════════════════════════════════════════════════════════
+
+def test_frame_offset_check_refuses_a_moving_platform_body():
+    """A Platform body whose samples spread 5 mm inside the window is not a
+    session-start number — refuse to evaluate, naming the spread."""
+    now = 100.0
+    n = sn._FRAME_CHECK_MIN_SAMPLES + 5
+    platform = ([(now - 0.5, 0.0, 0.0)] * n + [(now - 0.1, 0.0, 5.0)] * n)
+    commanded = [(now - 0.1, 0.0, 0.0)] * 5
+    result = sn._frame_offset_check(platform, commanded, now)
+    assert result.evaluable is False
+    assert 'Platform body moved 5.00 mm' in result.detail
+    assert result.plat_spread_mm == pytest.approx(5.0)
+
+
+def test_frame_offset_check_reports_the_body_spread():
+    now = 100.0
+    platform = ([(now - 0.5, -1.5, -8.5)] * 15 + [(now - 0.1, -1.6, -8.6)] * 15)
+    commanded = [(now - 0.1, 0.0, 0.0)] * 5
+    result = sn._frame_offset_check(platform, commanded, now)
+    assert result.evaluable is True
+    assert result.within_limit is True            # 8.7 mm < the 25 mm sanity bound
+    assert result.plat_spread_mm == pytest.approx(math.hypot(0.1, 0.1))
+    assert 'body spread 0.14 mm' in result.detail
+
+
+def test_the_2026_09_22_lever_arm_offset_is_adopted_not_refused():
+    """The sitting's own number: (-1.56, -8.53) mm with authority 40 starts
+    (it is under the 25 mm bound) AND becomes the correction."""
+    node, _client = _node_with_client(frame=False)
+    node.set_parameters(
+        [_MockParameter(40.0, name='learner_lateral_authority_mm')])
+    _frame_ready(node, plat_x=-1.56, plat_y=-8.53, cmd_x=0.0, cmd_y=0.0)
+    lines = []
+    node.get_logger().info = lambda m: lines.append(m)
+    assert node._frame_check_error() == ''
+    assert node._mocap_to_schedule_mm == pytest.approx((-1.56, -8.53))
+    corr = [ln for ln in lines if ln.startswith('tracker landings are now corrected')]
+    assert len(corr) == 1, lines
+    assert 'x +1.6' in corr[0] and 'y +8.5' in corr[0]
+
+
+def test_on_balls_subtracts_the_adopted_offset_from_landing_xy_only():
+    """A ball the tracker says landed at (-51.56, -8.53) — i.e. exactly on the
+    cup, which physically sits at command + offset — reads as the commanded
+    site (-50, 0) once the offset is subtracted; z and velocity untouched."""
+    node, _client = _node_with_client(frame=False)
+    _frame_ready(node, plat_x=-1.56, plat_y=-8.53, cmd_x=0.0, cmd_y=0.0)
+    node._frame_check_error()
+    node._on_balls(BallStateArray(balls=[
+        _ball(7, status=1, x=-51.56, y=-8.53, z=830.0, vx=1.0, vy=2.0,
+              vz=-2500.0, sec=10)]))
+    landing = node._balls[7]
+    assert landing.pos_mm[0] == pytest.approx(-50.0)
+    assert landing.pos_mm[1] == pytest.approx(0.0)
+    assert landing.pos_mm[2] == pytest.approx(830.0)
+    assert landing.vel_mm_s.tolist() == pytest.approx([1.0, 2.0, -2500.0])
+
+
+def test_on_balls_passes_landings_through_before_any_frame_measurement():
+    node, _client = _node_with_client(frame=False)
+    assert node._mocap_to_schedule_mm is None
+    node._on_balls(BallStateArray(balls=[
+        _ball(7, status=1, x=-51.56, y=-8.53, z=830.0, sec=10)]))
+    assert node._balls[7].pos_mm.tolist() == pytest.approx([-51.56, -8.53, 830.0])
+
+
+def test_an_over_limit_or_unevaluable_check_keeps_the_earlier_correction():
+    """A stale good number beats none: a later over-limit (wrong alignment)
+    or cannot-evaluate result leaves the adopted correction in place and
+    warns, rather than zeroing it under the learner."""
+    node, _client = _node_with_client(frame=False)
+    node.set_parameters(
+        [_MockParameter(0.0, name='learner_lateral_authority_mm')])
+    _frame_ready(node, plat_x=-1.56, plat_y=-8.53, cmd_x=0.0, cmd_y=0.0)
+    node._frame_check_error()
+    assert node._mocap_to_schedule_mm == pytest.approx((-1.56, -8.53))
+    warnings = []
+    node.get_logger().warning = lambda m: warnings.append(m)
+    node._platform_mocap_xy.clear()
+    _frame_ready(node, plat_x=2.1, plat_y=31.1, cmd_x=0.0, cmd_y=0.0)
+    node._frame_check_error()                       # over the 25 mm bound
+    assert node._mocap_to_schedule_mm == pytest.approx((-1.56, -8.53))
+    node._platform_mocap_xy.clear()                 # cannot evaluate
+    node._frame_check_error()
+    assert node._mocap_to_schedule_mm == pytest.approx((-1.56, -8.53))
+    assert len(warnings) == 2 and all('NOT updated' in w for w in warnings)
+    assert 'keeping the earlier (x +1.6, y +8.5) mm' in warnings[0]

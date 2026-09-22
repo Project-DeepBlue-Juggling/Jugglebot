@@ -20,10 +20,18 @@ related_code:
 
 # Cup-contact contract
 
-> **Status 2026-09-21: § 5 steps 1–4 DONE IN SOFTWARE (the unpinning landed); the sitting
-> is what remains.** § 6 is decided, τ moved 0.060 → 0.125 s on a measurement (§ 7),
-> `contact_knots` is a tuple of ranges (a chained plan has two windows). Design
-> owner-approved 2026-09-18.
+> **Status 2026-09-23: FIRST SITTING FLOWN 2026-09-22 (Block A, pinned) — τ = 0.125 s
+> HOLDS: 87/87 caught, seat median +0.089/+0.079 s, hop and late-seat rates no worse than the
+> 09-18 control (`logbook/2026-09-23-cup-contact-first-sitting.md`). Block B did NOT fly:
+> the § 1 frame check refused it at (−1.56, −8.53) mm, which is a height × levelling-tilt
+> lever arm (stable to 0.03 mm), not an alignment error. § 1 is therefore amended: the
+> measured offset is now SUBTRACTED from every tracker landing (`skill_node._on_balls`),
+> the check's limit is a 25 mm sanity bound plus a 2 mm Platform-body stability gate, and
+> Block B flies after the runsheet § 9 z-sweep. Two hand latches that sitting were traced
+> and the recovery park fixed (it had never once succeeded — the firmware rejects ACTIVATE
+> under an armed stream; the recovery now disarms first).** § 6 is decided, τ moved
+> 0.060 → 0.125 s on a measurement (§ 7), `contact_knots` is a tuple of ranges (a chained
+> plan has two windows). Design owner-approved 2026-09-18.
 
 ## 0. Why — the one root cause behind four symptoms
 
@@ -74,6 +82,19 @@ precondition reading `/rigid_body_poses` `Platform` against `/trajectory/command
 over 1 s: refuse to unpin above 5 mm, with the number). Real flight drift, after removing
 the offset: median +31 mm in y, scatter −34…+91 mm (60 throws, 2026-09-18) — the learner
 can remove the median; the scatter is per-throw.
+
+**Amended 2026-09-23 (first sitting, `logbook/2026-09-23-cup-contact-first-sitting.md`):**
+the residual offset after a clean base alignment is (−1.56, −8.53) mm, stable to 0.03 mm and
+invariant under relocating the base — 574.3 mm × the levelling pose offset (0.015, 0.002) rad,
+a lever arm between the QTM Base-body frame and the machine's base plane, which no alignment
+precision removes. Measuring in the frame you command in therefore means SUBTRACTING the
+measured offset: `skill_node._on_balls` now takes it off every tracker landing's xy, so the
+learner outcome and the catch aim are relative to the cup's real position at any authority.
+The check keeps a 25 mm sanity bound (a wrong alignment, the +30/−50 mm cases above) and a
+2 mm Platform-body stability requirement; an offset under the bound is adopted, not refused.
+The runsheet's § 9 z-sweep discriminates the mechanism (a lever arm scales ≈ 1.4 mm per
+100 mm of commanded height) before Block B flies. At zero lateral command the 2026-09-22 real
+misses were about (+4, −5) mm at 0.6 m and (+5.5, −9) mm at 0.9 m, scatter sd 10 / 17 mm.
 
 ## 2. The contract (normative)
 

@@ -1061,11 +1061,11 @@ _MANUAL_RECOVERY_HINT = ("manual recovery: disarm with set_setpoint_output=false
 # no band a schedule has to be inside before it may start.
 #
 # What this op is FOR, then: RECOVERY. One enforcement point (`_park_hand`) and
-# two callers that both have the disarm/arm edge or a cleared lane — guard-latch
-# recovery parks before it reports success (`_svc_recover`, both paths), and the
-# operator's `/park_hand` (which still REFUSES an off-band hand on an ARMED
-# wire, for the reason in `lane_cleared`'s block: it moves the axis out from
-# under a lane that is still commanding its last knot). The 2026-09-18 first
+# two callers — guard-latch recovery, which DISARMS the wire, parks and reports
+# (`_park_hand_disarmed`: `_svc_recover` both paths and the armed `/clear_errors`
+# fallback, 2026-09-23), and the operator's `/park_hand` (which REFUSES an
+# off-band hand on an ARMED wire: the firmware's MPC-stream interlock rejects
+# the op, and a live lane would drag the parked axis back to its last knot). The 2026-09-18 first
 # answer — a blocking `/park_hand` before every schedule plus a park-band
 # precondition in `skill_node` — is DELETED: the band was measured against the
 # ACTIVATE park (0.0 rev) while a schedule's REST leaves the hand at
@@ -2138,6 +2138,13 @@ class TeensyBridgeNode(Node):
         # A1, review 2026-07-15). Written/cleared on the deactivate's executor
         # thread, read on the arm service's thread — plain bool, GIL-atomic.
         self._deactivate_in_progress = False
+        # True while `_park_hand_disarmed` (the guard-recovery park) runs. The
+        # arm pre-check refuses while set (the firmware rejects the park's
+        # ACTIVATE under an armed stream), and `_publish_link_status` reports
+        # ``fault_state=RECOVERING`` so the orchestrator stays in FAULT and
+        # trajectory_node stays frozen until the hand is parked (2026-09-23).
+        # Same threading posture as `_deactivate_in_progress`.
+        self._recovery_park_in_progress = False
         # Serializes _arm_setpoint_output (audit 2026-07-15): the arm service
         # lives in the Reentrant group, so without this two overlapping arms
         # could both pass the mpc_active check and double-start the ingest.
@@ -4329,6 +4336,13 @@ class TeensyBridgeNode(Node):
         if self._deactivate_in_progress:
             return False, ('deactivate in progress — refuse to arm mid-descent; '
                            'retry once the stow completes')
+        # (a4) No guard-recovery hand park mid-flight (2026-09-23): the park's
+        # single-axis ACTIVATE is rejected by the firmware under an armed
+        # stream, and arming under it would hand a moving hand to a stream
+        # whose last knot is wherever the latch left it.
+        if self._recovery_park_in_progress:
+            return False, ('guard-recovery hand park in progress — refuse to '
+                           'arm until it completes; retry')
 
         # (b) a fresh mpccmd frame on :5557 within 0.5 s (is trajectory_node up?).
         source, created_here = self._acquire_setpoint_source()
@@ -4503,8 +4517,8 @@ class TeensyBridgeNode(Node):
         The 2026-07-10 stuttering-stroke runaway left the streamed u0 diverged
         ~0.5+ rev from the frozen encoder, so every bare /clear_errors re-latched
         MAX_DEVIATION within one 10 Hz fault tick. This does the recovery in the ONLY
-        order that survives, WITHOUT disarming (mpc_active stays 1 — stopping the
-        stream would trip SETPOINT_STALE at 250 ms):
+        order that survives, ARMED through the clear (mpc_active stays 1 — stopping
+        the stream while latched would trip SETPOINT_STALE at 250 ms):
           1. ask trajectory_node to install a PROFILED DESCENT that walks the
              commanded u0 down onto the frozen encoder
              (``trajectory/reseed_from_measured``);
@@ -4515,7 +4529,11 @@ class TeensyBridgeNode(Node):
              snapshot while the leg drifted on during suppression — the Event-1
              −0.102 rev plateau), RE-INSTALL onto the now-current encoder and re-wait,
              up to ``_RECOVER_MAX_RESEED_ATTEMPTS`` times;
-          4. only THEN fire CLEAR_ERRORS, and report precisely.
+          4. only THEN fire CLEAR_ERRORS, and report precisely;
+          5. then DISARM and park the hand (`_park_hand_disarmed`, 2026-09-23):
+             the guard is cleared so the disarm cannot strand a latch, and the
+             firmware rejects the park's ACTIVATE under an armed stream. The
+             wire is left disarmed; the orchestrator re-arms on ACTIVE.
         If the reseed client is UNAVAILABLE (trajectory_node down), converge-first is
         IMPOSSIBLE — there is no node to install the descent, and with the setpoint
         source gone no fresh stream can jolt at re-enable — so it CLEARS DIRECTLY as an
@@ -4548,8 +4566,11 @@ class TeensyBridgeNode(Node):
                     # The ODrive integrator re-wound gravity while the guard was
                     # latched; restart the torque-FF ramp so the feedforward
                     # re-enters over the configured window instead of stepping
-                    # (review 2026-07-14 — /recover keeps mpc_active=1, so
-                    # neither reset() trigger fires on this path).
+                    # (review 2026-07-14 — the wire is still in whatever arm
+                    # state it had at this point in the sequence; the
+                    # disarm-for-park comes AFTER, and a 1->0 edge does not
+                    # call reset() either, so neither of reset()'s 0->1
+                    # triggers fires on this path).
                     self._sp_pump.restart_torque_ramp()
                 if not cok:
                     res.success = False
@@ -4558,11 +4579,10 @@ class TeensyBridgeNode(Node):
                     return res
                 # Same hand-park obligation as the converge-first path below —
                 # more so here: with trajectory_node down nothing is streaming
-                # the hand at all, so the park is unopposed.
-                # lane_cleared: the latch's out_en false->true edge at the
-                # clear killed the hand lane (leg_interp.cpp:885), so the op
-                # is unopposed — see _park_hand's `lane_cleared` contract.
-                pok, pmsg = self._park_hand(lane_cleared=True)
+                # the hand at all. Disarm-then-park (2026-09-23): the firmware
+                # rejects the op under an armed stream — see
+                # `_park_hand_disarmed`.
+                pok, pmsg = self._park_hand_disarmed()
                 res.success = pok
                 res.message = (
                     ('reseed unavailable (trajectory_node down) — cleared DIRECTLY '
@@ -4622,8 +4642,10 @@ class TeensyBridgeNode(Node):
             return res
         # Restart the torque-FF ramp: the velocity integrator re-wound gravity
         # during the latch + firmware recovery slew (which zeroes cmd_tor), and
-        # /recover keeps mpc_active=1 so neither of reset()'s triggers fires on
-        # this path — without this the feedforward returns as a full-magnitude
+        # the wire is still armed at this point in the sequence (the
+        # disarm-for-park is step 5, below, and a 1->0 edge does not call
+        # reset()), so neither of reset()'s 0->1 triggers fires on this path
+        # — without this the feedforward returns as a full-magnitude
         # single-tick step at slew hand-back (review 2026-07-14). The ramp
         # begins at the clear, so the residual step at hand-back is bounded by
         # ramp_scale(t_slew) x FF ~= (0.3 s / 2 s) x 0.04 Nm ~= 0.1 A — noise.
@@ -4632,8 +4654,9 @@ class TeensyBridgeNode(Node):
         # wherever the stroke was, and nothing downstream can walk it home
         # inside the lead authority. Park it here, on the profiled firmware
         # path, before any schedule can stream it. See _HAND_PARK_BAND_REV.
-        # lane_cleared: same out_en edge as the escape hatch above.
-        pok, pmsg = self._park_hand(lane_cleared=True)
+        # Disarm-then-park (2026-09-23): the firmware's MPC-stream interlock
+        # rejected every armed park before — see `_park_hand_disarmed`.
+        pok, pmsg = self._park_hand_disarmed()
         if not pok:
             # The guard IS cleared, but reporting success would send the
             # operator straight into the E-STOP this park exists to prevent.
@@ -5028,6 +5051,26 @@ class TeensyBridgeNode(Node):
                     f'for the underlying numbers.')
         return state
 
+    def _published_fault_state(self, hb) -> str:
+        """The ``fault_state`` string `/link_status` carries: the firmware's
+        own (``NONE``/``MAX_DEVIATION``/...), ``UNKNOWN`` with no heartbeat,
+        and ``RECOVERING`` while the guard-recovery hand park runs
+        (`_recovery_park_in_progress`, 2026-09-23) on a firmware that already
+        reads ``NONE``. Both `orchestrator_node` (``guard_latched``) and
+        `trajectory_node` (``_guard_frozen``) treat anything but
+        ``NONE``/``UNKNOWN`` as latched, which is the point: the orchestrator
+        stays in FAULT (guard-only, control mode preserved) and the trajectory
+        node stays at its measured hold until the hand is parked, and the
+        NONE edge that follows re-arms the wire (A2) and reseeds the hold
+        exactly as a plain clear would have. A real firmware fault always wins
+        (it is never masked by the recovery word)."""
+        if hb is None:
+            return 'UNKNOWN'
+        fault = _enum_name(FaultState, hb.fault_state)
+        if fault == 'NONE' and self._recovery_park_in_progress:
+            return 'RECOVERING'
+        return fault
+
     def _publish_link_status(self):
         """Publish link_status as a DiagnosticStatus.
 
@@ -5078,8 +5121,7 @@ class TeensyBridgeNode(Node):
 
             teensy_link = (_enum_name(LinkState, hb.link_state)
                            if hb is not None else 'UNKNOWN')
-            teensy_fault = (_enum_name(FaultState, hb.fault_state)
-                            if hb is not None else 'UNKNOWN')
+            teensy_fault = self._published_fault_state(hb)
 
             # Level: ERROR on lost link or any non-NONE Teensy fault; OK otherwise.
             fault_active = hb is not None and int(hb.fault_state) != int(FaultState.NONE)
@@ -6519,14 +6561,15 @@ class TeensyBridgeNode(Node):
                     f'{timeout_s:.1f} s after the clear')
             time.sleep(poll_dt)
 
-    def _park_hand(self, *, lane_cleared=False, poll_dt=0.05):
+    def _park_hand(self, *, poll_dt=0.05):
         """Park the hand at ``HAND_ACTIVATE_POSITION_REV`` through the firmware's
         profiled single-axis ACTIVATE. Returns ``(ok, message)``.
 
         THE single enforcement point of the hand-park contract — see the
         ``_HAND_PARK_BAND_REV`` block for the 2026-09-17 double-latch and the
         2026-09-18 repeat it encodes. Called by guard-latch recovery
-        (``_svc_recover``, both paths) and by the operator's ``/park_hand``
+        (``_park_hand_disarmed``: ``_svc_recover`` both paths and the armed
+        ``/clear_errors`` fallback) and by the operator's ``/park_hand``
         (``_svc_park_hand``). Named ``_park_hand_after_guard_latch`` until
         2026-09-18, when the operator service became the second caller; a
         schedule was briefly the third that day and no longer calls it at all
@@ -6539,24 +6582,22 @@ class TeensyBridgeNode(Node):
         inside the 10 Hz fault task's own tick is how the 2026-09-18 park lost
         the race. No wait is spent when nothing is latched (the operator path).
 
-        ``lane_cleared`` is the caller's ASSERTION that the streamed hand lane
-        is not holding a command — and it is load-bearing, because the op moves
-        the AXIS while the STREAM keeps commanding. Firmware (FW 22): a
-        hand-less hold lets the lane extrapolate-then-decay to a HELD position
-        at its last knot and keep commanding it (``leg_interp.cpp:1105-1130``,
-        the I-HAND-4 falling-edge rule); the deviation guard measures that raw
-        command against the encoder (``leg_interp.cpp:1226-1228``) and the
-        ``MAX_LEAD_HAND_REV`` clamp would drag the parked hand back up toward it
-        at the recovery slew. So parking an axis out from under a live lane
-        opens the very gap MAX_DEVIATION_HAND_REV fires on — the mirror image
-        of the 2026-09-18 latches, with the encoder moving instead of the plan.
-        ONLY a ``s_output_enabled`` false→true edge clears the lane
-        (``leg_interp.cpp:885``), which is exactly what a guard latch + clear
-        gives the recovery path — hence ``lane_cleared=True`` there. With
-        ``lane_cleared=False`` (the ``/park_hand`` path) an ARMED wire is
-        REFUSED rather than raced: the operator's DEACTIVATE → ACTIVATE gives
-        the edge and parks in one move. An already-parked hand is still a free
-        no-op either way, which is every healthy schedule start.
+        REFUSES on an ARMED wire, every caller. The firmware's MPC-stream
+        interlock rejects a cold-start op while ``s_mpc_active`` is set
+        (``leg_activate.cpp:129``, ``ERR_REJECTED``) — a single-axis ACTIVATE
+        must not co-drive an ODrive the 500 Hz stream commands. Until
+        2026-09-23 the recovery path asserted ``lane_cleared=True`` and fired
+        the op anyway, reasoning that the latch's ``s_output_enabled`` edge
+        had killed the hand lane; the lane WAS dead, but the interlock reads
+        the arm state, not the lane, so every recovery park in every log came
+        back ``ERR_REJECTED`` (2026-09-18 ×2, 2026-09-22 ×2 — never one
+        success) and the hand was left mid-stroke for the next schedule's
+        opening REST to walk home through the 1 rev/s recovery slew, which
+        re-tripped MAX_DEVIATION at 7.3 rev on 2026-09-22. The recovery path
+        now DISARMS first (``_park_hand_disarmed``); the operator's
+        ``/park_hand`` path still gets the DEACTIVATE → ACTIVATE hint. An
+        already-parked hand is a free no-op either way, which is every healthy
+        schedule start.
 
         FAIL-SAFE on an unknown hand position: no telemetry, no per-axis
         diagnostic, or a non-finite ``pos_rev[6]`` (which is what a faulted
@@ -6590,14 +6631,15 @@ class TeensyBridgeNode(Node):
                 f'hand park not needed — hand at {pos:+.4f} rev, inside '
                 f'{_HAND_PARK_BAND_REV} rev of the park ({target:+.4f} rev)')
             return True, f'hand already parked ({pos:+.4f} rev)'
-        if not lane_cleared and self._mpc_active:
+        if self._mpc_active:
             return False, (
                 f'hand park REFUSED — the hand is at {pos:+.4f} rev (outside '
-                f'{_HAND_PARK_BAND_REV} rev of the park) but the wire is ARMED, '
-                f'so the streamed hand lane is still commanding its last knot: '
-                f'parking the axis under it would open a MAX_DEVIATION gap the '
-                f'other way round and the lead clamp would drag the hand back '
-                f'up. Only a disarm/arm edge clears the lane')
+                f'{_HAND_PARK_BAND_REV} rev of the park) but the wire is ARMED: '
+                f'the firmware rejects a cold-start op under an armed stream '
+                f'(leg_activate.cpp:129, ERR_REJECTED), and a streamed hand '
+                f'lane would drag a parked hand back up at the recovery slew. '
+                f'Disarm first (the recovery path does; the operator dance is '
+                f'DEACTIVATE then ACTIVATE)')
         self.get_logger().info(
             f'hand park: ACTIVATE(axis {_HAND_AXIS}) TRAP_TRAJ from {pos:+.4f} rev '
             f'to the park at {target:+.4f} rev at '
@@ -6629,6 +6671,61 @@ class TeensyBridgeNode(Node):
         self.get_logger().info(
             f'hand park complete — {pos:+.4f} rev -> {landed:+.4f} rev')
         return True, f'hand parked ({pos:+.4f} -> {landed:+.4f} rev)'
+
+    def _park_hand_disarmed(self, *, poll_dt=0.05):
+        """The RECOVERY park (2026-09-23): disarm the wire if it is armed, park
+        the hand through `_park_hand`, and leave the wire DISARMED. Returns
+        ``(ok, message)``; the message says what the wire state is.
+
+        Why the disarm: the firmware's MPC-stream interlock rejects the park's
+        single-axis ACTIVATE while ``s_mpc_active`` is set
+        (``leg_activate.cpp:129``) — see `_park_hand`'s docstring for the four
+        logged refusals that proved it. Disarming here is safe for the same
+        reason the armed ``/clear_errors`` fallback already disarms: with
+        ``mpc_active=0`` the firmware's guard terms are inert and the output
+        gate is off, so nothing can re-latch or jolt, and the ODrives hold
+        every axis in place. The disarm must CONFIRM on the wire
+        (`_wait_wire_disarmed`) before the op is fired, or the op would race
+        ``s_mpc_active=1`` and be rejected exactly as before.
+
+        Why it stays disarmed: re-arming is the orchestrator's job. While this
+        runs, `_publish_link_status` reports ``fault_state=RECOVERING``
+        (`_recovery_park_in_progress`), which keeps the orchestrator in FAULT
+        (guard-only) and `trajectory_node` frozen at its measured hold; when
+        the flag drops the orchestrator resumes ACTIVE and its A2 arm phase
+        arms the wire with bounded retries, exactly as it did after the
+        2026-09-22 fallback disarm (`launch_r2gate_20260922_2321.log`
+        1790084102.8-103.0). A manual-arm session (``auto_arm:=false``)
+        re-arms via ``/set_setpoint_output``. The trajectory node's hold is
+        hand-less after a latch (its descent/hold plans carry no hand track,
+        so ``_last_hand_rev`` is None), so the A1 arm check does not compare
+        the hand and the next schedule's opening REST plans the hand from the
+        MEASURED, now parked, position.
+        """
+        was_armed = bool(self._mpc_active)
+        self._recovery_park_in_progress = True
+        try:
+            if was_armed:
+                self.get_logger().info(
+                    'recovery park: disarming the wire first — the firmware '
+                    'rejects ACTIVATE under an armed stream; the orchestrator '
+                    're-arms once the park completes')
+                self._stop_setpoint_output()
+                if not self._wait_wire_disarmed():
+                    return False, (
+                        'hand NOT parked — the disarm before the park did not '
+                        'confirm on the wire (T2J bit3 still set), so the '
+                        'firmware would reject the ACTIVATE; wire is '
+                        'disarming, retry /recover')
+            pok, pmsg = self._park_hand(poll_dt=poll_dt)
+        finally:
+            self._recovery_park_in_progress = False
+        if not pok:
+            return False, pmsg
+        wire = ('wire DISARMED for the park — the orchestrator re-arms on '
+                'ACTIVE (auto_arm), or re-arm via /set_setpoint_output'
+                if was_armed else 'wire was already disarmed')
+        return True, f'{pmsg}; {wire}'
 
     def _svc_park_hand(self, req, res):
         """``/park_hand``: bring the hand home through the profiled ACTIVATE op
@@ -6984,10 +7081,23 @@ class TeensyBridgeNode(Node):
                                f'Wire is disarming; retry /clear_errors.')
                 return res
             ok, msg, _ = self.teensy_clear_errors()
-            res.success = ok
-            res.message = (f'recover failed ({prior}); disarmed and cleared '
-                           f'directly — {msg}. Wire is DISARMED; re-arm via '
-                           f'/set_setpoint_output when a stream is live.')
+            if not ok:
+                res.success = False
+                res.message = (f'recover failed ({prior}); disarmed but the '
+                               f'direct CLEAR_ERRORS failed — {msg}')
+                return res
+            # The same hand-park obligation as /recover (2026-09-23): this
+            # fallback is exactly where the 2026-09-22 sitting left the hand
+            # at 5.57 rev for the next schedule to walk into a 7.3 rev latch.
+            # The wire is already disarmed here, so the park is unopposed.
+            pok, pmsg = self._park_hand_disarmed()
+            res.success = pok
+            res.message = (
+                f'recover failed ({prior}); disarmed and cleared directly — '
+                f'{msg}; {pmsg}. Wire is DISARMED; re-arm via '
+                f'/set_setpoint_output when a stream is live.' if pok else
+                f'recover failed ({prior}); disarmed and cleared directly — '
+                f'{msg}; but HAND NOT PARKED — {pmsg}; {_HAND_NOT_PARKED_HINT}')
             return res
         ok, msg, _ = self.teensy_clear_errors()
         res.success = ok
