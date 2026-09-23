@@ -53,9 +53,18 @@ import yaml
 
 __all__ = [
     'AdmissibleBox', 'AdmissibleError', 'LimitsMismatch',
-    'MARGIN_FRAC', 'clip', 'dump', 'load', 'check_limits', 'gate_hash',
-    'select',
+    'MARGIN_FRAC', 'PATTERNS', 'clip', 'dump', 'load', 'check_limits',
+    'gate_hash', 'select',
 ]
+
+#: The skill patterns an admissible box may be swept for (R4,
+#: brief_U0_admissible.md § A). 'self_toss' and 'columns' both key
+#: :attr:`AdmissibleBox.site_pair` as (release site name, release site name)
+#: -- a columns throw's own release/target site IS the site a pre-throw
+#: transit lands it at, baked into the swept segment (see the module
+#: docstring's "Why" #1); 'hop' is the genuinely cross-site case, release
+#: site name != target site name.
+PATTERNS = ('self_toss', 'hop', 'columns')
 
 #: Every grid point in the box must clear the session limit by this fraction
 #: before it is admitted -- 10% headroom above the swept operating point for
@@ -86,7 +95,7 @@ def _is_empty_range(lo: float, hi: float) -> bool:
 
 @dataclasses.dataclass(frozen=True)
 class AdmissibleBox:
-    """Per (site pair, apex band) bounds on a THROW command, plus the
+    """Per (pattern, site pair, apex band) bounds on a THROW command, plus the
     provenance a loader needs to refuse a stale sweep (plan § 2.6).
 
     An EMPTY box (no grid point in the sweep passed with margin) is
@@ -95,6 +104,19 @@ class AdmissibleBox:
     ``throw_envelope._find_flight_band`` uses for "no admitted set", so a
     caller who forgets to check emptiness gets a loud ``nan`` comparison
     rather than a silently-passing bound.
+
+    **R4: ``pattern`` + the two site xy stamps (2026-09-23).** ``site_pair``
+    is ``(RELEASE site name, TARGET site name)`` -- THE key
+    ``executor.SkillExecutor._command_u`` looks a box up by
+    (``adm.select(self.boxes, self.schedule.pattern, (site.name,
+    target.name), apex, ...)``). A box carries no other site geometry, so a
+    box swept at one separation (e.g. columns' 100 mm) would otherwise be
+    silently applied at another (a hop swept at 250 mm applied to a 100 mm
+    schedule) -- :attr:`release_site_xy_mm` / :attr:`target_site_xy_mm` close
+    that, and :func:`select` refuses unless both match the live sites to
+    within 1e-6 mm. See ``tools/admissible_sweep.py``'s module docstring for
+    why 'columns' and 'self_toss' both key ``site_pair`` as (X, X) while
+    'hop' keys (release, target).
     """
 
     site_pair: Tuple[str, str]
@@ -107,6 +129,13 @@ class AdmissibleBox:
     #: Distinct from :attr:`apex_band_m`, which says which commands this box
     #: is the right one to LOOK UP, not what it clips them to.
     apex_m: Tuple[float, float]
+    #: One of :data:`PATTERNS` -- which skill shape this box was swept for.
+    pattern: str
+    #: ``(x, y)`` mm, platform frame -- the RELEASE site's ``cup_mm[:2]`` this
+    #: box was swept at (:func:`select`'s xy match).
+    release_site_xy_mm: Tuple[float, float]
+    #: ``(x, y)`` mm, platform frame -- the TARGET site's ``cup_mm[:2]``.
+    target_site_xy_mm: Tuple[float, float]
     #: The session limits this box was swept under -- see ``_LIMIT_KEYS``.
     limits: Dict[str, float]
     #: sha256(feasibility.py text + segments.py text)[:12] -- see :func:`gate_hash`.
@@ -144,6 +173,15 @@ class AdmissibleBox:
             raise ValueError('landing_xy_m and apex_m must be empty (nan) '
                               'together or not at all, got landing_xy_m=%r '
                               'apex_m=%r' % (self.landing_xy_m, self.apex_m))
+        if self.pattern not in PATTERNS:
+            raise ValueError('pattern must be one of %r, got %r'
+                              % (PATTERNS, self.pattern))
+        for name, xy in (('release_site_xy_mm', self.release_site_xy_mm),
+                         ('target_site_xy_mm', self.target_site_xy_mm)):
+            x, y = float(xy[0]), float(xy[1])
+            if not (math.isfinite(x) and math.isfinite(y)):
+                raise ValueError('%s must be a finite (x, y) pair, got %r'
+                                  % (name, xy))
         missing = [k for k in _LIMIT_KEYS if k not in self.limits]
         if missing:
             raise ValueError('limits is missing %r (required: %r)'
@@ -162,21 +200,54 @@ class AdmissibleBox:
         return _is_empty_range(*self.apex_m)
 
 
-def gate_hash(root: str = None) -> str:
-    """sha256 of ``feasibility.py`` + ``segments.py``'s TEXT, first 12 hex chars.
+#: The gated files, IN THE FIXED ORDER :func:`gate_hash` reads them --
+#: everything a working-tree edit to which must invalidate a swept box,
+#: because it changes what the real QP + gate (``unified_cycle.plan_launch``/
+#: ``plan_landing``, gated by ``feasibility.validate_cycle`` as
+#: ``skills.segments.plan_segment`` calls it) admits. R4 (2026-09-23) widened
+#: this from ``{feasibility, segments}.py`` alone: ``cup_cycle.py`` /
+#: ``cup_realize.py`` / ``unified_cycle.py`` / ``tilt_geometry.py`` all shape
+#: the SAME solve and a stale box against an edit to any of them would go
+#: undetected (plan R4 carried item (d)). Each entry is the path components
+#: relative to the ``motion/`` directory -- except ``segments.py``, which
+#: (like the live import ``skills.segments``) lives one level down, in
+#: ``motion/skills/`` alongside this module.
+_GATED_FILES = (
+    ('trajectory', 'feasibility.py'),
+    ('segments.py',),
+    ('trajectory', 'cup_cycle.py'),
+    ('trajectory', 'cup_realize.py'),
+    ('unified_cycle.py',),
+    ('trajectory', 'tilt_geometry.py'),
+)
 
-    Deliberately NOT the commit hash: a working-tree edit to either file (the
-    common case while iterating on a sweep) must invalidate a box that was
-    swept against the old gate, and a git hash only changes at commit.
+
+def gate_hash(root: str = None) -> str:
+    """sha256 of the six :data:`_GATED_FILES`' TEXT, in order, first 12 hex
+    chars.
+
+    Deliberately NOT the commit hash: a working-tree edit to any gated file
+    (the common case while iterating on a sweep) must invalidate a box that
+    was swept against the old gate, and a git hash only changes at commit.
+
+    ``root`` (test-only) maps EVERY one of the six paths directly under it
+    (``root/trajectory/feasibility.py``, ``root/segments.py``,
+    ``root/unified_cycle.py``, ...) -- a flat tmp tree, not a repo layout --
+    rather than replicating the live tree's ``motion/`` vs ``motion/skills/``
+    split. Left ``None``, each path resolves against the live tree: this
+    module's own directory (``motion/skills``) for ``segments.py``, its
+    parent (``motion/``) for the rest.
     """
     here = os.path.dirname(os.path.abspath(__file__))
-    feas_path = os.path.join(here, os.pardir, 'trajectory', 'feasibility.py')
-    seg_path = os.path.join(here, 'segments.py')
-    if root is not None:
-        feas_path = os.path.join(root, 'trajectory', 'feasibility.py')
-        seg_path = os.path.join(root, 'segments.py')
+    motion_dir = os.path.join(here, os.pardir)
     digest = hashlib.sha256()
-    for path in (feas_path, seg_path):
+    for parts in _GATED_FILES:
+        if root is not None:
+            path = os.path.join(root, *parts)
+        elif parts == ('segments.py',):
+            path = os.path.join(here, *parts)
+        else:
+            path = os.path.join(motion_dir, *parts)
         with open(path, 'rb') as handle:
             digest.update(handle.read())
     return digest.hexdigest()[:12]
@@ -206,20 +277,34 @@ def clip(u, box: AdmissibleBox):
     return np.array([cx, cy]), ca
 
 
-def select(boxes: List[AdmissibleBox], site_pair: Tuple[str, str],
-          apex_m: float) -> Optional[AdmissibleBox]:
-    """The box in ``boxes`` whose ``site_pair`` matches ``site_pair`` and
-    whose ``apex_band_m`` contains ``apex_m`` (inclusive, 1e-9 m tolerance).
+def select(boxes: List[AdmissibleBox], pattern: str, site_pair: Tuple[str, str],
+          apex_m: float, *, release_site_xy_mm: Tuple[float, float],
+          target_site_xy_mm: Tuple[float, float]) -> Optional[AdmissibleBox]:
+    """The box in ``boxes`` whose ``pattern`` matches ``pattern``, whose
+    ``site_pair`` matches ``site_pair``, whose ``apex_band_m`` contains
+    ``apex_m`` (inclusive, 1e-9 m tolerance), and whose ``release_site_xy_mm``
+    / ``target_site_xy_mm`` match the live sites to within 1e-6 mm.
 
     ``None`` when no box covers it -- the caller's cue to refuse rather than
     fall back to some OTHER apex's box (the defect this closes: a self-toss
     at 0.5 m apex silently reusing a box swept for 0.9 m and having its
-    apex clipped up to it). Site pair first, then apex band -- the same
-    two-key lookup :meth:`AdmissibleBox` is keyed by."""
+    apex clipped up to it) or some OTHER geometry's box (R4: a hop swept at
+    250 mm separation silently applied to a 100 mm schedule -- a box carries
+    no site geometry of its own, so the caller's live sites are the only
+    check). Pattern, then site pair, then xy, then apex band -- the same
+    four-key lookup :meth:`AdmissibleBox` is keyed by."""
     tol = 1e-9
+    xy_tol_mm = 1e-6
     pair = tuple(site_pair)
+    rel_x, rel_y = float(release_site_xy_mm[0]), float(release_site_xy_mm[1])
+    tgt_x, tgt_y = float(target_site_xy_mm[0]), float(target_site_xy_mm[1])
     for box in boxes:
-        if box.site_pair != pair:
+        if box.pattern != pattern or box.site_pair != pair:
+            continue
+        if (abs(box.release_site_xy_mm[0] - rel_x) > xy_tol_mm
+                or abs(box.release_site_xy_mm[1] - rel_y) > xy_tol_mm
+                or abs(box.target_site_xy_mm[0] - tgt_x) > xy_tol_mm
+                or abs(box.target_site_xy_mm[1] - tgt_y) > xy_tol_mm):
             continue
         lo, hi = box.apex_band_m
         if lo - tol <= float(apex_m) <= hi + tol:
@@ -238,20 +323,24 @@ def _apex_bands_overlap(a: Tuple[float, float], b: Tuple[float, float]) -> bool:
 
 
 def _refuse_overlapping_apex_bands(boxes: List[AdmissibleBox], error_cls) -> None:
-    """Refuse (raising ``error_cls``) when two boxes share a ``site_pair``
-    and their ``apex_band_m`` ranges overlap -- ambiguous at :func:`select`
-    time, so it is a contract violation in whatever built the file, not a
-    tie for the caller to break."""
-    by_pair: Dict[Tuple[str, str], List[Tuple[float, float]]] = {}
+    """Refuse (raising ``error_cls``) when two boxes share a
+    ``(pattern, site_pair)`` and their ``apex_band_m`` ranges overlap --
+    ambiguous at :func:`select` time, so it is a contract violation in
+    whatever built the file, not a tie for the caller to break. Keyed on
+    pattern too (R4): a 'hop' and a 'columns' box may legitimately share a
+    ``site_pair`` of ``(P1, P1)`` / ``(P2, P2)`` at overlapping apex bands --
+    :func:`select` never confuses them, so this must not refuse them either."""
+    by_key: Dict[Tuple[str, Tuple[str, str]], List[Tuple[float, float]]] = {}
     for box in boxes:
-        for band in by_pair.get(box.site_pair, ()):
+        key = (box.pattern, box.site_pair)
+        for band in by_key.get(key, ()):
             if _apex_bands_overlap(band, box.apex_band_m):
                 raise error_cls(
-                    'two boxes for site pair %r have overlapping apex_band_m '
-                    '%r and %r -- select() could not resolve which one a '
-                    'command in the overlap belongs to'
-                    % (box.site_pair, band, box.apex_band_m))
-        by_pair.setdefault(box.site_pair, []).append(box.apex_band_m)
+                    'two boxes for pattern %r site pair %r have overlapping '
+                    'apex_band_m %r and %r -- select() could not resolve '
+                    'which one a command in the overlap belongs to'
+                    % (box.pattern, box.site_pair, band, box.apex_band_m))
+        by_key.setdefault(key, []).append(box.apex_band_m)
 
 
 def _limits_dict(limits) -> Dict[str, float]:
@@ -323,6 +412,7 @@ def dump(path: str, boxes: List[AdmissibleBox]) -> None:
         'limits': {k: float(limits[k]) for k in _LIMIT_KEYS},
         'boxes': [
             {
+                'pattern': str(box.pattern),
                 'site_pair': list(box.site_pair),
                 'apex_band_m': [float(box.apex_band_m[0]), float(box.apex_band_m[1])],
                 'landing_xy_m': [
@@ -330,6 +420,10 @@ def dump(path: str, boxes: List[AdmissibleBox]) -> None:
                     [float(box.landing_xy_m[1][0]), float(box.landing_xy_m[1][1])],
                 ],
                 'apex_m': [float(box.apex_m[0]), float(box.apex_m[1])],
+                'release_site_xy_mm': [float(box.release_site_xy_mm[0]),
+                                       float(box.release_site_xy_mm[1])],
+                'target_site_xy_mm': [float(box.target_site_xy_mm[0]),
+                                      float(box.target_site_xy_mm[1])],
             }
             for box in boxes
         ],
@@ -343,6 +437,11 @@ def dump(path: str, boxes: List[AdmissibleBox]) -> None:
 
 _REQUIRED_TOP = ('swept_at', 'gate_hash', 'limits', 'boxes')
 _REQUIRED_BOX = ('site_pair', 'apex_band_m', 'landing_xy_m', 'apex_m')
+#: R4 (2026-09-23) box-level fields -- checked SEPARATELY from
+#: :data:`_REQUIRED_BOX` so a pre-R4 file (which has every ``_REQUIRED_BOX``
+#: key but none of these) gets the dedicated "regenerate the sweep" refusal
+#: below rather than a generic "missing %r" that reads like a typo.
+_REQUIRED_BOX_R4 = ('pattern', 'release_site_xy_mm', 'target_site_xy_mm')
 
 
 def load(path: str) -> List[AdmissibleBox]:
@@ -357,6 +456,13 @@ def load(path: str) -> List[AdmissibleBox]:
     writing ``flight_s`` (only this module's own loader and one now-deleted
     test exercised it) -- see ``logbook/2026-09-18-learn-the-apex-aim-from-
     the-tracker.md`` ("retire it then, not before").
+
+    **R4 (2026-09-23): a pre-R4 file (no ``pattern`` / site xy on its boxes)
+    is REFUSED, never reinterpreted.** There is no default pattern or xy a
+    loader could safely infer -- a box with no site geometry stamped on it is
+    exactly the defect this unit closes (a box swept at one separation
+    silently applied at another), so guessing would resurrect it one loader
+    away. Regenerate with ``tools/admissible_sweep.py``.
     """
     try:
         with open(path, 'r') as handle:
@@ -392,14 +498,28 @@ def load(path: str) -> List[AdmissibleBox]:
         if missing:
             raise AdmissibleError("%s: boxes[%d] is missing %r"
                                   % (path, i, missing))
+        missing_r4 = [k for k in _REQUIRED_BOX_R4 if k not in raw]
+        if missing_r4:
+            raise AdmissibleError(
+                "%s: boxes[%d] is missing %r -- this is a PRE-R4 admissible "
+                "box file (unit U0, 2026-09-23), swept before a box carried "
+                "its own pattern/site geometry, and is refused rather than "
+                "reinterpreted (a box with no site xy is exactly the defect "
+                "this unit closes). Regenerate: python tools/"
+                "admissible_sweep.py" % (path, i, missing_r4))
         xy = raw['landing_xy_m']
         apex = (float(raw['apex_m'][0]), float(raw['apex_m'][1]))
+        rel_xy = raw['release_site_xy_mm']
+        tgt_xy = raw['target_site_xy_mm']
         out.append(AdmissibleBox(
             site_pair=tuple(raw['site_pair']),
             apex_band_m=(float(raw['apex_band_m'][0]), float(raw['apex_band_m'][1])),
             landing_xy_m=((float(xy[0][0]), float(xy[0][1])),
                           (float(xy[1][0]), float(xy[1][1]))),
             apex_m=apex,
+            pattern=str(raw['pattern']),
+            release_site_xy_mm=(float(rel_xy[0]), float(rel_xy[1])),
+            target_site_xy_mm=(float(tgt_xy[0]), float(tgt_xy[1])),
             limits=limits_out,
             gate_hash=ghash,
             swept_at=swept_at,

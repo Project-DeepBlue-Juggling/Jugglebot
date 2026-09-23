@@ -34,12 +34,26 @@ caught and reported by code) but plans through ``skills.segments.plan_segment``
 so the admitted set is judged by the PRODUCTION entry point, not a bespoke
 chain.
 
+**R4 (2026-09-23): the cross-site HOP.** A hop releases at one columns site
+and lands at the OTHER (``sites.columns_sites``'s two orderings, default
+:data:`HOP_SEPARATION_MM` = 250 mm -- the owner's R4 target, wider than the
+columns pair's 100 mm) -- a genuinely different segment shape from the
+columns cell's baked-in-transit throw (see :func:`_hop_throw_cell` /
+:func:`_hop_catch_cell`), so :func:`hop_sweep` is its own driver, not a
+``site_pairs`` override of :func:`sweep`. Every box now also carries a
+``pattern`` (``admissible.PATTERNS``) and the release/target site xy it was
+swept at (``motion/skills/admissible.py``'s module docstring, "Why" #1/#2) --
+the executor's lookup key for a hop is genuinely (release, target), unlike
+'columns'/'self_toss', which both key (site, site) because their release AND
+target site coincide.
+
 Usage (venv)::
 
     python tools/admissible_sweep.py
     python tools/admissible_sweep.py --out /tmp/admissible_box.yaml
     python tools/admissible_sweep.py --site-pairs single \
         --single-apex 0.5 0.6 0.7 0.8 0.9
+    python tools/admissible_sweep.py --site-pairs hop --hop-separation-mm 250
 
 Deterministic (``tests/motion/test_unified_cycle.py::
 test_planning_is_deterministic``); run twice and diff the YAML before quoting
@@ -91,6 +105,15 @@ from jugglebot.motion.skills import sites as st                        # noqa: E
 # tool's default did not follow until now). See ``config/generated/
 # hardware_config.py``'s ``JB_TRAJ_LEG_*_LIMIT_*`` / ``JB_TRAJ_HAND_ACC_LIMIT_RPS2``.
 SEPARATION_MM = 100.0
+#: R4's cross-site HOP separation (owner target, 2026-09-16) -- wider than
+#: the columns pair's 100 mm; :func:`hop_sweep` runs BOTH at this separation.
+#: MEASURED 2026-09-23 (``scratchpad/probe_r4_hop.py``, R4's own operating
+#: limits 300/5000/150000/3500): at 250 mm the hop's launch THROW (jerk
+#: 126k), its CATCH+then_throw (88k) and the chained CATCH are all OK with
+#: margin; a +40 mm landing offset REFUSES (dx -40/+-20 mm are OK) -- so the
+#: box at this separation is expected to be narrower than the columns box's
+#: symmetric +-20 mm, not empty.
+HOP_SEPARATION_MM = 250.0
 APEXES_M = (0.85, 0.90, 0.95)
 #: Landing offsets per axis (mm): the original +-20/10/0 grid, densified
 #: around the origin 2026-09-21 with +-0.5/1/2/4/6/8 mm -- the 2026-09-16 grid
@@ -292,6 +315,83 @@ def _chained_catch_cell(site, release_seed, takeoff_vel_mm_s, flight_s: float,
     plan_a, meta_a = uc.plan_steady(goals_a, release_seed, limits, geom)
     next_release_seed = uc.release_state_from_meta(meta_a, plan_a)
     return True, 'OK', next_release_seed, next_takeoff
+
+
+def _hop_throw_cell(from_site, to_site, flight_s: float, launch_s: float,
+                    limits: TrajectoryLimits, geom, cfg,
+                    offset_mm: Tuple[float, float] = (0.0, 0.0)):
+    """R4's cross-site HOP launch: THROW from rest AT ``from_site``, released
+    at ``from_site.throw_site_mm()``, targeting ``to_site.throw_site_mm() +
+    offset_mm`` -- unlike the columns cell's :func:`_throw_cell` (whose
+    release site IS ``to_site``, the pre-throw transit baked into the
+    segment), a hop's release and landing sites are genuinely two different
+    physical locations, so the ballistic terminal's OWN site is
+    ``from_site``'s.  Two solves of the SAME launch, for the same reason
+    :func:`_throw_cell` gives.  Returns ``(ok, code, release_seed,
+    takeoff_vel_mm_s)`` -- the last two ``None`` on a refusal.
+    """
+    seed = _rest_state(from_site.rest_site_mm())
+    target_mm = to_site.throw_site_mm() + np.array(
+        [float(offset_mm[0]), float(offset_mm[1]), 0.0])
+    terminal = sg.ThrowTerminal(site_mm=from_site.throw_site_mm(),
+                                target_mm=target_mm, flight_s=flight_s,
+                                t_release_s=launch_s)
+    try:
+        segment = sg.plan_segment(sg.THROW, seed, terminal, cfg, limits, geom)
+    except uc.CycleInfeasible as exc:
+        return False, exc.code, None, None
+    if not _within_margin(segment.meta.report, limits):
+        return False, 'MARGIN', None, None
+    goals = uc.CycleGoals(period_s=launch_s, throw_site_mm=terminal.site_mm,
+                          throw_target_mm=terminal.target_mm, flight_s=flight_s)
+    plan_a, meta_a = uc.plan_launch(goals, seed, limits, geom)
+    release_seed = uc.release_state_from_meta(meta_a, plan_a)
+    return True, 'OK', release_seed, segment.takeoff_vel_mm_s
+
+
+def _hop_catch_cell(from_site, to_site, release_seed, takeoff_vel_mm_s,
+                    flight_s: float, dwell_s: float,
+                    offset_mm: Tuple[float, float],
+                    limits: TrajectoryLimits, geom, cfg):
+    """R4's cross-site HOP steady state: CATCH at ``to_site`` (arriving from
+    ``from_site``'s throw) carrying ``then_throw`` back TOWARD ``from_site``,
+    then one more :func:`_catch_cell` at ``from_site`` for that carried
+    throw -- the command ``u`` (the landing offset) applies to BOTH legs,
+    exactly as :func:`_chained_catch_cell` applies it to a same-site chain's
+    steady state.  Returns ``(ok, code)``.
+    """
+    landing_mm = to_site.catch_site_mm() + np.array(
+        [float(offset_mm[0]), float(offset_mm[1]), 0.0])
+    v_arrival = bal.arrival_velocity(takeoff_vel_mm_s, flight_s)
+    t_release = float(flight_s) + float(dwell_s)
+    target_back_mm = from_site.throw_site_mm() + np.array(
+        [float(offset_mm[0]), float(offset_mm[1]), 0.0])
+    then_throw = sg.ThrowAfterCatch(t_release_s=t_release,
+                                    site_mm=to_site.throw_site_mm(),
+                                    target_mm=target_back_mm, flight_s=float(flight_s))
+    terminal = sg.CatchTerminal(landing_mm=landing_mm, landing_vel_mm_s=v_arrival,
+                                t_land_s=float(flight_s),
+                                rest_site_mm=to_site.rest_site_mm(),
+                                then_throw=then_throw)
+    try:
+        segment = sg.plan_segment(sg.CATCH, release_seed, terminal, cfg, limits, geom)
+    except uc.CycleInfeasible as exc:
+        return False, exc.code
+    if not _within_margin(segment.meta.report, limits):
+        return False, 'MARGIN'
+    goals = uc.CycleGoals(period_s=t_release, throw_site_mm=then_throw.site_mm,
+                          throw_target_mm=then_throw.target_mm, flight_s=float(flight_s),
+                          catch_site_mm=landing_mm, catch_vel_mm_s=v_arrival,
+                          catch_t_s=float(flight_s))
+    plan_b, meta_b = uc.plan_steady(goals, release_seed, limits, geom)
+    next_release_seed = uc.release_state_from_meta(meta_b, plan_b)
+    next_takeoff = segment.takeoff_vel_mm_s
+    ok2, code2 = _catch_cell(from_site, next_release_seed, next_takeoff,
+                             float(flight_s), float(flight_s), offset_mm,
+                             limits, geom, cfg)
+    if not ok2:
+        return False, 'CHAIN_CATCH:%s' % code2
+    return True, 'OK'
 
 
 def _max_rectangle(xs: Sequence[float], ys: Sequence[float], pass_fn,
@@ -521,10 +621,126 @@ def sweep(*, apexes_m: Sequence[float] = APEXES_M,
             # conversion is `schedule.flight_s`'s exact inverse, so the band
             # admits the same set of throws either way.
             apex_bounds = (sc.apex_m(flight_band[0]), sc.apex_m(flight_band[1]))
+        # R4 (2026-09-23): the box's KEY, not merely its provenance. A
+        # same-site pair is a 'self_toss' box, keyed (site, site) -- unchanged
+        # geometry. A cross-site pair here is the COLUMNS cell, whose THROW
+        # (`_throw_cell`) is seeded at `from_site`'s rest but releases AT
+        # `to_site` (the pre-throw transit is baked into the segment, see the
+        # module docstring's "Why" #1) -- so the box the EXECUTOR looks up by
+        # (release_site.name, target_site.name) is keyed (to.name, to.name),
+        # not (from.name, to.name); the xy stamps are `to_site`'s own, both
+        # release and target (the two coincide for this pattern).
+        pattern = 'self_toss' if same_site else 'columns'
+        box_pair = (to_site.name, to_site.name)
+        box_xy = (float(to_site.cup_mm[0]), float(to_site.cup_mm[1]))
+        boxes.append(ab.AdmissibleBox(
+            site_pair=box_pair, apex_band_m=apex_band,
+            landing_xy_m=landing_xy, apex_m=apex_bounds, pattern=pattern,
+            release_site_xy_mm=box_xy, target_site_xy_mm=box_xy,
+            limits=limits_dict, gate_hash=ghash, swept_at=swept_at))
+    return boxes, rows
+
+
+def hop_sweep(*, apexes_m: Sequence[float] = APEXES_M,
+             offsets_mm: Sequence[float] = OFFSETS_MM, dwell_s: float = DWELL_S,
+             separation_mm: float = HOP_SEPARATION_MM, leg_vel: float = LEG_VEL_MMPS,
+             leg_acc: float = LEG_ACC_MMPS2, leg_jerk: float = LEG_JERK_MMPS3,
+             hand_acc: float = HAND_ACC_RPS2, launch_s: float = SINGLE_SITE_LAUNCH_S,
+             center_apex_m: Optional[float] = None, log=print
+             ) -> Tuple[List['ab.AdmissibleBox'], List[Dict]]:
+    """R4's cross-site HOP sweep (release at one columns site, landing at the
+    other) -- plan "R4", ``brief_U0_admissible.md`` § B.
+
+    Mirrors :func:`sweep`'s box-building (the same :func:`_flight_band_and_rect`
+    grid-to-rectangle reduction, and the columns apex band [0.85, 0.95] m via
+    :func:`~jugglebot.motion.skills.schedule.flight_s`) but drives the hop's
+    OWN three-segment chain (:func:`_hop_throw_cell` / :func:`_hop_catch_cell`)
+    rather than :func:`sweep`'s columns/self-toss cells -- a hop's steady state
+    is THROW(from) -> CATCH(to)+then_throw(to -> from) -> CATCH(from), a shape
+    neither existing cell plans (the columns cell's THROW releases AT the
+    destination site; a hop's releases at the ORIGIN).  Both directions
+    (``columns_sites``'s two orderings) are swept, each its own box: pattern
+    'hop', ``site_pair=(from.name, to.name)`` (genuinely two different sites,
+    unlike 'columns'/'self_toss' -- see ``admissible.AdmissibleBox``'s
+    docstring), xy stamped from the two sites.
+    """
+    geom = StewartGeometry()
+    limits = _limits(leg_vel, leg_acc, leg_jerk, hand_acc)
+    cfg = sg.SegmentConfig()
+    site0, site1 = st.columns_sites(separation_mm)
+    flights = [sc.flight_s(a) for a in apexes_m]
+    apex_band = (min(float(a) for a in apexes_m), max(float(a) for a in apexes_m))
+    center_apex = (float(center_apex_m) if center_apex_m is not None
+                  else sorted(float(a) for a in apexes_m)[len(apexes_m) // 2])
+    center_flight = sc.flight_s(center_apex)
+    ghash = ab.gate_hash()
+    swept_at = _dt.date.today().isoformat()
+    limits_dict = dict(leg_vel_mmps=float(leg_vel), leg_acc_mmps2=float(leg_acc),
+                       leg_jerk_mmps3=float(leg_jerk), hand_acc_rps2=float(hand_acc))
+
+    boxes: List['ab.AdmissibleBox'] = []
+    rows: List[Dict] = []
+    for from_site, to_site in ((site0, site1), (site1, site0)):
+        pass_grid = {}   # (flight, dx, dy) -> bool
+        for T in flights:
+            t0 = time.perf_counter()
+            ok, code, release_seed, takeoff = _hop_throw_cell(
+                from_site, to_site, T, launch_s, limits, geom, cfg)
+            row = dict(site_pair=(from_site.name, to_site.name), flight_s=round(T, 4),
+                      offset_mm=None, ok=ok,
+                      code=('THROW:%s' % code) if not ok else 'THROW:OK',
+                      wall_s=round(time.perf_counter() - t0, 3))
+            rows.append(row)
+            log(row)
+            if not ok:
+                for dx in offsets_mm:
+                    for dy in offsets_mm:
+                        pass_grid[(T, dx, dy)] = False
+                continue
+            for dx in offsets_mm:
+                for dy in offsets_mm:
+                    t1 = time.perf_counter()
+                    # The box is the intersection of two gates, same reason
+                    # as `sweep`'s same-site branch: the launch THROW from
+                    # rest under THIS offset (a cold-start attempt's own
+                    # command), and the chained CATCH+then_throw+CATCH from
+                    # the ZERO-offset seeding launch above.
+                    lok, lcode, _seed, _takeoff = _hop_throw_cell(
+                        from_site, to_site, T, launch_s, limits, geom, cfg,
+                        offset_mm=(dx, dy))
+                    if lok:
+                        cok, ccode = _hop_catch_cell(
+                            from_site, to_site, release_seed, takeoff, T, dwell_s,
+                            (dx, dy), limits, geom, cfg)
+                    else:
+                        cok, ccode = False, 'LAUNCH:%s' % lcode
+                    pass_grid[(T, dx, dy)] = cok
+                    rows.append(dict(site_pair=(from_site.name, to_site.name),
+                                     flight_s=round(T, 4), offset_mm=(dx, dy),
+                                     ok=cok, code=ccode,
+                                     wall_s=round(time.perf_counter() - t1, 3)))
+                    log(rows[-1])
+
+        flight_band, rect = _flight_band_and_rect(flights, offsets_mm, pass_grid,
+                                                  center_flight)
+        if flight_band is None:
+            log({'site_pair': (from_site.name, to_site.name), 'WARNING':
+                'the CENTRE flight %.4f s fails at zero offset -- the owner '
+                'operating point itself is refused, not merely a margin edge'
+                % center_flight})
+        if rect is None:
+            landing_xy = ((float('nan'), float('nan')), (float('nan'), float('nan')))
+            apex_bounds = (float('nan'), float('nan'))
+        else:
+            xlo, xhi, ylo, yhi = rect
+            landing_xy = ((xlo / 1000.0, xhi / 1000.0), (ylo / 1000.0, yhi / 1000.0))
+            apex_bounds = (sc.apex_m(flight_band[0]), sc.apex_m(flight_band[1]))
         boxes.append(ab.AdmissibleBox(
             site_pair=(from_site.name, to_site.name), apex_band_m=apex_band,
-            landing_xy_m=landing_xy, apex_m=apex_bounds, limits=limits_dict,
-            gate_hash=ghash, swept_at=swept_at))
+            landing_xy_m=landing_xy, apex_m=apex_bounds, pattern='hop',
+            release_site_xy_mm=(float(from_site.cup_mm[0]), float(from_site.cup_mm[1])),
+            target_site_xy_mm=(float(to_site.cup_mm[0]), float(to_site.cup_mm[1])),
+            limits=limits_dict, gate_hash=ghash, swept_at=swept_at))
     return boxes, rows
 
 
@@ -591,9 +807,9 @@ def _single_apex_boxes(apexes_m: Sequence[float], *, flight_frac: Sequence[float
 
 
 def to_markdown(boxes: List['ab.AdmissibleBox']) -> str:
-    out = ['| site pair | apex band m | landing xy box (mm) | apex box (m) |'
-          ' limits (vel/acc/jerk mm, hand acc rev) |',
-          '|---|---|---|---|---|']
+    out = ['| pattern | site pair | apex band m | landing xy box (mm) |'
+          ' apex box (m) | limits (vel/acc/jerk mm, hand acc rev) |',
+          '|---|---|---|---|---|---|']
     for box in boxes:
         if box.empty:
             xy_str, ap_str = 'EMPTY', 'EMPTY'
@@ -602,9 +818,9 @@ def to_markdown(boxes: List['ab.AdmissibleBox']) -> str:
             xy_str = '[%.0f, %.0f] x [%.0f, %.0f]' % (
                 xlo * 1000.0, xhi * 1000.0, ylo * 1000.0, yhi * 1000.0)
             ap_str = '%.4f-%.4f' % box.apex_m
-        out.append('| %s | %.2f-%.2f | %s | %s | %.0f/%.0f/%.0fk, %.0f |' % (
-            box.site_pair, box.apex_band_m[0], box.apex_band_m[1], xy_str, ap_str,
-            box.limits['leg_vel_mmps'], box.limits['leg_acc_mmps2'],
+        out.append('| %s | %s | %.2f-%.2f | %s | %s | %.0f/%.0f/%.0fk, %.0f |' % (
+            box.pattern, box.site_pair, box.apex_band_m[0], box.apex_band_m[1],
+            xy_str, ap_str, box.limits['leg_vel_mmps'], box.limits['leg_acc_mmps2'],
             box.limits['leg_jerk_mmps3'] / 1000.0, box.limits['hand_acc_rps2']))
     return '\n'.join(out)
 
@@ -618,13 +834,15 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--out', default=_DEFAULT_OUT)
     ap.add_argument('--quiet', action='store_true')
-    ap.add_argument('--site-pairs', choices=('columns', 'single', 'both'),
-                    default='columns',
-                    help='which boxes to sweep: the two columns orderings '
-                         '(default, unchanged), the R3 single-site self-toss '
-                         'pair, or both -- one YAML needs ONE limits set '
-                         '(ab.dump enforces it), so "both" sweeps every box '
-                         'under the SAME --leg-*/--hand-acc')
+    ap.add_argument('--site-pairs', choices=('columns', 'single', 'hop', 'all'),
+                    default='all',
+                    help='which boxes to sweep: the two columns orderings, '
+                         'the R3 single-site self-toss pair, the R4 '
+                         'cross-site hop (both directions), or all of them '
+                         '("both" was renamed "all" 2026-09-23 when hop was '
+                         'added) -- one YAML needs ONE limits set (ab.dump '
+                         'enforces it), so "all" sweeps every box under the '
+                         'SAME --leg-*/--hand-acc')
     ap.add_argument('--apex', type=float, nargs='+', default=list(APEXES_M),
                     help='columns apex grid (m), mapped through sc.flight_s')
     ap.add_argument('--offsets-mm', type=float, nargs='+', default=list(OFFSETS_MM),
@@ -660,6 +878,9 @@ def main(argv=None) -> int:
                          'sites.columns_sites(--separation-mm)[0]')
     ap.add_argument('--dwell-s', type=float, default=DWELL_S)
     ap.add_argument('--separation-mm', type=float, default=SEPARATION_MM)
+    ap.add_argument('--hop-separation-mm', type=float, default=HOP_SEPARATION_MM,
+                    help='R4 hop-pair separation (mm); independent of '
+                         '--separation-mm, which stays the columns cell\'s')
     ap.add_argument('--leg-vel', type=float, default=LEG_VEL_MMPS)
     ap.add_argument('--leg-acc', type=float, default=LEG_ACC_MMPS2)
     ap.add_argument('--leg-jerk', type=float, default=LEG_JERK_MMPS3)
@@ -672,14 +893,21 @@ def main(argv=None) -> int:
 
     t_start = time.perf_counter()
     boxes: List['ab.AdmissibleBox'] = []
-    if args.site_pairs in ('columns', 'both'):
+    if args.site_pairs in ('columns', 'all'):
         cboxes, _rows = sweep(
             apexes_m=args.apex, offsets_mm=args.offsets_mm, dwell_s=args.dwell_s,
             separation_mm=args.separation_mm, leg_vel=args.leg_vel,
             leg_acc=args.leg_acc, leg_jerk=args.leg_jerk, hand_acc=args.hand_acc,
             log=log)
         boxes.extend(cboxes)
-    if args.site_pairs in ('single', 'both'):
+    if args.site_pairs in ('hop', 'all'):
+        hboxes, _rows = hop_sweep(
+            apexes_m=args.apex, offsets_mm=args.offsets_mm, dwell_s=args.dwell_s,
+            separation_mm=args.hop_separation_mm, leg_vel=args.leg_vel,
+            leg_acc=args.leg_acc, leg_jerk=args.leg_jerk, hand_acc=args.hand_acc,
+            log=log)
+        boxes.extend(hboxes)
+    if args.site_pairs in ('single', 'all'):
         if args.single_site_xy is not None:
             sx, sy = args.single_site_xy
             site = st.Site('P1', np.array([sx, sy, st.CATCH_CUP_Z_MM]))

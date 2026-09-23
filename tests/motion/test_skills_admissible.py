@@ -43,10 +43,20 @@ _LIMITS_DICT = dict(leg_vel_mmps=300.0, leg_acc_mmps2=5000.0,
 _GATE_HASH = ab.gate_hash()
 
 
+#: The default release/target xy every ``_box()`` / ``_empty_box()`` carries
+#: unless overridden -- arbitrary but finite (most tests below exercise
+#: validation / dump / load / clip / check_limits, which never look at the
+#: xy's physical meaning); the ``select`` xy-matching tests pass explicit
+#: ``release_site_xy_mm`` / ``target_site_xy_mm`` on both sides.
+_DEFAULT_XY_MM = (-50.0, 50.0)
+
+
 def _box(**overrides):
     kwargs = dict(
         site_pair=('P1', 'P2'), apex_band_m=(0.85, 0.95),
         landing_xy_m=((-0.02, 0.02), (-0.01, 0.01)), apex_m=(0.87, 0.93),
+        pattern='hop', release_site_xy_mm=_DEFAULT_XY_MM,
+        target_site_xy_mm=_DEFAULT_XY_MM,
         limits=dict(_LIMITS_DICT), gate_hash=_GATE_HASH, swept_at='2026-09-12')
     kwargs.update(overrides)
     return ab.AdmissibleBox(**kwargs)
@@ -56,7 +66,9 @@ def _empty_box(**overrides):
     kwargs = dict(
         site_pair=('P1', 'P2'), apex_band_m=(0.85, 0.95),
         landing_xy_m=((float('nan'), float('nan')), (float('nan'), float('nan'))),
-        apex_m=(float('nan'), float('nan')), limits=dict(_LIMITS_DICT),
+        apex_m=(float('nan'), float('nan')), pattern='hop',
+        release_site_xy_mm=_DEFAULT_XY_MM, target_site_xy_mm=_DEFAULT_XY_MM,
+        limits=dict(_LIMITS_DICT),
         gate_hash=_GATE_HASH, swept_at='2026-09-12')
     kwargs.update(overrides)
     return ab.AdmissibleBox(**kwargs)
@@ -94,6 +106,18 @@ def test_box_rejects_a_malformed_gate_hash():
         _box(gate_hash='not-hex!!')
 
 
+def test_box_rejects_a_pattern_outside_the_vocabulary():
+    with pytest.raises(ValueError, match='pattern'):
+        _box(pattern='crossing')
+
+
+def test_box_rejects_a_non_finite_site_xy():
+    with pytest.raises(ValueError, match='release_site_xy_mm'):
+        _box(release_site_xy_mm=(float('nan'), 0.0))
+    with pytest.raises(ValueError, match='target_site_xy_mm'):
+        _box(target_site_xy_mm=(0.0, float('inf')))
+
+
 def test_empty_box_reports_empty():
     assert _box().empty is False
     assert _empty_box().empty is True
@@ -109,6 +133,36 @@ def test_gate_hash_is_twelve_lowercase_hex_chars_and_deterministic():
     assert h1 == h2
     assert len(h1) == 12
     assert all(c in '0123456789abcdef' for c in h1)
+
+
+_GATE_TREE_FILES = ('segments.py', 'unified_cycle.py',
+                    os.path.join('trajectory', 'feasibility.py'),
+                    os.path.join('trajectory', 'cup_cycle.py'),
+                    os.path.join('trajectory', 'cup_realize.py'),
+                    os.path.join('trajectory', 'tilt_geometry.py'))
+
+
+def _write_gate_tree(root, contents='x'):
+    os.makedirs(os.path.join(root, 'trajectory'), exist_ok=True)
+    for rel in _GATE_TREE_FILES:
+        with open(os.path.join(root, rel), 'w') as handle:
+            handle.write(contents)
+
+
+@pytest.mark.parametrize('which', _GATE_TREE_FILES)
+def test_gate_hash_changes_when_any_of_the_six_gated_files_change(tmp_path, which):
+    """R4 widened the gate from {feasibility, segments}.py alone to all six
+    files that shape the real solve (cup_cycle.py / cup_realize.py /
+    unified_cycle.py / tilt_geometry.py too) -- an edit to ANY of them must
+    change the hash, or a box swept against a stale one of the four newly
+    added files goes undetected (plan R4 carried item (d))."""
+    root = str(tmp_path)
+    _write_gate_tree(root)
+    before = ab.gate_hash(root=root)
+    with open(os.path.join(root, which), 'a') as handle:
+        handle.write('y')
+    after = ab.gate_hash(root=root)
+    assert before != after
 
 
 # ---------------------------------------------------------------------------
@@ -186,6 +240,27 @@ def test_clip_on_an_empty_box_refuses_naming_the_site_pair():
         ab.clip((np.array([0.0, 0.0]), 0.90), box)
 
 
+def test_load_refuses_a_pre_r4_file_missing_pattern_and_site_xy(tmp_path):
+    """A file swept before R4 (unit U0, 2026-09-23) has every _REQUIRED_BOX
+    key but none of pattern / release_site_xy_mm / target_site_xy_mm --
+    refused naming the missing fields and pointing at the sweep command,
+    never reinterpreted with a guessed pattern or xy."""
+    import yaml as _yaml
+    doc = {
+        'swept_at': '2026-09-12', 'gate_hash': _GATE_HASH,
+        'limits': dict(_LIMITS_DICT),
+        'boxes': [{'site_pair': ['P1', 'P2'], 'apex_band_m': [0.85, 0.95],
+                   'landing_xy_m': [[-0.02, 0.02], [-0.01, 0.01]],
+                   'apex_m': [0.87, 0.93]}],
+    }
+    path = str(tmp_path / 'pre_r4.yaml')
+    with open(path, 'w') as handle:
+        _yaml.safe_dump(doc, handle)
+    with pytest.raises(ab.AdmissibleError,
+                       match='pattern.*admissible_sweep|admissible_sweep.*pattern'):
+        ab.load(path)
+
+
 def test_load_refuses_a_box_missing_apex_m():
     """2026-09-21: the pre-2026-09-18 ``flight_s`` compatibility branch was
     retired (no other YAML/fixture depended on it), so ``apex_m`` is now a
@@ -209,33 +284,62 @@ def test_load_refuses_a_box_missing_apex_m():
 # select
 # ---------------------------------------------------------------------------
 
+def _sel(boxes, pattern, pair, apex, xy=_DEFAULT_XY_MM):
+    return ab.select(boxes, pattern, pair, apex, release_site_xy_mm=xy,
+                     target_site_xy_mm=xy)
+
+
 def test_select_hits_a_box_covering_the_apex():
-    box = _box(site_pair=('P1', 'P1'), apex_band_m=(0.85, 0.95))
-    assert ab.select([box], ('P1', 'P1'), 0.90) is box
+    box = _box(site_pair=('P1', 'P1'), apex_band_m=(0.85, 0.95), pattern='self_toss')
+    assert _sel([box], 'self_toss', ('P1', 'P1'), 0.90) is box
 
 
 def test_select_hits_at_the_inclusive_boundary():
-    box = _box(site_pair=('P1', 'P1'), apex_band_m=(0.85, 0.95))
-    assert ab.select([box], ('P1', 'P1'), 0.85) is box
-    assert ab.select([box], ('P1', 'P1'), 0.95) is box
+    box = _box(site_pair=('P1', 'P1'), apex_band_m=(0.85, 0.95), pattern='self_toss')
+    assert _sel([box], 'self_toss', ('P1', 'P1'), 0.85) is box
+    assert _sel([box], 'self_toss', ('P1', 'P1'), 0.95) is box
 
 
 def test_select_misses_an_apex_outside_the_band():
-    box = _box(site_pair=('P1', 'P1'), apex_band_m=(0.85, 0.95))
-    assert ab.select([box], ('P1', 'P1'), 0.50) is None
+    box = _box(site_pair=('P1', 'P1'), apex_band_m=(0.85, 0.95), pattern='self_toss')
+    assert _sel([box], 'self_toss', ('P1', 'P1'), 0.50) is None
 
 
 def test_select_misses_the_right_apex_at_the_wrong_site_pair():
-    box = _box(site_pair=('P1', 'P1'), apex_band_m=(0.85, 0.95))
-    assert ab.select([box], ('P1', 'P2'), 0.90) is None
+    box = _box(site_pair=('P1', 'P1'), apex_band_m=(0.85, 0.95), pattern='self_toss')
+    assert _sel([box], 'self_toss', ('P1', 'P2'), 0.90) is None
+
+
+def test_select_misses_the_right_pair_at_the_wrong_pattern():
+    """A columns box and a self-toss box may legitimately share a site_pair
+    -- select must not confuse them (the latent defect a shared key would
+    reopen: a self-toss silently reusing a columns box's bounds)."""
+    box = _box(site_pair=('P1', 'P1'), apex_band_m=(0.85, 0.95), pattern='columns')
+    assert _sel([box], 'self_toss', ('P1', 'P1'), 0.90) is None
+    assert _sel([box], 'columns', ('P1', 'P1'), 0.90) is box
+
+
+def test_select_misses_when_the_live_site_xy_does_not_match_the_swept_xy():
+    """R4: a box carries no site geometry beyond its own xy stamp -- a box
+    swept at one separation (e.g. a hop at 250 mm) must refuse when applied
+    at another (e.g. a schedule at 100 mm), even with a matching pattern and
+    site-name pair."""
+    box = _box(site_pair=('P1', 'P2'), apex_band_m=(0.85, 0.95), pattern='hop',
+              release_site_xy_mm=(-125.0, 0.0), target_site_xy_mm=(125.0, 0.0))
+    hit = ab.select([box], 'hop', ('P1', 'P2'), 0.90,
+                    release_site_xy_mm=(-125.0, 0.0), target_site_xy_mm=(125.0, 0.0))
+    assert hit is box
+    miss = ab.select([box], 'hop', ('P1', 'P2'), 0.90,
+                     release_site_xy_mm=(-50.0, 0.0), target_site_xy_mm=(50.0, 0.0))
+    assert miss is None
 
 
 def test_select_picks_the_right_box_among_several_apex_bands():
-    lo = _box(site_pair=('P1', 'P1'), apex_band_m=(0.45, 0.55))
-    hi = _box(site_pair=('P1', 'P1'), apex_band_m=(0.85, 0.95))
-    assert ab.select([lo, hi], ('P1', 'P1'), 0.50) is lo
-    assert ab.select([lo, hi], ('P1', 'P1'), 0.90) is hi
-    assert ab.select([lo, hi], ('P1', 'P1'), 0.70) is None
+    lo = _box(site_pair=('P1', 'P1'), apex_band_m=(0.45, 0.55), pattern='self_toss')
+    hi = _box(site_pair=('P1', 'P1'), apex_band_m=(0.85, 0.95), pattern='self_toss')
+    assert _sel([lo, hi], 'self_toss', ('P1', 'P1'), 0.50) is lo
+    assert _sel([lo, hi], 'self_toss', ('P1', 'P1'), 0.90) is hi
+    assert _sel([lo, hi], 'self_toss', ('P1', 'P1'), 0.70) is None
 
 
 def test_dump_refuses_two_boxes_for_one_pair_with_overlapping_apex_bands(tmp_path):
@@ -254,6 +358,16 @@ def test_dump_allows_touching_apex_bands_for_one_pair(tmp_path):
 def test_dump_allows_overlapping_apex_bands_for_different_pairs(tmp_path):
     boxes = [_box(site_pair=('P1', 'P1'), apex_band_m=(0.45, 0.60)),
             _box(site_pair=('P1', 'P2'), apex_band_m=(0.45, 0.60))]
+    ab.dump(str(tmp_path / 'x.yaml'), boxes)  # must not raise
+
+
+def test_dump_allows_overlapping_apex_bands_for_the_same_pair_different_pattern(
+        tmp_path):
+    """R4: a 'columns' box and a 'self_toss' box may share a site_pair of
+    (P1, P1) (both key release==target) -- overlap is only ambiguous within
+    one pattern, since select() always filters by pattern first."""
+    boxes = [_box(site_pair=('P1', 'P1'), apex_band_m=(0.45, 0.60), pattern='columns'),
+            _box(site_pair=('P1', 'P1'), apex_band_m=(0.45, 0.60), pattern='self_toss')]
     ab.dump(str(tmp_path / 'x.yaml'), boxes)  # must not raise
 
 
@@ -329,7 +443,12 @@ def test_tiny_sweep_produces_one_box_inside_the_swept_grid(tiny_sweep):
     boxes, rows = tiny_sweep
     assert len(boxes) == 1
     box = boxes[0]
-    assert box.site_pair == ('P1', 'P2')
+    # R4 (2026-09-23): a columns box is keyed on (TARGET, TARGET) -- the
+    # THROW releases AT the destination site (the pre-throw transit is baked
+    # into the segment), which is what the executor actually looks up by.
+    assert box.pattern == 'columns'
+    assert box.site_pair == ('P2', 'P2')
+    assert box.release_site_xy_mm == box.target_site_xy_mm
     assert not box.empty, 'the owner operating point (0.90 m apex) must admit ' \
                           'at least the identity-prior (0, 0) command'
     (xlo, xhi), (ylo, yhi) = box.landing_xy_m
@@ -359,6 +478,35 @@ def test_tiny_sweep_yaml_round_trips_and_validates(tmp_path, tiny_sweep,
                         leg_jerk_mmps3=sweep_mod.LEG_JERK_MMPS3,
                         hand_acc_rps2=sweep_mod.HAND_ACC_RPS2)
     ab.check_limits(loaded, live)
+
+
+# ---------------------------------------------------------------------------
+# End-to-end: a tiny REAL cross-site HOP sweep -- R4
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope='module')
+def tiny_hop_sweep(sweep_mod):
+    return sweep_mod.hop_sweep(apexes_m=(0.90,), offsets_mm=(-10.0, 0.0),
+                               separation_mm=250.0)
+
+
+def test_tiny_hop_sweep_produces_a_hop_box_both_directions_containing_the_origin(
+        tiny_hop_sweep):
+    boxes, rows = tiny_hop_sweep
+    assert len(boxes) == 2
+    by_pair = {b.site_pair: b for b in boxes}
+    assert set(by_pair) == {('P1', 'P2'), ('P2', 'P1')}
+    for pair, box in by_pair.items():
+        assert box.pattern == 'hop'
+        assert box.release_site_xy_mm != box.target_site_xy_mm, (
+            'a hop box must carry two DIFFERENT sites -- release != target, '
+            'unlike columns/self_toss')
+        assert not box.empty, (
+            '%r must admit at least the identity-prior (0, 0) command' % (pair,))
+        (xlo, xhi), (ylo, yhi) = box.landing_xy_m
+        assert xlo <= 0.0 <= xhi
+        assert ylo <= 0.0 <= yhi
+    assert len(rows) >= 6
 
 
 # ---------------------------------------------------------------------------
@@ -393,6 +541,7 @@ def test_single_site_sweep_uses_the_carried_throw_segment(sweep_mod, monkeypatch
         'which plan § 2.2 measured as infeasible for a same-site chain')
     assert len(boxes) == 1
     box = boxes[0]
+    assert box.pattern == 'self_toss'
     assert box.site_pair == ('P1', 'P1')
     assert not box.empty, 'the (P1, P1) chain must admit at least the ' \
                           'identity-prior (0, 0) command at its centre flight'
@@ -475,11 +624,14 @@ def test_single_apex_boxes_records_the_requested_band_not_the_grid_derived_one(
                     log):
         calls.append(list(flights_s))
         site = site_pairs[0][0]
+        site_xy = (float(site.cup_mm[0]), float(site.cup_mm[1]))
         box = sweep_mod.ab.AdmissibleBox(
             site_pair=(site.name, site.name), apex_band_m=(0.0, 99.0),
             landing_xy_m=((-0.01, 0.01), (-0.01, 0.01)),
             apex_m=(sweep_mod.sc.apex_m(min(flights_s)),
                     sweep_mod.sc.apex_m(max(flights_s))),
+            pattern='self_toss', release_site_xy_mm=site_xy,
+            target_site_xy_mm=site_xy,
             limits=dict(leg_vel_mmps=leg_vel, leg_acc_mmps2=leg_acc,
                        leg_jerk_mmps3=leg_jerk, hand_acc_rps2=hand_acc),
             gate_hash=sweep_mod.ab.gate_hash(), swept_at='2026-09-14')

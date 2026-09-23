@@ -1,13 +1,14 @@
-swept_at: '2026-09-21'
-gate_hash: 2fcdec288853
+swept_at: '2026-09-23'
+gate_hash: 7966cb6fadc9
 limits:
   leg_vel_mmps: 300.0
   leg_acc_mmps2: 5000.0
   leg_jerk_mmps3: 150000.0
   hand_acc_rps2: 3500.0
 boxes:
-- site_pair:
-  - P1
+- pattern: columns
+  site_pair:
+  - P2
   - P2
   apex_band_m:
   - 0.85
@@ -20,8 +21,15 @@ boxes:
   apex_m:
   - 0.8999999999999999
   - 0.8999999999999999
-- site_pair:
-  - P2
+  release_site_xy_mm:
+  - 50.0
+  - 0.0
+  target_site_xy_mm:
+  - 50.0
+  - 0.0
+- pattern: columns
+  site_pair:
+  - P1
   - P1
   apex_band_m:
   - 0.85
@@ -34,7 +42,56 @@ boxes:
   apex_m:
   - 0.8999999999999999
   - 0.8999999999999999
-- site_pair:
+  release_site_xy_mm:
+  - -50.0
+  - 0.0
+  target_site_xy_mm:
+  - -50.0
+  - 0.0
+- pattern: hop
+  site_pair:
+  - P1
+  - P2
+  apex_band_m:
+  - 0.85
+  - 0.95
+  landing_xy_m:
+  - - -0.02
+    - 0.006
+  - - -0.02
+    - 0.02
+  apex_m:
+  - 0.8499999999999999
+  - 0.8999999999999999
+  release_site_xy_mm:
+  - -125.0
+  - 0.0
+  target_site_xy_mm:
+  - 125.0
+  - 0.0
+- pattern: hop
+  site_pair:
+  - P2
+  - P1
+  apex_band_m:
+  - 0.85
+  - 0.95
+  landing_xy_m:
+  - - -0.006
+    - 0.02
+  - - -0.02
+    - 0.02
+  apex_m:
+  - 0.8499999999999999
+  - 0.8999999999999999
+  release_site_xy_mm:
+  - 125.0
+  - 0.0
+  target_site_xy_mm:
+  - -125.0
+  - 0.0
+- pattern: self_toss
+  site_pair:
   - P1
   - P1
   apex_band_m:
@@ -48,7 +105,14 @@ boxes:
   apex_m:
   - 0.32
   - 0.6050000000000001
-- site_pair:
+  release_site_xy_mm:
+  - -50.0
+  - 0.0
+  target_site_xy_mm:
+  - -50.0
+  - 0.0
+- pattern: self_toss
+  site_pair:
   - P1
   - P1
   apex_band_m:
@@ -62,7 +126,14 @@ boxes:
   apex_m:
   - 0.384
   - 0.7260000000000001
-- site_pair:
+  release_site_xy_mm:
+  - -50.0
+  - 0.0
+  target_site_xy_mm:
+  - -50.0
+  - 0.0
+- pattern: self_toss
+  site_pair:
   - P1
   - P1
   apex_band_m:
@@ -76,7 +147,14 @@ boxes:
   apex_m:
   - 0.448
   - 0.847
-- site_pair:
+  release_site_xy_mm:
+  - -50.0
+  - 0.0
+  target_site_xy_mm:
+  - -50.0
+  - 0.0
+- pattern: self_toss
+  site_pair:
   - P1
   - P1
   apex_band_m:
@@ -90,7 +168,14 @@ boxes:
   apex_m:
   - 0.5120000000000002
   - 0.8820000000000001
-- site_pair:
+  release_site_xy_mm:
+  - -50.0
+  - 0.0
+  target_site_xy_mm:
+  - -50.0
+  - 0.0
+- pattern: self_toss
+  site_pair:
   - P1
   - P1
   apex_band_m:
@@ -104,3 +189,9 @@ boxes:
   apex_m:
   - 0.576
   - 0.8999999999999999
+  release_site_xy_mm:
+  - -50.0
+  - 0.0
+  target_site_xy_mm:
+  - -50.0
+  - 0.0
