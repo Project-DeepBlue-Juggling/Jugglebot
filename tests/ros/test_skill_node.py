@@ -2057,7 +2057,7 @@ def test_an_over_limit_or_unevaluable_check_keeps_the_earlier_correction():
 # R4 reload (brief step 1: skill_node's BB orchestration)
 # ═════════════════════════════════════════════════════════════════════════════
 
-def _good_box_path(tmp_path, *, apex_band_m=(0.85, 0.95)):
+def _good_box_path(tmp_path, *, apex_band_m=(0.85, 0.95), hop=False):
     """A P1/P1 self_toss box at the LIVE gate hash and the session's
     operating limits (300/5000/150000/3500) — mirrors
     `test_self_toss_refuses_an_uncovered_apex_before_any_motion`'s box
@@ -2075,7 +2075,21 @@ def _good_box_path(tmp_path, *, apex_band_m=(0.85, 0.95)):
         limits={'leg_vel_mmps': 300.0, 'leg_acc_mmps2': 5000.0,
                'leg_jerk_mmps3': 150000.0, 'hand_acc_rps2': 3500.0},
         gate_hash=adm.gate_hash(), swept_at='2026-09-13')
-    adm.dump(str(box_path), [box])
+    boxes = [box]
+    if hop:
+        # The 250 mm hop's two boxes as the 2026-09-23 sweep produced them
+        # (release/target xy at +-125 mm), so a check/start at the node's
+        # separation default finds them without the committed yaml.
+        for rel, tgt, names in (((-125.0, 0.0), (125.0, 0.0), ('P1', 'P2')),
+                                ((125.0, 0.0), (-125.0, 0.0), ('P2', 'P1'))):
+            boxes.append(adm.AdmissibleBox(
+                site_pair=names, apex_band_m=apex_band_m,
+                landing_xy_m=((-0.02, 0.02), (-0.02, 0.02)), apex_m=(0.85, 0.90),
+                pattern='hop', release_site_xy_mm=rel, target_site_xy_mm=tgt,
+                limits={'leg_vel_mmps': 300.0, 'leg_acc_mmps2': 5000.0,
+                       'leg_jerk_mmps3': 150000.0, 'hand_acc_rps2': 3500.0},
+                gate_hash=adm.gate_hash(), swept_at='2026-09-13'))
+    adm.dump(str(box_path), boxes)
     return str(box_path)
 
 
@@ -2453,3 +2467,37 @@ class TestJuggleAction:
         sites = {sk.site.name for sk in node._executor.schedule.skills}
         assert sites == {'P1', 'P2'}
 
+
+
+def test_the_separation_default_is_the_swept_hop_separation():
+    """The GUI relay sends 0 for every numeric goal field ("the node's
+    default"), so the node's `separation_mm` default IS the separation a
+    GUI-started hop flies. It must be the one the hop boxes were swept at
+    (250 mm, owner decision D2 2026-09-23) — at 100 mm there is no hop box
+    and the goal is refused before anything moves (R4 runsheet finding,
+    2026-09-24)."""
+    node, _client = _node_with_client()
+    assert float(node.get_parameter('separation_mm').value) == 250.0
+    assert sn._DEFAULT_SEPARATION_MM == 250.0
+
+
+def test_check_reports_the_hop_boxes_at_the_node_separation(tmp_path):
+    """`skills/check` validates the HOP's boxes (both directions, at the
+    node's separation) — not only the self-toss box — so a missing hop box
+    surfaces at the dry-run check rather than as a goal rejection (R4
+    runsheet finding, 2026-09-24)."""
+    node, _client = _node_with_client()
+    node._on_traj_status(_status())
+    _freshen(node)
+    with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path, hop=True)):
+        resp = node._svc_check(Trigger.Request(), Trigger.Response())
+    hop_lines = [l for l in resp.message.split('; ') if 'hop box' in l]
+    assert len(hop_lines) == 2, resp.message
+    assert all('hop box OK' in l for l in hop_lines), resp.message
+    assert 'P1->P2 at 250.0 mm' in resp.message and 'P2->P1 at 250.0 mm' in resp.message
+    # ... and a box file WITHOUT hop boxes is a refusal at the check, not a
+    # goal rejection later.
+    with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)):
+        resp2 = node._svc_check(Trigger.Request(), Trigger.Response())
+    assert resp2.success is False
+    assert 'hop box REFUSED' in resp2.message

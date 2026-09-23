@@ -153,7 +153,10 @@ _MOCAP_STALE_S = 0.5
 #: itself is 5 Hz; also the freshness window for `trajectory/commanded_position`,
 #: same as `_live_commanded_position` there).
 _TRAJ_STATUS_STALE_S = 1.0
-#: Restates `reload_coordinator_node._HAND_STATE_STALE_S`.
+#: The hand-telemetry staleness bound `_observations` and `tools/probes/
+#: possession_replay.py::_sensor` both read (the FSM's own copy died with
+#: `reload_coordinator_node.py` at R4, 2026-09-24 — this is now the one
+#: statement of the value, not a restatement of a dead module's).
 _HAND_STATE_STALE_S = 0.5
 
 #: The session-start mocap-Platform-vs-commanded-position frame check (plan
@@ -226,11 +229,16 @@ _FRAME_CHECK_REST_TOL_MM = 1.0
 #: drops.
 _FRAME_CHECK_MIN_SAMPLES = 20
 
-#: the columns-pattern parameter defaults — the owner's R2 operating point
-#: (brief_common.md § 0, 2026-09-12): apex 0.9 m, separation 100 mm, dwell
-#: 0.30 s.
+#: the two-site pattern parameter defaults: apex 0.9 m and dwell 0.30 s are the
+#: owner's R2 operating point (2026-09-12); separation 250 mm is the owner's
+#: R4 target (plan § 0, 2026-09-16, BallButler experience; decision D2
+#: 2026-09-23: "sweep 250 first, fly 250 first") and the ONLY separation the
+#: hop boxes in config/generated/admissible_box.yaml are swept at — the GUI
+#: relay sends 0 for every numeric goal field ("use the node's default"), so
+#: this constant IS the separation a GUI-started hop flies.  A 100 mm hop has
+#: no box and is refused NO_ADMISSIBLE_COMMAND before anything moves.
 _DEFAULT_APEX_M = 0.9
-_DEFAULT_SEPARATION_MM = 100.0
+_DEFAULT_SEPARATION_MM = 250.0
 _DEFAULT_DWELL_S = 0.30
 _DEFAULT_N_THROWS = 4
 
@@ -2496,6 +2504,31 @@ class SkillNode(Node):
                         % (pair, check_apex_m, '; '.join(parts)))
                 else:
                     lines.append('box OK: %s' % ('; '.join(parts),))
+                # The HOP's boxes at the node's separation, both directions —
+                # the pattern a GUI Start actually flies (R4 runsheet finding,
+                # 2026-09-24: this line only ever checked self_toss, so a
+                # missing hop box surfaced as a goal rejection, never here).
+                sep_mm = float(self.get_parameter('separation_mm').value)
+                try:
+                    hop_sites = columns_sites(sep_mm)
+                except ValueError as exc:
+                    ok = False
+                    lines.append('hop box REFUSED: %s' % (exc,))
+                else:
+                    for a, b in ((hop_sites[0], hop_sites[1]),
+                                 (hop_sites[1], hop_sites[0])):
+                        if adm.select(boxes, 'hop', (a.name, b.name),
+                                      check_apex_m,
+                                      release_site_xy_mm=a.cup_mm[:2],
+                                      target_site_xy_mm=b.cup_mm[:2]) is None:
+                            ok = False
+                            lines.append(
+                                'hop box REFUSED: no hop box covers %s->%s at '
+                                'separation %.1f mm, apex %.3f m'
+                                % (a.name, b.name, sep_mm, check_apex_m))
+                        else:
+                            lines.append('hop box OK: %s->%s at %.1f mm'
+                                         % (a.name, b.name, sep_mm))
         site_x_mm = float(self.get_parameter('site_x_mm').value)
         site_y_mm = float(self.get_parameter('site_y_mm').value)
         if (abs(site_x_mm - _DEFAULT_SITE_X_MM) > 1e-9
