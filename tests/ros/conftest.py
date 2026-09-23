@@ -654,6 +654,14 @@ class InstallSegment:
             self.rest_site_mm = [0.0, 0.0, 0.0]
             self.t_release_s = 0.0
             self.release_site_mm = [0.0, 0.0, 0.0]
+            # R4 reload (Unit U3): NaN, not zero — the wire's "no tilt given"
+            # sentinel (`trajectory_node._wire_tilt`); every pre-R4 test in
+            # this suite builds a Request without touching these two fields
+            # and expects the ordinary (untilted) catch/rest it always got,
+            # so the MOCK's default must decode as `None`, matching what a
+            # caller who never learned about R4 still gets.
+            self.hold_tilt_rad = [float('nan'), float('nan')]
+            self.rest_tilt_rad = [float('nan'), float('nan')]
 
     Response = _make_service(
         resp_fields={'accepted': False, 'code': '', 'message': '',

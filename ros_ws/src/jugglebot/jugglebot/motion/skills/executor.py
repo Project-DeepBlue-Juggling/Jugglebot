@@ -47,6 +47,7 @@ from jugglebot.motion.skills.segments import (CATCH, REST, THROW, CatchTerminal,
                                               SegmentConfig, ThrowAfterCatch,
                                               ThrowTerminal)
 from jugglebot.motion.trajectory import ballistics_bc
+from jugglebot.motion.trajectory import tilt_geometry as tg
 from jugglebot.motion.trajectory.cycle_plan import CyclePlan
 
 # ── Refusal codes this layer owns ────────────────────────────────────────────
@@ -82,6 +83,23 @@ NO_ADMISSIBLE_COMMAND = 'NO_ADMISSIBLE_COMMAND'
 #: knot: there is no window left to re-solve, only a seam past the event.  One
 #: knot of window is the floor, hence the ``+ dt``.
 CATCH_FREEZE_S = LEAD_S + float(hw.JB_TRAJ_KNOT_DT_S)
+
+#: Seconds before touch-down inside which the QP enforces ``CUP_CONTACT_ACC``
+#: (a floor on axial deceleration, the cup-contact contract) — the SAME
+#: generated constant ``cup_cycle.CONTACT_WINDOW_LEAD_S`` reads
+#: (``hw.JB_TRAJ_CUP_CONTACT_WINDOW_LEAD_S``, τ = 0.125 s), restated here
+#: rather than imported from ``cup_cycle`` because this layer's only use of
+#: it is a RE-SEND timing fence, not the constraint itself — reading the one
+#: generated source twice is not a second copy of the number (plan § 0: no
+#: ``motion/`` module owns ``hw.*`` more than another). A re-send whose
+#: splice base falls inside this window is declined BEFORE the solve
+#: (:meth:`SkillExecutor._resend_live_catch` /
+#: :meth:`_resend_hand_corrected_catch`): a splice that opens inside the
+#: window hands the QP a re-solve with no runway left to reach the contact
+#: floor from whatever state the re-aim seeds, so the solve would only
+#: refuse ``CUP_CONTACT_ACC`` — paying it is a wasted 40-130 ms on the
+#: orchestrator thread for a result the timing alone already predicts.
+CUP_CONTACT_WINDOW_LEAD_S = float(hw.JB_TRAJ_CUP_CONTACT_WINDOW_LEAD_S)
 
 #: How long an UNDISPATCHED CATCH is willing to wait for its own ball to show
 #: up on the tracker before the attempt ends ``NO_LANDING`` (owner decision
@@ -317,6 +335,22 @@ ABORTED_NO_RELEASE = 'ABORTED_NO_RELEASE'
 #: aborts ``ABORTED_NO_RELEASE``. Restated, not imported, from
 #: ``toss_sequencer.TOSS_RELEASE_GRACE_S`` (0.5 s) -- that module dies at R4.
 RELEASE_GRACE_S = 0.5
+
+#: Seconds a tracker landing for an EXTERNALLY announced ball (a CATCH whose
+#: ``Skill.landing_prior`` is Ball Butler's own announcement, R4's reload) may
+#: disagree with the announced landing instant and still be trusted to aim or
+#: re-aim the catch. MEASURED 2026-09-23 (``sim/skills_gate.py --reload``, seed
+#: 0, under the live ``AIM_TRACKER`` default): the tracker's immature fit of a
+#: long externally-thrown flight aimed the reload CATCH at x = 306 078 mm; the
+#: lateral clamp (:meth:`SkillExecutor._clamp_lateral_to_schedule`) bounds the
+#: POSITION around the prior but nothing bounded the TIME, and a fit half a
+#: second off moves the whole window. Ball Butler's announced instant is the
+#: fact the FSM's reload catches were timed on for two months (its `throw_time`
+#: + solver ToF); a fit outside this band is the fit's error, not the
+#: announcement's, and is ignored -- inside it the fit refines the catch exactly
+#: as for a ball this schedule threw. 0.15 s is one hand-stroke duration: a
+#: catch moved further than that is a different catch, not a refinement.
+EXTERNAL_LANDING_TIME_BAND_S = 0.15
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1103,18 +1137,29 @@ class SkillExecutor:
         if self.boxes is None:
             box = None
         else:
-            box = adm.select(self.boxes, (site.name, target.name), apex)
+            # R4 (2026-09-23): a box now carries its own pattern + site xy
+            # (motion/skills/admissible.py's module docstring, "Why" #1/#2),
+            # so `select` is judged on all four -- the schedule states which
+            # pattern it was compiled for (`Schedule.pattern`), and the LIVE
+            # sites (not merely their names) close the defect a box swept at
+            # one separation being silently applied at another.
+            box = adm.select(self.boxes, self.schedule.pattern,
+                             (site.name, target.name), apex,
+                             release_site_xy_mm=site.cup_mm[:2],
+                             target_site_xy_mm=target.cup_mm[:2])
             if self.learner is not None and box is None:
                 bands = sorted(b.apex_band_m for b in self.boxes
-                              if b.site_pair == (site.name, target.name))
+                              if b.pattern == self.schedule.pattern
+                              and b.site_pair == (site.name, target.name))
                 bands_str = (', '.join('%.3f-%.3f m' % (lo, hi)
                                        for lo, hi in bands)
-                            if bands else 'none swept for this pair')
+                            if bands else 'none swept for this pattern/pair')
                 raise _NoAdmissibleCommand(
-                    'no admissible box covers site pair %r at apex %.3f m '
-                    '(bands swept for this pair: %s) — a learner command '
-                    'may not reach the platform unclipped'
-                    % ((site.name, target.name), apex, bands_str))
+                    'no admissible box covers pattern %r site pair %r at '
+                    'apex %.3f m (bands swept for this pattern/pair: %s) — '
+                    'a learner command may not reach the platform unclipped'
+                    % (self.schedule.pattern, (site.name, target.name), apex,
+                       bands_str))
         if self.learner is None:
             u_dy, u_apex = dy, apex
         else:
@@ -1255,6 +1300,12 @@ class SkillExecutor:
         (:meth:`_clamp_lateral_to_schedule`) — the ONE place a landing becomes
         a catch terminal, so dispatch, the hand-corrected re-send and the
         live tracker re-send all pass through the same lateral authority.
+
+        ``rest_site_mm`` and ``hold_tilt`` pass ``skill.rest_site_mm`` /
+        ``skill.hold_tilt`` straight through when the schedule set them (R4
+        reload's held-axis CATCH — ``schedule.compile_reload``,
+        ``segments.hold_axis_site``); ``skill.site.rest_site_mm()`` is the
+        default every pre-R4 CATCH still gets.
         """
         landing = self._clamp_lateral_to_schedule(idx, skill, landing)
         then_throw = None
@@ -1266,15 +1317,40 @@ class SkillExecutor:
                 site_mm=skill.site.throw_site_mm(),
                 target_mm=self._commanded_target_mm(tt.target, (u_dy, u_apex)),
                 flight_s=sch.flight_s(u_apex))
+        if skill.rest_site_mm is not None:
+            # HELD-AXIS CATCH (R4 reload): `skill.rest_site_mm` was computed
+            # ONCE at compile time, from the ANNOUNCED landing --
+            # `_clamp_lateral_to_schedule` above (a live re-send, `AIM_TRACKER`)
+            # can move `landing.pos_mm` off that exact point, and the pinned
+            # rest site would then sit off the NEW axis line through the
+            # refined landing. `segments.hold_axis_site` refuses (`CATCH_AXIS`)
+            # a seed off that line rather than absorbing it (its own
+            # docstring), so a re-send must RE-DERIVE the rest site from the
+            # refined landing at THIS catch's own hold_tilt, keeping only the
+            # z the schedule chose (U2 cross-unit contract, `uc.SETTLE_CUP_
+            # Z_MM`) -- not the pinned xy. A dispatch with no resend yet
+            # (`landing` still the skill's own compile-time value) recomputes
+            # to the SAME point, so this is a no-op there.
+            rest_mm = sg.hold_axis_site(landing.pos_mm, skill.hold_tilt,
+                                        float(skill.rest_site_mm[2]))
+        else:
+            rest_mm = skill.site.rest_site_mm()
         return CatchTerminal(landing_mm=landing.pos_mm,
                              landing_vel_mm_s=landing.vel_mm_s,
                              t_land_s=float(landing.t_land_abs_s),
-                             rest_site_mm=skill.site.rest_site_mm(),
-                             then_throw=then_throw)
+                             rest_site_mm=rest_mm, then_throw=then_throw,
+                             hold_tilt=skill.hold_tilt)
 
     def _rest_terminal(self, skill: Skill) -> RestTerminal:
-        return RestTerminal(rest_site_mm=skill.site.rest_site_mm(),
-                            t_rest_s=float(skill.t_abs_s))
+        """A REST's terminal. ``rest_site_mm`` / ``tilt`` / ``holds_ball``
+        pass the skill's own fields straight through — R4's PRE-TILT and
+        DECAY RESTs (``schedule.compile_reload``) are the callers that set
+        them to anything other than the pre-R4 defaults (the site's own
+        level rest point, no tilt, holding a ball)."""
+        rest_mm = (skill.rest_site_mm if skill.rest_site_mm is not None
+                  else skill.site.rest_site_mm())
+        return RestTerminal(rest_site_mm=rest_mm, t_rest_s=float(skill.t_abs_s),
+                            tilt=skill.rest_tilt, holds_ball=skill.holds_ball)
 
     def _predicted_landing(self, idx: int, skill: Skill) -> Optional[Landing]:
         """The PREDICTED landing for a catch-with-throw that must dispatch at
@@ -1295,7 +1371,20 @@ class SkillExecutor:
         schedule at all (columns' very first catch, of a ball thrown before
         ``t0``) -- the caller falls back to waiting for the tracker, exactly
         as every catch did before this unit.
+
+        **R4 reload:** ``skill.landing_prior`` -- an EXTERNALLY-observed
+        arrival (Ball Butler's own announcement, ``schedule.compile_reload``)
+        -- takes priority over the schedule-derived prediction below, because
+        such a catch has no release of its own in this schedule for
+        ``_previous_release`` to find (a schedule-internal ``None`` would
+        otherwise fall this catch straight to the tracker, which is the
+        RIGHT fallback for a ball thrown before ``t0`` but the WRONG one here
+        -- the announcement already says exactly where BB's ball is headed).
         """
+        if skill.landing_prior is not None:
+            lp = skill.landing_prior
+            return Landing(pos_mm=lp.pos_mm, vel_mm_s=lp.vel_mm_s,
+                          t_land_abs_s=lp.t_land_abs_s)
         prev = _previous_release(self.schedule, idx, skill.ball_id)
         if prev is None:
             return None
@@ -1424,15 +1513,31 @@ class SkillExecutor:
                                 r: float) -> Optional[Landing]:
         """The predicted landing re-flown with the MEASURED launch speed:
         the same release site and commanded landing as
-        :meth:`_predicted_landing`, but the ballistic launch velocity scaled
-        by ``r = v_meas / v_cmd`` (:mod:`~jugglebot.motion.skills.hand_launch`).
+        :meth:`_predicted_landing`, but the ballistic launch velocity's
+        HAND-STROKE component scaled by ``r = v_meas / v_cmd``
+        (:mod:`~jugglebot.motion.skills.hand_launch`).
 
-        For a vertical self-toss this is purely a TIMING correction --
-        ``T' = r·T``, i.e. an apex ``r²`` times the commanded one, since a
-        flight scales with the release speed and an apex with its SQUARE (the
-        ONE place that ratio is applied) -- which is the whole "the catch is
-        not timed" symptom: at 0.9 m apex and the measured r = 1.086,
-        touch-down is ~74 ms later than the schedule commanded. The general case is solved, not
+        **Scale only the axial (stroke) component, not the whole vector**
+        (R4, 2026-09-23 — this method's own prior comment said "revisit if
+        that changes", and a cross-site hop target is exactly the case that
+        changes it). ``r`` measures the fast slider stroke, which launches
+        the ball ALONG the release cup's up-axis
+        (``tilt_geometry.tilt_to_throw`` — the same rotation
+        ``unified_cycle.cup_state_from_platform`` realises the pose
+        through); the PERPENDICULAR component of the launch velocity is
+        delivered by platform motion/tilt geometry, not the stroke, so
+        scaling it by the same ``r`` would attribute a hand-speed error to a
+        DoF the hand never touched. For a vertical throw the perpendicular
+        component is exactly zero (``cup_axis(0, 0) == (0, 0, 1)``), so this
+        reduces to the old isotropic ``launch_vel * r`` bit for bit (pinned:
+        ``tests/motion/test_skills_executor.py::
+        test_hand_corrected_landing_reduces_to_the_old_formula_for_a_vertical_throw``).
+        This is still purely a TIMING correction in that case -- ``T' =
+        r·T``, i.e. an apex ``r²`` times the commanded one, since a flight
+        scales with the release speed and an apex with its SQUARE -- which is
+        the whole "the catch is not timed" symptom: at 0.9 m apex and the
+        measured r = 1.086, touch-down is ~74 ms later than the schedule
+        commanded. The general (lateral hop target) case is solved, not
         approximated: :func:`ballistics_bc.arrival_state_at_z` crosses the
         commanded landing PLANE, so a scaled launch that also drifts
         horizontally gets the drifted arrival position too.
@@ -1448,15 +1553,15 @@ class SkillExecutor:
         pos_mm = self._commanded_target_mm(target, y_d)
         flight_s = sch.flight_s(float(y_d[1]))
         release_pos = site.throw_site_mm()
-        # Isotropic scaling by r: the hand stroke along the (tilted) platform
-        # normal is the sole launch DoF, so an offset produced by tilt scales
-        # with the stroke exactly. An offset produced by platform MOTION would
-        # not — none exists in the R3 self-toss/columns schedules (dy is
-        # small against the ~4 m/s stroke); revisit if that changes.
         launch_vel = ballistics_bc.launch_velocity(
-            release_pos, pos_mm, flight_s) * float(r)
+            release_pos, pos_mm, flight_s)
+        rx, ry = tg.tilt_to_throw(launch_vel)
+        axis = tg.cup_axis(rx, ry)
+        axial = float(np.dot(launch_vel, axis))
+        perp = launch_vel - axis * axial
+        scaled_vel = perp + axis * (axial * float(r))
         pos2, vel2, t2 = ballistics_bc.arrival_state_at_z(
-            release_pos, launch_vel, float(pos_mm[2]))
+            release_pos, scaled_vel, float(pos_mm[2]))
         return Landing(pos_mm=pos2, vel_mm_s=vel2,
                        t_land_abs_s=t_release_s + float(t2))
 
@@ -1475,6 +1580,14 @@ class SkillExecutor:
         first catch) there is nothing to gate against: accept as before."""
         if landing is None:
             return None
+        if skill.landing_prior is not None:
+            # An externally announced ball: the announcement is the timing
+            # authority (:data:`EXTERNAL_LANDING_TIME_BAND_S`).
+            if (abs(float(landing.t_land_abs_s)
+                    - float(skill.landing_prior.t_land_abs_s))
+                    > EXTERNAL_LANDING_TIME_BAND_S):
+                return None
+            return landing
         prev = _previous_release(self.schedule, idx, skill.ball_id)
         if prev is None:
             return landing
@@ -1567,7 +1680,7 @@ class SkillExecutor:
         landing (below); every other path dispatches, refuses, or ends the
         attempt outright and reports ``deferred=False``."""
         # `idx == 0` is the only skill any attempt can be SURE is a fresh
-        # origin (Unit B): both `compile_self_toss` and `compile_columns`
+        # origin (Unit B): both `compile_one_ball` and `compile_columns`
         # build their opening REST as "a fresh install (no record yet)", and
         # every later skill splices onto the schedule's own already-streaming
         # plan. A non-fresh (closing) REST stays fully exempt -- only the
@@ -2103,15 +2216,26 @@ class SkillExecutor:
         property of a stroke that has already happened, so a second call
         would re-install the same landing and pay a solve for it.
 
-        The two timing fences are :meth:`_resend_live_catch`'s, for the same
-        two physical facts: nothing re-sends inside ``catch_freeze_s`` of
+        The first two timing fences are :meth:`_resend_live_catch`'s, for the
+        same two physical facts: nothing re-sends inside ``catch_freeze_s`` of
         touch-down (the hand is already decelerating into the ball), and
         nothing re-sends once ``now + lead_s`` leaves less than
         :data:`MIN_WINDOW_S` before the landing (a solve there can only
         refuse ``WINDOW_TOO_SHORT``). Both are checked against the CORRECTED
         landing as well as the committed one -- a correction that pulls
         touch-down EARLIER (r < 1) can land inside a freeze the committed aim
-        cleared.
+        cleared. A third fence is checked ONCE, against the corrected landing
+        only, right before the solve it would otherwise pay for: nothing
+        re-sends once the splice would open inside the cup-contact window (a
+        solve there can only refuse ``CUP_CONTACT_ACC`` — see
+        :data:`CUP_CONTACT_WINDOW_LEAD_S`). It needs no earlier stage against
+        the committed landing the way the two above do -- those gate whether
+        computing ``r`` is worth it at all, while this one exists only to
+        skip the SOLVE, and by the time ``r`` and the corrected landing are
+        known, checking the value the solve would actually target is both
+        necessary and sufficient (the committed landing's own touch-down can
+        differ from the corrected one in either direction, so it would not
+        reliably predict this fence's answer anyway).
         """
         if self._live_catch is None or self.launch_ratio is None:
             return []
@@ -2142,6 +2266,18 @@ class SkillExecutor:
             return ['%.3f CATCH-AIM-LATE skill %d: the hand-measured '
                     'correction (r=%.3f, Δt=%+.3f s) would splice too late — '
                     'the theoretical aim stands' % (t_abs_s, idx, r, dt_s)]
+        # DECLINE BEFORE THE SOLVE — the same physical fact
+        # :meth:`_resend_live_catch` declines on (see
+        # :data:`CUP_CONTACT_WINDOW_LEAD_S`): a splice opening inside the
+        # cup-contact window hands the QP no runway to reach
+        # ``CUP_CONTACT_ACC`` from a re-aimed seed, so the solve can only
+        # refuse it.
+        moved_mm = float(np.max(np.abs(
+            np.asarray(landing.pos_mm, dtype=float) - terminal.landing_mm)))
+        if (t_abs_s + float(skill.lead_s)
+                >= float(landing.t_land_abs_s) - CUP_CONTACT_WINDOW_LEAD_S):
+            return self._resend_declined(
+                t_abs_s, idx, 'CONTACT-WINDOW', moved_mm, dt_s)
         new_terminal = self._catch_terminal(idx, skill, landing)
         clamp_lines = self._pending_notes
         self._pending_notes = []
@@ -2235,6 +2371,18 @@ class SkillExecutor:
         if self._resend_counts.get(idx, 0) >= self.resend_max_per_catch:
             return clamp_lines + self._resend_declined(
                 t_abs_s, idx, 'CAP-SPENT', moved_mm, moved_s)
+        # DECLINE BEFORE THE SOLVE (plan § 0 carry-in, R4 2026-09-23): the
+        # splice this re-send would open at (its dispatch, `t_abs_s`, plus
+        # this skill's own lead) must land BEFORE the cup-contact window
+        # starts, `clamped.t_land_abs_s - CUP_CONTACT_WINDOW_LEAD_S` — a
+        # splice that opens inside the contact window hands the QP a
+        # re-solve with no runway left to reach the `CUP_CONTACT_ACC` floor
+        # from whatever state the re-aim seeds, so the solve can only refuse
+        # it (see :data:`CUP_CONTACT_WINDOW_LEAD_S`).
+        if (t_abs_s + float(skill.lead_s)
+                >= float(clamped.t_land_abs_s) - CUP_CONTACT_WINDOW_LEAD_S):
+            return clamp_lines + self._resend_declined(
+                t_abs_s, idx, 'CONTACT-WINDOW', moved_mm, moved_s)
         new_terminal = self._catch_terminal(idx, skill, landing)
         clamp_lines += self._pending_notes
         self._pending_notes = []

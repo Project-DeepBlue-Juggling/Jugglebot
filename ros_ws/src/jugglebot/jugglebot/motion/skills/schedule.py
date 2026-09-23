@@ -19,7 +19,7 @@ import numpy as np
 import jugglebot.hardware_config as hw
 from jugglebot.motion.skills import segments as sg
 from jugglebot.motion.skills.segments import CATCH, KINDS, REST, THROW
-from jugglebot.motion.skills.sites import REST_HAND_REV, Site
+from jugglebot.motion.skills.sites import REST_CUP_Z_MM, REST_HAND_REV, Site
 from jugglebot.motion.trajectory import ballistics_bc
 
 #: SI gravity magnitude (m/s²) — the same number ``cup_cycle.GRAVITY`` /
@@ -161,6 +161,47 @@ def transit_s(flight_s_: float, dwell_s: float) -> float:
     return (float(flight_s_) - float(dwell_s)) / 2.0
 
 
+def _vec3(value, name: str) -> np.ndarray:
+    """Same validation as ``segments._vec3`` (private there — this module
+    needs its own three-vector guard for :class:`LandingPrior`, and a schedule
+    ball's identity should not have to import a segment-planning internal for
+    it)."""
+    arr = np.asarray(value, dtype=float).reshape(-1)
+    if arr.shape != (3,):
+        raise ValueError('%s must be a 3-vector, got shape %s'
+                          % (name, np.shape(value)))
+    if not np.all(np.isfinite(arr)):
+        raise ValueError('%s must be finite, got %r' % (name, arr.tolist()))
+    return arr
+
+
+@dataclasses.dataclass(frozen=True)
+class LandingPrior:
+    """An externally-observed ball arrival to aim a CATCH at, for a ball with
+    no release of its own in THIS schedule (R4's reload: the ball came from
+    Ball Butler's throw, so ``executor._previous_release`` has nothing to
+    predict from — see :attr:`Skill.landing_prior`).
+
+    Position, arrival velocity, wall-clock instant — the same three physical
+    facts :class:`~jugglebot.motion.skills.segments.CatchTerminal` reads off
+    any landing, and nothing more: no ``from_fit`` (that is the executor's own
+    tracker-bookkeeping fact about a *different* landing source, the live
+    tracker fit, and restating it here would be a second copy of the same
+    concept under two names).
+    """
+
+    pos_mm: np.ndarray
+    vel_mm_s: np.ndarray
+    t_land_abs_s: float
+
+    def __post_init__(self):
+        object.__setattr__(self, 'pos_mm', _vec3(self.pos_mm, 'pos_mm'))
+        object.__setattr__(self, 'vel_mm_s', _vec3(self.vel_mm_s, 'vel_mm_s'))
+        if not np.isfinite(float(self.t_land_abs_s)):
+            raise ValueError('t_land_abs_s must be finite, got %r'
+                              % (self.t_land_abs_s,))
+
+
 @dataclasses.dataclass(frozen=True)
 class ThenThrow:
     """The same-site throw a CATCH carries out of the ball it just caught.
@@ -235,6 +276,30 @@ class Skill:
     #: ONE window (:class:`ThenThrow`).  ``None`` for a standalone CATCH — the
     #: last catch of an attempt, and R4's reload.
     then_throw: Optional[ThenThrow] = None
+    #: CATCH only: an externally-observed arrival (R4 reload) to aim at when
+    #: this ball has no release of its own in this schedule — see
+    #: :class:`LandingPrior` / ``executor._predicted_landing``.
+    landing_prior: Optional[LandingPrior] = None
+    #: CATCH only: the receive attitude (rx, ry) rad held through a held-axis
+    #: catch (R4 reload) — passed to ``segments.CatchTerminal.hold_tilt``
+    #: unchanged (``segments.receive_hold_tilt`` is the one derivation point).
+    hold_tilt: Optional[Tuple[float, float]] = None
+    #: REST only: the attitude (rx, ry) rad this REST ENDS at — passed to
+    #: ``segments.RestTerminal.tilt`` unchanged.  ``None`` (every pre-R4 REST)
+    #: is the level rest.
+    rest_tilt: Optional[Tuple[float, float]] = None
+    #: REST/CATCH: the rest point (mm) this segment settles at, when it is
+    #: NOT ``site.rest_site_mm()`` — a held-axis REST/CATCH (R4 reload)
+    #: settles ON THE AXIS LINE through the landing point
+    #: (``segments.hold_axis_site``), which is not the site's own xy at every
+    #: z (U2 handoff: 29.8 mm apart at the 12° ceiling).  ``None`` (every
+    #: pre-R4 skill) keeps the existing ``site.rest_site_mm()`` derivation.
+    rest_site_mm: Optional[np.ndarray] = None
+    #: REST only: whether the cup is holding a ball through this REST — see
+    #: ``segments.RestTerminal.holds_ball``.  Defaults True (every pre-R4
+    #: REST's behaviour); R4's PRE-TILT REST is the one caller that states
+    #: False (the ball is still in the air, not caught yet).
+    holds_ball: bool = True
     #: Seconds between this skill's DISPATCH and its splice base
     #: (``t_abs_s - window_s``).  :func:`compile_columns` sets it per skill;
     #: the default is the general :data:`LEAD_S`.
@@ -249,6 +314,15 @@ class Skill:
                 'only a CATCH may carry then_throw (kind=%r) — a throw is '
                 'carried out of the ball a catch has just seated, and no other '
                 'skill has one in the cup' % (self.kind,))
+        if self.landing_prior is not None and self.kind != CATCH:
+            raise ValueError('only a CATCH may carry landing_prior (kind=%r)'
+                              % (self.kind,))
+        if self.hold_tilt is not None and self.kind != CATCH:
+            raise ValueError('only a CATCH may carry hold_tilt (kind=%r)'
+                              % (self.kind,))
+        if self.rest_tilt is not None and self.kind != REST:
+            raise ValueError('only a REST may carry rest_tilt (kind=%r)'
+                              % (self.kind,))
         if not float(self.window_s) > 0.0:
             raise ValueError('window_s must be > 0, got %r' % (self.window_s,))
         if not float(self.lead_s) >= 0.0:
@@ -287,11 +361,63 @@ class Schedule:
     transit_s: float
     dwell_s: float
     t0_abs_s: float
+    #: Which compiler built this schedule — ``'columns'``
+    #: (:func:`compile_columns`), ``'self_toss'`` or ``'hop'``
+    #: (:func:`compile_one_ball`, one or two sites — R4, owner decision D1
+    #: 2026-09-23).  ``compile_reload`` (R4, owner decision D4 2026-09-23)
+    #: fills this with ``'self_toss'``/``'hop'`` too, NOT a third label — its
+    #: own PRE-TILT REST / held CATCH / DECAY REST never reach
+    #: :meth:`SkillExecutor._command_u` (only a THROW does), and every THROW
+    #: it schedules afterward is kinematically an ordinary self-toss/hop
+    #: throw (same site, same apex/dwell, a fresh-origin THROW 0 from a level
+    #: rest then dwell-carried throws) — so the box already swept for that
+    #: pattern is the CORRECT one, and a ``'reload'`` label would only send
+    #: every such throw to a box that does not exist (no sweep runs at R4;
+    #: `tools/` is out of scope for this unit).  Read by the admissible-box
+    #: selection at dispatch
+    #: (:mod:`~jugglebot.motion.skills.admissible`), which a box is swept
+    #: per-pattern for.  REQUIRED, no default (R4 audit call, 2026-09-23):
+    #: a schedule with no stated pattern is a schedule the executor cannot
+    #: safely look a box up for, and a defaulted label would let a hand-built
+    #: schedule silently borrow another pattern's swept box -- the same class
+    #: of defect as a box swept for one apex being reused at another.
+    pattern: str
 
     def due(self, t_abs_s: float) -> Tuple[Skill, ...]:
         """Skills whose dispatch instant has passed by ``t_abs_s``."""
         return tuple(s for s in self.skills
                      if s.dispatch_s() <= float(t_abs_s))
+
+
+#: Knots of margin the CLOSING REST's splice base keeps PAST the end of the
+#: last catch's own rest tail, so that REST is a FRESH ORIGIN from a machine
+#: already at rest (``executor.install_segment``: ``t_now + lead >= record.end_s``)
+#: and never a splice into the tail's last knots.
+#:
+#: MEASURED 2026-09-23 (scratchpad ``probe_r4_hop_schedule.py``, the one-ball HOP
+#: at 250 mm through the real install chain, limits 300/5000/150000/3500): with
+#: the REST's event exactly ``2 * rest_tail`` after the last touch-down its splice
+#: base lands ON the tail's terminal knot, the QP's ``round(period / dt)`` puts
+#: the record's end up to half a knot later than that base, and the install
+#: therefore takes the SPLICE branch — whose seam re-gate read 156 495 mm/s³ of
+#: leg jerk against 150 000 (the 100 mm hop passed at 101 394 by margin, not by
+#: construction).  This is R3's carried item (m) ("the closing REST after a
+#: spliced catch is intermittently refused LIMIT_JERK ... 24 % of tick phases
+#: at 0.9 m"), now deterministic at 250 mm.  Two knots covers the rounding
+#: (≤ half a knot) plus the tick quantisation of the dispatch (one knot) with a
+#: knot to spare; the attempt ends 50 ms later, which nothing measures.
+REST_FRESH_MARGIN_KNOTS = 2
+REST_FRESH_MARGIN_S = REST_FRESH_MARGIN_KNOTS * float(hw.JB_TRAJ_KNOT_DT_S)
+
+
+def closing_rest_t_abs(last_catch_t_abs_s: float, rest_tail_s: float) -> float:
+    """The event instant of a schedule's CLOSING REST: two ``rest_tail_s`` after
+    the last touch-down (one for that catch's own tail, one for the REST's window
+    — one tail would dispatch the REST before the touch-down and splice the catch
+    away) plus :data:`REST_FRESH_MARGIN_S`, so the REST installs as a fresh origin
+    from rest rather than a splice into the tail's final knots."""
+    return (float(last_catch_t_abs_s) + 2.0 * float(rest_tail_s)
+            + REST_FRESH_MARGIN_S)
 
 
 def _check_window(name: str, window_s: float) -> None:
@@ -500,7 +626,7 @@ def compile_columns(pattern: Pattern, t0_abs_s: float) -> Schedule:
     # (`t_abs - rest_tail - lead`) a lead BEFORE the touch-down; two puts it a
     # lead before the catch segment's own tail runs out, where the machine is
     # already at rest and the splice only extends the hold.
-    rest_t = last_catch.t_abs_s + 2.0 * pattern.rest_tail_s
+    rest_t = closing_rest_t_abs(last_catch.t_abs_s, pattern.rest_tail_s)
     skills.append(Skill(kind=REST, ball_id=last_catch.ball_id,
                         site=last_catch.site, t_abs_s=rest_t,
                         window_s=pattern.rest_tail_s))
@@ -527,7 +653,7 @@ def compile_columns(pattern: Pattern, t0_abs_s: float) -> Schedule:
     skills = [_shifted(s, t0) for s in skills]
     return Schedule(skills=tuple(skills), flight_s=t_f, beat_s=beta,
                     transit_s=tau, dwell_s=float(pattern.dwell_s),
-                    t0_abs_s=t0)
+                    t0_abs_s=t0, pattern='columns')
 
 
 #: Duration (s) of the OPENING REST that lifts the hand from the ACTIVATE park
@@ -655,15 +781,23 @@ def home_hand_bounds(hand_rev_now: float, t_rest_s: float):
 
 
 @dataclasses.dataclass(frozen=True)
-class SelfTossPattern:
-    """Single-site self-toss pattern parameters (R3 — plan § 0 / R3 build note).
+class OneBallPattern:
+    """One-ball pattern parameters (R4 — plan § 0, owner decision D1
+    2026-09-23): ``sites`` ONE long is R3's self-toss exactly (bit-identical
+    schedule — see :func:`compile_one_ball`); ``sites`` TWO long is R4's
+    alternating hop, one ball crossing the two sites (a THROW released at
+    ``sites[i % 2]`` lands at ``sites[(i + 1) % 2]``).  Replaces
+    ``SelfTossPattern`` (R3) — no second name for the same compiler input;
+    every live caller now builds a 1-tuple where it used to build a bare
+    ``site`` (grep swept to zero, R4 U1).
 
-    One ball, one site: THROW from rest, then CATCH-with-``then_throw`` chained
-    ``n_throws - 1`` times, then a standalone CATCH, then REST. Mirrors
-    :class:`Pattern`'s fields exactly (``sites`` collapsed to one ``site``).
+    One ball, ``len(sites)`` sites: THROW from rest, then
+    CATCH-with-``then_throw`` chained ``n_throws - 1`` times, then a
+    standalone CATCH, then REST. Mirrors :class:`Pattern`'s fields exactly
+    (``sites`` here is 1 or 2 long rather than exactly 2).
     """
 
-    site: Site
+    sites: Tuple[Site, ...]
     apex_m: float
     dwell_s: float
     n_throws: int
@@ -680,6 +814,11 @@ class SelfTossPattern:
     floor_lift_s: float = FLOOR_LIFT_S
 
     def __post_init__(self):
+        if len(self.sites) not in (1, 2):
+            raise ValueError(
+                'OneBallPattern takes 1 or 2 sites, got %d — no third site '
+                'exists in this plan (R4, owner decision D1 2026-09-23)'
+                % (len(self.sites),))
         if not float(self.floor_lift_s) >= FLOOR_LIFT_S:
             raise ValueError(
                 'floor_lift_s %r is below the %.3f s floor — the opening REST '
@@ -688,35 +827,65 @@ class SelfTossPattern:
                 % (self.floor_lift_s, FLOOR_LIFT_S))
 
 
-def compile_self_toss(pattern: SelfTossPattern, t0_abs_s: float) -> Schedule:
-    """The R3 single-site self-toss schedule (plan § 0 / R3 build note).
+def compile_one_ball(pattern: OneBallPattern, t0_abs_s: float) -> Schedule:
+    """The R4 one-ball schedule: self-toss (one site) or the alternating hop
+    (two — plan § 0, owner decision D1 2026-09-23). Replaces
+    ``compile_self_toss`` (R3) — one compiler, not two, for what is one
+    family of schedules (site-cycling with the count of sites as the only
+    difference).
 
-    One ball at ``pattern.site``: an OPENING REST
-    (``pattern.floor_lift_s``) lifts the cup onto the site AND HOMES THE HAND
-    from wherever it actually is to
+    One ball, ``pattern.sites`` cycled: an OPENING REST
+    (``pattern.floor_lift_s``) lifts the cup onto ``sites[0]`` AND HOMES THE
+    HAND from wherever it actually is to
     :data:`~jugglebot.motion.skills.sites.REST_HAND_REV` — one window, one
     home, sized by :func:`floor_lift_s` so the hand lane stays inside the
     firmware's resume-and-follow envelope (:data:`HOME_HAND_VEL_LIMIT_RPS` /
-    :data:`HOME_HAND_ACC_LIMIT_RPS2`).  Then THROW 0 is a fresh
-    origin from that rest (``launch_s`` window), then every later throw is
-    CARRIED by the catch one dwell before it
-    (:func:`_fold_catch_throw_pairs` — the same measured reason
-    :class:`ThenThrow` gives for columns: solved apart, the catch's runway
-    decelerates the hand toward rest and the throw has to undo that with
-    ``dwell - lead`` left). The last throw's catch is standalone (nothing
-    scheduled after it at this rung), and the schedule ends with a REST at the
-    site, two ``rest_tail_s`` after that catch — the same reason
-    :func:`compile_columns` gives: one tail would dispatch the REST before the
-    touch-down and splice the catch away.
+    :data:`HOME_HAND_ACC_LIMIT_RPS2`).  Then THROW 0 is a fresh origin from
+    that rest (``launch_s`` window), then every later throw is CARRIED by the
+    catch one dwell before it (:func:`_fold_catch_throw_pairs` — the same
+    measured reason :class:`ThenThrow` gives for columns: solved apart, the
+    catch's runway decelerates the hand toward rest and the throw has to undo
+    that with ``dwell - lead`` left). The last throw's catch is standalone
+    (nothing scheduled after it at this rung), and the schedule ends with a
+    REST at the site of that last catch, two ``rest_tail_s`` after it — the
+    same reason :func:`compile_columns` gives: one tail would dispatch the
+    REST before the touch-down and splice the catch away.
 
-    Throw ``i`` releases at ``floor_lift_s + i * (t_f + dwell_s)`` — one ball,
-    one site, so the throw-to-throw period is the WHOLE cycle
-    (``t_f + dwell_s``), not ``beat_s``'s half-cycle (that halving is a
-    property of two sites alternating, plan § 2.4, and does not apply here).
-    Every CATCH's window is the full flight ``t_f`` (its splice base is its
-    own previous release, exactly as ``tau`` is for columns, so it gets
-    :data:`HANDOFF_LEAD_S` via :func:`_assign_leads` the same way).
-    ``Schedule.beat_s`` is filled with this period (matching
+    **Throw ``i`` releases at** ``sites[i % len(sites)]`` **and targets**
+    ``sites[(i + 1) % len(sites)]``.  With one site ``(i + 1) % 1 == 0``
+    always, so the target is always the same site THROW 0 releases from —
+    R3's self-toss, and every number below (the fold, the lead assignment,
+    the dispatch-monotonicity check) runs the identical arithmetic it always
+    did, so a one-site schedule is BIT-IDENTICAL to the pre-R4
+    ``compile_self_toss`` (pinned,
+    ``tests/motion/test_skills_schedule.py::
+    test_one_site_one_ball_schedule_matches_the_pre_r4_compile_self_toss``).
+    With two sites this is the HOP (plan owner decision D1, 2026-09-23): the
+    cup coasts under the ball at the ball's lateral speed (117 mm/s at
+    100 mm separation / 292 mm/s at 250 mm, both apex 0.9 m) rather than the
+    platform chasing it, because the QP's release equality already pins the
+    cup velocity to the ballistic launch velocity (probed 2026-09-23: release
+    cup velocity (117, 0, 4201) mm/s == the ballistic launch for the 100 mm
+    hop) — no separate aim compensation exists or is needed. The fold
+    (:func:`_fold_catch_throw_pairs`) still pairs CATCH ``i`` with THROW
+    ``i + 1`` at the SAME site (the throw out of ``sites[1]`` IS at
+    ``sites[1]``, since target ``i`` == release site ``i + 1`` by
+    construction): CATCH ``i``'s site is ``sites[(i + 1) % 2]`` and THROW
+    ``i + 1``'s site is ``sites[(i + 1) % 2]`` too, and CATCH ``i``'s
+    ``t_abs_s + dwell_s`` equals THROW ``i + 1``'s ``t_abs_s`` exactly (both
+    derived from the same ``period``) — so the existing predicate (same
+    ``ball_id``, same ``site``, release ``dwell_s`` after touch-down) folds a
+    two-site schedule with no change.
+
+    Throw ``i`` releases at ``floor_lift_s + i * (t_f + dwell_s)`` — ONE
+    ball, so the throw-to-throw period is the WHOLE cycle (``t_f +
+    dwell_s``), not ``beat_s``'s half-cycle (that halving is a property of
+    two BALLS alternating out of phase, plan § 2.4's columns, and does not
+    apply to a single ball crossing sites). Every CATCH's window is the full
+    flight ``t_f`` (its splice base is its own previous release, exactly as
+    ``tau`` is for columns, so it gets :data:`HANDOFF_LEAD_S` via
+    :func:`_assign_leads` the same way). ``Schedule.beat_s`` is filled with
+    this period (matching
     ``toss_session.TossSessionSequencer.beat_s = flight_time_s + dwell_time_s``,
     the FSM's own name for a single ball's throw-to-throw period) and
     ``Schedule.transit_s`` with ``t_f`` (the CATCH window, honestly — there is
@@ -735,12 +904,10 @@ def compile_self_toss(pattern: SelfTossPattern, t0_abs_s: float) -> Schedule:
     itself would dispatch it while the lift is still mid-settle and force a
     SPLICE onto a plan that has not reached the floor yet.
     """
-    t_f = flight_s(pattern.apex_m)
     n = int(pattern.n_throws)
     if n < 1:
         raise ValueError('n_throws must be >= 1, got %r' % (pattern.n_throws,))
-    period = t_f + float(pattern.dwell_s)
-    site = pattern.site
+    n_sites = len(pattern.sites)
 
     # THE SCHEDULE IS BUILT ON ITS OWN CLOCK AND SHIFTED TO t0_abs_s ONCE, AT
     # THE END — see the identical note in compile_columns for why (ROS-epoch
@@ -748,47 +915,97 @@ def compile_self_toss(pattern: SelfTossPattern, t0_abs_s: float) -> Schedule:
     # below compares instants to 1e-9 s).
     t0_rel = 0.0
 
-    _check_window('THROW 0 (the launch from rest)', pattern.launch_s)
-    if n >= 2:
-        _check_window('dwell (touch-down to the throw the catch carries)',
-                      pattern.dwell_s)
-    _check_window('CATCH (the full flight back to the same site)', t_f)
-
     lift_s = float(pattern.floor_lift_s)
     _check_window('the opening REST (the floor lift + the hand homing)', lift_s)
-    skills = [Skill(kind=REST, ball_id=0, site=site,
+    skills = [Skill(kind=REST, ball_id=0, site=pattern.sites[0],
                     t_abs_s=t0_rel + lift_s, window_s=lift_s)]
 
+    # + launch_s: THROW 0's release cannot land AT the floor instant itself
+    # (the opening REST's plan is still mid-settle there) — see the
+    # docstring's "Why THROW 0 lands at floor_lift_s + launch_s". The shared
+    # tail (:func:`_append_one_ball_pattern`) takes the REST's own end
+    # instant and adds this same offset for ANY caller, reload's DECAY REST
+    # included.
+    skills, t_f, period = _append_one_ball_pattern(
+        skills, t0_rel + lift_s, pattern.sites, pattern.apex_m,
+        pattern.dwell_s, n, pattern.launch_s, pattern.rest_tail_s)
+
+    skills = _assign_leads(skills)
+    _check_dispatch_monotone(skills)
+
+    t0 = float(t0_abs_s)
+    skills = [_shifted(s, t0) for s in skills]
+    return Schedule(skills=tuple(skills), flight_s=t_f, beat_s=period,
+                    transit_s=t_f, dwell_s=float(pattern.dwell_s), t0_abs_s=t0,
+                    pattern=('self_toss' if n_sites == 1 else 'hop'))
+
+
+def _append_one_ball_pattern(skills, rest_end_t_rel: float, sites, apex_m: float,
+                             dwell_s: float, n_throws: int, launch_s: float,
+                             rest_tail_s: float):
+    """Append the one-ball pattern's THROW/CATCH events to ``skills`` (already
+    ending in a REST at ``rest_end_t_rel``, on the SAME relative clock),
+    fold same-site (CATCH, THROW) pairs, and append the closing REST.
+
+    THE SHARED TAIL of :func:`compile_one_ball` (plain self-toss/hop, whose
+    ``skills`` prefix is just the opening REST) and :func:`compile_reload`
+    (R4: whose prefix is PRE-TILT REST -> held CATCH -> DECAY REST — see that
+    function).  Lifted out unchanged from :func:`compile_one_ball` (R3/R4
+    build note) rather than duplicated (plan § 0): same arithmetic, same
+    fold, same lead assignment either way, because past the last REST that
+    precedes it, a one-ball pattern does not know or care how its own ball
+    got into the cup.
+
+    Returns ``(skills, t_f, period)`` — ``skills`` is still on the t0_rel=0
+    clock, not yet lead-assigned, monotonicity-checked or shifted (the
+    caller's job, since :func:`_assign_leads` and the dispatch check must run
+    over the WHOLE schedule, prefix included).
+    """
+    t_f = flight_s(apex_m)
+    n = int(n_throws)
+    period = t_f + float(dwell_s)
+    n_sites = len(sites)
+
+    _check_window('THROW 0 (the launch from rest)', launch_s)
+    if n >= 2:
+        _check_window('dwell (touch-down to the throw the catch carries)',
+                      dwell_s)
+    _check_window('CATCH (the full flight to the target site)', t_f)
+
     for i in range(n):
-        # + launch_s: THROW 0's release cannot land AT the floor instant
-        # itself (the opening REST's plan is still mid-settle there) — see
-        # the docstring's "Why THROW 0 lands at floor_lift_s + launch_s".
-        t_throw = t0_rel + lift_s + pattern.launch_s + float(i) * period
-        window = pattern.launch_s if i == 0 else pattern.dwell_s
-        skills.append(Skill(kind=THROW, ball_id=0, site=site,
+        site_i = sites[i % n_sites]
+        target_i = sites[(i + 1) % n_sites]
+        t_throw = float(rest_end_t_rel) + float(launch_s) + float(i) * period
+        window = launch_s if i == 0 else dwell_s
+        skills.append(Skill(kind=THROW, ball_id=0, site=site_i,
                             t_abs_s=t_throw, window_s=window,
-                            y_d=(np.zeros(2), pattern.apex_m), target=site))
+                            y_d=(np.zeros(2), apex_m), target=target_i))
         # Unlike columns (whose LAST throw's landing is deliberately left
-        # unscheduled for R5's cone delivery), a self-toss has nowhere else
-        # for the ball to go: EVERY throw gets a catch, and the fold below
-        # turns all but the very last one into a carried then_throw.
-        skills.append(Skill(kind=CATCH, ball_id=0, site=site,
+        # unscheduled for R5's cone delivery), a one-ball schedule has
+        # nowhere else for the ball to go: EVERY throw gets a catch, and the
+        # fold below turns all but the very last one into a carried
+        # then_throw.
+        skills.append(Skill(kind=CATCH, ball_id=0, site=target_i,
                             t_abs_s=t_throw + t_f, window_s=t_f))
 
     skills.sort(key=lambda s: s.t_abs_s)
-    skills = _fold_catch_throw_pairs(skills, float(pattern.dwell_s))
+    skills = _fold_catch_throw_pairs(skills, float(dwell_s))
 
     catches = [s for s in skills if s.kind == CATCH]
     last_catch = max(catches, key=lambda s: s.t_abs_s)
     # TWO tails — same reason as compile_columns: one would dispatch the REST
     # before the touch-down and splice the still-in-flight catch away.
-    rest_t = last_catch.t_abs_s + 2.0 * pattern.rest_tail_s
+    rest_t = closing_rest_t_abs(last_catch.t_abs_s, rest_tail_s)
     skills.append(Skill(kind=REST, ball_id=last_catch.ball_id,
                         site=last_catch.site, t_abs_s=rest_t,
-                        window_s=pattern.rest_tail_s))
+                        window_s=rest_tail_s))
+    return skills, t_f, period
 
-    skills = _assign_leads(skills)
 
+def _check_dispatch_monotone(skills) -> None:
+    """Dispatch instants must be non-decreasing across ``skills`` — shared by
+    every compiler (:func:`compile_columns`, :func:`compile_one_ball`,
+    :func:`compile_reload`) rather than three copies of the same loop."""
     disp = [s.dispatch_s() for s in skills]
     for k in range(1, len(disp)):
         if disp[k] < disp[k - 1] - 1e-9:
@@ -802,10 +1019,210 @@ def compile_self_toss(pattern: SelfTossPattern, t0_abs_s: float) -> Schedule:
                    k, skills[k].kind, skills[k].t_abs_s, skills[k].window_s,
                    skills[k].lead_s, disp[k - 1], disp[k]))
 
+
+#: Seconds the PRE-TILT REST's own transition takes (level -> the receive
+#: attitude) and the DECAY REST's takes (the receive attitude -> level) — the
+#: FSM's proven choreography (plan owner decision D4, 2026-09-23), restated
+#: as ONE constant each because both are a PHYSICAL fact about the
+#: platform's own tilt-rate limit, not a schedule choice.
+#:
+#: PROBED (U2, ``scratchpad/probe_r4_bb_catch4.py``, 2026-09-23, venv, R4
+#: operating point: leg 300/5000/150000 mm, hand acc 3500 rev/s²): the
+#: shortest of {1.0, 1.5, 2.0} s that passes ``validate_cycle`` for a
+#: level -> 12° (the receive-tilt ceiling) transition is **1.0 s** — U2's
+#: handoff has the full three-period sweep (peak tilt accel 1.21 rad/s² at
+#: 1.0 s).
+PRETILT_S = 1.0
+DECAY_S = 1.0
+
+#: Seconds the reload CATCH's own window (its splice base — the pre-tilt
+#: REST's end — to the announced touch-down) must be at least.
+#:
+#: This is OPERATING MARGIN for the heavier held-axis solve, not what makes
+#: the catch a fresh origin (any window does that, by construction — see
+#: :func:`compile_reload`'s docstring).  U2 measured the held-axis LANDING at
+#: ~5x a level LANDING's per-iteration solve cost under load (108 equality
+#: rows vs 12), ~0.09 s unloaded either way (handoff_U2.md, "held-axis QP
+#: cost").  Sized like :class:`OneBallPattern`'s ``launch_s`` (0.4 s, THROW
+#: 0's own fresh-origin window) with headroom for that factor.
+RELOAD_CATCH_WINDOW_S = 0.5
+
+
+def compile_reload_wait(site: Site, floor_lift_s: float,
+                        t0_abs_s: float) -> Schedule:
+    """The R4 reload's OPENING REST bridge (owner decision D4, brief step
+    1a) — installed BEFORE Ball Butler is even asked to reload, because the
+    receive tilt :func:`compile_reload` needs is not known until BB's
+    ``ThrowAnnouncement`` supplies the arrival velocity. ONE REST: bit-
+    identical Skill construction to :func:`compile_one_ball`'s own opening
+    REST (homes the hand from wherever it is to
+    :data:`~jugglebot.motion.skills.sites.REST_HAND_REV`, lifts the cup onto
+    ``site``), except ``holds_ball=False`` — unlike the self-toss opening
+    REST (which assumes an operator has already placed a ball), nothing is
+    in the cup while BB's throw is still pending.
+
+    ``SkillNode._svc_start_self_toss`` (``reload=True``) installs this
+    schedule, then calls ``bb/reload`` + ``bb/throw_at_target``; the hand
+    is already homing while that round trip is in flight. On the
+    announcement, ``SkillNode._on_announcement`` compiles the real
+    :func:`compile_reload` schedule and SWAPS the executor — by which point
+    the hand is already at rest, so that schedule's own combined home+tilt
+    REST (U2's SIMPLICITY contract) has nothing left to home and only
+    reaches the tilt. This schedule's only job is to get there and hold.
+    """
+    t0_rel = 0.0
+    period = float(floor_lift_s)
+    _check_window('the reload bridge REST (hand homing while BB is asked to '
+                 'reload)', period)
+    skills = [Skill(kind=REST, ball_id=0, site=site,
+                    t_abs_s=t0_rel + period, window_s=period,
+                    holds_ball=False)]
+    skills = _assign_leads(skills)
     t0 = float(t0_abs_s)
     skills = [_shifted(s, t0) for s in skills]
+    return Schedule(skills=tuple(skills), flight_s=0.0, beat_s=period,
+                    transit_s=0.0, dwell_s=0.0, t0_abs_s=t0,
+                    pattern='self_toss')
+
+
+def compile_reload(landing_mm, landing_vel_mm_s, t_land_abs_s: float,
+                   pattern: OneBallPattern, t0_abs_s: float) -> Schedule:
+    """The R4 reload schedule (plan owner decision D4, 2026-09-23): the FSM's
+    proven ball-butler-reload choreography, expressed as skills, anchored on
+    Ball Butler's OWN ``ThrowAnnouncement`` — ``landing_mm`` /
+    ``landing_vel_mm_s`` / ``t_land_abs_s`` are that announcement's physics,
+    already in the schedule frame (the caller subtracts the measured
+    mocap-to-schedule offset — plan § 1).  The announcement is the
+    AUTHORITY: this compiler is called once BB has announced, never before
+    (the brief's step 1c) — there is no earlier instant this schedule could
+    be built from, because the pre-tilt attitude is DERIVED from the
+    announced arrival velocity (:func:`~jugglebot.motion.skills.segments.
+    receive_hold_tilt`).
+
+    **PRE-TILT REST** (level -> the receive attitude, over
+    ``max(pattern.floor_lift_s, PRETILT_S)`` — ONE REST that both homes the
+    hand and reaches the tilt, U2's "SIMPLICITY" contract: no scenario in
+    U2's probe needed a separate homing REST ahead of it, and a second REST
+    is a second fresh-origin gate for no measured benefit) at
+    ``segments.hold_axis_site(landing_mm, tilt, sites.REST_CUP_Z_MM)`` — ON
+    the held axis line through the announced landing, not under
+    ``pattern.sites[0]``'s own xy (U2 cross-unit contract: 29.8 mm apart at
+    the 12° ceiling) —
+    **-> held-tilt CATCH** (a standalone LANDING, ``hold_tilt=tilt``,
+    terminal = the announced landing, carrying :class:`LandingPrior` so the
+    executor has an aim before any tracker fit exists for this
+    externally-thrown ball) —
+    **-> DECAY REST** (the same tilt back to level, over :data:`DECAY_S`, at
+    ``pattern.sites[0].rest_site_mm()`` — level, so the ordinary site rest
+    point already is on the (degenerate, vertical) axis) —
+    **-> the one-ball pattern's own throws** from that level rest
+    (:func:`_append_one_ball_pattern` — the SAME tail :func:`compile_one_ball`
+    builds; one compiler body, not two, plan § 0).
+
+    **Why the reload CATCH is a FRESH origin, not a splice** — mirrors
+    :func:`compile_one_ball`'s "Why THROW 0 lands at floor_lift_s +
+    launch_s".  The PRE-TILT REST is a plain SETTLE with no extra tail, so
+    its ``record.end_s`` is exactly its own event instant.  Setting the
+    CATCH's ``window_s`` to exactly ``t_land - pretilt_rest.t_abs_s`` (as
+    below) puts its splice base EXACTLY on that event, so
+    ``install_segment``'s fresh test (``t_now + lead >= record.end_s``)
+    reads true by construction at the catch's own dispatch instant, for ANY
+    window size — :data:`RELOAD_CATCH_WINDOW_S` is solve-budget margin for
+    the heavier held-axis QP (U2), not what makes the test pass.
+
+    ``pattern.sites`` names the site the reload catches at and the one-ball
+    pattern that follows it plays — :class:`OneBallPattern`, unchanged (R4
+    plays one site after a reload).  ``t0_abs_s`` plays the SAME role it does
+    in :func:`compile_one_ball` (the instant the caller — ``SkillNode.
+    _on_announcement`` — received the announcement; the schedule's own clock
+    is built at ``t0_rel = 0`` and shifted once at the end, per the identical
+    note on :func:`compile_columns`), not a free parameter.
+    """
+    landing_mm = _vec3(landing_mm, 'landing_mm')
+    landing_vel = _vec3(landing_vel_mm_s, 'landing_vel_mm_s')
+    if not np.isfinite(float(t_land_abs_s)):
+        raise ValueError('t_land_abs_s must be finite, got %r'
+                          % (t_land_abs_s,))
+    tilt = sg.receive_hold_tilt(landing_vel)
+    site0 = pattern.sites[0]
+
+    t0_rel = 0.0
+    t_land_rel = float(t_land_abs_s) - float(t0_abs_s)
+
+    lift_s = float(pattern.floor_lift_s)
+    pretilt_period = max(lift_s, PRETILT_S)
+    _check_window('the opening REST (the floor lift + the pre-tilt attitude)',
+                 pretilt_period)
+    pretilt_end_rel = t_land_rel - RELOAD_CATCH_WINDOW_S
+    pretilt_dispatch_rel = pretilt_end_rel - pretilt_period - LEAD_S
+    if pretilt_dispatch_rel < t0_rel - 1e-9:
+        raise ValueError(
+            'the announced landing (%.3f s from now) leaves no room for the '
+            'opening REST (%.3f s) + the reload CATCH window (%.3f s) + '
+            'dispatch lead (%.3f s) ahead of it — BB\'s throw_delay_s must '
+            'clear all three before the throw is announced'
+            % (t_land_rel - t0_rel, pretilt_period, RELOAD_CATCH_WINDOW_S,
+               LEAD_S))
+
+    # Both the PRE-TILT REST and the reload CATCH settle ON THE HELD AXIS
+    # LINE through the announced landing (U2 cross-unit contract) — ONE
+    # derivation, reused for both skills rather than recomputed per site.
+    pretilt_site = sg.hold_axis_site(landing_mm, tilt, REST_CUP_Z_MM)
+    skills = [Skill(kind=REST, ball_id=0, site=site0,
+                    t_abs_s=pretilt_end_rel, window_s=pretilt_period,
+                    rest_tilt=tilt, rest_site_mm=pretilt_site,
+                    holds_ball=False)]
+
+    catch_window = t_land_rel - pretilt_end_rel
+    _check_window('the reload CATCH (pre-tilt REST end to touch-down)',
+                 catch_window)
+    skills.append(Skill(
+        kind=CATCH, ball_id=0, site=site0, t_abs_s=t_land_rel,
+        window_s=catch_window, hold_tilt=tilt, rest_site_mm=pretilt_site,
+        # t_land_abs_s carries the ORIGINAL absolute instant, not the
+        # relative one `_shifted` below would double-shift — this is the
+        # only Skill field `_shifted` does not know how to move, so it is
+        # built already on the wall clock it will be read on.
+        landing_prior=LandingPrior(pos_mm=landing_mm, vel_mm_s=landing_vel,
+                                   t_land_abs_s=float(t_land_abs_s))))
+
+    # The DECAY REST is a FRESH ORIGIN from the tilted rest the CATCH's runway
+    # ends at -- its splice base clears the catch segment's end (touch-down +
+    # rest_tail) by REST_FRESH_MARGIN_S, exactly as `closing_rest_t_abs` does
+    # for a closing REST.  MEASURED 2026-09-23 (`sim/skills_gate.py --reload`,
+    # seeds 0-4, MuJoCo catch): with the decay's base AT the touch-down instant
+    # it spliced into the runway one knot after the seat and the seam's
+    # downward cup acceleration read -7049 mm/s^2 against the -0.70 g
+    # CUP_CONTACT_ACC floor (-6864), refusing every seed; from rest the decay
+    # is a pure attitude slew over a seated ball (U2 probe (iii): leg vel
+    # 70.8 mm/s, jerk 10 450 at 1.0 s).
+    decay_start_rel = t_land_rel + float(pattern.rest_tail_s) + REST_FRESH_MARGIN_S
+    decay_end_rel = decay_start_rel + DECAY_S
+    _check_window('the DECAY REST (the receive attitude back to level)',
+                 DECAY_S)
+    skills.append(Skill(kind=REST, ball_id=0, site=site0,
+                        t_abs_s=decay_end_rel, window_s=DECAY_S,
+                        rest_tilt=(0.0, 0.0)))
+
+    n = int(pattern.n_throws)
+    if n < 1:
+        raise ValueError('n_throws must be >= 1, got %r' % (pattern.n_throws,))
+    skills, t_f, period = _append_one_ball_pattern(
+        skills, decay_end_rel, pattern.sites, pattern.apex_m, pattern.dwell_s,
+        n, pattern.launch_s, pattern.rest_tail_s)
+
+    skills = _assign_leads(skills)
+    _check_dispatch_monotone(skills)
+
+    t0 = float(t0_abs_s)
+    skills = [_shifted(s, t0) for s in skills]
+    # NOT a 'reload' label — see the field docstring on `Schedule.pattern`:
+    # every THROW this schedule dispatches is kinematically an ordinary
+    # self-toss/hop throw, and that is the box actually swept.
+    n_sites = len(pattern.sites)
     return Schedule(skills=tuple(skills), flight_s=t_f, beat_s=period,
-                    transit_s=t_f, dwell_s=float(pattern.dwell_s), t0_abs_s=t0)
+                    transit_s=t_f, dwell_s=float(pattern.dwell_s), t0_abs_s=t0,
+                    pattern=('self_toss' if n_sites == 1 else 'hop'))
 
 
 def _shifted(sk: Skill, t0: float) -> Skill:

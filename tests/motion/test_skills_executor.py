@@ -215,10 +215,17 @@ def test_a_catch_during_the_throw_splices_at_the_first_knot_past_the_lead(
     assert new.t0_s == old.t0_s
     k = res.splice_k
     assert np.array_equal(new.plan.pose[:k + 1], old.plan.pose[:k + 1])
-    assert np.array_equal(new.plan.pose_vel[:k + 1], old.plan.pose_vel[:k + 1])
+    # Velocities are bit-identical BELOW the seam only (R4, 2026-09-23): the
+    # seam knot's commanded velocity is re-derived from the JOINED series by
+    # `unified_cycle._concat_plans` (a truncated head's own derivative at k_s
+    # was taken against a neighbour belonging to the discarded tail -- 59 k
+    # mm/s^3 of stale leg jerk at a 250 mm hop seam, measured), and knot k_s
+    # has not been read by the wire by construction (`SPLICE_TOO_LATE`).
+    assert np.array_equal(new.plan.pose_vel[:k], old.plan.pose_vel[:k])
     assert np.array_equal(new.plan.hand_rev[:k + 1], old.plan.hand_rev[:k + 1])
-    assert np.array_equal(new.plan.hand_vel_rps[:k + 1],
-                          old.plan.hand_vel_rps[:k + 1])
+    # The hand's seam velocity is re-derived with the pose's (same fix, all
+    # seven channels) -- bit-identical below the seam only.
+    assert np.array_equal(new.plan.hand_vel_rps[:k], old.plan.hand_vel_rps[:k])
     assert new.meta.kind == uc.SPLICED
     # The touch-down is on the NEW record's plan clock, and the schedule's
     # absolute instant reads back off it.
@@ -567,7 +574,7 @@ def test_a_six_throw_columns_schedule_installs_end_to_end(limits, geom):
 
 
 # ---------------------------------------------------------------------------
-# R3 — compile_self_toss through the real chain (leg 300/5000/150000, hand 3500 —
+# R3/R4 — compile_one_ball through the real chain (leg 300/5000/150000, hand 3500 —
 # the R3 build note's operating point, NOT the R2 fixture's 200000 jerk cap)
 # ---------------------------------------------------------------------------
 
@@ -580,14 +587,14 @@ def limits_r3():
 
 def test_self_toss_opening_rest_then_throw_0_installs_as_a_fresh_origin(
         limits_r3, geom):
-    """The whole reason ``compile_self_toss`` places THROW 0 where it does
+    """The whole reason ``compile_one_ball`` places THROW 0 where it does
     (plan § 0 / R3 build note): the opening REST installs (fresh, ``record`` is
     ``None``), and THROW 0 — dispatched only once that REST's own plan has
     ended — installs FRESH too (``splice_k == 0``), never a splice onto a plan
     still mid-settle."""
     site = si.columns_sites(SEPARATION_MM)[0]
-    sched = sc.compile_self_toss(
-        sc.SelfTossPattern(site=site, apex_m=0.9, dwell_s=0.30, n_throws=1),
+    sched = sc.compile_one_ball(
+        sc.OneBallPattern(sites=(site,), apex_m=0.9, dwell_s=0.30, n_throws=1),
         t0_abs_s=T0_ABS)
     rest0, throw0 = sched.skills[0], sched.skills[1]
     assert rest0.kind == sg.REST and throw0.kind == sg.THROW
@@ -640,15 +647,15 @@ def test_the_opening_rest_installs_from_the_activate_park_at_150k_jerk(
 def test_a_four_throw_self_toss_schedule_installs_end_to_end_at_a_ros_epoch(
         limits_r3, geom):
     """Mirrors ``test_a_six_throw_columns_schedule_installs_end_to_end``: the
-    whole ``compile_self_toss`` -> ``SkillExecutor`` -> ``install_segment``
+    whole ``compile_one_ball`` -> ``SkillExecutor`` -> ``install_segment``
     chain, offline, with a perfect analytic tracker — but at a ROS-epoch t0
     (the magnitude that broke ``compile_columns`` before the 2026-09-13 fix),
     since this compiler carries the exact same 1e-9 s comparisons.
     """
     site = si.columns_sites(SEPARATION_MM)[0]
     t0 = 1789263419.5
-    sched = sc.compile_self_toss(
-        sc.SelfTossPattern(site=site, apex_m=0.9, dwell_s=0.30, n_throws=4),
+    sched = sc.compile_one_ball(
+        sc.OneBallPattern(sites=(site,), apex_m=0.9, dwell_s=0.30, n_throws=4),
         t0_abs_s=t0)
     assert len(sched.skills) == 4 + 3
     arrival = np.array([0.0, 0.0, -0.5 * 9806.0 * sched.flight_s])
@@ -710,8 +717,8 @@ def test_the_chain_this_schedule_installs_is_hand_C2_through_validate_cycle(
     """
     site = si.columns_sites(SEPARATION_MM)[0]
     t0 = 1789263419.5
-    sched = sc.compile_self_toss(
-        sc.SelfTossPattern(site=site, apex_m=0.9, dwell_s=0.30, n_throws=4),
+    sched = sc.compile_one_ball(
+        sc.OneBallPattern(sites=(site,), apex_m=0.9, dwell_s=0.30, n_throws=4),
         t0_abs_s=t0)
     arrival = np.array([0.0, 0.0, -0.5 * 9806.0 * sched.flight_s])
     landings = [_fit_landing(pos_mm=sk.site.catch_site_mm(), vel_mm_s=arrival.copy(),
@@ -777,8 +784,8 @@ def test_a_four_throw_self_toss_schedule_installs_end_to_end_with_a_tracker_gate
     installs end to end through the real chain."""
     site = si.columns_sites(SEPARATION_MM)[0]
     t0 = 1789263419.5
-    sched = sc.compile_self_toss(
-        sc.SelfTossPattern(site=site, apex_m=0.9, dwell_s=0.30, n_throws=4),
+    sched = sc.compile_one_ball(
+        sc.OneBallPattern(sites=(site,), apex_m=0.9, dwell_s=0.30, n_throws=4),
         t0_abs_s=t0)
     assert len(sched.skills) == 4 + 3
 
@@ -899,7 +906,7 @@ def _schedule(sites, catch_window_s: float = 0.278,
         Skill(kind=sg.REST, ball_id=0, site=p2,
               t_abs_s=t_land + sg.REST_TAIL_S, window_s=sg.REST_TAIL_S),
     )
-    return Schedule(skills=skills, flight_s=FLIGHT_S, beat_s=0.578,
+    return Schedule(pattern='self_toss', skills=skills, flight_s=FLIGHT_S, beat_s=0.578,
                     transit_s=catch_window_s, dwell_s=0.30, t0_abs_s=T0_ABS)
 
 
@@ -1038,6 +1045,7 @@ def test_skill_order_is_preserved_while_a_catch_is_deferred(sites):
     assert catch.dispatch_s() < rest.dispatch_s() < deadline
 
     sch = Schedule(
+        pattern='self_toss',
         skills=(Skill(kind=sg.THROW, ball_id=0, site=p1, t_abs_s=t_throw,
                      window_s=LAUNCH_S, y_d=(np.zeros(2), APEX_M),
                      target=p1), catch, rest),
@@ -1388,13 +1396,20 @@ class _FakeLearner:
 
 
 def _box(xy=((-0.05, 0.05), (-0.05, 0.05)), apex=(0.3, 1.5), empty=False,
-         site_pair=('P1', 'P1'), apex_band_m=(0.8, 1.0)):
+         site_pair=('P1', 'P1'), apex_band_m=(0.8, 1.0), pattern='self_toss',
+         release_xy_mm=(-50.0, 0.0), target_xy_mm=(-50.0, 0.0)):
+    """R4 (2026-09-23): every caller in this file uses ``sites[0]`` (P1, at
+    (-50, 0) mm -- ``SEPARATION_MM = 100.0``) for both ends of ``site_pair``,
+    so those are the xy defaults -- ``executor._command_u`` now passes the
+    LIVE site's own ``cup_mm[:2]`` to ``adm.select``, and a box whose stamped
+    xy disagreed would refuse regardless of ``site_pair`` / ``apex_band_m``."""
     if empty:
         xy = ((float('nan'), float('nan')), (float('nan'), float('nan')))
         apex = (float('nan'), float('nan'))
     return adm.AdmissibleBox(
         site_pair=site_pair, apex_band_m=apex_band_m, landing_xy_m=xy,
-        apex_m=apex,
+        apex_m=apex, pattern=pattern, release_site_xy_mm=release_xy_mm,
+        target_site_xy_mm=target_xy_mm,
         limits={'leg_vel_mmps': 1.0, 'leg_acc_mmps2': 1.0,
                'leg_jerk_mmps3': 1.0, 'hand_acc_rps2': 1.0},
         gate_hash='0123456789ab', swept_at='2026-09-13')
@@ -1415,7 +1430,7 @@ def _schedule_with_then_throw(sites):
         Skill(kind=sg.CATCH, ball_id=0, site=p2, t_abs_s=t_land,
               window_s=0.278, then_throw=tt),
     )
-    return Schedule(skills=skills, flight_s=FLIGHT_S, beat_s=0.578,
+    return Schedule(pattern='self_toss', skills=skills, flight_s=FLIGHT_S, beat_s=0.578,
                     transit_s=0.278, dwell_s=0.30, t0_abs_s=T0_ABS)
 
 
@@ -1426,7 +1441,7 @@ def _single_throw_schedule(site, ball_id, t_release, apex=APEX_M):
     flight = sc.flight_s(apex)
     skills = (Skill(kind=sg.THROW, ball_id=ball_id, site=site, t_abs_s=t_release,
                     window_s=LAUNCH_S, y_d=(np.zeros(2), apex), target=site),)
-    return Schedule(skills=skills, flight_s=flight, beat_s=flight,
+    return Schedule(pattern='self_toss', skills=skills, flight_s=flight, beat_s=flight,
                     transit_s=flight, dwell_s=0.30, t0_abs_s=t_release - LAUNCH_S)
 
 
@@ -1678,8 +1693,8 @@ def test_an_end_to_end_self_toss_schedule_fails_today_without_the_scheduled_disp
     """
     site = si.columns_sites(SEPARATION_MM)[0]
     t0 = 1789263419.5
-    sched = sc.compile_self_toss(
-        sc.SelfTossPattern(site=site, apex_m=0.9, dwell_s=0.30, n_throws=4),
+    sched = sc.compile_one_ball(
+        sc.OneBallPattern(sites=(site,), apex_m=0.9, dwell_s=0.30, n_throws=4),
         t0_abs_s=t0)
     assert len(sched.skills) == 4 + 3
 
@@ -1858,7 +1873,7 @@ def test_outcome_y_is_exact_and_rows_land_in_schedule_order(sites):
         Skill(kind=sg.THROW, ball_id=1, site=p2, t_abs_s=t2, window_s=LAUNCH_S,
               y_d=(np.zeros(2), APEX_M), target=p2),
     )
-    sch = Schedule(skills=skills, flight_s=FLIGHT_S, beat_s=FLIGHT_S,
+    sch = Schedule(pattern='self_toss', skills=skills, flight_s=FLIGHT_S, beat_s=FLIGHT_S,
                   transit_s=FLIGHT_S, dwell_s=0.3, t0_abs_s=t1 - LAUNCH_S)
     inst = _FakeInstaller()
     landings = {
@@ -1956,7 +1971,7 @@ def test_an_outcome_still_finalises_after_a_later_skill_refuses(sites):
               window_s=LAUNCH_S, y_d=(np.zeros(2), APEX_M), target=p1),
         Skill(kind=sg.CATCH, ball_id=0, site=p2, t_abs_s=t_land, window_s=0.278),
     )
-    sch = Schedule(skills=skills, flight_s=FLIGHT_S, beat_s=0.578,
+    sch = Schedule(pattern='self_toss', skills=skills, flight_s=FLIGHT_S, beat_s=0.578,
                   transit_s=0.278, dwell_s=0.3, t0_abs_s=ROS_T0 - LAUNCH_S)
     inst = _FakeInstaller([
         ex.InstallResult(True, 'OK', 'ok', 0.0, splice_k=0),
@@ -2386,7 +2401,7 @@ def _single_catch_schedule(site, ball_id, t_land):
     first against the same shared ``obs``)."""
     skills = (Skill(kind=sg.CATCH, ball_id=ball_id, site=site, t_abs_s=t_land,
                     window_s=0.278),)
-    return Schedule(skills=skills, flight_s=FLIGHT_S, beat_s=FLIGHT_S,
+    return Schedule(pattern='self_toss', skills=skills, flight_s=FLIGHT_S, beat_s=FLIGHT_S,
                     transit_s=0.278, dwell_s=0.30, t0_abs_s=t_land - FLIGHT_S)
 
 
@@ -2500,7 +2515,7 @@ def _fresh_rest_schedule(site):
     fresh origin by `_dispatch`'s rule."""
     skills = (Skill(kind=sg.REST, ball_id=0, site=site, t_abs_s=ROS_T0,
                     window_s=sg.REST_TAIL_S),)
-    return Schedule(skills=skills, flight_s=FLIGHT_S, beat_s=FLIGHT_S,
+    return Schedule(pattern='self_toss', skills=skills, flight_s=FLIGHT_S, beat_s=FLIGHT_S,
                     transit_s=FLIGHT_S, dwell_s=0.3,
                     t0_abs_s=ROS_T0 - sg.REST_TAIL_S)
 
@@ -2941,6 +2956,7 @@ def test_an_unfitted_landing_aims_the_one_catch_nothing_else_can(sites):
     p1, p2 = sites
     t_land = T0_ABS + 0.6
     sch = Schedule(
+        pattern='self_toss',
         skills=(Skill(kind=sg.CATCH, ball_id=7, site=p2, t_abs_s=t_land,
                       window_s=0.6),),
         flight_s=FLIGHT_S, beat_s=0.578, transit_s=0.6, dwell_s=0.30,
@@ -3018,6 +3034,7 @@ def test_a_catch_the_schedule_cannot_aim_still_waits_for_the_tracker(sites):
     p1, p2 = sites
     t_land = T0_ABS + 0.6
     sch = Schedule(
+        pattern='self_toss',
         skills=(Skill(kind=sg.CATCH, ball_id=7, site=p2, t_abs_s=t_land,
                       window_s=0.6),),
         flight_s=FLIGHT_S, beat_s=0.578, transit_s=0.6, dwell_s=0.30,
@@ -3561,3 +3578,332 @@ def test_a_refused_re_send_ends_re_aiming_for_that_catch(sites):
     x.tick(sch.skills[1].dispatch_s() + 0.10)
     assert len(inst.calls) == n0 + 1
     assert not x.attempt_ended
+
+
+# ---------------------------------------------------------------------------
+# R4 (2026-09-23) — hand-ratio scaling on the STROKE component only
+# ---------------------------------------------------------------------------
+
+def test_hand_corrected_landing_reduces_to_the_old_formula_for_a_vertical_throw(
+        sites):
+    """The axis-decomposed scaling must collapse to the OLD isotropic
+    ``launch_vel * r`` for a vertical self-toss, where the release cup axis
+    IS the launch velocity's direction (``cup_axis(0, 0) == (0, 0, 1)``
+    exactly, so the perpendicular component is exactly zero and the whole
+    vector is "the stroke")."""
+    sch = _schedule(sites)
+    inst = _FakeInstaller()
+    x = ex.SkillExecutor(sch, inst, tracker=lambda b: None)
+    catch_idx = 1
+    catch_skill = sch.skills[catch_idx]
+    r = 1.086
+    got = x._hand_corrected_landing(catch_idx, catch_skill, r)
+
+    site, t_release_s, y_d, target = ex._previous_release(
+        sch, catch_idx, catch_skill.ball_id)
+    pos_mm = x._commanded_target_mm(target, y_d)
+    flight_s = sc.flight_s(float(y_d[1]))
+    release_pos = site.throw_site_mm()
+    launch_vel = ballistics_bc.launch_velocity(release_pos, pos_mm, flight_s)
+    assert abs(launch_vel[0]) < 1e-9 and abs(launch_vel[1]) < 1e-9  # vertical
+    old_vel = launch_vel * r
+    exp_pos, exp_v, exp_t = ballistics_bc.arrival_state_at_z(
+        release_pos, old_vel, float(pos_mm[2]))
+    assert np.allclose(got.pos_mm, exp_pos)
+    assert np.allclose(got.vel_mm_s, exp_v)
+    assert got.t_land_abs_s == pytest.approx(t_release_s + float(exp_t))
+
+
+def _hand_corrected_reference(x, sch, catch_idx, catch_skill, r):
+    """The axis-decomposed reference, computed the SAME way the production
+    code does -- shared by the two tests below so neither restates the
+    formula independently of ``_hand_corrected_landing`` itself (that would
+    only prove the two copies agree with each other, not with the code)."""
+    import jugglebot.motion.trajectory.tilt_geometry as tg
+    site, t_release_s, y_d, target = ex._previous_release(
+        sch, catch_idx, catch_skill.ball_id)
+    pos_mm = x._commanded_target_mm(target, y_d)
+    flight_s = sc.flight_s(float(y_d[1]))
+    release_pos = site.throw_site_mm()
+    launch_vel = ballistics_bc.launch_velocity(release_pos, pos_mm, flight_s)
+    rx, ry = tg.tilt_to_throw(launch_vel)
+    axis = tg.cup_axis(rx, ry)
+    axial = float(np.dot(launch_vel, axis))
+    perp = launch_vel - axis * axial
+    scaled = perp + axis * (axial * r)
+    pos2, vel2, t2 = ballistics_bc.arrival_state_at_z(
+        release_pos, scaled, float(pos_mm[2]))
+    return launch_vel, ex.Landing(pos_mm=pos2, vel_mm_s=vel2,
+                                  t_land_abs_s=t_release_s + float(t2))
+
+
+def test_hand_corrected_landing_matches_the_axis_decomposed_formula_for_a_hop(
+        sites):
+    """A cross-site hop (R4's 100 mm operating separation) is pinned against
+    the axis-decomposed reference (:func:`_hand_corrected_reference`).
+
+    **This throw's takeoff angle from vertical is ~1.6° (atan(117/4201)),
+    well under ``tilt_geometry.MAX_TILT_DEG`` (12°) -- so ``tilt_to_throw``
+    does NOT saturate, its cup axis is (to float precision) PARALLEL to
+    ``launch_vel`` itself (the throw-tilt policy's own definition: the cup
+    axis points ALONG the commanded takeoff velocity), and the axial/
+    perpendicular split therefore coincides with the old isotropic
+    ``launch_vel * r`` at this separation -- confirmed below, not assumed.**
+    The two formulas diverge only once the takeoff angle exceeds the clamp;
+    see ``test_hand_corrected_landing_diverges_from_the_old_formula_once_the_throw_tilt_saturates``
+    for that case, which R4's 100-250 mm hop separations never reach (apex
+    0.9 m gives 1.6-4°, per the schedule module's own docstring probe)."""
+    p1, p2 = sites
+    t_throw = T0_ABS + LAUNCH_S
+    skills = (
+        Skill(kind=sg.THROW, ball_id=0, site=p1, t_abs_s=t_throw,
+              window_s=LAUNCH_S, y_d=(np.zeros(2), APEX_M), target=p2),
+        Skill(kind=sg.CATCH, ball_id=0, site=p2, t_abs_s=t_throw + FLIGHT_S,
+              window_s=0.278),
+    )
+    sch = Schedule(pattern='self_toss', skills=skills, flight_s=FLIGHT_S, beat_s=0.578,
+                  transit_s=0.278, dwell_s=0.30, t0_abs_s=T0_ABS)
+    inst = _FakeInstaller()
+    x = ex.SkillExecutor(sch, inst, tracker=lambda b: None)
+    catch_idx = 1
+    catch_skill = sch.skills[catch_idx]
+    r = 1.086
+    got = x._hand_corrected_landing(catch_idx, catch_skill, r)
+    launch_vel, expected = _hand_corrected_reference(
+        x, sch, catch_idx, catch_skill, r)
+    # This throw crosses sites, so the launch velocity is NOT purely axial.
+    assert abs(launch_vel[0]) > 1e-6 or abs(launch_vel[1]) > 1e-6
+    assert np.allclose(got.pos_mm, expected.pos_mm, atol=1e-6)
+    assert np.allclose(got.vel_mm_s, expected.vel_mm_s, atol=1e-6)
+    assert got.t_land_abs_s == pytest.approx(expected.t_land_abs_s)
+    # Confirmed coincidence with the isotropic formula AT THIS SEPARATION.
+    old_vel = launch_vel * r
+    old_pos, _v, _t = ballistics_bc.arrival_state_at_z(
+        p1.throw_site_mm(), old_vel, float(p2.catch_site_mm()[2]))
+    assert np.allclose(got.pos_mm, old_pos, atol=1e-6)
+
+
+def test_hand_corrected_landing_diverges_from_the_old_formula_once_the_throw_tilt_saturates(
+        sites):
+    """Past ``tilt_geometry.MAX_TILT_DEG`` (12°) ``tilt_to_throw`` SATURATES
+    the tilt, so the cup axis is no longer parallel to the commanded launch
+    velocity and a genuine perpendicular (platform-motion) component exists
+    -- this is the case the axis-decomposed formula actually protects
+    against, even though R4's real hop separations never reach it (see the
+    test above). A 2 m separation at the same 0.9 m apex gives ~29° from
+    vertical, well past the clamp."""
+    p1 = sites[0]
+    p2 = si.Site('FAR', np.array([p1.cup_mm[0] + 2000.0, p1.cup_mm[1],
+                                  float(p1.cup_mm[2])]))
+    t_throw = T0_ABS + LAUNCH_S
+    skills = (
+        Skill(kind=sg.THROW, ball_id=0, site=p1, t_abs_s=t_throw,
+              window_s=LAUNCH_S, y_d=(np.zeros(2), APEX_M), target=p2),
+        Skill(kind=sg.CATCH, ball_id=0, site=p2, t_abs_s=t_throw + FLIGHT_S,
+              window_s=0.278),
+    )
+    sch = Schedule(pattern='self_toss', skills=skills, flight_s=FLIGHT_S, beat_s=0.578,
+                  transit_s=0.278, dwell_s=0.30, t0_abs_s=T0_ABS)
+    inst = _FakeInstaller()
+    x = ex.SkillExecutor(sch, inst, tracker=lambda b: None)
+    catch_idx = 1
+    catch_skill = sch.skills[catch_idx]
+    r = 1.086
+    got = x._hand_corrected_landing(catch_idx, catch_skill, r)
+    launch_vel, expected = _hand_corrected_reference(
+        x, sch, catch_idx, catch_skill, r)
+    assert np.allclose(got.pos_mm, expected.pos_mm, atol=1e-6)
+    old_vel = launch_vel * r
+    old_pos, _v, _t = ballistics_bc.arrival_state_at_z(
+        p1.throw_site_mm(), old_vel, float(p2.catch_site_mm()[2]))
+    assert not np.allclose(got.pos_mm, old_pos, atol=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# R4 (2026-09-23) — a re-send declines BEFORE the solve inside the
+# cup-contact window (plan § 0 carry-in)
+# ---------------------------------------------------------------------------
+
+def test_resend_live_catch_declines_before_the_solve_inside_the_contact_window(
+        sites):
+    """A re-send whose splice base would open inside the cup-contact window
+    (:data:`ex.CUP_CONTACT_WINDOW_LEAD_S`) must be declined WITHOUT calling
+    the installer -- a solve there can only refuse ``CUP_CONTACT_ACC``, so
+    paying for it is a wasted solve on the orchestrator thread.  Chosen so
+    NEITHER of the two pre-existing timing fences (``catch_freeze_s``,
+    the window floor) fires first: the remaining window at the re-send
+    instant (0.11 s) sits strictly between :data:`ex.MIN_WINDOW_S` (0.10 s)
+    and :data:`ex.CUP_CONTACT_WINDOW_LEAD_S` (0.125 s)."""
+    sch = _schedule(sites, catch_window_s=0.6)
+    catch_skill = sch.skills[1]
+    t_land = float(catch_skill.t_abs_s)
+    committed = _fit_landing(pos_mm=sites[1].catch_site_mm(), vel_mm_s=LAND_VEL,
+                             t_land_abs_s=t_land)
+    box = {'landing': committed}
+    inst = _FakeInstaller()
+    x = ex.SkillExecutor(sch, inst, tracker=lambda b: box['landing'])
+    x.tick(sch.skills[0].dispatch_s())
+    x.tick(catch_skill.dispatch_s())
+    n0 = len(inst.calls)
+    assert n0 == 2   # THROW committed, CATCH committed on the fit landing.
+
+    # Move the fit landing well beyond tolerance (50 mm > resend_pos_tol_mm),
+    # keeping its touch-down at t_land so the re-send instant below lands the
+    # splice base exactly inside the contact window.
+    box['landing'] = _fit_landing(
+        pos_mm=sites[1].catch_site_mm() + np.array([50.0, 0.0, 0.0]),
+        vel_mm_s=LAND_VEL, t_land_abs_s=t_land)
+    lead_s = float(catch_skill.lead_s)
+    assert lead_s == pytest.approx(sc.LEAD_S)   # this test's arithmetic assumes it
+    t_resend = t_land - 0.335   # remaining window at dispatch+lead = 0.11 s
+    remaining = t_land - (t_resend + lead_s)
+    assert ex.MIN_WINDOW_S < remaining < ex.CUP_CONTACT_WINDOW_LEAD_S
+    lines = x.tick(t_resend)
+    assert len(inst.calls) == n0          # the installer was NEVER called again
+    assert any('CONTACT-WINDOW' in ln for ln in lines)
+
+
+# ---------------------------------------------------------------------------
+# R4 reload (Unit U3): Skill.landing_prior / hold_tilt / rest_tilt /
+# rest_site_mm threading -- fake-installer, no real solve (plan § 0 D4).
+# ---------------------------------------------------------------------------
+
+def _reload_schedule(sites, tilt=(0.0, -0.20943951023931956)):
+    """PRE-TILT REST -> held CATCH (with a landing_prior, no schedule
+    release) -- the smallest slice of ``schedule.compile_reload``'s shape
+    this file needs to exercise the executor's own field-threading, built by
+    hand (this file's convention) rather than through the real compiler."""
+    p1, _p2 = sites
+    pretilt_site = sg.hold_axis_site(p1.catch_site_mm(), tilt, si.REST_CUP_Z_MM)
+    t_pretilt_end = T0_ABS + 1.5
+    t_land = t_pretilt_end + 0.5
+    prior = sc.LandingPrior(pos_mm=p1.catch_site_mm(), vel_mm_s=LAND_VEL,
+                            t_land_abs_s=t_land)
+    skills = (
+        Skill(kind=sg.REST, ball_id=0, site=p1, t_abs_s=t_pretilt_end,
+              window_s=1.5, rest_tilt=tilt, rest_site_mm=pretilt_site,
+              holds_ball=False),
+        Skill(kind=sg.CATCH, ball_id=0, site=p1, t_abs_s=t_land,
+              window_s=0.5, hold_tilt=tilt, rest_site_mm=pretilt_site,
+              landing_prior=prior),
+    )
+    return Schedule(pattern='self_toss', skills=skills, flight_s=FLIGHT_S,
+                    beat_s=2.0, transit_s=0.5, dwell_s=0.30, t0_abs_s=T0_ABS)
+
+
+def test_the_pretilt_rest_terminal_carries_its_tilt_and_off_axis_site(sites):
+    sch = _reload_schedule(sites)
+    inst = _FakeInstaller()
+    x = ex.SkillExecutor(sch, inst)
+    x.tick(sch.skills[0].dispatch_s())
+    kind, terminal, _t, ball_id = inst.calls[0]
+    assert kind == sg.REST and ball_id == 0
+    assert terminal.tilt == pytest.approx(sch.skills[0].rest_tilt)
+    assert terminal.holds_ball is False
+    assert np.array_equal(terminal.rest_site_mm, sch.skills[0].rest_site_mm)
+    # Off the plain site (U2 cross-unit contract): NOT site.rest_site_mm().
+    assert not np.allclose(terminal.rest_site_mm, sites[0].rest_site_mm())
+
+
+def test_a_catch_with_no_schedule_release_is_aimed_by_its_landing_prior(sites):
+    """The reload catch has NO previous release in this schedule --
+    ``_previous_release`` finds nothing -- so without ``landing_prior`` it
+    would wait on the tracker (and this test gives it none) and eventually
+    end ``NO_LANDING``.  With it, dispatch succeeds on the FIRST tick, aimed
+    at exactly the announced landing, and carries ``hold_tilt`` on the
+    terminal."""
+    sch = _reload_schedule(sites)
+    inst = _FakeInstaller()
+    x = ex.SkillExecutor(sch, inst, tracker=lambda ball_id: None)
+    x.tick(sch.skills[0].dispatch_s())
+    x.tick(sch.skills[1].dispatch_s())
+    assert [c[0] for c in inst.calls] == [sg.REST, sg.CATCH]
+    kind, terminal, _t, ball_id = inst.calls[1]
+    prior = sch.skills[1].landing_prior
+    assert np.array_equal(terminal.landing_mm, prior.pos_mm)
+    assert np.array_equal(terminal.landing_vel_mm_s, prior.vel_mm_s)
+    assert terminal.t_land_s == pytest.approx(prior.t_land_abs_s)
+    assert terminal.hold_tilt == pytest.approx(sch.skills[1].hold_tilt)
+    assert terminal.then_throw is None
+    assert np.array_equal(terminal.rest_site_mm, sch.skills[1].rest_site_mm)
+    assert not x.attempt_ended
+
+
+def test_a_held_axis_catch_terminal_recomputes_rest_site_from_the_given_landing(
+        sites):
+    """Regression (Unit U3 Part 2, 2026-09-23): `_catch_terminal`'s
+    ``rest_site_mm`` used to be the SKILL's PINNED (compile-time) value even
+    when the ``landing`` it builds a terminal FOR has moved (a live tracker
+    re-send under ``AIM_TRACKER``) -- the pinned xy then sits off the NEW
+    axis line through the moved landing and the QP refuses ``CATCH_AXIS``
+    (found probing ``sim/skills_gate.py --reload``: a held-axis catch's
+    dispatch reported the seed 3.06e5 mm off axis). ``_catch_terminal``
+    must RE-DERIVE ``rest_site_mm`` from whatever ``landing`` it is
+    actually given, at the skill's own ``hold_tilt`` and z -- a dispatch
+    with the UNMOVED ``landing_prior`` (no resend yet) must still recompute
+    to the identical point (no behaviour change there)."""
+    sch = _reload_schedule(sites)
+    inst = _FakeInstaller()
+    x = ex.SkillExecutor(sch, inst, tracker=lambda ball_id: None)
+    catch_skill = sch.skills[1]
+
+    # No resend: the given landing IS the compile-time landing_prior --
+    # must recompute to the SAME rest site (the fix is a no-op here).
+    same = ex.Landing(pos_mm=catch_skill.landing_prior.pos_mm,
+                      vel_mm_s=catch_skill.landing_prior.vel_mm_s,
+                      t_land_abs_s=catch_skill.landing_prior.t_land_abs_s)
+    unmoved_terminal = x._catch_terminal(1, catch_skill, same)
+    assert np.allclose(unmoved_terminal.rest_site_mm,
+                       catch_skill.rest_site_mm)
+
+    # A resend-style moved landing: rest_site_mm must move WITH it, onto
+    # the new axis line -- not stay pinned to the old one.
+    moved = ex.Landing(
+        pos_mm=catch_skill.landing_prior.pos_mm + np.array([50.0, 0.0, 0.0]),
+        vel_mm_s=catch_skill.landing_prior.vel_mm_s,
+        t_land_abs_s=catch_skill.landing_prior.t_land_abs_s)
+    moved_terminal = x._catch_terminal(1, catch_skill, moved)
+    expected = sg.hold_axis_site(moved.pos_mm, catch_skill.hold_tilt,
+                                 float(catch_skill.rest_site_mm[2]))
+    assert np.allclose(moved_terminal.rest_site_mm, expected)
+    # NOT the pinned compile-time value -- that would be off the NEW axis.
+    assert not np.allclose(moved_terminal.rest_site_mm,
+                          catch_skill.rest_site_mm)
+
+
+def test_a_tracker_fit_far_off_the_announced_landing_time_is_ignored_for_a_reload_catch(
+        sites):
+    """A tracker landing for an EXTERNALLY announced ball (the reload's
+    ``landing_prior``) is trusted only inside
+    :data:`executor.EXTERNAL_LANDING_TIME_BAND_S` of the announced instant.
+    MEASURED 2026-09-23 (``sim/skills_gate.py --reload``, seed 0, the live
+    ``AIM_TRACKER`` default): the tracker's immature fit of a 4 s synthetic
+    flight aimed the reload CATCH at x = 306 078 mm; the lateral clamp bounds
+    the position but nothing bounded the TIME, and a fit half a second off
+    moves the whole window. Ball Butler's announced landing instant is the
+    fact the FSM's catches were timed on for two months; a fit that disagrees
+    with it by more than the band is the fit's error, not the announcement's.
+    Inside the band the fit refines the catch exactly as for any other ball."""
+    sch = _reload_schedule(sites)
+    prior = sch.skills[1].landing_prior
+    far = ex.Landing(pos_mm=prior.pos_mm, vel_mm_s=prior.vel_mm_s,
+                     t_land_abs_s=prior.t_land_abs_s + 0.5, from_fit=True)
+    inst = _FakeInstaller()
+    x = ex.SkillExecutor(sch, inst, tracker=lambda ball_id: far,
+                         catch_aim_source=ex.AIM_TRACKER)
+    x.tick(sch.skills[0].dispatch_s())
+    x.tick(sch.skills[1].dispatch_s())
+    kind, terminal, _t, _b = inst.calls[1]
+    assert kind == sg.CATCH
+    assert terminal.t_land_s == pytest.approx(prior.t_land_abs_s), \
+        'a fit 0.5 s off the announcement must not move the catch'
+    near = ex.Landing(pos_mm=prior.pos_mm, vel_mm_s=prior.vel_mm_s,
+                      t_land_abs_s=prior.t_land_abs_s + 0.05, from_fit=True)
+    inst2 = _FakeInstaller()
+    x2 = ex.SkillExecutor(sch, inst2, tracker=lambda ball_id: near,
+                          catch_aim_source=ex.AIM_TRACKER)
+    x2.tick(sch.skills[0].dispatch_s())
+    x2.tick(sch.skills[1].dispatch_s())
+    _k, terminal2, _t2, _b2 = inst2.calls[1]
+    assert terminal2.t_land_s == pytest.approx(prior.t_land_abs_s + 0.05), \
+        'a fit inside the band refines the catch'

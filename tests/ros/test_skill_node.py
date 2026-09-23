@@ -14,6 +14,7 @@ from __future__ import annotations
 import math
 import threading
 import time
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -29,11 +30,11 @@ from rclpy.node import Node as _MockNodeClass
 
 from std_srvs.srv import Trigger
 from diagnostic_msgs.msg import DiagnosticStatus, KeyValue
-from geometry_msgs.msg import Point
+from geometry_msgs.msg import Point, Vector3
 from jugglebot_interfaces.msg import (BallStateArray, HandTelemetryMessage,
                                       RigidBodyPose, RigidBodyPoses,
-                                      TrajectoryStatus)
-from jugglebot_interfaces.srv import InstallSegment
+                                      ThrowAnnouncement, TrajectoryStatus)
+from jugglebot_interfaces.srv import BallButlerThrow, InstallSegment
 
 from jugglebot import ball_possession
 from jugglebot import skill_node as sn
@@ -363,6 +364,8 @@ def test_start_self_toss_is_refused_on_a_limits_mismatch(tmp_path):
     box = adm.AdmissibleBox(
         site_pair=('P1', 'P1'), apex_band_m=(0.85, 0.95),
         landing_xy_m=((-0.05, 0.05), (-0.05, 0.05)), apex_m=(0.6, 1.2),
+        pattern='self_toss', release_site_xy_mm=(-50.0, 0.0),
+        target_site_xy_mm=(-50.0, 0.0),
         limits={'leg_vel_mmps': 1.0, 'leg_acc_mmps2': 1.0,
                'leg_jerk_mmps3': 1.0, 'hand_acc_rps2': 1.0},
         gate_hash=adm.gate_hash(), swept_at='2026-09-13')
@@ -425,6 +428,8 @@ def test_start_self_toss_refuses_an_uncovered_apex_before_any_motion(tmp_path):
     box = adm.AdmissibleBox(
         site_pair=('P1', 'P1'), apex_band_m=(0.85, 0.95),
         landing_xy_m=((-0.05, 0.05), (-0.05, 0.05)), apex_m=(0.6, 1.2),
+        pattern='self_toss', release_site_xy_mm=(-50.0, 0.0),
+        target_site_xy_mm=(-50.0, 0.0),
         limits={'leg_vel_mmps': 300.0, 'leg_acc_mmps2': 5000.0,
                'leg_jerk_mmps3': 150000.0, 'hand_acc_rps2': 3500.0},
         gate_hash=adm.gate_hash(), swept_at='2026-09-13')
@@ -1023,6 +1028,8 @@ def test_check_reports_box_refused_when_the_apex_param_is_uncovered(tmp_path):
     box = adm.AdmissibleBox(
         site_pair=('P1', 'P1'), apex_band_m=(0.85, 0.95),
         landing_xy_m=((-0.05, 0.05), (-0.05, 0.05)), apex_m=(0.6, 1.2),
+        pattern='self_toss', release_site_xy_mm=(-50.0, 0.0),
+        target_site_xy_mm=(-50.0, 0.0),
         limits={'leg_vel_mmps': 300.0, 'leg_acc_mmps2': 5000.0,
                'leg_jerk_mmps3': 150000.0, 'hand_acc_rps2': 3500.0},
         gate_hash=adm.gate_hash(), swept_at='2026-09-13')
@@ -2024,3 +2031,287 @@ def test_an_over_limit_or_unevaluable_check_keeps_the_earlier_correction():
     assert node._mocap_to_schedule_mm == pytest.approx((-1.56, -8.53))
     assert len(warnings) == 2 and all('NOT updated' in w for w in warnings)
     assert 'keeping the earlier (x +1.6, y +8.5) mm' in warnings[0]
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# R4 reload (brief step 1: skill_node's BB orchestration)
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _good_box_path(tmp_path, *, apex_band_m=(0.85, 0.95)):
+    """A P1/P1 self_toss box at the LIVE gate hash and the session's
+    operating limits (300/5000/150000/3500) — mirrors
+    `test_start_self_toss_refuses_an_uncovered_apex_before_any_motion`'s box
+    exactly, so a reload test's shared refusal chain (identical to the
+    self-toss path up to `_start_reload`) passes without depending on
+    `config/generated/admissible_box.yaml`, which a concurrent sweep may be
+    mid-rewrite of (brief_common.md: "a background sweep is writing
+    config/generated/admissible_box.yaml (do not touch it or tools/)")."""
+    box_path = tmp_path / 'admissible_box.yaml'
+    box = adm.AdmissibleBox(
+        site_pair=('P1', 'P1'), apex_band_m=apex_band_m,
+        landing_xy_m=((-0.05, 0.05), (-0.05, 0.05)), apex_m=(0.6, 1.2),
+        pattern='self_toss', release_site_xy_mm=(-50.0, 0.0),
+        target_site_xy_mm=(-50.0, 0.0),
+        limits={'leg_vel_mmps': 300.0, 'leg_acc_mmps2': 5000.0,
+               'leg_jerk_mmps3': 150000.0, 'hand_acc_rps2': 3500.0},
+        gate_hash=adm.gate_hash(), swept_at='2026-09-13')
+    adm.dump(str(box_path), [box])
+    return str(box_path)
+
+
+def _bb_throw_response(*, success=True, message='ok', predicted_tof_s=0.7,
+                       throw_delay_s=3.0):
+    resp = BallButlerThrow.Response()
+    resp.success = success
+    resp.message = message
+    resp.predicted_tof_s = predicted_tof_s
+    resp.throw_delay_s = throw_delay_s
+    return resp
+
+
+def _reload_ready(node, *, reload_ok=True, reload_message='Reload command sent.',
+                  throw_ok=True, throw_message='ok', predicted_tof_s=0.7,
+                  throw_delay_s=3.0):
+    """Wire `node`'s two BB clients to succeed (the default) so
+    `_start_reload` reaches `_reload_ctx` -- mirrors `_prelevel_ready`'s
+    role for the pre-level move. Returns ``(reload_client, throw_client)``
+    so a test can inspect the requests each received."""
+    reload_resp = Trigger.Response()
+    reload_resp.success = reload_ok
+    reload_resp.message = reload_message
+    reload_client = _RecordingClient(response=reload_resp, ready=True)
+    throw_client = _RecordingClient(
+        response=_bb_throw_response(success=throw_ok, message=throw_message,
+                                    predicted_tof_s=predicted_tof_s,
+                                    throw_delay_s=throw_delay_s),
+        ready=True)
+    node._reload_cli = reload_client
+    node._bb_throw_cli = throw_client
+    return reload_client, throw_client
+
+
+def _bb_announcement(*, target_id, landing_mm, landing_vel_mm_s,
+                     throw_time_s, landing_time_s, thrower_name='ball_butler'):
+    """A real `ThrowAnnouncement` -- `_on_announcement` reads `msg.throw_time
+    .sec/.nanosec` etc, which only a real (or equally strict) sub-message
+    supports; mutating the auto-constructed nested `Time` fields in place
+    (rather than assigning a duck-typed stand-in) is what a real rosidl
+    message accepts."""
+    ann = ThrowAnnouncement()
+    ann.thrower_name = thrower_name
+    ann.target_id = target_id
+    ann.landing_position = Point(x=float(landing_mm[0]), y=float(landing_mm[1]),
+                                 z=float(landing_mm[2]))
+    ann.landing_velocity = Vector3(x=float(landing_vel_mm_s[0]),
+                                   y=float(landing_vel_mm_s[1]),
+                                   z=float(landing_vel_mm_s[2]))
+    ann.throw_time = _Time(sec=int(throw_time_s),
+                          nanosec=int(round((throw_time_s - int(throw_time_s))
+                                            * 1e9)))
+    ann.landing_time = _Time(sec=int(landing_time_s),
+                            nanosec=int(round((landing_time_s
+                                              - int(landing_time_s)) * 1e9)))
+    return ann
+
+
+def _start_reload(node, tmp_path, **reload_kw):
+    """Drive `node` through the full R4 reload start path (`reload_first`
+    param set, the shared refusal chain wired ready, both BB clients
+    succeeding by default) and return the service response."""
+    node._params['reload_first'] = True
+    node._params['plant_id'] = 'test_reload_' + str(id(node))
+    # `_svc_start_self_toss` wires `observer=`/`observations=` on the
+    # executor it builds (self-toss AND reload alike) -- unlike columns,
+    # which doesn't -- so a tick must see `in_trajectory_mode=True` or
+    # `SkillExecutor.tick`'s very first check ends the attempt
+    # `ABORTED_MODE_CHANGED` before the bridge REST ever dispatches.
+    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
+    _prelevel_ready(node)
+    _reload_ready(node, **reload_kw)
+    with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)), \
+         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        return node._svc_start_self_toss(Trigger.Request(), Trigger.Response())
+
+
+def _finish_bridge(node):
+    """Dispatch the reload bridge's one REST at its own `dispatch_s()` (the
+    mock clock always reads 0.0 -- ticking at the skill's own instant is
+    this file's established way around that, see `test_the_tick_dispatches_
+    the_first_throw_through_the_mocked_client`) and let `_on_tick` retire
+    the finished executor -- a REST releases nothing, so `done` is true the
+    instant it dispatches."""
+    rest = node._executor.schedule.skills[0]
+    node._executor.tick(rest.dispatch_s())
+    node._on_tick()
+
+
+def test_reload_installs_the_bridge_rest_then_calls_bb_reload_and_throw(tmp_path):
+    node, _client = _node_with_client(response=_response())
+    node._params['reload_first'] = True
+    node._params['plant_id'] = 'test_reload_bridge'
+    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
+    prelevel_client = _prelevel_ready(node)
+    reload_client, throw_client = _reload_ready(node)
+    with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)), \
+         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        resp = node._svc_start_self_toss(Trigger.Request(), Trigger.Response())
+    assert resp.success is True, resp.message
+    # The bridge REST is a fresh, single-skill schedule -- installed through
+    # the SAME `trajectory/install_segment` client every other schedule uses,
+    # once ticked at its own dispatch instant (the mock clock always reads
+    # 0.0, exactly like `test_the_tick_dispatches_the_first_throw_through_
+    # the_mocked_client` -- ticking at the skill's own `dispatch_s()`
+    # directly is this file's established way around that).
+    bridge_rest = node._executor.schedule.skills[0]
+    node._executor.tick(bridge_rest.dispatch_s())
+    assert len(_client.calls) == 1
+    req = _client.calls[0]
+    assert req.kind == InstallSegment.Request.KIND_REST
+    # bb/reload asked BEFORE bb/throw_at_target (brief step 1b's order).
+    assert len(reload_client.calls) == 1
+    assert len(throw_client.calls) == 1
+    throw_req = throw_client.calls[0]
+    assert throw_req.use_target_point is True
+    assert throw_req.target_name == node._robot_name
+    # The aim point is P1's CATCH point (-50, 0) mm at CATCH_CUP_Z_MM, in the
+    # MOCAP frame -- with no frame check ever run here `_mocap_to_schedule_mm`
+    # is still `None`, so the mocap-frame point equals the schedule-frame one.
+    assert throw_req.target_point_global_mm.x == pytest.approx(-50.0)
+    assert throw_req.target_point_global_mm.y == pytest.approx(0.0)
+    assert throw_req.target_point_global_mm.z == pytest.approx(sn.CATCH_CUP_Z_MM)
+    assert throw_req.throw_delay_s >= sn._BB_THROW_DELAY_FLOOR_S
+    assert node._reload_ctx is not None
+    assert prelevel_client.calls == [] or len(prelevel_client.calls) == 1
+
+
+def test_reload_aim_point_carries_the_mocap_frame_offset(tmp_path):
+    """`_mocap_aim_point_mm` is the INVERSE of `_on_balls`'s subtraction: an
+    adopted offset must be ADDED to the schedule-frame site to reach the
+    mocap frame BB's own aim resolves in."""
+    node, _client = _node_with_client(frame=False)
+    _frame_ready(node, plat_x=5.0, plat_y=-3.0, cmd_x=0.0, cmd_y=0.0)
+    node._frame_check_error()      # adopts (dx, dy) = (5.0, -3.0)
+    assert node._mocap_to_schedule_mm == pytest.approx((5.0, -3.0))
+    resp = _start_reload(node, tmp_path)
+    assert resp.success is True, resp.message
+    throw_req = node._bb_throw_cli.calls[0]
+    assert throw_req.target_point_global_mm.x == pytest.approx(-50.0 + 5.0)
+    assert throw_req.target_point_global_mm.y == pytest.approx(0.0 - 3.0)
+
+
+def test_reload_while_running_is_refused_even_after_the_bridge_finishes(tmp_path):
+    """The bridge REST's own `SkillExecutor` is `done` (releases nothing)
+    within a couple of ticks -- `_reload_ctx`, not `_executor`, is what must
+    keep a second start refused while BB's announcement is still awaited."""
+    node, _client = _node_with_client(response=_response())
+    resp = _start_reload(node, tmp_path)
+    assert resp.success is True, resp.message
+    _finish_bridge(node)
+    assert node._executor is None            # the bridge finished
+    assert node._reload_ctx is not None       # still awaiting the announcement
+    resp2 = node._svc_start_self_toss(Trigger.Request(), Trigger.Response())
+    assert resp2.success is False
+    assert 'already running' in resp2.message
+
+
+def test_a_bb_reload_refusal_surfaces_verbatim(tmp_path):
+    """INVARIANTS.md `REJECTED_BB(<message>)`: an external thrower's OWN
+    refusal surfaces verbatim, not laundered into a generic abort."""
+    node, _client = _node_with_client()
+    resp = _start_reload(node, tmp_path, reload_ok=False,
+                         reload_message='Reload failed: ERR_BUS_DOWN')
+    assert resp.success is False
+    assert resp.message == 'REJECTED_BB(Reload failed: ERR_BUS_DOWN)'
+    assert node._bb_throw_cli.calls == []     # never asked to throw
+    assert node._reload_ctx is None
+
+
+def test_a_bb_throw_at_target_refusal_surfaces_verbatim(tmp_path):
+    node, _client = _node_with_client()
+    resp = _start_reload(node, tmp_path, throw_ok=False,
+                         throw_message='no solution within BB limits')
+    assert resp.success is False
+    assert resp.message == 'REJECTED_BB(no solution within BB limits)'
+    assert node._reload_ctx is None
+
+
+def test_reload_carries_hold_tilt_on_the_catch_after_the_announcement(tmp_path):
+    """`_on_announcement` compiles the real `compile_reload` schedule and
+    swaps the executor; the CATCH it carries is aimed by the announced
+    landing (`landing_prior`) and holds the receive tilt the arrival
+    derives."""
+    node, _client = _node_with_client(response=_response())
+    resp = _start_reload(node, tmp_path)
+    assert resp.success is True, resp.message
+    _finish_bridge(node)
+    assert node._executor is None
+    ann = _bb_announcement(
+        target_id=node._robot_name, landing_mm=(-50.0, 0.0, sn.CATCH_CUP_Z_MM),
+        landing_vel_mm_s=(1200.0, 0.0, -2500.0),
+        throw_time_s=2.0, landing_time_s=2.7)
+    node._on_announcement(ann)
+    assert node._reload_ctx is None
+    assert node._executor is not None
+    schedule = node._executor.schedule
+    kinds = [s.kind for s in schedule.skills]
+    assert kinds[:3] == ['REST', 'CATCH', 'REST']
+    catch = schedule.skills[1]
+    assert catch.hold_tilt is not None
+    assert catch.landing_prior is not None
+    np.testing.assert_allclose(catch.landing_prior.pos_mm,
+                               [-50.0, 0.0, sn.CATCH_CUP_Z_MM])
+    assert any(s.kind == 'THROW' for s in schedule.skills)
+    assert node._executor.learner is not None
+    assert node._executor.boxes is not None
+    # The FlightLatch for the reload ball (schedule id 0) is queued from the
+    # announcement's OWN throw_time, exactly as `_maybe_announce` does for
+    # our own releases.
+    assert 0 in node._correlation
+    assert len(node._correlation[0]) == 1
+    assert node._correlation[0][0].t_release_s == pytest.approx(2.0)
+
+
+def test_an_announcement_not_from_ball_butler_is_ignored(tmp_path):
+    node, _client = _node_with_client(response=_response())
+    resp = _start_reload(node, tmp_path)
+    assert resp.success is True, resp.message
+    _finish_bridge(node)
+    ctx_before = node._reload_ctx
+    ann = _bb_announcement(
+        target_id=node._robot_name, landing_mm=(-50.0, 0.0, sn.CATCH_CUP_Z_MM),
+        landing_vel_mm_s=(1200.0, 0.0, -2500.0), throw_time_s=2.0,
+        landing_time_s=2.7, thrower_name=node._robot_name)   # OUR OWN throw
+    node._on_announcement(ann)
+    assert node._reload_ctx is ctx_before    # untouched
+    assert node._executor is None
+
+
+def test_the_reload_wait_times_out_aborted_no_announcement(tmp_path):
+    node, _client = _node_with_client(response=_response())
+    resp = _start_reload(node, tmp_path)
+    assert resp.success is True, resp.message
+    node._reload_ctx.deadline_mono = time.perf_counter() - 1.0
+    node._on_tick()
+    assert node._reload_ctx is None
+    # A late announcement after the timeout is ignored, not acted on --
+    # the executor (whatever `_on_tick` left it as) is UNCHANGED, never
+    # swapped for a reload schedule this announcement did not earn.
+    executor_before = node._executor
+    ann = _bb_announcement(
+        target_id=node._robot_name, landing_mm=(-50.0, 0.0, sn.CATCH_CUP_Z_MM),
+        landing_vel_mm_s=(1200.0, 0.0, -2500.0), throw_time_s=2.0,
+        landing_time_s=2.7)
+    node._on_announcement(ann)
+    assert node._executor is executor_before
+
+
+def test_stop_during_a_reload_wait_clears_the_context():
+    node, _client = _node_with_client()
+    node._reload_ctx = SimpleNamespace(
+        pattern=None, boxes=None, memory=None,
+        deadline_mono=time.perf_counter() + 10.0)
+    resp = node._svc_stop(Trigger.Request(), Trigger.Response())
+    assert resp.success is True
+    assert node._reload_ctx is None
+    assert 'cannot be aborted' in resp.message
+

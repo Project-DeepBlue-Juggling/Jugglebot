@@ -170,7 +170,7 @@ SELF_TOSS_AIM_ERR_MRAD = 8.5
 
 #: R3-g FINDING (2026-09-13, this bench, ``--rehearse --pattern self-toss``
 #: through ``install_segment`` unmodified), RESOLVED: ``schedule.
-#: compile_self_toss``'s own opening REST — ``FLOOR_LIFT_S``, from the
+#: compile_one_ball``'s own opening REST — ``FLOOR_LIFT_S``, from the
 #: ACTIVATE park (0, 0) to site P1's rest position (-50, 0) mm — refused
 #: ``LIMIT_JERK`` at the R3 session limit at its original 1.0 s value (peak
 #: 177 241 mm/s³ against 150 000; 205 051 mm/s³ at 1.2 s, a non-monotonic
@@ -182,7 +182,7 @@ SELF_TOSS_AIM_ERR_MRAD = 8.5
 #: RESOLVED) — the real ``skills/start_self_toss`` first call is no longer
 #: expected to refuse on this segment. This bench still pre-positions self-
 #: toss too (its OWN manual REST-pre, at this same 1.5 s window, mirroring
-#: columns) rather than relying on ``compile_self_toss``'s own opening REST
+#: columns) rather than relying on ``compile_one_ball``'s own opening REST
 #: — see ``rehearse_attempt``'s § 1b comment for why that still matters:
 #: it masks the real cold-start move and the real ``_prelevel`` step from
 #: this rehearsal.
@@ -253,12 +253,13 @@ def default_self_toss_site() -> si.Site:
 def build_self_toss_schedule(*, n_throws: int, site: si.Site = None,
                              apex_m: float = APEX_M, dwell_s: float = DWELL_S,
                              t0_abs_s: float = 0.0):
-    """R3's single-site self-toss schedule (``schedule.compile_self_toss``) —
-    the self-toss counterpart of :func:`build_schedule`."""
+    """R3's single-site self-toss schedule (``schedule.compile_one_ball``,
+    one site — R4 replaced ``compile_self_toss`` with the general one-ball
+    compiler) — the self-toss counterpart of :func:`build_schedule`."""
     site = default_self_toss_site() if site is None else site
-    pattern = sc.SelfTossPattern(site=site, apex_m=apex_m, dwell_s=dwell_s,
-                                 n_throws=n_throws)
-    return sc.compile_self_toss(pattern, t0_abs_s)
+    pattern = sc.OneBallPattern(sites=(site,), apex_m=apex_m, dwell_s=dwell_s,
+                                n_throws=n_throws)
+    return sc.compile_one_ball(pattern, t0_abs_s)
 
 
 def kind_display(skill, *, is_preposition: bool = False,
@@ -892,7 +893,7 @@ def rehearse_attempt(attempt: int, *, n_throws: int, jitter_mm: float,
     """One rehearsed attempt, per ``probe_gate_rehearsal.py`` (verified
     2026-09-13). Returns ``(rows, meta)``.
 
-    ``pattern='self-toss'`` (R3-g) runs ``schedule.compile_self_toss`` through
+    ``pattern='self-toss'`` (R3-g) runs ``schedule.compile_one_ball`` through
     the SAME install chain — warm start, epoch clock, learner/box hooks — with
     ``learner``/``boxes``/``on_experience`` wired into the
     :class:`~jugglebot.motion.skills.executor.SkillExecutor` exactly as
@@ -963,7 +964,7 @@ def rehearse_attempt(attempt: int, *, n_throws: int, jitter_mm: float,
     #     this bench supplies the same work-around the R2 gate sitting used
     #     — a 1.0 s lift.
     #
-    #     SELF-TOSS: ``compile_self_toss`` also carries its own opening REST
+    #     SELF-TOSS: ``compile_one_ball`` also carries its own opening REST
     #     (``schedule.FLOOR_LIFT_S``, landed at 1.5 s — Finding A, RESOLVED:
     #     the original 1.0 s refused ``LIMIT_JERK`` at the R3 session limit,
     #     see the runsheet). Despite that, this bench ALSO manually
@@ -972,7 +973,7 @@ def rehearse_attempt(attempt: int, *, n_throws: int, jitter_mm: float,
     #     REST from a raw ACTIVATE park, and masks ``_prelevel`` entirely
     #     (`skills/start_self_toss` pre-levels the platform before compiling
     #     its schedule; this bench never calls it). After the manual
-    #     pre-position lands, ``compile_self_toss``'s own opening REST is a
+    #     pre-position lands, ``compile_one_ball``'s own opening REST is a
     #     trivial no-op-sized move (the platform is already there) and
     #     installs for free — so this rehearsal exercises the STEADY-STATE
     #     schedule, not the session's first-ever cold-start move. That gap

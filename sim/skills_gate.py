@@ -551,7 +551,7 @@ def _activate_park_state(rcfg, site) -> uc.CycleState:
     at (a hair above) 0 rev — see :data:`_PARK_HAND_REV_EPS` — cup at
     ``rcfg``'s ``active_z_mm``/``slider_rev_zero_mm`` — MEASURED 679.6 mm
     (``schedule.FLOOR_LIFT_S``'s docstring) — 10 mm under the 689.6 mm
-    planner floor, which is exactly why ``compile_self_toss`` opens on a
+    planner floor, which is exactly why ``compile_one_ball`` opens on a
     REST that lifts off this state rather than a fresh-origin THROW planned
     from it directly."""
     pose = np.array([float(site.cup_mm[0]), float(site.cup_mm[1]),
@@ -741,7 +741,8 @@ class SkillsGate:
 
     def _stream_chain(self, *, plant, geom, rcfg, noise, executor, ictx,
                       ball_state, t_end, release_bias=None,
-                      final_removal=None, stop_check=None):
+                      final_removal=None, stop_check=None,
+                      pending_spawn=None):
         """The emitter/pump/wire/mirror/executor.tick loop (module
         docstring) -- run by every caller against a live ``PlanRecord``
         (``ictx``) and the executor dispatching one ``Schedule``.
@@ -754,6 +755,19 @@ class SkillsGate:
         every physical release -- the R3 self-toss run's measured-plant
         bias (:func:`_measured_release_bias`); the R2 columns gate passes
         ``None`` and its own exact/noisy-tracking behaviour is unchanged.
+
+        ``pending_spawn`` (``(spawn_t_abs_s, position_mm, velocity_mms,
+        ball_id)`` or ``None``): a ball not yet in the scene, spawned the
+        first tick ``plant.data.time >= spawn_t_abs_s`` -- the R4 reload
+        trial's own need (:meth:`run_reload_attempt`, root-caused
+        2026-09-24: spawning at the caller's "now" instead of the ball's own
+        physically-valid release instant put the spawn point 69.5 m under
+        the world floor -- see ``_RELOAD_BALL_FLIGHT_LEAD_S``'s docstring).
+        ``ball_state[ball_id]`` is armed (``airborne=True``, ``next_obs_t``
+        reset, ``estimator`` reset) at the same instant, so nothing is
+        "observed" of a ball that is not yet physically in the world. Every
+        other caller passes ``None`` (spawn already happened before the
+        loop starts, the pre-R4 behaviour, unchanged).
         ``final_removal`` (``(t_land_final, ball_final)``) is the columns-
         only "remove the last unscheduled ball" step; ``None`` skips it.
         ``stop_check()``, when given, ends the loop as soon as it returns
@@ -783,6 +797,17 @@ class SkillsGate:
         while plant.data.time < t_end and (stop_check is None
                                            or not stop_check()):
             t = plant.data.time
+
+            if pending_spawn is not None and t >= pending_spawn[0] - 1e-9:
+                spawn_t, spawn_pos, spawn_vel, spawn_ball = pending_spawn
+                plant.spawn_ball(spawn_pos, spawn_vel, ball=spawn_ball)
+                bstate = ball_state[spawn_ball]
+                bstate['airborne'] = True
+                bstate['expect_held'] = False
+                bstate['lost_since'] = None
+                bstate['estimator'].reset()
+                bstate['next_obs_t'] = t
+                pending_spawn = None
 
             # Dispatch-check every TICK, not every 40 Hz frame: a skill's
             # window budget is measured from the ACTUAL install instant
@@ -918,7 +943,7 @@ class SkillsGate:
                               noise: JuggleNoise, throws_out: list
                               ) -> Tuple[str, dict, '_InstallCtx']:
         """One self-toss attempt, cold from the ACTIVATE park (owner decision
-        6, "resets are cheap"): reset + spawn, ``schedule.compile_self_toss``,
+        6, "resets are cheap"): reset + spawn, ``schedule.compile_one_ball``,
         stream it through the one chain (:meth:`_stream_chain`) with the R3
         learner/box/observer/observations wired in.  ``throws_out`` accumulates
         every finalised :class:`~jugglebot.motion.skills.memory.Experience`
@@ -944,9 +969,9 @@ class SkillsGate:
         plant.ball_manager.ball(0).spawn_in_hand()
         t0_abs_s = float(plant.data.time)
 
-        pattern = sk.SelfTossPattern(site=site, apex_m=cfg.apex_m,
-                                     dwell_s=cfg.dwell_s, n_throws=n_throws)
-        sched = sk.compile_self_toss(pattern, t0_abs_s)
+        pattern = sk.OneBallPattern(sites=(site,), apex_m=cfg.apex_m,
+                                    dwell_s=cfg.dwell_s, n_throws=n_throws)
+        sched = sk.compile_one_ball(pattern, t0_abs_s)
 
         ball_state = {0: dict(estimator=BallisticEstimator(bal.G_VEC_MMS2),
                              airborne=False, next_obs_t=None,
@@ -1068,6 +1093,215 @@ class SkillsGate:
                        and bool(monotone_apex)),
             wall_s=time.time() - t_wall0)
 
+    # ── R4: the reload trial (Unit U3, brief step 5, owner decision D4) ────
+
+    #: BB's arrival condition this gate spawns synthetically -- an external
+    #: throw at 25 deg below horizontal, 4.8 m/s, toward `sites[0]`'s catch
+    #: point (`brief_U3_reload_skills.md` step 5's own numbers).
+    _RELOAD_ARRIVAL_ANGLE_DEG = 25.0
+    _RELOAD_ARRIVAL_SPEED_MMPS = 4800.0
+    #: How long BEFORE the arrival this gate spawns the ball, backward-
+    #: integrated through gravity from the arrival condition (constant
+    #: horizontal velocity, only the vertical component and the position
+    #: move). This is NOT a claim about BB's own real flight time -- this
+    #: gate has no BB node, so nothing here simulates a launcher or the
+    #: `bb/throw_at_target` round trip, only the physical ARRIVAL
+    #: `schedule.compile_reload` is built from (the synthetic announcement).
+    #: Sized so `compile_reload`'s own window check clears with margin: an
+    #: already-home hand needs PRE-TILT REST >= max(FLOOR_LIFT_S, PRETILT_S)
+    #: + RELOAD_CATCH_WINDOW_S + LEAD_S = 1.5 + 0.5 + ~0.225 =~ 2.2 s
+    #: (`schedule` module constants), so the synthetic announcement arrives
+    #: this many seconds before the ball does -- exactly mirroring BB's own
+    #: announcement preceding its physical release by `throw_delay_s`.
+    _RELOAD_ANNOUNCE_LEAD_S = 4.0
+
+    #: How long BEFORE touch-down the ball is PHYSICALLY spawned into the
+    #: MuJoCo scene -- deliberately NOT `_RELOAD_ANNOUNCE_LEAD_S`.
+    #:
+    #: ROOT-CAUSED 2026-09-24 (`scratchpad/probe_r4_sim_reload_capture.py`,
+    #: seed 0): the two are different physical facts BB's own announcement
+    #: keeps separate (`throw_delay_s` before the physical release, THEN the
+    #: ball's own flight time) but this gate's first cut conflated -- it
+    #: spawned the ball AT the announcement instant, backward-integrating
+    #: `_RELOAD_ANNOUNCE_LEAD_S` (4.0 s) of free fall from the 25 deg /
+    #: 4.8 m/s arrival. That arrival's OWN apex is only 1039.8 mm above the
+    #: landing site's `CATCH_CUP_Z_MM` height (830 mm) -- `t_apex =
+    #: |v_z_land| / g = 0.207 s` -- so the spawn height as a function of the
+    #: backward time `dt` is `830 + 2028.568*dt - 4903*dt**2` (mm), which
+    #: crosses the world floor (`sim/model/jugglebot.xml`'s `floor` plane,
+    #: `pos="0 0 -0.082"`, an INFINITE MuJoCo collision half-space regardless
+    #: of its finite visual `size`) at `dt = 0.668 s` and goes deeply negative
+    #: past that -- at 4.0 s the spawn point was **69.5 m below the floor**.
+    #: MuJoCo does not refuse an interpenetrating spawn; its contact solver
+    #: reads the ~69 m penetration as a proportionally huge restoring force
+    #: (`ball_geom`'s soft `solref="0.05 2.0"`) and rockets the ball to
+    #: z ~= 1.31e6 mm (~1.3 km) by `t_land`, still climbing at ~328 m/s
+    #: (measured, `scratchpad/probe_r4_sim_reload_capture.py`, seed 0: an
+    #: isolated single-ball check the same session found the contact-driven
+    #: acceleration already at ~1177x gravity 2 ms after spawn) -- the ball
+    #: is nowhere near the cup at touch-down and no MuJoCo contact with any
+    #: `hand_collision_*` geom is EVER seen (0 contact events across the
+    #: whole attempt), hence `makes=0` and the `REJECTED_NO_BALL` at the
+    #: first THROW (there is nothing seated to throw). This is independent
+    #: of `_RELOAD_ANNOUNCE_LEAD_S`, which stays
+    #: 4.0 s -- ONLY the announcement-to-landing schedule margin
+    #: `compile_reload` needs; it is not a claim about the ball's own hang
+    #: time either, and this gate's arrival condition cannot physically
+    #: sustain 4.0 s of free flight from any above-ground point.
+    #:
+    #: 0.35 s clears the floor with ~940 mm of margin (`spawn_z(0.35 s) =
+    #: 939.4 mm`, well inside the 0-666 mm window that keeps the spawn point
+    #: above ground) while still landing ON the SAME announced arrival
+    #: condition -- `run_reload_attempt` computes this spawn on its own
+    #: (SHORTER) backward integration and injects it mid-stream via
+    #: `_stream_chain`'s `pending_spawn`, at the simulated instant
+    #: `t_land_abs_s - _RELOAD_BALL_FLIGHT_LEAD_S`, rather than at `t0_abs_s`.
+    _RELOAD_BALL_FLIGHT_LEAD_S = 0.35
+
+    def run_reload_attempt(self, *, site: 'sites.Site', noise: JuggleNoise,
+                           n_throws: int = 1
+                           ) -> Tuple[str, dict, '_InstallCtx']:
+        """One R4 reload attempt (Unit U3, brief step 5): the platform
+        starts at a level REST at ``site`` with the cup EMPTY (the bridge
+        REST's own end state, ``SkillNode._start_reload``, is OUT OF SCOPE
+        for this gate -- a level REST at a site is already well covered:
+        `tests/motion/test_skills_schedule.py`'s `compile_reload` suite and
+        `tests/ros/test_skill_node.py`'s reload tests pin it). A ball is
+        spawned already in flight on a ballistic arc that arrives at
+        ``site``'s catch point at ``_RELOAD_ARRIVAL_ANGLE_DEG`` /
+        ``_RELOAD_ARRIVAL_SPEED_MMPS`` -- the SYNTHETIC ANNOUNCEMENT: those
+        arrival physics (position, velocity, the wall-clock landing instant)
+        ARE the announcement ``schedule.compile_reload`` is compiled from,
+        exactly as ``SkillNode._on_announcement`` compiles it from BB's real
+        one. The compiled schedule then streams through the SAME one chain
+        (:meth:`_stream_chain`) every other trial in this file uses.
+
+        Returns ``(end_code, loop_stats, ictx)`` -- ``end_code`` is ``''``
+        for an attempt that ran its whole schedule with no refusal.
+        """
+        plant = self.plant
+        geom = self.geom
+        rest0 = self._rest_state(site)
+        pose0 = np.asarray(rest0.pose, dtype=float)
+        plant.reset(pose0)
+        plant.command(plant.pose_to_extensions(pose0))
+        plant.command_hand(stream_chain.slider_mm_of_rev(
+            float(rest0.hand_rev), self.rcfg))
+        for _ in range(40):
+            plant.step(KNOT_DT_S)
+            if self.viewer is not None:
+                self.viewer.sync()
+
+        angle = math.radians(self._RELOAD_ARRIVAL_ANGLE_DEG)
+        speed = self._RELOAD_ARRIVAL_SPEED_MMPS
+        land_pos_nom = np.asarray(site.catch_site_mm(), dtype=float)
+        land_vel_nom = np.array([speed * math.cos(angle), 0.0,
+                                 -speed * math.sin(angle)])
+        land_pos, land_vel = noise.perturb_throw(
+            land_pos_nom, land_vel_nom, np.zeros(3))
+
+        # The synthetic announcement's OWN instant -- "now" to
+        # `compile_reload`, exactly like `SkillNode._on_announcement`'s
+        # `now = self.get_clock().now()...` at the moment the announcement
+        # arrives.
+        t0_abs_s = float(plant.data.time)
+        t_land_abs_s = t0_abs_s + self._RELOAD_ANNOUNCE_LEAD_S
+
+        # Backward-integrate the arrival condition through gravity to a
+        # spawn point `_RELOAD_BALL_FLIGHT_LEAD_S` earlier on the SAME
+        # parabola -- NOT `_RELOAD_ANNOUNCE_LEAD_S` (see that constant's
+        # docstring: at this arrival condition 4.0 s of backward free fall
+        # lands the spawn point 69.5 m under the world floor). The ball is
+        # not spawned here -- `_stream_chain`'s `pending_spawn` injects it at
+        # `spawn_t_abs_s`, once the sim clock actually reaches it, so the
+        # PRE-TILT REST streams first exactly as it would waiting for BB's
+        # real, later physical release.
+        g = bal.GRAVITY_MMS2
+        flight_lead_s = self._RELOAD_BALL_FLIGHT_LEAD_S
+        spawn_vel = np.array([land_vel[0], land_vel[1],
+                              land_vel[2] + g * flight_lead_s])
+        spawn_pos = np.array([
+            land_pos[0] - land_vel[0] * flight_lead_s,
+            land_pos[1] - land_vel[1] * flight_lead_s,
+            land_pos[2] - land_vel[2] * flight_lead_s
+            - 0.5 * g * flight_lead_s * flight_lead_s])
+        spawn_t_abs_s = t_land_abs_s - flight_lead_s
+        pending_spawn = (spawn_t_abs_s, spawn_pos, spawn_vel, 0)
+
+        pattern = sk.OneBallPattern(sites=(site,), apex_m=self.cfg.apex_m,
+                                    dwell_s=self.cfg.dwell_s,
+                                    n_throws=n_throws)
+        sched = sk.compile_reload(land_pos, land_vel, t_land_abs_s, pattern,
+                                  t0_abs_s)
+
+        # `airborne=False` / `next_obs_t=None` until `pending_spawn` actually
+        # fires -- there is no ball in the scene yet at `t0_abs_s` (BB has
+        # only just announced), so nothing here should be "observed".
+        ball_state = {0: dict(estimator=BallisticEstimator(bal.G_VEC_MMS2),
+                             airborne=False, next_obs_t=None,
+                             expect_held=False, lost_since=None,
+                             last_obs_t=None)}
+        tracker = _make_tracker(plant, ball_state)
+        ictx = _InstallCtx(rest0)
+        installer = _make_installer(ictx, self.seg_cfg, self.limits, geom)
+        observer = _make_observer(plant)
+        observations = _make_observations(observer)
+        # The config's own aim source -- the LIVE default is AIM_TRACKER.
+        # HISTORY (2026-09-23): this was hard-coded to AIM_SCHEDULE for one
+        # session because `_make_tracker`'s fit of the then-4 s synthetic
+        # flight aimed the catch at x = 3.06e5 mm; that flight was the
+        # spawn-below-the-floor defect `_RELOAD_BALL_FLIGHT_LEAD_S` fixed, and
+        # with the corrected 0.35 s flight the trial PASSES 5/5 seeds under
+        # AIM_TRACKER with tracker re-aims accepted (7-8 installs per seed,
+        # 2026-09-24 00:24). The executor now also bounds a tracker fit for an
+        # externally announced ball in TIME against the announcement
+        # (`executor.EXTERNAL_LANDING_TIME_BAND_S`), so an immature fit can
+        # no longer move a reload catch's window.
+        executor = ex.SkillExecutor(
+            sched, installer, tracker=tracker,
+            catch_aim_source=self.cfg.catch_aim_source,
+            observer=observer, observations=observations)
+
+        # A generous, bounded timeout -- the real exit is `executor.done`
+        # (`stop_check`), same reason `run_self_toss_attempt` gives.
+        t_end = float(sched.skills[-1].t_abs_s) + 1.0
+        loop = self._stream_chain(
+            plant=plant, geom=geom, rcfg=self.rcfg, noise=noise,
+            executor=executor, ictx=ictx, ball_state=ball_state, t_end=t_end,
+            release_bias=_measured_release_bias,
+            stop_check=lambda: executor.done, pending_spawn=pending_spawn)
+        return str(executor.end_code), loop, ictx
+
+    def run_reload_seed(self, seed: int) -> dict:
+        """One seed of the R4 reload gate (Unit U3, brief step 5): a SINGLE
+        attempt -- no cheap-reset chaining like :meth:`run_self_toss_seed`,
+        because this gate is about the reload CHOREOGRAPHY capturing the
+        externally-thrown ball, not learner convergence (no learner/boxes
+        are wired -- the pattern's continuation throws run open-loop, ``u =
+        y_d``, the R2-and-earlier behaviour). PASS = the schedule's one
+        reload CATCH is a make (kinematic capture) with zero pump rejects
+        across the whole run and no attempt-ending refusal."""
+        cfg: SelfTossGateConfig = self.cfg
+        site = sites.columns_sites(_SELF_TOSS_SEPARATION_MM)[0]
+        noise = JuggleNoise(cfg.noise, seed=seed)
+        t_wall0 = time.time()
+        end_code, loop, ictx = self.run_reload_attempt(site=site, noise=noise)
+        pump_clean = bool(loop['pump_rejects'] == 0
+                          and loop['accepted'] == loop['emitted']
+                          and loop['emitted'] > 0)
+        caught_all = bool(loop['makes'] >= 1)
+        no_drops = bool(loop['drops'] == 0)
+        passed = bool(pump_clean and caught_all and no_drops and not end_code)
+        return dict(
+            seed=seed, end_code=end_code, makes=loop['makes'],
+            drops=loop['drops'], pump_rejects=loop['pump_rejects'],
+            pump_frames_emitted=loop['emitted'],
+            pump_frames_accepted=loop['accepted'],
+            installs_total=ictx.installs_total,
+            installs_accepted=ictx.installs_accepted,
+            pump_clean=pump_clean, caught_all=caught_all, no_drops=no_drops,
+            passed=passed, wall_s=time.time() - t_wall0)
+
     # ── run + summarise ───────────────────────────────────────────────────
 
     def run(self) -> dict:
@@ -1181,6 +1415,68 @@ def run_learn(cfg: SelfTossGateConfig = None, seeds=(0, 1, 2, 3, 4),
     return report
 
 
+def run_reload_gate(cfg: SelfTossGateConfig = None,
+                    seeds=(0, 1, 2, 3, 4)) -> dict:
+    """The R4 reload sim gate (Unit U3, brief step 5): spawns a synthetic
+    Ball Butler arrival (25 deg / 4.8 m/s toward ``sites[0]``) at seeds 0-4
+    and runs ``schedule.compile_reload``'s schedule through the real install
+    chain. PASS per seed = caught (kinematic capture) with zero pump
+    rejects; the whole gate passes when every seed does. Reuses
+    ``SelfTossGateConfig`` (the R3 self-toss operating point: apex 0.9 m,
+    dwell 0.30 s, session limits 300/5000/150000/3500) -- the reload's own
+    tail throws are kinematically ordinary self-toss throws at the SAME
+    site (`compile_reload`'s own docstring), so this is the right box/limit
+    point for them, not a third one."""
+    cfg = SelfTossGateConfig() if cfg is None else cfg
+    gate = SkillsGate(cfg)
+    t0 = time.time()
+    seed_results = [gate.run_reload_seed(s) for s in seeds]
+    wall_s = time.time() - t0
+    report = {
+        'gate': 'skills_reload',
+        'passed': bool(seed_results and all(r['passed']
+                                            for r in seed_results)),
+        'seeds': list(seeds),
+        'apex_m': cfg.apex_m,
+        'dwell_s': cfg.dwell_s,
+        'arrival_angle_deg': SkillsGate._RELOAD_ARRIVAL_ANGLE_DEG,
+        'arrival_speed_mmps': SkillsGate._RELOAD_ARRIVAL_SPEED_MMPS,
+        'wall_s': wall_s,
+        'seed_results': seed_results,
+    }
+    path = cfg.report_path
+    if path is None:
+        out_dir = os.path.join(_repo_root, 'temp', 'reports')
+        os.makedirs(out_dir, exist_ok=True)
+        path = os.path.join(
+            out_dir, 'skills_gate_reload_%s.json'
+            % time.strftime('%Y%m%dT%H%M%S'))
+    with open(path, 'w') as fh:
+        json.dump(report, fh, indent=2)
+    report['report_path'] = path
+    return report
+
+
+def _print_reload_table(rep: dict) -> None:
+    print('[skills_gate_reload] arrival %.1f deg / %.1f m/s  apex %.2f m  '
+          'dwell %.2f s'
+          % (rep['arrival_angle_deg'], rep['arrival_speed_mmps'] / 1000.0,
+             rep['apex_m'], rep['dwell_s']))
+    print('[skills_gate_reload] %-6s %-8s %-6s %-6s %-13s %-9s %s'
+          % ('seed', 'verdict', 'makes', 'drops', 'pump_rejects',
+             'installs', 'end_code'))
+    for r in rep['seed_results']:
+        verdict = 'PASS' if r['passed'] else 'FAIL'
+        print('[skills_gate_reload] %-6d %-8s %-6d %-6d %-13d %-9s %s'
+              % (r['seed'], verdict, r['makes'], r['drops'],
+                 r['pump_rejects'],
+                 '%d/%d' % (r['installs_accepted'], r['installs_total']),
+                 r['end_code'] or '-'))
+    print('[skills_gate_reload] %s  (wall %.1f s over %d seed(s))  -> %s'
+          % ('PASS' if rep['passed'] else 'FAIL', rep['wall_s'],
+             len(rep['seeds']), rep.get('report_path')))
+
+
 def _print_learn_table(rep: dict) -> None:
     print('[skills_gate_learn] policy %s  apex %.2f m  dwell %.2f s  band '
           '%.0f mm xy / %.0f mm apex  entry<=%d throws  window<=%d throws'
@@ -1251,7 +1547,20 @@ def main(argv=None) -> int:
                    help='--learn only: A = single-throw attempts until '
                         'k_min rows then chained (the gated policy); B = '
                         'chained from the first throw (reported alongside)')
+    p.add_argument('--reload', action='store_true',
+                   help='run the R4 reload gate (Unit U3, brief step 5): a '
+                        'synthetic Ball Butler arrival (25 deg / 4.8 m/s) '
+                        'through schedule.compile_reload, instead of the '
+                        'columns gate')
     args = p.parse_args(argv)
+
+    if args.reload:
+        rcfg = SelfTossGateConfig(report_path=args.report,
+                                  catch_aim_source=args.catch_aim_source)
+        seeds = tuple(args.seeds) if args.seeds is not None else (0, 1, 2, 3, 4)
+        rep = run_reload_gate(rcfg, seeds=seeds)
+        _print_reload_table(rep)
+        return 0 if rep['passed'] else 1
 
     if args.learn:
         lcfg = SelfTossGateConfig(report_path=args.report,

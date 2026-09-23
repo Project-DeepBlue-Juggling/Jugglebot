@@ -132,9 +132,9 @@ def rest_state(cup_mm, cfg=None):
 
 def build_attempt(apex_m, n_throws, geo, lim, t0=1789263419.5, dwell_s=0.30):
     site = si.columns_sites(SEPARATION_MM)[0]
-    sched = sc.compile_self_toss(
-        sc.SelfTossPattern(site=site, apex_m=apex_m, dwell_s=dwell_s,
-                           n_throws=n_throws), t0_abs_s=t0)
+    sched = sc.compile_one_ball(
+        sc.OneBallPattern(sites=(site,), apex_m=apex_m, dwell_s=dwell_s,
+                          n_throws=n_throws), t0_abs_s=t0)
     arrival = np.array([0.0, 0.0, -0.5 * 9806.0 * sched.flight_s])
     landings = [ex.Landing(pos_mm=sk.site.catch_site_mm(), vel_mm_s=arrival.copy(),
                             t_land_abs_s=float(sk.t_abs_s))

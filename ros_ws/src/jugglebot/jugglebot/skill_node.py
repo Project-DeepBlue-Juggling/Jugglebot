@@ -51,7 +51,7 @@ from std_srvs.srv import Trigger
 from jugglebot_interfaces.msg import (BallStateArray, HandTelemetryMessage,
                                       RigidBodyPoses, ThrowAnnouncement,
                                       TrajectoryStatus)
-from jugglebot_interfaces.srv import GoToPose, InstallSegment
+from jugglebot_interfaces.srv import BallButlerThrow, GoToPose, InstallSegment
 
 import jugglebot.hardware_config as hw
 from jugglebot import ball_possession
@@ -64,10 +64,12 @@ from jugglebot.motion.skills.executor import (InstallResult, Landing,
                                               precondition_refusals)
 from jugglebot.motion.skills.hand_launch import HandLaunchMonitor
 from jugglebot.motion.skills.memory import Memory, memory_path
-from jugglebot.motion.skills.schedule import (HOME_BAND_REV, Pattern,
-                                              SelfTossPattern,
-                                              compile_columns,
-                                              compile_self_toss,
+from jugglebot.motion.skills.schedule import (HOME_BAND_REV, LEAD_S,
+                                              OneBallPattern, Pattern,
+                                              PRETILT_S, compile_columns,
+                                              compile_one_ball,
+                                              compile_reload,
+                                              compile_reload_wait,
                                               floor_lift_s, home_hand_bounds)
 from jugglebot.motion.skills.segments import CATCH, REST, THROW
 from jugglebot.motion.skills.sites import (CATCH_CUP_Z_MM, REST_CUP_Z_MM,
@@ -234,6 +236,51 @@ _DEFAULT_SITE_Y_MM = 0.0
 _DEFAULT_SITE_NAME = 'P1'
 #: A fresh id starts a cold memory (plan § 2.2) — `memory_path`'s own contract.
 _DEFAULT_PLANT_ID = 'jugglebot'
+
+#: R4 reload (owner decision D4, brief step 1b): the `bb/throw_at_target`
+#: `throw_delay_s` this node asks for is floored here, never below it —
+#: restated (not imported, node-boundary discipline) from
+#: `ball_butler_node._DEFAULT_THROW_DELAY_S` = 2.5 s, BB's own pitch-axis
+#: settle-time floor (that node's own docstring: a 60 deg pitch change takes
+#: ~1.6 s of motion + ~0.5 s margin, and firing before it settles releases at
+#: the wrong angle). In practice the opening REST + pre-tilt margin below
+#: always clears this (the opening REST alone is >= `schedule.FLOOR_LIFT_S`
+#: = 1.5 s), so the floor is a documented backstop, not what usually binds.
+_BB_THROW_DELAY_FLOOR_S = 2.5
+
+#: R4 reload: margin (s) added past BB's own reported `throw_delay_s +
+#: predicted_tof_s` before `_on_tick` gives up waiting for the
+#: `ThrowAnnouncement` and fails closed (`ABORTED_NO_ANNOUNCEMENT`, brief
+#: step 1d). Covers scheduling/publish jitter on both ends of the round
+#: trip — this node's own tick cadence (`1 / _TICK_HZ` = 0.025 s) is two
+#: orders inside it, so 1.0 s is pure headroom, not a measured bound.
+RELOAD_ANNOUNCE_TIMEOUT_S = 1.0
+
+
+def _wire_tilt_out(tilt):
+    """``segments.CatchTerminal.hold_tilt`` / ``RestTerminal.tilt`` ->
+    ``InstallSegment.Request.hold_tilt_rad`` / ``rest_tilt_rad`` (R4 reload,
+    Unit U3): ``None`` -> the wire's NaN sentinel (see
+    ``trajectory_node._wire_tilt`` for why NOT zero — a REST's own
+    ``(0.0, 0.0)`` is a real, distinct value from "no tilt given")."""
+    if tilt is None:
+        return [float('nan'), float('nan')]
+    return [float(tilt[0]), float(tilt[1])]
+
+
+def _mocap_aim_point_mm(site: Site, z_mm: float, offset_mm):
+    """The inverse of `SkillNode._on_balls`'s subtraction (R4 reload, brief
+    step 1b): a tracker LANDING has the measured mocap-to-schedule offset
+    SUBTRACTED to reach the schedule frame, so an OUTGOING aim point —
+    ``bb/throw_at_target``'s ``target_point_global_mm``, which Ball Butler
+    resolves against the mocap graph — needs the SAME offset ADDED back.
+    ``offset_mm`` is ``SkillNode._mocap_to_schedule_mm`` (``None`` before the
+    first evaluable frame check — treated as ``(0, 0)``, the same fallback
+    `_on_balls` uses)."""
+    dx, dy = (0.0, 0.0) if offset_mm is None else (float(offset_mm[0]),
+                                                    float(offset_mm[1]))
+    return (float(site.cup_mm[0]) + dx, float(site.cup_mm[1]) + dy,
+           float(z_mm))
 
 
 @dataclasses.dataclass(frozen=True)
@@ -481,6 +528,20 @@ class SkillNode(Node):
         # Which END code has already ARMED that hold, so the arming itself is
         # once per attempt too ('' = none; reset with the attempt).
         self._hold_forced_code = ''
+        # R4 reload (brief step 1): the reload context awaiting Ball
+        # Butler's `ThrowAnnouncement` — `None` outside a reload wait,
+        # else a `SimpleNamespace(pattern=..., boxes=..., memory=...,
+        # deadline_mono=...)` set by `_start_reload` once `bb/throw_at_target`
+        # is ACCEPTED and cleared by whichever of `_on_announcement` /
+        # `_on_tick`'s timeout branch fires first. The bridge REST's own
+        # `SkillExecutor` finishes (and `_executor` reverts to `None`) long
+        # before the announcement can arrive — this is the state
+        # `_refuse_if_running` reads so a second start cannot slip in during
+        # that window. Guarded by `_reload_lock` (read on the tick's 40 Hz
+        # cadence, written from the service thread and the subscription's
+        # own callback group).
+        self._reload_ctx = None
+        self._reload_lock = threading.Lock()
 
         self.declare_parameter('apex_m', _DEFAULT_APEX_M)
         self.declare_parameter('separation_mm', _DEFAULT_SEPARATION_MM)
@@ -520,6 +581,12 @@ class SkillNode(Node):
         # re-aiming outright -- the A/B knob for a sitting: on 2026-09-18 16:16
         # 18 of 21 timing-only re-sends were refused LIMIT_JERK, each a solve.
         self.declare_parameter('catch_resend_max', 2)
+        # R4 reload (owner decision D4, brief step 1): branches
+        # `skills/start_self_toss`'s existing start path onto the reload
+        # choreography instead of an ordinary self-toss. A node parameter
+        # FOR NOW — Unit U5 routes the `Juggle` action goal's own reload
+        # flag onto this path instead of adding a second service.
+        self.declare_parameter('reload_first', False)
 
         # ── the install client + tick timer share ONE reentrant group ──────
         # Fixed 2026-09-13 (found by reading, never exercised live): `main`
@@ -561,6 +628,16 @@ class SkillNode(Node):
         # still needs the MultiThreadedExecutor to process it concurrently.
         self._hold_cli = self.create_client(
             Trigger, 'trajectory/hold', callback_group=self._cbgroup)
+        # R4 reload (brief step 1b): the SAME reason every other blocking
+        # client on this node shares `self._cbgroup` (see the comment on
+        # `_install_cli` above) — `_start_reload` blocks in `_wait_future`
+        # for both, from the `skills/start_self_toss` service's own default
+        # (non-reentrant) group.
+        self._reload_cli = self.create_client(
+            Trigger, 'bb/reload', callback_group=self._cbgroup)
+        self._bb_throw_cli = self.create_client(
+            BallButlerThrow, 'bb/throw_at_target',
+            callback_group=self._cbgroup)
 
         self._announce_pub = self.create_publisher(
             ThrowAnnouncement, 'throw_announcements', 10)
@@ -605,6 +682,16 @@ class SkillNode(Node):
         self.create_subscription(
             DiagnosticStatus, 'link_status', self._on_link_status, 10,
             callback_group=self._sub_cbgroup)
+        # R4 reload (brief step 1c): this node only ever PUBLISHED on
+        # `throw_announcements` before (`_maybe_announce`, our own throws) —
+        # this is its one SUBSCRIBER, for Ball Butler's announcement of a
+        # reload throw. Own callback group, same reason as every other
+        # subscription here (finding 4, R3 audit): `_on_announcement` must
+        # run while `_start_reload` is blocked in a `bb/*` round trip on the
+        # service's default group.
+        self.create_subscription(
+            ThrowAnnouncement, 'throw_announcements', self._on_announcement,
+            10, callback_group=self._sub_cbgroup)
 
         self.create_service(Trigger, 'skills/start_columns',
                             self._svc_start_columns)
@@ -960,6 +1047,7 @@ class SkillNode(Node):
             req.site_mm = [float(v) for v in terminal.landing_mm]
             req.landing_vel_mm_s = [float(v) for v in terminal.landing_vel_mm_s]
             req.rest_site_mm = [float(v) for v in terminal.rest_site_mm]
+            req.hold_tilt_rad = _wire_tilt_out(terminal.hold_tilt)
             tt = terminal.then_throw
             if tt is not None:
                 req.t_release_s = float(tt.t_release_s)
@@ -969,6 +1057,7 @@ class SkillNode(Node):
         else:
             req.t_event_s = float(terminal.t_rest_s)
             req.rest_site_mm = [float(v) for v in terminal.rest_site_mm]
+            req.rest_tilt_rad = _wire_tilt_out(terminal.tilt)
 
         if not self._install_cli.wait_for_service(timeout_sec=_SERVICE_WAIT_S):
             self.get_logger().error('trajectory/install_segment unavailable')
@@ -1188,6 +1277,29 @@ class SkillNode(Node):
 
     # ── the tick ────────────────────────────────────────────────────────
 
+    def _check_reload_timeout(self) -> None:
+        """R4 reload fail-closed (brief step 1d): once `_reload_ctx.
+        deadline_mono` (`_start_reload`'s own margin past BB's reported
+        ``throw_delay_s + predicted_tof_s``) has passed with no
+        `ThrowAnnouncement`, the attempt ends `ABORTED_NO_ANNOUNCEMENT` and
+        `_reload_ctx` is cleared — the only action this takes, because
+        BB's own countdown cannot be aborted (the ball may still come) and
+        the safe end is already streaming: the bridge REST's rest tail,
+        holding level under the exact point BB was asked to aim at."""
+        timed_out = False
+        with self._reload_lock:
+            ctx = self._reload_ctx
+            if ctx is not None and time.perf_counter() >= ctx.deadline_mono:
+                self._reload_ctx = None
+                timed_out = True
+        if timed_out:
+            self.get_logger().error(
+                'reload ABORTED_NO_ANNOUNCEMENT: no ThrowAnnouncement from '
+                'ball_butler within the deadline -- BB\'s own countdown '
+                'cannot be aborted and the ball may still come; the '
+                'platform is at rest under the aim point (the bridge '
+                'REST\'s rest tail), the safest place to wait')
+
     def _on_tick(self):
         """Dispatch everything due, then retire a finished executor.
 
@@ -1204,7 +1316,14 @@ class SkillNode(Node):
         and `done` is exactly `attempt_ended` when nothing is listening for
         outcomes (`on_experience is None`), so this is a strict generalisation
         of the R2 behaviour, not a change to it.
+
+        Checks the R4 reload's announce timeout (`_check_reload_timeout`)
+        FIRST, unconditionally: that check reads/writes only `_reload_ctx`
+        under its own lock, not `_executor`, so it must not be skipped when
+        the tick lock is busy or `_executor` is `None` — exactly the state
+        during a reload wait (see `_reload_ctx`'s `__init__` comment).
         """
+        self._check_reload_timeout()
         if not self._tick_lock.acquire(blocking=False):
             return
         try:
@@ -1231,8 +1350,17 @@ class SkillNode(Node):
 
     def _refuse_if_running(self, response):
         """``response`` refused with the shared "already running" message, or
-        ``None`` when no attempt is running (the caller may proceed)."""
-        if self._executor is None:
+        ``None`` when no attempt is running (the caller may proceed).
+
+        R4 reload (brief step 1): a reload wait counts as running too, even
+        while `_executor` briefly reads `None` between the bridge REST's own
+        `SkillExecutor` finishing (`done`, once its one skill dispatches —
+        it releases nothing, so nothing keeps it alive) and the
+        announcement swapping in the real one — the whole reason
+        `_reload_ctx` exists (see its `__init__` comment)."""
+        with self._reload_lock:
+            reloading = self._reload_ctx is not None
+        if self._executor is None and not reloading:
             return None
         response.success = False
         response.message = ('an attempt is already running — call '
@@ -1577,8 +1705,8 @@ class SkillNode(Node):
         site = Site(_DEFAULT_SITE_NAME,
                    np.array([site_x_mm, site_y_mm, CATCH_CUP_Z_MM]))
         try:
-            pattern = SelfTossPattern(site=site, apex_m=apex_m, dwell_s=dwell_s,
-                                      n_throws=n_throws)
+            pattern = OneBallPattern(sites=(site,), apex_m=apex_m,
+                                     dwell_s=dwell_s, n_throws=n_throws)
         except ValueError as exc:
             response.success = False
             response.message = 'self-toss pattern refused: %s' % (exc,)
@@ -1599,8 +1727,11 @@ class SkillNode(Node):
         # defect this closes: a box swept for one apex silently reused at
         # another).
         pair = (site.name, site.name)
-        if adm.select(boxes, pair, apex_m) is None:
-            bands = sorted(b.apex_band_m for b in boxes if b.site_pair == pair)
+        site_xy = (float(site.cup_mm[0]), float(site.cup_mm[1]))
+        if adm.select(boxes, 'self_toss', pair, apex_m,
+                     release_site_xy_mm=site_xy, target_site_xy_mm=site_xy) is None:
+            bands = sorted(b.apex_band_m for b in boxes
+                           if b.pattern == 'self_toss' and b.site_pair == pair)
             bands_str = (', '.join('%.3f-%.3f m' % (lo, hi) for lo, hi in bands)
                         if bands else 'none swept for this pair')
             response.success = False
@@ -1658,6 +1789,17 @@ class SkillNode(Node):
             self.get_logger().error(response.message)
             return response
 
+        # R4 reload (owner decision D4, brief step 1): everything above is
+        # shared with the ordinary self-toss (same site/pattern, same box +
+        # memory) — only how the schedule gets COMPILED differs, because the
+        # reload's real schedule cannot be built until Ball Butler's
+        # announcement supplies the receive tilt. `reload_first` is read
+        # here, not at the top, so a bad value never short-circuits any of
+        # the refusals above it.
+        if bool(self.get_parameter('reload_first').value):
+            return self._start_reload(response, site=site, pattern=pattern,
+                                      boxes=boxes, memory=memory)
+
         now = self.get_clock().now().nanoseconds / 1e9
         try:
             # Compile once to read the opening REST's own dispatch lead (the
@@ -1668,10 +1810,10 @@ class SkillNode(Node):
             # that deficit plus one tick period of operational margin (the
             # call/dispatch latency `_START_LEAD_S` names for columns) lands
             # the real schedule's first dispatch at or after "now".
-            probe = compile_self_toss(pattern, now)
+            probe = compile_one_ball(pattern, now)
             deficit = now - probe.skills[0].dispatch_s()
             t0 = now + max(deficit, 0.0) + (1.0 / _TICK_HZ)
-            schedule = compile_self_toss(pattern, t0)
+            schedule = compile_one_ball(pattern, t0)
         except ValueError as exc:
             response.success = False
             response.message = 'self-toss schedule refused: %s' % (exc,)
@@ -1712,6 +1854,232 @@ class SkillNode(Node):
             % (len(schedule.skills), n_throws, plant_id, len(memory), t0))
         self.get_logger().info(response.message)
         return response
+
+    def _start_reload(self, response, *, site: Site, pattern: OneBallPattern,
+                      boxes, memory: Memory):
+        """R4 reload start path (owner decision D4, brief step 1): installs
+        the opening-REST-only bridge (`schedule.compile_reload_wait` — homes
+        the hand, holds level at ``site``, since the receive tilt is not yet
+        known), then asks Ball Butler to reload and throw at ``site``'s
+        catch point. `_on_announcement` compiles the real
+        `schedule.compile_reload` schedule and swaps the executor once BB's
+        `ThrowAnnouncement` lands (its own callback, run from the
+        subscription's callback group — this method returns long before
+        that can happen); `_on_tick`'s timeout branch fails closed
+        (`ABORTED_NO_ANNOUNCEMENT`) if it never does.
+
+        Called only from `_svc_start_self_toss`, after every no-motion
+        refusal, the box/memory build and `_prelevel` — see that method's
+        R4 branch. ``site``/``pattern``/``boxes``/``memory`` are exactly
+        what the ordinary self-toss path would compile with; the reload's
+        own DECAY REST hands off into the SAME one-ball pattern
+        (`schedule.compile_reload`'s docstring), so it needs the identical
+        box/memory the tail throws will be judged and learned against.
+        """
+        now = self.get_clock().now().nanoseconds / 1e9
+        lift_s = float(pattern.floor_lift_s)
+        try:
+            # Same t0 idiom as the ordinary self-toss path just above (a
+            # probe compile to read the bridge's own dispatch lead, then
+            # shift so the real compile's first dispatch lands at/after
+            # "now") — one schedule, two skills long, so restating it here
+            # rather than threading a third compiler through that block.
+            probe = compile_reload_wait(site, lift_s, now)
+            deficit = now - probe.skills[0].dispatch_s()
+            t0 = now + max(deficit, 0.0) + (1.0 / _TICK_HZ)
+            bridge = compile_reload_wait(site, lift_s, t0)
+        except ValueError as exc:
+            response.success = False
+            response.message = 'reload bridge schedule refused: %s' % (exc,)
+            self.get_logger().error(response.message)
+            return response
+
+        with self._correlation_lock:
+            self._correlation.pop(0, None)
+        self._sched_refused_at_start = self._sched_refused
+        self._force_hold = False
+        self._hold_forced_code = ''
+        self._executor = SkillExecutor(
+            bridge, self._installer, tracker=self._tracker,
+            catch_aim_source=self._catch_aim_source(),
+            resend_max_per_catch=self._catch_resend_max(),
+            launch_ratio=self._launch_ratio,
+            observer=self._ball_evidence, observations=self._observations)
+
+        if not self._reload_cli.wait_for_service(timeout_sec=_SERVICE_WAIT_S):
+            response.success = False
+            response.message = 'reload refused: bb/reload unavailable'
+            self.get_logger().error(response.message)
+            return response
+        reload_resp = self._wait_future(
+            self._reload_cli.call_async(Trigger.Request()))
+        if reload_resp is None:
+            response.success = False
+            response.message = ('reload refused: bb/reload did not answer '
+                                'in %.1f s' % (_SERVICE_WAIT_S,))
+            self.get_logger().error(response.message)
+            return response
+        if not bool(reload_resp.success):
+            # INVARIANTS.md `REJECTED_BB(<message>)`: an external thrower's
+            # OWN refusal surfaces verbatim, not laundered into a generic
+            # abort — `reload_resp.message` is BB's own diagnostic sentence
+            # (`teensy_bridge_node._svc_bb_reload`), unedited.
+            response.success = False
+            response.message = 'REJECTED_BB(%s)' % (reload_resp.message,)
+            self.get_logger().error(response.message)
+            return response
+
+        delay_s = max(lift_s + PRETILT_S + LEAD_S, _BB_THROW_DELAY_FLOOR_S)
+        aim_x, aim_y, aim_z = _mocap_aim_point_mm(
+            site, CATCH_CUP_Z_MM, self._mocap_to_schedule_mm)
+        req = BallButlerThrow.Request()
+        req.use_target_point = True
+        req.target_name = self._robot_name
+        req.target_point_global_mm = Point(x=aim_x, y=aim_y, z=aim_z)
+        req.throw_delay_s = float(delay_s)
+        if not self._bb_throw_cli.wait_for_service(timeout_sec=_SERVICE_WAIT_S):
+            response.success = False
+            response.message = ('reload refused: bb/throw_at_target '
+                                'unavailable')
+            self.get_logger().error(response.message)
+            return response
+        throw_resp = self._wait_future(self._bb_throw_cli.call_async(req))
+        if throw_resp is None:
+            response.success = False
+            response.message = ('reload refused: bb/throw_at_target did '
+                                'not answer in %.1f s' % (_SERVICE_WAIT_S,))
+            self.get_logger().error(response.message)
+            return response
+        if not bool(throw_resp.success):
+            # Same INVARIANTS.md row as the bb/reload refusal above.
+            response.success = False
+            response.message = 'REJECTED_BB(%s)' % (throw_resp.message,)
+            self.get_logger().error(response.message)
+            return response
+
+        accept_mono = time.perf_counter()
+        deadline_mono = (accept_mono + float(throw_resp.throw_delay_s)
+                         + float(throw_resp.predicted_tof_s)
+                         + RELOAD_ANNOUNCE_TIMEOUT_S)
+        with self._reload_lock:
+            self._reload_ctx = SimpleNamespace(
+                pattern=pattern, boxes=boxes, memory=memory,
+                deadline_mono=deadline_mono)
+        response.success = True
+        response.message = (
+            'reload requested: bb/throw_at_target OK (predicted_tof=%.3f s, '
+            'delay=%.3f s) -- awaiting ThrowAnnouncement (timeout in %.3f s)'
+            % (throw_resp.predicted_tof_s, throw_resp.throw_delay_s,
+               deadline_mono - accept_mono))
+        self.get_logger().info(response.message)
+        return response
+
+    def _on_announcement(self, msg: ThrowAnnouncement) -> None:
+        """Ball Butler's `ThrowAnnouncement` for a reload throw (R4, brief
+        step 1c) — the AUTHORITY the reload schedule is compiled from,
+        never compiled before it arrives (`schedule.compile_reload`'s own
+        docstring).
+
+        Filters on `thrower_name == 'ball_butler'` so this never mistakes
+        one of THIS node's own self-toss announcements for a reload
+        (`_maybe_announce` publishes those with `thrower_name ==
+        self._robot_name`, never `'ball_butler'`), and on `target_id ==
+        self._robot_name` so an announcement not naming us is ignored. Pops
+        `_reload_ctx` before doing anything else — an announcement that
+        arrives with nothing awaiting it (already timed out, or we were
+        never reloading) has nothing to act on and is logged, not acted on.
+        """
+        if (str(msg.thrower_name) != 'ball_butler'
+                or str(msg.target_id) != self._robot_name):
+            return
+        with self._reload_lock:
+            ctx = self._reload_ctx
+            self._reload_ctx = None
+        if ctx is None:
+            self.get_logger().info(
+                'reload: a ball_butler announcement for us arrived with no '
+                'reload awaiting one (already timed out, or none was '
+                'requested) -- ignored')
+            return
+
+        # THE JOIN: `_on_balls` subtracts the measured mocap-to-schedule
+        # offset from a tracker LANDING to reach the schedule frame (see
+        # that method's docstring) -- the announcement's landing is the
+        # SAME physical fact (BB's own predicted touch-down), read off the
+        # SAME mocap-tagged frame, so it gets the SAME correction. Velocity
+        # is untouched, as `_on_balls` leaves it.
+        off = self._mocap_to_schedule_mm
+        dx, dy = (0.0, 0.0) if off is None else (float(off[0]), float(off[1]))
+        landing_mm = np.array([msg.landing_position.x - dx,
+                               msg.landing_position.y - dy,
+                               msg.landing_position.z], dtype=float)
+        landing_vel_mm_s = np.array([msg.landing_velocity.x,
+                                     msg.landing_velocity.y,
+                                     msg.landing_velocity.z], dtype=float)
+        t_land_abs_s = (float(msg.landing_time.sec)
+                        + float(msg.landing_time.nanosec) * 1e-9)
+        throw_time_s = (float(msg.throw_time.sec)
+                       + float(msg.throw_time.nanosec) * 1e-9)
+        now = self.get_clock().now().nanoseconds / 1e9
+        try:
+            schedule = compile_reload(landing_mm, landing_vel_mm_s,
+                                      t_land_abs_s, ctx.pattern, now)
+        except ValueError as exc:
+            self.get_logger().error(
+                'reload: the announced landing could not be scheduled (%s) '
+                '-- no reload schedule installed; the platform stays at '
+                'rest under the aim point (the bridge REST is already '
+                'streaming)' % (exc,))
+            return
+
+        # Same FlightLatch rule `_maybe_announce` applies to our own
+        # releases (`advance_flight_latches`, ball_possession's one RULE) —
+        # a fresh, unlatched latch for the reload's schedule ball id (0,
+        # `compile_reload`'s own convention), not appended to whatever an
+        # earlier attempt left (already dropped in `_start_reload`).
+        preexisting = tuple(sorted(int(b.id) for b in self._raw_balls
+                                   if int(b.status) == _BALL_STATUS_IN_FLIGHT))
+        with self._correlation_lock:
+            self._correlation[0] = advance_flight_latches(
+                self._raw_balls, robot_name=self._robot_name,
+                latches=(FlightLatch(t_release_s=throw_time_s,
+                                     preexisting=preexisting),),
+                now_s=self._now_s(), in_flight_status=_BALL_STATUS_IN_FLIGHT)
+
+        learner_cfg = lr.LearnerConfig()
+        learner = SimpleNamespace(
+            command=lambda x, y_d: ctx.memory.command(x, y_d, learner_cfg))
+        # The SkillExecutor SWAP (brief step 1c): the bridge's own executor
+        # is done by now in every ordinary case (its one REST dispatched
+        # ticks ago) — this still takes `_tick_lock` first, same reason
+        # `_svc_stop` does (finding 12, R3 audit): a tick mid-dispatch on
+        # another thread must not read `_executor` half-swapped.
+        got_lock = self._tick_lock.acquire(timeout=_STOP_LOCK_WAIT_S)
+        if not got_lock:
+            self.get_logger().warning(
+                'reload: could not acquire the tick lock within %.1f s -- '
+                'swapping the executor without it' % (_STOP_LOCK_WAIT_S,))
+        try:
+            self._sched_refused_at_start = self._sched_refused
+            self._force_hold = False
+            self._hold_forced_code = ''
+            self._executor = SkillExecutor(
+                schedule, self._installer, tracker=self._tracker,
+                catch_aim_source=self._catch_aim_source(),
+                resend_max_per_catch=self._catch_resend_max(),
+                launch_ratio=self._launch_ratio,
+                learner=learner, boxes=ctx.boxes,
+                lateral_authority_m=float(self.get_parameter(
+                    'learner_lateral_authority_mm').value) / 1000.0,
+                observer=self._ball_evidence, observations=self._observations,
+                on_experience=self._bind_on_experience(ctx.memory))
+        finally:
+            if got_lock:
+                self._tick_lock.release()
+        self.get_logger().info(
+            'reload: ThrowAnnouncement received -- compiled the reload '
+            'schedule (%d skills) and swapped the executor'
+            % (len(schedule.skills),))
 
     def _bind_on_experience(self, memory: Memory):
         """``on_experience`` callable bound to ``memory`` (plan § 2.5 step 6):
@@ -1783,7 +2151,23 @@ class SkillNode(Node):
                         'attempt already ended (end_code=%r) — stop is a '
                         'no-op' % self._executor.end_code)
             else:
-                response.message = 'no attempt was running'
+                # R4 reload (brief step 1): a reload wait leaves `_executor`
+                # `None` (the bridge REST's own executor is `done` well
+                # before the announcement can arrive — see `_reload_ctx`'s
+                # `__init__` comment), so it is not "no attempt" — clear it
+                # so a new start is not refused by `_refuse_if_running`.
+                # BB's own countdown cannot be aborted (the ball may still
+                # come) and the platform is already resting at the aim
+                # point (the bridge REST's rest tail), so there is nothing
+                # else to command.
+                with self._reload_lock:
+                    was_reloading = self._reload_ctx is not None
+                    self._reload_ctx = None
+                response.message = (
+                    'reload wait cancelled -- BB\'s own countdown cannot be '
+                    'aborted and the ball may still come; the platform is '
+                    'at rest under the aim point' if was_reloading else
+                    'no attempt was running')
         finally:
             if got_lock:
                 self._tick_lock.release()
@@ -1888,7 +2272,10 @@ class SkillNode(Node):
                         for p, bands in sorted(by_pair.items())]
                 check_apex_m = float(self.get_parameter('apex_m').value)
                 pair = (_DEFAULT_SITE_NAME, _DEFAULT_SITE_NAME)
-                if adm.select(boxes, pair, check_apex_m) is None:
+                default_xy = (_DEFAULT_SITE_X_MM, _DEFAULT_SITE_Y_MM)
+                if adm.select(boxes, 'self_toss', pair, check_apex_m,
+                              release_site_xy_mm=default_xy,
+                              target_site_xy_mm=default_xy) is None:
                     ok = False
                     lines.append(
                         'box REFUSED: no box covers %r at apex %.3f m (%s)'

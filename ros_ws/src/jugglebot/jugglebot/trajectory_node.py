@@ -381,6 +381,23 @@ def _ceil_to_grid(t: float, dt: float) -> float:
     return k * dt
 
 
+def _wire_tilt(tilt_rad) -> Optional[Tuple[float, float]]:
+    """``InstallSegment.Request.hold_tilt_rad`` / ``rest_tilt_rad`` (R4
+    reload, Unit U3) -> ``segments.CatchTerminal.hold_tilt`` /
+    ``RestTerminal.tilt``, or ``None``.
+
+    NaN (either component) is the wire's OWN "no tilt given" sentinel —
+    ``(0.0, 0.0)`` is instead the DECAY REST's actual, explicit level target
+    and must round-trip as itself (see :meth:`TrajectoryNode.
+    _segment_terminal_from_request`'s docstring for why the brief's literal
+    "zeros = none" would be unsafe here).
+    """
+    rx, ry = float(tilt_rad[0]), float(tilt_rad[1])
+    if math.isnan(rx) or math.isnan(ry):
+        return None
+    return (rx, ry)
+
+
 # C-LEVEL-2 — how far a loaded map's capture height may sit from the standard
 # active plane (hw.JB_OP_DEFAULT_ACTIVE_Z_MM) before the load WARNs. Deliberately
 # a few mm and not zero: the acquisition tool's `--z` is a float the operator
@@ -5133,7 +5150,19 @@ class TrajectoryNode(Node):
 
         ``t_release_perf`` is the SAME ROS->perf crossing applied to
         ``request.t_release_s``; ``0.0`` means the CATCH carries no throw
-        (``request.t_release_s <= 0.0``, the wire's own sentinel)."""
+        (``request.t_release_s <= 0.0``, the wire's own sentinel).
+
+        ``hold_tilt_rad`` / ``rest_tilt_rad`` (R4 reload, Unit U3) decode
+        through :func:`_wire_tilt`, whose NaN sentinel is chosen over the
+        brief's literal "zeros = none" because a REST's own ``(0.0, 0.0)``
+        is NOT the same fact as "no tilt given": ``unified_cycle.
+        _realize_tilted`` branches on ``goals.rest_tilt is None`` to pick
+        ``rest_slew`` (True = the smoothstep U2 built for the pre-tilt/decay
+        transitions; False = the legacy zero-banking ramp, which U2's own
+        probe measured REFUSING ``LIMIT_VEL`` 574.9 mm/s > 250.0 for exactly
+        this transition, ``handoff_U2.md`` "Fail-before / pass-after"). A
+        zero-sentinel would silently collapse the DECAY REST's explicit
+        level target onto the branch already proven to refuse it."""
         if kind == sk_seg.THROW:
             return sk_seg.ThrowTerminal(
                 site_mm=np.asarray(request.site_mm, dtype=float),
@@ -5153,10 +5182,12 @@ class TrajectoryNode(Node):
                 landing_vel_mm_s=np.asarray(request.landing_vel_mm_s, dtype=float),
                 t_land_s=float(t_event_perf),
                 rest_site_mm=np.asarray(request.rest_site_mm, dtype=float),
-                then_throw=then_throw)
+                then_throw=then_throw,
+                hold_tilt=_wire_tilt(request.hold_tilt_rad))
         return sk_seg.RestTerminal(
             rest_site_mm=np.asarray(request.rest_site_mm, dtype=float),
-            t_rest_s=float(t_event_perf))
+            t_rest_s=float(t_event_perf),
+            tilt=_wire_tilt(request.rest_tilt_rad))
 
     def _svc_install_segment(self, request, response):
         """``trajectory/install_segment``: install ONE rest-terminal skill

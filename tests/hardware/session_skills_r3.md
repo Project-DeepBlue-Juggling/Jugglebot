@@ -89,7 +89,7 @@ Every terminal: `source /opt/ros/foxy/setup.bash && source
 
 ### Finding A — the opening REST needs more than 1.0 s at this session limit (RESOLVED)
 
-`schedule.compile_self_toss`'s own opening REST (`schedule.FLOOR_LIFT_S`, the
+`schedule.compile_one_ball`'s own opening REST (`schedule.FLOOR_LIFT_S`, the
 floor lift from the ACTIVATE park to site P1's rest position) **refuses
 `LIMIT_JERK` at the R3 session limit at its original 1.0 s value**, measured
 through the real install chain, 2026-09-13 (`ex.install_segment`, park →

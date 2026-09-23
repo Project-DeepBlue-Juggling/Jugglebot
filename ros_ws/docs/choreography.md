@@ -308,7 +308,7 @@
 ### `throw_announcements`
 
 - **publishers:** `ball_butler_node`, `reload_coordinator_node`, `skill_node`
-- **subscribers:** `ball_tracker_node`, `catch_coordinator_node`, `catch_correlation_node`, `reload_coordinator_node`
+- **subscribers:** `ball_tracker_node`, `catch_coordinator_node`, `catch_correlation_node`, `reload_coordinator_node`, `skill_node`
 - **type:** `jugglebot_interfaces.msg.ThrowAnnouncement`
 - **contract:**
   - MULTI-PUBLISHER by design: ball_butler_node announces a real BB throw and
@@ -381,7 +381,7 @@
 ### `bb/reload`
 
 - **servers:** `teensy_bridge_node`
-- **clients:** `reload_coordinator_node`
+- **clients:** `reload_coordinator_node`, `skill_node`
 - **type:** `std_srvs.srv.Trigger`
 
 ### `bb/reset`
@@ -399,7 +399,7 @@
 ### `bb/throw_at_target`
 
 - **servers:** `ball_butler_node`
-- **clients:** `reload_coordinator_node`
+- **clients:** `reload_coordinator_node`, `skill_node`
 - **type:** `jugglebot_interfaces.srv.BallButlerThrow`
 
 ### `clear_errors`

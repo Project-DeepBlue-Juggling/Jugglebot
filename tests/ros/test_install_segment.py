@@ -521,3 +521,43 @@ def test_the_opening_rest_carries_a_far_hand_home_inside_the_floor_lift():
     # And it is a GENTLE carry, not a lunge: the whole 7.7 rev inside 1.5 s
     # peaks three orders under the 200 rev/s session ceiling.
     assert float(np.max(np.abs(plan.hand_vel_rps))) < 12.0
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# hold_tilt_rad / rest_tilt_rad (R4 reload, Unit U3) — the wire sentinel
+# ═════════════════════════════════════════════════════════════════════════════
+
+def test_the_nan_sentinel_decodes_to_no_tilt():
+    """A request that never touches the new fields (every pre-R4 caller, and
+    the mock's own default — see conftest.InstallSegment.Request) must decode
+    to `hold_tilt=None` / `tilt=None`, exactly the pre-R4 behaviour."""
+    node = _perf_node()
+    catch_terminal = node._segment_terminal_from_request(
+        'CATCH', _catch_req(10.0), 10.0)
+    rest_terminal = node._segment_terminal_from_request(
+        'REST', _rest_req(10.0), 10.0)
+    assert catch_terminal.hold_tilt is None
+    assert rest_terminal.tilt is None
+
+
+def test_an_explicit_zero_tilt_round_trips_as_itself_not_as_none():
+    """THE reason the sentinel is NaN and not zero (`trajectory_node.
+    _wire_tilt`'s docstring): the DECAY REST's own target is the REAL value
+    (0.0, 0.0) rad, level, and must decode as that value — not collapse onto
+    `tilt=None`, which routes `unified_cycle._realize_tilted` to the
+    zero-banking branch U2 measured refusing `LIMIT_VEL` for this exact
+    transition (handoff_U2.md)."""
+    node = _perf_node()
+    req = _rest_req(10.0)
+    req.rest_tilt_rad = [0.0, 0.0]
+    terminal = node._segment_terminal_from_request('REST', req, 10.0)
+    assert terminal.tilt == (0.0, 0.0)
+    assert terminal.tilt is not None
+
+
+def test_a_nonzero_hold_tilt_rad_round_trips_onto_the_catch_terminal():
+    node = _perf_node()
+    req = _catch_req(10.0)
+    req.hold_tilt_rad = [0.01, -0.20943951023931956]
+    terminal = node._segment_terminal_from_request('CATCH', req, 10.0)
+    assert terminal.hold_tilt == pytest.approx((0.01, -0.20943951023931956))

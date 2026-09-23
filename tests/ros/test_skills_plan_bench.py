@@ -604,7 +604,7 @@ def test_default_self_toss_site_is_the_owner_P1():
 def test_build_self_toss_schedule_has_n_throws_plus_3_skills(n_throws):
     """The opening REST (floor lift) + the folded catch-with-throws + the
     final standalone catch + the closing REST — one ball throughout (schedule.
-    compile_self_toss's own count), verified against the real compiler rather
+    compile_one_ball's own count), verified against the real compiler rather
     than restated as a literal."""
     sched = spb.build_self_toss_schedule(n_throws=n_throws)
     assert len(sched.skills) == n_throws + 3
@@ -758,7 +758,7 @@ def test_main_leaves_columns_n_throws_default_unchanged(capsys):
 
 def test_self_toss_rehearsal_pre_positions_then_runs_the_schedule_clean():
     """One attempt, virtual clock, no learner: the pre-position (R3-g finding
-    — schedule.compile_self_toss's own FLOOR_LIFT_S refuses LIMIT_JERK at the
+    — schedule.compile_one_ball's own FLOOR_LIFT_S refuses LIMIT_JERK at the
     150 000 mm/s^3 R3 session limit, see SELF_TOSS_PRELIFT_S's docstring) plus
     the whole schedule install cleanly, exactly like the manual rehearsal run
     2026-09-13 (`--rehearse --pattern self-toss --arm A`, all gates PASS)."""
