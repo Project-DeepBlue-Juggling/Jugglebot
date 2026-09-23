@@ -107,4 +107,5 @@ headers naming what survives.
   `gate_hash 7966cb6fadc9`; run 2 2026-09-24, same command after this deletion (unified_cycle.py is
   hashed) → 2027.9 s, `gate_hash c2736ce2e2f7`; **all nine boxes IDENTICAL and all 16 471 row verdicts
   identical** (md5 of the row logs with `wall_s` stripped equal) — the deletion moved no admitted set.
-* (the gate triple is filled at commit time)
+* 2026-09-24, `./run_tests.sh` on the post-deletion tree → **PASS: 5378 passed, 8 skipped in 204.22 s; serial 3 passed** (the 6513 of the pre-deletion tree minus the FSM tests, plus the ported ones). Phase closure, same day, `./run_tests.sh --full` → **PASS: 5416 passed, 8 skipped, 1 xfailed in 274.47 s; serial 6 passed in 18.67 s**.
+* Commits `b3afcf7` (cluster A), `79cbb71` (B), `8364808` (C) — `git log --grep "Logbook-Entry: 2026-09-24-skill-stack-r4-fsm-deletion"`.
