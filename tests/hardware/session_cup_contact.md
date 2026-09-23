@@ -20,8 +20,9 @@ say so before the first throw.**
    rebound (its capture model is blind to closing speed). **This sitting is the test.**
 2. **Banking is amplitude-aware** (C-CUP-1/3): a 4 mm lateral aim now commands 0.2° of tilt, not
    2.2°; leg jerk rises smoothly with the lateral offset and saturates at half the 150 k limit.
-3. **Lateral authority defaults to 40 mm** (was pinned to 0): the learner may now aim throws
-   laterally, and a tracker-aimed catch may move up to 40 mm from the schedule's site.
+3. **Lateral authority defaults to 20 mm** (was pinned to 0; 40 mm through the first Block B on
+   2026-09-23, which dropped balls on the 0.9 m 25-throw chains): the learner may aim throws
+   laterally, and a tracker-aimed catch may move up to the authority from the schedule's site.
 4. **A session-start frame check guards (3)**: with authority > 0, a start is REFUSED
    (`REJECTED_FRAME_OFFSET`) if the mocap `Platform` body is more than 5 mm from the commanded
    platform position over 1 s, or if that cannot be measured. `learner_lateral_authority_mm:=0`
@@ -32,7 +33,7 @@ say so before the first throw.**
 | Block | Authority | Question | 
 |---|---|---|
 | A (pinned) | `learner_lateral_authority_mm := 0` | Does the new dive catch cleanly — no rebound, `seat=` in the smooth band? |
-| B (unpinned) | `:= 40` (the launch default) | Does the learner pull the lateral miss toward zero without the platform chasing the ball into a drop? |
+| B (unpinned) | `:= 20` (the launch default since 2026-09-23; 40 was the first Block B's) | Does the learner pull the lateral miss toward zero without the platform chasing the ball into a drop? |
 
 **Pre-registered fallback (decided now, not at the rig):** if Block A shows a rebound signature
 (§ 4) on **3 or more of the first 10 catches at either apex**, STOP — do not fly Block B. The
@@ -58,7 +59,7 @@ listed, GUI + QTM streaming, Home → Activate, site −50/0, `dwell_s 0.30`, a 
 
 | # | Step | Expect |
 |---|---|---|
-| 7 | `ros2 param get /skill_node learner_lateral_authority_mm` | `40.0` — proves the rebuilt install is the one running. `0.0` here = step 2 was skipped. |
+| 7 | `ros2 param get /skill_node learner_lateral_authority_mm` | `20.0` — proves the rebuilt install is the one running. `0.0` here = step 2 was skipped. |
 | 8 | `ros2 param set /skill_node apex_m 0.6` ; `ros2 service call skills/check std_srvs/srv/Trigger` | `ladder OK`, `box OK: ('P1', 'P1') …` with a band containing 0.6, and a **`frame check OK: mocap Platform is +N.N mm (x …, y …) … body spread S mm (limit 25.0 mm)`** line in the RESPONSE, plus a `tracker landings are now corrected by (x …, y …) mm` line in the launch log. **Record N, x, y, S.** Since 2026-09-23 an offset under 25 mm is MEASURED AND SUBTRACTED from every tracker landing, not refused — the 8.5 mm lever arm of 09-22 is expected here. |
 | 9 | If row 8 says `REJECTED_FRAME_OFFSET` | Over 25 mm: the base alignment is wrong outright (not the lever arm) — re-align QTM to the base marker and repeat row 8. Cannot-evaluate names the missing input: no `Platform` body, stale mocap, stale commanded position, the platform not at rest, or the Platform body moving > 2 mm inside the 1 s window — fix that one. Block A may still fly (authority 0 only logs it, and still adopts an in-bound offset). |
 | 10 | Loaded-box solve check: with the GUI open, bag recording and QTM streaming, leave it 60 s, then `grep -c SPLICE_TOO_LATE temp/logs/launch_cupcontact_*.log` after the first attempt of § 3 | 0. (Measured 2026-09-20 on a loaded box: catch-and-throw solve p95 146 ms against the 150 ms splice budget — the margin is thin. Two or more `SPLICE_TOO_LATE` in a block is a finding; note the load average at that time from the row-11 capture.) |
@@ -92,7 +93,7 @@ Only if Block A passed § 4, row 8's `skills/check` read `frame check OK` (offse
 
 | # | Step | Expect |
 |---|---|---|
-| 15 | `ros2 param set /skill_node learner_lateral_authority_mm 40.0` ; `ros2 service call skills/check std_srvs/srv/Trigger` | `frame check OK: …` (not `informational`). Same `plant_id` — Block A's rows already carry the observed lateral miss at zero lateral command, which is exactly what the learner needs (rows written BEFORE 2026-09-23 are in the raw mocap frame and were quarantined — only a Block A flown on this software is consistent with Block B). **Run § 9 first.** |
+| 15 | `ros2 param set /skill_node learner_lateral_authority_mm 20.0` ; `ros2 service call skills/check std_srvs/srv/Trigger` | `frame check OK: …` (not `informational`). Same `plant_id` — Block A's rows already carry the observed lateral miss at zero lateral command, which is exactly what the learner needs (rows written BEFORE 2026-09-23 are in the raw mocap frame and were quarantined — only a Block A flown on this software is consistent with Block B). **Run § 9 first.** |
 | 16 | **0.9 m first** (its box admits the full ±40 × ±40 mm): `n_throws 1` ×2, then `n_throws 10`. | Record per throw: landing error x/y from the memory-row line, `seat=`, caught. **Criterion (plan § 5): median lateral miss moves from ≈ +31 mm toward 0 within five throws**, `seat=` stays in +0.05 … +0.15 s. |
 | 17 | **0.6 m** (box admits ±40 mm in x but only **±30 mm in y** — the learner's throw command is clipped there; the catch-side clamp is still 40). | Same record. A learner command sitting on the ±30 mm y face is the box binding, not a fault. |
 | 18 | During both: `grep -E "AIM-LATERAL-CLAMPED\|RESEND \|RESEND-SKIPPED\|REJECTED_CYCLE_INFEASIBLE\|CUP_CONTACT_ACC\|LIMIT_JERK" temp/logs/launch_cupcontact_*.log \| tail -40` between attempts | `AIM-LATERAL-CLAMPED` = the tracker asked for more than 40 mm and was held (fine, count them). Re-send refusals on `LIMIT_JERK` should now be RARE (18 of 21 re-aims refused on 09-18; the dive is no longer at the jerk ceiling). **Any `CUP_CONTACT_ACC` refusal is a finding** — the planner should never produce a plan its own gate refuses; record the whole line (it names the knot and the value). |
@@ -127,7 +128,7 @@ touch-down, and keep the bag.
 
 Block A verdict (§ 4): rebounds __/10 at 0.6 m, __/10 at 0.9 m → PROCEED / STOP
 
-**Block B — unpinned (40 mm)**
+**Block B — unpinned (20 mm; the first Block B flew 40)**
 
 | apex | throw | err x (mm) | err y (mm) | seat= (s) | caught | clamped? | notes |
 |---|---|---|---|---|---|---|---|

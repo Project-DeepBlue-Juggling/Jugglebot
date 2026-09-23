@@ -404,15 +404,16 @@ def test_a_new_schedule_drops_the_previous_attempts_flight_latches():
     assert 0 not in node._correlation
 
 
-def test_the_learner_lateral_authority_parameter_defaults_to_forty():
+def test_the_learner_lateral_authority_parameter_defaults_to_twenty():
     """Owner 2026-09-16 pinned this at 0.0 (the learner corrects flight only)
     until the planner's small-lateral-offset banking defect was fixed; owner
-    2026-09-21 lifted the pin once the cup-contact contract landed
-    amplitude-aware banking (`plans/active/cup-contact-contract.md` § 6) —
-    the box admits +/-40 mm at 0.9 m, and the session-start frame check now
-    guards a live authority against an unverified mocap frame."""
+    2026-09-21 lifted the pin to 40 mm once the cup-contact contract landed
+    amplitude-aware banking (`plans/active/cup-contact-contract.md` § 6);
+    owner 2026-09-23 set 20 mm after the first unpinned sitting — 40 mm
+    dropped balls on the 25-throw chains at 0.9 m, 20 mm was stable at both
+    apexes. The box still admits +/-40 mm; this is the executor's clamp."""
     node, _client = _node_with_client()
-    assert node.get_parameter('learner_lateral_authority_mm').value == 40.0
+    assert node.get_parameter('learner_lateral_authority_mm').value == 20.0
 
 
 def test_start_self_toss_refuses_an_uncovered_apex_before_any_motion(tmp_path):

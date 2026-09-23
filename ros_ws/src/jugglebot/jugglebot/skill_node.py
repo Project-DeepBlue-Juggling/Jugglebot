@@ -509,8 +509,12 @@ class SkillNode(Node):
         # mocap-vs-commanded frame check (`_frame_check_error`) is what now
         # guards a live authority against an unverified mocap frame. mm per
         # axis, applied by SkillExecutor.lateral_authority_m; `:=0` re-pins
-        # it for a sitting or a bench check.
-        self.declare_parameter('learner_lateral_authority_mm', 40.0)
+        # it for a sitting or a bench check. Owner 2026-09-23, after the
+        # first unpinned sitting (Block B): 40 mm dropped balls on the 25-throw
+        # chains at 0.9 m (the learner's y command reached +29 mm against a
+        # 17.6 mm plant scatter — two drops in 51), 20 mm was stable at both
+        # apexes — 20 mm is the launch default; the box still admits 40.
+        self.declare_parameter('learner_lateral_authority_mm', 20.0)
         # How many re-solves one committed CATCH may spend re-aiming from later
         # fits (executor.resend_max_per_catch; 2 since 2026-09-18). 0 disables
         # re-aiming outright -- the A/B knob for a sitting: on 2026-09-18 16:16

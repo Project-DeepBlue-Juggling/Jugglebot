@@ -175,7 +175,10 @@ at the old grid.
 **Decided 2026-09-20 (owner, at implementation):**
 
 - `κ = 0.7` (a ball keeps 0.3 g of seating force through the window), `ε = 0.2`, authority
-  40 mm — CONFIRMED as proposed.
+  40 mm — CONFIRMED as proposed. **Amended 2026-09-23 (owner, after Block B): launch default
+  20 mm.** At 40 mm the 0.9 m 25-throw chains dropped balls (the learner's y command reached
+  +29 mm against a 17.6 mm plant scatter; 2 drops in 51); 20 mm was stable at 0.6 and 0.9 m.
+  The box still admits ±40 mm; the parameter is the executor's clamp.
 - The contact window of a catch-and-throw closes on the knot BEFORE the release knot —
   CONFIRMED. (The release equality pins `a = −g` at the release knot itself, so the bound
   cannot include it; measured, the run-up only reaches −0.32 g, so the alternative — ending
