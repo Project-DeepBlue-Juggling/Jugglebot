@@ -1061,7 +1061,7 @@ def compile_reload_wait(site: Site, floor_lift_s: float,
     REST (which assumes an operator has already placed a ball), nothing is
     in the cup while BB's throw is still pending.
 
-    ``SkillNode._svc_start_self_toss`` (``reload=True``) installs this
+    ``SkillNode._run_one_ball`` (a Juggle goal with ``reload=True``) installs this
     schedule, then calls ``bb/reload`` + ``bb/throw_at_target``; the hand
     is already homing while that round trip is in flight. On the
     announcement, ``SkillNode._on_announcement`` compiles the real

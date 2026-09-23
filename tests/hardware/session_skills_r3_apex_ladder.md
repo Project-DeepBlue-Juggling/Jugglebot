@@ -21,6 +21,14 @@ separately in `logbook/2026-09-16-outcome-landing-frozen-at-the-crossing.md`
 future re-ladder (e.g. at a new K, or after a further plant fix); do not
 delete its steps.
 
+**Note (2026-09-24, R4):** `skills/start_self_toss` and `skills/stop`
+(Trigger services) are deleted. Every step below that names them now reads
+`ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle
+"{pattern: self_toss}"` (goal ACCEPTED, then the call BLOCKS for the whole
+attempt, streaming `Feedback`/printing the final `Result`) and `ros2 service
+call /jugglebot/juggle_stop std_srvs/srv/Trigger` (or `Ctrl-C`, which
+cancels the goal directly) respectively.
+
 ---
 
 # R3 apex ladder — hand C2 + torque feedforward A/B (FW 23 / protocol 9)
@@ -196,7 +204,7 @@ REST, and the attempt is stopped from here if anything below is wrong —
 | 16b | **Quarantine the 2026-09-16 memories BEFORE the first rung** (once per box): read `temp/learn/README_QUARANTINE_20260916.md` (in the `~/Desktop/Jugglebot-skills` worktree — `temp/` is per-checkout) and run the `mv` it names, from that directory. | The ten `temp/learn/arm[AB]-0*0-20260916` directories move under `temp/learn/_quarantine_20260916/`. 21 of their 43 rows are the pre-fix contamination (observed flights 2.2–3.0x commanded); `Memory._load` now drops out-of-band rows, but the survivors were learned against contaminated neighbours. Re-using one of those `plant_id`s would otherwise reload them. A rung whose `plant_id` directory is absent starts COLD (identity prior), which is what we want after the fix. |
 | 17 | `ros2 param set /skill_node apex_m 0.5`, `... dwell_s 2.0` (temporary — long enough to read diagnostics twice during the REST), `... plant_id ffcheck-$(date +%Y%m%d)` (a throwaway id, not a ladder rung) | Set for this check only. |
 | 18 | `ros2 service call skills/check std_srvs/srv/Trigger` | `ladder OK` and `box OK` naming a `('P1', 'P1')` band containing 0.5 m. |
-| 19 | Seat a ball; `ros2 service call skills/start_self_toss std_srvs/srv/Trigger` | Accepted — the opening REST installs and starts streaming immediately. |
+| 19 | Seat a ball; `ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: self_toss}"` (line 24 note) | Goal ACCEPTED — the opening REST installs and starts streaming immediately. |
 | 20 | **Within the REST's dwell, before the THROW fires**, read `ros2 topic echo /link_status --once` | `time_synced: 1` (the bridge's wall anchor is set — without it every scheduled frame demotes to legacy and none of this check means anything); `hand_torque_ff_gain_requested: 0.0000` and `hand_torque_ff_gain_effective: 0.0000` (arm A). **FW 23 axis-silence watchdog fields** (fresh boot, healthy bus): `can_fault_leg: 255` (no CAN_BUS_DOWN trip since boot), `can_fault_count: 0`, `hb_stale_mask: 0` (no axis heartbeat older than 500 ms). A nonzero `can_fault_count` here means a trip already happened earlier in this session (check `can_fault_age_ms` and the log for the ERROR line); a nonzero `hb_stale_mask` is diagnostic-only (see `hb_stale_axes`) and does not by itself stop the check. |
 | 21 | In the same window, read the console `[hand7]` line (from the `pio device monitor` opened at step 5) | `sched=play` (not `off` — confirms the REST is riding the scheduled lane, not a legacy fallback); `promo_dp=`, `promo_dv=`, `promo_da=` all ≈ 0 (a static REST has no knot-to-knot motion to promote through, so these should read at or near the printed precision's zero); `promo_over=0`; `stops=0 refused=0 expired=0 demoted=0` — any of these counting up during a clean, on-time REST stream means a frame is arriving late, out of order, or unstamped, and needs diagnosis before flying the ladder for real. |
 | 22 | `ros2 topic echo /link_status --once \| grep interp_max_jitter_us` | Record the value. No pass bound exists yet (U2a residual: "measure at the first sitting") — note it here as the reference for later sittings; only a growing trend tick-over-tick, not a single reading, would indicate a real ISR-timing problem. |
@@ -234,7 +242,7 @@ For each apex `A` (write it as `050`, `060`, … in the id), each arm:
 |---|---|---|
 | 24 | `ros2 param set /skill_node apex_m A` and `... plant_id <arm>-A-$(date +%Y%m%d)` (e.g. `armA-090-20260915`) | Fresh id per rung per arm. |
 | 25 | `ros2 service call skills/check std_srvs/srv/Trigger` | `ladder OK` and `box OK` naming a `('P1', 'P1')` band that contains `A`. A `box REFUSED ... at apex` line means step 7 was not satisfied — stop. |
-| 26 | Seat a ball; `ros2 service call skills/start_self_toss std_srvs/srv/Trigger` | Accepted. One `skill announced ball 0` line, then a `CATCH-AIM skill 2: source=schedule landing=(…) mm t_land=…` line — the catch is aimed **open loop** now (see below), so `END NO_LANDING` must not appear at all. An `OUTCOME` line appears only when mocap happened to see the ball; its ABSENCE is expected at this sitting and is no longer a failure. **The `OUTCOME` line now lands LATER than it used to** (2026-09-16): it finalises `CAUGHT_WINDOW_S` = 0.35 s after the *observed* landing rather than 0.15 s after the *scheduled* one, and up to `CAUGHT_LAND_DEFER_CAP_S` = 0.35 s later still if the tracker's landing runs late — so expect it up to ~0.7 s after the scheduled touch-down, and do not read a missing row until a beat has passed. `caught=True` now means **the possession sensor read SEATED at some tick between 0.10 s before the landing and the finalise instant**, not "the cup was seated at one sampled instant" — a ball that seats and is re-thrown before the row closes still reads True, and a seat more than 0.35 s after the landing reads False (the window was widened from 0.25 s by owner ruling: a catch that SETTLES LATE is still a catch — the +282 ms arrival on armA-050 was re-thrown, not dropped). |
+| 26 | Seat a ball; `ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: self_toss}"` (line 24 note) | Goal ACCEPTED. One `skill announced ball 0` line, then a `CATCH-AIM skill 2: source=schedule landing=(…) mm t_land=…` line — the catch is aimed **open loop** now (see below), so `END NO_LANDING` must not appear at all. An `OUTCOME` line appears only when mocap happened to see the ball; its ABSENCE is expected at this sitting and is no longer a failure. **The `OUTCOME` line now lands LATER than it used to** (2026-09-16): it finalises `CAUGHT_WINDOW_S` = 0.35 s after the *observed* landing rather than 0.15 s after the *scheduled* one, and up to `CAUGHT_LAND_DEFER_CAP_S` = 0.35 s later still if the tracker's landing runs late — so expect it up to ~0.7 s after the scheduled touch-down, and do not read a missing row until a beat has passed. `caught=True` now means **the possession sensor read SEATED at some tick between 0.10 s before the landing and the finalise instant**, not "the cup was seated at one sampled instant" — a ball that seats and is re-thrown before the row closes still reads True, and a seat more than 0.35 s after the landing reads False (the window was widened from 0.25 s by owner ruling: a catch that SETTLES LATE is still a catch — the +282 ms arrival on armA-050 was re-thrown, not dropped). |
 | 27 | Note in § 6: caught Y/N, and the `memory row appended ... y=[x, y, flight]` values. | Flight longer than `sc.flight_s(A)` means the throw was fast. |
 | 28 | Repeat 24–27 until three throws are recorded for this rung. | |
 
@@ -381,7 +389,7 @@ FW 17; the FW 22 drain deliberately zeros only `input_torque`, leaving
 `pos`/`vel_ff` bit-identical to the last frame — `leg_interp.cpp`'s drain
 block, around :1523). If a drain or a `vel_ff`-driven creep past the held setpoint is
 observed on any disable edge this sitting (DEACTIVATE, an E-STOP, a
-`skills/stop`), **record it in § 6** — whether the drain should also zero
+`/jugglebot/juggle_stop`/`Ctrl-C` cancel — line 24 note), **record it in § 6** — whether the drain should also zero
 `vel_ff` is an owner decision still open, not something to fix or work around
 live.
 

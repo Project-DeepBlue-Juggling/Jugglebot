@@ -1,0 +1,35 @@
+# The skill-stack start surface (owner decision D3, R4, 2026-09-23):
+# skill_node serves this ONE action at jugglebot/juggle. It replaces the
+# Trigger services skills/start_columns, skills/start_self_toss and
+# skills/stop (goal CANCEL now ends the attempt) — see skill_node.py's
+# module docstring for the schedule-dispatch shell this drives, and
+# jugglebot.motion.skills.schedule.Schedule.pattern for the pattern names.
+# Only one goal may run at a time; a second goal while one is running is
+# REJECTED at accept (the same "an attempt is already running" refusal
+# skills/start_* used to return).
+
+string pattern                 # self_toss | hop | columns (schedule.Schedule.pattern's
+                               # own names). Required — no default pattern.
+float64 apex_m                 # ball apex height, m; 0 => the node's apex_m param
+float64 separation_mm          # site separation, mm; hop/columns only; 0 => the
+                               # node's separation_mm param (self_toss ignores this)
+int32 num_cycles               # throws; 0 => the node's n_throws param
+bool reload                    # open with the Ball Butler reload (unit U3's
+                               # compile_reload) before the pattern's own throws.
+                               # columns + reload is REFUSED until R5.
+---
+bool success                   # True iff the attempt reached its own COMPLETED end
+                               # (not merely "a schedule compiled" — see `outcome`)
+string outcome                 # COMPLETED | STOPPED | the executor's end_code
+                               # (executor.py's ABORTED_*/REJECTED_* names) — one
+                               # code, one sentence to the operator (plan § 0)
+int32 throws                   # number of released balls this attempt finalised an
+                               # OUTCOME row for (caught or not)
+int32 caught                   # of those, how many were caught
+string[] per_throw             # the executor's own OUTCOME lines, one per finalised
+                               # release, in the order they finalised
+---
+string phase                   # RUNNING while the attempt streams; the executor's
+                               # own end_code the moment it ends (mirrors `outcome`)
+int32 throw_index              # number of OUTCOME rows finalised so far
+int32 caught                   # of those, how many were caught so far

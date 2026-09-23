@@ -26,7 +26,10 @@ Everything here is run by the operator. Driver:
 3. The load is the sitting's own: launch up, bag recording, GUI open, QTM
    streaming. That is the point — an idle box measured below the knee has misled
    this project before (UH-3, 2026-09-06).
-4. No ball, no `level`, no `skills/start_columns`, no `/set_setpoint_output`.
+4. No ball, no `level`, no `skills/start_columns` (deleted at R4, 2026-09-24
+   — the live equivalent is `ros2 action send_goal /jugglebot/juggle
+   jugglebot_interfaces/action/Juggle "{pattern: columns}"`), no
+   `/set_setpoint_output`.
 5. About 30 minutes including bring-up. Send back three files and the bag id.
 
 ---

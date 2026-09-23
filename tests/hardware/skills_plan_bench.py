@@ -18,6 +18,7 @@ one would be.
   python3 tests/hardware/skills_plan_bench.py --rehearse --arm B --attempts 1 --n-throws 6
   python3 tests/hardware/skills_plan_bench.py --check
   python3 tests/hardware/skills_plan_bench.py --arm A --attempts 3 --label loaded
+  python3 tests/hardware/skills_plan_bench.py --via-action --pattern hop --n-throws 6
 
 Runs under the SYSTEM python3 with ROS 2 sourced for a live run (like every
 other rclpy tool in this directory) and under the project VENV for
@@ -179,8 +180,10 @@ SELF_TOSS_AIM_ERR_MRAD = 8.5
 #: accepts — so this was a NEW, R3-specific margin gap the lower jerk
 #: ceiling opened up, not a defect in this driver. **Fix landed**:
 #: ``schedule.FLOOR_LIFT_S`` is now 1.5 s (Finding A in the runsheet, now
-#: RESOLVED) — the real ``skills/start_self_toss`` first call is no longer
-#: expected to refuse on this segment. This bench still pre-positions self-
+#: RESOLVED) — a real ``jugglebot/juggle`` (pattern ``self_toss``) goal's
+#: first call is no longer expected to refuse on this segment (R4,
+#: 2026-09-24: the Trigger service this used to name, ``skills/start_
+#: self_toss``, is deleted — see :func:`run_live_action`). This bench still pre-positions self-
 #: toss too (its OWN manual REST-pre, at this same 1.5 s window, mirroring
 #: columns) rather than relying on ``compile_one_ball``'s own opening REST
 #: — see ``rehearse_attempt``'s § 1b comment for why that still matters:
@@ -260,6 +263,16 @@ def build_self_toss_schedule(*, n_throws: int, site: si.Site = None,
     pattern = sc.OneBallPattern(sites=(site,), apex_m=apex_m, dwell_s=dwell_s,
                                 n_throws=n_throws)
     return sc.compile_one_ball(pattern, t0_abs_s)
+
+
+def juggle_pattern_name(cli_pattern: str) -> str:
+    """This bench's ``--pattern`` spelling -> ``jugglebot_interfaces/action/
+    Juggle``'s ``pattern`` field / ``schedule.Schedule.pattern``'s own names
+    (``self_toss`` / ``hop`` / ``columns``). Only ``self-toss`` differs (the
+    CLI's hyphenated spelling, kept for every existing --dry-run/--rehearse
+    invocation, e.g. the runsheets' ``--pattern self-toss``) — ``columns``
+    and ``hop`` are already spelled the wire way."""
+    return cli_pattern.replace('-', '_')
 
 
 def kind_display(skill, *, is_preposition: bool = False,
@@ -897,14 +910,16 @@ def rehearse_attempt(attempt: int, *, n_throws: int, jitter_mm: float,
     the SAME install chain — warm start, epoch clock, learner/box hooks — with
     ``learner``/``boxes``/``on_experience`` wired into the
     :class:`~jugglebot.motion.skills.executor.SkillExecutor` exactly as
-    ``SkillNode._svc_start_self_toss`` wires them, and
-    :func:`make_self_toss_tracker`'s ``note_release`` recording every accepted
-    release so the tracker can report :func:`biased_landing` for it. It does
-    NOT skip the manual REST pre-position (§ 1b below) — this bench pre-
-    positions self-toss too, at :data:`SELF_TOSS_PRELIFT_S`, so the
-    rehearsal never exercises the real ``skills/start_self_toss`` path's OWN
-    opening REST (``schedule.FLOOR_LIFT_S``) from the raw ACTIVATE park, nor
-    the pre-level (``_prelevel``) that call runs first. See § 1b for why.
+    ``SkillNode._run_one_ball`` wires them (R4, 2026-09-24: renamed from the
+    deleted ``skills/start_self_toss`` Trigger service's ``_svc_start_self_
+    toss``), and :func:`make_self_toss_tracker`'s ``note_release`` recording
+    every accepted release so the tracker can report :func:`biased_landing`
+    for it. It does NOT skip the manual REST pre-position (§ 1b below) —
+    this bench pre-positions self-toss too, at :data:`SELF_TOSS_PRELIFT_S`,
+    so the rehearsal never exercises the real ``jugglebot/juggle`` (self_toss)
+    goal's OWN opening REST (``schedule.FLOOR_LIFT_S``) from the raw ACTIVATE
+    park, nor the pre-level (``_prelevel``) that call runs first. See § 1b
+    for why.
     """
     park = uc.CycleState.at_rest(
         np.array([0.0, 0.0, float(hw.JB_OP_DEFAULT_ACTIVE_Z_MM), 0.0, 0.0, 0.0]),
@@ -971,14 +986,16 @@ def rehearse_attempt(attempt: int, *, n_throws: int, jitter_mm: float,
     #     pre-positions self-toss here, at :data:`SELF_TOSS_PRELIFT_S`
     #     (1.5 s) — so PLAINLY: this pre-position MASKS the real opening
     #     REST from a raw ACTIVATE park, and masks ``_prelevel`` entirely
-    #     (`skills/start_self_toss` pre-levels the platform before compiling
-    #     its schedule; this bench never calls it). After the manual
-    #     pre-position lands, ``compile_one_ball``'s own opening REST is a
-    #     trivial no-op-sized move (the platform is already there) and
-    #     installs for free — so this rehearsal exercises the STEADY-STATE
-    #     schedule, not the session's first-ever cold-start move. That gap
-    #     is why the runsheet's dress rehearsal (§ 3) still runs the REAL
-    #     ``skills/start_self_toss`` from a fresh ACTIVATE, not this bench.
+    #     (the real ``jugglebot/juggle`` self_toss goal pre-levels the
+    #     platform before compiling its schedule; this bench's --rehearse
+    #     never calls it). After the manual pre-position lands, ``compile_
+    #     one_ball``'s own opening REST is a trivial no-op-sized move (the
+    #     platform is already there) and installs for free — so this
+    #     rehearsal exercises the STEADY-STATE schedule, not the session's
+    #     first-ever cold-start move. That gap is why the runsheet's dress
+    #     rehearsal (§ 3) still runs a REAL self_toss goal from a fresh
+    #     ACTIVATE (R4, 2026-09-24: via :func:`run_live_action`, or the
+    #     runsheet's own ``ros2 action send_goal`` — never this function).
     if pattern == 'self-toss':
         target_site = default_self_toss_site() if site is None else site
         rest_target_mm = target_site.rest_site_mm()
@@ -1442,6 +1459,95 @@ def run_live(args) -> int:
         rclpy.shutdown()
 
 
+def run_live_action(args) -> int:
+    """Dispatch ONE attempt through the real production entrypoint —
+    skill_node's ``jugglebot/juggle`` action — rather than this driver's own
+    ``trajectory/install_segment`` calls (:func:`live_attempt`/:func:`_Runner`
+    mirror ``SkillNode._installer`` field-for-field and deliberately bypass
+    skill_node entirely, for the R2/R3 gate's per-install plan-time telemetry
+    — see :func:`rehearse_attempt`'s § 1b comment). This is the ONLY path
+    that exercises skill_node's own opening REST/pre-level and its box-
+    coverage refusal ladder, and the ONLY path ``--pattern hop`` runs
+    through (this bench has no local ``hop`` schedule compiler — ``columns``/
+    ``self-toss`` do, via :func:`build_schedule`/:func:`build_self_toss_
+    schedule`, for --dry-run/--rehearse/the plain live path).
+
+    R4, 2026-09-24: this is the replacement for the deleted ``skills/start_
+    columns``/``skills/start_self_toss``/``skills/stop`` Trigger services —
+    the runsheet's dress-rehearsal step that used to be a manual ``ros2
+    service call`` is now a Juggle goal, cancelled on Ctrl-C (``cancel on
+    stop`` — the goal CANCEL ends the attempt, same as the GUI Stop button
+    and the deleted ``skills/stop``).
+    """
+    import rclpy
+    from rclpy.action import ActionClient
+    from jugglebot_interfaces.action import Juggle
+
+    rclpy.init()
+    node = None
+    try:
+        node = rclpy.create_node('skills_plan_bench_action')
+        client = ActionClient(node, Juggle, 'jugglebot/juggle')
+        print('waiting for jugglebot/juggle action server...')
+        if not client.wait_for_server(timeout_sec=10.0):
+            print('ABORT: jugglebot/juggle unavailable -- is skill_node '
+                  'running?', file=sys.stderr)
+            return 2
+
+        goal = Juggle.Goal()
+        goal.pattern = juggle_pattern_name(args.pattern)
+        goal.apex_m = float(args.apex_m)
+        goal.separation_mm = float(args.separation_mm)
+        goal.num_cycles = int(args.n_throws or 0)      # 0 => node default
+        goal.reload = bool(args.reload)
+        print('goal: pattern=%s apex_m=%.3f separation_mm=%.1f num_cycles=%d '
+              'reload=%s' % (goal.pattern, goal.apex_m, goal.separation_mm,
+                             goal.num_cycles, goal.reload))
+
+        def on_feedback(feedback_msg):
+            fb = feedback_msg.feedback
+            print('  feedback: phase=%s throw_index=%d caught=%d'
+                  % (fb.phase, fb.throw_index, fb.caught))
+
+        send_future = client.send_goal_async(goal, feedback_callback=on_feedback)
+        rclpy.spin_until_future_complete(node, send_future, timeout_sec=10.0)
+        goal_handle = send_future.result()
+        if goal_handle is None or not goal_handle.accepted:
+            print('ABORT: jugglebot/juggle goal REJECTED (an attempt is '
+                  'already running, or a refused precondition -- see '
+                  'skill_node\'s log)', file=sys.stderr)
+            return 2
+
+        result_future = goal_handle.get_result_async()
+        try:
+            while not result_future.done():
+                rclpy.spin_once(node, timeout_sec=0.1)
+        except KeyboardInterrupt:
+            # cancel on stop: mirrors the deleted skills/stop Trigger and the
+            # GUI's immediate-click Stop button (orchestrator_node._svc_
+            # juggle_stop) -- a goal CANCEL ends the attempt cleanly (every
+            # segment is rest-terminal; there is no unsafe mid-flight stop).
+            print('\n^C -- cancelling the goal (cancel on stop)')
+            cancel_future = goal_handle.cancel_goal_async()
+            rclpy.spin_until_future_complete(node, cancel_future, timeout_sec=5.0)
+            rclpy.spin_until_future_complete(node, result_future, timeout_sec=5.0)
+
+        wrapped = result_future.result()
+        if wrapped is None:
+            print('ABORT: jugglebot/juggle result never arrived', file=sys.stderr)
+            return 2
+        result = wrapped.result
+        print('outcome=%s success=%s throws=%d caught=%d'
+              % (result.outcome, result.success, result.throws, result.caught))
+        for line in result.per_throw:
+            print('  %s' % (line,))
+        return 0 if result.success else 2
+    finally:
+        if node is not None:
+            node.destroy_node()
+        rclpy.shutdown()
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Output
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1516,10 +1622,20 @@ def build_parser():
     ap.add_argument('--check', action='store_true',
                     help='live preconditions only (this driver\'s P1-P7 plus '
                          'skill_node\'s skills/check, R3-g), exit 0/2')
-    ap.add_argument('--pattern', choices=('columns', 'self-toss'),
+    ap.add_argument('--via-action', action='store_true',
+                    help='dispatch through skill_node\'s jugglebot/juggle '
+                         'action (run_live_action) instead of this driver\'s '
+                         'own trajectory/install_segment calls -- the real '
+                         'production entrypoint (R4, replaces the deleted '
+                         'skills/start_columns / skills/start_self_toss '
+                         'Trigger services); the only path --pattern hop '
+                         'runs through; cancel on Ctrl-C (cancel on stop)')
+    ap.add_argument('--pattern', choices=('columns', 'self-toss', 'hop'),
                     default='columns',
-                    help="'columns' (R2, default) or 'self-toss' (R3: one "
-                         'site, the learner + memory in the loop)')
+                    help="'columns' (R2, default), 'self-toss' (R3: one "
+                         "site, the learner + memory in the loop), or 'hop' "
+                         '(R4: one ball across two sites -- --via-action '
+                         'only, no local schedule compiler in this bench)')
     ap.add_argument('--apex-m', type=float, default=APEX_M,
                     help='self-toss apex (m); default %.2f. The 2026-09-14 '
                          'apex ladder rehearses each rung (0.5-0.9 m) with '
@@ -1550,6 +1666,15 @@ def build_parser():
     ap.add_argument('--jitter-mm', type=float, default=DEFAULT_JITTER_MM,
                     help='arm B catch jitter (mm, default %.1f); arm A forces '
                          '0.0' % (DEFAULT_JITTER_MM,))
+    ap.add_argument('--separation-mm', type=float, default=0.0,
+                    help='--via-action hop goal site separation, mm; 0 => '
+                         "the node's own separation_mm param (Juggle.action's "
+                         'own sentinel -- ignored by every other mode, which '
+                         'use :data:`SEPARATION_MM` instead)')
+    ap.add_argument('--reload', action='store_true',
+                    help='--via-action only: open with the Ball Butler '
+                         "reload before the pattern's own throws. columns + "
+                         'reload is REFUSED by skill_node until R5.')
     ap.add_argument('--label', default=None,
                     help="output label (default 'loaded'; 'rehearse' is forced "
                          "in --rehearse)")
@@ -1566,9 +1691,19 @@ def build_parser():
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
+    if args.pattern == 'hop' and not args.via_action:
+        print("ABORT: --pattern hop has no local schedule compiler in this "
+              "bench -- pass --via-action (skill_node compiles it)",
+              file=sys.stderr)
+        return 2
     if args.n_throws is None:
         args.n_throws = (SELF_TOSS_DEFAULT_N_THROWS if args.pattern == 'self-toss'
                          else DEFAULT_N_THROWS)
+
+    if args.via_action:
+        if args.label is None:
+            args.label = 'loaded'
+        return run_live_action(args)
 
     if args.dry_run:
         print_dry_run(args.n_throws, pattern=args.pattern, apex_m=args.apex_m)

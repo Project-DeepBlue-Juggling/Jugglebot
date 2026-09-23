@@ -283,11 +283,19 @@
     flex-shrink: 0;
 }
 
-/* ---- Reload button + its status line ---- */
+/* ---- Juggle controls (pattern select / reload checkbox / Start / Stop) + status line ---- */
 
-#minimap-reload {
+#minimap-juggle-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
     margin: 0 10px 6px;
     flex-shrink: 0;
+    flex-wrap: wrap;
+}
+
+#minimap-juggle-row .cmd-btn {
+    flex: 0 0 auto;
 }
 
 /* Purple accent — distinct from home/activate/deactivate/fault (viewer.css). */
@@ -296,7 +304,16 @@
     color: var(--accent-purple);
 }
 
-#minimap-reload-status {
+.cmd-checkbox-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: var(--font-size-xs);
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+
+#minimap-juggle-status {
     min-height: 1.4em;
     padding: 0 10px 6px;
     font-size: var(--font-size-xs);
@@ -305,5 +322,5 @@
     word-break: break-word;
 }
 
-#minimap-reload-status.status-err { color: var(--accent-red); }
-#minimap-reload-status.status-ok  { color: var(--accent-green); }
+#minimap-juggle-status.status-err { color: var(--accent-red); }
+#minimap-juggle-status.status-ok  { color: var(--accent-green); }

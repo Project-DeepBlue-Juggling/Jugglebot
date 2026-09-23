@@ -438,7 +438,13 @@
 - **clients:** _none_
 - **type:** `std_srvs.srv.Trigger`
 
-### `jugglebot/reload_request`
+### `jugglebot/juggle_request`
+
+- **servers:** `orchestrator_node`
+- **clients:** _none_
+- **type:** `jugglebot_interfaces.srv.SetString`
+
+### `jugglebot/juggle_stop`
 
 - **servers:** `orchestrator_node`
 - **clients:** _none_
@@ -487,24 +493,6 @@
 - **type:** `std_srvs.srv.SetBool`
 
 ### `skills/check`
-
-- **servers:** `skill_node`
-- **clients:** _none_
-- **type:** `std_srvs.srv.Trigger`
-
-### `skills/start_columns`
-
-- **servers:** `skill_node`
-- **clients:** _none_
-- **type:** `std_srvs.srv.Trigger`
-
-### `skills/start_self_toss`
-
-- **servers:** `skill_node`
-- **clients:** _none_
-- **type:** `std_srvs.srv.Trigger`
-
-### `skills/stop`
 
 - **servers:** `skill_node`
 - **clients:** _none_
@@ -590,10 +578,16 @@
 - **clients:** `orchestrator_node`
 - **type:** `jugglebot_interfaces.action.HomeMotors`
 
+### `jugglebot/juggle`
+
+- **servers:** `skill_node`
+- **clients:** `orchestrator_node`
+- **type:** `jugglebot_interfaces.action.Juggle`
+
 ### `jugglebot/reload`
 
 - **servers:** `reload_coordinator_node`
-- **clients:** `orchestrator_node`
+- **clients:** _none_
 - **type:** `jugglebot_interfaces.action.Reload`
 
 ### `jugglebot/toss`
@@ -630,7 +624,9 @@ broken wire cannot hide among them.
 - `configure` — service with no clients
 - `deactivate` — service with no clients
 - `home` — service with no clients
-- `jugglebot/reload_request` — service with no clients
+- `jugglebot/juggle_request` — service with no clients
+- `jugglebot/juggle_stop` — service with no clients
+- `jugglebot/reload` — action with no clients
 - `jugglebot/toss` — action with no clients
 - `jugglebot/toss_continuous` — action with no clients
 - `leg_cmd_executed` — topic with no subscribers
@@ -647,9 +643,6 @@ broken wire cannot hide among them.
 - `set_hand_state` — service with no clients
 - `set_motor_vel_curr_limits` — topic with no publishers
 - `skills/check` — service with no clients
-- `skills/start_columns` — service with no clients
-- `skills/start_self_toss` — service with no clients
-- `skills/stop` — service with no clients
 - `smooth_move_hand` — service with no servers
 - `trajectory/diagnostics` — topic with no subscribers
 - `trajectory/reload_tilt_map` — service with no clients

@@ -1143,80 +1143,130 @@ function renderStatusLine() {
     dom.status.className = s.cls ? 'status-' + s.cls : '';
 }
 
-// ---- Reload button (GUI → jugglebot/reload_request → jugglebot/reload) ----
+// ---- Juggle controls (GUI → jugglebot/juggle_request → jugglebot/juggle;
+// ---- jugglebot/juggle_stop cancels) — R4, owner decision D3 ----
 //
-// Fire-and-forget with a status hint: the callService below returns the relay's
-// DISPATCH ack (accepted/unavailable), not the reload's CAUGHT/MISSED outcome —
-// rosbridge on Foxy has no ROS2-action transport, so the outcome can't come back
-// here; it is logged by orchestrator_node and shows in the Ball Butler / tracking
-// panels.  reloadBusy latches the button disabled for a brief re-dispatch cooldown
-// after a successful dispatch (a genuine concurrent reload is rejected by the
-// coordinator anyway — the cooldown only stops accidental double-clicks).
-const RELOAD_COOLDOWN_MS = 4000;
-let reloadBusy = false;
-let reloadStatusMsg = null;    // { text, cls } | null
-let reloadCooldownTimer = null;
-let reloadStatusClearTimer = null;
+// Replaces the single-button Reload relay: a pattern <select> (Self-toss /
+// Hop / Columns), a "Reload first" checkbox, a hold-to-confirm Start (motion
+// starts — the same affordance every other motion-starting control on this
+// map uses) and an immediate-click Stop (it ENDS motion, so no hold — a
+// stop must never be slow to land). Start/Stop are both fire-and-forget with
+// a status hint: the callService below returns the relay's DISPATCH ack
+// (accepted/unavailable), not the attempt's COMPLETED/STOPPED/<end_code>
+// outcome — rosbridge on Foxy has no ROS2-action transport, so the outcome
+// can't come back here; it is logged by orchestrator_node and skill_node.
+// juggleBusy latches Start disabled for a brief re-dispatch cooldown after a
+// successful dispatch (a genuine concurrent goal is rejected by skill_node
+// anyway — the cooldown only stops accidental double-holds).
+const JUGGLE_COOLDOWN_MS = 4000;
+const JUGGLE_PATTERNS = [
+    { value: 'self_toss', label: 'Self-toss' },
+    { value: 'hop', label: 'Hop' },
+    { value: 'columns', label: 'Columns' },
+];
+let juggleBusy = false;
+let juggleStatusMsg = null;    // { text, cls } | null
+let juggleCooldownTimer = null;
+let juggleStatusClearTimer = null;
 
-function setReloadStatus(text, cls) {
-    reloadStatusMsg = text ? { text, cls: cls || '' } : null;
-    renderReloadButton();
+function setJuggleStatus(text, cls) {
+    juggleStatusMsg = text ? { text, cls: cls || '' } : null;
+    renderJuggleControls();
 }
 
-function renderReloadButton() {
-    if (!dom || !dom.reload) return;
+function renderJuggleControls() {
+    if (!dom || !dom.juggleStart) return;
     const connected = snap.conn === 'connected';
     const active = snap.orch.main === 'ACTIVE';
-    dom.reload.disabled = reloadBusy || !connected || !active;
-    dom.reload.title = reloadBusy
-        ? 'Reload dispatched — waiting for the sequence…'
+    const gated = juggleBusy || !connected || !active;
+    dom.jugglePattern.disabled = gated;
+    dom.juggleReload.disabled = gated;
+    dom.juggleStart.disabled = gated;
+    dom.juggleStart.title = juggleBusy
+        ? 'Juggle dispatched — waiting for the attempt…'
         : !connected
             ? 'rosbridge disconnected'
             : !active
-                ? 'Reload is available only in ACTIVE'
-                : 'BB throws a ball; Jugglebot catches it (throw in ~3 s)';
-    const s = reloadStatusMsg || { text: '', cls: '' };
-    dom.reloadStatus.textContent = s.text;
-    dom.reloadStatus.className = s.cls ? 'status-' + s.cls : '';
+                ? 'Start is available only in ACTIVE'
+                : 'hold to confirm — starts platform/hand motion';
+    // Stop is gated on connection alone — it must stay reachable even while
+    // Start's own cooldown is latched (that cooldown is about NOT double-
+    // dispatching a start, never about blocking a stop).
+    dom.juggleStop.disabled = !connected;
+    dom.juggleStop.title = connected
+        ? 'ends the running attempt immediately'
+        : 'rosbridge disconnected';
+    const s = juggleStatusMsg || { text: '', cls: '' };
+    dom.juggleStatus.textContent = s.text;
+    dom.juggleStatus.className = s.cls ? 'status-' + s.cls : '';
 }
 
-function onReloadClick() {
-    // The applySnapshot gate already disables the button off-ACTIVE / disconnected /
-    // busy; re-check here so a stale click that slips through is a no-op.
-    if (reloadBusy || snap.conn !== 'connected' || snap.orch.main !== 'ACTIVE') return;
-    reloadBusy = true;
-    setReloadStatus('Dispatching reload…', '');
+function onJuggleStartConfirm() {
+    if (juggleBusy || snap.conn !== 'connected' || snap.orch.main !== 'ACTIVE') return;
+    const pattern = dom.jugglePattern.value;
+    const reload = !!dom.juggleReload.checked;
+    const data = reload ? pattern + ',reload' : pattern;
+    juggleBusy = true;
+    setJuggleStatus('Dispatching ' + pattern + (reload ? ' (reload)' : '') + '…', '');
     emitEvent({
         type: EVENT_TYPES.COMMAND,
-        label: 'Reload',
-        detail: 'jugglebot/reload_request (throw_delay 3.0 s, catch_vel_scale default)',
+        label: 'Juggle Start',
+        detail: 'jugglebot/juggle_request (' + data + ')',
     });
-    ros.callService('jugglebot/reload_request', 'std_srvs/srv/Trigger', {})
+    ros.callService('jugglebot/juggle_request', 'jugglebot_interfaces/srv/SetString', { data })
         .then((res) => {
             if (res && res.success) {
-                setReloadStatus(res.message || 'Reload dispatched.', 'ok');
+                setJuggleStatus(res.message || 'Juggle dispatched.', 'ok');
             } else {
-                setReloadStatus((res && res.message) || 'Reload rejected.', 'err');
+                setJuggleStatus((res && res.message) || 'Juggle rejected.', 'err');
             }
         })
         .catch((err) => {
-            setReloadStatus('Reload failed: ' + (err && err.message ? err.message : err), 'err');
+            setJuggleStatus('Juggle failed: ' + (err && err.message ? err.message : err), 'err');
         })
         .finally(() => {
-            // Hold the button disabled for a short re-dispatch cooldown, then let
-            // the ACTIVE/connection gate govern again (renderReloadButton runs every
-            // applySnapshot frame).
-            clearTimeout(reloadCooldownTimer);
-            reloadCooldownTimer = setTimeout(() => {
-                reloadBusy = false;
-                renderReloadButton();
-            }, RELOAD_COOLDOWN_MS);
-            renderReloadButton();
+            // Hold Start disabled for a short re-dispatch cooldown, then let
+            // the ACTIVE/connection gate govern again (renderJuggleControls
+            // runs every applySnapshot frame).
+            clearTimeout(juggleCooldownTimer);
+            juggleCooldownTimer = setTimeout(() => {
+                juggleBusy = false;
+                renderJuggleControls();
+            }, JUGGLE_COOLDOWN_MS);
+            renderJuggleControls();
             // Auto-clear the sticky status after a while so it doesn't linger stale.
-            clearTimeout(reloadStatusClearTimer);
-            reloadStatusClearTimer = setTimeout(() => {
-                reloadStatusMsg = null;
-                renderReloadButton();
+            clearTimeout(juggleStatusClearTimer);
+            juggleStatusClearTimer = setTimeout(() => {
+                juggleStatusMsg = null;
+                renderJuggleControls();
+            }, 8000);
+        });
+}
+
+function onJuggleStopClick() {
+    if (snap.conn !== 'connected') return;
+    setJuggleStatus('Stopping…', '');
+    emitEvent({
+        type: EVENT_TYPES.COMMAND,
+        label: 'Juggle Stop',
+        detail: 'jugglebot/juggle_stop',
+    });
+    ros.callService('jugglebot/juggle_stop', 'std_srvs/srv/Trigger', {})
+        .then((res) => {
+            if (res && res.success) {
+                setJuggleStatus(res.message || 'Stopped.', 'ok');
+            } else {
+                setJuggleStatus((res && res.message) || 'Nothing to stop.', '');
+            }
+        })
+        .catch((err) => {
+            setJuggleStatus('Stop failed: ' + (err && err.message ? err.message : err), 'err');
+        })
+        .finally(() => {
+            clearTimeout(juggleStatusClearTimer);
+            juggleStatusClearTimer = setTimeout(() => {
+                juggleStatusMsg = null;
+                renderJuggleControls();
             }, 8000);
         });
 }
@@ -1439,7 +1489,7 @@ function applySnapshot() {
         dom.action.title = (a.title || '') + (a.disabled || busy ? '' : ' — hold to confirm');
     }
     renderStatusLine();
-    renderReloadButton();
+    renderJuggleControls();
 }
 
 function scheduleRender() {
@@ -1521,35 +1571,69 @@ function buildDom() {
     action.addEventListener('pointerleave', clearHeldAction);
     action.addEventListener('pointercancel', clearHeldAction);
 
-    // Reload button + its own status line.  A plain click (not hold-to-confirm):
-    // it triggers no motion by itself — the reload coordinator gates every arming
-    // step on its preconditions and aborts safely — so it matches the Ball Butler
-    // "Throw" button's single-click callService idiom, not the arm/disarm holds.
-    // Kept OUT of the contextual-action render path (computeAction/plans) so the
-    // fire-and-forget reload can never be confused with a state-machine plan.
-    const reload = document.createElement('button');
-    reload.id = 'minimap-reload';
-    reload.type = 'button';
-    reload.className = 'cmd-btn btn-reload';
-    reload.textContent = 'Reload';
-    reload.disabled = true;
-    reload.addEventListener('click', onReloadClick);
-    const reloadStatus = document.createElement('div');
-    reloadStatus.id = 'minimap-reload-status';
+    // Juggle controls (R4, owner decision D3): a pattern <select>, a "Reload
+    // first" checkbox, a hold-to-confirm Start and an immediate-click Stop —
+    // Start uses the SAME hold affordance every other motion-starting control
+    // on this map uses (it starts platform/hand motion); Stop is a plain
+    // click (it ENDS motion — skill_node gates every precondition on goal
+    // accept and aborts safely, so a stray Start click is safe, but a slow
+    // Stop is not). Kept OUT of the contextual-action render path
+    // (computeAction/plans) so the fire-and-forget dispatch can never be
+    // confused with a state-machine plan.
+    const juggleRow = document.createElement('div');
+    juggleRow.id = 'minimap-juggle-row';
+    const jugglePattern = document.createElement('select');
+    jugglePattern.id = 'minimap-juggle-pattern';
+    jugglePattern.className = 'cmd-select';
+    for (const p of JUGGLE_PATTERNS) {
+        const opt = document.createElement('option');
+        opt.value = p.value;
+        opt.textContent = p.label;
+        jugglePattern.appendChild(opt);
+    }
+    const juggleReloadLabel = document.createElement('label');
+    juggleReloadLabel.id = 'minimap-juggle-reload-label';
+    juggleReloadLabel.className = 'cmd-checkbox-label';
+    const juggleReload = document.createElement('input');
+    juggleReload.type = 'checkbox';
+    juggleReload.id = 'minimap-juggle-reload';
+    juggleReloadLabel.appendChild(juggleReload);
+    juggleReloadLabel.appendChild(document.createTextNode('Reload first'));
+    const juggleStart = document.createElement('button');
+    juggleStart.id = 'minimap-juggle-start';
+    juggleStart.type = 'button';
+    juggleStart.className = 'cmd-btn hold-fillable btn-reload';
+    juggleStart.textContent = 'Start';
+    juggleStart.disabled = true;
+    holdToConfirm(juggleStart, onJuggleStartConfirm, HOLD_MS);
+    const juggleStop = document.createElement('button');
+    juggleStop.id = 'minimap-juggle-stop';
+    juggleStop.type = 'button';
+    juggleStop.className = 'cmd-btn';
+    juggleStop.textContent = 'Stop';
+    juggleStop.disabled = true;
+    juggleStop.addEventListener('click', onJuggleStopClick);
+    juggleRow.appendChild(jugglePattern);
+    juggleRow.appendChild(juggleReloadLabel);
+    juggleRow.appendChild(juggleStart);
+    juggleRow.appendChild(juggleStop);
+    const juggleStatus = document.createElement('div');
+    juggleStatus.id = 'minimap-juggle-status';
 
     root.appendChild(header);
     root.appendChild(svg);
     root.appendChild(status);
     root.appendChild(action);
-    root.appendChild(reload);
-    root.appendChild(reloadStatus);
+    root.appendChild(juggleRow);
+    root.appendChild(juggleStatus);
 
     dom = {
-        root, header, svg, status, action, reload, reloadStatus,
+        root, header, svg, status, action,
+        jugglePattern, juggleReload, juggleStart, juggleStop, juggleStatus,
         armedBadge: armed, guardBadge: guard, chevron: chev,
         faultLive: null, clusterSub: null,
     };
-    renderReloadButton();
+    renderJuggleControls();
     return true;
 }
 

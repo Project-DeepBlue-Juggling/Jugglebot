@@ -10,19 +10,25 @@ header for why: only it holds the live commanded state); this node's whole job
 is schedule bookkeeping and dispatch — a thin wrapper over a pure-Python
 policy, exactly as the other ROS nodes in this package are.
 
-``skills/start_columns`` compiles the columns pattern (plan § 1.2) from ROS
-parameters and starts an attempt; ``skills/start_self_toss`` (R3) is the
-single-site self-toss — it pre-levels the platform (``_prelevel``, the same
-gravity-level rest ``reload_coordinator_node._unified_prelevel`` brings the
-session-start floor lift to) before compiling its schedule, and wires the R3
-precondition ladder (``executor.Observations`` / ``precondition_refusals``)
-through ``_observations``/``_ball_evidence``; ``skills/stop`` ends the
-current attempt — every segment is rest-terminal (``segments``' invariant),
-so ending an attempt needs no motion command of its own: whatever is
-streaming already ends at rest, and a released ball's outcome keeps
-finalising after the attempt ends. ``skills/check`` reports every current
-ladder refusal plus the box/limits status in one call, for a dress-rehearsal
-runsheet.
+``jugglebot/juggle`` (the ``Juggle`` action, R4 owner decision D3) is THE
+start surface: one goal names a ``pattern`` (``self_toss`` | ``hop`` |
+``columns`` — :data:`~jugglebot.motion.skills.schedule.Schedule.pattern`'s
+own names) and an optional ``reload`` flag. Goal accept runs the shared
+no-motion refusal ladder and compiles the schedule (``_start_pattern`` —
+merges the R2/R3 columns-start and self-toss-start Trigger services
+(deleted at R4) into one path); ``self_toss``/``hop`` also
+pre-level the platform (``_prelevel``, the same gravity-level rest
+``reload_coordinator_node._unified_prelevel`` brings the session-start floor
+lift to) and wire the R3 precondition ladder (``executor.Observations`` /
+``precondition_refusals``) through ``_observations``/``_ball_evidence``; a
+``reload=True`` goal opens with the Ball Butler reload (``_start_reload``)
+before its own throws. Cancelling the goal ends the current attempt
+(``_stop_attempt``, the former stop-service body unchanged) — every
+segment is rest-terminal (``segments``' invariant), so ending an attempt
+needs no motion command of its own: whatever is streaming already ends at
+rest, and a released ball's outcome keeps finalising after the attempt ends.
+``skills/check`` reports every current ladder refusal plus the box/limits
+status in one call, for a dress-rehearsal runsheet.
 """
 
 from __future__ import annotations
@@ -40,6 +46,7 @@ from typing import Dict, List, Tuple
 import numpy as np
 
 import rclpy
+from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.callback_groups import (MutuallyExclusiveCallbackGroup,
                                    ReentrantCallbackGroup)
 from rclpy.executors import MultiThreadedExecutor
@@ -48,6 +55,7 @@ from rclpy.node import Node
 from diagnostic_msgs.msg import DiagnosticStatus
 from geometry_msgs.msg import Point, Pose, Quaternion, Vector3
 from std_srvs.srv import Trigger
+from jugglebot_interfaces.action import Juggle
 from jugglebot_interfaces.msg import (BallStateArray, HandTelemetryMessage,
                                       RigidBodyPoses, ThrowAnnouncement,
                                       TrajectoryStatus)
@@ -94,7 +102,7 @@ _BALL_TRACKING_CONFIRMED = 1
 # (tilt_map.find_repo_root's MARKER walk, never a fixed __file__ depth — see
 # that function's docstring for why a fixed walk breaks under colcon install).
 # None for a genuinely detached deployment, where the admissible box / memory
-# paths below cannot be resolved and skills/start_self_toss refuses.
+# paths below cannot be resolved and a self-toss/hop Juggle goal refuses.
 _REPO_ROOT = find_repo_root(__file__)
 _ADMISSIBLE_BOX_PATH = (os.path.join(_REPO_ROOT, 'config', 'generated',
                                      'admissible_box.yaml')
@@ -120,7 +128,12 @@ _SERVICE_WAIT_S = 2.0
 #: become the reason a dispatch lands late.
 _TICK_HZ = 40.0
 
-#: `_svc_stop`'s bound on waiting for `_tick_lock` (finding 12, R3 audit,
+#: The Juggle action's `execute_callback` feedback publish rate (brief: "at
+#: <= 5 Hz") — one order below the 40 Hz tick, plenty for a human-readable
+#: throw_index/caught readout and no load on the action transport.
+_FEEDBACK_HZ = 5.0
+
+#: `_stop_attempt`'s bound on waiting for `_tick_lock` (finding 12, R3 audit,
 #: 2026-09-13): a tick mid-`_dispatch` can itself be blocked inside
 #: `_wait_future` on the install client, up to `_SERVICE_WAIT_S`, and
 #: `_prelevel`'s own `go_to_pose` round trip carries the same bound again if
@@ -213,7 +226,7 @@ _FRAME_CHECK_REST_TOL_MM = 1.0
 #: drops.
 _FRAME_CHECK_MIN_SAMPLES = 20
 
-#: `skills/start_columns` parameter defaults — the owner's R2 operating point
+#: the columns-pattern parameter defaults — the owner's R2 operating point
 #: (brief_common.md § 0, 2026-09-12): apex 0.9 m, separation 100 mm, dwell
 #: 0.30 s.
 _DEFAULT_APEX_M = 0.9
@@ -221,12 +234,12 @@ _DEFAULT_SEPARATION_MM = 100.0
 _DEFAULT_DWELL_S = 0.30
 _DEFAULT_N_THROWS = 4
 
-#: The columns schedule's first skill installs this long after `start_columns`
-#: is called — one second of margin for the operator's own dispatch latency,
+#: The columns schedule's first skill installs this long after a columns
+#: Juggle goal is accepted — one second of margin for the operator's own dispatch latency,
 #: not a physical constant of the pattern.
 _START_LEAD_S = 1.0
 
-#: `skills/start_self_toss` parameter defaults (R3 owner decisions,
+#: the self-toss-pattern parameter defaults (R3 owner decisions,
 #: brief_common.md § "Owner decisions"): one site, P1 = (-50, 0) mm — the SAME
 #: point `columns_sites(100.0)`'s P1 names, so a box swept for site pair
 #: ('P1', 'P1') at that xy (`config/generated/admissible_box.yaml`) matches
@@ -454,7 +467,7 @@ class SkillNode(Node):
         # rest-terminal, not event-free.
         self._pending_event_mono = 0.0
         # Guards `_pending_event_mono`'s check-and-clear only (never the hold
-        # round trip): `_svc_stop` calls `_maybe_hold_pending_event` OUTSIDE
+        # round trip): `_stop_attempt` calls `_maybe_hold_pending_event` OUTSIDE
         # `_tick_lock` while `_on_tick` may be inside it on another thread.
         self._pending_lock = threading.Lock()
         # Guards `_correlation`'s read-modify-write. `_on_balls` (the
@@ -464,8 +477,8 @@ class SkillNode(Node):
         # own latch — and a lost latch means the next flight is never
         # correlated at all. `_tracker` only reads the tuple and needs no lock.
         self._correlation_lock = threading.Lock()
-        # The latest `trajectory/status`, for `skills/start_self_toss`'s
-        # limits check (`_svc_start_self_toss`) and the R3 ladder's
+        # The latest `trajectory/status`, for the self-toss/hop Juggle goal's
+        # limits check (`_run_one_ball`) and the R3 ladder's
         # `levelled`/`in_trajectory_mode` fields (`_observations`, item 6).
         self._traj_status = TrajectoryStatus()
         # Perf-clock arrival stamps for the R3 ladder's freshness checks (item
@@ -543,6 +556,27 @@ class SkillNode(Node):
         self._reload_ctx = None
         self._reload_lock = threading.Lock()
 
+        # The Juggle action's own bookkeeping (R4 U5). `_goal_done_event` is
+        # set by `_on_tick` the instant nothing is left running for the goal
+        # in progress (`self._executor is None and self._reload_ctx is
+        # None` — NOT merely `self._executor is None`, which is also true
+        # mid-reload-wait between the bridge REST finishing and the real
+        # reload schedule swapping in; see `_reload_ctx`'s comment above);
+        # `_juggle_execute` waits on it instead of polling `self._executor`
+        # directly, so it can never observe the bridge-wait gap as "done".
+        # `_goal_end_code` is the last `SkillExecutor.end_code` the current
+        # goal's attempt set, captured the moment `_on_tick` nulls
+        # `self._executor` (the code is gone once that happens) — `''` means
+        # the attempt ran to its own natural end (COMPLETED, plan § 0's
+        # rest-terminal contract: nothing needs to "end" a schedule that
+        # simply ran out). `_goal_outcome_lines` accumulates the executor's
+        # own OUTCOME lines (`tick()`'s return) across the whole attempt, for
+        # the goal result's `per_throw`/`throws`/`caught`. All three are
+        # reset by `_start_pattern` at the start of every accepted goal.
+        self._goal_done_event = threading.Event()
+        self._goal_end_code = ''
+        self._goal_outcome_lines = []
+
         self.declare_parameter('apex_m', _DEFAULT_APEX_M)
         self.declare_parameter('separation_mm', _DEFAULT_SEPARATION_MM)
         self.declare_parameter('dwell_s', _DEFAULT_DWELL_S)
@@ -581,12 +615,6 @@ class SkillNode(Node):
         # re-aiming outright -- the A/B knob for a sitting: on 2026-09-18 16:16
         # 18 of 21 timing-only re-sends were refused LIMIT_JERK, each a solve.
         self.declare_parameter('catch_resend_max', 2)
-        # R4 reload (owner decision D4, brief step 1): branches
-        # `skills/start_self_toss`'s existing start path onto the reload
-        # choreography instead of an ordinary self-toss. A node parameter
-        # FOR NOW — Unit U5 routes the `Juggle` action goal's own reload
-        # flag onto this path instead of adding a second service.
-        self.declare_parameter('reload_first', False)
 
         # ── the install client + tick timer share ONE reentrant group ──────
         # Fixed 2026-09-13 (found by reading, never exercised live): `main`
@@ -614,7 +642,7 @@ class SkillNode(Node):
             InstallSegment, 'trajectory/install_segment',
             callback_group=self._cbgroup)
         # Shares the SAME reentrant group as the install client (item 7,
-        # `_prelevel`): `_svc_start_self_toss` runs on the node's default
+        # `_prelevel`): `_run_one_ball` runs on the node's default
         # (non-reentrant) service group and blocks in `_wait_future` waiting
         # for THIS client's response, exactly the shape `__init__`'s comment
         # above documents for the install client — a different group is what
@@ -624,14 +652,14 @@ class SkillNode(Node):
         # Shares the SAME reentrant group too (Unit A, R3 first sitting,
         # 2026-09-13): `_maybe_hold_pending_event` blocks in `_wait_future`
         # for THIS client's response, called from `_on_tick` (already on the
-        # group) and from `_svc_stop` (the default group) -- the response
+        # group) and from `_stop_attempt` (the default group) -- the response
         # still needs the MultiThreadedExecutor to process it concurrently.
         self._hold_cli = self.create_client(
             Trigger, 'trajectory/hold', callback_group=self._cbgroup)
         # R4 reload (brief step 1b): the SAME reason every other blocking
         # client on this node shares `self._cbgroup` (see the comment on
         # `_install_cli` above) — `_start_reload` blocks in `_wait_future`
-        # for both, from the `skills/start_self_toss` service's own default
+        # for both, from the self-toss/hop Juggle goal's own default
         # (non-reentrant) group.
         self._reload_cli = self.create_client(
             Trigger, 'bb/reload', callback_group=self._cbgroup)
@@ -645,7 +673,7 @@ class SkillNode(Node):
         # ── every subscription gets its OWN callback group (finding 4, R3
         # audit, 2026-09-13) ────────────────────────────────────────────────
         # All subscriptions used to share the node's default MutuallyExclusive
-        # group. `_svc_start_self_toss` blocks in `_prelevel` (a `go_to_pose`
+        # group. `_run_one_ball` blocks in `_prelevel` (a `go_to_pose`
         # round trip whose wait can run past a second) on the SERVICE's own
         # default group, and rclpy Foxy's executor yields ready timers before
         # subscriptions -- so while `_prelevel` blocks, no subscription
@@ -693,12 +721,25 @@ class SkillNode(Node):
             ThrowAnnouncement, 'throw_announcements', self._on_announcement,
             10, callback_group=self._sub_cbgroup)
 
-        self.create_service(Trigger, 'skills/start_columns',
-                            self._svc_start_columns)
-        self.create_service(Trigger, 'skills/start_self_toss',
-                            self._svc_start_self_toss)
-        self.create_service(Trigger, 'skills/stop', self._svc_stop)
         self.create_service(Trigger, 'skills/check', self._svc_check)
+
+        # The Juggle action's OWN callback group (R4 owner decision D3, U5):
+        # a goal accept (`_juggle_goal` -> `_start_pattern`) and an accepted
+        # goal's `_juggle_execute` both block in `_wait_future` round trips
+        # on the SAME clients the tick shares `self._cbgroup` with (see that
+        # group's own comment above) -- a SEPARATE reentrant group (not
+        # `self._cbgroup` itself) is what lets a goal accept still run --
+        # and reject a concurrent second goal -- while an already-accepted
+        # goal's execute callback is mid-wait on another thread. `main`'s
+        # `MultiThreadedExecutor` grew a 4th thread for it (see that
+        # function's comment).
+        self._juggle_cbgroup = ReentrantCallbackGroup()
+        self._juggle_action = ActionServer(
+            self, Juggle, 'jugglebot/juggle',
+            execute_callback=self._juggle_execute,
+            goal_callback=self._juggle_goal,
+            cancel_callback=self._juggle_cancel,
+            callback_group=self._juggle_cbgroup)
 
         self.create_timer(1.0 / _TICK_HZ, self._on_tick,
                           callback_group=self._cbgroup)
@@ -824,7 +865,7 @@ class SkillNode(Node):
         return r
 
     def _on_traj_status(self, msg) -> None:
-        """Cache the latest `trajectory/status` for `_svc_start_self_toss`'s
+        """Cache the latest `trajectory/status` for `_run_one_ball`'s
         limits check and the R3 ladder's `levelled`/`in_trajectory_mode`
         fields (`_observations`, item 6). Perf-stamped like every other
         freshness-gated cache in this node."""
@@ -1225,13 +1266,13 @@ class SkillNode(Node):
         last accepted install (a CATCH-with-throw) kept streaming -- the
         hand ran two more full strokes after END, the second at the
         session's own acceleration ceiling, and the guard latched.
-        ``_svc_stop``'s docstring says "whatever is streaming already ends
+        ``_stop_attempt``'s docstring says "whatever is streaming already ends
         at rest" -- true of every segment's TERMINAL, but a streaming
         segment can still carry a RELEASE ahead of it, and ending the
         attempt does nothing to that.
 
         Called from `_on_tick` (every tick while ``attempt_ended`` is True)
-        and from `_svc_stop` (an operator stop is a stop of the MACHINE,
+        and from `_stop_attempt` (an operator stop is a stop of the MACHINE,
         not only of dispatch) -- idempotent either way, because
         ``_pending_event_mono`` is cleared the moment a hold is attempted,
         so a later call with nothing left pending is a no-op.
@@ -1293,6 +1334,14 @@ class SkillNode(Node):
                 self._reload_ctx = None
                 timed_out = True
         if timed_out:
+            # The Juggle goal result (R4 U5): this IS the attempt's end —
+            # `_maybe_signal_goal_done` (called at the end of the SAME
+            # `_on_tick` invocation) will find `_executor` already `None`
+            # (the bridge REST finished ticks ago) and `_reload_ctx` now
+            # `None` too, and set `_goal_done_event`; `_juggle_execute` needs
+            # a code to report, which nothing else ever sets here (no
+            # `SkillExecutor` sees this timeout).
+            self._goal_end_code = 'ABORTED_NO_ANNOUNCEMENT'
             self.get_logger().error(
                 'reload ABORTED_NO_ANNOUNCEMENT: no ThrowAnnouncement from '
                 'ball_butler within the deadline -- BB\'s own countdown '
@@ -1327,24 +1376,52 @@ class SkillNode(Node):
         if not self._tick_lock.acquire(blocking=False):
             return
         try:
-            if self._executor is None:
-                return
-            now = self.get_clock().now().nanoseconds / 1e9
-            for line in self._executor.tick(now):
-                self.get_logger().info(line)
-            if self._executor.attempt_ended:
-                if (self._executor.end_code == ex.HAND_LANE_REFUSED
-                        and not self._hold_forced_code):
-                    # Armed once per attempt (the flag below), consumed by
-                    # `_maybe_hold_pending_event` on the same call.
-                    self._hold_forced_code = ex.HAND_LANE_REFUSED
-                    with self._pending_lock:
-                        self._force_hold = True
-                self._maybe_hold_pending_event(self._executor.end_code)
-            if self._executor.done:
-                self._executor = None
+            if self._executor is not None:
+                now = self.get_clock().now().nanoseconds / 1e9
+                for line in self._executor.tick(now):
+                    self.get_logger().info(line)
+                    # The Juggle goal result's `per_throw`/`throws`/`caught`
+                    # (R4 U5): every finalised release gets exactly one
+                    # OUTCOME line (`executor._finalise_outcome`).
+                    if 'OUTCOME' in line:
+                        self._goal_outcome_lines.append(line)
+                if self._executor.attempt_ended:
+                    if (self._executor.end_code == ex.HAND_LANE_REFUSED
+                            and not self._hold_forced_code):
+                        # Armed once per attempt (the flag below), consumed by
+                        # `_maybe_hold_pending_event` on the same call.
+                        self._hold_forced_code = ex.HAND_LANE_REFUSED
+                        with self._pending_lock:
+                            self._force_hold = True
+                    self._maybe_hold_pending_event(self._executor.end_code)
+                if self._executor.done:
+                    # Captured HERE (R4 U5) — `self._executor.end_code` is
+                    # gone the instant the line below runs, and
+                    # `_juggle_execute` reads `_goal_end_code` only after
+                    # `_goal_done_event` fires (`_maybe_signal_goal_done`).
+                    self._goal_end_code = (self._executor.end_code
+                                           if self._executor.attempt_ended
+                                           else '')
+                    self._executor = None
         finally:
             self._tick_lock.release()
+        self._maybe_signal_goal_done()
+
+    def _maybe_signal_goal_done(self) -> None:
+        """Set `_goal_done_event` the instant nothing is left running for the
+        Juggle goal in progress (R4 U5) — `self._executor is None and
+        self._reload_ctx is None`, NOT merely the former (see
+        `_goal_done_event`'s `__init__` comment: the latter is also true
+        mid-reload-wait, between the bridge REST finishing and the real
+        reload schedule swapping in). Called at the end of every `_on_tick`
+        that took the tick lock, so `_juggle_execute`'s wait can never miss
+        the transition — including the one `_check_reload_timeout` alone
+        causes (that function runs before the lock, in the SAME `_on_tick`
+        call this method ends)."""
+        with self._reload_lock:
+            idle = self._executor is None and self._reload_ctx is None
+        if idle:
+            self._goal_done_event.set()
 
     # ── attempt lifecycle ──────────────────────────────────────────────
 
@@ -1363,35 +1440,87 @@ class SkillNode(Node):
         if self._executor is None and not reloading:
             return None
         response.success = False
-        response.message = ('an attempt is already running — call '
-                            'skills/stop first')
+        response.message = ('an attempt is already running — cancel the '
+                            'jugglebot/juggle goal first')
         return response
 
-    def _svc_start_columns(self, request, response):
-        refused = self._refuse_if_running(response)
+    #: Pattern names the Juggle goal accepts — `schedule.Schedule.pattern`'s
+    #: own set (R4 owner decision D1).
+    _PATTERNS = ('self_toss', 'hop', 'columns')
+
+    def _start_pattern(self, goal) -> SimpleNamespace:
+        """The Juggle goal's shared no-motion refusal ladder + schedule
+        compile (R4 owner decision D3, U5): merges the R2/R3
+        the deleted columns-start and self-toss-start Trigger
+        services (deleted — one path, plan § 0) into one method, branching
+        only where the compilers differ. Called synchronously from the
+        action's ``goal_callback`` (``_juggle_goal``), never from
+        ``execute_callback`` — a refusal must reject the GOAL, not abort an
+        already-accepted one.
+
+        Returns ``SimpleNamespace(success, message)`` — the same shape the
+        deleted Trigger services returned, so every existing assertion on
+        ``.success``/``.message`` reads unchanged.
+        """
+        pattern = str(getattr(goal, 'pattern', ''))
+        if pattern not in self._PATTERNS:
+            return SimpleNamespace(
+                success=False,
+                message=('refused: pattern %r is not one of %s'
+                         % (pattern, self._PATTERNS)))
+        reload = bool(getattr(goal, 'reload', False))
+        if pattern == 'columns' and reload:
+            return SimpleNamespace(
+                success=False,
+                message=('columns refused: reload is not available for '
+                         'columns until R5 (owner decision D3, 2026-09-23)'))
+        refused = self._refuse_if_running(SimpleNamespace(success=None,
+                                                          message=None))
         if refused is not None:
             return refused
-        apex_m = float(self.get_parameter('apex_m').value)
-        separation_mm = float(self.get_parameter('separation_mm').value)
+
+        apex_m = (float(goal.apex_m) or float(self.get_parameter('apex_m').value))
+        separation_mm = (float(goal.separation_mm)
+                         or float(self.get_parameter('separation_mm').value))
         dwell_s = float(self.get_parameter('dwell_s').value)
-        n_throws = int(self.get_parameter('n_throws').value)
+        n_throws = (int(goal.num_cycles)
+                   or int(self.get_parameter('n_throws').value))
+
+        # Fresh bookkeeping for THIS goal (U5): the executor's OUTCOME lines
+        # accumulate here across the whole attempt (`_on_tick`), for the
+        # Juggle result's `per_throw`/`throws`/`caught`; `_goal_end_code` is
+        # captured the moment `_on_tick` nulls `self._executor` (see that
+        # field's `__init__` comment); the event gates `_juggle_execute`'s
+        # wait. Reset here, before anything moves, so a refusal below never
+        # touches a previous goal's still-unread result.
+        self._goal_outcome_lines = []
+        self._goal_end_code = ''
+        self._goal_done_event.clear()
+
+        if pattern == 'columns':
+            return self._run_columns(apex_m, separation_mm, dwell_s, n_throws)
+        return self._run_one_ball(pattern, apex_m, separation_mm, dwell_s,
+                                  n_throws, reload)
+
+    def _run_columns(self, apex_m: float, separation_mm: float,
+                     dwell_s: float, n_throws: int) -> SimpleNamespace:
+        """The ``columns`` branch of :meth:`_start_pattern` — the R2 body of
+        the deleted columns-start Trigger service, unchanged."""
         # Columns has no opening REST to home a displaced hand (R4) — refuse
         # BEFORE t0 is read and before anything moves (`_hand_home_error`).
         home_err = self._hand_home_error()
         if home_err:
-            response.success = False
-            response.message = 'columns refused: %s' % (home_err,)
-            self.get_logger().error(response.message)
-            return response
+            msg = 'columns refused: %s' % (home_err,)
+            self.get_logger().error(msg)
+            return SimpleNamespace(success=False, message=msg)
         # Session-start mocap-vs-commanded frame check (plan
         # `cup-contact-contract.md` § 1) — read-only, before t0 is read and
         # before anything moves, beside `_hand_home_error` above.
         frame_err = self._frame_check_error()
         if frame_err:
-            response.success = False
-            response.message = 'columns refused: %s' % (frame_err,)
-            self.get_logger().error(response.message)
-            return response
+            msg = 'columns refused: %s' % (frame_err,)
+            self.get_logger().error(msg)
+            return SimpleNamespace(success=False, message=msg)
         t0 = self.get_clock().now().nanoseconds / 1e9 + _START_LEAD_S
         try:
             sites = columns_sites(separation_mm)
@@ -1399,10 +1528,9 @@ class SkillNode(Node):
                              n_throws=n_throws)
             schedule = compile_columns(pattern, t0)
         except ValueError as exc:
-            response.success = False
-            response.message = 'columns schedule refused: %s' % (exc,)
-            self.get_logger().error(response.message)
-            return response
+            msg = 'columns schedule refused: %s' % (exc,)
+            self.get_logger().error(msg)
+            return SimpleNamespace(success=False, message=msg)
         # A new schedule reuses small ball ids: drop any flight latch an
         # earlier (possibly early-ended) attempt left for them, so a catch
         # with no in-schedule release can never read a previous attempt's
@@ -1421,11 +1549,10 @@ class SkillNode(Node):
             catch_aim_source=self._catch_aim_source(),
             resend_max_per_catch=self._catch_resend_max(),
             launch_ratio=self._launch_ratio)
-        response.success = True
-        response.message = ('columns schedule compiled: %d skills, %d throws, '
-                            't0=%.3f' % (len(schedule.skills), n_throws, t0))
-        self.get_logger().info(response.message)
-        return response
+        msg = ('columns schedule compiled: %d skills, %d throws, t0=%.3f'
+              % (len(schedule.skills), n_throws, t0))
+        self.get_logger().info(msg)
+        return SimpleNamespace(success=True, message=msg)
 
     def _live_limits(self):
         """The session limits `admissible.check_limits` judges the loaded box
@@ -1529,9 +1656,9 @@ class SkillNode(Node):
         if abs(rev - REST_HAND_REV) > HOME_BAND_REV:
             return ('the hand is at %+.4f rev, %.3f rev from the schedule home '
                     '(%+.4f rev, outside the %.2f rev band) and the columns '
-                    'schedule has no opening REST to home it (R4) — run '
-                    'skills/start_self_toss, whose opening REST homes the hand, '
-                    'or DEACTIVATE → ACTIVATE and re-level'
+                    'schedule has no opening REST to home it (R4) — run a '
+                    'Juggle goal with pattern self_toss or hop, whose opening '
+                    'REST homes the hand, or DEACTIVATE → ACTIVATE and re-level'
                     % (rev, abs(rev - REST_HAND_REV), REST_HAND_REV,
                        HOME_BAND_REV))
         return ''
@@ -1651,110 +1778,118 @@ class SkillNode(Node):
             time.sleep(min(1.0 / _TICK_HZ, max(0.0, end_at - time.perf_counter())))
         return ''
 
-    def _svc_start_self_toss(self, request, response):
-        """``skills/start_self_toss``: the R3 single-site self-toss (plan §
-        0 / R3 build note) — THROW(P1) -> CATCH(P1) -> ... -> REST, the
-        learner on, memory at ``temp/learn/<plant_id>/memory.csv``.
+    def _run_one_ball(self, kind: str, apex_m: float, separation_mm: float,
+                      dwell_s: float, n_throws: int,
+                      reload: bool) -> SimpleNamespace:
+        """The ``self_toss``/``hop`` branch of :meth:`_start_pattern` (R4,
+        generalises the deleted self-toss-start Trigger service to
+        ``kind in ('self_toss', 'hop')`` — one site for ``self_toss``, the
+        two :func:`~jugglebot.motion.skills.sites.columns_sites` sites for
+        ``hop``, same compiler either way
+        (:func:`~jugglebot.motion.skills.schedule.compile_one_ball`)):
+        THROW -> CATCH -> ... -> REST, the learner on, memory at
+        ``temp/learn/<plant_id>/memory.csv``.
 
         Order: refuse fast on anything that does not need the platform to
         move (running / repo root / pattern / box+limits) BEFORE
-        `_prelevel` (item 7) moves anything, then
-        compile the schedule —
+        `_prelevel` (item 7) moves anything, then compile the schedule —
         pre-levelling is the last check before compilation, per the R3
         carried note ("a healthy launch rests the cup at the gravity-level
         counter-tilt").
         """
-        refused = self._refuse_if_running(response)
-        if refused is not None:
-            return refused
         if _ADMISSIBLE_BOX_PATH is None:
-            response.success = False
-            response.message = ('cannot find the repo root from %r — the '
-                                'admissible box / memory paths cannot be '
-                                'resolved' % (__file__,))
-            self.get_logger().error(response.message)
-            return response
+            msg = ('cannot find the repo root from %r — the admissible box '
+                  '/ memory paths cannot be resolved' % (__file__,))
+            self.get_logger().error(msg)
+            return SimpleNamespace(success=False, message=msg)
 
-        site_x_mm = float(self.get_parameter('site_x_mm').value)
-        site_y_mm = float(self.get_parameter('site_y_mm').value)
-        apex_m = float(self.get_parameter('apex_m').value)
-        dwell_s = float(self.get_parameter('dwell_s').value)
-        n_throws = int(self.get_parameter('n_throws').value)
         plant_id = str(self.get_parameter('plant_id').value)
 
-        # Finding 5, R3 audit (2026-09-13): `skills/start_self_toss` always
-        # names the site 'P1', but the ADMISSIBLE BOX it was swept against
-        # (`_ADMISSIBLE_BOX_PATH`, keyed on `(site.name, target.name)`) carries
-        # no site xy at all — a box swept at the default (-50, 0) mm site is
-        # silently applied to whatever xy the caller passes. Refuse before
-        # anything else (no platform motion, no box/pattern object built yet)
-        # rather than let an off-box site reach `_command_u`'s clip with the
-        # wrong box.
-        if (abs(site_x_mm - _DEFAULT_SITE_X_MM) > 1e-9
-                or abs(site_y_mm - _DEFAULT_SITE_Y_MM) > 1e-9):
-            response.success = False
-            response.message = (
-                'self-toss refused: site (%.3f, %.3f) mm != the swept '
-                'default (%.3f, %.3f) mm — the admissible box carries no '
-                'site xy, so a box swept at the default site cannot be '
-                'applied here' % (site_x_mm, site_y_mm, _DEFAULT_SITE_X_MM,
-                                  _DEFAULT_SITE_Y_MM))
-            self.get_logger().error(response.message)
-            return response
+        if kind == 'self_toss':
+            site_x_mm = float(self.get_parameter('site_x_mm').value)
+            site_y_mm = float(self.get_parameter('site_y_mm').value)
+            # Finding 5, R3 audit (2026-09-13): the self-toss goal always
+            # names the site 'P1', but the ADMISSIBLE BOX it was swept
+            # against (`_ADMISSIBLE_BOX_PATH`, keyed on `(site.name,
+            # target.name)`) carries no site xy at all — a box swept at the
+            # default (-50, 0) mm site is silently applied to whatever xy
+            # the caller passes. Refuse before anything else (no platform
+            # motion, no box/pattern object built yet) rather than let an
+            # off-box site reach `_command_u`'s clip with the wrong box.
+            if (abs(site_x_mm - _DEFAULT_SITE_X_MM) > 1e-9
+                    or abs(site_y_mm - _DEFAULT_SITE_Y_MM) > 1e-9):
+                msg = (
+                    'self-toss refused: site (%.3f, %.3f) mm != the swept '
+                    'default (%.3f, %.3f) mm — the admissible box carries no '
+                    'site xy, so a box swept at the default site cannot be '
+                    'applied here' % (site_x_mm, site_y_mm, _DEFAULT_SITE_X_MM,
+                                      _DEFAULT_SITE_Y_MM))
+                self.get_logger().error(msg)
+                return SimpleNamespace(success=False, message=msg)
+            sites = (Site(_DEFAULT_SITE_NAME,
+                          np.array([site_x_mm, site_y_mm, CATCH_CUP_Z_MM])),)
+        else:  # 'hop'
+            sites = columns_sites(separation_mm)
 
-        site = Site(_DEFAULT_SITE_NAME,
-                   np.array([site_x_mm, site_y_mm, CATCH_CUP_Z_MM]))
         try:
-            pattern = OneBallPattern(sites=(site,), apex_m=apex_m,
+            pattern = OneBallPattern(sites=sites, apex_m=apex_m,
                                      dwell_s=dwell_s, n_throws=n_throws)
         except ValueError as exc:
-            response.success = False
-            response.message = 'self-toss pattern refused: %s' % (exc,)
-            self.get_logger().error(response.message)
-            return response
+            msg = '%s pattern refused: %s' % (kind, exc)
+            self.get_logger().error(msg)
+            return SimpleNamespace(success=False, message=msg)
 
         try:
             boxes = adm.load(_ADMISSIBLE_BOX_PATH)
             adm.check_limits(boxes, self._live_limits())
         except adm.AdmissibleError as exc:
-            response.success = False
-            response.message = 'admissible box refused: %s' % (exc,)
-            self.get_logger().error(response.message)
-            return response
+            msg = 'admissible box refused: %s' % (exc,)
+            self.get_logger().error(msg)
+            return SimpleNamespace(success=False, message=msg)
         # No box covers the requested apex -> refuse BEFORE any motion
         # (before `_prelevel`), rather than let `_command_u` discover this
         # only once the learner is already asking for a command (the latent
         # defect this closes: a box swept for one apex silently reused at
-        # another).
-        pair = (site.name, site.name)
-        site_xy = (float(site.cup_mm[0]), float(site.cup_mm[1]))
-        if adm.select(boxes, 'self_toss', pair, apex_m,
-                     release_site_xy_mm=site_xy, target_site_xy_mm=site_xy) is None:
-            bands = sorted(b.apex_band_m for b in boxes
-                           if b.pattern == 'self_toss' and b.site_pair == pair)
-            bands_str = (', '.join('%.3f-%.3f m' % (lo, hi) for lo, hi in bands)
-                        if bands else 'none swept for this pair')
-            response.success = False
-            response.message = (
-                'self-toss refused: no admissible box covers site pair %r '
-                'at apex %.3f m (bands swept for this pair: %s)'
-                % (pair, apex_m, bands_str))
-            self.get_logger().error(response.message)
-            return response
+        # another). One pair for self_toss (P1,P1); two for hop (each
+        # direction the ball actually crosses, `compile_one_ball`'s own
+        # release/target rule — `sites[i % n]` -> `sites[(i+1) % n]`).
+        n_sites = len(sites)
+        pairs = sorted({(sites[i % n_sites].name, sites[(i + 1) % n_sites].name)
+                       for i in range(n_sites)})
+        by_name = {s.name: s for s in sites}
+        missing = []
+        for pair in pairs:
+            release_xy = (float(by_name[pair[0]].cup_mm[0]),
+                         float(by_name[pair[0]].cup_mm[1]))
+            target_xy = (float(by_name[pair[1]].cup_mm[0]),
+                        float(by_name[pair[1]].cup_mm[1]))
+            if adm.select(boxes, kind, pair, apex_m,
+                         release_site_xy_mm=release_xy,
+                         target_site_xy_mm=target_xy) is None:
+                bands = sorted(b.apex_band_m for b in boxes
+                               if b.pattern == kind and b.site_pair == pair)
+                bands_str = (', '.join('%.3f-%.3f m' % (lo, hi)
+                                       for lo, hi in bands)
+                            if bands else 'none swept for this pair')
+                missing.append('%r (bands: %s)' % (pair, bands_str))
+        if missing:
+            msg = ('%s refused: no admissible box covers site pair(s) %s at '
+                  'apex %.3f m' % (kind, '; '.join(missing), apex_m))
+            self.get_logger().error(msg)
+            return SimpleNamespace(success=False, message=msg)
 
         # Finding 11, R3 audit (2026-09-13): built here, before `_prelevel`
         # actually moves the platform, and guarded — `memory_path` raises
         # `ValueError` on a bad `plant_id`, and `Memory(...)` can raise
         # `OSError` (unreadable file) or `csv.Error` (malformed rows); left
-        # uncaught in a service callback either kills the node AFTER the
-        # platform has already moved.
+        # uncaught in a goal accept either kills the node AFTER the platform
+        # has already moved.
         try:
             memory = Memory(memory_path(_REPO_ROOT, plant_id))
         except (ValueError, OSError, csv.Error) as exc:
-            response.success = False
-            response.message = 'memory refused: %s' % (exc,)
-            self.get_logger().error(response.message)
-            return response
+            msg = 'memory refused: %s' % (exc,)
+            self.get_logger().error(msg)
+            return SimpleNamespace(success=False, message=msg)
 
         # The opening REST HOMES THE HAND, over a period sized to the hand's
         # measured displacement (`_opening_rest_period`). Read here, after
@@ -1766,10 +1901,9 @@ class SkillNode(Node):
         # still the hand's position when the schedule streams.
         lift_s, lift_err = self._opening_rest_period()
         if lift_err:
-            response.success = False
-            response.message = 'self-toss refused: %s' % (lift_err,)
-            self.get_logger().error(response.message)
-            return response
+            msg = '%s refused: %s' % (kind, lift_err)
+            self.get_logger().error(msg)
+            return SimpleNamespace(success=False, message=msg)
         pattern = dataclasses.replace(pattern, floor_lift_s=lift_s)
 
         # Session-start mocap-vs-commanded frame check (plan
@@ -1777,28 +1911,27 @@ class SkillNode(Node):
         # (park-analogue) check above and before `_prelevel` moves anything.
         frame_err = self._frame_check_error()
         if frame_err:
-            response.success = False
-            response.message = 'self-toss refused: %s' % (frame_err,)
-            self.get_logger().error(response.message)
-            return response
+            msg = '%s refused: %s' % (kind, frame_err)
+            self.get_logger().error(msg)
+            return SimpleNamespace(success=False, message=msg)
 
         prelevel_err = self._prelevel()
         if prelevel_err:
-            response.success = False
-            response.message = 'self-toss refused: %s' % (prelevel_err,)
-            self.get_logger().error(response.message)
-            return response
+            msg = '%s refused: %s' % (kind, prelevel_err)
+            self.get_logger().error(msg)
+            return SimpleNamespace(success=False, message=msg)
 
         # R4 reload (owner decision D4, brief step 1): everything above is
-        # shared with the ordinary self-toss (same site/pattern, same box +
-        # memory) — only how the schedule gets COMPILED differs, because the
-        # reload's real schedule cannot be built until Ball Butler's
-        # announcement supplies the receive tilt. `reload_first` is read
-        # here, not at the top, so a bad value never short-circuits any of
-        # the refusals above it.
-        if bool(self.get_parameter('reload_first').value):
-            return self._start_reload(response, site=site, pattern=pattern,
-                                      boxes=boxes, memory=memory)
+        # shared with the ordinary self-toss/hop (same site(s)/pattern, same
+        # box + memory) — only how the schedule gets COMPILED differs,
+        # because the reload's real schedule cannot be built until Ball
+        # Butler's announcement supplies the receive tilt. `reload` is the
+        # Juggle goal's own flag (the deleted per-node reload parameter it replaced is
+        # deleted — one path, plan § 0).
+        if reload:
+            return self._start_reload(
+                SimpleNamespace(success=None, message=None), site=sites[0],
+                pattern=pattern, boxes=boxes, memory=memory)
 
         now = self.get_clock().now().nanoseconds / 1e9
         try:
@@ -1815,10 +1948,9 @@ class SkillNode(Node):
             t0 = now + max(deficit, 0.0) + (1.0 / _TICK_HZ)
             schedule = compile_one_ball(pattern, t0)
         except ValueError as exc:
-            response.success = False
-            response.message = 'self-toss schedule refused: %s' % (exc,)
-            self.get_logger().error(response.message)
-            return response
+            msg = '%s schedule refused: %s' % (kind, exc)
+            self.get_logger().error(msg)
+            return SimpleNamespace(success=False, message=msg)
 
         learner_cfg = lr.LearnerConfig()
         learner = SimpleNamespace(
@@ -1847,13 +1979,12 @@ class SkillNode(Node):
                 'learner_lateral_authority_mm').value) / 1000.0,
             observer=self._ball_evidence, observations=self._observations,
             on_experience=self._bind_on_experience(memory))
-        response.success = True
-        response.message = (
-            'self-toss schedule compiled: %d skills, %d throws, plant_id=%r, '
+        msg = (
+            '%s schedule compiled: %d skills, %d throws, plant_id=%r, '
             'memory rows=%d, t0=%.3f'
-            % (len(schedule.skills), n_throws, plant_id, len(memory), t0))
-        self.get_logger().info(response.message)
-        return response
+            % (kind, len(schedule.skills), n_throws, plant_id, len(memory), t0))
+        self.get_logger().info(msg)
+        return SimpleNamespace(success=True, message=msg)
 
     def _start_reload(self, response, *, site: Site, pattern: OneBallPattern,
                       boxes, memory: Memory):
@@ -1868,7 +1999,7 @@ class SkillNode(Node):
         that can happen); `_on_tick`'s timeout branch fails closed
         (`ABORTED_NO_ANNOUNCEMENT`) if it never does.
 
-        Called only from `_svc_start_self_toss`, after every no-motion
+        Called only from `_run_one_ball`, after every no-motion
         refusal, the box/memory build and `_prelevel` — see that method's
         R4 branch. ``site``/``pattern``/``boxes``/``memory`` are exactly
         what the ordinary self-toss path would compile with; the reload's
@@ -2052,7 +2183,7 @@ class SkillNode(Node):
         # The SkillExecutor SWAP (brief step 1c): the bridge's own executor
         # is done by now in every ordinary case (its one REST dispatched
         # ticks ago) — this still takes `_tick_lock` first, same reason
-        # `_svc_stop` does (finding 12, R3 audit): a tick mid-dispatch on
+        # `_stop_attempt` does (finding 12, R3 audit): a tick mid-dispatch on
         # another thread must not read `_executor` half-swapped.
         got_lock = self._tick_lock.acquire(timeout=_STOP_LOCK_WAIT_S)
         if not got_lock:
@@ -2103,14 +2234,18 @@ class SkillNode(Node):
                 % (exp.x.tolist(), exp.u.tolist(), exp.y.tolist(), exp.caught))
         return _on_experience
 
-    def _svc_stop(self, request, response):
-        """End the current attempt. Every segment is rest-terminal, so
-        whatever is streaming already ends at rest — but rest-terminal is
-        not event-free: a streaming segment can still carry a RELEASE ahead
-        of it (a THROW, or a CATCH-with-throw), and ending the attempt does
-        nothing to that on its own. `_maybe_hold_pending_event` (Unit A)
-        installs one `trajectory/hold` when that is the case; otherwise this
-        issues no motion command of its own.
+    def _stop_attempt(self) -> str:
+        """End the current attempt (the deleted stop-service Trigger
+        service's body, unchanged — R4 U5 now reaches it from the Juggle
+        action's ``cancel_callback``/``execute_callback`` pair,
+        ``_juggle_cancel``/``_juggle_execute``, instead of a service
+        handler). Every segment is rest-terminal, so whatever is streaming
+        already ends at rest — but rest-terminal is not event-free: a
+        streaming segment can still carry a RELEASE ahead of it (a THROW, or
+        a CATCH-with-throw), and ending the attempt does nothing to that on
+        its own. `_maybe_hold_pending_event` (Unit A) installs one
+        `trajectory/hold` when that is the case; otherwise this issues no
+        motion command of its own.
 
         Does NOT discard the executor: a released ball's outcome can still
         be finalising after the attempt ends (plan § 2.7, "outcomes keep
@@ -2125,29 +2260,35 @@ class SkillNode(Node):
 
         Takes `_tick_lock` first (finding 12, R3 audit, 2026-09-13, bounded
         by `_STOP_LOCK_WAIT_S`): without it, this can race a tick mid-
-        `_dispatch` on the timer thread — `_svc_stop` sets `attempt_ended` /
-        `end_code` from the service thread while `_on_tick` may be about to
+        `_dispatch` on the timer thread — this method sets `attempt_ended` /
+        `end_code` from the action's thread while `_on_tick` may be about to
         overwrite them with a dispatch's own refusal code, or STOPPED may
         itself overwrite a genuine abort the same tick produced a moment
         earlier. A failure to acquire within the bound is logged and the stop
         proceeds anyway — a stop that never lands is worse than one that
-        loses this one race."""
+        loses this one race.
+
+        Returns ``SimpleNamespace(success=True, message=...)`` — the same
+        shape the deleted Trigger service returned (always a "success" in
+        that sense — a stop can be a no-op, but it never fails), so every
+        existing assertion on ``.success``/``.message`` reads unchanged."""
         got_lock = self._tick_lock.acquire(timeout=_STOP_LOCK_WAIT_S)
         if not got_lock:
             self.get_logger().warning(
-                'skills/stop: could not acquire the tick lock within %.1f s '
+                'cancel: could not acquire the tick lock within %.1f s '
                 '— proceeding without it' % _STOP_LOCK_WAIT_S)
         ended_now = False
+        message = ''
         try:
             if self._executor is not None:
                 if not self._executor.attempt_ended:
                     self._executor.attempt_ended = True
                     self._executor.end_code = 'STOPPED'
                     ended_now = True
-                    response.message = (
+                    message = (
                         'attempt stopped — the rest tail is already streaming')
                 else:
-                    response.message = (
+                    message = (
                         'attempt already ended (end_code=%r) — stop is a '
                         'no-op' % self._executor.end_code)
             else:
@@ -2163,7 +2304,7 @@ class SkillNode(Node):
                 with self._reload_lock:
                     was_reloading = self._reload_ctx is not None
                     self._reload_ctx = None
-                response.message = (
+                message = (
                     'reload wait cancelled -- BB\'s own countdown cannot be '
                     'aborted and the ball may still come; the platform is '
                     'at rest under the aim point' if was_reloading else
@@ -2177,9 +2318,82 @@ class SkillNode(Node):
             # abort, called here outside the tick lock so a blocked
             # `trajectory/hold` round trip cannot stall ticking.
             self._maybe_hold_pending_event('STOPPED')
-        response.success = True
-        self.get_logger().info(response.message)
-        return response
+        self.get_logger().info(message)
+        return SimpleNamespace(success=True, message=message)
+
+    # ── the Juggle action (R4 owner decision D3, U5) ────────────────────
+
+    def _juggle_goal(self, goal_request):
+        """``goal_callback``: accept iff `_start_pattern` compiles a
+        schedule — the SAME no-motion refusal ladder the deleted
+        the deleted columns-start/self-toss-start Trigger services
+        ran. Runs on `_juggle_cbgroup`, not the tick/install pair's
+        `_cbgroup`, so a second goal is rejected promptly even while a first
+        goal's `_juggle_execute` is mid-wait on another thread."""
+        result = self._start_pattern(goal_request)
+        if not result.success:
+            self.get_logger().error('jugglebot/juggle REJECTED: %s'
+                                    % (result.message,))
+            return GoalResponse.REJECT
+        self.get_logger().info('jugglebot/juggle ACCEPTED: %s'
+                               % (result.message,))
+        return GoalResponse.ACCEPT
+
+    def _juggle_cancel(self, goal_handle):
+        """``cancel_callback``: always ACCEPTs — an operator cancel must
+        always be able to end the running attempt (mirrors the deleted
+        the deleted stop service's unconditional ``response.success = True``).
+        Mirrors `reload_coordinator_node._cancel_callback`'s split: this
+        callback only decides accept/reject; `_juggle_execute`'s wait loop
+        is what actually calls `_stop_attempt` once it observes
+        ``goal_handle.is_cancel_requested``."""
+        return CancelResponse.ACCEPT
+
+    def _juggle_execute(self, goal_handle):
+        """``execute_callback``: wait for the attempt `_juggle_goal` already
+        started (through `_start_pattern`) to finish, publishing feedback at
+        <= `_FEEDBACK_HZ`, and return the `Juggle.Result`.
+
+        Does NOT tick — the 40 Hz timer (`_on_tick`, `_cbgroup`) is the only
+        dispatcher; this callback only waits on `_goal_done_event` (set by
+        `_on_tick`'s `_maybe_signal_goal_done` the instant the attempt is
+        truly idle — see that method's docstring for why "truly idle" is
+        not just "`_executor is None`"). A cancel calls `_stop_attempt` (the
+        deleted stop-service body) and then keeps waiting on the SAME
+        event — a cancel does not itself end the attempt this tick (every
+        segment is rest-terminal, `_stop_attempt`'s own docstring), it only
+        starts the rest tail that will.
+        """
+        result = Juggle.Result()
+        feedback = Juggle.Feedback()
+        cancelled = False
+        period_s = 1.0 / _FEEDBACK_HZ
+        while not self._goal_done_event.wait(timeout=period_s):
+            if goal_handle.is_cancel_requested and not cancelled:
+                cancelled = True
+                self._stop_attempt()
+            if not rclpy.ok():
+                break
+            feedback.phase = 'RUNNING'
+            feedback.throw_index = len(self._goal_outcome_lines)
+            feedback.caught = sum(1 for line in self._goal_outcome_lines
+                                  if 'caught=True' in line)
+            goal_handle.publish_feedback(feedback)
+        end_code = self._goal_end_code
+        outcome = 'STOPPED' if end_code == 'STOPPED' else (end_code or 'COMPLETED')
+        result.outcome = outcome
+        result.success = bool(outcome == 'COMPLETED')
+        result.throws = len(self._goal_outcome_lines)
+        result.caught = sum(1 for line in self._goal_outcome_lines
+                            if 'caught=True' in line)
+        result.per_throw = list(self._goal_outcome_lines)
+        if cancelled:
+            goal_handle.canceled()
+        elif result.success:
+            goal_handle.succeed()
+        else:
+            goal_handle.abort()
+        return result
 
     def _svc_check(self, request, response):
         """``skills/check`` (item 8): every current R3 precondition-ladder
@@ -2224,8 +2438,8 @@ class SkillNode(Node):
                self._hand_pos_cmd, floor_lift_s(self._hand_pos_meas)))
         # Session-start mocap-vs-commanded frame check (plan
         # `cup-contact-contract.md` § 1), same string and the same
-        # fail-closed semantics as the start paths (`_svc_start_columns`'s
-        # `_hand_home_error`-adjacent check, `_svc_start_self_toss`'s
+        # fail-closed semantics as the start paths (`_run_columns`'s
+        # `_hand_home_error`-adjacent check, `_run_one_ball`'s
         # `_opening_rest_period`-adjacent one): a refusal the operator would
         # meet at `start_*` must be reported by the dry-run path too (UH-3,
         # 2026-09-06 — "make gates report every refusal at once"), not
@@ -2320,7 +2534,16 @@ def main(args=None):
     # __init__`'s `_sub_cbgroup`): with only two threads, both could be
     # occupied by the reentrant install-client/tick pair while a blocked
     # service call (`_prelevel`) starves every subscription callback.
-    executor = MultiThreadedExecutor(num_threads=3)
+    # A fourth (R4 owner decision D3, U5) is for the Juggle action's OWN
+    # `_juggle_cbgroup`: `_juggle_goal` (a goal accept) and `_juggle_execute`
+    # (an accepted goal's wait/feedback loop) both need to run concurrently
+    # with each other (a second goal must be rejectable while the first is
+    # still executing) AND with the tick — without a fourth thread the three
+    # existing threads could all be occupied (tick, a blocked install
+    # response, a blocked subscription) while `_juggle_goal` waits for one to
+    # free up, which would delay every goal accept behind whatever the other
+    # three threads are doing.
+    executor = MultiThreadedExecutor(num_threads=4)
     executor.add_node(node)
     try:
         executor.spin()

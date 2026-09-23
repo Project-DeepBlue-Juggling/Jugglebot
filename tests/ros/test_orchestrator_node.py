@@ -31,6 +31,7 @@ from tests.ros.conftest import (
     MockActionClient,
 )
 from std_srvs.srv import Trigger
+from jugglebot_interfaces.srv import SetString
 
 
 @pytest.fixture
@@ -1005,54 +1006,101 @@ class TestGuardLatch:
             assert traj._guard_frozen is True
 
 
-class TestReloadRelay:
-    """The GUI reaches the jugglebot/reload ACTION only through this Trigger
-    relay (rosbridge on Foxy has no action transport). The relay dispatches ONE
-    Reload goal fire-and-forget with fixed values; the reload coordinator owns
-    preconditions + the outcome. See orchestrator_node._svc_reload_request."""
+def _set_string_req(data):
+    """A `SetString.Request` with `.data` set — the mock's `Request.__init__`
+    takes no kwargs (`tests/ros/conftest.py::_make_service`), unlike the real
+    rosidl-generated one."""
+    req = SetString.Request()
+    req.data = data
+    return req
 
-    def test_reload_request_service_registered_as_trigger(self, orch):
-        assert 'jugglebot/reload_request' in orch._services
-        assert orch._services['jugglebot/reload_request'].srv_type is Trigger
 
-    def test_reload_action_client_created(self, orch):
-        # Relays to the ACTION named jugglebot/reload (NOT the request service).
-        assert 'jugglebot/reload' in orch._action_clients
+class TestJuggleRelay:
+    """The GUI reaches the jugglebot/juggle ACTION only through this
+    SetString relay (rosbridge on Foxy has no action transport) — R4 owner
+    decision D3, replaces the retired GUI reload-relay service). The
+    relay dispatches ONE Juggle goal fire-and-forget, parsed from
+    ``<pattern>[,reload]``; skill_node owns preconditions + the outcome. See
+    orchestrator_node._svc_juggle_request / _svc_juggle_stop."""
+
+    def test_juggle_request_service_registered_as_setstring(self, orch):
+        assert 'jugglebot/juggle_request' in orch._services
+        assert orch._services['jugglebot/juggle_request'].srv_type is SetString
+
+    def test_juggle_stop_service_registered_as_trigger(self, orch):
+        assert 'jugglebot/juggle_stop' in orch._services
+        assert orch._services['jugglebot/juggle_stop'].srv_type is Trigger
+
+    def test_juggle_action_client_created(self, orch):
+        # Relays to the ACTION named jugglebot/juggle (NOT the request service).
+        assert 'jugglebot/juggle' in orch._action_clients
 
     def test_dispatch_acks_when_server_ready(self, orch):
-        orch._reload_client._server_ready = True
-        res = orch._svc_reload_request(Trigger.Request(), Trigger.Response())
+        orch._juggle_client._server_ready = True
+        res = orch._svc_juggle_request(_set_string_req('hop'),
+                                       SetString.Response())
         assert res.success is True
         assert 'dispatch' in res.message.lower()
 
     def test_dispatch_fails_when_server_not_ready(self, orch):
-        orch._reload_client._server_ready = False
-        res = orch._svc_reload_request(Trigger.Request(), Trigger.Response())
+        orch._juggle_client._server_ready = False
+        res = orch._svc_juggle_request(_set_string_req('hop'),
+                                       SetString.Response())
         assert res.success is False
         assert 'unavailable' in res.message.lower()
 
-    def test_goal_carries_fixed_params(self, orch):
-        """throw_delay_s 3.0, catch_vel_scale 0.0 (0 => coordinator default; the
-        numeric default is NEVER encoded here or in the GUI)."""
+    def test_goal_carries_the_parsed_pattern_and_zero_sentinels(self, orch):
+        """apex_m/separation_mm/num_cycles 0 (0 => skill_node's own launch
+        default; the numeric default is NEVER encoded here or in the GUI),
+        reload False when the request carries no ``,reload`` suffix."""
         captured = {}
 
         def _spy_send(goal):
             captured['goal'] = goal
             return MockFuture()
 
-        orch._reload_client._server_ready = True
-        orch._reload_client.send_goal_async = _spy_send
-        orch._svc_reload_request(Trigger.Request(), Trigger.Response())
+        orch._juggle_client._server_ready = True
+        orch._juggle_client.send_goal_async = _spy_send
+        orch._svc_juggle_request(_set_string_req('columns'),
+                                 SetString.Response())
         goal = captured['goal']
-        assert goal.throw_delay_s == 3.0
-        assert goal.catch_vel_scale == 0.0
+        assert goal.pattern == 'columns'
+        assert goal.apex_m == 0.0
+        assert goal.separation_mm == 0.0
+        assert goal.num_cycles == 0
+        assert goal.reload is False
+
+    def test_goal_carries_the_reload_flag(self, orch):
+        captured = {}
+
+        def _spy_send(goal):
+            captured['goal'] = goal
+            return MockFuture()
+
+        orch._juggle_client._server_ready = True
+        orch._juggle_client.send_goal_async = _spy_send
+        orch._svc_juggle_request(_set_string_req('self_toss,reload'),
+                                 SetString.Response())
+        goal = captured['goal']
+        assert goal.pattern == 'self_toss'
+        assert goal.reload is True
+
+    def test_an_empty_pattern_is_refused_without_dispatching(self, orch):
+        sent = []
+        orch._juggle_client._server_ready = True
+        orch._juggle_client.send_goal_async = lambda goal: sent.append(goal)
+        res = orch._svc_juggle_request(_set_string_req(''),
+                                       SetString.Response())
+        assert res.success is False
+        assert sent == []
 
     def test_not_ready_dispatches_nothing(self, orch):
-        """A not-ready server must not send a goal (no half-fired reload)."""
+        """A not-ready server must not send a goal (no half-fired attempt)."""
         sent = []
-        orch._reload_client._server_ready = False
-        orch._reload_client.send_goal_async = lambda goal: sent.append(goal)
-        orch._svc_reload_request(Trigger.Request(), Trigger.Response())
+        orch._juggle_client._server_ready = False
+        orch._juggle_client.send_goal_async = lambda goal: sent.append(goal)
+        orch._svc_juggle_request(_set_string_req('hop'),
+                                 SetString.Response())
         assert sent == []
 
     def test_goal_response_rejected_is_safe(self, orch):
@@ -1060,43 +1108,61 @@ class TestReloadRelay:
         goal_handle = MagicMock()
         goal_handle.accepted = False
         goal_future.set_result(goal_handle)
-        orch._on_reload_goal_response(goal_future)   # must not raise
+        orch._on_juggle_goal_response(goal_future)   # must not raise
         goal_handle.get_result_async.assert_not_called()
+        assert orch._juggle_goal_handle is None
 
-    def test_goal_response_accepted_chains_result(self, orch):
+    def test_goal_response_accepted_chains_result_and_latches_the_handle(self, orch):
         goal_future = MockFuture()
         goal_handle = MagicMock()
         goal_handle.accepted = True
         goal_handle.get_result_async.return_value = MockFuture()
         goal_future.set_result(goal_handle)
-        orch._on_reload_goal_response(goal_future)
+        orch._on_juggle_goal_response(goal_future)
         goal_handle.get_result_async.assert_called_once()
+        assert orch._juggle_goal_handle is goal_handle
 
     def test_goal_response_exception_is_safe(self, orch):
         goal_future = MockFuture()
         goal_future.set_exception(RuntimeError('goal send blew up'))
-        orch._on_reload_goal_response(goal_future)    # must not raise
+        orch._on_juggle_goal_response(goal_future)    # must not raise
 
-    def test_result_callback_logs_outcome_safely(self, orch):
+    def test_result_callback_logs_outcome_safely_and_clears_the_handle(self, orch):
+        orch._juggle_goal_handle = MagicMock()
         result_future = MockFuture()
         wrapper = MagicMock()
         wrapper.result.success = True
-        wrapper.result.outcome = 'CAUGHT'
-        wrapper.result.catch_error_mm = 12.0
+        wrapper.result.outcome = 'COMPLETED'
+        wrapper.result.throws = 4
+        wrapper.result.caught = 4
         result_future.set_result(wrapper)
-        orch._on_reload_result(result_future)         # must not raise
+        orch._on_juggle_result(result_future)         # must not raise
+        assert orch._juggle_goal_handle is None
 
     def test_result_callback_exception_is_safe(self, orch):
         result_future = MockFuture()
         result_future.set_exception(RuntimeError('result blew up'))
-        orch._on_reload_result(result_future)         # must not raise
+        orch._on_juggle_result(result_future)         # must not raise
 
-    def test_reload_request_never_touches_state_machine(self, orch):
+    def test_juggle_request_never_touches_state_machine(self, orch):
         """The relay is a side-channel: it must NOT enqueue a command into the SM
-        queue (that path is for lifecycle transitions, not the reload)."""
-        orch._reload_client._server_ready = True
-        orch._svc_reload_request(Trigger.Request(), Trigger.Response())
+        queue (that path is for lifecycle transitions, not the juggle goal)."""
+        orch._juggle_client._server_ready = True
+        orch._svc_juggle_request(_set_string_req('hop'),
+                                 SetString.Response())
         assert orch.ctx.consume_command() is None
+
+    def test_stop_cancels_the_latched_goal_handle(self, orch):
+        handle = MagicMock()
+        orch._juggle_goal_handle = handle
+        res = orch._svc_juggle_stop(Trigger.Request(), Trigger.Response())
+        assert res.success is True
+        handle.cancel_goal_async.assert_called_once()
+
+    def test_stop_with_no_running_goal_is_a_harmless_failure(self, orch):
+        orch._juggle_goal_handle = None
+        res = orch._svc_juggle_stop(Trigger.Request(), Trigger.Response())
+        assert res.success is False
 
 
 class TestFireForgetDisarm:

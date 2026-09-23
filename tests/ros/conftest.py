@@ -762,6 +762,42 @@ class Reload:
     Feedback = _ReloadFeedback
 
 
+# ── Juggle action mock (R4, U5) ──────────────────
+# The skill-stack start surface (skill_node, jugglebot/juggle) — replaces the
+# deleted columns-start / self-toss-start / stop Trigger services.
+
+
+class _JuggleGoal:
+    def __init__(self):
+        self.pattern = ''
+        self.apex_m = 0.0
+        self.separation_mm = 0.0
+        self.num_cycles = 0
+        self.reload = False
+
+
+class _JuggleResult:
+    def __init__(self):
+        self.success = False
+        self.outcome = ''
+        self.throws = 0
+        self.caught = 0
+        self.per_throw = []
+
+
+class _JuggleFeedback:
+    def __init__(self):
+        self.phase = ''
+        self.throw_index = 0
+        self.caught = 0
+
+
+class Juggle:
+    Goal = _JuggleGoal
+    Result = _JuggleResult
+    Feedback = _JuggleFeedback
+
+
 # ── Toss action mock (Phase 8) ──────────────────
 
 
@@ -1184,6 +1220,7 @@ _create_mock_module('jugglebot_interfaces.action', {
     'Reload': Reload,
     'Toss': Toss,
     'TossContinuous': TossContinuous,
+    'Juggle': Juggle,
 })
 
 _create_mock_module('geometry_msgs')

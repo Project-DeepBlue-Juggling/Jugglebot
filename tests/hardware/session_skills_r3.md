@@ -7,11 +7,17 @@ learner ever runs on this machine"*). Same shape as `session_skills_r2_plan_gate
 below) but this one **throws a real ball**. Driver:
 `tests/hardware/skills_plan_bench.py` (`--pattern self-toss`), pure core
 tested in `tests/ros/test_skills_plan_bench.py`. Node under test:
-`skill_node.py` (`skills/start_self_toss`, `skills/check`, `skills/stop`).
+`skill_node.py` (the `jugglebot/juggle` action, pattern `self_toss`;
+`skills/check`; `jugglebot/juggle_stop`). **Note (2026-09-24, R4):** the
+Trigger services this sheet used to name — `skills/start_self_toss`,
+`skills/stop` — are deleted; `jugglebot/juggle` (an action, cancel-on-stop)
+and `jugglebot/juggle_stop` are their replacements. `skills/check` is
+unaffected.
 
 **What this sitting is, in six lines.**
-1. One site, P1 = (−50, 0) mm. One ball. `skills/start_self_toss` pre-levels
-   the platform, then compiles a THROW → CATCH(+throw) → … → REST self-toss.
+1. One site, P1 = (−50, 0) mm. One ball. A `jugglebot/juggle` self_toss goal
+   pre-levels the platform, then compiles a THROW → CATCH(+throw) → … → REST
+   self-toss.
 2. Cold-start policy A: single-throw attempts (`n_throws:=1`) until the
    memory holds 2 rows, then a CHAINED attempt. Reason: an unlearned throw
    lands ~84 ms late against a fixed carried release, which squeezes the
@@ -85,7 +91,7 @@ Every terminal: `source /opt/ros/foxy/setup.bash && source
 | 8 | (venv) `python tools/probes/skills_single_site_sweep.py --study grid --apex 0.9 --jerk 150000 --site-xy=-50,0` (or cite the existing run) | The single-site cycle's OWN leg jerk is **zero** at this operating point (2026-09-13) — no ramp needed for the chained/10-catch run's steady-state cycle. This is a DIFFERENT number from Finding A below (which is about the SESSION-START move onto the site, not the steady cycle). |
 | 9 | Re-run `session_skills_r2_plan_gate.md` row 17 (margin, not gating) if the owner's background-load work has landed since the third sitting | Record G1/G3 maxima in § 7 alongside the original 93.88 / 40.9 ms — R3's added load (a real ball, the tracker, the learner) can only push solves further from the 50 ms bar, so this number bounds what R3 should expect, not what it must pass. |
 | 10 | QTM: disable the `Catching Cone` rigid body; mask the Ball Butler reflectors | **Hard precondition (plan § 2.7)** — 2026-09-06's bag showed the ball binding to the stale cone body on 5/7 throws, and a 2026-09-13 probe found only 10/27 historical self-tosses passed the observed predicate. Nothing downstream can catch a skipped step here. |
-| 10a | QTM: confirm a rigid body named `Platform` is defined and tracked (Tools → Rigid Bodies) | **Session-start frame-check precondition (plan `cup-contact-contract.md` § 1)** — `skill_node`'s frame check (§ 3, row 21a) can only evaluate the mocap-vs-commanded offset with this body present; without it the check logs "cannot evaluate", and at the launch default `learner_lateral_authority_mm=40` (since 2026-09-21) it refuses `REJECTED_FRAME_OFFSET` on every `skills/start_self_toss` / `skills/start_columns` call — this is no longer a corner case only reached under an explicit override. |
+| 10a | QTM: confirm a rigid body named `Platform` is defined and tracked (Tools → Rigid Bodies) | **Session-start frame-check precondition (plan `cup-contact-contract.md` § 1)** — `skill_node`'s frame check (§ 3, row 21a) can only evaluate the mocap-vs-commanded offset with this body present; without it the check logs "cannot evaluate", and at the launch default `learner_lateral_authority_mm=40` (since 2026-09-21) it refuses `REJECTED_FRAME_OFFSET` on every `jugglebot/juggle` self_toss/columns goal (2026-09-24: R4 renamed these from `skills/start_self_toss` / `skills/start_columns`, deleted) — this is no longer a corner case only reached under an explicit override. |
 
 ### Finding A — the opening REST needs more than 1.0 s at this session limit (RESOLVED)
 
@@ -106,7 +112,8 @@ its own (higher) 200 000 mm/s³ ceiling without incident — this is a NEW
 margin gap R3's lower ceiling opens up, not a regression in anything R2
 touched. **`schedule.FLOOR_LIFT_S` has been widened 1.0 → 1.5 s (landed, unit
 h1)** — the 1.5 s window measured ACCEPTED above, so the first-ever
-`skills/start_self_toss` call this session is no longer expected to refuse
+self_toss goal this session (`jugglebot/juggle`, 2026-09-24: renamed from
+the deleted `skills/start_self_toss`) is no longer expected to refuse
 on this segment. Nothing else about the move changed (still park → site P1
 rest at the R3 session limits): if it refuses anyway on the day, treat that
 as a NEW finding, not a repeat of this one.
@@ -201,25 +208,37 @@ not a repeat of this one.
 | 17 | `ros2 param set /skill_node site_x_mm -50.0`, `... site_y_mm 0.0`, `... apex_m 0.9`, `... dwell_s 0.30`, `... plant_id r3-$(date +%Y%m%d)` | A FRESH `plant_id` this session — `memory.memory_path`'s own contract: a fresh id starts a cold memory. Record the exact id used in § 7. |
 | 18 | `ros2 service call /trajectory/set_limits jugglebot_interfaces/srv/SetTrajectoryLimits "{leg_vel_limit_mmps: 300.0, leg_acc_limit_mmps2: 5000.0, leg_jerk_limit_mmps3: 150000.0}"` | `applied_*` echoes **300 / 5000 / 150000** — the launch default is 1000 / 5000 / 30000 (`hardware_config.py:174-176`), so this call is mandatory, not conditional on it already matching. |
 | 19 | `ros2 service call skills/check std_srvs/srv/Trigger` | **Every current refusal at once** (item 8): expect `ladder REFUSED: REJECTED_NOT_LEVELLED` before `level`/pre-level has run, plus `box OK` (limits match) once step 18's `set_limits` call has applied the session limits. If MORE than the expected rows refuse, fix each named one and re-run — never re-dispatch around a refusal by hand. |
-| 20 | Seat a ball in the hand. | The hand's possession sensor should read SEATED — `skills/check`'s ladder cannot see this directly (no `ball_evidence` row printed by `_svc_check` — only the launch-time `_dispatch` path checks it), so confirm visually and via `ros2 topic echo /hand_telemetry` (`ball_held_valid: true`, `ball_held_raw: true`) before the first `start_self_toss` call. |
+| 20 | Seat a ball in the hand. | The hand's possession sensor should read SEATED — `skills/check`'s ladder cannot see this directly (no `ball_evidence` row printed by `_svc_check` — only the launch-time `_dispatch` path checks it), so confirm visually and via `ros2 topic echo /hand_telemetry` (`ball_held_valid: true`, `ball_held_raw: true`) before the first self_toss goal (§ 3 note). |
 
 ## 3. The dress rehearsal (every refusal reported at once, robot NOT yet armed to throw)
+
+**Note (2026-09-24, R4):** `skills/start_self_toss`, `skills/start_columns`
+and `skills/stop` (Trigger services) are deleted. The live replacement is
+the `jugglebot/juggle` action (cancel-on-stop) plus `jugglebot/juggle_stop`
+(Trigger) — `ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/
+action/Juggle "{pattern: self_toss}"` and `ros2 service call
+/jugglebot/juggle_stop std_srvs/srv/Trigger`. Unlike the old Trigger, the
+`send_goal` call BLOCKS for the whole attempt, streaming `Feedback`
+(`phase`/`throw_index`/`caught`) as it goes and printing the final `Result`
+(`success`/`outcome`/`throws`/`caught`/`per_throw`) on exit — watch THIS
+terminal rather than returning immediately to the next row. `Ctrl-C` cancels
+the goal cleanly (every segment is rest-terminal).
 
 Before the first REAL throw, run `skills/check` again after every step above
 is satisfied, and confirm the ladder reads clean:
 
 | # | Step | Expect |
 |---|---|---|
-| 21 | `ros2 service call skills/check std_srvs/srv/Trigger` | `ladder OK` and `box OK: ('P1', 'P1') …` listing a band that contains `apex_m` (since 2026-09-14 the check names each pair's apex bands; `box REFUSED ... at apex` means no box covers the apex) — if this is not clean, STOP and work the refusal list before any `start_self_toss` call. Finding A is RESOLVED (`FLOOR_LIFT_S` widened to 1.5 s, § 1); the first call is no longer expected to refuse on that segment — a refusal here is a NEW finding, not Finding A recurring. |
-| 21a | Watch `skill_node`'s log for `frame check: ...` — it ALSO fires on this row-21 `skills/check` call now (2026-09-20: the dry-run path surfaces it, not just the powered start calls, UH-3 "report every refusal at once"), against the LIVE `rigid_body_poses`/`trajectory/commanded_position` topics | `frame check: mocap Platform is +N.N mm (x ..., y ...) from the commanded position over 1.0 s, body spread S mm (limit 25.0 mm)` — **since 2026-09-23 an offset under 25 mm is ADOPTED and subtracted from every tracker landing, not a refusal** (plan `cup-contact-contract.md` § 1 as amended; `logbook/2026-09-23-cup-contact-first-sitting.md`); the 25 mm bound catches a wrong alignment, the 2 mm body-spread gate a moving platform. The launch default is `learner_lateral_authority_mm:=40` since 2026-09-21 (owner, `cup-contact-contract.md` § 6): this line REFUSES `REJECTED_FRAME_OFFSET` if the offset is over 25 mm or cannot be measured — align QTM to the base marker (row 10a) before row 21, or the first `start_self_toss`/`start_columns` call meets the same refusal with nothing having moved. If the operator instead flies pinned (`learner_lateral_authority_mm:=0`, an explicit override, no longer this sitting's default), the line is logged but informational only — record the number in § 9 regardless. |
-| 21b | Read the row-21 `skills/check` response's OWN message text (not just the log), and look for `frame check` there | The frame offset is now part of `skills/check`'s response message, not only its ROS log line (`skill_node.py::_svc_check`, same string/semantics as the start paths — a cannot-evaluate or over-limit result is listed alongside `ladder`/`box`/`site`; at the default `learner_lateral_authority_mm=40` a within-limit offset reads `frame check OK: ...`, and only an explicit `learner_lateral_authority_mm:=0` reads `frame check: ... (informational — learner_lateral_authority_mm=0)`, never a silent pass). This is what closes handoff_u5.md's open question 1: the dry-run at row 21 now sees this refusal ahead of the first `start_self_toss` call at row 23, instead of discovering it there. |
+| 21 | `ros2 service call skills/check std_srvs/srv/Trigger` | `ladder OK` and `box OK: ('P1', 'P1') …` listing a band that contains `apex_m` (since 2026-09-14 the check names each pair's apex bands; `box REFUSED ... at apex` means no box covers the apex) — if this is not clean, STOP and work the refusal list before any self_toss goal (§ 3 note). Finding A is RESOLVED (`FLOOR_LIFT_S` widened to 1.5 s, § 1); the first call is no longer expected to refuse on that segment — a refusal here is a NEW finding, not Finding A recurring. |
+| 21a | Watch `skill_node`'s log for `frame check: ...` — it ALSO fires on this row-21 `skills/check` call now (2026-09-20: the dry-run path surfaces it, not just the powered start calls, UH-3 "report every refusal at once"), against the LIVE `rigid_body_poses`/`trajectory/commanded_position` topics | `frame check: mocap Platform is +N.N mm (x ..., y ...) from the commanded position over 1.0 s, body spread S mm (limit 25.0 mm)` — **since 2026-09-23 an offset under 25 mm is ADOPTED and subtracted from every tracker landing, not a refusal** (plan `cup-contact-contract.md` § 1 as amended; `logbook/2026-09-23-cup-contact-first-sitting.md`); the 25 mm bound catches a wrong alignment, the 2 mm body-spread gate a moving platform. The launch default is `learner_lateral_authority_mm:=40` since 2026-09-21 (owner, `cup-contact-contract.md` § 6): this line REFUSES `REJECTED_FRAME_OFFSET` if the offset is over 25 mm or cannot be measured — align QTM to the base marker (row 10a) before row 21, or the first self_toss/columns goal (§ 3 note) meets the same refusal with nothing having moved. If the operator instead flies pinned (`learner_lateral_authority_mm:=0`, an explicit override, no longer this sitting's default), the line is logged but informational only — record the number in § 9 regardless. |
+| 21b | Read the row-21 `skills/check` response's OWN message text (not just the log), and look for `frame check` there | The frame offset is now part of `skills/check`'s response message, not only its ROS log line (`skill_node.py::_svc_check`, same string/semantics as the start paths — a cannot-evaluate or over-limit result is listed alongside `ladder`/`box`/`site`; at the default `learner_lateral_authority_mm=40` a within-limit offset reads `frame check OK: ...`, and only an explicit `learner_lateral_authority_mm:=0` reads `frame check: ... (informational — learner_lateral_authority_mm=0)`, never a silent pass). This is what closes handoff_u5.md's open question 1: the dry-run at row 21 now sees this refusal ahead of the first self_toss goal at row 23 (§ 3 note), instead of discovering it there. |
 | 22 | `ros2 param set /skill_node n_throws 1` | Cold-start policy A's own first attempt. |
 
 ## 4. Cold-start attempts (n_throws := 1, repeat until in-band within 5 throws)
 
 | # | Step | Expect |
 |---|---|---|
-| 23 | `ros2 service call skills/start_self_toss std_srvs/srv/Trigger` | Accepted (`success: true`), message names skills/throws/`plant_id`/memory rows. Finding A is RESOLVED, so this call is no longer expected to refuse on the opening REST — **if it refuses anyway, that is a NEW finding**, not Finding A recurring. |
+| 23 | `ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: self_toss}"` (§ 3 note) | Goal ACCEPTED; the call blocks, streaming feedback, then prints the final `outcome`/`throws`/`caught`/`per_throw` (names skills/throws/memory rows). Finding A is RESOLVED, so this call is no longer expected to refuse on the opening REST — **if it refuses anyway, that is a NEW finding**, not Finding A recurring. |
 | 24 | Watch `skill_node`'s log for the memory-row line (`memory row appended: x=... u=... y=... caught=...`) and the throw's landing. | One memory row per completed attempt. Record `(throw index, landing error mm, in-band Y/N)` for each. |
 | 25 | Repeat 23–24, incrementing `plant_id`'s attempt count only in your notes (NOT the parameter — memory is append-only under the SAME `plant_id` all sitting) | **Gate: in-band (xy ≤ 30 mm, flight ≤ 20 ms of nominal) within 5 throws of this cold memory.** Record the throw index it lands in-band at (or that it did not, within 5). |
 
@@ -228,9 +247,9 @@ is satisfied, and confirm the ladder reads clean:
 | # | Step | Expect |
 |---|---|---|
 | 26 | `ros2 param set /skill_node n_throws 10` | The chained form — every throw after the first CARRIED by the previous catch (`then_throw`). |
-| 27 | `ros2 service call skills/start_self_toss std_srvs/srv/Trigger` | Accepted. Watch for Finding B (a learner-warm launch THROW refusing `LIMIT_JERK`) — this attempt's OWN launch throw is a fresh-origin form and is the one Finding B is about. |
-| 28 | Count consecutive catches from the possession sensor / bag. | **Gate: 10 consecutive catches at P1.** If the attempt ends early before 10, record the end code (§ pre-registered verdict table below) and the throw index. |
-| 29 | If it ends early, `ros2 service call skills/stop std_srvs/srv/Trigger`, seat/re-seat the ball, and repeat 26–28. | A refused skill leaves the rest tail already streaming — never re-dispatch a hand move by hand. |
+| 27 | `ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: self_toss}"` (§ 3 note) | Goal ACCEPTED, streams feedback. Watch for Finding B (a learner-warm launch THROW refusing `LIMIT_JERK`) — this attempt's OWN launch throw is a fresh-origin form and is the one Finding B is about. |
+| 28 | Count consecutive catches from the possession sensor / bag (or the streamed `caught` feedback field). | **Gate: 10 consecutive catches at P1.** If the attempt ends early before 10, record the end code (§ pre-registered verdict table below) and the throw index. |
+| 29 | If it ends early, `Ctrl-C` this terminal or, from another one, `ros2 service call /jugglebot/juggle_stop std_srvs/srv/Trigger` (§ 3 note), seat/re-seat the ball, and repeat 26–28. | A refused skill leaves the rest tail already streaming — never re-dispatch a hand move by hand. |
 
 ## 6. Pre-registered verdict table (decided before the sitting)
 
@@ -258,9 +277,11 @@ this list, treat it as a NEW finding, not a known outcome.
 ## 7. If something refuses
 
 A refused skill ends the attempt through the rest tail already streaming —
-**never re-dispatch a hand move by hand.** `skills/stop` is safe to call at
-any time: it stops further dispatch, and since 2026-09-14 (sitting 1, latch
-L1) an ended attempt — `stop` or any abort — installs ONE `trajectory/hold`
+**never re-dispatch a hand move by hand.** `Ctrl-C` (cancel on stop) or
+`/jugglebot/juggle_stop` (2026-09-24, R4: replaces the deleted
+`skills/stop`) is safe to call at any time: it stops further dispatch, and
+since 2026-09-14 (sitting 1, latch L1) an ended attempt — cancel/stop or any
+abort — installs ONE `trajectory/hold`
 when the committed segment still carries a future release, so a
 catch-with-throw that was already installed no longer throws after the
 attempt has ended (the hold is a profiled decel-to-rest of the platform; the
@@ -268,7 +289,7 @@ hold plan carries no hand track, so the hand lane sees a HAS_HAND falling
 edge and the bridge firmware DECAYS it to rest where it is — the same rule
 the guard freeze relies on; the ball, if in the air, is not caught). If `skills/check` shows more than
 the expected ladder rows refused, work each one via § 6's table before
-calling `skills/start_self_toss` again.
+sending another self_toss goal (§ 3 note).
 
 **Sitting-1 recoveries (2026-09-13):**
 - ~~`REJECTED_HAND_NOT_PARKED` … recover with DEACTIVATE then ACTIVATE~~ —
@@ -301,8 +322,8 @@ calling `skills/start_self_toss` again.
   the message names the reason (guard still latched / no hand telemetry) and
   DEACTIVATE → ACTIVATE remains the manual escape.
 - **The opening REST HOMES the hand, and its period is sized to the trip**
-  (2026-09-18 evening). `skills/start_self_toss` reads the measured hand and
-  grows skill 0's window so the lane stays inside the firmware's own
+  (2026-09-18 evening). The self_toss goal (`jugglebot/juggle`) reads the
+  measured hand and grows skill 0's window so the lane stays inside the firmware's own
   resume-and-follow envelope (2.5 rev/s, 5 rev/s²). Expect ONE line before the
   pre-level:
   `opening REST homes the hand: +9.6227 → +0.3071 rev over 6.99 s (peak <=

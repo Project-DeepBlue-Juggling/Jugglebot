@@ -3,7 +3,7 @@
 The pure-Python schedule/segment/executor policy is pinned by
 ``tests/motion/test_skills_*.py``; ``trajectory/install_segment`` itself is
 pinned by ``tests/ros/test_install_segment.py``. What this file exercises is
-the SHELL: ``skills/start_columns`` compiles a schedule, the 40 Hz tick
+the SHELL: a `columns` Juggle goal compiles a schedule, the 40 Hz tick
 dispatches the first due skill through the (mocked) install_segment client
 with the right request fields, a refusal ends the attempt, and a ``/balls``
 message feeds the executor's tracker callable.
@@ -34,6 +34,7 @@ from geometry_msgs.msg import Point, Vector3
 from jugglebot_interfaces.msg import (BallStateArray, HandTelemetryMessage,
                                       RigidBodyPose, RigidBodyPoses,
                                       ThrowAnnouncement, TrajectoryStatus)
+from jugglebot_interfaces.action import Juggle
 from jugglebot_interfaces.srv import BallButlerThrow, InstallSegment
 
 from jugglebot import ball_possession
@@ -92,7 +93,7 @@ def _pose_at(x, y):
 def _status(**overrides):
     """A `trajectory/status` message at the admissible box's swept limits
     (`config/generated/admissible_box.yaml`: 300/5000/150000) — the LIVE
-    limits `_svc_start_self_toss` reads."""
+    limits `_run_one_ball` reads."""
     st = TrajectoryStatus()
     st.leg_vel_limit_mmps = 300.0
     st.leg_acc_limit_mmps2 = 5000.0
@@ -220,8 +221,31 @@ def _frame_ready(node, *, plat_x=0.0, plat_y=0.0, cmd_x=0.0, cmd_y=0.0,
         node._commanded_xy_hist.append((now, cmd_x, cmd_y))
 
 
+def _goal(pattern, **overrides):
+    """A `Juggle.Goal` for `node._start_pattern`/`node._juggle_goal` — the
+    conftest mock's field defaults (0/False/'') mean "use the node's own
+    parameter", exactly like an un-set field on the real action goal."""
+    g = Juggle.Goal()
+    g.pattern = pattern
+    for k, v in overrides.items():
+        setattr(g, k, v)
+    return g
+
+
+def _columns_goal(**overrides):
+    return _goal('columns', **overrides)
+
+
+def _self_toss_goal(**overrides):
+    return _goal('self_toss', **overrides)
+
+
+def _hop_goal(**overrides):
+    return _goal('hop', **overrides)
+
+
 # ═════════════════════════════════════════════════════════════════════════════
-# start_columns / stop
+# columns / stop
 # ═════════════════════════════════════════════════════════════════════════════
 
 def test_node_starts_idle():
@@ -230,9 +254,9 @@ def test_node_starts_idle():
     assert node._possession_evidence == ball_possession.EVIDENCE_UNKNOWN
 
 
-def test_start_columns_compiles_a_schedule_at_the_owner_operating_point():
+def test_columns_compiles_a_schedule_at_the_owner_operating_point():
     node, _client = _node_with_client()
-    resp = node._svc_start_columns(Trigger.Request(), Trigger.Response())
+    resp = node._start_pattern(_columns_goal())
     assert resp.success is True, resp.message
     assert node._executor is not None
     schedule = node._executor.schedule
@@ -242,22 +266,21 @@ def test_start_columns_compiles_a_schedule_at_the_owner_operating_point():
 
 def test_a_second_start_while_running_is_refused():
     node, _client = _node_with_client()
-    assert node._svc_start_columns(Trigger.Request(),
-                                   Trigger.Response()).success is True
-    resp2 = node._svc_start_columns(Trigger.Request(), Trigger.Response())
+    assert node._start_pattern(_columns_goal()).success is True
+    resp2 = node._start_pattern(_columns_goal())
     assert resp2.success is False
     assert 'already running' in resp2.message
 
 
 def test_stop_ends_the_attempt():
     node, _client = _node_with_client()
-    node._svc_start_columns(Trigger.Request(), Trigger.Response())
+    node._start_pattern(_columns_goal())
     assert node._executor is not None
-    resp = node._svc_stop(Trigger.Request(), Trigger.Response())
+    resp = node._stop_attempt()
     assert resp.success is True
     assert node._executor.attempt_ended is True
     assert node._executor.end_code == 'STOPPED'
-    # Not retired by `_svc_stop` itself — `.done` is a next-tick question
+    # Not retired by `_stop_attempt` itself — `.done` is a next-tick question
     # (main-session addition: a stopped attempt keeps ticking until any
     # pending outcome finalises, see the mid-flight test below). Here there
     # is nothing pending (`on_experience is None` for columns), so the very
@@ -269,7 +292,7 @@ def test_stop_ends_the_attempt():
 
 def test_stop_keeps_ticking_until_a_pending_flight_finalises_then_appends_its_row(
         tmp_path):
-    """`skills/stop` must not discard an observable flight already in
+    """cancelling the goal must not discard an observable flight already in
     progress: it ends the attempt (`attempt_ended=True`, `end_code='STOPPED'`)
     but leaves the executor live so `_on_tick` keeps calling `.tick()` until
     `.done` — the stopped attempt's flight still produces its memory row
@@ -287,8 +310,7 @@ def test_stop_keeps_ticking_until_a_pending_flight_finalises_then_appends_its_ro
     node._params['plant_id'] = plant_id
 
     with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
-        assert node._svc_start_self_toss(Trigger.Request(),
-                                         Trigger.Response()).success is True
+        assert node._start_pattern(_self_toss_goal()).success is True
         # Freshen the R3 ladder AFTER start (item 6/7 wiring is per-tick, not
         # a start-time check) so the dispatch below is not itself refused by
         # `precondition_refusals` — this test is about the outcome-capture /
@@ -319,13 +341,13 @@ def test_stop_keeps_ticking_until_a_pending_flight_finalises_then_appends_its_ro
                                          pend.t_release_s + 0.01)
         assert pend.best_landing is not None
 
-        resp = node._svc_stop(Trigger.Request(), Trigger.Response())
+        resp = node._stop_attempt()
         assert resp.success is True
         assert node._executor is not None          # still finalising
         assert node._executor.attempt_ended is True
         assert node._executor.end_code == 'STOPPED'
 
-        resp2 = node._svc_start_self_toss(Trigger.Request(), Trigger.Response())
+        resp2 = node._start_pattern(_self_toss_goal())
         assert resp2.success is False
         assert 'already running' in resp2.message
 
@@ -341,25 +363,25 @@ def test_stop_keeps_ticking_until_a_pending_flight_finalises_then_appends_its_ro
 
 def test_stop_with_no_attempt_is_a_harmless_success():
     node, _client = _node_with_client()
-    resp = node._svc_stop(Trigger.Request(), Trigger.Response())
+    resp = node._stop_attempt()
     assert resp.success is True
     assert 'no attempt' in resp.message
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# start_self_toss (R3 items 4/5) — the box/limits gate and the compiled schedule
+# self_toss (R3 items 4/5) — the box/limits gate and the compiled schedule
 # ═════════════════════════════════════════════════════════════════════════════
 
-def test_start_self_toss_is_refused_when_the_box_file_is_missing(tmp_path):
+def test_self_toss_is_refused_when_the_box_file_is_missing(tmp_path):
     node, _client = _node_with_client()
     with patch.object(sn, '_ADMISSIBLE_BOX_PATH', str(tmp_path / 'nope.yaml')):
-        resp = node._svc_start_self_toss(Trigger.Request(), Trigger.Response())
+        resp = node._start_pattern(_self_toss_goal())
     assert resp.success is False
     assert 'admissible box refused' in resp.message
     assert node._executor is None
 
 
-def test_start_self_toss_is_refused_on_a_limits_mismatch(tmp_path):
+def test_self_toss_is_refused_on_a_limits_mismatch(tmp_path):
     box_path = tmp_path / 'admissible_box.yaml'
     box = adm.AdmissibleBox(
         site_pair=('P1', 'P1'), apex_band_m=(0.85, 0.95),
@@ -372,21 +394,21 @@ def test_start_self_toss_is_refused_on_a_limits_mismatch(tmp_path):
     adm.dump(str(box_path), [box])
     node, _client = _node_with_client()
     with patch.object(sn, '_ADMISSIBLE_BOX_PATH', str(box_path)):
-        resp = node._svc_start_self_toss(Trigger.Request(), Trigger.Response())
+        resp = node._start_pattern(_self_toss_goal())
     assert resp.success is False
     assert 'admissible box refused' in resp.message
     assert 'leg_vel_mmps' in resp.message
     assert node._executor is None
 
 
-def test_start_self_toss_is_refused_with_no_status_received_yet():
+def test_self_toss_is_refused_with_no_status_received_yet():
     """The live-limits fallback (`_live_limits`) reads the YAML module
     defaults when `trajectory/status` has never arrived (its own documented
     "0.0 = field absent" sentinel) — which do not match the real box's swept
     session limits, so the start refuses rather than silently gating against
     the wrong machine."""
     node, _client = _node_with_client()
-    resp = node._svc_start_self_toss(Trigger.Request(), Trigger.Response())
+    resp = node._start_pattern(_self_toss_goal())
     assert resp.success is False
     # Since 2026-09-16 the YAML launch defaults ARE the swept session limits
     # (300/5000/150000, owner decision), so the box no longer refuses here;
@@ -403,7 +425,7 @@ def test_a_new_schedule_drops_the_previous_attempts_flight_latches():
     node, _client = _node_with_client()
     with node._correlation_lock:
         node._correlation[0] = ('stale-latch',)
-    node._svc_start_columns(Trigger.Request(), Trigger.Response())
+    node._start_pattern(_columns_goal())
     assert 0 not in node._correlation
 
 
@@ -419,7 +441,7 @@ def test_the_learner_lateral_authority_parameter_defaults_to_twenty():
     assert node.get_parameter('learner_lateral_authority_mm').value == 20.0
 
 
-def test_start_self_toss_refuses_an_uncovered_apex_before_any_motion(tmp_path):
+def test_self_toss_refuses_an_uncovered_apex_before_any_motion(tmp_path):
     """THE LATENT DEFECT this closes (found 2026-09-14): the only swept box
     covers apex 0.85-0.95 m; requesting 0.5 m (uncovered) must refuse BEFORE
     `_prelevel` ever calls `trajectory/go_to_pose` -- no platform motion for
@@ -439,7 +461,7 @@ def test_start_self_toss_refuses_an_uncovered_apex_before_any_motion(tmp_path):
     prelevel_client = _prelevel_ready(node)
     node._params['apex_m'] = 0.5
     with patch.object(sn, '_ADMISSIBLE_BOX_PATH', str(box_path)):
-        resp = node._svc_start_self_toss(Trigger.Request(), Trigger.Response())
+        resp = node._start_pattern(_self_toss_goal())
     assert resp.success is False
     assert 'no admissible box covers' in resp.message
     assert '0.500' in resp.message
@@ -448,12 +470,12 @@ def test_start_self_toss_refuses_an_uncovered_apex_before_any_motion(tmp_path):
     assert prelevel_client.calls == []
 
 
-def test_start_self_toss_compiles_a_schedule_at_the_owner_operating_point():
+def test_self_toss_compiles_a_schedule_at_the_owner_operating_point():
     node, _client = _node_with_client()
     node._on_traj_status(_status())
     prelevel_client = _prelevel_ready(node)
-    node._params['plant_id'] = 'test_start_self_toss_compiles'
-    resp = node._svc_start_self_toss(Trigger.Request(), Trigger.Response())
+    node._params['plant_id'] = 'test_self_toss_compiles'
+    resp = node._start_pattern(_self_toss_goal())
     assert resp.success is True, resp.message
     assert node._executor is not None
     schedule = node._executor.schedule
@@ -475,14 +497,13 @@ def test_start_self_toss_compiles_a_schedule_at_the_owner_operating_point():
         == (-50.0, 0.0, 830.0)
 
 
-def test_start_self_toss_while_running_is_refused():
+def test_self_toss_while_running_is_refused():
     node, _client = _node_with_client()
     node._on_traj_status(_status())
     _prelevel_ready(node)
-    node._params['plant_id'] = 'test_start_self_toss_while_running'
-    assert node._svc_start_self_toss(Trigger.Request(),
-                                     Trigger.Response()).success is True
-    resp2 = node._svc_start_self_toss(Trigger.Request(), Trigger.Response())
+    node._params['plant_id'] = 'test_self_toss_while_running'
+    assert node._start_pattern(_self_toss_goal()).success is True
+    resp2 = node._start_pattern(_self_toss_goal())
     assert resp2.success is False
     assert 'already running' in resp2.message
 
@@ -496,7 +517,7 @@ def test_a_site_off_the_swept_box_is_refused_before_the_platform_moves():
     pre = _prelevel_ready(node)
     node._params['plant_id'] = 'sketch_site_off_box'
     node._params['site_x_mm'] = 0.0
-    resp = node._svc_start_self_toss(Trigger.Request(), Trigger.Response())
+    resp = node._start_pattern(_self_toss_goal())
     assert resp.success is False
     assert 'site' in resp.message and 'swept default' in resp.message
     assert pre.calls == []
@@ -512,7 +533,7 @@ def test_a_bad_plant_id_is_refused_before_the_platform_moves(tmp_path):
     pre = _prelevel_ready(node)
     node._params['plant_id'] = '../escape'
     with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
-        resp = node._svc_start_self_toss(Trigger.Request(), Trigger.Response())
+        resp = node._start_pattern(_self_toss_goal())
     assert resp.success is False
     assert 'memory refused' in resp.message
     assert pre.calls == []
@@ -530,7 +551,7 @@ def test_an_unreadable_memory_file_is_refused_not_raised(tmp_path):
     (tmp_path / 'temp' / 'learn' / 'dir_not_file' / 'memory.csv').mkdir(
         parents=True)
     with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
-        resp = node._svc_start_self_toss(Trigger.Request(), Trigger.Response())
+        resp = node._start_pattern(_self_toss_goal())
     assert resp.success is False
     assert 'memory refused' in resp.message
     assert pre.calls == []
@@ -538,37 +559,37 @@ def test_an_unreadable_memory_file_is_refused_not_raised(tmp_path):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# start_self_toss (R3-e2 item 7) — the pre-level move
+# self_toss (R3-e2 item 7) — the pre-level move
 # ═════════════════════════════════════════════════════════════════════════════
 
-def test_start_self_toss_is_refused_when_go_to_pose_is_unavailable():
+def test_self_toss_is_refused_when_go_to_pose_is_unavailable():
     node, _client = _node_with_client()
     node._on_traj_status(_status())
     node._go_to_pose_cli = _RecordingClient(ready=False)
-    resp = node._svc_start_self_toss(Trigger.Request(), Trigger.Response())
+    resp = node._start_pattern(_self_toss_goal())
     assert resp.success is False
-    assert 'self-toss refused' in resp.message
+    assert 'self_toss refused' in resp.message
     assert 'go_to_pose unavailable' in resp.message
     assert node._executor is None
 
 
-def test_start_self_toss_is_refused_when_commanded_position_is_stale():
+def test_self_toss_is_refused_when_commanded_position_is_stale():
     """No `trajectory/commanded_position` has ever arrived — `_prelevel` has
     no xy/z to hold and must refuse rather than guess one."""
     node, _client = _node_with_client()
     node._on_traj_status(_status())
     node._go_to_pose_cli = _RecordingClient(response=_go_to_pose_response())
-    resp = node._svc_start_self_toss(Trigger.Request(), Trigger.Response())
+    resp = node._start_pattern(_self_toss_goal())
     assert resp.success is False
     assert 'commanded_position is stale' in resp.message
     assert node._executor is None
 
 
-def test_start_self_toss_is_refused_when_the_prelevel_move_is_refused():
+def test_self_toss_is_refused_when_the_prelevel_move_is_refused():
     node, _client = _node_with_client()
     node._on_traj_status(_status())
     _prelevel_ready(node, accepted=False, code='WORKSPACE', message='nope')
-    resp = node._svc_start_self_toss(Trigger.Request(), Trigger.Response())
+    resp = node._start_pattern(_self_toss_goal())
     assert resp.success is False
     assert 'pre-level move was refused' in resp.message
     assert 'WORKSPACE' in resp.message
@@ -581,8 +602,7 @@ def test_start_self_toss_is_refused_when_the_prelevel_move_is_refused():
 
 def test_the_tick_dispatches_the_first_throw_through_the_mocked_client():
     node, client = _node_with_client(response=_response())
-    assert node._svc_start_columns(Trigger.Request(),
-                                   Trigger.Response()).success is True
+    assert node._start_pattern(_columns_goal()).success is True
     first_throw = node._executor.schedule.skills[0]
     assert first_throw.kind == 'THROW'
     t_dispatch = first_throw.dispatch_s()
@@ -603,7 +623,7 @@ def test_a_refusal_ends_the_attempt():
     node, _client = _node_with_client(
         response=_response(accepted=False, code='WRONG_MODE',
                           message='not in TRAJECTORY mode'))
-    node._svc_start_columns(Trigger.Request(), Trigger.Response())
+    node._start_pattern(_columns_goal())
     first = node._executor.schedule.skills[0]
     node._executor.tick(first.dispatch_s())
     assert node._executor.attempt_ended is True
@@ -1100,8 +1120,8 @@ def test_check_reports_the_frame_offset_informationally_when_unevaluable():
 def test_check_lists_the_frame_offset_as_a_refusal_over_limit_with_authority():
     """`learner_lateral_authority_mm > 0` and an offset over the 5 mm limit:
     `skills/check` must list it as a REFUSAL, the identical
-    `REJECTED_FRAME_OFFSET: ...` string `_svc_start_columns` /
-    `_svc_start_self_toss` would refuse with — the dress-rehearsal gate is
+    `REJECTED_FRAME_OFFSET: ...` string `_run_columns` /
+    `_run_one_ball` would refuse with — the dress-rehearsal gate is
     fail-closed the same way the powered path is."""
     node, _client = _node_with_client(frame=False)
     node.set_parameters(
@@ -1151,12 +1171,12 @@ def test_default_parameters_refuse_every_start_path_with_no_frame_data():
     catches it ahead of a powered `start_*` call (UH-3, 2026-09-06)."""
     node, _client = _node_with_client(frame=False)
     node._on_traj_status(_status())
-    resp_toss = node._svc_start_self_toss(Trigger.Request(), Trigger.Response())
+    resp_toss = node._start_pattern(_self_toss_goal())
     assert resp_toss.success is False
     assert 'REJECTED_FRAME_OFFSET' in resp_toss.message
 
     node2, _client2 = _node_with_client(frame=False)
-    resp_columns = node2._svc_start_columns(Trigger.Request(), Trigger.Response())
+    resp_columns = node2._start_pattern(_columns_goal())
     assert resp_columns.success is False
     assert 'REJECTED_FRAME_OFFSET' in resp_columns.message
 
@@ -1172,7 +1192,7 @@ def test_default_parameters_refuse_every_start_path_with_no_frame_data():
 
 def test_installer_reports_service_unavailable():
     node, _client = _node_with_client(ready=False)
-    node._svc_start_columns(Trigger.Request(), Trigger.Response())
+    node._start_pattern(_columns_goal())
     first = node._executor.schedule.skills[0]
     node._executor.tick(first.dispatch_s())
     assert node._executor.attempt_ended is True
@@ -1311,7 +1331,7 @@ def test_every_subscription_has_its_own_non_default_callback_group():
 class _SignallingLock:
     """Wraps a real `threading.Lock`, setting `acquire_started` the instant
     `.acquire()` is entered -- so a test can wait (deterministically, via
-    `Event.wait`, never a sleep) for the exact moment `_svc_stop`'s blocking
+    `Event.wait`, never a sleep) for the exact moment `_stop_attempt`'s blocking
     acquire begins, instead of guessing at a delay."""
 
     def __init__(self, real_lock):
@@ -1327,12 +1347,12 @@ class _SignallingLock:
 
 
 def test_stop_waits_for_an_in_progress_tick():
-    """Finding 12, R3 audit (2026-09-13): `_svc_stop` must take `_tick_lock`
+    """Finding 12, R3 audit (2026-09-13): `_stop_attempt` must take `_tick_lock`
     before writing `attempt_ended` / `end_code`, bounded by
     `_STOP_LOCK_WAIT_S` — otherwise it can race a tick mid-`_dispatch` on the
     timer thread."""
     node, _c = _node_with_client()
-    node._svc_start_columns(Trigger.Request(), Trigger.Response())
+    node._start_pattern(_columns_goal())
     real_lock = node._tick_lock
     assert real_lock.acquire(blocking=False)   # simulate a tick mid-install
     wrapped = _SignallingLock(real_lock)
@@ -1341,13 +1361,13 @@ def test_stop_waits_for_an_in_progress_tick():
     result = {}
 
     def run():
-        result['resp'] = node._svc_stop(Trigger.Request(), Trigger.Response())
+        result['resp'] = node._stop_attempt()
 
     th = threading.Thread(target=run)
     th.start()
     try:
         assert wrapped.acquire_started.wait(timeout=5.0), (
-            '_svc_stop never attempted to acquire _tick_lock')
+            '_stop_attempt never attempted to acquire _tick_lock')
         # The blocking acquire is now queued behind the "in-progress tick" --
         # nothing has been written yet.
         assert node._executor.attempt_ended is False
@@ -1431,7 +1451,7 @@ def test_stop_with_a_pending_event_holds():
     node._executor.attempt_ended = False
     node._executor.end_code = ''
 
-    resp = node._svc_stop(Trigger.Request(), Trigger.Response())
+    resp = node._stop_attempt()
 
     assert resp.success is True
     assert len(hold_client.calls) == 1
@@ -1492,7 +1512,7 @@ def test_the_live_catch_aim_default_is_the_trackers_converged_fit():
     node ships the tracker aim rather than the open-loop A/B arm."""
     node, _client = _node_with_client()
     assert node.get_parameter('catch_aim_source').value == 'tracker'
-    node._svc_start_columns(Trigger.Request(), Trigger.Response())
+    node._start_pattern(_columns_goal())
     assert node._executor.catch_aim_source == 'tracker'
     assert node._executor.launch_ratio is not None
 
@@ -1501,7 +1521,7 @@ def test_the_live_catch_aim_default_is_the_trackers_converged_fit():
 def test_the_aim_source_parameter_reaches_the_executor(value):
     node, _client = _node_with_client()
     node.set_parameters([_MockParameter(value, name='catch_aim_source')])
-    node._svc_start_columns(Trigger.Request(), Trigger.Response())
+    node._start_pattern(_columns_goal())
     assert node._executor.catch_aim_source == value
 
 
@@ -1512,7 +1532,7 @@ def test_an_unknown_aim_source_falls_back_to_the_live_default():
     having chosen it."""
     node, _client = _node_with_client()
     node.set_parameters([_MockParameter('mocap', name='catch_aim_source')])
-    node._svc_start_columns(Trigger.Request(), Trigger.Response())
+    node._start_pattern(_columns_goal())
     assert node._executor.catch_aim_source == 'tracker'
 
 
@@ -1594,7 +1614,7 @@ def test_the_opening_rest_is_sized_to_home_a_displaced_hand():
     _hand_at(node, rev=9.6227)
     node._params['plant_id'] = 'test_opening_rest_sized'
 
-    resp = node._svc_start_self_toss(Trigger.Request(), Trigger.Response())
+    resp = node._start_pattern(_self_toss_goal())
     assert resp.success is True, resp.message
     rest0 = node._executor.schedule.skills[0]
     assert rest0.kind == sn.REST
@@ -1616,7 +1636,7 @@ def test_a_hand_already_at_home_gets_the_default_opening_rest():
     _hand_at(node, rev=sn.REST_HAND_REV)
     node._params['plant_id'] = 'test_opening_rest_default'
 
-    resp = node._svc_start_self_toss(Trigger.Request(), Trigger.Response())
+    resp = node._start_pattern(_self_toss_goal())
     assert resp.success is True, resp.message
     assert node._executor.schedule.skills[0].window_s == pytest.approx(
         sc.FLOOR_LIFT_S)
@@ -1632,7 +1652,7 @@ def test_the_activate_park_is_not_a_special_case():
     _hand_at(node, rev=0.0)
     node._params['plant_id'] = 'test_opening_rest_from_park'
 
-    resp = node._svc_start_self_toss(Trigger.Request(), Trigger.Response())
+    resp = node._start_pattern(_self_toss_goal())
     assert resp.success is True, resp.message
     assert node._executor.schedule.skills[0].window_s == pytest.approx(
         sc.FLOOR_LIFT_S)
@@ -1646,7 +1666,7 @@ def test_the_homing_rest_is_refused_when_the_hand_position_is_unread():
     prelevel = _prelevel_ready(node)
     node._hand_telemetry_mono -= sn._HAND_STATE_STALE_S + 0.1
 
-    resp = node._svc_start_self_toss(Trigger.Request(), Trigger.Response())
+    resp = node._start_pattern(_self_toss_goal())
     assert resp.success is False
     assert 'hand_telemetry is stale or absent' in resp.message
     assert node._executor is None
@@ -1663,7 +1683,7 @@ def test_the_sized_rest_is_logged_with_its_own_peaks():
     lines = []
     node.get_logger().info = lambda m: lines.append(m)
 
-    node._svc_start_self_toss(Trigger.Request(), Trigger.Response())
+    node._start_pattern(_self_toss_goal())
     homing = [ln for ln in lines if 'opening REST homes the hand' in ln]
     assert len(homing) == 1, lines
     assert '+9.6227' in homing[0] and '+0.3071' in homing[0]
@@ -1677,7 +1697,7 @@ def test_columns_refuses_a_displaced_hand_because_it_has_no_opening_rest():
     node, _client = _node_with_client()
     _hand_at(node, rev=9.6227)
 
-    resp = node._svc_start_columns(Trigger.Request(), Trigger.Response())
+    resp = node._start_pattern(_columns_goal())
     assert resp.success is False
     assert 'columns refused' in resp.message
     assert 'no opening REST' in resp.message
@@ -1687,7 +1707,7 @@ def test_columns_refuses_a_displaced_hand_because_it_has_no_opening_rest():
 def test_columns_starts_with_the_hand_at_home():
     node, _client = _node_with_client()
 
-    resp = node._svc_start_columns(Trigger.Request(), Trigger.Response())
+    resp = node._start_pattern(_columns_goal())
     assert resp.success is True, resp.message
     assert node._executor is not None
 
@@ -1708,7 +1728,7 @@ def _running_self_toss(node):
     object itself: `_on_tick` retires a finished one off the node."""
     _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
     _prelevel_ready(node)
-    resp = node._svc_start_self_toss(Trigger.Request(), Trigger.Response())
+    resp = node._start_pattern(_self_toss_goal())
     assert resp.success is True, resp.message
     return node._executor
 
@@ -1849,7 +1869,7 @@ def test_frame_check_within_limit_starts_columns_with_authority():
     node.set_parameters(
         [_MockParameter(40.0, name='learner_lateral_authority_mm')])
     _frame_ready(node, plat_x=3.0, plat_y=0.0, cmd_x=0.0, cmd_y=0.0)
-    resp = node._svc_start_columns(Trigger.Request(), Trigger.Response())
+    resp = node._start_pattern(_columns_goal())
     assert resp.success is True
 
 
@@ -1858,7 +1878,7 @@ def test_frame_check_over_limit_refuses_columns_with_the_number():
     node.set_parameters(
         [_MockParameter(40.0, name='learner_lateral_authority_mm')])
     _frame_ready(node, plat_x=2.1, plat_y=31.1, cmd_x=0.0, cmd_y=0.0)
-    resp = node._svc_start_columns(Trigger.Request(), Trigger.Response())
+    resp = node._start_pattern(_columns_goal())
     assert resp.success is False
     assert 'REJECTED_FRAME_OFFSET' in resp.message
     assert '+31.2' in resp.message
@@ -1876,7 +1896,7 @@ def test_frame_check_with_zero_authority_starts_and_logs_the_offset():
     _frame_ready(node, plat_x=2.1, plat_y=31.1, cmd_x=0.0, cmd_y=0.0)
     lines = []
     node.get_logger().info = lambda m: lines.append(m)
-    resp = node._svc_start_columns(Trigger.Request(), Trigger.Response())
+    resp = node._start_pattern(_columns_goal())
     assert resp.success is True
     frame_lines = [ln for ln in lines if ln.startswith('frame check:')]
     assert len(frame_lines) == 1, lines
@@ -1890,7 +1910,7 @@ def test_frame_check_cannot_evaluate_refuses_naming_the_missing_input():
     node, _client = _node_with_client(frame=False)
     node.set_parameters(
         [_MockParameter(40.0, name='learner_lateral_authority_mm')])
-    resp = node._svc_start_columns(Trigger.Request(), Trigger.Response())
+    resp = node._start_pattern(_columns_goal())
     assert resp.success is False
     assert 'REJECTED_FRAME_OFFSET' in resp.message
     assert 'Platform' in resp.message
@@ -1905,7 +1925,7 @@ def test_frame_check_refuses_when_the_commanded_position_is_moving():
         node._platform_mocap_xy.append((now, 0.0, 0.0))
     node._commanded_xy_hist.append((now - 0.5, 0.0, 0.0))
     node._commanded_xy_hist.append((now, 2.0, 0.0))  # 2 mm > 1 mm tolerance
-    resp = node._svc_start_columns(Trigger.Request(), Trigger.Response())
+    resp = node._start_pattern(_columns_goal())
     assert resp.success is False
     assert 'REJECTED_FRAME_OFFSET' in resp.message
     assert 'not at rest' in resp.message
@@ -2040,7 +2060,7 @@ def test_an_over_limit_or_unevaluable_check_keeps_the_earlier_correction():
 def _good_box_path(tmp_path, *, apex_band_m=(0.85, 0.95)):
     """A P1/P1 self_toss box at the LIVE gate hash and the session's
     operating limits (300/5000/150000/3500) — mirrors
-    `test_start_self_toss_refuses_an_uncovered_apex_before_any_motion`'s box
+    `test_self_toss_refuses_an_uncovered_apex_before_any_motion`'s box
     exactly, so a reload test's shared refusal chain (identical to the
     self-toss path up to `_start_reload`) passes without depending on
     `config/generated/admissible_box.yaml`, which a concurrent sweep may be
@@ -2115,12 +2135,11 @@ def _bb_announcement(*, target_id, landing_mm, landing_vel_mm_s,
 
 
 def _start_reload(node, tmp_path, **reload_kw):
-    """Drive `node` through the full R4 reload start path (`reload_first`
-    param set, the shared refusal chain wired ready, both BB clients
-    succeeding by default) and return the service response."""
-    node._params['reload_first'] = True
+    """Drive `node` through the full R4 reload start path (a `reload=True`
+    Juggle goal, the shared refusal chain wired ready, both BB clients
+    succeeding by default) and return the goal-accept result."""
     node._params['plant_id'] = 'test_reload_' + str(id(node))
-    # `_svc_start_self_toss` wires `observer=`/`observations=` on the
+    # `_run_one_ball` wires `observer=`/`observations=` on the
     # executor it builds (self-toss AND reload alike) -- unlike columns,
     # which doesn't -- so a tick must see `in_trajectory_mode=True` or
     # `SkillExecutor.tick`'s very first check ends the attempt
@@ -2130,7 +2149,7 @@ def _start_reload(node, tmp_path, **reload_kw):
     _reload_ready(node, **reload_kw)
     with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)), \
          patch.object(sn, '_REPO_ROOT', str(tmp_path)):
-        return node._svc_start_self_toss(Trigger.Request(), Trigger.Response())
+        return node._start_pattern(_self_toss_goal(reload=True))
 
 
 def _finish_bridge(node):
@@ -2147,14 +2166,13 @@ def _finish_bridge(node):
 
 def test_reload_installs_the_bridge_rest_then_calls_bb_reload_and_throw(tmp_path):
     node, _client = _node_with_client(response=_response())
-    node._params['reload_first'] = True
     node._params['plant_id'] = 'test_reload_bridge'
     _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
     prelevel_client = _prelevel_ready(node)
     reload_client, throw_client = _reload_ready(node)
     with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)), \
          patch.object(sn, '_REPO_ROOT', str(tmp_path)):
-        resp = node._svc_start_self_toss(Trigger.Request(), Trigger.Response())
+        resp = node._start_pattern(_self_toss_goal(reload=True))
     assert resp.success is True, resp.message
     # The bridge REST is a fresh, single-skill schedule -- installed through
     # the SAME `trajectory/install_segment` client every other schedule uses,
@@ -2209,7 +2227,7 @@ def test_reload_while_running_is_refused_even_after_the_bridge_finishes(tmp_path
     _finish_bridge(node)
     assert node._executor is None            # the bridge finished
     assert node._reload_ctx is not None       # still awaiting the announcement
-    resp2 = node._svc_start_self_toss(Trigger.Request(), Trigger.Response())
+    resp2 = node._start_pattern(_self_toss_goal())
     assert resp2.success is False
     assert 'already running' in resp2.message
 
@@ -2310,8 +2328,128 @@ def test_stop_during_a_reload_wait_clears_the_context():
     node._reload_ctx = SimpleNamespace(
         pattern=None, boxes=None, memory=None,
         deadline_mono=time.perf_counter() + 10.0)
-    resp = node._svc_stop(Trigger.Request(), Trigger.Response())
+    resp = node._stop_attempt()
     assert resp.success is True
     assert node._reload_ctx is None
     assert 'cannot be aborted' in resp.message
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# the Juggle action (R4 U5): goal accept/reject, cancel, execute/feedback
+
+
+class TestJuggleAction:
+    """`jugglebot/juggle` replaces the deleted columns-start / self-toss-start /
+    stop Trigger services (owner decision D3): goal accept
+    runs `_start_pattern` (`_juggle_goal`), cancel calls `_stop_attempt`
+    (`_juggle_cancel` + `_juggle_execute`'s wait loop), execute waits on
+    `_goal_done_event` and returns the `Juggle.Result`."""
+
+    def test_goal_callback_accepts_a_valid_pattern(self):
+        node, _client = _node_with_client()
+        assert node._juggle_goal(_columns_goal()) == sn.GoalResponse.ACCEPT
+        assert node._executor is not None
+
+    def test_goal_callback_rejects_an_unknown_pattern(self):
+        node, _client = _node_with_client()
+        assert node._juggle_goal(_goal('not_a_pattern')) == sn.GoalResponse.REJECT
+        assert node._executor is None
+
+    def test_goal_callback_rejects_a_second_goal_while_the_first_runs(self):
+        node, _client = _node_with_client()
+        assert node._juggle_goal(_columns_goal()) == sn.GoalResponse.ACCEPT
+        assert node._juggle_goal(_columns_goal()) == sn.GoalResponse.REJECT
+
+    def test_columns_with_reload_is_refused_until_r5(self):
+        node, _client = _node_with_client()
+        assert node._juggle_goal(_columns_goal(reload=True)) == sn.GoalResponse.REJECT
+        assert node._executor is None
+        resp = node._start_pattern(_columns_goal(reload=True))
+        assert resp.success is False
+        assert 'R5' in resp.message
+
+    def test_cancel_callback_always_accepts(self):
+        node, _client = _node_with_client()
+        assert node._juggle_cancel(MagicMock()) == sn.CancelResponse.ACCEPT
+
+    def test_execute_returns_the_end_code_once_on_tick_retires_the_executor(self):
+        """`_goal_done_event` fires from `_on_tick` (`_maybe_signal_goal_done`),
+        never merely because `_executor` went `None` mid-reload-wait (see that
+        method's docstring) -- here a plain `_stop_attempt` + one `_on_tick`
+        is the shortest path to that state, mirroring `test_stop_ends_the_
+        attempt`."""
+        node, _client = _node_with_client()
+        assert node._juggle_goal(_columns_goal()) == sn.GoalResponse.ACCEPT
+        node._stop_attempt()
+        node._on_tick()
+        assert node._executor is None
+        gh = MagicMock(is_cancel_requested=False)
+        result = node._juggle_execute(gh)
+        assert result.outcome == 'STOPPED'
+        assert result.success is False
+        assert result.throws == 0
+        assert result.caught == 0
+        assert result.per_throw == []
+        gh.canceled.assert_not_called()
+        gh.abort.assert_called_once()
+
+    def test_execute_publishes_feedback_and_honours_a_live_cancel(self):
+        node, _client = _node_with_client()
+        assert node._juggle_goal(_columns_goal()) == sn.GoalResponse.ACCEPT
+        gh = MagicMock(is_cancel_requested=False)
+        holder = {}
+
+        def run():
+            holder['result'] = node._juggle_execute(gh)
+
+        th = threading.Thread(target=run)
+        th.start()
+        try:
+            deadline = time.time() + 2.0
+            while not gh.publish_feedback.called and time.time() < deadline:
+                time.sleep(0.01)
+            assert gh.publish_feedback.called, 'no feedback published'
+            fb = gh.publish_feedback.call_args[0][0]
+            assert fb.phase == 'RUNNING'
+            gh.is_cancel_requested = True
+            deadline = time.time() + 2.0
+            while (node._executor is not None
+                   and not node._executor.attempt_ended
+                   and time.time() < deadline):
+                time.sleep(0.01)
+            assert node._executor is not None and node._executor.attempt_ended, (
+                '_juggle_execute never observed the cancel and called '
+                '_stop_attempt')
+            node._on_tick()
+        finally:
+            th.join(timeout=5.0)
+        assert not th.is_alive(), '_juggle_execute never returned after the hold'
+        result = holder['result']
+        assert result.outcome == 'STOPPED'
+        gh.canceled.assert_called_once()
+
+    def test_hop_pattern_compiles_a_two_site_schedule(self, tmp_path):
+        node, _client = _node_with_client()
+        node._on_traj_status(_status())
+        _prelevel_ready(node)
+        node._params['plant_id'] = 'test_hop_' + str(id(node))
+        box_path = tmp_path / 'admissible_box.yaml'
+        boxes = [
+            adm.AdmissibleBox(
+                site_pair=pair, apex_band_m=(0.85, 0.95),
+                landing_xy_m=((-0.05, 0.05), (-0.05, 0.05)), apex_m=(0.6, 1.2),
+                pattern='hop', release_site_xy_mm=rel, target_site_xy_mm=tgt,
+                limits={'leg_vel_mmps': 300.0, 'leg_acc_mmps2': 5000.0,
+                       'leg_jerk_mmps3': 150000.0, 'hand_acc_rps2': 3500.0},
+                gate_hash=adm.gate_hash(), swept_at='2026-09-13')
+            for pair, rel, tgt in [(('P1', 'P2'), (-50.0, 0.0), (50.0, 0.0)),
+                                   (('P2', 'P1'), (50.0, 0.0), (-50.0, 0.0))]]
+        adm.dump(str(box_path), boxes)
+        with patch.object(sn, '_ADMISSIBLE_BOX_PATH', str(box_path)), \
+             patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+            resp = node._start_pattern(_hop_goal(separation_mm=100.0))
+        assert resp.success is True, resp.message
+        assert node._executor.schedule.pattern == 'hop'
+        sites = {sk.site.name for sk in node._executor.schedule.skills}
+        assert sites == {'P1', 'P2'}
 

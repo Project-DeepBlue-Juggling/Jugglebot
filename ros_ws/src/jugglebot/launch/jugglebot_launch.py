@@ -699,14 +699,16 @@ def generate_launch_description():
             '/catch/reach_center',
             '/catch/pretilt_hold',
             '/trajectory/commanded_position',
-            # Ball-op action feedback + status: the per-cycle phase string and
-            # the goal terminal. Nothing else in a bag carries WHICH cycle of a
-            # session a given instant belongs to, which is the join a per-toss
-            # corpus is built on.
-            '/jugglebot/toss/_action/feedback',
-            '/jugglebot/toss/_action/status',
-            '/jugglebot/toss_continuous/_action/feedback',
-            '/jugglebot/toss_continuous/_action/status',
+            # The skill-stack start surface's action feedback + status (R4
+            # owner decision D3): the per-attempt phase string and the goal
+            # terminal (COMPLETED/STOPPED/<end_code>, throws/caught). Replaces
+            # the FSM /jugglebot/toss(_continuous) action topics above —
+            # jugglebot/juggle is now THE start surface every live session
+            # dispatches through, and nothing else in a bag carries WHICH
+            # attempt a given instant belongs to, which is the join a
+            # per-throw corpus is built on.
+            '/jugglebot/juggle/_action/feedback',
+            '/jugglebot/juggle/_action/status',
             '-s', 'mcap', '-o', bag_dir,
         ],
         output='screen',

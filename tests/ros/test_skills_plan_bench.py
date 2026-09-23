@@ -831,3 +831,60 @@ def test_self_toss_rehearsal_grows_memory_and_the_learner_changes_the_command(
     identity_u = commands[0]
     assert commands[1] == pytest.approx(identity_u)        # still cold (1 row)
     assert not np.allclose(commands[2], identity_u)        # warm (>= k_min rows)
+
+
+# ── R4: the jugglebot/juggle action replaces the deleted skills/start_columns
+# ── / skills/start_self_toss / skills/stop Trigger services ─────────────────
+
+@pytest.mark.parametrize('cli_pattern, wire_pattern', [
+    ('columns', 'columns'),
+    ('self-toss', 'self_toss'),
+    ('hop', 'hop'),
+])
+def test_juggle_pattern_name_maps_cli_spelling_to_the_wire_name(
+        cli_pattern, wire_pattern):
+    """``--pattern``'s CLI spelling -> ``Juggle.Goal.pattern`` / ``schedule.
+    Schedule.pattern``'s own names -- only ``self-toss`` (hyphenated, the
+    CLI's long-standing spelling) differs from the wire name."""
+    assert spb.juggle_pattern_name(cli_pattern) == wire_pattern
+
+
+def test_build_parser_accepts_hop_and_the_new_via_action_options():
+    """``--pattern hop`` plus the new ``--via-action``/``--separation-mm``/
+    ``--reload`` flags this unit added for :func:`spb.run_live_action` --
+    a pure argparse check, no ROS."""
+    args = spb.build_parser().parse_args([
+        '--via-action', '--pattern', 'hop', '--separation-mm', '80',
+        '--reload', '--n-throws', '4'])
+    assert args.via_action is True
+    assert args.pattern == 'hop'
+    assert args.separation_mm == 80.0
+    assert args.reload is True
+    assert args.n_throws == 4
+
+
+def test_build_parser_separation_mm_and_reload_default_to_off():
+    args = spb.build_parser().parse_args([])
+    assert args.via_action is False
+    assert args.separation_mm == 0.0
+    assert args.reload is False
+
+
+def test_main_refuses_hop_pattern_without_via_action(capsys):
+    """``hop`` has no local schedule compiler in this bench (unlike
+    ``columns``/``self-toss``, R2/R3) -- it only runs through :func:`spb.
+    run_live_action`, so every other mode refuses it up front rather than
+    silently mis-compiling."""
+    rc = spb.main(['--dry-run', '--pattern', 'hop'])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert '--via-action' in err
+
+
+def test_run_live_action_imports_no_ros_until_called():
+    """:func:`spb.run_live_action` exists and is a plain function at module
+    scope (its own ``rclpy``/``jugglebot_interfaces`` imports are inside the
+    function body -- covered by ``test_the_pure_core_imports_no_ros_at_
+    module_scope`` above, an AST check of the WHOLE file including this
+    function's module-level definition)."""
+    assert callable(spb.run_live_action)
