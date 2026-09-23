@@ -299,6 +299,16 @@ def test_splice_at_an_interior_knot_keeps_the_head_and_re_bases_the_marks(
 
     The head claim is the safety one: knots ``0..k_s`` are at or before
     ``t0 + k_s·dt``, which is what the emitter has already handed the wire.
+
+    **RE-BASELINED 2026-09-23 (R4 U4).**  The two VELOCITY pins stop one knot
+    short of the seam, at ``[:k_s]`` instead of ``[:k_s + 1]``, because
+    ``_seam_velocity`` now re-derives knot ``k_s``'s velocity from the JOINED
+    series: the inherited value was a finite difference taken against a knot in
+    the tail the splice discards (measured ``ry = −0.0100 rad/s`` against a
+    series rising at ``+0.0062``, a 402 mm/s² Hermite jump in x — see that
+    function).  ``k_s`` is ``WIRE_READ_KNOTS`` ahead of the emitter by
+    construction, so its velocity has not been sent; every knot the wire HAS
+    read is still pinned here, and the seam's POSITION pins are unchanged.
     """
     plan, meta = throw
     seg = catch_segment
@@ -309,10 +319,10 @@ def test_splice_at_an_interior_knot_keeps_the_head_and_re_bases_the_marks(
                                      limits, geom)
 
     assert np.array_equal(spliced.pose[:k_s + 1], plan.pose[:k_s + 1])
-    assert np.array_equal(spliced.pose_vel[:k_s + 1], plan.pose_vel[:k_s + 1])
+    assert np.array_equal(spliced.pose_vel[:k_s], plan.pose_vel[:k_s])
     assert np.array_equal(spliced.hand_rev[:k_s + 1], plan.hand_rev[:k_s + 1])
-    assert np.array_equal(spliced.hand_vel_rps[:k_s + 1],
-                          plan.hand_vel_rps[:k_s + 1])
+    assert np.array_equal(spliced.hand_vel_rps[:k_s],
+                          plan.hand_vel_rps[:k_s])
     # One knot dropped at the seam, not two and not none.
     assert spliced.n_knots == k_s + seg.plan.n_knots
     assert new_meta.n_knots == spliced.n_knots
@@ -333,6 +343,49 @@ def test_splice_at_an_interior_knot_keeps_the_head_and_re_bases_the_marks(
     assert new_meta.cup_plan.jerk.shape[0] == spliced.n_knots - 1
     # ...and the frame is the HEAD's, not re-read from anywhere (row E8).
     assert new_meta.levelling_correction is meta.levelling_correction
+
+
+def test_the_seam_knots_velocity_is_the_joined_series_derivative(
+        throw, catch_segment, limits, geom):
+    """The seam knot's velocity is the JOINED series' — not the head's stale one.
+
+    ``decompose`` differences the tilt/axis/dz series with a CENTRAL stencil
+    inside a series, so the head's velocity at the seam was taken against a knot
+    belonging to the tail the splice DISCARDS.  Measured on the R4 250 mm hop
+    (2026-09-23, ``scratchpad/probe_r4_seam_vel_channels.py``): ``ry =
+    −0.0100 rad/s`` where the joined tilt series RISES at ``+0.0062`` (left) and
+    ``+0.0008`` (right) rad/s — the wrong sign for the curve it is attached to —
+    and the emitter's Hermite jumped ``402.1 mm/s²`` in x and ``2.916 rad/s²`` in
+    tilt at that one knot (0.56× the whole tilt-accel budget, the 5th largest of
+    142 knots).  Re-derived: ``98.7 mm/s²`` and ``1.4 rad/s²``.
+
+    Two independent claims, because the implementation takes a 3-knot window and
+    a reader has to be able to check that shortcut:
+
+    1. every channel agrees with a decompose of the WHOLE joined series (a 3-knot
+       window makes ``_knot_derivative`` central at its middle knot, which is the
+       full-series value — this is what pins that equivalence), and
+    2. the tilt channel equals the plain central difference of the joined tilt
+       series, which is the statement in physical terms.
+
+    ``replan_tail`` has always installed exactly this value at ITS seam.
+    """
+    plan, meta = throw
+    seg = catch_segment
+    k_s = K_SPLICE
+    dt = float(plan.dt)
+
+    spliced, new_meta = uc.splice_at(plan, meta, k_s, seg.plan, seg.meta,
+                                     limits, geom)
+
+    whole = cr.decompose(new_meta.cup_plan, new_meta.tilts,
+                         uc.build_realize_config(limits))
+    assert np.allclose(spliced.pose_vel[k_s], whole.pose_vel[k_s], atol=1e-9)
+    assert spliced.hand_vel_rps[k_s] == pytest.approx(
+        float(whole.slider_vel_rev_s[k_s]), abs=1e-9)
+
+    central = (spliced.pose[k_s + 1, 3:5] - spliced.pose[k_s - 1, 3:5]) / (2.0 * dt)
+    assert np.allclose(spliced.pose_vel[k_s, 3:5], central, atol=1e-9)
 
 
 def test_splice_at_the_seam_knot_matches_the_segments_knot_zero(throw,

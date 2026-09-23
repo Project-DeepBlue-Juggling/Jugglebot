@@ -978,8 +978,61 @@ def _as_tilt_pair(value, name: str) -> np.ndarray:
     return arr
 
 
+def _smooth_slew(start: np.ndarray, end: np.ndarray, n: int, dt: float,
+                 cfg) -> np.ndarray:
+    """Quintic-smoothstep tilt ramp from ``start`` to ``end`` over ``n`` knots.
+
+    The attitude-bearing REST's schedule (the PRE-TILT that puts the platform at
+    the receive tilt before a BB arrival, and the DECAY REST that takes it back
+    to level afterwards).  ``s(u) = 6u⁵ − 15u⁴ + 10u³`` has zero first AND
+    second derivative at both ends, so the tilt leaves rest and arrives at rest
+    with no corner: peak rate ``1.875·|Δ|/T``, peak acceleration
+    ``5.774·|Δ|/T²``.
+
+    **Why not the rate-limited ramp the zero-banking branch already produces.**
+    That branch holds the terminal constant at every knot and lets
+    :func:`_rate_limit_sweeps` back a straight line out of it, which slews at
+    exactly the cap and then STOPS within one knot — the WP3 failure this
+    module's docstring records: 3.0 rad/s arriving with 240 rad/s², which
+    ``decompose`` turns into 104k mm/s² of leg acceleration through the 744.3 mm
+    lever.  A 12° pre-tilt over 1.0 s is 0.21 rad, so the corner of a linear
+    ramp alone is 8.4 rad/s² at ``dt = 0.025``; the smoothstep's peak is
+    1.21 rad/s² spread over the whole window.
+
+    Both caps are CHECKED, not clipped: a window too short for the requested
+    attitude change is refused with the period it would need, rather than
+    silently clipped back into the corner this function exists to avoid.
+    """
+    start = np.asarray(start, dtype=float).reshape(2)
+    end = np.asarray(end, dtype=float).reshape(2)
+    delta = end - start
+    mag = float(np.hypot(delta[0], delta[1]))
+    if n < 2 or mag < 1e-15:
+        return np.repeat(end[None, :], max(n, 1), axis=0)
+    T = float(n - 1) * float(dt)
+    rate_cap = float(cfg.tilt_rate_limit_rad_s)
+    accel_cap = float(cfg.tilt_accel_limit_rad_s2)
+    peak_rate = 1.875 * mag / T
+    peak_acc = 5.7735026918962575 * mag / (T * T)
+    if rate_cap > 0.0 and peak_rate > rate_cap * (1.0 + 1e-9):
+        raise ValueError(
+            "a %.3f° attitude change over %.3f s needs %.3f rad/s of tilt rate, "
+            "past the %.3f rad/s limit — give the REST at least %.3f s."
+            % (np.degrees(mag), T, peak_rate, rate_cap, 1.875 * mag / rate_cap))
+    if accel_cap > 0.0 and peak_acc > accel_cap * (1.0 + 1e-9):
+        raise ValueError(
+            "a %.3f° attitude change over %.3f s needs %.3f rad/s² of tilt "
+            "acceleration, past the %.3f rad/s² limit (the leg-acceleration "
+            "budget through the 744.3 mm lever) — give the REST at least %.3f s."
+            % (np.degrees(mag), T, peak_acc, accel_cap,
+               np.sqrt(5.7735026918962575 * mag / accel_cap)))
+    u = np.linspace(0.0, 1.0, n)
+    ss = u * u * u * (10.0 + u * (-15.0 + 6.0 * u))
+    return start[None, :] + ss[:, None] * delta[None, :]
+
+
 def tilt_schedule(cup_plan, receive_tilt, throw_tilt, cfg=None, *,
-                  start_tilt=None) -> np.ndarray:
+                  start_tilt=None, rest_slew=False) -> np.ndarray:
     """Per-knot cup tilt ``(rx, ry)`` for ``cup_plan``.  Returns an ``(n, 2)`` array.
 
     **Banking (``cfg.banking_enabled``, the default).**  A ball resting in the cup
@@ -1003,6 +1056,13 @@ def tilt_schedule(cup_plan, receive_tilt, throw_tilt, cfg=None, *,
     the NORMALISED lateral residual — full-scale tilt for a 0.4 milli-g residual
     and for a 60 milli-g one alike.  :func:`_banking_raw` carries the rule, the
     measurement behind it, and the no-predecessor case.
+
+    **``rest_slew`` — the attitude-bearing REST.**  Zero banking, but the window
+    is a SLEW from ``start_tilt`` to ``throw_tilt`` rather than a hold: the
+    pre-tilt that puts the platform at the receive attitude before a BB arrival,
+    and the decay back to level after the seat.  See :func:`_smooth_slew` for why
+    it is a quintic smoothstep and not the rate-limited ramp the branch below
+    produces.
 
     **Zero banking.**  No apparent-gravity content at all: hold ``receive_tilt``
     through the catch knot and ``throw_tilt`` after it.  When the two are equal the
@@ -1090,6 +1150,16 @@ def tilt_schedule(cup_plan, receive_tilt, throw_tilt, cfg=None, *,
 
     if cfg.banking_enabled:
         raw = _banking_raw(acc, cfg, start)
+    elif rest_slew:
+        # The attitude-bearing REST (``CycleGoals.rest_tilt``).  Gated on the new
+        # flag so the zero-banking branch below stays the legacy two-constant
+        # realisation the ``realize_tilted`` parity test pins bit-for-bit.
+        if start is None:
+            raise ValueError(
+                "rest_slew needs a start_tilt: a REST that ENDS at a chosen "
+                "attitude has to know the one it opens at, or the slew is a "
+                "step at the seam.")
+        raw = _smooth_slew(start, throw, n, dt, cfg)
     else:
         idx = np.arange(n)
         raw = np.where((idx <= catch_k)[:, None], recv[None, :], throw[None, :])

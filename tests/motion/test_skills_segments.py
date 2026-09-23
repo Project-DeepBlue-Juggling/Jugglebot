@@ -337,3 +337,139 @@ def test_the_opening_rest_homes_the_hand_inside_the_firmware_envelope(
     bound_v, bound_a = sc.home_hand_bounds(seed_rev, period)
     assert np.max(np.abs(vel)) <= bound_v + 1e-9
     assert np.max(np.abs(acc)) <= bound_a + 1e-9
+
+
+# ---------------------------------------------------------------------------
+# The held-attitude CATCH and the attitude-bearing REST (R4 U2)
+# ---------------------------------------------------------------------------
+#
+# THE RECIPE (probe ``probe_r4_bb_catch4.py``, venv, 2026-09-23, these limits):
+# a BB arrival 18-40 deg off vertical at 4.5-5.5 m/s clamps to the 12 deg receive
+# tilt; a PRE-TILT REST carries the platform from its level rest onto the axis
+# line at that attitude (1.0 s: leg vel 70.8 mm/s, acc 221.7, jerk 10450;
+# 1.5 s: 47.1 / 97.5 / 3611; 2.0 s: 35.3 / 54.6 / 1706); the held-attitude CATCH
+# then plans at peak leg vel 3.1 mm/s, acc 61.6-64.3, jerk 2377-2557, hand acc
+# 1029-1076 rev/s^2, with the cup opening at the touch-down knot exactly on the
+# landing point; the DECAY REST mirrors the pre-tilt; a 0.9 m self-toss THROW
+# from the level rest it leaves passes at hand acc 3152 rev/s^2.
+
+_BB_ARRIVAL = np.array([1390.5, 0.0, -4279.6])       # 18 deg at 4.5 m/s, mm/s
+
+
+def test_receive_hold_tilt_is_the_clamped_receive_tilt():
+    """One derivation of the reload's attitude, and it SATURATES.
+
+    A BB arrival is 18-40 deg off vertical but the platform can only track 12,
+    so past the clamp the arrival is partly nulled and the residual is in-cup
+    skid — which the FSM accepted and caught through. Asserted here because the
+    schedule, the segment and the QP must all read the same 12 deg.
+    """
+    from jugglebot.motion.trajectory import tilt_geometry as tg
+    for deg in (18.0, 25.0, 40.0):
+        a = np.radians(deg)
+        v = 4800.0 * np.array([np.sin(a), 0.0, -np.cos(a)])
+        tilt = sg.receive_hold_tilt(v)
+        assert tilt == tuple(tg.tilt_to_receive(v))
+        assert abs(np.degrees(np.hypot(*tilt)) - tg.MAX_TILT_DEG) < 1e-9
+    # ...and BELOW the clamp it is the exact collinear answer: the cup axis lands
+    # anti-parallel to the arrival, which is what "no skid" means.
+    a = np.radians(8.0)
+    v = 4800.0 * np.array([np.sin(a), 0.0, -np.cos(a)])
+    axis = tg.cup_axis(*sg.receive_hold_tilt(v))
+    assert np.allclose(axis, -v / np.linalg.norm(v), atol=1e-12)
+
+
+def test_hold_axis_site_is_on_the_axis_through_the_landing_point():
+    """Every site a held-attitude catch names is a point on ONE line.
+
+    The cup moves along the held axis and nowhere else, so its rest is up the
+    axis from the landing point, not under it. At the 12 deg ceiling that is
+    0.2126 mm of lateral per mm of height — 29.8 mm over the 140.4 mm from the
+    catch height to the rest height, which is why the pre-tilt REST also
+    translates.
+    """
+    from jugglebot.motion.trajectory import tilt_geometry as tg
+    tilt = sg.receive_hold_tilt(_BB_ARRIVAL)
+    axis = tg.cup_axis(*tilt)
+    land = CATCH_SITE_MM
+    for z in (750.0, 830.0, 900.0):
+        site = sg.hold_axis_site(land, tilt, z)
+        assert site[2] == z
+        d = site - land
+        if abs(d[2]) > 0:
+            assert np.allclose(d / np.linalg.norm(d),
+                               np.sign(d[2]) * axis, atol=1e-12)
+    assert np.allclose(sg.hold_axis_site(land, tilt, land[2]), land, atol=1e-12)
+
+
+def test_a_held_attitude_catch_cannot_carry_its_own_throw():
+    """The refusal is at construction: a release needs its own take-off tilt."""
+    tilt = sg.receive_hold_tilt(_BB_ARRIVAL)
+    tt = sg.ThrowAfterCatch(t_release_s=1.3, site_mm=THROW_SITE_MM,
+                            target_mm=THROW_SITE_MM, flight_s=T_F)
+    with pytest.raises(ValueError, match='own take-off tilt'):
+        sg.CatchTerminal(landing_mm=CATCH_SITE_MM,
+                         landing_vel_mm_s=_BB_ARRIVAL, t_land_s=1.0,
+                         rest_site_mm=REST_MM, then_throw=tt, hold_tilt=tilt)
+
+
+@pytest.fixture(scope='module')
+def bb_chain(limits, geom):
+    """PRE-TILT REST -> held-attitude CATCH -> DECAY REST, chained as the
+    schedule will chain them (each seeded from the last one's terminal knot)."""
+    cfg = sg.SegmentConfig()
+    tilt = sg.receive_hold_tilt(_BB_ARRIVAL)
+    land = CATCH_SITE_MM
+    pre_site = sg.hold_axis_site(land, tilt, uc.SETTLE_CUP_Z_MM)
+    level = np.array([land[0], land[1], uc.SETTLE_CUP_Z_MM])
+    seed = _rest_state(level)
+    pre = sg.plan_segment(sg.REST, seed, sg.RestTerminal(
+        rest_site_mm=pre_site, t_rest_s=1.5, tilt=tilt), cfg, limits, geom)
+    seed1 = uc.state_at_knot(pre.plan, pre.meta, pre.plan.pose.shape[0] - 1)
+    cat = sg.plan_segment(sg.CATCH, seed1, sg.CatchTerminal(
+        landing_mm=land, landing_vel_mm_s=_BB_ARRIVAL, t_land_s=1.0,
+        rest_site_mm=pre_site, hold_tilt=tilt), cfg, limits, geom)
+    seed2 = uc.state_at_knot(cat.plan, cat.meta, cat.plan.pose.shape[0] - 1)
+    dec = sg.plan_segment(sg.REST, seed2, sg.RestTerminal(
+        rest_site_mm=level, t_rest_s=1.5, tilt=(0.0, 0.0)), cfg, limits, geom)
+    return tilt, pre, cat, dec
+
+
+def test_the_pre_tilt_rest_leaves_the_machine_at_the_receive_attitude(bb_chain):
+    """The PRE-TILT's whole job: end AT the attitude, on the axis line.
+
+    The held-attitude catch refuses (``TILT_PIN``) a seed that is not already
+    there, so this is the segment that makes the catch plannable at all.
+    """
+    tilt, pre, _, _ = bb_chain
+    assert np.allclose(pre.plan.pose[-1, 3:5], np.asarray(tilt), atol=1e-12)
+    assert np.allclose(pre.plan.pose[0, 3:5], 0.0, atol=1e-12)
+    assert pre.meta.report.peak_leg_vel_mmps < 100.0
+
+
+def test_the_held_attitude_catch_holds_it_and_puts_the_cup_on_the_ball(
+        bb_chain, limits):
+    """One attitude for the whole window, the cup on the landing point, and the
+    legs essentially still — 3.1 mm/s against the 300 mm/s session limit.
+
+    That last number is the point of the unit. The same catch WITHOUT the held
+    attitude asks the legs to cancel the stroke's own lateral projection
+    (v_z sin 12 deg = 624 mm/s) and refuses LIMIT_VEL (probes 1-3, 2026-09-23).
+    """
+    tilt, _, cat, _ = bb_chain
+    tilts = cat.plan.pose[:, 3:5]
+    assert np.max(np.abs(tilts - np.asarray(tilt))) < 1e-12
+    k = int(round(cat.event_t_s / cat.plan.dt))
+    cup = uc.cup_state_from_platform(cat.plan.pose[k], cat.plan.hand_rev[k],
+                                    uc.build_realize_config(limits))
+    assert np.allclose(np.asarray(cup)[:2], CATCH_SITE_MM[:2], atol=0.05)
+    assert cat.meta.report.peak_leg_vel_mmps < 20.0
+    assert cat.meta.report.peak_hand_acc_rps2 < HAND_ACC
+
+
+def test_the_decay_rest_returns_the_machine_to_level(bb_chain):
+    """The FSM let the tilt decay after the seat; the DECAY REST is that, and it
+    is what leaves a level rest for the next THROW to launch from."""
+    _, _, _, dec = bb_chain
+    assert np.allclose(dec.plan.pose[-1, 3:5], 0.0, atol=1e-12)
+    assert dec.meta.report.peak_leg_vel_mmps < 100.0

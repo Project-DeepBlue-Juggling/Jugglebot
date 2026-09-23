@@ -14,12 +14,13 @@ this rung. Pure Python + numpy, no ROS imports.
 from __future__ import annotations
 
 import dataclasses
-from typing import Optional
+from typing import Optional, Tuple
 
 import numpy as np
 
 from jugglebot.motion import unified_cycle as uc
 from jugglebot.motion.trajectory import cup_cycle as cc
+from jugglebot.motion.trajectory import tilt_geometry as tg
 from jugglebot.motion.trajectory.cycle_plan import CyclePlan
 
 THROW = 'THROW'
@@ -127,6 +128,13 @@ class CatchTerminal:
     #: catch (the last catch of an attempt, and R4's reload).  With it the
     #: segment is a STEADY window + SETTLE tail; without it, a LANDING.
     then_throw: Optional[ThrowAfterCatch] = None
+    #: The receive attitude (rx, ry) rad held CONSTANT through the catch — the
+    #: FSM's pre-tilted receive, for an arrival that is not vertical (a BB throw
+    #: is 18-40° off).  ``None`` is the level catch.  Derive it with
+    #: :func:`receive_hold_tilt` and place the segment's rest site with
+    #: :func:`hold_axis_site`: the cup leaves the seat along the held axis, so
+    #: its rest is on that line, not under the landing point.
+    hold_tilt: Optional[Tuple[float, float]] = None
 
     def __post_init__(self):
         object.__setattr__(self, 'landing_mm', _vec3(self.landing_mm, 'landing_mm'))
@@ -136,6 +144,13 @@ class CatchTerminal:
                             _vec3(self.rest_site_mm, 'rest_site_mm'))
         if not float(self.t_land_s) > 0.0:
             raise ValueError('t_land_s must be > 0, got %r' % (self.t_land_s,))
+        if self.then_throw is not None and self.hold_tilt is not None:
+            raise ValueError(
+                'a held-attitude catch cannot carry its own throw: the release '
+                'needs its own take-off tilt and the receive attitude cannot be '
+                'held through the dwell (a throw from a 12° tilted rest was '
+                'measured LIMIT_JERK, 2026-09-23). Catch standalone, then throw '
+                'from the level rest the decay REST leaves.')
         if (self.then_throw is not None
                 and not float(self.then_throw.t_release_s) > float(self.t_land_s)):
             raise ValueError(
@@ -150,6 +165,12 @@ class RestTerminal:
 
     rest_site_mm: np.ndarray
     t_rest_s: float
+    #: The attitude (rx, ry) rad this REST ENDS at.  ``None`` is the level rest.
+    #: The two uses are the PRE-TILT (level → the receive attitude, before a BB
+    #: arrival) and the DECAY (back to level, after the seat) — the FSM's
+    #: choreography, which held the tilt through the catch and let it decay
+    #: slowly afterwards.
+    tilt: Optional[Tuple[float, float]] = None
     #: Whether the cup is holding a ball through this REST — C-CUP-2's contact
     #: window (``plans/active/cup-contact-contract.md``).  **Defaults to True**,
     #: because the clause is "a ball is OR MAY BE in the cup" and a REST is where
@@ -201,6 +222,40 @@ class Segment:
     #: ``plan_segment`` call as its ``warm_start`` (owner decision: carried on
     #: the ``Segment``, no cache).
     warm_start: Optional['cc.SolverState'] = None
+
+
+def receive_hold_tilt(landing_vel_mm_s) -> Tuple[float, float]:
+    """The attitude a CATCH holds for an arrival of ``landing_vel_mm_s``.
+
+    ``tilt_geometry.tilt_to_receive``, clamped at its 12° ceiling — the cup's
+    up-axis anti-parallel to the arrival, so the ball drops STRAIGHT DOWN the cup
+    axis instead of skidding across the rim.  The ONE place the reload's tilt is
+    derived, so the schedule, the segment and the QP cannot each pick their own.
+    Past the clamp the arrival is only partly nulled and the residual is in-cup
+    skid, which the FSM accepted and caught through.
+    """
+    rx, ry = tg.tilt_to_receive(np.asarray(landing_vel_mm_s, dtype=float).reshape(3))
+    return (float(rx), float(ry))
+
+
+def hold_axis_site(landing_mm, hold_tilt, z_mm: float) -> np.ndarray:
+    """Where the cup opening is at height ``z_mm`` on the HELD axis line.
+
+    A held-attitude catch moves the cup along one line — the axis through the
+    touch-down — so every other site the segment names (its rest, and the
+    pre-tilt REST that seeds it) is a point ON that line, not one under the
+    landing point.  ``xy = landing_xy + κ·(z − landing_z)`` with
+    ``κ = axis_xy / axis_z``: at the 12° ceiling that is 0.213 mm of lateral
+    per mm of height.  The QP refuses (``CATCH_AXIS``) a site off this line
+    rather than absorbing it, because the slaved lateral channel would carry the
+    offset straight into the seat.
+    """
+    land = _vec3(landing_mm, 'landing_mm')
+    axis = tg.cup_axis(float(hold_tilt[0]), float(hold_tilt[1]))
+    kappa = axis[:2] / axis[2]
+    dz = float(z_mm) - float(land[2])
+    return np.array([land[0] + kappa[0] * dz, land[1] + kappa[1] * dz,
+                     float(z_mm)])
 
 
 def plan_segment(kind: str, seed: uc.CycleState, terminal, cfg: SegmentConfig,
@@ -257,7 +312,8 @@ def _plan_catch(seed, terminal: CatchTerminal, cfg: SegmentConfig,
                           catch_site_mm=terminal.landing_mm,
                           catch_vel_mm_s=terminal.landing_vel_mm_s,
                           catch_t_s=terminal.t_land_s,
-                          settle_site_mm=terminal.rest_site_mm)
+                          settle_site_mm=terminal.rest_site_mm,
+                          hold_tilt=terminal.hold_tilt)
     plan, meta = uc.plan_landing(goals, seed, limits, geom,
                                  warm_start=warm_start)
     return Segment(kind=CATCH, plan=plan, meta=meta, splice_k=0,
@@ -296,6 +352,7 @@ def _plan_rest(seed, terminal: RestTerminal, cfg: SegmentConfig,
                 limits, geom, warm_start) -> Segment:
     goals = uc.CycleGoals(period_s=terminal.t_rest_s,
                           settle_site_mm=terminal.rest_site_mm,
+                          rest_tilt=terminal.tilt,
                           # The terminal's declaration is an UPPER bound: a
                           # seed that says a release just happened says the ball
                           # LEFT, and the two cannot both be true at knot 0.

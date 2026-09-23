@@ -139,6 +139,17 @@ _KIND_SHAPE = {
 #: ``validate_cycle`` code (``WORKSPACE``, ``LIMIT_JERK``, ``HAND_STROKE``, …) or
 #: one of the three below that this module owns.
 TILT_PIN = 'TILT_PIN'                    #: a tilt pin outside the 12° ceiling
+
+#: How far a held-attitude window's SEED may be from the attitude it holds (rad).
+#:
+#: ``_start_tilt_for``'s measurement: knot-0 tilt costs **0.0494 leg rev per
+#: degree** through the 744.3 mm ``CUP_TILT_CENTER_Z_MM`` lever, and
+#: ``trajectory_node._install_continuity_ok`` refuses an install at 0.06 rev.
+#: 1e-3 rad is 0.0573° ⇒ 0.0028 rev, a factor ~21 inside that gate — small
+#: enough that the one-or-two-knot slew the schedule's rate sweeps use to close
+#: it cannot be seen by the install gate, and far too small to be the whole
+#: pre-tilt (which is a REST's job, not a catch's).
+HOLD_TILT_SEAM_TOL_RAD = 1e-3
 CHAIN_DISCONTINUITY = 'CHAIN_DISCONTINUITY'   #: :func:`extend` seam mismatch
 REPLAN_WINDOW = 'REPLAN_WINDOW'          #: no usable tail at the splice knot
 
@@ -380,6 +391,18 @@ class CycleGoals:
     #: already in); REQUIRED for a SETTLE, which has no catch to default from.
     settle_site_mm: Optional[np.ndarray] = None
     ball_id: int = 0
+    #: The receive attitude (rx, ry) rad this LANDING HOLDS, constant, through
+    #: the whole window — the FSM's pre-tilted catch (see
+    #: ``cup_cycle.CatchEvent.axis``).  ``None`` is the level-catch window.
+    #: Banking is off for a held attitude: the two are competing answers to the
+    #: same question, and the ball is seated by the tilt, not by the bank.
+    hold_tilt: Optional[Tuple[float, float]] = None
+    #: The attitude (rx, ry) rad a SETTLE ENDS at — the PRE-TILT that puts the
+    #: platform at the receive attitude before the ball arrives, and the DECAY
+    #: REST that takes it back to level after the seat.  ``None`` is the
+    #: level-terminal REST.  Banking is off, and the slew is the quintic
+    #: smoothstep (``cup_realize._smooth_slew``), not a rate-limited ramp.
+    rest_tilt: Optional[Tuple[float, float]] = None
 
     def catch_time_s(self) -> float:
         """The catch instant on the window clock, from whichever form was given."""
@@ -1326,10 +1349,17 @@ def _events_for(kind: str, goals: CycleGoals):
     settle_m = None
     if has_catch:
         _require(goals, kind, 'catch_site_mm', 'catch_vel_mm_s')
+        # ``vel`` stays the RAW arrival: the QP projects it onto the held axis
+        # itself (one ratio, the stroke's), so the projection is stated once,
+        # where the rows that use it are written.
+        axis = (None if goals.hold_tilt is None
+                else tg.cup_axis(float(goals.hold_tilt[0]),
+                                 float(goals.hold_tilt[1])))
         events.append(cc.CatchEvent(
             ball_id=int(goals.ball_id), t_s=goals.catch_time_s(),
             site=_vec3(goals.catch_site_mm, 'catch_site_mm') / 1000.0,
-            vel=_vec3(goals.catch_vel_mm_s, 'catch_vel_mm_s') / 1000.0))
+            vel=_vec3(goals.catch_vel_mm_s, 'catch_vel_mm_s') / 1000.0,
+            axis=axis))
     if has_throw:
         _require(goals, kind, 'throw_site_mm', 'throw_target_mm', 'flight_s')
         events.append(cc.ThrowEvent(
@@ -1440,9 +1470,31 @@ def plan_cycle(kind: str, goals: CycleGoals, state: CycleState,
             % (kind, post_release, bool(state.post_release)))
     if not float(goals.period_s) > 0.0:
         raise ValueError("period_s must be > 0, got %r" % (goals.period_s,))
+    # The two attitude fields are checked per kind, like the site fields: one
+    # window can HOLD an attitude through a catch or END at one, never both —
+    # a slew inside a held line is the thing the held line exists to forbid.
+    if goals.hold_tilt is not None and goals.rest_tilt is not None:
+        raise ValueError(
+            "give hold_tilt OR rest_tilt, not both: a window that holds the "
+            "receive attitude through its catch cannot also slew to another "
+            "one, and the slew is what breaks the held line.")
+    if goals.hold_tilt is not None and kind != LANDING:
+        raise ValueError(
+            "hold_tilt is a %s field: only a window that catches and then rests "
+            "can hold the receive attitude (a release needs its own take-off "
+            "tilt). Got kind %r." % (LANDING, kind))
+    if goals.rest_tilt is not None and kind != SETTLE:
+        raise ValueError(
+            "rest_tilt is a %s field: only a window that just moves and stops "
+            "can choose the attitude it stops at. Got kind %r." % (SETTLE, kind))
 
     cup_cfg = build_cup_config() if cup_cfg is None else cup_cfg
-    rcfg = (build_realize_config(limits, banking=bool(goals.banking_enabled))
+    # A held or chosen attitude turns BANKING off: the banking objective points
+    # the cup down the apparent-gravity field, which is a second, disagreeing
+    # answer to the question the attitude field has already answered.
+    rcfg = (build_realize_config(limits, banking=(bool(goals.banking_enabled)
+                                                  and goals.hold_tilt is None
+                                                  and goals.rest_tilt is None))
             if realize_cfg is None else realize_cfg)
 
     events, settle_m = _events_for(kind, goals)
@@ -1721,6 +1773,44 @@ def _realize(kind, cup, goals, state, limits, geom, rcfg, *, t_wall,
     if start_tilt is not None and not state.post_release:
         # Plan frame → gravity frame.  See step 1 above for why only this branch.
         start_tilt = _tilt_to_gravity(start_tilt, correction)
+    rest_slew = False
+    if goals.hold_tilt is not None:
+        # The HELD receive attitude: one constant at every knot, which is what
+        # the QP's held-axis rows assumed when they slaved the cup's lateral
+        # channel to the stroke.  A schedule that slews inside the window would
+        # walk the centroid through the 744.3 mm lever under a line the QP
+        # believes is fixed, so there is nothing to schedule here — only to pin.
+        hold = np.asarray(goals.hold_tilt, dtype=float).reshape(2)
+        recv = hold
+        throw_tilt = hold
+        if start_tilt is None:
+            raise CycleInfeasible(TILT_PIN, [
+                "a held-attitude catch needs a seed that names its tilt, and "
+                "this one does not (a post-release seed carries only its detach "
+                "axis). The PRE-TILT REST is what puts the machine at the held "
+                "attitude; plan the catch from its terminal state."])
+        seam = float(np.hypot(*(start_tilt - hold)))
+        if seam > HOLD_TILT_SEAM_TOL_RAD:
+            raise CycleInfeasible(TILT_PIN, [bound_msg(
+                'seed attitude off the held receive attitude (%.4f°, %.4f°) ='
+                % (np.degrees(hold[0]), np.degrees(hold[1])),
+                np.degrees(seam), '>', np.degrees(HOLD_TILT_SEAM_TOL_RAD),
+                'deg', digits=4,
+                tail="the platform must ALREADY be at the held attitude when "
+                     "the dive starts — that is the PRE-TILT REST's job. "
+                     "Closing the gap inside the window walks the centroid "
+                     "%.2f mm through the %.1f mm lever under a line the QP "
+                     "holds fixed"
+                     % (float(tg.CUP_TILT_CENTER_Z_MM) * np.sin(seam),
+                        float(tg.CUP_TILT_CENTER_Z_MM)))])
+    elif goals.rest_tilt is not None:
+        # The attitude-bearing REST: ``_throw_tilt_for`` answers LEVEL for a
+        # zero take-off (the cup is held upright over a seated ball), which is
+        # right for every REST but the two this field exists for — the pre-tilt
+        # and the decay.  Overridden at that one point, and the slew between the
+        # seed's attitude and this one is the smoothstep.
+        throw_tilt = np.asarray(goals.rest_tilt, dtype=float).reshape(2)
+        rest_slew = True
     t_stage = time.perf_counter()
     try:
         # Only `tilt_schedule` is guarded: TILT_PIN means "the aim is outside the
@@ -1730,7 +1820,8 @@ def _realize(kind, cup, goals, state, limits, geom, rcfg, *, t_wall,
         # which is where a reader looking for it will look.
         try:
             tilts = cr.tilt_schedule(cup, recv, throw_tilt, rcfg,
-                                     start_tilt=start_tilt)
+                                     start_tilt=start_tilt,
+                                     rest_slew=rest_slew)
         except ValueError as exc:
             raise CycleInfeasible(TILT_PIN, [str(exc)])
         tilts = _tilts_to_plan(tilts, correction)
@@ -1946,16 +2037,98 @@ def _join_contact(win_a, win_b):
     return tuple(out)
 
 
-def _concat_plans(plan_a: CyclePlan, plan_b: CyclePlan, catch_k: int) -> CyclePlan:
-    """``plan_a`` then ``plan_b`` with ``plan_b``'s duplicate first knot dropped."""
+def _seam_velocity(cup_joined, tilts_joined, k_s: int, limits):
+    """``(pose_vel, hand_vel_rps)`` at seam knot ``k_s`` of the JOINED series, or
+    ``(None, None)`` when there is no joined cup track to derive them from.
+
+    **Why the seam knot's velocity has to be re-derived** (MEASURED 2026-09-23,
+    R4 U4; ``scratchpad/probe_r4_seam_vel_channels.py``).  ``_concat_plans``
+    keeps the HEAD's velocity at the seam and drops the tail's (``plan_b``'s knot
+    0), and ``decompose`` computes the FD-borne part of every channel —
+    ``tilt_dot``, ``dz_dot`` and the ``arm·axis_dot`` term inside the xy and
+    slider rates — with :func:`cup_realize._knot_derivative`, a CENTRAL
+    difference inside a series.  On a ``splice_at`` the head's value at that knot
+    was therefore differenced against a knot belonging to the tail the splice
+    DISCARDS: on the R4 250 mm hop it came out at ``ry = −0.0100 rad/s`` while
+    the joined tilt series rises at ``+0.0062`` (left) and ``+0.0008`` (right)
+    rad/s — the wrong SIGN for the curve it is attached to — and the emitter's
+    Hermite then jumps by **402.1 mm/s² in x and 2.916 rad/s² in tilt** at that
+    one knot, 0.56× the whole tilt accel budget and the 5th largest jump of 142
+    knots.  Re-derived here it is 98.7 mm/s² and 1.4 rad/s².
+
+    This is the value :func:`replan_tail` has always installed at ITS seam ("its
+    position is pinned to the head's but its velocity legitimately moves, because
+    its forward neighbour is new") — that path re-decomposes the joint cup+tilt
+    series and takes knot ``k_s`` from it.  Same quantity here, over a 3-knot
+    window: ``_knot_derivative`` is central at the middle knot of three, so the
+    middle knot of ``[k_s−1, k_s, k_s+1]`` is bit-for-bit the full-series value,
+    and the cost is one ``decompose`` over three knots instead of over the plan.
+
+    **Only a TRUNCATED head is stale, and that is why this is not applied to a
+    pure ``extend``** (measured 2026-09-23, both directions).  A ``splice_at``
+    head is ``_head_view``'s truncation, so its last knot was differenced against
+    knots the splice throws away — that knot's velocity describes a trajectory
+    that no longer exists.  A pure ``extend`` discards nothing: its head's last
+    knot carries ``_knot_derivative``'s second-order ONE-SIDED stencil over a
+    series that genuinely ends there, which is a valid estimate, and at a
+    rest-terminal or release-terminal seam it is the one that answers the
+    boundary condition exactly (measured: EXACTLY zero velocity at a rest seam,
+    where the joined central difference manufactures 0.041 mm/s across the
+    stop-then-start kink, and 0.046 mm/s at a STEADY+STEADY release knot whose
+    velocity IS the throw).  The splice seams' staleness is 1.565 mm/s and
+    0.0136 rad/s — 34× larger, and the only case with a discarded neighbour.
+    Re-deriving unconditionally also SILENTLY REPAIRS a seam velocity a caller
+    injected, which is what ``test_the_bounded_extend_gate_still_refuses_a_defect_AT_the_seam``
+    exists to catch; the gate must refuse such a seam, not smooth it.
+
+    The config: ``decompose`` reads only ``active_z_mm``, ``cup_z_base_mm``,
+    ``slider_rev_zero_mm``, ``slider_stroke_mm``, ``z_band_mm`` and
+    ``z_float_enabled`` — none of which :func:`build_realize_config` derives from
+    its ``banking`` argument, and no caller in this repo passes a custom
+    ``realize_cfg`` to ``plan_cycle`` — so rebuilding it from ``limits`` here
+    reproduces the one both halves were decomposed with exactly.
+
+    ``cup_joined is None`` means a caller joined plans this module did not
+    produce (``CycleMeta.cup_plan`` is ``Optional`` for exactly that case, and
+    ``_concat_cup`` already answers ``None`` there).  There is then no joined
+    series to difference and the seam keeps the head's velocity — the same
+    absence ``replan_tail`` refuses on, which cannot refuse here because a
+    cup-less ``extend`` is a legitimate call.
+    """
+    if cup_joined is None:
+        return None, None
+    a, b = k_s - 1, k_s + 2
+    win = cc.CupCyclePlan(
+        pos=cup_joined.pos[a:b], vel=cup_joined.vel[a:b],
+        acc=cup_joined.acc[a:b], jerk=cup_joined.jerk[a:b - 1],
+        t=cup_joined.t[a:b] - cup_joined.t[a], dt=cup_joined.dt,
+        catch_k=-1, takeoff_vel=cup_joined.takeoff_vel, warm_start=None)
+    realized = cr.decompose(win, np.asarray(tilts_joined, dtype=float)[a:b],
+                            build_realize_config(limits))
+    return realized.pose_vel[1].copy(), float(realized.slider_vel_rev_s[1])
+
+
+def _concat_plans(plan_a: CyclePlan, plan_b: CyclePlan, catch_k: int,
+                  seam_vel=(None, None)) -> CyclePlan:
+    """``plan_a`` then ``plan_b`` with ``plan_b``'s duplicate first knot dropped.
+
+    ``seam_vel`` is ``(pose_vel, hand_vel_rps)`` for the seam knot — see
+    :func:`_seam_velocity` for why the inherited pair is stale there.  Knots
+    BELOW the seam are untouched, which is what keeps the head bit-identical.
+    """
     n_a = int(plan_a.n_knots)
     n_joint = n_a + int(plan_b.n_knots) - 1
+    pose_vel = np.vstack([plan_a.pose_vel, plan_b.pose_vel[1:]])
+    hand_vel = np.concatenate([plan_a.hand_vel_rps, plan_b.hand_vel_rps[1:]])
+    seam_pv, seam_hv = seam_vel
+    if seam_pv is not None:
+        pose_vel[n_a - 1] = seam_pv
+        hand_vel[n_a - 1] = seam_hv
     return CyclePlan(
         pose=np.vstack([plan_a.pose, plan_b.pose[1:]]),
-        pose_vel=np.vstack([plan_a.pose_vel, plan_b.pose_vel[1:]]),
+        pose_vel=pose_vel,
         hand_rev=np.concatenate([plan_a.hand_rev, plan_b.hand_rev[1:]]),
-        hand_vel_rps=np.concatenate([plan_a.hand_vel_rps,
-                                     plan_b.hand_vel_rps[1:]]),
+        hand_vel_rps=hand_vel,
         dt=plan_a.dt, catch_k=catch_k,
         # b's knot j sits at n_a - 1 + j on the joint clock (its knot 0 is a's
         # last knot, dropped as the duplicate).
@@ -2218,15 +2391,31 @@ def _gate_joined(joined: CyclePlan, plan_a: CyclePlan, plan_b: CyclePlan,
 
 def extend(plan_a: CyclePlan, meta_a: CycleMeta,
            plan_b: CyclePlan, meta_b: CycleMeta,
-           limits, geom) -> Tuple[CyclePlan, CycleMeta]:
+           limits, geom, *,
+           head_truncated: bool = False) -> Tuple[CyclePlan, CycleMeta]:
     """Concatenate two windows at their shared release knot.  Re-gates the whole.
 
     ``plan_b`` must have been planned from ``release_state_from_meta(meta_a,
     plan_a)`` — that is what makes its knot 0 the SAME machine state as
     ``plan_a``'s terminal knot rather than merely a nearby one; :func:`_seam_check`
     refuses anything else.  The duplicate knot is dropped, ``plan_a`` survives
-    **bit for bit** in the head (a caller can therefore splice repeatedly without
-    the head drifting), and the SEAM AND THE NEW WINDOW are re-validated.
+    **bit for bit below the seam** (a caller can therefore splice repeatedly
+    without the head drifting), and the SEAM AND THE NEW WINDOW are re-validated.
+
+    **The seam knot itself is bit-identical in POSITION and re-derived in
+    VELOCITY** (2026-09-23, R4 U4).  ``_seam_velocity`` carries the measurement
+    and the mechanism; this is why it is allowed.  A splice knot is
+    ``executor.WIRE_READ_KNOTS`` knots ahead of the emitter BY CONSTRUCTION:
+    ``install_segment`` re-reads the clock after the solve and refuses
+    ``SPLICE_TOO_LATE`` unless ``k_s > k_wire``, where ``k_wire`` already carries
+    that reserve, so knot ``k_s``'s velocity has NOT been handed to the wire and
+    may still change.  Everything the wire has read — every knot below ``k_s`` —
+    is untouched, and the seam's POSITION is pinned (``_seam_check``), so nothing
+    the machine is already executing moves.  ``head_truncated`` is what asks for
+    it, and ONLY ``splice_at`` with a discarded tail passes it: a pure ``extend``
+    joins at a boundary knot whose one-sided velocity is valid — and at a rest or
+    release terminal it is the boundary condition exactly — so that path is
+    bit-identical, deliberately (see ``_seam_velocity`` for both measurements).
 
     **The gate range is bounded, and that is what keeps a ring's beat constant.**
     ``validate_cycle`` is ~89 % of a solve and linear in the knot count, so
@@ -2263,7 +2452,17 @@ def extend(plan_a: CyclePlan, meta_a: CycleMeta,
     catch_k = (int(plan_a.catch_k) if int(plan_a.catch_k) >= 0
                else (int(plan_b.catch_k) + n_a - 1 if int(plan_b.catch_k) >= 0
                      else -1))
-    joined = _concat_plans(plan_a, plan_b, catch_k)
+    # The joined cup track and tilt series are built BEFORE the gate, because the
+    # seam knot's velocity is re-derived from them (:func:`_seam_velocity`) and the
+    # gate has to measure the Hermite the emitter will actually sample.  The meta
+    # below reuses these two rather than rebuilding them.
+    cup_joined = _concat_cup(meta_a.cup_plan, meta_b.cup_plan, float(plan_a.dt),
+                             catch_k)
+    tilts_joined = np.vstack([meta_a.tilts, meta_b.tilts[1:]])
+    joined = _concat_plans(
+        plan_a, plan_b, catch_k,
+        seam_vel=(_seam_velocity(cup_joined, tilts_joined, n_a - 1, limits)
+                  if head_truncated else (None, None)))
     # The seam and the new window, not the whole plan — see `_gate_joined` for
     # why that is both sound and necessary (a ring's install cost must be flat).
     report, report_range = _gate_joined(joined, plan_a, plan_b, meta_a, limits,
@@ -2300,15 +2499,14 @@ def extend(plan_a: CyclePlan, meta_a: CycleMeta,
         # trustworthiness rests on.
         stage_wall_s=merge_stage_wall(meta_a.stage_wall_s, meta_b.stage_wall_s,
                                       join_wall_s),
-        tilts=np.vstack([meta_a.tilts, meta_b.tilts[1:]]),
+        tilts=tilts_joined,
         receive_tilt=(meta_a.receive_tilt if meta_a.catches
                       else meta_b.receive_tilt),
         throw_tilt=meta_b.throw_tilt,
         stroke_clear_s=meta_a.stroke_clear_s,
         takeoff_vel_mps=meta_b.takeoff_vel_mps,
         warm_start=meta_b.warm_start,
-        cup_plan=_concat_cup(meta_a.cup_plan, meta_b.cup_plan, joined.dt,
-                             catch_k),
+        cup_plan=cup_joined,
         goals=meta_b.goals, seam_vel_mismatch=seam,
         levelling_correction=correction,
         # `None` (whole plan) unless the head ALREADY carried a range — see
@@ -2533,8 +2731,13 @@ def splice_at(plan: CyclePlan, meta: CycleMeta, k_s: int,
                             'splice onto' % (n - 1, k_s)))])
     _refuse_splice_into_a_detach_cone(meta, k_s, dt, n)
     head, head_meta = _head_view(plan, meta, k_s)
+    # `k_s < n - 1` is exactly "this splice DISCARDS a tail", which is what makes
+    # the head's last-knot velocity stale (:func:`_seam_velocity`).  At
+    # `k_s == n - 1` nothing is discarded and this call stays today's `extend`,
+    # bit for bit — the claim the paragraph above makes testable.
     joined, joined_meta = extend(head, head_meta, seg_plan, seg_meta,
-                                 limits, geom)
+                                 limits, geom,
+                                 head_truncated=(k_s < n - 1))
     return joined, dataclasses.replace(joined_meta, kind=SPLICED)
 
 

@@ -119,6 +119,10 @@ from typing import Optional, Sequence
 import numpy as np
 
 import jugglebot.hardware_config as hw
+from jugglebot.motion.trajectory.tilt_geometry import MAX_TILT_DEG
+# The 12° usable tilt ceiling, imported rather than restated: the caller
+# CLAMPS the receive tilt to it (``tilt_geometry.tilt_to_receive``) and the QP
+# CHECKS the held axis against it, so the two must be the same constant.
 
 HAND_HOMED_REST_FLOOR_REV = float(hw.HAND_HOMED_REST_FLOOR_REV)
 HAND_REV_PER_M = float(hw.HAND_REV_PER_M)
@@ -348,6 +352,29 @@ class CatchEvent:
     t_s: float
     site: np.ndarray
     vel: np.ndarray
+    #: The cup up-axis (unit, world) HELD constant through the whole window — the
+    #: FSM's pre-tilted receive, stated in the QP.  ``None`` is the level-catch
+    #: program this stack has always assembled.
+    #:
+    #: **Why a held axis changes the PROGRAM and not just the tilt schedule.**  A
+    #: BB arrival is 18-40° off vertical, and the FSM caught it by pre-tilting to
+    #: ``tilt_to_receive`` (clamped 12°) seconds early, holding that attitude with
+    #: ZERO platform translation, and matching the ball with the HAND stroke along
+    #: the tilted axis.  Asked for the same catch without the axis, this program
+    #: answers with platform translation: the velocity-match rows want
+    #: ``catch_vel_ratio`` of the LATERAL arrival at the cup opening, and the cup's
+    #: xy channel is a 300 m/s³ jerk box on 300 mm/s legs, so every variant
+    #: measured on 2026-09-23 (raw arrival / projected / lateral-zeroed, from a
+    #: level OR a pre-tilted rest) refused LIMIT_VEL at 624-800 mm/s — the
+    #: 624 mm/s being exactly ``v_z·sin 12°``, the stroke's own lateral
+    #: projection, which the legs were being asked to cancel.
+    #:
+    #: With the axis held there is exactly one zero-translation family left: a cup
+    #: opening that moves ALONG the axis.  ``_assemble`` states that as the lateral
+    #: jerk being SLAVED to the axial one (``j_xy = κ·j_z``, ``κ = axis_xy/axis_z``),
+    #: which — from a seed already on that line — is the line
+    #: ``xy = site_xy + κ·(z − site_z)`` through the touch-down at every knot.
+    axis: Optional[np.ndarray] = None
 
 
 @dataclasses.dataclass
@@ -799,6 +826,57 @@ class _Program:
     contact_knots: Optional[tuple] = None
 
 
+#: How far off the held axis line a held-axis window's SEED and its settle site
+#: may sit: position (m), velocity (m/s), acceleration (m/s²).
+#:
+#: With the lateral jerk slaved to the axial one the lateral channel has NO
+#: freedom left, so an off-line seed is not corrected — it is CARRIED, unchanged,
+#: into the cup's lateral position at touch-down. These three bound that carried
+#: error: 0.1 mm of offset, 1 mm/s over a ~1 s dive, 10 mm/s² over the same —
+#: each ≲ 1 mm at the seat, two orders below the 49 mm plant scatter measured on
+#: 2026-09-20 and far below the cup opening's own radius. A seed further off than
+#: this is a wrong boundary condition (the pre-tilt REST was not placed on the
+#: line), which is what the refusal says.
+HELD_AXIS_SEED_TOL = (1e-4, 1e-3, 1e-2)
+
+
+def _held_axis(axis) -> np.ndarray:
+    """Validate a :attr:`CatchEvent.axis` and return it as a unit 3-vector.
+
+    A non-unit or downward axis is a CALLER bug (``tilt_geometry.cup_axis``
+    cannot produce one), so it raises ``ValueError``. An axis past the usable
+    tilt ceiling is a physical refusal: the caller CLAMPS (``tilt_to_receive``
+    saturates at :data:`MAX_TILT_DEG`) and the QP CHECKS, the ``toss_release``
+    "gate the aim, don't rely on the clamp" precedent.
+    """
+    a = np.asarray(axis, dtype=float).reshape(3)
+    nrm = float(np.linalg.norm(a))
+    if not np.isfinite(nrm) or abs(nrm - 1.0) > 1e-9:
+        raise ValueError("catch axis must be a unit vector, got |a| = %r" % (nrm,))
+    if a[2] <= 0.0:
+        raise ValueError("catch axis must point up (a_z > 0), got %r" % (a[2],))
+    ang = float(np.degrees(np.arccos(min(1.0, a[2]))))
+    if ang > MAX_TILT_DEG + 1e-9:
+        raise CupCycleInfeasible(
+            "held catch axis is %.3f° from vertical, past the %.1f° usable "
+            "ceiling — the tilt the platform can actually track. Clamp the "
+            "receive tilt upstream (tilt_to_receive does) instead of asking the "
+            "QP to hold an attitude the machine cannot hold."
+            % (ang, MAX_TILT_DEG), reason='CATCH_AXIS')
+    return a
+
+
+def _axis_offsets(pos, vel, acc, site, kappa):
+    """``(dp, dv, da)`` — how far a cup state sits off the held-axis line, per
+    lateral axis: ``dp = (pos_xy − site_xy) − κ·(pos_z − site_z)``, and the same
+    slaving residual on the derivatives (which have no site term)."""
+    pos = np.asarray(pos, float).reshape(3)
+    dp = (pos[:2] - np.asarray(site, float).reshape(3)[:2]) - kappa * (pos[2] - float(site[2]))
+    dv = np.asarray(vel, float).reshape(3)[:2] - kappa * float(np.asarray(vel, float).reshape(3)[2])
+    da = np.asarray(acc, float).reshape(3)[:2] - kappa * float(np.asarray(acc, float).reshape(3)[2])
+    return dp, dv, da
+
+
 def _assemble(state0: CupState, throw: Optional[ThrowEvent],
               catch: Optional[CatchEvent],
               period_s: float, cfg,
@@ -853,6 +931,47 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
     z_ratio = float(_cfg(cfg, 'catch_slider_vel_ratio'))
     k_td = -1
 
+    # ---- the HELD RECEIVE AXIS (see CatchEvent.axis) -----------------------
+    # Validated and refused here, before a single row is written, so every
+    # structural precondition of the slaved lateral channel is stated in one
+    # place.  ``kappa = axis_xy / axis_z`` is the line's slope in each lateral
+    # axis; the line itself passes through the touch-down site.
+    axis = None if catch is None else getattr(catch, 'axis', None)
+    kappa = None
+    if axis is not None:
+        axis = _held_axis(axis)
+        kappa = axis[:2] / axis[2]
+        if throw is not None:
+            raise CupCycleInfeasible(
+                "a window cannot hold the receive axis AND release: the throw "
+                "needs its own tilt at take-off, and a tilt that slews inside "
+                "the dwell breaks the held line (a plain throw from a 12° "
+                "tilted rest was measured LIMIT_JERK on 2026-09-23). Plan the "
+                "catch standalone and let the throw follow a level rest.",
+                reason='CATCH_AXIS')
+        if state0.post_release:
+            raise CupCycleInfeasible(
+                "a held-axis catch opens from the PRE-TILT rest, not from a "
+                "release: the detach-cone rows pin the first knots' "
+                "acceleration DIRECTION, which the slaved lateral channel "
+                "cannot also satisfy.", reason='CATCH_AXIS')
+        site = np.asarray(catch.site, dtype=float).reshape(3)
+        dp, dv, da = _axis_offsets(state0.pos, state0.vel, state0.acc, site, kappa)
+        tol_p, tol_v, tol_a = HELD_AXIS_SEED_TOL
+        for label, resid, tol, unit, scale in (
+                ('position', dp, tol_p, 'mm', 1e3),
+                ('velocity', dv, tol_v, 'mm/s', 1e3),
+                ('acceleration', da, tol_a, 'mm/s^2', 1e3)):
+            if float(np.max(np.abs(resid))) > tol:
+                raise CupCycleInfeasible(
+                    "held-axis catch: the seed's %s is (%.3f, %.3f) %s off the "
+                    "axis line through the touch-down, past the %.3f %s bound "
+                    "— the lateral channel is slaved to the stroke and carries "
+                    "that offset straight into the seat. Put the pre-tilt REST "
+                    "on the line (its xy is site_xy + kappa·(z − site_z))."
+                    % (label, scale * resid[0], scale * resid[1], unit,
+                       scale * tol, unit), reason='CATCH_AXIS')
+
     if catch is not None:
         # ---- the catch, at the INTERPOLATED touch-down time ----------------
         catch_time_s = float(catch.t_s)
@@ -900,10 +1019,29 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
                              z_ratio * catch_vel[2]])
         v_weights = [float(_cfg(cfg, 'catch_vel_weight'))] * 2 \
             + [float(_cfg(cfg, 'catch_slider_vel_weight'))]
-        for a in range(3):
-            sl = slice(a * n, (a + 1) * n)
-            H[sl, sl] += 2.0 * v_weights[a] * np.outer(r_vtd, r_vtd)
-            f[sl] += 2.0 * v_weights[a] * (c_vtd[a] - v_target[a]) * r_vtd
+        if axis is None:
+            for a in range(3):
+                sl = slice(a * n, (a + 1) * n)
+                H[sl, sl] += 2.0 * v_weights[a] * np.outer(r_vtd, r_vtd)
+                f[sl] += 2.0 * v_weights[a] * (c_vtd[a] - v_target[a]) * r_vtd
+        else:
+            # ONE term, on the AXIAL component. With the axis held the catch has
+            # exactly one degree of freedom — the stroke down the cup axis — so
+            # it gets one ratio (``catch_slider_vel_ratio``, the stroke's) and
+            # one weight. Splitting it per axis would be the same term counted
+            # three times through kappa: the slaved lateral velocity is already
+            # kappa x the axial one, so a separate lateral ratio has nothing
+            # left to ask for. The target is the arrival PROJECTED onto the held
+            # axis, which is the only part of it the cup can meet without
+            # translating the platform.
+            v_axial = float(np.dot(catch_vel, axis))
+            r_axial = np.zeros(nvar)
+            for a in range(3):
+                r_axial[a * n:(a + 1) * n] = axis[a] * r_vtd
+            c_axial = float(np.dot(c_vtd, axis))
+            w_axial = float(_cfg(cfg, 'catch_slider_vel_weight'))
+            H += 2.0 * w_axial * np.outer(r_axial, r_axial)
+            f += 2.0 * w_axial * (c_axial - z_ratio * v_axial) * r_axial
 
         # Lateral DWELL at the catch (opt-in; disabled by default in both planners).
         dwell_w = float(_cfg(cfg, 'catch_dwell_weight'))
@@ -950,7 +1088,26 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
         v_takeoff = np.zeros(3)
         settle = _as_site(settle_site, 'settle_site')
         _gate_settle_site(settle, cfg)
-        for a in range(3):
+        # With the axis held the lateral channel is slaved to the axial one, so
+        # the lateral terminal rows are LINEAR COMBINATIONS of these z rows and
+        # the slaving rows — writing them too makes Aeq rank-deficient and
+        # ``np.linalg.solve`` on the KKT meaningless. They are dropped and the
+        # one thing they said — that the settle site is where the held line
+        # reaches rest z — is checked analytically instead.
+        axes = (2,) if axis is not None else (0, 1, 2)
+        if axis is not None:
+            want = catch_pos[:2] + kappa * (settle[2] - catch_pos[2])
+            off = settle[:2] - want
+            if float(np.max(np.abs(off))) > HELD_AXIS_SEED_TOL[0]:
+                raise CupCycleInfeasible(
+                    "held-axis catch: the settle site (%.1f, %.1f) mm is "
+                    "(%.3f, %.3f) mm off the axis line at rest z — the cup "
+                    "leaves the seat along the held axis and cannot also stop "
+                    "somewhere else. Settle at (%.1f, %.1f) mm."
+                    % (1e3 * settle[0], 1e3 * settle[1], 1e3 * off[0],
+                       1e3 * off[1], 1e3 * want[0], 1e3 * want[1]),
+                    reason='CATCH_AXIS')
+        for a in axes:
             rows.append(_axis_row(n, a, Ap[n])); rhs.append(settle[a] - cp[n, a])
             rows.append(_axis_row(n, a, Av[n])); rhs.append(0.0 - cv[n, a])
             rows.append(_axis_row(n, a, Aa[n])); rhs.append(0.0 - ca[n, a])
@@ -973,9 +1130,30 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
                     rows.append(row); rhs.append(b)
 
     if catch is not None:
-        for a in range(3):                   # interpolated catch position
+        # Held axis: the lateral touch-down rows are implied by the z row and the
+        # slaving rows (the whole trajectory lies on the line THROUGH the
+        # touch-down, so pinning its height pins its xy), and writing them too
+        # would be rank-deficient — the same reason as the terminal block above.
+        for a in ((2,) if axis is not None else (0, 1, 2)):
             rows.append(_axis_row(n, a, r_ptd))
             rhs.append(catch_pos[a] - c_ptd[a])
+
+    if axis is not None:
+        # THE HELD LINE, stated once: the lateral jerk IS the axial jerk's
+        # projection, ``j_xy[k] = kappa·j_z[k]`` at every knot. From a seed on
+        # the line (checked above) that is exactly the line
+        # ``xy = site_xy + kappa·(z − site_z)`` at every knot and every
+        # instant between them, because all three lateral derivatives are then
+        # kappa x the axial ones. Written on the JERK variables rather than as
+        # per-knot position rows because those rows collide with the terminal
+        # and touch-down equalities (same quantity, twice) while these two
+        # nonzeros per row cannot: no other row touches a lateral jerk alone.
+        for k in range(n):
+            for a in range(2):
+                row = np.zeros(nvar)
+                row[a * n + k] = 1.0
+                row[2 * n + k] = -kappa[a]
+                rows.append(row); rhs.append(0.0)
 
     Aeq = np.array(rows)
     beq = np.array(rhs)
@@ -990,7 +1168,21 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
     box_rows, box_const, box_lo, box_hi = [], [], [], []
     jerk_xy = float(_cfg(cfg, 'max_jerk_xy'))
     jerk_z = float(_cfg(cfg, 'max_jerk_z'))
-    for a in range(3):
+    # The xy jerk box bounds PLATFORM translation (300 m/s³ against the z
+    # channel's 6000, because lateral cup motion is the legs and vertical cup
+    # motion is the slider). On a held axis the lateral motion is not the legs:
+    # it is the stroke seen through the tilt, and it is already bounded by the z
+    # box through kappa (|j_xy| = kappa·|j_z| <= 0.213 x 6000 at the 12°
+    # ceiling). Left in place it would bound the STROKE instead, capping the
+    # axial jerk at 300/kappa = 1411 m/s³ — 4.25x under the slider's own budget
+    # — with a number that describes a channel this window does not use.
+    #
+    # MEASURED (2026-09-23): at the R4 operating point (t_land 1.0 s, 4.5 m/s
+    # arrival, 1.3 s window) the box does NOT bind, so this is a correctness
+    # statement about which channel owns the bound rather than a refusal being
+    # avoided; a shorter dive or a faster arrival is where it would start to.
+    jerk_axes = (2,) if axis is not None else (0, 1, 2)
+    for a in jerk_axes:
         lim = jerk_z if a == 2 else jerk_xy
         for k in range(n):
             row = np.zeros(nvar)

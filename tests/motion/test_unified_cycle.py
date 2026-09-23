@@ -3581,3 +3581,159 @@ def test_the_knot_0_write_back_only_fires_when_a_pin_was_ASKED_for(
     assert step < math.radians(1.0), (
         'knot 0 is discontinuous with knot 1 — the write-back fired on an '
         'unpinned schedule')
+
+
+# ---------------------------------------------------------------------------
+# The HELD receive attitude and the attitude-bearing REST (R4 U2)
+# ---------------------------------------------------------------------------
+#
+# THE RECIPE (probe ``probe_r4_bb_catch4.py``, venv, 2026-09-23; leg
+# 300/5000/150000, hand 3500): a BB arrival 18–40° off vertical at 4.5–5.5 m/s
+# clamps to the 12° receive tilt; a PRE-TILT REST of 1.0/1.5/2.0 s carries the
+# platform from its level rest to that attitude (peak leg vel 70.8/47.1/35.3
+# mm/s, jerk 10450/3611/1706 mm/s³); the held-axis LANDING then plans at peak
+# leg vel **3.1 mm/s** and hand acc 1029–1076 rev/s², with the cup opening at
+# the touch-down knot exactly on the landing point; the DECAY REST mirrors the
+# pre-tilt. Without the held attitude the same catch refuses LIMIT_VEL at
+# 624–800 mm/s (probes 1–3, same day).
+
+_U2_TILT_DEG = 12.0
+#: 18° arrival at 4.5 m/s in mm/s — what the clamp turns into the 12° attitude.
+_U2_ARRIVAL = np.array([1390.5, 0.0, -4279.6])
+
+
+def _u2_tilt(v_mm_s=None):
+    return tg.tilt_to_receive(_U2_ARRIVAL if v_mm_s is None else v_mm_s)
+
+
+def _u2_on_axis(tilt, z_mm, site_mm=CATCH_MM):
+    """The cup site at height ``z_mm`` on the held-axis line through ``site_mm``."""
+    axis = tg.cup_axis(float(tilt[0]), float(tilt[1]))
+    kappa = axis[:2] / axis[2]
+    dz = float(z_mm) - float(site_mm[2])
+    return np.array([site_mm[0] + kappa[0] * dz, site_mm[1] + kappa[1] * dz,
+                     float(z_mm)])
+
+
+def _u2_tilted_rest(tilt, cup_mm, cfg=None):
+    """A resting state, platform at ``tilt``, cup opening AT ``cup_mm``.
+
+    Built by inverting ``cup_realize.decompose``'s position map by hand (lever
+    arm, drop, centroid offset) so the fixture owes nothing to the forward map;
+    the caller asserts the round trip.
+    """
+    cfg = cr.RealizeConfig() if cfg is None else cfg
+    axis = tg.cup_axis(float(tilt[0]), float(tilt[1]))
+    arm = float(cup_mm[2]) - float(tg.CUP_TILT_CENTER_Z_MM)
+    slider_mm = (float(cup_mm[2]) - cfg.cup_z_base_mm + arm * (1.0 - axis[2]))
+    rev = (slider_mm - cfg.slider_rev_zero_mm) / 1000.0 * cr.HAND_REV_PER_M
+    centroid = np.asarray(cup_mm, float)[:2] - arm * axis[:2]
+    pose = np.array([centroid[0], centroid[1], cfg.active_z_mm,
+                     float(tilt[0]), float(tilt[1]), 0.0])
+    return uc.CycleState.at_rest(pose, rev, cfg)
+
+
+def _u2_landing_goals(tilt, **kw):
+    base = dict(period_s=1.3, catch_site_mm=CATCH_MM,
+                catch_vel_mm_s=_U2_ARRIVAL, catch_t_s=1.0,
+                settle_site_mm=_u2_on_axis(tilt, REST_MM[2]),
+                hold_tilt=(float(tilt[0]), float(tilt[1])))
+    base.update(kw)
+    return uc.CycleGoals(**base)
+
+
+@pytest.mark.parametrize('arrival_deg', [18.0, 25.0, 40.0])
+def test_a_held_attitude_LANDING_holds_one_attitude_and_catches_the_ball(
+        limits, geom, arrival_deg):
+    """The tilt is CONSTANT through the window and the cup is on the ball.
+
+    Three facts in one plan, because they are one mechanism: the QP slaved the
+    cup's lateral channel to the stroke on the premise that the attitude never
+    moves, the schedule has to deliver exactly that premise, and the point of
+    the whole construction is that the cup opening still arrives at the landing
+    point. A schedule that slewed even a degree inside the window would walk the
+    centroid through the 744.3 mm lever under a line the QP holds fixed.
+    """
+    ang = np.radians(arrival_deg)
+    v = 4800.0 * np.array([np.sin(ang), 0.0, -np.cos(ang)])
+    tilt = _u2_tilt(v)
+    assert abs(np.degrees(np.hypot(*tilt)) - _U2_TILT_DEG) < 1e-9   # clamped
+    seed = _u2_tilted_rest(tilt, _u2_on_axis(tilt, REST_MM[2]))
+    assert np.allclose(seed.cup_pos_mm, _u2_on_axis(tilt, REST_MM[2]), atol=1e-6)
+    plan, meta = uc.plan_landing(_u2_landing_goals(tilt, catch_vel_mm_s=v),
+                                 seed, limits, geom)
+    tilts = plan.pose[:, 3:5]
+    assert np.max(np.abs(tilts - np.asarray(tilt))) < 1e-12
+    k = int(round(meta.t_catch_s / plan.dt))
+    cup = uc.cup_state_from_platform(plan.pose[k], plan.hand_rev[k],
+                                     uc.build_realize_config(limits))
+    assert np.allclose(np.asarray(cup)[:2], CATCH_MM[:2], atol=0.05)
+    assert meta.report.peak_leg_vel_mmps < 50.0, meta.report.peak_leg_vel_mmps
+
+
+def test_a_held_attitude_LANDING_is_deterministic(limits, geom):
+    """Bit-for-bit, twice — plan § 0's determinism rule, on the new branch."""
+    tilt = _u2_tilt()
+    seed = _u2_tilted_rest(tilt, _u2_on_axis(tilt, REST_MM[2]))
+    a, _ = uc.plan_landing(_u2_landing_goals(tilt), seed, limits, geom)
+    b, _ = uc.plan_landing(_u2_landing_goals(tilt), seed, limits, geom)
+    for ch in ('pose', 'hand_rev'):
+        assert np.array_equal(getattr(a, ch), getattr(b, ch)), ch
+
+
+def test_a_seed_off_the_held_attitude_refuses_TILT_PIN(limits, geom):
+    """Getting TO the attitude is the PRE-TILT REST's job, not the catch's.
+
+    Closing a 1° gap inside the dive would move the centroid 13 mm through the
+    744.3 mm lever — a step on six legs — under a cup line the QP already
+    solved as fixed. So the seam is a refusal, not a slew.
+    """
+    tilt = _u2_tilt()
+    off = (float(tilt[0]), float(tilt[1]) + np.radians(1.0))
+    seed = _u2_tilted_rest(off, _u2_on_axis(tilt, REST_MM[2]))
+    with pytest.raises(uc.CycleInfeasible) as exc:
+        uc.plan_landing(_u2_landing_goals(tilt), seed, limits, geom)
+    assert exc.value.code == uc.TILT_PIN
+    assert 'PRE-TILT' in ' '.join(exc.value.reasons)
+
+
+@pytest.mark.parametrize('t_rest_s', [1.0, 1.5])
+def test_an_attitude_bearing_SETTLE_ends_at_the_attitude_it_was_given(
+        limits, geom, t_rest_s):
+    """The PRE-TILT: a REST that ENDS tilted, on a bounded slew.
+
+    ``_throw_tilt_for`` answers LEVEL for a window with no take-off, which is
+    right for every REST but this one. The slew is the quintic smoothstep, so
+    the tilt leaves rest and arrives at rest with no corner — the WP3 failure
+    (3.0 rad/s arriving with 240 rad/s², 104k mm/s² of leg acceleration) is a
+    rate-limited ramp's corner, and this asserts the second difference stays
+    inside the configured tilt-acceleration cap.
+    """
+    tilt = _u2_tilt()
+    seed = _rest_state(REST_MM)
+    rcfg = uc.build_realize_config(limits)
+    goals = uc.CycleGoals(period_s=t_rest_s,
+                          settle_site_mm=_u2_on_axis(tilt, REST_MM[2]),
+                          rest_tilt=(float(tilt[0]), float(tilt[1])))
+    plan, meta = uc.plan_settle(goals, seed, limits, geom)
+    tilts = plan.pose[:, 3:5]
+    assert np.allclose(tilts[0], seed.pose[3:5], atol=1e-12)
+    assert np.allclose(tilts[-1], np.asarray(tilt), atol=1e-12)
+    mag = np.hypot(tilts[:, 0], tilts[:, 1])
+    assert np.all(np.diff(mag) >= -1e-15)                 # monotone, no overshoot
+    d2 = np.diff(tilts, n=2, axis=0) / plan.dt ** 2
+    assert np.max(np.hypot(d2[:, 0], d2[:, 1])) <= rcfg.tilt_accel_limit_rad_s2
+
+
+def test_the_attitude_fields_are_checked_per_kind(limits, geom):
+    """One window holds an attitude through a catch OR ends at one, never both,
+    and each field belongs to exactly one kind."""
+    tilt = _u2_tilt()
+    seed = _rest_state(REST_MM)
+    for kind, kw in ((uc.SETTLE, dict(hold_tilt=tilt)),
+                     (uc.LANDING, dict(rest_tilt=tilt)),
+                     (uc.LANDING, dict(hold_tilt=tilt, rest_tilt=tilt))):
+        goals = _goals(period_s=1.0, throw_site_mm=None, throw_target_mm=None,
+                       flight_s=None, catch_frac=None, catch_t_s=0.6, **kw)
+        with pytest.raises(ValueError):
+            uc.plan_cycle(kind, goals, seed, limits, geom)

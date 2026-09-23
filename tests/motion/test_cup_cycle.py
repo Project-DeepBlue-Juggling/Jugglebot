@@ -1326,3 +1326,191 @@ def test_module_stays_inside_the_motion_boundary():
                    'import scipy'):
         assert banned not in source, banned
     assert 'from __future__ import annotations' in source
+
+
+# ---------------------------------------------------------------------------
+# The HELD RECEIVE AXIS (R4 U2) — the FSM's pre-tilted catch, in the QP
+# ---------------------------------------------------------------------------
+#
+# THE RECIPE, from the probe that established it (scratchpad
+# ``probe_r4_bb_catch4.py``, venv, 2026-09-23): a BB arrival 18–40° off vertical
+# at 4.5–5.5 m/s, the receive tilt CLAMPED to 12°, a PRE-TILT rest on the axis
+# line, a standalone LANDING at t_land = 1.0 s holding that axis, a 0.3 s rest
+# tail. Measured there, through the whole segment chain: peak leg velocity
+# **3.1 mm/s** (the decompose lever's own shift, against 300 mm/s), peak leg
+# acceleration 61.6–64.3 mm/s², peak hand acceleration 1029–1076 rev/s² (against
+# 3500), and the cup opening at the touch-down knot exactly on the landing point
+# (−50.00, 0.00, 830.00). Without the axis every velocity-target variant of the
+# same catch refused LIMIT_VEL at 624–800 mm/s.
+
+_AX_TILT = (0.0, -np.radians(12.0))       # the clamped receive tilt, +x azimuth
+_AX_CATCH = np.array([0.02, 0.0, 0.83])
+_AX_CATCH_VEL = np.array([1.39, 0.0, -4.28])   # 18° arrival at 4.5 m/s
+
+
+def _held_axis_vec():
+    from jugglebot.motion.trajectory import tilt_geometry as tg
+    return tg.cup_axis(*_AX_TILT)
+
+
+def _on_axis(z, site=_AX_CATCH):
+    """The point at height ``z`` on the held-axis line through ``site``."""
+    a = _held_axis_vec()
+    kappa = a[:2] / a[2]
+    return np.array([site[0] + kappa[0] * (z - site[2]),
+                     site[1] + kappa[1] * (z - site[2]), z])
+
+
+def _held_axis_window(cfg=None, *, seed=None, settle=None, axis=None,
+                      throw=None, post_release=False):
+    cfg = _window_cfg() if cfg is None else cfg
+    seed = _on_axis(0.75) if seed is None else seed
+    state0 = cc.CupState(pos=np.asarray(seed, float), vel=np.zeros(3),
+                         acc=np.zeros(3), detach_axis=None,
+                         post_release=post_release)
+    catch = cc.CatchEvent(0, 1.0, _AX_CATCH, _AX_CATCH_VEL,
+                          axis=(_held_axis_vec() if axis is None else axis))
+    events = [catch] + ([throw] if throw is not None else [])
+    return cc.plan_window(events, state0, cfg, period_s=1.3,
+                          settle_site=(_on_axis(0.75) if settle is None
+                                       else settle))
+
+
+@pytest.fixture(scope='module')
+def held_axis_plan():
+    """One held-axis window, shared: the solve is ~5x a level window's (the 2n
+    slaving rows grow the working-set system), so it is paid once here."""
+    return _held_axis_window()
+
+
+def test_a_held_axis_window_solves_on_the_line(held_axis_plan):
+    """Every knot of a held-axis window lies on the line through the touch-down.
+
+    This is the WHOLE physical claim of the held axis: with the platform's
+    attitude fixed, the only cup motion that needs no platform translation is
+    motion ALONG the cup axis, so the planned cup track must be that line and
+    nothing else. The QP states it as ``j_xy = κ·j_z`` per knot (two nonzeros a
+    row); this test measures the consequence, which is what the machine sees.
+
+    MEASURED (probe, 2026-09-23): worst off-line residual over the 52-knot
+    window is at the QP's own equality-residual floor, ~1e-16 m — the 1e-9 bar
+    below is eight orders of slack.
+    """
+    plan = held_axis_plan
+    a = _held_axis_vec()
+    kappa = a[:2] / a[2]
+    off = ((plan.pos[:, :2] - _AX_CATCH[:2])
+           - np.outer(plan.pos[:, 2] - _AX_CATCH[2], kappa))
+    assert np.max(np.abs(off)) < 1e-9, np.max(np.abs(off))
+    # ...and the touch-down is exactly the landing point, xy included, although
+    # only its HEIGHT is written as a row (the line carries the rest).
+    k = int(round(1.0 / plan.dt))
+    assert np.allclose(plan.pos[k], _AX_CATCH, atol=1e-9)
+
+
+def test_a_held_axis_catch_matches_the_ball_along_the_axis(held_axis_plan):
+    """The velocity match is one term on the AXIAL component, the stroke's.
+
+    The cup's touch-down velocity is ``catch_slider_vel_ratio`` of the arrival
+    PROJECTED onto the held axis — the only part of the arrival the cup can meet
+    without translating the platform — and it carries no perpendicular
+    component at all, because the line has none to give.
+    """
+    plan = held_axis_plan
+    a = _held_axis_vec()
+    k = int(round(1.0 / plan.dt))
+    v = plan.vel[k]
+    perp = v - np.dot(v, a) * a
+    assert np.max(np.abs(perp)) < 1e-9, perp
+    target = 0.7 * float(np.dot(_AX_CATCH_VEL, a))      # catch_slider_vel_ratio
+    assert target < 0.0 and float(np.dot(v, a)) < 0.0   # the cup DIVES to meet it
+    # The match is SOFT by construction — it trades against the
+    # mean-square-acceleration objective, exactly as the level program's own z
+    # term does, and the window here also has to stop the cup 80 mm after the
+    # seat. MEASURED (probe, 2026-09-23): −1.584 m/s of −3.133, i.e. 50.6 % of
+    # the axial target, reproduced bit-for-bit across runs. The band below says
+    # "the term pulls, and it does not overshoot"; a harder pull is a weight
+    # decision (``catch_slider_vel_weight``), not a correctness one.
+    ratio = float(np.dot(v, a)) / target
+    assert 0.4 < ratio < 1.0, ratio
+
+
+def test_the_held_axis_rows_replace_the_lateral_rows_they_would_duplicate():
+    """Structure: 2n slaving rows in, the implied lateral equalities out.
+
+    Not bookkeeping. With the lateral channel slaved to the axial one, a lateral
+    terminal row (or a lateral touch-down row) is a LINEAR COMBINATION of the
+    slaving rows and the z row that shares its knot — so writing it too makes
+    ``Aeq`` rank-deficient, and the KKT step this solver takes is
+    ``np.linalg.solve`` on exactly that matrix. Rank is asserted here rather
+    than inferred from a solve that happened to converge.
+    """
+    cfg = _window_cfg()
+    state0 = cc.CupState(_on_axis(0.75), np.zeros(3), np.zeros(3), None,
+                         post_release=False)
+    base = cc.CatchEvent(0, 1.0, _AX_CATCH, _AX_CATCH_VEL)
+    held = cc.CatchEvent(0, 1.0, _AX_CATCH, _AX_CATCH_VEL, axis=_held_axis_vec())
+    p0 = cc._assemble(state0, None, base, 1.3, cfg, settle_site=_on_axis(0.75))
+    p1 = cc._assemble(state0, None, held, 1.3, cfg, settle_site=_on_axis(0.75))
+    n = p0.n_steps
+    assert p0.Aeq.shape[0] == 9 + 3                      # terminal + touch-down
+    assert p1.Aeq.shape[0] == 3 + 1 + 2 * n              # z rows + the slaving
+    assert np.linalg.matrix_rank(p1.Aeq) == p1.Aeq.shape[0]
+    # The xy jerk box is gone with them: on a held axis the lateral jerk is the
+    # axial jerk's projection, already bounded by the z box through κ, and left
+    # in place it would cap the STROKE at 300/κ = 1411 m/s³ instead. It does not
+    # BIND at the R4 operating point (measured 2026-09-23 — the held-attitude
+    # LANDING tests pass either way), so this column count is the only instrument
+    # that sees it.
+    assert p1.C.shape[1] == p0.C.shape[1] - 4 * n
+
+
+def test_a_no_axis_catch_assembles_the_program_it_always_did():
+    """``axis=None`` changes nothing — the parity claim, stated locally.
+
+    The CasADi fixture tests above are the byte-for-byte gate on this; here it is
+    pinned against the field's own default so a future edit to the held-axis
+    branch cannot drift the level program without one of the two failing.
+    """
+    cfg = _window_cfg()
+    state0 = _release_state()
+    ev = dict(ball_id=0, t_s=_W_FLIGHT_S, site=_W_CATCH, vel=_W_CATCH_VEL)
+    a = cc._assemble(state0, None, cc.CatchEvent(**ev), 1.0, cfg,
+                     settle_site=_W_REST)
+    b = cc._assemble(state0, None, cc.CatchEvent(axis=None, **ev), 1.0, cfg,
+                     settle_site=_W_REST)
+    for name in ('H', 'f', 'Aeq', 'beq', 'C', 'bc'):
+        assert np.array_equal(getattr(a, name), getattr(b, name)), name
+
+
+def test_a_held_axis_window_refuses_what_it_cannot_hold():
+    """Five refusals, one physical fact each, all ``CATCH_AXIS``."""
+    throw = cc.ThrowEvent(1, 1.3, _W_THROW, _W_THROW, _W_FLIGHT_S)
+    cases = {
+        # the throw needs its own take-off tilt, and the axis cannot be held
+        # through the dwell (a throw from a tilted rest is LIMIT_JERK)
+        'throw': dict(throw=throw),
+        # the detach rows pin the first knots' acceleration DIRECTION, which the
+        # slaved lateral channel cannot also satisfy
+        'post_release': dict(post_release=True),
+        # the offset is CARRIED into the seat — the lateral channel has no
+        # freedom left to correct it
+        'seed': dict(seed=_on_axis(0.75) + np.array([0.01, 0.0, 0.0])),
+        # the cup leaves the seat along the axis; it cannot stop elsewhere
+        'settle': dict(settle=_on_axis(0.75) + np.array([0.0, 0.01, 0.0])),
+        # past the tilt the platform can track — the caller clamps, we check
+        'ceiling': dict(axis=np.array([np.sin(np.radians(20.0)), 0.0,
+                                       np.cos(np.radians(20.0))])),
+    }
+    for name, kw in cases.items():
+        with pytest.raises(cc.CupCycleInfeasible) as exc:
+            _held_axis_window(**kw)
+        assert exc.value.reason == 'CATCH_AXIS', (name, exc.value.reason)
+
+
+def test_a_malformed_held_axis_is_a_caller_bug_not_a_refusal():
+    """A non-unit or downward axis cannot come out of ``cup_axis`` at all, so it
+    is a programming error (``ValueError``) rather than a physical refusal."""
+    for bad in (np.array([0.0, 0.0, 2.0]), np.array([0.0, 0.0, -1.0])):
+        with pytest.raises(ValueError):
+            _held_axis_window(axis=bad)
