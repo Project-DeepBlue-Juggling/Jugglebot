@@ -1,0 +1,15 @@
+# Manually aim Ball Butler (the GUI's editable Yaw/Pitch readouts).
+#
+# ball_butler_node forwards this to the bb/throw action with speed 0, which the
+# BB firmware routes to TRACKING — the axes move, no ball leaves. TRACKING
+# drops to IDLE (returning pitch to its rest angle) 5 s after the last aim, so a caller that
+# wants to HOLD a pose re-sends it (the GUI renews at 1 Hz); stopping the
+# re-sends is the release. Refused unless the orchestrator is IDLE and BB is
+# IDLE or TRACKING, and when either angle is outside its range (nothing is
+# clamped — an out-of-range request sends nothing).
+
+float64 yaw_deg     # BB yaw frame (as bb/heartbeat reports it), within the yaw soft limits
+float64 pitch_deg   # degrees from horizontal (0 = horizontal, 90 = vertical)
+---
+bool success
+string message

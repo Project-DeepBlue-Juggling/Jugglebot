@@ -522,6 +522,10 @@ BallButlerThrow = _make_service(
         'target_position_bb_local_mm': None,
     },
 )
+BallButlerAim = _make_service(
+    req_fields={'yaw_deg': 0.0, 'pitch_deg': 0.0},
+    resp_fields={'success': False, 'message': ''},
+)
 SetFloat = _make_service(
     req_fields={'data': 0.0},
     resp_fields={'success': False, 'message': ''},
@@ -1085,6 +1089,7 @@ _create_mock_module('jugglebot_interfaces.srv', {
     'SetHandTrajCmd': SetHandTrajCmd,
     'SetString': SetString,
     'BallButlerThrow': BallButlerThrow,
+    'BallButlerAim': BallButlerAim,
     'GoToPose': GoToPose,
     'SetTrajectoryLimits': SetTrajectoryLimits,
     'TimedTarget': TimedTarget,

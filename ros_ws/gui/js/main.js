@@ -40,6 +40,7 @@ import {
     setHardwareVersionsRosLink,
 } from './hardware-versions.js';
 import { initCommands, updateCommandStates } from './commands.js';
+import { bbAimOnHeartbeat, bbAimOnOrchestratorState } from './bb-aim.js';
 import {
     initStateMinimap, minimapOnOrchestratorState, minimapOnControlMode,
     minimapOnRobotState, minimapOnLinkStatus, minimapOnLegSetpointEcho,
@@ -551,6 +552,7 @@ function onRobotState(msg) {
 function onBBHeartbeat(msg) {
     recordTopicMessage('bb/heartbeat');
     updateBBPanel(msg);
+    bbAimOnHeartbeat(msg);
     if (msg.connected) {
         updateBallButler(msg.yaw_deg, msg.pitch_deg, msg.hand_pos_mm);
     }
@@ -574,6 +576,7 @@ function onOrchestratorState(msg) {
     recordTopicMessage('orchestrator_state');
     updateOrchestratorState(msg.data);
     updateCommandStates();
+    bbAimOnOrchestratorState(msg.data);
     minimapOnOrchestratorState(msg.data);
 
     if (msg.data !== lastOrchestratorState) {

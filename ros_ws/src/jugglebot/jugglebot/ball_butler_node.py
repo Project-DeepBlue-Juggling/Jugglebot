@@ -51,7 +51,7 @@ from jugglebot_interfaces.msg import (
     RigidBodyPoses,
     ThrowAnnouncement,
 )
-from jugglebot_interfaces.srv import BallButlerThrow
+from jugglebot_interfaces.srv import BallButlerAim, BallButlerThrow
 from jugglebot_interfaces.action import BallButlerThrowCmd
 
 import jugglebot.hardware_config as hw
@@ -81,6 +81,16 @@ _G_MMPS2 = hw.GRAVITY_MPS2 * 1000.0
 # through the BB hardware, the ball lands at the desired position.
 # The default file is packaged as a share/jugglebot/resources/ artifact.
 _DEFAULT_AIM_CORRECTION_FILE = 'throw_affine_correction.json'
+
+
+def _bb_state_name(state: Optional[int]) -> str:
+    """BallButlerStates member name for a heartbeat state code (or its number)."""
+    if state is None:
+        return 'unknown'
+    try:
+        return BallButlerStates(state).name
+    except ValueError:
+        return str(state)
 
 
 def _invert_affine_3x3(m):
@@ -152,10 +162,17 @@ class BallButlerNode(Node):
 
         # Latest heartbeat (used by the accuracy-calibration state machine)
         self._bb_state: Optional[int] = None
+        self._bb_connected: bool = False
         self._bb_yaw_deg: float = 0.0
         self._bb_pitch_deg: float = 0.0
         self._last_commanded_yaw_deg: float = 0.0
         self._last_commanded_pitch_deg: float = 0.0
+
+        # Orchestrator main state ("IDLE" of "IDLE" / "ACTIVE:SPACEMOUSE"), for
+        # the bb/aim gate.  None until the first orchestrator_state message —
+        # and None refuses, so a node that has not heard the orchestrator never
+        # moves BB on a manual aim.
+        self._orch_state: Optional[str] = None
 
         # ── Throw release delay (s) ──
         # See _DEFAULT_THROW_DELAY_S docstring at module scope for why the
@@ -235,6 +252,10 @@ class BallButlerNode(Node):
         self.create_subscription(
             BallButlerHeartbeat, 'bb/heartbeat', self._on_heartbeat, 20)
 
+        # Orchestrator state: gates bb/aim (manual aim only while IDLE).
+        self.create_subscription(
+            String, 'orchestrator_state', self._on_orchestrator_state, 10)
+
         # ── Action client (bb/throw — replaces bb/send_throw_command) ──
         # Fire-and-forget from the throw pipeline's view (we don't block on the
         # result), but the firmware's terminal outcome is logged when it arrives,
@@ -267,6 +288,8 @@ class BallButlerNode(Node):
         # ── Service servers ─────────────────────────────────────
         self.create_service(
             BallButlerThrow, 'bb/throw_at_target', self._svc_throw_at_target)
+        self.create_service(
+            BallButlerAim, 'bb/aim', self._svc_aim)
         self.create_service(
             Trigger, 'bb/start_accuracy_calibration',
             self._svc_start_accuracy_calibration)
@@ -304,10 +327,15 @@ class BallButlerNode(Node):
     def _on_heartbeat(self, msg: BallButlerHeartbeat):
         """Cache current BB state; drive the calibration FSM when active."""
         self._bb_state = msg.state
+        self._bb_connected = bool(msg.connected)
         self._bb_yaw_deg = msg.yaw_deg
         self._bb_pitch_deg = msg.pitch_deg
         if self._cal_active:
             self._handle_calibration_heartbeat(msg)
+
+    def _on_orchestrator_state(self, msg: String):
+        """Cache the orchestrator's MAIN state (the part before any ':')."""
+        self._orch_state = msg.data.split(':')[0].strip().upper()
 
     # ─────────────────────────────────────────────────────────────────
     # Aim correction (2D affine on BB-local target)
@@ -517,6 +545,78 @@ class BallButlerNode(Node):
             self.get_logger().info(f'bb/throw OK for {tgt}: {result.message}')
         else:
             self.get_logger().warn(f'bb/throw NOT thrown for {tgt}: {result.message}')
+
+    # ─────────────────────────────────────────────────────────────────
+    # Manual aim: bb/aim (the GUI's editable Yaw/Pitch readouts)
+    # ─────────────────────────────────────────────────────────────────
+
+    def _svc_aim(self, req: BallButlerAim.Request,
+                 res: BallButlerAim.Response) -> BallButlerAim.Response:
+        """Send BB to (yaw_deg, pitch_deg) — a speed-0 bb/throw goal, i.e. TRACKING.
+
+        Stateless: every call is gated afresh and the HOLD lives in the caller,
+        which re-sends to renew it (BB leaves TRACKING and returns pitch to rest 5 s after
+        the last aim).  That makes the caller's renewal the lease — a GUI that
+        closes or disconnects stops renewing and BB returns pitch on its own, so no pose
+        outlives the operator.  The gate is enforced HERE, not only in the
+        browser: orchestrator IDLE, BB connected and IDLE/TRACKING (the firmware
+        silently drops an aim in any other state), and both angles in range.
+        Out-of-range is refused, never clamped — the axis only goes where the
+        operator typed.
+        """
+        res.success = False
+        yaw = float(req.yaw_deg)
+        pitch = float(req.pitch_deg)
+
+        if self._orch_state != 'IDLE':
+            res.message = (f'Manual aim needs the orchestrator IDLE '
+                           f'(it is {self._orch_state or "unknown"})')
+            return res
+        if not self._bb_connected or self._bb_state not in (
+                BallButlerStates.IDLE, BallButlerStates.TRACKING):
+            state = ('disconnected' if not self._bb_connected
+                     else _bb_state_name(self._bb_state))
+            res.message = f'Manual aim needs BB IDLE or TRACKING (it is {state})'
+            return res
+        if not (math.isfinite(yaw)
+                and hw.BB_YAW_LIM_MIN_DEG <= yaw <= hw.BB_YAW_LIM_MAX_DEG):
+            res.message = (f'Yaw {yaw:g}° outside {hw.BB_YAW_LIM_MIN_DEG:g}–'
+                           f'{hw.BB_YAW_LIM_MAX_DEG:g}°; nothing sent')
+            return res
+        if not (math.isfinite(pitch)
+                and hw.BB_PITCH_DEG_MIN <= pitch <= hw.BB_PITCH_DEG_MAX):
+            res.message = (f'Pitch {pitch:g}° outside {hw.BB_PITCH_DEG_MIN:g}–'
+                           f'{hw.BB_PITCH_DEG_MAX:g}°; nothing sent')
+            return res
+        if not self._throw_action.server_is_ready():
+            res.message = 'bb/throw action server not available'
+            return res
+
+        goal = BallButlerThrowCmd.Goal()
+        goal.yaw_angle_rad = math.radians(yaw)
+        goal.pitch_angle_rad = math.radians(pitch)
+        goal.throw_speed = 0.0          # speed 0 = aim/track, no ball leaves
+        goal.throw_time = 0.0
+        goal.suppress_announcement = True
+        # Own done-callback, NOT _on_throw_goal_response: an aim renewed at 1 Hz
+        # must not publish on bb/throw_outcome, whose consumers read it as a
+        # throw's terminal firmware outcome.
+        self._throw_action.send_goal_async(goal).add_done_callback(
+            self._on_aim_goal_response)
+
+        res.success = True
+        res.message = f'Aiming yaw {yaw:.1f}°, pitch {pitch:.1f}°'
+        return res
+
+    def _on_aim_goal_response(self, future):
+        """Log an aim the bridge refused; success is silent (it renews at 1 Hz)."""
+        try:
+            goal_handle = future.result()
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().warn(f'bb/aim goal send failed: {e}')
+            return
+        if not goal_handle.accepted:
+            self.get_logger().warn('bb/aim goal REJECTED by the bridge')
 
     # ─────────────────────────────────────────────────────────────────
     # Single-shot service: bb/throw_at_target

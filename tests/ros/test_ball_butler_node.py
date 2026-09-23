@@ -503,3 +503,115 @@ class TestCacheUpdates:
     def test_unsuccessful_calibration_ignored(self, node):
         node._on_bb_calibration(_calibration(success=False))
         assert node._bb_position_mm is None
+
+
+# ── bb/aim: manual aim from the GUI's editable Yaw/Pitch readouts ──────────
+
+
+def _heartbeat(state, connected=True, yaw_deg=10.0, pitch_deg=90.0):
+    from types import SimpleNamespace
+    return SimpleNamespace(state=state, connected=connected, ball_in_hand=False,
+                           state_data=0, yaw_deg=yaw_deg, pitch_deg=pitch_deg,
+                           hand_pos_mm=0.0)
+
+
+def _aim(node, yaw_deg, pitch_deg):
+    from jugglebot_interfaces.srv import BallButlerAim
+    req = BallButlerAim.Request()
+    req.yaw_deg = yaw_deg
+    req.pitch_deg = pitch_deg
+    return node._svc_aim(req, BallButlerAim.Response())
+
+
+@pytest.fixture
+def aim_node(node):
+    """IDLE orchestrator + IDLE, connected BB, with a spy on bb/throw goals."""
+    from std_msgs.msg import String
+    from jugglebot.protocol_config import BallButlerStates
+    node._on_orchestrator_state(String(data='IDLE'))
+    node._on_heartbeat(_heartbeat(BallButlerStates.IDLE))
+    node.sent_goals = []
+    orig = node._throw_action.send_goal_async
+
+    def _spy(goal):
+        node.sent_goals.append(goal)
+        return orig(goal)
+    node._throw_action.send_goal_async = _spy
+    return node
+
+
+class TestManualAim:
+    def test_in_range_sends_speed_zero_goal_in_radians(self, aim_node):
+        res = _aim(aim_node, 45.0, 30.0)
+        assert res.success is True
+        assert len(aim_node.sent_goals) == 1
+        g = aim_node.sent_goals[0]
+        assert g.throw_speed == 0.0          # aim/track: no ball leaves
+        assert g.yaw_angle_rad == pytest.approx(math.radians(45.0))
+        assert g.pitch_angle_rad == pytest.approx(math.radians(30.0))
+
+    def test_accepted_while_bb_already_tracking(self, aim_node):
+        from jugglebot.protocol_config import BallButlerStates
+        aim_node._on_heartbeat(_heartbeat(BallButlerStates.TRACKING))
+        assert _aim(aim_node, 45.0, 30.0).success is True
+
+    def test_range_edges_are_inclusive(self, aim_node):
+        import jugglebot.hardware_config as hw
+        assert _aim(aim_node, hw.BB_YAW_LIM_MIN_DEG, hw.BB_PITCH_DEG_MIN).success
+        assert _aim(aim_node, hw.BB_YAW_LIM_MAX_DEG, hw.BB_PITCH_DEG_MAX).success
+
+    @pytest.mark.parametrize('yaw, pitch, word', [
+        (150.0, 30.0, 'Yaw'),        # beyond the 120° soft limit
+        (-1.0, 30.0, 'Yaw'),
+        (45.0, 5.0, 'Pitch'),        # below the 12° floor
+        (45.0, 95.0, 'Pitch'),
+        (float('nan'), 30.0, 'Yaw'),
+        (45.0, float('inf'), 'Pitch'),
+    ])
+    def test_out_of_range_is_refused_not_clamped(self, aim_node, yaw, pitch, word):
+        res = _aim(aim_node, yaw, pitch)
+        assert res.success is False
+        assert word in res.message
+        assert aim_node.sent_goals == []
+
+    @pytest.mark.parametrize('orch', ['ACTIVE:SPACEMOUSE', 'ACTIVE', 'BOOT',
+                                      'HOMING', 'LEVELLING', 'FAULT'])
+    def test_refused_unless_orchestrator_idle(self, aim_node, orch):
+        from std_msgs.msg import String
+        aim_node._on_orchestrator_state(String(data=orch))
+        res = _aim(aim_node, 45.0, 30.0)
+        assert res.success is False
+        assert 'IDLE' in res.message
+        assert aim_node.sent_goals == []
+
+    def test_refused_before_any_orchestrator_state(self, node):
+        from jugglebot.protocol_config import BallButlerStates
+        node._on_heartbeat(_heartbeat(BallButlerStates.IDLE))
+        assert _aim(node, 45.0, 30.0).success is False
+
+    @pytest.mark.parametrize('state_name', ['THROWING', 'RELOADING',
+                                            'CALIBRATING', 'ERROR', 'BOOT'])
+    def test_refused_unless_bb_idle_or_tracking(self, aim_node, state_name):
+        from jugglebot.protocol_config import BallButlerStates
+        aim_node._on_heartbeat(_heartbeat(BallButlerStates[state_name]))
+        res = _aim(aim_node, 45.0, 30.0)
+        assert res.success is False
+        assert state_name in res.message
+        assert aim_node.sent_goals == []
+
+    def test_refused_when_bb_disconnected(self, aim_node):
+        from jugglebot.protocol_config import BallButlerStates
+        aim_node._on_heartbeat(_heartbeat(BallButlerStates.IDLE, connected=False))
+        res = _aim(aim_node, 45.0, 30.0)
+        assert res.success is False
+        assert 'disconnected' in res.message
+
+    def test_aim_does_not_publish_a_throw_outcome(self, aim_node):
+        """A 1 Hz aim renewal must never reach bb/throw_outcome's consumers."""
+        assert _aim(aim_node, 45.0, 30.0).success is True
+        from types import SimpleNamespace
+        fut = SimpleNamespace(result=lambda: SimpleNamespace(accepted=True))
+        published = []
+        aim_node.throw_outcome_pub.publish = published.append
+        aim_node._on_aim_goal_response(fut)
+        assert published == []
