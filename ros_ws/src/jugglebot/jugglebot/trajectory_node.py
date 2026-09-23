@@ -380,17 +380,25 @@ def _ceil_to_grid(t: float, dt: float) -> float:
     return k * dt
 
 
-def _wire_tilt(tilt_rad) -> Optional[Tuple[float, float]]:
-    """``InstallSegment.Request.hold_tilt_rad`` / ``rest_tilt_rad`` (R4
-    reload, Unit U3) -> ``segments.CatchTerminal.hold_tilt`` /
+def _wire_tilt(tilt_rad, is_set: bool) -> Optional[Tuple[float, float]]:
+    """``InstallSegment.Request.{hold,rest}_tilt_rad`` + its ``*_set`` flag
+    (R4 reload, Unit U3; the flag added by the R4 phase-end audit,
+    2026-09-24) -> ``segments.CatchTerminal.hold_tilt`` /
     ``RestTerminal.tilt``, or ``None``.
 
-    NaN (either component) is the wire's OWN "no tilt given" sentinel —
-    ``(0.0, 0.0)`` is instead the DECAY REST's actual, explicit level target
-    and must round-trip as itself (see :meth:`TrajectoryNode.
-    _segment_terminal_from_request`'s docstring for why the brief's literal
-    "zeros = none" would be unsafe here).
+    The FLAG says whether a tilt was given. ``(0.0, 0.0)`` is the DECAY
+    REST's actual, explicit level target and must round-trip as itself, so
+    zero can never mean "none" — and rosidl initialises an unset
+    ``float64[2]`` to zeros, so a request built by anything other than
+    ``skill_node._installer`` (a hand-issued ``ros2 service call``, a caller
+    that never learned about R4) would have decoded as a level-tilt override
+    and put an ordinary REST on the ``rest_slew`` path (measured refusing
+    ``LIMIT_VEL`` 574.9 mm/s, handoff_U2). The flag's own rosidl default
+    (false) is the "no tilt" answer regardless of the numbers; a NaN with the
+    flag set is a malformed request and also decodes as ``None``.
     """
+    if not bool(is_set):
+        return None
     rx, ry = float(tilt_rad[0]), float(tilt_rad[1])
     if math.isnan(rx) or math.isnan(ry):
         return None
@@ -3985,11 +3993,12 @@ class TrajectoryNode(Node):
                 t_land_s=float(t_event_perf),
                 rest_site_mm=np.asarray(request.rest_site_mm, dtype=float),
                 then_throw=then_throw,
-                hold_tilt=_wire_tilt(request.hold_tilt_rad))
+                hold_tilt=_wire_tilt(request.hold_tilt_rad,
+                                     request.hold_tilt_set))
         return sk_seg.RestTerminal(
             rest_site_mm=np.asarray(request.rest_site_mm, dtype=float),
             t_rest_s=float(t_event_perf),
-            tilt=_wire_tilt(request.rest_tilt_rad))
+            tilt=_wire_tilt(request.rest_tilt_rad, request.rest_tilt_set))
 
     def _svc_install_segment(self, request, response):
         """``trajectory/install_segment``: install ONE rest-terminal skill

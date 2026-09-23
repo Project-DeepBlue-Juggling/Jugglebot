@@ -573,61 +573,6 @@ SetTrajectoryLimits = _make_service(
 )
 
 
-class PlanCycle:
-    """Unified 7-DoF cycle-planning service mock (plan Phase 4).
-
-    Mirrors ``srv/PlanCycle.srv`` field for field, INCLUDING the mode/kind
-    constants — the node compares ``request.mode`` against ``PlanCycle.Request
-    .MODE_NEW`` and friends, so a mock that carried only the fields would let a
-    typo'd constant name pass silently in the mocked-ROS suite and fail only on
-    the real generated type.
-    """
-
-    class Request:
-        MODE_NEW = 0
-        MODE_EXTEND = 1
-        MODE_REPLAN = 2
-        KIND_LAUNCH = 0
-        KIND_STEADY = 1
-        KIND_LANDING = 2
-        KIND_SETTLE = 3
-
-        def __init__(self):
-            self.mode = 0
-            self.kind = 0
-            self.period_s = 0.0
-            self.throw_site_mm = [0.0, 0.0, 0.0]
-            self.throw_target_mm = [0.0, 0.0, 0.0]
-            self.flight_s = 0.0
-            self.catch_site_mm = [0.0, 0.0, 0.0]
-            self.catch_vel_mm_s = [0.0, 0.0, 0.0]
-            self.catch_frac = 0.0
-            self.settle_site_mm = [0.0, 0.0, 0.0]
-            self.banking_enabled = False
-            # Chain a second window into the SAME install (MODE_NEW only). Default
-            # OFF, so a single-window request is byte-identical to the pre-chain
-            # one. See the srv for why a release-terminal plan must not be left to
-            # expire.
-            self.chain = False
-            self.chain_kind = 0
-            self.chain_period_s = 0.0
-            self.chain_catch_frac = 0.0
-            self.lead_s = 0.0
-
-    Response = _make_service(
-        resp_fields={'accepted': False, 'code': '', 'message': '',
-                     't0_mono': 0.0, 't_release_mono': 0.0,
-                     't_catch_mono': 0.0,
-                     'release_vel_mm_s': None,
-                     'release_terminal': False,
-                     'supersede_deadline_mono': 0.0,
-                     'stroke_clear_s': 0.0, 'arm_lead_s': 0.0,
-                     'duration_s': 0.0, 'plan_wall_ms': 0.0,
-                     'replans_used': 0,
-                     'hand_peak_rev': 0.0,
-                     'hand_peak_vel_rps': 0.0}).Response
-
-
 class InstallSegment:
     """Skill-segment install service mock (skill-stack R2, Unit D2).
 
@@ -660,8 +605,14 @@ class InstallSegment:
             # and expects the ordinary (untilted) catch/rest it always got,
             # so the MOCK's default must decode as `None`, matching what a
             # caller who never learned about R4 still gets.
-            self.hold_tilt_rad = [float('nan'), float('nan')]
-            self.rest_tilt_rad = [float('nan'), float('nan')]
+            # rosidl-FAITHFUL defaults (R4 audit, 2026-09-24): the generated
+            # type zero-initialises a float64[2] and false-initialises a bool,
+            # so the mock must too — the flag, not a NaN, is what says "no
+            # tilt" (trajectory_node._wire_tilt).
+            self.hold_tilt_set = False
+            self.hold_tilt_rad = [0.0, 0.0]
+            self.rest_tilt_set = False
+            self.rest_tilt_rad = [0.0, 0.0]
 
     Response = _make_service(
         resp_fields={'accepted': False, 'code': '', 'message': '',
@@ -1095,7 +1046,6 @@ _create_mock_module('jugglebot_interfaces.srv', {
     'GoToPose': GoToPose,
     'SetTrajectoryLimits': SetTrajectoryLimits,
     'TimedTarget': TimedTarget,
-    'PlanCycle': PlanCycle,
     'InstallSegment': InstallSegment,
 })
 _create_mock_module('jugglebot_interfaces.action', {

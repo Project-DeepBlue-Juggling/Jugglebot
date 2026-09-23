@@ -85,19 +85,18 @@ to the robot:
   `ros2 param set /skill_node separation_mm 250.0` (and `n_throws` if you
   want other than the launch default of 4) — the GUI cannot override them
   per click.
-- **`skills/check`'s box row only certifies `self_toss` (P1, P1)** —
-  `_svc_check`'s box-coverage check is hard-coded to that one pair (read the
-  code: `adm.select(boxes, 'self_toss', ('P1','P1'), ...)`). It does **not**
-  check hop's `(P1,P2)`/`(P2,P1)` boxes. A missing or apex-out-of-band hop
-  box is refused only at the hop GOAL's own accept (`_run_one_ball`'s
-  per-pair scan — message: `hop refused: no admissible box covers site
-  pair(s) ... at apex ...`), never at a `skills/check` dry run. Treat a clean
-  `skills/check` as certifying self_toss only; §1 row 3 below is how you
-  confirm the hop box independently before powering anything.
-- **`InstallSegment.srv` gained two fields** (`hold_tilt_rad`,
-  `rest_tilt_rad`) for the held-axis catch and attitude-bearing REST — a
-  stale `jugglebot_interfaces` install silently drops them (NaN-decodes as
-  "no override"), so the colcon build in §1 is mandatory, not optional.
+- **`skills/check` now certifies BOTH the self_toss box and the hop's two boxes** at the
+  node's own `separation_mm` / `apex_m` (`_svc_check`, since `1d6d7f5`): expect
+  `box OK: ...; hop box OK: P1->P2 at 250.0 mm; hop box OK: P2->P1 at 250.0 mm`, or
+  `hop box REFUSED: no hop box covers P1->P2 at separation 250.0 mm, apex 0.900 m`
+  (a refusal at the dry run, not at the goal). §1 row 3a's `grep -c "pattern: hop"` is
+  belt and braces, not the only pre-power check any more.
+- **`InstallSegment.srv` gained four fields** (`hold_tilt_set` + `hold_tilt_rad`,
+  `rest_tilt_set` + `rest_tilt_rad`) for the held-axis catch and attitude-bearing REST —
+  the `*_set` flag says a tilt is given (rosidl zero-fills the array, and (0, 0) is a real
+  level target, so zeros can never mean "none"); a stale `jugglebot_interfaces` install
+  is DARK for a reload goal (the fields do not exist), so the colcon build in §1 is
+  mandatory, not optional.
 - **Reload is real** (D4): `REJECTED_RELOAD_RETIRED_R1` is gone. A
   `reload: true` goal opens with `bb/reload` + `bb/throw_at_target`, then
   compiles the real schedule off Ball Butler's `ThrowAnnouncement`
@@ -163,7 +162,7 @@ through `--via-action`, the real production path, disarmed).
 | 14 | (system python3, ROS sourced, robot ACTIVATE only — **never ARM** for this row) `python3 tests/hardware/skills_plan_bench.py --via-action --pattern self-toss --n-throws 3` | `outcome=COMPLETED`, 3/3 skills-throws dispatched. The wire is DISARMED (Activate, not Arm) so nothing moves — this exercises `skill_node`'s real accept ladder (pre-level, box, frame check) on the loaded box without risking a bad first hop. |
 | 15 | Same, `--pattern hop --separation-mm 250 --n-throws 3` (still DISARMED) | `outcome=COMPLETED`. **Read every printed `per_throw` OUTCOME line and any REJECTED/ABORTED message together** — this is the "report every refusal at once" pass for hop; work every named refusal via § 7 before arming anything. |
 | 16 | Ctrl-C mid-attempt on one of rows 14/15 (repeat the row after) | `^C -- cancelling the goal (cancel on stop)`, `outcome=STOPPED` (or the current end_code) — the cancel path itself is being rehearsed, not just the happy path. |
-| 17 | `ros2 service call skills/check std_srvs/srv/Trigger` | `ladder OK`, `frame check OK: ...` (or the informational line if pinned), `box OK: ('P1','P1') 0.85-0.90...` — remember (§ "what changed") this line says NOTHING about hop's box; row 3a already covered that offline. |
+| 17 | `ros2 service call skills/check std_srvs/srv/Trigger` | `ladder OK`, `frame check OK: ...` (or the informational line if pinned), `box OK: ('P1','P1') 0.85-0.95; ...`, `hop box OK: P1->P2 at 250.0 mm`, `hop box OK: P2->P1 at 250.0 mm` — a `hop box REFUSED` line here means the box file does not cover the hop at the node's separation/apex: stop, do not power. |
 | 18 | Now ARM (`record:=true auto_arm:=true` was already set at launch — confirm via GUI/`/robot_state` that the wire reads ARMED) | Ready for § 4. |
 
 ## 4. Self-toss regression at 0.9 m (nothing physical changed for this rung)

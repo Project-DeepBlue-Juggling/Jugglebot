@@ -655,6 +655,7 @@ def test_an_explicit_zero_tilt_round_trips_as_itself_not_as_none():
     transition (handoff_U2.md)."""
     node = _perf_node()
     req = _rest_req(10.0)
+    req.rest_tilt_set = True
     req.rest_tilt_rad = [0.0, 0.0]
     terminal = node._segment_terminal_from_request('REST', req, 10.0)
     assert terminal.tilt == (0.0, 0.0)
@@ -664,6 +665,7 @@ def test_an_explicit_zero_tilt_round_trips_as_itself_not_as_none():
 def test_a_nonzero_hold_tilt_rad_round_trips_onto_the_catch_terminal():
     node = _perf_node()
     req = _catch_req(10.0)
+    req.hold_tilt_set = True
     req.hold_tilt_rad = [0.01, -0.20943951023931956]
     terminal = node._segment_terminal_from_request('CATCH', req, 10.0)
     assert terminal.hold_tilt == pytest.approx((0.01, -0.20943951023931956))
@@ -829,3 +831,25 @@ def test_main_runs_a_multi_threaded_executor_not_plain_spin(monkeypatch):
     assert built.get('spun') is True
     # At least two: one thread to run the serialized group, one free for the hold.
     assert built.get('threads', 0) >= 2
+
+
+def test_an_untouched_request_decodes_no_tilt_even_though_rosidl_zero_fills_the_array():
+    """R4 phase-end audit (2026-09-24): rosidl initialises an unset
+    ``float64[2]`` to ZEROS, not NaN, so a request built by anything other
+    than ``skill_node._installer`` (a hand-issued ``ros2 service call``, a
+    pre-R4 caller) carries ``[0.0, 0.0]`` — which is ALSO the DECAY REST's
+    real level target. The ``*_tilt_set`` flags (rosidl default false) are
+    what say "no tilt given"; the mock mirrors the generated type's defaults,
+    so this test drives the exact shape a hand-built request has."""
+    node = _perf_node()
+    req = _rest_req(10.0)
+    assert req.rest_tilt_set is False and list(req.rest_tilt_rad) == [0.0, 0.0]
+    assert node._segment_terminal_from_request('REST', req, 10.0).tilt is None
+    req2 = _catch_req(10.0)
+    assert req2.hold_tilt_set is False
+    assert node._segment_terminal_from_request('CATCH', req2, 10.0).hold_tilt is None
+    # and a set flag with a NaN payload is malformed -> also no tilt
+    req3 = _rest_req(10.0)
+    req3.rest_tilt_set = True
+    req3.rest_tilt_rad = [float('nan'), 0.0]
+    assert node._segment_terminal_from_request('REST', req3, 10.0).tilt is None

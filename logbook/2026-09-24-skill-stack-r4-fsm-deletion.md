@@ -107,5 +107,12 @@ headers naming what survives.
   `gate_hash 7966cb6fadc9`; run 2 2026-09-24, same command after this deletion (unified_cycle.py is
   hashed) → 2027.9 s, `gate_hash c2736ce2e2f7`; **all nine boxes IDENTICAL and all 16 471 row verdicts
   identical** (md5 of the row logs with `wall_s` stripped equal) — the deletion moved no admitted set.
-* 2026-09-24, `./run_tests.sh` on the post-deletion tree → **PASS: 5378 passed, 8 skipped in 204.22 s; serial 3 passed** (the 6513 of the pre-deletion tree minus the FSM tests, plus the ported ones). Phase closure, same day, `./run_tests.sh --full` → **PASS: 5416 passed, 8 skipped, 1 xfailed in 274.47 s; serial 6 passed in 18.67 s**.
+* 2026-09-24, `./run_tests.sh` on the post-deletion tree → **PASS: 5378 passed, 8 skipped in 204.22 s; serial 3 passed** (the pre-deletion tree at `0d6a032`: 2026-09-24, `./run_tests.sh` → 6513 passed, 9 skipped in 235.58 s, serial 3 passed — minus the FSM tests, plus the ported ones). Phase closure, same day, `./run_tests.sh --full` → **PASS: 5416 passed, 8 skipped, 1 xfailed in 274.47 s; serial 6 passed in 18.67 s**.
 * Commits `b3afcf7` (cluster A), `79cbb71` (B), `8364808` (C) — `git log --grep "Logbook-Entry: 2026-09-24-skill-stack-r4-fsm-deletion"`.
+* Phase-end audit, 2026-09-24, `/audit a4b4489..HEAD` (the ten R4 commits): no blocking defect in the
+  control code; four findings — three narrative / test-metadata applied directly (the R4 runsheet
+  described `skills/check`'s pre-`1d6d7f5` behaviour; this entry's 6513 lacked its triple; a dead
+  `PlanCycle` conftest mock) and one latent wire-contract fragility fixed: the `InstallSegment`
+  tilt fields' NaN sentinel was not the rosidl default (zeros), so a hand-built request would have
+  decoded as a level-tilt override and steered a REST onto the `rest_slew` path (a `LIMIT_VEL`
+  refusal, never motion); explicit `hold_tilt_set` / `rest_tilt_set` flags now carry presence.

@@ -280,13 +280,15 @@ RELOAD_ANNOUNCE_TIMEOUT_S = 1.0
 
 def _wire_tilt_out(tilt):
     """``segments.CatchTerminal.hold_tilt`` / ``RestTerminal.tilt`` ->
-    ``InstallSegment.Request.hold_tilt_rad`` / ``rest_tilt_rad`` (R4 reload,
-    Unit U3): ``None`` -> the wire's NaN sentinel (see
-    ``trajectory_node._wire_tilt`` for why NOT zero — a REST's own
-    ``(0.0, 0.0)`` is a real, distinct value from "no tilt given")."""
+    ``(is_set, [rx, ry])`` for ``InstallSegment.Request.{hold,rest}_tilt_set``
+    / ``*_tilt_rad`` (R4 reload, Unit U3; the flag since the R4 audit,
+    2026-09-24): ``None`` -> ``(False, [nan, nan])`` — the FLAG is the "no
+    tilt" answer (rosidl zero-initialises the array, and a REST's own
+    ``(0.0, 0.0)`` is a real target), the NaN is belt and braces. See
+    ``trajectory_node._wire_tilt``, the one decode point."""
     if tilt is None:
-        return [float('nan'), float('nan')]
-    return [float(tilt[0]), float(tilt[1])]
+        return False, [float('nan'), float('nan')]
+    return True, [float(tilt[0]), float(tilt[1])]
 
 
 def _mocap_aim_point_mm(site: Site, z_mm: float, offset_mm):
@@ -1096,7 +1098,7 @@ class SkillNode(Node):
             req.site_mm = [float(v) for v in terminal.landing_mm]
             req.landing_vel_mm_s = [float(v) for v in terminal.landing_vel_mm_s]
             req.rest_site_mm = [float(v) for v in terminal.rest_site_mm]
-            req.hold_tilt_rad = _wire_tilt_out(terminal.hold_tilt)
+            req.hold_tilt_set, req.hold_tilt_rad = _wire_tilt_out(terminal.hold_tilt)
             tt = terminal.then_throw
             if tt is not None:
                 req.t_release_s = float(tt.t_release_s)
@@ -1106,7 +1108,7 @@ class SkillNode(Node):
         else:
             req.t_event_s = float(terminal.t_rest_s)
             req.rest_site_mm = [float(v) for v in terminal.rest_site_mm]
-            req.rest_tilt_rad = _wire_tilt_out(terminal.tilt)
+            req.rest_tilt_set, req.rest_tilt_rad = _wire_tilt_out(terminal.tilt)
 
         if not self._install_cli.wait_for_service(timeout_sec=_SERVICE_WAIT_S):
             self.get_logger().error('trajectory/install_segment unavailable')

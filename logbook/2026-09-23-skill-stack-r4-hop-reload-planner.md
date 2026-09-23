@@ -149,9 +149,12 @@ naming the xy).
   reload trial no longer exists.
 * The held-axis QP costs ~5× a level LANDING per iteration (~0.09 s unloaded); the reload
   CATCH is a fresh origin, so no splice budget is at risk.
-* `InstallSegment.srv` gained `hold_tilt_rad` / `rest_tilt_rad` with a NaN sentinel, not
-  zeros: a DECAY REST's real (0, 0) target is a distinct fact from "no tilt" (it selects the
-  `rest_slew` path).
+* `InstallSegment.srv` gained `hold_tilt_rad` / `rest_tilt_rad`, first with a NaN sentinel
+  for "no tilt" (a DECAY REST's real (0, 0) target is a distinct fact — it selects the
+  `rest_slew` path); the phase-end audit found the NaN is not the field's rosidl default
+  (zeros are), so the wire now carries explicit `hold_tilt_set` / `rest_tilt_set` flags and
+  the flag, not the numbers, says whether a tilt was given
+  (`logbook/2026-09-24-skill-stack-r4-fsm-deletion.md`'s audit paragraph).
 * The axial-only hand-ratio scaling for a lateral target (`_hand_corrected_landing`) is a
   no-op below the 12° throw-tilt clamp — `tilt_to_throw` aligns the cup axis with the launch
   velocity, so the stroke IS the lateral velocity — and only diverges past saturation, which
