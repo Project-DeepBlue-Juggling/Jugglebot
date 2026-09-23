@@ -18,7 +18,7 @@ files_changed:
   - tests/ros/test_teensy_bridge_node_recover.py
   - tests/hardware/session_cup_contact.md
   - tests/hardware/session_skills_r3.md
-  - plans/active/cup-contact-contract.md
+  - plans/archived/cup-contact-contract.md
   - logbook/INDEX.md
 subsystem:
   - motion

@@ -2,7 +2,7 @@
 title: "Cup-contact contract implemented — the dive does not coast, it spikes in the knot before the window opens, and the tilt-jerk lever has no closed form and became a per-cycle measurement"
 type: investigation
 date: 2026-09-20
-status: open
+status: tuned
 phase: "two-ball-skill-stack — R3"
 related_plan: cup-contact-contract.md
 files_changed:
@@ -35,7 +35,7 @@ files_changed:
   - tests/motion/test_skills_admissible.py
   - tests/ros/test_skill_node.py
   - tests/sim/test_skills_gate.py
-  - plans/active/cup-contact-contract.md
+  - plans/archived/cup-contact-contract.md
   - plans/active/two-ball-skill-stack.md
   - logbook/INDEX.md
 subsystem:
@@ -51,7 +51,7 @@ tags:
 
 ## Symptom
 
-Four symptoms motivated `plans/active/cup-contact-contract.md` § 0: a 3.9 mm learner
+Four symptoms motivated `plans/archived/cup-contact-contract.md` § 0: a 3.9 mm learner
 lateral-aim correction at 0.9 m commanded 2.24° of tilt and 13.5 mm of platform excursion
 in the catch window (the "0.9 m wobble", 2026-09-16); the learner's lateral channel and the
 tracker's catch aim are both pinned/clamped to the schedule's own site because the platform
@@ -503,3 +503,7 @@ zero offset) is a real narrowing, not a grid artefact — Carried, R4 (below).
   trending to 0 within five throws.
 * **`colcon build`** owed before any sitting (`skill_node.py`, `unified_cycle.py` and the
   rest of the ROS package changed).
+
+---
+
+**2026-09-23:** status `open` → `tuned` at the plan's archival — the unpinning, the box re-sweep, the sim gate and the full-tier run listed as TODO above all landed (entries 2026-09-21 and 2026-09-23 ×2); the two Carried items (the seam tilt-rate pin, the QP/gate wall-clock bar) are now on `plans/active/two-ball-skill-stack.md` § 0's R4 carry-in list.

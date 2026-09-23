@@ -11,7 +11,7 @@ files_changed:
   - tests/motion/test_validate_cycle_vectorised.py
   - tests/motion/test_unified_cycle.py
   - config/generated/admissible_box.yaml
-  - plans/active/cup-contact-contract.md
+  - plans/archived/cup-contact-contract.md
   - logbook/2026-09-20-cup-contact-contract-implemented.md
   - logbook/INDEX.md
 subsystem:

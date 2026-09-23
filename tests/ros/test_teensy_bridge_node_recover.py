@@ -942,3 +942,22 @@ def test_recover_disarms_even_when_the_hand_is_already_parked():
         assert node._mpc_active is False
     finally:
         _teardown(teensy, client, node)
+
+
+def test_odrive_command_shares_the_recover_callback_group():
+    """2026-09-23 13:53: the orchestrator's 'clear_errors' rides the
+    odrive_command conduit into `_svc_clear_errors` and, since d8814ee, the
+    recovery hand park. That service sat in the node-default
+    MutuallyExclusiveCallbackGroup — the publish timers' group — so the 20 s
+    park held every timer and the operator's instruments went dark for
+    exactly its duration (the three recovery parks were the only
+    /robot_state gaps > 0.3 s in the bag). Same group as /clear_errors and
+    /recover now, for the same reason those two left the default group."""
+    teensy, client, node = _node()
+    try:
+        svcs = node._services
+        assert svcs['odrive_command'].callback_group is node._recover_cbgroup
+        assert svcs['odrive_command'].callback_group is svcs['clear_errors'].callback_group
+        assert svcs['reboot_odrives'].callback_group is None      # quick RPC, unchanged
+    finally:
+        _teardown(teensy, client, node)

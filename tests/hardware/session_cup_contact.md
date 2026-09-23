@@ -1,6 +1,11 @@
 # Cup-contact contract — first powered sitting (single-site self-toss, 0.6 m and 0.9 m)
 
-First flight of `plans/active/cup-contact-contract.md` (implemented 2026-09-21, commit
+> **FLOWN and CLOSED OUT 2026-09-23.** Block A 2026-09-22 (`logbook/2026-09-23-cup-contact-first-sitting.md`),
+> § 9 z-sweep and Block B 2026-09-23 (`logbook/2026-09-23-block-b-lateral-learner-and-hand-endstop-push.md`).
+> The plan is archived; this sheet is kept as the record of what was flown and is not a live
+> runsheet. The next sheet is R4's (`plans/active/two-ball-skill-stack.md`).
+
+First flight of `plans/archived/cup-contact-contract.md` (implemented 2026-09-21, commit
 `2cc8631`, logbook `2026-09-20-cup-contact-contract-implemented.md`). Same machine, site,
 driver and services as `session_skills_r3.md` — **that sheet stays the reference for every
 shared row** (perception preconditions, bring-up, refusal table, recovery); this sheet only
@@ -113,32 +118,21 @@ touch-down, and keep the bag.
 |---|---|
 | 20 | `skills/stop`, GUI Deactivate, launch down. Note the bag folder and the launch log path. |
 | 21 | Hand Claude the PATHS, not pastes: the launch log, the bag folder, the loadavg capture, this sheet's § 8 filled in. |
-| 22 | Logbook entry (`/investigate` or `/log`): the § 8 tables, the verdict on τ = 0.125 s, the lateral-miss trajectory, every finding. Update `plans/active/cup-contact-contract.md` status (§ 5 step 4's sitting) and the memory file. |
+| 22 | Logbook entry (`/investigate` or `/log`): the § 8 tables, the verdict on τ = 0.125 s, the lateral-miss trajectory, every finding. Update `plans/archived/cup-contact-contract.md` status (§ 5 step 4's sitting) and the memory file. |
 
-## 8. Results (fill in during the sitting)
+## 8. Results (filled 2026-09-23 from the bags — per-throw tables are in the two logbook entries)
 
-**Frame check (row 8):** offset ____ mm (x ____, y ____) · QTM re-aligned? Y/N
+**Frame check (row 8):** 09-22: +8.0 mm (x +4.1, y −6.8), after recal +8.6 mm (x −1.6, y −8.5), body spread 0.03 mm sd · QTM re-aligned? Y (twice) — a lever arm, now subtracted (see § 9).
 
-**Block A — pinned**
+**Block A — pinned (2026-09-22, 36 rows @ 0.6 m, 51 @ 0.9 m, 87/87 caught):** seat median +0.089 / +0.079 s; late seats (> 0.20 s) 3/36, 6/50; HELD/EMPTY/HELD hops 4/36, 5/50; first-ten signatures 0 and 1 → **PROCEED** (09-18 control: median +0.086 / +0.091, late 3/11 and 2/15, hops 1/11 and 1/15).
 
-| apex | throw | seat= (s) | caught | HELD/EMPTY/HELD | by eye | notes |
-|---|---|---|---|---|---|---|
-| 0.6 | 1 | | | | | |
-| 0.9 | 1 | | | | | |
+**Block B — unpinned (2026-09-23, 29 rows @ 0.6 m, 51 @ 0.9 m, 78/80 caught):** y command reached +23 / +29 mm; median y miss first five → last five: 0.6 m −3.8 → +5.4 mm, 0.9 m −5.7 → +7.9 mm; scatter sd 10.5 / 17.6 mm. At 40 mm the 0.9 m 25-throw chains dropped two balls; at 20 mm stable at both apexes → **launch default 20 mm**.
 
-Block A verdict (§ 4): rebounds __/10 at 0.6 m, __/10 at 0.9 m → PROCEED / STOP
+`SPLICE_TOO_LATE` 1 (09-22) · `AIM-LATERAL-CLAMPED` 91 (09-22, authority 0) · re-sends accepted/refused 57/23 (16 `LIMIT_JERK`) · `CUP_CONTACT_ACC` 3 (re-aims of ≤ 0.06 s seeded mid-dive — a re-send that should be skipped before the solve) · guard latches 2 (09-22) + 1 (09-23), all stale-hand-encoder bursts · drops 0 (09-22), 2 (09-23 at 40 mm).
 
-**Block B — unpinned (20 mm; the first Block B flew 40)**
+**09-23 safety event:** the first recovery park pressed the hand against the upper stop for up to 20 s with every bridge topic dark. Blackout fixed (`odrive_command` → the recover callback group); push mechanism unresolved, on watch; re-home the hand before the next sitting.
 
-| apex | throw | err x (mm) | err y (mm) | seat= (s) | caught | clamped? | notes |
-|---|---|---|---|---|---|---|---|
-| 0.9 | 1 | | | | | | |
-| 0.6 | 1 | | | | | | |
-
-Median lateral miss, first 5 → last 5 throws: 0.9 m ____ → ____ mm · 0.6 m ____ → ____ mm
-
-`SPLICE_TOO_LATE` __ · `AIM-LATERAL-CLAMPED` __ · re-sends accepted/refused __/__ ·
-`CUP_CONTACT_ACC` __ (expect 0) · guard latches __ · drops __
+**§ 9 z-sweep (09-23):** y slope −0.0135 mm/mm (0.77°), x ≈ +0.009 mm/mm, pivot ≈ 170 mm above the base plane → **LEVER ARM**; QTM ≈ gravity-level, the base plane 0.77° off it. Remedy at source: shim the base level; software: the subtraction at the site height (landed).
 
 ## 9. Frame-offset z-sweep — which frame is tilted? (robot powered, no throwing, BEFORE Block B)
 

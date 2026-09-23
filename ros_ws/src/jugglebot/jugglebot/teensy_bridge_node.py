@@ -1946,8 +1946,9 @@ class TeensyBridgeNode(Node):
                             callback_group=self._coldstart_cbgroup)
         self.create_service(Trigger, 'deactivate', self._svc_deactivate,
                             callback_group=self._coldstart_cbgroup)
-        self.create_service(ODriveCommandService, 'odrive_command',
-                            self._svc_odrive_command)
+        # 'odrive_command' is created below, in the recover group — it is the
+        # orchestrator's conduit for 'clear_errors', so it runs the same
+        # multi-second recovery as /clear_errors (2026-09-23).
         self.create_subscription(
             SetMotorVelCurrLimitsMessage, 'set_motor_vel_curr_limits',
             self._sub_vel_curr_limits, 10)
@@ -2223,6 +2224,20 @@ class TeensyBridgeNode(Node):
         # reply dispatches on another executor thread and the disarm/telemetry callbacks
         # keep running, so the operator can always disarm out.
         self.create_service(Trigger, 'clear_errors', self._svc_clear_errors,
+                            callback_group=self._recover_cbgroup)
+        # 'odrive_command' is the ORCHESTRATOR's conduit for 'clear_errors'
+        # (`_svc_odrive_command` -> `_svc_clear_errors`), so it runs the same
+        # inline recovery — and, since 2026-09-23, the recovery hand park. It
+        # sat in the node-default MutuallyExclusiveCallbackGroup until
+        # 2026-09-23: the 2026-09-23 13:53 recovery park (20 s) ran inside it
+        # and every default-group publish timer (robot_state, hand_telemetry,
+        # link_status, ...) waited for it — the operator's instruments went
+        # dark for exactly the park's duration, the three recovery parks being
+        # the only /robot_state gaps > 0.3 s in the whole bag (`logbook/
+        # 2026-09-23-block-b-lateral-learner-and-hand-endstop-push.md`). The
+        # reason above for /clear_errors applies verbatim here.
+        self.create_service(ODriveCommandService, 'odrive_command',
+                            self._svc_odrive_command,
                             callback_group=self._recover_cbgroup)
         # /park_hand — the OPERATOR/recovery caller of the hand-park contract
         # (2026-09-18). Same ReentrantCallbackGroup as /recover, for the same
