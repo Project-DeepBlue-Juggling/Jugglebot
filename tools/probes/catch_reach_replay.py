@@ -338,8 +338,17 @@ EVENT_TOPICS = (STATUS, DIAG, FEEDBACK, DYNTARGET, GRAVITY, THROWS)
 # self-check must FAIL loudly rather than silently re-scoring old captures under
 # new physics.
 
-#: ``catch_coordinator_node._PRETILT_EARLY_S`` — the pre-tilt target is scheduled
-#: to arrive this far BEFORE the announced landing.
+#: Was ``catch_coordinator_node._PRETILT_EARLY_S`` — the pre-tilt target was
+#: scheduled to arrive this far BEFORE the announced landing. CLOSED CAPTURE
+#: RECORD since R4 (2026-09-24, U6b Cluster A follow-up): `catch_coordinator_
+#: node.py` is deleted with the FSM under `fsm-final`, and the skill stack's
+#: CATCH scheduling (`motion/skills/schedule.py`, tracker-aimed, rest-terminal)
+#: has no equivalent "arrival = landing - fixed pre-tilt earliness" mechanism
+#: to mirror — so this is no longer a live-production mirror, same status as
+#: `THROUGH_SEAT_RATE_RADPS` above: frozen at the value the reference capture
+#: (2026-07-25_15-17-48) was actually scheduled with, pinned to itself in the
+#: self-check rather than compared against a production source that no longer
+#: exists.
 PRETILT_EARLY_S = 1.5
 #: ``planner.build_catch(tilt_decay_s=...)`` default.
 TILT_DECAY_S = 0.15
@@ -395,35 +404,6 @@ REFERENCE_TARGET_RX_DEG = -0.77878414
 REFERENCE_LEAD_S = 3.707
 #: The plan's predicted leg peaks as published on /trajectory/diagnostics.
 REFERENCE_PRED_PEAKS = (14.2, 142.4, 3950.0)
-
-
-def source_constant(module_filename, name):
-    """Read a module-level literal constant out of a ROS node's SOURCE.
-
-    ``catch_coordinator_node`` imports ``rclpy``, and this probe's whole scope
-    claim is that it needs no ROS. Parsing the assignment out of the source file
-    keeps the self-check able to compare against the shipping value without
-    taking the dependency. Returns ``None`` if the file or the name is absent —
-    which the self-check reports as drift, not as a pass.
-    """
-    import ast
-    path = os.path.join(_REPO, 'ros_ws', 'src', 'jugglebot', 'jugglebot',
-                        module_filename)
-    try:
-        with open(path, 'r', encoding='utf-8') as fh:
-            tree = ast.parse(fh.read(), filename=path)
-    except (OSError, SyntaxError):                               # pragma: no cover
-        return None
-    for node in tree.body:
-        if not isinstance(node, ast.Assign):
-            continue
-        for tgt in node.targets:
-            if isinstance(tgt, ast.Name) and tgt.id == name:
-                try:
-                    return ast.literal_eval(node.value)
-                except ValueError:                               # pragma: no cover
-                    return None
-    return None
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1637,9 +1617,11 @@ def self_check():
          ARRIVAL_TWIST_BASIS_PEAK * ARRIVAL_RATE_BOUND),
         ('hw.JB_TRAJ_CATCH_SETTLE_HOLD_S',
          float(hw.JB_TRAJ_CATCH_SETTLE_HOLD_S), 0.5),
-        ('catch_coordinator_node._PRETILT_EARLY_S',
-         source_constant('catch_coordinator_node.py', '_PRETILT_EARLY_S'),
-         PRETILT_EARLY_S),
+        # CLOSED capture record (R4, 2026-09-24) — pinned to itself, like the
+        # recorded-session rate above: `catch_coordinator_node.py` is deleted
+        # and the skill stack has no equivalent constant to mirror.
+        ('PRETILT_EARLY_S (capture record, NOT a live mirror)',
+         PRETILT_EARLY_S, 1.5),
     ]
     drifted = [f'{n}: production {p!r} != mirrored {m!r}'
                for n, p, m in mirrored if p != m]

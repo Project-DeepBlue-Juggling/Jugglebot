@@ -71,7 +71,22 @@ from jugglebot.ball_possession import (                         # noqa: E402
     arrival_blind,
     merge_possession,
 )
-from jugglebot.toss_sequencer import CATCH_CONFIRM_WINDOW_S     # noqa: E402
+#: CAUGHT within this PAST the scheduled landing — the FSM's own deadline this
+#: replay reproduces. PORTED HERE (R4, 2026-09-24, `census_fsm_deletion.md`
+#: Cluster A): this used to be `toss_sequencer.CATCH_CONFIRM_WINDOW_S`
+#: (itself `= ball_possession.ARRIVAL_BAND_MAX_S`, DERIVED not chosen — see
+#: that constant's own docstring for why 0.56 s clears the real seat-edge
+#: band), but `toss_sequencer.py` is deleted with the FSM. This probe is a
+#: committed replay harness (`tools/probes/README.md`; cited by
+#: logbook/2026-08-27-phase-b4-two-slot-pipeline.md,
+#: logbook/2026-08-27-phase-b3-session-scoped-arming.md,
+#: logbook/2026-08-26-possession-verdicts-become-sensor-only.md and
+#: logbook/2026-08-27-phase-b2-release-instant-input.md), so the value moves
+#: here rather than the probe losing its deadline arithmetic. Read directly
+#: off the surviving `ball_possession` module (already imported above) rather
+#: than re-declared, so this cannot silently drift from the constant it is
+#: derived from.
+CATCH_CONFIRM_WINDOW_S = ball_possession.ARRIVAL_BAND_MAX_S
 
 #: Samples this far either side of a cycle's landing are enough for every window
 #: the source can open: the arrival window is ``[landing - lead, landing +
@@ -100,11 +115,18 @@ def _load_miner():
 
 
 def _sensor():
-    """A source constructed EXACTLY as ``reload_coordinator_node`` constructs it,
-    from the generated config rather than from literals — ``_HAND_STATE_STALE_S``
+    """A source constructed EXACTLY as the live node constructs it, from the
+    generated config rather than from literals — ``_HAND_STATE_STALE_S``
     included, which is the node's own staleness window and not a fourth config
-    key."""
-    from jugglebot.reload_coordinator_node import _HAND_STATE_STALE_S
+    key.
+
+    PORTED HERE (R4, 2026-09-24, U6b Cluster A follow-up): was
+    ``reload_coordinator_node._HAND_STATE_STALE_S``; that module is deleted
+    with the FSM (`fsm-final`) and the live node is now ``skill_node.py``,
+    whose own ``_HAND_STATE_STALE_S`` docstring restates (not imports) the
+    same 0.5 s value rather than deriving it from generated config — read
+    directly off that module rather than re-declared a third time here."""
+    from jugglebot.skill_node import _HAND_STATE_STALE_S
     return HandBallSensorSource(
         arrival_lead_s=float(hw.JB_BD_ARRIVAL_LEAD_S),
         arrival_window_s=float(hw.JB_BD_ARRIVAL_WINDOW_S),

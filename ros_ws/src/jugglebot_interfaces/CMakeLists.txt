@@ -58,7 +58,6 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/GoToPose.srv"
   "srv/SetTrajectoryLimits.srv"
   "srv/TimedTarget.srv"
-  "srv/PlanCycle.srv"
   "srv/InstallSegment.srv"
 
   "msg/CanTrafficReportMessage.msg"
@@ -73,10 +72,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "action/HomeMotors.action"
   "action/LevelPlatform.action"
   "action/BallButlerThrowCmd.action"
-  "action/Reload.action"
   "action/Juggle.action"
-  "action/Toss.action"
-  "action/TossContinuous.action"
   DEPENDENCIES geometry_msgs
 )
 

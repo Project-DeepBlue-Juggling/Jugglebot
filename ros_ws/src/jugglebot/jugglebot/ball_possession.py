@@ -242,23 +242,17 @@ ARRIVAL_BAND_MAX_S = 0.56
 #: to the millisecond so it stays a true lower bound, and any tick allowance
 #: belongs in the consumer.  Retired value 0.137 (n=35, 2026-08-10).
 #:
-#: Its consumer is the session's dwell margin — the landing -> next-cycle-start
-#: handoff (``toss_session.DEFAULT_SESSION_DWELL_MARGIN_S``), which was sized on
-#: the mocap tracker's CAUGHT verdict until 2026-08-22 and is now sized on this,
-#: because possession became sensor-PRIMARY on 2026-08-10 and the tracker is the
-#: FALLBACK.  It is the ONLY production consumer: nothing in this module reads
-#: it, the arrival window opens at ``landing - arrival_lead_s`` and admits an
-#: early edge whatever this says, and the labeller never sees it.
-#:
-#: ⚠ **And that consumer does not actually read THIS constant at runtime.**
-#: ``DEFAULT_SESSION_DWELL_MARGIN_S`` is the no-config FALLBACK; the node passes
-#: in ``hw.JB_OP_TOSS_SESSION_DWELL_MARGIN_S``, generated from
-#: ``config/hardware_config.yaml: toss_session_dwell_margin_s`` — a re-typed
-#: literal of this value.  Moving this name alone changes the fallback and
-#: leaves the robot where it was.  The two are pinned equal by
-#: ``test_local_constants_match_generated_config``, which is what makes the
-#: duplication safe; a band re-measure is a YAML edit + ``generate_config.py`` +
-#: ``colcon build --packages-select jugglebot``, not a one-line Python change.
+#: ⚠ R4 (2026-09-24, U6b Cluster C): its former consumer, the TossContinuous
+#: session's dwell margin (``toss_session.DEFAULT_SESSION_DWELL_MARGIN_S`` and
+#: the ``hw.JB_OP_TOSS_SESSION_DWELL_MARGIN_S`` / ``toss_session_dwell_margin_s``
+#: config key it was re-typed from, kept equal by a now-deleted drift-guard
+#: test) is deleted with the FSM under `fsm-final` — there is no session dwell
+#: to floor any more. Nothing in this module reads it either: the arrival
+#: window opens at ``landing - arrival_lead_s`` and admits an early edge
+#: whatever this says, and the labeller never sees it. The constant survives
+#: as the measurement it always was (the earliest instant a CAUGHT verdict can
+#: exist), read directly by ``tests/ros/test_ball_possession.py`` — no
+#: production consumer remains.
 #:
 #: **Why the CAUGHT-only minimum and not the corpus minimum.** One row in the
 #: 2026-08-24 corpus carries an edge at **+45.4 ms**, 42 ms below this floor: a

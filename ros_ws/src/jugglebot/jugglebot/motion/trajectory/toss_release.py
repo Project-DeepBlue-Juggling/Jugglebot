@@ -7,7 +7,10 @@ the physics fields of the self-``ThrowAnnouncement`` that closes the existing
 correlation → catch loop unchanged. Phase 4 adds the Tier-8b displaced case
 (:func:`compute_release_state_tilted`): throw from site A, tilt-aimed at the
 displaced catch B, with the loud :class:`ThrowTiltInfeasible` clamp gate.
-Consumed by ``toss_sequencer`` / ``reload_coordinator_node``; siblings
+Consumed by ``tools/probes/displaced_reach_frontier.py`` and
+``tests/motion/test_toss_release.py`` (``toss_sequencer`` /
+``reload_coordinator_node`` were the FSM-era consumers, deleted at R4,
+2026-09-24, ``census_fsm_deletion.md`` Cluster A); siblings
 ``ballistics_bc`` (catch-side boundary conditions) and ``tilt_geometry``
 (receive tilt + the Phase-4 throw mirror).
 
@@ -78,10 +81,11 @@ def stow_to_global_mm(pos_stow_mm, *,
 
     THE single tested STOW→global conversion point for the toss (plan § Frame
     convention): general (x, y, z) — generalises
-    ``reload_sequencer.compute_catch_point_mm``, which only produces the
-    on-axis x = y = 0 point. The conversion is exactly one addition of
-    ``initial_height_mm`` to z; adding any active-z lift here or downstream
-    double-counts it (the 2026-07-23 first-sitting z bug,
+    :func:`compute_catch_point_mm` (below in this module since R4,
+    2026-09-24), which only produces the on-axis x = y = 0 point. The
+    conversion is exactly one addition of ``initial_height_mm`` to z; adding
+    any active-z lift here or downstream double-counts it (the 2026-07-23
+    first-sitting z bug,
     ``logbook/2026-07-23-phase7-reload-first-hardware-session.md``).
     """
     p = np.asarray(pos_stow_mm, dtype=float).reshape(3)
@@ -480,3 +484,28 @@ def build_announcement_fields(release: ReleaseState, throw_time_s: float
             release.launch_vel_mms, release.flight_time_s),
         landing_time_s=float(throw_time_s) + release.flight_time_s,
     )
+
+
+def compute_catch_point_mm(initial_height_mm: float, active_z_mm: float,
+                            landing_z_offset_mm: float = 0.0) -> tuple:
+    """The world-frame catch point BB aims at: directly above Jugglebot's base
+    at the hand-CUP catch height. ``(0, 0, initial_height + active_z +
+    landing_z_offset)``.
+
+    PORTED HERE (R4, 2026-09-24, ``census_fsm_deletion.md`` Cluster A) from
+    ``reload_sequencer.compute_catch_point_mm``, deleted with the FSM in the
+    same commit — a closed-form geometry helper, not FSM choreography, and
+    ``tests/motion/test_toss_release.py`` needs it to keep pinning the
+    Tier-8a self-toss's catch point against the same landing-z-offset
+    convention the reload path used.
+
+    The caller (formerly ``reload_coordinator_node``) passed
+    ``landing_z_offset_mm = HAND_CATCH_OFFSET_MM`` (64.78 mm) so the aim
+    lands on the CUP plane — where the hand actually intercepts the ball —
+    not the platform centroid. That matches the catch plane the rest of the
+    stack uses (``ballistics_bc``'s catch-height default, ``ball_tracker``
+    landing_z, the deferred-reach catch centroid).
+    """
+    return (0.0, 0.0,
+            float(initial_height_mm) + float(active_z_mm)
+            + float(landing_z_offset_mm))

@@ -92,7 +92,6 @@ for _p in (os.path.join(_REPO, 'ros_ws', 'src', 'jugglebot'),
 
 import jugglebot.hardware_config as hw                       # noqa: E402
 from jugglebot.motion.geometry import StewartGeometry        # noqa: E402
-from jugglebot.motion.trajectory import catch_reach          # noqa: E402
 from jugglebot.motion.trajectory import planner              # noqa: E402
 from jugglebot.motion.trajectory import tilt_geometry        # noqa: E402
 from jugglebot.motion.trajectory import toss_release         # noqa: E402
@@ -105,10 +104,23 @@ GEOM = StewartGeometry()
 LIMITS = TrajectoryLimits.from_config(hw)
 Z_ACTIVE = float(hw.JB_OP_DEFAULT_ACTIVE_Z_MM)
 SETTLE_S = float(hw.JB_TRAJ_CATCH_SETTLE_HOLD_S)
-# The ballistics-side gravity (never the tracker's 9810) — RE-EXPORTED from the
-# shared reach module since 2026-08-29 rather than re-declared, so a `--json` run
-# cannot quote one g while the gate it underpins uses another.
-GRAVITY_MMS2 = catch_reach.GRAVITY_MMS2
+# The ballistics-side gravity (never the tracker's 9810) — same value and same
+# reason as `toss_sequencer.GRAVITY_MMS2` and `ballistics_bc`: the arrival
+# velocity `reach_verdict` derives has to be the one the release math produced.
+# PORTED HERE (R4, 2026-09-24, `census_fsm_deletion.md` Cluster A): this used
+# to be re-exported from `motion/trajectory/catch_reach.py`, which is deleted
+# with the FSM — its only other caller, `reload_coordinator_node.py`, died in
+# the same commit. This probe is a committed replay harness per
+# `tools/probes/README.md` (cited by
+# logbook/2026-08-21-ilc-primary-foldin.md,
+# logbook/2026-08-29-displacement-caps-removed.md and
+# logbook/2026-07-25-displaced-throws-150.md), so the body moves here rather
+# than the probe losing its only remaining caller.
+GRAVITY_MMS2 = 9806.0
+# `compute_release_state_tilted` hit the tilt ceiling — a distinct verdict
+# from every `feasibility` code, because the refusal is about the AIM and not
+# the reach. Same string `catch_reach.py` used.
+TILT_CLAMP = 'TILT_CLAMP'
 
 _R2 = math.sqrt(0.5)
 DIRECTIONS = (('+x', 1.0, 0.0), ('NE', _R2, _R2), ('+y', 0.0, 1.0),
@@ -143,32 +155,67 @@ def closed_form_limit_mm(flight_s: float) -> float:
 def reach_verdict(a_xy, b_xy, flight_s):
     """Plan the production deferred A→B reach. Returns ('OK'|<reject code>, info).
 
-    ⚠ **THIS IS A DELEGATION SINCE 2026-08-29, AND THAT IS THE POINT.** The body
-    that used to live here — the production chain reproduced by hand — became
-    `motion/trajectory/catch_reach.catch_reach_verdict` when
+    ⚠ **THIS WAS A DELEGATION 2026-08-29..2026-09-24, AND THAT WAS THE POINT** —
+    the body that used to live here, the production chain reproduced by hand,
+    became `motion/trajectory/catch_reach.catch_reach_verdict` when
     `_build_toss_cycle` grew a pre-throw gate on it (Tier 8b commands the
-    PRE-TILT pose at A, so nothing else pre-throw judges B laterally). A probe
-    that measures a frontier the machine does not gate on is worse than no
-    probe, so the two share ONE body rather than a convention. Everything the
-    docstrings above claim this probe underpins is now a claim about that
-    module, measured through this entry point.
+    PRE-TILT pose at A, so nothing else pre-throw judges B laterally), and this
+    function called that module so a probe run and the gate could not disagree
+    silently. **PORTED BACK HERE at R4 (2026-09-24, `census_fsm_deletion.md`
+    Cluster A):** `catch_reach.py`'s only other caller,
+    `reload_coordinator_node.py` (the FSM's Tier-8b pre-throw gate), was
+    deleted in the same commit, so the module lost its "TWO CALLERS" — this
+    probe is a committed replay harness (`tools/probes/README.md`; cited by
+    logbook/2026-08-21-ilc-primary-foldin.md,
+    logbook/2026-08-29-displacement-caps-removed.md and
+    logbook/2026-07-25-displaced-throws-150.md), so the body moves here rather
+    than the probe losing its only remaining caller. No production code calls
+    this any more — it is now purely a measurement, same as before 2026-08-29.
 
     The chain, unchanged: `compute_release_state_tilted` for the
     swing-compensated pre-tilt seed at A and the aim, then the receive tilt from
     the ARRIVAL velocity (launch velocity minus g·T, as the tracker sees it),
     then the swing-compensated catch centroid at B — which is what
-    `catch_coordinator.predicted_catch_command` produces — and finally
+    `catch_coordinator.predicted_catch_command` used to produce — and finally
     `planner.build_catch` with the flight as the lead.
 
-    The probe's own module-level survey constants are passed explicitly so a
-    `--json` run stays a function of THIS file's LIMITS/GEOM/Z_ACTIVE/SETTLE_S
-    (the frontier is a function of the session limits, and the bench ladder
+    Uses the probe's own module-level survey constants (LIMITS/GEOM/Z_ACTIVE/
+    SETTLE_S) directly, so a `--json` run stays a function of THIS file's
+    session limits (the frontier is a function of them, and the bench ladder
     re-runs this probe precisely to re-derive it when they move).
     """
-    return catch_reach.catch_reach_verdict(
-        (float(a_xy[0]), float(a_xy[1])), (float(b_xy[0]), float(b_xy[1])),
-        float(flight_s), catch_z_mm=Z_ACTIVE, limits=LIMITS, geom=GEOM,
-        settle_hold_s=SETTLE_S)
+    t = float(flight_s)
+    bx, by = float(b_xy[0]), float(b_xy[1])
+    ax, ay = float(a_xy[0]), float(a_xy[1])
+    try:
+        rs = toss_release.compute_release_state_tilted(
+            (bx, by, Z_ACTIVE), t, throw_site_xy_mm=(ax, ay))
+    except toss_release.ThrowTiltInfeasible as exc:
+        return TILT_CLAMP, {'required_deg': float(exc.required_deg)}
+    # The ARRIVAL velocity as the tracker will see it: the launch velocity
+    # minus g·T on z. `tilt_to_receive` then gives the catch policy's receive
+    # tilt, and `cup_lateral_shift_mm` the swing that policy compensates.
+    v_arrival = np.asarray(rs.launch_vel_mms, dtype=float).copy()
+    v_arrival[2] -= GRAVITY_MMS2 * t
+    rx, ry = tilt_geometry.tilt_to_receive(v_arrival)
+    shift = tilt_geometry.cup_lateral_shift_mm(
+        rx, ry, cup_z_mm=float(rs.catch_point_global_mm[2]))
+    catch_pose = np.array([bx - shift[0], by - shift[1], Z_ACTIVE, rx, ry, 0.0])
+    info = {
+        'throw_tilt_deg': math.degrees(math.hypot(rs.tilt_rx, rs.tilt_ry)),
+        'event_vel_mps': float(rs.event_vel_mps),
+        'displacement_mm': float(rs.displacement_mm),
+    }
+    try:
+        _plan, report = planner.build_catch(
+            _rest_state(rs.pretilt_pose_stow), catch_pose, t, LIMITS, GEOM,
+            settle_hold_s=SETTLE_S, receive_tilt=(rx, ry))
+    except TrajectoryInfeasible as exc:
+        return exc.code, info
+    info['peak_leg_vel_mmps'] = float(report.peak_leg_vel_mmps)
+    info['peak_leg_acc_mmps2'] = float(report.peak_leg_acc_mmps2)
+    info['peak_leg_jerk_mmps3'] = float(report.peak_leg_jerk_mmps3)
+    return 'OK', info
 
 
 def frontier_table(a_xy=(0.0, 0.0)):

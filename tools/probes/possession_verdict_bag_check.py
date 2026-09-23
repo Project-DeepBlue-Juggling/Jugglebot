@@ -5,8 +5,10 @@ behind contract C-POSSESS-1 (``ros_ws/docs/ball_possession_contract.md``).
 WHAT IT DOES
 ------------
 Replays every ``/balls`` message in a rosbag through the **production**
-possession source (``jugglebot.ball_possession.TrackerArrivalSource``, constructed
-exactly as ``reload_coordinator_node`` constructs it) and prints, for every
+possession source (``jugglebot.ball_possession.TrackerArrivalSource``, a
+REPORTING-only source since D1 — see that class's own docstring; this probe
+and its self-check are its only remaining callers since ``reload_coordinator_
+node.py`` was deleted with the FSM at R4, 2026-09-24) and prints, for every
 destination-tagged track that reached ``CAUGHT``:
 
   * the CAUGHT estimate and the reference point it was judged against;
@@ -94,6 +96,17 @@ CATCH_POINT_MM = (0.0, 0.0,
                   float(hw.GEOM_INITIAL_HEIGHT_MM)
                   + float(hw.JB_OP_DEFAULT_ACTIVE_Z_MM)
                   + float(hw.HAND_CATCH_OFFSET_MM))
+
+#: The FSM's ``reload_coordinator_node._CAUGHT_MAX_XY_ERROR_MM`` — deleted with
+#: the FSM under `fsm-final` (R4, 2026-09-24); this probe's ``self_check`` was
+#: its only reader besides that node's own tests (also deleted), so per the
+#: census (`census_fsm_deletion.md`, U6b Cluster A follow-up) the constant
+#: dies with it, EXCEPT this probe still needs a second, independently-stated
+#: name to mirror-check ``ARRIVAL_TOL_MM`` against (case 7 below) — restated
+#: HERE, not imported, from the SAME generated-config field the deleted node
+#: read (``hw.GEOM_ARM_RADIUS_MM``), so it is a second statement of one
+#: config value, never a second number.
+_CAUGHT_MAX_XY_ERROR_MM = float(hw.GEOM_ARM_RADIUS_MM)
 
 _STATUS_CAUGHT = 2
 _FIXTURE_PATH = os.path.join(_REPO, 'tests', 'ros', 'possession_fixtures.py')
@@ -297,14 +310,14 @@ def self_check():
     check('6. the 2026-07-23 corrupt track is still refused',
           not src.judge(ball_xyz_mm=fx.CORRUPT_2026_07_23,
                         ref_point_mm=CATCH_POINT_MM).confirmed)
-    from jugglebot import reload_coordinator_node as rcn
-    check('7. probe mirrors the coordinator tolerance',
-          abs(rcn._CAUGHT_MAX_XY_ERROR_MM - ARRIVAL_TOL_MM) < 1e-9,
-          f'node {rcn._CAUGHT_MAX_XY_ERROR_MM} vs probe {ARRIVAL_TOL_MM}')
-    check('8. probe mirrors the coordinator catch point',
+    from jugglebot.motion.trajectory.toss_release import compute_catch_point_mm
+    check('7. probe mirrors the (deleted FSM node\'s) tolerance constant',
+          abs(_CAUGHT_MAX_XY_ERROR_MM - ARRIVAL_TOL_MM) < 1e-9,
+          f'restated {_CAUGHT_MAX_XY_ERROR_MM} vs probe {ARRIVAL_TOL_MM}')
+    check('8. probe mirrors compute_catch_point_mm',
           all(abs(a - b) < 1e-6 for a, b in zip(
               CATCH_POINT_MM,
-              rcn.compute_catch_point_mm(
+              compute_catch_point_mm(
                   hw.GEOM_INITIAL_HEIGHT_MM, hw.JB_OP_DEFAULT_ACTIVE_Z_MM,
                   landing_z_offset_mm=hw.HAND_CATCH_OFFSET_MM))))
 

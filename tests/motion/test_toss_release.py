@@ -20,7 +20,11 @@ import jugglebot.hardware_config as hw
 from jugglebot.motion.trajectory import ballistics_bc as bb
 from jugglebot.motion.trajectory import tilt_geometry as tg
 from jugglebot.motion.trajectory import toss_release as tr
-from jugglebot.reload_sequencer import compute_catch_point_mm
+# PORTED HERE (R4, 2026-09-24, census_fsm_deletion.md Cluster A):
+# compute_catch_point_mm used to live on reload_sequencer, deleted with the
+# FSM in the same commit; it is closed-form geometry, not FSM choreography,
+# so it moved to toss_release.py alongside its sibling STOW->global helpers.
+from jugglebot.motion.trajectory.toss_release import compute_catch_point_mm
 
 G = bb.GRAVITY_MMS2
 
@@ -44,7 +48,7 @@ def test_stow_to_global_general_xyz(stow, want):
 
 def test_conversion_parity_with_reload_catch_point():
     """The new general conversion + cup offset reproduces the hardware-verified
-    reload catch point (reload_sequencer.compute_catch_point_mm) at the ACTIVE
+    reload catch point (toss_release.compute_catch_point_mm) at the ACTIVE
     center — pins both frames' values for one worked example (809.08 mm), the
     plan's mandated regression against the z double-add."""
     cup = tr.stow_to_global_mm((0.0, 0.0, 170.0)) + np.array([0.0, 0.0, 64.78])

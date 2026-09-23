@@ -191,43 +191,19 @@ def test_an_omitted_knob_leaves_no_empty_brackets():
 
 
 # ── the wire map's COMPLETENESS ───────────────────────────────────────────────
-
-def test_every_minted_outcome_code_has_an_operator_hint():
-    """``REJECT_WIRE_MAP`` is the only enumeration of these codes anywhere, and
-    nothing pinned that it was complete.
-
-    That is how ``HAND_BELOW_FLOOR`` and ``UNIFIED_AIM_UNSUPPORTED`` sat unhinted
-    from the day they were minted, and how ``STOPPED_CHAIN_LOST`` joined them
-    within a session of being written: minting a code is one line, and the map
-    lives in another file that nobody is forced to open. An operator reading a
-    trace for an unhinted code gets a bare token and no next action — which is
-    precisely the thing the table exists to prevent.
-
-    So the check is structural rather than a list: every module constant on the
-    two producers whose VALUE looks like an operator-facing terminal must have a
-    key. A new code fails this the moment it is written, in the same commit,
-    which is the only time the author knows what the hint should say.
-    """
-    import jugglebot.toss_session as tsess
-    from jugglebot import reload_coordinator_node as rcn
-    from tests.hardware.toss_trace_recorder import REJECT_WIRE_MAP
-
-    codes = set()
-    for mod in (tsess, rcn):
-        for name in dir(mod):
-            if not (name.startswith('OUTCOME_STOPPED_')
-                    or name.startswith('_OUTCOME_')):
-                continue
-            value = getattr(mod, name)
-            if isinstance(value, str) and value:
-                codes.add(value)
-    # COMPLETED / STOPPED_ON_MISS are not refusals and predate the table; every
-    # other terminal an operator can read off a trace needs its next action.
-    codes -= {tsess.OUTCOME_COMPLETED, tsess.OUTCOME_STOPPED_ON_MISS}
-    missing = sorted(c for c in codes if c not in REJECT_WIRE_MAP)
-    assert not missing, (
-        'these outcome codes are minted but have no REJECT_WIRE_MAP hint, so a '
-        'trace shows the operator a bare token and no next action: %s' % missing)
-    # …and non-vacuity: the sweep must actually be finding the UH-7a codes.
-    assert {'REJECTED_BEAT_TOO_SHORT', 'REJECTED_CHAIN_LOST',
-            'STOPPED_CHAIN_LOST', 'STOPPED_CHAIN_REFUSED'} <= codes
+#
+# DELETED (R4, 2026-09-24, U6b Cluster A follow-up):
+# `test_every_minted_outcome_code_has_an_operator_hint`. It walked the two FSM
+# outcome-code PRODUCERS (`toss_session.OUTCOME_STOPPED_*`/`_OUTCOME_*`,
+# `reload_coordinator_node`'s same) against the CONSUMER
+# (`tests/hardware/toss_trace_recorder.REJECT_WIRE_MAP`) and asserted every
+# minted code had an operator hint. All three names are FSM/FSM-tooling,
+# deleted with it under `fsm-final` (`toss_trace_recorder.py` on Cluster B's
+# delete list, confirmed gone). This was pure FSM structure, not a claim
+# about `outcome_detail.py` itself (whose own formatters/parsers are still
+# exercised by every other test in this file, unchanged, against LIVE
+# producers — `motion/trajectory/feasibility.py`,
+# `motion/unified_cycle.py`). No live REJECT_WIRE_MAP-equivalent exists to
+# port to: the skill stack's refusal codes (INVARIANTS.md § 8) have no
+# per-code operator-hint table today. Flagged in the U6b handoff as a
+# possible gap for a future unit, not invented here.

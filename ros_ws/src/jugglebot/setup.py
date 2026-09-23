@@ -89,12 +89,8 @@ setup(
             'spacemouse_handler = jugglebot.spacemouse_handler:main',
             # ── Ball tracking & catch ──────────────────────────
             'ball_tracker_node = jugglebot.ball_tracker_node:main',
-            'catch_coordinator_node = jugglebot.catch_coordinator_node:main',
             'catch_correlation_node = jugglebot.catch_correlation_node:main',
             'ball_butler_node = jugglebot.ball_butler_node:main',
-            # BB→Jugglebot reload action (Phase 7): orchestrates only — trajectory_node
-            # plans the catch, catch_coordinator arms the hand, ball_butler throws.
-            'reload_coordinator_node = jugglebot.reload_coordinator_node:main',
             # Skill-stack orchestrator shell (R2): schedule dispatch over
             # trajectory/install_segment. See jugglebot/skill_node.py.
             'skill_node = jugglebot.skill_node:main',

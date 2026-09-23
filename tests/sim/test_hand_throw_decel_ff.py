@@ -110,7 +110,14 @@ import pytest
 
 from sim.hand import trajectory as mirror
 import hardware_config as hw
-from jugglebot.toss_sequencer import FLIGHT_TIME_MIN_S, FLIGHT_TIME_MAX_S
+# R4 (2026-09-24, census_fsm_deletion.md Cluster A): read directly off
+# throw_envelope rather than through toss_sequencer's re-export, deleted with
+# the FSM in the same commit — these two constants were always DEFINED here
+# (`toss_sequencer.FLIGHT_TIME_MIN_S = throw_envelope.MIN_FLIGHT_TIME_S`).
+from jugglebot.motion.trajectory.throw_envelope import (
+    MIN_FLIGHT_TIME_S as FLIGHT_TIME_MIN_S,
+    MAX_FLIGHT_TIME_S as FLIGHT_TIME_MAX_S,
+)
 
 # ── measured anchors (see the module docstring for provenance) ──────────────
 #: Binding DECEL-SIDE (post-release) lower bound on the hand axis's total
@@ -147,9 +154,9 @@ _HISTORICAL_FLIGHT_CEILING_S = 1.10
 
 _GRAVITY = 9.81
 
-# R1 (2026-09-11): throw_envelope.MIN_FLIGHT_TIME_S (re-exported by
-# toss_sequencer as FLIGHT_TIME_MIN_S) collapsed to the search bracket (0.05 s)
-# when ARM_WINDOW died with the stroke engine.  Below the wire band's floor
+# R1 (2026-09-11): throw_envelope.MIN_FLIGHT_TIME_S collapsed to the search
+# bracket (0.05 s) when ARM_WINDOW died with the stroke engine.  Below the
+# wire band's floor
 # (TEENSY_TRAJ_MIN_EVENT_VEL_MPS 0.3 m/s ⇒ T = 2v/g = 0.0612 s) the mirror CLAMPS
 # the release speed, so the algebraic identities below are only meaningful from
 # the wire floor up.  R2's admissible sweep owns the real floor.

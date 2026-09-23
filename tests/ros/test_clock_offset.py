@@ -7,8 +7,11 @@ functional test, it silently biases catch deadlines.
 
 The frozen reference below is the OLD implementation, transcribed verbatim
 from ``trajectory_node.py`` at 2013–2033 / ``catch_coordinator_node.py`` at
-395–411 (both were the same code).  Every test drives both through the same
-scripted clock and asserts exact float equality — not ``approx``.
+395–411 (both were the same code, historical — ``catch_coordinator_node.py``
+was deleted with the FSM at R4, 2026-09-24, ``census_fsm_deletion.md``
+Cluster A; ``trajectory_node.py`` is the sole surviving caller).  Every test
+drives both through the same scripted clock and asserts exact float
+equality — not ``approx``.
 """
 from __future__ import annotations
 
@@ -160,11 +163,15 @@ def test_shared_constants_match_both_node_call_sites():
 
     ``DEFAULT_SAMPLES`` / ``DEFAULT_HISTORY`` flow through the shared
     functions, so the equalities above pin them everywhere.  ``REFRESH_PERIOD_S``
-    does not — it is consumed at the nodes' ``create_timer`` call sites — so
-    this test reads those two call sites out of the source and fails if either
-    goes back to a bare literal.  Otherwise the constant is free to drift from
-    the cadence it claims to describe with nothing going red, which is the
+    does not — it is consumed at the node's ``create_timer`` call site — so
+    this test reads that call site out of the source and fails if it goes back
+    to a bare literal.  Otherwise the constant is free to drift from the
+    cadence it claims to describe with nothing going red, which is the
     duplicated-timing-constant shape this unit set out to kill.
+
+    Only ``trajectory_node.py`` is checked since R4 (2026-09-24,
+    ``census_fsm_deletion.md`` Cluster A): ``catch_coordinator_node.py``, the
+    dedup's other original call site, was deleted with the FSM.
     """
     import ast
     import os
@@ -174,7 +181,7 @@ def test_shared_constants_match_both_node_call_sites():
     assert clock_offset.REFRESH_PERIOD_S == 30.0
 
     pkg_dir = os.path.dirname(os.path.abspath(clock_offset.__file__))
-    for node_file in ('trajectory_node.py', 'catch_coordinator_node.py'):
+    for node_file in ('trajectory_node.py',):
         with open(os.path.join(pkg_dir, node_file)) as fh:
             tree = ast.parse(fh.read(), node_file)
         wired = []

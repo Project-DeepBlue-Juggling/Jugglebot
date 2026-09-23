@@ -364,14 +364,6 @@ def generate_launch_description():
     # launch terminal for `blas threads: 1`.
     _planner_blas_env = {'OPENBLAS_NUM_THREADS': '1', 'OMP_NUM_THREADS': '1'}
 
-    catch_coordinator_node = Node(
-        package='jugglebot',
-        executable='catch_coordinator_node',
-        # Calls the planner (build_catch / the unified cycle) — see
-        # _planner_blas_env above and the 2026-09-06 UH-3 entry.
-        additional_env=dict(_planner_blas_env),
-    )
-
     # Catch-timing correlation: matches each cone/catch_event against the nearest
     # predicted landing in throw_announcements and publishes cone/timing_result
     # (the per-catch predicted-vs-actual delta the GUI Catching Cone panel shows).
@@ -390,18 +382,6 @@ def generate_launch_description():
         package='jugglebot',
         executable='ball_butler_node',
         parameters=[{'apply_aim_correction': apply_aim_correction}],
-    )
-
-    # BB→Jugglebot reload action (Phase 7): thin orchestrator over the existing
-    # catch path (trajectory_node build_catch + catch_coordinator hand-arm) and BB
-    # throw. Exposes jugglebot/reload (Reload.action).
-    reload_coordinator_node = Node(
-        package='jugglebot',
-        executable='reload_coordinator_node',
-        # Calls the planner (_unified_warm_planner and every joined
-        # LAUNCH+LANDING solve) — see _planner_blas_env above and the
-        # 2026-09-06 UH-3 entry.
-        additional_env=dict(_planner_blas_env),
     )
 
     # trajectory_node is the sole owner of the :5557 leg funnel. It replaced the
@@ -425,9 +405,9 @@ def generate_launch_description():
     # trajectory/install_segment (jugglebot/skill_node.py). It calls the
     # planner over the wire (trajectory_node does the solve), but it builds and
     # ticks the schedule itself — small, frequent numpy work on this node's own
-    # thread, same class as catch_coordinator_node's build_catch calls — so it
-    # gets the same cap. See _planner_blas_env above and the 2026-09-06 UH-3
-    # entry.
+    # thread, the same class of planner-adjacent work every other node on this
+    # cap does — so it gets the same cap. See _planner_blas_env above and the
+    # 2026-09-06 UH-3 entry.
     skill_node = Node(
         package='jugglebot',
         executable='skill_node',
@@ -579,7 +559,6 @@ def generate_launch_description():
             '/qtm_clock_offset_sec',
             '/motion/tracking_error',
             '/motion/diagnostics',
-            '/catch/dynamic_target',
             '/gravity_offset',
             '/leg_torques_diagnostic',
             '/balls',
@@ -689,15 +668,13 @@ def generate_launch_description():
             # ball_butler_node (2026-08-11). bb/throw_at_target is
             # fire-and-forget, so this is the ONLY channel on which
             # THROW_ABORTED_NOT_SETTLED — BB not positioned in time, ball never
-            # left — is observable at all; without it a bag cannot explain why a
-            # TossContinuous reload interlude retried, or why it stopped.
+            # left — is observable at all. Its FSM-era consumer
+            # (reload_coordinator_node's reload interlude retry logic) was
+            # deleted at R4 (2026-09-24, census_fsm_deletion.md Cluster A);
+            # kept in the bag regardless — a publisher-with-no-consumer today
+            # is still the only channel this outcome reaches at all, for
+            # whatever reads it next.
             '/bb/throw_outcome',
-            '/catch/armed',
-            '/catch/prime_hold',
-            '/catch/prime_dispatched',
-            '/catch/vel_scale',
-            '/catch/reach_center',
-            '/catch/pretilt_hold',
             '/trajectory/commanded_position',
             # The skill-stack start surface's action feedback + status (R4
             # owner decision D3): the per-attempt phase string and the goal
@@ -734,10 +711,8 @@ def generate_launch_description():
         mocap_node,
         spacemouse_handler,
         ball_tracker_node,
-        catch_coordinator_node,
         catch_correlation_node,
         ball_butler_node,
-        reload_coordinator_node,
         trajectory_node,
         skill_node,
         teensy_bridge_node,

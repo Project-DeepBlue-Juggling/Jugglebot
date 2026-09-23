@@ -590,8 +590,16 @@ def test_a_legitimate_throw_at_the_SHIPPED_cadence_is_not_a_bounce_out():
     the shipped 6.0 s dwell the departure is far outside the window, so the
     clamp is inert and the raw window has to get the answer right on its own. A
     regression that broke the unclamped path would otherwise hide behind the
-    clamp at every cadence the ladder actually runs."""
-    departure_after_catch_s = float(hw.JB_OP_TOSS_SESSION_DWELL_DEFAULT_S)
+    clamp at every cadence the ladder actually runs.
+
+    ⚠ R4 (2026-09-24, U6b Cluster C): ``hw.JB_OP_TOSS_SESSION_DWELL_DEFAULT_S``
+    (the TossContinuous session dwell default) is deleted with the FSM under
+    `fsm-final` — the skill stack schedules on absolute wall-clock, not a
+    session dwell. The 6.0 s figure is kept as a plain literal: the claim this
+    test pins is "a departure far outside the retention window still reads
+    CONFIRMED", and 6.0 s is simply a concrete instance of "far outside" (the
+    window itself, ``_RETAIN_S``, is unchanged and asserted below)."""
+    departure_after_catch_s = 6.0  # historical: the retired toss_session_dwell_default_s shipped value
     assert _RETAIN_S < departure_after_catch_s
     src = _sensor()
     land = 10.0
@@ -638,14 +646,19 @@ def test_a_feed_that_simply_STOPS_reads_blind_and_not_missed():
     The liveness term closes it: anything past ``_last_t + stale_s`` is unwatched
     whether or not a later sample ever proves it. Note this is the SAME
     arithmetic ``evidence`` has always used (``_live_ok``), so the two halves of
-    the source now agree about when it has gone dark."""
-    from jugglebot.toss_sequencer import CATCH_CONFIRM_WINDOW_S
+    the source now agree about when it has gone dark.
+
+    PORTED (R4, 2026-09-24, U6b Cluster A follow-up): the deadline used to be
+    imported as ``toss_sequencer.CATCH_CONFIRM_WINDOW_S`` (an alias of
+    ``ARRIVAL_BAND_MAX_S``, deleted with the FSM); read directly off the
+    surviving module instead — this test drives only ``HandBallSensorSource``/
+    ``merge_possession``/``arrival_blind``, never the FSM."""
     src = _sensor()
     land = 10.0
     # A healthy 100 Hz feed, empty cup, up to 0.2 s before the landing…
     _stream(src, 8.0, land - 0.2, held=False)
     # …and then nothing. No later sample ever arrives to close the span.
-    deadline = land + CATCH_CONFIRM_WINDOW_S
+    deadline = land + ARRIVAL_BAND_MAX_S
     v = src.observe(deadline, landing_t=land)
     assert v.arrival == ARRIVAL_UNKNOWN
     assert v.reason == 'SENSOR_BLIND'
@@ -672,38 +685,18 @@ def test_a_feed_that_simply_STOPS_reads_blind_and_not_missed():
     assert arrival_blind(merge_possession(sensor=lc)) is False
 
 
-def test_the_fsm_mints_MISSED_SENSOR_BLIND_for_a_feed_that_stopped():
-    """B1's consequence, at the terminal the operator actually reads.
-
-    The unit assertion above proves the verdict; this proves the NAME the sitting
-    gets. ``MISSED`` sends an operator to the throw, ``MISSED_SENSOR_BLIND`` sends
-    them to the cup — and on a dead cup the second one is the true fault. Same
-    MISSED family, so ``stop_on_miss`` governs both identically."""
-    from jugglebot.toss_sequencer import (
-        CATCH_CONFIRM_WINDOW_S as _W, TossObservations, TossSequencer)
-    src = _sensor()
-    land = 10.0
-    _stream(src, 8.0, land - 0.2, held=False)      # feed stops before the landing
-    deadline = land + _W
-    verdict = merge_possession(sensor=src.observe(deadline, landing_t=land))
-    assert arrival_blind(verdict) is True
-
-    seq = TossSequencer(catch_pose_stow_mm=(0.0, 0.0, 170.0),
-                        flight_time_s=0.80, throw_delay_s=1.0,
-                        event_vel_mps=3.93, throw_site_known=True)
-    obs = TossObservations(
-        now=deadline, control_mode='TOSS', streaming=True, mocap_fresh=True,
-        platform_levelled=True, hand_fresh=True, hand_parked=True,
-        ball_seated=False, ball_evidence=EVIDENCE_UNKNOWN,
-        ball_caught=False, possession_blind=arrival_blind(verdict))
-    # Drive `_step_settling` directly: the phase transition is not what is under
-    # test here (test_toss_sequencer owns it), the TERMINAL NAME is.
-    dec = seq._step_settling(deadline, obs)
-    assert dec.done and dec.result.outcome == 'MISSED_SENSOR_BLIND'
-    # …and the same tick with a LIVE cup that simply saw no rise is a plain MISS.
-    plain = seq._step_settling(deadline, TossObservations(
-        **dict(obs.__dict__, possession_blind=False)))
-    assert plain.done and plain.result.outcome == 'MISSED'
+#: DELETED (R4, 2026-09-24, U6b Cluster A follow-up):
+#: ``test_the_fsm_mints_MISSED_SENSOR_BLIND_for_a_feed_that_stopped``. It
+#: constructed a real ``TossSequencer`` and drove ``_step_settling`` directly
+#: to check the terminal NAME (``MISSED_SENSOR_BLIND`` vs plain ``MISSED``)
+#: the deleted FSM minted for a blind vs. a genuine miss — FSM structure, not
+#: a claim about ``ball_possession`` (the unit assertion in the test above,
+#: which stays, already proves ``arrival_blind`` itself). No live analogue
+#: exists to port to: `motion/skills/executor.py`'s outcome capture tracks
+#: only a boolean `caught_seen` (INVARIANTS.md `ABORTED_NO_RELEASE` /
+#: C-POSSESS-1 rows) and mints no blind-vs-miss distinction at the terminal —
+#: flagged in the U6b handoff as a possible coverage gap for a future unit,
+#: not invented here.
 
 
 def test_a_recovered_link_does_not_manufacture_an_edge():
@@ -1473,10 +1466,17 @@ def test_the_catch_confirm_deadline_clears_the_band_it_has_to_outlast():
 
     Deriving it put that re-measure in ONE place, and on 2026-08-24 that is what
     happened: the constant moved 0.80 -> 0.56 and both sequencers plus the
-    session's MISS-cleanup floor followed with no edit of their own."""
-    from jugglebot import reload_sequencer, toss_sequencer
-    assert toss_sequencer.CATCH_CONFIRM_WINDOW_S is ARRIVAL_BAND_MAX_S
-    assert reload_sequencer.CATCH_CONFIRM_WINDOW_S is ARRIVAL_BAND_MAX_S
+    session's MISS-cleanup floor followed with no edit of their own.
+
+    R4 NOTE (2026-09-24, U6b Cluster A follow-up): the two identity checks this
+    test used to run (``toss_sequencer.CATCH_CONFIRM_WINDOW_S is
+    ARRIVAL_BAND_MAX_S``, same for ``reload_sequencer``) proved those FSM
+    modules ALIASED this constant rather than restating it — an FSM-structural
+    claim about two modules deleted with the FSM under `fsm-final`. The
+    physical claim below (the source's own window ceiling must outlast the
+    measured seat-edge band) is what survives; it is a claim about
+    ``ball_possession.ARRIVAL_BAND_MAX_S`` itself, which C-POSSESS-1.C
+    (INVARIANTS.md § 5) still enforces through this module."""
     # The measured ceiling the deadline must outlast. +0.5547 s over 33 catches,
     # four post-FW-14 bags, 2026-08-24 (it was +0.798, n=35, 2026-08-10 — and the
     # deadline was a hand-written 0.70 under THAT until census D7).
