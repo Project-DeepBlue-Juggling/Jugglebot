@@ -166,9 +166,13 @@ exact, and the capture design has to allow for two weak directions:
 ## 6. Sequence
 
 1. **Fit tool** (`tools/kincal_fit.py`): tested offline on synthetic data with a known
-   geometry error.
+   geometry error. **Done 2026-09-23.**
 2. **Capture tool** (`tests/hardware/kincal_capture.py`): pose generator, dry-run,
-   rehearsal.
+   rehearsal. **Done 2026-09-23:** seed 1 gives 185 dwells, 18.8 min, 0 refusals
+   under the production move gate. A `--check` mode is the § 4 per-session check.
+   `mocap_node` publishes the Platform body's z shifted down by `initial_height_mm`;
+   the tool adds it back and stores the capture in the Base frame, because step 5
+   changes that constant.
 3. **Sitting:** the full sweep, the two-direction repeats and the re-home repeat.
 4. **Fit** plus the report: the § 3 and § 4 verdicts, and § 8's criteria on the hold-out
    set. The tool proposes a geometry YAML. **It never writes `hardware_config.yaml`.**
